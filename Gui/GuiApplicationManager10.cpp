@@ -44,6 +44,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QGuiApplication>
 #include <QScreen>
 #include <QFileOpenEvent>
+#include <QScreen>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 

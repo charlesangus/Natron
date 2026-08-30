@@ -120,7 +120,7 @@ milestone than went in.
     run.
   - size: M
 
-- [ ] M2.P1.T2g — Fix `Engine/Knob.cpp`'s missing `Py_LIMITED_API` undef
+- [x] M2.P1.T2g — Fix `Engine/Knob.cpp`'s missing `Py_LIMITED_API` undef
   - files: `Engine/Knob.cpp`
   - approach: not a Qt6 issue — a pre-existing, unrelated latent bug that
     real CI's next run exposed simply by compiling further than any

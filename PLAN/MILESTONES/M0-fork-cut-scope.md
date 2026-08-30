@@ -26,7 +26,7 @@ before touching Qt.
     contains no Windows/macOS jobs.
   - size: S
 
-- [ ] M0.P1.T3 — Delete the qmake build entirely
+- [x] M0.P1.T3 — Delete the qmake build entirely
   - files: all 11 `*.pro` files (`Project.pro`, `Engine/Engine.pro`, etc.),
     `global.pri`, `config.pri`
   - approach: CMake is already the more complete build (it's the one with the
@@ -84,3 +84,11 @@ branch protection is wired to the M4 workflow once it exists.
   Windows-only conditional branches or prose, not live on the Linux path.
   Left for M6 (documentation pass) / a later Jenkins-script cleanup rather
   than expanding T2's scope further.
+- 2026-08-29 — M0.P1.T3 deleted `CrashReporter.pro`, `CrashReporterCLI.pro`,
+  and `BreakpadClient.pro`. These were already gated out of the qmake default
+  build (`CONFIG(enable-breakpad)`) and **CMake never had any build path for
+  them at all** — no `CMakeLists.txt` under `CrashReporter/`,
+  `CrashReporterCLI/`, or `BreakpadClient/`, and zero Breakpad references in
+  the top-level `CMakeLists.txt`. This directly affects M0.P1.T5 ("Decide on
+  Breakpad"), whose verify step assumes Breakpad CMake targets already exist
+  — they don't. Raised to the user before starting T5.

@@ -85,3 +85,19 @@ runs on every push.
   see the corrected `PLAN/DECISIONS/2026-08-29-pin-exact-aswf-tag.md`.
   Switched to `aswf/ci-baseqt:2027.0`, the latest tag actually released per
   `gh api repos/AcademySoftwareFoundation/aswf-docker/releases`.
+- 2026-08-29 — With the tag fixed, the pipeline itself works: container
+  pulls, CMake configures against real Qt 6.8, and the build progresses
+  through multiple targets before failing on a genuine Qt6 source bug in
+  `libs/qhttpserver` (`QHttpRequest::HttpMethod` → `QChar` conversion is
+  ambiguous in Qt6's moc-generated code). That's Qt6-porting work — M2's
+  job, not M4's. User confirmed: merge M4 anyway (the pipeline mechanism is
+  what M4 owns; M2 fixes this and other Qt6 bugs incrementally, with this
+  now-working CI catching each one). Also clarified: required status
+  checks (T3) gate *future* PRs' own CI runs, not a retroactive check on
+  `main`'s current state, so turning it on now doesn't block anything
+  already merged — it's exactly the mechanism to force M2's PRs to
+  actually compile before landing.
+- 2026-08-29 — T3 (require the workflow before merge) done: branch
+  protection enabled on `RB-2.6` requiring the `Test Ubuntu Python 3.10`
+  check (from the `Tests` workflow) to pass before merge, plus a PR
+  requirement (no direct pushes). Fulfills the rule deferred from M0.P1.T1.

@@ -1007,7 +1007,7 @@ TimeLineGui::mouseMoveEvent(QMouseEvent* e)
 } // TimeLineGui::mouseMoveEvent
 
 void
-TimeLineGui::enterEvent(QtCompat::QEnterEvent* e)
+TimeLineGui::enterEvent(QEnterEvent* e)
 {
     _imp->alphaCursor = true;
     update();

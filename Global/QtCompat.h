@@ -25,7 +25,6 @@
 #include <QString>
 #include <QUrl>
 #include <QFileInfo>
-#include <QEnterEvent>
 
 NATRON_NAMESPACE_ENTER
 
@@ -46,9 +45,6 @@ removeFileExtension(QString & filename)
     //qDebug() << "->" << filename << fi.suffix();
     return extension;
 }
-
-// Define compatibility typedefs so code builds with Qt6
-typedef QEnterEvent QEnterEvent;
 
 } // namespace QtCompat
 

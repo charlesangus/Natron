@@ -159,7 +159,7 @@ protected:
 
     void onUserDataChanged();
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE;
-    virtual void enterEvent(QtCompat::QEnterEvent* e) OVERRIDE;
+    virtual void enterEvent(QEnterEvent* e) OVERRIDE;
     virtual void leaveEvent(QEvent* e) OVERRIDE;
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE;
 

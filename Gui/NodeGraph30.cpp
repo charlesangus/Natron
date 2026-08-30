@@ -139,7 +139,7 @@ NodeGraph::connectCurrentViewerToSelection(int inputNB,
 } // connectCurrentViewerToSelection
 
 void
-NodeGraph::enterEvent(QtCompat::QEnterEvent* e)
+NodeGraph::enterEvent(QEnterEvent* e)
 {
     enterEventBase();
     QGraphicsView::enterEvent(e);

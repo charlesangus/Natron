@@ -25,7 +25,7 @@ automatically.
     green.
   - size: S
 
-- [ ] M4.P1.T3 — Require it to pass before merge
+- [x] M4.P1.T3 — Require it to pass before merge
   - files: GitHub repo branch protection settings (no source files)
   - approach: create the branch protection rule on the default branch, requiring
     the M4.P1.T1 workflow to pass before merge. This is the single change that
@@ -37,7 +37,7 @@ automatically.
     UI.
   - size: S
 
-- [ ] M4.P1.T4 — Move packaging off "every push"
+- [x] M4.P1.T4 — Move packaging off "every push"
   - files: whichever packaging workflow remains after M0's deletions, or its
     replacement per `PLAN/DECISIONS/2026-08-29-defer-packaging-decision.md`
   - approach: upstream's `build_installer.yml` runs a full installer build on

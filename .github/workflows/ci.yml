@@ -104,6 +104,13 @@ jobs:
           name: Ubuntu Test Logs
           path: ${{ github.workspace }}/release/Testing/Temporary/LastTest.log
 
+      - name: Report step outcomes (temporary M2.P3.T1a diagnostic)
+        if: always()
+        run: |
+          echo "::notice::run-unix-tests-debug.outcome=${{ steps.run-unix-tests-debug.outcome }}"
+          echo "::notice::python-smoke-test-debug.outcome=${{ steps.python-smoke-test-debug.outcome }}"
+          echo "::notice::run-unix-tests-release.outcome=${{ steps.run-unix-tests-release.outcome }}"
+
       - name: Check for test failures
         if: steps.run-unix-tests-debug.outcome == 'failure' || steps.run-unix-tests-release.outcome == 'failure' || steps.python-smoke-test-debug.outcome == 'failure'
         run: exit 1

@@ -20,7 +20,7 @@ jobs:
     name: Test Ubuntu Python 3.10
     runs-on: ubuntu-latest
     container:
-      image: aswf/ci-baseqt:2027.1
+      image: aswf/ci-baseqt:2027.0
     defaults:
       run:
         shell: xvfb-run --auto-servernum bash -l {0}

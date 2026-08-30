@@ -6,11 +6,11 @@ automatically.
 
 ## Phase 4.1: One gating pipeline
 
-- [x] M4.P1.T1 — Single "Tests" workflow, Linux only, running in `aswf/ci-baseqt:2027.1`
+- [x] M4.P1.T1 — Single "Tests" workflow, Linux only, running in `aswf/ci-baseqt:2027.0`
   - files: `.github/workflows/ci.yml` (new/rewritten workflow)
   - approach: adapt the existing `unix_test` job from `ci.yml` — it's the one
     part of upstream's CI that's currently green — but set
-    `runs-on: ubuntu-latest` with `container: aswf/ci-baseqt:2027.1`, a public,
+    `runs-on: ubuntu-latest` with `container: aswf/ci-baseqt:2027.0`, a public,
     pre-built image with no maintenance burden of our own. Drop the
     Windows/macOS matrix legs entirely rather than disabling them.
   - verify: a pushed branch triggers the workflow and it runs inside the
@@ -59,13 +59,13 @@ automatically.
   - size: S
 
 **Verification gate:** the Tests workflow is required on the default branch,
-runs debug and release inside `aswf/ci-baseqt:2027.1`, and packaging no longer
+runs debug and release inside `aswf/ci-baseqt:2027.0`, and packaging no longer
 runs on every push.
 
 ## Decisions
 
 - 2026-08-29 — T1/T2 implemented together (same file, one coherent rewrite):
-  `ci.yml`'s `unix_test` job now runs `container: aswf/ci-baseqt:2027.1`,
+  `ci.yml`'s `unix_test` job now runs `container: aswf/ci-baseqt:2027.0`,
   with the `apt`-based install step replaced by `dnf` for the handful of
   packages the image doesn't already bundle (`cairo-devel`,
   `extra-cmake-modules` via EPEL, `xorg-x11-server-Xvfb`). This sandbox has
@@ -80,3 +80,8 @@ runs on every push.
   packaging is actually decided.
 - 2026-08-29 — T5 (own the approval gate) recorded as acknowledged process
   commitment, no code involved.
+- 2026-08-29 — PR #3's first CI run failed fast: `manifest for
+  aswf/ci-baseqt:2027.1 not found`. `2027.1` was never actually published —
+  see the corrected `PLAN/DECISIONS/2026-08-29-pin-exact-aswf-tag.md`.
+  Switched to `aswf/ci-baseqt:2027.0`, the latest tag actually released per
+  `gh api repos/AcademySoftwareFoundation/aswf-docker/releases`.

@@ -180,9 +180,9 @@ milestone than went in.
     macros, not just `Status`: the actual break was `#define Bool int`
     colliding with `QVariant`'s deprecated `Type::Bool` enumerator.
     **Attempt 4**: undef the full standard set of X11-macro/Qt-identifier
-    collisions (`Bool`, `Status`, `True`, `False`, `None`, `Complex`,
-    `Unsorted` — the complete list every Qt+X11 integration guide names)
-    rather than whack-a-mole discovering them one real-CI-run at a time.
+    collisions (`Bool`, `Status`, `True`, `False`, `None`, `Complex` — the
+    list every Qt+X11 integration guide names) rather than whack-a-mole
+    discovering them one real-CI-run at a time. Pushed; awaiting CI.
 
 ## Phase 2.2: Mechanical Qt6 API replacements
 

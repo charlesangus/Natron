@@ -246,8 +246,8 @@ milestone than went in.
   harmless but unnecessary now — left as-is rather than reverting for no
   functional reason.
 
-- [ ] M2.P1.T2i — Fix `NatronRenderer`'s FreeType/HarfBuzz link failure
-  - files: `Engine/CMakeLists.txt`
+- [x] M2.P1.T2i — Fix `NatronRenderer`'s FreeType/HarfBuzz link failure
+  - files: `.github/workflows/ci.yml`, `Engine/CMakeLists.txt`
   - approach: not a Qt6 issue — real CI's next run got past compiling the
     *entire* codebase (a first!) and failed at link time instead:
     `libharfbuzz.so.0: undefined reference to 'FT_Get_Color_Glyph_Paint'`
@@ -276,7 +276,13 @@ milestone than went in.
     PUBLIC dependency of `NatronEngine`, alongside `PkgConfig::Cairo`, so
     every consumer (`NatronRenderer`, `NatronGui`, `Tests`) gets it via the
     same propagation mechanism that already works correctly for
-    Boost/Cairo. Pushed; awaiting CI.
+    Boost/Cairo. **Second revised approach**: the package-provided CMake
+    configs are under `/usr/local`, so configure CI with
+    `-DCMAKE_PREFIX_PATH=/usr/local`; require HarfBuzz's config package
+    explicitly (`find_package(harfbuzz 14 CONFIG REQUIRED)`) and link
+    `harfbuzz::harfbuzz` alongside `Freetype::Freetype` on `NatronEngine`.
+    This makes both libraries direct, propagated dependencies of every
+    consumer. Awaiting CI.
 
 ## Phase 2.2: Mechanical Qt6 API replacements
 
@@ -332,6 +338,11 @@ and operate without enum/QFlags errors, and the manual GUI checklist above
 passes end-to-end on Qt6.8.x.
 
 ## Decisions
+
+- 2026-08-30 — T2i's second link-failure attempt makes HarfBuzz explicit as
+  well as FreeType and sets CI's CMake prefix to `/usr/local`, where the
+  image exposes their package configs. This removes reliance on pkg-config
+  transitive dependency expansion and CMake's default package-search path.
 
 - 2026-08-30 — Cherry-picked PR #1084's 4 commits cleanly (one trivial
   line-shift auto-merge in `Engine/CLArgs.cpp`, verified byte-identical to

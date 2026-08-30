@@ -20,7 +20,7 @@ milestone than went in.
     resolution) and the project still builds.
   - size: M
 
-- [ ] M2.P1.T2a — Cherry-pick PR #1019's 3 still-relevant commits
+- [x] M2.P1.T2a — Cherry-pick PR #1019's 3 still-relevant commits
   - files: whatever `61e4b7762`, `666ead66b`, `af9d78e22` touch (45 + 6 + 1
     files; see decision below for the full analysis)
   - approach: *(re-scoped after consultant analysis — was "biggest

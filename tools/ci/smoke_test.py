@@ -86,6 +86,21 @@ import traceback
 import zlib
 
 
+def _mark(msg):
+    # TEMPORARY M2.P3.T1a diagnostic: flush eagerly and to both streams.
+    # Natron does not redirect sys.stdout/sys.stderr to a StreamCatcher in
+    # background mode (see AppManager::initPython()'s `if (!isBackground())`
+    # guard), so this is plain C stdio; when NatronRenderer's output is
+    # redirected to a file (not a tty) CPython block-buffers it, and any
+    # unflushed output is lost if the process is killed by a signal instead
+    # of exiting normally. Flush immediately after every step so progress
+    # survives a crash, to help bisect where a crash happens.
+    sys.stdout.write(msg + "\n")
+    sys.stdout.flush()
+    sys.stderr.write(msg + "\n")
+    sys.stderr.flush()
+
+
 def _write_solid_png(path, width, height, rgb):
     """Write a tiny, dependency-free solid-color PNG file.
 
@@ -111,7 +126,9 @@ def _write_solid_png(path, width, height, rgb):
 
 
 def check_qtpy_resolves_to_pyside6():
+    _mark("[smoke] importing qtpy...")
     import qtpy
+    _mark("[smoke] qtpy imported, API_NAME=%r" % (qtpy.API_NAME,))
     if qtpy.API_NAME != "PySide6":
         raise AssertionError(
             "qtpy.API_NAME is %r, expected 'PySide6'. This means QT_API is "
@@ -119,7 +136,7 @@ def check_qtpy_resolves_to_pyside6():
             "AppManager::initPython() (Engine/AppManager.cpp) sets "
             "QT_API=pyside6 BEFORE Py_Initialize(), not after." % (qtpy.API_NAME,)
         )
-    print("[smoke] OK: qtpy.API_NAME == 'PySide6'")
+    _mark("[smoke] OK: qtpy.API_NAME == 'PySide6'")
 
 
 def check_app_render_with_task_list():
@@ -127,16 +144,21 @@ def check_app_render_with_task_list():
     in_path = os.path.join(tmpdir, "in.png")
     out_path = os.path.join(tmpdir, "out.png")
     _write_solid_png(in_path, 4, 4, (220, 20, 60))
+    _mark("[smoke] wrote input PNG at %r" % (in_path,))
 
     reader = app.createReader(in_path)  # app: pre-declared by Natron, see module docstring above
+    _mark("[smoke] app.createReader() returned %r" % (reader,))
     if reader is None:
         raise AssertionError("app.createReader(%r) returned None" % (in_path,))
 
     writer = app.createWriter(out_path)
+    _mark("[smoke] app.createWriter() returned %r" % (writer,))
     if writer is None:
         raise AssertionError("app.createWriter(%r) returned None" % (out_path,))
 
-    if not writer.connectInput(0, reader):
+    connect_ok = writer.connectInput(0, reader)
+    _mark("[smoke] writer.connectInput(0, reader) returned %r" % (connect_ok,))
+    if not connect_ok:
         raise AssertionError("Effect.connectInput(0, reader) failed")
 
     # This is the call that exercises the PySequence replace-type fix: a
@@ -145,6 +167,7 @@ def check_app_render_with_task_list():
     # declared std::list<Effect*> C++ type, so Shiboken's generated
     # overload-dispatch code checked that every list element converts to
     # an Effect* and rejected our list of tuples with a TypeError.
+    _mark("[smoke] calling app.render([(writer, 1, 1)])...")
     try:
         app.render([(writer, 1, 1)])
     except TypeError as e:
@@ -154,16 +177,18 @@ def check_app_render_with_task_list():
             "this smoke test guards against (see "
             "Engine/typesystem_engine.xml's render() modify-function): %s" % (e,)
         )
+    _mark("[smoke] app.render([(writer, 1, 1)]) returned")
 
     if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
         raise AssertionError(
             "app.render([(writer, 1, 1)]) did not raise, but no non-empty "
             "output file was produced at %r" % (out_path,)
         )
-    print("[smoke] OK: app.render([(writer, 1, 1)]) rendered %r" % (out_path,))
+    _mark("[smoke] OK: app.render([(writer, 1, 1)]) rendered %r" % (out_path,))
 
 
 def main():
+    _mark("[smoke] script started")
     check_qtpy_resolves_to_pyside6()
     check_app_render_with_task_list()
 
@@ -197,8 +222,12 @@ try:
     main()
 except Exception:
     traceback.print_exc()
+    sys.stdout.flush()
     sys.stderr.write("\n[smoke] SMOKE TEST FAILED\n")
+    sys.stderr.flush()
+    _mark("[smoke] about to sys.exit(1)")
     sys.exit(1)
 else:
-    print("\n[smoke] SMOKE TEST PASSED")
+    _mark("\n[smoke] SMOKE TEST PASSED")
+    _mark("[smoke] about to sys.exit(0)")
     sys.exit(0)

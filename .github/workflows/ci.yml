@@ -67,6 +67,23 @@ jobs:
           cd debug
           OFX_PLUGIN_PATH=$PWD/../Plugins OCIO=$PWD/../OpenColorIO-Configs/blender/config.ocio ctest -V
 
+      - name: Python bindings smoke test (debug)
+        id: python-smoke-test-debug
+        # Allow continuing after error so later steps (release build/tests,
+        # log upload) still run; failure is aggregated below like the ctest
+        # steps above.
+        continue-on-error: true
+        run: |
+          cd debug
+          NATRON_RENDERER=$(find . -maxdepth 4 -type f -name NatronRenderer | head -n1)
+          if [ -z "$NATRON_RENDERER" ]; then
+            echo "Could not find a built NatronRenderer binary under debug/" >&2
+            exit 1
+          fi
+          echo "Using NatronRenderer: $NATRON_RENDERER"
+          OFX_PLUGIN_PATH=$PWD/../Plugins OCIO=$PWD/../OpenColorIO-Configs/blender/config.ocio \
+            "$NATRON_RENDERER" "$PWD/../tools/ci/smoke_test.py"
+
       - name: Build Unix (release)
         run: |
           mkdir release && cd release
@@ -88,5 +105,5 @@ jobs:
           path: ${{ github.workspace }}/release/Testing/Temporary/LastTest.log
 
       - name: Check for test failures
-        if: steps.run-unix-tests-debug.outcome == 'failure' || steps.run-unix-tests-release.outcome == 'failure'
+        if: steps.run-unix-tests-debug.outcome == 'failure' || steps.run-unix-tests-release.outcome == 'failure' || steps.python-smoke-test-debug.outcome == 'failure'
         run: exit 1

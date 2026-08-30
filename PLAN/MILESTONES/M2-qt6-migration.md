@@ -180,9 +180,28 @@ milestone than went in.
     macros, not just `Status`: the actual break was `#define Bool int`
     colliding with `QVariant`'s deprecated `Type::Bool` enumerator.
     **Attempt 4**: undef the full standard set of X11-macro/Qt-identifier
-    collisions (`Bool`, `Status`, `True`, `False`, `None`, `Complex` — the
-    list every Qt+X11 integration guide names) rather than whack-a-mole
-    discovering them one real-CI-run at a time. Pushed; awaiting CI.
+    collisions (`Bool`, `Status`, `True`, `False`, `None`, `Complex`).
+    **Still insufficient**: next real CI run broke on yet another
+    collision — X11 also defines `CursorShape` as a macro, breaking
+    `QVariant(Qt::CursorShape) = delete;` — confirming the X11 macro list
+    is open-ended and chasing it one real-CI-run at a time doesn't
+    converge (worse, the resulting parse corruption cascades into
+    unrelated-looking errors later in the same file, like the `PFNEGL*PROC`
+    "does not name a type" errors reappearing even though the GLAD/EGL
+    ordering itself was never touched this time).
+
+    **Final fix (attempt 5)**: stop enumerating X11 macros entirely.
+    Move only `#include "Engine/AppManager.h"` (not `OSGLContext.h`, not
+    `GLIncludes.h` — those two stay in their original post-EGL position,
+    since `OSGLContext.h` is what transitively pulls `GLIncludes.h`'s
+    GLAD/`__gl_h_` conflict) to BEFORE the EGL/Wayland include block.
+    `AppManager.h` alone pulls enough of QtCore (`QObject`, `QStringList`,
+    `QString`, `QProcess`, `QMap` — confirmed to not itself touch
+    `GLIncludes.h`/glad) to fully process `qvariant.h`, `qtextstream.h`,
+    and everything else Qt declares using an X11-clashing name, before
+    X11 ever gets a chance to define any of them. The existing `#undef`
+    block stays in place as defense in depth for anything `AppManager.h`
+    doesn't happen to reach.
 
 ## Phase 2.2: Mechanical Qt6 API replacements
 

@@ -81,10 +81,9 @@ depth; this skill is the quick map.
 
 ## Quick Reference
 
-Build (CMake, preferred; supports Qt6):
+Build (CMake, preferred; requires Qt6):
 ```bash
-cmake -S . -B build -DNATRON_QT6=OFF          # Qt5+PySide2 (default)
-cmake -S . -B build -DNATRON_QT6=ON           # Qt6.3+PySide6+OpenGLWidgets
+cmake -S . -B build                           # Qt6.8+/Shiboken6/PySide6, unconditional
 cmake --build build -j
 ctest --test-dir build                        # unit tests (or -DNATRON_BUILD_TESTS=OFF)
 ```
@@ -104,14 +103,16 @@ Do NOT hand-edit ``index.rst`` (except to add a whole new guide to the toctree),
 
 ## Qt 6 Migration Status (as of 2026)
 
-- **Done:** GL widgets already use ``QOpenGLWidget``; CMake has ``NATRON_QT6``
-  option (Qt6.3/Shiboken6/PySide6); ``QtCompat.h`` has version shims.
+- **Done:** GL widgets already use ``QOpenGLWidget``; the CMake build now
+  requires Qt6 unconditionally (Qt6.8+/Shiboken6/PySide6, no Qt5 path);
+  ``QtCompat.h`` has version shims.
 - **To do:** ``QRegExp`` → ``QRegularExpression`` (~16 files);
   ``QDesktopWidget``/``QApplication::desktop()`` → ``QScreen`` (~6 files);
   ``setMargin`` → ``setContentsMargins``; regenerate PySide6/Shiboken6 bindings
   (fixes enum/flag issue #854); bring qmake build to Qt6 parity.
-- Keep Qt 5.15 working: prefer APIs present in both; else shim in
-  ``QtCompat.h``; else guard with ``#if QT_VERSION >= QT_VERSION_CHECK(6,0,0)``.
+- This fork drops Qt 5 entirely (CMake already does); source-level
+  ``#if QT_VERSION`` guards and ``QtCompat.h`` shims are being removed as the
+  remaining Qt5-only code paths (chiefly qmake) are migrated.
 - Full plan: ``Documentation/source/maintainers/qt6-migration.rst``.
 
 ## Issue Triage Method

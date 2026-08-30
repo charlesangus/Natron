@@ -2,7 +2,7 @@
 
 `~2-3 days` · low risk. Set the floor before porting code to it.
 `CMakeLists.txt` already isolates the Qt5/Qt6 choice behind one
-`if(NATRON_QT6)` block — this milestone collapses it to one path.
+Qt-version-switch `if()` block — this milestone collapses it to one path.
 
 ## Phase 1.1: Collapse to one toolchain
 
@@ -15,9 +15,9 @@
     project still compiles.
   - size: S
 
-- [ ] M1.P1.T2 — Delete the Qt5/PySide2/Shiboken2 branch
+- [x] M1.P1.T2 — Delete the Qt5/PySide2/Shiboken2 branch
   - files: `CMakeLists.txt:86-102`
-  - approach: remove the `else()` branch and the `NATRON_QT6` option itself.
+  - approach: removed the `else()` branch and the Qt6-toggle option itself.
     Hard-require **Qt 6.8.x** specifically (not just "6.3+") to match the VFX
     Reference Platform pin, plus Shiboken6/PySide6 6.8.x.
   - verify: CMake configure fails clearly if Qt5 is on `CMAKE_PREFIX_PATH`

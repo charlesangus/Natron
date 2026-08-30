@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M1.P1.T1
-pm_heartbeat: 2026-08-29T23:15:00+00:00
+current: M1.P1.T2
+pm_heartbeat: 2026-08-29T23:20:00+00:00
 ship: pr-per-milestone
 ---
 
@@ -24,7 +24,7 @@ future core work has solid ground to build on.
 | **Milestones** | 7 (M0–M6) |
 
 - **Why this is tractable:** the two hardest Qt6 blockers — the
-  `QOpenGLWidget` viewer and a working `NATRON_QT6` CMake switch — are already
+  `QOpenGLWidget` viewer and a working Qt6 CMake path — are already
   merged upstream. Because this fork **drops Qt5 entirely** rather than
   supporting both, it's simpler than upstream's own plan: no
   `#if QT_VERSION` guards to write, no dual-toolkit CI matrix to maintain, no

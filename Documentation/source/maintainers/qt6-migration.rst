@@ -28,10 +28,10 @@ done:
   ``CustomParamInteract`` all derive from ``QOpenGLWidget``, not the Qt6-removed
   ``QGLWidget``. This is normally the single biggest Qt6 blocker for a GL-heavy
   app, and it is already handled.
-- **The CMake build already has a Qt6 switch.** ``CMakeLists.txt`` exposes
-  ``option(NATRON_QT6 "use Qt6" OFF)``. With it ``ON``, the build requires
-  Qt 6.3 + ``OpenGLWidgets``, Shiboken6 and PySide6; with it ``OFF`` it uses
-  Qt 5.15 + Shiboken2 + PySide2. So a dual-toolkit build is already modeled.
+- **The CMake build now targets Qt 6 exclusively.** ``CMakeLists.txt``
+  unconditionally requires Qt 6.8+, ``OpenGLWidgets``, Shiboken6 and PySide6;
+  the Qt 5.15 / Shiboken2 / PySide2 CMake path has been removed. There is no
+  longer a build-time switch — CMake commits to Qt 6.
 - **Binding scaffolding for PySide6 exists** (``PySide6_*_Python.h`` alongside
   ``PySide2_*_Python.h``).
 - **``QtCompat.h`` already carries ``QT_VERSION_CHECK(6,0,0)`` shims** and
@@ -52,8 +52,9 @@ necessary by ``#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)``. Prefer, in order:
 3. **A localized ``#if QT_VERSION`` block** only when a shim is impractical.
 
 Do the same for the two build systems: extend the qmake build with a
-``CONFIG+=qt6`` (or ``QT_MAJOR_VERSION``-driven) path mirroring what CMake's
-``NATRON_QT6`` already does, so both build systems can target either Qt.
+``CONFIG+=qt6`` (or ``QT_MAJOR_VERSION``-driven) path mirroring what the CMake
+build already does now that it targets Qt 6 unconditionally, so both build
+systems can target Qt 6.
 
 Concrete work items (audited)
 -----------------------------
@@ -107,11 +108,11 @@ Enum / ``QFlags`` scoping and the Python bindings (issue #854)
     ``QMetaType``. Localized fix.
 
 Shiboken6 / PySide6 binding regeneration
-    Switch the binding generation to Shiboken6/PySide6 when ``NATRON_QT6`` is on
-    (CMake already selects the toolchain). Regenerate the ``natronengine_*`` and
-    ``natrongui_*`` wrappers and the ``devel/PythonReference`` docs. Validate
-    against the tutorials and PyPlugs. This is where most *runtime* (as opposed
-    to compile-time) surprises will appear.
+    The CMake build already selects Shiboken6/PySide6 unconditionally.
+    Regenerate the ``natronengine_*`` and ``natrongui_*`` wrappers and the
+    ``devel/PythonReference`` docs. Validate against the tutorials and
+    PyPlugs. This is where most *runtime* (as opposed to compile-time)
+    surprises will appear.
 
 Module/include changes
     ``QOpenGLWidget`` lives in the ``OpenGLWidgets`` module in Qt 6 (CMake
@@ -195,10 +196,10 @@ Suggested sequence
    ``QRegularExpression``, ``QDesktopWidget`` → ``QScreen``, ``setMargin``,
    ``QVariant::Type``). These improve the Qt 5 build too and shrink the eventual
    Qt6 diff. Verify the Qt 5 build and test suite stay green.
-2. **Bring the qmake build to parity** with CMake's ``NATRON_QT6`` switch so
-   both build systems can select Qt 6.
-3. **Get a clean Qt 6 compile** with ``-DNATRON_QT6=ON``, fixing residual
-   compile errors with ``QtCompat.h`` shims or narrow ``#if QT_VERSION`` guards.
+2. **Bring the qmake build to parity** with CMake, which now targets Qt 6
+   unconditionally, so both build systems can select Qt 6.
+3. **Get a clean Qt 6 compile**, fixing residual compile errors with
+   ``QtCompat.h`` shims or narrow ``#if QT_VERSION`` guards.
 4. **Regenerate and fix the PySide6 bindings**; resolve #854-class enum/flag
    issues at runtime.
 5. **Validate the GUI end-to-end** on each OS: file dialog, node graph, viewer,

@@ -67,28 +67,23 @@ documentation web server), ``SequenceParsing`` (image sequence detection) and
 ``google-breakpad`` (crash reporting). With CMake, ``-DNATRON_SYSTEM_LIBS=ON``
 uses system copies of some of these instead.
 
-Other dependencies must be present on the system: **Qt** (5 or 6), **Boost**
-(notably ``boost::serialization``), **Python 3** plus **Shiboken/PySide**,
+Other dependencies must be present on the system: **Qt 6**, **Boost**
+(notably ``boost::serialization``), **Python 3** plus **Shiboken6/PySide6**,
 **cairo** (roto/paint rasterization), **OpenColorIO**, and OpenGL. The reader
 and writer plug-ins pull in **OpenImageIO** and **FFmpeg**, but those live in
 the separate ``openfx-io`` repository, not here.
 
-Qt 5 and Qt 6
--------------
+Qt 6
+----
 
-The CMake build already exposes a Qt version switch::
+The CMake build unconditionally requires **Qt 6.8+** (pinned to the VFX
+Reference Platform's Qt release), along with **Shiboken6** and **PySide6**,
+and the ``OpenGLWidgets`` component (``QOpenGLWidget`` moved into its own
+module in Qt 6). Qt 5 / Shiboken2 / PySide2 support has been removed; there
+is no build-time switch to select a Qt major version.
 
-    option(NATRON_QT6 "use Qt6" OFF)
-
-- With ``-DNATRON_QT6=OFF`` (default) it builds against **Qt 5.15**,
-  **Shiboken2** and **PySide2**.
-- With ``-DNATRON_QT6=ON`` it builds against **Qt 6.3+**, **Shiboken6** and
-  **PySide6**, and additionally requires the ``OpenGLWidgets`` component
-  (``QOpenGLWidget`` moved into its own module in Qt 6).
-
-The qmake build does **not** yet have an equivalent switch and targets Qt 5.
-Completing and stabilizing Qt 6 support is an active work item; see
-:ref:`maint-qt6`.
+The qmake build does **not** yet target Qt 6. Completing and stabilizing Qt 6
+support there is an active work item; see :ref:`maint-qt6`.
 
 Two compile definitions set in the CMake build are worth knowing about because
 they affect how you must write code:

@@ -42,12 +42,13 @@ The binding toolchain is tied to the Qt version:
 - Qt 5 builds use **Shiboken2 / PySide2**.
 - Qt 6 builds use **Shiboken6 / PySide6**.
 
-The CMake build already selects between them from the ``NATRON_QT6`` option (see
-:ref:`maint-building`), and the presence of both ``PySide2_*`` and ``PySide6_*``
-headers shows the port is under way. The bindings must be **regenerated** with
-the matching Shiboken when switching Qt major versions; a mismatch is a common
-source of the "``Qt.Alignment`` flags unrecognized" class of errors (issue
-`#854 <https://github.com/NatronGitHub/Natron/issues/854>`_). See
+The CMake build now unconditionally requires **Shiboken6 / PySide6** (see
+:ref:`maint-building`); the Qt5/Shiboken2/PySide2 CMake path has been removed.
+The presence of both ``PySide2_*`` and ``PySide6_*`` headers reflects the
+qmake build, which still targets Qt 5. The bindings must be **regenerated**
+with the matching Shiboken when switching Qt major versions; a mismatch is a
+common source of the "``Qt.Alignment`` flags unrecognized" class of errors
+(issue `#854 <https://github.com/NatronGitHub/Natron/issues/854>`_). See
 :ref:`maint-qt6`.
 
 Working on the bindings

@@ -20,14 +20,48 @@ milestone than went in.
     resolution) and the project still builds.
   - size: M
 
-- [ ] M2.P1.T2 — Rebase PR #1019 ("Qt6 support")
-  - files: whatever PR #1019 touches (per upstream diff, expect drift)
-  - approach: *(biggest unknown)* opened Dec 2024, now stale and conflicting.
-    Budget extra time for whatever's drifted in 20 months — expect to redo
-    parts by hand rather than a clean rebase.
-  - verify: rebased branch builds cleanly against the current M1 toolchain
-    baseline.
-  - size: L
+- [ ] M2.P1.T2a — Cherry-pick PR #1019's 3 still-relevant commits
+  - files: whatever `61e4b7762`, `666ead66b`, `af9d78e22` touch (45 + 6 + 1
+    files; see decision below for the full analysis)
+  - approach: *(re-scoped after consultant analysis — was "biggest
+    unknown")* PR #1019 (`origin/gui-sbk6`, already present locally, no
+    fetch needed) actually has 10 commits; 6 already landed upstream in
+    `RB-2.6` under different SHAs. Of the 4 remaining: `728ce2a90`
+    (QRegExp) is fully superseded by #1084 (M2.P1.T1) — skip it. Cherry-pick
+    the other 3 in order: `git cherry-pick -X ours 61e4b7762` (verified:
+    resolves clean, all 49 conflicts are "already fixed in HEAD, same or
+    better" — mostly duplicate `enterEvent` hunks #1084/upstream already
+    landed), then `git cherry-pick 666ead66b af9d78e22` (both verified
+    clean, no conflicts).
+  - verify: `git cherry-pick` sequence completes; `git grep` confirms the
+    wanted hunks survived (e.g. `ViewerGL.cpp`'s `e->position()`
+    conversions, `TableModelView.cpp`'s Qt6 fixes) and no unwanted reverts
+    of already-landed work.
+  - size: M
+
+- [ ] M2.P1.T2b — De-ifdef the cherry-picked commit, delete dead compat shim
+  - files: the ~45 files touched by `61e4b7762`
+  - approach: the cherry-pick imports ~73 `#if QT_VERSION >= QT_VERSION_CHECK(6,0,0)`
+    guards — this milestone's own policy (top of this file) is to apply
+    replacements unconditionally, not gate them, since Qt5 isn't kept.
+    Collapse every guard introduced by this cherry-pick to just its Qt6
+    branch. Also delete `Gui/QGLWidgetCompat.h` (a `#error`-on-Qt≥5.4
+    compat shim for Qt4-era `QGLWidget`, imported by the cherry-pick,
+    referenced by nothing).
+  - verify: `git grep -c "QT_VERSION_CHECK(6,0,0)"` returns 0 (or only the
+    handful of guards that predate this cherry-pick, if any turn out to be
+    load-bearing for a reason worth keeping — investigate any survivors);
+    `Gui/QGLWidgetCompat.h` is gone and nothing references it.
+  - size: S
+
+- [ ] M2.P1.T2c — Gap-fill: `Gui/CustomParamInteract.cpp`'s `QMouseEvent` sites
+  - files: `Gui/CustomParamInteract.cpp`
+  - approach: PR #1019 fixes `QMouseEvent::x()/y()/localPos()` (removed in
+    Qt6, replaced by `position()`) in 11 other files but misses this one —
+    6 live sites use the removed API. Same mechanical fix, applied here.
+  - verify: `git grep -n "\.x()\|\.y()\|localPos()" Gui/CustomParamInteract.cpp`
+    shows no `QMouseEvent`-derived calls to the removed accessors.
+  - size: S
 
 ## Phase 2.2: Mechanical Qt6 API replacements
 
@@ -57,7 +91,12 @@ milestone than went in.
   - approach: fix the enum/`QFlags` class of runtime bugs (upstream issue
     #854 — flags passed as raw `int` no longer implicitly convert in
     Qt6/PySide6). This is where most *runtime*, as opposed to compile-time,
-    surprises will show up.
+    surprises will show up. M2.P1.T2a's cherry-pick brings in a
+    pre-diagnosed blocker in `typesystem_engine.xml`/
+    `typesystem_natronGui.xml`: `<replace-type modified-type="PyList"/>`
+    on `render`/`renderBlocking`'s argument 1 fails to compile under
+    PySide6 and is commented out with a note that Shiboken infers the
+    conversion itself — verify that holds before assuming it's finished.
   - verify: regenerated bindings build; a Python console session exercising
     enum/flags-taking APIs (e.g. node property setters) runs without
     conversion errors.
@@ -91,3 +130,21 @@ passes end-to-end on Qt6.8.x.
   its only content is `CMAKE_CXX_STANDARD` (already 20, from M1) and
   `global.pri` edits (that file no longer exists, qmake removed in M0).
   Not cherry-picked; nothing to take.
+- 2026-08-30 — Consultant analysis of PR #1019 replaced M2.P1.T2 (see
+  M2.P1.T2a/b/c above) after finding: (1) 6 of its 10 commits already
+  landed upstream under different SHAs — the plan's "biggest unknown /
+  20-months-stale" framing was based on GitHub's raw diff count, not
+  actual remaining delta; (2) of the 4 remaining commits, 3 apply with
+  zero-or-mechanical conflicts (verified in a scratch worktree, not just
+  estimated) and 1 (`728ce2a90`, QRegExp) is superseded by #1084;
+  (3) `Documentation/source/maintainers/qt6-migration.rst`'s "Concrete
+  work items (audited)" list is incomplete — it covers QRegExp,
+  QDesktopWidget, setMargin, QVariant::Type, bindings, module includes,
+  foreach, but misses a second wave (QMouseEvent::x/y, QMutexLocker
+  template, QtConcurrent::run overload, QStyleOption::init,
+  QAbstractItemView::viewOptions, QVariant::canConvert, globalStrut,
+  QTabletEvent enums, QKeySequence operators, QButtonGroup signal) that
+  PR #1019 happens to fix already (folded into M2.P1.T2a) except for
+  `CustomParamInteract.cpp` (M2.P1.T2c). M6's existing
+  `qt6-migration.rst` doc-currency task already covers correcting this
+  list once the migration is actually done — no separate task added.

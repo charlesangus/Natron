@@ -36,7 +36,7 @@ before touching Qt.
     build still configures and builds.
   - size: S
 
-- [ ] M0.P1.T4 — Strip Qt4-era doc content
+- [x] M0.P1.T4 — Strip Qt4-era doc content
   - files: `INSTALL_LINUX.md`
   - approach: cut the sections documenting Qt4/PySide/Shiboken (Python 2) as a
     live option and the Ubuntu 18.04 Travis references — cut now rather than

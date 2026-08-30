@@ -15,19 +15,15 @@ This file is supposed to guide you step by step to have working (compiling) vers
     - [Environment to use the Natron SDK](#environment-to-use-the-natron-sdk)
   - [Manually install dependencies](#manually-install-dependencies)
     - [Qt5](#qt-515)
-    - [Qt4](#qt-48)
     - [Boost](#boost)
     - [Expat](#expat)
     - [Cairo](#cairo)
     - [Pyside2](#pyside2)
-    - [Shiboken](#shiboken2)
-    - [Pyside](#pyside)
-    - [Shiboken](#shiboken)
+    - [Shiboken2](#shiboken2)
     - [QtPy](#qtpy)
 2. [Configuration](#configuration)
     - [OpenFX](#openfx)
     - [OpenColorIO-Configs](#download-opencolorio-configs)
-    - [config.pri](#configpri)
     - [Nodes](#nodes)
 3. [Build](#build)
 4. [Distribution specific](#distribution-specific)
@@ -75,15 +71,6 @@ Once the SDK is built, you should set your environment in the shell from which y
 
 This must be done in every shell/terminal where you intend to compile and/or run Natron.
 
-## Installing dependencies from Ubuntu
-
-The scripts `tools/travis/install_dependencies.sh` and
-`tools/travis/build.sh` respectively install the correct dependencies
-and build Natron and the standard set of plugins on Ubuntu
-18.04 (Bionic Beaver).
-These scripts are used to make the [Travis CI builds](https://travis-ci.org/github/NatronGitHub/Natron).
-You can use them as a reference, but the resulting binaries are not guaranteed to be fully functional.
-
 ## Installing dependencies manually
 
 ### Qt 5.15
@@ -91,10 +78,6 @@ You can use them as a reference, but the resulting binaries are not guaranteed t
 For Qt5 You'll need to install the qtbase libraries, usually you can get them from your package manager (which depends on your Linux distribution).
 
 Alternatively you can build it from source using the tarballs from [Qt download](https://download.qt.io/archive/qt/5.15/5.15.4/submodules) or the [KDE fork](https://invent.kde.org/qt/qt/qtbase/-/tree/kde/5.15).
-
-### Qt 4.8
-
-In case you prefer to use Qt4 you'll have to build it from source as many distributions have already deprecated Qt 4, [Qt download](https://download.qt.io/archive/qt/4.8/4.8.7/) has a source archive.
 
 ### Boost
 
@@ -118,14 +101,6 @@ Natron uses pyside2 for Python 3 with Qt5.
 ### Shiboken2
 
 Natron uses shiboken2 for Python 3 with Qt5, the generator binary (`shiboken2`) and headers are required too.
-
-### PySide
-
-Natron uses pyside for Python 2 with Qt4, notice that it's deprecated in many distros.
-
-### Shiboken
-
-Natron uses shiboken for Python 2 with Qt4, notice that it's deprecated in many distros.
 
 ### QtPy
 
@@ -168,42 +143,6 @@ mv OpenColorIO-Configs-Natron-v2.4 OpenColorIO-Configs
 cd OpenColorIO-Configs && rm -v !("blender"|"blender-cycles"|"natron"|"nuke-default") -R
 ```
 
-### config.pri
-
-The `config.pri` is used to define the locations of the dependencies. It is probably the most
-confusing part of the build process.
-
-Create a `config.pri` file next to the `Project.pro` that will tell the .pro file
-where to find those libraries.
-
-You can fill it with the following proposed code to point to the libraries.
-Of course you need to provide valid paths that are valid on your system.
-
-You can find more examples specific to distributions below.
-
-`INCLUDEPATH` is the path to the include files.
-
-`LIBS` is the path to the libs.
-
-`PKGCONFIG` is the pkg-config.
-
-An example configuration for a Qt4 build might be
-
-```
------ copy and paste the following in a terminal -----
-cat > config.pri << EOF
-boost-serialization-lib: LIBS += -lboost_serialization
-boost: LIBS += -lboost_thread -lboost_system
-expat: LIBS += -lexpat
-expat: PKGCONFIG -= expat
-pyside: PYSIDE_PKG_CONFIG_PATH = $$system($$PYTHON_CONFIG --prefix)/lib/pkgconfig:$$(PKG_CONFIG_PATH)
-pyside: PKGCONFIG += pyside
-pyside: INCLUDEPATH += $$system(env PKG_CONFIG_PATH=$$PYSIDE_PKG_CONFIG_PATH pkg-config --variable=includedir pyside)/QtCore
-pyside: INCLUDEPATH += $$system(env PKG_CONFIG_PATH=$$PYSIDE_PKG_CONFIG_PATH pkg-config --variable=includedir pyside)/QtGui
-EOF
------ end -----
-```
-
 ### Nodes
 
 Natron's nodes are contained in separate repositories. To use the default nodes, you must also build the following repositories:
@@ -223,39 +162,6 @@ bin/
 Plugins/
     IO.ofx.bundle
 ```
-
-# Build
-
-To build, go into the Natron directory and type:
-
-```
-qmake -r
-make
-```
-
-If everything has been installed and configured correctly, it should build without errors.
-In case you have many versions of Qt installed qmake can generate errors, you can try for a Qt5 build
-
-```
-QT_SELECT=5 qmake -r
-make
-```
-
-If you want to build in DEBUG mode change the qmake call to this line:
-
-```
-qmake -r CONFIG+=debug
-```
-
-In case for compiling with Clang:
-
-```
-qmake -r -spec linux-clang
-```
-
-Some debug options are available for developers of Natron and you can see them in the
-`global.pri` file. To enable an option just add `CONFIG+=<option>` in the `qmake` call.
-
 
 # Distribution specific
 
@@ -304,63 +210,7 @@ And make a build folder:
 mkdir build && cd build
 ```
 
-At this point, you might need the `config.pri` in case you have to pass some options to the build via the config file. On every operating system and distro this will be different, including for Arch Linux. First, make it by running this command:
-
-```
-touch ../config.pri
-```
-
-Now, open `../config.pri` with any editor and modify it to your preference. For example you can pass options like this:
-
-```
-CONFIG += custombuild
-CONFIG += openmp
-DEFINES += QT_NO_DEBUG_OUTPUT
-```
-
-In case of a Qt4 you should paste in these lines to the empty file. **A template `config.pri` is available [here](./build-configs/arch-linux/config.pri)**. Here are some recommended instructions to do so:
-
-```
-# These are the lines you should paste into your empty `config.pri`
-boost: LIBS += -lboost_serialization
-expat: LIBS += -lexpat
-expat: PKGCONFIG -= expat
-cairo {
-        PKGCONFIG += cairo
-        LIBS -=  $$system(pkg-config --variable=libdir cairo)/libcairo.a
-}
-pyside {
-        PKGCONFIG -= pyside
-        INCLUDEPATH += $$system(pkg-config --variable=includedir pyside-py2)
-        INCLUDEPATH += $$system(pkg-config --variable=includedir pyside-py2)/QtCore
-        INCLUDEPATH += $$system(pkg-config --variable=includedir pyside-py2)/QtGui
-        INCLUDEPATH += $$system(pkg-config --variable=includedir QtGui)
-        LIBS += -lpyside-python2.7
-}
-shiboken {
-        PKGCONFIG -= shiboken
-        INCLUDEPATH += $$system(pkg-config --variable=includedir shiboken-py2)
-        LIBS += -lshiboken-python2.7
-}
-```
-
-You're now all set to compile. Use `qmake` to generate a Makefile for final compiling, like this:
-
-```
-qmake -r ../Project.pro PREFIX=/usr BUILD_USER_NAME="Arch Linux" CONFIG+=custombuild CONFIG+=openmp DEFINES+=QT_NO_DEBUG_OUTPUT QMAKE_CFLAGS_RELEASE="${CFLAGS}" QMAKE_CXXFLAGS_RELEASE="${CXXFLAGS}" QMAKE_LFLAGS_RELEASE="${LDFLAGS}"
-
-# or in case you want to use Clang
-
-qmake -r ../Project.pro -spec linux-clang PREFIX=/usr BUILD_USER_NAME="Arch Linux" CONFIG+=custombuild CONFIG+=openmp DEFINES+=QT_NO_DEBUG_OUTPUT QMAKE_CFLAGS_RELEASE="${CFLAGS}" QMAKE_CXXFLAGS_RELEASE="${CXXFLAGS}" QMAKE_LFLAGS_RELEASE="${LDFLAGS}"
-```
-
-Last, compile with `make`:
-
-```
-make
-```
-
-The binaries will be found in the `build/App` folder. In order to launch Natron after compiling, simply do `./App/Natron`, and you can then start using Natron!
+You're now all set to compile with CMake. See the Debian-based section for CMake build instructions.
 
 
 ## Debian-based
@@ -371,7 +221,7 @@ any Debian-based distribution.
 For Ubuntu 22.04 using Python 3.10 and Qt 5.15, install the required dependencies:
 
 ```
-sudo apt install build-essential libboost-serialization-dev libboost-system-dev libexpat1-dev libcairo2-dev qt5-qmake qtbase5-dev python3-dev libshiboken2-dev libpyside2-dev python3-pyside2.qtwidgets python3-qtpy
+sudo apt install build-essential libboost-serialization-dev libboost-system-dev libexpat1-dev libcairo2-dev qtbase5-dev python3-dev libshiboken2-dev libpyside2-dev python3-pyside2.qtwidgets python3-qtpy
 ```
 
 For Debian 12, install the following packages instead:
@@ -384,32 +234,6 @@ For most Debian/Ubuntu-based systems, install the required packages:
 
 ```
 sudo apt install qt5base-dev libboost-serialization-dev libboost-system-dev libexpat1-dev libcairo2-dev python3-dev python3-pyside2 libpyside2-dev libshiboken2-dev
-```
-
-For the Qt4 config.pri use:
-
-```
-boost-serialization-lib: LIBS += -lboost_serialization
-boost: LIBS += -lboost_thread -lboost_system
-expat: LIBS += -lexpat
-expat: PKGCONFIG -= expat
-cairo: PKGCONFIG -= cairo
-
-pyside: PYSIDE_PKG_CONFIG_PATH = $$system($$PYTHON_CONFIG --prefix)/lib/pkgconfig:$$(PKG_CONFIG_PATH)
-pyside: PKGCONFIG += pyside
-pyside: INCLUDEPATH += $$system(env PKG_CONFIG_PATH=$$PYSIDE_PKG_CONFIG_PATH pkg-config --variable=includedir pyside)/QtCore
-pyside: INCLUDEPATH += $$system(env PKG_CONFIG_PATH=$$PYSIDE_PKG_CONFIG_PATH pkg-config --variable=includedir pyside)/QtGui
-```
-
-for Linux Mint you will need to add:
-
-```
-pyside {
-        PYSIDE_PKG_CONFIG_PATH = $$system($$PYTHON_CONFIG --prefix)/lib/pkgconfig:$$(PKG_CONFIG_PATH)
-        PKGCONFIG += pyside
-        INCLUDEPATH += $$system(env PKG_CONFIG_PATH=$$PYSIDE_PKG_CONFIG_PATH pkg-config --variable=includedir pyside)/QtCore
-        INCLUDEPATH += $$system(env PKG_CONFIG_PATH=$$PYSIDE_PKG_CONFIG_PATH pkg-config --variable=includedir pyside)/QtGui
-}
 ```
 
 Get Natron:
@@ -449,49 +273,3 @@ or
 dnf install fontconfig-devel gcc-c++ expat-devel python-pyside2-devel shiboken2-devel qt5-qtbase-devel boost-devel pixman-devel cairo-devel
 ```
 
-Qt4 config.pri:
-```pri
-boost-serialization-lib: LIBS += -lboost_serialization
-boost: LIBS += -lboost_thread -lboost_system
-PKGCONFIG += expat
-PKGCONFIG += fontconfig
-cairo {
-        PKGCONFIG += cairo
-        LIBS -=  $$system(pkg-config --variable=libdir cairo)/libcairo.a
-}
-pyside {
-        PYSIDE_PKG_CONFIG_PATH = $$system($$PYTHON_CONFIG --prefix)/lib/pkgconfig:$$(PKG_CONFIG_PATH)
-        PKGCONFIG += pyside
-        INCLUDEPATH += $$system(env PKG_CONFIG_PATH=$$PYSIDE_PKG_CONFIG_PATH pkg-config --variable=includedir pyside)/QtCore
-        INCLUDEPATH += $$system(env PKG_CONFIG_PATH=$$PYSIDE_PKG_CONFIG_PATH pkg-config --variable=includedir pyside)/QtGui
-}
-shiboken {
-        PKGCONFIG -= shiboken
-        INCLUDEPATH += $$system(pkg-config --variable=includedir shiboken)
-        LIBS += -lshiboken-python2.7
-}
-```
-
-# Generating Python bindings
-
-This is not required as file generation occurs during build with Qt5 and generated files are already in the repository for Qt4. You would need to run it if you were both under Qt4 and either extend or modify the Python bindings via the
-typesystem.xml file. See the documentation of shiboken for an explanation of the command line arguments.
-
-If using PySide for Qt4, the command-line would be:
-
-```sh
-SDK_PREFIX=/usr # /opt/Natron-sdk if using the Natron SDK
-PYSIDE_PREFIX=/usr # /opt/Natron-sdk/qt4 if using the Natron SDK
-QT=4
-rm Engine/NatronEngine/* Gui/NatronGui/*
-
-shiboken --avoid-protected-hack --enable-pyside-extensions --include-paths=../Engine:../Global:$SDK_PREFIX/include:$PYSIDE_PREFIX/include/PySide --typesystem-paths=$PYSIDE_PREFIX/share/PySide/typesystems --output-directory=Engine/Qt${QT} Engine/Pyside_Engine_Python.h  Engine/typesystem_engine.xml
-
-shiboken --avoid-protected-hack --enable-pyside-extensions --include-paths=../Engine:../Gui:../Global:$SDK_PREFIX/include:$PYSIDE_PREFIX/include/PySide --typesystem-paths=$PYSIDE_PREFIX/share/PySide/typesystems:Engine:Shiboken --output-directory=Gui/Qt${QT} Gui/Pyside_Gui_Python.h  Gui/typesystem_natronGui.xml
-
-tools/utils/runPostShiboken.sh Engine/Qt${QT}/NatronEngine natronengine
-tools/utils/runPostShiboken.sh Gui/Qt${QT}/NatronGui natrongui
-```
-
-**Note**
-Shiboken has a few glitches which needs fixing with some sed commands, run `tools/utils/runPostShiboken.sh` for Qt4 once shiboken is called.

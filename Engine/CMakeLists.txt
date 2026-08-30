@@ -20,7 +20,9 @@
 include(FindPkgConfig)
 
 pkg_check_modules(Cairo REQUIRED IMPORTED_TARGET cairo fontconfig)
-find_package(harfbuzz 14 CONFIG REQUIRED)
+# The ASWF image's HarfBuzz config exports harfbuzz::harfbuzz but no package
+# version file, so requesting a version rejects an otherwise usable config.
+find_package(harfbuzz CONFIG REQUIRED)
 find_package(Freetype 2.13 REQUIRED)
 
 file(GLOB NatronEngine_HEADERS *.h)

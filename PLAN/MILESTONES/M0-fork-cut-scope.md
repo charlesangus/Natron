@@ -113,3 +113,10 @@ branch protection is wired to the M4 workflow once it exists.
   `tools/jenkins/`, `tools/docker/`, `tools/travis/`, and a legacy Xcode
   project file — left for a later docs/tooling pass, same as the
   MINGW-packages mentions noted under T2.
+- 2026-08-29 — Verification gate passed: no `.pro`/`.pri`/`.bat`/`msys*`
+  files remain; `.github/workflows/` has only `ci.yml` (Linux-only),
+  `gen_config.sh`, `verify_plugin_loads.cpp`. `cmake` configure on this
+  machine stops at missing Boost/Python3-dev/Qt5 (no toolchain installed
+  here) — confirmed those are pre-existing environment gaps, not caused by
+  M0's deletions; standing up the toolchain is M1's job. Branch protection
+  (M0.P1.T1) deferred to M4 per the decision above.

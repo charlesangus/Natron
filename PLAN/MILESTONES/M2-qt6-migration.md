@@ -141,6 +141,26 @@ milestone than went in.
     Python runtime functions.
   - size: S
 
+- [ ] M2.P1.T2h — Fix `Engine/OSGLContext_wayland.cpp`'s X11/Qt include-order conflict
+  - files: `Engine/OSGLContext_wayland.cpp`
+  - approach: not a Qt6 issue — a pre-existing, never-before-compiled code
+    path. `Wayland_FOUND` only started evaluating true once M4's CI began
+    installing `wayland-devel` defensively; this file was never actually
+    built in any prior CI run. Real CI's next failure:
+    `qtextstream.h must be included before any header file that defines
+    Status` — `<EGL/egl.h>` (line 35) pulls in X11 `Xlib.h`, which
+    `#define`s the bare identifier `Status`, and `#include "Engine/AppManager.h"`
+    (line 39, transitively pulling Qt's `qtextstream.h` via
+    `LogEntry.h`→`QDateTime`→`qvariant.h`→`qdebug.h`) comes after it in
+    this file — Qt's own header explicitly guards against exactly this
+    ordering with a `#error`. Fix: move
+    `#include "Engine/AppManager.h"`/`"Engine/OSGLContext.h"`/
+    `"Global/GLIncludes.h"` above the `<EGL/egl.h>`/`<EGL/eglext.h>`/
+    `<wayland-client.h>`/`<wayland-egl.h>` block, so Qt processes
+    `qtextstream.h` before `Status` is ever defined.
+  - verify: `Engine/OSGLContext_wayland.cpp` compiles in a real CI run.
+  - size: S
+
 ## Phase 2.2: Mechanical Qt6 API replacements
 
 - [x] M2.P2.T1 — Fix the ~33 `QRegExp` sites (16 files)

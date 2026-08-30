@@ -20,7 +20,7 @@ Toolkit and build modernization
 **Complete Qt 6 support while keeping Qt 5 (P1).**
 This is a first-class goal with its own chapter, :ref:`maint-qt6`, which is the
 single source of truth for the audited work items and counts. In short: the
-CMake build already has a ``NATRON_QT6`` switch and the viewer already uses
+CMake build already targets Qt 6 unconditionally and the viewer already uses
 ``QOpenGLWidget``, so the remaining work is bounded — modernize the removed Qt
 APIs (``QRegExp`` → ``QRegularExpression``, ``QDesktopWidget`` → ``QScreen``,
 ``setMargin``), bring the qmake build to Qt6 parity, and regenerate the

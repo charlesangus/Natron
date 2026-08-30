@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: null
-pm_heartbeat: 2026-08-29T22:45:00+00:00
+pm_heartbeat: 2026-08-29T23:50:00+00:00
 ship: pr-per-milestone
 ---
 
@@ -24,7 +24,7 @@ future core work has solid ground to build on.
 | **Milestones** | 7 (M0–M6) |
 
 - **Why this is tractable:** the two hardest Qt6 blockers — the
-  `QOpenGLWidget` viewer and a working `NATRON_QT6` CMake switch — are already
+  `QOpenGLWidget` viewer and a working Qt6 CMake path — are already
   merged upstream. Because this fork **drops Qt5 entirely** rather than
   supporting both, it's simpler than upstream's own plan: no
   `#if QT_VERSION` guards to write, no dual-toolkit CI matrix to maintain, no
@@ -49,7 +49,7 @@ future core work has solid ground to build on.
 | ID | Milestone | Status | File |
 |----|-----------|--------|------|
 | M0 | Fork & cut scope | done | [M0-fork-cut-scope.md](PLAN/MILESTONES/M0-fork-cut-scope.md) |
-| M1 | Toolchain baseline | todo | [M1-toolchain-baseline.md](PLAN/MILESTONES/M1-toolchain-baseline.md) |
+| M1 | Toolchain baseline | done | [M1-toolchain-baseline.md](PLAN/MILESTONES/M1-toolchain-baseline.md) |
 | M2 | Land the Qt6 migration | todo | [M2-qt6-migration.md](PLAN/MILESTONES/M2-qt6-migration.md) |
 | M3 | Dependency modernization | todo | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
 | M4 | CI/CD rebuild | todo | [M4-cicd-rebuild.md](PLAN/MILESTONES/M4-cicd-rebuild.md) |

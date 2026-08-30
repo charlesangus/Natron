@@ -473,14 +473,6 @@ GCC_ONLY_DIAG_OFF(pragmas)  // warning: unknown option after '#pragma GCC diagno
 #define NATRON_COMPILER_SUPPORTS_CXX_EXCEPTIONS COMPILER_HAS_CLANG_FEATURE(cxx_exceptions)
 #define NATRON_COMPILER_SUPPORTS_BUILTIN_IS_TRIVIALLY_COPYABLE COMPILER_HAS_CLANG_FEATURE(is_trivially_copyable)
 
-#ifdef __cplusplus
-#if __cplusplus <= 201103L
-#define NATRON_CPP_STD_VER 11
-#elif __cplusplus <= 201402L
-#define NATRON_CPP_STD_VER 14
-#endif
-#endif
-
 #endif // defined(__clang__)
 
 /* COMPILER(GCC_OR_CLANG) - GNU Compiler Collection or Clang */

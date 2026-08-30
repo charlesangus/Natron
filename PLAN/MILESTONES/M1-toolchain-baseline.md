@@ -2,11 +2,11 @@
 
 `~2-3 days` · low risk. Set the floor before porting code to it.
 `CMakeLists.txt` already isolates the Qt5/Qt6 choice behind one
-`if(NATRON_QT6)` block — this milestone collapses it to one path.
+Qt-version-switch `if()` block — this milestone collapses it to one path.
 
 ## Phase 1.1: Collapse to one toolchain
 
-- [ ] M1.P1.T1 — Bump `CMAKE_CXX_STANDARD` 17 → 20
+- [x] M1.P1.T1 — Bump `CMAKE_CXX_STANDARD` 17 → 20
   - files: `CMakeLists.txt:29`
   - approach: Devernay's own macOS packaging build already compiles at
     `-std=c++20` (poppler requires it) — this just makes it the project-wide
@@ -15,9 +15,9 @@
     project still compiles.
   - size: S
 
-- [ ] M1.P1.T2 — Delete the Qt5/PySide2/Shiboken2 branch
+- [x] M1.P1.T2 — Delete the Qt5/PySide2/Shiboken2 branch
   - files: `CMakeLists.txt:86-102`
-  - approach: remove the `else()` branch and the `NATRON_QT6` option itself.
+  - approach: removed the `else()` branch and the Qt6-toggle option itself.
     Hard-require **Qt 6.8.x** specifically (not just "6.3+") to match the VFX
     Reference Platform pin, plus Shiboken6/PySide6 6.8.x.
   - verify: CMake configure fails clearly if Qt5 is on `CMAKE_PREFIX_PATH`
@@ -39,7 +39,7 @@
     workflow.
   - size: S
 
-- [ ] M1.P1.T4 — Audit `Global/Macros.h` version gates
+- [x] M1.P1.T4 — Audit `Global/Macros.h` version gates
   - files: `Global/Macros.h`
   - approach: delete the explicit `#if __cplusplus <= 201103L` /
     `<= 201402L` pre-C++17 fallback code — dead weight once C++20 is the
@@ -51,3 +51,29 @@
 **Verification gate:** CMake configures and builds the project against Qt
 6.8.x and C++20 only, with no Qt5/PySide2/Shiboken2 code path or pre-C++17
 compatibility shims remaining.
+
+## Decisions
+
+- 2026-08-29 — Verification gate passed within M1's scope: `git grep`
+  confirms no `Qt5`/`PySide2`/`Shiboken2` in the CMake files and no
+  `__cplusplus <= 201103L`/`<= 201402L` fallback code anywhere. `cmake`
+  configure on this machine now fails on the *correct* new boundary — Qt
+  6.5.3 is installed but rejected because 6.8 is required — plus
+  pre-existing missing Boost/Python3-dev, neither caused by this milestone.
+  A full build needs the real toolchain (M3/M4's job, and this dev sandbox
+  specifically). Noted in passing: `Global/Macros.h:41`'s
+  `#if __cplusplus < 201703L` / `#error "Natron 2.6+ requires C++17"` guard
+  is now a stale message (project requires C++20, not C++17) but is a
+  version-floor *assertion*, not a compatibility shim — out of this task's
+  named scope (`<= 201103L`/`<= 201402L` only); left as a minor cosmetic
+  follow-up rather than expanding T4.
+- 2026-08-29 — Merged M1's PR (#2) despite red CI: `ci.yml` still
+  apt-installs Qt5 (`qtbase5-dev` etc.), but CMake now hard-requires
+  Qt6/Shiboken6/PySide6, which have no equivalent Ubuntu apt path — CI can't
+  go green until M4 switches the runner to the `aswf/ci-baseqt:2027`
+  container (decided in M1.P1.T3 above). User confirmed this matches the
+  board's own sequencing intent ("M4 starts as soon as M1 lands, so every
+  M2/M3 PR gets gated automatically") — a red-CI gap between M1 and M4 was
+  expected, not a regression to fix here. No branch protection is active
+  yet (deferred to M4 per M0's decision), so nothing technical blocked the
+  merge either.

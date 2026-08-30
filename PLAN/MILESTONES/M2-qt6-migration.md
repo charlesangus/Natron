@@ -63,7 +63,7 @@ milestone than went in.
     shows no `QMouseEvent`-derived calls to the removed accessors.
   - size: S
 
-- [ ] M2.P1.T2d — Fix `libs/qhttpserver`'s Qt6 moc build failure
+- [x] M2.P1.T2d — Fix `libs/qhttpserver`'s Qt6 moc build failure
   - files: `libs/qhttpserver/src/qhttprequest.h`
   - approach: real CI run (triggered manually via `workflow_dispatch` to
     check compile progress ahead of Phase 2.3) surfaced a genuine bug in

@@ -2,3 +2,4 @@
 - 2026-08-29 — target-vfx-cy2027: build on VFX Platform CY2027 draft (Rocky 9/glibc 2.34) now instead of CY2026-final → DECISIONS/2026-08-29-target-vfx-cy2027.md
 - 2026-08-29 — defer-packaging-decision: defer AppImage/Flatpak/source-only choice until CI is green → DECISIONS/2026-08-29-defer-packaging-decision.md
 - 2026-08-29 — upstream-agnostic-fixes: upstream platform-agnostic fixes to keep a bridge with lockewerks/cedricp → DECISIONS/2026-08-29-upstream-agnostic-fixes.md
+- 2026-08-29 — pin-exact-aswf-tag: use `aswf/ci-baseqt:2027.1` (not bare `2027`) — confirmed contents, GCC 14.2 default → DECISIONS/2026-08-29-pin-exact-aswf-tag.md

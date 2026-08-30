@@ -95,6 +95,31 @@ milestone than went in.
     run.
   - size: S
 
+- [ ] M2.P1.T2f — Remove the now-pointless `QtCompat::QEnterEvent` alias entirely
+  - files: `Global/QtCompat.h`, and the ~45 `Gui/*.cpp`/`Gui/*.h` files using
+    `QtCompat::QEnterEvent`
+  - approach: T2e's fix was incomplete — real CI's next run failed with
+    `QEnterEvent: No such file or directory` in `Engine/AppInstance.cpp`:
+    the `Engine` CMake target doesn't have Qt6Gui's include dir wired up,
+    so `#include <QEnterEvent>` in the shared `QtCompat.h` (included by
+    both Engine and Gui files, for the unrelated `removeFileExtension`
+    utility) breaks any Engine file that transitively includes it. The
+    `QtCompat::QEnterEvent` alias only ever existed to bridge Qt5's
+    `QEvent`-based enter events and Qt6's real `QEnterEvent` class — now
+    that Qt5 is gone, the indirection has no purpose. Per this milestone's
+    own policy, delete it rather than patch around it: remove the typedef
+    and the `#include <QEnterEvent>` from `QtCompat.h`, then replace every
+    `QtCompat::QEnterEvent` with plain `QEnterEvent` in the ~45 Gui files
+    that use it (all confirmed Gui-only via `git grep`; none are Engine
+    files). Each of those files should already transitively include
+    `<QEnterEvent>` via other Qt/widget headers it uses (they all handle
+    `QMouseEvent`/similar already) — add an explicit
+    `#include <QEnterEvent>` to any that don't.
+  - verify: `git grep -rn "QtCompat::QEnterEvent"` returns nothing;
+    `Engine/AppInstance.cpp` and the Gui files all compile in a real CI
+    run.
+  - size: M
+
 ## Phase 2.2: Mechanical Qt6 API replacements
 
 - [x] M2.P2.T1 — Fix the ~33 `QRegExp` sites (16 files)

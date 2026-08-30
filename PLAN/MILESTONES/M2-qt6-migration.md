@@ -175,9 +175,14 @@ milestone than went in.
     protecting.
   - verify: `Engine/OSGLContext_wayland.cpp` compiles in a real CI run.
   - size: S
-  - status: three attempts landed as one commit history (revert of attempt
-    1 in the same file already captured in attempt 2's commit); final
-    `#undef Status` fix pushed and awaiting CI confirmation.
+  - status: attempt 3 (`#undef Status` only) still failed identically —
+    turns out X11's `Xlib.h` pollutes several common identifiers as plain
+    macros, not just `Status`: the actual break was `#define Bool int`
+    colliding with `QVariant`'s deprecated `Type::Bool` enumerator.
+    **Attempt 4**: undef the full standard set of X11-macro/Qt-identifier
+    collisions (`Bool`, `Status`, `True`, `False`, `None`, `Complex`,
+    `Unsorted` — the complete list every Qt+X11 integration guide names)
+    rather than whack-a-mole discovering them one real-CI-run at a time.
 
 ## Phase 2.2: Mechanical Qt6 API replacements
 

@@ -2907,10 +2907,21 @@ AppManager::initPython()
     qputenv("PYTHONNOUSERSITE", "1");
     ++Py_NoUserSiteDirectory;
 
-    // TEMPORARY M2.P3.T1a NEGATIVE-VALIDATION REVERT: qputenv("QT_API", ...) moved back
-    // to the end of this function (see below), reproducing the pre-fix bug on purpose, to
-    // confirm the new CI smoke-test step actually catches this regression. Must be restored
-    // before this branch's validation is done.
+    // Set QT_API for QtPy
+    // https://github.com/spyder-ide/qtpy
+    // This MUST match the PySide/Qt that NatronEngine and NatronGui are bound against
+    // (PySide6/Qt6). Leaving it at "pyside2" makes qtpy hand user scripts PySide2 enum
+    // and QFlags objects while the application and its bindings are PySide6, which is the
+    // "Qt.AlignmentFlag object cannot be interpreted as an integer" class of failure
+    // reported in NatronGitHub/Natron#854. Requires qtpy >= 2.0 at runtime.
+    //
+    // This MUST be set before Py_Initialize() (called by initializePython3() below):
+    // CPython snapshots the C environment into posix.environ during interpreter startup,
+    // and os.environ - which is what qtpy reads - is built from that snapshot. A setenv()
+    // issued after Py_Initialize() is visible to getenv() but NOT to os.environ, so
+    // setting QT_API at the end of this function (as was done previously) is a no-op.
+    qputenv("QT_API", "pyside6");
+
     //
     // set up paths, clear those that don't exist or are not valid
     //
@@ -2970,16 +2981,8 @@ AppManager::initPython()
             throw std::runtime_error( tr("Error while loading StreamCatcher: %1").arg( QString::fromUtf8( err.c_str() ) ).toStdString() );
         }
     }
-    // Set QT_API for QtPy
-    // https://github.com/spyder-ide/qtpy
-    // TEMPORARY M2.P3.T1a NEGATIVE-VALIDATION REVERT: this is deliberately placed after
-    // Py_Initialize() (via initializePython3() above), which is the pre-fix bug -- CPython
-    // has already snapshotted the environment into os.environ by this point, so this
-    // qputenv() is a no-op and qtpy will NOT resolve to PySide6 via this path. This exists
-    // to confirm the new CI Python smoke-test step actually fails when this regresses; it
-    // must be restored (moved back before Py_Initialize(), above) before this branch's
-    // validation is done.
-    qputenv("QT_API", "pyside2");
+    // NOTE: QT_API for QtPy is deliberately set at the top of this function, before
+    // Py_Initialize(); see the comment there. Setting it here would have no effect.
 } // AppManager::initPython
 
 void

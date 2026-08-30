@@ -45,14 +45,17 @@ before touching Qt.
     Shiboken (unversioned), Python 2, or Ubuntu 18.04/Travis.
   - size: S
 
-- [ ] M0.P1.T5 — Decide on Breakpad
+- [ ] M0.P1.T5 — Drop Breakpad
   - files: `libs/google-breakpad`, `CrashReporter`, `CrashReporterCLI`, `BreakpadClient`
-  - approach: keep Breakpad — Linux minidumps are still useful — but confirm no
-    Windows/macOS-specific symbol upload steps survive now that
-    `build_installer.yml` (M0.P1.T2) is gone.
-  - verify: Breakpad-related CMake targets still configure and build on Linux;
-    `git grep` for symbol-upload steps in remaining CI config returns nothing
-    Windows/macOS-specific.
+  - approach: delete these directories outright. Breakpad has no working
+    CMake build path today (no `CMakeLists.txt` under any of the three
+    source dirs, zero Breakpad references in the top-level `CMakeLists.txt`)
+    and its qmake path was already removed in M0.P1.T3. Reintroducing crash
+    reporting is a bigger, separate task than this housekeeping milestone —
+    see the decision below.
+  - verify: `git grep -i breakpad` and `git grep -i "CrashReporter"` return
+    nothing; CMake configure is unaffected (these dirs were never part of
+    its dependency graph).
   - size: S
 
 - [x] M0.P1.T6 — Keep the "Natron" name and branding
@@ -92,3 +95,10 @@ branch protection is wired to the M4 workflow once it exists.
   the top-level `CMakeLists.txt`. This directly affects M0.P1.T5 ("Decide on
   Breakpad"), whose verify step assumes Breakpad CMake targets already exist
   — they don't. Raised to the user before starting T5.
+- 2026-08-29 — Drop Breakpad rather than build it: user chose to delete
+  Breakpad/CrashReporter entirely (revising T5) rather than write new CMake
+  support for it or leave the dead source in place. Reasoning: it has no
+  working build path in either qmake (already gone) or CMake today, and
+  standing up CMake support for it is bigger scope than this housekeeping
+  milestone. Crash reporting can be reconsidered as its own future task if
+  wanted.

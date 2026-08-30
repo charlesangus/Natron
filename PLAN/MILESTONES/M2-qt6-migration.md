@@ -54,7 +54,7 @@ milestone than went in.
     `Gui/QGLWidgetCompat.h` is gone and nothing references it.
   - size: S
 
-- [ ] M2.P1.T2c — Gap-fill: `Gui/CustomParamInteract.cpp`'s `QMouseEvent` sites
+- [x] M2.P1.T2c — Gap-fill: `Gui/CustomParamInteract.cpp`'s `QMouseEvent` sites
   - files: `Gui/CustomParamInteract.cpp`
   - approach: PR #1019 fixes `QMouseEvent::x()/y()/localPos()` (removed in
     Qt6, replaced by `position()`) in 11 other files but misses this one —

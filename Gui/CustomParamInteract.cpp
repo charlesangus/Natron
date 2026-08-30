@@ -323,8 +323,8 @@ CustomParamInteract::mousePressEvent(QMouseEvent* e)
     double time = _imp->knob.lock()->getKnob()->getHolder()->getApp()->getTimeLine()->currentFrame();
     OfxPointD pos;
     OfxPointI viewportPos;
-    pos.x = e->x();
-    pos.y = height() - 1 - e->y();
+    pos.x = e->position().x();
+    pos.y = height() - 1 - e->position().y();
     viewportPos.x = pos.x;
     viewportPos.y = pos.y;
     OfxStatus stat = _imp->entryPoint->penDownAction(time, scale, /*view=*/ 0, _imp->entryPoint->hasColorPicker() ? &_imp->entryPoint->getLastColorPickerColor() : /*colourPicker=*/0, pos, viewportPos, /*pressure=*/ 1.);
@@ -342,8 +342,8 @@ CustomParamInteract::mouseMoveEvent(QMouseEvent* e)
     double time = _imp->knob.lock()->getKnob()->getHolder()->getApp()->getTimeLine()->currentFrame();
     OfxPointD pos;
     OfxPointI viewportPos;
-    pos.x = e->x();
-    pos.y = height() - 1 - e->y();
+    pos.x = e->position().x();
+    pos.y = height() - 1 - e->position().y();
     viewportPos.x = pos.x;
     viewportPos.y = pos.y;
     OfxStatus stat = _imp->entryPoint->penMotionAction(time, scale, /*view=*/ 0, _imp->entryPoint->hasColorPicker() ? &_imp->entryPoint->getLastColorPickerColor() : /*colourPicker=*/0, pos, viewportPos, /*pressure=*/ 1.);
@@ -361,8 +361,8 @@ CustomParamInteract::mouseReleaseEvent(QMouseEvent* e)
     double time = _imp->knob.lock()->getKnob()->getHolder()->getApp()->getTimeLine()->currentFrame();
     OfxPointD pos;
     OfxPointI viewportPos;
-    pos.x = e->x();
-    pos.y = height() - 1 - e->y();
+    pos.x = e->position().x();
+    pos.y = height() - 1 - e->position().y();
     viewportPos.x = pos.x;
     viewportPos.y = pos.y;
     OfxStatus stat = _imp->entryPoint->penUpAction(time, scale, /*view=*/ 0, _imp->entryPoint->hasColorPicker() ? &_imp->entryPoint->getLastColorPickerColor() : /*colourPicker=*/0, pos, viewportPos, /*pressure=*/ 1.);

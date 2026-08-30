@@ -120,6 +120,27 @@ milestone than went in.
     run.
   - size: M
 
+- [ ] M2.P1.T2g — Fix `Engine/Knob.cpp`'s missing `Py_LIMITED_API` undef
+  - files: `Engine/Knob.cpp`
+  - approach: not a Qt6 issue — a pre-existing, unrelated latent bug that
+    real CI's next run exposed simply by compiling further than any
+    previous build reached. `Py_LIMITED_API` is defined project-wide
+    (compiler flag, likely from Shiboken/PySide6's CMake integration for
+    ABI-stable builds), which hides `cpython/pythonrun.h` (and with it the
+    `PyRun_String`/`PyRun_SimpleString`/`Py_NoUserSiteDirectory` macros)
+    unless a translation unit explicitly `#undef Py_LIMITED_API` before
+    `#include <Python.h>`. `Engine/AppInstance.cpp`, `Engine/AppManager.cpp`,
+    and `Global/PythonUtils.cpp` already carry this exact workaround
+    (`#undef Py_LIMITED_API  // Needed for PyRun_SimpleString, PyRun_String,
+    Py_NoUserSiteDirectory`) right before their `#include <Python.h>`.
+    `Engine/Knob.cpp` calls `PyRun_String` (in `executeExpression`) but
+    never got the same undef — add it, copying the existing pattern
+    verbatim for consistency.
+  - verify: `Engine/Knob.cpp` compiles in a real CI run; `git grep -c
+    "#undef Py_LIMITED_API"` now matches on all 4 files that call these
+    Python runtime functions.
+  - size: S
+
 ## Phase 2.2: Mechanical Qt6 API replacements
 
 - [x] M2.P2.T1 — Fix the ~33 `QRegExp` sites (16 files)

@@ -48,7 +48,7 @@ automatically.
     pushing a tag does.
   - size: S
 
-- [ ] M4.P1.T5 — Own the first-time-contributor approval gate
+- [x] M4.P1.T5 — Own the first-time-contributor approval gate
   - files: none (process commitment, not code)
   - approach: GitHub blocks Actions runs from first-time contributors pending
     manual approval (`action_required`) — every open upstream PR is currently
@@ -78,3 +78,5 @@ runs on every push.
   packaging workflow exists yet. Marking not-applicable rather than
   fabricating a workflow with no packaging policy behind it — revisit once
   packaging is actually decided.
+- 2026-08-29 — T5 (own the approval gate) recorded as acknowledged process
+  commitment, no code involved.

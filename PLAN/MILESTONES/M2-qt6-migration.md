@@ -282,7 +282,11 @@ milestone than went in.
     explicitly (`find_package(harfbuzz 14 CONFIG REQUIRED)`) and link
     `harfbuzz::harfbuzz` alongside `Freetype::Freetype` on `NatronEngine`.
     This makes both libraries direct, propagated dependencies of every
-    consumer. Awaiting CI.
+    consumer. **Confirmed fixed**: real CI run 33317644370 (head
+    `8ec23929`) built and linked `NatronRenderer` successfully — both debug
+    and release configurations. The run's only failure is in "Check for
+    test failures" (ctest), unrelated to linking and out of M2's scope
+    (M5: Test & correctness baseline).
 
 ## Phase 2.2: Mechanical Qt6 API replacements
 

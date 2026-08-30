@@ -201,7 +201,7 @@ milestone than went in.
     and everything else Qt declares using an X11-clashing name, before
     X11 ever gets a chance to define any of them. The existing `#undef`
     block stays in place as defense in depth for anything `AppManager.h`
-    doesn't happen to reach.
+    doesn't happen to reach. Pushed; awaiting CI.
 
 ## Phase 2.2: Mechanical Qt6 API replacements
 

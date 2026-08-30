@@ -63,13 +63,9 @@ class QNetworkRequest;
 class QProcess;
 class QSettings;
 class QString;
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 template<typename T> class QList;
 template<typename T> using QVector = QList<T>;
 using QStringList = QList<QString>;
-#else
-class QStringList;
-#endif
 class QThread;
 class QTimer;
 class QUrl;

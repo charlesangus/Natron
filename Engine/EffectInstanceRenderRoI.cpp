@@ -1517,12 +1517,8 @@ EffectInstance::renderRoI(const RenderRoIArgs & args,
         ///locks belongs to an instance)
 
 
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         std::unique_ptr<QMutexLocker<QMutex>> locker;
         std::unique_ptr<QMutexLocker<QRecursiveMutex>> recursiveLocker;
-#else
-        std::unique_ptr<QMutexLocker> locker;
-#endif
 
 
         EffectInstancePtr renderInstance;
@@ -1540,19 +1536,11 @@ EffectInstance::renderRoI(const RenderRoIArgs & args,
         assert(renderInstance);
 
         if (safety == eRenderSafetyInstanceSafe) {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
             locker.reset( new QMutexLocker<QMutex>( &getNode()->getRenderInstancesSharedMutex() ) );
-#else
-            locker.reset( new QMutexLocker( &getNode()->getRenderInstancesSharedMutex() ) );
-#endif
         } else if (safety == eRenderSafetyUnsafe) {
             const Plugin* p = getNode()->getPlugin();
             assert(p);
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
             recursiveLocker.reset( new QMutexLocker<QRecursiveMutex>( p->getPluginLock() ) );
-#else
-            locker.reset( new QMutexLocker( p->getPluginLock() ) );
-#endif
         } else {
             // no need to lock
             Q_UNUSED(locker);

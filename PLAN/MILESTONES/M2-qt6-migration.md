@@ -39,7 +39,7 @@ milestone than went in.
     of already-landed work.
   - size: M
 
-- [ ] M2.P1.T2b — De-ifdef the cherry-picked commit, delete dead compat shim
+- [x] M2.P1.T2b — De-ifdef the cherry-picked commit, delete dead compat shim
   - files: the ~45 files touched by `61e4b7762`
   - approach: the cherry-pick imports ~73 `#if QT_VERSION >= QT_VERSION_CHECK(6,0,0)`
     guards — this milestone's own policy (top of this file) is to apply

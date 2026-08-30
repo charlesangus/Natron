@@ -19,7 +19,8 @@
 
 include(FindPkgConfig)
 
-pkg_check_modules(Cairo REQUIRED IMPORTED_TARGET cairo fontconfig freetype2)
+pkg_check_modules(Cairo REQUIRED IMPORTED_TARGET cairo fontconfig)
+find_package(Freetype REQUIRED)
 
 file(GLOB NatronEngine_HEADERS *.h)
 file(GLOB NatronEngine_SOURCES *.cpp)
@@ -73,6 +74,7 @@ target_link_libraries(NatronEngine
         Boost::headers
         Boost::serialization
         PkgConfig::Cairo
+        Freetype::Freetype
     PRIVATE
         ${SHIBOKEN_LIB}
         ${PYSIDE_LIB}

@@ -276,7 +276,7 @@ milestone than went in.
     PUBLIC dependency of `NatronEngine`, alongside `PkgConfig::Cairo`, so
     every consumer (`NatronRenderer`, `NatronGui`, `Tests`) gets it via the
     same propagation mechanism that already works correctly for
-    Boost/Cairo.
+    Boost/Cairo. Pushed; awaiting CI.
 
 ## Phase 2.2: Mechanical Qt6 API replacements
 

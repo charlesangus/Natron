@@ -76,13 +76,6 @@ public:
     bool enableRenderStats;
     bool isEmpty;
     mutable QString imageFilename;
-#ifdef NATRON_USE_BREAKPAD
-    QString breakpadPipeFilePath;
-    QString breakpadComPipeFilePath;
-    int breakpadPipeClientID;
-    QString breakpadProcessFilePath;
-    qint64 breakpadProcessPID;
-#endif
     QString exportDocsPath;
 
     CLArgsPrivate()
@@ -105,13 +98,6 @@ public:
         , enableRenderStats(false)
         , isEmpty(true)
         , imageFilename()
-#ifdef NATRON_USE_BREAKPAD
-        , breakpadPipeFilePath()
-        , breakpadComPipeFilePath()
-        , breakpadPipeClientID(-1)
-        , breakpadProcessFilePath()
-        , breakpadProcessPID(-1)
-#endif
         , exportDocsPath()
     {
     }
@@ -572,38 +558,6 @@ CLArgs::isPythonScript() const
     return _imp->isPythonScript;
 }
 
-#ifdef NATRON_USE_BREAKPAD
-const QString&
-CLArgs::getBreakpadProcessExecutableFilePath() const
-{
-    return _imp->breakpadProcessFilePath;
-}
-
-qint64
-CLArgs::getBreakpadProcessPID() const
-{
-    return _imp->breakpadProcessPID;
-}
-
-int
-CLArgs::getBreakpadClientFD() const
-{
-    return _imp->breakpadPipeClientID;
-}
-
-const QString&
-CLArgs::getBreakpadPipeFilePath() const
-{
-    return _imp->breakpadPipeFilePath;
-}
-
-const QString&
-CLArgs::getBreakpadComPipeFilePath() const
-{
-    return _imp->breakpadComPipeFilePath;
-}
-#endif // NATRON_USE_BREAKPAD
-
 const QString &
 CLArgs::getExportDocsPath() const
 {
@@ -868,86 +822,6 @@ CLArgsPrivate::parse()
             enableRenderStats = true;
         }
     }
-
-#ifdef NATRON_USE_BREAKPAD
-    {
-        QStringList::iterator it = hasToken( QString::fromUtf8(NATRON_BREAKPAD_PROCESS_PID), QString() );
-        if ( it != args.end() ) {
-            it = args.erase(it);
-
-            if ( it == args.end() ) {
-                std::cout << tr("You must specify the breakpad process executable file path").toStdString() << std::endl;
-                error = 1;
-
-                return;
-            }
-            breakpadProcessPID = it->toLongLong();
-            it = args.erase(it);
-        }
-    }
-
-    {
-        QStringList::iterator it = hasToken( QString::fromUtf8(NATRON_BREAKPAD_PROCESS_EXEC), QString() );
-        if ( it != args.end() ) {
-            it = args.erase(it);
-            if ( it == args.end() || it->startsWith( QChar::fromLatin1('-') ) ) {
-                std::cout << tr("You must specify the breakpad process executable file path").toStdString() << std::endl;
-                error = 1;
-
-                return;
-            }
-            breakpadProcessFilePath = *it;
-            it = args.erase(it);
-        }
-    }
-
-    {
-        QStringList::iterator it = hasToken( QString::fromUtf8(NATRON_BREAKPAD_CLIENT_FD_ARG), QString() );
-        if ( it != args.end() ) {
-            it = args.erase(it);
-
-            if ( it == args.end() || it->startsWith( QChar::fromLatin1('-') ) ) {
-                std::cout << tr("You must specify the breakpad pipe client FD").toStdString() << std::endl;
-                error = 1;
-
-                return;
-            }
-            breakpadPipeClientID = it->toInt();
-            it = args.erase(it);
-        }
-    }
-
-    {
-        QStringList::iterator it = hasToken( QString::fromUtf8(NATRON_BREAKPAD_PIPE_ARG), QString() );
-        if ( it != args.end() ) {
-            it = args.erase(it);
-
-            if ( it == args.end() || it->startsWith( QChar::fromLatin1('-') ) ) {
-                std::cout << tr("You must specify the breakpad pipe path").toStdString() << std::endl;
-                error = 1;
-
-                return;
-            }
-            breakpadPipeFilePath = *it;
-            args.erase(it);
-        }
-    }
-
-    {
-        QStringList::iterator it = hasToken( QString::fromUtf8(NATRON_BREAKPAD_COM_PIPE_ARG), QString() );
-        if ( it != args.end() ) {
-            it = args.erase(it);
-            if ( it == args.end() || it->startsWith( QChar::fromLatin1('-') ) ) {
-                std::cout << tr("You must specify the breakpad communication pipe path").toStdString() << std::endl;
-                error = 1;
-
-                return;
-            }
-            breakpadComPipeFilePath = *it;
-            it = args.erase(it);
-        }
-    }
-#endif // NATRON_USE_BREAKPAD
 
     {
         QStringList::iterator it = hasToken( QString::fromUtf8("export-docs"), QString() );
@@ -1308,13 +1182,6 @@ CLArgsPrivate::parse()
     qDebug() << "isBackground:" << isBackground;
     qDebug() << "isInterpreterMode:" << isInterpreterMode;
     qDebug() << "enableRenderStats:" << enableRenderStats;
-#ifdef NATRON_USE_BREAKPAD
-    qDebug() << "breakpadProcessPID:" << breakpadProcessPID;
-    qDebug() << "breakpadProcessFilePath:" << breakpadProcessFilePath;
-    qDebug() << "breakpadPipeClientID:" << breakpadPipeClientID;
-    qDebug() << "breakpadPipeFilePath:" << breakpadPipeFilePath;
-    qDebug() << "breakpadComPipeFilePath:" << breakpadComPipeFilePath;
-#endif
     qDebug() << "exportDocsPath:" << exportDocsPath;
     qDebug() << "ipcPipe:" << ipcPipe;
     qDebug() << "defaultOnProjectLoadedScript:" << defaultOnProjectLoadedScript;

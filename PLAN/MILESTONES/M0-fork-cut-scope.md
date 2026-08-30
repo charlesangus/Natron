@@ -45,7 +45,7 @@ before touching Qt.
     Shiboken (unversioned), Python 2, or Ubuntu 18.04/Travis.
   - size: S
 
-- [ ] M0.P1.T5 — Drop Breakpad
+- [x] M0.P1.T5 — Drop Breakpad
   - files: `libs/google-breakpad`, `CrashReporter`, `CrashReporterCLI`, `BreakpadClient`
   - approach: delete these directories outright. Breakpad has no working
     CMake build path today (no `CMakeLists.txt` under any of the three
@@ -102,3 +102,14 @@ branch protection is wired to the M4 workflow once it exists.
   standing up CMake support for it is bigger scope than this housekeeping
   milestone. Crash reporting can be reconsidered as its own future task if
   wanted.
+- 2026-08-29 — M0.P1.T5 also removed the dead `#ifdef NATRON_USE_BREAKPAD`
+  code from `Engine/AppManager.{cpp,h}`, `AppManagerPrivate.{cpp,h}`,
+  `CLArgs.{cpp,h}`, `Settings.{cpp,h}`, the breakpad-only
+  `Engine/ExistenceCheckThread.{cpp,h}` (single call site, deleted), and the
+  `NATRON_BREAKPAD_*`/`NATRON_CRASH_REPORTER_USE_FORK` macros in
+  `Global/Macros.h` — all unreachable since `NATRON_USE_BREAKPAD` is never
+  defined by CMake. Stale text mentions remain in `.gitignore`,
+  `README_breakpad.md`, `INSTALL_FREEBSD.md`, `Documentation/`,
+  `tools/jenkins/`, `tools/docker/`, `tools/travis/`, and a legacy Xcode
+  project file — left for a later docs/tooling pass, same as the
+  MINGW-packages mentions noted under T2.

@@ -305,6 +305,17 @@ milestone than went in.
     across the tree both return 0; project builds.
   - size: S
 
+- [x] M2.P2.T3 — Replace Qt6-removed `QFontMetrics::width()`
+  - files: `Gui/TabWidget.cpp`
+  - approach: CI run 33316759167 reached `Gui/TabWidget.cpp` and found one
+    missed Qt6 removal: replace the `QFontMetrics::width()` call with the
+    equivalent `horizontalAdvance()` API, preserving the existing sizing
+    calculation.
+  - verify: `git grep -n 'QFontMetrics.*width\|\.width(' Gui/TabWidget.cpp`
+    contains no use of the removed `QFontMetrics::width`; the CI debug build
+    compiles `NatronGui` past `TabWidget.cpp`.
+  - size: S
+
 ## Phase 2.3: Bindings and validation
 
 - [ ] M2.P3.T1 — Regenerate PySide6/Shiboken6 bindings

@@ -791,9 +791,16 @@
         <modify-function signature="renderInternal(bool,std::list&lt;Effect*&gt;,std::list&lt;int&gt;,std::list&lt;int&gt;,std::list&lt;int&gt;)" remove="all"/>
         <modify-function signature="renderInternal(bool,Effect*,int,int,int)" remove="all"/>
         <modify-function signature="render(std::list&lt;Effect*&gt;,std::list&lt;int&gt;,std::list&lt;int&gt;,std::list&lt;int&gt;)">
-            <!--<modify-argument index="1"> This conversion fails to compile in PySide6, luckily Shiboken is smart enough to do it for ourselves
-                <replace-type modified-type="PyList"/>
-            </modify-argument>-->
+            <!-- Argument 1 must NOT keep its declared std::list<Effect*> type: the
+                 injected code below expects a Python list of (writeNode, first, last[, step])
+                 tuples, but Shiboken would emit a std::list<Effect*> element-type check for
+                 the overload dispatch and reject that list at runtime with a TypeError.
+                 "PyList" is not one of Shiboken6's built-in Python type entries (that is why
+                 it failed to compile against PySide6); "PySequence" is, and is already used
+                 the same way for PathParam::setTable() below. -->
+            <modify-argument index="1">
+                <replace-type modified-type="PySequence"/>
+            </modify-argument>
             <modify-argument index="2">
                 <remove-argument/>
             </modify-argument>

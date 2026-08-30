@@ -2907,6 +2907,21 @@ AppManager::initPython()
     qputenv("PYTHONNOUSERSITE", "1");
     ++Py_NoUserSiteDirectory;
 
+    // Set QT_API for QtPy
+    // https://github.com/spyder-ide/qtpy
+    // This MUST match the PySide/Qt that NatronEngine and NatronGui are bound against
+    // (PySide6/Qt6). Leaving it at "pyside2" makes qtpy hand user scripts PySide2 enum
+    // and QFlags objects while the application and its bindings are PySide6, which is the
+    // "Qt.AlignmentFlag object cannot be interpreted as an integer" class of failure
+    // reported in NatronGitHub/Natron#854. Requires qtpy >= 2.0 at runtime.
+    //
+    // This MUST be set before Py_Initialize() (called by initializePython3() below):
+    // CPython snapshots the C environment into posix.environ during interpreter startup,
+    // and os.environ - which is what qtpy reads - is built from that snapshot. A setenv()
+    // issued after Py_Initialize() is visible to getenv() but NOT to os.environ, so
+    // setting QT_API at the end of this function (as was done previously) is a no-op.
+    qputenv("QT_API", "pyside6");
+
     //
     // set up paths, clear those that don't exist or are not valid
     //
@@ -2966,9 +2981,8 @@ AppManager::initPython()
             throw std::runtime_error( tr("Error while loading StreamCatcher: %1").arg( QString::fromUtf8( err.c_str() ) ).toStdString() );
         }
     }
-    // Set QT_API for QtPy
-    // https://github.com/spyder-ide/qtpy
-    qputenv("QT_API", "pyside2");
+    // NOTE: QT_API for QtPy is deliberately set at the top of this function, before
+    // Py_Initialize(); see the comment there. Setting it here would have no effect.
 } // AppManager::initPython
 
 void

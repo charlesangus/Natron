@@ -322,21 +322,47 @@ milestone than went in.
 
 ## Phase 2.3: Bindings and validation
 
-- [ ] M2.P3.T1 — Regenerate PySide6/Shiboken6 bindings
-  - files: `Engine/NatronEngine`, `Gui/NatronGui`
+- [ ] M2.P3.T1 — Regenerate PySide6/Shiboken6 bindings (compile-verified; see M2.P3.T1a)
+  - files: `Engine/typesystem_engine.xml`, `Gui/typesystem_natronGui.xml`
+    (bindings themselves are generated at build time into
+    `${CMAKE_CURRENT_BINARY_DIR}/Qt6` by Shiboken — do not hand-edit
+    generated output; fix the typesystem XML / underlying C++ instead)
   - approach: fix the enum/`QFlags` class of runtime bugs (upstream issue
     #854 — flags passed as raw `int` no longer implicitly convert in
     Qt6/PySide6). This is where most *runtime*, as opposed to compile-time,
-    surprises will show up. M2.P1.T2a's cherry-pick brings in a
-    pre-diagnosed blocker in `typesystem_engine.xml`/
-    `typesystem_natronGui.xml`: `<replace-type modified-type="PyList"/>`
-    on `render`/`renderBlocking`'s argument 1 fails to compile under
-    PySide6 and is commented out with a note that Shiboken infers the
-    conversion itself — verify that holds before assuming it's finished.
-  - verify: regenerated bindings build; a Python console session exercising
-    enum/flags-taking APIs (e.g. node property setters) runs without
-    conversion errors.
+    surprises will show up. Confirmed still current (§5a spot-check,
+    2026-08-30): `Engine/typesystem_engine.xml:793-796` shows
+    `render(...)`'s argument-1 `<replace-type modified-type="PyList"/>`
+    still commented out with the note that Shiboken infers the conversion
+    itself — verify that actually holds under a real build/run rather than
+    assuming it's finished.
+  - verify: `cmake --build` regenerates and builds the bindings clean; a
+    Python console session exercising enum/flags-taking APIs (e.g. node
+    property setters) runs without conversion errors.
   - size: L
+
+- [ ] M2.P3.T1a — Add a CI Python smoke-test step and use it to verify the enum/QFlags binding fixes
+  - files: `.github/workflows/ci.yml`, a new small Python script under (e.g.)
+    `tools/ci/smoke_test.py`
+  - approach: M2.P3.T1's `PySequence`/`QT_API` fixes are compile-verified only
+    — `NatronEngine`/`NatronGui` build as static libs (no importable `.so`),
+    and no existing CI step runs any Python through the app. Add a CI step
+    that runs the built `NatronRenderer -t <script.py>` (background mode;
+    plain `-t` alone drops to an interactive prompt and would hang CI) or
+    equivalent, executing a short script that: (1) asserts
+    `import qtpy; qtpy.API_NAME == 'PySide6'` (would have caught the T1
+    QT_API-ordering bug directly), (2) calls `app.render([(writeNode, 1,
+    1)])` (exercises the `PySequence` fix), (3) calls
+    `natron.addMenuCommand(g, f, QtCore.Qt.Key.Key_L,
+    QtCore.Qt.KeyboardModifier.ShiftModifier)` or another QFlags-taking
+    bound API (exercises the one real QFlags case in the bound surface,
+    `PyGuiApplication::addMenuCommand`). Confirm the CI image's qtpy is
+    >=2.0 (required for `QT_API=pyside6`) before assuming this will pass.
+  - verify: the new CI step runs and passes on a real CI build, and fails
+    loudly (non-zero exit) if reverted/broken — confirm by temporarily
+    reverting one of the three fixes locally in the CI branch and observing
+    the new step catch it, then restore.
+  - size: M
 
 - [ ] M2.P3.T2 — Validate the GUI end-to-end
   - files: none (manual QA pass across the running application)
@@ -384,6 +410,30 @@ passes end-to-end on Qt6.8.x.
   its only content is `CMAKE_CXX_STANDARD` (already 20, from M1) and
   `global.pri` edits (that file no longer exists, qmake removed in M0).
   Not cherry-picked; nothing to take.
+- 2026-08-30 — M2.P3.T1 (bindings): fixed the enum/QFlags class of #854 bugs.
+  `App.render`/`GuiApp.renderBlocking` argument 1's `<replace-type>` was
+  commented out on the (wrong) claim that Shiboken infers the list-of-tuples
+  conversion itself; restored as `modified-type="PySequence"` (not the
+  original `PyList`, which isn't a Shiboken6 built-in type — that's why it
+  failed to compile). Precedent: `PathParam::setTable`
+  (`Engine/typesystem_engine.xml:1434`) uses the identical pattern. Also
+  fixed `QT_API` resolution: `Engine/AppManager.cpp` set
+  `qputenv("QT_API", "pyside2")` (now `"pyside6"`) *after* `Py_Initialize()`
+  — CPython snapshots the environment into `os.environ` at interpreter
+  startup, so the env var was invisible to qtpy and the whole fix was a
+  silent no-op. Independent review caught this and moved the `qputenv` call
+  to before `initializePython3()` (`Engine/AppManager.cpp:2910-2923`).
+  Both fixes are confirmed to generate and compile clean under real CI (run
+  33323834024 vs. baseline 33317644370, byte-identical step outcomes aside
+  from these changes). Neither is runtime-verified — no CI step exercises
+  Python against the bindings today (`NatronEngine`/`NatronGui` are static
+  libs, no importable `.so`) — hence new task M2.P3.T1a to close that gap
+  before M2.P3.T1 is checked off. Also noted for M6/future packaging work:
+  a Qt6 install bundle must ship `qtpy>=2.0` and strip any `PySide2` from
+  site-packages — no Qt6 packaging script exists yet
+  (`tools/jenkins/build-Linux-installer.sh`'s PySide2 strip is gated on the
+  Qt4/`USE_QT5` branch only).
+
 - 2026-08-30 — Consultant analysis of PR #1019 replaced M2.P1.T2 (see
   M2.P1.T2a/b/c above) after finding: (1) 6 of its 10 commits already
   landed upstream under different SHAs — the plan's "biggest unknown /

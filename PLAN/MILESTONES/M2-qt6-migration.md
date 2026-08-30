@@ -81,6 +81,20 @@ milestone than went in.
     CI build progresses past `libs/qhttpserver` without this error.
   - size: S
 
+- [ ] M2.P1.T2e — Fix missing `QEnterEvent` include in `Global/QtCompat.h`
+  - files: `Global/QtCompat.h`
+  - approach: real CI (second manual run, after T2d's fix) got past
+    `libs/qhttpserver` and into `Engine/AppInstance.cpp`, then failed with
+    `'QEnterEvent' does not name a type`. The de-ifdef pass (M2.P1.T2b)
+    collapsed `QtCompat.h`'s 3-way Qt5/Qt6 typedef to
+    `typedef QEnterEvent QEnterEvent;`, but the header never includes the
+    real Qt6 `QEnterEvent` class itself — it happened to compile in Gui
+    files that transitively pull it in via other Qt/widget headers, but
+    not in Engine files that don't. Add `#include <QEnterEvent>`.
+  - verify: `Engine/AppInstance.cpp` compiles past this point in a real CI
+    run.
+  - size: S
+
 ## Phase 2.2: Mechanical Qt6 API replacements
 
 - [x] M2.P2.T1 — Fix the ~33 `QRegExp` sites (16 files)

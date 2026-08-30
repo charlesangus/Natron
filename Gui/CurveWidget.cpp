@@ -1592,7 +1592,7 @@ CurveWidget::keyPressEvent(QKeyEvent* e)
 } // keyPressEvent
 
 void
-CurveWidget::enterEvent(QtCompat::QEnterEvent* e)
+CurveWidget::enterEvent(QEnterEvent* e)
 {
     setFocus();
     QOpenGLWidget::enterEvent(e);

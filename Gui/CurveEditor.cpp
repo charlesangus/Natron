@@ -1559,7 +1559,7 @@ CurveEditor::keyReleaseEvent(QKeyEvent* e)
 }
 
 void
-CurveEditor::enterEvent(QtCompat::QEnterEvent* e)
+CurveEditor::enterEvent(QEnterEvent* e)
 {
     enterEventBase();
     QWidget::enterEvent(e);

@@ -95,7 +95,7 @@ milestone than went in.
     run.
   - size: S
 
-- [ ] M2.P1.T2f — Remove the now-pointless `QtCompat::QEnterEvent` alias entirely
+- [x] M2.P1.T2f — Remove the now-pointless `QtCompat::QEnterEvent` alias entirely
   - files: `Global/QtCompat.h`, and the ~45 `Gui/*.cpp`/`Gui/*.h` files using
     `QtCompat::QEnterEvent`
   - approach: T2e's fix was incomplete — real CI's next run failed with

@@ -538,7 +538,7 @@ PyPanel::mousePressEvent(QMouseEvent* e)
 }
 
 void
-PyPanel::enterEvent(QtCompat::QEnterEvent* e)
+PyPanel::enterEvent(QEnterEvent* e)
 {
     enterEventBase();
     QWidget::enterEvent(e);

@@ -147,7 +147,7 @@ AnimatingTextEdit::setDirty(bool b)
 }
 
 void
-AnimatingTextEdit::enterEvent(QtCompat::QEnterEvent* e)
+AnimatingTextEdit::enterEvent(QEnterEvent* e)
 {
     _dnd->mouseEnter(e);
     QTextEdit::enterEvent(e);
@@ -270,7 +270,7 @@ KnobLineEdit::~KnobLineEdit()
 }
 
 void
-KnobLineEdit::enterEvent(QtCompat::QEnterEvent* e)
+KnobLineEdit::enterEvent(QEnterEvent* e)
 {
     _dnd->mouseEnter(e);
     LineEdit::enterEvent(e);

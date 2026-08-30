@@ -299,7 +299,7 @@ ProgressPanel::keyReleaseEvent(QKeyEvent* e)
 }
 
 void
-ProgressPanel::enterEvent(QtCompat::QEnterEvent* e)
+ProgressPanel::enterEvent(QEnterEvent* e)
 {
     enterEventBase();
     QWidget::enterEvent(e);

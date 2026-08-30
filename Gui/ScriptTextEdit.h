@@ -101,7 +101,7 @@ private:
     virtual void dropEvent(QDropEvent* e) OVERRIDE FINAL;
     virtual void resizeEvent(QResizeEvent *event) OVERRIDE FINAL;
     virtual void dragMoveEvent(QDragMoveEvent* e) OVERRIDE FINAL;
-    virtual void enterEvent(QtCompat::QEnterEvent* e) OVERRIDE FINAL;
+    virtual void enterEvent(QEnterEvent* e) OVERRIDE FINAL;
     virtual void leaveEvent(QEvent* e) OVERRIDE FINAL;
 
 private:

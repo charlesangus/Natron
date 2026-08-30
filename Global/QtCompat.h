@@ -25,6 +25,7 @@
 #include <QString>
 #include <QUrl>
 #include <QFileInfo>
+#include <QEnterEvent>
 
 NATRON_NAMESPACE_ENTER
 

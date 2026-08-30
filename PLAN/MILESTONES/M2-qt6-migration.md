@@ -81,7 +81,7 @@ milestone than went in.
     CI build progresses past `libs/qhttpserver` without this error.
   - size: S
 
-- [ ] M2.P1.T2e — Fix missing `QEnterEvent` include in `Global/QtCompat.h`
+- [x] M2.P1.T2e — Fix missing `QEnterEvent` include in `Global/QtCompat.h`
   - files: `Global/QtCompat.h`
   - approach: real CI (second manual run, after T2d's fix) got past
     `libs/qhttpserver` and into `Engine/AppInstance.cpp`, then failed with

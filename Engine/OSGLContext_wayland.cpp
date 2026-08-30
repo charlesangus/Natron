@@ -23,6 +23,10 @@
 
 #ifdef __NATRON_WAYLAND__
 
+// Qt's qtextstream.h must be included before any header that defines the
+// X11 Status macro (EGL/egl.h below pulls that in transitively).
+#include <QTextStream>
+
 #include <array>
 #include <cerrno>
 #include <cstring>
@@ -32,14 +36,14 @@
 
 #include <dlfcn.h>
 
-#include "Engine/AppManager.h"
-#include "Engine/OSGLContext.h"
-#include "Global/GLIncludes.h"
-
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <wayland-client.h>
 #include <wayland-egl.h>
+
+#include "Engine/AppManager.h"
+#include "Engine/OSGLContext.h"
+#include "Global/GLIncludes.h"
 
 NATRON_NAMESPACE_ENTER
 

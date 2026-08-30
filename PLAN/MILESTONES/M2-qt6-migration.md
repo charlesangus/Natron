@@ -11,7 +11,7 @@ milestone than went in.
 
 ## Phase 2.1: Pull in existing Qt6 work
 
-- [ ] M2.P1.T1 — Cherry-pick `lockewerks`'s PRs #1084 & #1085
+- [x] M2.P1.T1 — Cherry-pick `lockewerks`'s PRs #1084 & #1085
   - files: whatever the two PRs touch (per upstream diff)
   - approach: *(ready now)* "Replace the Qt6-removed APIs that have Qt5
     equivalents" and "Build against C++20" — both open, mergeable, dated 25
@@ -31,7 +31,7 @@ milestone than went in.
 
 ## Phase 2.2: Mechanical Qt6 API replacements
 
-- [ ] M2.P2.T1 — Fix the ~33 `QRegExp` sites (16 files)
+- [x] M2.P2.T1 — Fix the ~33 `QRegExp` sites (16 files)
   - files: `ScriptTextEdit.cpp`, `Project.cpp`, `CLArgs.cpp`,
     `NodeCreationDialog.cpp`, and the remaining sites inventoried in
     `Documentation/source/maintainers/qt6-migration.rst`
@@ -41,7 +41,7 @@ milestone than went in.
   - verify: `git grep -c QRegExp` across the tree returns 0; project builds.
   - size: M
 
-- [ ] M2.P2.T2 — Fix `QDesktopWidget` (6 files) and the one `QVariant::Type` site
+- [x] M2.P2.T2 — Fix `QDesktopWidget` (6 files) and the one `QVariant::Type` site
   - files: the 6 `QDesktopWidget` sites and the single `QVariant::Type` site,
     per `Documentation/source/maintainers/qt6-migration.rst`
   - approach: replace with `QScreen`/`QGuiApplication::screens()` and
@@ -76,3 +76,18 @@ milestone than went in.
 **Verification gate:** the ctest suite (M5) passes, the Python bindings load
 and operate without enum/QFlags errors, and the manual GUI checklist above
 passes end-to-end on Qt6.8.x.
+
+## Decisions
+
+- 2026-08-30 — Cherry-picked PR #1084's 4 commits cleanly (one trivial
+  line-shift auto-merge in `Engine/CLArgs.cpp`, verified byte-identical to
+  upstream's actual code change). This single PR's QRegExp→
+  QRegularExpression, QDesktopWidget→QScreen, and QVariant::Type→userType()
+  work turned out to BE Phase 2.2's entire scope — checked off M2.P2.T1 and
+  M2.P2.T2 as well rather than re-doing already-landed work. Remaining
+  `QDesktopWidget` grep hits (5) are all comments/dead code, not live
+  usage.
+- 2026-08-30 — PR #1085 ("Build against C++20") is fully redundant here:
+  its only content is `CMAKE_CXX_STANDARD` (already 20, from M1) and
+  `global.pri` edits (that file no longer exists, qmake removed in M0).
+  Not cherry-picked; nothing to take.

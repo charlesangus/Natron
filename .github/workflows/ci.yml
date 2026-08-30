@@ -56,7 +56,7 @@ jobs:
       - name: Build Unix (debug)
         run: |
           mkdir debug && cd debug
-          cmake -DCMAKE_BUILD_TYPE=Debug ../
+          cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=/usr/local ../
           make -j2
 
       - name: Run Unix Tests (debug)
@@ -70,7 +70,7 @@ jobs:
       - name: Build Unix (release)
         run: |
           mkdir release && cd release
-          cmake ../
+          cmake -DCMAKE_PREFIX_PATH=/usr/local ../
           make -j2
 
       - name: Run Unix Tests (release)

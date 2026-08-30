@@ -32,6 +32,8 @@
 
 #include <dlfcn.h>
 
+#include "Engine/AppManager.h"
+
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <wayland-client.h>
@@ -61,7 +63,6 @@
 #undef Complex
 #endif
 
-#include "Engine/AppManager.h"
 #include "Engine/OSGLContext.h"
 #include "Global/GLIncludes.h"
 

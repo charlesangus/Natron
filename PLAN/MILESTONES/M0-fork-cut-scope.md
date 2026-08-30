@@ -16,7 +16,7 @@ before touching Qt.
     check cannot merge.
   - size: S
 
-- [ ] M0.P1.T2 — Delete Windows/macOS CI & packaging
+- [x] M0.P1.T2 — Delete Windows/macOS CI & packaging
   - files: `.github/workflows/build_installer.yml`, `.github/workflows/build_pacman_repo.yml`,
     `tools/jenkins/build-OSX-installer.sh`, `tools/jenkins/build-Windows-installer.sh`,
     `*.bat`, `msys*`, `tools/MacPorts/`
@@ -73,3 +73,14 @@ branch protection is wired to the M4 workflow once it exists.
   scaffold branch protection without a required status check. The rule will
   be set up in M4, once the CI workflow it gates on actually exists, rather
   than being enabled now and edited later.
+- 2026-08-29 — M0.P1.T2 also removed `ci.yml`'s live `win-test` job and the
+  dead macOS-only step in `unix_test` (not in the original file list, but
+  required to satisfy the task's own verify criterion: no Windows/macOS jobs
+  in `.github/workflows/`), plus the now-orphaned
+  `install_natron_pacman_repo.sh`. Stale text mentions of `MINGW-packages`/
+  `MacPorts` remain in `tools/README.md`, `tools/jenkins/common.sh`,
+  `tools/jenkins/build-plugins.sh`, and
+  `Documentation/source/maintainers/codebase-map.rst` — all inside
+  Windows-only conditional branches or prose, not live on the Linux path.
+  Left for M6 (documentation pass) / a later Jenkins-script cleanup rather
+  than expanding T2's scope further.

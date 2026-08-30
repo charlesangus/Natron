@@ -48,11 +48,7 @@ void
 RightClickableWidget::mousePressEvent(QMouseEvent* e)
 {
     if ( buttonDownIsRight(e) ) {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         QWidget* underMouse = qApp->widgetAt( e->globalPosition().toPoint() );
-#else
-        QWidget* underMouse = qApp->widgetAt( e->globalPos() );
-#endif
         if (underMouse == this) {
             Q_EMIT rightClicked( e->pos() );
             e->accept();

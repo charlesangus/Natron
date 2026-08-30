@@ -192,11 +192,7 @@ private Q_SLOTS:
     void setSliderSColor();
     void setSliderVColor();
 
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     void handleButtonColorClicked(QAbstractButton *button);
-#else
-    void handleButtonColorClicked(int id);
-#endif
 
     void setPaletteButtonColor(bool clicked = true);
     void clearPaletteButtons(bool clicked = true);

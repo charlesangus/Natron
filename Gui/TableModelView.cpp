@@ -962,22 +962,14 @@ TableItemEditorFactory::createEditor(int userType,
                                      QWidget *parent) const
 {
     switch (userType) {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     case QMetaType::UInt: {
-#else
-    case QVariant::UInt: {
-#endif
         SpinBox *sb = new SpinBox(parent, SpinBox::eSpinBoxTypeInt);
         sb->setFrame(false);
         sb->setMaximum(std::numeric_limits<int>::max());
 
         return sb;
     }
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     case QMetaType::Int: {
-#else
-    case QVariant::Int: {
-#endif
         SpinBox *sb = new SpinBox(parent, SpinBox::eSpinBoxTypeInt);
         sb->setFrame(false);
         sb->setMinimum(std::numeric_limits<int>::min());
@@ -985,18 +977,10 @@ TableItemEditorFactory::createEditor(int userType,
 
         return sb;
     }
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     case QMetaType::QPixmap:
-#else
-    case QVariant::Pixmap:
-#endif
 
         return new Label(parent);
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     case QMetaType::Double: {
-#else
-    case QVariant::Double: {
-#endif
         SpinBox *sb = new SpinBox(parent, SpinBox::eSpinBoxTypeDouble);
         sb->setFrame(false);
         sb->setMinimum(std::numeric_limits<double>::lowest());
@@ -1004,11 +988,7 @@ TableItemEditorFactory::createEditor(int userType,
 
         return sb;
     }
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     case QMetaType::QString:
-#else
-    case QVariant::String:
-#endif
     default: {
         // the default editor is a lineedit
         ExpandingLineEdit *le = new ExpandingLineEdit(parent);
@@ -1429,11 +1409,7 @@ TableView::dropEvent(QDropEvent* e)
     case QAbstractItemView::BelowItem:
         break;
     }
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     TableItem* into = itemAt( e->position().toPoint() );
-#else
-    TableItem* into = itemAt( e->pos() );
-#endif
 
     if ( !into || _imp->draggedItems.empty() ) {
         return;

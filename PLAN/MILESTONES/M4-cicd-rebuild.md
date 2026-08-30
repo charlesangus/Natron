@@ -1,0 +1,61 @@
+# Milestone 4: CI/CD rebuild
+
+`~3-4 days` · low risk. One real, working pipeline beats three broken ones.
+Start this once M1 lands so every subsequent PR in M2/M3 gets gated
+automatically.
+
+## Phase 4.1: One gating pipeline
+
+- [ ] M4.P1.T1 — Single "Tests" workflow, Linux only, running in `aswf/ci-baseqt:2027`
+  - files: `.github/workflows/ci.yml` (new/rewritten workflow)
+  - approach: adapt the existing `unix_test` job from `ci.yml` — it's the one
+    part of upstream's CI that's currently green — but set
+    `runs-on: ubuntu-latest` with `container: aswf/ci-baseqt:2027`, a public,
+    pre-built image with no maintenance burden of our own. Drop the
+    Windows/macOS matrix legs entirely rather than disabling them.
+  - verify: a pushed branch triggers the workflow and it runs inside the
+    pinned container with no Windows/macOS jobs listed.
+  - size: M
+
+- [ ] M4.P1.T2 — Build both debug and release
+  - files: `.github/workflows/ci.yml`
+  - approach: same shape as today's `unix_test` job, now against the
+    ASWF-pinned VFX-Platform library set instead of Ubuntu's `apt` versions.
+  - verify: workflow run shows both a debug and a release build job, both
+    green.
+  - size: S
+
+- [ ] M4.P1.T3 — Require it to pass before merge
+  - files: GitHub repo branch protection settings (no source files)
+  - approach: branch protection rule pointed at the M4.P1.T1 workflow. This is
+    the single change that would have caught the currently-broken upstream
+    installer build before it sat red for 5 weeks. Completes the rule
+    scaffolded in M0.P1.T1.
+  - verify: a PR with a failing workflow run cannot be merged via the GitHub
+    UI.
+  - size: S
+
+- [ ] M4.P1.T4 — Move packaging off "every push"
+  - files: whichever packaging workflow remains after M0's deletions, or its
+    replacement per `PLAN/DECISIONS/2026-08-29-defer-packaging-decision.md`
+  - approach: upstream's `build_installer.yml` runs a full installer build on
+    *every* push to any branch — expensive and how a broken build goes
+    unnoticed. Trigger packaging (once decided, per the deferred packaging
+    decision) on tags/releases only.
+  - verify: pushing a non-tag commit does not trigger a packaging run;
+    pushing a tag does.
+  - size: S
+
+- [ ] M4.P1.T5 — Own the first-time-contributor approval gate
+  - files: none (process commitment, not code)
+  - approach: GitHub blocks Actions runs from first-time contributors pending
+    manual approval (`action_required`) — every open upstream PR is currently
+    stuck behind this, unreviewed. With one or two maintainers on a smaller
+    fork, commit to approving/reviewing within days, not indefinitely.
+  - verify: n/a — process commitment; revisit if approval latency becomes a
+    problem.
+  - size: S
+
+**Verification gate:** the Tests workflow is required on the default branch,
+runs debug and release inside `aswf/ci-baseqt:2027`, and packaging no longer
+runs on every push.

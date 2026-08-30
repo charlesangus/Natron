@@ -228,6 +228,24 @@ milestone than went in.
     Wayland desktop support — if ever wanted — is future work requiring
     an actual Wayland test environment, not CI guesswork.
 
+- 2026-08-30 — **Correction**: removing `wayland-devel` from `ci.yml`'s
+  `dnf install` line was insufficient — real CI still compiled
+  `OSGLContext_wayland.cpp` and failed identically. Root cause: the ASWF
+  base image bundles Wayland dev headers in its OS-distro layer
+  regardless of what we explicitly install (per `aswf-docker`'s
+  `versions.yaml`, `ASWF_WAYLAND_VERSION` is a base-OS package, not part
+  of the VFX-platform conan stack we control), so
+  `find_package(Wayland COMPONENTS Client Egl)` in the top-level
+  `CMakeLists.txt` (line ~118) succeeds unconditionally on this
+  container no matter what CI installs. Fixed properly at the source:
+  added `option(NATRON_ENABLE_WAYLAND "..." OFF)` and gated the
+  `find_package(Wayland ...)` call behind it, so Wayland detection (and
+  therefore `OSGLContext_wayland.cpp`) is opt-in and off by default,
+  robust to whatever the build environment happens to have installed.
+  The `ci.yml` `dnf install` change from the previous decision is
+  harmless but unnecessary now — left as-is rather than reverting for no
+  functional reason.
+
 ## Phase 2.2: Mechanical Qt6 API replacements
 
 - [x] M2.P2.T1 — Fix the ~33 `QRegExp` sites (16 files)

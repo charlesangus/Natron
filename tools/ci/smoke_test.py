@@ -87,18 +87,17 @@ import zlib
 
 
 def _mark(msg):
-    # TEMPORARY M2.P3.T1a diagnostic: flush eagerly and to both streams.
-    # Natron does not redirect sys.stdout/sys.stderr to a StreamCatcher in
-    # background mode (see AppManager::initPython()'s `if (!isBackground())`
-    # guard), so this is plain C stdio; when NatronRenderer's output is
-    # redirected to a file (not a tty) CPython block-buffers it, and any
-    # unflushed output is lost if the process is killed by a signal instead
-    # of exiting normally. Flush immediately after every step so progress
-    # survives a crash, to help bisect where a crash happens.
+    # Print with an eager, unbuffered flush. Natron does not redirect
+    # sys.stdout/sys.stderr to a StreamCatcher in background mode (see
+    # AppManager::initPython()'s `if (!isBackground())` guard), so this is
+    # plain C stdio; when NatronRenderer's output is piped to a file rather
+    # than a tty, CPython block-buffers it, and any unflushed output would
+    # be lost if the process were ever killed by a signal (e.g. a native
+    # crash unrelated to this script, elsewhere in Natron) instead of
+    # exiting normally. Flushing after every step keeps this script's
+    # progress visible in CI logs even in that case.
     sys.stdout.write(msg + "\n")
     sys.stdout.flush()
-    sys.stderr.write(msg + "\n")
-    sys.stderr.flush()
 
 
 def _write_solid_png(path, width, height, rgb):
@@ -222,12 +221,9 @@ try:
     main()
 except Exception:
     traceback.print_exc()
-    sys.stdout.flush()
-    sys.stderr.write("\n[smoke] SMOKE TEST FAILED\n")
     sys.stderr.flush()
-    _mark("[smoke] about to sys.exit(1)")
+    _mark("\n[smoke] SMOKE TEST FAILED")
     sys.exit(1)
 else:
     _mark("\n[smoke] SMOKE TEST PASSED")
-    _mark("[smoke] about to sys.exit(0)")
     sys.exit(0)

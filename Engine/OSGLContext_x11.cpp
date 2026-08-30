@@ -451,7 +451,7 @@ chooseFBConfig(const OSGLContext_glx_data* glxInfo,
     //       (VirtualBox GL) not setting the window bit on any GLXFBConfigs
     const char* vendor = glxInfo->_imp->GetClientString(glxInfo->_imp->x11.display, GLX_VENDOR);
 
-    if (strcmp(vendor, "Chromium") == 0) {
+    if (vendor && strcmp(vendor, "Chromium") == 0) {
         trustWindowBit = false;
     }
 

@@ -20,8 +20,6 @@
 #ifndef NATRON_GLOBAL_PROCINFO_H
 #define NATRON_GLOBAL_PROCINFO_H
 
-// Python.h not included here, because this is used by CrashReporter, which does not use python
-
 #include "Global/Macros.h"
 
 #if defined(__NATRON_WIN32__)

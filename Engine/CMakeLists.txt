@@ -19,7 +19,7 @@
 
 include(FindPkgConfig)
 
-pkg_check_modules(Cairo REQUIRED IMPORTED_TARGET cairo fontconfig)
+pkg_check_modules(Cairo REQUIRED IMPORTED_TARGET cairo fontconfig freetype2)
 
 file(GLOB NatronEngine_HEADERS *.h)
 file(GLOB NatronEngine_SOURCES *.cpp)

@@ -246,6 +246,26 @@ milestone than went in.
   harmless but unnecessary now — left as-is rather than reverting for no
   functional reason.
 
+- [ ] M2.P1.T2i — Fix `NatronRenderer`'s FreeType/HarfBuzz link failure
+  - files: `Engine/CMakeLists.txt`
+  - approach: not a Qt6 issue — real CI's next run got past compiling the
+    *entire* codebase (a first!) and failed at link time instead:
+    `libharfbuzz.so.0: undefined reference to 'FT_Get_Color_Glyph_Paint'`
+    and four sibling COLRv1 FreeType symbols. Root cause:
+    `pkg_check_modules(Cairo REQUIRED IMPORTED_TARGET cairo fontconfig)`
+    (Engine/CMakeLists.txt:22) combines cairo+fontconfig into one
+    `PkgConfig::Cairo` target, but neither `.pc` file's `Requires:` (as
+    opposed to `Requires.private:`, which pkg-config only expands for
+    static linking) surfaces `freetype2`/`harfbuzz` for a normal dynamic
+    `--libs` query — so nothing on `NatronRenderer`'s link line explicitly
+    pulls in a `libfreetype.so` with COLRv1 symbols, and this toolchain
+    validates *all* transitive `.so` symbols strictly at link time (unlike
+    the old Ubuntu-based CI, which apparently didn't). Fix: add
+    `freetype2` explicitly to the `pkg_check_modules(Cairo ...)` call so
+    its libs are included on the link line.
+  - verify: `NatronRenderer` links successfully in a real CI run.
+  - size: S
+
 ## Phase 2.2: Mechanical Qt6 API replacements
 
 - [x] M2.P2.T1 — Fix the ~33 `QRegExp` sites (16 files)

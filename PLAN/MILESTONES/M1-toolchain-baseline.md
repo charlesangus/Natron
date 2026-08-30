@@ -67,3 +67,13 @@ compatibility shims remaining.
   version-floor *assertion*, not a compatibility shim — out of this task's
   named scope (`<= 201103L`/`<= 201402L` only); left as a minor cosmetic
   follow-up rather than expanding T4.
+- 2026-08-29 — Merged M1's PR (#2) despite red CI: `ci.yml` still
+  apt-installs Qt5 (`qtbase5-dev` etc.), but CMake now hard-requires
+  Qt6/Shiboken6/PySide6, which have no equivalent Ubuntu apt path — CI can't
+  go green until M4 switches the runner to the `aswf/ci-baseqt:2027`
+  container (decided in M1.P1.T3 above). User confirmed this matches the
+  board's own sequencing intent ("M4 starts as soon as M1 lands, so every
+  M2/M3 PR gets gated automatically") — a red-CI gap between M1 and M4 was
+  expected, not a regression to fix here. No branch protection is active
+  yet (deferred to M4 per M0's decision), so nothing technical blocked the
+  merge either.

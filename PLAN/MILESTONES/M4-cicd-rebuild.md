@@ -64,6 +64,15 @@ runs on every push.
 
 ## Decisions
 
+- 2026-08-30 — **Addendum from M2**: `wayland-devel` (installed defensively
+  here in T1/T2, below) turned out to newly enable `Wayland_FOUND` in CMake,
+  which compiled a previously-never-built, broken source file
+  (`Engine/OSGLContext_wayland.cpp`) — 11 real CI round-trips of obscure
+  X11/Qt/EGL header bugs later, M2 removed `wayland-devel` from this
+  workflow rather than fix untested Wayland code. See M2's decisions for
+  the full story. Lesson for future defensive `dnf install` additions:
+  check whether a new package flips a `find_package(...)`-gated code path
+  on, not just whether the package itself is harmless to have present.
 - 2026-08-29 — T1/T2 implemented together (same file, one coherent rewrite):
   `ci.yml`'s `unix_test` job now runs `container: aswf/ci-baseqt:2027.0`,
   with the `apt`-based install step replaced by `dnf` for the handful of

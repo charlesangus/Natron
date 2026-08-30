@@ -201,7 +201,32 @@ milestone than went in.
     and everything else Qt declares using an X11-clashing name, before
     X11 ever gets a chance to define any of them. The existing `#undef`
     block stays in place as defense in depth for anything `AppManager.h`
-    doesn't happen to reach. Pushed; awaiting CI.
+    doesn't happen to reach.
+
+    **This actually worked** — the X11/Qt macro cascade was completely
+    gone on the next real CI run. But a *new*, unrelated problem
+    surfaced: `PFNEGLGETDISPLAYPROC` and every other core EGL function-
+    pointer typedef came back "does not name a type" — likely Qt6's own
+    internal EGL platform-integration headers (pulled in transitively by
+    `AppManager.h`) pre-define a guard like `EGL_VERSION_1_0` via a
+    minimal stub, causing the real `<EGL/egl.h>`'s
+    `#ifndef EGL_VERSION_1_0 ... #endif` block (which holds all the
+    typedefs) to be skipped when we include it afterward.
+
+    **Ultimately abandoned rather than chased further**: this file
+    (`OSGLContext_wayland.cpp`) was never compiled by any prior CI
+    configuration — it only started compiling because M4 defensively
+    installed `wayland-devel` in the CI container (see M4's decisions),
+    not because Wayland support was ever planned, tested, or requested.
+    After 11 real CI round-trips on a chain of distinct, increasingly
+    obscure bugs in untested code, the user chose to stop installing
+    `wayland-devel` in CI instead — restoring `Wayland_FOUND=false` and
+    `__NATRON_WAYLAND__` undefined, which makes this whole file compile
+    to nothing again, matching every build before M4. All the exploratory
+    fix attempts to this file were reverted (`git checkout` to the
+    pre-T2h state) rather than left as untested, unverified code. Real
+    Wayland desktop support — if ever wanted — is future work requiring
+    an actual Wayland test environment, not CI guesswork.
 
 ## Phase 2.2: Mechanical Qt6 API replacements
 

@@ -32,37 +32,12 @@
 
 #include <dlfcn.h>
 
-#include "Engine/AppManager.h"
-
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <wayland-client.h>
 #include <wayland-egl.h>
 
-// X11's Xlib.h (pulled in transitively by EGL/egl.h) #defines several
-// common identifiers as plain macros -- Bool, Status, True, False, None,
-// Complex -- which collide with identifiers Qt headers declare with the
-// same names (e.g. QVariant::Type::Bool, qtextstream.h's Status). Undo
-// all of them immediately so nothing included afterward is affected.
-#ifdef Bool
-#undef Bool
-#endif
-#ifdef Status
-#undef Status
-#endif
-#ifdef True
-#undef True
-#endif
-#ifdef False
-#undef False
-#endif
-#ifdef None
-#undef None
-#endif
-#ifdef Complex
-#undef Complex
-#endif
-
+#include "Engine/AppManager.h"
 #include "Engine/OSGLContext.h"
 #include "Global/GLIncludes.h"
 

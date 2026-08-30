@@ -37,7 +37,7 @@ jobs:
       - name: Install Linux system packages
         shell: bash
         run: |
-          dnf install -y cairo-devel epel-release wayland-devel wget unzip clang xorg-x11-server-Xvfb
+          dnf install -y cairo-devel epel-release wget unzip clang xorg-x11-server-Xvfb
           dnf install -y extra-cmake-modules
 
       - name: Download OpenColorIO-Configs

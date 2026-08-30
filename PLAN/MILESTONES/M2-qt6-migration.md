@@ -141,7 +141,7 @@ milestone than went in.
     Python runtime functions.
   - size: S
 
-- [ ] M2.P1.T2h — Fix `Engine/OSGLContext_wayland.cpp`'s X11/Qt include-order conflict
+- [x] M2.P1.T2h — Fix `Engine/OSGLContext_wayland.cpp`'s X11/Qt include-order conflict
   - files: `Engine/OSGLContext_wayland.cpp`
   - approach: not a Qt6 issue — a pre-existing, never-before-compiled code
     path. `Wayland_FOUND` only started evaluating true once M4's CI began

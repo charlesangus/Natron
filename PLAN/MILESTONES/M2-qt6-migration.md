@@ -161,9 +161,18 @@ milestone than went in.
     revert the Natron-include reorder entirely (restore original
     EGL-before-Natron-includes order) and instead add a single, narrowly
     targeted `#include <QTextStream>` as the very first thing inside the
-    `#ifdef __NATRON_WAYLAND__` block, before anything else — this alone
-    satisfies Qt's ordering requirement without touching the
-    GLAD/EGL relationship at all.
+    `#ifdef __NATRON_WAYLAND__` block, before anything else. **This was
+    also insufficient**: real CI's next run showed the identical
+    `Status`-pollution symptom cascading into a *different* Qt header,
+    `qvariant.h` (reached via a separate include chain off `EGL/egl.h`) —
+    pre-including one specific Qt header doesn't prevent `Status` from
+    corrupting whichever *other* Qt header gets pulled in next. **Final
+    fix**: the standard, robust pattern used throughout the Qt/X11/EGL
+    ecosystem for exactly this — `#undef Status` immediately after the
+    EGL/Wayland includes, before `Engine/AppManager.h` (or anything else)
+    can see the polluted macro. This removes the pollution at its source
+    rather than racing to pre-include whichever Qt header happens to need
+    protecting.
   - verify: `Engine/OSGLContext_wayland.cpp` compiles in a real CI run.
   - size: S
 

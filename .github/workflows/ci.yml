@@ -81,8 +81,20 @@ jobs:
             exit 1
           fi
           echo "Using NatronRenderer: $NATRON_RENDERER"
+          set +e
           OFX_PLUGIN_PATH=$PWD/../Plugins OCIO=$PWD/../OpenColorIO-Configs/blender/config.ocio \
-            "$NATRON_RENDERER" "$PWD/../tools/ci/smoke_test.py"
+            "$NATRON_RENDERER" "$PWD/../tools/ci/smoke_test.py" >/tmp/smoke_test.out 2>&1
+          rc=$?
+          set -e
+          cat /tmp/smoke_test.out
+          if [ $rc -ne 0 ]; then
+            # TEMPORARY M2.P3.T1a diagnostic: surface the script's output as
+            # a workflow annotation since raw step logs are not otherwise
+            # retrievable in this validation environment.
+            enc=$(sed 's/%/%25/g; s/\r/%0D/g' /tmp/smoke_test.out | awk '{printf "%s%%0A", $0}' | tail -c 60000)
+            echo "::error::smoke_test.py exited $rc. Output: ${enc}"
+          fi
+          exit $rc
 
       - name: Build Unix (release)
         run: |
@@ -103,6 +115,13 @@ jobs:
         with:
           name: Ubuntu Test Logs
           path: ${{ github.workspace }}/release/Testing/Temporary/LastTest.log
+
+      - name: Report step outcomes (temporary M2.P3.T1a diagnostic)
+        if: always()
+        run: |
+          echo "::notice::run-unix-tests-debug.outcome=${{ steps.run-unix-tests-debug.outcome }}"
+          echo "::notice::python-smoke-test-debug.outcome=${{ steps.python-smoke-test-debug.outcome }}"
+          echo "::notice::run-unix-tests-release.outcome=${{ steps.run-unix-tests-release.outcome }}"
 
       - name: Check for test failures
         if: steps.run-unix-tests-debug.outcome == 'failure' || steps.run-unix-tests-release.outcome == 'failure' || steps.python-smoke-test-debug.outcome == 'failure'

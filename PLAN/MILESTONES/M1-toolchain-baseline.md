@@ -6,7 +6,7 @@
 
 ## Phase 1.1: Collapse to one toolchain
 
-- [ ] M1.P1.T1 — Bump `CMAKE_CXX_STANDARD` 17 → 20
+- [x] M1.P1.T1 — Bump `CMAKE_CXX_STANDARD` 17 → 20
   - files: `CMakeLists.txt:29`
   - approach: Devernay's own macOS packaging build already compiles at
     `-std=c++20` (poppler requires it) — this just makes it the project-wide

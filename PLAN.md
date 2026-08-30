@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M1.P1.T2
-pm_heartbeat: 2026-08-29T23:20:00+00:00
+current: null
+pm_heartbeat: 2026-08-29T23:50:00+00:00
 ship: pr-per-milestone
 ---
 
@@ -49,7 +49,7 @@ future core work has solid ground to build on.
 | ID | Milestone | Status | File |
 |----|-----------|--------|------|
 | M0 | Fork & cut scope | done | [M0-fork-cut-scope.md](PLAN/MILESTONES/M0-fork-cut-scope.md) |
-| M1 | Toolchain baseline | doing | [M1-toolchain-baseline.md](PLAN/MILESTONES/M1-toolchain-baseline.md) |
+| M1 | Toolchain baseline | done | [M1-toolchain-baseline.md](PLAN/MILESTONES/M1-toolchain-baseline.md) |
 | M2 | Land the Qt6 migration | todo | [M2-qt6-migration.md](PLAN/MILESTONES/M2-qt6-migration.md) |
 | M3 | Dependency modernization | todo | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
 | M4 | CI/CD rebuild | todo | [M4-cicd-rebuild.md](PLAN/MILESTONES/M4-cicd-rebuild.md) |

@@ -23,10 +23,6 @@
 
 #ifdef __NATRON_WAYLAND__
 
-// Qt's qtextstream.h must be included before any header that defines the
-// X11 Status macro (EGL/egl.h below pulls that in transitively).
-#include <QTextStream>
-
 #include <array>
 #include <cerrno>
 #include <cstring>
@@ -40,6 +36,14 @@
 #include <EGL/eglext.h>
 #include <wayland-client.h>
 #include <wayland-egl.h>
+
+// X11's Xlib.h (pulled in transitively by EGL/egl.h) #defines Status as a
+// plain macro, which breaks several Qt headers (qtextstream.h, qvariant.h,
+// ...) that declare their own identifiers named Status. Undo the pollution
+// immediately so nothing included afterward is affected.
+#ifdef Status
+#undef Status
+#endif
 
 #include "Engine/AppManager.h"
 #include "Engine/OSGLContext.h"

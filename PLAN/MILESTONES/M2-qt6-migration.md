@@ -175,6 +175,9 @@ milestone than went in.
     protecting.
   - verify: `Engine/OSGLContext_wayland.cpp` compiles in a real CI run.
   - size: S
+  - status: three attempts landed as one commit history (revert of attempt
+    1 in the same file already captured in attempt 2's commit); final
+    `#undef Status` fix pushed and awaiting CI confirmation.
 
 ## Phase 2.2: Mechanical Qt6 API replacements
 

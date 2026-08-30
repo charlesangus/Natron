@@ -39,6 +39,7 @@ jobs:
         run: |
           dnf install -y cairo-devel epel-release wget unzip clang xorg-x11-server-Xvfb
           dnf install -y extra-cmake-modules
+          dnf install -y gdb
 
       - name: Download OpenColorIO-Configs
         run: |
@@ -83,16 +84,34 @@ jobs:
           echo "Using NatronRenderer: $NATRON_RENDERER"
           set +e
           OFX_PLUGIN_PATH=$PWD/../Plugins OCIO=$PWD/../OpenColorIO-Configs/blender/config.ocio \
+            gdb -q -batch -ex run -ex "thread apply all bt full" --args \
             "$NATRON_RENDERER" "$PWD/../tools/ci/smoke_test.py" >/tmp/smoke_test.out 2>&1
-          rc=$?
+          gdb_rc=$?
           set -e
           cat /tmp/smoke_test.out
-          if [ $rc -ne 0 ]; then
-            # TEMPORARY M2.P3.T1a diagnostic: surface the script's output as a
-            # workflow annotation, since raw step logs are not otherwise
-            # retrievable in this validation environment.
-            enc=$(sed 's/%/%25/g; s/\r/%0D/g' /tmp/smoke_test.out | awk '{printf "%s%%0A", $0}' | tail -c 60000)
-            echo "::error::smoke_test.py exited $rc. Output: ${enc}"
+          # TEMPORARY M2.P3.T1a diagnostic: a previous plain (non-gdb) run of
+          # this step showed NatronRenderer exiting 139 (SIGSEGV) with none
+          # of smoke_test.py's own (eagerly-flushed) output visible, meaning
+          # the crash happens before the script's own first line runs.
+          # Running under gdb here to get an actual backtrace instead of
+          # guessing further from print-statement bisection.
+          if grep -q "Program terminated with signal\|received signal SIG" /tmp/smoke_test.out; then
+            rc=139
+          elif grep -qE "\[Inferior 1 \(process [0-9]+\) exited normally\]" /tmp/smoke_test.out; then
+            rc=0
+          elif grep -qE "\[Inferior 1 \(process [0-9]+\) exited with code " /tmp/smoke_test.out; then
+            rc=$(grep -oE "exited with code [0-9]+" /tmp/smoke_test.out | tail -1 | grep -oE "[0-9]+")
+          else
+            rc=$gdb_rc
+          fi
+          if [ "$rc" != "0" ]; then
+            nlines=$(wc -l < /tmp/smoke_test.out)
+            nbytes=$(wc -c < /tmp/smoke_test.out)
+            echo "::notice::smoke_test.py (gdb) output: ${nlines} lines, ${nbytes} bytes total, rc=${rc}"
+            enc_head=$(head -n 80 /tmp/smoke_test.out | sed 's/%/%25/g; s/\r/%0D/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error::smoke_test.py exited $rc. HEAD (first 80 lines): ${enc_head}"
+            enc_tail=$(tail -n 80 /tmp/smoke_test.out | sed 's/%/%25/g; s/\r/%0D/g' | awk '{printf "%s%%0A", $0}')
+            echo "::error::smoke_test.py exited $rc. TAIL (last 80 lines): ${enc_tail}"
           fi
           exit $rc
 

@@ -6,7 +6,7 @@ automatically.
 
 ## Phase 4.1: One gating pipeline
 
-- [ ] M4.P1.T1 — Single "Tests" workflow, Linux only, running in `aswf/ci-baseqt:2027.1`
+- [x] M4.P1.T1 — Single "Tests" workflow, Linux only, running in `aswf/ci-baseqt:2027.1`
   - files: `.github/workflows/ci.yml` (new/rewritten workflow)
   - approach: adapt the existing `unix_test` job from `ci.yml` — it's the one
     part of upstream's CI that's currently green — but set
@@ -17,7 +17,7 @@ automatically.
     pinned container with no Windows/macOS jobs listed.
   - size: M
 
-- [ ] M4.P1.T2 — Build both debug and release
+- [x] M4.P1.T2 — Build both debug and release
   - files: `.github/workflows/ci.yml`
   - approach: same shape as today's `unix_test` job, now against the
     ASWF-pinned VFX-Platform library set instead of Ubuntu's `apt` versions.
@@ -61,3 +61,20 @@ automatically.
 **Verification gate:** the Tests workflow is required on the default branch,
 runs debug and release inside `aswf/ci-baseqt:2027.1`, and packaging no longer
 runs on every push.
+
+## Decisions
+
+- 2026-08-29 — T1/T2 implemented together (same file, one coherent rewrite):
+  `ci.yml`'s `unix_test` job now runs `container: aswf/ci-baseqt:2027.1`,
+  with the `apt`-based install step replaced by `dnf` for the handful of
+  packages the image doesn't already bundle (`cairo-devel`,
+  `extra-cmake-modules` via EPEL, `xorg-x11-server-Xvfb`). This sandbox has
+  no Docker daemon/internet pull access, so the change could only be
+  verified by static YAML/grep checks, not an actual container run — real
+  verification happens on the first GitHub Actions run once pushed.
+- 2026-08-29 — T4 (move packaging off "every push") has nothing to do: M0
+  deleted `build_installer.yml`/`build_pacman_repo.yml` outright, and per
+  `PLAN/DECISIONS/2026-08-29-defer-packaging-decision.md` no replacement
+  packaging workflow exists yet. Marking not-applicable rather than
+  fabricating a workflow with no packaging policy behind it — revisit once
+  packaging is actually decided.

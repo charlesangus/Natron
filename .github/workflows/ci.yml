@@ -19,6 +19,8 @@ jobs:
   unix_test:
     name: Test Ubuntu Python 3.10
     runs-on: ubuntu-latest
+    container:
+      image: aswf/ci-baseqt:2027.1
     defaults:
       run:
         shell: xvfb-run --auto-servernum bash -l {0}
@@ -35,12 +37,8 @@ jobs:
       - name: Install Linux system packages
         shell: bash
         run: |
-          sudo apt update
-          sudo apt install build-essential libboost-serialization-dev libboost-system-dev libexpat1-dev libcairo2-dev \
-            qt5-qmake qtbase5-dev qtdeclarative5-dev \
-            python3-dev libshiboken2-dev libpyside2-dev python3-pyside2.qtwidgets python3-qtpy \
-            libwayland-dev libwayland-client0 libwayland-egl1 \
-            extra-cmake-modules clang
+          dnf install -y cairo-devel epel-release wayland-devel wget unzip clang xorg-x11-server-Xvfb
+          dnf install -y extra-cmake-modules
 
       - name: Download OpenColorIO-Configs
         run: |

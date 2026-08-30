@@ -265,6 +265,18 @@ milestone than went in.
     its libs are included on the link line.
   - verify: `NatronRenderer` links successfully in a real CI run.
   - size: S
+  - status: first attempt (adding `freetype2` to the `pkg_check_modules(Cairo
+    ...)` call) did not fix it — identical error on the next real CI run.
+    Likely pkg-config path/ordering subtlety (freetype2.pc resolving to a
+    different libfreetype than the one satisfying harfbuzz, or link-order
+    placement). **Revised approach**: stop relying on pkg-config's
+    `Requires:`/`Requires.private:` semantics for this at all — add
+    `find_package(Freetype REQUIRED)` (CMake's own, more reliable
+    `FindFreetype` module) and link `Freetype::Freetype` explicitly as a
+    PUBLIC dependency of `NatronEngine`, alongside `PkgConfig::Cairo`, so
+    every consumer (`NatronRenderer`, `NatronGui`, `Tests`) gets it via the
+    same propagation mechanism that already works correctly for
+    Boost/Cairo.
 
 ## Phase 2.2: Mechanical Qt6 API replacements
 

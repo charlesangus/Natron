@@ -339,6 +339,12 @@ passes end-to-end on Qt6.8.x.
 
 ## Decisions
 
+- 2026-08-30 — T2i follow-up: the ASWF HarfBuzz config exports its target
+  but provides no usable version metadata, so `find_package(harfbuzz 14
+  CONFIG REQUIRED)` stopped CI configuration before binding generation.
+  Retain `CONFIG REQUIRED` but remove the version constraint; the explicit
+  public `harfbuzz::harfbuzz` and `Freetype::Freetype` links remain intact.
+
 - 2026-08-30 — T2i's second link-failure attempt makes HarfBuzz explicit as
   well as FreeType and sets CI's CMake prefix to `/usr/local`, where the
   image exposes their package configs. This removes reliance on pkg-config

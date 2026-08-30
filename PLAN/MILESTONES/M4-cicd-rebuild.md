@@ -6,11 +6,11 @@ automatically.
 
 ## Phase 4.1: One gating pipeline
 
-- [ ] M4.P1.T1 — Single "Tests" workflow, Linux only, running in `aswf/ci-baseqt:2027`
+- [ ] M4.P1.T1 — Single "Tests" workflow, Linux only, running in `aswf/ci-baseqt:2027.1`
   - files: `.github/workflows/ci.yml` (new/rewritten workflow)
   - approach: adapt the existing `unix_test` job from `ci.yml` — it's the one
     part of upstream's CI that's currently green — but set
-    `runs-on: ubuntu-latest` with `container: aswf/ci-baseqt:2027`, a public,
+    `runs-on: ubuntu-latest` with `container: aswf/ci-baseqt:2027.1`, a public,
     pre-built image with no maintenance burden of our own. Drop the
     Windows/macOS matrix legs entirely rather than disabling them.
   - verify: a pushed branch triggers the workflow and it runs inside the
@@ -59,5 +59,5 @@ automatically.
   - size: S
 
 **Verification gate:** the Tests workflow is required on the default branch,
-runs debug and release inside `aswf/ci-baseqt:2027`, and packaging no longer
+runs debug and release inside `aswf/ci-baseqt:2027.1`, and packaging no longer
 runs on every push.

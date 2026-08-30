@@ -94,6 +94,21 @@ target_link_libraries(NatronEngine
         tess
 )
 
+# Some Linux dependencies (notably Qt) can expose the distribution FreeType
+# before this static library's transitive link interface is expanded.  The
+# ASWF image also provides HarfBuzz and a newer, ABI-compatible FreeType under
+# /usr/local; loading the distribution library first wins by SONAME and leaves
+# HarfBuzz's newer FT_* references unresolved.  Promote this ordered pair to
+# direct dependencies of every final NatronEngine consumer so the matching
+# /usr/local FreeType is selected before any indirect system copy.
+if(UNIX AND NOT APPLE AND CMAKE_VERSION VERSION_GREATER_EQUAL 3.24)
+    set_property(TARGET NatronEngine APPEND PROPERTY
+        INTERFACE_LINK_LIBRARIES_DIRECT
+        harfbuzz::harfbuzz
+        Freetype::Freetype
+    )
+endif()
+
 if(WIN32)
     #System library is required on windows to map network share names from drive letters
     target_link_libraries(NatronEngine PRIVATE mpr)

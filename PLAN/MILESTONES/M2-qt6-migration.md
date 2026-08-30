@@ -339,6 +339,13 @@ passes end-to-end on Qt6.8.x.
 
 ## Decisions
 
+- 2026-08-30 — T2i follow-up: making HarfBuzz and FreeType public
+  dependencies was not enough to control final link order. On Linux/CMake
+  3.24+, promote the ordered `harfbuzz::harfbuzz`, `Freetype::Freetype`
+  pair to direct interface dependencies of `NatronEngine`, so the ASWF
+  `/usr/local` FreeType wins before an indirect system library with the
+  same SONAME.
+
 - 2026-08-30 — T2i follow-up: the ASWF HarfBuzz config exports its target
   but provides no usable version metadata, so `find_package(harfbuzz 14
   CONFIG REQUIRED)` stopped CI configuration before binding generation.

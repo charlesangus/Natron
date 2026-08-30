@@ -27,10 +27,12 @@ automatically.
 
 - [ ] M4.P1.T3 — Require it to pass before merge
   - files: GitHub repo branch protection settings (no source files)
-  - approach: branch protection rule pointed at the M4.P1.T1 workflow. This is
-    the single change that would have caught the currently-broken upstream
-    installer build before it sat red for 5 weeks. Completes the rule
-    scaffolded in M0.P1.T1.
+  - approach: create the branch protection rule on the default branch, requiring
+    the M4.P1.T1 workflow to pass before merge. This is the single change that
+    would have caught the currently-broken upstream installer build before it
+    sat red for 5 weeks. M0.P1.T1 deferred this whole task here rather than
+    scaffolding it early (see M0's `## Decisions`), since there was no required
+    check to point at yet.
   - verify: a PR with a failing workflow run cannot be merged via the GitHub
     UI.
   - size: S

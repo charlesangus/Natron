@@ -66,3 +66,10 @@ before touching Qt.
 **Verification gate:** a clean checkout builds via CMake only, with no
 Windows/macOS CI, packaging, qmake, or Qt4-era doc content remaining, and
 branch protection is wired to the M4 workflow once it exists.
+
+## Decisions
+
+- 2026-08-29 — Defer M0.P1.T1 (branch protection) to M4: user chose not to
+  scaffold branch protection without a required status check. The rule will
+  be set up in M4, once the CI workflow it gates on actually exists, rather
+  than being enabled now and edited later.

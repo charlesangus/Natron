@@ -39,7 +39,7 @@ Qt-version-switch `if()` block — this milestone collapses it to one path.
     workflow.
   - size: S
 
-- [ ] M1.P1.T4 — Audit `Global/Macros.h` version gates
+- [x] M1.P1.T4 — Audit `Global/Macros.h` version gates
   - files: `Global/Macros.h`
   - approach: delete the explicit `#if __cplusplus <= 201103L` /
     `<= 201402L` pre-C++17 fallback code — dead weight once C++20 is the

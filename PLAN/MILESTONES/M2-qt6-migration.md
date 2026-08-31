@@ -1,5 +1,13 @@
 # Milestone 2: Land the Qt6 migration
 
+> **Resumed 2026-08-31 at `M2.P3.T1c`.** M8 shipped, restoring a merge path.
+> This milestone's 54 commits were rebased off `main` onto
+> `milestone/m2-qt6-migration`; `.github/workflows/ci.yml` is now M8's version
+> verbatim, which strikes `M2.P3.T3` (see `## Decisions`). Remaining work:
+> `T1c` → `T1a` → `T1` → `T2`.
+>
+> <details><summary>Earlier parking notes (historical)</summary>
+>
 > **Re-parked at `blocked` 2026-08-30, after `M2.P3.T1b`.** M8 (branching model
 > and CI/CD rebuild) runs first: `M2.P3.T1b`'s job rename broke `RB-2.6`'s
 > branch protection, whose required check is a job display name, so M2 has no
@@ -13,6 +21,8 @@
 > 13 s and a build failure surfaces in seconds. See this file's `## Decisions`
 > for what M7 already found while validating itself — it is a head start, not
 > just tooling.
+>
+> </details>
 
 `~2-3 weeks` · highest risk. The bulk of the effort, but most of it is already
 scoped or already written. Three pieces of this exist as open upstream PRs —
@@ -443,7 +453,12 @@ milestone than went in.
     corruption or crashes on Qt6.
   - size: M
 
-- [ ] M2.P3.T3 — Strip the `ci(temp)` diagnostics from the CI workflow
+- [x] ~~M2.P3.T3 — Strip the `ci(temp)` diagnostics from the CI workflow~~
+  - **Superseded by `M8.P2.T2` and satisfied by the 2026-08-31 rebase.** M8
+    rewrote `ci.yml` wholesale; the rebase took M8's version verbatim at every
+    conflict, so the three surviving `ci(temp)` commits went empty and were
+    dropped. Verified: `grep -c "M2.P3.T1a diagnostic" .github/workflows/ci.yml`
+    and `grep -c "::notice::"` both return 0. Original brief below, for the record.
   - files: `.github/workflows/ci.yml`
   - approach: the temporary annotation-encoding block in the Python
     smoke-test step, the `::notice::` outcome-reporting step, and the other
@@ -577,3 +592,22 @@ diagnostics while still gating on test failure.
      that the dominant failure is an embedded-interpreter `encodings` import
      error, an incorrect assumption about which Python the bindings build
      against is a strong suspect. **Check this before anything else.**
+
+- 2026-08-31 — rebase onto `main` rather than merge: M2's 60 commits lived on
+  `ci-smoke-test-m2p3t1a`, a name the trunk-based-development decision
+  explicitly cites as what its convention exists to prevent. `main` was only
+  one commit ahead (M8's squash). Replayed onto a fresh
+  `milestone/m2-qt6-migration` for linear history — no force-push needed since
+  the target branch is new, and `ci-smoke-test-m2p3t1a` is kept as a safety
+  net. Conflict policy: M8's `ci.yml`, `PLAN.md`, and executed milestone files
+  win at every conflict; source files never conflicted. Verified afterwards
+  that the source tree is byte-identical to the old branch tip across
+  `Engine/ Gui/ Global/ libs/ Shiboken/ Tests/ App/ Renderer/ HostSupport/`
+  and `CMakeLists.txt`. Five commits went empty under that policy (two
+  board-only, three `ci(temp)`) and were dropped: 54 commits, not 59.
+
+- 2026-08-31 — `tools/ci/local/devshell.sh` kept M2's `PYTHON_VERSION=3.13`
+  over M8's `3.10`: M8's own `ci.yml` already declares `3.13`, so main's
+  `devshell.sh` was internally inconsistent with it and with the ASWF image
+  (Python 3.13.14). Carrying `M2.P3.T1b`'s fix forward is what keeps the local
+  loop and CI agreeing, which is the whole point of that task.

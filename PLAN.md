@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: null
-pm_heartbeat: 2026-08-30T23:57:14-04:00
+current: M2.P3.T1c
+pm_heartbeat: 2026-08-31T00:54:39-04:00
 ship: pr-per-milestone
 ---
 
@@ -38,13 +38,13 @@ future core work has solid ground to build on.
   parallel on separate branches. M4 starts as soon as M1 lands, so every
   M2/M3 PR gets gated automatically. M6 (docs) comes last, once the build is
   actually the thing being documented.
-- **M7 runs next, ahead of everything else** (2026-08-30). M2 is parked at
-  `blocked` mid-`M2.P3.T1a`: the only way to run the test suite today is a
-  full cold build on GitHub Actions, so debugging the Python-bindings smoke
-  test has degenerated into pushing `ci(temp)` diagnostic commits to read a
-  stack trace. M7 stands up the same `aswf/ci-baseqt:2027.0` environment
-  locally with a persistent build tree, then M2 resumes against it. Board
-  rows below are listed in execution order, not ID order.
+- **M2 is resumed and running** (2026-08-31), at `M2.P3.T1c`. It was parked
+  twice — for M7 (the local build loop, which removed the CI round-trip that
+  made `M2.P3.T1a` uneconomic) and then for M8 (which restored a merge path
+  after a job rename broke branch protection). Both have shipped. M2's work
+  was rebased off `main` onto `milestone/m2-qt6-migration`; see that
+  milestone's `## Decisions`. Board rows below are listed in execution order,
+  not ID order.
 - Grounded in the `RB-2.6` tree (`CMakeLists.txt`, `INSTALL_LINUX.md`,
   `Global/Macros.h`, `tools/jenkins/`), the open PR queue on
   `NatronGitHub/Natron`, and the ASWF `aswf-docker` image catalog, as of
@@ -57,7 +57,7 @@ future core work has solid ground to build on.
 |----|-----------|--------|------|
 | M0 | Fork & cut scope | done | [M0-fork-cut-scope.md](PLAN/MILESTONES/M0-fork-cut-scope.md) |
 | M1 | Toolchain baseline | done | [M1-toolchain-baseline.md](PLAN/MILESTONES/M1-toolchain-baseline.md) |
-| M2 | Land the Qt6 migration | blocked | [M2-qt6-migration.md](PLAN/MILESTONES/M2-qt6-migration.md) |
+| M2 | Land the Qt6 migration | doing   | [M2-qt6-migration.md](PLAN/MILESTONES/M2-qt6-migration.md) |
 | M7 | Local incremental builds | done | [M7-local-incremental-builds.md](PLAN/MILESTONES/M7-local-incremental-builds.md) |
 | M8 | Branching model and CI/CD rebuild | done | [M8-branching-and-cicd.md](PLAN/MILESTONES/M8-branching-and-cicd.md) |
 | M3 | Dependency modernization | todo | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
@@ -74,7 +74,8 @@ future core work has solid ground to build on.
   environment reproduces CI exactly; bumping both is a separate change that
   should not land while M2's smoke-test failure is still being diagnosed.
   Decide after M2 closes.
-- **M2 is `blocked`** pending M7 — parked mid-`M2.P3.T1a` because verifying the
-  PySide6/Shiboken6 binding fixes requires a test-suite run, and today that
-  means a full CI build per iteration. No human decision needed; it unblocks
-  when M7's gate passes.
+- **Should the plan move to a `.plan/` worktree?** `PLAN.md` is currently
+  tracked in the code repo, so plan churn rides every milestone branch and
+  shows up in every PR diff. Raised 2026-08-31; deferred rather than done
+  mid-flight, since M2's branch already interleaves plan and code commits.
+  Revisit once M2 lands.

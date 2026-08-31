@@ -95,7 +95,7 @@ one thing it exists to do.
     invoking user, not root.
   - size: M
 
-- [ ] M7.P2.T2 — `build.sh`: incremental CMake+Ninja build with ccache
+- [x] M7.P2.T2 — `build.sh`: incremental CMake+Ninja build with ccache
   - files: `tools/ci/local/build.sh`
   - approach: configure once into `build/debug` (or `build/release` via an
     argument) with `-G Ninja`, `-DCMAKE_BUILD_TYPE=Debug`,
@@ -110,7 +110,7 @@ one thing it exists to do.
     a growing hit rate.
   - size: M
 
-- [ ] M7.P2.T3 — `test.sh`: ctest and the Python smoke test, with a gdb mode
+- [x] M7.P2.T3 — `test.sh`: ctest and the Python smoke test, with a gdb mode
   - files: `tools/ci/local/test.sh`
   - approach: wrap the two things CI runs, with the env `ci.yml` uses —
     `OFX_PLUGIN_PATH` and `OCIO` pointing at `build/assets/` from M7.P1.T3,
@@ -127,7 +127,7 @@ one thing it exists to do.
 
 ## Phase 7.3: Prove it and write it down
 
-- [ ] M7.P3.T1 — Measure cold vs. incremental, record the numbers
+- [x] M7.P3.T1 — Measure cold vs. incremental, record the numbers
   - files: this milestone file's `## Decisions`
   - approach: time a cold build (empty ccache), then a warm rebuild after
     touching one `.cpp` in `Gui/`, then a no-op rebuild. Record all three
@@ -137,7 +137,7 @@ one thing it exists to do.
   - verify: three timings recorded; the one-file rebuild is under a minute.
   - size: S
 
-- [ ] M7.P3.T2 — Reproduce the M2.P3.T1a smoke-test failure locally
+- [x] M7.P3.T2 — Reproduce the M2.P3.T1a smoke-test failure locally
   - files: none (validation only; findings go to M2's `## Decisions`)
   - approach: this is the milestone's real acceptance test. Run
     `test.sh smoke --gdb` against the current branch and confirm it exhibits
@@ -260,3 +260,52 @@ a usable backtrace.
   one place local and CI differ, and it must be ruled out first if a local
   result ever fails to match CI. Closing the gap later is a one-line change
   once a package repo is reachable.
+- 2026-08-30 — M7.P3.T1 measurements (4 cores, debug build): **cold build
+  ~28 min**, **no-op rebuild 0 s** (`ninja: no work to do`), **one-file rebuild
+  13 s** after touching `Gui/SpinBox.cpp` (recompile + two links). Against a CI
+  round-trip of tens of minutes per iteration, the incremental loop is the
+  order-of-magnitude win the milestone was after, so no misconfiguration
+  investigation was triggered.
+  One real misconfiguration *was* found while taking these numbers: ccache was
+  thrashing against its 5 GiB default — 193 cleanups and a 0.18% hit rate on a
+  single cold build, i.e. it evicted continuously and never paid off. Raised to
+  40 GiB (overridable via `CCACHE_MAXSIZE`), and a stale `max_size` in the
+  volume's `ccache.conf` is now stripped at container creation since it would
+  otherwise silently override the environment. Ninja already covers the
+  same-branch case; ccache's actual job here is the cross-branch rebuild, which
+  is precisely the M2 workflow.
+- 2026-08-30 — **M7.P3.T2: the loop reproduces real failures, and found two
+  that CI had not isolated.** Validation could not run on this milestone's own
+  branch: `RB-2.6` does not build under Qt6 at all — `build.sh` surfaced
+  `QChar` ambiguity in `libs/qhttpserver`, a `QStringList` alias conflict in
+  `Engine/EngineFwd.h`, and undeclared `NATRON_BUILD_NUMBER` in
+  `Engine/PyGlobalFunctions.h`, all files M2 fixes — in **4 seconds**. A local
+  `m7-validation` branch (M2's `ci-smoke-test-m2p3t1a` merged with this
+  tooling) was used instead. Findings, in order:
+  1. **CMake generate failed** on `harfbuzz::harfbuzz` not existing for
+     `Renderer`/`Gui`/`Tests`/`App`. Cause: `find_package()` imported targets
+     are directory-scoped, and the call sat in `Engine/CMakeLists.txt` while
+     `harfbuzz::harfbuzz` was on `NatronEngine`'s PUBLIC link interface, so
+     Engine's siblings could not see it. Fixed by moving the call to the
+     top-level `CMakeLists.txt` (the `GLOBAL` keyword would also work but needs
+     CMake 3.24+, above this project's 3.16.7 minimum). Committed on
+     `m7-validation` as `6cd109373` — **this is M2's fix to adopt, not M7's to
+     ship**. With it, the full debug build completes: `NatronRenderer`, `Natron`
+     and `Tests` all link.
+  2. **`test.sh smoke --gdb` produced a usable backtrace in seconds** — the
+     milestone's acceptance test. A SIGSEGV at
+     `Engine/OSGLContext_x11.cpp:433`, `getFBConfigAttrib` dereferencing a NULL
+     `fbconfig` handed to it by `chooseFBConfig`, reached via
+     `AppManager::loadFromArgs` → `initializeOpenGLFunctionsOnce` →
+     `GPUContextPool::attachGLContextToRender`. A GLX fbconfig-selection NULL
+     deref under Xvfb, adjacent to commit `471f15c65`'s "fix pre-existing GLX
+     NULL deref".
+  3. **A second, distinct failure: `Fatal Python error: Failed to import
+     encodings module`**, appearing non-deterministically instead of the
+     SIGSEGV (3 of 4 runs). This is the more likely `M2.P3.T1a` blocker, and it
+     fits the `PYTHON_VERSION`/interpreter mismatch noted earlier in this file:
+     `ci.yml` declares 3.10 while the image ships 3.13.14. `ctest` shows the
+     same instability — one test, failing sometimes as `SEGFAULT` and sometimes
+     on the `encodings` error. **M2 should start here**, and the
+     non-determinism itself is a finding: it means a single green CI run would
+     not have been trustworthy evidence either way.

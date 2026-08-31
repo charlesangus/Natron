@@ -1,0 +1,92 @@
+name: Checks
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Install clang-format
+        run: pip install --disable-pip-version-check "clang-format==21.1.8"
+
+      - name: Check clang-format on changed files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          extensions=(c cc cpp h hpp mm)
+          pathspec=()
+          for ext in "${extensions[@]}"; do
+            pathspec+=("*.${ext}")
+          done
+
+          case "${{ github.event_name }}" in
+            pull_request)
+              base_sha="${{ github.event.pull_request.base.sha }}"
+              git fetch --no-tags --quiet origin "$base_sha"
+              if merge_base="$(git merge-base "$base_sha" HEAD 2>/dev/null)"; then
+                range="${merge_base}..HEAD"
+              else
+                # Unrelated/shallow history: fall back to a direct diff
+                # against the PR base instead of crashing or scanning the
+                # whole tree.
+                range="${base_sha}..HEAD"
+              fi
+              ;;
+            push)
+              before_sha="${{ github.event.before }}"
+              if [ -n "$before_sha" ] && [ "$before_sha" != "0000000000000000000000000000000000000000" ] \
+                 && git cat-file -e "${before_sha}^{commit}" 2>/dev/null; then
+                range="${before_sha}..${{ github.sha }}"
+              elif git rev-parse --verify --quiet "${{ github.sha }}~1" >/dev/null 2>&1; then
+                range="${{ github.sha }}~1..${{ github.sha }}"
+              else
+                # Root commit with no parent: diff against the empty tree.
+                range="$(git hash-object -t tree /dev/null)..${{ github.sha }}"
+              fi
+              ;;
+            *)
+              echo "No file diff for event '${{ github.event_name }}'; nothing to check."
+              exit 0
+              ;;
+          esac
+
+          diff_out="$(mktemp)"
+          trap 'rm -f "$diff_out"' EXIT
+          git diff --name-only -z --diff-filter=ACMR "$range" -- "${pathspec[@]}" > "$diff_out"
+          mapfile -d '' -t files < "$diff_out"
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No changed C/C++ files; nothing to check."
+            exit 0
+          fi
+
+          printf 'Checking format of %d file(s):\n' "${#files[@]}"
+          printf '  %s\n' "${files[@]}"
+
+          clang-format --dry-run --Werror -- "${files[@]}"

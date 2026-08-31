@@ -646,8 +646,8 @@ ColorSelectorWidget::ColorSelectorWidget(bool withAlpha, QWidget *parent)
                          this, SLOT( handleSliderAMoved(double) ) );
     }
 
-    QObject::connect( _buttonColorGroup, SIGNAL( buttonClicked(int) ),
-                      this, SLOT( handleButtonColorClicked(int) ) );
+    QObject::connect( _buttonColorGroup, SIGNAL( buttonClicked(QAbstractButton*) ),
+                      this, SLOT( handleButtonColorClicked(QAbstractButton*) ) );
 
     QObject::connect( paletteAddColorButton, SIGNAL( clicked(bool) ),
                       this, SLOT( setPaletteButtonColor(bool) ) );
@@ -1106,8 +1106,7 @@ void ColorSelectorWidget::handleHexChanged()
         value.prepend( QString::fromUtf8("#") );
     }
 
-    QColor color;
-    color.setNamedColor( _hex->text() );
+    QColor color( QColor::fromString(_hex->text()) );
     if ( !color.isValid() ) {
         return;
     }
@@ -1223,9 +1222,9 @@ ColorSelectorWidget::setSliderVColor()
 }
 
 void
-ColorSelectorWidget::handleButtonColorClicked(int /*id*/)
+ColorSelectorWidget::handleButtonColorClicked(QAbstractButton *button)
 {
-    QVariant var = _buttonColorGroup->checkedButton()->property(COLOR_SELECTOR_BUTTON_PROPERTY);
+    QVariant var = button->property(COLOR_SELECTOR_BUTTON_PROPERTY);
     if ( var.isValid() ) {
         _stack->setCurrentIndex( var.toInt() );
     }

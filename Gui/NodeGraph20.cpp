@@ -500,7 +500,7 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
         break;
     }
     case eEventStateZoomingArea: {
-        int delta = 2 * ( ( e->x() - _imp->_lastMousePos.x() ) - ( e->y() - _imp->_lastMousePos.y() ) );
+        int delta = 2 * ( ( e->position().x() - _imp->_lastMousePos.x() ) - ( e->position().y() - _imp->_lastMousePos.y() ) );
         setTransformationAnchor(QGraphicsView::AnchorViewCenter);
         wheelEventInternal(modCASIsControl(e), delta);
         setTransformationAnchor(QGraphicsView::AnchorUnderMouse);

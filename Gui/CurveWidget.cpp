@@ -803,7 +803,7 @@ CurveWidget::mouseDoubleClickEvent(QMouseEvent* e)
         QScreen* desktop = QGuiApplication::primaryScreen();
         QRect screen = desktop->availableGeometry();
 
-        QPoint gP = e->globalPos();
+        QPoint gP = e->globalPosition().toPoint();
         if ( gP.x() > (screen.width() - dialogW) ) {
             gP.rx() -= dialogW;
         }
@@ -1252,7 +1252,7 @@ CurveWidget::mouseMoveEvent(QMouseEvent* e)
         }
     }
 
-    QPointF newClick_opengl = _imp->zoomCtx.toZoomCoordinates( e->x(), e->y() );
+    QPointF newClick_opengl = _imp->zoomCtx.toZoomCoordinates( e->position().x(), e->position().y() );
     QPointF oldClick_opengl = _imp->zoomCtx.toZoomCoordinates( _imp->_lastMousePos.x(), _imp->_lastMousePos.y() );
     double dx = ( oldClick_opengl.x() - newClick_opengl.x() );
     double dy = ( oldClick_opengl.y() - newClick_opengl.y() );
@@ -1294,7 +1294,7 @@ CurveWidget::mouseMoveEvent(QMouseEvent* e)
         }
         break;
     case eEventStateSelecting:
-        _imp->refreshSelectionRectangle( (double)e->x(), (double)e->y() );
+        _imp->refreshSelectionRectangle( (double)e->position().x(), (double)e->position().y() );
         break;
 
     case eEventStateDraggingTangent:
@@ -1313,8 +1313,8 @@ CurveWidget::mouseMoveEvent(QMouseEvent* e)
         if ( (_imp->zoomCtx.screenWidth() > 0) && (_imp->zoomCtx.screenHeight() > 0) ) {
             _imp->zoomOrPannedSinceLastFit = true;
 
-            int deltaX = 2 * ( e->x() - _imp->_lastMousePos.x() );
-            int deltaY = -2 * ( e->y() - _imp->_lastMousePos.y() );
+            int deltaX = 2 * ( e->position().x() - _imp->_lastMousePos.x() );
+            int deltaY = -2 * ( e->position().y() - _imp->_lastMousePos.y() );
             // Wheel: zoom values and time, keep point under mouse
             double scaleFactorX = std::pow( NATRON_WHEEL_ZOOM_PER_DELTA, deltaX);
             double scaleFactorY = std::pow( NATRON_WHEEL_ZOOM_PER_DELTA, deltaY);
@@ -1592,7 +1592,7 @@ CurveWidget::keyPressEvent(QKeyEvent* e)
 } // keyPressEvent
 
 void
-CurveWidget::enterEvent(QtCompat::QEnterEvent* e)
+CurveWidget::enterEvent(QEnterEvent* e)
 {
     setFocus();
     QOpenGLWidget::enterEvent(e);

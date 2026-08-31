@@ -98,7 +98,7 @@ Q_SIGNALS:
 
 private:
 
-    virtual void enterEvent(QtCompat::QEnterEvent*) OVERRIDE FINAL;
+    virtual void enterEvent(QEnterEvent*) OVERRIDE FINAL;
     virtual void leaveEvent(QEvent*) OVERRIDE FINAL;
     virtual void mousePressEvent(QMouseEvent*) OVERRIDE FINAL;
 

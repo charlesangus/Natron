@@ -826,7 +826,7 @@ SpinBox::mouseMoveEvent(QMouseEvent *e)
              isReadOnly() ||
              !hasFocus() ) {
             // Multiply by some amount to resemble a wheel event
-            int delta = ( e->x() - _imp->lastMousePos.x() ) * 3;
+            int delta = ( e->position().x() - _imp->lastMousePos.x() ) * 3;
             int shift = 0;
             if ( modCASIsShift(e) ) {
                 shift = 1;
@@ -1000,7 +1000,7 @@ KnobSpinBox::~KnobSpinBox()
 }
 
 void
-KnobSpinBox::enterEvent(QtCompat::QEnterEvent* e)
+KnobSpinBox::enterEvent(QEnterEvent* e)
 {
     _dnd->mouseEnter(e);
     SpinBox::enterEvent(e);

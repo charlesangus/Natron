@@ -1803,28 +1803,32 @@ AppManager::loadPythonGroups()
         operateOnPathRecursive(&addToPythonPathFunctor, d);
     }
 
-    ///Also import qtpy.QtCore and qtpy.QtGui (the later only in non background mode)
+    ///Also import PySide6.QtCore and PySide6.QtGui (the later only in non background mode)
+    ///This is the same PySide6 that NatronEngine/NatronGui are bound against, imported
+    ///directly rather than through a third-party Qt-binding abstraction layer: this fork
+    ///targets exactly one Qt (6.8) and one Python (3.13), so that indirection bought
+    ///nothing. See M2.P3.T1g in PLAN/.
     {
         std::string s;
-        s = "import qtpy\nfrom qtpy import QtCore";
+        s = "import PySide6\nfrom PySide6 import QtCore";
         bool ok  = NATRON_PYTHON_NAMESPACE::interpretPythonScript(s, &err, 0);
         if (!ok) {
-            QString message = tr("Failed to import qtpy.QtCore, make sure it is bundled with your Natron installation "
+            QString message = tr("Failed to import PySide6.QtCore, make sure it is bundled with your Natron installation "
                                      "or reachable through the Python path. "
                                      "Note that Natron disables usage "
                                  "of site-packages).");
             std::cerr << message.toStdString() << std::endl;
-            appPTR->writeToErrorLog_mt_safe(QLatin1String("qtpy.QtCore"), QDateTime::currentDateTime(), message);
+            appPTR->writeToErrorLog_mt_safe(QLatin1String("PySide6.QtCore"), QDateTime::currentDateTime(), message);
         }
     }
 
     if ( !isBackground() ) {
-        std::string s = "from qtpy import QtGui";
+        std::string s = "from PySide6 import QtGui";
         bool ok  = NATRON_PYTHON_NAMESPACE::interpretPythonScript(s, &err, 0);
         if (!ok) {
-            QString message = tr("Failed to import qtpy.QtGui");
+            QString message = tr("Failed to import PySide6.QtGui");
             std::cerr << message.toStdString() << std::endl;
-            appPTR->writeToErrorLog_mt_safe(QLatin1String("qtpy.QtGui"), QDateTime::currentDateTime(), message);
+            appPTR->writeToErrorLog_mt_safe(QLatin1String("PySide6.QtGui"), QDateTime::currentDateTime(), message);
         }
     }
 
@@ -2904,8 +2908,13 @@ AppManager::initPython()
     //Disable user sites as they could conflict with Natron bundled packages.
     //If this is set, Python won’t add the user site-packages directory to sys.path.
     //See https://www.python.org/dev/peps/pep-0370/
+    //The Py_NoUserSiteDirectory global that used to be bumped here as well was deprecated
+    //in Python 3.12; initializePython3() sets PyConfig::user_site_directory instead.
+    //This qputenv() MUST stay ahead of Py_Initialize() (called by initializePython3()
+    //below): CPython reads PYTHONNOUSERSITE while building its config during interpreter
+    //startup, and snapshots the C environment into os.environ at the same point, so a
+    //setenv() issued afterwards is visible to getenv() but changes nothing for Python.
     qputenv("PYTHONNOUSERSITE", "1");
-    ++Py_NoUserSiteDirectory;
 
     //
     // set up paths, clear those that don't exist or are not valid
@@ -2966,9 +2975,6 @@ AppManager::initPython()
             throw std::runtime_error( tr("Error while loading StreamCatcher: %1").arg( QString::fromUtf8( err.c_str() ) ).toStdString() );
         }
     }
-    // Set QT_API for QtPy
-    // https://github.com/spyder-ide/qtpy
-    qputenv("QT_API", "pyside2");
 } // AppManager::initPython
 
 void

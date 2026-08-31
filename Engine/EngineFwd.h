@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <QtGlobal>
+
 #include <memory>
 #include <list>
 #include <vector>
@@ -61,7 +63,9 @@ class QNetworkRequest;
 class QProcess;
 class QSettings;
 class QString;
-class QStringList;
+template<typename T> class QList;
+template<typename T> using QVector = QList<T>;
+using QStringList = QList<QString>;
 class QThread;
 class QTimer;
 class QUrl;

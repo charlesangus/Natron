@@ -29,6 +29,8 @@
 #include "Global/Macros.h"
 #include "Global/QtCompat.h"
 
+#include <QEnterEvent>
+
 #include "Gui/PanelWidget.h"
 #include "Gui/GuiFwd.h"
 
@@ -45,7 +47,7 @@ public:
 
 private:
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL;
-    virtual void enterEvent(QtCompat::QEnterEvent* e) OVERRIDE FINAL;
+    virtual void enterEvent(QEnterEvent* e) OVERRIDE FINAL;
     virtual void leaveEvent(QEvent* e) OVERRIDE FINAL;
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE FINAL;
     virtual void keyReleaseEvent(QKeyEvent* e) OVERRIDE FINAL;

@@ -41,7 +41,6 @@ CLANG_DIAG_OFF(deprecated)
 #include <QHeaderView>
 #include <QDir>
 CLANG_DIAG_ON(deprecated)
-#include <qhttpserver.h>
 
 #include "Global/GlobalDefines.h"
 #include "Global/GitVersion.h"

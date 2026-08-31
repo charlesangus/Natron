@@ -54,6 +54,7 @@
 #include <QDebug>
 #include <QTextStream>
 #include <QHostInfo>
+#include <QRegularExpression>
 #include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 
 #include <ofxhXml.h> // OFX::XML::escape
@@ -105,7 +106,24 @@ getUserName()
     struct passwd *passwd;
     passwd = getpwuid( getuid() );
 
-    return passwd->pw_name;
+    if (passwd && passwd->pw_name) {
+        return passwd->pw_name;
+    }
+
+    // getpwuid() returns NULL when the uid has no passwd entry (e.g. no
+    // /etc/passwd entry, or an LDAP/NSS lookup failure/outage). Fall back
+    // to the environment, then to the raw uid, rather than dereferencing
+    // a NULL pointer or inventing a placeholder name that could collide
+    // with a real account.
+    const char *envUser = std::getenv("USER");
+    if (!envUser || !envUser[0]) {
+        envUser = std::getenv("LOGNAME");
+    }
+    if (envUser && envUser[0]) {
+        return envUser;
+    }
+
+    return std::to_string( getuid() );
 #endif
 }
 
@@ -504,7 +522,7 @@ findBackups(const QString & filePath)
         ret.append(filePath);
     }
     // find files matching filePath.~[0-9]+~
-    QRegExp rx(QString::fromUtf8("\\.~(\\d+)~$"));
+    QRegularExpression rx( QString::fromUtf8("\\.~(\\d+)~$") );
     QFileInfo fileInfo(filePath);
     QString fileName = fileInfo.fileName();
     QDirIterator it(fileInfo.dir());
@@ -518,7 +536,11 @@ findBackups(const QString & filePath)
 
         // If the filename contains target string - put it in the hitlist
         QString fn = file.fileName();
-        if (fn.startsWith(fileName) && rx.lastIndexIn(fn) == fileName.size()) {
+        // The pattern ends with $, so there is at most one match and
+        // lastIndexIn() is just that match.
+        QRegularExpressionMatch backupMatch = rx.match(fn);
+        if ( fn.startsWith(fileName) && backupMatch.hasMatch() &&
+             ( backupMatch.capturedStart() == fileName.size() ) ) {
             ret.append(file.filePath());
         }
     }
@@ -532,11 +554,11 @@ findBackups(const QString & filePath)
 static QString
 nextBackup(const QString & filePath)
 {
-    QRegExp rx(QString::fromUtf8("\\.~(\\d+)~$"));
-    int pos = rx.lastIndexIn(filePath);
-    if (pos >= 0) {
-        int i = rx.cap(1).toInt();
-        return filePath.left(pos) + QString::fromUtf8(".~%1~").arg(i+1);
+    QRegularExpression rx( QString::fromUtf8("\\.~(\\d+)~$") );
+    QRegularExpressionMatch match = rx.match(filePath);
+    if ( match.hasMatch() ) {
+        int i = match.captured(1).toInt();
+        return filePath.left( match.capturedStart() ) + QString::fromUtf8(".~%1~").arg(i+1);
     } else {
         return filePath + QString::fromUtf8(".~1~");
     }
@@ -756,7 +778,7 @@ Project::onAutoSaveTimerTriggered()
     if (canAutoSave) {
         std::shared_ptr<QFutureWatcher<void> > watcher = std::make_shared<QFutureWatcher<void> >();
         QObject::connect( watcher.get(), SIGNAL(finished()), this, SLOT(onAutoSaveFutureFinished()) );
-        watcher->setFuture( QtConcurrent::run(this, &Project::autoSave) );
+        watcher->setFuture( QtConcurrent::run(&Project::autoSave, this) );
         _imp->autoSaveFutures.push_back(watcher);
     } else {
         ///If the auto-save failed because a render is in progress, try every 2 seconds to auto-save.

@@ -33,6 +33,10 @@
 
 #include <dlfcn.h>
 
+#include "Engine/AppManager.h"
+#include "Engine/OSGLContext.h"
+#include "Global/GLIncludes.h"
+
 extern "C"
 {
 #include <X11/Xlib.h>
@@ -40,10 +44,6 @@ extern "C"
 #include <X11/Xmd.h>
 #include <X11/Xresource.h>
 }
-
-#include "Engine/AppManager.h"
-#include "Engine/OSGLContext.h"
-#include "Global/GLIncludes.h"
 
 #define GLX_VENDOR 1
 #define GLX_RGBA_BIT 0x00000001
@@ -428,7 +428,12 @@ getFBConfigAttrib(const OSGLContext_glx_data* glxInfo,
                   const GLXFBConfig& fbconfig,
                   int attrib)
 {
-    int value;
+    // Same out-parameter hazard as chooseFBConfig() below: glXGetFBConfigAttrib()
+    // returns a non-zero error code (GLX_BAD_ATTRIBUTE / GLX_BAD_VISUAL) and
+    // leaves *value untouched when the attribute is not supported, so an
+    // uninitialized `value` is an indeterminate read that then feeds the
+    // config-scoring in OSGLContext::chooseFBConfig().
+    int value = 0;
 
     glxInfo->_imp->GetFBConfigAttrib(glxInfo->_imp->x11.display, fbconfig, attrib, &value);
 
@@ -451,15 +456,45 @@ chooseFBConfig(const OSGLContext_glx_data* glxInfo,
     //       (VirtualBox GL) not setting the window bit on any GLXFBConfigs
     const char* vendor = glxInfo->_imp->GetClientString(glxInfo->_imp->x11.display, GLX_VENDOR);
 
-    if (strcmp(vendor, "Chromium") == 0) {
+    if (vendor && strcmp(vendor, "Chromium") == 0) {
         trustWindowBit = false;
     }
 
-    int nativeCount;
+    // nativeCount MUST be initialized: glXGetFBConfigs() returns NULL without
+    // touching its *nelements out-parameter when the screen exposes no GLX
+    // framebuffer configs at all (e.g. Xvfb with no GLX RGB visual, which is
+    // what CI runs under). Left uninitialized, the checks below read stack
+    // garbage: `!nativeCount` is then almost always false, so we fall through
+    // to `std::vector<FramebufferConfig> usableConfigs(nativeCount)` with a
+    // garbage element count (values in the 2.7e8 - 1.1e9 range were observed,
+    // i.e. 17-70 GB at sizeof(FramebufferConfig) == 64). That either throws
+    // std::bad_alloc, or -- when the value happens to land under the kernel's
+    // overcommit threshold -- actually succeeds and value-initializes several
+    // GB of memory, which gets the process OOM-killed (SIGKILL) or, if it
+    // survives that, segfaults immediately after on `nativeConfigs[i]` with
+    // nativeConfigs == NULL. Hence also the explicit NULL check.
+    int nativeCount = 0;
     GLXFBConfig* nativeConfigs = glxInfo->_imp->GetFBConfigs(glxInfo->_imp->x11.display, glxInfo->_imp->x11.screen, &nativeCount);
-    if (!nativeCount) {
+    if (!nativeConfigs || (nativeCount <= 0)) {
+        if (nativeConfigs) {
+            XFree(nativeConfigs);
+        }
         throw std::runtime_error("GLX: No GLXFBConfigs returned");
     }
+
+    // glXGetFBConfigs() transfers ownership of the returned array to the
+    // caller, which must release it with XFree(). Everything below this point
+    // can throw -- the usableConfigs allocation (std::bad_alloc) and
+    // OSGLContext::chooseFBConfig() (std::logic_error, thrown whenever
+    // usableCount ends up 0, i.e. whenever the screen exposes FBConfigs but
+    // none of them are RGBA window configs) -- so the free must be
+    // scope-bound. A bare XFree() at the end of the function leaks on both of
+    // those paths.
+    struct NativeConfigsDeleter
+    {
+        GLXFBConfig* p;
+        ~NativeConfigsDeleter() { XFree(p); }
+    } nativeConfigsDeleter{nativeConfigs};
 
     std::vector<FramebufferConfig> usableConfigs(nativeCount);
     int usableCount = 0;
@@ -516,8 +551,6 @@ chooseFBConfig(const OSGLContext_glx_data* glxInfo,
 
     const FramebufferConfig& closest = OSGLContext::chooseFBConfig(desired, usableConfigs, usableCount);
     *result = (GLXFBConfig) closest.handle;
-
-    XFree(nativeConfigs);
 } // chooseFBConfig
 
 // Returns the Visual and depth of the chosen GLXFBConfig
@@ -923,7 +956,11 @@ OSGLContext_x11::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
         // Just use the first screen
         const int screen = 0;
         // The function QueryRendererIntegerMESA can return at most 3 values:  https://www.opengl.org/registry/specs/MESA/glx_query_renderer.txt
-        unsigned int v[3];
+        // glXQueryRendererIntegerMESA() leaves this buffer untouched when it
+        // fails; the assert()s below are compiled out (this build defines
+        // NDEBUG), so v[0] would otherwise be read indeterminately into
+        // info.maxMemBytes.
+        unsigned int v[3] = {0, 0, 0};
         int renderer = 0;
         bool gotRenderer;
         do {

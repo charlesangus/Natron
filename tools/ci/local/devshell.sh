@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Start -- or exec into, if already running -- a long-lived dev container
-# built from natron-dev:2027.0 (see tools/ci/local/Dockerfile). The whole
+# built from natron-dev:2027-clang21.1 (see tools/ci/local/Dockerfile). The
 # point of this script is that container start cost (pulling/creating the
 # container, warming caches) is paid once, not on every build/test
 # invocation, so this always reuses one running container per repo
@@ -33,7 +33,7 @@
 
 set -euo pipefail
 
-IMAGE="natron-dev:2027.0"
+IMAGE="natron-dev:2027-clang21.1"
 CONTAINER_NAME="${NATRON_DEV_CONTAINER:-natron-dev}"
 CCACHE_VOLUME="${CONTAINER_NAME}-ccache"
 HOME_VOLUME="${CONTAINER_NAME}-home"
@@ -62,6 +62,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." >/dev/null 2>&1 && pwd)"
 
 UID_GID="$(id -u):$(id -g)"
+
+# GPU device passthrough, for direct (hardware) OpenGL rendering inside the
+# container. Without this, GL apps are stuck negotiating indirect GLX over
+# the forwarded X11 socket, which is unreliable-to-broken on modern
+# Xorg/Mesa+DRI3 setups (confirmed: BadValue on GLXCreateNewContext against
+# a real X server here) regardless of any client-side env var -- so this is
+# not optional for running Natron's GUI locally, only for headless
+# build/test use, which is why it's skipped when no GPU is present.
+# /dev/dri only exists on hosts exposing a GPU via DRI (Mesa: Intel/AMD;
+# NVIDIA needs nvidia-container-toolkit's --gpus instead, out of scope here).
+DRI_DOCKER_ARGS=()
+if [[ -e /dev/dri ]]; then
+    DRI_DOCKER_ARGS+=(--device=/dev/dri)
+    # The render/video device nodes are group-owned on the host; add those
+    # GIDs as supplementary groups so the unprivileged --user below can
+    # actually open them. Numeric GIDs pass straight into the container --
+    # no matching /etc/group entry is needed there.
+    for DRI_GROUP_NAME in render video; do
+        if DRI_GROUP_GID="$(getent group "${DRI_GROUP_NAME}" | cut -d: -f3)" && [[ -n "${DRI_GROUP_GID}" ]]; then
+            DRI_DOCKER_ARGS+=(--group-add "${DRI_GROUP_GID}")
+        fi
+    done
+fi
 
 # --- optional forced recreate -----------------------------------------------
 if [[ "${1:-}" == "--recreate" ]]; then
@@ -118,17 +141,20 @@ if [[ "${STATE}" == "missing" ]]; then
         --user "${UID_GID}" \
         --cap-add=SYS_PTRACE \
         --security-opt seccomp=unconfined \
+        "${DRI_DOCKER_ARGS[@]+"${DRI_DOCKER_ARGS[@]}"}" \
         -v "${REPO_ROOT}:${REPO_ROOT}" \
         -v "${CCACHE_VOLUME}:${CCACHE_MOUNT}" \
         -v "${HOME_VOLUME}:${HOME_MOUNT}" \
+        -v /tmp/.X11-unix:/tmp/.X11-unix \
         -w "${REPO_ROOT}" \
         -e CI=True \
         -e NATRON_IN_CONTAINER=1 \
-        -e PYTHON_VERSION=3.10 \
+        -e PYTHON_VERSION=3.13 \
         -e OCIO_CONFIG_VERSION=2.5 \
         -e HOME="${HOME_MOUNT}" \
         -e CCACHE_DIR="${CCACHE_MOUNT}" \
         -e CCACHE_MAXSIZE="${CCACHE_MAXSIZE}" \
+        -e DISPLAY \
         "${IMAGE}" \
         sleep infinity >/dev/null
 

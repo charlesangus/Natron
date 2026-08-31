@@ -32,6 +32,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPalette>
+#include <QFile>
 #include <QFrame>
 #include <QUndoStack>
 #include <QUndoCommand>

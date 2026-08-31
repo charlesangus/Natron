@@ -147,7 +147,7 @@ AnimatingTextEdit::setDirty(bool b)
 }
 
 void
-AnimatingTextEdit::enterEvent(QtCompat::QEnterEvent* e)
+AnimatingTextEdit::enterEvent(QEnterEvent* e)
 {
     _dnd->mouseEnter(e);
     QTextEdit::enterEvent(e);
@@ -270,7 +270,7 @@ KnobLineEdit::~KnobLineEdit()
 }
 
 void
-KnobLineEdit::enterEvent(QtCompat::QEnterEvent* e)
+KnobLineEdit::enterEvent(QEnterEvent* e)
 {
     _dnd->mouseEnter(e);
     LineEdit::enterEvent(e);
@@ -1354,7 +1354,7 @@ KnobGuiString::updateToolTip()
                 tt += tr("This text area supports html encoding. "
                          "Please check <a href=http://qt-project.org/doc/qt-5/richtext-html-subset.html>Qt website</a> for more info.");
             }
-            QKeySequence seq(Qt::CTRL + Qt::Key_Return);
+            QKeySequence seq(Qt::CTRL | Qt::Key_Return);
             tt += tr("Use %1 to validate changes made to the text.").arg( seq.toString(QKeySequence::NativeText) );
             _textEdit->setToolTip(tt);
         } else if (_lineEdit) {

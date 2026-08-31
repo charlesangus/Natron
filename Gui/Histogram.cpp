@@ -32,7 +32,6 @@
 #include <QVBoxLayout>
 #include <QCheckBox>
 #include <QSplitter>
-#include <QDesktopWidget>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
 #include <QMouseEvent>
@@ -1266,7 +1265,7 @@ Histogram::mousePressEvent(QMouseEvent* e)
         _imp->state = eEventStateDraggingView;
         _imp->oldClick = e->pos();
     } else if ( buttonDownIsRight(e) ) {
-        _imp->showMenu( e->globalPos() );
+        _imp->showMenu( e->globalPosition().toPoint() );
     } else if ( ( (e->buttons() & Qt::MiddleButton) &&
                   ( ( buttonMetaAlt(e) == Qt::AltModifier) || (e->buttons() & Qt::LeftButton) ) ) ||
                 ( (e->buttons() & Qt::LeftButton) &&
@@ -1285,7 +1284,7 @@ Histogram::mouseMoveEvent(QMouseEvent* e)
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
-    QPointF newClick_opengl = _imp->zoomCtx.toZoomCoordinates( e->x(), e->y() );
+    QPointF newClick_opengl = _imp->zoomCtx.toZoomCoordinates( e->position().x(), e->position().y() );
     QPointF oldClick_opengl = _imp->zoomCtx.toZoomCoordinates( _imp->oldClick.x(), _imp->oldClick.y() );
 
 
@@ -1302,12 +1301,12 @@ Histogram::mouseMoveEvent(QMouseEvent* e)
         computeHistogramAndRefresh();
         break;
     case eEventStateZoomingView: {
-        int delta = 2 * ( ( e->x() - _imp->oldClick.x() ) - ( e->y() - _imp->oldClick.y() ) );
+        int delta = 2 * ( ( e->position().x() - _imp->oldClick.x() ) - ( e->position().y() - _imp->oldClick.y() ) );
         const double zoomFactor_min = 0.000001;
         const double zoomFactor_max = 1000000.;
         double zoomFactor;
         double scaleFactor = std::pow( NATRON_WHEEL_ZOOM_PER_DELTA, delta); // no need to use ipow() here, because the result is not cast to int
-        QPointF zoomCenter = _imp->zoomCtx.toZoomCoordinates( e->x(), e->y() );
+        QPointF zoomCenter = _imp->zoomCtx.toZoomCoordinates( e->position().x(), e->position().y() );
 
 
         // Wheel: zoom values and time, keep point under mouse
@@ -1483,7 +1482,7 @@ Histogram::keyReleaseEvent(QKeyEvent* e)
 }
 
 void
-Histogram::enterEvent(QtCompat::QEnterEvent* e)
+Histogram::enterEvent(QEnterEvent* e)
 {
     enterEventBase();
     QOpenGLWidget::enterEvent(e);

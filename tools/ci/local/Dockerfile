@@ -8,12 +8,22 @@
 #
 # This file currently adds no layers on top of the base image -- everything
 # ci.yml's package-install step needs (bar one documented exception below) is
-# already present in aswf/ci-baseqt:2027.0. It is kept as a file (rather than
-# building the image straight from `docker pull`) so that:
+# already present in aswf/ci-vfxall:2027-clang21.1. It is kept as a file
+# (rather than building the image straight from `docker pull`) so that:
 #   (a) the drift-check comment block below has somewhere to live, and
 #   (b) future local-only layers (additional tools, env setup, etc.) have an
 #       obvious, already-wired seam to land in instead of a fresh file.
-FROM aswf/ci-baseqt:2027.0
+#
+# Why ci-vfxall and not ci-baseqt (which this used through M7): ci-baseqt
+# ships Qt/PySide and the base libraries but no OpenColorIO, OpenImageIO, or
+# OpenFX, which M3's OCIO work and M11's plugin integration test both need.
+# ci-vfxall is the same ci-common:7-clang21 base with builds of every ASWF
+# package deployed into /usr/local instead of just the Qt/PySide subset. The
+# RPM layer is therefore byte-identical between the two images (both are
+# FROM ci-common:7-clang21 and neither adds distro packages of its own), and
+# every Conan package version is shared, because both read the same "2027"
+# package_versions block in aswf-docker's versions.yaml.
+FROM aswf/ci-vfxall:2027-clang21.1
 
 # --- CI package list, for drift-checking against ci.yml -------------------
 #
@@ -28,14 +38,16 @@ FROM aswf/ci-baseqt:2027.0
 #
 # ci.yml's "Install Linux system packages" step currently installs (union of
 # the two branches that carry slightly different lists -- RB-2.6 includes
-# wayland-devel, ci-smoke-test-m2p3t1a does not; the aswf/ci-baseqt base
-# image already satisfies both variants, see below):
+# wayland-devel, ci-smoke-test-m2p3t1a does not; the aswf base image
+# already satisfies both variants, see below):
 #
 #   dnf install -y cairo-devel epel-release wayland-devel wget unzip \
 #                   clang xorg-x11-server-Xvfb
 #   dnf install -y extra-cmake-modules
 #
-# Status of each against this base image (aswf/ci-baseqt:2027.0):
+# Status of each against this base image (aswf/ci-vfxall:2027-clang21.1).
+# Every RPM below comes from the shared ci-common:7-clang21 layer, so these
+# statuses carried over unchanged from ci-baseqt:2027.0:
 #   cairo-devel              -- already installed as an RPM.
 #   epel-release             -- not needed here: its only purpose in ci.yml
 #                                is to make extra-cmake-modules resolvable
@@ -63,8 +75,8 @@ FROM aswf/ci-baseqt:2027.0
 # ci.yml installs extra-cmake-modules (ECM) via `dnf install`. This image
 # does not provide it, and we are deliberately not building it from source
 # here: this environment has no reachable distro package repository (see
-# above), and the project decided to use the aswf/ci-baseqt image as-is
-# rather than carry a from-source build of one package. A from-source build
+# above), and the project decided to use the stock aswf image as-is rather
+# than carry a from-source build of one package. A from-source build
 # of ECM v5.116.0 was prototyped and confirmed to work (see below) before
 # this decision was made to cut it.
 #

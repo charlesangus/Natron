@@ -43,6 +43,10 @@
 #include "Gui/ComboBox.h"
 #include "Gui/SpinBox.h"
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)
+using namespace Qt::Literals::StringLiterals;
+#endif
+
 NATRON_NAMESPACE_ENTER
 
 //////////////TableItem
@@ -925,8 +929,7 @@ ExpandingLineEdit::updateMinimumWidth()
     QStyleOptionFrame opt;
     initStyleOption(&opt);
 
-    int minWidth = style()->sizeFromContents(QStyle::CT_LineEdit, &opt, QSize(width, 0).
-                                             expandedTo( QApplication::globalStrut() ), this).width();
+    int minWidth = style()->sizeFromContents(QStyle::CT_LineEdit, &opt, QSize(width, sizeHint().height()), this).width();
     setMinimumWidth(minWidth);
 }
 
@@ -959,14 +962,14 @@ TableItemEditorFactory::createEditor(int userType,
                                      QWidget *parent) const
 {
     switch (userType) {
-    case QVariant::UInt: {
+    case QMetaType::UInt: {
         SpinBox *sb = new SpinBox(parent, SpinBox::eSpinBoxTypeInt);
         sb->setFrame(false);
         sb->setMaximum(std::numeric_limits<int>::max());
 
         return sb;
     }
-    case QVariant::Int: {
+    case QMetaType::Int: {
         SpinBox *sb = new SpinBox(parent, SpinBox::eSpinBoxTypeInt);
         sb->setFrame(false);
         sb->setMinimum(std::numeric_limits<int>::min());
@@ -974,10 +977,10 @@ TableItemEditorFactory::createEditor(int userType,
 
         return sb;
     }
-    case QVariant::Pixmap:
+    case QMetaType::QPixmap:
 
         return new Label(parent);
-    case QVariant::Double: {
+    case QMetaType::Double: {
         SpinBox *sb = new SpinBox(parent, SpinBox::eSpinBoxTypeDouble);
         sb->setFrame(false);
         sb->setMinimum(std::numeric_limits<double>::lowest());
@@ -985,7 +988,7 @@ TableItemEditorFactory::createEditor(int userType,
 
         return sb;
     }
-    case QVariant::String:
+    case QMetaType::QString:
     default: {
         // the default editor is a lineedit
         ExpandingLineEdit *le = new ExpandingLineEdit(parent);
@@ -1005,6 +1008,18 @@ QByteArray
 TableItemEditorFactory::valuePropertyName(int userType) const
 {
     switch (userType) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)
+    case QMetaType::UInt:
+    case QMetaType::Int:
+    case QMetaType::Double:
+
+        return "value"_ba;
+    case QMetaType::QString:
+    default:
+
+        // the default editor is a lineedit
+        return "text"_ba;
+#else
     case QVariant::UInt:
     case QVariant::Int:
     case QVariant::Double:
@@ -1013,8 +1028,8 @@ TableItemEditorFactory::valuePropertyName(int userType) const
     case QVariant::String:
     default:
 
-        // the default editor is a lineedit
         return "text";
+#endif
     }
 }
 
@@ -1394,7 +1409,7 @@ TableView::dropEvent(QDropEvent* e)
     case QAbstractItemView::BelowItem:
         break;
     }
-    TableItem* into = itemAt( e->pos() );
+    TableItem* into = itemAt( e->position().toPoint() );
 
     if ( !into || _imp->draggedItems.empty() ) {
         return;

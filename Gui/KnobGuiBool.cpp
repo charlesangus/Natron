@@ -113,7 +113,7 @@ Bool_CheckBox::getBackgroundColor(double *r,
 }
 
 void
-Bool_CheckBox::enterEvent(QtCompat::QEnterEvent* e)
+Bool_CheckBox::enterEvent(QEnterEvent* e)
 {
     _dnd->mouseEnter(e);
     AnimatedCheckBox::enterEvent(e);

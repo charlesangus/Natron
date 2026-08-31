@@ -4097,7 +4097,7 @@ EffectInstance::attachOpenGLContext_public(const OSGLContextPtr& glContext,
 {
     NON_RECURSIVE_ACTION();
     bool concurrentGLRender = supportsConcurrentOpenGLRenders();
-    std::unique_ptr<QMutexLocker> locker;
+    std::unique_ptr<QMutexLocker<QRecursiveMutex>> locker;
     if (concurrentGLRender) {
         locker.reset( new QMutexLocker(&_imp->attachedContextsMutex) );
     } else {
@@ -4131,7 +4131,7 @@ EffectInstance::attachOpenGLContext_public(const OSGLContextPtr& glContext,
 void
 EffectInstance::dettachAllOpenGLContexts()
 {
-    QMutexLocker locker(&_imp->attachedContextsMutex);
+    QMutexLocker<QRecursiveMutex> locker(&_imp->attachedContextsMutex);
 
     for (EffectInstance::OpenGLContextEffectsMap::iterator it = _imp->attachedContexts.begin(); it != _imp->attachedContexts.end(); ++it) {
         OSGLContextPtr context = it->first.lock();
@@ -4158,7 +4158,7 @@ EffectInstance::dettachOpenGLContext_public(const OSGLContextPtr& glContext, con
 {
     NON_RECURSIVE_ACTION();
     bool concurrentGLRender = supportsConcurrentOpenGLRenders();
-    std::unique_ptr<QMutexLocker> locker;
+    std::unique_ptr<QMutexLocker<QRecursiveMutex>> locker;
     if (concurrentGLRender) {
         locker.reset( new QMutexLocker(&_imp->attachedContextsMutex) );
     }

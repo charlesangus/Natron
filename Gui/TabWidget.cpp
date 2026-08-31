@@ -1330,7 +1330,7 @@ TabWidget::paintEvent(QPaintEvent* e)
         QString text = tr("(Viewer Pane)");
         QFontMetrics fm(f);
         QPointF pos(width() / 2., height() / 2.);
-        pos.rx() -= (fm.width(text) / 2.);
+        pos.rx() -= (fm.horizontalAdvance(text) / 2.);
         pos.ry() -= (fm.height() / 2.);
         p.drawText(pos, text);
     }
@@ -1457,7 +1457,7 @@ TabBar::mouseMoveEvent(QMouseEvent* e)
     }
 
     if ( _tabWidget->getGui()->isDraggingPanel() ) {
-        const QPoint & globalPos = e->globalPos();
+        QPoint globalPos(e->globalPosition().toPoint());
         QWidget* widgetUnderMouse = qApp->widgetAt(globalPos);
         if (widgetUnderMouse) {
             TabWidget* topLvlTabWidget = findTabWidgetRecursive(widgetUnderMouse);
@@ -1502,7 +1502,7 @@ TabBar::mouseMoveEvent(QMouseEvent* e)
         _tabWidget->startDragTab(selectedTabIndex);
 
         _dragPix = new DragPixmap( pixmap, e->pos() );
-        _dragPix->update( e->globalPos() );
+        _dragPix->update( e->globalPosition().toPoint() );
         _dragPix->show();
         grabMouse();
     }
@@ -1573,7 +1573,7 @@ TabBar::mouseReleaseEvent(QMouseEvent* e)
 
     if ( _tabWidget->getGui()->isDraggingPanel() ) {
         releaseMouse();
-        const QPoint & p = e->globalPos();
+        QPoint p(e->globalPosition().toPoint());
         hasClosedTabWidget = _tabWidget->stopDragTab(p);
         _dragPix->hide();
         delete _dragPix;
@@ -2046,7 +2046,7 @@ TabWidget::mouseMoveEvent(QMouseEvent* e)
 {
     if (!_imp->tabBarVisible) {
         QSize size = _imp->header->sizeHint();
-        if ( e->y() <= (size.height() * 1.2) ) {
+        if ( e->position().y() <= (size.height() * 1.2) ) {
             if ( !_imp->header->isVisible() ) {
                 _imp->header->setVisible(true);
             }
@@ -2057,7 +2057,7 @@ TabWidget::mouseMoveEvent(QMouseEvent* e)
         }
     }
     if ( _imp->gui && _imp->gui->isLeftToolBarDisplayedOnMouseHoverOnly() ) {
-        _imp->gui->refreshLeftToolBarVisibility( e->globalPos() );
+        _imp->gui->refreshLeftToolBarVisibility( e->globalPosition().toPoint() );
     }
     QFrame::mouseMoveEvent(e);
 }
@@ -2070,7 +2070,7 @@ TabWidget::leaveEvent(QEvent* e)
 }
 
 void
-TabWidget::enterEvent(QtCompat::QEnterEvent* e)
+TabWidget::enterEvent(QEnterEvent* e)
 {
     if (_imp->gui) {
         _imp->gui->setLastEnteredTabWidget(this);

@@ -32,6 +32,7 @@ include(GNUInstallDirs)
 
 option(NATRON_SYSTEM_LIBS "use system versions of dependencies instead of bundled ones" OFF)
 option(NATRON_BUILD_TESTS "build the Natron test suite" ON)
+option(NATRON_ENABLE_WAYLAND "search for and enable Wayland windowing support (experimental, currently untested/broken)" OFF)
 
 set(IS_DEBUG_BUILD OFF)
 if(CMAKE_BUILD_TYPE MATCHES "^(debug|Debug|DEBUG)$")
@@ -72,6 +73,15 @@ find_package(Shiboken6Tools 6.8 CONFIG REQUIRED COMPONENTS shiboken6)
 find_package(PySide6 6.8 CONFIG REQUIRED COMPONENTS pyside6)
 set(QT_VERSION_MAJOR 6)
 set(PYSIDE_VERSION_MAJOR 6)
+
+# The ASWF image's HarfBuzz config exports harfbuzz::harfbuzz but no package
+# version file, so requesting a version rejects an otherwise usable config.
+# Found here (rather than in Engine/CMakeLists.txt, where it is consumed) so
+# the imported target is visible in every directory that links NatronEngine:
+# find_package() imported targets are scoped to the directory that finds
+# them (and its subdirectories), and Renderer/Gui/Tests/App are siblings of
+# Engine, not descendants of it.
+find_package(harfbuzz CONFIG REQUIRED)
 
 get_target_property(PYSIDE_INCLUDE_DIRS PySide6::pyside6 INTERFACE_INCLUDE_DIRECTORIES)
 set(QTCORE_INCLUDE_DIRS ${Qt6Core_INCLUDE_DIRS})
@@ -115,7 +125,9 @@ if(UNIX AND NOT APPLE)
     find_package(ECM NO_MODULE)
     set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH} ${CMAKE_MODULE_PATH})
     find_package(X11 REQUIRED)
-    find_package(Wayland COMPONENTS Client Egl)
+    if(NATRON_ENABLE_WAYLAND)
+        find_package(Wayland COMPONENTS Client Egl)
+    endif()
 elseif(APPLE)
     enable_language(OBJCXX)
 elseif(WIN32)

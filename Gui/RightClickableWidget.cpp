@@ -48,7 +48,7 @@ void
 RightClickableWidget::mousePressEvent(QMouseEvent* e)
 {
     if ( buttonDownIsRight(e) ) {
-        QWidget* underMouse = qApp->widgetAt( e->globalPos() );
+        QWidget* underMouse = qApp->widgetAt( e->globalPosition().toPoint() );
         if (underMouse == this) {
             Q_EMIT rightClicked( e->pos() );
             e->accept();
@@ -68,7 +68,7 @@ RightClickableWidget::keyPressEvent(QKeyEvent* e)
 }
 
 void
-RightClickableWidget::enterEvent(QtCompat::QEnterEvent* e)
+RightClickableWidget::enterEvent(QEnterEvent* e)
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );

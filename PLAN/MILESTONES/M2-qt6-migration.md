@@ -348,6 +348,61 @@ milestone than went in.
     property setters) runs without conversion errors.
   - size: L
 
+- [ ] M2.P3.T1b — Declare the Python version the CY2027 platform actually ships
+  - files: `.github/workflows/ci.yml`, `tools/ci/local/devshell.sh`
+  - approach: *(run before `M2.P3.T1a`)* `ci.yml` sets
+    `PYTHON_VERSION: '3.10'` and names the job "Test Ubuntu Python 3.10", but
+    `aswf/ci-baseqt:2027.0` ships **Python 3.13.14** at `/usr/local` — the
+    variable is vestigial from the pre-ASWF CI and nothing consumes it
+    (`CMakeLists.txt:60` uses `find_package(Python3 ...)`, which finds 3.13
+    regardless). Set it to `3.13` to match the image, rename the job so it
+    stops advertising a version it does not run, and update the mirrored
+    `-e PYTHON_VERSION=3.10` in `devshell.sh` so local and CI keep agreeing.
+    Confirm the image's version from the image itself rather than from the
+    VFX Reference Platform document — the image is what we build against, and
+    `PLAN/DECISIONS/2026-08-29-target-vfx-cy2027.md` records CY2027 as the
+    target precisely because that is what the ASWF image line follows.
+    This task is **declaration only**; making the code work under 3.13 is
+    `M2.P3.T1c`. Keeping them separate means the rename cannot be blamed for a
+    behavioural change.
+  - verify: `grep -rn PYTHON_VERSION .github/workflows/ci.yml
+    tools/ci/local/devshell.sh` shows `3.13` in both; `tools/ci/local/devshell.sh
+    bash -lc 'echo $PYTHON_VERSION; python3 --version'` shows the two agreeing
+    after a `--recreate`; no build or test behaviour changes.
+  - size: S
+
+- [ ] M2.P3.T1c — Port embedded-Python startup off the deprecated 3.11 setters
+  - files: `Global/PythonUtils.cpp`, `Global/PythonUtils.h`,
+    `Engine/AppManager.cpp`
+  - approach: *(run before `M2.P3.T1a`; this is the leading suspect for its
+    failure)* `Global/PythonUtils.cpp` configures the embedded interpreter with
+    `Py_SetPythonHome` (line ~153) and `Py_SetProgramName` (line ~246) before
+    `Py_InitializeEx`. Both were deprecated in 3.11 and are slated for removal
+    in 3.15; they still compile against 3.13 but are the wrong API now. More
+    to the point, the surrounding logic **clears `pythonHome` when the expected
+    `lib/python*` layout is not found** (see the `not setting PYTHONHOME`
+    branch around line 133) and then never sets it at all — which is the
+    classic cause of the `Fatal Python error: Failed to import encodings
+    module` seen in this milestone's `## Decisions`. Port initialization to the
+    `PyConfig` API (`PyConfig_InitPythonConfig` / `PyConfig_SetString` /
+    `Py_InitializeFromConfig` / `PyConfig_Clear`), which is the supported way
+    to set `home`, `program_name` and `module_search_paths` from 3.8 onward,
+    and let it fall back to the interpreter's own defaults when Natron has no
+    bundled Python to point at — in the ASWF image the system interpreter at
+    `/usr/local` is the correct one, so overriding it with a nonexistent path
+    is worse than not overriding it.
+    Preserve the existing behaviour for a bundled/relocatable Natron install,
+    which is why the overrides exist; do not simply delete them. Check whether
+    `PY_VERSION_HEX` guards are warranted — this fork targets one Python, so
+    prefer an unconditional port over version-guarded branches, consistent with
+    how this milestone drops `#if QT_VERSION` guards.
+  - verify: `tools/ci/local/build.sh` compiles with no deprecation warnings for
+    `Py_SetPythonHome`/`Py_SetProgramName`; `tools/ci/local/test.sh smoke`
+    no longer reports `Failed to import encodings module` across **at least
+    five consecutive runs** (the failure is non-deterministic, so a single pass
+    proves nothing); `tools/ci/local/test.sh ctest` is no worse than before.
+  - size: L
+
 - [ ] M2.P3.T1a — Add a CI Python smoke-test step and use it to verify the enum/QFlags binding fixes
   - files: `.github/workflows/ci.yml`, a new small Python script under (e.g.)
     `tools/ci/smoke_test.py`

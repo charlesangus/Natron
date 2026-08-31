@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: null
-pm_heartbeat: 2026-08-31T20:18:00-04:00
+pm_heartbeat: 2026-08-31T20:32:00-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -36,7 +36,9 @@ future core work has solid ground to build on.
   `PLAN/DECISIONS/2026-08-29-target-vfx-cy2027.md`.
 - **Sequencing:** `M0 (fork & cut) → M1 (toolchain) → M2 (Qt6) → M7/M8 (local
   builds, branching) → M10 (clean-sheet CI/CD) → M3 (deps) → M5 (tests & P0s,
-  ongoing)`. M6 (docs) comes last, once the build is actually the thing being
+  ongoing)`.
+  **M10 shipped 2026-08-31** (PR #7, merge `c43270bc1`): `main` now requires
+  `format`, `lint-ci` and `build-and-test`, and the `ci` aggregator is gone. M6 (docs) comes last, once the build is actually the thing being
   documented. **M9 is cancelled** and no longer gates M10; the "Fetch test
   assets" step it would have deleted is now load-bearing — it builds the OFX
   plugin bundle from pinned source (see
@@ -75,7 +77,7 @@ future core work has solid ground to build on.
 | M7 | Local incremental builds | done | [M7-local-incremental-builds.md](PLAN/MILESTONES/M7-local-incremental-builds.md) |
 | M8 | Branching model and CI/CD rebuild | done | [M8-branching-and-cicd.md](PLAN/MILESTONES/M8-branching-and-cicd.md) |
 | M9 | Drop the vendored OFX plugin dependency | cancelled | [M9-drop-vendored-ofx.md](PLAN/MILESTONES/M9-drop-vendored-ofx.md) |
-| M10 | Clean-sheet CI/CD | doing | [M10-cicd-clean-sheet.md](PLAN/MILESTONES/M10-cicd-clean-sheet.md) |
+| M10 | Clean-sheet CI/CD | done | [M10-cicd-clean-sheet.md](PLAN/MILESTONES/M10-cicd-clean-sheet.md) |
 | M3 | Dependency modernization | todo | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
 | M4 | CI/CD rebuild | done | [M4-cicd-rebuild.md](PLAN/MILESTONES/M4-cicd-rebuild.md) |
 | M5 | Test & correctness baseline | todo | [M5-test-correctness-baseline.md](PLAN/MILESTONES/M5-test-correctness-baseline.md) |

@@ -134,7 +134,7 @@ jobs:
       # means the two test steps below -- which need a successful build to
       # have anything to run -- are skipped automatically; the aggregating
       # step further down accounts for that.
-      - name: Build Unix (release)
+      - name: Build (release)
         run: tools/ci/local/build.sh release --no-ccache-stats
 
       # --- test steps ------------------------------------------------------
@@ -144,7 +144,7 @@ jobs:
       # results" below is the step that turns any real failure back into a
       # red job -- without it, continue-on-error would silently swallow
       # failures.
-      - name: Run Unix Tests (release)
+      - name: Run ctest suite (release)
         id: run_ctest
         continue-on-error: true
         run: tools/ci/local/test.sh ctest release

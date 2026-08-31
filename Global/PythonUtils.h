@@ -53,12 +53,16 @@ NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
 
 /**
- * @brief Calls Py_SetPythonHome and set PYTHONPATH
+ * @brief Locates the Python installation bundled next to binPath, if any, and sets
+ * PYTHONPATH/PYTHONHOME accordingly. The home it resolves is also what initializePython3()
+ * passes to PyConfig; when there is no bundled Python, nothing is overridden and the
+ * interpreter's own defaults are used.
  **/
 void setupPythonEnv(const std::string& binPath);
 
 /**
- * @brief Must be called after setupPythonEnv(), calls Py_SetProgramName and Py_Initialize, PySys_SetArgv
+ * @brief Must be called after setupPythonEnv(), initializes the interpreter from a PyConfig
+ * and calls PySys_SetArgv
  * @returns A pointer to the main module
  **/
 PyObject* initializePython3(const std::vector<wchar_t*>& commandLineArgsWide);

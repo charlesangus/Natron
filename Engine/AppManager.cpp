@@ -2904,8 +2904,9 @@ AppManager::initPython()
     //Disable user sites as they could conflict with Natron bundled packages.
     //If this is set, Python won’t add the user site-packages directory to sys.path.
     //See https://www.python.org/dev/peps/pep-0370/
+    //The Py_NoUserSiteDirectory global that used to be bumped here as well was deprecated
+    //in Python 3.12; initializePython3() sets PyConfig::user_site_directory instead.
     qputenv("PYTHONNOUSERSITE", "1");
-    ++Py_NoUserSiteDirectory;
 
     // Set QT_API for QtPy
     // https://github.com/spyder-ide/qtpy

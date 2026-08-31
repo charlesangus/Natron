@@ -20,7 +20,7 @@
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
 // "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
-#undef Py_LIMITED_API  // Needed for Py_NoUserSiteDirectory, PyBytes_AS_STRING
+#undef Py_LIMITED_API  // Needed for PyBytes_AS_STRING
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
@@ -45,6 +45,12 @@
 
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
+
+// The root of a Python installation bundled with Natron, i.e. the directory holding
+// lib/python<VER>: resolved by setupPythonEnv(), consumed by initializePython3().
+// Empty when this install has no bundled Python, in which case the interpreter's own
+// defaults are used instead of an override pointing at nothing.
+static std::string gPythonHome;
 
 static bool fileExists(const std::string& path)
 {
@@ -71,15 +77,16 @@ void setupPythonEnv(const std::string& binPath)
     //Disable user sites as they could conflict with Natron bundled packages.
     //If this is set, Python won’t add the user site-packages directory to sys.path.
     //See https://www.python.org/dev/peps/pep-0370/
+    //The Py_NoUserSiteDirectory global that used to be bumped here as well was
+    //deprecated in Python 3.12: initializePython3() sets PyConfig::user_site_directory
+    //instead, and Py_Main() (NatronPython) reads the environment variable below.
     ProcInfo::putenv_wrapper("PYTHONNOUSERSITE", "1");
-    ++Py_NoUserSiteDirectory;
 
     //
     // set up paths, clear those that don't exist or are not valid
     //
 #ifdef __NATRON_WIN32__
-    static std::string pythonHome = binPath + "\\.."; // must use static storage
-    static const std::wstring pythonHomeW = StrUtils::utf8_to_utf16(pythonHome);
+    std::string pythonHome = binPath + "\\..";
     std::string pyPathZip = pythonHome + "\\lib\\python" NATRON_PY_VERSION_STRING_NO_DOT ".zip";
     std::string pyPath = pythonHome +  "\\lib\\python" NATRON_PY_VERSION_STRING;
     std::string pyPathDynLoad = pyPath + "\\lib-dynload";
@@ -87,13 +94,12 @@ void setupPythonEnv(const std::string& binPath)
     std::string pluginPath = binPath + "\\..\\Plugins";
 #else
 #  if defined(__NATRON_LINUX__)
-    static std::string pythonHome = binPath + "/.."; // must use static storage
+    std::string pythonHome = binPath + "/..";
 #  elif defined(__NATRON_OSX__)
-    static std::string pythonHome = binPath+ "/../Frameworks/Python.framework/Versions/" NATRON_PY_VERSION_STRING; // must use static storage
+    std::string pythonHome = binPath+ "/../Frameworks/Python.framework/Versions/" NATRON_PY_VERSION_STRING;
 #  else
 #    error "unsupported platform"
 #  endif
-    static const std::wstring pythonHomeW = StrUtils::utf8_to_utf16(pythonHome);
     std::string pyPathZip = pythonHome + "/lib/python" NATRON_PY_VERSION_STRING_NO_DOT ".zip";
     std::string pyPath = pythonHome + "/lib/python" NATRON_PY_VERSION_STRING;
     std::string pyPathDynLoad = pyPath + "/lib-dynload";
@@ -139,19 +145,30 @@ void setupPythonEnv(const std::string& binPath)
     }
 
     /////////////////////////////////////////
-    // Py_SetPythonHome
+    // Python home
     /////////////////////////////////////////
     //
-    // Must be done before Py_Initialize (see doc of Py_Initialize)
+    // Py_SetPythonHome() was deprecated in Python 3.11 and is scheduled for removal in
+    // 3.15: the home is handed to the interpreter through PyConfig::home instead, in
+    // initializePython3(), which is why it is only remembered here.
     //
-    // The argument should point to a zero-terminated character string in static storage whose contents will not change for the duration of the program’s execution
-
+    // PYTHONHOME is exported as well, for the interpreters we do not initialize
+    // ourselves: NatronPython (see PythonBin/python_main.cpp) calls this function and
+    // then hands over to Py_Main(), which used to inherit the home from the
+    // Py_SetPythonHome() call that stood here.
+    //
+    // When pythonHome is empty -- no lib/python* next to the binary, i.e. this is not a
+    // bundled/relocatable Natron install -- nothing is set at all, and the interpreter's
+    // own defaults locate the system Python, which is the right one in that case.
+    // Overriding home and program name with paths that do not exist is what produces
+    // "Fatal Python error: Failed to import encodings module".
     if ( !pythonHome.empty() ) {
 #     if defined(NATRON_CONFIG_SNAPSHOT) || defined(DEBUG)
-        printf( "Py_SetPythonHome(\"%s\")\n", pythonHome.c_str() );
+        printf( "PYTHONHOME set to %s\n", pythonHome.c_str() );
 #     endif
-        Py_SetPythonHome( const_cast<wchar_t*>( pythonHomeW.c_str() ) );
+        ProcInfo::putenv_wrapper( "PYTHONHOME", pythonHome.c_str() );
     }
+    gPythonHome = pythonHome;
 
 
     /////////////////////////////////////////
@@ -219,6 +236,19 @@ void setupPythonEnv(const std::string& binPath)
 
 } // setupPythonEnv
 
+// Abort on an unsuccessful PyStatus, the way the PyConfig examples in the Python
+// documentation do: an interpreter that cannot even be configured is not something
+// Natron can carry on without, and this is the same outcome Py_Initialize() had.
+static void
+checkPyStatus(PyStatus status,
+              PyConfig* config)
+{
+    if ( PyStatus_Exception(status) ) {
+        PyConfig_Clear(config);
+        Py_ExitStatusException(status);
+    }
+}
+
 PyObject* initializePython3(const std::vector<wchar_t*>& commandLineArgsWide)
 {
     //See https://developer.blender.org/T31507
@@ -237,38 +267,69 @@ PyObject* initializePython3(const std::vector<wchar_t*>& commandLineArgsWide)
     //Py_NoSiteFlag = 1;
 
     /////////////////////////////////////////
-    // Py_SetProgramName
+    // PyConfig
     /////////////////////////////////////////
     //
-    // Must be done before Py_Initialize (see doc of Py_Initialize)
+    // Py_SetProgramName() and Py_SetPythonHome() were deprecated in Python 3.11 and are
+    // scheduled for removal in 3.15. PyConfig is the supported way to set the program
+    // name and the home before the interpreter is initialized.
     //
+    PyConfig config;
+    PyConfig_InitPythonConfig(&config);
 
-    Py_SetProgramName(commandLineArgsWide[0]);
+    // Disable user sites as they could conflict with Natron bundled packages, see
+    // setupPythonEnv(). This replaces the deprecated Py_NoUserSiteDirectory global.
+    config.user_site_directory = 0;
+
+    // Py_Initialize() left the embedding application's C streams alone, but
+    // PyConfig_InitPythonConfig() defaults this to 1, which makes the interpreter
+    // reconfigure Natron's own stdin/stdout/stderr: unbuffered under PYTHONUNBUFFERED,
+    // and unconditionally switched to binary mode (no CRLF translation) on Windows.
+    // Natron embeds Python, it does not want to behave like the python binary here.
+    config.configure_c_stdio = 0;
+
+    if ( !gPythonHome.empty() ) {
+        // A Python installation is bundled with Natron (see setupPythonEnv()): point the
+        // interpreter at it, and keep sys.executable on the Natron binary as it always
+        // has been -- with home set, that is only cosmetic to the path computation.
+        const std::wstring pythonHomeW = StrUtils::utf8_to_utf16(gPythonHome);
+#     if defined(NATRON_CONFIG_SNAPSHOT) || defined(DEBUG)
+        printf( "PyConfig.home = \"%s\"\n", gPythonHome.c_str() );
+#     endif
+        checkPyStatus(PyConfig_SetString(&config, &config.home, pythonHomeW.c_str()), &config);
+        checkPyStatus(PyConfig_SetString(&config, &config.program_name, commandLineArgsWide[0]), &config);
+    }
+    // Otherwise neither home nor program_name is set: Python then derives prefix,
+    // exec_prefix and the module search paths from the interpreter it finds itself,
+    // which is the correct one when Natron runs against a system Python. Naming the
+    // Natron binary as the program name here instead makes Python look for
+    // lib/python<VER> next to that binary, find nothing, and die with
+    // "Fatal Python error: Failed to import encodings module".
 
     /////////////////////////////////////////
-    // Py_Initialize
+    // Py_InitializeFromConfig
     /////////////////////////////////////////
     //
-    // Initialize the Python interpreter. In an application embedding Python, this should be called before using any other Python/C API functions; with the exception of Py_SetProgramName(), Py_SetPythonHome() and Py_SetPath().
+    // Initialize the Python interpreter. In an application embedding Python, this should be called before using any other Python/C API functions.
 #if defined(NATRON_CONFIG_SNAPSHOT) || defined(DEBUG)
-    printf("Py_Initialize()\n");
+    printf("Py_InitializeFromConfig()\n");
 #endif
-    Py_Initialize();
-    // pythonHome must be const, so that the c_str() pointer is never invalidated
+    checkPyStatus(Py_InitializeFromConfig(&config), &config);
+    PyConfig_Clear(&config);
 
-    // Py_SetPath clears sys.prefix and sys.exec_prefix
-    // https://github.com/NatronGitHub/Natron/issues/696
-    PyObject *prefix = PyUnicode_FromWideChar(Py_GetPythonHome(), -1);
-    PySys_SetObject(const_cast<char*>("prefix"), prefix);
-    Py_XDECREF(prefix);
-    PyObject *exec_prefix = PyUnicode_FromWideChar(Py_GetPythonHome(), -1);
-    PySys_SetObject(const_cast<char*>("exec_prefix"), exec_prefix);
-    Py_XDECREF(exec_prefix);
+    // Note: sys.prefix and sys.exec_prefix used to be re-assigned from
+    // Py_GetPythonHome() here, to work around Py_SetPath() clearing them
+    // (https://github.com/NatronGitHub/Natron/issues/696). Py_SetPath() is never called
+    // and PyConfig computes both from home, so there is nothing left to repair.
 
     /////////////////////////////////////////
     // PySys_SetArgv
     /////////////////////////////////////////
     //
+    // Deprecated in 3.11 like the two setters above, but deliberately kept: its PyConfig
+    // replacement (PyConfig::argv) only fills sys.argv, whereas this also prepends the
+    // script's directory to sys.path, which is what makes relative module imports work
+    // for user scripts. Replacing it is a behaviour change, not an API port.
     PySys_SetArgv( commandLineArgsWide.size(), const_cast<wchar_t**>(&commandLineArgsWide[0]) ); /// relative module import
 
     PyObject* mainModule = PyImport_ImportModule("__main__"); //create main module , new ref
@@ -279,10 +340,9 @@ PyObject* initializePython3(const std::vector<wchar_t*>& commandLineArgsWide)
     //_PyEval_SetSwitchInterval(std::numeric_limits<long>::max());
 
     //See answer for http://stackoverflow.com/questions/15470367/pyeval-initthreads-in-python-3-how-when-to-call-it-the-saga-continues-ad-naus
-    // Note: on Python >= 3.7 this is already done by Py_Initialize(),
-#if PY_VERSION_HEX < 0x03070000
-    PyEval_InitThreads();
-#endif
+    // Note: the interpreter initialization above already creates the GIL; the
+    // PyEval_InitThreads() call that used to stand here was a no-op from 3.7 on,
+    // deprecated in 3.9, and is scheduled for removal.
 
     // Follow https://web.archive.org/web/20150918224620/http://wiki.blender.org/index.php/Dev:2.4/Source/Python/API/Threads
     ///All calls to the Python API should call PythonGILLocker beforehand.
@@ -297,31 +357,15 @@ PyObject* initializePython3(const std::vector<wchar_t*>& commandLineArgsWide)
         printf( "PATH is %s\n", Py_GETENV("PATH") );
         printf( "PYTHONPATH is %s\n", Py_GETENV("PYTHONPATH") );
         printf( "PYTHONHOME is %s\n", Py_GETENV("PYTHONHOME") );
-        printf( "Py_DebugFlag is %d\n", Py_DebugFlag );
-        printf( "Py_VerboseFlag is %d\n", Py_VerboseFlag );
-        printf( "Py_InteractiveFlag is %d\n", Py_InteractiveFlag );
-        printf( "Py_InspectFlag is %d\n", Py_InspectFlag );
-        printf( "Py_OptimizeFlag is %d\n", Py_OptimizeFlag );
-        printf( "Py_NoSiteFlag is %d\n", Py_NoSiteFlag );
-        printf( "Py_BytesWarningFlag is %d\n", Py_BytesWarningFlag );
-        printf( "Py_FrozenFlag is %d\n", Py_FrozenFlag );
-        printf( "Py_HashRandomizationFlag is %d\n", Py_HashRandomizationFlag );
-        printf( "Py_IsolatedFlag is %d\n", Py_IsolatedFlag );
-        printf( "Py_QuietFlag is %d\n", Py_QuietFlag );
-        printf( "Py_IgnoreEnvironmentFlag is %d\n", Py_IgnoreEnvironmentFlag );
-        printf( "Py_DontWriteBytecodeFlag is %d\n", Py_DontWriteBytecodeFlag );
-        printf( "Py_NoUserSiteDirectory is %d\n", Py_NoUserSiteDirectory );
-        printf( "Py_GetProgramName is %ls\n", Py_GetProgramName() );
-        printf( "Py_GetPrefix is %ls\n", Py_GetPrefix() );
-        printf( "Py_GetExecPrefix is %ls\n", Py_GetPrefix() );
-        printf( "Py_GetProgramFullPath is %ls\n", Py_GetProgramFullPath() );
-        printf( "Py_GetPath is %ls\n", Py_GetPath() );
-        printf( "Py_GetPythonHome is %ls\n", Py_GetPythonHome() );
 
+        // The Py_*Flag globals and the Py_GetProgramName()/Py_GetPrefix()/
+        // Py_GetProgramFullPath()/Py_GetPath()/Py_GetPythonHome() getters that used to be
+        // dumped here were deprecated in 3.12/3.13 alongside the setters this function no
+        // longer calls. Everything they reported is readable from the sys module below.
 #define DUMP_SYS(NAME) \
             do { \
                 obj = PySys_GetObject(#NAME); \
-                PySys_FormatStderr("  sys.%s = ", #NAME); \
+                PySys_FormatStdout("  sys.%s = ", #NAME); \
                 if (obj != NULL) { \
                     PySys_FormatStdout("%A", obj); \
                 } \
@@ -333,6 +377,7 @@ PyObject* initializePython3(const std::vector<wchar_t*>& commandLineArgsWide)
 
         PyObject *obj;
         DUMP_SYS(version);
+        DUMP_SYS(flags);
         DUMP_SYS(_base_executable);
         DUMP_SYS(base_prefix);
         DUMP_SYS(base_exec_prefix);
@@ -358,10 +403,16 @@ PyObject* initializePython3(const std::vector<wchar_t*>& commandLineArgsWide)
         PyErr_Clear();
 
         ///This is faster than PyRun_SimpleString since is doesn't call PyImport_AddModule("__main__")
-        std::string script("from distutils.sysconfig import get_python_lib; print('Python library is in ' + get_python_lib())");
+        // distutils was removed in Python 3.12; sysconfig's "purelib" path is what
+        // distutils.sysconfig.get_python_lib() used to report.
+        std::string script("import sysconfig; print('Python library is in ' + sysconfig.get_path('purelib'))");
         PyObject* v = PyRun_String(script.c_str(), Py_file_input, dict, 0);
         if (v) {
             Py_DECREF(v);
+        } else {
+            // Leaving the exception set here would make the next Python call Natron makes
+            // fail with an error it never raised.
+            PyErr_Print();
         }
     }
 #endif

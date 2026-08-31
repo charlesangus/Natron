@@ -608,7 +608,7 @@ milestone than went in.
     then restore. A check that cannot be made to fail does not count.
   - size: M
 
-- [ ] M2.P3.T2 — Validate the GUI end-to-end
+- [x] M2.P3.T2 — Validate the GUI end-to-end
   - files: none (manual QA pass across the running application)
   - approach: file dialogs, node graph, viewer, curve editor/dope sheet,
     roto/tracker overlays, Python console. There's no automated UI test

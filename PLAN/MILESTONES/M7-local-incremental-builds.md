@@ -20,7 +20,7 @@ one thing it exists to do.
 
 ## Phase 7.1: Stand up the container image
 
-- [ ] M7.P1.T1 — Confirm nested Docker works and pull the CI base image
+- [x] M7.P1.T1 — Confirm nested Docker works and pull the CI base image
   - files: none (environment check only; record findings in this file's
     `## Decisions`)
   - approach: this session already runs inside a sysbox container with a
@@ -184,3 +184,28 @@ a usable backtrace.
   CI omits it), and `test.sh` implements `smoke` regardless — M7.P3.T2 needs it
   even though `RB-2.6`'s CI does not yet run it. Superset is safe in both
   directions; a per-branch local environment would defeat the purpose.
+- 2026-08-30 — **Docker Hub's blob CDN is unreachable from this environment;
+  pull `aswf/ci-baseqt:2027.0` through `mirror.gcr.io` and retag.** Every
+  `docker pull aswf/ci-baseqt:2027.0` fails with `no route to host` against
+  `production.cloudfront.docker.com` — all four resolved edges (`65.8.70.12`,
+  `.25`, `.86`, `.110`) are egress-filtered here, while `registry-1.docker.io`
+  and `auth.docker.io` are reachable, so pulls authenticate and then die on the
+  first blob. `mirror.gcr.io`, `ghcr.io`, and `quay.io` all connect.
+  `docker pull mirror.gcr.io/aswf/ci-baseqt:2027.0` followed by
+  `docker tag mirror.gcr.io/aswf/ci-baseqt:2027.0 aswf/ci-baseqt:2027.0`
+  succeeds and leaves the `Dockerfile`'s `FROM` line pinned to the same tag CI
+  uses — the mirror is a transport detail, not a different image. Verified
+  identical content: digest
+  `sha256:9df58e9cc6831773bad261596a317ea6019006423ad73ed91652e1762a5a68f7`.
+- 2026-08-30 — M7.P1.T1 findings: the base image provides gcc 14.2.1
+  (Red Hat 14.2.1-13), Qt 6.8.3 with its CMake package at
+  `/usr/local/lib/cmake/Qt6`, CMake 4.3.3, and **Python 3.13.14**. Image is
+  12.5 GB on disk, leaving 116 GB free — enough for two build trees.
+- 2026-08-30 — **`ci.yml` sets `PYTHON_VERSION: '3.10'` but the image ships
+  Python 3.13.14.** The workflow is also still named "Test Ubuntu Python 3.10"
+  while running on Rocky 9. The env var appears to be vestigial from the
+  pre-ASWF CI, but the gap is worth flagging to M2: `M2.P3.T1a` is debugging a
+  PySide6/Shiboken6 binding failure, and a stale assumption about which Python
+  the bindings are built against is exactly the kind of thing that would cause
+  it. Not acted on here — M7 changes no CI behaviour — but it is the first
+  thing M2 should check once the local loop can reproduce the failure.

@@ -47,7 +47,7 @@ one thing it exists to do.
     installed as RPMs, and `clang` and `ccache` are present at
     `/usr/local/bin` (Conan-provided, so `rpm -q` does not see them). CI's
     `dnf install` line is therefore very nearly a no-op against this image.
-    The one real gap is `extra-cmake-modules`: `CMakeLists.txt:115` calls
+    The one real gap is `extra-cmake-modules`: `CMakeLists.txt:114` calls
     `find_package(ECM NO_MODULE)` to put `FindWayland.cmake` on
     `CMAKE_MODULE_PATH` for the `find_package(Wayland COMPONENTS Client Egl)`
     on line 118. Neither call is `REQUIRED`, so without ECM the build silently
@@ -251,7 +251,7 @@ a usable backtrace.
   `FROM aswf/ci-baseqt:2027.0` plus the comment block that documents what CI
   installs and how the base image satisfies each item, which is what keeps a
   `ci.yml` diff meaningful.
-  **Known divergence, recorded deliberately:** `CMakeLists.txt:115` calls
+  **Known divergence, recorded deliberately:** `CMakeLists.txt:114` calls
   `find_package(ECM NO_MODULE)` to put `FindWayland.cmake` on
   `CMAKE_MODULE_PATH` for line 118's `find_package(Wayland COMPONENTS Client
   Egl)`. Neither is `REQUIRED`, so locally the build configures with **Wayland

@@ -16,19 +16,26 @@ Follow this file top to bottom from a clean clone and you'll reach a passing
 
 - A working Docker daemon. If you are inside a container yourself, the host
   needs something like sysbox so Docker can nest.
-- Disk: the base image is ~12.5 GB, and a debug build tree is ~4.1 GB.
+- Disk: the base image is ~13.9 GB (measured), and a debug build tree is
+  ~4.1 GB.
 
 ## 1. Build the image
 
-`Dockerfile` is `FROM aswf/ci-baseqt:2027.0` -- the exact tag
+`Dockerfile` is `FROM aswf/ci-vfxall:2027-clang21.1` -- the exact tag
 `.github/workflows/ci.yml` pins -- and adds no layers, because that base
 image already ships everything CI's `dnf install` step provides. See the
 comments at the top of `Dockerfile` for the full package-by-package
-breakdown and the one documented gap (`extra-cmake-modules`, below).
+breakdown, why this is `ci-vfxall` rather than `ci-baseqt`, and the one
+documented gap (`extra-cmake-modules`, below).
 
 ```
-docker build -t natron-dev:2027.0 tools/ci/local/
+docker build -t natron-dev:2027-clang21.1 tools/ci/local/
 ```
+
+If you built the old `natron-dev:2027.0` image before this switch, the
+running container still points at it -- run
+`tools/ci/local/devshell.sh --recreate` after the build above to pick up the
+new base. The ccache and `HOME` volumes survive that.
 
 ### If the pull fails partway through
 
@@ -38,21 +45,36 @@ registry API works, so `docker pull`/`docker build` authenticates and then
 fails on the first blob. Workaround, verified to give a byte-identical image:
 
 ```
-docker pull mirror.gcr.io/aswf/ci-baseqt:2027.0
-docker tag mirror.gcr.io/aswf/ci-baseqt:2027.0 aswf/ci-baseqt:2027.0
+docker pull mirror.gcr.io/aswf/ci-vfxall:2027-clang21.1
+docker tag mirror.gcr.io/aswf/ci-vfxall:2027-clang21.1 aswf/ci-vfxall:2027-clang21.1
 ```
 
 Then re-run the `docker build` above; it will resolve `FROM` locally.
 
 ## 2. Fetch test assets (one time)
 
-Downloads the OCIO configs and OFX plugins CI also downloads on every run,
-into `build/assets/`. Idempotent -- safe to re-run, it skips anything already
-present.
+Prepares `build/assets/`: downloads the OCIO configs, and **builds** the
+openfx-io OFX plugin bundle from source at pinned SHAs. Idempotent -- a
+second run is instant, it skips anything already present and matching the
+pins.
 
 ```
 tools/ci/local/fetch-assets.sh
 ```
+
+The plugins are built rather than downloaded because the only bundle
+published upstream is an Ubuntu 22 build that cannot load on Rocky 9 (it
+needs `GLIBCXX_3.4.30`, and links OCIO 1 / OIIO 2.2 / OpenEXR 2.5). The
+`aswf/ci-vfxall` image ships OCIO, OIIO, OpenEXR, OpenFX and LibRaw, so the
+bundle is built against the container's own libraries instead. SeExpr is
+built too (ASWF ships none) and linked statically, so the resulting `IO.ofx`
+is self-contained -- nothing here or in `test.sh` needs an
+`LD_LIBRARY_PATH`. See the header of `fetch-assets.sh` for the full
+reasoning and the pinned SHAs.
+
+First run costs a few minutes of compiling; CI caches the result (see the
+"Cache test assets" step in `ci.yml`), keyed on `fetch-assets.sh`'s hash so
+that bumping a pin correctly invalidates it.
 
 ## 3. Build
 
@@ -141,7 +163,7 @@ FreeType, not the system one). The fix is to force only the correct LLVM via
 tools/ci/local/devshell.sh env LD_PRELOAD=/usr/lib64/libLLVM.so.21.1 ./build/debug/App/Natron
 ```
 
-This is a genuine image-level library mismatch (`aswf/ci-baseqt:2027.0`'s
+This is a genuine image-level library mismatch (`aswf/ci-vfxall:2027-clang21.1`'s
 Conan LLVM package vs. its system Mesa package), not something fixable from
 `devshell.sh` flags alone -- `LD_PRELOAD` here is a targeted workaround, not
 a real fix. It isn't baked into the container's default environment because
@@ -211,6 +233,9 @@ to trust locally reproduced failures. That only holds if it's kept in sync:
 - `test.sh`'s environment (`OFX_PLUGIN_PATH`, `OCIO`, running everything
   under `xvfb-run`) must stay in sync with what `ci.yml` sets for the test
   steps.
+- `fetch-assets.sh`'s pinned plugin SHAs are the test fixture. Bumping one
+  changes what `BaseTest` loads; re-run `fetch-assets.sh` (it rebuilds when
+  the stamp no longer matches) and expect CI's asset cache to miss once.
 
 If a local result disagrees with CI and you haven't touched either file
 recently, check here before assuming the local environment is broken.

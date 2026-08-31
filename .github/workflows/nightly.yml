@@ -42,7 +42,7 @@ jobs:
     name: Release build, tests, and smoke test (Linux)
     runs-on: ubuntu-latest
     container:
-      image: aswf/ci-baseqt:2027.0
+      image: aswf/ci-vfxall:2027-clang21.1
     defaults:
       run:
         shell: bash -l {0}
@@ -87,6 +87,26 @@ jobs:
           key: ccache-linux-release-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
             ccache-linux-release-${{ github.ref_name }}-
+
+      # build/assets is no longer just downloads: fetch-assets.sh now compiles
+      # the openfx-io plugin bundle from source (see that script's header for
+      # why the prebuilt one can't be used). Caching it turns the step below
+      # into a stamp check on a hit, instead of a few minutes of cmake per run.
+      #
+      # Keyed on fetch-assets.sh's own hash, which covers BOTH pinned SHAs and
+      # the build recipe -- change either and the cache correctly misses and
+      # rebuilds. Only the two output dirs are cached, not build/assets in
+      # full: plugin-src/ is 62 MB of checkouts and object files needed solely
+      # to *produce* Plugins/, and on a cache hit nothing reads it. The cached
+      # pair is ~52 MB, negligible against the 10 GB per-repo actions/cache
+      # quota that the ccache entries above actually have to live within.
+      - name: Cache test assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/assets/Plugins
+            build/assets/OpenColorIO-Configs
+          key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh

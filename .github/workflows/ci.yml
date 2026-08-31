@@ -18,14 +18,17 @@ jobs:
     name: Test Linux Python 3.13
     runs-on: ubuntu-latest
     container:
-      image: aswf/ci-baseqt:2027.0
+      image: aswf/ci-vfxall:2027-clang21.1
     defaults:
       run:
         shell: bash -l {0}
     env:
       CI: 'True'
-      # aswf/ci-baseqt:2027.0 ships ASWF_CPYTHON_VERSION=3.13.14 (verified
-      # via `docker image inspect`). Nothing in this repo actually consumes
+      # aswf/ci-vfxall:2027-clang21.1 ships ASWF_CPYTHON_VERSION=3.13.14 --
+      # the same CPython as the ci-baseqt:2027.0 image this job used to run
+      # in. Both images resolve every package version from the single "2027"
+      # package_versions block in aswf-docker's versions.yaml, so the two
+      # can never disagree on it. Nothing in this repo actually consumes
       # PYTHON_VERSION (CMakeLists.txt:60 uses find_package(Python3 ...),
       # which finds whatever Python3 is on PATH in the image regardless of
       # this var) -- it is declaration-only, kept accurate so it doesn't
@@ -128,6 +131,26 @@ jobs:
             ccache-linux-${{ github.head_ref || github.ref_name }}-
             ccache-linux-main-
 
+      # build/assets is no longer just downloads: fetch-assets.sh now compiles
+      # the openfx-io plugin bundle from source (see that script's header for
+      # why the prebuilt one can't be used). Caching it turns the step below
+      # into a stamp check on a hit, instead of a few minutes of cmake per run.
+      #
+      # Keyed on fetch-assets.sh's own hash, which covers BOTH pinned SHAs and
+      # the build recipe -- change either and the cache correctly misses and
+      # rebuilds. Only the two output dirs are cached, not build/assets in
+      # full: plugin-src/ is 62 MB of checkouts and object files needed solely
+      # to *produce* Plugins/, and on a cache hit nothing reads it. The cached
+      # pair is ~52 MB, negligible against the 10 GB per-repo actions/cache
+      # quota that the ccache entries above actually have to live within.
+      - name: Cache test assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/assets/Plugins
+            build/assets/OpenColorIO-Configs
+          key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
+
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh
 
@@ -192,8 +215,8 @@ jobs:
   # accuracy without ever breaking branch protection again.
   #
   # This job does no building -- it only evaluates the results of the
-  # real jobs above, so it deliberately does NOT run in the (12.5 GB)
-  # aswf/ci-baseqt container; runs on the bare ubuntu-latest runner.
+  # real jobs above, so it deliberately does NOT run in the 13.9 GB
+  # aswf/ci-vfxall container; runs on the bare ubuntu-latest runner.
   #
   # `if: always()` is required: a job with `needs:` is skipped by
   # default whenever a dependency doesn't succeed, and a *skipped*

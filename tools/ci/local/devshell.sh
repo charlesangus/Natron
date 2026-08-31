@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Start -- or exec into, if already running -- a long-lived dev container
-# built from natron-dev:2027.0 (see tools/ci/local/Dockerfile). The whole
+# built from natron-dev:2027-clang21.1 (see tools/ci/local/Dockerfile). The
 # point of this script is that container start cost (pulling/creating the
 # container, warming caches) is paid once, not on every build/test
 # invocation, so this always reuses one running container per repo
@@ -33,7 +33,7 @@
 
 set -euo pipefail
 
-IMAGE="natron-dev:2027.0"
+IMAGE="natron-dev:2027-clang21.1"
 CONTAINER_NAME="${NATRON_DEV_CONTAINER:-natron-dev}"
 CCACHE_VOLUME="${CONTAINER_NAME}-ccache"
 HOME_VOLUME="${CONTAINER_NAME}-home"

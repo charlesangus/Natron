@@ -22,3 +22,14 @@ Supersedes the "gates on a stable aggregator check" half of
 `2026-08-30-ci-reuses-local-scripts.md`. The other half of that decision — CI
 invoking `tools/ci/local/*.sh` so developers and CI run the same code — stands
 and is preserved by the M10 rewrite.
+
+**As landed (2026-08-31).** `main`'s required status checks are exactly
+`format`, `lint-ci`, and `build-and-test`. The list went straight from `["ci"]`
+to those three in a single API call at the moment the rewrite was pushed, so
+there was never a window in which `main` had no required check — the
+"relax now, re-arm later" sequencing originally planned proved unnecessary,
+because branch protection evaluates the checks a pull request actually
+reports rather than the workflows present on `main`. `CONTRIBUTING.md` names
+the three and repeats the renaming obligation, so it is stated where a
+contributor will meet it rather than only here.
+

@@ -117,10 +117,16 @@ governs for this repo.
 * **Branch naming:** `milestone/<id>-<slug>` for planned milestone work,
   `fix/<slug>` for everything else.
 
-* **Merging:** pull requests are squash-merged into `main`. One required
-  status check must pass before merge (its definition lives in
-  `.github/workflows/`, which is being actively reworked — check there for
-  the current check rather than trusting a name written here).
+* **Merging:** pull requests are squash-merged into `main`. Three required
+  status checks must pass before merge: `format` (clang-format on touched
+  C/C++ files), `lint-ci` (actionlint on workflows and shellcheck on CI
+  scripts), and `build-and-test` (the containerised debug build, ctest suite,
+  and Python-bindings smoke test). The first two are defined in
+  `.github/workflows/checks.yml`, the third in `.github/workflows/ci.yml`. If
+  you rename a CI job, update `main`'s required status checks in the same
+  change — a required check with no matching job leaves PRs pending forever
+  instead of failing them, which is why this fork removed its old stand-in
+  aggregator job.
 
 * **`RB-2.6` and the other `RB-*`/legacy branches** (`RB-2.3-broken`,
   `RB-2.4-VisualStudio`, `coverity_scan`, `master`, etc.) are **frozen

@@ -74,6 +74,15 @@ find_package(PySide6 6.8 CONFIG REQUIRED COMPONENTS pyside6)
 set(QT_VERSION_MAJOR 6)
 set(PYSIDE_VERSION_MAJOR 6)
 
+# The ASWF image's HarfBuzz config exports harfbuzz::harfbuzz but no package
+# version file, so requesting a version rejects an otherwise usable config.
+# Found here (rather than in Engine/CMakeLists.txt, where it is consumed) so
+# the imported target is visible in every directory that links NatronEngine:
+# find_package() imported targets are scoped to the directory that finds
+# them (and its subdirectories), and Renderer/Gui/Tests/App are siblings of
+# Engine, not descendants of it.
+find_package(harfbuzz CONFIG REQUIRED)
+
 get_target_property(PYSIDE_INCLUDE_DIRS PySide6::pyside6 INTERFACE_INCLUDE_DIRECTORIES)
 set(QTCORE_INCLUDE_DIRS ${Qt6Core_INCLUDE_DIRS})
 set(QTGUI_INCLUDE_DIRS ${Qt6Gui_INCLUDE_DIRS})

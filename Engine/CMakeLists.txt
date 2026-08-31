@@ -20,9 +20,10 @@
 include(FindPkgConfig)
 
 pkg_check_modules(Cairo REQUIRED IMPORTED_TARGET cairo fontconfig)
-# The ASWF image's HarfBuzz config exports harfbuzz::harfbuzz but no package
-# version file, so requesting a version rejects an otherwise usable config.
-find_package(harfbuzz CONFIG REQUIRED)
+# harfbuzz is found at the top-level CMakeLists.txt (see the comment there):
+# find_package() imported targets are directory-scoped, and harfbuzz::harfbuzz
+# is put on NatronEngine's PUBLIC link interface below, so every directory
+# that links NatronEngine (Renderer, Gui, Tests, App) needs it visible too.
 find_package(Freetype 2.13 REQUIRED)
 
 file(GLOB NatronEngine_HEADERS *.h)

@@ -4,7 +4,7 @@
 > This milestone's 54 commits were rebased off `main` onto
 > `milestone/m2-qt6-migration`; `.github/workflows/ci.yml` is now M8's version
 > verbatim, which strikes `M2.P3.T3` (see `## Decisions`). Remaining work:
-> `T1a` → `T1` → `T2`.
+> `T1g` → `T1a` → `T1` → `T2`.
 >
 > <details><summary>Earlier parking notes (historical)</summary>
 >
@@ -439,7 +439,13 @@ milestone than went in.
     `Tests` binary to completion rather than dying as `SEGFAULT`.
   - size: S
 
-- [x] M2.P3.T1d — Install `qtpy` so the smoke test can actually run
+- [x] ~~M2.P3.T1d — Install `qtpy` so the smoke test can actually run~~
+  - **Superseded by `M2.P3.T1g` (2026-08-31).** Landed as `91b5ab304`, then
+    reversed: installing qtpy meant adding a `pip install` the ASWF container
+    does not carry, which contradicts the standing requirement that the build
+    need only that container. The right fix was to remove the dependency, not
+    to satisfy it. See `PLAN/DECISIONS/2026-08-31-drop-qtpy.md`. Original
+    brief below, for the record.
   - files: `tools/ci/local/fetch-assets.sh` (or whichever shared script is
     the right seam — see below), possibly `tools/ci/local/Dockerfile`
   - approach: *(blocks `M2.P3.T1a`)* `tools/ci/smoke_test.py`'s first
@@ -503,6 +509,52 @@ milestone than went in.
   - verify: 10 consecutive `tools/ci/local/test.sh smoke` runs all reach
     `smoke_test.py` (they may still *fail* inside it — that is T1a's scope);
     none is killed. Report the peak RSS observed.
+  - size: M
+
+- [ ] M2.P3.T1g — Drop `qtpy`; import PySide6 directly
+  - files: `Engine/AppManager.cpp`, `tools/ci/smoke_test.py`,
+    `INSTALL_LINUX.md`, and the `M2.P3.T1d` plumbing in
+    `tools/ci/local/fetch-assets.sh`, `tools/ci/local/devshell.sh`,
+    `tools/ci/local/Dockerfile`, `.github/workflows/ci.yml`
+  - approach: *(supersedes `M2.P3.T1d`; see
+    `PLAN/DECISIONS/2026-08-31-drop-qtpy.md` for the rationale and the
+    accepted user-facing cost)* qtpy is an abstraction over PyQt4/5/PySide/
+    PySide2 adopted upstream (#687) for cross-Qt portability this fork does
+    not want — it targets one Qt and one Python, and has already deleted Qt5
+    outright. It is also absent from `aswf/ci-baseqt:2027.0`, so keeping it
+    means a `pip install` in the build, which the container-as-is
+    requirement forbids.
+    Three parts: (1) replace Natron's own startup imports at
+    `AppManager.cpp:1806-1828` — `import qtpy` / `from qtpy import QtCore`
+    and the non-background `from qtpy import QtGui` — with the PySide6
+    equivalents, keeping the existing soft-failure behaviour (log to stderr
+    + `writeToErrorLog_mt_safe`, do not abort) unless there is a reason to
+    harden it, and say so if you think there is. (2) remove
+    `qputenv("QT_API", "pyside6")` at `AppManager.cpp:2924` with its comment
+    block and the back-reference at :2985 — it exists only so qtpy resolves
+    to PySide6 and has no other reader; confirm that by grep before removing.
+    (3) revert `M2.P3.T1d`'s install plumbing in full (commit `91b5ab304`),
+    so no `pip install` runs in CI or the local loop and `QTPY_PIN`
+    disappears.
+    Then update `tools/ci/smoke_test.py`: `check_qtpy_resolves_to_pyside6()`
+    must go, but do not simply delete the coverage — it was the only runtime
+    assertion about the binding layer. Replace it with a direct PySide6
+    check that would still catch a broken bindings build (e.g. importing
+    `PySide6.QtCore` inside the embedded interpreter and exercising an enum
+    or `QFlags` value), and update the module docstring, which explains the
+    qtpy/`QT_API` relationship at length.
+    Also update `INSTALL_LINUX.md` (lines ~23, ~110, ~224). **Leave
+    `CHANGELOG.md` alone** — it records what past releases did and is not to
+    be rewritten.
+  - approach note: verified 2026-08-31 that the replacement needs nothing
+    new — the image ships PySide6 6.8.3 with `QtCore`/`QtGui`, plus
+    `shiboken6`, at `/usr/local/lib/python3.13/site-packages`.
+  - verify: `git grep -in qtpy` returns hits only in `CHANGELOG.md` and
+    `PLAN/`; `git grep -n QT_API` returns nothing outside `PLAN/`;
+    `tools/ci/local/fetch-assets.sh` does no `pip install` and a **fresh**
+    `aswf/ci-baseqt:2027.0` container (no prior qtpy install) runs
+    `tools/ci/local/test.sh smoke` reaching `smoke_test.py`; Natron's startup
+    no longer prints `Failed to import qtpy.QtCore`.
   - size: M
 
 - [ ] M2.P3.T1a — Add a CI Python smoke-test step and use it to verify the enum/QFlags binding fixes
@@ -806,3 +858,21 @@ diagnostics while still gating on test failure.
     `X11/Xlib.h` whose `Bool`/`Status` macros break the Qt includes — which
     is most of what made `M2.P1.T2h` unwinnable. Mesa's `/usr/include/EGL/`
     copy has neither problem.
+
+- 2026-08-31 — `M2.P3.T1d` was the wrong fix, and the PM briefed it wrongly.
+  The smoke test failed on a missing `qtpy`, and the task was framed as "make
+  the dependency available" without first asking whether the dependency should
+  exist. It should not: the fork targets one Qt and one Python, qtpy exists to
+  abstract over several, and it is not in the ASWF image — so satisfying it
+  required a `pip install` that contradicts the container-as-is requirement
+  recorded in `2026-08-30-sealed-package-network.md`. The user caught this;
+  `M2.P3.T1g` reverses it. **The general lesson: when a build needs something
+  the pinned container does not have, the first question is whether the
+  build should need it at all, not how to install it.**
+
+  Worth keeping from T1d's investigation, since it stays true: Natron's own
+  startup `import qtpy` (`AppManager.cpp:1806`) has been failing in CI all
+  along and failing *softly* — it logs to stderr and the error log, then
+  continues — so nothing ever went red over it. That is why the gap survived
+  this long, and it is an argument for hardening that import once it points
+  at PySide6.

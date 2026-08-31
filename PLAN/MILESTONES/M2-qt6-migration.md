@@ -4,7 +4,7 @@
 > This milestone's 54 commits were rebased off `main` onto
 > `milestone/m2-qt6-migration`; `.github/workflows/ci.yml` is now M8's version
 > verbatim, which strikes `M2.P3.T3` (see `## Decisions`). Remaining work:
-> `T1e` → `T1d` → `T1a` → `T1` → `T2`.
+> `T1d` → `T1a` → `T1` → `T2`.
 >
 > <details><summary>Earlier parking notes (historical)</summary>
 >
@@ -420,7 +420,7 @@ milestone than went in.
     proves nothing); `tools/ci/local/test.sh ctest` is no worse than before.
   - size: L
 
-- [ ] M2.P3.T1e — Guard the unchecked `getpwuid()` deref in `Engine/Project.cpp`
+- [x] M2.P3.T1e — Guard the unchecked `getpwuid()` deref in `Engine/Project.cpp`
   - files: `Engine/Project.cpp`
   - approach: *(run before `M2.P3.T1a`; it currently crashes every local smoke
     run)* `Natron::getUserName()` at line ~109 does
@@ -685,3 +685,12 @@ diagnostics while still gating on test failure.
   runs OOM-killed) — some of the "non-determinism" M7 attributed to the code
   is likely environmental, which is worth knowing before reading run-to-run
   variation as signal.
+
+- 2026-08-31 — `M2.P3.T1e` gave this milestone its first real test signal.
+  Before it, `ctest` died as `SEGFAULT`/"Subprocess killed" and reported
+  nothing; after it, the `Tests` binary runs to completion — 28 tests, 25
+  passed, 3 failed. The three failures (`BaseTest.GenerateDot`,
+  `BaseTest.SetValues`, `BaseTest.SimpleNodeConnections`) are pre-existing and
+  are **M5's** scope, not M2's, but they are now visible rather than hidden
+  behind a crash. M5 should start from this baseline rather than assuming the
+  suite was never runnable.

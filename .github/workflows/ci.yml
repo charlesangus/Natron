@@ -21,70 +21,24 @@ jobs:
       image: aswf/ci-baseqt:2027.0
     defaults:
       run:
-        shell: xvfb-run --auto-servernum bash -l {0}
+        shell: bash -l {0}
     env:
       CI: 'True'
       PYTHON_VERSION: '3.10'
       OCIO_CONFIG_VERSION: 2.5
+      NATRON_IN_CONTAINER: 1
 
     steps:
       - name: Checkout branch
         uses: actions/checkout@v4.1.1
         with:
           submodules: recursive
-      - name: Install Linux system packages
-        shell: bash
-        run: |
-          dnf install -y cairo-devel epel-release wayland-devel wget unzip clang xorg-x11-server-Xvfb
-          dnf install -y extra-cmake-modules
 
-      - name: Download OpenColorIO-Configs
-        run: |
-          wget https://github.com/NatronGitHub/OpenColorIO-Configs/archive/Natron-v${OCIO_CONFIG_VERSION}.tar.gz
-          tar xzf Natron-v${OCIO_CONFIG_VERSION}.tar.gz
-          mv OpenColorIO-Configs-Natron-v${OCIO_CONFIG_VERSION} OpenColorIO-Configs
-
-      - name: Download Plugins
-        run: |
-          mkdir Plugins && cd Plugins
-          wget https://github.com/NatronGitHub/openfx-io/releases/download/natron_testing/openfx-io-build-ubuntu_22-testing.zip
-          unzip openfx-io-build-ubuntu_22-testing.zip
-          cd ..
+      - name: Fetch test assets
+        run: tools/ci/local/fetch-assets.sh
 
       - name: Build Unix (debug)
-        run: |
-          mkdir debug && cd debug
-          cmake -DCMAKE_BUILD_TYPE=Debug ../
-          make -j2
+        run: tools/ci/local/build.sh debug
 
       - name: Run Unix Tests (debug)
-        id: run-unix-tests-debug
-        # Allow continuing after error so logs can be uploaded.
-        continue-on-error: true
-        run: |
-          cd debug
-          OFX_PLUGIN_PATH=$PWD/../Plugins OCIO=$PWD/../OpenColorIO-Configs/blender/config.ocio ctest -V
-
-      - name: Build Unix (release)
-        run: |
-          mkdir release && cd release
-          cmake ../
-          make -j2
-
-      - name: Run Unix Tests (release)
-        id: run-unix-tests-release
-        # Allow continuing after error so logs can be uploaded.
-        continue-on-error: true
-        run: |
-          cd release
-          OFX_PLUGIN_PATH=$PWD/../Plugins OCIO=$PWD/../OpenColorIO-Configs/blender/config.ocio ctest -V
-
-      - name: Upload Ubuntu Test Log artifacts
-        uses: actions/upload-artifact@v4.3.1
-        with:
-          name: Ubuntu Test Logs
-          path: ${{ github.workspace }}/release/Testing/Temporary/LastTest.log
-
-      - name: Check for test failures
-        if: steps.run-unix-tests-debug.outcome == 'failure' || steps.run-unix-tests-release.outcome == 'failure'
-        run: exit 1
+        run: tools/ci/local/test.sh ctest debug

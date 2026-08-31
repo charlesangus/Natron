@@ -79,7 +79,7 @@ Do not chase a green build here, and do not weaken the gate to manufacture one.
     host invocation still works unchanged; `CI=true` (lowercase) is handled.
   - size: M
 
-- [ ] M8.P2.T2 — Rewrite the workflow: fast PR gate calling the shared scripts
+- [x] M8.P2.T2 — Rewrite the workflow: fast PR gate calling the shared scripts
   - files: `.github/workflows/ci.yml`
   - approach: PR gate is configure + debug build + `ctest`, and nothing else.
     Steps call `tools/ci/local/build.sh` and `tools/ci/local/test.sh` instead
@@ -146,3 +146,25 @@ release/smoke run post-merge with logs uploaded on failure; and branch
 protection requires a single stable check that an inner job rename does not
 break. The build itself is still expected to fail until M2 lands — the gate is
 that the pipeline behaves correctly, not that it is green.
+
+## Decisions
+
+- 2026-08-30 — **M8 takes ownership of `.github/workflows/ci.yml`; M2's
+  `M2.P3.T1b` edit to it becomes redundant.** `M2.P3.T1b` corrected
+  `PYTHON_VERSION` to `3.13` and renamed the job, but it landed on
+  `ci-smoke-test-m2p3t1a`, and M8 branches off `main`, which does not have it.
+  Rather than leave the two to collide at merge, M8's rewrite carries the same
+  correction forward. When M2 merges, expect a conflict in this file and
+  resolve it in M8's favour for everything except the Python-bindings smoke
+  test step, which is M2's and moves to the post-merge workflow (`M8.P2.T4`).
+- 2026-08-30 — the workflow's `dnf install` step is dropped, not ported.
+  `tools/ci/local/Dockerfile`'s drift audit establishes that
+  `aswf/ci-baseqt:2027.0` already ships every package it installed, except
+  `extra-cmake-modules`, whose absence only disables Wayland support and is
+  already recorded as a known divergence in M7.
+- 2026-08-30 — `xvfb-run` moves out of the job's default shell. It was set as
+  `defaults.run.shell: xvfb-run --auto-servernum bash -l {0}`, wrapping every
+  step, while `test.sh` independently wraps its own `ctest` call the same way —
+  so the gate would have nested one Xvfb server inside another. `test.sh` is
+  now the sole owner of the wrap, and only the step that needs a display gets
+  one.

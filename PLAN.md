@@ -1,9 +1,10 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: running
+status: ready
 current: null
 pm_heartbeat: 2026-08-31T09:31:33-04:00
 ship: pr-per-milestone
+publish_decisions: docs/decisions/
 ---
 
 # Goal
@@ -33,18 +34,24 @@ future core work has solid ground to build on.
 - The dependency baseline targets the VFX Reference Platform's **CY2027
   draft** direction rather than CY2026-final — see
   `PLAN/DECISIONS/2026-08-29-target-vfx-cy2027.md`.
-- **Sequencing:** `M0 (fork & cut) → M1 (toolchain) → M2 (Qt6) / M3 (deps,
-  parallel) → M4 (CI/CD) → M5 (tests & P0s, ongoing)`. M2 and M3 run in
-  parallel on separate branches. M4 starts as soon as M1 lands, so every
-  M2/M3 PR gets gated automatically. M6 (docs) comes last, once the build is
-  actually the thing being documented.
-- **M2 is resumed and running** (2026-08-31), at `M2.P3.T1c`. It was parked
-  twice — for M7 (the local build loop, which removed the CI round-trip that
-  made `M2.P3.T1a` uneconomic) and then for M8 (which restored a merge path
-  after a job rename broke branch protection). Both have shipped. M2's work
-  was rebased off `main` onto `milestone/m2-qt6-migration`; see that
-  milestone's `## Decisions`. Board rows below are listed in execution order,
-  not ID order.
+- **Sequencing:** `M0 (fork & cut) → M1 (toolchain) → M2 (Qt6) → M7/M8 (local
+  builds, branching) → M9 (drop vendored OFX) → M10 (clean-sheet CI/CD) → M3
+  (deps) → M5 (tests & P0s, ongoing)`. M6 (docs) comes last, once the build is
+  actually the thing being documented; M11 is release-gated and comes after M5
+  defines the render fixture it needs. **M9 must precede M10** — the pipeline
+  redesign should not be built around a "Fetch test assets" step that M9
+  deletes. Board rows below are listed in execution order, not ID order.
+- **M2 is done** (2026-08-31). It was parked twice — for M7 (the local build
+  loop, which removed the CI round-trip that made `M2.P3.T1a` uneconomic) and
+  then for M8 (which restored a merge path after a job rename broke branch
+  protection). Both have shipped. Its PR is still red, but the failure is
+  inherited, not Qt6 scope: 25 of 28 ctest cases pass, and the 3 that fail are
+  all `BaseTest`, all on vendored OFX plugins — which is exactly what M9 cuts.
+  See `DECISIONS/2026-08-31-drop-vendored-ofx-from-ci.md`.
+- **The plan lives on the orphan `plan` branch**, checked out at `.plan/`
+  (PLAN-FORMAT.md §1a). Commit code first, then the plan, per §9 — plan edits
+  never ride in a code commit or a PR diff. See
+  `DECISIONS/2026-08-31-migrate-plan-worktree.md`.
 - Grounded in the `RB-2.6` tree (`CMakeLists.txt`, `INSTALL_LINUX.md`,
   `Global/Macros.h`, `tools/jenkins/`), the open PR queue on
   `NatronGitHub/Natron`, and the ASWF `aswf-docker` image catalog, as of
@@ -60,17 +67,20 @@ future core work has solid ground to build on.
 | M2 | Land the Qt6 migration | done    | [M2-qt6-migration.md](PLAN/MILESTONES/M2-qt6-migration.md) |
 | M7 | Local incremental builds | done | [M7-local-incremental-builds.md](PLAN/MILESTONES/M7-local-incremental-builds.md) |
 | M8 | Branching model and CI/CD rebuild | done | [M8-branching-and-cicd.md](PLAN/MILESTONES/M8-branching-and-cicd.md) |
+| M9 | Drop the vendored OFX plugin dependency | todo | [M9-drop-vendored-ofx.md](PLAN/MILESTONES/M9-drop-vendored-ofx.md) |
+| M10 | Clean-sheet CI/CD | todo | [M10-cicd-clean-sheet.md](PLAN/MILESTONES/M10-cicd-clean-sheet.md) |
 | M3 | Dependency modernization | todo | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
 | M4 | CI/CD rebuild | done | [M4-cicd-rebuild.md](PLAN/MILESTONES/M4-cicd-rebuild.md) |
 | M5 | Test & correctness baseline | todo | [M5-test-correctness-baseline.md](PLAN/MILESTONES/M5-test-correctness-baseline.md) |
 | M6 | Documentation pass | todo | [M6-documentation-pass.md](PLAN/MILESTONES/M6-documentation-pass.md) |
+| M11 | OFX plugin integration test (pre-release) | todo | [M11-ofx-plugin-integration-test.md](PLAN/MILESTONES/M11-ofx-plugin-integration-test.md) |
 
 # Open questions
 
-- **Which `aswf/ci-baseqt` tag is canonical — `2027.0` or `2027.1`?**
-  `.github/workflows/ci.yml` pins `2027.0`, but
-  `PLAN/DECISIONS/2026-08-29-pin-exact-aswf-tag.md` records `2027.1` as the
-  chosen tag. M7 deliberately matches `ci.yml` at `2027.0` so the local
-  environment reproduces CI exactly; bumping both is a separate change that
-  should not land while M2's smoke-test failure is still being diagnosed.
-  Decide after M2 closes.
+_None awaiting a human answer._
+
+The `aswf/ci-baseqt` tag drift (`2027.0` in the workflows vs. `2027.1` in
+`PLAN/DECISIONS/2026-08-29-pin-exact-aswf-tag.md`) was parked here pending M2.
+M2 is done and the smoke-test diagnosis that blocked it is finished, so it is
+now scheduled work rather than an open question: **M10.P3.T2** owns picking one
+tag and making every reference agree.

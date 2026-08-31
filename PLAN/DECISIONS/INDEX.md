@@ -10,3 +10,6 @@
 - 2026-08-30 — ci-reuses-local-scripts: CI invokes tools/ci/local/*.sh and gates on a stable aggregator check → DECISIONS/2026-08-30-ci-reuses-local-scripts.md
 - 2026-08-31 — defer-plan-worktree-migration: keep the plan in-repo until M2 merges, then move to `.plan/` → DECISIONS/2026-08-31-defer-plan-worktree-migration.md
 - 2026-08-31 — drop-qtpy: remove qtpy entirely; import PySide6 directly, build needs only the ASWF container → DECISIONS/2026-08-31-drop-qtpy.md
+- 2026-08-31 — migrate-plan-worktree: plan moved to the orphan `plan` branch at `.plan/`; supersedes defer-plan-worktree-migration → DECISIONS/2026-08-31-migrate-plan-worktree.md
+- 2026-08-31 — required-checks-name-real-jobs: required checks name real CI jobs; the `ci` aggregator is deleted → DECISIONS/2026-08-31-required-checks-name-real-jobs.md
+- 2026-08-31 — drop-vendored-ofx-from-ci: vendored OFX plugins leave build/test; plugin loading returns as an M11 pre-release integration test → DECISIONS/2026-08-31-drop-vendored-ofx-from-ci.md

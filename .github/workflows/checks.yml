@@ -90,3 +90,62 @@ jobs:
           printf '  %s\n' "${files[@]}"
 
           clang-format --dry-run --Werror -- "${files[@]}"
+
+  lint-ci:
+    name: lint-ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5.0.1
+
+      - name: Install shellcheck
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="0.10.0"
+          archive="shellcheck-v${version}.linux.x86_64.tar.xz"
+          sha256="6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87"
+
+          tmp="$(mktemp -d)"
+          curl -sSL -o "${tmp}/${archive}" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${version}/${archive}"
+          echo "${sha256}  ${tmp}/${archive}" | sha256sum -c -
+
+          tar xf "${tmp}/${archive}" -C "${tmp}"
+          sudo install -m 0755 "${tmp}/shellcheck-v${version}/shellcheck" /usr/local/bin/shellcheck
+          rm -rf "${tmp}"
+
+          shellcheck --version
+
+      - name: Install actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="1.7.12"
+          archive="actionlint_${version}_linux_amd64.tar.gz"
+          sha256="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+
+          tmp="$(mktemp -d)"
+          curl -sSL -o "${tmp}/${archive}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/${archive}"
+          echo "${sha256}  ${tmp}/${archive}" | sha256sum -c -
+
+          tar xf "${tmp}/${archive}" -C "${tmp}" actionlint
+          sudo install -m 0755 "${tmp}/actionlint" /usr/local/bin/actionlint
+          rm -rf "${tmp}"
+
+          actionlint -version
+
+      - name: shellcheck tools/ci/local + gen_config.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          shellcheck tools/ci/local/*.sh .github/workflows/gen_config.sh
+
+      - name: actionlint workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          actionlint .github/workflows/*.yml

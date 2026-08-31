@@ -1,0 +1,151 @@
+name: Checks
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    name: format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Install clang-format
+        run: pip install --disable-pip-version-check "clang-format==21.1.8"
+
+      - name: Check clang-format on changed files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          extensions=(c cc cpp h hpp mm)
+          pathspec=()
+          for ext in "${extensions[@]}"; do
+            pathspec+=("*.${ext}")
+          done
+
+          case "${{ github.event_name }}" in
+            pull_request)
+              base_sha="${{ github.event.pull_request.base.sha }}"
+              git fetch --no-tags --quiet origin "$base_sha"
+              if merge_base="$(git merge-base "$base_sha" HEAD 2>/dev/null)"; then
+                range="${merge_base}..HEAD"
+              else
+                # Unrelated/shallow history: fall back to a direct diff
+                # against the PR base instead of crashing or scanning the
+                # whole tree.
+                range="${base_sha}..HEAD"
+              fi
+              ;;
+            push)
+              before_sha="${{ github.event.before }}"
+              if [ -n "$before_sha" ] && [ "$before_sha" != "0000000000000000000000000000000000000000" ] \
+                 && git cat-file -e "${before_sha}^{commit}" 2>/dev/null; then
+                range="${before_sha}..${{ github.sha }}"
+              elif git rev-parse --verify --quiet "${{ github.sha }}~1" >/dev/null 2>&1; then
+                range="${{ github.sha }}~1..${{ github.sha }}"
+              else
+                # Root commit with no parent: diff against the empty tree.
+                range="$(git hash-object -t tree /dev/null)..${{ github.sha }}"
+              fi
+              ;;
+            *)
+              echo "No file diff for event '${{ github.event_name }}'; nothing to check."
+              exit 0
+              ;;
+          esac
+
+          diff_out="$(mktemp)"
+          trap 'rm -f "$diff_out"' EXIT
+          git diff --name-only -z --diff-filter=ACMR "$range" -- "${pathspec[@]}" > "$diff_out"
+          mapfile -d '' -t files < "$diff_out"
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No changed C/C++ files; nothing to check."
+            exit 0
+          fi
+
+          printf 'Checking format of %d file(s):\n' "${#files[@]}"
+          printf '  %s\n' "${files[@]}"
+
+          clang-format --dry-run --Werror -- "${files[@]}"
+
+  lint-ci:
+    name: lint-ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5.0.1
+
+      - name: Install shellcheck
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="0.10.0"
+          archive="shellcheck-v${version}.linux.x86_64.tar.xz"
+          sha256="6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87"
+
+          tmp="$(mktemp -d)"
+          curl -sSL -o "${tmp}/${archive}" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${version}/${archive}"
+          echo "${sha256}  ${tmp}/${archive}" | sha256sum -c -
+
+          tar xf "${tmp}/${archive}" -C "${tmp}"
+          sudo install -m 0755 "${tmp}/shellcheck-v${version}/shellcheck" /usr/local/bin/shellcheck
+          rm -rf "${tmp}"
+
+          shellcheck --version
+
+      - name: Install actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="1.7.12"
+          archive="actionlint_${version}_linux_amd64.tar.gz"
+          sha256="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+
+          tmp="$(mktemp -d)"
+          curl -sSL -o "${tmp}/${archive}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${version}/${archive}"
+          echo "${sha256}  ${tmp}/${archive}" | sha256sum -c -
+
+          tar xf "${tmp}/${archive}" -C "${tmp}" actionlint
+          sudo install -m 0755 "${tmp}/actionlint" /usr/local/bin/actionlint
+          rm -rf "${tmp}"
+
+          actionlint -version
+
+      - name: shellcheck tools/ci/local + gen_config.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          shellcheck tools/ci/local/*.sh .github/workflows/gen_config.sh
+
+      - name: actionlint workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          actionlint .github/workflows/*.yml

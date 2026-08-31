@@ -52,7 +52,7 @@ one thing it exists to do.
     --version && gdb --version && which Xvfb'` prints all four.
   - size: S
 
-- [ ] M7.P1.T3 — One-time fetch of OCIO configs and OFX plugins into a cached dir
+- [x] M7.P1.T3 — One-time fetch of OCIO configs and OFX plugins into a cached dir
   - files: `tools/ci/local/fetch-assets.sh`, `.gitignore`
   - approach: CI re-downloads `OpenColorIO-Configs` (v2.5) and the
     `openfx-io` testing build on every run; locally these need fetching once.

@@ -1,6 +1,6 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: running
+status: paused
 current: M2.P3.T2
 pm_heartbeat: 2026-08-31T05:52:29-04:00
 ship: pr-per-milestone
@@ -66,6 +66,15 @@ future core work has solid ground to build on.
 | M6 | Documentation pass | todo | [M6-documentation-pass.md](PLAN/MILESTONES/M6-documentation-pass.md) |
 
 # Open questions
+
+- **Force-push needed on `milestone/m2-qt6-migration`.** The branch was
+  rebased during M8 but the remote was never updated. Run
+  `git push --force-with-lease origin milestone/m2-qt6-migration` to sync
+  the remote and trigger CI on the new smoke-test step (T1a).
+- **M2.P3.T2 (GUI validation) is a manual QA pass.** Needs a human running
+  the Natron GUI on Qt6 — file dialogs, node graph, viewer, curve
+  editor/dope sheet, roto/tracker overlays, Python console. No automated UI
+  test suite exists.
 
 - **Which `aswf/ci-baseqt` tag is canonical — `2027.0` or `2027.1`?**
   `.github/workflows/ci.yml` pins `2027.0`, but

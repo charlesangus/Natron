@@ -33,6 +33,12 @@ jobs:
       PYTHON_VERSION: '3.13'
       OCIO_CONFIG_VERSION: 2.5
       NATRON_IN_CONTAINER: 1
+      # Single source for the qtpy pin fetch-assets.sh installs (M2.P3.T1d).
+      # devshell.sh's container-creation install reads the same var (see its
+      # `-e QTPY_PIN=...`); this is the one place that sets the value both
+      # paths use -- fetch-assets.sh's own fallback default exists only for
+      # the (currently theoretical) case of running it outside either path.
+      QTPY_PIN: 'qtpy>=2.0,<3'
       # --- ccache -----------------------------------------------------------
       # CCACHE_DIR: deliberately a path under the checked-out workspace, NOT
       # ccache's built-in default ($HOME/.cache/ccache -- confirmed via
@@ -128,6 +134,12 @@ jobs:
             ccache-linux-${{ github.head_ref || github.ref_name }}-
             ccache-linux-main-
 
+      # Also installs `qtpy` (pip, into system site-packages -- this job
+      # runs as root) for the smoke test's `import qtpy` -- see
+      # fetch-assets.sh's "Python test dependencies" section (M2.P3.T1d)
+      # for why that lives here rather than in a dedicated step or in
+      # tools/ci/local/Dockerfile (the latter only affects the local loop's
+      # separate natron-dev image, never this job's container).
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh
 

@@ -56,6 +56,18 @@ HOME_MOUNT="/home/devshell"
 #   CCACHE_MAXSIZE=10G tools/ci/local/devshell.sh
 CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-40G}"
 
+# qtpy pin (M2.P3.T1d). This script never runs under CI (CI's container
+# never goes through devshell.sh -- see ci.yml/README.md), so this literal
+# default is what an ordinary local invocation actually uses; it matches
+# ci.yml's own QTPY_PIN default by convention, same as PYTHON_VERSION/
+# OCIO_CONFIG_VERSION above. The value is threaded into the container below
+# (`-e QTPY_PIN=...`) so fetch-assets.sh, running inside that container,
+# installs/verifies the identical pin rather than an independently
+# maintained copy -- see fetch-assets.sh's own fallback default for the one
+# path (running outside both scripts) that still needs a hardcoded copy of
+# this string.
+QTPY_PIN="${QTPY_PIN:-qtpy>=2.0,<3}"
+
 # Resolve repo root from this script's own location, not $PWD, so this
 # works the same from any worktree.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
@@ -126,6 +138,7 @@ if [[ "${STATE}" == "missing" ]]; then
         -e NATRON_IN_CONTAINER=1 \
         -e PYTHON_VERSION=3.13 \
         -e OCIO_CONFIG_VERSION=2.5 \
+        -e QTPY_PIN="${QTPY_PIN}" \
         -e HOME="${HOME_MOUNT}" \
         -e CCACHE_DIR="${CCACHE_MOUNT}" \
         -e CCACHE_MAXSIZE="${CCACHE_MAXSIZE}" \
@@ -143,6 +156,35 @@ if [[ "${STATE}" == "missing" ]]; then
         -v "${CCACHE_VOLUME}:${CCACHE_MOUNT}" \
         "${IMAGE}" \
         sh -c "sed -i '/^max_size/d' ${CCACHE_MOUNT}/ccache.conf 2>/dev/null || true"
+
+    # One-time (per-container), root-level install of `qtpy` into system
+    # site-packages (see M2.P3.T1d). This container runs as uid 1000 (see
+    # `--user "${UID_GID}"` above), which cannot write to system
+    # site-packages (root-owned 755, verified) -- and `pip install --user`
+    # is not a usable workaround here: NatronRenderer's embedded
+    # interpreter explicitly disables user-site (see
+    # AppManager::initPython()'s PYTHONNOUSERSITE=1, there so Natron's own
+    # bundled packages can't be shadowed), so anything installed with
+    # --user would be invisible to `import qtpy` inside Natron even though
+    # it resolves fine from a bare `python3 -c ...`. `docker exec -u 0:0`
+    # overrides the container's default user for just this one exec, which
+    # is enough to install into system site-packages without changing how
+    # the container runs otherwise. This sits in the STATE=="missing"
+    # branch specifically -- not gated behind its own "is qtpy already
+    # there" check -- because that branch itself only ever runs once per
+    # container lifetime, which already gives idempotency for free: a
+    # second `devshell.sh` invocation against a still-running container
+    # skips this whole block, doing no network work.
+    #
+    # Pin comes from QTPY_PIN (set above), the single source shared with
+    # fetch-assets.sh's own qtpy install (which handles CI, where the job's
+    # container already runs as root and so never needs this escalation) --
+    # both this exec and the container's own QTPY_PIN env var (set on the
+    # `docker run` above) use the same value, so fetch-assets.sh running
+    # inside this container never has to guess it independently.
+    echo "devshell.sh: installing qtpy (root, one-time) into '${CONTAINER_NAME}'..." >&2
+    docker exec -u 0:0 "${CONTAINER_NAME}" \
+        python3 -m pip install --root-user-action=ignore "${QTPY_PIN}" >&2
 
 elif [[ "${STATE}" == "stopped" ]]; then
     echo "devshell.sh: starting existing (stopped) container '${CONTAINER_NAME}'..." >&2

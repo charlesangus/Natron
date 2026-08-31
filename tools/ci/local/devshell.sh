@@ -33,6 +33,22 @@ HOME_VOLUME="${CONTAINER_NAME}-home"
 CCACHE_MOUNT="/ccache"
 HOME_MOUNT="/home/devshell"
 
+# ccache's default max_size is 5 GiB. A cold full build of this repo alone
+# produces ~550 cacheable objects that overflow that 5 GiB ceiling well
+# before the build finishes, so ccache starts evicting entries mid-build
+# (confirmed: 193 cleanups logged by `ccache -s` on a single cold build,
+# with a resulting hit rate of 0.18%) -- i.e. it thrashes instead of
+# accumulating anything reusable. The whole point of this cache is to pay
+# off across branch switches (e.g. Qt6-migration branch <-> base branch),
+# where the same translation units get rebuilt repeatedly, so it needs
+# enough headroom to hold several full build trees at once. A full debug
+# build tree is ~4.1 GB, and the Docker filesystem has 116 GB free, so 40
+# GiB (roughly ten build trees' worth) comfortably covers realistic
+# branch-switch churn without being unbounded or eating the disk.
+# Overridable the same way NATRON_DEV_CONTAINER is, e.g. for a smaller disk:
+#   CCACHE_MAXSIZE=10G tools/ci/local/devshell.sh
+CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-40G}"
+
 # Resolve repo root from this script's own location, not $PWD, so this
 # works the same from any worktree.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
@@ -104,8 +120,21 @@ if [[ "${STATE}" == "missing" ]]; then
         -e OCIO_CONFIG_VERSION=2.5 \
         -e HOME="${HOME_MOUNT}" \
         -e CCACHE_DIR="${CCACHE_MOUNT}" \
+        -e CCACHE_MAXSIZE="${CCACHE_MAXSIZE}" \
         "${IMAGE}" \
         sleep infinity >/dev/null
+
+    # ccache persists settings it's told about (via `ccache -M`/env at time
+    # of use) into ${CCACHE_MOUNT}/ccache.conf inside the volume, and that
+    # file takes precedence over CCACHE_MAXSIZE on later runs -- so if an
+    # older ccache.conf with the old 5 GiB default is already sitting in
+    # this volume, just setting the env var above would be silently
+    # overridden by it. Clear any max_size line so our env var wins; this
+    # is idempotent and harmless if the file doesn't exist yet.
+    docker run --rm --user "${UID_GID}" \
+        -v "${CCACHE_VOLUME}:${CCACHE_MOUNT}" \
+        "${IMAGE}" \
+        sh -c "sed -i '/^max_size/d' ${CCACHE_MOUNT}/ccache.conf 2>/dev/null || true"
 
 elif [[ "${STATE}" == "stopped" ]]; then
     echo "devshell.sh: starting existing (stopped) container '${CONTAINER_NAME}'..." >&2

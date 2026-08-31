@@ -124,7 +124,7 @@ if [[ "${STATE}" == "missing" ]]; then
         -w "${REPO_ROOT}" \
         -e CI=True \
         -e NATRON_IN_CONTAINER=1 \
-        -e PYTHON_VERSION=3.10 \
+        -e PYTHON_VERSION=3.13 \
         -e OCIO_CONFIG_VERSION=2.5 \
         -e HOME="${HOME_MOUNT}" \
         -e CCACHE_DIR="${CCACHE_MOUNT}" \

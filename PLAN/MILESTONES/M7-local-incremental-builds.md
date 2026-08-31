@@ -155,7 +155,7 @@ one thing it exists to do.
     for `M2.P3.T1a` and are that milestone's cleanup, not this one's. M7 only
     has to make the local loop work well enough that they stop being needed.
 
-- [ ] M7.P3.T4 — `tools/ci/local/README.md` documenting the loop
+- [x] M7.P3.T4 — `tools/ci/local/README.md` documenting the loop
   - files: `tools/ci/local/README.md`
   - approach: short and operational — prerequisites (a Docker daemon; sysbox
     on the host if nesting), the three commands in order
@@ -309,3 +309,14 @@ a usable backtrace.
      on the `encodings` error. **M2 should start here**, and the
      non-determinism itself is a finding: it means a single green CI run would
      not have been trustworthy evidence either way.
+- 2026-08-30 — **verification gate: passed, with one qualification worth
+  stating.** `fetch-assets.sh` → `build.sh` → `test.sh ctest` runs end to end
+  with no manual steps; a one-file edit rebuilds in 13 s (gate: under a
+  minute); and `test.sh smoke --gdb` produced a usable backtrace. The
+  qualification: the two gate items that need a *working binary* were
+  necessarily demonstrated on `m7-validation`, not on this milestone's own
+  branch, because `RB-2.6` does not build under Qt6 — the very condition M2
+  exists to fix. On this branch `build.sh` still runs correctly and fails fast
+  with real compiler errors, and `test.sh smoke` reports `smoke_test.py`'s
+  absence explicitly, both of which are the intended behaviour. The tooling is
+  branch-agnostic; only the demonstration had to move.

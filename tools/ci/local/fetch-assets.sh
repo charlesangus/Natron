@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 #
-# One-time (per-cache) fetch/setup of the things CI re-does on every run
-# that this repo's tree doesn't already contain: the OpenColorIO-Configs
-# tarball, the openfx-io testing build, and (see M2.P3.T1d) the `qtpy`
-# Python package the smoke test imports.
+# One-time (per-cache) fetch of the two external assets CI re-downloads on
+# every run: the OpenColorIO-Configs tarball and the openfx-io testing build.
 #
 # URLs and OCIO_CONFIG_VERSION here MUST match the "Download OpenColorIO-Configs"
 # and "Download Plugins" steps in .github/workflows/ci.yml. Keep them in sync.
@@ -11,20 +9,20 @@
 # Result (idempotent, safe to re-run):
 #   build/assets/OpenColorIO-Configs/
 #   build/assets/Plugins/
-#   `qtpy` importable by the container's python3, from system
-#   site-packages -- see the "Python test dependencies" section below for
-#   why it has to be system-wide rather than a `--user` install.
 #
-# A second run does no network work if everything already looks complete.
+# A second run does no network work if both targets already look complete.
 #
-# Unlike build.sh/test.sh, this script has no CMake/ninja/gcc work to do --
-# only network fetches and a pip install -- but the pip install still needs
-# to land on the SAME python3 that NatronRenderer's embedded interpreter
-# will resolve `import qtpy` against, i.e. the dev container's python3, not
-# whatever `python3` happens to mean on the host. So, like build.sh/test.sh,
-# this script re-execs itself through devshell.sh unless it's already
-# running inside a dev/CI container. See build.sh's big comment block for
-# the full reasoning behind in_container()'s two checks.
+# This script has no CMake/ninja/gcc work to do -- only network fetches and
+# unpacking -- but it still runs INSIDE the dev container, like
+# build.sh/test.sh, re-execing itself through devshell.sh exactly once when
+# invoked from the host. The point is that the documented local loop
+# (fetch-assets -> build -> test) needs nothing on the host but Docker: the
+# fetches below shell out to wget/tar/unzip, which the aswf/ci-baseqt image
+# guarantees and an arbitrary developer host does not (unzip in particular
+# is frequently absent). See build.sh's big comment block for the full
+# reasoning behind in_container()'s two checks. Under CI this is a no-op:
+# CI=true, so the re-exec is skipped and the script runs directly in the
+# job's own container.
 
 set -euo pipefail
 
@@ -126,83 +124,5 @@ else
 
     echo "[Plugins] done -> ${PLUGINS_TARGET}"
 fi
-
-# ---------------------------------------------------------------------------
-# Python test dependencies (qtpy)
-# ---------------------------------------------------------------------------
-# tools/ci/smoke_test.py's first assertion is `import qtpy` /
-# `qtpy.API_NAME == 'PySide6'` (see M2.P3.T1a), but nothing installs qtpy --
-# not ci.yml, not the aswf/ci-baseqt base image. This installs it here so
-# the smoke test can actually run, in CI and locally, from one change.
-#
-# This MUST land in system site-packages, not a `--user`/`--target` install:
-# NatronRenderer's embedded Python interpreter explicitly disables user-site
-# (see AppManager::initPython() / Global/PythonUtils.cpp's
-# `PYTHONNOUSERSITE=1`, set there so Natron's own bundled packages can't be
-# shadowed by whatever happens to be in a user's site-packages) and does not
-# add any extra site-packages directory of its own when running against a
-# system (non-bundled) Python, as this build does -- so anything installed
-# with `--user` resolves fine from a bare `python3 -c "import qtpy"` but is
-# invisible to `import qtpy` from *inside* NatronRenderer. Confirmed
-# empirically: `--user` passed `test.sh smoke`'s "python3 -c" spot-check
-# but `test.sh smoke` itself still hit `ModuleNotFoundError: No module
-# named 'qtpy'` (see M2.P3.T1d's report) -- this is exactly the
-# root-vs-uid-1000 trap the task called out, just one level less obvious
-# than a plain permissions error.
-#
-# System site-packages (/usr/local/lib/python3.13/site-packages) is
-# root-owned 755 (verified), so it needs root to write to it:
-#   - CI runs this script as root directly (ci.yml's job container has no
-#     `user:` override) -- a plain, unprivileged-looking `pip3 install`
-#     here already IS a root install in that context.
-#   - The local dev container runs everything else as uid 1000 (see
-#     devshell.sh's `docker run --user "${UID_GID}"`), which cannot write
-#     there. This script cannot self-escalate from inside that container
-#     (no docker-in-docker/sudo available), so devshell.sh instead installs
-#     qtpy as root, once, at container creation, via `docker exec -u 0:0`
-#     (which can run as any uid regardless of the container's default user)
-#     -- see its "one-time root-level install of qtpy" step. By the time
-#     this script runs locally (always re-exec'd into that same
-#     already-provisioned container, see the top of this file), qtpy
-#     should already be there, so the branch below only needs to verify
-#     that and give an actionable error (recreate the container) if not --
-#     it does not attempt the install itself for the non-root case.
-#
-# qtpy is a pure-Python wheel (py3-none-any) -- no ABI/platform concerns
-# from installing it independently of the image's own package set.
-#
-# Pin: a floor + major-version ceiling (>=2.0,<3), not an exact version.
-# 2.0 is the floor for QT_API=pyside6 support at all; capping below 3
-# avoids an unvetted future major version silently changing qtpy's API
-# resolution behavior, but an exact pin isn't warranted for a lightweight
-# compatibility shim that isn't part of the shipped product.
-#
-# The pin itself is single-sourced via the QTPY_PIN env var (ci.yml sets it
-# for CI; devshell.sh sets it -- from the same default -- for the container
-# it creates, and this script inherits it since it always runs inside that
-# container). The literal fallback below only matters if this script is
-# ever run some other way; keep it matching ci.yml's QTPY_PIN if it changes.
-QTPY_PIN="${QTPY_PIN:-qtpy>=2.0,<3}"
-if python3 -c "import qtpy" >/dev/null 2>&1; then
-    echo "[qtpy] already importable -- skipping (no network work)."
-elif [[ "$(id -u)" -eq 0 ]]; then
-    echo "[qtpy] not importable yet, running as root -- installing ${QTPY_PIN} into system site-packages..."
-    python3 -m pip install --root-user-action=ignore "${QTPY_PIN}"
-else
-    cat >&2 <<'EOF'
-[qtpy] ERROR: qtpy is not importable, and this script is not running as
-root, so it cannot install into system site-packages here (see the
-comment above this check: NatronRenderer's embedded Python disables
-user-site, so a --user install would not be visible to it anyway).
-
-devshell.sh installs qtpy as root, once, at container creation -- this
-container was most likely created before that step existed. Recreate it
-to pick it up (caches are kept, see tools/ci/local/README.md):
-
-    tools/ci/local/devshell.sh --recreate
-EOF
-    exit 1
-fi
-python3 -c "import qtpy; print('[qtpy] OK: import qtpy -> API_NAME=%r version=%s (%s)' % (qtpy.API_NAME, qtpy.__version__, qtpy.__file__))"
 
 echo "== fetch-assets.sh: all assets present =="

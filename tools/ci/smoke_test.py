@@ -42,18 +42,40 @@
 # scripts (see Documentation/source/devel/natronexecution.rst). This
 # script relies on that pre-declared `app` variable below.
 #
-# It exercises two of the PySide6/Shiboken6 binding fixes from
-# https://github.com/NatronGitHub/Natron/issues/854 (see
+# It exercises two aspects of the PySide6/Shiboken6 binding surface
+# implicated in https://github.com/NatronGitHub/Natron/issues/854 (see
 # PLAN/MILESTONES/M2-qt6-migration.md, task M2.P3.T1):
 #
-#   1. AppManager::initPython() (Engine/AppManager.cpp) sets
-#      QT_API=pyside6 *before* Py_Initialize(), so that `import qtpy`
-#      resolves to PySide6 rather than a stale/default API. If this
-#      qputenv() call is ever moved back to after Py_Initialize() (as it
-#      was before the fix), CPython has already snapshotted the C
-#      environment into os.environ by then and the qputenv() becomes a
-#      silent no-op -- qtpy would fall back to its own default resolution
-#      instead of PySide6.
+#   1. The Qt binding a user script actually gets from inside Natron's
+#      embedded interpreter is a working PySide6 -- importable, and with
+#      enum/QFlags semantics that behave like the ints the surrounding
+#      code expects. That is the precise shape of #854 ("Qt.AlignmentFlag
+#      object cannot be interpreted as an integer"): user scripts were
+#      handed a different Qt binding from the one NatronEngine/NatronGui
+#      are compiled against. Natron used to route this through a
+#      third-party Qt-binding abstraction layer (PyQt4/PyQt5/PySide/
+#      PySide2/PySide6), steered by an environment variable that had to be
+#      exported before Py_Initialize(); this fork targets exactly one Qt
+#      (6.8) and one Python (3.13), so both the shim and the env var are
+#      gone and AppManager::loadPythonGroups() now imports PySide6
+#      directly (see M2.P3.T1g in PLAN/).
+#
+#      Be honest about what check_pyside6_bindings() is therefore worth.
+#      With no binding-selection layer left, #854's mechanism is gone by
+#      construction, and every property that check asserts is a property
+#      of the PySide6 wheel the container ships rather than of anything in
+#      this repo. Its `import PySide6` cannot fail here either:
+#      NatronEngine's generated module init already calls
+#      Shiboken::Module::import("PySide6.QtCore") (see
+#      build/*/Engine/Qt6/NatronEngine/natronengine_module_wrapper.cpp),
+#      and AppManager::initPython() throws if importing NatronEngine
+#      fails, so Natron aborts long before this script runs. Treat it as a
+#      cheap environment tripwire, not a regression guard. The coverage
+#      that does bite lives elsewhere in this file:
+#      check_app_render_with_task_list() drives NatronEngine's PySide6
+#      QString converters on every string-taking call, and the one
+#      QFlags-taking bound API (PyGuiApplication::addMenuCommand) stays
+#      uncovered, for the GUI-only reason spelled out in main().
 #   2. The <replace-type modified-type="PySequence"/> on App.render()'s
 #      (and GuiApp.renderBlocking()'s) first argument in
 #      Engine/typesystem_engine.xml / Gui/typesystem_natronGui.xml, which
@@ -124,18 +146,96 @@ def _write_solid_png(path, width, height, rgb):
         f.write(chunk(b"IEND", b""))
 
 
-def check_qtpy_resolves_to_pyside6():
-    _mark("[smoke] importing qtpy...")
-    import qtpy
-    _mark("[smoke] qtpy imported, API_NAME=%r" % (qtpy.API_NAME,))
-    if qtpy.API_NAME != "PySide6":
+def check_pyside6_bindings():
+    """Assert the embedded interpreter sees a working PySide6.
+
+    An environment tripwire, not a regression guard -- see item 1 of the
+    module docstring for why nothing in this repo can make it fail. It is
+    deliberately more than `import PySide6` (it converts an enum to an
+    int, round-trips a QFlags value, and instantiates a real QObject, so
+    the C++/shiboken6 half is exercised and not just the Python package's
+    presence on sys.path), but note that under the PySide6 6.8 that
+    the container ships, Qt.AlignmentFlag is an enum.IntFlag -- an int
+    subclass -- so those conversions cannot realistically fail against any
+    released PySide6 either.
+    """
+    _mark("[smoke] importing PySide6...")
+    import PySide6
+    import shiboken6
+    from PySide6 import QtCore
+    _mark("[smoke] PySide6 %s imported from %r"
+          % (PySide6.__version__, PySide6.__file__))
+
+    # A major-version check, not an exact pin: this fork builds against
+    # exactly one Qt (6.8), and anything that is not PySide6 here means the
+    # bindings the user script sees are not the ones NatronEngine/NatronGui
+    # were generated against.
+    if not PySide6.__version__.startswith("6."):
         raise AssertionError(
-            "qtpy.API_NAME is %r, expected 'PySide6'. This means QT_API is "
-            "not being honored by qtpy -- check that "
-            "AppManager::initPython() (Engine/AppManager.cpp) sets "
-            "QT_API=pyside6 BEFORE Py_Initialize(), not after." % (qtpy.API_NAME,)
+            "PySide6.__version__ is %r, expected a 6.x -- the Qt bindings "
+            "visible to user scripts do not match the PySide6/Qt6 that "
+            "NatronEngine/NatronGui are bound against."
+            % (PySide6.__version__,)
         )
-    _mark("[smoke] OK: qtpy.API_NAME == 'PySide6'")
+
+    # Enum -> int. This is literally the #854 symptom: under a mismatched
+    # binding, Qt.AlignmentFlag members are not int-like and int() (or any
+    # implicit integer coercion in user code) raises
+    # "TypeError: 'Qt.AlignmentFlag' object cannot be interpreted as an
+    # integer".
+    align_left = QtCore.Qt.AlignmentFlag.AlignLeft
+    align_top = QtCore.Qt.AlignmentFlag.AlignTop
+    try:
+        left_int = int(align_left)
+        top_int = int(align_top)
+    except TypeError as e:
+        raise AssertionError(
+            "int(QtCore.Qt.AlignmentFlag.AlignLeft) raised a TypeError -- "
+            "this is exactly the enum/QFlags regression from "
+            "NatronGitHub/Natron#854 that this smoke test guards "
+            "against: %s" % (e,)
+        )
+    _mark("[smoke] int(Qt.AlignmentFlag.AlignLeft)=%r int(AlignTop)=%r"
+          % (left_int, top_int))
+
+    # QFlags round trip: OR two flags together, and check both the combined
+    # integer value and membership testing. A binding whose QFlags support
+    # is broken typically fails one or the other rather than the import.
+    flags = align_left | align_top
+    if int(flags) != (left_int | top_int):
+        raise AssertionError(
+            "int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop) is "
+            "%r, expected %r -- PySide6's QFlags arithmetic is not behaving "
+            "as an integer flag set." % (int(flags), left_int | top_int)
+        )
+    if not (flags & align_left) or (flags & QtCore.Qt.AlignmentFlag.AlignRight):
+        raise AssertionError(
+            "QFlags membership test failed on %r: expected AlignLeft set "
+            "and AlignRight unset." % (flags,)
+        )
+    _mark("[smoke] OK: QFlags round trip, int(AlignLeft|AlignTop)=%r"
+          % (int(flags),))
+
+    # Finally, prove the native half of the bindings actually works: create
+    # a real QObject (a C++ instance behind a Python wrapper), round-trip a
+    # property through it, and ask shiboken6 whether the wrapper still owns
+    # a valid C++ object. An importable-but-broken PySide6 (mismatched Qt
+    # libs, half-installed package) gets this far and then fails here.
+    obj = QtCore.QObject()
+    obj.setObjectName("natron-ci-smoke")
+    if not shiboken6.isValid(obj):
+        raise AssertionError(
+            "shiboken6.isValid(QtCore.QObject()) is False -- the PySide6 "
+            "Python package imported but its underlying C++ object could "
+            "not be created."
+        )
+    if obj.objectName() != "natron-ci-smoke":
+        raise AssertionError(
+            "QObject.objectName() round trip returned %r, expected "
+            "'natron-ci-smoke'." % (obj.objectName(),)
+        )
+    _mark("[smoke] OK: PySide6/shiboken6 %s bindings are live "
+          "(QObject created and valid)" % (shiboken6.__version__,))
 
 
 def check_app_render_with_task_list():
@@ -188,7 +288,7 @@ def check_app_render_with_task_list():
 
 def main():
     _mark("[smoke] script started")
-    check_qtpy_resolves_to_pyside6()
+    check_pyside6_bindings()
     check_app_render_with_task_list()
 
     # NOTE: not covered here -- PyGuiApplication::addMenuCommand()

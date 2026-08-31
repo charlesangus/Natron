@@ -100,13 +100,3 @@ FROM aswf/ci-baseqt:2027.0
 # ninja via Conan at /usr/local/bin, gdb as an RPM) -- nothing to install
 # here. This section is intentionally empty; kept as a marker in case a
 # future local-only tool needs adding, so it's obvious where it belongs.
-#
-# `qtpy` (M2.P3.T1d) is deliberately NOT installed here either, even though
-# it doesn't need dnf/a distro repo (it's `pip install`-able and PyPI IS
-# reachable from this environment, unlike distro mirrors). This file is
-# FROM aswf/ci-baseqt:2027.0 and adds no layers, but CI never builds or
-# pulls this image -- ci.yml runs `aswf/ci-baseqt:2027.0` directly as its
-# job container (see README.md). A layer added here would fix the local
-# loop and leave `import qtpy` broken in CI. `qtpy` is instead installed by
-# tools/ci/local/fetch-assets.sh, which both CI and the local loop actually
-# run -- see that script's "Python test dependencies" section.

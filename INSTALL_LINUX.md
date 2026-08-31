@@ -20,7 +20,6 @@ This file is supposed to guide you step by step to have working (compiling) vers
     - [Cairo](#cairo)
     - [Pyside2](#pyside2)
     - [Shiboken2](#shiboken2)
-    - [QtPy](#qtpy)
 2. [Configuration](#configuration)
     - [OpenFX](#openfx)
     - [OpenColorIO-Configs](#download-opencolorio-configs)
@@ -101,14 +100,6 @@ Natron uses pyside2 for Python 3 with Qt5.
 ### Shiboken2
 
 Natron uses shiboken2 for Python 3 with Qt5, the generator binary (`shiboken2`) and headers are required too.
-
-### QtPy
-
-Abstraction layer for PyQt5/PyQt4/PySide2/PySide. Preferably you can use your distribution package manager or install it via pip
-
-```
-pip install qtpy
-```
 
 # Configuration
 
@@ -221,7 +212,7 @@ any Debian-based distribution.
 For Ubuntu 22.04 using Python 3.10 and Qt 5.15, install the required dependencies:
 
 ```
-sudo apt install build-essential libboost-serialization-dev libboost-system-dev libexpat1-dev libcairo2-dev qtbase5-dev python3-dev libshiboken2-dev libpyside2-dev python3-pyside2.qtwidgets python3-qtpy
+sudo apt install build-essential libboost-serialization-dev libboost-system-dev libexpat1-dev libcairo2-dev qtbase5-dev python3-dev libshiboken2-dev libpyside2-dev python3-pyside2.qtwidgets
 ```
 
 For Debian 12, install the following packages instead:

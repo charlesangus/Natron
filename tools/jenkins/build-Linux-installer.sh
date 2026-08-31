@@ -479,15 +479,6 @@ if [ -x "${NATRON_PYTHON}" ]; then
     fi
     "${NATRON_PYTHON}" get-pip.py
     rm get-pip.py
-    # Install qtpy
-    if [ "${USE_QT5:-}" != 1 ]; then
-        # Qt4 support was dropped after QtPy 1.11.2
-        "${NATRON_PYTHON}" -m pip install qtpy==1.11.2
-        # qtpy bug fix for Qt4
-        $GSED -i "s/^except ImportError:/except (ImportError, PythonQtError):/" "${TMP_PORTABLE_DIR}/lib/python${PYVER:-}/site-packages/qtpy/__init__.py"
-    else
-        "${NATRON_PYTHON}" -m pip install qtpy
-    fi
     # Useful Python packages
     "${NATRON_PYTHON}" -m pip install future six psutil
     # Run extra user provided pip install scripts

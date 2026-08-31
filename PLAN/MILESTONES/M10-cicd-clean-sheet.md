@@ -44,7 +44,7 @@ required check.
     deliberately misformatted file pushed to a scratch branch.
   - size: S
 
-- [ ] M10.P1.T2 — Add a `lint-ci` job for the workflow and shell sources
+- [x] M10.P1.T2 — Add a `lint-ci` job for the workflow and shell sources
   - files: `.github/workflows/` (same file as T1 or a sibling)
   - approach: run `actionlint` over `.github/workflows/*.yml` and `shellcheck`
     over `tools/ci/local/*.sh` and `.github/workflows/gen_config.sh`. Both are

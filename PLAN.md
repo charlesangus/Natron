@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M10.P1.T2
-pm_heartbeat: 2026-08-31T18:31:00-04:00
+current: M10.P2.T1
+pm_heartbeat: 2026-08-31T18:47:00-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -84,7 +84,17 @@ future core work has solid ground to build on.
 
 # Open questions
 
-_None awaiting a human answer._
+**Does the M0 cut still owe a second pass over dead platform/build files?**
+Raised 2026-08-31 while wiring M10's lint gate. M0 dropped Windows, macOS and
+qmake, but the tree still tracks artifacts of all three: `Gui/QtMac.mm` and
+`Gui/TaskBarMac.mm` (Objective-C++, nothing builds them), and
+`.github/workflows/gen_config.sh`, which generates the qmake `config.pri` and
+is invoked by no current workflow. M10.P1.T2 ended up *linting* that dead
+qmake script because the task brief named it — harmless, but the better answer
+may be deleting it. The question is scope, not method: fold a cleanup task into
+M3 or M5, give the qmake-era leftovers (`tools/travis/`, `tools/jenkins/`,
+`Project-*.xcodeproj/`, `Natron.spec`) their own small milestone, or leave them
+as inert history. Nothing is blocked either way.
 
 The `aswf/ci-baseqt` tag drift (`2027.0` in the workflows vs. `2027.1` in
 `PLAN/DECISIONS/2026-08-29-pin-exact-aswf-tag.md`) was parked here pending M2.

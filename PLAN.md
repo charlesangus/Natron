@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: null
-pm_heartbeat: 2026-08-30T22:28:28-04:00
+current: M8.P1.T1
+pm_heartbeat: 2026-08-30T22:44:12-04:00
 ship: pr-per-milestone
 ---
 
@@ -21,7 +21,7 @@ future core work has solid ground to build on.
 | **OS baseline** | Rocky Linux 9 (EL9) |
 | **Toolchain** | gcc 14.2 / glibc 2.34 |
 | **Build system** | CMake only |
-| **Milestones** | 8 (M0–M7) |
+| **Milestones** | 9 (M0–M8) |
 
 - **Why this is tractable:** the two hardest Qt6 blockers — the
   `QOpenGLWidget` viewer and a working Qt6 CMake path — are already
@@ -59,6 +59,7 @@ future core work has solid ground to build on.
 | M1 | Toolchain baseline | done | [M1-toolchain-baseline.md](PLAN/MILESTONES/M1-toolchain-baseline.md) |
 | M2 | Land the Qt6 migration | blocked | [M2-qt6-migration.md](PLAN/MILESTONES/M2-qt6-migration.md) |
 | M7 | Local incremental builds | done | [M7-local-incremental-builds.md](PLAN/MILESTONES/M7-local-incremental-builds.md) |
+| M8 | Branching model and CI/CD rebuild | doing | [M8-branching-and-cicd.md](PLAN/MILESTONES/M8-branching-and-cicd.md) |
 | M3 | Dependency modernization | todo | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
 | M4 | CI/CD rebuild | done | [M4-cicd-rebuild.md](PLAN/MILESTONES/M4-cicd-rebuild.md) |
 | M5 | Test & correctness baseline | todo | [M5-test-correctness-baseline.md](PLAN/MILESTONES/M5-test-correctness-baseline.md) |

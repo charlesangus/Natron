@@ -17,9 +17,9 @@ name: Nightly
 # not the defining trigger.
 #
 # This is intentionally NOT a merge gate: it is not wired into branch
-# protection / required status checks (that is M8.P3.T1's scope, and it
-# applies only to the PR gate in ci.yml). A red run here should surface a
-# problem, not block anyone's merge.
+# protection / required status checks, and it applies only to the PR gate
+# in ci.yml. A red run here should surface a problem, not block anyone's
+# merge.
 
 on:
   push:
@@ -37,9 +37,26 @@ on:
     - cron: '17 3 * * *'
   workflow_dispatch: {}
 
+# cancel-in-progress is deliberately false here, unlike ci.yml: a PR gate
+# only cares about the latest push, so killing a stale run is pure win, but
+# this job's whole purpose is to reliably produce a release-build/test
+# signal and the ctest log artifact -- if a nightly-triggered run got
+# cancelled mid-flight by an overlapping push-to-main (or vice versa), the
+# always() cleanup steps that upload that artifact and save the cache may
+# not get to finish before the runner is torn down, silently losing the
+# one thing this workflow exists to guarantee. Queuing runs on the same ref
+# instead of racing them is a fine tradeoff since this workflow's cadence
+# never demands low latency.
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
   nightly_release:
-    name: Release build, tests, and smoke test (Linux)
+    name: release-build-and-test
     runs-on: ubuntu-latest
     container:
       image: aswf/ci-vfxall:2027-clang21.1
@@ -66,7 +83,7 @@ jobs:
 
     steps:
       - name: Checkout branch
-        uses: actions/checkout@v4.1.1
+        uses: actions/checkout@v5.0.1
         with:
           submodules: recursive
 
@@ -81,7 +98,7 @@ jobs:
       # from last time" via the trailing restore-key.
       - name: Restore ccache
         id: restore_ccache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-linux-release-${{ github.ref_name }}-${{ github.run_id }}
@@ -101,7 +118,7 @@ jobs:
       # pair is ~52 MB, negligible against the 10 GB per-repo actions/cache
       # quota that the ccache entries above actually have to live within.
       - name: Cache test assets
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             build/assets/Plugins
@@ -112,24 +129,21 @@ jobs:
         run: tools/ci/local/fetch-assets.sh
 
       # No continue-on-error here, deliberately: a release-build failure is
-      # a real failure and must turn the job red on its own, not be
-      # papered over. (As of this writing, main does not yet compile under
-      # Qt6 -- M2's scope, not this workflow's -- so this step is expected
-      # to fail until that lands. That is a correct, informative red, not a
-      # bug in this pipeline.) Because this step has no continue-on-error,
-      # its failure also means the two test steps below -- which need a
-      # successful build to have anything to run -- are skipped
-      # automatically; the aggregating step further down accounts for that.
+      # a real failure and must turn the job red on its own, not be papered
+      # over. Because this step has no continue-on-error, its failure also
+      # means the two test steps below -- which need a successful build to
+      # have anything to run -- are skipped automatically; the aggregating
+      # step further down accounts for that.
       - name: Build Unix (release)
         run: tools/ci/local/build.sh release --no-ccache-stats
 
       # --- test steps ------------------------------------------------------
-      # Both use continue-on-error: true, the same pattern the old workflow
-      # used for its test steps: ctest and the smoke test are independent
-      # signals, and a failure in one should not prevent the other from
-      # running and reporting its own result. "Check test results" below is
-      # the step that turns any real failure back into a red job -- without
-      # it, continue-on-error would silently swallow failures.
+      # Both use continue-on-error: true: ctest and the smoke test are
+      # independent signals, and a failure in one should not prevent the
+      # other from running and reporting its own result. "Check test
+      # results" below is the step that turns any real failure back into a
+      # red job -- without it, continue-on-error would silently swallow
+      # failures.
       - name: Run Unix Tests (release)
         id: run_ctest
         continue-on-error: true
@@ -142,15 +156,13 @@ jobs:
 
       # if: always() so this uploads whenever the log exists, including
       # when a prior step failed -- that is precisely when the log is
-      # wanted most. (The old workflow's version of this step lacked
-      # if: always(), so it silently produced nothing on the failure path
-      # it was meant for.) if-no-files-found stays at its default ("warn")
-      # rather than "error": the log legitimately won't exist if the build
-      # itself failed before ctest ever ran, and that's not a separate
-      # failure to report on top of the build step already being red.
+      # wanted most. if-no-files-found stays at its default ("warn") rather
+      # than "error": the log legitimately won't exist if the build itself
+      # failed before ctest ever ran, and that's not a separate failure to
+      # report on top of the build step already being red.
       - name: Upload ctest log artifact
         if: always()
-        uses: actions/upload-artifact@v4.3.1
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: Linux Release Test Logs
           path: ${{ github.workspace }}/build/release/Testing/Temporary/LastTest.log
@@ -158,15 +170,14 @@ jobs:
       # if: always() is load-bearing, not decorative -- see ci.yml's Save
       # ccache step for the full rationale. Short version: actions/cache's
       # implicit post-job save only runs when the job succeeds, so without
-      # if: always() a failing release build (expected until M2 lands --
-      # see the Build Unix (release) step above) would compile objects into
+      # if: always() a failing release build would compile objects into
       # ccache and then throw all of it away every single run. key reuses
       # restore_ccache's resolved cache-primary-key output rather than
       # re-interpolating the key expression here, so restore and save can
       # never drift apart into different keys.
       - name: Save ccache
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.restore_ccache.outputs.cache-primary-key }}

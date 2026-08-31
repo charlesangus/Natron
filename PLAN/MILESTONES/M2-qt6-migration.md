@@ -1,5 +1,12 @@
 # Milestone 2: Land the Qt6 migration
 
+> **Re-parked at `blocked` 2026-08-30, after `M2.P3.T1b`.** M8 (branching model
+> and CI/CD rebuild) runs first: `M2.P3.T1b`'s job rename broke `RB-2.6`'s
+> branch protection, whose required check is a job display name, so M2 has no
+> merge path until that is fixed. M2 resumes at `M2.P3.T1c` on `main`.
+> `M2.P3.T3` (strip the `ci(temp)` diagnostics) is superseded by `M8.P2.T2`,
+> which rewrites the workflow wholesale — strike it when M8 lands.
+>
 > **Unblocked 2026-08-30 — M7 shipped; resumed at `M2.P3.T1a`.** The local
 > loop is live: `tools/ci/local/build.sh` then
 > `tools/ci/local/test.sh smoke --gdb`, no push required. A one-file rebuild is

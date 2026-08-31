@@ -106,7 +106,24 @@ getUserName()
     struct passwd *passwd;
     passwd = getpwuid( getuid() );
 
-    return passwd->pw_name;
+    if (passwd && passwd->pw_name) {
+        return passwd->pw_name;
+    }
+
+    // getpwuid() returns NULL when the uid has no passwd entry (e.g. no
+    // /etc/passwd entry, or an LDAP/NSS lookup failure/outage). Fall back
+    // to the environment, then to the raw uid, rather than dereferencing
+    // a NULL pointer or inventing a placeholder name that could collide
+    // with a real account.
+    const char *envUser = std::getenv("USER");
+    if (!envUser || !envUser[0]) {
+        envUser = std::getenv("LOGNAME");
+    }
+    if (envUser && envUser[0]) {
+        return envUser;
+    }
+
+    return std::to_string( getuid() );
 #endif
 }
 

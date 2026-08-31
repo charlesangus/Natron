@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: null
-pm_heartbeat: 2026-08-31T18:10:29-04:00
+current: M10.P1.T1
+pm_heartbeat: 2026-08-31T18:16:00-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -47,11 +47,12 @@ future core work has solid ground to build on.
 - **M2 is done** (2026-08-31). It was parked twice — for M7 (the local build
   loop, which removed the CI round-trip that made `M2.P3.T1a` uneconomic) and
   then for M8 (which restored a merge path after a job rename broke branch
-  protection). Both have shipped. Its PR is still red, but the failure is
-  inherited, not Qt6 scope: the 3 failures were all `BaseTest`, all on the
+  protection). Both have shipped. Its PR then sat red on a failure that was
+  inherited rather than Qt6 scope — 3 failures, all `BaseTest`, all on the
   vendored OFX plugin bundle failing to load. **Resolved 2026-08-31** — the
   cause was the container, not the tests: on `aswf/ci-vfxall` with the bundle
-  built from source, all 28 ctest cases pass. See
+  built from source, all 28 ctest cases pass. **Shipped 2026-08-31** — PR #6
+  went green end to end and squash-merged as `88e3ab05a`. See
   `DECISIONS/2026-08-31-restore-vendored-ofx-plugin-tests.md` and
   `DECISIONS/2026-08-31-switch-ci-image-to-vfxall.md`.
 - **The plan lives on the orphan `plan` branch**, checked out at `.plan/`
@@ -74,7 +75,7 @@ future core work has solid ground to build on.
 | M7 | Local incremental builds | done | [M7-local-incremental-builds.md](PLAN/MILESTONES/M7-local-incremental-builds.md) |
 | M8 | Branching model and CI/CD rebuild | done | [M8-branching-and-cicd.md](PLAN/MILESTONES/M8-branching-and-cicd.md) |
 | M9 | Drop the vendored OFX plugin dependency | cancelled | [M9-drop-vendored-ofx.md](PLAN/MILESTONES/M9-drop-vendored-ofx.md) |
-| M10 | Clean-sheet CI/CD | todo | [M10-cicd-clean-sheet.md](PLAN/MILESTONES/M10-cicd-clean-sheet.md) |
+| M10 | Clean-sheet CI/CD | doing | [M10-cicd-clean-sheet.md](PLAN/MILESTONES/M10-cicd-clean-sheet.md) |
 | M3 | Dependency modernization | todo | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
 | M4 | CI/CD rebuild | done | [M4-cicd-rebuild.md](PLAN/MILESTONES/M4-cicd-rebuild.md) |
 | M5 | Test & correctness baseline | todo | [M5-test-correctness-baseline.md](PLAN/MILESTONES/M5-test-correctness-baseline.md) |

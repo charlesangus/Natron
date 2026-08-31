@@ -17,3 +17,4 @@
 - 2026-08-31 — spike-ofx-plugins-on-vfxall: OFX plugin tests pass 28/28 on ci-vfxall if IO.ofx is built from source; reopens the M9/M11 split → DECISIONS/2026-08-31-spike-ofx-plugins-on-vfxall.md
 - 2026-08-31 — restore-vendored-ofx-plugin-tests: keep BaseTest; build the OFX bundle from pinned source instead of downloading it. 28/28 green → DECISIONS/2026-08-31-restore-vendored-ofx-plugin-tests.md
 - 2026-08-31 — fork-and-fix-natrongithub-repos: small fixes to NatronGitHub repos land on our `charlesangus/` fork and we pin the fork, not a local workaround → DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md
+- 2026-08-31 — publish-decisions-backlog: first publication mirrors every project-wide decision from M0 on, riding M10's branch → DECISIONS/2026-08-31-publish-decisions-backlog.md

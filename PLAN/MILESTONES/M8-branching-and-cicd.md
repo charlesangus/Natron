@@ -199,3 +199,18 @@ that the pipeline behaves correctly, not that it is green.
   `main` are what populate it. Until `main` produces a successful cache-saving
   run, PR runs legitimately start cold no matter what the keys say. Measure hit
   rates by comparing two runs of the *same* event type on the *same* ref.
+- 2026-08-30 — **gate results, measured on PR #5 rather than asserted.**
+  - Pipeline behaviour, run `33353204874`: `Checkout → Restore ccache → Fetch
+    assets → Build (failure) → ctest (skipped) → ccache stats (ran, via
+    `if: always()`) → ci = failure in 2s`. The aggregator did the thing it
+    exists for: it reported **red**, rather than being skipped and leaving the
+    required check pending forever, which is what a plain `needs:` job would
+    have done.
+  - ccache, same ref and same event type, runs `33354725968` → `33355300105`:
+    **0.00% hits (0/176) → 49.44% hits (175/354)**, restored from the previous
+    run's key. The first of those runs is also the proof for `M8.P2.T5`: it
+    logged `Save ccache=success` on a run whose build **failed**.
+  - Branch protection on `main` now requires exactly the context `ci`; the old
+    `Test Ubuntu Python 3.10` requirement is removed.
+  The build itself still fails, as this milestone said it would from the start.
+  That is M2's to fix and is not a defect in this pipeline.

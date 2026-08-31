@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: null
-pm_heartbeat: 2026-08-30T23:53:51-04:00
+pm_heartbeat: 2026-08-30T23:57:14-04:00
 ship: pr-per-milestone
 ---
 
@@ -59,7 +59,7 @@ future core work has solid ground to build on.
 | M1 | Toolchain baseline | done | [M1-toolchain-baseline.md](PLAN/MILESTONES/M1-toolchain-baseline.md) |
 | M2 | Land the Qt6 migration | blocked | [M2-qt6-migration.md](PLAN/MILESTONES/M2-qt6-migration.md) |
 | M7 | Local incremental builds | done | [M7-local-incremental-builds.md](PLAN/MILESTONES/M7-local-incremental-builds.md) |
-| M8 | Branching model and CI/CD rebuild | doing | [M8-branching-and-cicd.md](PLAN/MILESTONES/M8-branching-and-cicd.md) |
+| M8 | Branching model and CI/CD rebuild | done | [M8-branching-and-cicd.md](PLAN/MILESTONES/M8-branching-and-cicd.md) |
 | M3 | Dependency modernization | todo | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
 | M4 | CI/CD rebuild | done | [M4-cicd-rebuild.md](PLAN/MILESTONES/M4-cicd-rebuild.md) |
 | M5 | Test & correctness baseline | todo | [M5-test-correctness-baseline.md](PLAN/MILESTONES/M5-test-correctness-baseline.md) |

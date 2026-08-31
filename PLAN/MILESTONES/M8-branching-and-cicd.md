@@ -185,3 +185,17 @@ that the pipeline behaves correctly, not that it is green.
   so the gate would have nested one Xvfb server inside another. `test.sh` is
   now the sole owner of the wrap, and only the step that needs a display gets
   one.
+- 2026-08-30 — **GitHub Actions caches are scoped per ref, which shapes how the
+  ccache keys must be tested and read.** Verifying `M8.P2.T5` by comparing a
+  `pull_request` run against a `workflow_dispatch` run showed `Cache not found`
+  and briefly looked like a broken key design. It was not: a cache written by a
+  `pull_request` run lives in that PR's merge-ref scope
+  (`refs/pull/5/merge`), while a `workflow_dispatch` run reads the branch's own
+  scope. The two cannot see each other by construction, so the comparison was
+  meaningless.
+  What this means in practice, and why the restore-key chain is right: a PR run
+  can read caches from its **base branch**, so the `ccache-linux-main-` fallback
+  is what will actually warm a first-time PR, and the nightly/post-merge runs on
+  `main` are what populate it. Until `main` produces a successful cache-saving
+  run, PR runs legitimately start cold no matter what the keys say. Measure hit
+  rates by comparing two runs of the *same* event type on the *same* ref.

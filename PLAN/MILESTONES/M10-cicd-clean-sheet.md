@@ -32,7 +32,7 @@ everything else, and give a PR a signal in seconds. They can be added while the
 old `ci` aggregator is still in place — adding jobs never breaks the existing
 required check.
 
-- [ ] M10.P1.T1 — Add a `format` job that checks C++ formatting on changed files
+- [x] M10.P1.T1 — Add a `format` job that checks C++ formatting on changed files
   - files: `.github/workflows/` (new or restructured workflow file)
   - approach: `.clang-format` already exists at the repo root. Run
     `clang-format --dry-run --Werror` over the C/C++ files changed in the PR
@@ -117,9 +117,21 @@ required check.
     the ccache comment's now-stale "main doesn't compile under Qt6 until M2
     lands" justification — restate why `if: always()` still matters without
     tying it to a milestone that has shipped.
+    **Also drop `paths-ignore` from both triggers.** You cannot require a job
+    by exact name and simultaneously let the workflow's top-level trigger skip
+    it for certain paths: a workflow skipped by path filtering reports no check
+    at all, and a required check that never reports leaves the PR pending
+    forever (GitHub's own docs say so and advise against requiring skippable
+    workflows). It is currently inert only by typo — bare `Documentation` is
+    one path segment and never matches `Documentation/anything` — so the
+    hazard arrives the moment someone "corrects" it to `Documentation/**`. If
+    skipping the container build for docs-only changes is still wanted, it has
+    to be an in-job conditional so the required job name still posts a real
+    conclusion.
   - verify: a run on the milestone branch is green end to end with no
     deprecation annotations; the run's job list shows the new names and no `ci`
-    job; a second push to the same branch cancels the first run.
+    job; a second push to the same branch cancels the first run; and
+    `grep -n paths-ignore .github/workflows/ci.yml` returns nothing.
   - size: L
 
 - [ ] M10.P2.T4 — Realign `nightly.yml` with the new job structure
@@ -186,3 +198,14 @@ cancels the in-flight run; and Nightly is green on `workflow_dispatch`.
   `M10.P3.T2` shrank to confirmation-and-bookkeeping: the tag drift it was
   written to resolve no longer exists, since the image switch made every
   reference agree on one tag.
+
+- 2026-08-31 — `checks.yml` carries no `paths-ignore`, and `M10.P2.T3` removes
+  `ci.yml`'s. Consulted after the T1 reviewer added a path filter to match
+  `ci.yml` and the implementer had deliberately omitted one. A workflow skipped
+  by path filtering posts no check run, and a required check that never reports
+  blocks the PR indefinitely — unlike a skipped *job*, which reports a
+  `skipped` conclusion that branch protection accepts. Since `M10.P3.T1`
+  requires these jobs by literal name, no trigger-level path filter can stay.
+  The existing filter is inert only because bare `Documentation` never matches
+  a path inside `Documentation/`, which makes it a trap rather than a
+  safeguard.

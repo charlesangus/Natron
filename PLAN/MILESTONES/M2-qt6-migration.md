@@ -4,7 +4,7 @@
 > This milestone's 54 commits were rebased off `main` onto
 > `milestone/m2-qt6-migration`; `.github/workflows/ci.yml` is now M8's version
 > verbatim, which strikes `M2.P3.T3` (see `## Decisions`). Remaining work:
-> `T1d` → `T1a` → `T1` → `T2`.
+> `T1f` → `T1a` → `T1` → `T2`.
 >
 > <details><summary>Earlier parking notes (historical)</summary>
 >
@@ -439,9 +439,9 @@ milestone than went in.
     `Tests` binary to completion rather than dying as `SEGFAULT`.
   - size: S
 
-- [ ] M2.P3.T1d — Install `qtpy` so the smoke test can actually run
-  - files: `.github/workflows/ci.yml`, `tools/ci/local/Dockerfile` (and/or
-    `tools/ci/local/devshell.sh`), whichever is the right layer
+- [x] M2.P3.T1d — Install `qtpy` so the smoke test can actually run
+  - files: `tools/ci/local/fetch-assets.sh` (or whichever shared script is
+    the right seam — see below), possibly `tools/ci/local/Dockerfile`
   - approach: *(blocks `M2.P3.T1a`)* `tools/ci/smoke_test.py`'s first
     assertion is `import qtpy; qtpy.API_NAME == 'PySide6'`, but nothing
     installs `qtpy` — `grep -i "qtpy\|pip install" .github/workflows/ci.yml`
@@ -450,14 +450,60 @@ milestone than went in.
     `M2.P3.T1a` could never have been green. Install `qtpy>=2.0` (the floor
     for `QT_API=pyside6`) in the same layer CI and the local loop share, so
     the two keep agreeing per
-    `PLAN/DECISIONS/2026-08-30-ci-reuses-local-scripts.md`. Prefer the image
-    over an ad-hoc `pip install` step if the local Dockerfile is the shared
-    layer; note `PLAN/DECISIONS/2026-08-30-sealed-package-network.md` — check
-    what network access actually exists before assuming pip works.
+    `PLAN/DECISIONS/2026-08-30-ci-reuses-local-scripts.md`.
+
+    **Corrected premise (2026-08-31, PM):** an earlier draft of this brief
+    assumed `tools/ci/local/Dockerfile` was the layer CI and the local loop
+    share. It is not. CI runs `container: image: aswf/ci-baseqt:2027.0`
+    **directly** (`ci.yml:20-21`); the Dockerfile builds `natron-dev:2027.0`
+    for the local loop only and currently adds no layers. Installing `qtpy`
+    there would fix the local loop and leave CI broken. The genuinely shared
+    layer is `tools/ci/local/*.sh`, which is the whole point of
+    `2026-08-30-ci-reuses-local-scripts.md` — CI invokes `fetch-assets.sh`,
+    `build.sh` and `test.sh`. Put the install in a shared script so one change
+    serves both, and keep it idempotent the way `fetch-assets.sh` already is.
+
+    **Network:** PyPI *is* reachable, despite
+    `PLAN/DECISIONS/2026-08-30-sealed-package-network.md` — that decision is
+    about **distro** repos. Verified 2026-08-31 from inside the container:
+    `pip3 download qtpy` fetched `QtPy-2.4.3-py3-none-any.whl` successfully.
+    So `pip3 install` is a viable mechanism here; no vendoring needed.
   - verify: `tools/ci/local/devshell.sh bash -lc 'python3 -c "import qtpy;
     print(qtpy.API_NAME, qtpy.__version__)"'` prints `PySide6` and a version
-    >= 2.0; the same holds in a real CI run.
-  - size: S
+    >= 2.0; `tools/ci/local/test.sh smoke` gets past the `import qtpy` line;
+    and the mechanism is demonstrably one that a real CI run would also get,
+    not just the local container.
+  - size: M
+
+- [ ] M2.P3.T1f — Make the local smoke run survive to completion
+  - files: likely `tools/ci/local/test.sh` and/or a Natron cache setting;
+    diagnose before choosing
+  - approach: *(blocks `M2.P3.T1a`)* `tools/ci/local/test.sh smoke` is killed
+    by the OOM killer on roughly two runs in three — measured 2026-08-31 by
+    the PM: 1 of 3 reached the smoke script, and 2 died as
+    `xvfb-run: line 181: NNN Killed`. This is **not** ordinary host memory
+    pressure: at the time of the kills `free -m` showed ~10.8 GB *available*
+    of 15.7 GB total and the container has **no** memory limit
+    (`docker inspect` → `Memory=0`, cgroup `memory.max` = `max`). Swap, by
+    contrast, was pinned at 4094/4095 MB. The shape — plenty of free RAM,
+    exhausted swap, sudden kill — points at a single very large allocation
+    rather than gradual growth, and every run also prints
+    `Error while loading OpenGL: std::bad_alloc`. Natron sizes its caches
+    from total system memory, so the leading hypothesis is that the renderer
+    requests a cache proportional to RAM and the kernel's overcommit
+    heuristic refuses or the OOM killer reaps it. Diagnose it properly
+    (measure the peak RSS and the failing allocation) before choosing a fix;
+    a plausible fix is bounding the cache explicitly for the test harness,
+    but do not assume it.
+  - approach note: this is why it must precede `M2.P3.T1a`. T1a exists to
+    make the smoke test trustworthy evidence about the bindings, and it
+    cannot do that while two runs in three die for an unrelated reason —
+    the same "no single run was trustworthy" trap M7 recorded, in a new
+    guise. Do not paper over it with retries.
+  - verify: 10 consecutive `tools/ci/local/test.sh smoke` runs all reach
+    `smoke_test.py` (they may still *fail* inside it — that is T1a's scope);
+    none is killed. Report the peak RSS observed.
+  - size: M
 
 - [ ] M2.P3.T1a — Add a CI Python smoke-test step and use it to verify the enum/QFlags binding fixes
   - files: `.github/workflows/ci.yml`, a new small Python script under (e.g.)
@@ -694,3 +740,23 @@ diagnostics while still gating on test failure.
   are **M5's** scope, not M2's, but they are now visible rather than hidden
   behind a crash. M5 should start from this baseline rather than assuming the
   suite was never runnable.
+
+- 2026-08-31 — `M2.P3.T1d`: `pip install --user` is not usable for anything
+  `NatronRenderer` must import. Natron disables user site-packages in two
+  places — `qputenv("PYTHONNOUSERSITE", "1")` in `AppManager::initPython()`
+  and, since `M2.P3.T1c`, `config.user_site_directory = 0` in the `PyConfig`
+  startup path — so a `--user` install satisfies a bare
+  `python3 -c "import qtpy"` as either uid while remaining invisible inside
+  the renderer. The first implementation of T1d was `--user`, passed that
+  spot-check, and still failed the real smoke run. Recording it because the
+  wrong version looks correct under every check short of running the actual
+  binary: **verify Python-dependency changes by running `NatronRenderer`,
+  never by `python3 -c`.**
+
+- 2026-08-31 — the local `Dockerfile` is not a CI-shared layer, and a brief
+  that assumed otherwise nearly shipped a local-only fix for a CI-wide
+  problem (caught before dispatch). CI runs `aswf/ci-baseqt:2027.0` directly
+  via `container:` in `ci.yml`; `tools/ci/local/Dockerfile` builds
+  `natron-dev:2027.0` for the local loop alone. The only layer both share is
+  `tools/ci/local/*.sh`. Anything that must reach CI belongs in a script, not
+  the image.

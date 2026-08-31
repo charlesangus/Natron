@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: null
-pm_heartbeat: 2026-08-31T20:06:00-04:00
+pm_heartbeat: 2026-08-31T20:18:00-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---

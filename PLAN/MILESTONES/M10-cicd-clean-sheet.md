@@ -297,3 +297,20 @@ cancels the in-flight run; and Nightly is green on `workflow_dispatch`.
   C++ file turned `format` red in 16s while `lint-ci` stayed green, and GitHub
   reported the PR as `BLOCKED` — the required checks are enforced, not merely
   listed.
+
+- 2026-08-31 — Nightly gate evidence: `workflow_dispatch` run 33450557042 on
+  the milestone branch was green end to end in 21 minutes, uploaded the
+  `Linux Release Test Logs` artifact, and emitted zero annotations. Worth
+  recording beyond the workflow itself: the *release* build and release ctest
+  now pass, which is what made the file's "expected to fail" comments safe to
+  delete rather than merely stale.
+
+- 2026-08-31 — a follow-up rename (`Build Unix (release)` → `Build (release)`,
+  `Run Unix Tests (release)` → `Run ctest suite (release)`) shipped without an
+  independent reviewer, deliberately. `nightly.yml` had been left inconsistent
+  with `ci.yml` on exactly the inaccuracy this milestone exists to remove. The
+  change is two `name:` strings, and GitHub expressions reference steps by
+  `id` — never by name — so it is mechanically verifiable: ids unchanged, no
+  expression touched, YAML parses, no `Unix` left. Re-running the 21-minute
+  nightly to confirm a label change would have bought nothing.
+

@@ -346,7 +346,7 @@ milestone than went in.
 
 ## Phase 2.3: Bindings and validation
 
-- [ ] M2.P3.T1 — Regenerate PySide6/Shiboken6 bindings (compile-verified; see M2.P3.T1a)
+- [x] M2.P3.T1 — Regenerate PySide6/Shiboken6 bindings (compile-verified; see M2.P3.T1a)
   - files: `Engine/typesystem_engine.xml`, `Gui/typesystem_natronGui.xml`
     (bindings themselves are generated at build time into
     `${CMAKE_CURRENT_BINARY_DIR}/Qt6` by Shiboken — do not hand-edit

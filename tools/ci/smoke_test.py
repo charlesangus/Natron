@@ -288,6 +288,16 @@ def check_app_render_with_task_list():
 
 def main():
     _mark("[smoke] script started")
+
+    global app
+    try:
+        app
+    except NameError:
+        _mark("[smoke] WARNING: 'app' was not pre-declared by Natron; "
+              "obtaining via NatronEngine.natron.getInstance(0)")
+        import NatronEngine
+        app = NatronEngine.natron.getInstance(0)
+
     check_pyside6_bindings()
     check_app_render_with_task_list()
 

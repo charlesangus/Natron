@@ -144,6 +144,9 @@ jobs:
       - name: Run Unix Tests (debug)
         run: tools/ci/local/test.sh ctest debug
 
+      - name: Python bindings smoke test (debug)
+        run: tools/ci/local/test.sh smoke debug
+
       # if: always() is load-bearing, not decorative. actions/cache's
       # implicit post-job save only runs when the job succeeds -- with a
       # plain `actions/cache@v4` step, a failing build compiles objects

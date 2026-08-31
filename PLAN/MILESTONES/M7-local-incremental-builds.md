@@ -39,17 +39,29 @@ one thing it exists to do.
 
 - [ ] M7.P1.T2 — `tools/ci/local/Dockerfile` layering the CI setup steps onto the base
   - files: `tools/ci/local/Dockerfile`
-  - approach: `FROM aswf/ci-baseqt:2027.0`, then a single `RUN dnf install -y`
-    carrying **exactly** the packages `.github/workflows/ci.yml`'s "Install
-    Linux system packages" step installs (`cairo-devel epel-release wget unzip
-    clang xorg-x11-server-Xvfb`, then `extra-cmake-modules`), plus the
-    local-only additions the CI job does not need: `ccache`, `ninja-build`,
-    `gdb`. Baking these into an image layer is what removes the per-run dnf
-    cost. Keep the CI package list verbatim and clearly commented as
-    "must match ci.yml" so the two do not silently diverge.
+  - approach: **Re-planned 2026-08-30 — see the sealed-network decision below.**
+    No `dnf` is possible here: every distro repo (Rocky, EPEL, NVIDIA CUDA) is
+    unreachable. It turns out almost none is needed — the base image already
+    provides CI's entire package list. `cairo-devel`, `wget`, `unzip`,
+    `xorg-x11-server-Xvfb`, `wayland-devel`, `ninja-build`, and `gdb` are
+    installed as RPMs, and `clang` and `ccache` are present at
+    `/usr/local/bin` (Conan-provided, so `rpm -q` does not see them). CI's
+    `dnf install` line is therefore very nearly a no-op against this image.
+    The one real gap is `extra-cmake-modules`: `CMakeLists.txt:115` calls
+    `find_package(ECM NO_MODULE)` to put `FindWayland.cmake` on
+    `CMAKE_MODULE_PATH` for the `find_package(Wayland COMPONENTS Client Egl)`
+    on line 118. Neither call is `REQUIRED`, so without ECM the build silently
+    configures *without* Wayland — a fidelity divergence exactly of the kind
+    this milestone exists to avoid. Install ECM from the KDE GitHub mirror
+    (github.com is reachable) at an explicitly pinned tag; it is pure CMake
+    modules and builds with no dependencies. Comment the whole file with what
+    CI installs, what the base image already satisfies, and why ECM is fetched
+    from source rather than `dnf`.
   - verify: `docker build -t natron-dev:2027.0 tools/ci/local/` succeeds;
     `docker run --rm natron-dev:2027.0 bash -lc 'ccache --version && ninja
-    --version && gdb --version && which Xvfb'` prints all four.
+    --version && gdb --version && which Xvfb && which clang'` prints all five;
+    and a CMake probe resolves ECM — `find_package(ECM NO_MODULE)` sets
+    `ECM_MODULE_PATH` and `FindWayland.cmake` is present under it.
   - size: S
 
 - [x] M7.P1.T3 — One-time fetch of OCIO configs and OFX plugins into a cached dir
@@ -209,3 +221,25 @@ a usable backtrace.
   the bindings are built against is exactly the kind of thing that would cause
   it. Not acted on here — M7 changes no CI behaviour — but it is the first
   thing M2 should check once the local loop can reproduce the failure.
+- 2026-08-30 — **this environment has no reachable distro package repository at
+  all; the local image must be built from what the base image already
+  contains.** Beyond Docker Hub's CDN, egress filtering also blocks
+  `mirrors.rockylinux.org`, `mirrors.fedoraproject.org`,
+  `dl.fedoraproject.org`, `developer.download.nvidia.com`, and every EPEL
+  mirror probed (`mirrors.kernel.org`, `mirror.math.princeton.edu`,
+  `ftp.osuosl.org`, `mirror.us.leaseweb.net`, `epel.mirror.constant.com`).
+  Reachable: `github.com`, `registry-1.docker.io`, `auth.docker.io`,
+  `mirror.gcr.io`, `ghcr.io`, `quay.io` — an allowlist, not a blocklist. So
+  `dnf install` cannot run in a `RUN` layer, and the original M7.P1.T2 plan
+  (mirror CI's `dnf install` line) is not executable as written.
+  This costs less fidelity than it first appears: an inventory of
+  `aswf/ci-baseqt:2027.0` shows it already ships every package CI installs —
+  `cairo-devel`, `wget`, `unzip`, `xorg-x11-server-Xvfb`, `wayland-devel`,
+  `ninja-build` and `gdb` as RPMs, plus `clang` and `ccache` under
+  `/usr/local/bin` from Conan. CI's "Install Linux system packages" step is
+  therefore close to a no-op on this image, and the local-only additions the
+  original plan wanted (`ccache`, `ninja-build`, `gdb`) are already there.
+  Only `extra-cmake-modules` is genuinely absent, and it is fetched from
+  GitHub instead. The package-list-must-match-`ci.yml` comment stays in the
+  Dockerfile as documentation of what CI asks for and why each item is already
+  satisfied, so the two still cannot silently diverge.

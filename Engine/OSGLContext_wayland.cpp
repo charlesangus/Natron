@@ -321,7 +321,11 @@ getFBConfigAttrib(const OSGLContext_egl_data* eglInfo,
                   const EGLConfig& fbconfig,
                   int attrib)
 {
-    int value;
+    // Same out-parameter hazard as chooseFBConfig() below: eglGetConfigAttrib()
+    // returns EGL_FALSE and leaves *value untouched when the attribute is not
+    // supported, so an uninitialized `value` is an indeterminate read that then
+    // feeds the config-scoring in OSGLContext::chooseFBConfig().
+    int value = 0;
 
     eglInfo->_imp->GetConfigAttrib(eglInfo->_imp->dpy, fbconfig, attrib, &value);
 
@@ -339,13 +343,22 @@ chooseFBConfig(const OSGLContext_egl_data* eglInfo,
         throw std::runtime_error("EGL: No DISPLAY available");
     }
 
-    int nativeCount;
-    eglInfo->_imp->GetConfigs(eglInfo->_imp->dpy, nullptr, 0, &nativeCount);
-    if (nativeCount == 0) {
+    // Same hazard as chooseFBConfig() in OSGLContext_x11.cpp: eglGetConfigs()
+    // leaves its *num_config out-parameter untouched when it fails (returns
+    // EGL_FALSE), so nativeCount must be initialized and the return value
+    // checked. Otherwise the vector sizing below uses stack garbage.
+    int nativeCount = 0;
+    if (!eglInfo->_imp->GetConfigs(eglInfo->_imp->dpy, nullptr, 0, &nativeCount) || (nativeCount <= 0)) {
         throw std::runtime_error("EGL: No EGLConfigs returned");
     }
     std::vector<EGLConfig> nativeConfigs(nativeCount);
-    eglInfo->_imp->GetConfigs(eglInfo->_imp->dpy, nativeConfigs.data(), nativeCount, &nativeCount);
+    // The second call needs the same treatment: on EGL_FALSE it writes neither
+    // the configs nor the count, which would leave nativeConfigs full of the
+    // vector's value-initialized null EGLConfigs while nativeCount still claims
+    // they are populated.
+    if (!eglInfo->_imp->GetConfigs(eglInfo->_imp->dpy, nativeConfigs.data(), nativeCount, &nativeCount) || (nativeCount <= 0)) {
+        throw std::runtime_error("EGL: Failed to retrieve EGLConfigs");
+    }
 
     std::vector<FramebufferConfig> usableConfigs(nativeCount);
     int usableCount = 0;

@@ -119,7 +119,8 @@ jobs:
       #     explicitly deleting the old one (it just stops being the most
       #     recent and ages out under GitHub's quota/eviction on its own).
       - name: Restore ccache
-        uses: actions/cache@v4
+        id: restore_ccache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-linux-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
@@ -142,6 +143,28 @@ jobs:
 
       - name: Run Unix Tests (debug)
         run: tools/ci/local/test.sh ctest debug
+
+      # if: always() is load-bearing, not decorative. actions/cache's
+      # implicit post-job save only runs when the job succeeds -- with a
+      # plain `actions/cache@v4` step, a failing build compiles objects
+      # into ccache and then the save is skipped entirely, so the cache
+      # never accumulates anything on a red run. That matters a lot right
+      # now: main doesn't compile under Qt6 until M2 lands, so every run
+      # until then is a build failure, and without if: always() here every
+      # single one of those runs would throw away its ccache state and the
+      # next run would start cold again -- the cache would never once pay
+      # off for the whole milestone. Deleting if: always() to "tidy up"
+      # this step silently reintroduces that: nothing errors, CI just
+      # quietly stays slow, and the cause is nowhere near the symptom.
+      # key reuses restore_ccache's resolved cache-primary-key output
+      # (rather than re-interpolating the key expression here) so the
+      # restore and save can never drift apart into different keys.
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
 
       - name: ccache stats
         if: always()

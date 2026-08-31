@@ -139,6 +139,23 @@ Do not chase a green build here, and do not weaken the gate to manufacture one.
     context.
   - size: M
 
+- [x] M8.P2.T5 — Save the ccache even when the build fails
+  - files: `.github/workflows/ci.yml`, `.github/workflows/nightly.yml`
+  - approach: PR #5's first run showed `Post Restore ccache=skipped`.
+    `actions/cache`'s implicit save step only runs when the job succeeds, so a
+    failing build never persists what it compiled. That is exactly backwards
+    for the situation we are in: `main` stays red for the whole of M2, so under
+    the current setup **every CI run during M2 is a full cold build** and the
+    cache added in `M8.P2.T3` never pays off at all. Split the action into
+    `actions/cache/restore` before the build and `actions/cache/save` after it
+    with `if: always()`, keeping the same key design. Note that `save` needs the
+    resolved primary key — take it from the restore step's `cache-primary-key`
+    output rather than re-interpolating it, so the two cannot drift.
+  - verify: a run whose build fails shows the save step executing rather than
+    skipping, and a second run on the same branch reports a materially higher
+    ccache hit rate than the first. Report both hit rates.
+  - size: M
+
 **Verification gate:** the default branch is `main` with the legacy refs intact;
 CI runs `tools/ci/local/build.sh` and `test.sh` rather than duplicating them;
 a PR runs only the fast gate and a second run demonstrably reuses the ccache;

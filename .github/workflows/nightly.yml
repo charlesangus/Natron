@@ -80,7 +80,8 @@ jobs:
       # branch scenario to cover here the way ci.yml has -- just "warm
       # from last time" via the trailing restore-key.
       - name: Restore ccache
-        uses: actions/cache@v4
+        id: restore_ccache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-linux-release-${{ github.ref_name }}-${{ github.run_id }}
@@ -133,6 +134,22 @@ jobs:
         with:
           name: Linux Release Test Logs
           path: ${{ github.workspace }}/build/release/Testing/Temporary/LastTest.log
+
+      # if: always() is load-bearing, not decorative -- see ci.yml's Save
+      # ccache step for the full rationale. Short version: actions/cache's
+      # implicit post-job save only runs when the job succeeds, so without
+      # if: always() a failing release build (expected until M2 lands --
+      # see the Build Unix (release) step above) would compile objects into
+      # ccache and then throw all of it away every single run. key reuses
+      # restore_ccache's resolved cache-primary-key output rather than
+      # re-interpolating the key expression here, so restore and save can
+      # never drift apart into different keys.
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
 
       - name: ccache stats
         if: always()

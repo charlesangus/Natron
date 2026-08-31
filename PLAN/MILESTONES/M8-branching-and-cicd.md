@@ -97,7 +97,7 @@ Do not chase a green build here, and do not weaken the gate to manufacture one.
     clearly.
   - size: M
 
-- [ ] M8.P2.T3 — Cache ccache between runs
+- [x] M8.P2.T3 — Cache ccache between runs
   - files: `.github/workflows/ci.yml`
   - approach: restore/save `CCACHE_DIR` with `actions/cache`, keyed so that a
     PR reuses the base branch's cache and a merge to `main` refreshes it.

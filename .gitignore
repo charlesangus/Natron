@@ -301,3 +301,5 @@ moc_predefs.h
 # shiboken-generated files
 Engine/Qt5
 Gui/Qt5
+# ccache directory used by CI (CCACHE_DIR in .github/workflows/ci.yml)
+.ccache/

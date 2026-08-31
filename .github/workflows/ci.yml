@@ -15,7 +15,7 @@ on:
 
 jobs:
   unix_test:
-    name: Test Ubuntu Python 3.10
+    name: Test Linux Python 3.13
     runs-on: ubuntu-latest
     container:
       image: aswf/ci-baseqt:2027.0
@@ -24,9 +24,46 @@ jobs:
         shell: bash -l {0}
     env:
       CI: 'True'
-      PYTHON_VERSION: '3.10'
+      # aswf/ci-baseqt:2027.0 ships ASWF_CPYTHON_VERSION=3.13.14 (verified
+      # via `docker image inspect`). Nothing in this repo actually consumes
+      # PYTHON_VERSION (CMakeLists.txt:60 uses find_package(Python3 ...),
+      # which finds whatever Python3 is on PATH in the image regardless of
+      # this var) -- it is declaration-only, kept accurate so it doesn't
+      # mislead the next reader.
+      PYTHON_VERSION: '3.13'
       OCIO_CONFIG_VERSION: 2.5
       NATRON_IN_CONTAINER: 1
+      # --- ccache -----------------------------------------------------------
+      # CCACHE_DIR: deliberately a path under the checked-out workspace, NOT
+      # ccache's built-in default ($HOME/.cache/ccache -- confirmed via
+      # `ccache -p | grep cache_dir` against this exact image). GitHub
+      # Actions' `container:` jobs run as root but do not guarantee HOME
+      # matches the image's own /root; the runner is free to repoint it at a
+      # job-managed volume. github.workspace, by contrast, is where
+      # actions/checkout puts the repo and is bind-mounted at the same
+      # absolute path inside the container, so it is a stable, known,
+      # cacheable path regardless of what HOME resolves to. build.sh/test.sh
+      # never set CCACHE_DIR themselves (see build.sh's cmake invocation --
+      # it only passes -DCMAKE_*_COMPILER_LAUNCHER=ccache), so this job-level
+      # env value flows straight through to the compiler-launcher ccache
+      # invocations unmodified.
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      # CCACHE_MAXSIZE: ccache's built-in 5 GiB default was measured (M7,
+      # see tools/ci/local/devshell.sh) to already thrash on a single cold
+      # build of this repo -- 193 cleanup cycles and a 0.18% hit rate,
+      # because one full debug build's compiled-object working set exceeds
+      # 5 GiB before the build even finishes. devshell.sh's local answer
+      # (40G) is sized for holding *several* full build trees at once across
+      # branch switches -- do not copy that here: GitHub's actions/cache has
+      # a 10 GB *total-per-repository* quota across every cache entry, and
+      # this design (see the "Restore ccache" step below) intentionally
+      # keeps more than one entry alive (this branch's + main's). 6 GiB is
+      # comfortably above the observed 5 GiB thrashing point for one CI
+      # build, while leaving headroom under the 10 GB quota for at least one
+      # other entry to coexist without immediately evicting it. If the
+      # `ccache -s` summary at the end of the job keeps showing cleanups,
+      # this is the first number to raise.
+      CCACHE_MAXSIZE: 6G
 
     steps:
       - name: Checkout branch
@@ -34,11 +71,78 @@ jobs:
         with:
           submodules: recursive
 
+      # Cache key design:
+      #
+      #   key (primary):    ccache-linux-<branch>-<run_id>
+      #   restore-keys:     ccache-linux-<branch>-
+      #                      ccache-linux-main-
+      #
+      # <branch> is `github.head_ref || github.ref_name`: on pull_request
+      # events github.ref_name is the synthetic "<pr-number>/merge" ref (not
+      # useful as a stable per-branch prefix across runs of the same PR), so
+      # head_ref -- the PR's actual source branch -- is used instead; on
+      # push events (this workflow only pushes on main) head_ref is unset,
+      # so it falls back to ref_name, i.e. "main".
+      #
+      # The primary key always ends in github.run_id, which is unique to
+      # this run and therefore (almost) never matches an existing cache on
+      # restore -- that's intentional, not a miss to worry about:
+      # actions/cache's save step is a silent no-op if a cache already
+      # exists under the exact key it's given, so a run-unique primary key
+      # guarantees this run's ccache state is always saved as a *new* entry
+      # at the end of the job, instead of the save being dropped because an
+      # earlier run already claimed that key. All the actual cache hits come
+      # from restore-keys, which do a prefix match against the most
+      # recently created matching entry:
+      #   1. ccache-linux-<branch>-  -> this branch's own most recent run.
+      #      Covers: a second (or Nth) push to the same PR reuses the
+      #      previous push's warm cache.
+      #   2. ccache-linux-main-      -> main's most recent run. Covers: the
+      #      first run on a brand-new PR branch has no branch-specific
+      #      cache yet, so it reuses main's instead of starting cold.
+      #
+      # Walking through the three scenarios called out in the task:
+      #   - First run on a new PR branch: no "ccache-linux-<branch>-*" entry
+      #     exists yet, so restore-key 1 misses; restore-key 2 matches
+      #     main's latest cache and restores it warm. At job end, this run's
+      #     state is saved under "ccache-linux-<branch>-<run_id>" (a new
+      #     entry, branch-specific from now on).
+      #   - Second run on that same PR (e.g. another push): restore-key 1
+      #     now matches the entry the first run saved, so ccache is warm
+      #     from this branch's own prior build. Job end saves another new
+      #     branch-specific entry under this run's run_id.
+      #   - Push to main (merge): restore-key 1 (branch = "main") matches
+      #     main's previous cache, so the build is warm. Job end saves a new
+      #     "ccache-linux-main-<run_id>" entry -- this becomes the newest
+      #     match for every subsequent "ccache-linux-main-" lookup, which is
+      #     what "refreshes" main's cache on every merge without ever
+      #     explicitly deleting the old one (it just stops being the most
+      #     recent and ages out under GitHub's quota/eviction on its own).
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-linux-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-linux-${{ github.head_ref || github.ref_name }}-
+            ccache-linux-main-
+
       - name: Fetch test assets
         run: tools/ci/local/fetch-assets.sh
 
+      # --no-ccache-stats: suppress build.sh's own end-of-build `ccache -s`
+      # print (see build.sh) so the summary isn't printed twice on a normal
+      # successful run -- the "ccache stats" step below is the single,
+      # canonical place it's printed, and unlike build.sh's inline print it
+      # is also guaranteed to run (via if: always()) when a later step
+      # (build or test) fails, which is exactly when you most want to see
+      # whether ccache was even in play.
       - name: Build Unix (debug)
-        run: tools/ci/local/build.sh debug
+        run: tools/ci/local/build.sh debug --no-ccache-stats
 
       - name: Run Unix Tests (debug)
         run: tools/ci/local/test.sh ctest debug
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s

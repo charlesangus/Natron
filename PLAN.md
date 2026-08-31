@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M2.P3.T1c
-pm_heartbeat: 2026-08-31T00:54:39-04:00
+current: M2.P3.T1e
+pm_heartbeat: 2026-08-31T01:52:10-04:00
 ship: pr-per-milestone
 ---
 
@@ -74,8 +74,3 @@ future core work has solid ground to build on.
   environment reproduces CI exactly; bumping both is a separate change that
   should not land while M2's smoke-test failure is still being diagnosed.
   Decide after M2 closes.
-- **Should the plan move to a `.plan/` worktree?** `PLAN.md` is currently
-  tracked in the code repo, so plan churn rides every milestone branch and
-  shows up in every PR diff. Raised 2026-08-31; deferred rather than done
-  mid-flight, since M2's branch already interleaves plan and code commits.
-  Revisit once M2 lands.

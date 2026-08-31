@@ -8,3 +8,4 @@
 - 2026-08-30 — merge-m7-with-red-ci: merged M7 with CI red; RB-2.6 has failed since M1 and the failure is M2 scope → DECISIONS/2026-08-30-merge-m7-with-red-ci.md
 - 2026-08-30 — trunk-based-on-main: default branch becomes `main`; legacy RB-* kept as history, not merge targets → DECISIONS/2026-08-30-trunk-based-on-main.md
 - 2026-08-30 — ci-reuses-local-scripts: CI invokes tools/ci/local/*.sh and gates on a stable aggregator check → DECISIONS/2026-08-30-ci-reuses-local-scripts.md
+- 2026-08-31 — defer-plan-worktree-migration: keep the plan in-repo until M2 merges, then move to `.plan/` → DECISIONS/2026-08-31-defer-plan-worktree-migration.md

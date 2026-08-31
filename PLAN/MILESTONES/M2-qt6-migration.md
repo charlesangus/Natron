@@ -4,7 +4,7 @@
 > This milestone's 54 commits were rebased off `main` onto
 > `milestone/m2-qt6-migration`; `.github/workflows/ci.yml` is now M8's version
 > verbatim, which strikes `M2.P3.T3` (see `## Decisions`). Remaining work:
-> `T1c` → `T1a` → `T1` → `T2`.
+> `T1e` → `T1d` → `T1a` → `T1` → `T2`.
 >
 > <details><summary>Earlier parking notes (historical)</summary>
 >
@@ -388,7 +388,7 @@ milestone than went in.
     after a `--recreate`; no build or test behaviour changes.
   - size: S
 
-- [ ] M2.P3.T1c — Port embedded-Python startup off the deprecated 3.11 setters
+- [x] M2.P3.T1c — Port embedded-Python startup off the deprecated 3.11 setters
   - files: `Global/PythonUtils.cpp`, `Global/PythonUtils.h`,
     `Engine/AppManager.cpp`
   - approach: *(run before `M2.P3.T1a`; this is the leading suspect for its
@@ -419,6 +419,45 @@ milestone than went in.
     five consecutive runs** (the failure is non-deterministic, so a single pass
     proves nothing); `tools/ci/local/test.sh ctest` is no worse than before.
   - size: L
+
+- [ ] M2.P3.T1e — Guard the unchecked `getpwuid()` deref in `Engine/Project.cpp`
+  - files: `Engine/Project.cpp`
+  - approach: *(run before `M2.P3.T1a`; it currently crashes every local smoke
+    run)* `Natron::getUserName()` at line ~109 does
+    `return passwd->pw_name;` on the result of `getpwuid(getuid())` without a
+    NULL check, and `generateGUIUserName()` (line ~116) reaches it from
+    `Project::initializeKnobs()` (line ~1072). `getpwuid` returns NULL for any
+    uid with no passwd entry — which is exactly the dev container, running as
+    uid 1000 (the same cause as the `id: cannot find name for user ID 1000`
+    noise `tools/ci/local/README.md` already documents). CI runs as root and
+    has an entry, which is why this never showed up there. Fall back to
+    `$USER`/`$LOGNAME`, then to the uid rendered as a string; do not invent a
+    name that could collide with a real one. Pre-existing bug, not a Qt6
+    regression — found while verifying `M2.P3.T1c`.
+  - verify: `tools/ci/local/test.sh smoke` reaches `smoke_test.py` instead of
+    segfaulting in `initializeKnobs`; `tools/ci/local/test.sh ctest` runs the
+    `Tests` binary to completion rather than dying as `SEGFAULT`.
+  - size: S
+
+- [ ] M2.P3.T1d — Install `qtpy` so the smoke test can actually run
+  - files: `.github/workflows/ci.yml`, `tools/ci/local/Dockerfile` (and/or
+    `tools/ci/local/devshell.sh`), whichever is the right layer
+  - approach: *(blocks `M2.P3.T1a`)* `tools/ci/smoke_test.py`'s first
+    assertion is `import qtpy; qtpy.API_NAME == 'PySide6'`, but nothing
+    installs `qtpy` — `grep -i "qtpy\|pip install" .github/workflows/ci.yml`
+    returns nothing and `aswf/ci-baseqt:2027.0` does not ship it. The smoke
+    test therefore cannot pass anywhere today, in CI or locally, which means
+    `M2.P3.T1a` could never have been green. Install `qtpy>=2.0` (the floor
+    for `QT_API=pyside6`) in the same layer CI and the local loop share, so
+    the two keep agreeing per
+    `PLAN/DECISIONS/2026-08-30-ci-reuses-local-scripts.md`. Prefer the image
+    over an ad-hoc `pip install` step if the local Dockerfile is the shared
+    layer; note `PLAN/DECISIONS/2026-08-30-sealed-package-network.md` — check
+    what network access actually exists before assuming pip works.
+  - verify: `tools/ci/local/devshell.sh bash -lc 'python3 -c "import qtpy;
+    print(qtpy.API_NAME, qtpy.__version__)"'` prints `PySide6` and a version
+    >= 2.0; the same holds in a real CI run.
+  - size: S
 
 - [ ] M2.P3.T1a — Add a CI Python smoke-test step and use it to verify the enum/QFlags binding fixes
   - files: `.github/workflows/ci.yml`, a new small Python script under (e.g.)
@@ -611,3 +650,38 @@ diagnostics while still gating on test failure.
   `devshell.sh` was internally inconsistent with it and with the ASWF image
   (Python 3.13.14). Carrying `M2.P3.T1b`'s fix forward is what keeps the local
   loop and CI agreeing, which is the whole point of that task.
+
+- 2026-08-31 — `M2.P3.T1c` root cause was `Py_SetProgramName`, not the version
+  macros: `NATRON_PY_VERSION_STRING`/`_NO_DOT` derive from `PY_MAJOR_VERSION`/
+  `PY_MINOR_VERSION` and were already correct at 3.13, so M7's "`ci.yml` says
+  3.10, image ships 3.13.14" lead (recorded above as "check this before
+  anything else") was a dead end — `M2.P3.T1b` had already fixed the only
+  thing that was wrong there. The real fault was that `Py_SetProgramName` was
+  called *unconditionally*: pointed at a build-tree binary, CPython 3.13
+  derives `prefix`/`exec_prefix`/`module_search_paths` from that location,
+  finds no `lib/python3.13`, and aborts before importing `encodings`. The fix
+  is therefore conditional overriding — set `home`/`program_name` only when a
+  bundled layout exists — and not merely an API port. Recorded because the
+  dead lead was stated with high confidence and cost real time.
+
+- 2026-08-31 — `config.configure_c_stdio = 0` is load-bearing: caught in
+  review, not implementation. `Py_Initialize()` uses CPython's *compat*
+  config, where `configure_c_stdio` is 0; `PyConfig_InitPythonConfig()`
+  defaults it to 1, which makes the interpreter reconfigure the embedding
+  application's own `stdin`/`stdout`/`stderr` (unbuffered under
+  `PYTHONUNBUFFERED`, and binary mode on Windows). Natron embeds Python; it
+  must not start behaving like the `python` binary. The same class of trap
+  applies to `config.parse_argv`, which is 1 under `PyConfig_InitPythonConfig`
+  versus 0 under `Py_Initialize()` — harmless only because `config.argv` is
+  never set. Anyone populating `config.argv` later must set `parse_argv = 0`.
+
+- 2026-08-31 — the M7 GLX `getFBConfigAttrib` SIGSEGV did not reproduce once
+  in ~15 local runs while verifying `M2.P3.T1c`; every run instead reported
+  `Error while loading OpenGL: std::bad_alloc` and disabled OpenGL. Either
+  the allocation failure now short-circuits the GLX path or the original
+  diagnosis was of a different configuration. Whoever picks that bug up must
+  re-confirm it still reproduces before working it. Separately, the host was
+  under heavy memory pressure during verification (swap 4083/4095 MB, two
+  runs OOM-killed) — some of the "non-determinism" M7 attributed to the code
+  is likely environmental, which is worth knowing before reading run-to-run
+  variation as signal.

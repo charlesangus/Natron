@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: null
-pm_heartbeat: 2026-08-30T00:45:00+00:00
+current: M7.P1.T1
+pm_heartbeat: 2026-08-30T20:43:09-04:00
 ship: pr-per-milestone
 ---
 
@@ -21,7 +21,7 @@ future core work has solid ground to build on.
 | **OS baseline** | Rocky Linux 9 (EL9) |
 | **Toolchain** | gcc 14.2 / glibc 2.34 |
 | **Build system** | CMake only |
-| **Milestones** | 7 (M0–M6) |
+| **Milestones** | 8 (M0–M7) |
 
 - **Why this is tractable:** the two hardest Qt6 blockers — the
   `QOpenGLWidget` viewer and a working Qt6 CMake path — are already
@@ -38,6 +38,13 @@ future core work has solid ground to build on.
   parallel on separate branches. M4 starts as soon as M1 lands, so every
   M2/M3 PR gets gated automatically. M6 (docs) comes last, once the build is
   actually the thing being documented.
+- **M7 runs next, ahead of everything else** (2026-08-30). M2 is parked at
+  `blocked` mid-`M2.P3.T1a`: the only way to run the test suite today is a
+  full cold build on GitHub Actions, so debugging the Python-bindings smoke
+  test has degenerated into pushing `ci(temp)` diagnostic commits to read a
+  stack trace. M7 stands up the same `aswf/ci-baseqt:2027.0` environment
+  locally with a persistent build tree, then M2 resumes against it. Board
+  rows below are listed in execution order, not ID order.
 - Grounded in the `RB-2.6` tree (`CMakeLists.txt`, `INSTALL_LINUX.md`,
   `Global/Macros.h`, `tools/jenkins/`), the open PR queue on
   `NatronGitHub/Natron`, and the ASWF `aswf-docker` image catalog, as of
@@ -50,7 +57,8 @@ future core work has solid ground to build on.
 |----|-----------|--------|------|
 | M0 | Fork & cut scope | done | [M0-fork-cut-scope.md](PLAN/MILESTONES/M0-fork-cut-scope.md) |
 | M1 | Toolchain baseline | done | [M1-toolchain-baseline.md](PLAN/MILESTONES/M1-toolchain-baseline.md) |
-| M2 | Land the Qt6 migration | todo | [M2-qt6-migration.md](PLAN/MILESTONES/M2-qt6-migration.md) |
+| M2 | Land the Qt6 migration | blocked | [M2-qt6-migration.md](PLAN/MILESTONES/M2-qt6-migration.md) |
+| M7 | Local incremental builds | doing | [M7-local-incremental-builds.md](PLAN/MILESTONES/M7-local-incremental-builds.md) |
 | M3 | Dependency modernization | todo | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
 | M4 | CI/CD rebuild | done | [M4-cicd-rebuild.md](PLAN/MILESTONES/M4-cicd-rebuild.md) |
 | M5 | Test & correctness baseline | todo | [M5-test-correctness-baseline.md](PLAN/MILESTONES/M5-test-correctness-baseline.md) |
@@ -58,4 +66,14 @@ future core work has solid ground to build on.
 
 # Open questions
 
-(none)
+- **Which `aswf/ci-baseqt` tag is canonical — `2027.0` or `2027.1`?**
+  `.github/workflows/ci.yml` pins `2027.0`, but
+  `PLAN/DECISIONS/2026-08-29-pin-exact-aswf-tag.md` records `2027.1` as the
+  chosen tag. M7 deliberately matches `ci.yml` at `2027.0` so the local
+  environment reproduces CI exactly; bumping both is a separate change that
+  should not land while M2's smoke-test failure is still being diagnosed.
+  Decide after M2 closes.
+- **M2 is `blocked`** pending M7 — parked mid-`M2.P3.T1a` because verifying the
+  PySide6/Shiboken6 binding fixes requires a test-suite run, and today that
+  means a full CI build per iteration. No human decision needed; it unblocks
+  when M7's gate passes.

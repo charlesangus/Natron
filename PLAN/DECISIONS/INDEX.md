@@ -3,3 +3,4 @@
 - 2026-08-29 — defer-packaging-decision: defer AppImage/Flatpak/source-only choice until CI is green → DECISIONS/2026-08-29-defer-packaging-decision.md
 - 2026-08-29 — upstream-agnostic-fixes: upstream platform-agnostic fixes to keep a bridge with lockewerks/cedricp → DECISIONS/2026-08-29-upstream-agnostic-fixes.md
 - 2026-08-29 — pin-exact-aswf-tag: use `aswf/ci-baseqt:2027.1` (not bare `2027`) — confirmed contents, GCC 14.2 default → DECISIONS/2026-08-29-pin-exact-aswf-tag.md
+- 2026-08-30 — local-incremental-builds: build/test locally in an `aswf/ci-baseqt:2027.0` container instead of iterating through CI → DECISIONS/2026-08-30-local-incremental-builds.md

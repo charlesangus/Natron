@@ -1,11 +1,11 @@
 # Milestone 2: Land the Qt6 migration
 
-> **Parked at `blocked` on 2026-08-30, mid-`M2.P3.T1a`.** Verifying the
-> PySide6/Shiboken6 binding fixes needs a test-suite run, and today that costs
-> a full cold build on GitHub Actions per iteration. M7 (local incremental
-> builds) runs first; resume here once its gate passes and use
-> `tools/ci/local/test.sh smoke --gdb` instead of `ci(temp)` diagnostic
-> commits.
+> **Unblocked 2026-08-30 — M7 shipped; resumed at `M2.P3.T1a`.** The local
+> loop is live: `tools/ci/local/build.sh` then
+> `tools/ci/local/test.sh smoke --gdb`, no push required. A one-file rebuild is
+> 13 s and a build failure surfaces in seconds. See this file's `## Decisions`
+> for what M7 already found while validating itself — it is a head start, not
+> just tooling.
 
 `~2-3 weeks` · highest risk. The bulk of the effort, but most of it is already
 scoped or already written. Three pieces of this exist as open upstream PRs —
@@ -479,3 +479,39 @@ diagnostics while still gating on test failure.
   `CustomParamInteract.cpp` (M2.P1.T2c). M6's existing
   `qt6-migration.rst` doc-currency task already covers correcting this
   list once the migration is actually done — no separate task added.
+
+- 2026-08-30 — **handed over from M7, which found four things while validating
+  its own tooling against this branch.** Start here rather than re-deriving
+  them.
+  1. **A CMake generate failure, already fixed** (commit `621cd48c7` on this
+     branch). `find_package(harfbuzz CONFIG REQUIRED)` sat in
+     `Engine/CMakeLists.txt` while `harfbuzz::harfbuzz` was on `NatronEngine`'s
+     PUBLIC link interface; imported targets are directory-scoped, so
+     `Renderer`/`Gui`/`Tests`/`App` — siblings of `Engine`, not descendants —
+     could not resolve it. Moved to the top-level `CMakeLists.txt`, matching how
+     Qt6/Shiboken6/PySide6/X11 are already handled. The `GLOBAL` keyword would
+     also work but needs CMake 3.24+, above this project's 3.16.7 minimum. Link
+     order and the `INTERFACE_LINK_LIBRARIES_DIRECT` promotion from
+     `FREETYPE_HARFBUZZ_FINDINGS.md` are untouched. **With this, the full debug
+     build completes** — `NatronRenderer`, `Natron` and `Tests` all link.
+  2. **`M2.P3.T1a`'s smoke test fails two different ways, non-deterministically**
+     — this is the key finding. Across four `test.sh smoke --gdb` runs, three
+     produced `Fatal Python error: Failed to import encodings module` and one
+     produced a SIGSEGV. `ctest`'s single test shows the same instability,
+     failing sometimes as `SEGFAULT` and sometimes on the `encodings` error.
+     The non-determinism is itself important: it means no single CI run — green
+     or red — was ever trustworthy evidence, which is part of why chasing this
+     through `ci(temp)` commits went nowhere.
+  3. **The SIGSEGV has a backtrace now.** `getFBConfigAttrib` at
+     `Engine/OSGLContext_x11.cpp:433` dereferences a NULL `fbconfig` handed to
+     it by `chooseFBConfig` (line 472), reached via `main` →
+     `AppManager::load` → `loadFromArgs` → `initializeOpenGLFunctionsOnce` →
+     `GPUContextPool::attachGLContextToRender`. A GLX fbconfig-selection NULL
+     deref under Xvfb, adjacent to commit `471f15c65`'s "fix pre-existing GLX
+     NULL deref" — quite possibly that fix being incomplete.
+  4. **`ci.yml` declares `PYTHON_VERSION: '3.10'` and the job is still named
+     "Test Ubuntu Python 3.10", but `aswf/ci-baseqt:2027.0` ships Python
+     3.13.14.** The variable looks vestigial from the pre-ASWF CI, but given
+     that the dominant failure is an embedded-interpreter `encodings` import
+     error, an incorrect assumption about which Python the bindings build
+     against is a strong suspect. **Check this before anything else.**

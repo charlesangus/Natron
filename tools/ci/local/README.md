@@ -67,6 +67,10 @@ Configure only runs once, when `CMakeCache.txt` doesn't exist yet; pass
 This is also what re-execs you into the dev container (see "Getting a
 shell" below) -- you don't need to start one yourself first.
 
+`ninja` parallelism defaults to `nproc`, overridable via `NATRON_BUILD_JOBS`,
+e.g. `NATRON_BUILD_JOBS=2 tools/ci/local/build.sh` -- useful when a runner's
+core count shouldn't dictate memory pressure.
+
 ## 4. Test
 
 ```
@@ -122,6 +126,28 @@ and `test.sh` reach the container themselves; you don't need to run
 name is overridable via `NATRON_DEV_CONTAINER` -- use this to give a second
 worktree its own container and caches, e.g.
 `NATRON_DEV_CONTAINER=natron-dev-wt2 tools/ci/local/devshell.sh`.
+
+## Running build.sh/test.sh from inside a container already (e.g. CI)
+
+`build.sh` and `test.sh` normally re-exec themselves through `devshell.sh` so
+they can be invoked directly from the host. If something already runs them
+inside a container -- `devshell.sh` itself, or a CI job whose container *is*
+the dev image -- they need to detect that and run directly instead of trying
+(and failing, for lack of a Docker daemon) to nest another container.
+
+- `NATRON_IN_CONTAINER=1` is the explicit signal: `devshell.sh` sets it on
+  every container it creates, and setting it yourself forces `build.sh`/
+  `test.sh` to skip the re-exec and run directly -- e.g.
+  `tools/ci/local/devshell.sh env NATRON_IN_CONTAINER=1 tools/ci/local/build.sh`.
+- Failing that, both scripts also infer "already in a container" from `CI`
+  (checked case-insensitively, so `CI=true` as set by GitHub Actions and
+  `CI=True` as set by `devshell.sh` both count -- a strict compare against
+  one spelling would have silently mis-detected Actions' lowercase value).
+  `/.dockerenv` was considered as a further, runtime-level fallback but
+  rejected: it is not specific to the `natron-dev` container, and on hosts
+  that are themselves already inside some unrelated container (e.g. certain
+  sandboxed dev environments) its presence would falsely report "already in
+  the dev container" and run cmake/ninja directly on the wrong filesystem.
 
 ## Two gotchas
 

@@ -62,7 +62,7 @@ Do not chase a green build here, and do not weaken the gate to manufacture one.
 
 ## Phase 8.2: A pipeline that reuses the local loop
 
-- [ ] M8.P2.T1 — Make `build.sh` and `test.sh` usable from inside CI
+- [x] M8.P2.T1 — Make `build.sh` and `test.sh` usable from inside CI
   - files: `tools/ci/local/build.sh`, `tools/ci/local/test.sh`,
     `tools/ci/local/devshell.sh`
   - approach: both scripts currently re-exec themselves through `devshell.sh`.

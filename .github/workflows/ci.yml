@@ -4,89 +4,213 @@ on:
   workflow_dispatch: {}
   push:
     branches:
-    - RB-2.5
-    - RB-2.6
+    - main
     paths-ignore:
       - Documentation
   pull_request:
     branches:
-    - RB-2.5
-    - RB-2.6
+    - main
     paths-ignore:
       - Documentation
 
 jobs:
   unix_test:
-    name: Test Ubuntu Python 3.10
+    name: Test Linux Python 3.13
     runs-on: ubuntu-latest
     container:
       image: aswf/ci-baseqt:2027.0
     defaults:
       run:
-        shell: xvfb-run --auto-servernum bash -l {0}
+        shell: bash -l {0}
     env:
       CI: 'True'
-      PYTHON_VERSION: '3.10'
+      # aswf/ci-baseqt:2027.0 ships ASWF_CPYTHON_VERSION=3.13.14 (verified
+      # via `docker image inspect`). Nothing in this repo actually consumes
+      # PYTHON_VERSION (CMakeLists.txt:60 uses find_package(Python3 ...),
+      # which finds whatever Python3 is on PATH in the image regardless of
+      # this var) -- it is declaration-only, kept accurate so it doesn't
+      # mislead the next reader.
+      PYTHON_VERSION: '3.13'
       OCIO_CONFIG_VERSION: 2.5
+      NATRON_IN_CONTAINER: 1
+      # --- ccache -----------------------------------------------------------
+      # CCACHE_DIR: deliberately a path under the checked-out workspace, NOT
+      # ccache's built-in default ($HOME/.cache/ccache -- confirmed via
+      # `ccache -p | grep cache_dir` against this exact image). GitHub
+      # Actions' `container:` jobs run as root but do not guarantee HOME
+      # matches the image's own /root; the runner is free to repoint it at a
+      # job-managed volume. github.workspace, by contrast, is where
+      # actions/checkout puts the repo and is bind-mounted at the same
+      # absolute path inside the container, so it is a stable, known,
+      # cacheable path regardless of what HOME resolves to. build.sh/test.sh
+      # never set CCACHE_DIR themselves (see build.sh's cmake invocation --
+      # it only passes -DCMAKE_*_COMPILER_LAUNCHER=ccache), so this job-level
+      # env value flows straight through to the compiler-launcher ccache
+      # invocations unmodified.
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      # CCACHE_MAXSIZE: ccache's built-in 5 GiB default was measured (M7,
+      # see tools/ci/local/devshell.sh) to already thrash on a single cold
+      # build of this repo -- 193 cleanup cycles and a 0.18% hit rate,
+      # because one full debug build's compiled-object working set exceeds
+      # 5 GiB before the build even finishes. devshell.sh's local answer
+      # (40G) is sized for holding *several* full build trees at once across
+      # branch switches -- do not copy that here: GitHub's actions/cache has
+      # a 10 GB *total-per-repository* quota across every cache entry, and
+      # this design (see the "Restore ccache" step below) intentionally
+      # keeps more than one entry alive (this branch's + main's). 6 GiB is
+      # comfortably above the observed 5 GiB thrashing point for one CI
+      # build, while leaving headroom under the 10 GB quota for at least one
+      # other entry to coexist without immediately evicting it. If the
+      # `ccache -s` summary at the end of the job keeps showing cleanups,
+      # this is the first number to raise.
+      CCACHE_MAXSIZE: 6G
 
     steps:
       - name: Checkout branch
         uses: actions/checkout@v4.1.1
         with:
           submodules: recursive
-      - name: Install Linux system packages
-        shell: bash
-        run: |
-          dnf install -y cairo-devel epel-release wayland-devel wget unzip clang xorg-x11-server-Xvfb
-          dnf install -y extra-cmake-modules
 
-      - name: Download OpenColorIO-Configs
-        run: |
-          wget https://github.com/NatronGitHub/OpenColorIO-Configs/archive/Natron-v${OCIO_CONFIG_VERSION}.tar.gz
-          tar xzf Natron-v${OCIO_CONFIG_VERSION}.tar.gz
-          mv OpenColorIO-Configs-Natron-v${OCIO_CONFIG_VERSION} OpenColorIO-Configs
+      # Cache key design:
+      #
+      #   key (primary):    ccache-linux-<branch>-<run_id>
+      #   restore-keys:     ccache-linux-<branch>-
+      #                      ccache-linux-main-
+      #
+      # <branch> is `github.head_ref || github.ref_name`: on pull_request
+      # events github.ref_name is the synthetic "<pr-number>/merge" ref (not
+      # useful as a stable per-branch prefix across runs of the same PR), so
+      # head_ref -- the PR's actual source branch -- is used instead; on
+      # push events (this workflow only pushes on main) head_ref is unset,
+      # so it falls back to ref_name, i.e. "main".
+      #
+      # The primary key always ends in github.run_id, which is unique to
+      # this run and therefore (almost) never matches an existing cache on
+      # restore -- that's intentional, not a miss to worry about:
+      # actions/cache's save step is a silent no-op if a cache already
+      # exists under the exact key it's given, so a run-unique primary key
+      # guarantees this run's ccache state is always saved as a *new* entry
+      # at the end of the job, instead of the save being dropped because an
+      # earlier run already claimed that key. All the actual cache hits come
+      # from restore-keys, which do a prefix match against the most
+      # recently created matching entry:
+      #   1. ccache-linux-<branch>-  -> this branch's own most recent run.
+      #      Covers: a second (or Nth) push to the same PR reuses the
+      #      previous push's warm cache.
+      #   2. ccache-linux-main-      -> main's most recent run. Covers: the
+      #      first run on a brand-new PR branch has no branch-specific
+      #      cache yet, so it reuses main's instead of starting cold.
+      #
+      # Walking through the three scenarios called out in the task:
+      #   - First run on a new PR branch: no "ccache-linux-<branch>-*" entry
+      #     exists yet, so restore-key 1 misses; restore-key 2 matches
+      #     main's latest cache and restores it warm. At job end, this run's
+      #     state is saved under "ccache-linux-<branch>-<run_id>" (a new
+      #     entry, branch-specific from now on).
+      #   - Second run on that same PR (e.g. another push): restore-key 1
+      #     now matches the entry the first run saved, so ccache is warm
+      #     from this branch's own prior build. Job end saves another new
+      #     branch-specific entry under this run's run_id.
+      #   - Push to main (merge): restore-key 1 (branch = "main") matches
+      #     main's previous cache, so the build is warm. Job end saves a new
+      #     "ccache-linux-main-<run_id>" entry -- this becomes the newest
+      #     match for every subsequent "ccache-linux-main-" lookup, which is
+      #     what "refreshes" main's cache on every merge without ever
+      #     explicitly deleting the old one (it just stops being the most
+      #     recent and ages out under GitHub's quota/eviction on its own).
+      - name: Restore ccache
+        id: restore_ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-linux-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-linux-${{ github.head_ref || github.ref_name }}-
+            ccache-linux-main-
 
-      - name: Download Plugins
-        run: |
-          mkdir Plugins && cd Plugins
-          wget https://github.com/NatronGitHub/openfx-io/releases/download/natron_testing/openfx-io-build-ubuntu_22-testing.zip
-          unzip openfx-io-build-ubuntu_22-testing.zip
-          cd ..
+      - name: Fetch test assets
+        run: tools/ci/local/fetch-assets.sh
 
+      # --no-ccache-stats: suppress build.sh's own end-of-build `ccache -s`
+      # print (see build.sh) so the summary isn't printed twice on a normal
+      # successful run -- the "ccache stats" step below is the single,
+      # canonical place it's printed, and unlike build.sh's inline print it
+      # is also guaranteed to run (via if: always()) when a later step
+      # (build or test) fails, which is exactly when you most want to see
+      # whether ccache was even in play.
       - name: Build Unix (debug)
-        run: |
-          mkdir debug && cd debug
-          cmake -DCMAKE_BUILD_TYPE=Debug ../
-          make -j2
+        run: tools/ci/local/build.sh debug --no-ccache-stats
 
       - name: Run Unix Tests (debug)
-        id: run-unix-tests-debug
-        # Allow continuing after error so logs can be uploaded.
-        continue-on-error: true
-        run: |
-          cd debug
-          OFX_PLUGIN_PATH=$PWD/../Plugins OCIO=$PWD/../OpenColorIO-Configs/blender/config.ocio ctest -V
+        run: tools/ci/local/test.sh ctest debug
 
-      - name: Build Unix (release)
-        run: |
-          mkdir release && cd release
-          cmake ../
-          make -j2
-
-      - name: Run Unix Tests (release)
-        id: run-unix-tests-release
-        # Allow continuing after error so logs can be uploaded.
-        continue-on-error: true
-        run: |
-          cd release
-          OFX_PLUGIN_PATH=$PWD/../Plugins OCIO=$PWD/../OpenColorIO-Configs/blender/config.ocio ctest -V
-
-      - name: Upload Ubuntu Test Log artifacts
-        uses: actions/upload-artifact@v4.3.1
+      # if: always() is load-bearing, not decorative. actions/cache's
+      # implicit post-job save only runs when the job succeeds -- with a
+      # plain `actions/cache@v4` step, a failing build compiles objects
+      # into ccache and then the save is skipped entirely, so the cache
+      # never accumulates anything on a red run. That matters a lot right
+      # now: main doesn't compile under Qt6 until M2 lands, so every run
+      # until then is a build failure, and without if: always() here every
+      # single one of those runs would throw away its ccache state and the
+      # next run would start cold again -- the cache would never once pay
+      # off for the whole milestone. Deleting if: always() to "tidy up"
+      # this step silently reintroduces that: nothing errors, CI just
+      # quietly stays slow, and the cause is nowhere near the symptom.
+      # key reuses restore_ccache's resolved cache-primary-key output
+      # (rather than re-interpolating the key expression here) so the
+      # restore and save can never drift apart into different keys.
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
         with:
-          name: Ubuntu Test Logs
-          path: ${{ github.workspace }}/release/Testing/Temporary/LastTest.log
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
 
-      - name: Check for test failures
-        if: steps.run-unix-tests-debug.outcome == 'failure' || steps.run-unix-tests-release.outcome == 'failure'
-        run: exit 1
+      - name: ccache stats
+        if: always()
+        run: ccache -s
+
+  # ---------------------------------------------------------------------
+  # Stable aggregator / required-status-check contract.
+  #
+  # Branch protection on main is configured to require a status check
+  # literally named "ci" (job key == job `name`, both below). Do NOT
+  # rename this job casually -- that is the entire reason it exists.
+  #
+  # Background: branch protection previously required a check by the
+  # *display name* of the real build job (e.g. "Test Ubuntu Python
+  # 3.10"). When that job was later renamed to accurately describe what
+  # it actually does, the old required-check name stopped being
+  # reported by any job, so no PR could ever satisfy branch protection
+  # again. A required check must be a name nobody has a reason to touch
+  # when they fix an inaccurate label on the real work -- so this
+  # aggregator job's name is intentionally decoupled from what the real
+  # jobs are called, and the real jobs are free to be renamed for
+  # accuracy without ever breaking branch protection again.
+  #
+  # This job does no building -- it only evaluates the results of the
+  # real jobs above, so it deliberately does NOT run in the (12.5 GB)
+  # aswf/ci-baseqt container; runs on the bare ubuntu-latest runner.
+  #
+  # `if: always()` is required: a job with `needs:` is skipped by
+  # default whenever a dependency doesn't succeed, and a *skipped*
+  # required check leaves a PR pending forever instead of failing it.
+  # Running unconditionally lets this job itself decide pass/fail based
+  # on `needs.*.result`, explicitly requiring `== 'success'` rather than
+  # only checking for `failure` -- a dependency can also end up
+  # `cancelled` or `skipped`, and either of those must also fail this
+  # gate, not report green.
+  ci:
+    name: ci
+    needs: [unix_test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check dependency results
+        run: |
+          echo "unix_test result: ${{ needs.unix_test.result }}"
+          if [ "${{ needs.unix_test.result }}" != "success" ]; then
+            echo "One or more required jobs did not succeed -- failing the aggregator gate."
+            exit 1
+          fi
+          echo "All required jobs succeeded."

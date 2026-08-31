@@ -23,6 +23,13 @@
 # want --recreate, which keeps the ccache/home volumes):
 #   docker rm -f "${NATRON_DEV_CONTAINER:-natron-dev}"
 #   docker volume rm "${NATRON_DEV_CONTAINER:-natron-dev}-ccache" "${NATRON_DEV_CONTAINER:-natron-dev}-home"
+#
+# The container this script creates always has NATRON_IN_CONTAINER=1 set (see
+# the `docker run -e NATRON_IN_CONTAINER=1 ...` below). build.sh/test.sh use
+# that as the explicit, unambiguous "we are already inside the dev container,
+# do not re-exec through this script again" signal -- see their comments for
+# why this exists alongside (not instead of) inferring the same thing from
+# CI.
 
 set -euo pipefail
 
@@ -116,6 +123,7 @@ if [[ "${STATE}" == "missing" ]]; then
         -v "${HOME_VOLUME}:${HOME_MOUNT}" \
         -w "${REPO_ROOT}" \
         -e CI=True \
+        -e NATRON_IN_CONTAINER=1 \
         -e PYTHON_VERSION=3.10 \
         -e OCIO_CONFIG_VERSION=2.5 \
         -e HOME="${HOME_MOUNT}" \

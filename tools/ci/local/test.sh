@@ -34,8 +34,12 @@
 # Like build.sh, this is meant to be run from the host, from the repo root,
 # with no prior `devshell.sh` shell required -- it re-execs itself through
 # devshell.sh exactly once, and does nothing special if already inside the
-# container (CI=True, exported by devshell.sh's `docker run`, is the
-# "already inside" check -- see build.sh's comment for why that's reliable).
+# container. Detection uses the same in_container() logic as build.sh
+# (NATRON_IN_CONTAINER=1, exported by devshell.sh's `docker run`, checked
+# first; a case-insensitive CI check as fallback) -- see build.sh's comment
+# for the full reasoning, including why a strict CI=="True" compare is not
+# reliable under GitHub Actions (CI=true, lowercase) and why /.dockerenv was
+# considered and rejected as a further fallback.
 
 set -euo pipefail
 
@@ -74,8 +78,22 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." >/dev/null 2>&1 && pwd)"
 
+# Returns success if we're already running inside a dev/CI container -- see
+# build.sh's identical helper for why each of these checks exists.
+in_container() {
+    if [[ "${NATRON_IN_CONTAINER:-}" == "1" ]]; then
+        return 0
+    fi
+    local ci_lower
+    ci_lower="$(printf '%s' "${CI:-}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${ci_lower}" == "true" ]]; then
+        return 0
+    fi
+    return 1
+}
+
 # --- host-side: hop into the container --------------------------------------
-if [[ "${CI:-}" != "True" ]]; then
+if ! in_container; then
     echo "== test.sh: entering dev container via devshell.sh =="
     exec "${SCRIPT_DIR}/devshell.sh" "${REPO_ROOT}/tools/ci/local/test.sh" "$@"
 fi

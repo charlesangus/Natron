@@ -37,7 +37,7 @@ one thing it exists to do.
     shows headroom for two build trees.
   - size: S
 
-- [ ] M7.P1.T2 — `tools/ci/local/Dockerfile` layering the CI setup steps onto the base
+- [x] M7.P1.T2 — `tools/ci/local/Dockerfile` layering the CI setup steps onto the base
   - files: `tools/ci/local/Dockerfile`
   - approach: **Re-planned 2026-08-30 — see the sealed-network decision below.**
     No `dnf` is possible here: every distro repo (Rocky, EPEL, NVIDIA CUDA) is
@@ -60,8 +60,7 @@ one thing it exists to do.
   - verify: `docker build -t natron-dev:2027.0 tools/ci/local/` succeeds;
     `docker run --rm natron-dev:2027.0 bash -lc 'ccache --version && ninja
     --version && gdb --version && which Xvfb && which clang'` prints all five;
-    and a CMake probe resolves ECM — `find_package(ECM NO_MODULE)` sets
-    `ECM_MODULE_PATH` and `FindWayland.cmake` is present under it.
+    and `/usr/local/share/ECM` is absent, matching the documented divergence.
   - size: S
 
 - [x] M7.P1.T3 — One-time fetch of OCIO configs and OFX plugins into a cached dir
@@ -80,7 +79,7 @@ one thing it exists to do.
 
 ## Phase 7.2: The dev loop
 
-- [ ] M7.P2.T1 — `devshell.sh`: long-lived container with persistent caches
+- [x] M7.P2.T1 — `devshell.sh`: long-lived container with persistent caches
   - files: `tools/ci/local/devshell.sh`
   - approach: start (or `exec` into, if already running) a named container
     `natron-dev` from `natron-dev:2027.0`, with the repo bind-mounted at the
@@ -243,3 +242,21 @@ a usable backtrace.
   GitHub instead. The package-list-must-match-`ci.yml` comment stays in the
   Dockerfile as documentation of what CI asks for and why each item is already
   satisfied, so the two still cannot silently diverge.
+- 2026-08-30 — **`extra-cmake-modules` is deliberately NOT installed; the aswf
+  image is used as the build engine as-is.** Project owner's call, taken after
+  the sealed-network finding above: ECM was the single package in CI's list the
+  base image lacks, and a working from-source build of it (KDE GitHub,
+  `v5.116.0`, verified to give `Wayland_FOUND=TRUE`) was implemented and then
+  cut rather than carried. The Dockerfile consequently adds no layers — it is
+  `FROM aswf/ci-baseqt:2027.0` plus the comment block that documents what CI
+  installs and how the base image satisfies each item, which is what keeps a
+  `ci.yml` diff meaningful.
+  **Known divergence, recorded deliberately:** `CMakeLists.txt:115` calls
+  `find_package(ECM NO_MODULE)` to put `FindWayland.cmake` on
+  `CMAKE_MODULE_PATH` for line 118's `find_package(Wayland COMPONENTS Client
+  Egl)`. Neither is `REQUIRED`, so locally the build configures with **Wayland
+  support off** while CI has it **on**. This does not break the build and does
+  not affect the `NatronRenderer` smoke test M7 exists to debug, but it is the
+  one place local and CI differ, and it must be ruled out first if a local
+  result ever fails to match CI. Closing the gap later is a one-line change
+  once a package repo is reachable.

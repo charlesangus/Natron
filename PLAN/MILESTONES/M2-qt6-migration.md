@@ -557,7 +557,7 @@ milestone than went in.
     no longer prints `Failed to import qtpy.QtCore`.
   - size: M
 
-- [ ] M2.P3.T1a — Add a CI Python smoke-test step and use it to verify the enum/QFlags binding fixes
+- [x] M2.P3.T1a — Add a CI Python smoke-test step and use it to verify the enum/QFlags binding fixes
   - files: `.github/workflows/ci.yml`, a new small Python script under (e.g.)
     `tools/ci/smoke_test.py`
   - approach: M2.P3.T1's `PySequence`/`QT_API` fixes are compile-verified only

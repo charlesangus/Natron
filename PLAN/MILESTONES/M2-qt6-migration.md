@@ -4,7 +4,7 @@
 > This milestone's 54 commits were rebased off `main` onto
 > `milestone/m2-qt6-migration`; `.github/workflows/ci.yml` is now M8's version
 > verbatim, which strikes `M2.P3.T3` (see `## Decisions`). Remaining work:
-> `T1f` → `T1a` → `T1` → `T2`.
+> `T1a` → `T1` → `T2`.
 >
 > <details><summary>Earlier parking notes (historical)</summary>
 >
@@ -475,7 +475,7 @@ milestone than went in.
     not just the local container.
   - size: M
 
-- [ ] M2.P3.T1f — Make the local smoke run survive to completion
+- [x] M2.P3.T1f — Make the local smoke run survive to completion
   - files: likely `tools/ci/local/test.sh` and/or a Natron cache setting;
     diagnose before choosing
   - approach: *(blocks `M2.P3.T1a`)* `tools/ci/local/test.sh smoke` is killed
@@ -760,3 +760,49 @@ diagnostics while still gating on test failure.
   `natron-dev:2027.0` for the local loop alone. The only layer both share is
   `tools/ci/local/*.sh`. Anything that must reach CI belongs in a script, not
   the image.
+
+- 2026-08-31 — `M2.P3.T1f`: the smoke-run instability was one memory-safety
+  bug, not three symptoms and not the environment. `chooseFBConfig()` in
+  `Engine/OSGLContext_x11.cpp` read an uninitialized `nativeCount` after
+  `glXGetFBConfigs()` returned NULL without writing `*nelements`, then sized
+  a `std::vector` from 17–70 GB of stack garbage. Whether that threw
+  `bad_alloc`, got OOM-killed, or segfaulted was decided by the kernel's
+  overcommit heuristic. **This retires two earlier entries in this file as
+  separate mysteries:** M7's "SIGSEGV at `OSGLContext_x11.cpp:433` vs
+  `encodings` error, non-deterministically" and the 2026-08-31 note that the
+  GLX SIGSEGV "did not reproduce in ~15 runs" — it did not reproduce because
+  the *benign* branch of the same bug was being taken. The `Error while
+  loading OpenGL: std::bad_alloc` printed on every run was the mercy, not
+  the symptom.
+
+  Two hypotheses were wrong and are recorded so they are not re-tried: it is
+  **not** Natron's RAM-proportional cache sizing (those are lazily-populated
+  limits; a healthy run peaks at 120 MB), and swap exhaustion is
+  **incidental** — full swap lowers the overcommit accept threshold and
+  therefore makes kills *less* frequent, not more. The PM's drafted fix of
+  bounding the cache in `tools/ci/local/test.sh` would have masked a real
+  bug without preventing the allocation; it was correctly refused.
+
+- 2026-08-31 — pre-existing OpenGL-layer defects found while fixing T1f,
+  deliberately **not** fixed (out of M2's scope; candidates for M5 or a
+  follow-up):
+  - `Engine/OSGLContext_x11.cpp:314-331` — every `dlsym()` result is used
+    with no NULL check (e.g. `QueryExtension` is called unconditionally at
+    :333), so a missing symbol is a null-call crash rather than a graceful
+    failure.
+  - `~OSGLContext_x11()` never destroys `x11Window.handle` or
+    `x11Window.colormap` — the X window and colormap leak on *every* context
+    teardown.
+  - `Engine/OSGLContext_mac.cpp:531,535` — same uninitialized-out-parameter
+    class (`CGLQueryRendererInfo`/`CGLDescribeRenderer`). Not built by this
+    Linux-only fork, so it is upstream's problem, but it is real.
+  - The container has **no working OpenGL at all** (`glxinfo -B`: no RGB
+    visual or fbconfig). Graceful degradation is now deterministic, but any
+    future task needing real GL under CI requires an OSMesa/llvmpipe GLX in
+    the image or an EGL/OSMesa path in Natron. Two ctest cases already
+    self-skip on it.
+  - For anyone touching `OSGLContext_wayland.cpp`: `/usr/local/include/EGL/`
+    shadows Mesa's headers, lacks the `PFNEGL*PROC` typedefs, and drags in
+    `X11/Xlib.h` whose `Bool`/`Status` macros break the Qt includes — which
+    is most of what made `M2.P1.T2h` unwinnable. Mesa's `/usr/include/EGL/`
+    copy has neither problem.

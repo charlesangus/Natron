@@ -110,7 +110,7 @@ Do not chase a green build here, and do not weaken the gate to manufacture one.
     numbers.
   - size: M
 
-- [ ] M8.P2.T4 — Post-merge and nightly: release build, smoke test, artifacts
+- [x] M8.P2.T4 — Post-merge and nightly: release build, smoke test, artifacts
   - files: `.github/workflows/` (new workflow file)
   - approach: on push to `main` and on a nightly schedule, run the fuller set —
     release build, `ctest`, and the Python smoke test. Upload test logs with

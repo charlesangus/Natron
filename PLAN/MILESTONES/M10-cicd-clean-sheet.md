@@ -60,7 +60,7 @@ required check.
 
 ## Phase 10.2: Rebuild the build/test pipeline
 
-- [ ] M10.P2.T1 — Measure the build-artifact hand-off and record the job-split shape
+- [x] M10.P2.T1 — Measure the build-artifact hand-off and record the job-split shape
   - files: none (measurement + a decision entry in this file)
   - approach: splitting `build` and `test` into separate jobs requires handing
     the build tree between them, and this tree is large — the debug `Tests`
@@ -87,13 +87,17 @@ required check.
     the current configuration first (`gh api
     repos/charlesangus/Natron/branches/main/protection > ` a scratch file, and
     paste the required-checks list into this milestone's `## Decisions`), then
-    clear the required-status-checks list while keeping the
-    pull-request-required and no-direct-push rules intact. This is deliberately
-    reversible and scoped to the window between here and M10.P3.T1, which
-    re-arms it against the new names.
+    clear the required-status-checks list while leaving every other rule
+    untouched. This is deliberately reversible and scoped to the window between
+    here and M10.P3.T1, which re-arms it against the new names — so do it as
+    late as possible, immediately before the merge that needs it, not on
+    schedule. Note the protection is thinner than this task assumed when it was
+    written: there is **no** review requirement and no push restriction on
+    `main` today, so "keep the pull-request-required rule intact" describes a
+    rule that does not exist. Do not add one here; that is a separate call.
   - verify: `gh api repos/charlesangus/Natron/branches/main/protection` shows an
-    empty required status check list, `required_pull_request_reviews` still
-    present, and `allow_force_pushes` still false.
+    empty required status check list, and `allow_force_pushes`,
+    `allow_deletions` and `lock_branch` all still false.
   - size: S
 
 - [ ] M10.P2.T3 — Rewrite `ci.yml` as named jobs, born with modern hygiene
@@ -209,3 +213,45 @@ cancels the in-flight run; and Nightly is green on `workflow_dispatch`.
   The existing filter is inert only because bare `Documentation` never matches
   a path inside `Documentation/`, which makes it a trap rather than a
   safeguard.
+
+- 2026-08-31 — `main`'s branch protection as captured before any M10 change
+  (`gh api repos/charlesangus/Natron/branches/main/protection`):
+  `required_status_checks.contexts: ["ci"]` with `strict: false`;
+  `required_pull_request_reviews: null`; `enforce_admins: false`;
+  `allow_force_pushes: false`; `allow_deletions: false`;
+  `required_linear_history: false`; `required_conversation_resolution: false`;
+  `lock_branch: false`; no push restrictions. `M10.P3.T1` restores from this,
+  replacing only the `contexts` list. Note there is no review requirement to
+  preserve — `M10.P2.T2` was written assuming one existed.
+
+- 2026-08-31 — **`ci.yml` keeps one `build-and-test` job with clearly named
+  steps (option (c))**, measured rather than assumed. One two-job experiment on
+  a scratch branch (run 33448187599, since deleted) against the 220s warm
+  monolithic baseline:
+
+  | Quantity | Measured |
+  |---|---|
+  | ccache-warm debug build | 66.8s, 548/549 compile hits (99.8%) |
+  | `build/debug` on disk | 4.1 GB, 1112 files |
+  | `upload-artifact` of it | 95s → 935 MiB stored (4.4:1) |
+  | `download-artifact` of it | 20.0s (~47 MB/s) |
+  | Container init, per job | 84s and 134s |
+
+  The decisive number is not the transfer, it is the **container init: every
+  additional job pays 1–2 minutes to pull `aswf/ci-vfxall` before it does any
+  work.** A two-job split therefore costs 150–250s (upload+download+init) or
+  130–190s (rebuild-from-ccache+init) on every run, against a *total* warm
+  runtime of 220s. Rebuilding from ccache (67s) does beat moving the tree
+  (115s), so (b) is the better hand-off if one is ever needed — but both are
+  pure overhead here.
+
+  Splitting also buys less than it appears: build and test are inherently
+  sequential, so no parallelism is unlocked, and per-stage red/green already
+  exists — named steps report their own pass/fail and duration in the Actions
+  UI. The genuine parallelism is `format` and `lint-ci`, which are already
+  separate jobs on a bare runner.
+
+  If a split is ever revisited: ~75% of the 4.1 GB is `.o`/`.a` intermediates
+  already linked into the three binaries ctest actually runs (~1.02 GB), so a
+  path-scoped artifact would cut the transfer 3–4x. That still would not
+  overcome the per-job container init.

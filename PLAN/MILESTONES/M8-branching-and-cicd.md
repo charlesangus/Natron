@@ -30,7 +30,7 @@ Do not chase a green build here, and do not weaken the gate to manufacture one.
 
 ## Phase 8.1: Trunk-based branching
 
-- [ ] M8.P1.T1 — Rename the default branch to `main`
+- [x] M8.P1.T1 — Rename the default branch to `main`
   - files: GitHub repo settings, `.github/workflows/ci.yml` (trigger branches)
   - approach: use GitHub's branch rename so it retains open PRs and redirects
     the old ref. Keep `RB-2.6` as a frozen pointer at the rename commit so
@@ -45,7 +45,7 @@ Do not chase a green build here, and do not weaken the gate to manufacture one.
     triggers name `main`; local clones can still resolve `RB-2.6`.
   - size: S
 
-- [ ] M8.P1.T2 — Document the branching model and wire the upstream remote
+- [x] M8.P1.T2 — Document the branching model and wire the upstream remote
   - files: `CONTRIBUTING.md` (or a new `docs/development.md` — check which
     exists first), `.git` remote config is local-only so document rather than
     script it

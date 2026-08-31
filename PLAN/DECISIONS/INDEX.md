@@ -5,3 +5,4 @@
 - 2026-08-29 — pin-exact-aswf-tag: use `aswf/ci-baseqt:2027.1` (not bare `2027`) — confirmed contents, GCC 14.2 default → DECISIONS/2026-08-29-pin-exact-aswf-tag.md
 - 2026-08-30 — local-incremental-builds: build/test locally in an `aswf/ci-baseqt:2027.0` container instead of iterating through CI → DECISIONS/2026-08-30-local-incremental-builds.md
 - 2026-08-30 — sealed-package-network: no distro repo is reachable; pull images via mirror.gcr.io and use the aswf image as-is → DECISIONS/2026-08-30-sealed-package-network.md
+- 2026-08-30 — merge-m7-with-red-ci: merged M7 with CI red; RB-2.6 has failed since M1 and the failure is M2 scope → DECISIONS/2026-08-30-merge-m7-with-red-ci.md

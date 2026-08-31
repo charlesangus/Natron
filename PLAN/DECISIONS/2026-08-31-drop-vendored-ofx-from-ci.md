@@ -1,5 +1,24 @@
 # Vendored OFX plugins leave the build and test path
 
+> **SUPERSEDED, 2026-08-31, same day** — see
+> `PLAN/DECISIONS/2026-08-31-restore-vendored-ofx-plugin-tests.md`. Nothing
+> below was acted on; `BaseTest.cpp`, the plugin fetch and `OFX_PLUGIN_PATH`
+> all remain. Two of the three reasons here are wrong or obsolete:
+>
+> - **Reason 2 ("cannot work in the target container") was about the image,
+>   not the tests.** Correct for `ci-baseqt:2027.0`; the move to
+>   `aswf/ci-vfxall:2027-clang21.1` supplies OIIO/OCIO/OpenEXR/OpenFX, and
+>   building the plugin from source there gives 28/28 green.
+> - **Reason 3 is factually wrong.** `SeNoise` does not live in openfx-misc.
+>   It is `openfx-io/SeExpr/SeNoise.cpp`, built into the *same* `IO.ofx`
+>   bundle as ReadOIIO/WriteOIIO — the bundle CI was already downloading
+>   exports it. All three required plugins were being fetched all along; the
+>   bundle simply failed to `dlopen`.
+> - **Reason 1 stands as a judgement call** and was overridden deliberately;
+>   the superseding decision says why.
+>
+> Kept unedited below as the record of what was believed at the time.
+
 CI no longer fetches or tests against prebuilt third-party OFX plugin bundles.
 `Tests/BaseTest.cpp`, the openfx-io asset fetch, and the `OFX_PLUGIN_PATH`
 plumbing are all removed in M9. Plugin loading returns as a pre-release

@@ -35,19 +35,25 @@ future core work has solid ground to build on.
   draft** direction rather than CY2026-final — see
   `PLAN/DECISIONS/2026-08-29-target-vfx-cy2027.md`.
 - **Sequencing:** `M0 (fork & cut) → M1 (toolchain) → M2 (Qt6) → M7/M8 (local
-  builds, branching) → M9 (drop vendored OFX) → M10 (clean-sheet CI/CD) → M3
-  (deps) → M5 (tests & P0s, ongoing)`. M6 (docs) comes last, once the build is
-  actually the thing being documented; M11 is release-gated and comes after M5
-  defines the render fixture it needs. **M9 must precede M10** — the pipeline
-  redesign should not be built around a "Fetch test assets" step that M9
-  deletes. Board rows below are listed in execution order, not ID order.
+  builds, branching) → M10 (clean-sheet CI/CD) → M3 (deps) → M5 (tests & P0s,
+  ongoing)`. M6 (docs) comes last, once the build is actually the thing being
+  documented. **M9 is cancelled** and no longer gates M10; the "Fetch test
+  assets" step it would have deleted is now load-bearing — it builds the OFX
+  plugin bundle from pinned source (see
+  `DECISIONS/2026-08-31-restore-vendored-ofx-plugin-tests.md`), so M10 should
+  design around it, not around its removal. M11 is largely delivered by the
+  same change and needs rescoping to rendering + video I/O. Board rows below
+  are listed in execution order, not ID order.
 - **M2 is done** (2026-08-31). It was parked twice — for M7 (the local build
   loop, which removed the CI round-trip that made `M2.P3.T1a` uneconomic) and
   then for M8 (which restored a merge path after a job rename broke branch
   protection). Both have shipped. Its PR is still red, but the failure is
-  inherited, not Qt6 scope: 25 of 28 ctest cases pass, and the 3 that fail are
-  all `BaseTest`, all on vendored OFX plugins — which is exactly what M9 cuts.
-  See `DECISIONS/2026-08-31-drop-vendored-ofx-from-ci.md`.
+  inherited, not Qt6 scope: the 3 failures were all `BaseTest`, all on the
+  vendored OFX plugin bundle failing to load. **Resolved 2026-08-31** — the
+  cause was the container, not the tests: on `aswf/ci-vfxall` with the bundle
+  built from source, all 28 ctest cases pass. See
+  `DECISIONS/2026-08-31-restore-vendored-ofx-plugin-tests.md` and
+  `DECISIONS/2026-08-31-switch-ci-image-to-vfxall.md`.
 - **The plan lives on the orphan `plan` branch**, checked out at `.plan/`
   (PLAN-FORMAT.md §1a). Commit code first, then the plan, per §9 — plan edits
   never ride in a code commit or a PR diff. See
@@ -67,13 +73,13 @@ future core work has solid ground to build on.
 | M2 | Land the Qt6 migration | done    | [M2-qt6-migration.md](PLAN/MILESTONES/M2-qt6-migration.md) |
 | M7 | Local incremental builds | done | [M7-local-incremental-builds.md](PLAN/MILESTONES/M7-local-incremental-builds.md) |
 | M8 | Branching model and CI/CD rebuild | done | [M8-branching-and-cicd.md](PLAN/MILESTONES/M8-branching-and-cicd.md) |
-| M9 | Drop the vendored OFX plugin dependency | todo | [M9-drop-vendored-ofx.md](PLAN/MILESTONES/M9-drop-vendored-ofx.md) |
+| M9 | Drop the vendored OFX plugin dependency | cancelled | [M9-drop-vendored-ofx.md](PLAN/MILESTONES/M9-drop-vendored-ofx.md) |
 | M10 | Clean-sheet CI/CD | todo | [M10-cicd-clean-sheet.md](PLAN/MILESTONES/M10-cicd-clean-sheet.md) |
 | M3 | Dependency modernization | todo | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
 | M4 | CI/CD rebuild | done | [M4-cicd-rebuild.md](PLAN/MILESTONES/M4-cicd-rebuild.md) |
 | M5 | Test & correctness baseline | todo | [M5-test-correctness-baseline.md](PLAN/MILESTONES/M5-test-correctness-baseline.md) |
 | M6 | Documentation pass | todo | [M6-documentation-pass.md](PLAN/MILESTONES/M6-documentation-pass.md) |
-| M11 | OFX plugin integration test (pre-release) | todo | [M11-ofx-plugin-integration-test.md](PLAN/MILESTONES/M11-ofx-plugin-integration-test.md) |
+| M11 | OFX plugin integration test (pre-release) | rescope | [M11-ofx-plugin-integration-test.md](PLAN/MILESTONES/M11-ofx-plugin-integration-test.md) |
 
 # Open questions
 

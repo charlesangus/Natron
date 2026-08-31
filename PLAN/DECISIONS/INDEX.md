@@ -2,7 +2,7 @@
 - 2026-08-29 — target-vfx-cy2027: build on VFX Platform CY2027 draft (Rocky 9/glibc 2.34) now instead of CY2026-final → DECISIONS/2026-08-29-target-vfx-cy2027.md
 - 2026-08-29 — defer-packaging-decision: defer AppImage/Flatpak/source-only choice until CI is green → DECISIONS/2026-08-29-defer-packaging-decision.md
 - 2026-08-29 — upstream-agnostic-fixes: upstream platform-agnostic fixes to keep a bridge with lockewerks/cedricp → DECISIONS/2026-08-29-upstream-agnostic-fixes.md
-- 2026-08-29 — pin-exact-aswf-tag: use `aswf/ci-baseqt:2027.1` (not bare `2027`) — confirmed contents, GCC 14.2 default → DECISIONS/2026-08-29-pin-exact-aswf-tag.md
+- 2026-08-29 — pin-exact-aswf-tag: pin an exact published tag (not bare `2027`), verified against the releases list — image choice superseded by switch-ci-image-to-vfxall → DECISIONS/2026-08-29-pin-exact-aswf-tag.md
 - 2026-08-30 — local-incremental-builds: build/test locally in an `aswf/ci-baseqt:2027.0` container instead of iterating through CI → DECISIONS/2026-08-30-local-incremental-builds.md
 - 2026-08-30 — sealed-package-network: no distro repo is reachable; pull images via mirror.gcr.io and use the aswf image as-is → DECISIONS/2026-08-30-sealed-package-network.md
 - 2026-08-30 — merge-m7-with-red-ci: merged M7 with CI red; RB-2.6 has failed since M1 and the failure is M2 scope → DECISIONS/2026-08-30-merge-m7-with-red-ci.md
@@ -12,4 +12,8 @@
 - 2026-08-31 — drop-qtpy: remove qtpy entirely; import PySide6 directly, build needs only the ASWF container → DECISIONS/2026-08-31-drop-qtpy.md
 - 2026-08-31 — migrate-plan-worktree: plan moved to the orphan `plan` branch at `.plan/`; supersedes defer-plan-worktree-migration → DECISIONS/2026-08-31-migrate-plan-worktree.md
 - 2026-08-31 — required-checks-name-real-jobs: required checks name real CI jobs; the `ci` aggregator is deleted → DECISIONS/2026-08-31-required-checks-name-real-jobs.md
-- 2026-08-31 — drop-vendored-ofx-from-ci: vendored OFX plugins leave build/test; plugin loading returns as an M11 pre-release integration test → DECISIONS/2026-08-31-drop-vendored-ofx-from-ci.md
+- 2026-08-31 — drop-vendored-ofx-from-ci: SUPERSEDED by restore-vendored-ofx-plugin-tests → DECISIONS/2026-08-31-drop-vendored-ofx-from-ci.md
+- 2026-08-31 — switch-ci-image-to-vfxall: CI/local image moves to `aswf/ci-vfxall:2027-clang21.1` for OCIO/OIIO/OpenFX; supersedes the ci-baseqt choice → DECISIONS/2026-08-31-switch-ci-image-to-vfxall.md
+- 2026-08-31 — spike-ofx-plugins-on-vfxall: OFX plugin tests pass 28/28 on ci-vfxall if IO.ofx is built from source; reopens the M9/M11 split → DECISIONS/2026-08-31-spike-ofx-plugins-on-vfxall.md
+- 2026-08-31 — restore-vendored-ofx-plugin-tests: keep BaseTest; build the OFX bundle from pinned source instead of downloading it. 28/28 green → DECISIONS/2026-08-31-restore-vendored-ofx-plugin-tests.md
+- 2026-08-31 — fork-and-fix-natrongithub-repos: small fixes to NatronGitHub repos land on our `charlesangus/` fork and we pin the fork, not a local workaround → DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md

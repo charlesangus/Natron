@@ -1,5 +1,12 @@
 # Pin the exact ASWF image tag: `aswf/ci-baseqt:2027.0`, not `2027`
 
+> **Superseded (image choice only), 2026-08-31:** the image is now
+> `aswf/ci-vfxall:2027-clang21.1` -- see
+> `PLAN/DECISIONS/2026-08-31-switch-ci-image-to-vfxall.md`. The rule this
+> decision establishes -- pin an exact tag, verified against the releases
+> list rather than the changelog -- is what selected that tag and still
+> applies to any future bump.
+
 2026-08-29. M1 named the baseline image as `aswf/ci-baseqt:2027` (shorthand for
 "whatever CY2027 image exists"). Checked the actual `aswf-docker` repo
 (`AcademySoftwareFoundation/aswf-docker`) while implementing M4: published

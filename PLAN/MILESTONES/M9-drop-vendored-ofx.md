@@ -1,5 +1,22 @@
 # Milestone 9: Drop the vendored OFX plugin dependency
 
+> **CANCELLED, 2026-08-31 — do not execute.** The premise did not survive
+> contact with a different container. See
+> `PLAN/DECISIONS/2026-08-31-restore-vendored-ofx-plugin-tests.md`.
+>
+> The plugins now build from pinned source against `aswf/ci-vfxall`'s own
+> OIIO/OCIO/OpenEXR, and the suite is 28/28 green with `BaseTest` intact —
+> so there is nothing here worth cutting. Two specific claims below are
+> **wrong** and must not be carried forward:
+>
+> - `SeNoise` is **not** in openfx-misc. It is `openfx-io/SeExpr/SeNoise.cpp`,
+>   in the same bundle as ReadOIIO/WriteOIIO, and the bundle CI already
+>   downloaded exports it.
+> - "can never be made to work in the target container" was true of
+>   `ci-baseqt:2027.0` only, and only for the *prebuilt* Ubuntu 22 binary.
+>
+> Kept for the record; the work landed in `fetch-assets.sh` instead.
+
 The build and test path currently depends on a prebuilt third-party OFX plugin
 bundle that is fetched at CI time. That dependency is the sole cause of every
 current test failure, it can never be made to work in the target container, and

@@ -1,5 +1,19 @@
 # Milestone 11: OFX plugin integration test (pre-release)
 
+> **Mostly delivered early, 2026-08-31 — rescope before starting.** See
+> `PLAN/DECISIONS/2026-08-31-restore-vendored-ofx-plugin-tests.md`.
+>
+> This milestone was scoped as the place plugin loading would come back
+> *after* M9 removed it. M9 is cancelled and plugin loading never left:
+> `fetch-assets.sh` builds a pinned, EL9-native `IO.ofx` and `BaseTest`
+> loads it on every run (28/28). The "pinned, EL9-compatible bundles"
+> premise below is satisfied.
+>
+> What is genuinely left for this milestone, if it is kept at all:
+> **rendering** through plugins rather than merely loading them, and
+> video I/O — `ReadFFmpeg`/`WriteFFmpeg` are absent because ASWF ships no
+> ffmpeg, so covering them needs an ffmpeg source first.
+
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 
 M9 removes vendored third-party OFX plugins from the build and test path

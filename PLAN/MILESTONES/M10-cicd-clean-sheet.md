@@ -18,9 +18,12 @@ Clean-sheet the workflows: well-named jobs that each mean something, fast
 build-independent gates that fail in seconds instead of minutes, and required
 checks wired to the real job names.
 
-**Depends on M9.** Do not start until the vendored OFX plugins are gone —
-otherwise the new pipeline is designed around a "Fetch test assets" step that
-M9 deletes, and every run is red for reasons unrelated to the redesign.
+**M9 is cancelled; this milestone is unblocked.** The dependency it recorded
+has inverted: "Fetch test assets" is no longer a step to design around the
+removal of — it now builds the OFX plugin bundle from pinned source, and
+`BaseTest`'s 28 green ctest cases depend on it
+(`DECISIONS/2026-08-31-restore-vendored-ofx-plugin-tests.md`). Preserve that
+step and its companion `Cache test assets` through the rewrite.
 
 ## Phase 10.1: Fast, build-independent gates
 
@@ -105,10 +108,15 @@ required check.
     least-privilege `permissions:` (`contents: read`); and action versions
     current enough to clear the Node 20 deprecation warnings that
     `actions/checkout@v4.1.1` and `actions/cache@v4` currently emit on every
-    run. Keep what M4/M7 got right: the `aswf/ci-baseqt` container, the ccache
-    restore-key design (branch → main fallback) and its `if: always()` save,
-    and invoking `tools/ci/local/*.sh` rather than inlining build commands.
-    Preserve the substantial rationale comments on the ccache steps.
+    run. Keep what M4/M7/M2 got right: the `aswf/ci-vfxall:2027-clang21.1`
+    container, the ccache restore-key design (branch → main fallback) and its
+    `if: always()` save, the `Cache test assets` / `Fetch test assets` pair
+    that builds the OFX plugin bundle from source, and invoking
+    `tools/ci/local/*.sh` rather than inlining build commands. Preserve the
+    substantial rationale comments on the ccache and test-asset steps, minus
+    the ccache comment's now-stale "main doesn't compile under Qt6 until M2
+    lands" justification — restate why `if: always()` still matters without
+    tying it to a milestone that has shipped.
   - verify: a run on the milestone branch is green end to end with no
     deprecation annotations; the run's job list shows the new names and no `ci`
     job; a second push to the same branch cancels the first run.
@@ -146,20 +154,20 @@ required check.
     merging.
   - size: S
 
-- [ ] M10.P3.T2 — Resolve the `aswf/ci-baseqt` tag across CI and the dev shell
+- [ ] M10.P3.T2 — Close out the container-image tag question
   - files: `.github/workflows/ci.yml`, `.github/workflows/nightly.yml`,
-    `tools/ci/local/Dockerfile`, `tools/ci/local/devshell.sh`,
-    `tools/ci/local/README.md`
-  - approach: closes the board's standing open question. The workflows pin
-    `2027.0` while `DECISIONS/2026-08-29-pin-exact-aswf-tag.md` records `2027.1`
-    as the chosen tag; M7 matched `ci.yml` at `2027.0` so the local shell
-    reproduces CI exactly. M2 is done and the smoke-test diagnosis that was
-    blocking this is finished, so pick one tag and make every reference agree.
-    Verify the chosen image actually still exists and carries GCC 14.2 before
-    committing to it. Then supersede or confirm the existing decision file, and
-    remove the question from the board.
-  - verify: `grep -rn "ci-baseqt:" .github/ tools/` shows a single tag
-    everywhere; a full CI run and a local `devshell.sh` build both succeed on it.
+    `tools/ci/local/Dockerfile`, `tools/ci/local/README.md`
+  - approach: closes the board's standing open question. The drift it recorded
+    (`ci-baseqt:2027.0` in the workflows vs. `2027.1` in
+    `DECISIONS/2026-08-29-pin-exact-aswf-tag.md`) is already gone: M2's image
+    switch moved every reference to `aswf/ci-vfxall:2027-clang21.1`, and
+    `2026-08-31-switch-ci-image-to-vfxall.md` supersedes the older pin. What is
+    left is confirmation and bookkeeping — re-run the grep after the P2
+    rewrites to prove they did not reintroduce a second tag, check the pinned
+    tag is still published, and delete the trailing paragraph under the board's
+    `# Open questions`, leaving only `_None awaiting a human answer._`.
+  - verify: `grep -rn "ci-baseqt:\|ci-vfxall:" .github/ tools/` shows exactly
+    one image tag everywhere; the board carries no open question.
   - size: S
 
 **Verification gate:** a PR against `main` reports the new named jobs and no
@@ -167,3 +175,14 @@ required check.
 to a job that actually runs; `format` and `lint-ci` return a verdict in under a
 minute; a full green run emits zero deprecation annotations; a superseding push
 cancels the in-flight run; and Nightly is green on `workflow_dispatch`.
+
+## Decisions
+
+- 2026-08-31 — freshness check at promotion (PLAN-FORMAT.md §5a) re-planned two
+  tasks and the milestone preamble; the rest passed unchanged. `M10.P2.T3` now
+  names `aswf/ci-vfxall:2027-clang21.1` (M2 switched images) and must preserve
+  the `Cache test assets` / `Fetch test assets` pair, which builds the OFX
+  plugin bundle from source rather than being M9's deletion target.
+  `M10.P3.T2` shrank to confirmation-and-bookkeeping: the tag drift it was
+  written to resolve no longer exists, since the image switch made every
+  reference agree on one tag.

@@ -1,5 +1,12 @@
 # Milestone 2: Land the Qt6 migration
 
+> **Parked at `blocked` on 2026-08-30, mid-`M2.P3.T1a`.** Verifying the
+> PySide6/Shiboken6 binding fixes needs a test-suite run, and today that costs
+> a full cold build on GitHub Actions per iteration. M7 (local incremental
+> builds) runs first; resume here once its gate passes and use
+> `tools/ci/local/test.sh smoke --gdb` instead of `ci(temp)` diagnostic
+> commits.
+
 `~2-3 weeks` · highest risk. The bulk of the effort, but most of it is already
 scoped or already written. Three pieces of this exist as open upstream PRs —
 pull them in rather than redoing the work.
@@ -374,11 +381,31 @@ milestone than went in.
     corruption or crashes on Qt6.
   - size: M
 
+- [ ] M2.P3.T3 — Strip the `ci(temp)` diagnostics from the CI workflow
+  - files: `.github/workflows/ci.yml`
+  - approach: the temporary annotation-encoding block in the Python
+    smoke-test step, the `::notice::` outcome-reporting step, and the other
+    scaffolding commented as `M2.P3.T1a diagnostic` exist only because CI
+    logs were unreadable and iteration was slow. Once M7's local loop
+    reproduces the failure, they are dead weight — remove them and restore
+    the workflow to its clean design. Leave the `continue-on-error`
+    aggregation pattern intact; that is deliberate, not diagnostic.
+  - verify: `grep -c "M2.P3.T1a diagnostic" .github/workflows/ci.yml` returns
+    0; the workflow still fails the job when any of the three test steps fail.
+  - size: S
+
 **Verification gate:** the ctest suite (M5) passes, the Python bindings load
-and operate without enum/QFlags errors, and the manual GUI checklist above
-passes end-to-end on Qt6.8.x.
+and operate without enum/QFlags errors, the manual GUI checklist above passes
+end-to-end on Qt6.8.x, and `.github/workflows/ci.yml` carries no temporary
+diagnostics while still gating on test failure.
 
 ## Decisions
+
+- 2026-08-30 — park M2 for M7 (local incremental builds): the CI
+  round-trip made `M2.P3.T1a` uneconomic to debug — five consecutive
+  `ci(temp)` commits existed only to surface a stack trace. Building the
+  local loop first is cheaper than continuing to pay that cost for every
+  remaining task in this milestone.
 
 - 2026-08-30 — T2i follow-up: making HarfBuzz and FreeType public
   dependencies was not enough to control final link order. On Linux/CMake

@@ -146,3 +146,48 @@ jobs:
       - name: ccache stats
         if: always()
         run: ccache -s
+
+  # ---------------------------------------------------------------------
+  # Stable aggregator / required-status-check contract.
+  #
+  # Branch protection on main is configured to require a status check
+  # literally named "ci" (job key == job `name`, both below). Do NOT
+  # rename this job casually -- that is the entire reason it exists.
+  #
+  # Background: branch protection previously required a check by the
+  # *display name* of the real build job (e.g. "Test Ubuntu Python
+  # 3.10"). When that job was later renamed to accurately describe what
+  # it actually does, the old required-check name stopped being
+  # reported by any job, so no PR could ever satisfy branch protection
+  # again. A required check must be a name nobody has a reason to touch
+  # when they fix an inaccurate label on the real work -- so this
+  # aggregator job's name is intentionally decoupled from what the real
+  # jobs are called, and the real jobs are free to be renamed for
+  # accuracy without ever breaking branch protection again.
+  #
+  # This job does no building -- it only evaluates the results of the
+  # real jobs above, so it deliberately does NOT run in the (12.5 GB)
+  # aswf/ci-baseqt container; runs on the bare ubuntu-latest runner.
+  #
+  # `if: always()` is required: a job with `needs:` is skipped by
+  # default whenever a dependency doesn't succeed, and a *skipped*
+  # required check leaves a PR pending forever instead of failing it.
+  # Running unconditionally lets this job itself decide pass/fail based
+  # on `needs.*.result`, explicitly requiring `== 'success'` rather than
+  # only checking for `failure` -- a dependency can also end up
+  # `cancelled` or `skipped`, and either of those must also fail this
+  # gate, not report green.
+  ci:
+    name: ci
+    needs: [unix_test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check dependency results
+        run: |
+          echo "unix_test result: ${{ needs.unix_test.result }}"
+          if [ "${{ needs.unix_test.result }}" != "success" ]; then
+            echo "One or more required jobs did not succeed -- failing the aggregator gate."
+            exit 1
+          fi
+          echo "All required jobs succeeded."

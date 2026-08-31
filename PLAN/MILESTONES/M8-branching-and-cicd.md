@@ -125,7 +125,7 @@ Do not chase a green build here, and do not weaken the gate to manufacture one.
 
 ## Phase 8.3: Make the gate stable
 
-- [ ] M8.P3.T1 — A stable required check that job renames cannot break
+- [x] M8.P3.T1 — A stable required check that job renames cannot break
   - files: `.github/workflows/ci.yml`, GitHub branch protection settings
   - approach: add a final aggregator job (e.g. `name: ci`) that `needs:` the
     real jobs and fails if any dependency failed — including the skipped and

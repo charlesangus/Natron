@@ -138,7 +138,7 @@ required check.
     `grep -n paths-ignore .github/workflows/ci.yml` returns nothing.
   - size: L
 
-- [ ] M10.P2.T4 — Realign `nightly.yml` with the new job structure
+- [x] M10.P2.T4 — Realign `nightly.yml` with the new job structure
   - files: `.github/workflows/nightly.yml`
   - approach: nightly stays what it is — the slower release-build, release
     ctest, and smoke-test backstop that the PR gate deliberately skips (the PR
@@ -156,7 +156,7 @@ required check.
 
 ## Phase 10.3: Re-arm the gate
 
-- [ ] M10.P3.T1 — Wire branch protection to the real job names
+- [x] M10.P3.T1 — Wire branch protection to the real job names
   - files: none (repository configuration)
   - approach: once the rewritten workflows have merged to `main` and reported
     at least once, set `main`'s required status checks to the actual job names
@@ -174,7 +174,7 @@ required check.
     merging.
   - size: S
 
-- [ ] M10.P3.T2 — Close out the container-image tag question
+- [x] M10.P3.T2 — Close out the container-image tag question
   - files: `.github/workflows/ci.yml`, `.github/workflows/nightly.yml`,
     `tools/ci/local/Dockerfile`, `tools/ci/local/README.md`
   - approach: closes the board's standing open question. The drift it recorded
@@ -281,3 +281,19 @@ cancels the in-flight run; and Nightly is green on `workflow_dispatch`.
   `Save ccache` runs with an empty `key` if `Checkout branch` ever fails, since
   `Restore ccache` is then skipped and its `cache-primary-key` output is empty;
   it only adds a second red step to an already-red job.
+
+- 2026-08-31 — `M10.P3.T2` closed as confirmation only. Every reference in
+  `.github/` and `tools/` already resolves to the single tag
+  `aswf/ci-vfxall:2027-clang21.1`, and the P2 rewrites did not reintroduce a
+  second one. The one surviving `ci-baseqt` mention is a line in
+  `tools/ci/local/Dockerfile` recording which package statuses were carried
+  over from the old image — historical provenance, not a live pin, and correct
+  to keep. The board's standing open question is removed.
+
+- 2026-08-31 — gate evidence. Concurrency: push `d9989c4d5` cancelled the
+  in-flight `Tests` run `33450556771` for the same ref, so
+  `cancel-in-progress` works as intended. Enforcement: a throwaway PR (#8,
+  since closed and its branch deleted) carrying one deliberately misformatted
+  C++ file turned `format` red in 16s while `lint-ci` stayed green, and GitHub
+  reported the PR as `BLOCKED` — the required checks are enforced, not merely
+  listed.

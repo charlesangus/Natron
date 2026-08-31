@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M10.P2.T4
-pm_heartbeat: 2026-08-31T19:34:00-04:00
+current: null
+pm_heartbeat: 2026-08-31T20:06:00-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -95,9 +95,3 @@ may be deleting it. The question is scope, not method: fold a cleanup task into
 M3 or M5, give the qmake-era leftovers (`tools/travis/`, `tools/jenkins/`,
 `Project-*.xcodeproj/`, `Natron.spec`) their own small milestone, or leave them
 as inert history. Nothing is blocked either way.
-
-The `aswf/ci-baseqt` tag drift (`2027.0` in the workflows vs. `2027.1` in
-`PLAN/DECISIONS/2026-08-29-pin-exact-aswf-tag.md`) was parked here pending M2.
-M2 is done and the smoke-test diagnosis that blocked it is finished, so it is
-now scheduled work rather than an open question: **M10.P3.T2** owns picking one
-tag and making every reference agree.

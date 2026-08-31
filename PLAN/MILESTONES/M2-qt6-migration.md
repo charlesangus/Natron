@@ -348,7 +348,7 @@ milestone than went in.
     property setters) runs without conversion errors.
   - size: L
 
-- [ ] M2.P3.T1b — Declare the Python version the CY2027 platform actually ships
+- [x] M2.P3.T1b — Declare the Python version the CY2027 platform actually ships
   - files: `.github/workflows/ci.yml`, `tools/ci/local/devshell.sh`
   - approach: *(run before `M2.P3.T1a`)* `ci.yml` sets
     `PYTHON_VERSION: '3.10'` and names the job "Test Ubuntu Python 3.10", but

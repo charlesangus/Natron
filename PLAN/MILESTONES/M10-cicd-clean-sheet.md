@@ -79,7 +79,7 @@ required check.
     carries the measured numbers it was chosen on.
   - size: S
 
-- [ ] M10.P2.T2 — Relax `main`'s required status checks for the redesign window
+- [x] M10.P2.T2 — Relax `main`'s required status checks for the redesign window
   - files: none (repository configuration)
   - approach: T3 deletes the job named `ci`, and `main` currently *requires* a
     check by that name — so the PR that removes it can never merge, and a
@@ -100,7 +100,7 @@ required check.
     `allow_deletions` and `lock_branch` all still false.
   - size: S
 
-- [ ] M10.P2.T3 — Rewrite `ci.yml` as named jobs, born with modern hygiene
+- [x] M10.P2.T3 — Rewrite `ci.yml` as named jobs, born with modern hygiene
   - files: `.github/workflows/ci.yml`
   - approach: clean-sheet the file to the shape M10.P2.T1 chose. Delete the
     `ci` aggregator job outright. Name jobs for what they do (`build`, `test`,
@@ -164,7 +164,11 @@ required check.
     build/test job(s) M10.P2.T1 settled on — restoring the rest of the
     protection captured in M10.P2.T2. Record the final list, and the fact that
     renaming a job now requires updating this list, in a project-wide decision
-    file so nobody reintroduces an aggregator to avoid it.
+    file so nobody reintroduces an aggregator to avoid it. Two documentation
+    loose ends belong here too: `CONTRIBUTING.md` (around lines 120-123) still
+    says "one required status check must pass", which is now three; and the
+    published `docs/decisions/` copies keep the old job name as historical
+    narrative, which is correct and must be left alone.
   - verify: a scratch PR against `main` shows exactly the intended required
     checks, all reporting; and a PR that fails `format` alone is blocked from
     merging.
@@ -255,3 +259,25 @@ cancels the in-flight run; and Nightly is green on `workflow_dispatch`.
   already linked into the three binaries ctest actually runs (~1.02 GB), so a
   path-scoped artifact would cut the transfer 3–4x. That still would not
   overcome the per-job container init.
+
+- 2026-08-31 — `M10.P2.T2` executed as a **repoint, not a relaxation**.
+  The task planned to clear `main`'s required-status-check list for the
+  redesign window and re-arm it in `M10.P3.T1`. Instead the list went straight
+  from `["ci"]` to `["format", "lint-ci", "build-and-test"]` in one call, at
+  the moment the `ci.yml` rewrite was pushed. Same unblocking effect — the PR
+  deleting the `ci` job can now merge — with no window in which `main` has no
+  required check at all. It is safe because branch protection evaluates the
+  checks a PR actually reports, not the workflows on `main`: PR #7 reports all
+  three. The known cost is that a PR from a branch predating `checks.yml` would
+  report none of the three and would strand; that is the intended end state
+  anyway, and there are no such branches in flight. `M10.P3.T1` is now
+  confirmation and documentation rather than configuration.
+
+- 2026-08-31 — follow-ups found while reviewing the `ci.yml` rewrite, both
+  pre-existing and deliberately out of scope. `Cache test assets` is a plain
+  `actions/cache`, whose `post-if: success()` means a red build discards the
+  ~52 MB asset cache and rebuilds the OFX bundle next run — the same trap that
+  `Save ccache` was split into restore/save with `if: always()` to avoid. And
+  `Save ccache` runs with an empty `key` if `Checkout branch` ever fails, since
+  `Restore ccache` is then skipped and its `cache-primary-key` output is empty;
+  it only adds a second red step to an already-red job.

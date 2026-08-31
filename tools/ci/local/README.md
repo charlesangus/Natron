@@ -113,6 +113,42 @@ inside the container and propagates its exit code -- that's how `build.sh`
 and `test.sh` reach the container themselves; you don't need to run
 `devshell.sh` before them.
 
+## Running the GUI (X11 forwarding)
+
+`devshell.sh` forwards `DISPLAY` and mounts `/tmp/.X11-unix` into the
+container, and passes through `/dev/dri` (with the host's `render`/`video`
+group GIDs) when present, so `./build/debug/App/Natron` can open a window on
+your host's X server. On the host you may need to allow local Docker clients
+to connect first: `xhost +local:docker`.
+
+GPU passthrough only covers Mesa (Intel/AMD) via `/dev/dri`; an NVIDIA GPU
+needs `nvidia-container-toolkit`'s `--gpus`, which this script doesn't set up.
+
+**Known issue: `undefined symbol: LLVMInitializeAMDGPUTargetInfo`.** This
+image's `LD_LIBRARY_PATH` puts `/usr/local/lib` (the Conan-installed
+toolchain LLVM, used for compiling) ahead of `/usr/lib64` (the system LLVM
+Mesa's `libgallium` was actually built against). The Conan build is missing
+AMDGPU codegen, so loading Mesa's GLX driver for real rendering fails with
+that symbol error -- confirmed via `nm -D --defined-only
+/usr/local/lib/libLLVM.so.21.1 | grep LLVMInitializeAMDGPUTargetInfo`
+(nothing) vs. the same against `/usr/lib64/libLLVM.so.21.1` (present).
+Reordering `LD_LIBRARY_PATH` wholesale just trades this failure for another
+(`libQt6Gui.so.6: undefined symbol: FT_Get_Paint` -- Qt needs the Conan
+FreeType, not the system one). The fix is to force only the correct LLVM via
+`LD_PRELOAD`, leaving the rest of the search order untouched:
+
+```
+tools/ci/local/devshell.sh env LD_PRELOAD=/usr/lib64/libLLVM.so.21.1 ./build/debug/App/Natron
+```
+
+This is a genuine image-level library mismatch (`aswf/ci-baseqt:2027.0`'s
+Conan LLVM package vs. its system Mesa package), not something fixable from
+`devshell.sh` flags alone -- `LD_PRELOAD` here is a targeted workaround, not
+a real fix. It isn't baked into the container's default environment because
+`LD_PRELOAD`-ing a ~125 MB library into every process (including the
+thousands spawned during a build) would add unnecessary overhead there for
+no benefit -- this only matters for GUI/GL launches.
+
 ## Where things live, and how to reset them
 
 | What | Where | Reset |

@@ -4,7 +4,7 @@
 > This milestone's 54 commits were rebased off `main` onto
 > `milestone/m2-qt6-migration`; `.github/workflows/ci.yml` is now M8's version
 > verbatim, which strikes `M2.P3.T3` (see `## Decisions`). Remaining work:
-> `T1g` → `T1a` → `T1` → `T2`.
+> `T1a` → `T1` → `T2`.
 >
 > <details><summary>Earlier parking notes (historical)</summary>
 >
@@ -511,7 +511,7 @@ milestone than went in.
     none is killed. Report the peak RSS observed.
   - size: M
 
-- [ ] M2.P3.T1g — Drop `qtpy`; import PySide6 directly
+- [x] M2.P3.T1g — Drop `qtpy`; import PySide6 directly
   - files: `Engine/AppManager.cpp`, `tools/ci/smoke_test.py`,
     `INSTALL_LINUX.md`, and the `M2.P3.T1d` plumbing in
     `tools/ci/local/fetch-assets.sh`, `tools/ci/local/devshell.sh`,
@@ -574,10 +574,38 @@ milestone than went in.
     bound API (exercises the one real QFlags case in the bound surface,
     `PyGuiApplication::addMenuCommand`). Confirm the CI image's qtpy is
     >=2.0 (required for `QT_API=pyside6`) before assuming this will pass.
+  - **Revised 2026-08-31 after `M2.P3.T1g`.** Two things changed under this
+    task. First, the CI *step* no longer needs writing from scratch — M8
+    rewrote `ci.yml` to invoke `tools/ci/local/test.sh`, so wiring the smoke
+    test in means adding a `test.sh smoke` step alongside the existing
+    `test.sh ctest debug`, not hand-rolling an inline block. Second, and more
+    important: `check_pyside6_bindings()` is an **environment tripwire, not a
+    regression guard**, and must not be counted as binding coverage. It
+    cannot fail in this image — `Qt.AlignmentFlag` is an `int` subclass under
+    any released PySide6, and a missing PySide6 aborts Natron earlier anyway,
+    when `NatronEngine`'s module init calls
+    `Shiboken::Module::import("PySide6.QtCore")`. The old qtpy check *was* a
+    real guard (it asserted a Natron-controlled behaviour: `QT_API` being set
+    before `Py_Initialize()`); that sensitivity is gone and this task now
+    owns replacing it.
+    The coverage that actually exercises Natron's own bindings is the
+    `app.createReader`/`createWriter`/`render` path already in the script —
+    those go through `SbkPySide6_QtCoreTypeConverters`. Getting them running
+    is the first job here, starting with the current
+    `NameError: name 'app' is not defined`: the script's docstring asserts
+    Natron pre-declares `app` for directly-executed scripts, and that is not
+    holding — establish what invocation actually pre-declares it
+    (`NatronRenderer <script>` vs `-t`, background vs interpreter mode; the
+    original brief above assumed `-t`, and `test.sh` currently passes the
+    script positionally) before changing the script.
+    Note the one real QFlags-taking bound API,
+    `PyGuiApplication::addMenuCommand(Qt::KeyboardModifiers)`, is GUI-only
+    and stays uncovered in a background CI run — say so explicitly rather
+    than implying #854 is guarded when it is not.
   - verify: the new CI step runs and passes on a real CI build, and fails
     loudly (non-zero exit) if reverted/broken — confirm by temporarily
-    reverting one of the three fixes locally in the CI branch and observing
-    the new step catch it, then restore.
+    reverting one of the three fixes locally and observing the step catch it,
+    then restore. A check that cannot be made to fail does not count.
   - size: M
 
 - [ ] M2.P3.T2 — Validate the GUI end-to-end
@@ -876,3 +904,14 @@ diagnostics while still gating on test failure.
   continues — so nothing ever went red over it. That is why the gap survived
   this long, and it is an argument for hardening that import once it points
   at PySide6.
+
+- 2026-08-31 — `M2.P3.T1g` removed qtpy, and with it the milestone's only
+  real runtime assertion on the binding layer. The old check
+  (`qtpy.API_NAME == 'PySide6'`) tested a **Natron-controlled** behaviour —
+  that `QT_API` was set before `Py_Initialize()` — so an ordering regression
+  in `initPython()` would have turned it red. Its replacement,
+  `check_pyside6_bindings()`, tests properties of the vendored PySide6 wheel
+  and **cannot fail in this image**. That is an acceptable outcome for T1g,
+  whose job was removing a dependency, but it must not be mistaken for
+  coverage: `M2.P3.T1a` now owns restoring a check that can actually fail.
+  Recorded because a green tripwire reads exactly like a green guard.

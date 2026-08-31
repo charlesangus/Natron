@@ -101,3 +101,43 @@ if there is no change to the underlying code.
 guidelines. Use your head and ask for advice if your common sense seems to
 disagree with the conventions.
 
+
+This Fork: Branching Model
+---------------------------
+
+**The rest of this document describes upstream `NatronGitHub/Natron`.** This
+repository, [`charlesangus/Natron`](https://github.com/charlesangus/Natron),
+is a Linux-only fork migrating to Qt6/C++20/Rocky Linux 9/CMake, and it
+follows trunk-based development instead. Where the two disagree, this section
+governs for this repo.
+
+* **Default/target branch:** `main` (not `master`, and not `RB-2.6`). Branch
+  from `main`, and open pull requests against `main`.
+
+* **Branch naming:** `milestone/<id>-<slug>` for planned milestone work,
+  `fix/<slug>` for everything else.
+
+* **Merging:** pull requests are squash-merged into `main`. One required
+  status check must pass before merge (its definition lives in
+  `.github/workflows/`, which is being actively reworked — check there for
+  the current check rather than trusting a name written here).
+
+* **`RB-2.6` and the other `RB-*`/legacy branches** (`RB-2.3-broken`,
+  `RB-2.4-VisualStudio`, `coverity_scan`, `master`, etc.) are **frozen
+  history, not merge targets.** `RB-2.6` is a pointer kept at the commit
+  where the default branch was renamed to `main`, so old links keep
+  resolving. The rest are kept deliberately as the historical record and to
+  keep the upstream bridge (below) usable — they are not pruned and you
+  should not branch from or merge into them.
+
+* **Upstream bridge:** fixes that aren't Linux/Qt6/VFX-Platform-specific
+  should also get a matching PR against `NatronGitHub/Natron`, to avoid
+  fully diverging from that project's ongoing work. Add it as a remote with:
+
+  ```
+  git remote add upstream https://github.com/NatronGitHub/Natron.git
+  ```
+
+* **Building and testing locally:** see `tools/ci/local/README.md` for the
+  full local build/test loop.
+

@@ -113,7 +113,7 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
     `aswf/ci-vfxall:2027-clang21.1`.
   - size: S
 
-- [ ] M3.P1.T7 — Make the default OCIO config the ACES 2.0 Studio built-in
+- [x] M3.P1.T7 — Make the default OCIO config the ACES 2.0 Studio built-in
   - files: `Engine/Settings.cpp` (`NATRON_DEFAULT_OCIO_CONFIG_NAME` ~line 70,
     the `_ocioConfigKnob` population ~lines 626-658, and the resolution in
     `restoreOCIOConfig`-style code ~lines 2148-2221), `tools/ci/local/test.sh`
@@ -186,6 +186,29 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
   - verify: a deliberately mis-mapped write colorspace makes
     `tools/ci/local/test.sh smoke` exit non-zero and the new assertion name
     appears in the output; the fixed one exits 0.
+  - size: S
+
+- [ ] M3.P1.T14 — Move the `format` gate from whole files to changed lines
+  - files: `.github/workflows/checks.yml` (the `format` job)
+  - approach: per `DECISIONS/2026-09-01-format-gate-changed-lines-only.md`.
+    The job runs `clang-format --dry-run --Werror` over each file in the
+    merge-base diff, so touching one function in a legacy file fails on the
+    other thousand lines: `Engine/Settings.cpp` alone measures **~1610**
+    violations at HEAD, and `M3.P1.T7` adds ~20 in the same house style
+    (`foo( bar )`, which the WebKit-based `.clang-format` systematically
+    rejects). Switch to `git clang-format --diff` against the merge base.
+    Keep everything M10 built deliberately into this job: the bare
+    `ubuntu-latest` runner with no build container, and `clang-format` pinned
+    to 21.1.8 to match the container's clang — an unpinned runner-supplied
+    binary makes the verdict depend on when GitHub last rolled its image.
+    Note `git clang-format` needs the merge base fetched, so the checkout
+    depth matters; and it exits 0 with a diff on stdout rather than failing,
+    so the job has to turn a non-empty diff into a failure itself, and print
+    it.
+  - verify: the job fails on a deliberately mis-formatted added line and
+    passes on `M3.P1.T7`'s commit, which touches `Engine/Settings.cpp`;
+    proven by pushing the branch and reading the run, not by reasoning about
+    the YAML.
   - size: S
 
 - [ ] M3.P1.T8 — Fail loudly on projects saved against the old config
@@ -329,6 +352,38 @@ and the qmake/Windows/macOS leftovers are deleted with `lint-ci` still green.
   one renders, resolving the writer to `sRGB - Display`; scene-linear 0.18
   through EXR→PNG lands on **118/255** on both configs, with bit-identical
   decoded pixel arrays.
+
+- 2026-09-01 — **`M3.P1.T7` landed from a draft the crashed session left
+  uncommitted, reviewed rather than replayed.** The mechanism was sound and
+  kept; four things were wrong. `find_package(OpenColorIO 2.2)` was the wrong
+  floor — 2.2 is when built-in configs appeared, but this specific config only
+  exists in the 2.5 registry, so a 2.2 build would compile and then fail on its
+  own default; raised to 2.5. An `#if OCIO_VERSION_HEX >= 0x02020000 / #else`
+  branch was unreachable under a `REQUIRED` `find_package` for the same version;
+  deleted, with a `catch (...)` added instead. `int defaultIndex = 0` was left
+  mutable after its loop assignment was deleted, reading as if the loop still
+  set it. And `if (_ocioConfigKnob->getNumEntries() == 1)` became dead once the
+  built-in guaranteed a second entry. Verified independently of the implementer:
+  build, ctest 28/28, and smoke all green, with the smoke run reporting
+  `active OCIO config: 'studio-config-v4.0.0_aces-v2.0_ocio-v2.5'` and 118/255.
+
+- 2026-09-01 — two consequences of `M3.P1.T7` worth carrying forward.
+  `NatronEngine` now links `OpenColorIO::OpenColorIO` and `find_package(
+  OpenColorIO 2.5 REQUIRED)` is mandatory for **any** Natron build, not just the
+  plugins — kept deliberately, because it turns "the chosen default silently
+  doesn't exist" into a build-time error plus a clear runtime dialog. And
+  `doOCIOStartupCheckIfNeeded()` (GUI only, on by default) will prompt every
+  upgrading user whose saved selection is `blender` with "…is not the default
+  one (ACES 2.0 Studio (built-in)), would you like to set it to the default
+  config?". That is the knob's designed behaviour for a changed default, not a
+  bug, but it is a first-launch prompt for every existing user and belongs in
+  the release notes.
+
+- 2026-09-01 — pre-existing bug found while reviewing `M3.P1.T7`, deliberately
+  left alone as out of scope: the `Q_FOREACH` over `getDefaultOcioConfigPaths()`
+  in `tryLoadOpenColorIOConfig()` has no `break`, so the **last** existing
+  config directory wins rather than the first — inconsistent with the knob
+  population loop, which does `break`.
 
 - 2026-09-01 — **`M3.P1.T13`: the smoke test's exit-code bug had a specific
   cause, worth remembering because it will recur.**

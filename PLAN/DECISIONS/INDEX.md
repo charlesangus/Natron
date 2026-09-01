@@ -25,3 +25,5 @@
 - 2026-09-01 — fix-openfx-io-colorspace-sentinel: the ACES blocker is a -1 == -1 bug in openfx-io, fixed on our fork; substituting scene_linear would be a silent 2.5x error → DECISIONS/2026-09-01-fix-openfx-io-colorspace-sentinel.md
 - 2026-09-01 — png-output-srgb-display: 8-bit PNG output labelled `sRGB - Display`; no pixel change, and the real ACES deliverable question is deferred → DECISIONS/2026-09-01-png-output-srgb-display.md
 - 2026-09-01 — no-upstream-pr-for-ocio-sentinel: the sentinel guard stays on our fork; the commit is kept self-contained so upstreaming stays cheap later → DECISIONS/2026-09-01-no-upstream-pr-for-ocio-sentinel.md
+- 2026-09-01 — ci-tests-the-shipped-ocio-default: test.sh unsets OCIO so CI exercises the config Natron resolves; the smoke test asserts which one that was → DECISIONS/2026-09-01-ci-tests-the-shipped-ocio-default.md
+- 2026-09-01 — format-gate-changed-lines-only: the clang-format gate moves from whole touched files to changed lines; Settings.cpp alone has ~1610 pre-existing violations → DECISIONS/2026-09-01-format-gate-changed-lines-only.md

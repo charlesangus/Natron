@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: running
-current: null
-pm_heartbeat: 2026-08-31T20:32:00-04:00
+status: paused
+current: M3.P1.T6
+pm_heartbeat: 2026-08-31T20:52:00-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -78,7 +78,7 @@ future core work has solid ground to build on.
 | M8 | Branching model and CI/CD rebuild | done | [M8-branching-and-cicd.md](PLAN/MILESTONES/M8-branching-and-cicd.md) |
 | M9 | Drop the vendored OFX plugin dependency | cancelled | [M9-drop-vendored-ofx.md](PLAN/MILESTONES/M9-drop-vendored-ofx.md) |
 | M10 | Clean-sheet CI/CD | done | [M10-cicd-clean-sheet.md](PLAN/MILESTONES/M10-cicd-clean-sheet.md) |
-| M3 | Dependency modernization | todo | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
+| M3 | Dependency modernization | blocked | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
 | M4 | CI/CD rebuild | done | [M4-cicd-rebuild.md](PLAN/MILESTONES/M4-cicd-rebuild.md) |
 | M5 | Test & correctness baseline | todo | [M5-test-correctness-baseline.md](PLAN/MILESTONES/M5-test-correctness-baseline.md) |
 | M6 | Documentation pass | todo | [M6-documentation-pass.md](PLAN/MILESTONES/M6-documentation-pass.md) |
@@ -86,7 +86,40 @@ future core work has solid ground to build on.
 
 # Open questions
 
-**Does the M0 cut still owe a second pass over dead platform/build files?**
+**Run paused here 2026-08-31.** M10 shipped; M3 was freshness-checked and
+re-planned, and every task now remaining in it turns on one of the questions
+below. None of them is a technical unknown — they are product and scope calls.
+`M3.P1.T6` is `current` and will start as soon as the OCIO question is answered
+(its own design depends on the answer: an `ocio://` built-in config needs no
+installed config directory at all).
+
+**1. How should Natron get an ACES 2.0 OCIO config — and should it now?**
+`M3.P1.T7`. OpenColorIO 2.5.2 is in the image and ships **built-in configs**
+addressable as `ocio://` URIs, needing no tarball and no download. The
+alternative is to keep fetching an external config repo, pointed at an ACES 2.0
+set. The current default is the string `"blender"` resolved against a 2018-era
+tarball. This is a color-science-visible change to out-of-the-box behaviour.
+
+**2. What happens to projects saved against the old default?** `M3.P1.T8`.
+Colorspaces are stored in `.ntp`/`.ntf` as bare strings (`"Linear"`, `"sRGB"`,
+`"rec709"`) and matched by name against the active config; ACES configs name
+them differently (`ACES2065-1`, `ACEScg`, `sRGB - Display`). So changing the
+default silently breaks colorspace resolution in **existing** projects, not
+just new ones. Options: a name-mapping table on load, pinning each project's
+config at save time, or an explicit documented break. This was the part the
+original plan covered with "flag it in release notes."
+
+**3. Is `openfx-misc` in scope for this fork?** `M3.P1.T9`. It has never been
+built or tested here, and nothing in the current test surface needs it —
+`SeNoise` turned out to live in `openfx-io`. Build it from source the way
+`openfx-io` is built, or record a decision closing it.
+
+**4. Wayland: support it or drop the option?** `M3.P1.T10`.
+`NATRON_ENABLE_WAYLAND` exists but `find_package(ECM)` silently fails on this
+image, so it is a no-op today. M7 proved a from-source ECM build works but
+chose not to carry it.
+
+**5. Does the M0 cut still owe a second pass over dead platform/build files?**
 Raised 2026-08-31 while wiring M10's lint gate. M0 dropped Windows, macOS and
 qmake, but the tree still tracks artifacts of all three: `Gui/QtMac.mm` and
 `Gui/TaskBarMac.mm` (Objective-C++, nothing builds them), and
@@ -94,6 +127,5 @@ qmake, but the tree still tracks artifacts of all three: `Gui/QtMac.mm` and
 is invoked by no current workflow. M10.P1.T2 ended up *linting* that dead
 qmake script because the task brief named it — harmless, but the better answer
 may be deleting it. The question is scope, not method: fold a cleanup task into
-M3 or M5, give the qmake-era leftovers (`tools/travis/`, `tools/jenkins/`,
-`Project-*.xcodeproj/`, `Natron.spec`) their own small milestone, or leave them
-as inert history. Nothing is blocked either way.
+M3 (it would be `M3.P1.T11`) or give the qmake-era leftovers (`tools/travis/`,
+`tools/jenkins/`, `Project-*.xcodeproj/`, `Natron.spec`) their own milestone.

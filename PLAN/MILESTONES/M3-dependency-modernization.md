@@ -262,7 +262,7 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
     so the cost is visible.
   - size: M
 
-- [ ] M3.P1.T10 — Remove `NATRON_ENABLE_WAYLAND` and its dead detection
+- [x] M3.P1.T10 — Remove `NATRON_ENABLE_WAYLAND` and its dead detection
   - files: `CMakeLists.txt` (~line 114, `find_package(ECM NO_MODULE)` and the
     `NATRON_ENABLE_WAYLAND` option), `Engine`/`Gui` Wayland sources and any
     build wiring that references them

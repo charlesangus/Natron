@@ -49,10 +49,6 @@ add_custom_command(OUTPUT ${PyGui_SOURCES}
     DEPENDS ${SHIBOKEN_EXE} ${PYGUI_HEADER} NatronEngine ${NatronGui_HEADERS} ../tools/utils/sourceCleanup.py typesystem_natronGui.xml
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-if(APPLE)
-    list(APPEND NatronGui_SOURCES QtMac.mm TaskBarMac.mm)
-endif()
-
 list(APPEND NatronGui_SOURCES
     ${NatronGui_SOURCES}
     ${PyGui_SOURCES}

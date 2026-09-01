@@ -146,11 +146,11 @@ jobs:
 
           actionlint -version
 
-      - name: shellcheck tools/ci/local + gen_config.sh
+      - name: shellcheck tools/ci/local
         shell: bash
         run: |
           set -euo pipefail
-          shellcheck tools/ci/local/*.sh .github/workflows/gen_config.sh
+          shellcheck tools/ci/local/*.sh
 
       - name: actionlint workflows
         shell: bash

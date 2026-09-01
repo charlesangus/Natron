@@ -482,17 +482,6 @@ LLVM_PATH=/opt/llvm
 make CXX='clang++-mp-9.0 -stdlib=libc++' OPENMP=1 CXXFLAGS_MESA="-DHAVE_OSMESA" LDFLAGS_MESA="-L${OSMESA_PATH}/lib -lMangledOSMesa32 `${LLVM_PATH}/bin/llvm-config --ldflags --libs engine mcjit mcdisassembler | tr '\n' ' '`" OSMESA_PATH="${OSMESA_PATH}"
 ```
 
-### Build on Xcode
-
-Follow the instruction of build but
-add -spec macx-xcode to the qmake call command:
-
-```Shell
-qmake -r -spec macx-xcode
-```
-
-Then open the already provided Project-xcode.xcodeproj and compile the target "all"
-
 #### Compiling plugins with Xcode
 
 The source distributions of the plugin sets `openfx-io` and

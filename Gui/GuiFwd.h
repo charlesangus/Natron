@@ -237,7 +237,6 @@ class ViewerToolButton;
 class KnobPageGui;
 
 #ifdef Q_OS_DARWIN
-//Implementation in Gui/QtMac.mm
 namespace QtMac {
 #if OBJC_OLD_DISPATCH_PROTOTYPES != 1
 void setupDockClickHandler(void (*)(void));

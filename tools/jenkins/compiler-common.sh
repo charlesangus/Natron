@@ -136,7 +136,7 @@ if [ "$PKGOS" = "OSX" ]; then
         esac
         case "$osxver" in
         2[123].*)
-            # clang-mp can't compile QtMac.mm on Monterey
+            # clang-mp can't compile Objective-C++ sources on Monterey
             OBJECTIVE_CC=clang
             OBJECTIVE_CXX=clang++
             ;;

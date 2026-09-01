@@ -26,7 +26,21 @@ The rejected options are worth naming because they are the right answers for a
 different project: mapping and pinning both exist to protect a body of existing
 user work, and this fork does not have one to protect.
 
-Open at decision time, and the first thing to check when implementing: that
-ACES 2.0 specifically is among the built-in configs published by OCIO 2.5.2. If
-it is not, the fallback is an external ACES config set, which reopens the
-install-path work.
+**Verified, and the config is the Studio one.** OCIO 2.5.2 in
+`aswf/ci-vfxall:2027-clang21.1` publishes eight built-in configs, of which two
+are ACES 2.0. Natron's default becomes:
+
+    ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5
+
+not the CG config, and not the moving target `ocio://default` (which resolves
+to the CG config today). Natron is a compositor, and Studio is the config aimed
+at studio pipelines: 55 colorspaces against CG's 25, and — concretely — it
+contains `Camera Rec.709`, the nearest equivalent to what Natron stores as
+`"rec709"`. The CG config has no camera-referred Rec.709 at all, only display
+curves. Pinning the exact name rather than `ocio://default` keeps out-of-the-box
+colour behaviour from changing under us on an OCIO upgrade.
+
+Read the identifier carefully: it embeds three independent versions. `v4.0.0` is
+the config family's own colorspace-set version, `aces-v2.0` is the ACES spec
+version, and `ocio-v2.5` is the minimum library version. They do not increment
+together — there is no `v3.x` family.

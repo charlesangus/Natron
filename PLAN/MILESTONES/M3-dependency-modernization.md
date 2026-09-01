@@ -113,21 +113,31 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
     `aswf/ci-vfxall:2027-clang21.1`.
   - size: S
 
-- [ ] M3.P1.T7 — Make the default OCIO config an `ocio://` built-in
+- [ ] M3.P1.T7 — Make the default OCIO config the ACES 2.0 Studio built-in
   - files: `Engine/Settings.cpp` (`NATRON_DEFAULT_OCIO_CONFIG_NAME` ~line 70,
-    `getDefaultOcioConfigPaths()` ~line 91), `tools/ci/local/test.sh`
-  - approach: the default is currently the bare string `"blender"`, matched by
-    *directory name* against configs found on disk. A built-in config is a URI,
-    not a directory, so this is not a one-line string swap — the resolution
-    path has to accept a URI and hand it to OCIO directly, while still allowing
-    a user-supplied on-disk config to win. Keep the existing on-disk search as
-    a fallback so a user pointing `$OCIO` or dropping in a config still works.
-    `test.sh` currently pins `OCIO=.../OpenColorIO-Configs/blender/config.ocio`
-    from the fetched tarball; decide whether CI should keep testing against the
-    tarball or move to the built-in, and make that deliberate.
+    the `_ocioConfigKnob` population ~lines 626-658, and the resolution in
+    `restoreOCIOConfig`-style code ~lines 2148-2221), `tools/ci/local/test.sh`
+  - approach: target
+    `ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5` per
+    `DECISIONS/2026-08-31-aces-via-ocio-builtin-config.md`. The mechanism is
+    friendlier than it looks: Natron ultimately just **sets the `OCIO`
+    environment variable** to a config path and lets OCIO and the plugins pick
+    it up, and OCIO accepts an `ocio://` URI there as readily as a file path.
+    The work is in the two places that assume a *directory on disk*: the
+    `_ocioConfigKnob` choice list is populated by enumerating subdirectories of
+    the OCIO configs dir, and resolution appends `.ocio`/`config.ocio` and
+    calls `errorDialog` when the file is missing. Add the built-in as a first
+    class entry that bypasses that path rather than special-casing a fake
+    directory name. Keep the existing behaviour intact: the `OCIO` environment
+    variable still overrides everything, `Custom config` still works, and a
+    user-supplied on-disk config still wins. `test.sh` currently pins
+    `OCIO=.../OpenColorIO-Configs/blender/config.ocio` from the fetched
+    tarball; decide deliberately whether CI keeps testing the tarball or moves
+    to the built-in, and say which in the report.
   - verify: a from-source build with no `OCIO` environment variable set and no
-    config directory installed starts with the ACES 2.0 built-in active; a
-    build with `$OCIO` pointed at an on-disk config still honours it.
+    config directory installed starts with
+    `studio-config-v4.0.0_aces-v2.0_ocio-v2.5` active; setting `OCIO` to an
+    on-disk config still overrides it; `Custom config` still resolves.
   - size: M
 
 - [ ] M3.P1.T8 — Fail loudly on projects saved against the old config

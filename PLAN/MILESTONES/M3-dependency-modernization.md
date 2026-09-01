@@ -281,7 +281,7 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
     CI stays green.
   - size: S
 
-- [ ] M3.P1.T11 — Delete the dead Windows/macOS/qmake files
+- [x] M3.P1.T11 — Delete the dead Windows/macOS/qmake files
   - files: `Gui/QtMac.mm`, `Gui/TaskBarMac.mm`,
     `.github/workflows/gen_config.sh`, `tools/travis/`, `tools/jenkins/`,
     `Project-makefile.xcodeproj/`, `Project-xcode.xcodeproj/`, `Natron.spec`
@@ -304,10 +304,16 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
 `aswf/ci-vfxall:2027-clang21.1` via `CMAKE_PREFIX_PATH=/usr/local` with no
 distro-package installs in CI (already true today); a from-source build with no
 `OCIO` environment variable set starts with the ACES 2.0 built-in config
-active; a project saved against the old `"blender"` default fails loudly and
-actionably rather than silently; `openfx-misc` builds from source in CI and the
-suite stays green; `NATRON_ENABLE_WAYLAND` and its dead ECM detection are gone;
-and the qmake/Windows/macOS leftovers are deleted with `lint-ci` still green.
+active; a project saved against the old `"blender"` default puts each offending
+node into an error state naming the colorspace, **without blocking the load**;
+`openfx-misc` builds from source in CI and the suite stays green;
+`NATRON_ENABLE_WAYLAND` and its dead ECM detection are gone; and the
+qmake/Windows/macOS leftovers are deleted with `lint-ci` still green.
+
+_Gate amended 2026-09-01 on two points, both recorded below: the original
+"fails loudly and actionably" was written expecting a refused load, which the
+user overruled; and `tools/jenkins/` is **kept**, not deleted, because it turned
+out to be live._
 
 ## Decisions
 
@@ -370,6 +376,23 @@ and the qmake/Windows/macOS leftovers are deleted with `lint-ci` still green.
   one renders, resolving the writer to `sRGB - Display`; scene-linear 0.18
   through EXR→PNG lands on **118/255** on both configs, with bit-identical
   decoded pixel arrays.
+
+- 2026-09-01 — **`M3.P1.T11`: `tools/jenkins/` is kept, against
+  `DECISIONS/2026-08-31-delete-dead-platform-files.md`, because it is not
+  dead.** `tools/docker/natron-sdk/build.sh` and
+  `tools/docker/natron-sdk-rockylinux8/build.sh` both `cp ../../jenkins/*.sh .`
+  and run `include/scripts/build-Linux-sdk.sh`, and `INSTALL_LINUX.md` — the
+  install guide for this fork's only supported platform — instructs running it
+  directly. Deleting it would have broken the documented SDK build. Near-miss
+  worth recording: `tools/jenkins/build-Linux-installer.sh` does reference a
+  `Natron.spec`, but its own bundled copy under `include/natron/`, not the root
+  file, which is why deleting the root one is safe. **`tools/jenkins/` is
+  arguably dead in spirit** — the ASWF image replaced the custom SDK — but
+  retiring it means updating `INSTALL_LINUX.md` and `tools/docker/`, which is
+  M6's subject, not a file sweep's.
+
+  Also deleted beyond the original list: `.travis.yml.disabled`, whose entire
+  content was four references to the `tools/travis/` scripts this task removed.
 
 - 2026-09-01 — **`M3.P1.T9`: `openfx-misc` needs no fork, and costs ~9 minutes.**
   Unlike `openfx-io` it has no dependency on OIIO/OCIO/SeExpr and no

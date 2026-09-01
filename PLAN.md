@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M3.P1.T11
-pm_heartbeat: 2026-09-01T13:45:00-04:00
+current: null
+pm_heartbeat: 2026-09-01T15:00:00-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -78,7 +78,7 @@ future core work has solid ground to build on.
 | M8 | Branching model and CI/CD rebuild | done | [M8-branching-and-cicd.md](PLAN/MILESTONES/M8-branching-and-cicd.md) |
 | M9 | Drop the vendored OFX plugin dependency | cancelled | [M9-drop-vendored-ofx.md](PLAN/MILESTONES/M9-drop-vendored-ofx.md) |
 | M10 | Clean-sheet CI/CD | done | [M10-cicd-clean-sheet.md](PLAN/MILESTONES/M10-cicd-clean-sheet.md) |
-| M3 | Dependency modernization | doing | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
+| M3 | Dependency modernization | done | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
 | M4 | CI/CD rebuild | done | [M4-cicd-rebuild.md](PLAN/MILESTONES/M4-cicd-rebuild.md) |
 | M5 | Test & correctness baseline | todo | [M5-test-correctness-baseline.md](PLAN/MILESTONES/M5-test-correctness-baseline.md) |
 | M6 | Documentation pass | todo | [M6-documentation-pass.md](PLAN/MILESTONES/M6-documentation-pass.md) |

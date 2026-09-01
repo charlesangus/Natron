@@ -95,94 +95,120 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
   - verify: recorded in this file's `## Decisions`.
   - size: S
 
-- [ ] M3.P1.T6 — Give the CMake build an installed, discoverable OCIO config
-  - files: `CMakeLists.txt`, install rules; `Engine/Settings.cpp` (read only —
-    `getDefaultOcioConfigPaths()` at ~line 91 defines the search paths)
-  - approach: **prerequisite for T7, and the reason T7 is bigger than it
-    looks.** Nothing in the CMake-only build installs an
-    `OpenColorIO-Configs` directory anywhere `Settings.cpp` searches. The only
-    code that ever did is `tools/jenkins/build-Linux-installer.sh`, a
-    qmake/Jenkins-era script no workflow invokes. So a from-source build today
-    has no runtime-discoverable OCIO config at all unless `OCIO` is pointed by
-    hand at the CI test tarball, which is what `tools/ci/local/test.sh` does.
-    Establish the install path first; changing the default config name before
-    any config is installed changes nothing observable.
-  - verify: a fresh `cmake --install` produces a tree where Natron starts and
-    resolves its default OCIO config with no `OCIO` environment variable set.
+- [ ] M3.P1.T6 — Confirm OCIO 2.5.2 publishes an ACES 2.0 built-in config
+  - files: none (verification + a decision entry in this file)
+  - approach: `DECISIONS/2026-08-31-aces-via-ocio-builtin-config.md` rests on
+    one unverified premise — that ACES 2.0 specifically is among the built-in
+    configs OpenColorIO 2.5.2 publishes. Settle it before any code moves. Query
+    the library the image actually ships rather than the docs: OCIO's Python or
+    C++ API enumerates built-in configs, and `ocio://` URIs resolve through
+    `OCIO::Config::CreateFromBuiltinConfig`. Record the exact URI string to use
+    (built-in names are versioned and specific, e.g. the
+    `studio-config`/`cg-config` families). **If ACES 2.0 is not published at
+    2.5.2, stop and say so** — the fallback is an external ACES config set,
+    which reopens the install-path work this decision was chosen to avoid, and
+    that is a change of plan rather than a change of task.
+  - verify: a `## Decisions` entry naming the exact `ocio://` URI and the
+    command whose output confirmed it, run inside
+    `aswf/ci-vfxall:2027-clang21.1`.
+  - size: S
+
+- [ ] M3.P1.T7 — Make the default OCIO config an `ocio://` built-in
+  - files: `Engine/Settings.cpp` (`NATRON_DEFAULT_OCIO_CONFIG_NAME` ~line 70,
+    `getDefaultOcioConfigPaths()` ~line 91), `tools/ci/local/test.sh`
+  - approach: the default is currently the bare string `"blender"`, matched by
+    *directory name* against configs found on disk. A built-in config is a URI,
+    not a directory, so this is not a one-line string swap — the resolution
+    path has to accept a URI and hand it to OCIO directly, while still allowing
+    a user-supplied on-disk config to win. Keep the existing on-disk search as
+    a fallback so a user pointing `$OCIO` or dropping in a config still works.
+    `test.sh` currently pins `OCIO=.../OpenColorIO-Configs/blender/config.ocio`
+    from the fetched tarball; decide whether CI should keep testing against the
+    tarball or move to the built-in, and make that deliberate.
+  - verify: a from-source build with no `OCIO` environment variable set and no
+    config directory installed starts with the ACES 2.0 built-in active; a
+    build with `$OCIO` pointed at an on-disk config still honours it.
   - size: M
 
-- [ ] M3.P1.T7 — Move the default OCIO config to ACES 2.0
-  - files: `Engine/Settings.cpp` (`NATRON_DEFAULT_OCIO_CONFIG_NAME`, ~line 70),
-    `tools/ci/local/fetch-assets.sh`, whatever T6 establishes
-  - approach: **blocked on an answered product question — see the board's
-    `# Open questions`.** Two implementations differ in kind, not degree:
-    OpenColorIO 2.5.2 (which the image ships) has **built-in configs**
-    addressable as `ocio://` URIs with no tarball or download at all; or keep
-    fetching an external config repo and point it at an ACES 2.0 set. The
-    current default is the string `"blender"`, matched by directory name
-    against the 2018-era `NatronGitHub/OpenColorIO-Configs` tag `Natron-v2.5`.
-    Note `OCIO_CONFIG_VERSION=2.5` in the workflows is that tarball's *tag*,
-    not an OCIO library version — easy to misread as already ACES-adjacent.
-  - verify: a fresh install opens with the chosen ACES config active and no
-    environment variable set; release notes record the change.
-  - size: M
-
-- [ ] M3.P1.T8 — Handle colorspace-name migration for existing projects
+- [ ] M3.P1.T8 — Fail loudly on projects saved against the old config
   - files: project load path (`.ntp`/`.ntf` deserialization), Read/Write and
     `OCIOColorSpace`/`OCIODisplay`/`OCIOLookTransform` knob handling
-  - approach: **the correctness risk T3 described only as "flag it in release
-    notes."** Every colorspace is stored as a plain string (`"Linear"`,
-    `"sRGB"`, `"rec709"`) and matched against the active config's colorspace
-    names at load. ACES-family configs name them differently
-    (`ACES2065-1`, `ACEScg`, `sRGB - Display`), so changing the default
-    silently breaks colorspace resolution in every previously-saved project,
-    not just new ones. Decide and implement: a name-mapping table applied on
-    load, pinning a project's config at save time, or an explicit documented
-    break. Sequenced after T7 because the target config's naming decides the
-    mapping.
-  - verify: a project saved against the old default loads with its colorspaces
-    resolved (or fails loudly with an actionable message), proven by a test.
-  - size: L
-
-- [ ] M3.P1.T9 — Settle `openfx-misc`
-  - files: `tools/ci/local/fetch-assets.sh`
-  - approach: **the half of `M3.P1.T4` that is genuinely open.** `openfx-io` is
-    thoroughly settled — built from a pinned fork SHA against the image's own
-    OIIO/OCIO/OpenEXR/LibRaw, with 28/28 ctest cases green. `openfx-misc` has
-    never been fetched, built, or tested anywhere in this pipeline; it appears
-    only in legacy `tools/jenkins/` scripts. Nothing in the current test
-    surface needs it — `BaseTest`'s three plugin IDs (`ReadOIIO`, `WriteOIIO`,
-    `SeNoise`) are satisfied by `openfx-io` plus `SeExpr`, and `SeNoise` lives
-    in `openfx-io`, not `openfx-misc` as an earlier decision wrongly claimed.
-    So this is a scope question before it is a build question: either build it
-    from source the way `openfx-io` is, or record a decision closing it.
-  - verify: either `openfx-misc` builds in CI against
-    `aswf/ci-vfxall:2027-clang21.1`, or a decision file explains its exclusion.
+  - approach: per `DECISIONS/2026-08-31-aces-via-ocio-builtin-config.md`, no
+    name mapping and no per-project config pinning — a project whose stored
+    colorspace strings (`"Linear"`, `"sRGB"`, `"rec709"`) do not exist in the
+    active ACES config must fail **loudly and actionably**, naming the
+    colorspace that could not be resolved and what the user should do, rather
+    than silently falling back to a default and quietly changing the picture.
+    Audit what the current code does on an unresolvable colorspace first — the
+    risk is that it already fails silently, in which case this task is about
+    making an existing quiet failure loud, not adding a new check.
+  - verify: a project file saved against the old `"blender"` default produces a
+    clear, actionable error naming the unresolved colorspace, proven by a test.
   - size: M
 
-- [ ] M3.P1.T10 — Resolve the `extra-cmake-modules` / Wayland gap
-  - files: `CMakeLists.txt` (~line 114, `find_package(ECM NO_MODULE)`)
-  - approach: not in the original M3 at all, but it is dependency
-    modernization. `NATRON_ENABLE_WAYLAND` exists as an option, yet ECM is not
-    in the image and EPEL is unreachable from the build environment, so the
-    `find_package` quietly fails and Wayland support never activates. M7
-    prototyped a from-source ECM build and confirmed it works, but chose not to
-    carry it. A silent no-op option is the worst of both: either vendor the
-    from-source ECM build, or close the option as unsupported on this image and
-    say so where someone would look.
-  - verify: either Wayland support demonstrably activates in the container, or
-    the option is gone/documented as unsupported and no silent `find_package`
-    failure remains.
+- [ ] M3.P1.T9 — Build `openfx-misc` from source in CI
+  - files: `tools/ci/local/fetch-assets.sh`
+  - approach: per `DECISIONS/2026-08-31-build-openfx-misc-in-ci.md`. Mirror
+    exactly what the script already does for `openfx-io`: pin a source SHA,
+    build against the image's own OIIO/OCIO/OpenEXR/LibRaw rather than
+    downloading a prebuilt bundle, and land the result in the same plugin
+    directory the ctest cases load from. Expect to fork it if it needs fixes —
+    `DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md` establishes that
+    small fixes to NatronGitHub repos land on our fork and we pin the fork.
+    Watch the asset-cache key: it is keyed on `hashFiles('fetch-assets.sh')`,
+    so editing the script correctly invalidates it, and the first run will be
+    slow.
+  - verify: CI builds `openfx-misc` against `aswf/ci-vfxall:2027-clang21.1` and
+    stays green; the added wall-clock is recorded in this file's `## Decisions`
+    so the cost is visible.
+  - size: M
+
+- [ ] M3.P1.T10 — Remove `NATRON_ENABLE_WAYLAND` and its dead detection
+  - files: `CMakeLists.txt` (~line 114, `find_package(ECM NO_MODULE)` and the
+    `NATRON_ENABLE_WAYLAND` option), `Engine`/`Gui` Wayland sources and any
+    build wiring that references them
+  - approach: per `DECISIONS/2026-08-31-drop-wayland-support.md`. The option is
+    a silent no-op — ECM is absent from the image and EPEL is unreachable, and
+    the `find_package` is not `REQUIRED`, so detection fails quietly and
+    `OSGLContext_wayland.cpp` never activates. Remove the option and the
+    detection rather than leaving a switch that misleads. Decide explicitly
+    whether the Wayland source files go too or stay as dormant code, and say
+    which in the decision — note the sources are also hard to build here
+    (`/usr/local/include/EGL/` shadows Mesa's headers and drags in `X11/Xlib.h`,
+    whose `Bool`/`Status` macros break the Qt includes), which is what made an
+    earlier attempt unwinnable.
+  - verify: `grep -rn "NATRON_ENABLE_WAYLAND\|find_package(ECM" .` returns
+    nothing outside history; a clean CMake configure logs no failed ECM lookup;
+    CI stays green.
+  - size: S
+
+- [ ] M3.P1.T11 — Delete the dead Windows/macOS/qmake files
+  - files: `Gui/QtMac.mm`, `Gui/TaskBarMac.mm`,
+    `.github/workflows/gen_config.sh`, `tools/travis/`, `tools/jenkins/`,
+    `Project-makefile.xcodeproj/`, `Project-xcode.xcodeproj/`, `Natron.spec`
+  - approach: per `DECISIONS/2026-08-31-delete-dead-platform-files.md`. M0 cut
+    Windows, macOS and qmake but left their artifacts tracked, and M10 then
+    spent real effort making `shellcheck` pass on `gen_config.sh` — a generator
+    for a build system this fork no longer has. **Confirm each path is
+    genuinely unreferenced before deleting it**: grep for every filename across
+    the tree, the workflows, and `CMakeLists.txt`, and remove the `lint-ci`
+    reference to `gen_config.sh` in `.github/workflows/checks.yml` in the same
+    change, or the gate goes red on a missing file. `Natron.spec` and the Xcode
+    projects are packaging inputs — check nothing in `Documentation/` or the
+    release process still points at them before removing.
+  - verify: CI green; `grep -rn` for each deleted filename returns nothing
+    outside `.plan/`, `docs/decisions/` and git history; `lint-ci` still passes
+    with no reference to a file that no longer exists.
   - size: M
 
 **Verification gate:** the project builds cleanly inside
 `aswf/ci-vfxall:2027-clang21.1` via `CMAKE_PREFIX_PATH=/usr/local` with no
-distro-package installs in CI (already true today); an installed build resolves
-its default OCIO config with no environment variable set, and that config is
-ACES 2.0; existing project files have a tested colorspace-name migration path
-or a loud, documented failure; `openfx-misc` either builds against the same
-image or has a recorded exclusion; and `NATRON_ENABLE_WAYLAND` is no longer a
-silent no-op.
+distro-package installs in CI (already true today); a from-source build with no
+`OCIO` environment variable set starts with the ACES 2.0 built-in config
+active; a project saved against the old `"blender"` default fails loudly and
+actionably rather than silently; `openfx-misc` builds from source in CI and the
+suite stays green; `NATRON_ENABLE_WAYLAND` and its dead ECM detection are gone;
+and the qmake/Windows/macOS leftovers are deleted with `lint-ci` still green.
 
 ## Decisions
 
@@ -203,3 +229,15 @@ silent no-op.
   colorspaces as bare strings that an ACES config renames (T8). "Swap the
   default and flag it in release notes" would have produced a default nothing
   could load and a silent break in every existing project.
+
+- 2026-08-31 — the four open questions this milestone hung on were put to the
+  user and answered: ACES 2.0 via OCIO's built-in `ocio://` configs; existing
+  projects break loudly rather than being migrated or pinned; `openfx-misc` is
+  built from source in CI despite no test needing it; `NATRON_ENABLE_WAYLAND`
+  is removed rather than left as a silent no-op; and the dead platform-file
+  sweep folds in here as `M3.P1.T11` rather than getting its own milestone.
+  Recorded as four project-wide decisions (§3a). The built-in-config choice
+  dissolved `M3.P1.T6`'s original subject — there is no config directory to
+  install if the config is a URI — so T6 was rewritten to verify the premise
+  that choice rests on, which is now the one thing that could still overturn
+  it.

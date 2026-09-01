@@ -18,3 +18,7 @@
 - 2026-08-31 — restore-vendored-ofx-plugin-tests: keep BaseTest; build the OFX bundle from pinned source instead of downloading it. 28/28 green → DECISIONS/2026-08-31-restore-vendored-ofx-plugin-tests.md
 - 2026-08-31 — fork-and-fix-natrongithub-repos: small fixes to NatronGitHub repos land on our `charlesangus/` fork and we pin the fork, not a local workaround → DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md
 - 2026-08-31 — publish-decisions-backlog: first publication mirrors every project-wide decision from M0 on, riding M10's branch → DECISIONS/2026-08-31-publish-decisions-backlog.md
+- 2026-08-31 — aces-via-ocio-builtin-config: ACES 2.0 comes from OCIO's built-in `ocio://` configs; old projects break loudly rather than being migrated → DECISIONS/2026-08-31-aces-via-ocio-builtin-config.md
+- 2026-08-31 — build-openfx-misc-in-ci: openfx-misc is built from pinned source in CI like openfx-io, though no test needs it → DECISIONS/2026-08-31-build-openfx-misc-in-ci.md
+- 2026-08-31 — drop-wayland-support: NATRON_ENABLE_WAYLAND is removed rather than left as a silent no-op → DECISIONS/2026-08-31-drop-wayland-support.md
+- 2026-08-31 — delete-dead-platform-files: the qmake/Windows/macOS leftovers are deleted, as a task inside M3 → DECISIONS/2026-08-31-delete-dead-platform-files.md

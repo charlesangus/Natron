@@ -229,7 +229,7 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
     `test.sh smoke` all still green — a reformat must not change behaviour.
   - size: S
 
-- [ ] M3.P1.T8 — Fail loudly on projects saved against the old config
+- [x] M3.P1.T8 — Fail loudly on projects saved against the old config
   - files: project load path (`.ntp`/`.ntf` deserialization), Read/Write and
     `OCIOColorSpace`/`OCIODisplay`/`OCIOLookTransform` knob handling
   - approach: per `DECISIONS/2026-08-31-aces-via-ocio-builtin-config.md`, no
@@ -370,6 +370,49 @@ and the qmake/Windows/macOS leftovers are deleted with `lint-ci` still green.
   one renders, resolving the writer to `sRGB - Display`; scene-linear 0.18
   through EXR→PNG lands on **118/255** on both configs, with bit-identical
   decoded pixel arrays.
+
+- 2026-09-01 — **`M3.P1.T8` uncovered that `M3.P1.T7` had broken every saved
+  project, not only old ones.** `OfxStringInstance::projectEnvVar_getProxy` runs
+  every OFX file-path parameter through `Project::canonicalizePath`, and
+  `Project::isRelative()` returns true for anything not starting with `/` — so
+  the new `ocio://…` default was treated as a relative path and the project
+  directory was prepended, giving `Invalid OCIO config. file
+  "/path/to/project/ocio://studio-config-…"`. A valid project and one carrying
+  old colorspaces were indistinguishable, and both exited 0. The smoke test
+  could not see it because it never saves a project, so `[OCIO]` stays empty and
+  `canonicalizePath` short-circuits. Fixed separately in `2b22c7d94` so a bisect
+  finds it on its own. **Standing lesson: T7's verification never saved and
+  reloaded a project — "it starts with the right config" and "a project round-trips"
+  are different claims.**
+
+- 2026-09-01 — **`M3.P1.T8`: the user overrode the task's own brief on how
+  loudly to break.** The brief and
+  `DECISIONS/2026-08-31-aces-via-ocio-builtin-config.md` were read as licensing a
+  refused load; the first implementation threw out of `loadProjectInternal()`.
+  Asked, the user was unambiguous: "Nodes with bad parameters should error out.
+  We should never prevent loading. Rendering prevention is only by virtue of
+  error nodes in the graph. We should not do anything other than make a noise
+  with a bad param enter an error state." Reworked to set a per-node persistent
+  error and nothing else. The reasoning that settles it: a project the user
+  cannot open is a project they cannot repair, and the refused-load message's own
+  advice — fix the parameters and re-save — was unfollowable in the GUI.
+
+- 2026-09-01 — the `openfx-io` fallback from `M3.P1.T12` and `M3.P1.T8`'s loud
+  failure do **not** conflict, established by experiment rather than by reading.
+  `existingColorSpaceOrFallback()` is reachable only from
+  `describeInContextInput`/`describeInContextOutput`, which feed
+  `StringParamDescriptor` *defaults*; it is absent from `createInstance`,
+  `changedParam`, `getInputColorspace*` and every render path. A project storing
+  `ocioInputSpace = "Linear"` reads back that exact string from the live knob,
+  not `scene_linear`. The `KnobChoice` mirrors never enter it at all — they carry
+  `setIsPersistent(false)` and are absent from a saved `.ntp`.
+
+- 2026-09-01 — three pre-existing render-failure signalling gaps were measured
+  during `M3.P1.T8` and deliberately **not** fixed here, per the user's
+  instruction above: a persistent error message does not stop a render,
+  `setPersistentMessage` stores nothing in background mode, and a failed render
+  exits 0. Recorded with full evidence in
+  `DECISIONS/2026-09-01-render-failure-signalling-gaps.md` and routed to M5.
 
 - 2026-09-01 — **`M3.P1.T14`: "tune `.clang-format` to describe the house
   style" is measurably dead, not merely unattractive.** It was the runner-up

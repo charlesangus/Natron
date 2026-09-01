@@ -27,3 +27,4 @@
 - 2026-09-01 — no-upstream-pr-for-ocio-sentinel: the sentinel guard stays on our fork; the commit is kept self-contained so upstreaming stays cheap later → DECISIONS/2026-09-01-no-upstream-pr-for-ocio-sentinel.md
 - 2026-09-01 — ci-tests-the-shipped-ocio-default: test.sh unsets OCIO so CI exercises the config Natron resolves; the smoke test asserts which one that was → DECISIONS/2026-09-01-ci-tests-the-shipped-ocio-default.md
 - 2026-09-01 — format-gate-changed-lines-only: the clang-format gate moves from whole touched files to changed lines; Settings.cpp alone has ~1610 pre-existing violations → DECISIONS/2026-09-01-format-gate-changed-lines-only.md
+- 2026-09-01 — render-failure-signalling-gaps: persistent errors don't stop a render, don't store in background, and a failed render exits 0 — measured, deferred to M5 → DECISIONS/2026-09-01-render-failure-signalling-gaps.md

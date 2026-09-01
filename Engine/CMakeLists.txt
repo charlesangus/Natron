@@ -58,10 +58,6 @@ add_custom_command(OUTPUT ${PyEngine_SOURCES}
 
 if(UNIX AND NOT APPLE)
     set(XDG_LIBS ${X11_LIBRARIES})
-    if(Wayland_FOUND)
-        set(XDG_LIBS Wayland::Client Wayland::Egl ${XDG_LIBS})
-        set(XDG_DEFS __NATRON_WAYLAND__)
-    endif()
 endif()
 
 
@@ -136,5 +132,4 @@ target_compile_definitions(NatronEngine
         NATRON_CUSTOM_BUILD_USER_TOKEN="${BUILD_USER_NAME}"
         NATRON_BUILD_NUMBER=0
         QT_NO_KEYWORDS
-        ${XDG_DEFS}
 )

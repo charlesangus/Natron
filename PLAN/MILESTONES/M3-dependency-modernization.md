@@ -95,7 +95,7 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
   - verify: recorded in this file's `## Decisions`.
   - size: S
 
-- [ ] M3.P1.T6 — Confirm OCIO 2.5.2 publishes an ACES 2.0 built-in config
+- [x] M3.P1.T6 — Confirm OCIO 2.5.2 publishes an ACES 2.0 built-in config
   - files: none (verification + a decision entry in this file)
   - approach: `DECISIONS/2026-08-31-aces-via-ocio-builtin-config.md` rests on
     one unverified premise — that ACES 2.0 specifically is among the built-in
@@ -241,3 +241,31 @@ and the qmake/Windows/macOS leftovers are deleted with `lint-ci` still green.
   install if the config is a URI — so T6 was rewritten to verify the premise
   that choice rests on, which is now the one thing that could still overturn
   it.
+
+- 2026-08-31 — **`M3.P1.T6`: the premise holds.** Verified against the library
+  in `aswf/ci-vfxall:2027-clang21.1`, not against documentation
+  (`/usr/local/bin/python3 -c "import PyOpenColorIO ..."`; note `/usr/bin/python3`
+  is 3.9 and has no bindings). OpenColorIO reports **2.5.2**, and its built-in
+  registry publishes **8** configs, of which exactly two are ACES 2.0:
+
+  - `cg-config-v4.0.0_aces-v2.0_ocio-v2.5` — recommended, **and the default**
+  - `studio-config-v4.0.0_aces-v2.0_ocio-v2.5` — recommended, not default
+
+  The other six carry `aces-v1.3`. The identifiers embed three independent
+  version numbers and must not be conflated: `v4.0.0` is the config family's own
+  colorspace-set version, `aces-v2.0` is the ACES spec version, `ocio-v2.5` is
+  the minimum library version. There is no `v3.x` family, so config version and
+  ACES version do not increment in step. `ocio://default` resolves to the CG
+  config today, confirmed by loading it and comparing names rather than by
+  trusting the registry's boolean.
+
+- 2026-08-31 — **`M3.P1.T8`'s break is confirmed, not hypothetical.**
+  `cfg.getColorSpace()` returns null for `"Linear"`, `"sRGB"`, `"rec709"`,
+  `"Rec709"` and `"Rec.709"` in **both** ACES 2.0 configs, and dumping every
+  colorspace's alias list found none of those bare tokens. There is no silent
+  alias fallback to rely on. Nearest equivalents, none of them exact:
+  `Linear Rec.709 (sRGB)` for `"Linear"`; `sRGB Encoded Rec.709 (sRGB)` (a
+  texture space) for `"sRGB"` — not to be confused with `sRGB - Display`, which
+  is a display role; and for `"rec709"`, `Camera Rec.709`, which exists **only
+  in the Studio config**. The CG config has no camera-referred Rec.709 at all,
+  only display-oriented curves.

@@ -59,6 +59,8 @@
 
 #include <ofxhXml.h> // OFX::XML::escape
 
+#include <OpenColorIO/OpenColorIO.h>
+
 #include "Global/StrUtils.h"
 #include "Global/FStreamsSupport.h"
 #ifdef DEBUG
@@ -289,6 +291,94 @@ Project::loadProject(const QString & path,
     return true;
 } // loadProject
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// The parameter names openfx-io's GenericOCIO gives every plug-in that reads,
+// writes or converts through OpenColorIO (see IOSupport/GenericOCIO.h), also
+// mirrored by Engine/ReadNode.cpp and Engine/WriteNode.cpp.
+const char* const ocioConfigFileKnobName = "ocioConfigFile";
+const char* const ocioColorSpaceKnobNames[] = { "ocioInputSpace", "ocioOutputSpace" };
+
+std::string
+getStringKnobValue(const NodePtr& node,
+                   const char* knobName)
+{
+    KnobIPtr knob = node->getKnobByName(knobName);
+
+    if (!knob) {
+        return std::string();
+    }
+    KnobStringBasePtr stringKnob = std::dynamic_pointer_cast<KnobStringBase>(knob);
+    if (!stringKnob) {
+        return std::string();
+    }
+
+    return stringKnob->getValue();
+}
+
+OCIO_NAMESPACE::ConstConfigRcPtr
+createOcioConfig(const std::string& configFile)
+{
+    try {
+        if (configFile.empty()) {
+            return OCIO_NAMESPACE::Config::CreateFromEnv();
+        }
+
+        return OCIO_NAMESPACE::Config::CreateFromFile(configFile.c_str());
+    } catch (...) {
+        return OCIO_NAMESPACE::ConstConfigRcPtr();
+    }
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+void
+Project::reportUnresolvedOCIOColorSpaces()
+{
+    NodesList nodes;
+
+    getNodes_recursive(nodes, false);
+
+    std::map<std::string, OCIO_NAMESPACE::ConstConfigRcPtr> configs;
+
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        // The decoder/encoder a Read/Write node wraps carries the same knobs under a
+        // name the user never sees, so reporting it too would name each problem twice.
+        if ((*it)->getIOContainer()) {
+            continue;
+        }
+        std::string configFile = getStringKnobValue(*it, ocioConfigFileKnobName);
+        canonicalizePath(configFile);
+
+        std::map<std::string, OCIO_NAMESPACE::ConstConfigRcPtr>::const_iterator foundConfig = configs.find(configFile);
+        if (foundConfig == configs.end()) {
+            foundConfig = configs.insert(std::make_pair(configFile, createOcioConfig(configFile))).first;
+        }
+        const OCIO_NAMESPACE::ConstConfigRcPtr& config = foundConfig->second;
+        // A config that will not load at all is a different failure, reported by the
+        // plug-in itself; treating it as "every colorspace is unresolvable" here would
+        // bury that message under this one.
+        if (!config) {
+            continue;
+        }
+
+        QStringList unresolved;
+        for (std::size_t i = 0; i < sizeof(ocioColorSpaceKnobNames) / sizeof(ocioColorSpaceKnobNames[0]); ++i) {
+            const std::string colorSpace = getStringKnobValue(*it, ocioColorSpaceKnobNames[i]);
+            if (colorSpace.empty() || config->getColorSpace(colorSpace.c_str())) {
+                continue;
+            }
+            unresolved.push_back(tr("%1 = \"%2\" is not a colorspace in the OpenColorIO config \"%3\".")
+                                     .arg(QString::fromUtf8(ocioColorSpaceKnobNames[i]))
+                                     .arg(QString::fromUtf8(colorSpace.c_str()))
+                                     .arg(QString::fromUtf8(config->getName())));
+        }
+        if (!unresolved.isEmpty()) {
+            (*it)->setPersistentMessage(eMessageTypeError, unresolved.join(QString::fromUtf8("\n")).toStdString());
+        }
+    }
+} // Project::reportUnresolvedOCIOColorSpaces
+
 bool
 Project::loadProjectInternal(const QString & path,
                              const QString & name,
@@ -368,6 +458,8 @@ Project::loadProjectInternal(const QString & path,
         }
         throw std::runtime_error( tr("Unrecognized or damaged project file").toStdString() );
     }
+
+    reportUnresolvedOCIOColorSpaces();
 
     Format f;
     getProjectDefaultFormat(&f);

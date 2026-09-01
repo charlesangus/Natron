@@ -244,6 +244,12 @@ public:
      **/
     static bool hasUriScheme(const std::string& str);
 
+    /**
+     * @brief Puts every node asking for an OpenColorIO colorspace the config it uses does
+     * not define into an error state naming those parameters. Nodes whose colorspaces all
+     * resolve are left untouched.
+     **/
+    void reportUnresolvedOCIOColorSpaces();
 
     /**
      * @brief If str is relative it will canonicalize the path, i.e expand all variables and '.' and '..' that may

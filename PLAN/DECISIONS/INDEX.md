@@ -22,3 +22,5 @@
 - 2026-08-31 — build-openfx-misc-in-ci: openfx-misc is built from pinned source in CI like openfx-io, though no test needs it → DECISIONS/2026-08-31-build-openfx-misc-in-ci.md
 - 2026-08-31 — drop-wayland-support: NATRON_ENABLE_WAYLAND is removed rather than left as a silent no-op → DECISIONS/2026-08-31-drop-wayland-support.md
 - 2026-08-31 — delete-dead-platform-files: the qmake/Windows/macOS leftovers are deleted, as a task inside M3 → DECISIONS/2026-08-31-delete-dead-platform-files.md
+- 2026-09-01 — fix-openfx-io-colorspace-sentinel: the ACES blocker is a -1 == -1 bug in openfx-io, fixed on our fork; substituting scene_linear would be a silent 2.5x error → DECISIONS/2026-09-01-fix-openfx-io-colorspace-sentinel.md
+- 2026-09-01 — png-output-srgb-display: 8-bit PNG output labelled `sRGB - Display`; no pixel change, and the real ACES deliverable question is deferred → DECISIONS/2026-09-01-png-output-srgb-display.md

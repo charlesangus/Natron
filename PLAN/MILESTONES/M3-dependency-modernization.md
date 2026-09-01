@@ -140,6 +140,44 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
     on-disk config still overrides it; `Custom config` still resolves.
   - size: M
 
+- [ ] M3.P1.T12 — Patch the `openfx-io` fork's colorspace resolution
+  - files: our `charlesangus/openfx-io` fork (`IOSupport/GenericOCIO.cpp`), then
+    the pinned SHA in `tools/ci/local/fetch-assets.sh`
+  - approach: per `DECISIONS/2026-09-01-fix-openfx-io-colorspace-sentinel.md`
+    and `2026-09-01-png-output-srgb-display.md`. **Blocks `M3.P1.T7`** — the
+    ACES default cannot ship until this lands, because a fresh project cannot
+    render without it. Five changes, ~41 lines, one file: guard the `-1`
+    sentinel in `canonicalizeColorSpace()`; add an
+    `existingColorSpaceOrFallback()` preferring the name itself, then the
+    `scene_linear` role, then `default`, then colorspace 0; use it in
+    `describeInContextInput`/`describeInContextOutput`; add `sRGB - Display`
+    and `Camera Rec.709` to `colorSpaceName()`'s chains; and fix
+    `GenericOCIO.cpp:958`, which writes the literal `"default"` regardless of
+    what it just computed. A working patch exists at
+    `/tmp/ocioprobe/patch.diff` with a built bundle at `/tmp/ofxio-patched/` —
+    treat it as a reference, not as something to apply blind. Land the sentinel
+    guard as its own commit and open it upstream; it is obviously correct and
+    config-agnostic.
+  - verify: patched plugin on the old `blender` config produces byte-identical
+    output to the stock plugin (regression check); on the ACES built-in a fresh
+    project renders, and scene-linear 0.18 through EXR→PNG lands on 118/255,
+    not 46/255.
+  - size: M
+
+- [ ] M3.P1.T13 — Give the smoke test a mixed-format assertion
+  - files: `tools/ci/smoke_test.py` (or wherever the smoke test lives),
+    `tools/ci/local/test.sh`
+  - approach: **the smoke test currently cannot tell a correct colour fix from a
+    wrong one.** It round-trips PNG→PNG, so a reader and writer that are both
+    wrong cancel out — the 2.5x-too-dark `scene_linear` substitution passes it
+    cleanly. Add a mixed-format case: render a known scene-linear value through
+    EXR→PNG and assert the resulting 8-bit code value. Roughly ten lines, and it
+    is the only thing standing between this project and shipping a silent
+    colour error.
+  - verify: the new assertion fails against a deliberately mis-mapped write
+    colorspace and passes on the fixed one.
+  - size: S
+
 - [ ] M3.P1.T8 — Fail loudly on projects saved against the old config
   - files: project load path (`.ntp`/`.ntf` deserialization), Read/Write and
     `OCIOColorSpace`/`OCIODisplay`/`OCIOLookTransform` knob handling

@@ -126,16 +126,35 @@ fi
 # deliberately, and re-run this script (it rebuilds when the stamp below no
 # longer matches).
 #
-# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, two commits ahead of
-# NatronGitHub/openfx-io and zero behind. The delta is one CMakeLists.txt fix
-# (SEEXPR2_INCLUDES/SEEXPR2_LIBRARIES -> SEEXPR2_INCLUDE_DIR/SEEXPR2_LIBRARY):
-# upstream reads variable names its own FindSeExpr2.cmake never sets, so the
-# SeExpr sources compiled but IO.ofx was never linked against libSeExpr, and
-# the bundle failed to load with `undefined symbol: _ZTI11SeExprFuncX`.
-# Undefined symbols in a shared library don't fail a link by default, which
-# is why this went unnoticed upstream. Fork-and-fix is the standing pattern
-# for small changes to NatronGitHub repos -- see
-# PLAN/DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md.
+# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, four commits ahead of
+# NatronGitHub/openfx-io and zero behind. Fork-and-fix is the standing
+# pattern for small changes to NatronGitHub repos -- see
+# PLAN/DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md. Two deltas:
+#
+# 1. A CMakeLists.txt fix (SEEXPR2_INCLUDES/SEEXPR2_LIBRARIES ->
+#    SEEXPR2_INCLUDE_DIR/SEEXPR2_LIBRARY): upstream reads variable names its
+#    own FindSeExpr2.cmake never sets, so the SeExpr sources compiled but
+#    IO.ofx was never linked against libSeExpr, and the bundle failed to load
+#    with `undefined symbol: _ZTI11SeExprFuncX`. Undefined symbols in a shared
+#    library don't fail a link by default, which is why this went unnoticed
+#    upstream.
+#
+# 2. Colorspace resolution in IOSupport/GenericOCIO.cpp, which is what lets
+#    the bundle work against Natron's default OCIO config
+#    (ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5). Reader and writer
+#    colorspace parameter defaults are computed at describe time and were
+#    never checked against the config actually loaded, so on any config that
+#    defines no `default` role -- every ACES config -- a fresh project failed
+#    to render with `Color space 'default' could not be found.` The fix
+#    guards canonicalizeColorSpace()'s -1 "not found" sentinel (which
+#    otherwise compares equal to the -1 of an undefined role), falls back to
+#    scene_linear rather than to colorspace 0 (display-referred in the ACES
+#    configs), and teaches the fallback chains the ACES spellings
+#    `sRGB - Display` and `Camera Rec.709`. Against the older tarball configs
+#    this is a no-op: renders are byte-identical either side of it.
+#
+# The -1 sentinel guard is the first of the two commits and is deliberately
+# self-contained, so it can be offered upstream on its own.
 #
 # Verified to build clean against the image's OIIO 3.1.16.0 / OCIO 2.5.2 /
 # OpenEXR 3.4.15 -- openfx-io carries explicit `#if OIIO_VERSION >= 30000`
@@ -148,7 +167,7 @@ fi
 # openfx-io's own CI pins the same branch. Not forked -- wdas/SeExpr is not
 # a NatronGitHub repo and we carry no changes to it.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="59318530ed1c6b78e6a85dc7c4cf60366520ba7f"
+OPENFX_IO_REF="40764b207277d42c8c6a9060f6fc40c2eab80b7f"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 

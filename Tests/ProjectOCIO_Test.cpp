@@ -112,7 +112,6 @@ loadProjectCopy(const QString& dirPath,
 class ProjectOCIOTest
     : public testing::Test {
 protected:
-
     virtual void TearDown()
     {
         // Both cases below leave a loaded project behind, and every test in this binary

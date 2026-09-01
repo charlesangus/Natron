@@ -118,7 +118,7 @@ getDefaultOcioConfigPaths()
 static bool
 isBuiltinOcioConfig(const QString& config)
 {
-    return config.startsWith( QString::fromUtf8(NATRON_OCIO_BUILTIN_CONFIG_PREFIX) );
+    return config.startsWith(QString::fromUtf8(NATRON_OCIO_BUILTIN_CONFIG_PREFIX));
 }
 
 static bool
@@ -126,14 +126,14 @@ loadBuiltinOcioConfig(const QString& config,
                       QString* error)
 {
     try {
-        OCIO_NAMESPACE::ConstConfigRcPtr ocioConfig = OCIO_NAMESPACE::Config::CreateFromFile( config.toStdString().c_str() );
+        OCIO_NAMESPACE::ConstConfigRcPtr ocioConfig = OCIO_NAMESPACE::Config::CreateFromFile(config.toStdString().c_str());
         if (!ocioConfig) {
             *error = Settings::tr("OpenColorIO returned no configuration.");
 
             return false;
         }
     } catch (const std::exception& e) {
-        *error = QString::fromUtf8( e.what() );
+        *error = QString::fromUtf8(e.what());
 
         return false;
     } catch (...) {
@@ -664,10 +664,11 @@ Settings::initializeKnobsColorManagement()
     _ocioConfigKnob->setName("ocioConfig");
 
     std::vector<ChoiceOption> configs;
-    configs.push_back( ChoiceOption(NATRON_DEFAULT_OCIO_CONFIG_NAME,
-                                    NATRON_DEFAULT_OCIO_CONFIG_LABEL,
-                                    tr("Academy Color Encoding System - Studio Config [COLORSPACES v4.0.0] [ACES v2.0] [OCIO v2.5]. "
-                                       "This configuration is built into OpenColorIO and needs no files on disk.").toStdString() ) );
+    configs.push_back(ChoiceOption(NATRON_DEFAULT_OCIO_CONFIG_NAME,
+                                   NATRON_DEFAULT_OCIO_CONFIG_LABEL,
+                                   tr("Academy Color Encoding System - Studio Config [COLORSPACES v4.0.0] [ACES v2.0] [OCIO v2.5]. "
+                                      "This configuration is built into OpenColorIO and needs no files on disk.")
+                                       .toStdString()));
     const int defaultIndex = (int)configs.size() - 1;
 
     QStringList defaultOcioConfigsPaths = getDefaultOcioConfigPaths();
@@ -2197,7 +2198,7 @@ Settings::tryLoadOpenColorIOConfig()
         configFile = QString::fromUtf8( file.c_str() );
     }
     if ( !configFile.isEmpty() ) {
-        if ( !isBuiltinOcioConfig(configFile) && !QFile::exists(configFile) )  {
+        if (!isBuiltinOcioConfig(configFile) && !QFile::exists(configFile)) {
             Dialogs::errorDialog( "OpenColorIO", tr("%1: No such file.").arg(configFile).toStdString() );
 
             return false;
@@ -2207,34 +2208,34 @@ Settings::tryLoadOpenColorIOConfig()
         try {
             ///try to load from the combobox
             QString activeEntryText  = QString::fromUtf8( _ocioConfigKnob->getActiveEntry().id.c_str() );
-            if ( isBuiltinOcioConfig(activeEntryText) ) {
+            if (isBuiltinOcioConfig(activeEntryText)) {
                 configFile = activeEntryText;
             } else {
-                QString configFileName = QString( activeEntryText + QString::fromUtf8(".ocio") );
+                QString configFileName = QString(activeEntryText + QString::fromUtf8(".ocio"));
                 QStringList defaultConfigsPaths = getDefaultOcioConfigPaths();
-                Q_FOREACH(const QString &defaultConfigsDirStr, defaultConfigsPaths) {
+                Q_FOREACH (const QString& defaultConfigsDirStr, defaultConfigsPaths) {
                     QDir defaultConfigsDir(defaultConfigsDirStr);
 
-                    if ( !defaultConfigsDir.exists() ) {
+                    if (!defaultConfigsDir.exists()) {
                         qDebug() << "Attempt to read an OpenColorIO configuration but the configuration directory"
                                  << defaultConfigsDirStr << "does not exist.";
                         continue;
                     }
-                    ///try to open the .ocio config file first in the defaultConfigsDir
-                    ///if we can't find it, try to look in a subdirectory with the name of the config for the file config.ocio
-                    if ( !defaultConfigsDir.exists(configFileName) ) {
+                    /// try to open the .ocio config file first in the defaultConfigsDir
+                    /// if we can't find it, try to look in a subdirectory with the name of the config for the file config.ocio
+                    if (!defaultConfigsDir.exists(configFileName)) {
                         QDir subDir(defaultConfigsDirStr + QDir::separator() + activeEntryText);
-                        if ( !subDir.exists() ) {
-                            Dialogs::errorDialog( "OpenColorIO", tr("%1: No such file or directory.").arg( subDir.absoluteFilePath( QString::fromUtf8("config.ocio") ) ).toStdString() );
+                        if (!subDir.exists()) {
+                            Dialogs::errorDialog("OpenColorIO", tr("%1: No such file or directory.").arg(subDir.absoluteFilePath(QString::fromUtf8("config.ocio"))).toStdString());
 
                             return false;
                         }
-                        if ( !subDir.exists( QString::fromUtf8("config.ocio") ) ) {
-                            Dialogs::errorDialog( "OpenColorIO", tr("%1: No such file or directory.").arg( subDir.absoluteFilePath( QString::fromUtf8("config.ocio") ) ).toStdString() );
+                        if (!subDir.exists(QString::fromUtf8("config.ocio"))) {
+                            Dialogs::errorDialog("OpenColorIO", tr("%1: No such file or directory.").arg(subDir.absoluteFilePath(QString::fromUtf8("config.ocio"))).toStdString());
 
                             return false;
                         }
-                        configFile = subDir.absoluteFilePath( QString::fromUtf8("config.ocio") );
+                        configFile = subDir.absoluteFilePath(QString::fromUtf8("config.ocio"));
                     } else {
                         configFile = defaultConfigsDir.absoluteFilePath(configFileName);
                     }
@@ -2248,10 +2249,10 @@ Settings::tryLoadOpenColorIOConfig()
             return false;
         }
     }
-    if ( isBuiltinOcioConfig(configFile) ) {
+    if (isBuiltinOcioConfig(configFile)) {
         QString error;
-        if ( !loadBuiltinOcioConfig(configFile, &error) ) {
-            Dialogs::errorDialog( "OpenColorIO", tr("%1: %2").arg(configFile).arg(error).toStdString() );
+        if (!loadBuiltinOcioConfig(configFile, &error)) {
+            Dialogs::errorDialog("OpenColorIO", tr("%1: %2").arg(configFile).arg(error).toStdString());
 
             return false;
         }
@@ -2272,9 +2273,9 @@ Settings::tryLoadOpenColorIOConfig()
     // path equal to the URI down to the bare "[OCIO]" token, which is too short for
     // Project::expandVariable() to expand back.
     std::string configPath;
-    if ( !isBuiltinOcioConfig(configFile) ) {
+    if (!isBuiltinOcioConfig(configFile)) {
         configPath = SequenceParsing::removePath(stdConfigFile);
-        if ( !configPath.empty() && (configPath[configPath.size() - 1] == '/') ) {
+        if (!configPath.empty() && (configPath[configPath.size() - 1] == '/')) {
             configPath.erase(configPath.size() - 1, 1);
         }
     }
@@ -3260,9 +3261,9 @@ Settings::doOCIOStartupCheckIfNeeded()
         std::vector<ChoiceOption> entries = _ocioConfigKnob->getEntries_mt_safe();
         std::string warnText;
         if ( (entry_i < 0) || ( entry_i >= (int)entries.size() ) ) {
-            warnText = tr("The current OCIO config selected in the preferences is invalid, would you like to set it to the default config (%1)?").arg( QString::fromUtf8(NATRON_DEFAULT_OCIO_CONFIG_LABEL) ).toStdString();
+            warnText = tr("The current OCIO config selected in the preferences is invalid, would you like to set it to the default config (%1)?").arg(QString::fromUtf8(NATRON_DEFAULT_OCIO_CONFIG_LABEL)).toStdString();
         } else if (entries[entry_i].id != NATRON_DEFAULT_OCIO_CONFIG_NAME) {
-            warnText = tr("The current OCIO config selected in the preferences is not the default one (%1), would you like to set it to the default config?").arg( QString::fromUtf8(NATRON_DEFAULT_OCIO_CONFIG_LABEL) ).toStdString();
+            warnText = tr("The current OCIO config selected in the preferences is not the default one (%1), would you like to set it to the default config?").arg(QString::fromUtf8(NATRON_DEFAULT_OCIO_CONFIG_LABEL)).toStdString();
         } else {
             return;
         }
@@ -3289,9 +3290,12 @@ Settings::doOCIOStartupCheckIfNeeded()
                 _ocioConfigKnob->setValue(defaultIndex);
                 saveSetting( _ocioConfigKnob.get() );
             } else {
-                Dialogs::warningDialog( "OCIO config", tr("The %2 OCIO config could not be found.\n"
-                                                          "This is probably because you're not using the OpenColorIO-Configs folder that should "
-                                                          "be bundled with your %1 installation.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ).arg( QString::fromUtf8(NATRON_DEFAULT_OCIO_CONFIG_LABEL) ).toStdString() );
+                Dialogs::warningDialog("OCIO config", tr("The %2 OCIO config could not be found.\n"
+                                                         "This is probably because you're not using the OpenColorIO-Configs folder that should "
+                                                         "be bundled with your %1 installation.")
+                                                          .arg(QString::fromUtf8(NATRON_APPLICATION_NAME))
+                                                          .arg(QString::fromUtf8(NATRON_DEFAULT_OCIO_CONFIG_LABEL))
+                                                          .toStdString());
             }
         }
     }

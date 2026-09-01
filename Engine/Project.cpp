@@ -2518,6 +2518,12 @@ Project::fixFilePath(const std::string& projectPathName,
 bool
 Project::isRelative(const std::string& str)
 {
+    // A URI such as OpenColorIO's "ocio://<name>" names a built-in resource rather
+    // than a location on disk, so resolving it against the project directory turns
+    // it into a path that exists nowhere.
+    if (hasUriScheme(str)) {
+        return false;
+    }
 #ifdef __NATRON_WIN32__
 
     return ( str.empty() || ( !str.empty() && (str[0] != '/')
@@ -2525,6 +2531,25 @@ Project::isRelative(const std::string& str)
 #else  //Unix
     return ( str.empty() || (str[0] != '/') );
 #endif
+}
+
+bool
+Project::hasUriScheme(const std::string& str)
+{
+    const std::string::size_type sep = str.find("://");
+
+    if ((sep == std::string::npos) || (sep == 0)) {
+        return false;
+    }
+    for (std::string::size_type i = 0; i < sep; ++i) {
+        const char c = str[i];
+        const bool isSchemeChar = ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) || ((c >= '0') && (c <= '9')) || (c == '+') || (c == '-') || (c == '.');
+        if (!isSchemeChar) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void

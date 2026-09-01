@@ -239,6 +239,11 @@ public:
     static void makeRelativeToVariable(const std::string& varName, const std::string& varValue, std::string& str);
     static bool isRelative(const std::string& str);
 
+    /**
+     * @brief Returns true if str starts with a URI scheme, e.g. "ocio://".
+     **/
+    static bool hasUriScheme(const std::string& str);
+
 
     /**
      * @brief If str is relative it will canonicalize the path, i.e expand all variables and '.' and '..' that may

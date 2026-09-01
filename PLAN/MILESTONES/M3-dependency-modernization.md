@@ -245,7 +245,7 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
     clear, actionable error naming the unresolved colorspace, proven by a test.
   - size: M
 
-- [ ] M3.P1.T9 — Build `openfx-misc` from source in CI
+- [x] M3.P1.T9 — Build `openfx-misc` from source in CI
   - files: `tools/ci/local/fetch-assets.sh`
   - approach: per `DECISIONS/2026-08-31-build-openfx-misc-in-ci.md`. Mirror
     exactly what the script already does for `openfx-io`: pin a source SHA,
@@ -370,6 +370,31 @@ and the qmake/Windows/macOS leftovers are deleted with `lint-ci` still green.
   one renders, resolving the writer to `sRGB - Display`; scene-linear 0.18
   through EXR→PNG lands on **118/255** on both configs, with bit-identical
   decoded pixel arrays.
+
+- 2026-09-01 — **`M3.P1.T9`: `openfx-misc` needs no fork, and costs ~9 minutes.**
+  Unlike `openfx-io` it has no dependency on OIIO/OCIO/SeExpr and no
+  `CMakeLists.txt` bug, so upstream `NatronGitHub/openfx-misc` builds clean
+  against the container as-is and is pinned directly at
+  `0abd46b5a8cbc98fa24579042129460d0aa87b8f`. The one genuine trap: its CMake
+  build **globs `CImg/CImg.h` and `CImg/Inpaint/inpaint.h` as sources but never
+  fetches them** — only upstream's *Makefile* build does, via `curl` plus a
+  `patch`. So `cmake --build` links `Misc.ofx` (which doesn't need them) and
+  then dies partway through `CImg.ofx`. `fetch-assets.sh` replicates those two
+  fetches and the patch, reading the CImg commit out of `openfx-misc`'s own
+  `CImg/Makefile` rather than pinning it a second time, so it cannot drift when
+  the `openfx-misc` pin is bumped. Measured cold, from the PM's own timed run:
+  `openfx-io` **2m35s**, `openfx-misc` **8m59s**, plugins total **11m34s**. The
+  asset cache is keyed on `hashFiles('fetch-assets.sh')`, so that is paid when
+  the script changes, not per run. ctest 30/30 and smoke green with all three
+  bundles on `OFX_PLUGIN_PATH`.
+
+- 2026-09-01 — process note, not a code decision: T9's implementer parked three
+  times on background builds that were reaped when its turn ended, losing its
+  own work each time. The PM took the long-running verification over directly,
+  running the build detached *inside* the container (`docker exec -d`) with a
+  persistent monitor watching for either an exit marker or the disappearance of
+  the build processes. **For work in this repo that takes more than a few
+  minutes, drive the build from the coordinator, not from a subagent.**
 
 - 2026-09-01 — **`M3.P1.T8` uncovered that `M3.P1.T7` had broken every saved
   project, not only old ones.** `OfxStringInstance::projectEnvVar_getProxy` runs

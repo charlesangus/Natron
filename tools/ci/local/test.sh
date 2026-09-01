@@ -3,7 +3,7 @@
 # Run the same two test steps CI runs against an already-built tree
 # (build/debug or build/release, see build.sh): `ctest -V`, and the Python
 # bindings smoke test driven through the built NatronRenderer. Both are run
-# with the exact environment ci.yml uses (OFX_PLUGIN_PATH/OCIO pointed at
+# with the exact environment ci.yml uses (OFX_PLUGIN_PATH pointed at
 # the local asset cache from fetch-assets.sh, everything under
 # `xvfb-run --auto-servernum` because ci.yml's `defaults.run.shell` wraps
 # every step in Xvfb -- see the "Run Unix Tests" / "Python bindings smoke
@@ -117,17 +117,21 @@ fi
 
 ASSETS_DIR="${REPO_ROOT}/build/assets"
 OFX_PLUGIN_PATH="${ASSETS_DIR}/Plugins"
-OCIO="${ASSETS_DIR}/OpenColorIO-Configs/blender/config.ocio"
 
-if [[ ! -d "${OFX_PLUGIN_PATH}" || -z "$(ls -A "${OFX_PLUGIN_PATH}" 2>/dev/null)" || ! -f "${OCIO}" ]]; then
+if [[ ! -d "${OFX_PLUGIN_PATH}" || -z "$(ls -A "${OFX_PLUGIN_PATH}" 2>/dev/null)" ]]; then
     echo "test.sh: ERROR: build/assets is missing or incomplete." >&2
-    echo "Expected a non-empty ${OFX_PLUGIN_PATH} and ${OCIO}." >&2
+    echo "Expected a non-empty ${OFX_PLUGIN_PATH}." >&2
     echo "Run tools/ci/local/fetch-assets.sh first." >&2
     exit 1
 fi
 
 export OFX_PLUGIN_PATH
-export OCIO
+
+# Unset rather than pointed at build/assets/OpenColorIO-Configs, so that what the
+# tests run against is the config Natron itself resolves -- the one users get --
+# instead of an on-disk config no default install has. smoke_test.py asserts which
+# config that turned out to be; an inherited OCIO would silently defeat it.
+unset OCIO
 
 case "${SUBCOMMAND}" in
     ctest)
@@ -137,7 +141,7 @@ case "${SUBCOMMAND}" in
         fi
         echo "== test.sh: ctest -V (${BUILD_TYPE}) =="
         echo "+ cd ${BUILD_DIR}"
-        echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} OCIO=${OCIO} xvfb-run --auto-servernum ctest -V"
+        echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} xvfb-run --auto-servernum ctest -V"
         cd "${BUILD_DIR}"
         exec xvfb-run --auto-servernum ctest -V
         ;;
@@ -169,14 +173,14 @@ case "${SUBCOMMAND}" in
 
         if [[ "${USE_GDB}" -eq 1 ]]; then
             echo "== test.sh: smoke test under gdb (${BUILD_TYPE}) =="
-            echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} OCIO=${OCIO} xvfb-run --auto-servernum \\"
+            echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} xvfb-run --auto-servernum \\"
             echo "    gdb -batch -ex run -ex \"thread apply all bt\" -ex bt --args ${NATRON_RENDERER} ${SMOKE_TEST_SCRIPT}"
             exec xvfb-run --auto-servernum \
                 gdb -batch -ex run -ex "thread apply all bt" -ex bt \
                 --args "${NATRON_RENDERER}" "${SMOKE_TEST_SCRIPT}"
         else
             echo "== test.sh: smoke test (${BUILD_TYPE}) =="
-            echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} OCIO=${OCIO} xvfb-run --auto-servernum \\"
+            echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} xvfb-run --auto-servernum \\"
             echo "    ${NATRON_RENDERER} ${SMOKE_TEST_SCRIPT}"
             exec xvfb-run --auto-servernum "${NATRON_RENDERER}" "${SMOKE_TEST_SCRIPT}"
         fi

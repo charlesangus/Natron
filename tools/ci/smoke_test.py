@@ -141,6 +141,12 @@ SRGB_GREY_CODE = 118
 # and the same pixel lands on 46, a 2.5x error.
 SRGB_GREY_TOLERANCE = 2
 
+# The OCIO config Natron picks for itself when nothing in the environment
+# picks one for it (Engine/Settings.cpp's NATRON_DEFAULT_OCIO_CONFIG_NAME).
+# Natron exports it as an "ocio://" URI; OpenColorIO reports the config it
+# resolved to under the same name minus the scheme.
+DEFAULT_OCIO_CONFIG = "studio-config-v4.0.0_aces-v2.0_ocio-v2.5"
+
 
 def _mark(msg):
     # Print with an eager, unbuffered flush. Natron does not redirect
@@ -346,6 +352,34 @@ def check_app_render_with_task_list():
     _mark("[smoke] OK: app.render([(writer, 1, 1)]) rendered %r" % (out_path,))
 
 
+def check_default_ocio_config():
+    """Check the colour checks below run on Natron's own default OCIO config.
+
+    tools/ci/local/test.sh leaves OCIO unset so that Settings.cpp's default
+    resolution is what gets exercised. Nothing else would notice if that
+    resolution broke: with OCIO unset, OpenColorIO falls back to a built-in
+    config of its own that encodes sRGB just as correctly, so the code value
+    asserted below would still come out right.
+
+    os.environ cannot answer this. CPython snapshots the environment when the
+    interpreter starts, which is before Natron's qputenv(), so os.environ still
+    reports OCIO as unset here. CreateFromEnv() reads it through getenv(), the
+    same way the plug-ins do.
+    """
+    import PyOpenColorIO as ocio
+
+    name = ocio.Config.CreateFromEnv().getName()
+    _mark("[smoke] active OCIO config: %r" % (name,))
+    if name != DEFAULT_OCIO_CONFIG:
+        raise AssertionError(
+            "the active OpenColorIO config is %r, expected %r. Either "
+            "Settings::tryLoadOpenColorIOConfig() no longer resolves Natron's "
+            "default config, or something in the environment overrode it -- "
+            "in both cases the colour check below is no longer testing what "
+            "ships." % (name, DEFAULT_OCIO_CONFIG)
+        )
+
+
 def check_exr_to_png_colorspace():
     """Render scene-linear EXR -> 8-bit sRGB PNG and check the code value.
 
@@ -418,6 +452,7 @@ def main():
 
     check_pyside6_bindings()
     check_app_render_with_task_list()
+    check_default_ocio_config()
     check_exr_to_png_colorspace()
 
     # NOTE: not covered here -- PyGuiApplication::addMenuCommand()

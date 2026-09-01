@@ -165,7 +165,7 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
     not 46/255.
   - size: M
 
-- [ ] M3.P1.T13 — Give the smoke test a mixed-format assertion
+- [x] M3.P1.T13 — Give the smoke test a mixed-format assertion
   - files: `tools/ci/smoke_test.py` (or wherever the smoke test lives),
     `tools/ci/local/test.sh`
   - approach: **the smoke test currently cannot tell a correct colour fix from a
@@ -329,6 +329,23 @@ and the qmake/Windows/macOS leftovers are deleted with `lint-ci` still green.
   one renders, resolving the writer to `sRGB - Display`; scene-linear 0.18
   through EXR→PNG lands on **118/255** on both configs, with bit-identical
   decoded pixel arrays.
+
+- 2026-09-01 — **`M3.P1.T13`: the smoke test's exit-code bug had a specific
+  cause, worth remembering because it will recur.**
+  `AppInstance::loadPythonScript()` picks between executing a script directly
+  and importing it as a module with a plain `content.contains("def
+  createInstance")` search over the file's **text, comments included** — and
+  `smoke_test.py`'s own docstring spelled that name out while explaining why it
+  must not define it. On the import branch,
+  `NATRON_PYTHON_NAMESPACE::interpretPythonScript()` calls `PyErr_Fetch()` to
+  format the pending exception into a `std::string`, which *clears the error
+  indicator*, so `PyErr_Print()` → `handle_system_exit()` → `Py_Exit()` never
+  runs and `sys.exit()` is inert. Natron then rendered the project's write nodes
+  and the process status described that instead. Measured across all three
+  branches; the fix exits through `os._exit()` so the status no longer depends
+  on which branch is taken, or on what a future editor writes in a comment.
+  Verified in both directions independently of the implementer: clean run exits
+  0 with the 118/255 assertion executing, injected failure exits 1.
 
 - 2026-09-01 — a refinement to the "the `blender` config works by luck" framing
   in `DECISIONS/2026-09-01-fix-openfx-io-colorspace-sentinel.md`: `blender`

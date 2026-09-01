@@ -140,7 +140,7 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
     on-disk config still overrides it; `Custom config` still resolves.
   - size: M
 
-- [ ] M3.P1.T12 — Patch the `openfx-io` fork's colorspace resolution
+- [x] M3.P1.T12 — Patch the `openfx-io` fork's colorspace resolution
   - files: our `charlesangus/openfx-io` fork (`IOSupport/GenericOCIO.cpp`), then
     the pinned SHA in `tools/ci/local/fetch-assets.sh`
   - approach: per `DECISIONS/2026-09-01-fix-openfx-io-colorspace-sentinel.md`
@@ -156,8 +156,9 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
     what it just computed. A working patch exists at
     `/tmp/ocioprobe/patch.diff` with a built bundle at `/tmp/ofxio-patched/` —
     treat it as a reference, not as something to apply blind. Land the sentinel
-    guard as its own commit and open it upstream; it is obviously correct and
-    config-agnostic.
+    guard as its own commit; keeping it self-contained is what leaves
+    upstreaming cheap, though it is not being upstreamed
+    (`DECISIONS/2026-09-01-no-upstream-pr-for-ocio-sentinel.md`).
   - verify: patched plugin on the old `blender` config produces byte-identical
     output to the stock plugin (regression check); on the ACES built-in a fresh
     project renders, and scene-linear 0.18 through EXR→PNG lands on 118/255,
@@ -173,9 +174,18 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
     cleanly. Add a mixed-format case: render a known scene-linear value through
     EXR→PNG and assert the resulting 8-bit code value. Roughly ten lines, and it
     is the only thing standing between this project and shipping a silent
-    colour error.
-  - verify: the new assertion fails against a deliberately mis-mapped write
-    colorspace and passes on the fixed one.
+    colour error. **Fix the exit code first, or the assertion is worthless:**
+    `T12` found that `smoke_test.py` prints `[smoke] SMOKE TEST FAILED` and then
+    lets `NatronRenderer` exit **0** — the `SystemExit` surfaces as a printed
+    traceback rather than going through CPython's `handle_system_exit()`, so the
+    embedded interpreter never sets the process status. This contradicts the
+    long NOTE in the module docstring, and it means CI would have gone green on
+    the `default`-colorspace bug `T12` just fixed. Whatever makes the failure
+    propagate has to be proven by a deliberately failing run, not by reading the
+    code.
+  - verify: a deliberately mis-mapped write colorspace makes
+    `tools/ci/local/test.sh smoke` exit non-zero and the new assertion name
+    appears in the output; the fixed one exits 0.
   - size: S
 
 - [ ] M3.P1.T8 — Fail loudly on projects saved against the old config
@@ -306,6 +316,28 @@ and the qmake/Windows/macOS leftovers are deleted with `lint-ci` still green.
   ACES version do not increment in step. `ocio://default` resolves to the CG
   config today, confirmed by loading it and comparing names rather than by
   trusting the registry's boolean.
+
+- 2026-09-01 — **`M3.P1.T12` landed as two commits on
+  `charlesangus/openfx-io`, fast-forwarded onto the fork's `master`** so the
+  pinned SHA stays on the mainline and the fork remains "N commits ahead, zero
+  behind": `60c0275` (the `-1` sentinel guard, `+7/-0`, self-contained) and
+  `40764b2` (the rest, `+37/-3`) — one file, `IOSupport/GenericOCIO.cpp`.
+  Measured, not argued: on the old `blender` config the patched bundle's renders
+  are md5-identical to the stock bundle's in both PNG→PNG and EXR→PNG, and the
+  resolved parameter defaults are unchanged; on the ACES built-in the stock
+  bundle reproduces `Color space 'default' could not be found.` and the patched
+  one renders, resolving the writer to `sRGB - Display`; scene-linear 0.18
+  through EXR→PNG lands on **118/255** on both configs, with bit-identical
+  decoded pixel arrays.
+
+- 2026-09-01 — a refinement to the "the `blender` config works by luck" framing
+  in `DECISIONS/2026-09-01-fix-openfx-io-colorspace-sentinel.md`: `blender`
+  defines no `default` role either, so it *does* trip the `-1 == -1` collision —
+  for any name it does not know. It escapes only because every default the
+  shipped readers and writers actually pass (`sRGB`, `scene_linear`,
+  `reference`) resolves in it. The luck is in the names, not solely in
+  `reference` sitting at index 0. Doesn't change the fix; does mean the bug was
+  never `blender`-proof, only unexercised.
 
 - 2026-08-31 — **`M3.P1.T8`'s break is confirmed, not hypothetical.**
   `cfg.getColorSpace()` returns null for `"Linear"`, `"sRGB"`, `"rec709"`,

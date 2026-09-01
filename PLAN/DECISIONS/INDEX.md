@@ -24,3 +24,4 @@
 - 2026-08-31 — delete-dead-platform-files: the qmake/Windows/macOS leftovers are deleted, as a task inside M3 → DECISIONS/2026-08-31-delete-dead-platform-files.md
 - 2026-09-01 — fix-openfx-io-colorspace-sentinel: the ACES blocker is a -1 == -1 bug in openfx-io, fixed on our fork; substituting scene_linear would be a silent 2.5x error → DECISIONS/2026-09-01-fix-openfx-io-colorspace-sentinel.md
 - 2026-09-01 — png-output-srgb-display: 8-bit PNG output labelled `sRGB - Display`; no pixel change, and the real ACES deliverable question is deferred → DECISIONS/2026-09-01-png-output-srgb-display.md
+- 2026-09-01 — no-upstream-pr-for-ocio-sentinel: the sentinel guard stays on our fork; the commit is kept self-contained so upstreaming stays cheap later → DECISIONS/2026-09-01-no-upstream-pr-for-ocio-sentinel.md

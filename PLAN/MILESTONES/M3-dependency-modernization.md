@@ -211,7 +211,7 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
     the YAML.
   - size: S
 
-- [ ] M3.P1.T15 — Bring this milestone's changed C++ lines into format conformance
+- [x] M3.P1.T15 — Bring this milestone's changed C++ lines into format conformance
   - files: `Engine/Settings.cpp` (only the lines `M3.P1.T7` added or edited)
   - approach: `M3.P1.T14`'s gate correctly reports ~30 non-conformant lines in
     `57e4e80fa` — they were written in the surrounding house style

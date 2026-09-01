@@ -188,7 +188,7 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
     appears in the output; the fixed one exits 0.
   - size: S
 
-- [ ] M3.P1.T14 — Move the `format` gate from whole files to changed lines
+- [x] M3.P1.T14 — Move the `format` gate from whole files to changed lines
   - files: `.github/workflows/checks.yml` (the `format` job)
   - approach: per `DECISIONS/2026-09-01-format-gate-changed-lines-only.md`.
     The job runs `clang-format --dry-run --Werror` over each file in the
@@ -209,6 +209,24 @@ OCIO config, and `openfx-io`/`openfx-misc` build against the same image.")_
     passes on `M3.P1.T7`'s commit, which touches `Engine/Settings.cpp`;
     proven by pushing the branch and reading the run, not by reasoning about
     the YAML.
+  - size: S
+
+- [ ] M3.P1.T15 — Bring this milestone's changed C++ lines into format conformance
+  - files: `Engine/Settings.cpp` (only the lines `M3.P1.T7` added or edited)
+  - approach: `M3.P1.T14`'s gate correctly reports ~30 non-conformant lines in
+    `57e4e80fa` — they were written in the surrounding house style
+    (`foo( bar )`), which `.clang-format` rejects. Run `git clang-format`
+    against the merge base with `main` and commit only what it rewrites; do
+    not reformat anything the milestone did not touch, and do not widen the
+    diff. The result will read as clang-format style inside functions written
+    in house style; that mixing is the accepted cost of holding changed lines
+    to the config rather than reformatting whole files
+    (`DECISIONS/2026-09-01-format-gate-changed-lines-only.md`). Use the pinned
+    `clang-format 21.1.8`, not whatever is on `PATH`, or the reformat will not
+    match what CI checks.
+  - verify: `git clang-format --diff <merge-base>` is empty; the `format` job
+    passes on a pushed run of the branch; build, `test.sh ctest` and
+    `test.sh smoke` all still green — a reformat must not change behaviour.
   - size: S
 
 - [ ] M3.P1.T8 — Fail loudly on projects saved against the old config
@@ -352,6 +370,23 @@ and the qmake/Windows/macOS leftovers are deleted with `lint-ci` still green.
   one renders, resolving the writer to `sRGB - Display`; scene-linear 0.18
   through EXR→PNG lands on **118/255** on both configs, with bit-identical
   decoded pixel arrays.
+
+- 2026-09-01 — **`M3.P1.T14`: "tune `.clang-format` to describe the house
+  style" is measurably dead, not merely unattractive.** It was the runner-up
+  when the gate question was put to the user, on the theory that Natron's
+  `foo( bar )` spacing is WebKit plus spaces in parens. Measured against the
+  pinned `clang-format 21.1.8`, adding `SpacesInParens: Custom` with
+  `Other: true` makes things **worse**, not better: `Engine/Settings.cpp` goes
+  from 1630 violations to 4120, `Engine/AppManager.cpp` from 971 to 2736,
+  `Gui/Gui.cpp` from 258 to 753. The house spacing is not applied consistently
+  enough for any config to match it, so no amount of tuning gets whole-file
+  checking to green. Don't revisit this without new evidence.
+
+- 2026-09-01 — the changed-lines gate is working as intended and its first
+  verdict is against **our own** new code: `57e4e80fa`'s ~30 added lines are in
+  house style and fail. That is the accepted cost of the choice, not a defect —
+  new lines conform to the config, so C++ this fork adds will read as
+  clang-format style inside functions that don't. `M3.P1.T15` applies it.
 
 - 2026-09-01 — **`M3.P1.T7` landed from a draft the crashed session left
   uncommitted, reviewed rather than replayed.** The mechanism was sound and

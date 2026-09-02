@@ -148,7 +148,7 @@ producing wrong work — by humans and by agents.
 
 ## Phase 12.3: Repair what must stay
 
-- [ ] M12.P3.T1 — Rewrite the README for what this fork actually is
+- [x] M12.P3.T1 — Rewrite the README for what this fork actually is
   - files: `README.md`
   - approach: L7 claims "portable and cross-platform (GNU/Linux, macOS, and
     Microsoft Windows)"; L20 "source is still C++98"; L22 "builds with Qt4 or
@@ -239,6 +239,18 @@ producing wrong work — by humans and by agents.
   remains in `NatronGitHub/Natron`'s history regardless of what we do; rewriting
   our history would invalidate every SHA on `main` and break the plan branch's
   recorded code SHAs for no security gain. Recorded as a project-wide decision.
+
+- 2026-09-02 — two findings from `M12.P3.T1` are deliberately NOT fixed in
+  M12. (a) `gh api repos/charlesangus/Natron --jq '.has_issues'` returns
+  `false`, so the whole `.github/ISSUE_TEMPLATE/` directory is inert config —
+  `M12.P3.T2` corrected its contents, which is still right if issues are ever
+  enabled, but nothing routes through it today. The README now says issues are
+  tracked upstream. Whether to enable issues here is a repo-settings call for
+  the user, not a docs fix. (b) The README's feature list still marks
+  `openfx-arena` and `openfx-gmic` as included, while `fetch-assets.sh` builds
+  only `openfx-io` and `openfx-misc`. That is M13's subject — the plugin
+  surface changes there, so the claim is corrected once, after M13 settles it,
+  rather than twice.
 
 - 2026-09-02 — `M12.P3.T2` kept `.git-hooks/pre-commit` rather than deleting
   it. It now runs `git clang-format --binary <pinned> --extensions

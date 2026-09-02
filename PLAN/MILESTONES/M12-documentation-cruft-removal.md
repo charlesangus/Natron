@@ -62,7 +62,7 @@ producing wrong work — by humans and by agents.
     every entry without consulting the deleted docs.
   - size: M
 
-- [ ] M12.P1.T3 — Delete the maintainers subtree
+- [x] M12.P1.T3 — Delete the maintainers subtree
   - files: `Documentation/source/maintainers/` (17 files),
     `Documentation/source/index.rst`
   - approach: delete the directory outright, after M12.P1.T2 has captured the

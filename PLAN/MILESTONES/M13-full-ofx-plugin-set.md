@@ -130,7 +130,7 @@ debug` and `test.sh smoke debug` both still pass.
 
 ## Phase 13.3: Prove the bundle in the test suite
 
-- [ ] M13.P3.T1 — Assert an arena plugin loads through the Natron host
+- [x] M13.P3.T1 — Assert an arena plugin loads through the Natron host
   - files: `Tests/BaseTest.cpp`, `Tests/BaseTest.h`
   - approach: `BaseTest::SetUp` asserts exactly three plugin IDs today via
     `appPTR->getPluginBinary`. Add `net.fxarena.openfx.Text` — it needs no

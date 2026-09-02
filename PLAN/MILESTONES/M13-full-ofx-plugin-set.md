@@ -72,7 +72,10 @@ run is a no-op. No bundle has changed yet, so `test.sh ctest debug` is still
 
 ## Phase 13.2: Ship openfx-arena
 
-- [ ] M13.P2.T1 — Fork arena and gate the unbuildable readers behind options
+- [x] M13.P2.T1 — Fork arena and gate the unbuildable readers behind options
+  - landed: `charlesangus/openfx-arena` PR #1, merged as
+    `d29ac7f180e1ea5cca2b8c0492686638836b605c` — this is the SHA `M13.P2.T2`
+    pins.
   - files: `charlesangus/openfx-arena` (`CMakeLists.txt`) — out of tree, per
     `DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md`
   - approach: fork `NatronGitHub/openfx-arena` at

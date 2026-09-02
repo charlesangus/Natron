@@ -5,10 +5,10 @@ blank_issues_enabled: true
 
 contact_links:
   - name: Read the Code of Conduct
-    url: https://github.com/NatronGitHub/Natron/blob/RB-2.4/CODE_OF_CONDUCT.md
+    url: https://github.com/charlesangus/Natron/blob/main/CODE_OF_CONDUCT.md
     about: Before creating any issue, please read Natron's code of conduct and follow it to the best of your understanding.
   - name: Read the contributing guidelines
-    url: https://github.com/NatronGitHub/Natron/blob/RB-2.4/CONTRIBUTING.md
+    url: https://github.com/charlesangus/Natron/blob/main/CONTRIBUTING.md
     about: Not sure of how to contribute? Read the contributing guidelines to get started.
   - name: View the troubleshooting docs
     url: http://natron.readthedocs.io/en/rb-2.4/guide/getstarted-troubleshooting.html

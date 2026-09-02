@@ -43,10 +43,6 @@
 #if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD)
 #include "Engine/OSGLContext_wayland.h"
 #include "Engine/OSGLContext_x11.h"
-#elif defined(Q_OS_WIN32)
-#include "Engine/OSGLContext_win.h"
-#elif defined(Q_OS_DARWIN)
-#include "Engine/OSGLContext_mac.h"
 #endif
 
 #include "Engine/AppManager.h"

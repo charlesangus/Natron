@@ -35,11 +35,7 @@
 
 #include "Engine/AppManager.h"
 
-#ifdef __NATRON_WIN32__
-#include "Engine/OSGLContext_win.h"
-#elif defined(__NATRON_OSX__)
-#include "Engine/OSGLContext_mac.h"
-#elif defined(__NATRON_LINUX__)
+#ifdef __NATRON_LINUX__
 #include "Engine/OSGLContext_wayland.h"
 #include "Engine/OSGLContext_x11.h"
 #endif
@@ -225,11 +221,7 @@ OSGLContext::chooseFBConfig(const FramebufferConfig& desired,
 
 struct OSGLContextPrivate
 {
-#ifdef __NATRON_WIN32__
-    std::unique_ptr<OSGLContext_win> _platformContext;
-#elif defined(__NATRON_OSX__)
-    std::unique_ptr<OSGLContext_mac> _platformContext;
-#elif defined(__NATRON_LINUX__)
+#ifdef __NATRON_LINUX__
     std::unique_ptr<OSGLContext_xdg> _platformContext;
 #endif
 
@@ -292,11 +284,7 @@ OSGLContext::OSGLContext(const FramebufferConfig& pixelFormatAttrs,
             coreProfile = false;
         }
     }
-#ifdef __NATRON_WIN32__
-    _imp->_platformContext.reset( new OSGLContext_win(pixelFormatAttrs, major, minor, coreProfile, rendererID, shareContext ? shareContext->_imp->_platformContext.get() : nullptr) );
-#elif defined(__NATRON_OSX__)
-    _imp->_platformContext.reset( new OSGLContext_mac(pixelFormatAttrs, major, minor, coreProfile, rendererID, shareContext ? shareContext->_imp->_platformContext.get() : nullptr) );
-#elif defined(__NATRON_LINUX__)
+#ifdef __NATRON_LINUX__
     if (appPTR->isOnWayland()) {
         _imp->_platformContext.reset( new OSGLContext_wayland(pixelFormatAttrs, major, minor, coreProfile, rendererID, shareContext ? static_cast<const OSGLContext_wayland *>(shareContext->_imp->_platformContext.get()) : nullptr) );
     } else {
@@ -351,11 +339,7 @@ OSGLContext::getFBOId() const
 void
 OSGLContext::setContextCurrentNoRender()
 {
-#ifdef __NATRON_WIN32__
-    OSGLContext_win::makeContextCurrent( _imp->_platformContext.get() );
-#elif defined(__NATRON_OSX__)
-    OSGLContext_mac::makeContextCurrent( _imp->_platformContext.get() );
-#elif defined(__NATRON_LINUX__)
+#ifdef __NATRON_LINUX__
     if (appPTR->isOnWayland()) {
         OSGLContext_wayland::makeContextCurrent( static_cast<const OSGLContext_wayland *>( _imp->_platformContext.get()) );
     } else {
@@ -401,11 +385,7 @@ OSGLContext::setContextCurrent(const AbortableRenderInfoPtr& abortInfo
 void
 OSGLContext::unsetCurrentContextNoRender()
 {
-#ifdef __NATRON_WIN32__
-    OSGLContext_win::makeContextCurrent( nullptr );
-#elif defined(__NATRON_OSX__)
-    OSGLContext_mac::makeContextCurrent( nullptr );
-#elif defined(__NATRON_LINUX__)
+#ifdef __NATRON_LINUX__
     if (appPTR->isOnWayland()) {
         OSGLContext_wayland::makeContextCurrent( nullptr );
     } else {
@@ -415,11 +395,7 @@ OSGLContext::unsetCurrentContextNoRender()
 }
 
 bool OSGLContext::threadHasACurrentContext() {
-#ifdef __NATRON_WIN32__
-    return OSGLContext_win::threadHasACurrentContext();
-#elif defined(__NATRON_OSX__)
-    return OSGLContext_mac::threadHasACurrentContext();
-#elif defined(__NATRON_LINUX__)
+#ifdef __NATRON_LINUX__
     if (appPTR->isOnWayland()) {
         return OSGLContext_wayland::threadHasACurrentContext();
     }
@@ -628,11 +604,7 @@ OSGLContext::getOrCreateCopyUnprocessedChannelsShader(bool doR,
 void
 OSGLContext::getGPUInfos(std::list<OpenGLRendererInfo>& renderers)
 {
-#ifdef __NATRON_WIN32__
-    OSGLContext_win::getGPUInfos(renderers);
-#elif defined(__NATRON_OSX__)
-    OSGLContext_mac::getGPUInfos(renderers);
-#elif defined(__NATRON_LINUX__)
+#ifdef __NATRON_LINUX__
     if (appPTR->isOnWayland()) {
         OSGLContext_wayland::getGPUInfos(renderers);
     } else {

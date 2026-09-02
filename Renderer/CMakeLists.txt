@@ -18,9 +18,6 @@
 # ***** END LICENSE BLOCK *****
 
 set(NatronRenderer_SOURCES NatronRenderer_main.cpp)
-if(WIN32)
-    list(APPEND NatronRenderer_SOURCES ../Natron.rc)
-endif()
 add_executable(NatronRenderer ${NatronRenderer_SOURCES})
 target_link_libraries(NatronRenderer
     PRIVATE

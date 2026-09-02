@@ -57,7 +57,7 @@ with enough detail that others can reproduce the problem.
 Contributions Under Repository License
 --------------------------------------
 
-Whenever you make a contribution to a repository containing notice of a [license](https://github.com/NatronGitHub/Natron/blob/RB-2.4/LICENSE.txt), you license your contribution under the same terms, and you agree that you have the right to license your contribution under those terms.
+Whenever you make a contribution to a repository containing notice of a [license](LICENSE.txt), you license your contribution under the same terms, and you agree that you have the right to license your contribution under those terms.
 
 Pull Requests and Code Review
 -----------------------------
@@ -66,14 +66,14 @@ The best way to submit changes is via GitHub Pull Request.
 
 All code must be formally reviewed before being merged into the official repository. The protocol is like this:
 
-1. Get a GitHub account, fork NatronGitHub/Natron to create your own repository on GitHub, and then clone it to get a repository on your local machine.
+1. Get a GitHub account, fork [`charlesangus/Natron`](https://github.com/charlesangus/Natron) to create your own repository on GitHub, and then clone it to get a repository on your local machine.
 
 2. Edit, compile, and test your changes.
 
 3. Push your changes to your fork (each unrelated pull request to a separate
 "topic branch", please).
 
-4. Make a "pull request" on GitHub for your patch, use the "master" branch.
+4. Make a "pull request" on GitHub for your patch, targeting the "main" branch.
 
 5. If your patch will induce a major compatibility break, or has a design
 component that deserves extended discussion or debate among the wider Natron
@@ -85,7 +85,7 @@ or discuss in email/forum. Reviewers may ask for changes, explain problems they
 found, congratulate the author on a clever solution, etc. Please don't take it hard if your
 first try is not accepted. It happens to all of us.
 
-7. After approval, one of the senior developers (with commit approval to the official main repository) will merge your fixes into the "master" branch.
+7. After approval, one of the senior developers (with commit approval to the official main repository) will merge your fixes into the "main" branch.
 
 
 Coding Style

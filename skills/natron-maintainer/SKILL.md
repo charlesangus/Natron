@@ -1,6 +1,6 @@
 ---
 name: natron-maintainer
-description: Domain knowledge for working on the Natron compositor's own C++ source code (Engine/Gui/HostSupport). Use when navigating, fixing, or extending the Natron codebase, doing Qt5/Qt6 work, building Natron, building its Sphinx docs, or triaging its GitHub issues.
+description: Domain knowledge for working on the Natron compositor's own C++ source code (Engine/Gui/HostSupport). Use when navigating, fixing, or extending the Natron codebase, doing Qt 6 work, building Natron, or building its Sphinx docs.
 version: 1.0.0
 tags: [skill, natron, compositor, openfx, qt, cpp]
 ---
@@ -18,13 +18,11 @@ headless ``NatronRenderer`` can link ``Engine`` without ``Gui``).
 Use this skill when:
 - Navigating or modifying the Natron C++ source (Engine/Gui/Global/HostSupport).
 - Adding or fixing a node, knob (parameter), render behavior, or the cache.
-- Doing Qt 5 / Qt 6 migration work or touching the Python (Shiboken/PySide) bindings.
+- Doing Qt 6 migration cleanup work or touching the Python (Shiboken/PySide) bindings.
 - Building Natron, running its tests, or building the Sphinx documentation.
-- Triaging or prioritizing Natron GitHub issues.
 
-The authoritative long-form reference is the in-repo **Maintainer Guide** at
-``Documentation/source/maintainers/*.rst``. Read the relevant chapter there for
-depth; this skill is the quick map.
+This skill is a quick map, not a full reference; for depth beyond it, read
+the source itself.
 
 ## Core Concepts
 
@@ -81,17 +79,26 @@ depth; this skill is the quick map.
 
 ## Quick Reference
 
-Build (CMake, preferred; requires Qt6):
+Build (CMake, the only build system; Linux only; requires Qt 6.8+):
 ```bash
-cmake -S . -B build                           # Qt6.8+/Shiboken6/PySide6, unconditional
+cmake -S . -B build                           # Qt6.8+/Shiboken6/PySide6
 cmake --build build -j
 ctest --test-dir build                        # unit tests (or -DNATRON_BUILD_TESTS=OFF)
 ```
-Build (qmake, Qt5 only today): ``qmake Project.pro && make`` (see ``INSTALL_*.md``).
-
-Code style (enforced by ``.git-hooks/pre-commit``):
+Reproducible local build/test matching CI, in the same container CI uses
+(``aswf/ci-vfxall:2027-clang21.1``):
 ```bash
-astyle -p -H -f -j -z2 -c -k3 -U -A8 -n path/to/File.cpp && git add path/to/File.cpp
+tools/ci/local/build.sh [debug|release]
+tools/ci/local/test.sh <ctest|smoke> [debug|release]
+tools/ci/local/devshell.sh                    # interactive shell in the same container
+```
+See ``tools/ci/local/README.md`` for setup (image build, one-time test-asset fetch).
+
+Code style: ``clang-format``, pinned to 21.1.8. The ``format`` CI check only
+requires changed lines to be clean (``git clang-format --diff <base-rev>``), not
+the whole file:
+```bash
+git clang-format --diff HEAD~1                # or another base revision
 ```
 
 Docs (Sphinx; sources in ``Documentation/source``):
@@ -103,30 +110,13 @@ Do NOT hand-edit ``index.rst`` (except to add a whole new guide to the toctree),
 
 ## Qt 6 Migration Status (as of 2026)
 
-- **Done:** GL widgets already use ``QOpenGLWidget``; the CMake build now
-  requires Qt6 unconditionally (Qt6.8+/Shiboken6/PySide6, no Qt5 path);
-  ``QtCompat.h`` has version shims.
-- **To do:** ``QRegExp`` → ``QRegularExpression`` (~16 files);
-  ``QDesktopWidget``/``QApplication::desktop()`` → ``QScreen`` (~6 files);
-  ``setMargin`` → ``setContentsMargins``; regenerate PySide6/Shiboken6 bindings
-  (fixes enum/flag issue #854); bring qmake build to Qt6 parity.
-- This fork drops Qt 5 entirely (CMake already does); source-level
-  ``#if QT_VERSION`` guards and ``QtCompat.h`` shims are being removed as the
-  remaining Qt5-only code paths (chiefly qmake) are migrated.
-- Full plan: ``Documentation/source/maintainers/qt6-migration.rst``.
-
-## Issue Triage Method
-
-Fetch open issues via the GitHub API and aggregate by label:
-```bash
-curl -s "https://api.github.com/repos/NatronGitHub/Natron/issues?state=open&per_page=100&page=1"
-```
-Exclude items with a ``pull_request`` key (those are PRs). Labels: ``type:*``,
-``func:*``, ``prio:*``, ``difficulty:*``, ``status:*``. Prioritize:
-**P0** stability/data-loss (crashes, cannot-launch, cannot-render), **P1**
-sustainability (Qt6, CI, distribution), **P2** confirmed functional bugs +
-popular features, **P3** polish. Full analysis:
-``Documentation/source/maintainers/issue-triage.rst``.
+- **Done:** GL widgets already use ``QOpenGLWidget``; the build requires
+  Qt 6.8+/Shiboken6/PySide6 unconditionally; ``QtCompat.h`` has version shims.
+  This fork has dropped all prior major-version Qt support entirely —
+  remaining ``#if QT_VERSION`` guards only gate Qt 6 minor-version features.
+- **To do:** ``QDesktopWidget``/``QApplication::desktop()`` → ``QScreen``
+  (a handful of files in ``Gui``); regenerate PySide6/Shiboken6 bindings
+  (fixes enum/flag issue #854).
 
 ## Common Mistakes
 - Including a ``Gui`` header from ``Engine`` (breaks the headless renderer). Use a
@@ -137,4 +127,3 @@ popular features, **P3** polish. Full analysis:
   project files).
 - Making a core value-type a ``QObject`` for signals — use the
   ``KnobSignalSlotHandler`` companion pattern.
-- Editing only one of the two build systems (qmake **and** CMake must stay in sync).

@@ -1,13 +1,14 @@
 # Natron
 
-[![GPL2 License](http://img.shields.io/:license-gpl2-blue.svg?)](https://github.com/NatronGitHub/Natron/blob/master/LICENSE.txt) [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v1.4%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md) [![Build Status](https://api.travis-ci.org/NatronGitHub/Natron.svg?branch=RB-2.4)](https://travis-ci.org/NatronGitHub/Natron) [![Coverage Status](https://coveralls.io/repos/NatronGitHub/Natron/badge.svg?branch=master)](https://coveralls.io/r/NatronGitHub/Natron?branch=master) [![Documentation Status](https://readthedocs.org/projects/natron/badge/?version=rb-2.4)](http://natron.readthedocs.io/en/rb-2.4/) [![Packaging status](https://repology.org/badge/tiny-repos/natron.svg)](https://repology.org/project/natron/badges) [![OpenHub](https://www.openhub.net/p/natron/widgets/project_thin_badge?format=gif&ref=Thin+badge)](https://www.openhub.net/p/Natron)
+[![GPL2 License](http://img.shields.io/:license-gpl2-blue.svg?)](LICENSE.txt) [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v1.4%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md) [![Checks](https://github.com/charlesangus/Natron/actions/workflows/checks.yml/badge.svg)](https://github.com/charlesangus/Natron/actions/workflows/checks.yml) [![Tests](https://github.com/charlesangus/Natron/actions/workflows/ci.yml/badge.svg)](https://github.com/charlesangus/Natron/actions/workflows/ci.yml) [![Documentation Status](https://readthedocs.org/projects/natron/badge/?version=rb-2.4)](http://natron.readthedocs.io/en/rb-2.4/) [![Packaging status](https://repology.org/badge/tiny-repos/natron.svg)](https://repology.org/project/natron/badges) [![OpenHub](https://www.openhub.net/p/natron/widgets/project_thin_badge?format=gif&ref=Thin+badge)](https://www.openhub.net/p/Natron)
 
 ---
 
-Natron is a free, open-source (GPLv2 license) video compositor, similar in functionality to Adobe After Effects, Foundry's Nuke, or Blackmagic Fusion. It is portable and cross-platform (GNU/Linux, macOS, and Microsoft Windows).
+Natron is a free, open-source (GPLv2 license) video compositor, similar in functionality to Adobe After Effects, Foundry's Nuke, or Blackmagic Fusion. This fork targets Linux only, and is built with Qt 6.8, C++20, and CMake.
 
 - Website: https://natrongithub.github.io
-- Source code: https://github.com/NatronGitHub/Natron
+- Source code: https://github.com/charlesangus/Natron
+- Issues: this fork does not use GitHub Issues; bugs and feature requests are tracked upstream at https://github.com/NatronGitHub/Natron/issues
 - Forum: https://discuss.pixls.us/c/software/natron
 - Discord: https://discord.gg/cpMj5p3Fv5
 - User documentation: https://natron.readthedocs.io/
@@ -17,9 +18,9 @@ Natron is a free, open-source (GPLv2 license) video compositor, similar in funct
 Natron is looking for developers and maintainers! You can help develop and maintain Natron if you have the following skills:
 
 - [Git](https://en.wikipedia.org/wiki/Git) and [GitHub](https://en.wikipedia.org/wiki/GitHub)
-- [C++](https://en.wikipedia.org/wiki/C%2B%2B) (Natron source is still C++98, but switching to [C++11](https://en.wikipedia.org/wiki/C%2B%2B11) or [C++14](https://en.wikipedia.org/wiki/C%2B%2B11) should be straightforward if needed)
+- [C++](https://en.wikipedia.org/wiki/C%2B%2B) (this fork's source is [C++20](https://en.wikipedia.org/wiki/C%2B%2B20))
 - [Design patterns](https://en.wikipedia.org/wiki/Software_design_pattern)
-- [Qt](https://www.qt.io/) (Natron builds with Qt4 or Qt5, but does not yet support Qt6)
+- [Qt](https://www.qt.io/) (this fork builds with Qt 6.8)
 - Basic knowledge of [OpenGL](https://en.wikipedia.org/wiki/OpenGL)
 - Basic knowledge of [Python](<https://en.wikipedia.org/wiki/Python_(programming_language)>)
 
@@ -65,57 +66,39 @@ If you are willing to help, please contact the development team on the [pixls.us
 
 ## Requirements
 
-A machine running one of the supported operating systems (GNU/Linux, macOS, Microsoft Windows), and a 32-bits x86 or 64-bits x86-64 processor.
+A machine running Linux, with a 64-bit x86-64 processor.
 
 An OpenGL 2.0 compatible graphics card is needed to run Natron (2.1+) with hardware-accelerated rendering. Other graphics cards work with software-only rendering (see below).
 
 The following graphics cards are supported for hardware-accelerated rendering:
 
-- Intel GMA 3150 (Linux-only)
-- Intel GMA X3xxx (Linux-only)
-- Intel GMA X4xxx (Windows 7 & Linux)
-- Intel HD (Ironlake) (Windows 7 & Linux)
-- Intel HD 2000/3000 (Sandy Bridge) (Windows 7/Linux/Mac)
-- Intel HD 4000 and greater (All platforms)
+- Intel GMA 3150
+- Intel GMA X3xxx
+- Intel GMA X4xxx
+- Intel HD (Ironlake)
+- Intel HD 2000/3000 (Sandy Bridge)
+- Intel HD 4000 and greater
 - Nvidia GeForce 6 series and greater
 - Nvidia Quadro FX and greater
 - Nvidia Quadro NVS 285 and greater
 - ATI/AMD Radeon R300 and greater
 - ATI/AMD FireGL T2-64 and greater (FirePro)
 
-On Windows and Linux you can enable software rendering. On Linux, enable the environment variable LIBGL_ALWAYS_SOFTWARE=1 before running Natron. On Windows, enable the legacy hardware package in the installer.
+You can enable software rendering by setting the environment variable LIBGL_ALWAYS_SOFTWARE=1 before running Natron.
 
 ## Installing
 
 ### Binary distribution
 
-Standalone binary distributions of Natron are available for GNU/Linux, Windows, and macOS on [GitHub](https://github.com/NatronGitHub/Natron/releases), or from [the Natron web site](https://natrongithub.github.io/#download). These distributions contain Natron and four included sets of OpenFX plugins:
-
-- [openfx-io](https://github.com/NatronGitHub/openfx-io/)
-- [openfx-misc](https://github.com/NatronGitHub/openfx-misc)
-- [openfx-arena](https://github.com/NatronGitHub/openfx-arena)
-- [openfx-gmic](https://github.com/NatronGitHub/openfx-gmic)
-
-Alternatively, on Linux systems you can install Natron through flatpak: ``` flatpak install fr.natron.Natron ```
-
-For each architecture / operating system, you can either download a stable release, a release candidate (if available), or one of the latest snapshots. Note that snapshots contain the latest features and bug fixes, but may be unstable.
+This fork does not currently publish pre-built binaries. Build Natron from source (see below).
 
 ### Building and installing from source
 
-There are instructions for building Natron and the basic plugins from source is this directory on various architectures / operating systems:
+There are instructions for building Natron and the basic plugins from source in this directory, on Linux:
 
-- [GNU/Linux](INSTALL_LINUX.md)
-- [macOS](INSTALL_MACOS.md)
-- [FreeBSD](INSTALL_FREEBSD.md)
-- [Windows](INSTALL_WINDOWS.md)
+- [GNU/Linux](tools/ci/local/README.md)
 
-This documentation may be slightly outdated, so do not hesitate to submit updated build instructions, especially for the various GNU/Linux distributions.
-
-### Automatic build scripts & other development tools
-
-These can be found in [tools/README.md](tools/README.MD)
-
-These scripts run on virtual machines running a specific operating system, setting these up is more complicated than the basic build process linked above.
+This documentation may be slightly outdated, so do not hesitate to submit updated build instructions.
 
 ## Contributing
 
@@ -125,8 +108,8 @@ You should start contributing to the Natron project by first picking an easy tas
 
 - 2: Pyplugs, Shadertoy scripts (there are still developers for these, see https://github.com/NatronGitHub/natron-plugins )
 - 4: Write an OpenFX plugin, starting from an example in [openfx-misc](https://github.com/NatronGitHub/openfx-misc) or from the [official OpenFX](https://github.com/NatronGitHub/openfx) examples, for example try to make an OpenFX plugin from a widely-used PyPlug. There are a few OFX plugin developers in the community.
-- 5: Build Natron locally (on any system)
-- 7: Compile a redistributable Natron binary (Linux is easier since we build and ship most dependencies using the build scripts)
+- 5: Build Natron locally
+- 7: Compile a redistributable Natron binary using the build scripts in [`tools/ci/local/`](tools/ci/local/README.md)
 - 9: Fix a simple Natron bug
 - 10: Add new functionality to Natron (see issues)
 
@@ -134,11 +117,9 @@ You should start contributing to the Natron project by first picking an easy tas
 
 We coordinate development through the [GitHub issue tracker](https://github.com/NatronGitHub/Natron/issues).
 
-The main development branch is called ["master"](https://github.com/NatronGitHub/Natron/tree/master). The stable version is on branch RB-2.5.
+The default branch is `main`, and pull requests are opened against it. `RB-2.6` and the other `RB-*`/legacy branches (including `master`) are frozen upstream history, not merge targets — see [CONTRIBUTING.md](CONTRIBUTING.md) for the full branching model and the upstream bridge to `NatronGitHub/Natron`.
 
-Additionally, each stable release supported has a branch on its own. For example, the stable release of the v1.0. and all its bug fixes should go into that branch. At some point, a version that is no longer supported will get removed from GitHub's branches and only a release tag will be available to get the source code at that point.
-
-Feel free to report bugs, discuss tasks, or pick up work there. If you want to make changes, please fork, edit, and [send us a pull request](https://github.com/NatronGitHub/Natron/pull/new/RB-2.5), preferably on the ["RB-2.5"](https://github.com/NatronGitHub/Natron/tree/RB-2.5) branch.
+Feel free to report bugs, discuss tasks, or pick up work on the issue tracker. If you want to make changes, please fork, edit, and send us a pull request against `main`.
 
 There's a `.git-hooks` directory in the root. This contains a `pre-commit` hook that verifies code styling before accepting changes. You can add this to your local repository's `.git/hooks/` directory by doing the following:
 
@@ -148,4 +129,4 @@ mkdir .git/hooks
 ln -s ../../.git-hooks/pre-commit .git/hooks/pre-commit
 ```
 
-Pull requests that don't match the project code style are still likely to be accepted after manually formatting and amending your changeset. The formatting tool (`astyle`) is completely automated; please try to use it.
+Pull requests that don't match the project code style are still likely to be accepted after manually formatting and amending your changeset. The formatting tool (`clang-format`) is run automatically on changed lines by the `format` CI check; the `.git-hooks/pre-commit` hook above runs the same check locally before you commit.

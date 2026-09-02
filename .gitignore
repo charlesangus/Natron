@@ -20,11 +20,6 @@ build64
 sed*
 *latex*
 DerivedData
-*.sln
-*.xcworkspace
-*xcuserdata
-*.perspectivev3
-*.pbxuser
 *Debug
 *Release
 *release
@@ -32,11 +27,6 @@ DerivedData
 Cache
 TestImages
 TestWrite
-.pro.user
-config.pri
-*.vcxproj
-Info.plist
-*Win32
 qrc_*.cpp
 *GeneratedFiles
 
@@ -200,8 +190,6 @@ $RECYCLE.BIN/
 Makefile
 *.app
 
-*.pro.user.*
-
 # gcov test coverage files
 *.gcda
 *.gcno
@@ -211,7 +199,6 @@ ofxTestLog.txt
 test_dot_generator0.jpg
 Tests/Plugins
 pch
-*.filters
 
 # Python
 *.pyc
@@ -236,56 +223,20 @@ bigtosmall.txt
 #Documentation/source/_group*
 #Documentation/source/_prefs.rst
 #Documentation/source/plugins
-.qmake.stash
 App/Natron
-BreakpadClient.xcodeproj/
 Documentation/html
 Documentation/pdf
-Engine.xcodeproj/
-Gui.xcodeproj/
-HostSupport.xcodeproj/
-Natron-bin.xcodeproj/
-Natron.xcodeproj/
-NatronCrashReporter.xcodeproj/
-NatronRenderer-bin.xcodeproj/
-NatronRenderer.xcodeproj/
-NatronRendererCrashReporter.xcodeproj/
-Project-xcode-breakpad.xcodeproj/
-Project.xcodeproj/
 PythonBin/natron-python
 Renderer/NatronRenderer
-Serialization.xcodeproj/
 TODO.txt
 TestImages
 TestWrite
-Tests.xcodeproj/
 Tests/Plugins
 Tests/Tests
-breakpadclient.pri
-breakpadpro.pri
-config.pri
 google-breakpad/
-libs/ceres/ceres.xcodeproj/
-libs/gflags/gflags.xcodeproj/
-libs/glog/glog.xcodeproj/
-libs/hoedown/hoedown.xcodeproj/
-libs/libmv/LibMV.xcodeproj/
-libs/libtess/libtess.xcodeproj/
-libs/libtess/tess.xcodeproj/
-libs/openMVG/openMVG.xcodeproj/
-libs/qhttpserver/qhttpserver.xcodeproj/
-libs/qhttpserver/src/qhttpserver.xcodeproj/
-libs/yaml-cpp/yaml-cpp-natron.xcodeproj/
-natron-python.xcodeproj/
-natron-python.xcodeproj/
-natron-python.xcodeproj/
 ofxTestLog.txt
 test_dot_generator0.jpg
-tools/normalize/normalize
-tools/normalize/normalize.xcodeproj/
 tools/utils/generateGLIncludes
-tools/utils/generateGLIncludes.pro.user
-tools/utils/generateGLIncludes.xcodeproj/
 Gui/Resources/etc/fonts/fonts.conf
 
 # VS Code
@@ -298,8 +249,5 @@ xcshareddata/
 *QtCreator.*
 moc_predefs.h
 
-# shiboken-generated files
-Engine/Qt5
-Gui/Qt5
 # ccache directory used by CI (CCACHE_DIR in .github/workflows/ci.yml)
 .ccache/

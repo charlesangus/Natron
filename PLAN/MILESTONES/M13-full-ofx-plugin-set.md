@@ -91,7 +91,7 @@ run is a no-op. No bundle has changed yet, so `test.sh ctest debug` is still
     generated source list is byte-identical to upstream's.
   - size: S
 
-- [ ] M13.P2.T2 — Build Arena.ofx and stage its private libraries
+- [x] M13.P2.T2 — Build Arena.ofx and stage its private libraries
   - files: `tools/ci/local/fetch-assets.sh`
   - approach: `clone_at_ref()` the fork at an exact SHA with recursive
     submodules (`OpenFX`, `SupportExt`, `OpenFX-IO`, `lodepng`). Configure with
@@ -195,6 +195,20 @@ end to end.
 corresponds to a plugin ID the shipped bundles actually export.
 
 ## Decisions
+
+- 2026-09-02 — `M13.P2.T2`'s brief named the wrong staging directory. It said
+  `Arena.ofx.bundle/Contents/Libraries/`, but the binary's `$ORIGIN` is
+  `Contents/Linux-x86-64`, so `$ORIGIN/../../Libraries` resolves to
+  `Arena.ofx.bundle/Libraries` — one level higher. Confirmed with `LD_DEBUG=libs`
+  and by `ldd` with `LD_LIBRARY_PATH` cleared, where all five staged libraries
+  resolve inside the bundle and nothing is `not found`.
+
+- 2026-09-02 — `fr.inria.openfx.ReadMisc` is asserted through the `dlopen` probe
+  rather than the `strings` + `grep -Fxq` pattern used for the other plugin IDs.
+  At `-Ofast` GCC builds that 24-byte identifier from a 16-byte `.rodata` prefix
+  shared with the other `fr.inria.openfx.` IDs plus an 8-byte `movabs` immediate
+  in the code, so it never exists as one contiguous run for `strings` to find.
+  The probe sees what a real host sees, which is the stronger claim anyway.
 
 - 2026-09-02 — freshness check at promotion (PLAN-FORMAT.md §5a) corrected three
   stale references without re-planning: `tools/jenkins/` was deleted by M3, so

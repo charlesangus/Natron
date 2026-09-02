@@ -112,7 +112,7 @@ run is a no-op. No bundle has changed yet, so `test.sh ctest debug` is still
     plugins.
   - size: M
 
-- [ ] M13.P2.T3 — Record the arena decision and update the licence manifest
+- [x] M13.P2.T3 — Record the arena decision and update the licence manifest
   - files: `PLAN/DECISIONS/2026-09-02-build-openfx-arena.md`,
     `PLAN/DECISIONS/INDEX.md`, `tools/license/components/README.md`,
     `tools/license/components/LICENSE-libzip.txt`

@@ -31,3 +31,4 @@
 - 2026-09-02 — inherited-docs-are-not-requirements: upstream docs describe upstream; accuracy today isn't the test, drift is; agent-facing files rank first → DECISIONS/2026-09-02-inherited-docs-are-not-requirements.md
 - 2026-09-02 — inherited-credential-no-history-rewrite: the upstream natron-ci credential is deleted, not purged; a rewrite breaks every SHA for zero secrecy gain → DECISIONS/2026-09-02-inherited-credential-no-history-rewrite.md
 - 2026-09-02 — openfx-gmic-source-unavailable: gmic deferred; G'MIC 2.8.4's tarball is unreachable everywhere and a version bump breaks the plugin → DECISIONS/2026-09-02-openfx-gmic-source-unavailable.md
+- 2026-09-02 — build-openfx-arena: arena ships 22 plugins; SVG/PDF/CDR gated off via our fork, poppler excluded on licence grounds → DECISIONS/2026-09-02-build-openfx-arena.md

@@ -81,7 +81,7 @@ producing wrong work — by humans and by agents.
 
 ## Phase 12.2: Bulk removal
 
-- [ ] M12.P2.T1 — Delete the dead build and release tooling
+- [x] M12.P2.T1 — Delete the dead build and release tooling
   - files: `tools/{jenkins,docker,homebrew,appimage,valgrind,uncrustify,normalize}/`,
     `tools/{README.md,mkTarballs.sh}`, `tools/utils/{fixpngs.sh,Natron-Linux-hotfix.sh,natron-sdk-setup-linux.sh}`,
     `tools/license/{ha-cla-README.txt,natron-cla-*.odt}`, `INSTALL_LINUX.md`
@@ -223,6 +223,15 @@ producing wrong work — by humans and by agents.
   remains in `NatronGitHub/Natron`'s history regardless of what we do; rewriting
   our history would invalidate every SHA on `main` and break the plan branch's
   recorded code SHAs for no security gain. Recorded as a project-wide decision.
+
+- 2026-09-02 — `M12.P2.T1`'s "no tracked file references a deleted path" check
+  exempts `docs/decisions/`. `2026-08-31-drop-qtpy.md` cites
+  `INSTALL_LINUX.md:110` and `-delete-dead-platform-files.md` cites
+  `tools/jenkins/`; both are dated records of what was true when written, and
+  rewriting them to erase the citation would falsify the log rather than fix a
+  live reference. The gate's grep is read as covering docs that instruct a
+  reader, not the decision archive. (The second file also asserts
+  `tools/jenkins/` was deleted in M3 — it was not; this task deleted it.)
 
 **Verification gate:** a clean configure and build succeeds and `format`,
 `lint-ci` and `build-and-test` are green; no tracked file references a deleted

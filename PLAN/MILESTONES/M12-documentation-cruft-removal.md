@@ -198,7 +198,7 @@ producing wrong work — by humans and by agents.
     --include=*.txt .` returns nothing.
   - size: S
 
-- [ ] M12.P3.T5 — Strip dead-platform prose from the surviving resource docs
+- [x] M12.P3.T5 — Strip dead-platform prose from the surviving resource docs
   - files: `Gui/Resources/Images/natronIcon-README.txt`
   - approach: added 2026-09-02 after `M12.P2.T2`'s verification grep surfaced
     it. The file is the icon-generation recipe and stays, but it still

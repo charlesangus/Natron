@@ -122,12 +122,17 @@ producing wrong work — by humans and by agents.
 - [ ] M12.P2.T3 — Delete orphaned and checked-in artifacts
   - files: `Documentation/{Presentation.md,TuttleOFX-README.txt,ofxActionsSupported.rtf,ofxPropSupported.rtf,ofx_plugin_programming_guide.html}`,
     `Documentation/source/guide/tutorials-hugin.md`,
-    `.github/workflows/verify_plugin_loads.cpp`,
+    (**not** `.github/workflows/verify_plugin_loads.cpp` — see below),
     `libs/{ceres,libmv}/files.txt`, the `mkfiles.sh` that generated them,
     `tools/docker/natron-sdk-centos6/.build.sh.swp`
   - approach: none is referenced by any build, workflow, qrc or toctree.
-    Highlights: a tracked Vim swap file committed in 2020; a 58-line C++ file in
-    a directory of YAML whose includes have no include path; `.txt` manifests
+    **Keep `.github/workflows/verify_plugin_loads.cpp`.** It was slated as an
+    orphan — a 58-line C++ file in a directory of YAML, referenced by nothing.
+    M13's scout then had to hand-write exactly that probe (`dlopen` +
+    `OfxGetNumberOfPlugins`/`OfxGetPlugin`) to verify the arena bundle, so it is
+    the tool the job needs rather than dead weight. Move it somewhere
+    `fetch-assets.sh` can build and run it; do not delete it.
+    Highlights: a tracked Vim swap file committed in 2020; `.txt` manifests
     generated for the deleted `.pro` files, with zero hits in any CMake file; a
     771-line readme for a different project. Check the vendored HTML's license
     before deleting it. Add `*.swp` to `.gitignore`.

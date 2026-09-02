@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: null
-pm_heartbeat: 2026-09-01T15:00:00-04:00
+current: M5.P1.T1
+pm_heartbeat: 2026-09-01T21:03:35-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -37,6 +37,9 @@ future core work has solid ground to build on.
 - **Sequencing:** `M0 (fork & cut) → M1 (toolchain) → M2 (Qt6) → M7/M8 (local
   builds, branching) → M10 (clean-sheet CI/CD) → M3 (deps) → M5 (tests & P0s,
   ongoing)`.
+  **M3 shipped 2026-09-01** (PR #9, merge `d0349b060`): ACES 2.0 Studio is the
+  default OCIO config, openfx-misc builds from pinned source in CI, and the dead
+  Windows/macOS/qmake tree is gone.
   **M10 shipped 2026-08-31** (PR #7, merge `c43270bc1`): `main` now requires
   `format`, `lint-ci` and `build-and-test`, and the `ci` aggregator is gone. M6 (docs) comes last, once the build is actually the thing being
   documented. **M9 is cancelled** and no longer gates M10; the "Fetch test
@@ -80,7 +83,7 @@ future core work has solid ground to build on.
 | M10 | Clean-sheet CI/CD | done | [M10-cicd-clean-sheet.md](PLAN/MILESTONES/M10-cicd-clean-sheet.md) |
 | M3 | Dependency modernization | done | [M3-dependency-modernization.md](PLAN/MILESTONES/M3-dependency-modernization.md) |
 | M4 | CI/CD rebuild | done | [M4-cicd-rebuild.md](PLAN/MILESTONES/M4-cicd-rebuild.md) |
-| M5 | Test & correctness baseline | todo | [M5-test-correctness-baseline.md](PLAN/MILESTONES/M5-test-correctness-baseline.md) |
+| M5 | Test & correctness baseline | doing | [M5-test-correctness-baseline.md](PLAN/MILESTONES/M5-test-correctness-baseline.md) |
 | M6 | Documentation pass | todo | [M6-documentation-pass.md](PLAN/MILESTONES/M6-documentation-pass.md) |
 | M11 | OFX plugin integration test (pre-release) | rescope | [M11-ofx-plugin-integration-test.md](PLAN/MILESTONES/M11-ofx-plugin-integration-test.md) |
 

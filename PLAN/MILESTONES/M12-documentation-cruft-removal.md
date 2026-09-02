@@ -19,7 +19,7 @@ producing wrong work — by humans and by agents.
 
 ## Phase 12.1: Stop the bleeding
 
-- [ ] M12.P1.T1 — Correct the agent-facing maintainer skill
+- [x] M12.P1.T1 — Correct the agent-facing maintainer skill
   - files: `skills/natron-maintainer/SKILL.md`
   - approach: highest blast radius in the repo, because it is read by agents as
     instructions rather than as reference. L90 says
@@ -135,21 +135,11 @@ producing wrong work — by humans and by agents.
     references.
   - size: S
 
-- [ ] M12.P2.T4 — Delete the reference for plugins this fork does not build
-  - files: `Documentation/source/plugins/eu.gmic.*` (360),
-    `Documentation/source/plugins/net.fxarena.*` (40),
-    `Documentation/source/_groupGMIC.rst`, `Documentation/source/index.rst`
-  - approach: 4.6 MB documenting openfx-gmic and openfx-arena.
-    `tools/ci/local/fetch-assets.sh` builds only openfx-io and openfx-misc, so
-    these describe capability this fork neither builds nor ships. They are also
-    **generated artifacts**, not authored docs — `tools/genStaticDocs.sh:43`
-    deletes and regenerates `source/plugins/` wholesale — so the source of truth
-    is each plugin's own repository. Leave `fr.inria.openfx.*` and
-    `net.sf.openfx.*` (openfx-io and openfx-misc) alone: they document what we
-    do ship, and whether the manual should generate them at build time instead
-    of committing output is an M6 question.
-  - verify: no toctree or `:ref:` points at a deleted page.
-  - size: S
+- [x] ~~M12.P2.T4 — Delete the reference for plugins this fork does not build~~
+  - **Cancelled 2026-09-02.** The premise was that openfx-gmic and openfx-arena
+    are outside this fork's plugin surface. The user's decision is the opposite:
+    build the full upstream plugin set. `eu.gmic.*`, `net.fxarena.*` and
+    `_groupGMIC.rst` therefore document shipped capability and stay. See M13.
 
 ## Phase 12.3: Repair what must stay
 
@@ -204,6 +194,13 @@ producing wrong work — by humans and by agents.
   - size: S
 
 ## Decisions
+
+- 2026-09-02 — `M12.P1.T1` removed the skill's whole "Issue Triage Method"
+  section, not just its reference to the doomed `issue-triage.rst`. The section
+  instructed agents to `curl api.github.com/repos/NatronGitHub/Natron/issues`
+  and apply upstream's `prio:*`/P0-P3 labels — a live mechanism for pulling
+  upstream work into this project, which would have survived deleting the doc
+  link alone. The link was the symptom; the procedure was the defect.
 
 - 2026-09-02 — the entire `Documentation/source/maintainers/` subtree is
   deleted rather than partially rewritten, even though the audits would have

@@ -103,7 +103,7 @@ producing wrong work — by humans and by agents.
     --include=*.sh --include=*.yml .` returns nothing outside git history.
   - size: M
 
-- [ ] M12.P2.T2 — Delete the dead-platform and dead-infrastructure root files
+- [x] M12.P2.T2 — Delete the dead-platform and dead-infrastructure root files
   - files: `INSTALL_MACOS.md`, `INSTALL_FREEBSD.md`, `README_breakpad.md`,
     `OpenColorIO-Configs-README.md`, `BUGS.md`, `LATEST_VERSION_README.txt`,
     `.travis-coverity-scan-build.sh`, `Natron.rc`, `App/CMakeLists.txt`,
@@ -196,6 +196,22 @@ producing wrong work — by humans and by agents.
   - verify: configure and build succeed; `build-and-test` stays green;
     `grep -rn "OSGLContext_mac\|OSGLContext_win" --include=*.cpp --include=*.h
     --include=*.txt .` returns nothing.
+  - size: S
+
+- [ ] M12.P3.T5 — Strip dead-platform prose from the surviving resource docs
+  - files: `Gui/Resources/Images/natronIcon-README.txt`
+  - approach: added 2026-09-02 after `M12.P2.T2`'s verification grep surfaced
+    it. The file is the icon-generation recipe and stays, but it still
+    documents building `natronIcon256_windows.ico` and a macOS `.iconset`/
+    `.icns` — neither target exists in the tree and neither platform is built.
+    Keep the svg→pdf and Linux png sections; delete the Windows and macOS
+    ones. Do not touch `libs/OpenFX/` — it is a vendored submodule with its own
+    history, and its `.travis.yml.disabled` hit is a generic
+    `$TRAVIS_REPO_SLUG` URL template, not a reference to this fork's deleted
+    root script.
+  - verify: `grep -rn "natronIcon256_windows\|iconset\|icns" Gui/Resources/`
+    returns nothing; the remaining commands still describe a reproducible
+    Linux icon build.
   - size: S
 
 ## Decisions

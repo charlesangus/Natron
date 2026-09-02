@@ -160,7 +160,7 @@ end to end.
 
 ## Phase 13.4: Reconcile the documentation with what ships
 
-- [ ] M13.P4.T1 — Remove the pages for arena plugins that do not ship
+- [x] M13.P4.T1 — Remove the pages for arena plugins that do not ship
   - files: `Documentation/source/plugins/net.fxarena.openfx.{ReadSVG,AudioCurve}.rst`,
     `Documentation/source/plugins/fr.inria.openfx.{ReadPDF,ReadCDR}.rst`, their
     `.png` assets, `Documentation/source/_groupExtra.rst`
@@ -177,7 +177,7 @@ end to end.
     corresponds to an ID in the shipped bundle's `dlopen` output.
   - size: S
 
-- [ ] M13.P4.T2 — Remove the 360 gmic reference pages
+- [x] M13.P4.T2 — Remove the 360 gmic reference pages
   - files: `Documentation/source/plugins/eu.gmic.*` (360),
     `Documentation/source/_groupGMIC.rst`, `Documentation/source/index.rst`
   - approach: half of `Documentation/source/plugins/` documents a bundle this
@@ -195,6 +195,30 @@ end to end.
 corresponds to a plugin ID the shipped bundles actually export.
 
 ## Decisions
+
+- 2026-09-02 — Phase 13.4's file lists were wrong in three places; the tasks
+  were executed against the real locations. The unshipped arena readers were
+  listed in `_groupOther.rst` (AudioCurve) and `_groupImage.rst` (ReadCDR,
+  ReadPDF, ReadSVG), not `_groupExtra.rst`, which only ever held shipped
+  plugins. The GMIC group's toctree entry was in `_group.rst`, not
+  `index.rst`, which never mentioned GMIC at all. And the gmic pages carried no
+  `.png` assets to remove.
+
+- 2026-09-02 — Deleting the gmic pages orphaned a link in shipped code, so the
+  fix was taken as part of the task rather than deferred: Natron's built-in help
+  sidebar is emitted from hardcoded HTML literals in
+  `Engine/NodeDocumentation.cpp`, which pointed at the now-deleted
+  `_groupGMIC.html`. The six reference snapshots in `Documentation/templates/`
+  that mirror those literals were updated with it.
+
+- 2026-09-02 — Prose that describes unbuildable capability is left for M6, not
+  folded into this milestone. `guide/tutorials-svgworkflow.rst` is an entire
+  tutorial for the SVG workflow `ReadSVG` provided; `guide/tutorials-writedoc.rst`
+  and `guide/getstarted-about-features.rst` both still list `openfx-gmic` as a
+  shipped plugin set. None of it dangles structurally, so this milestone's gate
+  is unaffected, but all three now read as authoritative about capability this
+  fork does not have — which is exactly the failure M12 exists to stop. M6 is
+  the documentation pass that should absorb them.
 
 - 2026-09-02 — `M13.P2.T2`'s brief named the wrong staging directory. It said
   `Arena.ofx.bundle/Contents/Libraries/`, but the binary's `$ORIGIN` is

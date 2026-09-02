@@ -24,17 +24,14 @@ hard to silently break again. The existing suite is real but narrow.
     against the golden image in CI.
   - size: M
 
-- [ ] M5.P1.T3 — Work the existing P0 list once CI can catch regressions
-  - files: varies per bug — cache disk-limit crash (#192), silent render
-    stall (#248), startup/teardown crashes (#845/#1008/#795/#1029/#1057), CLI
-    zero-frame bug (#864)
-  - approach: same bugs regardless of fork — now actually safe to fix without
-    a manual full-GUI check each time, since M4's CI and M5.P1.T1/T2 catch
-    regressions.
-  - verify: each fixed bug gets a regression test (extending M5.P1.T1/T2's
-    suites) that fails before the fix and passes after.
-  - size: L
+> The "work the existing P0 list" task that stood here is **cancelled**. Its
+> eight issue numbers were scraped from `Documentation/source/maintainers/todo.rst`,
+> an upstream file predating this fork by six weeks, and read as requirements
+> during plan authoring. Triage found most were Windows-only or filed against the
+> Qt5/PySide2 2.5.0 bundle — a stack this fork does not have. See
+> `DECISIONS/2026-09-02-inherited-docs-are-not-requirements.md`. M5 delivers the
+> safety net only; bug-fixing work enters through the user, not through inherited
+> docs.
 
 **Verification gate:** the ctest suite (including the new render regression
-test) stays green on every CI run, and each P0 bug fixed carries a
-regression test that would have caught it.
+test) stays green on every CI run.

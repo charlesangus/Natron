@@ -60,7 +60,7 @@ test could otherwise not observe a failure at all.
 
 ## Phase 5.1: Make the suite report what it actually ran
 
-- [ ] M5.P1.T1 — Report one ctest case per gtest case
+- [x] M5.P1.T1 — Report one ctest case per gtest case
   - files: `Tests/CMakeLists.txt`
   - approach: `Tests/CMakeLists.txt:57` is a single `add_test(NAME Tests COMMAND
     Tests)`, so `ctest` reports `1/1 passed` whether the binary ran 30 cases or
@@ -303,6 +303,19 @@ multi-frame render each have coverage; `test.sh ctest debug` and `test.sh smoke
 debug` are both green.
 
 ## Decisions
+
+- **`M5.P1.T1` needed a second file the brief did not name.** With `PRE_TEST`
+  discovery wired up, `ctest` reported **46** cases rather than 30.
+  `Tests/wmain.cpp` reaches `AppManager::load()` even under
+  `--gtest_list_tests`, and in a debug build `Global/PythonUtils.cpp`'s
+  `initializePython3` dumps `PATH`, `sys.path` and friends to **stdout** — the
+  same channel gtest writes its machine-readable listing to. CMake's
+  `GoogleTestAddTests.cmake` captures only stdout, so the two-space-indented
+  diagnostic lines following a suite header parsed as sixteen extra test names
+  under `ModelSearch.`. Redirecting that block to stderr (`fprintf`,
+  `PySys_*Stderr`) fixes it with no loss of output. Committed separately from
+  the CMake change, since it is a distinct defect that merely happened to
+  surface here.
 
 - **No golden image.** A committed reference frame would not earn its
   maintenance cost here. The pixels come out of `openfx-io`, `openfx-misc` and

@@ -28,3 +28,5 @@
 - 2026-09-01 — ci-tests-the-shipped-ocio-default: test.sh unsets OCIO so CI exercises the config Natron resolves; the smoke test asserts which one that was → DECISIONS/2026-09-01-ci-tests-the-shipped-ocio-default.md
 - 2026-09-01 — format-gate-changed-lines-only: the clang-format gate moves from whole touched files to changed lines; Settings.cpp alone has ~1610 pre-existing violations → DECISIONS/2026-09-01-format-gate-changed-lines-only.md
 - 2026-09-01 — render-failure-signalling-gaps: persistent errors don't stop a render, don't store in background, and a failed render exits 0 — measured, deferred to M5 → DECISIONS/2026-09-01-render-failure-signalling-gaps.md
+- 2026-09-02 — inherited-docs-are-not-requirements: upstream docs describe upstream; accuracy today isn't the test, drift is; agent-facing files rank first → DECISIONS/2026-09-02-inherited-docs-are-not-requirements.md
+- 2026-09-02 — inherited-credential-no-history-rewrite: the upstream natron-ci credential is deleted, not purged; a rewrite breaks every SHA for zero secrecy gain → DECISIONS/2026-09-02-inherited-credential-no-history-rewrite.md

@@ -196,6 +196,12 @@ corresponds to a plugin ID the shipped bundles actually export.
 
 ## Decisions
 
+- 2026-09-02 — M13 ships without the `/address-pr-review --auto` handoff the
+  shipping protocol normally ends in; the user asked for it to be skipped this
+  run. PR #11 is left open for a human to review and merge, so M13 is `done`
+  on the board but not yet merged, and the next milestone cannot branch off an
+  updated `main` until it is.
+
 - 2026-09-02 — Phase 13.4's file lists were wrong in three places; the tasks
   were executed against the real locations. The unshipped arena readers were
   listed in `_groupOther.rst` (AudioCurve) and `_groupImage.rst` (ReadCDR,

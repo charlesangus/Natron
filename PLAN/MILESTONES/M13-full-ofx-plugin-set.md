@@ -22,7 +22,7 @@ to a file then `grep -Fxq` — deliberately not a pipeline, since `grep -q` unde
 
 ## Phase 13.1: Vendor the ImageMagick dependency chain
 
-- [ ] M13.P1.T1 — Build lcms2 and libzip from pinned source
+- [x] M13.P1.T1 — Build lcms2 and libzip from pinned source
   - files: `tools/ci/local/fetch-assets.sh`
   - approach: add a `DEPS_PREFIX="${PLUGINS_SRC_DIR}/deps-install"`, then build
     `mm2/Little-CMS` at the `lcms2.16` SHA (autotools, `--disable-static`) and

@@ -353,10 +353,14 @@ PyObject* initializePython3(const std::vector<wchar_t*>& commandLineArgsWide)
     std::string err;
 #if defined(NATRON_CONFIG_SNAPSHOT) || defined(DEBUG)
     /// print info about python lib
+    // Everything in this block goes to stderr, not stdout: Tests/Tests runs this
+    // same init path under --gtest_list_tests, and gtest_discover_tests() only
+    // captures the executable's stdout to parse the test list, so stdout output
+    // here would be mistaken for extra test names.
     {
-        printf( "PATH is %s\n", Py_GETENV("PATH") );
-        printf( "PYTHONPATH is %s\n", Py_GETENV("PYTHONPATH") );
-        printf( "PYTHONHOME is %s\n", Py_GETENV("PYTHONHOME") );
+        fprintf( stderr, "PATH is %s\n", Py_GETENV("PATH") );
+        fprintf( stderr, "PYTHONPATH is %s\n", Py_GETENV("PYTHONPATH") );
+        fprintf( stderr, "PYTHONHOME is %s\n", Py_GETENV("PYTHONHOME") );
 
         // The Py_*Flag globals and the Py_GetProgramName()/Py_GetPrefix()/
         // Py_GetProgramFullPath()/Py_GetPath()/Py_GetPythonHome() getters that used to be
@@ -365,14 +369,14 @@ PyObject* initializePython3(const std::vector<wchar_t*>& commandLineArgsWide)
 #define DUMP_SYS(NAME) \
             do { \
                 obj = PySys_GetObject(#NAME); \
-                PySys_FormatStdout("  sys.%s = ", #NAME); \
+                PySys_FormatStderr("  sys.%s = ", #NAME); \
                 if (obj != NULL) { \
-                    PySys_FormatStdout("%A", obj); \
+                    PySys_FormatStderr("%A", obj); \
                 } \
                 else { \
-                    PySys_WriteStdout("(not set)"); \
+                    PySys_WriteStderr("(not set)"); \
                 } \
-                PySys_FormatStdout("\n"); \
+                PySys_FormatStderr("\n"); \
             } while (0)
 
         PyObject *obj;
@@ -389,13 +393,13 @@ PyObject* initializePython3(const std::vector<wchar_t*>& commandLineArgsWide)
 
         PyObject *sys_path = PySys_GetObject("path");  /* borrowed reference */
         if (sys_path != NULL && PyList_Check(sys_path)) {
-            PySys_WriteStdout("  sys.path = [\n");
+            PySys_WriteStderr("  sys.path = [\n");
             Py_ssize_t len = PyList_GET_SIZE(sys_path);
             for (Py_ssize_t i=0; i < len; i++) {
                 PyObject *path = PyList_GET_ITEM(sys_path, i);
-                PySys_FormatStdout("    %A,\n", path);
+                PySys_FormatStderr("    %A,\n", path);
             }
-            PySys_WriteStdout("  ]\n");
+            PySys_WriteStderr("  ]\n");
         }
 
         PyObject* dict = PyModule_GetDict(mainModule);
@@ -405,7 +409,7 @@ PyObject* initializePython3(const std::vector<wchar_t*>& commandLineArgsWide)
         ///This is faster than PyRun_SimpleString since is doesn't call PyImport_AddModule("__main__")
         // distutils was removed in Python 3.12; sysconfig's "purelib" path is what
         // distutils.sysconfig.get_python_lib() used to report.
-        std::string script("import sysconfig; print('Python library is in ' + sysconfig.get_path('purelib'))");
+        std::string script("import sysconfig, sys; print('Python library is in ' + sysconfig.get_path('purelib'), file=sys.stderr)");
         PyObject* v = PyRun_String(script.c_str(), Py_file_input, dict, 0);
         if (v) {
             Py_DECREF(v);

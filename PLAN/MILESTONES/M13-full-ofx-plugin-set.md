@@ -41,11 +41,15 @@ to a file then `grep -Fxq` — deliberately not a pipeline, since `grep -q` unde
 - [ ] M13.P1.T2 — Build ImageMagick 7.1.1-6 with Q32/HDRI
   - files: `tools/ci/local/fetch-assets.sh`
   - approach: fetch `ImageMagick/ImageMagick` at the `7.1.1-6` SHA. Upstream's
-    own flags survive in this tree at
-    `tools/jenkins/include/scripts/pkg/imagemagick7.sh` — start there
-    (`--with-quantum-depth=32 --enable-hdri --with-magick-plus-plus=yes
-    --without-modules --enable-zero-configuration --without-x` and its
-    `--without-*` list). **Q32/HDRI is a correctness requirement, not a
+    own flags no longer live in this tree — M3 deleted `tools/jenkins/`;
+    recover them with `git show
+    576c2078^:tools/jenkins/include/scripts/pkg/imagemagick7.sh` and start from
+    that `./configure` line (`--with-quantum-depth=32 --enable-hdri
+    --with-magick-plus-plus=yes --without-modules --enable-zero-configuration
+    --without-x --disable-static --enable-shared --with-lcms --with-png
+    --with-zlib --with-freetype --with-fontconfig` plus its `--without-*` list,
+    and `CFLAGS/CXXFLAGS=-DMAGICKCORE_EXCLUDE_DEPRECATED=1`).
+    **Q32/HDRI is a correctness requirement, not a
     packaging preference:** every Magick plugin round-trips OFX float buffers
     through `Magick::FloatPixel`, so a non-HDRI build silently clips linear
     values. Two container-specific deltas, each needing a comment saying why:
@@ -135,15 +139,14 @@ debug` and `test.sh smoke debug` both still pass.
   - size: S
 
 - [ ] M13.P3.T2 — Check the expected bundle set in the smoke test
-  - files: `tools/ci/smoke_test.py`,
-    `.github/workflows/verify_plugin_loads.cpp`
+  - files: `tools/ci/smoke_test.py`, `tools/ci/verify_plugin_loads.cpp`
   - approach: assert the bundle set under `OFX_PLUGIN_PATH` (`IO`, `Misc`,
     `CImg`, `Arena`) rather than enumerating plugin IDs. The failure this
     catches is a silently-skipped assets step, which the cache makes possible.
-    `verify_plugin_loads.cpp` — kept rather than deleted in `M12.P2.T3` — is
-    already the `dlopen` + `OfxGetNumberOfPlugins`/`OfxGetPlugin` probe this
-    needs; move it somewhere `fetch-assets.sh` can build and run it instead of
-    leaving it orphaned in a directory of YAML.
+    `verify_plugin_loads.cpp` is already the `dlopen` +
+    `OfxGetNumberOfPlugins`/`OfxGetPlugin` probe this needs, and M12 already
+    moved it out of `.github/workflows/` to `tools/ci/`; wire
+    `fetch-assets.sh` to build and run it rather than leaving it unreferenced.
   - verify: `test.sh smoke debug` passes; removing any one bundle directory
     fails it by name.
   - size: S
@@ -161,8 +164,8 @@ end to end.
   - approach: after Phase 13.2, 21 of the 25 documented arena plugins are real
     shipped capability — which is what `M12.P2.T4` was cancelled to preserve.
     Four are not: `ReadSVG` and `ReadCDR` (librevenge and libcroco have no
-    reachable source), `ReadPDF` (poppler deliberately excluded, see
-    `DECISIONS/2026-09-02-skip-poppler-in-arena.md`), and `AudioCurve` (sox,
+    reachable source), `ReadPDF` (poppler deliberately excluded, see this
+    milestone's `## Decisions`), and `AudioCurve` (sox,
     optional and off in upstream's own bundle). Delete those four pages. They
     are generated artifacts — `tools/genStaticDocs.sh:43` deletes and
     regenerates `source/plugins/` wholesale — so they come back automatically if
@@ -189,6 +192,13 @@ end to end.
 corresponds to a plugin ID the shipped bundles actually export.
 
 ## Decisions
+
+- 2026-09-02 — freshness check at promotion (PLAN-FORMAT.md §5a) corrected three
+  stale references without re-planning: `tools/jenkins/` was deleted by M3, so
+  `M13.P1.T2` now recovers ImageMagick's upstream configure flags from git
+  history; `verify_plugin_loads.cpp` already moved to `tools/ci/` in M12, so
+  `M13.P3.T2` no longer asks for the move; and `M13.P4.T1` pointed at a poppler
+  decision file that was never written — the rationale is in this section.
 
 - 2026-09-02 — openfx-gmic is deferred rather than unblocked. Its dependency
   list is small and fftw3 is reachable; the blocker is that G'MIC 2.8.4's

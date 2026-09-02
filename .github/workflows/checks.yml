@@ -90,10 +90,16 @@ jobs:
           # -- when it doesn't; verified directly against this pin. Its exit
           # code is the verdict, so we only need to let the diff it prints
           # reach the log.
+          # Documentation/templates/*.c are not buildable C despite the
+          # extension: they're hand-maintained verbatim snapshots of the
+          # HTML that Engine/ emits as string literals, kept so a human can
+          # diff them against those literals. Reformatting would destroy
+          # that verbatim property, so exclude the directory via pathspec.
           set +e
           git clang-format --binary "$clang_format_bin" \
             --extensions c,cc,cpp,h,hpp,mm \
-            --diff "$base_rev"
+            --diff "$base_rev" \
+            -- . ':(exclude)Documentation/templates/'
           status=$?
           set -e
 

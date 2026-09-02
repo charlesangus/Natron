@@ -76,14 +76,16 @@ Natron binaries include components from the following libraries:
 * fontconfig (Modified BSD) http://www.freedesktop.org/wiki/Software/fontconfig/
 * Pango (LGPL 2.1) http://www.pango.org/
 * Little CMS (MIT) http://www.littlecms.com/
-* librsvg (LGPL 2.1) http://live.gnome.org/LibRsvg
 * libzip (BSD) http://www.nih.at/libzip/
 * lodepng (zlib) http://lodev.org/lodepng/
 * Cairo (LGPL 2.1) http://cairographics.org/
-* librevenge (MPL 2.0) https://sourceforge.net/p/libwpd/librevenge/
-* libcdr (MPL 2.0) https://github.com/LibreOffice/libcdr
 * libxml (MIT) http://www.xmlsoft.org/
-* poppler (GPL 2.0) https://poppler.freedesktop.org/ (used by openfx-arena via ReadPDF) 
+
+The SVG, PDF and CorelDRAW readers are built off, so the bundle links none
+of librsvg (LGPL 2.1), poppler (GPL 2.0), librevenge (MPL 2.0) or libcdr
+(MPL 2.0). Poppler in particular is excluded deliberately, not incidentally:
+linking it would make Arena.ofx GPL-2.0 outright. Re-enabling any of those
+readers means restoring its entry here.
 
 ## openfx-gmic
 

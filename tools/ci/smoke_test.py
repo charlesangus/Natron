@@ -212,6 +212,78 @@ def _write_solid_exr(path, width, height, value):
         )
 
 
+EXPECTED_OFX_BUNDLES = ("Arena", "CImg", "IO", "Misc")
+
+
+def check_ofx_plugin_bundle_set():
+    """Assert OFX_PLUGIN_PATH holds exactly the bundle set Natron ships.
+
+    Not a plugin-ID check (Tests/BaseTest.cpp already asserts specific IDs
+    at the C++ level) -- this exists to catch a *skipped*
+    tools/ci/local/fetch-assets.sh run. CI caches build/assets/ keyed on
+    that script's hash, so a build where the cache step was silently
+    skipped (or restored partially) still has OFX_PLUGIN_PATH pointing at
+    *something*: every check that doesn't happen to need the missing
+    bundle passes normally, and the gap stays invisible until a user hits
+    the missing plug-in.
+    """
+    plugin_path = os.environ.get("OFX_PLUGIN_PATH")
+    if not plugin_path or not os.path.isdir(plugin_path):
+        raise AssertionError(
+            "OFX_PLUGIN_PATH (%r) is not set to a directory -- "
+            "tools/ci/local/fetch-assets.sh has not run." % (plugin_path,)
+        )
+
+    found = set()
+    for entry in os.listdir(plugin_path):
+        if entry.endswith(".ofx.bundle") and os.path.isdir(os.path.join(plugin_path, entry)):
+            found.add(entry[: -len(".ofx.bundle")])
+
+    expected = set(EXPECTED_OFX_BUNDLES)
+    if found != expected:
+        raise AssertionError(
+            "OFX_PLUGIN_PATH=%r holds bundle set %r, expected exactly %r "
+            "(missing=%r extra=%r). A missing bundle here means "
+            "fetch-assets.sh did not run, or did not complete, before this "
+            "test did." % (plugin_path, sorted(found), sorted(expected),
+                            sorted(expected - found), sorted(found - expected))
+        )
+    _mark("[smoke] OK: OFX_PLUGIN_PATH bundle set is %r" % (sorted(found),))
+
+    # Reuse the dlopen + OfxGetNumberOfPlugins/OfxGetPlugin probe
+    # fetch-assets.sh already builds and runs against these same bundles
+    # (tools/ci/verify_plugin_loads.cpp), rather than re-implementing a
+    # second loader here: a directory that merely exists is not the same
+    # guarantee as a bundle that actually dlopen()s.
+    assets_dir = os.path.dirname(os.path.normpath(plugin_path))
+    verify_loader = os.path.join(assets_dir, "plugin-src", "verify_plugin_loads")
+    if not os.path.isfile(verify_loader):
+        raise AssertionError(
+            "verify_plugin_loads probe not found at %r -- fetch-assets.sh "
+            "builds it, so its absence means that step didn't complete "
+            "either." % (verify_loader,)
+        )
+
+    for name in EXPECTED_OFX_BUNDLES:
+        ofx_bin = os.path.join(plugin_path, "%s.ofx.bundle" % name,
+                                "Contents", "Linux-x86-64", "%s.ofx" % name)
+        proc = subprocess.run([verify_loader, ofx_bin],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        # IO.ofx's dlopen is informational-only in fetch-assets.sh too (see
+        # the comment above its own probe call): it depends on the
+        # container having already indexed OCIO/OIIO/OpenEXR's SONAMEs via
+        # ldconfig, which is a property of the environment, not the bundle.
+        if name == "IO":
+            continue
+        if proc.returncode != 0:
+            raise AssertionError(
+                "verify_plugin_loads %r failed (exit %d): %s"
+                % (ofx_bin, proc.returncode,
+                   proc.stdout.decode("utf-8", "replace").strip())
+            )
+    _mark("[smoke] OK: verify_plugin_loads probed %r" % (EXPECTED_OFX_BUNDLES,))
+
+
 def check_pyside6_bindings():
     """Assert the embedded interpreter sees a working PySide6.
 
@@ -450,6 +522,7 @@ def main():
         import NatronEngine
         app = NatronEngine.natron.getInstance(0)
 
+    check_ofx_plugin_bundle_set()
     check_pyside6_bindings()
     check_app_render_with_task_list()
     check_default_ocio_config()

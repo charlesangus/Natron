@@ -84,6 +84,9 @@ BaseTest::registerTestPlugins()
     _writeOIIOPluginID = QString::fromUtf8(PLUGINID_OFX_WRITEOIIO);
     _allTestPluginIDs.push_back(_writeOIIOPluginID);
 
+    _textArenaPluginID = QString::fromUtf8("net.fxarena.openfx.Text");
+    _allTestPluginIDs.push_back(_textArenaPluginID);
+
     for (unsigned int i = 0; i < _allTestPluginIDs.size(); ++i) {
         ///make sure the generic test plugin is present
         LibraryBinary* bin = NULL;

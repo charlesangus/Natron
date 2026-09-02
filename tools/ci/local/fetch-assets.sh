@@ -2,16 +2,20 @@
 #
 # Prepare the external assets the test suite and Natron's shipped plugin set
 # need: the OpenColorIO-Configs tarball, the openfx-io OFX plugin bundle that
-# Tests/BaseTest.cpp loads through OFX_PLUGIN_PATH, and the openfx-misc OFX
-# plugin bundles that ship with Natron but that no test currently loads --
-# openfx-misc is built here so CI proves it still builds against the pinned
-# toolchain, the same way the rest of Natron is proven to build.
+# Tests/BaseTest.cpp loads through OFX_PLUGIN_PATH, and the openfx-misc/
+# openfx-arena OFX plugin bundles that ship with Natron but that no test
+# currently loads -- they are built here so CI proves they still build
+# against the pinned toolchain, the same way the rest of Natron is proven to
+# build.
 #
 # Result (idempotent, safe to re-run):
 #   build/assets/OpenColorIO-Configs/
 #   build/assets/Plugins/IO.ofx.bundle/
 #   build/assets/Plugins/Misc.ofx.bundle/
 #   build/assets/Plugins/CImg.ofx.bundle/
+#   build/assets/Plugins/Arena.ofx.bundle/
+#   build/assets/plugin-src/deps-install/  (lcms2, libzip, ImageMagick --
+#                                           for openfx-arena)
 #
 # A second run does no network or compile work if both targets already look
 # complete and the plugin stamp matches the pins below.
@@ -193,10 +197,46 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 OPENFX_MISC_REPO="https://github.com/NatronGitHub/openfx-misc.git"
 OPENFX_MISC_REF="0abd46b5a8cbc98fa24579042129460d0aa87b8f"
 
+# LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
+# though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a
+# header, because it ships no lcms2.pc -- and openfx-arena (a later plugin
+# in this set) resolves it via pkg_search_module(LCMS2 REQUIRED lcms2).
+# Hand-writing a .pc for a library this repo doesn't build would drift
+# silently against the real image; building the pinned tag is cheaper to
+# keep honest.
+#
+# LIBZIP_REF: nih-at/libzip at the v1.11.4 tag. Absent from the image
+# entirely (no header, no library, no package) -- also needed by
+# openfx-arena.
+LCMS2_REPO="https://github.com/mm2/Little-CMS.git"
+LCMS2_REF="453bafeb85b4ef96498866b7a8eadcc74dff9223"
+LIBZIP_REPO="https://github.com/nih-at/libzip.git"
+LIBZIP_REF="6f8a0cdd24a0dc6cce9dac4a7679da784ab124ea"
+
+# IMAGEMAGICK_REF: ImageMagick/ImageMagick at the 7.1.1-6 tag, also needed by
+# openfx-arena. Built Q32/HDRI: every Magick-based OFX plugin round-trips
+# float buffers through Magick::FloatPixel, and a non-HDRI (integer) quantum
+# would silently clip linear values on the way through. Flags are upstream
+# Natron's own (tools/jenkins/include/scripts/pkg/imagemagick7.sh as of
+# 576c2078^, before that tree was deleted), minus its CentOS-6 conditionals,
+# plus two deltas this container forces -- see the comments on the build step
+# below.
+IMAGEMAGICK_REPO="https://github.com/ImageMagick/ImageMagick.git"
+IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
+
+# OPENFX_ARENA_REF: charlesangus/openfx-arena -- our fork, adding
+# WITH_SVG/WITH_PDF/WITH_CDR CMake options (all defaulting ON, so upstream
+# behaviour is unchanged) that gate the three readers whose dependencies
+# (librsvg, poppler-glib, libcdr/librevenge) this image does not ship. We
+# turn them OFF below rather than carry the missing libraries.
+OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
+OPENFX_ARENA_REF="d29ac7f180e1ea5cca2b8c0492686638836b605c"
+
 PLUGINS_TARGET="${ASSETS_DIR}/Plugins"
 PLUGINS_SRC_DIR="${ASSETS_DIR}/plugin-src"
+DEPS_PREFIX="${PLUGINS_SRC_DIR}/deps-install"
 PLUGINS_STAMP="${PLUGINS_TARGET}/.natron-plugin-pins"
-PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPENFX_MISC_REF}"
+PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPENFX_MISC_REF} lcms2=${LCMS2_REF} libzip=${LIBZIP_REF} imagemagick=${IMAGEMAGICK_REF} openfx-arena=${OPENFX_ARENA_REF}"
 
 # Defined unconditionally (not just in the build branch below) so both the
 # "already built -- skipping" and the "building..." paths can probe these
@@ -204,6 +244,7 @@ PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPEN
 IO_OFX="${PLUGINS_TARGET}/IO.ofx.bundle/Contents/Linux-x86-64/IO.ofx"
 MISC_OFX="${PLUGINS_TARGET}/Misc.ofx.bundle/Contents/Linux-x86-64/Misc.ofx"
 CIMG_OFX="${PLUGINS_TARGET}/CImg.ofx.bundle/Contents/Linux-x86-64/CImg.ofx"
+ARENA_OFX="${PLUGINS_TARGET}/Arena.ofx.bundle/Contents/Linux-x86-64/Arena.ofx"
 
 if [ -f "${PLUGINS_STAMP}" ] && [ "$(cat "${PLUGINS_STAMP}")" = "${PLUGINS_WANT}" ]; then
     echo "[Plugins] already built at the pinned refs -- skipping."
@@ -235,6 +276,92 @@ else
     clone_at_ref "${OPENFX_IO_REPO}"   "${OPENFX_IO_REF}"   "${PLUGINS_SRC_DIR}/openfx-io"
     clone_at_ref "${SEEXPR_REPO}"      "${SEEXPR_REF}"      "${PLUGINS_SRC_DIR}/SeExpr"
     clone_at_ref "${OPENFX_MISC_REPO}" "${OPENFX_MISC_REF}" "${PLUGINS_SRC_DIR}/openfx-misc"
+    clone_at_ref "${LCMS2_REPO}"       "${LCMS2_REF}"       "${PLUGINS_SRC_DIR}/Little-CMS"
+    clone_at_ref "${LIBZIP_REPO}"      "${LIBZIP_REF}"      "${PLUGINS_SRC_DIR}/libzip"
+    clone_at_ref "${IMAGEMAGICK_REPO}" "${IMAGEMAGICK_REF}" "${PLUGINS_SRC_DIR}/ImageMagick"
+    clone_at_ref "${OPENFX_ARENA_REPO}" "${OPENFX_ARENA_REF}" "${PLUGINS_SRC_DIR}/openfx-arena"
+
+    # --- lcms2 ---------------------------------------------------------
+    # `configure` is checked into the tag (not generated at release time
+    # only), so no autoreconf/autogen.sh step is needed here.
+    # --disable-static: only the shared lib + .pc are needed downstream.
+    if [ ! -f "${DEPS_PREFIX}/lib/pkgconfig/lcms2.pc" ]; then
+        echo "[Plugins] building lcms2..."
+        (
+            cd "${PLUGINS_SRC_DIR}/Little-CMS"
+            ./configure --prefix="${DEPS_PREFIX}" --disable-static > /dev/null
+            make -j "$(nproc)" > /dev/null
+            make install > /dev/null
+        )
+    fi
+
+    # --- libzip ----------------------------------------------------------
+    # All optional compression backends turned off: this bundle only needs
+    # plain zip read/write, and each extra codec is another image library
+    # this build would otherwise have to trust find_package() to locate
+    # correctly.
+    if [ ! -f "${DEPS_PREFIX}/lib/pkgconfig/libzip.pc" ]; then
+        echo "[Plugins] building libzip..."
+        LIBZIP_BUILD="${PLUGINS_SRC_DIR}/libzip/build"
+        rm -rf "${LIBZIP_BUILD}"
+        cmake -S "${PLUGINS_SRC_DIR}/libzip" -B "${LIBZIP_BUILD}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${DEPS_PREFIX}" \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_REGRESS=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            -DBUILD_DOC=OFF \
+            -DENABLE_BZIP2=OFF \
+            -DENABLE_LZMA=OFF \
+            -DENABLE_ZSTD=OFF \
+            > /dev/null
+        cmake --build "${LIBZIP_BUILD}" -j "$(nproc)" > /dev/null
+        cmake --install "${LIBZIP_BUILD}" > /dev/null
+    fi
+
+    # --- ImageMagick -----------------------------------------------------
+    # PKG_CONFIG_PATH points at DEPS_PREFIX first so --with-lcms resolves the
+    # lcms2 built above (the image's own liblcms2 ships no .pc, so without
+    # this configure would not find lcms2 at all rather than finding the
+    # wrong one).
+    #
+    # --without-jxl: this image's libjxl (0.12 under /usr/local) changed
+    # JxlDecoderGetColorAsICCProfile's signature and ImageMagick's
+    # coders/jxl.c does not compile against it.
+    #
+    # LDFLAGS/CPPFLAGS: the image carries FreeType 2.10.4 at /usr/lib64 and
+    # 2.13.x at /usr/local; `pkg-config freetype2` resolves the former, but
+    # /usr/local/lib/libharfbuzz.so.0 needs the latter's FT_Get_Paint*
+    # symbols. Forcing the /usr/local headers and an rpath back to
+    # /usr/local/lib is what makes the two agree. This FreeType split is an
+    # image-level property, not specific to ImageMagick -- expect it to bite
+    # any future font-touching dependency built in this container.
+    if [ ! -f "${DEPS_PREFIX}/lib/pkgconfig/Magick++.pc" ]; then
+        echo "[Plugins] building ImageMagick (Q32 HDRI)..."
+        (
+            cd "${PLUGINS_SRC_DIR}/ImageMagick"
+            env PKG_CONFIG_PATH="${DEPS_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
+                CFLAGS="-DMAGICKCORE_EXCLUDE_DEPRECATED=1" \
+                CXXFLAGS="-DMAGICKCORE_EXCLUDE_DEPRECATED=1" \
+                CPPFLAGS="-I/usr/local/include/freetype2" \
+                LDFLAGS="-L/usr/local/lib -Wl,-rpath,/usr/local/lib" \
+                ./configure --prefix="${DEPS_PREFIX}" \
+                --with-magick-plus-plus=yes --with-quantum-depth=32 --enable-hdri \
+                --disable-static --enable-shared --without-modules \
+                --enable-zero-configuration --without-x \
+                --with-lcms --with-png --with-zlib --with-freetype --with-fontconfig \
+                --with-libheif --without-jxl \
+                --without-dps --without-djvu --without-fftw --without-fpx \
+                --without-gslib --without-gvc --without-jbig --without-jpeg \
+                --without-openjp2 --without-lqr --without-lzma --without-openexr \
+                --without-pango --without-rsvg --without-tiff --without-webp \
+                --without-xml --without-bzlib \
+                > /dev/null
+            make -j "$(nproc)" > /dev/null
+            make install > /dev/null
+        )
+    fi
 
     # --- SeExpr ------------------------------------------------------------
     # The sed is openfx-io's own CI recipe: drop the editor/demos/tests/doc
@@ -324,24 +451,71 @@ else
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     cmake --build "${MISC_BUILD}" -j "$(nproc)"
 
-    # Both projects' install targets already emit the OFX bundle layout
+    # --- openfx-arena ---------------------------------------------------------
+    # The CMake build, not Makefile.master: the latter runs `pkg-config
+    # OpenColorIO` unconditionally, and this image ships OCIO as a CMake
+    # config package (libs/OpenColorIOConfig.cmake under /usr/local) with no
+    # .pc file at all -- Makefile.master would fail before touching any of
+    # openfx-arena's actual sources. The CMake build never needs OCIO in the
+    # first place: GenericOCIO.cpp is only compiled under #ifdef
+    # OFX_IO_USING_OCIO, which nothing here defines.
+    #
+    # PKG_CONFIG_PATH resolves Magick++/lcms2/libzip to the pinned builds
+    # above; fontconfig, pangocairo, libxml-2.0, glib-2.0 and cairo all
+    # resolve fine against the image's own packages, so nothing else needs
+    # steering here.
+    echo "[Plugins] building openfx-arena..."
+    ARENA_SRC="${PLUGINS_SRC_DIR}/openfx-arena"
+    ARENA_BUILD="${ARENA_SRC}/build"
+    rm -rf "${ARENA_BUILD}"
+    env PKG_CONFIG_PATH="${DEPS_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
+        cmake -S "${ARENA_SRC}" -B "${ARENA_BUILD}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_PREFIX_PATH=/usr/local \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        -DWITH_SVG=OFF -DWITH_PDF=OFF -DWITH_CDR=OFF
+    cmake --build "${ARENA_BUILD}" -j "$(nproc)"
+
+    # All three projects' install targets already emit the OFX bundle layout
     # (<Name>.ofx.bundle/Contents/{Linux-x86-64,Resources,Info.plist}), which
     # is exactly what OFX_PLUGIN_PATH expects -- no hand-assembly needed.
     # openfx-misc's CMakeLists.txt installs two bundles (Misc.ofx.bundle and
     # CImg.ofx.bundle) into the same prefix as IO.ofx.bundle; the rm -rf
-    # happens once, before either --install, so a run interrupted between the
-    # two never leaves PLUGINS_TARGET in a mixed old/new state.
+    # happens once, before any --install, so a run interrupted partway never
+    # leaves PLUGINS_TARGET in a mixed old/new state.
     rm -rf "${PLUGINS_TARGET}"
     mkdir -p "${PLUGINS_TARGET}"
     cmake --install "${IO_BUILD}" --prefix "${PLUGINS_TARGET}" > /dev/null
     cmake --install "${MISC_BUILD}" --prefix "${PLUGINS_TARGET}" > /dev/null
+    cmake --install "${ARENA_BUILD}" --prefix "${PLUGINS_TARGET}" > /dev/null
 
-    for ofx in "${IO_OFX}" "${MISC_OFX}" "${CIMG_OFX}"; do
+    for ofx in "${IO_OFX}" "${MISC_OFX}" "${CIMG_OFX}" "${ARENA_OFX}"; do
         if [ ! -f "${ofx}" ]; then
             echo "[Plugins] ERROR: build produced no ${ofx}" >&2
             exit 1
         fi
     done
+
+    # Stage Arena.ofx's private libraries. `readelf -d` shows
+    # RUNPATH=$ORIGIN/../../Libraries, and $ORIGIN is
+    # Arena.ofx.bundle/Contents/Linux-x86-64 -- two levels up from there is
+    # the bundle root, so the target is Arena.ofx.bundle/Libraries, *not*
+    # Contents/Libraries (verified with LD_DEBUG=libs; the search path glibc
+    # actually tries is .../Arena.ofx.bundle/Contents/Linux-x86-64/../../Libraries,
+    # which collapses to .../Arena.ofx.bundle/Libraries). Only Magick++/
+    # MagickWand/MagickCore, lcms2 and libzip need staging -- the same reason
+    # IO.ofx's SeExpr is linked statically: this makes the bundle
+    # self-contained with no LD_LIBRARY_PATH needed anywhere. Everything else
+    # Arena.ofx links against (fontconfig, freetype, pango, cairo, glib,
+    # libxml2, OpenGL) is already resolvable through the image's own library
+    # set.
+    ARENA_LIBRARIES="${PLUGINS_TARGET}/Arena.ofx.bundle/Libraries"
+    mkdir -p "${ARENA_LIBRARIES}"
+    cp -P "${DEPS_PREFIX}"/lib/libMagickCore-7.Q32HDRI.so.* "${ARENA_LIBRARIES}/"
+    cp -P "${DEPS_PREFIX}"/lib/libMagickWand-7.Q32HDRI.so.* "${ARENA_LIBRARIES}/"
+    cp -P "${DEPS_PREFIX}"/lib/libMagick++-7.Q32HDRI.so.* "${ARENA_LIBRARIES}/"
+    cp -P "${DEPS_PREFIX}"/lib/liblcms2.so.2* "${ARENA_LIBRARIES}/"
+    cp -P "${DEPS_PREFIX}"/lib/libzip.so.5* "${ARENA_LIBRARIES}/"
 
     # Fail loudly here rather than let BaseTest fail with the far less
     # informative "Couldn't find a plugin attached to the ID ...". These are
@@ -358,6 +532,18 @@ else
     strings "${IO_OFX}" > "${IO_SYMBOLS}"
     for id in fr.inria.openfx.ReadOIIO fr.inria.openfx.WriteOIIO net.sf.openfx.SeNoise; do
         if ! grep -Fxq -- "${id}" "${IO_SYMBOLS}"; then
+            echo "[Plugins] ERROR: built bundle does not export ${id}" >&2
+            exit 1
+        fi
+    done
+
+    # Same check for openfx-arena, for the two Magick-backed IDs. (A third ID,
+    # fr.inria.openfx.ReadMisc, is asserted further down instead -- see the
+    # comment by ARENA_PROBE_OUT for why `strings` can't see it.)
+    ARENA_SYMBOLS="${ARENA_BUILD}/arena-symbols.txt"
+    strings "${ARENA_OFX}" > "${ARENA_SYMBOLS}"
+    for id in net.fxarena.openfx.Text net.fxarena.openfx.ReadPSD; do
+        if ! grep -Fxq -- "${id}" "${ARENA_SYMBOLS}"; then
             echo "[Plugins] ERROR: built bundle does not export ${id}" >&2
             exit 1
         fi
@@ -400,13 +586,34 @@ if [ ! -x "${VERIFY_LOADER_BIN}" ] || [ "${VERIFY_LOADER_SRC}" -nt "${VERIFY_LOA
         -o "${VERIFY_LOADER_BIN}"
 fi
 
-# Misc.ofx and CImg.ofx are self-contained (see the "openfx-misc is built
-# the same way" note above), so a failed dlopen() here is always a real
-# regression -- fail loudly.
-for ofx in "${MISC_OFX}" "${CIMG_OFX}"; do
+# Misc.ofx, CImg.ofx and Arena.ofx are all self-contained (see the
+# "openfx-misc is built the same way" note above, and the library-staging
+# comment in the openfx-arena build step), so a failed dlopen() here is
+# always a real regression -- fail loudly.
+for ofx in "${MISC_OFX}" "${CIMG_OFX}" "${ARENA_OFX}"; do
     echo "[verify_plugin_loads] probing ${ofx##*/}..."
     "${VERIFY_LOADER_BIN}" "${ofx}"
 done
+
+# fr.inria.openfx.ReadMisc (unconditional -- never gated by WITH_SVG/
+# WITH_PDF/WITH_CDR, so its presence also proves the three disabled readers
+# didn't silently take other targets down with them) can't be asserted via
+# `strings` like the two IDs above: at this -Ofast optimization level, GCC
+# builds this specific 24-byte std::string constant from a 16-byte prefix
+# copy out of .rodata (shared with the other four "fr.inria.openfx."-prefixed
+# IDs) plus the 8-byte tail "ReadMisc" folded into a `movabs` immediate
+# operand in the code itself (confirmed by disassembling the bytes at that
+# offset). The full identifier therefore never exists as one contiguous run
+# anywhere in the file for `strings`/grep to find, even though it's exactly
+# what a real host sees at runtime -- which is what this probe call already
+# gives us for free. Same anti-pipefail discipline as the `strings` checks:
+# capture to a file first, `grep -Fxq` the file, never `| grep -q` directly.
+ARENA_PROBE_OUT="${PLUGINS_SRC_DIR}/arena-probe-out.txt"
+"${VERIFY_LOADER_BIN}" "${ARENA_OFX}" > "${ARENA_PROBE_OUT}"
+if ! grep -Fq -- "fr.inria.openfx.ReadMisc " "${ARENA_PROBE_OUT}"; then
+    echo "[verify_plugin_loads] ERROR: ${ARENA_OFX##*/} does not report plugin fr.inria.openfx.ReadMisc" >&2
+    exit 1
+fi
 
 # IO.ofx is not: `readelf -d` shows RUNPATH=$ORIGIN/../../Libraries, but
 # neither this script nor openfx-io's own install target populates

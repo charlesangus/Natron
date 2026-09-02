@@ -242,17 +242,6 @@ recently, check here before assuming the local environment is broken.
 
 ## Known divergences from CI
 
-- **Wayland support is off locally, on in CI.** `extra-cmake-modules` (ECM)
-  is not installed in this image -- no distro package repository is
-  reachable in the environment this image was built in. Without it,
-  `CMakeLists.txt:114`'s `find_package(ECM NO_MODULE)` fails, so
-  `CMakeLists.txt:118`'s `find_package(Wayland COMPONENTS Client Egl)` never
-  resolves (ECM ships the `FindWayland.cmake` module it needs). Neither
-  `find_package` call is `REQUIRED`, so nothing breaks the build -- it's a
-  silent difference, not a failure. Rule this out first if a local result
-  disagrees with CI in anything Wayland-related. See `Dockerfile` for how to
-  close the gap (a from-source ECM build was prototyped and confirmed to
-  work).
 - **Ninja locally, make in CI.** Deliberate, for build speed.
 - **`build.sh` passes `-DCMAKE_PREFIX_PATH=/usr/local`.** `RB-2.6`'s
   `ci.yml` omits this entirely; the `ci-smoke-test-m2p3t1a` branch's

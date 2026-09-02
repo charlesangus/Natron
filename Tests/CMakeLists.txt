@@ -29,6 +29,7 @@ set(Tests_SOURCES
     KnobFile_Test.cpp
     Lut_Test.cpp
     OSGLContext_Test.cpp
+    ProjectOCIO_Test.cpp
     Tracker_Test.cpp
     wmain.cpp
 )
@@ -39,6 +40,10 @@ target_link_libraries(Tests
         Qt::Core
         Python3::Python
         openMVG
+)
+target_compile_definitions(Tests
+    PRIVATE
+        NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
 )
 target_include_directories(Tests
     PRIVATE

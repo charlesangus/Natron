@@ -43,69 +43,27 @@ FROM aswf/ci-vfxall:2027-clang21.1
 #
 #   dnf install -y cairo-devel epel-release wayland-devel wget unzip \
 #                   clang xorg-x11-server-Xvfb
-#   dnf install -y extra-cmake-modules
 #
 # Status of each against this base image (aswf/ci-vfxall:2027-clang21.1).
 # Every RPM below comes from the shared ci-common:7-clang21 layer, so these
 # statuses carried over unchanged from ci-baseqt:2027.0:
 #   cairo-devel              -- already installed as an RPM.
-#   epel-release             -- not needed here: its only purpose in ci.yml
-#                                is to make extra-cmake-modules resolvable
-#                                from EPEL, and we are not installing
-#                                extra-cmake-modules at all (see "Known
-#                                divergence from CI" below).
+#   epel-release             -- not needed here.
 #   wayland-devel            -- already installed as an RPM (only present on
 #                                the RB-2.6-style package list; harmless
-#                                either way since it's already there).
+#                                either way since it's already there). Not
+#                                consumed by the build: Natron does not
+#                                detect or link against Wayland.
 #   wget                     -- already installed as an RPM.
 #   unzip                    -- already installed as an RPM.
 #   clang                    -- present at /usr/local/bin via Conan, so
 #                                `rpm -q clang` would report it missing even
 #                                though the binary is on PATH.
 #   xorg-x11-server-Xvfb     -- already installed as an RPM.
-#   extra-cmake-modules      -- NOT PROVIDED by this image. See "Known
-#                                divergence from CI" below.
 #
 # If ci.yml's package list changes, re-check this table -- most items are
 # almost certainly already covered by the base image, but confirm before
 # assuming so.
-
-# --- Known divergence from CI: extra-cmake-modules is NOT installed --------
-#
-# ci.yml installs extra-cmake-modules (ECM) via `dnf install`. This image
-# does not provide it, and we are deliberately not building it from source
-# here: this environment has no reachable distro package repository (see
-# above), and the project decided to use the stock aswf image as-is rather
-# than carry a from-source build of one package. A from-source build
-# of ECM v5.116.0 was prototyped and confirmed to work (see below) before
-# this decision was made to cut it.
-#
-# Concrete consequence for local builds: CMakeLists.txt (around line 114)
-# does, under `if(UNIX AND NOT APPLE)`:
-#   find_package(ECM NO_MODULE)
-#   set(CMAKE_MODULE_PATH ${ECM_MODULE_PATH} ${CMAKE_MODULE_PATH})
-#   find_package(X11 REQUIRED)
-#   find_package(Wayland COMPONENTS Client Egl)
-# ECM ships find-modules/FindWayland.cmake, which is what lets the
-# find_package(Wayland ...) call above succeed. Without ECM installed,
-# ECM_MODULE_PATH is empty and CMake has no FindWayland module on its path.
-# Neither find_package(ECM ...) nor find_package(Wayland ...) is REQUIRED,
-# so this does NOT break the configure step or the build -- it just silently
-# resolves Wayland support to off in a local build, while CI (which does
-# install ECM) configures with Wayland support on. wayland-devel itself IS
-# installed in this image, so this is purely a missing-build-tool gap, not a
-# real absence of Wayland on the system. Keep this in mind when comparing
-# local build results/behavior against CI -- it is a silent difference, not
-# a build failure, so it's easy to miss.
-#
-# How to close this gap if it ever matters: install extra-cmake-modules from
-# EPEL (not reachable from this environment, but may be elsewhere), or build
-# it from github.com/KDE/extra-cmake-modules directly. v5.116.0 (the final
-# KDE Frameworks 5 (KF5) release of ECM, Nov 2023 -- matching what EPEL 9's
-# KF5-era extra-cmake-modules package would pull into ci.yml's GitHub
-# runner) was verified to build cleanly with this image's own cmake/ninja,
-# to ship find-modules/FindWayland.cmake, and to result in a configure where
-# Wayland_FOUND=TRUE.
 
 # --- Local-only additions (not part of CI's package list) ------------------
 # ccache, ninja, and gdb are already present in this base image (ccache and

@@ -33,14 +33,21 @@
 # stdin prompt after sourcing the script and never returns, which would
 # hang CI indefinitely.
 #
-# Deliberately, this script does NOT define a top-level
-#     def createInstance(app, group):
-# function. If it did, Natron would `import` it as a module instead of
-# executing it directly (see AppInstance::loadPythonScript() in
-# Engine/AppInstance.cpp), and an imported module does not have access to
-# the "app" variable that Natron pre-declares for directly-executed
-# scripts (see Documentation/source/devel/natronexecution.rst). This
-# script relies on that pre-declared `app` variable below.
+# Deliberately, this script does NOT define a top-level createInstance()
+# function -- and, just as deliberately, does not spell that name with a
+# preceding "def " anywhere in its text, not even inside a comment.
+# AppInstance::loadPythonScript() (Engine/AppInstance.cpp) chooses how to
+# run this file with a plain content.contains() search for the text "def"
+# followed by "createInstance", over the whole file, comments included, so
+# a passing mention is indistinguishable from a real definition. On a
+# match, Natron
+# `import`s the file as a module instead of executing it directly, and an
+# imported module does not have access to the "app" variable that Natron
+# pre-declares for directly-executed scripts (see
+# Documentation/source/devel/natronexecution.rst). This script relies on
+# that pre-declared `app` variable below, and -- see the NOTE further down
+# -- the two branches also differ in whether a SystemExit from this file
+# can reach the process exit status at all.
 #
 # It exercises two aspects of the PySide6/Shiboken6 binding surface
 # implicated in https://github.com/NatronGitHub/Natron/issues/854 (see
@@ -86,26 +93,59 @@
 #
 # NOTE on how a Python-level failure here becomes a non-zero *process*
 # exit code (this matters, so a future editor doesn't "simplify" it away):
-# Since this script has no createInstance(app, group) function, Natron
-# executes it with CPython's PyRun_SimpleString(), and neither
+# raising is not enough, and neither is sys.exit(). Neither
 # PyRun_SimpleString()'s return value nor loadPythonScript()'s return
 # value is checked anywhere in Natron's caller chain in background-autorun
-# mode. A plain uncaught exception (e.g. AssertionError) would just be
-# printed by Natron's own PyErr_Print() call and swallowed -- the process
-# would still exit 0. The one exception CPython treats specially is
-# SystemExit: PyErr_Print() -> PyErr_PrintEx() calls handle_system_exit(),
-# which calls Py_Exit(code), which calls the C library exit(code)
-# immediately, terminating the whole process right there with that exit
-# code. So every failure path below must end in sys.exit(1) (raised via
-# SystemExit), not just an uncaught exception.
+# mode, so a plain uncaught exception (e.g. AssertionError) is printed and
+# swallowed and the process still exits 0. SystemExit is the one exception
+# CPython treats specially -- PyErr_Print() -> PyErr_PrintEx() calls
+# handle_system_exit(), which calls Py_Exit(code) -- but that chain is
+# only reached on the direct-execution branch described above. On the
+# module-import branch, Natron runs `import <module>` through
+# NATRON_PYTHON_NAMESPACE::interpretPythonScript() (Engine/AppManager.cpp),
+# which calls PyRun_String() and then PyErr_Fetch()es the pending
+# exception in order to format it into a std::string -- and PyErr_Fetch()
+# clears the error indicator. PyErr_Print() never runs, the SystemExit is
+# reported as an ordinary printed traceback, and Natron carries on to
+# render the project's write nodes, so the process exit status ends up
+# describing that unrelated render rather than this script's verdict.
+# That is not a hypothetical: this file used to spell that definition out
+# in the comment above, took the import branch because of it, printed
+# "SMOKE TEST FAILED", and exited 0.
+#
+# Keeping the substring out of this file restores the direct branch and
+# with it sys.exit(), but that would leave CI's only pass/fail signal at
+# the mercy of a comment. So both exits below go through _exit() ->
+# os._exit() instead, which sets the process exit status unconditionally
+# and identically on either branch.
 from __future__ import print_function
 
 import os
 import struct
+import subprocess
 import sys
 import tempfile
 import traceback
 import zlib
+
+# Scene-linear 0.18 -- the standard 18% mid-grey -- and the 8-bit code
+# value it lands on once encoded into an sRGB PNG. SRGB_GREY_CODE is
+# measured through the plug-in bundle under test, not derived from the
+# sRGB formula: it is what the reader's decode and the writer's encode
+# actually produce end to end.
+SCENE_LINEAR_GREY = 0.18
+SRGB_GREY_CODE = 118
+# Loose enough to absorb a rounding wobble in either transform, far too
+# tight for the failure this exists to catch: drop the sRGB encode (or
+# substitute a scene-linear role for a colorspace that failed to resolve)
+# and the same pixel lands on 46, a 2.5x error.
+SRGB_GREY_TOLERANCE = 2
+
+# The OCIO config Natron picks for itself when nothing in the environment
+# picks one for it (Engine/Settings.cpp's NATRON_DEFAULT_OCIO_CONFIG_NAME).
+# Natron exports it as an "ocio://" URI; OpenColorIO reports the config it
+# resolved to under the same name minus the scheme.
+DEFAULT_OCIO_CONFIG = "studio-config-v4.0.0_aces-v2.0_ocio-v2.5"
 
 
 def _mark(msg):
@@ -144,6 +184,32 @@ def _write_solid_png(path, width, height, rgb):
         f.write(chunk(b"IHDR", ihdr))
         f.write(chunk(b"IDAT", zlib.compress(raw, 9)))
         f.write(chunk(b"IEND", b""))
+
+
+def _write_solid_exr(path, width, height, value):
+    """Write a solid scene-linear half-float EXR, via oiiotool.
+
+    Generated at test time rather than committed next to this script: a
+    binary fixture would have to be taken on trust, whereas this states
+    the pixel value the assertion is about in the same file as the
+    assertion. oiiotool ships in the CI container alongside the openfx-io
+    plug-ins under test, so its absence is an environment failure and is
+    reported as one -- this case must never quietly skip itself, since a
+    skipped colour check looks exactly like a passing one.
+    """
+    size = "%dx%d" % (width, height)
+    cmd = ["oiiotool",
+           "--create", size, "3",
+           "--fill:color=%r,%r,%r" % (value, value, value), size,
+           "-d", "half",
+           "-o", path]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if proc.returncode != 0 or not os.path.exists(path):
+        raise AssertionError(
+            "%s exited %d and did not produce a usable EXR at %r: %s"
+            % (" ".join(cmd), proc.returncode, path,
+               proc.stdout.decode("utf-8", "replace").strip())
+        )
 
 
 def check_pyside6_bindings():
@@ -286,6 +352,92 @@ def check_app_render_with_task_list():
     _mark("[smoke] OK: app.render([(writer, 1, 1)]) rendered %r" % (out_path,))
 
 
+def check_default_ocio_config():
+    """Check the colour checks below run on Natron's own default OCIO config.
+
+    tools/ci/local/test.sh leaves OCIO unset so that Settings.cpp's default
+    resolution is what gets exercised. Nothing else would notice if that
+    resolution broke: with OCIO unset, OpenColorIO falls back to a built-in
+    config of its own that encodes sRGB just as correctly, so the code value
+    asserted below would still come out right.
+
+    os.environ cannot answer this. CPython snapshots the environment when the
+    interpreter starts, which is before Natron's qputenv(), so os.environ still
+    reports OCIO as unset here. CreateFromEnv() reads it through getenv(), the
+    same way the plug-ins do.
+    """
+    import PyOpenColorIO as ocio
+
+    name = ocio.Config.CreateFromEnv().getName()
+    _mark("[smoke] active OCIO config: %r" % (name,))
+    if name != DEFAULT_OCIO_CONFIG:
+        raise AssertionError(
+            "the active OpenColorIO config is %r, expected %r. Either "
+            "Settings::tryLoadOpenColorIOConfig() no longer resolves Natron's "
+            "default config, or something in the environment overrode it -- "
+            "in both cases the colour check below is no longer testing what "
+            "ships." % (name, DEFAULT_OCIO_CONFIG)
+        )
+
+
+def check_exr_to_png_colorspace():
+    """Render scene-linear EXR -> 8-bit sRGB PNG and check the code value.
+
+    The PNG -> PNG render above cannot see a colour bug at all: reader and
+    writer sit on opposite ends of the same transform there, so getting
+    that transform wrong cancels out and the output is byte-identical to
+    the input either way. Crossing formats breaks the symmetry -- the
+    reader is asked to decode a linear EXR and the writer to encode an
+    8-bit sRGB PNG, so only one of the two can be silently wrong -- which
+    is what makes the single code value asserted here meaningful. This is
+    the check that would have caught substituting OCIO's scene_linear role
+    for every colorspace that failed to resolve: the render still
+    succeeds, every image just comes out 2.5x too dark.
+    """
+    from PySide6 import QtGui
+
+    tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-exr-")
+    in_path = os.path.join(tmpdir, "linear.exr")
+    out_path = os.path.join(tmpdir, "encoded.png")
+    _write_solid_exr(in_path, 16, 16, SCENE_LINEAR_GREY)
+    _mark("[smoke] wrote %r scene-linear input EXR at %r"
+          % (SCENE_LINEAR_GREY, in_path))
+
+    reader = app.createReader(in_path)
+    if reader is None:
+        raise AssertionError("app.createReader(%r) returned None" % (in_path,))
+    writer = app.createWriter(out_path)
+    if writer is None:
+        raise AssertionError("app.createWriter(%r) returned None" % (out_path,))
+    if not writer.connectInput(0, reader):
+        raise AssertionError(
+            "Effect.connectInput(0, reader) failed for the EXR -> PNG case")
+
+    _mark("[smoke] calling app.render([(writer, 1, 1)]) for EXR -> PNG...")
+    app.render([(writer, 1, 1)])
+
+    img = QtGui.QImage(out_path)
+    if img.isNull():
+        raise AssertionError(
+            "app.render() produced no decodable PNG at %r" % (out_path,))
+    code = img.pixelColor(img.width() // 2, img.height() // 2).red()
+    _mark("[smoke] scene-linear %r -> PNG code value %d (expected %d +/- %d)"
+          % (SCENE_LINEAR_GREY, code, SRGB_GREY_CODE, SRGB_GREY_TOLERANCE))
+    if abs(code - SRGB_GREY_CODE) > SRGB_GREY_TOLERANCE:
+        raise AssertionError(
+            "scene-linear %r rendered from EXR to 8-bit PNG landed on code "
+            "value %d, expected %d +/- %d. The colour pipeline is not doing "
+            "what it should: %d is what an unencoded linear value quantised "
+            "straight into an 8-bit container looks like, and is the "
+            "signature of a colorspace that silently resolved to a linear "
+            "role instead of to a display encoding."
+            % (SCENE_LINEAR_GREY, code, SRGB_GREY_CODE, SRGB_GREY_TOLERANCE,
+               round(SCENE_LINEAR_GREY * 255))
+        )
+    _mark("[smoke] OK: EXR -> PNG colour transform intact, rendered %r"
+          % (out_path,))
+
+
 def main():
     _mark("[smoke] script started")
 
@@ -300,6 +452,8 @@ def main():
 
     check_pyside6_bindings()
     check_app_render_with_task_list()
+    check_default_ocio_config()
+    check_exr_to_png_colorspace()
 
     # NOTE: not covered here -- PyGuiApplication::addMenuCommand()
     # (Gui/PyGlobalGui.h, bound in Gui/typesystem_natronGui.xml), which
@@ -324,16 +478,38 @@ def main():
     # added speculatively -- see M2.P3.T1a's report for details.
 
 
+def _exit(code):
+    """End the process with `code`, immediately and unconditionally.
+
+    See the NOTE in the module docstring for why sys.exit() cannot be
+    trusted to do this from inside Natron's embedded interpreter.
+    os._exit() does not raise anything for Natron to catch, format and
+    discard: it goes straight to the C library's _exit(), so the status it
+    is handed is the status CI sees, and nothing Natron would otherwise go
+    on to do -- notably rendering the write nodes this script left in the
+    project -- gets a chance to overwrite the verdict. Both streams are
+    flushed first, since _exit() does not flush.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
+
+
 # Natron sources this file directly with PyRun_SimpleString() (see module
 # docstring above) -- it is never imported as a module -- so just run
 # unconditionally rather than gating on `if __name__ == "__main__"`.
+#
+# BaseException rather than Exception: anything at all that escapes main()
+# has to end up red, including a SystemExit raised out of code this script
+# calls, which under `except Exception` would sail past this handler and
+# be swallowed by Natron exactly as described in the NOTE.
 try:
     main()
-except Exception:
+except BaseException:
     traceback.print_exc()
     sys.stderr.flush()
     _mark("\n[smoke] SMOKE TEST FAILED")
-    sys.exit(1)
+    _exit(1)
 else:
     _mark("\n[smoke] SMOKE TEST PASSED")
-    sys.exit(0)
+    _exit(0)

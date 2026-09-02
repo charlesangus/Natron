@@ -25,6 +25,10 @@ pkg_check_modules(Cairo REQUIRED IMPORTED_TARGET cairo fontconfig)
 # is put on NatronEngine's PUBLIC link interface below, so every directory
 # that links NatronEngine (Renderer, Gui, Tests, App) needs it visible too.
 find_package(Freetype 2.13 REQUIRED)
+# The default OCIO config Settings.cpp selects is a built-in one, and the
+# "ocio-v2.5" half of its identifier is the version of the built-in registry it
+# first appears in -- an older OpenColorIO builds fine but cannot resolve it.
+find_package(OpenColorIO 2.5 REQUIRED)
 
 file(GLOB NatronEngine_HEADERS *.h)
 file(GLOB NatronEngine_SOURCES *.cpp)
@@ -54,10 +58,6 @@ add_custom_command(OUTPUT ${PyEngine_SOURCES}
 
 if(UNIX AND NOT APPLE)
     set(XDG_LIBS ${X11_LIBRARIES})
-    if(Wayland_FOUND)
-        set(XDG_LIBS Wayland::Client Wayland::Egl ${XDG_LIBS})
-        set(XDG_DEFS __NATRON_WAYLAND__)
-    endif()
 endif()
 
 
@@ -83,6 +83,7 @@ target_link_libraries(NatronEngine
     PRIVATE
         ${SHIBOKEN_LIB}
         ${PYSIDE_LIB}
+        OpenColorIO::OpenColorIO
         Qt::Core
         Qt::Concurrent
         Qt::Network
@@ -131,5 +132,4 @@ target_compile_definitions(NatronEngine
         NATRON_CUSTOM_BUILD_USER_TOKEN="${BUILD_USER_NAME}"
         NATRON_BUILD_NUMBER=0
         QT_NO_KEYWORDS
-        ${XDG_DEFS}
 )

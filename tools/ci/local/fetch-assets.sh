@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 #
-# Prepare the two external assets the test suite needs: the
-# OpenColorIO-Configs tarball, and the openfx-io OFX plugin bundle that
-# Tests/BaseTest.cpp loads through OFX_PLUGIN_PATH.
+# Prepare the external assets the test suite and Natron's shipped plugin set
+# need: the OpenColorIO-Configs tarball, the openfx-io OFX plugin bundle that
+# Tests/BaseTest.cpp loads through OFX_PLUGIN_PATH, and the openfx-misc OFX
+# plugin bundles that ship with Natron but that no test currently loads --
+# openfx-misc is built here so CI proves it still builds against the pinned
+# toolchain, the same way the rest of Natron is proven to build.
 #
 # Result (idempotent, safe to re-run):
 #   build/assets/OpenColorIO-Configs/
 #   build/assets/Plugins/IO.ofx.bundle/
+#   build/assets/Plugins/Misc.ofx.bundle/
+#   build/assets/Plugins/CImg.ofx.bundle/
 #
 # A second run does no network or compile work if both targets already look
 # complete and the plugin stamp matches the pins below.
@@ -35,6 +40,12 @@
 # IO.ofx self-contained, so neither this script, test.sh, nor CI has to
 # manage an LD_LIBRARY_PATH for it. Verified: the built IO.ofx has no
 # libSeExpr entry in DT_NEEDED.
+#
+# openfx-misc is built the same way and needs no fork: unlike openfx-io it
+# has no dependency on OIIO/OCIO/SeExpr and no CMakeLists.txt bug, so upstream
+# builds clean against this container as-is. It does have one prerequisite
+# its own CMakeLists.txt doesn't handle -- see the comment above the
+# openfx-misc build step below.
 #
 # This script therefore DOES do compile work now, which is the main reason
 # it (like build.sh/test.sh) runs INSIDE the dev container, re-execing
@@ -117,25 +128,45 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Plugins (openfx-io, built from source against this container's libraries)
+# Plugins (openfx-io and openfx-misc, built from source against this
+# container's libraries)
 # ---------------------------------------------------------------------------
 #
-# Both pins are exact commit SHAs, not branches or tags: this bundle is a
-# test fixture, and a fixture that silently changes under you turns an
-# unrelated upstream commit into a mystery CI failure on your PR. Bump them
-# deliberately, and re-run this script (it rebuilds when the stamp below no
-# longer matches).
+# All pins are exact commit SHAs, not branches or tags: this bundle is a
+# test fixture (openfx-io) or a build-health check (openfx-misc), and either
+# one silently changing under you turns an unrelated upstream commit into a
+# mystery CI failure on your PR. Bump them deliberately, and re-run this
+# script (it rebuilds when the stamp below no longer matches).
 #
-# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, two commits ahead of
-# NatronGitHub/openfx-io and zero behind. The delta is one CMakeLists.txt fix
-# (SEEXPR2_INCLUDES/SEEXPR2_LIBRARIES -> SEEXPR2_INCLUDE_DIR/SEEXPR2_LIBRARY):
-# upstream reads variable names its own FindSeExpr2.cmake never sets, so the
-# SeExpr sources compiled but IO.ofx was never linked against libSeExpr, and
-# the bundle failed to load with `undefined symbol: _ZTI11SeExprFuncX`.
-# Undefined symbols in a shared library don't fail a link by default, which
-# is why this went unnoticed upstream. Fork-and-fix is the standing pattern
-# for small changes to NatronGitHub repos -- see
-# PLAN/DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md.
+# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, four commits ahead of
+# NatronGitHub/openfx-io and zero behind. Fork-and-fix is the standing
+# pattern for small changes to NatronGitHub repos -- see
+# PLAN/DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md. Two deltas:
+#
+# 1. A CMakeLists.txt fix (SEEXPR2_INCLUDES/SEEXPR2_LIBRARIES ->
+#    SEEXPR2_INCLUDE_DIR/SEEXPR2_LIBRARY): upstream reads variable names its
+#    own FindSeExpr2.cmake never sets, so the SeExpr sources compiled but
+#    IO.ofx was never linked against libSeExpr, and the bundle failed to load
+#    with `undefined symbol: _ZTI11SeExprFuncX`. Undefined symbols in a shared
+#    library don't fail a link by default, which is why this went unnoticed
+#    upstream.
+#
+# 2. Colorspace resolution in IOSupport/GenericOCIO.cpp, which is what lets
+#    the bundle work against Natron's default OCIO config
+#    (ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5). Reader and writer
+#    colorspace parameter defaults are computed at describe time and were
+#    never checked against the config actually loaded, so on any config that
+#    defines no `default` role -- every ACES config -- a fresh project failed
+#    to render with `Color space 'default' could not be found.` The fix
+#    guards canonicalizeColorSpace()'s -1 "not found" sentinel (which
+#    otherwise compares equal to the -1 of an undefined role), falls back to
+#    scene_linear rather than to colorspace 0 (display-referred in the ACES
+#    configs), and teaches the fallback chains the ACES spellings
+#    `sRGB - Display` and `Camera Rec.709`. Against the older tarball configs
+#    this is a no-op: renders are byte-identical either side of it.
+#
+# The -1 sentinel guard is the first of the two commits and is deliberately
+# self-contained, so it can be offered upstream on its own.
 #
 # Verified to build clean against the image's OIIO 3.1.16.0 / OCIO 2.5.2 /
 # OpenEXR 3.4.15 -- openfx-io carries explicit `#if OIIO_VERSION >= 30000`
@@ -148,20 +179,30 @@ fi
 # openfx-io's own CI pins the same branch. Not forked -- wdas/SeExpr is not
 # a NatronGitHub repo and we carry no changes to it.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="59318530ed1c6b78e6a85dc7c4cf60366520ba7f"
+OPENFX_IO_REF="40764b207277d42c8c6a9060f6fc40c2eab80b7f"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
+
+# OPENFX_MISC_REF: NatronGitHub/openfx-misc, upstream directly -- not forked.
+# Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
+# it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
+# this container with no source changes needed. (If that ever stops being
+# true, fork it the same way -- see
+# PLAN/DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md -- rather than
+# patching it from this script.)
+OPENFX_MISC_REPO="https://github.com/NatronGitHub/openfx-misc.git"
+OPENFX_MISC_REF="0abd46b5a8cbc98fa24579042129460d0aa87b8f"
 
 PLUGINS_TARGET="${ASSETS_DIR}/Plugins"
 PLUGINS_SRC_DIR="${ASSETS_DIR}/plugin-src"
 PLUGINS_STAMP="${PLUGINS_TARGET}/.natron-plugin-pins"
-PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF}"
+PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPENFX_MISC_REF}"
 
 if [ -f "${PLUGINS_STAMP}" ] && [ "$(cat "${PLUGINS_STAMP}")" = "${PLUGINS_WANT}" ]; then
     echo "[Plugins] already built at the pinned refs -- skipping."
     echo "[Plugins]   ${PLUGINS_WANT}"
 else
-    echo "[Plugins] building openfx-io from source..."
+    echo "[Plugins] building openfx-io and openfx-misc from source..."
     echo "[Plugins]   ${PLUGINS_WANT}"
 
     mkdir -p "${PLUGINS_SRC_DIR}"
@@ -184,8 +225,9 @@ else
         git -C "${dest}" submodule update -q --init --recursive --depth 1
     }
 
-    clone_at_ref "${OPENFX_IO_REPO}" "${OPENFX_IO_REF}" "${PLUGINS_SRC_DIR}/openfx-io"
-    clone_at_ref "${SEEXPR_REPO}"    "${SEEXPR_REF}"    "${PLUGINS_SRC_DIR}/SeExpr"
+    clone_at_ref "${OPENFX_IO_REPO}"   "${OPENFX_IO_REF}"   "${PLUGINS_SRC_DIR}/openfx-io"
+    clone_at_ref "${SEEXPR_REPO}"      "${SEEXPR_REF}"      "${PLUGINS_SRC_DIR}/SeExpr"
+    clone_at_ref "${OPENFX_MISC_REPO}" "${OPENFX_MISC_REF}" "${PLUGINS_SRC_DIR}/openfx-misc"
 
     # --- SeExpr ------------------------------------------------------------
     # The sed is openfx-io's own CI recipe: drop the editor/demos/tests/doc
@@ -236,18 +278,66 @@ else
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     cmake --build "${IO_BUILD}" -j "$(nproc)"
 
-    # openfx-io's install target already emits the OFX bundle layout
-    # (IO.ofx.bundle/Contents/{Linux-x86-64,Resources,Info.plist}), which is
-    # exactly what OFX_PLUGIN_PATH expects -- no hand-assembly needed.
+    # --- openfx-misc ---------------------------------------------------------
+    # openfx-misc's CMakeLists.txt globs CImg/CImg.h and
+    # CImg/Inpaint/inpaint.h as sources for the CImg.ofx target, but never
+    # fetches them -- it assumes they're already there. Upstream's own
+    # Makefile build (not the CMake build CI uses) has rules that curl both
+    # files from dtschump/CImg and patch inpaint.h for abort support; CMake
+    # has no equivalent, so a plain `cmake --build` links Misc.ofx (it doesn't
+    # need CImg.h) and then fails partway through CImg.ofx with a "no such
+    # file" on Inpaint/inpaint.h. We replicate upstream's two curl calls and
+    # the patch, sourcing the CImg commit from openfx-misc's own
+    # CImg/Makefile rather than pinning it separately here -- that keeps it
+    # locked to whatever openfx-misc's own recipe expects at OPENFX_MISC_REF,
+    # so it can never drift out of sync when that ref is bumped.
+    echo "[Plugins] building openfx-misc..."
+    MISC_SRC="${PLUGINS_SRC_DIR}/openfx-misc"
+    MISC_BUILD="${MISC_SRC}/build"
+
+    CIMG_VERSION="$(sed -n 's/^CIMGVERSION=//p' "${MISC_SRC}/CImg/Makefile")"
+    if [ -z "${CIMG_VERSION}" ]; then
+        echo "[Plugins] ERROR: could not read CIMGVERSION from ${MISC_SRC}/CImg/Makefile" >&2
+        exit 1
+    fi
+    # -f (fail on HTTP error) matters here: without it, a 404 writes GitHub's
+    # HTML error page to CImg.h/inpaint.h instead of failing the fetch, and
+    # the build then dies confusingly deep in a C++ parse error instead of a
+    # clear "couldn't fetch" message.
+    curl -fsS -o "${MISC_SRC}/CImg/CImg.h" \
+        "https://raw.githubusercontent.com/dtschump/CImg/${CIMG_VERSION}/CImg.h"
+    curl -fsS -o "${MISC_SRC}/CImg/Inpaint/inpaint.h" \
+        "https://raw.githubusercontent.com/dtschump/CImg/${CIMG_VERSION}/plugins/inpaint.h"
+    patch -p0 -d "${MISC_SRC}/CImg" < "${MISC_SRC}/CImg/Inpaint/inpaint.h.patch" > /dev/null
+
+    rm -rf "${MISC_BUILD}"
+    cmake -S "${MISC_SRC}" -B "${MISC_BUILD}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_PREFIX_PATH=/usr/local \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    cmake --build "${MISC_BUILD}" -j "$(nproc)"
+
+    # Both projects' install targets already emit the OFX bundle layout
+    # (<Name>.ofx.bundle/Contents/{Linux-x86-64,Resources,Info.plist}), which
+    # is exactly what OFX_PLUGIN_PATH expects -- no hand-assembly needed.
+    # openfx-misc's CMakeLists.txt installs two bundles (Misc.ofx.bundle and
+    # CImg.ofx.bundle) into the same prefix as IO.ofx.bundle; the rm -rf
+    # happens once, before either --install, so a run interrupted between the
+    # two never leaves PLUGINS_TARGET in a mixed old/new state.
     rm -rf "${PLUGINS_TARGET}"
     mkdir -p "${PLUGINS_TARGET}"
     cmake --install "${IO_BUILD}" --prefix "${PLUGINS_TARGET}" > /dev/null
+    cmake --install "${MISC_BUILD}" --prefix "${PLUGINS_TARGET}" > /dev/null
 
     IO_OFX="${PLUGINS_TARGET}/IO.ofx.bundle/Contents/Linux-x86-64/IO.ofx"
-    if [ ! -f "${IO_OFX}" ]; then
-        echo "[Plugins] ERROR: build produced no ${IO_OFX}" >&2
-        exit 1
-    fi
+    MISC_OFX="${PLUGINS_TARGET}/Misc.ofx.bundle/Contents/Linux-x86-64/Misc.ofx"
+    CIMG_OFX="${PLUGINS_TARGET}/CImg.ofx.bundle/Contents/Linux-x86-64/CImg.ofx"
+    for ofx in "${IO_OFX}" "${MISC_OFX}" "${CIMG_OFX}"; do
+        if [ ! -f "${ofx}" ]; then
+            echo "[Plugins] ERROR: build produced no ${ofx}" >&2
+            exit 1
+        fi
+    done
 
     # Fail loudly here rather than let BaseTest fail with the far less
     # informative "Couldn't find a plugin attached to the ID ...". These are

@@ -33,7 +33,7 @@ producing wrong work — by humans and by agents.
     returns nothing; every command the file names exists and runs.
   - size: S
 
-- [ ] M12.P1.T2 — Salvage the maintainer docs' non-recoverable knowledge
+- [x] M12.P1.T2 — Salvage the maintainer docs' non-recoverable knowledge
   - files: new `docs/maintainer-notes.md`
   - approach: capture, verbatim with provenance, only the passages the audits
     classed as knowledge NOT derivable from the code — design rationale,

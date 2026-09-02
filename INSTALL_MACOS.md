@@ -7,7 +7,7 @@ OS X 10.6 (a.k.a. Snow Leopard) and newer are supported when building with MacPo
 
 ## Official Natron binaries
 
-The official Natron and plugins binaries are built using the section about MacPorts in these instructions to prepare the system, and the `launchBuildMain.sh` build script found in the `tools/jenkins` directory. The script takes care of everything, from checking out sources, to compiling and packaging.
+The official Natron and plugins binaries were built using the section about MacPorts in these instructions to prepare the system, and a `launchBuildMain.sh` Jenkins build script that took care of everything, from checking out sources, to compiling and packaging. That script is no longer part of this repository.
 
 These binaries are built on an OS X 10.9 (Mavericks) virtual machine with [Xcode 6.2](https://developer.apple.com/devcenter/download.action?path=/Developer_Tools/Xcode_6.2/Xcode_6.2.dmg). Note that [Mavericks can not be downloaded anymore from the 10.14 (High Sierra) App Store](https://www.macworld.co.uk/how-to/mac-software/download-old-os-x-3629363/), so you will need to use a Mac with an older system (up to 10.13), or look for [alternatives](https://applehint.com/t/download-all-macos-x-10-4-10-14-original/376).
 
@@ -154,10 +154,12 @@ gsed -e s@libdir=lib@libdir=\${prefix}/lib@ -i /usr/local/opt/pyside\@2/lib/pkgc
 
 #### Python2 (optional)
 
-Install Python 2.7 (yes, we know it's deprecated).
+Install Python 2.7 (yes, we know it's deprecated). This requires the custom
+`python@2.rb` Homebrew formula that used to ship in this repository's
+now-removed Homebrew formula directory, so a formula from another source is
+needed.
 ```Shell
 brew uninstall python@2 || true
-cp tools/homebrew/python@2.rb $( brew --prefix )/Homebrew/Library/Taps/homebrew/homebrew-core/Formula/python@2.rb
 brew install -s python@2
 ```
 
@@ -227,15 +229,13 @@ brew install pyside@2
 ```
 
 
- To install the [openfx-io](https://github.com/NatronGitHub/openfx-io) and [openfx-misc](https://github.com/NatronGitHub/openfx-misc) sets of plugin, you also need the following:
+ To install the [openfx-io](https://github.com/NatronGitHub/openfx-io) and [openfx-misc](https://github.com/NatronGitHub/openfx-misc) sets of plugin, you also need the following. This used to rely on custom `opencolorio@1.rb` and `seexpr@2.rb` Homebrew formulas that shipped in this repository's now-removed Homebrew formula directory, so formulas from another source are needed.
 
 ```Shell
 brew install ilmbase openexr freetype fontconfig ffmpeg
 brew unlink openimageio || true;
 brew unlink opencolorio || true;
 brew unlink seexpr || true;
-cp tools/homebrew/opencolorio@1.rb $( brew --prefix )/Homebrew/Library/Taps/homebrew/homebrew-core/Formula
-cp tools/homebrew/seexpr@2.rb $( brew --prefix )/Homebrew/Library/Taps/homebrew/homebrew-core/Formula
 brew install -s opencolorio@1
 brew unlink qt@4
 brew install -s seexpr@2
@@ -307,10 +307,8 @@ make install
 ## macOS packaging tools
 
 In addition to the compile-time dependencies above, building the distributable
-`.dmg` with `tools/jenkins/launchBuildMain.sh` requires a few extra tools. They
-are verified early by the build script (the `PKGOS = OSX` check in
-`launchBuildMain.sh`), so a missing tool fails fast with a clear message instead
-of after a multi-hour build:
+`.dmg` used to require a few extra tools, checked for by a `launchBuildMain.sh`
+Jenkins build script that is no longer part of this repository:
 
 - **dmgbuild** — writes the DMG window background and icon layout directly into
   the disk image's `.DS_Store`, without driving Finder (the old AppleScript

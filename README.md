@@ -104,18 +104,12 @@ For each architecture / operating system, you can either download a stable relea
 
 There are instructions for building Natron and the basic plugins from source is this directory on various architectures / operating systems:
 
-- [GNU/Linux](INSTALL_LINUX.md)
+- [GNU/Linux](tools/ci/local/README.md)
 - [macOS](INSTALL_MACOS.md)
 - [FreeBSD](INSTALL_FREEBSD.md)
 - [Windows](INSTALL_WINDOWS.md)
 
 This documentation may be slightly outdated, so do not hesitate to submit updated build instructions, especially for the various GNU/Linux distributions.
-
-### Automatic build scripts & other development tools
-
-These can be found in [tools/README.md](tools/README.MD)
-
-These scripts run on virtual machines running a specific operating system, setting these up is more complicated than the basic build process linked above.
 
 ## Contributing
 

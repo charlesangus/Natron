@@ -281,8 +281,6 @@ natron-python.xcodeproj/
 natron-python.xcodeproj/
 ofxTestLog.txt
 test_dot_generator0.jpg
-tools/normalize/normalize
-tools/normalize/normalize.xcodeproj/
 tools/utils/generateGLIncludes
 tools/utils/generateGLIncludes.pro.user
 tools/utils/generateGLIncludes.xcodeproj/

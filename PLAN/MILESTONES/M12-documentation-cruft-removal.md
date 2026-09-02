@@ -119,7 +119,7 @@ producing wrong work — by humans and by agents.
     path.
   - size: S
 
-- [ ] M12.P2.T3 — Delete orphaned and checked-in artifacts
+- [x] M12.P2.T3 — Delete orphaned and checked-in artifacts
   - files: `Documentation/{Presentation.md,TuttleOFX-README.txt,ofxActionsSupported.rtf,ofxPropSupported.rtf,ofx_plugin_programming_guide.html}`,
     `Documentation/source/guide/tutorials-hugin.md`,
     (**not** `.github/workflows/verify_plugin_loads.cpp` — see below),
@@ -239,6 +239,24 @@ producing wrong work — by humans and by agents.
   remains in `NatronGitHub/Natron`'s history regardless of what we do; rewriting
   our history would invalidate every SHA on `main` and break the plan branch's
   recorded code SHAs for no security gain. Recorded as a project-wide decision.
+
+- 2026-09-02 — `M12.P2.T3` did NOT delete
+  `Documentation/source/guide/tutorials-hugin.md`. The brief listed it as an
+  orphan; it is not — `Documentation/source/guide/tutorials.rst:14` carries it
+  as a live `toctree` entry beside `tutorials-ffmpeg` and
+  `tutorials-svgworkflow`. It is a user-guide tutorial about a third-party
+  tool, not dead-platform or dead-build cruft, so the milestone's premise does
+  not reach it. Kept.
+
+- 2026-09-02 — `M12.P2.T3` rehomed `verify_plugin_loads.cpp` to `tools/ci/`
+  and wired it into `fetch-assets.sh`, which now dlopens each built bundle and
+  calls its `OfxGetNumberOfPlugins`/`OfxGetPlugin` pair. `Misc.ofx` and
+  `CImg.ofx` gate hard. `IO.ofx` does not: `readelf -d` shows
+  `RUNPATH=$ORIGIN/../../Libraries`, and neither this script nor openfx-io's
+  install step populates `Contents/Libraries/`, so whether a bare `dlopen`
+  resolves OCIO/OIIO/OpenEXR depends on the container's ldconfig state rather
+  than on anything the repo controls. Gating on it would fail CI for a reason
+  unrelated to the plugin. Revisit under M13, which owns the plugin surface.
 
 - 2026-09-02 — `M12.P2.T1`'s "no tracked file references a deleted path" check
   exempts `docs/decisions/`. `2026-08-31-drop-qtpy.md` cites

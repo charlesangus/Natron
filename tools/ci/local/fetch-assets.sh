@@ -12,7 +12,8 @@
 #   build/assets/Plugins/IO.ofx.bundle/
 #   build/assets/Plugins/Misc.ofx.bundle/
 #   build/assets/Plugins/CImg.ofx.bundle/
-#   build/assets/plugin-src/deps-install/  (lcms2 + libzip, for openfx-arena)
+#   build/assets/plugin-src/deps-install/  (lcms2, libzip, ImageMagick --
+#                                           for openfx-arena)
 #
 # A second run does no network or compile work if both targets already look
 # complete and the plugin stamp matches the pins below.
@@ -210,11 +211,22 @@ LCMS2_REF="453bafeb85b4ef96498866b7a8eadcc74dff9223"
 LIBZIP_REPO="https://github.com/nih-at/libzip.git"
 LIBZIP_REF="6f8a0cdd24a0dc6cce9dac4a7679da784ab124ea"
 
+# IMAGEMAGICK_REF: ImageMagick/ImageMagick at the 7.1.1-6 tag, also needed by
+# openfx-arena. Built Q32/HDRI: every Magick-based OFX plugin round-trips
+# float buffers through Magick::FloatPixel, and a non-HDRI (integer) quantum
+# would silently clip linear values on the way through. Flags are upstream
+# Natron's own (tools/jenkins/include/scripts/pkg/imagemagick7.sh as of
+# 576c2078^, before that tree was deleted), minus its CentOS-6 conditionals,
+# plus two deltas this container forces -- see the comments on the build step
+# below.
+IMAGEMAGICK_REPO="https://github.com/ImageMagick/ImageMagick.git"
+IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
+
 PLUGINS_TARGET="${ASSETS_DIR}/Plugins"
 PLUGINS_SRC_DIR="${ASSETS_DIR}/plugin-src"
 DEPS_PREFIX="${PLUGINS_SRC_DIR}/deps-install"
 PLUGINS_STAMP="${PLUGINS_TARGET}/.natron-plugin-pins"
-PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPENFX_MISC_REF} lcms2=${LCMS2_REF} libzip=${LIBZIP_REF}"
+PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPENFX_MISC_REF} lcms2=${LCMS2_REF} libzip=${LIBZIP_REF} imagemagick=${IMAGEMAGICK_REF}"
 
 # Defined unconditionally (not just in the build branch below) so both the
 # "already built -- skipping" and the "building..." paths can probe these
@@ -255,6 +267,7 @@ else
     clone_at_ref "${OPENFX_MISC_REPO}" "${OPENFX_MISC_REF}" "${PLUGINS_SRC_DIR}/openfx-misc"
     clone_at_ref "${LCMS2_REPO}"       "${LCMS2_REF}"       "${PLUGINS_SRC_DIR}/Little-CMS"
     clone_at_ref "${LIBZIP_REPO}"      "${LIBZIP_REF}"      "${PLUGINS_SRC_DIR}/libzip"
+    clone_at_ref "${IMAGEMAGICK_REPO}" "${IMAGEMAGICK_REF}" "${PLUGINS_SRC_DIR}/ImageMagick"
 
     # --- lcms2 ---------------------------------------------------------
     # `configure` is checked into the tag (not generated at release time
@@ -293,6 +306,49 @@ else
             > /dev/null
         cmake --build "${LIBZIP_BUILD}" -j "$(nproc)" > /dev/null
         cmake --install "${LIBZIP_BUILD}" > /dev/null
+    fi
+
+    # --- ImageMagick -----------------------------------------------------
+    # PKG_CONFIG_PATH points at DEPS_PREFIX first so --with-lcms resolves the
+    # lcms2 built above (the image's own liblcms2 ships no .pc, so without
+    # this configure would not find lcms2 at all rather than finding the
+    # wrong one).
+    #
+    # --without-jxl: this image's libjxl (0.12 under /usr/local) changed
+    # JxlDecoderGetColorAsICCProfile's signature and ImageMagick's
+    # coders/jxl.c does not compile against it.
+    #
+    # LDFLAGS/CPPFLAGS: the image carries FreeType 2.10.4 at /usr/lib64 and
+    # 2.13.x at /usr/local; `pkg-config freetype2` resolves the former, but
+    # /usr/local/lib/libharfbuzz.so.0 needs the latter's FT_Get_Paint*
+    # symbols. Forcing the /usr/local headers and an rpath back to
+    # /usr/local/lib is what makes the two agree. This FreeType split is an
+    # image-level property, not specific to ImageMagick -- expect it to bite
+    # any future font-touching dependency built in this container.
+    if [ ! -f "${DEPS_PREFIX}/lib/pkgconfig/Magick++.pc" ]; then
+        echo "[Plugins] building ImageMagick (Q32 HDRI)..."
+        (
+            cd "${PLUGINS_SRC_DIR}/ImageMagick"
+            env PKG_CONFIG_PATH="${DEPS_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}" \
+                CFLAGS="-DMAGICKCORE_EXCLUDE_DEPRECATED=1" \
+                CXXFLAGS="-DMAGICKCORE_EXCLUDE_DEPRECATED=1" \
+                CPPFLAGS="-I/usr/local/include/freetype2" \
+                LDFLAGS="-L/usr/local/lib -Wl,-rpath,/usr/local/lib" \
+                ./configure --prefix="${DEPS_PREFIX}" \
+                --with-magick-plus-plus=yes --with-quantum-depth=32 --enable-hdri \
+                --disable-static --enable-shared --without-modules \
+                --enable-zero-configuration --without-x \
+                --with-lcms --with-png --with-zlib --with-freetype --with-fontconfig \
+                --with-libheif --without-jxl \
+                --without-dps --without-djvu --without-fftw --without-fpx \
+                --without-gslib --without-gvc --without-jbig --without-jpeg \
+                --without-openjp2 --without-lqr --without-lzma --without-openexr \
+                --without-pango --without-rsvg --without-tiff --without-webp \
+                --without-xml --without-bzlib \
+                > /dev/null
+            make -j "$(nproc)" > /dev/null
+            make install > /dev/null
+        )
     fi
 
     # --- SeExpr ------------------------------------------------------------

@@ -184,7 +184,7 @@ producing wrong work — by humans and by agents.
     for real file types.
   - size: S
 
-- [ ] M12.P3.T4 — Delete the dead macOS and Windows GL backends
+- [x] M12.P3.T4 — Delete the dead macOS and Windows GL backends
   - files: `Engine/OSGLContext_mac.{h,cpp}`, `Engine/OSGLContext_win.{h,cpp}`,
     `Engine/CMakeLists.txt`
   - approach: code, not docs, but found by this audit and caused by the same
@@ -239,6 +239,17 @@ producing wrong work — by humans and by agents.
   remains in `NatronGitHub/Natron`'s history regardless of what we do; rewriting
   our history would invalidate every SHA on `main` and break the plan branch's
   recorded code SHAs for no security gain. Recorded as a project-wide decision.
+
+- 2026-09-02 — `M12.P3.T4` needed no `Engine/CMakeLists.txt` edit: that file
+  gathers sources with unconditional `file(GLOB *.cpp/*.h)`, so deleting the
+  four files from disk is the whole change. The task's `files` line was wrong
+  about the mechanism. Removal did require pruning the win/mac branches from
+  the dispatch chains in `Engine/OSGLContext.cpp` and the include chain and
+  WGL init/teardown in `Engine/AppManagerPrivate.{h,cpp}`; the Linux bodies
+  are byte-identical. `wglInfo`, `AppManager::getWGLData()` and the
+  `OSGLContext_wgl_data` forward declaration survive — they are gated by the
+  separate, equally dead `__NATRON_WIN32__` and belong to a Windows dead-code
+  sweep this milestone did not scope.
 
 - 2026-09-02 — two findings from `M12.P3.T1` are deliberately NOT fixed in
   M12. (a) `gh api repos/charlesangus/Natron --jq '.has_issues'` returns

@@ -198,6 +198,13 @@ PLUGINS_SRC_DIR="${ASSETS_DIR}/plugin-src"
 PLUGINS_STAMP="${PLUGINS_TARGET}/.natron-plugin-pins"
 PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPENFX_MISC_REF}"
 
+# Defined unconditionally (not just in the build branch below) so both the
+# "already built -- skipping" and the "building..." paths can probe these
+# bundles with verify_plugin_loads afterwards.
+IO_OFX="${PLUGINS_TARGET}/IO.ofx.bundle/Contents/Linux-x86-64/IO.ofx"
+MISC_OFX="${PLUGINS_TARGET}/Misc.ofx.bundle/Contents/Linux-x86-64/Misc.ofx"
+CIMG_OFX="${PLUGINS_TARGET}/CImg.ofx.bundle/Contents/Linux-x86-64/CImg.ofx"
+
 if [ -f "${PLUGINS_STAMP}" ] && [ "$(cat "${PLUGINS_STAMP}")" = "${PLUGINS_WANT}" ]; then
     echo "[Plugins] already built at the pinned refs -- skipping."
     echo "[Plugins]   ${PLUGINS_WANT}"
@@ -329,9 +336,6 @@ else
     cmake --install "${IO_BUILD}" --prefix "${PLUGINS_TARGET}" > /dev/null
     cmake --install "${MISC_BUILD}" --prefix "${PLUGINS_TARGET}" > /dev/null
 
-    IO_OFX="${PLUGINS_TARGET}/IO.ofx.bundle/Contents/Linux-x86-64/IO.ofx"
-    MISC_OFX="${PLUGINS_TARGET}/Misc.ofx.bundle/Contents/Linux-x86-64/Misc.ofx"
-    CIMG_OFX="${PLUGINS_TARGET}/CImg.ofx.bundle/Contents/Linux-x86-64/CImg.ofx"
     for ofx in "${IO_OFX}" "${MISC_OFX}" "${CIMG_OFX}"; do
         if [ ! -f "${ofx}" ]; then
             echo "[Plugins] ERROR: build produced no ${ofx}" >&2
@@ -361,6 +365,60 @@ else
 
     echo "${PLUGINS_WANT}" > "${PLUGINS_STAMP}"
     echo "[Plugins] done -> ${PLUGINS_TARGET}"
+fi
+
+# ---------------------------------------------------------------------------
+# verify_plugin_loads: dlopen() each built bundle for real and confirm it
+# exports a working OfxGetNumberOfPlugins/OfxGetPlugin pair. This catches
+# what the strings/symbol check above cannot: a bundle whose identifiers are
+# present in the binary but that fails to dlopen (missing SONAME, unresolved
+# symbol, etc).
+# ---------------------------------------------------------------------------
+VERIFY_LOADER_SRC="${REPO_ROOT}/tools/ci/verify_plugin_loads.cpp"
+VERIFY_LOADER_BIN="${PLUGINS_SRC_DIR}/verify_plugin_loads"
+HOSTSUPPORT_SRC_DIR="${REPO_ROOT}/libs/OpenFX/HostSupport/src"
+HOSTSUPPORT_INC_DIR="${REPO_ROOT}/libs/OpenFX/HostSupport/include"
+OFX_INC_DIR="${REPO_ROOT}/libs/OpenFX/include"
+OFX_EXT_DIR="${REPO_ROOT}/libs/OpenFX_extensions"
+
+mkdir -p "${PLUGINS_SRC_DIR}"
+
+# The -D list mirrors HostSupport/CMakeLists.txt's add_library(HostSupport
+# ...) PUBLIC compile definitions -- keep the two in sync if that target's
+# definitions change.
+if [ ! -x "${VERIFY_LOADER_BIN}" ] || [ "${VERIFY_LOADER_SRC}" -nt "${VERIFY_LOADER_BIN}" ]; then
+    echo "[verify_plugin_loads] building probe..."
+    g++ -std=c++20 -O2 \
+        -I "${HOSTSUPPORT_INC_DIR}" -I "${OFX_INC_DIR}" -I "${OFX_EXT_DIR}" \
+        -DOFX_EXTENSIONS_NUKE -DOFX_EXTENSIONS_TUTTLE -DOFX_EXTENSIONS_VEGAS \
+        -DOFX_SUPPORTS_PARAMETRIC -DOFX_EXTENSIONS_NATRON -DOFX_EXTENSIONS_RESOLVE \
+        -DOFX_SUPPORTS_OPENGLRENDER -DOFX_SUPPORTS_MULTITHREAD -DOFX_SUPPORTS_DIALOG \
+        "${VERIFY_LOADER_SRC}" \
+        "${HOSTSUPPORT_SRC_DIR}"/ofxh*.cpp \
+        "${OFX_EXT_DIR}/ofxhParametricParam.cpp" \
+        -lexpat -ldl \
+        -o "${VERIFY_LOADER_BIN}"
+fi
+
+# Misc.ofx and CImg.ofx are self-contained (see the "openfx-misc is built
+# the same way" note above), so a failed dlopen() here is always a real
+# regression -- fail loudly.
+for ofx in "${MISC_OFX}" "${CIMG_OFX}"; do
+    echo "[verify_plugin_loads] probing ${ofx##*/}..."
+    "${VERIFY_LOADER_BIN}" "${ofx}"
+done
+
+# IO.ofx is not: `readelf -d` shows RUNPATH=$ORIGIN/../../Libraries, but
+# neither this script nor openfx-io's own install target populates
+# Contents/Libraries/ with libOpenColorIO/libOpenImageIO/libOpenEXR/etc, so
+# a bare dlopen() only succeeds if the container's dynamic linker already
+# resolves those SONAMEs some other way (e.g. ldconfig having indexed
+# /usr/local/lib). That is true or false depending on the container, not on
+# this script, so treat the result as informational rather than gating on
+# it here.
+echo "[verify_plugin_loads] probing ${IO_OFX##*/} (informational -- see comment above)..."
+if ! "${VERIFY_LOADER_BIN}" "${IO_OFX}"; then
+    echo "[verify_plugin_loads] WARNING: ${IO_OFX##*/} did not dlopen cleanly; not failing the build for it (see comment above)." >&2
 fi
 
 echo "== fetch-assets.sh: all assets present =="

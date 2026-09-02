@@ -174,7 +174,7 @@ producing wrong work — by humans and by agents.
     with `checks.yml`.
   - size: S
 
-- [ ] M12.P3.T3 — Prune dead entries from the ignore and attribute files
+- [x] M12.P3.T3 — Prune dead entries from the ignore and attribute files
   - files: `.gitignore`, `.gitattributes`
   - approach: ~25 dead `.gitignore` entries (`config.pri` twice,
     `breakpadpro.pri`, 20 `*.xcodeproj/`); `.gitattributes` covers `*.pro`,

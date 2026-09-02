@@ -12,6 +12,7 @@
 #   build/assets/Plugins/IO.ofx.bundle/
 #   build/assets/Plugins/Misc.ofx.bundle/
 #   build/assets/Plugins/CImg.ofx.bundle/
+#   build/assets/plugin-src/deps-install/  (lcms2 + libzip, for openfx-arena)
 #
 # A second run does no network or compile work if both targets already look
 # complete and the plugin stamp matches the pins below.
@@ -193,10 +194,27 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 OPENFX_MISC_REPO="https://github.com/NatronGitHub/openfx-misc.git"
 OPENFX_MISC_REF="0abd46b5a8cbc98fa24579042129460d0aa87b8f"
 
+# LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
+# though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a
+# header, because it ships no lcms2.pc -- and openfx-arena (a later plugin
+# in this set) resolves it via pkg_search_module(LCMS2 REQUIRED lcms2).
+# Hand-writing a .pc for a library this repo doesn't build would drift
+# silently against the real image; building the pinned tag is cheaper to
+# keep honest.
+#
+# LIBZIP_REF: nih-at/libzip at the v1.11.4 tag. Absent from the image
+# entirely (no header, no library, no package) -- also needed by
+# openfx-arena.
+LCMS2_REPO="https://github.com/mm2/Little-CMS.git"
+LCMS2_REF="453bafeb85b4ef96498866b7a8eadcc74dff9223"
+LIBZIP_REPO="https://github.com/nih-at/libzip.git"
+LIBZIP_REF="6f8a0cdd24a0dc6cce9dac4a7679da784ab124ea"
+
 PLUGINS_TARGET="${ASSETS_DIR}/Plugins"
 PLUGINS_SRC_DIR="${ASSETS_DIR}/plugin-src"
+DEPS_PREFIX="${PLUGINS_SRC_DIR}/deps-install"
 PLUGINS_STAMP="${PLUGINS_TARGET}/.natron-plugin-pins"
-PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPENFX_MISC_REF}"
+PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPENFX_MISC_REF} lcms2=${LCMS2_REF} libzip=${LIBZIP_REF}"
 
 # Defined unconditionally (not just in the build branch below) so both the
 # "already built -- skipping" and the "building..." paths can probe these
@@ -235,6 +253,47 @@ else
     clone_at_ref "${OPENFX_IO_REPO}"   "${OPENFX_IO_REF}"   "${PLUGINS_SRC_DIR}/openfx-io"
     clone_at_ref "${SEEXPR_REPO}"      "${SEEXPR_REF}"      "${PLUGINS_SRC_DIR}/SeExpr"
     clone_at_ref "${OPENFX_MISC_REPO}" "${OPENFX_MISC_REF}" "${PLUGINS_SRC_DIR}/openfx-misc"
+    clone_at_ref "${LCMS2_REPO}"       "${LCMS2_REF}"       "${PLUGINS_SRC_DIR}/Little-CMS"
+    clone_at_ref "${LIBZIP_REPO}"      "${LIBZIP_REF}"      "${PLUGINS_SRC_DIR}/libzip"
+
+    # --- lcms2 ---------------------------------------------------------
+    # `configure` is checked into the tag (not generated at release time
+    # only), so no autoreconf/autogen.sh step is needed here.
+    # --disable-static: only the shared lib + .pc are needed downstream.
+    if [ ! -f "${DEPS_PREFIX}/lib/pkgconfig/lcms2.pc" ]; then
+        echo "[Plugins] building lcms2..."
+        (
+            cd "${PLUGINS_SRC_DIR}/Little-CMS"
+            ./configure --prefix="${DEPS_PREFIX}" --disable-static > /dev/null
+            make -j "$(nproc)" > /dev/null
+            make install > /dev/null
+        )
+    fi
+
+    # --- libzip ----------------------------------------------------------
+    # All optional compression backends turned off: this bundle only needs
+    # plain zip read/write, and each extra codec is another image library
+    # this build would otherwise have to trust find_package() to locate
+    # correctly.
+    if [ ! -f "${DEPS_PREFIX}/lib/pkgconfig/libzip.pc" ]; then
+        echo "[Plugins] building libzip..."
+        LIBZIP_BUILD="${PLUGINS_SRC_DIR}/libzip/build"
+        rm -rf "${LIBZIP_BUILD}"
+        cmake -S "${PLUGINS_SRC_DIR}/libzip" -B "${LIBZIP_BUILD}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${DEPS_PREFIX}" \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_REGRESS=OFF \
+            -DBUILD_EXAMPLES=OFF \
+            -DBUILD_DOC=OFF \
+            -DENABLE_BZIP2=OFF \
+            -DENABLE_LZMA=OFF \
+            -DENABLE_ZSTD=OFF \
+            > /dev/null
+        cmake --build "${LIBZIP_BUILD}" -j "$(nproc)" > /dev/null
+        cmake --install "${LIBZIP_BUILD}" > /dev/null
+    fi
 
     # --- SeExpr ------------------------------------------------------------
     # The sed is openfx-io's own CI recipe: drop the editor/demos/tests/doc

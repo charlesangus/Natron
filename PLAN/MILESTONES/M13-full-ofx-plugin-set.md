@@ -141,7 +141,7 @@ debug` and `test.sh smoke debug` both still pass.
     exactly the new assertion, with a message naming the missing plugin.
   - size: S
 
-- [ ] M13.P3.T2 — Check the expected bundle set in the smoke test
+- [x] M13.P3.T2 — Check the expected bundle set in the smoke test
   - files: `tools/ci/smoke_test.py`, `tools/ci/verify_plugin_loads.cpp`
   - approach: assert the bundle set under `OFX_PLUGIN_PATH` (`IO`, `Misc`,
     `CImg`, `Arena`) rather than enumerating plugin IDs. The failure this

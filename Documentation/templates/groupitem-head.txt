@@ -105,7 +105,6 @@
 <li class="toctree-l2"><a class="reference internal" href="_groupTransform.html">Transform nodes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="_groupViews.html">Views nodes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="_groupOther.html">Other nodes</a></li>
-<li class="toctree-l2"><a class="reference internal" href="_groupGMIC.html">GMIC nodes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="_groupExtra.html">Extra nodes</a></li>
 </ul>
 </li>

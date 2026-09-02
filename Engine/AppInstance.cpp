@@ -1425,7 +1425,6 @@ AppInstance::exportDocs(const QString path)
         groups << QString::fromUtf8(PLUGIN_GROUP_TRANSFORM);
         groups << QString::fromUtf8(PLUGIN_GROUP_MULTIVIEW);
         groups << QString::fromUtf8(PLUGIN_GROUP_OTHER);
-        groups << QString::fromUtf8("GMIC"); // openfx-gmic
         groups << QString::fromUtf8("Extra"); // openfx-arena
         QVector<QStringList> plugins;
 

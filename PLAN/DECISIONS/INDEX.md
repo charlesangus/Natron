@@ -30,3 +30,4 @@
 - 2026-09-01 — render-failure-signalling-gaps: persistent errors don't stop a render, don't store in background, and a failed render exits 0 — measured, deferred to M5 → DECISIONS/2026-09-01-render-failure-signalling-gaps.md
 - 2026-09-02 — inherited-docs-are-not-requirements: upstream docs describe upstream; accuracy today isn't the test, drift is; agent-facing files rank first → DECISIONS/2026-09-02-inherited-docs-are-not-requirements.md
 - 2026-09-02 — inherited-credential-no-history-rewrite: the upstream natron-ci credential is deleted, not purged; a rewrite breaks every SHA for zero secrecy gain → DECISIONS/2026-09-02-inherited-credential-no-history-rewrite.md
+- 2026-09-02 — openfx-gmic-source-unavailable: gmic deferred; G'MIC 2.8.4's tarball is unreachable everywhere and a version bump breaks the plugin → DECISIONS/2026-09-02-openfx-gmic-source-unavailable.md

@@ -159,7 +159,7 @@ producing wrong work — by humans and by agents.
   - verify: no claim in the file contradicts the tree; every link resolves.
   - size: S
 
-- [ ] M12.P3.T2 — Reconcile the contributor-facing process docs
+- [x] M12.P3.T2 — Reconcile the contributor-facing process docs
   - files: `CONTRIBUTING.md`, `.github/PULL_REQUEST_TEMPLATE.md`,
     `.github/ISSUE_TEMPLATE/*.yml`, `.git-hooks/pre-commit`
   - approach: `CONTRIBUTING.md` contradicts itself — L76 says use `master`,
@@ -239,6 +239,17 @@ producing wrong work — by humans and by agents.
   remains in `NatronGitHub/Natron`'s history regardless of what we do; rewriting
   our history would invalidate every SHA on `main` and break the plan branch's
   recorded code SHAs for no security gain. Recorded as a project-wide decision.
+
+- 2026-09-02 — `M12.P3.T2` kept `.git-hooks/pre-commit` rather than deleting
+  it. It now runs `git clang-format --binary <pinned> --extensions
+  c,cc,cpp,h,hpp,mm --staged --diff`, the local equivalent of `checks.yml`'s
+  `format` job (which diffs against a base rev instead of the index), and
+  warns-and-passes when `python3`/`clang-format`/`git-clang-format` are
+  absent. Advisory, not a gate substitute. Also: the templates' repo links
+  were pointing at `NatronGitHub/Natron`; they now name `charlesangus/Natron`,
+  confirmed against `git remote -v`. The `natron.readthedocs.io/en/rb-2.4/`
+  links were left alone — an external, still-live doc host, not a stale merge
+  target — but they describe a 2.4-era UI and are a candidate for M6.
 
 - 2026-09-02 — `M12.P2.T3` did NOT delete
   `Documentation/source/guide/tutorials-hugin.md`. The brief listed it as an

@@ -38,7 +38,7 @@ to a file then `grep -Fxq` — deliberately not a pipeline, since `grep -q` unde
     compiles nothing.
   - size: S
 
-- [ ] M13.P1.T2 — Build ImageMagick 7.1.1-6 with Q32/HDRI
+- [x] M13.P1.T2 — Build ImageMagick 7.1.1-6 with Q32/HDRI
   - files: `tools/ci/local/fetch-assets.sh`
   - approach: fetch `ImageMagick/ImageMagick` at the `7.1.1-6` SHA. Upstream's
     own flags no longer live in this tree — M3 deleted `tools/jenkins/`;

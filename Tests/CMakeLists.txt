@@ -54,4 +54,9 @@ target_include_directories(Tests
         google-mock/include
         google-mock
 )
-add_test(NAME Tests COMMAND Tests)
+include(GoogleTest)
+# PRE_TEST, not the default POST_BUILD: discovery runs the binary, which
+# constructs an AppManager and calls load() before RUN_ALL_TESTS() (even
+# under --gtest_list_tests), so it needs libpython3.13, OFX_PLUGIN_PATH and
+# the built OFX bundles -- all guaranteed at ctest time, not at build time.
+gtest_discover_tests(Tests DISCOVERY_MODE PRE_TEST)

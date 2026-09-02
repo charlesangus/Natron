@@ -676,11 +676,7 @@ post_gl_call(const char *name,
 void
 AppManagerPrivate::initGLAPISpecific()
 {
-#ifdef Q_OS_WIN32
-    // scoped_ptr
-    wglInfo.reset(new OSGLContext_wgl_data);
-    OSGLContext_win::initWGLData( wglInfo.get() );
-#elif defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD)
+#if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD)
     // scoped_ptr
     if (onWayland) {
         eglInfo.reset(new OSGLContext_egl_data);
@@ -689,7 +685,7 @@ AppManagerPrivate::initGLAPISpecific()
         glxInfo.reset(new OSGLContext_glx_data);
         OSGLContext_x11::initGLXData( glxInfo.get() );
     }
-#endif // Q_OS_WIN32
+#endif
 }
 
 extern "C" {
@@ -1075,11 +1071,7 @@ AppManagerPrivate::tearDownGL()
     // Kill all rendering context
     renderingContextPool.reset();
 
-#ifdef Q_OS_WIN32
-    if (wglInfo) {
-        OSGLContext_win::destroyWGLData( wglInfo.get() );
-    }
-#elif defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD)
+#if defined(Q_OS_LINUX) || defined(Q_OS_FREEBSD)
     if (eglInfo) {
         OSGLContext_wayland::destroyEGLData( eglInfo.get() );
     }

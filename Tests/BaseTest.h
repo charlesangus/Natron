@@ -92,6 +92,7 @@ protected:
     QString _generatorPluginID;
     QString _readOIIOPluginID;
     QString _writeOIIOPluginID;
+    QString _textArenaPluginID;
     std::vector<QString> _allTestPluginIDs;
     AppInstanceWPtr _app;
 };

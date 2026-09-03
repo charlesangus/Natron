@@ -1300,6 +1300,22 @@ AppManager::getTopLevelInstance () const
     return AppInstancePtr();
 }
 
+void
+AppManager::setRenderFailed()
+{
+    QMutexLocker k(&_imp->renderFailedMutex);
+
+    _imp->renderFailed = true;
+}
+
+bool
+AppManager::hasRenderFailed() const
+{
+    QMutexLocker k(&_imp->renderFailedMutex);
+
+    return _imp->renderFailed;
+}
+
 bool
 AppManager::isLoaded() const
 {

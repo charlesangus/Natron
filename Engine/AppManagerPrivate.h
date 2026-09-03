@@ -89,6 +89,13 @@ public:
     //if this app is background, see the ProcessInputChannel def
     bool _loaded; //< true when the first instance is completely loaded.
     QString _binaryPath; //< the path to the application's binary
+
+    // Sticky: once a headless render has failed, this stays true for the
+    // remainder of the process, even after the AppInstance that observed the
+    // failure has been torn down (background-autorun instances are quit and
+    // destroyed before AppManager::load() returns to main()).
+    mutable QMutex renderFailedMutex;
+    bool renderFailed;
     U64 _nodesGlobalMemoryUse; //< how much memory all the nodes are using (besides the cache)
     mutable QMutex errorLogMutex;
     std::list<LogEntry> errorLog;

@@ -150,6 +150,28 @@ TEST_F(ProjectOCIOTest, ColorSpaceMissingFromTheActiveConfigPutsItsNodeInAnError
         << output;
 }
 
+TEST_F(ProjectOCIOTest, ColorSpaceMissingFromTheActiveConfigLeavesTheNodeWithAPersistentMessage)
+{
+    QTemporaryDir tmp;
+
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+
+    ASSERT_FALSE(writeProjectCopy(dirPath,
+                                  QString::fromUtf8("old.ntp"),
+                                  QString::fromUtf8(kFixtureInputSpace),
+                                  QString::fromUtf8(kFixtureOutputSpace))
+                     .isEmpty());
+
+    std::string output;
+    const bool loaded = loadProjectCopy(dirPath, QString::fromUtf8("old.ntp"), &output);
+
+    EXPECT_TRUE(loaded) << output;
+    NodePtr read1 = getProject()->getNodeByName("Read1");
+    ASSERT_TRUE(read1.get() != NULL);
+    EXPECT_TRUE(read1->hasPersistentMessage());
+}
+
 TEST_F(ProjectOCIOTest, NodesWhoseColorSpacesResolveAreLeftAlone)
 {
     QTemporaryDir tmp;

@@ -3838,6 +3838,13 @@ Node::setPersistentMessage(MessageTypeEnum type,
         Q_EMIT persistentMessageChanged();
     } else {
         std::cout << "Persistent message: " << content << std::endl;
+
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        QString mess = QString::fromUtf8( content.c_str() );
+        if (mess != _imp->persistentMessage) {
+            _imp->persistentMessageType = (int)type;
+            _imp->persistentMessage = mess;
+        }
     }
 }
 
@@ -3938,9 +3945,6 @@ Node::clearPersistentMessage(bool recurse)
     AppInstancePtr app = getApp();
 
     if (!app) {
-        return;
-    }
-    if ( app->isBackground() ) {
         return;
     }
     if (recurse) {

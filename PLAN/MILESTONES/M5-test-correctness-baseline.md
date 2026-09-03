@@ -205,7 +205,7 @@ C++ in background mode instead of only as a printed line.
     values in the message.
   - size: M
 
-- [ ] M5.P3.T2 — Test Image::convertToFormat across depths and premultiplication
+- [x] M5.P3.T2 — Test Image::convertToFormat across depths and premultiplication
   - files: `Tests/Image_Test.cpp`
   - approach: `Image_Test.cpp` never constructs an `Image`.
     `Image::convertToFormat` (`Engine/Image.h:797`, implemented through the
@@ -373,6 +373,21 @@ renders distinct frames through `-i`, and the check that proves it was watched t
 fail before the fix landed.
 
 ## Decisions
+
+- **FINDING (for the user, not for this milestone): `requiresUnpremult` is a
+  silent no-op when both colorspaces are Linear.** Surfaced by `M5.P3.T2`, which
+  is exactly what the safety net is for. `Image::convertToFormat`'s doc comment
+  in `Engine/Image.h` states unconditionally that the RGB channels are divided
+  by alpha when `requiresUnpremult` is true. The branch that does the division
+  (`ImageConvert.cpp:399-410`) is gated on `!useColorspaces || (!srcLutOp &&
+  !dstLutOp)` at `:391`, and `convertToFormatInternalForUnpremult` forces
+  `useColorspaces` false whenever both colorspaces are Linear (`:482-486`) —
+  and independently `lutFromColorspace(eViewerColorSpaceLinear)` returns null,
+  so the gate opens for two separate reasons. The test characterises what the
+  code actually does rather than asserting the documented behaviour, with the
+  gap spelled out at the call site. Whether the code or the doc comment is
+  wrong is a call for the user; per this milestone's scope, fixing it is not
+  M5's job.
 
 - **The render-failure flag lives on `AppManager`, not `AppInstance`, and its
   connection is direct rather than queued.** `M5.P2.T1`'s brief named

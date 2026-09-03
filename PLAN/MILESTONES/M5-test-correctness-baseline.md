@@ -141,7 +141,7 @@ decision's third gap — that nothing refuses to render a graph containing a nod
 already in an error state — changes render *semantics* rather than what a test
 can see, and is deliberately left out of this milestone.
 
-- [ ] M5.P2.T1 — Carry the render result out to NatronRenderer's exit status
+- [x] M5.P2.T1 — Carry the render result out to NatronRenderer's exit status
   - files: `Engine/AppInstance.cpp`, `Engine/AppInstance.h`,
     `Renderer/NatronRenderer_main.cpp`
   - approach: the failure is already computed and then dropped.
@@ -373,6 +373,21 @@ renders distinct frames through `-i`, and the check that proves it was watched t
 fail before the fix landed.
 
 ## Decisions
+
+- **The render-failure flag lives on `AppManager`, not `AppInstance`, and its
+  connection is direct rather than queued.** `M5.P2.T1`'s brief named
+  `AppInstance::onQueuedRenderFinished` as the latch point. Instrumenting the
+  running binary disproved it twice over: `renderFinished` is emitted from the
+  scheduler thread into a main-thread slot over a queued connection, and
+  `NatronRenderer` never runs an event loop, so that slot is never invoked at
+  all; and for `eAppTypeBackgroundAutoRun` the `AppInstance` is quit and
+  destroyed inside `AppManager::load()` before `main()` regains control, so
+  `getTopLevelInstance()` is already null by the time anyone could read a flag
+  stored there. Each fault alone would have made the briefed approach a silent
+  no-op — exit 0 on a failed render, with the flag having briefly held the right
+  value. Hence sticky state on `AppManager` (which `main()` holds directly) set
+  from a `Qt::DirectConnection` slot. Exit code 1, matching `main()`'s existing
+  convention for a failed `load()`.
 
 - **#864 is folded in, and only #864.** The user reinstated it on 2026-09-02
   after being shown a reproduction against this tree. This does not weaken

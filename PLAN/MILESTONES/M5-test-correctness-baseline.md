@@ -98,7 +98,7 @@ reopen the cancelled list below.
     the timeout in one case fails that case by name and leaves the rest green.
   - size: S
 
-- [ ] M5.P1.T3 — Stop reporting the two OpenGL tests as passing when they do not run
+- [x] M5.P1.T3 — Stop reporting the two OpenGL tests as passing when they do not run
   - files: `Tests/OSGLContext_Test.cpp`,
     `PLAN/DECISIONS/2026-09-02-no-glx-under-xvfb.md`, `PLAN/DECISIONS/INDEX.md`
   - approach: `OSGLContext.Basic` and `GPUContextPool.Basic` both open with

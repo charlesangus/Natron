@@ -33,3 +33,4 @@
 - 2026-09-02 — openfx-gmic-source-unavailable: gmic deferred; G'MIC 2.8.4's tarball is unreachable everywhere and a version bump breaks the plugin → DECISIONS/2026-09-02-openfx-gmic-source-unavailable.md
 - 2026-09-02 — build-openfx-arena: arena ships 22 plugins; SVG/PDF/CDR gated off via our fork, poppler excluded on licence grounds → DECISIONS/2026-09-02-build-openfx-arena.md
 - 2026-09-02 — exempt-doc-templates-from-format-gate: templates/*.c are verbatim HTML snapshots, not buildable C; the gate governs compilable sources → DECISIONS/2026-09-02-exempt-doc-templates-from-format-gate.md
+- 2026-09-02 — no-glx-under-xvfb: no GLX visual under xvfb-run on ci-vfxall; the two OpenGL tests are DISABLED_ rather than silently passing → DECISIONS/2026-09-02-no-glx-under-xvfb.md

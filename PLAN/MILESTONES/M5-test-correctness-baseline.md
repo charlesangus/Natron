@@ -79,7 +79,7 @@ reopen the cancelled list below.
     of reporting `1/1`; deleting a file from `Tests_SOURCES` lowers the count.
   - size: S
 
-- [ ] M5.P1.T2 — Bound every test's runtime
+- [x] M5.P1.T2 — Bound every test's runtime
   - files: `Tests/CMakeLists.txt`, `tools/ci/local/test.sh`
   - approach: nothing bounds a test's runtime today, and the hang this guards
     against is reachable in current code, not hypothetical:

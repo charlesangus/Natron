@@ -244,7 +244,7 @@ and `test.sh ctest debug` is green.
 
 ## Phase 5.4: Cover the headless entry points
 
-- [ ] M5.P4.T1 — Characterise command-line parsing
+- [x] M5.P4.T1 — Characterise command-line parsing
   - files: `Tests/CLArgs_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: `Engine/CLArgs.cpp` is 1273 lines with no coverage and is the
     entire entry surface of `NatronRenderer`. It needs no app state —
@@ -373,6 +373,19 @@ renders distinct frames through `-i`, and the check that proves it was watched t
 fail before the fix landed.
 
 ## Decisions
+
+- **FINDING (for the user, not for this milestone): `-w <name> <stepped range>`
+  silently renders the wrong frames.** Predicted by the `M5.P4.T1` brief and
+  confirmed exactly. The optional-filename heuristic at `Engine/CLArgs.cpp:1017`
+  tests the token against the anchored pattern `[0-9\-,]*`, whose character
+  class has no `:`. So `-w Write1 1-10:2` fails the match, is taken for the
+  writer's output filename, and is erased from the argument list before the
+  frame-range parser runs: `getWriterArgs().front().filename == "1-10:2"`,
+  `hasFrameRange() == false`, and `getError()` is unset — the parse reports
+  success. `-w Write1 10-20` is unaffected. Both are asserted, the surprising
+  one labelled in the test as documenting current rather than desired
+  behaviour. The fix is a one-character regex change, but it is a behaviour
+  change on the CLI surface and so is the user's call, not M5's.
 
 - **The hash invariant holds, but through a generation counter, not the knob
   values.** `M5.P3.T3` confirmed all three properties. Worth recording because

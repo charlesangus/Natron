@@ -281,7 +281,7 @@ and `test.sh ctest debug` is green.
     serialized field without bumping its `BOOST_CLASS_VERSION` fails it.
   - size: M
 
-- [ ] M5.P4.T3 — Render a frame range and assert every frame is its own frame
+- [x] M5.P4.T3 — Render a frame range and assert every frame is its own frame
   - files: `Tests/RenderRange_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: the only render coverage is `BaseTest.GenerateDot`, which renders
     one frame and asserts only that a file exists; nothing renders a range. Build
@@ -373,6 +373,17 @@ renders distinct frames through `-i`, and the check that proves it was watched t
 fail before the fix landed.
 
 ## Decisions
+
+- **The `format` gate was already red on this branch before M5 started.** Nine
+  files carried lines `git-clang-format` would rewrite, including
+  `Global/PythonUtils.cpp` from commit `bf0c90fcb`, which predates this
+  milestone. The gate checks lines changed since the merge base, and Natron's
+  legacy spacing (`f( x )`) is not what clang-format emits — so any new line
+  written in house style fails it while the untouched lines around it are
+  exempt. Fixed in one commit at the gate rather than per task, since it is
+  tool output, not a judgement. Worth knowing for future milestones: run
+  `git clang-format --diff <merge-base>` before opening the PR, not after CI
+  says no.
 
 - **FINDING (for the user, not for this milestone): `-w <name> <stepped range>`
   silently renders the wrong frames.** Predicted by the `M5.P4.T1` brief and

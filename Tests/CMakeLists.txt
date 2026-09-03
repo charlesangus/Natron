@@ -32,6 +32,7 @@ set(Tests_SOURCES
     OSGLContext_Test.cpp
     ProjectOCIO_Test.cpp
     ProjectSerialization_Test.cpp
+    RenderRange_Test.cpp
     Tracker_Test.cpp
     wmain.cpp
 )

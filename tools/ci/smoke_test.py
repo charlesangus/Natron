@@ -510,6 +510,119 @@ def check_exr_to_png_colorspace():
           % (out_path,))
 
 
+READ_TIME_OFFSET_FIXTURE_OUTPUT_TOKEN = "TIME_OFFSET_FIXTURE_OUTPUT_DIR"
+
+
+def _repo_root():
+    """Locate the repo root the same way check_ofx_plugin_bundle_set() locates
+    verify_plugin_loads: OFX_PLUGIN_PATH is always <repo>/build/assets/Plugins
+    under tools/ci/local/test.sh, which is the only launcher for this script
+    and always sets it -- there is no __file__ to fall back on, since Natron
+    runs this script's text through PyRun_SimpleString() rather than
+    executing it as a file (see the module docstring).
+    """
+    plugin_path = os.environ.get("OFX_PLUGIN_PATH")
+    if not plugin_path:
+        raise AssertionError(
+            "OFX_PLUGIN_PATH is not set -- cannot locate the repository "
+            "root to find Tests/fixtures/read-time-offset.ntp."
+        )
+    assets_dir = os.path.dirname(os.path.normpath(plugin_path))
+    build_dir = os.path.dirname(assets_dir)
+    return os.path.dirname(build_dir)
+
+
+def _write_time_offset_fixture_copy(dir_path, output_dir):
+    fixture_path = os.path.join(_repo_root(), "Tests", "fixtures",
+                                 "read-time-offset.ntp")
+    with open(fixture_path, "r") as f:
+        content = f.read()
+
+    # Read1's timeOffset knob in this fixture is 50, not 0. A first attempt
+    # at this check used the default offset of 0 and passed green against
+    # the broken -i code path -- i.e. it tested nothing, since with
+    # timeOffset==0 there is nothing stale for GenericReaderPlugin's
+    # sequenceTime = t - timeOffset to get wrong. Do not "simplify" this
+    # fixture to a zero offset.
+    content = content.replace(READ_TIME_OFFSET_FIXTURE_OUTPUT_TOKEN, output_dir)
+
+    copy_path = os.path.join(dir_path, "read-time-offset.ntp")
+    with open(copy_path, "w") as f:
+        f.write(content)
+    return copy_path
+
+
+def check_reader_cli_time_offset_regression():
+    """Assert `NatronRenderer -i <read> <file>` keeps frames 1-3 distinct.
+
+    Engine/AppInstance.cpp applies -i's filename with a bare
+    KnobFile::setValue(): the reader's own filename handler refreshes
+    originalFrameRange/firstFrame/lastFrame/startingTime from the new file,
+    but never timeOffset. Tests/fixtures/read-time-offset.ntp's Read1 node
+    carries a non-zero timeOffset for exactly this reason (see
+    _write_time_offset_fixture_copy() above): with the stale offset, every
+    requested time maps outside the sequence domain and the reader's
+    before/after hold collapses frames 1-3 onto one held input frame, so
+    they render byte-identical despite the 3 input frames differing.
+
+    This drives a *second*, freshly spawned NatronRenderer as a subprocess
+    rather than exercising -i in-process: the defect is specifically on
+    AppInstance::loadInternal()'s CLI path, which is one-shot per
+    AppInstance, and this script already runs inside one such instance.
+    """
+    natron_renderer = os.readlink("/proc/self/exe")
+
+    tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-timeoffset-")
+    in_dir = os.path.join(tmpdir, "in")
+    out_dir = os.path.join(tmpdir, "out")
+    os.mkdir(in_dir)
+    os.mkdir(out_dir)
+
+    for i in (1, 2, 3):
+        _write_solid_exr(os.path.join(in_dir, "input.%04d.exr" % i), 4, 4, 0.1 * i)
+    _mark("[smoke] wrote 3 distinct input frames at %r" % (in_dir,))
+
+    project_path = _write_time_offset_fixture_copy(tmpdir, out_dir)
+    read_pattern = os.path.join(in_dir, "input.####.exr")
+    cmd = [natron_renderer, "-i", "Read1", read_pattern, project_path, "1-3"]
+    _mark("[smoke] running %r" % (cmd,))
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    output = proc.stdout.decode("utf-8", "replace")
+    if proc.returncode != 0:
+        raise AssertionError(
+            "%s exited %d:\n%s" % (" ".join(cmd), proc.returncode, output)
+        )
+
+    frame_paths = [os.path.join(out_dir, "out.%04d.exr" % i) for i in (1, 2, 3)]
+    contents = []
+    for p in frame_paths:
+        if not os.path.exists(p) or os.path.getsize(p) == 0:
+            raise AssertionError(
+                "-i Read1 <file> did not produce a non-empty output frame "
+                "at %r:\n%s" % (p, output)
+            )
+        with open(p, "rb") as f:
+            contents.append(f.read())
+
+    matches = [(frame_paths[i], frame_paths[j])
+               for i in range(len(contents))
+               for j in range(i + 1, len(contents))
+               if contents[i] == contents[j]]
+    if matches:
+        raise AssertionError(
+            "rendering frames 1-3 through `%s` produced byte-identical "
+            "output for %r even though the 3 input frames at %r differ. "
+            "Read1's timeOffset (50, non-zero by design -- see "
+            "Tests/fixtures/read-time-offset.ntp) was not refreshed when -i "
+            "set a new filename, so every requested frame time maps "
+            "outside the sequence domain and the reader's before/after "
+            "hold collapses frames 1-3 onto a single held input frame."
+            % (" ".join(cmd), matches, in_dir)
+        )
+    _mark("[smoke] OK: -i Read1 <file> rendered 3 distinct frames %r "
+          "despite a stale non-zero timeOffset" % (frame_paths,))
+
+
 def main():
     _mark("[smoke] script started")
 
@@ -527,6 +640,7 @@ def main():
     check_app_render_with_task_list()
     check_default_ocio_config()
     check_exr_to_png_colorspace()
+    check_reader_cli_time_offset_regression()
 
     # NOTE: not covered here -- PyGuiApplication::addMenuCommand()
     # (Gui/PyGlobalGui.h, bound in Gui/typesystem_natronGui.xml), which

@@ -112,7 +112,7 @@ extern "C" {
         // Not manager.getTopLevelInstance()->hasRenderFailed(): a background-autorun
         // AppInstance is quit and destroyed inside load() itself, before this point, so
         // the result has to be read back from AppManager, which outlives it.
-        if ( manager.hasRenderFailed() ) {
+        if (manager.hasRenderFailed()) {
             return 1;
         }
 

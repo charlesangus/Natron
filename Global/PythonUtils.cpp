@@ -358,26 +358,25 @@ PyObject* initializePython3(const std::vector<wchar_t*>& commandLineArgsWide)
     // captures the executable's stdout to parse the test list, so stdout output
     // here would be mistaken for extra test names.
     {
-        fprintf( stderr, "PATH is %s\n", Py_GETENV("PATH") );
-        fprintf( stderr, "PYTHONPATH is %s\n", Py_GETENV("PYTHONPATH") );
-        fprintf( stderr, "PYTHONHOME is %s\n", Py_GETENV("PYTHONHOME") );
+        fprintf(stderr, "PATH is %s\n", Py_GETENV("PATH"));
+        fprintf(stderr, "PYTHONPATH is %s\n", Py_GETENV("PYTHONPATH"));
+        fprintf(stderr, "PYTHONHOME is %s\n", Py_GETENV("PYTHONHOME"));
 
         // The Py_*Flag globals and the Py_GetProgramName()/Py_GetPrefix()/
         // Py_GetProgramFullPath()/Py_GetPath()/Py_GetPythonHome() getters that used to be
         // dumped here were deprecated in 3.12/3.13 alongside the setters this function no
         // longer calls. Everything they reported is readable from the sys module below.
-#define DUMP_SYS(NAME) \
-            do { \
-                obj = PySys_GetObject(#NAME); \
-                PySys_FormatStderr("  sys.%s = ", #NAME); \
-                if (obj != NULL) { \
-                    PySys_FormatStderr("%A", obj); \
-                } \
-                else { \
-                    PySys_WriteStderr("(not set)"); \
-                } \
-                PySys_FormatStderr("\n"); \
-            } while (0)
+#define DUMP_SYS(NAME)                            \
+    do {                                          \
+        obj = PySys_GetObject(#NAME);             \
+        PySys_FormatStderr("  sys.%s = ", #NAME); \
+        if (obj != NULL) {                        \
+            PySys_FormatStderr("%A", obj);        \
+        } else {                                  \
+            PySys_WriteStderr("(not set)");       \
+        }                                         \
+        PySys_FormatStderr("\n");                 \
+    } while (0)
 
         PyObject *obj;
         DUMP_SYS(version);

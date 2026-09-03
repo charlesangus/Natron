@@ -54,8 +54,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-struct ExrChannelInfo
-{
+struct ExrChannelInfo {
     std::string name;
     int32_t pixelType;
 };
@@ -66,7 +65,7 @@ readExrCString(std::ifstream& in,
 {
     out->clear();
     char c;
-    while ( in.get(c) ) {
+    while (in.get(c)) {
         if (c == '\0') {
             return true;
         }
@@ -109,14 +108,14 @@ readExrFirstPixelRed(const std::string& path,
     char magic[4];
     in.read(magic, 4);
     static const char kMagic[4] = { 0x76, 0x2f, 0x31, 0x01 };
-    if ( !in || std::memcmp(magic, kMagic, 4) != 0 ) {
+    if (!in || std::memcmp(magic, kMagic, 4) != 0) {
         *error = "bad magic number";
 
         return false;
     }
 
     int32_t version = 0;
-    if ( !readExrPod(in, &version) ) {
+    if (!readExrPod(in, &version)) {
         *error = "cannot read version field";
 
         return false;
@@ -144,28 +143,28 @@ readExrFirstPixelRed(const std::string& path,
 
     for (;;) {
         std::string name;
-        if ( !readExrCString(in, &name) ) {
+        if (!readExrCString(in, &name)) {
             *error = "truncated header (attribute name)";
 
             return false;
         }
-        if ( name.empty() ) {
+        if (name.empty()) {
             break;
         }
         std::string type;
-        if ( !readExrCString(in, &type) ) {
+        if (!readExrCString(in, &type)) {
             *error = "truncated header (attribute type)";
 
             return false;
         }
         int32_t size = 0;
-        if ( !readExrPod(in, &size) || (size < 0) ) {
+        if (!readExrPod(in, &size) || (size < 0)) {
             *error = "truncated header (attribute size)";
 
             return false;
         }
         std::vector<char> data(size);
-        if ( (size > 0) && !in.read(data.data(), size) ) {
+        if ((size > 0) && !in.read(data.data(), size)) {
             *error = "truncated attribute data for " + name;
 
             return false;
@@ -173,17 +172,17 @@ readExrFirstPixelRed(const std::string& path,
 
         if (name == "channels") {
             size_t pos = 0;
-            while ( pos < data.size() ) {
+            while (pos < data.size()) {
                 std::string cname;
-                while ( (pos < data.size()) && (data[pos] != '\0') ) {
+                while ((pos < data.size()) && (data[pos] != '\0')) {
                     cname.push_back(data[pos]);
                     ++pos;
                 }
-                if ( pos >= data.size() ) {
+                if (pos >= data.size()) {
                     break;
                 }
                 ++pos; // the channel name's null terminator
-                if ( cname.empty() ) {
+                if (cname.empty()) {
                     break; // empty name terminates the channel list
                 }
                 if (pos + 16 > data.size()) {
@@ -194,11 +193,11 @@ readExrFirstPixelRed(const std::string& path,
                 int32_t pixelType = 0;
                 std::memcpy(&pixelType, &data[pos], 4);
                 pos += 16; // pixelType(4) + pLinear/reserved(4) + xSampling(4) + ySampling(4)
-                channels.push_back(ExrChannelInfo{ cname, pixelType });
+                channels.push_back(ExrChannelInfo { cname, pixelType });
             }
-        } else if ( (name == "compression") && (size >= 1) ) {
+        } else if ((name == "compression") && (size >= 1)) {
             compression = static_cast<unsigned char>(data[0]);
-        } else if ( (name == "dataWindow") && (size >= 16) ) {
+        } else if ((name == "dataWindow") && (size >= 16)) {
             std::memcpy(dataWindow, data.data(), 16);
             haveDataWindow = true;
         }
@@ -218,11 +217,11 @@ readExrFirstPixelRed(const std::string& path,
     int rChannelIndex = -1;
     std::string foundNames;
     for (size_t i = 0; i < channels.size(); ++i) {
-        if ( !foundNames.empty() ) {
+        if (!foundNames.empty()) {
             foundNames += ",";
         }
         foundNames += channels[i].name;
-        if ( (rChannelIndex < 0) && (channels[i].name == "R") ) {
+        if ((rChannelIndex < 0) && (channels[i].name == "R")) {
             rChannelIndex = static_cast<int>(i);
         }
     }
@@ -238,7 +237,7 @@ readExrFirstPixelRed(const std::string& path,
     }
 
     int64_t firstOffset = 0;
-    if ( !readExrPod(in, &firstOffset) ) {
+    if (!readExrPod(in, &firstOffset)) {
         *error = "cannot read the scanline offset table";
 
         return false;
@@ -247,7 +246,7 @@ readExrFirstPixelRed(const std::string& path,
     in.seekg(firstOffset, std::ios::beg);
     int32_t y = 0;
     int32_t chunkDataSize = 0;
-    if ( !readExrPod(in, &y) || !readExrPod(in, &chunkDataSize) || (chunkDataSize < 0) ) {
+    if (!readExrPod(in, &y) || !readExrPod(in, &chunkDataSize) || (chunkDataSize < 0)) {
         *error = "cannot read the scanline chunk header";
 
         return false;
@@ -261,7 +260,7 @@ readExrFirstPixelRed(const std::string& path,
     }
 
     std::vector<char> chunk(chunkDataSize);
-    if ( !in.read(chunk.data(), chunkDataSize) ) {
+    if (!in.read(chunk.data(), chunkDataSize)) {
         *error = "truncated scanline pixel data";
 
         return false;
@@ -292,16 +291,16 @@ readExrFirstPixelRed(const std::string& path,
 // It does not exercise reader-side frame mapping: there is no reader in this graph.
 TEST_F(BaseTest, RenderFrameRangeProducesDistinctFramePixels)
 {
-    NodePtr generator = createNode( QString::fromUtf8(PLUGINID_OFX_CONSTANT) );
+    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
     NodePtr writer = createNode(_writeOIIOPluginID);
-    ASSERT_TRUE( bool(generator) && bool(writer) );
+    ASSERT_TRUE(bool(generator) && bool(writer));
 
     connectNodes(generator, writer, 0, true);
 
     Format f(0, 0, 8, 8, "renderRangeFormat", 1.);
     generator->getApp()->getProject()->setOrAddProjectFormat(f);
 
-    KnobColor* color = dynamic_cast<KnobColor*>( generator->getKnobByName("color").get() );
+    KnobColor* color = dynamic_cast<KnobColor*>(generator->getKnobByName("color").get());
     ASSERT_TRUE(color != NULL);
 
     const int firstFrame = 1;
@@ -316,24 +315,24 @@ TEST_F(BaseTest, RenderFrameRangeProducesDistinctFramePixels)
         color->setValueAtTime(frame, 1., ViewSpec::all(), 3); // alpha=1: keeps premult/unpremult a no-op
     }
 
-    KnobChoice* bitDepth = dynamic_cast<KnobChoice*>( writer->getKnobByName("bitDepth").get() );
+    KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(writer->getKnobByName("bitDepth").get());
     ASSERT_TRUE(bitDepth != NULL);
     bitDepth->setValueFromID("32f", 0);
 
-    KnobChoice* compression = dynamic_cast<KnobChoice*>( writer->getKnobByName("compression").get() );
+    KnobChoice* compression = dynamic_cast<KnobChoice*>(writer->getKnobByName("compression").get());
     ASSERT_TRUE(compression != NULL);
     compression->setValueFromID("none", 0);
 
     QTemporaryDir tmp;
-    ASSERT_TRUE( tmp.isValid() );
+    ASSERT_TRUE(tmp.isValid());
     const std::string pattern = (tmp.path() + QLatin1String("/render.####.exr")).toStdString();
     writer->setOutputFilesForWriter(pattern);
 
-    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>( writer->getEffectInstance().get() );
+    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
     ASSERT_TRUE(writerEffect != NULL);
 
     std::list<AppInstance::RenderWork> works;
-    works.push_back( AppInstance::RenderWork(writerEffect, firstFrame, lastFrame, 1, false) );
+    works.push_back(AppInstance::RenderWork(writerEffect, firstFrame, lastFrame, 1, false));
     getApp()->startWritersRendering(false, works);
 
     const std::vector<std::string>& viewNames = getApp()->getProject()->getProjectViewNames();
@@ -342,14 +341,14 @@ TEST_F(BaseTest, RenderFrameRangeProducesDistinctFramePixels)
     for (int frame = firstFrame; frame <= lastFrame; ++frame) {
         const std::string path = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, 0);
         const QString qPath = QString::fromStdString(path);
-        ASSERT_TRUE( QFile::exists(qPath) ) << "frame " << frame << " was not rendered: " << path;
+        ASSERT_TRUE(QFile::exists(qPath)) << "frame " << frame << " was not rendered: " << path;
 
         float pixel = 0.f;
         std::string error;
-        ASSERT_TRUE( readExrFirstPixelRed(path, &pixel, &error) ) << "frame " << frame << ": " << error;
+        ASSERT_TRUE(readExrFirstPixelRed(path, &pixel, &error)) << "frame " << frame << ": " << error;
 
         EXPECT_NEAR(valueForFrame[frame], pixel, 1e-4) << "frame " << frame << " has the wrong pixel value";
-        EXPECT_TRUE( observedValues.insert(pixel).second )
+        EXPECT_TRUE(observedValues.insert(pixel).second)
             << "frame " << frame << " carries a pixel value (" << pixel << ") already seen on an earlier frame";
 
         QFile::remove(qPath);

@@ -88,7 +88,8 @@ TEST(OSGLContext, DISABLED_Basic)
 // false here and the bare return below was being scored as a pass. Run for
 // real with `--gtest_also_run_disabled_tests` inside devshell.sh on a host
 // with /dev/dri.
-TEST(GPUContextPool, DISABLED_Basic) {
+TEST(GPUContextPool, DISABLED_Basic)
+{
     if (!appPTR->isOpenGLLoaded()) {
         /// TODO: Convert to GTEST_SKIP() when gtest updated.
         std::cerr << "Skipping test because OpenGL loading failed." << std::endl;

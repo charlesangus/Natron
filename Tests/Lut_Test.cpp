@@ -25,10 +25,10 @@
 
 #include "Global/Macros.h"
 
-#include <cstdlib>
-#include <vector>
-#include <gtest/gtest.h>
 #include "Engine/Lut.h"
+#include <cstdlib>
+#include <gtest/gtest.h>
+#include <vector>
 
 NATRON_NAMESPACE_USING
 using namespace NATRON_NAMESPACE::Color;
@@ -55,8 +55,7 @@ TEST(Lut, IntConversions) {
 }
 
 namespace {
-struct NamedLut
-{
+struct NamedLut {
     const char* name;
     const Lut* lut;
 };
@@ -85,7 +84,8 @@ constexpr int kFastPathCodeTolerance = 1;
 constexpr int kDomainSamples = 2001;
 } // namespace
 
-TEST(Lut, TransferFunctionRoundTrip) {
+TEST(Lut, TransferFunctionRoundTrip)
+{
     for (const NamedLut& nl : getTransferLuts()) {
         SCOPED_TRACE(nl.name);
         for (int i = 0; i < kDomainSamples; ++i) {
@@ -97,16 +97,17 @@ TEST(Lut, TransferFunctionRoundTrip) {
     }
 }
 
-TEST(Lut, TransferFunctionFastPathAgreesWithAnalytic) {
+TEST(Lut, TransferFunctionFastPathAgreesWithAnalytic)
+{
     for (const NamedLut& nl : getTransferLuts()) {
         SCOPED_TRACE(nl.name);
         nl.lut->validate();
 
         for (int i = 0; i < kDomainSamples; ++i) {
             float v = (float)i / (float)(kDomainSamples - 1);
-            int analyticCode = floatToInt<256>( nl.lut->toColorSpaceFloatFromLinearFloat(v) );
+            int analyticCode = floatToInt<256>(nl.lut->toColorSpaceFloatFromLinearFloat(v));
             int fastCode = nl.lut->toColorSpaceUint8FromLinearFloatFast(v);
-            EXPECT_LE( std::abs(analyticCode - fastCode), kFastPathCodeTolerance )
+            EXPECT_LE(std::abs(analyticCode - fastCode), kFastPathCodeTolerance)
                 << "v=" << v << " analyticCode=" << analyticCode << " fastCode=" << fastCode;
         }
 
@@ -114,14 +115,15 @@ TEST(Lut, TransferFunctionFastPathAgreesWithAnalytic) {
         // analytic from-function at each of the 256 byte values, so the two
         // must agree exactly (not just within a tolerance).
         for (int b = 0; b < 256; ++b) {
-            float analytic = nl.lut->fromColorSpaceFloatToLinearFloat( intToFloat<256>(b) );
-            float fast = nl.lut->fromColorSpaceUint8ToLinearFloatFast( (unsigned char)b );
+            float analytic = nl.lut->fromColorSpaceFloatToLinearFloat(intToFloat<256>(b));
+            float fast = nl.lut->fromColorSpaceUint8ToLinearFloatFast((unsigned char)b);
             EXPECT_FLOAT_EQ(analytic, fast) << "b=" << b;
         }
     }
 }
 
-TEST(Lut, SRGBSceneLinearGreyAnchor) {
+TEST(Lut, SRGBSceneLinearGreyAnchor)
+{
     // Scene-linear 0.18 -- the standard 18% mid-grey -- is also asserted end
     // to end by tools/ci/smoke_test.py's SRGB_GREY_CODE, through the reader
     // and writer plugins. Pinning it here from the Lut side means a
@@ -138,11 +140,11 @@ TEST(Lut, SRGBSceneLinearGreyAnchor) {
     const Lut* srgb = LutManager::sRGBLut();
     srgb->validate();
 
-    int analyticCode = floatToInt<256>( srgb->toColorSpaceFloatFromLinearFloat(kSceneLinearGrey) );
-    EXPECT_LE( std::abs(analyticCode - kSRGBGreyCode), kSRGBGreyTolerance )
+    int analyticCode = floatToInt<256>(srgb->toColorSpaceFloatFromLinearFloat(kSceneLinearGrey));
+    EXPECT_LE(std::abs(analyticCode - kSRGBGreyCode), kSRGBGreyTolerance)
         << "analyticCode=" << analyticCode << " expected=" << kSRGBGreyCode;
 
     int fastCode = srgb->toColorSpaceUint8FromLinearFloatFast(kSceneLinearGrey);
-    EXPECT_LE( std::abs(fastCode - kSRGBGreyCode), kSRGBGreyTolerance )
+    EXPECT_LE(std::abs(fastCode - kSRGBGreyCode), kSRGBGreyTolerance)
         << "fastCode=" << fastCode << " expected=" << kSRGBGreyCode;
 }

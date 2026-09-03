@@ -26,9 +26,9 @@
 #include "Global/Macros.h"
 
 #include <cstring>
+#include <gtest/gtest.h>
 #include <memory>
 #include <vector>
-#include <gtest/gtest.h>
 
 #include "Engine/Image.h"
 #include "Engine/ImagePlaneDesc.h"
@@ -174,11 +174,11 @@ makeLocalImage(const ImagePlaneDesc& components,
                ImageBitDepthEnum depth,
                const RectI& bounds)
 {
-    RectD rod( bounds.x1, bounds.y1, bounds.x2, bounds.y2 );
+    RectD rod(bounds.x1, bounds.y1, bounds.x2, bounds.y2);
 
-    return std::make_shared<Image>(components, rod, bounds, /*mipmapLevel=*/ 0, /*par=*/ 1.,
-                                    depth, eImagePremultiplicationPremultiplied,
-                                    eImageFieldingOrderNone, /*useBitmap=*/ false);
+    return std::make_shared<Image>(components, rod, bounds, /*mipmapLevel=*/0, /*par=*/1.,
+                                   depth, eImagePremultiplicationPremultiplied,
+                                   eImageFieldingOrderNone, /*useBitmap=*/false);
 }
 
 void
@@ -203,7 +203,8 @@ getFloatPixel(const Image& img, int x, int y, int nComps)
 
 } // namespace
 
-TEST(ImageConvertToFormatTest, RoundTripFloatByte) {
+TEST(ImageConvertToFormatTest, RoundTripFloatByte)
+{
     RectI bounds(0, 0, 1, 1);
     ImagePtr srcFloat = makeLocalImage(ImagePlaneDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
     ImagePtr mid = makeLocalImage(ImagePlaneDesc::getRGBAComponents(), eImageBitDepthByte, bounds);
@@ -213,8 +214,8 @@ TEST(ImageConvertToFormatTest, RoundTripFloatByte) {
     setFloatPixel(*srcFloat, 0, 0, original);
 
     srcFloat->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                              /*channelForAlpha=*/ -1, /*copyBitmap=*/ false,
-                              /*requiresUnpremult=*/ false, mid.get());
+                              /*channelForAlpha=*/-1, /*copyBitmap=*/false,
+                              /*requiresUnpremult=*/false, mid.get());
     mid->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
                          -1, false, false, dstFloat.get());
 
@@ -225,13 +226,14 @@ TEST(ImageConvertToFormatTest, RoundTripFloatByte) {
     constexpr float kByteRoundTripTolerance = 1.f / 255.f;
     std::vector<float> roundTripped = getFloatPixel(*dstFloat, 0, 0, 4);
 
-    ASSERT_EQ( roundTripped.size(), original.size() );
+    ASSERT_EQ(roundTripped.size(), original.size());
     for (std::size_t i = 0; i < original.size(); ++i) {
         EXPECT_NEAR(roundTripped[i], original[i], kByteRoundTripTolerance) << "component " << i;
     }
 }
 
-TEST(ImageConvertToFormatTest, RoundTripFloatShort) {
+TEST(ImageConvertToFormatTest, RoundTripFloatShort)
+{
     RectI bounds(0, 0, 1, 1);
     ImagePtr srcFloat = makeLocalImage(ImagePlaneDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
     ImagePtr mid = makeLocalImage(ImagePlaneDesc::getRGBAComponents(), eImageBitDepthShort, bounds);
@@ -250,7 +252,7 @@ TEST(ImageConvertToFormatTest, RoundTripFloatShort) {
     constexpr float kShortRoundTripTolerance = 1.f / 65535.f;
     std::vector<float> roundTripped = getFloatPixel(*dstFloat, 0, 0, 4);
 
-    ASSERT_EQ( roundTripped.size(), original.size() );
+    ASSERT_EQ(roundTripped.size(), original.size());
     for (std::size_t i = 0; i < original.size(); ++i) {
         EXPECT_NEAR(roundTripped[i], original[i], kShortRoundTripTolerance) << "component " << i;
     }
@@ -268,7 +270,8 @@ TEST(ImageConvertToFormatTest, RoundTripFloatShort) {
 // contrary to the doc comment on Image::convertToFormat in Image.h, which
 // says the RGB channels "will be divided by the alpha channel" whenever
 // requiresUnpremult is true.
-TEST(ImageConvertToFormatTest, UnpremultHasNoEffectWhenColorSpacesAreLinear) {
+TEST(ImageConvertToFormatTest, UnpremultHasNoEffectWhenColorSpacesAreLinear)
+{
     RectI bounds(0, 0, 1, 1);
     ImagePtr srcRGBA = makeLocalImage(ImagePlaneDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
     ImagePtr dstRGB = makeLocalImage(ImagePlaneDesc::getRGBComponents(), eImageBitDepthFloat, bounds);
@@ -278,12 +281,12 @@ TEST(ImageConvertToFormatTest, UnpremultHasNoEffectWhenColorSpacesAreLinear) {
     setFloatPixel(*srcRGBA, 0, 0, { kColor, kColor, kColor, kAlpha });
 
     srcRGBA->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                             -1, /*copyBitmap=*/ false, /*requiresUnpremult=*/ true, dstRGB.get());
+                             -1, /*copyBitmap=*/false, /*requiresUnpremult=*/true, dstRGB.get());
 
     std::vector<float> result = getFloatPixel(*dstRGB, 0, 0, 3);
     constexpr float kExactTolerance = 1e-6f;
 
-    ASSERT_EQ( result.size(), 3u );
+    ASSERT_EQ(result.size(), 3u);
     for (float c : result) {
         EXPECT_NEAR(c, kColor, kExactTolerance) << "color left unchanged, not divided by alpha";
     }
@@ -295,7 +298,8 @@ TEST(ImageConvertToFormatTest, UnpremultHasNoEffectWhenColorSpacesAreLinear) {
 // isolates the unpremult math: fromColorSpace/toColorSpace with the same
 // LUT round-trips back to (approximately) the identity, so what's left is
 // the division by alpha.
-TEST(ImageConvertToFormatTest, UnpremultDoublesColorWhenColorSpaceIsNotLinear) {
+TEST(ImageConvertToFormatTest, UnpremultDoublesColorWhenColorSpaceIsNotLinear)
+{
     RectI bounds(0, 0, 1, 1);
     ImagePtr srcRGBA = makeLocalImage(ImagePlaneDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
     ImagePtr dstRGB = makeLocalImage(ImagePlaneDesc::getRGBComponents(), eImageBitDepthFloat, bounds);
@@ -305,7 +309,7 @@ TEST(ImageConvertToFormatTest, UnpremultDoublesColorWhenColorSpaceIsNotLinear) {
     setFloatPixel(*srcRGBA, 0, 0, { kColor, kColor, kColor, kAlpha });
 
     srcRGBA->convertToFormat(bounds, eViewerColorSpaceSRGB, eViewerColorSpaceSRGB,
-                             -1, /*copyBitmap=*/ false, /*requiresUnpremult=*/ true, dstRGB.get());
+                             -1, /*copyBitmap=*/false, /*requiresUnpremult=*/true, dstRGB.get());
 
     std::vector<float> result = getFloatPixel(*dstRGB, 0, 0, 3);
     // Matches Lut_Test.cpp's kRoundTripTolerance: the sRGB LUT's
@@ -313,9 +317,8 @@ TEST(ImageConvertToFormatTest, UnpremultDoublesColorWhenColorSpaceIsNotLinear) {
     // pair is only an approximate inverse of itself in float math.
     constexpr float kLutRoundTripTolerance = 1e-4f;
 
-    ASSERT_EQ( result.size(), 3u );
+    ASSERT_EQ(result.size(), 3u);
     for (float c : result) {
         EXPECT_NEAR(c, kColor / kAlpha, kLutRoundTripTolerance);
     }
 }
-

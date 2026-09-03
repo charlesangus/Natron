@@ -311,38 +311,38 @@ TEST_F(BaseTest, SetValues)
     }
 }
 
-///The hash is the sole cache-invalidation key: querying it repeatedly without
-///changing anything must be stable.
+/// The hash is the sole cache-invalidation key: querying it repeatedly without
+/// changing anything must be stable.
 TEST_F(BaseTest, HashStableAcrossNoOp)
 {
     NodePtr generator = createNode(_generatorPluginID);
-    ASSERT_TRUE( bool(generator) );
+    ASSERT_TRUE(bool(generator));
 
     U64 hash1 = generator->getHashValue();
     U64 hash2 = generator->getHashValue();
     EXPECT_EQ(hash1, hash2);
 }
 
-///Changing a knob's value must change the node's hash, otherwise a cached
-///render from before the change could be returned for a different render.
+/// Changing a knob's value must change the node's hash, otherwise a cached
+/// render from before the change could be returned for a different render.
 TEST_F(BaseTest, HashChangesOnKnobValueChange)
 {
     NodePtr generator = createNode(_generatorPluginID);
-    ASSERT_TRUE( bool(generator) );
+    ASSERT_TRUE(bool(generator));
 
     KnobIPtr knob = generator->getKnobByName("noiseZSlope");
-    KnobDouble* slope = dynamic_cast<KnobDouble*>( knob.get() );
+    KnobDouble* slope = dynamic_cast<KnobDouble*>(knob.get());
     ASSERT_TRUE(slope != 0);
 
     U64 hashBefore = generator->getHashValue();
-    slope->setValue( slope->getValue() + 1. );
+    slope->setValue(slope->getValue() + 1.);
     U64 hashAfter = generator->getHashValue();
 
     EXPECT_NE(hashBefore, hashAfter);
 }
 
-///Connecting an input must change the downstream node's hash, since the
-///downstream render now depends on a different (or newly-present) upstream tree.
+/// Connecting an input must change the downstream node's hash, since the
+/// downstream render now depends on a different (or newly-present) upstream tree.
 TEST_F(BaseTest, HashChangesOnInputConnected)
 {
     NodePtr generator = createNode(_generatorPluginID);

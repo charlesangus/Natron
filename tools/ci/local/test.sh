@@ -31,6 +31,16 @@
 #                              push + wait-for-Actions cycle with something
 #                              that runs locally in seconds.
 #
+#   The smoke step wraps NatronRenderer in `timeout`: it's the only bare
+#   `exec` left with no bound on how long it can run, and a hang there (the
+#   scheduler bug this whole exercise guards against is real, not
+#   hypothetical -- see OutputSchedulerThread.cpp) would otherwise wedge
+#   the CI job until GitHub's six-hour default job timeout kills it, with
+#   no diagnostic. The smoke test's own real runtime is ~8s end to end
+#   (measured locally, debug build); SMOKE_TIMEOUT_SECONDS below gives it
+#   ~35x headroom, matching the 300s per-case bound Tests/CMakeLists.txt
+#   puts on ctest.
+#
 # Like build.sh, this is meant to be run from the host, from the repo root,
 # with no prior `devshell.sh` shell required -- it re-execs itself through
 # devshell.sh exactly once, and does nothing special if already inside the
@@ -42,6 +52,9 @@
 # considered and rejected as a further fallback.
 
 set -euo pipefail
+
+# See the header comment for how this number was chosen.
+SMOKE_TIMEOUT_SECONDS=300
 
 # --- argument parsing --------------------------------------------------------
 SUBCOMMAND=""
@@ -171,18 +184,46 @@ case "${SUBCOMMAND}" in
         NATRON_RENDERER="$(cd "$(dirname "${NATRON_RENDERER}")" && pwd)/$(basename "${NATRON_RENDERER}")"
         echo "Using NatronRenderer: ${NATRON_RENDERER}"
 
+        # Not `exec`: a bare exec would replace this shell with the child,
+        # leaving nothing around to inspect `timeout`'s exit status and
+        # tell a real timeout (124, or 137 if it had to escalate to KILL --
+        # see `man timeout`) apart from the smoke test's own failure exit
+        # codes. `-k 10` gives a SIGTERM-ignoring hang a follow-up SIGKILL
+        # 10s later instead of leaving it around after `timeout` gives up
+        # on it. Note gdb's `-ex run -ex "thread apply all bt" -ex bt`
+        # sequence only fires once `run` returns, i.e. on a crash or normal
+        # exit; a genuine hang never gets there, so --gdb still gets no
+        # backtrace for a hang (only for a crash) -- the timeout below is
+        # what turns that case into a killed, reported process instead of
+        # one that runs until GitHub's six-hour job timeout.
         if [[ "${USE_GDB}" -eq 1 ]]; then
-            echo "== test.sh: smoke test under gdb (${BUILD_TYPE}) =="
+            echo "== test.sh: smoke test under gdb (${BUILD_TYPE}, ${SMOKE_TIMEOUT_SECONDS}s timeout) =="
             echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} xvfb-run --auto-servernum \\"
-            echo "    gdb -batch -ex run -ex \"thread apply all bt\" -ex bt --args ${NATRON_RENDERER} ${SMOKE_TEST_SCRIPT}"
-            exec xvfb-run --auto-servernum \
+            echo "    timeout -k 10 ${SMOKE_TIMEOUT_SECONDS} gdb -batch -ex run -ex \"thread apply all bt\" -ex bt --args ${NATRON_RENDERER} ${SMOKE_TEST_SCRIPT}"
+            if xvfb-run --auto-servernum \
+                timeout -k 10 "${SMOKE_TIMEOUT_SECONDS}" \
                 gdb -batch -ex run -ex "thread apply all bt" -ex bt \
-                --args "${NATRON_RENDERER}" "${SMOKE_TEST_SCRIPT}"
+                --args "${NATRON_RENDERER}" "${SMOKE_TEST_SCRIPT}"; then
+                rc=0
+            else
+                rc=$?
+            fi
         else
-            echo "== test.sh: smoke test (${BUILD_TYPE}) =="
+            echo "== test.sh: smoke test (${BUILD_TYPE}, ${SMOKE_TIMEOUT_SECONDS}s timeout) =="
             echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} xvfb-run --auto-servernum \\"
-            echo "    ${NATRON_RENDERER} ${SMOKE_TEST_SCRIPT}"
-            exec xvfb-run --auto-servernum "${NATRON_RENDERER}" "${SMOKE_TEST_SCRIPT}"
+            echo "    timeout -k 10 ${SMOKE_TIMEOUT_SECONDS} ${NATRON_RENDERER} ${SMOKE_TEST_SCRIPT}"
+            if xvfb-run --auto-servernum \
+                timeout -k 10 "${SMOKE_TIMEOUT_SECONDS}" \
+                "${NATRON_RENDERER}" "${SMOKE_TEST_SCRIPT}"; then
+                rc=0
+            else
+                rc=$?
+            fi
         fi
+
+        if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
+            echo "test.sh: ERROR: smoke test exceeded ${SMOKE_TIMEOUT_SECONDS}s and was killed by timeout(1) (exit ${rc})" >&2
+        fi
+        exit "${rc}"
         ;;
 esac

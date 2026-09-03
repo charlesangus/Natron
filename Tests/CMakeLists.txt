@@ -59,4 +59,9 @@ include(GoogleTest)
 # constructs an AppManager and calls load() before RUN_ALL_TESTS() (even
 # under --gtest_list_tests), so it needs libpython3.13, OFX_PLUGIN_PATH and
 # the built OFX bundles -- all guaranteed at ctest time, not at build time.
-gtest_discover_tests(Tests DISCOVERY_MODE PRE_TEST)
+# TIMEOUT 300: the whole suite runs in under a second locally and the
+# slowest single case is well under a second too, so 300s per case is pure
+# headroom -- its only job is to turn a scheduler wait with no predicate,
+# no loop and no timeout (OutputSchedulerThread.cpp's bufEmptyCondition
+# wait) into a failed test instead of a process that never exits.
+gtest_discover_tests(Tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 300)

@@ -161,7 +161,7 @@ can see, and is deliberately left out of this milestone.
     `test.sh smoke debug` is unchanged.
   - size: M
 
-- [ ] M5.P2.T2 — Keep persistent error messages readable in background mode
+- [x] M5.P2.T2 — Keep persistent error messages readable in background mode
   - files: `Engine/Node.cpp`
   - approach: `Node::setPersistentMessage` (`Engine/Node.cpp:3795`) branches on
     `!appPTR->isBackground()` at `:3804`; the background `else` at `:3839-3841`

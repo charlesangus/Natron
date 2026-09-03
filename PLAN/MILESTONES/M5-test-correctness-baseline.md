@@ -222,7 +222,7 @@ C++ in background mode instead of only as a printed line.
     fails the unpremult case and leaves the round-trip case green.
   - size: M
 
-- [ ] M5.P3.T3 — Assert the render hash changes when the render would change
+- [x] M5.P3.T3 — Assert the render hash changes when the render would change
   - files: `Tests/BaseTest.cpp`
   - approach: cache correctness in this engine rests entirely on the hash —
     `docs/maintainer-notes.md` states the invariant ("if an input changes, the
@@ -373,6 +373,16 @@ renders distinct frames through `-i`, and the check that proves it was watched t
 fail before the fix landed.
 
 ## Decisions
+
+- **The hash invariant holds, but through a generation counter, not the knob
+  values.** `M5.P3.T3` confirmed all three properties. Worth recording because
+  it is not what the maintainer-notes wording suggests:
+  `Node::computeHashInternal` does not fold individual knob values into the
+  hash — it hashes an opaque per-node `knobsAge` counter that
+  `incrementKnobsAge()` bumps from `evaluate()`, plus input hashes, script name
+  and project creation time. So any future path that changes a knob's effective
+  value without routing through `evaluate()` breaks cache invalidation silently,
+  and a hash-change assertion of exactly this shape is the only detector.
 
 - **FINDING (for the user, not for this milestone): `requiresUnpremult` is a
   silent no-op when both colorspaces are Linear.** Surfaced by `M5.P3.T2`, which

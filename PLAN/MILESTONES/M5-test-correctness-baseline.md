@@ -317,7 +317,7 @@ reproduction against this tree. Nothing else from that list returns with it.
 Test first, then fix, so the test is proven to catch the defect rather than
 written against an already-fixed tree.
 
-- [ ] M5.P5.T1 — Add a regression test that fails on the stale offset today
+- [x] M5.P5.T1 — Add a regression test that fails on the stale offset today
   - files: `Tests/fixtures/read-time-offset.ntp` (new), `tools/ci/smoke_test.py`
   - approach: this cannot be a gtest case. The defect lives on the
     `AppInstance::loadInternal` CLI path, and `Tests/wmain.cpp` shares one

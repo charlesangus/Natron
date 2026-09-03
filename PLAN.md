@@ -91,27 +91,9 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **Does the `-i` stale-`timeOffset` defect become work, and under what
-  milestone?** Awaiting a human answer; nothing is planned against it.
-  A scout reproduced it on 2026-09-02 against this fork's own debug build:
-  `-i <node> <file>` applies the filename with a bare `KnobFile::setValue`
-  (`Engine/AppInstance.cpp:645-654`) and nothing else. The reader's own
-  filename handler then refreshes `originalFrameRange`, `firstFrame`,
-  `lastFrame` and `startingTime` — but never `timeOffset`, which is the only
-  term in its decode mapping (`*sequenceTime = t - timeOffset`,
-  `GenericReader.cpp:693`). A project whose Read node carries a non-zero
-  `timeOffset` therefore renders every frame held at one input frame. The
-  mechanism was checked against the tree and holds; the reproduction itself
-  has not been independently repeated. `createReader()` escapes it only
-  because a fresh node defaults `timeOffset` to 0.
-  **This is upstream #864**, one of the eight numbers cancelled from M5 by
-  `DECISIONS/2026-09-02-inherited-docs-are-not-requirements.md`. That decision
-  is about *provenance* — those numbers entered the plan through inherited
-  docs rather than through the user — and it stands. But provenance being bad
-  does not make a defect unreal, and this one appears real in this tree, which
-  the "most were Windows-only or Qt5-bundle" triage did not establish either
-  way for #864 specifically. Recorded here rather than planned, because the
-  rule is that work enters through the user.
+_None awaiting a human answer._ The `-i` stale-`timeOffset` question raised on
+2026-09-02 was answered the same day — fold it in — and is now M5's Phase 5.5;
+see that milestone's `## Decisions`.
 
 The five that paused this run on 2026-08-31
 were answered the same day; see `DECISIONS/2026-08-31-aces-via-ocio-builtin-config.md`,

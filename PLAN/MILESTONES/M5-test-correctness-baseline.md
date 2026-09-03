@@ -42,9 +42,12 @@ The gaps worth closing first, for a compositor whose value is correct pixels:
 `NatronRenderer` entry surface, zero coverage), project save/load round-tripping,
 and any render longer than one frame.
 
-**Scope.** This milestone delivers the safety net only — coverage and regression
-infrastructure. Phase 5.2 is the one place M5 changes behaviour, and only where a
-test could otherwise not observe a failure at all.
+**Scope.** This milestone delivers the safety net — coverage and regression
+infrastructure — plus two deliberate exceptions. Phase 5.2 changes behaviour only
+where a test could otherwise not observe a failure at all. Phase 5.5 fixes one
+defect, folded in on the user's instruction after the safety-net work surfaced it
+(see `## Decisions`); it is the single bug fix in this milestone and does not
+reopen the cancelled list below.
 
 > **Cancelled, 2026-09-02 — the inherited P0 task.** The original `M5.P1.T3`
 > ("Work the existing P0 list once CI can catch regressions") is dropped, not
@@ -302,7 +305,87 @@ and `test.sh ctest debug` is green.
 multi-frame render each have coverage; `test.sh ctest debug` and `test.sh smoke
 debug` are both green.
 
+## Phase 5.5: Fix the `-i` stale-`timeOffset` defect
+
+Folded into M5 on the user's instruction, 2026-09-02. This is upstream #864 —
+one of the eight numbers Phase 5.1's cancellation note drops — and folding it in
+does **not** reopen that list. The cancellation was about provenance: those
+numbers entered the plan through inherited documentation instead of through the
+user. This one is back because the user put it back, having been shown a
+reproduction against this tree. Nothing else from that list returns with it.
+
+Test first, then fix, so the test is proven to catch the defect rather than
+written against an already-fixed tree.
+
+- [ ] M5.P5.T1 — Add a regression test that fails on the stale offset today
+  - files: `Tests/fixtures/read-time-offset.ntp` (new), `tools/ci/smoke_test.py`
+  - approach: this cannot be a gtest case. The defect lives on the
+    `AppInstance::loadInternal` CLI path, and `Tests/wmain.cpp` shares one
+    `AppManager` across all cases while `loadInternal` is one-shot per instance —
+    so the test drives the built `NatronRenderer` as a subprocess, which
+    `smoke_test.py` already does. Build a fixture project with a Read node whose
+    **`timeOffset` is non-zero** and a Write node; `.ntp` is boost XML text, and
+    `Tests/ProjectOCIO_Test.cpp:53-105` is the existing load-and-substitute
+    pattern to copy for path fixups. Render a 3-frame range through
+    `-i <read> <file>`, then assert the three outputs are **not** byte-identical
+    to each other.
+    **The non-zero `timeOffset` is what makes this test real:** a first attempt
+    with the default offset of 0 passed green against the broken code. Say so in
+    a comment, or the next person will simplify the fixture and silently void the
+    test.
+  - verify: the new check **fails** against the current tree, naming the frames
+    that matched when they should differ. Every existing `smoke_test.py` check
+    still passes. Do not fix the defect in this task.
+  - size: M
+
+- [ ] M5.P5.T2 — Keep `timeOffset` consistent when the filename changes
+  - files: to be determined by the task — either `Engine/AppInstance.cpp`, or
+    `charlesangus/openfx-io` plus the `OPENFX_IO_REF` pin in
+    `tools/ci/local/fetch-assets.sh`
+  - approach: `-i` applies the filename with a bare `KnobFile::setValue`
+    (`Engine/AppInstance.cpp:645-654`). The reader's own filename handler then
+    refreshes `originalFrameRange`, `firstFrame`, `lastFrame` and `startingTime`
+    but never `timeOffset`, and `timeOffset` is the only term in the decode
+    mapping (`*sequenceTime = t - timeOffset`, `GenericReader.cpp:693`). The node
+    is left internally inconsistent, every render time falls outside the sequence
+    domain, and the before/after hold behaviour collapses the range onto one
+    frame. `createReader()` escapes it only because a fresh node defaults
+    `timeOffset` to 0.
+    **Decide where the fix belongs and justify it in the commit message.** The
+    plugin already maintains four of the five derived params on a filename
+    change, which argues the omission is its bug and the fix belongs in the
+    `openfx-io` fork under `DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md`
+    — upstreamable, and it fixes every host, not just this one. Against that, a
+    host-side fix needs no pin bump and no second repository. Weigh both against
+    the evidence rather than taking either as given; the host-side variant in
+    particular was only ever a code-reading hypothesis and has not been shown to
+    work.
+  - verify: `M5.P5.T1`'s check passes, and each rendered frame carries its own
+    content. `test.sh ctest debug` and `test.sh smoke debug` are both green, and
+    a project whose reader has a zero `timeOffset` renders exactly as it does
+    today.
+  - size: M
+
+**Verification gate:** a project whose Read node carries a non-zero `timeOffset`
+renders distinct frames through `-i`, and the check that proves it was watched to
+fail before the fix landed.
+
 ## Decisions
+
+- **#864 is folded in, and only #864.** The user reinstated it on 2026-09-02
+  after being shown a reproduction against this tree. This does not weaken
+  `DECISIONS/2026-09-02-inherited-docs-are-not-requirements.md`: that rule is
+  about how work *enters* the plan, and #864 entered this time through the user,
+  which is exactly the channel the rule prescribes. Bad provenance never made the
+  defect unreal — the earlier triage established that most of the eight were
+  Windows-only or Qt5-bundle-specific, but never established anything either way
+  about #864 specifically, and reporting the cancellation as though it had was an
+  overreach on the PM's part. The other seven stay cancelled and are not to be
+  revisited without the same explicit instruction.
+
+- **The PR will not carry `Closes #864`.** That number belongs to
+  `NatronGitHub/Natron`, not to this fork; a closing keyword would silently do
+  nothing, or worse, resolve against an unrelated issue in this repo.
 
 - **`M5.P1.T1` needed a second file the brief did not name.** With `PRE_TEST`
   discovery wired up, `ctest` reported **46** cases rather than 30.
@@ -361,5 +444,6 @@ debug` are both green.
 matches what the binary actually runs; a failed headless render exits non-zero;
 and the colour transforms, the depth/premult converter, the cache-key invariant,
 the command-line surface, project round-tripping and a multi-frame render each
-have a case that fails when that behaviour breaks. `format`, `lint-ci` and
-`build-and-test` are all green.
+have a case that fails when that behaviour breaks. The `-i` stale-`timeOffset`
+defect is fixed, with the check that proves it having been watched to fail first.
+`format`, `lint-ci` and `build-and-test` are all green.

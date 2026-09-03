@@ -185,7 +185,7 @@ C++ in background mode instead of only as a printed line.
 
 ## Phase 5.3: Cover the pixel path
 
-- [ ] M5.P3.T1 — Test the sRGB, Rec709 and BT1886 transforms
+- [x] M5.P3.T1 — Test the sRGB, Rec709 and BT1886 transforms
   - files: `Tests/Lut_Test.cpp`
   - approach: `Lut_Test.cpp`'s single case tests only integer width conversions;
     the transfer functions are untested, though `Engine/Lut.cpp` drives

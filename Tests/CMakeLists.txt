@@ -31,6 +31,7 @@ set(Tests_SOURCES
     Lut_Test.cpp
     OSGLContext_Test.cpp
     ProjectOCIO_Test.cpp
+    ProjectSerialization_Test.cpp
     Tracker_Test.cpp
     wmain.cpp
 )

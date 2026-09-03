@@ -338,7 +338,9 @@ written against an already-fixed tree.
     still passes. Do not fix the defect in this task.
   - size: M
 
-- [ ] M5.P5.T2 — Keep `timeOffset` consistent when the filename changes
+- [x] M5.P5.T2 — Keep `timeOffset` consistent when the filename changes
+  - landed: `charlesangus/openfx-io` PR #2, merged as `020d898f9`; pin bumped
+    from `40764b207` in `tools/ci/local/fetch-assets.sh`.
   - files: to be determined by the task — either `Engine/AppInstance.cpp`, or
     `charlesangus/openfx-io` plus the `OPENFX_IO_REF` pin in
     `tools/ci/local/fetch-assets.sh`
@@ -382,6 +384,25 @@ fail before the fix landed.
   about #864 specifically, and reporting the cancellation as though it had was an
   overreach on the PM's part. The other seven stay cancelled and are not to be
   revisited without the same explicit instruction.
+
+- **The `-i` fix went plugin-side, and the host-side hypothesis was disproved,
+  not merely rejected.** `GenericReaderPlugin` keeps one time mapping in two
+  params under the invariant `timeOffset == startingTime - firstFrame`; three of
+  the four `changedParam` branches maintain it, and the `kParamOriginalFrameRange`
+  branch that fires on a file change resets `firstFrame`/`lastFrame`/`startingTime`
+  while leaving `timeOffset` stale. `getTimeDomain()` reads `startingTime` and
+  `getSequenceTime()` reads `timeOffset`, so the node advertises a range it cannot
+  decode. A probe setting the filename through the **Python API** — no `-i`
+  anywhere — reproduced the identical inconsistency, because
+  `OfxEffectInstance.cpp:2480` maps Natron's internal edit reason to
+  `kOfxChangeUserEdited`, exactly as a GUI file-dialog pick does. So `-i` is one
+  of three doors into one bug. A host-side fix in `AppInstance.cpp` *would* have
+  turned the test green (`timeOffset->setValue(0)` re-enters the plugin's own
+  handler) while leaving the GUI and script paths broken and hard-coding a plugin
+  invariant into the host — cheap and wrong. Chosen semantics: `timeOffset = 0`,
+  because the plugin has just reset `startingTime` to the new sequence's first
+  frame and the two must agree. This is not a semantics change; it makes a hidden
+  param follow the visible one it is derived from.
 
 - **The PR will not carry `Closes #864`.** That number belongs to
   `NatronGitHub/Natron`, not to this fork; a closing keyword would silently do

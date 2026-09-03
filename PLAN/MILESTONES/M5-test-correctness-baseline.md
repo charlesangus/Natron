@@ -265,7 +265,7 @@ and `test.sh ctest debug` is green.
     silently asserted away.
   - size: M
 
-- [ ] M5.P4.T2 — Round-trip a project through save and load
+- [x] M5.P4.T2 — Round-trip a project through save and load
   - files: `Tests/ProjectSerialization_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: `docs/maintainer-notes.md` calls the `…Serialization` structs "the
     single easiest place to cause data-loss regressions", and nothing round-trips

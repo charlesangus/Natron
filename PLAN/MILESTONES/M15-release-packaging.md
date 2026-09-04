@@ -52,7 +52,7 @@ this milestone alone.
 
 ## Phase 15.1: Make `cmake --install` produce a runnable tree
 
-- [ ] M15.P1.T1 — Install the OFX bundles and OCIO configs into the bundle layout
+- [x] M15.P1.T1 — Install the OFX bundles and OCIO configs into the bundle layout
   - files: `CMakeLists.txt`, `cmake/NatronBundleAssets.cmake` (new)
   - approach: add a `NATRON_BUNDLE_ASSETS` option, default `OFF`, that installs
     `build/assets/Plugins/*.ofx.bundle` to `Plugins/OFX/Natron/` and

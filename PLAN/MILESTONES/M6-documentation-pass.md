@@ -13,7 +13,7 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
 
 ## Phase 6.1: Make the root and agent-facing docs match what ships
 
-- [ ] M6.P1.T5 — Correct the README's plugin and binary-release claims
+- [x] M6.P1.T5 — Correct the README's plugin and binary-release claims
   - files: `README.md`
   - approach: `README.md:39` lists `OpenFX-G'MIC` with the `(+)` marker that
     `README.md:36` defines as "included in the binary releases". gmic is **not**
@@ -238,6 +238,16 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
   address, and `CHANGELOG.md` is deleted rather than annotated ("git is the
   changelog"). Both were offered to the user as fix-or-delete; both came back
   delete.
+
+- 2026-09-03 — `M6.P1.T5` left the plugin bullets pointing at
+  `github.com/NatronGitHub/openfx-*` even though `fetch-assets.sh` pins
+  **`charlesangus/openfx-io`** (`:202`) and **`charlesangus/openfx-arena`**
+  (`:249`) — this fork's own forks; only `openfx-misc` (`:214`) is genuinely
+  pinned to NatronGitHub. Surfaced by the reviewer, deliberately not fixed:
+  `DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md` frames those forks
+  as thin, upstream-tracking deltas meant to stay indistinguishable from
+  upstream for a general reader, so linking the canonical project page is
+  defensible. Raised with the user rather than decided here.
 
 - 2026-09-03 — M12's deferred idea of writing fresh maintainer docs from the
   code is **not** in M6. `docs/decisions/2026-09-02-inherited-docs-are-not-requirements.md`

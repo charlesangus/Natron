@@ -30,6 +30,8 @@ set(CMAKE_CXX_STANDARD 20)
 
 include(GNUInstallDirs)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
 option(NATRON_SYSTEM_LIBS "use system versions of dependencies instead of bundled ones" OFF)
 option(NATRON_BUILD_TESTS "build the Natron test suite" ON)
 
@@ -162,3 +164,5 @@ if(NATRON_BUILD_TESTS)
 endif()
 
 add_subdirectory(App)
+
+include(cmake/NatronBundleAssets.cmake)

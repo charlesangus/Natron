@@ -267,21 +267,24 @@ def check_ofx_plugin_bundle_set():
     for name in EXPECTED_OFX_BUNDLES:
         ofx_bin = os.path.join(plugin_path, "%s.ofx.bundle" % name,
                                 "Contents", "Linux-x86-64", "%s.ofx" % name)
-        proc = subprocess.run([verify_loader, ofx_bin],
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         # IO.ofx's dlopen is informational-only in fetch-assets.sh too (see
         # the comment above its own probe call): it depends on the
         # container having already indexed OCIO/OIIO/OpenEXR's SONAMEs via
         # ldconfig, which is a property of the environment, not the bundle.
+        # Skip before running it, not after: probing and discarding the result
+        # only cost time and made the log below overstate what was gated.
         if name == "IO":
             continue
+        proc = subprocess.run([verify_loader, ofx_bin],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if proc.returncode != 0:
             raise AssertionError(
                 "verify_plugin_loads %r failed (exit %d): %s"
                 % (ofx_bin, proc.returncode,
                    proc.stdout.decode("utf-8", "replace").strip())
             )
-    _mark("[smoke] OK: verify_plugin_loads probed %r" % (EXPECTED_OFX_BUNDLES,))
+    _mark("[smoke] OK: verify_plugin_loads gated on %r"
+          % (tuple(n for n in EXPECTED_OFX_BUNDLES if n != "IO"),))
 
 
 def check_pyside6_bindings():

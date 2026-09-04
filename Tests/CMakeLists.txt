@@ -67,4 +67,8 @@ include(GoogleTest)
 # headroom -- its only job is to turn a scheduler wait with no predicate,
 # no loop and no timeout (OutputSchedulerThread.cpp's bufEmptyCondition
 # wait) into a failed test instead of a process that never exits.
-gtest_discover_tests(Tests DISCOVERY_MODE PRE_TEST PROPERTIES TIMEOUT 300)
+# DISCOVERY_TIMEOUT 120, not the 5s default: PRE_TEST discovery runs the binary,
+# and wmain.cpp passes --clear-openfx-cache, so every discovery pays a cold rescan
+# of all four OFX bundles plus Python and OCIO init before gtest prints the list.
+# Blowing the 5s budget is a FATAL_ERROR that fails ctest before a single test runs.
+gtest_discover_tests(Tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 300)

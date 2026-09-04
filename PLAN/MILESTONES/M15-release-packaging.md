@@ -84,7 +84,7 @@ this milestone alone.
     does not exist" warning (`AppManager.cpp:341`).
   - size: S
 
-- [ ] M15.P1.T3 — Stage the Python runtime and PySide6 under the prefix
+- [x] M15.P1.T3 — Stage the Python runtime and PySide6 under the prefix
   - files: `cmake/NatronBundleAssets.cmake`
   - approach: copy the interpreter's `lib/python3.X/` — including `lib-dynload/`
     and a `site-packages/` carrying PySide6 and shiboken6 — under the prefix, so

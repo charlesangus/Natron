@@ -147,7 +147,7 @@ the smoke test green and loads all four OFX bundles.
 
 ## Phase 15.3: AppImage
 
-- [ ] M15.P3.T1 — Build the AppDir and the AppImage from the staged tree
+- [x] M15.P3.T1 — Build the AppDir and the AppImage from the staged tree
   - files: `tools/release/make-appimage.sh` (new)
   - approach: consume Phase 15.2's staged tree — do not re-derive it. Add
     `AppRun`, and the top-level `.desktop` and icon the AppImage runtime

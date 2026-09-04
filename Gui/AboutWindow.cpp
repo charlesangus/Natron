@@ -438,15 +438,6 @@ AboutWindow::AboutWindow(QWidget* parent)
     _aboutText->setText(aboutText);
     _tabWidget->addTab( _aboutText, tr("About") );
 
-    _changelogText =  new QTextBrowser(_tabWidget);
-    _changelogText->setOpenExternalLinks(true);
-    {
-        QFile changelogFile( QString::fromUtf8(":CHANGELOG.md") );
-        changelogFile.open(QIODevice::ReadOnly | QIODevice::Text);
-        _changelogText->setText( QString::fromUtf8( changelogFile.readAll() ) );
-    }
-    _tabWidget->addTab( _changelogText, tr("Changelog") );
-
     _libsText = new QTextBrowser(_tabWidget);
     _libsText->setOpenExternalLinks(true);
     updateLibrariesVersions();

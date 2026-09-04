@@ -1,6 +1,6 @@
 # Natron
 
-[![GPL2 License](http://img.shields.io/:license-gpl2-blue.svg?)](LICENSE.txt) [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v1.4%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md) [![Checks](https://github.com/charlesangus/Natron/actions/workflows/checks.yml/badge.svg)](https://github.com/charlesangus/Natron/actions/workflows/checks.yml) [![Tests](https://github.com/charlesangus/Natron/actions/workflows/ci.yml/badge.svg)](https://github.com/charlesangus/Natron/actions/workflows/ci.yml) [![Packaging status](https://repology.org/badge/tiny-repos/natron.svg)](https://repology.org/project/natron/badges) [![OpenHub](https://www.openhub.net/p/natron/widgets/project_thin_badge?format=gif&ref=Thin+badge)](https://www.openhub.net/p/Natron)
+[![GPL2 License](http://img.shields.io/:license-gpl2-blue.svg?)](LICENSE.txt) [![Checks](https://github.com/charlesangus/Natron/actions/workflows/checks.yml/badge.svg)](https://github.com/charlesangus/Natron/actions/workflows/checks.yml) [![Tests](https://github.com/charlesangus/Natron/actions/workflows/ci.yml/badge.svg)](https://github.com/charlesangus/Natron/actions/workflows/ci.yml) [![Packaging status](https://repology.org/badge/tiny-repos/natron.svg)](https://repology.org/project/natron/badges) [![OpenHub](https://www.openhub.net/p/natron/widgets/project_thin_badge?format=gif&ref=Thin+badge)](https://www.openhub.net/p/Natron)
 
 ---
 

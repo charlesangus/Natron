@@ -174,7 +174,11 @@ TEST(CLArgs, FrameRangeBareSingleFrame)
 TEST(CLArgs, MalformedReaderMissingNameSetsError)
 {
     ScopedCoutSilencer silence;
-    CLArgs cl(makeArgs({ "NatronRenderer", "-i" }), /*forceBackground=*/true);
+    // The project file comes first on purpose: it is what stops the "you must specify
+    // the filename of a script or project" error at the end of parse() from standing in
+    // for the -i validation, and it cannot come after "-i", which would take it for the
+    // Read node's name.
+    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntp", "-i" }), /*forceBackground=*/true);
 
     ASSERT_TRUE(cl.getError().has_value());
     EXPECT_EQ(1, *cl.getError());
@@ -184,7 +188,7 @@ TEST(CLArgs, MalformedReaderMissingNameSetsError)
 TEST(CLArgs, MalformedReaderMissingFilenameSetsError)
 {
     ScopedCoutSilencer silence;
-    CLArgs cl(makeArgs({ "NatronRenderer", "-i", "Read1" }), /*forceBackground=*/true);
+    CLArgs cl(makeArgs({ "NatronRenderer", "/tmp/project.ntp", "-i", "Read1" }), /*forceBackground=*/true);
 
     ASSERT_TRUE(cl.getError().has_value());
     EXPECT_EQ(1, *cl.getError());

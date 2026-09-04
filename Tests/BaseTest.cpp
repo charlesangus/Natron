@@ -311,16 +311,28 @@ TEST_F(BaseTest, SetValues)
     }
 }
 
-/// The hash is the sole cache-invalidation key: querying it repeatedly without
-/// changing anything must be stable.
-TEST_F(BaseTest, HashStableAcrossNoOp)
+/// A freshly created node must already carry a computed, non-zero hash, and
+/// reading that hash must not itself mutate it.
+///
+/// The non-zero half is what gives the two tests below their teeth: getHashValue()
+/// is documented to return 0 when the hash has never been computed, so if node
+/// creation stopped computing it, their EXPECT_NE(before, after) would still pass
+/// with `before` merely being 0.
+///
+/// Note what is deliberately *not* asserted here: that a no-op round-trip through
+/// a knob lands back on the same hash. computeHashInternal() appends _imp->knobsAge,
+/// a counter that only ever increments, so the hash is path-dependent by design --
+/// setting a knob back to its old value yields a new hash, not the original one.
+TEST_F(BaseTest, HashComputedAtCreationAndStableAcrossReads)
 {
     NodePtr generator = createNode(_generatorPluginID);
     ASSERT_TRUE(bool(generator));
 
     U64 hash1 = generator->getHashValue();
+    EXPECT_NE((U64)0, hash1) << "node creation must compute the hash";
+
     U64 hash2 = generator->getHashValue();
-    EXPECT_EQ(hash1, hash2);
+    EXPECT_EQ(hash1, hash2) << "getHashValue() must be side-effect-free";
 }
 
 /// Changing a knob's value must change the node's hash, otherwise a cached

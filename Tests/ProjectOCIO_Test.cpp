@@ -91,10 +91,11 @@ getProject()
     return appPTR->getTopLevelInstance()->getProject();
 }
 
-// Returns what the nodes reported while the project loaded. Node::setPersistentMessage()
-// only stores a message when the process has a GUI; this binary, like NatronRenderer, is
-// always AppManager::isBackground(), where the same call prints "Persistent message: ..."
-// instead. That print is the whole of the error state observable from here.
+// Returns what the nodes reported while the project loaded. This binary, like
+// NatronRenderer, is always AppManager::isBackground(); Node::setPersistentMessage()
+// prints "Persistent message: ..." on that path and, since this milestone, also stores
+// the message, so the error state is readable both from this captured output and from
+// Node::hasPersistentMessage().
 bool
 loadProjectCopy(const QString& dirPath,
                 const QString& fileName,

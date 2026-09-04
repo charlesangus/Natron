@@ -51,6 +51,11 @@
 
 NATRON_NAMESPACE_ENTER
 
+/**
+ * @brief KnobI is deliberately not a QObject: knobs are created in large
+ * numbers and must stay lightweight and copyable. This companion class
+ * carries the signals a knob needs to emit on its behalf.
+ **/
 class KnobSignalSlotHandler
     : public QObject
 {

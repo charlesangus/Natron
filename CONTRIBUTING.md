@@ -37,7 +37,7 @@ Bug Reports and Issue Tracking
 ------------------------------
 
 We use GitHub's issue tracking system for bugs and enhancements:
-https://github.com/NatronGitHub/Natron/issues
+https://github.com/charlesangus/Natron/issues
 
 **If you are merely asking a question ("how do I...")**, please do not file an
 issue, but instead ask the question on the [forum](https://discuss.pixls.us/c/software/natron).

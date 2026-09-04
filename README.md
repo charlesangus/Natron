@@ -8,7 +8,7 @@ Natron is a free, open-source (GPLv2 license) video compositor, similar in funct
 
 - Website: https://natrongithub.github.io
 - Source code: https://github.com/charlesangus/Natron
-- Issues: this fork does not use GitHub Issues; bugs and feature requests are tracked upstream at https://github.com/NatronGitHub/Natron/issues
+- Issues: bugs and feature requests are tracked at https://github.com/charlesangus/Natron/issues
 - Forum: https://discuss.pixls.us/c/software/natron
 - Discord: https://discord.gg/cpMj5p3Fv5
 - User documentation: [Documentation/source/](Documentation/source/)
@@ -114,7 +114,7 @@ You should start contributing to the Natron project by first picking an easy tas
 
 ### Logistics
 
-We coordinate development through the [GitHub issue tracker](https://github.com/NatronGitHub/Natron/issues).
+We coordinate development through the [GitHub issue tracker](https://github.com/charlesangus/Natron/issues).
 
 The default branch is `main`, and pull requests are opened against it. `RB-2.6` and the other `RB-*`/legacy branches (including `master`) are frozen upstream history, not merge targets — see [CONTRIBUTING.md](CONTRIBUTING.md) for the full branching model and the upstream bridge to `NatronGitHub/Natron`.
 

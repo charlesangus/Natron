@@ -38,6 +38,7 @@ Two corollaries the audit made concrete:
 Knowledge that is genuinely not recoverable from the code — the `shared_ptr`
 cycle rule, the serialization versioning requirement, the render-path TLS
 discipline, the `QRegExp`-to-`QRegularExpression` semantic gap whose call sites
-no longer exist — is salvaged into `docs/maintainer-notes.md` before deletion
-and distributed to `CONTRIBUTING.md` and to code comments in M6. Everything that
-merely describes the code is deleted, because the code is the better source.
+no longer exist — is salvaged into `docs/decisions/` (retrospective decision
+records) and distributed to `CONTRIBUTING.md` and to code comments in M6.
+Everything that merely describes the code is deleted, because the code is the
+better source.

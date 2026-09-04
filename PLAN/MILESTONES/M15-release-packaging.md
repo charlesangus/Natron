@@ -70,7 +70,7 @@ this milestone alone.
     reports nothing `not found` with `LD_LIBRARY_PATH` cleared.
   - size: M
 
-- [ ] M15.P1.T2 — Install the fontconfig tree and the PyPlugs
+- [x] M15.P1.T2 — Install the fontconfig tree and the PyPlugs
   - files: `cmake/NatronBundleAssets.cmake`, `Gui/CMakeLists.txt`
   - approach: install `Gui/Resources/etc/fonts` to `Resources/etc/fonts` and
     `Gui/Resources/PyPlugs` to `Plugins/`. `Fonts/` and `Stylesheets/` need no

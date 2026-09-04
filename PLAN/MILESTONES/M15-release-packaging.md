@@ -128,7 +128,7 @@ release` is unchanged at 28/28.
     environment scrubbed.
   - size: L
 
-- [ ] M15.P2.T2 — Emit the portable tarball
+- [x] M15.P2.T2 — Emit the portable tarball
   - files: `tools/release/stage-bundle.sh`, `tools/release/make-tarball.sh` (new)
   - approach: `tar Jcf` the staged tree with a single top-level
     `Natron-<version>-linux-x86_64/` directory, version read from

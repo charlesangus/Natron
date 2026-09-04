@@ -55,6 +55,11 @@ Acceptance sketch:
     `genStaticDocs.sh` invocation as a macOS `/Applications/Natron.app` example.
   - `guide/tutorials-hugin.md` — a byte-for-byte Markdown duplicate of the
     `.rst` that Sphinx never reads (`conf.py:34` sets `source_suffix = '.rst'`).
+  - `guide/getstarted-troubleshooting.rst:32,34,43,55,60,61` and
+    `guide/tutorials-writedoc.rst:36,102` — route users and doc contributors to
+    **upstream's** issue tracker. This fork uses its own (see M6's
+    `## Decisions`, 2026-09-03); found while fixing the root docs and left here
+    because M6 does not own `Documentation/`.
 - No dangling toctree entries. There are exactly two today —
   `known-bugs-and-workarounds`, referenced from
   `guide/getstarted-troubleshooting.rst:83` and `guide/getstarted.rst:15`, with

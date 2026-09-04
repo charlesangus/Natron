@@ -86,7 +86,7 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
     skills/natron-maintainer/SKILL.md` returns nothing.
   - size: S
 
-- [ ] M6.P1.T9 — Settle the issue-tracker policy on this fork's own tracker
+- [x] M6.P1.T9 — Settle the issue-tracker policy on this fork's own tracker
   - files: `README.md`, `CONTRIBUTING.md`, `.github/ISSUE_TEMPLATE/feature.yml`
   - approach: three docs give three answers. `README.md:11` says "this fork does
     not use GitHub Issues; bugs and feature requests are tracked upstream at
@@ -301,6 +301,24 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
   stray double blank line) that would otherwise have failed CI. There is no
   Docker or general network access in this sandbox, so this is the only local
   gate available.
+
+- 2026-09-03 — `M6.P1.T9` also repointed a **second** README issue-tracker
+  link, in `### Logistics` (~`:117`), which the brief did not name. Kept after
+  review: the very next sentence in that same paragraph invites the reader to
+  "report bugs, discuss tasks, or pick up work on the issue tracker", so
+  leaving the link upstream would have reproduced the exact self-contradiction
+  the task exists to remove — this time inside one paragraph. The genuinely
+  upstream-specific relationship, the PR bridge to `NatronGitHub/Natron`
+  described in `CONTRIBUTING.md`'s branching-model section, is a different
+  activity and was correctly left alone. Reporting bugs and mirroring PRs
+  upstream are not the same thing.
+
+- 2026-09-03 — three further upstream-tracker references were found and
+  deliberately **not** fixed by `M6.P1.T9`, because they belong to files other
+  milestones own: `CHANGELOG.md:3,189` (deleted outright by `M6.P1.T10`), and
+  `Documentation/source/guide/getstarted-troubleshooting.rst:32,34,43,55,60,61`
+  plus `tutorials-writedoc.rst:36,102`, which route users and doc contributors
+  to upstream's tracker and belong to **M14**. Added to M14's acceptance sketch.
 
 - 2026-09-03 — M12's deferred idea of writing fresh maintainer docs from the
   code is **not** in M6. `docs/decisions/2026-09-02-inherited-docs-are-not-requirements.md`

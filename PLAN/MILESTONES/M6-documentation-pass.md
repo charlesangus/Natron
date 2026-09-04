@@ -106,7 +106,7 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
     nothing.
   - size: S
 
-- [ ] M6.P1.T10 — Delete the inherited CHANGELOG and the placeholder code of conduct
+- [x] M6.P1.T10 — Delete the inherited CHANGELOG and the placeholder code of conduct
   - files: `CHANGELOG.md`, `CODE_OF_CONDUCT.md`, plus any file referencing them
   - approach: both are inherited artifacts that mislead rather than inform.
     `CHANGELOG.md` is 1122 lines of pure upstream history ending at "Version
@@ -319,6 +319,27 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
   `Documentation/source/guide/getstarted-troubleshooting.rst:32,34,43,55,60,61`
   plus `tutorials-writedoc.rst:36,102`, which route users and doc contributors
   to upstream's tracker and belong to **M14**. Added to M14's acceptance sketch.
+
+- 2026-09-03 — `M6.P1.T10` grew a **code** change the brief did not
+  anticipate: `CHANGELOG.md` was not only a doc. `Gui/GuiResources.qrc:3`
+  embedded it and `Gui/AboutWindow.cpp:441-448` rendered it as a "Changelog"
+  tab in the About dialog, so deleting the file alone would have pointed `rcc`
+  at a missing input and broken the build. The tab, the `_changelogText` member
+  and the resource entry were removed with it. This is a **user-visible change
+  to shipped UI**, not a docs cleanup, and it was flagged to the user as such;
+  the alternative — keeping 1122 lines of upstream history in the tree purely
+  to populate a GUI tab — contradicts the deletion decision. Verified by
+  stat-checking all 378 remaining `.qrc` entries against disk, sweeping
+  `Engine/`, `App/`, `PythonBin/`, `tools/`, CMake and the workflows for any
+  other reader, and confirming nothing selects About-dialog tabs by integer
+  index. Not compiled — no toolchain in this sandbox; CI is the first build.
+
+- 2026-09-03 — the code-of-conduct deletion had **three** inbound references,
+  not the one the brief named: the README badge, a `contact_links` entry in
+  `.github/ISSUE_TEMPLATE/config.yml`, and a checklist item in
+  `.github/PULL_REQUEST_TEMPLATE.md`. `CONTRIBUTING.md`'s own Code of Conduct
+  section was correctly left alone — it links the external
+  contributor-covenant.org, not the deleted file, so it does not dangle.
 
 - 2026-09-03 — M12's deferred idea of writing fresh maintainer docs from the
   code is **not** in M6. `docs/decisions/2026-09-02-inherited-docs-are-not-requirements.md`

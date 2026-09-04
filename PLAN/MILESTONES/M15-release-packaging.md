@@ -163,7 +163,7 @@ the smoke test green and loads all four OFX bundles.
     `--appimage-extract-and-run` on a FUSE-less host.
   - size: M
 
-- [ ] M15.P3.T2 — Refresh the AppStream metadata
+- [x] M15.P3.T2 — Refresh the AppStream metadata
   - files: `Gui/Resources/Metainfo/fr.natron.Natron.appdata.xml`
   - approach: the file is stale and partly malformed — its newest `<release>` is
     2.3.12 (2018), the homepage URL is missing its colon

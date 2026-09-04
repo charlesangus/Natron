@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: null
-pm_heartbeat: 2026-09-03T00:35:48-04:00
+current: M6.P1.T1
+pm_heartbeat: 2026-09-03T20:49:56-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -86,12 +86,25 @@ future core work has solid ground to build on.
 | M12 | Documentation cruft removal | done | [M12-documentation-cruft-removal.md](PLAN/MILESTONES/M12-documentation-cruft-removal.md) |
 | M13 | Build the full upstream OFX plugin set | done | [M13-full-ofx-plugin-set.md](PLAN/MILESTONES/M13-full-ofx-plugin-set.md) |
 | M5 | Test & correctness baseline | done | [M5-test-correctness-baseline.md](PLAN/MILESTONES/M5-test-correctness-baseline.md) |
-| M6 | Documentation pass | todo | [M6-documentation-pass.md](PLAN/MILESTONES/M6-documentation-pass.md) |
+| M6 | Documentation pass | doing | [M6-documentation-pass.md](PLAN/MILESTONES/M6-documentation-pass.md) |
 | M11 | OFX plugin integration test (pre-release) | rescope | [M11-ofx-plugin-integration-test.md](PLAN/MILESTONES/M11-ofx-plugin-integration-test.md) |
+| M14 | Sphinx documentation tree and doc CI | todo | [M14-documentation-tree-and-doc-ci.md](PLAN/MILESTONES/M14-documentation-tree-and-doc-ci.md) |
 
 # Open questions
 
-_None awaiting a human answer._ The `-i` stale-`timeOffset` question raised on
+**Does this fork publish user documentation at all?** Raised 2026-09-03 while
+scoping M6. `Documentation/` is ~70 pages of upstream 2.4-era guide that no
+workflow builds and no site publishes, while `.readthedocs.yaml` exists and
+`README.md` carried an RTD badge pointing at *upstream's* project. The three
+approaches — fork-owned RTD/Pages with a doc build gating merges; repair the
+tree and keep it in-tree only; or delete `Documentation/` and
+`.readthedocs.yaml` outright under
+`DECISIONS/2026-09-02-inherited-docs-are-not-requirements.md` — are mutually
+exclusive and produce entirely different task sets. **M14 cannot be elaborated
+until this is answered.** M6 deliberately deletes rather than repoints the
+stale RTD links so as not to pre-empt it.
+
+The `-i` stale-`timeOffset` question raised on
 2026-09-02 was answered the same day — fold it in — and is now M5's Phase 5.5;
 see that milestone's `## Decisions`.
 

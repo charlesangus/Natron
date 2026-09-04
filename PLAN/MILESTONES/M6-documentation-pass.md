@@ -125,7 +125,7 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
 
 ## Phase 6.2: Retire the `docs/maintainer-notes.md` holding pen
 
-- [ ] M6.P2.T11 — Fold the contributor-facing invariants into `CONTRIBUTING.md`
+- [x] M6.P2.T11 — Fold the contributor-facing invariants into `CONTRIBUTING.md`
   - files: `CONTRIBUTING.md`, `docs/maintainer-notes.md` (read only)
   - approach: `docs/maintainer-notes.md:1-5` declares itself a holding pen to be
     distributed and deleted (M12.P1.T2). Its factual claims were spot-checked and

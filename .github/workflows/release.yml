@@ -1,0 +1,121 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build-and-release
+    runs-on: ubuntu-latest
+    container:
+      image: aswf/ci-vfxall:2027-clang21.1
+    defaults:
+      run:
+        shell: bash -l {0}
+    env:
+      CI: 'True'
+      NATRON_IN_CONTAINER: 1
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 6G
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5.0.1
+        with:
+          submodules: recursive
+
+      - name: Restore ccache
+        id: restore_ccache
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-linux-release-tag-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-linux-release-tag-${{ github.ref_name }}-
+
+      - name: Cache test assets
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            build/assets/Plugins
+            build/assets/OpenColorIO-Configs
+          key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
+
+      - name: Fetch test assets
+        run: tools/ci/local/fetch-assets.sh
+
+      - name: Build (release)
+        run: tools/ci/local/build.sh release --no-ccache-stats
+
+      - name: Run ctest suite (release)
+        id: run_ctest
+        continue-on-error: true
+        run: tools/ci/local/test.sh ctest release
+
+      - name: Python bindings smoke test (release)
+        id: run_smoke
+        continue-on-error: true
+        run: tools/ci/local/test.sh smoke release
+
+      - name: Check test results
+        if: always()
+        run: |
+          status=0
+
+          echo "ctest outcome: ${{ steps.run_ctest.outcome }}"
+          if [[ "${{ steps.run_ctest.outcome }}" == "failure" ]]; then
+            echo "::error::ctest (release) failed"
+            status=1
+          fi
+
+          echo "smoke test outcome: ${{ steps.run_smoke.outcome }}"
+          if [[ "${{ steps.run_smoke.outcome }}" == "failure" ]]; then
+            echo "::error::Python bindings smoke test (release) failed"
+            status=1
+          fi
+
+          exit "${status}"
+
+      - name: Stage bundle
+        run: tools/release/stage-bundle.sh build/release /tmp/natron-stage
+
+      - name: Create tarball
+        run: tools/release/make-tarball.sh /tmp/natron-stage /tmp/artifacts
+
+      - name: Create AppImage
+        run: tools/release/make-appimage.sh /tmp/natron-stage /tmp/artifacts
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: Natron Release Artifacts
+          path: /tmp/artifacts/*
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG" /tmp/artifacts/* --title "Natron $TAG" --generate-notes
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.restore_ccache.outputs.cache-primary-key }}
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s

@@ -50,7 +50,7 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
   - verify: `grep -rn "rb-2\.4\|readthedocs" README.md .github/` returns nothing.
   - size: S
 
-- [ ] M6.P1.T7 — Correct the local build README's description of the plugin set
+- [x] M6.P1.T7 — Correct the local build README's description of the plugin set
   - files: `tools/ci/local/README.md`
   - approach: `tools/ci/local/README.md:56-57` says step 2 "**builds** the
     openfx-io OFX plugin bundle from source at pinned SHAs" — singular, pre-M13.
@@ -268,6 +268,17 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
   liability the task removed. The dead `GlobalDefines.h` guard is a real but
   out-of-scope code finding — it belongs to a Qt5 dead-code sweep, not a docs
   pass.
+
+- 2026-09-03 — `M6.P1.T7` left `tools/ci/local/README.md`'s pre-existing
+  "the resulting `IO.ofx` is self-contained" unchanged, though it overstates.
+  `fetch-assets.sh:635-641` records that `IO.ofx` also carries
+  `RUNPATH=$ORIGIN/../../Libraries` with nothing populating that directory, so a
+  bare `dlopen` of it resolves OCIO/OIIO only via the container's ldconfig
+  state — which is why the script treats that probe as a non-gating warning.
+  The sentence is defensible read as scoped to SeExpr (the one library that
+  would otherwise need `LD_LIBRARY_PATH`), it predates this task, and the
+  task's own added claim about `LD_LIBRARY_PATH` is literally true. Noted rather
+  than caveated, to keep the task to one coherent change.
 
 - 2026-09-03 — M12's deferred idea of writing fresh maintainer docs from the
   code is **not** in M6. `docs/decisions/2026-09-02-inherited-docs-are-not-requirements.md`

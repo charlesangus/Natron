@@ -1,6 +1,5 @@
 Thanks for submitting a pull request! Please provide enough information so that others can review your pull request. Additionally, make sure you've done all of these things:
 
-- [ ] I've followed the [code of conduct](https://github.com/charlesangus/Natron/blob/main/CODE_OF_CONDUCT.md) to the best of my understanding
 - [ ] I've read and understood the [contributing guidelines](https://github.com/charlesangus/Natron/blob/main/CONTRIBUTING.md)
 - [ ] I've formatted my code according to Natron's [coding style](https://github.com/charlesangus/Natron/blob/main/CONTRIBUTING.md#coding-style) (CI's `format` check runs clang-format on changed lines)
 - [ ] I've searched the [pull requests tracker](https://github.com/charlesangus/Natron/pulls?q=is%3Apr) to ensure that this PR is not a duplicate

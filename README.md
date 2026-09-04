@@ -1,6 +1,6 @@
 # Natron
 
-[![GPL2 License](http://img.shields.io/:license-gpl2-blue.svg?)](LICENSE.txt) [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v1.4%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md) [![Checks](https://github.com/charlesangus/Natron/actions/workflows/checks.yml/badge.svg)](https://github.com/charlesangus/Natron/actions/workflows/checks.yml) [![Tests](https://github.com/charlesangus/Natron/actions/workflows/ci.yml/badge.svg)](https://github.com/charlesangus/Natron/actions/workflows/ci.yml) [![Documentation Status](https://readthedocs.org/projects/natron/badge/?version=rb-2.4)](http://natron.readthedocs.io/en/rb-2.4/) [![Packaging status](https://repology.org/badge/tiny-repos/natron.svg)](https://repology.org/project/natron/badges) [![OpenHub](https://www.openhub.net/p/natron/widgets/project_thin_badge?format=gif&ref=Thin+badge)](https://www.openhub.net/p/Natron)
+[![GPL2 License](http://img.shields.io/:license-gpl2-blue.svg?)](LICENSE.txt) [![Checks](https://github.com/charlesangus/Natron/actions/workflows/checks.yml/badge.svg)](https://github.com/charlesangus/Natron/actions/workflows/checks.yml) [![Tests](https://github.com/charlesangus/Natron/actions/workflows/ci.yml/badge.svg)](https://github.com/charlesangus/Natron/actions/workflows/ci.yml) [![Packaging status](https://repology.org/badge/tiny-repos/natron.svg)](https://repology.org/project/natron/badges) [![OpenHub](https://www.openhub.net/p/natron/widgets/project_thin_badge?format=gif&ref=Thin+badge)](https://www.openhub.net/p/Natron)
 
 ---
 
@@ -8,10 +8,10 @@ Natron is a free, open-source (GPLv2 license) video compositor, similar in funct
 
 - Website: https://natrongithub.github.io
 - Source code: https://github.com/charlesangus/Natron
-- Issues: this fork does not use GitHub Issues; bugs and feature requests are tracked upstream at https://github.com/NatronGitHub/Natron/issues
+- Issues: bugs and feature requests are tracked at https://github.com/charlesangus/Natron/issues
 - Forum: https://discuss.pixls.us/c/software/natron
 - Discord: https://discord.gg/cpMj5p3Fv5
-- User documentation: https://natron.readthedocs.io/
+- User documentation: [Documentation/source/](Documentation/source/)
 
 ## Help wanted
 
@@ -33,10 +33,9 @@ If you are willing to help, please contact the development team on the [pixls.us
 - 32-bit floating-point linear color processing pipeline.
 - Color management handled by [OpenColorIO](https://opencolorio.org/).
 - Dozens of video and image formats supported such as: H264, DNxHR, EXR, DPX, TIFF, JPG, PNG through [OpenImageIO](https://github.com/OpenImageIO/oiio) and [FFmpeg](https://ffmpeg.org/).
-- Support for many free, open-source, and commercial OpenFX plugins—currently almost all features of OpenFX v1.4 are supported. Those marked with (+) are included in the binary releases.
+- Support for many free, open-source, and commercial OpenFX plugins—currently almost all features of OpenFX v1.4 are supported. Those marked with (+) are built by this fork's CI from pinned source.
   - [OpenFX-IO](https://github.com/NatronGitHub/openfx-io) (+)
   - [OpenFX-Misc](https://github.com/NatronGitHub/openfx-misc) (+)
-  - [OpenFX-G'MIC](https://github.com/NatronGitHub/openfx-gmic) (+)
   - [OpenFX-Arena](https://github.com/NatronGitHub/openfx-arena) (+)
   - [All OFX products from RevisionFX](http://www.revisionfx.com)
   - [Boris FX](https://borisfx.com/) OpenFX plugins, including Sapphire
@@ -115,7 +114,7 @@ You should start contributing to the Natron project by first picking an easy tas
 
 ### Logistics
 
-We coordinate development through the [GitHub issue tracker](https://github.com/NatronGitHub/Natron/issues).
+We coordinate development through the [GitHub issue tracker](https://github.com/charlesangus/Natron/issues).
 
 The default branch is `main`, and pull requests are opened against it. `RB-2.6` and the other `RB-*`/legacy branches (including `master`) are frozen upstream history, not merge targets — see [CONTRIBUTING.md](CONTRIBUTING.md) for the full branching model and the upstream bridge to `NatronGitHub/Natron`.
 

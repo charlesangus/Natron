@@ -50,7 +50,6 @@ class AboutWindow
     QTextBrowser* _libsText;
     QTextBrowser* _teamText;
     QTextBrowser* _licenseText;
-    QTextBrowser* _changelogText;
     QTextBrowser* _thirdPartyBrowser;
     QWidget* _buttonContainer;
     QHBoxLayout* _buttonLayout;

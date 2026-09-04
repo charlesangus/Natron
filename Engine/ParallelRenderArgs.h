@@ -241,7 +241,12 @@ public:
 
 typedef std::map<NodePtr, NodeFrameRequestPtr> FrameRequestMap;
 
-
+/**
+ * @brief Per-render context is captured up front into thread-local storage
+ * rather than read from live node state while rendering, so any new render
+ * entry point must install this setter or renders will see inconsistent
+ * state.
+ **/
 class ParallelRenderArgsSetter
 {
     std::shared_ptr<std::map<NodePtr, ParallelRenderArgsPtr> > argsMap;

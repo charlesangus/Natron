@@ -33,10 +33,9 @@ If you are willing to help, please contact the development team on the [pixls.us
 - 32-bit floating-point linear color processing pipeline.
 - Color management handled by [OpenColorIO](https://opencolorio.org/).
 - Dozens of video and image formats supported such as: H264, DNxHR, EXR, DPX, TIFF, JPG, PNG through [OpenImageIO](https://github.com/OpenImageIO/oiio) and [FFmpeg](https://ffmpeg.org/).
-- Support for many free, open-source, and commercial OpenFX plugins—currently almost all features of OpenFX v1.4 are supported. Those marked with (+) are included in the binary releases.
+- Support for many free, open-source, and commercial OpenFX plugins—currently almost all features of OpenFX v1.4 are supported. Those marked with (+) are built by this fork's CI from pinned source.
   - [OpenFX-IO](https://github.com/NatronGitHub/openfx-io) (+)
   - [OpenFX-Misc](https://github.com/NatronGitHub/openfx-misc) (+)
-  - [OpenFX-G'MIC](https://github.com/NatronGitHub/openfx-gmic) (+)
   - [OpenFX-Arena](https://github.com/NatronGitHub/openfx-arena) (+)
   - [All OFX products from RevisionFX](http://www.revisionfx.com)
   - [Boris FX](https://borisfx.com/) OpenFX plugins, including Sapphire

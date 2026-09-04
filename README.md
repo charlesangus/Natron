@@ -1,6 +1,6 @@
 # Natron
 
-[![GPL2 License](http://img.shields.io/:license-gpl2-blue.svg?)](LICENSE.txt) [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v1.4%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md) [![Checks](https://github.com/charlesangus/Natron/actions/workflows/checks.yml/badge.svg)](https://github.com/charlesangus/Natron/actions/workflows/checks.yml) [![Tests](https://github.com/charlesangus/Natron/actions/workflows/ci.yml/badge.svg)](https://github.com/charlesangus/Natron/actions/workflows/ci.yml) [![Documentation Status](https://readthedocs.org/projects/natron/badge/?version=rb-2.4)](http://natron.readthedocs.io/en/rb-2.4/) [![Packaging status](https://repology.org/badge/tiny-repos/natron.svg)](https://repology.org/project/natron/badges) [![OpenHub](https://www.openhub.net/p/natron/widgets/project_thin_badge?format=gif&ref=Thin+badge)](https://www.openhub.net/p/Natron)
+[![GPL2 License](http://img.shields.io/:license-gpl2-blue.svg?)](LICENSE.txt) [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v1.4%20adopted-ff69b4.svg)](CODE_OF_CONDUCT.md) [![Checks](https://github.com/charlesangus/Natron/actions/workflows/checks.yml/badge.svg)](https://github.com/charlesangus/Natron/actions/workflows/checks.yml) [![Tests](https://github.com/charlesangus/Natron/actions/workflows/ci.yml/badge.svg)](https://github.com/charlesangus/Natron/actions/workflows/ci.yml) [![Packaging status](https://repology.org/badge/tiny-repos/natron.svg)](https://repology.org/project/natron/badges) [![OpenHub](https://www.openhub.net/p/natron/widgets/project_thin_badge?format=gif&ref=Thin+badge)](https://www.openhub.net/p/Natron)
 
 ---
 
@@ -11,7 +11,7 @@ Natron is a free, open-source (GPLv2 license) video compositor, similar in funct
 - Issues: this fork does not use GitHub Issues; bugs and feature requests are tracked upstream at https://github.com/NatronGitHub/Natron/issues
 - Forum: https://discuss.pixls.us/c/software/natron
 - Discord: https://discord.gg/cpMj5p3Fv5
-- User documentation: https://natron.readthedocs.io/
+- User documentation: [Documentation/source/](Documentation/source/)
 
 ## Help wanted
 

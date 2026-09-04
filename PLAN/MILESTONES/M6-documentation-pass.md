@@ -68,7 +68,7 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
     plugin.
   - size: S
 
-- [ ] M6.P1.T8 — Delete the stale "Qt 6 Migration Status" section from the maintainer skill
+- [x] M6.P1.T8 — Delete the stale "Qt 6 Migration Status" section from the maintainer skill
   - files: `skills/natron-maintainer/SKILL.md`
   - approach: `SKILL.md:117-119` still lists as **To do**:
     "`QDesktopWidget`/`QApplication::desktop()` → `QScreen` (a handful of files
@@ -248,6 +248,26 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
   as thin, upstream-tracking deltas meant to stay indistinguishable from
   upstream for a general reader, so linking the canonical project page is
   defensible. Raised with the user rather than decided here.
+
+- 2026-09-03 — `M6.P1.T8`'s deletion also removed a "To do: regenerate
+  PySide6/Shiboken6 bindings (fixes enum/flag issue #854)" item. Checked before
+  accepting the loss: that work is **done**, not dropped — `M2.P3.T1` completed
+  it on 2026-08-30 and `DECISIONS/2026-08-31-drop-qtpy.md` records that #854's
+  enum-semantics failure mode cannot occur once nothing consults qtpy. The one
+  residue is a test-coverage gap, not unfinished binding work:
+  `PyGuiApplication::addMenuCommand` is the only remaining QFlags-taking bound
+  API and is GUI-only, so headless CI does not exercise it.
+
+- 2026-09-03 — the deleted section's claim that "remaining `#if QT_VERSION`
+  guards only gate Qt 6 minor-version features" was **not** re-homed as durable
+  guidance, because it is false. `Gui/Gui.cpp:284,416` and
+  `Gui/TableModelView.cpp:46,1011` match it, but `Global/GlobalDefines.h:59` is
+  a Qt5-era `#error` floor check (`QT_VERSION < 5.15.3`) that is dead in a
+  Qt 6.8-only build, and `libs/qhttpserver/src/qhttpconnection.cpp:153` gates on
+  Qt 5.0. Restating the generalisation would have recreated the same drift
+  liability the task removed. The dead `GlobalDefines.h` guard is a real but
+  out-of-scope code finding — it belongs to a Qt5 dead-code sweep, not a docs
+  pass.
 
 - 2026-09-03 — M12's deferred idea of writing fresh maintainer docs from the
   code is **not** in M6. `docs/decisions/2026-09-02-inherited-docs-are-not-requirements.md`

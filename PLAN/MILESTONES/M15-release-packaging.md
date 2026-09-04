@@ -199,7 +199,7 @@ under `appstreamcli`.
     anyway).
   - size: M
 
-- [ ] M15.P4.T2 — Document what each artifact is for and what it will not do
+- [x] M15.P4.T2 — Document what each artifact is for and what it will not do
   - files: `README.md`, `INSTALL_LINUX.md`
   - approach: state which artifact to take (AppImage for a workstation, tarball
     for a farm or shared storage), the glibc floor and what it excludes (Ubuntu

@@ -91,10 +91,11 @@ getProject()
     return appPTR->getTopLevelInstance()->getProject();
 }
 
-// Returns what the nodes reported while the project loaded. Node::setPersistentMessage()
-// only stores a message when the process has a GUI; this binary, like NatronRenderer, is
-// always AppManager::isBackground(), where the same call prints "Persistent message: ..."
-// instead. That print is the whole of the error state observable from here.
+// Returns what the nodes reported while the project loaded. This binary, like
+// NatronRenderer, is always AppManager::isBackground(); Node::setPersistentMessage()
+// prints "Persistent message: ..." on that path and, since this milestone, also stores
+// the message, so the error state is readable both from this captured output and from
+// Node::hasPersistentMessage().
 bool
 loadProjectCopy(const QString& dirPath,
                 const QString& fileName,
@@ -148,6 +149,28 @@ TEST_F(ProjectOCIOTest, ColorSpaceMissingFromTheActiveConfigPutsItsNodeInAnError
                           "OpenColorIO config \"studio-config-v4.0.0_aces-v2.0_ocio-v2.5\"."),
               std::string::npos)
         << output;
+}
+
+TEST_F(ProjectOCIOTest, ColorSpaceMissingFromTheActiveConfigLeavesTheNodeWithAPersistentMessage)
+{
+    QTemporaryDir tmp;
+
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+
+    ASSERT_FALSE(writeProjectCopy(dirPath,
+                                  QString::fromUtf8("old.ntp"),
+                                  QString::fromUtf8(kFixtureInputSpace),
+                                  QString::fromUtf8(kFixtureOutputSpace))
+                     .isEmpty());
+
+    std::string output;
+    const bool loaded = loadProjectCopy(dirPath, QString::fromUtf8("old.ntp"), &output);
+
+    EXPECT_TRUE(loaded) << output;
+    NodePtr read1 = getProject()->getNodeByName("Read1");
+    ASSERT_TRUE(read1.get() != NULL);
+    EXPECT_TRUE(read1->hasPersistentMessage());
 }
 
 TEST_F(ProjectOCIOTest, NodesWhoseColorSpacesResolveAreLeftAlone)

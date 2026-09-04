@@ -1790,6 +1790,10 @@ AppInstance::startWritersRendering(bool doBlockingRender,
             QObject::connect( item.process.get(), SIGNAL(processFinished(int)), this, SLOT(onBackgroundRenderProcessFinished()) );
         } else {
             QObject::connect(item.work.writer->getRenderEngine().get(), SIGNAL(renderFinished(int)), this, SLOT(onQueuedRenderFinished(int)), Qt::UniqueConnection);
+            // renderFinished() is emitted from the OutputSchedulerThread, not this app's thread, and in
+            // background mode nothing ever pumps this app's event loop to deliver a queued connection, so
+            // a direct connection is the only way the exit status is guaranteed to observe the result.
+            QObject::connect(item.work.writer->getRenderEngine().get(), SIGNAL(renderFinished(int)), this, SLOT(onRenderFinishedForExitStatus(int)), Qt::ConnectionType(Qt::DirectConnection | Qt::UniqueConnection));
         }
 
         bool canPause = !item.work.writer->isVideoWriter();
@@ -1936,6 +1940,14 @@ AppInstance::onQueuedRenderFinished(int /*retCode*/)
         return;
     }
     startNextQueuedRender( effect.get() );
+}
+
+void
+AppInstance::onRenderFinishedForExitStatus(int retCode)
+{
+    if (retCode != 0) {
+        appPTR->setRenderFailed();
+    }
 }
 
 void

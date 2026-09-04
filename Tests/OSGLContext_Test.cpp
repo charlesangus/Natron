@@ -44,7 +44,15 @@ std::ostream& operator<<(std::ostream& os, const std::nullptr_t p) {
 }  // namespace
 #endif
 
-TEST(OSGLContext, Basic)
+// Disabled: under xvfb-run on aswf/ci-vfxall:2027-clang21.1, Xvfb yields no
+// GLX visual (measured: "Error while loading OpenGL: GLX: No GLXFBConfigs
+// returned" / "OpenGL rendering is disabled" with +extension GLX, +iglx, and
+// LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe all tried), so the
+// isOpenGLLoaded() guard below always takes the bare-return branch, which
+// gtest scores as a pass -- reporting coverage that never ran. To run this
+// for real: `--gtest_also_run_disabled_tests` inside devshell.sh on a host
+// with /dev/dri (devshell.sh passes it through when present).
+TEST(OSGLContext, DISABLED_Basic)
 {
     if (!appPTR->isOpenGLLoaded()) {
         // TODO: Convert to GTEST_SKIP() when gtest updated.
@@ -75,7 +83,13 @@ TEST(OSGLContext, Basic)
     EXPECT_FALSE(OSGLContext::threadHasACurrentContext());
 }
 
-TEST(GPUContextPool, Basic) {
+// Disabled: same measured cause as OSGLContext.DISABLED_Basic above -- no
+// GLX visual under xvfb-run on this image, so isOpenGLLoaded() is always
+// false here and the bare return below was being scored as a pass. Run for
+// real with `--gtest_also_run_disabled_tests` inside devshell.sh on a host
+// with /dev/dri.
+TEST(GPUContextPool, DISABLED_Basic)
+{
     if (!appPTR->isOpenGLLoaded()) {
         /// TODO: Convert to GTEST_SKIP() when gtest updated.
         std::cerr << "Skipping test because OpenGL loading failed." << std::endl;

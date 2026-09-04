@@ -183,6 +183,10 @@ public:
 
     const AppInstanceVec& getAppInstances() const WARN_UNUSED_RETURN;
     AppInstancePtr getTopLevelInstance () const WARN_UNUSED_RETURN;
+
+    // Sticky for the process lifetime: see AppManagerPrivate::renderFailed.
+    void setRenderFailed();
+    bool hasRenderFailed() const WARN_UNUSED_RETURN;
     const PluginsMap & getPluginsList() const WARN_UNUSED_RETURN;
     Plugin* getPluginBinary(const QString & pluginId,
                             int majorVersion,

@@ -22,6 +22,7 @@ set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
     BaseTest.cpp
+    CLArgs_Test.cpp
     Curve_Test.cpp
     FileSystemModel_Test.cpp
     Hash64_Test.cpp
@@ -30,6 +31,8 @@ set(Tests_SOURCES
     Lut_Test.cpp
     OSGLContext_Test.cpp
     ProjectOCIO_Test.cpp
+    ProjectSerialization_Test.cpp
+    RenderRange_Test.cpp
     Tracker_Test.cpp
     wmain.cpp
 )
@@ -54,4 +57,18 @@ target_include_directories(Tests
         google-mock/include
         google-mock
 )
-add_test(NAME Tests COMMAND Tests)
+include(GoogleTest)
+# PRE_TEST, not the default POST_BUILD: discovery runs the binary, which
+# constructs an AppManager and calls load() before RUN_ALL_TESTS() (even
+# under --gtest_list_tests), so it needs libpython3.13, OFX_PLUGIN_PATH and
+# the built OFX bundles -- all guaranteed at ctest time, not at build time.
+# TIMEOUT 300: the whole suite runs in under a second locally and the
+# slowest single case is well under a second too, so 300s per case is pure
+# headroom -- its only job is to turn a scheduler wait with no predicate,
+# no loop and no timeout (OutputSchedulerThread.cpp's bufEmptyCondition
+# wait) into a failed test instead of a process that never exits.
+# DISCOVERY_TIMEOUT 120, not the 5s default: PRE_TEST discovery runs the binary,
+# and wmain.cpp passes --clear-openfx-cache, so every discovery pays a cold rescan
+# of all four OFX bundles plus Python and OCIO init before gtest prints the list.
+# Blowing the 5s budget is a FATAL_ERROR that fails ctest before a single test runs.
+gtest_discover_tests(Tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 300)

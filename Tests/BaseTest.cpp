@@ -311,6 +311,63 @@ TEST_F(BaseTest, SetValues)
     }
 }
 
+/// A freshly created node must already carry a computed, non-zero hash, and
+/// reading that hash must not itself mutate it.
+///
+/// The non-zero half is what gives the two tests below their teeth: getHashValue()
+/// is documented to return 0 when the hash has never been computed, so if node
+/// creation stopped computing it, their EXPECT_NE(before, after) would still pass
+/// with `before` merely being 0.
+///
+/// Note what is deliberately *not* asserted here: that a no-op round-trip through
+/// a knob lands back on the same hash. computeHashInternal() appends _imp->knobsAge,
+/// a counter that only ever increments, so the hash is path-dependent by design --
+/// setting a knob back to its old value yields a new hash, not the original one.
+TEST_F(BaseTest, HashComputedAtCreationAndStableAcrossReads)
+{
+    NodePtr generator = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(generator));
+
+    U64 hash1 = generator->getHashValue();
+    EXPECT_NE((U64)0, hash1) << "node creation must compute the hash";
+
+    U64 hash2 = generator->getHashValue();
+    EXPECT_EQ(hash1, hash2) << "getHashValue() must be side-effect-free";
+}
+
+/// Changing a knob's value must change the node's hash, otherwise a cached
+/// render from before the change could be returned for a different render.
+TEST_F(BaseTest, HashChangesOnKnobValueChange)
+{
+    NodePtr generator = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(generator));
+
+    KnobIPtr knob = generator->getKnobByName("noiseZSlope");
+    KnobDouble* slope = dynamic_cast<KnobDouble*>(knob.get());
+    ASSERT_TRUE(slope != 0);
+
+    U64 hashBefore = generator->getHashValue();
+    slope->setValue(slope->getValue() + 1.);
+    U64 hashAfter = generator->getHashValue();
+
+    EXPECT_NE(hashBefore, hashAfter);
+}
+
+/// Connecting an input must change the downstream node's hash, since the
+/// downstream render now depends on a different (or newly-present) upstream tree.
+TEST_F(BaseTest, HashChangesOnInputConnected)
+{
+    NodePtr generator = createNode(_generatorPluginID);
+    NodePtr writer = createNode(_writeOIIOPluginID);
+    ASSERT_TRUE(generator && writer);
+
+    U64 hashBefore = writer->getHashValue();
+    connectNodes(generator, writer, 0, true);
+    U64 hashAfter = writer->getHashValue();
+
+    EXPECT_NE(hashBefore, hashAfter);
+}
+
 ///High level test: simple node connections test
 TEST_F(BaseTest, SimpleNodeConnections) {
     ///create the generator

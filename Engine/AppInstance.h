@@ -440,6 +440,8 @@ public Q_SLOTS:
 
     void onQueuedRenderFinished(int retCode);
 
+    void onRenderFinishedForExitStatus(int retCode);
+
 Q_SIGNALS:
 
     void pluginsPopulated();

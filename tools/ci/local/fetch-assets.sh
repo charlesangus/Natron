@@ -142,10 +142,10 @@ fi
 # mystery CI failure on your PR. Bump them deliberately, and re-run this
 # script (it rebuilds when the stamp below no longer matches).
 #
-# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, four commits ahead of
+# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, five commits ahead of
 # NatronGitHub/openfx-io and zero behind. Fork-and-fix is the standing
 # pattern for small changes to NatronGitHub repos -- see
-# PLAN/DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md. Two deltas:
+# PLAN/DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md. Three deltas:
 #
 # 1. A CMakeLists.txt fix (SEEXPR2_INCLUDES/SEEXPR2_LIBRARIES ->
 #    SEEXPR2_INCLUDE_DIR/SEEXPR2_LIBRARY): upstream reads variable names its
@@ -169,8 +169,25 @@ fi
 #    `sRGB - Display` and `Camera Rec.709`. Against the older tarball configs
 #    this is a no-op: renders are byte-identical either side of it.
 #
-# The -1 sentinel guard is the first of the two commits and is deliberately
-# self-contained, so it can be offered upstream on its own.
+# 3. timeOffset consistency in IOSupport/GenericReader.cpp
+#    (charlesangus/openfx-io#2). GenericReaderPlugin keeps one time mapping
+#    in two params -- getTimeDomain() reads startingTime, getSequenceTime()
+#    decodes with `t - timeOffset` -- so they must satisfy
+#    `timeOffset == startingTime - firstFrame`. Every branch of
+#    changedParam() maintained that except kParamOriginalFrameRange, which
+#    resets firstFrame/lastFrame/startingTime to a newly chosen file's range
+#    and left timeOffset holding the old file's value. A reader whose
+#    startingTime had been moved off its first frame then advertised a frame
+#    range it could not decode: every time in it mapped outside the sequence
+#    domain and onMissingFrame's hold collapsed the whole range onto one
+#    frame. That is the defect Tests/fixtures/read-time-offset.ntp and
+#    smoke_test.py's check_reader_cli_time_offset_regression pin down.
+#    Readers already at timeOffset 0 are unaffected -- renders are
+#    pixel-identical either side of it.
+#
+# The -1 sentinel guard is the first of delta 2's two commits and is
+# deliberately self-contained, so it can be offered upstream on its own; so
+# is delta 3, which is one commit and touches nothing else.
 #
 # Verified to build clean against the image's OIIO 3.1.16.0 / OCIO 2.5.2 /
 # OpenEXR 3.4.15 -- openfx-io carries explicit `#if OIIO_VERSION >= 30000`
@@ -183,7 +200,7 @@ fi
 # openfx-io's own CI pins the same branch. Not forked -- wdas/SeExpr is not
 # a NatronGitHub repo and we carry no changes to it.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="40764b207277d42c8c6a9060f6fc40c2eab80b7f"
+OPENFX_IO_REF="020d898f9bc92191a6fc1cb5a69bbd3c641ed23d"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 

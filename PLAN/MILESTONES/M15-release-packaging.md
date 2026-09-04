@@ -105,7 +105,7 @@ release` is unchanged at 28/28.
 
 ## Phase 15.2: Stage the runtime closure and emit the tarball
 
-- [ ] M15.P2.T1 — Write `tools/release/stage-bundle.sh`
+- [x] M15.P2.T1 — Write `tools/release/stage-bundle.sh`
   - files: `tools/release/stage-bundle.sh` (new), `tools/release/excludelist.txt` (new)
   - approach: the one thing CMake cannot do — lift the `/usr/local` dependency
     closure out of the build container. `cmake --install` into a staging dir,

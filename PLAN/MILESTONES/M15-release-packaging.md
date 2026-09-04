@@ -182,7 +182,7 @@ under `appstreamcli`.
 
 ## Phase 15.4: Release workflow and user-facing docs
 
-- [ ] M15.P4.T1 — Add `release.yml`, triggered on tag
+- [x] M15.P4.T1 — Add `release.yml`, triggered on tag
   - files: `.github/workflows/release.yml` (new)
   - approach: mirror `nightly.yml`'s container, ccache and asset-cache setup —
     it is the only workflow that already does a release build — then run the

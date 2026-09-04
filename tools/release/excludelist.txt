@@ -1,0 +1,105 @@
+# Libraries that must come from the host — never bundle these.
+# Based on the AppImage project excludelist conventions.
+
+# glibc and low-level runtime
+linux-vdso.so.1
+ld-linux-x86-64.so.2
+libc.so.6
+libm.so.6
+libdl.so.2
+libpthread.so.0
+librt.so.1
+libutil.so.1
+libresolv.so.2
+libnsl.so.1
+libcrypt.so.1
+libBrokenLocale.so.1
+libthread_db.so.1
+libanl.so.1
+libmvec.so.1
+
+# GL/Vulkan — driver-specific
+libGL.so.1
+libGLX.so.0
+libGLdispatch.so.0
+libEGL.so.1
+libOpenGL.so.0
+libvulkan.so.1
+libGLESv2.so.2
+libdrm.so.2
+libgbm.so.1
+
+# X11 and windowing
+libX11.so.6
+libX11-xcb.so.1
+libxcb.so.1
+libXext.so.6
+libXi.so.6
+libXrender.so.1
+libXrandr.so.2
+libXfixes.so.3
+libXcursor.so.1
+libXinerama.so.1
+libXdamage.so.1
+libXcomposite.so.1
+libXtst.so.6
+libxkbcommon.so.0
+libxkbcommon-x11.so.0
+libxcb-*.so.*
+
+# ALSA/PulseAudio
+libasound.so.2
+libpulse.so.0
+libpulse-simple.so.0
+libpulse-mainloop-glib.so.0
+
+# D-Bus
+libdbus-1.so.3
+
+# systemd
+libsystemd.so.0
+
+# NSS/NSPR — system crypto
+libnss3.so
+libnssutil3.so
+libnspr4.so
+libplc4.so
+libplds4.so
+libsmime3.so
+libssl3.so
+
+# glib/GIO/GObject
+libgio-2.0.so.0
+libglib-2.0.so.0
+libgmodule-2.0.so.0
+libgobject-2.0.so.0
+libgthread-2.0.so.0
+
+# Fontconfig/Freetype
+libfontconfig.so.1
+libfreetype.so.6
+
+# Linux kernel interfaces
+libcom_err.so.2
+libgpg-error.so.0
+libkeyutils.so.1
+
+# PAM
+libpam.so.0
+libpam_misc.so.0
+
+# SELinux
+libselinux.so.1
+
+# libudev — tied to systemd/udev on host
+libudev.so.1
+
+# Kerberos
+libgssapi_krb5.so.2
+libkrb5.so.3
+libk5crypto.so.3
+libkrb5support.so.0
+
+# LDAP
+libldap.so.2
+liblber.so.2

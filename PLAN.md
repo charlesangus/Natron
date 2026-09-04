@@ -89,6 +89,7 @@ future core work has solid ground to build on.
 | M6 | Documentation pass | doing | [M6-documentation-pass.md](PLAN/MILESTONES/M6-documentation-pass.md) |
 | M11 | OFX plugin integration test (pre-release) | rescope | [M11-ofx-plugin-integration-test.md](PLAN/MILESTONES/M11-ofx-plugin-integration-test.md) |
 | M14 | Sphinx documentation tree and doc CI | todo | [M14-documentation-tree-and-doc-ci.md](PLAN/MILESTONES/M14-documentation-tree-and-doc-ci.md) |
+| M15 | Release packaging: tarball and AppImage | todo | [M15-release-packaging.md](PLAN/MILESTONES/M15-release-packaging.md) |
 
 # Open questions
 

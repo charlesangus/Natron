@@ -34,3 +34,4 @@
 - 2026-09-02 — build-openfx-arena: arena ships 22 plugins; SVG/PDF/CDR gated off via our fork, poppler excluded on licence grounds → DECISIONS/2026-09-02-build-openfx-arena.md
 - 2026-09-02 — exempt-doc-templates-from-format-gate: templates/*.c are verbatim HTML snapshots, not buildable C; the gate governs compilable sources → DECISIONS/2026-09-02-exempt-doc-templates-from-format-gate.md
 - 2026-09-02 — no-glx-under-xvfb: no GLX visual under xvfb-run on ci-vfxall; the two OpenGL tests are DISABLED_ rather than silently passing → DECISIONS/2026-09-02-no-glx-under-xvfb.md
+- 2026-09-03 — package-as-tarball-and-appimage: ship a portable tar.xz plus an AppImage from one staged tree; no Flatpak, deb/rpm, or renderer container → DECISIONS/2026-09-03-package-as-tarball-and-appimage.md

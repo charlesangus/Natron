@@ -171,7 +171,7 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
     *reason*, not the mechanism.
   - size: S
 
-- [ ] M6.P2.T13 — Preserve the QRegExp porting rule as a decision record and delete the holding pen
+- [x] M6.P2.T13 — Preserve the QRegExp porting rule as a decision record and delete the holding pen
   - files: new `docs/decisions/<date>-qregexp-to-qregularexpression-mapping.md`,
     `docs/maintainer-notes.md` (deleted)
   - approach: `maintainer-notes.md:118-137` fits neither `CONTRIBUTING.md` nor a

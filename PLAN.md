@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M6.P2.T13
-pm_heartbeat: 2026-09-04T01:11:51-04:00
+current: null
+pm_heartbeat: 2026-09-04T01:14:35-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -86,7 +86,7 @@ future core work has solid ground to build on.
 | M12 | Documentation cruft removal | done | [M12-documentation-cruft-removal.md](PLAN/MILESTONES/M12-documentation-cruft-removal.md) |
 | M13 | Build the full upstream OFX plugin set | done | [M13-full-ofx-plugin-set.md](PLAN/MILESTONES/M13-full-ofx-plugin-set.md) |
 | M5 | Test & correctness baseline | done | [M5-test-correctness-baseline.md](PLAN/MILESTONES/M5-test-correctness-baseline.md) |
-| M6 | Documentation pass | doing | [M6-documentation-pass.md](PLAN/MILESTONES/M6-documentation-pass.md) |
+| M6 | Documentation pass | done | [M6-documentation-pass.md](PLAN/MILESTONES/M6-documentation-pass.md) |
 | M11 | OFX plugin integration test (pre-release) | rescope | [M11-ofx-plugin-integration-test.md](PLAN/MILESTONES/M11-ofx-plugin-integration-test.md) |
 | M14 | Sphinx documentation tree and doc CI | todo | [M14-documentation-tree-and-doc-ci.md](PLAN/MILESTONES/M14-documentation-tree-and-doc-ci.md) |
 | M15 | Release packaging: tarball and AppImage | todo | [M15-release-packaging.md](PLAN/MILESTONES/M15-release-packaging.md) |

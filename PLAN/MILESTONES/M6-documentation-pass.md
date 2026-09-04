@@ -149,7 +149,7 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
     and `:118-137` has a corresponding sentence in `CONTRIBUTING.md`.
   - size: M
 
-- [ ] M6.P2.T12 — Add the two header comments that clear the comment bar
+- [x] M6.P2.T12 — Add the two header comments that clear the comment bar
   - files: `Engine/Knob.h`, `Engine/ParallelRenderArgs.h`
   - approach: **do not** distribute a dozen invariants as header comments. A
     comment survives only if it explains a non-obvious *why* at that site, and
@@ -289,6 +289,18 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
   falsehood as the RTD badge just removed, since a reader would read upstream's
   packaging and community-health stats as this fork's. Left alone as out of
   scope for T6; raised with the user rather than folded silently into T10.
+
+- 2026-09-03 — the `format` gate **can** be run locally after all, which
+  matters for every remaining code-touching task. `pip install clang-format`
+  fails plain, but `pip install --user --break-system-packages
+  "clang-format==21.1.8"` succeeds, and the CI invocation then reproduces
+  exactly: `git clang-format --binary $(python3 -c 'import clang_format, os;
+  print(os.path.join(os.path.dirname(clang_format.__file__), "data", "bin",
+  "clang-format"))') --extensions c,cc,cpp,h,hpp,mm --diff HEAD -- <paths>`.
+  Found by `M6.P2.T12`'s reviewer, which used it to catch a real violation (a
+  stray double blank line) that would otherwise have failed CI. There is no
+  Docker or general network access in this sandbox, so this is the only local
+  gate available.
 
 - 2026-09-03 — M12's deferred idea of writing fresh maintainer docs from the
   code is **not** in M6. `docs/decisions/2026-09-02-inherited-docs-are-not-requirements.md`

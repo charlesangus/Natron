@@ -34,7 +34,7 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
     claims a binary release exists.
   - size: S
 
-- [ ] M6.P1.T6 — Retire the `rb-2.4`-era Read the Docs links
+- [x] M6.P1.T6 — Retire the `rb-2.4`-era Read the Docs links
   - files: `README.md` (lines 3 and 14 only), `.github/ISSUE_TEMPLATE/bug.yml`,
     `.github/ISSUE_TEMPLATE/config.yml`
   - approach: four links point a reader of *this fork* at upstream's 2.4-era
@@ -279,6 +279,16 @@ Re-elaborated 2026-09-03; the original four tasks are cancelled below. See
   would otherwise need `LD_LIBRARY_PATH`), it predates this task, and the
   task's own added claim about `LD_LIBRARY_PATH` is literally true. Noted rather
   than caveated, to keep the task to one coherent change.
+
+- 2026-09-03 — `M6.P1.T6`'s reviewer surfaced two things for later tasks.
+  (a) `.github/ISSUE_TEMPLATE/config.yml` carries a **second** link to
+  `CODE_OF_CONDUCT.md` (a "Read the Code of Conduct" contact entry) beyond the
+  README badge; `M6.P1.T10` must clear both or it leaves a dangling link.
+  (b) The README badge row's `repology` and `openhub` badges report metrics for
+  the **upstream** `natron` project, not this fork — arguably the same class of
+  falsehood as the RTD badge just removed, since a reader would read upstream's
+  packaging and community-health stats as this fork's. Left alone as out of
+  scope for T6; raised with the user rather than folded silently into T10.
 
 - 2026-09-03 — M12's deferred idea of writing fresh maintainer docs from the
   code is **not** in M6. `docs/decisions/2026-09-02-inherited-docs-are-not-requirements.md`

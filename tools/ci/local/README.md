@@ -53,10 +53,11 @@ Then re-run the `docker build` above; it will resolve `FROM` locally.
 
 ## 2. Fetch test assets (one time)
 
-Prepares `build/assets/`: downloads the OCIO configs, and **builds** the
-openfx-io OFX plugin bundle from source at pinned SHAs. Idempotent -- a
-second run is instant, it skips anything already present and matching the
-pins.
+Prepares `build/assets/`: downloads the OCIO configs, and **builds** four OFX
+plugin bundles from source at pinned SHAs -- `IO.ofx`, `Misc.ofx`, `CImg.ofx`
+and `Arena.ofx` -- along with the dependency libraries (lcms2, libzip,
+ImageMagick) `Arena.ofx` needs. Idempotent -- a second run is instant, it
+skips anything already present and matching the pins.
 
 ```
 tools/ci/local/fetch-assets.sh
@@ -66,11 +67,13 @@ The plugins are built rather than downloaded because the only bundle
 published upstream is an Ubuntu 22 build that cannot load on Rocky 9 (it
 needs `GLIBCXX_3.4.30`, and links OCIO 1 / OIIO 2.2 / OpenEXR 2.5). The
 `aswf/ci-vfxall` image ships OCIO, OIIO, OpenEXR, OpenFX and LibRaw, so the
-bundle is built against the container's own libraries instead. SeExpr is
+bundles are built against the container's own libraries instead. SeExpr is
 built too (ASWF ships none) and linked statically, so the resulting `IO.ofx`
-is self-contained -- nothing here or in `test.sh` needs an
-`LD_LIBRARY_PATH`. See the header of `fetch-assets.sh` for the full
-reasoning and the pinned SHAs.
+is self-contained. `Arena.ofx` gets there a different way: its dependencies
+are staged into a `Libraries/` directory at the bundle root, which its
+existing `RUNPATH` already resolves to. Either way, nothing here or in
+`test.sh` needs an `LD_LIBRARY_PATH`. See the header of `fetch-assets.sh` for
+the full reasoning and the pinned SHAs.
 
 First run costs a few minutes of compiling; CI caches the result (see the
 "Cache test assets" step in `ci.yml`), keyed on `fetch-assets.sh`'s hash so

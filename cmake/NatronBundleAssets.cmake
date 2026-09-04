@@ -39,4 +39,48 @@ if(NATRON_BUNDLE_ASSETS)
         DESTINATION "Plugins"
     )
 
+    if(NOT Python3_STDLIB)
+        message(FATAL_ERROR "NATRON_BUNDLE_ASSETS is ON but Python3_STDLIB is not set. find_package(Python3 COMPONENTS Interpreter Development) must succeed first.")
+    endif()
+
+    if(NOT Python3_SITELIB)
+        message(FATAL_ERROR "NATRON_BUNDLE_ASSETS is ON but Python3_SITELIB is not set. find_package(Python3 COMPONENTS Interpreter Development) must succeed first.")
+    endif()
+
+    set(NATRON_PY_DEST_DIR "lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}")
+
+    install(DIRECTORY "${Python3_STDLIB}/"
+        DESTINATION "${NATRON_PY_DEST_DIR}"
+        PATTERN "test" EXCLUDE
+        PATTERN "idlelib" EXCLUDE
+        PATTERN "tkinter" EXCLUDE
+        PATTERN "turtledemo" EXCLUDE
+        PATTERN "lib-dynload" EXCLUDE
+        PATTERN "site-packages" EXCLUDE
+        PATTERN "__pycache__" EXCLUDE
+    )
+
+    if(EXISTS "${Python3_STDLIB}/lib-dynload")
+        install(DIRECTORY "${Python3_STDLIB}/lib-dynload/"
+            DESTINATION "${NATRON_PY_DEST_DIR}/lib-dynload"
+            PATTERN "__pycache__" EXCLUDE
+        )
+    endif()
+
+    foreach(NATRON_PY_SITE_ITEM PySide6 shiboken6 shiboken6_generator)
+        if(EXISTS "${Python3_SITELIB}/${NATRON_PY_SITE_ITEM}")
+            install(DIRECTORY "${Python3_SITELIB}/${NATRON_PY_SITE_ITEM}"
+                DESTINATION "${NATRON_PY_DEST_DIR}/site-packages"
+                PATTERN "__pycache__" EXCLUDE
+            )
+        endif()
+    endforeach()
+
+    file(GLOB NATRON_PY_DIST_INFOS "${Python3_SITELIB}/PySide6-*.dist-info" "${Python3_SITELIB}/shiboken6-*.dist-info" "${Python3_SITELIB}/shiboken6_generator-*.dist-info")
+    foreach(NATRON_PY_DIST_INFO ${NATRON_PY_DIST_INFOS})
+        install(DIRECTORY "${NATRON_PY_DIST_INFO}"
+            DESTINATION "${NATRON_PY_DEST_DIR}/site-packages"
+        )
+    endforeach()
+
 endif()

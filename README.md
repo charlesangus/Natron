@@ -89,7 +89,9 @@ You can enable software rendering by setting the environment variable LIBGL_ALWA
 
 ### Binary distribution
 
-This fork does not currently publish pre-built binaries. Build Natron from source (see below).
+Pre-built Linux release artifacts (AppImage and tarball) are published on the [Releases page](https://github.com/charlesangus/Natron/releases). See [INSTALL_LINUX.md](INSTALL_LINUX.md) for which artifact to pick, system requirements, and known limitations.
+
+You can also build Natron from source (see below).
 
 ### Building and installing from source
 

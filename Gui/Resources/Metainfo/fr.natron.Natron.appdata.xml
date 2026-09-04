@@ -13,13 +13,14 @@
          </p>
      </description>
      <releases>
+      <release version="2.6.0" date="2026-09-04"/>
       <release version="2.3.12" date="2018-05-23"/>
       <release version="2.3.11" date="2018-05-07"/>
      </releases>
      <screenshots>
       <screenshot type="default">https://upload.wikimedia.org/wikipedia/commons/c/cc/Natron-screenshot-20180619.png</screenshot>
      </screenshots>
-     <url type="homepage">https//natrongithub.github.io</url>
-     <url type="bugtracker">https://github.com/NatronGitHub/Natron/issues</url>
+     <url type="homepage">https://natrongithub.github.io</url>
+     <url type="bugtracker">https://github.com/charlesangus/Natron/issues</url>
      <content_rating type="oars-1.1" />
  </component>

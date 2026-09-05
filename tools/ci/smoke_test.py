@@ -614,6 +614,144 @@ def check_misc_effect_render():
           "%r" % (out_path,))
 
 
+def check_arena_effect_render():
+    from PySide6 import QtGui
+
+    tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-arena-")
+    out_path = os.path.join(tmpdir, "texture.png")
+
+    texture = app.createNode("net.fxarena.openfx.Texture")
+    if texture is None:
+        raise AssertionError(
+            "app.createNode('net.fxarena.openfx.Texture') returned None")
+    texture.getParam("extent").set("size")
+    texture.getParam("NatronParamFormatSize").set(16, 16)
+    _mark("[smoke] created Arena Texture node, 16x16")
+
+    writer = app.createWriter(out_path)
+    if writer is None:
+        raise AssertionError(
+            "app.createWriter(%r) returned None" % (out_path,))
+    if not writer.connectInput(0, texture):
+        raise AssertionError(
+            "Effect.connectInput(0, texture) failed for Texture -> Writer")
+
+    _mark("[smoke] calling app.render([(writer, 1, 1)]) for "
+          "Texture -> Writer...")
+    app.render([(writer, 1, 1)])
+
+    if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+        raise AssertionError(
+            "app.render() did not produce a non-empty file at %r"
+            % (out_path,))
+
+    img = QtGui.QImage(out_path)
+    if img.isNull():
+        raise AssertionError(
+            "app.render() produced no decodable PNG at %r" % (out_path,))
+
+    positions = [(0, 0), (4, 4), (8, 8), (12, 12), (0, 8), (8, 0), (4, 12),
+                 (12, 4)]
+    samples = []
+    for x, y in positions:
+        color = img.pixelColor(x, y)
+        samples.append((color.red(), color.green(), color.blue()))
+    _mark("[smoke] Arena Texture -> PNG sampled pixels: %r" % (samples,))
+
+    if all(sample == samples[0] for sample in samples):
+        raise AssertionError(
+            "all %d sampled pixels of the Arena Texture render are "
+            "identical (%r) -- expected spatial variation from a "
+            "procedural texture, ImageMagick render path may not have "
+            "executed" % (len(samples), samples[0]))
+    _mark("[smoke] OK: Arena Texture -> Writer render intact, rendered "
+          "%r" % (out_path,))
+
+
+def _write_stripe_png(path, width, height):
+    """Write a PNG with column 0 white and all other columns black."""
+    def chunk(tag, data):
+        c = tag + data
+        return struct.pack("!I", len(data)) + c + struct.pack("!I", zlib.crc32(c) & 0xffffffff)
+
+    white = bytes(bytearray((255, 255, 255)))
+    black = bytes(bytearray((0, 0, 0)))
+    row = white + black * (width - 1)
+    raw = b"".join(b"\x00" + row for _ in range(height))
+    ihdr = struct.pack("!IIBBBBB", width, height, 8, 2, 0, 0, 0)  # 8-bit depth, RGB color type
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(chunk(b"IHDR", ihdr))
+        f.write(chunk(b"IDAT", zlib.compress(raw, 9)))
+        f.write(chunk(b"IEND", b""))
+
+
+def check_cimg_effect_render():
+    from PySide6 import QtGui
+
+    tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-cimg-")
+    in_path = os.path.join(tmpdir, "stripe.png")
+    out_path = os.path.join(tmpdir, "blurred.png")
+    _write_stripe_png(in_path, 16, 16)
+    _mark("[smoke] wrote 16x16 single-column stripe input PNG at %r"
+          % (in_path,))
+
+    reader = app.createReader(in_path)
+    if reader is None:
+        raise AssertionError("app.createReader(%r) returned None" % (in_path,))
+
+    blur = app.createNode("net.sf.cimg.CImgBlur")
+    if blur is None:
+        raise AssertionError(
+            "app.createNode('net.sf.cimg.CImgBlur') returned None")
+    if not blur.connectInput(0, reader):
+        raise AssertionError(
+            "Effect.connectInput(0, reader) failed for Reader -> CImgBlur")
+    blur.getParam("size").set(3.0, 3.0)
+    _mark("[smoke] created CImgBlur node, size=(3.0, 3.0), wired "
+          "Reader -> CImgBlur")
+
+    writer = app.createWriter(out_path)
+    if writer is None:
+        raise AssertionError(
+            "app.createWriter(%r) returned None" % (out_path,))
+    if not writer.connectInput(0, blur):
+        raise AssertionError(
+            "Effect.connectInput(0, blur) failed for CImgBlur -> Writer")
+
+    _mark("[smoke] calling app.render([(writer, 1, 1)]) for "
+          "Reader -> CImgBlur -> Writer...")
+    app.render([(writer, 1, 1)])
+
+    if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+        raise AssertionError(
+            "app.render() did not produce a non-empty file at %r"
+            % (out_path,))
+
+    img = QtGui.QImage(out_path)
+    if img.isNull():
+        raise AssertionError(
+            "app.render() produced no decodable PNG at %r" % (out_path,))
+
+    far_red = img.pixelColor(4, 8).red()
+    near_red = img.pixelColor(0, 8).red()
+    _mark("[smoke] Reader -> CImgBlur -> PNG red at (4, 8) = %d, "
+          "red at (0, 8) = %d" % (far_red, near_red))
+
+    if far_red <= 5:
+        raise AssertionError(
+            "red channel at (4, 8) is %d, expected > 5 -- CImgBlur does "
+            "not appear to have spread energy away from the input stripe "
+            "(looks like a passthrough)" % (far_red,))
+    if near_red >= 245:
+        raise AssertionError(
+            "red channel at (0, 8) is %d, expected < 245 -- CImgBlur does "
+            "not appear to have reduced the stripe's peak (looks like a "
+            "passthrough)" % (near_red,))
+    _mark("[smoke] OK: Reader -> CImgBlur -> Writer render intact, rendered "
+          "%r" % (out_path,))
+
+
 READ_TIME_OFFSET_FIXTURE_OUTPUT_TOKEN = "TIME_OFFSET_FIXTURE_OUTPUT_DIR"
 
 
@@ -746,6 +884,8 @@ def main():
     check_default_ocio_config()
     check_exr_to_png_colorspace()
     check_misc_effect_render()
+    check_cimg_effect_render()
+    check_arena_effect_render()
     check_reader_cli_time_offset_regression()
 
     # NOTE: not covered here -- PyGuiApplication::addMenuCommand()

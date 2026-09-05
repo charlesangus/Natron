@@ -74,6 +74,13 @@ future core work has solid ground to build on.
   future work — do not start or elaborate it without an explicit user
   go-ahead. Design and evidence live in
   `PLAN/DECISIONS/2026-09-05-project-format-bundle-design.md`.
+- **M17–M21 (deep compositing + USD/Hydra 3D)** authored 2026-09-05 from
+  `PLAN/DESIGN/2026-09-05-deep-and-3d-native-extensions.md`, which governs on
+  any brief's ambiguity. Sequencing: **M17 first** (typed-edge/native-node
+  foundation), then **M18 and M19 in either order or in parallel**, then
+  **M20** (needs M19's gate), then **M21** (stub; blocked on M18/M20
+  real-world results and a design-doc amendment). Substrate decision:
+  `PLAN/DECISIONS/2026-09-05-adopt-typed-edges-and-usd-substrate.md`.
 
 # Board
 
@@ -96,6 +103,11 @@ future core work has solid ground to build on.
 | M11 | OFX plugin integration test (post-release hardening) | done | [M11-ofx-plugin-integration-test.md](PLAN/MILESTONES/M11-ofx-plugin-integration-test.md) |
 | M14 | Documentation tree → orphan branch | done | [M14-documentation-tree-and-doc-ci.md](PLAN/MILESTONES/M14-documentation-tree-and-doc-ci.md) |
 | M16 | Project file format redesign (.ntp successor) | todo | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
+| M17 | Typed graph edges and native node framework | todo | [M17-typed-edges-native-framework.md](PLAN/MILESTONES/M17-typed-edges-native-framework.md) |
+| M18 | Deep compositing v1 | todo | [M18-deep-compositing-v1.md](PLAN/MILESTONES/M18-deep-compositing-v1.md) |
+| M19 | USD/Hydra foundation: ScenePayload, ReadScene, Viewport3D | todo | [M19-usd-hydra-foundation.md](PLAN/MILESTONES/M19-usd-hydra-foundation.md) |
+| M20 | 3D node vocabulary and HydraRender | todo | [M20-3d-node-vocabulary.md](PLAN/MILESTONES/M20-3d-node-vocabulary.md) |
+| M21 | Deep tier-2 nodes and deep/3D bridges | todo | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 
 # Open questions
 

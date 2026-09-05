@@ -14,7 +14,7 @@ parked.
 
 ## Phase 14.1: Move documentation to orphan branch
 
-- [ ] M14.P1.T1 — Create orphan `docs` branch with the Documentation/ tree
+- [x] M14.P1.T1 — Create orphan `docs` branch with the Documentation/ tree
   - files: Documentation/ (entire tree)
   - approach: Create orphan branch `docs` with no shared history
     (`git checkout --orphan docs`, remove everything, copy Documentation/
@@ -24,7 +24,7 @@ parked.
     `git ls-tree docs Documentation/` lists the expected files.
   - size: S
 
-- [ ] M14.P1.T2 — Fix FAQ OS-support matrix on docs branch
+- [x] M14.P1.T2 — Fix FAQ OS-support matrix on docs branch
   - files: Documentation/source/guide/getstarted-about-faq.rst
   - approach: On the `docs` branch, edit lines 22-23 and 79-91 of
     `getstarted-about-faq.rst` to remove the Windows 7/8/10 and

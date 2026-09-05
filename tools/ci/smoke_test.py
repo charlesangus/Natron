@@ -287,6 +287,39 @@ def check_ofx_plugin_bundle_set():
           % (tuple(n for n in EXPECTED_OFX_BUNDLES if n != "IO"),))
 
 
+def check_plugin_id_enumeration():
+    """Assert Natron's OFX host sees expected plugin IDs from every bundle."""
+    import NatronEngine
+
+    actual_ids = set(NatronEngine.natron.getPluginIDs())
+
+    bundles = {
+        "IO": ("fr.inria.openfx.ReadOIIO", "fr.inria.openfx.WriteOIIO"),
+        "Misc": ("net.sf.openfx.ConstantPlugin", "net.sf.openfx.GradePlugin",
+                 "net.sf.openfx.MergePlugin"),
+        "CImg": ("net.sf.cimg.CImgBlur", "net.sf.cimg.CImgPlasma"),
+        "Arena": ("net.fxarena.openfx.Text", "net.fxarena.openfx.Texture")
+    }
+
+    all_expected = set()
+    for expected_ids in bundles.values():
+        all_expected.update(expected_ids)
+
+    missing = all_expected - actual_ids
+    if missing:
+        raise AssertionError(
+            "Missing plugin IDs from enumeration: %r" % (sorted(missing),)
+        )
+
+    _mark("[smoke] plugin enumeration: %d total plugins" % (len(actual_ids),))
+    for bundle_name in sorted(bundles.keys()):
+        expected_ids = bundles[bundle_name]
+        hit_count = sum(1 for pid in expected_ids if pid in actual_ids)
+        _mark("[smoke]   %s: %d/%d expected plugins"
+              % (bundle_name, hit_count, len(expected_ids)))
+    _mark("[smoke] OK: all expected plugin IDs found via enumeration")
+
+
 def check_pyside6_bindings():
     """Assert the embedded interpreter sees a working PySide6.
 
@@ -639,6 +672,7 @@ def main():
         app = NatronEngine.natron.getInstance(0)
 
     check_ofx_plugin_bundle_set()
+    check_plugin_id_enumeration()
     check_pyside6_bindings()
     check_app_render_with_task_list()
     check_default_ocio_config()

@@ -598,17 +598,20 @@ def check_misc_effect_render():
     _mark("[smoke] Constant -> Grade -> PNG code value (%d, %d, %d)"
           % (color.red(), color.green(), color.blue()))
 
+    # Measured through the ACES 2.0 Studio Output Transform, not a pure
+    # sRGB EOTF: scene-linear 1.0/0.5/0.25 land at 255/177/123 after
+    # tone mapping. Without the 2x multiply the values would be ~118/80/50.
     if abs(color.red() - 255) > 2:
         raise AssertionError(
             "red channel is %d, expected 255 +/- 2 -- Grade's multiply does "
             "not appear to have been applied" % (color.red(),))
-    if abs(color.green() - 188) > 8:
+    if abs(color.green() - 177) > 15:
         raise AssertionError(
-            "green channel is %d, expected 188 +/- 8 -- Grade's multiply "
+            "green channel is %d, expected 177 +/- 15 -- Grade's multiply "
             "does not appear to have been applied" % (color.green(),))
-    if abs(color.blue() - 137) > 8:
+    if abs(color.blue() - 123) > 15:
         raise AssertionError(
-            "blue channel is %d, expected 137 +/- 8 -- Grade's multiply "
+            "blue channel is %d, expected 123 +/- 15 -- Grade's multiply "
             "does not appear to have been applied" % (color.blue(),))
     _mark("[smoke] OK: Constant -> Grade -> Writer render intact, rendered "
           "%r" % (out_path,))

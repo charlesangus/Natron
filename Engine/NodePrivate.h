@@ -255,6 +255,9 @@ public:
         , streamWarnings()
         , requiresGLFinishBeforeRender(false)
         , hostChannelSelectorEnabled(false)
+        , effectiveDataKindMutex()
+        , effectiveDataKindCacheSet(false)
+        , effectiveDataKindCache(eDataKindPolymorphic)
     {
         ///Initialize timers
         gettimeofday(&lastRenderStartedSlotCallTime, 0);
@@ -487,6 +490,13 @@ public:
     bool requiresGLFinishBeforeRender;
 
     bool hostChannelSelectorEnabled;
+
+    // Cache for Node::getEffectiveOutputDataKind(): only ever populated for nodes whose
+    // declared output kind is eDataKindPolymorphic, since a non-polymorphic node's kind is a
+    // constant-time lookup that needs no caching. Invalidated by Node::onInputChanged().
+    mutable QMutex effectiveDataKindMutex;
+    mutable bool effectiveDataKindCacheSet;
+    mutable DataKindEnum effectiveDataKindCache;
 };
 
 

@@ -976,6 +976,101 @@ Node::computeHash()
     computeHashRecursive(marked);
 } // computeHash
 
+DataKindEnum
+Node::getEffectiveOutputDataKind() const
+{
+    DataKindEnum declared = _imp->effect->getOutputDataKind();
+
+    if (declared != eDataKindPolymorphic) {
+        return declared;
+    }
+
+    {
+        QMutexLocker l(&_imp->effectiveDataKindMutex);
+        if (_imp->effectiveDataKindCacheSet) {
+            return _imp->effectiveDataKindCache;
+        }
+    }
+
+    // Re-entrancy guard: resolution recurses into other nodes' getEffectiveOutputDataKind(), which
+    // could loop back to this node through a polymorphic chain (e.g. a Group boundary feeding back
+    // on itself). A thread-local stack of nodes currently being resolved lets us detect that without
+    // threading an extra parameter through every recursive call, and resolves the loop as unconstrained
+    // rather than recursing forever.
+    static thread_local std::vector<const Node*> resolutionStack;
+    if (std::find(resolutionStack.begin(), resolutionStack.end(), this) != resolutionStack.end()) {
+        return eDataKindPolymorphic;
+    }
+    resolutionStack.push_back(this);
+    DataKindEnum resolved = resolveEffectiveOutputDataKindFromInputs();
+    resolutionStack.pop_back();
+
+    {
+        QMutexLocker l(&_imp->effectiveDataKindMutex);
+        _imp->effectiveDataKindCache = resolved;
+        _imp->effectiveDataKindCacheSet = true;
+    }
+
+    return resolved;
+} // getEffectiveOutputDataKind
+
+DataKindEnum
+Node::resolveEffectiveOutputDataKindFromInputs() const
+{
+    int nInputs = getNInputs();
+
+    for (int i = 0; i < nInputs; ++i) {
+        NodePtr input = getRealInput(i);
+        if (!input) {
+            continue;
+        }
+        DataKindEnum inputKind = input->getEffectiveOutputDataKind();
+        if (inputKind != eDataKindPolymorphic) {
+            return inputKind;
+        }
+    }
+
+    // A GroupInput has no real inputs of its own: what feeds it is whatever is connected to the
+    // corresponding input of the enclosing Group node, one graph up.
+    GroupInput* isGroupInput = dynamic_cast<GroupInput*>(_imp->effect.get());
+    if (isGroupInput) {
+        NodeGroup* group = dynamic_cast<NodeGroup*>(getGroup().get());
+        if (group) {
+            NodePtr thisShared = std::const_pointer_cast<Node>(shared_from_this());
+            NodePtr realInput = group->getRealInputForInput(false, thisShared);
+            if (realInput && (realInput.get() != this)) {
+                return realInput->getEffectiveOutputDataKind();
+            }
+        }
+    }
+
+    return eDataKindPolymorphic;
+} // resolveEffectiveOutputDataKindFromInputs
+
+void
+Node::invalidateEffectiveOutputDataKindCache()
+{
+    bool wasCached;
+    {
+        QMutexLocker l(&_imp->effectiveDataKindMutex);
+        wasCached = _imp->effectiveDataKindCacheSet;
+        _imp->effectiveDataKindCacheSet = false;
+    }
+
+    if (!wasCached) {
+        // Never resolved (or not polymorphic, which never populates the cache): nothing downstream
+        // could have memoized a value depending on this node, so there is nothing to propagate.
+        return;
+    }
+
+    NodesList outputs;
+    getOutputsWithGroupRedirection(outputs);
+    for (NodesList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
+        if (*it) {
+            (*it)->invalidateEffectiveOutputDataKindCache();
+        }
+    }
+} // invalidateEffectiveOutputDataKindCache
 
 void
 Node::loadKnobs(const NodeSerialization & serialization,

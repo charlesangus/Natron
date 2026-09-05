@@ -24,6 +24,7 @@ set(Tests_SOURCES
     BaseTest.cpp
     CLArgs_Test.cpp
     Curve_Test.cpp
+    DataKind_Test.cpp
     FileSystemModel_Test.cpp
     Hash64_Test.cpp
     Image_Test.cpp

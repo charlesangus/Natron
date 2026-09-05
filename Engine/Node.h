@@ -322,6 +322,22 @@ public:
     int getNInputs() const;
 
     /**
+     * @brief Returns the data kind (image, deep, scene) effectively produced by this node's output.
+     * A node with a concrete (non-polymorphic) declared kind always returns that kind. A polymorphic
+     * pass-through node (Dot, other NoOps, group input/output boundaries) resolves structurally by
+     * walking its connected inputs until a concrete kind is found; a disconnected, or entirely
+     * polymorphic, upstream chain resolves to eDataKindPolymorphic, meaning no constraint yet.
+     * The result is cached per node and invalidated automatically on connection changes.
+     **/
+    DataKindEnum getEffectiveOutputDataKind() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Invalidates the cached result of getEffectiveOutputDataKind() for this node, and
+     * propagates the invalidation downstream to consumers whose own resolution could depend on it.
+     **/
+    void invalidateEffectiveOutputDataKindCache();
+
+    /**
      * @brief Returns true if the given input supports the given components. If inputNb equals -1
      * then this function will check whether the effect can produce the given components.
      **/
@@ -1332,6 +1348,8 @@ public:
 private:
 
     bool setStreamWarningInternal(StreamWarningEnum warning, const QString& message);
+
+    DataKindEnum resolveEffectiveOutputDataKindFromInputs() const;
 
     void computeHashRecursive(std::list<Node*>& marked);
 

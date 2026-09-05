@@ -62,6 +62,16 @@ public:
 
     virtual bool getCanTransform() const OVERRIDE FINAL WARN_UNUSED_RETURN { return true; }
 
+    virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindPolymorphic;
+    }
+
+    virtual DataKindEnum getInputDataKind(int /*inputNb*/) const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindPolymorphic;
+    }
+
     virtual std::string getPluginID() const OVERRIDE WARN_UNUSED_RETURN = 0;
     virtual std::string getPluginLabel() const OVERRIDE WARN_UNUSED_RETURN = 0;
     virtual std::string getPluginDescription() const OVERRIDE WARN_UNUSED_RETURN = 0;

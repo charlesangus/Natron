@@ -678,25 +678,37 @@ def check_cimg_effect_render():
     tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-cimg-")
     out_path = os.path.join(tmpdir, "plasma.png")
 
-    plasma = app.createNode("net.sf.cimg.CImgPlasma")
-    if plasma is None:
+    constant = app.createNode("net.sf.openfx.ConstantPlugin")
+    if constant is None:
         raise AssertionError(
-            "app.createNode('net.sf.cimg.CImgPlasma') returned None")
-    plasma.getParam("extent").set("size")
-    plasma.getParam("NatronParamFormatSize").set(16, 16)
-    _mark("[smoke] created CImgPlasma node, 16x16")
+            "app.createNode('net.sf.openfx.ConstantPlugin') returned "
+            "None (CImg check input)")
+    constant.getParam("color").set(0.5, 0.5, 0.5, 1.0)
+    constant.getParam("extent").set("size")
+    constant.getParam("NatronParamFormatSize").set(16, 16)
+
+    noise = app.createNode("net.sf.cimg.CImgNoise")
+    if noise is None:
+        raise AssertionError(
+            "app.createNode('net.sf.cimg.CImgNoise') returned None")
+    if not noise.connectInput(0, constant):
+        raise AssertionError(
+            "Effect.connectInput(0, constant) failed for "
+            "Constant -> CImgNoise")
+    noise.getParam("sigma").setValue(0.5)
+    _mark("[smoke] created Constant -> CImgNoise, sigma=0.5")
 
     writer = app.createWriter(out_path)
     if writer is None:
         raise AssertionError(
             "app.createWriter(%r) returned None" % (out_path,))
-    if not writer.connectInput(0, plasma):
+    if not writer.connectInput(0, noise):
         raise AssertionError(
-            "Effect.connectInput(0, plasma) failed for "
-            "CImgPlasma -> Writer")
+            "Effect.connectInput(0, noise) failed for "
+            "CImgNoise -> Writer")
 
     _mark("[smoke] calling app.render([(writer, 1, 1)]) for "
-          "CImgPlasma -> Writer...")
+          "Constant -> CImgNoise -> Writer...")
     app.render([(writer, 1, 1)])
 
     if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
@@ -715,15 +727,15 @@ def check_cimg_effect_render():
     for x, y in positions:
         color = img.pixelColor(x, y)
         samples.append((color.red(), color.green(), color.blue()))
-    _mark("[smoke] CImgPlasma -> PNG sampled pixels: %r" % (samples,))
+    _mark("[smoke] CImgNoise -> PNG sampled pixels: %r" % (samples,))
 
     if all(sample == samples[0] for sample in samples):
         raise AssertionError(
-            "all %d sampled pixels of the CImgPlasma render are "
-            "identical (%r) -- expected spatial variation from a "
-            "procedural noise generator" % (len(samples), samples[0]))
-    _mark("[smoke] OK: CImgPlasma -> Writer render intact, rendered "
-          "%r" % (out_path,))
+            "all %d sampled pixels of the CImgNoise render are "
+            "identical (%r) -- expected spatial variation from "
+            "noise applied to a solid input" % (len(samples), samples[0]))
+    _mark("[smoke] OK: Constant -> CImgNoise -> Writer render intact, "
+          "rendered %r" % (out_path,))
 
 
 READ_TIME_OFFSET_FIXTURE_OUTPUT_TOKEN = "TIME_OFFSET_FIXTURE_OUTPUT_DIR"

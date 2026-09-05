@@ -20,7 +20,7 @@ Task briefs below summarize; the design doc governs on any ambiguity.
   - verify: full build; existing ctest suite green (no behavior change anywhere).
   - size: S
 
-- [ ] M17.P1.T2 — Structural kind resolution for polymorphic pass-through nodes
+- [x] M17.P1.T2 — Structural kind resolution for polymorphic pass-through nodes
   - files: `Engine/Node.h`, `Engine/Node.cpp`, `Engine/NoOpBase.h`/`.cpp` (Dot/Switch), `Engine/GroupInput.cpp` or equivalent group-boundary sources
   - approach: pass-through utilities (Dot, Switch, NoOps, Group boundaries) declare `eDataKindPolymorphic`; a resolver on `Node` walks the graph to compute the effective kind from whatever feeds the chain (unconstrained when disconnected), caching the result and invalidating on connection change. One rule, no per-node special cases.
   - verify: unit test — a Dot fed by an image source resolves to image; disconnected Dot resolves unconstrained; resolution cache invalidates on reconnect.
@@ -74,6 +74,7 @@ Task briefs below summarize; the design doc governs on any ambiguity.
 
 ## Decisions
 
+- 2026-09-05 — pre-existing cache-thread shutdown race left unfixed in M17: `DeleterThread::quitThread()` and `CacheCleanerThread::quitThread()` in `Engine/Cache.h` satisfy their `mustQuit` handshake before `QThreadPrivate::finish()` runs and never call `QThread::wait()`, so `~Cache` can `qFatal` with "QThread: Destroyed while thread is still running". Unchanged since 2016, unrelated to typed edges, and only fires under CPU contention (reproduced on `HashChangesOnInputConnected` and `HashChangesOnKnobValueChange` under synthetic load; clean on an idle machine). Out of scope here — recorded so a red CI run on this branch is read as this flake, not a regression. Fix would be a `wait()` after the handshake in both, mirroring `GenericSchedulerThread::~GenericSchedulerThread`.
 - 2026-09-05 — single EffectInstance hierarchy, no parallel Op hierarchies: Natron's knob, hashing, undo, serialization, and scheduling machinery all hang off EffectInstance; parallel hierarchies would duplicate all of it for no isolation benefit (design doc, "Native node framework formalization").
 
 **Verification gate:** full build + entire ctest suite green; new kind-resolution/enforcement unit tests pass; proof node loads and passes its integration test; image-kind rendering of the existing node set is bit-identical (no regression from a foundation-only milestone); doc CI green.

@@ -37,3 +37,4 @@
 - 2026-09-03 — package-as-tarball-and-appimage: ship a portable tar.xz plus an AppImage from one staged tree; no Flatpak, deb/rpm, or renderer container → DECISIONS/2026-09-03-package-as-tarball-and-appimage.md
 - 2026-09-04 — docs-to-orphan-branch: Documentation/ moves to orphan docs branch; fixing paused → DECISIONS/2026-09-04-docs-to-orphan-branch.md
 - 2026-09-04 — defer-m11-past-m15: M11 deferred past M15; plugin loading already proven → DECISIONS/2026-09-04-defer-m11-past-m15.md
+- 2026-09-05 — project-format-bundle-design: .ntp successor = stored-uncompressed zip bundle, YAML graph, binary heavy-data blobs, explicit named connections → DECISIONS/2026-09-05-project-format-bundle-design.md

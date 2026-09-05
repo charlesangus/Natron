@@ -1,6 +1,6 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: done
+status: paused
 current: null
 pm_heartbeat: 2026-09-04T21:20:00-04:00
 ship: pr-per-milestone
@@ -70,6 +70,11 @@ future core work has solid ground to build on.
   2026-08-29. Re-check specific line numbers, PR states, and image tags
   before executing — all three will have moved.
 
+- **M16 is authored but deferred** (2026-09-05): the `.ntp` format redesign is
+  future work — do not start or elaborate it without an explicit user
+  go-ahead. Design and evidence live in
+  `PLAN/DECISIONS/2026-09-05-project-format-bundle-design.md`.
+
 # Board
 
 | ID | Milestone | Status | File |
@@ -90,6 +95,7 @@ future core work has solid ground to build on.
 | M15 | Release packaging: tarball and AppImage | done | [M15-release-packaging.md](PLAN/MILESTONES/M15-release-packaging.md) |
 | M11 | OFX plugin integration test (post-release hardening) | done | [M11-ofx-plugin-integration-test.md](PLAN/MILESTONES/M11-ofx-plugin-integration-test.md) |
 | M14 | Documentation tree → orphan branch | done | [M14-documentation-tree-and-doc-ci.md](PLAN/MILESTONES/M14-documentation-tree-and-doc-ci.md) |
+| M16 | Project file format redesign (.ntp successor) | todo | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
 
 # Open questions
 

@@ -546,6 +546,74 @@ def check_exr_to_png_colorspace():
           % (out_path,))
 
 
+def check_misc_effect_render():
+    from PySide6 import QtGui
+
+    tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-misc-")
+    out_path = os.path.join(tmpdir, "graded.png")
+
+    constant = app.createNode("net.sf.openfx.ConstantPlugin")
+    if constant is None:
+        raise AssertionError(
+            "app.createNode('net.sf.openfx.ConstantPlugin') returned None")
+    constant.getParam("color").set(0.5, 0.25, 0.125, 1.0)
+    constant.getParam("extent").set("size")
+    constant.getParam("NatronParamFormatSize").set(16, 16)
+    _mark("[smoke] created Constant node, color=(0.5, 0.25, 0.125, 1.0) "
+          "16x16")
+
+    grade = app.createNode("net.sf.openfx.GradePlugin")
+    if grade is None:
+        raise AssertionError(
+            "app.createNode('net.sf.openfx.GradePlugin') returned None")
+    if not grade.connectInput(0, constant):
+        raise AssertionError(
+            "Effect.connectInput(0, constant) failed for Constant -> Grade")
+    grade.getParam("multiply").set(2.0, 2.0, 2.0, 1.0)
+    _mark("[smoke] created Grade node, multiply=(2.0, 2.0, 2.0, 1.0), wired "
+          "Constant -> Grade")
+
+    writer = app.createWriter(out_path)
+    if writer is None:
+        raise AssertionError(
+            "app.createWriter(%r) returned None" % (out_path,))
+    if not writer.connectInput(0, grade):
+        raise AssertionError(
+            "Effect.connectInput(0, grade) failed for Grade -> Writer")
+
+    _mark("[smoke] calling app.render([(writer, 1, 1)]) for "
+          "Constant -> Grade -> Writer...")
+    app.render([(writer, 1, 1)])
+
+    if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+        raise AssertionError(
+            "app.render() did not produce a non-empty file at %r"
+            % (out_path,))
+
+    img = QtGui.QImage(out_path)
+    if img.isNull():
+        raise AssertionError(
+            "app.render() produced no decodable PNG at %r" % (out_path,))
+    color = img.pixelColor(img.width() // 2, img.height() // 2)
+    _mark("[smoke] Constant -> Grade -> PNG code value (%d, %d, %d)"
+          % (color.red(), color.green(), color.blue()))
+
+    if abs(color.red() - 255) > 2:
+        raise AssertionError(
+            "red channel is %d, expected 255 +/- 2 -- Grade's multiply does "
+            "not appear to have been applied" % (color.red(),))
+    if abs(color.green() - 188) > 8:
+        raise AssertionError(
+            "green channel is %d, expected 188 +/- 8 -- Grade's multiply "
+            "does not appear to have been applied" % (color.green(),))
+    if abs(color.blue() - 137) > 8:
+        raise AssertionError(
+            "blue channel is %d, expected 137 +/- 8 -- Grade's multiply "
+            "does not appear to have been applied" % (color.blue(),))
+    _mark("[smoke] OK: Constant -> Grade -> Writer render intact, rendered "
+          "%r" % (out_path,))
+
+
 READ_TIME_OFFSET_FIXTURE_OUTPUT_TOKEN = "TIME_OFFSET_FIXTURE_OUTPUT_DIR"
 
 
@@ -677,6 +745,7 @@ def main():
     check_app_render_with_task_list()
     check_default_ocio_config()
     check_exr_to_png_colorspace()
+    check_misc_effect_render()
     check_reader_cli_time_offset_regression()
 
     # NOTE: not covered here -- PyGuiApplication::addMenuCommand()

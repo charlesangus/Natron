@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: running
-current: M14
-pm_heartbeat: 2026-09-04T21:14:00-04:00
+status: done
+current: null
+pm_heartbeat: 2026-09-04T21:20:00-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -89,7 +89,7 @@ future core work has solid ground to build on.
 | M6 | Documentation pass | done | [M6-documentation-pass.md](PLAN/MILESTONES/M6-documentation-pass.md) |
 | M15 | Release packaging: tarball and AppImage | done | [M15-release-packaging.md](PLAN/MILESTONES/M15-release-packaging.md) |
 | M11 | OFX plugin integration test (post-release hardening) | done | [M11-ofx-plugin-integration-test.md](PLAN/MILESTONES/M11-ofx-plugin-integration-test.md) |
-| M14 | Documentation tree → orphan branch | doing | [M14-documentation-tree-and-doc-ci.md](PLAN/MILESTONES/M14-documentation-tree-and-doc-ci.md) |
+| M14 | Documentation tree → orphan branch | done | [M14-documentation-tree-and-doc-ci.md](PLAN/MILESTONES/M14-documentation-tree-and-doc-ci.md) |
 
 # Open questions
 

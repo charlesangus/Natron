@@ -35,7 +35,7 @@ parked.
     returns no hits on the docs branch.
   - size: S
 
-- [ ] M14.P1.T3 — Remove Documentation/ and .readthedocs.yaml from main
+- [x] M14.P1.T3 — Remove Documentation/ and .readthedocs.yaml from main
   - files: Documentation/, .readthedocs.yaml, .github/workflows/nightly.yml
   - approach: On the milestone branch (off main), delete the entire
     `Documentation/` directory and `.readthedocs.yaml`. Also remove the

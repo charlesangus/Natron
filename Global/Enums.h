@@ -527,6 +527,14 @@ enum RotoStrokeType
     eRotoStrokeTypeBurn,
 };
 
+enum DataKindEnum
+{
+    eDataKindImage,
+    eDataKindDeep,
+    eDataKindScene,
+    eDataKindPolymorphic,
+};
+
 enum RenderSafetyEnum
 {
     eRenderSafetyUnsafe = 0,

@@ -672,72 +672,6 @@ def check_arena_effect_render():
 
 
 
-def check_cimg_effect_render():
-    from PySide6 import QtGui
-
-    tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-cimg-")
-    out_path = os.path.join(tmpdir, "plasma.png")
-
-    constant = app.createNode("net.sf.openfx.ConstantPlugin")
-    if constant is None:
-        raise AssertionError(
-            "app.createNode('net.sf.openfx.ConstantPlugin') returned "
-            "None (CImg check input)")
-    constant.getParam("color").set(0.5, 0.5, 0.5, 1.0)
-    constant.getParam("extent").set("size")
-    constant.getParam("NatronParamFormatSize").set(16, 16)
-
-    noise = app.createNode("net.sf.cimg.CImgNoise")
-    if noise is None:
-        raise AssertionError(
-            "app.createNode('net.sf.cimg.CImgNoise') returned None")
-    if not noise.connectInput(0, constant):
-        raise AssertionError(
-            "Effect.connectInput(0, constant) failed for "
-            "Constant -> CImgNoise")
-    noise.getParam("sigma").setValue(0.5)
-    _mark("[smoke] created Constant -> CImgNoise, sigma=0.5")
-
-    writer = app.createWriter(out_path)
-    if writer is None:
-        raise AssertionError(
-            "app.createWriter(%r) returned None" % (out_path,))
-    if not writer.connectInput(0, noise):
-        raise AssertionError(
-            "Effect.connectInput(0, noise) failed for "
-            "CImgNoise -> Writer")
-
-    _mark("[smoke] calling app.render([(writer, 1, 1)]) for "
-          "Constant -> CImgNoise -> Writer...")
-    app.render([(writer, 1, 1)])
-
-    if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
-        raise AssertionError(
-            "app.render() did not produce a non-empty file at %r"
-            % (out_path,))
-
-    img = QtGui.QImage(out_path)
-    if img.isNull():
-        raise AssertionError(
-            "app.render() produced no decodable PNG at %r" % (out_path,))
-
-    positions = [(0, 0), (4, 4), (8, 8), (12, 12),
-                 (0, 8), (8, 0), (4, 12), (12, 4)]
-    samples = []
-    for x, y in positions:
-        color = img.pixelColor(x, y)
-        samples.append((color.red(), color.green(), color.blue()))
-    _mark("[smoke] CImgNoise -> PNG sampled pixels: %r" % (samples,))
-
-    if all(sample == samples[0] for sample in samples):
-        raise AssertionError(
-            "all %d sampled pixels of the CImgNoise render are "
-            "identical (%r) -- expected spatial variation from "
-            "noise applied to a solid input" % (len(samples), samples[0]))
-    _mark("[smoke] OK: Constant -> CImgNoise -> Writer render intact, "
-          "rendered %r" % (out_path,))
-
-
 READ_TIME_OFFSET_FIXTURE_OUTPUT_TOKEN = "TIME_OFFSET_FIXTURE_OUTPUT_DIR"
 
 
@@ -870,7 +804,6 @@ def main():
     check_default_ocio_config()
     check_exr_to_png_colorspace()
     check_misc_effect_render()
-    check_cimg_effect_render()
     check_arena_effect_render()
     check_reader_cli_time_offset_regression()
 

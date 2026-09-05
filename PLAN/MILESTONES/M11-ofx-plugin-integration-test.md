@@ -13,7 +13,7 @@ into IO.ofx.bundle.
 
 ## Phase 11.1: Plugin integration coverage
 
-- [ ] M11.P1.T1 — Assert Natron's OFX host sees expected plugin IDs from every bundle
+- [x] M11.P1.T1 — Assert Natron's OFX host sees expected plugin IDs from every bundle
   - files: tools/ci/smoke_test.py
   - approach: Add `check_plugin_id_enumeration()`. Call
     `NatronEngine.natron.getPluginIDs()` and assert a representative set of

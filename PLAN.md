@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: paused
-current: null
-pm_heartbeat: 2026-09-04T21:20:00-04:00
+status: running
+current: M17.P1.T1
+pm_heartbeat: 2026-09-05T12:14:03-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -103,7 +103,7 @@ future core work has solid ground to build on.
 | M11 | OFX plugin integration test (post-release hardening) | done | [M11-ofx-plugin-integration-test.md](PLAN/MILESTONES/M11-ofx-plugin-integration-test.md) |
 | M14 | Documentation tree → orphan branch | done | [M14-documentation-tree-and-doc-ci.md](PLAN/MILESTONES/M14-documentation-tree-and-doc-ci.md) |
 | M16 | Project file format redesign (.ntp successor) | todo | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
-| M17 | Typed graph edges and native node framework | todo | [M17-typed-edges-native-framework.md](PLAN/MILESTONES/M17-typed-edges-native-framework.md) |
+| M17 | Typed graph edges and native node framework | doing | [M17-typed-edges-native-framework.md](PLAN/MILESTONES/M17-typed-edges-native-framework.md) |
 | M18 | Deep compositing v1 | todo | [M18-deep-compositing-v1.md](PLAN/MILESTONES/M18-deep-compositing-v1.md) |
 | M19 | USD/Hydra foundation: ScenePayload, ReadScene, Viewport3D | todo | [M19-usd-hydra-foundation.md](PLAN/MILESTONES/M19-usd-hydra-foundation.md) |
 | M20 | 3D node vocabulary and HydraRender | todo | [M20-3d-node-vocabulary.md](PLAN/MILESTONES/M20-3d-node-vocabulary.md) |

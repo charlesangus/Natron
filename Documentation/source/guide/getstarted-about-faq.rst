@@ -17,11 +17,9 @@ Yes. Anything you create with Natron is yours and you’re free to do anything y
 What operating systems are supported by Natron?
 ***********************************************
 
-Natron officially supports:
+This fork of Natron officially supports:
 
-* Windows 7, 8 and 10 with latest service packs.
-* MacOSX 10.6 or greater
-* Linux 2.6.18 or greater (Glibc 2.12+/libgcc 4.4+)
+* Linux x86_64 (Rocky Linux 9 / EL9 baseline, glibc 2.34+)
 
 
 Why did you make Natron free of charge?
@@ -74,18 +72,12 @@ An OpenGL 2.0 compatible graphics card is needed to run Natron (2.1+) with hardw
 
 The following graphics cards are supported for hardware-accelerated rendering:
 
- * Intel GMA 3150 (Linux-only)
- * Intel GMA X3xxx (Linux-only)
- * Intel GMA X4xxx (Windows 7 & Linux)
- * Intel HD (Ironlake) (Windows 7 & Linux)
- * Intel HD 2000/3000 (Sandy Bridge) (Windows 7/Linux/Mac)
- * Intel HD 4000 and greater (All platforms)
+ * Intel HD 4000 and greater
  * Nvidia GeForce 6 series and greater
  * Nvidia Quadro FX and greater
- * Nvidia Quadro NVS 285 and greater
  * ATI/AMD Radeon R300 and greater
  * ATI/AMD FireGL T2-64 and greater (FirePro)
 
 Cards not listed here will probably not support hardware-accelerated rendering.
 
-On Windows and Linux you can enable software rendering. On Linux, enable the environment variable LIBGL_ALWAYS_SOFTWARE=1 before running Natron. On Windows, enable the legacy hardware package in the installer.
+You can enable software rendering on Linux by setting the environment variable LIBGL_ALWAYS_SOFTWARE=1 before running Natron.

@@ -14,7 +14,7 @@ Task briefs below summarize; the design doc governs on any ambiguity.
 
 ## Phase 17.1: Data-kind declaration and resolution
 
-- [ ] M17.P1.T1 — Add `DataKindEnum` and per-node kind declaration to EffectInstance
+- [x] M17.P1.T1 — Add `DataKindEnum` and per-node kind declaration to EffectInstance
   - files: `Global/Enums.h`, `Engine/EffectInstance.h`, `Engine/EffectInstance.cpp`
   - approach: `DataKindEnum { eDataKindImage, eDataKindDeep, eDataKindScene, eDataKindPolymorphic }`. Virtuals `getOutputDataKind()` and `getInputDataKind(int)` on `EffectInstance`, both defaulting to `eDataKindImage` so every OFX plugin and existing built-in is correctly typed with zero changes. Kinds are plugin-static declarations — no per-instance or per-edge state, nothing serialized.
   - verify: full build; existing ctest suite green (no behavior change anywhere).

@@ -29,7 +29,7 @@ into IO.ofx.bundle.
     AssertionError.
   - size: S
 
-- [ ] M11.P1.T2 — Render through Misc.ofx: Constant generator → Grade filter → Writer
+- [x] M11.P1.T2 — Render through Misc.ofx: Constant generator → Grade filter → Writer
   - files: tools/ci/smoke_test.py
   - approach: Add `check_misc_effect_render()`. Create a Constant
     (`net.sf.openfx.ConstantPlugin`, 16×16, color (0.5, 0.25, 0.125, 1.0)),

@@ -287,6 +287,39 @@ def check_ofx_plugin_bundle_set():
           % (tuple(n for n in EXPECTED_OFX_BUNDLES if n != "IO"),))
 
 
+def check_plugin_id_enumeration():
+    """Assert Natron's OFX host sees expected plugin IDs from every bundle."""
+    import NatronEngine
+
+    actual_ids = set(NatronEngine.natron.getPluginIDs())
+
+    bundles = {
+        "IO": ("fr.inria.openfx.ReadOIIO", "fr.inria.openfx.WriteOIIO"),
+        "Misc": ("net.sf.openfx.ConstantPlugin", "net.sf.openfx.GradePlugin",
+                 "net.sf.openfx.MergePlugin"),
+        "CImg": ("net.sf.cimg.CImgBlur", "net.sf.cimg.CImgPlasma"),
+        "Arena": ("net.fxarena.openfx.Text", "net.fxarena.openfx.Texture")
+    }
+
+    all_expected = set()
+    for expected_ids in bundles.values():
+        all_expected.update(expected_ids)
+
+    missing = all_expected - actual_ids
+    if missing:
+        raise AssertionError(
+            "Missing plugin IDs from enumeration: %r" % (sorted(missing),)
+        )
+
+    _mark("[smoke] plugin enumeration: %d total plugins" % (len(actual_ids),))
+    for bundle_name in sorted(bundles.keys()):
+        expected_ids = bundles[bundle_name]
+        hit_count = sum(1 for pid in expected_ids if pid in actual_ids)
+        _mark("[smoke]   %s: %d/%d expected plugins"
+              % (bundle_name, hit_count, len(expected_ids)))
+    _mark("[smoke] OK: all expected plugin IDs found via enumeration")
+
+
 def check_pyside6_bindings():
     """Assert the embedded interpreter sees a working PySide6.
 
@@ -513,6 +546,79 @@ def check_exr_to_png_colorspace():
           % (out_path,))
 
 
+def check_misc_effect_render():
+    from PySide6 import QtGui
+
+    tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-misc-")
+    out_path = os.path.join(tmpdir, "graded.png")
+
+    constant = app.createNode("net.sf.openfx.ConstantPlugin")
+    if constant is None:
+        raise AssertionError(
+            "app.createNode('net.sf.openfx.ConstantPlugin') returned None")
+    constant.getParam("color").set(0.5, 0.25, 0.125, 1.0)
+    constant.getParam("extent").set("size")
+    constant.getParam("NatronParamFormatSize").set(16, 16)
+    _mark("[smoke] created Constant node, color=(0.5, 0.25, 0.125, 1.0) "
+          "16x16")
+
+    grade = app.createNode("net.sf.openfx.GradePlugin")
+    if grade is None:
+        raise AssertionError(
+            "app.createNode('net.sf.openfx.GradePlugin') returned None")
+    if not grade.connectInput(0, constant):
+        raise AssertionError(
+            "Effect.connectInput(0, constant) failed for Constant -> Grade")
+    grade.getParam("multiply").set(2.0, 2.0, 2.0, 1.0)
+    _mark("[smoke] created Grade node, multiply=(2.0, 2.0, 2.0, 1.0), wired "
+          "Constant -> Grade")
+
+    writer = app.createWriter(out_path)
+    if writer is None:
+        raise AssertionError(
+            "app.createWriter(%r) returned None" % (out_path,))
+    if not writer.connectInput(0, grade):
+        raise AssertionError(
+            "Effect.connectInput(0, grade) failed for Grade -> Writer")
+
+    _mark("[smoke] calling app.render([(writer, 1, 1)]) for "
+          "Constant -> Grade -> Writer...")
+    app.render([(writer, 1, 1)])
+
+    if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+        raise AssertionError(
+            "app.render() did not produce a non-empty file at %r"
+            % (out_path,))
+
+    img = QtGui.QImage(out_path)
+    if img.isNull():
+        raise AssertionError(
+            "app.render() produced no decodable PNG at %r" % (out_path,))
+    color = img.pixelColor(img.width() // 2, img.height() // 2)
+    _mark("[smoke] Constant -> Grade -> PNG code value (%d, %d, %d)"
+          % (color.red(), color.green(), color.blue()))
+
+    # Measured through the ACES 2.0 Studio Output Transform, not a pure
+    # sRGB EOTF: scene-linear 1.0/0.5/0.25 land at 255/177/123 after
+    # tone mapping. Without the 2x multiply the values would be ~118/80/50.
+    if abs(color.red() - 255) > 2:
+        raise AssertionError(
+            "red channel is %d, expected 255 +/- 2 -- Grade's multiply does "
+            "not appear to have been applied" % (color.red(),))
+    if abs(color.green() - 177) > 15:
+        raise AssertionError(
+            "green channel is %d, expected 177 +/- 15 -- Grade's multiply "
+            "does not appear to have been applied" % (color.green(),))
+    if abs(color.blue() - 123) > 15:
+        raise AssertionError(
+            "blue channel is %d, expected 123 +/- 15 -- Grade's multiply "
+            "does not appear to have been applied" % (color.blue(),))
+    _mark("[smoke] OK: Constant -> Grade -> Writer render intact, rendered "
+          "%r" % (out_path,))
+
+
+
+
 READ_TIME_OFFSET_FIXTURE_OUTPUT_TOKEN = "TIME_OFFSET_FIXTURE_OUTPUT_DIR"
 
 
@@ -639,10 +745,12 @@ def main():
         app = NatronEngine.natron.getInstance(0)
 
     check_ofx_plugin_bundle_set()
+    check_plugin_id_enumeration()
     check_pyside6_bindings()
     check_app_render_with_task_list()
     check_default_ocio_config()
     check_exr_to_png_colorspace()
+    check_misc_effect_render()
     check_reader_cli_time_offset_regression()
 
     # NOTE: not covered here -- PyGuiApplication::addMenuCommand()

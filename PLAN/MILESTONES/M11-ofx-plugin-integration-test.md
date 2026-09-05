@@ -44,7 +44,7 @@ into IO.ofx.bundle.
     three channel assertions pass.
   - size: M
 
-- [ ] M11.P1.T3 — Render through CImg.ofx: Reader → CImgBlur filter → Writer
+- [x] M11.P1.T3 — Render through CImg.ofx: Reader → CImgBlur filter → Writer
   - files: tools/ci/smoke_test.py
   - approach: Add `check_cimg_effect_render()`. Generate a 16×16 PNG with a
     sharp vertical stripe (column 0 white, rest black). Wire
@@ -57,7 +57,7 @@ into IO.ofx.bundle.
     pass. Set blur size to 0.0 to confirm the far-pixel assertion fails.
   - size: M
 
-- [ ] M11.P1.T4 — Render through Arena.ofx: Texture generator → Writer
+- [x] M11.P1.T4 — Render through Arena.ofx: Texture generator → Writer
   - files: tools/ci/smoke_test.py
   - approach: Add `check_arena_effect_render()`. Create a Texture generator
     (`net.fxarena.openfx.Texture`, 16×16), wire to a writer, render frame 1.

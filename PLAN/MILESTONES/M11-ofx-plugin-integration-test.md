@@ -1,61 +1,76 @@
-# Milestone 11: OFX plugin integration test (pre-release)
+# Milestone 11: OFX plugin integration test (post-release hardening)
 
-> **Mostly delivered early, 2026-08-31 — rescope before starting.** See
-> `PLAN/DECISIONS/2026-08-31-restore-vendored-ofx-plugin-tests.md`.
->
-> This milestone was scoped as the place plugin loading would come back
-> *after* M9 removed it. M9 is cancelled and plugin loading never left:
-> `fetch-assets.sh` builds a pinned, EL9-native `IO.ofx` and `BaseTest`
-> loads it on every run (28/28). The "pinned, EL9-compatible bundles"
-> premise below is satisfied.
->
-> What is genuinely left for this milestone, if it is kept at all:
-> **rendering** through plugins rather than merely loading them, and
-> video I/O — `ReadFFmpeg`/`WriteFFmpeg` are absent because ASWF ships no
-> ffmpeg, so covering them needs an ffmpeg source first.
+The existing smoke test proves the four OFX bundles (IO, Misc, CImg, Arena)
+load via dlopen and that IO.ofx renders pixels through reader→writer chains.
+This milestone closes two genuine gaps: (1) no check that Natron's OFX host
+actually *enumerates* plugin IDs from each bundle, and (2) no render path
+exercises a non-IO plugin — Misc generators, CImg filters, and Arena effects
+are loaded but never asked to process pixels.
 
-> Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
+Video I/O (ReadFFmpeg/WriteFFmpeg) remains out of scope: the ASWF
+ci-vfxall:2027 image ships no ffmpeg, so those plugins are not compiled
+into IO.ofx.bundle.
 
-M9 removes vendored third-party OFX plugins from the build and test path
-because they were testing somebody else's binaries, in a container they cannot
-load in, on the critical path of every PR. That was the right cut for the merge
-gate — but "Natron can load and render through real OFX plugins" is still a
-property that has to hold before anything ships. This milestone brings it back
-where it belongs: an integration test run before a release, not a unit test run
-on every push.
+## Phase 11.1: Plugin integration coverage
 
-Roughly: obtain OFX plugin bundles that actually load on the EL9 baseline
-(openfx-io for ReadOIIO/WriteOIIO, openfx-misc for the generators), stand up a
-separate workflow that installs them, loads Natron against them, and renders a
-known project to a golden image. It overlaps heavily with M5.P1.T2's headless
-render regression test — the two should probably be designed together, with
-this milestone supplying the plugins that test renders through.
+- [ ] M11.P1.T1 — Assert Natron's OFX host sees expected plugin IDs from every bundle
+  - files: tools/ci/smoke_test.py
+  - approach: Add `check_plugin_id_enumeration()`. Call
+    `NatronEngine.natron.getPluginIDs()` and assert a representative set of
+    IDs from each bundle is present: IO (`fr.inria.openfx.ReadOIIO`,
+    `fr.inria.openfx.WriteOIIO`), Misc (`net.sf.openfx.ConstantPlugin`,
+    `net.sf.openfx.GradePlugin`, `net.sf.openfx.MergePlugin`), CImg
+    (`net.sf.cimg.CImgBlur`, `net.sf.cimg.CImgPlasma`), Arena
+    (`net.fxarena.openfx.Text`, `net.fxarena.openfx.Texture`). Log total
+    count and per-bundle hits. Wire the call into `main()` after
+    `check_ofx_plugin_bundle_set()`.
+  - verify: `tools/ci/local/test.sh smoke debug` prints the new OK line with
+    per-bundle counts. Temporarily add a bogus ID and confirm it raises
+    AssertionError.
+  - size: S
 
-Blocked on:
+- [ ] M11.P1.T2 — Render through Misc.ofx: Constant generator → Grade filter → Writer
+  - files: tools/ci/smoke_test.py
+  - approach: Add `check_misc_effect_render()`. Create a Constant
+    (`net.sf.openfx.ConstantPlugin`, 16×16, color (0.5, 0.25, 0.125, 1.0)),
+    wire it into a Grade (`net.sf.openfx.GradePlugin`, multiply
+    (2.0, 2.0, 2.0, 1.0)), then into a Writer. Render frame 1 to a temp
+    PNG. Read with `QImage` and assert the centre pixel: red ≈ 255 ± 2
+    (scene-linear 1.0 → sRGB), green ≈ 186 ± 4 (sRGB of 0.5), blue ≈ 137
+    ± 4 (sRGB of 0.25). This proves both Constant generated the colour AND
+    Grade's multiply was applied. Wire the call into `main()` after the
+    enumeration check.
+  - verify: `tools/ci/local/test.sh smoke debug` — output PNG exists and
+    three channel assertions pass.
+  - size: M
 
-- **No EL9-compatible plugin build exists.** The only published asset is
-  `openfx-io-build-ubuntu_22-testing.zip` (2023), which needs `GLIBCXX_3.4.30`
-  and cannot load against Rocky 9's `libstdc++.so.6.0.29` — see M9's background
-  section. openfx-misc publishes no testing build at all. Building either from
-  source needs OIIO/OCIO/FFmpeg/SeExpr, which `aswf/ci-baseqt` does not ship,
-  so this depends on settling a plugin-build toolchain (a fuller ASWF image, a
-  side build, or our own published bundles).
-- **The packaging decision** (`DECISIONS/2026-08-29-defer-packaging-decision.md`)
-  — how Natron ships determines how plugins ship alongside it, and therefore
-  what "installed plugins" means for this test to exercise.
-- **M5's render regression work**, which defines the golden-image fixture and
-  comparison this milestone would render through.
+- [ ] M11.P1.T3 — Render through CImg.ofx: Reader → CImgBlur filter → Writer
+  - files: tools/ci/smoke_test.py
+  - approach: Add `check_cimg_effect_render()`. Generate a 16×16 PNG with a
+    sharp vertical stripe (column 0 white, rest black). Wire
+    reader → CImgBlur (`net.sf.cimg.CImgBlur`, size 3.0) → writer. Render
+    to a temp PNG. Assert two properties: pixel at (4, 8) red > 5 (blur
+    spread energy away from the stripe), and pixel at (0, 8) red < 245
+    (blur reduced the peak). Fails both if CImgBlur was a passthrough and
+    if it zeroed everything. Wire into `main()` after the Misc check.
+  - verify: `tools/ci/local/test.sh smoke debug` — both pixel assertions
+    pass. Set blur size to 0.0 to confirm the far-pixel assertion fails.
+  - size: M
 
-Acceptance sketch:
+- [ ] M11.P1.T4 — Render through Arena.ofx: Texture generator → Writer
+  - files: tools/ci/smoke_test.py
+  - approach: Add `check_arena_effect_render()`. Create a Texture generator
+    (`net.fxarena.openfx.Texture`, 16×16), wire to a writer, render frame 1.
+    Assert the output exists, is non-empty, and sample 8+ pixels across the
+    image — assert not all are the same RGB value (a procedural texture must
+    produce spatial variation). This proves Arena's ImageMagick render path
+    is functional (libMagickCore/libMagickWand/liblcms2/libzip staging in
+    Arena.ofx.bundle/Libraries/ is correct). Wire into `main()` after the
+    CImg check.
+  - verify: `tools/ci/local/test.sh smoke debug` — file exists, non-empty,
+    pixel-variation assertion passes.
+  - size: M
 
-- A workflow separate from the PR gate — release-triggered or manually
-  dispatched — installs OFX plugin bundles that load cleanly on the EL9
-  baseline, with no `GLIBCXX`/`dlopen` failures in the log.
-- Natron enumerates the expected plugin IDs at startup (at minimum
-  ReadOIIO/WriteOIIO, plus a generator such as SeNoise) and the run fails loudly
-  if any are missing — rather than the current behaviour of loading zero
-  plugins and carrying on.
-- A headless render through a real reader → effect → writer chain produces
-  output matching a golden image.
-- The plugin bundles are versioned and pinned, so a release is reproducible
-  rather than dependent on whatever a moving `natron_testing` tag points at.
+**Verification gate:** A full CI run (push to a branch targeting main) passes
+with all 10 smoke checks (6 existing + 4 new) green and no regressions in
+the ctest cases.

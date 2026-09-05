@@ -710,9 +710,19 @@ def check_cimg_effect_render():
     if not blur.connectInput(0, reader):
         raise AssertionError(
             "Effect.connectInput(0, reader) failed for Reader -> CImgBlur")
-    blur.getParam("size").set(3.0, 3.0)
-    _mark("[smoke] created CImgBlur node, size=(3.0, 3.0), wired "
-          "Reader -> CImgBlur")
+    # Use setValue(value, dimension) rather than the convenience
+    # set(x, y): Double2DParam inherits DoubleParam, and both expose a
+    # two-double overload -- DoubleParam::set(value, frame) vs
+    # Double2DParam::set(x, y).  Shiboken cannot disambiguate the two
+    # identical (double, double) signatures, so .set(3.0, 3.0) silently
+    # dispatches to the base-class overload, setting dimension 0 to 3.0
+    # at *frame* 3.0 and leaving frame 1 at the default of 0 (no blur).
+    # setValue(double, int) is unambiguous.
+    size_param = blur.getParam("size")
+    size_param.setValue(3.0, 0)
+    size_param.setValue(3.0, 1)
+    _mark("[smoke] created CImgBlur node, size=(3.0, 3.0) via setValue, "
+          "wired Reader -> CImgBlur")
 
     writer = app.createWriter(out_path)
     if writer is None:

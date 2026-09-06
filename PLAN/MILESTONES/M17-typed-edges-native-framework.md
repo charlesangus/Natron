@@ -26,7 +26,7 @@ Task briefs below summarize; the design doc governs on any ambiguity.
   - verify: unit test — a Dot fed by an image source resolves to image; disconnected Dot resolves unconstrained; resolution cache invalidates on reconnect.
   - size: M
 
-- [ ] M17.P1.T3 — Connection-time enforcement in `canConnectInput`
+- [x] M17.P1.T3 — Connection-time enforcement in `canConnectInput`
   - files: `Engine/Node.h` (the `CanConnectInputReturnValue` enum at :541), `Engine/Node.cpp`, `Gui/NodeGraph*.cpp` (user-facing message)
   - approach: add `eCanConnectInput_incompatibleDataKind`, checked against *resolved* kinds inside `canConnectInput()` — the single choke point every GUI drag path, undo/redo, auto-connect, and the Python API already use. Connecting into a polymorphic chain validates the whole resolved chain so a contradiction (deep source → Dot → image consumer) is rejected at the connection that introduces it, naming the conflicting node in the GUI message.
   - verify: unit tests — mismatched direct connection rejected; contradiction through a Dot chain rejected with the right return value; image→image and polymorphic cases still connect.
@@ -74,6 +74,7 @@ Task briefs below summarize; the design doc governs on any ambiguity.
 
 ## Decisions
 
+- 2026-09-05 — M17.P1.T3's downstream conflict walk does not cross group boundaries: `Node::findDataKindConflictDownstream()` walks direct outputs rather than `getOutputsWithGroupRedirection()`, so a contradiction only visible past a `GroupInput`/`GroupOutput` boundary is not caught by the forward check. The backward check already understands group redirection and catches the same contradiction from the other connection order, so no graph can reach an invalid steady state — and M17.P1.T4's project-load revalidation is the backstop. Left as-is to keep the task to one coherent change; revisit if a real graph trips it.
 - 2026-09-05 — pre-existing cache-thread shutdown race left unfixed in M17: `DeleterThread::quitThread()` and `CacheCleanerThread::quitThread()` in `Engine/Cache.h` satisfy their `mustQuit` handshake before `QThreadPrivate::finish()` runs and never call `QThread::wait()`, so `~Cache` can `qFatal` with "QThread: Destroyed while thread is still running". Unchanged since 2016, unrelated to typed edges, and only fires under CPU contention (reproduced on `HashChangesOnInputConnected` and `HashChangesOnKnobValueChange` under synthetic load; clean on an idle machine). Out of scope here — recorded so a red CI run on this branch is read as this flake, not a regression. Fix would be a `wait()` after the handshake in both, mirroring `GenericSchedulerThread::~GenericSchedulerThread`.
 - 2026-09-05 — single EffectInstance hierarchy, no parallel Op hierarchies: Natron's knob, hashing, undo, serialization, and scheduling machinery all hang off EffectInstance; parallel hierarchies would duplicate all of it for no isolation benefit (design doc, "Native node framework formalization").
 

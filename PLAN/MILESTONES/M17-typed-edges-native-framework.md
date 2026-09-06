@@ -46,7 +46,7 @@ Task briefs below summarize; the design doc governs on any ambiguity.
   - verify: builds; a header-doc example in the class comment compiles as written (framework doc task M17.P2.T3 expands it).
   - size: M
 
-- [ ] M17.P2.T2 — Proof node registered through the framework
+- [x] M17.P2.T2 — Proof node registered through the framework
   - files: `Engine/Nodes/TypedPassthrough.cpp` (new), `Engine/AppManager.cpp` (`loadBuiltinNodePlugins`, ~:1517)
   - approach: one deliberately trivial native node built on `NativeEffectBase` — a polymorphic typed no-op passthrough — registered via `loadBuiltinNodePlugins()`. Proves declaration, registration, typed-IO, and knob helpers before any feature pressure arrives.
   - verify: node appears in the node menu; inserting it mid-chain renders identically (integration test alongside the M11 OFX render test harness); kind resolution flows through it per M17.P1.T2's tests.
@@ -83,5 +83,7 @@ Task briefs below summarize; the design doc governs on any ambiguity.
 - 2026-09-05 — test plugins registered from `Tests/wmain.cpp` now get a label-without-suffix: `registerTestBuiltInPlugin()` runs after `AppManager::load()`, so `onAllPluginsLoaded()` has already assigned every other plugin's, and without it these nodes take empty script names and no connection between them survives a save/load round trip. Latent trap for the whole `DataKind_Test.cpp` suite, not just M17.P1.T4.
 
 - 2026-09-05 — `NativeEffectBase` queries its subclass's `NativePluginDescription` on demand rather than caching it: virtual dispatch to a derived override does not work from a base constructor, and every call site (registration, UI display, project load) is off the render path. Keeps the class free of per-instance state, which is what makes data kinds static plugin declarations rather than instance data.
+
+- 2026-09-06 — M17.P2.T2's "renders identically mid-chain" test uses the gtest render path (`RenderRange_Test.cpp`'s SeNoise -> WriteOIIO EXR pattern, comparing every pixel of all four channels), not the M11 harness the brief named: `tools/ci/smoke_test.py` is a separate Python/NatronRenderer harness that `test.sh ctest` does not run, so a test written against it would not gate anything.
 
 **Verification gate:** full build + entire ctest suite green; new kind-resolution/enforcement unit tests pass; proof node loads and passes its integration test; image-kind rendering of the existing node set is bit-identical (no regression from a foundation-only milestone); doc CI green.

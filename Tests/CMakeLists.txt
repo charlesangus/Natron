@@ -36,6 +36,7 @@ set(Tests_SOURCES
     ProjectSerialization_Test.cpp
     RenderRange_Test.cpp
     Tracker_Test.cpp
+    TypedPassthrough_Test.cpp
     wmain.cpp
 )
 add_executable(Tests ${Tests_HEADERS} ${Tests_SOURCES})

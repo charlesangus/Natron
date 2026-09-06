@@ -40,7 +40,7 @@ Task briefs below summarize; the design doc governs on any ambiguity.
 
 ## Phase 17.2: Native node framework
 
-- [ ] M17.P2.T1 — `Engine/Nodes/` layout and `NativeEffectBase` convenience layer
+- [x] M17.P2.T1 — `Engine/Nodes/` layout and `NativeEffectBase` convenience layer
   - files: `Engine/Nodes/NativeEffectBase.h`, `Engine/Nodes/NativeEffectBase.cpp`, `Engine/CMakeLists.txt` (or top-level CMake source lists)
   - approach: `NativeEffectBase : EffectInstance` — declarative plugin metadata (id, grouping, version), typed-IO declaration, knob-building helpers, so a new native node is one .cpp file. New source layout `Engine/Nodes/<Domain>/` keeps `Engine/` core free of node implementations; existing built-ins stay put. Single EffectInstance hierarchy — capability virtuals, no parallel Op hierarchies.
   - verify: builds; a header-doc example in the class comment compiles as written (framework doc task M17.P2.T3 expands it).
@@ -81,5 +81,7 @@ Task briefs below summarize; the design doc governs on any ambiguity.
 - 2026-09-05 — M17.P1.T4 moved data-kind enforcement off the per-connection restore path: `Node::canConnectInput()` now skips the kind check while `Project::isLoadingProject()`, and `ProjectPrivate::revalidateDataKindEdges()` judges the fully-restored tree instead. Kinds resolve structurally, so mid-restore the verdict depends on how much of the tree happens to be wired yet — `NodeCollection::connectNodes()` was rejecting the edge order-dependently with only a `qDebug()`, which is the silent miswire the task exists to prevent. The whole-tree pass is the only sound point of enforcement on load, and the only one that warns.
 
 - 2026-09-05 — test plugins registered from `Tests/wmain.cpp` now get a label-without-suffix: `registerTestBuiltInPlugin()` runs after `AppManager::load()`, so `onAllPluginsLoaded()` has already assigned every other plugin's, and without it these nodes take empty script names and no connection between them survives a save/load round trip. Latent trap for the whole `DataKind_Test.cpp` suite, not just M17.P1.T4.
+
+- 2026-09-05 — `NativeEffectBase` queries its subclass's `NativePluginDescription` on demand rather than caching it: virtual dispatch to a derived override does not work from a base constructor, and every call site (registration, UI display, project load) is off the render path. Keeps the class free of per-instance state, which is what makes data kinds static plugin declarations rather than instance data.
 
 **Verification gate:** full build + entire ctest suite green; new kind-resolution/enforcement unit tests pass; proof node loads and passes its integration test; image-kind rendering of the existing node set is bit-identical (no regression from a foundation-only milestone); doc CI green.

@@ -53,9 +53,9 @@ Task briefs below summarize; the design doc governs on any ambiguity.
   - size: S
 
 - [ ] M17.P2.T3 — Native node framework documentation
-  - files: docs branch (per M14 layout) — one new page on writing a native node; `Engine/Nodes/README.md`
-  - approach: document the contract: subclass `NativeEffectBase`, declare kinds, register; the sizing of what belongs in `Engine/Nodes/<Domain>/` vs `Engine/`; the enforcement rules a node author must know (kinds are static; adapters are Viewer-only).
-  - verify: doc CI (M14 gate) passes; a reader can create the proof node (M17.P2.T2) from the doc alone.
+  - files: `Engine/Nodes/README.md`
+  - approach: **Re-planned 2026-09-06 — see the decision below.** In-repo only; no docs-branch page. Document the contract: subclass `NativeEffectBase`, declare kinds, register in `loadBuiltinNodePlugins()`; the sizing of what belongs in `Engine/Nodes/<Domain>/` vs `Engine/`; the enforcement rules a node author must know (kinds are static plugin declarations; adapters are Viewer-only).
+  - verify: a reader can create the proof node (M17.P2.T2) from the doc alone — check the doc against `Engine/Nodes/TypedPassthrough.{h,cpp}` and the worked example in `NativeEffectBase.h`, and confirm no step is missing.
   - size: S
 
 ## Phase 17.3: Kind legibility in the node graph
@@ -85,5 +85,7 @@ Task briefs below summarize; the design doc governs on any ambiguity.
 - 2026-09-05 — `NativeEffectBase` queries its subclass's `NativePluginDescription` on demand rather than caching it: virtual dispatch to a derived override does not work from a base constructor, and every call site (registration, UI display, project load) is off the render path. Keeps the class free of per-instance state, which is what makes data kinds static plugin declarations rather than instance data.
 
 - 2026-09-06 — M17.P2.T2's "renders identically mid-chain" test uses the gtest render path (`RenderRange_Test.cpp`'s SeNoise -> WriteOIIO EXR pattern, comparing every pixel of all four channels), not the M11 harness the brief named: `tools/ci/smoke_test.py` is a separate Python/NatronRenderer harness that `test.sh ctest` does not run, so a test written against it would not gate anything.
+
+- 2026-09-06 — M17.P2.T3's framework doc is in-repo only (`Engine/Nodes/README.md`), not on the `docs` branch its brief named. The brief's `verify` ("doc CI (M14 gate) passes") describes a gate that does not exist: M14 moved documentation to a parked orphan branch and left no doc CI, and per `DECISIONS/2026-09-04-docs-to-orphan-branch.md` that branch holds stale 2.4-era user docs with the publish decision deferred. A developer doc written today would be buried in explicitly-not-current material with nothing gating it. In-repo, it sits beside the code it describes and is reviewed in the same PR. User confirmed 2026-09-06.
 
 **Verification gate:** full build + entire ctest suite green; new kind-resolution/enforcement unit tests pass; proof node loads and passes its integration test; image-kind rendering of the existing node set is bit-identical (no regression from a foundation-only milestone); doc CI green.

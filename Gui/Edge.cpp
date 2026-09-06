@@ -34,14 +34,15 @@
 #include <QApplication>
 #include <QGraphicsScene>
 
-#include "Gui/NodeGui.h"
-#include "Gui/NodeGraph.h"
-#include "Gui/NodeGraphTextItem.h"
-#include "Gui/GuiApplicationManager.h"
-#include "Engine/Node.h"
 #include "Engine/Image.h"
+#include "Engine/Node.h"
 #include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
+#include "Global/Enums.h"
+#include "Gui/GuiApplicationManager.h"
+#include "Gui/NodeGraph.h"
+#include "Gui/NodeGraphTextItem.h"
+#include "Gui/NodeGui.h"
 
 #ifndef M_PI
 #define M_PI        3.14159265358979323846264338327950288   /* pi             */
@@ -748,6 +749,43 @@ Edge::isNearbyBendPoint(const QPointF & scenePoint)
     return false;
 }
 
+// Width is the primary channel for data-kind styling: it stays legible under both
+// colorblindness and zoom-out, where a fine dash period collapses into a uniform gray.
+// The existing dash pattern below is reserved for edge activity (mask / hidden input),
+// an orthogonal, simultaneously-possible state, so kind styling must never touch it.
+static qreal
+kindWidthMultiplier(DataKindEnum kind)
+{
+    switch (kind) {
+    case eDataKindDeep:
+        return 3.;
+    case eDataKindScene:
+        return 2.;
+    case eDataKindImage:
+    case eDataKindPolymorphic:
+    default:
+        return 1.;
+    }
+}
+
+static bool
+kindTintColor(DataKindEnum kind,
+              QColor* color)
+{
+    switch (kind) {
+    case eDataKindDeep:
+        *color = QColor(0, 114, 178); // Okabe-Ito blue
+        return true;
+    case eDataKindScene:
+        *color = QColor(230, 159, 0); // Okabe-Ito orange
+        return true;
+    case eDataKindImage:
+    case eDataKindPolymorphic:
+    default:
+        return false;
+    }
+}
+
 void
 Edge::paint(QPainter *painter,
             const QStyleOptionGraphicsItem * /*options*/,
@@ -776,6 +814,14 @@ Edge::paint(QPainter *painter,
         myPen.setStyle(Qt::SolidLine);
     }
 
+    DataKindEnum resolvedKind = eDataKindPolymorphic;
+    NodeGuiPtr kindSrc = _imp->source.lock();
+    NodePtr kindSrcNode = kindSrc ? kindSrc->getNode() : NodePtr();
+    if (kindSrcNode) {
+        resolvedKind = kindSrcNode->getEffectiveOutputDataKind();
+    }
+    myPen.setWidthF(myPen.widthF() * kindWidthMultiplier(resolvedKind));
+
     QColor color, arrowColor;
     if (_imp->useSelected) {
         color = arrowColor = Qt::white;
@@ -784,7 +830,8 @@ Edge::paint(QPainter *painter,
     } else if (_imp->useRenderingColor) {
         color = arrowColor = _imp->renderingColor;
     } else {
-        color = arrowColor = _imp->defaultColor;
+        QColor tint;
+        color = arrowColor = kindTintColor(resolvedKind, &tint) ? tint : _imp->defaultColor;
         if (_imp->optional && !_imp->paintWithDash) {
             color.setAlphaF(0.4);
         }

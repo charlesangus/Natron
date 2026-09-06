@@ -39,3 +39,4 @@
 - 2026-09-04 — defer-m11-past-m15: M11 deferred past M15; plugin loading already proven → DECISIONS/2026-09-04-defer-m11-past-m15.md
 - 2026-09-05 — project-format-bundle-design: .ntp successor = stored-uncompressed zip bundle, YAML graph, binary heavy-data blobs, explicit named connections → DECISIONS/2026-09-05-project-format-bundle-design.md
 - 2026-09-05 — adopt-typed-edges-and-usd-substrate: deep + 3D built on typed payload edges; USD (model A) is the 3D substrate via SceneOps seam → DECISIONS/2026-09-05-adopt-typed-edges-and-usd-substrate.md
+- 2026-09-06 — loading-must-not-destroy-data: a project load never discards edges or nodes; unrealisable state surfaces as a node error → DECISIONS/2026-09-06-loading-must-not-destroy-data.md

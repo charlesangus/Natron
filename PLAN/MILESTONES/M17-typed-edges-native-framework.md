@@ -60,7 +60,7 @@ Task briefs below summarize; the design doc governs on any ambiguity.
 
 ## Phase 17.3: Kind legibility in the node graph
 
-- [ ] M17.P3.T1 — Edge styling by resolved kind
+- [x] M17.P3.T1 — Edge styling by resolved kind
   - files: `Gui/Edge.cpp`, `Gui/Edge.h`
   - approach: `Edge` already does custom paint + dashes — render deep and scene edges distinctly by *resolved* kind (line style first, color as reinforcement only; colorblind- and zoom-safe). This is what makes polymorphic nodes legible: a Dot stays neutral, its edges show what flows through it.
   - verify: manual GUI check with the M17.P2.T2 proof node forced to each kind; screenshot comparison in the GUI test harness if available, else a checklist in the PR.
@@ -87,5 +87,9 @@ Task briefs below summarize; the design doc governs on any ambiguity.
 - 2026-09-06 — M17.P2.T2's "renders identically mid-chain" test uses the gtest render path (`RenderRange_Test.cpp`'s SeNoise -> WriteOIIO EXR pattern, comparing every pixel of all four channels), not the M11 harness the brief named: `tools/ci/smoke_test.py` is a separate Python/NatronRenderer harness that `test.sh ctest` does not run, so a test written against it would not gate anything.
 
 - 2026-09-06 — M17.P2.T3's framework doc is in-repo only (`Engine/Nodes/README.md`), not on the `docs` branch its brief named. The brief's `verify` ("doc CI (M14 gate) passes") describes a gate that does not exist: M14 moved documentation to a parked orphan branch and left no doc CI, and per `DECISIONS/2026-09-04-docs-to-orphan-branch.md` that branch holds stale 2.4-era user docs with the publish decision deferred. A developer doc written today would be buried in explicitly-not-current material with nothing gating it. In-repo, it sits beside the code it describes and is reviewed in the same PR. User confirmed 2026-09-06.
+
+- 2026-09-06 — edge kind styling uses pen width as the primary channel, not dashes: `Edge`'s existing dash pattern already means "this input is not live" (mask, inactive viewer input, non-selected input of an identity pass-through), which is a destination-side interaction state orthogonal to data kind and can hold at the same time. Overloading one QPen dash property for both would force a precedence choice whenever both apply. Width also degrades better at zoom-out than a dash period, which collapses into uniform gray sub-pixel. Colour (Okabe-Ito blue/orange) is reinforcement only, applied in the lowest-priority branch so selection, highlight and rendering colours still win. Image and polymorphic edges keep exactly the pen they had.
+
+- 2026-09-06 — no GUI test harness exists in this repo, so M17.P3's tasks cannot be verified automatically: their gate is build + ctest + a human visual pass against a reviewer checklist carried in the PR body. Recorded so the milestone is not read as having automated coverage it does not have.
 
 **Verification gate:** full build + entire ctest suite green; new kind-resolution/enforcement unit tests pass; proof node loads and passes its integration test; image-kind rendering of the existing node set is bit-identical (no regression from a foundation-only milestone); doc CI green.

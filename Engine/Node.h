@@ -574,6 +574,14 @@ public:
      **/
     Node::CanConnectInputReturnValue canConnectInput(const NodePtr& input, int inputNumber, NodePtr* conflictingNode = 0) const;
 
+    /**
+     * @brief The data-kind half of canConnectInput(), factored out so it can also be applied to an
+     * edge that already exists (e.g. one just restored from a project) rather than only to a
+     * prospective one. Returns eCanConnectInput_incompatibleDataKind (with the same conflictingNode
+     * semantics as canConnectInput()) or eCanConnectInput_ok.
+     **/
+    Node::CanConnectInputReturnValue checkDataKindCompatibility(const NodePtr& input, int inputNumber, NodePtr* conflictingNode = 0) const;
+
     /** @brief Adds the node parent to the input inputNumber of the
      * node. Returns true if it succeeded, false otherwise.
      * When returning false, this means an input was already

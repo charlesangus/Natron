@@ -1124,6 +1124,32 @@ Node::findDataKindConflictDownstream(DataKindEnum kind,
     return false;
 } // findDataKindConflictDownstream
 
+Node::CanConnectInputReturnValue
+Node::checkDataKindCompatibility(const NodePtr& input,
+                                 int inputNumber,
+                                 NodePtr* conflictingNode) const
+{
+    DataKindEnum upstreamKind = input->getEffectiveOutputDataKind();
+    DataKindEnum requiredKind = _imp->effect->getInputDataKind(inputNumber);
+
+    if ((requiredKind != eDataKindPolymorphic) && (upstreamKind != eDataKindPolymorphic) && (requiredKind != upstreamKind)) {
+        if (conflictingNode) {
+            *conflictingNode = input;
+        }
+
+        return eCanConnectInput_incompatibleDataKind;
+    }
+
+    if ((upstreamKind != eDataKindPolymorphic) && (_imp->effect->getOutputDataKind() == eDataKindPolymorphic)) {
+        DataKindEnum simulated = resolveEffectiveOutputDataKindFromInputsWithOverride(inputNumber, upstreamKind);
+        if ((simulated != eDataKindPolymorphic) && findDataKindConflictDownstream(simulated, conflictingNode)) {
+            return eCanConnectInput_incompatibleDataKind;
+        }
+    }
+
+    return eCanConnectInput_ok;
+} // Node::checkDataKindCompatibility
+
 void
 Node::invalidateEffectiveOutputDataKindCache()
 {

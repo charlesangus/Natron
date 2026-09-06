@@ -211,10 +211,18 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
             }
         }
 
-        // restore the Knob links stored in the Knobs during NodeCollectionSerialization::restoreFromSerialization()
         NodesList allNodes;
-        const std::map<std::string, std::string> oldNewScriptNamesMapping;
         _publicInterface->getNodes_recursive(allNodes, false);
+
+        // Kinds are never serialized: now that every node and every connection in the whole tree is
+        // restored, recompute them and drop whatever doesn't hold up. Must run after the recursive
+        // restore above has fully returned, since kinds resolve structurally through the graph.
+        if (ProjectPrivate::revalidateDataKindEdges(allNodes)) {
+            ok = false;
+        }
+
+        // restore the Knob links stored in the Knobs during NodeCollectionSerialization::restoreFromSerialization()
+        const std::map<std::string, std::string> oldNewScriptNamesMapping;
         for (NodesList::iterator n = allNodes.begin(); n != allNodes.end(); ++n) {
             // find all KnobIs in the node, restore links
             std::vector<KnobIPtr> knobs = (*n)->getKnobs(); // copy the knobs vector
@@ -257,6 +265,43 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
     }
     return ok;
 } // restoreFromSerialization
+
+bool
+ProjectPrivate::revalidateDataKindEdges(const NodesList& allNodes)
+{
+    bool droppedAny = false;
+
+    for (NodesList::const_iterator it = allNodes.begin(); it != allNodes.end(); ++it) {
+        const NodePtr& node = *it;
+        if (!node) {
+            continue;
+        }
+        int nInputs = node->getNInputs();
+        for (int i = 0; i < nInputs; ++i) {
+            NodePtr inputNode = node->getRealInput(i);
+            if (!inputNode) {
+                continue;
+            }
+
+            NodePtr conflictingNode;
+            Node::CanConnectInputReturnValue ret = node->checkDataKindCompatibility(inputNode, i, &conflictingNode);
+            if (ret != Node::eCanConnectInput_incompatibleDataKind) {
+                continue;
+            }
+
+            QString text(tr("WARNING: Disconnected %1 from %2's input \"%3\": the connection carries "
+                            "incompatible data kinds and could not be restored.")
+                             .arg(QString::fromUtf8(inputNode->getScriptName_mt_safe().c_str()))
+                             .arg(QString::fromUtf8(node->getScriptName_mt_safe().c_str()))
+                             .arg(QString::fromUtf8(node->getInputLabel(i).c_str())));
+            appPTR->writeToErrorLog_mt_safe(tr("Project"), QDateTime::currentDateTime(), text);
+            node->disconnectInput(i);
+            droppedAny = true;
+        }
+    }
+
+    return droppedAny;
+} // revalidateDataKindEdges
 
 bool
 ProjectPrivate::findFormat(int index,

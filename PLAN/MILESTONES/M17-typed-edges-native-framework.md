@@ -52,7 +52,7 @@ Task briefs below summarize; the design doc governs on any ambiguity.
   - verify: node appears in the node menu; inserting it mid-chain renders identically (integration test alongside the M11 OFX render test harness); kind resolution flows through it per M17.P1.T2's tests.
   - size: S
 
-- [ ] M17.P2.T3 — Native node framework documentation
+- [x] M17.P2.T3 — Native node framework documentation
   - files: `Engine/Nodes/README.md`
   - approach: **Re-planned 2026-09-06 — see the decision below.** In-repo only; no docs-branch page. Document the contract: subclass `NativeEffectBase`, declare kinds, register in `loadBuiltinNodePlugins()`; the sizing of what belongs in `Engine/Nodes/<Domain>/` vs `Engine/`; the enforcement rules a node author must know (kinds are static plugin declarations; adapters are Viewer-only).
   - verify: a reader can create the proof node (M17.P2.T2) from the doc alone — check the doc against `Engine/Nodes/TypedPassthrough.{h,cpp}` and the worked example in `NativeEffectBase.h`, and confirm no step is missing.

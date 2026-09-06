@@ -44,8 +44,7 @@ NATRON_NAMESPACE_ENTER
  * NoOpBase -- it does not invent a new pass-through mechanism.
  **/
 class TypedPassthrough
-    : public NativeEffectBase
-{
+    : public NativeEffectBase {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -63,8 +62,8 @@ private:
     virtual void initializeKnobs() OVERRIDE FINAL;
 
     virtual bool isIdentity(double time,
-                            const RenderScale & scale,
-                            const RectI & roi,
+                            const RenderScale& scale,
+                            const RectI& roi,
                             ViewIdx view,
                             double* inputTime,
                             ViewIdx* inputView,

@@ -38,11 +38,12 @@ TypedPassthrough::getNativePluginDescription() const
     desc.label = "TypedPassthrough";
     desc.description = tr("A trivial polymorphic pass-through node built on NativeEffectBase. "
                           "It is an identity of its single input, and its effective data kind "
-                          "resolves structurally from whatever feeds it, exactly like Dot.").toStdString();
+                          "resolves structurally from whatever feeds it, exactly like Dot.")
+                           .toStdString();
     desc.grouping = PLUGIN_GROUP_OTHER;
     desc.majorVersion = 1;
     desc.minorVersion = 0;
-    desc.inputs.push_back( NativeInputDescription("Source", false, eDataKindPolymorphic) );
+    desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindPolymorphic));
     desc.outputKind = eDataKindPolymorphic;
 
     return desc;
@@ -51,24 +52,24 @@ TypedPassthrough::getNativePluginDescription() const
 void
 TypedPassthrough::initializeKnobs()
 {
-    KnobPagePtr page = createKnob<KnobPage>( tr("Controls") );
-    KnobStringPtr info = createKnob<KnobString>( tr("Info") );
+    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
+    KnobStringPtr info = createKnob<KnobString>(tr("Info"));
 
     info->setAnimationEnabled(false);
     info->setAsLabel();
     info->setEvaluateOnChange(false);
-    info->setValue( tr("Proof node for the native node framework. Has no effect on rendering.").toStdString() );
+    info->setValue(tr("Proof node for the native node framework. Has no effect on rendering.").toStdString());
     page->addKnob(info);
 }
 
 bool
 TypedPassthrough::isIdentity(double time,
-                            const RenderScale & /*scale*/,
-                            const RectI & /*roi*/,
-                            ViewIdx view,
-                            double* inputTime,
-                            ViewIdx* inputView,
-                            int* inputNb)
+                             const RenderScale& /*scale*/,
+                             const RectI& /*roi*/,
+                             ViewIdx view,
+                             double* inputTime,
+                             ViewIdx* inputView,
+                             int* inputNb)
 {
     *inputTime = time;
     *inputNb = 0;

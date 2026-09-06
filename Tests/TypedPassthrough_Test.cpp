@@ -64,11 +64,11 @@ struct ExrChannelInfo {
 
 bool
 readExrCString(std::ifstream& in,
-              std::string* out)
+               std::string* out)
 {
     out->clear();
     char c;
-    while ( in.get(c) ) {
+    while (in.get(c)) {
         if (c == '\0') {
             return true;
         }
@@ -81,7 +81,7 @@ readExrCString(std::ifstream& in,
 template <typename T>
 bool
 readExrPod(std::ifstream& in,
-          T* out)
+           T* out)
 {
     in.read(reinterpret_cast<char*>(out), sizeof(T));
 
@@ -113,14 +113,14 @@ readExrChannelPlane(const std::string& path,
     char magic[4];
     in.read(magic, 4);
     static const char kMagic[4] = { 0x76, 0x2f, 0x31, 0x01 };
-    if ( !in || (std::memcmp(magic, kMagic, 4) != 0) ) {
+    if (!in || (std::memcmp(magic, kMagic, 4) != 0)) {
         *error = "bad magic number";
 
         return false;
     }
 
     int32_t version = 0;
-    if ( !readExrPod(in, &version) ) {
+    if (!readExrPod(in, &version)) {
         *error = "cannot read version field";
 
         return false;
@@ -148,28 +148,28 @@ readExrChannelPlane(const std::string& path,
 
     for (;;) {
         std::string name;
-        if ( !readExrCString(in, &name) ) {
+        if (!readExrCString(in, &name)) {
             *error = "truncated header (attribute name)";
 
             return false;
         }
-        if ( name.empty() ) {
+        if (name.empty()) {
             break;
         }
         std::string type;
-        if ( !readExrCString(in, &type) ) {
+        if (!readExrCString(in, &type)) {
             *error = "truncated header (attribute type)";
 
             return false;
         }
         int32_t size = 0;
-        if ( !readExrPod(in, &size) || (size < 0) ) {
+        if (!readExrPod(in, &size) || (size < 0)) {
             *error = "truncated header (attribute size)";
 
             return false;
         }
         std::vector<char> data(size);
-        if ( (size > 0) && !in.read(data.data(), size) ) {
+        if ((size > 0) && !in.read(data.data(), size)) {
             *error = "truncated attribute data for " + name;
 
             return false;
@@ -177,17 +177,17 @@ readExrChannelPlane(const std::string& path,
 
         if (name == "channels") {
             size_t pos = 0;
-            while ( pos < data.size() ) {
+            while (pos < data.size()) {
                 std::string cname;
-                while ( (pos < data.size()) && (data[pos] != '\0') ) {
+                while ((pos < data.size()) && (data[pos] != '\0')) {
                     cname.push_back(data[pos]);
                     ++pos;
                 }
-                if ( pos >= data.size() ) {
+                if (pos >= data.size()) {
                     break;
                 }
                 ++pos; // the channel name's null terminator
-                if ( cname.empty() ) {
+                if (cname.empty()) {
                     break; // empty name terminates the channel list
                 }
                 if (pos + 16 > data.size()) {
@@ -198,11 +198,11 @@ readExrChannelPlane(const std::string& path,
                 int32_t pixelType = 0;
                 std::memcpy(&pixelType, &data[pos], 4);
                 pos += 16; // pixelType(4) + pLinear/reserved(4) + xSampling(4) + ySampling(4)
-                channels.push_back( ExrChannelInfo{ cname, pixelType } );
+                channels.push_back(ExrChannelInfo { cname, pixelType });
             }
-        } else if ( (name == "compression") && (size >= 1) ) {
+        } else if ((name == "compression") && (size >= 1)) {
             compression = static_cast<unsigned char>(data[0]);
-        } else if ( (name == "dataWindow") && (size >= 16) ) {
+        } else if ((name == "dataWindow") && (size >= 16)) {
             std::memcpy(dataWindow, data.data(), 16);
             haveDataWindow = true;
         }
@@ -222,11 +222,11 @@ readExrChannelPlane(const std::string& path,
     int channelIndex = -1;
     std::string foundNames;
     for (size_t i = 0; i < channels.size(); ++i) {
-        if ( !foundNames.empty() ) {
+        if (!foundNames.empty()) {
             foundNames += ",";
         }
         foundNames += channels[i].name;
-        if ( (channelIndex < 0) && (channels[i].name == channelName) ) {
+        if ((channelIndex < 0) && (channels[i].name == channelName)) {
             channelIndex = static_cast<int>(i);
         }
     }
@@ -256,7 +256,7 @@ readExrChannelPlane(const std::string& path,
 
     for (int row = 0; row < height; ++row) {
         int64_t offset = 0;
-        if ( !readExrPod(in, &offset) ) {
+        if (!readExrPod(in, &offset)) {
             *error = "cannot read the scanline offset table";
 
             return false;
@@ -267,14 +267,14 @@ readExrChannelPlane(const std::string& path,
         in.seekg(offset, std::ios::beg);
         int32_t y = 0;
         int32_t chunkDataSize = 0;
-        if ( !readExrPod(in, &y) || !readExrPod(in, &chunkDataSize) || (chunkDataSize < 0) ) {
+        if (!readExrPod(in, &y) || !readExrPod(in, &chunkDataSize) || (chunkDataSize < 0)) {
             *error = "cannot read the scanline chunk header";
 
             return false;
         }
 
         std::vector<char> chunk(chunkDataSize);
-        if ( !in.read(chunk.data(), chunkDataSize) ) {
+        if (!in.read(chunk.data(), chunkDataSize)) {
             *error = "truncated scanline pixel data";
 
             return false;
@@ -286,7 +286,7 @@ readExrChannelPlane(const std::string& path,
         }
 
         const int rowIndex = y - dataWindow[1];
-        if ( (rowIndex < 0) || (rowIndex >= height) ) {
+        if ((rowIndex < 0) || (rowIndex >= height)) {
             *error = "scanline y is outside dataWindow";
 
             return false;
@@ -312,7 +312,7 @@ TEST_F(BaseTest, TypedPassthroughIsRegisteredAndInstantiable)
 
     NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_TYPEDPASSTHROUGH));
 
-    ASSERT_TRUE( bool(node) );
+    ASSERT_TRUE(bool(node));
     EXPECT_EQ(std::string(PLUGINID_NATRON_TYPEDPASSTHROUGH), node->getPluginID());
 }
 
@@ -338,7 +338,7 @@ TEST_F(BaseTest, DisconnectedTypedPassthroughResolvesUnconstrained)
 {
     NodePtr proof = createNode(QString::fromUtf8(PLUGINID_NATRON_TYPEDPASSTHROUGH));
 
-    ASSERT_TRUE( bool(proof) );
+    ASSERT_TRUE(bool(proof));
 
     EXPECT_EQ(eDataKindPolymorphic, proof->getEffectiveOutputDataKind());
 }
@@ -372,7 +372,7 @@ TEST_F(BaseTest, TypedPassthroughChainContradictionRejected)
 TEST_F(BaseTest, TypedPassthroughMidChainRendersIdentically)
 {
     QTemporaryDir tmp;
-    ASSERT_TRUE( tmp.isValid() );
+    ASSERT_TRUE(tmp.isValid());
 
     const std::string directPath = (tmp.path() + QLatin1String("/direct.exr")).toStdString();
     const std::string throughProofPath = (tmp.path() + QLatin1String("/through_proof.exr")).toStdString();
@@ -386,22 +386,22 @@ TEST_F(BaseTest, TypedPassthroughMidChainRendersIdentically)
         NodePtr writer = createNode(_writeOIIOPluginID);
         ASSERT_TRUE(generator && writer);
 
-        KnobChoice* bitDepth = dynamic_cast<KnobChoice*>( writer->getKnobByName("bitDepth").get() );
+        KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(writer->getKnobByName("bitDepth").get());
         ASSERT_TRUE(bitDepth != NULL);
         bitDepth->setValueFromID("32f", 0);
 
-        KnobChoice* compression = dynamic_cast<KnobChoice*>( writer->getKnobByName("compression").get() );
+        KnobChoice* compression = dynamic_cast<KnobChoice*>(writer->getKnobByName("compression").get());
         ASSERT_TRUE(compression != NULL);
         compression->setValueFromID("none", 0);
 
         writer->setOutputFilesForWriter(directPath);
         connectNodes(generator, writer, 0, true);
 
-        OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>( writer->getEffectInstance().get() );
+        OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
         ASSERT_TRUE(writerEffect != NULL);
 
         std::list<AppInstance::RenderWork> works;
-        works.push_back( AppInstance::RenderWork(writerEffect, 1, 1, 1, false) );
+        works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
         getApp()->startWritersRendering(false, works);
     }
 
@@ -412,11 +412,11 @@ TEST_F(BaseTest, TypedPassthroughMidChainRendersIdentically)
         NodePtr writer = createNode(_writeOIIOPluginID);
         ASSERT_TRUE(generator && proof && writer);
 
-        KnobChoice* bitDepth = dynamic_cast<KnobChoice*>( writer->getKnobByName("bitDepth").get() );
+        KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(writer->getKnobByName("bitDepth").get());
         ASSERT_TRUE(bitDepth != NULL);
         bitDepth->setValueFromID("32f", 0);
 
-        KnobChoice* compression = dynamic_cast<KnobChoice*>( writer->getKnobByName("compression").get() );
+        KnobChoice* compression = dynamic_cast<KnobChoice*>(writer->getKnobByName("compression").get());
         ASSERT_TRUE(compression != NULL);
         compression->setValueFromID("none", 0);
 
@@ -424,16 +424,16 @@ TEST_F(BaseTest, TypedPassthroughMidChainRendersIdentically)
         connectNodes(generator, proof, 0, true);
         connectNodes(proof, writer, 0, true);
 
-        OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>( writer->getEffectInstance().get() );
+        OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
         ASSERT_TRUE(writerEffect != NULL);
 
         std::list<AppInstance::RenderWork> works;
-        works.push_back( AppInstance::RenderWork(writerEffect, 1, 1, 1, false) );
+        works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
         getApp()->startWritersRendering(false, works);
     }
 
-    ASSERT_TRUE( QFile::exists( QString::fromStdString(directPath) ) );
-    ASSERT_TRUE( QFile::exists( QString::fromStdString(throughProofPath) ) );
+    ASSERT_TRUE(QFile::exists(QString::fromStdString(directPath)));
+    ASSERT_TRUE(QFile::exists(QString::fromStdString(throughProofPath)));
 
     static const char* const kChannels[] = { "R", "G", "B", "A" };
     for (size_t c = 0; c < sizeof(kChannels) / sizeof(kChannels[0]); ++c) {
@@ -441,23 +441,23 @@ TEST_F(BaseTest, TypedPassthroughMidChainRendersIdentically)
         int directWidth = 0, directHeight = 0, throughProofWidth = 0, throughProofHeight = 0;
         std::string error;
 
-        ASSERT_TRUE( readExrChannelPlane(directPath, kChannels[c], &direct, &directWidth, &directHeight, &error) ) << error;
-        ASSERT_TRUE( readExrChannelPlane(throughProofPath, kChannels[c], &throughProof, &throughProofWidth, &throughProofHeight, &error) ) << error;
+        ASSERT_TRUE(readExrChannelPlane(directPath, kChannels[c], &direct, &directWidth, &directHeight, &error)) << error;
+        ASSERT_TRUE(readExrChannelPlane(throughProofPath, kChannels[c], &throughProof, &throughProofWidth, &throughProofHeight, &error)) << error;
 
         ASSERT_EQ(directWidth, throughProofWidth);
         ASSERT_EQ(directHeight, throughProofHeight);
-        ASSERT_EQ( direct.size(), throughProof.size() );
+        ASSERT_EQ(direct.size(), throughProof.size());
 
         for (size_t i = 0; i < direct.size(); ++i) {
             EXPECT_EQ(direct[i], throughProof[i]) << "channel " << kChannels[c] << " pixel " << i << " differs";
         }
 
         if (std::string(kChannels[c]) == "R") {
-            std::set<float> distinctValues( direct.begin(), direct.end() );
-            EXPECT_GT( distinctValues.size(), (size_t)1 ) << "generator produced a degenerate (uniform) image; this test would pass vacuously";
+            std::set<float> distinctValues(direct.begin(), direct.end());
+            EXPECT_GT(distinctValues.size(), (size_t)1) << "generator produced a degenerate (uniform) image; this test would pass vacuously";
         }
     }
 
-    QFile::remove( QString::fromStdString(directPath) );
-    QFile::remove( QString::fromStdString(throughProofPath) );
+    QFile::remove(QString::fromStdString(directPath));
+    QFile::remove(QString::fromStdString(throughProofPath));
 } // TEST_F(BaseTest, TypedPassthroughMidChainRendersIdentically)

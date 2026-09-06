@@ -1047,6 +1047,83 @@ Node::resolveEffectiveOutputDataKindFromInputs() const
     return eDataKindPolymorphic;
 } // resolveEffectiveOutputDataKindFromInputs
 
+DataKindEnum
+Node::resolveEffectiveOutputDataKindFromInputsWithOverride(int overrideInputNb,
+                                                           DataKindEnum overrideKind) const
+{
+    int nInputs = getNInputs();
+
+    for (int i = 0; i < nInputs; ++i) {
+        DataKindEnum inputKind;
+        if (i == overrideInputNb) {
+            inputKind = overrideKind;
+        } else {
+            NodePtr input = getRealInput(i);
+            if (!input) {
+                continue;
+            }
+            inputKind = input->getEffectiveOutputDataKind();
+        }
+        if (inputKind != eDataKindPolymorphic) {
+            return inputKind;
+        }
+    }
+
+    GroupInput* isGroupInput = dynamic_cast<GroupInput*>(_imp->effect.get());
+    if (isGroupInput) {
+        NodeGroup* group = dynamic_cast<NodeGroup*>(getGroup().get());
+        if (group) {
+            NodePtr thisShared = std::const_pointer_cast<Node>(shared_from_this());
+            NodePtr realInput = group->getRealInputForInput(false, thisShared);
+            if (realInput && (realInput.get() != this)) {
+                return realInput->getEffectiveOutputDataKind();
+            }
+        }
+    }
+
+    return eDataKindPolymorphic;
+} // resolveEffectiveOutputDataKindFromInputsWithOverride
+
+bool
+Node::findDataKindConflictDownstream(DataKindEnum kind,
+                                     NodePtr* conflictingNode) const
+{
+    NodesWList outputs;
+    getOutputs_mt_safe(outputs);
+
+    for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
+        NodePtr consumer = it->lock();
+        if (!consumer) {
+            continue;
+        }
+        int slot = consumer->getInputIndex(this);
+        if (slot < 0) {
+            continue;
+        }
+        DataKindEnum required = consumer->getEffectInstance()->getInputDataKind(slot);
+        if (required != eDataKindPolymorphic) {
+            if (required != kind) {
+                if (conflictingNode) {
+                    *conflictingNode = consumer;
+                }
+
+                return true;
+            }
+            continue;
+        }
+        if (consumer->getEffectInstance()->getOutputDataKind() != eDataKindPolymorphic) {
+            continue;
+        }
+
+        DataKindEnum consumerSimulated = consumer->resolveEffectiveOutputDataKindFromInputsWithOverride(slot, kind);
+        if ((consumerSimulated != eDataKindPolymorphic) && consumer->findDataKindConflictDownstream(consumerSimulated, conflictingNode)) {
+            return true;
+        }
+    }
+
+    return false;
+} // findDataKindConflictDownstream
+
 void
 Node::invalidateEffectiveOutputDataKindCache()
 {

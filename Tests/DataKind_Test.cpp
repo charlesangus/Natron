@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include "BaseTest.h"
+#include "DataKindTestEffect.h"
 
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
@@ -76,4 +77,91 @@ TEST_F(BaseTest, DotResolutionUpdatesAfterDisconnectAndReconnect)
 
     connectNodes(generator, dot, 0, true);
     EXPECT_EQ(eDataKindImage, dot->getEffectiveOutputDataKind());
+}
+
+// A concrete image-kind sink cannot be fed directly by a concrete deep-kind source:
+// canConnectInput must reject at the connection that introduces the contradiction, and
+// name the node responsible for the conflicting kind (here, the source itself).
+TEST_F(BaseTest, DirectConcreteKindMismatchRejected)
+{
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+
+    ASSERT_TRUE(deepSource && imageSink);
+
+    NodePtr conflictingNode;
+    Node::CanConnectInputReturnValue ret = imageSink->canConnectInput(deepSource, 0, &conflictingNode);
+
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, ret);
+    EXPECT_EQ(deepSource.get(), conflictingNode.get());
+}
+
+// A concrete image source connecting to a concrete image sink is untouched by the new check.
+TEST_F(BaseTest, ImageToImageStillConnects)
+{
+    NodePtr generator = createNode(_generatorPluginID);
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+
+    ASSERT_TRUE(generator && imageSink);
+
+    EXPECT_EQ(Node::eCanConnectInput_ok, imageSink->canConnectInput(generator, 0));
+    connectNodes(generator, imageSink, 0, true);
+}
+
+// A Dot with nothing feeding it is unconstrained (eDataKindPolymorphic), not image: connecting
+// it into a concrete image sink must still be allowed exactly as before this check existed.
+TEST_F(BaseTest, StillUnconstrainedPolymorphicConnects)
+{
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+
+    ASSERT_TRUE(dot && imageSink);
+
+    EXPECT_EQ(Node::eCanConnectInput_ok, imageSink->canConnectInput(dot, 0));
+    connectNodes(dot, imageSink, 0, true);
+}
+
+// A contradiction introduced through a Dot chain, discovered from the Dot's already-resolved
+// upstream side: deep source -> Dot (fine, Dot is unconstrained), then Dot -> image sink must
+// be rejected because the Dot's effective output kind has already resolved to deep.
+TEST_F(BaseTest, DotChainContradictionRejectedFromUpstreamSide)
+{
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+
+    ASSERT_TRUE(deepSource && dot && imageSink);
+
+    connectNodes(deepSource, dot, 0, true);
+    EXPECT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind());
+
+    NodePtr conflictingNode;
+    Node::CanConnectInputReturnValue ret = imageSink->canConnectInput(dot, 0, &conflictingNode);
+
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, ret);
+    EXPECT_EQ(dot.get(), conflictingNode.get());
+}
+
+// The same contradiction, introduced from the other end: Dot -> image sink first (fine, Dot is
+// still unconstrained), then deep source -> Dot must be rejected, because connecting it would
+// retroactively make the Dot's already-connected downstream sink incompatible. This is the case
+// that requires validating the whole resolved chain, not just the two ends of the new edge.
+TEST_F(BaseTest, DotChainContradictionRejectedFromDownstreamSide)
+{
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+
+    ASSERT_TRUE(deepSource && dot && imageSink);
+
+    connectNodes(dot, imageSink, 0, true);
+    EXPECT_EQ(eDataKindPolymorphic, dot->getEffectiveOutputDataKind());
+
+    NodePtr conflictingNode;
+    Node::CanConnectInputReturnValue ret = dot->canConnectInput(deepSource, 0, &conflictingNode);
+
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, ret);
+    EXPECT_EQ(imageSink.get(), conflictingNode.get());
+
+    EXPECT_EQ(eDataKindPolymorphic, dot->getEffectiveOutputDataKind());
 }

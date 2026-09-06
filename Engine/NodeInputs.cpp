@@ -676,7 +676,8 @@ checkCanConnectNoMultiRes(const Node* output,
 
 Node::CanConnectInputReturnValue
 Node::canConnectInput(const NodePtr& input,
-                      int inputNumber) const
+                      int inputNumber,
+                      NodePtr* conflictingNode) const
 {
     ///No-one is allowed to connect to the other node
     if ( !input || !input->canOthersConnectToThisNode() ) {
@@ -740,6 +741,25 @@ Node::canConnectInput(const NodePtr& input,
                 if (std::abs(node->getEffectInstance()->getFrameRate() - inputFPS) > 0.01) {
                     return eCanConnectInput_differentFPS;
                 }
+            }
+        }
+    }
+
+    {
+        DataKindEnum upstreamKind = input->getEffectiveOutputDataKind();
+        DataKindEnum requiredKind = _imp->effect->getInputDataKind(inputNumber);
+        if ((requiredKind != eDataKindPolymorphic) && (upstreamKind != eDataKindPolymorphic) && (requiredKind != upstreamKind)) {
+            if (conflictingNode) {
+                *conflictingNode = input;
+            }
+
+            return eCanConnectInput_incompatibleDataKind;
+        }
+
+        if ((upstreamKind != eDataKindPolymorphic) && (_imp->effect->getOutputDataKind() == eDataKindPolymorphic)) {
+            DataKindEnum simulated = resolveEffectiveOutputDataKindFromInputsWithOverride(inputNumber, upstreamKind);
+            if ((simulated != eDataKindPolymorphic) && findDataKindConflictDownstream(simulated, conflictingNode)) {
+                return eCanConnectInput_incompatibleDataKind;
             }
         }
     }

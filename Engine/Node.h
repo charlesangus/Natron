@@ -552,8 +552,7 @@ public:
      **/
     void getInputNames(std::map<std::string, std::string> & inputNames) const;
 
-    enum CanConnectInputReturnValue
-    {
+    enum CanConnectInputReturnValue {
         eCanConnectInput_ok = 0,
         eCanConnectInput_indexOutOfRange,
         eCanConnectInput_inputAlreadyConnected,
@@ -563,14 +562,17 @@ public:
         eCanConnectInput_differentPars,
         eCanConnectInput_differentFPS,
         eCanConnectInput_multiResNotSupported,
+        eCanConnectInput_incompatibleDataKind,
     };
 
     /**
      * @brief Returns true if a connection is possible for the given input number of the current node
-     * to the given input.
+     * to the given input. If the return value is eCanConnectInput_incompatibleDataKind and
+     * conflictingNode is non-NULL, it is set to the node whose declared data kind requirement
+     * conflicts with the connection (which may be a node other than input, if the conflict is only
+     * revealed further downstream through a chain of polymorphic pass-through nodes).
      **/
-    Node::CanConnectInputReturnValue canConnectInput(const NodePtr& input, int inputNumber) const;
-
+    Node::CanConnectInputReturnValue canConnectInput(const NodePtr& input, int inputNumber, NodePtr* conflictingNode = 0) const;
 
     /** @brief Adds the node parent to the input inputNumber of the
      * node. Returns true if it succeeded, false otherwise.
@@ -1350,6 +1352,10 @@ private:
     bool setStreamWarningInternal(StreamWarningEnum warning, const QString& message);
 
     DataKindEnum resolveEffectiveOutputDataKindFromInputs() const;
+
+    DataKindEnum resolveEffectiveOutputDataKindFromInputsWithOverride(int overrideInputNb, DataKindEnum overrideKind) const;
+
+    bool findDataKindConflictDownstream(DataKindEnum kind, NodePtr* conflictingNode) const;
 
     void computeHashRecursive(std::list<Node*>& marked);
 

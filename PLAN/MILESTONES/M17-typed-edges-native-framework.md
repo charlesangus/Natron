@@ -66,7 +66,7 @@ Task briefs below summarize; the design doc governs on any ambiguity.
   - verify: manual GUI check with the M17.P2.T2 proof node forced to each kind; screenshot comparison in the GUI test harness if available, else a checklist in the PR.
   - size: M
 
-- [ ] M17.P3.T2 — Node silhouettes and input-arrow glyphs by kind
+- [x] M17.P3.T2 — Node silhouettes and input-arrow glyphs by kind
   - files: `Gui/NodeGui.cpp`, `Gui/NodeGui.h`
   - approach: per-output-kind node silhouette carved within the existing bounding rect via the already-virtual `NodeGui::paint()` (name frame / icon / preview / resize-handle layout assumes that rect); input-arrow glyphs by *declared* kind on dangling unconnected-input arrows so a node's accepted kinds read before connection. Hybrid nodes take their output kind's shape. `NodeGuiIndicator` badges stay reserved for transient state.
   - verify: manual GUI check per M17.P3.T1's method; layout untouched for image-kind nodes (the entire existing node set renders pixel-identical).
@@ -91,5 +91,7 @@ Task briefs below summarize; the design doc governs on any ambiguity.
 - 2026-09-06 — edge kind styling uses pen width as the primary channel, not dashes: `Edge`'s existing dash pattern already means "this input is not live" (mask, inactive viewer input, non-selected input of an identity pass-through), which is a destination-side interaction state orthogonal to data kind and can hold at the same time. Overloading one QPen dash property for both would force a precedence choice whenever both apply. Width also degrades better at zoom-out than a dash period, which collapses into uniform gray sub-pixel. Colour (Okabe-Ito blue/orange) is reinforcement only, applied in the lowest-priority branch so selection, highlight and rendering colours still win. Image and polymorphic edges keep exactly the pen they had.
 
 - 2026-09-06 — no GUI test harness exists in this repo, so M17.P3's tasks cannot be verified automatically: their gate is build + ctest + a human visual pass against a reviewer checklist carried in the PR body. Recorded so the milestone is not read as having automated coverage it does not have.
+
+- 2026-09-06 — the cache-thread shutdown race recorded above is not confined to the two tests originally named: it aborted `BaseTest.RenderFrameRangeProducesDistinctFramePixels` during M17.P3.T2's verification (test body reported `[  PASSED  ]`, then `QThread: Destroyed while thread is still running` at teardown, ctest reading it as "Subprocess aborted"). A clean re-run gave 70/70. Any ctest case can hit it, so a single red CI run on this branch showing an abort *after* a passing test body is this flake, not a regression.
 
 **Verification gate:** full build + entire ctest suite green; new kind-resolution/enforcement unit tests pass; proof node loads and passes its integration test; image-kind rendering of the existing node set is bit-identical (no regression from a foundation-only milestone); doc CI green.

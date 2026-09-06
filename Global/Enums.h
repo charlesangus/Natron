@@ -527,8 +527,7 @@ enum RotoStrokeType
     eRotoStrokeTypeBurn,
 };
 
-enum DataKindEnum
-{
+enum DataKindEnum {
     eDataKindImage,
     eDataKindDeep,
     eDataKindScene,

@@ -44,7 +44,7 @@ registerTestBuiltInPlugin()
     // Registration happens after AppManager::load(), i.e. after onAllPluginsLoaded() has already
     // assigned every plugin its label-without-suffix. Without this these plugins keep an empty one,
     // and every node built from them ends up with an empty script name.
-    p->setLabelWithoutSuffix( Plugin::makeLabelWithoutSuffix( p->getPluginLabel() ) );
+    p->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(p->getPluginLabel()));
 
     std::list<PluginActionShortcut> shortcuts;
     node->getPluginShortcuts(&shortcuts);

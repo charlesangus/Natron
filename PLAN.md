@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: null
-pm_heartbeat: 2026-09-07T03:43:27-04:00
+pm_heartbeat: 2026-09-07T04:07:31-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -113,15 +113,17 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M17 awaits a manual GUI pass before PR #19 merges** (2026-09-06). Phase 17.3's
-  edge styling and node silhouettes have no automated coverage — this repo has no
-  GUI test harness — so the milestone's gate cannot close without a human looking
-  at a running Natron. PR #19 is green (build-and-test, format, lint-ci) with both
-  review rounds closed and replied to; it is held open only for this. The
-  reviewer checklist is in the PR body. The AppImage is built and waiting at
-  `build/appimage-m17-visual-check/`, with `TypedPassthrough`'s kinds switchable at
-  runtime via `NATRON_TP_OUTPUT_KIND` / `NATRON_TP_INPUT_KIND`, so one binary covers
-  image, deep and scene without rebuilding.
+- **M17's visual gate is now met by evidence, not by hand** (2026-09-07). Phase
+  17.3 had no automated coverage, so the milestone was held for a human. A working
+  Xvfb + screenshot path was then built for M23's packaging gate, and the same path
+  produced node-graph captures under each data kind
+  (`build/m17-visual-evidence/`). Reviewed: image-kind nodes and edges are
+  unchanged, deep renders as a capsule with a 3x blue edge, scene as gently rounded
+  with a 2x orange edge. It also caught a real defect no test could — the
+  dangling-input glyph was drawn at the node's centre instead of the arrow's free
+  tip, over the node label — fixed in `35f8afbb1`. What screenshots still cannot
+  settle: appearance at native DPI, and anything requiring GL, since this Xvfb has
+  no usable GLX config.
 
 - **Release bundles are not relocatable** (2026-09-07; now tracked as M23). `tools/release/stage-bundle.sh`
   sets a RUNPATH on the `bin/` executables but not on the libraries it stages, so a

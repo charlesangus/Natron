@@ -25,6 +25,8 @@
 
 #include "NativeEffectBase.h"
 
+#include "Engine/Node.h"
+
 NATRON_NAMESPACE_ENTER
 
 NativeEffectBase::NativeEffectBase(NodePtr node)
@@ -70,6 +72,22 @@ NativeEffectBase::getInputDataKind(int inputNb) const
     }
 
     return desc.inputs[inputNb].kind;
+}
+
+DataKindEnum
+NativeEffectBase::resolveOutputDataKind(bool* isAmbiguous) const
+{
+    NodePtr node = getNode();
+
+    if (!node) {
+        if (isAmbiguous) {
+            *isAmbiguous = false;
+        }
+
+        return eDataKindPolymorphic;
+    }
+
+    return node->resolveStructuralOutputDataKind(isAmbiguous);
 }
 
 void

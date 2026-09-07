@@ -25,13 +25,14 @@
 
 #include "NodePrivate.h"
 
-#include <limits>
-#include <locale>
 #include <algorithm> // min, max
 #include <bitset>
 #include <cassert>
-#include <stdexcept>
+#include <limits>
+#include <locale>
+#include <set>
 #include <sstream> // stringstream
+#include <stdexcept>
 
 #include "Global/Macros.h"
 
@@ -100,6 +101,8 @@
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 #include "Engine/WriteNode.h"
+
+#include "Engine/Nodes/NativeEffectBase.h"
 
 #ifndef M_LN2
 #define M_LN2       0.693147180559945309417232121458176568  /* loge(2)        */
@@ -977,8 +980,12 @@ Node::computeHash()
 } // computeHash
 
 DataKindEnum
-Node::getEffectiveOutputDataKind() const
+Node::getEffectiveOutputDataKind(bool* isAmbiguous) const
 {
+    if (isAmbiguous) {
+        *isAmbiguous = false;
+    }
+
     DataKindEnum declared = _imp->effect->getOutputDataKind();
 
     if (declared != eDataKindPolymorphic) {
@@ -988,6 +995,10 @@ Node::getEffectiveOutputDataKind() const
     {
         QMutexLocker l(&_imp->effectiveDataKindMutex);
         if (_imp->effectiveDataKindCacheSet) {
+            if (isAmbiguous) {
+                *isAmbiguous = _imp->effectiveDataKindCacheAmbiguous;
+            }
+
             return _imp->effectiveDataKindCache;
         }
     }
@@ -1002,32 +1013,112 @@ Node::getEffectiveOutputDataKind() const
         return eDataKindPolymorphic;
     }
     resolutionStack.push_back(this);
-    DataKindEnum resolved = resolveEffectiveOutputDataKindFromInputs();
+    bool ambiguous = false;
+    DataKindEnum resolved;
+    NativeEffectBase* isNative = dynamic_cast<NativeEffectBase*>(_imp->effect.get());
+    if (isNative) {
+        resolved = isNative->resolveOutputDataKind(&ambiguous);
+    } else {
+        resolved = resolveStructuralOutputDataKind(&ambiguous);
+    }
     resolutionStack.pop_back();
 
     {
         QMutexLocker l(&_imp->effectiveDataKindMutex);
         _imp->effectiveDataKindCache = resolved;
+        _imp->effectiveDataKindCacheAmbiguous = ambiguous;
         _imp->effectiveDataKindCacheSet = true;
+    }
+
+    if (isAmbiguous) {
+        *isAmbiguous = ambiguous;
     }
 
     return resolved;
 } // getEffectiveOutputDataKind
 
+void
+Node::DataKindConstraint::merge(const Node::DataKindConstraint& other)
+{
+    if (ambiguous) {
+        return;
+    }
+    if (other.ambiguous) {
+        ambiguous = true;
+        kind = eDataKindPolymorphic;
+
+        return;
+    }
+    if (other.kind == eDataKindPolymorphic) {
+        return;
+    }
+    if (kind == eDataKindPolymorphic) {
+        kind = other.kind;
+
+        return;
+    }
+    if (kind != other.kind) {
+        ambiguous = true;
+        kind = eDataKindPolymorphic;
+    }
+} // Node::DataKindConstraint::merge
+
+Node::DataKindConstraint
+Node::effectiveDataKindConstraintOf(const NodePtr& node)
+{
+    DataKindConstraint constraint;
+
+    if (node) {
+        bool ambiguous = false;
+        constraint.kind = node->getEffectiveOutputDataKind(&ambiguous);
+        constraint.ambiguous = ambiguous;
+    }
+
+    return constraint;
+}
+
 DataKindEnum
-Node::resolveEffectiveOutputDataKindFromInputs() const
+Node::resolveStructuralOutputDataKind(bool* isAmbiguous) const
+{
+    DataKindConstraint constraint = resolveDataKindConstraint(-1, DataKindConstraint());
+
+    if (isAmbiguous) {
+        *isAmbiguous = constraint.ambiguous;
+    }
+
+    return constraint.kind;
+}
+
+Node::DataKindConstraint
+Node::resolveDataKindConstraint(int overrideInputNb,
+                                const DataKindConstraint& overrideConstraint) const
+{
+    DataKindConstraint constraint;
+
+    collectUpstreamDataKindConstraint(overrideInputNb, overrideConstraint, &constraint);
+    collectDownstreamDataKindRequirement(&constraint);
+
+    return constraint;
+}
+
+void
+Node::collectUpstreamDataKindConstraint(int overrideInputNb,
+                                        const DataKindConstraint& overrideConstraint,
+                                        DataKindConstraint* constraint) const
 {
     int nInputs = getNInputs();
 
     for (int i = 0; i < nInputs; ++i) {
-        NodePtr input = getRealInput(i);
-        if (!input) {
+        // An input declaring a concrete kind says what may connect to it; it never decides what a
+        // polymorphic output carries, or a mask declared eDataKindImage would type the whole node.
+        if (_imp->effect->getInputDataKind(i) != eDataKindPolymorphic) {
             continue;
         }
-        DataKindEnum inputKind = input->getEffectiveOutputDataKind();
-        if (inputKind != eDataKindPolymorphic) {
-            return inputKind;
+        if (i == overrideInputNb) {
+            constraint->merge(overrideConstraint);
+            continue;
         }
+        constraint->merge(effectiveDataKindConstraintOf(getRealInput(i)));
     }
 
     // A GroupInput has no real inputs of its own: what feeds it is whatever is connected to the
@@ -1039,55 +1130,24 @@ Node::resolveEffectiveOutputDataKindFromInputs() const
             NodePtr thisShared = std::const_pointer_cast<Node>(shared_from_this());
             NodePtr realInput = group->getRealInputForInput(false, thisShared);
             if (realInput && (realInput.get() != this)) {
-                return realInput->getEffectiveOutputDataKind();
+                constraint->merge(effectiveDataKindConstraintOf(realInput));
             }
         }
     }
+} // collectUpstreamDataKindConstraint
 
-    return eDataKindPolymorphic;
-} // resolveEffectiveOutputDataKindFromInputs
-
-DataKindEnum
-Node::resolveEffectiveOutputDataKindFromInputsWithOverride(int overrideInputNb,
-                                                           DataKindEnum overrideKind) const
+void
+Node::collectDownstreamDataKindRequirement(DataKindConstraint* constraint) const
 {
-    int nInputs = getNInputs();
-
-    for (int i = 0; i < nInputs; ++i) {
-        DataKindEnum inputKind;
-        if (i == overrideInputNb) {
-            inputKind = overrideKind;
-        } else {
-            NodePtr input = getRealInput(i);
-            if (!input) {
-                continue;
-            }
-            inputKind = input->getEffectiveOutputDataKind();
-        }
-        if (inputKind != eDataKindPolymorphic) {
-            return inputKind;
-        }
+    // Same discipline as the upstream re-entrancy guard: walking consumers can come back through a
+    // node already on the walk, and a thread-local stack ends that without threading a visited set
+    // through every recursive call.
+    static thread_local std::vector<const Node*> requirementStack;
+    if (std::find(requirementStack.begin(), requirementStack.end(), this) != requirementStack.end()) {
+        return;
     }
+    requirementStack.push_back(this);
 
-    GroupInput* isGroupInput = dynamic_cast<GroupInput*>(_imp->effect.get());
-    if (isGroupInput) {
-        NodeGroup* group = dynamic_cast<NodeGroup*>(getGroup().get());
-        if (group) {
-            NodePtr thisShared = std::const_pointer_cast<Node>(shared_from_this());
-            NodePtr realInput = group->getRealInputForInput(false, thisShared);
-            if (realInput && (realInput.get() != this)) {
-                return realInput->getEffectiveOutputDataKind();
-            }
-        }
-    }
-
-    return eDataKindPolymorphic;
-} // resolveEffectiveOutputDataKindFromInputsWithOverride
-
-bool
-Node::findDataKindConflictDownstream(DataKindEnum kind,
-                                     NodePtr* conflictingNode) const
-{
     NodesWList outputs;
     getOutputs_mt_safe(outputs);
 
@@ -1102,7 +1162,42 @@ Node::findDataKindConflictDownstream(DataKindEnum kind,
         }
         DataKindEnum required = consumer->getEffectInstance()->getInputDataKind(slot);
         if (required != eDataKindPolymorphic) {
-            if (required != kind) {
+            constraint->merge(DataKindConstraint(required));
+            continue;
+        }
+        // A consumer that accepts anything requires nothing of its own, but what it must in turn
+        // deliver still reaches back through it: that is what resolves a whole chain of
+        // pass-throughs feeding one concrete consumer. Its other inputs are deliberately not
+        // consulted -- they are its business, not this node's.
+        if (consumer->getEffectInstance()->getOutputDataKind() != eDataKindPolymorphic) {
+            continue;
+        }
+        consumer->collectDownstreamDataKindRequirement(constraint);
+    }
+
+    requirementStack.pop_back();
+} // collectDownstreamDataKindRequirement
+
+bool
+Node::findDataKindConflictDownstream(const DataKindConstraint& constraint,
+                                     NodePtr* conflictingNode) const
+{
+    NodesWList outputs;
+
+    getOutputs_mt_safe(outputs);
+
+    for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
+        NodePtr consumer = it->lock();
+        if (!consumer) {
+            continue;
+        }
+        int slot = consumer->getInputIndex(this);
+        if (slot < 0) {
+            continue;
+        }
+        DataKindEnum required = consumer->getEffectInstance()->getInputDataKind(slot);
+        if (required != eDataKindPolymorphic) {
+            if (constraint.ambiguous || ((constraint.kind != eDataKindPolymorphic) && (required != constraint.kind))) {
                 if (conflictingNode) {
                     *conflictingNode = consumer;
                 }
@@ -1115,8 +1210,8 @@ Node::findDataKindConflictDownstream(DataKindEnum kind,
             continue;
         }
 
-        DataKindEnum consumerSimulated = consumer->resolveEffectiveOutputDataKindFromInputsWithOverride(slot, kind);
-        if ((consumerSimulated != eDataKindPolymorphic) && consumer->findDataKindConflictDownstream(consumerSimulated, conflictingNode)) {
+        DataKindConstraint consumerSimulated = consumer->resolveDataKindConstraint(slot, constraint);
+        if ((consumerSimulated.ambiguous || (consumerSimulated.kind != eDataKindPolymorphic)) && consumer->findDataKindConflictDownstream(consumerSimulated, conflictingNode)) {
             return true;
         }
     }
@@ -1124,15 +1219,27 @@ Node::findDataKindConflictDownstream(DataKindEnum kind,
     return false;
 } // findDataKindConflictDownstream
 
+bool
+Node::isInputDataKindUnacceptable(const NodePtr& input,
+                                  int inputNumber) const
+{
+    DataKindEnum requiredKind = _imp->effect->getInputDataKind(inputNumber);
+
+    if (requiredKind == eDataKindPolymorphic) {
+        return false;
+    }
+
+    DataKindConstraint upstream = effectiveDataKindConstraintOf(input);
+
+    return upstream.ambiguous || ((upstream.kind != eDataKindPolymorphic) && (requiredKind != upstream.kind));
+} // isInputDataKindUnacceptable
+
 Node::CanConnectInputReturnValue
 Node::checkDataKindCompatibility(const NodePtr& input,
                                  int inputNumber,
                                  NodePtr* conflictingNode) const
 {
-    DataKindEnum upstreamKind = input->getEffectiveOutputDataKind();
-    DataKindEnum requiredKind = _imp->effect->getInputDataKind(inputNumber);
-
-    if ((requiredKind != eDataKindPolymorphic) && (upstreamKind != eDataKindPolymorphic) && (requiredKind != upstreamKind)) {
+    if (isInputDataKindUnacceptable(input, inputNumber)) {
         if (conflictingNode) {
             *conflictingNode = input;
         }
@@ -1140,9 +1247,9 @@ Node::checkDataKindCompatibility(const NodePtr& input,
         return eCanConnectInput_incompatibleDataKind;
     }
 
-    if ((upstreamKind != eDataKindPolymorphic) && (_imp->effect->getOutputDataKind() == eDataKindPolymorphic)) {
-        DataKindEnum simulated = resolveEffectiveOutputDataKindFromInputsWithOverride(inputNumber, upstreamKind);
-        if ((simulated != eDataKindPolymorphic) && findDataKindConflictDownstream(simulated, conflictingNode)) {
+    if (_imp->effect->getOutputDataKind() == eDataKindPolymorphic) {
+        DataKindConstraint simulated = resolveDataKindConstraint(inputNumber, effectiveDataKindConstraintOf(input));
+        if ((simulated.ambiguous || (simulated.kind != eDataKindPolymorphic)) && findDataKindConflictDownstream(simulated, conflictingNode)) {
             return eCanConnectInput_incompatibleDataKind;
         }
     }
@@ -1153,24 +1260,37 @@ Node::checkDataKindCompatibility(const NodePtr& input,
 void
 Node::invalidateEffectiveOutputDataKindCache()
 {
-    bool wasCached;
-    {
-        QMutexLocker l(&_imp->effectiveDataKindMutex);
-        wasCached = _imp->effectiveDataKindCacheSet;
-        _imp->effectiveDataKindCacheSet = false;
-    }
+    // Resolution is bidirectional, so a memoized kind may depend on a node on either side of this
+    // one; the walk therefore goes both ways, and the visited set is what keeps it finite.
+    std::set<Node*> visited;
+    std::vector<Node*> pending;
 
-    if (!wasCached) {
-        // Never resolved (or not polymorphic, which never populates the cache): nothing downstream
-        // could have memoized a value depending on this node, so there is nothing to propagate.
-        return;
-    }
+    visited.insert(this);
+    pending.push_back(this);
 
-    NodesList outputs;
-    getOutputsWithGroupRedirection(outputs);
-    for (NodesList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
-        if (*it) {
-            (*it)->invalidateEffectiveOutputDataKindCache();
+    while (!pending.empty()) {
+        Node* node = pending.back();
+        pending.pop_back();
+
+        {
+            QMutexLocker l(&node->_imp->effectiveDataKindMutex);
+            node->_imp->effectiveDataKindCacheSet = false;
+        }
+
+        NodesList outputs;
+        node->getOutputsWithGroupRedirection(outputs);
+        for (NodesList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
+            if (*it && visited.insert(it->get()).second) {
+                pending.push_back(it->get());
+            }
+        }
+
+        int nInputs = node->getNInputs();
+        for (int i = 0; i < nInputs; ++i) {
+            NodePtr input = node->getRealInput(i);
+            if (input && visited.insert(input.get()).second) {
+                pending.push_back(input.get());
+            }
         }
     }
 } // invalidateEffectiveOutputDataKindCache
@@ -5260,7 +5380,7 @@ Node::onEffectKnobValueChanged(KnobI* what,
     }
 
     if (!ret) {
-        GroupInput* isInput = dynamic_cast<GroupInput*>( _imp->effect.get() );
+        GroupInput* isInput = dynamic_cast<GroupInput*>(_imp->effect.get());
         if (isInput) {
             if ( (what->getName() == kNatronGroupInputIsOptionalParamName)
                  || ( what->getName() == kNatronGroupInputIsMaskParamName) ) {

@@ -25,7 +25,6 @@
 
 #include "Global/Macros.h"
 
-#include <list>
 #include <string>
 
 #include <QFile>
@@ -37,7 +36,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
-#include "Engine/LogEntry.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 
@@ -45,11 +44,11 @@ NATRON_NAMESPACE_USING
 
 // Kinds are never serialized: a project can only end up on disk with a kind-invalid edge if it was
 // wired up bypassing canConnectInput() (e.g. the way NodeWrapper::connectInput() does for Python
-// scripts and PyPlug init). connectInput() itself hand-wires such an edge here, without going through
-// canConnectInput(), to reproduce that. Loading the resulting project back must drop the edge through
-// the normal disconnect path and log a user-visible warning, the same policy used for a plug-in
-// missing at load time.
-TEST_F(BaseTest, ProjectLoadDropsKindInvalidEdgeWithWarning)
+// scripts and PyPlug init). connectInput() itself hand-wires such an edge here, without going
+// through canConnectInput(), to reproduce that. Loading it back must leave the user's graph exactly
+// as they saved it and put the node holding the input it cannot handle into an error state -- the
+// same answer as a project naming a colorspace its OpenColorIO config does not define.
+TEST_F(BaseTest, ProjectLoadKeepsKindInvalidEdgeAndErrorsTheNode)
 {
     ProjectPtr project = getApp()->getProject();
 
@@ -61,6 +60,7 @@ TEST_F(BaseTest, ProjectLoadDropsKindInvalidEdgeWithWarning)
     ASSERT_EQ(deepSource, imageSink->getInput(0));
 
     const std::string sinkName = imageSink->getScriptName();
+    const std::string sourceName = deepSource->getScriptName();
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -72,29 +72,19 @@ TEST_F(BaseTest, ProjectLoadDropsKindInvalidEdgeWithWarning)
     ASSERT_TRUE(QFile::exists(savedFilePath));
 
     project->reset(false, true);
-    appPTR->clearErrorLog_mt_safe();
 
     ASSERT_TRUE(project->loadProject(dirPath, fileName));
 
     NodePtr sink2 = project->getNodeByName(sinkName);
     ASSERT_TRUE(bool(sink2));
-    EXPECT_FALSE(bool(sink2->getInput(0)));
-
-    std::list<LogEntry> log;
-    appPTR->getErrorLog_mt_safe(&log);
-    bool foundWarning = false;
-    for (std::list<LogEntry>::const_iterator it = log.begin(); it != log.end(); ++it) {
-        if (it->message.contains(QString::fromUtf8("incompatible data kind"), Qt::CaseInsensitive)) {
-            foundWarning = true;
-            break;
-        }
-    }
-    EXPECT_TRUE(foundWarning);
+    ASSERT_TRUE(bool(sink2->getInput(0)));
+    EXPECT_EQ(sourceName, sink2->getInput(0)->getScriptName());
+    EXPECT_TRUE(sink2->hasPersistentMessage());
 }
 
 // Every existing project is entirely image-kind: loading one must be a no-op for this check,
-// edge and all, with nothing added to the error log.
-TEST_F(BaseTest, ProjectLoadKeepsValidEdgeAndLogsNoDataKindWarning)
+// edge and all, with no node left in an error state.
+TEST_F(BaseTest, ProjectLoadKeepsValidEdgeAndLeavesNoErrorState)
 {
     ProjectPtr project = getApp()->getProject();
 
@@ -116,17 +106,94 @@ TEST_F(BaseTest, ProjectLoadKeepsValidEdgeAndLogsNoDataKindWarning)
     ASSERT_TRUE(QFile::exists(savedFilePath));
 
     project->reset(false, true);
-    appPTR->clearErrorLog_mt_safe();
 
     ASSERT_TRUE(project->loadProject(dirPath, fileName));
 
     NodePtr sink2 = project->getNodeByName(sinkName);
     ASSERT_TRUE(bool(sink2));
     EXPECT_TRUE(bool(sink2->getInput(0)));
+    EXPECT_FALSE(sink2->hasPersistentMessage());
+}
 
-    std::list<LogEntry> log;
-    appPTR->getErrorLog_mt_safe(&log);
-    for (std::list<LogEntry>::const_iterator it = log.begin(); it != log.end(); ++it) {
-        EXPECT_FALSE(it->message.contains(QString::fromUtf8("incompatible data kind"), Qt::CaseInsensitive));
-    }
+// Kinds are resolved from topology alone, so a reload -- which restores every edge in serialization
+// order rather than the order the user made them -- has to arrive at the same answer. The Dot here
+// is typed only by what it feeds, the direction with nothing upstream to fall back on.
+TEST_F(BaseTest, ResolutionSurvivesSaveAndLoadUnchanged)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr deepSink = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSink));
+
+    ASSERT_TRUE(dot && deepSink);
+    connectNodes(dot, deepSink, 0, true);
+    ASSERT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind());
+
+    const std::string dotName = dot->getScriptName();
+    const std::string sinkName = deepSink->getScriptName();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("kind-downstream.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    ASSERT_TRUE(QFile::exists(savedFilePath));
+
+    project->reset(false, true);
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr dot2 = project->getNodeByName(dotName);
+    NodePtr sink2 = project->getNodeByName(sinkName);
+    ASSERT_TRUE(dot2 && sink2);
+    ASSERT_TRUE(bool(sink2->getInput(0)));
+
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindDeep, dot2->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+    EXPECT_FALSE(sink2->hasPersistentMessage());
+    EXPECT_FALSE(dot2->hasPersistentMessage());
+}
+
+// A node the graph leaves ambiguous is not an invalid graph: both edges survive the round trip,
+// nothing is rewired, and the node itself is not the one in error -- only a consumer that cannot
+// take an ambiguous input would be.
+TEST_F(BaseTest, ProjectLoadKeepsAmbiguousPolymorphicInputsIntact)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    NodePtr generator = createNode(_generatorPluginID);
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr poly = createNode(QString::fromUtf8(kTestPluginIDDataKindPolyTwoInputs));
+
+    ASSERT_TRUE(generator && deepSource && poly);
+    connectNodes(generator, poly, 0, true);
+    connectNodes(deepSource, poly, 1, true);
+
+    const std::string polyName = poly->getScriptName();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("kind-ambiguous.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    ASSERT_TRUE(QFile::exists(savedFilePath));
+
+    project->reset(false, true);
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr poly2 = project->getNodeByName(polyName);
+    ASSERT_TRUE(bool(poly2));
+    EXPECT_TRUE(bool(poly2->getInput(0)));
+    EXPECT_TRUE(bool(poly2->getInput(1)));
+    EXPECT_FALSE(poly2->hasPersistentMessage());
+
+    bool ambiguous = false;
+    EXPECT_EQ(eDataKindPolymorphic, poly2->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_TRUE(ambiguous);
 }

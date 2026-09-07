@@ -59,6 +59,10 @@ registerDataKindTestPlugins()
     // concrete non-image data kinds: no shipped plugin declares one.
     registerTestBuiltInPlugin<DataKindTestDeepSource>();
     registerTestBuiltInPlugin<DataKindTestImageSink>();
+    registerTestBuiltInPlugin<DataKindTestDeepSink>();
+    registerTestBuiltInPlugin<DataKindTestPolyTwoInputs>();
+    registerTestBuiltInPlugin<DataKindTestPolyAndImageInput>();
+    registerTestBuiltInPlugin<DataKindTestScenePolicy>();
 }
 }
 

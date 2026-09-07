@@ -258,6 +258,7 @@ public:
         , effectiveDataKindMutex()
         , effectiveDataKindCacheSet(false)
         , effectiveDataKindCache(eDataKindPolymorphic)
+        , effectiveDataKindCacheAmbiguous(false)
     {
         ///Initialize timers
         gettimeofday(&lastRenderStartedSlotCallTime, 0);
@@ -497,6 +498,7 @@ public:
     mutable QMutex effectiveDataKindMutex;
     mutable bool effectiveDataKindCacheSet;
     mutable DataKindEnum effectiveDataKindCache;
+    mutable bool effectiveDataKindCacheAmbiguous;
 };
 
 

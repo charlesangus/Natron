@@ -324,16 +324,29 @@ public:
     /**
      * @brief Returns the data kind (image, deep, scene) effectively produced by this node's output.
      * A node with a concrete (non-polymorphic) declared kind always returns that kind. A polymorphic
-     * pass-through node (Dot, other NoOps, group input/output boundaries) resolves structurally by
-     * walking its connected inputs until a concrete kind is found; a disconnected, or entirely
-     * polymorphic, upstream chain resolves to eDataKindPolymorphic, meaning no constraint yet.
+     * node's kind comes from its own resolution policy: NativeEffectBase subclasses may supply one,
+     * and every other node uses the engine default, resolveStructuralOutputDataKind() below.
+     * A node the graph constrains to two different concrete kinds at once is ambiguous: it returns
+     * eDataKindPolymorphic and sets *isAmbiguous, so a caller that only wants a value to display
+     * reads "no single kind" and has no error to handle, while the connection checks can still
+     * refuse to feed an ambiguous producer into an input declaring a concrete kind.
      * The result is cached per node and invalidated automatically on connection changes.
      **/
-    DataKindEnum getEffectiveOutputDataKind() const WARN_UNUSED_RETURN;
+    DataKindEnum getEffectiveOutputDataKind(bool* isAmbiguous = 0) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief Invalidates the cached result of getEffectiveOutputDataKind() for this node, and
-     * propagates the invalidation downstream to consumers whose own resolution could depend on it.
+     * @brief The engine's default data-kind resolution policy, exposed so that
+     * NativeEffectBase::resolveOutputDataKind() can delegate to it. Resolves bidirectionally from
+     * the current topology alone: the kinds reaching the node's polymorphic-declared inputs, and
+     * the kinds its consumers require of it. Nothing about it depends on the order the edges were
+     * made, so it survives a save/load round trip unchanged.
+     **/
+    DataKindEnum resolveStructuralOutputDataKind(bool* isAmbiguous) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Invalidates the cached result of getEffectiveOutputDataKind() for this node and for
+     * every node whose own resolution could depend on it. Resolution is bidirectional, so that is
+     * both directions: consumers and inputs alike.
      **/
     void invalidateEffectiveOutputDataKindCache();
 
@@ -581,6 +594,15 @@ public:
      * semantics as canConnectInput()) or eCanConnectInput_ok.
      **/
     Node::CanConnectInputReturnValue checkDataKindCompatibility(const NodePtr& input, int inputNumber, NodePtr* conflictingNode = 0) const;
+
+    /**
+     * @brief Returns true if what input produces cannot be accepted by this node's declared input
+     * kind at inputNumber -- the half of checkDataKindCompatibility() that judges a single edge on
+     * its own, without simulating what the connection would mean further downstream. This is what
+     * an already-restored graph is judged by: it names the node that is holding an input it cannot
+     * handle, which is the node that must show the error.
+     **/
+    bool isInputDataKindUnacceptable(const NodePtr& input, int inputNumber) const WARN_UNUSED_RETURN;
 
     /** @brief Adds the node parent to the input inputNumber of the
      * node. Returns true if it succeeded, false otherwise.
@@ -1359,11 +1381,33 @@ private:
 
     bool setStreamWarningInternal(StreamWarningEnum warning, const QString& message);
 
-    DataKindEnum resolveEffectiveOutputDataKindFromInputs() const;
+    /**
+     * @brief One accumulated data-kind constraint: no constraint yet (eDataKindPolymorphic), one
+     * concrete kind, or ambiguous -- constrained to more than one concrete kind at once, which is
+     * a different thing from being unconstrained.
+     **/
+    struct DataKindConstraint {
+        DataKindEnum kind;
+        bool ambiguous;
 
-    DataKindEnum resolveEffectiveOutputDataKindFromInputsWithOverride(int overrideInputNb, DataKindEnum overrideKind) const;
+        explicit DataKindConstraint(DataKindEnum kind_ = eDataKindPolymorphic)
+            : kind(kind_)
+            , ambiguous(false)
+        {
+        }
 
-    bool findDataKindConflictDownstream(DataKindEnum kind, NodePtr* conflictingNode) const;
+        void merge(const DataKindConstraint& other);
+    };
+
+    static DataKindConstraint effectiveDataKindConstraintOf(const NodePtr& node);
+
+    DataKindConstraint resolveDataKindConstraint(int overrideInputNb, const DataKindConstraint& overrideConstraint) const;
+
+    void collectUpstreamDataKindConstraint(int overrideInputNb, const DataKindConstraint& overrideConstraint, DataKindConstraint* constraint) const;
+
+    void collectDownstreamDataKindRequirement(DataKindConstraint* constraint) const;
+
+    bool findDataKindConflictDownstream(const DataKindConstraint& constraint, NodePtr* conflictingNode) const;
 
     void computeHashRecursive(std::list<Node*>& marked);
 

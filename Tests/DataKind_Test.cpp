@@ -155,7 +155,7 @@ TEST_F(BaseTest, DotChainContradictionRejectedFromDownstreamSide)
     ASSERT_TRUE(deepSource && dot && imageSink);
 
     connectNodes(dot, imageSink, 0, true);
-    EXPECT_EQ(eDataKindPolymorphic, dot->getEffectiveOutputDataKind());
+    EXPECT_EQ(eDataKindImage, dot->getEffectiveOutputDataKind());
 
     NodePtr conflictingNode;
     Node::CanConnectInputReturnValue ret = dot->canConnectInput(deepSource, 0, &conflictingNode);
@@ -163,5 +163,164 @@ TEST_F(BaseTest, DotChainContradictionRejectedFromDownstreamSide)
     EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, ret);
     EXPECT_EQ(imageSink.get(), conflictingNode.get());
 
-    EXPECT_EQ(eDataKindPolymorphic, dot->getEffectiveOutputDataKind());
+    EXPECT_EQ(eDataKindImage, dot->getEffectiveOutputDataKind());
+}
+
+// The same pass-through, resolved from the other direction: nothing feeds the Dot, but the only
+// thing it feeds declares deep, so deep is the only kind it can be carrying.
+TEST_F(BaseTest, DotResolvesFromItsDownstreamConsumerAlone)
+{
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr deepSink = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSink));
+
+    ASSERT_TRUE(dot && deepSink);
+
+    connectNodes(dot, deepSink, 0, true);
+
+    EXPECT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind());
+}
+
+// Upstream-only, for comparison with the case above: the same node, the same answer, reached from
+// the opposite side.
+TEST_F(BaseTest, DotResolvesFromItsUpstreamSourceAlone)
+{
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+
+    ASSERT_TRUE(deepSource && dot);
+
+    connectNodes(deepSource, dot, 0, true);
+
+    EXPECT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind());
+}
+
+// Kinds are resolved from the topology alone, never from the history of how it was built: the same
+// graph wired in either order has to answer the same, or a project would resolve differently after
+// a reload, where every edge is restored in serialization order.
+TEST_F(BaseTest, ResolutionDoesNotDependOnConnectionOrder)
+{
+    NodePtr deepSourceA = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr dotA = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr deepSinkA = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSink));
+
+    ASSERT_TRUE(deepSourceA && dotA && deepSinkA);
+
+    connectNodes(deepSourceA, dotA, 0, true);
+    connectNodes(dotA, deepSinkA, 0, true);
+
+    NodePtr deepSourceB = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr dotB = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr deepSinkB = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSink));
+
+    ASSERT_TRUE(deepSourceB && dotB && deepSinkB);
+
+    connectNodes(dotB, deepSinkB, 0, true);
+    connectNodes(deepSourceB, dotB, 0, true);
+
+    EXPECT_EQ(eDataKindDeep, dotA->getEffectiveOutputDataKind());
+    EXPECT_EQ(dotA->getEffectiveOutputDataKind(), dotB->getEffectiveOutputDataKind());
+}
+
+// Several polymorphic inputs carrying the same concrete kind say one thing, not several: the node
+// carries that kind and connects to a consumer declaring it.
+TEST_F(BaseTest, MultiInputPolymorphicWithAgreeingInputsResolvesToThatKind)
+{
+    NodePtr deepSource1 = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr deepSource2 = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr poly = createNode(QString::fromUtf8(kTestPluginIDDataKindPolyTwoInputs));
+    NodePtr deepSink = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSink));
+
+    ASSERT_TRUE(deepSource1 && deepSource2 && poly && deepSink);
+
+    connectNodes(deepSource1, poly, 0, true);
+    connectNodes(deepSource2, poly, 1, true);
+
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindDeep, poly->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+
+    EXPECT_EQ(Node::eCanConnectInput_ok, deepSink->canConnectInput(poly, 0));
+    connectNodes(poly, deepSink, 0, true);
+}
+
+// Inputs of different concrete kinds are legitimate -- a node selecting between an image branch
+// and a deep branch has exactly that shape -- so neither input is refused. What the node produces
+// is simply not one kind, and getEffectiveOutputDataKind() reports that as ambiguous.
+TEST_F(BaseTest, MultiInputPolymorphicWithDisagreeingInputsIsAmbiguousNotRejected)
+{
+    NodePtr generator = createNode(_generatorPluginID);
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr poly = createNode(QString::fromUtf8(kTestPluginIDDataKindPolyTwoInputs));
+
+    ASSERT_TRUE(generator && deepSource && poly);
+
+    connectNodes(generator, poly, 0, true);
+
+    EXPECT_EQ(Node::eCanConnectInput_ok, poly->canConnectInput(deepSource, 1));
+    connectNodes(deepSource, poly, 1, true);
+
+    bool ambiguous = false;
+    EXPECT_EQ(eDataKindPolymorphic, poly->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_TRUE(ambiguous);
+}
+
+// Where the ambiguity is refused: not at the inputs that created it, but at a consumer that has to
+// be handed one definite kind and cannot be.
+TEST_F(BaseTest, AmbiguousProducerRejectedByConcreteConsumer)
+{
+    NodePtr generator = createNode(_generatorPluginID);
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr poly = createNode(QString::fromUtf8(kTestPluginIDDataKindPolyTwoInputs));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+
+    ASSERT_TRUE(generator && deepSource && poly && imageSink);
+
+    connectNodes(generator, poly, 0, true);
+    connectNodes(deepSource, poly, 1, true);
+
+    NodePtr conflictingNode;
+    Node::CanConnectInputReturnValue ret = imageSink->canConnectInput(poly, 0, &conflictingNode);
+
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, ret);
+    EXPECT_EQ(poly.get(), conflictingNode.get());
+}
+
+// An input that declares a concrete kind constrains what may connect to it, it does not decide
+// what the node produces: with only that input connected the output is still unconstrained.
+TEST_F(BaseTest, ConcreteDeclaredInputDoesNotResolvePolymorphicOutput)
+{
+    NodePtr generator = createNode(_generatorPluginID);
+    NodePtr poly = createNode(QString::fromUtf8(kTestPluginIDDataKindPolyAndImageInput));
+
+    ASSERT_TRUE(generator && poly);
+
+    connectNodes(generator, poly, 1, true);
+
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindPolymorphic, poly->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+}
+
+// A native node that overrides NativeEffectBase::resolveOutputDataKind() decides its own kind, and
+// the engine uses that answer rather than what the graph structurally says: here scene, although
+// the only thing connected to the node is an image source.
+TEST_F(BaseTest, NativeNodeResolutionPolicyOverridesStructuralResolution)
+{
+    NodePtr generator = createNode(_generatorPluginID);
+    NodePtr policy = createNode(QString::fromUtf8(kTestPluginIDDataKindScenePolicy));
+
+    ASSERT_TRUE(generator && policy);
+
+    connectNodes(generator, policy, 0, true);
+
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindScene, policy->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+    ASSERT_TRUE(bool(imageSink));
+
+    NodePtr conflictingNode;
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, imageSink->canConnectInput(policy, 0, &conflictingNode));
+    EXPECT_EQ(policy.get(), conflictingNode.get());
 }

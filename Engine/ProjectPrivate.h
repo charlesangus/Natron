@@ -122,15 +122,6 @@ public:
 
     bool restoreFromSerialization(const ProjectSerialization & obj, const QString& name, const QString& path, bool* mustSave);
 
-    /**
-     * @brief Called once every node and every connection in the whole (recursive) node tree has been
-     * restored from a project. Kinds are never serialized, so this recomputes them from the restored
-     * graph and drops any edge found to carry incompatible data kinds, going through the normal
-     * disconnect path and logging a warning, the same policy used for a plug-in missing at load time.
-     * Returns true if at least one edge was dropped.
-     **/
-    static bool revalidateDataKindEdges(const NodesList& allNodes);
-
     bool findFormat(int index, Format* format) const;
     bool findFormat(const std::string& formatSpec, Format* format) const;
     /**

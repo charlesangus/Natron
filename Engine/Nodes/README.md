@@ -71,10 +71,18 @@ What it supplies so a subclass doesn't have to:
 What a subclass still must provide, exactly as it would on top of
 `EffectInstance` directly: `getNativePluginDescription()` (the only pure
 virtual `NativeEffectBase` adds), `initializeKnobs()`, and its render
-behavior (`render()`, or `isIdentity()` if the node is a pass-through). Any
-of the defaults above can still be overridden per-node if a node genuinely
-needs, say, a different accepted-components list -- `NativeEffectBase` only
-removes the *obligation* to write them, it doesn't seal them off.
+behavior (`render()`, or `isIdentity()` if the node is a pass-through).
+
+The plugin-identity accessors -- `getPluginID()`, `getPluginLabel()`,
+`getPluginDescription()`, `getPluginGrouping()`, `getMajorVersion()`,
+`getMinorVersion()` -- are `OVERRIDE FINAL` on purpose: `NativePluginDescription`
+is meant to be the single place a node's identity is written, and a subclass
+changes them by changing what it returns from `getNativePluginDescription()`,
+not by overriding the accessor. The remaining defaults are plain overrides that
+a node may replace when the default doesn't fit it: `getNInputs()`,
+`getInputLabel()`, `isInputOptional()`, `getOutputDataKind()`,
+`getInputDataKind()`, `resolveOutputDataKind()`, `addAcceptedComponents()`,
+`addSupportedBitDepth()` and `renderThreadSafety()`.
 
 ## Writing a node, start to finish
 
@@ -162,10 +170,13 @@ throughout; read it alongside this section.
   kind of data today.
 - `eDataKindScene` -- 3D scene data. Same caveat as deep: declaration only,
   no scene payload or evaluation path yet.
-- `eDataKindPolymorphic` -- "no fixed kind of my own; take on whatever feeds
-  me." For pass-through utility nodes (`Dot`, `Switch`, `NoOps`, group
-  boundaries, `TypedPassthrough`), not for nodes that actually produce or
-  transform data.
+- `eDataKindPolymorphic` -- on an input, "I accept any kind"; on an output,
+  "I have no fixed kind of my own." For pass-through utility nodes (`Dot`, the
+  other `NoOps`, group boundaries, `TypedPassthrough`), not for nodes that
+  actually produce or transform data. Only nodes that override the kind
+  virtuals are polymorphic: an OFX plugin that happens to pass its input
+  through, like openfx-misc's `Switch`, is loaded as an `OfxEffectInstance`
+  and is typed image/image like every other plugin.
 
 A node declares kinds via `NativePluginDescription::inputs[i].kind` and
 `NativePluginDescription::outputKind` (or, off `NativeEffectBase`, by
@@ -180,24 +191,64 @@ edge carries no kind of its own -- its kind is simply its source node's
 into a project, and nothing about it can go stale independently of the graph
 itself.
 
-A polymorphic node's *effective* output kind (`Node::getEffectiveOutputDataKind()`,
-`Engine/Node.cpp`) is resolved structurally: it walks the node's declared
-inputs, resolves each upstream node's effective kind in turn, and takes the
-first non-polymorphic kind it finds; a polymorphic node with nothing feeding
-it (or only other unresolved polymorphic nodes upstream) resolves to
-`eDataKindPolymorphic` itself -- "unconstrained," not a silent fallback to
-image. The result is cached per node and invalidated on connection change,
-since recomputing it is a graph walk, not a field read.
+**Resolution policy belongs to the node.** A polymorphic node's *effective*
+output kind is `Node::getEffectiveOutputDataKind()` (`Engine/Node.cpp`), which
+asks the node's own policy. A `NativeEffectBase` subclass supplies one by
+overriding `NativeEffectBase::resolveOutputDataKind()` -- that is how a native
+switch would follow the input it has selected rather than all of them. Every
+other node, including every built-in pass-through, uses the engine default,
+`Node::resolveStructuralOutputDataKind()`. OFX plugins are untouched by any of
+this: they never override the kind virtuals, so they are image/image.
 
-Enforcement has three separate points. Each one compares a **resolved**
-kind on the upstream/source side (`Node::getEffectiveOutputDataKind()`,
-walking through any polymorphic nodes as above) against the **declared**
-kind of the consuming input (`EffectInstance::getInputDataKind(inputNumber)`,
-a fixed, per-plugin, per-input value) -- never resolved against resolved. A
-consumer's accepted kind for a given input is fixed by the plugin and needs
-no resolving; only the upstream side has to be walked through the graph to
-find out what it currently, structurally is. Do not assume any single one of
-these three points is the whole story:
+The engine default resolves **bidirectionally**, from the current topology
+alone:
+
+- Upstream, through the node's **polymorphic-declared inputs only**. An input
+  declaring a concrete kind says what may connect to it (a mask declared
+  `eDataKindImage` stays an image input whatever the node passes through) and
+  never decides the output kind.
+- Downstream, through what the node's consumers require of it. Connecting a
+  `Dot`'s output into a deep input resolves the `Dot` to deep, exactly as
+  connecting a deep source into its input does. A consumer that itself accepts
+  anything requires nothing of its own, but what *it* must in turn deliver
+  still reaches back through it, which is what types a whole chain of
+  pass-throughs feeding one concrete consumer.
+
+Nothing in that depends on the order the edges were made, and nothing is
+serialized, so a project resolves the same way after a reload as it did while
+being built.
+
+A node the graph constrains to no kind at all resolves to
+`eDataKindPolymorphic` -- "unconstrained", not a silent fallback to image. A
+node it constrains to two different concrete kinds at once is **ambiguous**,
+which is a different thing: a node with a primary input and a polymorphic
+auxiliary, or one selecting between an image branch and a deep branch, is a
+legitimate graph, so the inputs that make it ambiguous are not rejected. What
+is rejected is handing that node's output to an input declaring a concrete
+kind, which is the point at which a single definite kind is actually required.
+`getEffectiveOutputDataKind()` reports ambiguity through an optional
+`bool* isAmbiguous` out-parameter and returns `eDataKindPolymorphic` when it is
+set, so a caller that only wants something to draw -- `Gui/Edge.cpp`,
+`Gui/NodeGui.cpp` -- reads "no single kind" and has no error case to handle.
+
+The result is cached per node and invalidated on connection change
+(`Node::invalidateEffectiveOutputDataKindCache()`, driven from
+`Node::onInputChanged()`). Because resolution is bidirectional, a node's kind
+can change when a connection anywhere on either side of it changes, so the
+invalidation walks both directions.
+
+Enforcement then splits by regime. At **connection time** the connection is
+refused outright: the user is making the edge, so there is no reason to create
+an invalid one. When an edge that was legal becomes illegal through something
+other than making that edge, the edge is **kept** and the node that now holds
+an input it cannot handle is put into an error state -- the graph is the user's
+and is never silently rewired.
+
+Every check compares a **resolved** kind on the upstream/source side against
+the **declared** kind of the consuming input
+(`EffectInstance::getInputDataKind(inputNumber)`, a fixed, per-plugin,
+per-input value) -- never resolved against resolved. Do not assume any single
+one of these three points is the whole story:
 
 1. **Connection time** -- `Node::canConnectInput()`
    (`Engine/NodeInputs.cpp`) is the single choke point used by every GUI drag,
@@ -205,52 +256,66 @@ these three points is the whole story:
    `Node::checkDataKindCompatibility()`, which resolves the upstream node's
    effective output kind and compares it against this node's declared kind
    for that input, returning `Node::eCanConnectInput_incompatibleDataKind`
-   on a mismatch and naming the conflicting (upstream) node. This check is
-   skipped while a project is loading (see point 2) because mid-restore the
-   answer depends on how much of the tree has been reconnected so far.
-2. **Project load** -- `ProjectPrivate::revalidateDataKindEdges()`
-   (`Engine/ProjectPrivate.cpp`) runs once, after the whole node tree and all
-   its connections have been restored, and re-checks every restored edge with
-   `checkDataKindCompatibility()`. Since kinds are never serialized, this is
-   the only place a stale or contradictory kind combination (e.g. a project
-   saved before an upstream node's declared kind changed) gets caught: an
-   incompatible edge is dropped (disconnected) and a warning is written to
-   the error log -- never silently miswired -- the same policy as a missing
-   plugin.
+   on a mismatch and naming the conflicting (upstream) node. An ambiguous
+   upstream node is refused here too. This check is skipped while a project is
+   loading (see point 2) because mid-restore the answer depends on how much of
+   the tree has been reconnected so far.
+2. **Project load** -- `Project::reportDataKindConflicts()`
+   (`Engine/Project.cpp`) runs once, after the whole node tree and all its
+   connections have been restored, and re-checks every restored edge. Since
+   kinds are never serialized, this is the only place a stale or contradictory
+   combination (e.g. a project saved before an upstream node's declared kind
+   changed, or one wired up through `Node::connectInput()` by a Python script
+   or PyPlug, which bypasses `canConnectInput()`) gets caught. Every edge is
+   kept exactly as saved and every node holding an input it cannot handle gets
+   an `eMessageTypeError` persistent message naming those inputs -- the same
+   answer as a project naming an OpenColorIO colorspace its config does not
+   define (`Project::reportUnresolvedOCIOColorSpaces()`). The load itself still
+   succeeds: a node showing an error is a loaded project, not a failed one.
 3. **Chain simulation for polymorphic nodes** -- connecting a new upstream
    source into a node whose own output is polymorphic (e.g. `Dot`,
-   `TypedPassthrough`) does more than re-run point 1 for that one edge:
-   `checkDataKindCompatibility()` also simulates what the polymorphic node's
-   resolved output kind would become with the new connection in place
-   (`Node::resolveEffectiveOutputDataKindFromInputsWithOverride()`), then
-   walks that simulated kind forward through the node's existing downstream
-   consumers (`Node::findDataKindConflictDownstream()`, recursing through any
-   further polymorphic nodes), comparing it against each concrete consumer's
-   declared input kind -- still resolved/simulated upstream value against
-   declared consumer input, just propagated forward first. This is what
-   rejects `deep source -> Dot` when `Dot -> image sink` was already
-   connected first (fine at the time, since `Dot` was still unconstrained):
-   the new connection would retroactively make the already-connected sink
+   `TypedPassthrough`) does more than re-run point 1 for that one edge.
+   `checkDataKindCompatibility()` first computes what the node would resolve to
+   with the new connection in place, then walks that forward through the node's
+   existing downstream consumers (`Node::findDataKindConflictDownstream()`,
+   recursing through any further polymorphic nodes) and compares it against
+   each concrete consumer's declared input kind. That forward walk is what
+   rejects `deep source -> Dot` when `Dot -> image sink` was already connected
+   first: the new connection would make the already-connected sink
    incompatible, so it is rejected at the connection that introduces the
-   contradiction, naming the sink as the conflicting node.
+   contradiction, naming the sink as the conflicting node. The engine cannot
+   predict a node that overrides `resolveOutputDataKind()`, so this simulation
+   assumes the structural default.
 
 `Tests/DataKind_Test.cpp`, `Tests/DataKindProjectLoad_Test.cpp`, and
 `Tests/TypedPassthrough_Test.cpp` exercise all three points end to end,
 including through `TypedPassthrough` itself, and are worth reading alongside
 this section.
 
-## Adapters are Viewer-only
+## Conversions between kinds are explicit
 
-The only implicit data-kind conversion anywhere in the graph is deep-to-image
-at the Viewer: the Viewer accepts a deep edge directly and auto-flattens it.
-No other node accepts an edge of a different kind than it declares, and there
-is no general adapter-insertion mechanism for mid-graph conversions -- an
-information-destroying conversion elsewhere in the graph requires an
-explicit node (e.g. a `DeepToImage`), so the graph always shows where such a
-conversion happens. A new node should never rely on, or attempt to register,
-an implicit conversion of its own; if a node needs data in a different kind
-than what feeds it, it takes that kind as its declared input and requires an
-explicit converter node upstream.
+No node accepts an edge of a different kind than it declares, and there is no
+adapter-insertion mechanism: a conversion between kinds requires an explicit
+node (e.g. a `DeepToImage`), so the graph always shows where an
+information-destroying conversion happens. A new node should never rely on, or
+attempt to register, an implicit conversion of its own; if a node needs data in
+a different kind than what feeds it, it takes that kind as its declared input
+and requires an explicit converter node upstream.
+
+The Viewer is the intended single exception, once there is deep data to
+convert: flattening deep to image for display is the one conversion that has
+nowhere else to go, since it is not part of the graph's result. That is a
+design intent, not current behavior -- `ViewerInstance` declares image inputs
+like every other node here and no flattening exists to run.
+
+## Known limitation: groups are an image barrier
+
+`NodeGroup` declares no kinds of its own, so it takes `EffectInstance`'s
+image/image default: a deep or scene chain inside a group is reported as image
+at the group node's external output, and connecting that output to a deep or
+scene input is rejected. Resolving a group's effective kind from its internal
+`GroupOutput` (and its inputs from the corresponding `GroupInput` nodes) is a
+design decision that has not been made yet.
 
 ## Testing
 

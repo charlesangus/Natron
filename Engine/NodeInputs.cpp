@@ -746,8 +746,8 @@ Node::canConnectInput(const NodePtr& input,
     }
 
     // Not while loading: kinds resolve structurally through the graph, so mid-restore the answer
-    // depends on how much of the tree is connected yet. ProjectPrivate::revalidateDataKindEdges()
-    // is the backstop that judges the whole restored tree at once.
+    // depends on how much of the tree is connected yet. Project::reportDataKindConflicts() is the
+    // backstop that judges the whole restored tree at once.
     if (!getApp()->getProject()->isLoadingProject()) {
         CanConnectInputReturnValue kindRet = checkDataKindCompatibility(input, inputNumber, conflictingNode);
         if (kindRet != eCanConnectInput_ok) {

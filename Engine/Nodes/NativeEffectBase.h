@@ -96,7 +96,9 @@ struct NativePluginDescription {
  * virtuals from it.
  *
  * Everything else about EffectInstance -- knobs, rendering, undo, serialization,
- * scheduling -- is unchanged; this class adds no capability virtuals of its own.
+ * scheduling -- is unchanged; the one virtual this class adds beyond that metadata is
+ * resolveOutputDataKind(), the hook by which a native node supplies its own data-kind
+ * resolution policy.
  * A subclass still overrides initializeKnobs() and render() exactly as it would
  * on top of EffectInstance directly, optionally using the createKnob() helper
  * below for the AppManager::createKnob() idiom.
@@ -211,6 +213,23 @@ public:
     }
 
     virtual DataKindEnum getInputDataKind(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Supplies this node's data-kind resolution policy, consulted when its declared output
+     * kind is eDataKindPolymorphic. The default delegates to the engine's structural resolution
+     * (Node::resolveStructuralOutputDataKind()): the kinds reaching the node's polymorphic-declared
+     * inputs, and the kinds its consumers require of it. A node whose kind follows something
+     * narrower -- the input a switch has selected, say -- overrides this, returns that kind and
+     * clears *isAmbiguous. Set *isAmbiguous instead when the policy leaves the node holding more
+     * than one concrete kind at once; the returned kind is then ignored.
+     * A policy that reads anything other than the node's connections -- a knob, typically -- must
+     * call Node::invalidateEffectiveOutputDataKindCache() itself when that thing changes: the
+     * engine only invalidates the cached answer when a connection changes.
+     * Note that the engine cannot predict an overridden policy, so the connection-time check that
+     * simulates what a not-yet-made edge would resolve to assumes the structural default; the
+     * answer this returns is always what the node is actually taken to carry.
+     **/
+    virtual DataKindEnum resolveOutputDataKind(bool* isAmbiguous) const WARN_UNUSED_RETURN;
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImagePlaneDesc>* comps) OVERRIDE;
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE;

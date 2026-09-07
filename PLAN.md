@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: null
-pm_heartbeat: 2026-09-06T20:20:50-04:00
+pm_heartbeat: 2026-09-07T00:00:39-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -112,4 +112,11 @@ future core work has solid ground to build on.
 
 # Open questions
 
-(None pending.)
+- **M17 awaits a manual GUI pass before PR #19 merges** (2026-09-06). Phase 17.3's
+  edge styling and node silhouettes have no automated coverage — this repo has no
+  GUI test harness — so the milestone's gate cannot close without a human looking
+  at a running Natron. PR #19 is green (build-and-test, format, lint-ci) with both
+  review rounds closed and replied to; it is held open only for this. The
+  reviewer checklist is in the PR body. An AppImage is being built with
+  `TypedPassthrough`'s kinds switchable at runtime via environment variables, so
+  one binary covers image, deep and scene without rebuilding.

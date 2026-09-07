@@ -1701,7 +1701,10 @@ NodeGui::refreshInputKindGlyphs()
         Edge* edge = (i < _inputEdges.size()) ? _inputEdges[i] : 0;
         bool show = edge && edge->isVisible() && !edge->hasSource();
         if (show) {
-            QPointF scenePt = edge->mapToScene(edge->line().p1());
+            // For a dangling input edge, Edge::initLine() anchors p1() at the node (its
+            // bbox center) and puts the free end the arrowhead points at in p2(), past the
+            // room initLine() already leaves for the arrowhead itself.
+            QPointF scenePt = edge->mapToScene(edge->line().p2());
             glyph->setPos(mapFromScene(scenePt));
         }
         glyph->setVisible(show);

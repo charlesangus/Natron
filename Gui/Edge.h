@@ -56,6 +56,8 @@ public:
 
     virtual ~Edge() OVERRIDE;
 
+    QRectF boundingRect() const OVERRIDE WARN_UNUSED_RETURN;
+
     QPainterPath shape() const OVERRIDE WARN_UNUSED_RETURN;
 
     bool contains(const QPointF &point) const OVERRIDE WARN_UNUSED_RETURN;
@@ -122,6 +124,14 @@ public:
 private:
 
     virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *options, QWidget *parent = 0) OVERRIDE FINAL;
+
+    /**
+     * @brief Re-reads the source node's resolved data kind and, if it changed, stores the pen that
+     * kind calls for on the item itself. The width has to live in the item's own pen because
+     * boundingRect() and shape() are both derived from it.
+     **/
+    void refreshDataKindPen();
+
     std::unique_ptr<EdgePrivate> _imp;
 };
 

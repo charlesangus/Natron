@@ -36,12 +36,10 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief A deliberately trivial NativeEffectBase subclass: a single-input,
- * single-output polymorphic pass-through, proving declaration, registration,
- * typed-IO and the createKnob() helper before any feature pressure arrives.
- * Its effective data kind resolves structurally from whatever feeds it,
- * exactly like Dot, and it renders as an identity of its input, exactly like
- * NoOpBase -- it does not invent a new pass-through mechanism.
+ * @brief A single-input, single-output polymorphic pass-through: it forwards its
+ * input unchanged, and its effective data kind is whatever feeds it. The forward
+ * is an isIdentity() answer rather than a render() that copies pixels, so the
+ * render path resolves straight to the input and the node costs nothing.
  **/
 class TypedPassthrough
     : public NativeEffectBase {

@@ -86,4 +86,33 @@ home per `Global/PythonUtils.h`.
   - verify: the smoke test fails on a bundle missing the Python stdlib and passes on a complete one.
   - size: M
 
-**Verification gate:** a freshly staged bundle passes both the relocatability check and the offscreen smoke test; each check fails on a bundle with its corresponding defect reintroduced; an AppImage built from the fixed tooling starts and opens a window on a desktop that has neither the ASWF VFX libraries, nor Qt's xcb dependencies, nor a matching Python installed.
+## Phase 23.4: OFX plugin bundles
+
+The staged bundle ships **no OFX plugins at all** — no Read, Write, Merge or Blur.
+`Engine/OfxHost.cpp:890` looks for them under `<bin>/../Plugins/OFX/Natron`, and
+`cmake --install` stages nothing there. Staging `build/assets/Plugins/*.ofx.bundle`
+was attempted and `check-relocatable.sh` correctly rejected the result.
+
+Measured on the built plugins rather than assumed: each `.ofx` already carries
+`RUNPATH=$ORIGIN/../../Libraries`, which from `Contents/Linux-x86-64/` correctly
+resolves to its own bundle's `Libraries/`. Two things are wrong anyway. Only
+`Arena.ofx.bundle` actually *has* a `Libraries/` directory — `CImg`, `IO` and
+`Misc` point at one that does not exist. And none of them can reach the Natron
+bundle's own `lib/`, where the OCIO, OIIO and OpenEXR they link against live. So
+the fix is not "rewrite a build-tree path"; it is to give each plugin a RUNPATH
+reaching both its own `Libraries/` and the bundle's `lib/`, without flattening the
+per-bundle layout the OFX spec requires.
+
+- [ ] M23.P4.T1 — Stage OFX plugin bundles with a RUNPATH that reaches both trees
+  - files: `tools/release/stage-bundle.sh`
+  - approach: stage `*.ofx.bundle` under `Plugins/OFX/Natron/`, preserving each bundle's `Contents/<arch>/` and `Libraries/` layout exactly — the OFX host resolves plugins by that structure, so it cannot be flattened into `lib/`. Give each staged `.ofx` a RUNPATH listing both its own `Libraries/` and the bundle's `lib/`, computed from where the file lands the way `set_bundle_runpath()` already does rather than hardcoded. Decide deliberately whether a library a plugin needs goes in that plugin's `Libraries/` or in the shared `lib/` — prefer the shared one where the main app already stages the same soname, so the bundle does not ship two copies that could diverge.
+  - verify: `check-relocatable.sh` passes with the plugins staged; a plugin's dependency resolves to the bundle's copy.
+  - size: L
+
+- [ ] M23.P4.T2 — Assert the plugins actually load in the startup gate
+  - files: `tools/release/check-startup.sh`
+  - approach: `check-relocatable.sh` proves the ELF closure resolves, which is not the same as the OFX host accepting the bundle. Extend the engine-startup probe to assert a non-zero count of loaded OFX plugins and that a few expected ones by name (a reader, a writer, Merge) are present. A bundle whose plugins silently fail to load must fail packaging — that is the state shipped today.
+  - verify: the gate fails on a bundle with the plugins removed or with a deliberately broken plugin RUNPATH, and passes with them staged correctly.
+  - size: M
+
+**Verification gate:** a freshly staged bundle passes both the relocatability check and the offscreen smoke test; each check fails on a bundle with its corresponding defect reintroduced; an AppImage built from the fixed tooling starts, opens a window, and loads its OFX plugins on a desktop that has neither the ASWF VFX libraries, nor Qt's xcb dependencies, nor a matching Python installed.

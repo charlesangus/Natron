@@ -50,4 +50,40 @@ See `DECISIONS/2026-09-07-staged-bundle-runpath-bug.md`.
   - verify: the packaging path fails loudly on a deliberately broken bundle.
   - size: S
 
-**Verification gate:** a freshly staged bundle passes the relocatability check; the same check fails on a bundle staged with either defect reintroduced; an AppImage built from the fixed tooling starts and opens a window on a desktop that does not have the ASWF VFX libraries or Qt xcb dependencies installed.
+## Phase 23.3: Runtime data, not just libraries
+
+Added 2026-09-07, after the ELF fixes let the bundle get far enough to fail on the
+next layer. `check-relocatable.sh` validates `DT_NEEDED` closure and by construction
+cannot see data dependencies. The bundle ships `bin lib plugins share` and no
+`Resources/` at all, so with libraries finally resolving it dies on:
+
+```
+Fontconfig configuration file .../bin/../Resources/etc/fonts does not exist
+Could not find platform independent libraries <prefix>
+Fatal Python error: Failed to import encodings module
+```
+
+`libpython3.13.so.1.0` is staged because it is an ELF dependency; the Python
+standard library it needs is not, and nothing sets a Python home. Natron expects
+`<bin>/../Resources/etc/fonts` (`Engine/AppManager.cpp:342`) and resolves its Python
+home per `Global/PythonUtils.h`.
+
+- [ ] M23.P3.T1 — Stage the Python standard library and set its home
+  - files: `tools/release/stage-bundle.sh`
+  - approach: stage the interpreter's stdlib into the bundle and make the shipped binaries resolve it from there rather than from the host. Read `Global/PythonUtils.h` for the home/path resolution the app already implements and satisfy that contract rather than inventing a parallel one. Do not bundle the host's `site-packages` wholesale; stage what the interpreter needs to start and what Natron's own Python layer imports.
+  - verify: the bundle starts with Python initialised on a machine with no matching Python installed.
+  - size: M
+
+- [ ] M23.P3.T2 — Stage the fontconfig configuration and any other expected Resources
+  - files: `tools/release/stage-bundle.sh`
+  - approach: create `Resources/etc/fonts` with a working configuration, and audit what else the app resolves relative to its own binary — grep for `applicationDirPath()` in `Engine/` and `Gui/` and satisfy every path it expects, rather than fixing only the one that happened to warn. OCIO configs are a likely second case.
+  - verify: no "does not exist" warnings about bundle-relative resources at startup.
+  - size: M
+
+- [ ] M23.P3.T3 — Start the app offscreen as part of the packaging gate
+  - files: `tools/release/` (extend the check or add a smoke script), packaging entry points
+  - approach: `--version` returns before Python or any platform plugin initialises, which is why every failure so far reached the user instead of the gate. Run the packaged binary with `QT_QPA_PLATFORM=offscreen` far enough to initialise Python, fontconfig and the plugin layer, and fail packaging on any error output. This is the check that would have caught all three defects in this milestone; the ELF check complements it but cannot replace it.
+  - verify: the smoke test fails on a bundle missing the Python stdlib and passes on a complete one.
+  - size: M
+
+**Verification gate:** a freshly staged bundle passes both the relocatability check and the offscreen smoke test; each check fails on a bundle with its corresponding defect reintroduced; an AppImage built from the fixed tooling starts and opens a window on a desktop that has neither the ASWF VFX libraries, nor Qt's xcb dependencies, nor a matching Python installed.

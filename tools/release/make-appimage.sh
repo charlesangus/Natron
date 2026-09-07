@@ -6,6 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CMAKELISTS="$SCRIPT_DIR/../../CMakeLists.txt"
 CHECK_RELOCATABLE="$SCRIPT_DIR/check-relocatable.sh"
+CHECK_STARTUP="$SCRIPT_DIR/check-startup.sh"
 APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
 
 if [[ $# -ne 2 ]]; then
@@ -59,6 +60,9 @@ done
 
 echo "==> Checking bundle relocatability"
 "$CHECK_RELOCATABLE" "$STAGING_DIR"
+
+echo "==> Checking the bundle starts"
+"$CHECK_STARTUP" "$STAGING_DIR"
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT

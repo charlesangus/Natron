@@ -77,9 +77,12 @@ libgmodule-2.0.so.0
 libgobject-2.0.so.0
 libgthread-2.0.so.0
 
-# Fontconfig/Freetype
+# Fontconfig. libfreetype is deliberately absent from this list: Qt 6.8 binds
+# COLRv1 entry points (FT_Get_Paint and friends) that only exist from FreeType
+# 2.11, so taking it from the host makes libQt6Gui fail to relocate on anything
+# older. libfontconfig stays host-provided, and reads the bundle's own
+# configuration through FONTCONFIG_PATH.
 libfontconfig.so.1
-libfreetype.so.6
 
 # Linux kernel interfaces
 libcom_err.so.2

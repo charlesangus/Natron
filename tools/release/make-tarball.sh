@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CMAKELISTS="$SCRIPT_DIR/../../CMakeLists.txt"
 CHECK_RELOCATABLE="$SCRIPT_DIR/check-relocatable.sh"
+CHECK_STARTUP="$SCRIPT_DIR/check-startup.sh"
 
 if [[ $# -ne 2 ]]; then
     echo "Usage: make-tarball.sh <staging-dir> <output-dir>" >&2
@@ -50,6 +51,9 @@ CHECKSUM="$TARBALL.sha256"
 
 echo "==> Checking bundle relocatability"
 "$CHECK_RELOCATABLE" "$STAGING_DIR"
+
+echo "==> Checking the bundle starts"
+"$CHECK_STARTUP" "$STAGING_DIR"
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT

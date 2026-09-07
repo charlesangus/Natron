@@ -324,3 +324,84 @@ TEST_F(BaseTest, NativeNodeResolutionPolicyOverridesStructuralResolution)
     EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, imageSink->canConnectInput(policy, 0, &conflictingNode));
     EXPECT_EQ(policy.get(), conflictingNode.get());
 }
+
+// A node whose policy reads a neighbour can close a resolution loop, and truncating that loop
+// answers "unconstrained" for whichever node the query happened to start from. Memoizing that
+// would make later reads depend on which node was asked first, so the same graph is built twice
+// and queried in opposite orders: both nodes must answer the same either way.
+TEST_F(BaseTest, ResolutionOfACycleDoesNotDependOnWhichNodeIsQueriedFirst)
+{
+    NodePtr deepSourceA = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr mirrorA = createNode(QString::fromUtf8(kTestPluginIDDataKindConsumerMirrorPolicy));
+    NodePtr polyA = createNode(QString::fromUtf8(kTestPluginIDDataKindPolyTwoInputs));
+
+    ASSERT_TRUE(deepSourceA && mirrorA && polyA);
+
+    connectNodes(mirrorA, polyA, 0, true);
+    connectNodes(deepSourceA, polyA, 1, true);
+
+    NodePtr deepSourceB = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr mirrorB = createNode(QString::fromUtf8(kTestPluginIDDataKindConsumerMirrorPolicy));
+    NodePtr polyB = createNode(QString::fromUtf8(kTestPluginIDDataKindPolyTwoInputs));
+
+    ASSERT_TRUE(deepSourceB && mirrorB && polyB);
+
+    connectNodes(mirrorB, polyB, 0, true);
+    connectNodes(deepSourceB, polyB, 1, true);
+
+    bool polyAAmbiguous = true;
+    const DataKindEnum polyAKind = polyA->getEffectiveOutputDataKind(&polyAAmbiguous);
+    bool mirrorAAmbiguous = true;
+    const DataKindEnum mirrorAKind = mirrorA->getEffectiveOutputDataKind(&mirrorAAmbiguous);
+
+    bool mirrorBAmbiguous = true;
+    const DataKindEnum mirrorBKind = mirrorB->getEffectiveOutputDataKind(&mirrorBAmbiguous);
+    bool polyBAmbiguous = true;
+    const DataKindEnum polyBKind = polyB->getEffectiveOutputDataKind(&polyBAmbiguous);
+
+    EXPECT_EQ(mirrorBKind, mirrorAKind);
+    EXPECT_EQ(mirrorBAmbiguous, mirrorAAmbiguous);
+    EXPECT_EQ(polyBKind, polyAKind);
+    EXPECT_EQ(polyBAmbiguous, polyAAmbiguous);
+
+    EXPECT_EQ(eDataKindDeep, polyAKind);
+    EXPECT_EQ(eDataKindDeep, mirrorAKind);
+
+    // Re-reading in the opposite order to the one each graph was first queried in must not move
+    // either answer: nothing about the first query may have been recorded.
+    EXPECT_EQ(mirrorAKind, mirrorA->getEffectiveOutputDataKind());
+    EXPECT_EQ(polyBKind, polyB->getEffectiveOutputDataKind());
+}
+
+// A node that owns its resolution policy follows the input it selected, so the branches it does
+// not follow carry nothing on its account: what it must deliver downstream must not reach back
+// through them and type, and then reject connections on, a branch it never reads.
+TEST_F(BaseTest, PolicyNodeDoesNotTypeTheBranchesItDoesNotFollow)
+{
+    NodePtr selectedBranch = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr ignoredBranch = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr policy = createNode(QString::fromUtf8(kTestPluginIDDataKindSelectFirstInputPolicy));
+    NodePtr deepSink = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSink));
+
+    ASSERT_TRUE(selectedBranch && ignoredBranch && policy && deepSink);
+
+    connectNodes(selectedBranch, policy, 0, true);
+    connectNodes(ignoredBranch, policy, 1, true);
+    connectNodes(policy, deepSink, 0, true);
+
+    EXPECT_EQ(eDataKindDeep, policy->getEffectiveOutputDataKind());
+    EXPECT_EQ(eDataKindDeep, selectedBranch->getEffectiveOutputDataKind());
+
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindPolymorphic, ignoredBranch->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+
+    NodePtr generator = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(generator));
+
+    EXPECT_EQ(Node::eCanConnectInput_ok, ignoredBranch->canConnectInput(generator, 0));
+    connectNodes(generator, ignoredBranch, 0, true);
+
+    EXPECT_EQ(eDataKindImage, ignoredBranch->getEffectiveOutputDataKind());
+    EXPECT_EQ(eDataKindDeep, policy->getEffectiveOutputDataKind());
+}

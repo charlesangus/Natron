@@ -387,20 +387,7 @@ Project::reportDataKindConflicts()
     getNodes_recursive(nodes, false);
 
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        QStringList unhandled;
-        const int nInputs = (*it)->getNInputs();
-        for (int i = 0; i < nInputs; ++i) {
-            NodePtr inputNode = (*it)->getRealInput(i);
-            if (!inputNode || !(*it)->isInputDataKindUnacceptable(inputNode, i)) {
-                continue;
-            }
-            unhandled.push_back(tr("Input \"%1\" is connected to %2, which carries a kind of data this node cannot handle.")
-                                    .arg(QString::fromUtf8((*it)->getInputLabel(i).c_str()))
-                                    .arg(QString::fromUtf8(inputNode->getScriptName_mt_safe().c_str())));
-        }
-        if (!unhandled.isEmpty()) {
-            (*it)->setPersistentMessage(eMessageTypeError, unhandled.join(QString::fromUtf8("\n")).toStdString());
-        }
+        (*it)->refreshDataKindConflictMessage();
     }
 } // Project::reportDataKindConflicts
 

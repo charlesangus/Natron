@@ -481,6 +481,13 @@ public Q_SLOTS:
     void refreshEdges();
 
     /**
+     * @brief Re-reads the resolved data kind of everything this node's edges are drawn from. A kind
+     * resolves from the whole connected component, so an edge somewhere else in the graph can
+     * retype this node and its edges without any of them being touched.
+     **/
+    void onDataKindChanged();
+
+    /**
      * @brief Specific for the Viewer to  have inputs that are not used in A or B be dashed
      **/
     void refreshDashedStateOfEdges();

@@ -63,6 +63,8 @@ registerDataKindTestPlugins()
     registerTestBuiltInPlugin<DataKindTestPolyTwoInputs>();
     registerTestBuiltInPlugin<DataKindTestPolyAndImageInput>();
     registerTestBuiltInPlugin<DataKindTestScenePolicy>();
+    registerTestBuiltInPlugin<DataKindTestSelectFirstInputPolicy>();
+    registerTestBuiltInPlugin<DataKindTestConsumerMirrorPolicy>();
 }
 }
 

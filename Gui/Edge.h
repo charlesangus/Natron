@@ -121,16 +121,19 @@ public:
 
     bool computeVisibility(bool hovered) const;
 
-private:
-
-    virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *options, QWidget *parent = 0) OVERRIDE FINAL;
-
     /**
      * @brief Re-reads the source node's resolved data kind and, if it changed, stores the pen that
      * kind calls for on the item itself. The width has to live in the item's own pen because
      * boundingRect() and shape() are both derived from it.
+     * Public because a kind resolves from the whole connected component: an edit anywhere in it can
+     * retype nodes whose own edges were not otherwise touched, and NodeGui refreshes those from
+     * Node::dataKindChanged().
      **/
     void refreshDataKindPen();
+
+private:
+
+    virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *options, QWidget *parent = 0) OVERRIDE FINAL;
 
     std::unique_ptr<EdgePrivate> _imp;
 };

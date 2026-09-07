@@ -197,3 +197,87 @@ TEST_F(BaseTest, ProjectLoadKeepsAmbiguousPolymorphicInputsIntact)
     EXPECT_EQ(eDataKindPolymorphic, poly2->getEffectiveOutputDataKind(&ambiguous));
     EXPECT_TRUE(ambiguous);
 }
+
+// The other half of keeping an invalid edge instead of disconnecting it: once the user does what
+// the error asked and removes the input the node cannot handle, the error has to go. An app that
+// still says a project is broken after it has been fixed is no better than one that rewired it.
+TEST_F(BaseTest, DataKindErrorClearsWhenTheOffendingInputIsRemoved)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+
+    ASSERT_TRUE(deepSource && imageSink);
+    ASSERT_TRUE(imageSink->connectInput(deepSource, 0));
+
+    const std::string sinkName = imageSink->getScriptName();
+    const std::string sourceName = deepSource->getScriptName();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("kind-invalid-then-fixed.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    project->reset(false, true);
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr sink2 = project->getNodeByName(sinkName);
+    NodePtr source2 = project->getNodeByName(sourceName);
+    ASSERT_TRUE(sink2 && source2);
+    ASSERT_TRUE(sink2->hasPersistentMessage());
+
+    disconnectNodes(source2, sink2, true);
+
+    EXPECT_FALSE(sink2->hasPersistentMessage());
+}
+
+// The persistent message is one slot per node with no record of who wrote it, so clearing the
+// data-kind diagnostic must recognise that something else has written over it since and leave that
+// alone: the node still has a real problem, just not this one.
+TEST_F(BaseTest, ClearingTheDataKindErrorLeavesAnUnrelatedErrorAlone)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+
+    ASSERT_TRUE(deepSource && imageSink);
+    ASSERT_TRUE(imageSink->connectInput(deepSource, 0));
+
+    const std::string sinkName = imageSink->getScriptName();
+    const std::string sourceName = deepSource->getScriptName();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("kind-invalid-plus-unrelated.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    project->reset(false, true);
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr sink2 = project->getNodeByName(sinkName);
+    NodePtr source2 = project->getNodeByName(sourceName);
+    ASSERT_TRUE(sink2 && source2);
+    ASSERT_TRUE(sink2->hasPersistentMessage());
+
+    const std::string unrelated("Something else went wrong on this node.");
+    sink2->setPersistentMessage(eMessageTypeError, unrelated);
+
+    disconnectNodes(source2, sink2, true);
+
+    EXPECT_TRUE(sink2->hasPersistentMessage());
+
+    QString message;
+    int type = 0;
+    sink2->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ(unrelated, message.toStdString());
+}

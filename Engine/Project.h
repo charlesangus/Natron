@@ -256,6 +256,8 @@ public:
      * state naming those inputs. Data kinds are never serialized, so they are recomputed from
      * the restored graph; an edge found invalid is kept exactly as the user made it, since
      * silently rewiring a loaded project would be a worse answer than showing the problem.
+     * Runs Node::refreshDataKindConflictMessage() over the whole graph, so a node whose inputs
+     * are all acceptable ends up with no such error rather than keeping an older one.
      **/
     void reportDataKindConflicts();
 

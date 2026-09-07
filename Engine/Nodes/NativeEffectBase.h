@@ -231,6 +231,21 @@ public:
      **/
     virtual DataKindEnum resolveOutputDataKind(bool* isAmbiguous) const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Whether this node's output data kind follows what is connected to inputNb. That is
+     * what lets a kind required of this node's output reach back through it to the node feeding
+     * that input, resolving a whole chain of pass-throughs from one concrete consumer.
+     * The default is true, matching the structural resolution above, which follows every
+     * polymorphic-declared input at once. A node that overrides resolveOutputDataKind() to follow
+     * something narrower -- the input a switch has selected, say -- must also override this, or
+     * the branches its policy ignores are still typed, rendered and checked as the kind the node
+     * outputs. An input declaring a concrete kind is unaffected either way: it never contributes.
+     **/
+    virtual bool inputParticipatesInDataKindPropagation(int /*inputNb*/) const WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
     virtual void addAcceptedComponents(int inputNb, std::list<ImagePlaneDesc>* comps) OVERRIDE;
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE;
 

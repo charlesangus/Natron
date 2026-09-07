@@ -226,6 +226,7 @@ public:
         , persistentMessage()
         , persistentMessageType(0)
         , persistentMessageMutex()
+        , dataKindConflictMessage()
         , guiPointer()
         , nativeOverlays()
         , nodeCreated(false)
@@ -443,6 +444,11 @@ public:
     QString persistentMessage;
     int persistentMessageType;
     mutable QMutex persistentMessageMutex;
+
+    // The text Node::refreshDataKindConflictMessage() last posted into persistentMessage, so it
+    // can tell a stale diagnostic of its own from an unrelated message that has since replaced it.
+    // Guarded by persistentMessageMutex.
+    QString dataKindConflictMessage;
     NodeGuiIWPtr guiPointer;
     std::list<HostOverlayKnobsPtr> nativeOverlays;
     bool nodeCreated;

@@ -81,7 +81,8 @@ changes them by changing what it returns from `getNativePluginDescription()`,
 not by overriding the accessor. The remaining defaults are plain overrides that
 a node may replace when the default doesn't fit it: `getNInputs()`,
 `getInputLabel()`, `isInputOptional()`, `getOutputDataKind()`,
-`getInputDataKind()`, `resolveOutputDataKind()`, `addAcceptedComponents()`,
+`getInputDataKind()`, `resolveOutputDataKind()`,
+`inputParticipatesInDataKindPropagation()`, `addAcceptedComponents()`,
 `addSupportedBitDepth()` and `renderThreadSafety()`.
 
 ## Writing a node, start to finish
@@ -200,6 +201,16 @@ other node, including every built-in pass-through, uses the engine default,
 `Node::resolveStructuralOutputDataKind()`. OFX plugins are untouched by any of
 this: they never override the kind virtuals, so they are image/image.
 
+A node that supplies its own policy must also say which of its inputs that
+policy follows, by overriding
+`NativeEffectBase::inputParticipatesInDataKindPropagation()`. That is what
+stops a kind required of its output from reaching back through a branch it
+never reads: a switch following its selected input must return false for the
+others, or those branches are typed, rendered and connection-checked as the
+kind the switch outputs. The default is true, matching the engine default
+below, which follows every polymorphic-declared input at once -- so a node
+without a policy needs nothing here.
+
 The engine default resolves **bidirectionally**, from the current topology
 alone:
 
@@ -212,7 +223,8 @@ alone:
   connecting a deep source into its input does. A consumer that itself accepts
   anything requires nothing of its own, but what *it* must in turn deliver
   still reaches back through it, which is what types a whole chain of
-  pass-throughs feeding one concrete consumer.
+  pass-throughs feeding one concrete consumer -- as far as the first consumer
+  that says the input in question does not feed its output.
 
 Nothing in that depends on the order the edges were made, and nothing is
 serialized, so a project resolves the same way after a reload as it did while
@@ -235,14 +247,22 @@ The result is cached per node and invalidated on connection change
 (`Node::invalidateEffectiveOutputDataKindCache()`, driven from
 `Node::onInputChanged()`). Because resolution is bidirectional, a node's kind
 can change when a connection anywhere on either side of it changes, so the
-invalidation walks both directions.
+invalidation walks both directions, and everything derived from the kinds it
+reaches is brought back up to date with it: each node's data-kind diagnostic,
+and the `Node::dataKindChanged()` signal `NodeGui` repaints its edges from.
+A resolution that had to be truncated because it came back to a node already
+being resolved -- which a policy reading a neighbour can cause -- is not cached
+at all: that answer depends on which node the query started from, and
+memoizing it would make every later read depend on query order.
 
 Enforcement then splits by regime. At **connection time** the connection is
 refused outright: the user is making the edge, so there is no reason to create
 an invalid one. When an edge that was legal becomes illegal through something
 other than making that edge, the edge is **kept** and the node that now holds
 an input it cannot handle is put into an error state -- the graph is the user's
-and is never silently rewired.
+and is never silently rewired. That error state is recomputed whenever the
+node's inputs change (`Node::refreshDataKindConflictMessage()`), so fixing the
+graph clears it.
 
 Every check compares a **resolved** kind on the upstream/source side against
 the **declared** kind of the consuming input
@@ -262,7 +282,9 @@ one of these three points is the whole story:
    the tree has been reconnected so far.
 2. **Project load** -- `Project::reportDataKindConflicts()`
    (`Engine/Project.cpp`) runs once, after the whole node tree and all its
-   connections have been restored, and re-checks every restored edge. Since
+   connections have been restored, and re-checks every restored edge (it is
+   `Node::refreshDataKindConflictMessage()` over every node, the same call an
+   input change makes for the nodes it affects). Since
    kinds are never serialized, this is the only place a stale or contradictory
    combination (e.g. a project saved before an upstream node's declared kind
    changed, or one wired up through `Node::connectInput()` by a Python script
@@ -283,8 +305,10 @@ one of these three points is the whole story:
    rejects `deep source -> Dot` when `Dot -> image sink` was already connected
    first: the new connection would make the already-connected sink
    incompatible, so it is rejected at the connection that introduces the
-   contradiction, naming the sink as the conflicting node. The engine cannot
-   predict a node that overrides `resolveOutputDataKind()`, so this simulation
+   contradiction, naming the sink as the conflicting node. The walk stops at an
+   input a node's policy says it does not follow. The engine still cannot
+   predict what an overridden `resolveOutputDataKind()` would answer across the
+   edge being simulated, so for that one not-yet-existing edge the simulation
    assumes the structural default.
 
 `Tests/DataKind_Test.cpp`, `Tests/DataKindProjectLoad_Test.cpp`, and

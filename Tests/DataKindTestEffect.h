@@ -30,6 +30,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/NoOpBase.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define kTestPluginIDDataKindDeepSource "test.natron.built-in.DataKindDeepSource"
@@ -38,6 +39,8 @@
 #define kTestPluginIDDataKindPolyTwoInputs "test.natron.built-in.DataKindPolyTwoInputs"
 #define kTestPluginIDDataKindPolyAndImageInput "test.natron.built-in.DataKindPolyAndImageInput"
 #define kTestPluginIDDataKindScenePolicy "test.natron.built-in.DataKindScenePolicy"
+#define kTestPluginIDDataKindSelectFirstInputPolicy "test.natron.built-in.DataKindSelectFirstInputPolicy"
+#define kTestPluginIDDataKindConsumerMirrorPolicy "test.natron.built-in.DataKindConsumerMirrorPolicy"
 
 NATRON_NAMESPACE_ENTER
 
@@ -306,6 +309,114 @@ private:
 
         desc.id = kTestPluginIDDataKindScenePolicy;
         desc.label = "Test Data Kind Scene Policy";
+        desc.description = "";
+        desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindPolymorphic));
+        desc.outputKind = eDataKindPolymorphic;
+
+        return desc;
+    }
+};
+
+// Stands in for a native switch: it declares two polymorphic inputs but its policy follows only
+// the one it has selected, and it says so, so the branch it ignores is not typed by what the
+// selected branch has to deliver.
+class DataKindTestSelectFirstInputPolicy
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DataKindTestSelectFirstInputPolicy(n);
+    }
+
+    explicit DataKindTestSelectFirstInputPolicy(NodePtr n)
+        : NativeEffectBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
+
+    virtual DataKindEnum resolveOutputDataKind(bool* isAmbiguous) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        if (isAmbiguous) {
+            *isAmbiguous = false;
+        }
+        NodePtr node = getNode();
+        NodePtr selected = node ? node->getRealInput(0) : NodePtr();
+        if (!selected) {
+            return eDataKindPolymorphic;
+        }
+
+        return selected->getEffectiveOutputDataKind(isAmbiguous);
+    }
+
+    virtual bool inputParticipatesInDataKindPropagation(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return inputNb == 0;
+    }
+
+private:
+    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        NativePluginDescription desc;
+
+        desc.id = kTestPluginIDDataKindSelectFirstInputPolicy;
+        desc.label = "Test Data Kind Select First Input Policy";
+        desc.description = "";
+        desc.inputs.push_back(NativeInputDescription("A", true, eDataKindPolymorphic));
+        desc.inputs.push_back(NativeInputDescription("B", true, eDataKindPolymorphic));
+        desc.outputKind = eDataKindPolymorphic;
+
+        return desc;
+    }
+};
+
+// A policy that reads a neighbour: it carries whatever the node it feeds carries. Put in front of
+// a node that resolves structurally, it is the one shape that closes a resolution loop -- the
+// engine refuses to connect a node graph into a cycle, so nothing built out of inputs alone can.
+class DataKindTestConsumerMirrorPolicy
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DataKindTestConsumerMirrorPolicy(n);
+    }
+
+    explicit DataKindTestConsumerMirrorPolicy(NodePtr n)
+        : NativeEffectBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
+
+    virtual DataKindEnum resolveOutputDataKind(bool* isAmbiguous) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        if (isAmbiguous) {
+            *isAmbiguous = false;
+        }
+        NodePtr node = getNode();
+        if (!node) {
+            return eDataKindPolymorphic;
+        }
+
+        NodesWList outputs;
+        node->getOutputs_mt_safe(outputs);
+        for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
+            NodePtr consumer = it->lock();
+            if (consumer) {
+                return consumer->getEffectiveOutputDataKind(isAmbiguous);
+            }
+        }
+
+        return eDataKindPolymorphic;
+    }
+
+private:
+    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        NativePluginDescription desc;
+
+        desc.id = kTestPluginIDDataKindConsumerMirrorPolicy;
+        desc.label = "Test Data Kind Consumer Mirror Policy";
         desc.description = "";
         desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindPolymorphic));
         desc.outputKind = eDataKindPolymorphic;

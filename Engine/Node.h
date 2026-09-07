@@ -346,9 +346,20 @@ public:
     /**
      * @brief Invalidates the cached result of getEffectiveOutputDataKind() for this node and for
      * every node whose own resolution could depend on it. Resolution is bidirectional, so that is
-     * both directions: consumers and inputs alike.
+     * both directions: consumers and inputs alike. Everything derived from the kinds of the nodes
+     * it reaches is then brought back up to date: their data-kind diagnostic, and the
+     * dataKindChanged() signal the GUI redraws its edges from.
      **/
     void invalidateEffectiveOutputDataKindCache();
+
+    /**
+     * @brief Recomputes this node's data-kind diagnostic: an eMessageTypeError persistent message
+     * naming every connected input carrying a kind the node cannot handle, or no message at all
+     * when every current input is acceptable. An edge that becomes invalid after it was made is
+     * never disconnected, so this error state is how the user is told, and clearing it when they
+     * fix the graph is the other half of that. Unrelated persistent messages are left alone.
+     **/
+    void refreshDataKindConflictMessage();
 
     /**
      * @brief Returns true if the given input supports the given components. If inputNb equals -1
@@ -1508,6 +1519,13 @@ Q_SIGNALS:
     void knobsAgeChanged(U64 age);
 
     void persistentMessageChanged();
+
+    /**
+     * @brief Emitted for every node whose effective data kind may have changed, which is the whole
+     * connected component the change reaches and not only the node whose input was edited: kinds
+     * resolve bidirectionally, so an edit downstream can retype nodes upstream of it.
+     **/
+    void dataKindChanged();
 
     void inputsInitialized();
 

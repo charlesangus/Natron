@@ -290,6 +290,7 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect( internalNode.get(), SIGNAL(rightClickMenuKnobPopulated()), this, SLOT(onRightClickMenuKnobPopulated()) );
     QObject::connect( internalNode.get(), SIGNAL(inputEdgeLabelChanged(int, QString)), this, SLOT(onInputLabelChanged(int,QString)) );
     QObject::connect( internalNode.get(), SIGNAL(inputVisibilityChanged(int)), this, SLOT(onInputVisibilityChanged(int)) );
+    QObject::connect(internalNode.get(), SIGNAL(dataKindChanged()), this, SLOT(onDataKindChanged()));
     QObject::connect( this, SIGNAL(previewImageComputed()), this, SLOT(onPreviewImageComputed()) );
     setCacheMode(DeviceCoordinateCache);
 
@@ -1347,6 +1348,23 @@ NodeGui::refreshEdges()
         _outputEdge->initLine();
     }
     refreshInputKindGlyphs();
+}
+
+void
+NodeGui::onDataKindChanged()
+{
+    for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
+        if (*it) {
+            (*it)->refreshDataKindPen();
+        }
+    }
+    if (_outputEdge) {
+        _outputEdge->refreshDataKindPen();
+    }
+
+    // The silhouette reads the resolved kind at paint time, so it only follows a change that
+    // repaints the node item.
+    update();
 }
 
 void

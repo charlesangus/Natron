@@ -979,6 +979,50 @@ Node::computeHash()
     computeHashRecursive(marked);
 } // computeHash
 
+namespace {
+// One node whose data-kind resolution is in progress on this thread. A resolution recurses into
+// other nodes' getEffectiveOutputDataKind(), which can come back to a node already being resolved:
+// a node's own policy may consult a neighbour, and that neighbour's resolution reaches back. The
+// stack detects that without threading an extra parameter through every recursive call.
+struct DataKindResolutionFrame {
+    const Node* node;
+    bool reachedThroughCycle;
+
+    explicit DataKindResolutionFrame(const Node* node_)
+        : node(node_)
+        , reachedThroughCycle(false)
+    {
+    }
+};
+}
+
+static thread_local std::vector<DataKindResolutionFrame> dataKindResolutionStack;
+
+// Truncating a resolution loop yields an answer that depends on which node the query started from,
+// so nothing currently being resolved may be memoized: caching one of those would freeze one entry
+// point's answer into the graph and make every later read depend on the order nodes were queried.
+static void
+markDataKindResolutionCycle()
+{
+    for (std::vector<DataKindResolutionFrame>::iterator it = dataKindResolutionStack.begin(); it != dataKindResolutionStack.end(); ++it) {
+        it->reachedThroughCycle = true;
+    }
+}
+
+// A node owning its resolution policy decides for itself which of its inputs its output kind
+// follows. Everything else -- every OFX plugin, every built-in pass-through -- passes through.
+static bool
+nodePropagatesDataKindThroughInput(const NodePtr& node,
+                                   int inputNb)
+{
+    if (!node) {
+        return false;
+    }
+    NativeEffectBase* isNative = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+
+    return !isNative || isNative->inputParticipatesInDataKindPropagation(inputNb);
+}
+
 DataKindEnum
 Node::getEffectiveOutputDataKind(bool* isAmbiguous) const
 {
@@ -1003,16 +1047,14 @@ Node::getEffectiveOutputDataKind(bool* isAmbiguous) const
         }
     }
 
-    // Re-entrancy guard: resolution recurses into other nodes' getEffectiveOutputDataKind(), which
-    // could loop back to this node through a polymorphic chain (e.g. a Group boundary feeding back
-    // on itself). A thread-local stack of nodes currently being resolved lets us detect that without
-    // threading an extra parameter through every recursive call, and resolves the loop as unconstrained
-    // rather than recursing forever.
-    static thread_local std::vector<const Node*> resolutionStack;
-    if (std::find(resolutionStack.begin(), resolutionStack.end(), this) != resolutionStack.end()) {
-        return eDataKindPolymorphic;
+    for (std::vector<DataKindResolutionFrame>::const_iterator it = dataKindResolutionStack.begin(); it != dataKindResolutionStack.end(); ++it) {
+        if (it->node == this) {
+            markDataKindResolutionCycle();
+
+            return eDataKindPolymorphic;
+        }
     }
-    resolutionStack.push_back(this);
+    dataKindResolutionStack.push_back(DataKindResolutionFrame(this));
     bool ambiguous = false;
     DataKindEnum resolved;
     NativeEffectBase* isNative = dynamic_cast<NativeEffectBase*>(_imp->effect.get());
@@ -1021,9 +1063,10 @@ Node::getEffectiveOutputDataKind(bool* isAmbiguous) const
     } else {
         resolved = resolveStructuralOutputDataKind(&ambiguous);
     }
-    resolutionStack.pop_back();
+    const bool reachedThroughCycle = dataKindResolutionStack.back().reachedThroughCycle;
+    dataKindResolutionStack.pop_back();
 
-    {
+    if (!reachedThroughCycle) {
         QMutexLocker l(&_imp->effectiveDataKindMutex);
         _imp->effectiveDataKindCache = resolved;
         _imp->effectiveDataKindCacheAmbiguous = ambiguous;
@@ -1144,6 +1187,8 @@ Node::collectDownstreamDataKindRequirement(DataKindConstraint* constraint) const
     // through every recursive call.
     static thread_local std::vector<const Node*> requirementStack;
     if (std::find(requirementStack.begin(), requirementStack.end(), this) != requirementStack.end()) {
+        markDataKindResolutionCycle();
+
         return;
     }
     requirementStack.push_back(this);
@@ -1170,6 +1215,11 @@ Node::collectDownstreamDataKindRequirement(DataKindConstraint* constraint) const
         // pass-throughs feeding one concrete consumer. Its other inputs are deliberately not
         // consulted -- they are its business, not this node's.
         if (consumer->getEffectInstance()->getOutputDataKind() != eDataKindPolymorphic) {
+            continue;
+        }
+        // Unless the consumer's own policy does not carry this input through to its output, in
+        // which case what the consumer must deliver says nothing about what reaches that input.
+        if (!nodePropagatesDataKindThroughInput(consumer, slot)) {
             continue;
         }
         consumer->collectDownstreamDataKindRequirement(constraint);
@@ -1207,6 +1257,9 @@ Node::findDataKindConflictDownstream(const DataKindConstraint& constraint,
             continue;
         }
         if (consumer->getEffectInstance()->getOutputDataKind() != eDataKindPolymorphic) {
+            continue;
+        }
+        if (!nodePropagatesDataKindThroughInput(consumer, slot)) {
             continue;
         }
 
@@ -1264,6 +1317,7 @@ Node::invalidateEffectiveOutputDataKindCache()
     // one; the walk therefore goes both ways, and the visited set is what keeps it finite.
     std::set<Node*> visited;
     std::vector<Node*> pending;
+    std::vector<Node*> component;
 
     visited.insert(this);
     pending.push_back(this);
@@ -1271,6 +1325,7 @@ Node::invalidateEffectiveOutputDataKindCache()
     while (!pending.empty()) {
         Node* node = pending.back();
         pending.pop_back();
+        component.push_back(node);
 
         {
             QMutexLocker l(&node->_imp->effectiveDataKindMutex);
@@ -1293,7 +1348,67 @@ Node::invalidateEffectiveOutputDataKindCache()
             }
         }
     }
+
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    // Mid-restore, half the connections are missing and the answer is meaningless; the whole graph
+    // is checked once at the end of the load by Project::reportDataKindConflicts().
+    const bool refreshDiagnostic = !project || !project->isLoadingProject();
+
+    // Nothing is read back until every cached kind in the component has been dropped, or a node
+    // recomputed early would memoize an answer derived from a neighbour's stale one.
+    for (std::vector<Node*>::const_iterator it = component.begin(); it != component.end(); ++it) {
+        Node* node = *it;
+        if (refreshDiagnostic) {
+            node->refreshDataKindConflictMessage();
+        }
+        Q_EMIT node->dataKindChanged();
+    }
 } // invalidateEffectiveOutputDataKindCache
+
+void
+Node::refreshDataKindConflictMessage()
+{
+    QStringList unhandled;
+    const int nInputs = getNInputs();
+
+    for (int i = 0; i < nInputs; ++i) {
+        NodePtr inputNode = getRealInput(i);
+        if (!inputNode || !isInputDataKindUnacceptable(inputNode, i)) {
+            continue;
+        }
+        unhandled.push_back(tr("Input \"%1\" is connected to %2, which carries a kind of data this node cannot handle.")
+                                .arg(QString::fromUtf8(getInputLabel(i).c_str()))
+                                .arg(QString::fromUtf8(inputNode->getScriptName_mt_safe().c_str())));
+    }
+
+    const QString message = unhandled.join(QString::fromUtf8("\n"));
+    QString previous;
+    {
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        previous = _imp->dataKindConflictMessage;
+        _imp->dataKindConflictMessage = message;
+    }
+
+    if (!message.isEmpty()) {
+        setPersistentMessage(eMessageTypeError, message.toStdString());
+
+        return;
+    }
+    if (previous.isEmpty()) {
+        return;
+    }
+
+    // A persistent message is a single slot with no record of who posted it, so anything else that
+    // reported on this node since has overwritten ours and clearing would delete that instead.
+    // Only the exact text this node last posted here is ours to take back.
+    QString current;
+    int type;
+    getPersistentMessage(&current, &type, false);
+    if (current == previous) {
+        clearPersistentMessage(false);
+    }
+} // refreshDataKindConflictMessage
 
 void
 Node::loadKnobs(const NodeSerialization & serialization,

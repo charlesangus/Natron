@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: null
-pm_heartbeat: 2026-09-07T00:00:39-04:00
+pm_heartbeat: 2026-09-07T00:50:32-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -117,6 +117,15 @@ future core work has solid ground to build on.
   GUI test harness — so the milestone's gate cannot close without a human looking
   at a running Natron. PR #19 is green (build-and-test, format, lint-ci) with both
   review rounds closed and replied to; it is held open only for this. The
-  reviewer checklist is in the PR body. An AppImage is being built with
-  `TypedPassthrough`'s kinds switchable at runtime via environment variables, so
-  one binary covers image, deep and scene without rebuilding.
+  reviewer checklist is in the PR body. The AppImage is built and waiting at
+  `build/appimage-m17-visual-check/`, with `TypedPassthrough`'s kinds switchable at
+  runtime via `NATRON_TP_OUTPUT_KIND` / `NATRON_TP_INPUT_KIND`, so one binary covers
+  image, deep and scene without rebuilding.
+
+- **Release bundles are not relocatable** (2026-09-07). `tools/release/stage-bundle.sh`
+  sets a RUNPATH on the `bin/` executables but not on the libraries it stages, so a
+  bundle fails to start anywhere the ASWF VFX libraries are not already installed
+  system-wide — which is every ordinary desktop. M15's gate passed because packaging
+  was only ever exercised inside the dev container, where they are. Needs its own
+  fix and a verification that does not run in that container. See
+  `DECISIONS/2026-09-07-staged-bundle-runpath-bug.md`.

@@ -25,13 +25,14 @@
 
 #include "NodePrivate.h"
 
-#include <limits>
-#include <locale>
 #include <algorithm> // min, max
 #include <bitset>
 #include <cassert>
-#include <stdexcept>
+#include <limits>
+#include <locale>
+#include <set>
 #include <sstream> // stringstream
+#include <stdexcept>
 
 #include "Global/Macros.h"
 
@@ -100,6 +101,8 @@
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 #include "Engine/WriteNode.h"
+
+#include "Engine/Nodes/NativeEffectBase.h"
 
 #ifndef M_LN2
 #define M_LN2       0.693147180559945309417232121458176568  /* loge(2)        */
@@ -976,6 +979,436 @@ Node::computeHash()
     computeHashRecursive(marked);
 } // computeHash
 
+namespace {
+// One node whose data-kind resolution is in progress on this thread. A resolution recurses into
+// other nodes' getEffectiveOutputDataKind(), which can come back to a node already being resolved:
+// a node's own policy may consult a neighbour, and that neighbour's resolution reaches back. The
+// stack detects that without threading an extra parameter through every recursive call.
+struct DataKindResolutionFrame {
+    const Node* node;
+    bool reachedThroughCycle;
+
+    explicit DataKindResolutionFrame(const Node* node_)
+        : node(node_)
+        , reachedThroughCycle(false)
+    {
+    }
+};
+}
+
+static thread_local std::vector<DataKindResolutionFrame> dataKindResolutionStack;
+
+// Truncating a resolution loop yields an answer that depends on which node the query started from,
+// so nothing currently being resolved may be memoized: caching one of those would freeze one entry
+// point's answer into the graph and make every later read depend on the order nodes were queried.
+static void
+markDataKindResolutionCycle()
+{
+    for (std::vector<DataKindResolutionFrame>::iterator it = dataKindResolutionStack.begin(); it != dataKindResolutionStack.end(); ++it) {
+        it->reachedThroughCycle = true;
+    }
+}
+
+// A node owning its resolution policy decides for itself which of its inputs its output kind
+// follows. Everything else -- every OFX plugin, every built-in pass-through -- passes through.
+static bool
+nodePropagatesDataKindThroughInput(const NodePtr& node,
+                                   int inputNb)
+{
+    if (!node) {
+        return false;
+    }
+    NativeEffectBase* isNative = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+
+    return !isNative || isNative->inputParticipatesInDataKindPropagation(inputNb);
+}
+
+DataKindEnum
+Node::getEffectiveOutputDataKind(bool* isAmbiguous) const
+{
+    if (isAmbiguous) {
+        *isAmbiguous = false;
+    }
+
+    DataKindEnum declared = _imp->effect->getOutputDataKind();
+
+    if (declared != eDataKindPolymorphic) {
+        return declared;
+    }
+
+    {
+        QMutexLocker l(&_imp->effectiveDataKindMutex);
+        if (_imp->effectiveDataKindCacheSet) {
+            if (isAmbiguous) {
+                *isAmbiguous = _imp->effectiveDataKindCacheAmbiguous;
+            }
+
+            return _imp->effectiveDataKindCache;
+        }
+    }
+
+    for (std::vector<DataKindResolutionFrame>::const_iterator it = dataKindResolutionStack.begin(); it != dataKindResolutionStack.end(); ++it) {
+        if (it->node == this) {
+            markDataKindResolutionCycle();
+
+            return eDataKindPolymorphic;
+        }
+    }
+    dataKindResolutionStack.push_back(DataKindResolutionFrame(this));
+    bool ambiguous = false;
+    DataKindEnum resolved;
+    NativeEffectBase* isNative = dynamic_cast<NativeEffectBase*>(_imp->effect.get());
+    if (isNative) {
+        resolved = isNative->resolveOutputDataKind(&ambiguous);
+    } else {
+        resolved = resolveStructuralOutputDataKind(&ambiguous);
+    }
+    const bool reachedThroughCycle = dataKindResolutionStack.back().reachedThroughCycle;
+    dataKindResolutionStack.pop_back();
+
+    if (!reachedThroughCycle) {
+        QMutexLocker l(&_imp->effectiveDataKindMutex);
+        _imp->effectiveDataKindCache = resolved;
+        _imp->effectiveDataKindCacheAmbiguous = ambiguous;
+        _imp->effectiveDataKindCacheSet = true;
+    }
+
+    if (isAmbiguous) {
+        *isAmbiguous = ambiguous;
+    }
+
+    return resolved;
+} // getEffectiveOutputDataKind
+
+void
+Node::DataKindConstraint::merge(const Node::DataKindConstraint& other)
+{
+    if (ambiguous) {
+        return;
+    }
+    if (other.ambiguous) {
+        ambiguous = true;
+        kind = eDataKindPolymorphic;
+
+        return;
+    }
+    if (other.kind == eDataKindPolymorphic) {
+        return;
+    }
+    if (kind == eDataKindPolymorphic) {
+        kind = other.kind;
+
+        return;
+    }
+    if (kind != other.kind) {
+        ambiguous = true;
+        kind = eDataKindPolymorphic;
+    }
+} // Node::DataKindConstraint::merge
+
+Node::DataKindConstraint
+Node::effectiveDataKindConstraintOf(const NodePtr& node)
+{
+    DataKindConstraint constraint;
+
+    if (node) {
+        bool ambiguous = false;
+        constraint.kind = node->getEffectiveOutputDataKind(&ambiguous);
+        constraint.ambiguous = ambiguous;
+    }
+
+    return constraint;
+}
+
+DataKindEnum
+Node::resolveStructuralOutputDataKind(bool* isAmbiguous) const
+{
+    DataKindConstraint constraint = resolveDataKindConstraint(-1, DataKindConstraint());
+
+    if (isAmbiguous) {
+        *isAmbiguous = constraint.ambiguous;
+    }
+
+    return constraint.kind;
+}
+
+Node::DataKindConstraint
+Node::resolveDataKindConstraint(int overrideInputNb,
+                                const DataKindConstraint& overrideConstraint) const
+{
+    DataKindConstraint constraint;
+
+    collectUpstreamDataKindConstraint(overrideInputNb, overrideConstraint, &constraint);
+    collectDownstreamDataKindRequirement(&constraint);
+
+    return constraint;
+}
+
+void
+Node::collectUpstreamDataKindConstraint(int overrideInputNb,
+                                        const DataKindConstraint& overrideConstraint,
+                                        DataKindConstraint* constraint) const
+{
+    int nInputs = getNInputs();
+
+    for (int i = 0; i < nInputs; ++i) {
+        // An input declaring a concrete kind says what may connect to it; it never decides what a
+        // polymorphic output carries, or a mask declared eDataKindImage would type the whole node.
+        if (_imp->effect->getInputDataKind(i) != eDataKindPolymorphic) {
+            continue;
+        }
+        if (i == overrideInputNb) {
+            constraint->merge(overrideConstraint);
+            continue;
+        }
+        constraint->merge(effectiveDataKindConstraintOf(getRealInput(i)));
+    }
+
+    // A GroupInput has no real inputs of its own: what feeds it is whatever is connected to the
+    // corresponding input of the enclosing Group node, one graph up.
+    GroupInput* isGroupInput = dynamic_cast<GroupInput*>(_imp->effect.get());
+    if (isGroupInput) {
+        NodeGroup* group = dynamic_cast<NodeGroup*>(getGroup().get());
+        if (group) {
+            NodePtr thisShared = std::const_pointer_cast<Node>(shared_from_this());
+            NodePtr realInput = group->getRealInputForInput(false, thisShared);
+            if (realInput && (realInput.get() != this)) {
+                constraint->merge(effectiveDataKindConstraintOf(realInput));
+            }
+        }
+    }
+} // collectUpstreamDataKindConstraint
+
+void
+Node::collectDownstreamDataKindRequirement(DataKindConstraint* constraint) const
+{
+    // Same discipline as the upstream re-entrancy guard: walking consumers can come back through a
+    // node already on the walk, and a thread-local stack ends that without threading a visited set
+    // through every recursive call.
+    static thread_local std::vector<const Node*> requirementStack;
+    if (std::find(requirementStack.begin(), requirementStack.end(), this) != requirementStack.end()) {
+        markDataKindResolutionCycle();
+
+        return;
+    }
+    requirementStack.push_back(this);
+
+    NodesWList outputs;
+    getOutputs_mt_safe(outputs);
+
+    for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
+        NodePtr consumer = it->lock();
+        if (!consumer) {
+            continue;
+        }
+        int slot = consumer->getInputIndex(this);
+        if (slot < 0) {
+            continue;
+        }
+        DataKindEnum required = consumer->getEffectInstance()->getInputDataKind(slot);
+        if (required != eDataKindPolymorphic) {
+            constraint->merge(DataKindConstraint(required));
+            continue;
+        }
+        // A consumer that accepts anything requires nothing of its own, but what it must in turn
+        // deliver still reaches back through it: that is what resolves a whole chain of
+        // pass-throughs feeding one concrete consumer. Its other inputs are deliberately not
+        // consulted -- they are its business, not this node's.
+        if (consumer->getEffectInstance()->getOutputDataKind() != eDataKindPolymorphic) {
+            continue;
+        }
+        // Unless the consumer's own policy does not carry this input through to its output, in
+        // which case what the consumer must deliver says nothing about what reaches that input.
+        if (!nodePropagatesDataKindThroughInput(consumer, slot)) {
+            continue;
+        }
+        consumer->collectDownstreamDataKindRequirement(constraint);
+    }
+
+    requirementStack.pop_back();
+} // collectDownstreamDataKindRequirement
+
+bool
+Node::findDataKindConflictDownstream(const DataKindConstraint& constraint,
+                                     NodePtr* conflictingNode) const
+{
+    NodesWList outputs;
+
+    getOutputs_mt_safe(outputs);
+
+    for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
+        NodePtr consumer = it->lock();
+        if (!consumer) {
+            continue;
+        }
+        int slot = consumer->getInputIndex(this);
+        if (slot < 0) {
+            continue;
+        }
+        DataKindEnum required = consumer->getEffectInstance()->getInputDataKind(slot);
+        if (required != eDataKindPolymorphic) {
+            if (constraint.ambiguous || ((constraint.kind != eDataKindPolymorphic) && (required != constraint.kind))) {
+                if (conflictingNode) {
+                    *conflictingNode = consumer;
+                }
+
+                return true;
+            }
+            continue;
+        }
+        if (consumer->getEffectInstance()->getOutputDataKind() != eDataKindPolymorphic) {
+            continue;
+        }
+        if (!nodePropagatesDataKindThroughInput(consumer, slot)) {
+            continue;
+        }
+
+        DataKindConstraint consumerSimulated = consumer->resolveDataKindConstraint(slot, constraint);
+        if ((consumerSimulated.ambiguous || (consumerSimulated.kind != eDataKindPolymorphic)) && consumer->findDataKindConflictDownstream(consumerSimulated, conflictingNode)) {
+            return true;
+        }
+    }
+
+    return false;
+} // findDataKindConflictDownstream
+
+bool
+Node::isInputDataKindUnacceptable(const NodePtr& input,
+                                  int inputNumber) const
+{
+    DataKindEnum requiredKind = _imp->effect->getInputDataKind(inputNumber);
+
+    if (requiredKind == eDataKindPolymorphic) {
+        return false;
+    }
+
+    DataKindConstraint upstream = effectiveDataKindConstraintOf(input);
+
+    return upstream.ambiguous || ((upstream.kind != eDataKindPolymorphic) && (requiredKind != upstream.kind));
+} // isInputDataKindUnacceptable
+
+Node::CanConnectInputReturnValue
+Node::checkDataKindCompatibility(const NodePtr& input,
+                                 int inputNumber,
+                                 NodePtr* conflictingNode) const
+{
+    if (isInputDataKindUnacceptable(input, inputNumber)) {
+        if (conflictingNode) {
+            *conflictingNode = input;
+        }
+
+        return eCanConnectInput_incompatibleDataKind;
+    }
+
+    if (_imp->effect->getOutputDataKind() == eDataKindPolymorphic) {
+        DataKindConstraint simulated = resolveDataKindConstraint(inputNumber, effectiveDataKindConstraintOf(input));
+        if ((simulated.ambiguous || (simulated.kind != eDataKindPolymorphic)) && findDataKindConflictDownstream(simulated, conflictingNode)) {
+            return eCanConnectInput_incompatibleDataKind;
+        }
+    }
+
+    return eCanConnectInput_ok;
+} // Node::checkDataKindCompatibility
+
+void
+Node::invalidateEffectiveOutputDataKindCache()
+{
+    // Resolution is bidirectional, so a memoized kind may depend on a node on either side of this
+    // one; the walk therefore goes both ways, and the visited set is what keeps it finite.
+    std::set<Node*> visited;
+    std::vector<Node*> pending;
+    std::vector<Node*> component;
+
+    visited.insert(this);
+    pending.push_back(this);
+
+    while (!pending.empty()) {
+        Node* node = pending.back();
+        pending.pop_back();
+        component.push_back(node);
+
+        {
+            QMutexLocker l(&node->_imp->effectiveDataKindMutex);
+            node->_imp->effectiveDataKindCacheSet = false;
+        }
+
+        NodesList outputs;
+        node->getOutputsWithGroupRedirection(outputs);
+        for (NodesList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
+            if (*it && visited.insert(it->get()).second) {
+                pending.push_back(it->get());
+            }
+        }
+
+        int nInputs = node->getNInputs();
+        for (int i = 0; i < nInputs; ++i) {
+            NodePtr input = node->getRealInput(i);
+            if (input && visited.insert(input.get()).second) {
+                pending.push_back(input.get());
+            }
+        }
+    }
+
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    // Mid-restore, half the connections are missing and the answer is meaningless; the whole graph
+    // is checked once at the end of the load by Project::reportDataKindConflicts().
+    const bool refreshDiagnostic = !project || !project->isLoadingProject();
+
+    // Nothing is read back until every cached kind in the component has been dropped, or a node
+    // recomputed early would memoize an answer derived from a neighbour's stale one.
+    for (std::vector<Node*>::const_iterator it = component.begin(); it != component.end(); ++it) {
+        Node* node = *it;
+        if (refreshDiagnostic) {
+            node->refreshDataKindConflictMessage();
+        }
+        Q_EMIT node->dataKindChanged();
+    }
+} // invalidateEffectiveOutputDataKindCache
+
+void
+Node::refreshDataKindConflictMessage()
+{
+    QStringList unhandled;
+    const int nInputs = getNInputs();
+
+    for (int i = 0; i < nInputs; ++i) {
+        NodePtr inputNode = getRealInput(i);
+        if (!inputNode || !isInputDataKindUnacceptable(inputNode, i)) {
+            continue;
+        }
+        unhandled.push_back(tr("Input \"%1\" is connected to %2, which carries a kind of data this node cannot handle.")
+                                .arg(QString::fromUtf8(getInputLabel(i).c_str()))
+                                .arg(QString::fromUtf8(inputNode->getScriptName_mt_safe().c_str())));
+    }
+
+    const QString message = unhandled.join(QString::fromUtf8("\n"));
+    QString previous;
+    {
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        previous = _imp->dataKindConflictMessage;
+        _imp->dataKindConflictMessage = message;
+    }
+
+    if (!message.isEmpty()) {
+        setPersistentMessage(eMessageTypeError, message.toStdString());
+
+        return;
+    }
+    if (previous.isEmpty()) {
+        return;
+    }
+
+    // A persistent message is a single slot with no record of who posted it, so anything else that
+    // reported on this node since has overwritten ours and clearing would delete that instead.
+    // Only the exact text this node last posted here is ours to take back.
+    QString current;
+    int type;
+    getPersistentMessage(&current, &type, false);
+    if (current == previous) {
+        clearPersistentMessage(false);
+    }
+} // refreshDataKindConflictMessage
 
 void
 Node::loadKnobs(const NodeSerialization & serialization,
@@ -5062,7 +5495,7 @@ Node::onEffectKnobValueChanged(KnobI* what,
     }
 
     if (!ret) {
-        GroupInput* isInput = dynamic_cast<GroupInput*>( _imp->effect.get() );
+        GroupInput* isInput = dynamic_cast<GroupInput*>(_imp->effect.get());
         if (isInput) {
             if ( (what->getName() == kNatronGroupInputIsOptionalParamName)
                  || ( what->getName() == kNatronGroupInputIsMaskParamName) ) {

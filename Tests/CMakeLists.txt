@@ -17,13 +17,15 @@
 # along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
 # ***** END LICENSE BLOCK *****
 
-set(Tests_HEADERS BaseTest.h)
+set(Tests_HEADERS BaseTest.h DataKindTestEffect.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
     BaseTest.cpp
     CLArgs_Test.cpp
     Curve_Test.cpp
+    DataKind_Test.cpp
+    DataKindProjectLoad_Test.cpp
     FileSystemModel_Test.cpp
     Hash64_Test.cpp
     Image_Test.cpp
@@ -34,6 +36,7 @@ set(Tests_SOURCES
     ProjectSerialization_Test.cpp
     RenderRange_Test.cpp
     Tracker_Test.cpp
+    TypedPassthrough_Test.cpp
     wmain.cpp
 )
 add_executable(Tests ${Tests_HEADERS} ${Tests_SOURCES})

@@ -481,6 +481,13 @@ public Q_SLOTS:
     void refreshEdges();
 
     /**
+     * @brief Re-reads the resolved data kind of everything this node's edges are drawn from. A kind
+     * resolves from the whole connected component, so an edge somewhere else in the graph can
+     * retype this node and its edges without any of them being touched.
+     **/
+    void onDataKindChanged();
+
+    /**
      * @brief Specific for the Viewer to  have inputs that are not used in A or B be dashed
      **/
     void refreshDashedStateOfEdges();
@@ -581,6 +588,13 @@ private:
 
     void initializeInputsForInspector();
 
+    /*creates the glyph item (if any) marking input inputNb's declared data kind;
+      returns NULL for image/polymorphic inputs so existing plugins get no extra item.*/
+    QGraphicsItem* createInputKindGlyphItem(int inputNb);
+
+    /*repositions/shows the per-input kind glyphs on dangling (unconnected) input
+      arrows; a no-op for slots whose glyph is NULL.*/
+    void refreshInputKindGlyphs();
 
     /*pointer to the dag*/
     NodeGraph* _graph;
@@ -621,6 +635,9 @@ private:
     QGraphicsLineItem* _disabledBtmLeftTopRight;
     /*the graphical input arrows*/
     std::vector<Edge*> _inputEdges;
+    /*small glyphs marking a dangling input arrow's declared data kind, indexed like
+      _inputEdges; entries are NULL for image/polymorphic inputs.*/
+    std::vector<QGraphicsItem*> _inputKindGlyphs;
     Edge* _outputEdge;
     NodeSettingsPanel* _settingsPanel;
 

@@ -64,7 +64,8 @@ handleConnectionError(const NodeGuiPtr& outputNode,
                       const NodeGuiPtr& inputNode,
                       int inputNb)
 {
-    Node::CanConnectInputReturnValue linkRetCode = outputNode->getNode()->canConnectInput(inputNode->getNode(), inputNb);
+    NodePtr conflictingNode;
+    Node::CanConnectInputReturnValue linkRetCode = outputNode->getNode()->canConnectInput(inputNode->getNode(), inputNb, &conflictingNode);
 
     if ( (linkRetCode != Node::eCanConnectInput_ok) && (linkRetCode != Node::eCanConnectInput_inputAlreadyConnected) ) {
         if (linkRetCode == Node::eCanConnectInput_differentPars) {
@@ -104,6 +105,13 @@ handleConnectionError(const NodeGuiPtr& outputNode,
                             .arg( QString::fromUtf8( inputNode->getNode()->getLabel().c_str() ) );
             Dialogs::errorDialog( QCoreApplication::translate("NodeGraph", "Multi-resolution not supported").toStdString(),
                                   error.toStdString() );;
+        } else if (linkRetCode == Node::eCanConnectInput_incompatibleDataKind) {
+            QString error = QCoreApplication::translate("NodeGraph", "You cannot connect %1 to %2 because the data produced is incompatible with %3.")
+                                .arg(QString::fromUtf8(outputNode->getNode()->getLabel().c_str()))
+                                .arg(QString::fromUtf8(inputNode->getNode()->getLabel().c_str()))
+                                .arg(conflictingNode ? QString::fromUtf8(conflictingNode->getLabel().c_str()) : QString::fromUtf8(outputNode->getNode()->getLabel().c_str()));
+            Dialogs::errorDialog(QCoreApplication::translate("NodeGraph", "Incompatible data kind").toStdString(),
+                                 error.toStdString());
         }
 
         return false;

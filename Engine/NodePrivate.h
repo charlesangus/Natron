@@ -226,6 +226,7 @@ public:
         , persistentMessage()
         , persistentMessageType(0)
         , persistentMessageMutex()
+        , dataKindConflictMessage()
         , guiPointer()
         , nativeOverlays()
         , nodeCreated(false)
@@ -255,6 +256,10 @@ public:
         , streamWarnings()
         , requiresGLFinishBeforeRender(false)
         , hostChannelSelectorEnabled(false)
+        , effectiveDataKindMutex()
+        , effectiveDataKindCacheSet(false)
+        , effectiveDataKindCache(eDataKindPolymorphic)
+        , effectiveDataKindCacheAmbiguous(false)
     {
         ///Initialize timers
         gettimeofday(&lastRenderStartedSlotCallTime, 0);
@@ -439,6 +444,11 @@ public:
     QString persistentMessage;
     int persistentMessageType;
     mutable QMutex persistentMessageMutex;
+
+    // The text Node::refreshDataKindConflictMessage() last posted into persistentMessage, so it
+    // can tell a stale diagnostic of its own from an unrelated message that has since replaced it.
+    // Guarded by persistentMessageMutex.
+    QString dataKindConflictMessage;
     NodeGuiIWPtr guiPointer;
     std::list<HostOverlayKnobsPtr> nativeOverlays;
     bool nodeCreated;
@@ -487,6 +497,14 @@ public:
     bool requiresGLFinishBeforeRender;
 
     bool hostChannelSelectorEnabled;
+
+    // Cache for Node::getEffectiveOutputDataKind(): only ever populated for nodes whose
+    // declared output kind is eDataKindPolymorphic, since a non-polymorphic node's kind is a
+    // constant-time lookup that needs no caching. Invalidated by Node::onInputChanged().
+    mutable QMutex effectiveDataKindMutex;
+    mutable bool effectiveDataKindCacheSet;
+    mutable DataKindEnum effectiveDataKindCache;
+    mutable bool effectiveDataKindCacheAmbiguous;
 };
 
 

@@ -322,6 +322,46 @@ public:
     int getNInputs() const;
 
     /**
+     * @brief Returns the data kind (image, deep, scene) effectively produced by this node's output.
+     * A node with a concrete (non-polymorphic) declared kind always returns that kind. A polymorphic
+     * node's kind comes from its own resolution policy: NativeEffectBase subclasses may supply one,
+     * and every other node uses the engine default, resolveStructuralOutputDataKind() below.
+     * A node the graph constrains to two different concrete kinds at once is ambiguous: it returns
+     * eDataKindPolymorphic and sets *isAmbiguous, so a caller that only wants a value to display
+     * reads "no single kind" and has no error to handle, while the connection checks can still
+     * refuse to feed an ambiguous producer into an input declaring a concrete kind.
+     * The result is cached per node and invalidated automatically on connection changes.
+     **/
+    DataKindEnum getEffectiveOutputDataKind(bool* isAmbiguous = 0) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The engine's default data-kind resolution policy, exposed so that
+     * NativeEffectBase::resolveOutputDataKind() can delegate to it. Resolves bidirectionally from
+     * the current topology alone: the kinds reaching the node's polymorphic-declared inputs, and
+     * the kinds its consumers require of it. Nothing about it depends on the order the edges were
+     * made, so it survives a save/load round trip unchanged.
+     **/
+    DataKindEnum resolveStructuralOutputDataKind(bool* isAmbiguous) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Invalidates the cached result of getEffectiveOutputDataKind() for this node and for
+     * every node whose own resolution could depend on it. Resolution is bidirectional, so that is
+     * both directions: consumers and inputs alike. Everything derived from the kinds of the nodes
+     * it reaches is then brought back up to date: their data-kind diagnostic, and the
+     * dataKindChanged() signal the GUI redraws its edges from.
+     **/
+    void invalidateEffectiveOutputDataKindCache();
+
+    /**
+     * @brief Recomputes this node's data-kind diagnostic: an eMessageTypeError persistent message
+     * naming every connected input carrying a kind the node cannot handle, or no message at all
+     * when every current input is acceptable. An edge that becomes invalid after it was made is
+     * never disconnected, so this error state is how the user is told, and clearing it when they
+     * fix the graph is the other half of that. Unrelated persistent messages are left alone.
+     **/
+    void refreshDataKindConflictMessage();
+
+    /**
      * @brief Returns true if the given input supports the given components. If inputNb equals -1
      * then this function will check whether the effect can produce the given components.
      **/
@@ -536,8 +576,7 @@ public:
      **/
     void getInputNames(std::map<std::string, std::string> & inputNames) const;
 
-    enum CanConnectInputReturnValue
-    {
+    enum CanConnectInputReturnValue {
         eCanConnectInput_ok = 0,
         eCanConnectInput_indexOutOfRange,
         eCanConnectInput_inputAlreadyConnected,
@@ -547,14 +586,34 @@ public:
         eCanConnectInput_differentPars,
         eCanConnectInput_differentFPS,
         eCanConnectInput_multiResNotSupported,
+        eCanConnectInput_incompatibleDataKind,
     };
 
     /**
      * @brief Returns true if a connection is possible for the given input number of the current node
-     * to the given input.
+     * to the given input. If the return value is eCanConnectInput_incompatibleDataKind and
+     * conflictingNode is non-NULL, it is set to the node whose declared data kind requirement
+     * conflicts with the connection (which may be a node other than input, if the conflict is only
+     * revealed further downstream through a chain of polymorphic pass-through nodes).
      **/
-    Node::CanConnectInputReturnValue canConnectInput(const NodePtr& input, int inputNumber) const;
+    Node::CanConnectInputReturnValue canConnectInput(const NodePtr& input, int inputNumber, NodePtr* conflictingNode = 0) const;
 
+    /**
+     * @brief The data-kind half of canConnectInput(), factored out so it can also be applied to an
+     * edge that already exists (e.g. one just restored from a project) rather than only to a
+     * prospective one. Returns eCanConnectInput_incompatibleDataKind (with the same conflictingNode
+     * semantics as canConnectInput()) or eCanConnectInput_ok.
+     **/
+    Node::CanConnectInputReturnValue checkDataKindCompatibility(const NodePtr& input, int inputNumber, NodePtr* conflictingNode = 0) const;
+
+    /**
+     * @brief Returns true if what input produces cannot be accepted by this node's declared input
+     * kind at inputNumber -- the half of checkDataKindCompatibility() that judges a single edge on
+     * its own, without simulating what the connection would mean further downstream. This is what
+     * an already-restored graph is judged by: it names the node that is holding an input it cannot
+     * handle, which is the node that must show the error.
+     **/
+    bool isInputDataKindUnacceptable(const NodePtr& input, int inputNumber) const WARN_UNUSED_RETURN;
 
     /** @brief Adds the node parent to the input inputNumber of the
      * node. Returns true if it succeeded, false otherwise.
@@ -1333,6 +1392,34 @@ private:
 
     bool setStreamWarningInternal(StreamWarningEnum warning, const QString& message);
 
+    /**
+     * @brief One accumulated data-kind constraint: no constraint yet (eDataKindPolymorphic), one
+     * concrete kind, or ambiguous -- constrained to more than one concrete kind at once, which is
+     * a different thing from being unconstrained.
+     **/
+    struct DataKindConstraint {
+        DataKindEnum kind;
+        bool ambiguous;
+
+        explicit DataKindConstraint(DataKindEnum kind_ = eDataKindPolymorphic)
+            : kind(kind_)
+            , ambiguous(false)
+        {
+        }
+
+        void merge(const DataKindConstraint& other);
+    };
+
+    static DataKindConstraint effectiveDataKindConstraintOf(const NodePtr& node);
+
+    DataKindConstraint resolveDataKindConstraint(int overrideInputNb, const DataKindConstraint& overrideConstraint) const;
+
+    void collectUpstreamDataKindConstraint(int overrideInputNb, const DataKindConstraint& overrideConstraint, DataKindConstraint* constraint) const;
+
+    void collectDownstreamDataKindRequirement(DataKindConstraint* constraint) const;
+
+    bool findDataKindConflictDownstream(const DataKindConstraint& constraint, NodePtr* conflictingNode) const;
+
     void computeHashRecursive(std::list<Node*>& marked);
 
     /**
@@ -1432,6 +1519,13 @@ Q_SIGNALS:
     void knobsAgeChanged(U64 age);
 
     void persistentMessageChanged();
+
+    /**
+     * @brief Emitted for every node whose effective data kind may have changed, which is the whole
+     * connected component the change reaches and not only the node whose input was edited: kinds
+     * resolve bidirectionally, so an edit downstream can retype nodes upstream of it.
+     **/
+    void dataKindChanged();
 
     void inputsInitialized();
 

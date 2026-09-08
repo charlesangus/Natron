@@ -379,6 +379,18 @@ Project::reportUnresolvedOCIOColorSpaces()
     }
 } // Project::reportUnresolvedOCIOColorSpaces
 
+void
+Project::reportDataKindConflicts()
+{
+    NodesList nodes;
+
+    getNodes_recursive(nodes, false);
+
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        (*it)->refreshDataKindConflictMessage();
+    }
+} // Project::reportDataKindConflicts
+
 bool
 Project::loadProjectInternal(const QString & path,
                              const QString & name,
@@ -460,6 +472,7 @@ Project::loadProjectInternal(const QString & path,
     }
 
     reportUnresolvedOCIOColorSpaces();
+    reportDataKindConflicts();
 
     Format f;
     getProjectDefaultFormat(&f);

@@ -676,7 +676,8 @@ checkCanConnectNoMultiRes(const Node* output,
 
 Node::CanConnectInputReturnValue
 Node::canConnectInput(const NodePtr& input,
-                      int inputNumber) const
+                      int inputNumber,
+                      NodePtr* conflictingNode) const
 {
     ///No-one is allowed to connect to the other node
     if ( !input || !input->canOthersConnectToThisNode() ) {
@@ -741,6 +742,16 @@ Node::canConnectInput(const NodePtr& input,
                     return eCanConnectInput_differentFPS;
                 }
             }
+        }
+    }
+
+    // Not while loading: kinds resolve structurally through the graph, so mid-restore the answer
+    // depends on how much of the tree is connected yet. Project::reportDataKindConflicts() is the
+    // backstop that judges the whole restored tree at once.
+    if (!getApp()->getProject()->isLoadingProject()) {
+        CanConnectInputReturnValue kindRet = checkDataKindCompatibility(input, inputNumber, conflictingNode);
+        if (kindRet != eCanConnectInput_ok) {
+            return kindRet;
         }
     }
 
@@ -1602,6 +1613,8 @@ Node::onInputChanged(int inputNb,
     }
     assert( QThread::currentThread() == qApp->thread() );
 
+    invalidateEffectiveOutputDataKindCache();
+
     bool mustCallEndInputEdition = _imp->inputModifiedRecursion == 0;
     if (mustCallEndInputEdition) {
         beginInputEdition();
@@ -1671,6 +1684,11 @@ Node::onInputChanged(int inputNb,
         std::vector<NodePtr> groupInputs;
         isGroup->getInputs(&groupInputs, false);
         if ( (inputNb >= 0) && ( inputNb < (int)groupInputs.size() ) && groupInputs[inputNb] ) {
+            // The GroupInput's own effective kind is resolved from this (the group's) input, so its
+            // cache needs to be invalidated directly: nothing upstream of it changed to trigger that
+            // through its own (nonexistent) inputs.
+            groupInputs[inputNb]->invalidateEffectiveOutputDataKindCache();
+
             std::map<NodePtr, int> inputOutputs;
             groupInputs[inputNb]->getOutputsConnectedToThisNode(&inputOutputs);
             for (std::map<NodePtr, int> ::iterator it = inputOutputs.begin(); it != inputOutputs.end(); ++it) {

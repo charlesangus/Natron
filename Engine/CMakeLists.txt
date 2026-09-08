@@ -33,6 +33,15 @@ find_package(OpenColorIO 2.5 REQUIRED)
 file(GLOB NatronEngine_HEADERS *.h)
 file(GLOB NatronEngine_SOURCES *.cpp)
 
+# Engine/Nodes/ holds native (non-OFX) node implementations, kept out of Engine/'s
+# top-level GLOB above so that directory stays free of node implementations.
+# Recursive because node implementations are grouped into per-domain subdirectories
+# (Nodes/Deep/, Nodes/Scene/, ...), see Engine/Nodes/README.md.
+file(GLOB_RECURSE NatronEngineNodes_HEADERS Nodes/*.h)
+file(GLOB_RECURSE NatronEngineNodes_SOURCES Nodes/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineNodes_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineNodes_SOURCES})
+
 set(PYENGINE_OUT ${CMAKE_CURRENT_BINARY_DIR}/Qt${QT_VERSION_MAJOR})
 set(PYENGINE_INCLUDE_DIRS ${PYSIDE_INCLUDE_DIRS} ${PYSIDE_INCLUDE_DIRS}/QtCore)
 list(APPEND PYENGINE_INCLUDE_DIRS ${QTCORE_INCLUDE_DIRS} ${Python3_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS})

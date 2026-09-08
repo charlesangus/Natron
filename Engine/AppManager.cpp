@@ -131,6 +131,9 @@
 #include "Engine/StandardPaths.h"
 #include "Engine/TrackerNode.h"
 #include "Engine/ThreadPool.h"
+
+#include "Engine/Nodes/TypedPassthrough.h"
+
 #include "Engine/Utils.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h" // RenderStatsMap
@@ -1522,6 +1525,7 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
     registerBuiltInPlugin<GroupInput>(QString::fromUtf8(NATRON_IMAGES_PATH "input_icon.png"), false, false);
     registerBuiltInPlugin<NodeGroup>(QString::fromUtf8(NATRON_IMAGES_PATH "group_icon.png"), false, false);
     registerBuiltInPlugin<Dot>(QString::fromUtf8(NATRON_IMAGES_PATH "dot_icon.png"), false, false);
+    registerBuiltInPlugin<TypedPassthrough>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DiskCacheNode>(QString::fromUtf8(NATRON_IMAGES_PATH "diskcache_icon.png"), false, false);
     registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_IMAGES_PATH "GroupingIcons/Set2/paint_grouping_2.png"), false, false);
     registerBuiltInPlugin<RotoNode>(QString::fromUtf8(NATRON_IMAGES_PATH "rotoNodeIcon.png"), false, false);

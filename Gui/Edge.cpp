@@ -34,14 +34,15 @@
 #include <QApplication>
 #include <QGraphicsScene>
 
-#include "Gui/NodeGui.h"
-#include "Gui/NodeGraph.h"
-#include "Gui/NodeGraphTextItem.h"
-#include "Gui/GuiApplicationManager.h"
-#include "Engine/Node.h"
 #include "Engine/Image.h"
+#include "Engine/Node.h"
 #include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
+#include "Global/Enums.h"
+#include "Gui/GuiApplicationManager.h"
+#include "Gui/NodeGraph.h"
+#include "Gui/NodeGraphTextItem.h"
+#include "Gui/NodeGui.h"
 
 #ifndef M_PI
 #define M_PI        3.14159265358979323846264338327950288   /* pi             */
@@ -54,6 +55,7 @@
 #endif
 
 #define EDGE_LENGTH_MIN 0.1
+#define EDGE_PEN_WIDTH 2
 #define ARROW_OFFSET 3 // offset of the arrow tip from the object border
 #define ARROW_SIZE_CONNECTED 14
 #define ARROW_SIZE_DISCONNECTED 10
@@ -86,8 +88,8 @@ struct EdgePrivate
     bool enoughSpaceToShowLabel;
     bool isRotoMask;
     bool isMask;
+    DataKindEnum dataKind;
     QPointF middlePoint; //updated only when dest && source are valid
-
 
     EdgePrivate(Edge* publicInterface,
                 int inputNb,
@@ -112,6 +114,7 @@ struct EdgePrivate
         , enoughSpaceToShowLabel(true)
         , isRotoMask(false)
         , isMask(false)
+        , dataKind(eDataKindPolymorphic)
         , middlePoint()
     {
     }
@@ -128,7 +131,7 @@ Edge::Edge(int inputNb_,
 {
     _imp->dest = dest_;
 
-    setPen( QPen(Qt::black, 2, Qt::SolidLine, Qt::SquareCap, Qt::BevelJoin) );
+    setPen(QPen(Qt::black, EDGE_PEN_WIDTH, Qt::SolidLine, Qt::SquareCap, Qt::BevelJoin));
     _imp->initLabel();
     setAcceptedMouseButtons(Qt::LeftButton);
     initLine();
@@ -167,7 +170,7 @@ Edge::Edge(const NodeGuiPtr & src,
 {
     _imp->source = src;
     assert(src);
-    setPen( QPen(Qt::black, 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin) );
+    setPen(QPen(Qt::black, EDGE_PEN_WIDTH, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     setAcceptedMouseButtons(Qt::LeftButton);
     initLine();
     //setFlag(QGraphicsItem::ItemStacksBehindParent);
@@ -354,6 +357,8 @@ Edge::computeVisibility(bool hovered) const
 void
 Edge::refreshState(bool hovered)
 {
+    refreshDataKindPen();
+
     NodeGuiPtr dst = _imp->dest.lock();
     EffectInstancePtr effect = dst ? dst->getNode()->getEffectInstance() : EffectInstancePtr();
 
@@ -428,6 +433,8 @@ makeEdges(const QRectF & bbox,
 void
 Edge::initLine()
 {
+    refreshDataKindPen();
+
     NodeGuiPtr source = _imp->source.lock();
     NodeGuiPtr dest = _imp->dest.lock();
 
@@ -618,9 +625,29 @@ Edge::initLine()
                                                std::sin(a - ARROW_HEAD_ANGLE / 2) * arrowSize);
     //_drawLine = QLineF((arrowP1+arrowP2)/2, line().p2());
 
+    // The arrow head is part of boundingRect() and shape(), and setLine() above has already
+    // announced the geometry change the line itself makes.
+    prepareGeometryChange();
     _imp->arrowHead.clear();
     _imp->arrowHead << arrowIntersect << arrowP1 << arrowP2;
 } // initLine
+
+QRectF
+Edge::boundingRect() const
+{
+    // QGraphicsLineItem::boundingRect() covers the line stroked with the item's pen, whose width
+    // now varies with the resolved data kind, but the arrow head is painted (and stroked with that
+    // same pen) outside the line's own rect, exactly as shape() below already accounts for.
+    QRectF rect = QGraphicsLineItem::boundingRect();
+    QRectF headRect = _imp->arrowHead.boundingRect();
+
+    if (!headRect.isNull()) {
+        const qreal margin = pen().widthF() / 2.;
+        rect = rect.united(headRect.adjusted(-margin, -margin, margin, margin));
+    }
+
+    return rect;
+}
 
 QPainterPath
 Edge::shape() const
@@ -695,6 +722,7 @@ Edge::dragSource(const QPointF & src)
                                             std::sin(a + ARROW_HEAD_ANGLE / 2) * arrowSize);
     QPointF arrowP2 = line().p1() + QPointF(std::cos(a - ARROW_HEAD_ANGLE / 2) * arrowSize,
                                             std::sin(a - ARROW_HEAD_ANGLE / 2) * arrowSize);
+    prepareGeometryChange();
     _imp->arrowHead.clear();
     _imp->arrowHead << line().p1() << arrowP1 << arrowP2;
 
@@ -721,6 +749,7 @@ Edge::dragDest(const QPointF & dst)
                                             std::sin(a + ARROW_HEAD_ANGLE / 2) * arrowSize);
     QPointF arrowP2 = line().p1() + QPointF(std::cos(a - ARROW_HEAD_ANGLE / 2) * arrowSize,
                                             std::sin(a - ARROW_HEAD_ANGLE / 2) * arrowSize);
+    prepareGeometryChange();
     _imp->arrowHead.clear();
     _imp->arrowHead << line().p1() << arrowP1 << arrowP2;
 }
@@ -746,6 +775,69 @@ Edge::isNearbyBendPoint(const QPointF & scenePoint)
     }
 
     return false;
+}
+
+// Width is the primary channel for data-kind styling: it stays legible under both
+// colorblindness and zoom-out, where a fine dash period collapses into a uniform gray.
+// The existing dash pattern below is reserved for edge activity (mask / hidden input),
+// an orthogonal, simultaneously-possible state, so kind styling must never touch it.
+static qreal
+kindWidthMultiplier(DataKindEnum kind)
+{
+    switch (kind) {
+    case eDataKindDeep:
+        return 3.;
+    case eDataKindScene:
+        return 2.;
+    case eDataKindImage:
+    case eDataKindPolymorphic:
+    default:
+        return 1.;
+    }
+}
+
+static bool
+kindTintColor(DataKindEnum kind,
+              QColor* color)
+{
+    switch (kind) {
+    case eDataKindDeep:
+        *color = QColor(0, 114, 178); // Okabe-Ito blue
+        return true;
+    case eDataKindScene:
+        *color = QColor(230, 159, 0); // Okabe-Ito orange
+        return true;
+    case eDataKindImage:
+    case eDataKindPolymorphic:
+    default:
+        return false;
+    }
+}
+
+void
+Edge::refreshDataKindPen()
+{
+    NodeGuiPtr src = _imp->source.lock();
+    NodePtr srcNode = src ? src->getNode() : NodePtr();
+    DataKindEnum kind = srcNode ? srcNode->getEffectiveOutputDataKind() : eDataKindPolymorphic;
+
+    if (kind == _imp->dataKind) {
+        return;
+    }
+    _imp->dataKind = kind;
+
+    QPen p = pen();
+    qreal width = EDGE_PEN_WIDTH * kindWidthMultiplier(kind);
+    if (p.widthF() != width) {
+        // The width belongs on the item's own pen, not on a pen local to paint(): both
+        // QGraphicsLineItem::boundingRect() and shape() are derived from it, so a width only
+        // paint() knew about would draw outside the item's bounding rect -- clipped, left behind
+        // on partial repaints, and unclickable along the part of the stroke outside shape().
+        prepareGeometryChange();
+        p.setWidthF(width);
+        setPen(p);
+    }
+    update();
 }
 
 void
@@ -784,7 +876,8 @@ Edge::paint(QPainter *painter,
     } else if (_imp->useRenderingColor) {
         color = arrowColor = _imp->renderingColor;
     } else {
-        color = arrowColor = _imp->defaultColor;
+        QColor tint;
+        color = arrowColor = kindTintColor(_imp->dataKind, &tint) ? tint : _imp->defaultColor;
         if (_imp->optional && !_imp->paintWithDash) {
             color.setAlphaF(0.4);
         }

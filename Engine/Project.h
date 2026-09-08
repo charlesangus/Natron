@@ -252,6 +252,16 @@ public:
     void reportUnresolvedOCIOColorSpaces();
 
     /**
+     * @brief Puts every node holding an input whose data kind it cannot handle into an error
+     * state naming those inputs. Data kinds are never serialized, so they are recomputed from
+     * the restored graph; an edge found invalid is kept exactly as the user made it, since
+     * silently rewiring a loaded project would be a worse answer than showing the problem.
+     * Runs Node::refreshDataKindConflictMessage() over the whole graph, so a node whose inputs
+     * are all acceptable ends up with no such error rather than keeping an older one.
+     **/
+    void reportDataKindConflicts();
+
+    /**
      * @brief If str is relative it will canonicalize the path, i.e expand all variables and '.' and '..' that may
      * be. When returning from this function str will be an absolute path.
      * It internally uses expandVariable

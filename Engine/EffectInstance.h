@@ -444,6 +444,22 @@ public:
         return -1;
     }
 
+    /**
+     * @brief The kind of data (image, deep, scene) this effect produces on its output.
+     **/
+    virtual DataKindEnum getOutputDataKind() const WARN_UNUSED_RETURN
+    {
+        return eDataKindImage;
+    }
+
+    /**
+     * @brief The kind of data (image, deep, scene) inputNb accepts.
+     **/
+    virtual DataKindEnum getInputDataKind(int /*inputNb*/) const WARN_UNUSED_RETURN
+    {
+        return eDataKindImage;
+    }
+
     virtual bool getMakeSettingsPanel() const { return true; }
 
 

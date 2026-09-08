@@ -24,13 +24,13 @@ See `DECISIONS/2026-09-07-staged-bundle-runpath-bug.md`.
 
 ## Phase 23.1: Stage a complete, self-contained tree
 
-- [ ] M23.P1.T1 — Walk plugin dependencies, not just executables
+- [x] M23.P1.T1 — Walk plugin dependencies, not just executables
   - files: `tools/release/stage-bundle.sh`
   - approach: the ldd-closure walk must seed from every binary the bundle ships that can be `dlopen`'d — the Qt plugin tree under `plugins/` as well as `bin/`. Iterate to a fixed point so a dependency pulled in by a plugin has its own dependencies staged too. Keep honouring `excludelist.txt` for libraries that must come from the host (glibc, GL). Qt 6.5+ requires `xcb-cursor`; do not special-case it, fix the walk so it falls out.
   - verify: the staged tree contains the xcb libraries `libqxcb.so` needs; no staged binary reports a missing direct dependency when resolved against the bundle alone.
   - size: M
 
-- [ ] M23.P1.T2 — Set RUNPATH on every staged library
+- [x] M23.P1.T2 — Set RUNPATH on every staged library
   - files: `tools/release/stage-bundle.sh`
   - approach: the existing step patches only `bin/*`. Every library staged into `lib/` needs its own RUNPATH (`$ORIGIN`, and `$ORIGIN/../lib` where nesting requires it), and so does every staged plugin, since `DT_RUNPATH` does not chain. Set it as part of staging each file rather than as a separate pass over a hardcoded list, so nothing added later is missed.
   - verify: no staged `.so` is left without a RUNPATH; the resolved dependency of a bundled library is the bundled copy, not a system one.
@@ -38,13 +38,13 @@ See `DECISIONS/2026-09-07-staged-bundle-runpath-bug.md`.
 
 ## Phase 23.2: Verify somewhere the libraries are absent
 
-- [ ] M23.P2.T1 — A relocatability check that cannot pass falsely
+- [x] M23.P2.T1 — A relocatability check that cannot pass falsely
   - files: `tools/release/` (new check script), `tools/ci/local/README.md`
   - approach: a check that resolves every staged binary's dependencies **against the bundle alone**, ignoring system paths and `ld.so.cache`, and fails on anything unresolved that is not on the deliberate host-provided excludelist. This is what makes the gate meaningful: it must give the same verdict inside the dev container as on a bare desktop. A container without the VFX libraries installed is the stronger check if it can be arranged cheaply; the dependency-resolution check is the minimum.
   - verify: run against a bundle staged before M23.P1's fixes — it must fail, naming the unresolved libraries; run against one staged after — it must pass.
   - size: M
 
-- [ ] M23.P2.T2 — Wire the check into the release path
+- [x] M23.P2.T2 — Wire the check into the release path
   - files: `tools/release/make-appimage.sh` or the packaging entry point, `.github/workflows/` as appropriate
   - approach: run the check as part of producing a release artifact, so a bundle that is not self-contained cannot be published. Match how the existing release workflow is structured rather than adding a parallel one.
   - verify: the packaging path fails loudly on a deliberately broken bundle.
@@ -68,19 +68,19 @@ standard library it needs is not, and nothing sets a Python home. Natron expects
 `<bin>/../Resources/etc/fonts` (`Engine/AppManager.cpp:342`) and resolves its Python
 home per `Global/PythonUtils.h`.
 
-- [ ] M23.P3.T1 — Stage the Python standard library and set its home
+- [x] M23.P3.T1 — Stage the Python standard library and set its home
   - files: `tools/release/stage-bundle.sh`
   - approach: stage the interpreter's stdlib into the bundle and make the shipped binaries resolve it from there rather than from the host. Read `Global/PythonUtils.h` for the home/path resolution the app already implements and satisfy that contract rather than inventing a parallel one. Do not bundle the host's `site-packages` wholesale; stage what the interpreter needs to start and what Natron's own Python layer imports.
   - verify: the bundle starts with Python initialised on a machine with no matching Python installed.
   - size: M
 
-- [ ] M23.P3.T2 — Stage the fontconfig configuration and any other expected Resources
+- [x] M23.P3.T2 — Stage the fontconfig configuration and any other expected Resources
   - files: `tools/release/stage-bundle.sh`
   - approach: create `Resources/etc/fonts` with a working configuration, and audit what else the app resolves relative to its own binary — grep for `applicationDirPath()` in `Engine/` and `Gui/` and satisfy every path it expects, rather than fixing only the one that happened to warn. OCIO configs are a likely second case.
   - verify: no "does not exist" warnings about bundle-relative resources at startup.
   - size: M
 
-- [ ] M23.P3.T3 — Start the app offscreen as part of the packaging gate
+- [x] M23.P3.T3 — Start the app offscreen as part of the packaging gate
   - files: `tools/release/` (extend the check or add a smoke script), packaging entry points
   - approach: `--version` returns before Python or any platform plugin initialises, which is why every failure so far reached the user instead of the gate. Run the packaged binary with `QT_QPA_PLATFORM=offscreen` far enough to initialise Python, fontconfig and the plugin layer, and fail packaging on any error output. This is the check that would have caught all three defects in this milestone; the ELF check complements it but cannot replace it.
   - verify: the smoke test fails on a bundle missing the Python stdlib and passes on a complete one.

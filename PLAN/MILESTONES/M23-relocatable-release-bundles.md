@@ -103,7 +103,7 @@ the fix is not "rewrite a build-tree path"; it is to give each plugin a RUNPATH
 reaching both its own `Libraries/` and the bundle's `lib/`, without flattening the
 per-bundle layout the OFX spec requires.
 
-- [ ] M23.P4.T1 — Stage OFX plugin bundles with a RUNPATH that reaches both trees
+- [x] M23.P4.T1 — Stage OFX plugin bundles with a RUNPATH that reaches both trees
   - files: `tools/release/stage-bundle.sh`
   - approach: stage `*.ofx.bundle` under `Plugins/OFX/Natron/`, preserving each bundle's `Contents/<arch>/` and `Libraries/` layout exactly — the OFX host resolves plugins by that structure, so it cannot be flattened into `lib/`. Give each staged `.ofx` a RUNPATH listing both its own `Libraries/` and the bundle's `lib/`, computed from where the file lands the way `set_bundle_runpath()` already does rather than hardcoded. Decide deliberately whether a library a plugin needs goes in that plugin's `Libraries/` or in the shared `lib/` — prefer the shared one where the main app already stages the same soname, so the bundle does not ship two copies that could diverge.
   - verify: `check-relocatable.sh` passes with the plugins staged; a plugin's dependency resolves to the bundle's copy.

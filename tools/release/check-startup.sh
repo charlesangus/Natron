@@ -246,9 +246,29 @@ for module in (sys.modules["encodings"], sys.modules["ctypes"]):
         fail("%s was imported from %s, outside the bundle" % (module.__name__, location))
 
 try:
-    import NatronEngine  # noqa: F401
+    import NatronEngine
 except ImportError as error:
     fail("NatronEngine did not import: %s" % error)
+
+# getPluginIDs() reads AppManager's plugin registry directly, so it is a
+# verdict on the OFX host having accepted each bundle -- not just on the ELF
+# closure resolving, which check-relocatable.sh already covers separately.
+plugin_ids = set(NatronEngine.natron.getPluginIDs())
+if not plugin_ids:
+    fail("NatronEngine.natron.getPluginIDs() returned no plugins at all")
+
+expected_plugins = {
+    "reader": "fr.inria.openfx.ReadOIIO",
+    "writer": "fr.inria.openfx.WriteOIIO",
+    "Merge": "net.sf.openfx.MergePlugin",
+}
+missing = [
+    "%s (%s)" % (role, plugin_id)
+    for role, plugin_id in expected_plugins.items()
+    if plugin_id not in plugin_ids
+]
+if missing:
+    fail("expected plugins missing from the %d loaded: %s" % (len(plugin_ids), ", ".join(missing)))
 
 try:
     import PySide6  # noqa: F401
@@ -283,6 +303,7 @@ if not ocio:
 print("natron-startup-probe: interpreter prefix %s" % sys.prefix)
 print("natron-startup-probe: fontconfig %s" % fontconfig_path)
 print("natron-startup-probe: OCIO %s" % ocio.decode("utf-8", "replace"))
+print("natron-startup-probe: %d OFX/PyPlug plugins loaded" % len(plugin_ids))
 print("$SENTINEL")
 sys.stdout.flush()
 PROBE

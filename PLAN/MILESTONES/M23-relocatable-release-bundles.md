@@ -115,4 +115,27 @@ per-bundle layout the OFX spec requires.
   - verify: the gate fails on a bundle with the plugins removed or with a deliberately broken plugin RUNPATH, and passes with them staged correctly.
   - size: M
 
+## Decisions
+
+- 2026-09-07 — a release bundle must be staged from a non-`Debug` build tree, and
+  the gate now says so by name. `CMakeLists.txt` adds `-DDEBUG` for
+  `CMAKE_BUILD_TYPE=Debug`, which arms `FE_DIVBYZERO|FE_INVALID|FE_OVERFLOW` for the
+  whole process at the top of `App/NatronApp_main.cpp:66`; the host's software GL
+  driver raises one while compiling its own shaders during `createContextGLX()`, so
+  the GUI stage dies of SIGFPE inside `libgallium`. Nothing in the staged tree is
+  involved and neither the excludelist nor the closure can change it. Established by
+  swapping binaries between a passing and a failing bundle in both directions, and
+  confirmed by an `LD_PRELOAD` shim stubbing `feenableexcept` to a no-op, which makes
+  the same bundle pass. `build/release` (RelWithDebInfo) from `main` at `8bb4403f2`
+  stages and passes both checks.
+
+- 2026-09-07 — `check-startup.sh`'s header claim that "Xvfb has no GLX" was wrong and
+  load-bearing. The test server does serve GLX, through the host's software
+  rasteriser. It also *has* to: Qt 6.8 builds its backing store through `QRhiGles2`,
+  and under `Xvfb -extension GLX` the GUI hangs for 180s constructing its main window
+  (`QRhiGles2: Failed to create context`). So "just disable GLX" is not available as a
+  way around the trap above. This does not contradict
+  `DECISIONS/2026-09-02-no-glx-under-xvfb.md`, which is about the CI image's Xvfb; the
+  host running this gate has a working software GLX.
+
 **Verification gate:** a freshly staged bundle passes both the relocatability check and the offscreen smoke test; each check fails on a bundle with its corresponding defect reintroduced; an AppImage built from the fixed tooling starts, opens a window, and loads its OFX plugins on a desktop that has neither the ASWF VFX libraries, nor Qt's xcb dependencies, nor a matching Python installed.

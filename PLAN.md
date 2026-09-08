@@ -121,3 +121,16 @@ future core work has solid ground to build on.
   was only ever exercised inside the dev container, where they are. Needs its own
   fix and a verification that does not run in that container. See
   `DECISIONS/2026-09-07-staged-bundle-runpath-bug.md`.
+
+- **Debug builds cannot start on a software-GL host** (2026-09-07, found while
+  fixing M23; pre-existing upstream, not a regression). `App/NatronApp_main.cpp:66`
+  arms floating-point traps process-wide under `-DDEBUG`, and
+  `AppManager::initializeOpenGLFunctionsOnce()` (`Engine/AppManager.cpp:818`) calls
+  into the GL driver **without** the `boost_adaptbx::floating_point::exception_trapping
+  trap(0)` guard that `AppManager::exec()` (`:2591`), `Node.cpp:3595`,
+  `Project.cpp:521` and `OfxImageEffectInstance.cpp:154` all use when entering
+  third-party code. So a debug build dies of SIGFPE inside llvmpipe on any host
+  without hardware GL — which is every CI runner and this gate's Xvfb. Adding the
+  same guard around the context-creation block is a small, contained fix. **Needs a
+  call: fix it in its own milestone, or leave debug builds unusable on software GL?**
+  Traced from upstream `300ddcbd0` (2018).

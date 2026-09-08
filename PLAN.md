@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: null
-pm_heartbeat: 2026-09-07T04:07:31-04:00
+current: M23.P4.T1
+pm_heartbeat: 2026-09-07T21:57:52-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -103,27 +103,16 @@ future core work has solid ground to build on.
 | M11 | OFX plugin integration test (post-release hardening) | done | [M11-ofx-plugin-integration-test.md](PLAN/MILESTONES/M11-ofx-plugin-integration-test.md) |
 | M14 | Documentation tree → orphan branch | done | [M14-documentation-tree-and-doc-ci.md](PLAN/MILESTONES/M14-documentation-tree-and-doc-ci.md) |
 | M16 | Project file format redesign (.ntp successor) | todo | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
-| M17 | Typed graph edges and native node framework | doing | [M17-typed-edges-native-framework.md](PLAN/MILESTONES/M17-typed-edges-native-framework.md) |
+| M17 | Typed graph edges and native node framework | done | [M17-typed-edges-native-framework.md](PLAN/MILESTONES/M17-typed-edges-native-framework.md) |
 | M18 | Deep compositing v1 | todo | [M18-deep-compositing-v1.md](PLAN/MILESTONES/M18-deep-compositing-v1.md) |
 | M19 | USD/Hydra foundation: ScenePayload, ReadScene, Viewport3D | todo | [M19-usd-hydra-foundation.md](PLAN/MILESTONES/M19-usd-hydra-foundation.md) |
 | M20 | 3D node vocabulary and HydraRender | todo | [M20-3d-node-vocabulary.md](PLAN/MILESTONES/M20-3d-node-vocabulary.md) |
 | M21 | Deep tier-2 nodes and deep/3D bridges | todo | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M22 | Lossless project round-trip with missing plugins | todo | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M23 | Make release bundles actually relocatable | doing | [M23-relocatable-release-bundles.md](PLAN/MILESTONES/M23-relocatable-release-bundles.md) |
+| M24 | Node graph aesthetics: category colour and user colour | todo | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
 
 # Open questions
-
-- **M17's visual gate is now met by evidence, not by hand** (2026-09-07). Phase
-  17.3 had no automated coverage, so the milestone was held for a human. A working
-  Xvfb + screenshot path was then built for M23's packaging gate, and the same path
-  produced node-graph captures under each data kind
-  (`build/m17-visual-evidence/`). Reviewed: image-kind nodes and edges are
-  unchanged, deep renders as a capsule with a 3x blue edge, scene as gently rounded
-  with a 2x orange edge. It also caught a real defect no test could — the
-  dangling-input glyph was drawn at the node's centre instead of the arrow's free
-  tip, over the node label — fixed in `35f8afbb1`. What screenshots still cannot
-  settle: appearance at native DPI, and anything requiring GL, since this Xvfb has
-  no usable GLX config.
 
 - **Release bundles are not relocatable** (2026-09-07; now tracked as M23). `tools/release/stage-bundle.sh`
   sets a RUNPATH on the `bin/` executables but not on the libraries it stages, so a

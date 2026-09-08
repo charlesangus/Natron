@@ -1,24 +1,3 @@
-### 2026-08-30T10:21:32+00:00 — info
-- refs: M2.P1.T2h
-- Pause after the current task. Finish M2.P1.T2h (or whatever task is in flight when this is read), commit/checkpoint as normal, then set board `status: paused` and stop — do not start the next task until told to resume.
-
-### 2026-08-30T23:56:05-04:00 — info
-- refs: M8
-- User asks: pause after M8 (Branching model and CI/CD rebuild) closes — do not start the next milestone (M2 resume, M3, M5, or M6) without checking in first. Finish out M8's remaining tasks and its gate normally, then set `current: null`, leave the board row `done`, and stop.
-
-  **Processed 2026-08-31T00:54:39-04:00.** Honoured: M8 closed, board went to
-  `current: null`, and the run stopped. The user then checked in and chose to
-  resume M2, so this entry is discharged.
-
-### 2026-09-07T20:35:24-04:00 — change-request
-- refs: M24, M17
-- Add a new milestone **M24 — Node graph aesthetics: category colour and user colour**. Create `PLAN/MILESTONES/M24-node-graph-category-colour.md` with the content below, and add a board row `| M24 | Node graph aesthetics: category colour and user colour | todo | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |` at the end of the `# Board` table.
-- **Do not start M24 until M17 has merged.** M24 removes the edge pen-width ladder that M17 shipped (`kindWidthMultiplier()` in `Gui/Edge.cpp`), so starting it while M17's PR is open would put the two milestones in conflict over the same lines.
-- Also record this project-wide decision (new file `PLAN/DECISIONS/<date>-node-colour-carries-category.md` + INDEX line): *Node body colour carries the node's category; a user-chosen colour is carried by a thick border instead of replacing the body. Data kind is signalled by node silhouette shape and edge colour only — the edge pen-width ladder introduced in M17 is removed as not noticeable in practice, superseding M17's "width is the primary channel, colour is reinforcement only" rationale in `Gui/Edge.cpp`.* Decided by the user 2026-09-07 during `/cat-plan`.
-
-Full content for `PLAN/MILESTONES/M24-node-graph-category-colour.md`:
-
----8<--- BEGIN MILESTONE FILE ---8<---
 # Milestone 24: Node graph aesthetics: category colour and user colour
 
 Today a node's colour is chosen by `NodeGui::getColorFromGrouping()`
@@ -240,4 +219,3 @@ and the selection halo are still tellable apart; a deep node and a scene node sh
 their silhouettes with no colour outside the shape; and a graph with deep, scene and
 image edges all at uniform width. Plus a round-trip check that a project saved before
 this milestone loads with its recoloured nodes still recoloured.
----8<--- END MILESTONE FILE ---8<---

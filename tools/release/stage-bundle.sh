@@ -85,20 +85,12 @@ is_elf() {
     file -b "$1" 2>/dev/null | grep -q "^ELF"
 }
 
-# DT_RUNPATH is not transitive: it governs only the DT_NEEDED entries of the
-# file that carries it, not anything further down the chain. So every staged
-# ELF needs its own way back to lib/, and the number of ".." depends on where
-# in the tree that file landed -- plugins/platforms/libqxcb.so needs
-# $ORIGIN/../../lib where bin/Natron needs $ORIGIN/../lib.
-set_bundle_runpath() {
-    local target="$1"
-    local dir rel depth up=""
-    local i
+# The "../" sequence that walks from $dir back up to $base.
+relative_up() {
+    local dir="$1" base="$2"
+    local rel depth up="" i
 
-    is_elf "$target" || return 0
-
-    dir="$(cd "$(dirname "$target")" && pwd)"
-    rel="${dir#"$STAGE_DIR"}"
+    rel="${dir#"$base"}"
     rel="${rel#/}"
 
     if [[ -n "$rel" ]]; then
@@ -108,8 +100,49 @@ set_bundle_runpath() {
         done
     fi
 
+    printf '%s' "$up"
+}
+
+# An OFX bundle is a tree the host resolves by structure -- it loads
+# <bundle>/Contents/<arch>/*.ofx, and the plugin's own libraries live in
+# <bundle>/Libraries -- so nothing in it can be flattened into lib/, and a
+# file inside one needs its bundle's Libraries as well as the bundle-wide
+# lib/. Fails for anything outside an OFX bundle, which has no Libraries.
+ofx_libraries_entry() {
+    local dir="$1" root
+
+    case "$dir" in
+        *.ofx.bundle) root="$dir" ;;
+        *.ofx.bundle/*) root="${dir%%.ofx.bundle/*}.ofx.bundle" ;;
+        *) return 1 ;;
+    esac
+
+    printf '%s' "\$ORIGIN/$(relative_up "$dir" "$root")Libraries"
+}
+
+# DT_RUNPATH is not transitive: it governs only the DT_NEEDED entries of the
+# file that carries it, not anything further down the chain. So every staged
+# ELF needs its own way back to lib/, and the number of ".." depends on where
+# in the tree that file landed -- plugins/platforms/libqxcb.so needs
+# $ORIGIN/../../lib where bin/Natron needs $ORIGIN/../lib.
+set_bundle_runpath() {
+    local target="$1"
+    local dir rpath libraries
+
+    is_elf "$target" || return 0
+
+    dir="$(cd "$(dirname "$target")" && pwd)"
+    rpath="\$ORIGIN/$(relative_up "$dir" "$STAGE_DIR")lib"
+
+    # lib/ first: where a soname exists in both, the shared copy is the one
+    # the bundle keeps (see drop_shared_ofx_libraries), so it is also the one
+    # the loader should find.
+    if libraries="$(ofx_libraries_entry "$dir")"; then
+        rpath="$rpath:$libraries"
+    fi
+
     chmod u+w "$target"
-    patchelf --set-rpath "\$ORIGIN/${up}lib" "$target"
+    patchelf --set-rpath "$rpath" "$target"
 }
 
 stage_library() {
@@ -259,20 +292,38 @@ copy_tree "$FONTS_SRC/conf.d" "$FONTS_DEST/conf.d"
 # <bin>/../Plugins/PyPlugs, and OfxHost under <bin>/../Plugins/OFX/Natron.
 copy_tree "$SOURCE_DIR/Gui/Resources/PyPlugs" "$STAGE_DIR/Plugins/PyPlugs"
 
-# Plugins/OFX/Natron is left empty on purpose. The prebuilt OFX bundles ship
-# their own Contents/Libraries with RUNPATHs written for the tree they were
-# built in, and dropping them in here unmodified leaves them unable to resolve
-# either those libraries or the bundle's own lib/. Relocating them needs a
-# RUNPATH rewrite that preserves each bundle's internal layout, which is its
-# own piece of work; until then this ships no OFX plugins rather than broken
-# ones, and check-relocatable.sh will say so if that changes.
+# fetch-assets.sh writes what it downloads and builds to <repo>/build/assets
+# regardless of where the build directory itself is, so a build tree
+# configured anywhere else still has to be pointed back at that one place.
+ASSETS_DIR="$BUILD_DIR/assets"
+if [[ ! -d "$ASSETS_DIR" ]]; then
+    ASSETS_DIR="$SOURCE_DIR/build/assets"
+fi
+
+OFX_ASSETS="$ASSETS_DIR/Plugins"
+mkdir -p "$STAGE_DIR/Plugins/OFX/Natron"
+
+if compgen -G "$OFX_ASSETS/*.ofx.bundle" > /dev/null; then
+    echo "==> Staging OFX plugins from $OFX_ASSETS"
+    for ofx_bundle in "$OFX_ASSETS"/*.ofx.bundle; do
+        echo "  $(basename "$ofx_bundle")"
+        copy_tree "$ofx_bundle" "$STAGE_DIR/Plugins/OFX/Natron/$(basename "$ofx_bundle")"
+    done
+    while IFS= read -r staged_ofx_file; do
+        set_bundle_runpath "$staged_ofx_file"
+    done < <(find "$STAGE_DIR/Plugins/OFX/Natron" -type f 2>/dev/null)
+else
+    echo "warning: no *.ofx.bundle under $OFX_ASSETS — this bundle will ship no OFX" >&2
+    echo "warning: plugins at all, so it has no Read, Write, Merge or Blur." >&2
+    echo "warning: Run tools/ci/local/fetch-assets.sh and stage again." >&2
+fi
 
 # Settings::getDefaultOcioConfigPaths() searches <bin>/../share/OpenColorIO-
 # Configs and <bin>/../Resources/OpenColorIO-Configs for the named on-disk
 # configs. Natron's default is the built-in "ocio://" URI, which libOpenColorIO
 # resolves without any files at all, so an absent asset tree is not an error --
 # only the named legacy configs become unselectable.
-OCIO_ASSETS="$BUILD_DIR/assets/OpenColorIO-Configs"
+OCIO_ASSETS="$ASSETS_DIR/OpenColorIO-Configs"
 if [[ -d "$OCIO_ASSETS" ]]; then
     echo "==> Staging OpenColorIO configs from $OCIO_ASSETS"
     copy_tree "$OCIO_ASSETS" "$STAGE_DIR/Resources/OpenColorIO-Configs"
@@ -307,12 +358,12 @@ collect_binaries() {
             echo "$f"
         fi
     done < <(find "$STAGE_DIR/bin" "$STAGE_DIR/lib" "$STAGE_DIR/plugins" -type f 2>/dev/null
-             find "$STAGE_DIR/Plugins" -type f -name "*.ofx" 2>/dev/null)
+             find "$STAGE_DIR/Plugins" -type f \( -name "*.ofx" -o -name "*.so*" \) 2>/dev/null)
 }
 
 is_inside_ofx_libraries() {
     local path="$1"
-    [[ "$path" == */Contents/Libraries/* ]] && return 0
+    [[ "$path" == *.ofx.bundle/Libraries/* ]] && return 0
     return 1
 }
 
@@ -364,6 +415,28 @@ walk_closure() {
 }
 
 walk_closure
+
+# A plugin's private Libraries and the shared lib/ can offer the same soname:
+# the app and Arena's ImageMagick both link lcms2. Shipping both copies means
+# two of one library in one process, free to drift apart as the host libraries
+# are refreshed and the plugin pins are not, so the shared copy wins and the
+# private one goes -- along with the symlinks that named it. What is left in
+# Libraries is only what nothing else in the bundle provides.
+drop_shared_ofx_libraries() {
+    local lib soname
+
+    while IFS= read -r lib; do
+        soname="$(patchelf --print-soname "$lib" 2>/dev/null || true)"
+        [[ -n "$soname" && -f "$STAGE_DIR/lib/$soname" ]] || continue
+        rm -f "$lib"
+        echo "  shared: $soname (dropped ${lib#"$STAGE_DIR"/})"
+    done < <(find "$STAGE_DIR/Plugins" -path "*.ofx.bundle/Libraries/*" -type f 2>/dev/null)
+
+    find "$STAGE_DIR/Plugins" -path "*.ofx.bundle/Libraries/*" -xtype l -delete 2>/dev/null || true
+}
+
+echo "==> Resolving plugin libraries against the shared lib/"
+drop_shared_ofx_libraries
 
 # ldd is the right tool above -- finding host libraries to bundle is exactly
 # its job -- and the wrong one here, because it would answer using this

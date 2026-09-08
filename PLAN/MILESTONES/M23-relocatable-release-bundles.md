@@ -109,7 +109,7 @@ per-bundle layout the OFX spec requires.
   - verify: `check-relocatable.sh` passes with the plugins staged; a plugin's dependency resolves to the bundle's copy.
   - size: L
 
-- [ ] M23.P4.T2 — Assert the plugins actually load in the startup gate
+- [x] M23.P4.T2 — Assert the plugins actually load in the startup gate
   - files: `tools/release/check-startup.sh`
   - approach: `check-relocatable.sh` proves the ELF closure resolves, which is not the same as the OFX host accepting the bundle. Extend the engine-startup probe to assert a non-zero count of loaded OFX plugins and that a few expected ones by name (a reader, a writer, Merge) are present. A bundle whose plugins silently fail to load must fail packaging — that is the state shipped today.
   - verify: the gate fails on a bundle with the plugins removed or with a deliberately broken plugin RUNPATH, and passes with them staged correctly.

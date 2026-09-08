@@ -20,11 +20,16 @@
 # library closure that broke first in this milestone. Running the GUI under
 # QT_QPA_PLATFORM=offscreen would not -- offscreen never opens libqxcb.so.
 #
-# Passing here does not mean the bundle renders. Xvfb has no GLX, so Natron
-# disables OpenGL and the viewer cannot draw; that is a property of the test
-# server, not of the bundle, and is deliberately not treated as a failure. The
-# main window and the node graph are Qt raster widgets and do come up, which is
-# what is asserted.
+# Passing here does not mean the bundle renders. Where the test server does
+# serve GLX it serves it through the host's software rasteriser, so what the
+# viewer would draw says nothing about the bundle, and GLX and OpenGL
+# complaints are deliberately not treated as failures. The main window and the
+# node graph are Qt raster widgets and do come up, which is what is asserted.
+#
+# The server does have to serve GLX, though: Qt 6.8 builds its backing store
+# through QRhiGles2, and on an Xvfb started with -extension GLX the GUI hangs
+# constructing its main window. That in turn means a build compiled with
+# -DDEBUG cannot be checked on a software-GL host at all -- see run_probe.
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -133,8 +138,8 @@ NATRONCONF
 # Patterns that mean the bundle is incomplete even when the process manages to
 # exit 0 anyway -- Natron reports several of these and carries on degraded,
 # which is how they reached a user rather than the gate. GLX and OpenGL
-# complaints are deliberately absent: Xvfb has no GLX, so they say nothing
-# about the bundle.
+# complaints are deliberately absent: they are the test server's software GL
+# stack talking, and say nothing about the bundle.
 FATAL_PATTERNS=(
     'Fatal Python error'
     'Failed to import encodings'
@@ -175,6 +180,21 @@ run_probe() {
 
     if [[ $status -eq 124 ]]; then
         report_failure "$label" "$logfile" "timed out after 300s"
+    fi
+    if [[ $status -gt 128 ]]; then
+        local signal note
+        signal="SIG$(kill -l "$((status - 128))")"
+        note=""
+        # main() arms FE_DIVBYZERO/FE_INVALID/FE_OVERFLOW for the whole process
+        # under -DDEBUG, and the host's software GL driver raises one while
+        # compiling its own shaders during context creation, killing the
+        # process inside the driver. Nothing in the staged tree is involved,
+        # and neither the excludelist nor the closure can change it.
+        if [[ "$signal" == "SIGFPE" ]]; then
+            note=" -- a build compiled with -DDEBUG traps floating-point exceptions"
+            note+=" that the host's software GL driver raises; stage a non-debug build"
+        fi
+        report_failure "$label" "$logfile" "died of $signal$note"
     fi
     if [[ $status -ne 0 ]]; then
         report_failure "$label" "$logfile" "exited with status $status"

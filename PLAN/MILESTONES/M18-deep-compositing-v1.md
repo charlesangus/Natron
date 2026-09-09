@@ -23,10 +23,16 @@ Pixels" document verbatim.
   - verify: unit tests against the worked examples in the OpenEXR doc (split/merge identities, volumetric merge commutativity where the doc guarantees it).
   - size: M
 
-- [ ] M18.P1.T3 — `Cache<DeepImage>` with its own memory budget
+- [x] M18.P1.T3 — `Cache<DeepImage>` with its own memory budget
   - files: `Engine/Cache.h` (already templated, :382), `Engine/DeepImageKey.h`/`.cpp`, `Engine/Settings.cpp`, `Engine/Settings.h`
   - approach: dedicated `Cache<DeepImage>` instantiation with `DeepImageKey = (nodeHash, time, view, scale)`; bounds live in params, not the key (leaves room for future tiling). Variable-size entries costed by actual `getSizeInBytes()`. New settings knob for a separate deep cache budget — deep frames must not evict the entire 2D image cache. Bounds growth, not tiling, in v1.
   - verify: unit test — insert/lookup round-trip; eviction respects the deep budget while the image cache stays untouched.
+  - size: M
+
+- [ ] M18.P1.T4 — Wire the deep cache into the app-wide cache lifecycle
+  - files: `Engine/AppManager.cpp`, `Engine/AppManager.h`, `Engine/AppManagerPrivate.h`, `Tests/DeepImageCache_Test.cpp`
+  - approach: M18.P1.T3 wires `_deepImageCache` into construction, teardown and the size knob only, leaving it invisible to every other app-wide cache operation. Reach the same six sites the other three caches are wired into, following each one's existing shape rather than inventing a parallel path: `clearAllCaches()` (AppManager.cpp:1246), `clearExceedingEntriesFromNodeCache()` (:2103), `removeAllEntriesWithDifferentNodeHashForHolderPublic()` (:2361) and `removeAllEntriesForHolderPublic()` (:2382), the memory-stats reporting (:2351), and `checkCacheFreeMemoryIsGoodEnough()` (:2766-2792). Line numbers are from 2026-09-09 and will have moved — locate by name. The low-memory handler is the load-bearing one: as it stands, system memory pressure evicts the 2D node cache while the deep cache holds its full budget.
+  - verify: unit test — a populated deep cache is emptied by `clearAllCaches()`; a per-node purge on hash change removes that node's deep entries and leaves another node's alone; the deep cache's bytes appear in the memory-stats total. Whole ctest suite still green.
   - size: M
 
 ## Phase 18.2: Render path
@@ -127,4 +133,27 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   `BaseTest` fixture's teardown, not at any one case, and it will make this
   milestone's own PR intermittently red. Raise it as its own milestone at the
   M18 gate.
+
+- 2026-09-09 — The deep cache must be wired into the full app-wide cache
+  lifecycle inside this milestone, not deferred. M18.P1.T3 reached only
+  construction, teardown and the size knob, leaving `_deepImageCache` absent
+  from `clearAllCaches()`, `clearExceedingEntriesFromNodeCache()`, both
+  `removeAllEntries*ForHolderPublic()` hooks, the memory-stats reporting and
+  `checkCacheFreeMemoryIsGoodEnough()`. That was proposed as a known v1 gap and
+  rejected on the grounds that it is core caching functionality, not polish: a
+  "Clear cache" action that silently leaves deep entries resident is wrong, and
+  a low-memory handler that evicts the 2D node cache while the deep cache holds
+  its full budget inverts the very isolation the separate budget exists to
+  provide. Split out as M18.P1.T4 rather than folded into T3 so it carries its
+  own verify and commit.
+
+- 2026-09-09 — M18.P1.T3's two new cache tests both failed on their first real
+  run, for the reason a pre-commit review predicted: `Cache::getOrCreate()`
+  returns `true` when an entry is *found* and `false` when it is *created*, so
+  four `ASSERT_TRUE` calls on freshly-created entries were inverted. The
+  eviction test was also vacuous — it held `entry1` alive while creating
+  `entry2`, so `LRUHashTable::evict()`'s `use_count() == 1` guard skipped it and
+  nothing was ever evicted. Both fixed, and the eviction test was re-checked by
+  temporarily raising the budget to confirm its assertions fail when no eviction
+  occurs rather than passing regardless.
 

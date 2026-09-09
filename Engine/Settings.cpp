@@ -1310,6 +1310,15 @@ Settings::initializeKnobsCaching()
     _maxDiskCacheNodeGB->setHintToolTip( tr("The maximum size that may be used by the DiskCache node on disk (in GiB)") );
     _cachingTab->addKnob(_maxDiskCacheNodeGB);
 
+    _maxDeepImageCacheGB = AppManager::createKnob<KnobInt>(this, tr("Maximum deep image cache RAM usage (GiB)"));
+    _maxDeepImageCacheGB->setName("maxDeepImageCache");
+    _maxDeepImageCacheGB->disableSlider();
+    _maxDeepImageCacheGB->setMinimum(0);
+    _maxDeepImageCacheGB->setMaximum(100);
+    _maxDeepImageCacheGB->setHintToolTip(tr("The maximum size that may be used in RAM by the deep image cache (in GiB). "
+                                            "This is a separate budget from the regular image cache above, "
+                                            "so that large deep renders cannot evict it entirely."));
+    _cachingTab->addKnob(_maxDeepImageCacheGB);
 
     _diskCachePath = AppManager::createKnob<KnobPath>( this, tr("Disk cache path") );
     _diskCachePath->setName("diskCachePath");
@@ -1548,6 +1557,7 @@ Settings::setDefaultValues()
     _unreachableRAMPercent->setDefaultValue(20); // see https://github.com/NatronGitHub/Natron/issues/486
     _maxViewerDiskCacheGB->setDefaultValue(5, 0);
     _maxDiskCacheNodeGB->setDefaultValue(10, 0);
+    _maxDeepImageCacheGB->setDefaultValue(2, 0);
     //_diskCachePath
     setCachingLabels();
 
@@ -2302,18 +2312,22 @@ Settings::onKnobValueChanged(KnobI* k,
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumDiskSpace( getMaximumDiskCacheNodeSize() );
         }
-    } else if ( k == _maxRAMPercent.get() ) {
+    } else if (k == _maxDeepImageCacheGB.get()) {
+        if (!_restoringSettings) {
+            appPTR->setApplicationsCachesMaximumDeepImageCacheSize(getMaximumDeepImageCacheSize());
+        }
+    } else if (k == _maxRAMPercent.get()) {
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumMemoryPercent( getRamMaximumPercent() );
         }
         setCachingLabels();
-    } else if ( k == _diskCachePath.get() ) {
+    } else if (k == _diskCachePath.get()) {
         QString path = QString::fromUtf8(_diskCachePath->getValue().c_str());
         qputenv(NATRON_DISK_CACHE_PATH_ENV_VAR, path.toUtf8());
         appPTR->refreshDiskCacheLocation();
-    } else if ( k == _wipeDiskCache.get() ) {
+    } else if (k == _wipeDiskCache.get()) {
         appPTR->wipeAndCreateDiskCacheStructure();
-    } else if ( k == _numberOfThreads.get() ) {
+    } else if (k == _numberOfThreads.get()) {
         int nbThreads = getNumberOfThreads();
         appPTR->setNThreadsToRender(nbThreads);
         if (nbThreads == -1) {
@@ -2328,19 +2342,19 @@ Settings::onKnobValueChanged(KnobI* k,
         } else {
             QThreadPool::globalInstance()->setMaxThreadCount(nbThreads);
         }
-    } else if ( k == _nThreadsPerEffect.get() ) {
+    } else if (k == _nThreadsPerEffect.get()) {
         appPTR->setNThreadsPerEffect( getNumberOfThreadsPerEffect() );
-    } else if ( k == _ocioConfigKnob.get() ) {
+    } else if (k == _ocioConfigKnob.get()) {
         if (_ocioConfigKnob->getActiveEntry().id == NATRON_CUSTOM_OCIO_CONFIG_NAME) {
             _customOcioConfigFile->setAllDimensionsEnabled(true);
         } else {
             _customOcioConfigFile->setAllDimensionsEnabled(false);
         }
         tryLoadOpenColorIOConfig();
-    } else if ( k == _useThreadPool.get() ) {
+    } else if (k == _useThreadPool.get()) {
         bool useTP = _useThreadPool->getValue();
         appPTR->setUseThreadPool(useTP);
-    } else if ( k == _customOcioConfigFile.get() ) {
+    } else if (k == _customOcioConfigFile.get()) {
         if ( _customOcioConfigFile->isEnabled(0) ) {
             tryLoadOpenColorIOConfig();
             bool warnOcioChanged = _warnOcioConfigKnobChanged->getValue();
@@ -2353,67 +2367,35 @@ Settings::onKnobValueChanged(KnobI* k,
                 }
             }
         }
-    } else if ( k == _maxUndoRedoNodeGraph.get() ) {
+    } else if (k == _maxUndoRedoNodeGraph.get()) {
         appPTR->setUndoRedoStackLimit( _maxUndoRedoNodeGraph->getValue() );
-    } else if ( k == _maxPanelsOpened.get() ) {
+    } else if (k == _maxPanelsOpened.get()) {
         appPTR->onMaxPanelsOpenedChanged( _maxPanelsOpened->getValue() );
-    } else if ( k == _queueRenders.get() ) {
+    } else if (k == _queueRenders.get()) {
         appPTR->onQueueRendersChanged( _queueRenders->getValue() );
-    } else if ( ( k == _checkerboardTileSize.get() ) || ( k == _checkerboardColor1.get() ) || ( k == _checkerboardColor2.get() ) ) {
+    } else if ((k == _checkerboardTileSize.get()) || (k == _checkerboardColor1.get()) || (k == _checkerboardColor2.get())) {
         appPTR->onCheckerboardSettingsChanged();
-    } else if ( k == _powerOf2Tiling.get() && !_restoringSettings) {
+    } else if (k == _powerOf2Tiling.get() && !_restoringSettings) {
         appPTR->onViewerTileCacheSizeChanged();
-    } else if ( k == _texturesMode.get() &&  !_restoringSettings) {
-         appPTR->onViewerTileCacheSizeChanged();
-    } else if ( ( k == _hideOptionalInputsAutomatically.get() ) && !_restoringSettings && (reason == eValueChangedReasonUserEdited) ) {
+    } else if (k == _texturesMode.get() && !_restoringSettings) {
+        appPTR->onViewerTileCacheSizeChanged();
+    } else if ((k == _hideOptionalInputsAutomatically.get()) && !_restoringSettings && (reason == eValueChangedReasonUserEdited)) {
         appPTR->toggleAutoHideGraphInputs();
-    } else if ( k == _autoProxyWhenScrubbingTimeline.get() ) {
+    } else if (k == _autoProxyWhenScrubbingTimeline.get()) {
         _autoProxyLevel->setSecret( !_autoProxyWhenScrubbingTimeline->getValue() );
-    } else if ( !_restoringSettings &&
-                ( ( k == _sunkenColor.get() ) ||
-                  ( k == _baseColor.get() ) ||
-                  ( k == _raisedColor.get() ) ||
-                  ( k == _selectionColor.get() ) ||
-                  ( k == _textColor.get() ) ||
-                  ( k == _altTextColor.get() ) ||
-                  ( k == _timelinePlayheadColor.get() ) ||
-                  ( k == _timelineBoundsColor.get() ) ||
-                  ( k == _timelineBGColor.get() ) ||
-                  ( k == _interpolatedColor.get() ) ||
-                  ( k == _keyframeColor.get() ) ||
-                  ( k == _trackerKeyframeColor.get() ) ||
-                  ( k == _cachedFrameColor.get() ) ||
-                  ( k == _diskCachedFrameColor.get() ) ||
-                  ( k == _curveEditorBGColor.get() ) ||
-                  ( k == _gridColor.get() ) ||
-                  ( k == _curveEditorScaleColor.get() ) ||
-                  ( k == _dopeSheetEditorBackgroundColor.get() ) ||
-                  ( k == _dopeSheetEditorRootSectionBackgroundColor.get() ) ||
-                  ( k == _dopeSheetEditorKnobSectionBackgroundColor.get() ) ||
-                  ( k == _dopeSheetEditorScaleColor.get() ) ||
-                  ( k == _dopeSheetEditorGridColor.get() ) ||
-                  ( k == _keywordColor.get() ) ||
-                  ( k == _operatorColor.get() ) ||
-                  ( k == _curLineColor.get() ) ||
-                  ( k == _braceColor.get() ) ||
-                  ( k == _defClassColor.get() ) ||
-                  ( k == _stringsColor.get() ) ||
-                  ( k == _commentsColor.get() ) ||
-                  ( k == _selfColor.get() ) ||
-                  ( k == _sliderColor.get() ) ||
-                  ( k == _numbersColor.get() ) ) ) {
+    } else if (!_restoringSettings && ((k == _sunkenColor.get()) || (k == _baseColor.get()) || (k == _raisedColor.get()) || (k == _selectionColor.get()) || (k == _textColor.get()) || (k == _altTextColor.get()) || (k == _timelinePlayheadColor.get()) || (k == _timelineBoundsColor.get()) || (k == _timelineBGColor.get()) || (k == _interpolatedColor.get()) || (k == _keyframeColor.get()) || (k == _trackerKeyframeColor.get()) || (k == _cachedFrameColor.get()) || (k == _diskCachedFrameColor.get()) || (k == _curveEditorBGColor.get()) || (k == _gridColor.get()) || (k == _curveEditorScaleColor.get()) || (k == _dopeSheetEditorBackgroundColor.get()) || (k == _dopeSheetEditorRootSectionBackgroundColor.get()) || (k == _dopeSheetEditorKnobSectionBackgroundColor.get()) || (k == _dopeSheetEditorScaleColor.get()) || (k == _dopeSheetEditorGridColor.get()) || (k == _keywordColor.get()) || (k == _operatorColor.get()) || (k == _curLineColor.get()) || (k == _braceColor.get()) || (k == _defClassColor.get()) || (k == _stringsColor.get()) || (k == _commentsColor.get()) || (k == _selfColor.get()) || (k == _sliderColor.get()) || (k == _numbersColor.get()))) {
         appPTR->reloadStylesheets();
-    } else if ( k == _qssFile.get() ) {
+    } else if (k == _qssFile.get()) {
         appPTR->reloadStylesheets();
-    } else if ( k == _hostName.get() ) {
+    } else if (k == _hostName.get()) {
         std::string hostName = _hostName->getActiveEntry().id;
         bool isCustom = hostName == NATRON_CUSTOM_HOST_NAME_ENTRY;
         _customHostName->setSecret(!isCustom);
-    } else if ( ( k == _scriptEditorFontChoice.get() ) || ( k == _scriptEditorFontSize.get() ) ) {
+    } else if ((k == _scriptEditorFontChoice.get()) || (k == _scriptEditorFontSize.get())) {
         appPTR->reloadScriptEditorFonts();
-    } else if ( k == _pluginUseImageCopyForSource.get() ) {
+    } else if (k == _pluginUseImageCopyForSource.get()) {
         appPTR->setPluginsUseInputImageCopyToRender( _pluginUseImageCopyForSource->getValue() );
-    } else if ( k == _enableOpenGL.get() ) {
+    } else if (k == _enableOpenGL.get()) {
         appPTR->refreshOpenGLRenderingFlagOnAllInstances();
         if (!_restoringSettings) {
             appPTR->clearPluginsLoadedCache();
@@ -2547,6 +2529,12 @@ U64
 Settings::getMaximumDiskCacheNodeSize() const
 {
     return (U64)( _maxDiskCacheNodeGB->getValue() ) * 1024 * 1024 * 1024;
+}
+
+U64
+Settings::getMaximumDeepImageCacheSize() const
+{
+    return (U64)(_maxDeepImageCacheGB->getValue()) * 1024 * 1024 * 1024;
 }
 
 ///////////////////////////////////////////////////

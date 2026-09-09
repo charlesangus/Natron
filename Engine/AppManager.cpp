@@ -460,9 +460,13 @@ AppManager::~AppManager()
     if (_imp->_viewerCache) {
         _imp->_viewerCache->waitForDeleterThread();
     }
+    if (_imp->_deepImageCache) {
+        _imp->_deepImageCache->waitForDeleterThread();
+    }
     _imp->_nodeCache.reset();
     _imp->_viewerCache.reset();
     _imp->_diskCache.reset();
+    _imp->_deepImageCache.reset();
 
     tearDownPython();
     _imp->tearDownGL();
@@ -918,10 +922,14 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
         size_t maxCacheRAM = _imp->_settings->getRamMaximumPercent() * getSystemTotalRAM();
         U64 viewerCacheSize = _imp->_settings->getMaximumViewerDiskCacheSize();
         U64 maxDiskCacheNode = _imp->_settings->getMaximumDiskCacheNodeSize();
+        U64 maxDeepImageCache = _imp->_settings->getMaximumDeepImageCacheSize();
 
         _imp->_nodeCache = std::make_shared<Cache<Image> >("NodeCache", NATRON_CACHE_VERSION, maxCacheRAM, 1.);
         _imp->_diskCache = std::make_shared<Cache<Image> >("DiskCache", NATRON_CACHE_VERSION, maxDiskCacheNode, 0.);
         _imp->_viewerCache = std::make_shared<Cache<FrameEntry> >("ViewerCache", NATRON_CACHE_VERSION, viewerCacheSize, 0.);
+        // RAM-only, like _nodeCache: deep has no on-disk cache in v1, and must not share
+        // _nodeCache's budget or a large deep render would evict the entire 2D image cache.
+        _imp->_deepImageCache = std::make_shared<Cache<DeepImageCacheEntry>>("DeepImageCache", NATRON_CACHE_VERSION, maxDeepImageCache, 1.);
         _imp->setViewerCacheTileSize();
     } catch (std::logic_error&) {
         // ignore
@@ -1377,6 +1385,13 @@ void
 AppManager::setApplicationsCachesMaximumDiskSpace(unsigned long long size)
 {
     _imp->_diskCache->setMaximumCacheSize(size);
+}
+
+void
+AppManager::setApplicationsCachesMaximumDeepImageCacheSize(unsigned long long size)
+{
+    _imp->_deepImageCache->setMaximumCacheSize(size);
+    _imp->_deepImageCache->setMaximumInMemorySize(1);
 }
 
 void
@@ -2411,6 +2426,21 @@ AppManager::getImageOrCreate_diskCache(const ImageKey & key,
                                        ImagePtr* returnValue) const
 {
     return _imp->_diskCache->getOrCreate(key, params, 0, returnValue);
+}
+
+bool
+AppManager::getDeepImage(const DeepImageKey& key,
+                         std::list<DeepImageCacheEntryPtr>* returnValue) const
+{
+    return _imp->_deepImageCache->get(key, returnValue);
+}
+
+bool
+AppManager::getDeepImageOrCreate(const DeepImageKey& key,
+                                 const DeepImageParamsPtr& params,
+                                 DeepImageCacheEntryPtr* returnValue) const
+{
+    return _imp->_deepImageCache->getOrCreate(key, params, 0, returnValue);
 }
 
 bool

@@ -89,6 +89,24 @@ search_path_of() {
     fi
 }
 
+# lib/optional/* holds the GCC runtime libraries the bundle carries but does
+# not impose: nothing's RUNPATH reaches them, and bin/natron-runtime.sh names
+# whichever of the bundled and the host's copy is newer on LD_LIBRARY_PATH,
+# which ld.so searches ahead of DT_RUNPATH. They are still inside the bundle,
+# so they count as resolved -- for every binary, since LD_LIBRARY_PATH is not
+# per-file.
+optional_entries() {
+    local dir
+    for dir in "$STAGE_DIR"/lib/optional/*/; do
+        [[ -d "$dir" ]] && printf '%s\n' "${dir%/}"
+    done
+}
+
+OPTIONAL_ENTRIES=()
+while IFS= read -r optional_dir; do
+    [[ -n "$optional_dir" ]] && OPTIONAL_ENTRIES+=("$optional_dir")
+done < <(optional_entries)
+
 # Resolution deliberately uses only the binary's own DT_RUNPATH/DT_RPATH. The
 # real loader also lets a DT_RPATH on an earlier link in the chain rescue a
 # library that carries none, but DT_RUNPATH -- which is what patchelf writes,
@@ -102,6 +120,7 @@ resolve_in_bundle() {
 
     local entries=()
     IFS=':' read -r -a entries <<< "$(search_path_of "$binary")"
+    entries+=("${OPTIONAL_ENTRIES[@]}")
 
     for entry in "${entries[@]}"; do
         [[ -z "$entry" ]] && continue

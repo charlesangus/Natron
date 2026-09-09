@@ -438,6 +438,151 @@ drop_shared_ofx_libraries() {
 echo "==> Resolving plugin libraries against the shared lib/"
 drop_shared_ofx_libraries
 
+# The GCC runtime is the one piece of the closure the bundle must not simply
+# impose. A library reached through DT_RUNPATH is resident by SONAME for the
+# whole process, so a bundled libstdc++.so.6 older than the host's also
+# shadows it for whatever the host dlopen()s later -- the Mesa DRI driver
+# links the host's LLVM, which then cannot find the symbol versions it was
+# built against, and a GLX context that fails to create takes the GUI down
+# with it. Move these two out of lib/, where nothing's RUNPATH reaches them,
+# and let the launcher elect between them and the host's at startup.
+OPTIONAL_RUNTIME_LIBS=(
+    "libstdc++:libstdc++.so.6"
+    "libgcc:libgcc_s.so.1"
+)
+
+split_optional_runtime_libs() {
+    local entry subdir soname dest
+
+    for entry in "${OPTIONAL_RUNTIME_LIBS[@]}"; do
+        subdir="${entry%%:*}"
+        soname="${entry#*:}"
+
+        if [[ ! -f "$STAGE_DIR/lib/$soname" ]]; then
+            echo "  not bundled: $soname (the host's will be the only one)"
+            continue
+        fi
+
+        dest="$STAGE_DIR/lib/optional/$subdir"
+        mkdir -p "$dest"
+        mv -f "$STAGE_DIR/lib/$soname" "$dest/$soname"
+        set_bundle_runpath "$dest/$soname"
+        echo "  set aside: $soname -> ${dest#"$STAGE_DIR"/}"
+    done
+}
+
+# The election has to happen for the tarball as much as for the AppImage, and
+# the tarball has no AppRun. So it lives in the staged tree itself: each
+# executable becomes a shim that sources the rule and execs the real binary
+# beside it, and the AppImage's AppRun reaches the same shim.
+install_launcher() {
+    local binaries=() binary name
+
+    cat > "$STAGE_DIR/bin/natron-runtime.sh" <<'RUNTIME'
+# Elect between the bundle's copy of the GCC runtime and the host's, and name
+# the winner on LD_LIBRARY_PATH for the binary about to be exec'd. Sourced by
+# the shims beside it, which set NATRON_BUNDLE_BIN first.
+#
+# Both copies are present. The bundled ones sit under lib/optional, outside
+# every DT_RUNPATH in the bundle, so neither is imposed: ld.so reads
+# LD_LIBRARY_PATH before DT_RUNPATH and ld.so.cache after both, which makes
+# naming a directory here the whole of the decision.
+#
+# Newer wins, because these libraries are backward compatible and not all of
+# their consumers are inside the bundle -- the host's Mesa driver is dlopen'd
+# into this process and links the host's LLVM, so an older bundled
+# libstdc++.so.6 resident by SONAME denies it symbol versions it needs. Where
+# the comparison cannot be made -- no host copy, no readable version symbols,
+# no grep -- the bundled copy wins, which is the case the bundling exists for.
+
+natron_max_version() {
+    LC_ALL=C grep -a -o "$2[0-9][0-9.]*" "$1" 2>/dev/null |
+        sed -e "s/^$2//" -e 's/\.*$//' |
+        sort -t. -k1,1n -k2,2n -k3,3n |
+        tail -n 1
+}
+
+natron_version_ge() {
+    [ "$(printf '%s\n%s\n' "$1" "$2" |
+         sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" = "$1" ]
+}
+
+natron_host_paths() {
+    PATH="$PATH:/sbin:/usr/sbin" ldconfig -p 2>/dev/null |
+        sed -n "s|^[[:space:]]*$1 (libc6,x86-64[^)]*) => ||p"
+    for natron_dir in /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu \
+                      /lib64 /usr/lib64 /lib /usr/lib; do
+        if [ -e "$natron_dir/$1" ]; then
+            printf '%s\n' "$natron_dir/$1"
+        fi
+    done
+    return 0
+}
+
+natron_host_version() {
+    natron_best=
+    for natron_path in $(natron_host_paths "$1"); do
+        [ -r "$natron_path" ] || continue
+        natron_found=$(natron_max_version "$natron_path" "$2")
+        [ -n "$natron_found" ] || continue
+        if [ -z "$natron_best" ] || natron_version_ge "$natron_found" "$natron_best"; then
+            natron_best=$natron_found
+        fi
+    done
+    printf '%s' "$natron_best"
+}
+
+natron_prefer_bundled() {
+    natron_lib="$NATRON_BUNDLE_BIN/../lib/optional/$1/$2"
+    [ -r "$natron_lib" ] || return 1
+
+    natron_bundled=$(natron_max_version "$natron_lib" "$3")
+    [ -n "$natron_bundled" ] || return 0
+
+    natron_host=$(natron_host_version "$2" "$3")
+    [ -n "$natron_host" ] || return 0
+
+    natron_version_ge "$natron_bundled" "$natron_host"
+}
+
+natron_elect_runtime_lib() {
+    natron_prefer_bundled "$@" || return 0
+    natron_dir=$(cd "$NATRON_BUNDLE_BIN/../lib/optional/$1" 2>/dev/null && pwd) || return 0
+    [ -n "$natron_dir" ] || return 0
+    LD_LIBRARY_PATH="$natron_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LD_LIBRARY_PATH
+}
+
+natron_elect_runtime_lib libstdc++ libstdc++.so.6 GLIBCXX_
+natron_elect_runtime_lib libgcc libgcc_s.so.1 GCC_
+RUNTIME
+
+    while IFS= read -r binary; do
+        [[ "$binary" == *.bin ]] && continue
+        is_elf "$binary" || continue
+        binaries+=("$binary")
+    done < <(find "$STAGE_DIR/bin" -maxdepth 1 -type f 2>/dev/null | sort)
+
+    for binary in "${binaries[@]}"; do
+        name="$(basename "$binary")"
+        mv -f "$binary" "$binary.bin"
+        cat > "$binary" <<LAUNCHER
+#!/bin/sh
+NATRON_BUNDLE_BIN="\$(dirname "\$(readlink -f "\$0")")"
+. "\$NATRON_BUNDLE_BIN/natron-runtime.sh"
+exec "\$NATRON_BUNDLE_BIN/$name.bin" "\$@"
+LAUNCHER
+        chmod +x "$binary"
+        echo "  launcher: bin/$name -> bin/$name.bin"
+    done
+}
+
+echo "==> Setting the GCC runtime aside for launch-time election"
+split_optional_runtime_libs
+
+echo "==> Installing the launcher shims"
+install_launcher
+
 # ldd is the right tool above -- finding host libraries to bundle is exactly
 # its job -- and the wrong one here, because it would answer using this
 # machine's ld.so.cache. Hand the finished tree to the checker instead.

@@ -50,8 +50,8 @@ All nodes below are `NativeEffectBase` subclasses in `Engine/Nodes/Deep/`, one
 not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 
 - [ ] M18.P3.T1 — `DeepRead` and `DeepWrite`
-  - files: `Engine/Nodes/Deep/DeepRead.cpp`, `Engine/Nodes/Deep/DeepWrite.cpp`, CMake source list
-  - approach: OIIO `DeepData` for both directions; EXR deep scanline and tiled parts. `DeepData`'s layout maps 1:1 onto `DeepImage`'s structure-of-channels, so I/O is a per-channel copy, not a transform. Deep AOVs ride the existing plane concept.
+  - files: `Engine/Nodes/Deep/DeepRead.cpp`, `Engine/Nodes/Deep/DeepWrite.cpp`, `Engine/CMakeLists.txt` (CMake source list + new OIIO dependency)
+  - approach: `NatronEngine` does not link OpenImageIO today (`Engine/CMakeLists.txt` finds only Freetype and OpenColorIO), so this task adds `find_package(OpenImageIO CONFIG REQUIRED)` and links `OpenImageIO::OpenImageIO` — 3.1.16 with its CMake config ships in the `aswf/ci-vfxall:2027-clang21.1` image CI and `tools/ci/local/` both use, so no image change is needed. Then OIIO `DeepData` for both directions; EXR deep scanline and tiled parts. `DeepData`'s layout maps 1:1 onto `DeepImage`'s structure-of-channels, so I/O is a per-channel copy, not a transform. Deep AOVs ride the existing plane concept.
   - verify: round-trip test — read a reference deep EXR, write it back, `oiiotool --diff` clean; sample counts and Z order preserved.
   - size: M
 
@@ -68,9 +68,21 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - size: L
 
 - [ ] M18.P3.T4 — Deep integration test in CI
-  - files: `tests/` (alongside the M11 OFX integration test), reference deep EXR asset (pinned, same discipline as existing test assets)
+  - files: `Tests/` (the ctest suite; the directory is capital-T `Tests/`, and M11's OFX integration test is `tools/ci/smoke_test.py` + `tools/ci/verify_plugin_loads.cpp`, not a ctest case), reference deep EXR asset under `Tests/fixtures/` (pinned, same discipline as existing test assets)
   - approach: end-to-end graph — DeepRead → DeepMerge → DeepRecolor → DeepToImage → Write — rendered headless in CI, output diffed against a committed reference. This is the deep analog of M11's OFX plugin test.
   - verify: test green in the `build-and-test` job; deliberately breaking the merge math makes it fail.
   - size: M
 
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; entire pre-existing ctest suite still green.
+
+## Decisions
+
+- 2026-09-09 — Promotion freshness check (PLAN-FORMAT.md §5a): the milestone's
+  premise holds — `Engine/Nodes/NativeEffectBase.h`, the templated `Engine/Cache.h`,
+  `Engine/EffectInstanceRenderRoI.cpp`, `Engine/ViewerInstance.cpp` and
+  `Gui/InfoViewerWidget.cpp` all exist as briefed, and `Engine/Nodes/README.md`
+  documents the registration path. Two task briefs were re-planned in place:
+  M18.P3.T1 (OpenImageIO is not yet a `NatronEngine` dependency — the task now
+  owns wiring it; OIIO 3.1.16 with a CMake config is already in the
+  `aswf/ci-vfxall:2027-clang21.1` image) and M18.P3.T4 (the test directory is
+  `Tests/`, and M11's OFX integration test lives in `tools/ci/`, not in ctest).

@@ -161,7 +161,7 @@ Bundling `libstdc++` is what lets the bundle run on hosts *older* than the build
 toolchain, so simply excludelisting it trades this failure for the opposite one.
 The choice has to be made at startup, against the host actually present.
 
-- [ ] M23.P5.T1 — Prefer whichever `libstdc++`/`libgcc_s` is newer, the host's or the bundle's
+- [x] M23.P5.T1 — Prefer whichever `libstdc++`/`libgcc_s` is newer, the host's or the bundle's
   - files: `tools/release/make-appimage.sh` (the generated `AppRun`), `tools/release/stage-bundle.sh`, `tools/release/make-tarball.sh` as needed
   - approach: at launch, compare the host's `libstdc++.so.6` against the bundled one by maximum `GLIBCXX_` version and use the newer; same for `libgcc_s`. This is the established AppImage answer to the problem and it must hold for the **tarball** too, which has no `AppRun` — the executables carry a baked-in `$ORIGIN/../lib`, so a launcher shim or an equivalent mechanism is needed there rather than an AppImage-only fix. Do not solve it by excludelisting `libstdc++`: that breaks every host older than the build toolchain, which is the case the bundling exists for. State the selection rule and where it runs.
   - verify: on this host, the extracted AppImage passes `check-startup.sh`'s GUI stage, and `LIBGL_DEBUG=verbose` shows `swrast_dri.so` loading. The tarball bundle passes the same check. Neither check regresses inside the dev container, where the bundled libstdc++ is the newer one and must still win.

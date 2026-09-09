@@ -17,7 +17,7 @@ Pixels" document verbatim.
   - verify: unit tests — COW sharing (mutating R leaves Z buffer shared), offsets/counts invariants, size accounting under sharing.
   - size: M
 
-- [ ] M18.P1.T2 — Deep sample math per "Interpreting Deep Pixels"
+- [x] M18.P1.T2 — Deep sample math per "Interpreting Deep Pixels"
   - files: `Engine/DeepPixelOps.h`, `Engine/DeepPixelOps.cpp`
   - approach: free functions over sample ranges — point vs volumetric sample handling, sample split at a depth, sort, tidy (merge overlapping via Hillman's volumetric merge math), and flatten-to-front compositing. Pure functions, no Image/EffectInstance dependencies, so they unit-test in isolation and both `DeepMerge` and the viewer flatten reuse them.
   - verify: unit tests against the worked examples in the OpenEXR doc (split/merge identities, volumetric merge commutativity where the doc guarantees it).
@@ -97,4 +97,34 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   evict. `getUniquelyOwnedSizeInBytes()` keeps the aliasing-aware figure for
   diagnostics. The design doc's parenthetical, which was the origin of the
   wording, is amended in the same change.
+
+- 2026-09-09 — `DeepPixelOps` takes non-owning structure-of-channels views, not
+  an owning array-of-structs sample list. The first implementation used
+  `struct DeepSample { float z, zback; std::vector<float> channels; }`, which
+  cannot point at a `DeepImage`'s existing per-channel runs (one pixel's data
+  for a channel is already contiguous at `data() + offset`), cannot express a
+  missing ZBack channel without materializing it, and costs a heap allocation
+  per sample on the render scheduler's hot path — no per-pixel allocation exists
+  anywhere in the image path (`ImageMaskMix.cpp`, `ImageCopyChannels.cpp`,
+  `ImageConvert.cpp` all walk raw `PIX*` with tile-granularity scratch). It was
+  reworked before dependants existed because M18.P2.T1's `NativeEffectBase`
+  helpers turn this into node-author-facing surface for six M18 nodes and the
+  M21 ports. `DeepPixelView`/`MutableDeepPixelView` + a caller-owned
+  `DeepPixelScratch`/`DeepTidyWorkspace` replace it; the numerics (the
+  `-expm1(f * log1p(-a))` split, the Hillman merge, the depth tie-break) carried
+  over unchanged, as did all 14 tests' expected values. `DeepSample` survives
+  only as a convenience type for the pixel probe and tests. Not templated on
+  channel count: deep channel counts are genuinely dynamic, unlike the image
+  path's 1-4.
+
+- 2026-09-09 — Watch item, not yet a task: `BaseTest.ConcreteDeclaredInputDoesNotResolvePolymorphicOutput` and `BaseTest.ClearingTheDataKindErrorLeavesAnUnrelatedErrorAlone` (both from M17) failed once with "Subprocess aborted" and passed on
+  an immediate re-run with no intervening change. If they recur, they need their
+  own milestone — an intermittently red `build-and-test` job is worse than a
+  failing one. **It recurred**, on a third case
+  (`BaseTest.StillUnconstrainedPolymorphicConnects`), whose gtest body printed
+  `[  OK  ]` before the process aborted during teardown with
+  `QThread: Destroyed while thread is still running`. That points at the shared
+  `BaseTest` fixture's teardown, not at any one case, and it will make this
+  milestone's own PR intermittently red. Raise it as its own milestone at the
+  M18 gate.
 

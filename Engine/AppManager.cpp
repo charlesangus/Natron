@@ -1267,7 +1267,7 @@ AppManager::clearAllCaches()
 
     clearDiskCache();
     clearNodeCache();
-
+    _imp->_deepImageCache->clear();
 
     ///for each app instance clear all its nodes cache
     for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {
@@ -2101,6 +2101,7 @@ void
 AppManager::clearExceedingEntriesFromNodeCache()
 {
     _imp->_nodeCache->clearExceedingEntries();
+    _imp->_deepImageCache->clearExceedingEntries();
 }
 
 const PluginsMap&
@@ -2340,6 +2341,8 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
     std::size_t diskCacheDisk = 0;
     std::size_t nodeCacheMem = 0;
     std::size_t nodeCacheDisk = 0;
+    std::size_t deepCacheMem = 0;
+    std::size_t deepCacheDisk = 0; // the deep cache is RAM-only, so this is always 0
     const Node* isNode = dynamic_cast<const Node*>(holder);
     if (isNode) {
         ViewerInstance* isViewer = isNode->isEffectViewer();
@@ -2349,8 +2352,9 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
     }
     _imp->_diskCache->getMemoryStatsForCacheEntryHolder(holder, &diskCacheMem, &diskCacheDisk);
     _imp->_nodeCache->getMemoryStatsForCacheEntryHolder(holder, &nodeCacheMem, &nodeCacheDisk);
+    _imp->_deepImageCache->getMemoryStatsForCacheEntryHolder(holder, &deepCacheMem, &deepCacheDisk);
 
-    *ramOccupied = diskCacheMem + viewerCacheMem + nodeCacheMem;
+    *ramOccupied = diskCacheMem + viewerCacheMem + nodeCacheMem + deepCacheMem;
     *diskOccupied = diskCacheDisk + viewerCacheDisk + nodeCacheDisk;
 }
 
@@ -2359,6 +2363,7 @@ AppManager::removeAllImagesFromCacheWithMatchingIDAndDifferentKey(const CacheEnt
                                                                   U64 treeVersion)
 {
     _imp->_nodeCache->removeAllEntriesWithDifferentNodeHashForHolderPublic(holder, treeVersion);
+    _imp->_deepImageCache->removeAllEntriesWithDifferentNodeHashForHolderPublic(holder, treeVersion);
 }
 
 void
@@ -2382,6 +2387,7 @@ AppManager::removeAllCacheEntriesForHolder(const CacheEntryHolder* holder,
     _imp->_nodeCache->removeAllEntriesForHolderPublic(holder, blocking);
     _imp->_diskCache->removeAllEntriesForHolderPublic(holder, blocking);
     _imp->_viewerCache->removeAllEntriesForHolderPublic(holder, blocking);
+    _imp->_deepImageCache->removeAllEntriesForHolderPublic(holder, blocking);
 }
 
 const QString &
@@ -2777,6 +2783,15 @@ AppManager::isNodeCacheAlmostFull() const
     }
 }
 
+bool
+AppManager::evictLRUFromMemoryCaches()
+{
+    bool evictedFromNodeCache = _imp->_nodeCache->evictLRUInMemoryEntry();
+    bool evictedFromDeepImageCache = _imp->_deepImageCache->evictLRUInMemoryEntry();
+
+    return evictedFromNodeCache || evictedFromDeepImageCache;
+}
+
 void
 AppManager::checkCacheFreeMemoryIsGoodEnough()
 {
@@ -2787,12 +2802,11 @@ AppManager::checkCacheFreeMemoryIsGoodEnough()
     while (totalFreeRAM <= systemRAMToKeepFree) {
 #ifdef NATRON_DEBUG_CACHE
         qDebug() << "Total system free RAM is below the threshold:" << printAsRAM(totalFreeRAM)
-        << ", clearing least recently used NodeCache image...";
+                 << ", clearing least recently used NodeCache/DeepImageCache image...";
 #endif
-        if ( !_imp->_nodeCache->evictLRUInMemoryEntry() ) {
+        if (!evictLRUFromMemoryCaches()) {
             break;
         }
-
 
         totalFreeRAM = getAmountFreePhysicalRAM();
     }

@@ -29,8 +29,13 @@
 #include <gtest/gtest.h>
 #include <list>
 #include <memory>
+#include <string>
 
+#include <QThread>
+
+#include "Engine/AppManager.h"
 #include "Engine/Cache.h"
+#include "Engine/CacheEntryHolder.h"
 #include "Engine/DeepImage.h"
 #include "Engine/DeepImageCacheEntry.h"
 #include "Engine/DeepImageKey.h"
@@ -68,6 +73,43 @@ fillDeepImage(DeepImage& img, U32 samplesPerPixel = 1)
             data[i] = float(c * 1000 + i);
         }
     }
+}
+
+// A minimal CacheEntryHolder so tests can exercise the app-wide cache's holder-scoped
+// operations (per-node purge, per-node memory stats) without a real Node.
+class TestCacheHolder
+    : public CacheEntryHolder {
+public:
+    explicit TestCacheHolder(const std::string& id)
+        : _id(id)
+    {
+    }
+
+    virtual std::string getCacheID() const OVERRIDE FINAL
+    {
+        return _id;
+    }
+
+private:
+    std::string _id;
+};
+
+// AppManager::removeAllImagesFromCacheWithMatchingIDAndDifferentKey() queues the actual removal
+// on the cache's cleaner thread, so it is not reflected synchronously. Poll for it, bounded, so
+// the test fails (rather than hangs) if the removal never happens.
+bool
+waitUntilDeepImageAbsent(const DeepImageKey& key,
+                         int timeoutMs = 5000)
+{
+    for (int waited = 0; waited <= timeoutMs; waited += 5) {
+        std::list<DeepImageCacheEntryPtr> found;
+        if (!appPTR->getDeepImage(key, &found)) {
+            return true;
+        }
+        QThread::msleep(5);
+    }
+
+    return false;
 }
 
 } // namespace
@@ -199,4 +241,199 @@ TEST(DeepImageCacheTest, EvictionRespectsOwnBudgetAndLeavesImageCacheUntouched)
     entry2.reset();
     deepCache.waitForDeleterThread();
     imageCache.waitForDeleterThread();
+}
+
+TEST(DeepImageCacheTest, ClearAllCachesEmptiesAppWideDeepCache)
+{
+    const RectI bounds(0, 0, 4, 4);
+    const RenderScale scale = RenderScale::identity;
+    TestCacheHolder holder("DeepImageCacheTest.ClearAllCaches.Holder");
+
+    DeepImageKey key(&holder, 90001, 1., ViewIdx(0), scale);
+    DeepImageParamsPtr params = std::make_shared<DeepImageParams>(bounds);
+
+    DeepImageCacheEntryPtr entry;
+    ASSERT_FALSE(appPTR->getDeepImageOrCreate(key, params, &entry));
+    ASSERT_TRUE(entry != NULL);
+    fillDeepImage(*entry->getDeepImage());
+    entry->allocateMemory();
+
+    // Cache::clear() relies on LRUHashTable::evict(), which skips anything whose use_count() is
+    // not 1 (see the eviction test above): drop our own reference first, otherwise the entry
+    // would survive clearAllCaches() regardless of whether the deep cache is wired into it, and
+    // the assertions below would pass vacuously.
+    std::weak_ptr<DeepImageCacheEntry> entryWeak = entry;
+    entry.reset();
+
+    std::list<DeepImageCacheEntryPtr> foundBefore;
+    ASSERT_TRUE(appPTR->getDeepImage(key, &foundBefore));
+    foundBefore.clear();
+
+    appPTR->clearAllCaches();
+
+    std::list<DeepImageCacheEntryPtr> foundAfter;
+    EXPECT_FALSE(appPTR->getDeepImage(key, &foundAfter));
+    EXPECT_TRUE(foundAfter.empty());
+    EXPECT_TRUE(entryWeak.expired());
+}
+
+TEST(DeepImageCacheTest, HashChangePurgeRemovesOnlyThatNodesStaleDeepEntries)
+{
+    const RectI bounds(0, 0, 4, 4);
+    const RenderScale scale = RenderScale::identity;
+    TestCacheHolder holderA("DeepImageCacheTest.HashChangePurge.HolderA");
+    TestCacheHolder holderB("DeepImageCacheTest.HashChangePurge.HolderB");
+
+    const U64 staleHashA = 90101;
+    const U64 freshHashA = 90102;
+    const U64 hashB = 90103;
+
+    DeepImageKey staleKeyA(&holderA, staleHashA, 1., ViewIdx(0), scale);
+    DeepImageKey freshKeyA(&holderA, freshHashA, 1., ViewIdx(0), scale);
+    DeepImageKey keyB(&holderB, hashB, 1., ViewIdx(0), scale);
+
+    DeepImageParamsPtr paramsStaleA = std::make_shared<DeepImageParams>(bounds);
+    DeepImageParamsPtr paramsFreshA = std::make_shared<DeepImageParams>(bounds);
+    DeepImageParamsPtr paramsB = std::make_shared<DeepImageParams>(bounds);
+
+    DeepImageCacheEntryPtr staleA, freshA, entryB;
+    ASSERT_FALSE(appPTR->getDeepImageOrCreate(staleKeyA, paramsStaleA, &staleA));
+    fillDeepImage(*staleA->getDeepImage());
+    staleA->allocateMemory();
+    staleA.reset();
+
+    ASSERT_FALSE(appPTR->getDeepImageOrCreate(freshKeyA, paramsFreshA, &freshA));
+    fillDeepImage(*freshA->getDeepImage());
+    freshA->allocateMemory();
+    freshA.reset();
+
+    ASSERT_FALSE(appPTR->getDeepImageOrCreate(keyB, paramsB, &entryB));
+    fillDeepImage(*entryB->getDeepImage());
+    entryB->allocateMemory();
+    entryB.reset();
+
+    // Sanity check: all three are resident before the purge, so the removal checked below is a
+    // genuine transition rather than something that was already missing.
+    std::list<DeepImageCacheEntryPtr> foundStaleABefore;
+    ASSERT_TRUE(appPTR->getDeepImage(staleKeyA, &foundStaleABefore));
+    foundStaleABefore.clear();
+
+    // Simulates what Node::computeHashInternal() does when a node's hash changes: entries left
+    // over from the old hash are no longer reachable and must be purged, but only for that node.
+    appPTR->removeAllImagesFromCacheWithMatchingIDAndDifferentKey(&holderA, freshHashA);
+
+    ASSERT_TRUE(waitUntilDeepImageAbsent(staleKeyA))
+        << "holder A's stale-hash deep entry was not purged within the timeout";
+
+    std::list<DeepImageCacheEntryPtr> foundFreshA;
+    EXPECT_TRUE(appPTR->getDeepImage(freshKeyA, &foundFreshA));
+    EXPECT_FALSE(foundFreshA.empty());
+    foundFreshA.clear();
+
+    std::list<DeepImageCacheEntryPtr> foundB;
+    EXPECT_TRUE(appPTR->getDeepImage(keyB, &foundB));
+    EXPECT_FALSE(foundB.empty());
+    foundB.clear();
+
+    // Hermetic cleanup: leave the app-wide cache as we found it for whatever test runs next in
+    // this binary. Blocking removal is synchronous, so no further waiting is needed.
+    appPTR->removeAllCacheEntriesForHolder(&holderA, true);
+    appPTR->removeAllCacheEntriesForHolder(&holderB, true);
+}
+
+TEST(DeepImageCacheTest, MemoryStatsForHolderIncludeDeepCacheBytes)
+{
+    const RectI bounds(0, 0, 4, 4);
+    const RenderScale scale = RenderScale::identity;
+    TestCacheHolder holder("DeepImageCacheTest.MemoryStats.Holder");
+
+    DeepImageKey key(&holder, 90201, 1., ViewIdx(0), scale);
+    DeepImageParamsPtr params = std::make_shared<DeepImageParams>(bounds);
+
+    std::size_t ramBefore = 0, diskBefore = 0;
+    appPTR->getMemoryStatsForCacheEntryHolder(&holder, &ramBefore, &diskBefore);
+    ASSERT_EQ((std::size_t)0, ramBefore);
+
+    DeepImageCacheEntryPtr entry;
+    ASSERT_FALSE(appPTR->getDeepImageOrCreate(key, params, &entry));
+    fillDeepImage(*entry->getDeepImage());
+    entry->allocateMemory();
+    const std::size_t expectedSize = entry->size();
+    ASSERT_GT(expectedSize, (std::size_t)0);
+    entry.reset();
+
+    std::size_t ramAfter = 0, diskAfter = 0;
+    appPTR->getMemoryStatsForCacheEntryHolder(&holder, &ramAfter, &diskAfter);
+    EXPECT_EQ(expectedSize, ramAfter);
+
+    // Hermetic cleanup, and a synchronous (blocking) exercise of the same per-holder purge path
+    // as the previous test.
+    appPTR->removeAllCacheEntriesForHolder(&holder, true);
+
+    std::size_t ramCleaned = 0, diskCleaned = 0;
+    appPTR->getMemoryStatsForCacheEntryHolder(&holder, &ramCleaned, &diskCleaned);
+    EXPECT_EQ((std::size_t)0, ramCleaned);
+}
+
+TEST(DeepImageCacheTest, EvictLRUFromMemoryCachesDrainsBothAppWideCaches)
+{
+    const RectI bounds(0, 0, 4, 4);
+    const RenderScale scale = RenderScale::identity;
+    TestCacheHolder holder("DeepImageCacheTest.EvictLRU.Holder");
+
+    // Defensive: guarantee both app-wide in-memory caches start empty regardless of what earlier
+    // tests in this binary left behind, so what follows is a genuine transition rather than
+    // continuing to drain someone else's leftovers.
+    for (int guard = 0; guard < 1000 && appPTR->evictLRUFromMemoryCaches(); ++guard) {
+    }
+
+    ImageParamsPtr imgParams = Image::makeParams(RectD(0, 0, 4, 4), 1., 0, false,
+                                                 ImagePlaneDesc::getRGBAComponents(),
+                                                 eImageBitDepthFloat,
+                                                 eImagePremultiplicationPremultiplied,
+                                                 eImageFieldingOrderNone);
+    static const U64 kNodeHashes[] = { 90401, 90402, 90403 };
+    for (std::size_t i = 0; i < sizeof(kNodeHashes) / sizeof(kNodeHashes[0]); ++i) {
+        ImageKey key = Image::makeKey(&holder, kNodeHashes[i], false, 1., ViewIdx(0), false, false);
+        ImagePtr img;
+        ASSERT_FALSE(appPTR->getImageOrCreate(key, imgParams, &img));
+        ASSERT_TRUE(img != NULL);
+        img->allocateMemory();
+        img.reset();
+    }
+
+    DeepImageKey deepKey(&holder, 90404, 1., ViewIdx(0), scale);
+    DeepImageParamsPtr deepParams = std::make_shared<DeepImageParams>(bounds);
+    DeepImageCacheEntryPtr deepEntry;
+    ASSERT_FALSE(appPTR->getDeepImageOrCreate(deepKey, deepParams, &deepEntry));
+    fillDeepImage(*deepEntry->getDeepImage());
+    deepEntry->allocateMemory();
+    deepEntry.reset();
+
+    std::size_t ramBefore = 0, diskBefore = 0;
+    appPTR->getMemoryStatsForCacheEntryHolder(&holder, &ramBefore, &diskBefore);
+    ASSERT_GT(ramBefore, (std::size_t)0);
+
+    // A single pass must evict from the deep cache alongside the node cache, not only after the
+    // node cache is fully drained: that is what distinguishes evicting from both caches on every
+    // pass from a short-circuiting nodeCache->evict() || deepCache->evict() that only reaches the
+    // deep cache once the node cache reports nothing left to evict. With three node cache entries
+    // still resident, the lone deep cache entry must already be gone after this first call.
+    ASSERT_TRUE(appPTR->evictLRUFromMemoryCaches());
+    std::list<DeepImageCacheEntryPtr> foundDeepAfterFirstPass;
+    EXPECT_FALSE(appPTR->getDeepImage(deepKey, &foundDeepAfterFirstPass))
+        << "the deep cache entry should be evicted in the same pass as the first node cache entry";
+
+    bool evictedSomething = true;
+    int iterations = 1;
+    while (evictedSomething && iterations < 1000) {
+        evictedSomething = appPTR->evictLRUFromMemoryCaches();
+        ++iterations;
+    }
+    ASSERT_LT(iterations, 1000) << "eviction did not terminate";
+    EXPECT_FALSE(evictedSomething);
+
+    std::size_t ramAfter = 0, diskAfter = 0;
+    appPTR->getMemoryStatsForCacheEntryHolder(&holder, &ramAfter, &diskAfter);
+    EXPECT_EQ((std::size_t)0, ramAfter);
 }

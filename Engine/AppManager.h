@@ -367,6 +367,13 @@ public:
      **/
     void checkCacheFreeMemoryIsGoodEnough();
 
+    /**
+     * @brief Evicts a single least-recently-used in-memory entry from each of the app-wide
+     * in-memory caches (the node cache and the deep image cache). Returns true if at least one
+     * entry was evicted from either cache.
+     **/
+    bool evictLRUFromMemoryCaches();
+
     void onCheckerboardSettingsChanged() { Q_EMIT checkerboardSettingsChanged(); }
 
     void onOCIOConfigPathChanged(const std::string& path);

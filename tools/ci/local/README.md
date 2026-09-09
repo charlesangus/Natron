@@ -126,6 +126,40 @@ tools/ci/local/test.sh <ctest|smoke> [debug|release] [--gdb]
       attrib=32785) at Engine/OSGLContext_x11.cpp:433
   ```
 
+## 5. Verify a release bundle starts outside the dev container
+
+`tools/release/stage-bundle.sh` already runs `check-relocatable.sh` and
+`check-startup.sh` on every bundle it stages, and `make-appimage.sh`/
+`make-tarball.sh` refuse to package a bundle that fails either. All three of
+those, though, run inside whatever container staged the bundle -- your
+`natron-dev` container locally, `aswf/ci-vfxall` in `release.yml` -- and that
+container has the entire ASWF/Conan VFX stack, Qt's xcb dependencies, and a
+matching Python installed system-wide. A bundle that is missing a RUNPATH, or
+that should have shipped a library itself but didn't, can therefore still
+start there and pass both checks, because the container silently stands in
+for whatever the bundle failed to ship. That is how missing RUNPATHs, an
+absent xcb stack, no Python stdlib and no OFX plugins each reached a built
+artifact before anyone thought to check; the worst of them shipped a bundle
+whose own older `libstdc++.so.6` shadowed the host's, breaking the host's
+Mesa driver in a way that only ever showed up on a real desktop.
+
+```
+tools/release/check-startup-container.sh <staging-dir>
+```
+
+This runs the same `check-startup.sh`, completely unmodified, inside a
+throwaway `debian:12` container (`tools/release/container/Dockerfile`) that
+has never had Natron's dependencies installed -- only `Xvfb` and the small
+set of libraries `tools/release/excludelist.txt` says the bundle is entitled
+to expect from the host (fontconfig, X11/GLX, Mesa's software rasteriser,
+glib, D-Bus). It fails there the same way it would on a user's machine, and
+passes only when the bundle is genuinely self-contained. Needs Docker on the
+host; the image is ~a few hundred MB and builds once, then is reused.
+
+Run it against `/tmp/natron-stage` after `stage-bundle.sh`, or against
+`squashfs-root`/the extracted tarball after `make-appimage.sh`/
+`make-tarball.sh` -- anywhere `check-startup.sh` itself would accept.
+
 ## Getting a shell
 
 ```

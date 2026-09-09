@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Build the AppDir and the AppImage from a staged Natron bundle tree.
-# The AppImage runtime needs FUSE2 at run time; if it is unavailable, run the AppImage with --appimage-extract-and-run.
+# appimagetool is itself an AppImage; run it with APPIMAGE_EXTRACT_AND_RUN=1 so
+# packaging works on hosts without FUSE. The AppImage runtime honours the same
+# variable, or --appimage-extract-and-run, if FUSE is unavailable when running it.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CMAKELISTS="$SCRIPT_DIR/../../CMakeLists.txt"
+CHECK_RELOCATABLE="$SCRIPT_DIR/check-relocatable.sh"
+CHECK_STARTUP="$SCRIPT_DIR/check-startup.sh"
 APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
 
 if [[ $# -ne 2 ]]; then
@@ -56,6 +60,12 @@ for f in "$DESKTOP_FILE" "$ICON_FILE" "$APPDATA_FILE"; do
     fi
 done
 
+echo "==> Checking bundle relocatability"
+"$CHECK_RELOCATABLE" "$STAGING_DIR"
+
+echo "==> Checking the bundle starts"
+"$CHECK_STARTUP" "$STAGING_DIR"
+
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
@@ -94,7 +104,7 @@ APPIMAGE="$OUTPUT_DIR/${BUNDLE_NAME}.AppImage"
 CHECKSUM="$APPIMAGE.sha256"
 
 echo "==> Running appimagetool"
-ARCH=x86_64 "$APPIMAGETOOL" "$APPDIR" "$APPIMAGE"
+ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" "$APPDIR" "$APPIMAGE"
 
 echo "==> Writing checksum $CHECKSUM"
 ( cd "$OUTPUT_DIR" && sha256sum "$(basename "$APPIMAGE")" > "$(basename "$CHECKSUM")" )

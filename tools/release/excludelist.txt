@@ -29,10 +29,15 @@ libGLESv2.so.2
 libdrm.so.2
 libgbm.so.1
 
-# X11 and windowing
+# X11 and windowing. libxcb.so.1 and the two DRI modules speak to the host's
+# X server and graphics drivers; the xcb protocol helpers (cursor, icccm,
+# image, keysyms, ...) and libxkbcommon do not, and the Qt xcb platform
+# plugin needs them present in the bundle.
 libX11.so.6
 libX11-xcb.so.1
 libxcb.so.1
+libxcb-dri2.so.0
+libxcb-dri3.so.0
 libXext.so.6
 libXi.so.6
 libXrender.so.1
@@ -43,9 +48,6 @@ libXinerama.so.1
 libXdamage.so.1
 libXcomposite.so.1
 libXtst.so.6
-libxkbcommon.so.0
-libxkbcommon-x11.so.0
-libxcb-*.so.*
 
 # ALSA/PulseAudio
 libasound.so.2
@@ -75,9 +77,12 @@ libgmodule-2.0.so.0
 libgobject-2.0.so.0
 libgthread-2.0.so.0
 
-# Fontconfig/Freetype
+# Fontconfig. libfreetype is deliberately absent from this list: Qt 6.8 binds
+# COLRv1 entry points (FT_Get_Paint and friends) that only exist from FreeType
+# 2.11, so taking it from the host makes libQt6Gui fail to relocate on anything
+# older. libfontconfig stays host-provided, and reads the bundle's own
+# configuration through FONTCONFIG_PATH.
 libfontconfig.so.1
-libfreetype.so.6
 
 # Linux kernel interfaces
 libcom_err.so.2

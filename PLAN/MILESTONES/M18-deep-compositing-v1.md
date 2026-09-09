@@ -11,7 +11,7 @@ Pixels" document verbatim.
 
 ## Phase 18.1: Data model and math
 
-- [ ] M18.P1.T1 — `DeepImage` data structure
+- [x] M18.P1.T1 — `DeepImage` data structure
   - files: `Engine/DeepImage.h`, `Engine/DeepImage.cpp` (payload transport lives in `Engine/`, not `Engine/Nodes/`)
   - approach: structure-of-channels mirroring OpenEXR deep layout — `RectI bounds` + `RenderScale` + `ViewIdx`; a COW `shared_ptr` `SampleTable` (per-pixel `counts` uint32, `offsets` uint64 prefix sum); `map<string, DeepChannelBuffer>` of per-channel contiguous float arrays indexed by offsets. Color-only ops copy only touched channels and share Z/ZBack/A via COW. Per-pixel tidiness (sorted/non-overlapping) is a recorded flag, tidied on demand. `getSizeInBytes()` counts table + *owned* buffers only so COW sharing is not double-counted.
   - verify: unit tests — COW sharing (mutating R leaves Z buffer shared), offsets/counts invariants, size accounting under sharing.
@@ -86,3 +86,15 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   owns wiring it; OIIO 3.1.16 with a CMake config is already in the
   `aswf/ci-vfxall:2027-clang21.1` image) and M18.P3.T4 (the test directory is
   `Tests/`, and M11's OFX integration test lives in `tools/ci/`, not in ctest).
+
+- 2026-09-09 — `DeepImage::getSizeInBytes()` counts all channel buffers, not
+  only uniquely-owned ones: `Engine/Cache.h` keeps `_memoryCacheSize` as a
+  running integer (added at allocation, re-queried and subtracted at
+  `deallocate()`, clamped at zero), so an entry's cost must be aliasing-blind
+  and identical at insert and destroy, as `Image::size()` already is. The
+  use-count-based reading the brief invited would report ~0 bytes for any deep
+  frame a downstream node is rendering from, so the deep budget would never
+  evict. `getUniquelyOwnedSizeInBytes()` keeps the aliasing-aware figure for
+  diagnostics. The design doc's parenthetical, which was the origin of the
+  wording, is amended in the same change.
+

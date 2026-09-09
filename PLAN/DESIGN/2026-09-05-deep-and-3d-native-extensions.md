@@ -175,10 +175,21 @@ Deep renders go through a real pull pipeline, not a `getDeepImage()` side-channe
   flags and the render scheduler, and consults the cache first.
 - **Cache**: a dedicated `Cache<DeepImage>` instantiation (`Engine/Cache.h` is
   already templated) with `DeepImageKey = (nodeHash, time, view, scale)`.
-  Entries are variable-size; cost accounting uses actual bytes
-  (`getSizeInBytes()` = table + owned channel buffers only, so COW sharing is
-  not double-counted). Deep gets its **own memory budget knob** — deep frames
-  are large and must not evict the entire 2D image cache.
+  Entries are variable-size; cost accounting uses actual bytes —
+  `getSizeInBytes()` = table + *all* channel buffers, counted whether or not
+  this instance uniquely owns them. **Amended 2026-09-09** (this originally read
+  "owned channel buffers only, so COW sharing is not double-counted", which is
+  unsafe): `Engine/Cache.h` keeps `_memoryCacheSize` as a running integer,
+  adding `size()` at allocation and re-querying it at `deallocate()`, so cost
+  must be a pure function of an entry's declared shape and identical at both
+  points — exactly as `Image::size()` already is. A use-count-dependent cost
+  drifts the counter to zero and the clamp never recovers it, and since a
+  resident entry is handed out live to downstream nodes it would report ~0 bytes
+  for as long as anything renders from it. Over-counting storage shared between
+  two distinct cache entries is the safe direction to err: it evicts early
+  rather than OOMing. A separate `getUniquelyOwnedSizeInBytes()` exposes the
+  aliasing-aware figure for diagnostics only. Deep gets its **own memory budget
+  knob** — deep frames are large and must not evict the entire 2D image cache.
 - **Bounds growth, not tiling, in v1.** The image path caches at requested-RoI
   granularity and grows bounds on demand; deep does the same. True tile-level
   deep caching is deferred: variable sample density makes tile stitching

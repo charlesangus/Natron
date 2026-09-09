@@ -29,7 +29,7 @@ Pixels" document verbatim.
   - verify: unit test — insert/lookup round-trip; eviction respects the deep budget while the image cache stays untouched.
   - size: M
 
-- [ ] M18.P1.T4 — Wire the deep cache into the app-wide cache lifecycle
+- [x] M18.P1.T4 — Wire the deep cache into the app-wide cache lifecycle
   - files: `Engine/AppManager.cpp`, `Engine/AppManager.h`, `Engine/AppManagerPrivate.h`, `Tests/DeepImageCache_Test.cpp`
   - approach: M18.P1.T3 wires `_deepImageCache` into construction, teardown and the size knob only, leaving it invisible to every other app-wide cache operation. Reach the same six sites the other three caches are wired into, following each one's existing shape rather than inventing a parallel path: `clearAllCaches()` (AppManager.cpp:1246), `clearExceedingEntriesFromNodeCache()` (:2103), `removeAllEntriesWithDifferentNodeHashForHolderPublic()` (:2361) and `removeAllEntriesForHolderPublic()` (:2382), the memory-stats reporting (:2351), and `checkCacheFreeMemoryIsGoodEnough()` (:2766-2792). Line numbers are from 2026-09-09 and will have moved — locate by name. The low-memory handler is the load-bearing one: as it stands, system memory pressure evicts the 2D node cache while the deep cache holds its full budget.
   - verify: unit test — a populated deep cache is emptied by `clearAllCaches()`; a per-node purge on hash change removes that node's deep entries and leaves another node's alone; the deep cache's bytes appear in the memory-stats total. Whole ctest suite still green.
@@ -156,4 +156,21 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   nothing was ever evicted. Both fixed, and the eviction test was re-checked by
   temporarily raising the budget to confirm its assertions fail when no eviction
   occurs rather than passing regardless.
+
+- 2026-09-09 — The low-memory eviction step was extracted from
+  `AppManager::checkCacheFreeMemoryIsGoodEnough()` into
+  `AppManager::evictLRUFromMemoryCaches()` so it could be tested: the enclosing
+  loop is driven by real `getAmountFreePhysicalRAM()` readings and cannot be
+  driven hermetically, but the per-pass step can. The helper asks both caches on
+  every call rather than short-circuiting, and its test asserts the deep entry
+  goes on the *first* call while the node cache still holds three — which is
+  exactly what a short-circuiting implementation would fail.
+
+- 2026-09-09 — All three app-wide wiring tests were verified red-then-green by
+  reverting one `AppManager.cpp` line at a time, not by reading: clear-all fails
+  with `getDeepImage` returning true; the hash-change purge fails on its 5s poll
+  timeout; the memory-stats test reports 0 instead of 448 bytes. None was
+  vacuous. Worth keeping as the standard for this milestone's remaining tests —
+  the first version of the T3 cache tests passed review by inspection and then
+  failed on their first real run.
 

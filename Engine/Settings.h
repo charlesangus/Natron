@@ -111,6 +111,8 @@ public:
 
     U64 getMaximumDiskCacheNodeSize() const;
 
+    U64 getMaximumDeepImageCacheSize() const;
+
     double getUnreachableRamPercent() const;
 
     bool getColorPickerLinear() const;
@@ -515,6 +517,10 @@ private:
     ///The total disk space allowed for all Natron's caches
     KnobIntPtr _maxViewerDiskCacheGB;
     KnobIntPtr _maxDiskCacheNodeGB;
+
+    /// Deep renders are large and must not be able to evict the entire 2D image cache above, so
+    /// they get a separate budget entirely, RAM-only (deep has no on-disk cache in v1).
+    KnobIntPtr _maxDeepImageCacheGB;
     KnobPathPtr _diskCachePath;
     KnobButtonPtr _wipeDiskCache;
 

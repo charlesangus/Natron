@@ -27,6 +27,7 @@ set(Tests_SOURCES
     DataKind_Test.cpp
     DataKindProjectLoad_Test.cpp
     DeepImage_Test.cpp
+    DeepImageCache_Test.cpp
     DeepPixelOps_Test.cpp
     FileSystemModel_Test.cpp
     Hash64_Test.cpp

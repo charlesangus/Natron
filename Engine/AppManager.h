@@ -214,6 +214,15 @@ public:
     bool getImageOrCreate_diskCache(const ImageKey & key, const ImageParamsPtr& params,
                                     ImagePtr* returnValue) const;
 
+    /**
+     * @brief Same as getImage/getImageOrCreate but for the deep image cache, which has its own
+     * memory budget separate from the regular image cache above.
+     **/
+    bool getDeepImage(const DeepImageKey& key, std::list<DeepImageCacheEntryPtr>* returnValue) const;
+
+    bool getDeepImageOrCreate(const DeepImageKey& key, const DeepImageParamsPtr& params,
+                              DeepImageCacheEntryPtr* returnValue) const;
+
     bool getTexture(const FrameKey & key,
                     std::list<FrameEntryPtr>* returnValue) const;
 
@@ -231,6 +240,8 @@ public:
     void setApplicationsCachesMaximumViewerDiskSpace(unsigned long long size);
 
     void setApplicationsCachesMaximumDiskSpace(unsigned long long size);
+
+    void setApplicationsCachesMaximumDeepImageCacheSize(unsigned long long size);
 
     void removeFromNodeCache(const ImagePtr & image);
     void removeFromViewerCache(const FrameEntryPtr & texture);

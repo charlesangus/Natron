@@ -167,7 +167,7 @@ The choice has to be made at startup, against the host actually present.
   - verify: on this host, the extracted AppImage passes `check-startup.sh`'s GUI stage, and `LIBGL_DEBUG=verbose` shows `swrast_dri.so` loading. The tarball bundle passes the same check. Neither check regresses inside the dev container, where the bundled libstdc++ is the newer one and must still win.
   - size: L
 
-- [ ] M23.P5.T2 — Make the gate run somewhere the bundle is not already at home
+- [x] M23.P5.T2 — Make the gate run somewhere the bundle is not already at home
   - files: `tools/release/check-startup.sh` or the packaging entry points, `tools/ci/local/README.md`
   - approach: the defect above survived every in-container check and was caught only by running on the host by hand. Whatever is cheapest that makes "does this start where the libraries are absent" a repeatable step rather than a manual one — a documented host-side invocation is acceptable if a second container is not. The point is that the next person does not have to think of it.
   - verify: the step exists, is documented, and fails on a bundle with P5.T1 reverted.

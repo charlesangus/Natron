@@ -138,4 +138,39 @@ per-bundle layout the OFX spec requires.
   `DECISIONS/2026-09-02-no-glx-under-xvfb.md`, which is about the CI image's Xvfb; the
   host running this gate has a working software GLX.
 
+## Phase 23.5: Do not starve the host's GL driver
+
+Added 2026-09-08, from the milestone gate's first run on a bare Debian 12 desktop.
+The interpreter, engine, OFX-registry, fontconfig and OCIO probes all pass there;
+the xcb GUI does not:
+
+```
+libGL: MESA-LOADER: failed to open /usr/lib/x86_64-linux-gnu/dri/swrast_dri.so:
+  <bundle>/lib/libstdc++.so.6: version `GLIBCXX_3.4.30' not found
+  (required by /lib/x86_64-linux-gnu/libLLVM-15.so.1)
+```
+
+The host's Mesa is present and correct. The bundle ships `libstdc++.so.6` at
+GLIBCXX 3.4.29; the host's is 3.4.30 and its `swrast_dri.so` needs that through
+`libLLVM-15`. The binaries' RUNPATH is `$ORIGIN/../lib`, so the bundled copy is
+already resident by SONAME when Mesa `dlopen`s the driver, and the loader reuses it
+rather than the host's newer one. GLX context creation then fails and Qt 6.8's
+QRhiGles2 main window construction takes the process down with `GLXBadFBConfig`.
+
+Bundling `libstdc++` is what lets the bundle run on hosts *older* than the build
+toolchain, so simply excludelisting it trades this failure for the opposite one.
+The choice has to be made at startup, against the host actually present.
+
+- [ ] M23.P5.T1 — Prefer whichever `libstdc++`/`libgcc_s` is newer, the host's or the bundle's
+  - files: `tools/release/make-appimage.sh` (the generated `AppRun`), `tools/release/stage-bundle.sh`, `tools/release/make-tarball.sh` as needed
+  - approach: at launch, compare the host's `libstdc++.so.6` against the bundled one by maximum `GLIBCXX_` version and use the newer; same for `libgcc_s`. This is the established AppImage answer to the problem and it must hold for the **tarball** too, which has no `AppRun` — the executables carry a baked-in `$ORIGIN/../lib`, so a launcher shim or an equivalent mechanism is needed there rather than an AppImage-only fix. Do not solve it by excludelisting `libstdc++`: that breaks every host older than the build toolchain, which is the case the bundling exists for. State the selection rule and where it runs.
+  - verify: on this host, the extracted AppImage passes `check-startup.sh`'s GUI stage, and `LIBGL_DEBUG=verbose` shows `swrast_dri.so` loading. The tarball bundle passes the same check. Neither check regresses inside the dev container, where the bundled libstdc++ is the newer one and must still win.
+  - size: L
+
+- [ ] M23.P5.T2 — Make the gate run somewhere the bundle is not already at home
+  - files: `tools/release/check-startup.sh` or the packaging entry points, `tools/ci/local/README.md`
+  - approach: the defect above survived every in-container check and was caught only by running on the host by hand. Whatever is cheapest that makes "does this start where the libraries are absent" a repeatable step rather than a manual one — a documented host-side invocation is acceptable if a second container is not. The point is that the next person does not have to think of it.
+  - verify: the step exists, is documented, and fails on a bundle with P5.T1 reverted.
+  - size: M
+
 **Verification gate:** a freshly staged bundle passes both the relocatability check and the offscreen smoke test; each check fails on a bundle with its corresponding defect reintroduced; an AppImage built from the fixed tooling starts, opens a window, and loads its OFX plugins on a desktop that has neither the ASWF VFX libraries, nor Qt's xcb dependencies, nor a matching Python installed.

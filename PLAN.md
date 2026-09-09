@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: null
-pm_heartbeat: 2026-09-09T00:14:41-04:00
+pm_heartbeat: 2026-09-09T00:20:40-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -109,28 +109,10 @@ future core work has solid ground to build on.
 | M20 | 3D node vocabulary and HydraRender | todo | [M20-3d-node-vocabulary.md](PLAN/MILESTONES/M20-3d-node-vocabulary.md) |
 | M21 | Deep tier-2 nodes and deep/3D bridges | todo | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M22 | Lossless project round-trip with missing plugins | todo | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
-| M23 | Make release bundles actually relocatable | doing | [M23-relocatable-release-bundles.md](PLAN/MILESTONES/M23-relocatable-release-bundles.md) |
+| M23 | Make release bundles actually relocatable | done | [M23-relocatable-release-bundles.md](PLAN/MILESTONES/M23-relocatable-release-bundles.md) |
+| M25 | Guard the GL init path against the debug FP traps | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M24 | Node graph aesthetics: category colour and user colour | todo | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
 
 # Open questions
 
-- **Release bundles are not relocatable** (2026-09-07; now tracked as M23). `tools/release/stage-bundle.sh`
-  sets a RUNPATH on the `bin/` executables but not on the libraries it stages, so a
-  bundle fails to start anywhere the ASWF VFX libraries are not already installed
-  system-wide — which is every ordinary desktop. M15's gate passed because packaging
-  was only ever exercised inside the dev container, where they are. Needs its own
-  fix and a verification that does not run in that container. See
-  `DECISIONS/2026-09-07-staged-bundle-runpath-bug.md`.
-
-- **Debug builds cannot start on a software-GL host** (2026-09-07, found while
-  fixing M23; pre-existing upstream, not a regression). `App/NatronApp_main.cpp:66`
-  arms floating-point traps process-wide under `-DDEBUG`, and
-  `AppManager::initializeOpenGLFunctionsOnce()` (`Engine/AppManager.cpp:818`) calls
-  into the GL driver **without** the `boost_adaptbx::floating_point::exception_trapping
-  trap(0)` guard that `AppManager::exec()` (`:2591`), `Node.cpp:3595`,
-  `Project.cpp:521` and `OfxImageEffectInstance.cpp:154` all use when entering
-  third-party code. So a debug build dies of SIGFPE inside llvmpipe on any host
-  without hardware GL — which is every CI runner and this gate's Xvfb. Adding the
-  same guard around the context-creation block is a small, contained fix. **Needs a
-  call: fix it in its own milestone, or leave debug builds unusable on software GL?**
-  Traced from upstream `300ddcbd0` (2018).
+_None._

@@ -42,3 +42,4 @@
 - 2026-09-06 — loading-must-not-destroy-data: a project load never discards edges or nodes; unrealisable state surfaces as a node error → DECISIONS/2026-09-06-loading-must-not-destroy-data.md
 - 2026-09-07 — staged-bundle-runpath-bug: release bundles set RUNPATH only on executables, so bundled libs cannot find each other off-container → DECISIONS/2026-09-07-staged-bundle-runpath-bug.md
 - 2026-09-07 — node-colour-carries-category: node body colour = category, user colour = border; M17's edge pen-width ladder removed → DECISIONS/2026-09-07-node-colour-carries-category.md
+- 2026-09-09 — guard-gl-init-against-fp-traps: the GL init path gets the FP-trap guard every other foreign call already has → DECISIONS/2026-09-09-guard-gl-init-against-fp-traps.md

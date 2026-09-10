@@ -1,6 +1,8 @@
 [submodule "libs/OpenFX"]
 	path = libs/OpenFX
-	url = https://github.com/NatronGitHub/openfx.git
+	url = https://github.com/charlesangus/openfx-natron.git
+	# NatronGitHub/openfx with OpenFX clip and image metadata suite additions,
+	# pinned by exact commit
 [submodule "Tests/google-test"]
 	path = Tests/google-test
 	url = https://github.com/NatronGitHub/google-test.git

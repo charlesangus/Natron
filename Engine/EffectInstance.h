@@ -209,6 +209,60 @@ public:
         }
     };
 
+    /**
+     * @brief Arguments of renderDeepRoI(), the deep counterpart of RenderRoIArgs. Deep data has
+     * no planes, no components and no bit depth -- a DeepImage carries its own arbitrary set of
+     * named channels -- so this is RenderRoIArgs minus everything that describes an Image's
+     * fixed-stride layout.
+     **/
+    struct RenderDeepRoIArgs {
+        double time;
+        RenderScale scale;
+        unsigned int mipmapLevel;
+        ViewIdx view;
+        RectI roi; //< the render window, in pixel coordinates
+        RectD preComputedRoD; //< pre-computed region of definition in canonical coordinates, to skip getRegionOfDefinition
+        const EffectInstance* caller;
+        bool byPassCache;
+
+        // the time that was passed to the original renderDeepRoI call of the caller node
+        double callerRenderTime;
+
+        RenderDeepRoIArgs()
+            : time(0)
+            , scale()
+            , mipmapLevel(0)
+            , view(0)
+            , roi()
+            , preComputedRoD()
+            , caller(0)
+            , byPassCache(false)
+            , callerRenderTime(0.)
+        {
+        }
+
+        RenderDeepRoIArgs(double time_,
+                          const RenderScale& scale_,
+                          unsigned int mipmapLevel_,
+                          ViewIdx view_,
+                          bool byPassCache_,
+                          const RectI& roi_,
+                          const RectD& preComputedRoD_,
+                          const EffectInstance* caller_,
+                          double callerRenderTime_)
+            : time(time_)
+            , scale(scale_)
+            , mipmapLevel(mipmapLevel_)
+            , view(view_)
+            , roi(roi_)
+            , preComputedRoD(preComputedRoD_)
+            , caller(caller_)
+            , byPassCache(byPassCache_)
+            , callerRenderTime(callerRenderTime_)
+        {
+        }
+    };
+
     enum SupportsEnum
     {
         eSupportsMaybe = -1,
@@ -591,6 +645,25 @@ public:
     RenderRoIRetCode renderRoI(const RenderRoIArgs & args,
                                std::map<ImagePlaneDesc, ImagePtr>* outputPlanes) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The deep counterpart of renderRoI(): renders this effect's deep data at the given
+     * time, scale, view and render window and returns it in *outputDeepImage.
+     *
+     * It is a pull pipeline of exactly the same shape as renderRoI(), not a side-channel: it
+     * consults the deep cache first, walks up the inputs whose effective data kind is
+     * eDataKindDeep honouring both getRegionsOfInterest() and getFramesNeeded(), checks the
+     * render's abort flag between every step, and only then calls this effect's renderDeep().
+     *
+     * Caching is at requested-RoI granularity with bounds growth rather than tiling, matching
+     * the image path: a cached entry satisfies a request only if its bounds contain the
+     * requested RoI, and a request that is not contained re-renders over the union of the
+     * requested RoI and every cached entry's bounds.
+     *
+     * On eRenderRoIRetCodeOk, *outputDeepImage is non-NULL (it may be empty, when the RoI does
+     * not intersect this effect's region of definition). On any other return code it is NULL.
+     **/
+    RenderRoIRetCode renderDeepRoI(const RenderDeepRoIArgs& args,
+                                   DeepImagePtr* outputDeepImage) WARN_UNUSED_RETURN;
 
     void getImageFromCacheAndConvertIfNeeded(bool useCache,
                                              StorageModeEnum storage,
@@ -982,6 +1055,50 @@ public:
         std::bitset<4> processChannels;
     };
 
+    // A deep input is fetched once per time getFramesNeeded() asked for, so an input's deep
+    // images are keyed by time, not by plane the way InputImagesMap keys an image input.
+    typedef std::map<double, DeepImagePtr> DeepImagesByTime;
+    typedef std::map<int, DeepImagesByTime> DeepInputImagesMap;
+
+    struct DeepRenderActionArgs {
+        double time;
+        RenderScale scale;
+        unsigned int mipmapLevel;
+        ViewIdx view;
+        RectI roi;
+        DeepInputImagesMap inputDeepImages;
+        DeepImagePtr outputDeepImage;
+        bool isSequentialRender;
+        bool isRenderResponseToUserInteraction;
+        bool byPassCache;
+
+        DeepRenderActionArgs()
+            : time(0)
+            , scale()
+            , mipmapLevel(0)
+            , view(0)
+            , roi()
+            , inputDeepImages()
+            , outputDeepImage()
+            , isSequentialRender(false)
+            , isRenderResponseToUserInteraction(false)
+            , byPassCache(false)
+        {
+        }
+
+        /**
+         * @brief The deep image fetched from inputNb at the given time, or NULL if that input is
+         * not connected, is not deep, or was not asked for at that time. The single-argument
+         * overload asks for this render's own time, which is what a spatially local op wants.
+         **/
+        DeepImagePtr getInputDeepImage(int inputNb, double atTime) const;
+
+        DeepImagePtr getInputDeepImage(int inputNb) const
+        {
+            return getInputDeepImage(inputNb, time);
+        }
+    };
+
 protected:
     /**
      * @brief Must fill the image 'output' for the region of interest 'roi' at the given time and
@@ -994,6 +1111,22 @@ protected:
     virtual StatusEnum render(const RenderActionArgs & /*args*/) WARN_UNUSED_RETURN
     {
         return eStatusOK;
+    }
+
+    /**
+     * @brief The deep counterpart of render(): must fill args.outputDeepImage over args.roi.
+     * Pre-condition: renderDeepRoI() has already pulled every deep input this effect declared it
+     * needs, so args.getInputDeepImage() returns data valid over this effect's input RoIs.
+     *
+     * The default returns eStatusReplyDefault, meaning "this effect does not render deep data";
+     * renderDeepRoI() turns that into a failed render. Deep-capable nodes override it. Nodes
+     * built on NativeEffectBase should implement it by delegating to renderDeepTwoPass(), which
+     * is what keeps sample-count computation and sample filling as two separate parallel passes
+     * over a single allocation.
+     **/
+    virtual StatusEnum renderDeep(const DeepRenderActionArgs& /*args*/) WARN_UNUSED_RETURN
+    {
+        return eStatusReplyDefault;
     }
 
     virtual StatusEnum getTransform(double /*time*/,

@@ -28,10 +28,12 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "Engine/AppManager.h" // for AppManager::createKnob
+#include "Engine/DeepPixelOps.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
 
@@ -255,6 +257,61 @@ public:
     }
 
 protected:
+    /**
+     * @brief Pass 1 of a two-pass deep render: returns how many samples the pixel at (x, y) --
+     * absolute pixel coordinates within the output DeepImage's bounds -- will hold. Called once
+     * per pixel, concurrently from several threads, so it must only read.
+     **/
+    typedef std::function<U32(int x, int y)> DeepSampleCountFunc;
+
+    /**
+     * @brief Pass 2 of a two-pass deep render: fills the pixel at (x, y). out points straight
+     * into the output DeepImage's channel buffers at that pixel's offset and is already sized to
+     * the count pass 1 returned for it, so this writes out.numSamples samples and nothing else.
+     * Called once per pixel, concurrently from several threads; distinct pixels never share
+     * storage, so two calls never collide.
+     **/
+    typedef std::function<void(int x, int y, const MutableDeepPixelView& out)> DeepFillSamplesFunc;
+
+    /**
+     * @brief Runs a deep render as the two passes deep evaluation must be split into, and is the
+     * only sample-writing path a node built on this class should use. It covers the whole of the
+     * output DeepImage's bounds, not just args.roi: a DeepImage has no bitmap, so a pixel left
+     * unwritten is indistinguishable from a pixel that genuinely has no samples.
+     *
+     * A DeepImage's channel buffers are one contiguous array per channel indexed by a prefix sum
+     * of per-pixel sample counts, so the total sample count -- and therefore every pixel's
+     * offset -- has to be known before a single sample can be written. That rules out appending
+     * samples as they are discovered, which is the shape a node author naturally reaches for and
+     * which cannot be made both correct and parallel here. Instead: pass 1 asks countSamples for
+     * every pixel's count in parallel over scanline chunks, the sample table's offsets and the
+     * channel buffers are then built in one allocation, and pass 2 asks fillSamples to fill every
+     * pixel in parallel over the same chunks, writing through non-owning views into that single
+     * allocation. Nothing is allocated per pixel or per sample in either pass.
+     *
+     * channelNames are the value channels to allocate, in the order fillSamples' views index
+     * them; "Z" and "ZBack" are always allocated on top of them and must not be listed.
+     * alphaChannelIndex is the index within channelNames of the alpha channel, recorded in every
+     * view handed to fillSamples so that the ops in DeepPixelOps cannot disagree about it.
+     *
+     * resultIsTidy records on the output whether this node guarantees the samples it just wrote
+     * are sorted by depth and non-overlapping; it is not verified.
+     **/
+    StatusEnum renderDeepTwoPass(const DeepRenderActionArgs& args,
+                                 const std::vector<std::string>& channelNames,
+                                 int alphaChannelIndex,
+                                 const DeepSampleCountFunc& countSamples,
+                                 const DeepFillSamplesFunc& fillSamples,
+                                 bool resultIsTidy = false) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Splits bounds into the scanline chunks renderDeepTwoPass() parallelizes over.
+     * Exposed so a node needing its own parallel pass over the same rectangle can use the same
+     * partition, and so tests can reason about it.
+     **/
+    static void makeDeepScanlineChunks(const RectI& bounds,
+                                       std::vector<RectI>* chunks);
+
     /**
      * @brief Subclasses declare their static plugin metadata by overriding this.
      * It is queried on demand rather than cached: every call site above is off the

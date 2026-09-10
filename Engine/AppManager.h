@@ -246,6 +246,13 @@ public:
     void removeFromNodeCache(const ImagePtr & image);
     void removeFromViewerCache(const FrameEntryPtr & texture);
 
+    /**
+     * @brief Drops one deep image entry. A cache entry is sealed as soon as it is created, i.e.
+     * before its payload exists, so a deep render that aborts or fails must take its own
+     * half-built entry back out rather than leave it to be found by the next lookup.
+     **/
+    void removeFromDeepImageCache(const DeepImageCacheEntryPtr& entry);
+
     void removeFromNodeCache(U64 hash);
     void removeFromViewerCache(U64 hash);
     /**

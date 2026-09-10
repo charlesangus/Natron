@@ -17,7 +17,7 @@
 # along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
 # ***** END LICENSE BLOCK *****
 
-set(Tests_HEADERS BaseTest.h DataKindTestEffect.h)
+set(Tests_HEADERS BaseTest.h DataKindTestEffect.h DeepRenderTestEffect.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -29,6 +29,7 @@ set(Tests_SOURCES
     DeepImage_Test.cpp
     DeepImageCache_Test.cpp
     DeepPixelOps_Test.cpp
+    DeepRenderPipeline_Test.cpp
     FileSystemModel_Test.cpp
     Hash64_Test.cpp
     Image_Test.cpp

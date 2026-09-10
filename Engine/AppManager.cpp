@@ -2314,6 +2314,12 @@ AppManager::removeFromViewerCache(const FrameEntryPtr & texture)
 }
 
 void
+AppManager::removeFromDeepImageCache(const DeepImageCacheEntryPtr& entry)
+{
+    _imp->_deepImageCache->removeEntry(entry);
+}
+
+void
 AppManager::removeFromNodeCache(U64 hash)
 {
     _imp->_nodeCache->removeEntry(hash);

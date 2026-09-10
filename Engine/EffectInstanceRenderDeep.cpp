@@ -1,0 +1,440 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "EffectInstance.h"
+#include "EffectInstancePrivate.h"
+
+#include <list>
+#include <map>
+#include <memory>
+#include <set>
+
+#include <QDebug>
+#include <QThread>
+
+#include "Engine/AppManager.h"
+#include "Engine/DeepImage.h"
+#include "Engine/DeepImageCacheEntry.h"
+#include "Engine/DeepImageKey.h"
+#include "Engine/DeepImageParams.h"
+#include "Engine/Node.h"
+#include "Engine/ParallelRenderArgs.h"
+
+NATRON_NAMESPACE_ENTER
+
+DeepImagePtr
+EffectInstance::DeepRenderActionArgs::getInputDeepImage(int inputNb,
+                                                        double atTime) const
+{
+    DeepInputImagesMap::const_iterator foundInput = inputDeepImages.find(inputNb);
+
+    if (foundInput == inputDeepImages.end()) {
+        return DeepImagePtr();
+    }
+
+    DeepImagesByTime::const_iterator foundTime = foundInput->second.find(atTime);
+
+    return (foundTime == foundInput->second.end()) ? DeepImagePtr() : foundTime->second;
+}
+
+namespace {
+// Mirrors the frame enumeration ParallelRenderArgs.cpp's treeRecurseFunctor() does for the image
+// path: only integer-bounded ranges are pre-fetched, and no more than
+// NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING frames per range.
+void
+collectFramesNeededForInput(const FramesNeededMap& framesNeeded,
+                            int inputNb,
+                            ViewIdx view,
+                            double defaultTime,
+                            std::set<double>* times)
+{
+    FramesNeededMap::const_iterator foundInput = framesNeeded.find(inputNb);
+
+    if (foundInput == framesNeeded.end()) {
+        times->insert(defaultTime);
+
+        return;
+    }
+
+    FrameRangesMap::const_iterator foundView = foundInput->second.find(view);
+    if (foundView == foundInput->second.end()) {
+        times->insert(defaultTime);
+
+        return;
+    }
+
+    for (std::size_t range = 0; range < foundView->second.size(); ++range) {
+        const RangeD& r = foundView->second[range];
+
+        if ((r.min != (int)r.min) || (r.max != (int)r.max)) {
+            times->insert(defaultTime);
+            continue;
+        }
+
+        int nbFramesPreFetched = 0;
+        for (double f = r.min; f <= r.max && nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING; f += 1.) {
+            times->insert(f);
+            ++nbFramesPreFetched;
+        }
+    }
+
+    if (times->empty()) {
+        times->insert(defaultTime);
+    }
+}
+
+// Pops the fallback frame args renderDeepRoI() pushes when it is called outside of a render
+// set up by the scheduler. Without this, a second direct call would find the first call's
+// stale hash and time still on the thread and key its cache lookup with them.
+class ScopedFallbackFrameArgs {
+public:
+    explicit ScopedFallbackFrameArgs(const EffectInstance::EffectTLSDataPtr& tls)
+        : _tls(tls)
+    {
+    }
+
+    ~ScopedFallbackFrameArgs()
+    {
+        if (_tls && !_tls->frameArgs.empty()) {
+            _tls->frameArgs.pop_back();
+        }
+    }
+
+private:
+    EffectInstance::EffectTLSDataPtr _tls;
+};
+
+bool
+inputCarriesDeepData(const EffectInstancePtr& input)
+{
+    NodePtr inputNode = input->getNode();
+
+    if (!inputNode) {
+        return false;
+    }
+
+    bool isAmbiguous = false;
+
+    return inputNode->getEffectiveOutputDataKind(&isAmbiguous) == eDataKindDeep && !isAmbiguous;
+}
+} // anonymous namespace
+
+EffectInstance::RenderRoIRetCode
+EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
+                              DeepImagePtr* outputDeepImage)
+{
+    assert(outputDeepImage);
+    if (!outputDeepImage) {
+        return eRenderRoIRetCodeFailed;
+    }
+    outputDeepImage->reset();
+
+    if (args.roi.isNull()) {
+        return eRenderRoIRetCodeOk;
+    }
+
+    // Same guard as renderRoI(): a render clone forwards to the main instance so that the cache
+    // identity and the TLS both belong to a single effect.
+    if (_imp->mainInstance) {
+        return _imp->mainInstance->renderDeepRoI(args, outputDeepImage);
+    }
+
+    EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
+    assert(tls);
+    ParallelRenderArgsPtr frameArgs;
+    std::unique_ptr<ScopedFallbackFrameArgs> fallbackFrameArgs;
+    if (tls->frameArgs.empty()) {
+        // No pre-pass set this render up (a direct call, e.g. from a test or a script). Build the
+        // minimal frame args renderRoI() builds in the same situation so that the hash used for
+        // the cache key and the abort flag both have somewhere to live.
+        frameArgs = std::make_shared<ParallelRenderArgs>();
+        {
+            NodesWList outputs;
+            getNode()->getOutputs_mt_safe(outputs);
+            frameArgs->visitsCount = (int)outputs.size();
+        }
+        frameArgs->time = args.time;
+        frameArgs->nodeHash = getHash();
+        frameArgs->view = args.view;
+        frameArgs->isSequentialRender = false;
+        frameArgs->isRenderResponseToUserInteraction = true;
+        tls->frameArgs.push_back(frameArgs);
+        fallbackFrameArgs.reset(new ScopedFallbackFrameArgs(tls));
+    } else {
+        frameArgs = tls->frameArgs.back();
+    }
+
+    if (aborted()) {
+        return eRenderRoIRetCodeAborted;
+    }
+
+    const U64 nodeHash = frameArgs->nodeHash;
+    const double par = getAspectRatio(-1);
+
+    ////////////////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////// Get the RoD /////////////////////////////////////////////////
+
+    RectD rod;
+    if (!args.preComputedRoD.isNull()) {
+        rod = args.preComputedRoD;
+    } else {
+        bool isProjectFormat = false;
+        StatusEnum stat = getRegionOfDefinition_public(nodeHash, args.time, args.scale, args.view, &rod, &isProjectFormat);
+
+        if ((stat == eStatusFailed) || rod.isNull()) {
+            *outputDeepImage = std::make_shared<DeepImage>(RectI(), args.scale, args.view);
+
+            return eRenderRoIRetCodeOk;
+        }
+    }
+
+    const RectI pixelRoD = rod.toPixelEnclosing(args.mipmapLevel, par);
+    const RectI roi = args.roi.intersect(pixelRoD);
+    if (roi.isNull()) {
+        *outputDeepImage = std::make_shared<DeepImage>(RectI(), args.scale, args.view);
+
+        return eRenderRoIRetCodeOk;
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////// Check if effect is identity /////////////////////////////////
+
+    {
+        double identityTime = args.time;
+        ViewIdx identityView(args.view);
+        int identityInputNb = -1;
+        bool identity;
+
+        try {
+            identity = isIdentity_public(true, nodeHash, args.time, args.scale, pixelRoD, args.view, &identityTime, &identityView, &identityInputNb);
+        } catch (...) {
+            return eRenderRoIRetCodeFailed;
+        }
+
+        if (identity) {
+            if (identityInputNb == -1) {
+                *outputDeepImage = std::make_shared<DeepImage>(RectI(), args.scale, args.view);
+
+                return eRenderRoIRetCodeOk;
+            }
+            if (identityInputNb == -2) {
+                // The effect is an identity of itself at another time. Guard against the
+                // degenerate answer that would recurse forever.
+                if (identityTime == args.time) {
+                    return eRenderRoIRetCodeFailed;
+                }
+                RenderDeepRoIArgs selfArgs(args);
+                selfArgs.time = identityTime;
+                selfArgs.view = identityView;
+                selfArgs.preComputedRoD.clear();
+
+                return renderDeepRoI(selfArgs, outputDeepImage);
+            }
+
+            EffectInstancePtr identityInput = getInput(identityInputNb);
+            if (!identityInput) {
+                *outputDeepImage = std::make_shared<DeepImage>(RectI(), args.scale, args.view);
+
+                return eRenderRoIRetCodeOk;
+            }
+
+            RenderDeepRoIArgs identityArgs(args);
+            identityArgs.time = identityTime;
+            identityArgs.view = identityView;
+            identityArgs.roi = roi;
+            identityArgs.caller = this;
+            identityArgs.preComputedRoD.clear();
+
+            return identityInput->renderDeepRoI(identityArgs, outputDeepImage);
+        }
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////// Look-up the deep cache //////////////////////////////////////
+
+    const DeepImageKey key(getNode().get(), nodeHash, args.time, args.view, args.scale);
+    RectI boundsToRender = roi;
+
+    if (!args.byPassCache) {
+        std::list<DeepImageCacheEntryPtr> cached;
+        if (appPTR->getDeepImage(key, &cached)) {
+            for (std::list<DeepImageCacheEntryPtr>::const_iterator it = cached.begin(); it != cached.end(); ++it) {
+                const DeepImagePtr& entryImage = (*it)->getDeepImage();
+                if (!entryImage) {
+                    continue;
+                }
+                if (entryImage->getBounds().contains(roi)) {
+                    *outputDeepImage = entryImage;
+
+                    return eRenderRoIRetCodeOk;
+                }
+                // Bounds growth, not tiling: nothing cached under this key covers the request, so
+                // re-render over everything that was ever asked for rather than minting a
+                // narrower entry that the next, wider request would miss again.
+                boundsToRender.merge(entryImage->getBounds());
+            }
+        }
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////// Pull the deep inputs ////////////////////////////////////////
+
+    const RectD canonicalRoI = roi.toCanonical(args.mipmapLevel, par, rod);
+    RoIMap inputsRoi;
+    getRegionsOfInterest_public(args.time, args.scale, rod, canonicalRoI, args.view, &inputsRoi);
+
+    const FramesNeededMap framesNeeded = getFramesNeeded_public(nodeHash, args.time, args.view, args.mipmapLevel);
+
+    DeepInputImagesMap inputDeepImages;
+    const int nInputs = getNInputs();
+    for (int i = 0; i < nInputs; ++i) {
+        EffectInstancePtr input = getInput(i);
+
+        if (!input || !inputCarriesDeepData(input)) {
+            continue;
+        }
+
+        // Deep ops are spatially local, so RoI propagation is the image path's: whatever
+        // getRegionsOfInterest() said, defaulting to this node's own render window.
+        RectD inputCanonicalRoI = canonicalRoI;
+        RoIMap::const_iterator foundInputRoI = inputsRoi.find(input);
+        if (foundInputRoI != inputsRoi.end()) {
+            if (foundInputRoI->second.isNull()) {
+                continue;
+            }
+            inputCanonicalRoI = foundInputRoI->second;
+        }
+
+        const RectI inputRoI = inputCanonicalRoI.toPixelEnclosing(args.mipmapLevel, input->getAspectRatio(-1));
+        if (inputRoI.isNull()) {
+            continue;
+        }
+
+        std::set<double> inputTimes;
+        collectFramesNeededForInput(framesNeeded, i, args.view, args.time, &inputTimes);
+
+        NotifyInputNRenderingStarted_RAII inputNIsRendering_RAII(getNode().get(), i);
+
+        for (std::set<double>::const_iterator it = inputTimes.begin(); it != inputTimes.end(); ++it) {
+            RenderDeepRoIArgs inputArgs(*it,
+                                        args.scale,
+                                        args.mipmapLevel,
+                                        args.view,
+                                        args.byPassCache,
+                                        inputRoI,
+                                        RectD(),
+                                        this,
+                                        args.time);
+            DeepImagePtr inputImage;
+            RenderRoIRetCode inputCode = input->renderDeepRoI(inputArgs, &inputImage);
+
+            if (inputCode != eRenderRoIRetCodeOk) {
+                return inputCode;
+            }
+            if (inputImage) {
+                inputDeepImages[i][*it] = inputImage;
+            }
+        }
+    }
+
+    if (aborted()) {
+        return eRenderRoIRetCodeAborted;
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////// Render //////////////////////////////////////////////////////
+
+    DeepImagePtr renderedImage;
+    DeepImageCacheEntryPtr cacheEntry;
+
+    if (args.byPassCache) {
+        renderedImage = std::make_shared<DeepImage>(boundsToRender, args.scale, args.view);
+    } else {
+        DeepImageParamsPtr params = std::make_shared<DeepImageParams>(boundsToRender);
+
+        // getOrCreate() returns true when it *found* an entry and false when it created one.
+        if (appPTR->getDeepImageOrCreate(key, params, &cacheEntry)) {
+            if (cacheEntry && cacheEntry->getDeepImage()) {
+                *outputDeepImage = cacheEntry->getDeepImage();
+
+                return eRenderRoIRetCodeOk;
+            }
+        }
+        if (!cacheEntry || !cacheEntry->getDeepImage()) {
+            return eRenderRoIRetCodeFailed;
+        }
+        renderedImage = cacheEntry->getDeepImage();
+    }
+
+    DeepRenderActionArgs actionArgs;
+    actionArgs.time = args.time;
+    actionArgs.scale = args.scale;
+    actionArgs.mipmapLevel = args.mipmapLevel;
+    actionArgs.view = args.view;
+    actionArgs.roi = boundsToRender;
+    actionArgs.inputDeepImages = inputDeepImages;
+    actionArgs.outputDeepImage = renderedImage;
+    actionArgs.isSequentialRender = frameArgs->isSequentialRender;
+    actionArgs.isRenderResponseToUserInteraction = frameArgs->isRenderResponseToUserInteraction;
+    actionArgs.byPassCache = args.byPassCache;
+
+    StatusEnum st;
+    try {
+        st = renderDeep(actionArgs);
+    } catch (...) {
+        st = eStatusFailed;
+    }
+
+    if (aborted()) {
+        if (cacheEntry) {
+            appPTR->removeFromDeepImageCache(cacheEntry);
+        }
+
+        return eRenderRoIRetCodeAborted;
+    }
+
+    if (st != eStatusOK) {
+        if (cacheEntry) {
+            appPTR->removeFromDeepImageCache(cacheEntry);
+        }
+        if (st == eStatusReplyDefault) {
+            qDebug() << getScriptName_mt_safe().c_str() << "renderDeepRoI: this effect does not implement renderDeep()";
+        }
+
+        return eRenderRoIRetCodeFailed;
+    }
+
+    if (cacheEntry) {
+        // The one point at which the cache captures this entry's byte cost, so it must happen
+        // after renderDeep() has populated the sample table and the channel buffers.
+        cacheEntry->allocateMemory();
+    }
+
+    *outputDeepImage = renderedImage;
+
+    return eRenderRoIRetCodeOk;
+} // EffectInstance::renderDeepRoI
+
+NATRON_NAMESPACE_EXIT

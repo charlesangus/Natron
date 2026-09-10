@@ -1479,7 +1479,7 @@ public:
      * @brief Called when the associated node's hash has changed.
      * This is always called on the main-thread.
      **/
-    void onNodeHashChanged(U64 hash);
+    virtual void onNodeHashChanged(U64 hash);
 
 
     virtual void initializeData()

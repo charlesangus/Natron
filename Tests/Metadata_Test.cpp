@@ -76,6 +76,36 @@ struct MetadataPluginFixture
         ASSERT_TRUE(bool(node)) << "node creation failed for " << pluginID;
     }
 };
+
+const char kMetadataContributeID[] = "org.openfx.examples.metadataContribute";
+const char kMetadataViewID[] = "org.openfx.examples.metadataView";
+
+// the param metadataContribute reads, and the key it publishes that param's value under
+const char kContributeNoteParam[] = "note";
+const char kContributeNoteKey[] = "org.openfx.examples.metadataContribute.note";
+
+OFX::Host::ImageEffect::ClipInstance*
+clipOf(const NodePtr& node,
+       const char* clipName)
+{
+    OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>( node->getEffectInstance().get() );
+
+    if ( !ofxEffect || !ofxEffect->effectInstance() ) {
+        return NULL;
+    }
+
+    return ofxEffect->effectInstance()->getClip(clipName);
+}
+
+void
+setContributedNote(const NodePtr& node,
+                   const std::string& note)
+{
+    KnobString* knob = dynamic_cast<KnobString*>( node->getKnobByName(kContributeNoteParam).get() );
+
+    ASSERT_TRUE(knob != NULL) << "metadataContribute has no " << kContributeNoteParam << " param";
+    knob->setValue(note);
+}
 } // namespace
 
 // Each of the metadataView/Contribute/TimeCode example plugins loads via OFX_PLUGIN_PATH
@@ -343,3 +373,169 @@ TEST_F(MetadataPluginFixture, ReaderOutputClipCarriesPerFrameFileMetadata)
         QFile::remove( QString::fromStdString(renderedPaths[i]) );
     }
 } // TEST_F(MetadataPluginFixture, ReaderOutputClipCarriesPerFrameFileMetadata)
+
+// A node downstream of a change used to keep serving the metadata it had derived beforehand,
+// because nothing dropped the per clip cache. Here B is read, the contribution A makes is
+// changed, and B is read again -- B's own params and inputs are never touched in between, so
+// only an invalidation that reached B from A can make the new value show up.
+TEST_F(MetadataPluginFixture, DownstreamMetadataFollowsAnUpstreamParamChange)
+{
+    NodePtr contribute = createNode( QString::fromUtf8(kMetadataContributeID) );
+    NodePtr view = createNode( QString::fromUtf8(kMetadataViewID) );
+    ASSERT_TRUE( bool(contribute) ) << "node creation failed for " << kMetadataContributeID;
+    ASSERT_TRUE( bool(view) ) << "node creation failed for " << kMetadataViewID;
+
+    connectNodes(contribute, view, 0, true);
+
+    OFX::Host::ImageEffect::ClipInstance* viewOutput = clipOf(view, kOfxImageEffectOutputClipName);
+    ASSERT_TRUE(viewOutput != NULL) << "the downstream node has no output clip";
+
+    setContributedNote(contribute, "before");
+
+    OFX::Host::ImageEffect::MetadataSet* first = viewOutput->getMetadata(1.);
+    ASSERT_TRUE(first != NULL);
+    ASSERT_TRUE(first->fetchProperty(kContributeNoteKey) != NULL) << "the upstream contribution never reached the downstream output clip";
+    EXPECT_EQ( std::string("before"), first->getStringProperty(kContributeNoteKey) );
+    first->releaseReference();
+
+    setContributedNote(contribute, "after");
+
+    OFX::Host::ImageEffect::MetadataSet* second = viewOutput->getMetadata(1.);
+    ASSERT_TRUE(second != NULL);
+    EXPECT_EQ( std::string("after"), second->getStringProperty(kContributeNoteKey) );
+
+    second->releaseReference();
+}
+
+// The node upstream here is native, so the input clip has no upstream OFX output clip to copy
+// and derives its keys from the host instead. The change made is one no OFX param change can
+// stand in for: the project's own frame rate, which reaches the node without any hash moving.
+TEST_F(MetadataPluginFixture, NativeUpstreamNodeChangeReachesTheOfxInputClip)
+{
+    NodePtr dot = createNode( QString::fromUtf8(PLUGINID_NATRON_DOT) );
+    NodePtr view = createNode( QString::fromUtf8(kMetadataViewID) );
+    ASSERT_TRUE( bool(dot) ) << "node creation failed for " << PLUGINID_NATRON_DOT;
+    ASSERT_TRUE( bool(view) ) << "node creation failed for " << kMetadataViewID;
+    ASSERT_TRUE( dynamic_cast<OfxEffectInstance*>( dot->getEffectInstance().get() ) == NULL ) << "the upstream node is not native";
+
+    connectNodes(dot, view, 0, true);
+
+    OFX::Host::ImageEffect::ClipInstance* source = clipOf(view, kOfxImageEffectSimpleSourceClipName);
+    ASSERT_TRUE(source != NULL) << "the downstream node has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+
+    KnobDouble* projectFrameRate = dynamic_cast<KnobDouble*>( getApp()->getProject()->getKnobByName("frameRate").get() );
+    ASSERT_TRUE(projectFrameRate != NULL) << "the project has no frame rate param";
+
+    const double originalFrameRate = getApp()->getProjectFrameRate();
+
+    Format projectFormat;
+    getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+
+    OFX::Host::ImageEffect::MetadataSet* before = source->getMetadata(1.);
+    ASSERT_TRUE(before != NULL);
+    EXPECT_DOUBLE_EQ( originalFrameRate, before->getDoubleProperty(kOfxMetadataKeyFrameRate) );
+    EXPECT_EQ( projectFormat.width(), before->getIntProperty(kOfxMetadataKeyWidth) );
+    EXPECT_DOUBLE_EQ( projectFormat.getPixelAspectRatio(), before->getDoubleProperty(kOfxMetadataKeyPixelAspect) );
+    before->releaseReference();
+
+    const double changedFrameRate = originalFrameRate + 12.;
+    projectFrameRate->setValue(changedFrameRate);
+    ASSERT_DOUBLE_EQ( changedFrameRate, getApp()->getProjectFrameRate() );
+
+    OFX::Host::ImageEffect::MetadataSet* after = source->getMetadata(1.);
+    ASSERT_TRUE(after != NULL);
+    EXPECT_DOUBLE_EQ( changedFrameRate, after->getDoubleProperty(kOfxMetadataKeyFrameRate) );
+
+    // read live rather than asserted against literals: setOrAddProjectFormat() is a no-op
+    // after the first call in a process and the app instance is shared by the whole suite
+    Format liveFormat;
+    getApp()->getProject()->getProjectDefaultFormat(&liveFormat);
+    EXPECT_EQ( liveFormat.width(), after->getIntProperty(kOfxMetadataKeyWidth) );
+    EXPECT_DOUBLE_EQ( liveFormat.getPixelAspectRatio(), after->getDoubleProperty(kOfxMetadataKeyPixelAspect) );
+    after->releaseReference();
+
+    // the project outlives this case, so it is left as it was found
+    projectFrameRate->setValue(originalFrameRate);
+}
+
+// An input clip's metadata is a copy of what the node connected to it puts out, so pointing the
+// input at a different node has to drop that copy just as a change in the node itself would.
+TEST_F(MetadataPluginFixture, ReconnectingAnInputRepointsTheMetadata)
+{
+    NodePtr firstUpstream = createNode( QString::fromUtf8(kMetadataContributeID) );
+    NodePtr secondUpstream = createNode( QString::fromUtf8(kMetadataContributeID) );
+    NodePtr view = createNode( QString::fromUtf8(kMetadataViewID) );
+    ASSERT_TRUE( bool(firstUpstream) && bool(secondUpstream) ) << "node creation failed for " << kMetadataContributeID;
+    ASSERT_TRUE( bool(view) ) << "node creation failed for " << kMetadataViewID;
+
+    setContributedNote(firstUpstream, "from the first");
+    setContributedNote(secondUpstream, "from the second");
+
+    connectNodes(firstUpstream, view, 0, true);
+
+    OFX::Host::ImageEffect::ClipInstance* source = clipOf(view, kOfxImageEffectSimpleSourceClipName);
+    ASSERT_TRUE(source != NULL) << "the downstream node has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+
+    OFX::Host::ImageEffect::MetadataSet* fromFirst = source->getMetadata(1.);
+    ASSERT_TRUE(fromFirst != NULL);
+    ASSERT_TRUE(fromFirst->fetchProperty(kContributeNoteKey) != NULL) << "the upstream contribution never reached the input clip";
+    EXPECT_EQ( std::string("from the first"), fromFirst->getStringProperty(kContributeNoteKey) );
+    fromFirst->releaseReference();
+
+    disconnectNodes(firstUpstream, view, true);
+    connectNodes(secondUpstream, view, 0, true);
+
+    OFX::Host::ImageEffect::MetadataSet* fromSecond = source->getMetadata(1.);
+    ASSERT_TRUE(fromSecond != NULL);
+    EXPECT_EQ( std::string("from the second"), fromSecond->getStringProperty(kContributeNoteKey) );
+
+    fromSecond->releaseReference();
+}
+
+// The guard against the opposite failure. getOutputMetadata() allocates a fresh MetadataSet for
+// every run of the plug-in's get metadata action and caches that one, and the reference taken
+// on the first read keeps it alive, so a second run could not hand its address back. Identical
+// pointers across two reads with nothing changed in between therefore say the action ran once.
+TEST_F(MetadataPluginFixture, UnchangedStateDoesNotReRunTheGetMetadataAction)
+{
+    NodePtr contribute = createNode( QString::fromUtf8(kMetadataContributeID) );
+    NodePtr view = createNode( QString::fromUtf8(kMetadataViewID) );
+    ASSERT_TRUE( bool(contribute) ) << "node creation failed for " << kMetadataContributeID;
+    ASSERT_TRUE( bool(view) ) << "node creation failed for " << kMetadataViewID;
+
+    connectNodes(contribute, view, 0, true);
+    setContributedNote(contribute, "stable");
+
+    OFX::Host::ImageEffect::ClipInstance* contributeOutput = clipOf(contribute, kOfxImageEffectOutputClipName);
+    OFX::Host::ImageEffect::ClipInstance* viewSource = clipOf(view, kOfxImageEffectSimpleSourceClipName);
+    OFX::Host::ImageEffect::ClipInstance* viewOutput = clipOf(view, kOfxImageEffectOutputClipName);
+    ASSERT_TRUE(contributeOutput != NULL);
+    ASSERT_TRUE(viewSource != NULL);
+    ASSERT_TRUE(viewOutput != NULL);
+
+    OFX::Host::ImageEffect::MetadataSet* firstContribute = contributeOutput->getMetadata(1.);
+    OFX::Host::ImageEffect::MetadataSet* firstSource = viewSource->getMetadata(1.);
+    OFX::Host::ImageEffect::MetadataSet* firstView = viewOutput->getMetadata(1.);
+    ASSERT_TRUE(firstContribute != NULL);
+    ASSERT_TRUE(firstSource != NULL);
+    ASSERT_TRUE(firstView != NULL);
+
+    OFX::Host::ImageEffect::MetadataSet* secondContribute = contributeOutput->getMetadata(1.);
+    OFX::Host::ImageEffect::MetadataSet* secondSource = viewSource->getMetadata(1.);
+    OFX::Host::ImageEffect::MetadataSet* secondView = viewOutput->getMetadata(1.);
+    ASSERT_TRUE(secondContribute != NULL);
+    ASSERT_TRUE(secondSource != NULL);
+    ASSERT_TRUE(secondView != NULL);
+
+    EXPECT_EQ(firstContribute, secondContribute) << "the upstream get metadata action ran a second time";
+    EXPECT_EQ(firstSource, secondSource) << "the input clip's cached copy was dropped for nothing";
+    EXPECT_EQ(firstView, secondView) << "the downstream get metadata action ran a second time";
+    EXPECT_EQ( std::string("stable"), secondView->getStringProperty(kContributeNoteKey) );
+
+    secondView->releaseReference();
+    secondSource->releaseReference();
+    secondContribute->releaseReference();
+    firstView->releaseReference();
+    firstSource->releaseReference();
+    firstContribute->releaseReference();
+}

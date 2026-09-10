@@ -23,7 +23,10 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include <atomic>
 #include <list>
+#include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -32,6 +35,7 @@
 #include <QFile>
 #include <QString>
 #include <QTemporaryDir>
+#include <QThread>
 
 #include <SequenceParsing.h>
 
@@ -78,6 +82,7 @@ struct MetadataPluginFixture
 };
 
 const char kMetadataContributeID[] = "org.openfx.examples.metadataContribute";
+const char kMetadataPrintID[] = "org.openfx.examples.metadataPrint";
 const char kMetadataViewID[] = "org.openfx.examples.metadataView";
 
 // the param metadataContribute reads, and the key it publishes that param's value under
@@ -106,6 +111,184 @@ setContributedNote(const NodePtr& node,
     ASSERT_TRUE(knob != NULL) << "metadataContribute has no " << kContributeNoteParam << " param";
     knob->setValue(note);
 }
+
+// Every key of a clip's metadata at one time, with each key's values flattened to text. Two
+// reads that agree as whole maps agree on the key set and on every value, so a lost key and a
+// key whose values came back half-written both show up as a plain inequality.
+typedef std::map<std::string, std::string> MetadataSnapshot;
+
+MetadataSnapshot
+snapshotMetadata(OFX::Host::ImageEffect::ClipInstance* clip,
+                 OfxTime time)
+{
+    MetadataSnapshot snapshot;
+    OFX::Host::ImageEffect::MetadataSet* set = clip->getMetadata(time);
+
+    if (!set) {
+        return snapshot;
+    }
+
+    const OFX::Host::Property::PropertyMap& props = set->getProperties();
+    for (OFX::Host::Property::PropertyMap::const_iterator it = props.begin(); it != props.end(); ++it) {
+        std::ostringstream value;
+        const int dimension = it->second->getDimension();
+
+        for (int i = 0; i < dimension; ++i) {
+            if (i > 0) {
+                value << ",";
+            }
+            switch ( it->second->getType() ) {
+            case OFX::Host::Property::eInt:
+                value << set->getIntProperty(it->first, i);
+                break;
+            case OFX::Host::Property::eDouble:
+                value << set->getDoubleProperty(it->first, i);
+                break;
+            case OFX::Host::Property::eString:
+                value << set->getStringProperty(it->first, i);
+                break;
+            default:
+                value << "<unreadable>";
+                break;
+            }
+        }
+        snapshot[it->first] = value.str();
+    }
+
+    set->releaseReference();
+
+    return snapshot;
+}
+
+std::string
+snapshotValue(const MetadataSnapshot& snapshot,
+              const std::string& key)
+{
+    MetadataSnapshot::const_iterator found = snapshot.find(key);
+
+    return found == snapshot.end() ? std::string("<absent>") : found->second;
+}
+
+std::string
+describeSnapshot(const MetadataSnapshot& snapshot)
+{
+    std::ostringstream text;
+
+    for (MetadataSnapshot::const_iterator it = snapshot.begin(); it != snapshot.end(); ++it) {
+        if ( it != snapshot.begin() ) {
+            text << ", ";
+        }
+        text << it->first << "=" << it->second;
+    }
+
+    return text.str();
+}
+
+// One reader. Nothing it reads can change while it runs, so every read must match the snapshot
+// taken of the same clip and time before the render started. gtest's assertions are not used
+// off the main thread: a mismatch is recorded and asserted on once the thread has been joined.
+class MetadataReaderThread
+    : public QThread
+{
+public:
+
+    MetadataReaderThread(const std::vector<OFX::Host::ImageEffect::ClipInstance*>& clips,
+                         const std::vector<std::string>& clipLabels,
+                         const std::vector<std::vector<MetadataSnapshot> >& expected,
+                         int firstFrame,
+                         const std::atomic<bool>* stop)
+        : _clips(clips)
+        , _clipLabels(clipLabels)
+        , _expected(expected)
+        , _firstFrame(firstFrame)
+        , _stop(stop)
+        , _reads(0)
+        , _failure()
+    {
+    }
+
+    long long reads() const
+    {
+        return _reads.load();
+    }
+
+    // only safe to call once this thread has been joined
+    const std::string& failure() const
+    {
+        return _failure;
+    }
+
+private:
+
+    void recordFailure(const std::string& what)
+    {
+        if ( _failure.empty() ) {
+            _failure = what;
+        }
+    }
+
+    virtual void run() OVERRIDE FINAL
+    {
+        // Asking for more distinct times than a clip's cache holds makes it fill up, be
+        // flushed whole and be derived again while the render is deriving times of its own.
+        // Without it every read after the first would be a cache hit and the derivation and
+        // flush paths -- the ones an invalidation can race -- would never be reached.
+        OfxTime churnTime = 1000.;
+
+        while ( !_stop->load() ) {
+            for (std::size_t c = 0; c < _clips.size(); ++c) {
+                for (std::size_t f = 0; f < _expected[c].size(); ++f) {
+                    const OfxTime time = _firstFrame + (OfxTime)f;
+                    const MetadataSnapshot read = snapshotMetadata(_clips[c], time);
+                    _reads.fetch_add(1);
+
+                    if ( read != _expected[c][f] ) {
+                        std::ostringstream message;
+                        message << _clipLabels[c] << " at frame " << time << " read {" << describeSnapshot(read)
+                                << "} but held {" << describeSnapshot(_expected[c][f]) << "} before the render";
+                        recordFailure( message.str() );
+                    }
+                }
+            }
+
+            for (int i = 0; i < 8; ++i) {
+                churnTime += 1.;
+                if (churnTime > 4000.) {
+                    churnTime = 1000.;
+                }
+
+                OFX::Host::ImageEffect::MetadataSet* set = _clips[0]->getMetadata(churnTime);
+                _reads.fetch_add(1);
+
+                if (!set) {
+                    recordFailure(_clipLabels[0] + " came back with no metadata at all");
+                    continue;
+                }
+
+                if ( set->fetchProperty(kOfxMetadataKeySourceFrame) == NULL ) {
+                    recordFailure(_clipLabels[0] + " lost " + kOfxMetadataKeySourceFrame + " on a freshly derived set");
+                } else if ( set->getIntProperty(kOfxMetadataKeySourceFrame) != (int)churnTime ) {
+                    std::ostringstream message;
+                    message << _clipLabels[0] << " derived at " << churnTime << " carries "
+                            << kOfxMetadataKeySourceFrame << "=" << set->getIntProperty(kOfxMetadataKeySourceFrame);
+                    recordFailure( message.str() );
+                }
+
+                set->releaseReference();
+            }
+
+            yieldCurrentThread();
+        }
+    } // run
+
+    std::vector<OFX::Host::ImageEffect::ClipInstance*> _clips;
+    std::vector<std::string> _clipLabels;
+    std::vector<std::vector<MetadataSnapshot> > _expected;
+    int _firstFrame;
+    const std::atomic<bool>* _stop;
+    std::atomic<long long> _reads;
+    std::string _failure;
+};
 } // namespace
 
 // Each of the metadataView/Contribute/TimeCode example plugins loads via OFX_PLUGIN_PATH
@@ -539,3 +722,164 @@ TEST_F(MetadataPluginFixture, UnchangedStateDoesNotReRunTheGetMetadataAction)
     firstSource->releaseReference();
     firstContribute->releaseReference();
 }
+
+// The per clip metadata cache is reached from whichever thread asks for metadata, and a render
+// is the one thing that asks for it from many threads at once. This renders a real frame range
+// through a chain whose middle node reads its source clip's metadata inside its render action,
+// while separate threads read the same clips, and checks that every read comes back whole: the
+// failures it exists to catch are a crash, a hang, and a read that has lost or half-written a
+// key. The nodes are raised to fully safe first, because that is the level at which
+// EffectInstance::renderRoI takes no serialising lock and makes no render clone -- at anything
+// less the render is serialised on the node and barely touches the cache concurrently at all.
+TEST_F(MetadataPluginFixture, MetadataConcurrentReadsDuringRenderStayWhole)
+{
+    // small, so that a run of this is spent on metadata rather than on pixels.
+    // setOrAddProjectFormat() only bites the first time it is called in a process and the app
+    // instance is shared by the whole suite, so nothing below may depend on it having taken
+    Format small(0, 0, 64, 64, "metadataConcurrentFormat", 1.);
+    getApp()->getProject()->setOrAddProjectFormat(small);
+
+    NodePtr generator = createNode( QString::fromUtf8(PLUGINID_OFX_CONSTANT) );
+    NodePtr contribute = createNode( QString::fromUtf8(kMetadataContributeID) );
+    NodePtr print = createNode( QString::fromUtf8(kMetadataPrintID) );
+    NodePtr writer = createNode(_writeOIIOPluginID);
+    ASSERT_TRUE( bool(generator) ) << "node creation failed for " << PLUGINID_OFX_CONSTANT;
+    ASSERT_TRUE( bool(contribute) ) << "node creation failed for " << kMetadataContributeID;
+    ASSERT_TRUE( bool(print) ) << "node creation failed for " << kMetadataPrintID;
+    ASSERT_TRUE( bool(writer) ) << "node creation failed for " << _writeOIIOPluginID.toStdString();
+
+    connectNodes(generator, contribute, 0, true);
+    connectNodes(contribute, print, 0, true);
+    connectNodes(print, writer, 0, true);
+
+    setContributedNote(contribute, "rendered concurrently");
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE( tmp.isValid() );
+    const std::string pattern = ( tmp.path() + QLatin1String("/metadataConcurrent.####.exr") ).toStdString();
+    writer->setOutputFilesForWriter(pattern);
+
+    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>( writer->getEffectInstance().get() );
+    ASSERT_TRUE(writerEffect != NULL);
+
+    // Raised last, after every input and knob change: Node::refreshDynamicProperties() puts the
+    // plug-in's own level back and both of those run it. The example plug-ins never call
+    // setRenderThreadSafety(), so they take the OFX default of instance safe, and their render
+    // bodies -- a per window pixel copy of images the host hands them, plus a read of metadata
+    // the host owns -- meet fully safe. The generator and the writer declare fully safe for
+    // themselves and are left alone, so with these two raised nothing in the chain serialises.
+    contribute->setRenderThreadSafety(eRenderSafetyFullySafe);
+    print->setRenderThreadSafety(eRenderSafetyFullySafe);
+    ASSERT_EQ( eRenderSafetyFullySafe, contribute->getCurrentRenderThreadSafety() );
+    ASSERT_EQ( eRenderSafetyFullySafe, print->getCurrentRenderThreadSafety() );
+
+    OFX::Host::ImageEffect::ClipInstance* contributeOutput = clipOf(contribute, kOfxImageEffectOutputClipName);
+    // the clip the reading node's own render action asks for metadata on
+    OFX::Host::ImageEffect::ClipInstance* printSource = clipOf(print, kOfxImageEffectSimpleSourceClipName);
+    OFX::Host::ImageEffect::ClipInstance* printOutput = clipOf(print, kOfxImageEffectOutputClipName);
+    ASSERT_TRUE(contributeOutput != NULL) << "the contributing node has no output clip";
+    ASSERT_TRUE(printSource != NULL) << "the reading node has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+    ASSERT_TRUE(printOutput != NULL) << "the reading node has no output clip";
+
+    std::vector<OFX::Host::ImageEffect::ClipInstance*> clips;
+    std::vector<std::string> clipLabels;
+    clips.push_back(printSource);
+    clipLabels.push_back("the reading node's source clip");
+    clips.push_back(printOutput);
+    clipLabels.push_back("the reading node's output clip");
+    clips.push_back(contributeOutput);
+    clipLabels.push_back("the contributing node's output clip");
+
+    const int firstFrame = 1;
+    const int lastFrame = 6;
+
+    std::vector<std::vector<MetadataSnapshot> > before( clips.size() );
+    for (std::size_t c = 0; c < clips.size(); ++c) {
+        for (int frame = firstFrame; frame <= lastFrame; ++frame) {
+            before[c].push_back( snapshotMetadata(clips[c], frame) );
+        }
+    }
+
+    // An empty answer would satisfy every comparison made against it, so the baseline is checked
+    // to carry the chain's keys before it is used as one: the plug-in's contribution, and the
+    // host's own keys including the one whose value differs from frame to frame.
+    ASSERT_FALSE( before[0][0].empty() ) << "the reading node's source clip carries no metadata at all";
+    EXPECT_EQ( std::string("rendered concurrently"), snapshotValue(before[0][0], kContributeNoteKey) );
+    EXPECT_EQ( std::string("rendered concurrently"), snapshotValue(before[1][0], kContributeNoteKey) );
+    EXPECT_EQ( std::string("rendered concurrently"), snapshotValue(before[2][0], kContributeNoteKey) );
+    EXPECT_EQ( std::string("1"), snapshotValue(before[0][0], kOfxMetadataKeySourceFrame) );
+    EXPECT_EQ( std::string("6"), snapshotValue(before[0][lastFrame - firstFrame], kOfxMetadataKeySourceFrame) );
+    EXPECT_NE( std::string("<absent>"), snapshotValue(before[0][0], kOfxMetadataKeyFrameRate) );
+    EXPECT_NE( std::string("<absent>"), snapshotValue(before[0][0], kOfxMetadataKeyWidth) );
+    EXPECT_NE( std::string("<absent>"), snapshotValue(before[0][0], kOfxMetadataKeyHeight) );
+
+    std::atomic<bool> stop(false);
+    std::vector<MetadataReaderThread*> readers;
+    for (int i = 0; i < 4; ++i) {
+        readers.push_back( new MetadataReaderThread(clips, clipLabels, before, firstFrame, &stop) );
+        readers.back()->start();
+    }
+
+    long long readsBeforeRender = 0;
+    for (std::size_t i = 0; i < readers.size(); ++i) {
+        readsBeforeRender += readers[i]->reads();
+    }
+
+    std::list<AppInstance::RenderWork> works;
+    works.push_back( AppInstance::RenderWork(writerEffect, firstFrame, lastFrame, 1, false) );
+    getApp()->startWritersRendering(false, works);
+
+    long long readsDuringRender = 0;
+    for (std::size_t i = 0; i < readers.size(); ++i) {
+        readsDuringRender += readers[i]->reads();
+    }
+    readsDuringRender -= readsBeforeRender;
+
+    stop.store(true);
+
+    std::string failure;
+    long long totalReads = 0;
+    for (std::size_t i = 0; i < readers.size(); ++i) {
+        readers[i]->wait();
+        totalReads += readers[i]->reads();
+        if ( failure.empty() ) {
+            failure = readers[i]->failure();
+        }
+    }
+    for (std::size_t i = 0; i < readers.size(); ++i) {
+        delete readers[i];
+    }
+    readers.clear();
+
+    EXPECT_EQ( std::string(), failure );
+    EXPECT_GT(readsDuringRender, 0) << "the readers were not running while the render was";
+    EXPECT_GT(totalReads, 0);
+
+    // the level has to have held for the whole render, or the lock free path was not the one taken
+    EXPECT_EQ( eRenderSafetyFullySafe, contribute->getCurrentRenderThreadSafety() );
+    EXPECT_EQ( eRenderSafetyFullySafe, print->getCurrentRenderThreadSafety() );
+
+    const std::vector<std::string>& viewNames = getApp()->getProject()->getProjectViewNames();
+    for (int frame = firstFrame; frame <= lastFrame; ++frame) {
+        const std::string path = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, 0);
+        EXPECT_TRUE( QFile::exists( QString::fromStdString(path) ) ) << "frame " << frame << " was not rendered: " << path;
+        QFile::remove( QString::fromStdString(path) );
+    }
+
+    NodePtr chain[] = { generator, contribute, print, writer };
+    for (std::size_t i = 0; i < sizeof(chain) / sizeof(chain[0]); ++i) {
+        QString message;
+        int type = 0;
+        chain[i]->getPersistentMessage(&message, &type);
+        EXPECT_TRUE( message.isEmpty() ) << chain[i]->getScriptName() << " reported: " << message.toStdString();
+    }
+
+    for (std::size_t c = 0; c < clips.size(); ++c) {
+        for (int frame = firstFrame; frame <= lastFrame; ++frame) {
+            const MetadataSnapshot after = snapshotMetadata(clips[c], frame);
+            EXPECT_TRUE( after == before[c][frame - firstFrame] )
+                << clipLabels[c] << " at frame " << frame << " reads {" << describeSnapshot(after)
+                << "} after the render but held {" << describeSnapshot(before[c][frame - firstFrame]) << "} before it";
+        }
+    }
+} // TEST_F(MetadataPluginFixture, MetadataConcurrentReadsDuringRenderStayWhole)

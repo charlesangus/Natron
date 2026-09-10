@@ -31,6 +31,7 @@ set(Tests_SOURCES
     Image_Test.cpp
     KnobFile_Test.cpp
     Lut_Test.cpp
+    Metadata_Test.cpp
     OSGLContext_Test.cpp
     ProjectOCIO_Test.cpp
     ProjectSerialization_Test.cpp

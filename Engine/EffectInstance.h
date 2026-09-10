@@ -1481,7 +1481,6 @@ public:
      **/
     virtual void onNodeHashChanged(U64 hash);
 
-
     virtual void initializeData()
     {
     }

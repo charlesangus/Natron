@@ -1776,7 +1776,7 @@ addReaderFileMetadata(OFX::Host::Property::Set& metadata,
                       const EffectInstancePtr& reader,
                       OfxTime time)
 {
-    KnobFile* fileKnob = dynamic_cast<KnobFile*>( reader->getKnobByName(kOfxImageEffectFileParamName).get() );
+    KnobFile* fileKnob = dynamic_cast<KnobFile*>(reader->getKnobByName(kOfxImageEffectFileParamName).get());
 
     if (!fileKnob) {
         return;
@@ -1789,21 +1789,21 @@ addReaderFileMetadata(OFX::Host::Property::Set& metadata,
     if (app) {
         viewNames = app->getProject()->getProjectViewNames();
     }
-    const std::string path = SequenceParsing::generateFileNameFromPattern(fileKnob->getValue( 0, ViewIdx(0) ), viewNames, (int)time, 0);
-    if ( path.empty() ) {
+    const std::string path = SequenceParsing::generateFileNameFromPattern(fileKnob->getValue(0, ViewIdx(0)), viewNames, (int)time, 0);
+    if (path.empty()) {
         return;
     }
 
-    const QFileInfo info( QString::fromUtf8( path.c_str() ) );
-    if ( !info.isFile() ) {
+    const QFileInfo info(QString::fromUtf8(path.c_str()));
+    if (!info.isFile()) {
         // a reader aimed at a frame that is not on disk is an ordinary state rather than an
         // error, and a key whose value is unknown is omitted rather than published empty
         return;
     }
 
     addMetadataString(metadata, kOfxMetadataKeyFilePath, path);
-    addMetadataDouble( metadata, kOfxMetadataKeyMTime, info.lastModified().toMSecsSinceEpoch() / 1000. );
-    addMetadataDouble( metadata, kOfxMetadataKeyFileSize, (double)info.size() );
+    addMetadataDouble(metadata, kOfxMetadataKeyMTime, info.lastModified().toMSecsSinceEpoch() / 1000.);
+    addMetadataDouble(metadata, kOfxMetadataKeyFileSize, (double)info.size());
 } // addReaderFileMetadata
 
 void
@@ -1812,13 +1812,13 @@ OfxClipInstance::fetchMetadata(OfxTime time,
 {
     OFX::Host::ImageEffect::ClipInstance* upstreamOutput = NULL;
 
-    if ( !isOutput() ) {
+    if (!isOutput()) {
         // An input clip carries the metadata of the image handed to it, which is the one the
         // node connected to it puts out of its own output clip. That node is taken as it is
         // rather than through getNearestNonIdentity(): a node that passes its pixels through
         // untouched may still be there precisely to add metadata to them.
         EffectInstancePtr inputNode = getAssociatedNode();
-        OfxEffectInstance* ofxInputNode = dynamic_cast<OfxEffectInstance*>( inputNode.get() );
+        OfxEffectInstance* ofxInputNode = dynamic_cast<OfxEffectInstance*>(inputNode.get());
         if (ofxInputNode) {
             OfxImageEffectInstance* upstreamEffect = ofxInputNode->effectInstance();
             if (upstreamEffect) {
@@ -1848,19 +1848,19 @@ OfxClipInstance::fetchMetadata(OfxTime time,
         // read from upstream: nothing is connected to it, or what is connected is a native
         // node and so has no OFX clip at all. The keys are derived from this clip instead,
         // which falls back to the project's own values when it has no input.
-        addMetadataDouble( metadata, kOfxMetadataKeyFrameRate, getFrameRate() );
-        addMetadataDouble( metadata, kOfxMetadataKeyPixelAspect, getAspectRatio() );
+        addMetadataDouble(metadata, kOfxMetadataKeyFrameRate, getFrameRate());
+        addMetadataDouble(metadata, kOfxMetadataKeyPixelAspect, getAspectRatio());
 
         const OfxRectI format = getFormat();
         addMetadataInt(metadata, kOfxMetadataKeyWidth, format.x2 - format.x1);
         addMetadataInt(metadata, kOfxMetadataKeyHeight, format.y2 - format.y1);
 
-        const int bitDepth = ofxBitDepthToBitCount( getUnmappedBitDepth() );
+        const int bitDepth = ofxBitDepthToBitCount(getUnmappedBitDepth());
         if (bitDepth > 0) {
             addMetadataInt(metadata, kOfxMetadataKeyBitDepth, bitDepth);
         }
 
-        addMetadataInt( metadata, kOfxMetadataKeySourceFrame, (int)time );
+        addMetadataInt(metadata, kOfxMetadataKeySourceFrame, (int)time);
 
         EffectInstancePtr effect = getEffectHolder();
         AppInstancePtr app = effect ? effect->getApp() : AppInstancePtr();
@@ -1869,22 +1869,22 @@ OfxClipInstance::fetchMetadata(OfxTime time,
             // getProjectViewNames() hands out a reference to thread-local storage that the
             // next call on this thread rewrites, so the names are copied out of it here.
             const std::vector<std::string> viewNames = project->getProjectViewNames();
-            if ( !viewNames.empty() ) {
+            if (!viewNames.empty()) {
                 addMetadataStringN(metadata, kOfxMetadataKeyViewNames, viewNames);
             }
 
             const std::string projectFile = project->getProjectFilename().toStdString();
-            if ( !projectFile.empty() ) {
+            if (!projectFile.empty()) {
                 addMetadataString(metadata, kOfxMetadataKeyProject, projectFile);
             }
         }
 
-        if ( isOutput() ) {
+        if (isOutput()) {
             // The filename param belongs to the decoder rather than to the Read container
             // getEffectHolder() hands back, so the keys are taken from the effect this clip
             // is actually part of.
             OfxEffectInstancePtr reader = _imp->nodeInstance.lock();
-            if ( reader && reader->isReader() ) {
+            if (reader && reader->isReader()) {
                 addReaderFileMetadata(metadata, reader, time);
             }
         }

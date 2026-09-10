@@ -212,7 +212,11 @@ def _write_solid_exr(path, width, height, value):
         )
 
 
-EXPECTED_OFX_BUNDLES = ("Arena", "CImg", "IO", "Misc")
+EXPECTED_OFX_BUNDLES = (
+    "Arena", "CImg", "IO", "Misc",
+    "metadataCompare", "metadataContribute", "metadataCopy", "metadataModify",
+    "metadataPrint", "metadataTimeCode", "metadataView",
+)
 
 
 def check_ofx_plugin_bundle_set():
@@ -298,7 +302,14 @@ def check_plugin_id_enumeration():
         "Misc": ("net.sf.openfx.ConstantPlugin", "net.sf.openfx.GradePlugin",
                  "net.sf.openfx.MergePlugin"),
         "CImg": ("net.sf.cimg.CImgBlur", "net.sf.cimg.CImgPlasma"),
-        "Arena": ("net.fxarena.openfx.Text", "net.fxarena.openfx.Texture")
+        "Arena": ("net.fxarena.openfx.Text", "net.fxarena.openfx.Texture"),
+        "metadataCompare": ("org.openfx.examples.metadataCompare",),
+        "metadataContribute": ("org.openfx.examples.metadataContribute",),
+        "metadataCopy": ("org.openfx.examples.metadataCopy",),
+        "metadataModify": ("org.openfx.examples.metadataModify",),
+        "metadataPrint": ("org.openfx.examples.metadataPrint",),
+        "metadataTimeCode": ("org.openfx.examples.metadataTimeCode",),
+        "metadataView": ("org.openfx.examples.metadataView",),
     }
 
     all_expected = set()

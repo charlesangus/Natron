@@ -83,6 +83,7 @@ struct MetadataPluginFixture
 
 const char kMetadataContributeID[] = "org.openfx.examples.metadataContribute";
 const char kMetadataPrintID[] = "org.openfx.examples.metadataPrint";
+const char kMetadataTimeCodeID[] = "org.openfx.examples.metadataTimeCode";
 const char kMetadataViewID[] = "org.openfx.examples.metadataView";
 
 // the param metadataContribute reads, and the key it publishes that param's value under
@@ -195,6 +196,38 @@ describeSnapshot(const MetadataSnapshot& snapshot)
         }
         text << it->first << "=" << it->second;
     }
+
+    return text.str();
+}
+
+// The four fields of an HH:MM:SS:FF timecode. Failing rather than handing back zeroed fields
+// keeps a timecode that never arrived from reading as 00:00:00:00 and passing for a real one.
+struct TimecodeFields
+{
+    int hours;
+    int minutes;
+    int seconds;
+    int frames;
+};
+
+bool
+parseTimecodeFields(const std::string& text,
+                    TimecodeFields* fields)
+{
+    std::istringstream stream(text);
+    char first = 0, second = 0, third = 0;
+
+    stream >> fields->hours >> first >> fields->minutes >> second >> fields->seconds >> third >> fields->frames;
+
+    return !stream.fail() && (first == ':') && (second == ':') && (third == ':');
+}
+
+std::string
+describeTimecodeFields(const TimecodeFields& fields)
+{
+    std::ostringstream text;
+
+    text << fields.hours << ":" << fields.minutes << ":" << fields.seconds << ":" << fields.frames;
 
     return text.str();
 }
@@ -978,3 +1011,130 @@ TEST_F(MetadataPluginFixture, MetadataConcurrentReadsDuringRenderStayWhole)
         }
     }
 } // TEST_F(MetadataPluginFixture, MetadataConcurrentReadsDuringRenderStayWhole)
+
+// Metadata that changes with time rather than only with the clip. MetadataTimeCode synthesises
+// its timecode -- it counts frames on from a start code rather than reading one off a file --
+// which is what makes this testable at all, since nothing in the tree carries a file derived
+// timecode. It counts at the rate it reads off its source clip's ofx/framerate, so the rate the
+// host publishes for that clip is what decides both the value reported and where the frames
+// field rolls over, and the rate param is deliberately set well away from the project's so that
+// a count at the project's rate cannot also be explained by the param.
+TEST_F(MetadataPluginFixture, MetadataTimeCodeAdvancesFrameByFrameAtTheHostFrameRate)
+{
+    NodePtr generator = createNode( QString::fromUtf8(PLUGINID_OFX_CONSTANT) );
+    NodePtr timecode = createNode( QString::fromUtf8(kMetadataTimeCodeID) );
+    ASSERT_TRUE( bool(generator) ) << "node creation failed for " << PLUGINID_OFX_CONSTANT;
+    ASSERT_TRUE( bool(timecode) ) << "node creation failed for " << kMetadataTimeCodeID;
+
+    connectNodes(generator, timecode, 0, true);
+
+    KnobString* startTimecode = dynamic_cast<KnobString*>( timecode->getKnobByName("startTimecode").get() );
+    KnobDouble* rate = dynamic_cast<KnobDouble*>( timecode->getKnobByName("rate").get() );
+    KnobBool* rateFromMetadata = dynamic_cast<KnobBool*>( timecode->getKnobByName("rateFromMetadata").get() );
+    KnobBool* useStartFrame = dynamic_cast<KnobBool*>( timecode->getKnobByName("useStartFrame").get() );
+    ASSERT_TRUE(startTimecode != NULL) << "the time code node has no startTimecode param";
+    ASSERT_TRUE(rate != NULL) << "the time code node has no rate param";
+    ASSERT_TRUE(rateFromMetadata != NULL) << "the time code node has no rateFromMetadata param";
+    ASSERT_TRUE(useStartFrame != NULL) << "the time code node has no useStartFrame param";
+
+    // read live rather than asserted against a literal: the app instance, and so the project, is
+    // shared by the whole suite
+    const double projectFrameRate = getApp()->getProjectFrameRate();
+    const int countedRate = (int)(projectFrameRate + 0.5);
+    ASSERT_GE(countedRate, 3) << "the project frame rate is too low for a second boundary to be crossed within a frame or two of it";
+
+    const double paramRate = projectFrameRate + 36.;
+
+    startTimecode->setValue( std::string("01:00:00:00") );
+    useStartFrame->setValue(false);
+    rate->setValue(paramRate);
+    rateFromMetadata->setValue(true);
+
+    OFX::Host::ImageEffect::ClipInstance* output = clipOf(timecode, kOfxImageEffectOutputClipName);
+    ASSERT_TRUE(output != NULL) << "the time code node has no output clip";
+
+    // With the start code landing on frame 1, frame t carries t-1 frames counted at the rate, so
+    // the frames field rolls into the seconds field at frame countedRate+1. Reading either side
+    // of it is what makes the rollover exercised rather than assumed.
+    const int rolloverTime = countedRate + 1;
+    const int firstTime = rolloverTime - 2;
+    const int lastTime = rolloverTime + 1;
+
+    TimecodeFields previous;
+    bool havePrevious = false;
+
+    for (int time = firstTime; time <= lastTime; ++time) {
+        OFX::Host::ImageEffect::MetadataSet* set = output->getMetadata(time);
+        ASSERT_TRUE(set != NULL) << "frame " << time << ": no metadata at all";
+        ASSERT_TRUE(set->fetchProperty(kOfxMetadataKeyTimecode) != NULL)
+            << "frame " << time << ": the plug-in's timecode never reached its output clip";
+
+        const std::string text = set->getStringProperty(kOfxMetadataKeyTimecode);
+        const double reportedRate = set->getDoubleProperty(kOfxMetadataKeyFrameRate);
+        set->releaseReference();
+
+        EXPECT_DOUBLE_EQ(projectFrameRate, reportedRate)
+            << "frame " << time << ": the rate reported alongside the timecode is neither the host's "
+            << projectFrameRate << " nor, as it happens, anything the param's " << paramRate << " implies";
+
+        TimecodeFields fields;
+        ASSERT_TRUE( parseTimecodeFields(text, &fields) )
+            << "frame " << time << ": '" << text << "' is not an HH:MM:SS:FF timecode";
+
+        EXPECT_EQ(1, fields.hours) << "frame " << time << ": read " << text;
+        EXPECT_EQ(0, fields.minutes) << "frame " << time << ": read " << text;
+        EXPECT_EQ( (time - 1) / countedRate, fields.seconds )
+            << "frame " << time << ": read " << text << ", counting at " << countedRate;
+        EXPECT_EQ( (time - 1) % countedRate, fields.frames )
+            << "frame " << time << ": read " << text << ", counting at " << countedRate;
+
+        if (havePrevious) {
+            if (fields.seconds == previous.seconds) {
+                EXPECT_EQ(previous.frames + 1, fields.frames)
+                    << "the frames field did not advance by one from frame " << (time - 1) << " ("
+                    << describeTimecodeFields(previous) << ") to frame " << time << " (" << text << ")";
+            } else {
+                EXPECT_EQ(previous.seconds + 1, fields.seconds)
+                    << "frame " << time << " (" << text << ") did not follow frame " << (time - 1)
+                    << " (" << describeTimecodeFields(previous) << ") by one second";
+                EXPECT_EQ(0, fields.frames) << "the frames field did not restart at zero across the second boundary: " << text;
+                EXPECT_EQ(countedRate - 1, previous.frames)
+                    << "the frames field rolled over at " << describeTimecodeFields(previous)
+                    << " rather than after counting to " << countedRate;
+            }
+        }
+
+        previous = fields;
+        havePrevious = true;
+    }
+
+    ASSERT_TRUE(havePrevious);
+
+    // rateFromMetadata is the param that chooses between the two rates, so turning it off has to
+    // make the same frame count at the rate param instead. That is what says the count above came
+    // from the rate this host publishes rather than from anything the plug-in fell back on.
+    rateFromMetadata->setValue(false);
+
+    OFX::Host::ImageEffect::MetadataSet* fromParam = output->getMetadata(rolloverTime);
+    ASSERT_TRUE(fromParam != NULL) << "frame " << rolloverTime << ": no metadata at all";
+    ASSERT_TRUE(fromParam->fetchProperty(kOfxMetadataKeyTimecode) != NULL)
+        << "frame " << rolloverTime << ": the plug-in's timecode never reached its output clip";
+
+    const std::string paramText = fromParam->getStringProperty(kOfxMetadataKeyTimecode);
+    const double paramReportedRate = fromParam->getDoubleProperty(kOfxMetadataKeyFrameRate);
+    fromParam->releaseReference();
+
+    EXPECT_DOUBLE_EQ(paramRate, paramReportedRate)
+        << "with rateFromMetadata off the reported rate is not the param's";
+
+    TimecodeFields paramFields;
+    ASSERT_TRUE( parseTimecodeFields(paramText, &paramFields) )
+        << "frame " << rolloverTime << ": '" << paramText << "' is not an HH:MM:SS:FF timecode";
+
+    EXPECT_EQ(0, paramFields.seconds)
+        << "frame " << rolloverTime << " read " << paramText << ": counted at the param's " << paramRate
+        << " it is still short of a whole second, so it must not have rolled over";
+    EXPECT_EQ(rolloverTime - 1, paramFields.frames)
+        << "frame " << rolloverTime << " read " << paramText << " rather than counting to "
+        << (rolloverTime - 1) << " at the param's rate";
+} // TEST_F(MetadataPluginFixture, MetadataTimeCodeAdvancesFrameByFrameAtTheHostFrameRate)

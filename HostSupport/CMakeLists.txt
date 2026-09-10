@@ -66,5 +66,6 @@ target_compile_definitions(HostSupport
         OFX_SUPPORTS_OPENGLRENDER
         OFX_SUPPORTS_MULTITHREAD
         OFX_SUPPORTS_DIALOG
+        OFX_SUPPORTS_METADATA
 )
 set_target_properties(HostSupport PROPERTIES POSITION_INDEPENDENT_CODE ON)

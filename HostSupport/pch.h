@@ -24,6 +24,9 @@
 #ifdef OFX_SUPPORTS_OPENGLRENDER
 #include "ofxOpenGLRender.h"
 #endif
+#ifdef OFX_SUPPORTS_METADATA
+#include "ofxMetadata.h"
+#endif
 #include "ofxOld.h" // old plugins may rely on deprecated properties being present
 
 #endif // __cplusplus

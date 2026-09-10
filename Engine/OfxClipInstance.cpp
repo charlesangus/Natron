@@ -58,6 +58,13 @@
 #include <ofxOpenGLRender.h>
 #include <ofxNatron.h>
 #ifdef OFX_SUPPORTS_METADATA
+#include <QDateTime>
+#include <QFileInfo>
+
+#include <SequenceParsing.h>
+
+#include "Engine/KnobFile.h"
+
 #include <ofxMetadata.h>
 #endif
 
@@ -1762,6 +1769,43 @@ ofxBitDepthToBitCount(const std::string& depth)
     return 0;
 }
 
+/// Adds the keys describing the file a reader read this image from. Nothing is added if the
+/// reader has no filename param, or if the file the param names at this time is not there.
+static void
+addReaderFileMetadata(OFX::Host::Property::Set& metadata,
+                      const EffectInstancePtr& reader,
+                      OfxTime time)
+{
+    KnobFile* fileKnob = dynamic_cast<KnobFile*>( reader->getKnobByName(kOfxImageEffectFileParamName).get() );
+
+    if (!fileKnob) {
+        return;
+    }
+
+    // the param holds a sequence pattern while these keys describe one image, so the pattern is
+    // expanded at this time and the value names the single file this image was read from
+    std::vector<std::string> viewNames;
+    AppInstancePtr app = reader->getApp();
+    if (app) {
+        viewNames = app->getProject()->getProjectViewNames();
+    }
+    const std::string path = SequenceParsing::generateFileNameFromPattern(fileKnob->getValue( 0, ViewIdx(0) ), viewNames, (int)time, 0);
+    if ( path.empty() ) {
+        return;
+    }
+
+    const QFileInfo info( QString::fromUtf8( path.c_str() ) );
+    if ( !info.isFile() ) {
+        // a reader aimed at a frame that is not on disk is an ordinary state rather than an
+        // error, and a key whose value is unknown is omitted rather than published empty
+        return;
+    }
+
+    addMetadataString(metadata, kOfxMetadataKeyFilePath, path);
+    addMetadataDouble( metadata, kOfxMetadataKeyMTime, info.lastModified().toMSecsSinceEpoch() / 1000. );
+    addMetadataDouble( metadata, kOfxMetadataKeyFileSize, (double)info.size() );
+} // addReaderFileMetadata
+
 void
 OfxClipInstance::fetchMetadata(OfxTime time,
                                OFX::Host::Property::Set& metadata)
@@ -1832,6 +1876,16 @@ OfxClipInstance::fetchMetadata(OfxTime time,
             const std::string projectFile = project->getProjectFilename().toStdString();
             if ( !projectFile.empty() ) {
                 addMetadataString(metadata, kOfxMetadataKeyProject, projectFile);
+            }
+        }
+
+        if ( isOutput() ) {
+            // The filename param belongs to the decoder rather than to the Read container
+            // getEffectHolder() hands back, so the keys are taken from the effect this clip
+            // is actually part of.
+            OfxEffectInstancePtr reader = _imp->nodeInstance.lock();
+            if ( reader && reader->isReader() ) {
+                addReaderFileMetadata(metadata, reader, time);
             }
         }
     }

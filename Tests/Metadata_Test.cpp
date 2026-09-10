@@ -34,7 +34,12 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/Node.h"
+#include "Engine/OfxEffectInstance.h"
+#include "Engine/OfxHost.h"
 #include "Engine/Plugin.h"
+
+#include <ofxMetadata.h>
+#include <ofxProperty.h>
 
 NATRON_NAMESPACE_USING
 
@@ -76,4 +81,29 @@ TEST_F(MetadataPluginFixture, MetadataContributeInstantiatesAsNode)
 TEST_F(MetadataPluginFixture, MetadataTimeCodeInstantiatesAsNode)
 {
     assertPluginInstantiates("org.openfx.examples.metadataTimeCode");
+}
+
+// Support/Library/ofxsMetadata.cpp fetches the metadata suite optionally and quietly no-ops
+// when it is absent, so every other test in this file would keep passing even if the host
+// never actually vended the suite. This is the one case that would catch that.
+TEST_F(MetadataPluginFixture, MetadataAndPropertySuiteAreFetchableFromOfxHost)
+{
+    const QString id = QString::fromUtf8("org.openfx.examples.metadataView");
+    NodePtr node = createNode(id);
+    ASSERT_TRUE(bool(node)) << "node creation failed for " << id.toStdString();
+
+    OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>( node->getEffectInstance().get() );
+    ASSERT_TRUE(ofxEffect != NULL) << "node's effect instance is not backed by the OFX host";
+
+    // ImageEffectPlugin/PluginHandle keep no back-pointer to the OfxHost that instantiated
+    // them, so the host is reached via Natron's AppManager singleton rather than through the
+    // node's plugin handle. AppManager only hands out a const OfxHost*, but fetchSuite() does
+    // nothing but look suites up, so the const_cast is safe here.
+    const Natron::OfxHost* constHost = appPTR->getOFXHost();
+    ASSERT_TRUE(constHost != NULL);
+    Natron::OfxHost* host = const_cast<Natron::OfxHost*>(constHost);
+
+    EXPECT_TRUE(host->fetchSuite(kOfxPropertySuite, 1) != NULL) << "property suite v1 not vended";
+    EXPECT_TRUE(host->fetchSuite(kOfxPropertySuite, 2) != NULL) << "property suite v2 not vended";
+    EXPECT_TRUE(host->fetchSuite(kOfxMetadataSuite, 1) != NULL) << "metadata suite not vended";
 }

@@ -22,7 +22,7 @@ Rationale for doing it now and as its own milestone:
 
 ## Phase 26.1: Diagnose and fix
 
-- [ ] M26.P1.T1 — Find which thread outlives teardown
+- [x] M26.P1.T1 — Find which thread outlives teardown
   - files: `Tests/BaseTest.cpp`, `Tests/BaseTest.h`, plus whatever
     `AppInstance`/`AppManager` teardown path the investigation implicates
   - approach: reproduce under the container (`xvfb-run --auto-servernum ctest -R
@@ -55,3 +55,48 @@ Rationale for doing it now and as its own milestone:
   - size: M
 
 **Verification gate:** the full ctest suite green, and `ctest -R "BaseTest|DeepRenderPipelineTest"` run 20 consecutive times with zero "Subprocess aborted" results. CI's `build-and-test` job green on the PR.
+
+## Decisions
+
+- 2026-09-10 — M26.P1.T1 result. The thread is `CacheCleanerThread`
+  (`Engine/Cache.h:202`, object name `"CacheCleaner"`), owned by
+  `Cache<Image>::_cleanerThread` (`:510`) — in practice
+  `AppManagerPrivate::_nodeCache`. Ordering, all on the main thread after
+  `RUN_ALL_TESTS()`: `~AppManager` → `_nodeCache->waitForDeleterThread()`
+  (`AppManager.cpp:455`) → `quitThread()` on both helper threads → returns →
+  `_imp->_nodeCache.reset()` (`:463`) → `~Cache` → `~CacheCleanerThread` →
+  `~QThread` → `qFatal`.
+
+  The defect: `quitThread()` (`Cache.h:258`) is a condition-variable handshake
+  mistaken for a join. It sets `mustQuit`, wakes the worker, waits on
+  `mustQuitCond` until `run()` clears the flag — and returns **without
+  `QThread::wait()`**. The worker still has to unwind two `QMutexLocker`s,
+  return from `run()`, and reach `QThreadPrivate::finish()`; `~Cache` destroys
+  the thread object inside that window. `DeleterThread::quitThread()` (`:129`)
+  has the identical defect. `GenericWatcher::stopWatching()`
+  (`GenericSchedulerThreadWatcher.cpp:97-124`) is the same handshake done
+  correctly — it calls `wait()` afterwards — and is the pattern to copy.
+
+  Backtrace confirms it rather than inferring it: the aborting `~QThread` on the
+  main thread holds `QThreadPrivate::mutex`, while thread `"CacheCleaner"` sits
+  in `QThreadPrivate::finish()` blocked on `QBasicMutex::lockInternal()` for that
+  same mutex. Pure race, no ordering between the two acquisitions, hence
+  intermittent.
+
+  Two secondary findings. Which *case* aborts varies because the cleaner thread
+  is only started by a node hash change after creation
+  (`Node::computeHashInternal()` → `removeAllEntriesWithDifferentNodeHashForHolderPublic()`
+  → `appendToQueue()`), so only tests that call `connectNodes()` or set a knob
+  are exposed — matching the observed failing set exactly. And the rate is
+  machine-dependent: 0/7 full `BaseTest` runs on an idle 16-core box, ~1/30 under
+  load. The ~50% recorded on the M18 branch is consistent — that branch adds a
+  fourth `Cache` with its own thread pair and actually renders, so there are more
+  racers and a wider window.
+
+- 2026-09-10 — Do not suppress the Qt message. `qFatal` here is reporting a
+  genuine use-after-free-shaped defect: the worker touches `QThreadPrivate`
+  owned by an object the main thread is concurrently destroying. Prior art in
+  the tree: `13eb6dcb2` ("Fix DeleterThread and CacheCleanerThread locking",
+  upstream #877) fixed a double-unlock in these same two functions, motivated by
+  "crashes when the Tests binary would exit" — the same teardown, left
+  unfinished.

@@ -89,6 +89,21 @@ const char kMetadataViewID[] = "org.openfx.examples.metadataView";
 const char kContributeNoteParam[] = "note";
 const char kContributeNoteKey[] = "org.openfx.examples.metadataContribute.note";
 
+// every key metadataContribute publishes on each call. ofx/framerate is deliberately one of
+// them: the host publishes that key for every clip too, so what a node downstream reads back
+// for it is what says whose value wins.
+const char* const kContributedKeys[] = {
+    kContributeNoteKey,
+    "org.openfx.examples.metadataContribute.revision",
+    "org.openfx.examples.metadataContribute.quality",
+    "org.openfx.examples.metadataContribute.tags",
+    "org.openfx.examples.metadataContribute.renderRegion",
+    "org.openfx.examples.metadataContribute.weights",
+    kOfxMetadataKeyFrameRate
+};
+
+const double kContributedFrameRate = 30.;
+
 OFX::Host::ImageEffect::ClipInstance*
 clipOf(const NodePtr& node,
        const char* clipName)
@@ -722,6 +737,86 @@ TEST_F(MetadataPluginFixture, UnchangedStateDoesNotReRunTheGetMetadataAction)
     firstSource->releaseReference();
     firstContribute->releaseReference();
 }
+
+// The chain contract the reference host's harness holds two nodes to, made to hold here: a node
+// downstream of a contributing one has to put out the union of what its source carries and what
+// the contributor adds, with the contributed values winning, and has to follow a later change to
+// the contributor. Natron's source keys are the host's own rather than a fixture's, so the union
+// is checked as each side being contained in what the tail carries rather than as a literal set.
+TEST_F(MetadataPluginFixture, MetadataChainCarriesTheContributedKeysDownstream)
+{
+    NodePtr generator = createNode( QString::fromUtf8(PLUGINID_OFX_CONSTANT) );
+    NodePtr contribute = createNode( QString::fromUtf8(kMetadataContributeID) );
+    NodePtr view = createNode( QString::fromUtf8(kMetadataViewID) );
+    ASSERT_TRUE( bool(generator) ) << "node creation failed for " << PLUGINID_OFX_CONSTANT;
+    ASSERT_TRUE( bool(contribute) ) << "node creation failed for " << kMetadataContributeID;
+    ASSERT_TRUE( bool(view) ) << "node creation failed for " << kMetadataViewID;
+
+    connectNodes(generator, contribute, 0, true);
+    connectNodes(contribute, view, 0, true);
+
+    setContributedNote(contribute, "before the chain");
+
+    // read live: the project is shared by the whole suite. Were it sitting at the contributed
+    // rate the frame rate check below would say nothing at all, so it is asserted to differ.
+    const double projectFrameRate = getApp()->getProjectFrameRate();
+    ASSERT_NE(projectFrameRate, kContributedFrameRate)
+        << "the project frame rate is the contributed one, so nothing below could tell them apart";
+
+    OFX::Host::ImageEffect::ClipInstance* sourceOutput = clipOf(generator, kOfxImageEffectOutputClipName);
+    OFX::Host::ImageEffect::ClipInstance* viewOutput = clipOf(view, kOfxImageEffectOutputClipName);
+    ASSERT_TRUE(sourceOutput != NULL) << "the head of the chain has no output clip";
+    ASSERT_TRUE(viewOutput != NULL) << "the tail of the chain has no output clip";
+
+    const int firstFrame = 1;
+    const int lastFrame = 4;
+
+    for (int frame = firstFrame; frame <= lastFrame; ++frame) {
+        const MetadataSnapshot source = snapshotMetadata(sourceOutput, frame);
+        const MetadataSnapshot tail = snapshotMetadata(viewOutput, frame);
+
+        ASSERT_FALSE( source.empty() ) << "the chain's source carries no metadata at frame " << frame;
+        ASSERT_FALSE( tail.empty() ) << "the chain's tail carries no metadata at frame " << frame;
+
+        for (MetadataSnapshot::const_iterator it = source.begin(); it != source.end(); ++it) {
+            EXPECT_TRUE( tail.find(it->first) != tail.end() )
+                << "frame " << frame << ": the source key " << it->first
+                << " did not reach the tail, which carries {" << describeSnapshot(tail) << "}";
+        }
+
+        for (std::size_t k = 0; k < sizeof(kContributedKeys) / sizeof(kContributedKeys[0]); ++k) {
+            EXPECT_NE( std::string("<absent>"), snapshotValue(tail, kContributedKeys[k]) )
+                << "frame " << frame << ": the contributed key " << kContributedKeys[k]
+                << " did not reach the tail, which carries {" << describeSnapshot(tail) << "}";
+        }
+
+        OFX::Host::ImageEffect::MetadataSet* sourceSet = sourceOutput->getMetadata(frame);
+        OFX::Host::ImageEffect::MetadataSet* tailSet = viewOutput->getMetadata(frame);
+        ASSERT_TRUE(sourceSet != NULL);
+        ASSERT_TRUE(tailSet != NULL);
+
+        EXPECT_DOUBLE_EQ( projectFrameRate, sourceSet->getDoubleProperty(kOfxMetadataKeyFrameRate) )
+            << "frame " << frame << ": the source does not carry the project's frame rate, so the "
+            << "value read at the tail proves nothing about which of the two won";
+        EXPECT_DOUBLE_EQ( kContributedFrameRate, tailSet->getDoubleProperty(kOfxMetadataKeyFrameRate) )
+            << "frame " << frame << ": the tail carries the inherited frame rate rather than the "
+            << "contributed one";
+
+        tailSet->releaseReference();
+        sourceSet->releaseReference();
+    }
+
+    setContributedNote(contribute, "chained");
+
+    OFX::Host::ImageEffect::MetadataSet* revised = viewOutput->getMetadata(firstFrame);
+    ASSERT_TRUE(revised != NULL);
+    ASSERT_TRUE(revised->fetchProperty(kContributeNoteKey) != NULL)
+        << "the contributed note is no longer at the tail at all";
+    EXPECT_EQ( std::string("chained"), revised->getStringProperty(kContributeNoteKey) );
+    EXPECT_DOUBLE_EQ( kContributedFrameRate, revised->getDoubleProperty(kOfxMetadataKeyFrameRate) );
+
+    revised->releaseReference();
+} // TEST_F(MetadataPluginFixture, MetadataChainCarriesTheContributedKeysDownstream)
 
 // The per clip metadata cache is reached from whichever thread asks for metadata, and a render
 // is the one thing that asks for it from many threads at once. This renders a real frame range

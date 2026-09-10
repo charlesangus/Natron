@@ -244,17 +244,18 @@ name is overridable via `NATRON_DEV_CONTAINER` -- use this to give a second
 worktree its own container and caches, e.g.
 `NATRON_DEV_CONTAINER=natron-dev-wt2 tools/ci/local/devshell.sh`.
 
-## Running build.sh/test.sh from inside a container already (e.g. CI)
+## Running build.sh/test.sh/package.sh from inside a container already (e.g. CI)
 
-`build.sh` and `test.sh` normally re-exec themselves through `devshell.sh` so
-they can be invoked directly from the host. If something already runs them
-inside a container -- `devshell.sh` itself, or a CI job whose container *is*
-the dev image -- they need to detect that and run directly instead of trying
-(and failing, for lack of a Docker daemon) to nest another container.
+`build.sh`, `test.sh` and `package.sh` normally re-exec themselves through
+`devshell.sh` so they can be invoked directly from the host. If something
+already runs them inside a container -- `devshell.sh` itself, or a CI job
+whose container *is* the dev image -- they need to detect that and run
+directly instead of trying (and failing, for lack of a Docker daemon) to
+nest another container.
 
 - `NATRON_IN_CONTAINER=1` is the explicit signal: `devshell.sh` sets it on
   every container it creates, and setting it yourself forces `build.sh`/
-  `test.sh` to skip the re-exec and run directly -- e.g.
+  `test.sh`/`package.sh` to skip the re-exec and run directly -- e.g.
   `tools/ci/local/devshell.sh env NATRON_IN_CONTAINER=1 tools/ci/local/build.sh`.
 - Failing that, both scripts also infer "already in a container" from `CI`
   (checked case-insensitively, so `CI=true` as set by GitHub Actions and
@@ -292,6 +293,11 @@ to trust locally reproduced failures. That only holds if it's kept in sync:
 - `test.sh`'s environment (`OFX_PLUGIN_PATH`, `OCIO`, running everything
   under `xvfb-run`) must stay in sync with what `ci.yml` sets for the test
   steps.
+- `package.sh`'s stage/tarball/AppImage sequence must stay in sync with
+  `release.yml`'s "Stage bundle" / "Create tarball" / "Create AppImage"
+  steps -- it exists to reproduce them locally, and both call the same
+  `tools/release/*.sh` scripts, so a step added, reordered or reflagged in
+  one place needs the same change in the other.
 - `fetch-assets.sh`'s pinned plugin SHAs are the test fixture. Bumping one
   changes what `BaseTest` loads; re-run `fetch-assets.sh` (it rebuilds when
   the stamp no longer matches) and expect CI's asset cache to miss once.

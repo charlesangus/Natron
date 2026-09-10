@@ -19,10 +19,11 @@
 #
 # appimagetool needs a route to upload.wikimedia.org to validate the
 # AppData screenshot URL; some sandboxes have no such route. If
-# build/appimagetool-wrapper/ exists (a local, gitignored wrapper -- see its
-# own header -- that passes appimagetool -n/--no-appstream), it's put ahead
-# of PATH so make-appimage.sh finds it instead of downloading the real tool
-# -- a no-op everywhere that wrapper doesn't exist, e.g. CI.
+# build/appimagetool-wrapper/appimagetool exists and is executable (a
+# local, gitignored wrapper -- see its own header -- that passes
+# appimagetool -n/--no-appstream), it's put ahead of PATH for the
+# make-appimage.sh call only, so that call finds it instead of downloading
+# the real tool -- a no-op everywhere that wrapper doesn't exist, e.g. CI.
 
 set -euo pipefail
 
@@ -75,12 +76,8 @@ STAGE_DIR="$(mktemp -d)"
 trap 'rm -rf "${STAGE_DIR}"' EXIT
 
 ARTIFACTS_DIR="${BUILD_DIR}/artifacts"
+rm -rf "${ARTIFACTS_DIR}"
 mkdir -p "${ARTIFACTS_DIR}"
-
-APPIMAGETOOL_WRAPPER="${REPO_ROOT}/build/appimagetool-wrapper"
-if [[ -d "${APPIMAGETOOL_WRAPPER}" ]]; then
-    PATH="${APPIMAGETOOL_WRAPPER}:${PATH}"
-fi
 
 echo "== package.sh: staging ${BUILD_DIR} =="
 "${SCRIPT_DIR}/../../release/stage-bundle.sh" "${BUILD_DIR}" "${STAGE_DIR}"
@@ -89,7 +86,12 @@ echo "== package.sh: building tarball =="
 "${SCRIPT_DIR}/../../release/make-tarball.sh" "${STAGE_DIR}" "${ARTIFACTS_DIR}"
 
 echo "== package.sh: building AppImage =="
-"${SCRIPT_DIR}/../../release/make-appimage.sh" "${STAGE_DIR}" "${ARTIFACTS_DIR}"
+APPIMAGETOOL_WRAPPER="${REPO_ROOT}/build/appimagetool-wrapper"
+if [[ -x "${APPIMAGETOOL_WRAPPER}/appimagetool" ]]; then
+    PATH="${APPIMAGETOOL_WRAPPER}:${PATH}" "${SCRIPT_DIR}/../../release/make-appimage.sh" "${STAGE_DIR}" "${ARTIFACTS_DIR}"
+else
+    "${SCRIPT_DIR}/../../release/make-appimage.sh" "${STAGE_DIR}" "${ARTIFACTS_DIR}"
+fi
 
 echo "== package.sh: artifacts ready in ${ARTIFACTS_DIR} =="
 ls -la "${ARTIFACTS_DIR}"

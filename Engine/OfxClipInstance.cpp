@@ -1766,7 +1766,44 @@ void
 OfxClipInstance::fetchMetadata(OfxTime time,
                                OFX::Host::Property::Set& metadata)
 {
-    if ( isOutput() ) {
+    OFX::Host::ImageEffect::ClipInstance* upstreamOutput = NULL;
+
+    if ( !isOutput() ) {
+        // An input clip carries the metadata of the image handed to it, which is the one the
+        // node connected to it puts out of its own output clip. That node is taken as it is
+        // rather than through getNearestNonIdentity(): a node that passes its pixels through
+        // untouched may still be there precisely to add metadata to them.
+        EffectInstancePtr inputNode = getAssociatedNode();
+        OfxEffectInstance* ofxInputNode = dynamic_cast<OfxEffectInstance*>( inputNode.get() );
+        if (ofxInputNode) {
+            OfxImageEffectInstance* upstreamEffect = ofxInputNode->effectInstance();
+            if (upstreamEffect) {
+                upstreamOutput = upstreamEffect->getClip(kOfxImageEffectOutputClipName);
+            }
+        }
+    }
+
+    if (upstreamOutput) {
+        OFX::Host::ImageEffect::MetadataSet* upstream = upstreamOutput->getMetadata(time);
+        if (upstream) {
+            const OFX::Host::Property::PropertyMap& props = upstream->getProperties();
+            for (OFX::Host::Property::PropertyMap::const_iterator it = props.begin(); it != props.end(); ++it) {
+                OFX::Host::Property::Property* copied = it->second->deepCopy();
+                if (copied) {
+                    metadata.addProperty(copied);
+                }
+            }
+
+            // the copies stand on their own, so the reference getMetadata() handed out is
+            // dropped as soon as they are made: holding it for the lifetime of this clip
+            // would pin the upstream clip's cache entry for just as long
+            upstream->releaseReference();
+        }
+    } else {
+        // Either this is the output clip, or it is an input clip whose metadata cannot be
+        // read from upstream: nothing is connected to it, or what is connected is a native
+        // node and so has no OFX clip at all. The keys are derived from this clip instead,
+        // which falls back to the project's own values when it has no input.
         addMetadataDouble( metadata, kOfxMetadataKeyFrameRate, getFrameRate() );
         addMetadataDouble( metadata, kOfxMetadataKeyPixelAspect, getAspectRatio() );
 

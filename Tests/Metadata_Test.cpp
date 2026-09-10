@@ -155,3 +155,86 @@ TEST_F(MetadataPluginFixture, OutputClipCarriesHostDerivedMetadata)
 
     again->releaseReference();
 }
+
+// An input clip carries the metadata of the image handed to it, which is what the node
+// connected to it puts out. Comparing against the upstream output clip rather than against
+// literal values is the point: the two must agree whatever the project happens to be set to.
+TEST_F(MetadataPluginFixture, InputClipCarriesUpstreamOutputMetadata)
+{
+    Format projectFormat;
+    getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+
+    NodePtr constant = createNode( QString::fromUtf8("net.sf.openfx.ConstantPlugin") );
+    ASSERT_TRUE( bool(constant) ) << "node creation failed for net.sf.openfx.ConstantPlugin";
+
+    NodePtr grade = createNode( QString::fromUtf8("net.sf.openfx.GradePlugin") );
+    ASSERT_TRUE( bool(grade) ) << "node creation failed for net.sf.openfx.GradePlugin";
+
+    connectNodes(constant, grade, 0, true);
+
+    OfxEffectInstance* constantEffect = dynamic_cast<OfxEffectInstance*>( constant->getEffectInstance().get() );
+    ASSERT_TRUE(constantEffect != NULL) << "Constant is not backed by the OFX host";
+
+    OfxEffectInstance* gradeEffect = dynamic_cast<OfxEffectInstance*>( grade->getEffectInstance().get() );
+    ASSERT_TRUE(gradeEffect != NULL) << "Grade is not backed by the OFX host";
+
+    OFX::Host::ImageEffect::ClipInstance* constantOutput = constantEffect->effectInstance()->getClip(kOfxImageEffectOutputClipName);
+    ASSERT_TRUE(constantOutput != NULL) << "Constant has no output clip";
+
+    OFX::Host::ImageEffect::ClipInstance* gradeSource = gradeEffect->effectInstance()->getClip(kOfxImageEffectSimpleSourceClipName);
+    ASSERT_TRUE(gradeSource != NULL) << "Grade has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+
+    OFX::Host::ImageEffect::MetadataSet* upstream = constantOutput->getMetadata(1.);
+    ASSERT_TRUE(upstream != NULL);
+
+    OFX::Host::ImageEffect::MetadataSet* source = gradeSource->getMetadata(1.);
+    ASSERT_TRUE(source != NULL);
+
+    // the keys are copied out of the upstream set, not aliased to it, so the two clips hold
+    // sets of their own that happen to carry equal values
+    EXPECT_NE(upstream, source);
+    EXPECT_DOUBLE_EQ( upstream->getDoubleProperty(kOfxMetadataKeyFrameRate), source->getDoubleProperty(kOfxMetadataKeyFrameRate) );
+    EXPECT_EQ( upstream->getIntProperty(kOfxMetadataKeyWidth), source->getIntProperty(kOfxMetadataKeyWidth) );
+    EXPECT_EQ( upstream->getIntProperty(kOfxMetadataKeyHeight), source->getIntProperty(kOfxMetadataKeyHeight) );
+
+    // Constant generates the project format, so the values that reached Grade are the ones
+    // the project implies rather than whatever a default constructed set would carry
+    EXPECT_DOUBLE_EQ( getApp()->getProjectFrameRate(), source->getDoubleProperty(kOfxMetadataKeyFrameRate) );
+    EXPECT_EQ( projectFormat.width(), source->getIntProperty(kOfxMetadataKeyWidth) );
+
+    source->releaseReference();
+    upstream->releaseReference();
+}
+
+// With nothing connected there is no upstream clip to copy from, and a plug-in asking its
+// input for metadata must still get the host's answer rather than an empty set or a crash.
+TEST_F(MetadataPluginFixture, DisconnectedInputClipFallsBackToHostDerivedMetadata)
+{
+    Format projectFormat;
+    getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+
+    NodePtr constant = createNode( QString::fromUtf8("net.sf.openfx.ConstantPlugin") );
+    ASSERT_TRUE( bool(constant) ) << "node creation failed for net.sf.openfx.ConstantPlugin";
+
+    NodePtr grade = createNode( QString::fromUtf8("net.sf.openfx.GradePlugin") );
+    ASSERT_TRUE( bool(grade) ) << "node creation failed for net.sf.openfx.GradePlugin";
+
+    connectNodes(constant, grade, 0, true);
+    disconnectNodes(constant, grade, true);
+
+    OfxEffectInstance* gradeEffect = dynamic_cast<OfxEffectInstance*>( grade->getEffectInstance().get() );
+    ASSERT_TRUE(gradeEffect != NULL) << "Grade is not backed by the OFX host";
+
+    OFX::Host::ImageEffect::ClipInstance* gradeSource = gradeEffect->effectInstance()->getClip(kOfxImageEffectSimpleSourceClipName);
+    ASSERT_TRUE(gradeSource != NULL) << "Grade has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+
+    OFX::Host::ImageEffect::MetadataSet* source = gradeSource->getMetadata(1.);
+    ASSERT_TRUE(source != NULL);
+
+    EXPECT_DOUBLE_EQ( getApp()->getProjectFrameRate(), source->getDoubleProperty(kOfxMetadataKeyFrameRate) );
+    EXPECT_EQ( projectFormat.width(), source->getIntProperty(kOfxMetadataKeyWidth) );
+    EXPECT_EQ( projectFormat.height(), source->getIntProperty(kOfxMetadataKeyHeight) );
+    EXPECT_EQ( 1, source->getIntProperty(kOfxMetadataKeySourceFrame) );
+
+    source->releaseReference();
+}

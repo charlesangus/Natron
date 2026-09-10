@@ -64,6 +64,8 @@
 #include <SequenceParsing.h>
 
 #include "Engine/KnobFile.h"
+#include "Engine/ReadNode.h"
+#include "Engine/WriteNode.h"
 
 #include <ofxMetadata.h>
 #endif
@@ -1806,6 +1808,32 @@ addReaderFileMetadata(OFX::Host::Property::Set& metadata,
     addMetadataDouble(metadata, kOfxMetadataKeyFileSize, (double)info.size());
 } // addReaderFileMetadata
 
+namespace {
+// Drops a metadata reference however the scope holding it is left. Copying a set out can
+// throw, and a reference that is not given back leaves the upstream clip's entry pinned for
+// the life of the process.
+class MetadataSetReference {
+public:
+    explicit MetadataSetReference(OFX::Host::ImageEffect::MetadataSet* set)
+        : _set(set)
+    {
+    }
+
+    ~MetadataSetReference()
+    {
+        if (_set) {
+            _set->releaseReference();
+        }
+    }
+
+private:
+    MetadataSetReference(const MetadataSetReference&);
+    MetadataSetReference& operator=(const MetadataSetReference&);
+
+    OFX::Host::ImageEffect::MetadataSet* _set;
+};
+} // namespace
+
 void
 OfxClipInstance::fetchMetadata(OfxTime time,
                                OFX::Host::Property::Set& metadata)
@@ -1819,6 +1847,22 @@ OfxClipInstance::fetchMetadata(OfxTime time,
         // untouched may still be there precisely to add metadata to them.
         EffectInstancePtr inputNode = getAssociatedNode();
         OfxEffectInstance* ofxInputNode = dynamic_cast<OfxEffectInstance*>(inputNode.get());
+        if (!ofxInputNode) {
+            // A bundled reader or writer stands in the graph as a Read/Write container, which
+            // is not itself an OFX effect: the clips are the decoder's or encoder's, and so is
+            // the metadata that has to reach whatever is connected downstream of the container.
+            NodePtr embedded;
+            ReadNode* isReadNode = dynamic_cast<ReadNode*>(inputNode.get());
+            WriteNode* isWriteNode = dynamic_cast<WriteNode*>(inputNode.get());
+            if (isReadNode) {
+                embedded = isReadNode->getEmbeddedReader();
+            } else if (isWriteNode) {
+                embedded = isWriteNode->getEmbeddedWriter();
+            }
+            if (embedded) {
+                ofxInputNode = dynamic_cast<OfxEffectInstance*>(embedded->getEffectInstance().get());
+            }
+        }
         if (ofxInputNode) {
             OfxImageEffectInstance* upstreamEffect = ofxInputNode->effectInstance();
             if (upstreamEffect) {
@@ -1830,6 +1874,11 @@ OfxClipInstance::fetchMetadata(OfxTime time,
     if (upstreamOutput) {
         OFX::Host::ImageEffect::MetadataSet* upstream = upstreamOutput->getMetadata(time);
         if (upstream) {
+            // the copies stand on their own, so the reference getMetadata() handed out is
+            // dropped as soon as they are made: holding it for the lifetime of this clip
+            // would pin the upstream clip's cache entry for just as long
+            MetadataSetReference held(upstream);
+
             const OFX::Host::Property::PropertyMap& props = upstream->getProperties();
             for (OFX::Host::Property::PropertyMap::const_iterator it = props.begin(); it != props.end(); ++it) {
                 OFX::Host::Property::Property* copied = it->second->deepCopy();
@@ -1837,11 +1886,6 @@ OfxClipInstance::fetchMetadata(OfxTime time,
                     metadata.addProperty(copied);
                 }
             }
-
-            // the copies stand on their own, so the reference getMetadata() handed out is
-            // dropped as soon as they are made: holding it for the lifetime of this clip
-            // would pin the upstream clip's cache entry for just as long
-            upstream->releaseReference();
         }
     } else {
         // Either this is the output clip, or it is an input clip whose metadata cannot be

@@ -104,6 +104,66 @@ const char* const kContributedKeys[] = {
 
 const double kContributedFrameRate = 30.;
 
+// A metadata reference held for a scope and given back however that scope is left. Several of
+// the assertions below are the ones that fire on a regression, so a failing run would otherwise
+// be the run that also leaks the reference it took.
+class MetadataRef {
+public:
+    MetadataRef(OFX::Host::ImageEffect::ClipInstance* clip,
+                OfxTime time)
+        : _set(clip ? clip->getMetadata(time) : NULL)
+    {
+    }
+
+    ~MetadataRef()
+    {
+        if (_set) {
+            _set->releaseReference();
+        }
+    }
+
+    OFX::Host::ImageEffect::MetadataSet* get() const
+    {
+        return _set;
+    }
+
+    OFX::Host::ImageEffect::MetadataSet* operator->() const
+    {
+        return _set;
+    }
+
+private:
+    MetadataRef(const MetadataRef&);
+    MetadataRef& operator=(const MetadataRef&);
+
+    OFX::Host::ImageEffect::MetadataSet* _set;
+};
+
+// The project outlives every case in this file, so one that moves the project frame rate has to
+// put it back however it leaves: an assertion firing partway through would otherwise hand the
+// rest of the suite a rate this case chose.
+class ProjectFrameRateGuard {
+public:
+    ProjectFrameRateGuard(KnobDouble* knob,
+                          double original)
+        : _knob(knob)
+        , _original(original)
+    {
+    }
+
+    ~ProjectFrameRateGuard()
+    {
+        _knob->setValue(_original);
+    }
+
+private:
+    ProjectFrameRateGuard(const ProjectFrameRateGuard&);
+    ProjectFrameRateGuard& operator=(const ProjectFrameRateGuard&);
+
+    KnobDouble* _knob;
+    double _original;
+};
+
 OFX::Host::ImageEffect::ClipInstance*
 clipOf(const NodePtr& node,
        const char* clipName)
@@ -385,12 +445,11 @@ TEST_F(MetadataPluginFixture, MetadataAndPropertySuiteAreFetchableFromOfxHost)
 // from the host, and the values are the ones the project and its format imply.
 TEST_F(MetadataPluginFixture, OutputClipCarriesHostDerivedMetadata)
 {
-    const int formatWidth = 320;
-    const int formatHeight = 240;
-    const double formatPar = 1.;
-
-    Format f(0, 0, formatWidth, formatHeight, "metadataHostKeysFormat", formatPar);
-    getApp()->getProject()->setOrAddProjectFormat(f);
+    // read live rather than set here: setOrAddProjectFormat() only bites the first time it is
+    // called in a process and the app instance is shared by the whole suite, so a case that set
+    // its own format and asserted against it would pass alone and fail in a full run
+    Format projectFormat;
+    getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
 
     NodePtr node = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
     ASSERT_TRUE(bool(node)) << "node creation failed for net.sf.openfx.ConstantPlugin";
@@ -401,25 +460,23 @@ TEST_F(MetadataPluginFixture, OutputClipCarriesHostDerivedMetadata)
     OFX::Host::ImageEffect::ClipInstance* output = ofxEffect->effectInstance()->getClip(kOfxImageEffectOutputClipName);
     ASSERT_TRUE(output != NULL) << "the effect has no output clip";
 
-    OFX::Host::ImageEffect::MetadataSet* metadata = output->getMetadata(1.);
-    ASSERT_TRUE(metadata != NULL);
+    MetadataRef metadata(output, 1.);
+    ASSERT_TRUE(metadata.get() != NULL);
 
     EXPECT_DOUBLE_EQ(getApp()->getProjectFrameRate(), metadata->getDoubleProperty(kOfxMetadataKeyFrameRate));
-    EXPECT_DOUBLE_EQ(formatPar, metadata->getDoubleProperty(kOfxMetadataKeyPixelAspect));
-    EXPECT_EQ(formatWidth, metadata->getIntProperty(kOfxMetadataKeyWidth));
-    EXPECT_EQ(formatHeight, metadata->getIntProperty(kOfxMetadataKeyHeight));
+    EXPECT_DOUBLE_EQ(projectFormat.getPixelAspectRatio(), metadata->getDoubleProperty(kOfxMetadataKeyPixelAspect));
+    EXPECT_EQ(projectFormat.width(), metadata->getIntProperty(kOfxMetadataKeyWidth));
+    EXPECT_EQ(projectFormat.height(), metadata->getIntProperty(kOfxMetadataKeyHeight));
     EXPECT_EQ(1, metadata->getIntProperty(kOfxMetadataKeySourceFrame));
 
-    metadata->releaseReference();
-
-    // The cache holds a reference of its own, so releasing the caller's must leave the set
-    // alive: asking again returns that same set rather than a fresh one.
-    OFX::Host::ImageEffect::MetadataSet* again = output->getMetadata(1.);
-    ASSERT_TRUE(again != NULL);
-    EXPECT_EQ(metadata, again);
-    EXPECT_EQ(formatWidth, again->getIntProperty(kOfxMetadataKeyWidth));
-
-    again->releaseReference();
+    // The cache holds a reference of its own, so a second ask has to come back with that same
+    // set rather than a fresh one. The first reference is still held while the second is taken:
+    // released first, the block could be freed and handed straight back to the next allocation,
+    // and the addresses would match whether or not the cache had kept anything alive.
+    MetadataRef again(output, 1.);
+    ASSERT_TRUE(again.get() != NULL);
+    EXPECT_EQ(metadata.get(), again.get());
+    EXPECT_EQ(projectFormat.width(), again->getIntProperty(kOfxMetadataKeyWidth));
 }
 
 // An input clip carries the metadata of the image handed to it, which is what the node
@@ -450,15 +507,15 @@ TEST_F(MetadataPluginFixture, InputClipCarriesUpstreamOutputMetadata)
     OFX::Host::ImageEffect::ClipInstance* gradeSource = gradeEffect->effectInstance()->getClip(kOfxImageEffectSimpleSourceClipName);
     ASSERT_TRUE(gradeSource != NULL) << "Grade has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
-    OFX::Host::ImageEffect::MetadataSet* upstream = constantOutput->getMetadata(1.);
-    ASSERT_TRUE(upstream != NULL);
+    MetadataRef upstream(constantOutput, 1.);
+    ASSERT_TRUE(upstream.get() != NULL);
 
-    OFX::Host::ImageEffect::MetadataSet* source = gradeSource->getMetadata(1.);
-    ASSERT_TRUE(source != NULL);
+    MetadataRef source(gradeSource, 1.);
+    ASSERT_TRUE(source.get() != NULL);
 
     // the keys are copied out of the upstream set, not aliased to it, so the two clips hold
     // sets of their own that happen to carry equal values
-    EXPECT_NE(upstream, source);
+    EXPECT_NE(upstream.get(), source.get());
     EXPECT_DOUBLE_EQ(upstream->getDoubleProperty(kOfxMetadataKeyFrameRate), source->getDoubleProperty(kOfxMetadataKeyFrameRate));
     EXPECT_EQ(upstream->getIntProperty(kOfxMetadataKeyWidth), source->getIntProperty(kOfxMetadataKeyWidth));
     EXPECT_EQ(upstream->getIntProperty(kOfxMetadataKeyHeight), source->getIntProperty(kOfxMetadataKeyHeight));
@@ -467,9 +524,6 @@ TEST_F(MetadataPluginFixture, InputClipCarriesUpstreamOutputMetadata)
     // the project implies rather than whatever a default constructed set would carry
     EXPECT_DOUBLE_EQ(getApp()->getProjectFrameRate(), source->getDoubleProperty(kOfxMetadataKeyFrameRate));
     EXPECT_EQ(projectFormat.width(), source->getIntProperty(kOfxMetadataKeyWidth));
-
-    source->releaseReference();
-    upstream->releaseReference();
 }
 
 // With nothing connected there is no upstream clip to copy from, and a plug-in asking its
@@ -494,15 +548,13 @@ TEST_F(MetadataPluginFixture, DisconnectedInputClipFallsBackToHostDerivedMetadat
     OFX::Host::ImageEffect::ClipInstance* gradeSource = gradeEffect->effectInstance()->getClip(kOfxImageEffectSimpleSourceClipName);
     ASSERT_TRUE(gradeSource != NULL) << "Grade has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
-    OFX::Host::ImageEffect::MetadataSet* source = gradeSource->getMetadata(1.);
-    ASSERT_TRUE(source != NULL);
+    MetadataRef source(gradeSource, 1.);
+    ASSERT_TRUE(source.get() != NULL);
 
     EXPECT_DOUBLE_EQ(getApp()->getProjectFrameRate(), source->getDoubleProperty(kOfxMetadataKeyFrameRate));
     EXPECT_EQ(projectFormat.width(), source->getIntProperty(kOfxMetadataKeyWidth));
     EXPECT_EQ(projectFormat.height(), source->getIntProperty(kOfxMetadataKeyHeight));
     EXPECT_EQ(1, source->getIntProperty(kOfxMetadataKeySourceFrame));
-
-    source->releaseReference();
 }
 
 // ofx/filepath is the one standard key whose value has to change from frame to frame, and a
@@ -572,11 +624,11 @@ TEST_F(MetadataPluginFixture, ReaderOutputClipCarriesPerFrameFileMetadata)
     OFX::Host::ImageEffect::ClipInstance* output = ofxEffect->effectInstance()->getClip(kOfxImageEffectOutputClipName);
     ASSERT_TRUE(output != NULL) << "the decoder has no output clip";
 
-    OFX::Host::ImageEffect::MetadataSet* first = output->getMetadata(firstFrame);
-    ASSERT_TRUE(first != NULL);
+    MetadataRef first(output, firstFrame);
+    ASSERT_TRUE(first.get() != NULL);
 
-    OFX::Host::ImageEffect::MetadataSet* second = output->getMetadata(lastFrame);
-    ASSERT_TRUE(second != NULL);
+    MetadataRef second(output, lastFrame);
+    ASSERT_TRUE(second.get() != NULL);
 
     ASSERT_TRUE(first->fetchProperty(kOfxMetadataKeyFilePath) != NULL) << "the reader published no " << kOfxMetadataKeyFilePath;
     ASSERT_TRUE(second->fetchProperty(kOfxMetadataKeyFilePath) != NULL) << "the reader published no " << kOfxMetadataKeyFilePath;
@@ -592,13 +644,79 @@ TEST_F(MetadataPluginFixture, ReaderOutputClipCarriesPerFrameFileMetadata)
     EXPECT_GT(second->getDoubleProperty(kOfxMetadataKeyFileSize), 0.);
     EXPECT_GT(first->getDoubleProperty(kOfxMetadataKeyMTime), 0.);
 
-    second->releaseReference();
-    first->releaseReference();
-
     for (std::size_t i = 0; i < renderedPaths.size(); ++i) {
         QFile::remove(QString::fromStdString(renderedPaths[i]));
     }
 } // TEST_F(MetadataPluginFixture, ReaderOutputClipCarriesPerFrameFileMetadata)
+
+// The point of a reader publishing its file keys is for the rest of the tree to read them, and
+// nothing downstream ever looks at the decoder's own output clip: it looks at its own input
+// clip. A bundled reader stands in the graph as a Read container, which is not an OFX effect at
+// all, so a host that stops there publishes the keys where no plug-in can reach them. The case
+// above reaches into the container by hand and would not notice.
+TEST_F(MetadataPluginFixture, ReaderFileMetadataReachesADownstreamInputClip)
+{
+    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
+    NodePtr writer = createNode(_writeOIIOPluginID);
+    ASSERT_TRUE(bool(generator) && bool(writer));
+
+    connectNodes(generator, writer, 0, true);
+
+    KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(writer->getKnobByName("bitDepth").get());
+    ASSERT_TRUE(bitDepth != NULL);
+    bitDepth->setValueFromID("32f", 0);
+
+    KnobChoice* compression = dynamic_cast<KnobChoice*>(writer->getKnobByName("compression").get());
+    ASSERT_TRUE(compression != NULL);
+    compression->setValueFromID("none", 0);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string pattern = (tmp.path() + QLatin1String("/downstreamReaderMetadata.####.exr")).toStdString();
+    writer->setOutputFilesForWriter(pattern);
+
+    const int frame = 1;
+
+    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
+    ASSERT_TRUE(writerEffect != NULL);
+
+    std::list<AppInstance::RenderWork> works;
+    works.push_back(AppInstance::RenderWork(writerEffect, frame, frame, 1, false));
+    getApp()->startWritersRendering(false, works);
+
+    const std::vector<std::string>& viewNames = getApp()->getProject()->getProjectViewNames();
+    const std::string renderedPath = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, 0);
+    ASSERT_TRUE(QFile::exists(QString::fromStdString(renderedPath))) << "frame " << frame << " was not rendered: " << renderedPath;
+
+    CreateNodeArgs args(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, pattern);
+    NodePtr reader = getApp()->createNode(args);
+    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+    // the two facts that make the read below a real test of the unwrapping rather than of the
+    // ordinary input clip path
+    ASSERT_TRUE(dynamic_cast<ReadNode*>(reader->getEffectInstance().get()) != NULL) << "the reader is not backed by a Read container";
+    ASSERT_TRUE(dynamic_cast<OfxEffectInstance*>(reader->getEffectInstance().get()) == NULL) << "the Read container is itself an OFX effect, so nothing here needs unwrapping";
+
+    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    ASSERT_TRUE(bool(grade)) << "node creation failed for net.sf.openfx.GradePlugin";
+
+    connectNodes(reader, grade, 0, true);
+
+    OFX::Host::ImageEffect::ClipInstance* gradeSource = clipOf(grade, kOfxImageEffectSimpleSourceClipName);
+    ASSERT_TRUE(gradeSource != NULL) << "the downstream node has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+
+    MetadataRef source(gradeSource, frame);
+    ASSERT_TRUE(source.get() != NULL);
+    ASSERT_TRUE(source->fetchProperty(kOfxMetadataKeyFilePath) != NULL)
+        << "the reader's " << kOfxMetadataKeyFilePath << " never reached the input clip of the node connected to it";
+
+    EXPECT_EQ(renderedPath, source->getStringProperty(kOfxMetadataKeyFilePath));
+    EXPECT_GT(source->getDoubleProperty(kOfxMetadataKeyFileSize), 0.);
+    EXPECT_GT(source->getDoubleProperty(kOfxMetadataKeyMTime), 0.);
+
+    QFile::remove(QString::fromStdString(renderedPath));
+} // TEST_F(MetadataPluginFixture, ReaderFileMetadataReachesADownstreamInputClip)
 
 // A node downstream of a change used to keep serving the metadata it had derived beforehand,
 // because nothing dropped the per clip cache. Here B is read, the contribution A makes is
@@ -618,19 +736,18 @@ TEST_F(MetadataPluginFixture, DownstreamMetadataFollowsAnUpstreamParamChange)
 
     setContributedNote(contribute, "before");
 
-    OFX::Host::ImageEffect::MetadataSet* first = viewOutput->getMetadata(1.);
-    ASSERT_TRUE(first != NULL);
-    ASSERT_TRUE(first->fetchProperty(kContributeNoteKey) != NULL) << "the upstream contribution never reached the downstream output clip";
-    EXPECT_EQ(std::string("before"), first->getStringProperty(kContributeNoteKey));
-    first->releaseReference();
+    {
+        MetadataRef first(viewOutput, 1.);
+        ASSERT_TRUE(first.get() != NULL);
+        ASSERT_TRUE(first->fetchProperty(kContributeNoteKey) != NULL) << "the upstream contribution never reached the downstream output clip";
+        EXPECT_EQ(std::string("before"), first->getStringProperty(kContributeNoteKey));
+    }
 
     setContributedNote(contribute, "after");
 
-    OFX::Host::ImageEffect::MetadataSet* second = viewOutput->getMetadata(1.);
-    ASSERT_TRUE(second != NULL);
+    MetadataRef second(viewOutput, 1.);
+    ASSERT_TRUE(second.get() != NULL);
     EXPECT_EQ(std::string("after"), second->getStringProperty(kContributeNoteKey));
-
-    second->releaseReference();
 }
 
 // The node upstream here is native, so the input clip has no upstream OFX output clip to copy
@@ -657,19 +774,23 @@ TEST_F(MetadataPluginFixture, NativeUpstreamNodeChangeReachesTheOfxInputClip)
     Format projectFormat;
     getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
 
-    OFX::Host::ImageEffect::MetadataSet* before = source->getMetadata(1.);
-    ASSERT_TRUE(before != NULL);
-    EXPECT_DOUBLE_EQ(originalFrameRate, before->getDoubleProperty(kOfxMetadataKeyFrameRate));
-    EXPECT_EQ(projectFormat.width(), before->getIntProperty(kOfxMetadataKeyWidth));
-    EXPECT_DOUBLE_EQ(projectFormat.getPixelAspectRatio(), before->getDoubleProperty(kOfxMetadataKeyPixelAspect));
-    before->releaseReference();
+    {
+        MetadataRef before(source, 1.);
+        ASSERT_TRUE(before.get() != NULL);
+        EXPECT_DOUBLE_EQ(originalFrameRate, before->getDoubleProperty(kOfxMetadataKeyFrameRate));
+        EXPECT_EQ(projectFormat.width(), before->getIntProperty(kOfxMetadataKeyWidth));
+        EXPECT_DOUBLE_EQ(projectFormat.getPixelAspectRatio(), before->getDoubleProperty(kOfxMetadataKeyPixelAspect));
+    }
+
+    // the project outlives this case, so it is left as it was found however this case leaves
+    ProjectFrameRateGuard restoreFrameRate(projectFrameRate, originalFrameRate);
 
     const double changedFrameRate = originalFrameRate + 12.;
     projectFrameRate->setValue(changedFrameRate);
     ASSERT_DOUBLE_EQ(changedFrameRate, getApp()->getProjectFrameRate());
 
-    OFX::Host::ImageEffect::MetadataSet* after = source->getMetadata(1.);
-    ASSERT_TRUE(after != NULL);
+    MetadataRef after(source, 1.);
+    ASSERT_TRUE(after.get() != NULL);
     EXPECT_DOUBLE_EQ(changedFrameRate, after->getDoubleProperty(kOfxMetadataKeyFrameRate));
 
     // read live rather than asserted against literals: setOrAddProjectFormat() is a no-op
@@ -678,10 +799,6 @@ TEST_F(MetadataPluginFixture, NativeUpstreamNodeChangeReachesTheOfxInputClip)
     getApp()->getProject()->getProjectDefaultFormat(&liveFormat);
     EXPECT_EQ(liveFormat.width(), after->getIntProperty(kOfxMetadataKeyWidth));
     EXPECT_DOUBLE_EQ(liveFormat.getPixelAspectRatio(), after->getDoubleProperty(kOfxMetadataKeyPixelAspect));
-    after->releaseReference();
-
-    // the project outlives this case, so it is left as it was found
-    projectFrameRate->setValue(originalFrameRate);
 }
 
 // An input clip's metadata is a copy of what the node connected to it puts out, so pointing the
@@ -702,20 +819,19 @@ TEST_F(MetadataPluginFixture, ReconnectingAnInputRepointsTheMetadata)
     OFX::Host::ImageEffect::ClipInstance* source = clipOf(view, kOfxImageEffectSimpleSourceClipName);
     ASSERT_TRUE(source != NULL) << "the downstream node has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
-    OFX::Host::ImageEffect::MetadataSet* fromFirst = source->getMetadata(1.);
-    ASSERT_TRUE(fromFirst != NULL);
-    ASSERT_TRUE(fromFirst->fetchProperty(kContributeNoteKey) != NULL) << "the upstream contribution never reached the input clip";
-    EXPECT_EQ(std::string("from the first"), fromFirst->getStringProperty(kContributeNoteKey));
-    fromFirst->releaseReference();
+    {
+        MetadataRef fromFirst(source, 1.);
+        ASSERT_TRUE(fromFirst.get() != NULL);
+        ASSERT_TRUE(fromFirst->fetchProperty(kContributeNoteKey) != NULL) << "the upstream contribution never reached the input clip";
+        EXPECT_EQ(std::string("from the first"), fromFirst->getStringProperty(kContributeNoteKey));
+    }
 
     disconnectNodes(firstUpstream, view, true);
     connectNodes(secondUpstream, view, 0, true);
 
-    OFX::Host::ImageEffect::MetadataSet* fromSecond = source->getMetadata(1.);
-    ASSERT_TRUE(fromSecond != NULL);
+    MetadataRef fromSecond(source, 1.);
+    ASSERT_TRUE(fromSecond.get() != NULL);
     EXPECT_EQ(std::string("from the second"), fromSecond->getStringProperty(kContributeNoteKey));
-
-    fromSecond->releaseReference();
 }
 
 // The guard against the opposite failure. getOutputMetadata() allocates a fresh MetadataSet for
@@ -739,31 +855,24 @@ TEST_F(MetadataPluginFixture, UnchangedStateDoesNotReRunTheGetMetadataAction)
     ASSERT_TRUE(viewSource != NULL);
     ASSERT_TRUE(viewOutput != NULL);
 
-    OFX::Host::ImageEffect::MetadataSet* firstContribute = contributeOutput->getMetadata(1.);
-    OFX::Host::ImageEffect::MetadataSet* firstSource = viewSource->getMetadata(1.);
-    OFX::Host::ImageEffect::MetadataSet* firstView = viewOutput->getMetadata(1.);
-    ASSERT_TRUE(firstContribute != NULL);
-    ASSERT_TRUE(firstSource != NULL);
-    ASSERT_TRUE(firstView != NULL);
+    MetadataRef firstContribute(contributeOutput, 1.);
+    MetadataRef firstSource(viewSource, 1.);
+    MetadataRef firstView(viewOutput, 1.);
+    ASSERT_TRUE(firstContribute.get() != NULL);
+    ASSERT_TRUE(firstSource.get() != NULL);
+    ASSERT_TRUE(firstView.get() != NULL);
 
-    OFX::Host::ImageEffect::MetadataSet* secondContribute = contributeOutput->getMetadata(1.);
-    OFX::Host::ImageEffect::MetadataSet* secondSource = viewSource->getMetadata(1.);
-    OFX::Host::ImageEffect::MetadataSet* secondView = viewOutput->getMetadata(1.);
-    ASSERT_TRUE(secondContribute != NULL);
-    ASSERT_TRUE(secondSource != NULL);
-    ASSERT_TRUE(secondView != NULL);
+    MetadataRef secondContribute(contributeOutput, 1.);
+    MetadataRef secondSource(viewSource, 1.);
+    MetadataRef secondView(viewOutput, 1.);
+    ASSERT_TRUE(secondContribute.get() != NULL);
+    ASSERT_TRUE(secondSource.get() != NULL);
+    ASSERT_TRUE(secondView.get() != NULL);
 
-    EXPECT_EQ(firstContribute, secondContribute) << "the upstream get metadata action ran a second time";
-    EXPECT_EQ(firstSource, secondSource) << "the input clip's cached copy was dropped for nothing";
-    EXPECT_EQ(firstView, secondView) << "the downstream get metadata action ran a second time";
+    EXPECT_EQ(firstContribute.get(), secondContribute.get()) << "the upstream get metadata action ran a second time";
+    EXPECT_EQ(firstSource.get(), secondSource.get()) << "the input clip's cached copy was dropped for nothing";
+    EXPECT_EQ(firstView.get(), secondView.get()) << "the downstream get metadata action ran a second time";
     EXPECT_EQ(std::string("stable"), secondView->getStringProperty(kContributeNoteKey));
-
-    secondView->releaseReference();
-    secondSource->releaseReference();
-    secondContribute->releaseReference();
-    firstView->releaseReference();
-    firstSource->releaseReference();
-    firstContribute->releaseReference();
 }
 
 // The chain contract the reference host's harness holds two nodes to, made to hold here: a node
@@ -818,10 +927,10 @@ TEST_F(MetadataPluginFixture, MetadataChainCarriesTheContributedKeysDownstream)
                 << " did not reach the tail, which carries {" << describeSnapshot(tail) << "}";
         }
 
-        OFX::Host::ImageEffect::MetadataSet* sourceSet = sourceOutput->getMetadata(frame);
-        OFX::Host::ImageEffect::MetadataSet* tailSet = viewOutput->getMetadata(frame);
-        ASSERT_TRUE(sourceSet != NULL);
-        ASSERT_TRUE(tailSet != NULL);
+        MetadataRef sourceSet(sourceOutput, frame);
+        MetadataRef tailSet(viewOutput, frame);
+        ASSERT_TRUE(sourceSet.get() != NULL);
+        ASSERT_TRUE(tailSet.get() != NULL);
 
         EXPECT_DOUBLE_EQ(projectFrameRate, sourceSet->getDoubleProperty(kOfxMetadataKeyFrameRate))
             << "frame " << frame << ": the source does not carry the project's frame rate, so the "
@@ -829,21 +938,16 @@ TEST_F(MetadataPluginFixture, MetadataChainCarriesTheContributedKeysDownstream)
         EXPECT_DOUBLE_EQ(kContributedFrameRate, tailSet->getDoubleProperty(kOfxMetadataKeyFrameRate))
             << "frame " << frame << ": the tail carries the inherited frame rate rather than the "
             << "contributed one";
-
-        tailSet->releaseReference();
-        sourceSet->releaseReference();
     }
 
     setContributedNote(contribute, "chained");
 
-    OFX::Host::ImageEffect::MetadataSet* revised = viewOutput->getMetadata(firstFrame);
-    ASSERT_TRUE(revised != NULL);
+    MetadataRef revised(viewOutput, firstFrame);
+    ASSERT_TRUE(revised.get() != NULL);
     ASSERT_TRUE(revised->fetchProperty(kContributeNoteKey) != NULL)
         << "the contributed note is no longer at the tail at all";
     EXPECT_EQ(std::string("chained"), revised->getStringProperty(kContributeNoteKey));
     EXPECT_DOUBLE_EQ(kContributedFrameRate, revised->getDoubleProperty(kOfxMetadataKeyFrameRate));
-
-    revised->releaseReference();
 } // TEST_F(MetadataPluginFixture, MetadataChainCarriesTheContributedKeysDownstream)
 
 // The per clip metadata cache is reached from whichever thread asks for metadata, and a render
@@ -1059,14 +1163,13 @@ TEST_F(MetadataPluginFixture, MetadataTimeCodeAdvancesFrameByFrameAtTheHostFrame
     bool havePrevious = false;
 
     for (int time = firstTime; time <= lastTime; ++time) {
-        OFX::Host::ImageEffect::MetadataSet* set = output->getMetadata(time);
-        ASSERT_TRUE(set != NULL) << "frame " << time << ": no metadata at all";
+        MetadataRef set(output, time);
+        ASSERT_TRUE(set.get() != NULL) << "frame " << time << ": no metadata at all";
         ASSERT_TRUE(set->fetchProperty(kOfxMetadataKeyTimecode) != NULL)
             << "frame " << time << ": the plug-in's timecode never reached its output clip";
 
         const std::string text = set->getStringProperty(kOfxMetadataKeyTimecode);
         const double reportedRate = set->getDoubleProperty(kOfxMetadataKeyFrameRate);
-        set->releaseReference();
 
         EXPECT_DOUBLE_EQ(projectFrameRate, reportedRate)
             << "frame " << time << ": the rate reported alongside the timecode is neither the host's "
@@ -1110,14 +1213,13 @@ TEST_F(MetadataPluginFixture, MetadataTimeCodeAdvancesFrameByFrameAtTheHostFrame
     // from the rate this host publishes rather than from anything the plug-in fell back on.
     rateFromMetadata->setValue(false);
 
-    OFX::Host::ImageEffect::MetadataSet* fromParam = output->getMetadata(rolloverTime);
-    ASSERT_TRUE(fromParam != NULL) << "frame " << rolloverTime << ": no metadata at all";
+    MetadataRef fromParam(output, rolloverTime);
+    ASSERT_TRUE(fromParam.get() != NULL) << "frame " << rolloverTime << ": no metadata at all";
     ASSERT_TRUE(fromParam->fetchProperty(kOfxMetadataKeyTimecode) != NULL)
         << "frame " << rolloverTime << ": the plug-in's timecode never reached its output clip";
 
     const std::string paramText = fromParam->getStringProperty(kOfxMetadataKeyTimecode);
     const double paramReportedRate = fromParam->getDoubleProperty(kOfxMetadataKeyFrameRate);
-    fromParam->releaseReference();
 
     EXPECT_DOUBLE_EQ(paramRate, paramReportedRate)
         << "with rateFromMetadata off the reported rate is not the param's";

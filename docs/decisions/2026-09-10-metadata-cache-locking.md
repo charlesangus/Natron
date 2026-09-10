@@ -37,12 +37,11 @@ actually reach the same `ClipInstance` at the same time. Two things in
 Natron's threading model, taken together, say they can:
 
 - **`Engine/EffectInstanceRenderRoI.cpp:1544-1547`.** Effects declaring
-  `eRenderSafetyFullySafe` or `eRenderSafetyFullySafeFrame` take the
+  `eRenderSafetyFullySafe` or `eRenderSafetyFullySafeFrame` take neither the
   `eRenderSafetyInstanceSafe` branch's `QMutexLocker` on
-  `getRenderInstancesSharedMutex()`, and they take the
-  `eRenderSafetyUnsafe` branch's recursive lock on the plugin. Neither
-  applies to them; they fall into the `else` branch, which takes no lock at
-  all:
+  `getRenderInstancesSharedMutex()` nor the `eRenderSafetyUnsafe` branch's
+  recursive lock on the plugin. Neither applies to them; they fall into the
+  `else` branch, which takes no lock at all:
 
   ```cpp
   } else {

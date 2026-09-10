@@ -33,8 +33,10 @@ lives.
 `https://github.com/charlesangus/openfx-natron` holds `NatronGitHub/openfx`'s
 full history plus the OpenFX clip and image metadata suite, added on top.
 `libs/OpenFX` is pinned to it by exact commit
-(`2303ff811bee3ffe085287602f684fe5fe5357e0`), not a branch and not a tag,
-per the standing fork-and-fix policy.
+(`b6b1fdf3be2071cd6c57114179eaa96af58c5bdb`), not a branch and not a tag,
+per the standing fork-and-fix policy. That commit also carries the tag
+`natron-metadata-suite-v1`, which names it for humans without the pin
+depending on a name anyone could move.
 
 The PR carrying the suite on the fork is based on a `natron-pin` branch at
 `2303ff81` — the commit this submodule already pointed at — rather than on

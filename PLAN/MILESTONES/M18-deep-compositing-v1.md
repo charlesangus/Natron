@@ -37,7 +37,7 @@ Pixels" document verbatim.
 
 ## Phase 18.2: Render path
 
-- [ ] M18.P2.T1 — `renderDeepRoI` pull pipeline
+- [x] M18.P2.T1 — `renderDeepRoI` pull pipeline
   - files: `Engine/EffectInstance.h`, `Engine/EffectInstanceRenderRoI.cpp` (or new `Engine/EffectInstanceRenderDeep.cpp`), `Engine/Nodes/NativeEffectBase.h`
   - approach: `renderDeepRoI(args, DeepImagePtr*)` with the same shape as `renderRoI` — walks up typed inputs, honors RoI/FramesNeeded (deep RoI propagation is identical to image: deep ops are spatially local), respects abort flags and the render scheduler, consults the M18.P1.T3 cache first. Capability virtual `renderDeep()` on EffectInstance; `NativeEffectBase` helpers make two-pass evaluation (pass 1: parallel per-pixel sample counts → single allocation; pass 2: parallel fill) the path of least resistance.
   - verify: unit test with two stub deep nodes chained — cache hit on second render, abort honored, two-pass helper produces identical output to a serial reference.
@@ -174,3 +174,27 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   the first version of the T3 cache tests passed review by inspection and then
   failed on their first real run.
 
+
+- 2026-09-10 — The teardown-abort watch item above is superseded: it is now
+  **M26**, to be fixed and merged before M18 continues, rather than raised at the
+  M18 gate. It stopped being confined to `BaseTest` — measured at ~50% across
+  three runs, and it takes down M18's own `DeepRenderPipelineTest` cases — so it
+  would have made the verify step of every remaining M18 task meaningless. See
+  `PLAN/DECISIONS/2026-09-10-fix-test-fixture-teardown-flake.md`.
+
+- 2026-09-10 — M18.P2.T1's four assertions were each driven red-then-green by
+  perturbing one line of the code under test, per this milestone's standard, and
+  the first attempt found a real gap. Disabling the bounds-growth cache block
+  (`EffectInstanceRenderDeep.cpp:281`) left the whole suite green: `renderDeepRoI`
+  has two cache paths, and the tests only ever rendered one full-frame RoI, so
+  every cache hit was being served by the exact-bounds path at
+  `getDeepImageOrCreate()` and the bounds-growth path — the strategy the design
+  doc names for v1 — was never executed. The cache-hit assertion was then
+  confirmed red by stubbing the path it actually uses. A
+  `BoundsGrowthReRendersOverTheUnionOfRequestedRoIs` case was added to cover the
+  gap rather than recording it as a known one. The other three perturbations:
+  early abort check (`:190`) → `AbortBeforeRenderingIsHonoured` red; the
+  `removeFromDeepImageCache()` retraction on abort (`:413`) →
+  `AbortDuringUpstreamRenderLeavesNothingCached` red; dropping the last scanline
+  chunk in `makeDeepScanlineChunks()` → `TwoPassHelperMatchesSerialReference` red
+  on a 342-vs-371 sample-count mismatch.

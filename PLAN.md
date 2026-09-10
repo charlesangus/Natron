@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M18.P2.T1
-pm_heartbeat: 2026-09-09T10:20:00-04:00
+current: M26.P1.T1
+pm_heartbeat: 2026-09-10T18:51:06-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -104,7 +104,8 @@ future core work has solid ground to build on.
 | M14 | Documentation tree → orphan branch | done | [M14-documentation-tree-and-doc-ci.md](PLAN/MILESTONES/M14-documentation-tree-and-doc-ci.md) |
 | M16 | Project file format redesign (.ntp successor) | todo | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
 | M17 | Typed graph edges and native node framework | done | [M17-typed-edges-native-framework.md](PLAN/MILESTONES/M17-typed-edges-native-framework.md) |
-| M18 | Deep compositing v1 | doing | [M18-deep-compositing-v1.md](PLAN/MILESTONES/M18-deep-compositing-v1.md) |
+| M26 | Fix the shared test-fixture teardown flake | doing | [M26-test-fixture-teardown-flake.md](PLAN/MILESTONES/M26-test-fixture-teardown-flake.md) |
+| M18 | Deep compositing v1 | blocked | [M18-deep-compositing-v1.md](PLAN/MILESTONES/M18-deep-compositing-v1.md) |
 | M19 | USD/Hydra foundation: ScenePayload, ReadScene, Viewport3D | todo | [M19-usd-hydra-foundation.md](PLAN/MILESTONES/M19-usd-hydra-foundation.md) |
 | M20 | 3D node vocabulary and HydraRender | todo | [M20-3d-node-vocabulary.md](PLAN/MILESTONES/M20-3d-node-vocabulary.md) |
 | M21 | Deep tier-2 nodes and deep/3D bridges | todo | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
@@ -115,4 +116,10 @@ future core work has solid ground to build on.
 
 # Open questions
 
-_None._
+- **M18 is parked on M26** (2026-09-10). Not a question awaiting an answer — the
+  blocking condition, recorded here per PLAN-FORMAT.md §4. M18's remaining six
+  tasks all verify through ctest, and the shared fixture's teardown abort makes
+  the suite fail ~50% of the time regardless of the change under test. M18
+  resumes, rebased onto the default branch, once M26 merges. Phase 18.1 and
+  M18.P2.T1 are committed on `milestone/m18-deep-compositing-v1`; no PR is open
+  yet. See `PLAN/DECISIONS/2026-09-10-fix-test-fixture-teardown-flake.md`.

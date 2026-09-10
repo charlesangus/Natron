@@ -32,12 +32,17 @@
 
 #include "BaseTest.h"
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/Format.h"
 #include "Engine/Node.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxHost.h"
+#include "Engine/OfxImageEffectInstance.h"
 #include "Engine/Plugin.h"
+#include "Engine/Project.h"
 
+#include <ofxImageEffect.h>
 #include <ofxMetadata.h>
 #include <ofxProperty.h>
 
@@ -106,4 +111,47 @@ TEST_F(MetadataPluginFixture, MetadataAndPropertySuiteAreFetchableFromOfxHost)
     EXPECT_TRUE(host->fetchSuite(kOfxPropertySuite, 1) != NULL) << "property suite v1 not vended";
     EXPECT_TRUE(host->fetchSuite(kOfxPropertySuite, 2) != NULL) << "property suite v2 not vended";
     EXPECT_TRUE(host->fetchSuite(kOfxMetadataSuite, 1) != NULL) << "metadata suite not vended";
+}
+
+// The base ClipInstance::fetchMetadata() adds nothing of the host's own, so without
+// Natron's override an output clip's metadata carries only whatever the plug-in
+// contributed -- and Constant contributes nothing. Every key checked here therefore comes
+// from the host, and the values are the ones the project and its format imply.
+TEST_F(MetadataPluginFixture, OutputClipCarriesHostDerivedMetadata)
+{
+    const int formatWidth = 320;
+    const int formatHeight = 240;
+    const double formatPar = 1.;
+
+    Format f(0, 0, formatWidth, formatHeight, "metadataHostKeysFormat", formatPar);
+    getApp()->getProject()->setOrAddProjectFormat(f);
+
+    NodePtr node = createNode( QString::fromUtf8("net.sf.openfx.ConstantPlugin") );
+    ASSERT_TRUE( bool(node) ) << "node creation failed for net.sf.openfx.ConstantPlugin";
+
+    OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>( node->getEffectInstance().get() );
+    ASSERT_TRUE(ofxEffect != NULL) << "node's effect instance is not backed by the OFX host";
+
+    OFX::Host::ImageEffect::ClipInstance* output = ofxEffect->effectInstance()->getClip(kOfxImageEffectOutputClipName);
+    ASSERT_TRUE(output != NULL) << "the effect has no output clip";
+
+    OFX::Host::ImageEffect::MetadataSet* metadata = output->getMetadata(1.);
+    ASSERT_TRUE(metadata != NULL);
+
+    EXPECT_DOUBLE_EQ( getApp()->getProjectFrameRate(), metadata->getDoubleProperty(kOfxMetadataKeyFrameRate) );
+    EXPECT_DOUBLE_EQ( formatPar, metadata->getDoubleProperty(kOfxMetadataKeyPixelAspect) );
+    EXPECT_EQ( formatWidth, metadata->getIntProperty(kOfxMetadataKeyWidth) );
+    EXPECT_EQ( formatHeight, metadata->getIntProperty(kOfxMetadataKeyHeight) );
+    EXPECT_EQ( 1, metadata->getIntProperty(kOfxMetadataKeySourceFrame) );
+
+    metadata->releaseReference();
+
+    // The cache holds a reference of its own, so releasing the caller's must leave the set
+    // alive: asking again returns that same set rather than a fresh one.
+    OFX::Host::ImageEffect::MetadataSet* again = output->getMetadata(1.);
+    ASSERT_TRUE(again != NULL);
+    EXPECT_EQ(metadata, again);
+    EXPECT_EQ( formatWidth, again->getIntProperty(kOfxMetadataKeyWidth) );
+
+    again->releaseReference();
 }

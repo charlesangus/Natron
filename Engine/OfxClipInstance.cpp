@@ -57,6 +57,9 @@
 #include <nuke/fnOfxExtensions.h>
 #include <ofxOpenGLRender.h>
 #include <ofxNatron.h>
+#ifdef OFX_SUPPORTS_METADATA
+#include <ofxMetadata.h>
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -1693,6 +1696,115 @@ OfxClipInstance::findSupportedComp(const std::string &s) const
 
     return none;
 } // OfxClipInstance::findSupportedComp
+
+#ifdef OFX_SUPPORTS_METADATA
+static void
+addMetadataInt(OFX::Host::Property::Set& metadata,
+               const char* key,
+               int value)
+{
+    const OFX::Host::Property::PropSpec spec = { key, OFX::Host::Property::eInt, 1, false, "0" };
+
+    metadata.createProperty(spec);
+    metadata.setIntProperty(key, value);
+}
+
+static void
+addMetadataDouble(OFX::Host::Property::Set& metadata,
+                  const char* key,
+                  double value)
+{
+    const OFX::Host::Property::PropSpec spec = { key, OFX::Host::Property::eDouble, 1, false, "0" };
+
+    metadata.createProperty(spec);
+    metadata.setDoubleProperty(key, value);
+}
+
+static void
+addMetadataString(OFX::Host::Property::Set& metadata,
+                  const char* key,
+                  const std::string& value)
+{
+    const OFX::Host::Property::PropSpec spec = { key, OFX::Host::Property::eString, 1, false, "" };
+
+    metadata.createProperty(spec);
+    metadata.setStringProperty(key, value);
+}
+
+static void
+addMetadataStringN(OFX::Host::Property::Set& metadata,
+                   const char* key,
+                   const std::vector<std::string>& values)
+{
+    const OFX::Host::Property::PropSpec spec = { key, OFX::Host::Property::eString, (int)values.size(), false, "" };
+
+    metadata.createProperty(spec);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        metadata.setStringProperty(key, values[i], (int)i);
+    }
+}
+
+/// The number of bits one component of one pixel takes at the given OFX bit depth, or 0
+/// if the depth names no pixels at all.
+static int
+ofxBitDepthToBitCount(const std::string& depth)
+{
+    if (depth == kOfxBitDepthByte) {
+        return 8;
+    } else if (depth == kOfxBitDepthShort) {
+        return 16;
+    } else if (depth == kOfxBitDepthHalf) {
+        return 16;
+    } else if (depth == kOfxBitDepthFloat) {
+        return 32;
+    }
+
+    return 0;
+}
+
+void
+OfxClipInstance::fetchMetadata(OfxTime time,
+                               OFX::Host::Property::Set& metadata)
+{
+    if ( isOutput() ) {
+        addMetadataDouble( metadata, kOfxMetadataKeyFrameRate, getFrameRate() );
+        addMetadataDouble( metadata, kOfxMetadataKeyPixelAspect, getAspectRatio() );
+
+        const OfxRectI format = getFormat();
+        addMetadataInt(metadata, kOfxMetadataKeyWidth, format.x2 - format.x1);
+        addMetadataInt(metadata, kOfxMetadataKeyHeight, format.y2 - format.y1);
+
+        const int bitDepth = ofxBitDepthToBitCount( getUnmappedBitDepth() );
+        if (bitDepth > 0) {
+            addMetadataInt(metadata, kOfxMetadataKeyBitDepth, bitDepth);
+        }
+
+        addMetadataInt( metadata, kOfxMetadataKeySourceFrame, (int)time );
+
+        EffectInstancePtr effect = getEffectHolder();
+        AppInstancePtr app = effect ? effect->getApp() : AppInstancePtr();
+        ProjectPtr project = app ? app->getProject() : ProjectPtr();
+        if (project) {
+            // getProjectViewNames() hands out a reference to thread-local storage that the
+            // next call on this thread rewrites, so the names are copied out of it here.
+            const std::vector<std::string> viewNames = project->getProjectViewNames();
+            if ( !viewNames.empty() ) {
+                addMetadataStringN(metadata, kOfxMetadataKeyViewNames, viewNames);
+            }
+
+            const std::string projectFile = project->getProjectFilename().toStdString();
+            if ( !projectFile.empty() ) {
+                addMetadataString(metadata, kOfxMetadataKeyProject, projectFile);
+            }
+        }
+    }
+
+    // last, so that the plug-in's contribution lands on top of the host's and a key the
+    // plug-in sets replaces the value Natron derived for it
+    OFX::Host::ImageEffect::ClipInstance::fetchMetadata(time, metadata);
+} // OfxClipInstance::fetchMetadata
+
+#endif // OFX_SUPPORTS_METADATA
 
 NATRON_NAMESPACE_EXIT
 

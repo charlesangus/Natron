@@ -302,6 +302,13 @@ public:
 
     typedef std::shared_ptr<ClipTLSData> ClipDataTLSPtr;
 
+#ifdef OFX_SUPPORTS_METADATA
+protected:
+    /// Fills in the metadata this clip's image carries at the given time: the keys Natron
+    /// itself knows the value of, followed by whatever the plug-in contributes.
+    virtual void fetchMetadata(OfxTime time, OFX::Host::Property::Set& metadata) OVERRIDE FINAL;
+#endif // OFX_SUPPORTS_METADATA
+
 private:
     EffectInstancePtr getEffectHolder() const;
 

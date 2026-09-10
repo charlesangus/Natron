@@ -57,6 +57,18 @@
 #include <nuke/fnOfxExtensions.h>
 #include <ofxOpenGLRender.h>
 #include <ofxNatron.h>
+#ifdef OFX_SUPPORTS_METADATA
+#include <QDateTime>
+#include <QFileInfo>
+
+#include <SequenceParsing.h>
+
+#include "Engine/KnobFile.h"
+#include "Engine/ReadNode.h"
+#include "Engine/WriteNode.h"
+
+#include <ofxMetadata.h>
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -1693,6 +1705,241 @@ OfxClipInstance::findSupportedComp(const std::string &s) const
 
     return none;
 } // OfxClipInstance::findSupportedComp
+
+#ifdef OFX_SUPPORTS_METADATA
+static void
+addMetadataInt(OFX::Host::Property::Set& metadata,
+               const char* key,
+               int value)
+{
+    const OFX::Host::Property::PropSpec spec = { key, OFX::Host::Property::eInt, 1, false, "0" };
+
+    metadata.createProperty(spec);
+    metadata.setIntProperty(key, value);
+}
+
+static void
+addMetadataDouble(OFX::Host::Property::Set& metadata,
+                  const char* key,
+                  double value)
+{
+    const OFX::Host::Property::PropSpec spec = { key, OFX::Host::Property::eDouble, 1, false, "0" };
+
+    metadata.createProperty(spec);
+    metadata.setDoubleProperty(key, value);
+}
+
+static void
+addMetadataString(OFX::Host::Property::Set& metadata,
+                  const char* key,
+                  const std::string& value)
+{
+    const OFX::Host::Property::PropSpec spec = { key, OFX::Host::Property::eString, 1, false, "" };
+
+    metadata.createProperty(spec);
+    metadata.setStringProperty(key, value);
+}
+
+static void
+addMetadataStringN(OFX::Host::Property::Set& metadata,
+                   const char* key,
+                   const std::vector<std::string>& values)
+{
+    const OFX::Host::Property::PropSpec spec = { key, OFX::Host::Property::eString, (int)values.size(), false, "" };
+
+    metadata.createProperty(spec);
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        metadata.setStringProperty(key, values[i], (int)i);
+    }
+}
+
+/// The number of bits one component of one pixel takes at the given OFX bit depth, or 0
+/// if the depth names no pixels at all.
+static int
+ofxBitDepthToBitCount(const std::string& depth)
+{
+    if (depth == kOfxBitDepthByte) {
+        return 8;
+    } else if (depth == kOfxBitDepthShort) {
+        return 16;
+    } else if (depth == kOfxBitDepthHalf) {
+        return 16;
+    } else if (depth == kOfxBitDepthFloat) {
+        return 32;
+    }
+
+    return 0;
+}
+
+/// Adds the keys describing the file a reader read this image from. Nothing is added if the
+/// reader has no filename param, or if the file the param names at this time is not there.
+static void
+addReaderFileMetadata(OFX::Host::Property::Set& metadata,
+                      const EffectInstancePtr& reader,
+                      OfxTime time)
+{
+    KnobFile* fileKnob = dynamic_cast<KnobFile*>(reader->getKnobByName(kOfxImageEffectFileParamName).get());
+
+    if (!fileKnob) {
+        return;
+    }
+
+    // the param holds a sequence pattern while these keys describe one image, so the pattern is
+    // expanded at this time and the value names the single file this image was read from
+    std::vector<std::string> viewNames;
+    AppInstancePtr app = reader->getApp();
+    if (app) {
+        viewNames = app->getProject()->getProjectViewNames();
+    }
+    const std::string path = SequenceParsing::generateFileNameFromPattern(fileKnob->getValue(0, ViewIdx(0)), viewNames, (int)time, 0);
+    if (path.empty()) {
+        return;
+    }
+
+    const QFileInfo info(QString::fromUtf8(path.c_str()));
+    if (!info.isFile()) {
+        // a reader aimed at a frame that is not on disk is an ordinary state rather than an
+        // error, and a key whose value is unknown is omitted rather than published empty
+        return;
+    }
+
+    addMetadataString(metadata, kOfxMetadataKeyFilePath, path);
+    addMetadataDouble(metadata, kOfxMetadataKeyMTime, info.lastModified().toMSecsSinceEpoch() / 1000.);
+    addMetadataDouble(metadata, kOfxMetadataKeyFileSize, (double)info.size());
+} // addReaderFileMetadata
+
+namespace {
+// Drops a metadata reference however the scope holding it is left. Copying a set out can
+// throw, and a reference that is not given back leaves the upstream clip's entry pinned for
+// the life of the process.
+class MetadataSetReference {
+public:
+    explicit MetadataSetReference(OFX::Host::ImageEffect::MetadataSet* set)
+        : _set(set)
+    {
+    }
+
+    ~MetadataSetReference()
+    {
+        if (_set) {
+            _set->releaseReference();
+        }
+    }
+
+private:
+    MetadataSetReference(const MetadataSetReference&);
+    MetadataSetReference& operator=(const MetadataSetReference&);
+
+    OFX::Host::ImageEffect::MetadataSet* _set;
+};
+} // namespace
+
+void
+OfxClipInstance::fetchMetadata(OfxTime time,
+                               OFX::Host::Property::Set& metadata)
+{
+    OFX::Host::ImageEffect::ClipInstance* upstreamOutput = NULL;
+
+    if (!isOutput()) {
+        // An input clip carries the metadata of the image handed to it, which is the one the
+        // node connected to it puts out of its own output clip. That node is taken as it is
+        // rather than through getNearestNonIdentity(): a node that passes its pixels through
+        // untouched may still be there precisely to add metadata to them.
+        EffectInstancePtr inputNode = getAssociatedNode();
+        OfxEffectInstance* ofxInputNode = dynamic_cast<OfxEffectInstance*>(inputNode.get());
+        if (!ofxInputNode) {
+            // A bundled reader or writer stands in the graph as a Read/Write container, which
+            // is not itself an OFX effect: the clips are the decoder's or encoder's, and so is
+            // the metadata that has to reach whatever is connected downstream of the container.
+            NodePtr embedded;
+            ReadNode* isReadNode = dynamic_cast<ReadNode*>(inputNode.get());
+            WriteNode* isWriteNode = dynamic_cast<WriteNode*>(inputNode.get());
+            if (isReadNode) {
+                embedded = isReadNode->getEmbeddedReader();
+            } else if (isWriteNode) {
+                embedded = isWriteNode->getEmbeddedWriter();
+            }
+            if (embedded) {
+                ofxInputNode = dynamic_cast<OfxEffectInstance*>(embedded->getEffectInstance().get());
+            }
+        }
+        if (ofxInputNode) {
+            OfxImageEffectInstance* upstreamEffect = ofxInputNode->effectInstance();
+            if (upstreamEffect) {
+                upstreamOutput = upstreamEffect->getClip(kOfxImageEffectOutputClipName);
+            }
+        }
+    }
+
+    if (upstreamOutput) {
+        OFX::Host::ImageEffect::MetadataSet* upstream = upstreamOutput->getMetadata(time);
+        if (upstream) {
+            // the copies stand on their own, so the reference getMetadata() handed out is
+            // dropped as soon as they are made: holding it for the lifetime of this clip
+            // would pin the upstream clip's cache entry for just as long
+            MetadataSetReference held(upstream);
+
+            const OFX::Host::Property::PropertyMap& props = upstream->getProperties();
+            for (OFX::Host::Property::PropertyMap::const_iterator it = props.begin(); it != props.end(); ++it) {
+                OFX::Host::Property::Property* copied = it->second->deepCopy();
+                if (copied) {
+                    metadata.addProperty(copied);
+                }
+            }
+        }
+    } else {
+        // Either this is the output clip, or it is an input clip whose metadata cannot be
+        // read from upstream: nothing is connected to it, or what is connected is a native
+        // node and so has no OFX clip at all. The keys are derived from this clip instead,
+        // which falls back to the project's own values when it has no input.
+        addMetadataDouble(metadata, kOfxMetadataKeyFrameRate, getFrameRate());
+        addMetadataDouble(metadata, kOfxMetadataKeyPixelAspect, getAspectRatio());
+
+        const OfxRectI format = getFormat();
+        addMetadataInt(metadata, kOfxMetadataKeyWidth, format.x2 - format.x1);
+        addMetadataInt(metadata, kOfxMetadataKeyHeight, format.y2 - format.y1);
+
+        const int bitDepth = ofxBitDepthToBitCount(getUnmappedBitDepth());
+        if (bitDepth > 0) {
+            addMetadataInt(metadata, kOfxMetadataKeyBitDepth, bitDepth);
+        }
+
+        addMetadataInt(metadata, kOfxMetadataKeySourceFrame, (int)time);
+
+        EffectInstancePtr effect = getEffectHolder();
+        AppInstancePtr app = effect ? effect->getApp() : AppInstancePtr();
+        ProjectPtr project = app ? app->getProject() : ProjectPtr();
+        if (project) {
+            // getProjectViewNames() hands out a reference to thread-local storage that the
+            // next call on this thread rewrites, so the names are copied out of it here.
+            const std::vector<std::string> viewNames = project->getProjectViewNames();
+            if (!viewNames.empty()) {
+                addMetadataStringN(metadata, kOfxMetadataKeyViewNames, viewNames);
+            }
+
+            const std::string projectFile = project->getProjectFilename().toStdString();
+            if (!projectFile.empty()) {
+                addMetadataString(metadata, kOfxMetadataKeyProject, projectFile);
+            }
+        }
+
+        if (isOutput()) {
+            // The filename param belongs to the decoder rather than to the Read container
+            // getEffectHolder() hands back, so the keys are taken from the effect this clip
+            // is actually part of.
+            OfxEffectInstancePtr reader = _imp->nodeInstance.lock();
+            if (reader && reader->isReader()) {
+                addReaderFileMetadata(metadata, reader, time);
+            }
+        }
+    }
+
+    // last, so that the plug-in's contribution lands on top of the host's and a key the
+    // plug-in sets replaces the value Natron derived for it
+    OFX::Host::ImageEffect::ClipInstance::fetchMetadata(time, metadata);
+} // OfxClipInstance::fetchMetadata
+
+#endif // OFX_SUPPORTS_METADATA
 
 NATRON_NAMESPACE_EXIT
 

@@ -126,7 +126,28 @@ tools/ci/local/test.sh <ctest|smoke> [debug|release] [--gdb]
       attrib=32785) at Engine/OSGLContext_x11.cpp:433
   ```
 
-## 5. Verify a release bundle starts outside the dev container
+## 5. Package (tarball + AppImage)
+
+```
+tools/ci/local/package.sh [debug|release]
+```
+
+Stages the built tree (`stage-bundle.sh`) and packages it into a `.tar.xz`
+and an AppImage, landing both -- plus their `.sha256` files -- in
+`<build-dir>/artifacts/`, e.g. `build/release/artifacts/`. This is the local
+equivalent of `release.yml`'s "Stage bundle" / "Create tarball" / "Create
+AppImage" steps, which only run on a tag push and drop their output in
+`/tmp/artifacts` instead of the build tree. Defaults to `release` (packaging
+a debug build is rarely useful, but supported).
+
+`appimagetool` needs a route to `upload.wikimedia.org` to validate the
+AppData screenshot URL; sandboxes without one can drop a wrapper at
+`build/appimagetool-wrapper/appimagetool` that execs the real tool with
+`-n`/`--no-appstream` (see that wrapper's own header for the full story) --
+`package.sh` puts it ahead of `PATH` when present, and does nothing when it
+isn't (e.g. CI, which has real network access).
+
+## 6. Verify a release bundle starts outside the dev container
 
 `tools/release/stage-bundle.sh` already runs `check-relocatable.sh` and
 `check-startup.sh` on every bundle it stages, and `make-appimage.sh`/
@@ -213,6 +234,7 @@ no benefit -- this only matters for GUI/GL launches.
 | What | Where | Reset |
 |---|---|---|
 | Build tree | `build/debug`, `build/release` (gitignored) | delete the directory |
+| Packaged artifacts | `build/<type>/artifacts` (gitignored) | delete the directory |
 | Test assets | `build/assets` (gitignored) | delete, then re-run `fetch-assets.sh` |
 | ccache, `HOME` | Docker named volumes `natron-dev-ccache`, `natron-dev-home` | `docker volume rm` |
 | Container | `natron-dev` | `docker rm -f natron-dev`, or see below |

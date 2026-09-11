@@ -306,9 +306,12 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     ////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////// Pull the deep inputs ////////////////////////////////////////
 
-    const RectD canonicalRoI = roi.toCanonical(args.mipmapLevel, par, rod);
+    // Inputs are pulled over the window actually being rendered, which bounds growth above may
+    // have widened past the caller's request: rendering boundsToRender while having asked the
+    // inputs for only roi leaves the grown remainder with nothing to read.
+    const RectD canonicalRenderWindow = boundsToRender.toCanonical(args.mipmapLevel, par, rod);
     RoIMap inputsRoi;
-    getRegionsOfInterest_public(args.time, args.scale, rod, canonicalRoI, args.view, &inputsRoi);
+    getRegionsOfInterest_public(args.time, args.scale, rod, canonicalRenderWindow, args.view, &inputsRoi);
 
     const FramesNeededMap framesNeeded = getFramesNeeded_public(nodeHash, args.time, args.view, args.mipmapLevel);
 
@@ -323,7 +326,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
 
         // Deep ops are spatially local, so RoI propagation is the image path's: whatever
         // getRegionsOfInterest() said, defaulting to this node's own render window.
-        RectD inputCanonicalRoI = canonicalRoI;
+        RectD inputCanonicalRoI = canonicalRenderWindow;
         RoIMap::const_iterator foundInputRoI = inputsRoi.find(input);
         if (foundInputRoI != inputsRoi.end()) {
             if (foundInputRoI->second.isNull()) {

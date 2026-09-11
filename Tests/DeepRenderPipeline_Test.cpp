@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <list>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,8 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/DeepImage.h"
+#include "Engine/DeepImageCacheEntry.h"
+#include "Engine/DeepImageKey.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/ImageKey.h"
@@ -168,6 +171,65 @@ expectFlattenedImageMatchesSource(const ImagePtr& image,
             ASSERT_TRUE(actual != NULL) << "at pixel (" << x << ", " << y << ")";
             for (int c = 0; c < numChannels; ++c) {
                 ASSERT_FLOAT_EQ(expected[c], actual[c]) << "at pixel (" << x << ", " << y << ") channel " << c;
+            }
+        }
+    }
+}
+
+DeepImageKey
+deepEntryKey(const NodePtr& node,
+             double time)
+{
+    return DeepImageKey(node.get(), node->getHashValue(), time, ViewIdx(0), RenderScale::identity);
+}
+
+// The bounds of every deep cache entry a node currently holds for that frame. Empty means the
+// node has nothing cached, which is what a deliberate per-holder eviction must produce.
+std::vector<RectI>
+cachedDeepEntryBounds(const NodePtr& node,
+                      double time)
+{
+    std::list<DeepImageCacheEntryPtr> found;
+    std::vector<RectI> bounds;
+
+    if (!appPTR->getDeepImage(deepEntryKey(node, time), &found)) {
+        return bounds;
+    }
+    for (std::list<DeepImageCacheEntryPtr>::const_iterator it = found.begin(); it != found.end(); ++it) {
+        if ((*it)->getDeepImage()) {
+            bounds.push_back((*it)->getDeepImage()->getBounds());
+        }
+    }
+
+    return bounds;
+}
+
+// Every pixel of roi holds exactly the samples the source formulas prescribe, scaled by the gain
+// node. A total sample count would not catch an empty region, so this walks every pixel.
+void
+expectGainedSamplesOverWholeRegion(const DeepImagePtr& image,
+                                   const RectI& roi)
+{
+    const std::vector<std::string> channelNames = deepRenderTestChannelNames();
+    std::vector<const DeepChannelBuffer*> channels(channelNames.size());
+
+    for (std::size_t c = 0; c < channelNames.size(); ++c) {
+        channels[c] = image->getChannel(channelNames[c]);
+        ASSERT_TRUE(channels[c] != NULL) << "missing channel " << channelNames[c];
+    }
+
+    for (int y = roi.y1; y < roi.y2; ++y) {
+        for (int x = roi.x1; x < roi.x2; ++x) {
+            std::size_t index;
+            ASSERT_TRUE(deepRenderTestPixelIndex(*image, x, y, &index)) << "at pixel (" << x << ", " << y << ")";
+            const U32 count = image->getSampleTable().getCount(index);
+            const U64 offset = image->getSampleTable().getOffset(index);
+            ASSERT_EQ(deepRenderTestSampleCount(x, y), count) << "at pixel (" << x << ", " << y << ")";
+            for (U32 s = 0; s < count; ++s) {
+                for (std::size_t c = 0; c < channels.size(); ++c) {
+                    ASSERT_FLOAT_EQ(deepRenderTestChannel(x, y, (int)s, (int)c) * kDeepRenderTestGain, channels[c]->data()[offset + s])
+                        << "at pixel (" << x << ", " << y << ") sample " << s << " channel " << channelNames[c];
+                }
             }
         }
     }
@@ -394,6 +456,49 @@ TEST_F(DeepRenderPipelineTest, BoundsGrowthReRendersOverTheUnionOfRequestedRoIs)
             }
         }
     }
+}
+
+TEST_F(DeepRenderPipelineTest, BoundsGrowthRePullsItsInputOverTheGrownWindow)
+{
+    const RectI fullFrame(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+    const RectI leftHalf(0, 0, kDeepRenderTestWidth / 2, kDeepRenderTestHeight);
+    const RectI rightHalf(kDeepRenderTestWidth / 2, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+
+    DeepImagePtr left;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., leftHalf, &left));
+    ASSERT_TRUE(left != NULL);
+    ASSERT_TRUE(leftHalf == left->getBounds());
+    ASSERT_EQ(1, deepRenderTestSourceRenderCount().load());
+    ASSERT_EQ(1, deepRenderTestGainRenderCount().load());
+
+    // Both links of the chain are cached at this point: the asymmetry below has to be a genuine
+    // transition, not something that was already missing.
+    const std::vector<RectI> sourceCachedBefore = cachedDeepEntryBounds(_source, 1.);
+    ASSERT_EQ((std::size_t)1, sourceCachedBefore.size());
+    ASSERT_TRUE(leftHalf == sourceCachedBefore[0]);
+    ASSERT_EQ((std::size_t)1, cachedDeepEntryBounds(_gain, 1.).size());
+
+    // Evict the upstream node's entry only. That is what forces the second render's grown window
+    // to be satisfied by a fresh upstream render rather than by an entry that happens to be wide
+    // enough already.
+    appPTR->removeAllCacheEntriesForHolder(_source.get(), true);
+    ASSERT_TRUE(cachedDeepEntryBounds(_source, 1.).empty());
+    ASSERT_EQ((std::size_t)1, cachedDeepEntryBounds(_gain, 1.).size());
+
+    DeepImagePtr right;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., rightHalf, &right));
+    ASSERT_TRUE(right != NULL);
+    ASSERT_TRUE(fullFrame == right->getBounds());
+    EXPECT_EQ(2, deepRenderTestSourceRenderCount().load());
+    EXPECT_EQ(2, deepRenderTestGainRenderCount().load());
+
+    // The upstream node was asked for the window the downstream node is rendering, not for the
+    // narrower RoI the caller requested.
+    const std::vector<RectI> sourceCachedAfter = cachedDeepEntryBounds(_source, 1.);
+    ASSERT_EQ((std::size_t)1, sourceCachedAfter.size());
+    EXPECT_TRUE(fullFrame == sourceCachedAfter[0]);
+
+    expectGainedSamplesOverWholeRegion(right, fullFrame);
 }
 
 TEST_F(DeepRenderPipelineTest, AbortBeforeRenderingIsHonoured)

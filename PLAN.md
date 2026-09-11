@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: M18.P3.T1
-pm_heartbeat: 2026-09-11T01:57:16-04:00
+pm_heartbeat: 2026-09-11T04:24:34-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -81,6 +81,13 @@ future core work has solid ground to build on.
   **M20** (needs M19's gate), then **M21** (stub; blocked on M18/M20
   real-world results and a design-doc amendment). Substrate decision:
   `PLAN/DECISIONS/2026-09-05-adopt-typed-edges-and-usd-substrate.md`.
+- **M29–M30 (independent repo + automated beta releases)** authored
+  2026-09-11, no ordering dependency between them — either can run first, or
+  in parallel with the deep/3D work above. M29 recreates `origin` as a
+  non-fork repo (chosen over a GitHub Support ticket — see M29's Decisions);
+  M30 makes `release.yml`'s existing build/package pipeline fire
+  automatically on every merge to `main`, tagged `v0.1.0-betaN` (sequential
+  from 1) as a pre-release, alongside the unchanged manual stable-tag path.
 
 # Board
 
@@ -115,6 +122,8 @@ future core work has solid ground to build on.
 | M24 | Node graph aesthetics: category colour and user colour | todo | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
 | M27 | Make the debug build a debug build again | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M28 | Stop treating page cache as memory pressure | todo | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |
+| M29 | Break the link to upstream — an independent repository | todo | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |
+| M30 | Full release + AppImage on every merge, auto-versioned betas from 0.1.0-beta1 | todo | [M30-automated-beta-releases.md](PLAN/MILESTONES/M30-automated-beta-releases.md) |
 
 # Open questions
 

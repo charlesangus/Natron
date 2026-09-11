@@ -61,11 +61,17 @@ Pixels" document verbatim.
   - verify: no ctest coverage is possible — the Viewer plugin is not registered in the `Tests` binary (`registerBuiltInPlugin<ViewerInstance>` is gated on `!isBackground()`) and `Tests` does not link `NatronGui`, so there is no test to write and `DISABLED_` is the wrong tool. Manual app-launch checklist instead, recorded in this milestone's `## Decisions` with its result: DeepRead connects to the Viewer with no explicit `DeepToImage`; the image appears; scrub forward then back and confirm the second pass does not re-render (render counter or `--enable-render-stats`); hover a known multi-sample pixel and match bar count + tooltip values against the source EXR; hover an empty pixel and get a dash, not a stale list. Whole ctest suite still green.
   - size: M
 
-- [ ] M18.P2.T4 — Pull deep inputs over the window actually being rendered
+- [x] M18.P2.T4 — Pull deep inputs over the window actually being rendered
   - files: `Engine/EffectInstanceRenderDeep.cpp`, `Tests/DeepRenderPipeline_Test.cpp`
   - approach: in `renderDeepRoI`, the canonical RoI handed to the upstream pull is derived from the requested `roi`, not from `boundsToRender` (the candidate is the `canonicalRoI` computation around `EffectInstanceRenderDeep.cpp:309`). After the bounds-growth path widens `boundsToRender` to the union of the requested and cached bounds, the node therefore renders a wider window than it pulled its inputs over. With an upstream cache hit the extra region happens to be covered; on an upstream miss it is silently truncated data rather than a re-render — a wrong answer, not a slow one. `renderDeepRoIFlattened` and so the whole Viewer deep path inherit it. Found while implementing M18.P2.T2; the M18.P2.T1 tests missed it because `BoundsGrowthReRendersOverTheUnionOfRequestedRoIs` exercises growth with the upstream still cached.
   - verify: a test that grows bounds **with the upstream entry evicted between the two renders**, asserting full sample coverage over the union (not just the second RoI); driven red-then-green by reverting the fix. Whole ctest suite green.
   - size: M
+
+- [ ] M18.P2.T5 — Make the two deep cache-growth retractions symmetric
+  - files: `Engine/EffectInstanceRenderDeep.cpp`, `Tests/DeepRenderPipeline_Test.cpp`
+  - approach: two small cache-lifetime defects, opposite in sign, found by M18.P2.T4's audit of the growth path. (1) `renderDeepRoI()` never retracts the narrow entry it just superseded, so after growth the deep cache holds both the narrow and the wide entry under the same key and `getDeepImage()`'s list grows monotonically per key across successive widenings — dead weight until LRU, and deep frames are exactly the entries whose size justified a separate budget. `renderDeepRoIFlattened()` already does this via `removeFromNodeCache(cached)`; match it. (2) `renderDeepRoIFlattened()` removes the superseded narrow flattened entry **before** rendering, so an abort or failure during a widening flatten retracts the new entry too and leaves nothing cached where a valid narrower image existed. Retract the old entry only once the new one is complete. Neither is a wrong answer — both are cache efficiency — so do not let the fix complicate the success path; if making the ordering safe costs more than it saves, say so and close the task by recording that instead.
+  - verify: after a growth render, exactly one entry remains under the key, with the grown bounds (driven red-then-green by dropping the retraction); an abort during a widening flatten leaves the pre-existing narrower image still servable (red-then-green by restoring the eager removal). Whole ctest suite green.
+  - size: S
 
 ## Phase 18.3: Tier-1 node set
 
@@ -312,3 +318,26 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   to the allocator, not to the OS, so `MemFree` barely moves and the loop
   evicts until a cache is empty. M18.P1.T5 only stops it distorting this
   milestone's tests.
+
+- 2026-09-11 — M18.P2.T4 landed as `c5edf95f2`; suite **149/149**, confirmed on
+  my own run. The fix is one line plus a rename — `canonicalRoI` becomes
+  `canonicalRenderWindow`, computed from `boundsToRender` — and the audit it
+  came with is the valuable part: every other `roi` use after the divergence was
+  checked and justified rather than assumed. Two are *correctly* the request and
+  must stay so: the `entryImage->getBounds().contains(roi)` cache test (asking
+  whether an entry satisfies the caller, and `boundsToRender` is derived from it,
+  so using the window there would be circular) and the identity/pass-through
+  forwards (moot anyway — they all return above `boundsToRender`'s declaration).
+  `getFramesNeeded_public()` carries no render window at all, so growth being
+  spatial-only cannot affect it. The red proof is the instructive part: under the
+  bug the render *counts* were still 2/2, so any count-based assertion would have
+  been vacuous — only the per-pixel walk catches it, and it did, with 0 samples
+  where 3 were expected across the whole left half. This is the third vacuous
+  assertion this milestone would have shipped with a weaker verify.
+
+- 2026-09-11 — Growth remains unbounded: `boundsToRender.merge()` over
+  everything ever requested means a pathological sequence of disjoint RoIs
+  re-renders an ever-larger union. Deliberate for v1 per the design doc's
+  "bounds growth, not tiling" and the comment at the merge site, and left as a
+  known limitation rather than a task — a size cap is only worth designing once
+  there is a real workload to size it against. Revisit in M21.

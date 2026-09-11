@@ -35,6 +35,12 @@ Pixels" document verbatim.
   - verify: unit test — a populated deep cache is emptied by `clearAllCaches()`; a per-node purge on hash change removes that node's deep entries and leaves another node's alone; the deep cache's bytes appear in the memory-stats total. Whole ctest suite still green.
   - size: M
 
+- [ ] M18.P1.T5 — Make the deep cache tests hermetic against the low-memory handler
+  - files: `Tests/DeepImageCache_Test.cpp`, `Tests/DeepRenderPipeline_Test.cpp`, possibly `Engine/Settings.h`/`.cpp`
+  - approach: `DeepImageCacheTest.HashChangePurgeRemovesOnlyThatNodesStaleDeepEntries` and `DeepRenderPipelineTest.BoundsGrowthReRendersOverTheUnionOfRequestedRoIs` fail on any host whose **free** physical RAM is under `getSystemTotalRAM() * getUnreachableRamPercent()` (default 20%). `AppManager::checkCacheFreeMemoryIsGoodEnough()` runs on every `allocateMemory()` and evicts LRU entries from the node *and* deep caches until free RAM clears that bar; `getAmountFreePhysicalRAM()` reads `sysinfo.freeram`, i.e. `MemFree`, which page cache keeps low regardless of how much memory is actually reclaimable, and evicting cache entries barely moves it — so on such a host the loop drains both caches and the first test's own sanity check (`DeepImageCache_Test.cpp:318`) fails before the purge under test is even called. Any test that asserts a cache *retains* something must pin the setting it depends on: set `unreachableRamPercent` to 0 for the duration (fixture setup/teardown, restoring the previous value) so the handler cannot fire. Do **not** weaken the assertions, and do not touch M18.P1.T4's `evictLRUFromMemoryCaches()` test — it drives the helper directly and is unaffected. While there, judge whether the reading `MemFree` rather than `MemAvailable` is worth its own milestone and say so rather than fixing it here.
+  - verify: both tests pass on this host as it is now (free RAM below the threshold — check with `free -m` before and confirm the arithmetic in the task notes still holds), and still pass with `unreachableRamPercent` restored; each driven red-then-green by reverting the pin. Whole ctest suite green.
+  - size: M
+
 ## Phase 18.2: Render path
 
 - [x] M18.P2.T1 — `renderDeepRoI` pull pipeline
@@ -43,7 +49,7 @@ Pixels" document verbatim.
   - verify: unit test with two stub deep nodes chained — cache hit on second render, abort honored, two-pass helper produces identical output to a serial reference.
   - size: L
 
-- [ ] M18.P2.T2 — Deep→image adapter seam and the cached flatten (Engine half)
+- [x] M18.P2.T2 — Deep→image adapter seam and the cached flatten (Engine half)
   - files: `Engine/EffectInstance.h`, `Engine/Node.cpp`, `Engine/DeepFlatten.h`/`.cpp` (new), `Engine/EffectInstanceRenderDeep.cpp`, `Engine/ViewerInstance.h`/`.cpp`, `Engine/CMakeLists.txt`, `Tests/DataKindTestEffect.h`, `Tests/DeepFlatten_Test.cpp` (new), `Tests/DeepRenderPipeline_Test.cpp`
   - approach: the adapter is a per-input opt-in virtual `EffectInstance::inputAcceptsDataKindViaAdapter(int, DataKindEnum)` (default false, overridden only by `ViewerInstance` for `eDataKindDeep`) **gated by a fixed one-row table** `isRegisteredAdapter(from, to)` in `Node.cpp` — both must hold, so neither a node nor a table row can widen the system alone, and deep→image cannot leak mid-graph. Three guard sites in `Node.cpp`: `isInputDataKindUnacceptable()` (serves connect-time *and* project-load conflict reporting in one place), the `constraint->merge()` in `collectDownstreamDataKindRequirement()` (without it a `Dot` between a deep source and the Viewer resolves ambiguous — the M17 regression), and `findDataKindConflictDownstream()`. New `Engine/DeepFlatten.{h,cpp}` holds `flattenToImage()` (build a `DeepPixelView` over the source's existing per-channel runs, `tidySamples()` then `flattenFrontToBack()` straight into the destination Image row — zero copy) and `getSamplesAtPixel()` for the probe; it is shared code, not Viewer-private — M18.P3.T2's `DeepToImage` calls the same functions. `EffectInstance::renderDeepRoIFlattened()` in `EffectInstanceRenderDeep.cpp`, called on the deep upstream effect, mints an `ImageKey` from the deep node's own `nodeHash` (exact automatic purge via `removeAllImagesFromCacheWithMatchingIDAndDifferentKey`; safe because a deep-output node never produces `Cache<Image>` entries of its own), looks it up per the `RotoContext.cpp` precedent, on miss calls `renderDeepRoI()` — never reimplements the pull — and retracts the half-filled entry with `removeFromImageCache()` on abort. `ViewerArgs::deepUpstream` is detected main-thread-only from the memoized effective kind; the branch in `renderViewer_internal` bypasses the layer/components block and synthesizes RGBA (deep channels are not Natron planes; the v1 Viewer contract is flatten-to-RGBA).
   - verify: ten ctest cases, each driven red-then-green by perturbing one line — adapter accepts / adapter refuses scene even when the effect asks for it (the invariant) / polymorphic node between deep source and adapter sink resolves deep (the M17 regression) / adapter edge survives project load with no persistent message / flatten matches a serial reference **over a pixel with overlapping samples** / second flatten is a cache hit / abort leaves nothing cached / cache invalidates on deep-node hash change / probe samples match the payload / probe returns raw not tidied samples. Whole ctest suite still green.
@@ -53,6 +59,12 @@ Pixels" document verbatim.
   - files: `Engine/UpdateViewerParams.h`, `Engine/OpenGLViewerI.h`, `Engine/ViewerInstance.cpp`, `Gui/ViewerGL.cpp`, `Gui/ViewerGLPrivate.h`, `Gui/InfoViewerWidget.h`/`.cpp`, `Gui/ViewerTab40.cpp`
   - approach: **execute after M18.P3.T1** so the manual verify has a real deep source to hover. Carry `DeepImagePtr deepImage` on `UpdateViewerParams` beside `colorImage`; hand it to the GUI through one new `OpenGLViewerI::setLastRenderedDeepImage(textureIndex, mipmapLevel, deepImage)` rather than an 18th argument on `endTransferBufferFromRAMToGPU`, passing null on the image path so a stale payload cannot outlive its frame; stash it in `TextureInfo::lastRenderedDeepTiles` next to `lastRenderedTiles` and clear it wherever that is cleared. `ViewerGL::getDeepSamplesAt()` beside `getColorAt()` delegates to `DeepFlatten::getSamplesAtPixel()` — and unlike `getColorAt` it does **not** fall back to a neighbouring mipmap level, because samples from the wrong scale are actively misleading; return false and show a dash. The info bar is one text-line tall, so it gets a summary label (`deep: 7 smp  Z 12.40–48.90`) and the full per-sample list (`Z / ZBack / A / R G B`, monospace, capped ~16 with a trailing count) in that label's dynamic tooltip — the only multi-line affordance there. Probe reads raw untidied samples: tidying splits and merges, and would show the user values the source file does not contain.
   - verify: no ctest coverage is possible — the Viewer plugin is not registered in the `Tests` binary (`registerBuiltInPlugin<ViewerInstance>` is gated on `!isBackground()`) and `Tests` does not link `NatronGui`, so there is no test to write and `DISABLED_` is the wrong tool. Manual app-launch checklist instead, recorded in this milestone's `## Decisions` with its result: DeepRead connects to the Viewer with no explicit `DeepToImage`; the image appears; scrub forward then back and confirm the second pass does not re-render (render counter or `--enable-render-stats`); hover a known multi-sample pixel and match bar count + tooltip values against the source EXR; hover an empty pixel and get a dash, not a stale list. Whole ctest suite still green.
+  - size: M
+
+- [ ] M18.P2.T4 — Pull deep inputs over the window actually being rendered
+  - files: `Engine/EffectInstanceRenderDeep.cpp`, `Tests/DeepRenderPipeline_Test.cpp`
+  - approach: in `renderDeepRoI`, the canonical RoI handed to the upstream pull is derived from the requested `roi`, not from `boundsToRender` (the candidate is the `canonicalRoI` computation around `EffectInstanceRenderDeep.cpp:309`). After the bounds-growth path widens `boundsToRender` to the union of the requested and cached bounds, the node therefore renders a wider window than it pulled its inputs over. With an upstream cache hit the extra region happens to be covered; on an upstream miss it is silently truncated data rather than a re-render — a wrong answer, not a slow one. `renderDeepRoIFlattened` and so the whole Viewer deep path inherit it. Found while implementing M18.P2.T2; the M18.P2.T1 tests missed it because `BoundsGrowthReRendersOverTheUnionOfRequestedRoIs` exercises growth with the upstream still cached.
+  - verify: a test that grows bounds **with the upstream entry evicted between the two renders**, asserting full sample coverage over the union (not just the second RoI); driven red-then-green by reverting the fix. Whole ctest suite green.
   - size: M
 
 ## Phase 18.3: Tier-1 node set
@@ -231,3 +243,47 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   row can widen the system alone, and a test asserts exactly that.
   Also recorded: `Engine/DeepFlatten.{h,cpp}` is shared, not Viewer-private —
   M18.P3.T2's `DeepToImage` calls the same `flattenToImage()`.
+
+- 2026-09-11 — M18.P2.T2 landed as `9af908d7d`, with all eleven cases driven
+  red-then-green (the eleventh is over the ten briefed: the
+  `findDataKindConflictDownstream()` guard is only reachable when the sink is
+  wired to the pass-through *before* the deep source is, so it needed its own
+  case). Four corrections to the design brief, all verified against the code:
+  `Engine/CMakeLists.txt` has no source list to edit — it globs, so a new file
+  needs only a `--reconfigure`; `appPTR->removeFromImageCache()` does not exist
+  and the `Cache<Image>` retraction is `AppManager::removeFromNodeCache(const
+  ImagePtr&)`; and **two of the briefed perturbations were vacuous**, which is
+  the second time this milestone's stated perturbations have been weaker than
+  the tests they were meant to validate. Skipping the cache lookup does not make
+  the cache-hit test red, because `Cache::getOrCreate()` matches on key *and*
+  params (`Cache.h:1017`) and so returns the same `ImagePtr` to be re-flattened
+  into — a sentinel-pixel assertion detects that instead. Keying with a constant
+  does not reliably make the invalidation test red either, because
+  `computeHashInternal()`'s purge drops any entry of that holder whose tree
+  version differs from the new hash, asynchronously — a direct assertion that
+  the cached image's tree version equals the node's hash is deterministic.
+  Bounds growth with stale-entry removal on a too-narrow hit was added beyond
+  the brief so a later wider request cannot be served a narrower image; it ships
+  untested, as does everything inside `ViewerInstance` (unreachable from ctest).
+
+- 2026-09-11 — Two deep-cache tests fail on this host for a reason that is
+  neither a regression nor a flake: free physical RAM sits under the 20%
+  `unreachableRamPercent` bar, so `checkCacheFreeMemoryIsGoodEnough()` drains
+  both caches on every allocation. Confirmed three ways — the implementer built
+  HEAD-only and modified binaries side by side and got 8/8 failures from each;
+  the arithmetic holds on this host (15735 MB x 0.20 = 3147 MB against 2990 MB
+  `MemFree`); and the first failure lands on its own sanity check, before the
+  code under test runs. Raised as **M18.P1.T5** and sequenced next, for the same
+  reason M26 was: a suite that depends on the host's page-cache pressure makes
+  every later verify in this milestone untrustworthy. Note the tests are
+  *fragile*, not wrong — asserting that a cache retains an entry while the
+  low-memory handler is live is the defect.
+
+- 2026-09-11 — `renderDeepRoI` pulls its inputs over the requested `roi` rather
+  than over `boundsToRender`, so after the bounds-growth path widens the render
+  window the node renders wider than it pulled. Found while implementing
+  M18.P2.T2, which inherits it through `renderDeepRoIFlattened`. M18.P2.T1's own
+  growth test missed it because it grows bounds with the upstream still cached,
+  where the extra region is covered by luck. Raised as **M18.P2.T4** rather than
+  fixed in passing: it is a wrong answer on an upstream miss, and it needs a
+  test that evicts between the two renders.

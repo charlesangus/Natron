@@ -106,6 +106,7 @@ public:
 
     virtual ~DeleterThread()
     {
+        quitThread();
     }
 
     void appendToQueue(const std::list<std::shared_ptr<T> > & entriesToDelete)
@@ -131,18 +132,25 @@ public:
         if ( !isRunning() ) {
             return;
         }
-        QMutexLocker k(&mustQuitMutex);
-        assert(!mustQuit);
-        mustQuit = true;
-
         {
-            QMutexLocker k2(&_entriesQueueMutex);
-            _entriesQueue.push_back( std::shared_ptr<T>() );
-            _entriesQueueNotEmptyCond.wakeOne();
+            QMutexLocker k(&mustQuitMutex);
+            assert(!mustQuit);
+            mustQuit = true;
+
+            {
+                QMutexLocker k2(&_entriesQueueMutex);
+                _entriesQueue.push_back(std::shared_ptr<T>());
+                _entriesQueueNotEmptyCond.wakeOne();
+            }
+            while (mustQuit) {
+                mustQuitCond.wait(k.mutex());
+            }
         }
-        while (mustQuit) {
-            mustQuitCond.wait(k.mutex());
-        }
+        // The handshake above only proves run() observed mustQuit and is about to
+        // return; it may still be unwinding its QMutexLockers before
+        // QThreadPrivate::finish() runs. Without this wait(), the owning QThread
+        // can be destroyed while the thread is still finishing, which aborts.
+        wait();
     }
 
     bool isWorking() const
@@ -233,6 +241,7 @@ public:
 
     virtual ~CacheCleanerThread()
     {
+        quitThread();
     }
 
     void appendToQueue(const std::string & holderID,
@@ -260,19 +269,25 @@ public:
         if ( !isRunning() ) {
             return;
         }
-        QMutexLocker k(&mustQuitMutex);
-        assert(!mustQuit);
-        mustQuit = true;
-
         {
-            QMutexLocker k2(&_requestQueueMutex);
-            CleanRequest r;
-            _requestsQueues.push_back(r);
-            _requestsQueueNotEmptyCond.wakeOne();
+            QMutexLocker k(&mustQuitMutex);
+            assert(!mustQuit);
+            mustQuit = true;
+
+            {
+                QMutexLocker k2(&_requestQueueMutex);
+                CleanRequest r;
+                _requestsQueues.push_back(r);
+                _requestsQueueNotEmptyCond.wakeOne();
+            }
+            while (mustQuit) {
+                mustQuitCond.wait(k.mutex());
+            }
         }
-        while (mustQuit) {
-            mustQuitCond.wait(k.mutex());
-        }
+        // See DeleterThread::quitThread(): the handshake alone does not guarantee
+        // QThreadPrivate::finish() has run yet, so the owning QThread must not be
+        // destroyed until wait() returns.
+        wait();
     }
 
     bool isWorking() const

@@ -67,7 +67,7 @@ Pixels" document verbatim.
   - verify: a test that grows bounds **with the upstream entry evicted between the two renders**, asserting full sample coverage over the union (not just the second RoI); driven red-then-green by reverting the fix. Whole ctest suite green.
   - size: M
 
-- [ ] M18.P2.T5 — Make the two deep cache-growth retractions symmetric
+- [x] M18.P2.T5 — Make the two deep cache-growth retractions symmetric
   - files: `Engine/EffectInstanceRenderDeep.cpp`, `Tests/DeepRenderPipeline_Test.cpp`
   - approach: two small cache-lifetime defects, opposite in sign, found by M18.P2.T4's audit of the growth path. (1) `renderDeepRoI()` never retracts the narrow entry it just superseded, so after growth the deep cache holds both the narrow and the wide entry under the same key and `getDeepImage()`'s list grows monotonically per key across successive widenings — dead weight until LRU, and deep frames are exactly the entries whose size justified a separate budget. `renderDeepRoIFlattened()` already does this via `removeFromNodeCache(cached)`; match it. (2) `renderDeepRoIFlattened()` removes the superseded narrow flattened entry **before** rendering, so an abort or failure during a widening flatten retracts the new entry too and leaves nothing cached where a valid narrower image existed. Retract the old entry only once the new one is complete. Neither is a wrong answer — both are cache efficiency — so do not let the fix complicate the success path; if making the ordering safe costs more than it saves, say so and close the task by recording that instead.
   - verify: after a growth render, exactly one entry remains under the key, with the grown bounds (driven red-then-green by dropping the retraction); an abort during a widening flatten leaves the pre-existing narrower image still servable (red-then-green by restoring the eager removal). Whole ctest suite green.
@@ -341,3 +341,30 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   "bounds growth, not tiling" and the comment at the merge site, and left as a
   known limitation rather than a task — a size cap is only worth designing once
   there is a real workload to size it against. Revisit in M21.
+
+- 2026-09-11 — M18.P2.T5 landed as `bddf34987`; suite **150/150**, confirmed on
+  my own run. Half the task was completed and half was **deliberately declined**,
+  which was the right call. The two defects looked symmetric but are not the same
+  bug: the two caches have different identity contracts, and I verified all three
+  premises myself rather than accepting the report.
+  `DeepImageParams::operator==` compares `_bounds` (`DeepImageParams.h:72`), so a
+  narrow and a wide entry are genuinely distinct and may coexist until the wider
+  render succeeds — `renderDeepRoI()` now defers its retraction to exactly there,
+  so an aborted render no longer costs the entry it was replacing.
+  `ImageParams::operator==` (`ImageParams.h:240`) compares RoD, components,
+  bitdepth, mipmap and premult but **not bounds**, so if
+  `renderDeepRoIFlattened()` deferred its removal, `getImageOrCreate()` would
+  match the surviving narrow entry against the wider params and hand it back
+  instead of allocating — the widening render would then write against
+  narrow bounds, a worse failure than the one being fixed. Measured, not
+  reasoned: the deferred version left 0 flattened entries after a
+  widen-then-abort, where the eager version leaves the old one servable.
+  Eager-remove-before-re-render is also the general render path's own idiom
+  (`EffectInstanceRenderRoI.cpp:1010-1013`), so it is load-bearing rather than a
+  local shortcut. Defect (2) is therefore **accepted, not fixed**, with a comment
+  at the site so a future symmetry cleanup does not reintroduce it; fixing it for
+  real means making `ImageParams` bounds-aware, which is a blast radius across
+  every non-deep node and does not belong in a deep-cache cleanup. The
+  complementary abort test was written, failed against the "fixed" version, and
+  was then removed rather than kept — a test asserting behaviour the codebase
+  deliberately does not provide is worse than no test.

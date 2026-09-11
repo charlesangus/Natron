@@ -281,6 +281,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
 
     const DeepImageKey key(getNode().get(), nodeHash, args.time, args.view, args.scale);
     RectI boundsToRender = roi;
+    std::list<DeepImageCacheEntryPtr> supersededDeepEntries;
 
     if (!args.byPassCache) {
         std::list<DeepImageCacheEntryPtr> cached;
@@ -297,8 +298,10 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
                 }
                 // Bounds growth, not tiling: nothing cached under this key covers the request, so
                 // re-render over everything that was ever asked for rather than minting a
-                // narrower entry that the next, wider request would miss again.
+                // narrower entry that the next, wider request would miss again. The superseded
+                // entry is only retracted once the wider render succeeds, below.
                 boundsToRender.merge(entryImage->getBounds());
+                supersededDeepEntries.push_back(*it);
             }
         }
     }
@@ -440,6 +443,10 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
         cacheEntry->allocateMemory();
     }
 
+    for (std::list<DeepImageCacheEntryPtr>::const_iterator it = supersededDeepEntries.begin(); it != supersededDeepEntries.end(); ++it) {
+        appPTR->removeFromDeepImageCache(*it);
+    }
+
     *outputDeepImage = renderedImage;
 
     return eRenderRoIRetCodeOk;
@@ -510,7 +517,11 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
             }
             // Bounds growth, not tiling, the same way renderDeepRoI() handles it: re-flatten over
             // the union of what was asked for rather than mint a narrower entry that the next,
-            // wider request would miss again.
+            // wider request would miss again. Unlike the deep cache's entries, ImageParams::
+            // operator==() does not compare bounds, so getImageOrCreate() below would treat this
+            // stale entry as a match for the wider params and hand it straight back instead of
+            // making a new one if it were still here -- this removal cannot be deferred to the
+            // success path the way renderDeepRoI() defers its deep-cache counterpart.
             boundsToRender.merge(cached->getBounds());
             appPTR->removeFromNodeCache(cached);
         }

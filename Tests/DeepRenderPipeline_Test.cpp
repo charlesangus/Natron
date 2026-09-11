@@ -501,6 +501,29 @@ TEST_F(DeepRenderPipelineTest, BoundsGrowthRePullsItsInputOverTheGrownWindow)
     expectGainedSamplesOverWholeRegion(right, fullFrame);
 }
 
+TEST_F(DeepRenderPipelineTest, BoundsGrowthRetractsTheSupersededDeepCacheEntry)
+{
+    const RectI fullFrame(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+    const RectI leftHalf(0, 0, kDeepRenderTestWidth / 2, kDeepRenderTestHeight);
+    const RectI rightHalf(kDeepRenderTestWidth / 2, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+
+    DeepImagePtr left;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., leftHalf, &left));
+    ASSERT_TRUE(left != NULL);
+    ASSERT_EQ((std::size_t)1, cachedDeepEntryBounds(_gain, 1.).size());
+
+    DeepImagePtr right;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., rightHalf, &right));
+    ASSERT_TRUE(right != NULL);
+    ASSERT_TRUE(fullFrame == right->getBounds());
+
+    // The narrow entry growth superseded must not linger alongside the grown one: exactly one
+    // entry should remain under this key, and it must be the grown entry.
+    const std::vector<RectI> gainCached = cachedDeepEntryBounds(_gain, 1.);
+    ASSERT_EQ((std::size_t)1, gainCached.size());
+    EXPECT_TRUE(fullFrame == gainCached[0]);
+}
+
 TEST_F(DeepRenderPipelineTest, AbortBeforeRenderingIsHonoured)
 {
     const RectI roi(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);

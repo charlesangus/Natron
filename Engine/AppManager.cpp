@@ -132,7 +132,10 @@
 #include "Engine/TrackerNode.h"
 #include "Engine/ThreadPool.h"
 
+#include "Engine/Nodes/Deep/DeepFromImage.h"
+#include "Engine/Nodes/Deep/DeepMerge.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
+#include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
 #include "Engine/Nodes/TypedPassthrough.h"
 
@@ -1545,6 +1548,9 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
     registerBuiltInPlugin<TypedPassthrough>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DeepRead>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DeepWrite>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepMerge>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepToImage>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepFromImage>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DiskCacheNode>(QString::fromUtf8(NATRON_IMAGES_PATH "diskcache_icon.png"), false, false);
     registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_IMAGES_PATH "GroupingIcons/Set2/paint_grouping_2.png"), false, false);
     registerBuiltInPlugin<RotoNode>(QString::fromUtf8(NATRON_IMAGES_PATH "rotoNodeIcon.png"), false, false);

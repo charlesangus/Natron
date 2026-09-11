@@ -1,0 +1,1082 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "Global/Macros.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <list>
+#include <map>
+#include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include <QString>
+
+#include "BaseTest.h"
+#include "CacheMemoryPressureGuard.h"
+#include "DeepRenderTestEffect.h"
+
+#include "Engine/AbortableRenderInfo.h"
+#include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
+#include "Engine/DeepFlatten.h"
+#include "Engine/DeepImage.h"
+#include "Engine/DeepImageCacheEntry.h"
+#include "Engine/DeepImageKey.h"
+#include "Engine/DeepPixelOps.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Image.h"
+#include "Engine/ImagePlaneDesc.h"
+#include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Deep/DeepFromImage.h"
+#include "Engine/Nodes/Deep/DeepMerge.h"
+#include "Engine/Nodes/Deep/DeepRead.h"
+#include "Engine/Nodes/Deep/DeepToImage.h"
+#include "Engine/ParallelRenderArgs.h"
+#include "Engine/RectD.h"
+#include "Engine/RectI.h"
+#include "Engine/RenderScale.h"
+#include "Engine/TimeLine.h"
+#include "Engine/ViewIdx.h"
+
+NATRON_NAMESPACE_USING
+
+namespace {
+
+#define kDeepFixtureWidth 4
+#define kDeepFixtureHeight 3
+
+std::vector<std::string>
+rgbaChannelNames()
+{
+    std::vector<std::string> names;
+
+    names.push_back("R");
+    names.push_back("G");
+    names.push_back("B");
+    names.push_back("A");
+
+    return names;
+}
+
+DeepSample
+pointSample(float z,
+            float r,
+            float g,
+            float b,
+            float a)
+{
+    std::vector<float> channels;
+
+    channels.push_back(r);
+    channels.push_back(g);
+    channels.push_back(b);
+    channels.push_back(a);
+
+    return DeepSample(z, z, channels);
+}
+
+DeepSample
+volumeSample(float z,
+             float zback,
+             float r,
+             float g,
+             float b,
+             float a)
+{
+    DeepSample sample = pointSample(z, r, g, b, a);
+
+    sample.zback = zback;
+
+    return sample;
+}
+
+// The samples one pixel of a hand-built deep image holds, in the order they are stored.
+struct SynthPixel {
+    int x;
+    int y;
+    std::vector<DeepSample> samples;
+
+    SynthPixel(int x_,
+               int y_)
+        : x(x_)
+        , y(y_)
+        , samples()
+    {
+    }
+};
+
+typedef std::vector<SynthPixel> SynthPixels;
+
+const SynthPixel*
+findSynthPixel(const SynthPixels& pixels,
+               int x,
+               int y)
+{
+    for (std::size_t p = 0; p < pixels.size(); ++p) {
+        if ((pixels[p].x == x) && (pixels[p].y == y)) {
+            return &pixels[p];
+        }
+    }
+
+    return NULL;
+}
+
+// A DeepImage holding exactly pixels, every sample's channel values in channelNames' order; the
+// samples of a pixel not listed are none.
+DeepImagePtr
+makeDeepImage(const RectI& bounds,
+              const std::vector<std::string>& channelNames,
+              const SynthPixels& pixels,
+              bool tidy)
+{
+    DeepImagePtr image = std::make_shared<DeepImage>(bounds, RenderScale::identity, ViewIdx(0));
+
+    SampleTable& table = image->getSampleTableForWriting();
+    for (std::size_t p = 0; p < pixels.size(); ++p) {
+        std::size_t index;
+        EXPECT_TRUE(deepRenderTestPixelIndex(*image, pixels[p].x, pixels[p].y, &index));
+        table.setCount(index, (U32)pixels[p].samples.size());
+    }
+    table.recomputeOffsets();
+
+    float* z = image->getChannelForWriting("Z").dataForWriting();
+    float* zback = image->getChannelForWriting("ZBack").dataForWriting();
+    std::vector<float*> channels(channelNames.size());
+    for (std::size_t c = 0; c < channelNames.size(); ++c) {
+        channels[c] = image->getChannelForWriting(channelNames[c]).dataForWriting();
+    }
+
+    for (std::size_t p = 0; p < pixels.size(); ++p) {
+        std::size_t index;
+        EXPECT_TRUE(deepRenderTestPixelIndex(*image, pixels[p].x, pixels[p].y, &index));
+        const U64 offset = table.getOffset(index);
+        for (std::size_t s = 0; s < pixels[p].samples.size(); ++s) {
+            const DeepSample& sample = pixels[p].samples[s];
+            z[offset + s] = sample.z;
+            zback[offset + s] = sample.zback;
+            for (std::size_t c = 0; c < channels.size(); ++c) {
+                channels[c][offset + s] = (c < sample.channels.size()) ? sample.channels[c] : 0.f;
+            }
+        }
+    }
+    image->setTidy(tidy);
+
+    return image;
+}
+
+// One sample as read back out of a DeepImage, its values by channel name so a comparison need
+// not care about the name ordering DeepImage keeps its channels in.
+struct ReadSample {
+    float z;
+    float zback;
+    std::map<std::string, float> values;
+
+    float value(const std::string& channel) const
+    {
+        const std::map<std::string, float>::const_iterator found = values.find(channel);
+
+        return (found == values.end()) ? -1.f : found->second;
+    }
+};
+
+std::vector<ReadSample>
+samplesAt(const DeepImage& image,
+          int x,
+          int y)
+{
+    std::vector<std::string> channelNames;
+    std::vector<DeepSample> samples;
+    std::vector<ReadSample> out;
+
+    if (!DeepFlatten::getSamplesAtPixel(image, x, y, &channelNames, &samples)) {
+        return out;
+    }
+    for (std::size_t s = 0; s < samples.size(); ++s) {
+        ReadSample sample;
+        sample.z = samples[s].z;
+        sample.zback = samples[s].zback;
+        for (std::size_t c = 0; c < channelNames.size(); ++c) {
+            sample.values[channelNames[c]] = samples[s].channels[c];
+        }
+        out.push_back(sample);
+    }
+
+    return out;
+}
+
+bool
+frontToBack(const ReadSample& a,
+            const ReadSample& b)
+{
+    return a.z < b.z;
+}
+
+// The reference the merge is checked against: the front-to-back "over" of samples that never
+// overlap one another, in depth order, which is the composite "Interpreting Deep Pixels"
+// prescribes once no splitting or merging is called for. Written as the plainest possible loop,
+// with no call into DeepPixelOps or DeepFlatten.
+std::vector<float>
+flattenSerial(std::vector<ReadSample> samples)
+{
+    const std::vector<std::string> channels = rgbaChannelNames();
+    std::vector<float> out(channels.size(), 0.f);
+    float transmittance = 1.f;
+
+    std::stable_sort(samples.begin(), samples.end(), &frontToBack);
+    for (std::size_t s = 0; s < samples.size(); ++s) {
+        for (std::size_t c = 0; c < channels.size(); ++c) {
+            out[c] += transmittance * samples[s].value(channels[c]);
+        }
+        transmittance *= 1.f - samples[s].value("A");
+    }
+
+    return out;
+}
+
+std::vector<ReadSample>
+synthSamplesAt(const SynthPixels& pixels,
+               int x,
+               int y)
+{
+    const std::vector<std::string> channels = rgbaChannelNames();
+    std::vector<ReadSample> out;
+    const SynthPixel* pixel = findSynthPixel(pixels, x, y);
+
+    if (!pixel) {
+        return out;
+    }
+    for (std::size_t s = 0; s < pixel->samples.size(); ++s) {
+        ReadSample sample;
+        sample.z = pixel->samples[s].z;
+        sample.zback = pixel->samples[s].zback;
+        for (std::size_t c = 0; c < channels.size(); ++c) {
+            sample.values[channels[c]] = pixel->samples[s].channels[c];
+        }
+        out.push_back(sample);
+    }
+
+    return out;
+}
+
+void
+expectSampleValues(const ReadSample& sample,
+                   const DeepSample& expected,
+                   float tolerance)
+{
+    const std::vector<std::string> channels = rgbaChannelNames();
+
+    EXPECT_NEAR(expected.z, sample.z, tolerance);
+    EXPECT_NEAR(expected.zback, sample.zback, tolerance);
+    for (std::size_t c = 0; c < channels.size() && c < expected.channels.size(); ++c) {
+        EXPECT_NEAR(expected.channels[c], sample.value(channels[c]), tolerance) << "channel " << channels[c];
+    }
+}
+
+const float*
+imagePixel(const Image::ReadAccess& access,
+           int x,
+           int y)
+{
+    return (const float*)access.pixelAt(x, y);
+}
+
+ImagePtr
+makeFloatRGBAImage(const RectI& bounds)
+{
+    const RectD rod(bounds.x1, bounds.y1, bounds.x2, bounds.y2);
+
+    return std::make_shared<Image>(ImagePlaneDesc::getRGBAComponents(), rod, bounds, 0 /*mipmapLevel*/, 1. /*par*/,
+                                   eImageBitDepthFloat, eImagePremultiplicationPremultiplied,
+                                   eImageFieldingOrderNone, false /*useBitmap*/);
+}
+
+QString
+fixturePath(const char* name)
+{
+    return QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/") + QString::fromUtf8(name);
+}
+
+std::vector<RectI>
+cachedDeepEntryBounds(const NodePtr& node,
+                      double time)
+{
+    std::list<DeepImageCacheEntryPtr> found;
+    std::vector<RectI> bounds;
+
+    if (!appPTR->getDeepImage(DeepImageKey(node.get(), node->getHashValue(), time, ViewIdx(0), RenderScale::identity), &found)) {
+        return bounds;
+    }
+    for (std::list<DeepImageCacheEntryPtr>::const_iterator it = found.begin(); it != found.end(); ++it) {
+        if ((*it)->getDeepImage()) {
+            bounds.push_back((*it)->getDeepImage()->getBounds());
+        }
+    }
+
+    return bounds;
+}
+
+} // namespace
+
+class DeepNodesTest
+    : public BaseTest {
+protected:
+    // Tests here assert that a deep entry rendered earlier is still servable from the app-wide
+    // cache; see CacheMemoryPressureGuard.h.
+    DisableUnreachableRAMPurging _noPurging;
+
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        deepSyntheticSourceImages().clear();
+        _nextSlot = 1;
+    }
+
+    // Destroyed nodes take their cache entries with them, so the next test's nodes -- which may
+    // well get the same script names, and so the same hashes -- cannot be served this test's
+    // renders.
+    virtual void TearDown() OVERRIDE
+    {
+        for (std::vector<NodePtr>::reverse_iterator it = _nodes.rbegin(); it != _nodes.rend(); ++it) {
+            (*it)->destroyNode(false, false);
+        }
+        _nodes.clear();
+        deepSyntheticSourceImages().clear();
+        BaseTest::TearDown();
+    }
+
+    NodePtr createTrackedNode(const char* pluginID)
+    {
+        NodePtr node = createNode(QString::fromUtf8(pluginID));
+
+        if (node) {
+            _nodes.push_back(node);
+        }
+
+        return node;
+    }
+
+    NodePtr createSyntheticSource(const DeepImagePtr& image)
+    {
+        const int slot = _nextSlot++;
+
+        deepSyntheticSourceImages()[slot] = image;
+        NodePtr node = createTrackedNode(kTestPluginIDDeepSyntheticSource);
+        if (!node) {
+            return node;
+        }
+        KnobInt* knob = dynamic_cast<KnobInt*>(node->getKnobByName("slot").get());
+        if (!knob) {
+            return NodePtr();
+        }
+        knob->setValue(slot);
+
+        return node;
+    }
+
+    NodePtr createImageSource(int seed)
+    {
+        NodePtr node = createTrackedNode(kTestPluginIDImageRenderSource);
+
+        if (!node) {
+            return node;
+        }
+        KnobInt* knob = dynamic_cast<KnobInt*>(node->getKnobByName("seed").get());
+        if (!knob) {
+            return NodePtr();
+        }
+        knob->setValue(seed);
+
+        return node;
+    }
+
+    NodePtr createDeepRead(const QString& filename)
+    {
+        NodePtr read = createTrackedNode(PLUGINID_NATRON_DEEPREAD);
+
+        if (!read) {
+            return read;
+        }
+        KnobFile* knob = dynamic_cast<KnobFile*>(read->getKnobByName("filename").get());
+        if (!knob) {
+            return NodePtr();
+        }
+        knob->setValue(filename.toStdString());
+
+        return read;
+    }
+
+    NodePtr createDeepMerge(DeepMerge::OperationEnum operation)
+    {
+        NodePtr merge = createTrackedNode(PLUGINID_NATRON_DEEPMERGE);
+
+        if (!merge) {
+            return merge;
+        }
+        KnobChoice* knob = dynamic_cast<KnobChoice*>(merge->getKnobByName("operation").get());
+        if (!knob) {
+            return NodePtr();
+        }
+        knob->setValue((int)operation);
+
+        return merge;
+    }
+
+    NodePtr createDeepFromImage(double depth)
+    {
+        NodePtr node = createTrackedNode(PLUGINID_NATRON_DEEPFROMIMAGE);
+
+        if (!node) {
+            return node;
+        }
+        KnobDouble* knob = dynamic_cast<KnobDouble*>(node->getKnobByName("depth").get());
+        if (!knob) {
+            return NodePtr();
+        }
+        knob->setValue(depth);
+
+        return node;
+    }
+
+    // Renders node's deep data the way the scheduler does, under frame args carrying an abort
+    // flag for EffectInstance::aborted() to read.
+    EffectInstance::RenderRoIRetCode renderDeepFrame(const NodePtr& node,
+                                                     double time,
+                                                     const RectI& roi,
+                                                     DeepImagePtr* outputDeepImage)
+    {
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        ParallelRenderArgsSetter frameRenderArgs(time,
+                                                 ViewIdx(0),
+                                                 true /*isRenderUserInteraction*/,
+                                                 false /*isSequential*/,
+                                                 abortInfo,
+                                                 node,
+                                                 0 /*textureIndex*/,
+                                                 getApp()->getTimeLine().get(),
+                                                 NodePtr(),
+                                                 false /*isAnalysis*/,
+                                                 false /*draftMode*/,
+                                                 RenderStatsPtr());
+        EffectInstance::RenderDeepRoIArgs args(time,
+                                               RenderScale::identity,
+                                               0 /*mipmapLevel*/,
+                                               ViewIdx(0),
+                                               false /*byPassCache*/,
+                                               roi,
+                                               RectD(),
+                                               0 /*caller*/,
+                                               time);
+
+        return node->getEffectInstance()->renderDeepRoI(args, outputDeepImage);
+    }
+
+    // Renders node's float RGBA image through the ordinary image path -- request pass included,
+    // the way Node::makePreviewImage() and the scheduler drive it.
+    EffectInstance::RenderRoIRetCode renderImageFrame(const NodePtr& node,
+                                                      double time,
+                                                      const RectI& roi,
+                                                      ImagePtr* outputImage)
+    {
+        outputImage->reset();
+
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        ParallelRenderArgsSetter frameRenderArgs(time,
+                                                 ViewIdx(0),
+                                                 true /*isRenderUserInteraction*/,
+                                                 false /*isSequential*/,
+                                                 abortInfo,
+                                                 node,
+                                                 0 /*textureIndex*/,
+                                                 getApp()->getTimeLine().get(),
+                                                 NodePtr(),
+                                                 false /*isAnalysis*/,
+                                                 false /*draftMode*/,
+                                                 RenderStatsPtr());
+        EffectInstancePtr effect = node->getEffectInstance();
+
+        RectD rod;
+        bool isProjectFormat = false;
+        if (effect->getRegionOfDefinition_public(node->getHashValue(), time, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat) == eStatusFailed) {
+            return EffectInstance::eRenderRoIRetCodeFailed;
+        }
+
+        FrameRequestMap request;
+        if (EffectInstance::computeRequestPass(time, ViewIdx(0), 0 /*mipmapLevel*/, rod, node, request) == eStatusFailed) {
+            return EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        frameRenderArgs.updateNodesRequest(request);
+
+        std::list<ImagePlaneDesc> components;
+        components.push_back(ImagePlaneDesc::getRGBAComponents());
+        EffectInstance::RenderRoIArgs args(time,
+                                           RenderScale::identity,
+                                           0 /*mipmapLevel*/,
+                                           ViewIdx(0),
+                                           false /*byPassCache*/,
+                                           roi,
+                                           rod,
+                                           components,
+                                           eImageBitDepthFloat,
+                                           false /*calledFromGetImage*/,
+                                           0 /*caller*/,
+                                           eStorageModeRAM,
+                                           time);
+        std::map<ImagePlaneDesc, ImagePtr> planes;
+        const EffectInstance::RenderRoIRetCode code = effect->renderRoI(args, &planes);
+        if ((code == EffectInstance::eRenderRoIRetCodeOk) && !planes.empty()) {
+            *outputImage = planes.begin()->second;
+        }
+
+        return code;
+    }
+
+    std::vector<NodePtr> _nodes;
+    int _nextSlot;
+};
+
+TEST_F(DeepNodesTest, AllThreeNodesAreRegisteredAndInstantiable)
+{
+    NodePtr merge = createTrackedNode(PLUGINID_NATRON_DEEPMERGE);
+    NodePtr toImage = createTrackedNode(PLUGINID_NATRON_DEEPTOIMAGE);
+    NodePtr fromImage = createTrackedNode(PLUGINID_NATRON_DEEPFROMIMAGE);
+
+    ASSERT_TRUE(merge != NULL);
+    ASSERT_TRUE(toImage != NULL);
+    ASSERT_TRUE(fromImage != NULL);
+
+    EXPECT_EQ(2, merge->getEffectInstance()->getNInputs());
+    EXPECT_EQ(eDataKindDeep, merge->getEffectInstance()->getInputDataKind(0));
+    EXPECT_EQ(eDataKindDeep, merge->getEffectInstance()->getInputDataKind(1));
+    EXPECT_EQ(eDataKindDeep, merge->getEffectInstance()->getOutputDataKind());
+    EXPECT_EQ("A", merge->getEffectInstance()->getInputLabel(0));
+    EXPECT_EQ("B", merge->getEffectInstance()->getInputLabel(1));
+
+    EXPECT_EQ(1, toImage->getEffectInstance()->getNInputs());
+    EXPECT_EQ(eDataKindDeep, toImage->getEffectInstance()->getInputDataKind(0));
+    EXPECT_EQ(eDataKindImage, toImage->getEffectInstance()->getOutputDataKind());
+
+    EXPECT_EQ(2, fromImage->getEffectInstance()->getNInputs());
+    EXPECT_EQ(eDataKindImage, fromImage->getEffectInstance()->getInputDataKind(0));
+    EXPECT_EQ(eDataKindImage, fromImage->getEffectInstance()->getInputDataKind(1));
+    EXPECT_EQ(eDataKindDeep, fromImage->getEffectInstance()->getOutputDataKind());
+    EXPECT_FALSE(fromImage->getEffectInstance()->isInputOptional(0));
+    EXPECT_TRUE(fromImage->getEffectInstance()->isInputOptional(1));
+    EXPECT_EQ("Z", fromImage->getEffectInstance()->getInputLabel(1));
+
+    // All three sit in the same menu as DeepRead and DeepWrite.
+    NodePtr nodes[3] = { merge, toImage, fromImage };
+    for (int i = 0; i < 3; ++i) {
+        std::list<std::string> grouping;
+        nodes[i]->getEffectInstance()->getPluginGrouping(&grouping);
+        ASSERT_EQ((std::size_t)1, grouping.size());
+        EXPECT_EQ(PLUGIN_GROUP_DEEP, grouping.front());
+    }
+
+    // The kinds they declare are what decides which edges the graph accepts.
+    NodePtr deepSource = createSyntheticSource(makeDeepImage(RectI(0, 0, 2, 2), rgbaChannelNames(), SynthPixels(), true));
+    NodePtr imageSource = createImageSource(0);
+    ASSERT_TRUE(deepSource && imageSource);
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, merge->canConnectInput(imageSource, 1));
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, fromImage->canConnectInput(deepSource, 0));
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, toImage->canConnectInput(imageSource, 0));
+    connectNodes(deepSource, merge, 0, true);
+    connectNodes(merge, toImage, 0, true);
+    connectNodes(imageSource, fromImage, 0, true);
+    connectNodes(fromImage, merge, 1, true);
+}
+
+TEST_F(DeepNodesTest, CombineConcatenatesSortsAndFlattensLikeTheSerialReference)
+{
+    // A and B cover different rectangles, hold samples at interleaved depths, store one pixel's
+    // samples back to front, and B carries a channel A lacks.
+    const RectI boundsA(0, 0, 4, 3);
+    const RectI boundsB(2, 1, 6, 4);
+    const RectI unionBounds(0, 0, 6, 4);
+
+    SynthPixels pixelsA;
+    pixelsA.push_back(SynthPixel(1, 0));
+    pixelsA.back().samples.push_back(pointSample(2.f, 0.2f, 0.1f, 0.05f, 0.5f));
+    pixelsA.push_back(SynthPixel(2, 1));
+    pixelsA.back().samples.push_back(pointSample(5.f, 0.3f, 0.3f, 0.3f, 0.6f));
+    pixelsA.back().samples.push_back(pointSample(1.f, 0.1f, 0.f, 0.2f, 0.25f));
+    pixelsA.push_back(SynthPixel(3, 2));
+    pixelsA.back().samples.push_back(volumeSample(3.f, 4.f, 0.4f, 0.2f, 0.1f, 0.8f));
+
+    std::vector<std::string> channelsB = rgbaChannelNames();
+    channelsB.push_back("AOV");
+    SynthPixels pixelsB;
+    pixelsB.push_back(SynthPixel(2, 1));
+    pixelsB.back().samples.push_back(pointSample(3.f, 0.05f, 0.1f, 0.15f, 0.2f));
+    pixelsB.back().samples.back().channels.push_back(7.f);
+    pixelsB.push_back(SynthPixel(3, 2));
+    pixelsB.back().samples.push_back(pointSample(1.f, 0.5f, 0.5f, 0.5f, 0.5f));
+    pixelsB.back().samples.back().channels.push_back(8.f);
+    pixelsB.back().samples.push_back(pointSample(6.f, 0.1f, 0.1f, 0.1f, 1.f));
+    pixelsB.back().samples.back().channels.push_back(9.f);
+    pixelsB.push_back(SynthPixel(5, 3));
+    pixelsB.back().samples.push_back(pointSample(2.f, 1.f, 1.f, 1.f, 1.f));
+    pixelsB.back().samples.back().channels.push_back(10.f);
+
+    NodePtr sourceA = createSyntheticSource(makeDeepImage(boundsA, rgbaChannelNames(), pixelsA, false));
+    NodePtr sourceB = createSyntheticSource(makeDeepImage(boundsB, channelsB, pixelsB, true));
+    NodePtr merge = createDeepMerge(DeepMerge::eOperationCombine);
+    ASSERT_TRUE(sourceA && sourceB && merge);
+    connectNodes(sourceA, merge, 0, true);
+    connectNodes(sourceB, merge, 1, true);
+
+    DeepImagePtr merged;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(merge, 1., unionBounds, &merged));
+    ASSERT_TRUE(merged != NULL);
+    EXPECT_TRUE(unionBounds == merged->getBounds());
+    EXPECT_FALSE(merged->isTidy());
+    EXPECT_EQ((U64)8, merged->getSampleTable().getTotalSampleCount());
+    EXPECT_TRUE(merged->hasChannel("AOV"));
+
+    for (int y = unionBounds.y1; y < unionBounds.y2; ++y) {
+        for (int x = unionBounds.x1; x < unionBounds.x2; ++x) {
+            std::vector<ReadSample> expected = synthSamplesAt(pixelsA, x, y);
+            const std::vector<ReadSample> fromB = synthSamplesAt(pixelsB, x, y);
+            expected.insert(expected.end(), fromB.begin(), fromB.end());
+            std::stable_sort(expected.begin(), expected.end(), &frontToBack);
+
+            const std::vector<ReadSample> actual = samplesAt(*merged, x, y);
+            ASSERT_EQ(expected.size(), actual.size()) << "at pixel (" << x << ", " << y << ")";
+            for (std::size_t s = 0; s < expected.size(); ++s) {
+                EXPECT_FLOAT_EQ(expected[s].z, actual[s].z) << "at pixel (" << x << ", " << y << ") sample " << s;
+                EXPECT_FLOAT_EQ(expected[s].zback, actual[s].zback) << "at pixel (" << x << ", " << y << ") sample " << s;
+                const std::vector<std::string> channels = rgbaChannelNames();
+                for (std::size_t c = 0; c < channels.size(); ++c) {
+                    EXPECT_FLOAT_EQ(expected[s].value(channels[c]), actual[s].value(channels[c])) << "at pixel (" << x << ", " << y << ") sample " << s << " channel " << channels[c];
+                }
+            }
+            // A's samples never had an AOV, so on them it reads as zero; B's keep theirs.
+            const SynthPixel* pixelB = findSynthPixel(pixelsB, x, y);
+            for (std::size_t s = 0; s < actual.size(); ++s) {
+                float expectedAov = 0.f;
+                if (pixelB) {
+                    for (std::size_t t = 0; t < pixelB->samples.size(); ++t) {
+                        if (pixelB->samples[t].z == actual[s].z) {
+                            expectedAov = pixelB->samples[t].channels[4];
+                        }
+                    }
+                }
+                EXPECT_FLOAT_EQ(expectedAov, actual[s].value("AOV")) << "at pixel (" << x << ", " << y << ") sample " << s;
+            }
+        }
+    }
+
+    NodePtr toImage = createTrackedNode(PLUGINID_NATRON_DEEPTOIMAGE);
+    ASSERT_TRUE(toImage != NULL);
+    connectNodes(merge, toImage, 0, true);
+
+    ImagePtr flattened;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderImageFrame(toImage, 1., unionBounds, &flattened));
+    ASSERT_TRUE(flattened != NULL);
+    ASSERT_TRUE(flattened->getBounds().contains(unionBounds));
+    ASSERT_EQ(eImageBitDepthFloat, flattened->getBitDepth());
+    ASSERT_EQ(4u, flattened->getComponentsCount());
+
+    Image::ReadAccess access = flattened->getReadRights();
+    for (int y = unionBounds.y1; y < unionBounds.y2; ++y) {
+        for (int x = unionBounds.x1; x < unionBounds.x2; ++x) {
+            std::vector<ReadSample> samples = synthSamplesAt(pixelsA, x, y);
+            const std::vector<ReadSample> fromB = synthSamplesAt(pixelsB, x, y);
+            samples.insert(samples.end(), fromB.begin(), fromB.end());
+            const std::vector<float> expected = flattenSerial(samples);
+            const float* actual = imagePixel(access, x, y);
+            ASSERT_TRUE(actual != NULL);
+            for (std::size_t c = 0; c < expected.size(); ++c) {
+                EXPECT_NEAR(expected[c], actual[c], 1e-6f) << "at pixel (" << x << ", " << y << ") channel " << c;
+            }
+        }
+    }
+} // TEST_F(DeepNodesTest, CombineConcatenatesSortsAndFlattensLikeTheSerialReference)
+
+TEST_F(DeepNodesTest, CombineOfTwoDeepReadsPullsThroughRenderDeepRoIAndCaches)
+{
+    const RectI fullFrame(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
+
+    // The two fixtures hold the same samples in a scanline and a tiled part, so the merged pixel
+    // is each of them twice over.
+    NodePtr readA = createDeepRead(fixturePath("deep-scanline.exr"));
+    NodePtr readB = createDeepRead(fixturePath("deep-tiled.exr"));
+    NodePtr merge = createDeepMerge(DeepMerge::eOperationCombine);
+    ASSERT_TRUE(readA && readB && merge);
+    connectNodes(readA, merge, 0, true);
+    connectNodes(readB, merge, 1, true);
+
+    DeepImagePtr first;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(merge, 1., fullFrame, &first));
+    ASSERT_TRUE(first != NULL);
+    EXPECT_TRUE(fullFrame == first->getBounds());
+    EXPECT_FALSE(first->isTidy());
+
+    // Both inputs were pulled through the deep pipeline: each has its own cached entry now.
+    ASSERT_EQ((std::size_t)1, cachedDeepEntryBounds(readA, 1.).size());
+    ASSERT_EQ((std::size_t)1, cachedDeepEntryBounds(readB, 1.).size());
+    ASSERT_EQ((std::size_t)1, cachedDeepEntryBounds(merge, 1.).size());
+    EXPECT_TRUE(fullFrame == cachedDeepEntryBounds(merge, 1.)[0]);
+
+    DeepImagePtr fixture;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(readA, 1., fullFrame, &fixture));
+    ASSERT_TRUE(fixture != NULL);
+    ASSERT_GT(fixture->getSampleTable().getTotalSampleCount(), (U64)0);
+    EXPECT_EQ(2 * fixture->getSampleTable().getTotalSampleCount(), first->getSampleTable().getTotalSampleCount());
+
+    const std::vector<std::string> channels = rgbaChannelNames();
+    for (int y = fullFrame.y1; y < fullFrame.y2; ++y) {
+        for (int x = fullFrame.x1; x < fullFrame.x2; ++x) {
+            const std::vector<ReadSample> once = samplesAt(*fixture, x, y);
+            std::vector<ReadSample> expected(once);
+            expected.insert(expected.end(), once.begin(), once.end());
+            std::stable_sort(expected.begin(), expected.end(), &frontToBack);
+
+            const std::vector<ReadSample> actual = samplesAt(*first, x, y);
+            ASSERT_EQ(expected.size(), actual.size()) << "at pixel (" << x << ", " << y << ")";
+            for (std::size_t s = 0; s < expected.size(); ++s) {
+                EXPECT_FLOAT_EQ(expected[s].z, actual[s].z) << "at pixel (" << x << ", " << y << ") sample " << s;
+                EXPECT_FLOAT_EQ(expected[s].zback, actual[s].zback) << "at pixel (" << x << ", " << y << ") sample " << s;
+                for (std::size_t c = 0; c < channels.size(); ++c) {
+                    EXPECT_FLOAT_EQ(expected[s].value(channels[c]), actual[s].value(channels[c])) << "at pixel (" << x << ", " << y << ") sample " << s << " channel " << channels[c];
+                }
+                EXPECT_FLOAT_EQ(expected[s].value("AOV"), actual[s].value("AOV")) << "at pixel (" << x << ", " << y << ") sample " << s;
+            }
+        }
+    }
+
+    // The very same payload comes back out of the deep cache.
+    DeepImagePtr second;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(merge, 1., fullFrame, &second));
+    ASSERT_TRUE(second != NULL);
+    EXPECT_EQ(first.get(), second.get());
+    ASSERT_EQ((std::size_t)1, cachedDeepEntryBounds(merge, 1.).size());
+}
+
+TEST_F(DeepNodesTest, CombineOfAFixtureWithSamplesBehindItFlattensAsAOverB)
+{
+    const RectI fullFrame(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
+
+    // Everything in B lies behind everything in the fixture, so the flattened merge has to be
+    // the fixture's flat over B's flat -- and the fixture's own overlapping pixel is handled by
+    // the library flatten, not by anything in the node under test.
+    SynthPixels pixelsB;
+    pixelsB.push_back(SynthPixel(0, 2));
+    pixelsB.back().samples.push_back(pointSample(100.f, 0.3f, 0.6f, 0.9f, 1.f));
+    pixelsB.push_back(SynthPixel(3, 2));
+    pixelsB.back().samples.push_back(pointSample(100.f, 0.2f, 0.1f, 0.4f, 0.5f));
+    pixelsB.back().samples.push_back(pointSample(200.f, 0.8f, 0.8f, 0.8f, 1.f));
+    pixelsB.push_back(SynthPixel(1, 1));
+    pixelsB.back().samples.push_back(volumeSample(100.f, 150.f, 0.1f, 0.2f, 0.3f, 0.4f));
+    pixelsB.push_back(SynthPixel(2, 0));
+    pixelsB.back().samples.push_back(pointSample(100.f, 0.25f, 0.25f, 0.25f, 0.25f));
+
+    NodePtr read = createDeepRead(fixturePath("deep-scanline.exr"));
+    NodePtr sourceB = createSyntheticSource(makeDeepImage(fullFrame, rgbaChannelNames(), pixelsB, true));
+    NodePtr merge = createDeepMerge(DeepMerge::eOperationCombine);
+    NodePtr toImage = createTrackedNode(PLUGINID_NATRON_DEEPTOIMAGE);
+    ASSERT_TRUE(read && sourceB && merge && toImage);
+    connectNodes(read, merge, 0, true);
+    connectNodes(sourceB, merge, 1, true);
+    connectNodes(merge, toImage, 0, true);
+
+    DeepImagePtr fixture;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 1., fullFrame, &fixture));
+    ASSERT_TRUE(fixture != NULL);
+
+    ImagePtr flatA = makeFloatRGBAImage(fullFrame);
+    {
+        DeepPixelScratch scratch;
+        DeepTidyWorkspace work;
+        ASSERT_EQ(eStatusOK, DeepFlatten::flattenToImage(*fixture, fullFrame, rgbaChannelNames(), 3, &scratch, &work, flatA));
+    }
+
+    ImagePtr flattened;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderImageFrame(toImage, 1., fullFrame, &flattened));
+    ASSERT_TRUE(flattened != NULL);
+    ASSERT_TRUE(flattened->getBounds().contains(fullFrame));
+
+    Image::ReadAccess accessA = flatA->getReadRights();
+    Image::ReadAccess access = flattened->getReadRights();
+    for (int y = fullFrame.y1; y < fullFrame.y2; ++y) {
+        for (int x = fullFrame.x1; x < fullFrame.x2; ++x) {
+            const float* a = imagePixel(accessA, x, y);
+            const std::vector<float> b = flattenSerial(synthSamplesAt(pixelsB, x, y));
+            const float* actual = imagePixel(access, x, y);
+            ASSERT_TRUE(a && actual);
+            for (int c = 0; c < 4; ++c) {
+                EXPECT_NEAR(a[c] + (1.f - a[3]) * b[c], actual[c], 1e-6f) << "at pixel (" << x << ", " << y << ") channel " << c;
+            }
+        }
+    }
+}
+
+TEST_F(DeepNodesTest, HoldoutAttenuatesAByWhatOfBLiesInFront)
+{
+    // The same A sample at every pixel of the first row, held out by a different B each time,
+    // plus a volumetric A at x == 6 for the overlap case. B's colour is deliberately loud, and it
+    // carries a channel A lacks, so anything of B's reaching the output would show.
+    const RectI boundsA(0, 0, 8, 1);
+    const RectI boundsB(0, 0, 10, 1);
+    const DeepSample aPoint = pointSample(5.f, 0.4f, 0.2f, 0.1f, 0.5f);
+    const DeepSample aVolume = volumeSample(1.f, 3.f, 0.6f, 0.3f, 0.15f, 0.75f);
+
+    SynthPixels pixelsA;
+    for (int x = 0; x < 8; ++x) {
+        pixelsA.push_back(SynthPixel(x, 0));
+        pixelsA.back().samples.push_back((x == 6) ? aVolume : aPoint);
+    }
+
+    std::vector<std::string> channelsB = rgbaChannelNames();
+    channelsB.push_back("AOV");
+    SynthPixels pixelsB;
+    // x == 0: opaque, in front.
+    pixelsB.push_back(SynthPixel(0, 0));
+    pixelsB.back().samples.push_back(pointSample(1.f, 1.f, 1.f, 1.f, 1.f));
+    // x == 1: opaque, behind.
+    pixelsB.push_back(SynthPixel(1, 0));
+    pixelsB.back().samples.push_back(pointSample(9.f, 1.f, 1.f, 1.f, 1.f));
+    // x == 2: half transparent, in front.
+    pixelsB.push_back(SynthPixel(2, 0));
+    pixelsB.back().samples.push_back(pointSample(1.f, 0.5f, 0.5f, 0.5f, 0.5f));
+    // x == 3: a volume wholly in front.
+    pixelsB.push_back(SynthPixel(3, 0));
+    pixelsB.back().samples.push_back(volumeSample(1.f, 3.f, 0.75f, 0.75f, 0.75f, 0.75f));
+    // x == 4: two half transparent samples in front, stored back to front.
+    pixelsB.push_back(SynthPixel(4, 0));
+    pixelsB.back().samples.push_back(pointSample(2.f, 0.5f, 0.5f, 0.5f, 0.5f));
+    pixelsB.back().samples.push_back(pointSample(1.f, 0.5f, 0.5f, 0.5f, 0.5f));
+    // x == 5: a volume straddling A's depth, its front half holding 1 - sqrt(1 - 0.75) of alpha.
+    pixelsB.push_back(SynthPixel(5, 0));
+    pixelsB.back().samples.push_back(volumeSample(4.f, 6.f, 0.75f, 0.75f, 0.75f, 0.75f));
+    // x == 6: a volume overlapping the back half of A's volume.
+    pixelsB.push_back(SynthPixel(6, 0));
+    pixelsB.back().samples.push_back(volumeSample(2.f, 4.f, 0.75f, 0.75f, 0.75f, 0.75f));
+    // x == 7: a point coincident with A's.
+    pixelsB.push_back(SynthPixel(7, 0));
+    pixelsB.back().samples.push_back(pointSample(5.f, 0.5f, 0.5f, 0.5f, 0.5f));
+    for (std::size_t p = 0; p < pixelsB.size(); ++p) {
+        for (std::size_t s = 0; s < pixelsB[p].samples.size(); ++s) {
+            pixelsB[p].samples[s].channels.push_back(42.f);
+        }
+    }
+
+    NodePtr sourceA = createSyntheticSource(makeDeepImage(boundsA, rgbaChannelNames(), pixelsA, true));
+    NodePtr sourceB = createSyntheticSource(makeDeepImage(boundsB, channelsB, pixelsB, false));
+    NodePtr merge = createDeepMerge(DeepMerge::eOperationHoldout);
+    ASSERT_TRUE(sourceA && sourceB && merge);
+    connectNodes(sourceA, merge, 0, true);
+    connectNodes(sourceB, merge, 1, true);
+
+    // Asked over B's wider window, the output still only covers A: B contributes no samples.
+    DeepImagePtr held;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(merge, 1., boundsB, &held));
+    ASSERT_TRUE(held != NULL);
+    EXPECT_TRUE(boundsA == held->getBounds());
+    EXPECT_TRUE(held->isTidy());
+    EXPECT_FALSE(held->hasChannel("AOV"));
+    EXPECT_EQ((U64)9, held->getSampleTable().getTotalSampleCount());
+
+    const float tolerance = 1e-5f;
+    std::vector<ReadSample> samples;
+
+    samples = samplesAt(*held, 0, 0);
+    ASSERT_EQ((std::size_t)1, samples.size());
+    expectSampleValues(samples[0], pointSample(5.f, 0.f, 0.f, 0.f, 0.f), tolerance);
+
+    samples = samplesAt(*held, 1, 0);
+    ASSERT_EQ((std::size_t)1, samples.size());
+    expectSampleValues(samples[0], aPoint, tolerance);
+
+    samples = samplesAt(*held, 2, 0);
+    ASSERT_EQ((std::size_t)1, samples.size());
+    expectSampleValues(samples[0], pointSample(5.f, 0.2f, 0.1f, 0.05f, 0.25f), tolerance);
+
+    samples = samplesAt(*held, 3, 0);
+    ASSERT_EQ((std::size_t)1, samples.size());
+    expectSampleValues(samples[0], pointSample(5.f, 0.1f, 0.05f, 0.025f, 0.125f), tolerance);
+
+    samples = samplesAt(*held, 4, 0);
+    ASSERT_EQ((std::size_t)1, samples.size());
+    expectSampleValues(samples[0], pointSample(5.f, 0.1f, 0.05f, 0.025f, 0.125f), tolerance);
+
+    samples = samplesAt(*held, 5, 0);
+    ASSERT_EQ((std::size_t)1, samples.size());
+    expectSampleValues(samples[0], pointSample(5.f, 0.2f, 0.1f, 0.05f, 0.25f), tolerance);
+
+    // A's [1, 3] is cut at B's front boundary, 2, into two halves each holding alpha
+    // 1 - sqrt(1 - 0.75) = 0.5 and two thirds of the colour. B's [2, 4] leaves the front half
+    // alone; its own front half, [2, 3], holds alpha 0.5 and is coincident with the back half,
+    // which it attenuates by 1 - 0.5 / 2.
+    samples = samplesAt(*held, 6, 0);
+    ASSERT_EQ((std::size_t)2, samples.size());
+    expectSampleValues(samples[0], volumeSample(1.f, 2.f, 0.4f, 0.2f, 0.1f, 0.5f), tolerance);
+    expectSampleValues(samples[1], volumeSample(2.f, 3.f, 0.3f, 0.15f, 0.075f, 0.375f), tolerance);
+
+    samples = samplesAt(*held, 7, 0);
+    ASSERT_EQ((std::size_t)1, samples.size());
+    expectSampleValues(samples[0], pointSample(5.f, 0.3f, 0.15f, 0.075f, 0.375f), tolerance);
+} // TEST_F(DeepNodesTest, HoldoutAttenuatesAByWhatOfBLiesInFront)
+
+TEST_F(DeepNodesTest, HoldoutWithNothingOnBPassesAThrough)
+{
+    const RectI bounds(0, 0, 3, 2);
+
+    SynthPixels pixelsA;
+    pixelsA.push_back(SynthPixel(1, 1));
+    pixelsA.back().samples.push_back(pointSample(7.f, 0.4f, 0.2f, 0.1f, 0.5f));
+    pixelsA.back().samples.push_back(volumeSample(2.f, 4.f, 0.6f, 0.3f, 0.15f, 0.75f));
+    pixelsA.push_back(SynthPixel(2, 0));
+    pixelsA.back().samples.push_back(pointSample(1.f, 1.f, 1.f, 1.f, 1.f));
+
+    NodePtr sourceA = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixelsA, false));
+    NodePtr merge = createDeepMerge(DeepMerge::eOperationHoldout);
+    ASSERT_TRUE(sourceA && merge);
+    connectNodes(sourceA, merge, 0, true);
+
+    DeepImagePtr held;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(merge, 1., bounds, &held));
+    ASSERT_TRUE(held != NULL);
+    EXPECT_TRUE(bounds == held->getBounds());
+    EXPECT_FALSE(held->isTidy());
+    EXPECT_EQ((U64)3, held->getSampleTable().getTotalSampleCount());
+
+    for (std::size_t p = 0; p < pixelsA.size(); ++p) {
+        const std::vector<ReadSample> samples = samplesAt(*held, pixelsA[p].x, pixelsA[p].y);
+        ASSERT_EQ(pixelsA[p].samples.size(), samples.size());
+        for (std::size_t s = 0; s < samples.size(); ++s) {
+            expectSampleValues(samples[s], pixelsA[p].samples[s], 0.f);
+        }
+    }
+}
+
+TEST_F(DeepNodesTest, DeepFromImageThenDeepToImageReproducesTheImageAtAConstantDepth)
+{
+    const RectI frame(0, 0, kImageRenderTestWidth, kImageRenderTestHeight);
+    const int seed = 3;
+    const double depth = 12.5;
+
+    NodePtr image = createImageSource(seed);
+    NodePtr fromImage = createDeepFromImage(depth);
+    ASSERT_TRUE(image && fromImage);
+    connectNodes(image, fromImage, 0, true);
+
+    DeepImagePtr deep;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(fromImage, 1., frame, &deep));
+    ASSERT_TRUE(deep != NULL);
+    EXPECT_TRUE(frame == deep->getBounds());
+    EXPECT_TRUE(deep->isTidy());
+    EXPECT_EQ((U64)(kImageRenderTestWidth * kImageRenderTestHeight), deep->getSampleTable().getTotalSampleCount());
+
+    const std::vector<std::string> channels = rgbaChannelNames();
+    for (int y = frame.y1; y < frame.y2; ++y) {
+        for (int x = frame.x1; x < frame.x2; ++x) {
+            const std::vector<ReadSample> samples = samplesAt(*deep, x, y);
+            ASSERT_EQ((std::size_t)1, samples.size()) << "at pixel (" << x << ", " << y << ")";
+            EXPECT_EQ((float)depth, samples[0].z) << "at pixel (" << x << ", " << y << ")";
+            EXPECT_EQ((float)depth, samples[0].zback) << "at pixel (" << x << ", " << y << ")";
+            for (std::size_t c = 0; c < channels.size(); ++c) {
+                EXPECT_EQ(imageRenderTestValue(seed, x, y, (int)c), samples[0].value(channels[c])) << "at pixel (" << x << ", " << y << ") channel " << channels[c];
+            }
+        }
+    }
+
+    NodePtr toImage = createTrackedNode(PLUGINID_NATRON_DEEPTOIMAGE);
+    ASSERT_TRUE(toImage != NULL);
+    connectNodes(fromImage, toImage, 0, true);
+
+    ImagePtr roundTrip;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderImageFrame(toImage, 1., frame, &roundTrip));
+    ASSERT_TRUE(roundTrip != NULL);
+    ASSERT_TRUE(roundTrip->getBounds().contains(frame));
+    ASSERT_EQ(eImageBitDepthFloat, roundTrip->getBitDepth());
+    ASSERT_EQ(4u, roundTrip->getComponentsCount());
+
+    Image::ReadAccess access = roundTrip->getReadRights();
+    for (int y = frame.y1; y < frame.y2; ++y) {
+        for (int x = frame.x1; x < frame.x2; ++x) {
+            const float* actual = imagePixel(access, x, y);
+            ASSERT_TRUE(actual != NULL);
+            for (int c = 0; c < 4; ++c) {
+                EXPECT_EQ(imageRenderTestValue(seed, x, y, c), actual[c]) << "at pixel (" << x << ", " << y << ") channel " << c;
+            }
+        }
+    }
+}
+
+TEST_F(DeepNodesTest, DeepFromImageTakesItsDepthFromTheFirstChannelOfZ)
+{
+    const RectI frame(0, 0, kImageRenderTestWidth, kImageRenderTestHeight);
+    const int seed = 3;
+    const int depthSeed = 11;
+
+    NodePtr image = createImageSource(seed);
+    NodePtr depthImage = createImageSource(depthSeed);
+    // The constant is a decoy here: with Z connected it must never be read.
+    NodePtr fromImage = createDeepFromImage(-1.);
+    NodePtr toImage = createTrackedNode(PLUGINID_NATRON_DEEPTOIMAGE);
+    ASSERT_TRUE(image && depthImage && fromImage && toImage);
+    connectNodes(image, fromImage, 0, true);
+    connectNodes(depthImage, fromImage, 1, true);
+    connectNodes(fromImage, toImage, 0, true);
+
+    DeepImagePtr deep;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(fromImage, 1., frame, &deep));
+    ASSERT_TRUE(deep != NULL);
+    EXPECT_TRUE(frame == deep->getBounds());
+
+    const std::vector<std::string> channels = rgbaChannelNames();
+    for (int y = frame.y1; y < frame.y2; ++y) {
+        for (int x = frame.x1; x < frame.x2; ++x) {
+            const std::vector<ReadSample> samples = samplesAt(*deep, x, y);
+            ASSERT_EQ((std::size_t)1, samples.size()) << "at pixel (" << x << ", " << y << ")";
+            EXPECT_EQ(imageRenderTestValue(depthSeed, x, y, 0), samples[0].z) << "at pixel (" << x << ", " << y << ")";
+            EXPECT_EQ(imageRenderTestValue(depthSeed, x, y, 0), samples[0].zback) << "at pixel (" << x << ", " << y << ")";
+            for (std::size_t c = 0; c < channels.size(); ++c) {
+                EXPECT_EQ(imageRenderTestValue(seed, x, y, (int)c), samples[0].value(channels[c])) << "at pixel (" << x << ", " << y << ") channel " << channels[c];
+            }
+        }
+    }
+
+    ImagePtr roundTrip;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderImageFrame(toImage, 1., frame, &roundTrip));
+    ASSERT_TRUE(roundTrip != NULL);
+    ASSERT_TRUE(roundTrip->getBounds().contains(frame));
+
+    Image::ReadAccess access = roundTrip->getReadRights();
+    for (int y = frame.y1; y < frame.y2; ++y) {
+        for (int x = frame.x1; x < frame.x2; ++x) {
+            const float* actual = imagePixel(access, x, y);
+            ASSERT_TRUE(actual != NULL);
+            for (int c = 0; c < 4; ++c) {
+                EXPECT_EQ(imageRenderTestValue(seed, x, y, c), actual[c]) << "at pixel (" << x << ", " << y << ") channel " << c;
+            }
+        }
+    }
+}

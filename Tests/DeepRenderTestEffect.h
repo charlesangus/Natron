@@ -31,22 +31,33 @@
 #include <atomic>
 #include <cstddef>
 #include <functional>
+#include <list>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Engine/DeepImage.h"
 #include "Engine/DeepPixelOps.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/Image.h"
+#include "Engine/ImagePlaneDesc.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 
 #define kTestPluginIDDeepRenderSource "test.natron.built-in.DeepRenderSource"
 #define kTestPluginIDDeepRenderGain "test.natron.built-in.DeepRenderGain"
+#define kTestPluginIDDeepSyntheticSource "test.natron.built-in.DeepSyntheticSource"
+#define kTestPluginIDImageRenderSource "test.natron.built-in.ImageRenderSource"
 
 #define kDeepRenderTestWidth 19
 #define kDeepRenderTestHeight 13
 #define kDeepRenderTestGain 3.f
+
+#define kImageRenderTestWidth 11
+#define kImageRenderTestHeight 7
 
 NATRON_NAMESPACE_ENTER
 
@@ -299,6 +310,275 @@ private:
                 }
             } }, source->isTidy());
     }
+};
+
+// The deep images DeepSyntheticSource instances serve, keyed by their "slot" knob: a test builds
+// whatever sample layout it needs, parks it here and points a node at it.
+inline std::map<int, DeepImagePtr>&
+deepSyntheticSourceImages()
+{
+    static std::map<int, DeepImagePtr> images;
+
+    return images;
+}
+
+/**
+ * @brief A deep generator serving a DeepImage a test built by hand, sample for sample, so that
+ * nodes taking deep inputs can be fed exactly the sample layouts a test wants to reason about.
+ **/
+class DeepSyntheticSource
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DeepSyntheticSource(n);
+    }
+
+    explicit DeepSyntheticSource(NodePtr n)
+        : NativeEffectBase(n)
+        , _slot()
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    virtual bool supportsTiles() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
+                                             double /*time*/,
+                                             const RenderScale& /*scale*/,
+                                             ViewIdx /*view*/,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        const DeepImagePtr image = getImage();
+
+        if (!image) {
+            return eStatusFailed;
+        }
+        const RectI& bounds = image->getBounds();
+        rod->x1 = bounds.x1;
+        rod->y1 = bounds.y1;
+        rod->x2 = bounds.x2;
+        rod->y2 = bounds.y2;
+
+        return eStatusOK;
+    }
+
+private:
+    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        NativePluginDescription desc;
+
+        desc.id = kTestPluginIDDeepSyntheticSource;
+        desc.label = "Test Deep Synthetic Source";
+        desc.description = "";
+        desc.outputKind = eDataKindDeep;
+
+        return desc;
+    }
+
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+        KnobPagePtr page = createKnob<KnobPage>(std::string("Controls"));
+        KnobIntPtr slot = createKnob<KnobInt>(std::string("Slot"));
+
+        slot->setName("slot");
+        slot->setAnimationEnabled(false);
+        slot->setDefaultValue(0);
+        page->addKnob(slot);
+        _slot = slot;
+    }
+
+    DeepImagePtr getImage() const
+    {
+        KnobIntPtr slot = _slot.lock();
+        const std::map<int, DeepImagePtr>::const_iterator found = deepSyntheticSourceImages().find(slot ? slot->getValue() : 0);
+
+        return (found == deepSyntheticSourceImages().end()) ? DeepImagePtr() : found->second;
+    }
+
+    virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        const DeepImagePtr source = getImage();
+
+        if (!source) {
+            return eStatusFailed;
+        }
+
+        std::vector<std::string> channelNames;
+        std::vector<const float*> channels;
+        int alphaChannelIndex = 0;
+        for (std::map<std::string, DeepChannelBuffer>::const_iterator it = source->getChannels().begin(); it != source->getChannels().end(); ++it) {
+            if ((it->first == "Z") || (it->first == "ZBack")) {
+                continue;
+            }
+            if (it->first == "A") {
+                alphaChannelIndex = (int)channelNames.size();
+            }
+            channelNames.push_back(it->first);
+            channels.push_back(it->second.data());
+        }
+        const DeepChannelBuffer* srcZ = source->getChannel("Z");
+        const DeepChannelBuffer* srcZBack = source->getChannel("ZBack");
+        if (channelNames.empty() || !srcZ) {
+            return eStatusFailed;
+        }
+
+        return renderDeepTwoPass(args, channelNames, alphaChannelIndex, [source](int x, int y) -> U32 {
+            std::size_t index;
+
+            if ( !deepRenderTestPixelIndex(*source, x, y, &index) ) {
+                return 0;
+            }
+
+            return source->getSampleTable().getCount(index); }, [source, srcZ, srcZBack, &channels](int x, int y, const MutableDeepPixelView& out) {
+            std::size_t index;
+
+            if ( !deepRenderTestPixelIndex(*source, x, y, &index) ) {
+                return;
+            }
+            const U64 offset = source->getSampleTable().getOffset(index);
+            for (int s = 0; s < out.numSamples; ++s) {
+                out.z[s] = srcZ->data()[offset + s];
+                out.zback[s] = srcZBack ? srcZBack->data()[offset + s] : out.z[s];
+                for (int c = 0; c < out.numChannels; ++c) {
+                    out.channels[c][s] = channels[c][offset + s];
+                }
+            } }, source->isTidy());
+    }
+
+    KnobIntWPtr _slot;
+};
+
+// The per-pixel formula the image stub evaluates, and what a test expects back from anything
+// that reproduces its image. Every third pixel is fully transparent while keeping non-zero
+// colour, so a round trip that dropped transparent samples, or premultiplied on the way, shows.
+inline float
+imageRenderTestValue(int seed,
+                     int x,
+                     int y,
+                     int channel)
+{
+    if ((channel == 3) && (((x + y) % 3) == 0)) {
+        return 0.f;
+    }
+
+    return ((float)(((x * 7) + (y * 11) + (channel * 13) + (seed * 17)) % 32)) / 32.f;
+}
+
+/**
+ * @brief An image generator: no inputs, a fixed region of definition, a float RGBA output whose
+ * every pixel follows imageRenderTestValue() for the node's seed.
+ **/
+class ImageRenderTestSource
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new ImageRenderTestSource(n);
+    }
+
+    explicit ImageRenderTestSource(NodePtr n)
+        : NativeEffectBase(n)
+        , _seed()
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    virtual bool supportsTiles() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+    virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
+                                             double /*time*/,
+                                             const RenderScale& /*scale*/,
+                                             ViewIdx /*view*/,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        rod->x1 = 0.;
+        rod->y1 = 0.;
+        rod->x2 = kImageRenderTestWidth;
+        rod->y2 = kImageRenderTestHeight;
+
+        return eStatusOK;
+    }
+
+    virtual void addAcceptedComponents(int /*inputNb*/,
+                                       std::list<ImagePlaneDesc>* comps) OVERRIDE FINAL
+    {
+        comps->push_back(ImagePlaneDesc::getRGBAComponents());
+    }
+
+    virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL
+    {
+        depths->push_back(eImageBitDepthFloat);
+    }
+
+private:
+    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        NativePluginDescription desc;
+
+        desc.id = kTestPluginIDImageRenderSource;
+        desc.label = "Test Image Render Source";
+        desc.description = "";
+        desc.outputKind = eDataKindImage;
+
+        return desc;
+    }
+
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+        KnobPagePtr page = createKnob<KnobPage>(std::string("Controls"));
+        KnobIntPtr seed = createKnob<KnobInt>(std::string("Seed"));
+
+        seed->setName("seed");
+        seed->setAnimationEnabled(false);
+        seed->setDefaultValue(0);
+        page->addKnob(seed);
+        _seed = seed;
+    }
+
+    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        KnobIntPtr seedKnob = _seed.lock();
+        const int seed = seedKnob ? seedKnob->getValue() : 0;
+
+        for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator it = args.outputPlanes.begin(); it != args.outputPlanes.end(); ++it) {
+            const ImagePtr& image = it->second;
+            if (!image || (image->getBitDepth() != eImageBitDepthFloat)) {
+                return eStatusFailed;
+            }
+            const int numChannels = (int)image->getComponentsCount();
+            Image::WriteAccess access(image.get());
+            for (int y = args.roi.y1; y < args.roi.y2; ++y) {
+                for (int x = args.roi.x1; x < args.roi.x2; ++x) {
+                    float* pixel = (float*)access.pixelAt(x, y);
+                    if (!pixel) {
+                        return eStatusFailed;
+                    }
+                    for (int c = 0; c < numChannels; ++c) {
+                        pixel[c] = imageRenderTestValue(seed, x, y, c);
+                    }
+                }
+            }
+        }
+
+        return eStatusOK;
+    }
+
+    KnobIntWPtr _seed;
 };
 
 NATRON_NAMESPACE_EXIT

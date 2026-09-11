@@ -54,6 +54,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Deep/DeepCrop.h"
 #include "Engine/Nodes/Deep/DeepFromImage.h"
 #include "Engine/Nodes/Deep/DeepMerge.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
@@ -536,6 +537,42 @@ protected:
             return NodePtr();
         }
         knob->setValue(depth);
+
+        return node;
+    }
+
+    NodePtr createDeepCrop(double bx,
+                           double by,
+                           double bw,
+                           double bh,
+                           bool useBBox,
+                           double zmin,
+                           double zmax,
+                           bool useZRange,
+                           bool reformat)
+    {
+        NodePtr node = createTrackedNode(PLUGINID_NATRON_DEEPCROP);
+
+        if (!node) {
+            return node;
+        }
+        KnobDouble* bbox = dynamic_cast<KnobDouble*>(node->getKnobByName("bbox").get());
+        KnobBool* useBBoxKnob = dynamic_cast<KnobBool*>(node->getKnobByName("useBBox").get());
+        KnobDouble* zRange = dynamic_cast<KnobDouble*>(node->getKnobByName("zRange").get());
+        KnobBool* useZRangeKnob = dynamic_cast<KnobBool*>(node->getKnobByName("useZRange").get());
+        KnobBool* reformatKnob = dynamic_cast<KnobBool*>(node->getKnobByName("reformat").get());
+        if (!bbox || !useBBoxKnob || !zRange || !useZRangeKnob || !reformatKnob) {
+            return NodePtr();
+        }
+        bbox->setValue(bx, ViewSpec::all(), 0);
+        bbox->setValue(by, ViewSpec::all(), 1);
+        bbox->setValue(bw, ViewSpec::all(), 2);
+        bbox->setValue(bh, ViewSpec::all(), 3);
+        useBBoxKnob->setValue(useBBox);
+        zRange->setValue(zmin, ViewSpec::all(), 0);
+        zRange->setValue(zmax, ViewSpec::all(), 1);
+        useZRangeKnob->setValue(useZRange);
+        reformatKnob->setValue(reformat);
 
         return node;
     }
@@ -1395,4 +1432,174 @@ TEST_F(DeepNodesTest, DeepRecolorRendersNothingWithoutAAndFailsWithAMessageWitho
     out.reset();
     EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed, renderDeepFrame(recolor, 1., frame, &out));
     EXPECT_TRUE(recolor->hasPersistentMessage());
+}
+
+TEST_F(DeepNodesTest, DeepCropIsRegisteredAndInstantiable)
+{
+    NodePtr crop = createTrackedNode(PLUGINID_NATRON_DEEPCROP);
+
+    ASSERT_TRUE(crop != NULL);
+    EXPECT_EQ(1, crop->getEffectInstance()->getNInputs());
+    EXPECT_EQ(eDataKindDeep, crop->getEffectInstance()->getInputDataKind(0));
+    EXPECT_EQ(eDataKindDeep, crop->getEffectInstance()->getOutputDataKind());
+    EXPECT_EQ("Source", crop->getEffectInstance()->getInputLabel(0));
+
+    std::list<std::string> grouping;
+    crop->getEffectInstance()->getPluginGrouping(&grouping);
+    ASSERT_EQ((std::size_t)1, grouping.size());
+    EXPECT_EQ(PLUGIN_GROUP_DEEP, grouping.front());
+
+    NodePtr imageSource = createImageSource(0);
+    ASSERT_TRUE(imageSource != NULL);
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, crop->canConnectInput(imageSource, 0));
+}
+
+TEST_F(DeepNodesTest, DeepCropBBoxCropsToTheIntersectionAndLeavesSamplesInsideUnchanged)
+{
+    const RectI bounds(0, 0, 8, 8);
+    // Bbox (2, 2, 3, 2) -> canonical (2, 2, 5, 4), already inside bounds, so the crop's own
+    // bounds are exactly that rectangle.
+    const RectI window(2, 2, 5, 4);
+
+    SynthPixels pixels;
+    pixels.push_back(SynthPixel(2, 2));
+    pixels.back().samples.push_back(pointSample(1.f, 0.1f, 0.2f, 0.3f, 0.4f));
+    pixels.back().samples.push_back(volumeSample(2.f, 3.f, 0.5f, 0.5f, 0.5f, 0.5f));
+    pixels.push_back(SynthPixel(4, 3));
+    pixels.back().samples.push_back(pointSample(5.f, 0.9f, 0.8f, 0.7f, 0.6f));
+    // Outside the crop window on every side: dropped by the narrower bounds alone.
+    pixels.push_back(SynthPixel(1, 2));
+    pixels.back().samples.push_back(pointSample(2.f, 0.2f, 0.2f, 0.2f, 0.2f));
+    pixels.push_back(SynthPixel(4, 4));
+    pixels.back().samples.push_back(pointSample(1.f, 0.3f, 0.3f, 0.3f, 0.3f));
+    pixels.push_back(SynthPixel(5, 3));
+    pixels.back().samples.push_back(pointSample(1.f, 0.4f, 0.4f, 0.4f, 0.4f));
+    pixels.push_back(SynthPixel(0, 0));
+    pixels.back().samples.push_back(pointSample(9.f, 0.5f, 0.5f, 0.5f, 0.5f));
+
+    NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixels, true));
+    NodePtr crop = createDeepCrop(2., 2., 3., 2., true, 0., 0., false, false);
+    ASSERT_TRUE(source && crop);
+    connectNodes(source, crop, 0, true);
+
+    DeepImagePtr cropped;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(crop, 1., bounds, &cropped));
+    ASSERT_TRUE(cropped != NULL);
+    EXPECT_TRUE(window == cropped->getBounds());
+    EXPECT_TRUE(cropped->isTidy());
+    EXPECT_EQ((U64)3, cropped->getSampleTable().getTotalSampleCount());
+
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const std::vector<ReadSample> expected = synthSamplesAt(pixels, x, y);
+            const std::vector<ReadSample> actual = samplesAt(*cropped, x, y);
+            ASSERT_EQ(expected.size(), actual.size()) << "at pixel (" << x << ", " << y << ")";
+            for (std::size_t s = 0; s < expected.size(); ++s) {
+                EXPECT_FLOAT_EQ(expected[s].z, actual[s].z) << "at pixel (" << x << ", " << y << ") sample " << s;
+                EXPECT_FLOAT_EQ(expected[s].zback, actual[s].zback) << "at pixel (" << x << ", " << y << ") sample " << s;
+                const std::vector<std::string> channels = rgbaChannelNames();
+                for (std::size_t c = 0; c < channels.size(); ++c) {
+                    EXPECT_FLOAT_EQ(expected[s].value(channels[c]), actual[s].value(channels[c])) << "at pixel (" << x << ", " << y << ") sample " << s << " channel " << channels[c];
+                }
+            }
+        }
+    }
+} // TEST_F(DeepNodesTest, DeepCropBBoxCropsToTheIntersectionAndLeavesSamplesInsideUnchanged)
+
+TEST_F(DeepNodesTest, DeepCropZRangeDropsExactlyTheOutOfRangeSamplesAndKeepsOrder)
+{
+    const RectI bounds(0, 0, 5, 5);
+
+    // Front to back, straddling both ends of [2, 6] so the boundary is tested both ways: kept at
+    // exactly Near or Far, dropped when only partly inside (no splitting).
+    const DeepSample below = pointSample(1.f, 0.1f, 0.1f, 0.1f, 0.1f);
+    const DeepSample atNear = pointSample(2.f, 0.2f, 0.2f, 0.2f, 0.2f);
+    const DeepSample straddlesNear = volumeSample(1.f, 3.f, 0.3f, 0.3f, 0.3f, 0.3f);
+    const DeepSample inside = volumeSample(3.f, 6.f, 0.4f, 0.4f, 0.4f, 0.4f);
+    const DeepSample straddlesFar = volumeSample(5.f, 7.f, 0.5f, 0.5f, 0.5f, 0.5f);
+    const DeepSample atFar = pointSample(6.f, 0.6f, 0.6f, 0.6f, 0.6f);
+    const DeepSample above = pointSample(7.f, 0.7f, 0.7f, 0.7f, 0.7f);
+
+    SynthPixels pixels;
+    pixels.push_back(SynthPixel(3, 3));
+    pixels.back().samples.push_back(below);
+    pixels.back().samples.push_back(atNear);
+    pixels.back().samples.push_back(straddlesNear);
+    pixels.back().samples.push_back(inside);
+    pixels.back().samples.push_back(straddlesFar);
+    pixels.back().samples.push_back(atFar);
+    pixels.back().samples.push_back(above);
+
+    NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixels, true));
+    NodePtr crop = createDeepCrop(0., 0., 0., 0., false, 2., 6., true, false);
+    ASSERT_TRUE(source && crop);
+    connectNodes(source, crop, 0, true);
+
+    DeepImagePtr cropped;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(crop, 1., bounds, &cropped));
+    ASSERT_TRUE(cropped != NULL);
+    EXPECT_TRUE(bounds == cropped->getBounds());
+    EXPECT_EQ((U64)3, cropped->getSampleTable().getTotalSampleCount());
+
+    const std::vector<ReadSample> samples = samplesAt(*cropped, 3, 3);
+    ASSERT_EQ((std::size_t)3, samples.size());
+    expectSampleValues(samples[0], atNear, 0.f);
+    expectSampleValues(samples[1], inside, 0.f);
+    expectSampleValues(samples[2], atFar, 0.f);
+} // TEST_F(DeepNodesTest, DeepCropZRangeDropsExactlyTheOutOfRangeSamplesAndKeepsOrder)
+
+TEST_F(DeepNodesTest, DeepCropWithNothingToDropIsAnIdentityAndSharesTheInputsCacheEntry)
+{
+    const RectI bounds(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
+
+    SynthPixels pixels;
+    pixels.push_back(SynthPixel(1, 1));
+    pixels.back().samples.push_back(pointSample(1.f, 0.1f, 0.2f, 0.3f, 0.4f));
+    pixels.push_back(SynthPixel(2, 0));
+    pixels.back().samples.push_back(volumeSample(1.f, 3.f, 0.5f, 0.5f, 0.5f, 0.5f));
+
+    NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixels, true));
+    // Bbox comfortably contains the source's region of definition, and Use Z Range is off, so
+    // nothing the crop would do actually changes anything.
+    NodePtr crop = createDeepCrop(-100., -100., 300., 300., true, 0., 0., false, false);
+    ASSERT_TRUE(source && crop);
+    connectNodes(source, crop, 0, true);
+
+    DeepImagePtr fromSource;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(source, 1., bounds, &fromSource));
+    ASSERT_TRUE(fromSource != NULL);
+
+    DeepImagePtr fromCrop;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(crop, 1., bounds, &fromCrop));
+    ASSERT_TRUE(fromCrop != NULL);
+
+    EXPECT_EQ(fromSource.get(), fromCrop.get());
+    // The identity bypasses the crop's own cache lookup entirely, so it never mints an entry
+    // under the crop's own key.
+    EXPECT_TRUE(cachedDeepEntryBounds(crop, 1.).empty());
+}
+
+TEST_F(DeepNodesTest, DeepCropReformatSetsTheOutputFormatToBboxAndOffLeavesTheInputs)
+{
+    const RectI bounds(0, 0, 6, 6);
+
+    SynthPixels pixels;
+    pixels.push_back(SynthPixel(1, 1));
+    pixels.back().samples.push_back(pointSample(1.f, 0.1f, 0.2f, 0.3f, 0.4f));
+
+    NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixels, true));
+    ASSERT_TRUE(source != NULL);
+    source->getEffectInstance()->refreshMetadata_public(false);
+
+    NodePtr cropOff = createDeepCrop(1., 1., 4., 3., true, 0., 0., false, false);
+    NodePtr cropOn = createDeepCrop(1., 1., 4., 3., true, 0., 0., false, true);
+    ASSERT_TRUE(cropOff && cropOn);
+    connectNodes(source, cropOff, 0, true);
+    connectNodes(source, cropOn, 0, true);
+
+    cropOff->getEffectInstance()->refreshMetadata_public(false);
+    cropOn->getEffectInstance()->refreshMetadata_public(false);
+
+    EXPECT_TRUE(source->getEffectInstance()->getOutputFormat() == cropOff->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(RectI(1, 1, 5, 4) == cropOn->getEffectInstance()->getOutputFormat());
 }

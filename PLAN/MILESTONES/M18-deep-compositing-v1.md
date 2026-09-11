@@ -109,7 +109,7 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: the full ctest suite run 10+ times consecutively with zero failures (record the count in this file's `## Decisions`); the specific crash driven red-then-green if a deterministic reproducer is found. Whole ctest suite green.
   - size: M
 
-- [ ] M18.P3.T6 — Retract the deep cache entry by identity, not by key
+- [x] M18.P3.T6 — Retract the deep cache entry by identity, not by key
   - files: `Engine/Cache.h`, `Engine/EffectInstanceRenderDeep.cpp`, `Tests/DeepRenderPipeline_Test.cpp`
   - approach: `Cache::removeEntry()` (`Engine/Cache.h:1533`) matches on `(*it)->getKey() == entry->getKey()` and removes the **first** bucket entry with that key. `DeepImageKey` deliberately excludes bounds, so during a bounds-growth render the narrow and the wide entry coexist under one key — which makes "first match" the wrong entry roughly whenever it matters. The abort and failure paths in `renderDeepRoI` (`EffectInstanceRenderDeep.cpp:423` and `:431`) therefore evict the *narrow* entry and leave the *half-built wide* one cached; a later request whose RoI the wide bounds contain is then served an unpopulated deep frame instead of re-rendering. That is a silent wrong answer, not a slow one. Fix the identity comparison (pointer identity, or key plus bounds) rather than special-casing the deep path — but check who else calls `removeEntry()` before changing shared behaviour, and if a by-key removal is load-bearing for another caller, add the identity-matching variant alongside it instead. Found during M18.P3.T5; `AbortDuringUpstreamRenderLeavesNothingCached` misses it because that test involves no bounds growth.
   - verify: a test that aborts a *widening* deep render and asserts nothing stale is servable afterwards — driven red-then-green against the current by-key removal. Whole ctest suite green.
@@ -118,6 +118,18 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; entire pre-existing ctest suite still green.
 
 ## Decisions
+
+- 2026-09-11 — M18.P3.T6 changed `Cache::removeEntry(EntryTypePtr)` for every
+  cache, not just the deep one: every caller (`EffectInstance.cpp`,
+  `EffectInstanceRenderRoI.cpp`, `EffectInstanceRenderDeep.cpp`,
+  `ViewerInstance.cpp`) passes an instance obtained from the cache, so no caller
+  relied on by-key matching and no by-key variant was kept. The image cache had
+  the same latent defect (`ImageKey` excludes mipmap level/components/depth, so
+  first-match could evict a sibling level). The rewrite also consults
+  `_diskCache` when the memory bucket exists but does not hold the instance;
+  the old code only looked at disk when the hash was absent from memory.
+  Verified red-then-green by `AbortDuringWideningRenderRetractsTheHalfBuiltWideEntry`;
+  full suite 159/159.
 
 - 2026-09-11 — The M18.P3.T5 crash was a use-after-free in `Engine/Cache.h`'s
   teardown, not in the deep retraction path. `Cache` declared `_deleterThread`

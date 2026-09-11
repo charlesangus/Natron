@@ -113,6 +113,14 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 
 ## Decisions
 
+- 2026-09-11 — M18.P3.T5 is executed before M18.P3.T2/T3/T4, out of task order.
+  Every remaining task in this phase carries "whole ctest suite green" in its
+  `verify`, so an intermittent SIGSEGV in the full suite makes each of those
+  verdicts unreliable — a red run could be the task under test or could be the
+  flake, and telling them apart costs a re-run every time. Fixing the flake first
+  makes the rest of the phase's verification trustworthy. No scope change; the
+  task IDs keep their numbering.
+
 - 2026-09-11 — `DeepRenderPipelineTest.BoundsGrowthRetractsTheSupersededDeepCacheEntry`
   segfaults intermittently during teardown, and it is a **full-suite-only** flake:
   the gtest body itself reports `[ OK ]`, then the process dies with SIGSEGV

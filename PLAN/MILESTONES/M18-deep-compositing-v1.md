@@ -85,7 +85,7 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: round-trip test — read a reference deep EXR, write it back, `oiiotool --diff` clean; sample counts and Z order preserved.
   - size: M
 
-- [ ] M18.P3.T2 — `DeepMerge`, `DeepToImage`, `DeepFromImage`
+- [x] M18.P3.T2 — `DeepMerge`, `DeepToImage`, `DeepFromImage`
   - files: `Engine/Nodes/Deep/DeepMerge.cpp`, `Engine/Nodes/Deep/DeepToImage.cpp`, `Engine/Nodes/Deep/DeepFromImage.cpp`, CMake source list
   - approach: `DeepMerge` — combine and holdout modes over M18.P1.T2's tidy/merge math, tidying lazily. `DeepToImage` — explicit mid-graph flatten (the graph always shows where information is destroyed). `DeepFromImage` — image + optional Z input → single-sample-per-pixel deep.
   - verify: merge of two deep EXRs matches Nuke-generated reference within tolerance; DeepFromImage→DeepToImage round-trip reproduces the source image.
@@ -118,6 +118,25 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; entire pre-existing ctest suite still green.
 
 ## Decisions
+
+- 2026-09-11 — M18.P3.T2's "Nuke-generated reference" verify was replaced: no
+  Nuke reference exists in the repo or on the build host, so `DeepMerge` combine
+  is checked against an independent serial front-to-back reference written in
+  the test, and holdout against analytic cases (opaque/half-transparent/volume
+  mattes in front, behind, straddling, coincident, hand-computed overlaps).
+  Implementation choices worth knowing: holdout cuts each A sample at the
+  matte's boundaries and can therefore *increase* the sample count (exact under
+  the OpenEXR model rather than a per-sample approximation); combine does not
+  tidy; holdout RoD is A's only; `DeepToImage` returns empty `getFramesNeeded()`
+  / `getRegionsOfInterest()` so the image pre-render never calls `renderRoI()`
+  on the deep input (which would cache a bogus `Image` under the hash
+  `renderDeepRoIFlattened()` assumes free), and renders `eRenderSafetyFullySafe`
+  so a frame is one deep pull, not per-thread tiles; `DeepFromImage` emits a
+  sample for every pixel, zero alpha included, which is what makes the
+  round-trip exact. COW sharing of Z/ZBack/A in holdout was not done —
+  `renderDeepTwoPass` allocates fresh buffers and `DeepImage` has no API to
+  alias another image's table; that is the M18.P3.T3 `DeepRecolor` verify's
+  concern and may need a `DeepImage` addition there. Suite: 167/167.
 
 - 2026-09-11 — M18.P3.T6 changed `Cache::removeEntry(EntryTypePtr)` for every
   cache, not just the deep one: every caller (`EffectInstance.cpp`,

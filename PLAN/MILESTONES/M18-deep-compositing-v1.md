@@ -79,7 +79,7 @@ All nodes below are `NativeEffectBase` subclasses in `Engine/Nodes/Deep/`, one
 .cpp each, registered in `loadBuiltinNodePlugins()`. The vocabulary is a cap,
 not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 
-- [ ] M18.P3.T1 — `DeepRead` and `DeepWrite`
+- [x] M18.P3.T1 — `DeepRead` and `DeepWrite`
   - files: `Engine/Nodes/Deep/DeepRead.cpp`, `Engine/Nodes/Deep/DeepWrite.cpp`, `Engine/CMakeLists.txt` (CMake source list + new OIIO dependency)
   - approach: `NatronEngine` does not link OpenImageIO today (`Engine/CMakeLists.txt` finds only Freetype and OpenColorIO), so this task adds `find_package(OpenImageIO CONFIG REQUIRED)` and links `OpenImageIO::OpenImageIO` — 3.1.16 with its CMake config ships in the `aswf/ci-vfxall:2027-clang21.1` image CI and `tools/ci/local/` both use, so no image change is needed. Then OIIO `DeepData` for both directions; EXR deep scanline and tiled parts. `DeepData`'s layout maps 1:1 onto `DeepImage`'s structure-of-channels, so I/O is a per-channel copy, not a transform. Deep AOVs ride the existing plane concept.
   - verify: round-trip test — read a reference deep EXR, write it back, `oiiotool --diff` clean; sample counts and Z order preserved.
@@ -103,9 +103,29 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: test green in the `build-and-test` job; deliberately breaking the merge math makes it fail.
   - size: M
 
+- [ ] M18.P3.T5 — Fix the full-suite SIGSEGV in the deep cache-retraction test
+  - files: `Engine/EffectInstanceRenderDeep.cpp`, `Engine/DeepImage.h`/`.cpp`, `Tests/DeepRenderPipeline_Test.cpp`, `Tests/BaseTest.cpp` (whichever the cause turns out to be in)
+  - approach: `DeepRenderPipelineTest.BoundsGrowthRetractsTheSupersededDeepCacheEntry` passes its assertions and then the process dies with SIGSEGV in teardown — but only in a full `ctest -V` run, never in isolation (20/20 clean under `ctest -R`). Reproduce it first: run the full suite in a loop to get a failure rate, then run it under gdb (`test.sh` has no per-test `--gdb`, so drive `ctest -V` or the `Tests` binary directly inside `tools/ci/local/devshell.sh`) to get a real backtrace — the one seen so far goes through `libQt6Core.so.6` with no useful symbols, so build with symbols and do not accept a symbol-less trace as the diagnosis. Two hypotheses worth separating early: (a) the retraction added by M18.P2.T5 (`bddf34987`) leaves a dangling `DeepImagePtr` or double-removes a cache entry, which would make this a real product bug that a user hits on any bounds-growth render, not just a test artifact; (b) it is the shared-fixture teardown-ordering family M26 already fixed once, in which case the deep cache is merely the new thing outliving its `AppManager`. Decide which by evidence, not by whichever is cheaper to fix. If it proves to be (a), the fix belongs in the engine and the test stays as-is.
+  - verify: the full ctest suite run 10+ times consecutively with zero failures (record the count in this file's `## Decisions`); the specific crash driven red-then-green if a deterministic reproducer is found. Whole ctest suite green.
+  - size: M
+
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; entire pre-existing ctest suite still green.
 
 ## Decisions
+
+- 2026-09-11 — `DeepRenderPipelineTest.BoundsGrowthRetractsTheSupersededDeepCacheEntry`
+  segfaults intermittently during teardown, and it is a **full-suite-only** flake:
+  the gtest body itself reports `[ OK ]`, then the process dies with SIGSEGV
+  (backtrace through `libQt6Core.so.6`, no useful symbols) after the assertions
+  pass. Run in isolation via `ctest -R` it passed **20/20**; it has failed once
+  in a full `ctest -V` run and passed in another. The test is one of the two
+  added by M18.P2.T5 (`bddf34987`), so the retraction path is the prime suspect,
+  but the signature — clean body, crash in teardown, only when sharing a process
+  with the rest of the suite — is the same family as M26's shared-fixture
+  teardown flake. Tracked as M18.P3.T5 rather than folded into M18.P3.T1, whose
+  scope is `DeepRead`/`DeepWrite` and which is unrelated to it. It must be closed
+  before the milestone gate: CI runs the full suite, so an intermittent SIGSEGV
+  there is an intermittently red PR.
 
 - 2026-09-09 — Promotion freshness check (PLAN-FORMAT.md §5a): the milestone's
   premise holds — `Engine/Nodes/NativeEffectBase.h`, the templated `Engine/Cache.h`,

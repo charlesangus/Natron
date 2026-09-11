@@ -514,6 +514,18 @@ public:
         return eDataKindImage;
     }
 
+    /**
+     * @brief Whether inputNb accepts kind through an implicit conversion, even though it declares
+     * a different kind in getInputDataKind(). This is only half of the permission: the conversion
+     * must also be one Node.cpp's adapter table lists, so neither a node nor that table can widen
+     * the system on its own.
+     **/
+    virtual bool inputAcceptsDataKindViaAdapter(int /*inputNb*/,
+                                                DataKindEnum /*kind*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
     virtual bool getMakeSettingsPanel() const { return true; }
 
 
@@ -646,6 +658,13 @@ public:
                                std::map<ImagePlaneDesc, ImagePtr>* outputPlanes) WARN_UNUSED_RETURN;
 
     /**
+     * @brief Whether what this effect puts on its output is deep data, as the graph around it
+     * resolves it: eDataKindDeep and unambiguously so. This is the predicate that decides which
+     * of renderRoI() and renderDeepRoI() may be asked of it.
+     **/
+    bool producesDeepData() const WARN_UNUSED_RETURN;
+
+    /**
      * @brief The deep counterpart of renderRoI(): renders this effect's deep data at the given
      * time, scale, view and render window and returns it in *outputDeepImage.
      *
@@ -664,6 +683,21 @@ public:
      **/
     RenderRoIRetCode renderDeepRoI(const RenderDeepRoIArgs& args,
                                    DeepImagePtr* outputDeepImage) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Renders this effect's deep data through renderDeepRoI() and returns it flattened to
+     * a float RGBA Image, cached in the ordinary Cache<Image> under this node's own hash. Called
+     * on the deep effect itself, not on whatever consumes the flattened result.
+     *
+     * This is the implementation of the deep->image adapter: the Viewer shows a deep stream by
+     * asking for this rather than by growing a second display path, so scrubbing a deep stream
+     * costs one flatten per frame, once.
+     *
+     * Requires the thread-local frame args a render set up by the scheduler provides: the cache
+     * key has to be the hash the scheduler assigned this node, not one derived after the fact.
+     **/
+    RenderRoIRetCode renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
+                                            ImagePtr* outputImage) WARN_UNUSED_RETURN;
 
     void getImageFromCacheAndConvertIfNeeded(bool useCache,
                                              StorageModeEnum storage,

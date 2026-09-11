@@ -41,6 +41,8 @@
 #include "Engine/AppManager.h"
 #include "Engine/DeepImage.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Image.h"
+#include "Engine/ImageKey.h"
 #include "Engine/Node.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
@@ -129,6 +131,47 @@ expectDeepImagesIdentical(const DeepImage& actual,
     }
 }
 
+// What flattening the source stub's samples must produce: they are point samples at strictly
+// increasing depths, so the source declares them tidy and the flatten is a plain front-to-back
+// composite over the stored order, with no splitting or merging in between.
+std::vector<float>
+expectedFlattenedPixel(int x,
+                       int y)
+{
+    const std::vector<std::string> channelNames = deepRenderTestChannelNames();
+    std::vector<float> out(channelNames.size(), 0.f);
+    const U32 count = deepRenderTestSampleCount(x, y);
+    float transmittance = 1.f;
+
+    for (U32 s = 0; s < count; ++s) {
+        for (std::size_t c = 0; c < channelNames.size(); ++c) {
+            out[c] += transmittance * deepRenderTestChannel(x, y, (int)s, (int)c);
+        }
+        transmittance *= (1.f - deepRenderTestChannel(x, y, (int)s, 3));
+    }
+
+    return out;
+}
+
+void
+expectFlattenedImageMatchesSource(const ImagePtr& image,
+                                  const RectI& roi)
+{
+    const int numChannels = (int)deepRenderTestChannelNames().size();
+    Image::ReadAccess access = image->getReadRights();
+
+    for (int y = roi.y1; y < roi.y2; ++y) {
+        for (int x = roi.x1; x < roi.x2; ++x) {
+            const std::vector<float> expected = expectedFlattenedPixel(x, y);
+            const float* actual = (const float*)access.pixelAt(x, y);
+            ASSERT_TRUE(actual != NULL) << "at pixel (" << x << ", " << y << ")";
+            for (int c = 0; c < numChannels; ++c) {
+                ASSERT_FLOAT_EQ(expected[c], actual[c]) << "at pixel (" << x << ", " << y << ") channel " << c;
+            }
+        }
+    }
+}
+
 } // namespace
 
 class DeepRenderPipelineTest
@@ -207,6 +250,45 @@ protected:
                                                time);
 
         return node->getEffectInstance()->renderDeepRoI(args, outputDeepImage);
+    }
+
+    // Same, but asking for the flattened Image the Viewer displays rather than the deep payload.
+    EffectInstance::RenderRoIRetCode renderFlattenedFrame(const NodePtr& node,
+                                                          double time,
+                                                          const RectI& roi,
+                                                          ImagePtr* outputImage,
+                                                          AbortableRenderInfoPtr* abortInfoOut = 0)
+    {
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+
+        if (abortInfoOut) {
+            *abortInfoOut = abortInfo;
+        }
+
+        ParallelRenderArgsSetter frameRenderArgs(time,
+                                                 ViewIdx(0),
+                                                 true /*isRenderUserInteraction*/,
+                                                 false /*isSequential*/,
+                                                 abortInfo,
+                                                 node,
+                                                 0 /*textureIndex*/,
+                                                 getApp()->getTimeLine().get(),
+                                                 NodePtr(),
+                                                 false /*isAnalysis*/,
+                                                 false /*draftMode*/,
+                                                 RenderStatsPtr());
+
+        EffectInstance::RenderDeepRoIArgs args(time,
+                                               RenderScale::identity,
+                                               0 /*mipmapLevel*/,
+                                               ViewIdx(0),
+                                               false /*byPassCache*/,
+                                               roi,
+                                               RectD(),
+                                               0 /*caller*/,
+                                               time);
+
+        return node->getEffectInstance()->renderDeepRoIFlattened(args, outputImage);
     }
 
     NodePtr _source;
@@ -379,4 +461,104 @@ TEST_F(DeepRenderPipelineTest, TwoPassHelperMatchesSerialReference)
     ASSERT_GT(reference.getSampleTable().getTotalSampleCount(), (U64)0);
 
     expectDeepImagesIdentical(*rendered, reference);
+}
+
+TEST_F(DeepRenderPipelineTest, SecondFlattenOfTheSameFrameIsACacheHit)
+{
+    const RectI roi(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+
+    ImagePtr first;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderFlattenedFrame(_source, 1., roi, &first));
+    ASSERT_TRUE(first != NULL);
+    EXPECT_TRUE(roi == first->getBounds());
+    EXPECT_EQ(1, deepRenderTestSourceRenderCount().load());
+    expectFlattenedImageMatchesSource(first, roi);
+
+    // A cache hit hands the entry back untouched; anything that re-ran the flatten would write
+    // over this. Nothing else can tell the two apart -- the image object is the same either way,
+    // because a second getImageOrCreate() under the same key finds the entry that already exists.
+    const float sentinel = -1234.5f;
+    {
+        Image::WriteAccess access = first->getWriteRights();
+        float* pixel = (float*)access.pixelAt(2, 3);
+        ASSERT_TRUE(pixel != NULL);
+        pixel[0] = sentinel;
+    }
+
+    ImagePtr second;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderFlattenedFrame(_source, 1., roi, &second));
+    ASSERT_TRUE(second != NULL);
+    EXPECT_EQ(first.get(), second.get());
+    EXPECT_EQ(1, deepRenderTestSourceRenderCount().load());
+
+    {
+        Image::ReadAccess access = second->getReadRights();
+        const float* pixel = (const float*)access.pixelAt(2, 3);
+        ASSERT_TRUE(pixel != NULL);
+        EXPECT_FLOAT_EQ(sentinel, pixel[0]);
+    }
+
+    // A different frame is a different cache identity, so that one does flatten.
+    ImagePtr otherFrame;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderFlattenedFrame(_source, 2., roi, &otherFrame));
+    ASSERT_TRUE(otherFrame != NULL);
+    EXPECT_NE(first.get(), otherFrame.get());
+    EXPECT_EQ(2, deepRenderTestSourceRenderCount().load());
+}
+
+TEST_F(DeepRenderPipelineTest, AbortDuringFlattenLeavesNothingCached)
+{
+    const RectI roi(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+    AbortableRenderInfoPtr abortInfo;
+
+    // Abort from inside the deep render, i.e. after the flattened image's cache entry exists but
+    // before anything has been composited into it.
+    deepRenderTestSourceHook() = [&abortInfo]() {
+        if (abortInfo) {
+            abortInfo->setAborted();
+        }
+    };
+
+    ImagePtr aborted;
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, renderFlattenedFrame(_source, 1., roi, &aborted, &abortInfo));
+    EXPECT_TRUE(aborted == NULL);
+    EXPECT_EQ(1, deepRenderTestSourceRenderCount().load());
+
+    deepRenderTestSourceHook() = std::function<void()>();
+
+    // The entry the aborted render created must not be servable: this has to flatten for real,
+    // not hand back the empty image the first attempt left behind.
+    ImagePtr complete;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderFlattenedFrame(_source, 1., roi, &complete));
+    ASSERT_TRUE(complete != NULL);
+    EXPECT_EQ(2, deepRenderTestSourceRenderCount().load());
+    expectFlattenedImageMatchesSource(complete, roi);
+}
+
+TEST_F(DeepRenderPipelineTest, FlattenCacheInvalidatesWhenTheDeepNodesHashChanges)
+{
+    const RectI roi(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+    const U64 firstHash = _source->getHashValue();
+
+    ImagePtr first;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderFlattenedFrame(_source, 1., roi, &first));
+    ASSERT_TRUE(first != NULL);
+    EXPECT_EQ(1, deepRenderTestSourceRenderCount().load());
+
+    // The entry is keyed on the deep node's own hash. That is what makes the purge
+    // Node::computeHashInternal() fires on any hash change land on exactly these entries, so it
+    // is the property to assert, not just the re-render it produces below.
+    EXPECT_EQ(firstHash, first->getKey().getTreeVersion());
+
+    _source->incrementKnobsAge();
+    const U64 secondHash = _source->getHashValue();
+    ASSERT_NE(firstHash, secondHash);
+
+    ImagePtr second;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderFlattenedFrame(_source, 1., roi, &second));
+    ASSERT_TRUE(second != NULL);
+    EXPECT_NE(first.get(), second.get());
+    EXPECT_EQ(secondHash, second->getKey().getTreeVersion());
+    EXPECT_EQ(2, deepRenderTestSourceRenderCount().load());
+    expectFlattenedImageMatchesSource(second, roi);
 }

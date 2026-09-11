@@ -405,3 +405,85 @@ TEST_F(BaseTest, PolicyNodeDoesNotTypeTheBranchesItDoesNotFollow)
     EXPECT_EQ(eDataKindImage, ignoredBranch->getEffectiveOutputDataKind());
     EXPECT_EQ(eDataKindDeep, policy->getEffectiveOutputDataKind());
 }
+
+// The deep->image adapter, from the connection-time side: a sink declaring an image input that
+// also accepts deep through the adapter takes a deep source directly, where a plain image sink
+// (DirectConcreteKindMismatchRejected above) does not.
+TEST_F(BaseTest, AdapterSinkAcceptsDeepSource)
+{
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr adapterSink = createNode(QString::fromUtf8(kTestPluginIDDataKindAdapterSink));
+
+    ASSERT_TRUE(deepSource && adapterSink);
+
+    EXPECT_EQ(Node::eCanConnectInput_ok, adapterSink->canConnectInput(deepSource, 0));
+    connectNodes(deepSource, adapterSink, 0, true);
+    EXPECT_FALSE(adapterSink->hasPersistentMessage());
+}
+
+// Both halves of the permission are required, and this is the one that keeps the seam from being
+// an escape hatch: an effect declaring that it takes scene through an adapter is still refused,
+// because the engine's table has no scene->image row for it to lean on.
+TEST_F(BaseTest, AdapterCannotAcceptSceneEvenWhenTheEffectAsksForIt)
+{
+    NodePtr sceneSource = createNode(QString::fromUtf8(kTestPluginIDDataKindScenePolicy));
+    NodePtr sceneAdapterSink = createNode(QString::fromUtf8(kTestPluginIDDataKindSceneAdapterSink));
+
+    ASSERT_TRUE(sceneSource && sceneAdapterSink);
+    ASSERT_EQ(eDataKindScene, sceneSource->getEffectiveOutputDataKind());
+
+    NodePtr conflictingNode;
+    Node::CanConnectInputReturnValue ret = sceneAdapterSink->canConnectInput(sceneSource, 0, &conflictingNode);
+
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, ret);
+    EXPECT_EQ(sceneSource.get(), conflictingNode.get());
+}
+
+// A pass-through between a deep source and an adapter sink is the shape the Viewer is actually
+// reached in: deep source -> Dot -> Viewer. The Dot must resolve to deep, not hold deep upstream
+// and image downstream at once and go ambiguous, which would reject the edge outright.
+TEST_F(BaseTest, PolymorphicBetweenDeepSourceAndAdapterSinkResolvesToDeep)
+{
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr adapterSink = createNode(QString::fromUtf8(kTestPluginIDDataKindAdapterSink));
+
+    ASSERT_TRUE(deepSource && dot && adapterSink);
+
+    connectNodes(deepSource, dot, 0, true);
+    ASSERT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind());
+
+    EXPECT_EQ(Node::eCanConnectInput_ok, adapterSink->canConnectInput(dot, 0));
+    connectNodes(dot, adapterSink, 0, true);
+
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+    EXPECT_FALSE(dot->hasPersistentMessage());
+    EXPECT_FALSE(adapterSink->hasPersistentMessage());
+}
+
+// The same graph wired the other way round, which is the order a user gets when the Viewer is
+// already there: the check then runs on the edge going into the pass-through with the adapter sink
+// already downstream of it. That is the connection-time simulation's downstream walk rather than
+// the direct input check the two tests above go through.
+TEST_F(BaseTest, DeepSourceConnectsIntoAPolymorphicAlreadyFeedingAnAdapterSink)
+{
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr adapterSink = createNode(QString::fromUtf8(kTestPluginIDDataKindAdapterSink));
+
+    ASSERT_TRUE(deepSource && dot && adapterSink);
+
+    connectNodes(dot, adapterSink, 0, true);
+
+    NodePtr conflictingNode;
+    EXPECT_EQ(Node::eCanConnectInput_ok, dot->canConnectInput(deepSource, 0, &conflictingNode));
+    connectNodes(deepSource, dot, 0, true);
+
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindDeep, dot->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+    EXPECT_FALSE(dot->hasPersistentMessage());
+    EXPECT_FALSE(adapterSink->hasPersistentMessage());
+}

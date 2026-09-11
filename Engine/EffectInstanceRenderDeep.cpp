@@ -35,10 +35,14 @@
 #include <QThread>
 
 #include "Engine/AppManager.h"
+#include "Engine/DeepFlatten.h"
 #include "Engine/DeepImage.h"
 #include "Engine/DeepImageCacheEntry.h"
 #include "Engine/DeepImageKey.h"
 #include "Engine/DeepImageParams.h"
+#include "Engine/DeepPixelOps.h"
+#include "Engine/Image.h"
+#include "Engine/ImageParams.h"
 #include "Engine/Node.h"
 #include "Engine/ParallelRenderArgs.h"
 
@@ -126,20 +130,21 @@ private:
     EffectInstance::EffectTLSDataPtr _tls;
 };
 
-bool
-inputCarriesDeepData(const EffectInstancePtr& input)
-{
-    NodePtr inputNode = input->getNode();
+} // anonymous namespace
 
-    if (!inputNode) {
+bool
+EffectInstance::producesDeepData() const
+{
+    NodePtr node = getNode();
+
+    if (!node) {
         return false;
     }
 
     bool isAmbiguous = false;
 
-    return inputNode->getEffectiveOutputDataKind(&isAmbiguous) == eDataKindDeep && !isAmbiguous;
+    return node->getEffectiveOutputDataKind(&isAmbiguous) == eDataKindDeep && !isAmbiguous;
 }
-} // anonymous namespace
 
 EffectInstance::RenderRoIRetCode
 EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
@@ -312,7 +317,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     for (int i = 0; i < nInputs; ++i) {
         EffectInstancePtr input = getInput(i);
 
-        if (!input || !inputCarriesDeepData(input)) {
+        if (!input || !input->producesDeepData()) {
             continue;
         }
 
@@ -436,5 +441,160 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
 
     return eRenderRoIRetCodeOk;
 } // EffectInstance::renderDeepRoI
+
+EffectInstance::RenderRoIRetCode
+EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
+                                       ImagePtr* outputImage)
+{
+    assert(outputImage);
+    if (!outputImage) {
+        return eRenderRoIRetCodeFailed;
+    }
+    outputImage->reset();
+
+    if (args.roi.isNull()) {
+        return eRenderRoIRetCodeOk;
+    }
+
+    if (_imp->mainInstance) {
+        return _imp->mainInstance->renderDeepRoIFlattened(args, outputImage);
+    }
+
+    EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
+    // No fallback frame args here, deliberately, unlike renderDeepRoI(): the hash this keys the
+    // flattened Image with must be the one the scheduler assigned this node, because that is the
+    // hash Node::computeHashInternal()'s purge compares against. A hash invented here instead
+    // would be outside the purge's reach and the entry would never be invalidated.
+    assert(tls && !tls->frameArgs.empty());
+    if (!tls || tls->frameArgs.empty()) {
+        return eRenderRoIRetCodeFailed;
+    }
+    const ParallelRenderArgsPtr frameArgs = tls->frameArgs.back();
+
+    if (aborted()) {
+        return eRenderRoIRetCodeAborted;
+    }
+
+    const U64 nodeHash = frameArgs->nodeHash;
+    const double par = getAspectRatio(-1);
+    const ImagePlaneDesc& components = ImagePlaneDesc::getRGBAComponents();
+    const std::vector<std::string>& channelOrder = components.getChannels();
+
+    ////////////////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////// Look-up the image cache /////////////////////////////////////
+
+    // An effect whose output kind is eDataKindDeep never produces Cache<Image> entries of its own
+    // -- its renders live in the deep cache under DeepImageKey -- so this node's hash identifies
+    // the flattened image and nothing else, and the purge fired on any hash change is exact.
+    const ImageKey key(getNode().get(),
+                       nodeHash,
+                       true /*frameVaryingOrAnimated*/,
+                       args.time,
+                       args.view,
+                       1. /*pixelAspect*/,
+                       false /*draftMode*/,
+                       false /*fullScaleWithDownscaleInputs*/);
+
+    RectI boundsToRender = args.roi;
+    {
+        ImagePtr cached;
+        getImageFromCacheAndConvertIfNeeded(true, eStorageModeRAM, eStorageModeRAM, key, args.mipmapLevel, NULL, NULL, RectI(), eImageBitDepthFloat, components, InputImagesMap(), RenderStatsPtr(), OSGLContextAttacherPtr(), &cached);
+        if (cached) {
+            if (!args.byPassCache && cached->getBounds().contains(args.roi)) {
+                *outputImage = cached;
+
+                return eRenderRoIRetCodeOk;
+            }
+            // Bounds growth, not tiling, the same way renderDeepRoI() handles it: re-flatten over
+            // the union of what was asked for rather than mint a narrower entry that the next,
+            // wider request would miss again.
+            boundsToRender.merge(cached->getBounds());
+            appPTR->removeFromNodeCache(cached);
+        }
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////// Get the RoD /////////////////////////////////////////////////
+
+    RectD rod;
+    if (!args.preComputedRoD.isNull()) {
+        rod = args.preComputedRoD;
+    } else {
+        bool isProjectFormat = false;
+        StatusEnum stat = getRegionOfDefinition_public(nodeHash, args.time, args.scale, args.view, &rod, &isProjectFormat);
+
+        if ((stat == eStatusFailed) || rod.isNull()) {
+            return eRenderRoIRetCodeOk;
+        }
+    }
+
+    boundsToRender = boundsToRender.intersect(rod.toPixelEnclosing(args.mipmapLevel, par));
+    if (boundsToRender.isNull()) {
+        return eRenderRoIRetCodeOk;
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////// Allocate the flattened image ////////////////////////////////
+
+    ImageParamsPtr params = Image::makeParams(rod,
+                                              boundsToRender,
+                                              par,
+                                              args.mipmapLevel,
+                                              false /*isRoDProjectFormat*/,
+                                              components,
+                                              eImageBitDepthFloat,
+                                              getPremult(),
+                                              getFieldingOrder());
+    ImagePtr image;
+    appPTR->getImageOrCreate(key, params, &image);
+    if (!image) {
+        return eRenderRoIRetCodeFailed;
+    }
+    image->allocateMemory();
+
+    ////////////////////////////////////////////////////////////////////////////////////////////
+    ////////////////////////////// Pull the deep data and flatten it ///////////////////////////
+
+    DeepImagePtr deepImage;
+    RenderDeepRoIArgs deepArgs(args);
+    deepArgs.roi = boundsToRender;
+    deepArgs.preComputedRoD = rod;
+
+    const RenderRoIRetCode deepCode = renderDeepRoI(deepArgs, &deepImage);
+    if ((deepCode != eRenderRoIRetCodeOk) || !deepImage) {
+        // The entry was sealed the moment it was created, before it held anything, so a render
+        // that does not finish has to take it back out itself -- otherwise every later request
+        // for this frame is served a half-filled image.
+        appPTR->removeFromNodeCache(image);
+
+        return (deepCode == eRenderRoIRetCodeOk) ? eRenderRoIRetCodeFailed : deepCode;
+    }
+
+    if (aborted()) {
+        appPTR->removeFromNodeCache(image);
+
+        return eRenderRoIRetCodeAborted;
+    }
+
+    DeepPixelScratch scratch;
+    DeepTidyWorkspace work;
+    const StatusEnum stat = DeepFlatten::flattenToImage(*deepImage, boundsToRender, channelOrder, 3 /*alphaChannelIndex*/, &scratch, &work, image);
+
+    if (aborted()) {
+        appPTR->removeFromNodeCache(image);
+
+        return eRenderRoIRetCodeAborted;
+    }
+    if (stat != eStatusOK) {
+        appPTR->removeFromNodeCache(image);
+
+        return eRenderRoIRetCodeFailed;
+    }
+
+    image->markForRendered(boundsToRender);
+    *outputImage = image;
+
+    return eRenderRoIRetCodeOk;
+} // EffectInstance::renderDeepRoIFlattened
 
 NATRON_NAMESPACE_EXIT

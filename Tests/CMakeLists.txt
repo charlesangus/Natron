@@ -26,6 +26,7 @@ set(Tests_SOURCES
     Curve_Test.cpp
     DataKind_Test.cpp
     DataKindProjectLoad_Test.cpp
+    DeepFlatten_Test.cpp
     DeepImage_Test.cpp
     DeepImageCache_Test.cpp
     DeepPixelOps_Test.cpp

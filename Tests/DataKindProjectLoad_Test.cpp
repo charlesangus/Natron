@@ -281,3 +281,47 @@ TEST_F(BaseTest, ClearingTheDataKindErrorLeavesAnUnrelatedErrorAlone)
     sink2->getPersistentMessage(&message, &type, false);
     EXPECT_EQ(unrelated, message.toStdString());
 }
+
+// An edge the engine only permits through an adapter must survive a round trip like any other:
+// loading it back may neither drop it nor report it as a problem, since it is a legal graph. The
+// edge is wired here with connectInput() rather than through canConnectInput() so that what this
+// asserts is the whole-graph verdict taken at the end of the load, not the connection check
+// (DataKind_Test.cpp's AdapterSinkAcceptsDeepSource covers that one).
+TEST_F(BaseTest, AdapterEdgeSurvivesSaveAndLoadWithNoError)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    NodePtr deepSource = createNode(QString::fromUtf8(kTestPluginIDDataKindDeepSource));
+    NodePtr adapterSink = createNode(QString::fromUtf8(kTestPluginIDDataKindAdapterSink));
+
+    ASSERT_TRUE(deepSource && adapterSink);
+    ASSERT_TRUE(adapterSink->connectInput(deepSource, 0));
+    ASSERT_EQ(deepSource, adapterSink->getInput(0));
+
+    const std::string sinkName = adapterSink->getScriptName();
+    const std::string sourceName = deepSource->getScriptName();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("kind-adapter.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    ASSERT_TRUE(QFile::exists(savedFilePath));
+
+    project->reset(false, true);
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr sink2 = project->getNodeByName(sinkName);
+    ASSERT_TRUE(bool(sink2));
+    ASSERT_TRUE(bool(sink2->getInput(0)));
+    EXPECT_EQ(sourceName, sink2->getInput(0)->getScriptName());
+
+    QString message;
+    int type = 0;
+    sink2->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.isEmpty());
+    EXPECT_FALSE(sink2->hasPersistentMessage());
+}

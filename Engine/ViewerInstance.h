@@ -44,6 +44,7 @@ class ViewerArgs
 {
 public:
     EffectInstancePtr activeInputToRender;
+    bool deepUpstream;
     bool forceRender;
     int activeInputIndex;
     U64 activeInputHash;
@@ -411,6 +412,15 @@ private:
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImagePlaneDesc>* comps) OVERRIDE FINAL;
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
+
+    // The Viewer is the one place a deep edge may land on an image input: it flattens what it
+    // displays anyway. Declaring eDataKindPolymorphic instead would be shorter and also work,
+    // but it would accept a scene edge too and make a real scene-to-Viewer mistake silent.
+    virtual bool inputAcceptsDataKindViaAdapter(int /*inputNb*/,
+                                                DataKindEnum kind) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return kind == eDataKindDeep;
+    }
     /*******************************************/
 
 

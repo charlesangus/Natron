@@ -41,6 +41,8 @@
 #define kTestPluginIDDataKindScenePolicy "test.natron.built-in.DataKindScenePolicy"
 #define kTestPluginIDDataKindSelectFirstInputPolicy "test.natron.built-in.DataKindSelectFirstInputPolicy"
 #define kTestPluginIDDataKindConsumerMirrorPolicy "test.natron.built-in.DataKindConsumerMirrorPolicy"
+#define kTestPluginIDDataKindAdapterSink "test.natron.built-in.DataKindAdapterSink"
+#define kTestPluginIDDataKindSceneAdapterSink "test.natron.built-in.DataKindSceneAdapterSink"
 
 NATRON_NAMESPACE_ENTER
 
@@ -422,6 +424,117 @@ private:
         desc.outputKind = eDataKindPolymorphic;
 
         return desc;
+    }
+};
+
+// Stands in for the Viewer: an image input that also takes deep through the engine's registered
+// deep->image adapter. ViewerInstance itself is out of reach here -- its plugin is only registered
+// in a GUI application, and this binary does not link NatronGui -- so the seam is exercised
+// through a stub declaring the same thing.
+class DataKindTestAdapterSink
+    : public NoOpBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DataKindTestAdapterSink(n);
+    }
+
+    DataKindTestAdapterSink(NodePtr n)
+        : NoOpBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
+
+    virtual std::string getPluginID() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return kTestPluginIDDataKindAdapterSink;
+    }
+
+    virtual std::string getPluginLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "Test Data Kind Adapter Sink";
+    }
+
+    virtual std::string getPluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual std::string getInputLabel(int /*inputNb*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindImage;
+    }
+
+    virtual DataKindEnum getInputDataKind(int /*inputNb*/) const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindImage;
+    }
+
+    virtual bool inputAcceptsDataKindViaAdapter(int /*inputNb*/,
+                                                DataKindEnum kind) const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return kind == eDataKindDeep;
+    }
+};
+
+// The other half of the adapter permission, and the invariant it protects: an effect asking for
+// scene->image must still be refused, because the engine's table has no such row and a node
+// cannot add one.
+class DataKindTestSceneAdapterSink
+    : public NoOpBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DataKindTestSceneAdapterSink(n);
+    }
+
+    DataKindTestSceneAdapterSink(NodePtr n)
+        : NoOpBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
+
+    virtual std::string getPluginID() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return kTestPluginIDDataKindSceneAdapterSink;
+    }
+
+    virtual std::string getPluginLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "Test Data Kind Scene Adapter Sink";
+    }
+
+    virtual std::string getPluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual std::string getInputLabel(int /*inputNb*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return "";
+    }
+
+    virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindImage;
+    }
+
+    virtual DataKindEnum getInputDataKind(int /*inputNb*/) const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eDataKindImage;
+    }
+
+    virtual bool inputAcceptsDataKindViaAdapter(int /*inputNb*/,
+                                                DataKindEnum kind) const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return kind == eDataKindScene;
     }
 };
 

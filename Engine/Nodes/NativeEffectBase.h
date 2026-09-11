@@ -305,6 +305,41 @@ protected:
                                  bool resultIsTidy = false) WARN_UNUSED_RETURN;
 
     /**
+     * @brief The one pass of renderDeepFromInput(): rewrites the pixel at (x, y). in views the
+     * input's samples there -- its channels are the input's minus "Z" and "ZBack", in the order
+     * DeepImage::getChannels() lists them, in.alphaChannelIndex naming "A" among them or -1 when
+     * the input has none -- and out points into the output's buffers for the channels
+     * renderDeepFromInput() was told to write, in that order, over those same samples. out's z
+     * and zback are null: the depths stay the input's. Called once per pixel holding samples,
+     * concurrently from several threads; distinct pixels never share storage.
+     **/
+    typedef std::function<void(int x, int y, const DeepPixelView& in, const MutableDeepPixelView& out)> DeepRewriteSamplesFunc;
+
+    /**
+     * @brief Runs a deep render that keeps its input's sample structure -- which samples exist
+     * and at what depths -- and rewrites the values of some channels, the way a grade or a
+     * recolour does. Rather than filling the output from scratch, the output aliases the input
+     * (DeepImage::aliasContentsOf()) when their bounds agree, and otherwise copies the input's
+     * samples over the output's bounds, an input served from the cache being possibly wider than
+     * the window being rendered. Only the channels named in channelsToWrite are then detached, or
+     * created for a name the input lacks, and handed to rewrite; the sample table and every
+     * other channel stay shared with the input for as long as both live, and nothing rewrite is
+     * given can reach the input's storage.
+     *
+     * alphaChannelIndex is the index within channelsToWrite of the alpha channel, recorded in
+     * every out view, or -1 when alpha is not being written. "Z" and "ZBack" must not be listed.
+     *
+     * The output's tidiness is the input's, since rewriting values moves no sample. The cache
+     * charges an aliased output for every channel it holds all the same (DeepImage's
+     * getSizeInBytes() is aliasing-blind), so sharing evicts early rather than desyncing.
+     **/
+    StatusEnum renderDeepFromInput(const DeepRenderActionArgs& args,
+                                   const DeepImagePtr& input,
+                                   const std::vector<std::string>& channelsToWrite,
+                                   int alphaChannelIndex,
+                                   const DeepRewriteSamplesFunc& rewrite) WARN_UNUSED_RETURN;
+
+    /**
      * @brief Splits bounds into the scanline chunks renderDeepTwoPass() parallelizes over.
      * Exposed so a node needing its own parallel pass over the same rectangle can use the same
      * partition, and so tests can reason about it.
@@ -336,6 +371,15 @@ protected:
     {
         return AppManager::createKnob<KNOB_TYPE>(this, label, dimension);
     }
+
+private:
+    typedef std::function<void(const RectI& chunk)> DeepChunkFunc;
+
+    // Runs body over every chunk in parallel, each render thread carrying the calling thread's
+    // TLS for the duration. Returns false if the render was aborted, in which case some chunks
+    // were skipped.
+    bool forEachDeepChunk(const std::vector<RectI>& chunks,
+                          const DeepChunkFunc& body) WARN_UNUSED_RETURN;
 };
 
 NATRON_NAMESPACE_EXIT

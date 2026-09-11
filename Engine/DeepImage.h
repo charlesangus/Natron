@@ -270,6 +270,12 @@ public:
         _channels.erase(name);
     }
 
+    // Makes this DeepImage a shallow copy of source -- its sample table, every one of its
+    // channels and its tidy flag all aliased -- for an instance whose identity is fixed
+    // elsewhere (a cache entry's) and so cannot simply be copy-constructed from source. Requires
+    // the bounds to match; returns false and leaves this untouched otherwise.
+    bool aliasContentsOf(const DeepImage& source);
+
     bool sharesChannelStorageWith(const DeepImage& other, const std::string& name) const
     {
         const DeepChannelBuffer* mine = getChannel(name);

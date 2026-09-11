@@ -57,6 +57,7 @@
 #include "Engine/Nodes/Deep/DeepFromImage.h"
 #include "Engine/Nodes/Deep/DeepMerge.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
+#include "Engine/Nodes/Deep/DeepRecolor.h"
 #include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectD.h"
@@ -342,6 +343,81 @@ cachedDeepEntryBounds(const NodePtr& node,
     return bounds;
 }
 
+// The samples DeepRecolor's tests feed it: pixels with several non-overlapping samples, a sample
+// with no alpha, a pixel whose colour has no alpha, one under no colour at all, one covered in
+// full and one not covered, so that every branch of the recolour has a pixel to show on.
+SynthPixels
+recolorPixels()
+{
+    SynthPixels pixels;
+
+    pixels.push_back(SynthPixel(1, 1));
+    pixels.back().samples.push_back(pointSample(1.f, 0.1f, 0.2f, 0.3f, 0.25f));
+    pixels.back().samples.push_back(pointSample(2.f, 0.4f, 0.5f, 0.6f, 0.5f));
+    pixels.push_back(SynthPixel(3, 0));
+    pixels.back().samples.push_back(pointSample(4.f, 0.5f, 0.5f, 0.5f, 0.6f));
+    pixels.push_back(SynthPixel(4, 3));
+    pixels.back().samples.push_back(pointSample(3.f, 0.f, 0.f, 0.f, 0.f));
+    pixels.back().samples.push_back(pointSample(5.f, 0.7f, 0.7f, 0.7f, 0.75f));
+    pixels.push_back(SynthPixel(5, 5));
+    pixels.back().samples.push_back(volumeSample(1.f, 2.f, 0.3f, 0.3f, 0.3f, 0.3f));
+    pixels.back().samples.push_back(pointSample(4.f, 0.9f, 0.9f, 0.9f, 0.9f));
+    pixels.push_back(SynthPixel(6, 1));
+    pixels.back().samples.push_back(pointSample(1.f, 0.5f, 0.5f, 0.5f, 0.5f));
+    pixels.back().samples.push_back(pointSample(2.f, 1.f, 1.f, 1.f, 1.f));
+    pixels.push_back(SynthPixel(7, 2));
+    pixels.back().samples.push_back(pointSample(1.f, 0.f, 0.f, 0.f, 0.f));
+    pixels.push_back(SynthPixel(kImageRenderTestWidth + 1, 3));
+    pixels.back().samples.push_back(pointSample(2.f, 0.5f, 0.5f, 0.5f, 0.5f));
+
+    return pixels;
+}
+
+float
+recolorAlphaAt(int seed,
+               int x,
+               int y,
+               const RectI& colorFrame)
+{
+    return colorFrame.contains(x, y) ? imageRenderTestValue(seed, x, y, 3) : 0.f;
+}
+
+// Checks every sample of pixels that lies within window against what DeepRecolor is meant to
+// write: depths untouched, R, G and B the colour image's unpremultiplied colour times the
+// sample's output alpha -- zero where the colour has no alpha or does not cover the pixel --
+// and, unless the alphas were retargeted, the alpha the sample came in with.
+void
+expectRecolored(const DeepImage& out,
+                const SynthPixels& pixels,
+                const RectI& window,
+                int seed,
+                const RectI& colorFrame,
+                bool alphasRetargeted)
+{
+    for (std::size_t p = 0; p < pixels.size(); ++p) {
+        const int x = pixels[p].x;
+        const int y = pixels[p].y;
+
+        if (!window.contains(x, y)) {
+            continue;
+        }
+        const std::vector<ReadSample> samples = samplesAt(out, x, y);
+        ASSERT_EQ(pixels[p].samples.size(), samples.size()) << "at pixel (" << x << ", " << y << ")";
+        const float colorAlpha = recolorAlphaAt(seed, x, y, colorFrame);
+        for (std::size_t s = 0; s < samples.size(); ++s) {
+            EXPECT_FLOAT_EQ(pixels[p].samples[s].z, samples[s].z) << "at pixel (" << x << ", " << y << ") sample " << s;
+            EXPECT_FLOAT_EQ(pixels[p].samples[s].zback, samples[s].zback) << "at pixel (" << x << ", " << y << ") sample " << s;
+            if (!alphasRetargeted) {
+                EXPECT_FLOAT_EQ(pixels[p].samples[s].channels[3], samples[s].value("A")) << "at pixel (" << x << ", " << y << ") sample " << s;
+            }
+            for (int c = 0; c < 3; ++c) {
+                const float expected = (colorAlpha > 0.f) ? (imageRenderTestValue(seed, x, y, c) / colorAlpha * samples[s].value("A")) : 0.f;
+                EXPECT_NEAR(expected, samples[s].value(rgbaChannelNames()[c]), 1e-5f) << "at pixel (" << x << ", " << y << ") sample " << s << " channel " << c;
+            }
+        }
+    }
+}
+
 } // namespace
 
 class DeepNodesTest
@@ -460,6 +536,22 @@ protected:
             return NodePtr();
         }
         knob->setValue(depth);
+
+        return node;
+    }
+
+    NodePtr createDeepRecolor(bool targetInputAlpha)
+    {
+        NodePtr node = createTrackedNode(PLUGINID_NATRON_DEEPRECOLOR);
+
+        if (!node) {
+            return node;
+        }
+        KnobBool* knob = dynamic_cast<KnobBool*>(node->getKnobByName("targetInputAlpha").get());
+        if (!knob) {
+            return NodePtr();
+        }
+        knob->setValue(targetInputAlpha);
 
         return node;
     }
@@ -1079,4 +1171,228 @@ TEST_F(DeepNodesTest, DeepFromImageTakesItsDepthFromTheFirstChannelOfZ)
             }
         }
     }
+}
+
+TEST_F(DeepNodesTest, DeepRecolorGivesSamplesTheColourImagesColourAndSharesWhatItDoesNotWrite)
+{
+    const RectI colorFrame(0, 0, kImageRenderTestWidth, kImageRenderTestHeight);
+    const RectI deepBounds(0, 0, kImageRenderTestWidth + 2, kImageRenderTestHeight);
+    const int seed = 5;
+    const SynthPixels pixels = recolorPixels();
+
+    NodePtr source = createSyntheticSource(makeDeepImage(deepBounds, rgbaChannelNames(), pixels, true));
+    NodePtr color = createImageSource(seed);
+    NodePtr recolor = createDeepRecolor(false);
+    ASSERT_TRUE(source && color && recolor);
+
+    EXPECT_EQ(2, recolor->getEffectInstance()->getNInputs());
+    EXPECT_EQ(eDataKindDeep, recolor->getEffectInstance()->getInputDataKind(0));
+    EXPECT_EQ(eDataKindImage, recolor->getEffectInstance()->getInputDataKind(1));
+    EXPECT_EQ(eDataKindDeep, recolor->getEffectInstance()->getOutputDataKind());
+    EXPECT_EQ("A", recolor->getEffectInstance()->getInputLabel(0));
+    EXPECT_EQ("Color", recolor->getEffectInstance()->getInputLabel(1));
+    {
+        std::list<std::string> grouping;
+        recolor->getEffectInstance()->getPluginGrouping(&grouping);
+        ASSERT_EQ((std::size_t)1, grouping.size());
+        EXPECT_EQ(PLUGIN_GROUP_DEEP, grouping.front());
+    }
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, recolor->canConnectInput(color, 0));
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, recolor->canConnectInput(source, 1));
+    connectNodes(source, recolor, 0, true);
+    connectNodes(color, recolor, 1, true);
+
+    DeepImagePtr recolored;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(recolor, 1., deepBounds, &recolored));
+    ASSERT_TRUE(recolored != NULL);
+    EXPECT_TRUE(deepBounds == recolored->getBounds());
+    EXPECT_TRUE(recolored->isTidy());
+    EXPECT_FALSE(recolor->hasPersistentMessage());
+
+    DeepImagePtr input;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(source, 1., deepBounds, &input));
+    ASSERT_TRUE(input != NULL);
+    EXPECT_EQ(input->getSampleTable().getTotalSampleCount(), recolored->getSampleTable().getTotalSampleCount());
+
+    // Only the colour was written: the sample table, the depths and the alpha are the input's
+    // own storage, and the input's colour is untouched.
+    EXPECT_TRUE(recolored->sharesSampleTableWith(*input));
+    EXPECT_TRUE(recolored->sharesChannelStorageWith(*input, "Z"));
+    EXPECT_TRUE(recolored->sharesChannelStorageWith(*input, "ZBack"));
+    EXPECT_TRUE(recolored->sharesChannelStorageWith(*input, "A"));
+    EXPECT_FALSE(recolored->sharesChannelStorageWith(*input, "R"));
+    EXPECT_FALSE(recolored->sharesChannelStorageWith(*input, "G"));
+    EXPECT_FALSE(recolored->sharesChannelStorageWith(*input, "B"));
+
+    expectRecolored(*recolored, pixels, deepBounds, seed, colorFrame, false);
+    for (std::size_t p = 0; p < pixels.size(); ++p) {
+        const std::vector<ReadSample> samples = samplesAt(*input, pixels[p].x, pixels[p].y);
+        ASSERT_EQ(pixels[p].samples.size(), samples.size());
+        for (std::size_t s = 0; s < samples.size(); ++s) {
+            expectSampleValues(samples[s], pixels[p].samples[s], 0.f);
+        }
+    }
+}
+
+TEST_F(DeepNodesTest, DeepRecolorTargetInputAlphaFlattensToTheColourImagesAlpha)
+{
+    const RectI colorFrame(0, 0, kImageRenderTestWidth, kImageRenderTestHeight);
+    const RectI deepBounds(0, 0, kImageRenderTestWidth + 2, kImageRenderTestHeight);
+    const int seed = 5;
+    const SynthPixels pixels = recolorPixels();
+
+    NodePtr source = createSyntheticSource(makeDeepImage(deepBounds, rgbaChannelNames(), pixels, true));
+    NodePtr color = createImageSource(seed);
+    NodePtr recolor = createDeepRecolor(true);
+    ASSERT_TRUE(source && color && recolor);
+    connectNodes(source, recolor, 0, true);
+    connectNodes(color, recolor, 1, true);
+
+    DeepImagePtr recolored;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(recolor, 1., deepBounds, &recolored));
+    ASSERT_TRUE(recolored != NULL);
+    EXPECT_TRUE(deepBounds == recolored->getBounds());
+
+    DeepImagePtr input;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(source, 1., deepBounds, &input));
+    ASSERT_TRUE(input != NULL);
+    EXPECT_TRUE(recolored->sharesSampleTableWith(*input));
+    EXPECT_TRUE(recolored->sharesChannelStorageWith(*input, "Z"));
+    EXPECT_TRUE(recolored->sharesChannelStorageWith(*input, "ZBack"));
+    EXPECT_FALSE(recolored->sharesChannelStorageWith(*input, "A"));
+    EXPECT_FALSE(recolored->sharesChannelStorageWith(*input, "R"));
+
+    expectRecolored(*recolored, pixels, deepBounds, seed, colorFrame, true);
+
+    ImagePtr flattened = makeFloatRGBAImage(deepBounds);
+    {
+        DeepPixelScratch scratch;
+        DeepTidyWorkspace work;
+        ASSERT_EQ(eStatusOK, DeepFlatten::flattenToImage(*recolored, deepBounds, rgbaChannelNames(), 3, &scratch, &work, flattened));
+    }
+    Image::ReadAccess access = flattened->getReadRights();
+    for (std::size_t p = 0; p < pixels.size(); ++p) {
+        const int x = pixels[p].x;
+        const int y = pixels[p].y;
+        float inputTransmittance = 1.f;
+        for (std::size_t s = 0; s < pixels[p].samples.size(); ++s) {
+            inputTransmittance *= 1.f - pixels[p].samples[s].channels[3];
+        }
+        const float* actual = imagePixel(access, x, y);
+        ASSERT_TRUE(actual != NULL);
+        const std::vector<ReadSample> samples = samplesAt(*recolored, x, y);
+        ASSERT_EQ(pixels[p].samples.size(), samples.size());
+        if ((inputTransmittance > 0.f) && (inputTransmittance < 1.f)) {
+            EXPECT_NEAR(recolorAlphaAt(seed, x, y, colorFrame), actual[3], 1e-5f) << "at pixel (" << x << ", " << y << ")";
+            // The colour flattens to the image's too: it was scaled to the very alphas that do.
+            if (recolorAlphaAt(seed, x, y, colorFrame) > 0.f) {
+                for (int c = 0; c < 3; ++c) {
+                    EXPECT_NEAR(imageRenderTestValue(seed, x, y, c), actual[c], 1e-5f) << "at pixel (" << x << ", " << y << ") channel " << c;
+                }
+            }
+        } else {
+            // Nothing covering the pixel, or something covering it in full, leaves the alphas be.
+            for (std::size_t s = 0; s < samples.size(); ++s) {
+                EXPECT_FLOAT_EQ(pixels[p].samples[s].channels[3], samples[s].value("A")) << "at pixel (" << x << ", " << y << ") sample " << s;
+            }
+        }
+    }
+}
+
+TEST_F(DeepNodesTest, DeepRecolorOverAWiderCachedInputCopiesAndMatchesTheAliasedRender)
+{
+    const RectI colorFrame(0, 0, kImageRenderTestWidth, kImageRenderTestHeight);
+    const RectI deepBounds(0, 0, kImageRenderTestWidth + 2, kImageRenderTestHeight);
+    const RectI window(1, 0, 8, 5);
+    const int seed = 5;
+    const SynthPixels pixels = recolorPixels();
+
+    NodePtr wideSource = createSyntheticSource(makeDeepImage(deepBounds, rgbaChannelNames(), pixels, true));
+    NodePtr color = createImageSource(seed);
+    NodePtr copied = createDeepRecolor(false);
+    ASSERT_TRUE(wideSource && color && copied);
+    connectNodes(wideSource, copied, 0, true);
+    connectNodes(color, copied, 1, true);
+
+    // Rendered over everything first, the source serves the narrower pull below from that wider
+    // entry, so the recolour cannot alias it and has to copy.
+    DeepImagePtr wide;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(wideSource, 1., deepBounds, &wide));
+    ASSERT_TRUE(wide != NULL);
+    EXPECT_TRUE(deepBounds == wide->getBounds());
+
+    DeepImagePtr copiedOut;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(copied, 1., window, &copiedOut));
+    ASSERT_TRUE(copiedOut != NULL);
+    EXPECT_TRUE(window == copiedOut->getBounds());
+    EXPECT_TRUE(copiedOut->isTidy());
+    EXPECT_FALSE(copiedOut->sharesSampleTableWith(*wide));
+    EXPECT_FALSE(copiedOut->sharesChannelStorageWith(*wide, "Z"));
+    EXPECT_FALSE(copiedOut->sharesChannelStorageWith(*wide, "A"));
+    expectRecolored(*copiedOut, pixels, window, seed, colorFrame, false);
+
+    NodePtr narrowSource = createSyntheticSource(makeDeepImage(deepBounds, rgbaChannelNames(), pixels, true));
+    NodePtr aliased = createDeepRecolor(false);
+    ASSERT_TRUE(narrowSource && aliased);
+    connectNodes(narrowSource, aliased, 0, true);
+    connectNodes(color, aliased, 1, true);
+
+    DeepImagePtr aliasedOut;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(aliased, 1., window, &aliasedOut));
+    ASSERT_TRUE(aliasedOut != NULL);
+    EXPECT_TRUE(window == aliasedOut->getBounds());
+
+    DeepImagePtr narrow;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(narrowSource, 1., window, &narrow));
+    ASSERT_TRUE(narrow != NULL);
+    EXPECT_TRUE(window == narrow->getBounds());
+    EXPECT_TRUE(aliasedOut->sharesSampleTableWith(*narrow));
+
+    EXPECT_EQ(aliasedOut->getSampleTable().getTotalSampleCount(), copiedOut->getSampleTable().getTotalSampleCount());
+    const std::vector<std::string> channels = rgbaChannelNames();
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const std::vector<ReadSample> expected = samplesAt(*aliasedOut, x, y);
+            const std::vector<ReadSample> actual = samplesAt(*copiedOut, x, y);
+            ASSERT_EQ(expected.size(), actual.size()) << "at pixel (" << x << ", " << y << ")";
+            for (std::size_t s = 0; s < expected.size(); ++s) {
+                EXPECT_EQ(expected[s].z, actual[s].z) << "at pixel (" << x << ", " << y << ") sample " << s;
+                EXPECT_EQ(expected[s].zback, actual[s].zback) << "at pixel (" << x << ", " << y << ") sample " << s;
+                for (std::size_t c = 0; c < channels.size(); ++c) {
+                    EXPECT_EQ(expected[s].value(channels[c]), actual[s].value(channels[c])) << "at pixel (" << x << ", " << y << ") sample " << s << " channel " << channels[c];
+                }
+            }
+        }
+    }
+}
+
+TEST_F(DeepNodesTest, DeepRecolorRendersNothingWithoutAAndFailsWithAMessageWithoutAlphaOnA)
+{
+    const RectI frame(0, 0, kImageRenderTestWidth, kImageRenderTestHeight);
+
+    NodePtr color = createImageSource(2);
+    NodePtr recolor = createDeepRecolor(false);
+    ASSERT_TRUE(color && recolor);
+    connectNodes(color, recolor, 1, true);
+
+    // With nothing on A the node has no region of definition, and the deep pipeline answers an
+    // empty RoD with an empty image before any render action runs.
+    DeepImagePtr out;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(recolor, 1., frame, &out));
+    ASSERT_TRUE(out != NULL);
+    EXPECT_TRUE(out->getBounds().isNull());
+    EXPECT_EQ((U64)0, out->getSampleTable().getTotalSampleCount());
+
+    std::vector<std::string> rgbOnly = rgbaChannelNames();
+    rgbOnly.pop_back();
+    SynthPixels pixels;
+    pixels.push_back(SynthPixel(1, 1));
+    pixels.back().samples.push_back(pointSample(1.f, 0.5f, 0.5f, 0.5f, 0.f));
+    NodePtr noAlpha = createSyntheticSource(makeDeepImage(frame, rgbOnly, pixels, true));
+    ASSERT_TRUE(noAlpha != NULL);
+    connectNodes(noAlpha, recolor, 0, true);
+
+    out.reset();
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed, renderDeepFrame(recolor, 1., frame, &out));
+    EXPECT_TRUE(recolor->hasPersistentMessage());
 }

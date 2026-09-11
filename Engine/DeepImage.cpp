@@ -94,6 +94,19 @@ DeepImage::getChannelForWriting(const std::string& name)
     return buf;
 }
 
+bool
+DeepImage::aliasContentsOf(const DeepImage& source)
+{
+    if (!(_bounds == source._bounds)) {
+        return false;
+    }
+    _sampleTable = source._sampleTable;
+    _channels = source._channels;
+    _tidy = source._tidy;
+
+    return true;
+}
+
 std::size_t
 DeepImage::getSizeInBytes() const
 {

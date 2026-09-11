@@ -27,6 +27,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
+#include <map>
+#include <string>
+#include <vector>
 
 #include <QThread>
 #include <QThreadPool>
@@ -51,6 +55,30 @@ allocateDeepChannel(const DeepImagePtr& image,
     }
 
     return buf.dataForWriting();
+}
+
+bool
+isDepthChannelName(const std::string& name)
+{
+    return (name == "Z") || (name == "ZBack");
+}
+
+// Calls pixel(x, y, pixelIndex) for every pixel of chunk, pixelIndex being its index into the
+// sample table of a DeepImage over bounds.
+template <typename PixelFunc>
+void
+forEachPixelOfChunk(const RectI& bounds,
+                    const RectI& chunk,
+                    const PixelFunc& pixel)
+{
+    const std::size_t rowWidth = (std::size_t)bounds.width();
+
+    for (int y = chunk.y1; y < chunk.y2; ++y) {
+        const std::size_t rowIndex = (std::size_t)(y - bounds.y1) * rowWidth;
+        for (int x = chunk.x1; x < chunk.x2; ++x) {
+            pixel(x, y, rowIndex + (std::size_t)(x - bounds.x1));
+        }
+    }
 }
 } // anonymous namespace
 
@@ -154,6 +182,33 @@ NativeEffectBase::makeDeepScanlineChunks(const RectI& bounds,
     }
 }
 
+bool
+NativeEffectBase::forEachDeepChunk(const std::vector<RectI>& chunks,
+                                   const DeepChunkFunc& body)
+{
+    QThread* const callingThread = QThread::currentThread();
+    std::atomic<bool> wasAborted(false);
+
+    QtConcurrent::blockingMap(chunks, [&](RectI chunk) {
+        QThread* const curThread = QThread::currentThread();
+        const bool spawnedThread = (curThread != callingThread);
+
+        if (spawnedThread) {
+            appPTR->getAppTLS()->copyTLS(callingThread, curThread);
+        }
+        if (aborted()) {
+            wasAborted = true;
+        } else {
+            body(chunk);
+        }
+        if (spawnedThread) {
+            appPTR->getAppTLS()->cleanupTLSForThread();
+        }
+    });
+
+    return !wasAborted;
+}
+
 StatusEnum
 NativeEffectBase::renderDeepTwoPass(const DeepRenderActionArgs& args,
                                     const std::vector<std::string>& channelNames,
@@ -179,36 +234,16 @@ NativeEffectBase::renderDeepTwoPass(const DeepRenderActionArgs& args,
     std::vector<RectI> chunks;
     makeDeepScanlineChunks(bounds, &chunks);
 
-    const std::size_t rowWidth = (std::size_t)bounds.width();
-    QThread* const callingThread = QThread::currentThread();
-    std::atomic<bool> wasAborted(false);
     SampleTable& table = out->getSampleTableForWriting();
 
     // Pass 1: per-pixel sample counts. Distinct pixels are distinct elements of the count
     // vector, so threads never collide, and nothing is allocated.
-    QtConcurrent::blockingMap(chunks, [&](RectI chunk) {
-        QThread* const curThread = QThread::currentThread();
-        const bool spawnedThread = (curThread != callingThread);
-
-        if (spawnedThread) {
-            appPTR->getAppTLS()->copyTLS(callingThread, curThread);
-        }
-        if (aborted()) {
-            wasAborted = true;
-        } else {
-            for (int y = chunk.y1; y < chunk.y2; ++y) {
-                const std::size_t rowIndex = (std::size_t)(y - bounds.y1) * rowWidth;
-                for (int x = chunk.x1; x < chunk.x2; ++x) {
-                    table.setCount(rowIndex + (std::size_t)(x - bounds.x1), countSamples(x, y));
-                }
-            }
-        }
-        if (spawnedThread) {
-            appPTR->getAppTLS()->cleanupTLSForThread();
-        }
+    const bool counted = forEachDeepChunk(chunks, [&](const RectI& chunk) {
+        forEachPixelOfChunk(bounds, chunk, [&](int x, int y, std::size_t pixelIndex) {
+            table.setCount(pixelIndex, countSamples(x, y));
+        });
     });
-
-    if (wasAborted) {
+    if (!counted) {
         return eStatusFailed;
     }
 
@@ -226,50 +261,33 @@ NativeEffectBase::renderDeepTwoPass(const DeepRenderActionArgs& args,
 
     // Pass 2: fill. Every view points straight into the buffers allocated just above, at the
     // offset the prefix sum gave that pixel, so no sample is ever copied or reallocated.
-    QtConcurrent::blockingMap(chunks, [&](RectI chunk) {
-        QThread* const curThread = QThread::currentThread();
-        const bool spawnedThread = (curThread != callingThread);
+    const bool filled = forEachDeepChunk(chunks, [&](const RectI& chunk) {
+        std::vector<float*> pixelChannels(channelNames.size());
 
-        if (spawnedThread) {
-            appPTR->getAppTLS()->copyTLS(callingThread, curThread);
-        }
-        if (aborted()) {
-            wasAborted = true;
-        } else {
-            std::vector<float*> pixelChannels(channelNames.size());
-            for (int y = chunk.y1; y < chunk.y2; ++y) {
-                const std::size_t rowIndex = (std::size_t)(y - bounds.y1) * rowWidth;
-                for (int x = chunk.x1; x < chunk.x2; ++x) {
-                    const std::size_t pixelIndex = rowIndex + (std::size_t)(x - bounds.x1);
-                    const U32 count = table.getCount(pixelIndex);
+        forEachPixelOfChunk(bounds, chunk, [&](int x, int y, std::size_t pixelIndex) {
+            const U32 count = table.getCount(pixelIndex);
 
-                    if (count == 0) {
-                        continue;
-                    }
-
-                    const U64 offset = table.getOffset(pixelIndex);
-                    for (std::size_t c = 0; c < pixelChannels.size(); ++c) {
-                        pixelChannels[c] = channelData[c] + offset;
-                    }
-
-                    MutableDeepPixelView view;
-                    view.z = zData + offset;
-                    view.zback = zBackData + offset;
-                    view.channels = pixelChannels.data();
-                    view.numChannels = (int)pixelChannels.size();
-                    view.alphaChannelIndex = alphaChannelIndex;
-                    view.numSamples = (int)count;
-
-                    fillSamples(x, y, view);
-                }
+            if (count == 0) {
+                return;
             }
-        }
-        if (spawnedThread) {
-            appPTR->getAppTLS()->cleanupTLSForThread();
-        }
-    });
 
-    if (wasAborted) {
+            const U64 offset = table.getOffset(pixelIndex);
+            for (std::size_t c = 0; c < pixelChannels.size(); ++c) {
+                pixelChannels[c] = channelData[c] + offset;
+            }
+
+            MutableDeepPixelView view;
+            view.z = zData + offset;
+            view.zback = zBackData + offset;
+            view.channels = pixelChannels.data();
+            view.numChannels = (int)pixelChannels.size();
+            view.alphaChannelIndex = alphaChannelIndex;
+            view.numSamples = (int)count;
+
+            fillSamples(x, y, view);
+        });
+    });
+    if (!filled) {
         return eStatusFailed;
     }
 
@@ -277,5 +295,141 @@ NativeEffectBase::renderDeepTwoPass(const DeepRenderActionArgs& args,
 
     return eStatusOK;
 } // NativeEffectBase::renderDeepTwoPass
+
+StatusEnum
+NativeEffectBase::renderDeepFromInput(const DeepRenderActionArgs& args,
+                                      const DeepImagePtr& input,
+                                      const std::vector<std::string>& channelsToWrite,
+                                      int alphaChannelIndex,
+                                      const DeepRewriteSamplesFunc& rewrite)
+{
+    const DeepImagePtr& out = args.outputDeepImage;
+
+    if (!out || !input || !rewrite || channelsToWrite.empty()) {
+        return eStatusFailed;
+    }
+    if ((alphaChannelIndex < -1) || (alphaChannelIndex >= (int)channelsToWrite.size())) {
+        return eStatusFailed;
+    }
+    for (std::size_t c = 0; c < channelsToWrite.size(); ++c) {
+        if (isDepthChannelName(channelsToWrite[c])) {
+            return eStatusFailed;
+        }
+    }
+
+    std::vector<std::string> inputChannelNames;
+    std::vector<const float*> inputChannels;
+    int inputAlphaChannelIndex = -1;
+    for (std::map<std::string, DeepChannelBuffer>::const_iterator it = input->getChannels().begin(); it != input->getChannels().end(); ++it) {
+        if (isDepthChannelName(it->first)) {
+            continue;
+        }
+        if (it->first == "A") {
+            inputAlphaChannelIndex = (int)inputChannelNames.size();
+        }
+        inputChannelNames.push_back(it->first);
+        inputChannels.push_back(it->second.data());
+    }
+    const DeepChannelBuffer* const inputZ = input->getChannel("Z");
+    const DeepChannelBuffer* const inputZBack = input->getChannel("ZBack");
+    const float* const inputZData = inputZ ? inputZ->data() : nullptr;
+    const float* const inputZBackData = inputZBack ? inputZBack->data() : nullptr;
+    const RectI& inputBounds = input->getBounds();
+    const SampleTable& inputTable = input->getSampleTable();
+    const std::size_t inputRowWidth = (std::size_t)inputBounds.width();
+    const auto inputPixelIndex = [&inputBounds, inputRowWidth](int x, int y) -> std::size_t {
+        return ((std::size_t)(y - inputBounds.y1) * inputRowWidth) + (std::size_t)(x - inputBounds.x1);
+    };
+
+    if (!out->aliasContentsOf(*input)) {
+        std::vector<std::string> copyNames = inputChannelNames;
+        for (std::size_t c = 0; c < channelsToWrite.size(); ++c) {
+            if (std::find(copyNames.begin(), copyNames.end(), channelsToWrite[c]) == copyNames.end()) {
+                copyNames.push_back(channelsToWrite[c]);
+            }
+        }
+        // Only the views handed to the fill pass carry this, and the copy reads nothing through
+        // it, so an input with no alpha at all still has a well-formed index to report.
+        const int copyAlphaChannelIndex = std::max(0, inputAlphaChannelIndex);
+
+        const StatusEnum copied = renderDeepTwoPass(args, copyNames, copyAlphaChannelIndex, [&](int x, int y) -> U32 {
+            if (!inputZData || !inputBounds.contains(x, y)) {
+                return 0;
+            }
+
+            return inputTable.getCount(inputPixelIndex(x, y)); }, [&](int x, int y, const MutableDeepPixelView& dst) {
+            const U64 offset = inputTable.getOffset(inputPixelIndex(x, y));
+
+            for (int s = 0; s < dst.numSamples; ++s) {
+                dst.z[s] = inputZData[offset + s];
+                dst.zback[s] = inputZBackData ? inputZBackData[offset + s] : dst.z[s];
+            }
+            for (std::size_t c = 0; c < inputChannels.size(); ++c) {
+                for (int s = 0; s < dst.numSamples; ++s) {
+                    dst.channels[c][s] = inputChannels[c][offset + s];
+                }
+            } }, input->isTidy());
+        if (copied != eStatusOK) {
+            return copied;
+        }
+    }
+
+    std::vector<float*> writeChannels(channelsToWrite.size());
+    for (std::size_t c = 0; c < channelsToWrite.size(); ++c) {
+        writeChannels[c] = out->getChannelForWriting(channelsToWrite[c]).dataForWriting();
+    }
+
+    const RectI bounds = out->getBounds();
+    if (bounds.isNull() || !inputZData) {
+        return eStatusOK;
+    }
+
+    std::vector<RectI> chunks;
+    makeDeepScanlineChunks(bounds, &chunks);
+
+    const SampleTable& table = out->getSampleTable();
+
+    const bool rewritten = forEachDeepChunk(chunks, [&](const RectI& chunk) {
+        std::vector<const float*> inPixelChannels(inputChannels.size());
+        std::vector<float*> outPixelChannels(writeChannels.size());
+
+        forEachPixelOfChunk(bounds, chunk, [&](int x, int y, std::size_t pixelIndex) {
+            const U32 count = table.getCount(pixelIndex);
+
+            if (count == 0) {
+                return;
+            }
+
+            // Either path gives a pixel samples only where the input has them, so (x, y) lies
+            // within the input's bounds here; the two tables only differ on the copy path.
+            const U64 offset = table.getOffset(pixelIndex);
+            const U64 inputOffset = inputTable.getOffset(inputPixelIndex(x, y));
+            for (std::size_t c = 0; c < inPixelChannels.size(); ++c) {
+                inPixelChannels[c] = inputChannels[c] + inputOffset;
+            }
+            for (std::size_t c = 0; c < outPixelChannels.size(); ++c) {
+                outPixelChannels[c] = writeChannels[c] + offset;
+            }
+
+            DeepPixelView in;
+            in.z = inputZData + inputOffset;
+            in.zback = inputZBackData ? (inputZBackData + inputOffset) : nullptr;
+            in.channels = inPixelChannels.data();
+            in.numChannels = (int)inPixelChannels.size();
+            in.alphaChannelIndex = inputAlphaChannelIndex;
+            in.numSamples = (int)count;
+
+            MutableDeepPixelView outView;
+            outView.channels = outPixelChannels.data();
+            outView.numChannels = (int)outPixelChannels.size();
+            outView.alphaChannelIndex = alphaChannelIndex;
+            outView.numSamples = (int)count;
+
+            rewrite(x, y, in, outView);
+        });
+    });
+
+    return rewritten ? eStatusOK : eStatusFailed;
+} // NativeEffectBase::renderDeepFromInput
 
 NATRON_NAMESPACE_EXIT

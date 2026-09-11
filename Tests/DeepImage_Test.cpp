@@ -254,3 +254,71 @@ TEST(DeepImageTest, SetChannelAliasesAnotherImagesBufferDirectly)
     out.removeChannel("Z");
     EXPECT_FALSE(out.hasChannel("Z"));
 }
+
+TEST(DeepImageTest, AliasContentsOfSharesTableAndEveryChannelWithSource)
+{
+    RectI bounds(0, 0, 3, 2);
+    DeepImage source = makeFilledDeepImage(bounds, 2);
+    source.setTidy(true);
+    DeepImage target(bounds, RenderScale::identity, ViewIdx(0));
+
+    EXPECT_TRUE(target.aliasContentsOf(source));
+
+    EXPECT_TRUE(target.sharesSampleTableWith(source));
+    EXPECT_EQ(source.getSampleTable().getTotalSampleCount(), target.getSampleTable().getTotalSampleCount());
+    static const char* const kChannels[] = { "R", "G", "B", "A", "Z", "ZBack" };
+    for (size_t c = 0; c < sizeof(kChannels) / sizeof(kChannels[0]); ++c) {
+        EXPECT_TRUE(target.sharesChannelStorageWith(source, kChannels[c])) << "channel " << kChannels[c];
+    }
+    EXPECT_EQ(source.getChannels().size(), target.getChannels().size());
+    EXPECT_TRUE(target.isTidy());
+    EXPECT_EQ(source.getSizeInBytes(), target.getSizeInBytes());
+}
+
+TEST(DeepImageTest, AliasContentsOfRefusesMismatchedBoundsAndLeavesTargetUntouched)
+{
+    DeepImage source = makeFilledDeepImage(RectI(0, 0, 4, 4), 2);
+    source.setTidy(true);
+    DeepImage target = makeFilledDeepImage(RectI(1, 1, 3, 3), 1);
+    const SampleTable* const tableBefore = &target.getSampleTable();
+    const float* const rBefore = target.getChannel("R")->data();
+
+    EXPECT_FALSE(target.aliasContentsOf(source));
+
+    EXPECT_FALSE(target.sharesSampleTableWith(source));
+    EXPECT_EQ(tableBefore, &target.getSampleTable());
+    EXPECT_EQ((U64)4, target.getSampleTable().getTotalSampleCount());
+    EXPECT_EQ(rBefore, target.getChannel("R")->data());
+    EXPECT_FALSE(target.sharesChannelStorageWith(source, "Z"));
+    EXPECT_FALSE(target.isTidy());
+}
+
+TEST(DeepImageTest, ChannelWriteAfterAliasingDetachesThatChannelOnly)
+{
+    RectI bounds(0, 0, 2, 2);
+    DeepImage source = makeFilledDeepImage(bounds, 3);
+    DeepImage target(bounds, RenderScale::identity, ViewIdx(0));
+    ASSERT_TRUE(target.aliasContentsOf(source));
+
+    DeepChannelBuffer& targetR = target.getChannelForWriting("R");
+    float* data = targetR.dataForWriting();
+    ASSERT_TRUE(data != NULL);
+    EXPECT_EQ(source.getSampleTable().getTotalSampleCount(), (U64)targetR.size());
+    for (std::size_t i = 0; i < targetR.size(); ++i) {
+        data[i] = -1.f;
+    }
+
+    EXPECT_FALSE(target.sharesChannelStorageWith(source, "R"));
+    EXPECT_TRUE(target.sharesSampleTableWith(source));
+    EXPECT_TRUE(target.sharesChannelStorageWith(source, "G"));
+    EXPECT_TRUE(target.sharesChannelStorageWith(source, "B"));
+    EXPECT_TRUE(target.sharesChannelStorageWith(source, "A"));
+    EXPECT_TRUE(target.sharesChannelStorageWith(source, "Z"));
+    EXPECT_TRUE(target.sharesChannelStorageWith(source, "ZBack"));
+
+    const DeepChannelBuffer* sourceR = source.getChannel("R");
+    ASSERT_TRUE(sourceR != NULL);
+    for (std::size_t i = 0; i < sourceR->size(); ++i) {
+        EXPECT_EQ(float(i), sourceR->data()[i]);
+    }
+}

@@ -29,6 +29,9 @@ find_package(Freetype 2.13 REQUIRED)
 # "ocio-v2.5" half of its identifier is the version of the built-in registry it
 # first appears in -- an older OpenColorIO builds fine but cannot resolve it.
 find_package(OpenColorIO 2.5 REQUIRED)
+# CONFIG mode: OpenImageIO ships its own package config and no CMake FindOpenImageIO
+# module exists. Nodes/Deep/ reads and writes deep EXR through its DeepData.
+find_package(OpenImageIO CONFIG REQUIRED)
 
 file(GLOB NatronEngine_HEADERS *.h)
 file(GLOB NatronEngine_SOURCES *.cpp)
@@ -93,6 +96,7 @@ target_link_libraries(NatronEngine
         ${SHIBOKEN_LIB}
         ${PYSIDE_LIB}
         OpenColorIO::OpenColorIO
+        OpenImageIO::OpenImageIO
         Qt::Core
         Qt::Concurrent
         Qt::Network

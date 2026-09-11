@@ -30,6 +30,7 @@ set(Tests_SOURCES
     DeepImage_Test.cpp
     DeepImageCache_Test.cpp
     DeepPixelOps_Test.cpp
+    DeepReadWrite_Test.cpp
     DeepRenderPipeline_Test.cpp
     FileSystemModel_Test.cpp
     Hash64_Test.cpp

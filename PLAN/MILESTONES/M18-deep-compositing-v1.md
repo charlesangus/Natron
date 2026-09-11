@@ -91,11 +91,23 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: merge of two deep EXRs matches Nuke-generated reference within tolerance; DeepFromImage→DeepToImage round-trip reproduces the source image.
   - size: L
 
-- [ ] M18.P3.T3 — `DeepRecolor`, `DeepCrop`/`DeepReformat`, `DeepExpression`
-  - files: `Engine/Nodes/Deep/DeepRecolor.cpp`, `Engine/Nodes/Deep/DeepCrop.cpp`, `Engine/Nodes/Deep/DeepExpression.cpp`, CMake source list
-  - approach: `DeepRecolor` — hybrid node (deep + image inputs; input-arrow glyphs from M17.P3.T2 document the ports) applying flat color to deep samples. `DeepCrop`/`DeepReformat` — bounds/format ops touching only the sample table. `DeepExpression` — per-sample expression over channels, reusing the existing expression machinery.
-  - verify: per-node unit render tests; DeepRecolor shares Z buffers with its input (COW assertion from M18.P1.T1's test hooks).
-  - size: L
+- [ ] M18.P3.T3a — `DeepImage` in-place aliasing, `NativeEffectBase` rewrite helper, and `DeepRecolor`
+  - files: `Engine/DeepImage.h`/`.cpp`, `Engine/Nodes/NativeEffectBase.h`/`.cpp`, `Engine/Nodes/Deep/DeepRecolor.h`/`.cpp`, `Engine/AppManager.cpp` (registration), `Tests/DeepImage_Test.cpp`, `Tests/DeepNodes_Test.cpp`
+  - approach: the output `DeepImage` is a cache-owned instance fixed at entry construction and `renderDeepTwoPass` always allocates fresh buffers, so COW sharing has to be in place: add `bool DeepImage::aliasContentsOf(const DeepImage& source)` (bounds must match, else false; shares the sample table, every channel and the tidy flag — the shallow-copy semantic the class comment already promises). Add `NativeEffectBase::renderDeepFromInput(args, input, channelsToWrite, alphaChannelIndex, rewrite)`: alias the input, or fall back to a `renderDeepTwoPass` copy when the cached input entry is wider than the window; `getChannelForWriting()` only `channelsToWrite`; then the pass-2 chunk/TLS/abort loop factored out of `renderDeepTwoPass` (not duplicated), handing the callback a const `DeepPixelView` of the input and a `MutableDeepPixelView` restricted to `channelsToWrite` with z/zback null so a node cannot write through aliased storage into the input's cache entry. `getSizeInBytes()` stays aliasing-blind: an aliased entry over-counts and evicts early, never desyncs. `DeepRecolor`: inputs `A` (deep) + `Color` (image, pulled as `DeepFromImage` pulls its image); per sample `rgb = color.rgb / color.a * sample.a` (0 when `color.a == 0` or outside the Color image); one `KnobBool targetInputAlpha` (default off) that rescales `a_i' = 1 - (1 - a_i)^k`, `k = log(1 - At) / log(1 - Af)`, `Af = 1 - ∏(1 - a_i)`, with the `Af ∈ {0,1}` / `At == 1` edge cases handled; `channelsToWrite` is `{R,G,B}` or `{R,G,B,A}`. Persistent message when `A` is unconnected.
+  - verify: `DeepImage_Test`: `aliasContentsOf` shares table and channels, refuses mismatched bounds, and `getChannelForWriting` after aliasing detaches one channel only. `DeepNodes_Test`: synthetic deep + image source → DeepRecolor: per-sample rgb matches the formula; output `sharesSampleTableWith` / `sharesChannelStorageWith(Z, ZBack, A)` the input and not `R`; with `targetInputAlpha` the flattened alpha equals the image alpha within 1e-5 and `A` is no longer shared; a wider-than-window cached input takes the copy path with equal values. Whole ctest suite green.
+  - size: M
+
+- [ ] M18.P3.T3b — `DeepCrop` (bbox, Z range, reformat toggle)
+  - files: `Engine/Nodes/Deep/DeepCrop.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/DeepNodes_Test.cpp`
+  - approach: one node, no separate `DeepReformat`: a resample-free reformat is only metadata (format flows from `getPreferredMetadata()`, and Natron already hijacks `kNatronParamFormatChoice/Size/Par` knobs on every node), and sample-position scaling would be a DeepTransform — Tier-2. Knobs: `bbox` (`KnobDouble` 4-dim, `setAsRectangle()`, default project format), `useBBox`, `zRange` (2-dim), `useZRange`, `reformat`. `getRegionOfDefinition` = input RoD ∩ bbox; `isIdentity` → input 0 when nothing would change (`renderDeepRoI` then shares the input's entry outright — the real zero-copy path; a zero-copy XY sub-rectangle is impossible because offsets must stay a prefix sum); otherwise a `renderDeepTwoPass` copy whose count/fill keep samples with `zmin <= Z && ZBack <= zmax`; tidy flag propagated. `getPreferredMetadata` sets the output format to the bbox when `reformat` is on. `keepOutside` and PAR editing deferred.
+  - verify: crop of a synthetic 8x8 yields bounds = intersection with unchanged samples inside; Z-range drops exactly the out-of-range samples and keeps order; a no-op crop returns the input's cache entry (same `DeepImagePtr`); `reformat` sets the output format to the bbox. Whole ctest suite green.
+  - size: S
+
+- [ ] M18.P3.T3c — `DeepExpression` on a self-contained per-sample evaluator (after T3a)
+  - files: `Engine/Nodes/Deep/DeepExpressionEvaluator.h`/`.cpp`, `Engine/Nodes/Deep/DeepExpression.h`/`.cpp`, `Engine/AppManager.cpp`, `Tests/DeepExpressionEvaluator_Test.cpp`, `Tests/DeepNodes_Test.cpp`
+  - approach: "the existing expression machinery" is the Python knob evaluator — GIL-serialised, one value per knob per frame — and nothing else is linkable (no exprtk/muParser/tinyexpr in `libs/` or the ASWF image; SeExpr is a plugin-build artifact statically linked into `IO.ofx`), so write a ~400-line recursive-descent parser → postfix op vector, compiled once per `renderDeep()`, evaluated per sample on a fixed local stack with no allocation. Grammar: float literals; identifiers resolved at compile time to any input channel by name (`R G B A Z ZBack`, AOVs incl. dotted names) or the builtins `x y sampleIndex sampleCount frame pi`; unary `- !`; `+ - * / % ^`; comparisons; `&& ||`; `?:`; parentheses; C precedence; functions `abs floor ceil round sqrt exp log pow min max clamp lerp step smoothstep sin cos tan atan2`; IEEE semantics (÷0 → inf/NaN passes through). Node: six `KnobString` expressions (`R G B A Z ZBack`), empty = pass-through (channel stays aliased); compile all at `renderDeep()` start, errors → `setPersistentMessage` with column number + `eStatusFailed`, `clearPersistentMessage` on success, never throw from the fill callback; render through `renderDeepFromInput` with `channelsToWrite` = channels with non-empty expressions, reading the input's views; untidy iff `Z`/`ZBack` is written. AOV outputs and mask inputs are Tier-2.
+  - verify: evaluator unit tests (precedence, ternary, every function, column-numbered errors, unknown identifier); node test: `A*0.5` halves `A` and leaves `R/G/B/Z/ZBack` shared with the input (COW hooks); an expression on `Z` clears `isTidy`; a syntax error sets a persistent message and does not crash. Whole ctest suite green.
+  - size: M
 
 - [ ] M18.P3.T4 — Deep integration test in CI
   - files: `Tests/` (the ctest suite; the directory is capital-T `Tests/`, and M11's OFX integration test is `tools/ci/smoke_test.py` + `tools/ci/verify_plugin_loads.cpp`, not a ctest case), reference deep EXR asset under `Tests/fixtures/` (pinned, same discipline as existing test assets)
@@ -118,6 +130,20 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; entire pre-existing ctest suite still green.
 
 ## Decisions
+
+- 2026-09-11 — M18.P3.T3 split into T3a/T3b/T3c (consultant scoping). The
+  original brief's "reusing the existing expression machinery" for
+  `DeepExpression` is not viable: that machinery is the Python knob evaluator,
+  GIL-serialised and one-value-per-frame, unusable per sample from parallel
+  render threads; no C++ expression library is linkable (none in `libs/`, none
+  in the ASWF image, SeExpr is a plugin-build artifact inside `IO.ofx`), and
+  vendoring exprtk is 40k lines for a v1 need. `DeepExpression` therefore gets a
+  small purpose-built evaluator. `DeepCrop`/`DeepReformat` collapse into one
+  `DeepCrop` with a `reformat` toggle — a resample-free reformat is only format
+  metadata. COW sharing for colour-only nodes needs one `DeepImage` addition
+  (`aliasContentsOf`) and one `NativeEffectBase` helper
+  (`renderDeepFromInput`), because the output is a cache-owned instance the
+  two-pass helper always fills with fresh buffers. Order: T3a → (T3b ∥ T3c).
 
 - 2026-09-11 — M18.P3.T2's "Nuke-generated reference" verify was replaced: no
   Nuke reference exists in the repo or on the build host, so `DeepMerge` combine

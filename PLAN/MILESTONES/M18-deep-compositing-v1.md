@@ -43,11 +43,17 @@ Pixels" document verbatim.
   - verify: unit test with two stub deep nodes chained — cache hit on second render, abort honored, two-pass helper produces identical output to a serial reference.
   - size: L
 
-- [ ] M18.P2.T2 — Viewer deep support: auto-flatten adapter and per-sample probe
-  - files: `Engine/ViewerInstance.cpp`, `Gui/ViewerTab*.cpp`, `Gui/InfoViewerWidget.cpp`
-  - approach: the Viewer accepts a deep edge via the registered deep→image adapter — the **only** implicit conversion in the system; the flatten result is cached as a normal Image so scrubbing costs one flatten per frame, once. Pixel probe shows per-sample values (count, Z/ZBack/A/RGB per sample, DeepSample-style) for the pixel under the cursor.
-  - verify: connect a deep source to the Viewer — image appears, no explicit DeepToImage needed; probe lists samples matching the input EXR's values.
+- [ ] M18.P2.T2 — Deep→image adapter seam and the cached flatten (Engine half)
+  - files: `Engine/EffectInstance.h`, `Engine/Node.cpp`, `Engine/DeepFlatten.h`/`.cpp` (new), `Engine/EffectInstanceRenderDeep.cpp`, `Engine/ViewerInstance.h`/`.cpp`, `Engine/CMakeLists.txt`, `Tests/DataKindTestEffect.h`, `Tests/DeepFlatten_Test.cpp` (new), `Tests/DeepRenderPipeline_Test.cpp`
+  - approach: the adapter is a per-input opt-in virtual `EffectInstance::inputAcceptsDataKindViaAdapter(int, DataKindEnum)` (default false, overridden only by `ViewerInstance` for `eDataKindDeep`) **gated by a fixed one-row table** `isRegisteredAdapter(from, to)` in `Node.cpp` — both must hold, so neither a node nor a table row can widen the system alone, and deep→image cannot leak mid-graph. Three guard sites in `Node.cpp`: `isInputDataKindUnacceptable()` (serves connect-time *and* project-load conflict reporting in one place), the `constraint->merge()` in `collectDownstreamDataKindRequirement()` (without it a `Dot` between a deep source and the Viewer resolves ambiguous — the M17 regression), and `findDataKindConflictDownstream()`. New `Engine/DeepFlatten.{h,cpp}` holds `flattenToImage()` (build a `DeepPixelView` over the source's existing per-channel runs, `tidySamples()` then `flattenFrontToBack()` straight into the destination Image row — zero copy) and `getSamplesAtPixel()` for the probe; it is shared code, not Viewer-private — M18.P3.T2's `DeepToImage` calls the same functions. `EffectInstance::renderDeepRoIFlattened()` in `EffectInstanceRenderDeep.cpp`, called on the deep upstream effect, mints an `ImageKey` from the deep node's own `nodeHash` (exact automatic purge via `removeAllImagesFromCacheWithMatchingIDAndDifferentKey`; safe because a deep-output node never produces `Cache<Image>` entries of its own), looks it up per the `RotoContext.cpp` precedent, on miss calls `renderDeepRoI()` — never reimplements the pull — and retracts the half-filled entry with `removeFromImageCache()` on abort. `ViewerArgs::deepUpstream` is detected main-thread-only from the memoized effective kind; the branch in `renderViewer_internal` bypasses the layer/components block and synthesizes RGBA (deep channels are not Natron planes; the v1 Viewer contract is flatten-to-RGBA).
+  - verify: ten ctest cases, each driven red-then-green by perturbing one line — adapter accepts / adapter refuses scene even when the effect asks for it (the invariant) / polymorphic node between deep source and adapter sink resolves deep (the M17 regression) / adapter edge survives project load with no persistent message / flatten matches a serial reference **over a pixel with overlapping samples** / second flatten is a cache hit / abort leaves nothing cached / cache invalidates on deep-node hash change / probe samples match the payload / probe returns raw not tidied samples. Whole ctest suite still green.
   - size: L
+
+- [ ] M18.P2.T3 — Viewer per-sample probe plumbing (Gui half)
+  - files: `Engine/UpdateViewerParams.h`, `Engine/OpenGLViewerI.h`, `Engine/ViewerInstance.cpp`, `Gui/ViewerGL.cpp`, `Gui/ViewerGLPrivate.h`, `Gui/InfoViewerWidget.h`/`.cpp`, `Gui/ViewerTab40.cpp`
+  - approach: **execute after M18.P3.T1** so the manual verify has a real deep source to hover. Carry `DeepImagePtr deepImage` on `UpdateViewerParams` beside `colorImage`; hand it to the GUI through one new `OpenGLViewerI::setLastRenderedDeepImage(textureIndex, mipmapLevel, deepImage)` rather than an 18th argument on `endTransferBufferFromRAMToGPU`, passing null on the image path so a stale payload cannot outlive its frame; stash it in `TextureInfo::lastRenderedDeepTiles` next to `lastRenderedTiles` and clear it wherever that is cleared. `ViewerGL::getDeepSamplesAt()` beside `getColorAt()` delegates to `DeepFlatten::getSamplesAtPixel()` — and unlike `getColorAt` it does **not** fall back to a neighbouring mipmap level, because samples from the wrong scale are actively misleading; return false and show a dash. The info bar is one text-line tall, so it gets a summary label (`deep: 7 smp  Z 12.40–48.90`) and the full per-sample list (`Z / ZBack / A / R G B`, monospace, capped ~16 with a trailing count) in that label's dynamic tooltip — the only multi-line affordance there. Probe reads raw untidied samples: tidying splits and merges, and would show the user values the source file does not contain.
+  - verify: no ctest coverage is possible — the Viewer plugin is not registered in the `Tests` binary (`registerBuiltInPlugin<ViewerInstance>` is gated on `!isBackground()`) and `Tests` does not link `NatronGui`, so there is no test to write and `DISABLED_` is the wrong tool. Manual app-launch checklist instead, recorded in this milestone's `## Decisions` with its result: DeepRead connects to the Viewer with no explicit `DeepToImage`; the image appears; scrub forward then back and confirm the second pass does not re-render (render counter or `--enable-render-stats`); hover a known multi-sample pixel and match bar count + tooltip values against the source EXR; hover an empty pixel and get a dash, not a stale list. Whole ctest suite still green.
+  - size: M
 
 ## Phase 18.3: Tier-1 node set
 
@@ -198,3 +204,30 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   `AbortDuringUpstreamRenderLeavesNothingCached` red; dropping the last scanline
   chunk in `makeDeepScanlineChunks()` → `TwoPassHelperMatchesSerialReference` red
   on a 342-vs-371 sample-count mismatch.
+
+- 2026-09-10 — M18.P2.T2 is split in two at `Engine/DeepFlatten.h`, and the
+  adapter is a per-input opt-in virtual gated by a fixed table rather than a
+  registry. Both came out of scouting the Viewer path. The split is forced by
+  testability: `registerBuiltInPlugin<ViewerInstance>` is gated on
+  `!isBackground()` and the `Tests` target never links `NatronGui`, so **no ctest
+  case can create a Viewer node or touch `Gui/`** — leaving the whole task as one
+  unit would have put its substance behind a boundary where this milestone's
+  red-then-green standard cannot reach. So everything substantive lives in Engine
+  code a headless test can call (T2, ten cases), and the Gui half is thin
+  plumbing with a manual checklist (new T3). T3 is sequenced after M18.P3.T1
+  because `DeepRead` is the only thing that gives its manual verify a real deep
+  source to hover; the original brief's verify ("connect a deep source to the
+  Viewer") was not executable at this point in the milestone at all.
+  On the adapter: a registry keyed on (from-kind, to-kind) alone cannot express
+  "Viewer only" and would legalize deep→image at every image input — the
+  mid-graph leak the design doc forbids — and keying it on consumer identity
+  makes it the per-input virtual plus a global mutable table, with an init-order
+  problem and a plugin-reachable registration hook, for a table the doc says will
+  only ever have one row. The tempting one-liner — `ViewerInstance::getInputDataKind()`
+  returning `eDataKindPolymorphic` — is rejected on purpose: it also accepts
+  **scene**, and it makes the Viewer invisible to `findDataKindConflictDownstream()`,
+  so a real scene→Viewer mistake becomes silent instead of reported. Two
+  conditions (fixed table AND per-input opt-in) mean neither a node nor a table
+  row can widen the system alone, and a test asserts exactly that.
+  Also recorded: `Engine/DeepFlatten.{h,cpp}` is shared, not Viewer-private —
+  M18.P3.T2's `DeepToImage` calls the same `flattenToImage()`.

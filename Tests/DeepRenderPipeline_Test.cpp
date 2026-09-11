@@ -581,6 +581,61 @@ TEST_F(DeepRenderPipelineTest, AbortDuringUpstreamRenderLeavesNothingCached)
     }
 }
 
+TEST_F(DeepRenderPipelineTest, AbortDuringWideningRenderRetractsTheHalfBuiltWideEntry)
+{
+    const RectI fullFrame(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+    const RectI leftHalf(0, 0, kDeepRenderTestWidth / 2, kDeepRenderTestHeight);
+    const RectI rightHalf(kDeepRenderTestWidth / 2, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+
+    DeepImagePtr left;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., leftHalf, &left));
+    ASSERT_TRUE(left != NULL);
+    ASSERT_EQ(1, deepRenderTestSourceRenderCount().load());
+    ASSERT_EQ(1, deepRenderTestGainRenderCount().load());
+
+    const std::vector<RectI> sourceCachedBefore = cachedDeepEntryBounds(_source, 1.);
+    ASSERT_EQ((std::size_t)1, sourceCachedBefore.size());
+    ASSERT_TRUE(leftHalf == sourceCachedBefore[0]);
+
+    // The right half is not covered, so the upstream render grows to the full frame and its
+    // wide entry is created alongside the narrow one, both under the same key. Aborting from
+    // inside the upstream render action leaves that wide entry empty.
+    AbortableRenderInfoPtr abortInfo;
+    deepRenderTestSourceHook() = [&abortInfo]() {
+        if (abortInfo) {
+            abortInfo->setAborted();
+        }
+    };
+
+    DeepImagePtr aborted;
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, renderDeepFrame(_gain, 1., rightHalf, &aborted, false, &abortInfo));
+    EXPECT_TRUE(aborted == NULL);
+    EXPECT_EQ(2, deepRenderTestSourceRenderCount().load());
+    EXPECT_EQ(1, deepRenderTestGainRenderCount().load());
+
+    // It is the empty wide entry that has to go, not the narrow one it was meant to replace.
+    const std::vector<RectI> sourceCachedAfterAbort = cachedDeepEntryBounds(_source, 1.);
+    ASSERT_EQ((std::size_t)1, sourceCachedAfterAbort.size());
+    EXPECT_TRUE(leftHalf == sourceCachedAfterAbort[0]);
+
+    deepRenderTestSourceHook() = std::function<void()>();
+
+    // Whatever the abort left behind, a request the wide bounds would have covered must be
+    // rendered for real rather than served the entry the abort never filled.
+    DeepImagePtr right;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_gain, 1., rightHalf, &right));
+    ASSERT_TRUE(right != NULL);
+    ASSERT_TRUE(fullFrame == right->getBounds());
+    EXPECT_EQ(3, deepRenderTestSourceRenderCount().load());
+    EXPECT_EQ(2, deepRenderTestGainRenderCount().load());
+
+    const std::vector<RectI> sourceCachedAfterRender = cachedDeepEntryBounds(_source, 1.);
+    ASSERT_EQ((std::size_t)1, sourceCachedAfterRender.size());
+    EXPECT_TRUE(fullFrame == sourceCachedAfterRender[0]);
+
+    expectGainedSamplesOverWholeRegion(right, fullFrame);
+}
+
 TEST_F(DeepRenderPipelineTest, TwoPassHelperMatchesSerialReference)
 {
     const RectI roi(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);

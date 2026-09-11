@@ -1506,34 +1506,10 @@ public:
 
         {
             QMutexLocker l(&_lock);
-            CacheIterator existingEntry = _memoryCache( entry->getHashKey() );
-            if ( existingEntry != _memoryCache.end() ) {
-                std::list<EntryTypePtr> & ret = getValueFromIterator(existingEntry);
-                for (typename std::list<EntryTypePtr>::iterator it = ret.begin(); it != ret.end(); ++it) {
-                    if ( (*it)->getKey() == entry->getKey() ) {
-                        toRemove.push_back(*it);
-                        ret.erase(it);
-                        break;
-                    }
-                }
-                if ( ret.empty() ) {
-                    _memoryCache.erase(existingEntry);
-                }
-            } else {
-                existingEntry = _diskCache( entry->getHashKey() );
-                if ( existingEntry != _diskCache.end() ) {
-                    std::list<EntryTypePtr> & ret = getValueFromIterator(existingEntry);
-                    for (typename std::list<EntryTypePtr>::iterator it = ret.begin(); it != ret.end(); ++it) {
-                        if ( (*it)->getKey() == entry->getKey() ) {
-                            toRemove.push_back(*it);
-                            ret.erase(it);
-                            break;
-                        }
-                    }
-                    if ( ret.empty() ) {
-                        _diskCache.erase(existingEntry);
-                    }
-                }
+            // Several entries can share a key and differ only in their params (bounds, mipmap
+            // level...), so the match has to be the instance itself rather than its key.
+            if (!removeEntryFromContainer(_memoryCache, entry, &toRemove)) {
+                removeEntryFromContainer(_diskCache, entry, &toRemove);
             }
         } // QMutexLocker l(&_lock);
         if ( !toRemove.empty() ) {
@@ -1544,6 +1520,31 @@ public:
             toRemove.clear();
         }
     } // removeEntry
+
+    static bool removeEntryFromContainer(CacheContainer& container,
+                                         const EntryTypePtr& entry,
+                                         std::list<EntryTypePtr>* toRemove)
+    {
+        CacheIterator existingEntry = container(entry->getHashKey());
+        if (existingEntry == container.end()) {
+            return false;
+        }
+        std::list<EntryTypePtr>& ret = getValueFromIterator(existingEntry);
+        bool found = false;
+        for (typename std::list<EntryTypePtr>::iterator it = ret.begin(); it != ret.end(); ++it) {
+            if (*it == entry) {
+                toRemove->push_back(*it);
+                ret.erase(it);
+                found = true;
+                break;
+            }
+        }
+        if (ret.empty()) {
+            container.erase(existingEntry);
+        }
+
+        return found;
+    }
 
     void removeEntry(U64 hash)
     {

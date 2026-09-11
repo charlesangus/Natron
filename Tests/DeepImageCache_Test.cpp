@@ -33,6 +33,8 @@
 
 #include <QThread>
 
+#include "CacheMemoryPressureGuard.h"
+
 #include "Engine/AppManager.h"
 #include "Engine/Cache.h"
 #include "Engine/CacheEntryHolder.h"
@@ -279,6 +281,8 @@ TEST(DeepImageCacheTest, ClearAllCachesEmptiesAppWideDeepCache)
 
 TEST(DeepImageCacheTest, HashChangePurgeRemovesOnlyThatNodesStaleDeepEntries)
 {
+    DisableUnreachableRAMPurging noPurging;
+
     const RectI bounds(0, 0, 4, 4);
     const RenderScale scale = RenderScale::identity;
     TestCacheHolder holderA("DeepImageCacheTest.HashChangePurge.HolderA");
@@ -436,4 +440,29 @@ TEST(DeepImageCacheTest, EvictLRUFromMemoryCachesDrainsBothAppWideCaches)
     std::size_t ramAfter = 0, diskAfter = 0;
     appPTR->getMemoryStatsForCacheEntryHolder(&holder, &ramAfter, &diskAfter);
     EXPECT_EQ((std::size_t)0, ramAfter);
+}
+
+TEST(DeepImageCacheTest, DisableUnreachableRAMPurgingRestoresPreviousValue)
+{
+    KnobIntPtr knob = appPTR->getCurrentSettings()->getKnobByNameAndType<KnobInt>("unreachableRAMPercent");
+    ASSERT_TRUE(knob != NULL);
+
+    const int original = knob->getValue();
+
+    // A sentinel distinct from both 0 (what the guard pins to) and the knob's original value, so
+    // the assertions below cannot pass by coincidence regardless of what this host's settings
+    // started at.
+    const int sentinel = (original == 37) ? 42 : 37;
+    knob->setValue(sentinel);
+    ASSERT_EQ(sentinel, knob->getValue());
+
+    {
+        DisableUnreachableRAMPurging noPurging;
+        EXPECT_EQ(0, knob->getValue());
+    }
+
+    EXPECT_EQ(sentinel, knob->getValue())
+        << "the guard must restore the previous value once it goes out of scope";
+
+    knob->setValue(original);
 }

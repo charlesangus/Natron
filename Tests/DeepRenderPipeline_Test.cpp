@@ -34,6 +34,7 @@
 #include <QString>
 
 #include "BaseTest.h"
+#include "CacheMemoryPressureGuard.h"
 #include "DeepRenderTestEffect.h"
 
 #include "Engine/AbortableRenderInfo.h"
@@ -177,6 +178,11 @@ expectFlattenedImageMatchesSource(const ImagePtr& image,
 class DeepRenderPipelineTest
     : public BaseTest {
 protected:
+    // Several tests in this fixture assert that a deep or flattened entry rendered earlier is
+    // still servable from the app-wide cache; without this, that outcome depends on the host's
+    // memory pressure rather than the pipeline under test. See CacheMemoryPressureGuard.h.
+    DisableUnreachableRAMPurging _noPurging;
+
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();

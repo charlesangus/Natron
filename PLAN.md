@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M18.P3.T5
-pm_heartbeat: 2026-09-11T05:13:32-04:00
+current: M18.P3.T6
+pm_heartbeat: 2026-09-11T07:17:59-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---

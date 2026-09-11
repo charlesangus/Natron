@@ -103,15 +103,58 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: test green in the `build-and-test` job; deliberately breaking the merge math makes it fail.
   - size: M
 
-- [ ] M18.P3.T5 — Fix the full-suite SIGSEGV in the deep cache-retraction test
+- [x] M18.P3.T5 — Fix the full-suite SIGSEGV in the deep cache-retraction test
   - files: `Engine/EffectInstanceRenderDeep.cpp`, `Engine/DeepImage.h`/`.cpp`, `Tests/DeepRenderPipeline_Test.cpp`, `Tests/BaseTest.cpp` (whichever the cause turns out to be in)
   - approach: `DeepRenderPipelineTest.BoundsGrowthRetractsTheSupersededDeepCacheEntry` passes its assertions and then the process dies with SIGSEGV in teardown — but only in a full `ctest -V` run, never in isolation (20/20 clean under `ctest -R`). Reproduce it first: run the full suite in a loop to get a failure rate, then run it under gdb (`test.sh` has no per-test `--gdb`, so drive `ctest -V` or the `Tests` binary directly inside `tools/ci/local/devshell.sh`) to get a real backtrace — the one seen so far goes through `libQt6Core.so.6` with no useful symbols, so build with symbols and do not accept a symbol-less trace as the diagnosis. Two hypotheses worth separating early: (a) the retraction added by M18.P2.T5 (`bddf34987`) leaves a dangling `DeepImagePtr` or double-removes a cache entry, which would make this a real product bug that a user hits on any bounds-growth render, not just a test artifact; (b) it is the shared-fixture teardown-ordering family M26 already fixed once, in which case the deep cache is merely the new thing outliving its `AppManager`. Decide which by evidence, not by whichever is cheaper to fix. If it proves to be (a), the fix belongs in the engine and the test stays as-is.
   - verify: the full ctest suite run 10+ times consecutively with zero failures (record the count in this file's `## Decisions`); the specific crash driven red-then-green if a deterministic reproducer is found. Whole ctest suite green.
   - size: M
 
+- [ ] M18.P3.T6 — Retract the deep cache entry by identity, not by key
+  - files: `Engine/Cache.h`, `Engine/EffectInstanceRenderDeep.cpp`, `Tests/DeepRenderPipeline_Test.cpp`
+  - approach: `Cache::removeEntry()` (`Engine/Cache.h:1533`) matches on `(*it)->getKey() == entry->getKey()` and removes the **first** bucket entry with that key. `DeepImageKey` deliberately excludes bounds, so during a bounds-growth render the narrow and the wide entry coexist under one key — which makes "first match" the wrong entry roughly whenever it matters. The abort and failure paths in `renderDeepRoI` (`EffectInstanceRenderDeep.cpp:423` and `:431`) therefore evict the *narrow* entry and leave the *half-built wide* one cached; a later request whose RoI the wide bounds contain is then served an unpopulated deep frame instead of re-rendering. That is a silent wrong answer, not a slow one. Fix the identity comparison (pointer identity, or key plus bounds) rather than special-casing the deep path — but check who else calls `removeEntry()` before changing shared behaviour, and if a by-key removal is load-bearing for another caller, add the identity-matching variant alongside it instead. Found during M18.P3.T5; `AbortDuringUpstreamRenderLeavesNothingCached` misses it because that test involves no bounds growth.
+  - verify: a test that aborts a *widening* deep render and asserts nothing stale is servable afterwards — driven red-then-green against the current by-key removal. Whole ctest suite green.
+  - size: M
+
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; entire pre-existing ctest suite still green.
 
 ## Decisions
+
+- 2026-09-11 — The M18.P3.T5 crash was a use-after-free in `Engine/Cache.h`'s
+  teardown, not in the deep retraction path. `Cache` declared `_deleterThread`
+  and `_cleanerThread` *before* `_memoryFullCondition` and the containers they
+  touch, so the threads were destroyed — and therefore joined — only after those
+  members were already gone; `DeleterThread::run()` ends every loop turn,
+  including the one that consumes the quit sentinel, with
+  `notifyMemoryDeallocated()` → `_memoryFullCondition.wakeAll()` on freed memory.
+  `waitForDeleterThread()` compounded it by stopping the deleter before the
+  cleaner that feeds it, so draining the cleaner restarted the deleter behind the
+  back of the call meant to quiesce it. Fix: move both threads to be the last
+  declared members (first destroyed), cleaner second so it stops first, and
+  reverse the quit order. Evidence: valgrind found **0 errors** in the retraction
+  path, ruling out a dangling `DeepImagePtr`; a gdb-injected deleter restart in
+  `~Cache` reproduced `QWaitCondition::wakeAll(): mutex lock failure` 3/3 pre-fix
+  and 0/3 post-fix. **Caveat: the crash was never reproduced naturally on this
+  box** (0 failures in 3 sequential full runs, 2 `-j4` runs, ~80 solo runs and a
+  valgrind run pre-fix), so the mechanism and its precondition are proven but the
+  final link to the one observed failure is argued from the code path, not from a
+  captured natural failure. The bug is real and user-visible at application exit
+  regardless: any session that does a bounds-growth deep render leaves the deep
+  cache's deleter thread running into `~Cache`. `bddf34987` did not introduce a
+  memory bug — it introduced the only call in the suite that leaves that thread
+  running, exposing a pre-existing `Cache<T>` defect.
+
+- 2026-09-11 — Two further `Cache`/`AppManager` defects found during M18.P3.T5
+  and deliberately **not** fixed there, being outside a teardown-crash fix and
+  not deep-specific: (1) `AppManager::evictLRUFromMemoryCaches()` and
+  `checkCacheFreeMemoryIsGoodEnough()` dereference `_imp->_nodeCache` and
+  `_imp->_deepImageCache` with no null check, while `~AppManager` resets them
+  before `tearDownPython()` — a late cache allocation would crash on a null
+  `this` inside `QMutex::lock`, i.e. indistinguishable from the bug just fixed.
+  (2) `CacheCleanerThread::run()` executes its own quit sentinel as a real
+  request (a full scan matching nothing), and `DeleterThread::run()` mirrors it
+  by reporting a deallocation that never happened — the very call that reached
+  the freed `QWaitCondition`. Neither is deep-specific; they belong to whoever
+  next owns `Engine/Cache.h`.
 
 - 2026-09-11 — M18.P3.T5 is executed before M18.P3.T2/T3/T4, out of task order.
   Every remaining task in this phase carries "whole ctest suite green" in its

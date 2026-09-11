@@ -520,9 +520,7 @@ private:
     ///Store the system physical total RAM in a member
     std::size_t _maxPhysicalRAM;
     bool _tearingDown;
-    mutable DeleterThread<EntryType> _deleterThread;
     mutable QWaitCondition _memoryFullCondition; //< protected by _sizeLock
-    mutable CacheCleanerThread _cleanerThread;
 
     // If tiled, the cache will consist only of a few large files that each contain tiles of the same size.
     // This is useful to cache chunks of data that always have the same size.
@@ -539,13 +537,20 @@ private:
     // When set these are used for fast search of a free tile
     TileCacheFileWPtr _nextAvailableCacheFile;
     int _nextAvailableCacheFileIndex;
+
+    // Declared last, so that they are the first members destroyed: joining a helper thread is
+    // what its destructor does, and until it is joined the thread still reaches back into the
+    // members above -- _memoryFullCondition and _sizeLock from every loop turn, _tileCacheMutex
+    // and the containers from the work itself. _cleanerThread comes second because it hands
+    // entries to _deleterThread, so it has to be the first of the two to stop.
+    mutable DeleterThread<EntryType> _deleterThread;
+    mutable CacheCleanerThread _cleanerThread;
+
 public:
-
-
-    Cache(const std::string & cacheName,
+    Cache(const std::string& cacheName,
           unsigned int version,
-          U64 maximumCacheSize,      // total size
-          double maximumInMemoryPercentage //how much should live in RAM
+          U64 maximumCacheSize, // total size
+          double maximumInMemoryPercentage // how much should live in RAM
           )
         : CacheAPI()
         , _maximumInMemorySize(maximumCacheSize * maximumInMemoryPercentage)
@@ -560,11 +565,9 @@ public:
         , _cacheName(cacheName)
         , _version(version)
         , _signalEmitter()
-        , _maxPhysicalRAM( getSystemTotalRAM() )
+        , _maxPhysicalRAM(getSystemTotalRAM())
         , _tearingDown(false)
-        , _deleterThread(this)
         , _memoryFullCondition()
-        , _cleanerThread(this)
         , _tileCacheMutex()
         , _isTiled(false)
         , _tileByteSize(0)
@@ -572,6 +575,8 @@ public:
         , _cacheFiles()
         , _nextAvailableCacheFile()
         , _nextAvailableCacheFileIndex(-1)
+        , _deleterThread(this)
+        , _cleanerThread(this)
     {
         _signalEmitter = std::make_shared<CacheSignalEmitter>();
     }
@@ -612,8 +617,10 @@ public:
 
     void waitForDeleterThread()
     {
-        _deleterThread.quitThread();
+        // The cleaner hands entries to the deleter, so it has to stop first: stopping the deleter
+        // while the cleaner can still queue work restarts the deleter behind this call's back.
         _cleanerThread.quitThread();
+        _deleterThread.quitThread();
     }
 
     /**

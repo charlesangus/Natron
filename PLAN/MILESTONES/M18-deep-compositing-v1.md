@@ -91,7 +91,7 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: merge of two deep EXRs matches Nuke-generated reference within tolerance; DeepFromImage→DeepToImage round-trip reproduces the source image.
   - size: L
 
-- [ ] M18.P3.T3a — `DeepImage` in-place aliasing, `NativeEffectBase` rewrite helper, and `DeepRecolor`
+- [x] M18.P3.T3a — `DeepImage` in-place aliasing, `NativeEffectBase` rewrite helper, and `DeepRecolor`
   - files: `Engine/DeepImage.h`/`.cpp`, `Engine/Nodes/NativeEffectBase.h`/`.cpp`, `Engine/Nodes/Deep/DeepRecolor.h`/`.cpp`, `Engine/AppManager.cpp` (registration), `Tests/DeepImage_Test.cpp`, `Tests/DeepNodes_Test.cpp`
   - approach: the output `DeepImage` is a cache-owned instance fixed at entry construction and `renderDeepTwoPass` always allocates fresh buffers, so COW sharing has to be in place: add `bool DeepImage::aliasContentsOf(const DeepImage& source)` (bounds must match, else false; shares the sample table, every channel and the tidy flag — the shallow-copy semantic the class comment already promises). Add `NativeEffectBase::renderDeepFromInput(args, input, channelsToWrite, alphaChannelIndex, rewrite)`: alias the input, or fall back to a `renderDeepTwoPass` copy when the cached input entry is wider than the window; `getChannelForWriting()` only `channelsToWrite`; then the pass-2 chunk/TLS/abort loop factored out of `renderDeepTwoPass` (not duplicated), handing the callback a const `DeepPixelView` of the input and a `MutableDeepPixelView` restricted to `channelsToWrite` with z/zback null so a node cannot write through aliased storage into the input's cache entry. `getSizeInBytes()` stays aliasing-blind: an aliased entry over-counts and evicts early, never desyncs. `DeepRecolor`: inputs `A` (deep) + `Color` (image, pulled as `DeepFromImage` pulls its image); per sample `rgb = color.rgb / color.a * sample.a` (0 when `color.a == 0` or outside the Color image); one `KnobBool targetInputAlpha` (default off) that rescales `a_i' = 1 - (1 - a_i)^k`, `k = log(1 - At) / log(1 - Af)`, `Af = 1 - ∏(1 - a_i)`, with the `Af ∈ {0,1}` / `At == 1` edge cases handled; `channelsToWrite` is `{R,G,B}` or `{R,G,B,A}`. Persistent message when `A` is unconnected.
   - verify: `DeepImage_Test`: `aliasContentsOf` shares table and channels, refuses mismatched bounds, and `getChannelForWriting` after aliasing detaches one channel only. `DeepNodes_Test`: synthetic deep + image source → DeepRecolor: per-sample rgb matches the formula; output `sharesSampleTableWith` / `sharesChannelStorageWith(Z, ZBack, A)` the input and not `R`; with `targetInputAlpha` the flattened alpha equals the image alpha within 1e-5 and `A` is no longer shared; a wider-than-window cached input takes the copy path with equal values. Whole ctest suite green.
@@ -130,6 +130,14 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; entire pre-existing ctest suite still green.
 
 ## Decisions
+
+- 2026-09-11 — User confirmed the built-in evaluator for `DeepExpression`
+  (over vendoring exprtk or deferring the node to M21). Also noted in
+  M18.P3.T3a: with a deep input *unconnected*, `renderDeepRoI` answers a null
+  RoD with an empty `DeepImage` + `eRenderRoIRetCodeOk` before ever reaching
+  `renderDeep()`, so the per-node "input unconnected" persistent messages in
+  `DeepRecolor`/`DeepFromImage`/`DeepMerge` are unreachable through the deep
+  pipeline; the tests assert the reachable contract instead. Suite: 174/174.
 
 - 2026-09-11 — M18.P3.T3 split into T3a/T3b/T3c (consultant scoping). The
   original brief's "reusing the existing expression machinery" for

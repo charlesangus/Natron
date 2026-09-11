@@ -54,7 +54,7 @@ Rationale for doing it now and as its own milestone:
     the ordering found in T1 rather than hiding the symptom.
   - size: M
 
-**Verification gate:** the full ctest suite green, and `ctest -R "BaseTest|DeepRenderPipelineTest"` run 20 consecutive times with zero "Subprocess aborted" results. CI's `build-and-test` job green on the PR.
+**Verification gate (met 2026-09-10, PR #23 merged as `eabda9276`):** the full ctest suite green, and `ctest -R "BaseTest|DeepRenderPipelineTest"` run 20 consecutive times with zero "Subprocess aborted" results. CI's `build-and-test` job green on the PR.
 
 ## Decisions
 

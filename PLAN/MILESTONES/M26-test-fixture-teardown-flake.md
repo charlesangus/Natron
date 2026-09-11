@@ -39,7 +39,7 @@ Rationale for doing it now and as its own milestone:
     backtrace, not inferred from reading.
   - size: L
 
-- [ ] M26.P1.T2 — Make teardown join the thread it destroys
+- [x] M26.P1.T2 — Make teardown join the thread it destroys
   - files: as implicated by M26.P1.T1
   - approach: shut the thread down deterministically before its owner is
     destroyed — `quit()` + `wait()` on the owning object's teardown path, or the
@@ -100,3 +100,28 @@ Rationale for doing it now and as its own milestone:
   upstream #877) fixed a double-unlock in these same two functions, motivated by
   "crashes when the Tests binary would exit" — the same teardown, left
   unfinished.
+
+- 2026-09-10 — M26.P1.T2 landed as `92e07501f`. Both `quitThread()`s scope the
+  handshake's locker and then call `wait()` outside it (holding `mustQuitMutex`
+  across `wait()` would deadlock against `run()`, which takes that mutex each
+  iteration), and both destructors call `quitThread()`. Evidence, since a green
+  run proves nothing at a ~1/30 rate: pre-fix 1 abort in 30 loaded runs of
+  `BaseTest.DotFedByImageSourceResolvesToImage`, post-fix 0/30; then `BaseTest`
+  20/20 consecutive under 8 background spinners, independently re-run by the PM
+  at 20/20. Zero "Destroyed while thread is still running" or "Subprocess
+  aborted" in a full-suite run.
+
+- 2026-09-10 — The `appendToQueue()` start/quit race (item 3 of the brief) was
+  deliberately not fixed. `run()` acquires `mustQuitMutex` at the top of each
+  iteration, so guarding `appendToQueue()`'s unlocked `isRunning()`/`start()`
+  check under that same mutex risks starting a thread whose first action
+  contends on a mutex the caller holds. It is not the cause of the abort and was
+  left rather than forced, per the brief's own carve-out.
+
+- 2026-09-10 — Pre-existing, not M26's: 11 `MetadataPluginFixture` cases fail
+  locally with `Couldn't find a plugin attached to the ID
+  org.openfx.examples.metadataView`. PR #22 (`2c464af9b`, the commit this branch
+  is based on) added both those tests and the `metadata*.ofx.bundle` plugins they
+  need, and `build/assets/` here predates it. They fail cleanly as `[ FAILED ]`,
+  never as aborts, and `tools/ci/local/fetch-assets.sh` is what provisions them.
+  CI caches that step keyed on the script's hash, so CI has them.

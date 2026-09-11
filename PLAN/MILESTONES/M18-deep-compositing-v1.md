@@ -35,7 +35,7 @@ Pixels" document verbatim.
   - verify: unit test — a populated deep cache is emptied by `clearAllCaches()`; a per-node purge on hash change removes that node's deep entries and leaves another node's alone; the deep cache's bytes appear in the memory-stats total. Whole ctest suite still green.
   - size: M
 
-- [ ] M18.P1.T5 — Make the deep cache tests hermetic against the low-memory handler
+- [x] M18.P1.T5 — Make the deep cache tests hermetic against the low-memory handler
   - files: `Tests/DeepImageCache_Test.cpp`, `Tests/DeepRenderPipeline_Test.cpp`, possibly `Engine/Settings.h`/`.cpp`
   - approach: `DeepImageCacheTest.HashChangePurgeRemovesOnlyThatNodesStaleDeepEntries` and `DeepRenderPipelineTest.BoundsGrowthReRendersOverTheUnionOfRequestedRoIs` fail on any host whose **free** physical RAM is under `getSystemTotalRAM() * getUnreachableRamPercent()` (default 20%). `AppManager::checkCacheFreeMemoryIsGoodEnough()` runs on every `allocateMemory()` and evicts LRU entries from the node *and* deep caches until free RAM clears that bar; `getAmountFreePhysicalRAM()` reads `sysinfo.freeram`, i.e. `MemFree`, which page cache keeps low regardless of how much memory is actually reclaimable, and evicting cache entries barely moves it — so on such a host the loop drains both caches and the first test's own sanity check (`DeepImageCache_Test.cpp:318`) fails before the purge under test is even called. Any test that asserts a cache *retains* something must pin the setting it depends on: set `unreachableRamPercent` to 0 for the duration (fixture setup/teardown, restoring the previous value) so the handler cannot fire. Do **not** weaken the assertions, and do not touch M18.P1.T4's `evictLRUFromMemoryCaches()` test — it drives the helper directly and is unaffected. While there, judge whether the reading `MemFree` rather than `MemAvailable` is worth its own milestone and say so rather than fixing it here.
   - verify: both tests pass on this host as it is now (free RAM below the threshold — check with `free -m` before and confirm the arithmetic in the task notes still holds), and still pass with `unreachableRamPercent` restored; each driven red-then-green by reverting the pin. Whole ctest suite green.
@@ -287,3 +287,28 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   where the extra region is covered by luck. Raised as **M18.P2.T4** rather than
   fixed in passing: it is a wrong answer on an upstream miss, and it needs a
   test that evicts between the two renders.
+
+- 2026-09-11 — M18.P1.T5 landed as `3ec2a9a4d`; suite is **148/148** green, which
+  I confirmed on my own run and not only from the implementer's report. The fix
+  is an RAII `DisableUnreachableRAMPurging` (`Tests/CacheMemoryPressureGuard.h`)
+  pinning `unreachableRAMPercent` to 0 and restoring it; no assertion was
+  weakened. Two things went beyond the brief and were right to. The guard is a
+  `DeepRenderPipelineTest` **fixture member** rather than a per-test local,
+  because `SecondRenderOfTheSameFrameIsACacheHit` and
+  `SecondFlattenOfTheSameFrameIsACacheHit` assert retention too — they were not
+  failing at this host's exact memory level, but they carry the identical hazard
+  and would have started failing nondeterministically later. And the restoration
+  is asserted by a test (`DisableUnreachableRAMPurgingRestoresPreviousValue`),
+  not by inspection, which was worth it: it is itself non-vacuous, going red
+  when the pin was neutered. The rest of `Tests/` was swept for the same hazard
+  — only these two files touch the app-wide caches at all; everything else uses
+  local `Cache<T>` instances, which the low-memory handler never reaches.
+
+- 2026-09-11 — `getAmountFreePhysicalRAM()` reading `MemFree` rather than
+  `MemAvailable` is a real engine defect, not a test artifact, and is raised as
+  **M28** rather than fixed inside M18. Every user's caches get drained by page
+  cache occupying memory that is fully reclaimable, and the eviction loop cannot
+  even reach its exit condition that way — freeing cache entries returns memory
+  to the allocator, not to the OS, so `MemFree` barely moves and the loop
+  evicts until a cache is empty. M18.P1.T5 only stops it distorting this
+  milestone's tests.

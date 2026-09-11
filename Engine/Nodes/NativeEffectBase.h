@@ -309,9 +309,10 @@ protected:
      * input's samples there -- its channels are the input's minus "Z" and "ZBack", in the order
      * DeepImage::getChannels() lists them, in.alphaChannelIndex naming "A" among them or -1 when
      * the input has none -- and out points into the output's buffers for the channels
-     * renderDeepFromInput() was told to write, in that order, over those same samples. out's z
-     * and zback are null: the depths stay the input's. Called once per pixel holding samples,
-     * concurrently from several threads; distinct pixels never share storage.
+     * renderDeepFromInput() was told to write, in that order, over those same samples, "Z" and
+     * "ZBack" included when they were listed -- out.z and out.zback then point at those same
+     * buffers, and are null otherwise, the depths staying the input's. Called once per pixel
+     * holding samples, concurrently from several threads; distinct pixels never share storage.
      **/
     typedef std::function<void(int x, int y, const DeepPixelView& in, const MutableDeepPixelView& out)> DeepRewriteSamplesFunc;
 
@@ -327,9 +328,12 @@ protected:
      * given can reach the input's storage.
      *
      * alphaChannelIndex is the index within channelsToWrite of the alpha channel, recorded in
-     * every out view, or -1 when alpha is not being written. "Z" and "ZBack" must not be listed.
+     * every out view, or -1 when alpha is not being written. "Z" and "ZBack" may be listed, and
+     * are handed to rewrite like any other channel; an input lacking "ZBack" gets one, zeroed
+     * on the aliasing path and equal to "Z" on the copying path, for rewrite to fill.
      *
-     * The output's tidiness is the input's, since rewriting values moves no sample. The cache
+     * The output's tidiness is the input's: rewriting values moves no sample, and a node that
+     * rewrites depths is the one to know whether its samples are still sorted. The cache
      * charges an aliased output for every channel it holds all the same (DeepImage's
      * getSizeInBytes() is aliasing-blind), so sharing evicts early rather than desyncing.
      **/

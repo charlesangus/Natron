@@ -55,6 +55,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Deep/DeepCrop.h"
+#include "Engine/Nodes/Deep/DeepExpression.h"
 #include "Engine/Nodes/Deep/DeepFromImage.h"
 #include "Engine/Nodes/Deep/DeepMerge.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
@@ -589,6 +590,27 @@ protected:
             return NodePtr();
         }
         knob->setValue(targetInputAlpha);
+
+        return node;
+    }
+
+    // expressions holds the R, G, B, A, Z and ZBack expressions in that order; an empty one
+    // leaves its channel alone.
+    NodePtr createDeepExpression(const std::vector<std::string>& expressions)
+    {
+        static const char* const knobNames[] = { "expressionR", "expressionG", "expressionB", "expressionA", "expressionZ", "expressionZBack" };
+        NodePtr node = createTrackedNode(PLUGINID_NATRON_DEEPEXPRESSION);
+
+        if (!node) {
+            return node;
+        }
+        for (std::size_t c = 0; c < expressions.size() && c < 6; ++c) {
+            KnobString* knob = dynamic_cast<KnobString*>(node->getKnobByName(knobNames[c]).get());
+            if (!knob) {
+                return NodePtr();
+            }
+            knob->setValue(expressions[c]);
+        }
 
         return node;
     }
@@ -1602,4 +1624,277 @@ TEST_F(DeepNodesTest, DeepCropReformatSetsTheOutputFormatToBboxAndOffLeavesTheIn
 
     EXPECT_TRUE(source->getEffectInstance()->getOutputFormat() == cropOff->getEffectInstance()->getOutputFormat());
     EXPECT_TRUE(RectI(1, 1, 5, 4) == cropOn->getEffectInstance()->getOutputFormat());
+}
+
+namespace {
+
+std::vector<std::string>
+expressionsRGBAZZBack(const char* r,
+                      const char* g = "",
+                      const char* b = "",
+                      const char* a = "",
+                      const char* z = "",
+                      const char* zback = "")
+{
+    std::vector<std::string> expressions;
+
+    expressions.push_back(r);
+    expressions.push_back(g);
+    expressions.push_back(b);
+    expressions.push_back(a);
+    expressions.push_back(z);
+    expressions.push_back(zback);
+
+    return expressions;
+}
+
+// Two pixels of two and three samples, volumetric and point ones both, tidy.
+SynthPixels
+expressionPixels()
+{
+    SynthPixels pixels;
+
+    pixels.push_back(SynthPixel(1, 1));
+    pixels.back().samples.push_back(pointSample(1.f, 0.1f, 0.2f, 0.3f, 0.25f));
+    pixels.back().samples.push_back(volumeSample(2.f, 3.f, 0.4f, 0.5f, 0.6f, 0.5f));
+    pixels.push_back(SynthPixel(3, 2));
+    pixels.back().samples.push_back(pointSample(4.f, 0.5f, 0.5f, 0.5f, 0.6f));
+    pixels.back().samples.push_back(pointSample(5.f, 0.f, 0.f, 0.f, 0.f));
+    pixels.back().samples.push_back(pointSample(6.f, 0.7f, 0.7f, 0.7f, 0.75f));
+
+    return pixels;
+}
+
+} // namespace
+
+TEST_F(DeepNodesTest, DeepExpressionIsRegisteredAndInstantiable)
+{
+    NodePtr expression = createTrackedNode(PLUGINID_NATRON_DEEPEXPRESSION);
+
+    ASSERT_TRUE(expression != NULL);
+    EXPECT_EQ(1, expression->getEffectInstance()->getNInputs());
+    EXPECT_EQ(eDataKindDeep, expression->getEffectInstance()->getInputDataKind(0));
+    EXPECT_EQ(eDataKindDeep, expression->getEffectInstance()->getOutputDataKind());
+    EXPECT_EQ("Source", expression->getEffectInstance()->getInputLabel(0));
+
+    std::list<std::string> grouping;
+    expression->getEffectInstance()->getPluginGrouping(&grouping);
+    ASSERT_EQ((std::size_t)1, grouping.size());
+    EXPECT_EQ(PLUGIN_GROUP_DEEP, grouping.front());
+
+    static const char* const knobNames[] = { "expressionR", "expressionG", "expressionB", "expressionA", "expressionZ", "expressionZBack" };
+    for (std::size_t c = 0; c < 6; ++c) {
+        KnobString* knob = dynamic_cast<KnobString*>(expression->getKnobByName(knobNames[c]).get());
+        ASSERT_TRUE(knob != NULL) << knobNames[c];
+        EXPECT_TRUE(knob->getValue().empty()) << knobNames[c];
+    }
+
+    NodePtr imageSource = createImageSource(0);
+    ASSERT_TRUE(imageSource != NULL);
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, expression->canConnectInput(imageSource, 0));
+}
+
+TEST_F(DeepNodesTest, DeepExpressionOnAlphaHalvesItAndSharesEveryOtherChannel)
+{
+    const RectI bounds(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
+    const SynthPixels pixels = expressionPixels();
+
+    NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixels, true));
+    NodePtr expression = createDeepExpression(expressionsRGBAZZBack("", "", "", "A*0.5"));
+    ASSERT_TRUE(source && expression);
+    connectNodes(source, expression, 0, true);
+
+    DeepImagePtr out;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(expression, 1., bounds, &out));
+    ASSERT_TRUE(out != NULL);
+    EXPECT_TRUE(bounds == out->getBounds());
+    EXPECT_TRUE(out->isTidy());
+    EXPECT_FALSE(expression->hasPersistentMessage());
+
+    DeepImagePtr input;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(source, 1., bounds, &input));
+    ASSERT_TRUE(input != NULL);
+    EXPECT_NE(input.get(), out.get());
+
+    EXPECT_TRUE(out->sharesSampleTableWith(*input));
+    EXPECT_TRUE(out->sharesChannelStorageWith(*input, "R"));
+    EXPECT_TRUE(out->sharesChannelStorageWith(*input, "G"));
+    EXPECT_TRUE(out->sharesChannelStorageWith(*input, "B"));
+    EXPECT_TRUE(out->sharesChannelStorageWith(*input, "Z"));
+    EXPECT_TRUE(out->sharesChannelStorageWith(*input, "ZBack"));
+    EXPECT_FALSE(out->sharesChannelStorageWith(*input, "A"));
+
+    for (std::size_t p = 0; p < pixels.size(); ++p) {
+        const std::vector<ReadSample> samples = samplesAt(*out, pixels[p].x, pixels[p].y);
+        ASSERT_EQ(pixels[p].samples.size(), samples.size());
+        for (std::size_t s = 0; s < samples.size(); ++s) {
+            DeepSample expected = pixels[p].samples[s];
+            expected.channels[3] *= 0.5f;
+            expectSampleValues(samples[s], expected, 0.f);
+        }
+        const std::vector<ReadSample> untouched = samplesAt(*input, pixels[p].x, pixels[p].y);
+        ASSERT_EQ(pixels[p].samples.size(), untouched.size());
+        for (std::size_t s = 0; s < untouched.size(); ++s) {
+            expectSampleValues(untouched[s], pixels[p].samples[s], 0.f);
+        }
+    }
+}
+
+TEST_F(DeepNodesTest, DeepExpressionOnDepthMovesSamplesAndClearsTidiness)
+{
+    const RectI bounds(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
+    const SynthPixels pixels = expressionPixels();
+
+    NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixels, true));
+    // Reading ZBack while writing Z checks that expressions see the input's depths, not the
+    // ones being written.
+    NodePtr expression = createDeepExpression(expressionsRGBAZZBack("", "", "", "", "ZBack + 10", "Z"));
+    ASSERT_TRUE(source && expression);
+    connectNodes(source, expression, 0, true);
+
+    DeepImagePtr out;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(expression, 1., bounds, &out));
+    ASSERT_TRUE(out != NULL);
+    EXPECT_FALSE(out->isTidy());
+    EXPECT_FALSE(expression->hasPersistentMessage());
+
+    DeepImagePtr input;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(source, 1., bounds, &input));
+    ASSERT_TRUE(input != NULL);
+    EXPECT_TRUE(input->isTidy());
+    EXPECT_TRUE(out->sharesSampleTableWith(*input));
+    EXPECT_TRUE(out->sharesChannelStorageWith(*input, "R"));
+    EXPECT_TRUE(out->sharesChannelStorageWith(*input, "A"));
+    EXPECT_FALSE(out->sharesChannelStorageWith(*input, "Z"));
+    EXPECT_FALSE(out->sharesChannelStorageWith(*input, "ZBack"));
+
+    for (std::size_t p = 0; p < pixels.size(); ++p) {
+        const std::vector<ReadSample> samples = samplesAt(*out, pixels[p].x, pixels[p].y);
+        ASSERT_EQ(pixels[p].samples.size(), samples.size());
+        for (std::size_t s = 0; s < samples.size(); ++s) {
+            DeepSample expected = pixels[p].samples[s];
+            expected.z = pixels[p].samples[s].zback + 10.f;
+            expected.zback = pixels[p].samples[s].z;
+            expectSampleValues(samples[s], expected, 0.f);
+        }
+    }
+}
+
+TEST_F(DeepNodesTest, DeepExpressionCreatesAChannelTheInputLacks)
+{
+    const RectI bounds(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
+    const SynthPixels pixels = expressionPixels();
+
+    std::vector<std::string> rgbOnly = rgbaChannelNames();
+    rgbOnly.pop_back();
+    NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbOnly, pixels, true));
+    NodePtr expression = createDeepExpression(expressionsRGBAZZBack("", "", "", "R + G", "", "Z + 0.5"));
+    ASSERT_TRUE(source && expression);
+    connectNodes(source, expression, 0, true);
+
+    DeepImagePtr out;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(expression, 1., bounds, &out));
+    ASSERT_TRUE(out != NULL);
+    EXPECT_FALSE(out->isTidy());
+    EXPECT_FALSE(expression->hasPersistentMessage());
+
+    DeepImagePtr input;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(source, 1., bounds, &input));
+    ASSERT_TRUE(input != NULL);
+    EXPECT_FALSE(input->hasChannel("A"));
+    ASSERT_TRUE(out->hasChannel("A"));
+    EXPECT_TRUE(out->sharesSampleTableWith(*input));
+    EXPECT_TRUE(out->sharesChannelStorageWith(*input, "R"));
+    EXPECT_TRUE(out->sharesChannelStorageWith(*input, "G"));
+    EXPECT_TRUE(out->sharesChannelStorageWith(*input, "B"));
+    EXPECT_TRUE(out->sharesChannelStorageWith(*input, "Z"));
+    EXPECT_FALSE(out->sharesChannelStorageWith(*input, "ZBack"));
+
+    for (std::size_t p = 0; p < pixels.size(); ++p) {
+        const std::vector<ReadSample> samples = samplesAt(*out, pixels[p].x, pixels[p].y);
+        ASSERT_EQ(pixels[p].samples.size(), samples.size());
+        for (std::size_t s = 0; s < samples.size(); ++s) {
+            const DeepSample& in = pixels[p].samples[s];
+            EXPECT_FLOAT_EQ(in.z, samples[s].z);
+            EXPECT_FLOAT_EQ(in.z + 0.5f, samples[s].zback);
+            EXPECT_FLOAT_EQ(in.channels[0], samples[s].value("R"));
+            EXPECT_FLOAT_EQ(in.channels[0] + in.channels[1], samples[s].value("A"));
+        }
+    }
+}
+
+TEST_F(DeepNodesTest, DeepExpressionBuiltinsGiveEverySampleItsOwnValues)
+{
+    const RectI bounds(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
+    const SynthPixels pixels = expressionPixels();
+
+    NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixels, true));
+    NodePtr expression = createDeepExpression(expressionsRGBAZZBack("sampleIndex", "sampleCount", "x + 100 * y", "sampleIndex == sampleCount - 1 ? frame : 0"));
+    ASSERT_TRUE(source && expression);
+    connectNodes(source, expression, 0, true);
+
+    DeepImagePtr out;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(expression, 3., bounds, &out));
+    ASSERT_TRUE(out != NULL);
+    EXPECT_TRUE(out->isTidy());
+
+    for (std::size_t p = 0; p < pixels.size(); ++p) {
+        const std::vector<ReadSample> samples = samplesAt(*out, pixels[p].x, pixels[p].y);
+        ASSERT_EQ(pixels[p].samples.size(), samples.size());
+        for (std::size_t s = 0; s < samples.size(); ++s) {
+            EXPECT_FLOAT_EQ((float)s, samples[s].value("R"));
+            EXPECT_FLOAT_EQ((float)pixels[p].samples.size(), samples[s].value("G"));
+            EXPECT_FLOAT_EQ((float)(pixels[p].x + 100 * pixels[p].y), samples[s].value("B"));
+            EXPECT_FLOAT_EQ((s + 1 == pixels[p].samples.size()) ? 3.f : 0.f, samples[s].value("A"));
+            EXPECT_FLOAT_EQ(pixels[p].samples[s].z, samples[s].z);
+            EXPECT_FLOAT_EQ(pixels[p].samples[s].zback, samples[s].zback);
+        }
+    }
+}
+
+TEST_F(DeepNodesTest, DeepExpressionWithNoExpressionIsAnIdentity)
+{
+    const RectI bounds(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
+
+    NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), expressionPixels(), true));
+    NodePtr expression = createDeepExpression(expressionsRGBAZZBack("", "  ", "\t"));
+    ASSERT_TRUE(source && expression);
+    connectNodes(source, expression, 0, true);
+
+    DeepImagePtr fromSource;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(source, 1., bounds, &fromSource));
+    DeepImagePtr fromExpression;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(expression, 1., bounds, &fromExpression));
+    ASSERT_TRUE(fromSource && fromExpression);
+    EXPECT_EQ(fromSource.get(), fromExpression.get());
+}
+
+TEST_F(DeepNodesTest, DeepExpressionThatDoesNotCompileFailsWithAMessageNamingTheChannelAndColumn)
+{
+    const RectI bounds(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
+
+    NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), expressionPixels(), true));
+    NodePtr expression = createDeepExpression(expressionsRGBAZZBack("R", "G * (1 + ", "", "nope"));
+    ASSERT_TRUE(source && expression);
+    connectNodes(source, expression, 0, true);
+
+    DeepImagePtr out;
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed, renderDeepFrame(expression, 1., bounds, &out));
+    ASSERT_TRUE(expression->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    expression->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.startsWith(QString::fromUtf8("G: "))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("(column 10)"))) << message.toStdString();
+
+    // Fixing the expression clears the message on the next render.
+    KnobString* g = dynamic_cast<KnobString*>(expression->getKnobByName("expressionG").get());
+    KnobString* a = dynamic_cast<KnobString*>(expression->getKnobByName("expressionA").get());
+    ASSERT_TRUE(g && a);
+    g->setValue("G * 2");
+    a->setValue("A");
+    out.reset();
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(expression, 1., bounds, &out));
+    ASSERT_TRUE(out != NULL);
+    EXPECT_FALSE(expression->hasPersistentMessage());
 }

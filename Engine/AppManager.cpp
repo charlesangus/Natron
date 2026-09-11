@@ -133,6 +133,7 @@
 #include "Engine/ThreadPool.h"
 
 #include "Engine/Nodes/Deep/DeepCrop.h"
+#include "Engine/Nodes/Deep/DeepExpression.h"
 #include "Engine/Nodes/Deep/DeepFromImage.h"
 #include "Engine/Nodes/Deep/DeepMerge.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
@@ -1555,6 +1556,7 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
     registerBuiltInPlugin<DeepFromImage>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DeepRecolor>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DeepCrop>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepExpression>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DiskCacheNode>(QString::fromUtf8(NATRON_IMAGES_PATH "diskcache_icon.png"), false, false);
     registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_IMAGES_PATH "GroupingIcons/Set2/paint_grouping_2.png"), false, false);
     registerBuiltInPlugin<RotoNode>(QString::fromUtf8(NATRON_IMAGES_PATH "rotoNodeIcon.png"), false, false);

@@ -311,11 +311,6 @@ NativeEffectBase::renderDeepFromInput(const DeepRenderActionArgs& args,
     if ((alphaChannelIndex < -1) || (alphaChannelIndex >= (int)channelsToWrite.size())) {
         return eStatusFailed;
     }
-    for (std::size_t c = 0; c < channelsToWrite.size(); ++c) {
-        if (isDepthChannelName(channelsToWrite[c])) {
-            return eStatusFailed;
-        }
-    }
 
     std::vector<std::string> inputChannelNames;
     std::vector<const float*> inputChannels;
@@ -344,7 +339,7 @@ NativeEffectBase::renderDeepFromInput(const DeepRenderActionArgs& args,
     if (!out->aliasContentsOf(*input)) {
         std::vector<std::string> copyNames = inputChannelNames;
         for (std::size_t c = 0; c < channelsToWrite.size(); ++c) {
-            if (std::find(copyNames.begin(), copyNames.end(), channelsToWrite[c]) == copyNames.end()) {
+            if (!isDepthChannelName(channelsToWrite[c]) && (std::find(copyNames.begin(), copyNames.end(), channelsToWrite[c]) == copyNames.end())) {
                 copyNames.push_back(channelsToWrite[c]);
             }
         }
@@ -375,8 +370,15 @@ NativeEffectBase::renderDeepFromInput(const DeepRenderActionArgs& args,
     }
 
     std::vector<float*> writeChannels(channelsToWrite.size());
+    int zWriteIndex = -1;
+    int zbackWriteIndex = -1;
     for (std::size_t c = 0; c < channelsToWrite.size(); ++c) {
         writeChannels[c] = out->getChannelForWriting(channelsToWrite[c]).dataForWriting();
+        if (channelsToWrite[c] == "Z") {
+            zWriteIndex = (int)c;
+        } else if (channelsToWrite[c] == "ZBack") {
+            zbackWriteIndex = (int)c;
+        }
     }
 
     const RectI bounds = out->getBounds();
@@ -420,6 +422,8 @@ NativeEffectBase::renderDeepFromInput(const DeepRenderActionArgs& args,
             in.numSamples = (int)count;
 
             MutableDeepPixelView outView;
+            outView.z = (zWriteIndex >= 0) ? outPixelChannels[zWriteIndex] : nullptr;
+            outView.zback = (zbackWriteIndex >= 0) ? outPixelChannels[zbackWriteIndex] : nullptr;
             outView.channels = outPixelChannels.data();
             outView.numChannels = (int)outPixelChannels.size();
             outView.alphaChannelIndex = alphaChannelIndex;

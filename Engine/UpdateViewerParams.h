@@ -83,6 +83,7 @@ public:
         , tileSize(0)
         , nbCachedTile(0)
         , colorImage()
+        , deepImage()
         , rod()
         , pixelAspectRatio(1.)
         , abortInfo()
@@ -133,6 +134,9 @@ public:
 
     // The image which was used to make the texture
     ImagePtr colorImage;
+
+    // The deep image colorImage was flattened from; NULL unless the input is a deep stream
+    DeepImagePtr deepImage;
 
     // The RoD of the src image
     RectD rod;

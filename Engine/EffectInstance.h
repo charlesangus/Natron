@@ -695,9 +695,15 @@ public:
      *
      * Requires the thread-local frame args a render set up by the scheduler provides: the cache
      * key has to be the hash the scheduler assigned this node, not one derived after the fact.
+     *
+     * When outputDeepImage is given, it receives the deep image the flattened one was made from,
+     * fetched back through renderDeepRoI() when the flattened image itself was a cache hit. It
+     * may be left NULL on eRenderRoIRetCodeOk if that fetch fails: the flattened image is still
+     * valid, only the per-sample view of it is unavailable.
      **/
     RenderRoIRetCode renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
-                                            ImagePtr* outputImage) WARN_UNUSED_RETURN;
+                                            ImagePtr* outputImage,
+                                            DeepImagePtr* outputDeepImage = NULL) WARN_UNUSED_RETURN;
 
     void getImageFromCacheAndConvertIfNeeded(bool useCache,
                                              StorageModeEnum storage,

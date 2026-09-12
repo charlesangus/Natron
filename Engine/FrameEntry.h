@@ -89,8 +89,19 @@ public:
         _params->setInternalImage(image);
     }
 
+    DeepImagePtr getInternalDeepImage() const
+    {
+        QReadLocker k(&_entryLock);
 
+        return _params->getInternalDeepImage();
+    }
 
+    void setInternalDeepImage(const DeepImagePtr& deepImage)
+    {
+        QWriteLocker k(&_entryLock);
+
+        _params->setInternalDeepImage(deepImage);
+    }
 };
 
 NATRON_NAMESPACE_EXIT

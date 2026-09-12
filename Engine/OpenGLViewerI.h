@@ -134,6 +134,13 @@ public:
                                                bool isPartialRect) = 0;
 
     /**
+     * @brief Hands over the deep image the frame just transferred was flattened from, for the
+     * per-sample probe. Called after every endTransferBufferFromRAMToGPU() with NULL when the
+     * frame did not come from deep data, so samples of an earlier frame never outlive it.
+     **/
+    virtual void setLastRenderedDeepImage(int textureIndex, unsigned int mipmapLevel, const DeepImagePtr& deepImage) = 0;
+
+    /**
      * @brief Called when the input of a viewer should render black.
      **/
     virtual void disconnectInputTexture(int textureIndex, bool clearRoD) = 0;

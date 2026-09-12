@@ -130,6 +130,30 @@ private:
     EffectInstance::EffectTLSDataPtr _tls;
 };
 
+bool
+lookupCachedDeepImage(const DeepImageKey& key,
+                      const RectI& roi,
+                      DeepImagePtr* outputDeepImage)
+{
+    std::list<DeepImageCacheEntryPtr> cached;
+    if (!appPTR->getDeepImage(key, &cached)) {
+        return false;
+    }
+    for (std::list<DeepImageCacheEntryPtr>::const_iterator it = cached.begin(); it != cached.end(); ++it) {
+        const DeepImagePtr& entryImage = (*it)->getDeepImage();
+        if (!entryImage) {
+            continue;
+        }
+        if (entryImage->getBounds().contains(roi)) {
+            *outputDeepImage = entryImage;
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
 } // anonymous namespace
 
 bool
@@ -454,20 +478,24 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
 
 EffectInstance::RenderRoIRetCode
 EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
-                                       ImagePtr* outputImage)
+                                       ImagePtr* outputImage,
+                                       DeepImagePtr* outputDeepImage)
 {
     assert(outputImage);
     if (!outputImage) {
         return eRenderRoIRetCodeFailed;
     }
     outputImage->reset();
+    if (outputDeepImage) {
+        outputDeepImage->reset();
+    }
 
     if (args.roi.isNull()) {
         return eRenderRoIRetCodeOk;
     }
 
     if (_imp->mainInstance) {
-        return _imp->mainInstance->renderDeepRoIFlattened(args, outputImage);
+        return _imp->mainInstance->renderDeepRoIFlattened(args, outputImage, outputDeepImage);
     }
 
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
@@ -511,6 +539,10 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
         getImageFromCacheAndConvertIfNeeded(true, eStorageModeRAM, eStorageModeRAM, key, args.mipmapLevel, NULL, NULL, RectI(), eImageBitDepthFloat, components, InputImagesMap(), RenderStatsPtr(), OSGLContextAttacherPtr(), &cached);
         if (cached) {
             if (!args.byPassCache && cached->getBounds().contains(args.roi)) {
+                if (outputDeepImage) {
+                    const DeepImageKey deepKey(getNode().get(), nodeHash, args.time, args.view, args.scale);
+                    lookupCachedDeepImage(deepKey, args.roi, outputDeepImage);
+                }
                 *outputImage = cached;
 
                 return eRenderRoIRetCodeOk;
@@ -607,6 +639,9 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
 
     image->markForRendered(boundsToRender);
     *outputImage = image;
+    if (outputDeepImage) {
+        *outputDeepImage = deepImage;
+    }
 
     return eRenderRoIRetCodeOk;
 } // EffectInstance::renderDeepRoIFlattened

@@ -1537,12 +1537,14 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                            inArgs.params->rod,
                                                            this,
                                                            inArgs.params->time);
-                retCode = inArgs.activeInputToRender->renderDeepRoIFlattened(deepArgs, &colorImage);
+                DeepImagePtr deepImage;
+                retCode = inArgs.activeInputToRender->renderDeepRoIFlattened(deepArgs, &colorImage, &deepImage);
                 if (colorImage && (retCode == EffectInstance::eRenderRoIRetCodeOk)) {
                     if (inArgs.channels == eDisplayChannelsMatte) {
                         alphaImage = colorImage;
                     }
                     inArgs.params->colorImage = colorImage;
+                    inArgs.params->deepImage = deepImage;
                 } else {
                     colorImage.reset();
                 }
@@ -1822,6 +1824,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
 
                 if (it->cachedData) {
                     it->cachedData->setInternalImage(colorImage);
+                    it->cachedData->setInternalDeepImage(inArgs.params->deepImage);
                 }
             }
         } // !useTextureCache
@@ -2944,8 +2947,10 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
         const UpdateViewerParams::CachedTile& firstTile = params->tiles.front();
         ImagePtr originalImage;
         originalImage = params->colorImage;
+        DeepImagePtr deepImage = params->deepImage;
         if (firstTile.cachedData && !originalImage) {
             originalImage = firstTile.cachedData->getInternalImage();
+            deepImage = firstTile.cachedData->getInternalDeepImage();
         }
         ImageBitDepthEnum depth;
         if (originalImage) {
@@ -2960,6 +2965,9 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
         }
 
         uiContext->endTransferBufferFromRAMToGPU(params->textureIndex, texture, originalImage, params->time, params->rod,  params->pixelAspectRatio, depth, params->mipmapLevel, params->srcPremult, params->gain, params->gamma, params->offset, params->lut, params->recenterViewport, params->viewportCenter, params->isPartialRect);
+        if (!params->isPartialRect && originalImage) {
+            uiContext->setLastRenderedDeepImage(params->textureIndex, params->mipmapLevel, deepImage);
+        }
 
         if (!isDrawing) {
             uiContext->updateColorPicker(params->textureIndex);

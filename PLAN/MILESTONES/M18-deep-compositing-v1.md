@@ -109,7 +109,7 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: evaluator unit tests (precedence, ternary, every function, column-numbered errors, unknown identifier); node test: `A*0.5` halves `A` and leaves `R/G/B/Z/ZBack` shared with the input (COW hooks); an expression on `Z` clears `isTidy`; a syntax error sets a persistent message and does not crash. Whole ctest suite green.
   - size: M
 
-- [ ] M18.P3.T4 — Deep integration test in CI
+- [x] M18.P3.T4 — Deep integration test in CI
   - files: `Tests/` (the ctest suite; the directory is capital-T `Tests/`, and M11's OFX integration test is `tools/ci/smoke_test.py` + `tools/ci/verify_plugin_loads.cpp`, not a ctest case), reference deep EXR asset under `Tests/fixtures/` (pinned, same discipline as existing test assets)
   - approach: end-to-end graph — DeepRead → DeepMerge → DeepRecolor → DeepToImage → Write — rendered headless in CI, output diffed against a committed reference. This is the deep analog of M11's OFX plugin test.
   - verify: test green in the `build-and-test` job; deliberately breaking the merge math makes it fail.
@@ -504,3 +504,29 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   complementary abort test was written, failed against the "fixed" version, and
   was then removed rather than kept — a test asserting behaviour the codebase
   deliberately does not provide is worse than no test.
+
+- 2026-09-11 — M18.P3.T4 landed as `e5e00d68c`; suite **197/197**, confirmed on
+  my own run. The test compares against an oracle computed in the test from the
+  fixtures' documented samples rather than a committed flat reference: the new
+  `deep-interleaved.exr` fixture was laid out so no depth range overlaps
+  `deep-scanline.exr`'s in the same pixel, which makes a plain front-to-back
+  over exact and keeps the engine's tidy/flatten code out of the expected side.
+  Red-then-green was done twice — halving the transmittance step in
+  `flattenFrontToBack` (36 failures, the nine multi-sample pixels × RGBA) and
+  dropping input B in `DeepMerge::renderCombine` (24 failures, exactly the six
+  pixels B contributes to). Known blind spot, inherent to the briefed graph:
+  `DeepRecolor` sets every sample's RGB to colour × alpha, so the flattened RGB
+  is colour × flattened alpha and a sample-*ordering* bug in the merge is
+  invisible here; ordering is covered by `DeepNodes_Test.cpp`. Also noted, not
+  fixed: the Tests binary exits with an OIIO "pending error message …
+  ImageOutput::create() called with no filename" whenever a WriteOIIO node is
+  created — pre-existing, reproducible with `BaseTest.RenderFrameRange*` alone.
+  The comment-policy checker flags line 2 of the mandatory GPL header on every
+  *new* Natron source file ("restates what the code is"); the gate was passed
+  with that as the only finding, on the grounds that the licence block is not
+  a comment the policy governs.
+
+- 2026-09-11 — User confirmed they will run M18.P2.T3's manual Viewer checklist
+  themselves (over shipping on build+review only, or deferring the Gui probe to
+  M21). T3 is therefore implemented and built here, then handed over with the
+  exact checklist; its result is recorded in this section before the gate.

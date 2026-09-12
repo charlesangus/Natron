@@ -530,3 +530,32 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   themselves (over shipping on build+review only, or deferring the Gui probe to
   M21). T3 is therefore implemented and built here, then handed over with the
   exact checklist; its result is recorded in this section before the gate.
+
+- 2026-09-11 — **Handoff (system reboot mid-task).** M18.P2.T3's code is
+  written but **uncommitted and unverified** in the working tree — 13 modified
+  files: `Engine/EffectInstance.h`, `Engine/EffectInstanceRenderDeep.cpp`,
+  `Engine/EngineFwd.h`, `Engine/FrameEntry.h`, `Engine/FrameParams.h`,
+  `Engine/OpenGLViewerI.h`, `Engine/UpdateViewerParams.h`,
+  `Engine/ViewerInstance.cpp`, `Gui/InfoViewerWidget.{h,cpp}`,
+  `Gui/ViewerGL.{h,cpp}`, `Gui/ViewerGLPrivate.h`. The implementer's rebuild
+  (`tools/ci/local/build.sh debug`, log at `/tmp/m18-t3-build.log`) was at
+  173/388 when the box went down; `build/debug/App/Natron` still dates from
+  21:28, i.e. pre-T3. The implementer never reached its report, so nothing about
+  the change has been checked by anyone. **Pick up:** (1) `git status` should
+  show exactly those 13 files and nothing else — if the tree is clean the WIP
+  was lost and T3 must be re-delegated from its brief; (2) run
+  `tools/ci/local/build.sh debug` in the foreground (it resumes incrementally);
+  (3) run the whole ctest suite (was 197/197 at `e5e00d68c`); (4) run
+  `git clang-format ... --diff HEAD -- Engine/ Gui/` and
+  `check-comments.py --files` on the 13 files; (5) have a reviewer-grade look at
+  the diff against the T3 brief (payload cleared wherever `lastRenderedTiles`
+  is cleared; null passed on the image path; no mipmap fallback in
+  `getDeepSamplesAt`; raw untidied samples; same mutex as `lastRenderedTiles`)
+  before committing — nobody has; (6) commit as T3, then write the manual
+  checklist from the `deep-scanline.exr` sample table in
+  `Tests/DeepReadWrite_Test.cpp` (name one multi-sample pixel with its count /
+  Z range / values and one empty pixel) and hand it to the user, who has agreed
+  to run it; record the result here before the gate. Background `until`-loops
+  waiting on the build were killed twice by the harness for "low memory" — wait
+  in foreground chunks with `timeout`, or just re-run `build.sh` and let it
+  finish.

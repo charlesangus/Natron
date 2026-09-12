@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: running
+status: paused
 current: M18.P2.T3
-pm_heartbeat: 2026-09-11T21:40:15-04:00
+pm_heartbeat: 2026-09-11T22:24:06-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -127,4 +127,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
-_None._
+- 2026-09-11 — Run paused for a system reboot with M18.P2.T3 in flight:
+  code uncommitted in the working tree, build unfinished, nothing verified.
+  Exact pick-up steps are in M18's `## Decisions` (last entry). Remaining
+  after T3: the M18 verification gate, PR, review round, merge.

@@ -3,14 +3,17 @@
 #
 #   python3 Tests/fixtures/make-deep-fixtures.py Tests/fixtures
 #
-# Writes three files. deep-scanline.exr and deep-tiled.exr hold identical
+# Writes five files. deep-scanline.exr and deep-tiled.exr hold identical
 # content and differ only in whether the EXR part is scanline or tiled.
 # deep-noncanonical.exr holds the same sample structure over a channel set with
 # no RGB at all, which OpenImageIO hands to a reader as A, Z, ZBack, AOV -- an
 # order in which neither the alpha nor the depth channel sits where an
 # R,G,B,A,Z,ZBack file would put it. deep-nozback.exr carries no ZBack channel
 # at all, which the deep specification reads as every sample being a point
-# sample whose back is its front.
+# sample whose back is its front. deep-interleaved.exr is a second, different
+# image over the same frame for merging with deep-scanline.exr
+# (DeepPipeline_Test.cpp): its samples sit in front of, between and behind the
+# first file's without ever overlapping one in depth.
 # Run it inside the dev container (tools/ci/local/devshell.sh), which ships the
 # OpenImageIO 3.1 Python module.
 #
@@ -54,6 +57,29 @@ PIXELS = {
 }
 
 
+# The same, for deep-interleaved.exr, each sample [R, G, B, A, Z, ZBack] with no
+# AOV. Depths are chosen against PIXELS: none of these depth ranges overlaps a
+# range in the same pixel there, so the merged pixel flattens as a plain
+# front-to-back "over" of the union of the two files' samples.
+INTERLEAVED = {
+    (0, 0): [[0.1, 0.2, 0.3, 0.4, 20.0, 20.0]],
+    (1, 0): [[0.2, 0.2, 0.2, 0.375, 1.0, 2.0]],
+    (2, 0): [[0.3, 0.1, 0.2, 0.5, 3.0, 3.0],
+             [0.4, 0.4, 0.4, 0.5, 10.0, 10.0]],
+    (3, 0): [[0.5, 0.5, 0.5, 0.5, 3.0, 3.0]],
+    (0, 1): [[0.6, 0.5, 0.4, 0.25, 6.0, 6.0]],
+    (1, 1): [[0.75, 0.75, 0.75, 0.75, 3.0, 4.0]],
+    # Back-to-front on purpose, like PIXELS[(2, 0)].
+    (2, 1): [[0.25, 0.5, 0.75, 0.25, 12.0, 12.0],
+             [0.5, 0.25, 0.125, 0.5, 8.0, 8.0]],
+    (3, 1): [[0.9, 0.8, 0.7, 0.5, 9.0, 9.0]],
+    (0, 2): [[0.5, 0.5, 0.5, 0.5, 14.0, 14.0]],
+    (1, 2): [[0.25, 0.25, 0.25, 0.25, 13.0, 13.0]],
+    (2, 2): [],
+    (3, 2): [[0.5, 0.5, 0.5, 0.5, 15.0, 15.0]],
+}
+
+
 def make_spec(names, tiled):
     spec = oiio.ImageSpec(WIDTH, HEIGHT, len(names), "float")
     spec.channelnames = names
@@ -64,14 +90,14 @@ def make_spec(names, tiled):
     return spec
 
 
-def make_deep_data(names, columns):
+def make_deep_data(names, columns, pixels):
     deep = oiio.DeepData()
     deep.init(WIDTH * HEIGHT, len(names),
               [oiio.TypeDesc("float")] * len(names), names)
     for y in range(HEIGHT):
         for x in range(WIDTH):
             pixel = y * WIDTH + x
-            samples = PIXELS[(x, y)]
+            samples = pixels[(x, y)]
             deep.set_samples(pixel, len(samples))
             for s, values in enumerate(samples):
                 for c, column in enumerate(columns):
@@ -79,7 +105,7 @@ def make_deep_data(names, columns):
     return deep
 
 
-def write(path, names, columns, tiled):
+def write(path, names, columns, tiled, pixels=PIXELS):
     spec = make_spec(names, tiled)
     out = oiio.ImageOutput.create(path)
     if out is None:
@@ -90,7 +116,7 @@ def write(path, names, columns, tiled):
         raise RuntimeError("%s does not support tiles" % path)
     if not out.open(path, spec):
         raise RuntimeError(out.geterror())
-    if not out.write_deep_image(make_deep_data(names, columns)):
+    if not out.write_deep_image(make_deep_data(names, columns, pixels)):
         raise RuntimeError(out.geterror())
     out.close()
     print("wrote %s" % path)
@@ -107,6 +133,8 @@ def main():
     write("%s/deep-nozback.exr" % outdir,
           [name for name, _ in NOZBACK],
           [column for _, column in NOZBACK], False)
+    write("%s/deep-interleaved.exr" % outdir, CHANNELS[:6], list(range(6)),
+          False, INTERLEAVED)
 
 
 if __name__ == "__main__":

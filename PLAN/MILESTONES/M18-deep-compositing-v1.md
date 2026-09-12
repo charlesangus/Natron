@@ -55,7 +55,7 @@ Pixels" document verbatim.
   - verify: ten ctest cases, each driven red-then-green by perturbing one line — adapter accepts / adapter refuses scene even when the effect asks for it (the invariant) / polymorphic node between deep source and adapter sink resolves deep (the M17 regression) / adapter edge survives project load with no persistent message / flatten matches a serial reference **over a pixel with overlapping samples** / second flatten is a cache hit / abort leaves nothing cached / cache invalidates on deep-node hash change / probe samples match the payload / probe returns raw not tidied samples. Whole ctest suite still green.
   - size: L
 
-- [ ] M18.P2.T3 — Viewer per-sample probe plumbing (Gui half)
+- [x] M18.P2.T3 — Viewer per-sample probe plumbing (Gui half)
   - files: `Engine/UpdateViewerParams.h`, `Engine/OpenGLViewerI.h`, `Engine/ViewerInstance.cpp`, `Gui/ViewerGL.cpp`, `Gui/ViewerGLPrivate.h`, `Gui/InfoViewerWidget.h`/`.cpp`, `Gui/ViewerTab40.cpp`
   - approach: **execute after M18.P3.T1** so the manual verify has a real deep source to hover. Carry `DeepImagePtr deepImage` on `UpdateViewerParams` beside `colorImage`; hand it to the GUI through one new `OpenGLViewerI::setLastRenderedDeepImage(textureIndex, mipmapLevel, deepImage)` rather than an 18th argument on `endTransferBufferFromRAMToGPU`, passing null on the image path so a stale payload cannot outlive its frame; stash it in `TextureInfo::lastRenderedDeepTiles` next to `lastRenderedTiles` and clear it wherever that is cleared. `ViewerGL::getDeepSamplesAt()` beside `getColorAt()` delegates to `DeepFlatten::getSamplesAtPixel()` — and unlike `getColorAt` it does **not** fall back to a neighbouring mipmap level, because samples from the wrong scale are actively misleading; return false and show a dash. The info bar is one text-line tall, so it gets a summary label (`deep: 7 smp  Z 12.40–48.90`) and the full per-sample list (`Z / ZBack / A / R G B`, monospace, capped ~16 with a trailing count) in that label's dynamic tooltip — the only multi-line affordance there. Probe reads raw untidied samples: tidying splits and merges, and would show the user values the source file does not contain.
   - verify: no ctest coverage is possible — the Viewer plugin is not registered in the `Tests` binary (`registerBuiltInPlugin<ViewerInstance>` is gated on `!isBackground()`) and `Tests` does not link `NatronGui`, so there is no test to write and `DISABLED_` is the wrong tool. Manual app-launch checklist instead, recorded in this milestone's `## Decisions` with its result: DeepRead connects to the Viewer with no explicit `DeepToImage`; the image appears; scrub forward then back and confirm the second pass does not re-render (render counter or `--enable-render-stats`); hover a known multi-sample pixel and match bar count + tooltip values against the source EXR; hover an empty pixel and get a dash, not a stale list. Whole ctest suite still green.
@@ -559,3 +559,74 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   waiting on the build were killed twice by the harness for "low memory" — wait
   in foreground chunks with `timeout`, or just re-run `build.sh` and let it
   finish.
+
+- 2026-09-12 — **T3 resumed and closed out.** The 13-file WIP survived the
+  reboot intact. The Docker content store was corrupted by the reboot
+  (`natron-dev` image's layers were unreadable, then `aswf/ci-vfxall` itself
+  came back with a missing blob) — fixed by `docker pull
+  aswf/ci-vfxall:2027-clang21.1` followed by rebuilding `natron-dev`; not a
+  code issue. Incremental debug build then found nothing to do (the
+  implementer's build had actually finished, at 22:26, after the 21:44/21:48
+  edits — the "173/388, pre-T3 binary" note in the prior entry was a stale
+  snapshot taken before that run completed). Full ctest suite: 197/197.
+  `git clang-format --diff main` (pip `clang-format==21.1.8`, `--user
+  --break-system-packages`) and `check-comments.py`: both clean.
+  A reviewer-grade consultant pass (opus) against the T3 brief then found no
+  brief-compliance defects but flagged 5 issues, of which 4 were fixed
+  (sonnet implementer, then rebuilt/retested/reformatted/re-gated, all green
+  again) before committing as `119005b64`:
+  - **Perf regression (fixed):** the viewer's flat-image-cache-hit path in
+    `renderDeepRoIFlattened()` was unconditionally calling `renderDeepRoI()`
+    to populate the probe's deep payload, so any refresh where the *deep*
+    cache entry had been evicted (they lose the eviction race — they're
+    large) triggered a full synchronous deep re-render nobody asked for, on
+    the strength of a texture-cache-hit render alone. Replaced with a
+    cache-only peek (new file-local `lookupCachedDeepImage()`) that leaves
+    the payload null on a miss rather than rendering — consistent with the
+    probe's existing "no fallback, show nothing" rule for the wrong-mipmap
+    case.
+  - **Stale-payload risk (fixed):** `setLastRenderedDeepImage()` was called
+    whenever the frame wasn't partial, even when the color payload
+    (`originalImage`) was null and `endTransferBufferFromRAMToGPU` therefore
+    left the *previous* color texture in place — so an expired deep
+    weak-ref on that path could wipe a still-valid previous deep payload out
+    from under an otherwise-unchanged display. Now gated on `originalImage`
+    too, matching the color path's own condition.
+  - **Stale label (fixed):** the deep-probe label wasn't cleared when the
+    cursor left the valid probe area unless the color label happened to
+    already be visible (three sites in `ViewerGL.cpp`) — `hideDeepInfo()`
+    is now called unconditionally alongside the existing conditional
+    `hideColorInfo()` at each.
+  - **Qt string bug (fixed):** `InfoViewerWidget.cpp`'s tooltip build used
+    chained `.arg(header).arg(rows)`, which re-scans the substituted string
+    for the next placeholder — a channel literally named `%2` would corrupt
+    the tooltip. Changed to the two-argument `.arg(header, rows)` form.
+  - **Not fixed, accepted as scope:** the probe indexes by
+    `getMipmapLevelCombinedToZoomFactor()`, which doesn't know about
+    auto-proxy, so a draft-mode frame at `mipmapLevelWithDraft` shows a dash
+    even though a same-resolution deep image would satisfy it. Consistent
+    with the deliberate no-mipmap-fallback rule; the user-visible scope is
+    wider than "not rendered yet" but not wrong. Left for a future task if
+    it proves to matter in practice.
+
+  **Manual Viewer checklist**, handed to the user per the 2026-09-11 decision
+  above (built binary: `build/debug/App/Natron`, this commit):
+  1. Connect `DeepRead` (pointed at `Tests/fixtures/deep-scanline.exr`)
+     directly to the Viewer, no `DeepToImage` in between. The image should
+     display.
+  2. Scrub the timeline forward one frame then back to the original frame;
+     confirm the second pass does not re-render (render counter, or launch
+     with `--enable-render-stats` and check the second pass logs a cache
+     hit, not a render).
+  3. Hover pixel **(3, 0)** (a multi-sample pixel): the info-bar label
+     should read `deep: 3 smp  Z 1.00–5.50`; its tooltip should list all
+     three samples — `Z=1 ZBack=1 A=1 R=1 G=0 B=0`, `Z=4 ZBack=6 A=0.5 R=0
+     G=1 B=0`, `Z=5.5 ZBack=5.5 A=0.75 R=0 G=0 B=1` (order not guaranteed —
+     raw/untidied, so match as a set) plus the `AOV` column (14, 15, 16
+     respectively).
+  4. Hover pixel **(1, 1)** (an empty pixel — no sample in the fixture):
+     the label should show a dash (`deep: –`), not a stale list from the
+     previous hover.
+  5. Confirm the whole ctest suite is still green after any changes made
+     while running this checklist.
+  Result: *pending — awaiting the user's run.*

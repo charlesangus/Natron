@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: paused
-current: M18.P2.T3
-pm_heartbeat: 2026-09-11T22:24:06-04:00
+status: running
+current: null
+pm_heartbeat: 2026-09-12T00:35:00-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -127,7 +127,10 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- 2026-09-11 — Run paused for a system reboot with M18.P2.T3 in flight:
-  code uncommitted in the working tree, build unfinished, nothing verified.
-  Exact pick-up steps are in M18's `## Decisions` (last entry). Remaining
-  after T3: the M18 verification gate, PR, review round, merge.
+- 2026-09-12 — M18.P2.T3 is implemented, reviewed, fixed, built, tested
+  (197/197) and committed (`119005b64` on `milestone/m18-deep-compositing-v1`).
+  All M18 tasks are now checked off. What remains before the verification
+  gate is the manual Viewer checklist recorded in M18's `## Decisions`
+  (last entry) — GUI mouse-hover steps this session cannot run headlessly.
+  Waiting on the user to run it and report the result; once recorded, proceed
+  straight to the gate, PR, review round, and merge.

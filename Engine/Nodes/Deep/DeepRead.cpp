@@ -105,16 +105,22 @@ DeepRead::getRegionOfDefinition(U64 /*hash*/,
     const std::string filename = getFilenameAtTime(time);
 
     if (filename.empty()) {
+        setPersistentMessage(eMessageTypeError, tr("No deep file to read.").toStdString());
+
         return eStatusFailed;
     }
 
     OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::open(filename);
     if (!input) {
+        setPersistentMessage(eMessageTypeError, OIIO::geterror());
+
         return eStatusFailed;
     }
 
     const OIIO::ImageSpec& spec = input->spec();
     if (!spec.deep) {
+        setPersistentMessage(eMessageTypeError, tr("%1 does not hold deep data.").arg(QString::fromUtf8(filename.c_str())).toStdString());
+
         return eStatusFailed;
     }
 
@@ -124,6 +130,8 @@ DeepRead::getRegionOfDefinition(U64 /*hash*/,
     rod->x2 = spec.x + spec.width;
     rod->y1 = spec.full_y + spec.full_height - (spec.y + spec.height);
     rod->y2 = spec.full_y + spec.full_height - spec.y;
+
+    clearPersistentMessage(false);
 
     return eStatusOK;
 }

@@ -137,6 +137,36 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 
 ## Decisions
 
+- 2026-09-15 — `34ce1f926` was verified only against the ctest suite, which
+  calls `refreshMetadata_public()` manually in test setup, and the user found
+  the bug still fully reproduced in the built AppImage. Root cause:
+  `NativeEffectBase` has none of the OFX host's automatic "re-run
+  `getClipPreferences` after any param the plugin declared via
+  `addClipPreferencesSlaveParam`" wiring (`Engine/OfxImageEffectInstance.cpp:690`),
+  so with no input to trigger `Node::refreshAllInputRelatedData()`,
+  `getPreferredMetadata()` was only ever consulted once, at node creation,
+  before a file is chosen — the RoD looked right because it is computed live
+  on every render, while the format is cached `NodeMetadata` state. Fixed in
+  `c2bd4da27` by marking the filename knob `setIsMetadataSlave(true)` in
+  `initializeKnobs()`, the same mechanism the *actual* native 2D Read node's
+  embedded OFX plugin gets for free. Also corrected the format rect itself
+  (`34ce1f926`'s version preserved `full_x` as the origin; OFX formats must
+  start at `(0, 0)` per `ReadOIIO::getFrameBounds`'s `specFormat` — no
+  observable difference on these fixtures since their `full_x`/`full_y` are
+  0, but wrong for a file with a nonzero display-window origin). New test
+  `OutputFormatRefreshesWhenTheFileKnobChangesWithNoExplicitRefresh`
+  reproduces the real bug (no manual refresh call) and was driven
+  red-then-green. Full ctest suite **200/200**. Verified a second way this
+  time, not just ctest: visually, through Xvfb
+  (`build/deeprepro/check_format.py` against a freshly built
+  `build/release/App/Natron`) — format reads `0 0 1920 1080` before the file
+  is set and `0 0 640 360` immediately after, Viewer info bar shows
+  "640x360", screenshot captured. **Lesson for this milestone: a ctest pass
+  is not sufficient proof for anything that depends on the knob-change →
+  evaluate → metadata-refresh chain — that chain is largely untested by the
+  suite's own `refreshMetadata_public()`-calling helpers, and needs an
+  Xvfb/GUI check before being called done.**
+
 - 2026-09-15 — M18.P3.T7 landed as `34ce1f926`; full ctest suite **199/199**
   passing (confirmed by the implementer's own run, `OSGLContext.Basic` and
   `GPUContextPool.Basic` are the two pre-existing environment-disabled

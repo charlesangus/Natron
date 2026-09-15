@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: null
-pm_heartbeat: 2026-09-12T00:35:00-04:00
+pm_heartbeat: 2026-09-15T00:00:00-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -127,10 +127,12 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- 2026-09-12 — M18.P2.T3 is implemented, reviewed, fixed, built, tested
-  (197/197) and committed (`119005b64` on `milestone/m18-deep-compositing-v1`).
-  All M18 tasks are now checked off. What remains before the verification
-  gate is the manual Viewer checklist recorded in M18's `## Decisions`
-  (last entry) — GUI mouse-hover steps this session cannot run headlessly.
+- 2026-09-15 — M18.P3.T7 (raised 2026-09-15, `DeepRead` output-format
+  defaulting) is implemented, tested (199/199) and committed (`34ce1f926` on
+  `milestone/m18-deep-compositing-v1`), on top of an unrelated uncommitted
+  mipmap-subsampling WIP committed first at the user's direction (`da8370e7f`).
+  All M18 tasks are once again checked off. What remains before the
+  verification gate is the manual Viewer checklist recorded in M18's
+  `## Decisions` — GUI mouse-hover steps this session cannot run headlessly.
   Waiting on the user to run it and report the result; once recorded, proceed
   straight to the gate, PR, review round, and merge.

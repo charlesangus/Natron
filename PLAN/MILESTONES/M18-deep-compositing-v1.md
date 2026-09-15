@@ -127,9 +127,46 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: a test that aborts a *widening* deep render and asserts nothing stale is servable afterwards — driven red-then-green against the current by-key removal. Whole ctest suite green.
   - size: M
 
+- [x] M18.P3.T7 — Fix `DeepRead` output format defaulting to the project format instead of the file's
+  - files: `Engine/Nodes/Deep/DeepRead.h`, `Engine/Nodes/Deep/DeepRead.cpp`, `Tests/DeepReadWrite_Test.cpp`
+  - approach: add `getPreferredMetadata(NodeMetadata&)` (declared `OVERRIDE FINAL WARN_UNUSED_RETURN` in `DeepRead.h` beside `getRegionOfDefinition`), mirroring `DeepCrop.cpp`'s `metadata.setOutputFormat(RectI)` pattern (`DeepCrop.cpp:203-215`) rather than inventing a new one. `DeepRead` currently overrides `getRegionOfDefinition()` (correct — mirrors the data window into Natron's RoD) but never touches the output format, so it inherits the project's default HD format regardless of the file; on the small fixture EXRs this makes the format visibly wrong even though the RoD is right. Open the file the same way `getRegionOfDefinition` does (OIIO `ImageInput::open()`/`spec()`), but build the format `RectI` from the *display* window (`spec.full_x`/`full_y`/`full_width`/`full_height`), mirrored top-to-bottom the same way the RoD's data window already is — for these fixtures data window == display window so the two rects coincide, but display window is the semantically correct source for format regardless. Leave the format untouched (falls through to the default) if the file can't be opened; `getRegionOfDefinition`/`renderDeep` already report that error, no need to duplicate it here.
+  - verify: a `DeepReadWrite_Test.cpp` case pointing `DeepRead` at a small (few-pixel) fixture and asserting `EffectInstance::getOutputFormat()` matches the file's dimensions, not the project's default HD format; driven red-then-green by temporarily reverting the override. Whole ctest suite green.
+  - size: S
+
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; entire pre-existing ctest suite still green.
 
 ## Decisions
+
+- 2026-09-15 — M18.P3.T7 landed as `34ce1f926`; full ctest suite **199/199**
+  passing (confirmed by the implementer's own run, `OSGLContext.Basic` and
+  `GPUContextPool.Basic` are the two pre-existing environment-disabled
+  GPU-context tests, unaffected). `getPreferredMetadata()` derives the output
+  format from the EXR's display window (`full_x/full_y/full_width/full_height`),
+  mirrored top-to-bottom the same way `getRegionOfDefinition()`'s data-window
+  RoD already is — mirroring the *whole* display window within itself always
+  normalizes its y-origin to 0 regardless of `full_y` (the offset cancels),
+  while x preserves any horizontal offset via `full_x`, since only the
+  vertical axis is flipped between EXR and Natron conventions. On open
+  failure the metadata is left untouched so it falls through to the project
+  default, since `getRegionOfDefinition()`/`renderDeep()` already own error
+  reporting for that case. New test
+  `OutputFormatIsTheFilesDisplayWindowNotTheProjectDefault` driven
+  red-then-green (failed with the override stubbed to a no-op, passed with
+  the real implementation).
+  Landed on top of an unrelated pre-existing WIP found uncommitted in the
+  working tree at session start — mipmap-level subsampling support for
+  `DeepRead::renderDeep()`'s `filePixelIndex` plus a `NativeEffectBase`
+  `supportsRenderScaleMaybe` default fix — which the user asked to be
+  committed first, as its own commit (`da8370e7f`), verified by a full green
+  ctest run before T7 was implemented on top of a clean tree.
+
+- 2026-09-15 — User found `DeepRead` sets the output format to the project's
+  default HD format rather than the file's, on small test deep EXRs, even
+  though the RoD (`getRegionOfDefinition`) is correct. Raised as **M18.P3.T7**
+  and sequenced before the gate rather than folded into M18.P3.T1: the format
+  is user-visible on any deep source smaller than the project default, and
+  `DeepCrop` (M18.P3.T3b) already has the `getPreferredMetadata` pattern to
+  mirror.
 
 - 2026-09-11 — User confirmed the built-in evaluator for `DeepExpression`
   (over vendoring exprtk or deferring the node to M21). Also noted in

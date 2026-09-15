@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: M18.P3.T8c
-pm_heartbeat: 2026-09-15T11:09:53-04:00
+pm_heartbeat: 2026-09-15T11:39:54-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -134,21 +134,13 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- 2026-09-15 — M18.P3.T7 (raised 2026-09-15, `DeepRead` output-format
-  defaulting) is implemented, tested (199/199) and committed (`34ce1f926` on
-  `milestone/m18-deep-compositing-v1`), on top of an unrelated uncommitted
-  mipmap-subsampling WIP committed first at the user's direction (`da8370e7f`).
-  What remains before the verification gate is the manual Viewer checklist
-  recorded in M18's `## Decisions` (M18.P2.T3, GUI mouse-hover steps this
-  session cannot run headlessly) — waiting on the user to run it and report
-  the result.
-- 2026-09-15 — User then reported `DeepWrite` has no real way to trigger a
-  file write; confirmed and raised as **M18.P3.T8a/T8b/T8c** (see M18's
-  `## Decisions` for the investigation). Full parity (GUI + CLI + Python)
-  chosen as the fix scope; T8a/T8b later reshaped at the user's direction
-  to fix the framework (`NativeEffectBase` → `OutputEffectInstance`,
-  scheduler dispatches on output data kind) rather than special-case
-  `DeepWrite`, so `WriteScene` reuses it. M18 is not yet fully checked off again — T8a/b/c
-  are `[ ]` — and T8c's manual GUI check folds into the same pending
-  checklist as M18.P2.T3's. Once both items are implemented/run and
-  reported, proceed straight to the gate, PR, review round, and merge.
+- 2026-09-15 — **M18 is fully implemented** (every task `[x]`, last code
+  commit `1119c937d` on `milestone/m18-deep-compositing-v1`, suite 205/205,
+  smoke green). The only thing between it and the verification gate is the
+  **manual GUI checklist** (six items, recorded at the end of M18's
+  `## Decisions`: five Viewer/probe steps for M18.P2.T3 plus a
+  right-click-`DeepWrite`-→-Render step for M18.P3.T8c) — GUI mouse
+  interaction a headless session cannot run. Waiting on the user to run it
+  against a binary built at `1119c937d` or later and report. On a pass:
+  record the result in the milestone file, then gate → PR → merge
+  (`--no-review` was passed this run).

@@ -145,7 +145,7 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: an integration test that drives a `DeepWrite` node through `OutputEffectInstance::renderFullSequence()` (not a direct `renderDeepRoI()` call) over a small frame range, asserting the files land on disk with correct content and that abort is honored mid-sequence; the existing 2D path is provably untouched (an existing 2D Write ctest case still green, and the image branch's code is byte-identical apart from the enclosing `switch`). Whole ctest suite green.
   - size: M
 
-- [ ] M18.P3.T8c — Wire up and prove the GUI, CLI, and Python entry points
+- [x] M18.P3.T8c — Wire up and prove the GUI, CLI, and Python entry points
   - files: `Engine/AppInstance.cpp`, `Tests/DeepReadWrite_Test.cpp`
   - approach: depends on M18.P3.T8a/T8b. Once `DeepWrite` is a real `isWriter()`/`OutputEffectInstance` with a working deep scheduler, the GUI Render menu (`Gui::renderSelectedNode()`/`renderAllWriters()`, `Gui/Gui40.cpp`) and the Python `App::render()`/`renderInternal()` (`Engine/PyAppInstance.cpp:~323/~370`) need **no changes** — they already operate generically off `OutputEffectInstance*`/`isWriter()`/`isOutput()`. The CLI `-w` path (`AppInstance::getWritersWorkForCL()`, `Engine/AppInstance.cpp:452-521`) has one deep-specific check to make: its output-filename-knob override (lines 473-481) looks up a `KnobOutputFile` named `kOfxImageEffectFileParamName` — confirm `DeepWrite`'s file knob (named `"filename"` in `initializeKnobs()`) matches that constant, and if not, add the lookup-by-name fallback needed for a deep writer. The CLI's `mustCreate` auto-node-creation branch (lines 482-505, creates a `PLUGINID_NATRON_WRITE` node when the named writer doesn't exist) is explicitly out of scope: a deep graph must already contain an explicit `DeepWrite`.
   - verify: a `Tests/DeepReadWrite_Test.cpp` (or `tools/ci/`, matching wherever T8b's integration test landed) case driving the CLI path (`AppInstance::getWritersWorkForCL()` + `startWritersRendering()`) and the Python `App::render()` binding, each asserting a file lands on disk — this is the test that would have caught the original defect, since the pre-existing round-trip test only ever called `renderDeepRoI()` directly. Manual GUI checklist addition (this milestone already has one pending for M18.P2.T3; add to it rather than opening a second): right-click a `DeepWrite` node → Render, confirm the file is written and the node's progress/abort UI behaves like an ordinary Write node. Whole ctest suite green.
@@ -154,6 +154,26 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; `DeepWrite` actually writes a file through the GUI Render menu, the CLI `-w` flag, and the Python `app.render()` binding (not just direct `renderDeepRoI()` calls in a test); entire pre-existing ctest suite still green.
 
 ## Decisions
+
+- 2026-09-15 — M18.P3.T8c landed as `1119c937d`. The brief's one
+  hypothesised gap was not real: `DeepWrite`'s file knob is `"filename"`
+  and so is `kOfxImageEffectFileParamName`, so the CLI `-w <name> <file>`
+  override in `getWritersWorkForCL()`, the `-i` override and
+  `getSequenceNameFromWriter()` already resolve it. Every entry point read
+  end to end — `CLArgs.cpp` parsing, `startWritersRendering[FromNames]`,
+  `NodeCollection::getWriters`, `PyAppInstance.cpp` `App::render`, and
+  `Gui40.cpp` `renderAllWriters()`/`renderSelectedNode()` — is generic over
+  `OutputEffectInstance*`/`isWriter()` with no plugin-ID or knob-name
+  filter, so after T8a/T8b all three work for `DeepWrite` unchanged. Only
+  production edit: `getWritersWorkForCL()` made public so the CLI path is
+  testable directly. Tests: ctest
+  `CLIWriterArgOverridesTheFileKnobAndRendersThroughGetWritersWorkForCL`
+  (asserts the override lands on the `KnobOutputFile` and the overridden
+  file is written), and a new `check_deep_write_render()` in
+  `tools/ci/smoke_test.py` driving `app.render()` on DeepRead → DeepWrite
+  through the built `NatronRenderer` (the Python binding is not reachable
+  from the `Tests` binary). Suite 205/205; smoke passes. The GUI half is
+  item 6 of the manual checklist below.
 
 - 2026-09-15 — M18.P3.T8b landed as `334abaf3d`. Both `DefaultScheduler`
   sites (`DefaultRenderFrameRunnable::renderFrame`,
@@ -809,4 +829,10 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
      previous hover.
   5. Confirm the whole ctest suite is still green after any changes made
      while running this checklist.
-  Result: *pending — awaiting the user's run.*
+  6. *(added 2026-09-15 for M18.P3.T8c)* Add a `DeepWrite` downstream of the
+     `DeepRead`, set its `filename` to a writable `.exr` path, right-click
+     it → Render (or Render → Render All Writers). Confirm the file is
+     written and the progress/abort UI behaves like an ordinary Write node.
+  Result: *pending — awaiting the user's run.* Binary must be rebuilt at
+  `1119c937d` or later (`build/debug/App/Natron`, or an AppImage via
+  `tools/ci/local/package.sh`).

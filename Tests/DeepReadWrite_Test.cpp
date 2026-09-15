@@ -32,15 +32,20 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
+#include <QObject>
 #include <QProcess>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
 
+#include <SequenceParsing.h>
+
 #include "BaseTest.h"
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/DeepImage.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
@@ -50,9 +55,12 @@
 #include "Engine/Nodes/Deep/DeepRecolor.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
 #include "Engine/OutputEffectInstance.h"
+#include "Engine/OutputSchedulerThread.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
+#include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -373,6 +381,41 @@ protected:
     {
         return RectI(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
     }
+
+    // Renders writer over [first, last] the way the Render menu, the CLI and app.render() do:
+    // queued on the writer's own render engine and dispatched by the scheduler, blocking until
+    // the engine reports it finished. Returns what renderFinished() carried: 0 for a completed
+    // sequence, 1 for an aborted one, -1 if the engine never reported at all.
+    int renderSequenceThroughScheduler(const NodePtr& writer,
+                                       int first,
+                                       int last)
+    {
+        OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
+
+        if (!writerEffect) {
+            return -1;
+        }
+
+        int finishedCode = -1;
+        RenderEnginePtr engine = writerEffect->getRenderEngine();
+        // The signal is emitted from the scheduler thread and nothing pumps this thread's event
+        // loop while blocked in startWritersRendering(), so only a direct connection observes it.
+        QMetaObject::Connection connection = QObject::connect(engine.get(), &RenderEngine::renderFinished, engine.get(), [&finishedCode](int retCode) { finishedCode = retCode; }, Qt::DirectConnection);
+
+        std::list<AppInstance::RenderWork> works;
+        works.push_back(AppInstance::RenderWork(writerEffect, first, last, 1, false));
+        getApp()->startWritersRendering(true, works);
+
+        QObject::disconnect(connection);
+
+        return finishedCode;
+    }
+
+    std::string sequenceFrameFile(const std::string& pattern,
+                                  int frame) const
+    {
+        return SequenceParsing::generateFileNameFromPattern(pattern, getApp()->getProject()->getProjectViewNames(), frame, 0);
+    }
 };
 
 TEST_F(DeepReadWriteTest, BothNodesAreRegisteredAndInstantiable)
@@ -633,4 +676,92 @@ TEST_F(DeepReadWriteTest, WhatDeepWriteWroteReadsBackAsTheFixtureDid)
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(reread, 1., fullFrame(), &rereadImage));
     ASSERT_TRUE(rereadImage != NULL);
     expectFixtureContents(*rereadImage, noncanonicalChannelSet(), fullFrame());
+}
+
+// The scheduler path, not a hand-driven renderDeepRoI(): DeepRead -> DeepWrite rendered as a
+// writer over a frame range, each frame checked on disk against the fixture both by oiiotool
+// and by reading it back through DeepRead.
+TEST_F(DeepReadWriteTest, DeepWriteRendersASequenceThroughTheRenderScheduler)
+{
+    QTemporaryDir tmp;
+
+    ASSERT_TRUE(tmp.isValid());
+    const std::string pattern = (tmp.path() + QString::fromUtf8("/deep-sequence.####.exr")).toStdString();
+
+    NodePtr read = createDeepRead(fixturePath("deep-scanline.exr"));
+    NodePtr write = createDeepWrite(QString::fromStdString(pattern), false /*tiled*/);
+    ASSERT_TRUE(read != NULL);
+    ASSERT_TRUE(write != NULL);
+    connectNodes(read, write, 0, true);
+
+    const int firstFrame = 1;
+    const int lastFrame = 3;
+    EXPECT_EQ(0, renderSequenceThroughScheduler(write, firstFrame, lastFrame));
+
+    for (int frame = firstFrame; frame <= lastFrame; ++frame) {
+        const std::string written = sequenceFrameFile(pattern, frame);
+        ASSERT_TRUE(QFile::exists(QString::fromStdString(written))) << "frame " << frame << " was not written: " << written;
+
+        QString output;
+        EXPECT_EQ(0, runOiiotool(QStringList() << QString::fromUtf8("--diff") << fixturePath("deep-scanline.exr") << QString::fromStdString(written), &output)) << "frame " << frame << ": " << output.toStdString();
+
+        NodePtr reread = createDeepRead(QString::fromStdString(written));
+        ASSERT_TRUE(reread != NULL);
+        DeepImagePtr rereadImage;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(reread, 1., fullFrame(), &rereadImage));
+        ASSERT_TRUE(rereadImage != NULL);
+        expectFixtureContents(*rereadImage, fullChannelSet(), fullFrame());
+    }
+}
+
+// Aborting the engine once the first frame has been rendered must end the sequence there: the
+// frames after it are never written. The abort lands between frames, so the render is pinned to
+// a single render thread; with more, later frames could already be in flight when it arrives.
+TEST_F(DeepReadWriteTest, DeepWriteSequenceStopsWhereTheRenderIsAborted)
+{
+    QTemporaryDir tmp;
+
+    ASSERT_TRUE(tmp.isValid());
+    const std::string pattern = (tmp.path() + QString::fromUtf8("/deep-aborted.####.exr")).toStdString();
+
+    NodePtr read = createDeepRead(fixturePath("deep-scanline.exr"));
+    NodePtr write = createDeepWrite(QString::fromStdString(pattern), false /*tiled*/);
+    ASSERT_TRUE(read != NULL);
+    ASSERT_TRUE(write != NULL);
+    connectNodes(read, write, 0, true);
+
+    struct ParallelRendersScope {
+        int saved;
+
+        ParallelRendersScope()
+            : saved(appPTR->getCurrentSettings()->getNumberOfParallelRenders())
+        {
+            appPTR->getCurrentSettings()->setNumberOfParallelRenders(1);
+        }
+
+        ~ParallelRendersScope()
+        {
+            appPTR->getCurrentSettings()->setNumberOfParallelRenders(saved);
+        }
+    } parallelRenders;
+
+    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(write->getEffectInstance().get());
+    ASSERT_TRUE(writerEffect != NULL);
+    RenderEnginePtr engine = writerEffect->getRenderEngine();
+    int framesReported = 0;
+    QMetaObject::Connection abortOnFirstFrame = QObject::connect(engine.get(), &RenderEngine::frameRendered, engine.get(), [&framesReported, engine](int /*time*/, double /*progress*/) {
+        if (++framesReported == 1) {
+            engine->abortRenderingNoRestart();
+        } }, Qt::DirectConnection);
+
+    const int firstFrame = 1;
+    const int lastFrame = 3;
+    EXPECT_EQ(1, renderSequenceThroughScheduler(write, firstFrame, lastFrame));
+    QObject::disconnect(abortOnFirstFrame);
+
+    EXPECT_EQ(1, framesReported);
+    EXPECT_TRUE(QFile::exists(QString::fromStdString(sequenceFrameFile(pattern, firstFrame))));
+    for (int frame = firstFrame + 1; frame <= lastFrame; ++frame) {
+        EXPECT_FALSE(QFile::exists(QString::fromStdString(sequenceFrameFile(pattern, frame)))) << "frame " << frame << " was written after the abort";
+    }
 }

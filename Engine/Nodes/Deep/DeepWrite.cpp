@@ -36,6 +36,8 @@
 
 #include <QString>
 
+#include "Global/FloatingPointExceptions.h"
+
 #include "Engine/DeepImage.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -169,6 +171,12 @@ DeepWrite::writeDeepImage(const std::string& filename,
         spec.tile_height = kDeepWriteTileSize;
     }
 
+#ifdef DEBUG
+    // OIIO's first EXR open() in the process builds its default colour config, and OCIO's builtin
+    // colourspace probing raises FE_INVALID doing so. The render threads trap that in debug builds;
+    // OFX plugins are shielded by OfxImageEffectInstance::mainEntry(), a native node has to be here.
+    boost_adaptbx::floating_point::exception_trapping trap(0);
+#endif
     OIIO::ImageOutput::unique_ptr output = OIIO::ImageOutput::create(filename);
     if (!output) {
         setPersistentMessage(eMessageTypeError, OIIO::geterror());

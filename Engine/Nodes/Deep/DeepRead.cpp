@@ -37,6 +37,8 @@
 #include "Engine/DeepImage.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/NodeMetadata.h"
+#include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
@@ -132,6 +134,32 @@ DeepRead::getRegionOfDefinition(U64 /*hash*/,
     rod->y2 = spec.full_y + spec.full_height - spec.y;
 
     clearPersistentMessage(false);
+
+    return eStatusOK;
+}
+
+StatusEnum
+DeepRead::getPreferredMetadata(NodeMetadata& metadata)
+{
+    const std::string filename = getFilenameAtTime(getCurrentTime());
+
+    if (filename.empty()) {
+        return eStatusFailed;
+    }
+
+    OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::open(filename);
+    if (!input) {
+        return eStatusFailed;
+    }
+
+    const OIIO::ImageSpec& spec = input->spec();
+    if (!spec.deep) {
+        return eStatusFailed;
+    }
+
+    const int displayTop = spec.full_y + spec.full_height;
+    const RectI format(spec.full_x, displayTop - (spec.full_y + spec.full_height), spec.full_x + spec.full_width, displayTop - spec.full_y);
+    metadata.setOutputFormat(format);
 
     return eStatusOK;
 }

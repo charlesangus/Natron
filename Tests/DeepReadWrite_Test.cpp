@@ -390,6 +390,16 @@ TEST_F(DeepReadWriteTest, BothNodesAreRegisteredAndInstantiable)
     connectNodes(read, write, 0, true);
 }
 
+TEST_F(DeepReadWriteTest, OutputFormatIsTheFilesDisplayWindowNotTheProjectDefault)
+{
+    NodePtr read = createDeepRead(fixturePath("deep-scanline.exr"));
+
+    ASSERT_TRUE(read != NULL);
+    read->getEffectInstance()->refreshMetadata_public(false);
+
+    EXPECT_TRUE(fullFrame() == read->getEffectInstance()->getOutputFormat());
+}
+
 TEST_F(DeepReadWriteTest, ReadsADeepScanlinePartExactly)
 {
     NodePtr read = createDeepRead(fixturePath("deep-scanline.exr"));

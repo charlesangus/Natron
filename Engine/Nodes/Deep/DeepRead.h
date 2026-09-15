@@ -75,6 +75,8 @@ private:
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
+    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     std::string getFilenameAtTime(double time) const WARN_UNUSED_RETURN;

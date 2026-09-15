@@ -210,9 +210,14 @@ DeepRead::renderDeep(const DeepRenderActionArgs& args)
 
     // The pixel of deepData holding Natron's (x, y), or -1 when that pixel is outside the file's
     // data window -- which the output's bounds can reach, since they follow the render window.
-    const auto filePixelIndex = [dataX, dataY, dataWidth, dataHeight, displayTop](int x, int y) -> int {
-        const int fileX = x - dataX;
-        const int fileY = displayTop - 1 - y - dataY;
+    // (x, y) is at the requested mipmap level; the file is only ever full resolution, and a
+    // reduced-resolution pixel carries the sample list of the first full-resolution pixel of the
+    // block it covers. Averaging deep samples across pixels has no single right answer, and a
+    // proxy is a preview.
+    const unsigned int mipmapLevel = args.mipmapLevel;
+    const auto filePixelIndex = [dataX, dataY, dataWidth, dataHeight, displayTop, mipmapLevel](int x, int y) -> int {
+        const int fileX = (x << mipmapLevel) - dataX;
+        const int fileY = displayTop - 1 - (y << mipmapLevel) - dataY;
 
         if ((fileX < 0) || (fileX >= dataWidth) || (fileY < 0) || (fileY >= dataHeight)) {
             return -1;

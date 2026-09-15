@@ -302,7 +302,8 @@ protected:
     EffectInstance::RenderRoIRetCode renderDeepFrame(const NodePtr& node,
                                                      double time,
                                                      const RectI& roi,
-                                                     DeepImagePtr* outputDeepImage)
+                                                     DeepImagePtr* outputDeepImage,
+                                                     unsigned int mipmapLevel = 0)
     {
         AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
         ParallelRenderArgsSetter frameRenderArgs(time,
@@ -318,8 +319,8 @@ protected:
                                                  false /*draftMode*/,
                                                  RenderStatsPtr());
         EffectInstance::RenderDeepRoIArgs args(time,
-                                               RenderScale::identity,
-                                               0 /*mipmapLevel*/,
+                                               RenderScale::fromMipmapLevel(mipmapLevel),
+                                               mipmapLevel,
                                                ViewIdx(0),
                                                false /*byPassCache*/,
                                                roi,
@@ -411,6 +412,48 @@ TEST_F(DeepReadWriteTest, ReadsADeepTiledPartExactly)
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 1., fullFrame(), &image));
     ASSERT_TRUE(image != NULL);
     expectFixtureContents(*image, fullChannelSet(), fullFrame());
+}
+
+// A reduced-resolution pixel carries the sample list of the first full-resolution pixel of the
+// block it covers: at level 1 the 4x3 fixture reads as 2x2, and (1, 1) holds what (2, 2) holds.
+TEST_F(DeepReadWriteTest, ReadsAtAReducedMipmapLevelBySubsampling)
+{
+    NodePtr read = createDeepRead(fixturePath("deep-scanline.exr"));
+
+    ASSERT_TRUE(read != NULL);
+
+    const RectI halfFrame(0, 0, 2, 2);
+    DeepImagePtr image;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 1., halfFrame, &image, 1 /*mipmapLevel*/));
+    ASSERT_TRUE(image != NULL);
+    ASSERT_TRUE(image->getBounds() == halfFrame);
+
+    const SampleTable& table = image->getSampleTable();
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            const ExpectedPixel* expected = 0;
+            for (std::size_t p = 0; p < sizeof(kExpectedPixels) / sizeof(kExpectedPixels[0]); ++p) {
+                if ((kExpectedPixels[p].x == 2 * x) && (kExpectedPixels[p].y == 2 * y)) {
+                    expected = &kExpectedPixels[p];
+                }
+            }
+            ASSERT_TRUE(expected != NULL);
+
+            const std::size_t index = ((std::size_t)y * 2) + (std::size_t)x;
+            ASSERT_EQ((U32)expected->count, table.getCount(index)) << "at pixel (" << x << ", " << y << ")";
+
+            const U64 offset = table.getOffset(index);
+            const std::vector<std::string> channels = fullChannelSet();
+            for (int s = 0; s < expected->count; ++s) {
+                for (std::size_t c = 0; c < channels.size(); ++c) {
+                    const DeepChannelBuffer* buffer = image->getChannel(channels[c]);
+                    ASSERT_TRUE(buffer != NULL) << "missing channel " << channels[c];
+                    ASSERT_FLOAT_EQ(expectedChannelValue(expected->samples[s], channels[c]), buffer->data()[offset + (U64)s])
+                        << "at pixel (" << x << ", " << y << ") sample " << s << " channel " << channels[c];
+                }
+            }
+        }
+    }
 }
 
 // The channels of deep-noncanonical.exr reach a reader as A, Z, ZBack, AOV: the alpha is first,

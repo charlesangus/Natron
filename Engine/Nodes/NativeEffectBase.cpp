@@ -85,6 +85,15 @@ forEachPixelOfChunk(const RectI& bounds,
 NativeEffectBase::NativeEffectBase(NodePtr node)
     : EffectInstance(node)
 {
+    // Left unresolved, render-scale support is settled only by the probe in
+    // Node::refreshAllInputRelatedData(), which runs when inputs change and needs
+    // getRegionOfDefinition() to succeed right then. A source node whose RoD depends on a knob
+    // (DeepRead before its file is set) fails that probe, has no inputs to trigger another, and
+    // is then rejected by every request pass without a word. The per-plugin preference that
+    // EffectInstance's constructor honours takes precedence.
+    if (supportsRenderScaleMaybe() == eSupportsMaybe) {
+        setSupportsRenderScaleMaybe(eSupportsYes);
+    }
 }
 
 NativeEffectBase::~NativeEffectBase()

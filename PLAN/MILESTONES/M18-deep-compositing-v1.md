@@ -139,7 +139,7 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: existing `DeepReadWrite_Test.cpp` and `DeepNodes_Test.cpp` cases (calling `renderDeepRoI()` directly) still pass unchanged; new assertions that `dynamic_cast<OutputEffectInstance*>(deepWriteNode->getEffectInstance().get())` succeeds with `isWriter()`/`isOutput()` both true, and that a non-writer native node (`DeepRecolor`) has `isOutput() == false`. Whole ctest suite green.
   - size: S
 
-- [ ] M18.P3.T8b — Dispatch the render scheduler on the writer's output data kind
+- [x] M18.P3.T8b — Dispatch the render scheduler on the writer's output data kind
   - files: `Engine/OutputSchedulerThread.cpp`, `Engine/EffectInstance.h`/`.cpp`
   - approach: depends on M18.P3.T8a landing (needs a real `OutputEffectInstance`-derived deep writer to drive). `DefaultScheduler` is already kind-agnostic everywhere except two call sites: `DefaultRenderFrameRunnable::renderFrame` (`OutputSchedulerThread.cpp:~2348`) and `DefaultScheduler::processFrame` (`~2471`) both hard-code `renderRoI()` (2D `Image`); threading, abort, buffering (`BufferableObject` has no image-specific members), progress and the Python frame callbacks never look inside the frame. Do **not** add a `DeepScheduler` sibling or a per-node `createRenderEngine()` override — that forks the scheduler per data kind and `WriteScene` would need a third. Instead, at those two sites, branch on `activeInputToRender->getOutputDataKind()`: `eDataKindImage` keeps the exact existing `renderRoI` block; `eDataKindDeep` builds a `RenderDeepRoIArgs` over the same RoD/scale-1 render window and calls `renderDeepRoI()`; any other kind fails the render with a clear "no scheduler support for this output kind yet" message (the hook M19/M20 fill in for scene). The writer's own `renderDeep()` performs the file write — exactly how OFX writers work today (`renderRoI` on the writer runs the plugin's render action, which writes) — so the scheduler never calls `writeDeepImage()` or knows a deep writer from a deep pass-through. Factor the deep branch's RoD/hash/args setup so it reads like the image branch, not a copy of it; if that pushes toward a single `EffectInstance::renderOutputFrame(kind, …)` helper that both branches call, that is fine but not required.
   - verify: an integration test that drives a `DeepWrite` node through `OutputEffectInstance::renderFullSequence()` (not a direct `renderDeepRoI()` call) over a small frame range, asserting the files land on disk with correct content and that abort is honored mid-sequence; the existing 2D path is provably untouched (an existing 2D Write ctest case still green, and the image branch's code is byte-identical apart from the enclosing `switch`). Whole ctest suite green.
@@ -154,6 +154,39 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; `DeepWrite` actually writes a file through the GUI Render menu, the CLI `-w` flag, and the Python `app.render()` binding (not just direct `renderDeepRoI()` calls in a test); entire pre-existing ctest suite still green.
 
 ## Decisions
+
+- 2026-09-15 — M18.P3.T8b landed as `334abaf3d`. Both `DefaultScheduler`
+  sites (`DefaultRenderFrameRunnable::renderFrame`,
+  `DefaultScheduler::processFrame`) now `switch` on `getOutputDataKind()`;
+  everything kind-agnostic (RoD, hash, `ParallelRenderArgsSetter`,
+  request pass, abort/failure handling, `notifyFrameRendered`) stays
+  shared, the image-only component/bit-depth pre-work is guarded, and the
+  deep case is ~10 lines per site — no `renderOutputFrame` helper needed.
+  `renderDeepRoI` reads hash and abort state from the TLS frame args the
+  setter installs, so no extra TLS setup. `default:` fails with "No
+  scheduler support for the output data kind of <node> yet" — the hook a
+  scene scheduler fills. Findings: (1) the image branch is
+  whitespace-normalised, not byte-identical — re-indenting made the
+  clang-format gate touch it, no token changed; (2) `processFrame` is dead
+  for `DefaultScheduler` (`renderFrame` reports FFA and never
+  `appendToBuffer`), dispatched anyway; `DeepImage` is not a
+  `BufferableObject` so its deep case re-pulls through the deep cache;
+  (3) **latent debug-only SIGFPE in `DeepWrite`**: OIIO 3.1's first EXR
+  `open()` builds `ColorConfig::default_colorconfig()`, whose OCIO probing
+  raises `FE_INVALID`; OFX plugins are shielded by
+  `OfxImageEffectInstance::mainEntry`'s `exception_trapping trap(0)`, a
+  native node's `renderDeep` is not — fixed with the same `#ifdef DEBUG`
+  idiom in `writeDeepImage()`. This would have crashed any debug
+  `Natron`/`NatronRenderer` rendering a `DeepWrite`, and is the same
+  family as M25. Tests: `DeepWriteRendersASequenceThroughTheRenderScheduler`
+  (DeepRead → DeepWrite via `startWritersRendering(true)` over frames 1–3;
+  files exist, `oiiotool --diff` 0, re-read matches) and
+  `DeepWriteSequenceStopsWhereTheRenderIsAborted` (abort after frame 1;
+  frames 2–3 absent; `numberOfParallelRenders` pinned to 1; 60/60 under
+  repeat). Red-then-green real: pre-change `renderRoI` on the writer
+  returned OK with no planes and no files. Existing 2D scheduler cases
+  (`BaseTest.GenerateDot`, the M18.P3.T4 pipeline test) green. Suite
+  204/204.
 
 - 2026-09-15 — M18.P3.T8a landed as `603de39c0`: `NativeEffectBase` now
   derives `OutputEffectInstance`; `NativePluginDescription::isWriter`

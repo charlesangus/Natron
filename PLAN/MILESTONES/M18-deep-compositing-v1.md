@@ -133,9 +133,76 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: a `DeepReadWrite_Test.cpp` case pointing `DeepRead` at a small (few-pixel) fixture and asserting `EffectInstance::getOutputFormat()` matches the file's dimensions, not the project's default HD format; driven red-then-green by temporarily reverting the override. Whole ctest suite green.
   - size: S
 
-**Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; entire pre-existing ctest suite still green.
+- [ ] M18.P3.T8a — Root `NativeEffectBase` at `OutputEffectInstance` and let the plugin description declare writer-ness
+  - files: `Engine/Nodes/NativeEffectBase.h`/`.cpp`, `Engine/Nodes/Deep/DeepWrite.cpp`, `Tests/DeepReadWrite_Test.cpp`
+  - approach: user-reported and confirmed real: `DeepWrite::writeDeepImage()`'s OIIO logic is correct, but `DeepWrite` is a plain `NativeEffectBase : public EffectInstance`, never an `OutputEffectInstance`, so every real writer entry point (GUI Render menu, CLI `-w`, Python `app.render()`; see M18.P3.T8c) rejects it via `dynamic_cast<OutputEffectInstance*>`, and `isWriter()`/`isOutput()` both default false. The fix is to the framework, not the node: `OutputEffectInstance` (`Engine/OutputEffectInstance.h`) is not "a writer", it is "an effect that can own a `RenderEngine`" — `OfxEffectInstance`, `NodeGroup`, `NoOpBase`, `DiskCacheNode` and `ViewerInstance` all derive from it and each overrides `isOutput()` to say whether the instance really is a render root (`OfxEffectInstance::isOutput()` returns a flag set from the plugin's context). M17 rooting `NativeEffectBase` at `EffectInstance` put native nodes alongside `RotoPaint`/`PrecompNode`/`OneView`, internal helpers that can never be render roots; that is the actual defect, and it would hit `WriteScene` (M20.P3.T2) identically. Change `NativeEffectBase` to derive `OutputEffectInstance`; add `bool isWriter` (default false) to `NativePluginDescription` and override `NativeEffectBase::isOutput()`/`isWriter()` to return it, so a native node's writer-ness is declared in its description exactly as an OFX plugin's is in its context; `DeepWrite`'s description sets it. No helper extraction, no sibling base class, `renderDeepTwoPass()` stays where it is. The engine is cheap — `RenderEngine::RenderEngine` only connects a signal and the scheduler thread is created lazily on the first `renderFrameRange`/`renderCurrentFrame` — and every non-writer already carries one (each OFX Blur is an `OutputEffectInstance`). Implementation checks: `OutputEffectInstance::initializeData()` is `FINAL` and calls `createRenderEngine()`, which does `shared_from_this()` — confirm native nodes are constructed through the same `Node::load` sequence so that holds; `OutputEffectInstance` has a protected copy ctor `NativeEffectBase` must not fall through to accidentally.
+  - verify: existing `DeepReadWrite_Test.cpp` and `DeepNodes_Test.cpp` cases (calling `renderDeepRoI()` directly) still pass unchanged; new assertions that `dynamic_cast<OutputEffectInstance*>(deepWriteNode->getEffectInstance().get())` succeeds with `isWriter()`/`isOutput()` both true, and that a non-writer native node (`DeepRecolor`) has `isOutput() == false`. Whole ctest suite green.
+  - size: S
+
+- [ ] M18.P3.T8b — Dispatch the render scheduler on the writer's output data kind
+  - files: `Engine/OutputSchedulerThread.cpp`, `Engine/EffectInstance.h`/`.cpp`
+  - approach: depends on M18.P3.T8a landing (needs a real `OutputEffectInstance`-derived deep writer to drive). `DefaultScheduler` is already kind-agnostic everywhere except two call sites: `DefaultRenderFrameRunnable::renderFrame` (`OutputSchedulerThread.cpp:~2348`) and `DefaultScheduler::processFrame` (`~2471`) both hard-code `renderRoI()` (2D `Image`); threading, abort, buffering (`BufferableObject` has no image-specific members), progress and the Python frame callbacks never look inside the frame. Do **not** add a `DeepScheduler` sibling or a per-node `createRenderEngine()` override — that forks the scheduler per data kind and `WriteScene` would need a third. Instead, at those two sites, branch on `activeInputToRender->getOutputDataKind()`: `eDataKindImage` keeps the exact existing `renderRoI` block; `eDataKindDeep` builds a `RenderDeepRoIArgs` over the same RoD/scale-1 render window and calls `renderDeepRoI()`; any other kind fails the render with a clear "no scheduler support for this output kind yet" message (the hook M19/M20 fill in for scene). The writer's own `renderDeep()` performs the file write — exactly how OFX writers work today (`renderRoI` on the writer runs the plugin's render action, which writes) — so the scheduler never calls `writeDeepImage()` or knows a deep writer from a deep pass-through. Factor the deep branch's RoD/hash/args setup so it reads like the image branch, not a copy of it; if that pushes toward a single `EffectInstance::renderOutputFrame(kind, …)` helper that both branches call, that is fine but not required.
+  - verify: an integration test that drives a `DeepWrite` node through `OutputEffectInstance::renderFullSequence()` (not a direct `renderDeepRoI()` call) over a small frame range, asserting the files land on disk with correct content and that abort is honored mid-sequence; the existing 2D path is provably untouched (an existing 2D Write ctest case still green, and the image branch's code is byte-identical apart from the enclosing `switch`). Whole ctest suite green.
+  - size: M
+
+- [ ] M18.P3.T8c — Wire up and prove the GUI, CLI, and Python entry points
+  - files: `Engine/AppInstance.cpp`, `Tests/DeepReadWrite_Test.cpp`
+  - approach: depends on M18.P3.T8a/T8b. Once `DeepWrite` is a real `isWriter()`/`OutputEffectInstance` with a working deep scheduler, the GUI Render menu (`Gui::renderSelectedNode()`/`renderAllWriters()`, `Gui/Gui40.cpp`) and the Python `App::render()`/`renderInternal()` (`Engine/PyAppInstance.cpp:~323/~370`) need **no changes** — they already operate generically off `OutputEffectInstance*`/`isWriter()`/`isOutput()`. The CLI `-w` path (`AppInstance::getWritersWorkForCL()`, `Engine/AppInstance.cpp:452-521`) has one deep-specific check to make: its output-filename-knob override (lines 473-481) looks up a `KnobOutputFile` named `kOfxImageEffectFileParamName` — confirm `DeepWrite`'s file knob (named `"filename"` in `initializeKnobs()`) matches that constant, and if not, add the lookup-by-name fallback needed for a deep writer. The CLI's `mustCreate` auto-node-creation branch (lines 482-505, creates a `PLUGINID_NATRON_WRITE` node when the named writer doesn't exist) is explicitly out of scope: a deep graph must already contain an explicit `DeepWrite`.
+  - verify: a `Tests/DeepReadWrite_Test.cpp` (or `tools/ci/`, matching wherever T8b's integration test landed) case driving the CLI path (`AppInstance::getWritersWorkForCL()` + `startWritersRendering()`) and the Python `App::render()` binding, each asserting a file lands on disk — this is the test that would have caught the original defect, since the pre-existing round-trip test only ever called `renderDeepRoI()` directly. Manual GUI checklist addition (this milestone already has one pending for M18.P2.T3; add to it rather than opening a second): right-click a `DeepWrite` node → Render, confirm the file is written and the node's progress/abort UI behaves like an ordinary Write node. Whole ctest suite green.
+  - size: M
+
+**Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; `DeepWrite` actually writes a file through the GUI Render menu, the CLI `-w` flag, and the Python `app.render()` binding (not just direct `renderDeepRoI()` calls in a test); entire pre-existing ctest suite still green.
 
 ## Decisions
+
+- 2026-09-15 — User reported `DeepWrite` "does not appear to have any way to
+  actually write a file." Confirmed real: `writeDeepImage()`'s OIIO logic is
+  correct, but `DeepWrite` never overrides `EffectInstance::isWriter()` and is
+  a plain `NativeEffectBase`, not an `OutputEffectInstance` — so every real
+  writer entry point (GUI Render menu, CLI `-w`, Python `app.render()`)
+  rejects it via `dynamic_cast<OutputEffectInstance*>`, and even a successful
+  cast wouldn't help because `OutputSchedulerThread`'s frame-pulling core
+  only calls `renderRoI()` (2D `Image`), with no notion of `renderDeep()` at
+  all. `Tests/DeepReadWrite_Test.cpp`'s round-trip test calls
+  `renderDeepRoI()` directly on the node, bypassing every one of those entry
+  points — the same "ctest pass proves nothing about the real invocation
+  chain" failure mode already hit once this milestone with `DeepRead`
+  (M18.P3.T7). User chose full parity (GUI + CLI + Python, not a GUI-only
+  v1) as the fix scope. Raised and sequenced as **M18.P3.T8a/T8b/T8c**,
+  before the gate — split immediately (rather than as a single T8, per the
+  M18.P3.T3 precedent) because the class-hierarchy fix, the scheduler's
+  deep-frame-pulling branch, and the three entry points are each a coherent
+  chunk with its own verify, and together would have been an 8+ file task.
+  The board's `# Open questions` manual-GUI-checklist item, already
+  blocking the gate for M18.P2.T3, now also covers T8c's GUI check rather
+  than opening a second one.
+- 2026-09-15 — User questioned the shape of T8a/T8b (extract the two-pass
+  helper, give `DeepWrite` a separate `OutputEffectInstance`-derived base,
+  add a `DeepScheduler` sibling with a per-node `createRenderEngine()`
+  override): it changed the node rather than the write machinery, and
+  `WriteScene` (M20.P3.T2) would need a third base and a third scheduler.
+  The original plan's premise was wrong: it claimed deriving
+  `NativeEffectBase` from `OutputEffectInstance` "would make every deep node
+  a writer", but `OutputEffectInstance` is the render-engine owner, not a
+  writer marker — every `OfxEffectInstance` (Blur included), `NodeGroup`,
+  `NoOpBase` and `DiskCacheNode` already derives from it and gates
+  writer-ness on an `isOutput()` override. The reason it is spread so wide
+  is historical: OFX plugins are one host class whose writer-ness is only
+  known per instance (plugin context), and C++ picks a base per class, so
+  the engine slot had to go on every OFX instance; `NodeGroup` follows
+  because `WriteNode : NodeGroup`. The engine is cheap and lazy (thread
+  created on first render request), so the cost is one null pointer per
+  node. The principled fix in this codebase is therefore to move
+  `NativeEffectBase` to the same base and declare writer-ness in
+  `NativePluginDescription`, and to make `DefaultScheduler`'s two
+  `renderRoI` call sites dispatch on `getOutputDataKind()` — one generic
+  seam that `WriteScene` reuses. T8a/T8b rewritten accordingly (T8c
+  unchanged). The cleaner long-term shape is composition — `Node` owns an
+  optional `RenderEngine` created iff `effect->isOutput()`, and
+  `OutputEffectInstance` goes away — but that touches ~28 files across
+  Engine/Gui and is a refactor in its own right; filed as **M31.P1.T1** in
+  the deferred architectural-cleanup milestone. Nothing in T8a/T8b
+  conflicts with doing it afterwards.
 
 - 2026-09-15 — `34ce1f926` was verified only against the ctest suite, which
   calls `refreshMetadata_public()` manually in test setup, and the user found

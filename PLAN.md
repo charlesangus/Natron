@@ -88,6 +88,12 @@ future core work has solid ground to build on.
   M30 makes `release.yml`'s existing build/package pipeline fire
   automatically on every merge to `main`, tagged `v0.1.0-betaN` (sequential
   from 1) as a pre-release, alongside the unchanged manual stable-tag path.
+- **M31 (architectural cleanup) is authored but deferred** (2026-09-15): a
+  parking place for structural debts that feature work exposes — first entry
+  is moving the `RenderEngine` from the `OutputEffectInstance` base class to
+  `Node` by composition, surfaced by M18.P3.T8a. Do not start it without an
+  explicit user go-ahead; add tasks to it as they surface instead of folding
+  refactors into feature milestones.
 
 # Board
 
@@ -122,6 +128,7 @@ future core work has solid ground to build on.
 | M24 | Node graph aesthetics: category colour and user colour | todo | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
 | M27 | Make the debug build a debug build again | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M28 | Stop treating page cache as memory pressure | todo | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |
+| M31 | Architectural cleanup (deferred; render-root ownership by composition) | todo | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
 | M29 | Break the link to upstream — an independent repository | todo | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |
 | M30 | Full release + AppImage on every merge, auto-versioned betas from 0.1.0-beta1 | todo | [M30-automated-beta-releases.md](PLAN/MILESTONES/M30-automated-beta-releases.md) |
 
@@ -131,8 +138,17 @@ future core work has solid ground to build on.
   defaulting) is implemented, tested (199/199) and committed (`34ce1f926` on
   `milestone/m18-deep-compositing-v1`), on top of an unrelated uncommitted
   mipmap-subsampling WIP committed first at the user's direction (`da8370e7f`).
-  All M18 tasks are once again checked off. What remains before the
-  verification gate is the manual Viewer checklist recorded in M18's
-  `## Decisions` — GUI mouse-hover steps this session cannot run headlessly.
-  Waiting on the user to run it and report the result; once recorded, proceed
-  straight to the gate, PR, review round, and merge.
+  What remains before the verification gate is the manual Viewer checklist
+  recorded in M18's `## Decisions` (M18.P2.T3, GUI mouse-hover steps this
+  session cannot run headlessly) — waiting on the user to run it and report
+  the result.
+- 2026-09-15 — User then reported `DeepWrite` has no real way to trigger a
+  file write; confirmed and raised as **M18.P3.T8a/T8b/T8c** (see M18's
+  `## Decisions` for the investigation). Full parity (GUI + CLI + Python)
+  chosen as the fix scope; T8a/T8b later reshaped at the user's direction
+  to fix the framework (`NativeEffectBase` → `OutputEffectInstance`,
+  scheduler dispatches on output data kind) rather than special-case
+  `DeepWrite`, so `WriteScene` reuses it. M18 is not yet fully checked off again — T8a/b/c
+  are `[ ]` — and T8c's manual GUI check folds into the same pending
+  checklist as M18.P2.T3's. Once both items are implemented/run and
+  reported, proceed straight to the gate, PR, review round, and merge.

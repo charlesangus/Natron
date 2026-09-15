@@ -46,6 +46,7 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CLArgs.h"
 #include "Engine/DeepImage.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
@@ -764,4 +765,47 @@ TEST_F(DeepReadWriteTest, DeepWriteSequenceStopsWhereTheRenderIsAborted)
     for (int frame = firstFrame + 1; frame <= lastFrame; ++frame) {
         EXPECT_FALSE(QFile::exists(QString::fromStdString(sequenceFrameFile(pattern, frame)))) << "frame " << frame << " was written after the abort";
     }
+}
+
+// Drives the same entry point `NatronRenderer -w <name> <file>` reaches
+// (AppInstance::getWritersWorkForCL()), against a CLArgs built the way the real -w parser
+// would build one: a positional filename after the writer's script-name overrides the node's
+// existing file knob. That override is looked up by kOfxImageEffectFileParamName, which is
+// "filename" -- the same name DeepWrite::initializeKnobs() gives its own file knob -- so no
+// deep-specific lookup is needed for the override to land.
+TEST_F(DeepReadWriteTest, CLIWriterArgOverridesTheFileKnobAndRendersThroughGetWritersWorkForCL)
+{
+    QTemporaryDir tmp;
+
+    ASSERT_TRUE(tmp.isValid());
+    const QString originalFilename = tmp.path() + QString::fromUtf8("/cli-original.exr");
+    const QString overrideFilename = tmp.path() + QString::fromUtf8("/cli-override.exr");
+
+    NodePtr read = createDeepRead(fixturePath("deep-scanline.exr"));
+    NodePtr write = createDeepWrite(originalFilename, false /*tiled*/);
+    ASSERT_TRUE(read != NULL);
+    ASSERT_TRUE(write != NULL);
+    connectNodes(read, write, 0, true);
+
+    QStringList args;
+    args << QString::fromUtf8("NatronRendererTest")
+         << QString::fromUtf8("-w") << QString::fromStdString(write->getScriptName()) << overrideFilename
+         << QString::fromUtf8("cli-writer-arg-test.ntp")
+         << QString::fromUtf8("1");
+    CLArgs cl(args, true /*forceBackground*/);
+    ASSERT_FALSE(cl.getError().has_value());
+
+    std::list<AppInstance::RenderWork> works;
+    getApp()->getWritersWorkForCL(cl, works);
+    ASSERT_EQ((std::size_t)1, works.size());
+    EXPECT_EQ(1, works.front().firstFrame);
+    EXPECT_EQ(1, works.front().lastFrame);
+
+    KnobOutputFile* knob = dynamic_cast<KnobOutputFile*>(write->getKnobByName("filename").get());
+    ASSERT_TRUE(knob != NULL);
+    EXPECT_EQ(overrideFilename.toStdString(), knob->getValue());
+
+    getApp()->startWritersRendering(true, works);
+    EXPECT_TRUE(QFile::exists(overrideFilename));
+    EXPECT_FALSE(QFile::exists(originalFilename));
 }

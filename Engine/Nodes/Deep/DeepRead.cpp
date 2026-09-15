@@ -81,6 +81,11 @@ DeepRead::initializeKnobs()
     filename->setName("filename");
     filename->setAsInputImage();
     filename->setHintToolTip(tr("The deep EXR file to read."));
+    // OFX hosts re-run getClipPreferences after any param the plugin declares via
+    // addClipPreferencesSlaveParam (see ReadOIIO's filename param); NativeEffectBase has no such
+    // wiring, so without this getPreferredMetadata() is only ever consulted once, at node
+    // creation, before a file is chosen.
+    filename->setIsMetadataSlave(true);
     page->addKnob(filename);
     _filename = filename;
 }
@@ -157,8 +162,11 @@ DeepRead::getPreferredMetadata(NodeMetadata& metadata)
         return eStatusFailed;
     }
 
-    const int displayTop = spec.full_y + spec.full_height;
-    const RectI format(spec.full_x, displayTop - (spec.full_y + spec.full_height), spec.full_x + spec.full_width, displayTop - spec.full_y);
+    // OpenFX formats must start at (0, 0) (see ReadOIIO::getFrameBounds's specFormat), so a
+    // positive display-window origin only ever widens the format rather than offsetting it.
+    // full_y drops out entirely: mirroring the display window within itself top-to-bottom, the
+    // same way the data window is mirrored into the RoD above, always lands it at [0, full_height).
+    const RectI format(0, 0, spec.full_x + spec.full_width, spec.full_height);
     metadata.setOutputFormat(format);
 
     return eStatusOK;

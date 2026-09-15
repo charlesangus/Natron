@@ -400,6 +400,25 @@ TEST_F(DeepReadWriteTest, OutputFormatIsTheFilesDisplayWindowNotTheProjectDefaul
     EXPECT_TRUE(fullFrame() == read->getEffectInstance()->getOutputFormat());
 }
 
+// Reproduces the real-world bug report: with no explicit refresh call, setting the filename
+// knob (as the GUI's file dialog and Python's Param.set() both do) must itself trigger a
+// metadata refresh, the same way an OFX reader's clip-preferences-slave params do.
+TEST_F(DeepReadWriteTest, OutputFormatRefreshesWhenTheFileKnobChangesWithNoExplicitRefresh)
+{
+    NodePtr read = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPREAD));
+
+    ASSERT_TRUE(read != NULL);
+
+    const RectI projectDefaultFormat = read->getEffectInstance()->getOutputFormat();
+
+    KnobFile* knob = dynamic_cast<KnobFile*>(read->getKnobByName("filename").get());
+    ASSERT_TRUE(knob != NULL);
+    knob->setValue(fixturePath("deep-scanline.exr").toStdString());
+
+    EXPECT_TRUE(fullFrame() == read->getEffectInstance()->getOutputFormat());
+    EXPECT_FALSE(fullFrame() == projectDefaultFormat);
+}
+
 TEST_F(DeepReadWriteTest, ReadsADeepScanlinePartExactly)
 {
     NodePtr read = createDeepRead(fixturePath("deep-scanline.exr"));

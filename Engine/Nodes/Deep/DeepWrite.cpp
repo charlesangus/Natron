@@ -86,6 +86,7 @@ DeepWrite::getNativePluginDescription() const
     desc.minorVersion = 0;
     desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindDeep));
     desc.outputKind = eDataKindDeep;
+    desc.isWriter = true;
 
     return desc;
 }

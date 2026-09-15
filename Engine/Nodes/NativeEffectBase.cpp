@@ -83,7 +83,7 @@ forEachPixelOfChunk(const RectI& bounds,
 } // anonymous namespace
 
 NativeEffectBase::NativeEffectBase(NodePtr node)
-    : EffectInstance(node)
+    : OutputEffectInstance(node)
 {
     // Left unresolved, render-scale support is settled only by the probe in
     // Node::refreshAllInputRelatedData(), which runs when inputs change and needs

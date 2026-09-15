@@ -47,7 +47,9 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
+#include "Engine/Nodes/Deep/DeepRecolor.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
+#include "Engine/OutputEffectInstance.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -388,6 +390,30 @@ TEST_F(DeepReadWriteTest, BothNodesAreRegisteredAndInstantiable)
 
     // Connecting the pair is what makes the chain the tests below render legal at all.
     connectNodes(read, write, 0, true);
+}
+
+// The real writer entry points -- the GUI Render menu, the CLI's -w, Python's app.render() --
+// all reject a node via dynamic_cast<OutputEffectInstance*> before ever asking isWriter(), so
+// DeepWrite has to actually be one, not just answer isWriter() truthfully.
+TEST_F(DeepReadWriteTest, DeepWriteIsARenderRootOutputEffectInstance)
+{
+    NodePtr write = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPWRITE));
+
+    ASSERT_TRUE(write != NULL);
+    EXPECT_TRUE(dynamic_cast<OutputEffectInstance*>(write->getEffectInstance().get()) != NULL);
+    EXPECT_TRUE(write->getEffectInstance()->isWriter());
+    EXPECT_TRUE(write->getEffectInstance()->isOutput());
+}
+
+// A native node that isn't meant to be rendered as a root -- DeepRecolor, an ordinary in-chain
+// deep node -- must not pick up writer-ness just by sharing NativeEffectBase with DeepWrite.
+TEST_F(DeepReadWriteTest, DeepRecolorIsNotAnOutputNode)
+{
+    NodePtr recolor = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPRECOLOR));
+
+    ASSERT_TRUE(recolor != NULL);
+    EXPECT_FALSE(recolor->getEffectInstance()->isWriter());
+    EXPECT_FALSE(recolor->getEffectInstance()->isOutput());
 }
 
 TEST_F(DeepReadWriteTest, OutputFormatIsTheFilesDisplayWindowNotTheProjectDefault)

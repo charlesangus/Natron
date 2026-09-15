@@ -36,6 +36,7 @@
 #include "Engine/DeepPixelOps.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/OutputEffectInstance.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -60,9 +61,9 @@ struct NativeInputDescription {
 
 /**
  * @brief Statically describes a NativeEffectBase subclass: plugin id/label/description,
- * grouping, version, its inputs and the DataKindEnum it outputs. One instance of this,
- * returned by NativeEffectBase::getNativePluginDescription(), replaces the half-dozen
- * one-line EffectInstance accessor overrides a hand-written node otherwise repeats.
+ * grouping, version, its inputs, the DataKindEnum it outputs, and whether it is a writer. One
+ * instance of this, returned by NativeEffectBase::getNativePluginDescription(), replaces the
+ * half-dozen one-line EffectInstance accessor overrides a hand-written node otherwise repeats.
  **/
 struct NativePluginDescription {
     std::string id;
@@ -73,6 +74,7 @@ struct NativePluginDescription {
     int minorVersion;
     std::vector<NativeInputDescription> inputs;
     DataKindEnum outputKind;
+    bool isWriter;
 
     NativePluginDescription()
         : id()
@@ -83,26 +85,29 @@ struct NativePluginDescription {
         , minorVersion(0)
         , inputs()
         , outputKind(eDataKindImage)
+        , isWriter(false)
     {
     }
 };
 
 /**
- * @brief Convenience base class for native (non-OFX) nodes living under Engine/Nodes/.
+ * @brief Convenience base class for native (non-OFX) nodes living under Engine/Nodes/, rooted at
+ * OutputEffectInstance so a subclass can declare itself a render root (a writer, in practice) the
+ * same way an OFX plugin does through its context, rather than being structurally unable to.
  *
  * A hand-written EffectInstance subclass otherwise repeats the same half-dozen
  * one-line overrides (getPluginID(), getPluginLabel(), getPluginGrouping(),
- * getMajorVersion(), getMinorVersion(), getNInputs(), getInputDataKind(), ...) for
- * every new node. NativeEffectBase asks for that metadata once, via a single
- * getNativePluginDescription() override, and implements those EffectInstance
- * virtuals from it.
+ * getMajorVersion(), getMinorVersion(), getNInputs(), getInputDataKind(), isWriter(),
+ * isOutput(), ...) for every new node. NativeEffectBase asks for that metadata once, via a
+ * single getNativePluginDescription() override, and implements those EffectInstance and
+ * OutputEffectInstance virtuals from it.
  *
- * Everything else about EffectInstance -- knobs, rendering, undo, serialization,
+ * Everything else about OutputEffectInstance -- knobs, rendering, undo, serialization,
  * scheduling -- is unchanged; the one virtual this class adds beyond that metadata is
  * resolveOutputDataKind(), the hook by which a native node supplies its own data-kind
  * resolution policy.
  * A subclass still overrides initializeKnobs() and render() exactly as it would
- * on top of EffectInstance directly, optionally using the createKnob() helper
+ * on top of OutputEffectInstance directly, optionally using the createKnob() helper
  * below for the AppManager::createKnob() idiom.
  *
  * Worked example -- a minimal one-input, one-output native node:
@@ -140,6 +145,7 @@ struct NativePluginDescription {
  *         desc.minorVersion = 0;
  *         desc.inputs.push_back( NativeInputDescription("Source", false, eDataKindImage) );
  *         desc.outputKind = eDataKindImage;
+ *         desc.isWriter = false;
  *
  *         return desc;
  *     }
@@ -165,7 +171,7 @@ struct NativePluginDescription {
  * @endcode
  **/
 class NativeEffectBase
-    : public EffectInstance {
+    : public OutputEffectInstance {
 public:
     explicit NativeEffectBase(NodePtr node);
 
@@ -199,6 +205,16 @@ public:
     virtual int getMinorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return getNativePluginDescription().minorVersion;
+    }
+
+    virtual bool isWriter() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return getNativePluginDescription().isWriter;
+    }
+
+    virtual bool isOutput() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return getNativePluginDescription().isWriter;
     }
 
     virtual int getNInputs() const OVERRIDE WARN_UNUSED_RETURN

@@ -133,7 +133,7 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: a `DeepReadWrite_Test.cpp` case pointing `DeepRead` at a small (few-pixel) fixture and asserting `EffectInstance::getOutputFormat()` matches the file's dimensions, not the project's default HD format; driven red-then-green by temporarily reverting the override. Whole ctest suite green.
   - size: S
 
-- [ ] M18.P3.T8a — Root `NativeEffectBase` at `OutputEffectInstance` and let the plugin description declare writer-ness
+- [x] M18.P3.T8a — Root `NativeEffectBase` at `OutputEffectInstance` and let the plugin description declare writer-ness
   - files: `Engine/Nodes/NativeEffectBase.h`/`.cpp`, `Engine/Nodes/Deep/DeepWrite.cpp`, `Tests/DeepReadWrite_Test.cpp`
   - approach: user-reported and confirmed real: `DeepWrite::writeDeepImage()`'s OIIO logic is correct, but `DeepWrite` is a plain `NativeEffectBase : public EffectInstance`, never an `OutputEffectInstance`, so every real writer entry point (GUI Render menu, CLI `-w`, Python `app.render()`; see M18.P3.T8c) rejects it via `dynamic_cast<OutputEffectInstance*>`, and `isWriter()`/`isOutput()` both default false. The fix is to the framework, not the node: `OutputEffectInstance` (`Engine/OutputEffectInstance.h`) is not "a writer", it is "an effect that can own a `RenderEngine`" — `OfxEffectInstance`, `NodeGroup`, `NoOpBase`, `DiskCacheNode` and `ViewerInstance` all derive from it and each overrides `isOutput()` to say whether the instance really is a render root (`OfxEffectInstance::isOutput()` returns a flag set from the plugin's context). M17 rooting `NativeEffectBase` at `EffectInstance` put native nodes alongside `RotoPaint`/`PrecompNode`/`OneView`, internal helpers that can never be render roots; that is the actual defect, and it would hit `WriteScene` (M20.P3.T2) identically. Change `NativeEffectBase` to derive `OutputEffectInstance`; add `bool isWriter` (default false) to `NativePluginDescription` and override `NativeEffectBase::isOutput()`/`isWriter()` to return it, so a native node's writer-ness is declared in its description exactly as an OFX plugin's is in its context; `DeepWrite`'s description sets it. No helper extraction, no sibling base class, `renderDeepTwoPass()` stays where it is. The engine is cheap — `RenderEngine::RenderEngine` only connects a signal and the scheduler thread is created lazily on the first `renderFrameRange`/`renderCurrentFrame` — and every non-writer already carries one (each OFX Blur is an `OutputEffectInstance`). Implementation checks: `OutputEffectInstance::initializeData()` is `FINAL` and calls `createRenderEngine()`, which does `shared_from_this()` — confirm native nodes are constructed through the same `Node::load` sequence so that holds; `OutputEffectInstance` has a protected copy ctor `NativeEffectBase` must not fall through to accidentally.
   - verify: existing `DeepReadWrite_Test.cpp` and `DeepNodes_Test.cpp` cases (calling `renderDeepRoI()` directly) still pass unchanged; new assertions that `dynamic_cast<OutputEffectInstance*>(deepWriteNode->getEffectInstance().get())` succeeds with `isWriter()`/`isOutput()` both true, and that a non-writer native node (`DeepRecolor`) has `isOutput() == false`. Whole ctest suite green.
@@ -154,6 +154,19 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; `DeepWrite` actually writes a file through the GUI Render menu, the CLI `-w` flag, and the Python `app.render()` binding (not just direct `renderDeepRoI()` calls in a test); entire pre-existing ctest suite still green.
 
 ## Decisions
+
+- 2026-09-15 — M18.P3.T8a landed as `603de39c0`: `NativeEffectBase` now
+  derives `OutputEffectInstance`; `NativePluginDescription::isWriter`
+  (default false) drives `isWriter()`/`isOutput()` (`OVERRIDE FINAL`);
+  `DeepWrite` sets it. Every implementation check in the brief held:
+  `Node::load` owns the effect by `shared_ptr` before `initializeData()`, so
+  `createRenderEngine()`'s `shared_from_this()` is safe; no native node
+  overrides `initializeData()`; the protected copy ctor is never reached
+  (`createRenderClone()` is not overridden by any native node).
+  `Engine/Nodes/README.md` updated. Two new tests
+  (`DeepWriteIsARenderRootOutputEffectInstance`,
+  `DeepRecolorIsNotAnOutputNode`), the first driven red-then-green by
+  flipping `desc.isWriter`. Suite 202/202.
 
 - 2026-09-15 — User reported `DeepWrite` "does not appear to have any way to
   actually write a file." Confirmed real: `writeDeepImage()`'s OIIO logic is

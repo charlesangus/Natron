@@ -253,6 +253,12 @@ InfoViewerWidget::hideDeepInfo()
     deepValues->hide();
 }
 
+QString
+InfoViewerWidget::getDeepSamplesToolTip() const
+{
+    return deepValues->isHidden() ? QString() : deepValues->toolTip();
+}
+
 void
 InfoViewerWidget::setDeepSamplesUnavailable()
 {

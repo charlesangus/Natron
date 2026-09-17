@@ -193,8 +193,20 @@ DeepWrite::writeDeepImage(const std::string& filename,
     deepData.init(spec);
 
     const SampleTable& table = image.getSampleTable();
+    // Every OIIO set_samples() call rewrites its cumulative-capacity table for all the pixels
+    // after the one being set, so sizing pixel by pixel is quadratic in the pixel count; hand
+    // over all the counts at once and OIIO allocates the sample storage in one go.
+    std::vector<unsigned int> sampleCounts((std::size_t)bounds.width() * (std::size_t)bounds.height(), 0);
     for (int y = bounds.y1; y < bounds.y2; ++y) {
         // The file's first row is the top of the display window, which is this image's last.
+        const std::ptrdiff_t fileRow = (std::ptrdiff_t)(bounds.y2 - 1 - y) * (std::ptrdiff_t)bounds.width();
+        for (int x = bounds.x1; x < bounds.x2; ++x) {
+            sampleCounts[(std::size_t)(fileRow + (x - bounds.x1))] = table.getCount((std::size_t)pixelIndex(image, x, y));
+        }
+    }
+    deepData.set_all_samples(sampleCounts);
+
+    for (int y = bounds.y1; y < bounds.y2; ++y) {
         const std::ptrdiff_t fileRow = (std::ptrdiff_t)(bounds.y2 - 1 - y) * (std::ptrdiff_t)bounds.width();
         for (int x = bounds.x1; x < bounds.x2; ++x) {
             const std::ptrdiff_t index = pixelIndex(image, x, y);
@@ -202,7 +214,6 @@ DeepWrite::writeDeepImage(const std::string& filename,
             const U32 count = table.getCount((std::size_t)index);
             const U64 offset = table.getOffset((std::size_t)index);
 
-            deepData.set_samples((int)filePixel, (int)count);
             for (U32 s = 0; s < count; ++s) {
                 for (std::size_t c = 0; c < channelData.size(); ++c) {
                     deepData.set_deep_value((int)filePixel, (int)c, (int)s, channelData[c] ? channelData[c][offset + s] : 0.f);

@@ -42,8 +42,10 @@
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
+#include <QHelpEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QToolTip>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include <QTreeWidget>
 #include <QTabBar>
@@ -3134,6 +3136,26 @@ ViewerGL::enterEvent(QEnterEvent* e)
     _imp->infoViewer[0]->showMouseInfo();
     _imp->infoViewer[1]->showMouseInfo();
     QOpenGLWidget::enterEvent(e);
+}
+
+bool
+ViewerGL::event(QEvent* e)
+{
+    if (e->type() == QEvent::ToolTip) {
+        // The deep sample list lives in the info bar label's tooltip, which can never be
+        // hovered while probing: pop the same list up over the pixel being probed instead.
+        for (int i = 0; i < 2; ++i) {
+            const QString samples = _imp->infoViewer[i]->getDeepSamplesToolTip();
+            if (!samples.isEmpty()) {
+                QToolTip::showText(static_cast<QHelpEvent*>(e)->globalPos(), samples, this);
+                e->accept();
+
+                return true;
+            }
+        }
+    }
+
+    return QOpenGLWidget::event(e);
 }
 
 void

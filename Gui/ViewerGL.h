@@ -518,6 +518,7 @@ private:
     virtual void enterEvent(QEnterEvent* e) OVERRIDE FINAL;
     virtual void leaveEvent(QEvent* e) OVERRIDE FINAL;
     virtual void tabletEvent(QTabletEvent* e) OVERRIDE FINAL;
+    virtual bool event(QEvent* e) OVERRIDE FINAL;
 
     /**
      *@brief initializes OpenGL context related stuff. This is called once after widget creation.

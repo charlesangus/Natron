@@ -85,6 +85,13 @@ public:
 
     void hideDeepInfo();
 
+    /**
+     * @brief The per-sample list behind the deep label, or an empty string when no deep
+     * probe is being shown. The viewer pops it up over the hovered pixel, since moving the
+     * mouse to the label itself ends the probe.
+     **/
+    QString getDeepSamplesToolTip() const;
+
     void setMousePos(QPoint p);
 
 

@@ -32,6 +32,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QElapsedTimer>
 #include <QFile>
 #include <QObject>
 #include <QProcess>
@@ -52,6 +53,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Deep/DeepFromImage.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepRecolor.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
@@ -677,6 +679,47 @@ TEST_F(DeepReadWriteTest, WhatDeepWriteWroteReadsBackAsTheFixtureDid)
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(reread, 1., fullFrame(), &rereadImage));
     ASSERT_TRUE(rereadImage != NULL);
     expectFixtureContents(*rereadImage, noncanonicalChannelSet(), fullFrame());
+}
+
+// A frame-sized image, not a fixture a few pixels wide: sizing OIIO's DeepData one pixel at a
+// time is quadratic in the pixel count, which the small fixtures cannot tell from linear (a
+// 640x360 frame took 15 s that way). The bound is far above what a linear write needs.
+TEST_F(DeepReadWriteTest, WritesAFrameSizedImageInLinearTime)
+{
+    QTemporaryDir tmp;
+
+    ASSERT_TRUE(tmp.isValid());
+    const QString written = tmp.path() + QString::fromUtf8("/frame-sized.exr");
+
+    NodePtr generator = createNode(_generatorPluginID);
+    NodePtr fromImage = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPFROMIMAGE));
+    NodePtr write = createDeepWrite(written, false /*tiled*/);
+    ASSERT_TRUE(generator != NULL);
+    ASSERT_TRUE(fromImage != NULL);
+    ASSERT_TRUE(write != NULL);
+    connectNodes(generator, fromImage, 0, true);
+    connectNodes(fromImage, write, 0, true);
+
+    RectD rod;
+    bool isProjectFormat;
+    ASSERT_EQ(eStatusOK, write->getEffectInstance()->getRegionOfDefinition_public(write->getEffectInstance()->getHash(), 1., RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+    const RectI frame = rod.toPixelEnclosing(0, 1.);
+    ASSERT_GE((std::size_t)frame.width() * (std::size_t)frame.height(), (std::size_t)640 * 360);
+
+    QElapsedTimer timer;
+    timer.start();
+    DeepImagePtr image;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(write, 1., frame, &image));
+    ASSERT_TRUE(image != NULL);
+    EXPECT_LT(timer.elapsed(), 60000);
+
+    NodePtr reread = createDeepRead(written);
+    ASSERT_TRUE(reread != NULL);
+    DeepImagePtr rereadImage;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(reread, 1., frame, &rereadImage));
+    ASSERT_TRUE(rereadImage != NULL);
+    EXPECT_EQ(image->getSampleTable().getTotalSampleCount(), rereadImage->getSampleTable().getTotalSampleCount());
+    EXPECT_EQ(image->getSampleTable().getCounts(), rereadImage->getSampleTable().getCounts());
 }
 
 // The scheduler path, not a hand-driven renderDeepRoI(): DeepRead -> DeepWrite rendered as a

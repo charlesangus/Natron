@@ -42,23 +42,27 @@
 
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
+#include <QHelpEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QToolTip>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include <QTreeWidget>
 #include <QTabBar>
 
 #include <QOpenGLShaderProgram>
 
+#include "Engine/DeepFlatten.h"
+#include "Engine/DeepImage.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Lut.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGuiI.h"
-#include "Engine/Project.h"
 #include "Engine/OfxOverlayInteract.h"
-#include "Engine/KnobTypes.h"
+#include "Engine/Project.h"
 #include "Engine/Settings.h"
-#include "Engine/Timer.h" // for gettimeofday
 #include "Engine/Texture.h"
+#include "Engine/Timer.h" // for gettimeofday
 #include "Engine/Utils.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
@@ -1549,6 +1553,39 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
 } // ViewerGL::endTransferBufferFromRAMToGPU
 
 void
+ViewerGL::setLastRenderedDeepImage(int textureIndex,
+                                   unsigned int mipmapLevel,
+                                   const DeepImagePtr& deepImage)
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    assert(textureIndex == 0 || textureIndex == 1);
+
+    ViewerInstance* internalNode = getInternalNode();
+    QMutexLocker k(&_imp->lastRenderedImageMutex);
+    TextureInfo& info = _imp->displayTextures[textureIndex];
+    std::vector<DeepImagePtr>& tiles = info.lastRenderedDeepTiles;
+
+    if (info.memoryHeldByLastRenderedDeepImages > 0) {
+        internalNode->unregisterPluginMemory(info.memoryHeldByLastRenderedDeepImages);
+        info.memoryHeldByLastRenderedDeepImages = 0;
+    }
+
+    // getDeepSamplesAt() never reads another level than the one displayed, so a level left over
+    // from an earlier frame could only ever be read as that frame's samples by mistake.
+    for (std::size_t i = 0; i < tiles.size(); ++i) {
+        tiles[i].reset();
+    }
+    if (mipmapLevel < tiles.size()) {
+        tiles[mipmapLevel] = deepImage;
+        if (deepImage) {
+            info.memoryHeldByLastRenderedDeepImages = deepImage->getSizeInBytes();
+            internalNode->registerPluginMemory(info.memoryHeldByLastRenderedDeepImages);
+        }
+    }
+}
+
+void
 ViewerGL::transferBufferFromRAMtoGPU(const unsigned char* ramBuffer,
                                      size_t bytesCount,
                                      const RectI &roiRoundedToTileSize,
@@ -1673,9 +1710,16 @@ ViewerGL::clearLastRenderedImage()
         for (U32 j = 0; j < _imp->displayTextures[i].lastRenderedTiles.size(); ++j) {
             _imp->displayTextures[i].lastRenderedTiles[j].reset();
         }
+        for (U32 j = 0; j < _imp->displayTextures[i].lastRenderedDeepTiles.size(); ++j) {
+            _imp->displayTextures[i].lastRenderedDeepTiles[j].reset();
+        }
         if (_imp->displayTextures[i].memoryHeldByLastRenderedImages > 0) {
             internalNode->unregisterPluginMemory(_imp->displayTextures[i].memoryHeldByLastRenderedImages);
             _imp->displayTextures[i].memoryHeldByLastRenderedImages = 0;
+        }
+        if (_imp->displayTextures[i].memoryHeldByLastRenderedDeepImages > 0) {
+            internalNode->unregisterPluginMemory(_imp->displayTextures[i].memoryHeldByLastRenderedDeepImages);
+            _imp->displayTextures[i].memoryHeldByLastRenderedDeepImages = 0;
         }
     }
 }
@@ -2554,6 +2598,7 @@ ViewerGL::updateColorPicker(int textureIndex,
         if ( _imp->infoViewer[textureIndex]->colorVisible() ) {
             _imp->infoViewer[textureIndex]->hideColorInfo();
         }
+        _imp->infoViewer[textureIndex]->hideDeepInfo();
         if (textureIndex == 0) {
             setParametricParamsPickerColor(OfxRGBAColourD(), false, false);
         }
@@ -2648,6 +2693,7 @@ ViewerGL::updateColorPicker(int textureIndex,
             }
         }
     }
+    updateDeepProbe(textureIndex, imgPosCanonical.x(), imgPosCanonical.y(), picked);
 } // updateColorPicker
 
 void
@@ -3106,6 +3152,26 @@ ViewerGL::enterEvent(QEnterEvent* e)
     _imp->infoViewer[0]->showMouseInfo();
     _imp->infoViewer[1]->showMouseInfo();
     QOpenGLWidget::enterEvent(e);
+}
+
+bool
+ViewerGL::event(QEvent* e)
+{
+    if (e->type() == QEvent::ToolTip) {
+        // The deep sample list lives in the info bar label's tooltip, which can never be
+        // hovered while probing: pop the same list up over the pixel being probed instead.
+        for (int i = 0; i < 2; ++i) {
+            const QString samples = _imp->infoViewer[i]->getDeepSamplesToolTip();
+            if (!samples.isEmpty()) {
+                QToolTip::showText(static_cast<QHelpEvent*>(e)->globalPos(), samples, this);
+                e->accept();
+
+                return true;
+            }
+        }
+    }
+
+    return QOpenGLWidget::event(e);
 }
 
 void
@@ -3717,6 +3783,7 @@ ViewerGL::pickColorInternal(double x,
             _imp->infoViewer[i]->setColorValid(false);
             setParametricParamsPickerColor(OfxRGBAColourD(), false, false);
         }
+        updateDeepProbe(i, imgPos.x(), imgPos.y(), picked);
     }
 
     return ret;
@@ -3796,6 +3863,7 @@ ViewerGL::updateInfoWidgetColorPickerInternal(const QPointF & imgPos,
                  if ( _imp->infoViewer[texIndex]->colorVisible() && _imp->pickerState == ePickerStateInactive) {
                      _imp->infoViewer[texIndex]->hideColorInfo();
                  }
+                 _imp->infoViewer[texIndex]->hideDeepInfo();
                  for (std::list<Histogram*>::const_iterator it = histograms.begin(); it != histograms.end(); ++it) {
                      if ( (*it)->getViewerTextureInputDisplayed() == texIndex ) {
                          (*it)->hideViewerCursor();
@@ -3826,6 +3894,7 @@ ViewerGL::updateInfoWidgetColorPickerInternal(const QPointF & imgPos,
         if ( _imp->infoViewer[texIndex]->colorVisible() && _imp->pickerState == ePickerStateInactive) {
             _imp->infoViewer[texIndex]->hideColorInfo();
         }
+        _imp->infoViewer[texIndex]->hideDeepInfo();
         for (std::list<Histogram*>::const_iterator it = histograms.begin(); it != histograms.end(); ++it) {
             if ( (*it)->getViewerTextureInputDisplayed() == texIndex ) {
                 (*it)->hideViewerCursor();
@@ -3894,6 +3963,7 @@ ViewerGL::updateRectangleColorPickerInternal()
             _imp->infoViewer[i]->setColorValid(false);
             setParametricParamsPickerColor(OfxRGBAColourD(), false, false);
         }
+        _imp->infoViewer[i]->hideDeepInfo();
     }
 }
 
@@ -4089,7 +4159,11 @@ ViewerGL::clearLastRenderedTexture()
             for (U32 j = 0; j < _imp->displayTextures[i].lastRenderedTiles.size(); ++j) {
                 _imp->displayTextures[i].lastRenderedTiles[j].reset();
             }
+            for (U32 j = 0; j < _imp->displayTextures[i].lastRenderedDeepTiles.size(); ++j) {
+                _imp->displayTextures[i].lastRenderedDeepTiles[j].reset();
+            }
             toUnRegister += _imp->displayTextures[i].memoryHeldByLastRenderedImages;
+            toUnRegister += _imp->displayTextures[i].memoryHeldByLastRenderedDeepImages;
         }
         if (toUnRegister > 0) {
             getInternalNode()->unregisterPluginMemory(toUnRegister);
@@ -4352,6 +4426,81 @@ ViewerGL::getColorAt(double x,
 
     return gotval;
 } // getColorAt
+
+bool
+ViewerGL::isLastRenderedImageDeep(int textureIndex) const
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    assert(textureIndex == 0 || textureIndex == 1);
+
+    QMutexLocker l(&_imp->lastRenderedImageMutex);
+    const std::vector<DeepImagePtr>& tiles = _imp->displayTextures[textureIndex].lastRenderedDeepTiles;
+    for (std::size_t i = 0; i < tiles.size(); ++i) {
+        if (tiles[i]) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+ViewerGL::getDeepSamplesAt(double x,
+                           double y, // x and y in canonical coordinates
+                           int textureIndex,
+                           std::vector<std::string>* channelNames,
+                           std::vector<DeepSample>* samples) const
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    assert(channelNames && samples);
+    assert(textureIndex == 0 || textureIndex == 1);
+
+    if (!getInternalNode()->getNode()->isActivated()) {
+        return false;
+    }
+
+    const unsigned int mipmapLevel = (unsigned int)getMipmapLevelCombinedToZoomFactor();
+    DeepImagePtr deepImage;
+    {
+        QMutexLocker l(&_imp->lastRenderedImageMutex);
+        const std::vector<DeepImagePtr>& tiles = _imp->displayTextures[textureIndex].lastRenderedDeepTiles;
+        if (mipmapLevel < tiles.size()) {
+            deepImage = tiles[mipmapLevel];
+        }
+    }
+    if (!deepImage) {
+        return false;
+    }
+
+    const double par = _imp->displayTextures[textureIndex].pixelAspectRatio;
+    const double scale = 1. / (1 << deepImage->getRenderScale().toMipmapLevel());
+    const int xPixel = std::floor(x * scale / par);
+    const int yPixel = std::floor(y * scale);
+
+    return DeepFlatten::getSamplesAtPixel(*deepImage, xPixel, yPixel, channelNames, samples);
+} // getDeepSamplesAt
+
+void
+ViewerGL::updateDeepProbe(int textureIndex,
+                          double x,
+                          double y,
+                          bool picked)
+{
+    if (!isLastRenderedImageDeep(textureIndex)) {
+        _imp->infoViewer[textureIndex]->hideDeepInfo();
+
+        return;
+    }
+    std::vector<std::string> channelNames;
+    std::vector<DeepSample> samples;
+    if (picked && getDeepSamplesAt(x, y, textureIndex, &channelNames, &samples)) {
+        _imp->infoViewer[textureIndex]->setDeepSamples(channelNames, samples);
+    } else {
+        _imp->infoViewer[textureIndex]->setDeepSamplesUnavailable();
+    }
+}
 
 bool
 ViewerGL::getColorAtRect(const RectD &rect, // rectangle in canonical coordinates

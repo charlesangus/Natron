@@ -520,9 +520,7 @@ private:
     ///Store the system physical total RAM in a member
     std::size_t _maxPhysicalRAM;
     bool _tearingDown;
-    mutable DeleterThread<EntryType> _deleterThread;
     mutable QWaitCondition _memoryFullCondition; //< protected by _sizeLock
-    mutable CacheCleanerThread _cleanerThread;
 
     // If tiled, the cache will consist only of a few large files that each contain tiles of the same size.
     // This is useful to cache chunks of data that always have the same size.
@@ -539,13 +537,20 @@ private:
     // When set these are used for fast search of a free tile
     TileCacheFileWPtr _nextAvailableCacheFile;
     int _nextAvailableCacheFileIndex;
+
+    // Declared last, so that they are the first members destroyed: joining a helper thread is
+    // what its destructor does, and until it is joined the thread still reaches back into the
+    // members above -- _memoryFullCondition and _sizeLock from every loop turn, _tileCacheMutex
+    // and the containers from the work itself. _cleanerThread comes second because it hands
+    // entries to _deleterThread, so it has to be the first of the two to stop.
+    mutable DeleterThread<EntryType> _deleterThread;
+    mutable CacheCleanerThread _cleanerThread;
+
 public:
-
-
-    Cache(const std::string & cacheName,
+    Cache(const std::string& cacheName,
           unsigned int version,
-          U64 maximumCacheSize,      // total size
-          double maximumInMemoryPercentage //how much should live in RAM
+          U64 maximumCacheSize, // total size
+          double maximumInMemoryPercentage // how much should live in RAM
           )
         : CacheAPI()
         , _maximumInMemorySize(maximumCacheSize * maximumInMemoryPercentage)
@@ -560,11 +565,9 @@ public:
         , _cacheName(cacheName)
         , _version(version)
         , _signalEmitter()
-        , _maxPhysicalRAM( getSystemTotalRAM() )
+        , _maxPhysicalRAM(getSystemTotalRAM())
         , _tearingDown(false)
-        , _deleterThread(this)
         , _memoryFullCondition()
-        , _cleanerThread(this)
         , _tileCacheMutex()
         , _isTiled(false)
         , _tileByteSize(0)
@@ -572,6 +575,8 @@ public:
         , _cacheFiles()
         , _nextAvailableCacheFile()
         , _nextAvailableCacheFileIndex(-1)
+        , _deleterThread(this)
+        , _cleanerThread(this)
     {
         _signalEmitter = std::make_shared<CacheSignalEmitter>();
     }
@@ -612,8 +617,10 @@ public:
 
     void waitForDeleterThread()
     {
-        _deleterThread.quitThread();
+        // The cleaner hands entries to the deleter, so it has to stop first: stopping the deleter
+        // while the cleaner can still queue work restarts the deleter behind this call's back.
         _cleanerThread.quitThread();
+        _deleterThread.quitThread();
     }
 
     /**
@@ -1499,34 +1506,10 @@ public:
 
         {
             QMutexLocker l(&_lock);
-            CacheIterator existingEntry = _memoryCache( entry->getHashKey() );
-            if ( existingEntry != _memoryCache.end() ) {
-                std::list<EntryTypePtr> & ret = getValueFromIterator(existingEntry);
-                for (typename std::list<EntryTypePtr>::iterator it = ret.begin(); it != ret.end(); ++it) {
-                    if ( (*it)->getKey() == entry->getKey() ) {
-                        toRemove.push_back(*it);
-                        ret.erase(it);
-                        break;
-                    }
-                }
-                if ( ret.empty() ) {
-                    _memoryCache.erase(existingEntry);
-                }
-            } else {
-                existingEntry = _diskCache( entry->getHashKey() );
-                if ( existingEntry != _diskCache.end() ) {
-                    std::list<EntryTypePtr> & ret = getValueFromIterator(existingEntry);
-                    for (typename std::list<EntryTypePtr>::iterator it = ret.begin(); it != ret.end(); ++it) {
-                        if ( (*it)->getKey() == entry->getKey() ) {
-                            toRemove.push_back(*it);
-                            ret.erase(it);
-                            break;
-                        }
-                    }
-                    if ( ret.empty() ) {
-                        _diskCache.erase(existingEntry);
-                    }
-                }
+            // Several entries can share a key and differ only in their params (bounds, mipmap
+            // level...), so the match has to be the instance itself rather than its key.
+            if (!removeEntryFromContainer(_memoryCache, entry, &toRemove)) {
+                removeEntryFromContainer(_diskCache, entry, &toRemove);
             }
         } // QMutexLocker l(&_lock);
         if ( !toRemove.empty() ) {
@@ -1537,6 +1520,31 @@ public:
             toRemove.clear();
         }
     } // removeEntry
+
+    static bool removeEntryFromContainer(CacheContainer& container,
+                                         const EntryTypePtr& entry,
+                                         std::list<EntryTypePtr>* toRemove)
+    {
+        CacheIterator existingEntry = container(entry->getHashKey());
+        if (existingEntry == container.end()) {
+            return false;
+        }
+        std::list<EntryTypePtr>& ret = getValueFromIterator(existingEntry);
+        bool found = false;
+        for (typename std::list<EntryTypePtr>::iterator it = ret.begin(); it != ret.end(); ++it) {
+            if (*it == entry) {
+                toRemove->push_back(*it);
+                ret.erase(it);
+                found = true;
+                break;
+            }
+        }
+        if (ret.empty()) {
+            container.erase(existingEntry);
+        }
+
+        return found;
+    }
 
     void removeEntry(U64 hash)
     {

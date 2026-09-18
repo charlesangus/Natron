@@ -124,6 +124,12 @@ public:
     }
 };
 
+std::string
+unsupportedOutputKindMessage(const NodePtr& writer)
+{
+    return std::string("No scheduler support for the output data kind of ") + writer->getScriptName_mt_safe() + " yet";
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 
@@ -2267,6 +2273,7 @@ private:
             const double par = activeInputToRender->getAspectRatio(-1);
             const bool isRenderDueToRenderInteraction = false;
             const bool isSequentialRender = true;
+            const DataKindEnum outputKind = activeInputToRender->getOutputDataKind();
 
             for (std::size_t view = 0; view < viewsToRender.size(); ++view) {
                 StatusEnum stat = activeInputToRender->getRegionOfDefinition_public(activeInputToRenderHash, time, scale, viewsToRender[view], &rod, &isProjectFormat);
@@ -2276,27 +2283,28 @@ private:
                     return;
                 }
                 std::list<ImagePlaneDesc> components;
-                ImageBitDepthEnum imageDepth;
+                ImageBitDepthEnum imageDepth = eImageBitDepthNone;
 
-                //Use needed components to figure out what we need to render
-                EffectInstance::ComponentsNeededMap neededComps;
-                std::list<ImagePlaneDesc> passThroughPlanes;
-                bool processAll;
-                double ptTime;
-                int ptView;
-                std::bitset<4> processChannels;
-                int ptInput;
-                activeInputToRender->getComponentsNeededAndProduced_public(activeInputToRenderHash,time, viewsToRender[view], &neededComps, &passThroughPlanes, &processAll, &ptTime, &ptView, &processChannels, &ptInput);
+                if (outputKind == eDataKindImage) {
+                    // Use needed components to figure out what we need to render
+                    EffectInstance::ComponentsNeededMap neededComps;
+                    std::list<ImagePlaneDesc> passThroughPlanes;
+                    bool processAll;
+                    double ptTime;
+                    int ptView;
+                    std::bitset<4> processChannels;
+                    int ptInput;
+                    activeInputToRender->getComponentsNeededAndProduced_public(activeInputToRenderHash, time, viewsToRender[view], &neededComps, &passThroughPlanes, &processAll, &ptTime, &ptView, &processChannels, &ptInput);
 
+                    // Retrieve bitdepth only
+                    imageDepth = activeInputToRender->getBitDepth(-1);
+                    components.clear();
 
-                //Retrieve bitdepth only
-                imageDepth = activeInputToRender->getBitDepth(-1);
-                components.clear();
-
-                EffectInstance::ComponentsNeededMap::iterator foundOutput = neededComps.find(-1);
-                if ( foundOutput != neededComps.end() ) {
-                    for (std::list<ImagePlaneDesc>::const_iterator it2 = foundOutput->second.begin(); it2 != foundOutput->second.end(); ++it2) {
-                        components.push_back(*it2);
+                    EffectInstance::ComponentsNeededMap::iterator foundOutput = neededComps.find(-1);
+                    if (foundOutput != neededComps.end()) {
+                        for (std::list<ImagePlaneDesc>::const_iterator it2 = foundOutput->second.begin(); it2 != foundOutput->second.end(); ++it2) {
+                            components.push_back(*it2);
+                        }
                     }
                 }
                 const RectI renderWindow = rod.toPixelEnclosing(scale, par);
@@ -2329,23 +2337,46 @@ private:
                     }
                     frameRenderArgs.updateNodesRequest(request);
                 }
-                RenderingFlagSetter flagIsRendering( activeInputToRender->getNode() );
-                std::map<ImagePlaneDesc, ImagePtr> planes;
-                std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs( new EffectInstance::RenderRoIArgs(time, //< the time at which to render
-                                                                                                               scale, //< the scale at which to render
-                                                                                                               mipmapLevel, //< the mipmap level (redundant with the scale)
-                                                                                                               viewsToRender[view], //< the view to render
-                                                                                                               false,
-                                                                                                               renderWindow, //< the region of interest (in pixel coordinates)
-                                                                                                               rod, // < any precomputed rod ? in canonical coordinates
-                                                                                                               components,
-                                                                                                               imageDepth,
-                                                                                                               false,
-                                                                                                               activeInputToRender.get(),
-                                                                                                               eStorageModeRAM,
-                                                                                                               time) );
+                RenderingFlagSetter flagIsRendering(activeInputToRender->getNode());
                 EffectInstance::RenderRoIRetCode retCode;
-                retCode = activeInputToRender->renderRoI(*renderArgs, &planes);
+                switch (outputKind) {
+                case eDataKindImage: {
+                    std::map<ImagePlaneDesc, ImagePtr> planes;
+                    std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs(new EffectInstance::RenderRoIArgs(time, //< the time at which to render
+                                                                                                                scale, //< the scale at which to render
+                                                                                                                mipmapLevel, //< the mipmap level (redundant with the scale)
+                                                                                                                viewsToRender[view], //< the view to render
+                                                                                                                false,
+                                                                                                                renderWindow, //< the region of interest (in pixel coordinates)
+                                                                                                                rod, // < any precomputed rod ? in canonical coordinates
+                                                                                                                components,
+                                                                                                                imageDepth,
+                                                                                                                false,
+                                                                                                                activeInputToRender.get(),
+                                                                                                                eStorageModeRAM,
+                                                                                                                time));
+                    retCode = activeInputToRender->renderRoI(*renderArgs, &planes);
+                    break;
+                }
+                case eDataKindDeep: {
+                    DeepImagePtr deepImage;
+                    EffectInstance::RenderDeepRoIArgs renderArgs(time,
+                                                                 scale,
+                                                                 mipmapLevel,
+                                                                 viewsToRender[view],
+                                                                 false, //< byPassCache
+                                                                 renderWindow,
+                                                                 rod,
+                                                                 activeInputToRender.get(),
+                                                                 time);
+                    retCode = activeInputToRender->renderDeepRoI(renderArgs, &deepImage);
+                    break;
+                }
+                default:
+                    _imp->scheduler->notifyRenderFailure(unsupportedOutputKindMessage(activeInputNode));
+
+                    return;
+                }
                 if (retCode != EffectInstance::eRenderRoIRetCodeOk) {
                     if (retCode == EffectInstance::eRenderRoIRetCodeAborted) {
                         _imp->scheduler->notifyRenderFailure("Render aborted");
@@ -2408,16 +2439,18 @@ DefaultScheduler::processFrame(const BufferedFrames& frames)
     U64 hash = effect->getHash();
     bool isProjectFormat;
     std::list<ImagePlaneDesc> components;
+    ImageBitDepthEnum imageDepth = eImageBitDepthNone;
+    const DataKindEnum outputKind = effect->getOutputDataKind();
 
-    {
+    if (outputKind == eDataKindImage) {
         ImagePlaneDesc metadataPlane, metadataPairedPlane;
         effect->getMetadataComponents(-1, &metadataPlane, &metadataPairedPlane);
         if (metadataPlane.getNumComponents() > 0) {
             components.push_back(metadataPlane);
         }
+        imageDepth = effect->getBitDepth(-1);
     }
 
-    ImageBitDepthEnum imageDepth = effect->getBitDepth(-1);
     const double par = effect->getAspectRatio(-1);
     const bool isRenderDueToRenderInteraction = false;
     const bool isSequentialRender = true;
@@ -2445,30 +2478,54 @@ DefaultScheduler::processFrame(const BufferedFrames& frames)
         ignore_result( effect->getRegionOfDefinition_public(hash, it->time, scale, it->view, &rod, &isProjectFormat) );
         const RectI roi = rod.toPixelEnclosing(0, par);
 
-
-        RenderingFlagSetter flagIsRendering( effect->getNode() );
-        ImagePtr inputImage = std::dynamic_pointer_cast<Image>(it->frame);
-        assert(inputImage);
-
-        EffectInstance::InputImagesMap inputImages;
-        inputImages[0].push_back(inputImage);
-        std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs( new EffectInstance::RenderRoIArgs(frame.time,
-                                                                                                       scale, 0,
-                                                                                                       it->view,
-                                                                                                       true, // for writers, always by-pass cache for the write node only @see renderRoiInternal
-                                                                                                       roi,
-                                                                                                       rod,
-                                                                                                       components,
-                                                                                                       imageDepth,
-                                                                                                       false,
-                                                                                                       effect.get(),
-                                                                                                       eStorageModeRAM,
-                                                                                                       frame.time,
-                                                                                                       inputImages) );
+        RenderingFlagSetter flagIsRendering(effect->getNode());
         try {
-            std::map<ImagePlaneDesc, ImagePtr> planes;
             EffectInstance::RenderRoIRetCode retCode;
-            retCode = effect->renderRoI(*renderArgs, &planes);
+            switch (outputKind) {
+            case eDataKindImage: {
+                ImagePtr inputImage = std::dynamic_pointer_cast<Image>(it->frame);
+                assert(inputImage);
+
+                EffectInstance::InputImagesMap inputImages;
+                inputImages[0].push_back(inputImage);
+                std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs(new EffectInstance::RenderRoIArgs(frame.time,
+                                                                                                            scale, 0,
+                                                                                                            it->view,
+                                                                                                            true, // for writers, always by-pass cache for the write node only @see renderRoiInternal
+                                                                                                            roi,
+                                                                                                            rod,
+                                                                                                            components,
+                                                                                                            imageDepth,
+                                                                                                            false,
+                                                                                                            effect.get(),
+                                                                                                            eStorageModeRAM,
+                                                                                                            frame.time,
+                                                                                                            inputImages));
+                std::map<ImagePlaneDesc, ImagePtr> planes;
+                retCode = effect->renderRoI(*renderArgs, &planes);
+                break;
+            }
+            case eDataKindDeep: {
+                // A DeepImage is no BufferableObject, so nothing a render thread rendered can be
+                // handed over here: the writer pulls its input again, through the deep cache.
+                DeepImagePtr deepImage;
+                EffectInstance::RenderDeepRoIArgs renderArgs(frame.time,
+                                                             scale,
+                                                             0,
+                                                             it->view,
+                                                             true, //< byPassCache
+                                                             roi,
+                                                             rod,
+                                                             effect.get(),
+                                                             frame.time);
+                retCode = effect->renderDeepRoI(renderArgs, &deepImage);
+                break;
+            }
+            default:
+                notifyRenderFailure(unsupportedOutputKindMessage(effect->getNode()));
+
+                return;
+            }
             if (retCode != EffectInstance::eRenderRoIRetCodeOk) {
                 notifyRenderFailure("");
             }

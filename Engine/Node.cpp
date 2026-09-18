@@ -1023,6 +1023,26 @@ nodePropagatesDataKindThroughInput(const NodePtr& node,
     return !isNative || isNative->inputParticipatesInDataKindPropagation(inputNb);
 }
 
+// The conversions the engine is willing to insert without a node in the graph to show for it. A
+// fixed table rather than a registry on purpose: adding a row widens what the type system permits
+// everywhere at once, which is a design decision taken here, not a capability a node -- or a
+// plugin -- can grant itself by answering a virtual.
+static bool
+isRegisteredAdapter(DataKindEnum from,
+                    DataKindEnum to)
+{
+    return (from == eDataKindDeep) && (to == eDataKindImage);
+}
+
+static bool
+inputAcceptsViaAdapter(const EffectInstancePtr& effect,
+                       int inputNb,
+                       DataKindEnum from,
+                       DataKindEnum required)
+{
+    return isRegisteredAdapter(from, required) && effect->inputAcceptsDataKindViaAdapter(inputNb, from);
+}
+
 DataKindEnum
 Node::getEffectiveOutputDataKind(bool* isAmbiguous) const
 {
@@ -1207,6 +1227,12 @@ Node::collectDownstreamDataKindRequirement(DataKindConstraint* constraint) const
         }
         DataKindEnum required = consumer->getEffectInstance()->getInputDataKind(slot);
         if (required != eDataKindPolymorphic) {
+            // A consumer reached by an adapter requires nothing of this node: the conversion is
+            // what satisfies it, so merging its declared kind in would make every pass-through
+            // between a deep source and such a consumer hold two kinds at once and go ambiguous.
+            if (!constraint->ambiguous && inputAcceptsViaAdapter(consumer->getEffectInstance(), slot, constraint->kind, required)) {
+                continue;
+            }
             constraint->merge(DataKindConstraint(required));
             continue;
         }
@@ -1247,6 +1273,9 @@ Node::findDataKindConflictDownstream(const DataKindConstraint& constraint,
         }
         DataKindEnum required = consumer->getEffectInstance()->getInputDataKind(slot);
         if (required != eDataKindPolymorphic) {
+            if (!constraint.ambiguous && inputAcceptsViaAdapter(consumer->getEffectInstance(), slot, constraint.kind, required)) {
+                continue;
+            }
             if (constraint.ambiguous || ((constraint.kind != eDataKindPolymorphic) && (required != constraint.kind))) {
                 if (conflictingNode) {
                     *conflictingNode = consumer;
@@ -1284,7 +1313,14 @@ Node::isInputDataKindUnacceptable(const NodePtr& input,
 
     DataKindConstraint upstream = effectiveDataKindConstraintOf(input);
 
-    return upstream.ambiguous || ((upstream.kind != eDataKindPolymorphic) && (requiredKind != upstream.kind));
+    if (upstream.ambiguous) {
+        return true;
+    }
+    if ((upstream.kind == eDataKindPolymorphic) || (requiredKind == upstream.kind)) {
+        return false;
+    }
+
+    return !inputAcceptsViaAdapter(_imp->effect, inputNumber, upstream.kind, requiredKind);
 } // isInputDataKindUnacceptable
 
 Node::CanConnectInputReturnValue

@@ -1276,6 +1276,9 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
     if (upstreamInput) {
         outArgs->activeInputToRender = upstreamInput->getNearestNonDisabled();
     }
+    // Detection only: this runs on the main thread, where the resolved kind is a memoized read
+    // and no render may be started.
+    outArgs->deepUpstream = outArgs->activeInputToRender && outArgs->activeInputToRender->producesDeepData();
 
     // Before rendering we check that all mandatory inputs in the graph are connected else we fail
     if ( !outArgs->activeInputToRender || !checkTreeCanRender( outArgs->activeInputToRender->getNode().get() ) ) {
@@ -1428,8 +1431,14 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
     ImageBitDepthEnum imageDepth = inArgs.activeInputToRender->getBitDepth(-1);
     std::list<ImagePlaneDesc> requestedComponents;
     int alphaChannelIndex = -1;
-    if ( (inArgs.channels != eDisplayChannelsA) &&
-         ( inArgs.channels != eDisplayChannelsMatte) ) {
+    if (inArgs.deepUpstream) {
+        // Deep channels are not Natron planes, so there is no layer for the GUI to have selected
+        // and nothing to ask the upstream node for its available layers: the v1 contract is a
+        // flatten to RGBA, and this is the plane that flatten writes.
+        components = ImagePlaneDesc::getRGBAComponents();
+        imageDepth = eImageBitDepthFloat;
+        alphaChannelIndex = 3;
+    } else if ((inArgs.channels != eDisplayChannelsA) && (inArgs.channels != eDisplayChannelsMatte)) {
         ///We fetch the Layer specified in the gui
         if (inArgs.params->layer.getNumComponents() > 0) {
             requestedComponents.push_back(inArgs.params->layer);
@@ -1455,7 +1464,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         }
     }
 
-    if ( requestedComponents.empty() ) {
+    if (!inArgs.deepUpstream && requestedComponents.empty()) {
         return eViewerRenderRetCodeBlack;
     }
 
@@ -1515,7 +1524,31 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         try {
             std::map<ImagePlaneDesc, ImagePtr> planes;
             EffectInstance::RenderRoIRetCode retCode;
-            {
+            if (inArgs.deepUpstream) {
+                // Only isDoingPartialUpdates (RotoPaint) ever splits the RoI, and deep has no
+                // tiling, so there is exactly one rect to flatten.
+                assert(splitRoi.size() == 1);
+                EffectInstance::RenderDeepRoIArgs deepArgs(inArgs.params->time,
+                                                           RenderScale::fromMipmapLevel(inArgs.params->mipmapLevel),
+                                                           inArgs.params->mipmapLevel,
+                                                           view,
+                                                           inArgs.forceRender /*byPassCache*/,
+                                                           splitRoi[rectIndex],
+                                                           inArgs.params->rod,
+                                                           this,
+                                                           inArgs.params->time);
+                DeepImagePtr deepImage;
+                retCode = inArgs.activeInputToRender->renderDeepRoIFlattened(deepArgs, &colorImage, &deepImage);
+                if (colorImage && (retCode == EffectInstance::eRenderRoIRetCodeOk)) {
+                    if (inArgs.channels == eDisplayChannelsMatte) {
+                        alphaImage = colorImage;
+                    }
+                    inArgs.params->colorImage = colorImage;
+                    inArgs.params->deepImage = deepImage;
+                } else {
+                    colorImage.reset();
+                }
+            } else {
                 std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs;
                 renderArgs.reset( new EffectInstance::RenderRoIArgs(inArgs.params->time,
                                                                     RenderScale::fromMipmapLevel(inArgs.params->mipmapLevel),
@@ -1791,6 +1824,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
 
                 if (it->cachedData) {
                     it->cachedData->setInternalImage(colorImage);
+                    it->cachedData->setInternalDeepImage(inArgs.params->deepImage);
                 }
             }
         } // !useTextureCache
@@ -2913,8 +2947,10 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
         const UpdateViewerParams::CachedTile& firstTile = params->tiles.front();
         ImagePtr originalImage;
         originalImage = params->colorImage;
+        DeepImagePtr deepImage = params->deepImage;
         if (firstTile.cachedData && !originalImage) {
             originalImage = firstTile.cachedData->getInternalImage();
+            deepImage = firstTile.cachedData->getInternalDeepImage();
         }
         ImageBitDepthEnum depth;
         if (originalImage) {
@@ -2929,6 +2965,9 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
         }
 
         uiContext->endTransferBufferFromRAMToGPU(params->textureIndex, texture, originalImage, params->time, params->rod,  params->pixelAspectRatio, depth, params->mipmapLevel, params->srcPremult, params->gain, params->gamma, params->offset, params->lut, params->recenterViewport, params->viewportCenter, params->isPartialRect);
+        if (!params->isPartialRect && originalImage) {
+            uiContext->setLastRenderedDeepImage(params->textureIndex, params->mipmapLevel, deepImage);
+        }
 
         if (!isDrawing) {
             uiContext->updateColorPicker(params->textureIndex);

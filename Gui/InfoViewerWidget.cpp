@@ -25,6 +25,7 @@
 
 #include "InfoViewerWidget.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
 
@@ -35,12 +36,13 @@
 #include <QPainter>
 #include <QCoreApplication>
 
-#include "Engine/ViewerInstance.h"
-#include "Engine/Lut.h"
+#include "Engine/DeepPixelOps.h"
 #include "Engine/Image.h"
+#include "Engine/Lut.h"
+#include "Engine/ViewerInstance.h"
 #include "Gui/GuiApplicationManager.h"
-#include "Gui/ViewerGL.h"
 #include "Gui/Label.h"
+#include "Gui/ViewerGL.h"
 
 using std::cout; using std::endl;
 NATRON_NAMESPACE_ENTER
@@ -66,22 +68,24 @@ InfoViewerWidget::InfoViewerWidget(const QString & description,
 
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
 
-
-    QString tt = QString( tr("Information, from left to right:<br />"
-                             "<br />"
-                             "<font color=orange>Input:</font> Specifies whether the information is for the input <b>A</b> or <b>B</b><br />"
-                             "<font color=orange>Image format:</font>  An identifier for the pixel components and bitdepth of the displayed image<br />"
-                             "<font color=orange>Format:</font>  The resolution of the input (where the image is displayed)<br />"
-                             "<font color=orange>RoD:</font>  The region of definition of the displayed image (where the data is defined)<br />"
-                             "<font color=orange>Fps:</font>  (Only active during playback) The frame-rate of the play-back sustained by the viewer<br />"
-                             "<font color=orange>Coordinates:</font>  The coordinates of the current mouse location<br />"
-                             "<font color=orange>RGBA:</font>  The RGBA color of the displayed image. Note that if some <b>?</b> are set instead of colors "
-                             "that means the underlying image cannot be accessed internally, you should refresh the viewer to make it available. "
-                             "Also sometimes you may notice the tilde '~' before the colors: it indicates whether the color indicated is the true "
-                             "color in the image (no tilde) or this is an approximated mipmap that has been filtered with a box filter (tilde), "
-                             "in which case this may not reflect exactly the underlying internal image. <br />"
-                             "<font color=orange>HSVL:</font>  For convenience the RGBA color is also displayed as HSV(L)"
-                             "") );
+    QString tt = QString(tr("Information, from left to right:<br />"
+                            "<br />"
+                            "<font color=orange>Input:</font> Specifies whether the information is for the input <b>A</b> or <b>B</b><br />"
+                            "<font color=orange>Image format:</font>  An identifier for the pixel components and bitdepth of the displayed image<br />"
+                            "<font color=orange>Format:</font>  The resolution of the input (where the image is displayed)<br />"
+                            "<font color=orange>RoD:</font>  The region of definition of the displayed image (where the data is defined)<br />"
+                            "<font color=orange>Fps:</font>  (Only active during playback) The frame-rate of the play-back sustained by the viewer<br />"
+                            "<font color=orange>Coordinates:</font>  The coordinates of the current mouse location<br />"
+                            "<font color=orange>RGBA:</font>  The RGBA color of the displayed image. Note that if some <b>?</b> are set instead of colors "
+                            "that means the underlying image cannot be accessed internally, you should refresh the viewer to make it available. "
+                            "Also sometimes you may notice the tilde '~' before the colors: it indicates whether the color indicated is the true "
+                            "color in the image (no tilde) or this is an approximated mipmap that has been filtered with a box filter (tilde), "
+                            "in which case this may not reflect exactly the underlying internal image. <br />"
+                            "<font color=orange>HSVL:</font>  For convenience the RGBA color is also displayed as HSV(L)<br />"
+                            "<font color=orange>deep:</font>  (Deep inputs only) The number of deep samples at the current mouse location and their depth range, "
+                            "exactly as the source stores them. Hover this label to list every sample. A dash means the samples cannot be read at this "
+                            "zoom level until the viewer has rendered it."
+                            ""));
     setToolTip(tt);
 
     layout = new QHBoxLayout(this);
@@ -157,6 +161,14 @@ InfoViewerWidget::InfoViewerWidget(const QString & description,
         hvl_lastOption->setMinimumWidth(width);
     }
 
+    deepValues = new Label(this);
+    {
+        QFontMetrics fm = deepValues->fontMetrics();
+        int width = fm.horizontalAdvance(QString::fromUtf8("deep: 000 smp  Z 00000.00-00000.00"));
+        deepValues->setMinimumWidth(width);
+        deepValues->hide();
+    }
+
     layout->addWidget(descriptionLabel);
     layout->addWidget(imageFormat);
     layout->addWidget(resolution);
@@ -166,6 +178,7 @@ InfoViewerWidget::InfoViewerWidget(const QString & description,
     layout->addWidget(rgbaValues);
     layout->addWidget(color);
     layout->addWidget(hvl_lastOption);
+    layout->addWidget(deepValues);
 }
 
 QSize
@@ -231,7 +244,102 @@ InfoViewerWidget::hideColorInfo()
     hvl_lastOption->hide();
     rgbaValues->hide();
     color->hide();
+    deepValues->hide();
 }
+
+void
+InfoViewerWidget::hideDeepInfo()
+{
+    deepValues->hide();
+}
+
+QString
+InfoViewerWidget::getDeepSamplesToolTip() const
+{
+    return deepValues->isHidden() ? QString() : deepValues->toolTip();
+}
+
+void
+InfoViewerWidget::setDeepSamplesUnavailable()
+{
+    const QFont& font = deepValues->font();
+    QString text = QString::fromUtf8("<font color=\"#DBE0E0\" face=\"%1\" size=%2>deep: %3</font>")
+                       .arg(font.family())
+                       .arg(font.pixelSize())
+                       .arg(QChar(0x2013));
+
+    deepValues->setText(text);
+    deepValues->setToolTip(QString());
+    deepValues->show();
+}
+
+void
+InfoViewerWidget::setDeepSamples(const std::vector<std::string>& channelNames,
+                                 const std::vector<DeepSample>& samples)
+{
+    const QFont& font = deepValues->font();
+    QString summary = QString::fromUtf8("deep: %1 smp").arg(samples.size());
+    if (!samples.empty()) {
+        float zMin = samples[0].z;
+        float zMax = std::max(samples[0].z, samples[0].zback);
+        for (std::size_t s = 1; s < samples.size(); ++s) {
+            zMin = std::min(zMin, samples[s].z);
+            zMax = std::max(zMax, std::max(samples[s].z, samples[s].zback));
+        }
+        summary.append(QString::fromUtf8("  Z %1%2%3")
+                           .arg(QString::number(zMin, 'f', 2))
+                           .arg(QChar(0x2013))
+                           .arg(QString::number(zMax, 'f', 2)));
+    }
+    deepValues->setText(QString::fromUtf8("<font color=\"#DBE0E0\" face=\"%1\" size=%2>%3</font>")
+                            .arg(font.family())
+                            .arg(font.pixelSize())
+                            .arg(summary));
+
+    // Colour and alpha first, then whatever else the file carries, since a probe reads
+    // "Z / ZBack / A / R G B" far more often than it reads an AOV
+    std::vector<std::size_t> columns;
+    const char* const preferred[] = { "A", "R", "G", "B" };
+    for (std::size_t p = 0; p < sizeof(preferred) / sizeof(preferred[0]); ++p) {
+        for (std::size_t c = 0; c < channelNames.size(); ++c) {
+            if (channelNames[c] == preferred[p]) {
+                columns.push_back(c);
+            }
+        }
+    }
+    for (std::size_t c = 0; c < channelNames.size(); ++c) {
+        if (std::find(columns.begin(), columns.end(), c) == columns.end()) {
+            columns.push_back(c);
+        }
+    }
+
+    const int columnWidth = 10;
+    QString header = QString::fromUtf8("Z").rightJustified(columnWidth) + QString::fromUtf8("ZBack").rightJustified(columnWidth);
+    for (std::size_t i = 0; i < columns.size(); ++i) {
+        header.append(QString::fromUtf8(channelNames[columns[i]].c_str()).toHtmlEscaped().rightJustified(columnWidth));
+    }
+    QString rows;
+    const std::size_t maxListed = 16;
+    const std::size_t listed = std::min(samples.size(), maxListed);
+    for (std::size_t s = 0; s < listed; ++s) {
+        const DeepSample& sample = samples[s];
+        QString row = QString::number(sample.z, 'g', 6).rightJustified(columnWidth) + QString::number(sample.zback, 'g', 6).rightJustified(columnWidth);
+        for (std::size_t i = 0; i < columns.size(); ++i) {
+            const std::size_t c = columns[i];
+            row.append((c < sample.channels.size() ? QString::number(sample.channels[c], 'g', 6) : QString::fromUtf8("?")).rightJustified(columnWidth));
+        }
+        rows.append(QString::fromUtf8("\n")).append(row);
+    }
+    if (samples.size() > listed) {
+        rows.append(QString::fromUtf8("\n")).append(tr("... and %1 more").arg(samples.size() - listed));
+    }
+    if (samples.empty()) {
+        deepValues->setToolTip(tr("No deep samples at this pixel"));
+    } else {
+        deepValues->setToolTip(QString::fromUtf8("<pre>%1%2</pre>").arg(header, rows));
+    }
+    deepValues->show();
+} // setDeepSamples
 
 bool
 InfoViewerWidget::mouseVisible()

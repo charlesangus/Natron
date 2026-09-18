@@ -28,12 +28,15 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "Engine/AppManager.h" // for AppManager::createKnob
+#include "Engine/DeepPixelOps.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/OutputEffectInstance.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -58,9 +61,9 @@ struct NativeInputDescription {
 
 /**
  * @brief Statically describes a NativeEffectBase subclass: plugin id/label/description,
- * grouping, version, its inputs and the DataKindEnum it outputs. One instance of this,
- * returned by NativeEffectBase::getNativePluginDescription(), replaces the half-dozen
- * one-line EffectInstance accessor overrides a hand-written node otherwise repeats.
+ * grouping, version, its inputs, the DataKindEnum it outputs, and whether it is a writer. One
+ * instance of this, returned by NativeEffectBase::getNativePluginDescription(), replaces the
+ * half-dozen one-line EffectInstance accessor overrides a hand-written node otherwise repeats.
  **/
 struct NativePluginDescription {
     std::string id;
@@ -71,6 +74,7 @@ struct NativePluginDescription {
     int minorVersion;
     std::vector<NativeInputDescription> inputs;
     DataKindEnum outputKind;
+    bool isWriter;
 
     NativePluginDescription()
         : id()
@@ -81,26 +85,29 @@ struct NativePluginDescription {
         , minorVersion(0)
         , inputs()
         , outputKind(eDataKindImage)
+        , isWriter(false)
     {
     }
 };
 
 /**
- * @brief Convenience base class for native (non-OFX) nodes living under Engine/Nodes/.
+ * @brief Convenience base class for native (non-OFX) nodes living under Engine/Nodes/, rooted at
+ * OutputEffectInstance so a subclass can declare itself a render root (a writer, in practice) the
+ * same way an OFX plugin does through its context, rather than being structurally unable to.
  *
  * A hand-written EffectInstance subclass otherwise repeats the same half-dozen
  * one-line overrides (getPluginID(), getPluginLabel(), getPluginGrouping(),
- * getMajorVersion(), getMinorVersion(), getNInputs(), getInputDataKind(), ...) for
- * every new node. NativeEffectBase asks for that metadata once, via a single
- * getNativePluginDescription() override, and implements those EffectInstance
- * virtuals from it.
+ * getMajorVersion(), getMinorVersion(), getNInputs(), getInputDataKind(), isWriter(),
+ * isOutput(), ...) for every new node. NativeEffectBase asks for that metadata once, via a
+ * single getNativePluginDescription() override, and implements those EffectInstance and
+ * OutputEffectInstance virtuals from it.
  *
- * Everything else about EffectInstance -- knobs, rendering, undo, serialization,
+ * Everything else about OutputEffectInstance -- knobs, rendering, undo, serialization,
  * scheduling -- is unchanged; the one virtual this class adds beyond that metadata is
  * resolveOutputDataKind(), the hook by which a native node supplies its own data-kind
  * resolution policy.
  * A subclass still overrides initializeKnobs() and render() exactly as it would
- * on top of EffectInstance directly, optionally using the createKnob() helper
+ * on top of OutputEffectInstance directly, optionally using the createKnob() helper
  * below for the AppManager::createKnob() idiom.
  *
  * Worked example -- a minimal one-input, one-output native node:
@@ -138,6 +145,7 @@ struct NativePluginDescription {
  *         desc.minorVersion = 0;
  *         desc.inputs.push_back( NativeInputDescription("Source", false, eDataKindImage) );
  *         desc.outputKind = eDataKindImage;
+ *         desc.isWriter = false;
  *
  *         return desc;
  *     }
@@ -163,7 +171,7 @@ struct NativePluginDescription {
  * @endcode
  **/
 class NativeEffectBase
-    : public EffectInstance {
+    : public OutputEffectInstance {
 public:
     explicit NativeEffectBase(NodePtr node);
 
@@ -197,6 +205,16 @@ public:
     virtual int getMinorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return getNativePluginDescription().minorVersion;
+    }
+
+    virtual bool isWriter() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return getNativePluginDescription().isWriter;
+    }
+
+    virtual bool isOutput() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return getNativePluginDescription().isWriter;
     }
 
     virtual int getNInputs() const OVERRIDE WARN_UNUSED_RETURN
@@ -256,6 +274,100 @@ public:
 
 protected:
     /**
+     * @brief Pass 1 of a two-pass deep render: returns how many samples the pixel at (x, y) --
+     * absolute pixel coordinates within the output DeepImage's bounds -- will hold. Called once
+     * per pixel, concurrently from several threads, so it must only read.
+     **/
+    typedef std::function<U32(int x, int y)> DeepSampleCountFunc;
+
+    /**
+     * @brief Pass 2 of a two-pass deep render: fills the pixel at (x, y). out points straight
+     * into the output DeepImage's channel buffers at that pixel's offset and is already sized to
+     * the count pass 1 returned for it, so this writes out.numSamples samples and nothing else.
+     * Called once per pixel, concurrently from several threads; distinct pixels never share
+     * storage, so two calls never collide.
+     **/
+    typedef std::function<void(int x, int y, const MutableDeepPixelView& out)> DeepFillSamplesFunc;
+
+    /**
+     * @brief Runs a deep render as the two passes deep evaluation must be split into, and is the
+     * only sample-writing path a node built on this class should use. It covers the whole of the
+     * output DeepImage's bounds, not just args.roi: a DeepImage has no bitmap, so a pixel left
+     * unwritten is indistinguishable from a pixel that genuinely has no samples.
+     *
+     * A DeepImage's channel buffers are one contiguous array per channel indexed by a prefix sum
+     * of per-pixel sample counts, so the total sample count -- and therefore every pixel's
+     * offset -- has to be known before a single sample can be written. That rules out appending
+     * samples as they are discovered, which is the shape a node author naturally reaches for and
+     * which cannot be made both correct and parallel here. Instead: pass 1 asks countSamples for
+     * every pixel's count in parallel over scanline chunks, the sample table's offsets and the
+     * channel buffers are then built in one allocation, and pass 2 asks fillSamples to fill every
+     * pixel in parallel over the same chunks, writing through non-owning views into that single
+     * allocation. Nothing is allocated per pixel or per sample in either pass.
+     *
+     * channelNames are the value channels to allocate, in the order fillSamples' views index
+     * them; "Z" and "ZBack" are always allocated on top of them and must not be listed.
+     * alphaChannelIndex is the index within channelNames of the alpha channel, recorded in every
+     * view handed to fillSamples so that the ops in DeepPixelOps cannot disagree about it.
+     *
+     * resultIsTidy records on the output whether this node guarantees the samples it just wrote
+     * are sorted by depth and non-overlapping; it is not verified.
+     **/
+    StatusEnum renderDeepTwoPass(const DeepRenderActionArgs& args,
+                                 const std::vector<std::string>& channelNames,
+                                 int alphaChannelIndex,
+                                 const DeepSampleCountFunc& countSamples,
+                                 const DeepFillSamplesFunc& fillSamples,
+                                 bool resultIsTidy = false) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The one pass of renderDeepFromInput(): rewrites the pixel at (x, y). in views the
+     * input's samples there -- its channels are the input's minus "Z" and "ZBack", in the order
+     * DeepImage::getChannels() lists them, in.alphaChannelIndex naming "A" among them or -1 when
+     * the input has none -- and out points into the output's buffers for the channels
+     * renderDeepFromInput() was told to write, in that order, over those same samples, "Z" and
+     * "ZBack" included when they were listed -- out.z and out.zback then point at those same
+     * buffers, and are null otherwise, the depths staying the input's. Called once per pixel
+     * holding samples, concurrently from several threads; distinct pixels never share storage.
+     **/
+    typedef std::function<void(int x, int y, const DeepPixelView& in, const MutableDeepPixelView& out)> DeepRewriteSamplesFunc;
+
+    /**
+     * @brief Runs a deep render that keeps its input's sample structure -- which samples exist
+     * and at what depths -- and rewrites the values of some channels, the way a grade or a
+     * recolour does. Rather than filling the output from scratch, the output aliases the input
+     * (DeepImage::aliasContentsOf()) when their bounds agree, and otherwise copies the input's
+     * samples over the output's bounds, an input served from the cache being possibly wider than
+     * the window being rendered. Only the channels named in channelsToWrite are then detached, or
+     * created for a name the input lacks, and handed to rewrite; the sample table and every
+     * other channel stay shared with the input for as long as both live, and nothing rewrite is
+     * given can reach the input's storage.
+     *
+     * alphaChannelIndex is the index within channelsToWrite of the alpha channel, recorded in
+     * every out view, or -1 when alpha is not being written. "Z" and "ZBack" may be listed, and
+     * are handed to rewrite like any other channel; an input lacking "ZBack" gets one, zeroed
+     * on the aliasing path and equal to "Z" on the copying path, for rewrite to fill.
+     *
+     * The output's tidiness is the input's: rewriting values moves no sample, and a node that
+     * rewrites depths is the one to know whether its samples are still sorted. The cache
+     * charges an aliased output for every channel it holds all the same (DeepImage's
+     * getSizeInBytes() is aliasing-blind), so sharing evicts early rather than desyncing.
+     **/
+    StatusEnum renderDeepFromInput(const DeepRenderActionArgs& args,
+                                   const DeepImagePtr& input,
+                                   const std::vector<std::string>& channelsToWrite,
+                                   int alphaChannelIndex,
+                                   const DeepRewriteSamplesFunc& rewrite) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Splits bounds into the scanline chunks renderDeepTwoPass() parallelizes over.
+     * Exposed so a node needing its own parallel pass over the same rectangle can use the same
+     * partition, and so tests can reason about it.
+     **/
+    static void makeDeepScanlineChunks(const RectI& bounds,
+                                       std::vector<RectI>* chunks);
+
+    /**
      * @brief Subclasses declare their static plugin metadata by overriding this.
      * It is queried on demand rather than cached: every call site above is off the
      * render path (registration, UI display, project load), so re-building the
@@ -279,6 +391,15 @@ protected:
     {
         return AppManager::createKnob<KNOB_TYPE>(this, label, dimension);
     }
+
+private:
+    typedef std::function<void(const RectI& chunk)> DeepChunkFunc;
+
+    // Runs body over every chunk in parallel, each render thread carrying the calling thread's
+    // TLS for the duration. Returns false if the render was aborted, in which case some chunks
+    // were skipped.
+    bool forEachDeepChunk(const std::vector<RectI>& chunks,
+                          const DeepChunkFunc& body) WARN_UNUSED_RETURN;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -29,8 +29,9 @@
 #include "Global/Macros.h"
 
 #include <limits>
-#include <vector>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "Global/GLIncludes.h" //!<must be included before QGlWidget because of gl.h and glew.h
 
@@ -188,6 +189,7 @@ public:
                                                bool recenterViewer,
                                                const Point& viewportCenter,
                                                bool isPartialRect) OVERRIDE FINAL;
+    virtual void setLastRenderedDeepImage(int textureIndex, unsigned int mipmapLevel, const DeepImagePtr& deepImage) OVERRIDE FINAL;
     virtual void clearLastRenderedImage() OVERRIDE FINAL;
     virtual void disconnectInputTexture(int textureIndex, bool clearRoD) OVERRIDE FINAL;
 
@@ -441,6 +443,23 @@ public:
     bool getColorAtRect(const RectD &rect, // rectangle in canonical coordinates
                         bool forceLinear, int textureIndex, float* r, float* g, float* b, float* a, unsigned int* mipmapLevel);
 
+    /**
+     * @brief Get the raw deep samples of the currently displayed image at position x,y, in
+     * CANONICAL COORDINATES, exactly as the source stores them (see DeepFlatten::getSamplesAtPixel()).
+     * Unlike getColorAt() this never substitutes another mipmap level: samples taken at the wrong
+     * scale are not an approximation of the right ones, so there is nothing until the level being
+     * displayed has been rendered.
+     * @return true if the displayed image is deep, has been rendered at the current mipmap level
+     * and x,y lies inside it; samples may then still be empty for a pixel holding none.
+     **/
+    bool getDeepSamplesAt(double x, double y, int textureIndex, std::vector<std::string>* channelNames,
+                          std::vector<DeepSample>* samples) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief True if the last frame transferred to this texture came from deep data, whatever
+     * mipmap level it was rendered at.
+     **/
+    bool isLastRenderedImageDeep(int textureIndex) const WARN_UNUSED_RETURN;
 
     virtual unsigned int getCurrentMipmapLevel() const OVERRIDE FINAL;
 
@@ -499,6 +518,7 @@ private:
     virtual void enterEvent(QEnterEvent* e) OVERRIDE FINAL;
     virtual void leaveEvent(QEvent* e) OVERRIDE FINAL;
     virtual void tabletEvent(QTabletEvent* e) OVERRIDE FINAL;
+    virtual bool event(QEvent* e) OVERRIDE FINAL;
 
     /**
      *@brief initializes OpenGL context related stuff. This is called once after widget creation.
@@ -618,6 +638,12 @@ private:
     void updateRectangleColorPicker();
     void updateRectangleColorPickerInternal();
 
+    /**
+     * @brief Refreshes the info bar's deep sample label for the pixel at x,y in canonical
+     * coordinates. picked is whether getColorAt() succeeded there, so the label can show a dash
+     * rather than probe a point the colour picker itself rejected.
+     **/
+    void updateDeepProbe(int textureIndex, double x, double y, bool picked);
 
     /**
      * @brief X and Y are in widget coords!

@@ -588,14 +588,6 @@ private:
 
     void initializeInputsForInspector();
 
-    /*creates the glyph item (if any) marking input inputNb's declared data kind;
-      returns NULL for image/polymorphic inputs so existing plugins get no extra item.*/
-    QGraphicsItem* createInputKindGlyphItem(int inputNb);
-
-    /*repositions/shows the per-input kind glyphs on dangling (unconnected) input
-      arrows; a no-op for slots whose glyph is NULL.*/
-    void refreshInputKindGlyphs();
-
     /*pointer to the dag*/
     NodeGraph* _graph;
 
@@ -635,9 +627,6 @@ private:
     QGraphicsLineItem* _disabledBtmLeftTopRight;
     /*the graphical input arrows*/
     std::vector<Edge*> _inputEdges;
-    /*small glyphs marking a dangling input arrow's declared data kind, indexed like
-      _inputEdges; entries are NULL for image/polymorphic inputs.*/
-    std::vector<QGraphicsItem*> _inputKindGlyphs;
     Edge* _outputEdge;
     NodeSettingsPanel* _settingsPanel;
 

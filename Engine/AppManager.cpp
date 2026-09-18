@@ -132,6 +132,15 @@
 #include "Engine/TrackerNode.h"
 #include "Engine/ThreadPool.h"
 
+#include "Engine/Nodes/Deep/DeepCrop.h"
+#include "Engine/Nodes/Deep/DeepExpression.h"
+#include "Engine/Nodes/Deep/DeepFromImage.h"
+#include "Engine/Nodes/Deep/DeepMerge.h"
+#include "Engine/Nodes/Deep/DeepRead.h"
+#include "Engine/Nodes/Deep/DeepRecolor.h"
+#include "Engine/Nodes/Deep/DeepReformat.h"
+#include "Engine/Nodes/Deep/DeepToImage.h"
+#include "Engine/Nodes/Deep/DeepWrite.h"
 #include "Engine/Nodes/TypedPassthrough.h"
 
 #include "Engine/Utils.h"
@@ -460,9 +469,13 @@ AppManager::~AppManager()
     if (_imp->_viewerCache) {
         _imp->_viewerCache->waitForDeleterThread();
     }
+    if (_imp->_deepImageCache) {
+        _imp->_deepImageCache->waitForDeleterThread();
+    }
     _imp->_nodeCache.reset();
     _imp->_viewerCache.reset();
     _imp->_diskCache.reset();
+    _imp->_deepImageCache.reset();
 
     tearDownPython();
     _imp->tearDownGL();
@@ -918,10 +931,14 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
         size_t maxCacheRAM = _imp->_settings->getRamMaximumPercent() * getSystemTotalRAM();
         U64 viewerCacheSize = _imp->_settings->getMaximumViewerDiskCacheSize();
         U64 maxDiskCacheNode = _imp->_settings->getMaximumDiskCacheNodeSize();
+        U64 maxDeepImageCache = _imp->_settings->getMaximumDeepImageCacheSize();
 
         _imp->_nodeCache = std::make_shared<Cache<Image> >("NodeCache", NATRON_CACHE_VERSION, maxCacheRAM, 1.);
         _imp->_diskCache = std::make_shared<Cache<Image> >("DiskCache", NATRON_CACHE_VERSION, maxDiskCacheNode, 0.);
         _imp->_viewerCache = std::make_shared<Cache<FrameEntry> >("ViewerCache", NATRON_CACHE_VERSION, viewerCacheSize, 0.);
+        // RAM-only, like _nodeCache: deep has no on-disk cache in v1, and must not share
+        // _nodeCache's budget or a large deep render would evict the entire 2D image cache.
+        _imp->_deepImageCache = std::make_shared<Cache<DeepImageCacheEntry>>("DeepImageCache", NATRON_CACHE_VERSION, maxDeepImageCache, 1.);
         _imp->setViewerCacheTileSize();
     } catch (std::logic_error&) {
         // ignore
@@ -1259,7 +1276,7 @@ AppManager::clearAllCaches()
 
     clearDiskCache();
     clearNodeCache();
-
+    _imp->_deepImageCache->clear();
 
     ///for each app instance clear all its nodes cache
     for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {
@@ -1377,6 +1394,13 @@ void
 AppManager::setApplicationsCachesMaximumDiskSpace(unsigned long long size)
 {
     _imp->_diskCache->setMaximumCacheSize(size);
+}
+
+void
+AppManager::setApplicationsCachesMaximumDeepImageCacheSize(unsigned long long size)
+{
+    _imp->_deepImageCache->setMaximumCacheSize(size);
+    _imp->_deepImageCache->setMaximumInMemorySize(1);
 }
 
 void
@@ -1526,6 +1550,15 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
     registerBuiltInPlugin<NodeGroup>(QString::fromUtf8(NATRON_IMAGES_PATH "group_icon.png"), false, false);
     registerBuiltInPlugin<Dot>(QString::fromUtf8(NATRON_IMAGES_PATH "dot_icon.png"), false, false);
     registerBuiltInPlugin<TypedPassthrough>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepRead>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepWrite>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepMerge>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepToImage>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepFromImage>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepRecolor>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepCrop>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepExpression>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepReformat>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DiskCacheNode>(QString::fromUtf8(NATRON_IMAGES_PATH "diskcache_icon.png"), false, false);
     registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_IMAGES_PATH "GroupingIcons/Set2/paint_grouping_2.png"), false, false);
     registerBuiltInPlugin<RotoNode>(QString::fromUtf8(NATRON_IMAGES_PATH "rotoNodeIcon.png"), false, false);
@@ -2086,6 +2119,7 @@ void
 AppManager::clearExceedingEntriesFromNodeCache()
 {
     _imp->_nodeCache->clearExceedingEntries();
+    _imp->_deepImageCache->clearExceedingEntries();
 }
 
 const PluginsMap&
@@ -2298,6 +2332,12 @@ AppManager::removeFromViewerCache(const FrameEntryPtr & texture)
 }
 
 void
+AppManager::removeFromDeepImageCache(const DeepImageCacheEntryPtr& entry)
+{
+    _imp->_deepImageCache->removeEntry(entry);
+}
+
+void
 AppManager::removeFromNodeCache(U64 hash)
 {
     _imp->_nodeCache->removeEntry(hash);
@@ -2325,6 +2365,8 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
     std::size_t diskCacheDisk = 0;
     std::size_t nodeCacheMem = 0;
     std::size_t nodeCacheDisk = 0;
+    std::size_t deepCacheMem = 0;
+    std::size_t deepCacheDisk = 0; // the deep cache is RAM-only, so this is always 0
     const Node* isNode = dynamic_cast<const Node*>(holder);
     if (isNode) {
         ViewerInstance* isViewer = isNode->isEffectViewer();
@@ -2334,8 +2376,9 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
     }
     _imp->_diskCache->getMemoryStatsForCacheEntryHolder(holder, &diskCacheMem, &diskCacheDisk);
     _imp->_nodeCache->getMemoryStatsForCacheEntryHolder(holder, &nodeCacheMem, &nodeCacheDisk);
+    _imp->_deepImageCache->getMemoryStatsForCacheEntryHolder(holder, &deepCacheMem, &deepCacheDisk);
 
-    *ramOccupied = diskCacheMem + viewerCacheMem + nodeCacheMem;
+    *ramOccupied = diskCacheMem + viewerCacheMem + nodeCacheMem + deepCacheMem;
     *diskOccupied = diskCacheDisk + viewerCacheDisk + nodeCacheDisk;
 }
 
@@ -2344,6 +2387,7 @@ AppManager::removeAllImagesFromCacheWithMatchingIDAndDifferentKey(const CacheEnt
                                                                   U64 treeVersion)
 {
     _imp->_nodeCache->removeAllEntriesWithDifferentNodeHashForHolderPublic(holder, treeVersion);
+    _imp->_deepImageCache->removeAllEntriesWithDifferentNodeHashForHolderPublic(holder, treeVersion);
 }
 
 void
@@ -2367,6 +2411,7 @@ AppManager::removeAllCacheEntriesForHolder(const CacheEntryHolder* holder,
     _imp->_nodeCache->removeAllEntriesForHolderPublic(holder, blocking);
     _imp->_diskCache->removeAllEntriesForHolderPublic(holder, blocking);
     _imp->_viewerCache->removeAllEntriesForHolderPublic(holder, blocking);
+    _imp->_deepImageCache->removeAllEntriesForHolderPublic(holder, blocking);
 }
 
 const QString &
@@ -2411,6 +2456,21 @@ AppManager::getImageOrCreate_diskCache(const ImageKey & key,
                                        ImagePtr* returnValue) const
 {
     return _imp->_diskCache->getOrCreate(key, params, 0, returnValue);
+}
+
+bool
+AppManager::getDeepImage(const DeepImageKey& key,
+                         std::list<DeepImageCacheEntryPtr>* returnValue) const
+{
+    return _imp->_deepImageCache->get(key, returnValue);
+}
+
+bool
+AppManager::getDeepImageOrCreate(const DeepImageKey& key,
+                                 const DeepImageParamsPtr& params,
+                                 DeepImageCacheEntryPtr* returnValue) const
+{
+    return _imp->_deepImageCache->getOrCreate(key, params, 0, returnValue);
 }
 
 bool
@@ -2747,6 +2807,15 @@ AppManager::isNodeCacheAlmostFull() const
     }
 }
 
+bool
+AppManager::evictLRUFromMemoryCaches()
+{
+    bool evictedFromNodeCache = _imp->_nodeCache->evictLRUInMemoryEntry();
+    bool evictedFromDeepImageCache = _imp->_deepImageCache->evictLRUInMemoryEntry();
+
+    return evictedFromNodeCache || evictedFromDeepImageCache;
+}
+
 void
 AppManager::checkCacheFreeMemoryIsGoodEnough()
 {
@@ -2757,12 +2826,11 @@ AppManager::checkCacheFreeMemoryIsGoodEnough()
     while (totalFreeRAM <= systemRAMToKeepFree) {
 #ifdef NATRON_DEBUG_CACHE
         qDebug() << "Total system free RAM is below the threshold:" << printAsRAM(totalFreeRAM)
-        << ", clearing least recently used NodeCache image...";
+                 << ", clearing least recently used NodeCache/DeepImageCache image...";
 #endif
-        if ( !_imp->_nodeCache->evictLRUInMemoryEntry() ) {
+        if (!evictLRUFromMemoryCaches()) {
             break;
         }
-
 
         totalFreeRAM = getAmountFreePhysicalRAM();
     }

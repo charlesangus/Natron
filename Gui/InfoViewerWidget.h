@@ -28,6 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <string>
+#include <vector>
+
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QWidget>
@@ -68,6 +71,27 @@ public:
 
     void setColor(float r, float g, float b, float a);
 
+    /**
+     * @brief Shows the deep sample summary for the hovered pixel, with every sample listed in
+     * the label's tooltip, the info bar being a single line. samples may be empty.
+     **/
+    void setDeepSamples(const std::vector<std::string>& channelNames, const std::vector<DeepSample>& samples);
+
+    /**
+     * @brief Shows the deep label with a dash: the input is deep but no samples can be read at
+     * the hovered pixel, e.g. because the displayed mipmap level has not been rendered yet.
+     **/
+    void setDeepSamplesUnavailable();
+
+    void hideDeepInfo();
+
+    /**
+     * @brief The per-sample list behind the deep label, or an empty string when no deep
+     * probe is being shown. The viewer pops it up over the hovered pixel, since moving the
+     * mouse to the label itself ends the probe.
+     **/
+    QString getDeepSamplesToolTip() const;
+
     void setMousePos(QPoint p);
 
 
@@ -102,6 +126,7 @@ private:
     Label* rgbaValues;
     Label* color;
     Label* hvl_lastOption;
+    Label* deepValues;
     Label* _fpsLabel;
     ImagePlaneDesc _comp;
     bool _colorValid;

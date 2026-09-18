@@ -214,6 +214,15 @@ public:
     bool getImageOrCreate_diskCache(const ImageKey & key, const ImageParamsPtr& params,
                                     ImagePtr* returnValue) const;
 
+    /**
+     * @brief Same as getImage/getImageOrCreate but for the deep image cache, which has its own
+     * memory budget separate from the regular image cache above.
+     **/
+    bool getDeepImage(const DeepImageKey& key, std::list<DeepImageCacheEntryPtr>* returnValue) const;
+
+    bool getDeepImageOrCreate(const DeepImageKey& key, const DeepImageParamsPtr& params,
+                              DeepImageCacheEntryPtr* returnValue) const;
+
     bool getTexture(const FrameKey & key,
                     std::list<FrameEntryPtr>* returnValue) const;
 
@@ -232,8 +241,17 @@ public:
 
     void setApplicationsCachesMaximumDiskSpace(unsigned long long size);
 
+    void setApplicationsCachesMaximumDeepImageCacheSize(unsigned long long size);
+
     void removeFromNodeCache(const ImagePtr & image);
     void removeFromViewerCache(const FrameEntryPtr & texture);
+
+    /**
+     * @brief Drops one deep image entry. A cache entry is sealed as soon as it is created, i.e.
+     * before its payload exists, so a deep render that aborts or fails must take its own
+     * half-built entry back out rather than leave it to be found by the next lookup.
+     **/
+    void removeFromDeepImageCache(const DeepImageCacheEntryPtr& entry);
 
     void removeFromNodeCache(U64 hash);
     void removeFromViewerCache(U64 hash);
@@ -355,6 +373,13 @@ public:
      * WARNING: This function may remove some entries from the caches.
      **/
     void checkCacheFreeMemoryIsGoodEnough();
+
+    /**
+     * @brief Evicts a single least-recently-used in-memory entry from each of the app-wide
+     * in-memory caches (the node cache and the deep image cache). Returns true if at least one
+     * entry was evicted from either cache.
+     **/
+    bool evictLRUFromMemoryCaches();
 
     void onCheckerboardSettingsChanged() { Q_EMIT checkerboardSettingsChanged(); }
 

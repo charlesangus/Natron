@@ -14,6 +14,7 @@
 #include "Engine/PluginActionShortcut.h"
 
 #include "DataKindTestEffect.h"
+#include "DeepRenderTestEffect.h"
 
 using namespace NATRON_NAMESPACE;
 
@@ -65,6 +66,21 @@ registerDataKindTestPlugins()
     registerTestBuiltInPlugin<DataKindTestScenePolicy>();
     registerTestBuiltInPlugin<DataKindTestSelectFirstInputPolicy>();
     registerTestBuiltInPlugin<DataKindTestConsumerMirrorPolicy>();
+    registerTestBuiltInPlugin<DataKindTestAdapterSink>();
+    registerTestBuiltInPlugin<DataKindTestSceneAdapterSink>();
+}
+
+void
+registerDeepRenderTestPlugins()
+{
+    // Two deep-capable stubs chained together, so DeepRenderPipeline_Test.cpp can drive a real
+    // renderDeepRoI() pull through more than one node; a deep source serving hand-built sample
+    // layouts and an image generator, so DeepNodes_Test.cpp can feed the merge and conversion
+    // nodes exactly what it wants to reason about.
+    registerTestBuiltInPlugin<DeepRenderTestSource>();
+    registerTestBuiltInPlugin<DeepRenderTestGain>();
+    registerTestBuiltInPlugin<DeepSyntheticSource>();
+    registerTestBuiltInPlugin<ImageRenderTestSource>();
 }
 }
 
@@ -98,6 +114,7 @@ GTEST_API_ int main(int argc, char **argv)
         }
     }
     registerDataKindTestPlugins();
+    registerDeepRenderTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

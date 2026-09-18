@@ -169,27 +169,6 @@ kindTintColor(DataKindEnum kind,
     }
 }
 
-// Corner radius is the primary, geometry-only channel for the node silhouette: deep
-// resolves to a full capsule, scene to a gentle rounding, mirroring the 3x/2x/1x pen
-// width ladder Edge.cpp uses for the same kinds. Image and polymorphic keep the
-// radius at 0px, which is the value NodeGui::createGui() has always hardcoded, so
-// their silhouette is untouched.
-static qreal
-kindSilhouetteCornerRadiusPx(DataKindEnum kind,
-                             qreal minDimension)
-{
-    switch (kind) {
-    case eDataKindDeep:
-        return minDimension / 2.;
-    case eDataKindScene:
-        return minDimension * 0.25;
-    case eDataKindImage:
-    case eDataKindPolymorphic:
-    default:
-        return 0.;
-    }
-}
-
 NodeGui::NodeGui(QGraphicsItem* parent)
     : QObject()
     , QGraphicsItem(parent)
@@ -218,7 +197,6 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _disabledTopLeftBtmRight(NULL)
     , _disabledBtmLeftTopRight(NULL)
     , _inputEdges()
-    , _inputKindGlyphs()
     , _outputEdge(NULL)
     , _settingsPanel(NULL)
     , _mainInstancePanel(NULL)
@@ -1347,7 +1325,6 @@ NodeGui::refreshEdges()
     if (_outputEdge) {
         _outputEdge->initLine();
     }
-    refreshInputKindGlyphs();
 }
 
 void
@@ -1551,7 +1528,6 @@ NodeGui::initializeInputsForInspector()
     }
 
     refreshEdgesVisility();
-    refreshInputKindGlyphs();
 }
 
 void
@@ -1572,11 +1548,6 @@ NodeGui::initializeInputs()
         delete *it;
     }
     _inputEdges.clear();
-
-    for (std::vector<QGraphicsItem*>::iterator it = _inputKindGlyphs.begin(); it != _inputKindGlyphs.end(); ++it) {
-        delete *it;
-    }
-    _inputKindGlyphs.clear();
 
     ///Make new edge for all non existing inputs
     NodeGuiPtr thisShared = shared_from_this();
@@ -1606,7 +1577,6 @@ NodeGui::initializeInputs()
             ++inputsCount;
         }
         _inputEdges.push_back(edge);
-        _inputKindGlyphs.push_back(createInputKindGlyphItem(i));
     }
 
 
@@ -1648,68 +1618,7 @@ NodeGui::initializeInputs()
             }
         }
     }
-    refreshInputKindGlyphs();
 } // initializeInputs
-
-QGraphicsItem*
-NodeGui::createInputKindGlyphItem(int inputNb)
-{
-    NodePtr node = getNode();
-
-    if (!node) {
-        return 0;
-    }
-
-    DataKindEnum kind = node->getEffectInstance()->getInputDataKind(inputNb);
-    QColor tint;
-    if (!kindTintColor(kind, &tint)) {
-        // Image and polymorphic declared inputs get no glyph at all: every existing
-        // plugin only ever declares those two, so this keeps every existing node's
-        // dangling input arrows exactly as they render today.
-        return 0;
-    }
-
-    const qreal r = TO_DPIX(5);
-    QGraphicsItem* item;
-    if (kind == eDataKindDeep) {
-        QGraphicsEllipseItem* ellipse = new QGraphicsEllipseItem(-r, -r, 2. * r, 2. * r, this);
-        ellipse->setPen(Qt::NoPen);
-        ellipse->setBrush(tint);
-        item = ellipse;
-    } else {
-        QPolygonF poly;
-        poly << QPointF(0, -r) << QPointF(r, 0) << QPointF(0, r) << QPointF(-r, 0);
-        QGraphicsPolygonItem* diamond = new QGraphicsPolygonItem(poly, this);
-        diamond->setPen(Qt::NoPen);
-        diamond->setBrush(tint);
-        item = diamond;
-    }
-    item->setZValue(getBaseDepth() + 2);
-    item->hide();
-
-    return item;
-} // createInputKindGlyphItem
-
-void
-NodeGui::refreshInputKindGlyphs()
-{
-    for (std::size_t i = 0; i < _inputKindGlyphs.size(); ++i) {
-        QGraphicsItem* glyph = _inputKindGlyphs[i];
-        if (!glyph) {
-            continue;
-        }
-        Edge* edge = (i < _inputEdges.size()) ? _inputEdges[i] : 0;
-        bool show = edge && edge->isVisible() && !edge->hasSource();
-        if (show) {
-            // For a dangling input edge, Edge::initLine() anchors p1() at the node (its
-            // bbox center) and puts the free end the arrowhead points at in p2(), past the
-            // room initLine() already leaves for the arrowhead itself.
-            QPointF scenePt = edge->mapToScene(edge->line().p2());
-            glyph->setPos(mapFromScene(scenePt));
-        }
-        glyph->setVisible(show);
-    }
-} // refreshInputKindGlyphs
 
 bool
 NodeGui::contains(const QPointF &point) const
@@ -1810,7 +1719,6 @@ NodeGui::refreshEdgesVisibilityInternal(bool hovered)
     if (hasChanged) {
         update();
     }
-    refreshInputKindGlyphs();
 }
 
 QRectF
@@ -2333,39 +2241,11 @@ NodeGui::getDockContainer() const
 }
 
 void
-NodeGui::paint(QPainter* painter,
+NodeGui::paint(QPainter* /*painter*/,
                const QStyleOptionGraphicsItem* /*options*/,
                QWidget* /*parent*/)
 {
-    if (!_boundingBox) {
-        // DotGui (and any other subclass whose createGui() does not call
-        // NodeGui::createGui()) never constructs _boundingBox: there is nothing here
-        // to carve a silhouette into, so it stays visually neutral regardless of its
-        // resolved kind, same as an unresolved polymorphic node.
-        return;
-    }
-
-    NodePtr node = getNode();
-    DataKindEnum kind = node ? node->getEffectiveOutputDataKind() : eDataKindImage;
-
-    QColor tint;
-    bool hasTint = kindTintColor(kind, &tint);
-    QRectF bbox = boundingRect();
-    qreal radius = hasTint ? kindSilhouetteCornerRadiusPx(kind, std::min(bbox.width(), bbox.height())) : 0.;
-
-    // _boundingBox is a child, so it always paints on top of us; setting its corner
-    // radius here (rather than only once in createGui()) takes effect immediately in
-    // this same repaint pass, and the tint below is only visible in the corner
-    // wedges its rounded rect leaves uncovered.
-    _boundingBox->setCornerRadiusPx((int)(radius + 0.5));
-
-    if (hasTint) {
-        painter->save();
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(tint);
-        painter->drawRect(bbox);
-        painter->restore();
-    }
+    // nothing special
 }
 
 const std::list<std::pair<KnobIWPtr, KnobGuiPtr> > &

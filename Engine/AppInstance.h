@@ -303,6 +303,12 @@ public:
                                         const std::list<std::pair<int, std::pair<int, int> > >& frameRanges);
     void startWritersRendering(bool doBlockingRender, const std::list<RenderWork>& writers);
 
+    /**
+     * @brief Turns the -w/--writer arguments of cl into RenderWork requests, resolving each
+     * named Write node and applying its optional filename override.
+     **/
+    void getWritersWorkForCL(const CLArgs& cl, std::list<AppInstance::RenderWork>& requests);
+
 public:
 
     void addInvalidExpressionKnob(const KnobIPtr& knob);
@@ -458,10 +464,6 @@ protected:
 private:
 
     void startNextQueuedRender(OutputEffectInstance* finishedWriter);
-
-
-    void getWritersWorkForCL(const CLArgs& cl, std::list<AppInstance::RenderWork>& requests);
-
 
     NodePtr createNodeInternal(CreateNodeArgs& args);
 

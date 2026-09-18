@@ -111,7 +111,9 @@ struct TextureInfo
         , format()
         , pixelAspectRatio(1.)
         , lastRenderedTiles(MAX_MIP_MAP_LEVELS)
+        , lastRenderedDeepTiles(MAX_MIP_MAP_LEVELS)
         , memoryHeldByLastRenderedImages(0)
+        , memoryHeldByLastRenderedDeepImages(0)
         , isPartialImage(false)
         , isVisible(false)
     {
@@ -133,7 +135,15 @@ struct TextureInfo
 
     // Hold shared pointers here because some images might not be held by the cache
     std::vector<ImagePtr> lastRenderedTiles;
+    // The deep image each entry of lastRenderedTiles was flattened from, for the sample probe;
+    // NULL at a level whose image did not come from deep data
+    std::vector<DeepImagePtr> lastRenderedDeepTiles;
     U64 memoryHeldByLastRenderedImages;
+    // Registered separately from memoryHeldByLastRenderedImages: the deep payload a
+    // lastRenderedDeepTiles entry keeps alive is not the same allocation as the flattened image,
+    // and can be considerably larger, so it must be accounted for on its own for the memory-stats
+    // total to reflect what is actually resident.
+    U64 memoryHeldByLastRenderedDeepImages;
     bool isPartialImage;
 
     // false if this input is disconnected for the viewer

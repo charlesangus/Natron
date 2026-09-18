@@ -46,21 +46,38 @@ layer *on* `EffectInstance`, not a second hierarchy.
 
 ## `NativeEffectBase`
 
+`NativeEffectBase` is rooted at `OutputEffectInstance`, not `EffectInstance`
+directly. `OutputEffectInstance` is not "a writer" -- `OfxEffectInstance`,
+`NodeGroup`, `NoOpBase`, `DiskCacheNode` and `ViewerInstance` all derive from
+it too -- it is "an effect that can own a `RenderEngine`", the thing every
+real writer entry point (the GUI Render menu, the CLI's `-w`, Python's
+`app.render()`) requires via `dynamic_cast<OutputEffectInstance*>` before it
+will touch a node. Owning one is cheap for a node that is never rendered as a
+root: `RenderEngine`'s constructor only connects a signal, and its scheduler
+thread is created lazily on the first actual render-sequence request. Whether
+a given native node *is* a writer is a plugin-description flag, exactly as an
+OFX plugin's writer-ness follows from its context -- see below.
+
 Writing an `EffectInstance` subclass directly means overriding a half-dozen
 one-line accessors (`getPluginID()`, `getPluginLabel()`, `getPluginGrouping()`,
 `getMajorVersion()`, `getMinorVersion()`, `getNInputs()`, `getInputDataKind()`,
-...) for every node. `NativeEffectBase` asks for that metadata once, as a
-single `NativePluginDescription` returned from `getNativePluginDescription()`,
-and implements those `EffectInstance` virtuals from it. It adds no capability
-virtuals of its own -- see "Single hierarchy" above.
+`isWriter()`, `isOutput()`, ...) for every node. `NativeEffectBase` asks for
+that metadata once, as a single `NativePluginDescription` returned from
+`getNativePluginDescription()`, and implements those `EffectInstance` and
+`OutputEffectInstance` virtuals from it. It adds no capability virtuals of its
+own -- see "Single hierarchy" above.
 
 What it supplies so a subclass doesn't have to:
 
 - `getPluginID()`, `getPluginLabel()`, `getPluginDescription()`,
   `getPluginGrouping()`, `getMajorVersion()`, `getMinorVersion()`,
-  `getNInputs()`, `getInputLabel()`, `isInputOptional()`,
-  `getOutputDataKind()`, `getInputDataKind()` -- all derived from
-  `getNativePluginDescription()`.
+  `isWriter()`, `isOutput()`, `getNInputs()`, `getInputLabel()`,
+  `isInputOptional()`, `getOutputDataKind()`, `getInputDataKind()` -- all
+  derived from `getNativePluginDescription()`. `isWriter()` and `isOutput()`
+  both follow the description's `isWriter` flag, default `false`: a node that
+  is meant to be a render root -- a writer -- sets it, and both accessors
+  report true; every other native node reports false for both, same as
+  before this class carried a `RenderEngine` at all.
 - `addAcceptedComponents()` -- defaults to RGB, RGBA and Alpha.
 - `addSupportedBitDepth()` -- defaults to byte, short and float.
 - `renderThreadSafety()` -- defaults to `eRenderSafetyFullySafeFrame`.
@@ -69,19 +86,21 @@ What it supplies so a subclass doesn't have to:
   `initializeKnobs()` otherwise repeats.
 
 What a subclass still must provide, exactly as it would on top of
-`EffectInstance` directly: `getNativePluginDescription()` (the only pure
+`OutputEffectInstance` directly: `getNativePluginDescription()` (the only pure
 virtual `NativeEffectBase` adds), `initializeKnobs()`, and its render
-behavior (`render()`, or `isIdentity()` if the node is a pass-through).
+behavior (`render()`, or `isIdentity()` if the node is a pass-through). A
+writer sets `NativePluginDescription::isWriter = true`; nothing else about
+writing a native node changes.
 
 The plugin-identity accessors -- `getPluginID()`, `getPluginLabel()`,
 `getPluginDescription()`, `getPluginGrouping()`, `getMajorVersion()`,
-`getMinorVersion()` -- are `OVERRIDE FINAL` on purpose: `NativePluginDescription`
-is meant to be the single place a node's identity is written, and a subclass
-changes them by changing what it returns from `getNativePluginDescription()`,
-not by overriding the accessor. The remaining defaults are plain overrides that
-a node may replace when the default doesn't fit it: `getNInputs()`,
-`getInputLabel()`, `isInputOptional()`, `getOutputDataKind()`,
-`getInputDataKind()`, `resolveOutputDataKind()`,
+`getMinorVersion()`, `isWriter()`, `isOutput()` -- are `OVERRIDE FINAL` on
+purpose: `NativePluginDescription` is meant to be the single place a node's
+identity is written, and a subclass changes them by changing what it returns
+from `getNativePluginDescription()`, not by overriding the accessor. The
+remaining defaults are plain overrides that a node may replace when the
+default doesn't fit it: `getNInputs()`, `getInputLabel()`, `isInputOptional()`,
+`getOutputDataKind()`, `getInputDataKind()`, `resolveOutputDataKind()`,
 `inputParticipatesInDataKindPropagation()`, `addAcceptedComponents()`,
 `addSupportedBitDepth()` and `renderThreadSafety()`.
 
@@ -128,7 +147,11 @@ throughout; read it alongside this section.
    and `PLUGIN_GROUP_3D` already exist for the corresponding domains),
    `majorVersion`, `minorVersion`, one `NativeInputDescription` per input
    (label, whether it's optional, its `DataKindEnum`), and `outputKind`. See
-   "Data kinds" below for what to put in the kind fields.
+   "Data kinds" below for what to put in the kind fields. Set `isWriter = true`
+   if this node is meant to be rendered as a root -- a writer -- through the
+   GUI Render menu, the CLI's `-w`, or Python's `app.render()`; leave it at
+   its default `false` otherwise, which is what every node needed before this
+   flag existed.
 
 3. **Knobs and render behavior**: implement `initializeKnobs()` using
    `createKnob<KnobType>(tr("Label"))`. Implement the node's actual behavior:

@@ -630,6 +630,42 @@ def check_misc_effect_render():
 
 
 
+def check_deep_write_render():
+    """Assert App.render() drives a native (non-OFX) writer, not just WriteOIIO.
+
+    DeepRead/DeepWrite (Engine/Nodes/Deep/) are NativeEffectBase plugins registered directly by
+    AppManager::registerBuiltInPlugin(), not OFX bundles discovered via OFX_PLUGIN_PATH, so this
+    exercises App.render()'s dynamic_cast<OutputEffectInstance*>/isOutput() path (Engine/
+    PyAppInstance.cpp) against a writer that never goes near OfxEffectInstance/WriteNode.
+    """
+    tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-deep-")
+    in_path = os.path.join(_repo_root(), "Tests", "fixtures", "deep-scanline.exr")
+    out_path = os.path.join(tmpdir, "deep-out.exr")
+
+    reader = app.createNode("fr.natron.DeepRead")
+    if reader is None:
+        raise AssertionError("app.createNode('fr.natron.DeepRead') returned None")
+    reader.getParam("filename").set(in_path)
+    _mark("[smoke] created DeepRead pointed at %r" % (in_path,))
+
+    writer = app.createNode("fr.natron.DeepWrite")
+    if writer is None:
+        raise AssertionError("app.createNode('fr.natron.DeepWrite') returned None")
+    writer.getParam("filename").set(out_path)
+    if not writer.connectInput(0, reader):
+        raise AssertionError(
+            "Effect.connectInput(0, reader) failed for DeepRead -> DeepWrite")
+
+    _mark("[smoke] calling app.render([(writer, 1, 1)]) for DeepRead -> DeepWrite...")
+    app.render([(writer, 1, 1)])
+
+    if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+        raise AssertionError(
+            "app.render([(writer, 1, 1)]) did not produce a non-empty deep file "
+            "at %r" % (out_path,))
+    _mark("[smoke] OK: app.render() rendered a native DeepWrite at %r" % (out_path,))
+
+
 READ_TIME_OFFSET_FIXTURE_OUTPUT_TOKEN = "TIME_OFFSET_FIXTURE_OUTPUT_DIR"
 
 
@@ -762,6 +798,7 @@ def main():
     check_default_ocio_config()
     check_exr_to_png_colorspace()
     check_misc_effect_render()
+    check_deep_write_render()
     check_reader_cli_time_offset_regression()
 
     # NOTE: not covered here -- PyGuiApplication::addMenuCommand()

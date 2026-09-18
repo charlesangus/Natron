@@ -39,27 +39,29 @@ class FrameParams
     : public NonKeyParams
 {
 public:
-
     FrameParams()
         : NonKeyParams()
         , _image()
+        , _deepImage()
         , _rod()
     {
     }
 
-    FrameParams(const FrameParams & other)
+    FrameParams(const FrameParams& other)
         : NonKeyParams(other)
         , _image(other._image)
+        , _deepImage(other._deepImage)
         , _rod(other._rod)
     {
     }
 
-    FrameParams(const RectI & rod,
+    FrameParams(const RectI& rod,
                 int bitDepth,
                 const RectI& bounds,
                 const ImagePtr& originalImage)
         : NonKeyParams()
         , _image(originalImage)
+        , _deepImage()
         , _rod(rod)
     {
         CacheEntryStorageInfo& info = getStorageInfo();
@@ -98,10 +100,23 @@ public:
         _image = image;
     }
 
+    DeepImagePtr getInternalDeepImage() const
+    {
+        return _deepImage.lock();
+    }
+
+    void setInternalDeepImage(const DeepImagePtr& deepImage)
+    {
+        _deepImage = deepImage;
+    }
+
 private:
 
     // The image used to make this frame entry
     ImageWPtr  _image;
+
+    // The deep image that image was flattened from, when the frame came from deep data
+    DeepImageWPtr _deepImage;
 
     // The RoD of the image used to make this frame entry
     RectI _rod;

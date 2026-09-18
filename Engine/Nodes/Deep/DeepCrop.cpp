@@ -79,6 +79,9 @@ DeepCrop::initializeKnobs()
         bbox->setDefaultValue((double)projectFormat.height(), 3);
     }
     bbox->setHintToolTip(tr("The rectangle, in canonical coordinates and as (X, Y, Width, Height), that Use Bbox crops the input to."));
+    // See DeepRead::initializeKnobs()'s _filename for why NativeEffectBase needs this spelled out:
+    // Reformat's output format (below) is computed from Bbox.
+    bbox->setIsMetadataSlave(true);
     page->addKnob(bbox);
     _bbox = bbox;
 
@@ -109,6 +112,7 @@ DeepCrop::initializeKnobs()
     reformat->setName("reformat");
     reformat->setDefaultValue(false);
     reformat->setHintToolTip(tr("Set the output format to Bbox rather than keeping the input's."));
+    reformat->setIsMetadataSlave(true);
     page->addKnob(reformat);
     _reformat = reformat;
 } // DeepCrop::initializeKnobs

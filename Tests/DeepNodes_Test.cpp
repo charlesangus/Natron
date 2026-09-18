@@ -1674,6 +1674,42 @@ TEST_F(DeepNodesTest, DeepCropReformatSetsTheOutputFormatToBboxAndOffLeavesTheIn
     EXPECT_TRUE(RectI(1, 1, 5, 4) == cropOn->getEffectInstance()->getOutputFormat());
 }
 
+TEST_F(DeepNodesTest, DeepCropOutputFormatRefreshesWhenReformatOrBboxChangeWithNoExplicitRefresh)
+{
+    const RectI bounds(0, 0, 6, 6);
+
+    SynthPixels pixels;
+    pixels.push_back(SynthPixel(1, 1));
+    pixels.back().samples.push_back(pointSample(1.f, 0.1f, 0.2f, 0.3f, 0.4f));
+
+    NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixels, true));
+    ASSERT_TRUE(source != NULL);
+    source->getEffectInstance()->refreshMetadata_public(false);
+
+    NodePtr crop = createDeepCrop(1., 1., 4., 3., true, 0., 0., false, false);
+    ASSERT_TRUE(crop != NULL);
+    connectNodes(source, crop, 0, true);
+    crop->getEffectInstance()->refreshMetadata_public(false);
+
+    EXPECT_TRUE(source->getEffectInstance()->getOutputFormat() == crop->getEffectInstance()->getOutputFormat());
+
+    DeepImagePtr image;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(crop, 1., bounds, &image));
+    ASSERT_TRUE(image != NULL);
+
+    KnobBool* reformatKnob = dynamic_cast<KnobBool*>(crop->getKnobByName("reformat").get());
+    ASSERT_TRUE(reformatKnob != NULL);
+    reformatKnob->setValue(true);
+
+    EXPECT_TRUE(RectI(1, 1, 5, 4) == crop->getEffectInstance()->getOutputFormat());
+
+    KnobDouble* bboxKnob = dynamic_cast<KnobDouble*>(crop->getKnobByName("bbox").get());
+    ASSERT_TRUE(bboxKnob != NULL);
+    bboxKnob->setValue(6., ViewSpec::all(), 2);
+
+    EXPECT_TRUE(RectI(1, 1, 7, 4) == crop->getEffectInstance()->getOutputFormat());
+}
+
 namespace {
 
 std::vector<std::string>

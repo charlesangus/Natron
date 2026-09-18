@@ -153,7 +153,7 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 
 ## Phase 18.4: Post-checklist fixes and glyph rollback
 
-- [ ] M18.P4.T1 — `DeepFromImage`: don't create samples for zero-alpha pixels
+- [x] M18.P4.T1 — `DeepFromImage`: don't create samples for zero-alpha pixels
   - files: `Engine/Nodes/Deep/DeepFromImage.cpp`, `Tests/DeepNodes_Test.cpp`
   - approach: in `DeepFromImage::renderDeep` (`DeepFromImage.cpp:180`), the count-pass lambda `[&sourceBounds](int x, int y) -> U32 { return sourceBounds.contains(x, y) ? 1 : 0; }` creates a sample for every in-bounds pixel regardless of alpha, so fully-transparent source pixels still produce a (zero-alpha) deep sample. Capture `sourceAccess` in that lambda too and return 0 when the source pixel's alpha channel (index 3 of RGBA) is `<= 0.f`; leave the fill lambda unchanged, since `renderDeepTwoPass` only invokes it for pixels the count lambda already approved (`NativeEffectBase.cpp:276-281`). Add a regression test near `DeepFromImageThenDeepToImageReproducesTheImageAtAConstantDepth` (`Tests/DeepNodes_Test.cpp:1130`) using a source image with a mix of zero- and nonzero-alpha pixels (e.g. a small `DeepSyntheticSource`-style fixture or a per-pixel-pattern extension of `createImageSource`), asserting zero-alpha pixels get zero samples and nonzero-alpha pixels keep exactly one.
   - verify: new test fails against the current code (asserts 0 samples, gets 1), passes after the fix; full ctest suite green.
@@ -180,6 +180,19 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; `DeepWrite` actually writes a file through the GUI Render menu, the CLI `-w` flag, and the Python `app.render()` binding (not just direct `renderDeepRoI()` calls in a test); `DeepFromImage` never creates a zero-alpha sample; `DeepCrop`'s Reformat/Bbox knobs update the output format with no explicit refresh; the node graph shows no per-kind input-pipe dot and no tinted rectangle behind a node's body; entire ctest suite still green.
 
 ## Decisions
+
+- 2026-09-18 — M18.P4.T1 landed as `67e6d332a`. The count-pass lambda in
+  `DeepFromImage::renderDeep` now returns 0 for pixels with source alpha
+  `<= 0.f` (in addition to the existing out-of-bounds check); fill lambda
+  unchanged per the two-pass contract. The two pre-existing tests
+  (`DeepFromImageThenDeepToImageReproducesTheImageAtAConstantDepth`,
+  `DeepFromImageTakesItsDepthFromTheFirstChannelOfZ`) both used the
+  seed-3 fixture with zero-alpha pixels baked in and had encoded the bug
+  as expected behavior (asserting 1 sample everywhere); both updated to
+  assert the corrected behavior instead of masking it. New test
+  `DeepFromImageOmitsSamplesForFullyTransparentPixels` red-then-green
+  (77 vs expected 50 samples pre-fix; passes post-fix). Full ctest suite
+  207/207.
 
 - 2026-09-17 — **Manual GUI checklist run by the user: items 1, 2, 4, 5
   pass; items 3 and 6 failed**, both fixed in the same commit.

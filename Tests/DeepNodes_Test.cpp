@@ -1127,6 +1127,37 @@ TEST_F(DeepNodesTest, HoldoutWithNothingOnBPassesAThrough)
     }
 }
 
+TEST_F(DeepNodesTest, DeepFromImageOmitsSamplesForFullyTransparentPixels)
+{
+    const RectI frame(0, 0, kImageRenderTestWidth, kImageRenderTestHeight);
+    const int seed = 3;
+    const double depth = 12.5;
+
+    NodePtr image = createImageSource(seed);
+    NodePtr fromImage = createDeepFromImage(depth);
+    ASSERT_TRUE(image && fromImage);
+    connectNodes(image, fromImage, 0, true);
+
+    DeepImagePtr deep;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(fromImage, 1., frame, &deep));
+    ASSERT_TRUE(deep != NULL);
+    EXPECT_TRUE(frame == deep->getBounds());
+
+    U64 expectedSampleCount = 0;
+    for (int y = frame.y1; y < frame.y2; ++y) {
+        for (int x = frame.x1; x < frame.x2; ++x) {
+            const std::vector<ReadSample> samples = samplesAt(*deep, x, y);
+            if (imageRenderTestValue(seed, x, y, 3) <= 0.f) {
+                EXPECT_EQ((std::size_t)0, samples.size()) << "at pixel (" << x << ", " << y << ")";
+            } else {
+                EXPECT_EQ((std::size_t)1, samples.size()) << "at pixel (" << x << ", " << y << ")";
+                expectedSampleCount += samples.size();
+            }
+        }
+    }
+    EXPECT_EQ(expectedSampleCount, deep->getSampleTable().getTotalSampleCount());
+}
+
 TEST_F(DeepNodesTest, DeepFromImageThenDeepToImageReproducesTheImageAtAConstantDepth)
 {
     const RectI frame(0, 0, kImageRenderTestWidth, kImageRenderTestHeight);
@@ -1143,12 +1174,14 @@ TEST_F(DeepNodesTest, DeepFromImageThenDeepToImageReproducesTheImageAtAConstantD
     ASSERT_TRUE(deep != NULL);
     EXPECT_TRUE(frame == deep->getBounds());
     EXPECT_TRUE(deep->isTidy());
-    EXPECT_EQ((U64)(kImageRenderTestWidth * kImageRenderTestHeight), deep->getSampleTable().getTotalSampleCount());
 
     const std::vector<std::string> channels = rgbaChannelNames();
     for (int y = frame.y1; y < frame.y2; ++y) {
         for (int x = frame.x1; x < frame.x2; ++x) {
             const std::vector<ReadSample> samples = samplesAt(*deep, x, y);
+            if (imageRenderTestValue(seed, x, y, 3) <= 0.f) {
+                continue;
+            }
             ASSERT_EQ((std::size_t)1, samples.size()) << "at pixel (" << x << ", " << y << ")";
             EXPECT_EQ((float)depth, samples[0].z) << "at pixel (" << x << ", " << y << ")";
             EXPECT_EQ((float)depth, samples[0].zback) << "at pixel (" << x << ", " << y << ")";
@@ -1174,6 +1207,12 @@ TEST_F(DeepNodesTest, DeepFromImageThenDeepToImageReproducesTheImageAtAConstantD
         for (int x = frame.x1; x < frame.x2; ++x) {
             const float* actual = imagePixel(access, x, y);
             ASSERT_TRUE(actual != NULL);
+            if (imageRenderTestValue(seed, x, y, 3) <= 0.f) {
+                for (int c = 0; c < 4; ++c) {
+                    EXPECT_EQ(0.f, actual[c]) << "at pixel (" << x << ", " << y << ") channel " << c;
+                }
+                continue;
+            }
             for (int c = 0; c < 4; ++c) {
                 EXPECT_EQ(imageRenderTestValue(seed, x, y, c), actual[c]) << "at pixel (" << x << ", " << y << ") channel " << c;
             }
@@ -1206,6 +1245,9 @@ TEST_F(DeepNodesTest, DeepFromImageTakesItsDepthFromTheFirstChannelOfZ)
     for (int y = frame.y1; y < frame.y2; ++y) {
         for (int x = frame.x1; x < frame.x2; ++x) {
             const std::vector<ReadSample> samples = samplesAt(*deep, x, y);
+            if (imageRenderTestValue(seed, x, y, 3) <= 0.f) {
+                continue;
+            }
             ASSERT_EQ((std::size_t)1, samples.size()) << "at pixel (" << x << ", " << y << ")";
             EXPECT_EQ(imageRenderTestValue(depthSeed, x, y, 0), samples[0].z) << "at pixel (" << x << ", " << y << ")";
             EXPECT_EQ(imageRenderTestValue(depthSeed, x, y, 0), samples[0].zback) << "at pixel (" << x << ", " << y << ")";
@@ -1225,6 +1267,12 @@ TEST_F(DeepNodesTest, DeepFromImageTakesItsDepthFromTheFirstChannelOfZ)
         for (int x = frame.x1; x < frame.x2; ++x) {
             const float* actual = imagePixel(access, x, y);
             ASSERT_TRUE(actual != NULL);
+            if (imageRenderTestValue(seed, x, y, 3) <= 0.f) {
+                for (int c = 0; c < 4; ++c) {
+                    EXPECT_EQ(0.f, actual[c]) << "at pixel (" << x << ", " << y << ") channel " << c;
+                }
+                continue;
+            }
             for (int c = 0; c < 4; ++c) {
                 EXPECT_EQ(imageRenderTestValue(seed, x, y, c), actual[c]) << "at pixel (" << x << ", " << y << ") channel " << c;
             }

@@ -177,7 +177,13 @@ DeepFromImage::renderDeep(const DeepRenderActionArgs& args)
 
     clearPersistentMessage(false);
 
-    return renderDeepTwoPass(args, ImagePlaneDesc::getRGBAComponents().getChannels(), 3 /*alphaChannelIndex*/, [&sourceBounds](int x, int y) -> U32 { return sourceBounds.contains(x, y) ? 1 : 0; }, [&sourceAccess, &zAccess, &zBounds, constantDepth](int x, int y, const MutableDeepPixelView& out) {
+    return renderDeepTwoPass(args, ImagePlaneDesc::getRGBAComponents().getChannels(), 3 /*alphaChannelIndex*/, [&sourceBounds, &sourceAccess](int x, int y) -> U32 {
+        if (!sourceBounds.contains(x, y)) {
+            return 0;
+        }
+
+        return (((const float*)sourceAccess.pixelAt(x, y))[3] > 0.f) ? 1 : 0;
+    }, [&sourceAccess, &zAccess, &zBounds, constantDepth](int x, int y, const MutableDeepPixelView& out) {
         const float* pixel = (const float*)sourceAccess.pixelAt(x, y);
         float depth = constantDepth;
 

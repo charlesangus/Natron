@@ -171,7 +171,7 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: build, then an Xvfb GUI check (per this project's Xvfb-GUI practice): create a `DeepRead` node and confirm its dangling input arrow shows no dot; ctest suite green.
   - size: S
 
-- [ ] M18.P4.T4 — Remove the tinted rectangular fill drawn behind a node's body
+- [x] M18.P4.T4 — Remove the tinted rectangular fill drawn behind a node's body
   - files: `Gui/NodeGui.cpp`
   - approach: in `NodeGui::paint()` (`NodeGui.cpp:2336-2368`), M17 added a `painter->drawRect(bbox)` filled with `kindTintColor()`'s tint behind the node, plus a per-kind corner radius on `_boundingBox` sized to hide most of that fill in the node's rounded corners. Remove the tint-fill `drawRect()` call and the corner-radius-from-kind logic together (`_boundingBox`'s corner radius reverts to its pre-M17 default), so a node's silhouette paints exactly as it did before M17. Leave `kindTintColor()` itself alone — `Edge::refreshDataKindPen()` still uses it.
   - verify: Xvfb GUI check: a Deep-kind node (e.g. `DeepRead`) shows no colored fill or corner rounding behind its body; ctest suite green (Gui-only change, no ctest coverage expected to move).
@@ -332,6 +332,18 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; `DeepWrite` actually writes a file through the GUI Render menu, the CLI `-w` flag, and the Python `app.render()` binding (not just direct `renderDeepRoI()` calls in a test); `DeepFromImage` never creates a zero-alpha sample; `DeepCrop`'s Reformat/Bbox knobs update the output format with no explicit refresh; `DeepReformat` translates without resampling, centres correctly, and its format-change knobs refresh with no explicit call; the node graph shows no per-kind input-pipe dot and no tinted rectangle behind a node's body; entire ctest suite still green.
 
 ## Decisions
+
+- 2026-09-18 — M18.P4.T4 landed as `985195c32`. `NodeGui::paint()` reverted
+  to its pre-M17 no-op body (removes the `kindTintColor()`-brushed
+  `drawRect()` fill and the per-kind `_boundingBox->setCornerRadiusPx()`
+  call); the now-dead `kindSilhouetteCornerRadiusPx()` helper removed too.
+  `kindTintColor()` itself left in place (`Edge::refreshDataKindPen()` still
+  uses it) — it is now an unused-function warning in this file only
+  (no `-Werror`, does not fail the build); noted, not swept up here since
+  the task explicitly scoped it out. Verified via Xvfb screenshot of a
+  connected `DeepRead -> DeepCrop`: sharp square corners, no tint overlay
+  (navy body color is the standard per-plugin-group node color, unrelated).
+  Full ctest suite 208/208.
 
 - 2026-09-18 — M18.P4.T3 landed as `226a37154`. `createInputKindGlyphItem()`,
   `refreshInputKindGlyphs()`, the `_inputKindGlyphs` member, and all call

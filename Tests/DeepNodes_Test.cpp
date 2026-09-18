@@ -36,6 +36,8 @@
 
 #include <QString>
 
+#include <ofxNatron.h>
+
 #include "BaseTest.h"
 #include "CacheMemoryPressureGuard.h"
 #include "DeepRenderTestEffect.h"
@@ -49,6 +51,7 @@
 #include "Engine/DeepImageKey.h"
 #include "Engine/DeepPixelOps.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImagePlaneDesc.h"
 #include "Engine/KnobFile.h"
@@ -60,8 +63,10 @@
 #include "Engine/Nodes/Deep/DeepMerge.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepRecolor.h"
+#include "Engine/Nodes/Deep/DeepReformat.h"
 #include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -576,6 +581,56 @@ protected:
         reformatKnob->setValue(reformat);
 
         return node;
+    }
+
+    NodePtr createDeepReformat(int w,
+                               int h,
+                               bool useCustomSize,
+                               bool centre)
+    {
+        NodePtr node = createTrackedNode(PLUGINID_NATRON_DEEPREFORMAT);
+
+        if (!node) {
+            return node;
+        }
+        KnobBool* useCustomSizeKnob = dynamic_cast<KnobBool*>(node->getKnobByName("useCustomSize").get());
+        KnobInt* customSize = dynamic_cast<KnobInt*>(node->getKnobByName("customSize").get());
+        KnobBool* centreKnob = dynamic_cast<KnobBool*>(node->getKnobByName("centre").get());
+        if (!useCustomSizeKnob || !customSize || !centreKnob) {
+            return NodePtr();
+        }
+        customSize->setValue(w, ViewSpec::all(), 0);
+        customSize->setValue(h, ViewSpec::all(), 1);
+        useCustomSizeKnob->setValue(useCustomSize);
+        centreKnob->setValue(centre);
+
+        return node;
+    }
+
+    // The synthetic source declares no format of its own, so its metadata carries the project's,
+    // which is no use to a node that positions its input by the input's format. A DeepCrop with
+    // Reformat on and a Bbox containing the whole source declares (0, 0, w, h) instead without
+    // touching a sample: it is an identity, so a render through it still resolves to the source's
+    // own cache entry. Returns that DeepCrop, with the source it wraps in *source.
+    NodePtr createDeepSourceWithFormat(const DeepImagePtr& image,
+                                       int w,
+                                       int h,
+                                       NodePtr* source)
+    {
+        *source = createSyntheticSource(image);
+
+        if (!*source) {
+            return NodePtr();
+        }
+        NodePtr format = createDeepCrop(0., 0., (double)w, (double)h, true, 0., 0., false, true);
+        if (!format) {
+            return NodePtr();
+        }
+        connectNodes(*source, format, 0, true);
+        (*source)->getEffectInstance()->refreshMetadata_public(false);
+        format->getEffectInstance()->refreshMetadata_public(false);
+
+        return format;
     }
 
     NodePtr createDeepRecolor(bool targetInputAlpha)
@@ -1708,6 +1763,312 @@ TEST_F(DeepNodesTest, DeepCropOutputFormatRefreshesWhenReformatOrBboxChangeWithN
     bboxKnob->setValue(6., ViewSpec::all(), 2);
 
     EXPECT_TRUE(RectI(1, 1, 7, 4) == crop->getEffectInstance()->getOutputFormat());
+}
+
+namespace {
+
+// An 8x8 source's samples: point and volume samples both, at all four extremes and in the middle,
+// so that a shift has something to land wherever it puts it.
+SynthPixels
+reformatPixels()
+{
+    SynthPixels pixels;
+
+    pixels.push_back(SynthPixel(0, 0));
+    pixels.back().samples.push_back(pointSample(1.f, 0.1f, 0.2f, 0.3f, 0.4f));
+    pixels.push_back(SynthPixel(2, 2));
+    pixels.back().samples.push_back(pointSample(2.f, 0.5f, 0.4f, 0.3f, 0.2f));
+    pixels.back().samples.push_back(volumeSample(3.f, 5.f, 0.6f, 0.6f, 0.6f, 0.6f));
+    pixels.push_back(SynthPixel(3, 6));
+    pixels.back().samples.push_back(pointSample(6.f, 0.25f, 0.5f, 0.75f, 0.125f));
+    pixels.push_back(SynthPixel(5, 5));
+    pixels.back().samples.push_back(volumeSample(1.5f, 2.5f, 0.7f, 0.8f, 0.9f, 0.5f));
+    pixels.push_back(SynthPixel(7, 7));
+    pixels.back().samples.push_back(pointSample(4.f, 0.9f, 0.9f, 0.9f, 1.f));
+
+    return pixels;
+}
+
+U64
+totalSampleCount(const SynthPixels& pixels)
+{
+    U64 count = 0;
+
+    for (std::size_t p = 0; p < pixels.size(); ++p) {
+        count += (U64)pixels[p].samples.size();
+    }
+
+    return count;
+}
+
+// DeepReformat filters nothing, so its samples are held to exact equality rather than to a
+// tolerance: a value that merely came close would mean arithmetic happened somewhere.
+void
+expectSamplesIdentical(const std::vector<ReadSample>& expected,
+                       const std::vector<ReadSample>& actual,
+                       int x,
+                       int y)
+{
+    const std::vector<std::string> channels = rgbaChannelNames();
+
+    ASSERT_EQ(expected.size(), actual.size()) << "at pixel (" << x << ", " << y << ")";
+    for (std::size_t s = 0; s < expected.size(); ++s) {
+        EXPECT_FLOAT_EQ(expected[s].z, actual[s].z) << "at pixel (" << x << ", " << y << ") sample " << s;
+        EXPECT_FLOAT_EQ(expected[s].zback, actual[s].zback) << "at pixel (" << x << ", " << y << ") sample " << s;
+        for (std::size_t c = 0; c < channels.size(); ++c) {
+            EXPECT_FLOAT_EQ(expected[s].value(channels[c]), actual[s].value(channels[c])) << "at pixel (" << x << ", " << y << ") sample " << s << " channel " << channels[c];
+        }
+    }
+}
+
+} // namespace
+
+TEST_F(DeepNodesTest, DeepReformatIsRegisteredAndInstantiable)
+{
+    NodePtr reformat = createTrackedNode(PLUGINID_NATRON_DEEPREFORMAT);
+
+    ASSERT_TRUE(reformat != NULL);
+    EXPECT_EQ(1, reformat->getEffectInstance()->getNInputs());
+    EXPECT_EQ(eDataKindDeep, reformat->getEffectInstance()->getInputDataKind(0));
+    EXPECT_EQ(eDataKindDeep, reformat->getEffectInstance()->getOutputDataKind());
+    EXPECT_EQ("Source", reformat->getEffectInstance()->getInputLabel(0));
+
+    std::list<std::string> grouping;
+    reformat->getEffectInstance()->getPluginGrouping(&grouping);
+    ASSERT_EQ((std::size_t)1, grouping.size());
+    EXPECT_EQ(PLUGIN_GROUP_DEEP, grouping.front());
+
+    NodePtr imageSource = createImageSource(0);
+    ASSERT_TRUE(imageSource != NULL);
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, reformat->canConnectInput(imageSource, 0));
+}
+
+TEST_F(DeepNodesTest, DeepReformatCentresByAWholePixelOffsetAndLeavesEverySampleUnchanged)
+{
+    const RectI bounds(0, 0, 8, 8);
+    const SynthPixels pixels = reformatPixels();
+
+    NodePtr source;
+    NodePtr formatted = createDeepSourceWithFormat(makeDeepImage(bounds, rgbaChannelNames(), pixels, true), 8, 8, &source);
+    ASSERT_TRUE(source && formatted);
+
+    NodePtr reformat = createDeepReformat(12, 12, true, true);
+    ASSERT_TRUE(reformat != NULL);
+    connectNodes(formatted, reformat, 0, true);
+    reformat->getEffectInstance()->refreshMetadata_public(false);
+
+    EXPECT_TRUE(RectI(0, 0, 12, 12) == reformat->getEffectInstance()->getOutputFormat());
+
+    DeepImagePtr out;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(reformat, 1., RectI(0, 0, 12, 12), &out));
+    ASSERT_TRUE(out != NULL);
+    EXPECT_TRUE(RectI(2, 2, 10, 10) == out->getBounds());
+    EXPECT_TRUE(out->isTidy());
+    EXPECT_EQ(totalSampleCount(pixels), out->getSampleTable().getTotalSampleCount());
+
+    for (int y = bounds.y1; y < bounds.y2; ++y) {
+        for (int x = bounds.x1; x < bounds.x2; ++x) {
+            expectSamplesIdentical(synthSamplesAt(pixels, x, y), samplesAt(*out, x + 2, y + 2), x + 2, y + 2);
+        }
+    }
+}
+
+TEST_F(DeepNodesTest, DeepReformatOddSizeDifferenceTruncatesTheOffset)
+{
+    const RectI bounds(0, 0, 8, 8);
+    const SynthPixels pixels = reformatPixels();
+
+    NodePtr source;
+    NodePtr formatted = createDeepSourceWithFormat(makeDeepImage(bounds, rgbaChannelNames(), pixels, true), 8, 8, &source);
+    ASSERT_TRUE(source && formatted);
+
+    NodePtr reformat = createDeepReformat(11, 11, true, true);
+    ASSERT_TRUE(reformat != NULL);
+    connectNodes(formatted, reformat, 0, true);
+    reformat->getEffectInstance()->refreshMetadata_public(false);
+
+    DeepImagePtr out;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(reformat, 1., RectI(0, 0, 11, 11), &out));
+    ASSERT_TRUE(out != NULL);
+    // (11 - 8) / 2 truncates to one whole pixel, not to a pixel and a half.
+    EXPECT_TRUE(RectI(1, 1, 9, 9) == out->getBounds());
+    EXPECT_EQ(totalSampleCount(pixels), out->getSampleTable().getTotalSampleCount());
+
+    for (int y = bounds.y1; y < bounds.y2; ++y) {
+        for (int x = bounds.x1; x < bounds.x2; ++x) {
+            expectSamplesIdentical(synthSamplesAt(pixels, x, y), samplesAt(*out, x + 1, y + 1), x + 1, y + 1);
+        }
+    }
+}
+
+TEST_F(DeepNodesTest, DeepReformatWithCentreOffOnlyChangesTheFormatAndSharesTheInputsCacheEntry)
+{
+    const RectI bounds(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
+
+    SynthPixels pixels;
+    pixels.push_back(SynthPixel(1, 1));
+    pixels.back().samples.push_back(pointSample(1.f, 0.1f, 0.2f, 0.3f, 0.4f));
+    pixels.push_back(SynthPixel(2, 0));
+    pixels.back().samples.push_back(volumeSample(1.f, 3.f, 0.5f, 0.5f, 0.5f, 0.5f));
+
+    NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixels, true));
+    ASSERT_TRUE(source != NULL);
+    source->getEffectInstance()->refreshMetadata_public(false);
+
+    NodePtr reformat = createDeepReformat(40, 30, true, false);
+    ASSERT_TRUE(reformat != NULL);
+    connectNodes(source, reformat, 0, true);
+    reformat->getEffectInstance()->refreshMetadata_public(false);
+
+    DeepImagePtr fromSource;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(source, 1., bounds, &fromSource));
+    ASSERT_TRUE(fromSource != NULL);
+
+    DeepImagePtr fromReformat;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(reformat, 1., bounds, &fromReformat));
+    ASSERT_TRUE(fromReformat != NULL);
+
+    EXPECT_EQ(fromSource.get(), fromReformat.get());
+    EXPECT_TRUE(cachedDeepEntryBounds(reformat, 1.).empty());
+    EXPECT_TRUE(RectI(0, 0, 40, 30) == reformat->getEffectInstance()->getOutputFormat());
+}
+
+TEST_F(DeepNodesTest, DeepReformatToTheInputsOwnFormatIsAnIdentity)
+{
+    const RectI bounds(0, 0, 8, 8);
+
+    NodePtr source;
+    NodePtr formatted = createDeepSourceWithFormat(makeDeepImage(bounds, rgbaChannelNames(), reformatPixels(), true), 8, 8, &source);
+    ASSERT_TRUE(source && formatted);
+
+    NodePtr reformat = createDeepReformat(8, 8, true, true);
+    ASSERT_TRUE(reformat != NULL);
+    connectNodes(formatted, reformat, 0, true);
+    reformat->getEffectInstance()->refreshMetadata_public(false);
+
+    DeepImagePtr fromInput;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(formatted, 1., bounds, &fromInput));
+    ASSERT_TRUE(fromInput != NULL);
+
+    DeepImagePtr fromReformat;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(reformat, 1., bounds, &fromReformat));
+    ASSERT_TRUE(fromReformat != NULL);
+
+    EXPECT_EQ(fromInput.get(), fromReformat.get());
+    EXPECT_TRUE(cachedDeepEntryBounds(reformat, 1.).empty());
+}
+
+TEST_F(DeepNodesTest, DeepReformatKeepsSamplesPushedOutsideTheNewFormat)
+{
+    const RectI bounds(0, 0, 8, 8);
+    const SynthPixels pixels = reformatPixels();
+
+    NodePtr source;
+    NodePtr formatted = createDeepSourceWithFormat(makeDeepImage(bounds, rgbaChannelNames(), pixels, true), 8, 8, &source);
+    ASSERT_TRUE(source && formatted);
+
+    NodePtr reformat = createDeepReformat(4, 4, true, true);
+    ASSERT_TRUE(reformat != NULL);
+    connectNodes(formatted, reformat, 0, true);
+    reformat->getEffectInstance()->refreshMetadata_public(false);
+
+    EXPECT_TRUE(RectI(0, 0, 4, 4) == reformat->getEffectInstance()->getOutputFormat());
+
+    DeepImagePtr out;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(reformat, 1., RectI(-2, -2, 6, 6), &out));
+    ASSERT_TRUE(out != NULL);
+    // Shrinking the format pushes the input out past it on every side, and the region of
+    // definition follows the samples rather than the format: nothing is dropped.
+    EXPECT_TRUE(RectI(-2, -2, 6, 6) == out->getBounds());
+    EXPECT_EQ(totalSampleCount(pixels), out->getSampleTable().getTotalSampleCount());
+
+    expectSamplesIdentical(synthSamplesAt(pixels, 0, 0), samplesAt(*out, -2, -2), -2, -2);
+    expectSamplesIdentical(synthSamplesAt(pixels, 7, 7), samplesAt(*out, 5, 5), 5, 5);
+}
+
+TEST_F(DeepNodesTest, DeepReformatAsksItsInputForATranslatedRegion)
+{
+    const RectI bounds(0, 0, 8, 8);
+    const SynthPixels pixels = reformatPixels();
+
+    NodePtr source;
+    NodePtr formatted = createDeepSourceWithFormat(makeDeepImage(bounds, rgbaChannelNames(), pixels, true), 8, 8, &source);
+    ASSERT_TRUE(source && formatted);
+
+    NodePtr reformat = createDeepReformat(12, 12, true, true);
+    ASSERT_TRUE(reformat != NULL);
+    connectNodes(formatted, reformat, 0, true);
+    reformat->getEffectInstance()->refreshMetadata_public(false);
+
+    // Narrower than the region of definition (2, 2, 10, 10), so the render window is what
+    // propagates upstream rather than the whole frame.
+    DeepImagePtr out;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(reformat, 1., RectI(4, 4, 8, 8), &out));
+    ASSERT_TRUE(out != NULL);
+    EXPECT_TRUE(RectI(4, 4, 8, 8) == out->getBounds());
+
+    const std::vector<RectI> upstream = cachedDeepEntryBounds(source, 1.);
+    ASSERT_EQ((std::size_t)1, upstream.size());
+    EXPECT_TRUE(RectI(2, 2, 6, 6) == upstream[0]);
+
+    EXPECT_EQ((U64)3, out->getSampleTable().getTotalSampleCount());
+    expectSamplesIdentical(synthSamplesAt(pixels, 2, 2), samplesAt(*out, 4, 4), 4, 4);
+    expectSamplesIdentical(synthSamplesAt(pixels, 5, 5), samplesAt(*out, 7, 7), 7, 7);
+}
+
+TEST_F(DeepNodesTest, DeepReformatOutputFormatRefreshesWhenTheFormatKnobChangesWithNoExplicitRefresh)
+{
+    const RectI bounds(0, 0, 6, 6);
+
+    SynthPixels pixels;
+    pixels.push_back(SynthPixel(1, 1));
+    pixels.back().samples.push_back(pointSample(1.f, 0.1f, 0.2f, 0.3f, 0.4f));
+
+    NodePtr source = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), pixels, true));
+    ASSERT_TRUE(source != NULL);
+    source->getEffectInstance()->refreshMetadata_public(false);
+
+    NodePtr reformat = createDeepReformat(6, 6, false, false);
+    ASSERT_TRUE(reformat != NULL);
+    connectNodes(source, reformat, 0, true);
+    reformat->getEffectInstance()->refreshMetadata_public(false);
+
+    Format projectFormat;
+    getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
+    EXPECT_TRUE(RectI(0, 0, projectFormat.width(), projectFormat.height()) == reformat->getEffectInstance()->getOutputFormat());
+
+    KnobBool* useCustomSize = dynamic_cast<KnobBool*>(reformat->getKnobByName("useCustomSize").get());
+    KnobInt* customSize = dynamic_cast<KnobInt*>(reformat->getKnobByName("customSize").get());
+    ASSERT_TRUE(useCustomSize && customSize);
+
+    useCustomSize->setValue(true);
+    EXPECT_TRUE(RectI(0, 0, 6, 6) == reformat->getEffectInstance()->getOutputFormat());
+
+    customSize->setValue(10, ViewSpec::all(), 1);
+    EXPECT_TRUE(RectI(0, 0, 6, 10) == reformat->getEffectInstance()->getOutputFormat());
+
+    useCustomSize->setValue(false);
+    EXPECT_TRUE(RectI(0, 0, projectFormat.width(), projectFormat.height()) == reformat->getEffectInstance()->getOutputFormat());
+
+    // The Format choice is the host's to fill and to translate into the hidden size knob, so the
+    // node only ever sees the size; picking another entry has to reach the metadata all the same.
+    KnobChoice* formatChoice = dynamic_cast<KnobChoice*>(reformat->getKnobByName(kNatronParamFormatChoice).get());
+    KnobInt* formatSize = dynamic_cast<KnobInt*>(reformat->getKnobByName(kNatronParamFormatSize).get());
+    ASSERT_TRUE(formatChoice && formatSize);
+
+    int otherIndex = -1;
+    for (int i = 0; i < formatChoice->getNumEntries(); ++i) {
+        Format f;
+        if (getApp()->getProject()->getProjectFormatAtIndex(i, &f) && ((f.width() != projectFormat.width()) || (f.height() != projectFormat.height()))) {
+            otherIndex = i;
+            break;
+        }
+    }
+    ASSERT_NE(-1, otherIndex);
+
+    formatChoice->setValue(otherIndex);
+    EXPECT_FALSE(RectI(0, 0, projectFormat.width(), projectFormat.height()) == reformat->getEffectInstance()->getOutputFormat());
+    EXPECT_TRUE(RectI(0, 0, formatSize->getValue(0), formatSize->getValue(1)) == reformat->getEffectInstance()->getOutputFormat());
 }
 
 namespace {

@@ -138,6 +138,7 @@
 #include "Engine/Nodes/Deep/DeepMerge.h"
 #include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepRecolor.h"
+#include "Engine/Nodes/Deep/DeepReformat.h"
 #include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
 #include "Engine/Nodes/TypedPassthrough.h"
@@ -1557,6 +1558,7 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
     registerBuiltInPlugin<DeepRecolor>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DeepCrop>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DeepExpression>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepReformat>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DiskCacheNode>(QString::fromUtf8(NATRON_IMAGES_PATH "diskcache_icon.png"), false, false);
     registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_IMAGES_PATH "GroupingIcons/Set2/paint_grouping_2.png"), false, false);
     registerBuiltInPlugin<RotoNode>(QString::fromUtf8(NATRON_IMAGES_PATH "rotoNodeIcon.png"), false, false);

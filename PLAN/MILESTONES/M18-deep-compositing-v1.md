@@ -177,7 +177,159 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: Xvfb GUI check: a Deep-kind node (e.g. `DeepRead`) shows no colored fill or corner rounding behind its body; ctest suite green (Gui-only change, no ctest coverage expected to move).
   - size: S
 
-**Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; `DeepWrite` actually writes a file through the GUI Render menu, the CLI `-w` flag, and the Python `app.render()` binding (not just direct `renderDeepRoI()` calls in a test); `DeepFromImage` never creates a zero-alpha sample; `DeepCrop`'s Reformat/Bbox knobs update the output format with no explicit refresh; the node graph shows no per-kind input-pipe dot and no tinted rectangle behind a node's body; entire ctest suite still green.
+- [ ] M18.P4.T5 — `DeepReformat`: format-only reposition, no resampling
+  - files: `Engine/Nodes/Deep/DeepReformat.h`/`.cpp` (new), `Engine/AppManager.cpp`
+    (add `#include "Engine/Nodes/Deep/DeepReformat.h"` next to the other
+    `Nodes/Deep/*.h` at :135-142, and `registerBuiltInPlugin<DeepReformat>(QString::fromUtf8(""), false, false);`
+    after the `DeepExpression` line at :1559), `Tests/DeepNodes_Test.cpp`.
+    **No build-file change**: `Engine/CMakeLists.txt:43-44` uses
+    `file(GLOB_RECURSE NatronEngineNodes_SOURCES Nodes/*.cpp)`, which is why
+    `DeepCrop` appears in no `.txt`/`.pro`.
+  - approach: new `NativeEffectBase` subclass, `PLUGINID_NATRON_DEEPREFORMAT
+    "fr.natron.DeepReformat"`, `PLUGIN_GROUP_DEEP`, one non-optional
+    `NativeInputDescription("Source", false, eDataKindDeep)`, `outputKind =
+    eDataKindDeep`, `supportsTiles() == true`. Structurally a twin of `DeepCrop`
+    (`Engine/Nodes/Deep/DeepCrop.cpp`) — same five overrides
+    (`initializeKnobs`, `getRegionOfDefinition`, `isIdentity`,
+    `getPreferredMetadata`, `renderDeep`) plus one `DeepCrop` does not have
+    (`getRegionsOfInterest`).
+
+    **Knobs.** Reuse Natron's host-side format hijack rather than hand-rolling a
+    format list. `Node::initializeDefaultKnobs()` → `Node::findPluginFormatKnobs()`
+    (`Engine/Node.cpp:2147-2192`) runs for *every* node, so a native node that
+    simply creates three knobs with these exact names gets the project-format UI
+    for free:
+      - `kNatronParamFormatChoice` (`KnobChoice`, label tr("Format")) — do
+        **not** call `populateChoices()` yourself; `refreshFormatParamChoice()`
+        (`Node.cpp:3031`) fills it from `Project::getProjectFormatEntries()`.
+        Default becomes the project's current format, so a freshly created
+        `DeepReformat` is a no-op by default.
+      - `kNatronParamFormatSize` (`KnobInt`, 2 dims) and `kNatronParamFormatPar`
+        (`KnobDouble`) — the host forces these secret + `setEvaluateOnChange(false)`
+        and writes W/H/PAR from `Node::handleFormatKnob()` (`Node.cpp:2991`)
+        every time the choice changes. These are the authoritative W/H the node
+        reads. Same three constants openfx-misc's `Reformat.cpp:83-95` aliases;
+        there is no in-tree `Reformat` node to copy (it ships in
+        `Misc.ofx.bundle`).
+      - `useCustomSize` (`KnobBool`, default false) + `customSize` (`KnobInt`,
+        2 dims, default = project format W/H) — same "`useX` bool + value knob"
+        idiom as `DeepCrop`'s `useBBox`/`useZRange`. When on, W/H come from
+        `customSize` instead of the hidden format-size knob.
+      - `centre` (`KnobBool`, default **true**), hint "Centre the input's format
+        in the new format rather than anchoring it at the origin."
+
+    **Metadata-slave wiring** (the M18.P4.T2 lesson): mark
+    `kNatronParamFormatChoice`, `useCustomSize`, `customSize` and `centre` with
+    `setIsMetadataSlave(true)`. Do **not** rely on the hidden
+    `kNatronParamFormatSize` knob for this — `handleFormatKnob()` wraps its
+    `setValues()` in `blockValueChanges()`/`unblockValueChanges()`, but the
+    metadata-refresh counter (`KnobHolder::appendValueChange`) is bumped
+    independent of `knobChanged()` (`Knob.cpp:5716`/`:5887`), which is what the
+    hijack suppresses (`EffectInstance.cpp:4736-4746`) — so the slave flag on
+    the choice knob should be both necessary and sufficient. If the red-then-green
+    refresh test says otherwise, fall back to driving the node off
+    `useCustomSize`/`customSize` only.
+
+    **Geometry.** Formats always start at (0,0) (see `DeepRead`'s
+    `getPreferredMetadata()` comment), so the target format is
+    `RectI(0, 0, W, H)`. Let `inFormat = getInput(0)->getOutputFormat()`. Then
+    `dx = centre ? (W - inFormat.width()) / 2 : 0`,
+    `dy = centre ? (H - inFormat.height()) / 2 : 0` — integer (truncating)
+    division, giving a whole-pixel, exact translation. **Centre off `inFormat`,
+    not off the input's RoD** — centring the RoD would make the offset
+    data-dependent, so a deep stream whose sample extent changes over time
+    would slide frame to frame. `getOutputFormat()` is already on
+    `EffectInstance` (`EffectInstance.h:349`) and defaults to the first
+    non-optional input's format.
+
+    **`getPreferredMetadata(NodeMetadata&)`**: `metadata.setOutputFormat(RectI(0, 0, W, H))`
+    only. Do not touch output PAR — that would be a resample by another
+    name; mirror `DeepCrop`'s "PAR editing deferred" scoping in the class
+    comment.
+
+    **`getRegionOfDefinition`**: fetch the input RoD via
+    `input->getRegionOfDefinition_public(...)` as `DeepCrop.cpp:143-167` does,
+    then translate in *pixel* space:
+    `RectI p = rod->toPixelEnclosing(0u, par); p.translate(dx, dy);
+     *rod = p.toCanonical_noClipping(0u, par);` — not `RectD::translate()`
+    directly (`RectD.h:194` takes `int dx, int dy)` despite holding doubles;
+    the canonical x-offset is `dx * par`, not `dx`.
+
+    **`getRegionsOfInterest` override — required, new relative to every
+    existing Deep node.** `EffectInstanceRenderDeep.cpp:333-395` honours a
+    per-input `RoIMap` entry, defaulting to this node's own render window when
+    absent. A translating node must ask its input for `renderWindow` shifted by
+    `(-dx, -dy)` (canonical: `-dx * par`), or partial-RoI renders lose samples
+    at the edges. No shipping Deep node overrides this today — follow the base
+    implementation at `EffectInstance.cpp:1336-1356` and shift each entry.
+
+    **`renderDeep`**: `renderDeepTwoPass`, not `renderDeepFromInput`
+    (`renderDeepFromInput` assumes output (x,y) ↔ input (x,y) — value rewrites
+    only). Lift `DeepCrop::renderDeep`'s body and fold the shift into the
+    `pixelIndex` lambda: `pixelIndex(x, y)` becomes `pixelIndex(x - dx, y - dy)`
+    against `input->getBounds()`, returning -1 (→ count 0) when out of bounds.
+    Count lambda returns the unfiltered count; fill lambda copies `Z`, `ZBack`
+    and every value channel straight across with no arithmetic — sample order
+    and count per pixel preserved exactly. Pass `resultIsTidy = input->isTidy()`
+    (a rigid XY translate moves no sample in Z). Build `channelNames`/
+    `alphaChannelIndex` the same way `DeepCrop.cpp:232-252` does.
+
+    **`isIdentity`**: true → input 0 exactly when `dx == 0 && dy == 0` (centre
+    off, or target W/H already equal `inFormat`). With `centre` off,
+    `DeepReformat` is therefore purely a metadata change and always an
+    identity render — same zero-copy shape as `DeepCrop`'s `reformat`-only
+    mode.
+
+    **Samples pushed outside the new format are kept, not cropped.** RoD is
+    allowed to extend past the format (`EffectInstance::ifInfiniteApplyHeuristic`,
+    `EffectInstance.cpp:1225-1330`, already unions input RoDs with format this
+    way — RoD > format is normal in-tree state). No `cropToFormat`/"black
+    outside" knob in v1 — `DeepCrop` already does that job and composes after
+    `DeepReformat`. Say so in the class comment so the omission reads as a
+    decision.
+
+    **Deliberately deferred (note only, do not implement):** a whole-image
+    shift with nothing cropped makes the output's `SampleTable` bit-identical
+    to the input's, so a zero-copy alias is theoretically available — but
+    `DeepImage::aliasContentsOf()` hard-requires `_bounds == source._bounds`
+    (`DeepImage.cpp:100`), and relaxing that for one node's benefit is a change
+    to shared COW machinery the `centre`-off identity path already avoids
+    needing. Copy.
+  - verify: extend `Tests/DeepNodes_Test.cpp` (include `DeepReformat.h` beside
+    the other `Engine/Nodes/Deep/*` includes at :57-63; add a
+    `createDeepReformat(int w, int h, bool useCustomSize, bool centre)` helper
+    beside `createDeepCrop` at :545). All cases reuse the existing
+    `createSyntheticSource`/`makeDeepImage`/`SynthPixels`/`samplesAt`/
+    `synthSamplesAt`/`renderDeepFrame`/`cachedDeepEntryBounds` fixtures:
+    * `DeepReformatIsRegisteredAndInstantiable` — mirror
+      `DeepCropIsRegisteredAndInstantiable` (:1507).
+    * `DeepReformatCentresByAWholePixelOffsetAndLeavesEverySampleUnchanged` —
+      8x8 → 12x12, `centre` on → offset (2,2); bounds, total sample count,
+      `isTidy()`, and every sample's `z`/`zback`/R/G/B/A matching the source
+      exactly (`EXPECT_FLOAT_EQ`, not `EXPECT_NEAR` — exactness is the claim).
+    * `DeepReformatOddSizeDifferenceTruncatesTheOffset` — 8x8 → 11x11 gives
+      offset (1,1), not a rounded-up (1.5,1.5).
+    * `DeepReformatWithCentreOffOnlyChangesTheFormatAndSharesTheInputsCacheEntry` —
+      mirror `DeepCropWithNothingToDropIsAnIdentityAndSharesTheInputsCacheEntry`
+      (:1621): same `DeepImagePtr`, no new cache entry, but
+      `getOutputFormat()` reflects the new size.
+    * `DeepReformatToTheInputsOwnFormatIsAnIdentity` — same size in and out
+      with `centre` on.
+    * `DeepReformatKeepsSamplesPushedOutsideTheNewFormat` — 8x8 → 4x4, `centre`
+      on → offset (-2,-2); bounds `RectI(-2,-2,6,6)`, sample count unchanged,
+      a sample originally at (0,0) readable at (-2,-2) — pins the "no crop"
+      decision.
+    * `DeepReformatAsksItsInputForATranslatedRegion` — render a sub-RoI on a
+      centre-shifted graph; assert both the shifted samples are present and
+      `cachedDeepEntryBounds(source, 1.)` is the RoI shifted by `(-dx,-dy)`,
+      not the RoI itself — fails without the `getRegionsOfInterest` override.
+    * `DeepReformatOutputFormatRefreshesWhenTheFormatKnobChangesWithNoExplicitRefresh` —
+      mirror `DeepCropOutputFormatRefreshesWhenReformatOrBboxChange...` (:1677);
+      expect red before the `setIsMetadataSlave(true)` calls are added.
+    Plus: full ctest suite green (currently 208/208 → 216/216).
+  - size: M
+
+**Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; `DeepWrite` actually writes a file through the GUI Render menu, the CLI `-w` flag, and the Python `app.render()` binding (not just direct `renderDeepRoI()` calls in a test); `DeepFromImage` never creates a zero-alpha sample; `DeepCrop`'s Reformat/Bbox knobs update the output format with no explicit refresh; `DeepReformat` translates without resampling, centres correctly, and its format-change knobs refresh with no explicit call; the node graph shows no per-kind input-pipe dot and no tinted rectangle behind a node's body; entire ctest suite still green.
 
 ## Decisions
 

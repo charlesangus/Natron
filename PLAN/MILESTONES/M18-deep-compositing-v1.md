@@ -177,7 +177,7 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: Xvfb GUI check: a Deep-kind node (e.g. `DeepRead`) shows no colored fill or corner rounding behind its body; ctest suite green (Gui-only change, no ctest coverage expected to move).
   - size: S
 
-- [ ] M18.P4.T5 — `DeepReformat`: format-only reposition, no resampling
+- [x] M18.P4.T5 — `DeepReformat`: format-only reposition, no resampling
   - files: `Engine/Nodes/Deep/DeepReformat.h`/`.cpp` (new), `Engine/AppManager.cpp`
     (add `#include "Engine/Nodes/Deep/DeepReformat.h"` next to the other
     `Nodes/Deep/*.h` at :135-142, and `registerBuiltInPlugin<DeepReformat>(QString::fromUtf8(""), false, false);`
@@ -332,6 +332,35 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; `DeepWrite` actually writes a file through the GUI Render menu, the CLI `-w` flag, and the Python `app.render()` binding (not just direct `renderDeepRoI()` calls in a test); `DeepFromImage` never creates a zero-alpha sample; `DeepCrop`'s Reformat/Bbox knobs update the output format with no explicit refresh; `DeepReformat` translates without resampling, centres correctly, and its format-change knobs refresh with no explicit call; the node graph shows no per-kind input-pipe dot and no tinted rectangle behind a node's body; entire ctest suite still green.
 
 ## Decisions
+
+- 2026-09-18 — M18.P4.T5 landed as `7a5834160`. New `Engine/Nodes/Deep/DeepReformat.{h,cpp}`,
+  registered in `AppManager.cpp`. Twin of `DeepCrop` plus a new
+  `getRegionsOfInterest` override — the first Deep node to need one — that
+  shifts each `RoIMap` entry by `(-dx*par, -dy)` so a partial-RoI render
+  still pulls the correctly-translated window from the input. Format knobs
+  use the `kNatronParamFormatChoice`/`Size`/`Par` host hijack
+  (`Node::findPluginFormatKnobs()`); one addition beyond the brief:
+  `initializeKnobs()` seeds the choice knob's *default* to the project's
+  own format index via `setDefaultValue()`, because the host's
+  `refreshFormatParamChoice()` only moves the default with
+  `setDefaultValueWithoutApplying()` and leaves the value at index 0 — a
+  fresh node would otherwise target the first format in the list, not the
+  project's, breaking the "no-op by default" claim. `setIsMetadataSlave(true)`
+  on all four format/centre knobs does fire the refresh correctly (`Node::
+  handleFormatKnob()`'s `blockValueChanges()` covers only the size/par
+  writes it makes, not the choice knob's own change, and `endChanges()`
+  runs the write before checking `mustRefreshMetadata`) — confirmed by the
+  metadata-refresh test going red with the slave flags removed, including
+  on the choice-knob branch specifically. Centre offset computed from the
+  input's own format (not RoD) so positioning doesn't drift as a deep
+  stream's sample extent changes frame to frame; truncating division on
+  an odd size difference. Samples pushed outside the new format are kept,
+  not cropped (RoD wider than format is normal in this codebase) —
+  `DeepCrop` downstream is how a shot crops. 8 new tests, two verified
+  red-then-green directly: the RoI-shift test (without the override,
+  wrong bounds/sample count/missing samples) and the metadata-refresh
+  test (without the slave flags, format stays stale). Full ctest suite
+  216/216 (218 discovered, 2 disabled).
 
 - 2026-09-18 — M18.P4.T4 landed as `985195c32`. `NodeGui::paint()` reverted
   to its pre-M17 no-op body (removes the `kindTintColor()`-brushed

@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M18.P4.T5
-pm_heartbeat: 2026-09-18T01:15:47-04:00
+current: null
+pm_heartbeat: 2026-09-18T03:20:08-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -123,7 +123,7 @@ future core work has solid ground to build on.
 | M16 | Project file format redesign (.ntp successor) | todo | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
 | M17 | Typed graph edges and native node framework | done | [M17-typed-edges-native-framework.md](PLAN/MILESTONES/M17-typed-edges-native-framework.md) |
 | M26 | Fix the shared test-fixture teardown flake | done | [M26-test-fixture-teardown-flake.md](PLAN/MILESTONES/M26-test-fixture-teardown-flake.md) |
-| M18 | Deep compositing v1 | doing | [M18-deep-compositing-v1.md](PLAN/MILESTONES/M18-deep-compositing-v1.md) |
+| M18 | Deep compositing v1 | done | [M18-deep-compositing-v1.md](PLAN/MILESTONES/M18-deep-compositing-v1.md) |
 | M19 | USD/Hydra foundation: ScenePayload, ReadScene, Viewport3D | todo | [M19-usd-hydra-foundation.md](PLAN/MILESTONES/M19-usd-hydra-foundation.md) |
 | M20 | 3D node vocabulary and HydraRender | todo | [M20-3d-node-vocabulary.md](PLAN/MILESTONES/M20-3d-node-vocabulary.md) |
 | M21 | Deep tier-2 nodes and deep/3D bridges | todo | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
@@ -149,5 +149,8 @@ future core work has solid ground to build on.
   zero-alpha samples it shouldn't, `DeepCrop`'s `Reformat` knob not
   refreshing the output format, and two M17-introduced node-graph visuals
   (dangling-input-pipe dot/diamond glyph, tinted rectangle behind a node's
-  body) the user wants removed outright. M18 stays `doing` until Phase 18.4
-  lands and the gate is re-checked.
+  body) the user wants removed outright. A fifth task, `DeepReformat` (a new
+  filterless format-reposition node with a centre option), was added
+  mid-phase by explicit user request. **All five landed 2026-09-18; the
+  gate re-check passed (216/216 ctest, Xvfb-verified glyph/fill removal) and
+  M18 is `done`.**

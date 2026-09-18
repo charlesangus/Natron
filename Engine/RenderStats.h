@@ -76,8 +76,8 @@ public:
     void addMipmapLevelRendered(unsigned int level);
     const std::set<unsigned int>& getMipmapLevelsRendered() const;
 
-    void addPlaneRendered(const std::string& plane);
-    const std::set<std::string>& getPlanesRendered() const;
+    void addLayerRendered(const std::string& plane);
+    const std::set<std::string>& getLayersRendered() const;
 
     void addCacheAccessInfo(bool isCacheMiss, bool hasDownscaled);
     void getCacheAccessInfos(int* nbCacheMisses, int* nbCacheHits, int* nbCacheHitButDownscaledImages) const;

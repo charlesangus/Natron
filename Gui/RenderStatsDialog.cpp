@@ -61,7 +61,7 @@
 #define COL_IDENTITY 9
 #define COL_IDENTITY_TILES 10
 #define COL_RENDERED_TILES 11
-#define COL_RENDERED_PLANES 12
+#define COL_RENDERED_LAYERS 12
 #define COL_NB_CACHE_HIT 13
 #define COL_NB_CACHE_HIT_DOWNSCALED 14
 #define COL_NB_CACHE_MISS 15
@@ -529,31 +529,31 @@ public:
         }
         {
             TableItem* item = 0;
-            QString planesInfo;
+            QString layersInfo;
             if (exists) {
-                item = view->item(row, COL_RENDERED_PLANES);
+                item = view->item(row, COL_RENDERED_LAYERS);
             } else {
                 item = new TableItem;
-                QString tt = NATRON_NAMESPACE::convertFromPlainText(tr("The list of the planes rendered by this node."), NATRON_NAMESPACE::WhiteSpaceNormal);
+                QString tt = NATRON_NAMESPACE::convertFromPlainText(tr("The list of the layers rendered by this node."), NATRON_NAMESPACE::WhiteSpaceNormal);
                 item->setToolTip(tt);
                 item->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
             }
             assert(item);
-            const std::set<std::string>& planes = stats.getPlanesRendered();
+            const std::set<std::string>& planes = stats.getLayersRendered();
             for (std::set<std::string>::const_iterator it = planes.begin(); it != planes.end(); ++it) {
-                if ( !planesInfo.isEmpty() ) {
-                    planesInfo.append( QLatin1Char(' ') );
+                if (!layersInfo.isEmpty()) {
+                    layersInfo.append(QLatin1Char(' '));
                 }
-                planesInfo.append( QString::fromUtf8( it->c_str() ) );
+                layersInfo.append(QString::fromUtf8(it->c_str()));
             }
 
             if (nodeUi) {
                 item->setTextColor(Qt::black);
                 item->setBackgroundColor(c);
             }
-            item->setText(planesInfo);
+            item->setText(layersInfo);
             if (!exists) {
-                view->setItem(row, COL_RENDERED_PLANES, item);
+                view->setItem(row, COL_RENDERED_LAYERS, item);
             }
         }
         {
@@ -888,7 +888,7 @@ RenderStatsDialog::RenderStatsDialog(Gui* gui)
         << tr("Identity")
         << tr("Identity Tiles")
         << tr("Rendered Tiles")
-        << tr("Rendered Planes")
+        << tr("Rendered Layers")
         << tr("Cache Hits")
         << tr("Cache Hits Higher Scale")
         << tr("Cache Misses");
@@ -956,7 +956,7 @@ RenderStatsDialog::refreshAdvancedColsVisibility()
     _imp->view->setColumnHidden(COL_IDENTITY, !checked);
     _imp->view->setColumnHidden(COL_IDENTITY_TILES, !checked);
     _imp->view->setColumnHidden(COL_RENDERED_TILES, !checked);
-    _imp->view->setColumnHidden(COL_RENDERED_PLANES, !checked);
+    _imp->view->setColumnHidden(COL_RENDERED_LAYERS, !checked);
     _imp->view->setColumnHidden(COL_NB_CACHE_HIT, !checked);
     _imp->view->setColumnHidden(COL_NB_CACHE_HIT_DOWNSCALED, !checked);
     _imp->view->setColumnHidden(COL_NB_CACHE_MISS, !checked);

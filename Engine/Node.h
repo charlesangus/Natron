@@ -64,9 +64,8 @@ CLANG_DIAG_ON(deprecated)
 #define kOutputChannelsKnobName "channels"
 
 #define kNodeParamProcessAllLayers "processAllPlanes"
-#define kNodeParamProcessAllLayersLabel "All Planes"
-#define kNodeParamProcessAllLayersHint "When checked all planes in input will be processed and output to the same plane as in input. It is useful for example to apply a Transform effect on all planes."
-
+#define kNodeParamProcessAllLayersLabel "All Layers"
+#define kNodeParamProcessAllLayersHint "When checked all layers in input will be processed and output to the same layer as in input. It is useful for example to apply a Transform effect on all layers."
 
 #define kOfxMaskInvertParamName "maskInvert"
 #define kOfxMixParamName "mix"

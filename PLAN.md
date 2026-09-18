@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: paused
+status: running
 current: null
-pm_heartbeat: 2026-09-18T06:35:00-04:00
+pm_heartbeat: 2026-09-18T07:37:18-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -141,7 +141,7 @@ future core work has solid ground to build on.
 | M26 | Fix the shared test-fixture teardown flake | done | [M26-test-fixture-teardown-flake.md](PLAN/MILESTONES/M26-test-fixture-teardown-flake.md) |
 | M18 | Deep compositing v1 | done | [M18-deep-compositing-v1.md](PLAN/MILESTONES/M18-deep-compositing-v1.md) |
 | M23 | Make release bundles actually relocatable | done | [M23-relocatable-release-bundles.md](PLAN/MILESTONES/M23-relocatable-release-bundles.md) |
-| M39 | Adopt "layer" terminology instead of "planes" | todo | [M39-layers-not-planes.md](PLAN/MILESTONES/M39-layers-not-planes.md) |
+| M39 | Adopt "layer" terminology instead of "planes" | doing | [M39-layers-not-planes.md](PLAN/MILESTONES/M39-layers-not-planes.md) |
 | M34 | New native Shuffle node | todo | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
 | M35 | Remove implicit output-plane shuffling from non-Shuffle nodes | todo | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M36 | Add "new channel/layer" affordance wherever a node outputs channels | todo | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |

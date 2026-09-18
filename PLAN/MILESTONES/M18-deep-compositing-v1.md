@@ -333,6 +333,41 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 
 ## Decisions
 
+- 2026-09-18 — PR #24 review round (Codex, quota available). 10 findings
+  posted as inline PR comments. A consultant verified each against the
+  actual code rather than trusting the diff snippets, since several
+  contradicted this file's own red-then-green claims:
+  - **5 confirmed and fixed** (`7415a7991`): deep-cache and flatten-cache
+    lookups could hand a concurrent reader an entry another thread had
+    claimed but not yet populated (no completion signal existed on either
+    path); the deep scheduler dispatch never replicated the 2D path's
+    sequential-writer cache bypass, so `DeepWrite` could skip its own
+    `renderDeep()` — and the file write inside it — on a cache hit; the
+    Viewer's retained probe `DeepImagePtr` wasn't registered with plugin
+    memory accounting (unlike the flattened `Image`); `DeepExpression`
+    left a stale compile-error message on screen forever once every
+    expression knob went blank, because the resulting identity path never
+    reaches the success-path `clearPersistentMessage()`.
+  - **2 false positives**: the M18.P2.T4 finding had the bug's direction
+    inverted — the code at the flagged line *is* the verified fix, not a
+    regression of it. The `DeepToImage`-should-share-`renderDeepRoIFlattened()`
+    finding misread the design: the actually-shared code is
+    `DeepFlatten::flattenToImage()`, and `renderDeepRoIFlattened()` is a
+    Viewer-only adapter that mints a synthetic `ImageKey` for a case
+    `DeepToImage` (an ordinary image-output node) doesn't have.
+  - **3 confirmed but left as documented tradeoffs, not fixed**: the
+    M18.P2.T5 eager-retraction ordering is deliberate (deferring it would
+    let `getImageOrCreate()` silently return a stale narrow entry, which
+    is worse); `DeepImage::getSizeInBytes()` is deliberately
+    aliasing-blind, matching `Image::size()`'s own precedent, because a
+    use-count-based reading would make any frame with a downstream reader
+    report near-zero size and defeat eviction (`getUniquelyOwnedSizeInBytes()`
+    already exists for diagnostics); the `OutputSchedulerThread.cpp`
+    reformatting at the M18.P3.T8b dispatch sites is real but reverting it
+    would violate this repo's own diff-based `format` CI gate — already
+    recorded as whitespace-only in the 2026-09-15 entry.
+  - Re-verified: full ctest suite 216/216, `git clang-format --diff`
+    against `origin/main` clean.
 - 2026-09-18 — PR #24 opened against the wrong base (`RB-2.6`) by mistake;
   patched to `main` over the REST API (`gh pr edit` still hits the
   Projects-classic GraphQL error — same failure mode as

@@ -333,6 +333,15 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 
 ## Decisions
 
+- 2026-09-18 — PR #24 opened against the wrong base (`RB-2.6`) by mistake;
+  patched to `main` over the REST API (`gh pr edit` still hits the
+  Projects-classic GraphQL error — same failure mode as
+  `gh-pr-edit-broken.md`, but this time on `base` rather than `body`), then
+  closed/reopened to fire `pull_request` CI against the corrected base
+  (a base-ref edit alone doesn't retrigger `pull_request: [opened,
+  synchronize, reopened]`). CI then caught 3 real clang-format violations
+  (`DeepFromImage.cpp`, `NodeGui.cpp`, `Tests/CacheMemoryPressureGuard.h`)
+  that had slid past local per-task commits; fixed as `ce79ecbc7`.
 - 2026-09-18 — M18.P4.T5 landed as `7a5834160`. New `Engine/Nodes/Deep/DeepReformat.{h,cpp}`,
   registered in `AppManager.cpp`. Twin of `DeepCrop` plus a new
   `getRegionsOfInterest` override — the first Deep node to need one — that

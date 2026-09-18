@@ -151,7 +151,33 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: a `Tests/DeepReadWrite_Test.cpp` (or `tools/ci/`, matching wherever T8b's integration test landed) case driving the CLI path (`AppInstance::getWritersWorkForCL()` + `startWritersRendering()`) and the Python `App::render()` binding, each asserting a file lands on disk — this is the test that would have caught the original defect, since the pre-existing round-trip test only ever called `renderDeepRoI()` directly. Manual GUI checklist addition (this milestone already has one pending for M18.P2.T3; add to it rather than opening a second): right-click a `DeepWrite` node → Render, confirm the file is written and the node's progress/abort UI behaves like an ordinary Write node. Whole ctest suite green.
   - size: M
 
-**Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; `DeepWrite` actually writes a file through the GUI Render menu, the CLI `-w` flag, and the Python `app.render()` binding (not just direct `renderDeepRoI()` calls in a test); entire pre-existing ctest suite still green.
+## Phase 18.4: Post-checklist fixes and glyph rollback
+
+- [ ] M18.P4.T1 — `DeepFromImage`: don't create samples for zero-alpha pixels
+  - files: `Engine/Nodes/Deep/DeepFromImage.cpp`, `Tests/DeepNodes_Test.cpp`
+  - approach: in `DeepFromImage::renderDeep` (`DeepFromImage.cpp:180`), the count-pass lambda `[&sourceBounds](int x, int y) -> U32 { return sourceBounds.contains(x, y) ? 1 : 0; }` creates a sample for every in-bounds pixel regardless of alpha, so fully-transparent source pixels still produce a (zero-alpha) deep sample. Capture `sourceAccess` in that lambda too and return 0 when the source pixel's alpha channel (index 3 of RGBA) is `<= 0.f`; leave the fill lambda unchanged, since `renderDeepTwoPass` only invokes it for pixels the count lambda already approved (`NativeEffectBase.cpp:276-281`). Add a regression test near `DeepFromImageThenDeepToImageReproducesTheImageAtAConstantDepth` (`Tests/DeepNodes_Test.cpp:1130`) using a source image with a mix of zero- and nonzero-alpha pixels (e.g. a small `DeepSyntheticSource`-style fixture or a per-pixel-pattern extension of `createImageSource`), asserting zero-alpha pixels get zero samples and nonzero-alpha pixels keep exactly one.
+  - verify: new test fails against the current code (asserts 0 samples, gets 1), passes after the fix; full ctest suite green.
+  - size: M
+
+- [ ] M18.P4.T2 — `DeepCrop`: make the Reformat/Bbox knobs actually refresh the output format
+  - files: `Engine/Nodes/Deep/DeepCrop.cpp`, `Tests/DeepNodes_Test.cpp`
+  - approach: same root cause `c2bd4da27` fixed for `DeepRead`'s `filename` knob — `NativeEffectBase` has none of the OFX host's automatic "re-run getClipPreferences after a slave param changes" wiring, so `DeepCrop::getPreferredMetadata()` (`DeepCrop.cpp:204`) is only ever consulted once, at node creation, unless the driving knob is marked `setIsMetadataSlave(true)`. `DeepCrop::initializeKnobs()` (`DeepCrop.cpp:69-113`) never marks `reformat` or `bbox` (the format computed when `reformat` is on depends on `bbox`) as metadata slaves. Mark both the same way `DeepRead::_filename` was marked. Add a test mirroring `DeepRead`'s `OutputFormatRefreshesWhenTheFileKnobChangesWithNoExplicitRefresh` case: create a `DeepCrop`, render once with `reformat` off, then toggle `reformat` (and/or edit `bbox`) with no explicit refresh call, and assert the output format changes to match `bbox`.
+  - verify: new test fails before the fix (format stays stale after the knob change), passes after; full ctest suite green.
+  - size: S
+
+- [ ] M18.P4.T3 — Remove the input-kind glyph (dot/diamond) drawn on dangling input pipes
+  - files: `Gui/NodeGui.cpp`, `Gui/NodeGui.h`
+  - approach: M17 (`8bb4403f2`) added `NodeGui::createInputKindGlyphItem()` and `refreshInputKindGlyphs()` (`NodeGui.cpp:1654-1712`), which draw a filled dot (Deep) or diamond (Scene) at the free end of an unconnected input arrow, tinted via `kindTintColor()`. Remove this glyph machinery entirely — the member(s) storing the glyph items, both functions, and their call sites (node construction, input-count changes, wherever `refreshInputKindGlyphs()` is invoked) — so a dangling input arrow renders exactly as it did before M17. Do not touch `kindTintColor()`, `kindSilhouetteCornerRadiusPx()`, or `Edge::refreshDataKindPen()` (`Edge.cpp:818-835`, the connected-edge pen styling) — those are separate M17 features not in scope here.
+  - verify: build, then an Xvfb GUI check (per this project's Xvfb-GUI practice): create a `DeepRead` node and confirm its dangling input arrow shows no dot; ctest suite green.
+  - size: S
+
+- [ ] M18.P4.T4 — Remove the tinted rectangular fill drawn behind a node's body
+  - files: `Gui/NodeGui.cpp`
+  - approach: in `NodeGui::paint()` (`NodeGui.cpp:2336-2368`), M17 added a `painter->drawRect(bbox)` filled with `kindTintColor()`'s tint behind the node, plus a per-kind corner radius on `_boundingBox` sized to hide most of that fill in the node's rounded corners. Remove the tint-fill `drawRect()` call and the corner-radius-from-kind logic together (`_boundingBox`'s corner radius reverts to its pre-M17 default), so a node's silhouette paints exactly as it did before M17. Leave `kindTintColor()` itself alone — `Edge::refreshDataKindPen()` still uses it.
+  - verify: Xvfb GUI check: a Deep-kind node (e.g. `DeepRead`) shows no colored fill or corner rounding behind its body; ctest suite green (Gui-only change, no ctest coverage expected to move).
+  - size: S
+
+**Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; `DeepWrite` actually writes a file through the GUI Render menu, the CLI `-w` flag, and the Python `app.render()` binding (not just direct `renderDeepRoI()` calls in a test); `DeepFromImage` never creates a zero-alpha sample; `DeepCrop`'s Reformat/Bbox knobs update the output format with no explicit refresh; the node graph shows no per-kind input-pipe dot and no tinted rectangle behind a node's body; entire ctest suite still green.
 
 ## Decisions
 
@@ -867,3 +893,24 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   Result (2026-09-17, user's run at `1119c937d`): 1, 2, 4, 5 pass; 3 and 6
   failed — see the 2026-09-17 decision above for the root causes and fixes.
   Items 3 and 6 are to be re-run on an AppImage built at that fix or later.
+
+- 2026-09-18 — **Manual checklist re-run confirmed all 6 items pass** (user,
+  on a rebuilt AppImage at `94ceb9407` or later). The gate's manual-checklist
+  requirement is now satisfied; what remains before M18 can be marked `done`
+  is Phase 18.4 below. Separately from the checklist, the user flagged four
+  more items during this pass: `DeepFromImage` creating deep samples for
+  fully-transparent source pixels (should create none there); `DeepCrop`'s
+  `Reformat` knob visibly doing nothing; and two M17-introduced node-graph
+  visuals they don't want — the tinted dot/diamond glyph M17 draws on
+  dangling input pipes, and the tinted rectangle M17 draws behind a node's
+  body. Root-caused (not yet fixed): `DeepFromImage`'s sample-count pass
+  never looks at alpha; `DeepCrop` never marks `reformat`/`bbox` as metadata
+  slaves, so `NativeEffectBase`'s lack of OFX-style automatic slave-param
+  wiring (the same defect `c2bd4da27` fixed for `DeepRead`'s `filename`)
+  leaves its `getPreferredMetadata()` stuck at its node-creation value; both
+  visuals are M17's `NodeGui.cpp` glyph/fill machinery
+  (`createInputKindGlyphItem`/`refreshInputKindGlyphs` and the `drawRect`
+  tint fill in `NodeGui::paint()`), which the user wants rolled back outright
+  rather than restyled. Filed as Phase 18.4, all four sized S/M, none blocked
+  on anything — added to M18 rather than a new milestone since M18 is still
+  `doing` and these surfaced from testing this same milestone's work.

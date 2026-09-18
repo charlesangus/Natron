@@ -1,7 +1,7 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M18.P3.T8c
+current: M18.P4.T1
 pm_heartbeat: 2026-09-15T11:39:54-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
@@ -138,13 +138,16 @@ future core work has solid ground to build on.
 | M30 | Full release + AppImage on every merge, auto-versioned betas from 0.1.0-beta1 | todo | [M30-automated-beta-releases.md](PLAN/MILESTONES/M30-automated-beta-releases.md) |
 | M32 | Deep sample inspector node (replaces the hover probe) | todo | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
 
-- 2026-09-18 — **M18's manual GUI checklist: 4 of 6 items confirmed, 2
-  pending re-verification.** User's 2026-09-17 run: items 1, 2, 4, 5 passed;
-  items 3 and 6 failed. Both root-caused and fixed in code commit
-  `94ceb9407` (see M18's `## Decisions`), but items 3 and 6 still need to be
-  re-run against a rebuilt AppImage at that commit or later before the gate
-  can close — not yet done. Separately, the user judged M18.P2.T3's
-  hover/tooltip probe itself the wrong design post-hoc (independent of
-  whether it now works) — that is **not** a gate blocker, it's filed as new
-  stub milestone M32 (see
+- 2026-09-18 — **M18's manual GUI checklist: all 6 items now confirmed**
+  (re-run on a rebuilt AppImage at `94ceb9407` or later). Separately, the
+  user judged M18.P2.T3's hover/tooltip probe itself the wrong design
+  post-hoc (independent of whether it now works) — that is **not** a gate
+  blocker, it's filed as new stub milestone M32 (see
   `PLAN/DECISIONS/2026-09-18-deepsample-node-replaces-hover-probe.md`).
+  Also on 2026-09-18, four more items surfaced and were added to M18 as a
+  new **Phase 18.4** (see M18's `## Decisions`): `DeepFromImage` creating
+  zero-alpha samples it shouldn't, `DeepCrop`'s `Reformat` knob not
+  refreshing the output format, and two M17-introduced node-graph visuals
+  (dangling-input-pipe dot/diamond glyph, tinted rectangle behind a node's
+  body) the user wants removed outright. M18 stays `doing` until Phase 18.4
+  lands and the gate is re-checked.

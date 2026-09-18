@@ -94,6 +94,11 @@ future core work has solid ground to build on.
   `Node` by composition, surfaced by M18.P3.T8a. Do not start it without an
   explicit user go-ahead; add tasks to it as they surface instead of folding
   refactors into feature milestones.
+- **M32 (deep sample inspector node) authored 2026-09-18** as a stub: a
+  Nuke-style `DeepSample` node (picker + table) replacing M18.P2.T3's
+  hover/tooltip probe. Needs a codebase-scouting pass (overlay-handle and
+  panel-widget precedent) before elaboration — see
+  `PLAN/DECISIONS/2026-09-18-deepsample-node-replaces-hover-probe.md`.
 
 # Board
 
@@ -131,16 +136,15 @@ future core work has solid ground to build on.
 | M31 | Architectural cleanup (deferred; render-root ownership by composition) | todo | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
 | M29 | Break the link to upstream — an independent repository | todo | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |
 | M30 | Full release + AppImage on every merge, auto-versioned betas from 0.1.0-beta1 | todo | [M30-automated-beta-releases.md](PLAN/MILESTONES/M30-automated-beta-releases.md) |
+| M32 | Deep sample inspector node (replaces the hover probe) | todo | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
 
-# Open questions
-
-- 2026-09-15 — **M18 is fully implemented** (every task `[x]`, last code
-  commit `1119c937d` on `milestone/m18-deep-compositing-v1`, suite 205/205,
-  smoke green). The only thing between it and the verification gate is the
-  **manual GUI checklist** (six items, recorded at the end of M18's
-  `## Decisions`: five Viewer/probe steps for M18.P2.T3 plus a
-  right-click-`DeepWrite`-→-Render step for M18.P3.T8c) — GUI mouse
-  interaction a headless session cannot run. Waiting on the user to run it
-  against a binary built at `1119c937d` or later and report. On a pass:
-  record the result in the milestone file, then gate → PR → merge
-  (`--no-review` was passed this run).
+- 2026-09-18 — **M18's manual GUI checklist: 4 of 6 items confirmed, 2
+  pending re-verification.** User's 2026-09-17 run: items 1, 2, 4, 5 passed;
+  items 3 and 6 failed. Both root-caused and fixed in code commit
+  `94ceb9407` (see M18's `## Decisions`), but items 3 and 6 still need to be
+  re-run against a rebuilt AppImage at that commit or later before the gate
+  can close — not yet done. Separately, the user judged M18.P2.T3's
+  hover/tooltip probe itself the wrong design post-hoc (independent of
+  whether it now works) — that is **not** a gate blocker, it's filed as new
+  stub milestone M32 (see
+  `PLAN/DECISIONS/2026-09-18-deepsample-node-replaces-hover-probe.md`).

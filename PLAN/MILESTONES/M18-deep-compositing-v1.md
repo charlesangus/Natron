@@ -155,6 +155,37 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 
 ## Decisions
 
+- 2026-09-17 — **Manual GUI checklist run by the user: items 1, 2, 4, 5
+  pass; items 3 and 6 failed**, both fixed in the same commit.
+  - Item 3 (tooltip): the per-sample list was only reachable as the
+    info-bar label's tooltip, and the label is cleared the moment the mouse
+    leaves the image on its way to the bar — so the affordance was
+    unreachable by construction. `ViewerGL::event()` now handles
+    `QEvent::ToolTip`: hover a pixel of a deep image, pause, and the same
+    list pops up over the pixel (`InfoViewerWidget::getDeepSamplesToolTip()`
+    hands it over). Verified under Xvfb by synthesising a mouse-move plus
+    `QHelpEvent` over `big-deep.exr`: screenshot
+    `build/deeprepro/shot-tooltip.png` shows the `Z / ZBack / A / R G B`
+    table over the hovered pixel, bar reading `deep: 1 smp`.
+  - Item 6 ("stays on Queued, knobs greyed"): `DeepWrite::writeDeepImage`
+    sized OIIO's `DeepData` with `set_samples()` per pixel, which rewrites
+    OIIO's cumulative-capacity table for every pixel after the one being
+    set — quadratic in the pixel count. A 640×360 frame took **15 s** to
+    write (the ctest fixtures are a few pixels wide, so never noticed), and
+    the progress panel shows "Queued" until the first frame lands while the
+    scheduler has already frozen the knobs; re-triggering Render while that
+    ran queued the new run behind the un-abortable write. Reproduced under
+    Xvfb via `build/deeprepro/gui_deepwrite.py` (`app.render()` twice 0.3 s
+    apart on `big-deep.exr`, 250 frames): 3 frames written then stuck 40 s+,
+    two "Parallel render" threads in `DeepData::insert_samples`. Fixed with
+    one `set_all_samples()` call: **15 s → 1 s** per frame, sample-exact
+    round trip (0 mismatches vs source), and the re-trigger scenario now
+    completes all 250 frames in ~10 s, same as an ordinary Write. New ctest
+    `WritesAFrameSizedImageInLinearTime` (SeNoise → DeepFromImage →
+    DeepWrite over the project format, 60 s bound, read-back sample counts
+    equal) runs in ~1 s on the fix and does not finish within 150 s on the
+    old code. Suite green.
+
 - 2026-09-15 — M18.P3.T8c landed as `1119c937d`. The brief's one
   hypothesised gap was not real: `DeepWrite`'s file knob is `"filename"`
   and so is `kOfxImageEffectFileParamName`, so the CLI `-w <name> <file>`
@@ -819,8 +850,8 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
      with `--enable-render-stats` and check the second pass logs a cache
      hit, not a render).
   3. Hover pixel **(3, 0)** (a multi-sample pixel): the info-bar label
-     should read `deep: 3 smp  Z 1.00–5.50`; its tooltip should list all
-     three samples — `Z=1 ZBack=1 A=1 R=1 G=0 B=0`, `Z=4 ZBack=6 A=0.5 R=0
+     should read `deep: 3 smp  Z 1.00–5.50`; pausing the mouse over the
+     pixel pops up a tooltip listing all three samples — `Z=1 ZBack=1 A=1 R=1 G=0 B=0`, `Z=4 ZBack=6 A=0.5 R=0
      G=1 B=0`, `Z=5.5 ZBack=5.5 A=0.75 R=0 G=0 B=1` (order not guaranteed —
      raw/untidied, so match as a set) plus the `AOV` column (14, 15, 16
      respectively).
@@ -833,6 +864,6 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
      `DeepRead`, set its `filename` to a writable `.exr` path, right-click
      it → Render (or Render → Render All Writers). Confirm the file is
      written and the progress/abort UI behaves like an ordinary Write node.
-  Result: *pending — awaiting the user's run.* Binary must be rebuilt at
-  `1119c937d` or later (`build/debug/App/Natron`, or an AppImage via
-  `tools/ci/local/package.sh`).
+  Result (2026-09-17, user's run at `1119c937d`): 1, 2, 4, 5 pass; 3 and 6
+  failed — see the 2026-09-17 decision above for the root causes and fixes.
+  Items 3 and 6 are to be re-run on an AppImage built at that fix or later.

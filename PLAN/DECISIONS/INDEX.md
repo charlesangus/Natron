@@ -44,3 +44,4 @@
 - 2026-09-07 — node-colour-carries-category: node body colour = category, user colour = border; M17's edge pen-width ladder removed → DECISIONS/2026-09-07-node-colour-carries-category.md
 - 2026-09-09 — guard-gl-init-against-fp-traps: the GL init path gets the FP-trap guard every other foreign call already has → DECISIONS/2026-09-09-guard-gl-init-against-fp-traps.md
 - 2026-09-10 — fix-test-fixture-teardown-flake: ~50% QThread teardown abort now hits any app-fixture test; fix as M26 before M18 continues → DECISIONS/2026-09-10-fix-test-fixture-teardown-flake.md
+- 2026-09-18 — deepsample-node-replaces-hover-probe: M18.P2.T3's hover tooltip is the wrong design; replace with a Nuke-style `DeepSample` node (picker + table), filed as new stub milestone M32 → DECISIONS/2026-09-18-deepsample-node-replaces-hover-probe.md

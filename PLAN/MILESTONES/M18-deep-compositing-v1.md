@@ -159,7 +159,7 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: new test fails against the current code (asserts 0 samples, gets 1), passes after the fix; full ctest suite green.
   - size: M
 
-- [ ] M18.P4.T2 — `DeepCrop`: make the Reformat/Bbox knobs actually refresh the output format
+- [x] M18.P4.T2 — `DeepCrop`: make the Reformat/Bbox knobs actually refresh the output format
   - files: `Engine/Nodes/Deep/DeepCrop.cpp`, `Tests/DeepNodes_Test.cpp`
   - approach: same root cause `c2bd4da27` fixed for `DeepRead`'s `filename` knob — `NativeEffectBase` has none of the OFX host's automatic "re-run getClipPreferences after a slave param changes" wiring, so `DeepCrop::getPreferredMetadata()` (`DeepCrop.cpp:204`) is only ever consulted once, at node creation, unless the driving knob is marked `setIsMetadataSlave(true)`. `DeepCrop::initializeKnobs()` (`DeepCrop.cpp:69-113`) never marks `reformat` or `bbox` (the format computed when `reformat` is on depends on `bbox`) as metadata slaves. Mark both the same way `DeepRead::_filename` was marked. Add a test mirroring `DeepRead`'s `OutputFormatRefreshesWhenTheFileKnobChangesWithNoExplicitRefresh` case: create a `DeepCrop`, render once with `reformat` off, then toggle `reformat` (and/or edit `bbox`) with no explicit refresh call, and assert the output format changes to match `bbox`.
   - verify: new test fails before the fix (format stays stale after the knob change), passes after; full ctest suite green.
@@ -180,6 +180,25 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; `DeepWrite` actually writes a file through the GUI Render menu, the CLI `-w` flag, and the Python `app.render()` binding (not just direct `renderDeepRoI()` calls in a test); `DeepFromImage` never creates a zero-alpha sample; `DeepCrop`'s Reformat/Bbox knobs update the output format with no explicit refresh; the node graph shows no per-kind input-pipe dot and no tinted rectangle behind a node's body; entire ctest suite still green.
 
 ## Decisions
+
+- 2026-09-18 — M18.P4.T2 landed as `cdfe24c22`. `bbox` and `reformat` knobs
+  marked `setIsMetadataSlave(true)` in `DeepCrop::initializeKnobs()`, mirroring
+  `DeepRead::_filename`. New test
+  `DeepCropOutputFormatRefreshesWhenReformatOrBboxChangeWithNoExplicitRefresh`
+  red-then-green (format stale pre-fix, tracks `reformat`/`bbox` changes
+  post-fix with no explicit refresh call). Full ctest suite 208/208.
+
+- 2026-09-18 — **User requested a new `DeepReformat` node** (format-only
+  reposition with a "centre" option, no pixel filtering/resampling —
+  comparable to Nuke's Reformat "resize: none") after M18.P3.T3b's decision
+  had explicitly scoped this out ("no separate DeepReformat... sample-position
+  scaling would be a DeepTransform — Tier-2"). That prior reasoning covered
+  *scaling*; a filterless translate-only reformat is a different, simpler
+  operation and is in scope here. Filed as **M18.P4.T5** below, added while
+  M18 is still `doing` (gate not yet closed) rather than deferred to M21.
+  Task brief drafted by a codebase-scouting consultant against the current
+  `DeepCrop`/`NativeEffectBase`/`DeepImage` implementation before being
+  written into this file.
 
 - 2026-09-18 — M18.P4.T1 landed as `67e6d332a`. The count-pass lambda in
   `DeepFromImage::renderDeep` now returns 0 for pixels with source alpha

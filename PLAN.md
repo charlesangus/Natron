@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: running
+status: paused
 current: null
-pm_heartbeat: 2026-09-18T03:20:08-04:00
+pm_heartbeat: 2026-09-18T06:35:00-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -153,4 +153,7 @@ future core work has solid ground to build on.
   filterless format-reposition node with a centre option), was added
   mid-phase by explicit user request. **All five landed 2026-09-18; the
   gate re-check passed (216/216 ctest, Xvfb-verified glyph/fill removal) and
-  M18 is `done`.**
+  M18 is `done`.** **Shipped 2026-09-18** — PR #24 squash-merged to `main`
+  as `3e14c2a1e` after one Codex review round (10 findings: 5 fixed, 2
+  false-positive, 3 documented tradeoffs — see M18's `## Decisions`); CI
+  (`format`, `lint-ci`, `build-and-test`) green throughout.

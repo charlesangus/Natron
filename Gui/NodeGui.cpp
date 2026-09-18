@@ -2245,7 +2245,7 @@ NodeGui::paint(QPainter* /*painter*/,
                const QStyleOptionGraphicsItem* /*options*/,
                QWidget* /*parent*/)
 {
-    //nothing special
+    // nothing special
 }
 
 const std::list<std::pair<KnobIWPtr, KnobGuiPtr> > &

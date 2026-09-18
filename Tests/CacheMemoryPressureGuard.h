@@ -42,11 +42,10 @@ NATRON_NAMESPACE_ENTER
 // resident would fail for a reason that has nothing to do with the code under test. Pin the knob
 // to 0 for the guard's lifetime to make that eviction unreachable, and restore whatever it was
 // set to beforehand.
-class DisableUnreachableRAMPurging
-{
+class DisableUnreachableRAMPurging {
 public:
     DisableUnreachableRAMPurging()
-        : _knob( appPTR->getCurrentSettings()->getKnobByNameAndType<KnobInt>("unreachableRAMPercent") )
+        : _knob(appPTR->getCurrentSettings()->getKnobByNameAndType<KnobInt>("unreachableRAMPercent"))
         , _previousValue(0)
     {
         if (_knob) {

@@ -182,8 +182,7 @@ DeepFromImage::renderDeep(const DeepRenderActionArgs& args)
             return 0;
         }
 
-        return (((const float*)sourceAccess.pixelAt(x, y))[3] > 0.f) ? 1 : 0;
-    }, [&sourceAccess, &zAccess, &zBounds, constantDepth](int x, int y, const MutableDeepPixelView& out) {
+        return (((const float*)sourceAccess.pixelAt(x, y))[3] > 0.f) ? 1 : 0; }, [&sourceAccess, &zAccess, &zBounds, constantDepth](int x, int y, const MutableDeepPixelView& out) {
         const float* pixel = (const float*)sourceAccess.pixelAt(x, y);
         float depth = constantDepth;
 

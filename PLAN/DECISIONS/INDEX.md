@@ -45,3 +45,5 @@
 - 2026-09-09 — guard-gl-init-against-fp-traps: the GL init path gets the FP-trap guard every other foreign call already has → DECISIONS/2026-09-09-guard-gl-init-against-fp-traps.md
 - 2026-09-10 — fix-test-fixture-teardown-flake: ~50% QThread teardown abort now hits any app-fixture test; fix as M26 before M18 continues → DECISIONS/2026-09-10-fix-test-fixture-teardown-flake.md
 - 2026-09-18 — deepsample-node-replaces-hover-probe: M18.P2.T3's hover tooltip is the wrong design; replace with a Nuke-style `DeepSample` node (picker + table), filed as new stub milestone M32 → DECISIONS/2026-09-18-deepsample-node-replaces-hover-probe.md
+- 2026-09-18 — geometry-is-a-fourth-data-kind: editable geometry is `eDataKindGeometry` + COW `GeoDetail`, bridged explicitly to/from the scene stack (SOP/LOP split); work is M54 → DECISIONS/2026-09-18-geometry-is-a-fourth-data-kind.md
+- 2026-09-18 — backlog-reorg-and-prioritization: channel/layer → compositing semantics → infra/housekeeping → polish → 3D roadmap; deep work/Nuke ports/M16/M31 deferred → DECISIONS/2026-09-18-backlog-reorg-and-prioritization.md

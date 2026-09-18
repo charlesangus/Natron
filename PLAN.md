@@ -99,6 +99,23 @@ future core work has solid ground to build on.
   hover/tooltip probe. Needs a codebase-scouting pass (overlay-handle and
   panel-widget precedent) before elaboration — see
   `PLAN/DECISIONS/2026-09-18-deepsample-node-replaces-hover-probe.md`.
+- **M52–M54 (3D roadmap) authored 2026-09-18** from
+  `PLAN/DESIGN/2026-09-18-3d-roadmap-lops-paint-sops.md`, which amends the
+  2026-09-05 design doc's Part 2 and governs on any brief's ambiguity.
+  Order is fixed by user priority: **M52** (USD layer-stack completion:
+  schema-driven edits, path-expression selection, composition nodes) after
+  M20's gate → **M53** (projected texture painting: CPU UV bake,
+  ProjectTexture, live textures into Hydra) after M52 → **M54** (SOPs-style
+  geometry: `eDataKindGeometry`, `GeoDetail`, bridges, operators, point
+  editing) after M53. Geometry as a fourth data kind is decided in
+  `PLAN/DECISIONS/2026-09-18-geometry-is-a-fourth-data-kind.md`.
+- **Backlog reorg and prioritization (2026-09-18)**: after a `/cat-discuss`
+  review, execution order is channel/layer rework (M39, M34, M35, M36, M37,
+  M38, M50) → compositing semantics (M43) → infra/housekeeping (M25, M27,
+  M28, M22, M29, M30) → polish (M24, M44, M55, M56) → the 3D roadmap (M19,
+  M20, M52, M53, M54). Deferred with no active order: deep work (M21, M51,
+  M32), Nuke-tool ports (M45, M46), M16, M31. See
+  `DECISIONS/2026-09-18-backlog-reorg-and-prioritization.md`.
 
 # Board
 
@@ -120,23 +137,40 @@ future core work has solid ground to build on.
 | M15 | Release packaging: tarball and AppImage | done | [M15-release-packaging.md](PLAN/MILESTONES/M15-release-packaging.md) |
 | M11 | OFX plugin integration test (post-release hardening) | done | [M11-ofx-plugin-integration-test.md](PLAN/MILESTONES/M11-ofx-plugin-integration-test.md) |
 | M14 | Documentation tree → orphan branch | done | [M14-documentation-tree-and-doc-ci.md](PLAN/MILESTONES/M14-documentation-tree-and-doc-ci.md) |
-| M16 | Project file format redesign (.ntp successor) | todo | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
 | M17 | Typed graph edges and native node framework | done | [M17-typed-edges-native-framework.md](PLAN/MILESTONES/M17-typed-edges-native-framework.md) |
 | M26 | Fix the shared test-fixture teardown flake | done | [M26-test-fixture-teardown-flake.md](PLAN/MILESTONES/M26-test-fixture-teardown-flake.md) |
 | M18 | Deep compositing v1 | done | [M18-deep-compositing-v1.md](PLAN/MILESTONES/M18-deep-compositing-v1.md) |
-| M19 | USD/Hydra foundation: ScenePayload, ReadScene, Viewport3D | todo | [M19-usd-hydra-foundation.md](PLAN/MILESTONES/M19-usd-hydra-foundation.md) |
-| M20 | 3D node vocabulary and HydraRender | todo | [M20-3d-node-vocabulary.md](PLAN/MILESTONES/M20-3d-node-vocabulary.md) |
-| M21 | Deep tier-2 nodes and deep/3D bridges | todo | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
-| M22 | Lossless project round-trip with missing plugins | todo | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M23 | Make release bundles actually relocatable | done | [M23-relocatable-release-bundles.md](PLAN/MILESTONES/M23-relocatable-release-bundles.md) |
+| M39 | Adopt "layer" terminology instead of "planes" | todo | [M39-layers-not-planes.md](PLAN/MILESTONES/M39-layers-not-planes.md) |
+| M34 | New native Shuffle node | todo | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
+| M35 | Remove implicit output-plane shuffling from non-Shuffle nodes | todo | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
+| M36 | Add "new channel/layer" affordance wherever a node outputs channels | todo | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
+| M37 | Channel/layer management nodes | todo | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |
+| M38 | Improve channel/layer information organization in the node UI | todo | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
+| M50 | Proper OCIO support as a project property | todo | [M50-proper-ocio-support.md](PLAN/MILESTONES/M50-proper-ocio-support.md) |
+| M43 | Drop the premultiplied/unpremultiplied concept | todo | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
 | M25 | Guard the GL init path against the debug FP traps | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
-| M24 | Node graph aesthetics: category colour and user colour | todo | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
 | M27 | Make the debug build a debug build again | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M28 | Stop treating page cache as memory pressure | todo | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |
-| M31 | Architectural cleanup (deferred; render-root ownership by composition) | todo | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
+| M22 | Lossless project round-trip with missing plugins | todo | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M29 | Break the link to upstream — an independent repository | todo | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |
 | M30 | Full release + AppImage on every merge, auto-versioned betas from 0.1.0-beta1 | todo | [M30-automated-beta-releases.md](PLAN/MILESTONES/M30-automated-beta-releases.md) |
+| M24 | Node graph aesthetics: category colour and user colour | todo | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
+| M44 | Trackball-style colour editing | todo | [M44-trackball-colour-editing.md](PLAN/MILESTONES/M44-trackball-colour-editing.md) |
+| M55 | Polish — node graph interaction | todo | [M55-polish-node-graph-interaction.md](PLAN/MILESTONES/M55-polish-node-graph-interaction.md) |
+| M56 | Polish — visual and menus | todo | [M56-polish-visual-and-menus.md](PLAN/MILESTONES/M56-polish-visual-and-menus.md) |
+| M19 | USD/Hydra foundation: ScenePayload, ReadScene, Viewport3D | todo | [M19-usd-hydra-foundation.md](PLAN/MILESTONES/M19-usd-hydra-foundation.md) |
+| M20 | 3D node vocabulary and HydraRender | todo | [M20-3d-node-vocabulary.md](PLAN/MILESTONES/M20-3d-node-vocabulary.md) |
+| M52 | USD layer-stack completion: schema-driven edits, path expressions, composition nodes | todo | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
+| M53 | Projected texture painting: UV bake, ProjectTexture, live textures | todo | [M53-projected-texture-painting.md](PLAN/MILESTONES/M53-projected-texture-painting.md) |
+| M54 | SOPs-style geometry: GeoDetail data kind, bridges, operators, point editing | todo | [M54-sops-style-geometry.md](PLAN/MILESTONES/M54-sops-style-geometry.md) |
+| M21 | Deep tier-2 nodes and deep/3D bridges | todo | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
+| M51 | Deep filtering nodes (OpenDCX integration) | todo | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep sample inspector node (replaces the hover probe) | todo | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
+| M45 | Port tabtabtab-nuke as the native tab menu | todo | [M45-tabtabtab-native-tab-menu.md](PLAN/MILESTONES/M45-tabtabtab-native-tab-menu.md) |
+| M46 | Port Labelmaker as a native node graph annotation feature | todo | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |
+| M16 | Project file format redesign (.ntp successor) | todo | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
+| M31 | Architectural cleanup (deferred; render-root ownership by composition) | todo | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
 
 - 2026-09-18 — **M18's manual GUI checklist: all 6 items now confirmed**
   (re-run on a rebuilt AppImage at `94ceb9407` or later). Separately, the
@@ -157,3 +191,12 @@ future core work has solid ground to build on.
   as `3e14c2a1e` after one Codex review round (10 findings: 5 fixed, 2
   false-positive, 3 documented tradeoffs — see M18's `## Decisions`); CI
   (`format`, `lint-ci`, `build-and-test`) green throughout.
+
+# Open questions
+
+- **USD Python inside Natron's Python?** M19.P1.T1 builds USD with Python
+  OFF (Shiboken6/PySide6 vs pxr coexistence). A Solaris-style "Python over
+  the stage" node would cover the LOPs long tail cheaply but needs pxr
+  bindings loaded into Natron's interpreter. M52.P3.T3's `SetAttribute3D`
+  is the no-Python substitute for now. Decide whether to spike pxr-in-Natron
+  coexistence after M52 ships, or leave it out of scope.

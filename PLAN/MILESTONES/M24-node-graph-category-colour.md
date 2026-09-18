@@ -157,6 +157,22 @@ Scope note: this milestone does **not** touch the node silhouette shapes
     watch every merge node's body update without reopening the project.
   - size: M
 
+- [ ] M24.P3.T6 — Flip node label text colour to white when the node body
+      colour is dark
+  - files: `Gui/NodeGui.cpp`, `Gui/NodeGui.h`
+  - approach: Node labels are drawn in a fixed colour today. Compute the
+    relative luminance of the node's current body (category) colour
+    wherever the label is painted/updated, and switch between a light and a
+    dark text colour at a fixed luminance threshold, so labels stay
+    readable regardless of category or user body colour. Re-evaluate when
+    the body colour changes at runtime (the M24.P3.T5 re-colour path), so
+    an open graph's label colours stay correct after a Preferences change.
+  - verify: Xvfb GUI check — a node with a light category colour keeps dark
+    text, a node with a dark category colour shows white text, and
+    changing a category's colour in Preferences updates already-placed
+    nodes' label colour along with their body.
+  - size: S
+
 ## Phase 24.4: Retire the data-kind affordances that did not earn their place
 
 - [ ] M24.P4.T1 — Remove the tinted backdrop behind deep and scene nodes

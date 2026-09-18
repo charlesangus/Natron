@@ -69,6 +69,15 @@ public:
         return _deepImage;
     }
 
+    // False from construction until renderDeepRoI() has actually populated the sample table and
+    // channels and called allocateMemory() (the same instant onMemoryAllocated() below fires):
+    // a cache lookup that finds this entry before then would otherwise hand out an empty payload
+    // that just happens to have the right bounds.
+    bool isFullyRendered() const
+    {
+        return _sizeAccounted;
+    }
+
     // The cache adds this entry's cost exactly once, from within allocateMemory(), and later
     // subtracts whatever size() reports at that same instant during deallocate(). Snapshotting
     // here (rather than measuring the DeepImage live in size()) keeps those two numbers equal

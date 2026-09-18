@@ -140,6 +140,10 @@ lookupCachedDeepImage(const DeepImageKey& key,
         return false;
     }
     for (std::list<DeepImageCacheEntryPtr>::const_iterator it = cached.begin(); it != cached.end(); ++it) {
+        if (!(*it)->isFullyRendered()) {
+            // Another thread claimed this entry and has not finished populating it yet.
+            continue;
+        }
         const DeepImagePtr& entryImage = (*it)->getDeepImage();
         if (!entryImage) {
             continue;
@@ -307,10 +311,22 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     RectI boundsToRender = roi;
     std::list<DeepImageCacheEntryPtr> supersededDeepEntries;
 
-    if (!args.byPassCache) {
+    // A writer's own output must actually run renderDeep() on every sequential render, since the
+    // file write is a side effect inside it -- mirroring EffectInstanceRenderRoI.cpp's
+    // `doCacheLookup = !isWriter() || !frameArgs->isSequentialRender` for the image path. Inputs
+    // upstream of the writer are unaffected: each is pulled through its own recursive
+    // renderDeepRoI() call below, gated by that input's own isWriter().
+    const bool doCacheLookup = !args.byPassCache && (!isWriter() || !frameArgs->isSequentialRender);
+
+    if (doCacheLookup) {
         std::list<DeepImageCacheEntryPtr> cached;
         if (appPTR->getDeepImage(key, &cached)) {
             for (std::list<DeepImageCacheEntryPtr>::const_iterator it = cached.begin(); it != cached.end(); ++it) {
+                if (!(*it)->isFullyRendered()) {
+                    // Another thread claimed this entry and has not finished populating it yet:
+                    // leave it alone rather than either serving it as a hit or superseding it.
+                    continue;
+                }
                 const DeepImagePtr& entryImage = (*it)->getDeepImage();
                 if (!entryImage) {
                     continue;
@@ -404,23 +420,32 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     DeepImagePtr renderedImage;
     DeepImageCacheEntryPtr cacheEntry;
 
-    if (args.byPassCache) {
+    if (args.byPassCache || !doCacheLookup) {
         renderedImage = std::make_shared<DeepImage>(boundsToRender, args.scale, args.view);
     } else {
         DeepImageParamsPtr params = std::make_shared<DeepImageParams>(boundsToRender);
 
         // getOrCreate() returns true when it *found* an entry and false when it created one.
         if (appPTR->getDeepImageOrCreate(key, params, &cacheEntry)) {
-            if (cacheEntry && cacheEntry->getDeepImage()) {
+            if (cacheEntry && cacheEntry->getDeepImage() && cacheEntry->isFullyRendered()) {
                 *outputDeepImage = cacheEntry->getDeepImage();
 
                 return eRenderRoIRetCodeOk;
             }
+            if (cacheEntry) {
+                // A concurrent render already claimed this exact cache slot (same key and bounds)
+                // and has not finished populating it: render standalone instead of writing into
+                // its cache-owned buffers from this thread too.
+                cacheEntry.reset();
+                renderedImage = std::make_shared<DeepImage>(boundsToRender, args.scale, args.view);
+            }
         }
-        if (!cacheEntry || !cacheEntry->getDeepImage()) {
-            return eRenderRoIRetCodeFailed;
+        if (!renderedImage) {
+            if (!cacheEntry || !cacheEntry->getDeepImage()) {
+                return eRenderRoIRetCodeFailed;
+            }
+            renderedImage = cacheEntry->getDeepImage();
         }
-        renderedImage = cacheEntry->getDeepImage();
     }
 
     DeepRenderActionArgs actionArgs;
@@ -538,7 +563,13 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
         ImagePtr cached;
         getImageFromCacheAndConvertIfNeeded(true, eStorageModeRAM, eStorageModeRAM, key, args.mipmapLevel, NULL, NULL, RectI(), eImageBitDepthFloat, components, InputImagesMap(), RenderStatsPtr(), OSGLContextAttacherPtr(), &cached);
         if (cached) {
-            if (!args.byPassCache && cached->getBounds().contains(args.roi)) {
+            // A cache entry can be found here before the thread that created it has reached
+            // markForRendered() below, so bounds alone do not prove it is actually filled in --
+            // check the bitmap the same way the image path's own cache consumers do (e.g. the
+            // eStorageModeGLTex branch of getImageFromCacheAndConvertIfNeeded).
+            std::list<RectI> restToRender;
+            cached->getRestToRender(args.roi, restToRender);
+            if (!args.byPassCache && cached->getBounds().contains(args.roi) && restToRender.empty()) {
                 if (outputDeepImage) {
                     const DeepImageKey deepKey(getNode().get(), nodeHash, args.time, args.view, args.scale);
                     lookupCachedDeepImage(deepKey, args.roi, outputDeepImage);

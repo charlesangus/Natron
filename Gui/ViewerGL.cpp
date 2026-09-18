@@ -1561,8 +1561,16 @@ ViewerGL::setLastRenderedDeepImage(int textureIndex,
     assert(qApp && qApp->thread() == QThread::currentThread());
     assert(textureIndex == 0 || textureIndex == 1);
 
+    ViewerInstance* internalNode = getInternalNode();
     QMutexLocker k(&_imp->lastRenderedImageMutex);
-    std::vector<DeepImagePtr>& tiles = _imp->displayTextures[textureIndex].lastRenderedDeepTiles;
+    TextureInfo& info = _imp->displayTextures[textureIndex];
+    std::vector<DeepImagePtr>& tiles = info.lastRenderedDeepTiles;
+
+    if (info.memoryHeldByLastRenderedDeepImages > 0) {
+        internalNode->unregisterPluginMemory(info.memoryHeldByLastRenderedDeepImages);
+        info.memoryHeldByLastRenderedDeepImages = 0;
+    }
+
     // getDeepSamplesAt() never reads another level than the one displayed, so a level left over
     // from an earlier frame could only ever be read as that frame's samples by mistake.
     for (std::size_t i = 0; i < tiles.size(); ++i) {
@@ -1570,6 +1578,10 @@ ViewerGL::setLastRenderedDeepImage(int textureIndex,
     }
     if (mipmapLevel < tiles.size()) {
         tiles[mipmapLevel] = deepImage;
+        if (deepImage) {
+            info.memoryHeldByLastRenderedDeepImages = deepImage->getSizeInBytes();
+            internalNode->registerPluginMemory(info.memoryHeldByLastRenderedDeepImages);
+        }
     }
 }
 
@@ -1704,6 +1716,10 @@ ViewerGL::clearLastRenderedImage()
         if (_imp->displayTextures[i].memoryHeldByLastRenderedImages > 0) {
             internalNode->unregisterPluginMemory(_imp->displayTextures[i].memoryHeldByLastRenderedImages);
             _imp->displayTextures[i].memoryHeldByLastRenderedImages = 0;
+        }
+        if (_imp->displayTextures[i].memoryHeldByLastRenderedDeepImages > 0) {
+            internalNode->unregisterPluginMemory(_imp->displayTextures[i].memoryHeldByLastRenderedDeepImages);
+            _imp->displayTextures[i].memoryHeldByLastRenderedDeepImages = 0;
         }
     }
 }
@@ -4147,6 +4163,7 @@ ViewerGL::clearLastRenderedTexture()
                 _imp->displayTextures[i].lastRenderedDeepTiles[j].reset();
             }
             toUnRegister += _imp->displayTextures[i].memoryHeldByLastRenderedImages;
+            toUnRegister += _imp->displayTextures[i].memoryHeldByLastRenderedDeepImages;
         }
         if (toUnRegister > 0) {
             getInternalNode()->unregisterPluginMemory(toUnRegister);

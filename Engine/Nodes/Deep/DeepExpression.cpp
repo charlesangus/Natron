@@ -148,6 +148,11 @@ DeepExpression::isIdentity(double time,
         return false;
     }
 
+    // Every expression is blank, so renderDeep() -- and its success-path clearPersistentMessage()
+    // -- will never run again for this identity: a compile error left over from a previous,
+    // non-blank set of expressions would otherwise stay displayed on a now-valid node forever.
+    clearPersistentMessage(false);
+
     *inputTime = time;
     *inputNb = 0;
     *inputView = view;

@@ -165,7 +165,7 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
   - verify: new test fails before the fix (format stays stale after the knob change), passes after; full ctest suite green.
   - size: S
 
-- [ ] M18.P4.T3 — Remove the input-kind glyph (dot/diamond) drawn on dangling input pipes
+- [x] M18.P4.T3 — Remove the input-kind glyph (dot/diamond) drawn on dangling input pipes
   - files: `Gui/NodeGui.cpp`, `Gui/NodeGui.h`
   - approach: M17 (`8bb4403f2`) added `NodeGui::createInputKindGlyphItem()` and `refreshInputKindGlyphs()` (`NodeGui.cpp:1654-1712`), which draw a filled dot (Deep) or diamond (Scene) at the free end of an unconnected input arrow, tinted via `kindTintColor()`. Remove this glyph machinery entirely — the member(s) storing the glyph items, both functions, and their call sites (node construction, input-count changes, wherever `refreshInputKindGlyphs()` is invoked) — so a dangling input arrow renders exactly as it did before M17. Do not touch `kindTintColor()`, `kindSilhouetteCornerRadiusPx()`, or `Edge::refreshDataKindPen()` (`Edge.cpp:818-835`, the connected-edge pen styling) — those are separate M17 features not in scope here.
   - verify: build, then an Xvfb GUI check (per this project's Xvfb-GUI practice): create a `DeepRead` node and confirm its dangling input arrow shows no dot; ctest suite green.
@@ -332,6 +332,16 @@ not a floor (design doc, "Scope gravity") — Tier-2 is M21.
 **Verification gate:** all unit tests and the M18.P3.T4 end-to-end CI test green; deep EXR round-trip clean; Viewer flattens a deep stream with per-frame caching (second scrub pass hits cache); deep cache budget respected under a memory-pressure test; `DeepWrite` actually writes a file through the GUI Render menu, the CLI `-w` flag, and the Python `app.render()` binding (not just direct `renderDeepRoI()` calls in a test); `DeepFromImage` never creates a zero-alpha sample; `DeepCrop`'s Reformat/Bbox knobs update the output format with no explicit refresh; `DeepReformat` translates without resampling, centres correctly, and its format-change knobs refresh with no explicit call; the node graph shows no per-kind input-pipe dot and no tinted rectangle behind a node's body; entire ctest suite still green.
 
 ## Decisions
+
+- 2026-09-18 — M18.P4.T3 landed as `226a37154`. `createInputKindGlyphItem()`,
+  `refreshInputKindGlyphs()`, the `_inputKindGlyphs` member, and all call
+  sites removed (82 lines, `Gui/NodeGui.cpp`/`.h`); `kindTintColor()`,
+  `kindSilhouetteCornerRadiusPx()`, `Edge::refreshDataKindPen()` untouched.
+  `DeepRead` itself declares zero inputs so it can't exercise this path;
+  verified instead via Xvfb screenshot of an unconnected `DeepCrop` (which
+  has a required deep input) — dangling "Source" arrow renders as a plain
+  arrowhead, no dot, node's blue tint silhouette still present (separate
+  M17 feature, correctly untouched). Full ctest suite 208/208.
 
 - 2026-09-18 — M18.P4.T2 landed as `cdfe24c22`. `bbox` and `reformat` knobs
   marked `setIsMetadataSlave(true)` in `DeepCrop::initializeKnobs()`, mirroring

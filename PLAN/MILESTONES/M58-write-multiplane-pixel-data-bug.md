@@ -63,3 +63,10 @@ part 0 every time.
 - 2026-09-19 — Out of scope, noted for a follow-up: `EffectInstance::getAvailableLayers`
   (`EffectInstance.cpp:4476`) queries the *input's* components-needed cache with *this* node's
   render hash, polluting the input's `ActionsCache` with foreign hash entries.
+- 2026-09-19 — **PR #28 review round (Codex, 3 findings, all fixed in `941debdc9`)**: the toggle
+  test rendered each pass to a different filename, and a filename change also bumps the
+  container's `knobsAge` — so with the fix in place the test could pass even if
+  `processAllLayers` alone stopped reaching the embedded encoder's hash. It now renders all three
+  passes to one fixed path (removed between renders). Two comment-policy nits (stale
+  "expected to fail on the current tree" wording, Render 1/2/3 narration) removed. The same
+  commit re-formats the test file, which is what the `format` CI job had been failing on.

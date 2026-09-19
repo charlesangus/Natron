@@ -149,10 +149,9 @@ fi
 # mystery CI failure on your PR. Bump them deliberately, and re-run this
 # script (it rebuilds when the stamp below no longer matches).
 #
-# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, five commits ahead of
+# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, six commits ahead of
 # NatronGitHub/openfx-io and zero behind. Fork-and-fix is the standing
-# pattern for small changes to NatronGitHub repos -- see
-# PLAN/DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md. Three deltas:
+# pattern for small changes to NatronGitHub repos. Four deltas:
 #
 # 1. A CMakeLists.txt fix (SEEXPR2_INCLUDES/SEEXPR2_LIBRARIES ->
 #    SEEXPR2_INCLUDE_DIR/SEEXPR2_LIBRARY): upstream reads variable names its
@@ -192,6 +191,20 @@ fi
 #    Readers already at timeOffset 0 are unaffected -- renders are
 #    pixel-identical either side of it.
 #
+# 4. The Write node's "All Planes"/"All Layers" checkbox
+#    (kMultiPlaneProcessAllPlanesParam, charlesangus/openfx-io#3). Its OFX
+#    param string (processAllPlanes -> processAllLayers), label, and hint
+#    text live in SupportExt/ofxsMultiPlane.h -- SupportExt is a submodule
+#    pinned to NatronGitHub/openfx-supportext, not part of this fork's own
+#    tree, so the rename could not land as a change here. Commit 87264e5
+#    repoints the submodule at charlesangus/openfx-supportext
+#    (charlesangus/openfx-supportext#1), which carries the fix, matching
+#    the layer terminology Natron itself already carries across the OFX
+#    ABI boundary. There is no compatibility shim: a .ntp file saved
+#    against the old param string fails to restore that one value on load
+#    -- accepted, the same tradeoff any other identifier rename across
+#    this boundary would carry.
+#
 # The -1 sentinel guard is the first of delta 2's two commits and is
 # deliberately self-contained, so it can be offered upstream on its own; so
 # is delta 3, which is one commit and touches nothing else.
@@ -207,7 +220,7 @@ fi
 # openfx-io's own CI pins the same branch. Not forked -- wdas/SeExpr is not
 # a NatronGitHub repo and we carry no changes to it.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="020d898f9bc92191a6fc1cb5a69bbd3c641ed23d"
+OPENFX_IO_REF="87264e5f1c76c652e89fff6018b8b963f1029c87"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 

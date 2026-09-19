@@ -149,10 +149,9 @@ fi
 # mystery CI failure on your PR. Bump them deliberately, and re-run this
 # script (it rebuilds when the stamp below no longer matches).
 #
-# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, five commits ahead of
+# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, six commits ahead of
 # NatronGitHub/openfx-io and zero behind. Fork-and-fix is the standing
-# pattern for small changes to NatronGitHub repos -- see
-# PLAN/DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md. Three deltas:
+# pattern for small changes to NatronGitHub repos. Four deltas:
 #
 # 1. A CMakeLists.txt fix (SEEXPR2_INCLUDES/SEEXPR2_LIBRARIES ->
 #    SEEXPR2_INCLUDE_DIR/SEEXPR2_LIBRARY): upstream reads variable names its
@@ -191,6 +190,20 @@ fi
 #    smoke_test.py's check_reader_cli_time_offset_regression pin down.
 #    Readers already at timeOffset 0 are unaffected -- renders are
 #    pixel-identical either side of it.
+#
+# 4. The Write node's "All Planes"/"All Layers" checkbox
+#    (kMultiPlaneProcessAllPlanesParam, charlesangus/openfx-io#3). Its OFX
+#    param string (processAllPlanes -> processAllLayers), label, and hint
+#    text live in SupportExt/ofxsMultiPlane.h -- SupportExt is a submodule
+#    pinned to NatronGitHub/openfx-supportext, not part of this fork's own
+#    tree, so the rename could not land as a change here. Commit 87264e5
+#    repoints the submodule at charlesangus/openfx-supportext
+#    (charlesangus/openfx-supportext#1), which carries the fix, matching
+#    the layer terminology Natron itself already carries across the OFX
+#    ABI boundary. There is no compatibility shim: a .ntp file saved
+#    against the old param string fails to restore that one value on load
+#    -- accepted, the same tradeoff any other identifier rename across
+#    this boundary would carry.
 #
 # The -1 sentinel guard is the first of delta 2's two commits and is
 # deliberately self-contained, so it can be offered upstream on its own; so

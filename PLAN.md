@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: M59.P1.T3
-pm_heartbeat: 2026-09-19T18:01:33-04:00
+pm_heartbeat: 2026-09-19T18:08:46-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -147,7 +147,10 @@ future core work has solid ground to build on.
   **M59 (pre-commit auto-format hook) added 2026-09-19, up next after M58:**
   small housekeeping milestone — PRs keep failing CI's `format` job because
   the existing `.git-hooks/pre-commit` is check-only, uninstalled, and passes
-  silently when clang-format is absent. Runs before M35.
+  silently when clang-format is absent. Runs before M35. **Shipped 2026-09-19**
+  (PR #29, squash-merge `c8e64551b`): `tools/install-git-hooks.sh` links a hook
+  that auto-formats staged C/C++ with the pinned clang-format 21.1.8 and
+  refuses the commit when the tool is missing.
 
 # Board
 
@@ -176,7 +179,7 @@ future core work has solid ground to build on.
 | M39 | Adopt "layer" terminology instead of "planes" | done | [M39-layers-not-planes.md](PLAN/MILESTONES/M39-layers-not-planes.md) |
 | M57 | Fix Write node plane/layer regressions found while testing M39 | done | [M57-write-node-plane-layer-regressions.md](PLAN/MILESTONES/M57-write-node-plane-layer-regressions.md) |
 | M58 | Write's "All Layers" output copies one layer's pixel data into every layer | done | [M58-write-multiplane-pixel-data-bug.md](PLAN/MILESTONES/M58-write-multiplane-pixel-data-bug.md) |
-| M59 | Pre-commit hook that auto-formats staged C/C++ so PRs stop failing CI's `format` check | doing | [M59-pre-commit-auto-format.md](PLAN/MILESTONES/M59-pre-commit-auto-format.md) |
+| M59 | Pre-commit hook that auto-formats staged C/C++ so PRs stop failing CI's `format` check | done | [M59-pre-commit-auto-format.md](PLAN/MILESTONES/M59-pre-commit-auto-format.md) |
 | M35 | Remove implicit output-plane shuffling from non-Shuffle nodes | todo | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M38 | Improve channel/layer information organization in the node UI | todo | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
 | M43 | Drop the premultiplied/unpremultiplied concept | todo | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |

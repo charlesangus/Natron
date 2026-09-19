@@ -19,7 +19,7 @@ Functions
 ^^^^^^^^^
 
 - def :meth:`ImageLayer<NatronEngine.ImageLayer.ImageLayer>` (layerName,componentsPrettyName,componentsName)
-- def :meth:`isColorPlane<NatronEngine.ImageLayer.isColorPlane>` ()
+- def :meth:`isColorLayer<NatronEngine.ImageLayer.isColorLayer>` ()
 - def :meth:`getNumComponents<NatronEngine.ImageLayer.getNumComponents>` ()
 - def :meth:`getLayerName<NatronEngine.ImageLayer.getLayerName>` ()
 - def :meth:`getComponentsNames<NatronEngine.ImageLayer.getComponentsNames>` ()
@@ -46,7 +46,7 @@ When the ImageLayer does not have a pretty name, its pretty name will just be a 
 of all channel names in order.
 
 There is one special layer in Natron: the color layer. It be represented as 3 different types:
-RGBA, RGB or Alpha. If the ImageLayer is a color layer, the method :func:`isColorPlane()<NatronEngine.ImageLayer.isColorPlane>` will
+RGBA, RGB or Alpha. If the ImageLayer is a color layer, the method :func:`isColorLayer()<NatronEngine.ImageLayer.isColorLayer>` will
 return True
 
 
@@ -63,7 +63,7 @@ Member functions description
     Make a new image layer with the given layer name, optional components pretty name and
     the set of channels (also called components) in the layer.
 
-.. method:: NatronEngine.ImageLayer.isColorPlane()
+.. method:: NatronEngine.ImageLayer.isColorLayer()
 
 
     :rtype: :class:`bool<PySide.QtCore.bool>`

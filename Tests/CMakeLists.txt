@@ -47,6 +47,7 @@ set(Tests_SOURCES
     RenderRange_Test.cpp
     Tracker_Test.cpp
     TypedPassthrough_Test.cpp
+    WriteAllLayers_Test.cpp
     wmain.cpp
 )
 add_executable(Tests ${Tests_HEADERS} ${Tests_SOURCES})

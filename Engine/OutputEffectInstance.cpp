@@ -501,9 +501,9 @@ OutputEffectInstance::reportStats(int time,
         ofile << "Nb cache miss: " << nbCacheMiss << std::endl;
         ofile << "Nb cache hit requiring mipmap downscaling: " << nbCacheHitButDownscaled << std::endl;
 
-        const std::set<std::string>& planes = it->second.getLayersRendered();
+        const std::set<std::string>& layers = it->second.getLayersRendered();
         ofile << "Layer(s) rendered: ";
-        for (std::set<std::string>::const_iterator it2 = planes.begin(); it2 != planes.end(); ++it2) {
+        for (std::set<std::string>::const_iterator it2 = layers.begin(); it2 != layers.end(); ++it2) {
             ofile << *it2 << ' ';
         }
         ofile << std::endl;

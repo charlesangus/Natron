@@ -199,26 +199,25 @@ public:
 
     void resetTransformCenter();
 
-    ImagePtr renderMaskFromStroke(const ImagePlaneDesc& components,
-                                                  const double time,
-                                                  const ViewIdx view,
-                                                  const ImageBitDepthEnum depth,
-                                                  const unsigned int mipmapLevel,
-                                                  const RectD& rotoNodeSrcRod);
+    ImagePtr renderMaskFromStroke(const ImageLayerDesc& components,
+                                  const double time,
+                                  const ViewIdx view,
+                                  const ImageBitDepthEnum depth,
+                                  const unsigned int mipmapLevel,
+                                  const RectD& rotoNodeSrcRod);
 
 private:
-
-    ImagePtr renderMaskInternal(const RectI & roi,
-                                                const ImagePlaneDesc& components,
-                                                const double startTime,
-                                                const double endTime,
-                                                const double timeStep,
-                                                const double time,
-                                                const bool inverted,
-                                                const ImageBitDepthEnum depth,
-                                                const unsigned int mipmapLevel,
-                                                const std::list<std::list<std::pair<Point, double> > >& strokes,
-                                                const ImagePtr &image);
+    ImagePtr renderMaskInternal(const RectI& roi,
+                                const ImageLayerDesc& components,
+                                const double startTime,
+                                const double endTime,
+                                const double timeStep,
+                                const double time,
+                                const bool inverted,
+                                const ImageBitDepthEnum depth,
+                                const unsigned int mipmapLevel,
+                                const std::list<std::list<std::pair<Point, double>>>& strokes,
+                                const ImagePtr& image);
 
 Q_SIGNALS:
 

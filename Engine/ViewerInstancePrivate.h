@@ -384,8 +384,8 @@ public:
                                                  0 = sRGB ,  1 = linear , 2 = Rec 709*/
     bool viewerParamsAutoContrast;
     DisplayChannelsEnum viewerParamsChannels[2];
-    ImagePlaneDesc viewerParamsLayer;
-    ImagePlaneDesc viewerParamsAlphaLayer;
+    ImageLayerDesc viewerParamsLayer;
+    ImageLayerDesc viewerParamsAlphaLayer;
     std::string viewerParamsAlphaChannelName;
     unsigned int viewerMipmapLevel; //< the mipmap level the viewer should render at (0 == no downscaling)
     bool fullFrameProcessingEnabled;

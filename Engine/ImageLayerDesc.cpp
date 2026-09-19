@@ -300,23 +300,23 @@ static bool
 extractOFXEncodedCustomLayer(const std::string& comp, std::string* layerName, std::string* layerLabel, std::string* channelsLabel, std::vector<std::string>* channels)
 {
 
-    // Find the plane unique identifier
-    const std::size_t foundPlaneLen = std::strlen(kNatronOfxImageComponentsPlaneName);
-    std::size_t foundPlane = comp.find(kNatronOfxImageComponentsPlaneName);
-    if (foundPlane == std::string::npos) {
+    // Find the layer unique identifier
+    const std::size_t foundLayerLen = std::strlen(kNatronOfxImageComponentsPlaneName);
+    std::size_t foundLayer = comp.find(kNatronOfxImageComponentsPlaneName);
+    if (foundLayer == std::string::npos) {
         return false;
     }
 
-    const std::size_t planeNameStartIdx = foundPlane + foundPlaneLen;
+    const std::size_t layerNameStartIdx = foundLayer + foundLayerLen;
 
-    // Find the optional plane label
-    // If planeLabelStartIdx = 0, there's no plane label.
-    std::size_t planeLabelStartIdx = 0;
+    // Find the optional layer label
+    // If layerLabelStartIdx = 0, there is no layer label.
+    std::size_t layerLabelStartIdx = 0;
 
-    const std::size_t foundPlaneLabelLen = std::strlen(kNatronOfxImageComponentsPlaneLabel);
-    std::size_t foundPlaneLabel = comp.find(kNatronOfxImageComponentsPlaneLabel, planeNameStartIdx);
-    if (foundPlaneLabel != std::string::npos) {
-        planeLabelStartIdx = foundPlaneLabel + foundPlaneLabelLen;
+    const std::size_t foundLayerLabelLen = std::strlen(kNatronOfxImageComponentsPlaneLabel);
+    std::size_t foundLayerLabel = comp.find(kNatronOfxImageComponentsPlaneLabel, layerNameStartIdx);
+    if (foundLayerLabel != std::string::npos) {
+        layerLabelStartIdx = foundLayerLabel + foundLayerLabelLen;
     }
 
     // Find the optional channels label
@@ -325,23 +325,23 @@ extractOFXEncodedCustomLayer(const std::string& comp, std::string* layerName, st
 
     const std::size_t foundChannelsLabelLen = std::strlen(kNatronOfxImageComponentsPlaneChannelsLabel);
 
-    // If there was a plane label before, pick from there otherwise pick from the name
-    std::size_t findChannelsLabelStart = planeLabelStartIdx > 0 ? planeLabelStartIdx : planeNameStartIdx;
+    // If there was a layer label before, pick from there otherwise pick from the name
+    std::size_t findChannelsLabelStart = layerLabelStartIdx > 0 ? layerLabelStartIdx : layerNameStartIdx;
     std::size_t foundChannelsLabel = comp.find(kNatronOfxImageComponentsPlaneChannelsLabel, findChannelsLabelStart);
     if (foundChannelsLabel != std::string::npos) {
         channelsLabelStartIdx = foundChannelsLabel + foundChannelsLabelLen;
     }
 
     // Find the first channel
-    // If there was a channels label before, find from there, otherwise if there was a plane label before
+    // If there was a channels label before, find from there, otherwise if there was a layer label before
     // find from there, otherwise find from the name.
     std::size_t findChannelStart = 0;
     if (channelsLabelStartIdx > 0) {
         findChannelStart = channelsLabelStartIdx;
-    } else if (planeLabelStartIdx > 0) {
-        findChannelStart = planeLabelStartIdx;
+    } else if (layerLabelStartIdx > 0) {
+        findChannelStart = layerLabelStartIdx;
     } else {
-        findChannelStart = planeNameStartIdx;
+        findChannelStart = layerNameStartIdx;
     }
 
     const std::size_t foundChannelLen = std::strlen(kNatronOfxImageComponentsPlaneChannel);
@@ -356,31 +356,31 @@ extractOFXEncodedCustomLayer(const std::string& comp, std::string* layerName, st
         *channelsLabel = comp.substr(channelsLabelStartIdx, foundChannel - channelsLabelStartIdx);
     }
 
-    // Extract plane label
-    if (planeLabelStartIdx > 0) {
+    // Extract layer label
+    if (layerLabelStartIdx > 0) {
         std::size_t endIndex = (foundChannelsLabel != std::string::npos) ? foundChannelsLabel : foundChannel;
-        *layerLabel = comp.substr(planeLabelStartIdx, endIndex - planeLabelStartIdx);
+        *layerLabel = comp.substr(layerLabelStartIdx, endIndex - layerLabelStartIdx);
     }
 
-    // Extract plane name
+    // Extract layer name
     {
         std::size_t endIndex;
-        if (foundPlaneLabel != std::string::npos) {
-            // There's a plane label
-            endIndex = foundPlaneLabel;
+        if (foundLayerLabel != std::string::npos) {
+            // There is a layer label
+            endIndex = foundLayerLabel;
         } else if (foundChannelsLabel != std::string::npos) {
-            // There's no plane label but a channels label
+            // There is no layer label but a channels label
             endIndex = foundChannelsLabel;
         } else {
-            // No plane label and no channels label
+            // No layer label and no channels label
             endIndex = foundChannel;
         }
-        *layerName = comp.substr(planeNameStartIdx, endIndex - planeNameStartIdx);
+        *layerName = comp.substr(layerNameStartIdx, endIndex - layerNameStartIdx);
     }
 
     while (foundChannel != std::string::npos) {
         if (channels->size() >= 4) {
-            // A plane must have between 1 and 4 channels.
+            // A layer must have between 1 and 4 channels.
             return false;
         }
         findChannelStart = foundChannel + foundChannelLen;

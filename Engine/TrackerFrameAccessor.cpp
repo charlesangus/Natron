@@ -349,8 +349,8 @@ TrackerFrameAccessor::GetImage(int /*clip*/,
         roi = precomputedRoD.toPixelEnclosing(mipmapLevel, par);
     }
 
-    std::list<ImagePlaneDesc> components;
-    components.push_back( ImagePlaneDesc::getRGBComponents() );
+    std::list<ImageLayerDesc> components;
+    components.push_back(ImageLayerDesc::getRGBComponents());
 
     NodePtr node = _imp->context->getNode();
     const bool isRenderUserInteraction = true;
@@ -385,9 +385,9 @@ TrackerFrameAccessor::GetImage(int /*clip*/,
                                         _imp->context->getNode()->getEffectInstance().get(),
                                         eStorageModeRAM /*returnOpenGLTex*/,
                                         frame);
-    std::map<ImagePlaneDesc, ImagePtr> planes;
-    EffectInstance::RenderRoIRetCode stat = effect->renderRoI(args, &planes);
-    if ( (stat != EffectInstance::eRenderRoIRetCodeOk) || planes.empty() ) {
+    std::map<ImageLayerDesc, ImagePtr> layers;
+    EffectInstance::RenderRoIRetCode stat = effect->renderRoI(args, &layers);
+    if ((stat != EffectInstance::eRenderRoIRetCodeOk) || layers.empty()) {
 #ifdef TRACE_LIB_MV
         qDebug() << QThread::currentThread() << "FrameAccessor::GetImage():" << "Failed to call renderRoI on input at frame" << frame << "with RoI x1="
                  << roi.x1 << "y1=" << roi.y1 << "x2=" << roi.x2 << "y2=" << roi.y2;
@@ -396,8 +396,8 @@ TrackerFrameAccessor::GetImage(int /*clip*/,
         return (mv::FrameAccessor::Key)0;
     }
 
-    assert( !planes.empty() );
-    const ImagePtr& sourceImage = planes.begin()->second;
+    assert(!layers.empty());
+    const ImagePtr& sourceImage = layers.begin()->second;
     RectI sourceBounds = sourceImage->getBounds();
     const RectI intersectedRoI = roi.intersect(sourceBounds);
     if ( intersectedRoI.isNull() ) {

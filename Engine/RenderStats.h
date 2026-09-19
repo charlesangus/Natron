@@ -76,7 +76,7 @@ public:
     void addMipmapLevelRendered(unsigned int level);
     const std::set<unsigned int>& getMipmapLevelsRendered() const;
 
-    void addLayerRendered(const std::string& plane);
+    void addLayerRendered(const std::string& layer);
     const std::set<std::string>& getLayersRendered() const;
 
     void addCacheAccessInfo(bool isCacheMiss, bool hasDownscaled);
@@ -133,7 +133,7 @@ public:
 
     void addRenderInfosForNode(const NodePtr& node,
                                const NodePtr& identity,
-                               const std::string& plane,
+                               const std::string& layer,
                                const RectI& rectangle,
                                double timeSpent);
 

@@ -125,8 +125,8 @@ public:
     double offset; // viewer offset
     unsigned int mipmapLevel; // viewer mipmaplevel
     ViewerColorSpaceEnum lut; // the viewer colorspace lut
-    ImagePlaneDesc layer; // the image layer
-    ImagePlaneDesc alphaLayer; // the alpha layer
+    ImageLayerDesc layer; // the image layer
+    ImageLayerDesc alphaLayer; // the alpha layer
     std::string alphaChannelName; // the alpha channel name
     std::list<CachedTile> tiles;
     int tileSize;

@@ -1132,11 +1132,11 @@ NodeGroup::getPluginDescription() const
 
 void
 NodeGroup::addAcceptedComponents(int /*inputNb*/,
-                                 std::list<ImagePlaneDesc>* comps)
+                                 std::list<ImageLayerDesc>* comps)
 {
-    comps->push_back( ImagePlaneDesc::getRGBAComponents() );
-    comps->push_back( ImagePlaneDesc::getRGBComponents() );
-    comps->push_back( ImagePlaneDesc::getAlphaComponents() );
+    comps->push_back(ImageLayerDesc::getRGBAComponents());
+    comps->push_back(ImageLayerDesc::getRGBComponents());
+    comps->push_back(ImageLayerDesc::getAlphaComponents());
 }
 
 void
@@ -2729,9 +2729,9 @@ exportGroupInternal(int indentLevel,
         // a precision of 3 digits is enough for the node color
         WRITE_INDENT(indentLevel); WRITE_STRING( QString::fromUtf8("lastNode.setColor(") + NUM_COLOR(r) + QString::fromUtf8(", ") + NUM_COLOR(g) + QString::fromUtf8(", ") + NUM_COLOR(b) +  QString::fromUtf8(")") );
 
-        std::list<ImagePlaneDesc> userComps;
+        std::list<ImageLayerDesc> userComps;
         (*it)->getUserCreatedComponents(&userComps);
-        for (std::list<ImagePlaneDesc>::iterator it2 = userComps.begin(); it2 != userComps.end(); ++it2) {
+        for (std::list<ImageLayerDesc>::iterator it2 = userComps.begin(); it2 != userComps.end(); ++it2) {
             const std::vector<std::string>& channels = it2->getChannels();
             QString compStr = QString::fromUtf8("[");
             for (std::size_t i = 0; i < channels.size(); ++i) {

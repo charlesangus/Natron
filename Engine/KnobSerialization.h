@@ -75,8 +75,8 @@ GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_ON
 #define KNOB_SERIALIZATION_INTRODUCES_ALIAS 11
 #define KNOB_SERIALIZATION_REMOVE_SLAVED_TRACKS 12
 #define KNOB_SERIALIZATION_REMOVE_DEFAULT_VALUES 13
-#define KNOB_SERIALIZATION_CHANGE_PLANES_SERIALIZATION 14
-#define KNOB_SERIALIZATION_VERSION KNOB_SERIALIZATION_CHANGE_PLANES_SERIALIZATION
+#define KNOB_SERIALIZATION_CHANGE_LAYERS_SERIALIZATION 14
+#define KNOB_SERIALIZATION_VERSION KNOB_SERIALIZATION_CHANGE_LAYERS_SERIALIZATION
 
 #define VALUE_SERIALIZATION_INTRODUCES_CHOICE_LABEL 2
 #define VALUE_SERIALIZATION_INTRODUCES_EXPRESSIONS 3
@@ -694,9 +694,9 @@ private:
                 assert(cData);
                 if (cData) {
                     ar & ::boost::serialization::make_nvp("ChoiceLabel", cData->_choiceString);
-                    /*if (version < KNOB_SERIALIZATION_CHANGE_PLANES_SERIALIZATION) {
-                        // In Natron 2.2.6 we changed the encoding of planes: they no longer are planeLabel + "." + channels
-                        // but planeID + "." + channels
+                    /*if (version < KNOB_SERIALIZATION_CHANGE_LAYERS_SERIALIZATION) {
+                        // In Natron 2.2.6 we changed the encoding of layers: they no longer are layerLabel + "." + channels
+                        // but layerID + "." + channels
                         // Hard-code the mapping
                         filterKnobChoiceOption(getPluginID(), projectInfos.vMajor, projectInfos.vMinor, isChoice->getName(), &cData->_choiceString);
                     }*/

@@ -219,9 +219,9 @@ NodeRenderStats::getMipmapLevelsRendered() const
 }
 
 void
-NodeRenderStats::addLayerRendered(const std::string& plane)
+NodeRenderStats::addLayerRendered(const std::string& layer)
 {
-    _imp->layersRendered.insert(plane);
+    _imp->layersRendered.insert(layer);
 }
 
 const std::set<std::string>&
@@ -418,7 +418,7 @@ RenderStats::addCacheInfosForNode(const NodePtr& node,
 void
 RenderStats::addRenderInfosForNode(const NodePtr& node,
                                    const NodePtr& identity,
-                                   const std::string& plane,
+                                   const std::string& layer,
                                    const RectI& rectangle,
                                    double timeSpent)
 {
@@ -433,7 +433,7 @@ RenderStats::addRenderInfosForNode(const NodePtr& node,
         stats.addRenderedRectangle(rectangle);
     }
     stats.addTimeSpentRendering(timeSpent);
-    stats.addLayerRendered(plane);
+    stats.addLayerRendered(layer);
 }
 
 std::map<NodePtr, NodeRenderStats >

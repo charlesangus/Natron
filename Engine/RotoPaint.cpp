@@ -167,14 +167,14 @@ RotoPaint::isInputMask(int inputNb) const
 
 void
 RotoPaint::addAcceptedComponents(int inputNb,
-                                 std::list<ImagePlaneDesc>* comps)
+                                 std::list<ImageLayerDesc>* comps)
 {
     if (inputNb != ROTOPAINT_MASK_INPUT_INDEX) {
-        comps->push_back( ImagePlaneDesc::getRGBAComponents() );
-        comps->push_back( ImagePlaneDesc::getRGBComponents() );
-        comps->push_back( ImagePlaneDesc::getXYComponents() );
+        comps->push_back(ImageLayerDesc::getRGBAComponents());
+        comps->push_back(ImageLayerDesc::getRGBComponents());
+        comps->push_back(ImageLayerDesc::getXYComponents());
     }
-    comps->push_back( ImagePlaneDesc::getAlphaComponents() );
+    comps->push_back(ImageLayerDesc::getAlphaComponents());
 }
 
 void
@@ -1481,11 +1481,11 @@ RotoPaint::render(const RenderActionArgs& args)
     RotoContextPtr roto = getNode()->getRotoContext();
     std::list<RotoDrawableItemPtr> items = roto->getCurvesByRenderOrder(false /*onlyActiveItems*/);
     ImageBitDepthEnum bgDepth = getBitDepth(0);
-    std::list<ImagePlaneDesc> neededComps;
+    std::list<ImageLayerDesc> neededComps;
 
-    for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator plane = args.outputLayers.begin();
-         plane != args.outputLayers.end(); ++plane) {
-        neededComps.push_back(plane->first);
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator layer = args.outputLayers.begin();
+         layer != args.outputLayers.end(); ++layer) {
+        neededComps.push_back(layer->first);
     }
 
     KnobBoolPtr premultKnob = _imp->premultKnob.lock();
@@ -1496,24 +1496,22 @@ RotoPaint::render(const RenderActionArgs& args)
         RectI bgImgRoI;
         ImagePtr bgImg = getImage(0, args.time, args.mappedScale, args.view, 0, 0, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM /*returnOpenGLtexture*/, 0 /*textureDepth*/, &bgImgRoI);
 
-        for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator plane = args.outputLayers.begin();
-             plane != args.outputLayers.end(); ++plane) {
+        for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator layer = args.outputLayers.begin();
+             layer != args.outputLayers.end(); ++layer) {
             if (bgImg) {
-                if ( bgImg->getComponents() != plane->second->getComponents() ) {
-                    bgImg->convertToFormat( args.roi,
-                                            getApp()->getDefaultColorSpaceForBitDepth( bgImg->getBitDepth() ),
-                                            getApp()->getDefaultColorSpaceForBitDepth( plane->second->getBitDepth() ), 3
-                                            , false, false, plane->second.get() );
+                if (bgImg->getComponents() != layer->second->getComponents()) {
+                    bgImg->convertToFormat(args.roi,
+                                           getApp()->getDefaultColorSpaceForBitDepth(bgImg->getBitDepth()),
+                                           getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, false, layer->second.get());
                 } else {
-                    plane->second->pasteFrom(*bgImg, args.roi, false);
+                    layer->second->pasteFrom(*bgImg, args.roi, false);
                 }
 
-
-                if ( premultiply && ( plane->second->getComponents() == ImagePlaneDesc::getRGBAComponents() ) ) {
-                    plane->second->premultImage(args.roi);
+                if (premultiply && (layer->second->getComponents() == ImageLayerDesc::getRGBAComponents())) {
+                    layer->second->premultImage(args.roi);
                 }
             } else {
-                plane->second->fillZero(args.roi);
+                layer->second->fillZero(args.roi);
             }
         }
     } else {
@@ -1545,16 +1543,16 @@ RotoPaint::render(const RenderActionArgs& args)
                                     this,
                                     eStorageModeRAM /*returnOpenGLtex*/,
                                     args.time);
-        std::map<ImagePlaneDesc, ImagePtr> rotoPaintImages;
+        std::map<ImageLayerDesc, ImagePtr> rotoPaintImages;
         RenderRoIRetCode code = bottomMerge->getEffectInstance()->renderRoI(rotoPaintArgs, &rotoPaintImages);
         if (code == eRenderRoIRetCodeFailed) {
             return eStatusFailed;
         } else if (code == eRenderRoIRetCodeAborted) {
             return eStatusOK;
         } else if ( rotoPaintImages.empty() ) {
-            for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator plane = args.outputLayers.begin();
-                 plane != args.outputLayers.end(); ++plane) {
-                plane->second->fillZero(args.roi);
+            for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator layer = args.outputLayers.begin();
+                 layer != args.outputLayers.end(); ++layer) {
+                layer->second->fillZero(args.roi);
             }
 
             return eStatusOK;
@@ -1566,9 +1564,9 @@ RotoPaint::render(const RenderActionArgs& args)
         ImagePremultiplicationEnum outputPremult = getPremult();
         bool triedGetImage = false;
 
-        for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator plane = args.outputLayers.begin();
-             plane != args.outputLayers.end(); ++plane) {
-            std::map<ImagePlaneDesc, ImagePtr>::iterator rotoImagesIt = rotoPaintImages.find(plane->first);
+        for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator layer = args.outputLayers.begin();
+             layer != args.outputLayers.end(); ++layer) {
+            std::map<ImageLayerDesc, ImagePtr>::iterator rotoImagesIt = rotoPaintImages.find(layer->first);
             assert( rotoImagesIt != rotoPaintImages.end() );
             if ( rotoImagesIt == rotoPaintImages.end() ) {
                 continue;
@@ -1621,39 +1619,36 @@ RotoPaint::render(const RenderActionArgs& args)
                     dRect.x2 = bgBounds.x1;
                     dRect.y2 = bgBounds.y2;
 
-                    plane->second->fillZero(aRect);
-                    plane->second->fillZero(bRect);
-                    plane->second->fillZero(cRect);
-                    plane->second->fillZero(dRect);
+                    layer->second->fillZero(aRect);
+                    layer->second->fillZero(bRect);
+                    layer->second->fillZero(cRect);
+                    layer->second->fillZero(dRect);
 
-                    if ( bgImg->getComponents() != plane->second->getComponents() ) {
+                    if (bgImg->getComponents() != layer->second->getComponents()) {
                         const RectI intersection = args.roi.intersect(bgImg->getBounds());
                         if (!intersection.isNull()) {
-                            bgImg->convertToFormat( intersection,
-                                                getApp()->getDefaultColorSpaceForBitDepth( rotoImagesIt->second->getBitDepth() ),
-                                                getApp()->getDefaultColorSpaceForBitDepth( plane->second->getBitDepth() ), 3
-                                                , false, false, plane->second.get() );
+                            bgImg->convertToFormat(intersection,
+                                                   getApp()->getDefaultColorSpaceForBitDepth(rotoImagesIt->second->getBitDepth()),
+                                                   getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, false, layer->second.get());
                         }
                     } else {
-                        plane->second->pasteFrom(*bgImg, args.roi, false);
+                        layer->second->pasteFrom(*bgImg, args.roi, false);
                     }
                 } else {
-                    plane->second->fillZero(args.roi);
+                    layer->second->fillZero(args.roi);
                 }
             }
 
-
-            if ( rotoImagesIt->second->getComponents() != plane->second->getComponents() ) {
-                rotoImagesIt->second->convertToFormat( args.roi,
-                                                       getApp()->getDefaultColorSpaceForBitDepth( rotoImagesIt->second->getBitDepth() ),
-                                                       getApp()->getDefaultColorSpaceForBitDepth( plane->second->getBitDepth() ), 3
-                                                       , false, false, plane->second.get() );
+            if (rotoImagesIt->second->getComponents() != layer->second->getComponents()) {
+                rotoImagesIt->second->convertToFormat(args.roi,
+                                                      getApp()->getDefaultColorSpaceForBitDepth(rotoImagesIt->second->getBitDepth()),
+                                                      getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, false, layer->second.get());
             } else {
-                plane->second->pasteFrom(*(rotoImagesIt->second), args.roi, false);
+                layer->second->pasteFrom(*(rotoImagesIt->second), args.roi, false);
             }
-            plane->second->copyUnProcessedChannels(args.roi, outputPremult, bgImg ? bgImg->getPremultiplication() : eImagePremultiplicationOpaque, copyChannels, bgImg, false);
-            if ( premultiply && ( plane->second->getComponents() == ImagePlaneDesc::getRGBAComponents() ) ) {
-                plane->second->premultImage(args.roi);
+            layer->second->copyUnProcessedChannels(args.roi, outputPremult, bgImg ? bgImg->getPremultiplication() : eImagePremultiplicationOpaque, copyChannels, bgImg, false);
+            if (premultiply && (layer->second->getComponents() == ImageLayerDesc::getRGBAComponents())) {
+                layer->second->premultImage(args.roi);
             }
         }
     } // RenderingFlagSetter

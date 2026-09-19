@@ -49,7 +49,7 @@
 NATRON_NAMESPACE_ENTER
 
 inline int
-getElementsCountForComponents(ImagePlaneDescEnum comp)
+getElementsCountForComponents(ImageComponentsEnum comp)
 {
     switch (comp) {
     case eImageComponentNone:
@@ -74,7 +74,7 @@ getElementsCountForComponents(ImagePlaneDescEnum comp)
 }
 
 inline bool
-isColorComponents(ImagePlaneDescEnum comp)
+isColorComponents(ImageComponentsEnum comp)
 {
     switch (comp) {
     case eImageComponentNone:
@@ -102,12 +102,11 @@ class ImageParams
     : public NonKeyParams
 {
 public:
-
     ImageParams()
         : NonKeyParams()
         , _rod()
         , _par(1.)
-        , _components( ImagePlaneDesc::getRGBAComponents() )
+        , _components(ImageLayerDesc::getRGBAComponents())
         , _bitdepth(eImageBitDepthFloat)
         , _fielding(eImageFieldingOrderNone)
         , _premult(eImagePremultiplicationPremultiplied)
@@ -129,15 +128,15 @@ public:
     {
     }
 
-    ImageParams(const RectD & rod,
+    ImageParams(const RectD& rod,
                 const double par,
                 const unsigned int mipmapLevel,
-                const RectI & bounds,
+                const RectI& bounds,
                 ImageBitDepthEnum bitdepth,
                 ImageFieldingOrderEnum fielding,
                 ImagePremultiplicationEnum premult,
                 bool isRoDProjectFormat,
-                const ImagePlaneDesc& components,
+                const ImageLayerDesc& components,
                 StorageModeEnum storageMode,
                 U32 textureTarget)
         : NonKeyParams()
@@ -199,7 +198,7 @@ public:
         _bitdepth = bitdepth;
     }
 
-    const ImagePlaneDesc& getComponents() const
+    const ImageLayerDesc& getComponents() const
     {
         return _components;
     }
@@ -260,7 +259,7 @@ private:
 
     RectD _rod;
     double _par;
-    ImagePlaneDesc _components;
+    ImageLayerDesc _components;
     ImageBitDepthEnum _bitdepth;
     ImageFieldingOrderEnum _fielding;
     ImagePremultiplicationEnum _premult;

@@ -63,11 +63,11 @@ DiskCacheNode::~DiskCacheNode()
 
 void
 DiskCacheNode::addAcceptedComponents(int /*inputNb*/,
-                                     std::list<ImagePlaneDesc>* comps)
+                                     std::list<ImageLayerDesc>* comps)
 {
-    comps->push_back( ImagePlaneDesc::getRGBAComponents() );
-    comps->push_back( ImagePlaneDesc::getRGBComponents() );
-    comps->push_back( ImagePlaneDesc::getAlphaComponents() );
+    comps->push_back(ImageLayerDesc::getRGBAComponents());
+    comps->push_back(ImageLayerDesc::getRGBComponents());
+    comps->push_back(ImageLayerDesc::getAlphaComponents());
 }
 
 void
@@ -212,9 +212,9 @@ DiskCacheNode::render(const RenderActionArgs& args)
         return eStatusFailed;
     }
 
-    const std::pair<ImagePlaneDesc, ImagePtr>& output = args.outputLayers.front();
+    const std::pair<ImageLayerDesc, ImagePtr>& output = args.outputLayers.front();
 
-    for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
         RectI roiPixel;
         ImagePtr srcImg = getImage(0, args.time, args.originalScale, args.view, NULL, &it->first, false /*mapToClipPrefs*/, true /*dontUpscale*/, eStorageModeRAM /*useOpenGL*/, 0 /*textureDepth*/,  &roiPixel);
         if (!srcImg) {

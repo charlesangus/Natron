@@ -703,9 +703,9 @@ Image::Image(const ImageKey & key,
 /*This constructor can be used to allocate a local Image. The deallocation should
    then be handled by the user. Note that no view number is passed in parameter
    as it is not needed.*/
-Image::Image(const ImagePlaneDesc& components,
-             const RectD & regionOfDefinition, //!< rod in canonical coordinates
-             const RectI & bounds, //!< bounds in pixel coordinates
+Image::Image(const ImageLayerDesc& components,
+             const RectD& regionOfDefinition, //!< rod in canonical coordinates
+             const RectI& bounds, //!< bounds in pixel coordinates
              unsigned int mipmapLevel,
              double par,
              ImageBitDepthEnum bitdepth,
@@ -803,11 +803,11 @@ Image::makeKey(const CacheEntryHolder* holder,
 }
 
 ImageParamsPtr
-Image::makeParams(const RectD & rod,
+Image::makeParams(const RectD& rod,
                   const double par,
                   unsigned int mipmapLevel,
                   bool isRoDProjectFormat,
-                  const ImagePlaneDesc& components,
+                  const ImageLayerDesc& components,
                   ImageBitDepthEnum bitdepth,
                   ImagePremultiplicationEnum premult,
                   ImageFieldingOrderEnum fielding,
@@ -844,12 +844,12 @@ Image::makeParams(const RectD & rod,
 }
 
 ImageParamsPtr
-Image::makeParams(const RectD & rod,    // the image rod in canonical coordinates
+Image::makeParams(const RectD& rod, // the image rod in canonical coordinates
                   const RectI& bounds,
                   const double par,
                   unsigned int mipmapLevel,
                   bool isRoDProjectFormat,
-                  const ImagePlaneDesc& components,
+                  const ImageLayerDesc& components,
                   ImageBitDepthEnum bitdepth,
                   ImagePremultiplicationEnum premult,
                   ImageFieldingOrderEnum fielding,
@@ -1271,9 +1271,9 @@ Image::pasteFrom(const Image & src,
         if (gpuData) {
             // update data directly on the mapped buffer
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-            ImagePtr tmpImg( new Image( ImagePlaneDesc::getRGBAComponents(), src.getRoD(), roi, 0, src.getPixelAspectRatio(), src.getBitDepth(), src.getPremultiplication(), src.getFieldingOrder(), false, eStorageModeRAM) );
+            ImagePtr tmpImg(new Image(ImageLayerDesc::getRGBAComponents(), src.getRoD(), roi, 0, src.getPixelAspectRatio(), src.getBitDepth(), src.getPremultiplication(), src.getFieldingOrder(), false, eStorageModeRAM));
 #else
-            ImagePtr tmpImg = std::make_shared<Image>( ImagePlaneDesc::getRGBAComponents(), src.getRoD(), roi, 0, src.getPixelAspectRatio(), src.getBitDepth(), src.getPremultiplication(), src.getFieldingOrder(), false, eStorageModeRAM);
+            ImagePtr tmpImg = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), src.getRoD(), roi, 0, src.getPixelAspectRatio(), src.getBitDepth(), src.getPremultiplication(), src.getFieldingOrder(), false, eStorageModeRAM);
 #endif
             tmpImg->pasteFrom(src, roi);
 
@@ -1333,9 +1333,9 @@ Image::pasteFrom(const Image & src,
         glCheckError();
         // Read to a temporary RGBA buffer then convert to the image which may not be RGBA
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-        ImagePtr tmpImg( new Image( ImagePlaneDesc::getRGBAComponents(), getRoD(), roi, 0, getPixelAspectRatio(), getBitDepth(), getPremultiplication(), getFieldingOrder(), false, eStorageModeRAM) );
+        ImagePtr tmpImg(new Image(ImageLayerDesc::getRGBAComponents(), getRoD(), roi, 0, getPixelAspectRatio(), getBitDepth(), getPremultiplication(), getFieldingOrder(), false, eStorageModeRAM));
 #else
-        ImagePtr tmpImg = std::make_shared<Image>( ImagePlaneDesc::getRGBAComponents(), getRoD(), roi, 0, getPixelAspectRatio(), getBitDepth(), getPremultiplication(), getFieldingOrder(), false, eStorageModeRAM);
+        ImagePtr tmpImg = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), getRoD(), roi, 0, getPixelAspectRatio(), getBitDepth(), getPremultiplication(), getFieldingOrder(), false, eStorageModeRAM);
 #endif
 
         {
@@ -1663,8 +1663,8 @@ Image::getComponentsCount() const
 }
 
 bool
-Image::hasEnoughDataToConvert(ImagePlaneDescEnum from,
-                              ImagePlaneDescEnum to)
+Image::hasEnoughDataToConvert(ImageComponentsEnum from,
+                              ImageComponentsEnum to)
 {
     switch (from) {
     case eImageComponentRGBA:
@@ -1712,7 +1712,7 @@ Image::hasEnoughDataToConvert(ImagePlaneDescEnum from,
 }
 
 std::string
-Image::getFormatString(const ImagePlaneDesc& comps,
+Image::getFormatString(const ImageLayerDesc& comps,
                        ImageBitDepthEnum depth)
 {
     std::string s = comps.getLayerLabel() + '.' + comps.getChannelsLabel();

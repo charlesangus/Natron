@@ -942,7 +942,7 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
         }
     }
 
-    // If the plug-in is requesting the colour layer, it is expected that we return
+    // If the plug-in is requesting the colour plane, it is expected that we return
     // an image mapped to the clip components
     const bool mapImageToClipPref = !ofxPlane || *ofxPlane == kFnOfxImagePlaneColour;
 
@@ -1079,7 +1079,7 @@ OfxClipInstance::getOutputImageInternal(const std::string* ofxPlane,
         }
 
         /*
-           If the plugin is multi-planar, we are in the situation where it called the regular clipGetImage without a layer in argument
+           If the plugin is multi-planar, we are in the situation where it called the regular clipGetImage without a plane argument
            so the components will not have been set on the TLS hence just use regular components.
          */
         if ((natronLayer.getNumComponents() == 0) && effect->isMultiPlanar()) {

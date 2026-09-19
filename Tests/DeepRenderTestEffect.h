@@ -515,9 +515,9 @@ public:
     }
 
     virtual void addAcceptedComponents(int /*inputNb*/,
-                                       std::list<ImagePlaneDesc>* comps) OVERRIDE FINAL
+                                       std::list<ImageLayerDesc>* comps) OVERRIDE FINAL
     {
-        comps->push_back(ImagePlaneDesc::getRGBAComponents());
+        comps->push_back(ImageLayerDesc::getRGBAComponents());
     }
 
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL
@@ -555,7 +555,7 @@ private:
         KnobIntPtr seedKnob = _seed.lock();
         const int seed = seedKnob ? seedKnob->getValue() : 0;
 
-        for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+        for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
             const ImagePtr& image = it->second;
             if (!image || (image->getBitDepth() != eImageBitDepthFloat)) {
                 return eStatusFailed;

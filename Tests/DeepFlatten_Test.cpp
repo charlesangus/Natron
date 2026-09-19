@@ -169,7 +169,7 @@ makeFlattenDestination(const RectI& bounds)
 {
     const RectD rod(bounds.x1, bounds.y1, bounds.x2, bounds.y2);
 
-    return std::make_shared<Image>(ImagePlaneDesc::getRGBAComponents(), rod, bounds, 0 /*mipmapLevel*/, 1. /*par*/,
+    return std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), rod, bounds, 0 /*mipmapLevel*/, 1. /*par*/,
                                    eImageBitDepthFloat, eImagePremultiplicationPremultiplied,
                                    eImageFieldingOrderNone, false /*useBitmap*/);
 }

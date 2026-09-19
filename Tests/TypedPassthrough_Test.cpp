@@ -95,12 +95,12 @@ readExrPod(std::ifstream& in,
 // the Tests binary. This is what lets the "renders identically" test below compare every
 // pixel of the two renders instead of only their first one.
 bool
-readExrChannelPlane(const std::string& path,
-                    const std::string& channelName,
-                    std::vector<float>* outValues,
-                    int* outWidth,
-                    int* outHeight,
-                    std::string* error)
+readExrChannel(const std::string& path,
+               const std::string& channelName,
+               std::vector<float>* outValues,
+               int* outWidth,
+               int* outHeight,
+               std::string* error)
 {
     std::ifstream in(path, std::ios::binary);
 
@@ -297,7 +297,7 @@ readExrChannelPlane(const std::string& path,
     }
 
     return true;
-} // readExrChannelPlane
+} // readExrChannel
 
 } // namespace
 
@@ -441,8 +441,8 @@ TEST_F(BaseTest, TypedPassthroughMidChainRendersIdentically)
         int directWidth = 0, directHeight = 0, throughProofWidth = 0, throughProofHeight = 0;
         std::string error;
 
-        ASSERT_TRUE(readExrChannelPlane(directPath, kChannels[c], &direct, &directWidth, &directHeight, &error)) << error;
-        ASSERT_TRUE(readExrChannelPlane(throughProofPath, kChannels[c], &throughProof, &throughProofWidth, &throughProofHeight, &error)) << error;
+        ASSERT_TRUE(readExrChannel(directPath, kChannels[c], &direct, &directWidth, &directHeight, &error)) << error;
+        ASSERT_TRUE(readExrChannel(throughProofPath, kChannels[c], &throughProof, &throughProofWidth, &throughProofHeight, &error)) << error;
 
         ASSERT_EQ(directWidth, throughProofWidth);
         ASSERT_EQ(directHeight, throughProofHeight);

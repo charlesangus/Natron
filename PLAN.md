@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M57.P1.T2
-pm_heartbeat: 2026-09-19T11:15:00-04:00
+current: null
+pm_heartbeat: 2026-09-19T12:40:00-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -133,7 +133,12 @@ future core work has solid ground to build on.
   `kMultiPlaneProcessAllPlanesParam`, defined in the separate
   `charlesangus/openfx-io` fork's `SupportExt/ofxsMultiPlane.h`, untouched by
   M39), and checking that box does not write every input layer to the
-  output.
+  output. **M57 shipped 2026-09-19**: the label fix landed (M57.P1.T1,
+  `charlesangus/openfx-io` PR #3, `OPENFX_IO_REF` bumped to `87264e5`); the
+  second bug (M57.P1.T2) bisected as **pre-existing, not an M39 regression**
+  (byte-identical wrong-pixel-data symptom on `3e14c2a1e`, pre-M39) and was
+  rescoped out to new stub milestone **M58** rather than fixed here — see
+  M57's `## Decisions`.
 
 # Board
 
@@ -160,7 +165,8 @@ future core work has solid ground to build on.
 | M18 | Deep compositing v1 | done | [M18-deep-compositing-v1.md](PLAN/MILESTONES/M18-deep-compositing-v1.md) |
 | M23 | Make release bundles actually relocatable | done | [M23-relocatable-release-bundles.md](PLAN/MILESTONES/M23-relocatable-release-bundles.md) |
 | M39 | Adopt "layer" terminology instead of "planes" | done | [M39-layers-not-planes.md](PLAN/MILESTONES/M39-layers-not-planes.md) |
-| M57 | Fix Write node plane/layer regressions found while testing M39 | doing | [M57-write-node-plane-layer-regressions.md](PLAN/MILESTONES/M57-write-node-plane-layer-regressions.md) |
+| M57 | Fix Write node plane/layer regressions found while testing M39 | done | [M57-write-node-plane-layer-regressions.md](PLAN/MILESTONES/M57-write-node-plane-layer-regressions.md) |
+| M58 | Write's "All Layers" output copies one layer's pixel data into every layer | todo | [M58-write-multiplane-pixel-data-bug.md](PLAN/MILESTONES/M58-write-multiplane-pixel-data-bug.md) |
 | M35 | Remove implicit output-plane shuffling from non-Shuffle nodes | todo | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M38 | Improve channel/layer information organization in the node UI | todo | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
 | M43 | Drop the premultiplied/unpremultiplied concept | todo | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |

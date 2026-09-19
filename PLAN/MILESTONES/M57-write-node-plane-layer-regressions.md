@@ -29,7 +29,7 @@ M39 never touched. This repo's own allowlist grep is clean; there is nothing lef
     `grep -rn 'processAllPlanes\|All Planes' <openfx-io checkout>/SupportExt/ofxsMultiPlane.*`
     prints 0 lines.
   - size: M
-- [ ] M57.P1.T2 — Diagnose and fix Write not writing all layers when "All Layers" is checked
+- [x] M57.P1.T2 — Diagnose and fix Write not writing all layers when "All Layers" is checked (closed: pre-existing, see Decisions)
   - files: unknown until diagnosed — candidates are the `charlesangus/openfx-io` fork's
     `IOSupport/GenericWriter.cpp` / `SupportExt/ofxsMultiPlane.cpp` (plugin-side render and
     `getClipComponents` logic) and this repo's `Engine/OfxImageEffectInstance.cpp`,
@@ -50,8 +50,10 @@ M39 never touched. This repo's own allowlist grep is clean; there is nothing lef
     ctest debug` and `tools/ci/local/test.sh smoke debug` green; confirmed under Xvfb.
   - size: L
 
-**Verification gate:** both tasks' `verify` steps pass; a Write node's checkbox reads "All
-Layers" and, when checked, writes every layer present at its input.
+**Verification gate:** M57.P1.T1's `verify` steps pass (done). M57.P1.T2 is closed as
+diagnosed-but-out-of-scope (see Decisions) rather than fixed — the underlying bug is real but
+predates M39, so it does not belong in a "regressions found while testing M39" milestone. It is
+rescoped to **M58** (new stub, see board).
 
 ## Decisions
 
@@ -59,3 +61,15 @@ Layers" and, when checked, writes every layer present at its input.
   `fix/all-planes-to-all-layers` (PR #3, left open unmerged): matches the standing pattern
   from `56b782a4a` (PR #2 also open) — `OPENFX_IO_REF` pins directly to the fork's branch tip
   rather than waiting on a merge, since we control the fork.
+- 2026-09-19 — M57.P1.T2 diagnosed as a **pre-existing bug, not an M39 regression**, per the
+  task's own stop condition. Repro: a single-part EXR with 3 visually-distinct solid-color
+  layers (red RGBA / green `diffuse` / blue `specular`, built via `oiiotool --chappend`) read
+  into a Write with "All Layers" checked. The output's 3 subimages get the *right layer names*
+  but *identical (wrong) pixel data* — the `diffuse` layer's green copied into all three.
+  Bisected against `3e14c2a1e` (M18, immediately pre-M39) using that commit's own correctly
+  pre-rename-pinned `openfx-io` ref (`020d898f9`) in an isolated worktree: byte-for-byte
+  identical symptom. Not caused by M39's terminology rename. Rescoped to new stub milestone
+  **M58** (see board) — a real bug, just not this milestone's bug. An earlier, less careful
+  repro (checking only `oiiotool -info` channel *names*, not pixel *values*) had wrongly
+  suggested no bug existed at all; the names-only check is a trap worth remembering for anyone
+  else diagnosing multi-layer output.

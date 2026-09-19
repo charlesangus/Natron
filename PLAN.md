@@ -120,6 +120,15 @@ future core work has solid ground to build on.
   Natron side of the codebase says "layer" everywhere; only the OpenFX ABI
   boundary keeps "plane". `.ntp` tags are `LayerID`/`LayerLabel`, the knob
   script-name is `processAllLayers`, `NATRON_CACHE_VERSION` is 5.
+  **User testing of M39 (2026-09-19) surfaced two Write-node bugs, filed as
+  new milestone M57**: the Write node's params panel still shows "All
+  Planes" (this repo's own allowlist grep is clean — `WriteNode::
+  getCreateChannelSelectorKnob()` returns `false`, so the only "process
+  everything" checkbox on a Write is the embedded OFX writer's own
+  `kMultiPlaneProcessAllPlanesParam`, defined in the separate
+  `charlesangus/openfx-io` fork's `SupportExt/ofxsMultiPlane.h`, untouched by
+  M39), and checking that box does not write every input layer to the
+  output.
 
 # Board
 
@@ -146,11 +155,12 @@ future core work has solid ground to build on.
 | M18 | Deep compositing v1 | done | [M18-deep-compositing-v1.md](PLAN/MILESTONES/M18-deep-compositing-v1.md) |
 | M23 | Make release bundles actually relocatable | done | [M23-relocatable-release-bundles.md](PLAN/MILESTONES/M23-relocatable-release-bundles.md) |
 | M39 | Adopt "layer" terminology instead of "planes" | done | [M39-layers-not-planes.md](PLAN/MILESTONES/M39-layers-not-planes.md) |
+| M57 | Fix Write node plane/layer regressions found while testing M39 | todo | [M57-write-node-plane-layer-regressions.md](PLAN/MILESTONES/M57-write-node-plane-layer-regressions.md) |
 | M35 | Remove implicit output-plane shuffling from non-Shuffle nodes | todo | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
+| M38 | Improve channel/layer information organization in the node UI | todo | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
 | M34 | New native Shuffle node | todo | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
 | M36 | Add "new channel/layer" affordance wherever a node outputs channels | todo | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
 | M37 | Channel/layer management nodes | todo | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |
-| M38 | Improve channel/layer information organization in the node UI | todo | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
 | M50 | Proper OCIO support as a project property | todo | [M50-proper-ocio-support.md](PLAN/MILESTONES/M50-proper-ocio-support.md) |
 | M43 | Drop the premultiplied/unpremultiplied concept | todo | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
 | M25 | Guard the GL init path against the debug FP traps | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |

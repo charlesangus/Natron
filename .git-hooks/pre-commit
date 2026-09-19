@@ -9,7 +9,8 @@ export LANG=C
 
 EXTENSIONS="c,cc,cpp,h,hpp,mm"
 PATHSPEC=(-- . ':(exclude)Documentation/templates/')
-PIN_INSTALL_CMD="pip install --user --break-system-packages clang-format==21.1.8"
+PIN_VERSION="21.1.8"
+PIN_INSTALL_CMD="pip install --user --break-system-packages clang-format==$PIN_VERSION"
 
 indent() {
 	local prefix="$1" line
@@ -41,8 +42,67 @@ if [ -z "$CF_BINARY" ]; then
 	fail_missing_tool "Did not find the pinned clang-format module."
 fi
 
+# A version other than the pin can silently re-stage output CI's clang-format
+# rejects, so check the binary directly rather than trusting module/PATH
+# resolution to have found the right release.
+cf_version="$("$CF_BINARY" --version 2>/dev/null)"
+case "$cf_version" in
+*" $PIN_VERSION"*) ;;
+*)
+	fail_missing_tool "Found clang-format \"$cf_version\", not the pinned $PIN_VERSION."
+	;;
+esac
+
 if ! command -v git-clang-format >/dev/null 2>&1; then
 	fail_missing_tool "Did not find git-clang-format on PATH (it ships with the pip \"clang-format\" package)."
+fi
+
+matches_ext() {
+	local path="$1" ext
+	local -a exts
+	IFS=',' read -ra exts <<<"$EXTENSIONS"
+	for ext in "${exts[@]}"; do
+		case "$path" in
+		*".$ext") return 0 ;;
+		esac
+	done
+	return 1
+}
+
+# git-clang-format silently skips staged paths that git would need to quote
+# when listed without -z (non-ASCII, quotes, backslashes), and this hook's
+# newline-delimited re-stage parsing below can't represent an embedded
+# newline in a path either -- catch both up front so they fail loudly
+# instead of being committed unformatted.
+bad_paths=""
+while IFS= read -r -d '' path; do
+	matches_ext "$path" || continue
+	case "$path" in
+	*$'\n'*)
+		bad_paths="$bad_paths
+(embedded newline) $path"
+		continue
+		;;
+	esac
+	quoted_form="$(git --literal-pathspecs diff --cached --name-only --diff-filter=ACMR -- "$path")"
+	case "$quoted_form" in
+	\"*)
+		bad_paths="$bad_paths
+$quoted_form"
+		;;
+	esac
+done < <(git diff --cached --name-only -z --diff-filter=ACMR "${PATHSPEC[@]}")
+bad_paths="${bad_paths#$'\n'}"
+
+if [ -n "$bad_paths" ]; then
+	echo "git pre-commit hook:"
+	echo "       git-clang-format can't safely handle these staged paths (git would"
+	echo "       quote them, or they contain a newline), so they can't be auto-formatted:"
+	echo
+	echo "$bad_paths" | indent "       "
+	echo
+	echo "       Rename the file(s) to drop the newline/quotes/backslashes/non-ASCII, then commit again."
+	exit 1
 fi
 
 echo "-----> Formatting staged changes with clang-format (changed lines only)"
@@ -87,6 +147,9 @@ fi
 
 echo "       Reformatted:"
 echo "$changed_files" | indent "         "
-echo "$changed_files" | git --literal-pathspecs add --pathspec-from-file=- --
+if ! echo "$changed_files" | git --literal-pathspecs add --pathspec-from-file=- --; then
+	echo "       Failed to re-stage the reformatted files above; commit aborted."
+	exit 1
+fi
 
 echo "       Re-staged the formatted files above."

@@ -77,8 +77,8 @@ void
 ImageLayerDesc::save(Archive& ar,
                      const unsigned int /*version*/) const
 {
-    ar& boost::serialization::make_nvp("PlaneID", _layerID);
-    ar& boost::serialization::make_nvp("PlaneLabel", _layerLabel);
+    ar& boost::serialization::make_nvp("LayerID", _layerID);
+    ar& boost::serialization::make_nvp("LayerLabel", _layerLabel);
     ar &  boost::serialization::make_nvp("ChannelsLabel", _channelsLabel);
     ar &  boost::serialization::make_nvp("Channels", _channels);
 }
@@ -86,19 +86,12 @@ ImageLayerDesc::save(Archive& ar,
 template <class Archive>
 void
 ImageLayerDesc::load(Archive& ar,
-                     const unsigned int version)
+                     const unsigned int /*version*/)
 {
-    if (version < IMAGELAYERDESC_SERIALIZATION_INTRODUCES_ID) {
-        ar& boost::serialization::make_nvp("Layer", _layerID);
-        _layerLabel = _layerID;
-        ar &  boost::serialization::make_nvp("Components", _channels);
-        ar &  boost::serialization::make_nvp("CompName", _channelsLabel);
-    } else {
-        ar& boost::serialization::make_nvp("PlaneID", _layerID);
-        ar& boost::serialization::make_nvp("PlaneLabel", _layerLabel);
-        ar &  boost::serialization::make_nvp("ChannelsLabel", _channelsLabel);
-        ar &  boost::serialization::make_nvp("Channels", _channels);
-    }
+    ar& boost::serialization::make_nvp("LayerID", _layerID);
+    ar& boost::serialization::make_nvp("LayerLabel", _layerLabel);
+    ar& boost::serialization::make_nvp("ChannelsLabel", _channelsLabel);
+    ar& boost::serialization::make_nvp("Channels", _channels);
 }
 
 template<class Archive>

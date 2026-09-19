@@ -63,7 +63,7 @@ CLANG_DIAG_ON(deprecated)
 #define kEnablePreviewKnobName "enablePreview"
 #define kOutputChannelsKnobName "channels"
 
-#define kNodeParamProcessAllLayers "processAllPlanes"
+#define kNodeParamProcessAllLayers "processAllLayers"
 #define kNodeParamProcessAllLayersLabel "All Layers"
 #define kNodeParamProcessAllLayersHint "When checked all layers in input will be processed and output to the same layer as in input. It is useful for example to apply a Transform effect on all layers."
 

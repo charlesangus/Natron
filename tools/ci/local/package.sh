@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Package an already-built tree (build/debug or build/release, see
+# Package an already-built tree (build/debug, build/release or build/fast, see
 # build.sh) into a relocatable tarball and AppImage, landing both under
 # <build-dir>/artifacts/ -- the local-dev equivalent of release.yml's
 # "Stage bundle" / "Create tarball" / "Create AppImage" steps, which only
@@ -8,7 +8,7 @@
 # build tree.
 #
 # Usage:
-#   tools/ci/local/package.sh [debug|release]
+#   tools/ci/local/package.sh [debug|release|fast]
 #
 # Like build.sh/test.sh, this is meant to be run from the host, from the
 # repo root, with no prior devshell.sh shell required -- it re-execs itself
@@ -31,12 +31,12 @@ BUILD_TYPE="release"
 
 for arg in "$@"; do
     case "${arg}" in
-        debug|release)
+        debug|release|fast)
             BUILD_TYPE="${arg}"
             ;;
         *)
             echo "package.sh: unknown argument '${arg}'" >&2
-            echo "usage: package.sh [debug|release]" >&2
+            echo "usage: package.sh [debug|release|fast]" >&2
             exit 1
             ;;
     esac

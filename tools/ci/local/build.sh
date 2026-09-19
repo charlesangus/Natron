@@ -7,11 +7,19 @@
 # and ccache serves most of the compiler invocations from the previous run.
 #
 # Usage:
-#   tools/ci/local/build.sh [debug|release] [--reconfigure] [--no-ccache-stats]
+#   tools/ci/local/build.sh [debug|release|fast] [--reconfigure] [--no-ccache-stats]
 #
 #   debug (default)      -> build/debug,   configured with -DCMAKE_BUILD_TYPE=Debug
 #   release               -> build/release, configured with NO explicit build
 #                            type, matching ci.yml's release job exactly.
+#   fast                  -> build/fast, a release-flavoured build (no -DDEBUG,
+#                            NDEBUG defined, so it packages and runs under
+#                            llvmpipe just like release) compiled at -O1 with
+#                            no debug info. Roughly half the compile time of
+#                            release's RelWithDebInfo (-O2 -g) and a fraction
+#                            of its object/link size; meant for quick UAT
+#                            checkpoints where a full release build is
+#                            overkill. Not a CI configuration.
 #   --reconfigure         -> force re-running `cmake` even if the build
 #                            directory already has a CMakeCache.txt (use this
 #                            after e.g. editing CMakeLists.txt).
@@ -65,7 +73,7 @@ SHOW_CCACHE_STATS=1
 
 for arg in "$@"; do
     case "${arg}" in
-        debug|release)
+        debug|release|fast)
             BUILD_TYPE="${arg}"
             ;;
         --reconfigure)
@@ -76,7 +84,7 @@ for arg in "$@"; do
             ;;
         *)
             echo "build.sh: unknown argument '${arg}'" >&2
-            echo "usage: build.sh [debug|release] [--reconfigure] [--no-ccache-stats]" >&2
+            echo "usage: build.sh [debug|release|fast] [--reconfigure] [--no-ccache-stats]" >&2
             exit 1
             ;;
     esac
@@ -144,6 +152,19 @@ case "${BUILD_TYPE}" in
         # "fix" it to Release.
         CMAKE_BUILD_TYPE_ARGS=()
         ;;
+    fast)
+        BUILD_DIR="${REPO_ROOT}/build/fast"
+        # CMake's own Release flags are "-O3 -DNDEBUG"; override the
+        # per-config flags to keep NDEBUG (so this stays a release-semantics
+        # binary) but compile at -O1 with no -g. The top-level CMakeLists
+        # only special-cases the Debug build type, so "Release" here gets
+        # exactly the same code paths as build/release.
+        CMAKE_BUILD_TYPE_ARGS=(
+            -DCMAKE_BUILD_TYPE=Release
+            "-DCMAKE_C_FLAGS_RELEASE=-O1 -DNDEBUG"
+            "-DCMAKE_CXX_FLAGS_RELEASE=-O1 -DNDEBUG"
+        )
+        ;;
 esac
 
 mkdir -p "${BUILD_DIR}"
@@ -172,11 +193,14 @@ else
     ( cd "${BUILD_DIR}" && cmake "${CMAKE_ARGS[@]}" )
 fi
 
-# Parallelism: defaults to nproc (the previous hardcoded behaviour), but is
-# overridable -- GitHub-hosted runners and this machine don't necessarily
-# have the same core count, and CI may want a lower number to bound memory
-# use. e.g. NATRON_BUILD_JOBS=2 tools/ci/local/build.sh
-JOBS="${NATRON_BUILD_JOBS:-$(nproc)}"
+# Parallelism: defaults to 3, overridable via NATRON_BUILD_JOBS, e.g.
+# NATRON_BUILD_JOBS=2 tools/ci/local/build.sh. The dev machine has 4 cores
+# and 15 GB; -j3 leaves one core for the editor/agent and keeps peak memory
+# (the big Gui/Engine TUs run 1-2 GB each at -O2) well under the ceiling.
+# The earlier -j2 habit was a workaround for the agent harness's spurious
+# "low on memory" kill, which the detached-launch recipe avoids -- it cost
+# ~2x on every build for no reason.
+JOBS="${NATRON_BUILD_JOBS:-3}"
 
 echo "== build.sh: building (${BUILD_TYPE}) with ninja -j${JOBS} =="
 echo "+ cd ${BUILD_DIR}"

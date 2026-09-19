@@ -20,9 +20,10 @@
 #   NATRON_DEV_CONTAINER=natron-dev-wt2 tools/ci/local/devshell.sh
 #
 # To fully tear down a container and its caches (rare -- normally you just
-# want --recreate, which keeps the ccache/home volumes):
+# want --recreate, which keeps the ccache dir/home volume):
 #   docker rm -f "${NATRON_DEV_CONTAINER:-natron-dev}"
-#   docker volume rm "${NATRON_DEV_CONTAINER:-natron-dev}-ccache" "${NATRON_DEV_CONTAINER:-natron-dev}-home"
+#   rm -rf .ccache
+#   docker volume rm "${NATRON_DEV_CONTAINER:-natron-dev}-home"
 #
 # The container this script creates always has NATRON_IN_CONTAINER=1 set (see
 # the `docker run -e NATRON_IN_CONTAINER=1 ...` below). build.sh/test.sh use
@@ -35,7 +36,6 @@ set -euo pipefail
 
 IMAGE="natron-dev:2027-clang21.1"
 CONTAINER_NAME="${NATRON_DEV_CONTAINER:-natron-dev}"
-CCACHE_VOLUME="${CONTAINER_NAME}-ccache"
 HOME_VOLUME="${CONTAINER_NAME}-home"
 CCACHE_MOUNT="/ccache"
 HOME_MOUNT="/home/devshell"
@@ -60,6 +60,20 @@ CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-40G}"
 # works the same from any worktree.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." >/dev/null 2>&1 && pwd)"
+
+# Bind-mount ccache from a gitignored dir under the checked-out repo (same
+# ${CCACHE_DIR: deliberately under the workspace} rationale as
+# .github/workflows/ci.yml), NOT a named Docker volume: a named volume's
+# lifetime is tied to `docker volume rm`/prune and to nothing else, so it
+# silently survives (or silently vanishes) independent of the image/
+# container it was built for. Confirmed 2026-09-19: rebuilding the
+# natron-dev image after a registry outage produced a fresh container
+# against an already-`docker volume create`d-but-empty ccache volume --
+# `ccache -s` showed 0/380 hits on a full release rebuild. A bind mount
+# under the repo has no such failure mode: it's just a directory, present
+# or not, and it's trivially inspectable/removable with normal file tools.
+CCACHE_DIR_HOST="${REPO_ROOT}/.ccache"
+mkdir -p "${CCACHE_DIR_HOST}"
 
 UID_GID="$(id -u):$(id -g)"
 
@@ -116,19 +130,19 @@ if [[ "${STATE}" == "missing" ]]; then
 
     echo "devshell.sh: creating container '${CONTAINER_NAME}' from ${IMAGE}..." >&2
 
-    # Named volumes for persistent caches. Created fresh they are
-    # root-owned, so a one-time chown (as root, against the same volumes)
-    # is needed before the unprivileged container below can write to them.
+    # Named volume for the persistent home dir. Created fresh it is
+    # root-owned, so a one-time chown (as root, against the same volume)
+    # is needed before the unprivileged container below can write to it.
     # This is idempotent: docker volume create is a no-op if the volume
     # already exists, and re-chowning an already-chowned volume is harmless.
-    docker volume create "${CCACHE_VOLUME}" >/dev/null
+    # ccache is a host bind mount (see CCACHE_DIR_HOST above), already
+    # owned by the host user, so it needs no such chown.
     docker volume create "${HOME_VOLUME}" >/dev/null
 
     docker run --rm --user 0:0 \
-        -v "${CCACHE_VOLUME}:${CCACHE_MOUNT}" \
         -v "${HOME_VOLUME}:${HOME_MOUNT}" \
         "${IMAGE}" \
-        chown -R "${UID_GID}" "${CCACHE_MOUNT}" "${HOME_MOUNT}" >/dev/null
+        chown -R "${UID_GID}" "${HOME_MOUNT}" >/dev/null
 
     # The repo is bind-mounted at the SAME absolute path it has outside the
     # container, and that path is also the container's working directory,
@@ -143,7 +157,7 @@ if [[ "${STATE}" == "missing" ]]; then
         --security-opt seccomp=unconfined \
         "${DRI_DOCKER_ARGS[@]+"${DRI_DOCKER_ARGS[@]}"}" \
         -v "${REPO_ROOT}:${REPO_ROOT}" \
-        -v "${CCACHE_VOLUME}:${CCACHE_MOUNT}" \
+        -v "${CCACHE_DIR_HOST}:${CCACHE_MOUNT}" \
         -v "${HOME_VOLUME}:${HOME_MOUNT}" \
         -v /tmp/.X11-unix:/tmp/.X11-unix \
         -w "${REPO_ROOT}" \
@@ -154,21 +168,31 @@ if [[ "${STATE}" == "missing" ]]; then
         -e HOME="${HOME_MOUNT}" \
         -e CCACHE_DIR="${CCACHE_MOUNT}" \
         -e CCACHE_MAXSIZE="${CCACHE_MAXSIZE}" \
+        -e CCACHE_COMPILERCHECK=content \
         -e DISPLAY \
         "${IMAGE}" \
         sleep infinity >/dev/null
 
     # ccache persists settings it's told about (via `ccache -M`/env at time
-    # of use) into ${CCACHE_MOUNT}/ccache.conf inside the volume, and that
-    # file takes precedence over CCACHE_MAXSIZE on later runs -- so if an
-    # older ccache.conf with the old 5 GiB default is already sitting in
-    # this volume, just setting the env var above would be silently
-    # overridden by it. Clear any max_size line so our env var wins; this
-    # is idempotent and harmless if the file doesn't exist yet.
-    docker run --rm --user "${UID_GID}" \
-        -v "${CCACHE_VOLUME}:${CCACHE_MOUNT}" \
-        "${IMAGE}" \
-        sh -c "sed -i '/^max_size/d' ${CCACHE_MOUNT}/ccache.conf 2>/dev/null || true"
+    # of use) into ${CCACHE_MOUNT}/ccache.conf inside the bind mount, and
+    # that file takes precedence over CCACHE_MAXSIZE on later runs -- so if
+    # an older ccache.conf with the old 5 GiB default is already sitting in
+    # ${CCACHE_DIR_HOST}, just setting the env var above would be silently
+    # overridden by it. Clear any max_size/compiler_check line so our env
+    # vars win; this is idempotent and harmless if the file doesn't exist
+    # yet. It's a host bind mount now, so this is a plain host-side edit,
+    # no docker run needed.
+    #
+    # CCACHE_COMPILERCHECK=content: ccache's default is "mtime", which
+    # folds the compiler binary's mtime+size into every cache key. That
+    # means rebuilding the natron-dev image (same toolset, same version,
+    # freshly-installed files with new mtimes) silently invalidates the
+    # entire cache even when the cache directory itself survived --
+    # exactly the "0/380 hits on a full rebuild" symptom above, from a
+    # second angle. Hashing the compiler's contents instead costs a few ms
+    # per invocation (ccache memoises it per compiler mtime anyway) and
+    # makes the cache survive image rebuilds.
+    sed -i '/^max_size/d; /^compiler_check/d' "${CCACHE_DIR_HOST}/ccache.conf" 2>/dev/null || true
 
 elif [[ "${STATE}" == "stopped" ]]; then
     echo "devshell.sh: starting existing (stopped) container '${CONTAINER_NAME}'..." >&2

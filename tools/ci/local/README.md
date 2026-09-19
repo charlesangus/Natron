@@ -35,7 +35,7 @@ docker build -t natron-dev:2027-clang21.1 tools/ci/local/
 If you built the old `natron-dev:2027.0` image before this switch, the
 running container still points at it -- run
 `tools/ci/local/devshell.sh --recreate` after the build above to pick up the
-new base. The ccache and `HOME` volumes survive that.
+new base. The `.ccache` dir and `HOME` volume survive that.
 
 ### If the pull fails partway through
 
@@ -82,24 +82,35 @@ that bumping a pin correctly invalidates it.
 ## 3. Build
 
 ```
-tools/ci/local/build.sh [debug|release] [--reconfigure]
+tools/ci/local/build.sh [debug|release|fast] [--reconfigure]
 ```
 
 `debug` (default) builds `build/debug`; `release` builds `build/release`
 with no explicit `-DCMAKE_BUILD_TYPE`, matching CI's release job exactly.
+`fast` builds `build/fast`: release semantics (no `-DDEBUG`, `NDEBUG` on,
+so it packages and runs under llvmpipe like `release` does) but compiled at
+`-O1` with no debug info -- roughly half the compile time of `release`'s
+`RelWithDebInfo`. Use it for quick UAT checkpoints; use `release` for
+anything you'd ship or profile.
 Configure only runs once, when `CMakeCache.txt` doesn't exist yet; pass
 `--reconfigure` after editing `CMakeLists.txt` or similar to force it again.
 This is also what re-execs you into the dev container (see "Getting a
 shell" below) -- you don't need to start one yourself first.
 
-`ninja` parallelism defaults to `nproc`, overridable via `NATRON_BUILD_JOBS`,
+`ninja` parallelism defaults to `-j3`, overridable via `NATRON_BUILD_JOBS`,
 e.g. `NATRON_BUILD_JOBS=2 tools/ci/local/build.sh` -- useful when a runner's
 core count shouldn't dictate memory pressure.
+
+Edits to `Global/Enums.h` or `Global/GlobalDefines.h` recompile essentially
+every translation unit (~380 objects); batch such changes rather than
+touching them mid-iteration. When a rebuild looks bigger than it should,
+`ninja -d explain -n` in the build directory names the input that dirtied
+each target.
 
 ## 4. Test
 
 ```
-tools/ci/local/test.sh <ctest|smoke> [debug|release] [--gdb]
+tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
 ```
 
 - `ctest` runs `ctest -V` against the build dir, exactly as CI does.
@@ -129,7 +140,7 @@ tools/ci/local/test.sh <ctest|smoke> [debug|release] [--gdb]
 ## 5. Package (tarball + AppImage)
 
 ```
-tools/ci/local/package.sh [debug|release]
+tools/ci/local/package.sh [debug|release|fast]
 ```
 
 Stages the built tree (`stage-bundle.sh`) and packages it into a `.tar.xz`
@@ -233,10 +244,11 @@ no benefit -- this only matters for GUI/GL launches.
 
 | What | Where | Reset |
 |---|---|---|
-| Build tree | `build/debug`, `build/release` (gitignored) | delete the directory |
+| Build tree | `build/debug`, `build/release`, `build/fast` (gitignored) | delete the directory |
 | Packaged artifacts | `build/<type>/artifacts` (gitignored) | delete the directory |
 | Test assets | `build/assets` (gitignored) | delete, then re-run `fetch-assets.sh` |
-| ccache, `HOME` | Docker named volumes `natron-dev-ccache`, `natron-dev-home` | `docker volume rm` |
+| ccache | `.ccache` (repo root, gitignored, host bind mount) | delete the directory |
+| `HOME` | Docker named volume `natron-dev-home` | `docker volume rm` |
 | Container | `natron-dev` | `docker rm -f natron-dev`, or see below |
 
 `CCACHE_MAXSIZE` defaults to `40G`, overridable via env var. The container
@@ -272,9 +284,9 @@ nest another container.
 - **Editing `devshell.sh` does not affect an already-running container.**
   Environment (image, mounts, env vars) is only applied at container
   creation. After changing `devshell.sh` or the `Dockerfile`, run
-  `tools/ci/local/devshell.sh --recreate` to pick it up. Caches (ccache,
+  `tools/ci/local/devshell.sh --recreate` to pick it up. Caches (`.ccache`,
   `HOME`) survive a recreate; for a full teardown, also
-  `docker volume rm natron-dev-ccache natron-dev-home`.
+  `rm -rf .ccache && docker volume rm natron-dev-home`.
 
 - **`bash -l` inside the container prints noise you should ignore.** An
   interactive `devshell.sh` shell prints a large NVIDIA/CUDA banner on

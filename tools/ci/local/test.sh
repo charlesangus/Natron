@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Run the same two test steps CI runs against an already-built tree
-# (build/debug or build/release, see build.sh): `ctest -V`, and the Python
+# (build/debug, build/release or build/fast, see build.sh): `ctest -V`, and the Python
 # bindings smoke test driven through the built NatronRenderer. Both are run
 # with the exact environment ci.yml uses (OFX_PLUGIN_PATH pointed at
 # the local asset cache from fetch-assets.sh, everything under
@@ -10,14 +10,14 @@
 # test" steps).
 #
 # Usage:
-#   tools/ci/local/test.sh <ctest|smoke> [debug|release] [--gdb]
+#   tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
 #
 #   ctest                  -> `ctest -V` in the build dir, exactly as ci.yml.
 #   smoke                  -> tools/ci/smoke_test.py run through the built
 #                              NatronRenderer, located the same way ci.yml
 #                              locates it (`find . -maxdepth 4 -type f -name
 #                              NatronRenderer | head -n1` from the build dir).
-#   debug (default)|release -> selects build/debug or build/release, same
+#   debug (default)|release|fast -> selects build/debug, build/release or build/fast, same
 #                              argument style as build.sh.
 #   --gdb                   -> run the target (ctest's failing invocation
 #                              isn't a single binary, so this applies to
@@ -66,7 +66,7 @@ for arg in "$@"; do
         ctest|smoke)
             SUBCOMMAND="${arg}"
             ;;
-        debug|release)
+        debug|release|fast)
             BUILD_TYPE="${arg}"
             ;;
         --gdb)
@@ -74,7 +74,7 @@ for arg in "$@"; do
             ;;
         *)
             echo "test.sh: unknown argument '${arg}'" >&2
-            echo "usage: test.sh <ctest|smoke> [debug|release] [--gdb]" >&2
+            echo "usage: test.sh <ctest|smoke> [debug|release|fast] [--gdb]" >&2
             exit 1
             ;;
     esac
@@ -82,7 +82,7 @@ done
 
 if [[ -z "${SUBCOMMAND}" ]]; then
     echo "test.sh: missing subcommand" >&2
-    echo "usage: test.sh <ctest|smoke> [debug|release] [--gdb]" >&2
+    echo "usage: test.sh <ctest|smoke> [debug|release|fast] [--gdb]" >&2
     exit 1
 fi
 
@@ -119,6 +119,9 @@ case "${BUILD_TYPE}" in
         ;;
     release)
         BUILD_DIR="${REPO_ROOT}/build/release"
+        ;;
+    fast)
+        BUILD_DIR="${REPO_ROOT}/build/fast"
         ;;
 esac
 

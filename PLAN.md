@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: paused
-current: null
-pm_heartbeat: 2026-09-19T13:08:23-04:00
+status: running
+current: M58.P1.T1
+pm_heartbeat: 2026-09-19T13:21:38-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -138,7 +138,9 @@ future core work has solid ground to build on.
   second bug (M57.P1.T2) bisected as **pre-existing, not an M39 regression**
   (byte-identical wrong-pixel-data symptom on `3e14c2a1e`, pre-M39) and was
   rescoped out to new stub milestone **M58** rather than fixed here — see
-  M57's `## Decisions`.
+  M57's `## Decisions`. **M58 placed first (2026-09-19, user decision):** it
+  runs ahead of M35 so the Write-node correctness bug is closed before the
+  rest of the channel/layer rework; the sequence after it is unchanged.
 
 # Board
 
@@ -166,7 +168,7 @@ future core work has solid ground to build on.
 | M23 | Make release bundles actually relocatable | done | [M23-relocatable-release-bundles.md](PLAN/MILESTONES/M23-relocatable-release-bundles.md) |
 | M39 | Adopt "layer" terminology instead of "planes" | done | [M39-layers-not-planes.md](PLAN/MILESTONES/M39-layers-not-planes.md) |
 | M57 | Fix Write node plane/layer regressions found while testing M39 | done | [M57-write-node-plane-layer-regressions.md](PLAN/MILESTONES/M57-write-node-plane-layer-regressions.md) |
-| M58 | Write's "All Layers" output copies one layer's pixel data into every layer | todo | [M58-write-multiplane-pixel-data-bug.md](PLAN/MILESTONES/M58-write-multiplane-pixel-data-bug.md) |
+| M58 | Write's "All Layers" output copies one layer's pixel data into every layer | doing | [M58-write-multiplane-pixel-data-bug.md](PLAN/MILESTONES/M58-write-multiplane-pixel-data-bug.md) |
 | M35 | Remove implicit output-plane shuffling from non-Shuffle nodes | todo | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M38 | Improve channel/layer information organization in the node UI | todo | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
 | M43 | Drop the premultiplied/unpremultiplied concept | todo | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
@@ -218,11 +220,6 @@ future core work has solid ground to build on.
   (`format`, `lint-ci`, `build-and-test`) green throughout.
 
 # Open questions
-
-- **M57 shipped 2026-09-19, PM run paused by user request (`M57 only`).** PR #27
-  squash-merged to `main` as `b48771d0b`. M58 (rescoped from M57.P1.T2) sits as an
-  unelaborated stub in the board, not yet prioritized into the backlog reorg
-  sequence — needs a placement decision before it's picked up.
 
 - **USD Python inside Natron's Python?** M19.P1.T1 builds USD with Python
   OFF (Shiboken6/PySide6 vs pxr coexistence). A Solaris-style "Python over

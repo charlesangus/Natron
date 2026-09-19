@@ -28,7 +28,7 @@ Scope cuts: no whole-tree reformat, no new CI job, no change to the CI
   - verify: `tools/install-git-hooks.sh` twice on this clone → first run creates the link, second run reports already installed, exit 0 both times; `ls -l .git/hooks/pre-commit` shows the relative symlink. Put a stray regular file at `.git/hooks/pre-commit` → script exits 1 without touching it. `--uninstall` removes the link. `shellcheck tools/install-git-hooks.sh` passes.
   - size: S
 
-- [ ] M59.P1.T3 — Document the hook and installer
+- [x] M59.P1.T3 — Document the hook and installer
   - files: `README.md` (the `.git-hooks` paragraph around line 125), `tools/ci/local/README.md`
   - approach: In README.md replace the manual `ln -s` recipe with `tools/install-git-hooks.sh`, state that the hook now auto-formats staged C/C++ lines with the pinned `clang-format==21.1.8` (same as CI) and refuses to commit when the tool is missing, and give the pip install line. Drop the sentence that says the hook merely "verifies" style. In `tools/ci/local/README.md` add a short "Git hooks" subsection near the prerequisites pointing at the installer, so a fresh clone that follows that file top-to-bottom ends up with the hook armed. Keep both edits to a paragraph each.
   - verify: `grep -n 'install-git-hooks' README.md tools/ci/local/README.md` hits both files; `grep -n 'ln -s ../../.git-hooks' README.md` hits nothing; `lint-ci`'s markdown/shell checks (whatever `checks.yml` runs) pass locally.

@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: null
-pm_heartbeat: 2026-09-19T00:48:06-04:00
+current: M57.P1.T1
+pm_heartbeat: 2026-09-19T10:42:45-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -155,7 +155,7 @@ future core work has solid ground to build on.
 | M18 | Deep compositing v1 | done | [M18-deep-compositing-v1.md](PLAN/MILESTONES/M18-deep-compositing-v1.md) |
 | M23 | Make release bundles actually relocatable | done | [M23-relocatable-release-bundles.md](PLAN/MILESTONES/M23-relocatable-release-bundles.md) |
 | M39 | Adopt "layer" terminology instead of "planes" | done | [M39-layers-not-planes.md](PLAN/MILESTONES/M39-layers-not-planes.md) |
-| M57 | Fix Write node plane/layer regressions found while testing M39 | todo | [M57-write-node-plane-layer-regressions.md](PLAN/MILESTONES/M57-write-node-plane-layer-regressions.md) |
+| M57 | Fix Write node plane/layer regressions found while testing M39 | doing | [M57-write-node-plane-layer-regressions.md](PLAN/MILESTONES/M57-write-node-plane-layer-regressions.md) |
 | M35 | Remove implicit output-plane shuffling from non-Shuffle nodes | todo | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M38 | Improve channel/layer information organization in the node UI | todo | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
 | M34 | New native Shuffle node | todo | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |

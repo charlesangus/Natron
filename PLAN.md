@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: running
+status: paused
 current: null
-pm_heartbeat: 2026-09-19T12:40:00-04:00
+pm_heartbeat: 2026-09-19T13:08:23-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -218,6 +218,11 @@ future core work has solid ground to build on.
   (`format`, `lint-ci`, `build-and-test`) green throughout.
 
 # Open questions
+
+- **M57 shipped 2026-09-19, PM run paused by user request (`M57 only`).** PR #27
+  squash-merged to `main` as `b48771d0b`. M58 (rescoped from M57.P1.T2) sits as an
+  unelaborated stub in the board, not yet prioritized into the backlog reorg
+  sequence — needs a placement decision before it's picked up.
 
 - **USD Python inside Natron's Python?** M19.P1.T1 builds USD with Python
   OFF (Shiboken6/PySide6 vs pxr coexistence). A Solaris-style "Python over

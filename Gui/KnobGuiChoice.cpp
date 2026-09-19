@@ -312,11 +312,11 @@ KnobGuiChoice::onEntriesPopulated()
 void
 KnobGuiChoice::onItemNewSelected()
 {
-    NewLayerDialog dialog( ImagePlaneDesc::getNoneComponents(), getGui() );
+    NewLayerDialog dialog(ImageLayerDesc::getNoneComponents(), getGui());
 
     if ( dialog.exec() ) {
-        ImagePlaneDesc comps = dialog.getComponents();
-        if ( comps == ImagePlaneDesc::getNoneComponents() ) {
+        ImageLayerDesc comps = dialog.getComponents();
+        if (comps == ImageLayerDesc::getNoneComponents()) {
             Dialogs::errorDialog( tr("Layer").toStdString(), tr("A layer must contain at least 1 channel and channel names must be "
                                                                 "Python compliant.").toStdString() );
 

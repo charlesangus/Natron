@@ -371,7 +371,7 @@ ViewerTabPrivate::getTimeTransform(double time,
 #endif // ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
 
 void
-ViewerTabPrivate::getComponentsAvailabel(std::set<ImagePlaneDesc>* comps) const
+ViewerTabPrivate::getComponentsAvailabel(std::set<ImageLayerDesc>* comps) const
 {
     int activeInputIdx[2];
 
@@ -381,9 +381,9 @@ ViewerTabPrivate::getComponentsAvailabel(std::set<ImagePlaneDesc>* comps) const
     for (int i = 0; i < 2; ++i) {
         activeInput[i] = viewerNode->getInput(activeInputIdx[i]);
         if (activeInput[i]) {
-            std::list<ImagePlaneDesc> compsAvailable;
+            std::list<ImageLayerDesc> compsAvailable;
             activeInput[i]->getAvailableLayers(time, ViewIdx(0), -1, &compsAvailable);
-            for (std::list<ImagePlaneDesc>::iterator it = compsAvailable.begin(); it != compsAvailable.end(); ++it) {
+            for (std::list<ImageLayerDesc>::iterator it = compsAvailable.begin(); it != compsAvailable.end(); ++it) {
                 comps->insert(*it);
             }
         }

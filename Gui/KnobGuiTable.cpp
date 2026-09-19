@@ -646,11 +646,11 @@ KnobGuiLayers::~KnobGuiLayers()
 bool
 KnobGuiLayers::addNewUserEntry(QStringList& row)
 {
-    NewLayerDialog dialog( ImagePlaneDesc::getNoneComponents(), getGui() );
+    NewLayerDialog dialog(ImageLayerDesc::getNoneComponents(), getGui());
 
     if ( dialog.exec() ) {
-        ImagePlaneDesc comps = dialog.getComponents();
-        if ( comps == ImagePlaneDesc::getNoneComponents() ) {
+        ImageLayerDesc comps = dialog.getComponents();
+        if (comps == ImageLayerDesc::getNoneComponents()) {
             Dialogs::errorDialog( tr("Layer").toStdString(), tr("A layer must contain at least 1 channel and channel names must be "
                                                                 "Python compliant.").toStdString() );
 
@@ -697,11 +697,12 @@ KnobGuiLayers::editUserEntry(QStringList& row)
     for (int i = 0; i < splits.size(); ++i) {
         channels.push_back( splits[i].toStdString() );
     }
-    ImagePlaneDesc original(row[0].toStdString(), row[0].toStdString(), std::string(), channels);;
+    ImageLayerDesc original(row[0].toStdString(), row[0].toStdString(), std::string(), channels);
+    ;
     NewLayerDialog dialog( original, getGui() );
     if ( dialog.exec() ) {
-        ImagePlaneDesc comps = dialog.getComponents();
-        if ( comps == ImagePlaneDesc::getNoneComponents() ) {
+        ImageLayerDesc comps = dialog.getComponents();
+        if (comps == ImageLayerDesc::getNoneComponents()) {
             Dialogs::errorDialog( tr("Layer").toStdString(), tr("A layer must contain at least 1 channel and channel names must be "
                                                                 "Python compliant.").toStdString() );
 

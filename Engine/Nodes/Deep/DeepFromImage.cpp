@@ -91,7 +91,7 @@ DeepFromImage::getRegionOfDefinition(U64 hash,
 }
 
 // The float image inputNb renders over this render's window, in RGBA for the source and in
-// whatever plane its own metadata names for Z. NULL, with *failed left alone, when the input is
+// whatever layer its own metadata names for Z. NULL, with *failed left alone, when the input is
 // not connected or has nothing over that window.
 ImagePtr
 DeepFromImage::renderInputImage(int inputNb,
@@ -104,21 +104,21 @@ DeepFromImage::renderInputImage(int inputNb,
         return ImagePtr();
     }
 
-    ImagePlaneDesc plane;
+    ImageLayerDesc layer;
     if (inputNb == 0) {
-        plane = ImagePlaneDesc::getRGBAComponents();
+        layer = ImageLayerDesc::getRGBAComponents();
     } else {
-        ImagePlaneDesc pairedPlane;
-        input->getMetadataComponents(-1, &plane, &pairedPlane);
+        ImageLayerDesc pairedLayer;
+        input->getMetadataComponents(-1, &layer, &pairedLayer);
     }
-    if (plane.getNumComponents() == 0) {
+    if (layer.getNumComponents() == 0) {
         *failed = true;
 
         return ImagePtr();
     }
 
-    std::list<ImagePlaneDesc> components;
-    components.push_back(plane);
+    std::list<ImageLayerDesc> components;
+    components.push_back(layer);
     RenderRoIArgs roiArgs(args.time,
                           args.scale,
                           args.mipmapLevel,
@@ -132,17 +132,17 @@ DeepFromImage::renderInputImage(int inputNb,
                           this,
                           eStorageModeRAM,
                           args.time);
-    std::map<ImagePlaneDesc, ImagePtr> planes;
-    if (input->renderRoI(roiArgs, &planes) != eRenderRoIRetCodeOk) {
+    std::map<ImageLayerDesc, ImagePtr> layers;
+    if (input->renderRoI(roiArgs, &layers) != eRenderRoIRetCodeOk) {
         *failed = true;
 
         return ImagePtr();
     }
-    if (planes.empty() || !planes.begin()->second || (planes.begin()->second->getBitDepth() != eImageBitDepthFloat)) {
+    if (layers.empty() || !layers.begin()->second || (layers.begin()->second->getBitDepth() != eImageBitDepthFloat)) {
         return ImagePtr();
     }
 
-    return planes.begin()->second;
+    return layers.begin()->second;
 }
 
 StatusEnum
@@ -177,7 +177,7 @@ DeepFromImage::renderDeep(const DeepRenderActionArgs& args)
 
     clearPersistentMessage(false);
 
-    return renderDeepTwoPass(args, ImagePlaneDesc::getRGBAComponents().getChannels(), 3 /*alphaChannelIndex*/, [&sourceBounds, &sourceAccess](int x, int y) -> U32 {
+    return renderDeepTwoPass(args, ImageLayerDesc::getRGBAComponents().getChannels(), 3 /*alphaChannelIndex*/, [&sourceBounds, &sourceAccess](int x, int y) -> U32 {
         if (!sourceBounds.contains(x, y)) {
             return 0;
         }

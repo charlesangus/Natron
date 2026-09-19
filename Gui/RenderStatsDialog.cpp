@@ -539,8 +539,8 @@ public:
                 item->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
             }
             assert(item);
-            const std::set<std::string>& planes = stats.getLayersRendered();
-            for (std::set<std::string>::const_iterator it = planes.begin(); it != planes.end(); ++it) {
+            const std::set<std::string>& layers = stats.getLayersRendered();
+            for (std::set<std::string>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
                 if (!layersInfo.isEmpty()) {
                     layersInfo.append(QLatin1Char(' '));
                 }

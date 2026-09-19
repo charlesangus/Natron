@@ -120,10 +120,10 @@ struct NewLayerDialogPrivate
     }
 };
 
-NewLayerDialog::NewLayerDialog(const ImagePlaneDesc& original,
+NewLayerDialog::NewLayerDialog(const ImageLayerDesc& original,
                                QWidget* parent)
     : QDialog(parent)
-    , _imp( new NewLayerDialogPrivate() )
+    , _imp(new NewLayerDialogPrivate())
 {
     _imp->mainLayout = new QGridLayout(this);
     _imp->layerLabel = new Label(tr("Layer Name"), this);
@@ -241,7 +241,7 @@ NewLayerDialog::onNumCompsChanged(double value)
     }
 }
 
-ImagePlaneDesc
+ImageLayerDesc
 NewLayerDialog::getComponents() const
 {
     QString layer = _imp->layerEdit->text();
@@ -257,22 +257,22 @@ NewLayerDialog::getComponents() const
     std::string aFixed = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendlyWithDots( a.toStdString() );
 
     if ( layerFixed.empty() ) {
-        return ImagePlaneDesc::getNoneComponents();
+        return ImageLayerDesc::getNoneComponents();
     }
 
     if (nComps == 1) {
         if ( a.isEmpty() ) {
-            return ImagePlaneDesc::getNoneComponents();
+            return ImageLayerDesc::getNoneComponents();
         }
         std::vector<std::string> comps;
         std::string compsGlobal;
         comps.push_back(aFixed);
         compsGlobal.append(aFixed);
 
-        return ImagePlaneDesc(layerFixed, layerFixed, compsGlobal, comps);
+        return ImageLayerDesc(layerFixed, layerFixed, compsGlobal, comps);
     } else if (nComps == 2) {
         if ( rFixed.empty() || gFixed.empty() ) {
-            return ImagePlaneDesc::getNoneComponents();
+            return ImageLayerDesc::getNoneComponents();
         }
         std::vector<std::string> comps;
         std::string compsGlobal;
@@ -281,10 +281,10 @@ NewLayerDialog::getComponents() const
         comps.push_back(gFixed);
         compsGlobal.append(gFixed);
 
-        return ImagePlaneDesc(layerFixed, layerFixed, compsGlobal, comps);
+        return ImageLayerDesc(layerFixed, layerFixed, compsGlobal, comps);
     } else if (nComps == 3) {
         if ( rFixed.empty() || gFixed.empty() || bFixed.empty() ) {
-            return ImagePlaneDesc::getNoneComponents();
+            return ImageLayerDesc::getNoneComponents();
         }
         std::vector<std::string> comps;
         std::string compsGlobal;
@@ -295,10 +295,10 @@ NewLayerDialog::getComponents() const
         comps.push_back(bFixed);
         compsGlobal.append(bFixed);
 
-        return ImagePlaneDesc(layerFixed, layerFixed, compsGlobal, comps);
+        return ImageLayerDesc(layerFixed, layerFixed, compsGlobal, comps);
     } else if (nComps == 4) {
         if ( rFixed.empty() || gFixed.empty() || bFixed.empty() || aFixed.empty() ) {
-            return ImagePlaneDesc::getNoneComponents();
+            return ImageLayerDesc::getNoneComponents();
         }
         std::vector<std::string> comps;
         std::string compsGlobal;
@@ -311,10 +311,10 @@ NewLayerDialog::getComponents() const
         comps.push_back(aFixed);
         compsGlobal.append(aFixed);
 
-        return ImagePlaneDesc(layerFixed, layerFixed, compsGlobal, comps);
+        return ImageLayerDesc(layerFixed, layerFixed, compsGlobal, comps);
     }
 
-    return ImagePlaneDesc::getNoneComponents();
+    return ImageLayerDesc::getNoneComponents();
 } // NewLayerDialog::getComponents
 
 void

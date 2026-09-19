@@ -67,7 +67,7 @@ public:
 
     void setDataWindow(const RectI & r); // in pixel coordinates
 
-    void setImageFormat(const ImagePlaneDesc& comp, ImageBitDepthEnum depth);
+    void setImageFormat(const ImageLayerDesc& comp, ImageBitDepthEnum depth);
 
     void setColor(float r, float g, float b, float a);
 
@@ -128,7 +128,7 @@ private:
     Label* hvl_lastOption;
     Label* deepValues;
     Label* _fpsLabel;
-    ImagePlaneDesc _comp;
+    ImageLayerDesc _comp;
     bool _colorValid;
     bool _colorApprox;
     double currentColor[4];

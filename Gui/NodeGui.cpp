@@ -3201,10 +3201,10 @@ NodeGui::onOutputLayerChanged()
         }
     }
     KnobChoicePtr layerKnob = internalNode->getChannelSelectorKnob(-1);
-    ImagePlaneDesc outputLayer;
+    ImageLayerDesc outputLayer;
     {
         bool isAll;
-        std::list<ImagePlaneDesc> availableLayers;
+        std::list<ImageLayerDesc> availableLayers;
         internalNode->getEffectInstance()->getAvailableLayers(internalNode->getApp()->getTimeLine()->currentFrame(), ViewIdx(0), -1,  &availableLayers);
 
 

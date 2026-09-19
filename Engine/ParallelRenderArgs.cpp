@@ -74,14 +74,14 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
     for (FramesNeededMap::const_iterator it = framesNeeded.begin(); it != framesNeeded.end(); ++it) {
         int inputNb = it->first;
         bool inputIsMask = effect->isInputMask(inputNb);
-        ImagePlaneDesc maskComps;
+        ImageLayerDesc maskComps;
         int channelForAlphaInput;
         // if (inputIsMask) {
         if ( !effect->isMaskEnabled(inputNb) ) {
             continue;
         }
 
-        std::list<ImagePlaneDesc> availableLayers;
+        std::list<ImageLayerDesc> availableLayers;
         effect->getAvailableLayers(time, view, inputNb, &availableLayers);
 
         channelForAlphaInput = effect->getMaskChannel(inputNb, availableLayers, &maskComps);
@@ -193,7 +193,7 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
         }
 
         ///There cannot be frames needed without components needed.
-        const std::list<ImagePlaneDesc>* compsNeeded = 0;
+        const std::list<ImageLayerDesc>* compsNeeded = 0;
 
         if (neededComps) {
             EffectInstance::ComponentsNeededMap::const_iterator foundCompsNeeded = neededComps->find(inputNb);
@@ -261,7 +261,7 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
                                 const RenderScale upstreamScale = useScaleOneInputs ? RenderScale::identity : RenderScale::fromMipmapLevel(originalMipmapLevel);
                                 const RectI inputRoIPixelCoords = roi.toPixelEnclosing(upstreamMipmapLevel, inputPar);
 
-                                std::map<ImagePlaneDesc, ImagePtr> inputImgs;
+                                std::map<ImageLayerDesc, ImagePtr> inputImgs;
                                 {
                                     std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs;
                                     renderArgs.reset( new EffectInstance::RenderRoIArgs( f, //< time
@@ -284,7 +284,7 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
                                         return ret;
                                     }
                                 }
-                                for (std::map<ImagePlaneDesc, ImagePtr>::iterator it3 = inputImgs.begin(); it3 != inputImgs.end(); ++it3) {
+                                for (std::map<ImageLayerDesc, ImagePtr>::iterator it3 = inputImgs.begin(); it3 != inputImgs.end(); ++it3) {
                                     if (inputImagesList && it3->second) {
                                         inputImagesList->push_back(it3->second);
                                     }

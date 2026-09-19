@@ -58,8 +58,8 @@ struct NodeRenderStatsPrivate
     //The different mipmaplevels rendered
     std::set<unsigned int> mipmapLevelsAccessed;
 
-    //The different planes rendered
-    std::set<std::string> planesRendered;
+    // The different layers rendered
+    std::set<std::string> layersRendered;
 
     //Cache access infos
     int nbCacheMisses;
@@ -85,7 +85,7 @@ struct NodeRenderStatsPrivate
         , rectanglesRendered()
         , identityRectangles()
         , mipmapLevelsAccessed()
-        , planesRendered()
+        , layersRendered()
         , nbCacheMisses(0)
         , nbCacheHit(0)
         , nbCacheHitButDownscaledImages(0)
@@ -124,7 +124,7 @@ NodeRenderStats::operator=(const NodeRenderStats& other)
     _imp->rectanglesRendered = other._imp->rectanglesRendered;
     _imp->identityRectangles  = other._imp->identityRectangles;
     _imp->mipmapLevelsAccessed = other._imp->mipmapLevelsAccessed;
-    _imp->planesRendered = other._imp->planesRendered;
+    _imp->layersRendered = other._imp->layersRendered;
     _imp->nbCacheMisses = other._imp->nbCacheMisses;
     _imp->nbCacheHit = other._imp->nbCacheHit;
     _imp->nbCacheHitButDownscaledImages = other._imp->nbCacheHitButDownscaledImages;
@@ -219,15 +219,15 @@ NodeRenderStats::getMipmapLevelsRendered() const
 }
 
 void
-NodeRenderStats::addPlaneRendered(const std::string& plane)
+NodeRenderStats::addLayerRendered(const std::string& layer)
 {
-    _imp->planesRendered.insert(plane);
+    _imp->layersRendered.insert(layer);
 }
 
 const std::set<std::string>&
-NodeRenderStats::getPlanesRendered() const
+NodeRenderStats::getLayersRendered() const
 {
-    return _imp->planesRendered;
+    return _imp->layersRendered;
 }
 
 void
@@ -418,7 +418,7 @@ RenderStats::addCacheInfosForNode(const NodePtr& node,
 void
 RenderStats::addRenderInfosForNode(const NodePtr& node,
                                    const NodePtr& identity,
-                                   const std::string& plane,
+                                   const std::string& layer,
                                    const RectI& rectangle,
                                    double timeSpent)
 {
@@ -433,7 +433,7 @@ RenderStats::addRenderInfosForNode(const NodePtr& node,
         stats.addRenderedRectangle(rectangle);
     }
     stats.addTimeSpentRendering(timeSpent);
-    stats.addPlaneRendered(plane);
+    stats.addLayerRendered(layer);
 }
 
 std::map<NodePtr, NodeRenderStats >

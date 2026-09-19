@@ -229,15 +229,14 @@ OfxClipInstance::getUnmappedComponents() const
         ///Get the input node's output preferred bit depth and componentns
         ClipDataTLSPtr tls = _imp->tlsData->getOrCreateTLSData();
 
-        ImagePlaneDesc metadataPlane, metadataPairedPlane;
-        effect->getMetadataComponents( -1, &metadataPlane, &metadataPairedPlane);
-
+        ImageLayerDesc metadataLayer, metadataPairedLayer;
+        effect->getMetadataComponents(-1, &metadataLayer, &metadataPairedLayer);
 
         // Default to RGBA
-        if (metadataPlane.getNumComponents() == 0) {
-            metadataPlane = ImagePlaneDesc::getRGBAComponents();
+        if (metadataLayer.getNumComponents() == 0) {
+            metadataLayer = ImageLayerDesc::getRGBAComponents();
         }
-        ret = ImagePlaneDesc::mapPlaneToOFXComponentsTypeString(metadataPlane);
+        ret = ImageLayerDesc::mapLayerToOFXComponentsTypeString(metadataLayer);
 
     } else {
         // The node is not connected but optional, return the closest supported components
@@ -247,11 +246,11 @@ OfxClipInstance::getUnmappedComponents() const
             int nInputs = effect->getNInputs();
             for (int i = 0; i < nInputs; ++i) {
 
-                ImagePlaneDesc metadataPlane, metadataPairedPlane;
-                effect->getMetadataComponents(i, &metadataPlane, &metadataPairedPlane);
+                ImageLayerDesc metadataLayer, metadataPairedLayer;
+                effect->getMetadataComponents(i, &metadataLayer, &metadataPairedLayer);
 
-                if (metadataPlane.getNumComponents() > 0) {
-                    ret = ImagePlaneDesc::mapPlaneToOFXComponentsTypeString(metadataPlane);
+                if (metadataLayer.getNumComponents() > 0) {
+                    ret = ImageLayerDesc::mapLayerToOFXComponentsTypeString(metadataLayer);
                 }
             }
         }
@@ -259,7 +258,7 @@ OfxClipInstance::getUnmappedComponents() const
 
         // last-resort: black and transparent image means RGBA.
         if (ret.empty()) {
-            ret = ImagePlaneDesc::mapPlaneToOFXComponentsTypeString(ImagePlaneDesc::getRGBAComponents());
+            ret = ImageLayerDesc::mapLayerToOFXComponentsTypeString(ImageLayerDesc::getRGBAComponents());
         }
 
     }
@@ -305,12 +304,11 @@ OfxClipInstancePrivate::getComponentsPresentInternal(const OfxClipInstance::Clip
     double time = effect->getCurrentTime();
     ViewIdx view = effect->getCurrentView();
 
-
-    std::list<ImagePlaneDesc> availableLayers;
+    std::list<ImageLayerDesc> availableLayers;
     effect->getAvailableLayers(time, view, inputNb, &availableLayers);
- 
-    for (std::list<ImagePlaneDesc>::iterator it = availableLayers.begin(); it != availableLayers.end(); ++it) {
-        std::string ofxPlane = ImagePlaneDesc::mapPlaneToOFXPlaneString(*it);
+
+    for (std::list<ImageLayerDesc>::iterator it = availableLayers.begin(); it != availableLayers.end(); ++it) {
+        std::string ofxPlane = ImageLayerDesc::mapLayerToOFXPlaneString(*it);
         tls->componentsPresent.push_back(ofxPlane);
     }
 
@@ -722,7 +720,7 @@ OfxClipInstance::loadTexture(OfxTime time,
     }
 
     OFX::Host::ImageEffect::Texture* texture = 0;
-    if ( !getImagePlaneInternal(time, ViewSpec::current(), optionalBounds, 0 /*plane*/, format ? &depth : 0, 0 /*image*/, &texture) ) {
+    if (!getImagePlaneInternal(time, ViewSpec::current(), optionalBounds, 0 /*ofxPlane*/, format ? &depth : 0, 0 /*image*/, &texture)) {
         return 0;
     }
 
@@ -744,7 +742,7 @@ OfxClipInstance::getImage(OfxTime time,
 {
     OFX::Host::ImageEffect::Image* image = 0;
 
-    if ( !getImagePlaneInternal(time, ViewSpec::current(), optionalBounds, 0 /*plane*/, 0 /*texdepth*/, &image, 0 /*tex*/) ) {
+    if (!getImagePlaneInternal(time, ViewSpec::current(), optionalBounds, 0 /*ofxPlane*/, 0 /*texdepth*/, &image, 0 /*tex*/)) {
         return 0;
     }
 
@@ -759,7 +757,7 @@ OfxClipInstance::getStereoscopicImage(OfxTime time,
 {
     OFX::Host::ImageEffect::Image* image = 0;
 
-    if ( !getImagePlaneInternal(time, ViewSpec(view), optionalBounds, 0 /*plane*/, 0 /*texdepth*/, &image, 0 /*tex*/) ) {
+    if (!getImagePlaneInternal(time, ViewSpec(view), optionalBounds, 0 /*ofxPlane*/, 0 /*texdepth*/, &image, 0 /*tex*/)) {
         return 0;
     }
 
@@ -832,8 +830,8 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
     ClipDataTLSPtr tls = _imp->tlsData->getTLSData();
     RenderActionDataPtr renderData;
 
-    //If components param is not set (i.e: the plug-in uses regular clipGetImage call) then figure out the plane from the TLS set in OfxEffectInstance::render
-    //otherwise use the param sent by the plug-in call of clipGetImagePlane
+    // If components param is not set (i.e: the plug-in uses regular clipGetImage call) then figure out the layer from the TLS set in OfxEffectInstance::render
+    // otherwise use the param sent by the plug-in call of clipGetImagePlane
     if (tls) {
         if ( !tls->renderData.empty() ) {
             renderData = tls->renderData.back();
@@ -847,11 +845,11 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
     int inputnb = getInputNb();
     const std::string& thisClipComponents = getComponents();
 
-    //If components param is not set (i.e: the plug-in uses regular clipGetImage call) then figure out the plane from the TLS set in OfxEffectInstance::render
-    //otherwise use the param sent by the plug-in call of clipGetImagePlane
+    // If components param is not set (i.e: the plug-in uses regular clipGetImage call) then figure out the layer from the TLS set in OfxEffectInstance::render
+    // otherwise use the param sent by the plug-in call of clipGetImagePlane
 
     //bool isMultiplanar = effect->isMultiPlanar();
-    ImagePlaneDesc comp;
+    ImageLayerDesc comp;
     if (!ofxPlane) {
         EffectInstance::ComponentsNeededMapPtr neededComps;
         effect->getThreadLocalNeededComponents(&neededComps);
@@ -863,8 +861,8 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
                     ///We are in the case of a multi-plane effect who did not specify correctly the needed components for an input
                     //fallback on the basic components indicated on the clip
                     //This could be the case for example for the Mask Input
-                    ImagePlaneDesc pairedComp;
-                    ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes( thisClipComponents, &comp, &pairedComp );
+                    ImageLayerDesc pairedComp;
+                    ImageLayerDesc::mapOFXComponentsTypeStringToLayers(thisClipComponents, &comp, &pairedComp);
 
                     foundCompsInTLS = true;
                     //qDebug() << _imp->nodeInstance->getScriptName_mt_safe().c_str() << " didn't specify any needed components via getClipComponents for clip " << getName().c_str();
@@ -880,20 +878,20 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
             std::bitset<4> processChannels;
             bool isAll;
 
-            std::list<ImagePlaneDesc> availableLayers;
+            std::list<ImageLayerDesc> availableLayers;
             effect->getAvailableLayers(time, ViewIdx(0), inputnb, &availableLayers);
             if (!effect->getNode()->getSelectedLayer(inputnb, availableLayers, &processChannels, &isAll, &comp)) {
                 //There's no selector...fallback on the basic components indicated on the clip
-                ImagePlaneDesc pairedComp;
-                ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes( thisClipComponents, &comp, &pairedComp );
+                ImageLayerDesc pairedComp;
+                ImageLayerDesc::mapOFXComponentsTypeStringToLayers(thisClipComponents, &comp, &pairedComp);
             }
         }
     } else {
         if (*ofxPlane == kFnOfxImagePlaneColour) {
-            ImagePlaneDesc pairedComp;
-            ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes( thisClipComponents, &comp, &pairedComp );
+            ImageLayerDesc pairedComp;
+            ImageLayerDesc::mapOFXComponentsTypeStringToLayers(thisClipComponents, &comp, &pairedComp);
         } else {
-            comp = ImagePlaneDesc::mapOFXPlaneStringToPlane(*ofxPlane);
+            comp = ImageLayerDesc::mapOFXPlaneStringToLayer(*ofxPlane);
         }
     }
 
@@ -1015,13 +1013,13 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
     std::string components;
     int nComps;
     if (multiPlanar) {
-        components = ImagePlaneDesc::mapPlaneToOFXComponentsTypeString( image->getComponents() );
+        components = ImageLayerDesc::mapLayerToOFXComponentsTypeString(image->getComponents());
         nComps = image->getComponents().getNumComponents();
     } else {
         components = thisClipComponents;
-        ImagePlaneDesc plane, pairedComp;
-        ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes( components, &plane, &pairedComp );
-        nComps = plane.getNumComponents();
+        ImageLayerDesc layer, pairedComp;
+        ImageLayerDesc::mapOFXComponentsTypeStringToLayers(components, &layer, &pairedComp);
+        nComps = layer.getNumComponents();
     }
 
 
@@ -1063,8 +1061,8 @@ OfxClipInstance::getOutputImageInternal(const std::string* ofxPlane,
 
     assert( (retImage && !retTexture) || (!retImage && retTexture) );
 
-    //If components param is not set (i.e: the plug-in uses regular clipGetImage call) then figure out the plane from the TLS set in OfxEffectInstance::render
-    //otherwise use the param sent by the plug-in call of clipGetImagePlane
+    // If components param is not set (i.e: the plug-in uses regular clipGetImage call) then figure out the layer from the TLS set in OfxEffectInstance::render
+    // otherwise use the param sent by the plug-in call of clipGetImagePlane
     if (tls) {
         if ( !tls->renderData.empty() ) {
             renderData = tls->renderData.back();
@@ -1074,41 +1072,39 @@ OfxClipInstance::getOutputImageInternal(const std::string* ofxPlane,
 
     EffectInstancePtr effect = getEffectHolder();
     bool isMultiplanar = effect->isMultiPlanar();
-    ImagePlaneDesc natronPlane;
+    ImageLayerDesc natronLayer;
     if (!ofxPlane) {
         if (renderData) {
-            natronPlane = renderData->clipComponents;
+            natronLayer = renderData->clipComponents;
         }
 
         /*
-           If the plugin is multi-planar, we are in the situation where it called the regular clipGetImage without a plane in argument
+           If the plugin is multi-planar, we are in the situation where it called the regular clipGetImage without a plane argument
            so the components will not have been set on the TLS hence just use regular components.
          */
-        if ( (natronPlane.getNumComponents() == 0) && effect->isMultiPlanar() ) {
-            ImagePlaneDesc pairedPlane;
-            ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(getComponents(), &natronPlane, &pairedPlane);
-
+        if ((natronLayer.getNumComponents() == 0) && effect->isMultiPlanar()) {
+            ImageLayerDesc pairedLayer;
+            ImageLayerDesc::mapOFXComponentsTypeStringToLayers(getComponents(), &natronLayer, &pairedLayer);
         }
-        assert(natronPlane.getNumComponents() > 0);
+        assert(natronLayer.getNumComponents() > 0);
     } else {
         if (*ofxPlane == kFnOfxImagePlaneColour) {
-            ImagePlaneDesc pairedComp;
-            ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes( getComponents(), &natronPlane, &pairedComp );
+            ImageLayerDesc pairedComp;
+            ImageLayerDesc::mapOFXComponentsTypeStringToLayers(getComponents(), &natronLayer, &pairedComp);
         } else {
-            natronPlane = ImagePlaneDesc::mapOFXPlaneStringToPlane(*ofxPlane);
+            natronLayer = ImageLayerDesc::mapOFXPlaneStringToLayer(*ofxPlane);
         }
     }
 
-    if (natronPlane.getNumComponents() == 0) {
+    if (natronLayer.getNumComponents() == 0) {
         return false;
     }
 
-
-    //Look into TLS what planes are being rendered in the render action currently and the render window
-    std::map<ImagePlaneDesc, EffectInstance::PlaneToRender> outputPlanes;
+    // Look into TLS what layers are being rendered in the render action currently and the render window
+    std::map<ImageLayerDesc, EffectInstance::LayerToRender> outputLayers;
     RectI renderWindow;
-    ImagePlaneDesc planeBeingRendered;
-    bool ok = effect->getThreadLocalRenderedPlanes(&outputPlanes, &planeBeingRendered, &renderWindow);
+    ImageLayerDesc layerBeingRendered;
+    bool ok = effect->getThreadLocalRenderedLayers(&outputLayers, &layerBeingRendered, &renderWindow);
     if (!ok) {
         return false;
     }
@@ -1117,22 +1113,22 @@ OfxClipInstance::getOutputImageInternal(const std::string* ofxPlane,
 
     /*
        If the plugin is multiplanar return exactly what it requested.
-       Otherwise, hack the clipGetImage and return the plane requested by the user via the interface instead of the colour plane.
+       Otherwise, hack the clipGetImage and return the layer requested by the user via the interface instead of the colour layer.
      */
-    const std::string& layerName = /*multiPlanar ?*/ natronPlane.getPlaneID(); // : planeBeingRendered.getLayerName();
+    const std::string& layerName = /*multiPlanar ?*/ natronLayer.getLayerID(); // : layerBeingRendered.getLayerName();
 
-    for (std::map<ImagePlaneDesc, EffectInstance::PlaneToRender>::iterator it = outputPlanes.begin(); it != outputPlanes.end(); ++it) {
-        if (it->first.getPlaneID() == layerName) {
+    for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::iterator it = outputLayers.begin(); it != outputLayers.end(); ++it) {
+        if (it->first.getLayerID() == layerName) {
             outputImage = it->second.tmpImage;
             break;
         }
     }
 
-    //The output image MAY not exist in the TLS in some cases:
-    //e.g: Natron requested Motion.Forward but plug-ins only knows how to render Motion.Forward + Motion.Backward
-    //We then just allocate on the fly the plane and cache it.
+    // The output image MAY not exist in the TLS in some cases:
+    // e.g: Natron requested Motion.Forward but plug-ins only knows how to render Motion.Forward + Motion.Backward
+    // We then just allocate on the fly the layer and cache it.
     if (!outputImage) {
-        outputImage = effect->allocateImagePlaneAndSetInThreadLocalStorage(natronPlane);
+        outputImage = effect->allocateImageLayerAndSetInThreadLocalStorage(natronLayer);
     }
 
     //If we don't have it by now then something is really wrong either in TLS or in the plug-in.
@@ -1172,12 +1168,12 @@ OfxClipInstance::getOutputImageInternal(const std::string* ofxPlane,
     std::string ofxComponents;
     int nComps;
     if (isMultiplanar) {
-        ofxComponents = ImagePlaneDesc::mapPlaneToOFXComponentsTypeString( outputImage->getComponents() );
+        ofxComponents = ImageLayerDesc::mapLayerToOFXComponentsTypeString(outputImage->getComponents());
         nComps = outputImage->getComponents().getNumComponents();
     } else {
         ofxComponents = getComponents();
-        ImagePlaneDesc natronComps, pairedComps;
-        ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(ofxComponents, &natronComps, &pairedComps);
+        ImageLayerDesc natronComps, pairedComps;
+        ImageLayerDesc::mapOFXComponentsTypeStringToLayers(ofxComponents, &natronComps, &pairedComps);
         nComps = natronComps.getNumComponents();
         assert( nComps == (int)outputImage->getComponentsCount() );
         if ( nComps != (int)outputImage->getComponentsCount() ) {
@@ -1586,7 +1582,7 @@ OfxClipInstance::getAssociatedNode() const
 void
 OfxClipInstance::setClipTLS(ViewIdx view,
                             unsigned int mipmapLevel,
-                            const ImagePlaneDesc& components)
+                            const ImageLayerDesc& components)
 {
     ClipDataTLSPtr tls = _imp->tlsData->getOrCreateTLSData();
 

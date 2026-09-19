@@ -252,9 +252,9 @@ public:
 
     void setDisplayChannels(DisplayChannelsEnum channels, bool bothInputs);
 
-    void setActiveLayer(const ImagePlaneDesc& layer, bool doRender);
+    void setActiveLayer(const ImageLayerDesc& layer, bool doRender);
 
-    void setAlphaChannel(const ImagePlaneDesc& layer, const std::string& channelName, bool doRender);
+    void setAlphaChannel(const ImageLayerDesc& layer, const std::string& channelName, bool doRender);
 
     bool isAutoContrastEnabled() const WARN_UNUSED_RETURN;
 
@@ -410,7 +410,7 @@ private:
         return eRenderSafetyFullySafe;
     }
 
-    virtual void addAcceptedComponents(int inputNb, std::list<ImagePlaneDesc>* comps) OVERRIDE FINAL;
+    virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
 
     // The Viewer is the one place a deep edge may land on an image input: it flattens what it

@@ -31,7 +31,7 @@
 #include <vector>
 
 #include "Engine/Image.h"
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -170,7 +170,7 @@ namespace {
 // Allocates a local (non-cached) Image, per Image.h's constructor comment
 // that this overload is for local allocations the caller must manage.
 ImagePtr
-makeLocalImage(const ImagePlaneDesc& components,
+makeLocalImage(const ImageLayerDesc& components,
                ImageBitDepthEnum depth,
                const RectI& bounds)
 {
@@ -206,9 +206,9 @@ getFloatPixel(const Image& img, int x, int y, int nComps)
 TEST(ImageConvertToFormatTest, RoundTripFloatByte)
 {
     RectI bounds(0, 0, 1, 1);
-    ImagePtr srcFloat = makeLocalImage(ImagePlaneDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
-    ImagePtr mid = makeLocalImage(ImagePlaneDesc::getRGBAComponents(), eImageBitDepthByte, bounds);
-    ImagePtr dstFloat = makeLocalImage(ImagePlaneDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
+    ImagePtr srcFloat = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
+    ImagePtr mid = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthByte, bounds);
+    ImagePtr dstFloat = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
     const std::vector<float> original = { 0.12f, 0.34f, 0.56f, 0.78f };
 
     setFloatPixel(*srcFloat, 0, 0, original);
@@ -235,9 +235,9 @@ TEST(ImageConvertToFormatTest, RoundTripFloatByte)
 TEST(ImageConvertToFormatTest, RoundTripFloatShort)
 {
     RectI bounds(0, 0, 1, 1);
-    ImagePtr srcFloat = makeLocalImage(ImagePlaneDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
-    ImagePtr mid = makeLocalImage(ImagePlaneDesc::getRGBAComponents(), eImageBitDepthShort, bounds);
-    ImagePtr dstFloat = makeLocalImage(ImagePlaneDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
+    ImagePtr srcFloat = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
+    ImagePtr mid = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthShort, bounds);
+    ImagePtr dstFloat = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
     const std::vector<float> original = { 0.12f, 0.34f, 0.56f, 0.78f };
 
     setFloatPixel(*srcFloat, 0, 0, original);
@@ -273,8 +273,8 @@ TEST(ImageConvertToFormatTest, RoundTripFloatShort)
 TEST(ImageConvertToFormatTest, UnpremultHasNoEffectWhenColorSpacesAreLinear)
 {
     RectI bounds(0, 0, 1, 1);
-    ImagePtr srcRGBA = makeLocalImage(ImagePlaneDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
-    ImagePtr dstRGB = makeLocalImage(ImagePlaneDesc::getRGBComponents(), eImageBitDepthFloat, bounds);
+    ImagePtr srcRGBA = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
+    ImagePtr dstRGB = makeLocalImage(ImageLayerDesc::getRGBComponents(), eImageBitDepthFloat, bounds);
     constexpr float kColor = 0.2f;
     constexpr float kAlpha = 0.5f;
 
@@ -301,8 +301,8 @@ TEST(ImageConvertToFormatTest, UnpremultHasNoEffectWhenColorSpacesAreLinear)
 TEST(ImageConvertToFormatTest, UnpremultDoublesColorWhenColorSpaceIsNotLinear)
 {
     RectI bounds(0, 0, 1, 1);
-    ImagePtr srcRGBA = makeLocalImage(ImagePlaneDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
-    ImagePtr dstRGB = makeLocalImage(ImagePlaneDesc::getRGBComponents(), eImageBitDepthFloat, bounds);
+    ImagePtr srcRGBA = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
+    ImagePtr dstRGB = makeLocalImage(ImageLayerDesc::getRGBComponents(), eImageBitDepthFloat, bounds);
     constexpr float kColor = 0.2f;
     constexpr float kAlpha = 0.5f;
 

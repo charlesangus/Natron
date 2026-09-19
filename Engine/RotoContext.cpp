@@ -2526,13 +2526,13 @@ convertNatronImageToCairoImage(unsigned char* cairoImg,
 
 double
 RotoStrokeItem::renderSingleStroke(const RectD& pointsBbox,
-                                   const std::list<std::pair<Point, double> >& points,
+                                   const std::list<std::pair<Point, double>>& points,
                                    unsigned int mipmapLevel,
                                    double par,
-                                   const ImagePlaneDesc& components,
+                                   const ImageLayerDesc& components,
                                    ImageBitDepthEnum depth,
                                    double distToNext,
-                                   ImagePtr *image)
+                                   ImagePtr* image)
 {
     double time = getContext()->getTimelineCurrentTime();
     double shapeColor[3];
@@ -2710,7 +2710,7 @@ RotoStrokeItem::renderSingleStroke(const RectD& pointsBbox,
 } // RotoStrokeItem::renderSingleStroke
 
 ImagePtr
-RotoDrawableItem::renderMaskFromStroke(const ImagePlaneDesc& components,
+RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
                                        const double time,
                                        const ViewIdx view,
                                        const ImageBitDepthEnum depth,
@@ -2846,8 +2846,8 @@ RotoDrawableItem::renderMaskFromStroke(const ImagePlaneDesc& components,
 } // RotoDrawableItem::renderMaskFromStroke
 
 ImagePtr
-RotoDrawableItem::renderMaskInternal(const RectI & roi,
-                                     const ImagePlaneDesc& components,
+RotoDrawableItem::renderMaskInternal(const RectI& roi,
+                                     const ImageLayerDesc& components,
                                      const double startTime,
                                      const double endTime,
                                      const double timeStep,
@@ -2855,8 +2855,8 @@ RotoDrawableItem::renderMaskInternal(const RectI & roi,
                                      const bool inverted,
                                      const ImageBitDepthEnum depth,
                                      const unsigned int mipmapLevel,
-                                     const std::list<std::list<std::pair<Point, double> > >& strokes,
-                                     const ImagePtr &image)
+                                     const std::list<std::list<std::pair<Point, double>>>& strokes,
+                                     const ImagePtr& image)
 {
     Q_UNUSED(startTime);
     Q_UNUSED(endTime);

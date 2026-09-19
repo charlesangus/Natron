@@ -35,7 +35,7 @@
 #include "Engine/DeepImage.h"
 #include "Engine/DeepPixelOps.h"
 #include "Engine/Image.h"
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
@@ -147,8 +147,8 @@ DeepRecolor::renderColorImage(const DeepRenderActionArgs& args,
         return ImagePtr();
     }
 
-    std::list<ImagePlaneDesc> components;
-    components.push_back(ImagePlaneDesc::getRGBAComponents());
+    std::list<ImageLayerDesc> components;
+    components.push_back(ImageLayerDesc::getRGBAComponents());
     RenderRoIArgs roiArgs(args.time,
                           args.scale,
                           args.mipmapLevel,
@@ -162,17 +162,17 @@ DeepRecolor::renderColorImage(const DeepRenderActionArgs& args,
                           this,
                           eStorageModeRAM,
                           args.time);
-    std::map<ImagePlaneDesc, ImagePtr> planes;
-    if (color->renderRoI(roiArgs, &planes) != eRenderRoIRetCodeOk) {
+    std::map<ImageLayerDesc, ImagePtr> layers;
+    if (color->renderRoI(roiArgs, &layers) != eRenderRoIRetCodeOk) {
         *failed = true;
 
         return ImagePtr();
     }
-    if (planes.empty() || !planes.begin()->second || (planes.begin()->second->getBitDepth() != eImageBitDepthFloat)) {
+    if (layers.empty() || !layers.begin()->second || (layers.begin()->second->getBitDepth() != eImageBitDepthFloat)) {
         return ImagePtr();
     }
 
-    return planes.begin()->second;
+    return layers.begin()->second;
 }
 
 StatusEnum
@@ -207,7 +207,7 @@ DeepRecolor::renderDeep(const DeepRenderActionArgs& args)
 
     KnobBoolPtr targetInputAlphaKnob = _targetInputAlpha.lock();
     const bool targetInputAlpha = targetInputAlphaKnob && targetInputAlphaKnob->getValueAtTime(args.time);
-    const std::vector<std::string>& channelsToWrite = targetInputAlpha ? ImagePlaneDesc::getRGBAComponents().getChannels() : ImagePlaneDesc::getRGBComponents().getChannels();
+    const std::vector<std::string>& channelsToWrite = targetInputAlpha ? ImageLayerDesc::getRGBAComponents().getChannels() : ImageLayerDesc::getRGBComponents().getChannels();
     const int alphaChannelIndex = targetInputAlpha ? 3 : -1;
 
     Image::ReadAccess colorAccess(color.get());

@@ -37,7 +37,7 @@
 #include "Engine/DeepImage.h"
 #include "Engine/DeepPixelOps.h"
 #include "Engine/Image.h"
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -169,7 +169,7 @@ makeFlattenDestination(const RectI& bounds)
 {
     const RectD rod(bounds.x1, bounds.y1, bounds.x2, bounds.y2);
 
-    return std::make_shared<Image>(ImagePlaneDesc::getRGBAComponents(), rod, bounds, 0 /*mipmapLevel*/, 1. /*par*/,
+    return std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), rod, bounds, 0 /*mipmapLevel*/, 1. /*par*/,
                                    eImageBitDepthFloat, eImagePremultiplicationPremultiplied,
                                    eImageFieldingOrderNone, false /*useBitmap*/);
 }

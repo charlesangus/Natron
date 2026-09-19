@@ -71,12 +71,12 @@ RotoSmear::~RotoSmear()
 
 void
 RotoSmear::addAcceptedComponents(int /*inputNb*/,
-                                 std::list<ImagePlaneDesc>* comps)
+                                 std::list<ImageLayerDesc>* comps)
 {
-    comps->push_back( ImagePlaneDesc::getRGBAComponents() );
-    comps->push_back( ImagePlaneDesc::getRGBComponents() );
-    comps->push_back( ImagePlaneDesc::getXYComponents() );
-    comps->push_back( ImagePlaneDesc::getAlphaComponents() );
+    comps->push_back(ImageLayerDesc::getRGBAComponents());
+    comps->push_back(ImageLayerDesc::getRGBComponents());
+    comps->push_back(ImageLayerDesc::getXYComponents());
+    comps->push_back(ImageLayerDesc::getAlphaComponents());
 }
 
 void
@@ -234,14 +234,13 @@ RotoSmear::render(const RenderActionArgs& args)
 
 
     EffectInstance::ComponentsNeededMap neededComps;
-    std::list<ImagePlaneDesc> ptPlanes;
+    std::list<ImageLayerDesc> ptLayers;
     bool processAll;
     std::bitset<4> processChannels;
     double ptTime;
     int ptView;
     int ptInput;
-    getComponentsNeededAndProduced_public(getRenderHash(), args.time, args.view, &neededComps, &ptPlanes, &processAll, &ptTime, &ptView, &processChannels, &ptInput);
-
+    getComponentsNeededAndProduced_public(getRenderHash(), args.time, args.view, &neededComps, &ptLayers, &processAll, &ptTime, &ptView, &processChannels, &ptInput);
 
     EffectInstance::ComponentsNeededMap::iterator foundBg = neededComps.find(0);
     RectI bgImgRoI;
@@ -307,17 +306,15 @@ RotoSmear::render(const RenderActionArgs& args)
             }
         }
 
-
-        for (std::list<std::pair<ImagePlaneDesc, ImagePtr> >::const_iterator plane = args.outputPlanes.begin();
-             plane != args.outputPlanes.end(); ++plane) {
-            assert(plane->second->getMipmapLevel() == mipmapLevel);
+        for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator layer = args.outputLayers.begin();
+             layer != args.outputLayers.end(); ++layer) {
+            assert(layer->second->getMipmapLevel() == mipmapLevel);
 
             distToNext = 0.;
-            int nComps = plane->first.getNumComponents();
-
+            int nComps = layer->first.getNumComponents();
 
             if ( !bgImg && !bgInitialized && (strokeIndex == 0) ) {
-                plane->second->fillZero(args.roi);
+                layer->second->fillZero(args.roi);
                 bgInitialized = true;
                 continue;
             }
@@ -326,8 +323,8 @@ RotoSmear::render(const RenderActionArgs& args)
 
             if ( (isFirstStrokeTick || !duringPainting) && !bgInitialized && (strokeIndex == 0) ) {
                 // Make sure all areas are black and transparent
-                plane->second->fillZero(args.roi);
-                plane->second->pasteFrom(*bgImg, args.roi, false);
+                layer->second->fillZero(args.roi);
+                layer->second->pasteFrom(*bgImg, args.roi, false);
                 bgInitialized = true;
             }
 
@@ -343,7 +340,7 @@ RotoSmear::render(const RenderActionArgs& args)
                 // This is the very first dot we render
                 prev = *it;
                 ++it;
-                renderSmearDot(maskData, maskStride, maskWidth, maskHeight, prev.first, it->first, brushSizePixel, nComps, plane->second);
+                renderSmearDot(maskData, maskStride, maskWidth, maskHeight, prev.first, it->first, brushSizePixel, nComps, layer->second);
                 didPaint = true;
                 renderPoint = *it;
                 prev = renderPoint;
@@ -406,13 +403,13 @@ RotoSmear::render(const RenderActionArgs& args)
 
                 prevPoint.x = prev.first.x + vx * v.x;
                 prevPoint.y = prev.first.y + vy * v.y;
-                renderSmearDot(maskData, maskStride, maskWidth, maskHeight, prevPoint, renderPoint.first, brushSizePixel, nComps, plane->second);
+                renderSmearDot(maskData, maskStride, maskWidth, maskHeight, prevPoint, renderPoint.first, brushSizePixel, nComps, layer->second);
                 didPaint = true;
                 prev = renderPoint;
                 cur = renderPoint;
                 distToNext = 0;
             } // while (it!=visiblePortion.end()) {
-        } // for (std::list<std::pair<ImagePlaneDesc,ImagePtr> >::const_iterator plane = args.outputPlanes.begin();
+        } // for (std::list<std::pair<ImageLayerDesc,ImagePtr> >::const_iterator layer = args.outputLayers.begin();
 
         if (duringPainting && didPaint) {
             QMutexLocker k(&_imp->smearDataMutex);

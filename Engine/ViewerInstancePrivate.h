@@ -44,13 +44,13 @@
 #include <QCoreApplication>
 
 #include "Engine/AbortableRenderInfo.h"
-#include "Engine/OutputSchedulerThread.h"
-#include "Engine/ImagePlaneDesc.h"
-#include "Engine/FrameEntry.h"
-#include "Engine/Settings.h"
-#include "Engine/Image.h"
-#include "Engine/TextureRect.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/FrameEntry.h"
+#include "Engine/Image.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/OutputSchedulerThread.h"
+#include "Engine/Settings.h"
+#include "Engine/TextureRect.h"
 
 #define GAMMA_LUT_NB_VALUES 1023
 
@@ -123,7 +123,7 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
-
+    // clang-format off
     ViewerInstancePrivate(const ViewerInstance* parent)
         : instance(parent)
         , uiContext(NULL)
@@ -137,8 +137,8 @@ public:
         , viewerParamsLut(eViewerColorSpaceSRGB)
         , viewerParamsAutoContrast(false)
         , viewerParamsChannels()
-        , viewerParamsLayer( ImagePlaneDesc::getRGBAComponents() )
-        , viewerParamsAlphaLayer( ImagePlaneDesc::getRGBAComponents() )
+        , viewerParamsLayer( ImageLayerDesc::getRGBAComponents() )
+        , viewerParamsAlphaLayer( ImageLayerDesc::getRGBAComponents() )
         , viewerParamsAlphaChannelName("a")
         , viewerMipmapLevel(0)
         , fullFrameProcessingEnabled(false)
@@ -163,6 +163,7 @@ public:
             viewerParamsChannels[i] = eDisplayChannelsRGB;
         }
     }
+    // clang-format on
 
     void redrawViewer()
     {
@@ -384,8 +385,8 @@ public:
                                                  0 = sRGB ,  1 = linear , 2 = Rec 709*/
     bool viewerParamsAutoContrast;
     DisplayChannelsEnum viewerParamsChannels[2];
-    ImagePlaneDesc viewerParamsLayer;
-    ImagePlaneDesc viewerParamsAlphaLayer;
+    ImageLayerDesc viewerParamsLayer;
+    ImageLayerDesc viewerParamsAlphaLayer;
     std::string viewerParamsAlphaChannelName;
     unsigned int viewerMipmapLevel; //< the mipmap level the viewer should render at (0 == no downscaling)
     bool fullFrameProcessingEnabled;

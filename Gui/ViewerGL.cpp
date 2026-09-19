@@ -4378,7 +4378,7 @@ ViewerGL::getColorAt(double x,
         srcColorSpace = 0;
         dstColorSpace = 0;
     } else {
-        if ( image->getComponents().isColorPlane() ) {
+        if (image->getComponents().isColorLayer()) {
             srcColorSpace = ViewerInstance::lutFromColorspace(srcCS);
             dstColorSpace = ViewerInstance::lutFromColorspace(_imp->displayingImageLut);
         } else {

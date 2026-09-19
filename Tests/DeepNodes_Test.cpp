@@ -53,7 +53,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/Image.h"
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -320,7 +320,7 @@ makeFloatRGBAImage(const RectI& bounds)
 {
     const RectD rod(bounds.x1, bounds.y1, bounds.x2, bounds.y2);
 
-    return std::make_shared<Image>(ImagePlaneDesc::getRGBAComponents(), rod, bounds, 0 /*mipmapLevel*/, 1. /*par*/,
+    return std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), rod, bounds, 0 /*mipmapLevel*/, 1. /*par*/,
                                    eImageBitDepthFloat, eImagePremultiplicationPremultiplied,
                                    eImageFieldingOrderNone, false /*useBitmap*/);
 }
@@ -739,8 +739,8 @@ protected:
         }
         frameRenderArgs.updateNodesRequest(request);
 
-        std::list<ImagePlaneDesc> components;
-        components.push_back(ImagePlaneDesc::getRGBAComponents());
+        std::list<ImageLayerDesc> components;
+        components.push_back(ImageLayerDesc::getRGBAComponents());
         EffectInstance::RenderRoIArgs args(time,
                                            RenderScale::identity,
                                            0 /*mipmapLevel*/,
@@ -754,10 +754,10 @@ protected:
                                            0 /*caller*/,
                                            eStorageModeRAM,
                                            time);
-        std::map<ImagePlaneDesc, ImagePtr> planes;
-        const EffectInstance::RenderRoIRetCode code = effect->renderRoI(args, &planes);
-        if ((code == EffectInstance::eRenderRoIRetCodeOk) && !planes.empty()) {
-            *outputImage = planes.begin()->second;
+        std::map<ImageLayerDesc, ImagePtr> layers;
+        const EffectInstance::RenderRoIRetCode code = effect->renderRoI(args, &layers);
+        if ((code == EffectInstance::eRenderRoIRetCodeOk) && !layers.empty()) {
+            *outputImage = layers.begin()->second;
         }
 
         return code;

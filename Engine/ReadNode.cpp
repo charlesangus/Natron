@@ -968,10 +968,10 @@ ReadNode::isViewInvariant() const
 }
 
 EffectInstance::PassThroughEnum
-ReadNode::isPassThroughForNonRenderedPlanes() const
+ReadNode::isPassThroughForNonRenderedLayers() const
 {
     NodePtr p = getEmbeddedReader();
-    return p ? p->getEffectInstance()->isPassThroughForNonRenderedPlanes() : EffectInstance::isPassThroughForNonRenderedPlanes();
+    return p ? p->getEffectInstance()->isPassThroughForNonRenderedLayers() : EffectInstance::isPassThroughForNonRenderedLayers();
 }
 
 bool
@@ -1044,13 +1044,13 @@ ReadNode::isInputMask(int /*inputNb*/) const
 
 void
 ReadNode::addAcceptedComponents(int inputNb,
-                                std::list<ImagePlaneDesc>* comps)
+                                std::list<ImageLayerDesc>* comps)
 {
     NodePtr p = getEmbeddedReader();
     if (p) {
         p->getEffectInstance()->addAcceptedComponents(inputNb, comps);
     } else {
-        comps->push_back( ImagePlaneDesc::getRGBAComponents() );
+        comps->push_back(ImageLayerDesc::getRGBAComponents());
     }
 }
 

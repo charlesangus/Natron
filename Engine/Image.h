@@ -40,15 +40,14 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_ON(deprecated)
 #include <QReadWriteLock>
 
-#include "Engine/ImageKey.h"
-#include "Engine/ImagePlaneDesc.h"
-#include "Engine/ImageParams.h"
 #include "Engine/CacheEntry.h"
+#include "Engine/EngineFwd.h"
+#include "Engine/ImageKey.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/ImageParams.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/RectD.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
-
 
 NATRON_NAMESPACE_ENTER
 
@@ -186,9 +185,9 @@ public:
     /*This constructor can be used to allocate a local Image. The deallocation should
        then be handled by the user. Note that no view number is passed in parameter
        as it is not needed.*/
-    Image(const ImagePlaneDesc& components,
-          const RectD & regionOfDefinition,    //!< rod in canonical coordinates
-          const RectI & bounds,    //!< bounds in pixel coordinates
+    Image(const ImageLayerDesc& components,
+          const RectD& regionOfDefinition, //!< rod in canonical coordinates
+          const RectI& bounds, //!< bounds in pixel coordinates
           unsigned int mipmapLevel,
           double par,
           ImageBitDepthEnum bitdepth,
@@ -220,27 +219,27 @@ public:
                             ViewIdx view,
                             bool draftMode,
                             bool fullScaleWithDownscaleInputs);
-    static ImageParamsPtr makeParams(const RectD & rod,    // the image rod in canonical coordinates
-                                                     const double par,
-                                                     unsigned int mipmapLevel,
-                                                     bool isRoDProjectFormat,
-                                                     const ImagePlaneDesc& components,
-                                                     ImageBitDepthEnum bitdepth,
-                                                     ImagePremultiplicationEnum premult,
-                                                     ImageFieldingOrderEnum fielding,
-                                                     StorageModeEnum storage = eStorageModeRAM,
-                                                     U32 textureTarget = GL_TEXTURE_2D);
-    static ImageParamsPtr makeParams(const RectD & rod,    // the image rod in canonical coordinates
-                                                     const RectI& bounds,
-                                                     const double par,
-                                                     unsigned int mipmapLevel,
-                                                     bool isRoDProjectFormat,
-                                                     const ImagePlaneDesc& components,
-                                                     ImageBitDepthEnum bitdepth,
-                                                     ImagePremultiplicationEnum premult,
-                                                     ImageFieldingOrderEnum fielding,
-                                                     StorageModeEnum storage = eStorageModeRAM,
-                                                     U32 textureTarget = GL_TEXTURE_2D);
+    static ImageParamsPtr makeParams(const RectD& rod, // the image rod in canonical coordinates
+                                     const double par,
+                                     unsigned int mipmapLevel,
+                                     bool isRoDProjectFormat,
+                                     const ImageLayerDesc& components,
+                                     ImageBitDepthEnum bitdepth,
+                                     ImagePremultiplicationEnum premult,
+                                     ImageFieldingOrderEnum fielding,
+                                     StorageModeEnum storage = eStorageModeRAM,
+                                     U32 textureTarget = GL_TEXTURE_2D);
+    static ImageParamsPtr makeParams(const RectD& rod, // the image rod in canonical coordinates
+                                     const RectI& bounds,
+                                     const double par,
+                                     unsigned int mipmapLevel,
+                                     bool isRoDProjectFormat,
+                                     const ImageLayerDesc& components,
+                                     ImageBitDepthEnum bitdepth,
+                                     ImagePremultiplicationEnum premult,
+                                     ImageFieldingOrderEnum fielding,
+                                     StorageModeEnum storage = eStorageModeRAM,
+                                     U32 textureTarget = GL_TEXTURE_2D);
 
     // ImageParamsPtr getParams() const WARN_UNUSED_RETURN;
 
@@ -323,7 +322,7 @@ public:
     }
 
     unsigned int getComponentsCount() const;
-    const ImagePlaneDesc& getComponents() const
+    const ImageLayerDesc& getComponents() const
     {
         return this->_params->getComponents();
     }
@@ -335,8 +334,8 @@ public:
      * convert to the 'to' components.
      * e.g: RGBA to RGB would return true , the opposite would return false.
      **/
-    static bool hasEnoughDataToConvert(ImagePlaneDescEnum from, ImagePlaneDescEnum to);
-    static std::string getFormatString(const ImagePlaneDesc& comps, ImageBitDepthEnum depth);
+    static bool hasEnoughDataToConvert(ImageComponentsEnum from, ImageComponentsEnum to);
+    static std::string getFormatString(const ImageLayerDesc& comps, ImageBitDepthEnum depth);
     static std::string getDepthString(ImageBitDepthEnum depth);
     static bool isBitDepthConversionLossy(ImageBitDepthEnum from, ImageBitDepthEnum to);
     ImageBitDepthEnum getBitDepth() const

@@ -892,23 +892,20 @@ Node::destroyNode(bool blockingDestroy, bool autoReconnect)
     }
 } // Node::destroyNodeInternal
 
-
 bool
 Node::isSupportedComponent(int inputNb,
-                           const ImagePlaneDesc& comp) const
+                           const ImageLayerDesc& comp) const
 {
     QMutexLocker l(&_imp->inputsMutex);
 
     if (inputNb >= 0) {
         assert( inputNb < (int)_imp->inputsComponents.size() );
-        std::list<ImagePlaneDesc>::const_iterator found =
-            std::find(_imp->inputsComponents[inputNb].begin(), _imp->inputsComponents[inputNb].end(), comp);
+        std::list<ImageLayerDesc>::const_iterator found = std::find(_imp->inputsComponents[inputNb].begin(), _imp->inputsComponents[inputNb].end(), comp);
 
         return found != _imp->inputsComponents[inputNb].end();
     } else {
         assert(inputNb == -1);
-        std::list<ImagePlaneDesc>::const_iterator found =
-            std::find(_imp->outputComponents.begin(), _imp->outputComponents.end(), comp);
+        std::list<ImageLayerDesc>::const_iterator found = std::find(_imp->outputComponents.begin(), _imp->outputComponents.end(), comp);
 
         return found != _imp->outputComponents.end();
     }

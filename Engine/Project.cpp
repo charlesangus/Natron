@@ -1093,18 +1093,17 @@ Project::initializeKnobs()
     _imp->defaultLayersList->setEvaluateOnChange(false);
     std::list<std::vector<std::string> > defaultLayers;
     {
-        std::vector<ImagePlaneDesc> defaultComponents;
-        defaultComponents.push_back(ImagePlaneDesc::getRGBAComponents());
-        defaultComponents.push_back(ImagePlaneDesc::getDisparityLeftComponents());
-        defaultComponents.push_back(ImagePlaneDesc::getDisparityRightComponents());
-        defaultComponents.push_back(ImagePlaneDesc::getBackwardMotionComponents());
-        defaultComponents.push_back(ImagePlaneDesc::getForwardMotionComponents());
-
+        std::vector<ImageLayerDesc> defaultComponents;
+        defaultComponents.push_back(ImageLayerDesc::getRGBAComponents());
+        defaultComponents.push_back(ImageLayerDesc::getDisparityLeftComponents());
+        defaultComponents.push_back(ImageLayerDesc::getDisparityRightComponents());
+        defaultComponents.push_back(ImageLayerDesc::getBackwardMotionComponents());
+        defaultComponents.push_back(ImageLayerDesc::getForwardMotionComponents());
 
         for (std::size_t i = 0; i < defaultComponents.size(); ++i) {
-            const ImagePlaneDesc& comps = defaultComponents[i];
+            const ImageLayerDesc& comps = defaultComponents[i];
             std::vector<std::string> row(3);
-            row[0] = comps.getPlaneLabel();
+            row[0] = comps.getLayerLabel();
             std::string channelsStr;
             const std::vector<std::string>& channels = comps.getChannels();
             for (std::size_t c = 0; c < channels.size(); ++c) {
@@ -1475,42 +1474,42 @@ Project::isGPURenderingEnabledInProject() const
     return false;
 }
 
-std::list<ImagePlaneDesc>
+std::list<ImageLayerDesc>
 Project::getProjectDefaultLayers() const
 {
-    std::list<ImagePlaneDesc> ret;
+    std::list<ImageLayerDesc> ret;
     std::list<std::vector<std::string> > table;
 
     _imp->defaultLayersList->getTable(&table);
     for (std::list<std::vector<std::string> >::iterator it = table.begin();
          it != table.end(); ++it) {
 
-        const std::string& planeLabel = (*it)[0];
-        std::string planeID = planeLabel;
+        const std::string& layerLabel = (*it)[0];
+        std::string layerID = layerLabel;
         std::string componentsLabel;
 
-        // The layers knob only propose the user to display the label of the plane desc,
-        // but we need to recover the ID for the built-in planes to ensure compatibility
+        // The layers knob only propose the user to display the label of the layer desc,
+        // but we need to recover the ID for the built-in layers to ensure compatibility
         // with the old Nuke multi-plane suite.
-        if (planeID == kNatronColorPlaneLabel) {
-            planeID = kNatronColorPlaneID;
-        } else if (planeID == kNatronBackwardMotionVectorsPlaneLabel) {
-            planeID = kNatronBackwardMotionVectorsPlaneID;
+        if (layerID == kNatronColorLayerLabel) {
+            layerID = kNatronColorLayerID;
+        } else if (layerID == kNatronBackwardMotionVectorsLayerLabel) {
+            layerID = kNatronBackwardMotionVectorsLayerID;
             componentsLabel = kNatronMotionComponentsLabel;
-        } else if (planeID == kNatronForwardMotionVectorsPlaneLabel) {
-            planeID = kNatronForwardMotionVectorsPlaneID;
+        } else if (layerID == kNatronForwardMotionVectorsLayerLabel) {
+            layerID = kNatronForwardMotionVectorsLayerID;
             componentsLabel = kNatronMotionComponentsLabel;
-        } else if (planeID == kNatronDisparityLeftPlaneLabel) {
-            planeID = kNatronDisparityLeftPlaneID;
+        } else if (layerID == kNatronDisparityLeftLayerLabel) {
+            layerID = kNatronDisparityLeftLayerID;
             componentsLabel = kNatronDisparityComponentsLabel;
-        } else if (planeID == kNatronDisparityRightPlaneLabel) {
-            planeID = kNatronDisparityRightPlaneID;
+        } else if (layerID == kNatronDisparityRightLayerLabel) {
+            layerID = kNatronDisparityRightLayerID;
             componentsLabel = kNatronDisparityComponentsLabel;
         }
 
         bool found = false;
-        for (std::list<ImagePlaneDesc>::const_iterator it2 = ret.begin(); it2 != ret.end(); ++it2) {
-            if (it2->getPlaneID() == planeID) {
+        for (std::list<ImageLayerDesc>::const_iterator it2 = ret.begin(); it2 != ret.end(); ++it2) {
+            if (it2->getLayerID() == layerID) {
                 found = true;
                 break;
             }
@@ -1523,7 +1522,7 @@ Project::getProjectDefaultLayers() const
             for (int i = 0; i < channels.size(); ++i) {
                 componentsName[i] = channels[i].toStdString();
             }
-            ImagePlaneDesc c( planeID, planeLabel, componentsLabel, componentsName );
+            ImageLayerDesc c(layerID, layerLabel, componentsLabel, componentsName);
             ret.push_back(c);
         }
     }
@@ -1532,12 +1531,12 @@ Project::getProjectDefaultLayers() const
 }
 
 void
-Project::addProjectDefaultLayer(const ImagePlaneDesc& comps)
+Project::addProjectDefaultLayer(const ImageLayerDesc& comps)
 {
     const std::vector<std::string>& channels = comps.getChannels();
     std::vector<std::string> row(2);
 
-    row[0] = comps.getPlaneLabel();
+    row[0] = comps.getLayerLabel();
     std::string channelsStr;
     for (std::size_t i = 0; i < channels.size(); ++i) {
         channelsStr += channels[i];

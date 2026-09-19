@@ -2282,19 +2282,19 @@ private:
 
                     return;
                 }
-                std::list<ImagePlaneDesc> components;
+                std::list<ImageLayerDesc> components;
                 ImageBitDepthEnum imageDepth = eImageBitDepthNone;
 
                 if (outputKind == eDataKindImage) {
                     // Use needed components to figure out what we need to render
                     EffectInstance::ComponentsNeededMap neededComps;
-                    std::list<ImagePlaneDesc> passThroughPlanes;
+                    std::list<ImageLayerDesc> passThroughLayers;
                     bool processAll;
                     double ptTime;
                     int ptView;
                     std::bitset<4> processChannels;
                     int ptInput;
-                    activeInputToRender->getComponentsNeededAndProduced_public(activeInputToRenderHash, time, viewsToRender[view], &neededComps, &passThroughPlanes, &processAll, &ptTime, &ptView, &processChannels, &ptInput);
+                    activeInputToRender->getComponentsNeededAndProduced_public(activeInputToRenderHash, time, viewsToRender[view], &neededComps, &passThroughLayers, &processAll, &ptTime, &ptView, &processChannels, &ptInput);
 
                     // Retrieve bitdepth only
                     imageDepth = activeInputToRender->getBitDepth(-1);
@@ -2302,7 +2302,7 @@ private:
 
                     EffectInstance::ComponentsNeededMap::iterator foundOutput = neededComps.find(-1);
                     if (foundOutput != neededComps.end()) {
-                        for (std::list<ImagePlaneDesc>::const_iterator it2 = foundOutput->second.begin(); it2 != foundOutput->second.end(); ++it2) {
+                        for (std::list<ImageLayerDesc>::const_iterator it2 = foundOutput->second.begin(); it2 != foundOutput->second.end(); ++it2) {
                             components.push_back(*it2);
                         }
                     }
@@ -2341,7 +2341,7 @@ private:
                 EffectInstance::RenderRoIRetCode retCode;
                 switch (outputKind) {
                 case eDataKindImage: {
-                    std::map<ImagePlaneDesc, ImagePtr> planes;
+                    std::map<ImageLayerDesc, ImagePtr> layers;
                     std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs(new EffectInstance::RenderRoIArgs(time, //< the time at which to render
                                                                                                                 scale, //< the scale at which to render
                                                                                                                 mipmapLevel, //< the mipmap level (redundant with the scale)
@@ -2355,7 +2355,7 @@ private:
                                                                                                                 activeInputToRender.get(),
                                                                                                                 eStorageModeRAM,
                                                                                                                 time));
-                    retCode = activeInputToRender->renderRoI(*renderArgs, &planes);
+                    retCode = activeInputToRender->renderRoI(*renderArgs, &layers);
                     break;
                 }
                 case eDataKindDeep: {
@@ -2389,7 +2389,7 @@ private:
 
                 ///If we need sequential rendering, pass the image to the output scheduler that will ensure the sequential ordering
                 /*if (!renderDirectly) {
-                    for (std::map<ImagePlaneDesc,ImagePtr>::iterator it = planes.begin(); it != planes.end(); ++it) {
+                    for (std::map<ImageLayerDesc,ImagePtr>::iterator it = layers.begin(); it != layers.end(); ++it) {
                         _imp->scheduler->appendToBuffer(time, viewsToRender[view], stats, std::dynamic_pointer_cast<BufferableObject>(it->second));
                     }
                    } else {*/
@@ -2438,15 +2438,15 @@ DefaultScheduler::processFrame(const BufferedFrames& frames)
     OutputEffectInstancePtr effect = _effect.lock();
     U64 hash = effect->getHash();
     bool isProjectFormat;
-    std::list<ImagePlaneDesc> components;
+    std::list<ImageLayerDesc> components;
     ImageBitDepthEnum imageDepth = eImageBitDepthNone;
     const DataKindEnum outputKind = effect->getOutputDataKind();
 
     if (outputKind == eDataKindImage) {
-        ImagePlaneDesc metadataPlane, metadataPairedPlane;
-        effect->getMetadataComponents(-1, &metadataPlane, &metadataPairedPlane);
-        if (metadataPlane.getNumComponents() > 0) {
-            components.push_back(metadataPlane);
+        ImageLayerDesc metadataLayer, metadataPairedLayer;
+        effect->getMetadataComponents(-1, &metadataLayer, &metadataPairedLayer);
+        if (metadataLayer.getNumComponents() > 0) {
+            components.push_back(metadataLayer);
         }
         imageDepth = effect->getBitDepth(-1);
     }
@@ -2501,8 +2501,8 @@ DefaultScheduler::processFrame(const BufferedFrames& frames)
                                                                                                             eStorageModeRAM,
                                                                                                             frame.time,
                                                                                                             inputImages));
-                std::map<ImagePlaneDesc, ImagePtr> planes;
-                retCode = effect->renderRoI(*renderArgs, &planes);
+                std::map<ImageLayerDesc, ImagePtr> layers;
+                retCode = effect->renderRoI(*renderArgs, &layers);
                 break;
             }
             case eDataKindDeep: {

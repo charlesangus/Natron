@@ -1086,7 +1086,7 @@ ViewerInstance::getViewerRoIAndTexture(const RectD& rod,
                          mipmapLevel,
                          inputToRenderName,
                          outArgs->params->layer,
-                         outArgs->params->alphaLayer.getPlaneID() + outArgs->params->alphaChannelName,
+                         outArgs->params->alphaLayer.getLayerID() + outArgs->params->alphaChannelName,
                          outArgs->params->depth == eImageBitDepthFloat,
                          isDraftMode);
             std::list<FrameEntryPtr> entries;
@@ -1426,16 +1426,16 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         //clearPersistentMessage(true);
     }
 
-    ImagePlaneDesc components, pairedComponents;
+    ImageLayerDesc components, pairedComponents;
     inArgs.activeInputToRender->getMetadataComponents(-1, &components, &pairedComponents);
     ImageBitDepthEnum imageDepth = inArgs.activeInputToRender->getBitDepth(-1);
-    std::list<ImagePlaneDesc> requestedComponents;
+    std::list<ImageLayerDesc> requestedComponents;
     int alphaChannelIndex = -1;
     if (inArgs.deepUpstream) {
-        // Deep channels are not Natron planes, so there is no layer for the GUI to have selected
+        // Deep channels are not Natron layers, so there is no layer for the GUI to have selected
         // and nothing to ask the upstream node for its available layers: the v1 contract is a
-        // flatten to RGBA, and this is the plane that flatten writes.
-        components = ImagePlaneDesc::getRGBAComponents();
+        // flatten to RGBA, and this is the layer that flatten writes.
+        components = ImageLayerDesc::getRGBAComponents();
         imageDepth = eImageBitDepthFloat;
         alphaChannelIndex = 3;
     } else if ((inArgs.channels != eDisplayChannelsA) && (inArgs.channels != eDisplayChannelsMatte)) {
@@ -1522,7 +1522,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         // by the HostSupport library.
         // We catch it  and rethrow it just to notify the rendering is done.
         try {
-            std::map<ImagePlaneDesc, ImagePtr> planes;
+            std::map<ImageLayerDesc, ImagePtr> layers;
             EffectInstance::RenderRoIRetCode retCode;
             if (inArgs.deepUpstream) {
                 // Only isDoingPartialUpdates (RotoPaint) ever splits the RoI, and deep has no
@@ -1563,30 +1563,30 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                                     this,
                                                                     eStorageModeRAM /*returnStorage*/,
                                                                     inArgs.params->time) );
-                retCode = inArgs.activeInputToRender->renderRoI(*renderArgs, &planes);
+                retCode = inArgs.activeInputToRender->renderRoI(*renderArgs, &layers);
             }
-            //Either rendering failed or we have 2 planes (alpha mask and color image) or we have a single plane (color image)
-            assert(planes.size() == 0 || planes.size() <= 2);
-            if ( !planes.empty() && (retCode == EffectInstance::eRenderRoIRetCodeOk) ) {
-                if (planes.size() == 2) {
-                    std::map<ImagePlaneDesc, ImagePtr>::iterator foundColorLayer = planes.find(inArgs.params->layer);
-                    if ( foundColorLayer != planes.end() ) {
+            // Either rendering failed or we have 2 layers (alpha mask and color image) or we have a single layer (color image)
+            assert(layers.size() == 0 || layers.size() <= 2);
+            if (!layers.empty() && (retCode == EffectInstance::eRenderRoIRetCodeOk)) {
+                if (layers.size() == 2) {
+                    std::map<ImageLayerDesc, ImagePtr>::iterator foundColorLayer = layers.find(inArgs.params->layer);
+                    if (foundColorLayer != layers.end()) {
                         colorImage = foundColorLayer->second;
                     }
-                    std::map<ImagePlaneDesc, ImagePtr>::iterator foundAlphaLayer = planes.find(inArgs.params->alphaLayer);
-                    if ( foundAlphaLayer != planes.end() ) {
+                    std::map<ImageLayerDesc, ImagePtr>::iterator foundAlphaLayer = layers.find(inArgs.params->alphaLayer);
+                    if (foundAlphaLayer != layers.end()) {
                         alphaImage = foundAlphaLayer->second;
                     }
                 } else {
-                    //only 1 plane, figure out if the alpha layer is the same as the color layer
+                    // only 1 layer, figure out if the alpha layer is the same as the color layer
                     if (inArgs.params->alphaLayer == inArgs.params->layer) {
                         if (inArgs.channels == eDisplayChannelsMatte) {
-                            alphaImage = colorImage = planes.begin()->second;
+                            alphaImage = colorImage = layers.begin()->second;
                         } else {
-                            colorImage = planes.begin()->second;
+                            colorImage = layers.begin()->second;
                         }
                     } else {
-                        colorImage = planes.begin()->second;
+                        colorImage = layers.begin()->second;
                     }
                 }
                 assert(colorImage);
@@ -1769,7 +1769,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                 } else {
                     assert(!it->ramBuffer);
 
-
                     FrameKey key(getNode().get(),
                                  inArgs.params->time,
                                  viewerHash,
@@ -1783,11 +1782,9 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                  inArgs.params->mipmapLevel,
                                  inputToRenderName,
                                  inArgs.params->layer,
-                                 inArgs.params->alphaLayer.getPlaneID() + inArgs.params->alphaChannelName,
+                                 inArgs.params->alphaLayer.getLayerID() + inArgs.params->alphaChannelName,
                                  inArgs.params->depth == eImageBitDepthFloat,
                                  inArgs.draftModeEnabled);
-
-
 
                     FrameParamsPtr cachedFrameParams( new FrameParams(bounds , key.getBitDepth(), tileBounds, ImagePtr() ) );
                     bool cached = appPTR->getTextureOrCreate(key, cachedFrameParams, &entryLocker, &it->cachedData);
@@ -3153,7 +3150,7 @@ ViewerInstance::setDisplayChannels(DisplayChannelsEnum channels,
 }
 
 void
-ViewerInstance::setActiveLayer(const ImagePlaneDesc& layer,
+ViewerInstance::setActiveLayer(const ImageLayerDesc& layer,
                                bool doRender)
 {
     // always running in the main thread
@@ -3172,7 +3169,7 @@ ViewerInstance::setActiveLayer(const ImagePlaneDesc& layer,
 }
 
 void
-ViewerInstance::setAlphaChannel(const ImagePlaneDesc& layer,
+ViewerInstance::setAlphaChannel(const ImageLayerDesc& layer,
                                 const std::string& channelName,
                                 bool doRender)
 {
@@ -3297,12 +3294,12 @@ ViewerInstance::isFullFrameProcessingEnabled() const
 
 void
 ViewerInstance::addAcceptedComponents(int /*inputNb*/,
-                                      std::list<ImagePlaneDesc>* comps)
+                                      std::list<ImageLayerDesc>* comps)
 {
     ///Viewer only supports RGBA for now.
-    comps->push_back( ImagePlaneDesc::getRGBAComponents() );
-    comps->push_back( ImagePlaneDesc::getRGBComponents() );
-    comps->push_back( ImagePlaneDesc::getAlphaComponents() );
+    comps->push_back(ImageLayerDesc::getRGBAComponents());
+    comps->push_back(ImageLayerDesc::getRGBComponents());
+    comps->push_back(ImageLayerDesc::getAlphaComponents());
 }
 
 ViewIdx

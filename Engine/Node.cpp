@@ -526,7 +526,7 @@ Node::getLastPaintStrokePoints(double time,
 ImagePtr
 Node::getOrRenderLastStrokeImage(unsigned int mipmapLevel,
                                  double par,
-                                 const ImagePlaneDesc& components,
+                                 const ImageLayerDesc& components,
                                  ImageBitDepthEnum depth) const
 {
     QMutexLocker k(&_imp->lastStrokeMovementMutex);
@@ -1567,7 +1567,7 @@ Node::loadKnob(const KnobIPtr & knob,
                     KnobStringPtr stringKnob = std::dynamic_pointer_cast<KnobString>((*it)->getKnob());
                     if (stringKnob) {
                         std::string serializedString = stringKnob->getValue();
-                        if ((*it)->_version < KNOB_SERIALIZATION_CHANGE_PLANES_SERIALIZATION) {
+                        if ((*it)->_version < KNOB_SERIALIZATION_CHANGE_LAYERS_SERIALIZATION) {
                             filterKnobChoiceOptionCompat(getPluginID(), getMajorVersion(), getMinorVersion(), projectInfos.vMajor, projectInfos.vMinor, projectInfos.vRev, isChoice->getName(), &serializedString);
                         }
                         isChoice->setActiveEntry(ChoiceOption(serializedString));
@@ -2036,15 +2036,15 @@ Node::makeInfoForInput(int inputNumber) const
     }
     { // image format
         ss << "<b>" << tr("Layers:").toStdString() << "</b> <font color=#c8c8c8>";
-        std::list<ImagePlaneDesc> availableLayers;
+        std::list<ImageLayerDesc> availableLayers;
         input->getAvailableLayers(time, ViewIdx(0), -1, &availableLayers); // get the layers in the input's output (thus the -1)!
-        std::list<ImagePlaneDesc>::iterator next = availableLayers.begin();
+        std::list<ImageLayerDesc>::iterator next = availableLayers.begin();
         if ( next != availableLayers.end() ) {
             ++next;
         }
-        for (std::list<ImagePlaneDesc>::iterator it = availableLayers.begin(); it != availableLayers.end(); ++it) {
+        for (std::list<ImageLayerDesc>::iterator it = availableLayers.begin(); it != availableLayers.end(); ++it) {
 
-            ss << " "  << it->getPlaneLabel() << '.' << it->getChannelsLabel();
+            ss << " " << it->getLayerLabel() << '.' << it->getChannelsLabel();
             if ( next != availableLayers.end() ) {
                 ss << ", ";
                 ++next;
@@ -2949,8 +2949,8 @@ Node::Implementation::createChannelSelector(int inputNb,
         processAllKnob->setIsMetadataSlave(true);
         page->addKnob(processAllKnob);
 
-        // If the effect wants by default to render all planes set default value
-        if ( isOutput && (effect->isPassThroughForNonRenderedPlanes() == EffectInstance::ePassThroughRenderAllRequestedPlanes) ) {
+        // If the effect wants by default to render all layers set default value
+        if (isOutput && (effect->isPassThroughForNonRenderedLayers() == EffectInstance::ePassThroughRenderAllRequestedLayers)) {
             processAllKnob->setDefaultValue(true);
             //Hide all other input selectors if choice is All in output
             for (std::map<int, ChannelSelector>::iterator it = channelsSelectors.begin(); it != channelsSelectors.end(); ++it) {
@@ -3832,18 +3832,18 @@ Node::makePreviewImage(SequenceTime time,
 
         frameRenderArgs.updateNodesRequest(request);
 
-        std::list<ImagePlaneDesc> requestedComps;
+        std::list<ImageLayerDesc> requestedComps;
         ImageBitDepthEnum depth = effect->getBitDepth(-1);
         {
-            ImagePlaneDesc plane, pairedPlane;
-            effect->getMetadataComponents(-1, &plane, &pairedPlane);
-            requestedComps.push_back(plane);
+            ImageLayerDesc layer, pairedLayer;
+            effect->getMetadataComponents(-1, &layer, &pairedLayer);
+            requestedComps.push_back(layer);
         }
 
 
         // Exceptions are caught because the program can run without a preview,
         // but any exception in renderROI is probably fatal.
-        std::map<ImagePlaneDesc, ImagePtr> planes;
+        std::map<ImageLayerDesc, ImagePtr> layers;
         try {
             std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs( new EffectInstance::RenderRoIArgs(time,
                                                                                                            scale,
@@ -3859,7 +3859,7 @@ Node::makePreviewImage(SequenceTime time,
                                                                                                            eStorageModeRAM /*returnStorage*/,
                                                                                                            time /*callerRenderTime*/) );
             EffectInstance::RenderRoIRetCode retCode;
-            retCode = effect->renderRoI(*renderArgs, &planes);
+            retCode = effect->renderRoI(*renderArgs, &layers);
             if (retCode != EffectInstance::eRenderRoIRetCodeOk) {
                 return false;
             }
@@ -3867,12 +3867,12 @@ Node::makePreviewImage(SequenceTime time,
             return false;
         }
 
-        if ( planes.empty() ) {
+        if (layers.empty()) {
             return false;
         }
 
-        const ImagePtr& img = planes.begin()->second;
-        const ImagePlaneDesc& components = img->getComponents();
+        const ImagePtr& img = layers.begin()->second;
+        const ImageLayerDesc& components = img->getComponents();
         int elemCount = components.getNumComponents();
 
         ///we convert only when input is Linear.
@@ -4776,17 +4776,16 @@ Node::getMasterNode() const
     return _imp->masterNode.lock();
 }
 
-
-ImagePlaneDesc
-Node::findClosestInList(const ImagePlaneDesc& comp,
-                        const std::list<ImagePlaneDesc> &components,
+ImageLayerDesc
+Node::findClosestInList(const ImageLayerDesc& comp,
+                        const std::list<ImageLayerDesc>& components,
                         bool multiPlanar)
 {
     if ( components.empty() ) {
-        return ImagePlaneDesc::getNoneComponents();
+        return ImageLayerDesc::getNoneComponents();
     }
-    std::list<ImagePlaneDesc>::const_iterator closestComp = components.end();
-    for (std::list<ImagePlaneDesc>::const_iterator it = components.begin(); it != components.end(); ++it) {
+    std::list<ImageLayerDesc>::const_iterator closestComp = components.end();
+    for (std::list<ImageLayerDesc>::const_iterator it = components.begin(); it != components.end(); ++it) {
         if ( closestComp == components.end() ) {
             if ( multiPlanar && ( it->getNumComponents() == comp.getNumComponents() ) ) {
                 return comp;
@@ -4809,17 +4808,17 @@ Node::findClosestInList(const ImagePlaneDesc& comp,
         }
     }
     if ( closestComp == components.end() ) {
-        return ImagePlaneDesc::getNoneComponents();
+        return ImageLayerDesc::getNoneComponents();
     }
 
     return *closestComp;
 }
 
-ImagePlaneDesc
+ImageLayerDesc
 Node::findClosestSupportedComponents(int inputNb,
-                                     const ImagePlaneDesc& comp) const
+                                     const ImageLayerDesc& comp) const
 {
-    std::list<ImagePlaneDesc> comps;
+    std::list<ImageLayerDesc> comps;
     {
         QMutexLocker l(&_imp->inputsMutex);
 
@@ -5579,16 +5578,16 @@ Node::getSelectedLayerChoiceRaw(int inputNb,
     return true;
 }
 
-ImagePlaneDesc
+ImageLayerDesc
 Node::Implementation::getSelectedLayerInternal(int inputNb,
-                                               const std::list<ImagePlaneDesc>& availableLayers,
+                                               const std::list<ImageLayerDesc>& availableLayers,
                                                const ChannelSelector& selector) const
 {
     NodePtr node;
 
     assert(_publicInterface);
     if (!_publicInterface) {
-        return ImagePlaneDesc();
+        return ImageLayerDesc();
     }
     if (inputNb == -1) {
         node = _publicInterface->shared_from_this();
@@ -5598,18 +5597,18 @@ Node::Implementation::getSelectedLayerInternal(int inputNb,
 
     KnobChoicePtr layerKnob = selector.layer.lock();
     if (!layerKnob) {
-        return ImagePlaneDesc();
+        return ImageLayerDesc();
     }
     ChoiceOption layerID = layerKnob->getActiveEntry();
 
-    for (std::list<ImagePlaneDesc>::const_iterator it2 = availableLayers.begin(); it2 != availableLayers.end(); ++it2) {
+    for (std::list<ImageLayerDesc>::const_iterator it2 = availableLayers.begin(); it2 != availableLayers.end(); ++it2) {
 
-        const std::string& layerName = it2->getPlaneID();
+        const std::string& layerName = it2->getLayerID();
         if (layerID.id == layerName) {
             return *it2;
         }
     }
-    return ImagePlaneDesc();
+    return ImageLayerDesc();
 } // Node::Implementation::getSelectedLayerInternal
 
 void
@@ -5647,10 +5646,10 @@ Node::Implementation::onLayerChanged(int inputNb,
                 enabledChan[i].lock()->setSecret(true);
             }
         } else {
-            std::list<ImagePlaneDesc> availablePlanes;
-            effect->getAvailableLayers(_publicInterface->getApp()->getTimeLine()->currentFrame(), ViewIdx(0), inputNb, &availablePlanes);
+            std::list<ImageLayerDesc> availableLayers;
+            effect->getAvailableLayers(_publicInterface->getApp()->getTimeLine()->currentFrame(), ViewIdx(0), inputNb, &availableLayers);
 
-            ImagePlaneDesc comp = getSelectedLayerInternal(inputNb, availablePlanes, selector);
+            ImageLayerDesc comp = getSelectedLayerInternal(inputNb, availableLayers, selector);
             _publicInterface->refreshEnabledKnobsLabel(comp);
         }
 
@@ -5659,7 +5658,7 @@ Node::Implementation::onLayerChanged(int inputNb,
 }
 
 void
-Node::refreshEnabledKnobsLabel(const ImagePlaneDesc& comp)
+Node::refreshEnabledKnobsLabel(const ImageLayerDesc& comp)
 {
     const std::vector<std::string>& channels = comp.getChannels();
     if (!_imp->enabledChan[0].lock()) {
@@ -5767,10 +5766,10 @@ Node::getProcessChannel(int channelIndex) const
 
 bool
 Node::getSelectedLayer(int inputNb,
-                       const std::list<ImagePlaneDesc>& availableLayers,
-                       std::bitset<4> *processChannels,
+                       const std::list<ImageLayerDesc>& availableLayers,
+                       std::bitset<4>* processChannels,
                        bool* isAll,
-                       ImagePlaneDesc* layer) const
+                       ImageLayerDesc* layer) const
 {
     // If there's a mask channel selector, fetch the mask layer
     int chanIndex = getMaskChannel(inputNb, availableLayers, layer);
@@ -7592,9 +7591,9 @@ Node::checkForPremultWarningAndCheckboxes()
 } // Node::checkForPremultWarningAndCheckboxes
 
 int
-Node::getMaskChannel(int inputNb, const std::list<ImagePlaneDesc>& availableLayers, ImagePlaneDesc* comps) const
+Node::getMaskChannel(int inputNb, const std::list<ImageLayerDesc>& availableLayers, ImageLayerDesc* comps) const
 {
-    *comps = ImagePlaneDesc::getNoneComponents();
+    *comps = ImageLayerDesc::getNoneComponents();
 
     std::map<int, MaskSelector >::const_iterator it = _imp->maskSelectors.find(inputNb);
 
@@ -7603,7 +7602,7 @@ Node::getMaskChannel(int inputNb, const std::list<ImagePlaneDesc>& availableLaye
     }
     ChoiceOption maskChannelID =  it->second.channel.lock()->getActiveEntry();
 
-    for (std::list<ImagePlaneDesc>::const_iterator it2 = availableLayers.begin(); it2 != availableLayers.end(); ++it2) {
+    for (std::list<ImageLayerDesc>::const_iterator it2 = availableLayers.begin(); it2 != availableLayers.end(); ++it2) {
 
         std::size_t nChans = (std::size_t)it2->getNumComponents();
         for (std::size_t c = 0; c < nChans; ++c) {
@@ -7638,12 +7637,11 @@ Node::refreshChannelSelectors()
             choices.push_back(ChoiceOption("None", "", ""));
         }
 
-
-        std::list<ImagePlaneDesc> availableComponents;
+        std::list<ImageLayerDesc> availableComponents;
         _imp->effect->getAvailableLayers(time, ViewIdx(0), inputNb,  &availableComponents);
 
-        for (std::list<ImagePlaneDesc>::const_iterator it2 = availableComponents.begin(); it2 != availableComponents.end(); ++it2) {
-            ChoiceOption layerOption = it2->getPlaneOption();
+        for (std::list<ImageLayerDesc>::const_iterator it2 = availableComponents.begin(); it2 != availableComponents.end(); ++it2) {
+            ChoiceOption layerOption = it2->getLayerOption();
             choices.push_back(layerOption);
         }
 
@@ -7669,19 +7667,17 @@ Node::refreshChannelSelectors()
         choices.push_back(ChoiceOption("None", "",""));
 
         // Get the mask input components
-        std::list<ImagePlaneDesc> availableComponents;
+        std::list<ImageLayerDesc> availableComponents;
 
         _imp->effect->getAvailableLayers(time, ViewIdx(0), inputNb,  &availableComponents);
 
-
-        for (std::list<ImagePlaneDesc>::const_iterator it2 = availableComponents.begin(); it2 != availableComponents.end(); ++it2) {
+        for (std::list<ImageLayerDesc>::const_iterator it2 = availableComponents.begin(); it2 != availableComponents.end(); ++it2) {
 
             std::size_t nChans = (std::size_t)it2->getNumComponents();
             for (std::size_t c = 0; c < nChans; ++c) {
                 choices.push_back(it2->getChannelOption(c));
             }
         }
-
 
         KnobChoicePtr channelKnob = it->second.channel.lock();
 
@@ -7695,9 +7691,9 @@ Node::refreshChannelSelectors()
 } // Node::refreshChannelSelectors()
 
 bool
-Node::addUserComponents(const ImagePlaneDesc& comps)
+Node::addUserComponents(const ImageLayerDesc& comps)
 {
-    ///The node has node channel selector, don't allow adding a custom plane.
+    /// The node has node channel selector, don't allow adding a custom layer.
     KnobIPtr outputLayerKnob = getKnobByName(kNatronOfxParamOutputChannels);
 
     if (_imp->channelsSelectors.empty() && !outputLayerKnob) {
@@ -7715,8 +7711,8 @@ Node::addUserComponents(const ImagePlaneDesc& comps)
 
     {
         QMutexLocker k(&_imp->createdComponentsMutex);
-        for (std::list<ImagePlaneDesc>::iterator it = _imp->createdComponents.begin(); it != _imp->createdComponents.end(); ++it) {
-            if ( it->getPlaneID() == comps.getPlaneID() ) {
+        for (std::list<ImageLayerDesc>::iterator it = _imp->createdComponents.begin(); it != _imp->createdComponents.end(); ++it) {
+            if (it->getLayerID() == comps.getLayerID()) {
                 return false;
             }
         }
@@ -7731,7 +7727,7 @@ Node::addUserComponents(const ImagePlaneDesc& comps)
         ///Set the selector to the new channel
         KnobChoice* layerChoice = dynamic_cast<KnobChoice*>( outputLayerKnob.get() );
         if (layerChoice) {
-            layerChoice->setValueFromID(comps.getPlaneID(), 0);
+            layerChoice->setValueFromID(comps.getLayerID(), 0);
         }
     }
 
@@ -7739,7 +7735,7 @@ Node::addUserComponents(const ImagePlaneDesc& comps)
 }
 
 void
-Node::getUserCreatedComponents(std::list<ImagePlaneDesc>* comps)
+Node::getUserCreatedComponents(std::list<ImageLayerDesc>* comps)
 {
     QMutexLocker k(&_imp->createdComponentsMutex);
 

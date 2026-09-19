@@ -52,11 +52,12 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Lut.h"
 #include "Engine/Node.h"
-#include "Engine/EffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
@@ -311,11 +312,11 @@ KnobGuiChoice::onEntriesPopulated()
 void
 KnobGuiChoice::onItemNewSelected()
 {
-    NewLayerDialog dialog( ImagePlaneDesc::getNoneComponents(), getGui() );
+    NewLayerDialog dialog(ImageLayerDesc::getNoneComponents(), getGui());
 
     if ( dialog.exec() ) {
-        ImagePlaneDesc comps = dialog.getComponents();
-        if ( comps == ImagePlaneDesc::getNoneComponents() ) {
+        ImageLayerDesc comps = dialog.getComponents();
+        if (comps == ImageLayerDesc::getNoneComponents()) {
             Dialogs::errorDialog( tr("Layer").toStdString(), tr("A layer must contain at least 1 channel and channel names must be "
                                                                 "Python compliant.").toStdString() );
 
@@ -362,22 +363,22 @@ KnobGuiChoice::updateToolTip()
 // The project only saves the choice ID that was selected and not the associated label.
 // If the ID cannot be found in the menu upon loading the project, then the ID of the choice
 // will be displayed in the menu.
-// For a plane selector, if the plane is not present in the menu when loading the project it will display
-// the raw ID of the plane which contains stuff that should not be displayed to the user.
-static void ensureUnknownChocieIsNotInternalPlaneID(QString& label)
+// For a layer selector, if the layer is not present in the menu when loading the project it will display
+// the raw ID of the layer which contains stuff that should not be displayed to the user.
+static void
+ensureUnknownChoiceIsNotInternalLayerID(QString& label)
 {
-    if (label.contains(QLatin1String(kNatronColorPlaneID))) {
-        label.replace(QLatin1String(kNatronColorPlaneID), QLatin1String(kNatronColorPlaneLabel)); ;
-    } else if (label.contains(QLatin1String(kNatronBackwardMotionVectorsPlaneID))) {
-        label.replace(QLatin1String(kNatronBackwardMotionVectorsPlaneID), QLatin1String(kNatronBackwardMotionVectorsPlaneLabel)); ;
-    } else if (label.contains(QLatin1String(kNatronForwardMotionVectorsPlaneID))) {
-        label.replace(QLatin1String(kNatronForwardMotionVectorsPlaneID), QLatin1String(kNatronForwardMotionVectorsPlaneLabel)); ;
-    } else if (label.contains(QLatin1String(kNatronDisparityLeftPlaneID))) {
-        label.replace(QLatin1String(kNatronDisparityLeftPlaneID), QLatin1String(kNatronDisparityLeftPlaneLabel)); ;
-    } else if (label.contains(QLatin1String(kNatronDisparityRightPlaneID))) {
-        label.replace(QLatin1String(kNatronDisparityRightPlaneID), QLatin1String(kNatronDisparityRightPlaneLabel)); ;
+    if (label.contains(QLatin1String(kNatronColorLayerID))) {
+        label.replace(QLatin1String(kNatronColorLayerID), QLatin1String(kNatronColorLayerLabel));
+    } else if (label.contains(QLatin1String(kNatronBackwardMotionVectorsLayerID))) {
+        label.replace(QLatin1String(kNatronBackwardMotionVectorsLayerID), QLatin1String(kNatronBackwardMotionVectorsLayerLabel));
+    } else if (label.contains(QLatin1String(kNatronForwardMotionVectorsLayerID))) {
+        label.replace(QLatin1String(kNatronForwardMotionVectorsLayerID), QLatin1String(kNatronForwardMotionVectorsLayerLabel));
+    } else if (label.contains(QLatin1String(kNatronDisparityLeftLayerID))) {
+        label.replace(QLatin1String(kNatronDisparityLeftLayerID), QLatin1String(kNatronDisparityLeftLayerLabel));
+    } else if (label.contains(QLatin1String(kNatronDisparityRightLayerID))) {
+        label.replace(QLatin1String(kNatronDisparityRightLayerID), QLatin1String(kNatronDisparityRightLayerLabel));
     }
-
 }
 
 void
@@ -408,7 +409,7 @@ KnobGuiChoice::updateGUI(int /*dimension*/)
     if ( _comboBox->isCascading() || activeEntry.id.empty() ) {
         _comboBox->setCurrentIndex_no_emit( knob->getValue() );
     } else {
-        ensureUnknownChocieIsNotInternalPlaneID(activeEntryLabel);
+        ensureUnknownChoiceIsNotInternalLayerID(activeEntryLabel);
         _comboBox->setCurrentText_no_emit( activeEntryLabel );
     }
 }

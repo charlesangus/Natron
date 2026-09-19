@@ -540,7 +540,7 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
 
     const U64 nodeHash = frameArgs->nodeHash;
     const double par = getAspectRatio(-1);
-    const ImagePlaneDesc& components = ImagePlaneDesc::getRGBAComponents();
+    const ImageLayerDesc& components = ImageLayerDesc::getRGBAComponents();
     const std::vector<std::string>& channelOrder = components.getChannels();
 
     ////////////////////////////////////////////////////////////////////////////////////////////

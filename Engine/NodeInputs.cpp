@@ -401,7 +401,7 @@ Node::isInputOnlyAlpha(int inputNb) const
 {
     assert(_imp->inputsInitialized);
 
-    const std::list<ImagePlaneDesc>& inputSupportedComps = _imp->inputsComponents[inputNb];
+    const std::list<ImageLayerDesc>& inputSupportedComps = _imp->inputsComponents[inputNb];
     return (inputSupportedComps.size() == 1 && inputSupportedComps.front().getNumComponents() == 1);
 }
 
@@ -466,7 +466,7 @@ Node::initializeInputs()
             _imp->inputsComponents[i].clear();
             if ( _imp->effect->isInputMask(i) ) {
                 //Force alpha for masks
-                _imp->inputsComponents[i].push_back( ImagePlaneDesc::getAlphaComponents() );
+                _imp->inputsComponents[i].push_back(ImageLayerDesc::getAlphaComponents());
             } else {
                 _imp->effect->addAcceptedComponents(i, &_imp->inputsComponents[i]);
             }

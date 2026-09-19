@@ -3201,22 +3201,22 @@ NodeGui::onOutputLayerChanged()
         }
     }
     KnobChoicePtr layerKnob = internalNode->getChannelSelectorKnob(-1);
-    ImagePlaneDesc outputLayer;
+    ImageLayerDesc outputLayer;
     {
         bool isAll;
-        std::list<ImagePlaneDesc> availableLayers;
+        std::list<ImageLayerDesc> availableLayers;
         internalNode->getEffectInstance()->getAvailableLayers(internalNode->getApp()->getTimeLine()->currentFrame(), ViewIdx(0), -1,  &availableLayers);
 
 
         internalNode->getSelectedLayer(-1, availableLayers, 0, &isAll, &outputLayer);
     }
     if (!processAll && outputLayer.getNumComponents() > 0) {
-        if (!outputLayer.isColorPlane()) {
+        if (!outputLayer.isColorLayer()) {
             if (!extraLayerStr.isEmpty()) {
                 extraLayerStr.append( QString::fromUtf8("<br />") );
             }
             extraLayerStr.push_back( QLatin1Char('(') );
-            extraLayerStr.append( QString::fromUtf8( outputLayer.getPlaneLabel().c_str() ) );
+            extraLayerStr.append(QString::fromUtf8(outputLayer.getLayerLabel().c_str()));
             extraLayerStr.push_back( QLatin1Char(')') );
         }
     }

@@ -34,7 +34,7 @@
 #include "Engine/DeepImage.h"
 #include "Engine/DeepPixelOps.h"
 #include "Engine/Image.h"
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 
@@ -68,9 +68,9 @@ DeepToImage::initializeKnobs()
 
 void
 DeepToImage::addAcceptedComponents(int /*inputNb*/,
-                                   std::list<ImagePlaneDesc>* comps)
+                                   std::list<ImageLayerDesc>* comps)
 {
-    comps->push_back(ImagePlaneDesc::getRGBAComponents());
+    comps->push_back(ImageLayerDesc::getRGBAComponents());
 }
 
 void
@@ -126,10 +126,10 @@ DeepToImage::render(const RenderActionArgs& args)
         return eStatusFailed;
     }
 
-    const std::vector<std::string>& channelOrder = ImagePlaneDesc::getRGBAComponents().getChannels();
+    const std::vector<std::string>& channelOrder = ImageLayerDesc::getRGBAComponents().getChannels();
     DeepPixelScratch scratch;
     DeepTidyWorkspace work;
-    for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator it = args.outputPlanes.begin(); it != args.outputPlanes.end(); ++it) {
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
         const ImagePtr& image = it->second;
 
         if (!image || (image->getBitDepth() != eImageBitDepthFloat) || (image->getComponentsCount() != channelOrder.size())) {

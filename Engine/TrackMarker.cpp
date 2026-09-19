@@ -28,20 +28,20 @@
 #include <QCoreApplication>
 
 #include "Engine/AbortableRenderInfo.h"
-#include "Engine/CreateNodeArgs.h"
-#include "Engine/NodeSerialization.h"
-#include "Engine/AppManager.h"
 #include "Engine/AppInstance.h"
-#include "Engine/KnobTypes.h"
+#include "Engine/AppManager.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/TrackerContext.h"
-#include "Engine/TimeLine.h"
-#include "Engine/TrackerSerialization.h"
+#include "Engine/NodeSerialization.h"
 #include "Engine/TLSHolder.h"
+#include "Engine/TimeLine.h"
+#include "Engine/TrackerContext.h"
+#include "Engine/TrackerSerialization.h"
 
 #include <ofxNatron.h>
 
@@ -1162,9 +1162,9 @@ std::pair<ImagePtr, RectI>
 TrackMarker::getMarkerImage(int time,
                             const RectI& roi) const
 {
-    std::list<ImagePlaneDesc> components;
+    std::list<ImageLayerDesc> components;
 
-    components.push_back( ImagePlaneDesc::getRGBComponents() );
+    components.push_back(ImageLayerDesc::getRGBComponents());
 
     const unsigned int mipmapLevel = 0;
     assert( !roi.isNull() );
@@ -1208,16 +1208,16 @@ TrackMarker::getMarkerImage(int time,
                                         node->getEffectInstance().get(),
                                         eStorageModeRAM /*returnOpenGlTex*/,
                                         time);
-    std::map<ImagePlaneDesc, ImagePtr> planes;
-    EffectInstance::RenderRoIRetCode stat = input->getEffectInstance()->renderRoI(args, &planes);
+    std::map<ImageLayerDesc, ImagePtr> layers;
+    EffectInstance::RenderRoIRetCode stat = input->getEffectInstance()->renderRoI(args, &layers);
 
     appPTR->getAppTLS()->cleanupTLSForThread();
 
-    if ( (stat != EffectInstance::eRenderRoIRetCodeOk) || planes.empty() ) {
+    if ((stat != EffectInstance::eRenderRoIRetCodeOk) || layers.empty()) {
         return std::make_pair(ImagePtr(), roi);
     }
 
-    return std::make_pair(planes.begin()->second, roi);
+    return std::make_pair(layers.begin()->second, roi);
 } // TrackMarker::getMarkerImage
 
 void
@@ -1342,7 +1342,7 @@ TrackMarkerPM::trackMarker(bool forward,
                 double areaPixels = (topRight.x - btmLeft.x) * (topRight.y - btmLeft.y);
                 NodePtr trackerInput = trackerNode->getInput(0);
                 if (trackerInput) {
-                    ImagePlaneDesc comps, paireComps;
+                    ImageLayerDesc comps, paireComps;
                     trackerInput->getEffectInstance()->getMetadataComponents(-1, &comps, &paireComps);
                     areaPixels *= comps.getNumComponents();
                 }

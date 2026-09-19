@@ -76,7 +76,7 @@ public:
     KnobChoiceWPtr channel;
     mutable QMutex compsMutex;
     //Stores the components available at build time of the choice menu
-    std::vector<std::pair<ImagePlaneDesc, NodeWPtr> > compsAvailable;
+    std::vector<std::pair<ImageLayerDesc, NodeWPtr>> compsAvailable;
 
     MaskSelector()
         : enabled()
@@ -312,8 +312,7 @@ public:
 
     void onMaskSelectorChanged(int inputNb, const MaskSelector& selector);
 
-    ImagePlaneDesc getSelectedLayerInternal(int inputNb, const std::list<ImagePlaneDesc>& availableLayers, const ChannelSelector& selector) const;
-
+    ImageLayerDesc getSelectedLayerInternal(int inputNb, const std::list<ImageLayerDesc>& availableLayers, const ChannelSelector& selector) const;
 
     Node* _publicInterface;
     NodeCollectionWPtr group;
@@ -336,8 +335,8 @@ public:
 
     ///The accepted components in input and in output of the plug-in
     ///These two are also protected by inputsMutex
-    std::vector<std::list<ImagePlaneDesc> > inputsComponents;
-    std::list<ImagePlaneDesc> outputComponents;
+    std::vector<std::list<ImageLayerDesc>> inputsComponents;
+    std::list<ImageLayerDesc> outputComponents;
     mutable QMutex nameMutex;
     mutable QMutex inputsLabelsMutex;
     std::vector<std::string> inputLabels; // inputs name, protected by inputsLabelsMutex
@@ -454,7 +453,7 @@ public:
     bool nodeCreated;
     bool wasCreatedSilently;
     mutable QMutex createdComponentsMutex;
-    std::list<ImagePlaneDesc> createdComponents; // comps created by the user
+    std::list<ImageLayerDesc> createdComponents; // comps created by the user
     RotoDrawableItemWPtr paintStroke;
 
     // These are dynamic props

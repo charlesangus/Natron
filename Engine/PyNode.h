@@ -35,11 +35,11 @@
 
 #include <list>
 
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h" // KnobI
 #include "Engine/PyNodeGroup.h" // Group
 #include "Engine/RectD.h"
-#include "Engine/EngineFwd.h"
 
 NATRON_NAMESPACE_ENTER;
 NATRON_PYTHON_NAMESPACE_ENTER;
@@ -49,7 +49,7 @@ class ImageLayer
     QString _layerName;
     QString _componentsPrettyName;
     QStringList _componentsName;
-    ImagePlaneDescPtr _comps;
+    ImageLayerDescPtr _comps;
 
 public:
 
@@ -57,9 +57,9 @@ public:
                const QString& componentsPrettyName,
                const QStringList& componentsName);
 
-    ImageLayer(const ImagePlaneDesc& comps);
+    ImageLayer(const ImageLayerDesc& comps);
 
-    const ImagePlaneDesc& getInternalComps() const
+    const ImageLayerDesc& getInternalComps() const
     {
         return *_comps;
     }
@@ -68,7 +68,7 @@ public:
 
     static int getHash(const ImageLayer& layer);
 
-    bool isColorPlane() const;
+    bool isColorLayer() const;
 
     int getNumComponents() const;
 
@@ -373,7 +373,7 @@ public:
 
     void setSubGraphEditable(bool editable);
 
-    bool addUserPlane(const QString& planeName, const QStringList& channels);
+    bool addUserLayer(const QString& layerName, const QStringList& channels);
 
     std::list<ImageLayer> getAvailableLayers(int inputNb) const;
 

@@ -44,8 +44,8 @@
 #include "Engine/DeepImageParams.h"
 #include "Engine/Image.h"
 #include "Engine/ImageKey.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/ImageParams.h"
-#include "Engine/ImagePlaneDesc.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -191,7 +191,7 @@ TEST(DeepImageCacheTest, EvictionRespectsOwnBudgetAndLeavesImageCacheUntouched)
     Cache<Image> imageCache("DeepImageCacheTest_ImageSideCache", 1, 64ULL * 1024 * 1024, 1.);
     ImageKey imgKey = Image::makeKey(NULL, 555, false, 1., ViewIdx(0), false, false);
     ImageParamsPtr imgParams = Image::makeParams(RectD(0, 0, 4, 4), 1., 0, false,
-                                                 ImagePlaneDesc::getRGBAComponents(),
+                                                 ImageLayerDesc::getRGBAComponents(),
                                                  eImageBitDepthFloat,
                                                  eImagePremultiplicationPremultiplied,
                                                  eImageFieldingOrderNone);
@@ -392,7 +392,7 @@ TEST(DeepImageCacheTest, EvictLRUFromMemoryCachesDrainsBothAppWideCaches)
     }
 
     ImageParamsPtr imgParams = Image::makeParams(RectD(0, 0, 4, 4), 1., 0, false,
-                                                 ImagePlaneDesc::getRGBAComponents(),
+                                                 ImageLayerDesc::getRGBAComponents(),
                                                  eImageBitDepthFloat,
                                                  eImagePremultiplicationPremultiplied,
                                                  eImageFieldingOrderNone);

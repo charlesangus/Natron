@@ -42,10 +42,9 @@ CLANG_DIAG_ON(uninitialized)
 #include "Global/GlobalDefines.h"
 #include "Global/QtCompat.h"
 
-#include "Engine/Singleton.h"
-#include "Engine/Knob.h"
-#include "Engine/ImagePlaneDesc.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/Knob.h"
+#include "Engine/Singleton.h"
 
 #include "Gui/CurveSelection.h"
 #include "Gui/KnobGui.h"

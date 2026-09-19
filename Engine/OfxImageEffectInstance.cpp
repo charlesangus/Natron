@@ -289,8 +289,8 @@ const std::vector<std::string>&
 OfxImageEffectInstance::getUserCreatedPlanes() const
 {
     OfxEffectInstancePtr effect = _ofxEffectInstance.lock();
-    const std::vector<std::string>& planes = effect->getUserPlanes();
-    return planes;
+    const std::vector<std::string>& ofxPlanes = effect->getUserLayers();
+    return ofxPlanes;
 }
 
 int
@@ -304,8 +304,8 @@ OfxImageEffectInstance::getDimension(const std::string &name) const OFX_EXCEPTIO
         return OFX::Host::ImageEffect::Instance::getDimension(name);
     }
     try {
-        const std::vector<std::string>& planes = effect->getUserPlanes();
-        return (int)planes.size();
+        const std::vector<std::string>& ofxPlanes = effect->getUserLayers();
+        return (int)ofxPlanes.size();
     } catch (...) {
         throw OFX::Host::Property::Exception(kOfxStatErrUnknown);
     }
@@ -1189,15 +1189,15 @@ OfxImageEffectInstance::setupClipPreferencesArgsFromMetadata(NodeMetadata& metad
         std::string ofxClipComponentStr;
         std::string componentsType = metadata.getComponentsType(inputNb);
         int nComps = metadata.getNComps(inputNb);
-        ImagePlaneDesc natronPlane = ImagePlaneDesc::mapNCompsToColorPlane(nComps);
-        if (componentsType == kNatronColorPlaneID) {
-            ofxClipComponentStr = ImagePlaneDesc::mapPlaneToOFXComponentsTypeString(natronPlane);
+        ImageLayerDesc natronLayer = ImageLayerDesc::mapNCompsToColorLayer(nComps);
+        if (componentsType == kNatronColorLayerID) {
+            ofxClipComponentStr = ImageLayerDesc::mapLayerToOFXComponentsTypeString(natronLayer);
         } else if (componentsType == kNatronDisparityComponentsLabel) {
             ofxClipComponentStr = kFnOfxImageComponentStereoDisparity;
         } else if (componentsType == kNatronMotionComponentsLabel) {
             ofxClipComponentStr = kFnOfxImageComponentMotionVectors;
         } else {
-            ofxClipComponentStr = ImagePlaneDesc::mapPlaneToOFXComponentsTypeString(natronPlane);
+            ofxClipComponentStr = ImageLayerDesc::mapLayerToOFXComponentsTypeString(natronLayer);
         }
 
         outArgs.setStringProperty( componentParamName.c_str(), ofxClipComponentStr.c_str() ); // as it is variable dimension, there is no default value, so we have to set it explicitly
@@ -1280,16 +1280,16 @@ OfxImageEffectInstance::getClipPreferences_safe(NodeMetadata& defaultPrefs)
 #       endif
 
             defaultPrefs.setBitDepth( inputNb, OfxClipInstance::ofxDepthToNatronDepth( outArgs.getStringProperty(depthParamName) ) );
-            ImagePlaneDesc plane, pairedPlane;
+            ImageLayerDesc layer, pairedLayer;
             std::string ofxComponentsType = outArgs.getStringProperty(componentParamName);
-            ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(ofxComponentsType, &plane, &pairedPlane);
-            defaultPrefs.setNComps( inputNb, plane.getNumComponents() );
+            ImageLayerDesc::mapOFXComponentsTypeStringToLayers(ofxComponentsType, &layer, &pairedLayer);
+            defaultPrefs.setNComps(inputNb, layer.getNumComponents());
 
-            if (plane.isColorPlane()) {
-                defaultPrefs.setComponentsType( inputNb, kNatronColorPlaneID);
-            } else if (plane.getChannelsLabel() == kNatronMotionComponentsLabel) {
+            if (layer.isColorLayer()) {
+                defaultPrefs.setComponentsType(inputNb, kNatronColorLayerID);
+            } else if (layer.getChannelsLabel() == kNatronMotionComponentsLabel) {
                 defaultPrefs.setComponentsType( inputNb, kNatronMotionComponentsLabel);
-            } else if (plane.getChannelsLabel() == kNatronDisparityComponentsLabel) {
+            } else if (layer.getChannelsLabel() == kNatronDisparityComponentsLabel) {
                 defaultPrefs.setComponentsType( inputNb, kNatronDisparityComponentsLabel);
             } else {
                 defaultPrefs.setComponentsType( inputNb, ofxComponentsType);

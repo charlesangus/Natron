@@ -69,7 +69,7 @@ struct ComponentsNeededResults
     EffectInstance::ComponentsNeededMap neededComps;
     std::bitset<4> processChannels;
     bool processAll;
-    std::list<ImagePlaneDesc> passThroughPlanes;
+    std::list<ImageLayerDesc> passThroughLayers;
     int passThroughInputNb;
     double passThroughTime;
     ViewIdx passThroughView;
@@ -127,11 +127,11 @@ public:
 
     void setIdentityResult(U64 hash, double time, ViewIdx view, int inputNbIdentity, ViewIdx inputView, double identityTime);
 
-    bool getComponentsNeededResults(U64 hash, double time, ViewIdx view, EffectInstance::ComponentsNeededMap* neededComps, std::bitset<4> *processChannels, bool *processAll,
-                                    std::list<ImagePlaneDesc> *passThroughPlanes, int* passThroughInputNb, ViewIdx *passThroughView, double* passThroughTime);
+    bool getComponentsNeededResults(U64 hash, double time, ViewIdx view, EffectInstance::ComponentsNeededMap* neededComps, std::bitset<4>* processChannels, bool* processAll,
+                                    std::list<ImageLayerDesc>* passThroughLayers, int* passThroughInputNb, ViewIdx* passThroughView, double* passThroughTime);
 
-    void setComponentsNeededResults(U64 hash, double time, ViewIdx view, const EffectInstance::ComponentsNeededMap& neededComps, std::bitset<4> processChannels,  bool processAll,
-                                    const std::list<ImagePlaneDesc>& passThroughPlanes,int passThroughInputNb, ViewIdx passThroughView, double passThroughTime);
+    void setComponentsNeededResults(U64 hash, double time, ViewIdx view, const EffectInstance::ComponentsNeededMap& neededComps, std::bitset<4> processChannels, bool processAll,
+                                    const std::list<ImageLayerDesc>& passThroughLayers, int passThroughInputNb, ViewIdx passThroughView, double passThroughTime);
 
     bool getRoDResult(U64 hash, double time, ViewIdx view, unsigned int mipmapLevel, RectD* rod);
 
@@ -333,16 +333,16 @@ public:
         double par;
         ImageBitDepthEnum outputClipPrefDepth;
         ComponentsNeededMapPtr  compsNeeded;
-        ImagePlaneDesc outputClipPrefsComps;
+        ImageLayerDesc outputClipPrefsComps;
         bool byPassCache;
         std::bitset<4> processChannels;
-        ImagePlanesToRenderPtr planes;
+        ImageLayersToRenderPtr layers;
     };
 
     RenderingFunctorRetEnum tiledRenderingFunctor(TiledRenderingFunctorArgs & args,  const RectToRender & specificData,
                                                   QThread* callingThread);
 
-    RenderingFunctorRetEnum tiledRenderingFunctor(const RectToRender & rectToRender,
+    RenderingFunctorRetEnum tiledRenderingFunctor(const RectToRender& rectToRender,
                                                   const bool renderFullScaleThenDownscale,
                                                   const bool isSequentialRender,
                                                   const bool isRenderResponseToUserInteraction,
@@ -350,17 +350,16 @@ public:
                                                   const int preferredInput,
                                                   const unsigned int mipmapLevel,
                                                   const unsigned int renderMappedMipmapLevel,
-                                                  const RectD & rod,
+                                                  const RectD& rod,
                                                   const double time,
                                                   const ViewIdx view,
                                                   const double par,
                                                   const bool byPassCache,
                                                   const ImageBitDepthEnum outputClipPrefDepth,
-                                                  const ImagePlaneDesc & outputClipPrefsComps,
-                                                  const ComponentsNeededMapPtr & compsNeeded,
+                                                  const ImageLayerDesc& outputClipPrefsComps,
+                                                  const ComponentsNeededMapPtr& compsNeeded,
                                                   const std::bitset<4>& processChannels,
-                                                  const ImagePlanesToRenderPtr & planes);
-
+                                                  const ImageLayersToRenderPtr& layers);
 
     ///These are the image passed to the plug-in to render
     /// - fullscaleMappedImage is the fullscale image remapped to what the plugin can support (components/bitdepth)
@@ -388,16 +387,16 @@ public:
                                           const bool renderFullScaleThenDownscale,
                                           const bool isSequentialRender,
                                           const bool isRenderResponseToUserInteraction,
-                                          const RectI & renderMappedRectToRender,
-                                          const RectI & downscaledRectToRender,
+                                          const RectI& renderMappedRectToRender,
+                                          const RectI& downscaledRectToRender,
                                           const bool byPassCache,
                                           const ImageBitDepthEnum outputClipPrefDepth,
-                                          const ImagePlaneDesc & outputClipPrefsComps,
+                                          const ImageLayerDesc& outputClipPrefsComps,
                                           const std::bitset<4>& processChannels,
-                                          const ImagePtr & originalInputImage,
-                                          const ImagePtr & maskImage,
+                                          const ImagePtr& originalInputImage,
+                                          const ImagePtr& maskImage,
                                           const ImagePremultiplicationEnum originalImagePremultiplication,
-                                          ImagePlanesToRender & planes);
+                                          ImageLayersToRender& layers);
 
     static bool aborted(bool isRenderResponseToUserInteraction,
                         const AbortableRenderInfoPtr& abortInfo,

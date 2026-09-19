@@ -187,11 +187,11 @@ PrecompNode::getPluginGrouping(std::list<std::string>* grouping) const
 
 void
 PrecompNode::addAcceptedComponents(int /*inputNb*/,
-                                   std::list<ImagePlaneDesc>* comps)
+                                   std::list<ImageLayerDesc>* comps)
 {
-    comps->push_back( ImagePlaneDesc::getRGBAComponents() );
-    comps->push_back( ImagePlaneDesc::getRGBComponents() );
-    comps->push_back( ImagePlaneDesc::getAlphaComponents() );
+    comps->push_back(ImageLayerDesc::getRGBAComponents());
+    comps->push_back(ImageLayerDesc::getRGBComponents());
+    comps->push_back(ImageLayerDesc::getAlphaComponents());
 }
 
 void

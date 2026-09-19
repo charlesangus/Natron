@@ -28,9 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include "Engine/ImageLayerDesc.h"
 #include "Global/GlobalDefines.h"
-#include "Engine/ImagePlaneDesc.h"
-
 
 NATRON_NAMESPACE_ENTER
 

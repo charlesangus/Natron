@@ -41,12 +41,12 @@ CLANG_DIAG_ON(deprecated)
 #include <QMutex>
 
 #include "Engine/AppManager.h"
-#include "Global/KeySymbols.h"
-#include "Engine/ImagePlaneDesc.h"
 #include "Engine/CacheEntryHolder.h"
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/Markdown.h"
+#include "Engine/ViewIdx.h"
+#include "Global/KeySymbols.h"
 
 #define NATRON_PARAMETER_PAGE_NAME_EXTRA "Node"
 #define NATRON_PARAMETER_PAGE_NAME_INFO "Info"
@@ -63,10 +63,9 @@ CLANG_DIAG_ON(deprecated)
 #define kEnablePreviewKnobName "enablePreview"
 #define kOutputChannelsKnobName "channels"
 
-#define kNodeParamProcessAllLayers "processAllPlanes"
-#define kNodeParamProcessAllLayersLabel "All Planes"
-#define kNodeParamProcessAllLayersHint "When checked all planes in input will be processed and output to the same plane as in input. It is useful for example to apply a Transform effect on all planes."
-
+#define kNodeParamProcessAllLayers "processAllLayers"
+#define kNodeParamProcessAllLayersLabel "All Layers"
+#define kNodeParamProcessAllLayersHint "When checked all layers in input will be processed and output to the same layer as in input. It is useful for example to apply a Transform effect on all layers."
 
 #define kOfxMaskInvertParamName "maskInvert"
 #define kOfxMixParamName "mix"
@@ -365,16 +364,16 @@ public:
      * @brief Returns true if the given input supports the given components. If inputNb equals -1
      * then this function will check whether the effect can produce the given components.
      **/
-    bool isSupportedComponent(int inputNb, const ImagePlaneDesc& comp) const;
+    bool isSupportedComponent(int inputNb, const ImageLayerDesc& comp) const;
 
     /**
      * @brief Returns the most appropriate components that can be supported by the inputNb.
      * If inputNb equals -1 then this function will check the output components.
      **/
-    ImagePlaneDesc findClosestSupportedComponents(int inputNb, const ImagePlaneDesc& comp) const;
-    static ImagePlaneDesc findClosestInList(const ImagePlaneDesc& comp,
-                                             const std::list<ImagePlaneDesc> &components,
-                                             bool multiPlanar);
+    ImageLayerDesc findClosestSupportedComponents(int inputNb, const ImageLayerDesc& comp) const;
+    static ImageLayerDesc findClosestInList(const ImageLayerDesc& comp,
+                                            const std::list<ImageLayerDesc>& components,
+                                            bool multiPlanar);
 
     ImageBitDepthEnum getBestSupportedBitDepth() const;
     bool isSupportedBitDepth(ImageBitDepthEnum depth) const;
@@ -388,7 +387,7 @@ public:
      * B = 2
      * A = 3
      **/
-    int getMaskChannel(int inputNb, const std::list<ImagePlaneDesc>& availableLayers, ImagePlaneDesc* comps) const;
+    int getMaskChannel(int inputNb, const std::list<ImageLayerDesc>& availableLayers, ImageLayerDesc* comps) const;
 
     int isMaskChannelKnob(const KnobI* knob) const;
 
@@ -535,9 +534,9 @@ public:
                                   std::list<std::list<std::pair<Point, double> > >* strokes,
                                   int* strokeIndex) const;
     ImagePtr getOrRenderLastStrokeImage(unsigned int mipmapLevel,
-                                                        double par,
-                                                        const ImagePlaneDesc& components,
-                                                        ImageBitDepthEnum depth) const;
+                                        double par,
+                                        const ImageLayerDesc& components,
+                                        ImageBitDepthEnum depth) const;
 
     void setWhileCreatingPaintStroke(bool creating);
     bool isDuringPaintStrokeCreation() const;
@@ -1325,11 +1324,11 @@ public:
 
     KnobBoolPtr getProcessAllLayersKnob() const;
 
-    bool getSelectedLayer(int inputNb, const std::list<ImagePlaneDesc>& availableLayers, std::bitset<4> *processChannels, bool* isAll, ImagePlaneDesc *layer) const;
+    bool getSelectedLayer(int inputNb, const std::list<ImageLayerDesc>& availableLayers, std::bitset<4>* processChannels, bool* isAll, ImageLayerDesc* layer) const;
 
-    bool addUserComponents(const ImagePlaneDesc& comps);
+    bool addUserComponents(const ImageLayerDesc& comps);
 
-    void getUserCreatedComponents(std::list<ImagePlaneDesc>* comps);
+    void getUserCreatedComponents(std::list<ImageLayerDesc>* comps);
 
     bool hasAtLeastOneChannelToProcess() const;
 
@@ -1386,7 +1385,7 @@ public:
     void clearStreamWarning(StreamWarningEnum warning);
     void getStreamWarnings(std::map<StreamWarningEnum, QString>* warnings) const;
 
-    void refreshEnabledKnobsLabel(const ImagePlaneDesc& layer);
+    void refreshEnabledKnobsLabel(const ImageLayerDesc& layer);
 
 private:
 

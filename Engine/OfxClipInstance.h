@@ -48,10 +48,10 @@ CLANG_DIAG_ON(unknown-pragmas)
 
 #include "Global/GlobalDefines.h"
 
-#include "Engine/Image.h"
-#include "Engine/ImagePlaneDesc.h"
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/Image.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -215,7 +215,7 @@ public:
 
     void setClipTLS(ViewIdx view,
                     unsigned int mipmapLevel,
-                    const ImagePlaneDesc& components);
+                    const ImageLayerDesc& components);
     void invalidateClipTLS();
 
     //returns the index of this clip if it is an input clip, otherwise -1.
@@ -239,8 +239,8 @@ public:
         //if this is the same image
         std::list<OfxImageCommon*> imagesBeingRendered;
 
-        //Used to determine the plane to render in a call to getOutputImageInternal()
-        ImagePlaneDesc clipComponents;
+        // Used to determine the layer to render in a call to getOutputImageInternal()
+        ImageLayerDesc clipComponents;
 
         RenderActionData()
             : imagesBeingRendered()

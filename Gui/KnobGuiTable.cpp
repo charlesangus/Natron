@@ -646,17 +646,17 @@ KnobGuiLayers::~KnobGuiLayers()
 bool
 KnobGuiLayers::addNewUserEntry(QStringList& row)
 {
-    NewLayerDialog dialog( ImagePlaneDesc::getNoneComponents(), getGui() );
+    NewLayerDialog dialog(ImageLayerDesc::getNoneComponents(), getGui());
 
     if ( dialog.exec() ) {
-        ImagePlaneDesc comps = dialog.getComponents();
-        if ( comps == ImagePlaneDesc::getNoneComponents() ) {
+        ImageLayerDesc comps = dialog.getComponents();
+        if (comps == ImageLayerDesc::getNoneComponents()) {
             Dialogs::errorDialog( tr("Layer").toStdString(), tr("A layer must contain at least 1 channel and channel names must be "
                                                                 "Python compliant.").toStdString() );
 
             return false;
         }
-        row.push_back( QString::fromUtf8( comps.getPlaneLabel().c_str() ) );
+        row.push_back(QString::fromUtf8(comps.getLayerLabel().c_str()));
 
         std::list<std::vector<std::string> > table;
         KnobLayersPtr knob = _knob.lock();
@@ -665,7 +665,7 @@ KnobGuiLayers::addNewUserEntry(QStringList& row)
         }
         knob->getTable(&table);
         for (std::list<std::vector<std::string> >::iterator it = table.begin(); it != table.end(); ++it) {
-            if ( (*it)[0] == comps.getPlaneLabel() ) {
+            if ((*it)[0] == comps.getLayerLabel()) {
                 Dialogs::errorDialog( tr("Layer").toStdString(), tr("A Layer with the same name already exists").toStdString() );
 
                 return false;
@@ -697,11 +697,12 @@ KnobGuiLayers::editUserEntry(QStringList& row)
     for (int i = 0; i < splits.size(); ++i) {
         channels.push_back( splits[i].toStdString() );
     }
-    ImagePlaneDesc original(row[0].toStdString(), row[0].toStdString(), std::string(), channels);;
+    ImageLayerDesc original(row[0].toStdString(), row[0].toStdString(), std::string(), channels);
+    ;
     NewLayerDialog dialog( original, getGui() );
     if ( dialog.exec() ) {
-        ImagePlaneDesc comps = dialog.getComponents();
-        if ( comps == ImagePlaneDesc::getNoneComponents() ) {
+        ImageLayerDesc comps = dialog.getComponents();
+        if (comps == ImageLayerDesc::getNoneComponents()) {
             Dialogs::errorDialog( tr("Layer").toStdString(), tr("A layer must contain at least 1 channel and channel names must be "
                                                                 "Python compliant.").toStdString() );
 
@@ -709,7 +710,7 @@ KnobGuiLayers::editUserEntry(QStringList& row)
         }
 
         std::string oldLayerName = row[0].toStdString();
-        row[0] = ( QString::fromUtf8( comps.getPlaneLabel().c_str() ) );
+        row[0] = (QString::fromUtf8(comps.getLayerLabel().c_str()));
 
         KnobLayersPtr knob = _knob.lock();
         if (!knob) {
@@ -718,7 +719,7 @@ KnobGuiLayers::editUserEntry(QStringList& row)
         std::list<std::vector<std::string> > table;
         knob->getTable(&table);
         for (std::list<std::vector<std::string> >::iterator it = table.begin(); it != table.end(); ++it) {
-            if ( ( (*it)[0] == comps.getPlaneLabel() ) && ( (*it)[0] != oldLayerName ) ) {
+            if (((*it)[0] == comps.getLayerLabel()) && ((*it)[0] != oldLayerName)) {
                 Dialogs::errorDialog( tr("Layer").toStdString(), tr("A Layer with the same name already exists").toStdString() );
 
                 return false;

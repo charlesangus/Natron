@@ -3,22 +3,31 @@
 export LANG=C
 
 # Mirrors the "format" job in .github/workflows/checks.yml: clang-format on
-# changed lines only, via git-clang-format. This hook is advisory, not a
-# gate substitute -- the CI "format" check is what's actually required on
-# main. If clang-format/git-clang-format isn't installed locally, warn and
-# let the commit through rather than blocking on a missing optional tool.
+# changed lines only, via git-clang-format. Unlike CI, this hook fixes
+# formatting in place (re-staging the result) instead of only reporting it,
+# so a formatting slip never has to round-trip through a failed CI run.
 
 EXTENSIONS="c,cc,cpp,h,hpp,mm"
+PATHSPEC=(-- . ':(exclude)Documentation/templates/')
+PIN_INSTALL_CMD="pip install --user --break-system-packages clang-format==21.1.8"
 
-warn_and_pass() {
+indent() {
+	local prefix="$1" line
+	while IFS= read -r line; do
+		printf '%s%s\n' "$prefix" "$line"
+	done
+}
+
+fail_missing_tool() {
 	echo "git pre-commit hook:"
 	echo "       $1"
-	echo "       Skipping the local format check; CI's \"format\" check will still run on the PR."
-	exit 0
+	echo "       Install the pinned version CI uses:"
+	echo "       $PIN_INSTALL_CMD"
+	exit 1
 }
 
 if ! command -v python3 >/dev/null 2>&1; then
-	warn_and_pass "python3 not found."
+	fail_missing_tool "python3 not found."
 fi
 
 # Prefer the pinned clang-format shipped by the pip "clang-format" package
@@ -29,31 +38,55 @@ if [ -z "$CF_BINARY" ] || [ ! -x "$CF_BINARY" ]; then
 	CF_BINARY="$(command -v clang-format)"
 fi
 if [ -z "$CF_BINARY" ]; then
-	warn_and_pass "Did not find clang-format, please install it before continuing (pip install clang-format, or see tools/ci/local/README.md)."
+	fail_missing_tool "Did not find the pinned clang-format module."
 fi
 
 if ! command -v git-clang-format >/dev/null 2>&1; then
-	warn_and_pass "Did not find git-clang-format on PATH (it ships with the pip \"clang-format\" package)."
+	fail_missing_tool "Did not find git-clang-format on PATH (it ships with the pip \"clang-format\" package)."
 fi
 
-echo "-----> Checking staged changes with clang-format (changed lines only)"
+echo "-----> Formatting staged changes with clang-format (changed lines only)"
 
-diff_output="$(git clang-format --binary "$CF_BINARY" --extensions "$EXTENSIONS" --staged --diff)"
+apply_output="$(git clang-format --binary "$CF_BINARY" --extensions "$EXTENSIONS" --staged "${PATHSPEC[@]}" 2>&1)"
 status=$?
 
-# git-clang-format exits non-zero when it finds something to fix, and 0
-# (printing "no modified files to format" / "clang-format did not modify
-# any files") when it doesn't -- same contract the CI job relies on.
-if [ $status -ne 0 ]; then
-	echo "       Code style error(s) found in staged changes:"
+# git-clang-format overloads exit 2 for both "die()" errors and its own
+# refusal to apply when a to-be-reformatted file also has unstaged hunks
+# (that specific case needs --force, which we never pass since it would
+# sweep unrelated unstaged edits into the commit) -- tell those apart by
+# the message rather than the exit code alone.
+if [ $status -eq 2 ] && echo "$apply_output" | grep -q "unstaged changes"; then
+	echo "       Some staged files also have unstaged changes, so they can't be"
+	echo "       safely auto-formatted without risking staging unrelated edits:"
 	echo
-	echo "$diff_output" | sed 's/^/       /'
+	echo "$apply_output" | indent "       "
 	echo
-	echo "       Review the diff above, then re-stage the affected files."
-	echo "       You can apply clang-format's suggested changes directly with:"
-	echo
-	echo "       git clang-format --binary $CF_BINARY --extensions $EXTENSIONS --staged"
+	echo "       Stage or stash the rest of the file, then commit again."
 	exit 1
 fi
 
-echo "       clang-format passed"
+# Exit 1 here means git-clang-format applied changes to the working tree
+# (see its "changed files:" list below) -- that's success, not failure.
+if [ $status -ne 0 ] && [ $status -ne 1 ]; then
+	echo "       git-clang-format failed:"
+	echo
+	echo "$apply_output" | indent "       "
+	exit 1
+fi
+
+# With no --diff, git-clang-format prints one of: "no modified files to
+# format" / "clang-format did not modify any files" (nothing to re-stage),
+# or a "changed files:" list of what it rewrote in the working tree -- the
+# latter still needs `git add` since it never touches the real index.
+changed_files="$(echo "$apply_output" | sed -n '/^changed files:$/,$ p' | tail -n +2 | sed 's/^    //')"
+
+if [ -z "$changed_files" ]; then
+	echo "$apply_output" | indent "       "
+	exit 0
+fi
+
+echo "       Reformatted:"
+echo "$changed_files" | indent "         "
+echo "$changed_files" | git --literal-pathspecs add --pathspec-from-file=- --
+
+echo "       Re-staged the formatted files above."

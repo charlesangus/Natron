@@ -14,3 +14,7 @@ Acceptance sketch:
 - Non-Shuffle nodes no longer expose an output-plane/channel-shuffle
   selector.
 - Channel remapping is only available via the Shuffle node.
+
+## Decisions
+
+- 2026-09-19 — **Kept behind M34** (user decision): the 2026-09-19 reorder had placed M35 ahead of M34, but the stub's block — the new native Shuffle node must exist as the supported replacement before the escape hatch is removed elsewhere — still holds. Board row moved to directly after M34.

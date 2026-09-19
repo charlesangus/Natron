@@ -56,10 +56,10 @@ ImageLayer::ImageLayer(const QString& layerName,
     for (QStringList::const_iterator it = componentsName.begin(); it != componentsName.end(); ++it, ++i) {
         channels[i] = it->toStdString();
     }
-    _comps.reset( new ImagePlaneDesc(layerName.toStdString(), layerName.toStdString(), componentsPrettyName.toStdString(), channels) );
+    _comps.reset(new ImageLayerDesc(layerName.toStdString(), layerName.toStdString(), componentsPrettyName.toStdString(), channels));
 }
 
-ImageLayer::ImageLayer(const ImagePlaneDesc& comps)
+ImageLayer::ImageLayer(const ImageLayerDesc& comps)
     : _layerName(QString::fromUtf8(comps.getLayerLabel().c_str()))
     , _componentsPrettyName(QString::fromUtf8(comps.getChannelsLabel().c_str()))
 {
@@ -68,7 +68,7 @@ ImageLayer::ImageLayer(const ImagePlaneDesc& comps)
     for (std::size_t i = 0; i < channels.size(); ++i) {
         _componentsName.push_back( QString::fromUtf8( channels[i].c_str() ) );
     }
-    _comps.reset( new ImagePlaneDesc(comps) );
+    _comps.reset(new ImageLayerDesc(comps));
 }
 
 int
@@ -86,7 +86,7 @@ ImageLayer::getHash(const ImageLayer& layer)
 }
 
 bool
-ImageLayer::isColorPlane() const
+ImageLayer::isColorLayer() const
 {
     return _comps->isColorLayer();
 }
@@ -133,49 +133,49 @@ ImageLayer::operator<(const ImageLayer& other) const
 ImageLayer
 ImageLayer::getNoneComponents()
 {
-    return ImageLayer( ImagePlaneDesc::getNoneComponents() );
+    return ImageLayer(ImageLayerDesc::getNoneComponents());
 }
 
 ImageLayer
 ImageLayer::getRGBAComponents()
 {
-    return ImageLayer( ImagePlaneDesc::getRGBAComponents() );
+    return ImageLayer(ImageLayerDesc::getRGBAComponents());
 }
 
 ImageLayer
 ImageLayer::getRGBComponents()
 {
-    return ImageLayer( ImagePlaneDesc::getRGBComponents() );
+    return ImageLayer(ImageLayerDesc::getRGBComponents());
 }
 
 ImageLayer
 ImageLayer::getAlphaComponents()
 {
-    return ImageLayer( ImagePlaneDesc::getAlphaComponents() );
+    return ImageLayer(ImageLayerDesc::getAlphaComponents());
 }
 
 ImageLayer
 ImageLayer::getBackwardMotionComponents()
 {
-    return ImageLayer( ImagePlaneDesc::getBackwardMotionComponents() );
+    return ImageLayer(ImageLayerDesc::getBackwardMotionComponents());
 }
 
 ImageLayer
 ImageLayer::getForwardMotionComponents()
 {
-    return ImageLayer( ImagePlaneDesc::getForwardMotionComponents() );
+    return ImageLayer(ImageLayerDesc::getForwardMotionComponents());
 }
 
 ImageLayer
 ImageLayer::getDisparityLeftComponents()
 {
-    return ImageLayer( ImagePlaneDesc::getDisparityLeftComponents() );
+    return ImageLayer(ImageLayerDesc::getDisparityLeftComponents());
 }
 
 ImageLayer
 ImageLayer::getDisparityRightComponents()
 {
-    return ImageLayer( ImagePlaneDesc::getDisparityRightComponents() );
+    return ImageLayer(ImageLayerDesc::getDisparityRightComponents());
 }
 
 UserParamHolder::UserParamHolder()
@@ -482,7 +482,7 @@ Effect::getParam(const QString& name) const
 
     QString fallbackSearchName;
     if (node->getApp()->isCreatingPythonGroup()) {
-        // Before Natron 2.2.3, all dynamic choice parameters for multiplane had a string parameter.
+        // Before Natron 2.2.3, all dynamic choice parameters for multi-layer had a string parameter.
         // The string parameter had the same name as the choice parameter plus "Choice" appended.
         // If we found such a parameter, retrieve the string from it.
         QString str = QString::fromUtf8("Choice");
@@ -989,12 +989,10 @@ Effect::setSubGraphEditable(bool editable)
 }
 
 bool
-Effect::addUserPlane(const QString& planeName,
+Effect::addUserLayer(const QString& layerName,
                      const QStringList& channels)
 {
-    if ( planeName.isEmpty() ||
-         ( channels.size() < 1) ||
-         ( channels.size() > 4) ) {
+    if (layerName.isEmpty() || (channels.size() < 1) || (channels.size() > 4)) {
         return false;
     }
     std::string compsGlobal;
@@ -1005,7 +1003,7 @@ Effect::addUserPlane(const QString& planeName,
         compsGlobal.append(c);
         chans[i] = c;
     }
-    ImagePlaneDesc comp(planeName.toStdString(),planeName.toStdString(), compsGlobal, chans);
+    ImageLayerDesc comp(layerName.toStdString(), layerName.toStdString(), compsGlobal, chans);
 
     return getInternalNode()->addUserComponents(comp);
 }
@@ -1020,12 +1018,11 @@ Effect::getAvailableLayers(int inputNb) const
     }
     double time(getInternalNode()->getApp()->getTimeLine()->currentFrame());
 
-    std::list<ImagePlaneDesc> availComps;
+    std::list<ImageLayerDesc> availComps;
     getInternalNode()->getEffectInstance()->getAvailableLayers(time, ViewIdx(0), inputNb, &availComps);
-    for (std::list<ImagePlaneDesc>::iterator it = availComps.begin(); it != availComps.end(); ++it) {
+    for (std::list<ImageLayerDesc>::iterator it = availComps.begin(); it != availComps.end(); ++it) {
         ret.push_back(ImageLayer(*it));
     }
-
 
     return ret;
 }

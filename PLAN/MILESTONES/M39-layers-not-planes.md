@@ -62,26 +62,27 @@ Build/test commands used by every task below (single-tenant container, never two
   - size: M
 
 ## Phase 39.7: Tests, shim removal and the allowlist gate
-- [ ] M39.P7.T1 — Rename test-side identifiers
+- [x] M39.P7.T1 — Rename test-side identifiers
   - files: `Tests/Image_Test.cpp`, `Tests/DeepNodes_Test.cpp`, `Tests/DeepImageCache_Test.cpp`, `Tests/DeepFlatten_Test.cpp`, `Tests/DeepRenderTestEffect.h`, `Tests/TypedPassthrough_Test.cpp`
   - approach: `ImagePlaneDesc`→`ImageLayerDesc`; `planes` locals→`layers`; `readExrChannelPlane`→`readExrChannel` (it reads one EXR channel; "plane" was loose OIIO-speak). No test names contain "plane", so `ctest -N` output is unchanged.
   - verify: build + full ctest green; `git grep -nE '[Pp]lane' -- Tests ':(exclude)Tests/google-*'` prints 0 lines.
   - size: S
-- [ ] M39.P7.T2 — Remove the transition shim and run the repository-wide allowlist grep
+- [x] M39.P7.T2 — Remove the transition shim and run the repository-wide allowlist grep
   - files: `Engine/EngineFwd.h`, anything the grep still flags
   - approach: delete `using ImagePlaneDesc = ImageLayerDesc;` and `using ImagePlaneDescPtr = ImageLayerDescPtr;`; fix any stragglers the build then reports — known ones: `Engine/ViewerInstancePrivate.h:140-141` (ctor initializers left on the alias by P4.T1 because clang-format 21.1.8 is non-idempotent on that ctor — touching those lines makes `git clang-format --diff` toggle the whole initializer list between indented and column-0 on every run; wrap the ctor initializer list in `// clang-format off` / `// clang-format on` so the gate leaves it alone); OFX-bridge locals that hold OFX plane *strings* and so were left by P4.T2 but are not on the gate allowlist — `identityPlane` (`Engine/OfxEffectInstance.cpp` ~1885) → `identityOfxPlane`, `planes` (`Engine/OfxImageEffectInstance.cpp` ~292,307) → `ofxPlanes`; and add `getImagePlane`'s `const std::string& plane,` parameter line (`OfxClipInstance.cpp` ~771) and the spec-quote "other planes." (`OfxClipInstance.h` ~158) to the gate's exclude list rather than renaming them; sweep comments in touched subsystems for prose "plane(s)" where it means a Natron layer (leave OFX-spec quotes and `multiplane` branch names).
   - verify: `tools/ci/local/build.sh debug --reconfigure && tools/ci/local/test.sh ctest debug && tools/ci/local/test.sh smoke debug` green; the gate grep below prints 0 lines; format command exits 0.
   - size: S
 
 ## Phase 39.8: Documentation (orphan `docs` branch)
-- [ ] M39.P8.T1 — Update the Python reference and the SVG tutorial on the `docs` branch via a separate PR
+- [x] M39.P8.T1 — Update the Python reference and the SVG tutorial on the `docs` branch via a separate PR
   - files (on `origin/docs`): `Documentation/source/devel/PythonReference/NatronEngine/Effect.rst:18,106-122`, `…/ImageLayer.rst:22,49,66`, `…/Natron.rst:40`, `Documentation/source/guide/tutorials-svgworkflow.rst:39,57`
   - approach: docs are not in the `main` tree (decision `docs/decisions/2026-09-04-docs-to-orphan-branch.md`); there is no docs worktree, script or CI job — the branch's two commits were made directly. So: `git worktree add /tmp/natron-docs -b milestone/m39-docs-layer-terminology origin/docs`, edit, commit, push, `gh pr create -B docs` (write the body in `gh pr create`; `gh pr edit` is broken on this repo). Edits: `addUserPlane(planeName, channels)`→`addUserLayer(layerName, channels)` and "plane"→"layer" in its prose; `isColorPlane`→`isColorLayer`; delete the `NatronEngine.Natron.ImagePlaneDescEnum` attribute line (the enum was never exported to Python — no `enum-type` in `Engine/typesystem_engine.xml`); "multi-plane"→"multi-layer" in the SVG tutorial. Generated plugin pages (Shuffle etc.) echo openfx-misc labels and are out of scope.
   - verify: on the docs branch, `git grep -niE 'addUserPlane|isColorPlane|ImagePlaneDescEnum|multi-plane' -- Documentation/source/devel/PythonReference Documentation/source/guide/tutorials-svgworkflow.rst` prints 0 lines; the PR targets `docs`, not `main`.
   - size: S
 
 **Verification gate:** `tools/ci/local/build.sh debug --reconfigure`, `tools/ci/local/test.sh ctest debug` and `tools/ci/local/test.sh smoke debug` all green on the milestone branch; a **release** build (`tools/ci/local/build.sh release`) run under the Xvfb recipe (`build/deeprepro/gui_layers.py`, container only) confirms the viewer layer/alpha combos populate and the Read `outputLayer` choice lists `Color.RGBA` — this is the deferred P5.T1 GUI check — and the same release binary performs P6.T2's save/reopen round-trip; the local format command exits 0 against `origin/main`; and this allowlist grep prints 0 lines:
-`git grep -nE '[A-Za-z_]*[Pp]lane[A-Za-z_]*' -- Engine Gui Tests Global/Enums.h ':(exclude)Gui/Resources' ':(exclude)Gui/ViewerGLPrivate.cpp' ':(exclude)Gui/ViewerGLPrivate.h' ':(exclude)Tests/google-*' | grep -vE 'kFnOfxImagePlane|OfxImagePlane|kOfxImageEffectPropRenderPlanes|kNatronOfx[A-Za-z]*Plane|getImagePlane(Internal)?\b|getUserCreatedPlanes|ofxPlane|OFXPlane|clipGetImagePlane|image plane|Plane suite|multiplane'`
+`git grep -nE '[A-Za-z_]*[Pp]lane[A-Za-z_]*' -- Engine Gui Tests Global/Enums.h ':(exclude)Gui/Resources' ':(exclude)Gui/ViewerGLPrivate.cpp' ':(exclude)Gui/ViewerGLPrivate.h' ':(exclude)Tests/google-*' | grep -vE 'kFnOfxImagePlane|OfxImagePlane|kOfxImageEffectPropRenderPlanes|kNatronOfx[A-Za-z]*Plane|getImagePlane(Internal)?\b|getUserCreatedPlanes|getPassThroughForNonRenderedPlanes|ePassThroughLevelEnum|ofxPlane|OfxPlane|OFXPlane|clipGetImagePlane|image plane|Plane suite|multiplane|multi-plane|OpenFX plane|2D plane|x-y plane|other planes\.|across planes|const std::string& plane,'`
+(the allowlist was extended 2026-09-18 after P7.T2's sweep: HostSupport's `getPassThroughForNonRenderedPlanes`/`ePassThroughLevelEnum*`, the `getImagePlane` override's `plane` parameter, OFX-string locals such as `identityOfxPlane`, the "multi-plane suite/extension" and "OpenFX plane" doc prose, the spec quote "other planes.", the `isIdentity` "across planes" note, and the geometric "2D plane"/"x-y plane" comments — all OFX-boundary or geometry, none a Natron layer).
 Additionally `test ! -e Engine/ImagePlaneDesc.h`, `git grep -n 'using ImagePlaneDesc' -- Engine` prints 0 lines, and the P8 docs PR is open against `docs`.
 
 ## Decisions

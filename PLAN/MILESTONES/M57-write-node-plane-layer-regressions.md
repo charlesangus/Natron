@@ -10,7 +10,7 @@ defined in `SupportExt/ofxsMultiPlane.h` inside the `charlesangus/openfx-io` for
 `tools/ci/local/fetch-assets.sh`, built into `build/openfx-io-fork/`) — a separate repository
 M39 never touched. This repo's own allowlist grep is clean; there is nothing left to rename here.
 
-- [ ] M57.P1.T1 — Rename the embedded writer's "All Planes" checkbox to "All Layers"
+- [x] M57.P1.T1 — Rename the embedded writer's "All Planes" checkbox to "All Layers"
   - files: (in the `charlesangus/openfx-io` fork, not this repo) `SupportExt/ofxsMultiPlane.h`
     (`kMultiPlaneProcessAllPlanesParam`, `…ParamLabel`, `…ParamHint`), `SupportExt/ofxsMultiPlane.cpp`
     (matching comment ~line 660); this repo's `tools/ci/local/fetch-assets.sh` (`OPENFX_IO_REF`)
@@ -52,3 +52,10 @@ M39 never touched. This repo's own allowlist grep is clean; there is nothing lef
 
 **Verification gate:** both tasks' `verify` steps pass; a Write node's checkbox reads "All
 Layers" and, when checked, writes every layer present at its input.
+
+## Decisions
+
+- 2026-09-19 — M57.P1.T1 landed as `charlesangus/openfx-io` commit `87264e5` on branch
+  `fix/all-planes-to-all-layers` (PR #3, left open unmerged): matches the standing pattern
+  from `56b782a4a` (PR #2 also open) — `OPENFX_IO_REF` pins directly to the fork's branch tip
+  rather than waiting on a merge, since we control the fork.

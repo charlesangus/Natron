@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M58.P1.T3
-pm_heartbeat: 2026-09-19T17:31:27-04:00
+current: M59.P1.T1
+pm_heartbeat: 2026-09-19T17:38:18-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -141,6 +141,9 @@ future core work has solid ground to build on.
   M57's `## Decisions`. **M58 placed first (2026-09-19, user decision):** it
   runs ahead of M35 so the Write-node correctness bug is closed before the
   rest of the channel/layer rework; the sequence after it is unchanged.
+  **M58 shipped 2026-09-19** (PR #28, squash-merge `b2d4ef1d2`): a Read/Write
+  container's `knobsAge` is folded into its embedded node's hash, so toggling
+  All Layers after a render now invalidates the encoder's cached plane set.
   **M59 (pre-commit auto-format hook) added 2026-09-19, up next after M58:**
   small housekeeping milestone — PRs keep failing CI's `format` job because
   the existing `.git-hooks/pre-commit` is check-only, uninstalled, and passes
@@ -172,8 +175,8 @@ future core work has solid ground to build on.
 | M23 | Make release bundles actually relocatable | done | [M23-relocatable-release-bundles.md](PLAN/MILESTONES/M23-relocatable-release-bundles.md) |
 | M39 | Adopt "layer" terminology instead of "planes" | done | [M39-layers-not-planes.md](PLAN/MILESTONES/M39-layers-not-planes.md) |
 | M57 | Fix Write node plane/layer regressions found while testing M39 | done | [M57-write-node-plane-layer-regressions.md](PLAN/MILESTONES/M57-write-node-plane-layer-regressions.md) |
-| M58 | Write's "All Layers" output copies one layer's pixel data into every layer | doing | [M58-write-multiplane-pixel-data-bug.md](PLAN/MILESTONES/M58-write-multiplane-pixel-data-bug.md) |
-| M59 | Pre-commit hook that auto-formats staged C/C++ so PRs stop failing CI's `format` check | todo | [M59-pre-commit-auto-format.md](PLAN/MILESTONES/M59-pre-commit-auto-format.md) |
+| M58 | Write's "All Layers" output copies one layer's pixel data into every layer | done | [M58-write-multiplane-pixel-data-bug.md](PLAN/MILESTONES/M58-write-multiplane-pixel-data-bug.md) |
+| M59 | Pre-commit hook that auto-formats staged C/C++ so PRs stop failing CI's `format` check | doing | [M59-pre-commit-auto-format.md](PLAN/MILESTONES/M59-pre-commit-auto-format.md) |
 | M35 | Remove implicit output-plane shuffling from non-Shuffle nodes | todo | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M38 | Improve channel/layer information organization in the node UI | todo | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
 | M43 | Drop the premultiplied/unpremultiplied concept | todo | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |

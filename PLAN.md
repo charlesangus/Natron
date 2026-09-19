@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: M38 (elaborating)
-pm_heartbeat: 2026-09-19T18:28:00-04:00
+pm_heartbeat: 2026-09-19T19:23:08-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -153,7 +153,12 @@ future core work has solid ground to build on.
   refuses the commit when the tool is missing.
   **M35 moved back behind M34 (2026-09-19, user decision):** its stub is
   blocked on the new Shuffle node existing as the replacement path, so the
-  sequence is now M38 → M43 → M34 → M35 → M36 → M37 → M50. M38 is `doing`.
+  sequence is now M38 → M43 → M34 → M36 → M37 → M50. **Then M35 was folded
+  into M38 (same day, user decision)**: M38 is no longer a layout reorder but a
+  new Nuke-style-but-stronger layer/channel widget (dropdown None/All/Regex/
+  layers + dynamic channel buttons, multiple instances via "Add layer"),
+  with nodes processing exactly the selected layers/channels in place and no
+  shuffle capability outside the Shuffle node. See M38's `## Decisions`.
 
 # Board
 
@@ -183,10 +188,10 @@ future core work has solid ground to build on.
 | M57 | Fix Write node plane/layer regressions found while testing M39 | done | [M57-write-node-plane-layer-regressions.md](PLAN/MILESTONES/M57-write-node-plane-layer-regressions.md) |
 | M58 | Write's "All Layers" output copies one layer's pixel data into every layer | done | [M58-write-multiplane-pixel-data-bug.md](PLAN/MILESTONES/M58-write-multiplane-pixel-data-bug.md) |
 | M59 | Pre-commit hook that auto-formats staged C/C++ so PRs stop failing CI's `format` check | done | [M59-pre-commit-auto-format.md](PLAN/MILESTONES/M59-pre-commit-auto-format.md) |
-| M38 | Improve channel/layer information organization in the node UI | doing | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
+| M38 | Layer/channel selection widget: process-in-place, no implicit shuffling (absorbs M35) | doing | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
 | M43 | Drop the premultiplied/unpremultiplied concept | todo | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
 | M34 | New native Shuffle node | todo | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
-| M35 | Remove implicit output-plane shuffling from non-Shuffle nodes | todo | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
+| M35 | ~~Remove implicit output-plane shuffling from non-Shuffle nodes~~ (folded into M38) | cancelled | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M36 | Add "new channel/layer" affordance wherever a node outputs channels | todo | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
 | M37 | Channel/layer management nodes | todo | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |
 | M50 | Proper OCIO support as a project property | todo | [M50-proper-ocio-support.md](PLAN/MILESTONES/M50-proper-ocio-support.md) |

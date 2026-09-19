@@ -1,4 +1,4 @@
-# Milestone 35: Remove implicit output-plane shuffling from non-Shuffle nodes
+# Milestone 35: ~~Remove implicit output-plane shuffling from non-Shuffle nodes~~ (cancelled — folded into M38)
 
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 
@@ -18,3 +18,4 @@ Acceptance sketch:
 ## Decisions
 
 - 2026-09-19 — **Kept behind M34** (user decision): the 2026-09-19 reorder had placed M35 ahead of M34, but the stub's block — the new native Shuffle node must exist as the supported replacement before the escape hatch is removed elsewhere — still holds. Board row moved to directly after M34.
+- 2026-09-19 — **Folded into M38** (user decision, later the same day): the removal of the output-layer/input-layer selectors is one half of M38's new layer/channel widget, so it ships there. Row cancelled.

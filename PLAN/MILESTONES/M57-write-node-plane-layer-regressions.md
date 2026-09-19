@@ -73,3 +73,13 @@ rescoped to **M58** (new stub, see board).
   repro (checking only `oiiotool -info` channel *names*, not pixel *values*) had wrongly
   suggested no bug existed at all; the names-only check is a trap worth remembering for anyone
   else diagnosing multi-layer output.
+- 2026-09-19 — PR #27 review (Codex, quota available): 1 minor finding — the
+  `OPENFX_IO_REF` comment's fork-delta manifest was stale (said "five commits/Three
+  deltas", missed the sixth commit `87264e5`). Fixed in `5cfba1d65`. That fix also
+  surfaced a detail worth recording: the "All Planes"->"All Layers" param rename
+  doesn't live in `charlesangus/openfx-io`'s own tree at all — `SupportExt/` is a
+  git submodule of `NatronGitHub/openfx-supportext`, so the actual rename required
+  forking that submodule too (`charlesangus/openfx-supportext#1`) and repointing
+  `openfx-io`'s `.gitmodules`/pin at it. Two fork PRs total for M57.P1.T1, not one:
+  `charlesangus/openfx-io#3` and `charlesangus/openfx-supportext#1`, both left
+  open/unmerged per the established pattern.

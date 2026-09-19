@@ -146,8 +146,8 @@ future core work has solid ground to build on.
 | M18 | Deep compositing v1 | done | [M18-deep-compositing-v1.md](PLAN/MILESTONES/M18-deep-compositing-v1.md) |
 | M23 | Make release bundles actually relocatable | done | [M23-relocatable-release-bundles.md](PLAN/MILESTONES/M23-relocatable-release-bundles.md) |
 | M39 | Adopt "layer" terminology instead of "planes" | done | [M39-layers-not-planes.md](PLAN/MILESTONES/M39-layers-not-planes.md) |
-| M34 | New native Shuffle node | todo | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
 | M35 | Remove implicit output-plane shuffling from non-Shuffle nodes | todo | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
+| M34 | New native Shuffle node | todo | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
 | M36 | Add "new channel/layer" affordance wherever a node outputs channels | todo | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
 | M37 | Channel/layer management nodes | todo | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |
 | M38 | Improve channel/layer information organization in the node UI | todo | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |

@@ -116,6 +116,11 @@ future core work has solid ground to build on.
   M20, M52, M53, M54). Deferred with no active order: deep work (M21, M51,
   M32), Nuke-tool ports (M45, M46), M16, M31. See
   `DECISIONS/2026-09-18-backlog-reorg-and-prioritization.md`.
+  **Reordered again (2026-09-19, via inbox):** M57 (Write node regressions
+  from M39 testing) goes first, and M43 (drop premult/unpremult) moves ahead
+  of M34 so compositing semantics land alongside the rest of the channel/layer
+  rework rather than after it. New sequence: M57 → M35 → M38 → M43 → M34 →
+  M36 → M37 → M50 → (unchanged: infra/housekeeping → polish → 3D roadmap).
   **M39 shipped 2026-09-19** (PR #26, merge `1e59109fe`; docs PR #25): the
   Natron side of the codebase says "layer" everywhere; only the OpenFX ABI
   boundary keeps "plane". `.ntp` tags are `LayerID`/`LayerLabel`, the knob
@@ -158,11 +163,11 @@ future core work has solid ground to build on.
 | M57 | Fix Write node plane/layer regressions found while testing M39 | doing | [M57-write-node-plane-layer-regressions.md](PLAN/MILESTONES/M57-write-node-plane-layer-regressions.md) |
 | M35 | Remove implicit output-plane shuffling from non-Shuffle nodes | todo | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M38 | Improve channel/layer information organization in the node UI | todo | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
+| M43 | Drop the premultiplied/unpremultiplied concept | todo | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
 | M34 | New native Shuffle node | todo | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
 | M36 | Add "new channel/layer" affordance wherever a node outputs channels | todo | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
 | M37 | Channel/layer management nodes | todo | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |
 | M50 | Proper OCIO support as a project property | todo | [M50-proper-ocio-support.md](PLAN/MILESTONES/M50-proper-ocio-support.md) |
-| M43 | Drop the premultiplied/unpremultiplied concept | todo | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
 | M25 | Guard the GL init path against the debug FP traps | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M27 | Make the debug build a debug build again | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M28 | Stop treating page cache as memory pressure | todo | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |

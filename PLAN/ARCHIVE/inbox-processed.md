@@ -1422,3 +1422,7 @@ this milestone loads with its recoloured nodes still recoloured.
 
   **Verification gate:** CI green including M54.P5.T1; on real hardware a geometry chain displays in `Viewport3D`, point picking and `GeoEdit` drag work with undo, and the result renders through `GeoToScene` → `HydraRender` to an image; `GeoWrangle` runs a script that edits points; geometry cache respects its own budget; pre-existing ctest suite green; `Engine/GeoDetail.h` and `Engine/` core stay pxr-free.
   ```
+
+### 2026-09-19T10:45:00-04:00 — change-request
+- refs: M43, M34, M35, M36, M37, M38
+- Move M43 (Drop the premultiplied/unpremultiplied concept) ahead of M34 in the board. New sequence: M57, M35, M38, M43, M34, M36, M37, M50 (compositing semantics integrated into the channel/layer rework)

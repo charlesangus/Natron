@@ -1,55 +1,65 @@
 # Milestone 58: Write's "All Layers" output copies one layer's pixel data into every layer
 
-> Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
-
 Discovered while diagnosing M57.P1.T2, then bisected out of that milestone because it predates
-M39 (confirmed pre-existing on `3e14c2a1e`, byte-for-byte identical symptom before and after the
-plane→layer rename — see M57's `## Decisions`). With a Write node's "All Layers" checkbox
-(`processAllLayers` OFX param) checked, the rendered multi-part/multi-layer EXR gets the correct
-per-subimage layer *names* (e.g. `diffuse.R/G/B`, `specular.R/G/B`, `R/G/B/A`) but every
-subimage contains **identical pixel data** — specifically, whichever layer got rendered/copied
-last (`diffuse` in the repro) ends up duplicated into all of them, silently discarding the
-others' actual content. This is a correctness bug in Natron's own multi-layer image-copy path
-(`Engine/EffectInstance.cpp`'s `Implementation::renderHandler` and/or `Engine/OfxClipInstance.cpp`'s
-`getOutputImageInternal`, per M57.P1.T2's abandoned investigation — not yet root-caused) or
-possibly in the `charlesangus/openfx-io` fork's `WriteOIIO`/`GenericWriter` render loop; scope
-unconfirmed.
+M39 (confirmed pre-existing on `3e14c2a1e`). The user-visible symptom: with a Write node's
+"All Layers" checkbox (`processAllLayers` OFX param) checked, the rendered EXR does not contain
+every input layer.
 
-Blocked on: nothing technical — this is a plannable, self-contained bug fix. Stub only because
-it surfaced mid-milestone and needs its own elaboration pass (root-cause investigation first,
-same as M57.P1.T2 attempted) rather than being folded into M57's scope. No user go-ahead needed
-beyond normal backlog prioritization (see the board's backlog-reorg note for where this slots
-in — it was not part of that reorg and needs an explicit priority decision).
+**Root cause (consultant investigation, 2026-09-19 — see `## Decisions`):** the OFX params of a
+bundled writer are knobs of the *container* (`Write1`, `Engine/OfxParamInstance.cpp:315-329`),
+so toggling `processAllLayers` bumps only the container's `knobsAge`. `WriteNode` is a
+`NodeGroup`, so the embedded encoder (`internalEncoderNode`) is a real render-graph node with
+its own hash, which `Node::computeHashRecursive` (`Engine/Node.cpp:884-923`) never revisits.
+Its per-hash `ActionsCache` entry for `getComponentsNeededAndProduced` therefore keeps serving
+the plane set computed for the previous render: after a render with the box off, checking it
+and rendering again writes only `R,G,B,A` — the extra layers take the pass-through branch in
+`EffectInstanceRenderRoI.cpp:492-510` and are never encoded. `OutputSchedulerThread.cpp:2272`
+(`isWriteNode ? isWriteNode->getHash() : …`) is an existing partial workaround that makes the
+scheduler's *request* fresh while `renderRoI`'s lookups stay stale — which is why "checked
+before the first render" and ON→OFF look correct by accident.
 
-Reusable artifacts from the abandoned M57.P1.T2 investigation (all cleaned up, not preserved on
-disk — reproduce fresh):
-- Repro recipe: build a single-part EXR with 2+ layers using **visually-distinct solid colors**
-  per layer (e.g. `oiiotool --chappend` of separately-colored constant images) — a names-only
-  check via `oiiotool -info` is NOT sufficient to catch this bug, since the layer *names* come
-  out correct; only a pixel-value comparison (`oiiotool --info -v -a` plus an actual pixel dump,
-  or a Python OIIO read) reveals the wrong data.
-- The bug reproduces via the plain headless `NatronRenderer` Python API
-  (`app.createReader`/`createWriter`/`connectInput`/`render`) — no GUI needed.
-- `Engine/EffectInstance.cpp`'s `Implementation::renderHandler` (the `outputLayers` map
-  iteration) and `Engine/OfxClipInstance.cpp`'s `getOutputImageInternal` (which looks up an
-  output image by layer name in that same map) are the two most promising places to instrument
-  first — a mismatch between the key used to populate `outputLayers` and the key used to look
-  an image back up for each OFX-side layer request would produce exactly this symptom (every
-  lookup resolving to the same entry).
-- A second investigation pass ruled out plane *declaration*/negotiation as the culprit:
-  `WriteOIIOPlugin::getClipComponents` (`build/openfx-io-fork/OIIO/WriteOIIO.cpp:568-590`) takes
-  the `eGetPlaneNeededRetCodeReturnedAllPlanes` branch and calls
-  `_inputClip->getPlanesPresent(&components)` correctly — channel names/subimage count always
-  matched the input across several layouts tried. Since names come out right but *data* doesn't,
-  the bug is downstream of negotiation, in the per-plane pixel fetch: look at
-  `GenericWriterPlugin::render`'s call to `_inputClip->fetchImagePlane(time, view, plane.c_str(),
-  ...)` (`build/openfx-io-fork/IOSupport/GenericWriter.cpp` ~line 423) and whether the requested
-  plane *name* actually threads through to the correct source buffer in the host-side
-  `OfxClipInstance::getInputImageInternal` (`Engine/OfxClipInstance.cpp`) — i.e. whether every
-  plane's fetch resolves to the same (wrong) buffer regardless of the name it asked for.
+Repro kit (scratch, not committed): `build/m58-repro/` — `run.sh <release|debug> [M58_TOGGLE=1]
+[M58_RECONNECT=1]`, `run-gui.sh` (Xvfb), `trace2.gdb`, `README.txt`. Trustworthy pixel checks
+are `oiiotool --stats -a` or `oiiotool f.exr --subimage N --printstats`; `--printstats -a`
+mis-reports alpha on later parts, and Python `read_image()` without `seek_subimage()` returns
+part 0 every time.
 
-Acceptance sketch:
-- A Write node with "All Layers" checked, given 2+ distinctly-valued upstream layers, produces
-  an output where each subimage's pixel data matches its own layer's actual content (not another
-  layer's).
-- Existing 216-test ctest suite and the smoke test stay green.
+## Phase 58.1: Write container knob changes must reach the embedded encoder's hash
+
+- [ ] M58.P1.T1 — Add a committed three-layer flat EXR fixture and its generator
+  - files: Tests/fixtures/make-flat-layers-fixture.py (new), Tests/fixtures/flat-three-layers.exr (new, ~1 KB)
+  - approach: mirror Tests/fixtures/make-deep-fixtures.py (Python OpenImageIO, run via tools/ci/local/devshell.sh): 8x8 single-part half EXR with channels R,G,B,A=(1,0,0,1), diffuse.R/G/B=(0,1,0), specular.R/G/B=(0,0,1); document the values in the script header exactly as make-deep-fixtures.py does. Read by ReadOIIO only, so half/zip is fine (the output side is what Tests/FlatExrReader.h constrains).
+  - verify: `oiiotool --stats Tests/fixtures/flat-three-layers.exr` prints channel list R,G,B,A,diffuse.R,diffuse.G,diffuse.B,specular.R,specular.G,specular.B and Stats Avg 1 0 0 1 0 1 0 0 0 1; regenerating with the script is byte-identical.
+  - size: S
+- [ ] M58.P1.T2 — Add a gtest that toggles All Layers between two renders and checks every layer's pixels
+  - files: Tests/WriteAllLayers_Test.cpp (new), Tests/CMakeLists.txt
+  - approach: TEST_F(BaseTest, WriteAllLayersToggleAfterRenderWritesEveryLayer): create ReadOIIO via CreateNodeArgs + addParamDefaultValue(kOfxImageEffectFileParamName, NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr") (pattern: Tests/Metadata_Test.cpp:608); create the writer with createNode(_writeOIIOPluginID) — AppInstance.cpp:1142 wraps it in the WriteNode container, which is the buggy path; set knobs by name on the container: partSplitting="single", bitDepth="32f", compression="none" (FlatExrReader.h layout); render frame 1 via startWritersRendering (pattern: Tests/RenderRange_Test.cpp:130-140) into a QTemporaryDir with processAllLayers=false -> assert readFlatExr channels == {R,G,B,A}; set processAllLayers=true, new filename, render -> assert channels include diffuse.R/G/B and specular.R/G/B and pixel (x1,y1) values are diffuse=(0,1,0), specular=(0,0,1), R,G,B,A=(1,0,0,1); set false again, render -> RGBA only. Also a second TEST_F where the box is checked before the first render (must already pass; guards the accidental-correctness path). Register the .cpp in Tests/CMakeLists.txt.
+  - verify: on the current (unfixed) tree `tools/ci/local/test.sh ctest debug` shows the new toggle test FAILING at the post-toggle channel assertion (only R,G,B,A) and the checked-first test passing; ctest count goes 216 -> 218.
+  - size: M
+- [ ] M58.P1.T3 — Fold the Read/Write container's knob age into the embedded node's hash and recompute it with the container
+  - files: Engine/Node.cpp (computeHashInternal ~:807, computeHashRecursive ~:884), Engine/OutputSchedulerThread.cpp (:2272 workaround removal)
+  - approach: append `ioContainer->getKnobsAge()` to an embedded node's hash in `computeHashInternal` (after `_imp->hash.append(_imp->knobsAge)`); in `computeHashRecursive`, after a WriteNode/ReadNode container's own hash changed, recurse into `getEmbeddedWriter()`/`getEmbeddedReader()` (precedent: the disabled-group inner-node hash change at Node.cpp:5375-5391); then replace the OutputSchedulerThread.cpp:2272 ternary with `activeInputToRender->getHash()` so scheduler, request pass and renderRoI share one hash. No openfx-io change, no NATRON_CACHE_VERSION bump (the hash formula change only orphans in-memory entries for embedded encoder outputs).
+  - verify: `build/m58-repro/run.sh release M58_TOGGLE=1` prints three channel lists (diffuse, specular, RGBA) with `oiiotool --stats -a` averages 0 1 0 / 0 0 1 / 1 0 0 1; gdb `trace2.gdb` shows `onNodeHashChanged node=internalEncoderNode` immediately after the toggle and an `OFX getClipComponents ACTION` before `getImagePlane`; T2's tests pass; `tools/ci/local/test.sh ctest debug` and `test.sh smoke debug` green; `build/m58-repro/run-gui.sh M58_VIEW=read M58_TOGGLE=1` (Xvfb GUI, in-process render like the user) prints three channel lists.
+  - size: M
+
+**Verification gate:** all 218 ctest cases and the smoke test green on debug; `run.sh release M58_TOGGLE=1` and `run-gui.sh M58_VIEW=read M58_TOGGLE=1` both emit diffuse/specular/RGBA parts with the expected solid colours (checked with `oiiotool --stats -a`, not `--printstats`).
+
+## Decisions
+
+- 2026-09-19 — **Reframed from "identical pixel data in every layer" to "stale embedded-encoder
+  hash after toggling All Layers"**: the stub's symptom did not reproduce on release or debug
+  binaries, headless or GUI, across ~a dozen input layouts; gdb shows three distinct source
+  buffers per plane and `OfxClipInstance` routes each plane string to its own `Natron::Image`.
+  The earlier "diffuse copied into all parts" finding matches exactly what a Python-OIIO
+  `read_image()` loop without `seek_subimage()` prints (part 0 every time), so it is judged a
+  verification artefact. The user's original M57 symptom ("checking the box does not write every
+  input layer") reproduces deterministically when the box is toggled after a first render, and is
+  what this milestone fixes. Milestone name/ID kept (stable IDs).
+- 2026-09-19 — **Fix is host-side, hash-derivation form**: fold the container's `knobsAge` into
+  the embedded node's hash and recurse hash recomputation from container to embedded node,
+  rather than bumping the embedded node's age from `incrementKnobsAge()` (which would miss
+  `setKnobsAge` and `incrementKnobsAge_internal` callers). The `OutputSchedulerThread.cpp:2272`
+  workaround becomes redundant and is removed for a single source of truth.
+- 2026-09-19 — Out of scope, noted for a follow-up: `EffectInstance::getAvailableLayers`
+  (`EffectInstance.cpp:4476`) queries the *input's* components-needed cache with *this* node's
+  render hash, polluting the input's `ActionsCache` with foreign hash entries.

@@ -806,6 +806,13 @@ Node::computeHashInternal()
         ///append the effect's own age
         _imp->hash.append(_imp->knobsAge);
 
+        // A bundled encoder/decoder's OFX params are knobs of the Read/Write container,
+        // so its own age never moves when the user edits them.
+        NodePtr ioContainer = _imp->ioContainer.lock();
+        if (ioContainer) {
+            _imp->hash.append(ioContainer->getKnobsAge());
+        }
+
         ///append all inputs hash
         RotoDrawableItemPtr attachedStroke = _imp->paintStroke.lock();
         NodePtr attachedStrokeContextNode;
@@ -911,6 +918,19 @@ Node::computeHashRecursive(std::list<Node*>& marked)
         (*it)->computeHashRecursive(marked);
     }
 
+    {
+        NodePtr embedded;
+        ReadNode* isReadNode = dynamic_cast<ReadNode*>(_imp->effect.get());
+        WriteNode* isWriteNode = dynamic_cast<WriteNode*>(_imp->effect.get());
+        if (isReadNode) {
+            embedded = isReadNode->getEmbeddedReader();
+        } else if (isWriteNode) {
+            embedded = isWriteNode->getEmbeddedWriter();
+        }
+        if (embedded) {
+            embedded->computeHashRecursive(marked);
+        }
+    }
 
     ///If the node has a rotopaint tree, compute the hash of the nodes in the tree
     if (_imp->rotoContext) {

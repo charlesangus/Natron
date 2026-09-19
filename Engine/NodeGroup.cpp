@@ -2741,7 +2741,8 @@ exportGroupInternal(int indentLevel,
                 }
             }
             compStr.push_back( QLatin1Char(']') );
-            WRITE_INDENT(indentLevel); WRITE_STRING( QString::fromUtf8("lastNode.addUserPlane(") + ESC( it2->getPlaneLabel() ) + QString::fromUtf8(", ") + compStr +  QString::fromUtf8(")") );
+            WRITE_INDENT(indentLevel);
+            WRITE_STRING(QString::fromUtf8("lastNode.addUserPlane(") + ESC(it2->getLayerLabel()) + QString::fromUtf8(", ") + compStr + QString::fromUtf8(")"));
         }
 
         QString nodeNameInScript = groupName + QString::fromUtf8( (*it)->getScriptName_mt_safe().c_str() );

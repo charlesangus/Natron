@@ -1104,7 +1104,7 @@ Project::initializeKnobs()
         for (std::size_t i = 0; i < defaultComponents.size(); ++i) {
             const ImagePlaneDesc& comps = defaultComponents[i];
             std::vector<std::string> row(3);
-            row[0] = comps.getPlaneLabel();
+            row[0] = comps.getLayerLabel();
             std::string channelsStr;
             const std::vector<std::string>& channels = comps.getChannels();
             for (std::size_t c = 0; c < channels.size(); ++c) {
@@ -1492,25 +1492,25 @@ Project::getProjectDefaultLayers() const
         // The layers knob only propose the user to display the label of the plane desc,
         // but we need to recover the ID for the built-in planes to ensure compatibility
         // with the old Nuke multi-plane suite.
-        if (planeID == kNatronColorPlaneLabel) {
-            planeID = kNatronColorPlaneID;
-        } else if (planeID == kNatronBackwardMotionVectorsPlaneLabel) {
-            planeID = kNatronBackwardMotionVectorsPlaneID;
+        if (planeID == kNatronColorLayerLabel) {
+            planeID = kNatronColorLayerID;
+        } else if (planeID == kNatronBackwardMotionVectorsLayerLabel) {
+            planeID = kNatronBackwardMotionVectorsLayerID;
             componentsLabel = kNatronMotionComponentsLabel;
-        } else if (planeID == kNatronForwardMotionVectorsPlaneLabel) {
-            planeID = kNatronForwardMotionVectorsPlaneID;
+        } else if (planeID == kNatronForwardMotionVectorsLayerLabel) {
+            planeID = kNatronForwardMotionVectorsLayerID;
             componentsLabel = kNatronMotionComponentsLabel;
-        } else if (planeID == kNatronDisparityLeftPlaneLabel) {
-            planeID = kNatronDisparityLeftPlaneID;
+        } else if (planeID == kNatronDisparityLeftLayerLabel) {
+            planeID = kNatronDisparityLeftLayerID;
             componentsLabel = kNatronDisparityComponentsLabel;
-        } else if (planeID == kNatronDisparityRightPlaneLabel) {
-            planeID = kNatronDisparityRightPlaneID;
+        } else if (planeID == kNatronDisparityRightLayerLabel) {
+            planeID = kNatronDisparityRightLayerID;
             componentsLabel = kNatronDisparityComponentsLabel;
         }
 
         bool found = false;
         for (std::list<ImagePlaneDesc>::const_iterator it2 = ret.begin(); it2 != ret.end(); ++it2) {
-            if (it2->getPlaneID() == planeID) {
+            if (it2->getLayerID() == planeID) {
                 found = true;
                 break;
             }
@@ -1537,7 +1537,7 @@ Project::addProjectDefaultLayer(const ImagePlaneDesc& comps)
     const std::vector<std::string>& channels = comps.getChannels();
     std::vector<std::string> row(2);
 
-    row[0] = comps.getPlaneLabel();
+    row[0] = comps.getLayerLabel();
     std::string channelsStr;
     for (std::size_t i = 0; i < channels.size(); ++i) {
         channelsStr += channels[i];

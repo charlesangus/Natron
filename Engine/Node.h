@@ -41,12 +41,12 @@ CLANG_DIAG_ON(deprecated)
 #include <QMutex>
 
 #include "Engine/AppManager.h"
-#include "Global/KeySymbols.h"
-#include "Engine/ImagePlaneDesc.h"
 #include "Engine/CacheEntryHolder.h"
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/Markdown.h"
+#include "Engine/ViewIdx.h"
+#include "Global/KeySymbols.h"
 
 #define NATRON_PARAMETER_PAGE_NAME_EXTRA "Node"
 #define NATRON_PARAMETER_PAGE_NAME_INFO "Info"

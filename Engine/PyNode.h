@@ -35,11 +35,11 @@
 
 #include <list>
 
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h" // KnobI
 #include "Engine/PyNodeGroup.h" // Group
 #include "Engine/RectD.h"
-#include "Engine/EngineFwd.h"
 
 NATRON_NAMESPACE_ENTER;
 NATRON_PYTHON_NAMESPACE_ENTER;

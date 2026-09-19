@@ -41,7 +41,7 @@
 #include "Engine/DeepPixelOps.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/Image.h"
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RectD.h"

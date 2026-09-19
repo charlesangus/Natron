@@ -41,7 +41,7 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Format.h"
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/ImageLayerDesc.h"
 
 #include "Gui/GuiFwd.h"
 

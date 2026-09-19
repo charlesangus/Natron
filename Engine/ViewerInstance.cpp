@@ -1086,7 +1086,7 @@ ViewerInstance::getViewerRoIAndTexture(const RectD& rod,
                          mipmapLevel,
                          inputToRenderName,
                          outArgs->params->layer,
-                         outArgs->params->alphaLayer.getPlaneID() + outArgs->params->alphaChannelName,
+                         outArgs->params->alphaLayer.getLayerID() + outArgs->params->alphaChannelName,
                          outArgs->params->depth == eImageBitDepthFloat,
                          isDraftMode);
             std::list<FrameEntryPtr> entries;
@@ -1769,7 +1769,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                 } else {
                     assert(!it->ramBuffer);
 
-
                     FrameKey key(getNode().get(),
                                  inArgs.params->time,
                                  viewerHash,
@@ -1783,11 +1782,9 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                  inArgs.params->mipmapLevel,
                                  inputToRenderName,
                                  inArgs.params->layer,
-                                 inArgs.params->alphaLayer.getPlaneID() + inArgs.params->alphaChannelName,
+                                 inArgs.params->alphaLayer.getLayerID() + inArgs.params->alphaChannelName,
                                  inArgs.params->depth == eImageBitDepthFloat,
                                  inArgs.draftModeEnabled);
-
-
 
                     FrameParamsPtr cachedFrameParams( new FrameParams(bounds , key.getBitDepth(), tileBounds, ImagePtr() ) );
                     bool cached = appPTR->getTextureOrCreate(key, cachedFrameParams, &entryLocker, &it->cachedData);

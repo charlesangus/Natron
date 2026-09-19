@@ -348,7 +348,7 @@ NodeMetadata::getComponentsType(int inputNb) const
 
             return _imp->inputsData[inputNb].componentsType;
         } else {
-            return kNatronColorPlaneID;
+            return kNatronColorLayerID;
         }
     }
 }

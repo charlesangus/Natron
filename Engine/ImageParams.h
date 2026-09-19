@@ -35,12 +35,12 @@
 #include <boost/serialization/version.hpp>
 #endif
 
+#include "Engine/EngineFwd.h"
 #include "Engine/Format.h"
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/NonKeyParams.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
-#include "Engine/EngineFwd.h"
 
 // Note: this structure is only serialized in the image cache and does not have to maintain backward compatibility
 #define IMAGE_SERIALIZATION_REMOVE_FRAMESNEEDED 2

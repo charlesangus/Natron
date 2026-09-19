@@ -48,10 +48,10 @@ CLANG_DIAG_ON(unknown-pragmas)
 
 #include "Global/GlobalDefines.h"
 
-#include "Engine/Image.h"
-#include "Engine/ImagePlaneDesc.h"
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/Image.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 

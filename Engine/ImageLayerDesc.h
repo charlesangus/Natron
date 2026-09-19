@@ -45,100 +45,96 @@ GCC_DIAG_ON(unused-parameter)
 // clang-format on
 #endif
 
-#define IMAGEPLANEDESC_SERIALIZATION_INTRODUCES_ID 2
-#define IMAGEPLANEDESC_SERIALIZATION_VERSION IMAGEPLANEDESC_SERIALIZATION_INTRODUCES_ID
+#define IMAGELAYERDESC_SERIALIZATION_INTRODUCES_ID 2
+#define IMAGELAYERDESC_SERIALIZATION_VERSION IMAGELAYERDESC_SERIALIZATION_INTRODUCES_ID
 
-#include <nuke/fnOfxExtensions.h>
-#include "Engine/EngineFwd.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/EngineFwd.h"
+#include <nuke/fnOfxExtensions.h>
 
-#define kNatronColorPlaneID kFnOfxImagePlaneColour
-#define kNatronColorPlaneLabel "Color"
+#define kNatronColorLayerID kFnOfxImagePlaneColour
+#define kNatronColorLayerLabel "Color"
 
-#define kNatronBackwardMotionVectorsPlaneID kFnOfxImagePlaneBackwardMotionVector
-#define kNatronBackwardMotionVectorsPlaneLabel "Backward"
+#define kNatronBackwardMotionVectorsLayerID kFnOfxImagePlaneBackwardMotionVector
+#define kNatronBackwardMotionVectorsLayerLabel "Backward"
 
-#define kNatronForwardMotionVectorsPlaneID kFnOfxImagePlaneForwardMotionVector
-#define kNatronForwardMotionVectorsPlaneLabel "Forward"
+#define kNatronForwardMotionVectorsLayerID kFnOfxImagePlaneForwardMotionVector
+#define kNatronForwardMotionVectorsLayerLabel "Forward"
 
-#define kNatronDisparityLeftPlaneID kFnOfxImagePlaneStereoDisparityLeft
-#define kNatronDisparityLeftPlaneLabel "DisparityLeft"
+#define kNatronDisparityLeftLayerID kFnOfxImagePlaneStereoDisparityLeft
+#define kNatronDisparityLeftLayerLabel "DisparityLeft"
 
-#define kNatronDisparityRightPlaneID kFnOfxImagePlaneStereoDisparityRight
-#define kNatronDisparityRightPlaneLabel "DisparityRight"
+#define kNatronDisparityRightLayerID kFnOfxImagePlaneStereoDisparityRight
+#define kNatronDisparityRightLayerLabel "DisparityRight"
 
 #define kNatronDisparityComponentsLabel "Disparity"
 #define kNatronMotionComponentsLabel "Motion"
 
 NATRON_NAMESPACE_ENTER
 
-class ImagePlaneDesc
-{
+class ImageLayerDesc {
 public:
+    ImageLayerDesc();
 
-    ImagePlaneDesc();
-
-    ImagePlaneDesc(const std::string& planeID,
-                   const std::string& planeLabel,
+    ImageLayerDesc(const std::string& layerID,
+                   const std::string& layerLabel,
                    const std::string& channelsLabel,
                    const std::vector<std::string>& channels);
 
-    ImagePlaneDesc(const std::string& planeID,
-                   const std::string& planeLabel,
+    ImageLayerDesc(const std::string& layerID,
+                   const std::string& layerLabel,
                    const std::string& channelsLabel,
                    const char** chanels,
                    int count);
 
+    ImageLayerDesc(const ImageLayerDesc& other);
 
-    ImagePlaneDesc(const ImagePlaneDesc& other);
+    ImageLayerDesc& operator=(const ImageLayerDesc& other);
 
-    ImagePlaneDesc& operator=(const ImagePlaneDesc& other);
-
-    ~ImagePlaneDesc();
+    ~ImageLayerDesc();
 
     // Is it Alpha, RGB or RGBA
-    bool isColorPlane() const;
+    bool isColorLayer() const;
 
-    static bool isColorPlane(const std::string& layerID);
+    static bool isColorLayer(const std::string& layerID);
 
     /**
-     * @brief Returns the number of channels in this plane.
+     * @brief Returns the number of channels in this layer.
      **/
     int getNumComponents() const;
 
     /**
-     * @brief Returns the plane unique identifier. This should be used to compare ImagePlaneDesc together.
-     * This is not supposed to be used for display purpose, use getPlaneLabel() instead.
+     * @brief Returns the layer unique identifier. This should be used to compare ImageLayerDesc together.
+     * This is not supposed to be used for display purpose, use getLayerLabel() instead.
      **/
-    const std::string& getPlaneID() const;
+    const std::string& getLayerID() const;
 
     /**
-     * @brief Returns the plane label.
+     * @brief Returns the layer label.
      * This is what is used to display to the user.
      **/
-    const std::string& getPlaneLabel() const;
+    const std::string& getLayerLabel() const;
 
     /**
-     * @brief Returns the channels composing this plane.
+     * @brief Returns the channels composing this layer.
      **/
     const std::vector<std::string>& getChannels() const;
 
     /**
-     * @brief Returns a label used to better represent the type of components used by this plane.
+     * @brief Returns a label used to better represent the type of components used by this layer.
      * e.g: "Motion" can be used to better label "XY" component types.
      **/
     const std::string& getChannelsLabel() const;
 
+    bool operator==(const ImageLayerDesc& other) const;
 
-    bool operator==(const ImagePlaneDesc& other) const;
-
-    bool operator!=(const ImagePlaneDesc& other) const
+    bool operator!=(const ImageLayerDesc& other) const
     {
         return !(*this == other);
     }
 
     // For std::map
-    bool operator<(const ImagePlaneDesc& other) const;
+    bool operator<(const ImageLayerDesc& other) const;
 
     operator bool() const
     {
@@ -150,17 +146,16 @@ public:
         return getNumComponents() == 0;
     }
 
-
-    ChoiceOption getPlaneOption() const;
+    ChoiceOption getLayerOption() const;
     ChoiceOption getChannelOption(int channelIndex) const;
 
     /**
-     * @brief Maps the given nComps to the color plane
+     * @brief Maps the given nComps to the color layer
      **/
-    static const ImagePlaneDesc& mapNCompsToColorPlane(int nComps);
+    static const ImageLayerDesc& mapNCompsToColorLayer(int nComps);
 
     /**
-     * @brief Maps the given OpenFX plane to a ImagePlaneDesc.
+     * @brief Maps the given OpenFX plane to a ImageLayerDesc.
      * @param ofxPlane Can be
 
      *  kFnOfxImagePlaneBackwardMotionVector
@@ -168,50 +163,50 @@ public:
      *  kFnOfxImagePlaneStereoDisparityLeft
      *  kFnOfxImagePlaneStereoDisparityRight
      *  Or any plane encoded in the format specified by the Natron multi-plane extension.
-     * This function CANNOT be used to map the color plane, instead use mapNCompsToColorPlane.
-     *
-     * This function returns an empty plane desc upon failure.
+     * @note kFnOfxImagePlaneColour carries no channel count, so the color layer must go through
+     * mapNCompsToColorLayer instead.
+     * @return getNoneComponents() when ofxPlane cannot be decoded.
      **/
-    static ImagePlaneDesc mapOFXPlaneStringToPlane(const std::string& ofxPlane);
+    static ImageLayerDesc mapOFXPlaneStringToLayer(const std::string& ofxPlane);
 
     /**
-     * @brief Maps OpenFX components string to a plane, optionnally also to a paired plane in the case of disparity/motion vectors.
+     * @brief Maps OpenFX components string to a layer, optionnally also to a paired layer in the case of disparity/motion vectors.
      * @param ofxComponents Must be a string between
      * kOfxImageComponentRGBA, kOfxImageComponentRGB, kOfxImageComponentAlpha, kNatronOfxImageComponentXY, kOfxImageComponentNone
      * or kFnOfxImageComponentStereoDisparity or kFnOfxImageComponentMotionVectors
      * Or any plane encoded in the format specified by the Natron multi-plane extension.
      **/
-    static void mapOFXComponentsTypeStringToPlanes(const std::string& ofxComponents, ImagePlaneDesc* plane, ImagePlaneDesc* pairedPlane);
+    static void mapOFXComponentsTypeStringToLayers(const std::string& ofxComponents, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer);
 
     /**
-     * @brief Does the inverse of mapOFXPlaneStringToPlane, except that it can also be used for
-     * the color plane.
+     * @brief Does the inverse of mapOFXPlaneStringToLayer, except that it can also be used for
+     * the color layer.
      **/
-    static std::string mapPlaneToOFXPlaneString(const ImagePlaneDesc& plane);
+    static std::string mapLayerToOFXPlaneString(const ImageLayerDesc& layer);
 
     /**
-     * @brief Returns an OpenFX encoded string representing the components type of the plane.
+     * @brief Returns an OpenFX encoded string representing the components type of the layer.
      * @returns One of the following strings:
      * kOfxImageComponentRGBA, kOfxImageComponentRGB, kOfxImageComponentAlpha, kNatronOfxImageComponentXY, kOfxImageComponentNone
      * or kFnOfxImageComponentStereoDisparity or kFnOfxImageComponentMotionVectors
      * Or any plane encoded in the format specified by the Natron multi-plane extension.
      **/
-    static std::string mapPlaneToOFXComponentsTypeString(const ImagePlaneDesc& plane);
+    static std::string mapLayerToOFXComponentsTypeString(const ImageLayerDesc& layer);
 
     /**
      * @brief Find a layer equivalent to this layer in the other layers container.
-     * ITERATOR must be either a std::vector<ImagePlaneDesc>::iterator or std::list<ImagePlaneDesc>::iterator
+     * ITERATOR must be either a std::vector<ImageLayerDesc>::iterator or std::list<ImageLayerDesc>::iterator
      **/
     template <typename ITERATOR>
-    static ITERATOR findEquivalentLayer(const ImagePlaneDesc& layer, ITERATOR begin, ITERATOR end)
+    static ITERATOR findEquivalentLayer(const ImageLayerDesc& layer, ITERATOR begin, ITERATOR end)
     {
-        bool isColor = layer.isColorPlane();
+        bool isColor = layer.isColorLayer();
 
         ITERATOR foundExistingColorMatch = end;
         ITERATOR foundExistingComponents = end;
 
         for (ITERATOR it = begin; it != end; ++it) {
-            if (it->isColorPlane() && isColor) {
+            if (it->isColorLayer() && isColor) {
                 foundExistingColorMatch = it;
             } else {
                 if (*it == layer) {
@@ -233,28 +228,27 @@ public:
     /*
      * These are default presets image components
      */
-    static const ImagePlaneDesc& getNoneComponents();
-    static const ImagePlaneDesc& getRGBAComponents();
-    static const ImagePlaneDesc& getRGBComponents();
-    static const ImagePlaneDesc& getAlphaComponents();
-    static const ImagePlaneDesc& getBackwardMotionComponents();
-    static const ImagePlaneDesc& getForwardMotionComponents();
-    static const ImagePlaneDesc& getDisparityLeftComponents();
-    static const ImagePlaneDesc& getDisparityRightComponents();
-    static const ImagePlaneDesc& getXYComponents();
+    static const ImageLayerDesc& getNoneComponents();
+    static const ImageLayerDesc& getRGBAComponents();
+    static const ImageLayerDesc& getRGBComponents();
+    static const ImageLayerDesc& getAlphaComponents();
+    static const ImageLayerDesc& getBackwardMotionComponents();
+    static const ImageLayerDesc& getForwardMotionComponents();
+    static const ImageLayerDesc& getDisparityLeftComponents();
+    static const ImageLayerDesc& getDisparityRightComponents();
+    static const ImageLayerDesc& getXYComponents();
 
+    template <class Archive>
+    void save(Archive& ar, const unsigned int version) const;
 
-    template<class Archive>
-    void save(Archive & ar, const unsigned int version) const;
-
-    template<class Archive>
-    void load(Archive & ar, const unsigned int version);
+    template <class Archive>
+    void load(Archive& ar, const unsigned int version);
 
 private:
-    std::string _planeID, _planeLabel;
+    std::string _layerID, _layerLabel;
     std::vector<std::string> _channels;
     std::string _channelsLabel;
-    
+
     friend class boost::serialization::access;
 
     BOOST_SERIALIZATION_SPLIT_MEMBER()
@@ -262,7 +256,6 @@ private:
 
 NATRON_NAMESPACE_EXIT
 
-BOOST_CLASS_VERSION(NATRON_NAMESPACE::ImagePlaneDesc, IMAGEPLANEDESC_SERIALIZATION_VERSION)
-
+BOOST_CLASS_VERSION(NATRON_NAMESPACE::ImageLayerDesc, IMAGELAYERDESC_SERIALIZATION_VERSION)
 
 #endif // IMAGECOMPONENTS_H

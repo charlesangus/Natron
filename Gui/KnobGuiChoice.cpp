@@ -52,11 +52,12 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Lut.h"
 #include "Engine/Node.h"
-#include "Engine/EffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
@@ -367,18 +368,17 @@ KnobGuiChoice::updateToolTip()
 static void
 ensureUnknownChoiceIsNotInternalLayerID(QString& label)
 {
-    if (label.contains(QLatin1String(kNatronColorPlaneID))) {
-        label.replace(QLatin1String(kNatronColorPlaneID), QLatin1String(kNatronColorPlaneLabel));
-    } else if (label.contains(QLatin1String(kNatronBackwardMotionVectorsPlaneID))) {
-        label.replace(QLatin1String(kNatronBackwardMotionVectorsPlaneID), QLatin1String(kNatronBackwardMotionVectorsPlaneLabel));
-    } else if (label.contains(QLatin1String(kNatronForwardMotionVectorsPlaneID))) {
-        label.replace(QLatin1String(kNatronForwardMotionVectorsPlaneID), QLatin1String(kNatronForwardMotionVectorsPlaneLabel));
-    } else if (label.contains(QLatin1String(kNatronDisparityLeftPlaneID))) {
-        label.replace(QLatin1String(kNatronDisparityLeftPlaneID), QLatin1String(kNatronDisparityLeftPlaneLabel));
-    } else if (label.contains(QLatin1String(kNatronDisparityRightPlaneID))) {
-        label.replace(QLatin1String(kNatronDisparityRightPlaneID), QLatin1String(kNatronDisparityRightPlaneLabel));
+    if (label.contains(QLatin1String(kNatronColorLayerID))) {
+        label.replace(QLatin1String(kNatronColorLayerID), QLatin1String(kNatronColorLayerLabel));
+    } else if (label.contains(QLatin1String(kNatronBackwardMotionVectorsLayerID))) {
+        label.replace(QLatin1String(kNatronBackwardMotionVectorsLayerID), QLatin1String(kNatronBackwardMotionVectorsLayerLabel));
+    } else if (label.contains(QLatin1String(kNatronForwardMotionVectorsLayerID))) {
+        label.replace(QLatin1String(kNatronForwardMotionVectorsLayerID), QLatin1String(kNatronForwardMotionVectorsLayerLabel));
+    } else if (label.contains(QLatin1String(kNatronDisparityLeftLayerID))) {
+        label.replace(QLatin1String(kNatronDisparityLeftLayerID), QLatin1String(kNatronDisparityLeftLayerLabel));
+    } else if (label.contains(QLatin1String(kNatronDisparityRightLayerID))) {
+        label.replace(QLatin1String(kNatronDisparityRightLayerID), QLatin1String(kNatronDisparityRightLayerLabel));
     }
-
 }
 
 void

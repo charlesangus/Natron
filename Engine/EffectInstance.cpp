@@ -194,7 +194,7 @@ EffectInstance::getUserPlanes() const
 
 
     for (std::list<ImagePlaneDesc>::iterator it = projectLayers.begin(); it != projectLayers.end(); ++it) {
-        std::string ofxPlane = ImagePlaneDesc::mapPlaneToOFXPlaneString(*it);
+        std::string ofxPlane = ImagePlaneDesc::mapLayerToOFXPlaneString(*it);
         tls->userPlaneStrings.push_back(ofxPlane);
     }
     return tls->userPlaneStrings;
@@ -1134,12 +1134,11 @@ EffectInstance::getImage(int inputNb,
 
     //Remap if needed
     ImagePremultiplicationEnum outputPremult;
-    if ( components.isColorPlane() ) {
+    if (components.isColorLayer()) {
         outputPremult = inputEffect->getPremult();
     } else {
         outputPremult = eImagePremultiplicationOpaque;
     }
-
 
     if (mapToClipPrefs) {
         inputImg = convertPlanesFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, node->usesAlpha0ToConvertFromRGBToRGBA(), outputPremult, channelForMask);
@@ -1686,12 +1685,12 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
             }
 
             ///Throw away images that are not even what the node want to render
-            /*if ( ( imgComps.isColorPlane() && nodePrefComps.isColorPlane() && (imgComps != nodePrefComps) ) || (imgDepth != nodePrefDepth) ) {
+            /*if ( ( imgComps.isColorLayer() && nodePrefComps.isColorLayer() && (imgComps != nodePrefComps) ) || (imgDepth != nodePrefDepth) ) {
                 appPTR->removeFromNodeCache(*it);
                 continue;
             }*/
 
-            bool convertible = (imgComps.isColorPlane() && components.isColorPlane()) || (imgComps == components);
+            bool convertible = (imgComps.isColorLayer() && components.isColorLayer()) || (imgComps == components);
             if ( (imgMMlevel == mipmapLevel) && convertible &&
                  ( getSizeOfForBitDepth(imgDepth) >= getSizeOfForBitDepth(bitdepth) ) /* && imgComps == components && imgDepth == bitdepth*/ ) {
                 ///We found  a matching image
@@ -2443,7 +2442,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
         for (std::map<ImagePlaneDesc, EffectInstance::PlaneToRender>::iterator it = planes.planes.begin(); it != planes.planes.end(); ++it) {
             //If color plane, request the preferred comp of the identity input
-            if ( tls->currentRenderArgs.identityInput && it->second.renderMappedImage->getComponents().isColorPlane() ) {
+            if (tls->currentRenderArgs.identityInput && it->second.renderMappedImage->getComponents().isColorLayer()) {
                 ImagePlaneDesc prefInputComps, prefInputCompsPaired;
                 tls->currentRenderArgs.identityInput->getMetadataComponents(-1, &prefInputComps, &prefInputCompsPaired);
                 comps.push_back(prefInputComps);
@@ -4313,7 +4312,7 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
 
         // If the user did not select any components or the layer is the color-plane, fallback on
         // meta-data color plane
-        if (layer.getNumComponents() == 0 || layer.isColorPlane()) {
+        if (layer.getNumComponents() == 0 || layer.isColorLayer()) {
             gotUserSelectedPlane = false;
         }
 
@@ -4344,7 +4343,7 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
         bool ok = getNode()->getSelectedLayer(i, upstreamAvailableLayers, &inputProcChannels, &isAll, &layer);
 
         // When color plane or all choice then request the default metadata components
-        if (isAll || layer.isColorPlane()) {
+        if (isAll || layer.isColorLayer()) {
             ok = false;
         }
 
@@ -4507,7 +4506,7 @@ EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::
     // Ensure the color layer is always the first one available in the list
     bool hasColorPlane = false;
     for (std::list<ImagePlaneDesc>::iterator it = passThroughLayers.begin(); it != passThroughLayers.end(); ++it) {
-        if (it->isColorPlane()) {
+        if (it->isColorLayer()) {
             hasColorPlane = true;
             availableLayers->push_front(*it);
             passThroughLayers.erase(it);
@@ -4522,7 +4521,7 @@ EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::
         if (hasColorPlane) {
             // Don't add the color plane from the default alyers if already present
             for (std::list<ImagePlaneDesc>::iterator it = projectLayers.begin(); it != projectLayers.end(); ++it) {
-                if (it->isColorPlane()) {
+                if (it->isColorLayer()) {
                     projectLayers.erase(it);
                     break;
                 }
@@ -5315,7 +5314,7 @@ getUnmappedComponentsForInput(EffectInstance* self,
             //None comps
             return rawComps;
         } else {
-            ImagePlaneDesc supportedComps = self->findClosestSupportedComponents(inputNb, ImagePlaneDesc::mapNCompsToColorPlane(rawComps)); //turn that into a comp the plugin expects on that clip
+            ImagePlaneDesc supportedComps = self->findClosestSupportedComponents(inputNb, ImagePlaneDesc::mapNCompsToColorLayer(rawComps)); // turn that into a comp the plugin expects on that clip
             rawComps = supportedComps.getNumComponents();
         }
     }
@@ -5476,9 +5475,9 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
             // http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#id482755
             ImageBitDepthEnum depth = deepestBitDepth;
             int remappedComps = mostComponents;
-            remappedComps = findClosestSupportedComponents(i, ImagePlaneDesc::mapNCompsToColorPlane(remappedComps)).getNumComponents();
+            remappedComps = findClosestSupportedComponents(i, ImagePlaneDesc::mapNCompsToColorLayer(remappedComps)).getNumComponents();
             metadata.setNComps(i, remappedComps);
-            metadata.setComponentsType(i, kNatronColorPlaneID);
+            metadata.setComponentsType(i, kNatronColorLayerID);
             if ( (i == -1) && !premultSet &&
                 ( ( remappedComps == 4 ) || ( remappedComps == 1 ) ) ) {
                 premult = eImagePremultiplicationPremultiplied;
@@ -5496,7 +5495,7 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
             metadata.setBitDepth(i, depth);
 
             metadata.setNComps(i, rawComps);
-            metadata.setComponentsType(i, kNatronColorPlaneID);
+            metadata.setComponentsType(i, kNatronColorLayerID);
         }
     }
     
@@ -5540,8 +5539,8 @@ EffectInstance::getMetadataComponents(int inputNb, ImagePlaneDesc* plane, ImageP
         nComps = _imp->metadata.getNComps(inputNb);
         componentsType = _imp->metadata.getComponentsType(inputNb);
     }
-    if (componentsType == kNatronColorPlaneID) {
-        *plane = ImagePlaneDesc::mapNCompsToColorPlane(nComps);
+    if (componentsType == kNatronColorLayerID) {
+        *plane = ImagePlaneDesc::mapNCompsToColorLayer(nComps);
     } else if (componentsType == kNatronDisparityComponentsLabel) {
         *plane = ImagePlaneDesc::getDisparityLeftComponents();
         *pairedPlane = ImagePlaneDesc::getDisparityRightComponents();
@@ -5762,8 +5761,8 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
             }
         }
 
-        if ( md.getComponentsType(i) == kNatronColorPlaneID ) {
-            md.setNComps(i, node->findClosestSupportedComponents(i, ImagePlaneDesc::mapNCompsToColorPlane(nComps)).getNumComponents());
+        if (md.getComponentsType(i) == kNatronColorLayerID) {
+            md.setNComps(i, node->findClosestSupportedComponents(i, ImagePlaneDesc::mapNCompsToColorLayer(nComps)).getNumComponents());
         }
 
         if (i == -1) {

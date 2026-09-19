@@ -32,7 +32,7 @@
 
 #include "Engine/DeepImage.h"
 #include "Engine/Image.h"
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"

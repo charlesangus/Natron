@@ -1715,7 +1715,7 @@ std::string
 Image::getFormatString(const ImagePlaneDesc& comps,
                        ImageBitDepthEnum depth)
 {
-    std::string s = comps.getPlaneLabel() + '.' + comps.getChannelsLabel();
+    std::string s = comps.getLayerLabel() + '.' + comps.getChannelsLabel();
 
     s.append( getDepthString(depth) );
 

@@ -54,15 +54,14 @@ GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_ON
 
 #include <SequenceParsing.h>
 
-#include "Engine/Variant.h"
-#include "Engine/KnobTypes.h"
-#include "Engine/KnobFile.h"
-#include "Engine/ImagePlaneDesc.h"
 #include "Engine/CurveSerialization.h"
-#include "Engine/StringAnimationManager.h"
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
-
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/StringAnimationManager.h"
+#include "Engine/Variant.h"
+#include "Engine/ViewIdx.h"
 
 #define KNOB_SERIALIZATION_INTRODUCES_SLAVED_TRACKS 2
 #define KNOB_SERIALIZATION_INTRODUCES_SLAVED_TRACKS_OFFSET 3

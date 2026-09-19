@@ -237,7 +237,7 @@ OfxClipInstance::getUnmappedComponents() const
         if (metadataPlane.getNumComponents() == 0) {
             metadataPlane = ImagePlaneDesc::getRGBAComponents();
         }
-        ret = ImagePlaneDesc::mapPlaneToOFXComponentsTypeString(metadataPlane);
+        ret = ImagePlaneDesc::mapLayerToOFXComponentsTypeString(metadataPlane);
 
     } else {
         // The node is not connected but optional, return the closest supported components
@@ -251,7 +251,7 @@ OfxClipInstance::getUnmappedComponents() const
                 effect->getMetadataComponents(i, &metadataPlane, &metadataPairedPlane);
 
                 if (metadataPlane.getNumComponents() > 0) {
-                    ret = ImagePlaneDesc::mapPlaneToOFXComponentsTypeString(metadataPlane);
+                    ret = ImagePlaneDesc::mapLayerToOFXComponentsTypeString(metadataPlane);
                 }
             }
         }
@@ -259,7 +259,7 @@ OfxClipInstance::getUnmappedComponents() const
 
         // last-resort: black and transparent image means RGBA.
         if (ret.empty()) {
-            ret = ImagePlaneDesc::mapPlaneToOFXComponentsTypeString(ImagePlaneDesc::getRGBAComponents());
+            ret = ImagePlaneDesc::mapLayerToOFXComponentsTypeString(ImagePlaneDesc::getRGBAComponents());
         }
 
     }
@@ -310,7 +310,7 @@ OfxClipInstancePrivate::getComponentsPresentInternal(const OfxClipInstance::Clip
     effect->getAvailableLayers(time, view, inputNb, &availableLayers);
  
     for (std::list<ImagePlaneDesc>::iterator it = availableLayers.begin(); it != availableLayers.end(); ++it) {
-        std::string ofxPlane = ImagePlaneDesc::mapPlaneToOFXPlaneString(*it);
+        std::string ofxPlane = ImagePlaneDesc::mapLayerToOFXPlaneString(*it);
         tls->componentsPresent.push_back(ofxPlane);
     }
 
@@ -864,7 +864,7 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
                     //fallback on the basic components indicated on the clip
                     //This could be the case for example for the Mask Input
                     ImagePlaneDesc pairedComp;
-                    ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes( thisClipComponents, &comp, &pairedComp );
+                    ImagePlaneDesc::mapOFXComponentsTypeStringToLayers(thisClipComponents, &comp, &pairedComp);
 
                     foundCompsInTLS = true;
                     //qDebug() << _imp->nodeInstance->getScriptName_mt_safe().c_str() << " didn't specify any needed components via getClipComponents for clip " << getName().c_str();
@@ -885,15 +885,15 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
             if (!effect->getNode()->getSelectedLayer(inputnb, availableLayers, &processChannels, &isAll, &comp)) {
                 //There's no selector...fallback on the basic components indicated on the clip
                 ImagePlaneDesc pairedComp;
-                ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes( thisClipComponents, &comp, &pairedComp );
+                ImagePlaneDesc::mapOFXComponentsTypeStringToLayers(thisClipComponents, &comp, &pairedComp);
             }
         }
     } else {
         if (*ofxPlane == kFnOfxImagePlaneColour) {
             ImagePlaneDesc pairedComp;
-            ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes( thisClipComponents, &comp, &pairedComp );
+            ImagePlaneDesc::mapOFXComponentsTypeStringToLayers(thisClipComponents, &comp, &pairedComp);
         } else {
-            comp = ImagePlaneDesc::mapOFXPlaneStringToPlane(*ofxPlane);
+            comp = ImagePlaneDesc::mapOFXPlaneStringToLayer(*ofxPlane);
         }
     }
 
@@ -1015,12 +1015,12 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
     std::string components;
     int nComps;
     if (multiPlanar) {
-        components = ImagePlaneDesc::mapPlaneToOFXComponentsTypeString( image->getComponents() );
+        components = ImagePlaneDesc::mapLayerToOFXComponentsTypeString(image->getComponents());
         nComps = image->getComponents().getNumComponents();
     } else {
         components = thisClipComponents;
         ImagePlaneDesc plane, pairedComp;
-        ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes( components, &plane, &pairedComp );
+        ImagePlaneDesc::mapOFXComponentsTypeStringToLayers(components, &plane, &pairedComp);
         nComps = plane.getNumComponents();
     }
 
@@ -1086,16 +1086,15 @@ OfxClipInstance::getOutputImageInternal(const std::string* ofxPlane,
          */
         if ( (natronPlane.getNumComponents() == 0) && effect->isMultiPlanar() ) {
             ImagePlaneDesc pairedPlane;
-            ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(getComponents(), &natronPlane, &pairedPlane);
-
+            ImagePlaneDesc::mapOFXComponentsTypeStringToLayers(getComponents(), &natronPlane, &pairedPlane);
         }
         assert(natronPlane.getNumComponents() > 0);
     } else {
         if (*ofxPlane == kFnOfxImagePlaneColour) {
             ImagePlaneDesc pairedComp;
-            ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes( getComponents(), &natronPlane, &pairedComp );
+            ImagePlaneDesc::mapOFXComponentsTypeStringToLayers(getComponents(), &natronPlane, &pairedComp);
         } else {
-            natronPlane = ImagePlaneDesc::mapOFXPlaneStringToPlane(*ofxPlane);
+            natronPlane = ImagePlaneDesc::mapOFXPlaneStringToLayer(*ofxPlane);
         }
     }
 
@@ -1119,10 +1118,10 @@ OfxClipInstance::getOutputImageInternal(const std::string* ofxPlane,
        If the plugin is multiplanar return exactly what it requested.
        Otherwise, hack the clipGetImage and return the plane requested by the user via the interface instead of the colour plane.
      */
-    const std::string& layerName = /*multiPlanar ?*/ natronPlane.getPlaneID(); // : planeBeingRendered.getLayerName();
+    const std::string& layerName = /*multiPlanar ?*/ natronPlane.getLayerID(); // : planeBeingRendered.getLayerName();
 
     for (std::map<ImagePlaneDesc, EffectInstance::PlaneToRender>::iterator it = outputPlanes.begin(); it != outputPlanes.end(); ++it) {
-        if (it->first.getPlaneID() == layerName) {
+        if (it->first.getLayerID() == layerName) {
             outputImage = it->second.tmpImage;
             break;
         }
@@ -1172,12 +1171,12 @@ OfxClipInstance::getOutputImageInternal(const std::string* ofxPlane,
     std::string ofxComponents;
     int nComps;
     if (isMultiplanar) {
-        ofxComponents = ImagePlaneDesc::mapPlaneToOFXComponentsTypeString( outputImage->getComponents() );
+        ofxComponents = ImagePlaneDesc::mapLayerToOFXComponentsTypeString(outputImage->getComponents());
         nComps = outputImage->getComponents().getNumComponents();
     } else {
         ofxComponents = getComponents();
         ImagePlaneDesc natronComps, pairedComps;
-        ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(ofxComponents, &natronComps, &pairedComps);
+        ImagePlaneDesc::mapOFXComponentsTypeStringToLayers(ofxComponents, &natronComps, &pairedComps);
         nComps = natronComps.getNumComponents();
         assert( nComps == (int)outputImage->getComponentsCount() );
         if ( nComps != (int)outputImage->getComponentsCount() ) {

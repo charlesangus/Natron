@@ -879,14 +879,14 @@ ViewerTab::refreshLayerAndAlphaChannelComboBox()
 
     for (std::set<ImagePlaneDesc>::iterator it = components.begin(); it != components.end(); ++it) {
 
-        ChoiceOption option = it->getPlaneOption();
+        ChoiceOption option = it->getLayerOption();
         _imp->layerChoice->addItem(QString::fromUtf8(option.label.c_str()));
 
         if (option.label == layerCurChoice.toStdString()) {
             foundCurIt = it;
         }
 
-        if (it->isColorPlane()) {
+        if (it->isColorLayer()) {
             foundColorIt = it;
         } else {
             foundOtherIt = it;
@@ -903,7 +903,7 @@ ViewerTab::refreshLayerAndAlphaChannelComboBox()
             _imp->alphaChannelChoice->addItem(QString::fromUtf8(chanOpt.label.c_str()));
         }
 
-        if ( it->isColorPlane() ) {
+        if (it->isColorLayer()) {
             //There's RGBA or alpha, set it to A
             std::string alphaChoice;
             if (channels.size() == 4) {
@@ -924,12 +924,12 @@ ViewerTab::refreshLayerAndAlphaChannelComboBox()
     if ( ( layerCurChoice == QString::fromUtf8("-") ) || layerCurChoice.isEmpty() || ( foundCurIt == components.end() ) ) {
         // Try to find color plane, otherwise fallback on any other layer
         if ( foundColorIt != components.end() ) {
-            layerCurChoice = QString::fromUtf8( foundColorIt->getPlaneLabel().c_str() )
-                             + QLatin1Char('.') + QString::fromUtf8( foundColorIt->getChannelsLabel().c_str() );
+            layerCurChoice = QString::fromUtf8(foundColorIt->getLayerLabel().c_str())
+                + QLatin1Char('.') + QString::fromUtf8(foundColorIt->getChannelsLabel().c_str());
             foundCurIt = foundColorIt;
         } else if ( foundOtherIt != components.end() ) {
-            layerCurChoice = QString::fromUtf8( foundOtherIt->getPlaneLabel().c_str() )
-                             + QLatin1Char('.') + QString::fromUtf8( foundOtherIt->getChannelsLabel().c_str() );
+            layerCurChoice = QString::fromUtf8(foundOtherIt->getLayerLabel().c_str())
+                + QLatin1Char('.') + QString::fromUtf8(foundOtherIt->getChannelsLabel().c_str());
             foundCurIt = foundOtherIt;
         } else {
             layerCurChoice = QString::fromUtf8("-");
@@ -966,8 +966,8 @@ ViewerTab::refreshLayerAndAlphaChannelComboBox()
              ( ( foundColorIt->getChannels().size() == 4) || ( foundColorIt->getChannels().size() == 1) ) ) {
             std::size_t lastComp = foundColorIt->getChannels().size() - 1;
 
-            alphaCurChoice = QString::fromUtf8( foundColorIt->getPlaneLabel().c_str() )
-                             + QLatin1Char('.') + QString::fromUtf8( foundColorIt->getChannels()[lastComp].c_str() );
+            alphaCurChoice = QString::fromUtf8(foundColorIt->getLayerLabel().c_str())
+                + QLatin1Char('.') + QString::fromUtf8(foundColorIt->getChannels()[lastComp].c_str());
             foundAlphaChannel = foundColorIt->getChannels()[lastComp];
             foundCurAlphaIt = foundColorIt;
         } else {

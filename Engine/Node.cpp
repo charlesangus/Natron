@@ -2044,7 +2044,7 @@ Node::makeInfoForInput(int inputNumber) const
         }
         for (std::list<ImagePlaneDesc>::iterator it = availableLayers.begin(); it != availableLayers.end(); ++it) {
 
-            ss << " "  << it->getPlaneLabel() << '.' << it->getChannelsLabel();
+            ss << " " << it->getLayerLabel() << '.' << it->getChannelsLabel();
             if ( next != availableLayers.end() ) {
                 ss << ", ";
                 ++next;
@@ -5604,7 +5604,7 @@ Node::Implementation::getSelectedLayerInternal(int inputNb,
 
     for (std::list<ImagePlaneDesc>::const_iterator it2 = availableLayers.begin(); it2 != availableLayers.end(); ++it2) {
 
-        const std::string& layerName = it2->getPlaneID();
+        const std::string& layerName = it2->getLayerID();
         if (layerID.id == layerName) {
             return *it2;
         }
@@ -7643,7 +7643,7 @@ Node::refreshChannelSelectors()
         _imp->effect->getAvailableLayers(time, ViewIdx(0), inputNb,  &availableComponents);
 
         for (std::list<ImagePlaneDesc>::const_iterator it2 = availableComponents.begin(); it2 != availableComponents.end(); ++it2) {
-            ChoiceOption layerOption = it2->getPlaneOption();
+            ChoiceOption layerOption = it2->getLayerOption();
             choices.push_back(layerOption);
         }
 
@@ -7716,7 +7716,7 @@ Node::addUserComponents(const ImagePlaneDesc& comps)
     {
         QMutexLocker k(&_imp->createdComponentsMutex);
         for (std::list<ImagePlaneDesc>::iterator it = _imp->createdComponents.begin(); it != _imp->createdComponents.end(); ++it) {
-            if ( it->getPlaneID() == comps.getPlaneID() ) {
+            if (it->getLayerID() == comps.getLayerID()) {
                 return false;
             }
         }
@@ -7731,7 +7731,7 @@ Node::addUserComponents(const ImagePlaneDesc& comps)
         ///Set the selector to the new channel
         KnobChoice* layerChoice = dynamic_cast<KnobChoice*>( outputLayerKnob.get() );
         if (layerChoice) {
-            layerChoice->setValueFromID(comps.getPlaneID(), 0);
+            layerChoice->setValueFromID(comps.getLayerID(), 0);
         }
     }
 

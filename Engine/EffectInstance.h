@@ -34,16 +34,16 @@
 #include "Global/GlobalDefines.h"
 #include "Global/KeySymbols.h"
 
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/ImageLocker.h"
 #include "Engine/Knob.h" // for KnobHolder
+#include "Engine/ParallelRenderArgs.h"
+#include "Engine/PluginActionShortcut.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/RenderStats.h"
-#include "Engine/EngineFwd.h"
-#include "Engine/ParallelRenderArgs.h"
-#include "Engine/PluginActionShortcut.h"
 #include "Engine/ViewIdx.h"
 
 // Various useful plugin IDs, @see EffectInstance::getPluginID()

@@ -44,13 +44,13 @@
 #include <QCoreApplication>
 
 #include "Engine/AbortableRenderInfo.h"
-#include "Engine/OutputSchedulerThread.h"
-#include "Engine/ImagePlaneDesc.h"
-#include "Engine/FrameEntry.h"
-#include "Engine/Settings.h"
-#include "Engine/Image.h"
-#include "Engine/TextureRect.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/FrameEntry.h"
+#include "Engine/Image.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/OutputSchedulerThread.h"
+#include "Engine/Settings.h"
+#include "Engine/TextureRect.h"
 
 #define GAMMA_LUT_NB_VALUES 1023
 

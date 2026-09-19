@@ -31,7 +31,7 @@
 #include <vector>
 
 #include "Engine/Image.h"
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"

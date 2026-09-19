@@ -53,7 +53,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/Image.h"
-#include "Engine/ImagePlaneDesc.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"

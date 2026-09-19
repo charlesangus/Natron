@@ -178,7 +178,7 @@ NewLayerDialog::NewLayerDialog(const ImagePlaneDesc& original,
     _imp->mainLayout->addWidget(_imp->buttons, 7, 0, 1, 2);
 
     if (original.getNumComponents() != 0) {
-        _imp->layerEdit->setText( QString::fromUtf8( original.getPlaneLabel().c_str() ) );
+        _imp->layerEdit->setText(QString::fromUtf8(original.getLayerLabel().c_str()));
 
         LineEdit* edits[4] = {_imp->rEdit, _imp->gEdit, _imp->bEdit, _imp->aEdit};
         Label* labels[4] = {_imp->rLabel, _imp->gLabel, _imp->bLabel, _imp->aLabel};

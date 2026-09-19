@@ -1321,17 +1321,16 @@ OfxEffectInstance::onMetadataRefreshed(const NodeMetadata& metadata)
             std::string ofxClipComponentStr;
             std::string componentsType = metadata.getComponentsType(inputNb);
             int nComps = metadata.getNComps(inputNb);
-            ImagePlaneDesc natronPlane = ImagePlaneDesc::mapNCompsToColorPlane(nComps);
-            if (componentsType == kNatronColorPlaneID) {
-                ofxClipComponentStr = ImagePlaneDesc::mapPlaneToOFXComponentsTypeString(natronPlane);
+            ImagePlaneDesc natronPlane = ImagePlaneDesc::mapNCompsToColorLayer(nComps);
+            if (componentsType == kNatronColorLayerID) {
+                ofxClipComponentStr = ImagePlaneDesc::mapLayerToOFXComponentsTypeString(natronPlane);
             } else if (componentsType == kNatronDisparityComponentsLabel) {
                 ofxClipComponentStr = kFnOfxImageComponentStereoDisparity;
             } else if (componentsType == kNatronMotionComponentsLabel) {
                 ofxClipComponentStr = kFnOfxImageComponentMotionVectors;
             } else {
-                ofxClipComponentStr = ImagePlaneDesc::mapPlaneToOFXComponentsTypeString(natronPlane);
+                ofxClipComponentStr = ImagePlaneDesc::mapLayerToOFXComponentsTypeString(natronPlane);
             }
-
 
             clip->setComponents(ofxClipComponentStr);
             clip->setPixelDepth( OfxClipInstance::natronsDepthToOfxDepth( metadata.getBitDepth(inputNb) ) );
@@ -2066,9 +2065,9 @@ OfxEffectInstance::render(const RenderActionArgs& args)
          it != args.outputPlanes.end(); ++it) {
         if (!multiPlanar) {
             // When not multi-planar, the components of the image will be the colorplane
-            ofxPlanes.push_back(ImagePlaneDesc::mapPlaneToOFXPlaneString(it->second->getComponents()));
+            ofxPlanes.push_back(ImagePlaneDesc::mapLayerToOFXPlaneString(it->second->getComponents()));
         } else {
-            ofxPlanes.push_back(ImagePlaneDesc::mapPlaneToOFXPlaneString(it->first));
+            ofxPlanes.push_back(ImagePlaneDesc::mapLayerToOFXPlaneString(it->first));
         }
     }
 
@@ -2836,8 +2835,8 @@ OfxEffectInstance::addAcceptedComponents(int inputNb,
         for (U32 i = 0; i < supportedComps.size(); ++i) {
             try {
                 ImagePlaneDesc comp, pairedComp;
-                ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(supportedComps[i], &comp, &pairedComp);
-                comps->push_back(ImagePlaneDesc::mapNCompsToColorPlane(comp.getNumComponents()));
+                ImagePlaneDesc::mapOFXComponentsTypeStringToLayers(supportedComps[i], &comp, &pairedComp);
+                comps->push_back(ImagePlaneDesc::mapNCompsToColorLayer(comp.getNumComponents()));
             } catch (const std::runtime_error &e) {
                 // ignore unsupported components
             }
@@ -2850,8 +2849,8 @@ OfxEffectInstance::addAcceptedComponents(int inputNb,
         for (U32 i = 0; i < supportedComps.size(); ++i) {
             try {
                 ImagePlaneDesc comp, pairedComp;
-                ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(supportedComps[i], &comp, &pairedComp);
-                comps->push_back(ImagePlaneDesc::mapNCompsToColorPlane(comp.getNumComponents()));
+                ImagePlaneDesc::mapOFXComponentsTypeStringToLayers(supportedComps[i], &comp, &pairedComp);
+                comps->push_back(ImagePlaneDesc::mapNCompsToColorLayer(comp.getNumComponents()));
             } catch (const std::runtime_error &e) {
                 // ignore unsupported components
             }
@@ -2915,9 +2914,9 @@ OfxEffectInstance::getComponentsNeededAndProduced(double time,
 
                         ImagePlaneDesc plane;
                         if ((*it2) == kFnOfxImagePlaneColour) {
-                            plane = ImagePlaneDesc::mapNCompsToColorPlane(getMetadataNComps(index));
+                            plane = ImagePlaneDesc::mapNCompsToColorLayer(getMetadataNComps(index));
                         } else {
-                            plane = ImagePlaneDesc::mapOFXPlaneStringToPlane(*it2);
+                            plane = ImagePlaneDesc::mapOFXPlaneStringToLayer(*it2);
                         }
                         if (plane.getNumComponents() > 0) {
                             compNeeded.push_back(plane);

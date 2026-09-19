@@ -60,8 +60,8 @@ ImageLayer::ImageLayer(const QString& layerName,
 }
 
 ImageLayer::ImageLayer(const ImagePlaneDesc& comps)
-    : _layerName( QString::fromUtf8( comps.getPlaneLabel().c_str() ) )
-    , _componentsPrettyName( QString::fromUtf8( comps.getChannelsLabel().c_str() ) )
+    : _layerName(QString::fromUtf8(comps.getLayerLabel().c_str()))
+    , _componentsPrettyName(QString::fromUtf8(comps.getChannelsLabel().c_str()))
 {
     const std::vector<std::string>& channels = comps.getChannels();
 
@@ -88,7 +88,7 @@ ImageLayer::getHash(const ImageLayer& layer)
 bool
 ImageLayer::isColorPlane() const
 {
-    return _comps->isColorPlane();
+    return _comps->isColorLayer();
 }
 
 int

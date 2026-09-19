@@ -23,48 +23,47 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "ImagePlaneDesc.h"
+#include "ImageLayerDesc.h"
 
 #include <ofxNatron.h>
 
 #include <cassert>
-#include <stdexcept>
 #include <cstring>
 #include <sstream>
+#include <stdexcept>
 
 NATRON_NAMESPACE_ENTER
 
-static const char* rgbaComps[4] = {"R", "G", "B", "A"};
-static const char* rgbComps[3] = {"R", "G", "B"};
-static const char* alphaComps[1] = {"A"};
-static const char* motionComps[2] = {"U", "V"};
-static const char* disparityComps[2] = {"X", "Y"};
-static const char* xyComps[2] = {"X", "Y"};
+static const char* rgbaComps[4] = { "R", "G", "B", "A" };
+static const char* rgbComps[3] = { "R", "G", "B" };
+static const char* alphaComps[1] = { "A" };
+static const char* motionComps[2] = { "U", "V" };
+static const char* disparityComps[2] = { "X", "Y" };
+static const char* xyComps[2] = { "X", "Y" };
 
+ImageLayerDesc::ImageLayerDesc()
+    : _layerID("none")
 
-ImagePlaneDesc::ImagePlaneDesc()
-: _planeID("none")
-
-, _planeLabel("none")
-, _channels()
-, _channelsLabel("none")
+    , _layerLabel("none")
+    , _channels()
+    , _channelsLabel("none")
 {
 }
 
-ImagePlaneDesc::ImagePlaneDesc(const std::string& planeID,
-                               const std::string& planeLabel,
+ImageLayerDesc::ImageLayerDesc(const std::string& layerID,
+                               const std::string& layerLabel,
                                const std::string& channelsLabel,
                                const std::vector<std::string>& channels)
-: _planeID(planeID)
-, _planeLabel(planeLabel)
-, _channels(channels)
-, _channelsLabel(channelsLabel)
+    : _layerID(layerID)
+    , _layerLabel(layerLabel)
+    , _channels(channels)
+    , _channelsLabel(channelsLabel)
 {
-    if (planeLabel.empty()) {
-        // Plane label is the ID if empty
-        _planeLabel = _planeID;
+    if (layerLabel.empty()) {
+        // Layer label is the ID if empty
+        _layerLabel = _layerID;
     }
-    if ( channelsLabel.empty() ) {
+    if (channelsLabel.empty()) {
         // Channels label is the concatenation of all channels
         for (std::size_t i = 0; i < channels.size(); ++i) {
             _channelsLabel.append(channels[i]);
@@ -72,26 +71,26 @@ ImagePlaneDesc::ImagePlaneDesc(const std::string& planeID,
     }
 }
 
-ImagePlaneDesc::ImagePlaneDesc(const std::string& planeName,
-                               const std::string& planeLabel,
+ImageLayerDesc::ImageLayerDesc(const std::string& layerName,
+                               const std::string& layerLabel,
                                const std::string& channelsLabel,
                                const char** channels,
                                int count)
-: _planeID(planeName)
-, _planeLabel(planeLabel)
-, _channels()
-, _channelsLabel(channelsLabel)
+    : _layerID(layerName)
+    , _layerLabel(layerLabel)
+    , _channels()
+    , _channelsLabel(channelsLabel)
 {
     _channels.resize(count);
     for (int i = 0; i < count; ++i) {
         _channels[i] = channels[i];
     }
 
-    if (planeLabel.empty()) {
-        // Plane label is the ID if empty
-        _planeLabel = _planeID;
+    if (layerLabel.empty()) {
+        // Layer label is the ID if empty
+        _layerLabel = _layerID;
     }
-    if ( channelsLabel.empty() ) {
+    if (channelsLabel.empty()) {
         // Channels label is the concatenation of all channels
         for (std::size_t i = 0; i < _channels.size(); ++i) {
             _channelsLabel.append(channels[i]);
@@ -99,168 +98,164 @@ ImagePlaneDesc::ImagePlaneDesc(const std::string& planeName,
     }
 }
 
-ImagePlaneDesc::ImagePlaneDesc(const ImagePlaneDesc& other)
+ImageLayerDesc::ImageLayerDesc(const ImageLayerDesc& other)
 {
     *this = other;
 }
 
-ImagePlaneDesc&
-ImagePlaneDesc::operator=(const ImagePlaneDesc& other)
+ImageLayerDesc&
+ImageLayerDesc::operator=(const ImageLayerDesc& other)
 {
-    _planeID = other._planeID;
-    _planeLabel = other._planeLabel;
+    _layerID = other._layerID;
+    _layerLabel = other._layerLabel;
     _channels = other._channels;
     _channelsLabel = other._channelsLabel;
     return *this;
 }
 
-ImagePlaneDesc::~ImagePlaneDesc()
+ImageLayerDesc::~ImageLayerDesc()
 {
 }
 
 bool
-ImagePlaneDesc::isColorPlane(const std::string& planeID)
+ImageLayerDesc::isColorLayer(const std::string& layerID)
 {
-    return planeID == kNatronColorPlaneID;
+    return layerID == kNatronColorLayerID;
 }
 
 bool
-ImagePlaneDesc::isColorPlane() const
+ImageLayerDesc::isColorLayer() const
 {
-    return ImagePlaneDesc::isColorPlane(_planeID);
+    return ImageLayerDesc::isColorLayer(_layerID);
 }
 
-
-
 bool
-ImagePlaneDesc::operator==(const ImagePlaneDesc& other) const
+ImageLayerDesc::operator==(const ImageLayerDesc& other) const
 {
-    if ( _channels.size() != other._channels.size() ) {
+    if (_channels.size() != other._channels.size()) {
         return false;
     }
-    return _planeID == other._planeID;
+    return _layerID == other._layerID;
 }
 
 bool
-ImagePlaneDesc::operator<(const ImagePlaneDesc& other) const
+ImageLayerDesc::operator<(const ImageLayerDesc& other) const
 {
-    return _planeID < other._planeID;
+    return _layerID < other._layerID;
 }
 
 int
-ImagePlaneDesc::getNumComponents() const
+ImageLayerDesc::getNumComponents() const
 {
     return (int)_channels.size();
 }
 
 const std::string&
-ImagePlaneDesc::getPlaneID() const
+ImageLayerDesc::getLayerID() const
 {
-    return _planeID;
+    return _layerID;
 }
 
 const std::string&
-ImagePlaneDesc::getPlaneLabel() const
+ImageLayerDesc::getLayerLabel() const
 {
-    return _planeLabel;
+    return _layerLabel;
 }
 
 const std::string&
-ImagePlaneDesc::getChannelsLabel() const
+ImageLayerDesc::getChannelsLabel() const
 {
     return _channelsLabel;
 }
 
 const std::vector<std::string>&
-ImagePlaneDesc::getChannels() const
+ImageLayerDesc::getChannels() const
 {
     return _channels;
 }
 
-const ImagePlaneDesc&
-ImagePlaneDesc::getNoneComponents()
+const ImageLayerDesc&
+ImageLayerDesc::getNoneComponents()
 {
-    static const ImagePlaneDesc comp;
+    static const ImageLayerDesc comp;
     return comp;
 }
 
-const ImagePlaneDesc&
-ImagePlaneDesc::getRGBAComponents()
+const ImageLayerDesc&
+ImageLayerDesc::getRGBAComponents()
 {
-    static const ImagePlaneDesc comp(kNatronColorPlaneID, kNatronColorPlaneLabel, "", rgbaComps, 4);
-
-    return comp;
-}
-
-const ImagePlaneDesc&
-ImagePlaneDesc::getRGBComponents()
-{
-    static const ImagePlaneDesc comp(kNatronColorPlaneID, kNatronColorPlaneLabel, "", rgbComps, 3);
+    static const ImageLayerDesc comp(kNatronColorLayerID, kNatronColorLayerLabel, "", rgbaComps, 4);
 
     return comp;
 }
 
-
-const ImagePlaneDesc&
-ImagePlaneDesc::getXYComponents()
+const ImageLayerDesc&
+ImageLayerDesc::getRGBComponents()
 {
-    static const ImagePlaneDesc comp(kNatronColorPlaneID, kNatronColorPlaneLabel, "XY", xyComps, 2);
+    static const ImageLayerDesc comp(kNatronColorLayerID, kNatronColorLayerLabel, "", rgbComps, 3);
 
     return comp;
 }
 
-const ImagePlaneDesc&
-ImagePlaneDesc::getAlphaComponents()
+const ImageLayerDesc&
+ImageLayerDesc::getXYComponents()
 {
-    static const ImagePlaneDesc comp(kNatronColorPlaneID, kNatronColorPlaneLabel, "Alpha", alphaComps, 1);
+    static const ImageLayerDesc comp(kNatronColorLayerID, kNatronColorLayerLabel, "XY", xyComps, 2);
 
     return comp;
 }
 
-const ImagePlaneDesc&
-ImagePlaneDesc::getBackwardMotionComponents()
+const ImageLayerDesc&
+ImageLayerDesc::getAlphaComponents()
 {
-    static const ImagePlaneDesc comp(kNatronBackwardMotionVectorsPlaneID, kNatronBackwardMotionVectorsPlaneLabel, kNatronMotionComponentsLabel, motionComps, 2);
+    static const ImageLayerDesc comp(kNatronColorLayerID, kNatronColorLayerLabel, "Alpha", alphaComps, 1);
 
     return comp;
 }
 
-const ImagePlaneDesc&
-ImagePlaneDesc::getForwardMotionComponents()
+const ImageLayerDesc&
+ImageLayerDesc::getBackwardMotionComponents()
 {
-    static const ImagePlaneDesc comp(kNatronForwardMotionVectorsPlaneID, kNatronForwardMotionVectorsPlaneLabel, kNatronMotionComponentsLabel, motionComps, 2);
+    static const ImageLayerDesc comp(kNatronBackwardMotionVectorsLayerID, kNatronBackwardMotionVectorsLayerLabel, kNatronMotionComponentsLabel, motionComps, 2);
 
     return comp;
 }
 
-const ImagePlaneDesc&
-ImagePlaneDesc::getDisparityLeftComponents()
+const ImageLayerDesc&
+ImageLayerDesc::getForwardMotionComponents()
 {
-    static const ImagePlaneDesc comp(kNatronDisparityLeftPlaneID, kNatronDisparityLeftPlaneLabel, kNatronDisparityComponentsLabel, disparityComps, 2);
+    static const ImageLayerDesc comp(kNatronForwardMotionVectorsLayerID, kNatronForwardMotionVectorsLayerLabel, kNatronMotionComponentsLabel, motionComps, 2);
 
     return comp;
 }
 
-const ImagePlaneDesc&
-ImagePlaneDesc::getDisparityRightComponents()
+const ImageLayerDesc&
+ImageLayerDesc::getDisparityLeftComponents()
 {
-    static const ImagePlaneDesc comp(kNatronDisparityRightPlaneID, kNatronDisparityRightPlaneLabel, kNatronDisparityComponentsLabel, disparityComps, 2);
+    static const ImageLayerDesc comp(kNatronDisparityLeftLayerID, kNatronDisparityLeftLayerLabel, kNatronDisparityComponentsLabel, disparityComps, 2);
 
     return comp;
 }
 
+const ImageLayerDesc&
+ImageLayerDesc::getDisparityRightComponents()
+{
+    static const ImageLayerDesc comp(kNatronDisparityRightLayerID, kNatronDisparityRightLayerLabel, kNatronDisparityComponentsLabel, disparityComps, 2);
+
+    return comp;
+}
 
 ChoiceOption
-ImagePlaneDesc::getChannelOption(int channelIndex) const
+ImageLayerDesc::getChannelOption(int channelIndex) const
 {
     if (channelIndex < 0 || channelIndex >= (int)_channels.size()) {
         assert(false);
-        return ChoiceOption("","","");
+        return ChoiceOption("", "", "");
     }
     std::string optionID, optionLabel;
-    optionLabel += _planeLabel;
-    optionID += _planeID;
-    if ( !optionLabel.empty() ) {
+    optionLabel += _layerLabel;
+    optionID += _layerID;
+    if (!optionLabel.empty()) {
         optionLabel += '.';
     }
     if (!optionID.empty()) {
@@ -275,35 +270,34 @@ ImagePlaneDesc::getChannelOption(int channelIndex) const
 }
 
 ChoiceOption
-ImagePlaneDesc::getPlaneOption() const
+ImageLayerDesc::getLayerOption() const
 {
-    std::string optionLabel = _planeLabel + "." + _channelsLabel;
+    std::string optionLabel = _layerLabel + "." + _channelsLabel;
 
-    // The option ID is always the name of the layer, this ensures for the Color plane that even if the components type changes, the choice stays
+    // The option ID is always the name of the layer, this ensures for the Color layer that even if the components type changes, the choice stays
     // the same in the parameter.
-    return ChoiceOption(_planeID, optionLabel, "");
-
+    return ChoiceOption(_layerID, optionLabel, "");
 }
 
-const ImagePlaneDesc&
-ImagePlaneDesc::mapNCompsToColorPlane(int nComps)
+const ImageLayerDesc&
+ImageLayerDesc::mapNCompsToColorLayer(int nComps)
 {
     switch (nComps) {
-        case 1:
-            return ImagePlaneDesc::getAlphaComponents();
-        case 2:
-            return ImagePlaneDesc::getXYComponents();
-        case 3:
-            return ImagePlaneDesc::getRGBComponents();
-        case 4:
-            return ImagePlaneDesc::getRGBAComponents();
-        default:
-            return ImagePlaneDesc::getNoneComponents();
+    case 1:
+        return ImageLayerDesc::getAlphaComponents();
+    case 2:
+        return ImageLayerDesc::getXYComponents();
+    case 3:
+        return ImageLayerDesc::getRGBComponents();
+    case 4:
+        return ImageLayerDesc::getRGBAComponents();
+    default:
+        return ImageLayerDesc::getNoneComponents();
     }
 }
 
 static bool
-extractOFXEncodedCustomPlane(const std::string& comp, std::string* layerName, std::string* layerLabel, std::string* channelsLabel, std::vector<std::string>* channels)
+extractOFXEncodedCustomLayer(const std::string& comp, std::string* layerName, std::string* layerLabel, std::string* channelsLabel, std::vector<std::string>* channels)
 {
 
     // Find the plane unique identifier
@@ -319,19 +313,15 @@ extractOFXEncodedCustomPlane(const std::string& comp, std::string* layerName, st
     // If planeLabelStartIdx = 0, there's no plane label.
     std::size_t planeLabelStartIdx = 0;
 
-
     const std::size_t foundPlaneLabelLen = std::strlen(kNatronOfxImageComponentsPlaneLabel);
     std::size_t foundPlaneLabel = comp.find(kNatronOfxImageComponentsPlaneLabel, planeNameStartIdx);
     if (foundPlaneLabel != std::string::npos) {
         planeLabelStartIdx = foundPlaneLabel + foundPlaneLabelLen;
     }
 
-
-
     // Find the optional channels label
     // If channelsLabelStartIdx = 0, there's no channels label.
     std::size_t channelsLabelStartIdx = 0;
-
 
     const std::size_t foundChannelsLabelLen = std::strlen(kNatronOfxImageComponentsPlaneChannelsLabel);
 
@@ -341,8 +331,6 @@ extractOFXEncodedCustomPlane(const std::string& comp, std::string* layerName, st
     if (foundChannelsLabel != std::string::npos) {
         channelsLabelStartIdx = foundChannelsLabel + foundChannelsLabelLen;
     }
-
-
 
     // Find the first channel
     // If there was a channels label before, find from there, otherwise if there was a plane label before
@@ -403,74 +391,73 @@ extractOFXEncodedCustomPlane(const std::string& comp, std::string* layerName, st
     }
 
     return true;
-} // extractOFXEncodedCustomPlane
+} // extractOFXEncodedCustomLayer
 
-static ImagePlaneDesc
+static ImageLayerDesc
 ofxCustomCompToNatronComp(const std::string& comp)
 {
-    std::string planeID, planeLabel, channelsLabel;
+    std::string layerID, layerLabel, channelsLabel;
     std::vector<std::string> channels;
-    if (!extractOFXEncodedCustomPlane(comp, &planeID, &planeLabel, &channelsLabel, &channels)) {
-        return ImagePlaneDesc::getNoneComponents();
+    if (!extractOFXEncodedCustomLayer(comp, &layerID, &layerLabel, &channelsLabel, &channels)) {
+        return ImageLayerDesc::getNoneComponents();
     }
 
-    return ImagePlaneDesc(planeID, planeLabel, channelsLabel, channels);
+    return ImageLayerDesc(layerID, layerLabel, channelsLabel, channels);
 }
 
-ImagePlaneDesc
-ImagePlaneDesc::mapOFXPlaneStringToPlane(const std::string& ofxPlane)
+ImageLayerDesc
+ImageLayerDesc::mapOFXPlaneStringToLayer(const std::string& ofxPlane)
 {
     assert(ofxPlane != kFnOfxImagePlaneColour);
     if (ofxPlane == kFnOfxImagePlaneBackwardMotionVector) {
-        return ImagePlaneDesc::getBackwardMotionComponents();
+        return ImageLayerDesc::getBackwardMotionComponents();
     } else if (ofxPlane == kFnOfxImagePlaneForwardMotionVector) {
-        return ImagePlaneDesc::getForwardMotionComponents();
+        return ImageLayerDesc::getForwardMotionComponents();
     } else if (ofxPlane == kFnOfxImagePlaneStereoDisparityLeft) {
-        return ImagePlaneDesc::getDisparityLeftComponents();
+        return ImageLayerDesc::getDisparityLeftComponents();
     } else if (ofxPlane == kFnOfxImagePlaneStereoDisparityRight) {
-        return ImagePlaneDesc::getDisparityRightComponents();
+        return ImageLayerDesc::getDisparityRightComponents();
     } else {
         return ofxCustomCompToNatronComp(ofxPlane);
     }
 }
 
 void
-ImagePlaneDesc::mapOFXComponentsTypeStringToPlanes(const std::string& ofxComponents, ImagePlaneDesc* plane, ImagePlaneDesc* pairedPlane)
+ImageLayerDesc::mapOFXComponentsTypeStringToLayers(const std::string& ofxComponents, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer)
 {
-    if (ofxComponents ==  kOfxImageComponentRGBA) {
-        *plane = ImagePlaneDesc::getRGBAComponents();
+    if (ofxComponents == kOfxImageComponentRGBA) {
+        *layer = ImageLayerDesc::getRGBAComponents();
     } else if (ofxComponents == kOfxImageComponentAlpha) {
-        *plane = ImagePlaneDesc::getAlphaComponents();
+        *layer = ImageLayerDesc::getAlphaComponents();
     } else if (ofxComponents == kOfxImageComponentRGB) {
-        *plane = ImagePlaneDesc::getRGBComponents();
-    }else if (ofxComponents == kNatronOfxImageComponentXY) {
-        *plane = ImagePlaneDesc::getXYComponents();
+        *layer = ImageLayerDesc::getRGBComponents();
+    } else if (ofxComponents == kNatronOfxImageComponentXY) {
+        *layer = ImageLayerDesc::getXYComponents();
     } else if (ofxComponents == kOfxImageComponentNone) {
-        *plane = ImagePlaneDesc::getNoneComponents();
+        *layer = ImageLayerDesc::getNoneComponents();
     } else if (ofxComponents == kFnOfxImageComponentMotionVectors) {
-        *plane = ImagePlaneDesc::getBackwardMotionComponents();
-        *pairedPlane = ImagePlaneDesc::getForwardMotionComponents();
+        *layer = ImageLayerDesc::getBackwardMotionComponents();
+        *pairedLayer = ImageLayerDesc::getForwardMotionComponents();
     } else if (ofxComponents == kFnOfxImageComponentStereoDisparity) {
-        *plane = ImagePlaneDesc::getDisparityLeftComponents();
-        *pairedPlane = ImagePlaneDesc::getDisparityRightComponents();
+        *layer = ImageLayerDesc::getDisparityLeftComponents();
+        *pairedLayer = ImageLayerDesc::getDisparityRightComponents();
     } else {
-        *plane = ofxCustomCompToNatronComp(ofxComponents);
+        *layer = ofxCustomCompToNatronComp(ofxComponents);
     }
 
-} // mapOFXComponentsTypeStringToPlanes
-
+} // mapOFXComponentsTypeStringToLayers
 
 static std::string
-natronCustomCompToOfxComp(const ImagePlaneDesc &comp)
+natronCustomCompToOfxComp(const ImageLayerDesc& comp)
 {
     std::stringstream ss;
     const std::vector<std::string>& channels = comp.getChannels();
-    const std::string& planeID = comp.getPlaneID();
-    const std::string& planeLabel = comp.getPlaneLabel();
+    const std::string& layerID = comp.getLayerID();
+    const std::string& layerLabel = comp.getLayerLabel();
     const std::string& channelsLabel = comp.getChannelsLabel();
-    ss << kNatronOfxImageComponentsPlaneName << planeID;
-    if (!planeLabel.empty()) {
-        ss << kNatronOfxImageComponentsPlaneLabel << planeLabel;
+    ss << kNatronOfxImageComponentsPlaneName << layerID;
+    if (!layerLabel.empty()) {
+        ss << kNatronOfxImageComponentsPlaneLabel << layerLabel;
     }
     if (!channelsLabel.empty()) {
         ss << kNatronOfxImageComponentsPlaneChannelsLabel << channelsLabel;
@@ -482,48 +469,43 @@ natronCustomCompToOfxComp(const ImagePlaneDesc &comp)
     return ss.str();
 } // natronCustomCompToOfxComp
 
-
 std::string
-ImagePlaneDesc::mapPlaneToOFXPlaneString(const ImagePlaneDesc& plane)
+ImageLayerDesc::mapLayerToOFXPlaneString(const ImageLayerDesc& layer)
 {
-    if (plane.isColorPlane()) {
+    if (layer.isColorLayer()) {
         return kFnOfxImagePlaneColour;
-    } else if ( plane == ImagePlaneDesc::getBackwardMotionComponents() ) {
+    } else if (layer == ImageLayerDesc::getBackwardMotionComponents()) {
         return kFnOfxImagePlaneBackwardMotionVector;
-    } else if ( plane == ImagePlaneDesc::getForwardMotionComponents()) {
+    } else if (layer == ImageLayerDesc::getForwardMotionComponents()) {
         return kFnOfxImagePlaneForwardMotionVector;
-    } else if ( plane == ImagePlaneDesc::getDisparityLeftComponents()) {
+    } else if (layer == ImageLayerDesc::getDisparityLeftComponents()) {
         return kFnOfxImagePlaneStereoDisparityLeft;
-    } else if ( plane == ImagePlaneDesc::getDisparityRightComponents() ) {
+    } else if (layer == ImageLayerDesc::getDisparityRightComponents()) {
         return kFnOfxImagePlaneStereoDisparityRight;
     } else {
-        return natronCustomCompToOfxComp(plane);
+        return natronCustomCompToOfxComp(layer);
     }
-
 }
 
 std::string
-ImagePlaneDesc::mapPlaneToOFXComponentsTypeString(const ImagePlaneDesc& plane)
+ImageLayerDesc::mapLayerToOFXComponentsTypeString(const ImageLayerDesc& layer)
 {
-    if ( plane == ImagePlaneDesc::getNoneComponents() ) {
+    if (layer == ImageLayerDesc::getNoneComponents()) {
         return kOfxImageComponentNone;
-    } else if ( plane == ImagePlaneDesc::getAlphaComponents() ) {
+    } else if (layer == ImageLayerDesc::getAlphaComponents()) {
         return kOfxImageComponentAlpha;
-    } else if ( plane == ImagePlaneDesc::getRGBComponents() ) {
+    } else if (layer == ImageLayerDesc::getRGBComponents()) {
         return kOfxImageComponentRGB;
-    } else if ( plane == ImagePlaneDesc::getRGBAComponents() ) {
+    } else if (layer == ImageLayerDesc::getRGBAComponents()) {
         return kOfxImageComponentRGBA;
-    } else if ( plane == ImagePlaneDesc::getXYComponents() ) {
+    } else if (layer == ImageLayerDesc::getXYComponents()) {
         return kNatronOfxImageComponentXY;
-    } else if ( plane == ImagePlaneDesc::getBackwardMotionComponents() ||
-               plane == ImagePlaneDesc::getForwardMotionComponents()) {
+    } else if (layer == ImageLayerDesc::getBackwardMotionComponents() || layer == ImageLayerDesc::getForwardMotionComponents()) {
         return kFnOfxImageComponentMotionVectors;
-    } else if ( plane == ImagePlaneDesc::getDisparityLeftComponents() ||
-               plane == ImagePlaneDesc::getDisparityRightComponents()) {
+    } else if (layer == ImageLayerDesc::getDisparityLeftComponents() || layer == ImageLayerDesc::getDisparityRightComponents()) {
         return kFnOfxImageComponentStereoDisparity;
     } else {
-        return natronCustomCompToOfxComp(plane);
+        return natronCustomCompToOfxComp(layer);
     }
 }
 NATRON_NAMESPACE_EXIT
-

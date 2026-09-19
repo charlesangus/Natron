@@ -1350,7 +1350,7 @@ StatusEnum
 RotoPaint::getPreferredMetadata(NodeMetadata& metadata)
 {
     metadata.setNComps( -1, 4 );
-    metadata.setComponentsType(-1, kNatronColorPlaneID);
+    metadata.setComponentsType(-1, kNatronColorLayerID);
     /*KnobBoolPtr premultKnob = _imp->premultKnob.lock();
        assert(premultKnob);
        bool premultiply = premultKnob->getValue();

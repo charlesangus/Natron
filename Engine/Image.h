@@ -40,15 +40,14 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_ON(deprecated)
 #include <QReadWriteLock>
 
-#include "Engine/ImageKey.h"
-#include "Engine/ImagePlaneDesc.h"
-#include "Engine/ImageParams.h"
 #include "Engine/CacheEntry.h"
+#include "Engine/EngineFwd.h"
+#include "Engine/ImageKey.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/ImageParams.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/RectD.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
-
 
 NATRON_NAMESPACE_ENTER
 

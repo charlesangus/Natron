@@ -464,7 +464,7 @@ EffectInstance::renderRoI(const RenderRoIArgs & args,
                 bool found = false;
                 //Change all needed comps in output to the requested components
                 for (std::list<ImagePlaneDesc>::const_iterator it2 = foundOutputNeededComps->second.begin(); it2 != foundOutputNeededComps->second.end(); ++it2) {
-                    if ( ( it2->isColorPlane() && it->isColorPlane() ) ) {
+                    if ((it2->isColorLayer() && it->isColorLayer())) {
                         compVec.push_back(*it2);
                         found = true;
                         break;
@@ -667,7 +667,7 @@ EffectInstance::renderRoI(const RenderRoIArgs & args,
                         for (std::map<ImagePlaneDesc, ImagePtr>::iterator it = outputPlanes->begin(); it != outputPlanes->end(); ++it, ++compIt) {
                             ImagePremultiplicationEnum premult;
                             const ImagePlaneDesc & outComp = outputComponents.front();
-                            if ( outComp.isColorPlane() ) {
+                            if (outComp.isColorLayer()) {
                                 premult = thisEffectOutputPremult;
                             } else {
                                 premult = eImagePremultiplicationOpaque;
@@ -925,11 +925,11 @@ EffectInstance::renderRoI(const RenderRoIArgs & args,
              * For all other planes, just consider this set of components, we do not allow conversion.
              */
             const ImagePlaneDesc* components = 0;
-            if ( !it->isColorPlane() ) {
+            if (!it->isColorLayer()) {
                 components = &(*it);
             } else {
                 for (std::list<ImagePlaneDesc>::const_iterator it2 = outputComponents.begin(); it2 != outputComponents.end(); ++it2) {
-                    if ( it2->isColorPlane() ) {
+                    if (it2->isColorLayer()) {
                         components = &(*it2);
                         break;
                     }
@@ -1292,7 +1292,7 @@ EffectInstance::renderRoI(const RenderRoIArgs & args,
 
     ///Pre-render input images before allocating the image if we need to render
     {
-        if ( !outputComponents.empty() && outputComponents.front().isColorPlane() ) {
+        if (!outputComponents.empty() && outputComponents.front().isColorLayer()) {
             planesToRender->outputPremult = thisEffectOutputPremult;
         } else {
             planesToRender->outputPremult = eImagePremultiplicationOpaque;
@@ -1330,7 +1330,7 @@ EffectInstance::renderRoI(const RenderRoIArgs & args,
                     ImagePremultiplicationEnum inputPremult = input->getPremult();
                     if ( !it2->second.empty() ) {
                         const ImagePlaneDesc & comps = it2->second.front()->getComponents();
-                        if ( !comps.isColorPlane() ) {
+                        if (!comps.isColorLayer()) {
                             inputPremult = eImagePremultiplicationOpaque;
                         }
                     }
@@ -1368,13 +1368,13 @@ EffectInstance::renderRoI(const RenderRoIArgs & args,
              it != planesToRender->planes.end(); ++it) {
             const ImagePlaneDesc *components = 0;
 
-            if ( !it->first.isColorPlane() ) {
+            if (!it->first.isColorLayer()) {
                 //This plane is not color, there can only be a single set of components
                 components = &(it->first);
             } else {
                 //Find color plane from clip preferences
                 for (std::list<ImagePlaneDesc>::const_iterator it = outputComponents.begin(); it != outputComponents.end(); ++it) {
-                    if ( it->isColorPlane() ) {
+                    if (it->isColorLayer()) {
                         components = &(*it);
                         break;
                     }
@@ -1746,12 +1746,12 @@ EffectInstance::renderRoI(const RenderRoIArgs & args,
         }
 
         const ImagePlaneDesc* comp = 0;
-        if ( !it->first.isColorPlane() ) {
+        if (!it->first.isColorLayer()) {
             comp = &it->first;
         } else {
             // If we were requested the color plane, we rendered what the node's metadata is for the color plane. Map it to what was requested
             for (std::list<ImagePlaneDesc>::const_iterator it2 = args.components.begin(); it2 != args.components.end(); ++it2) {
-                if ( it2->isColorPlane() ) {
+                if (it2->isColorLayer()) {
                     comp = &(*it2);
                     break;
                 }
@@ -1807,12 +1807,12 @@ EffectInstance::renderRoI(const RenderRoIArgs & args,
     if ( outputPlanes->size() != args.components.size() ) {
         qDebug() << "Requested:";
         for (std::list<ImagePlaneDesc>::const_iterator it = args.components.begin(); it != args.components.end(); ++it) {
-            qDebug() << it->getPlaneID().c_str();
+            qDebug() << it->getLayerID().c_str();
         }
         qDebug() << "But rendered:";
         for (std::map<ImagePlaneDesc, ImagePtr>::iterator it = outputPlanes->begin(); it != outputPlanes->end(); ++it) {
             if (it->second) {
-                qDebug() << it->first.getPlaneID().c_str();
+                qDebug() << it->first.getLayerID().c_str();
             }
         }
     }

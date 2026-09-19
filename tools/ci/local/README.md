@@ -19,6 +19,17 @@ Follow this file top to bottom from a clean clone and you'll reach a passing
 - Disk: the base image is ~13.9 GB (measured), and a debug build tree is
   ~4.1 GB.
 
+## Git hooks
+
+Install the project's pre-commit hook to auto-format staged C/C++ changes locally:
+
+```shell
+tools/install-git-hooks.sh
+pip install --user --break-system-packages clang-format==21.1.8
+```
+
+This prevents formatting issues from reaching CI, using the same `clang-format==21.1.8` the `format` job uses.
+
 ## 1. Build the image
 
 `Dockerfile` is `FROM aswf/ci-vfxall:2027-clang21.1` -- the exact tag

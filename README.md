@@ -122,12 +122,16 @@ The default branch is `main`, and pull requests are opened against it. `RB-2.6` 
 
 Feel free to report bugs, discuss tasks, or pick up work on the issue tracker. If you want to make changes, please fork, edit, and send us a pull request against `main`.
 
-There's a `.git-hooks` directory in the root. This contains a `pre-commit` hook that verifies code styling before accepting changes. You can add this to your local repository's `.git/hooks/` directory by doing the following:
+The repository includes a git pre-commit hook that auto-formats staged C/C++ changes with the pinned `clang-format==21.1.8` (the same tool and version CI uses). To install it, run:
 
 ```shell
-cd Natron
-mkdir .git/hooks
-ln -s ../../.git-hooks/pre-commit .git/hooks/pre-commit
+tools/install-git-hooks.sh
 ```
 
-Pull requests that don't match the project code style are still likely to be accepted after manually formatting and amending your changeset. The formatting tool (`clang-format`) is run automatically on changed lines by the `format` CI check; the `.git-hooks/pre-commit` hook above runs the same check locally before you commit.
+This links the hook idempotently into `.git/hooks/pre-commit`. The hook reformats staged C/C++ lines and re-stages the result, letting the commit proceed. It only refuses commits when the pinned `clang-format==21.1.8` is missing, or when a file to be reformatted has unstaged hunks (asking you to stage or stash them rather than risk including unrelated edits). Install the tool with:
+
+```shell
+pip install --user --break-system-packages clang-format==21.1.8
+```
+
+The same `clang-format` check runs automatically on changed lines by the `format` CI job, so the hook ensures a commit never reaches CI unformatted.

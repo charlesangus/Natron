@@ -110,7 +110,7 @@ public:
             OfxClipInstance* clip = dynamic_cast<OfxClipInstance*>(it->second);
             assert(clip);
             if (clip) {
-                clip->setClipTLS( view, mipmapLevel, ImagePlaneDesc::getNoneComponents() );
+                clip->setClipTLS(view, mipmapLevel, ImageLayerDesc::getNoneComponents());
             }
         }
     }
@@ -135,11 +135,10 @@ private:
 class RenderThreadStorageSetter
 {
 public:
-
     RenderThreadStorageSetter(OfxImageEffectInstance* effect,
                               ViewIdx view,
                               unsigned int mipmapLevel,
-                              const ImagePlaneDesc& currentPlane,
+                              const ImageLayerDesc& currentLayer,
                               const EffectInstance::InputImagesMap& inputImages)
         : effect(effect)
     {
@@ -150,7 +149,7 @@ public:
             assert(clip);
             if (clip) {
                 if ( clip->isOutput() ) {
-                    clip->setClipTLS(view, mipmapLevel, currentPlane);
+                    clip->setClipTLS(view, mipmapLevel, currentLayer);
                 } else {
                     int inputNb = clip->getInputNb();
                     EffectInstance::InputImagesMap::const_iterator foundClip = inputImages.find(inputNb);
@@ -160,7 +159,7 @@ public:
                         assert(img);
                         clip->setClipTLS( view, mipmapLevel, img->getComponents() );
                     } else {
-                        clip->setClipTLS( view, mipmapLevel, ImagePlaneDesc::getNoneComponents() );
+                        clip->setClipTLS(view, mipmapLevel, ImageLayerDesc::getNoneComponents());
                     }
                 }
             }
@@ -1321,15 +1320,15 @@ OfxEffectInstance::onMetadataRefreshed(const NodeMetadata& metadata)
             std::string ofxClipComponentStr;
             std::string componentsType = metadata.getComponentsType(inputNb);
             int nComps = metadata.getNComps(inputNb);
-            ImagePlaneDesc natronPlane = ImagePlaneDesc::mapNCompsToColorLayer(nComps);
+            ImageLayerDesc natronLayer = ImageLayerDesc::mapNCompsToColorLayer(nComps);
             if (componentsType == kNatronColorLayerID) {
-                ofxClipComponentStr = ImagePlaneDesc::mapLayerToOFXComponentsTypeString(natronPlane);
+                ofxClipComponentStr = ImageLayerDesc::mapLayerToOFXComponentsTypeString(natronLayer);
             } else if (componentsType == kNatronDisparityComponentsLabel) {
                 ofxClipComponentStr = kFnOfxImageComponentStereoDisparity;
             } else if (componentsType == kNatronMotionComponentsLabel) {
                 ofxClipComponentStr = kFnOfxImageComponentMotionVectors;
             } else {
-                ofxClipComponentStr = ImagePlaneDesc::mapLayerToOFXComponentsTypeString(natronPlane);
+                ofxClipComponentStr = ImageLayerDesc::mapLayerToOFXComponentsTypeString(natronLayer);
             }
 
             clip->setComponents(ofxClipComponentStr);
@@ -2050,7 +2049,7 @@ OfxEffectInstance::render(const RenderActionArgs& args)
 
     assert(!args.outputLayers.empty());
 
-    const std::pair<ImagePlaneDesc, ImagePtr>& firstPlane = args.outputLayers.front();
+    const std::pair<ImageLayerDesc, ImagePtr>& firstLayer = args.outputLayers.front();
     OfxRectI ofxRoI;
     ofxRoI.x1 = args.roi.left();
     ofxRoI.x2 = args.roi.right();
@@ -2061,13 +2060,13 @@ OfxEffectInstance::render(const RenderActionArgs& args)
     const std::string field = kOfxImageFieldNone; // TODO: support interlaced data
     bool multiPlanar = isMultiPlanar();
     std::list<std::string> ofxPlanes;
-    for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin();
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin();
          it != args.outputLayers.end(); ++it) {
         if (!multiPlanar) {
-            // When not multi-planar, the components of the image will be the colorplane
-            ofxPlanes.push_back(ImagePlaneDesc::mapLayerToOFXPlaneString(it->second->getComponents()));
+            // When not multi-planar, the components of the image will be the color layer
+            ofxPlanes.push_back(ImageLayerDesc::mapLayerToOFXPlaneString(it->second->getComponents()));
         } else {
-            ofxPlanes.push_back(ImagePlaneDesc::mapLayerToOFXPlaneString(it->first));
+            ofxPlanes.push_back(ImageLayerDesc::mapLayerToOFXPlaneString(it->first));
         }
     }
 
@@ -2075,9 +2074,9 @@ OfxEffectInstance::render(const RenderActionArgs& args)
 # ifdef DEBUG
     {
         // check the dimensions of output images
-        const RectI & dstBounds = firstPlane.second->getBounds();
-        const RectD & dstRodCanonical = firstPlane.second->getRoD();
-        const RectI dstRod = dstRodCanonical.toPixelEnclosing( args.mappedScale, firstPlane.second->getPixelAspectRatio() );
+        const RectI& dstBounds = firstLayer.second->getBounds();
+        const RectD& dstRodCanonical = firstLayer.second->getRoD();
+        const RectI dstRod = dstRodCanonical.toPixelEnclosing(args.mappedScale, firstLayer.second->getPixelAspectRatio());
 
         if ( !supportsTiles() && !isDuringPaintStrokeCreationThreadLocal() ) {
             // http://openfx.sourceforge.net/Documentation/1.3/ofxProgrammingReference.html#kOfxImageEffectPropSupportsTiles
@@ -2106,7 +2105,7 @@ OfxEffectInstance::render(const RenderActionArgs& args)
         RenderThreadStorageSetter clipSetter(effectInstance(),
                                              args.view,
                                              args.originalScale.toMipmapLevel(),
-                                             firstPlane.first,
+                                             firstLayer.first,
                                              args.inputImages);
         OfxGLContextEffectData* isOfxGLData = dynamic_cast<OfxGLContextEffectData*>( args.glContextData.get() );
         void* oglData = isOfxGLData ? isOfxGLData->getDataHandle() : 0;
@@ -2826,7 +2825,7 @@ OfxEffectInstance::onSyncPrivateDataRequested()
 
 void
 OfxEffectInstance::addAcceptedComponents(int inputNb,
-                                         std::list<ImagePlaneDesc>* comps)
+                                         std::list<ImageLayerDesc>* comps)
 {
     if (inputNb >= 0) {
         OfxClipInstance* clip = getClipCorrespondingToInput(inputNb);
@@ -2834,9 +2833,9 @@ OfxEffectInstance::addAcceptedComponents(int inputNb,
         const std::vector<std::string> & supportedComps = clip->getSupportedComponents();
         for (U32 i = 0; i < supportedComps.size(); ++i) {
             try {
-                ImagePlaneDesc comp, pairedComp;
-                ImagePlaneDesc::mapOFXComponentsTypeStringToLayers(supportedComps[i], &comp, &pairedComp);
-                comps->push_back(ImagePlaneDesc::mapNCompsToColorLayer(comp.getNumComponents()));
+                ImageLayerDesc comp, pairedComp;
+                ImageLayerDesc::mapOFXComponentsTypeStringToLayers(supportedComps[i], &comp, &pairedComp);
+                comps->push_back(ImageLayerDesc::mapNCompsToColorLayer(comp.getNumComponents()));
             } catch (const std::runtime_error &e) {
                 // ignore unsupported components
             }
@@ -2848,9 +2847,9 @@ OfxEffectInstance::addAcceptedComponents(int inputNb,
         const std::vector<std::string> & supportedComps = clip->getSupportedComponents();
         for (U32 i = 0; i < supportedComps.size(); ++i) {
             try {
-                ImagePlaneDesc comp, pairedComp;
-                ImagePlaneDesc::mapOFXComponentsTypeStringToLayers(supportedComps[i], &comp, &pairedComp);
-                comps->push_back(ImagePlaneDesc::mapNCompsToColorLayer(comp.getNumComponents()));
+                ImageLayerDesc comp, pairedComp;
+                ImageLayerDesc::mapOFXComponentsTypeStringToLayers(supportedComps[i], &comp, &pairedComp);
+                comps->push_back(ImageLayerDesc::mapNCompsToColorLayer(comp.getNumComponents()));
             } catch (const std::runtime_error &e) {
                 // ignore unsupported components
             }
@@ -2909,17 +2908,17 @@ OfxEffectInstance::getComponentsNeededAndProduced(double time,
                 assert(clip);
                 if (clip) {
                     int index = clip->getInputNb();
-                    std::list<ImagePlaneDesc>& compNeeded = (*comps)[index];
+                    std::list<ImageLayerDesc>& compNeeded = (*comps)[index];
                     for (std::list<std::string>::iterator it2 = it->second.begin(); it2 != it->second.end(); ++it2) {
 
-                        ImagePlaneDesc plane;
+                        ImageLayerDesc layer;
                         if ((*it2) == kFnOfxImagePlaneColour) {
-                            plane = ImagePlaneDesc::mapNCompsToColorLayer(getMetadataNComps(index));
+                            layer = ImageLayerDesc::mapNCompsToColorLayer(getMetadataNComps(index));
                         } else {
-                            plane = ImagePlaneDesc::mapOFXPlaneStringToLayer(*it2);
+                            layer = ImageLayerDesc::mapOFXPlaneStringToLayer(*it2);
                         }
-                        if (plane.getNumComponents() > 0) {
-                            compNeeded.push_back(plane);
+                        if (layer.getNumComponents() > 0) {
+                            compNeeded.push_back(layer);
                         }
                     }
                 }

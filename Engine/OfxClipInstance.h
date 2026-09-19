@@ -215,7 +215,7 @@ public:
 
     void setClipTLS(ViewIdx view,
                     unsigned int mipmapLevel,
-                    const ImagePlaneDesc& components);
+                    const ImageLayerDesc& components);
     void invalidateClipTLS();
 
     //returns the index of this clip if it is an input clip, otherwise -1.
@@ -239,8 +239,8 @@ public:
         //if this is the same image
         std::list<OfxImageCommon*> imagesBeingRendered;
 
-        //Used to determine the plane to render in a call to getOutputImageInternal()
-        ImagePlaneDesc clipComponents;
+        // Used to determine the layer to render in a call to getOutputImageInternal()
+        ImageLayerDesc clipComponents;
 
         RenderActionData()
             : imagesBeingRendered()

@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M39-gate
-pm_heartbeat: 2026-09-19T00:27:33-04:00
+current: null
+pm_heartbeat: 2026-09-19T00:48:06-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -116,6 +116,10 @@ future core work has solid ground to build on.
   M20, M52, M53, M54). Deferred with no active order: deep work (M21, M51,
   M32), Nuke-tool ports (M45, M46), M16, M31. See
   `DECISIONS/2026-09-18-backlog-reorg-and-prioritization.md`.
+  **M39 shipped 2026-09-19** (PR #26, merge `1e59109fe`; docs PR #25): the
+  Natron side of the codebase says "layer" everywhere; only the OpenFX ABI
+  boundary keeps "plane". `.ntp` tags are `LayerID`/`LayerLabel`, the knob
+  script-name is `processAllLayers`, `NATRON_CACHE_VERSION` is 5.
 
 # Board
 

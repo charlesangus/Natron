@@ -26,7 +26,7 @@ part 0 every time.
 
 ## Phase 58.1: Write container knob changes must reach the embedded encoder's hash
 
-- [ ] M58.P1.T1 — Add a committed three-layer flat EXR fixture and its generator
+- [x] M58.P1.T1 — Add a committed three-layer flat EXR fixture and its generator
   - files: Tests/fixtures/make-flat-layers-fixture.py (new), Tests/fixtures/flat-three-layers.exr (new, ~1 KB)
   - approach: mirror Tests/fixtures/make-deep-fixtures.py (Python OpenImageIO, run via tools/ci/local/devshell.sh): 8x8 single-part half EXR with channels R,G,B,A=(1,0,0,1), diffuse.R/G/B=(0,1,0), specular.R/G/B=(0,0,1); document the values in the script header exactly as make-deep-fixtures.py does. Read by ReadOIIO only, so half/zip is fine (the output side is what Tests/FlatExrReader.h constrains).
   - verify: `oiiotool --stats Tests/fixtures/flat-three-layers.exr` prints channel list R,G,B,A,diffuse.R,diffuse.G,diffuse.B,specular.R,specular.G,specular.B and Stats Avg 1 0 0 1 0 1 0 0 0 1; regenerating with the script is byte-identical.

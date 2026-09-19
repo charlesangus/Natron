@@ -40,4 +40,11 @@ Scope cuts: no whole-tree reformat, no new CI job, no change to the CI
 
 - 2026-09-19 — **Auto-format and re-stage, not check-and-block**: user decision. The hook applies `git clang-format --staged` and re-adds the touched files; the goal is that a commit never reaches CI unformatted, not that the developer is told to go fix it.
 - 2026-09-19 — **Missing pinned tool fails the commit**: user decision. The existing hook's warn-and-pass is exactly how unformatted commits reach CI today (this host has no clang-format at all). The hook prints the one-line pip install and exits 1.
+- 2026-09-19 — **PR #29 review round (Codex, 5 findings, all fixed in `6e8a48ae7`)**: the hook
+  accepted any clang-format on PATH (now version-checked against the pin); git-clang-format
+  silently skips paths git would quote, and the newline-delimited re-stage parse could not carry
+  an embedded newline (now a NUL-delimited preflight fails the commit for either); a failed
+  `git add` was masked by the final `echo` (now guarded); the installer's tool check did not
+  mirror the hook's module-first/PATH-fallback resolution (now does, with the version check);
+  `--uninstall` treated a dangling foreign symlink as "not installed" (now reported, exit 1).
 - 2026-09-19 — **Install by symlinking `pre-commit` only, not `core.hooksPath`**: `.git-hooks/post-commit` runs `git-version`, which rewrites the tracked `Global/GitVersion.h` on every commit; arming the whole directory would dirty the working tree after each commit. Retiring `post-commit`/`git-version` is out of scope here.

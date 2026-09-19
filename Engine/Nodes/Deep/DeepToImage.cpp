@@ -129,7 +129,7 @@ DeepToImage::render(const RenderActionArgs& args)
     const std::vector<std::string>& channelOrder = ImagePlaneDesc::getRGBAComponents().getChannels();
     DeepPixelScratch scratch;
     DeepTidyWorkspace work;
-    for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator it = args.outputPlanes.begin(); it != args.outputPlanes.end(); ++it) {
+    for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
         const ImagePtr& image = it->second;
 
         if (!image || (image->getBitDepth() != eImageBitDepthFloat) || (image->getComponentsCount() != channelOrder.size())) {

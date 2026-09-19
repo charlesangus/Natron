@@ -555,7 +555,7 @@ private:
         KnobIntPtr seedKnob = _seed.lock();
         const int seed = seedKnob ? seedKnob->getValue() : 0;
 
-        for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator it = args.outputPlanes.begin(); it != args.outputPlanes.end(); ++it) {
+        for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
             const ImagePtr& image = it->second;
             if (!image || (image->getBitDepth() != eImageBitDepthFloat)) {
                 return eStatusFailed;

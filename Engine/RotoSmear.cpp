@@ -307,9 +307,8 @@ RotoSmear::render(const RenderActionArgs& args)
             }
         }
 
-
-        for (std::list<std::pair<ImagePlaneDesc, ImagePtr> >::const_iterator plane = args.outputPlanes.begin();
-             plane != args.outputPlanes.end(); ++plane) {
+        for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator plane = args.outputLayers.begin();
+             plane != args.outputLayers.end(); ++plane) {
             assert(plane->second->getMipmapLevel() == mipmapLevel);
 
             distToNext = 0.;
@@ -412,7 +411,7 @@ RotoSmear::render(const RenderActionArgs& args)
                 cur = renderPoint;
                 distToNext = 0;
             } // while (it!=visiblePortion.end()) {
-        } // for (std::list<std::pair<ImagePlaneDesc,ImagePtr> >::const_iterator plane = args.outputPlanes.begin();
+        } // for (std::list<std::pair<ImagePlaneDesc,ImagePtr> >::const_iterator plane = args.outputLayers.begin();
 
         if (duringPainting && didPaint) {
             QMutexLocker k(&_imp->smearDataMutex);

@@ -289,7 +289,7 @@ const std::vector<std::string>&
 OfxImageEffectInstance::getUserCreatedPlanes() const
 {
     OfxEffectInstancePtr effect = _ofxEffectInstance.lock();
-    const std::vector<std::string>& planes = effect->getUserPlanes();
+    const std::vector<std::string>& planes = effect->getUserLayers();
     return planes;
 }
 
@@ -304,7 +304,7 @@ OfxImageEffectInstance::getDimension(const std::string &name) const OFX_EXCEPTIO
         return OFX::Host::ImageEffect::Instance::getDimension(name);
     }
     try {
-        const std::vector<std::string>& planes = effect->getUserPlanes();
+        const std::vector<std::string>& planes = effect->getUserLayers();
         return (int)planes.size();
     } catch (...) {
         throw OFX::Host::Property::Exception(kOfxStatErrUnknown);

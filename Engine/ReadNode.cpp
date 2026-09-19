@@ -968,10 +968,10 @@ ReadNode::isViewInvariant() const
 }
 
 EffectInstance::PassThroughEnum
-ReadNode::isPassThroughForNonRenderedPlanes() const
+ReadNode::isPassThroughForNonRenderedLayers() const
 {
     NodePtr p = getEmbeddedReader();
-    return p ? p->getEffectInstance()->isPassThroughForNonRenderedPlanes() : EffectInstance::isPassThroughForNonRenderedPlanes();
+    return p ? p->getEffectInstance()->isPassThroughForNonRenderedLayers() : EffectInstance::isPassThroughForNonRenderedLayers();
 }
 
 bool

@@ -124,7 +124,7 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
     typedef std::map<int, std::list<ImagePtr> > InputImagesMap;
-    typedef std::map<int, std::list<ImagePlaneDesc> > ComponentsNeededMap;
+    typedef std::map<int, std::list<ImageLayerDesc>> ComponentsNeededMap;
     typedef std::shared_ptr<ComponentsNeededMap> ComponentsNeededMapPtr;
 
     struct RenderRoIArgs
@@ -138,7 +138,7 @@ public:
         ViewIdx view; //< the view to render
         RectI roi; //< the renderWindow (in pixel coordinates) , watch out OpenFX action getRegionsOfInterest expects canonical coords!
         RectD preComputedRoD; //<  pre-computed region of definition in canonical coordinates for this effect to speed-up the call to renderRoi
-        std::list<ImagePlaneDesc> components; //< the requested image components (per plane)
+        std::list<ImageLayerDesc> components; //< the requested image components (per layer)
 
         ///When called from getImage() the calling node  will have already computed input images, hence the image of this node
         ///might already be in this list
@@ -176,20 +176,20 @@ public:
         {
         }
 
-        RenderRoIArgs( double time_,
-                       const RenderScale & scale_,
-                       unsigned int mipmapLevel_,
-                       ViewIdx view_,
-                       bool byPassCache_,
-                       const RectI & roi_,
-                       const RectD & preComputedRoD_,
-                       const std::list<ImagePlaneDesc> & components_,
-                       ImageBitDepthEnum bitdepth_,
-                       bool calledFromGetImage,
-                       const EffectInstance* caller,
-                       StorageModeEnum returnStorage,
-                       double callerRenderTime,
-                       const EffectInstance::InputImagesMap & inputImages = EffectInstance::InputImagesMap() )
+        RenderRoIArgs(double time_,
+                      const RenderScale& scale_,
+                      unsigned int mipmapLevel_,
+                      ViewIdx view_,
+                      bool byPassCache_,
+                      const RectI& roi_,
+                      const RectD& preComputedRoD_,
+                      const std::list<ImageLayerDesc>& components_,
+                      ImageBitDepthEnum bitdepth_,
+                      bool calledFromGetImage,
+                      const EffectInstance* caller,
+                      StorageModeEnum returnStorage,
+                      double callerRenderTime,
+                      const EffectInstance::InputImagesMap& inputImages = EffectInstance::InputImagesMap())
             : time(time_)
             , scale(scale_)
             , mipmapLevel(mipmapLevel_)
@@ -211,7 +211,7 @@ public:
 
     /**
      * @brief Arguments of renderDeepRoI(), the deep counterpart of RenderRoIArgs. Deep data has
-     * no planes, no components and no bit depth -- a DeepImage carries its own arbitrary set of
+     * no layers, no components and no bit depth -- a DeepImage carries its own arbitrary set of
      * named channels -- so this is RenderRoIArgs minus everything that describes an Image's
      * fixed-stride layout.
      **/
@@ -539,7 +539,7 @@ public:
      * B = 2
      * A = 3
      **/
-    int getMaskChannel(int inputNb, const std::list<ImagePlaneDesc>& availableLayers, ImagePlaneDesc* comps) const;
+    int getMaskChannel(int inputNb, const std::list<ImageLayerDesc>& availableLayers, ImageLayerDesc* comps) const;
 
     /**
      * @brief Returns whether masking is enabled or not
@@ -552,7 +552,7 @@ public:
      * This function is also called to specify what image components this effect can output.
      * In that case inputNb equals -1.
      **/
-    virtual void addAcceptedComponents(int inputNb, std::list<ImagePlaneDesc>* comps) = 0;
+    virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) = 0;
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const = 0;
 
     /**
@@ -569,13 +569,13 @@ public:
      * @brief Returns true if the given input supports the given components. If inputNb equals -1
      * then this function will check whether the effect can produce the given components.
      **/
-    bool isSupportedComponent(int inputNb, const ImagePlaneDesc & comp) const;
+    bool isSupportedComponent(int inputNb, const ImageLayerDesc& comp) const;
 
     /**
      * @brief Returns the most appropriate components that can be supported by the inputNb.
      * If inputNb equals -1 then this function will check the output components.
      **/
-    ImagePlaneDesc findClosestSupportedComponents(int inputNb, const ImagePlaneDesc & comp) const WARN_UNUSED_RETURN;
+    ImageLayerDesc findClosestSupportedComponents(int inputNb, const ImageLayerDesc& comp) const WARN_UNUSED_RETURN;
 
     /**
      * @brief Can be derived to give a more meaningful label to the input 'inputNb'
@@ -648,14 +648,14 @@ public:
     };
 
     /**
-     * @brief Renders the image planes at the given time,scale and for the given view & render window.
-     * This returns a list of all planes requested in the args.
+     * @brief Renders the image layers at the given time,scale and for the given view & render window.
+     * This returns a list of all layers requested in the args.
      * @param args See the definition of the class for comments on each argument.
      * The return code indicates whether the render succeeded or failed. Note that this function may succeed
-     * and return 0 plane if the RoI does not intersect the RoD of the effect.
+     * and return 0 layer if the RoI does not intersect the RoD of the effect.
      **/
-    RenderRoIRetCode renderRoI(const RenderRoIArgs & args,
-                               std::map<ImagePlaneDesc, ImagePtr>* outputPlanes) WARN_UNUSED_RETURN;
+    RenderRoIRetCode renderRoI(const RenderRoIArgs& args,
+                               std::map<ImageLayerDesc, ImagePtr>* outputLayers) WARN_UNUSED_RETURN;
 
     /**
      * @brief Whether what this effect puts on its output is deep data, as the graph around it
@@ -708,15 +708,15 @@ public:
     void getImageFromCacheAndConvertIfNeeded(bool useCache,
                                              StorageModeEnum storage,
                                              StorageModeEnum returnStorage,
-                                             const ImageKey & key,
+                                             const ImageKey& key,
                                              unsigned int mipmapLevel,
                                              const RectI* boundsParam,
                                              const RectD* rodParam,
                                              const RectI& roi,
                                              ImageBitDepthEnum bitdepth,
-                                             const ImagePlaneDesc & components,
-                                             const EffectInstance::InputImagesMap & inputImages,
-                                             const RenderStatsPtr & stats,
+                                             const ImageLayerDesc& components,
+                                             const EffectInstance::InputImagesMap& inputImages,
+                                             const RenderStatsPtr& stats,
                                              const OSGLContextAttacherPtr& glContextAttacher,
                                              ImagePtr* image);
 
@@ -734,14 +734,12 @@ public:
      **/
     ImagePtr convertRAMImageToOpenGLTexture(const ImagePtr& image);
 
-
     /**
-     * @brief This function is to be called by getImage() when the plug-ins renders more planes than the ones suggested
-     * by the render action. We allocate those extra planes and cache them so they were not rendered for nothing.
-     * Note that the plug-ins may call this only while in the render action, and there must be other planes to render.
+     * @brief This function is to be called by getImage() when the plug-ins renders more layers than the ones suggested
+     * by the render action. We allocate those extra layers and cache them so they were not rendered for nothing.
+     * Note that the plug-ins may call this only while in the render action, and there must be other layers to render.
      **/
-    ImagePtr allocateImagePlaneAndSetInThreadLocalStorage(const ImagePlaneDesc & plane);
-
+    ImagePtr allocateImageLayerAndSetInThreadLocalStorage(const ImageLayerDesc& layer);
 
     class NotifyRenderingStarted_RAII
     {
@@ -969,7 +967,7 @@ public:
      * If inputNb equals -1 then this function will check the output components.
      **/
     double getAspectRatio(int inputNb) const;
-    void getMetadataComponents(int inputNb, ImagePlaneDesc* plane, ImagePlaneDesc* pairedPlane) const;
+    void getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const;
     int getMetadataNComps(int inputNb) const;
 
     ImageBitDepthEnum getBitDepth(int inputNb) const;
@@ -1017,16 +1015,15 @@ public:
         return false;
     }
 
-    enum PassThroughEnum
-    {
-        ePassThroughBlockNonRenderedPlanes,
-        ePassThroughPassThroughNonRenderedPlanes,
-        ePassThroughRenderAllRequestedPlanes
+    enum PassThroughEnum {
+        ePassThroughBlockNonRenderedLayers,
+        ePassThroughPassThroughNonRenderedLayers,
+        ePassThroughRenderAllRequestedLayers
     };
 
-    virtual EffectInstance::PassThroughEnum isPassThroughForNonRenderedPlanes() const
+    virtual EffectInstance::PassThroughEnum isPassThroughForNonRenderedLayers() const
     {
-        return ePassThroughPassThroughNonRenderedPlanes;
+        return ePassThroughPassThroughNonRenderedLayers;
     }
 
     virtual bool isViewAware() const
@@ -1034,10 +1031,9 @@ public:
         return false;
     }
 
-    enum ViewInvarianceLevel
-    {
+    enum ViewInvarianceLevel {
         eViewInvarianceAllViewsVariant,
-        eViewInvarianceOnlyPassThroughPlanesVariant,
+        eViewInvarianceOnlyPassThroughLayersVariant,
         eViewInvarianceAllViewsInvariant,
     };
 
@@ -1083,7 +1079,7 @@ public:
         RenderScale originalScale;
         RenderScale mappedScale;
         RectI roi;
-        std::list<std::pair<ImagePlaneDesc, ImagePtr> > outputPlanes;
+        std::list<std::pair<ImageLayerDesc, ImagePtr>> outputLayers;
         EffectInstance::InputImagesMap inputImages;
         ViewIdx view;
         bool isSequentialRender;
@@ -1096,7 +1092,7 @@ public:
     };
 
     // A deep input is fetched once per time getFramesNeeded() asked for, so an input's deep
-    // images are keyed by time, not by plane the way InputImagesMap keys an image input.
+    // images are keyed by time, not by layer the way InputImagesMap keys an image input.
     typedef std::map<double, DeepImagePtr> DeepImagesByTime;
     typedef std::map<int, DeepImagesByTime> DeepInputImagesMap;
 
@@ -1249,17 +1245,17 @@ public:
      * converted to pixel coordinates
      */
     ImagePtr getImage(int inputNb,
-                                      const double time,
-                                      const RenderScale & scale,
-                                      const ViewIdx view,
-                                      const RectD *optionalBounds, //!< optional region in canonical coordinates
-                                      const ImagePlaneDesc* layer, //< if set, fetch this specific layer, otherwise use what's in the clip pref
-                                      const bool mapToClipPrefs,
-                                      const bool dontUpscale,
-                                      const StorageModeEnum returnStorage,
-                                      const ImageBitDepthEnum* textureDepth,
-                                      RectI* roiPixel,
-                                      Transform::Matrix3x3Ptr* transform = 0) WARN_UNUSED_RETURN;
+                      const double time,
+                      const RenderScale& scale,
+                      const ViewIdx view,
+                      const RectD* optionalBounds, //!< optional region in canonical coordinates
+                      const ImageLayerDesc* layer, //< if set, fetch this specific layer, otherwise use what's in the clip pref
+                      const bool mapToClipPrefs,
+                      const bool dontUpscale,
+                      const StorageModeEnum returnStorage,
+                      const ImageBitDepthEnum* textureDepth,
+                      RectI* roiPixel,
+                      Transform::Matrix3x3Ptr* transform = 0) WARN_UNUSED_RETURN;
     virtual void aboutToRestoreDefaultValues() OVERRIDE FINAL;
     virtual bool shouldCacheOutput(bool isFrameVaryingOrAnimated, double time, ViewIdx view, int visitsCount) const;
 
@@ -1563,8 +1559,7 @@ public:
 
     bool isDuringPaintStrokeCreationThreadLocal() const;
 
-    struct PlaneToRender
-    {
+    struct LayerToRender {
         //Points to the fullscale image if render scale is not supported by the plug-in, or downscaleImage otherwise
         ImagePtr fullscaleImage;
 
@@ -1585,11 +1580,11 @@ public:
         void* originalCachedImage;
 
         /**
-         * This is set to true if this plane is allocated with allocateImagePlaneAndSetInThreadLocalStorage()
+         * This is set to true if this layer is allocated with allocateImageLayerAndSetInThreadLocalStorage()
          **/
         bool isAllocatedOnTheFly;
 
-        PlaneToRender()
+        LayerToRender()
             : fullscaleImage()
             , downscaleImage()
             , renderMappedImage()
@@ -1612,18 +1607,17 @@ public:
         ViewIdx identityView;
     };
 
-    struct ImagePlanesToRender
-    {
+    struct ImageLayersToRender {
         std::list<RectToRender> rectsToRender;
-        std::map<ImagePlaneDesc, PlaneToRender> planes;
+        std::map<ImageLayerDesc, LayerToRender> layers;
         std::map<int, ImagePremultiplicationEnum> inputPremult;
         ImagePremultiplicationEnum outputPremult;
         bool useOpenGL;
         EffectInstance::OpenGLContextEffectDataPtr glContextData;
 
-        ImagePlanesToRender()
+        ImageLayersToRender()
             : rectsToRender()
-            , planes()
+            , layers()
             , inputPremult()
             , outputPremult(eImagePremultiplicationPremultiplied)
             , useOpenGL(false)
@@ -1632,7 +1626,7 @@ public:
         }
     };
 
-    typedef std::shared_ptr<ImagePlanesToRender> ImagePlanesToRenderPtr;
+    typedef std::shared_ptr<ImageLayersToRender> ImageLayersToRenderPtr;
 
     /**
      * @brief If the caller thread is currently rendering an image, it will return a pointer to it
@@ -1642,8 +1636,8 @@ public:
      *
      * WARNING: This call isexpensive and this function should not be called many times.
      **/
-    bool getThreadLocalRenderedPlanes(std::map<ImagePlaneDesc, EffectInstance::PlaneToRender >*  planes,
-                                      ImagePlaneDesc* planeBeingRendered,
+    bool getThreadLocalRenderedLayers(std::map<ImageLayerDesc, EffectInstance::LayerToRender>* layers,
+                                      ImageLayerDesc* layerBeingRendered,
                                       RectI* renderWindow) const;
 
     bool getThreadLocalNeededComponents(ComponentsNeededMapPtr* neededComps) const;
@@ -1985,34 +1979,29 @@ private:
      **/
     virtual StatusEnum dettachOpenGLContext(const OpenGLContextEffectDataPtr& /*data*/) { return eStatusReplyDefault; }
 
-
-
 public:
-
     void getComponentsNeededAndProduced_public(U64 hash,
                                                double time, ViewIdx view,
                                                EffectInstance::ComponentsNeededMap* comps,
-                                               std::list<ImagePlaneDesc>* passThroughPlanes,
+                                               std::list<ImageLayerDesc>* passThroughLayers,
                                                bool* processAllRequested,
                                                double* passThroughTime,
                                                int* passThroughView,
-                                               std::bitset<4> *processChannels,
+                                               std::bitset<4>* processChannels,
                                                int* passThroughInput);
 
+    void getAvailableLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* availableLayers);
 
-    void getAvailableLayers(double time, ViewIdx view, int inputNb, std::list<ImagePlaneDesc>* availableLayers) ;
-
-    const std::vector<std::string>& getUserPlanes() const;
+    const std::vector<std::string>& getUserLayers() const;
 
 private:
-
     void getComponentsNeededDefault(double time, ViewIdx view,
                                     EffectInstance::ComponentsNeededMap* comps,
-                                    std::list<ImagePlaneDesc>* passThroughPlanes,
+                                    std::list<ImageLayerDesc>* passThroughLayers,
                                     bool* processAllRequested,
                                     double* passThroughTime,
                                     int* passThroughView,
-                                    std::bitset<4> *processChannels,
+                                    std::bitset<4>* processChannels,
                                     int* passThroughInput);
 
 public:
@@ -2046,10 +2035,10 @@ public:
         double identityTime;
         EffectInstancePtr identityInput;
         EffectInstance::InputImagesMap inputImages;
-        std::map<ImagePlaneDesc, PlaneToRender> outputPlanes;
+        std::map<ImageLayerDesc, LayerToRender> outputLayers;
 
-        //This is set only when the plug-in has set ePassThroughRenderAllRequestedPlanes
-        ImagePlaneDesc outputPlaneBeingRendered;
+        // This is set only when the plug-in has set ePassThroughRenderAllRequestedLayers
+        ImageLayerDesc outputLayerBeingRendered;
         ComponentsNeededMapPtr  compsNeeded;
         double firstFrame, lastFrame;
         InputMatrixMapPtr transformRedirections;
@@ -2108,7 +2097,7 @@ public:
         std::list<ParallelRenderArgsPtr> frameArgs;
         EffectInstance::RenderArgs currentRenderArgs;
 
-        std::vector<std::string> userPlaneStrings;
+        std::vector<std::string> userLayerStrings;
 
         EffectTLSData()
             : beginEndRenderCount(0)
@@ -2118,7 +2107,7 @@ public:
 #endif
             , frameArgs()
             , currentRenderArgs()
-            , userPlaneStrings()
+            , userLayerStrings()
         {
         }
     };
@@ -2334,23 +2323,22 @@ private:
      **/
     static RenderRoIStatusEnum renderRoIInternal(EffectInstance* self,
                                                  double time,
-                                                 const ParallelRenderArgsPtr & frameArgs,
+                                                 const ParallelRenderArgsPtr& frameArgs,
                                                  RenderSafetyEnum safety,
                                                  unsigned int mipmapLevel,
                                                  ViewIdx view,
-                                                 const RectD & rod, //!< rod in canonical coordinates
+                                                 const RectD& rod, //!< rod in canonical coordinates
                                                  const double par,
-                                                 const ImagePlanesToRenderPtr & planes,
+                                                 const ImageLayersToRenderPtr& layers,
                                                  bool isSequentialRender,
                                                  bool isRenderMadeInResponseToUserInteraction,
                                                  U64 nodeHash,
                                                  bool renderFullScaleThenDownscale,
                                                  bool byPassCache,
                                                  ImageBitDepthEnum outputClipPrefDepth,
-                                                 const ImagePlaneDesc& outputClipPrefsComps,
-                                                 const ComponentsNeededMapPtr & compsNeeded,
+                                                 const ImageLayerDesc& outputClipPrefsComps,
+                                                 const ComponentsNeededMapPtr& compsNeeded,
                                                  std::bitset<4> processChannels);
-
 
     /// \returns false if rendering was aborted
     RenderRoIRetCode renderInputImagesForRoI(const FrameViewRequest* request,
@@ -2370,15 +2358,14 @@ private:
                                              EffectInstance::InputImagesMap *inputImages,
                                              RoIMap* inputsRoI);
 
-    static ImagePtr convertPlanesFormatsIfNeeded(const AppInstancePtr& app,
-                                                                 const ImagePtr& inputImage,
-                                                                 const RectI& roi,
-                                                                 const ImagePlaneDesc& targetComponents,
-                                                                 ImageBitDepthEnum targetDepth,
-                                                                 bool useAlpha0ForRGBToRGBAConversion,
-                                                                 ImagePremultiplicationEnum outputPremult,
-                                                                 int channelForAlpha);
-
+    static ImagePtr convertLayersFormatsIfNeeded(const AppInstancePtr& app,
+                                                 const ImagePtr& inputImage,
+                                                 const RectI& roi,
+                                                 const ImageLayerDesc& targetComponents,
+                                                 ImageBitDepthEnum targetDepth,
+                                                 bool useAlpha0ForRGBToRGBAConversion,
+                                                 ImagePremultiplicationEnum outputPremult,
+                                                 int channelForAlpha);
 
     /**
      * @brief Called by getImage when the thread-storage was not set by the caller thread (mostly because this is a thread that is not
@@ -2397,13 +2384,12 @@ private:
                                          RoIMap* inputRois_p, //!< output, only set if optionalBoundsParam != NULL
                                          RectD* optionalBounds_p); //!< output, only set if optionalBoundsParam != NULL
 
-
-    bool allocateImagePlane(const ImageKey & key,
-                            const RectD & rod,
-                            const RectI & downscaleImageBounds,
-                            const RectI & fullScaleImageBounds,
+    bool allocateImageLayer(const ImageKey& key,
+                            const RectD& rod,
+                            const RectI& downscaleImageBounds,
+                            const RectI& fullScaleImageBounds,
                             bool isProjectFormat,
-                            const ImagePlaneDesc & components,
+                            const ImageLayerDesc& components,
                             ImageBitDepthEnum depth,
                             ImagePremultiplicationEnum premult,
                             ImageFieldingOrderEnum fielding,
@@ -2414,7 +2400,6 @@ private:
                             bool createInCache,
                             ImagePtr* fullScaleImage,
                             ImagePtr* downscaleImage);
-
 
     virtual void onSignificantEvaluateAboutToBeCalled(KnobI* knob) OVERRIDE FINAL;
     virtual void onAllKnobsSlaved(bool isSlave, KnobHolder* master) OVERRIDE FINAL;

@@ -2950,7 +2950,7 @@ Node::Implementation::createChannelSelector(int inputNb,
         page->addKnob(processAllKnob);
 
         // If the effect wants by default to render all planes set default value
-        if ( isOutput && (effect->isPassThroughForNonRenderedPlanes() == EffectInstance::ePassThroughRenderAllRequestedPlanes) ) {
+        if (isOutput && (effect->isPassThroughForNonRenderedLayers() == EffectInstance::ePassThroughRenderAllRequestedLayers)) {
             processAllKnob->setDefaultValue(true);
             //Hide all other input selectors if choice is All in output
             for (std::map<int, ChannelSelector>::iterator it = channelsSelectors.begin(); it != channelsSelectors.end(); ++it) {

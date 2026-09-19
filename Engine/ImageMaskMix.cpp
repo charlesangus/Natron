@@ -211,7 +211,7 @@ Image::applyMaskMix(const RectI& roi,
     const RectI realRoI = roi.intersect(_bounds);
 
     assert( !originalImg || getBitDepth() == originalImg->getBitDepth() );
-    assert( !masked || !maskImg || maskImg->getComponents() == ImagePlaneDesc::getAlphaComponents() );
+    assert(!masked || !maskImg || maskImg->getComponents() == ImageLayerDesc::getAlphaComponents());
 
     if (getStorageMode() == eStorageModeGLTex) {
         assert(glContext);

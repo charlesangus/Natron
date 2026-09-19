@@ -2048,9 +2048,9 @@ OfxEffectInstance::render(const RenderActionArgs& args)
         return eStatusFailed;
     }
 
-    assert( !args.outputPlanes.empty() );
+    assert(!args.outputLayers.empty());
 
-    const std::pair<ImagePlaneDesc, ImagePtr>& firstPlane = args.outputPlanes.front();
+    const std::pair<ImagePlaneDesc, ImagePtr>& firstPlane = args.outputLayers.front();
     OfxRectI ofxRoI;
     ofxRoI.x1 = args.roi.left();
     ofxRoI.x2 = args.roi.right();
@@ -2061,8 +2061,8 @@ OfxEffectInstance::render(const RenderActionArgs& args)
     const std::string field = kOfxImageFieldNone; // TODO: support interlaced data
     bool multiPlanar = isMultiPlanar();
     std::list<std::string> ofxPlanes;
-    for (std::list<std::pair<ImagePlaneDesc, ImagePtr> >::const_iterator it = args.outputPlanes.begin();
-         it != args.outputPlanes.end(); ++it) {
+    for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin();
+         it != args.outputLayers.end(); ++it) {
         if (!multiPlanar) {
             // When not multi-planar, the components of the image will be the colorplane
             ofxPlanes.push_back(ImagePlaneDesc::mapLayerToOFXPlaneString(it->second->getComponents()));
@@ -2935,23 +2935,23 @@ OfxEffectInstance::isMultiPlanar() const
 }
 
 EffectInstance::PassThroughEnum
-OfxEffectInstance::isPassThroughForNonRenderedPlanes() const
+OfxEffectInstance::isPassThroughForNonRenderedLayers() const
 {
     OFX::Host::ImageEffect::Base::OfxPassThroughLevelEnum pt = effectInstance()->getPassThroughForNonRenderedPlanes();
 
     switch (pt) {
     case OFX::Host::ImageEffect::Base::ePassThroughLevelEnumBlockAllNonRenderedPlanes:
 
-        return EffectInstance::ePassThroughBlockNonRenderedPlanes;
+        return EffectInstance::ePassThroughBlockNonRenderedLayers;
     case OFX::Host::ImageEffect::Base::ePassThroughLevelEnumPassThroughAllNonRenderedPlanes:
 
-        return EffectInstance::ePassThroughPassThroughNonRenderedPlanes;
+        return EffectInstance::ePassThroughPassThroughNonRenderedLayers;
     case OFX::Host::ImageEffect::Base::ePassThroughLevelEnumRenderAllRequestedPlanes:
 
-        return EffectInstance::ePassThroughRenderAllRequestedPlanes;
+        return EffectInstance::ePassThroughRenderAllRequestedLayers;
     }
 
-    return EffectInstance::ePassThroughBlockNonRenderedPlanes;
+    return EffectInstance::ePassThroughBlockNonRenderedLayers;
 }
 
 bool
@@ -2968,7 +2968,7 @@ OfxEffectInstance::isViewInvariant() const
     if (inv == 0) {
         return eViewInvarianceAllViewsVariant;
     } else if (inv == 1) {
-        return eViewInvarianceOnlyPassThroughPlanesVariant;
+        return eViewInvarianceOnlyPassThroughLayersVariant;
     } else {
         assert(inv == 2);
 

@@ -157,8 +157,8 @@ ActionsCache::setIdentityResult(U64 hash,
 }
 
 bool
-ActionsCache::getComponentsNeededResults(U64 hash, double time, ViewIdx view, EffectInstance::ComponentsNeededMap* neededComps, std::bitset<4> *processChannels, bool *processAll,
-                                         std::list<ImagePlaneDesc> *passThroughPlanes, int* passThroughInputNb, ViewIdx *passThroughView, double* passThroughTime)
+ActionsCache::getComponentsNeededResults(U64 hash, double time, ViewIdx view, EffectInstance::ComponentsNeededMap* neededComps, std::bitset<4>* processChannels, bool* processAll,
+                                         std::list<ImageLayerDesc>* passThroughLayers, int* passThroughInputNb, ViewIdx* passThroughView, double* passThroughTime)
 {
     QMutexLocker l(&_cacheMutex);
 
@@ -177,7 +177,7 @@ ActionsCache::getComponentsNeededResults(U64 hash, double time, ViewIdx view, Ef
                 *neededComps = found->second.neededComps;
                 *processChannels = found->second.processChannels;
                 *processAll = found->second.processAll;
-                *passThroughPlanes = found->second.passThroughPlanes;
+                *passThroughLayers = found->second.passThroughLayers;
                 return true;
             }
 
@@ -192,7 +192,7 @@ void
 ActionsCache::setComponentsNeededResults(U64 hash, double time, ViewIdx view, const EffectInstance::ComponentsNeededMap& neededComps,
                                          std::bitset<4> processChannels,
                                          bool processAll,
-                                         const std::list<ImagePlaneDesc>& passThroughPlanes, int passThroughInputNb, ViewIdx passThroughView, double passThroughTime)
+                                         const std::list<ImageLayerDesc>& passThroughLayers, int passThroughInputNb, ViewIdx passThroughView, double passThroughTime)
 {
     QMutexLocker l(&_cacheMutex);
     ActionsCacheInstance & cache = getOrCreateActionCache(hash);
@@ -209,8 +209,7 @@ ActionsCache::setComponentsNeededResults(U64 hash, double time, ViewIdx view, co
     v.passThroughInputNb = passThroughInputNb;
     v.processChannels = processChannels;
     v.processAll = processAll;
-    v.passThroughPlanes = passThroughPlanes;
-
+    v.passThroughLayers = passThroughLayers;
 }
 
 bool
@@ -352,8 +351,8 @@ EffectInstance::RenderArgs::RenderArgs()
     , identityTime(0)
     , identityInput()
     , inputImages()
-    , outputPlanes()
-    , outputPlaneBeingRendered()
+    , outputLayers()
+    , outputLayerBeingRendered()
     , firstFrame(0)
     , lastFrame(0)
     , transformRedirections()
@@ -361,7 +360,7 @@ EffectInstance::RenderArgs::RenderArgs()
 {
 }
 
-EffectInstance::RenderArgs::RenderArgs(const RenderArgs & o)
+EffectInstance::RenderArgs::RenderArgs(const RenderArgs& o)
     : rod(o.rod)
     , regionOfInterestResults(o.regionOfInterestResults)
     , renderWindowPixel(o.renderWindowPixel)
@@ -372,8 +371,8 @@ EffectInstance::RenderArgs::RenderArgs(const RenderArgs & o)
     , identityTime(o.identityTime)
     , identityInput(o.identityInput)
     , inputImages(o.inputImages)
-    , outputPlanes(o.outputPlanes)
-    , outputPlaneBeingRendered(o.outputPlaneBeingRendered)
+    , outputLayers(o.outputLayers)
+    , outputLayerBeingRendered(o.outputLayerBeingRendered)
     , firstFrame(o.firstFrame)
     , lastFrame(o.lastFrame)
     , transformRedirections(o.transformRedirections)
@@ -395,8 +394,8 @@ EffectInstance::RenderArgs::operator=(const RenderArgs & o)
     identityTime = o.identityTime;
     identityInput = o.identityInput;
     inputImages = o.inputImages;
-    outputPlanes = o.outputPlanes;
-    outputPlaneBeingRendered = o.outputPlaneBeingRendered;
+    outputLayers = o.outputLayers;
+    outputLayerBeingRendered = o.outputLayerBeingRendered;
     firstFrame = o.firstFrame;
     lastFrame = o.lastFrame;
     transformRedirections = o.transformRedirections;
@@ -727,7 +726,7 @@ EffectInstance::Implementation::ScopedRenderArgs::ScopedRenderArgs(const EffectT
 EffectInstance::Implementation::ScopedRenderArgs::~ScopedRenderArgs()
 {
     assert(tlsData);
-    tlsData->currentRenderArgs.outputPlanes.clear();
+    tlsData->currentRenderArgs.outputLayers.clear();
     tlsData->currentRenderArgs.inputImages.clear();
     tlsData->currentRenderArgs.validArgs = false;
 }

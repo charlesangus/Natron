@@ -1483,8 +1483,8 @@ RotoPaint::render(const RenderActionArgs& args)
     ImageBitDepthEnum bgDepth = getBitDepth(0);
     std::list<ImagePlaneDesc> neededComps;
 
-    for (std::list<std::pair<ImagePlaneDesc, ImagePtr> >::const_iterator plane = args.outputPlanes.begin();
-         plane != args.outputPlanes.end(); ++plane) {
+    for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator plane = args.outputLayers.begin();
+         plane != args.outputLayers.end(); ++plane) {
         neededComps.push_back(plane->first);
     }
 
@@ -1496,8 +1496,8 @@ RotoPaint::render(const RenderActionArgs& args)
         RectI bgImgRoI;
         ImagePtr bgImg = getImage(0, args.time, args.mappedScale, args.view, 0, 0, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM /*returnOpenGLtexture*/, 0 /*textureDepth*/, &bgImgRoI);
 
-        for (std::list<std::pair<ImagePlaneDesc, ImagePtr> >::const_iterator plane = args.outputPlanes.begin();
-             plane != args.outputPlanes.end(); ++plane) {
+        for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator plane = args.outputLayers.begin();
+             plane != args.outputLayers.end(); ++plane) {
             if (bgImg) {
                 if ( bgImg->getComponents() != plane->second->getComponents() ) {
                     bgImg->convertToFormat( args.roi,
@@ -1552,22 +1552,22 @@ RotoPaint::render(const RenderActionArgs& args)
         } else if (code == eRenderRoIRetCodeAborted) {
             return eStatusOK;
         } else if ( rotoPaintImages.empty() ) {
-            for (std::list<std::pair<ImagePlaneDesc, ImagePtr> >::const_iterator plane = args.outputPlanes.begin();
-                 plane != args.outputPlanes.end(); ++plane) {
+            for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator plane = args.outputLayers.begin();
+                 plane != args.outputLayers.end(); ++plane) {
                 plane->second->fillZero(args.roi);
             }
 
             return eStatusOK;
         }
-        assert( rotoPaintImages.size() == args.outputPlanes.size() );
+        assert(rotoPaintImages.size() == args.outputLayers.size());
 
         RectI bgImgRoI;
         ImagePtr bgImg;
         ImagePremultiplicationEnum outputPremult = getPremult();
         bool triedGetImage = false;
 
-        for (std::list<std::pair<ImagePlaneDesc, ImagePtr> >::const_iterator plane = args.outputPlanes.begin();
-             plane != args.outputPlanes.end(); ++plane) {
+        for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator plane = args.outputLayers.begin();
+             plane != args.outputLayers.end(); ++plane) {
             std::map<ImagePlaneDesc, ImagePtr>::iterator rotoImagesIt = rotoPaintImages.find(plane->first);
             assert( rotoImagesIt != rotoPaintImages.end() );
             if ( rotoImagesIt == rotoPaintImages.end() ) {

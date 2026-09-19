@@ -205,17 +205,16 @@ DiskCacheNode::getFrameRange(double *first,
 StatusEnum
 DiskCacheNode::render(const RenderActionArgs& args)
 {
-    assert(args.outputPlanes.size() == 1);
+    assert(args.outputLayers.size() == 1);
 
     EffectInstancePtr input = getInput(0);
     if (!input) {
         return eStatusFailed;
     }
 
+    const std::pair<ImagePlaneDesc, ImagePtr>& output = args.outputLayers.front();
 
-    const std::pair<ImagePlaneDesc, ImagePtr>& output = args.outputPlanes.front();
-
-    for (std::list<std::pair<ImagePlaneDesc, ImagePtr> >::const_iterator it = args.outputPlanes.begin(); it != args.outputPlanes.end(); ++it) {
+    for (std::list<std::pair<ImagePlaneDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
         RectI roiPixel;
         ImagePtr srcImg = getImage(0, args.time, args.originalScale, args.view, NULL, &it->first, false /*mapToClipPrefs*/, true /*dontUpscale*/, eStorageModeRAM /*useOpenGL*/, 0 /*textureDepth*/,  &roiPixel);
         if (!srcImg) {

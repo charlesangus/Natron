@@ -207,7 +207,7 @@ fi
 # openfx-io's own CI pins the same branch. Not forked -- wdas/SeExpr is not
 # a NatronGitHub repo and we carry no changes to it.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="020d898f9bc92191a6fc1cb5a69bbd3c641ed23d"
+OPENFX_IO_REF="87264e5f1c76c652e89fff6018b8b963f1029c87"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 

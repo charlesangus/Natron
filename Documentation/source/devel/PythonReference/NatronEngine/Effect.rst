@@ -15,7 +15,7 @@ See :ref:`Effectdetails`
 Functions
 ^^^^^^^^^
 
-- def :meth:`addUserPlane<NatronEngine.Effect.addUserPlane>` (planeName,channels)
+- def :meth:`addUserLayer<NatronEngine.Effect.addUserLayer>` (layerName,channels)
 - def :meth:`endChanges<NatronEngine.Effect.endChanges>` ()
 - def :meth:`beginChanges<NatronEngine.Effect.beginChanges>` ()
 - def :meth:`canConnectInput<NatronEngine.Effect.canConnectInput>` (inputNumber, node)
@@ -103,23 +103,23 @@ See :ref:`this section<userParams.details>`
 Member functions description
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. method:: NatronEngine.Effect.addUserPlane(planeName,channels)
+.. method:: NatronEngine.Effect.addUserLayer(layerName,channels)
 
-    :param planeName: :class:`str<NatronEngine.std::string>`
+    :param layerName: :class:`str<NatronEngine.std::string>`
     :param channels: :class:`sequence`
     :rtype: :class:`bool<PySide.QtCore.bool>`
 
-    Adds a new plane to the Channels selector of the node in its settings panel. When selected,
-    the end-user can choose to output the result of the node to this new custom plane.
-    The *planeName* will identify the plane uniquely and must not contain spaces or non
+    Adds a new layer to the Channels selector of the node in its settings panel. When selected,
+    the end-user can choose to output the result of the node to this new custom layer.
+    The *layerName* will identify the layer uniquely and must not contain spaces or non
     python compliant characters.
     The *channels* are a sequence of channel names, e.g.:
 
-        addUserPlane("MyLayer",["R", "G", "B", "A"])
+        addUserLayer("MyLayer",["R", "G", "B", "A"])
 
     .. note::
 
-        A plane cannot contain more than 4 channels and must at least have 1 channel.
+        A layer cannot contain more than 4 channels and must at least have 1 channel.
 
     This function returns *True* if the layer was added successfully, *False* otherwise.
 

@@ -36,7 +36,7 @@ The image below is Natron with the SVG file loaded. We have two viewers displayi
 
 .. figure:: _images/svgworkflow_04.png
 
-After you have loaded the file, you can check the Color.RGB/Alpha Channels headers to see how the layers, paths and groups are read. The ReadSVG node is multi-plane aware. The next few images are Natron screen captures of the headers, merge and shuffle nodes.
+After you have loaded the file, you can check the Color.RGB/Alpha Channels headers to see how the layers, paths and groups are read. The ReadSVG node is multi-layer aware. The next few images are Natron screen captures of the headers, merge and shuffle nodes.
 
 .. figure:: _images/svgworkflow_05.png
    :alt: Merge Node Channels
@@ -54,7 +54,7 @@ Be sure to look carefully at the Color.RGB and alpha headers in the images below
 .. figure:: _images/svgworkflow_08.png
    :align: left
 
-The Shuffle and Merge nodes are used to access multi-plane layers. Though they both can process the different SVG files objects, paths, layers, they work differently. As you can see in the image on the left the shuffle node display every channel(s) from a file and also copy channels from other files into the "A" input from the "B" input. 
+The Shuffle and Merge nodes are used to access the individual layers. Though they both can process the different SVG files objects, paths, layers, they work differently. As you can see in the image on the left the shuffle node display every channel(s) from a file and also copy channels from other files into the "A" input from the "B" input. 
 
 The merge node only perform mathematical blending operations on the inputs "B" and "A:A1000". In order to access the alpha channels from the SVG file you must use the maskChannel mask inputs.
 

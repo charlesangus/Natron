@@ -1880,17 +1880,17 @@ OfxEffectInstance::isIdentity(double time,
         assert(_imp->effect);
 
         int identityView = view;
-        string identityPlane = kFnOfxImagePlaneColour;
+        string identityOfxPlane = kFnOfxImagePlaneColour;
         if (getRecursionLevel() > 1) {
-            stat = _imp->effect->isIdentityAction(inputTimeOfx, field, ofxRoI, scale.toOfxPointD(), identityView, identityPlane, inputclip);
+            stat = _imp->effect->isIdentityAction(inputTimeOfx, field, ofxRoI, scale.toOfxPointD(), identityView, identityOfxPlane, inputclip);
         } else {
             ///Take the preferences lock so that it cannot be modified throughout the action.
             QReadLocker preferencesLocker(&_imp->preferencesLock);
-            stat = _imp->effect->isIdentityAction(inputTimeOfx, field, ofxRoI, scale.toOfxPointD(), identityView, identityPlane, inputclip);
+            stat = _imp->effect->isIdentityAction(inputTimeOfx, field, ofxRoI, scale.toOfxPointD(), identityView, identityOfxPlane, inputclip);
         }
-        if (identityView != view || identityPlane != kFnOfxImagePlaneColour) {
-//#pragma message WARN("can Natron RB2-multiplane2 handle isIdentity across views and planes?")
-            // Natron 2 cannot handle isIdentity across planes
+        if (identityView != view || identityOfxPlane != kFnOfxImagePlaneColour) {
+            // #pragma message WARN("can Natron RB2-multiplane2 handle isIdentity across views and planes?")
+            //  Natron 2 cannot handle isIdentity across planes
             stat = kOfxStatOK;
         }
     }

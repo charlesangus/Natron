@@ -31,6 +31,7 @@
 #include "Global/GlobalDefines.h"
 
 #include "Engine/Knob.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 
@@ -93,6 +94,7 @@ KnobFactory::loadBultinKnobs()
     _loadedKnobs.insert( knobFactoryEntry<KnobPath>() );
     _loadedKnobs.insert( knobFactoryEntry<KnobPage>() );
     _loadedKnobs.insert( knobFactoryEntry<KnobLayers>() );
+    _loadedKnobs.insert(knobFactoryEntry<KnobChannelSet>());
 }
 
 KnobHelperPtr KnobFactory::createKnob(const std::string &id,

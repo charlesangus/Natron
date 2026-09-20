@@ -47,6 +47,7 @@
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
 
+#include "Engine/KnobChannelSet.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -163,17 +164,19 @@ KnobSerialization::createKnob(const std::string & typeName,
         ret = std::make_shared<KnobPath>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if ( typeName == KnobLayers::typeNameStatic() ) {
         ret = std::make_shared<KnobLayers>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobFile::typeNameStatic() ) {
+    } else if (typeName == KnobChannelSet::typeNameStatic()) {
+        ret = std::make_shared<KnobChannelSet>((KnobHolder*)NULL, std::string(), dimension, false);
+    } else if (typeName == KnobFile::typeNameStatic()) {
         ret = std::make_shared<KnobFile>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobOutputFile::typeNameStatic() ) {
+    } else if (typeName == KnobOutputFile::typeNameStatic()) {
         ret = std::make_shared<KnobOutputFile>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobButton::typeNameStatic() ) {
+    } else if (typeName == KnobButton::typeNameStatic()) {
         ret = std::make_shared<KnobButton>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobSeparator::typeNameStatic() ) {
+    } else if (typeName == KnobSeparator::typeNameStatic()) {
         ret = std::make_shared<KnobSeparator>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobGroup::typeNameStatic() ) {
+    } else if (typeName == KnobGroup::typeNameStatic()) {
         ret = std::make_shared<KnobGroup>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobPage::typeNameStatic() ) {
+    } else if (typeName == KnobPage::typeNameStatic()) {
         ret = std::make_shared<KnobPage>((KnobHolder*)NULL, std::string(), dimension, false);
     }
 

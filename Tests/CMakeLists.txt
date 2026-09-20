@@ -38,6 +38,7 @@ set(Tests_SOURCES
     FileSystemModel_Test.cpp
     Hash64_Test.cpp
     Image_Test.cpp
+    KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
     Knob_Test.cpp
     LayerRegistry_Test.cpp

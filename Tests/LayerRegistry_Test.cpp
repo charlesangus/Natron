@@ -41,12 +41,14 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
+#include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
 
@@ -467,3 +469,67 @@ TEST_F(BaseTest, LayersKnobMirrorsRegistryAndUsers)
     EXPECT_FALSE(findLayersKnobRow(layersKnob, "diffuse", &row));
     EXPECT_TRUE(findLayersKnobRow(layersKnob, "Color", &row));
 } // TEST_F(BaseTest, LayersKnobMirrorsRegistryAndUsers)
+
+static bool
+containsLayerID(const std::list<ImageLayerDesc>& layers, const std::string& id)
+{
+    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        if (it->getLayerID() == id) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// getPresentLayers()/getAvailableLayers() must key the input's components-needed query on the
+// input's own hash, not the caller's: otherwise the answer is cached under the caller's hash in
+// the input's ActionsCache, and the input's plane list can go stale (or pollute the input's cache)
+// with entries the input's own hash never indexes.
+//
+// A connected node's hash folds in every upstream hash (Node::computeHashInternal()), so a real
+// file change on the reader necessarily changes the Blur's hash too: that part isn't the
+// regression to catch here. What this exercises is that querying the input through a downstream
+// node (inputNb >= 0) still tracks the input's current metadata, the same way querying it directly
+// (inputNb == -1) already did before this fix.
+TEST_F(BaseTest, PresentLayersFollowInputMetadataChange)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+    NodePtr reader = getApp()->createNode(readerArgs);
+    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    ASSERT_TRUE(bool(blur));
+
+    connectNodes(reader, blur, 0, true);
+
+    std::list<ImageLayerDesc> layersBefore;
+    blur->getEffectInstance()->getPresentLayers(0, ViewIdx(0), 0, &layersBefore);
+    EXPECT_TRUE(containsLayerID(layersBefore, "diffuse"));
+
+    std::list<ImageLayerDesc> readerOwnLayersBefore;
+    reader->getEffectInstance()->getPresentLayers(0, ViewIdx(0), -1, &readerOwnLayersBefore);
+    EXPECT_TRUE(containsLayerID(readerOwnLayersBefore, "diffuse"));
+
+    KnobFilePtr fileKnob = std::dynamic_pointer_cast<KnobFile>(reader->getKnobByName(kOfxImageEffectFileParamName));
+    ASSERT_TRUE(bool(fileKnob));
+    fileKnob->setValue(std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr"));
+    reader->forceRefreshAllInputRelatedData();
+
+    std::list<ImageLayerDesc> readerOwnLayersAfter;
+    reader->getEffectInstance()->getPresentLayers(0, ViewIdx(0), -1, &readerOwnLayersAfter);
+    EXPECT_FALSE(containsLayerID(readerOwnLayersAfter, "diffuse"));
+    EXPECT_FALSE(containsLayerID(readerOwnLayersAfter, "specular"));
+
+    std::list<ImageLayerDesc> layersAfter;
+    blur->getEffectInstance()->getPresentLayers(0, ViewIdx(0), 0, &layersAfter);
+    EXPECT_FALSE(containsLayerID(layersAfter, "diffuse"));
+    EXPECT_FALSE(containsLayerID(layersAfter, "specular"));
+
+    project->reset(false, true);
+} // TEST_F(BaseTest, PresentLayersFollowInputMetadataChange)

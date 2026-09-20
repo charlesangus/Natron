@@ -4479,7 +4479,9 @@ EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::li
         int passThroughInputNb = -1; // prevent infinite recursion, because getComponentsNeededAndProduced_public() may call getPresentLayers()
         std::bitset<4> processChannels;
         bool processAll = false;
-        effect->getComponentsNeededAndProduced_public(getRenderHash(), time, view, &comps, &passThroughLayers, &processAll, &passThroughTime, &passThroughView, &processChannels, &passThroughInputNb);
+        // Key this query on the queried effect's own hash: it caches into that effect's ActionsCache, and a foreign
+        // (caller's) hash would pollute or stale-serve that cache independently of the effect's own invalidation.
+        effect->getComponentsNeededAndProduced_public(effect->getRenderHash(), time, view, &comps, &passThroughLayers, &processAll, &passThroughTime, &passThroughView, &processChannels, &passThroughInputNb);
 
         // Merge pass-through layers produced + pass-through available layers and make it as the pass-through layers for this node
         // if they are not produced by this node

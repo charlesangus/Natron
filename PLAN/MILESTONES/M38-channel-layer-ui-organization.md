@@ -167,7 +167,7 @@ become phases here.
   - verify: `ctest -R ChannelSetRender` green; the audit list is in the test's header comment.
   - size: M
 
-- [ ] M38.P4.T5 — Quad-adoption exception list: KeyMix, DenoiseSharpen, ClipTest keep their own R/G/B/A
+- [x] M38.P4.T5 — Quad-adoption exception list: KeyMix, DenoiseSharpen, ClipTest keep their own R/G/B/A
   - files: `Engine/Node.cpp`, `Engine/Node.h`, `Tests/ChannelSetRender_Test.cpp`
   - approach: the 38.4.T4 audit found three openfx-misc plugins whose `NatronOfxParamProcess*` quad is not a mask: KeyMix (`net.sf.openfx.KeyMix` — the quad picks A vs B per channel), DenoiseSharpen (`net.sf.openfx.DenoiseSharpen` — collapses R/G/B into one flag), ClipTest (`net.sf.openfx.ClipTestPlugin` — zebra decision ORs across selected channels). `adoptChannelQuad` consults a small host-side set of plugin IDs (verify the exact IDs from the bundle) for which the quad is left visible and untouched, the channel set's row-0 buttons are hidden for that node (the plugin owns per-channel behaviour) but the set still drives which layers are rendered, and the host bitset for that node's planes is all-true (plugin masks). Document the list in one why-comment next to the set.
   - verify: gtest: KeyMix's `NatronOfxParamProcessR` is visible and not forced; render KeyMix (A=reader on `flat-three-layers.exr`, B=reader on `flat-rgba-only.exr`, quad R on / G,B,A off) → output R from A, G/B/A from B (whatever the plugin's semantics are — assert against the plugin's own math); Grade's quad remains adopted; `ctest -R ChannelSetRender` green; full ctest green.

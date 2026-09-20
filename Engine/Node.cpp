@@ -5624,6 +5624,61 @@ Node::getReferencedLayerIDs(std::set<std::string>* ids) const
     }
 } // Node::getReferencedLayerIDs
 
+void
+Node::registerProducedLayers()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    if (!_imp->effect || !isActivated()) {
+        return;
+    }
+    {
+        QMutexLocker k(&_imp->isBeingDestroyedMutex);
+        if (_imp->isBeingDestroyed) {
+            return;
+        }
+    }
+
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (!project) {
+        return;
+    }
+
+    double time = app->getTimeLine()->currentFrame();
+    EffectInstance::ComponentsNeededMap comps;
+    std::list<ImageLayerDesc> passThroughLayers;
+    bool processAllRequested;
+    double passThroughTime;
+    int passThroughView;
+    std::bitset<4> processChannels;
+    int passThroughInputNb;
+
+    _imp->effect->getComponentsNeededAndProduced_public(getHashValue(), time, ViewIdx(0), &comps, &passThroughLayers, &processAllRequested, &passThroughTime, &passThroughView, &processChannels, &passThroughInputNb);
+
+    EffectInstance::ComponentsNeededMap::const_iterator foundOutput = comps.find(-1);
+    if (foundOutput == comps.end()) {
+        return;
+    }
+
+    // The union of a file's channels can grow an already-registered layer's channel count;
+    // nodes that reference it may have cached actions keyed on the old count.
+    LayerRegistryEntry::OriginEnum origin = _imp->effect->isReader() ? LayerRegistryEntry::eOriginFile : LayerRegistryEntry::eOriginPlugin;
+    for (std::list<ImageLayerDesc>::const_iterator it = foundOutput->second.begin(); it != foundOutput->second.end(); ++it) {
+        if (it->isColorLayer()) {
+            continue;
+        }
+        std::string error;
+        LayerRegistry::AddResultEnum ret = project->addLayer(*it, origin, &error);
+        if (ret == LayerRegistry::eAddResultGrown) {
+            std::list<NodePtr> users;
+            project->getLayerUsers(it->getLayerID(), &users);
+            for (std::list<NodePtr>::const_iterator uit = users.begin(); uit != users.end(); ++uit) {
+                (*uit)->incrementKnobsAge();
+            }
+        }
+    }
+} // Node::registerProducedLayers
+
 ImageLayerDesc
 Node::Implementation::getSelectedLayerInternal(int inputNb,
                                                const std::list<ImageLayerDesc>& availableLayers,
@@ -6638,6 +6693,8 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
     }
 
     hasChanged |= refreshChannelSelectors();
+
+    registerProducedLayers();
 
     refreshIdentityState();
 

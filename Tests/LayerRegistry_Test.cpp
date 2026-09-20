@@ -25,14 +25,30 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <QLatin1Char>
+#include <QObject>
+#include <QString>
+#include <QTemporaryDir>
+
+#include "BaseTest.h"
+
+#include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
+#include "Engine/Node.h"
+#include "Engine/Project.h"
+
+#include <ofxImageEffect.h>
 
 NATRON_NAMESPACE_USING
 
@@ -240,3 +256,146 @@ TEST(LayerRegistry, SnapshotIsStableAcrossAdd)
     std::shared_ptr<const std::vector<LayerRegistryEntry>> after = registry.snapshot();
     EXPECT_EQ(sizeBefore + 1, after->size());
 }
+
+namespace {
+
+bool
+findOrigin(const ProjectPtr& project,
+           const std::string& id,
+           LayerRegistryEntry::OriginEnum* origin)
+{
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
+
+    for (std::vector<LayerRegistryEntry>::const_iterator it = snapshot->begin(); it != snapshot->end(); ++it) {
+        if (it->desc.getLayerID() == id) {
+            *origin = it->origin;
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // namespace
+
+// A Read node's produced (non-Color) planes are registered at the project level as soon as the
+// node exists, with origin eOriginFile; pointing the same Read at a file that no longer carries
+// those planes must not unregister them (Nuke behaviour: a channel, once known, stays known).
+TEST_F(BaseTest, ReadRegistersFileLayers)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+    NodePtr reader = getApp()->createNode(readerArgs);
+    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+    LayerRegistryEntry::OriginEnum origin;
+    ASSERT_TRUE(findOrigin(project, "diffuse", &origin));
+    EXPECT_EQ(LayerRegistryEntry::eOriginFile, origin);
+    ASSERT_TRUE(findOrigin(project, "specular", &origin));
+    EXPECT_EQ(LayerRegistryEntry::eOriginFile, origin);
+
+    KnobFilePtr fileKnob = std::dynamic_pointer_cast<KnobFile>(reader->getKnobByName(kOfxImageEffectFileParamName));
+    ASSERT_TRUE(bool(fileKnob));
+    fileKnob->setValue(std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr"));
+    reader->forceRefreshAllInputRelatedData();
+
+    EXPECT_TRUE(findOrigin(project, "diffuse", &origin));
+    EXPECT_TRUE(findOrigin(project, "specular", &origin));
+
+    project->reset(false, true);
+} // TEST_F(BaseTest, ReadRegistersFileLayers)
+
+// Loading a project whose Read nodes' files have not changed must restore the exact same
+// registry that was saved, and emit projectLayersChanged() exactly once (not once per node whose
+// produced layers get re-registered during the load).
+TEST_F(BaseTest, LoadWithUnchangedFilesDoesNotChangeRegistry)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+    NodePtr reader = getApp()->createNode(readerArgs);
+    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+    LayerRegistryEntry::OriginEnum origin;
+    ASSERT_TRUE(findOrigin(project, "diffuse", &origin));
+    ASSERT_TRUE(findOrigin(project, "specular", &origin));
+
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> beforeSnapshot = project->getLayerRegistrySnapshot();
+    const std::vector<LayerRegistryEntry> before(*beforeSnapshot);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("unchanged-files.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    project->reset(false, true);
+
+    int layersChangedCount = 0;
+    QObject::connect(project.get(), &Project::projectLayersChanged, [&layersChangedCount]() {
+        ++layersChangedCount;
+    });
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+    EXPECT_EQ(1, layersChangedCount);
+
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> afterSnapshot = project->getLayerRegistrySnapshot();
+    ASSERT_EQ(before.size(), afterSnapshot->size());
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        EXPECT_EQ(before[i].desc.getLayerID(), (*afterSnapshot)[i].desc.getLayerID());
+        EXPECT_EQ(before[i].origin, (*afterSnapshot)[i].origin);
+        EXPECT_EQ(before[i].desc.getNumComponents(), (*afterSnapshot)[i].desc.getNumComponents());
+    }
+
+    project->reset(false, true);
+} // TEST_F(BaseTest, LoadWithUnchangedFilesDoesNotChangeRegistry)
+
+// Selecting a registered layer on a downstream node's Output Layer choice makes that node a
+// "user" of the layer (Node::getReferencedLayerIDs()); Project::removeLayer() must then refuse
+// and name the referencing node.
+TEST_F(BaseTest, ReferencedLayerCannotBeRemoved)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+    NodePtr reader = getApp()->createNode(readerArgs);
+    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    ASSERT_TRUE(bool(blur));
+
+    connectNodes(reader, blur, 0, true);
+
+    KnobChoicePtr outputLayerKnob = std::dynamic_pointer_cast<KnobChoice>(blur->getKnobByName(kOutputChannelsKnobName));
+    ASSERT_TRUE(bool(outputLayerKnob));
+    outputLayerKnob->setValueFromID("diffuse", 0);
+
+    std::string error;
+    EXPECT_FALSE(project->removeLayer("diffuse", &error));
+    EXPECT_NE(std::string::npos, error.find(blur->getScriptName_mt_safe()));
+
+    std::list<NodePtr> users;
+    project->getLayerUsers("diffuse", &users);
+    bool foundBlur = false;
+    for (std::list<NodePtr>::const_iterator it = users.begin(); it != users.end(); ++it) {
+        if (*it == blur) {
+            foundBlur = true;
+        }
+    }
+    EXPECT_TRUE(foundBlur);
+
+    project->reset(false, true);
+} // TEST_F(BaseTest, ReferencedLayerCannotBeRemoved)

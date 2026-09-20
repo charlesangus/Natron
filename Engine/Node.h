@@ -1352,6 +1352,13 @@ public:
      **/
     virtual void getReferencedLayerIDs(std::set<std::string>* ids) const;
 
+    /**
+     * @brief Registers every non-Color layer this node produces (per
+     * getComponentsNeededAndProduced_public()'s output entry) with the project-level
+     * LayerRegistry. Main thread only, called at the end of refreshAllInputRelatedData().
+     **/
+    void registerProducedLayers();
+
     const std::vector<std::string>& getCreatedViews() const;
 
     void refreshCreatedViews(bool silent);

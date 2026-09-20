@@ -52,11 +52,13 @@
 # manage an LD_LIBRARY_PATH for it. Verified: the built IO.ofx has no
 # libSeExpr entry in DT_NEEDED.
 #
-# openfx-misc is built the same way and needs no fork: unlike openfx-io it
-# has no dependency on OIIO/OCIO/SeExpr and no CMakeLists.txt bug, so upstream
-# builds clean against this container as-is. It does have one prerequisite
-# its own CMakeLists.txt doesn't handle -- see the comment above the
-# openfx-misc build step below.
+# openfx-misc is built the same way, from our fork: unlike openfx-io it has
+# no dependency on OIIO/OCIO/SeExpr and no CMakeLists.txt bug, so it needs no
+# source changes to build against this container -- the fork exists only so
+# Premult/Unpremult always multiply/divide by alpha (see the comment above
+# OPENFX_MISC_REF below). It does have one build prerequisite its own
+# CMakeLists.txt doesn't handle -- see the comment above the openfx-misc
+# build step below.
 #
 # This script therefore DOES do compile work now, which is the main reason
 # it (like build.sh/test.sh) runs INSIDE the dev container, re-execing
@@ -224,15 +226,43 @@ OPENFX_IO_REF="87264e5f1c76c652e89fff6018b8b963f1029c87"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 
-# OPENFX_MISC_REF: NatronGitHub/openfx-misc, upstream directly -- not forked.
+# OPENFX_MISC_REF: charlesangus/openfx-misc -- our fork, one commit ahead of
+# NatronGitHub/openfx-misc and zero behind. Fork-and-fix is the standing
+# pattern for small changes to NatronGitHub repos (see OPENFX_IO_REF above).
+# One delta:
+#
+# 1. Premult/Unpremult always multiply/divide by alpha
+#    (charlesangus/openfx-misc#1). Natron no longer tracks whether an image
+#    is premultiplied: the host answers the OFX clip property
+#    kOfxImageEffectPropPreMultiplication with the constant
+#    kOfxImageUnPreMultiplied for every clip, and the user alone owns knowing
+#    an image's state. Upstream Premult.cpp reads that property in three
+#    places to vary its own math: an isIdentity shortcut that skips
+#    processing once the clip already claims the target premult state, a
+#    changedClip auto-toggle of the R/G/B/A process checkboxes (already
+#    disabled upstream, left in as a commented-out block), and an
+#    eImageOpaque branch in render() that treats alpha as 1 and copies
+#    pixels unchanged. Against a host that always answers UnPreMultiplied
+#    none of the three currently fires -- Premult's isIdentity gate requires
+#    PreMultiplied to pass through to a real identity check and so is always
+#    false, and eImageOpaque is never the answer either -- so this is not
+#    fixing an observed bad render; it deletes a class of behavior this
+#    plugin has no business having now that the property it keyed off of
+#    carries no information, so a future change to what the host answers
+#    can't silently revive it. Premult always computes rgb * a and Unpremult
+#    always computes rgb / a (existing divide-by-zero guard preserved) on
+#    whichever channels the R/G/B/A checkboxes select. Also removed: the
+#    Clip Info push button and its changedParam handler, which only ever
+#    displayed that same (now meaningless) clip premult state.
+#    getClipPreferences's setOutputPremultiplication call is untouched -- it
+#    sets an advisory output preference that nothing downstream, including
+#    this plugin, reads back.
+#
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
-# this container with no source changes needed. (If that ever stops being
-# true, fork it the same way -- see
-# PLAN/DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md -- rather than
-# patching it from this script.)
-OPENFX_MISC_REPO="https://github.com/NatronGitHub/openfx-misc.git"
-OPENFX_MISC_REF="0abd46b5a8cbc98fa24579042129460d0aa87b8f"
+# this container with no other source changes needed.
+OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
+OPENFX_MISC_REF="19e52fffb004f4926b219d6ed3eadee156e01b8f"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a

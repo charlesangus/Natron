@@ -97,7 +97,7 @@ become phases here.
   - verify: `grep -rn -i "ImagePremultiplicationEnum\|getPremult\|outputPremult\|inputPremult\|eImagePremultiplication" Engine Gui Global Tests` returns zero hits and `grep -rn -i opaque Engine Gui Global | grep -v -i 'setOpaque\|WA_Opaque\|OpaquePaintEvent'` returns zero hits (the OFX `kOfxImageOpaque` string may remain only inside `libs/OpenFX`, never answered by the host); full `ctest` green; a stale disk cache from a previous build is discarded on first launch (log line).
   - size: L
 
-- [ ] M38.P2.T7 — openfx-misc fork: Premult/Unpremult always do their math
+- [x] M38.P2.T7 — openfx-misc fork: Premult/Unpremult always do their math
   - files: `tools/ci/local/fetch-assets.sh` (+ fork `charlesangus/openfx-misc`: `Premult/Premult.cpp`)
   - approach: in the fork delete every read of the clip premult property in `Premult.cpp`: the `isIdentity` shortcuts (`:756-770`), the `changedClip` quad auto-toggle (`:870-880`) and the `eImageOpaque` alpha-as-1 branch (`:644`) — Premult always multiplies by alpha, Unpremult always divides, the user owns knowing which state an image is in; `OPENFX_MISC_REPO` → the fork, `OPENFX_MISC_REF` → the SHA, add "delta 1" to the comment block (`:227-235`) in the style of `:152-211`.
   - verify: a Python background render of Constant(RGBA, 0.5 alpha)→Premult→Write and →Unpremult→Write: pixels are `rgb*a` and `rgb/a` respectively (read back with `Tests/FlatExrReader.h`-style parsing or a gtest added to `Tests/`).

@@ -51,6 +51,12 @@ become phases here.
   - verify: a Python script run through the built binary in background mode asserts: built-ins first, `addProjectLayer("diffuse", ["R","G","B"])` returns an `ImageLayer`, re-adding is idempotent, `addProjectLayer("rgba", …)` returns Color, `addProjectLayer("bad name", …)` raises, `removeProjectLayer("Color")` is False, `hasattr(node, "addUserLayer")` is False; `tools/ci/local/test.sh smoke debug` green.
   - size: S
 
+- [ ] M38.P1.T8 — Key an input's components-needed answer on the input's own hash in `getPresentLayers`/`getAvailableLayers`
+  - files: `Engine/EffectInstance.cpp`, `Tests/LayerRegistry_Test.cpp`
+  - approach: both helpers query `input->getComponentsNeededAndProduced_public(getRenderHash(), …)` with the *caller's* hash, so the input's `ActionsCache` fills with foreign-hash entries and can serve a stale plane list (the M58 decisions noted the same for `getAvailableLayers`; the 38.1 gate fix `3429d3640` only masks it via metadata invalidation). Pass `input->getRenderHash()` (or the input node's hash, matching what the input's own render path uses) instead; keep `-1`'s own-hash path unchanged.
+  - verify: gtest: reader → Blur; call `blur->getPresentLayers(0)` then change the reader's file to `flat-rgba-only.exr` (metadata refresh) and call again → the second answer has no `diffuse`/`specular` without any change to the Blur's hash; full ctest and smoke green.
+  - size: S
+
 **Phase 38.1 gate:** `tools/ci/local/test.sh ctest debug` and `test.sh smoke debug` green; the T6 Xvfb screenshots exist; a project saved with file layers reloads with an identical registry.
 
 ## Phase 38.2: Premult removal (M43)
@@ -308,3 +314,4 @@ become phases here.
 - 2026-09-19 — **Widget design v3 approved** with three answers: (1) Read of a file with no R/G/B/A layer keeps OIIO's default (first layer into Color) for M38, provided the layer is *duplicated* into Color and still present as its own plane — verified by a no-Color fixture in 38.6.T3; (2) Write Color subsets map to the encoder's RGBA/RGB/Alpha superset for now; (3) a generator writes its output into the target layer and every other layer passes through untouched.
 - 2026-09-19 — **Premult/Unpremult always do their math** (user confirmation): once the un/premultiplied concept is gone the user owns knowing an image's state; the openfx-misc fork deletes every read of the clip premult property in `Premult.cpp` (identity shortcuts, auto-toggle, and the opaque branch), and the 30 plugins' own (un)premult checkboxes are hidden and off.
 - 2026-09-19 — **"Opaque" goes with the premult concept** (user): `kOfxImageOpaque`/`eImagePremultiplicationOpaque` is the third value of the same property and is never answered or tracked; the viewer's alpha-is-one path is renamed to a channel-count term (`noAlphaChannel`) because that is what it actually keys on.
+- 2026-09-20 — **Phase 38.1 gate passed** after one regression fix (`3429d3640`): `Node::registerProducedLayers` queried a Read container's produced planes under its own hash before the bundled decoder had loaded the file, caching Color as RGBA for an RGB file; the fix invalidates cached components-needed results whenever a node's metadata changes, since produced planes derive from clip preferences the hash never tracked. A related pre-existing mis-keying (input answers cached under the caller's hash) is T8.

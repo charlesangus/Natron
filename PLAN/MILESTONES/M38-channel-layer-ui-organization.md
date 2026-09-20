@@ -79,7 +79,7 @@ become phases here.
   - verify: `ctest` green; a Python background script connects Read→Grade and asserts `grade.getParam("premult").get()` stays False after connection (the auto-toggle no longer fires); `hasattr(effect, "getPremult")` still True until T6.
   - size: M
 
-- [ ] M38.P2.T4 — Remove the warning, RotoPaint's premultiply knob, and hide plugin premult params
+- [x] M38.P2.T4 — Remove the warning, RotoPaint's premultiply knob, and hide plugin premult params
   - files: `Engine/Node.cpp`, `Engine/NodePrivate.h`, `Engine/Node.h`, `Engine/RotoPaint.cpp`, `Engine/OfxEffectInstance.cpp`
   - approach: delete `premultWarning` (`NodePrivate.h:404`, creation `Node.cpp:2691-2706`, `checkForPremultWarningAndCheckboxes` `:7547-7611`, `Node.h:1064`, trigger `:5545`); delete RotoPaint `premultiply` (`RotoPaint.cpp:217-227`, use `:1491-1511, 1650`) and the `premultImage` call; `OfxEffectInstance` after param creation sets `premult`, `premultChanged`, `premultChannel`, `filePremult`, `outputPremult`, `inputPremult` secret + non-persistent when present (Read/Write containers inherit this since embedded params are container knobs, `Engine/OfxParamInstance.cpp:305-330`); drop the `premultChannel` load filter (`KnobSerialization.cpp:619`) as redundant; `Tests/DeepPipeline_Test.cpp:262-267` loses its `inputPremult` line.
   - verify: `dump.py` (T1) shows no visible `premult*`/`filePremult`/`outputPremult`/`inputPremult`/`premultiply` param on Grade, Read, Write, RotoPaint; Xvfb `after-grade-0.png` shows no warning icon with A on / R off; `ctest -R DeepPipeline` green.
@@ -102,6 +102,12 @@ become phases here.
   - approach: in the fork delete every read of the clip premult property in `Premult.cpp`: the `isIdentity` shortcuts (`:756-770`), the `changedClip` quad auto-toggle (`:870-880`) and the `eImageOpaque` alpha-as-1 branch (`:644`) — Premult always multiplies by alpha, Unpremult always divides, the user owns knowing which state an image is in; `OPENFX_MISC_REPO` → the fork, `OPENFX_MISC_REF` → the SHA, add "delta 1" to the comment block (`:227-235`) in the style of `:152-211`.
   - verify: a Python background render of Constant(RGBA, 0.5 alpha)→Premult→Write and →Unpremult→Write: pixels are `rgb*a` and `rgb/a` respectively (read back with `Tests/FlatExrReader.h`-style parsing or a gtest added to `Tests/`).
   - size: S
+
+- [ ] M38.P2.T8 — openfx-io fork: readers and writers never convert premultiplication
+  - files: `tools/ci/local/fetch-assets.sh` (`OPENFX_IO_REF` + fork-delta comment), `Tests/DeepPipeline_Test.cpp` (+ fork `charlesangus/openfx-io`: `IOSupport/GenericWriter.cpp`, `IOSupport/GenericReader.cpp`)
+  - approach: in the fork, `GenericWriter::changedClip` stops re-deriving `inputPremult` from `_inputClip->getPreMultiplication()`, and the write path never multiplies or divides by alpha (delete the `inputPremult`-driven conversion; the param can stay declared, hidden host-side); `GenericReader` likewise never converts between `filePremult` and `outputPremult` — pixels are decoded as stored. Bump `OPENFX_IO_REF` to the merged commit and extend the delta comment. Then drop the `inputPremult` override 38.2.T4 had to keep in `Tests/DeepPipeline_Test.cpp`.
+  - verify: `ctest -R "DeepPipeline|WriteAllLayers"` green with the override removed; a Python background render Constant(RGBA, rgb=1, a=0.5) → WriteOIIO EXR → read back with `Tests/FlatExrReader.h`-style parsing gives rgb=1 (not 0.5); Read of that EXR → Write PNG/EXR round-trips rgb=1; `tools/ci/local/test.sh smoke debug` green.
+  - size: M
 
 ## Phase 38.3: The three knob types (engine)
 
@@ -315,3 +321,4 @@ become phases here.
 - 2026-09-19 — **Premult/Unpremult always do their math** (user confirmation): once the un/premultiplied concept is gone the user owns knowing an image's state; the openfx-misc fork deletes every read of the clip premult property in `Premult.cpp` (identity shortcuts, auto-toggle, and the opaque branch), and the 30 plugins' own (un)premult checkboxes are hidden and off.
 - 2026-09-19 — **"Opaque" goes with the premult concept** (user): `kOfxImageOpaque`/`eImagePremultiplicationOpaque` is the third value of the same property and is never answered or tracked; the viewer's alpha-is-one path is renamed to a channel-count term (`noAlphaChannel`) because that is what it actually keys on.
 - 2026-09-20 — **Phase 38.1 gate passed** after one regression fix (`3429d3640`): `Node::registerProducedLayers` queried a Read container's produced planes under its own hash before the bundled decoder had loaded the file, caching Color as RGBA for an RGB file; the fix invalidates cached components-needed results whenever a node's metadata changes, since produced planes derive from clip preferences the hash never tracked. A related pre-existing mis-keying (input answers cached under the caller's hash) is T8.
+- 2026-09-20 — **Readers and writers must stop converting premultiplication themselves (38.2.T8, openfx-io fork)**: found by 38.2.T4 — `GenericWriter::changedClip` re-derives its `inputPremult` from the clip property on every connect (now always UnPreMultiplied) and then premultiplies before writing; `GenericReader` converts `filePremult`→`outputPremult` the same way. Hiding the knobs is not enough; under "the user owns premult", I/O writes and reads pixels as stored.

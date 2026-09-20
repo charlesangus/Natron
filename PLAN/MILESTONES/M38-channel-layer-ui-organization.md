@@ -33,7 +33,7 @@ become phases here.
   - verify: `ctest -R ProjectSerialization` and `DataKindProjectLoad` green; a saved `.ntp` contains no `UserComponents` element (test greps the file); `Tests/fixtures/*.ntp` still load.
   - size: S
 
-- [ ] M38.P1.T5 — Auto-register produced layers on the main-thread refresh
+- [x] M38.P1.T5 — Auto-register produced layers on the main-thread refresh
   - files: `Engine/Node.cpp`, `Engine/Node.h`, `Engine/Project.cpp`, `Tests/LayerRegistry_Test.cpp`
   - approach: `Node::registerProducedLayers()` called at the end of `refreshAllInputRelatedData` (`Node.cpp:6614` region): produced non-Color planes from `getComponentsNeededAndProduced_public(comps[-1])` → `Project::addLayer(desc, isReader ? eOriginFile : eOriginPlugin)`; union results call `incrementKnobsAge()` on `getLayerUsers(id)`; batched under `isLoadingProject`; not gated on output data kind (M60 will call it from DeepRead). `Node::getReferencedLayerIDs()` virtual, implemented over `_imp->channelsSelectors`/`maskSelectors` choice values so `getLayerUsers` is truthful in 38.1.
   - verify: test: create ReadOIIO on `flat-three-layers.exr` → registry gains `diffuse`, `specular` with `eOriginFile`; change the file knob to a plain RGBA fixture → both stay registered; save/reset/load with the file unchanged → registry identical and `projectLayersChanged` count unchanged after load; select `diffuse` on a Blur's Output Layer choice → `removeLayer("diffuse")` returns false and `getLayerUsers` names the Blur.

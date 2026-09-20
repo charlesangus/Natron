@@ -39,6 +39,7 @@ set(Tests_SOURCES
     Hash64_Test.cpp
     Image_Test.cpp
     KnobFile_Test.cpp
+    Knob_Test.cpp
     LayerRegistry_Test.cpp
     Lut_Test.cpp
     Metadata_Test.cpp

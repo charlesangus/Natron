@@ -453,6 +453,15 @@ public:
     virtual bool canAnimate() const = 0;
 
     /**
+     * @brief Must return true if this knob accepts a Python expression. Table-valued knobs refuse:
+     * their value is a serialized row set, not a scalar an expression could sensibly produce.
+     **/
+    virtual bool supportsExpressions() const
+    {
+        return true;
+    }
+
+    /**
      * @brief Returns true if the knob has had modifications
      **/
     virtual bool hasModifications() const = 0;

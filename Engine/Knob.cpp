@@ -2828,6 +2828,9 @@ KnobHelper::setExpressionInternal(int dimension,
                                   bool clearResults,
                                   bool failIfInvalid)
 {
+    if (!supportsExpressions()) {
+        throw std::invalid_argument("This parameter does not support expressions");
+    }
 #ifdef NATRON_RUN_WITHOUT_PYTHON
 
     return;
@@ -4550,6 +4553,7 @@ KnobHelper::createDuplicateOnHolder(KnobHolder* otherHolder,
     KnobFile* isFile = dynamic_cast<KnobFile*>(this);
     KnobOutputFile* isOutputFile = dynamic_cast<KnobOutputFile*>(this);
     KnobPath* isPath = dynamic_cast<KnobPath*>(this);
+    KnobLayers* isLayers = dynamic_cast<KnobLayers*>(this);
     KnobGroup* isGrp = dynamic_cast<KnobGroup*>(this);
     KnobPage* isPage = dynamic_cast<KnobPage*>(this);
     KnobButton* isBtn = dynamic_cast<KnobButton*>(this);
@@ -4643,6 +4647,10 @@ KnobHelper::createDuplicateOnHolder(KnobHolder* otherHolder,
         if ( isPath->isMultiPath() ) {
             newKnob->setMultiPath(true);
         }
+        output = newKnob;
+    } else if (isLayers) {
+        KnobLayersPtr newKnob = AppManager::createKnob<KnobLayers>(otherHolder, newLabel, getDimension(), false);
+        newKnob->setAsUserKnob(isUserKnob);
         output = newKnob;
     } else if (isGrp) {
         KnobGroupPtr newKnob = otherHolder->createGroupKnob(newScriptName, newLabel, isUserKnob);

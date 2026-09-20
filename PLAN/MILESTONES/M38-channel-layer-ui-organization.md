@@ -85,7 +85,7 @@ become phases here.
   - verify: `dump.py` (T1) shows no visible `premult*`/`filePremult`/`outputPremult`/`inputPremult`/`premultiply` param on Grade, Read, Write, RotoPaint; Xvfb `after-grade-0.png` shows no warning icon with A on / R off; `ctest -R DeepPipeline` green.
   - size: M
 
-- [ ] M38.P2.T5 — Viewer without premult state
+- [x] M38.P2.T5 — Viewer without premult state
   - files: `Engine/ViewerInstance.cpp`, `Engine/UpdateViewerParams.h`, `Engine/ViewerInstancePrivate.h`, `Gui/ViewerGL.cpp`, `Gui/ViewerGLPrivate.cpp`
   - approach: drop `srcPremult` (`ViewerInstance.cpp:915`, `UpdateViewerParams.h:72, 121`, `ViewerInstancePrivate.h:77, 90, 106`, `OpenGLViewerI.h:127`, `ViewerGL.h:184`, `ViewerGLPrivate.h:108, 128`); `scaleToTexture{8,32}bitsForPremult` (`:2444-2508, 2800-2882`) become `scaleToTexture{8,32}bits` and choose the alpha-is-one template iff the image has no alpha channel (2 or 3 components) — rename the `opaque` template parameter (`ViewerInstance.cpp:2150, 2380, 2391`) to `noAlphaChannel` so no premult-era vocabulary survives in the viewer; `BlendSetter` (`ViewerGL.cpp:230-250`, `ViewerGLPrivate.cpp:621-640`, uses `:381-460`) always premultiplied blending (`GL_ONE, GL_ONE_MINUS_SRC_ALPHA`) when a checkerboard/wipe blend is needed.
   - verify: Xvfb screenshots of the viewer over the checkerboard for (a) the RGBA fixture, (b) an RGB Constant, before (T1) and after — pixel-diff within 1/255 on both.

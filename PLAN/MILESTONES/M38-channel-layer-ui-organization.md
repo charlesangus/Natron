@@ -61,7 +61,7 @@ become phases here.
 
 ## Phase 38.2: Premult removal (M43)
 
-- [ ] M38.P2.T1 — Extend the Xvfb harness and take the "before" shots
+- [x] M38.P2.T1 — Extend the Xvfb harness and take the "before" shots
   - files: `build/m38scout/gui.py`, `build/m38scout/dump.py`, `build/m38scout/run.sh`
   - approach: `dump.py` covers Roto, RotoPaint, Tracker, Constant, Ramp, ReadOIIO, WriteOIIO, Grade, Premult, Unpremult in addition to the 12 ids at `dump.py:5`; `gui.py` gains `NODE=` cases that connect a Read of `Tests/fixtures/flat-three-layers.exr` (copy it under `build/` first — fixtures must live under `build/`) and a Grade with A checked and R unchecked so the premult warning is visible; screenshots `before-<tag>.png`; `run.sh` keeps the `Xvfb :79 +extension GLX` / `LIBGL_ALWAYS_SOFTWARE=1` recipe (`build/deeprepro/run-gui.sh:5-13`).
   - verify: `build/m38scout/run.sh` produces `before-grade-0.png` showing the warning icon and `dump.txt` sections for every listed id (grep the `##` headers).

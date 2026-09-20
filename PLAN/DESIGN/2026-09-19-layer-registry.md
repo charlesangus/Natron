@@ -91,13 +91,34 @@ Two Color variants never conflict: `isColorLayer()` collapses them (`ImageLayerD
 
 ## 3. Listed vs present
 
-**Every layer dropdown lists the registry** (Nuke-style), in registry order, plus — appended, visually distinct — any layer *present in the source stream but not registered* (a transient state between a render and the next main-thread refresh, or a file layer whose ID fails validation). Data is never hidden. Layers that are registered but not present in the node's source stream are shown greyed with a "(not in input)" suffix and remain selectable.
+**Amended 2026-09-19 after user review — no greyed-out entries.** The listing source is a
+property of the knob's *role*, not a global rule:
+
+- **Input-bound knobs list present layers only**: a processing node's channel set, mask
+  channel selects, the future Merge A/B selects. The list is exactly
+  `getPresentLayers(inputNb)` (produced ∪ pass-through of the source stream); registry
+  layers the stream does not carry are **not shown**, and there is no "New layer…" entry
+  (a node that cannot write into a layer has no business creating one).
+- **Target knobs list the registry**: Roto/RotoPaint's output layer select, generators,
+  the native Shuffle's output, the future Merge output. Registry order, built-ins first,
+  plus "New layer…". A writing node declaring a registry layer in `comps[-1]` **creates it
+  in its output stream** (what `EffectInstanceRenderRoI.cpp:492-499` already does for a
+  produced plane).
+
+A selected layer that later disappears from an input keeps its ID in the knob's value and
+contributes nothing to `resolve()`; the widget marks the *selected value* ("(not in
+input)"), never the list. Which knobs are input-bound and which are targets is fixed per
+knob type in the widget design; the registry does not care.
 
 Two engine queries, both on `EffectInstance`:
-- `getAvailableLayers(time, view, inputNb, out)` keeps its name and becomes **present ∪ registry** for `inputNb == -1` only (as today, with the `getProjectDefaultLayers() ∪ getUserCreatedComponents()` pair at `EffectInstance.cpp:4496-4517` replaced by one registry snapshot) — the existing choice selectors and `kNatronOfxExtraCreatedPlanes` keep working through 38.1.
-- new `getPresentLayers(time, view, inputNb, out)` = produced ∪ pass-through only (`:4466-4493, 4511`). The viewer switches to it (`ViewerTabPrivate.cpp:385`): **the viewer shows what is there.** The widget phase reads both (registry for the list, present for the greying and for `resolve()`).
-
-**Render consequence**, stated for the knob phase to implement: a *processing* node whose channel set names a registry layer its stream does not carry contributes nothing for that row — `resolve()` intersects with `getPresentLayers` and an empty result is identity (`hasAtLeastOneChannelToProcess`, widget doc §4). A *writing* node — Roto/RotoPaint's single-layer select, a generator's layer select, the native Shuffle's output — declares the layer in `comps[-1]` and thereby **creates it in its output stream** (this is exactly what `EffectInstanceRenderRoI.cpp:492-499` does today for a produced plane). Which nodes are writers is a per-knob-type property decided in the widget phase; the registry does not care.
+- `getAvailableLayers(time, view, inputNb, out)` keeps its name and becomes **present ∪
+  registry** for `inputNb == -1` only (the `getProjectDefaultLayers() ∪
+  getUserCreatedComponents()` pair at `EffectInstance.cpp:4496-4517` replaced by one
+  registry snapshot) — the existing choice selectors and `kNatronOfxExtraCreatedPlanes`
+  keep working through 38.1; the widget phase stops using it for input-bound knobs.
+- new `getPresentLayers(time, view, inputNb, out)` = produced ∪ pass-through only
+  (`:4466-4493, 4511`). The viewer switches to it (`ViewerTabPrivate.cpp:385`): **the
+  viewer shows what is there**, and so does every input-bound knob.
 
 ## 4. Relationship to the OFX plane model and the caches
 
@@ -142,7 +163,11 @@ Out of scope for M38 (M60), with one requirement the registry satisfies now: **c
 - **Used-by completeness**: if a reference type is missed (a future knob, a PyPlug alias), removal succeeds and leaves a dangling ID; the failure mode is the §1.2 one (row visible, warned, resolves to nothing), never a crash or a wrong render. `Node::getReferencedLayerIDs()` is the single virtual every new layer knob must feed.
 - **Render-thread reads during load**: the viewer can render while the registry is being restored; `snapshot()` makes that safe by construction, and the restore happens before any node exists anyway.
 
-## 9. Open questions for the user
+## 9. Open questions — answered 2026-09-19
+
+All three answered as recommended: removal refused while referenced plus "Remove unused"; `depth [Z]` pre-registered; Python surface on `App`.
+
+Original questions for the record:
 
 1. **Removal policy** — refuse-while-referenced with "Remove unused" (recommended), or Nuke's never-remove? Recommendation stands: same safety, plus an exit from bloat.
 2. **Pre-register `depth [Z]`?** Recommended yes: ReadOIIO already names lone `Z` that way (`ReadOIIO.cpp:326`), Nuke users expect `depth.Z`, and a ZDefocus-style node wants a target before any Read exists.
@@ -202,7 +227,7 @@ Out of scope for M38 (M60), with one requirement the registry satisfies now: **c
 - 2026-09-19 — **A node that produces a layer registers it, on the main-thread refresh, and the layer stays registered when the file stops carrying it**: one generic rule covers Read, plugins and future native readers; Nuke behaviour on file change; render threads never mutate.
 - 2026-09-19 — **File-origin conflicts union (≤4), user conflicts refuse**: never silently drop a file's channel; never silently rewrite what a user typed.
 - 2026-09-19 — **Removal refused while referenced; "Remove unused" for bloat; built-ins immutable**: Nuke's safety without Nuke's accretion.
-- 2026-09-19 — **Dropdowns list registry ∪ present (present-but-unregistered appended); the viewer lists present only**: a knob targets what the script knows, the viewer shows what is there; `resolve()` distinguishes listed from present.
+- 2026-09-19 — **Input-bound knobs and the viewer list present layers only; target knobs (Roto output, generators, Shuffle output) list the registry and carry "New layer…"** (user decision, replacing the greyed-entries proposal): greyed registry entries in every input list are visual clutter; a layer only needs to be targetable where a node can write into it.
 - 2026-09-19 — **No hash or cache-version change for add/remove; union bumps referencing nodes' knobs age**: `ImageKey` has no plane (`ImageKey.cpp:68-79`), `ImageParams::_components` disambiguates; only a channel-count change can alter pixels.
 - 2026-09-19 — **Python surface lives on `App`** (`addProjectLayer/getProjectLayers/removeProjectLayer`): no `Project` wrapper exists (`PyAppInstance.h:306`); `Effect.addUserLayer` deleted.
 - 2026-09-19 — **Deep shares the registry through `groupChannelNames`**: M60 wires DeepRead; the grouping rule is written once, mirroring ReadOIIO (`:1138-1172`).

@@ -1059,13 +1059,7 @@ Effect::getBitDepth() const
 ImagePremultiplicationEnum
 Effect::getPremult() const
 {
-    NodePtr node = getInternalNode();
-
-    if (!node) {
-        return eImagePremultiplicationPremultiplied;
-    }
-
-    return node->getEffectInstance()->getPremult();
+    return eImagePremultiplicationUnPremultiplied;
 }
 
 void

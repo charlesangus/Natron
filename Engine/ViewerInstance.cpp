@@ -911,8 +911,9 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
     // Used to differentiate the 2 different textures when wipe is enabled
     outArgs->params->setUniqueID(textureIndex);
 
-    // Used to determine how the viewer should handle alpha
-    outArgs->params->srcPremult = outArgs->activeInputToRender->getPremult();
+    // The host does not track premultiplication: the viewer composites every image as
+    // premultiplied over the checkerboard.
+    outArgs->params->srcPremult = eImagePremultiplicationPremultiplied;
 
     // The user requested bitdepth of the textures
     outArgs->params->depth = _imp->uiContext->getBitDepth();

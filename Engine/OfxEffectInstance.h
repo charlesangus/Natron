@@ -121,8 +121,6 @@ public:
     bool isCreated() const;
     bool isInitialized() const;
 
-    const std::string & ofxGetOutputPremultiplication() const;
-
     /**
      * @brief Calls syncPrivateDataAction from another thread than the main thread. The actual
      * call of the action will take place in the main-thread.

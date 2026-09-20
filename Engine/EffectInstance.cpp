@@ -5333,8 +5333,6 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
 
     double inputPar = 1.;
     bool inputParSet = false;
-    ImagePremultiplicationEnum premult = eImagePremultiplicationOpaque;
-    bool premultSet = false;
     for (int i = 0; i < nInputs; ++i) {
         const EffectInstancePtr& input = inputs[i];
         if (input) {
@@ -5351,19 +5349,6 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
 
         int rawComp = getUnmappedComponentsForInput(this, i, inputs, firstNonOptionalConnectedInputComps);
         ImageBitDepthEnum rawDepth = input ? input->getBitDepth(-1) : eImageBitDepthFloat;
-        ImagePremultiplicationEnum rawPreMult = input ? input->getPremult() : eImagePremultiplicationPremultiplied;
-
-        // Note: first chromatic input gives the default output premult too, even if not connected
-        // (else the output of generators may be opaque even if the host default is premultiplied)
-        if ( ( rawComp == 4 ) && (input || !premultSet) ) {
-            if (rawPreMult == eImagePremultiplicationPremultiplied) {
-                premult = eImagePremultiplicationPremultiplied;
-                premultSet = true;
-            } else if ( (rawPreMult == eImagePremultiplicationUnPremultiplied) && ( !premultSet || (premult != eImagePremultiplicationPremultiplied) ) ) {
-                premult = eImagePremultiplicationUnPremultiplied;
-                premultSet = true;
-            }
-        }
 
         if (input) {
             //Update deepest bitdepth and most components only if the infos are relevant, i.e: only if the clip is connected
@@ -5451,13 +5436,6 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
             remappedComps = findClosestSupportedComponents(i, ImageLayerDesc::mapNCompsToColorLayer(remappedComps)).getNumComponents();
             metadata.setNComps(i, remappedComps);
             metadata.setComponentsType(i, kNatronColorLayerID);
-            if ( (i == -1) && !premultSet &&
-                ( ( remappedComps == 4 ) || ( remappedComps == 1 ) ) ) {
-                premult = eImagePremultiplicationPremultiplied;
-                premultSet = true;
-            }
-
-
             metadata.setBitDepth(i, depth);
         } else {
 
@@ -5471,13 +5449,6 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
             metadata.setComponentsType(i, kNatronColorLayerID);
         }
     }
-    
-    // default to a reasonable value if there is no input
-    if (!premultSet) {
-        premult = eImagePremultiplicationOpaque;
-    }
-    // set output premultiplication
-    metadata.setOutputPremult(premult);
 
     RectI outputFormat;
 
@@ -5554,14 +5525,6 @@ EffectInstance::getAspectRatio(int inputNb) const
     QMutexLocker k(&_imp->metadataMutex);
 
     return _imp->metadata.getPixelAspectRatio(inputNb);
-}
-
-ImagePremultiplicationEnum
-EffectInstance::getPremult() const
-{
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return _imp->metadata.getOutputPremult();
 }
 
 bool
@@ -5672,8 +5635,6 @@ EffectInstance::refreshMetadata_internal()
         _imp->actionsCache->clearComponentsNeededResults();
 
         NodePtr node = getNode();
-        node->checkForPremultWarningAndCheckboxes();
-
         ImageLayerDesc layer, pairedLayer;
         getMetadataComponents(-1, &layer, &pairedLayer);
         node->refreshEnabledKnobsLabel(layer);
@@ -5729,27 +5690,8 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
     for (int i = -1; i < nInputs; ++i) {
         md.setBitDepth( i, node->getClosestSupportedBitDepth( md.getBitDepth(i) ) );
         int nComps = md.getNComps(i);
-        bool isAlpha = false;
-        bool isRGB = false;
-        if (i == -1) {
-            if ( nComps == 3) {
-                isRGB = true;
-            } else if (nComps == 1) {
-                isAlpha = true;
-            }
-        }
-
         if (md.getComponentsType(i) == kNatronColorLayerID) {
             md.setNComps(i, node->findClosestSupportedComponents(i, ImageLayerDesc::mapNCompsToColorLayer(nComps)).getNumComponents());
-        }
-
-        if (i == -1) {
-            //Force opaque for RGB and premult for alpha
-            if (isRGB) {
-                md.setOutputPremult(eImagePremultiplicationOpaque);
-            } else if (isAlpha) {
-                md.setOutputPremult(eImagePremultiplicationPremultiplied);
-            }
         }
     }
 

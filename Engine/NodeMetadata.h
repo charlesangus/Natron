@@ -58,10 +58,6 @@ public:
         return !(*this == other);
     }
 
-    void setOutputPremult(ImagePremultiplicationEnum premult);
-
-    ImagePremultiplicationEnum getOutputPremult() const;
-
     void setOutputFrameRate(double fps);
 
     double getOutputFrameRate() const;

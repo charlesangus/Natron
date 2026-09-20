@@ -2086,22 +2086,6 @@ Node::makeInfoForInput(int inputNumber) const
         }
         ss << "<b>" << tr("BitDepth:").toStdString() << "</b> <font color=#c8c8c8>" << depthStr.toStdString() << "</font><br />";
     }
-    { // premult
-        ImagePremultiplicationEnum premult = input->getPremult();
-        QString premultStr = tr("unknown");
-        switch (premult) {
-        case eImagePremultiplicationOpaque:
-            premultStr = tr("opaque");
-            break;
-        case eImagePremultiplicationPremultiplied:
-            premultStr = tr("premultiplied");
-            break;
-        case eImagePremultiplicationUnPremultiplied:
-            premultStr = tr("unpremultiplied");
-            break;
-        }
-        ss << "<b>" << tr("Alpha premultiplication:").toStdString() << "</b> <font color=#c8c8c8>" << premultStr.toStdString() << "</font><br />";
-    }
     {
         RectI format = input->getOutputFormat();
         if ( !format.isNull() ) {
@@ -7651,69 +7635,11 @@ Node::getProcessAllLayersKnob() const
 void
 Node::checkForPremultWarningAndCheckboxes()
 {
-    if ( isOutputNode() ) {
-        return;
-    }
-    KnobBoolPtr chans[4];
     KnobStringPtr premultWarn = _imp->premultWarning.lock();
-    if (!premultWarn) {
-        return;
-    }
-    NodePtr prefInput = getPreferredInputNode();
-
-    //Do not display a warning for Roto paint
-    if ( !prefInput || _imp->effect->isRotoPaintNode() ) {
-        //No input, do not warn
+    if (premultWarn) {
         premultWarn->setSecret(true);
-
-        return;
     }
-    for (int i = 0; i < 4; ++i) {
-        chans[i] = _imp->enabledChan[i].lock();
-
-        //No checkboxes
-        if (!chans[i]) {
-            premultWarn->setSecret(true);
-
-            return;
-        }
-
-        //not RGBA
-        if ( chans[i]->getIsSecret() ) {
-            return;
-        }
-    }
-
-    ImagePremultiplicationEnum premult = _imp->effect->getPremult();
-
-    //not premult
-    if (premult != eImagePremultiplicationPremultiplied) {
-        premultWarn->setSecret(true);
-
-        return;
-    }
-
-    bool checked[4];
-    checked[3] = chans[3]->getValue();
-
-    //alpha unchecked
-    if (!checked[3]) {
-        premultWarn->setSecret(true);
-
-        return;
-    }
-    for (int i = 0; i < 3; ++i) {
-        checked[i] = chans[i]->getValue();
-        if (!checked[i]) {
-            premultWarn->setSecret(false);
-
-            return;
-        }
-    }
-
-    //RGB checked
-    premultWarn->setSecret(true);
-} // Node::checkForPremultWarningAndCheckboxes
+}
 
 int
 Node::getMaskChannel(int inputNb, const std::list<ImageLayerDesc>& availableLayers, ImageLayerDesc* comps) const

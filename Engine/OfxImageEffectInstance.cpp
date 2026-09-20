@@ -1158,7 +1158,7 @@ OfxImageEffectInstance::setupClipPreferencesArgsFromMetadata(NodeMetadata& metad
     //forbidden by the host.
     double outputFrameRate = metadata.getOutputFrameRate();
     outArgs.setDoubleProperty(kOfxImageEffectPropFrameRate, outputFrameRate);
-    outArgs.setStringProperty( kOfxImageEffectPropPreMultiplication, OfxClipInstance::natronsPremultToOfxPremult( metadata.getOutputPremult() ) );
+    outArgs.setStringProperty(kOfxImageEffectPropPreMultiplication, kOfxImageUnPreMultiplied);
     outArgs.setStringProperty( kOfxImageClipPropFieldOrder, OfxClipInstance::natronsFieldingToOfxFielding( metadata.getOutputFielding() ) );
     outArgs.setIntProperty( kOfxImageClipPropContinuousSamples, metadata.getIsContinuous() );
     outArgs.setIntProperty( kOfxImageEffectFrameVarying, metadata.getIsFrameVarying() );
@@ -1300,8 +1300,7 @@ OfxImageEffectInstance::getClipPreferences_safe(NodeMetadata& defaultPrefs)
 
 
         defaultPrefs.setOutputFrameRate( outArgs.getDoubleProperty(kOfxImageEffectPropFrameRate) );
-        defaultPrefs.setOutputFielding( OfxClipInstance::ofxFieldingToNatronFielding( outArgs.getStringProperty(kOfxImageClipPropFieldOrder) ) );
-        defaultPrefs.setOutputPremult( OfxClipInstance::ofxPremultToNatronPremult( outArgs.getStringProperty(kOfxImageEffectPropPreMultiplication) ) );
+        defaultPrefs.setOutputFielding(OfxClipInstance::ofxFieldingToNatronFielding(outArgs.getStringProperty(kOfxImageClipPropFieldOrder)));
         defaultPrefs.setIsContinuous(outArgs.getIntProperty(kOfxImageClipPropContinuousSamples) != 0);
         defaultPrefs.setIsFrameVarying(outArgs.getIntProperty(kOfxImageEffectFrameVarying) != 0);
         int formatV[4];
@@ -1316,7 +1315,6 @@ OfxImageEffectInstance::getClipPreferences_safe(NodeMetadata& defaultPrefs)
 #       ifdef OFX_DEBUG_ACTIONS
         std::cout << outArgs.getDoubleProperty(kOfxImageEffectPropFrameRate) << ","
                   << outArgs.getStringProperty(kOfxImageClipPropFieldOrder) << ","
-                  << outArgs.getStringProperty(kOfxImageEffectPropPreMultiplication) << ","
                   << outArgs.getIntProperty(kOfxImageClipPropContinuousSamples) << ","
                   << outArgs.getIntProperty(kOfxImageEffectFrameVarying) << std::endl;
 #       endif
@@ -1328,7 +1326,6 @@ OfxImageEffectInstance::getClipPreferences_safe(NodeMetadata& defaultPrefs)
 bool
 OfxImageEffectInstance::updatePreferences_safe(double frameRate,
                                                const std::string& fielding,
-                                               const std::string& premult,
                                                bool continuous,
                                                bool frameVarying)
 {
@@ -1340,10 +1337,6 @@ OfxImageEffectInstance::updatePreferences_safe(double frameRate,
     }
     if (_outputFielding != fielding) {
         _outputFielding = fielding;
-        changed = true;
-    }
-    if (_outputPreMultiplication != premult) {
-        _outputPreMultiplication = premult;
         changed = true;
     }
     if (_continuousSamples != continuous) {

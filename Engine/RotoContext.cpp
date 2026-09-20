@@ -2544,7 +2544,7 @@ RotoStrokeItem::renderSingleStroke(const RectD& pointsBbox,
 
     NodePtr node = getContext()->getNode();
     ImageFieldingOrderEnum fielding = node->getEffectInstance()->getFieldingOrder();
-    ImagePremultiplicationEnum premult = node->getEffectInstance()->getPremult();
+    ImagePremultiplicationEnum premult = eImagePremultiplicationPremultiplied;
     bool copyFromImage = false;
     bool mipmapLevelChanged = false;
     if (!source) {
@@ -2809,15 +2809,15 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
 
     const RectI pixelRod = rotoBbox.toPixelEnclosing(mipmapLevel, 1.);
 
-    ImageParamsPtr params = Image::makeParams( rotoBbox,
-                                                               pixelRod,
-                                                               1., // par
-                                                               mipmapLevel,
-                                                               false,
-                                                               components,
-                                                               depth,
-                                                               node->getEffectInstance()->getPremult(),
-                                                               node->getEffectInstance()->getFieldingOrder() );
+    ImageParamsPtr params = Image::makeParams(rotoBbox,
+                                              pixelRod,
+                                              1., // par
+                                              mipmapLevel,
+                                              false,
+                                              components,
+                                              depth,
+                                              eImagePremultiplicationPremultiplied,
+                                              node->getEffectInstance()->getFieldingOrder());
     /*
        At this point we take the cacheAccessMutex so that no other thread can retrieve this image from the cache while it has not been
        finished rendering. You might wonder why we do this differently here than in EffectInstance::renderRoI, this is because we do not use

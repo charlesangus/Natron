@@ -1336,11 +1336,10 @@ OfxEffectInstance::onMetadataRefreshed(const NodeMetadata& metadata)
             clip->setAspectRatio( metadata.getPixelAspectRatio(inputNb) );
         }
 
-        effectInstance()->updatePreferences_safe( metadata.getOutputFrameRate(),
-                                                  OfxClipInstance::natronsFieldingToOfxFielding( metadata.getOutputFielding() ),
-                                                  OfxClipInstance::natronsPremultToOfxPremult( metadata.getOutputPremult() ),
-                                                  metadata.getIsContinuous(),
-                                                  metadata.getIsFrameVarying() );
+        effectInstance()->updatePreferences_safe(metadata.getOutputFrameRate(),
+                                                 OfxClipInstance::natronsFieldingToOfxFielding(metadata.getOutputFielding()),
+                                                 metadata.getIsContinuous(),
+                                                 metadata.getIsFrameVarying());
     }
 
 #ifdef OFX_SUPPORTS_METADATA
@@ -2979,12 +2978,6 @@ SequentialPreferenceEnum
 OfxEffectInstance::getSequentialPreference() const
 {
     return _imp->sequentialPref;
-}
-
-const std::string &
-OfxEffectInstance::ofxGetOutputPremultiplication() const
-{
-    return OfxClipInstance::natronsPremultToOfxPremult( getPremult() );
 }
 
 bool

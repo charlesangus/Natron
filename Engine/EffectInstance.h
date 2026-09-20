@@ -947,11 +947,6 @@ public:
     double getFrameRate() const;
 
     /**
-     * @brief Returns the preferred premultiplication flag for the output image
-     **/
-    ImagePremultiplicationEnum getPremult() const;
-
-    /**
      * @brief If true, the plug-in knows how to render frames at non integer times. If false
      * this is the hint indicating that the plug-ins can only render integer frame times (such as a Reader)
      **/

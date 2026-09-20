@@ -267,26 +267,15 @@ OfxClipInstance::getUnmappedComponents() const
     return tls->unmappedComponents;
 }
 
-// PreMultiplication -
-//
-//  kOfxImageOpaque - the image is opaque and so has no premultiplication state
-//  kOfxImagePreMultiplied - the image is premultiplied by it's alpha
-//  kOfxImageUnPreMultiplied - the image is unpremultiplied
+// The host does not track premultiplication. Unpremultiplied is the one answer that
+// triggers nothing in plugins: the Grade family only auto-enables its premult box on
+// kOfxImagePreMultiplied, and kOfxImageOpaque makes Premult treat alpha as 1.
 const std::string &
 OfxClipInstance::getPremult() const
 {
-    EffectInstancePtr effect = getEffectHolder();
+    static const std::string unprem(kOfxImageUnPreMultiplied);
 
-    if (!effect) {
-        return natronsPremultToOfxPremult(eImagePremultiplicationPremultiplied);
-    }
-    if ( isOutput() ) {
-        return natronsPremultToOfxPremult( effect->getPremult() );
-    } else {
-        EffectInstancePtr associatedNode = getAssociatedNode();
-
-        return associatedNode ? natronsPremultToOfxPremult( associatedNode->getPremult() ) : natronsPremultToOfxPremult(eImagePremultiplicationPremultiplied);
-    }
+    return unprem;
 }
 
 const std::vector<std::string>&
@@ -1252,44 +1241,6 @@ OfxClipInstance::natronsDepthToOfxDepth(ImageBitDepthEnum depth)
     return none;
 }
 
-ImagePremultiplicationEnum
-OfxClipInstance::ofxPremultToNatronPremult(const std::string& str)
-{
-    if (str == kOfxImagePreMultiplied) {
-        return eImagePremultiplicationPremultiplied;
-    } else if (str == kOfxImageUnPreMultiplied) {
-        return eImagePremultiplicationUnPremultiplied;
-    } else if (str == kOfxImageOpaque) {
-        return eImagePremultiplicationOpaque;
-    } else {
-        assert(false);
-
-        return eImagePremultiplicationPremultiplied;
-    }
-}
-
-const std::string&
-OfxClipInstance::natronsPremultToOfxPremult(ImagePremultiplicationEnum premult)
-{
-    static const std::string prem(kOfxImagePreMultiplied);
-    static const std::string unprem(kOfxImageUnPreMultiplied);
-    static const std::string opq(kOfxImageOpaque);
-
-    switch (premult) {
-    case eImagePremultiplicationPremultiplied:
-
-        return prem;
-    case eImagePremultiplicationUnPremultiplied:
-
-        return unprem;
-    case eImagePremultiplicationOpaque:
-
-        return opq;
-    }
-
-    return prem;
-}
-
 ImageFieldingOrderEnum
 OfxClipInstance::ofxFieldingToNatronFielding(const std::string& fielding)
 {
@@ -1487,7 +1438,7 @@ OfxImageCommon::OfxImageCommon(OFX::Host::ImageEffect::ImageBase* ofxImageBase,
 
     ofxImageBase->setStringProperty( kOfxImageEffectPropComponents, components);
     ofxImageBase->setStringProperty( kOfxImageEffectPropPixelDepth, OfxClipInstance::natronsDepthToOfxDepth( internalImage->getBitDepth() ) );
-    ofxImageBase->setStringProperty( kOfxImageEffectPropPreMultiplication, OfxClipInstance::natronsPremultToOfxPremult( internalImage->getPremultiplication() ) );
+    ofxImageBase->setStringProperty(kOfxImageEffectPropPreMultiplication, kOfxImageUnPreMultiplied);
     ofxImageBase->setStringProperty( kOfxImagePropField, OfxClipInstance::natronsFieldingToOfxFielding( internalImage->getFieldingOrder() ) );
     ofxImageBase->setStringProperty( kOfxImagePropUniqueIdentifier, QString::number(internalImage->getHashKey(), 16).toStdString() );
     ofxImageBase->setDoubleProperty( kOfxImagePropPixelAspectRatio, par );

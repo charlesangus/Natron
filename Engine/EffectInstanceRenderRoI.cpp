@@ -1501,7 +1501,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         ///For eRenderSafetyFullySafe, don't take any lock, the image already has a lock on itself so we're sure it can't be written to by 2 different threads.
 
         if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-            frameArgs->stats->setGlobalRenderInfosForNode(getNode(), rod, getPremult(), processChannels, frameArgs->tilesSupported, !renderFullScaleThenDownscale, renderMappedMipmapLevel);
+            frameArgs->stats->setGlobalRenderInfosForNode(getNode(), rod, eImagePremultiplicationUnPremultiplied, processChannels, frameArgs->tilesSupported, !renderFullScaleThenDownscale, renderMappedMipmapLevel);
         }
 
 # ifdef DEBUG

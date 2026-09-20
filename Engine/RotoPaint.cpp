@@ -1351,25 +1351,6 @@ RotoPaint::getPreferredMetadata(NodeMetadata& metadata)
 {
     metadata.setNComps( -1, 4 );
     metadata.setComponentsType(-1, kNatronColorLayerID);
-    /*KnobBoolPtr premultKnob = _imp->premultKnob.lock();
-       assert(premultKnob);
-       bool premultiply = premultKnob->getValue();
-       if (premultiply) {
-        metadata.setOutputPremult(eImagePremultiplicationPremultiplied);
-       } else {
-        ImagePremultiplicationEnum srcPremult = eImagePremultiplicationOpaque;
-        EffectInstancePtr input = getInput(0);
-        if (input) {
-            srcPremult = input->getPremult();
-        }
-        bool processA = getNode()->getProcessChannel(3);
-        if ( (srcPremult == eImagePremultiplicationOpaque) && processA ) {
-            metadata.setOutputPremult(eImagePremultiplicationUnPremultiplied);
-        } else {
-            metadata.setOutputPremult(eImagePremultiplicationPremultiplied);
-        }
-       }*/
-    metadata.setOutputPremult(eImagePremultiplicationPremultiplied);
 
     return eStatusOK;
 }
@@ -1561,7 +1542,7 @@ RotoPaint::render(const RenderActionArgs& args)
 
         RectI bgImgRoI;
         ImagePtr bgImg;
-        ImagePremultiplicationEnum outputPremult = getPremult();
+        ImagePremultiplicationEnum outputPremult = eImagePremultiplicationPremultiplied;
         bool triedGetImage = false;
 
         for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator layer = args.outputLayers.begin();

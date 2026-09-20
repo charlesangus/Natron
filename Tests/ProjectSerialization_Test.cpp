@@ -244,3 +244,27 @@ TEST_F(BaseTest, RemoveLayerRefusesBuiltinsAllowsUnused)
 
     project->reset(false, true);
 }
+
+TEST_F(BaseTest, SavedProjectContainsNoUserComponents)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    NodePtr generator = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(generator));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("no-usercomponents.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    ASSERT_TRUE(QFile::exists(savedFilePath));
+
+    QFile f(savedFilePath);
+    ASSERT_TRUE(f.open(QIODevice::ReadOnly | QIODevice::Text));
+    const QString contents = QString::fromUtf8(f.readAll());
+    f.close();
+    EXPECT_FALSE(contents.contains(QString::fromUtf8("UserComponents")))
+        << "Saved project should not contain UserComponents element";
+}

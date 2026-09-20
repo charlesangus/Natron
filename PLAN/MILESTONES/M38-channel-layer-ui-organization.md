@@ -117,7 +117,7 @@ become phases here.
   - verify: gtest: a `KnobLayers` round trip encodes `<Name>`/`<Channels>` regardless of `QLocale`; `setExpression` on a table knob throws `std::invalid_argument`; `createDuplicateOnHolder` of a `KnobLayers` returns non-null with the same `typeName()`.
   - size: S
 
-- [ ] M38.P3.T2 — `KnobChannelSet` with `resolve()` and summary
+- [x] M38.P3.T2 — `KnobChannelSet` with `resolve()` and summary
   - files: `Engine/KnobChannelSet.h`, `Engine/KnobChannelSet.cpp`, `Engine/CMakeLists.txt`, `Tests/KnobChannelSet_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: §1.1 exactly: rows/codec on `KnobTable` with tags `Mode/Layer/Channels`, the row-0-only `none/all` invariant enforced in the setters, per-row compiled `QRegularExpression` cache swapped under a `QMutex` on value change, pure `resolve(present)`, `getSummary()`, `getReferencedLayerIDs()` (feeds the registry's used-by).
   - verify: `ctest -R KnobChannelSet`, EXPECT_* on: default Color row; `none`→empty; `all`→every present layer/all bits; layer row absent→nothing; enabled names ∩ actual channels; `depth[Z]`→bit 3; regex `spec.*` anchored (`specular` yes, `xspecular` no, `Specular` no); invalid regex→nothing; duplicate IDs OR-ed; Color first; codec round trip with a pattern containing `<`, `&` and a space; `setNone` on row 1 throws.

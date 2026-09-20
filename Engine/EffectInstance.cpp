@@ -203,10 +203,6 @@ EffectInstance::getUserLayers() const
 
     std::list<ImageLayerDesc> projectLayers = getRegisteredProjectLayersList(getApp()->getProject());
 
-    std::list<ImageLayerDesc> userCreatedLayers;
-    getNode()->getUserCreatedComponents(&userCreatedLayers);
-    mergeLayersList(userCreatedLayers, &projectLayers);
-
     for (std::list<ImageLayerDesc>::iterator it = projectLayers.begin(); it != projectLayers.end(); ++it) {
         tls->userLayerStrings.push_back(ImageLayerDesc::mapLayerToOFXPlaneString(*it));
     }
@@ -4305,12 +4301,6 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
                 mergeLayersList(projectLayers, &availableLayersInOutput);
             }
 
-            {
-                std::list<ImageLayerDesc> userCreatedLayers;
-                getNode()->getUserCreatedComponents(&userCreatedLayers);
-                mergeLayersList(userCreatedLayers, &availableLayersInOutput);
-            }
-
             gotUserSelectedLayer = getNode()->getSelectedLayer(-1, availableLayersInOutput, processChannels, processAllRequested, &layer);
         }
 
@@ -4466,7 +4456,7 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
 } // EffectInstance::getComponentsNeededAndProduced_public
 
 void
-EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* availableLayers)
+EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* presentLayers)
 {
 
     EffectInstancePtr effect;
@@ -4486,7 +4476,7 @@ EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::
         EffectInstance::ComponentsNeededMap comps;
         double passThroughTime = 0.;
         int passThroughView = 0;
-        int passThroughInputNb = -1; // prevent infinite recursion, because getComponentsNeededAndProduced_public() may call getAvailableLayers()
+        int passThroughInputNb = -1; // prevent infinite recursion, because getComponentsNeededAndProduced_public() may call getPresentLayers()
         std::bitset<4> processChannels;
         bool processAll = false;
         effect->getComponentsNeededAndProduced_public(getRenderHash(), time, view, &comps, &passThroughLayers, &processAll, &passThroughTime, &passThroughView, &processChannels, &passThroughInputNb);
@@ -4498,22 +4488,38 @@ EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::
     }
 
     // Ensure the color layer is always the first one available in the list
-    bool hasColorLayer = false;
     for (std::list<ImageLayerDesc>::iterator it = passThroughLayers.begin(); it != passThroughLayers.end(); ++it) {
         if (it->isColorLayer()) {
-            hasColorLayer = true;
-            availableLayers->push_front(*it);
+            presentLayers->push_front(*it);
             passThroughLayers.erase(it);
             break;
         }
     }
 
-    // In output, also make available the default project layers and the user created components
+    mergeLayersList(passThroughLayers, presentLayers);
+
+} // getPresentLayers
+
+void
+EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* availableLayers)
+{
+    getPresentLayers(time, view, inputNb, availableLayers);
+
+    // In output, also make available every layer registered at the project level, whether or not
+    // this stream currently carries it (a target knob may create it on write).
     if (inputNb == -1) {
+
+        bool hasColorLayer = false;
+        for (std::list<ImageLayerDesc>::const_iterator it = availableLayers->begin(); it != availableLayers->end(); ++it) {
+            if (it->isColorLayer()) {
+                hasColorLayer = true;
+                break;
+            }
+        }
 
         std::list<ImageLayerDesc> projectLayers = getRegisteredProjectLayersList(getApp()->getProject());
         if (hasColorLayer) {
-            // Don't add the color layer from the default alyers if already present
+            // Don't add the color layer from the registry if already present
             for (std::list<ImageLayerDesc>::iterator it = projectLayers.begin(); it != projectLayers.end(); ++it) {
                 if (it->isColorLayer()) {
                     projectLayers.erase(it);
@@ -4524,14 +4530,6 @@ EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::
         mergeLayersList(projectLayers, availableLayers);
     }
 
-    mergeLayersList(passThroughLayers, availableLayers);
-
-     {
-         std::list<ImageLayerDesc> userCreatedLayers;
-         getNode()->getUserCreatedComponents(&userCreatedLayers);
-         mergeLayersList(userCreatedLayers, availableLayers);
-    }
-    
 } // getAvailableLayers
 
 bool

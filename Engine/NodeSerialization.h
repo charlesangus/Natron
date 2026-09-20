@@ -233,11 +233,6 @@ public:
         return _children;
     }
 
-    const std::list<ImageLayerDesc>& getUserCreatedComponents() const
-    {
-        return _userComponents;
-    }
-
 private:
 
     bool _isNull;

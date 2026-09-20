@@ -1327,10 +1327,6 @@ public:
 
     bool getSelectedLayer(int inputNb, const std::list<ImageLayerDesc>& availableLayers, std::bitset<4>* processChannels, bool* isAll, ImageLayerDesc* layer) const;
 
-    bool addUserComponents(const ImageLayerDesc& comps);
-
-    void getUserCreatedComponents(std::list<ImageLayerDesc>* comps);
-
     bool hasAtLeastOneChannelToProcess() const;
 
     void removeParameterFromPython(const std::string& parameterName);

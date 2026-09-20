@@ -2729,22 +2729,6 @@ exportGroupInternal(int indentLevel,
         // a precision of 3 digits is enough for the node color
         WRITE_INDENT(indentLevel); WRITE_STRING( QString::fromUtf8("lastNode.setColor(") + NUM_COLOR(r) + QString::fromUtf8(", ") + NUM_COLOR(g) + QString::fromUtf8(", ") + NUM_COLOR(b) +  QString::fromUtf8(")") );
 
-        std::list<ImageLayerDesc> userComps;
-        (*it)->getUserCreatedComponents(&userComps);
-        for (std::list<ImageLayerDesc>::iterator it2 = userComps.begin(); it2 != userComps.end(); ++it2) {
-            const std::vector<std::string>& channels = it2->getChannels();
-            QString compStr = QString::fromUtf8("[");
-            for (std::size_t i = 0; i < channels.size(); ++i) {
-                compStr.append( ESC(channels[i]) );
-                if ( i < (channels.size() - 1) ) {
-                    compStr.push_back( QLatin1Char(',') );
-                }
-            }
-            compStr.push_back( QLatin1Char(']') );
-            WRITE_INDENT(indentLevel);
-            WRITE_STRING(QString::fromUtf8("lastNode.addUserLayer(") + ESC(it2->getLayerLabel()) + QString::fromUtf8(", ") + compStr + QString::fromUtf8(")"));
-        }
-
         QString nodeNameInScript = groupName + QString::fromUtf8( (*it)->getScriptName_mt_safe().c_str() );
         WRITE_INDENT(indentLevel); WRITE_STRING( nodeNameInScript + QString::fromUtf8(" = lastNode") );
         WRITE_STATIC_LINE("");

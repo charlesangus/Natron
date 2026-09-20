@@ -28,16 +28,17 @@
 #include <cassert>
 #include <stdexcept>
 
-#include "Engine/Node.h"
-#include "Engine/KnobTypes.h"
-#include "Engine/KnobFile.h"
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Hash64.h"
+#include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Project.h"
 #include "Engine/PyRoto.h"
 #include "Engine/PyTracker.h"
 #include "Engine/TimeLine.h"
-#include "Engine/Hash64.h"
 
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
@@ -1005,7 +1006,9 @@ Effect::addUserLayer(const QString& layerName,
     }
     ImageLayerDesc comp(layerName.toStdString(), layerName.toStdString(), compsGlobal, chans);
 
-    return getInternalNode()->addUserComponents(comp);
+    std::string error;
+    LayerRegistry::AddResultEnum res = getInternalNode()->getApp()->getProject()->addLayer(comp, LayerRegistryEntry::eOriginUser, &error);
+    return res != LayerRegistry::eAddResultRefused;
 }
 
 std::list<ImageLayer>

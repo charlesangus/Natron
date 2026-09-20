@@ -1477,12 +1477,6 @@ Node::loadKnobs(const NodeSerialization & serialization,
         return;
     }
 
-
-    {
-        QMutexLocker k(&_imp->createdComponentsMutex);
-        _imp->createdComponents = serialization.getUserCreatedComponents();
-    }
-
     const std::vector<KnobIPtr> & nodeKnobs = getKnobs();
     ///for all knobs of the node
     for (U32 j = 0; j < nodeKnobs.size(); ++j) {
@@ -7741,58 +7735,6 @@ Node::refreshChannelSelectors()
 
     return hasChanged;
 } // Node::refreshChannelSelectors()
-
-bool
-Node::addUserComponents(const ImageLayerDesc& comps)
-{
-    /// The node has node channel selector, don't allow adding a custom layer.
-    KnobIPtr outputLayerKnob = getKnobByName(kNatronOfxParamOutputChannels);
-
-    if (_imp->channelsSelectors.empty() && !outputLayerKnob) {
-        return false;
-    }
-
-    if (!outputLayerKnob) {
-        //The effect does not have kNatronOfxParamOutputChannels but maybe the selector provided by Natron
-        std::map<int, ChannelSelector>::iterator found = _imp->channelsSelectors.find(-1);
-        if ( found == _imp->channelsSelectors.end() ) {
-            return false;
-        }
-        outputLayerKnob = found->second.layer.lock();
-    }
-
-    {
-        QMutexLocker k(&_imp->createdComponentsMutex);
-        for (std::list<ImageLayerDesc>::iterator it = _imp->createdComponents.begin(); it != _imp->createdComponents.end(); ++it) {
-            if (it->getLayerID() == comps.getLayerID()) {
-                return false;
-            }
-        }
-
-        _imp->createdComponents.push_back(comps);
-    }
-    if (!_imp->isRefreshingInputRelatedData) {
-        ///Clip preferences have changed
-        getEffectInstance()->refreshMetadata_public(true);
-    }
-    {
-        ///Set the selector to the new channel
-        KnobChoice* layerChoice = dynamic_cast<KnobChoice*>( outputLayerKnob.get() );
-        if (layerChoice) {
-            layerChoice->setValueFromID(comps.getLayerID(), 0);
-        }
-    }
-
-    return true;
-}
-
-void
-Node::getUserCreatedComponents(std::list<ImageLayerDesc>* comps)
-{
-    QMutexLocker k(&_imp->createdComponentsMutex);
-
-    *comps = _imp->createdComponents;
-}
 
 double
 Node::getHostMixingValue(double time,

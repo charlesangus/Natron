@@ -1990,6 +1990,10 @@ public:
                                                std::bitset<4>* processChannels,
                                                int* passThroughInput);
 
+    // Produced union pass-through layers only: what the stream actually carries.
+    void getPresentLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* presentLayers);
+
+    // getPresentLayers() plus, for inputNb == -1 only, every layer registered at the project level.
     void getAvailableLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* availableLayers);
 
     const std::vector<std::string>& getUserLayers() const;

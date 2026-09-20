@@ -64,6 +64,16 @@ channelSet(const FlatExrImage& image)
     return std::set<std::string>(image.channels.begin(), image.channels.end());
 }
 
+std::set<std::string>
+layerIDSet(const std::list<ImageLayerDesc>& layers)
+{
+    std::set<std::string> ret;
+    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        ret.insert(it->getLayerID());
+    }
+    return ret;
+}
+
 void
 expectRgbaOnly(const FlatExrImage& image)
 {
@@ -246,3 +256,55 @@ TEST_F(BaseTest, WriteAllLayersCheckedBeforeFirstRenderWritesEveryLayer)
 
     QFile::remove(QString::fromStdString(path));
 } // TEST_F(BaseTest, WriteAllLayersCheckedBeforeFirstRenderWritesEveryLayer)
+
+// getPresentLayers() reports only what the stream actually carries (produced union pass-through);
+// getAvailableLayers() adds every layer registered at the project level (built-ins included) on
+// top of that, on the output (inputNb == -1) query only.
+TEST_F(BaseTest, PresentLayersAreStreamOnlyAvailableLayersIncludeRegistry)
+{
+    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+    NodePtr reader = getApp()->createNode(readerArgs);
+    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+    EffectInstancePtr readerEffect = reader->getEffectInstance();
+    ASSERT_TRUE(bool(readerEffect));
+
+    static const std::set<std::string> expectedPresent = { kNatronColorLayerID, "diffuse", "specular" };
+
+    {
+        std::list<ImageLayerDesc> present;
+        readerEffect->getPresentLayers(0, ViewIdx(0), -1, &present);
+        EXPECT_EQ(expectedPresent, layerIDSet(present));
+    }
+
+    {
+        std::list<ImageLayerDesc> available;
+        readerEffect->getAvailableLayers(0, ViewIdx(0), -1, &available);
+        std::set<std::string> availableIDs = layerIDSet(available);
+        EXPECT_EQ(std::size_t(1), availableIDs.count(ImageLayerDesc::getBackwardMotionComponents().getLayerID()));
+        EXPECT_EQ(std::size_t(1), availableIDs.count(ImageLayerDesc::getForwardMotionComponents().getLayerID()));
+        EXPECT_EQ(std::size_t(1), availableIDs.count(ImageLayerDesc::getDisparityLeftComponents().getLayerID()));
+        EXPECT_EQ(std::size_t(1), availableIDs.count(ImageLayerDesc::getDisparityRightComponents().getLayerID()));
+        EXPECT_EQ(std::size_t(1), availableIDs.count(std::string("depth")));
+    }
+
+    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    ASSERT_TRUE(bool(blur));
+
+    connectNodes(reader, blur, 0, true);
+
+    EffectInstancePtr blurEffect = blur->getEffectInstance();
+    ASSERT_TRUE(bool(blurEffect));
+
+    {
+        std::list<ImageLayerDesc> present;
+        blurEffect->getPresentLayers(0, ViewIdx(0), -1, &present);
+        EXPECT_EQ(expectedPresent, layerIDSet(present));
+    }
+    {
+        std::list<ImageLayerDesc> present0;
+        blurEffect->getPresentLayers(0, ViewIdx(0), 0, &present0);
+        EXPECT_EQ(expectedPresent, layerIDSet(present0));
+    }
+} // TEST_F(BaseTest, PresentLayersAreStreamOnlyAvailableLayersIncludeRegistry)

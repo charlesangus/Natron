@@ -231,8 +231,6 @@ public:
         , nativeOverlays()
         , nodeCreated(false)
         , wasCreatedSilently(false)
-        , createdComponentsMutex()
-        , createdComponents()
         , paintStroke()
         , pluginsPropMutex()
         , pluginSafety(eRenderSafetyInstanceSafe)
@@ -452,8 +450,6 @@ public:
     std::list<HostOverlayKnobsPtr> nativeOverlays;
     bool nodeCreated;
     bool wasCreatedSilently;
-    mutable QMutex createdComponentsMutex;
-    std::list<ImageLayerDesc> createdComponents; // comps created by the user
     RotoDrawableItemWPtr paintStroke;
 
     // These are dynamic props

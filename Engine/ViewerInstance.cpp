@@ -911,10 +911,6 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
     // Used to differentiate the 2 different textures when wipe is enabled
     outArgs->params->setUniqueID(textureIndex);
 
-    // The host does not track premultiplication: the viewer composites every image as
-    // premultiplied over the checkerboard.
-    outArgs->params->srcPremult = eImagePremultiplicationPremultiplied;
-
     // The user requested bitdepth of the textures
     outArgs->params->depth = _imp->uiContext->getBitDepth();
 
@@ -1509,7 +1505,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             channelsRendered[3] = true;
             break;
         }
-        stats->setGlobalRenderInfosForNode(getNode(), inArgs.params->rod, inArgs.params->srcPremult, channelsRendered, true, true, inArgs.params->mipmapLevel);
+        stats->setGlobalRenderInfosForNode(getNode(), inArgs.params->rod, eImagePremultiplicationUnPremultiplied, channelsRendered, true, true, inArgs.params->mipmapLevel);
     }
 
 //#pragma message WARN("Implement Viewer so it accepts OpenGL Textures in input")
@@ -1868,7 +1864,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             const RenderViewerArgs args(colorImage,
                                         alphaImage,
                                         inArgs.channels,
-                                        updateParams->srcPremult,
                                         updateParams->depth,
                                         updateParams->gain,
                                         updateParams->gamma,
@@ -1935,7 +1930,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             const RenderViewerArgs args(colorImage,
                                         alphaImage,
                                         inArgs.channels,
-                                        updateParams->srcPremult,
                                         updateParams->depth,
                                         updateParams->gain,
                                         updateParams->gamma,
@@ -2148,10 +2142,10 @@ findAutoContrastVminVmax(const ImagePtr inputImage,
     }
 } // findAutoContrastVminVmax
 
-template <typename PIX, int maxValue, bool opaque, bool applyMatte, int rOffset, int gOffset, int bOffset>
+template <typename PIX, int maxValue, bool applyMatte, int rOffset, int gOffset, int bOffset>
 void
 scaleToTexture8bits_generic(const RectI& roi,
-                            const RenderViewerArgs & args,
+                            const RenderViewerArgs& args,
                             int nComps,
                             ViewerInstance* viewer,
                             const UpdateViewerParams::CachedTile& tile,
@@ -2214,13 +2208,8 @@ scaleToTexture8bits_generic(const RectI& roi,
                     r = (src_pixels ? src_pixels[index * nComps + rOffset] : 0.);
                     g = (src_pixels ? src_pixels[index * nComps + gOffset] : 0.);
                     b = (src_pixels ? src_pixels[index * nComps + bOffset] : 0.);
-                    if (opaque) {
-                        a = 1;
-                        uA = 255;
-                    } else {
-                        a = src_pixels ? src_pixels[index * nComps + 3] : 0;
-                        uA = Color::floatToInt<256>(a);
-                    }
+                    a = src_pixels ? src_pixels[index * nComps + 3] : 0;
+                    uA = Color::floatToInt<256>(a);
                 } else if (nComps == 3) {
                     // coverity[dead_error_line]
                     r = (src_pixels && rOffset < nComps) ? src_pixels[index * nComps + rOffset] : 0.;
@@ -2378,21 +2367,21 @@ scaleToTexture8bits_generic(const RectI& roi,
     } // for (int y = yRange.first; y < yRange.second;
 } // scaleToTexture8bits_generic
 
-template <typename PIX, int maxValue, int nComps, bool opaque, bool matteOverlay, int rOffset, int gOffset, int bOffset>
+template <typename PIX, int maxValue, int nComps, bool matteOverlay, int rOffset, int gOffset, int bOffset>
 void
 scaleToTexture8bits_internal(const RectI& roi,
-                             const RenderViewerArgs & args,
+                             const RenderViewerArgs& args,
                              ViewerInstance* viewer,
                              const UpdateViewerParams::CachedTile& tile,
                              U32* output)
 {
-    scaleToTexture8bits_generic<PIX, maxValue, opaque, matteOverlay, rOffset, gOffset, bOffset>(roi, args, nComps, viewer, tile, output);
+    scaleToTexture8bits_generic<PIX, maxValue, matteOverlay, rOffset, gOffset, bOffset>(roi, args, nComps, viewer, tile, output);
 }
 
-template <typename PIX, int maxValue, int nComps, bool opaque, int rOffset, int gOffset, int bOffset>
+template <typename PIX, int maxValue, int nComps, int rOffset, int gOffset, int bOffset>
 void
 scaleToTexture8bitsForMatte(const RectI& roi,
-                            const RenderViewerArgs & args,
+                            const RenderViewerArgs& args,
                             ViewerInstance* viewer,
                             const UpdateViewerParams::CachedTile& tile,
                             U32* output)
@@ -2400,16 +2389,16 @@ scaleToTexture8bitsForMatte(const RectI& roi,
     bool applyMate = args.matteImage.get() && args.alphaChannelIndex >= 0;
 
     if (applyMate) {
-        scaleToTexture8bits_internal<PIX, maxValue, nComps, opaque, true, rOffset, gOffset, bOffset>(roi, args, viewer, tile, output);
+        scaleToTexture8bits_internal<PIX, maxValue, nComps, true, rOffset, gOffset, bOffset>(roi, args, viewer, tile, output);
     } else {
-        scaleToTexture8bits_internal<PIX, maxValue, nComps, opaque, false, rOffset, gOffset, bOffset>(roi, args, viewer, tile, output);
+        scaleToTexture8bits_internal<PIX, maxValue, nComps, false, rOffset, gOffset, bOffset>(roi, args, viewer, tile, output);
     }
 }
 
-template <typename PIX, int maxValue, bool opaque, int rOffset, int gOffset, int bOffset>
+template <typename PIX, int maxValue, int rOffset, int gOffset, int bOffset>
 void
 scaleToTexture8bitsForDepthForComponents(const RectI& roi,
-                                         const RenderViewerArgs & args,
+                                         const RenderViewerArgs& args,
                                          ViewerInstance* viewer,
                                          const UpdateViewerParams::CachedTile& tile,
                                          U32* output)
@@ -2418,75 +2407,24 @@ scaleToTexture8bitsForDepthForComponents(const RectI& roi,
 
     switch (nComps) {
     case 4:
-        scaleToTexture8bitsForMatte<PIX, maxValue, 4, opaque, rOffset, gOffset, bOffset>(roi, args, viewer, tile, output);
+        scaleToTexture8bitsForMatte<PIX, maxValue, 4, rOffset, gOffset, bOffset>(roi, args, viewer, tile, output);
         break;
     case 3:
-        scaleToTexture8bitsForMatte<PIX, maxValue, 3, opaque, rOffset, gOffset, bOffset>(roi, args, viewer, tile, output);
+        scaleToTexture8bitsForMatte<PIX, maxValue, 3, rOffset, gOffset, bOffset>(roi, args, viewer, tile, output);
         break;
     case 2:
-        scaleToTexture8bitsForMatte<PIX, maxValue, 2, opaque, rOffset, gOffset, bOffset>(roi, args, viewer, tile, output);
+        scaleToTexture8bitsForMatte<PIX, maxValue, 2, rOffset, gOffset, bOffset>(roi, args, viewer, tile, output);
         break;
     case 1:
-        scaleToTexture8bitsForMatte<PIX, maxValue, 1, opaque, rOffset, gOffset, bOffset>(roi, args, viewer, tile, output);
+        scaleToTexture8bitsForMatte<PIX, maxValue, 1, rOffset, gOffset, bOffset>(roi, args, viewer, tile, output);
         break;
     default:
         bool applyMate = args.matteImage.get() && args.alphaChannelIndex >= 0;
         if (applyMate) {
-            scaleToTexture8bits_generic<PIX, maxValue, opaque, true, rOffset, gOffset, bOffset>(roi, args, nComps, viewer, tile, output);
+            scaleToTexture8bits_generic<PIX, maxValue, true, rOffset, gOffset, bOffset>(roi, args, nComps, viewer, tile, output);
         } else {
-            scaleToTexture8bits_generic<PIX, maxValue, opaque, false, rOffset, gOffset, bOffset>(roi, args, nComps, viewer, tile, output);
+            scaleToTexture8bits_generic<PIX, maxValue, false, rOffset, gOffset, bOffset>(roi, args, nComps, viewer, tile, output);
         }
-        break;
-    }
-}
-
-template <typename PIX, int maxValue, bool opaque>
-void
-scaleToTexture8bitsForPremult(const RectI& roi,
-                              const RenderViewerArgs & args,
-                              ViewerInstance* viewer,
-                              const UpdateViewerParams::CachedTile& tile,
-                              U32* output)
-{
-    switch (args.channels) {
-    case eDisplayChannelsRGB:
-    case eDisplayChannelsY:
-    case eDisplayChannelsMatte:
-
-        scaleToTexture8bitsForDepthForComponents<PIX, maxValue, opaque, 0, 1, 2>(roi, args, viewer, tile, output);
-        break;
-    case eDisplayChannelsG:
-        scaleToTexture8bitsForDepthForComponents<PIX, maxValue, opaque, 1, 1, 1>(roi, args, viewer, tile, output);
-        break;
-    case eDisplayChannelsB:
-        scaleToTexture8bitsForDepthForComponents<PIX, maxValue, opaque, 2, 2, 2>(roi, args, viewer, tile, output);
-        break;
-    case eDisplayChannelsA:
-        switch (args.alphaChannelIndex) {
-        case -1:
-            scaleToTexture8bitsForDepthForComponents<PIX, maxValue, opaque, 3, 3, 3>(roi, args, viewer, tile, output);
-            break;
-        case 0:
-            scaleToTexture8bitsForDepthForComponents<PIX, maxValue, opaque, 0, 0, 0>(roi, args, viewer, tile, output);
-            break;
-        case 1:
-            scaleToTexture8bitsForDepthForComponents<PIX, maxValue, opaque, 1, 1, 1>(roi, args, viewer, tile, output);
-            break;
-        case 2:
-            scaleToTexture8bitsForDepthForComponents<PIX, maxValue, opaque, 2, 2, 2>(roi, args, viewer, tile, output);
-            break;
-        case 3:
-            scaleToTexture8bitsForDepthForComponents<PIX, maxValue, opaque, 3, 3, 3>(roi, args, viewer, tile, output);
-            break;
-        default:
-            scaleToTexture8bitsForDepthForComponents<PIX, maxValue, opaque, 3, 3, 3>(roi, args, viewer, tile, output);
-        }
-
-        break;
-    case eDisplayChannelsR:
-    default:
-        scaleToTexture8bitsForDepthForComponents<PIX, maxValue, opaque, 0, 0, 0>(roi, args, viewer, tile, output);
-
         break;
     }
 }
@@ -2494,19 +2432,50 @@ scaleToTexture8bitsForPremult(const RectI& roi,
 template <typename PIX, int maxValue>
 void
 scaleToTexture8bitsForDepth(const RectI& roi,
-                            const RenderViewerArgs & args,
+                            const RenderViewerArgs& args,
                             ViewerInstance* viewer,
                             const UpdateViewerParams::CachedTile& tile,
                             U32* output)
 {
-    switch (args.srcPremult) {
-    case eImagePremultiplicationOpaque:
-        scaleToTexture8bitsForPremult<PIX, maxValue, true>(roi, args, viewer, tile, output);
+    switch (args.channels) {
+    case eDisplayChannelsRGB:
+    case eDisplayChannelsY:
+    case eDisplayChannelsMatte:
+
+        scaleToTexture8bitsForDepthForComponents<PIX, maxValue, 0, 1, 2>(roi, args, viewer, tile, output);
         break;
-    case eImagePremultiplicationPremultiplied:
-    case eImagePremultiplicationUnPremultiplied:
+    case eDisplayChannelsG:
+        scaleToTexture8bitsForDepthForComponents<PIX, maxValue, 1, 1, 1>(roi, args, viewer, tile, output);
+        break;
+    case eDisplayChannelsB:
+        scaleToTexture8bitsForDepthForComponents<PIX, maxValue, 2, 2, 2>(roi, args, viewer, tile, output);
+        break;
+    case eDisplayChannelsA:
+        switch (args.alphaChannelIndex) {
+        case -1:
+            scaleToTexture8bitsForDepthForComponents<PIX, maxValue, 3, 3, 3>(roi, args, viewer, tile, output);
+            break;
+        case 0:
+            scaleToTexture8bitsForDepthForComponents<PIX, maxValue, 0, 0, 0>(roi, args, viewer, tile, output);
+            break;
+        case 1:
+            scaleToTexture8bitsForDepthForComponents<PIX, maxValue, 1, 1, 1>(roi, args, viewer, tile, output);
+            break;
+        case 2:
+            scaleToTexture8bitsForDepthForComponents<PIX, maxValue, 2, 2, 2>(roi, args, viewer, tile, output);
+            break;
+        case 3:
+            scaleToTexture8bitsForDepthForComponents<PIX, maxValue, 3, 3, 3>(roi, args, viewer, tile, output);
+            break;
+        default:
+            scaleToTexture8bitsForDepthForComponents<PIX, maxValue, 3, 3, 3>(roi, args, viewer, tile, output);
+        }
+
+        break;
+    case eDisplayChannelsR:
     default:
-        scaleToTexture8bitsForPremult<PIX, maxValue, false>(roi, args, viewer, tile, output);
+        scaleToTexture8bitsForDepthForComponents<PIX, maxValue, 0, 0, 0>(roi, args, viewer, tile, output);
+
         break;
     }
 }
@@ -2567,13 +2536,13 @@ ViewerInstance::markAllOnGoingRendersAsAborted(bool keepOldestRender)
     }
 }
 
-template <typename PIX, int maxValue, bool opaque, bool applyMatte, int rOffset, int gOffset, int bOffset>
+template <typename PIX, int maxValue, bool applyMatte, int rOffset, int gOffset, int bOffset>
 void
 scaleToTexture32bitsGeneric(const RectI& roi,
-                            const RenderViewerArgs & args,
+                            const RenderViewerArgs& args,
                             int nComps,
                             const UpdateViewerParams::CachedTile& tile,
-                            float *tileBuffer)
+                            float* tileBuffer)
 {
     const size_t pixelSize = sizeof(PIX);
     const bool luminance = (args.channels == eDisplayChannelsY);
@@ -2616,11 +2585,7 @@ scaleToTexture32bitsGeneric(const RectI& roi,
                 r = (src_pixels && rOffset < nComps) ? src_pixels[x * nComps + rOffset] : 0.;
                 g = (src_pixels && gOffset < nComps) ? src_pixels[x * nComps + gOffset] : 0.;
                 b = (src_pixels && bOffset < nComps) ? src_pixels[x * nComps + bOffset] : 0.;
-                if (opaque) {
-                    a = 1.;
-                } else {
-                    a = src_pixels ? src_pixels[x * nComps + 3] : 0.;
-                }
+                a = src_pixels ? src_pixels[x * nComps + 3] : 0.;
             } else if (nComps == 3) {
                 // coverity[dead_error_line]
                 r = (src_pixels && rOffset < nComps) ? src_pixels[x * nComps + rOffset] : 0.;
@@ -2737,129 +2702,110 @@ scaleToTexture32bitsGeneric(const RectI& roi,
     }
 } // scaleToTexture32bitsGeneric
 
-template <typename PIX, int maxValue, int nComps, bool opaque, bool applyMatte, int rOffset, int gOffset, int bOffset>
+template <typename PIX, int maxValue, int nComps, bool applyMatte, int rOffset, int gOffset, int bOffset>
 void
 scaleToTexture32bitsInternal(const RectI& roi,
-                             const RenderViewerArgs & args,
+                             const RenderViewerArgs& args,
                              const UpdateViewerParams::CachedTile& tile,
-                             float *output)
+                             float* output)
 {
-    scaleToTexture32bitsGeneric<PIX, maxValue, opaque, applyMatte, rOffset, gOffset, bOffset>(roi, args, nComps, tile, output);
+    scaleToTexture32bitsGeneric<PIX, maxValue, applyMatte, rOffset, gOffset, bOffset>(roi, args, nComps, tile, output);
 }
 
-template <typename PIX, int maxValue, int nComps, bool opaque, int rOffset, int gOffset, int bOffset>
+template <typename PIX, int maxValue, int nComps, int rOffset, int gOffset, int bOffset>
 void
 scaleToTexture32bitsForMatte(const RectI& roi,
-                             const RenderViewerArgs & args,
+                             const RenderViewerArgs& args,
                              const UpdateViewerParams::CachedTile& tile,
-                             float *output)
+                             float* output)
 {
     bool applyMatte = args.matteImage.get() && args.alphaChannelIndex >= 0;
 
     if (applyMatte) {
-        scaleToTexture32bitsInternal<PIX, maxValue, nComps, opaque, true, rOffset, gOffset, bOffset>(roi, args, tile, output);
+        scaleToTexture32bitsInternal<PIX, maxValue, nComps, true, rOffset, gOffset, bOffset>(roi, args, tile, output);
     } else {
-        scaleToTexture32bitsInternal<PIX, maxValue, nComps, opaque, false, rOffset, gOffset, bOffset>(roi, args, tile, output);
+        scaleToTexture32bitsInternal<PIX, maxValue, nComps, false, rOffset, gOffset, bOffset>(roi, args, tile, output);
     }
 }
 
-template <typename PIX, int maxValue, bool opaque, int rOffset, int gOffset, int bOffset>
+template <typename PIX, int maxValue, int rOffset, int gOffset, int bOffset>
 void
 scaleToTexture32bitsForDepthForComponents(const RectI& roi,
-                                          const RenderViewerArgs & args,
+                                          const RenderViewerArgs& args,
                                           const UpdateViewerParams::CachedTile& tile,
-                                          float *output)
+                                          float* output)
 {
     int nComps = args.inputImage->getComponents().getNumComponents();
 
     switch (nComps) {
     case 4:
-        scaleToTexture32bitsForMatte<PIX, maxValue, 4, opaque, rOffset, gOffset, bOffset>(roi, args, tile, output);
+        scaleToTexture32bitsForMatte<PIX, maxValue, 4, rOffset, gOffset, bOffset>(roi, args, tile, output);
         break;
     case 3:
-        scaleToTexture32bitsForMatte<PIX, maxValue, 3, opaque, rOffset, gOffset, bOffset>(roi, args, tile, output);
+        scaleToTexture32bitsForMatte<PIX, maxValue, 3, rOffset, gOffset, bOffset>(roi, args, tile, output);
         break;
     case 2:
-        scaleToTexture32bitsForMatte<PIX, maxValue, 2, opaque, rOffset, gOffset, bOffset>(roi, args, tile, output);
+        scaleToTexture32bitsForMatte<PIX, maxValue, 2, rOffset, gOffset, bOffset>(roi, args, tile, output);
         break;
     case 1:
-        scaleToTexture32bitsForMatte<PIX, maxValue, 1, opaque, rOffset, gOffset, bOffset>(roi, args, tile, output);
+        scaleToTexture32bitsForMatte<PIX, maxValue, 1, rOffset, gOffset, bOffset>(roi, args, tile, output);
         break;
     default:
         bool applyMatte = args.matteImage.get() && args.alphaChannelIndex >= 0;
         if (applyMatte) {
-            scaleToTexture32bitsGeneric<PIX, maxValue, opaque, true, rOffset, gOffset, bOffset>(roi, args, nComps, tile, output);
+            scaleToTexture32bitsGeneric<PIX, maxValue, true, rOffset, gOffset, bOffset>(roi, args, nComps, tile, output);
         } else {
-            scaleToTexture32bitsGeneric<PIX, maxValue, opaque, false, rOffset, gOffset, bOffset>(roi, args, nComps, tile, output);
+            scaleToTexture32bitsGeneric<PIX, maxValue, false, rOffset, gOffset, bOffset>(roi, args, nComps, tile, output);
         }
-        break;
-    }
-}
-
-template <typename PIX, int maxValue, bool opaque>
-void
-scaleToTexture32bitsForPremultForComponents(const RectI& roi,
-                                            const RenderViewerArgs & args,
-                                            const UpdateViewerParams::CachedTile& tile,
-                                            float *output)
-{
-    switch (args.channels) {
-    case eDisplayChannelsRGB:
-    case eDisplayChannelsY:
-    case eDisplayChannelsMatte:
-        scaleToTexture32bitsForDepthForComponents<PIX, maxValue, opaque, 0, 1, 2>(roi, args, tile, output);
-        break;
-    case eDisplayChannelsG:
-        scaleToTexture32bitsForDepthForComponents<PIX, maxValue, opaque, 1, 1, 1>(roi, args, tile, output);
-        break;
-    case eDisplayChannelsB:
-        scaleToTexture32bitsForDepthForComponents<PIX, maxValue, opaque, 2, 2, 2>(roi, args, tile, output);
-        break;
-    case eDisplayChannelsA:
-        switch (args.alphaChannelIndex) {
-        case -1:
-            scaleToTexture32bitsForDepthForComponents<PIX, maxValue, opaque, 3, 3, 3>(roi, args, tile, output);
-            break;
-        case 0:
-            scaleToTexture32bitsForDepthForComponents<PIX, maxValue, opaque, 0, 0, 0>(roi, args, tile, output);
-            break;
-        case 1:
-            scaleToTexture32bitsForDepthForComponents<PIX, maxValue, opaque, 1, 1, 1>(roi, args, tile, output);
-            break;
-        case 2:
-            scaleToTexture32bitsForDepthForComponents<PIX, maxValue, opaque, 2, 2, 2>(roi, args, tile, output);
-            break;
-        case 3:
-            scaleToTexture32bitsForDepthForComponents<PIX, maxValue, opaque, 3, 3, 3>(roi, args, tile, output);
-            break;
-        default:
-            scaleToTexture32bitsForDepthForComponents<PIX, maxValue, opaque, 3, 3, 3>(roi, args, tile, output);
-            break;
-        }
-
-        break;
-    case eDisplayChannelsR:
-    default:
-        scaleToTexture32bitsForDepthForComponents<PIX, maxValue, opaque, 0, 0, 0>(roi, args, tile, output);
         break;
     }
 }
 
 template <typename PIX, int maxValue>
 void
-scaleToTexture32bitsForPremult(const RectI& roi,
-                               const RenderViewerArgs & args,
-                               const UpdateViewerParams::CachedTile& tile,
-                               float *output)
+scaleToTexture32bitsForDepth(const RectI& roi,
+                             const RenderViewerArgs& args,
+                             const UpdateViewerParams::CachedTile& tile,
+                             float* output)
 {
-    switch (args.srcPremult) {
-    case eImagePremultiplicationOpaque:
-        scaleToTexture32bitsForPremultForComponents<PIX, maxValue, true>(roi, args, tile, output);
+    switch (args.channels) {
+    case eDisplayChannelsRGB:
+    case eDisplayChannelsY:
+    case eDisplayChannelsMatte:
+        scaleToTexture32bitsForDepthForComponents<PIX, maxValue, 0, 1, 2>(roi, args, tile, output);
         break;
-    case eImagePremultiplicationPremultiplied:
-    case eImagePremultiplicationUnPremultiplied:
+    case eDisplayChannelsG:
+        scaleToTexture32bitsForDepthForComponents<PIX, maxValue, 1, 1, 1>(roi, args, tile, output);
+        break;
+    case eDisplayChannelsB:
+        scaleToTexture32bitsForDepthForComponents<PIX, maxValue, 2, 2, 2>(roi, args, tile, output);
+        break;
+    case eDisplayChannelsA:
+        switch (args.alphaChannelIndex) {
+        case -1:
+            scaleToTexture32bitsForDepthForComponents<PIX, maxValue, 3, 3, 3>(roi, args, tile, output);
+            break;
+        case 0:
+            scaleToTexture32bitsForDepthForComponents<PIX, maxValue, 0, 0, 0>(roi, args, tile, output);
+            break;
+        case 1:
+            scaleToTexture32bitsForDepthForComponents<PIX, maxValue, 1, 1, 1>(roi, args, tile, output);
+            break;
+        case 2:
+            scaleToTexture32bitsForDepthForComponents<PIX, maxValue, 2, 2, 2>(roi, args, tile, output);
+            break;
+        case 3:
+            scaleToTexture32bitsForDepthForComponents<PIX, maxValue, 3, 3, 3>(roi, args, tile, output);
+            break;
+        default:
+            scaleToTexture32bitsForDepthForComponents<PIX, maxValue, 3, 3, 3>(roi, args, tile, output);
+            break;
+        }
+
+        break;
+    case eDisplayChannelsR:
     default:
-        scaleToTexture32bitsForPremultForComponents<PIX, maxValue, false>(roi, args, tile, output);
+        scaleToTexture32bitsForDepthForComponents<PIX, maxValue, 0, 0, 0>(roi, args, tile, output);
         break;
     }
 }
@@ -2874,13 +2820,13 @@ scaleToTexture32bits(const RectI& roi,
 
     switch ( args.inputImage->getBitDepth() ) {
     case eImageBitDepthFloat:
-        scaleToTexture32bitsForPremult<float, 1>(roi, args, tile, output);
+        scaleToTexture32bitsForDepth<float, 1>(roi, args, tile, output);
         break;
     case eImageBitDepthByte:
-        scaleToTexture32bitsForPremult<unsigned char, 255>(roi, args, tile, output);
+        scaleToTexture32bitsForDepth<unsigned char, 255>(roi, args, tile, output);
         break;
     case eImageBitDepthShort:
-        scaleToTexture32bitsForPremult<unsigned short, 65535>(roi, args, tile, output);
+        scaleToTexture32bitsForDepth<unsigned short, 65535>(roi, args, tile, output);
         break;
     case eImageBitDepthHalf:
         assert(false);
@@ -2962,7 +2908,7 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
             }
         }
 
-        uiContext->endTransferBufferFromRAMToGPU(params->textureIndex, texture, originalImage, params->time, params->rod,  params->pixelAspectRatio, depth, params->mipmapLevel, params->srcPremult, params->gain, params->gamma, params->offset, params->lut, params->recenterViewport, params->viewportCenter, params->isPartialRect);
+        uiContext->endTransferBufferFromRAMToGPU(params->textureIndex, texture, originalImage, params->time, params->rod, params->pixelAspectRatio, depth, params->mipmapLevel, params->gain, params->gamma, params->offset, params->lut, params->recenterViewport, params->viewportCenter, params->isPartialRect);
         if (!params->isPartialRect && originalImage) {
             uiContext->setLastRenderedDeepImage(params->textureIndex, params->mipmapLevel, deepImage);
         }

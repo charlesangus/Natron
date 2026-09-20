@@ -69,7 +69,6 @@ public:
         , textureIndex(0)
         , time(0)
         , view(0)
-        , srcPremult(eImagePremultiplicationOpaque)
         , depth()
         , gain(1.)
         , gamma(1.)
@@ -118,7 +117,6 @@ public:
     int textureIndex; // The texture index (for input A or B)
     int time; // the frame
     ViewIdx view; // the view
-    ImagePremultiplicationEnum srcPremult; // the image premult
     ImageBitDepthEnum depth; // bitdepth of the texture
     double gain; // viewer gain
     double gamma; // viewer gamma

@@ -609,41 +609,6 @@ ViewerGL::Implementation::getWipePolygon(const RectD & texRectClipped,
     return ViewerGL::Implementation::eWipePolygonPartial;
 } // getWipePolygon
 
-/**
- * @brief Used to setup the blending mode to draw the first texture
- **/
-class BlendSetter
-{
-    bool didBlend;
-
-public:
-
-    BlendSetter(ImagePremultiplicationEnum premult)
-    {
-        didBlend = premult != eImagePremultiplicationOpaque;
-        if (didBlend) {
-            glEnable(GL_BLEND);
-        }
-        switch (premult) {
-        case eImagePremultiplicationPremultiplied:
-            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-            break;
-        case eImagePremultiplicationUnPremultiplied:
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            break;
-        case eImagePremultiplicationOpaque:
-            break;
-        }
-    }
-
-    ~BlendSetter()
-    {
-        if (didBlend) {
-            glDisable(GL_BLEND);
-        }
-    }
-};
-
 void
 ViewerGL::Implementation::drawArcOfCircle(const QPointF & center,
                                           double radiusX,

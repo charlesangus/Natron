@@ -124,14 +124,14 @@ public:
                                                double par,
                                                ImageBitDepthEnum depth,
                                                unsigned int mipmapLevel,
-                                               ImagePremultiplicationEnum premult,
                                                double gain,
                                                double gamma,
                                                double offset,
                                                int lut,
                                                bool recenterViewer,
                                                const Point& viewportCenter,
-                                               bool isPartialRect) = 0;
+                                               bool isPartialRect)
+        = 0;
 
     /**
      * @brief Hands over the deep image the frame just transferred was flattened from, for the

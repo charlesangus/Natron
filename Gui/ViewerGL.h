@@ -181,7 +181,6 @@ public:
                                                double par,
                                                ImageBitDepthEnum depth,
                                                unsigned int mipmapLevel,
-                                               ImagePremultiplicationEnum premult,
                                                double gain,
                                                double gamma,
                                                double offset,

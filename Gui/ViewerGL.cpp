@@ -219,29 +219,20 @@ ViewerGL::resizeGL(int w,
 }
 
 /**
- * @brief Used to setup the blending mode to draw the first texture
+ * @brief Used to setup the blending mode to draw the first texture: the texture is
+ * composited as premultiplied over whatever was drawn before it.
  **/
 class BlendSetter
 {
     bool didBlend;
 
 public:
-
-    BlendSetter(ImagePremultiplicationEnum premult)
+    BlendSetter(bool blend)
+        : didBlend(blend)
     {
-        didBlend = premult != eImagePremultiplicationOpaque;
         if (didBlend) {
             glEnable(GL_BLEND);
-        }
-        switch (premult) {
-        case eImagePremultiplicationPremultiplied:
             glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-            break;
-        case eImagePremultiplicationUnPremultiplied:
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            break;
-        case eImagePremultiplicationOpaque:
-            break;
         }
     }
 
@@ -377,18 +368,12 @@ ViewerGL::paintGL()
                 }
             }
 
-
-            ///Depending on the premultiplication of the input image we use a different blending func
-            ImagePremultiplicationEnum premultA = _imp->displayTextures[0].premult;
-
-            // Left side of the wipe is displayed as Opaque if there is no checkerboard.
-            // That way, unpremultiplied images can easily be displayed, even if their alpha is zero.
-            // We do not "unpremult" premultiplied RGB for displaying it, because it is the usual way
-            // to visualize masks: areas with alpha=0 appear as black.
+            // Without a checkerboard the left side of the wipe is drawn without blending, so
+            // an image is visible even where its alpha is zero.
             switch (compOperator) {
             case eViewerCompositingOperatorNone: {
                 if (drawTexture[0]) {
-                    BlendSetter b(checkerboard ? premultA : eImagePremultiplicationOpaque);
+                    BlendSetter b(checkerboard);
                     _imp->drawRenderingVAO(_imp->displayTextures[0].mipmapLevel, 0, eDrawPolygonModeWhole, true);
                 }
                 break;
@@ -396,11 +381,11 @@ ViewerGL::paintGL()
             case eViewerCompositingOperatorWipeUnder:
             case eViewerCompositingOperatorStackUnder: {
                 if (drawTexture[0] && !stack) {
-                    BlendSetter b(checkerboard ? premultA : eImagePremultiplicationOpaque);
+                    BlendSetter b(checkerboard);
                     _imp->drawRenderingVAO(_imp->displayTextures[0].mipmapLevel, 0, eDrawPolygonModeWipeLeft, true);
                 }
                 if (drawTexture[0]) {
-                    BlendSetter b(premultA);
+                    BlendSetter b(true);
                     _imp->drawRenderingVAO(_imp->displayTextures[0].mipmapLevel, 0, stack ? eDrawPolygonModeWhole : eDrawPolygonModeWipeRight, false);
                 }
                 if (drawTexture[1]) {
@@ -415,7 +400,7 @@ ViewerGL::paintGL()
             case eViewerCompositingOperatorWipeOver:
             case eViewerCompositingOperatorStackOver: {
                 if (drawTexture[0] && !stack) {
-                    BlendSetter b(checkerboard ? premultA : eImagePremultiplicationOpaque);
+                    BlendSetter b(checkerboard);
                     _imp->drawRenderingVAO(_imp->displayTextures[0].mipmapLevel, 0, eDrawPolygonModeWipeLeft, true);
                 }
                 if (drawTexture[1]) {
@@ -425,7 +410,7 @@ ViewerGL::paintGL()
                     glDisable(GL_BLEND);
                 }
                 if (drawTexture[0]) {
-                    BlendSetter b(premultA);
+                    BlendSetter b(true);
                     _imp->drawRenderingVAO(_imp->displayTextures[0].mipmapLevel, 0, stack ? eDrawPolygonModeWhole : eDrawPolygonModeWipeRight, false);
                 }
 
@@ -434,11 +419,11 @@ ViewerGL::paintGL()
             case eViewerCompositingOperatorWipeMinus:
             case eViewerCompositingOperatorStackMinus: {
                 if (drawTexture[0] && !stack) {
-                    BlendSetter b(checkerboard ? premultA : eImagePremultiplicationOpaque);
+                    BlendSetter b(checkerboard);
                     _imp->drawRenderingVAO(_imp->displayTextures[0].mipmapLevel, 0, eDrawPolygonModeWipeLeft, true);
                 }
                 if (drawTexture[0]) {
-                    BlendSetter b(premultA);
+                    BlendSetter b(true);
                     _imp->drawRenderingVAO(_imp->displayTextures[0].mipmapLevel, 0, stack ? eDrawPolygonModeWhole : eDrawPolygonModeWipeRight, false);
                 }
                 if (drawTexture[1]) {
@@ -453,11 +438,11 @@ ViewerGL::paintGL()
             case eViewerCompositingOperatorWipeOnionSkin:
             case eViewerCompositingOperatorStackOnionSkin: {
                 if (drawTexture[0] && !stack) {
-                    BlendSetter b(checkerboard ? premultA : eImagePremultiplicationOpaque);
+                    BlendSetter b(checkerboard);
                     _imp->drawRenderingVAO(_imp->displayTextures[0].mipmapLevel, 0, eDrawPolygonModeWipeLeft, true);
                 }
                 if (drawTexture[0]) {
-                    BlendSetter b(premultA);
+                    BlendSetter b(true);
                     _imp->drawRenderingVAO(_imp->displayTextures[0].mipmapLevel, 0, stack ? eDrawPolygonModeWhole : eDrawPolygonModeWipeRight, false);
                 }
                 if (drawTexture[1]) {
@@ -1481,7 +1466,6 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
                                         double par,
                                         ImageBitDepthEnum depth,
                                         unsigned int mipmapLevel,
-                                        ImagePremultiplicationEnum premult,
                                         double gain,
                                         double gamma,
                                         double offset,
@@ -1504,7 +1488,6 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
         info.gamma = gamma;
         info.offset = offset;
         info.mipmapLevel = mipmapLevel;
-        info.premult = premult;
         info.time = time;
         info.memoryHeldByLastRenderedImages = 0;
         info.isPartialImage = true;
@@ -1521,7 +1504,6 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
         _imp->displayTextures[textureIndex].offset = offset;
         _imp->displayTextures[textureIndex].mipmapLevel = mipmapLevel;
         _imp->displayingImageLut = (ViewerColorSpaceEnum)lut;
-        _imp->displayTextures[textureIndex].premult = premult;
         _imp->displayTextures[textureIndex].time = time;
 
         if (_imp->displayTextures[textureIndex].memoryHeldByLastRenderedImages > 0) {

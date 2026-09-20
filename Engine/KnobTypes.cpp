@@ -45,6 +45,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/Image.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobSerialization.h"
 #include "Engine/Node.h"
@@ -2580,6 +2581,24 @@ const std::string&
 KnobLayers::typeNameStatic()
 {
     return _typeNameStr;
+}
+
+std::vector<std::string>
+KnobLayers::makeRow(const ImageLayerDesc& layer, int usersCount)
+{
+    std::vector<std::string> row(3);
+
+    row[0] = layer.getLayerLabel();
+    const std::vector<std::string>& channels = layer.getChannels();
+    for (std::size_t c = 0; c < channels.size(); ++c) {
+        if (c > 0) {
+            row[1] += ' ';
+        }
+        row[1] += channels[c];
+    }
+    row[2] = std::to_string(usersCount);
+
+    return row;
 }
 
 NATRON_NAMESPACE_EXIT

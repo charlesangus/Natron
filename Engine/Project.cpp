@@ -32,6 +32,7 @@
 #include <fstream>
 #include <ios>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 
@@ -69,12 +70,13 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
-#include "Engine/CreateNodeArgs.h"
 #include "Engine/BezierCPSerialization.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FormatSerialization.h"
 #include "Engine/Hash64.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProjectPrivate.h"
@@ -84,8 +86,8 @@
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
 #include "Engine/StandardPaths.h"
-#include "Engine/ViewerInstance.h"
 #include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -1090,38 +1092,12 @@ Project::initializeKnobs()
     _imp->defaultLayersList->setHintToolTip( tr("The list of the default layers available in layers menus on nodes.") );
     _imp->defaultLayersList->setAnimationEnabled(false);
     _imp->defaultLayersList->setEvaluateOnChange(false);
-    // The LayerRegistry owned by ProjectPrivate is now the source of truth; this knob
-    // is kept only as a view onto it (rebuilt from the registry starting T6) and must
-    // not be written back to the project file.
+    // The registry owned by ProjectPrivate is the source of truth; this knob is a
+    // read-only view of it and must not be written back to the project file.
     _imp->defaultLayersList->setIsPersistent(false);
-    std::list<std::vector<std::string> > defaultLayers;
-    {
-        std::vector<ImageLayerDesc> defaultComponents;
-        defaultComponents.push_back(ImageLayerDesc::getRGBAComponents());
-        defaultComponents.push_back(ImageLayerDesc::getDisparityLeftComponents());
-        defaultComponents.push_back(ImageLayerDesc::getDisparityRightComponents());
-        defaultComponents.push_back(ImageLayerDesc::getBackwardMotionComponents());
-        defaultComponents.push_back(ImageLayerDesc::getForwardMotionComponents());
-
-        for (std::size_t i = 0; i < defaultComponents.size(); ++i) {
-            const ImageLayerDesc& comps = defaultComponents[i];
-            std::vector<std::string> row(3);
-            row[0] = comps.getLayerLabel();
-            std::string channelsStr;
-            const std::vector<std::string>& channels = comps.getChannels();
-            for (std::size_t c = 0; c < channels.size(); ++c) {
-                if (c > 0) {
-                    channelsStr += ' ';
-                }
-                channelsStr += channels[c];
-            }
-            row[1] = channelsStr;
-            row[2] = comps.getChannelsLabel();
-            defaultLayers.push_back(row);
-        }
-    }
-    std::string encodedDefaultLayers = _imp->defaultLayersList->encodeToKnobTableFormat(defaultLayers);
-    _imp->defaultLayersList->setDefaultValue(encodedDefaultLayers);
+    // The default value is a fresh registry with no users, which is exactly what
+    // reset() restores when it resets every project knob to its default.
+    _imp->defaultLayersList->setDefaultValue(encodeLayersKnobTable());
     LayersPage->addKnob(_imp->defaultLayersList);
 
     KnobPagePtr lutPages = AppManager::createKnob<KnobPage>( this, tr("LUT") );
@@ -1544,22 +1520,58 @@ Project::getLayerUsers(const std::string& id, std::list<NodePtr>* users) const
     }
 }
 
+std::string
+Project::encodeLayersKnobTable() const
+{
+    std::map<std::string, int> usersCount;
+    {
+        NodesList nodes;
+        getNodes_recursive(nodes, true);
+        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+            std::set<std::string> ids;
+            (*it)->getReferencedLayerIDs(&ids);
+            for (std::set<std::string>::const_iterator id = ids.begin(); id != ids.end(); ++id) {
+                ++usersCount[*id];
+            }
+        }
+    }
+
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = _imp->layers->snapshot();
+    std::list<std::vector<std::string>> table;
+    for (std::size_t i = 0; i < snapshot->size(); ++i) {
+        const ImageLayerDesc& desc = (*snapshot)[i].desc;
+        std::map<std::string, int>::const_iterator found = usersCount.find(desc.getLayerID());
+        table.push_back(KnobLayers::makeRow(desc, found == usersCount.end() ? 0 : found->second));
+    }
+
+    return _imp->defaultLayersList->encodeToKnobTableFormat(table);
+}
+
+void
+Project::refreshLayersKnob()
+{
+    _imp->defaultLayersList->setValue(encodeLayersKnobTable());
+}
+
 void
 Project::emitProjectLayersChangedSignal()
 {
+    refreshLayersKnob();
     Q_EMIT projectLayersChanged();
 }
 
 void
 Project::notifyLayersChanged()
 {
-    Q_EMIT projectLayersChanged();
-
     NodesList nodes;
     getNodes_recursive(nodes, true);
     for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
         (*it)->refreshChannelSelectors();
     }
+
+    // After the selectors: a selector that loses its layer changes "Used by".
+    refreshLayersKnob();
+    Q_EMIT projectLayersChanged();
 }
 
 const std::vector<std::string>&

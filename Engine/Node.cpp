@@ -3504,6 +3504,7 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
     }
 
     deleteNodeVariableToPython( getFullyQualifiedName() );
+    _imp->notifyLayerReferencesChanged();
 } // deactivate
 
 void
@@ -3611,6 +3612,7 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
     }
 
     _imp->runOnNodeCreatedCB(true);
+    _imp->notifyLayerReferencesChanged();
 } // activate
 
 
@@ -5756,6 +5758,7 @@ Node::Implementation::onLayerChanged(int inputNb,
 
         _publicInterface->s_outputLayerChanged();
     }
+    notifyLayerReferencesChanged();
 }
 
 void
@@ -5842,6 +5845,24 @@ Node::Implementation::onMaskSelectorChanged(int inputNb,
         ///Clip preferences have changed
         effect->refreshMetadata_public(true);
     }
+    notifyLayerReferencesChanged();
+}
+
+void
+Node::Implementation::notifyLayerReferencesChanged()
+{
+    if (QThread::currentThread() != qApp->thread()) {
+        return;
+    }
+    AppInstancePtr app = _publicInterface->getApp();
+    if (!app) {
+        return;
+    }
+    ProjectPtr project = app->getProject();
+    if (!project || project->isLoadingProject() || project->isProjectClosing()) {
+        return;
+    }
+    project->refreshLayersKnob();
 }
 
 bool
@@ -6695,6 +6716,7 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
     hasChanged |= refreshChannelSelectors();
 
     registerProducedLayers();
+    _imp->notifyLayerReferencesChanged();
 
     refreshIdentityState();
 

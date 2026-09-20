@@ -57,6 +57,8 @@ public Q_SLOTS:
 
     void onRGBAButtonClicked();
 
+    void onOkClicked();
+
 private:
     std::unique_ptr<NewLayerDialogPrivate> _imp;
 };

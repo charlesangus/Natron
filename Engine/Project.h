@@ -174,6 +174,11 @@ public:
     // Q_EMIT a signal directly because they are not a member of this QObject.
     void emitProjectLayersChangedSignal();
 
+    // Rebuilds the read-only Layers page (Layer / Channels / Used by) from the registry.
+    // Registry mutations call it themselves; nodes call it when a layer reference changes,
+    // since that alters "Used by" without touching the registry.
+    void refreshLayersKnob();
+
     void setOrAddProjectFormat(const Format & frmt, bool skipAdd = false);
 
     bool isAutoSetProjectFormatEnabled() const;
@@ -407,6 +412,8 @@ private:
     // called after a registry mutation outside of project load (load batches its own
     // single emission after all nodes are restored, see ProjectPrivate::restoreFromSerialization).
     void notifyLayersChanged();
+
+    std::string encodeLayersKnobTable() const;
 
     /*Returns the index of the format*/
     int tryAddProjectFormat(const Format & f, bool* existed);

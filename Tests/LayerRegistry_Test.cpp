@@ -399,3 +399,71 @@ TEST_F(BaseTest, ReferencedLayerCannotBeRemoved)
 
     project->reset(false, true);
 } // TEST_F(BaseTest, ReferencedLayerCannotBeRemoved)
+
+static bool
+findLayersKnobRow(const KnobTablePtr& knob, const std::string& label, std::vector<std::string>* row)
+{
+    std::list<std::vector<std::string>> table;
+
+    knob->getTable(&table);
+    for (std::list<std::vector<std::string>>::const_iterator it = table.begin(); it != table.end(); ++it) {
+        if ((*it)[0] == label) {
+            *row = *it;
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The project "Layers" page knob is a read-only view of the registry: one row per
+// registered layer with its channels and the number of referencing nodes, kept in sync
+// with registry mutations and with layer selections on nodes.
+TEST_F(BaseTest, LayersKnobMirrorsRegistryAndUsers)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    KnobTablePtr layersKnob = std::dynamic_pointer_cast<KnobTable>(project->getKnobByName("defaultLayers"));
+    ASSERT_TRUE(bool(layersKnob));
+    EXPECT_EQ(3, layersKnob->getColumnsCount());
+
+    std::vector<std::string> row;
+    EXPECT_TRUE(findLayersKnobRow(layersKnob, "Color", &row));
+    EXPECT_EQ(std::string("R G B A"), row[1]);
+    EXPECT_EQ(std::string("0"), row[2]);
+    EXPECT_FALSE(findLayersKnobRow(layersKnob, "diffuse", &row));
+
+    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+    NodePtr reader = getApp()->createNode(readerArgs);
+    ASSERT_TRUE(bool(reader));
+
+    EXPECT_TRUE(findLayersKnobRow(layersKnob, "diffuse", &row));
+    EXPECT_EQ(std::string("0"), row[2]);
+    EXPECT_TRUE(findLayersKnobRow(layersKnob, "specular", &row));
+
+    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    ASSERT_TRUE(bool(blur));
+    connectNodes(reader, blur, 0, true);
+
+    KnobChoicePtr outputLayerKnob = std::dynamic_pointer_cast<KnobChoice>(blur->getKnobByName(kOutputChannelsKnobName));
+    ASSERT_TRUE(bool(outputLayerKnob));
+    outputLayerKnob->setValueFromID("diffuse", 0);
+
+    EXPECT_TRUE(findLayersKnobRow(layersKnob, "diffuse", &row));
+    EXPECT_EQ(std::string("1"), row[2]);
+
+    std::string error;
+    EXPECT_FALSE(project->removeLayer("diffuse", &error));
+    EXPECT_TRUE(findLayersKnobRow(layersKnob, "diffuse", &row));
+
+    EXPECT_TRUE(project->removeLayer("specular", &error)) << error;
+    EXPECT_FALSE(findLayersKnobRow(layersKnob, "specular", &row));
+
+    project->reset(false, true);
+    EXPECT_FALSE(findLayersKnobRow(layersKnob, "diffuse", &row));
+    EXPECT_TRUE(findLayersKnobRow(layersKnob, "Color", &row));
+} // TEST_F(BaseTest, LayersKnobMirrorsRegistryAndUsers)

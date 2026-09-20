@@ -382,7 +382,7 @@ ViewerTabPrivate::getComponentsAvailabel(std::set<ImageLayerDesc>* comps) const
         activeInput[i] = viewerNode->getInput(activeInputIdx[i]);
         if (activeInput[i]) {
             std::list<ImageLayerDesc> compsAvailable;
-            activeInput[i]->getAvailableLayers(time, ViewIdx(0), -1, &compsAvailable);
+            activeInput[i]->getPresentLayers(time, ViewIdx(0), -1, &compsAvailable);
             for (std::list<ImageLayerDesc>::iterator it = compsAvailable.begin(); it != compsAvailable.end(); ++it) {
                 comps->insert(*it);
             }

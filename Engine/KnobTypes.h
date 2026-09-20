@@ -1168,15 +1168,17 @@ public:
 
     virtual int getColumnsCount() const OVERRIDE FINAL
     {
-        return 2;
+        return 3;
     }
 
     virtual std::string getColumnLabel(int col) const OVERRIDE FINAL
     {
         if (col == 0) {
-            return tr("Name").toStdString();
+            return tr("Layer").toStdString();
         } else if (col == 1) {
             return tr("Channels").toStdString();
+        } else if (col == 2) {
+            return tr("Used by").toStdString();
         } else {
             return std::string();
         }
@@ -1189,14 +1191,17 @@ public:
         return true;
     }
 
-    virtual bool isColumnEditable(int col) OVERRIDE FINAL WARN_UNUSED_RETURN
+    virtual bool isColumnEditable(int /*col*/) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        if (col == 1) {
-            return false;
-        }
-
-        return true;
+        return false;
     }
+
+    virtual bool useEditButton() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    static std::vector<std::string> makeRow(const ImageLayerDesc& layer, int usersCount);
 
     static const std::string & typeNameStatic() WARN_UNUSED_RETURN;
 

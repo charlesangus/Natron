@@ -310,6 +310,8 @@ public:
 
     void onMaskSelectorChanged(int inputNb, const MaskSelector& selector);
 
+    void notifyLayerReferencesChanged();
+
     ImageLayerDesc getSelectedLayerInternal(int inputNb, const std::list<ImageLayerDesc>& availableLayers, const ChannelSelector& selector) const;
 
     Node* _publicInterface;

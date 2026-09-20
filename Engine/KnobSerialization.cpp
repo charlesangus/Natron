@@ -47,7 +47,9 @@
 #include "Engine/TrackMarker.h"
 #include "Engine/TrackerContext.h"
 
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobLayerSelect.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -166,6 +168,10 @@ KnobSerialization::createKnob(const std::string & typeName,
         ret = std::make_shared<KnobLayers>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobChannelSet::typeNameStatic()) {
         ret = std::make_shared<KnobChannelSet>((KnobHolder*)NULL, std::string(), dimension, false);
+    } else if (typeName == KnobLayerSelect::typeNameStatic()) {
+        ret = std::make_shared<KnobLayerSelect>((KnobHolder*)NULL, std::string(), dimension, false);
+    } else if (typeName == KnobChannelSelect::typeNameStatic()) {
+        ret = std::make_shared<KnobChannelSelect>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobFile::typeNameStatic()) {
         ret = std::make_shared<KnobFile>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobOutputFile::typeNameStatic()) {

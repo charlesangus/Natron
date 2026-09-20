@@ -40,6 +40,7 @@ set(Tests_SOURCES
     Image_Test.cpp
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
+    KnobLayerSelect_Test.cpp
     Knob_Test.cpp
     LayerRegistry_Test.cpp
     Lut_Test.cpp

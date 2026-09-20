@@ -175,7 +175,7 @@ become phases here.
 
 ## Phase 38.5: GUI
 
-- [ ] M38.P5.T1 — `LayerChannelRow` widget
+- [x] M38.P5.T1 — `LayerChannelRow` widget
   - files: `Gui/LayerChannelRow.h`, `Gui/LayerChannelRow.cpp`, `Gui/CMakeLists.txt`
   - approach: §2: combo (entries by mode), checkable coloured `Button`s by channel name (`KnobGuiBool.cpp:273-300` constants), regex `LineEdit` + matches label validated on `editingFinished`, `[−]`; signals `layerChosen(id)`, `channelToggled(name, on)`, `patternCommitted(p)`, `removeRequested()`, `newLayerRequested()`; `setAbsentMarker(text)` inserts/removes the single marker item; no knob dependency (unit-testable with a fake list).
   - verify: an offscreen `QApplication` gtest (`QT_QPA_PLATFORM=offscreen`): entries order per mode, buttons rebuilt on layer change with all checked, invalid pattern sets the `dirty` property and tooltip, marker item present only while set; `clang-format` gate passes.

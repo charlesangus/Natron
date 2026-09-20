@@ -1610,16 +1610,12 @@ public:
     struct ImageLayersToRender {
         std::list<RectToRender> rectsToRender;
         std::map<ImageLayerDesc, LayerToRender> layers;
-        std::map<int, ImagePremultiplicationEnum> inputPremult;
-        ImagePremultiplicationEnum outputPremult;
         bool useOpenGL;
         EffectInstance::OpenGLContextEffectDataPtr glContextData;
 
         ImageLayersToRender()
             : rectsToRender()
             , layers()
-            , inputPremult()
-            , outputPremult(eImagePremultiplicationPremultiplied)
             , useOpenGL(false)
             , glContextData()
         {
@@ -2368,7 +2364,6 @@ private:
                                                  const ImageLayerDesc& targetComponents,
                                                  ImageBitDepthEnum targetDepth,
                                                  bool useAlpha0ForRGBToRGBAConversion,
-                                                 ImagePremultiplicationEnum outputPremult,
                                                  int channelForAlpha);
 
     /**

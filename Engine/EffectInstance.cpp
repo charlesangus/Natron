@@ -1059,7 +1059,7 @@ EffectInstance::getImage(int inputNb,
         }
 
         if (mapToClipPrefs) {
-            inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, node->usesAlpha0ToConvertFromRGBToRGBA(), eImagePremultiplicationPremultiplied, channelForMask);
+            inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, node->usesAlpha0ToConvertFromRGBToRGBA(), channelForMask);
         }
 
         return inputImg;
@@ -1140,17 +1140,9 @@ EffectInstance::getImage(int inputNb,
         inputImg = rescaledImg;
     }
 
-
-    //Remap if needed
-    ImagePremultiplicationEnum outputPremult;
-    if (components.isColorLayer()) {
-        outputPremult = inputEffect->getPremult();
-    } else {
-        outputPremult = eImagePremultiplicationOpaque;
-    }
-
+    // Remap if needed
     if (mapToClipPrefs) {
-        inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, node->usesAlpha0ToConvertFromRGBToRGBA(), outputPremult, channelForMask);
+        inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, node->usesAlpha0ToConvertFromRGBToRGBA(), channelForMask);
     }
 
 #ifdef DEBUG
@@ -2258,7 +2250,6 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                 lastFrame,
                                                 layers->useOpenGL);
     ImagePtr originalInputImage, maskImage;
-    ImagePremultiplicationEnum originalImagePremultiplication;
     EffectInstance::InputImagesMap::const_iterator foundPrefInput = rectToRender.imgs.find(preferredInput);
     EffectInstance::InputImagesMap::const_iterator foundMaskInput = rectToRender.imgs.end();
 
@@ -2267,12 +2258,6 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
     }
     if ( ( foundPrefInput != rectToRender.imgs.end() ) && !foundPrefInput->second.empty() ) {
         originalInputImage = foundPrefInput->second.front();
-    }
-    std::map<int, ImagePremultiplicationEnum>::const_iterator foundPrefPremult = layers->inputPremult.find(preferredInput);
-    if ((foundPrefPremult != layers->inputPremult.end()) && originalInputImage) {
-        originalImagePremultiplication = foundPrefPremult->second;
-    } else {
-        originalImagePremultiplication = eImagePremultiplicationOpaque;
     }
 
     if ( ( foundMaskInput != rectToRender.imgs.end() ) && !foundMaskInput->second.empty() ) {
@@ -2359,7 +2344,6 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                        processChannels,
                                                        originalInputImage,
                                                        maskImage,
-                                                       originalImagePremultiplication,
                                                        *layers);
     if (handlerRet == eRenderingFunctorRetOK) {
         return eRenderingFunctorRetOK;
@@ -2382,7 +2366,6 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                               const std::bitset<4>& processChannels,
                                               const ImagePtr& originalInputImage,
                                               const ImagePtr& maskImage,
-                                              const ImagePremultiplicationEnum originalImagePremultiplication,
                                               ImageLayersToRender& layers)
 {
     TimeLapsePtr timeRecorder;
@@ -2728,15 +2711,12 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
     assert(!renderAborted);
 
-    bool unPremultIfNeeded = layers.outputPremult == eImagePremultiplicationPremultiplied;
     bool useMaskMix = _publicInterface->isHostMaskingEnabled() || _publicInterface->isHostMixingEnabled();
     double mix = useMaskMix ? _publicInterface->getNode()->getHostMixingValue(time, view) : 1.;
     bool doMask = useMaskMix ? _publicInterface->getNode()->isMaskEnabled(_publicInterface->getNInputs() - 1) : false;
 
     //Check for NaNs, copy to output image and mark for rendered
     for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = outputLayers.begin(); it != outputLayers.end(); ++it) {
-        bool unPremultRequired = unPremultIfNeeded && it->second.tmpImage->getComponentsCount() == 4 && it->second.renderMappedImage->getComponentsCount() == 3;
-
         if ( frameArgs->doNansHandling && it->second.tmpImage->checkForNaNsAndFix(actionArgs.roi) ) {
             QString warning = QString::fromUtf8( _publicInterface->getNode()->getScriptName_mt_safe().c_str() );
             warning.append( QString::fromUtf8(": ") );
@@ -2762,10 +2742,10 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
                 if ( ( it->second.renderMappedImage->getComponents() != it->second.tmpImage->getComponents() ) ||
                      ( it->second.renderMappedImage->getBitDepth() != it->second.tmpImage->getBitDepth() ) ) {
-                    it->second.tmpImage->convertToFormat( it->second.tmpImage->getBounds(),
-                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.tmpImage->getBitDepth() ),
-                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.renderMappedImage->getBitDepth() ),
-                                                          -1, false, unPremultRequired, it->second.renderMappedImage.get() );
+                    it->second.tmpImage->convertToFormat(it->second.tmpImage->getBounds(),
+                                                         _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
+                                                         _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.renderMappedImage->getBitDepth()),
+                                                         -1, false, false, it->second.renderMappedImage.get());
                 } else {
                     it->second.renderMappedImage->pasteFrom(*(it->second.tmpImage), it->second.tmpImage->getBounds(), false);
                 }
@@ -2804,7 +2784,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 }
 
                 if (mappedOriginalInputImage) {
-                    it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, layers.outputPremult, originalImagePremultiplication, processChannels, mappedOriginalInputImage, true);
+                    it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, eImagePremultiplicationOpaque, eImagePremultiplicationOpaque, processChannels, mappedOriginalInputImage, true);
                     if (useMaskMix) {
                         it->second.tmpImage->applyMaskMix(renderMappedRectToRender, maskImage.get(), mappedOriginalInputImage.get(), doMask, false, mix);
                     }
@@ -2836,10 +2816,10 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                                              false);
 #endif
 
-                    it->second.tmpImage->convertToFormat( renderMappedRectToRender,
-                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.tmpImage->getBitDepth() ),
-                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.fullscaleImage->getBitDepth() ),
-                                                          -1, false, unPremultRequired, tmp.get() );
+                    it->second.tmpImage->convertToFormat(renderMappedRectToRender,
+                                                         _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
+                                                         _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.fullscaleImage->getBitDepth()),
+                                                         -1, false, false, tmp.get());
                     tmp->downscaleMipmap( it->second.tmpImage->getRoD(),
                                           renderMappedRectToRender, 0, mipmapLevel, false, it->second.downscaleImage.get() );
                     it->second.fullscaleImage->pasteFrom(*tmp, renderMappedRectToRender, false);
@@ -2867,11 +2847,10 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                          * BitDepth/Components conversion required
                          */
 
-
-                        it->second.tmpImage->convertToFormat( it->second.tmpImage->getBounds(),
-                                                              _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.tmpImage->getBitDepth() ),
-                                                              _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.downscaleImage->getBitDepth() ),
-                                                              -1, false, unPremultRequired, it->second.downscaleImage.get() );
+                        it->second.tmpImage->convertToFormat(it->second.tmpImage->getBounds(),
+                                                             _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
+                                                             _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.downscaleImage->getBitDepth()),
+                                                             -1, false, false, it->second.downscaleImage.get());
                     } else {
                         /*
                          * No conversion required, copy to output
@@ -2881,7 +2860,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     }
                 }
 
-                it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, layers.outputPremult, originalImagePremultiplication, processChannels, originalInputImage, true, glContext);
+                it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, eImagePremultiplicationOpaque, eImagePremultiplicationOpaque, processChannels, originalInputImage, true, glContext);
                 if (useMaskMix) {
                     it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInputImage.get(), doMask, false, mix, glContext);
                 }

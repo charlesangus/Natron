@@ -162,7 +162,6 @@ EffectInstance::convertLayersFormatsIfNeeded(const AppInstancePtr& app,
                                              const ImageLayerDesc& targetComponents,
                                              ImageBitDepthEnum targetDepth,
                                              bool useAlpha0ForRGBToRGBAConversion,
-                                             ImagePremultiplicationEnum outputPremult,
                                              int channelForAlpha)
 {
     // Do not do any conversion for OpenGL textures, OpenGL is managing it for us.
@@ -204,18 +203,16 @@ EffectInstance::convertLayersFormatsIfNeeded(const AppInstancePtr& app,
         tmp->setKey(inputImage->getKey());
         const RectI clippedRoi = roi.intersect(bounds);
 
-        bool unPremultIfNeeded = outputPremult == eImagePremultiplicationPremultiplied && inputImage->getComponentsCount() == 4 && tmp->getComponentsCount() == 3;
-
         if (useAlpha0ForRGBToRGBAConversion) {
-            inputImage->convertToFormatAlpha0( clippedRoi,
-                                               app->getDefaultColorSpaceForBitDepth( inputImage->getBitDepth() ),
-                                               app->getDefaultColorSpaceForBitDepth(targetDepth),
-                                               channelForAlpha, false, unPremultIfNeeded, tmp.get() );
+            inputImage->convertToFormatAlpha0(clippedRoi,
+                                              app->getDefaultColorSpaceForBitDepth(inputImage->getBitDepth()),
+                                              app->getDefaultColorSpaceForBitDepth(targetDepth),
+                                              channelForAlpha, false, false, tmp.get());
         } else {
-            inputImage->convertToFormat( clippedRoi,
-                                         app->getDefaultColorSpaceForBitDepth( inputImage->getBitDepth() ),
-                                         app->getDefaultColorSpaceForBitDepth(targetDepth),
-                                         channelForAlpha, false, unPremultIfNeeded, tmp.get() );
+            inputImage->convertToFormat(clippedRoi,
+                                        app->getDefaultColorSpaceForBitDepth(inputImage->getBitDepth()),
+                                        app->getDefaultColorSpaceForBitDepth(targetDepth),
+                                        channelForAlpha, false, false, tmp.get());
         }
 
         return tmp;
@@ -370,7 +367,6 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     U64 nodeHash = frameArgs->nodeHash;
     const double par = getAspectRatio(-1);
     const ImageFieldingOrderEnum fieldingOrder = getFieldingOrder();
-    const ImagePremultiplicationEnum thisEffectOutputPremult = getPremult();
     const unsigned int mipmapLevel = args.mipmapLevel;
     SupportsEnum supportsRS = supportsRenderScaleMaybe();
     ///This flag is relevant only when the mipmapLevel is different than 0. We use it to determine
@@ -658,15 +654,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                         std::list<ImageLayerDesc>::const_iterator compIt = args.components.begin();
 
                         for (std::map<ImageLayerDesc, ImagePtr>::iterator it = outputLayers->begin(); it != outputLayers->end(); ++it, ++compIt) {
-                            ImagePremultiplicationEnum premult;
-                            const ImageLayerDesc& outComp = outputComponents.front();
-                            if (outComp.isColorLayer()) {
-                                premult = thisEffectOutputPremult;
-                            } else {
-                                premult = eImagePremultiplicationOpaque;
-                            }
-
-                            ImagePtr tmp = convertLayersFormatsIfNeeded(app, it->second, args.roi, *compIt, inputArgs->bitdepth, useAlpha0ForRGBToRGBAConversion, premult, -1);
+                            ImagePtr tmp = convertLayersFormatsIfNeeded(app, it->second, args.roi, *compIt, inputArgs->bitdepth, useAlpha0ForRGBToRGBAConversion, -1);
                             assert(tmp);
                             convertedLayers[it->first] = tmp;
                         }
@@ -1278,14 +1266,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////// Pre-render input images ////////////////////////////////////////////////////////////////
 
-    ///Pre-render input images before allocating the image if we need to render
-    {
-        if (!outputComponents.empty() && outputComponents.front().isColorLayer()) {
-            layersToRender->outputPremult = thisEffectOutputPremult;
-        } else {
-            layersToRender->outputPremult = eImagePremultiplicationOpaque;
-        }
-    }
+    /// Pre-render input images before allocating the image if we need to render
     for (std::list<RectToRender>::iterator it = layersToRender->rectsToRender.begin(); it != layersToRender->rectsToRender.end(); ++it) {
         if (it->isIdentity) {
             continue;
@@ -1310,22 +1291,6 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                                 *neededComps,
                                                 &it->imgs,
                                                 &it->inputRois);
-        }
-        if (layersToRender->inputPremult.empty()) {
-            for (InputImagesMap::iterator it2 = it->imgs.begin(); it2 != it->imgs.end(); ++it2) {
-                EffectInstancePtr input = getInput(it2->first);
-                if (input) {
-                    ImagePremultiplicationEnum inputPremult = input->getPremult();
-                    if ( !it2->second.empty() ) {
-                        const ImageLayerDesc& comps = it2->second.front()->getComponents();
-                        if (!comps.isColorLayer()) {
-                            inputPremult = eImagePremultiplicationOpaque;
-                        }
-                    }
-
-                    layersToRender->inputPremult[it2->first] = inputPremult;
-                }
-            }
         }
 
         //Render was aborted
@@ -1381,7 +1346,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                    isProjectFormat,
                                    *components,
                                    args.bitdepth,
-                                   layersToRender->outputPremult,
+                                   eImagePremultiplicationPremultiplied,
                                    fieldingOrder,
                                    par,
                                    args.mipmapLevel,
@@ -1449,7 +1414,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                                                         args.mipmapLevel,
                                                                         it->second.fullscaleImage->getPixelAspectRatio(),
                                                                         outputDepth,
-                                                                        layersToRender->outputPremult,
+                                                                        eImagePremultiplicationPremultiplied,
                                                                         fieldingOrder,
                                                                         true);
 
@@ -1536,7 +1501,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         ///For eRenderSafetyFullySafe, don't take any lock, the image already has a lock on itself so we're sure it can't be written to by 2 different threads.
 
         if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-            frameArgs->stats->setGlobalRenderInfosForNode(getNode(), rod, layersToRender->outputPremult, processChannels, frameArgs->tilesSupported, !renderFullScaleThenDownscale, renderMappedMipmapLevel);
+            frameArgs->stats->setGlobalRenderInfosForNode(getNode(), rod, getPremult(), processChannels, frameArgs->tilesSupported, !renderFullScaleThenDownscale, renderMappedMipmapLevel);
         }
 
 # ifdef DEBUG
@@ -1746,7 +1711,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         ///The image might need to be converted to fit the original requested format
         if (comp) {
             const RectI downscaledOriginalRoI = originalRoI.toNewMipmapLevel(originalRoIMipmapLevel, args.mipmapLevel, par, rod);
-            it->second.downscaleImage = convertLayersFormatsIfNeeded(getApp(), it->second.downscaleImage, downscaledOriginalRoI, *comp, args.bitdepth, useAlpha0ForRGBToRGBAConversion, layersToRender->outputPremult, -1);
+            it->second.downscaleImage = convertLayersFormatsIfNeeded(getApp(), it->second.downscaleImage, downscaledOriginalRoI, *comp, args.bitdepth, useAlpha0ForRGBToRGBAConversion, -1);
             assert(it->second.downscaleImage->getComponents() == *comp && it->second.downscaleImage->getBitDepth() == args.bitdepth);
 
             StorageModeEnum imageStorage = it->second.downscaleImage->getStorageMode();

@@ -397,7 +397,6 @@ public:
                                           const std::bitset<4>& processChannels,
                                           const ImagePtr& originalInputImage,
                                           const ImagePtr& maskImage,
-                                          const ImagePremultiplicationEnum originalImagePremultiplication,
                                           ImageLayersToRender& layers);
 
     static bool aborted(bool isRenderResponseToUserInteraction,

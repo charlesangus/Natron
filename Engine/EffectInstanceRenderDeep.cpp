@@ -620,7 +620,7 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
                                               false /*isRoDProjectFormat*/,
                                               components,
                                               eImageBitDepthFloat,
-                                              getPremult(),
+                                              eImagePremultiplicationPremultiplied,
                                               getFieldingOrder());
     ImagePtr image;
     appPTR->getImageOrCreate(key, params, &image);

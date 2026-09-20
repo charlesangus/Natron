@@ -989,28 +989,6 @@ Effect::setSubGraphEditable(bool editable)
     }
 }
 
-bool
-Effect::addUserLayer(const QString& layerName,
-                     const QStringList& channels)
-{
-    if (layerName.isEmpty() || (channels.size() < 1) || (channels.size() > 4)) {
-        return false;
-    }
-    std::string compsGlobal;
-    std::vector<std::string> chans( channels.size() );
-    int i = 0;
-    for (QStringList::const_iterator it = channels.begin(); it != channels.end(); ++it, ++i) {
-        std::string c = it->toStdString();
-        compsGlobal.append(c);
-        chans[i] = c;
-    }
-    ImageLayerDesc comp(layerName.toStdString(), layerName.toStdString(), compsGlobal, chans);
-
-    std::string error;
-    LayerRegistry::AddResultEnum res = getInternalNode()->getApp()->getProject()->addLayer(comp, LayerRegistryEntry::eOriginUser, &error);
-    return res != LayerRegistry::eAddResultRefused;
-}
-
 std::list<ImageLayer>
 Effect::getAvailableLayers(int inputNb) const
 {

@@ -373,8 +373,6 @@ public:
 
     void setSubGraphEditable(bool editable);
 
-    bool addUserLayer(const QString& layerName, const QStringList& channels);
-
     std::list<ImageLayer> getAvailableLayers(int inputNb) const;
 
     RectI getOutputFormat() const;

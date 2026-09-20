@@ -111,7 +111,7 @@ become phases here.
 
 ## Phase 38.3: The three knob types (engine)
 
-- [ ] M38.P3.T1 — `KnobTable` groundwork: fixed tags, expression refusal, alias branch
+- [x] M38.P3.T1 — `KnobTable` groundwork: fixed tags, expression refusal, alias branch
   - files: `Engine/KnobTypes.h`, `Engine/KnobTypes.cpp`, `Engine/Knob.h`, `Engine/Knob.cpp`, `Tests/Knob_Test.cpp`
   - approach: `KnobTable::getColumnTag(col)` (ASCII, used by the codec) separate from `getColumnLabel` (display; `KnobLayers` keeps `tr()` for display only); `KnobI::supportsExpressions()` default true, false on `KnobTable`, checked in `KnobHelper::setExpressionInternal` (`Knob.cpp:2825-2889`); `createDuplicateOnHolder` (`Knob.cpp:4525-4667`) gains a `KnobTable` branch (dispatching on `typeName()` to the concrete `BuildKnob`).
   - verify: gtest: a `KnobLayers` round trip encodes `<Name>`/`<Channels>` regardless of `QLocale`; `setExpression` on a table knob throws `std::invalid_argument`; `createDuplicateOnHolder` of a `KnobLayers` returns non-null with the same `typeName()`.

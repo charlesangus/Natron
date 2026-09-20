@@ -67,7 +67,7 @@ become phases here.
   - verify: `build/m38scout/run.sh` produces `before-grade-0.png` showing the warning icon and `dump.txt` sections for every listed id (grep the `##` headers).
   - size: S
 
-- [ ] M38.P2.T2 — Render path stops deciding anything from premult
+- [x] M38.P2.T2 — Render path stops deciding anything from premult
   - files: `Engine/EffectInstanceRenderRoI.cpp`, `Engine/EffectInstance.cpp`, `Engine/EffectInstance.h`, `Engine/EffectInstanceRenderDeep.cpp`
   - approach: delete the `outputComponents.front()` decisions (`EffectInstanceRenderRoI.cpp:661-669, 1283-1287`), `thisEffectOutputPremult` (`:373`), `ImagePlanesToRender::inputPremult/outputPremult` (`EffectInstance.h:1613-1622`, filled `:1314-1327`); `convertLayersFormatsIfNeeded` always `requiresUnpremult = false` (`:165, 189-218`); `renderHandler` loses `originalImagePremultiplication` (`EffectInstance.cpp:2249-2263`) and `unPremultRequired` (`:2719-2726, 2756, 2830, 2862`); temporarily pass `eImagePremultiplicationPremultiplied` to `Image` ctors (`:1384, 1452`, `EffectInstanceRenderDeep.cpp:623`) — the enum dies in T6.
   - verify: `tools/ci/local/test.sh ctest debug` green (WriteAllLayers pixel assertions are an RGBA round trip); `Tests/Image_Test.cpp:261-312` still pass unchanged.

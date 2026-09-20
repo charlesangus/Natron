@@ -2385,7 +2385,6 @@ private:
                             bool isProjectFormat,
                             const ImageLayerDesc& components,
                             ImageBitDepthEnum depth,
-                            ImagePremultiplicationEnum premult,
                             ImageFieldingOrderEnum fielding,
                             double par,
                             unsigned int mipmapLevel,

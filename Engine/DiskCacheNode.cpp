@@ -224,8 +224,8 @@ DiskCacheNode::render(const RenderActionArgs& args)
             throw std::runtime_error("Host gave image with wrong scale");
         }
         if ( ( srcImg->getComponents() != output.second->getComponents() ) || ( srcImg->getBitDepth() != output.second->getBitDepth() ) ) {
-            srcImg->convertToFormat( args.roi, getApp()->getDefaultColorSpaceForBitDepth( srcImg->getBitDepth() ),
-                                     getApp()->getDefaultColorSpaceForBitDepth( output.second->getBitDepth() ), 3, true, false, output.second.get() );
+            srcImg->convertToFormat(args.roi, getApp()->getDefaultColorSpaceForBitDepth(srcImg->getBitDepth()),
+                                    getApp()->getDefaultColorSpaceForBitDepth(output.second->getBitDepth()), 3, true, output.second.get());
         } else {
             output.second->pasteFrom( *srcImg, args.roi, output.second->usesBitMap() && srcImg->usesBitMap() );
         }

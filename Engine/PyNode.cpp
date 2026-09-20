@@ -1056,12 +1056,6 @@ Effect::getBitDepth() const
     return node->getEffectInstance()->getBitDepth(-1);
 }
 
-ImagePremultiplicationEnum
-Effect::getPremult() const
-{
-    return eImagePremultiplicationUnPremultiplied;
-}
-
 void
 Effect::setPagesOrder(const QStringList& pages)
 {

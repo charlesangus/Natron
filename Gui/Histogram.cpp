@@ -1646,7 +1646,6 @@ HistogramPrivate::drawScale()
                             // draw it with a lower alpha
                             alphaText *= (tickSizePixel - sSizePixel) / (double)minTickSizeTextPixel;
                         }
-                        //alphaText = std::min(alphaText, alpha); // don't draw more opaque than ticks
                         QColor c = _scaleColor;
                         c.setAlpha(255 * alphaText);
                         glCheckError();

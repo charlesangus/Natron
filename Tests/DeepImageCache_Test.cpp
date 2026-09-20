@@ -193,7 +193,6 @@ TEST(DeepImageCacheTest, EvictionRespectsOwnBudgetAndLeavesImageCacheUntouched)
     ImageParamsPtr imgParams = Image::makeParams(RectD(0, 0, 4, 4), 1., 0, false,
                                                  ImageLayerDesc::getRGBAComponents(),
                                                  eImageBitDepthFloat,
-                                                 eImagePremultiplicationPremultiplied,
                                                  eImageFieldingOrderNone);
     ImagePtr img;
     ASSERT_FALSE(imageCache.getOrCreate(imgKey, imgParams, 0, &img));
@@ -394,7 +393,6 @@ TEST(DeepImageCacheTest, EvictLRUFromMemoryCachesDrainsBothAppWideCaches)
     ImageParamsPtr imgParams = Image::makeParams(RectD(0, 0, 4, 4), 1., 0, false,
                                                  ImageLayerDesc::getRGBAComponents(),
                                                  eImageBitDepthFloat,
-                                                 eImagePremultiplicationPremultiplied,
                                                  eImageFieldingOrderNone);
     static const U64 kNodeHashes[] = { 90401, 90402, 90403 };
     for (std::size_t i = 0; i < sizeof(kNodeHashes) / sizeof(kNodeHashes[0]); ++i) {

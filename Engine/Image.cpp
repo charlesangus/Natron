@@ -679,7 +679,6 @@ Image::Image(const ImageKey & key,
     _rod = params->getRoD();
     _bounds = params->getBounds();
     _par = params->getPixelAspectRatio();
-    _premult = params->getPremultiplication();
     _fielding = params->getFieldingOrder();
 }
 
@@ -694,7 +693,6 @@ Image::Image(const ImageKey & key,
     _rod = params->getRoD();
     _bounds = params->getBounds();
     _par = params->getPixelAspectRatio();
-    _premult = params->getPremultiplication();
     _fielding = params->getFieldingOrder();
 
     allocateMemory();
@@ -709,7 +707,6 @@ Image::Image(const ImageLayerDesc& components,
              unsigned int mipmapLevel,
              double par,
              ImageBitDepthEnum bitdepth,
-             ImagePremultiplicationEnum premult,
              ImageFieldingOrderEnum fielding,
              bool useBitmap,
              StorageModeEnum storage,
@@ -719,32 +716,30 @@ Image::Image(const ImageLayerDesc& components,
 {
     setCacheEntry(makeKey(0, 0, false, 0, ViewIdx(0), false, false),
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-                  ImageParamsPtr( new ImageParams(regionOfDefinition,
-                                                                  par,
-                                                                  mipmapLevel,
-                                                                  bounds,
-                                                                  bitdepth,
-                                                                  fielding,
-                                                                  premult,
-                                                                  false /*isRoDProjectFormat*/,
-                                                                  components,
-                                                                  storage,
-                                                                  textureTarget) ),
+                  ImageParamsPtr(new ImageParams(regionOfDefinition,
+                                                 par,
+                                                 mipmapLevel,
+                                                 bounds,
+                                                 bitdepth,
+                                                 fielding,
+                                                 false /*isRoDProjectFormat*/,
+                                                 components,
+                                                 storage,
+                                                 textureTarget)),
 #else
                   std::make_shared<ImageParams>(regionOfDefinition,
-                                                  par,
-                                                  mipmapLevel,
-                                                  bounds,
-                                                  bitdepth,
-                                                  fielding,
-                                                  premult,
-                                                  false /*isRoDProjectFormat*/,
-                                                  components,
-                                                  storage,
-                                                  textureTarget),
+                                                par,
+                                                mipmapLevel,
+                                                bounds,
+                                                bitdepth,
+                                                fielding,
+                                                false /*isRoDProjectFormat*/,
+                                                components,
+                                                storage,
+                                                textureTarget),
 #endif
                   NULL /*cacheAPI*/
-                  );
+    );
 
     _bitDepth = bitdepth;
     _depthBytesSize = getSizeOfForBitDepth(_bitDepth);
@@ -752,7 +747,6 @@ Image::Image(const ImageLayerDesc& components,
     _rod = regionOfDefinition;
     _bounds = _params->getBounds();
     _par = par;
-    _premult = premult;
     _fielding = fielding;
 
     allocateMemory();
@@ -809,7 +803,6 @@ Image::makeParams(const RectD& rod,
                   bool isRoDProjectFormat,
                   const ImageLayerDesc& components,
                   ImageBitDepthEnum bitdepth,
-                  ImagePremultiplicationEnum premult,
                   ImageFieldingOrderEnum fielding,
                   StorageModeEnum storage,
                   U32 textureTarget)
@@ -817,29 +810,27 @@ Image::makeParams(const RectD& rod,
     const RectI bounds = rod.toPixelEnclosing(mipmapLevel, par);
 
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-    return ImageParamsPtr( new ImageParams(rod,
-                                                           par,
-                                                           mipmapLevel,
-                                                           bounds,
-                                                           bitdepth,
-                                                           fielding,
-                                                           premult,
-                                                           isRoDProjectFormat,
-                                                           components,
-                                                           storage,
-                                                           textureTarget) );
+    return ImageParamsPtr(new ImageParams(rod,
+                                          par,
+                                          mipmapLevel,
+                                          bounds,
+                                          bitdepth,
+                                          fielding,
+                                          isRoDProjectFormat,
+                                          components,
+                                          storage,
+                                          textureTarget));
 #else
     return std::make_shared<ImageParams>(rod,
-                                           par,
-                                           mipmapLevel,
-                                           bounds,
-                                           bitdepth,
-                                           fielding,
-                                           premult,
-                                           isRoDProjectFormat,
-                                           components,
-                                           storage,
-                                           textureTarget);
+                                         par,
+                                         mipmapLevel,
+                                         bounds,
+                                         bitdepth,
+                                         fielding,
+                                         isRoDProjectFormat,
+                                         components,
+                                         storage,
+                                         textureTarget);
 #endif
 }
 
@@ -851,7 +842,6 @@ Image::makeParams(const RectD& rod, // the image rod in canonical coordinates
                   bool isRoDProjectFormat,
                   const ImageLayerDesc& components,
                   ImageBitDepthEnum bitdepth,
-                  ImagePremultiplicationEnum premult,
                   ImageFieldingOrderEnum fielding,
                   StorageModeEnum storage,
                   U32 textureTarget)
@@ -863,29 +853,27 @@ Image::makeParams(const RectD& rod, // the image rod in canonical coordinates
 #endif
 
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-    return ImageParamsPtr( new ImageParams(rod,
-                                                           par,
-                                                           mipmapLevel,
-                                                           bounds,
-                                                           bitdepth,
-                                                           fielding,
-                                                           premult,
-                                                           isRoDProjectFormat,
-                                                           components,
-                                                           storage,
-                                                           textureTarget) );
+    return ImageParamsPtr(new ImageParams(rod,
+                                          par,
+                                          mipmapLevel,
+                                          bounds,
+                                          bitdepth,
+                                          fielding,
+                                          isRoDProjectFormat,
+                                          components,
+                                          storage,
+                                          textureTarget));
 #else
     return std::make_shared<ImageParams>(rod,
-                                           par,
-                                           mipmapLevel,
-                                           bounds,
-                                           bitdepth,
-                                           fielding,
-                                           premult,
-                                           isRoDProjectFormat,
-                                           components,
-                                           storage,
-                                           textureTarget);
+                                         par,
+                                         mipmapLevel,
+                                         bounds,
+                                         bitdepth,
+                                         fielding,
+                                         isRoDProjectFormat,
+                                         components,
+                                         storage,
+                                         textureTarget);
 #endif
 }
 
@@ -971,15 +959,14 @@ Image::resizeInternal(const Image* srcImg,
 {
     ///Allocate to resized image
     if (!createInCache) {
-        *outputImage = std::make_shared<Image>( srcImg->getComponents(),
-                                       srcImg->getRoD(),
-                                       merge,
-                                       srcImg->getMipmapLevel(),
-                                       srcImg->getPixelAspectRatio(),
-                                       srcImg->getBitDepth(),
-                                       srcImg->getPremultiplication(),
-                                       srcImg->getFieldingOrder(),
-                                       srcImg->usesBitMap() );
+        *outputImage = std::make_shared<Image>(srcImg->getComponents(),
+                                               srcImg->getRoD(),
+                                               merge,
+                                               srcImg->getMipmapLevel(),
+                                               srcImg->getPixelAspectRatio(),
+                                               srcImg->getBitDepth(),
+                                               srcImg->getFieldingOrder(),
+                                               srcImg->usesBitMap());
     } else {
         ImageParamsPtr params = std::make_shared<ImageParams>( *srcImg->getParams() );
         params->setBounds(merge);
@@ -1271,9 +1258,9 @@ Image::pasteFrom(const Image & src,
         if (gpuData) {
             // update data directly on the mapped buffer
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-            ImagePtr tmpImg(new Image(ImageLayerDesc::getRGBAComponents(), src.getRoD(), roi, 0, src.getPixelAspectRatio(), src.getBitDepth(), src.getPremultiplication(), src.getFieldingOrder(), false, eStorageModeRAM));
+            ImagePtr tmpImg(new Image(ImageLayerDesc::getRGBAComponents(), src.getRoD(), roi, 0, src.getPixelAspectRatio(), src.getBitDepth(), src.getFieldingOrder(), false, eStorageModeRAM));
 #else
-            ImagePtr tmpImg = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), src.getRoD(), roi, 0, src.getPixelAspectRatio(), src.getBitDepth(), src.getPremultiplication(), src.getFieldingOrder(), false, eStorageModeRAM);
+            ImagePtr tmpImg = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), src.getRoD(), roi, 0, src.getPixelAspectRatio(), src.getBitDepth(), src.getFieldingOrder(), false, eStorageModeRAM);
 #endif
             tmpImg->pasteFrom(src, roi);
 
@@ -1333,9 +1320,9 @@ Image::pasteFrom(const Image & src,
         glCheckError();
         // Read to a temporary RGBA buffer then convert to the image which may not be RGBA
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-        ImagePtr tmpImg(new Image(ImageLayerDesc::getRGBAComponents(), getRoD(), roi, 0, getPixelAspectRatio(), getBitDepth(), getPremultiplication(), getFieldingOrder(), false, eStorageModeRAM));
+        ImagePtr tmpImg(new Image(ImageLayerDesc::getRGBAComponents(), getRoD(), roi, 0, getPixelAspectRatio(), getBitDepth(), getFieldingOrder(), false, eStorageModeRAM));
 #else
-        ImagePtr tmpImg = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), getRoD(), roi, 0, getPixelAspectRatio(), getBitDepth(), getPremultiplication(), getFieldingOrder(), false, eStorageModeRAM);
+        ImagePtr tmpImg = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), getRoD(), roi, 0, getPixelAspectRatio(), getBitDepth(), getFieldingOrder(), false, eStorageModeRAM);
 #endif
 
         {
@@ -1350,7 +1337,7 @@ Image::pasteFrom(const Image & src,
 
         // Ok now convert from RGBA to this image format if needed
         if ( tmpImg->getComponentsCount() != getComponentsCount() ) {
-            tmpImg->convertToFormat(roi, eViewerColorSpaceLinear, eViewerColorSpaceLinear, 3, false, false, this);
+            tmpImg->convertToFormat(roi, eViewerColorSpaceLinear, eViewerColorSpaceLinear, 3, false, this);
         } else {
             pasteFrom(*tmpImg, roi, false);
         }
@@ -1769,12 +1756,6 @@ Image::getFieldingOrder() const
     return this->_fielding;
 }
 
-ImagePremultiplicationEnum
-Image::getPremultiplication() const
-{
-    return this->_premult;
-}
-
 unsigned int
 Image::getRowElements() const
 {
@@ -2086,7 +2067,7 @@ Image::downscaleMipmap(const RectD& dstRod,
     assert( !copyBitMap || _bitmap.getBitmap() );
 
     RectI dstRoI  = roi.downscalePowerOfTwoSmallestEnclosing(downscaleLvls);
-    ImagePtr tmpImg = std::make_shared<Image>( getComponents(), dstRod, dstRoI, toLevel, par, getBitDepth(), getPremultiplication(), getFieldingOrder(), true);
+    ImagePtr tmpImg = std::make_shared<Image>(getComponents(), dstRod, dstRoI, toLevel, par, getBitDepth(), getFieldingOrder(), true);
 
     buildMipmapLevel( dstRod, roi, downscaleLvls, copyBitMap, tmpImg.get() );
 
@@ -2309,7 +2290,7 @@ Image::buildMipmapLevel(const RectD& dstRoD,
         RectI halvedRoI = previousRoI.downscalePowerOfTwoSmallestEnclosing(1);
 
         ///Allocate an image with half the size of the source image
-        dstImg = new Image( getComponents(), dstRoD, halvedRoI, getMipmapLevel() + i, getPixelAspectRatio(), getBitDepth(), getPremultiplication(), getFieldingOrder(), true);
+        dstImg = new Image(getComponents(), dstRoD, halvedRoI, getMipmapLevel() + i, getPixelAspectRatio(), getBitDepth(), getFieldingOrder(), true);
 
         ///Half the source image into dstImg.
         ///We pass the closestPo2 roi which might not be the entire size of the source image
@@ -2409,78 +2390,6 @@ Bitmap::copyBitmapPortion(const RectI& roi,
             ++dstCur;
         }
     }
-}
-
-template <typename PIX, bool doPremult>
-void
-Image::premultInternal(const RectI& roi)
-{
-    WriteAccess acc(this);
-    const RectI renderWindow = roi.intersect(_bounds);
-
-    assert(getComponentsCount() == 4);
-
-    int srcRowElements = 4 * _bounds.width();
-    PIX* dstPix = (PIX*)acc.pixelAt(renderWindow.x1, renderWindow.y1);
-    for ( int y = renderWindow.y1; y < renderWindow.y2; ++y, dstPix += (srcRowElements - (renderWindow.x2 - renderWindow.x1) * 4) ) {
-        for (int x = renderWindow.x1; x < renderWindow.x2; ++x, dstPix += 4) {
-#ifdef DEBUG_NAN
-            assert( !std::isnan(dstPix[3]) ); // check for NaN
-#endif
-            for (int c = 0; c < 3; ++c) {
-#ifdef DEBUG_NAN
-                assert( !std::isnan(dstPix[c]) ); // check for NaN
-#endif
-                if (doPremult) {
-                    dstPix[c] = PIX(float(dstPix[c]) * dstPix[3]);
-                } else {
-                    if (dstPix[3] != 0) {
-                        dstPix[c] = PIX( dstPix[c] / float(dstPix[3]) );
-                    }
-                }
-#ifdef DEBUG_NAN
-                assert( !std::isnan(dstPix[c]) ); // check for NaN
-#endif
-            }
-        }
-    }
-}
-
-template <bool doPremult>
-void
-Image::premultForDepth(const RectI& roi)
-{
-    if (getComponentsCount() != 4) {
-        return;
-    }
-    ImageBitDepthEnum depth = getBitDepth();
-    switch (depth) {
-    case eImageBitDepthByte:
-        premultInternal<unsigned char, doPremult>(roi);
-        break;
-    case eImageBitDepthShort:
-        premultInternal<unsigned short, doPremult>(roi);
-        break;
-    case eImageBitDepthFloat:
-        premultInternal<float, doPremult>(roi);
-        break;
-    default:
-        break;
-    }
-}
-
-void
-Image::premultImage(const RectI& roi)
-{
-    assert(getStorageMode() != eStorageModeGLTex);
-    premultForDepth<true>(roi);
-}
-
-void
-Image::unpremultImage(const RectI& roi)
-{
-    assert(getStorageMode() != eStorageModeGLTex);
-    premultForDepth<false>(roi);
 }
 
 NATRON_NAMESPACE_EXIT

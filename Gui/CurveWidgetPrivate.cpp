@@ -529,7 +529,6 @@ CurveWidgetPrivate::drawScale(double screenPixelRatio)
                             // draw it with a lower alpha
                             alphaText *= (tickSizePixel - sSizePixel) / (double)minTickSizeTextPixel;
                         }
-                        //alphaText = std::min(alphaText, alpha); // don't draw more opaque than ticks
                         QColor c = scaleColor;
                         c.setAlpha(255 * alphaText);
                         if (axis == 0) {

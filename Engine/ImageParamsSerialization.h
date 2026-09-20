@@ -108,8 +108,7 @@ ImageParams::serialize(Archive & ar,
     //    ar & ::boost::serialization::make_nvp("FramesNeeded",f);
     //}
     ar & ::boost::serialization::make_nvp("Components", _components);
-    ar & ::boost::serialization::make_nvp("MMLevel", _mipmapLevel);
-    ar & ::boost::serialization::make_nvp("Premult", _premult);
+    ar& ::boost::serialization::make_nvp("MMLevel", _mipmapLevel);
     ar & ::boost::serialization::make_nvp("Fielding", _fielding);
 }
 

@@ -153,15 +153,14 @@ renderSmearDot(const unsigned char* maskData,
     /// First copy the portion of the image around the previous dot into tmpBuf
     RectD prevDotRoD(prev.x - brushSizePixels / 2., prev.y - brushSizePixels / 2., prev.x + brushSizePixels / 2., prev.y + brushSizePixels / 2.);
     const RectI prevDotBounds = prevDotRoD.toPixelEnclosing(0, outputImage->getPixelAspectRatio());
-    ImagePtr tmpBuf( new Image(outputImage->getComponents(),
-                               prevDotRoD,
-                               prevDotBounds,
-                               0,
-                               outputImage->getPixelAspectRatio(),
-                               outputImage->getBitDepth(),
-                               outputImage->getPremultiplication(),
-                               outputImage->getFieldingOrder(),
-                               false) );
+    ImagePtr tmpBuf(new Image(outputImage->getComponents(),
+                              prevDotRoD,
+                              prevDotBounds,
+                              0,
+                              outputImage->getPixelAspectRatio(),
+                              outputImage->getBitDepth(),
+                              outputImage->getFieldingOrder(),
+                              false));
     tmpBuf->pasteFrom(*outputImage, prevDotBounds, false);
 
     Image::ReadAccess tmpAcc( tmpBuf.get() );

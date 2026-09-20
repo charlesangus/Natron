@@ -2544,19 +2544,17 @@ RotoStrokeItem::renderSingleStroke(const RectD& pointsBbox,
 
     NodePtr node = getContext()->getNode();
     ImageFieldingOrderEnum fielding = node->getEffectInstance()->getFieldingOrder();
-    ImagePremultiplicationEnum premult = eImagePremultiplicationPremultiplied;
     bool copyFromImage = false;
     bool mipmapLevelChanged = false;
     if (!source) {
-        source.reset( new Image(components,
-                                pointsBbox,
-                                pixelPointsBbox,
-                                mipmapLevel,
-                                par,
-                                depth,
-                                premult,
-                                fielding,
-                                false) );
+        source.reset(new Image(components,
+                               pointsBbox,
+                               pixelPointsBbox,
+                               mipmapLevel,
+                               par,
+                               depth,
+                               fielding,
+                               false));
         *image = source;
     } else {
         if ( (*image)->getMipmapLevel() > mipmapLevel ) {
@@ -2569,15 +2567,14 @@ RotoStrokeItem::renderSingleStroke(const RectD& pointsBbox,
             const RectI mergeBounds = mergeRoD.toPixelEnclosing(mipmapLevel, par);
 
             //upscale the original image
-            source.reset( new Image(components,
-                                    mergeRoD,
-                                    mergeBounds,
-                                    mipmapLevel,
-                                    par,
-                                    depth,
-                                    premult,
-                                    fielding,
-                                    false) );
+            source.reset(new Image(components,
+                                   mergeRoD,
+                                   mergeBounds,
+                                   mipmapLevel,
+                                   par,
+                                   depth,
+                                   fielding,
+                                   false));
             source->fillZero(pixelPointsBbox);
             (*image)->upscaleMipmap( oldBounds, (*image)->getMipmapLevel(), source->getMipmapLevel(), source.get() );
             *image = source;
@@ -2591,15 +2588,14 @@ RotoStrokeItem::renderSingleStroke(const RectD& pointsBbox,
             const RectI mergeBounds = mergeRoD.toPixelEnclosing(mipmapLevel, par);
 
             //downscale the original image
-            source.reset( new Image(components,
-                                    mergeRoD,
-                                    mergeBounds,
-                                    mipmapLevel,
-                                    par,
-                                    depth,
-                                    premult,
-                                    fielding,
-                                    false) );
+            source.reset(new Image(components,
+                                   mergeRoD,
+                                   mergeBounds,
+                                   mipmapLevel,
+                                   par,
+                                   depth,
+                                   fielding,
+                                   false));
             source->fillZero(pixelPointsBbox);
             (*image)->downscaleMipmap( pointsBbox, oldBounds, (*image)->getMipmapLevel(), source->getMipmapLevel(), false, source.get() );
             *image = source;
@@ -2816,7 +2812,6 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
                                               false,
                                               components,
                                               depth,
-                                              eImagePremultiplicationPremultiplied,
                                               node->getEffectInstance()->getFieldingOrder());
     /*
        At this point we take the cacheAccessMutex so that no other thread can retrieve this image from the cache while it has not been

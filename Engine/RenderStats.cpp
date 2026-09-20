@@ -75,9 +75,6 @@ struct NodeRenderStatsPrivate
     //Channels rendered
     std::bitset<4> channelsEnabled;
 
-    //Premultiplication of the output imge
-    ImagePremultiplicationEnum outputPremult;
-
     NodeRenderStatsPrivate()
         : totalTimeSpentRendering(0)
         , rod()
@@ -92,7 +89,6 @@ struct NodeRenderStatsPrivate
         , tileSupportEnabled(false)
         , renderScaleSupportEnabled(false)
         , channelsEnabled()
-        , outputPremult(eImagePremultiplicationOpaque)
     {
         for (int i = 0; i < 4; ++i) {
             channelsEnabled[i] = false;
@@ -133,7 +129,6 @@ NodeRenderStats::operator=(const NodeRenderStats& other)
     for (int i = 0; i < 4; ++i) {
         _imp->channelsEnabled[i] = other._imp->channelsEnabled[i];
     }
-    _imp->outputPremult = other._imp->outputPremult;
 }
 
 void
@@ -290,18 +285,6 @@ NodeRenderStats::getChannelsRendered() const
     return _imp->channelsEnabled;
 }
 
-void
-NodeRenderStats::setOutputPremult(ImagePremultiplicationEnum premult)
-{
-    _imp->outputPremult = premult;
-}
-
-ImagePremultiplicationEnum
-NodeRenderStats::getOutputPremult() const
-{
-    return _imp->outputPremult;
-}
-
 struct RenderStatsPrivate
 {
     mutable QMutex lock;
@@ -383,7 +366,6 @@ RenderStats::setNodeIdentity(const NodePtr& node,
 void
 RenderStats::setGlobalRenderInfosForNode(const NodePtr& node,
                                          const RectD& rod,
-                                         ImagePremultiplicationEnum outputPremult,
                                          std::bitset<4> channelsRendered,
                                          bool tilesSupported,
                                          bool renderScaleSupported,
@@ -394,7 +376,6 @@ RenderStats::setGlobalRenderInfosForNode(const NodePtr& node,
     assert(_imp->doNodesProfiling);
 
     NodeRenderStats& stats = _imp->findOrCreateNodeStats(node);
-    stats.setOutputPremult(outputPremult);
     stats.setTilesSupported(tilesSupported);
     stats.setRenderScaleSupported(renderScaleSupported);
     stats.addMipmapLevelRendered(mipmapLevel);

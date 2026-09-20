@@ -577,7 +577,6 @@ TimeLineGui::paintGL()
                         // draw it with a lower alpha
                         alphaText *= (tickSizePixel - sSizePixel) / (double)minTickSizeTextPixel;
                     }
-                    //alphaText = std::min(alphaText, alpha); // don't draw more opaque than ticks
                     QColor c;
                     c.setRgbF( Image::clamp<qreal>(txtR, 0., 1.),
                                Image::clamp<qreal>(txtG, 0., 1.),

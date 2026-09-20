@@ -1466,7 +1466,7 @@ RotoPaint::render(const RenderActionArgs& args)
                 if (bgImg->getComponents() != layer->second->getComponents()) {
                     bgImg->convertToFormat(args.roi,
                                            getApp()->getDefaultColorSpaceForBitDepth(bgImg->getBitDepth()),
-                                           getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, false, layer->second.get());
+                                           getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, layer->second.get());
                 } else {
                     layer->second->pasteFrom(*bgImg, args.roi, false);
                 }
@@ -1521,7 +1521,6 @@ RotoPaint::render(const RenderActionArgs& args)
 
         RectI bgImgRoI;
         ImagePtr bgImg;
-        ImagePremultiplicationEnum outputPremult = eImagePremultiplicationPremultiplied;
         bool triedGetImage = false;
 
         for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator layer = args.outputLayers.begin();
@@ -1589,7 +1588,7 @@ RotoPaint::render(const RenderActionArgs& args)
                         if (!intersection.isNull()) {
                             bgImg->convertToFormat(intersection,
                                                    getApp()->getDefaultColorSpaceForBitDepth(rotoImagesIt->second->getBitDepth()),
-                                                   getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, false, layer->second.get());
+                                                   getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, layer->second.get());
                         }
                     } else {
                         layer->second->pasteFrom(*bgImg, args.roi, false);
@@ -1602,11 +1601,11 @@ RotoPaint::render(const RenderActionArgs& args)
             if (rotoImagesIt->second->getComponents() != layer->second->getComponents()) {
                 rotoImagesIt->second->convertToFormat(args.roi,
                                                       getApp()->getDefaultColorSpaceForBitDepth(rotoImagesIt->second->getBitDepth()),
-                                                      getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, false, layer->second.get());
+                                                      getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, layer->second.get());
             } else {
                 layer->second->pasteFrom(*(rotoImagesIt->second), args.roi, false);
             }
-            layer->second->copyUnProcessedChannels(args.roi, outputPremult, bgImg ? bgImg->getPremultiplication() : eImagePremultiplicationOpaque, copyChannels, bgImg, false);
+            layer->second->copyUnProcessedChannels(args.roi, copyChannels, bgImg);
         }
     } // RenderingFlagSetter
 

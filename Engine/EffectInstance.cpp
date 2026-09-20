@@ -1123,8 +1123,8 @@ EffectInstance::getImage(int inputNb,
         ///Resize the image according to the requested scale
         ImageBitDepthEnum bitdepth = inputImg->getBitDepth();
         const RectI bounds = inputImg->getRoD().toPixelEnclosing(0, par);
-        ImagePtr rescaledImg = std::make_shared<Image>( inputImg->getComponents(), inputImg->getRoD(),
-                                                         bounds, 0, par, bitdepth, inputImg->getPremultiplication(), inputImg->getFieldingOrder() );
+        ImagePtr rescaledImg = std::make_shared<Image>(inputImg->getComponents(), inputImg->getRoD(),
+                                                       bounds, 0, par, bitdepth, inputImg->getFieldingOrder());
         inputImg->upscaleMipmap( inputImg->getBounds(), inputImgMipmapLevel, 0, rescaledImg.get() );
         if (roiPixel) {
             if (!inputRoDSet) {
@@ -1572,15 +1572,15 @@ EffectInstance::convertRAMImageToOpenGLTexture(const ImagePtr& image)
     ImagePtr tmpImg;
     if (useTmpImage) {
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-        tmpImg.reset(new Image(ImageLayerDesc::getRGBAComponents(), image->getRoD(), bounds, 0, image->getPixelAspectRatio(), image->getBitDepth(), image->getPremultiplication(), image->getFieldingOrder(), false, eStorageModeRAM));
+        tmpImg.reset(new Image(ImageLayerDesc::getRGBAComponents(), image->getRoD(), bounds, 0, image->getPixelAspectRatio(), image->getBitDepth(), image->getFieldingOrder(), false, eStorageModeRAM));
 #else
-        tmpImg = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), image->getRoD(), bounds, 0, image->getPixelAspectRatio(), image->getBitDepth(), image->getPremultiplication(), image->getFieldingOrder(), false, eStorageModeRAM);
+        tmpImg = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), image->getRoD(), bounds, 0, image->getPixelAspectRatio(), image->getBitDepth(), image->getFieldingOrder(), false, eStorageModeRAM);
 #endif
         tmpImg->setKey(image->getKey());
         if (tmpImg->getComponents() == image->getComponents()) {
             tmpImg->pasteFrom(*image, bounds);
         } else {
-            image->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear, -1, false, false, tmpImg.get());
+            image->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear, -1, false, tmpImg.get());
         }
     }
 
@@ -1741,17 +1741,14 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
                 }
 
                 ImageParamsPtr imageParams = Image::makeParams(rod,
-                                                                               downscaledBounds,
-                                                                               oldParams->getPixelAspectRatio(),
-                                                                               mipmapLevel,
-                                                                               oldParams->isRodProjectFormat(),
-                                                                               oldParams->getComponents(),
-                                                                               oldParams->getBitDepth(),
-                                                                               oldParams->getPremultiplication(),
-                                                                               oldParams->getFieldingOrder(),
-                                                                               eStorageModeRAM);
-
-
+                                                               downscaledBounds,
+                                                               oldParams->getPixelAspectRatio(),
+                                                               mipmapLevel,
+                                                               oldParams->isRodProjectFormat(),
+                                                               oldParams->getComponents(),
+                                                               oldParams->getBitDepth(),
+                                                               oldParams->getFieldingOrder(),
+                                                               eStorageModeRAM);
 
                 ImagePtr img;
                 getOrCreateFromCacheInternal(key, imageParams, imageToConvert->usesBitMap(), &img);
@@ -1965,7 +1962,6 @@ EffectInstance::allocateImageLayer(const ImageKey& key,
                                    bool isProjectFormat,
                                    const ImageLayerDesc& components,
                                    ImageBitDepthEnum depth,
-                                   ImagePremultiplicationEnum premult,
                                    ImageFieldingOrderEnum fielding,
                                    double par,
                                    unsigned int mipmapLevel,
@@ -1978,18 +1974,17 @@ EffectInstance::allocateImageLayer(const ImageKey& key,
     //If we're rendering full scale and with input images at full scale, don't cache the downscale image since it is cheap to
     //recreate, instead cache the full-scale image
     if (renderFullScaleThenDownscale) {
-        *downscaleImage = std::make_shared<Image>(components, rod, downscaleImageBounds, mipmapLevel, par, depth, premult, fielding, true);
+        *downscaleImage = std::make_shared<Image>(components, rod, downscaleImageBounds, mipmapLevel, par, depth, fielding, true);
         ImageParamsPtr upscaledImageParams = Image::makeParams(rod,
-                                                                               fullScaleImageBounds,
-                                                                               par,
-                                                                               0,
-                                                                               isProjectFormat,
-                                                                               components,
-                                                                               depth,
-                                                                               premult,
-                                                                               fielding,
-                                                                               storage,
-                                                                               GL_TEXTURE_2D);
+                                                               fullScaleImageBounds,
+                                                               par,
+                                                               0,
+                                                               isProjectFormat,
+                                                               components,
+                                                               depth,
+                                                               fielding,
+                                                               storage,
+                                                               GL_TEXTURE_2D);
         //The upscaled image will be rendered with input images at full def, it is then the best possibly rendered image so cache it!
 
         fullScaleImage->reset();
@@ -2001,16 +1996,15 @@ EffectInstance::allocateImageLayer(const ImageKey& key,
     } else {
         ///Cache the image with the requested components instead of the remapped ones
         ImageParamsPtr cachedImgParams = Image::makeParams(rod,
-                                                                           downscaleImageBounds,
-                                                                           par,
-                                                                           mipmapLevel,
-                                                                           isProjectFormat,
-                                                                           components,
-                                                                           depth,
-                                                                           premult,
-                                                                           fielding,
-                                                                           storage,
-                                                                           GL_TEXTURE_2D);
+                                                           downscaleImageBounds,
+                                                           par,
+                                                           mipmapLevel,
+                                                           isProjectFormat,
+                                                           components,
+                                                           depth,
+                                                           fielding,
+                                                           storage,
+                                                           GL_TEXTURE_2D);
 
         //Take the lock after getting the image from the cache or while allocating it
         ///to make sure a thread will not attempt to write to the image while its being allocated.
@@ -2500,18 +2494,17 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                         ImagePtr sourceImage;
                         if ( ( it->second.fullscaleImage->getComponents() != idIt->second->getComponents() ) || ( it->second.fullscaleImage->getBitDepth() != idIt->second->getBitDepth() ) ) {
                             sourceImage = std::make_shared<Image>(it->second.fullscaleImage->getComponents(),
-                                                                    idIt->second->getRoD(),
-                                                                    idIt->second->getBounds(),
-                                                                    idIt->second->getMipmapLevel(),
-                                                                    idIt->second->getPixelAspectRatio(),
-                                                                    it->second.fullscaleImage->getBitDepth(),
-                                                                    idIt->second->getPremultiplication(),
-                                                                    idIt->second->getFieldingOrder(),
-                                                                    false);
+                                                                  idIt->second->getRoD(),
+                                                                  idIt->second->getBounds(),
+                                                                  idIt->second->getMipmapLevel(),
+                                                                  idIt->second->getPixelAspectRatio(),
+                                                                  it->second.fullscaleImage->getBitDepth(),
+                                                                  idIt->second->getFieldingOrder(),
+                                                                  false);
 
                             ViewerColorSpaceEnum colorspace = _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( idIt->second->getBitDepth() );
                             ViewerColorSpaceEnum dstColorspace = _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.fullscaleImage->getBitDepth() );
-                            idIt->second->convertToFormat( idIt->second->getBounds(), colorspace, dstColorspace, 3, false, false, sourceImage.get() );
+                            idIt->second->convertToFormat(idIt->second->getBounds(), colorspace, dstColorspace, 3, false, sourceImage.get());
                         } else {
                             sourceImage = idIt->second;
                         }
@@ -2525,7 +2518,6 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                                                       it->second.renderMappedImage->getMipmapLevel(),
                                                                       it->second.renderMappedImage->getPixelAspectRatio(),
                                                                       it->second.renderMappedImage->getBitDepth(),
-                                                                      it->second.renderMappedImage->getPremultiplication(),
                                                                       it->second.renderMappedImage->getFieldingOrder(),
                                                                       false);
                         sourceImage->upscaleMipmap(sourceImage->getBounds(), sourceImage->getMipmapLevel(), inputLayer->getMipmapLevel(), inputLayer.get());
@@ -2541,7 +2533,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                             ViewerColorSpaceEnum colorspace = _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( idIt->second->getBitDepth() );
                             ViewerColorSpaceEnum dstColorspace = _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.fullscaleImage->getBitDepth() );
                             const RectI convertWindow = idIt->second->getBounds().intersect(downscaledRectToRender);
-                            idIt->second->convertToFormat( convertWindow, colorspace, dstColorspace, 3, false, false, it->second.downscaleImage.get() );
+                            idIt->second->convertToFormat(convertWindow, colorspace, dstColorspace, 3, false, it->second.downscaleImage.get());
                         } else {
                             it->second.downscaleImage->pasteFrom(*(idIt->second), downscaledRectToRender, false, glContext);
                         }
@@ -2574,14 +2566,13 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         // OpenGL render never use the cache and bitmaps, all images are local to a render.
         if ((it->second.renderMappedImage->usesBitMap() || (prefComp != it->second.renderMappedImage->getComponents()) || (outputClipPrefDepth != it->second.renderMappedImage->getBitDepth())) && !_publicInterface->isPaintingOverItselfEnabled() && !layers.useOpenGL) {
             it->second.tmpImage = std::make_shared<Image>(prefComp,
-                                                            it->second.renderMappedImage->getRoD(),
-                                                            actionArgs.roi,
-                                                            it->second.renderMappedImage->getMipmapLevel(),
-                                                            it->second.renderMappedImage->getPixelAspectRatio(),
-                                                            outputClipPrefDepth,
-                                                            it->second.renderMappedImage->getPremultiplication(),
-                                                            it->second.renderMappedImage->getFieldingOrder(),
-                                                 false); //< no bitmap
+                                                          it->second.renderMappedImage->getRoD(),
+                                                          actionArgs.roi,
+                                                          it->second.renderMappedImage->getMipmapLevel(),
+                                                          it->second.renderMappedImage->getPixelAspectRatio(),
+                                                          outputClipPrefDepth,
+                                                          it->second.renderMappedImage->getFieldingOrder(),
+                                                          false); //< no bitmap
         } else {
             it->second.tmpImage = it->second.renderMappedImage;
         }
@@ -2745,7 +2736,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     it->second.tmpImage->convertToFormat(it->second.tmpImage->getBounds(),
                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.renderMappedImage->getBitDepth()),
-                                                         -1, false, false, it->second.renderMappedImage.get());
+                                                         -1, false, it->second.renderMappedImage.get());
                 } else {
                     it->second.renderMappedImage->pasteFrom(*(it->second.tmpImage), it->second.tmpImage->getBounds(), false);
                 }
@@ -2770,21 +2761,20 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                         assert(originalInputImage->getMipmapLevel() > it->second.tmpImage->getMipmapLevel() &&
                                originalInputImage->getMipmapLevel() == mipmapLevel);
                         ImagePtr tmp = std::make_shared<Image>(it->second.tmpImage->getComponents(),
-                                                it->second.tmpImage->getRoD(),
-                                                renderMappedRectToRender,
-                                                0,
-                                                it->second.tmpImage->getPixelAspectRatio(),
-                                                it->second.tmpImage->getBitDepth(),
-                                                it->second.tmpImage->getPremultiplication(),
-                                                it->second.tmpImage->getFieldingOrder(),
-                                                false);
+                                                               it->second.tmpImage->getRoD(),
+                                                               renderMappedRectToRender,
+                                                               0,
+                                                               it->second.tmpImage->getPixelAspectRatio(),
+                                                               it->second.tmpImage->getBitDepth(),
+                                                               it->second.tmpImage->getFieldingOrder(),
+                                                               false);
                         originalInputImage->upscaleMipmap( downscaledRectToRender, originalInputImage->getMipmapLevel(), 0, tmp.get() );
                         mappedOriginalInputImage = tmp;
                     }
                 }
 
                 if (mappedOriginalInputImage) {
-                    it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, eImagePremultiplicationOpaque, eImagePremultiplicationOpaque, processChannels, mappedOriginalInputImage, true);
+                    it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, processChannels, mappedOriginalInputImage);
                     if (useMaskMix) {
                         it->second.tmpImage->applyMaskMix(renderMappedRectToRender, maskImage.get(), mappedOriginalInputImage.get(), doMask, false, mix);
                     }
@@ -2795,31 +2785,29 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                      * BitDepth/Components conversion required as well as downscaling, do conversion to a tmp buffer
                      */
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-                    ImagePtr tmp( new Image(it->second.fullscaleImage->getComponents(),
-                                            it->second.tmpImage->getRoD(),
-                                            renderMappedRectToRender,
-                                            mipmapLevel,
-                                            it->second.tmpImage->getPixelAspectRatio(),
-                                            it->second.fullscaleImage->getBitDepth(),
-                                            it->second.fullscaleImage->getPremultiplication(),
-                                            it->second.fullscaleImage->getFieldingOrder(),
-                                            false) );
+                    ImagePtr tmp(new Image(it->second.fullscaleImage->getComponents(),
+                                           it->second.tmpImage->getRoD(),
+                                           renderMappedRectToRender,
+                                           mipmapLevel,
+                                           it->second.tmpImage->getPixelAspectRatio(),
+                                           it->second.fullscaleImage->getBitDepth(),
+                                           it->second.fullscaleImage->getFieldingOrder(),
+                                           false));
 #else
                     ImagePtr tmp = std::make_shared<Image>(it->second.fullscaleImage->getComponents(),
-                                                             it->second.tmpImage->getRoD(),
-                                                             renderMappedRectToRender,
-                                                             mipmapLevel,
-                                                             it->second.tmpImage->getPixelAspectRatio(),
-                                                             it->second.fullscaleImage->getBitDepth(),
-                                                             it->second.fullscaleImage->getPremultiplication(),
-                                                             it->second.fullscaleImage->getFieldingOrder(),
-                                                             false);
+                                                           it->second.tmpImage->getRoD(),
+                                                           renderMappedRectToRender,
+                                                           mipmapLevel,
+                                                           it->second.tmpImage->getPixelAspectRatio(),
+                                                           it->second.fullscaleImage->getBitDepth(),
+                                                           it->second.fullscaleImage->getFieldingOrder(),
+                                                           false);
 #endif
 
                     it->second.tmpImage->convertToFormat(renderMappedRectToRender,
                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.fullscaleImage->getBitDepth()),
-                                                         -1, false, false, tmp.get());
+                                                         -1, false, tmp.get());
                     tmp->downscaleMipmap( it->second.tmpImage->getRoD(),
                                           renderMappedRectToRender, 0, mipmapLevel, false, it->second.downscaleImage.get() );
                     it->second.fullscaleImage->pasteFrom(*tmp, renderMappedRectToRender, false);
@@ -2850,7 +2838,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                         it->second.tmpImage->convertToFormat(it->second.tmpImage->getBounds(),
                                                              _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
                                                              _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.downscaleImage->getBitDepth()),
-                                                             -1, false, false, it->second.downscaleImage.get());
+                                                             -1, false, it->second.downscaleImage.get());
                     } else {
                         /*
                          * No conversion required, copy to output
@@ -2860,7 +2848,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     }
                 }
 
-                it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, eImagePremultiplicationOpaque, eImagePremultiplicationOpaque, processChannels, originalInputImage, true, glContext);
+                it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, processChannels, originalInputImage, glContext);
                 if (useMaskMix) {
                     it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInputImage.get(), doMask, false, mix, glContext);
                 }
@@ -2913,7 +2901,6 @@ EffectInstance::allocateImageLayerAndSetInThreadLocalStorage(const ImageLayerDes
                                  false /*isProjectFormat*/,
                                  layer,
                                  img->getBitDepth(),
-                                 img->getPremultiplication(),
                                  img->getFieldingOrder(),
                                  img->getPixelAspectRatio(),
                                  img->getMipmapLevel(),
@@ -2933,27 +2920,25 @@ EffectInstance::allocateImageLayerAndSetInThreadLocalStorage(const ImageLayerDes
          */
         if (useCache) {
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-            p.tmpImage.reset( new Image(p.renderMappedImage->getComponents(),
-                                        p.renderMappedImage->getRoD(),
-                                        tls->currentRenderArgs.renderWindowPixel,
-                                        p.renderMappedImage->getMipmapLevel(),
-                                        p.renderMappedImage->getPixelAspectRatio(),
-                                        p.renderMappedImage->getBitDepth(),
-                                        p.renderMappedImage->getPremultiplication(),
-                                        p.renderMappedImage->getFieldingOrder(),
-                                        false /*useBitmap*/,
-                                        img->getParams()->getStorageInfo().mode) );
+            p.tmpImage.reset(new Image(p.renderMappedImage->getComponents(),
+                                       p.renderMappedImage->getRoD(),
+                                       tls->currentRenderArgs.renderWindowPixel,
+                                       p.renderMappedImage->getMipmapLevel(),
+                                       p.renderMappedImage->getPixelAspectRatio(),
+                                       p.renderMappedImage->getBitDepth(),
+                                       p.renderMappedImage->getFieldingOrder(),
+                                       false /*useBitmap*/,
+                                       img->getParams()->getStorageInfo().mode));
 #else
             p.tmpImage = std::make_shared<Image>(p.renderMappedImage->getComponents(),
-                                                   p.renderMappedImage->getRoD(),
-                                                   tls->currentRenderArgs.renderWindowPixel,
-                                                   p.renderMappedImage->getMipmapLevel(),
-                                                   p.renderMappedImage->getPixelAspectRatio(),
-                                                   p.renderMappedImage->getBitDepth(),
-                                                   p.renderMappedImage->getPremultiplication(),
-                                                   p.renderMappedImage->getFieldingOrder(),
-                                                   false /*useBitmap*/,
-                                                   img->getParams()->getStorageInfo().mode);
+                                                 p.renderMappedImage->getRoD(),
+                                                 tls->currentRenderArgs.renderWindowPixel,
+                                                 p.renderMappedImage->getMipmapLevel(),
+                                                 p.renderMappedImage->getPixelAspectRatio(),
+                                                 p.renderMappedImage->getBitDepth(),
+                                                 p.renderMappedImage->getFieldingOrder(),
+                                                 false /*useBitmap*/,
+                                                 img->getParams()->getStorageInfo().mode);
 #endif
         } else {
             p.tmpImage = p.renderMappedImage;

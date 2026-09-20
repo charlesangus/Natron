@@ -1505,7 +1505,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             channelsRendered[3] = true;
             break;
         }
-        stats->setGlobalRenderInfosForNode(getNode(), inArgs.params->rod, eImagePremultiplicationUnPremultiplied, channelsRendered, true, true, inArgs.params->mipmapLevel);
+        stats->setGlobalRenderInfosForNode(getNode(), inArgs.params->rod, channelsRendered, true, true, inArgs.params->mipmapLevel);
     }
 
 //#pragma message WARN("Implement Viewer so it accepts OpenGL Textures in input")

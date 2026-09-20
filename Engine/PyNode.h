@@ -382,7 +382,6 @@ public:
     double getPixelAspectRatio() const;
 
     Natron::ImageBitDepthEnum getBitDepth() const;
-    Natron::ImagePremultiplicationEnum getPremult() const;
 
     void setPagesOrder(const QStringList& pages);
 };

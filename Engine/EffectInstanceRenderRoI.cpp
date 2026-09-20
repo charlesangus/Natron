@@ -185,19 +185,17 @@ EffectInstance::convertLayersFormatsIfNeeded(const AppInstancePtr& app,
                                 inputImage->getMipmapLevel(),
                                 inputImage->getPixelAspectRatio(),
                                 targetDepth,
-                                inputImage->getPremultiplication(),
                                 inputImage->getFieldingOrder(),
                                 false) );
 #else
         ImagePtr tmp = std::make_shared<Image>(targetComponents,
-                                                 inputImage->getRoD(),
-                                                 bounds,
-                                                 inputImage->getMipmapLevel(),
-                                                 inputImage->getPixelAspectRatio(),
-                                                 targetDepth,
-                                                 inputImage->getPremultiplication(),
-                                                 inputImage->getFieldingOrder(),
-                                                 false);
+                                               inputImage->getRoD(),
+                                               bounds,
+                                               inputImage->getMipmapLevel(),
+                                               inputImage->getPixelAspectRatio(),
+                                               targetDepth,
+                                               inputImage->getFieldingOrder(),
+                                               false);
 
 #endif
         tmp->setKey(inputImage->getKey());
@@ -207,12 +205,12 @@ EffectInstance::convertLayersFormatsIfNeeded(const AppInstancePtr& app,
             inputImage->convertToFormatAlpha0(clippedRoi,
                                               app->getDefaultColorSpaceForBitDepth(inputImage->getBitDepth()),
                                               app->getDefaultColorSpaceForBitDepth(targetDepth),
-                                              channelForAlpha, false, false, tmp.get());
+                                              channelForAlpha, false, tmp.get());
         } else {
             inputImage->convertToFormat(clippedRoi,
                                         app->getDefaultColorSpaceForBitDepth(inputImage->getBitDepth()),
                                         app->getDefaultColorSpaceForBitDepth(targetDepth),
-                                        channelForAlpha, false, false, tmp.get());
+                                        channelForAlpha, false, tmp.get());
         }
 
         return tmp;
@@ -1346,7 +1344,6 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                    isProjectFormat,
                                    *components,
                                    args.bitdepth,
-                                   eImagePremultiplicationPremultiplied,
                                    fieldingOrder,
                                    par,
                                    args.mipmapLevel,
@@ -1414,7 +1411,6 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                                                         args.mipmapLevel,
                                                                         it->second.fullscaleImage->getPixelAspectRatio(),
                                                                         outputDepth,
-                                                                        eImagePremultiplicationPremultiplied,
                                                                         fieldingOrder,
                                                                         true);
 
@@ -1501,7 +1497,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         ///For eRenderSafetyFullySafe, don't take any lock, the image already has a lock on itself so we're sure it can't be written to by 2 different threads.
 
         if ( frameArgs->stats && frameArgs->stats->isInDepthProfilingEnabled() ) {
-            frameArgs->stats->setGlobalRenderInfosForNode(getNode(), rod, eImagePremultiplicationUnPremultiplied, processChannels, frameArgs->tilesSupported, !renderFullScaleThenDownscale, renderMappedMipmapLevel);
+            frameArgs->stats->setGlobalRenderInfosForNode(getNode(), rod, processChannels, frameArgs->tilesSupported, !renderFullScaleThenDownscale, renderMappedMipmapLevel);
         }
 
 # ifdef DEBUG
@@ -1681,14 +1677,13 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             assert(it->second.fullscaleImage->getMipmapLevel() == 0);
             if (it->second.downscaleImage == it->second.fullscaleImage) {
                 it->second.downscaleImage = std::make_shared<Image>(it->second.fullscaleImage->getComponents(),
-                                                                      it->second.fullscaleImage->getRoD(),
-                                                                      downscaledImageBounds,
-                                                                      args.mipmapLevel,
-                                                                      it->second.fullscaleImage->getPixelAspectRatio(),
-                                                                      it->second.fullscaleImage->getBitDepth(),
-                                                                      it->second.fullscaleImage->getPremultiplication(),
-                                                                      it->second.fullscaleImage->getFieldingOrder(),
-                                                                      false);
+                                                                    it->second.fullscaleImage->getRoD(),
+                                                                    downscaledImageBounds,
+                                                                    args.mipmapLevel,
+                                                                    it->second.fullscaleImage->getPixelAspectRatio(),
+                                                                    it->second.fullscaleImage->getBitDepth(),
+                                                                    it->second.fullscaleImage->getFieldingOrder(),
+                                                                    false);
                 it->second.downscaleImage->setKey(it->second.fullscaleImage->getKey());
             }
 

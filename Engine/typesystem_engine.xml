@@ -219,7 +219,6 @@
     <enum-type name="ValueChangedReasonEnum"/>
     <enum-type name="AnimationLevelEnum"/>
     <enum-type name="ImageBitDepthEnum"/>
-    <enum-type name="ImagePremultiplicationEnum"/>
     <enum-type name="ViewerCompositingOperatorEnum"/>
     <enum-type name="ViewerColorSpaceEnum"/>
     <enum-type name="OrientationEnum"/>

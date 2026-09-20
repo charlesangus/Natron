@@ -151,9 +151,9 @@ fi
 # mystery CI failure on your PR. Bump them deliberately, and re-run this
 # script (it rebuilds when the stamp below no longer matches).
 #
-# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, six commits ahead of
+# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, seven commits ahead of
 # NatronGitHub/openfx-io and zero behind. Fork-and-fix is the standing
-# pattern for small changes to NatronGitHub repos. Four deltas:
+# pattern for small changes to NatronGitHub repos. Five deltas:
 #
 # 1. A CMakeLists.txt fix (SEEXPR2_INCLUDES/SEEXPR2_LIBRARIES ->
 #    SEEXPR2_INCLUDE_DIR/SEEXPR2_LIBRARY): upstream reads variable names its
@@ -207,6 +207,36 @@ fi
 #    -- accepted, the same tradeoff any other identifier rename across
 #    this boundary would carry.
 #
+# 5. Readers and writers never convert premultiplication
+#    (charlesangus/openfx-io#4). Natron no longer tracks whether an image
+#    is premultiplied: the host answers kOfxImageEffectPropPreMultiplication
+#    with the constant kOfxImageUnPreMultiplied for every clip and hides
+#    the plugins' inputPremult/filePremult/outputPremult params, and the
+#    user alone owns knowing an image's state. Upstream GenericWriter
+#    re-derived inputPremult from that clip property on every connect and
+#    compared it against each format's getExpectedInputPremultiplication()
+#    (PreMultiplied for EXR/OIIO, UnPreMultiplied for PNG/PFM/FFmpeg),
+#    multiplying or dividing RGB by alpha at render time to match -- so
+#    against this host every RGBA render to EXR was premultiplied before
+#    encoding: a Solid (0.8, 0.6, 0.4, a=0.5) landed on disk as (0.4, 0.3,
+#    0.2). GenericReader did the mirror image between filePremult and
+#    outputPremult, with an extra unpremult/premult pair around the OCIO
+#    transform. The fork deletes both conversions and the machinery behind
+#    them (the premult/unPremult pixel helpers, the per-format
+#    getExpectedInputPremultiplication() virtual, guessParamsFromFilename's
+#    filePremult out-param, changedClip's re-derivation, and the
+#    changedParam handlers that forced outputPremult to match components):
+#    pixels go to and from the file exactly as they are. The three params
+#    stay declared so existing .ntp files load; nothing reads them except
+#    the reader's getClipPreferences, which still reports outputPremult to
+#    the host as an advisory the host ignores. WriteOIIO now sets
+#    oiio:UnassociatedAlpha on its output spec -- without it OpenImageIO
+#    itself divides RGB by alpha on the way out for PNG, TGA and WebP
+#    (verified against this image's OIIO 3.1.16) -- matching what ReadOIIO
+#    already asks of it on the way in. The one metadata consequence: TIFF's
+#    EXTRASAMPLES tag now records unassociated rather than associated
+#    alpha; pixel bytes are unchanged either way.
+#
 # The -1 sentinel guard is the first of delta 2's two commits and is
 # deliberately self-contained, so it can be offered upstream on its own; so
 # is delta 3, which is one commit and touches nothing else.
@@ -222,7 +252,7 @@ fi
 # openfx-io's own CI pins the same branch. Not forked -- wdas/SeExpr is not
 # a NatronGitHub repo and we carry no changes to it.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="87264e5f1c76c652e89fff6018b8b963f1029c87"
+OPENFX_IO_REF="9c1e45279058cc24a910d1ef708230956cc62a0b"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 

@@ -258,16 +258,6 @@ TEST_F(DeepPipelineTest, DeepReadMergeRecolorToImageWriteMatchesTheSerialComposi
         KnobChoice* compression = dynamic_cast<KnobChoice*>(writer->getKnobByName("compression").get());
         ASSERT_TRUE(compression != NULL);
         compression->setValueFromID("none", 0);
-
-        // DeepToImage's output is a front-to-back composite, i.e. premultiplied. The writer's own
-        // inputPremult is now a hidden, host-managed knob (M43), but GenericWriter still re-derives
-        // its value from the source clip's (now constant) premultiplication state on connect, which
-        // would otherwise make it unpremultiply already-premultiplied data; set it explicitly here to
-        // keep this pixel-exact round trip meaningful.
-        KnobChoice* inputPremult = dynamic_cast<KnobChoice*>(writer->getKnobByName("inputPremult").get());
-        ASSERT_TRUE(inputPremult != NULL);
-        inputPremult->setValueFromID("premult", 0);
-        ASSERT_EQ(1, inputPremult->getValue());
     }
 
     QTemporaryDir tmp;

@@ -401,7 +401,6 @@ public:
     KnobStringWPtr afterFrameRender;
     KnobStringWPtr afterRender;
     KnobBoolWPtr enabledChan[4];
-    KnobStringWPtr premultWarning;
     KnobDoubleWPtr mixWithSource;
     KnobButtonWPtr renderButton; //< render button for writers
     FormatKnob pluginFormatKnobs;

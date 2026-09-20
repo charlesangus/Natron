@@ -1062,8 +1062,6 @@ public:
      **/
     void initializeKnobs(bool loadingSerialization);
 
-    void checkForPremultWarningAndCheckboxes();
-
     void findPluginFormatKnobs();
 
 private:

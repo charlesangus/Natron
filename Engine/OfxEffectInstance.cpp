@@ -445,6 +445,8 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
 
             _imp->effect->addParamsToTheirParents();
 
+            hideDeprecatedPremultKnobs();
+
             int nPages = _imp->effect->getDescriptor().getProps().getDimension(kOfxPluginPropParamPageOrder);
             std::list<std::string> pagesOrder;
             for (int i = 0; i < nPages; ++i) {
@@ -609,6 +611,39 @@ OfxEffectInstance::createOfxImageEffectInstance(OFX::Host::ImageEffect::ImageEff
 
     endChanges();
 } // createOfxImageEffectInstance
+
+static void
+hidePremultKnobOnHolder(const EffectInstancePtr& holder,
+                        const char* name)
+{
+    if (!holder) {
+        return;
+    }
+    KnobIPtr knob = holder->getKnobByName(name);
+    if (knob) {
+        knob->setSecret(true);
+        knob->setIsPersistent(false);
+    }
+}
+
+void
+OfxEffectInstance::hideDeprecatedPremultKnobs()
+{
+    static const char* premultKnobNames[] = {
+        "premult", "premultChanged", "premultChannel", "filePremult", "outputPremult", "inputPremult", 0
+    };
+
+    // Read/Write plugins are hosted behind a ReadNode/WriteNode container: their generic
+    // GenericReader/GenericWriter params (filePremult, outputPremult, inputPremult) are
+    // instantiated onto the container's knob holder, not this effect's.
+    NodePtr ioContainer = getNode() ? getNode()->getIOContainer() : NodePtr();
+    EffectInstancePtr containerEffect = ioContainer ? ioContainer->getEffectInstance() : EffectInstancePtr();
+
+    for (int i = 0; premultKnobNames[i] != 0; ++i) {
+        hidePremultKnobOnHolder(shared_from_this(), premultKnobNames[i]);
+        hidePremultKnobOnHolder(containerEffect, premultKnobNames[i]);
+    }
+}
 
 OfxEffectInstance::~OfxEffectInstance()
 {

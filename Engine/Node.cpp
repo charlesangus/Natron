@@ -2666,22 +2666,6 @@ Node::findOrCreateChannelEnabled(const KnobPagePtr& mainPage)
             foundAll = true;
         }
     }
-    if ( !isWriter && foundAll && !getApp()->isBackground() ) {
-        _imp->enabledChan[3].lock()->setAddNewLine(false);
-        KnobStringPtr premultWarning = AppManager::createKnob<KnobString>(_imp->effect.get(), std::string(), 1, false);
-        premultWarning->setIconLabel("dialog-warning");
-        premultWarning->setSecretByDefault(true);
-        premultWarning->setAsLabel();
-        premultWarning->setEvaluateOnChange(false);
-        premultWarning->setIsPersistent(false);
-        premultWarning->setHintToolTip( tr("The alpha checkbox is checked and the RGB "
-                                           "channels in output are alpha-premultiplied. Any of the unchecked RGB channel "
-                                           "may be incorrect because the alpha channel changed but their value did not. "
-                                           "To fix this, either check all RGB channels (or uncheck alpha) or unpremultiply the "
-                                           "input image first.").toStdString() );
-        mainPage->insertKnob(4, premultWarning);
-        _imp->premultWarning = premultWarning;
-    }
 } // Node::findOrCreateChannelEnabled
 
 void
@@ -5522,7 +5506,6 @@ Node::onEffectKnobValueChanged(KnobI* what,
                 break;
             }
             if (enabled.get() == what) {
-                checkForPremultWarningAndCheckboxes();
                 ret = true;
                 break;
             }
@@ -7630,15 +7613,6 @@ KnobBoolPtr
 Node::getProcessAllLayersKnob() const
 {
     return _imp->processAllLayersKnob.lock();
-}
-
-void
-Node::checkForPremultWarningAndCheckboxes()
-{
-    KnobStringPtr premultWarn = _imp->premultWarning.lock();
-    if (premultWarn) {
-        premultWarn->setSecret(true);
-    }
 }
 
 int

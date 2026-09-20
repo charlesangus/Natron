@@ -213,19 +213,6 @@ RotoPaint::initializeKnobs()
         _imp->enabledKnobs[i] = enabled;
     }
 
-
-    KnobBoolPtr premultKnob = AppManager::createKnob<KnobBool>(this, tr("Premultiply"), 1, false);
-    premultKnob->setName("premultiply");
-    premultKnob->setHintToolTip( tr("When checked, the red, green and blue channels of the output are premultiplied by the alpha channel.\n"
-                                    "This will result in the pixels outside of the shapes and paint strokes being black and transparent.\n"
-                                    "This should only be used if all the inputs are Opaque or UnPremultiplied, and only the Alpha channel "
-                                    "is selected to be drawn by this node.") );
-    premultKnob->setDefaultValue(false);
-    premultKnob->setAnimationEnabled(false);
-    premultKnob->setIsMetadataSlave(true);
-    _imp->premultKnob = premultKnob;
-    generalPage->addKnob(premultKnob);
-
     RotoContextPtr context = getNode()->getRotoContext();
     assert(context);
     QObject::connect( context.get(), SIGNAL(refreshViewerOverlays()), this, SLOT(onRefreshAsked()) );
@@ -1469,10 +1456,6 @@ RotoPaint::render(const RenderActionArgs& args)
         neededComps.push_back(layer->first);
     }
 
-    KnobBoolPtr premultKnob = _imp->premultKnob.lock();
-    assert(premultKnob);
-    bool premultiply = premultKnob->getValueAtTime(args.time);
-
     if ( items.empty() ) {
         RectI bgImgRoI;
         ImagePtr bgImg = getImage(0, args.time, args.mappedScale, args.view, 0, 0, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM /*returnOpenGLtexture*/, 0 /*textureDepth*/, &bgImgRoI);
@@ -1486,10 +1469,6 @@ RotoPaint::render(const RenderActionArgs& args)
                                            getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, false, layer->second.get());
                 } else {
                     layer->second->pasteFrom(*bgImg, args.roi, false);
-                }
-
-                if (premultiply && (layer->second->getComponents() == ImageLayerDesc::getRGBAComponents())) {
-                    layer->second->premultImage(args.roi);
                 }
             } else {
                 layer->second->fillZero(args.roi);
@@ -1628,9 +1607,6 @@ RotoPaint::render(const RenderActionArgs& args)
                 layer->second->pasteFrom(*(rotoImagesIt->second), args.roi, false);
             }
             layer->second->copyUnProcessedChannels(args.roi, outputPremult, bgImg ? bgImg->getPremultiplication() : eImagePremultiplicationOpaque, copyChannels, bgImg, false);
-            if (premultiply && (layer->second->getComponents() == ImageLayerDesc::getRGBAComponents())) {
-                layer->second->premultImage(args.roi);
-            }
         }
     } // RenderingFlagSetter
 

@@ -309,6 +309,8 @@ private:
 
     void tryInitializeOverlayInteracts();
 
+    void hideDeprecatedPremultKnobs();
+
 private:
 
     std::unique_ptr<OfxEffectInstancePrivate> _imp;

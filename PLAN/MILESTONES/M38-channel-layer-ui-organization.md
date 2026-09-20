@@ -27,7 +27,7 @@ become phases here.
   - verify: existing `ctest` (WriteAllLayers, TypedPassthrough, DataKind) green; new case in `Tests/WriteAllLayers_Test.cpp`: after loading `flat-three-layers.exr` through ReadOIIO, `getPresentLayers(-1)` on the Read = {Color, diffuse, specular} and `getAvailableLayers(-1)` ⊇ registry built-ins; a Blur downstream reports present = the same three. Builds without `NodeSerialization` changes (T4 does those).
   - size: M
 
-- [ ] M38.P1.T4 — Drop `UserComponents` from node serialization and the PyPlug exporter
+- [x] M38.P1.T4 — Drop `UserComponents` from node serialization and the PyPlug exporter
   - files: `Engine/NodeSerialization.h`, `Engine/NodeSerialization.cpp`, `Engine/NodeGroup.cpp`
   - approach: remove `_userComponents` (`NodeSerialization.h:236-238, 267, 321, 430`, `.cpp:202`), bump `NODE_SERIALIZATION_CURRENT_VERSION` (`:73`); remove the `addUserLayer` emission loop (`NodeGroup.cpp:2733-2745`); no migration (clean break, design §1.2).
   - verify: `ctest -R ProjectSerialization` and `DataKindProjectLoad` green; a saved `.ntp` contains no `UserComponents` element (test greps the file); `Tests/fixtures/*.ntp` still load.

@@ -155,7 +155,7 @@ become phases here.
   - verify: gtest: Read→Invert(`Color R only` + `diffuse[G]`)→Write All: Color = (0,0,0,1) inverted R only i.e. `(0,0,0,1)`, diffuse = `(0,0,0)` (G inverted from 1 to 0, R/B untouched), specular untouched `(0,0,1)`; Read→Grade with `A` off leaves alpha bit-identical.
   - size: L
 
-- [ ] M38.P4.T3 — Identity on empty; delete "choice B"
+- [x] M38.P4.T3 — Identity on empty; delete "choice B"
   - files: `Engine/Node.cpp`, `Engine/EffectInstanceRenderRoI.cpp`
   - approach: `hasAtLeastOneChannelToProcess` (`Node.cpp:5846-5865`) = resolved set non-empty with a set bit; delete the `getChannelSelectorKnob(inputNbIdentity)` branch (`EffectInstanceRenderRoI.cpp:630-680`), always choice A.
   - verify: gtest: Blur with row 0 `None` renders bit-identical to its input for all three planes and reports identity; Blur with `diffuse` only leaves Color bit-identical.

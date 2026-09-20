@@ -143,7 +143,7 @@ become phases here.
 
 ## Phase 38.4: Render model
 
-- [ ] M38.P4.T1 — `comps` from the knobs, per-plane bitsets, `processAllRequested` deleted
+- [x] M38.P4.T1 — `comps` from the knobs, per-plane bitsets, `processAllRequested` deleted
   - files: `Engine/EffectInstance.cpp`, `Engine/EffectInstance.h`, `Engine/EffectInstancePrivate.h`, `Engine/EffectInstanceRenderRoI.cpp`, `Engine/OutputSchedulerThread.cpp`
   - approach: §5(1): `getComponentsNeededDefault` (`EffectInstance.cpp:4219-4372`) builds `comps[-1]`/`comps[i]` from `resolve(getPresentLayers(...))` / the layer select / channel selects; ActionsCache entry stores `map<ImageLayerDesc, bitset<4>>` (`EffectInstancePrivate.h:70, 130-133`); remove the `processAllRequested` out-param from `getComponentsNeededAndProduced_public` (`:4375-4450`) and the dead block `EffectInstanceRenderRoI.cpp:457-476`; update callers `:450`, `OutputSchedulerThread.cpp:2297`, `RotoSmear.cpp:243`, `EffectInstance.cpp:4476`.
   - verify: gtest on Read(`flat-three-layers.exr`)→Blur: with rows `Color` + `diffuse[R,G]`, `getComponentsNeededAndProduced_public` yields `comps[-1] = {Color, diffuse}` with bitsets `1111`/`0011`... (index order `R,G` → bits 0,1) and `comps[0]` equal; with `All` → all three planes; with a regex matching nothing → Color only from metadata; `TypedPassthrough`/`DataKind` tests green.

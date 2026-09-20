@@ -583,60 +583,16 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                 // Make sure we do not hold the RoD for this effect
                 inputArgs->preComputedRoD.clear();
 
-
-                /*
-                   When the effect is identity, we can make 2 different requests upstream:
-                   A) If they do not exist upstream, then this will result in a black image
-                   B) If instead we request what this node (the identity node) has set to the corresponding layer
-                   selector for the identity input, we may end-up with something different.
-
-                   So we have to use option B), but for some cases it requires behaviour A), e.g:
-                   1 - A Dot node does not have any channel selector and is expected to be a pass-through for layers.
-                   2 - A node's Output Layer choice set on All is expected to act as a Dot (because it is identity).
-                   This second case is already covered above in the code when choice is All, so we only have to worry
-                   about case 1
-                 */
-
-                bool fetchUserSelectedComponentsUpstream = getNode()->getChannelSelectorKnob(inputNbIdentity).get() != 0;
-
-                if (fetchUserSelectedComponentsUpstream) {
-                    /// This corresponds to choice B)
-                    EffectInstance::ComponentsNeededMap::const_iterator foundCompsNeeded = neededComps->find(inputNbIdentity);
-                    if ( foundCompsNeeded != neededComps->end() ) {
-                        inputArgs->components.clear();
-                        for (std::list<ImageLayerDesc>::const_iterator it = foundCompsNeeded->second.begin(); it != foundCompsNeeded->second.end(); ++it) {
-                            if (it->getNumComponents() != 0) {
-                                inputArgs->components.push_back(*it);
-                            }
-                        }
-                    }
-                } else {
-                    /// This corresponds to choice A)
-                    inputArgs->components = requestedComponents;
-                }
+                // An identity node is a pass-through for layers: it asks the identity input for
+                // exactly the planes the caller asked for, whatever its own layer knob selects.
+                inputArgs->components = requestedComponents;
 
                 std::map<ImageLayerDesc, ImagePtr> identityLayers;
                 RenderRoIRetCode ret = inputEffectIdentity->renderRoI(*inputArgs, &identityLayers);
-                if (ret == eRenderRoIRetCodeOk) {
-                    outputLayers->insert(identityLayers.begin(), identityLayers.end());
-
-                    if (fetchUserSelectedComponentsUpstream) {
-                        // We fetched potentially different components, so convert them to the format requested
-                        std::map<ImageLayerDesc, ImagePtr> convertedLayers;
-                        AppInstancePtr app = getApp();
-                        bool useAlpha0ForRGBToRGBAConversion = args.caller ? args.caller->getNode()->usesAlpha0ToConvertFromRGBToRGBA() : false;
-                        std::list<ImageLayerDesc>::const_iterator compIt = args.components.begin();
-
-                        for (std::map<ImageLayerDesc, ImagePtr>::iterator it = outputLayers->begin(); it != outputLayers->end(); ++it, ++compIt) {
-                            ImagePtr tmp = convertLayersFormatsIfNeeded(app, it->second, args.roi, *compIt, inputArgs->bitdepth, useAlpha0ForRGBToRGBAConversion, -1);
-                            assert(tmp);
-                            convertedLayers[it->first] = tmp;
-                        }
-                        *outputLayers = convertedLayers;
-                    }
-                } else {
+                if (ret != eRenderRoIRetCodeOk) {
                     return ret;
                 }
+                outputLayers->insert(identityLayers.begin(), identityLayers.end());
             } else {
                 assert(outputLayers->empty());
             }

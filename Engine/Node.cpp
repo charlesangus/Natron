@@ -6123,8 +6123,20 @@ Node::getSelectedLayer(int inputNb,
 }
 
 bool
-Node::hasAtLeastOneChannelToProcess() const
+Node::hasAtLeastOneChannelToProcess(double time,
+                                    ViewIdx view) const
 {
+    std::vector<ResolvedLayer> selected;
+    if (resolveLayerKnob(time, view, &selected)) {
+        for (std::vector<ResolvedLayer>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+            if (it->channels.any()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     std::map<int, ChannelSelector>::const_iterator foundSelector = _imp->channelsSelectors.find(-1);
 
     if ( foundSelector == _imp->channelsSelectors.end() ) {

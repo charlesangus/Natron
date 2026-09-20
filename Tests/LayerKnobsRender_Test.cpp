@@ -172,18 +172,19 @@ expectColor(const FlatExrImage& image,
 class LayerKnobsRenderTest
     : public BaseTest {
 protected:
-    NodePtr createReader()
+    NodePtr createReader(const std::string& fixture = "flat-three-layers.exr")
     {
         CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
 
-        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
 
         return getApp()->createNode(readerArgs);
     }
 
-    NodePtr createInvertOnReader(KnobChannelSetPtr* channels)
+    NodePtr createInvertOnReader(KnobChannelSetPtr* channels,
+                                 const std::string& fixture = "flat-three-layers.exr")
     {
-        NodePtr reader = createReader();
+        NodePtr reader = createReader(fixture);
         if (!reader) {
             return NodePtr();
         }
@@ -247,6 +248,19 @@ protected:
         }
 
         return readFlatExr(path, image, error);
+    }
+
+    // True when the node reports itself an identity of its input 0 at frame 0.
+    bool isIdentityOfSource(const NodePtr& node)
+    {
+        EffectInstancePtr effect = node->getEffectInstance();
+        const RectI window(0, 0, 8, 8);
+        double inputTime = 0.;
+        ViewIdx inputView(0);
+        int inputNb = -1;
+        const bool identity = effect->isIdentity_public(false, effect->getRenderHash(), 0, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb);
+
+        return identity && inputNb == 0;
     }
 };
 
@@ -536,4 +550,103 @@ TEST_F(LayerKnobsRenderTest, BlurOnOnePlaneRoutesEveryPlaneThrough)
     expectColor(image, 1.f, 0.f, 0.f, 1.f);
     expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
     expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
+// An identity node hands the caller's planes through from its input: the diffuse plane must
+// not come back relabelled as Color.
+TEST_F(LayerKnobsRenderTest, IdentityBlurPassesEveryPlaneThroughUnchanged)
+{
+    NodePtr reader = createReader();
+    ASSERT_TRUE(bool(reader));
+    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    ASSERT_TRUE(bool(blur));
+    connectNodes(reader, blur, 0, true);
+
+    KnobDouble* size = dynamic_cast<KnobDouble*>(blur->getKnobByName("size").get());
+    ASSERT_TRUE(size != NULL);
+    EXPECT_EQ(0., size->getValue(0));
+    EXPECT_EQ(0., size->getValue(1));
+    EXPECT_TRUE(isIdentityOfSource(blur));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(blur, tmp, &image, &error)) << error;
+
+    expectColor(image, 1.f, 0.f, 0.f, 1.f);
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
+TEST_F(LayerKnobsRenderTest, ChannelSetNoneMakesTheNodeAnIdentity)
+{
+    KnobChannelSetPtr channels;
+    NodePtr invert = createInvertOnReader(&channels);
+
+    ASSERT_TRUE(bool(invert));
+    ASSERT_TRUE(bool(channels));
+
+    EXPECT_FALSE(isIdentityOfSource(invert));
+    channels->setNone();
+    EXPECT_FALSE(invert->hasAtLeastOneChannelToProcess(0, ViewIdx(0)));
+    EXPECT_TRUE(isIdentityOfSource(invert));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(invert, tmp, &image, &error)) << error;
+
+    expectColor(image, 1.f, 0.f, 0.f, 1.f);
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
+// A row naming only channels its layer does not have resolves to no channel at all.
+TEST_F(LayerKnobsRenderTest, ChannelSetRowWithNoMatchingChannelMakesTheNodeAnIdentity)
+{
+    KnobChannelSetPtr channels;
+    NodePtr invert = createInvertOnReader(&channels);
+
+    ASSERT_TRUE(bool(invert));
+    ASSERT_TRUE(bool(channels));
+
+    std::vector<std::string> q;
+    q.push_back("Q");
+    channels->setLayer(0, kNatronColorLayerID, &q);
+    EXPECT_FALSE(invert->hasAtLeastOneChannelToProcess(0, ViewIdx(0)));
+    EXPECT_TRUE(isIdentityOfSource(invert));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(invert, tmp, &image, &error)) << error;
+
+    expectColor(image, 1.f, 0.f, 0.f, 1.f);
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
+TEST_F(LayerKnobsRenderTest, SelectingALayerTheInputLacksMakesTheNodeAnIdentity)
+{
+    KnobChannelSetPtr channels;
+    NodePtr invert = createInvertOnReader(&channels, "flat-rgba-only.exr");
+
+    ASSERT_TRUE(bool(invert));
+    ASSERT_TRUE(bool(channels));
+
+    channels->setLayer(0, "diffuse", NULL);
+    EXPECT_FALSE(invert->hasAtLeastOneChannelToProcess(0, ViewIdx(0)));
+    EXPECT_TRUE(isIdentityOfSource(invert));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(invert, tmp, &image, &error)) << error;
+
+    expectColor(image, 1.f, 0.f, 0.f, 1.f);
+    EXPECT_EQ(-1, image.channelIndex("diffuse.R"));
 }

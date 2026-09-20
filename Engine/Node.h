@@ -1333,7 +1333,12 @@ public:
 
     bool getSelectedLayer(int inputNb, const std::list<ImageLayerDesc>& availableLayers, std::bitset<4>* processChannels, bool* isAll, ImageLayerDesc* layer) const;
 
-    bool hasAtLeastOneChannelToProcess() const;
+    /**
+     * @brief False when the node's layer knob resolves to no channel at the given time and
+     * view (or, for a node without one, when every legacy channel bool is off), which makes
+     * the node an identity of its preferred input.
+     **/
+    bool hasAtLeastOneChannelToProcess(double time, ViewIdx view) const;
 
     void removeParameterFromPython(const std::string& parameterName);
 

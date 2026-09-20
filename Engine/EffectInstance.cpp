@@ -4312,7 +4312,11 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
         std::list<ImageLayerDesc>& outputPlanes = (*comps)[-1];
         outputPlanes.clear();
         if (hasLayerKnob) {
-            appendSelectedPlanes(selected, metadataPlanes, &outputPlanes, processChannelsPerPlane);
+            // Plug-ins that own their channel mask (see Node::adoptChannelQuad()) read their
+            // R/G/B/A quad themselves; leaving processChannelsPerPlane empty for them makes
+            // processChannelsForPlane() fall back to the node-wide bitset below, which stays
+            // all-true, instead of the layer knob's row-0 buttons masking their output.
+            appendSelectedPlanes(selected, metadataPlanes, &outputPlanes, node->pluginOwnsChannelMask() ? NULL : processChannelsPerPlane);
         }
         if (outputPlanes.empty()) {
             outputPlanes = metadataPlanes;

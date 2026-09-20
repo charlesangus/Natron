@@ -1327,6 +1327,11 @@ public:
 
     bool getProcessChannel(int channelIndex) const;
 
+    // True for the handful of plug-ins (see adoptChannelQuad()) whose R/G/B/A quad the host
+    // does not adopt as a per-channel mask: their quad stays visible and the layer knob's
+    // row-0 channel buttons are ignored (the host treats every plane as fully processed).
+    bool pluginOwnsChannelMask() const;
+
     KnobChoicePtr getChannelSelectorKnob(int inputNb) const;
 
     KnobBoolPtr getProcessAllLayersKnob() const;

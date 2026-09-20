@@ -2666,6 +2666,20 @@ Node::findOrCreateChannelEnabled(const KnobPagePtr& mainPage)
 void
 Node::adoptChannelQuad()
 {
+    // KeyMix's quad picks source A vs source B per channel, DenoiseSharpen's collapses R/G/B
+    // into a single "process chroma" flag, and ClipTest's ORs the selected channels into one
+    // zebra-stripe decision: none of the three is a per-channel output mask, so forcing the
+    // quad true and letting the host mask instead would silently change what they compute.
+    static const std::set<std::string> pluginsOwningChannelMask = {
+        "net.sf.openfx.KeyMix",
+        "net.sf.openfx.DenoiseSharpen",
+        "net.sf.openfx.ClipTestPlugin"
+    };
+    if (pluginsOwningChannelMask.count(getPluginID()) > 0) {
+        _imp->pluginOwnsChannelMask = true;
+        return;
+    }
+
     static const std::string channelNames[4] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
     static const std::string channelShortNames[4] = { "R", "G", "B", "A" };
     KnobBoolPtr foundEnabled[4];
@@ -6047,6 +6061,12 @@ bool
 Node::isPluginUsingHostChannelSelectors() const
 {
     return _imp->hostChannelSelectorEnabled;
+}
+
+bool
+Node::pluginOwnsChannelMask() const
+{
+    return _imp->pluginOwnsChannelMask;
 }
 
 bool

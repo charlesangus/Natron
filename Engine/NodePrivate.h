@@ -276,6 +276,7 @@ public:
         , streamWarnings()
         , requiresGLFinishBeforeRender(false)
         , hostChannelSelectorEnabled(false)
+        , pluginOwnsChannelMask(false)
         , effectiveDataKindMutex()
         , effectiveDataKindCacheSet(false)
         , effectiveDataKindCache(eDataKindPolymorphic)
@@ -518,6 +519,11 @@ public:
     bool requiresGLFinishBeforeRender;
 
     bool hostChannelSelectorEnabled;
+
+    // True for plug-ins whose R/G/B/A quad is not a per-channel mask (KeyMix picks A vs B per
+    // channel, DenoiseSharpen collapses R/G/B into one flag, ClipTest ORs the selection into a
+    // zebra decision): adoptChannelQuad() leaves their quad alone instead of forcing it.
+    bool pluginOwnsChannelMask;
 
     // Cache for Node::getEffectiveOutputDataKind(): only ever populated for nodes whose
     // declared output kind is eDataKindPolymorphic, since a non-polymorphic node's kind is a

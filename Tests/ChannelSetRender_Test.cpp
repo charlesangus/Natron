@@ -89,6 +89,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -97,6 +98,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
+#include <ofxNatron.h>
 
 NATRON_NAMESPACE_USING
 
@@ -786,4 +788,133 @@ TEST_F(ChannelSetRenderBlurTest, CImgBlurSpecularRowLeavesColorAndDiffuseUntouch
     expectColor(image, 1.f, 0.f, 0.f, 1.f);
     expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
     expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
+// --- Quad-adoption exceptions: KeyMix, DenoiseSharpen, ClipTest --------------------------
+//
+// adoptChannelQuad() leaves these three plug-ins' own R/G/B/A quad alone instead of forcing
+// it true and hiding it (see the audit at the top of this file for why each one's quad is not
+// a per-channel mask); Node::pluginOwnsChannelMask() reports that so the host also stops
+// masking their output with the layer knob's row-0 channel bits.
+
+TEST_F(ChannelSetRenderTest, KeyMixQuadIsLeftToThePluginWhileGradeQuadIsAdopted)
+{
+    KnobChannelSetPtr keyMixChannels;
+    NodePtr keyMix = createEffectOnReader(QString::fromUtf8("net.sf.openfx.KeyMix"), &keyMixChannels);
+    ASSERT_TRUE(bool(keyMix));
+    EXPECT_TRUE(keyMix->pluginOwnsChannelMask());
+
+    KnobBool* keyMixProcessR = dynamic_cast<KnobBool*>(keyMix->getKnobByName(kNatronOfxParamProcessR).get());
+    ASSERT_TRUE(keyMixProcessR != NULL);
+    EXPECT_FALSE(keyMixProcessR->getIsSecret());
+    EXPECT_TRUE(keyMixProcessR->getIsPersistent());
+    EXPECT_TRUE(keyMixProcessR->getDefaultValue(0));
+    EXPECT_TRUE(keyMixProcessR->getValue());
+
+    KnobChannelSetPtr gradeChannels;
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &gradeChannels);
+    ASSERT_TRUE(bool(grade));
+    EXPECT_FALSE(grade->pluginOwnsChannelMask());
+
+    KnobBool* gradeProcessR = dynamic_cast<KnobBool*>(grade->getKnobByName(kNatronOfxParamProcessR).get());
+    ASSERT_TRUE(gradeProcessR != NULL);
+    EXPECT_TRUE(gradeProcessR->getIsSecret());
+    EXPECT_FALSE(gradeProcessR->getIsPersistent());
+    EXPECT_TRUE(gradeProcessR->getValue());
+}
+
+TEST_F(ChannelSetRenderTest, DenoiseSharpenAndClipTestAlsoOwnTheirChannelMask)
+{
+    KnobChannelSetPtr denoiseChannels;
+    NodePtr denoiseSharpen = createEffectOnReader(QString::fromUtf8("net.sf.openfx.DenoiseSharpen"), &denoiseChannels);
+    ASSERT_TRUE(bool(denoiseSharpen));
+    EXPECT_TRUE(denoiseSharpen->pluginOwnsChannelMask());
+
+    KnobChannelSetPtr clipTestChannels;
+    NodePtr clipTest = createEffectOnReader(QString::fromUtf8("net.sf.openfx.ClipTestPlugin"), &clipTestChannels);
+    ASSERT_TRUE(bool(clipTest));
+    EXPECT_TRUE(clipTest->pluginOwnsChannelMask());
+}
+
+// KeyMix's multiThreadProcessImages() reads its own NatronOfxParamProcessR/G/B/A quad
+// (_aChannels) directly: for channel c, the source is A[c] when _aChannels[c] is set, else B[c]
+// is copied through untouched by the "copy unprocessed channels from B" loop, independently of
+// mask/mix. With the mask open (Constant alpha 1, default mix 1), the per-channel blend inside
+// ofxsMaskMixPix resolves to exactly that A[c]-or-B[c] choice, so the expected output is
+// R = A.R (quad picks A), G/B/A = B.G/B/A (quad picks B).
+TEST_F(ChannelSetRenderTest, KeyMixRChannelFromAAndGBAlphaFromBIgnoringTheMeaninglessLayerKnobRow)
+{
+    NodePtr readerA = createReader("flat-three-layers.exr");
+    ASSERT_TRUE(bool(readerA));
+    NodePtr readerB = createReader("flat-rgba-only.exr");
+    ASSERT_TRUE(bool(readerB));
+
+    // flat-rgba-only.exr's Color (1,0,0,1) is identical to flat-three-layers.exr's, so scale it
+    // down first: with A and B carrying the same values, a channel reading the wrong source
+    // would go unnoticed.
+    NodePtr multiplyB = createNode(QString::fromUtf8("net.sf.openfx.MultiplyPlugin"));
+    ASSERT_TRUE(bool(multiplyB));
+    KnobColor* multiplyValue = dynamic_cast<KnobColor*>(multiplyB->getKnobByName("value").get());
+    ASSERT_TRUE(multiplyValue != NULL);
+    multiplyValue->setValues(0.5, 0.5, 0.5, 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    // Multiply's own default row leaves alpha unprocessed (see MultiplyDefaultRowMatchesPluginMathAndMasksAlpha
+    // above), so without this the multiplied B would keep A's original alpha and the two
+    // channel sources would be indistinguishable on alpha too.
+    KnobChannelSetPtr multiplyChannels = std::dynamic_pointer_cast<KnobChannelSet>(multiplyB->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(multiplyChannels));
+    multiplyChannels->setAll();
+    connectNodes(readerB, multiplyB, 0, true);
+    // B after the multiply: (0.5, 0, 0, 0.5).
+
+    NodePtr maskConstant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+    ASSERT_TRUE(bool(maskConstant));
+    KnobColor* maskColor = dynamic_cast<KnobColor*>(maskConstant->getKnobByName("color").get());
+    ASSERT_TRUE(maskColor != NULL);
+    maskColor->setValues(0., 0., 0., 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+    NodePtr keyMix = createNode(QString::fromUtf8("net.sf.openfx.KeyMix"));
+    ASSERT_TRUE(bool(keyMix));
+    ASSERT_EQ(std::string("B"), keyMix->getInputLabel(0));
+    ASSERT_EQ(std::string("A"), keyMix->getInputLabel(1));
+    ASSERT_EQ(std::string("Mask"), keyMix->getInputLabel(2));
+    connectNodes(multiplyB, keyMix, 0, true);
+    connectNodes(readerA, keyMix, 1, true);
+    connectNodes(maskConstant, keyMix, 2, true);
+
+    KnobBool* maskEnabled = dynamic_cast<KnobBool*>(keyMix->getKnobByName("enableMask_Mask").get());
+    ASSERT_TRUE(maskEnabled != NULL);
+    maskEnabled->setValue(true);
+    KnobChannelSelect* maskChannel = dynamic_cast<KnobChannelSelect*>(keyMix->getKnobByName("maskChannel_Mask").get());
+    ASSERT_TRUE(maskChannel != NULL);
+    maskChannel->set(ImageLayerDesc::getRGBAComponents().getChannelOption(3).id);
+
+    KnobBool* processR = dynamic_cast<KnobBool*>(keyMix->getKnobByName(kNatronOfxParamProcessR).get());
+    KnobBool* processG = dynamic_cast<KnobBool*>(keyMix->getKnobByName(kNatronOfxParamProcessG).get());
+    KnobBool* processB = dynamic_cast<KnobBool*>(keyMix->getKnobByName(kNatronOfxParamProcessB).get());
+    KnobBool* processA = dynamic_cast<KnobBool*>(keyMix->getKnobByName(kNatronOfxParamProcessA).get());
+    ASSERT_TRUE(processR != NULL && processG != NULL && processB != NULL && processA != NULL);
+    processR->setValue(true);
+    processG->setValue(false);
+    processB->setValue(false);
+    processA->setValue(false);
+
+    // The layer knob's row-0 channel buttons are meaningless for this plug-in: restrict them to
+    // exclude R, the opposite of the plug-in's own quad, so a host that still masked by these
+    // bits (the bug this test guards against) would overwrite R with the preferred input's (B's)
+    // value instead of leaving the plug-in's own A-sourced R alone.
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(keyMix->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(channels));
+    std::vector<std::string> gba;
+    gba.push_back("G");
+    gba.push_back("B");
+    gba.push_back("A");
+    channels->setLayer(0, kNatronColorLayerID, &gba);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(keyMix, tmp, &image, &error)) << error;
+
+    expectColor(image, 1.f, 0.f, 0.f, 0.5f);
 }

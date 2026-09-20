@@ -33,9 +33,12 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "FlatExrReader.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
@@ -43,7 +46,9 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
@@ -135,6 +140,33 @@ planeBits(const NeededComponents& needed,
     return std::bitset<4>();
 }
 
+// The fixture is spatially constant, so any in-bounds pixel stands for the whole plane.
+const int32_t kCheckX = 1;
+const int32_t kCheckY = 1;
+
+void
+expectPlane(const FlatExrImage& image,
+            const std::string& prefix,
+            float r,
+            float g,
+            float b)
+{
+    EXPECT_NEAR(r, image.at(kCheckX, kCheckY, prefix + "R"), 1e-4f) << prefix << "R";
+    EXPECT_NEAR(g, image.at(kCheckX, kCheckY, prefix + "G"), 1e-4f) << prefix << "G";
+    EXPECT_NEAR(b, image.at(kCheckX, kCheckY, prefix + "B"), 1e-4f) << prefix << "B";
+}
+
+void
+expectColor(const FlatExrImage& image,
+            float r,
+            float g,
+            float b,
+            float a)
+{
+    expectPlane(image, "", r, g, b);
+    EXPECT_NEAR(a, image.at(kCheckX, kCheckY, "A"), 1e-4f) << "A";
+}
+
 } // namespace
 
 class LayerKnobsRenderTest
@@ -163,6 +195,58 @@ protected:
         *channels = std::dynamic_pointer_cast<KnobChannelSet>(invert->getKnobByName(kNodeParamChannelSet));
 
         return invert;
+    }
+
+    // Appends a WriteOIIO writing every layer of `node` as one 32-bit float part and renders
+    // frame 1 into `tmp`, parsing the result into `image`.
+    bool renderAllLayers(const NodePtr& node,
+                         const QTemporaryDir& tmp,
+                         FlatExrImage* image,
+                         std::string* error)
+    {
+        NodePtr writer = createNode(_writeOIIOPluginID);
+        if (!writer) {
+            *error = "writer creation failed";
+
+            return false;
+        }
+        connectNodes(node, writer, 0, true);
+
+        KnobChoice* partSplitting = dynamic_cast<KnobChoice*>(writer->getKnobByName("partSplitting").get());
+        KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(writer->getKnobByName("bitDepth").get());
+        KnobChoice* compression = dynamic_cast<KnobChoice*>(writer->getKnobByName("compression").get());
+        KnobBool* processAllLayers = dynamic_cast<KnobBool*>(writer->getKnobByName("processAllLayers").get());
+        if (!partSplitting || !bitDepth || !compression || !processAllLayers) {
+            *error = "writer knobs missing";
+
+            return false;
+        }
+        partSplitting->setValueFromID("single", 0);
+        bitDepth->setValueFromID("32f", 0);
+        compression->setValueFromID("none", 0);
+        processAllLayers->setValue(true);
+
+        const std::string path = (tmp.path() + QLatin1String("/out.exr")).toStdString();
+        writer->setOutputFilesForWriter(path);
+        QFile::remove(QString::fromStdString(path));
+
+        OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
+        if (!writerEffect) {
+            *error = "writer has no OutputEffectInstance";
+
+            return false;
+        }
+        std::list<AppInstance::RenderWork> works;
+        works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
+        getApp()->startWritersRendering(false, works);
+
+        if (!QFile::exists(QString::fromStdString(path))) {
+            *error = "frame was not rendered: " + path;
+
+            return false;
+        }
+
+        return readFlatExr(path, image, error);
     }
 };
 
@@ -343,4 +427,113 @@ TEST_F(LayerKnobsRenderTest, NodesWithoutLayerKnobKeepMetadataPlanes)
     EXPECT_EQ(colorOnly, layerIDs(source->second));
     EXPECT_TRUE(needed.processChannelsPerPlane.empty());
     EXPECT_EQ(bits(true, true, true, true), premult->getEffectInstance()->getProcessChannelsForPlane(needed.hash, 0, ViewIdx(0), ImageLayerDesc::getRGBAComponents()));
+}
+
+// Rendering plane L reads plane L and masks with L's own bits: Color loses only its R, diffuse
+// only its G, and the unselected specular plane passes through.
+TEST_F(LayerKnobsRenderTest, InvertReadsAndMasksEachPlaneOnItsOwn)
+{
+    KnobChannelSetPtr channels;
+    NodePtr invert = createInvertOnReader(&channels);
+
+    ASSERT_TRUE(bool(invert));
+    ASSERT_TRUE(bool(channels));
+
+    std::vector<std::string> r;
+    r.push_back("R");
+    channels->setLayer(0, kNatronColorLayerID, &r);
+    std::vector<std::string> g;
+    g.push_back("G");
+    channels->addLayer("diffuse", &g);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(invert, tmp, &image, &error)) << error;
+
+    expectColor(image, 0.f, 0.f, 0.f, 1.f);
+    expectPlane(image, "diffuse.", 0.f, 0.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
+TEST_F(LayerKnobsRenderTest, InvertOnOneNonColorPlaneLeavesTheOthersUntouched)
+{
+    KnobChannelSetPtr channels;
+    NodePtr invert = createInvertOnReader(&channels);
+
+    ASSERT_TRUE(bool(invert));
+    ASSERT_TRUE(bool(channels));
+
+    channels->setLayer(0, "diffuse", NULL);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(invert, tmp, &image, &error)) << error;
+
+    expectColor(image, 1.f, 0.f, 0.f, 1.f);
+    expectPlane(image, "diffuse.", 1.f, 0.f, 1.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
+// Grade's adopted channel quad is forced on, so its alpha survives only through host masking
+// with the Color row's default A-off bits.
+TEST_F(LayerKnobsRenderTest, GradeDefaultRowKeepsAlphaByHostMasking)
+{
+    NodePtr reader = createReader();
+    ASSERT_TRUE(bool(reader));
+    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    ASSERT_TRUE(bool(grade));
+    connectNodes(reader, grade, 0, true);
+
+    KnobColor* multiply = dynamic_cast<KnobColor*>(grade->getKnobByName("multiply").get());
+    ASSERT_TRUE(multiply != NULL);
+    multiply->setValues(0.5, 0.5, 0.5, 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(grade, tmp, &image, &error)) << error;
+
+    expectColor(image, 0.5f, 0.f, 0.f, 1.f);
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
+// A constant plane blurred with nearest-pixel borders is itself, so a real (non-identity) blur
+// of one plane must leave all three planes equal to the input.
+TEST_F(LayerKnobsRenderTest, BlurOnOnePlaneRoutesEveryPlaneThrough)
+{
+    NodePtr reader = createReader();
+    ASSERT_TRUE(bool(reader));
+    NodePtr blur = createNode(QString::fromUtf8("net.sf.cimg.CImgBlur"));
+    ASSERT_TRUE(bool(blur));
+    connectNodes(reader, blur, 0, true);
+
+    KnobDouble* size = dynamic_cast<KnobDouble*>(blur->getKnobByName("size").get());
+    ASSERT_TRUE(size != NULL);
+    size->setValues(3., 3., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    KnobChoice* boundary = dynamic_cast<KnobChoice*>(blur->getKnobByName("boundary").get());
+    ASSERT_TRUE(boundary != NULL);
+    boundary->setValueFromID("nearest", 0);
+    KnobBool* expandRoD = dynamic_cast<KnobBool*>(blur->getKnobByName("expandRoD").get());
+    ASSERT_TRUE(expandRoD != NULL);
+    expandRoD->setValue(false);
+
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(blur->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(channels));
+    channels->setLayer(0, "specular", NULL);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(blur, tmp, &image, &error)) << error;
+
+    expectColor(image, 1.f, 0.f, 0.f, 1.f);
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
 }

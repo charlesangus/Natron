@@ -53,7 +53,6 @@
 #include "Engine/ImageParams.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
-#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Log.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
@@ -2245,15 +2244,11 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                 firstFrame,
                                                 lastFrame,
                                                 layers->useOpenGL);
-    ImagePtr originalInputImage, maskImage;
-    EffectInstance::InputImagesMap::const_iterator foundPrefInput = rectToRender.imgs.find(preferredInput);
+    ImagePtr maskImage;
     EffectInstance::InputImagesMap::const_iterator foundMaskInput = rectToRender.imgs.end();
 
     if ( _publicInterface->isHostMaskingEnabled() ) {
         foundMaskInput = rectToRender.imgs.find(_publicInterface->getNInputs() - 1);
-    }
-    if ( ( foundPrefInput != rectToRender.imgs.end() ) && !foundPrefInput->second.empty() ) {
-        originalInputImage = foundPrefInput->second.front();
     }
 
     if ( ( foundMaskInput != rectToRender.imgs.end() ) && !foundMaskInput->second.empty() ) {
@@ -2338,7 +2333,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                        outputClipPrefDepth,
                                                        outputClipPrefsComps,
                                                        processChannels,
-                                                       originalInputImage,
+                                                       preferredInput,
                                                        maskImage,
                                                        *layers);
     if (handlerRet == eRenderingFunctorRetOK) {
@@ -2347,6 +2342,42 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
         return handlerRet;
     }
 } // EffectInstance::tiledRenderingFunctor
+
+// The channels the node processes on the given output plane: the layer knob's bits for that
+// plane, else the node-wide bits (nodes without a layer knob, and planes rendered because the
+// selection resolved to nothing).
+static std::bitset<4>
+processChannelsForPlane(const EffectInstance::ProcessChannelsPerPlaneMap& perPlane,
+                        const ImageLayerDesc& plane,
+                        const std::bitset<4>& defaultChannels)
+{
+    EffectInstance::ProcessChannelsPerPlaneMap::const_iterator found = perPlane.find(plane);
+
+    return found == perPlane.end() ? defaultChannels : found->second;
+}
+
+// The preferred input's image of the given output plane: same layer ID, or any Color plane
+// for a Color plane. Falls back to the first image so an input without that plane still
+// feeds the mask/mix pass.
+static ImagePtr
+findInputImageForPlane(const EffectInstance::InputImagesMap& inputImages,
+                       int inputNb,
+                       const ImageLayerDesc& plane)
+{
+    EffectInstance::InputImagesMap::const_iterator found = inputImages.find(inputNb);
+    if ((found == inputImages.end()) || found->second.empty()) {
+        return ImagePtr();
+    }
+    for (ImageList::const_iterator it = found->second.begin(); it != found->second.end(); ++it) {
+        const ImageLayerDesc& comps = (*it)->getComponents();
+        const bool equivalent = plane.isColorLayer() ? comps.isColorLayer() : comps.getLayerID() == plane.getLayerID();
+        if (equivalent) {
+            return *it;
+        }
+    }
+
+    return found->second.front();
+}
 
 EffectInstance::RenderingFunctorRetEnum
 EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
@@ -2360,7 +2391,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                               const ImageBitDepthEnum outputClipPrefDepth,
                                               const ImageLayerDesc& outputClipPrefsComps,
                                               const std::bitset<4>& processChannels,
-                                              const ImagePtr& originalInputImage,
+                                              const int preferredInput,
                                               const ImagePtr& maskImage,
                                               ImageLayersToRender& layers)
 {
@@ -2607,6 +2638,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         if (!multiPlanar) {
             assert( !it->empty() );
             tls->currentRenderArgs.outputLayerBeingRendered = it->front().first;
+            actionArgs.processChannels = processChannelsForPlane(layers.processChannelsPerPlane, it->front().first, processChannels);
         }
         actionArgs.outputLayers = *it;
 
@@ -2725,6 +2757,13 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
             warning.append( tr("contains NaN values. They have been converted to 1.") );
             _publicInterface->setPersistentMessage( eMessageTypeWarning, warning.toStdString() );
         }
+
+        // Per the no-shuffle invariant (see OfxClipInstance::getInputImageInternal), the channels
+        // of plane L the node does not process come from the preferred input's plane L, with
+        // L's own bits: one bitset and one source image for every plane would shuffle planes.
+        const ImagePtr originalInputImage = findInputImageForPlane(tls->currentRenderArgs.inputImages, preferredInput, it->first);
+        const std::bitset<4> planeProcessChannels = processChannelsForPlane(layers.processChannelsPerPlane, it->first, processChannels);
+
         if (it->second.isAllocatedOnTheFly) {
             /// Layer allocated on the fly only have a temp image if using the cache and it is defined over the render window only
             if (it->second.tmpImage != it->second.renderMappedImage) {
@@ -2756,7 +2795,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 ImagePtr mappedOriginalInputImage = originalInputImage;
 
                 if ( originalInputImage && (originalInputImage->getMipmapLevel() != 0) ) {
-                    bool mustCopyUnprocessedChannels = it->second.tmpImage->canCallCopyUnProcessedChannels(processChannels);
+                    bool mustCopyUnprocessedChannels = it->second.tmpImage->canCallCopyUnProcessedChannels(planeProcessChannels);
                     if (mustCopyUnprocessedChannels || useMaskMix) {
                         ///there is some processing to be done by copyUnProcessedChannels or applyMaskMix
                         ///but originalInputImage is not in the correct mipmapLevel, upscale it
@@ -2776,7 +2815,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 }
 
                 if (mappedOriginalInputImage) {
-                    it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, processChannels, mappedOriginalInputImage);
+                    it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, planeProcessChannels, mappedOriginalInputImage);
                     if (useMaskMix) {
                         it->second.tmpImage->applyMaskMix(renderMappedRectToRender, maskImage.get(), mappedOriginalInputImage.get(), doMask, false, mix);
                     }
@@ -2850,7 +2889,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     }
                 }
 
-                it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, processChannels, originalInputImage, glContext);
+                it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInputImage, glContext);
                 if (useMaskMix) {
                     it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInputImage.get(), doMask, false, mix, glContext);
                 }
@@ -4263,23 +4302,8 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
 
     // Resolve the layer knob once against the list it is bound to; the same selection is
     // read from every non-mask input and written to the output (no-shuffle invariant).
-    KnobIPtr layerKnob = node->getLayerKnob();
-    KnobChannelSet* channelSet = dynamic_cast<KnobChannelSet*>(layerKnob.get());
-    KnobLayerSelect* layerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get());
-    const bool hasLayerKnob = channelSet || layerSelect;
     std::vector<ResolvedLayer> selected;
-    if (hasLayerKnob) {
-        std::list<ImageLayerDesc> present;
-        node->listLayersForKnob(layerKnob, time, view, &present);
-        if (channelSet) {
-            selected = channelSet->resolve(present);
-        } else {
-            ResolvedLayer one;
-            if (layerSelect->resolve(present, &one)) {
-                selected.push_back(one);
-            }
-        }
-    }
+    const bool hasLayerKnob = node->resolveLayerKnob(time, view, &selected);
 
     {
         std::list<ImageLayerDesc> metadataPlanes;
@@ -4563,6 +4587,20 @@ EffectInstance::getThreadLocalRenderedLayers(std::map<ImageLayerDesc, EffectInst
         *layerBeingRendered = tls->currentRenderArgs.outputLayerBeingRendered;
         *outputLayers = tls->currentRenderArgs.outputLayers;
         *renderWindow = tls->currentRenderArgs.renderWindowPixel;
+
+        return true;
+    }
+
+    return false;
+}
+
+bool
+EffectInstance::getThreadLocalOutputLayerBeingRendered(ImageLayerDesc* layer) const
+{
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+
+    if (tls && tls->currentRenderArgs.validArgs) {
+        *layer = tls->currentRenderArgs.outputLayerBeingRendered;
 
         return true;
     }

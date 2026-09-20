@@ -723,6 +723,7 @@ EffectInstance::Implementation::ScopedRenderArgs::ScopedRenderArgs(const EffectT
     tlsData->currentRenderArgs.firstFrame = firstFrame;
     tlsData->currentRenderArgs.lastFrame = lastFrame;
     tlsData->currentRenderArgs.isDoingOpenGLRender = isDoingOpenGLRender;
+    tlsData->currentRenderArgs.outputLayerBeingRendered = ImageLayerDesc();
 
     tlsData->currentRenderArgs.validArgs = true;
 }

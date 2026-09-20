@@ -5777,6 +5777,34 @@ Node::listLayersForKnob(const KnobIPtr& knob,
     layers->insert(layers->end(), present.begin(), present.end());
 } // Node::listLayersForKnob
 
+bool
+Node::resolveLayerKnob(double time,
+                       ViewIdx view,
+                       std::vector<ResolvedLayer>* selected) const
+{
+    selected->clear();
+
+    KnobIPtr layerKnob = getLayerKnob();
+    KnobChannelSet* channelSet = dynamic_cast<KnobChannelSet*>(layerKnob.get());
+    KnobLayerSelect* layerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get());
+    if (!channelSet && !layerSelect) {
+        return false;
+    }
+
+    std::list<ImageLayerDesc> present;
+    listLayersForKnob(layerKnob, time, view, &present);
+    if (channelSet) {
+        *selected = channelSet->resolve(present);
+    } else {
+        ResolvedLayer one;
+        if (layerSelect->resolve(present, &one)) {
+            selected->push_back(one);
+        }
+    }
+
+    return true;
+}
+
 void
 Node::registerProducedLayers()
 {

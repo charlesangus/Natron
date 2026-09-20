@@ -397,7 +397,7 @@ public:
                                           const ImageBitDepthEnum outputClipPrefDepth,
                                           const ImageLayerDesc& outputClipPrefsComps,
                                           const std::bitset<4>& processChannels,
-                                          const ImagePtr& originalInputImage,
+                                          const int preferredInput,
                                           const ImagePtr& maskImage,
                                           ImageLayersToRender& layers);
 

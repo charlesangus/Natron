@@ -1649,12 +1649,14 @@ public:
     struct ImageLayersToRender {
         std::list<RectToRender> rectsToRender;
         std::map<ImageLayerDesc, LayerToRender> layers;
+        ProcessChannelsPerPlaneMap processChannelsPerPlane;
         bool useOpenGL;
         EffectInstance::OpenGLContextEffectDataPtr glContextData;
 
         ImageLayersToRender()
             : rectsToRender()
             , layers()
+            , processChannelsPerPlane()
             , useOpenGL(false)
             , glContextData()
         {
@@ -1676,6 +1678,13 @@ public:
                                       RectI* renderWindow) const;
 
     bool getThreadLocalNeededComponents(ComponentsNeededMapPtr* neededComps) const;
+
+    /**
+     * @brief The plane the on-going render action of a non-multiplanar effect is writing,
+     * or an empty descriptor when the effect renders all its planes at once. Returns false
+     * outside a render action.
+     **/
+    bool getThreadLocalOutputLayerBeingRendered(ImageLayerDesc* layer) const;
 
     /**
      * @brief Called when the associated node's hash has changed.
@@ -2020,10 +2029,10 @@ public:
      * with the pass-through planes of the preferred input.
      *
      * processChannelsPerPlane holds, for every plane of comps[-1] the node's layer knob
-     * selected, the channels it processes; a plane not in the map (and every plane of a node
-     * without a layer knob) is processed on all channels. processChannels is the Color plane's
-     * entry, or the union of all entries when no Color plane is selected: the single bitset the
-     * transitional render path still applies to every plane.
+     * selected, the channels it processes; the render path masks each plane with its own
+     * entry. processChannels is what a plane absent from the map gets: the node's channel
+     * checkboxes for a node without a layer knob, all channels otherwise (for a layer-knob
+     * node it is the Color entry, or the union of all entries when no Color plane is selected).
      **/
     void getComponentsNeededAndProduced_public(U64 hash,
                                                double time, ViewIdx view,

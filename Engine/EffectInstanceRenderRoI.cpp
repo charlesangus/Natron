@@ -861,6 +861,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     getMetadataComponents(-1, &outputClipPrefComps, &outputClipPrefCompsPaired);
     ImageLayersToRenderPtr layersToRender = std::make_shared<ImageLayersToRender>();
     layersToRender->useOpenGL = storage == eStorageModeGLTex;
+    layersToRender->processChannelsPerPlane = processChannelsPerPlane;
     FramesNeededMapPtr framesNeeded = std::make_shared<FramesNeededMap>();
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////// Look-up the cache ///////////////////////////////////////////////////////////////

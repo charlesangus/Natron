@@ -1378,6 +1378,13 @@ public:
     void listLayersForKnob(const KnobIPtr& knob, double time, ViewIdx view, std::list<ImageLayerDesc>* layers) const;
 
     /**
+     * @brief Resolves the layer knob (channel set or layer select) against the layers it is
+     * bound to at the given time and view. Returns false when the node has no layer knob,
+     * in which case selected is left empty.
+     **/
+    bool resolveLayerKnob(double time, ViewIdx view, std::vector<ResolvedLayer>* selected) const;
+
+    /**
      * @brief Registers every non-Color layer this node produces (per
      * getComponentsNeededAndProduced_public()'s output entry) with the project-level
      * LayerRegistry. Main thread only, called at the end of refreshAllInputRelatedData().

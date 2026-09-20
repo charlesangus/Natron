@@ -32,6 +32,8 @@
 #include <stdexcept>
 #include <sstream> // stringstream
 
+#include <vector>
+
 #include <QTextStream>
 #include <QDebug>
 #include <QCoreApplication>
@@ -53,6 +55,8 @@
 #include "Engine/TLSHolder.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
+
+#include "Engine/KnobChannelSet.h"
 
 #include <nuke/fnOfxExtensions.h>
 #include <ofxOpenGLRender.h>
@@ -856,7 +860,20 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
                     foundCompsInTLS = true;
                     //qDebug() << _imp->nodeInstance->getScriptName_mt_safe().c_str() << " didn't specify any needed components via getClipComponents for clip " << getName().c_str();
                 } else {
+                    // No-shuffle invariant: a node rendering plane L reads plane L from every
+                    // non-mask input and writes plane L; the channels of L it does not process
+                    // are copied from the preferred input's plane L. The needed list carries
+                    // every plane the node renders, so the entry equivalent to the plane being
+                    // rendered is picked; only a list without it (mask inputs, multiplanar
+                    // effects) yields the front.
                     comp = found->second.front();
+                    ImageLayerDesc layerBeingRendered;
+                    if (effect->getThreadLocalOutputLayerBeingRendered(&layerBeingRendered) && layerBeingRendered.getNumComponents() > 0) {
+                        std::list<ImageLayerDesc>::const_iterator equivalent = ImageLayerDesc::findEquivalentLayer(layerBeingRendered, found->second.begin(), found->second.end());
+                        if (equivalent != found->second.end()) {
+                            comp = *equivalent;
+                        }
+                    }
                     foundCompsInTLS = true;
                 }
             }
@@ -864,13 +881,17 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
 
         if (!foundCompsInTLS) {
             ///We are in analysis or the effect does not have any input
-            std::bitset<4> processChannels;
-            bool isAll;
-
+            NodePtr node = effect->getNode();
             std::list<ImageLayerDesc> availableLayers;
             effect->getAvailableLayers(time, ViewIdx(0), inputnb, &availableLayers);
-            if (!effect->getNode()->getSelectedLayer(inputnb, availableLayers, &processChannels, &isAll, &comp)) {
-                //There's no selector...fallback on the basic components indicated on the clip
+
+            ImageLayerDesc maskComp;
+            std::vector<ResolvedLayer> selected;
+            if ((node->getMaskChannel(inputnb, availableLayers, &maskComp) != -1) && (maskComp.getNumComponents() > 0)) {
+                comp = maskComp;
+            } else if (node->resolveLayerKnob(time, ViewIdx(0), &selected) && !selected.empty() && !selected.front().desc.isColorLayer()) {
+                comp = selected.front().desc;
+            } else {
                 ImageLayerDesc pairedComp;
                 ImageLayerDesc::mapOFXComponentsTypeStringToLayers(thisClipComponents, &comp, &pairedComp);
             }

@@ -123,7 +123,7 @@ become phases here.
   - verify: `ctest -R KnobChannelSet`, EXPECT_* on: default Color row; `none`→empty; `all`→every present layer/all bits; layer row absent→nothing; enabled names ∩ actual channels; `depth[Z]`→bit 3; regex `spec.*` anchored (`specular` yes, `xspecular` no, `Specular` no); invalid regex→nothing; duplicate IDs OR-ed; Color first; codec round trip with a pattern containing `<`, `&` and a space; `setNone` on row 1 throws.
   - size: M
 
-- [ ] M38.P3.T3 — `KnobLayerSelect` and `KnobChannelSelect`
+- [x] M38.P3.T3 — `KnobLayerSelect` and `KnobChannelSelect`
   - files: `Engine/KnobLayerSelect.h`, `Engine/KnobLayerSelect.cpp`, `Engine/KnobChannelSelect.h`, `Engine/KnobChannelSelect.cpp`, `Tests/KnobLayerSelect_Test.cpp`
   - approach: §1.2/§1.3; `KnobLayerSelect(withChannelButtons)` with `setLayer` resetting channels to all; `KnobChannelSelect` value `layerID.C` or empty; both expose `resolve(list)` and `getReferencedLayerIDs()`; registered in `KnobFactory.cpp:79-96`, `KnobSerialization.cpp:143-185`.
   - verify: gtest: `setLayer("diffuse")` after `setChannels({"R"})` on Color yields all of diffuse's channels; a buttonless select serialises an empty `Channels` cell and resolves to all bits; channel select `Color.A` resolves to (Color, 3), `diffuse.G` to (diffuse, 1), unknown → none; both survive a `KnobSerialization` save/load round trip by `typeName()`.

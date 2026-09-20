@@ -117,9 +117,9 @@ public:
         return false;
     }
 
-    virtual bool getCreateChannelSelectorKnob() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return false;
+        return LayerKnobSpec();
     }
 
     virtual bool hasOverlay() const OVERRIDE FINAL

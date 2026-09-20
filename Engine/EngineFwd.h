@@ -178,6 +178,7 @@ class KnobBool;
 class KnobButton;
 class KnobChannelSelect;
 class KnobChannelSet;
+struct LayerKnobSpec;
 class KnobChoice;
 class KnobColor;
 class KnobDouble;

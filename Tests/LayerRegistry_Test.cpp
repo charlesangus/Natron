@@ -43,6 +43,7 @@
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
@@ -362,7 +363,7 @@ TEST_F(BaseTest, LoadWithUnchangedFilesDoesNotChangeRegistry)
     project->reset(false, true);
 } // TEST_F(BaseTest, LoadWithUnchangedFilesDoesNotChangeRegistry)
 
-// Selecting a registered layer on a downstream node's Output Layer choice makes that node a
+// Selecting a registered layer on a downstream node's channel set makes that node a
 // "user" of the layer (Node::getReferencedLayerIDs()); Project::removeLayer() must then refuse
 // and name the referencing node.
 TEST_F(BaseTest, ReferencedLayerCannotBeRemoved)
@@ -381,9 +382,9 @@ TEST_F(BaseTest, ReferencedLayerCannotBeRemoved)
 
     connectNodes(reader, blur, 0, true);
 
-    KnobChoicePtr outputLayerKnob = std::dynamic_pointer_cast<KnobChoice>(blur->getKnobByName(kOutputChannelsKnobName));
-    ASSERT_TRUE(bool(outputLayerKnob));
-    outputLayerKnob->setValueFromID("diffuse", 0);
+    KnobChannelSetPtr channelsKnob = std::dynamic_pointer_cast<KnobChannelSet>(blur->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(channelsKnob));
+    channelsKnob->addLayer("diffuse", 0);
 
     std::string error;
     EXPECT_FALSE(project->removeLayer("diffuse", &error));
@@ -451,9 +452,9 @@ TEST_F(BaseTest, LayersKnobMirrorsRegistryAndUsers)
     ASSERT_TRUE(bool(blur));
     connectNodes(reader, blur, 0, true);
 
-    KnobChoicePtr outputLayerKnob = std::dynamic_pointer_cast<KnobChoice>(blur->getKnobByName(kOutputChannelsKnobName));
-    ASSERT_TRUE(bool(outputLayerKnob));
-    outputLayerKnob->setValueFromID("diffuse", 0);
+    KnobChannelSetPtr channelsKnob = std::dynamic_pointer_cast<KnobChannelSet>(blur->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(channelsKnob));
+    channelsKnob->addLayer("diffuse", 0);
 
     EXPECT_TRUE(findLayersKnobRow(layersKnob, "diffuse", &row));
     EXPECT_EQ(std::string("1"), row[2]);

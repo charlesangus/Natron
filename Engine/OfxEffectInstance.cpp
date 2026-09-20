@@ -852,6 +852,19 @@ OfxEffectInstance::isGenerator() const
 #endif
 }
 
+LayerKnobSpec
+OfxEffectInstance::getLayerKnobSpec() const
+{
+    LayerKnobSpec spec = EffectInstance::getLayerKnobSpec();
+
+    // A generator writes into one layer of its own output rather than processing an input.
+    if (spec.kind == LayerKnobSpec::eKindChannelSet && isGenerator()) {
+        return LayerKnobSpec(LayerKnobSpec::eKindLayerSelect, LayerKnobSpec::eRoleTarget, true);
+    }
+
+    return spec;
+}
+
 bool
 OfxEffectInstance::isReader() const
 {

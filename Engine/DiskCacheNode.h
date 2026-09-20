@@ -135,7 +135,7 @@ public:
 
     virtual void initializeKnobs() OVERRIDE FINAL;
     virtual void getFrameRange(double *first, double *last) OVERRIDE FINAL;
-    virtual bool getCreateChannelSelectorKnob() const OVERRIDE FINAL WARN_UNUSED_RETURN { return false; }
+    virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN { return LayerKnobSpec(); }
 
     virtual bool isHostChannelSelectorSupported(bool* defaultR, bool* defaultG, bool* defaultB, bool* defaultA) const OVERRIDE WARN_UNUSED_RETURN;
 

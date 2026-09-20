@@ -109,6 +109,43 @@
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief Which layer/channel knob, if any, the host creates on a node's main page, and
+ * where that knob's layer list comes from.
+ **/
+struct LayerKnobSpec {
+    enum KindEnum {
+        eKindNone,
+        eKindChannelSet,
+        eKindLayerSelect
+    };
+
+    enum RoleEnum {
+        eRoleInputBound,
+        eRoleTarget
+    };
+
+    KindEnum kind;
+    RoleEnum role;
+    bool withChannelButtons;
+
+    LayerKnobSpec()
+        : kind(eKindNone)
+        , role(eRoleInputBound)
+        , withChannelButtons(false)
+    {
+    }
+
+    LayerKnobSpec(KindEnum kind_,
+                  RoleEnum role_,
+                  bool withChannelButtons_)
+        : kind(kind_)
+        , role(role_)
+        , withChannelButtons(withChannelButtons_)
+    {
+    }
+};
+
+/**
  * @brief This is the base class for visual effects.
  * A live instance is always living throughout the lifetime of a Node and other copies are
  * created on demand when a render is needed.
@@ -528,8 +565,11 @@ public:
 
     virtual bool getMakeSettingsPanel() const { return true; }
 
-
-    virtual bool getCreateChannelSelectorKnob() const;
+    /**
+     * @brief The layer/channel knob the host adds to this effect's main page. Image-producing
+     * effects that own their planes (multiplanar, readers, writers, Furnace) get none.
+     **/
+    virtual LayerKnobSpec getLayerKnobSpec() const WARN_UNUSED_RETURN;
 
     /**
      * @brief Returns the index of the channel to use to produce the mask and the components.

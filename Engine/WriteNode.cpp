@@ -966,10 +966,10 @@ WriteNode::isOutput() const
     return true;
 }
 
-bool
-WriteNode::getCreateChannelSelectorKnob() const
+LayerKnobSpec
+WriteNode::getLayerKnobSpec() const
 {
-    return false;
+    return LayerKnobSpec();
 }
 
 bool

@@ -1732,9 +1732,9 @@ exportKnobValues(int indentLevel,
 
     EffectInstance* holderIsEffect = dynamic_cast<EffectInstance*>( knob->getHolder() );
 
-    if (isChoice && holderIsEffect) {
+    if (holderIsEffect) {
         //Do not serialize mask channel selector if the mask is not enabled
-        int maskInputNb = holderIsEffect->getNode()->isMaskChannelKnob(isChoice);
+        int maskInputNb = holderIsEffect->getNode()->isMaskChannelKnob(knob.get());
         if (maskInputNb != -1) {
             if ( !holderIsEffect->getNode()->isMaskEnabled(maskInputNb) ) {
                 return false;

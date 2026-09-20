@@ -28,19 +28,20 @@
 #include <QDebug>
 #include <QThread>
 
-#include "Engine/NodeGroup.h"
-#include "Engine/PrecompNode.h"
+#include "Engine/AbortableRenderInfo.h"
+#include "Engine/AppInstance.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
-#include "Engine/AppInstance.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/Settings.h"
-#include "Engine/TimeLine.h"
-#include "Engine/Project.h"
-#include "Engine/ViewerInstance.h"
-#include "Engine/AbortableRenderInfo.h"
-#include "Engine/ThreadPool.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/OpenGLViewerI.h"
+#include "Engine/PrecompNode.h"
+#include "Engine/Project.h"
+#include "Engine/Settings.h"
+#include "Engine/ThreadPool.h"
+#include "Engine/TimeLine.h"
+#include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_ENTER
 

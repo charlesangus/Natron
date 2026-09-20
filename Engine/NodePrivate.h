@@ -31,6 +31,8 @@
 #include "Node.h"
 #include "Timer.h" // gettimeofday()
 
+#include "Engine/EffectInstance.h"
+
 #include <QWaitCondition>
 #include <QReadWriteLock>
 #include <QMutex>
@@ -73,16 +75,11 @@ class MaskSelector
 public:
 
     KnobBoolWPtr enabled;
-    KnobChoiceWPtr channel;
-    mutable QMutex compsMutex;
-    //Stores the components available at build time of the choice menu
-    std::vector<std::pair<ImageLayerDesc, NodeWPtr>> compsAvailable;
+    KnobChannelSelectWPtr channel;
 
     MaskSelector()
         : enabled()
         , channel()
-        , compsMutex()
-        , compsAvailable()
     {
     }
 
@@ -95,11 +92,33 @@ public:
     {
         enabled = other.enabled;
         channel = other.channel;
-        QMutexLocker k(&compsMutex);
-        compsAvailable = other.compsAvailable;
     }
 };
 
+/**
+ * @brief Where a layer/channel knob's list comes from: the present layers of one input
+ * (kPreferredInput resolves to Node::getPreferredInput() at call time) or the project
+ * registry. A property of the node kind, never persisted.
+ **/
+struct LayerKnobSource {
+    static const int kPreferredInput = -2;
+
+    int inputNb;
+    LayerKnobSpec::RoleEnum role;
+
+    LayerKnobSource()
+        : inputNb(kPreferredInput)
+        , role(LayerKnobSpec::eRoleInputBound)
+    {
+    }
+
+    LayerKnobSource(int inputNb_,
+                    LayerKnobSpec::RoleEnum role_)
+        : inputNb(inputNb_)
+        , role(role_)
+    {
+    }
+};
 
 struct PyPlugInfo
 {
@@ -201,6 +220,9 @@ public:
         , enabledChan()
         , channelsSelectors()
         , maskSelectors()
+        , layerKnob()
+        , layerKnobSpec()
+        , layerKnobSources()
         , rotoContext()
         , trackContext()
         , imagesBeingRenderedMutex()
@@ -407,6 +429,9 @@ public:
     KnobBoolWPtr processAllLayersKnob;
     std::map<int, ChannelSelector> channelsSelectors;
     std::map<int, MaskSelector> maskSelectors;
+    KnobIWPtr layerKnob;
+    LayerKnobSpec layerKnobSpec;
+    std::map<const KnobI*, LayerKnobSource> layerKnobSources;
     RotoContextPtr rotoContext; //< valid when the node has a rotoscoping context (i.e: paint context)
     TrackerContextPtr trackContext;
     mutable QMutex imagesBeingRenderedMutex;

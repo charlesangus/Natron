@@ -4498,11 +4498,14 @@ EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::
 
 } // getAvailableLayers
 
-bool
-EffectInstance::getCreateChannelSelectorKnob() const
+LayerKnobSpec
+EffectInstance::getLayerKnobSpec() const
 {
-    return ( !isMultiPlanar() && !isReader() && !isWriter() && !isTrackerNodePlugin() &&
-             getPluginID().rfind("uk.co.thefoundry.furnace", 0) == std::string::npos );
+    if (isMultiPlanar() || isReader() || isWriter() || getOutputDataKind() != eDataKindImage || getPluginID().rfind("uk.co.thefoundry.furnace", 0) != std::string::npos) {
+        return LayerKnobSpec();
+    }
+
+    return LayerKnobSpec(LayerKnobSpec::eKindChannelSet, LayerKnobSpec::eRoleInputBound, true);
 }
 
 int

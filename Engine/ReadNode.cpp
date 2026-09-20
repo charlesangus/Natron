@@ -974,10 +974,10 @@ ReadNode::isPassThroughForNonRenderedLayers() const
     return p ? p->getEffectInstance()->isPassThroughForNonRenderedLayers() : EffectInstance::isPassThroughForNonRenderedLayers();
 }
 
-bool
-ReadNode::getCreateChannelSelectorKnob() const
+LayerKnobSpec
+ReadNode::getLayerKnobSpec() const
 {
-    return false;
+    return LayerKnobSpec();
 }
 
 bool

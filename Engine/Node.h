@@ -62,7 +62,11 @@ CLANG_DIAG_ON(deprecated)
 #define kMaskChannelKnobName "maskChannel"
 #define kInputChannelKnobName "inputChannel"
 #define kEnablePreviewKnobName "enablePreview"
-#define kOutputChannelsKnobName "channels"
+#define kOutputChannelsKnobName "channels_legacy"
+#define kNodeParamChannelSet "channels"
+#define kNodeParamChannelSetLabel "Channels"
+#define kNodeParamLayerSelect "layer"
+#define kNodeParamLayerSelectLabel "Layer"
 
 #define kNodeParamProcessAllLayers "processAllLayers"
 #define kNodeParamProcessAllLayersLabel "All Layers"
@@ -1094,6 +1098,10 @@ private:
 
     void findOrCreateChannelEnabled(const KnobPagePtr& mainPage);
 
+    void createLayerKnob(const LayerKnobSpec& spec, const KnobPagePtr& mainPage);
+
+    void adoptChannelQuad();
+
     void createChannelSelectors(const std::vector<std::pair<bool, bool> >& hasMaskChannelSelector,
                                 const std::vector<std::string>& inputLabels,
                                 const KnobPagePtr& mainPage,
@@ -1349,6 +1357,19 @@ public:
      * Project::getLayerUsers() relies on to refuse removing a referenced layer.
      **/
     virtual void getReferencedLayerIDs(std::set<std::string>* ids) const;
+
+    /**
+     * @brief The channel set or layer select the host created on this node's main page,
+     * or null when getLayerKnobSpec() asked for none.
+     **/
+    KnobIPtr getLayerKnob() const;
+
+    /**
+     * @brief The layers a layer/channel knob of this node may choose from: an input-bound
+     * knob lists the present layers of its input (always including Color), a target knob
+     * lists the project registry. An alias delegates to its master's node.
+     **/
+    void listLayersForKnob(const KnobIPtr& knob, std::list<ImageLayerDesc>* layers) const;
 
     /**
      * @brief Registers every non-Color layer this node produces (per

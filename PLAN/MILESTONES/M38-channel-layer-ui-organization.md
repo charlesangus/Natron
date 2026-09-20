@@ -9,7 +9,7 @@ become phases here.
 
 ## Phase 38.1: Project-level layer registry
 
-- [ ] M38.P1.T1 — Add `LayerRegistry` with validation, reserved aliases, union rule and channel grouping
+- [x] M38.P1.T1 — Add `LayerRegistry` with validation, reserved aliases, union rule and channel grouping
   - files: `Engine/LayerRegistry.h`, `Engine/LayerRegistry.cpp`, `Engine/CMakeLists.txt`, `Tests/LayerRegistry_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: value class per design §1.1 (built-ins seeded in the `Project.cpp:1096-1101` order, `depth [Z]` as `eOriginUser`), `add/remove/find/contains/snapshot`, `validate(desc, fromFile, error)` with `kLayerMaxChannels = 4`, `reservedAlias`, union-on-file-conflict returning an `eAddResult {added, unchanged, grown, refused}`, `groupChannelNames` mirroring `ReadOIIO.cpp:1138-1172`. Pure data + `QMutex` + `shared_ptr<const vector>` snapshot; no Qt signal here.
   - verify: `ctest -R LayerRegistry`: EXPECT_* on built-in order, `rgba`→Color alias, `none/all/Backward` refused, dotted ID refused unless `fromFile`, 5 channels refused, duplicate identical → unchanged, file union RGB+RGBA → grown, user conflict → refused, remove built-in refused, `groupChannelNames({"R","G","B","A","Z","diffuse.R","diffuse.G"})` → Color, depth, diffuse; a snapshot taken before an `add` is unchanged after it.

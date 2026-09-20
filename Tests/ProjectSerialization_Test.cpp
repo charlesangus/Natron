@@ -24,18 +24,22 @@
 // ***** END PYTHON BLOCK *****
 
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include <QFile>
+#include <QObject>
 #include <QString>
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 
@@ -125,4 +129,118 @@ TEST_F(BaseTest, RoundTripsNodesConnectionsAndKnobValues)
     KnobString* key1_2 = dynamic_cast<KnobString*>(writer2->getKnobByName("key1").get());
     ASSERT_TRUE(key1_2 != NULL);
     EXPECT_EQ(key1Value, key1_2->getValue());
+}
+
+static ImageLayerDesc
+makeThreeChannelLayer(const std::string& id)
+{
+    std::vector<std::string> channels;
+
+    channels.push_back("R");
+    channels.push_back("G");
+    channels.push_back("B");
+    return ImageLayerDesc(id, id, "", channels);
+}
+
+// Exercises the project-level LayerRegistry (Project::addLayer/removeLayer/findLayer/
+// getLayerRegistrySnapshot) through a save/reset/load cycle: built-ins are never written
+// to the .ntp, non-built-in layers (both user- and file-origin) are, project reset drops
+// everything back to built-ins + depth, and loading restores exactly what was saved while
+// emitting projectLayersChanged() exactly once.
+TEST_F(BaseTest, RoundTripsLayerRegistry)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    std::string error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded,
+              project->addLayer(makeThreeChannelLayer("diffuse"), LayerRegistryEntry::eOriginUser, &error))
+        << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded,
+              project->addLayer(makeThreeChannelLayer("specular"), LayerRegistryEntry::eOriginFile, &error))
+        << error;
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("layers-roundtrip.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    ASSERT_TRUE(QFile::exists(savedFilePath));
+
+    {
+        QFile f(savedFilePath);
+        ASSERT_TRUE(f.open(QIODevice::ReadOnly | QIODevice::Text));
+        const QString contents = QString::fromUtf8(f.readAll());
+        EXPECT_TRUE(contents.contains(QString::fromUtf8("<Layers")));
+        EXPECT_TRUE(contents.contains(QString::fromUtf8("diffuse")));
+        EXPECT_FALSE(contents.contains(QString::fromUtf8(kNatronColorLayerID)));
+        EXPECT_FALSE(contents.contains(QString::fromUtf8("Backward")));
+    }
+
+    project->reset(false, true);
+
+    {
+        std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
+        EXPECT_EQ((std::size_t)6, snapshot->size()); // 5 built-ins + depth
+        ImageLayerDesc unused;
+        EXPECT_FALSE(project->findLayer("diffuse", &unused));
+        EXPECT_FALSE(project->findLayer("specular", &unused));
+    }
+
+    int layersChangedCount = 0;
+    QObject::connect(project.get(), &Project::projectLayersChanged, [&layersChangedCount]() {
+        ++layersChangedCount;
+    });
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+    EXPECT_EQ(1, layersChangedCount);
+
+    {
+        std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
+        int diffuseIdx = -1, specularIdx = -1;
+        for (std::size_t i = 0; i < snapshot->size(); ++i) {
+            if ((*snapshot)[i].desc.getLayerID() == "diffuse") {
+                diffuseIdx = (int)i;
+            }
+            if ((*snapshot)[i].desc.getLayerID() == "specular") {
+                specularIdx = (int)i;
+            }
+        }
+        ASSERT_GE(diffuseIdx, 0);
+        ASSERT_GE(specularIdx, 0);
+        EXPECT_LT(diffuseIdx, specularIdx);
+        EXPECT_EQ(LayerRegistryEntry::eOriginUser, (*snapshot)[diffuseIdx].origin);
+        EXPECT_EQ(LayerRegistryEntry::eOriginFile, (*snapshot)[specularIdx].origin);
+    }
+
+    project->reset(false, true);
+}
+
+// Removal is refused for built-ins regardless of references, and allowed for a
+// non-built-in layer with no users.
+TEST_F(BaseTest, RemoveLayerRefusesBuiltinsAllowsUnused)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    std::string error;
+    EXPECT_FALSE(project->removeLayer(kNatronColorLayerID, &error));
+    EXPECT_FALSE(error.empty());
+
+    error.clear();
+    ASSERT_EQ(LayerRegistry::eAddResultAdded,
+              project->addLayer(makeThreeChannelLayer("diffuse"), LayerRegistryEntry::eOriginUser, &error))
+        << error;
+
+    error.clear();
+    EXPECT_TRUE(project->removeLayer("diffuse", &error));
+    EXPECT_TRUE(error.empty());
+
+    ImageLayerDesc unused;
+    EXPECT_FALSE(project->findLayer("diffuse", &unused));
+
+    project->reset(false, true);
 }

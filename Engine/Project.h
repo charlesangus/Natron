@@ -41,13 +41,13 @@ CLANG_DIAG_ON(uninitialized)
 #include "Global/GlobalDefines.h"
 
 #include "Engine/AfterQuitProcessingI.h"
-#include "Engine/Knob.h"
-#include "Engine/Format.h"
-#include "Engine/TimeLine.h"
-#include "Engine/NodeGroup.h"
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
-
+#include "Engine/Format.h"
+#include "Engine/Knob.h"
+#include "Engine/LayerRegistry.h"
+#include "Engine/NodeGroup.h"
+#include "Engine/TimeLine.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -160,10 +160,19 @@ public:
 
     bool isGPURenderingEnabledInProject() const;
 
-    std::vector<std::string> getProjectDefaultLayerNames() const;
-    std::list<ImageLayerDesc> getProjectDefaultLayers() const;
+    LayerRegistry::AddResultEnum addLayer(const ImageLayerDesc& desc, LayerRegistryEntry::OriginEnum origin, std::string* error);
 
-    void addProjectDefaultLayer(const ImageLayerDesc& comps);
+    bool removeLayer(const std::string& id, std::string* error);
+
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> getLayerRegistrySnapshot() const;
+
+    bool findLayer(const std::string& id, ImageLayerDesc* out) const;
+
+    void getLayerUsers(const std::string& id, std::list<NodePtr>* users) const;
+
+    // Re-emits projectLayersChanged() from contexts (e.g. ProjectPrivate) that cannot
+    // Q_EMIT a signal directly because they are not a member of this QObject.
+    void emitProjectLayersChangedSignal();
 
     void setOrAddProjectFormat(const Format & frmt, bool skipAdd = false);
 
@@ -391,7 +400,13 @@ Q_SIGNALS:
 
     void projectViewsChanged();
 
+    void projectLayersChanged();
+
 private:
+    // Emits projectLayersChanged() and refreshes every node's channel selector menus;
+    // called after a registry mutation outside of project load (load batches its own
+    // single emission after all nodes are restored, see ProjectPrivate::restoreFromSerialization).
+    void notifyLayersChanged();
 
     /*Returns the index of the format*/
     int tryAddProjectFormat(const Format & f, bool* existed);

@@ -496,7 +496,9 @@ App::getViewNames() const
 void
 App::addProjectLayer(const ImageLayer& layer)
 {
-    getInternalApp()->getProject()->addProjectDefaultLayer( layer.getInternalComps() );
+    std::string error;
+
+    getInternalApp()->getProject()->addLayer(layer.getInternalComps(), LayerRegistryEntry::eOriginUser, &error);
 }
 
 NATRON_PYTHON_NAMESPACE_EXIT

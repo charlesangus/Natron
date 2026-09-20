@@ -28,8 +28,9 @@
 
 #include "Global/Macros.h"
 
-#include <map>
 #include <list>
+#include <map>
+#include <memory>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -42,15 +43,15 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
-#include "Engine/Format.h"
-#include "Engine/KnobTypes.h"
-#include "Engine/KnobFile.h"
-#include "Engine/KnobFactory.h"
-#include "Engine/TLSHolder.h"
 #include "Engine/EngineFwd.h"
-#include "Engine/Project.h"
+#include "Engine/Format.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
-
+#include "Engine/KnobFactory.h"
+#include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/LayerRegistry.h"
+#include "Engine/Project.h"
+#include "Engine/TLSHolder.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -69,6 +70,11 @@ public:
     std::list<Format> builtinFormats;
     std::list<Format> additionalFormats; //< added by the user
     mutable QRecursiveMutex formatMutex;
+
+    // The project-level source of truth for layers; a unique_ptr (not a value member)
+    // because it is swapped wholesale on Project::reset(), and LayerRegistry holds a
+    // QMutex and is therefore non-copyable/non-assignable.
+    std::unique_ptr<LayerRegistry> layers;
 
     ///Project parameters (settings)
     KnobPathPtr envVars;

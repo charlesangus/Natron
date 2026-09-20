@@ -28,11 +28,12 @@
 
 #include "Global/Macros.h"
 
-#include <vector>
-#include <string>
-#include <map>
-#include <list>
 #include <bitset>
+#include <list>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 #include <QMetaType>
@@ -1347,6 +1348,13 @@ public:
     void markAllInputRelatedDataDirty();
 
     bool getSelectedLayerChoiceRaw(int inputNb, std::string& layer) const;
+
+    /**
+     * @brief Fills ids with the layer ID of every layer/channel knob row on this node that
+     * currently targets a non-empty selection. This is the single source of truth
+     * Project::getLayerUsers() relies on to refuse removing a referenced layer.
+     **/
+    virtual void getReferencedLayerIDs(std::set<std::string>* ids) const;
 
     const std::vector<std::string>& getCreatedViews() const;
 

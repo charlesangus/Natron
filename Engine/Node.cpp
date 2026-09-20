@@ -36,13 +36,13 @@
 
 #include "Global/Macros.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
-#include <QReadWriteLock>
-#include <QCoreApplication>
-#include <QWaitCondition>
-#include <QTextStream>
 #include <QFile>
+#include <QReadWriteLock>
+#include <QTextStream>
+#include <QWaitCondition>
 
 #include <ofxNatron.h>
 
@@ -5597,6 +5597,38 @@ Node::getSelectedLayerChoiceRaw(int inputNb,
 
     return true;
 }
+
+void
+Node::getReferencedLayerIDs(std::set<std::string>* ids) const
+{
+    for (std::map<int, ChannelSelector>::const_iterator it = _imp->channelsSelectors.begin(); it != _imp->channelsSelectors.end(); ++it) {
+        KnobChoicePtr layerKnob = it->second.layer.lock();
+        if (!layerKnob) {
+            continue;
+        }
+        // getLayerOption() sets the option ID to the layer ID verbatim (Node.cpp refreshChannelSelectors()).
+        const std::string& id = layerKnob->getActiveEntry().id;
+        if (!id.empty() && id != "None") {
+            ids->insert(id);
+        }
+    }
+
+    for (std::map<int, MaskSelector>::const_iterator it = _imp->maskSelectors.begin(); it != _imp->maskSelectors.end(); ++it) {
+        KnobChoicePtr channelKnob = it->second.channel.lock();
+        if (!channelKnob) {
+            continue;
+        }
+        // getChannelOption() encodes the option ID as "<layerID>.<channelName>" (ImageLayerDesc.cpp).
+        const std::string& channelID = channelKnob->getActiveEntry().id;
+        if (channelID.empty() || channelID == "None") {
+            continue;
+        }
+        std::size_t dot = channelID.find_last_of('.');
+        if (dot != std::string::npos) {
+            ids->insert(channelID.substr(0, dot));
+        }
+    }
+} // Node::getReferencedLayerIDs
 
 ImageLayerDesc
 Node::Implementation::getSelectedLayerInternal(int inputNb,

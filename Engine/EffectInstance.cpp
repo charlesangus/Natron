@@ -163,6 +163,22 @@ mergeLayersList(const std::list<ImageLayerDesc>& inputList,
 } // mergeLayersList
 
 /**
+ * @brief The registry snapshot as a plain list, in registry order (built-ins first), the
+ * shape every getAvailableLayers()-adjacent caller here expects.
+ **/
+static std::list<ImageLayerDesc>
+getRegisteredProjectLayersList(const ProjectPtr& project)
+{
+    std::list<ImageLayerDesc> ret;
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
+
+    for (std::vector<LayerRegistryEntry>::const_iterator it = snapshot->begin(); it != snapshot->end(); ++it) {
+        ret.push_back(it->desc);
+    }
+    return ret;
+}
+
+/**
  * @brief Remove any layer from the toRemove list from toList.
  **/
 static void
@@ -185,7 +201,7 @@ EffectInstance::getUserLayers() const
     assert(tls);
     tls->userLayerStrings.clear();
 
-    std::list<ImageLayerDesc> projectLayers = getApp()->getProject()->getProjectDefaultLayers();
+    std::list<ImageLayerDesc> projectLayers = getRegisteredProjectLayersList(getApp()->getProject());
 
     std::list<ImageLayerDesc> userCreatedLayers;
     getNode()->getUserCreatedComponents(&userCreatedLayers);
@@ -4285,7 +4301,7 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
             availableLayersInOutput.insert(availableLayersInOutput.end(), clipPrefsAllComps.begin(), clipPrefsAllComps.end());
 
             {
-                std::list<ImageLayerDesc> projectLayers = getApp()->getProject()->getProjectDefaultLayers();
+                std::list<ImageLayerDesc> projectLayers = getRegisteredProjectLayersList(getApp()->getProject());
                 mergeLayersList(projectLayers, &availableLayersInOutput);
             }
 
@@ -4495,7 +4511,7 @@ EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::
     // In output, also make available the default project layers and the user created components
     if (inputNb == -1) {
 
-        std::list<ImageLayerDesc> projectLayers = getApp()->getProject()->getProjectDefaultLayers();
+        std::list<ImageLayerDesc> projectLayers = getRegisteredProjectLayersList(getApp()->getProject());
         if (hasColorLayer) {
             // Don't add the color layer from the default alyers if already present
             for (std::list<ImageLayerDesc>::iterator it = projectLayers.begin(); it != projectLayers.end(); ++it) {

@@ -44,6 +44,14 @@ ProjectSerialization::initialize(const Project* project)
 
     project->getAdditionalFormats(&_additionalFormats);
 
+    // Built-ins are code, not data: they are always re-seeded by LayerRegistry's constructor.
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> layers = project->getLayerRegistrySnapshot();
+    for (std::vector<LayerRegistryEntry>::const_iterator it = layers->begin(); it != layers->end(); ++it) {
+        if (it->origin != LayerRegistryEntry::eOriginBuiltin) {
+            _layers.push_back(*it);
+        }
+    }
+
     std::vector<KnobIPtr> knobs = project->getKnobs_mt_safe();
     for (U32 i = 0; i < knobs.size(); ++i) {
         KnobGroup* isGroup = dynamic_cast<KnobGroup*>( knobs[i].get() );

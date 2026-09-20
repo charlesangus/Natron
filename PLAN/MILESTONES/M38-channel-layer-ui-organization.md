@@ -91,7 +91,7 @@ become phases here.
   - verify: Xvfb screenshots of the viewer over the checkerboard for (a) the RGBA fixture, (b) an RGB Constant, before (T1) and after — pixel-diff within 1/255 on both.
   - size: M
 
-- [ ] M38.P2.T6 — Delete `ImagePremultiplicationEnum` end to end; cache version 5→6
+- [x] M38.P2.T6 — Delete `ImagePremultiplicationEnum` end to end; cache version 5→6
   - files: `Global/Enums.h`, `Engine/Image.h`, `Engine/Image.cpp`, `Engine/ImageParams.h`, `Engine/ImageParamsSerialization.h`, `Global/GlobalDefines.h` (plus the mechanical ctor-argument sweep in `ImageCopyChannels.cpp`, `ImageConvert.cpp`, `RotoContext.cpp`, `RotoSmear.cpp`, `RenderStats.*`, `OutputEffectInstance.cpp`, `Gui/RenderStatsDialog.cpp`, `Engine/PyNode.*`, `typesystem_engine.xml:222`, tests)
   - approach: remove `Image::_premult` and every ctor/`makeParams` argument, `premultImage/unpremultImage`, the `premult/originalPremult/ignorePremult` template parameters of `copyUnProcessedChannels*` and `requiresUnpremult` of `convertToFormat*`; `ImageParams::_premult` and its nvp (`ImageParamsSerialization.h:112`); `Effect::getPremult` and the enum from the typesystem; RenderStats "Output Premult" column; `#define NATRON_CACHE_VERSION 6`. One compile-driven sweep; no behaviour change expected after T2-T5.
   - verify: `grep -rn -i "ImagePremultiplicationEnum\|getPremult\|outputPremult\|inputPremult\|eImagePremultiplication" Engine Gui Global Tests` returns zero hits and `grep -rn -i opaque Engine Gui Global | grep -v -i 'setOpaque\|WA_Opaque\|OpaquePaintEvent'` returns zero hits (the OFX `kOfxImageOpaque` string may remain only inside `libs/OpenFX`, never answered by the host); full `ctest` green; a stale disk cache from a previous build is discarded on first launch (log line).

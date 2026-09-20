@@ -149,7 +149,7 @@ become phases here.
   - verify: gtest on Read(`flat-three-layers.exr`)→Blur: with rows `Color` + `diffuse[R,G]`, `getComponentsNeededAndProduced_public` yields `comps[-1] = {Color, diffuse}` with bitsets `1111`/`0011`... (index order `R,G` → bits 0,1) and `comps[0]` equal; with `All` → all three planes; with a regex matching nothing → Color only from metadata; `TypedPassthrough`/`DataKind` tests green.
   - size: M
 
-- [ ] M38.P4.T2 — Per-plane input fetch and per-plane host masking
+- [x] M38.P4.T2 — Per-plane input fetch and per-plane host masking
   - files: `Engine/OfxClipInstance.cpp`, `Engine/EffectInstance.cpp`, `Engine/Node.cpp`
   - approach: §5(2)(3): `clipGetImage` (`OfxClipInstance.cpp:853-874`) picks the entry equivalent to `outputLayerBeingRendered`; `renderHandler` chooses `originalInputImage` and the bitset per plane in the loop at `EffectInstance.cpp:2618` (today `:2250-2258`); `Node::getProcessChannel` (`:5773-5785`) is deleted with `hostChannelSelectorEnabled` — the host masks whenever the node has channel buttons.
   - verify: gtest: Read→Invert(`Color R only` + `diffuse[G]`)→Write All: Color = (0,0,0,1) inverted R only i.e. `(0,0,0,1)`, diffuse = `(0,0,0)` (G inverted from 1 to 0, R/B untouched), specular untouched `(0,0,1)`; Read→Grade with `A` off leaves alpha bit-identical.

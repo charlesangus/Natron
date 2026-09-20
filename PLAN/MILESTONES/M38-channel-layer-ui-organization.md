@@ -21,7 +21,7 @@ become phases here.
   - verify: extend `ProjectSerialization_Test`: add `diffuse` + `specular`, save, reset, load → registry has both in order, built-ins not written to the XML (grep the saved file), `projectLayersChanged` emitted exactly once on load (QSignalSpy). Independent of T3: uses only `Project` API.
   - size: M
 
-- [ ] M38.P1.T3 — Route availability and OFX publication through the registry; delete per-node user components
+- [x] M38.P1.T3 — Route availability and OFX publication through the registry; delete per-node user components
   - files: `Engine/EffectInstance.cpp`, `Engine/EffectInstance.h`, `Engine/Node.cpp`, `Engine/Node.h`, `Engine/NodePrivate.h`
   - approach: `getAvailableLayers` (`EffectInstance.cpp:4496-4517`) merges one registry snapshot for `inputNb == -1` only; new `getPresentLayers` (produced ∪ pass-through, `:4466-4493, 4511`); `getUserLayers` (`:182-196`) = registry snapshot; `getComponentsNeededDefault` (`:4288-4297`) uses the registry; delete `Node::addUserComponents/getUserCreatedComponents` (`Node.cpp:7714-7763`), `createdComponents` + mutex (`NodePrivate.h:455-456`), `Node.h:1329-1331`, `Node.cpp:1481-1484`; the choice-knob "New…" path (`Gui/KnobGuiChoice.cpp:312-340`) temporarily calls `Project::addLayer` (wired in T6).
   - verify: existing `ctest` (WriteAllLayers, TypedPassthrough, DataKind) green; new case in `Tests/WriteAllLayers_Test.cpp`: after loading `flat-three-layers.exr` through ReadOIIO, `getPresentLayers(-1)` on the Read = {Color, diffuse, specular} and `getAvailableLayers(-1)` ⊇ registry built-ins; a Blur downstream reports present = the same three. Builds without `NodeSerialization` changes (T4 does those).

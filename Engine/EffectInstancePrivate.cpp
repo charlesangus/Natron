@@ -212,6 +212,16 @@ ActionsCache::setComponentsNeededResults(U64 hash, double time, ViewIdx view, co
     v.passThroughLayers = passThroughLayers;
 }
 
+void
+ActionsCache::clearComponentsNeededResults()
+{
+    QMutexLocker l(&_cacheMutex);
+
+    for (std::list<ActionsCacheInstance>::iterator it = _instances.begin(); it != _instances.end(); ++it) {
+        it->_componentsNeededCache.clear();
+    }
+}
+
 bool
 ActionsCache::getRoDResult(U64 hash,
                            double time,

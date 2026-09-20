@@ -5685,6 +5685,11 @@ EffectInstance::refreshMetadata_internal()
     bool ret = setMetadataInternal(metadata);
     onMetadataRefreshed(metadata);
     if (ret) {
+        // Produced planes follow the metadata (a reader reports the file's color component
+        // count only once the file is loaded) while the hash does not, so entries keyed on
+        // the current hash would otherwise survive this refresh stale.
+        _imp->actionsCache->clearComponentsNeededResults();
+
         NodePtr node = getNode();
         node->checkForPremultWarningAndCheckboxes();
 

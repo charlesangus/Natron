@@ -133,6 +133,8 @@ public:
     void setComponentsNeededResults(U64 hash, double time, ViewIdx view, const EffectInstance::ComponentsNeededMap& neededComps, std::bitset<4> processChannels, bool processAll,
                                     const std::list<ImageLayerDesc>& passThroughLayers, int passThroughInputNb, ViewIdx passThroughView, double passThroughTime);
 
+    void clearComponentsNeededResults();
+
     bool getRoDResult(U64 hash, double time, ViewIdx view, unsigned int mipmapLevel, RectD* rod);
 
     void setRoDResult(U64 hash, double time, ViewIdx view, unsigned int mipmapLevel, const RectD & rod);

@@ -45,7 +45,7 @@ become phases here.
   - verify: Xvfb run via `build/m38scout/` (recipe in `build/deeprepro/run-gui.sh`): script opens Project Settings → Layers, screenshots the page with Color…Forward, depth, and the two file layers of a loaded `flat-three-layers.exr` (Used by = 0/1); adding `spec2` through the page's "New" shows it in the table; removing `diffuse` while a Blur's Output Layer selects it shows the refusal dialog (screenshot); the viewer combo on the Read shows only Color/diffuse/specular (no project defaults).
   - size: L
 
-- [ ] M38.P1.T7 — Python: project layer API on `App`; delete `Effect.addUserLayer`
+- [x] M38.P1.T7 — Python: project layer API on `App`; delete `Effect.addUserLayer`
   - files: `Engine/PyAppInstance.h`, `Engine/PyAppInstance.cpp`, `Engine/PyNode.h`, `Engine/PyNode.cpp`, `Engine/typesystem_engine.xml`
   - approach: `getProjectLayers/getProjectLayer/addProjectLayer(name, channels)/removeProjectLayer` per design §6, raising `ValueError` with the registry's message; remove `Effect::addUserLayer` (`PyNode.cpp:991-1009`, `PyNode.h:376`); `ImageLayer` unchanged.
   - verify: a Python script run through the built binary in background mode asserts: built-ins first, `addProjectLayer("diffuse", ["R","G","B"])` returns an `ImageLayer`, re-adding is idempotent, `addProjectLayer("rgba", …)` returns Color, `addProjectLayer("bad name", …)` raises, `removeProjectLayer("Color")` is False, `hasattr(node, "addUserLayer")` is False; `tools/ci/local/test.sh smoke debug` green.

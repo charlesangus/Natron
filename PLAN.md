@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: M38 (elaborating)
-pm_heartbeat: 2026-09-19T21:06:16-04:00
+pm_heartbeat: 2026-09-19T21:48:51-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -189,6 +189,7 @@ future core work has solid ground to build on.
 | M58 | Write's "All Layers" output copies one layer's pixel data into every layer | done | [M58-write-multiplane-pixel-data-bug.md](PLAN/MILESTONES/M58-write-multiplane-pixel-data-bug.md) |
 | M59 | Pre-commit hook that auto-formats staged C/C++ so PRs stop failing CI's `format` check | done | [M59-pre-commit-auto-format.md](PLAN/MILESTONES/M59-pre-commit-auto-format.md) |
 | M38 | Layer/channel selection widget: process-in-place, no implicit shuffling (absorbs M35) | doing | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
+| M60 | Deep images get layers/channels like flat images | todo | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
 | M43 | Drop the premultiplied/unpremultiplied concept | todo | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
 | M34 | New native Shuffle node | todo | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
 | M35 | ~~Remove implicit output-plane shuffling from non-Shuffle nodes~~ (folded into M38) | cancelled | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |

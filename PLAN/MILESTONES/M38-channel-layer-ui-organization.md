@@ -51,7 +51,7 @@ become phases here.
   - verify: a Python script run through the built binary in background mode asserts: built-ins first, `addProjectLayer("diffuse", ["R","G","B"])` returns an `ImageLayer`, re-adding is idempotent, `addProjectLayer("rgba", …)` returns Color, `addProjectLayer("bad name", …)` raises, `removeProjectLayer("Color")` is False, `hasattr(node, "addUserLayer")` is False; `tools/ci/local/test.sh smoke debug` green.
   - size: S
 
-- [ ] M38.P1.T8 — Key an input's components-needed answer on the input's own hash in `getPresentLayers`/`getAvailableLayers`
+- [x] M38.P1.T8 — Key an input's components-needed answer on the input's own hash in `getPresentLayers`/`getAvailableLayers`
   - files: `Engine/EffectInstance.cpp`, `Tests/LayerRegistry_Test.cpp`
   - approach: both helpers query `input->getComponentsNeededAndProduced_public(getRenderHash(), …)` with the *caller's* hash, so the input's `ActionsCache` fills with foreign-hash entries and can serve a stale plane list (the M58 decisions noted the same for `getAvailableLayers`; the 38.1 gate fix `3429d3640` only masks it via metadata invalidation). Pass `input->getRenderHash()` (or the input node's hash, matching what the input's own render path uses) instead; keep `-1`'s own-hash path unchanged.
   - verify: gtest: reader → Blur; call `blur->getPresentLayers(0)` then change the reader's file to `flat-rgba-only.exr` (metadata refresh) and call again → the second answer has no `diffuse`/`specular` without any change to the Blur's hash; full ctest and smoke green.

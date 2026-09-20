@@ -47,8 +47,11 @@
 #include "Engine/Curve.h"
 #include "Engine/DockablePanelI.h"
 #include "Engine/Hash64.h"
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobGuiI.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobSerialization.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
@@ -4554,6 +4557,9 @@ KnobHelper::createDuplicateOnHolder(KnobHolder* otherHolder,
     KnobOutputFile* isOutputFile = dynamic_cast<KnobOutputFile*>(this);
     KnobPath* isPath = dynamic_cast<KnobPath*>(this);
     KnobLayers* isLayers = dynamic_cast<KnobLayers*>(this);
+    KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(this);
+    KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(this);
+    KnobChannelSelect* isChannelSelect = dynamic_cast<KnobChannelSelect*>(this);
     KnobGroup* isGrp = dynamic_cast<KnobGroup*>(this);
     KnobPage* isPage = dynamic_cast<KnobPage*>(this);
     KnobButton* isBtn = dynamic_cast<KnobButton*>(this);
@@ -4651,6 +4657,15 @@ KnobHelper::createDuplicateOnHolder(KnobHolder* otherHolder,
     } else if (isLayers) {
         KnobLayersPtr newKnob = AppManager::createKnob<KnobLayers>(otherHolder, newLabel, getDimension(), false);
         newKnob->setAsUserKnob(isUserKnob);
+        output = newKnob;
+    } else if (isChannelSet) {
+        KnobChannelSetPtr newKnob = otherHolder->createChannelSetKnob(newScriptName, newLabel, isUserKnob);
+        output = newKnob;
+    } else if (isLayerSelect) {
+        KnobLayerSelectPtr newKnob = otherHolder->createLayerSelectKnob(newScriptName, newLabel, isLayerSelect->getWithChannelButtons(), isUserKnob);
+        output = newKnob;
+    } else if (isChannelSelect) {
+        KnobChannelSelectPtr newKnob = otherHolder->createChannelSelectKnob(newScriptName, newLabel, isUserKnob);
         output = newKnob;
     } else if (isGrp) {
         KnobGroupPtr newKnob = otherHolder->createGroupKnob(newScriptName, newLabel, isUserKnob);
@@ -5596,6 +5611,71 @@ KnobHolder::createPathKnob(const std::string& name,
     ret->setAsUserKnob(userKnob);
     /*KnobPagePtr pageknob = getOrCreateUserPageKnob();
        Q_UNUSED(pageknob);*/
+    EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);
+    if (isEffect && userKnob) {
+        isEffect->getNode()->declarePythonFields();
+    }
+
+    return ret;
+}
+
+KnobChannelSetPtr
+KnobHolder::createChannelSetKnob(const std::string& name,
+                                 const std::string& label,
+                                 bool userKnob)
+{
+    KnobIPtr existingKnob = getKnobByName(name);
+
+    if (existingKnob) {
+        return std::dynamic_pointer_cast<KnobChannelSet>(existingKnob);
+    }
+    KnobChannelSetPtr ret = AppManager::createKnob<KnobChannelSet>(this, label, 1, false);
+    ret->setName(name);
+    ret->setAsUserKnob(userKnob);
+    EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);
+    if (isEffect && userKnob) {
+        isEffect->getNode()->declarePythonFields();
+    }
+
+    return ret;
+}
+
+KnobLayerSelectPtr
+KnobHolder::createLayerSelectKnob(const std::string& name,
+                                  const std::string& label,
+                                  bool withChannelButtons,
+                                  bool userKnob)
+{
+    KnobIPtr existingKnob = getKnobByName(name);
+
+    if (existingKnob) {
+        return std::dynamic_pointer_cast<KnobLayerSelect>(existingKnob);
+    }
+    KnobLayerSelectPtr ret = AppManager::createKnob<KnobLayerSelect>(this, label, 1, false);
+    ret->setName(name);
+    ret->setWithChannelButtons(withChannelButtons);
+    ret->setAsUserKnob(userKnob);
+    EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);
+    if (isEffect && userKnob) {
+        isEffect->getNode()->declarePythonFields();
+    }
+
+    return ret;
+}
+
+KnobChannelSelectPtr
+KnobHolder::createChannelSelectKnob(const std::string& name,
+                                    const std::string& label,
+                                    bool userKnob)
+{
+    KnobIPtr existingKnob = getKnobByName(name);
+
+    if (existingKnob) {
+        return std::dynamic_pointer_cast<KnobChannelSelect>(existingKnob);
+    }
+    KnobChannelSelectPtr ret = AppManager::createKnob<KnobChannelSelect>(this, label, 1, false);
+    ret->setName(name);
+    ret->setAsUserKnob(userKnob);
     EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);
     if (isEffect && userKnob) {
         isEffect->getNode()->declarePythonFields();

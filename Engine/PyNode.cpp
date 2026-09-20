@@ -31,7 +31,10 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Hash64.h"
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
@@ -397,6 +400,9 @@ Effect::createParamWrapperForKnob(const KnobIPtr& knob)
     KnobFilePtr isFile = std::dynamic_pointer_cast<KnobFile>(knob);
     KnobOutputFilePtr isOutputFile = std::dynamic_pointer_cast<KnobOutputFile>(knob);
     KnobPathPtr isPath = std::dynamic_pointer_cast<KnobPath>(knob);
+    KnobChannelSetPtr isChannelSet = std::dynamic_pointer_cast<KnobChannelSet>(knob);
+    KnobLayerSelectPtr isLayerSelect = std::dynamic_pointer_cast<KnobLayerSelect>(knob);
+    KnobChannelSelectPtr isChannelSelect = std::dynamic_pointer_cast<KnobChannelSelect>(knob);
     KnobButtonPtr isButton = std::dynamic_pointer_cast<KnobButton>(knob);
     KnobGroupPtr isGroup = std::dynamic_pointer_cast<KnobGroup>(knob);
     KnobPagePtr isPage = std::dynamic_pointer_cast<KnobPage>(knob);
@@ -445,6 +451,12 @@ Effect::createParamWrapperForKnob(const KnobIPtr& knob)
         return new OutputFileParam(isOutputFile);
     } else if (isPath) {
         return new PathParam(isPath);
+    } else if (isChannelSet) {
+        return new ChannelSetParam(isChannelSet);
+    } else if (isLayerSelect) {
+        return new LayerSelectParam(isLayerSelect);
+    } else if (isChannelSelect) {
+        return new ChannelSelectParam(isChannelSelect);
     } else if (isGroup) {
         return new GroupParam(isGroup);
     } else if (isPage) {
@@ -804,6 +816,61 @@ UserParamHolder::createPathParam(const QString& name,
         }
 
         return new PathParam(knob);
+    } else {
+        return 0;
+    }
+}
+
+ChannelSetParam*
+UserParamHolder::createChannelSetParam(const QString& name,
+                                       const QString& label)
+{
+    KnobChannelSetPtr knob = _holder->createChannelSetKnob(name.toStdString(), label.toStdString());
+
+    if (knob) {
+        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        if (userPage) {
+            userPage->addKnob(knob);
+        }
+
+        return new ChannelSetParam(knob);
+    } else {
+        return 0;
+    }
+}
+
+LayerSelectParam*
+UserParamHolder::createLayerSelectParam(const QString& name,
+                                        const QString& label,
+                                        bool withChannelButtons)
+{
+    KnobLayerSelectPtr knob = _holder->createLayerSelectKnob(name.toStdString(), label.toStdString(), withChannelButtons);
+
+    if (knob) {
+        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        if (userPage) {
+            userPage->addKnob(knob);
+        }
+
+        return new LayerSelectParam(knob);
+    } else {
+        return 0;
+    }
+}
+
+ChannelSelectParam*
+UserParamHolder::createChannelSelectParam(const QString& name,
+                                          const QString& label)
+{
+    KnobChannelSelectPtr knob = _holder->createChannelSelectKnob(name.toStdString(), label.toStdString());
+
+    if (knob) {
+        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        if (userPage) {
+            userPage->addKnob(knob);
+        }
+
+        return new ChannelSelectParam(knob);
     } else {
         return 0;
     }

@@ -2541,6 +2541,9 @@ public:
     std::shared_ptr<KnobFile> createFileKnob(const std::string& name, const std::string& label, bool userKnob = true);
     std::shared_ptr<KnobOutputFile> createOuptutFileKnob(const std::string& name, const std::string& label, bool userKnob = true);
     std::shared_ptr<KnobPath> createPathKnob(const std::string& name, const std::string& label, bool userKnob = true);
+    std::shared_ptr<KnobChannelSet> createChannelSetKnob(const std::string& name, const std::string& label, bool userKnob = true);
+    std::shared_ptr<KnobLayerSelect> createLayerSelectKnob(const std::string& name, const std::string& label, bool withChannelButtons, bool userKnob = true);
+    std::shared_ptr<KnobChannelSelect> createChannelSelectKnob(const std::string& name, const std::string& label, bool userKnob = true);
     std::shared_ptr<KnobPage> createPageKnob(const std::string& name, const std::string& label, bool userKnob = true);
     std::shared_ptr<KnobGroup> createGroupKnob(const std::string& name, const std::string& label, bool userKnob = true);
     std::shared_ptr<KnobParametric> createParametricKnob(const std::string& name, const std::string& label, int nbCurves, bool userKnob = true);

@@ -13,3 +13,12 @@ landing first.
 Acceptance sketch:
 - Channel/layer selection UI is redesigned and demonstrably clearer than
   the current layout.
+
+## Decisions
+
+- 2026-09-19 — **Rescoped (user decision): M38 is a new layer/channel selection widget, absorbing M35.** Nuke-style but more powerful: dropdown None / All / Regex / list of layers, dynamic channel buttons matching the chosen layer's actual channels, "Add layer" adds another instance (instances beyond the first have a remove button). Nodes process exactly the selected layers/channels in place; non-Shuffle nodes get no shuffle capability. Not the earlier "reorder the existing knobs" proposal.
+- 2026-09-19 — **Clean break for old projects** (user decision): no load-time mapping of `processAllLayers` / `channels` / R,G,B,A values; old nodes come up on the default selection. `NATRON_CACHE_VERSION` bumps.
+- 2026-09-19 — **Plugin-declared R/G/B/A rows are adopted into the widget, Merge included** (user decision): the 28 openfx-misc plugins' `NatronOfxParamProcess*` rows are hidden and driven by the widget; Merge uses a widget *variant* with no add-rows and no regex. Goal is one consistent channel-selection UI across essentially all nodes with small variations for specific purposes — treated as a foundational design, written up in `PLAN/DESIGN/2026-09-19-layer-channel-widget.md` for approval before implementation.
+- 2026-09-19 — **Regex matches layer labels, whole-string anchored, case-sensitive, `QRegularExpression`** (user decision): users type what they see.
+- 2026-09-19 — **ZRemap and ZMask PyPlugs are dropped until M34** (user decision): they depend on the implicit shuffle; the native Shuffle milestone re-adds them.
+- 2026-09-19 — **One undo step per user action**; the regex editor commits on `editingFinished`, not per keystroke.

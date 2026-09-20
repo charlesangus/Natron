@@ -48,25 +48,27 @@
 #include "Engine/AppManager.h"
 #include "Engine/BlockingBackgroundRender.h"
 #include "Engine/DiskCacheNode.h"
+#include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Log.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/Node.h"
-#include "Engine/OfxEffectInstance.h"
-#include "Engine/OfxOverlayInteract.h"
-#include "Engine/OfxImageEffectInstance.h"
-#include "Engine/GPUContextPool.h"
 #include "Engine/OSGLContext.h"
+#include "Engine/OfxEffectInstance.h"
+#include "Engine/OfxImageEffectInstance.h"
+#include "Engine/OfxOverlayInteract.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/PluginMemory.h"
 #include "Engine/Project.h"
+#include "Engine/ReadNode.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
-#include "Engine/ReadNode.h"
 #include "Engine/Settings.h"
 #include "Engine/Timer.h"
 #include "Engine/Transform.h"
@@ -4185,161 +4187,156 @@ EffectInstance::getComponentsNeededAndProduced(double time,
                                                int* passThroughView,
                                                int* passThroughInputNb)
 {
-    bool processAllRequested;
     std::bitset<4> processChannels;
+    ProcessChannelsPerPlaneMap processChannelsPerPlane;
     std::list<ImageLayerDesc> passThroughLayers;
-    getComponentsNeededDefault(time, view, comps, &passThroughLayers, &processAllRequested, passThroughTime, passThroughView, &processChannels, passThroughInputNb);
+    getComponentsNeededDefault(time, view, comps, &passThroughLayers, passThroughTime, passThroughView, &processChannels, &processChannelsPerPlane, passThroughInputNb);
+}
+
+// The plane(s) the plug-in declared in its metadata for this clip: the Color plane at the
+// declared channel count, or, for Furnace-style effects, a disparity/motion plane with its
+// paired plane, since both must be rendered at once. RGBA until the metadata are set.
+static void
+getMetadataPlanes(const EffectInstance* effect,
+                  int inputNb,
+                  std::list<ImageLayerDesc>* planes)
+{
+    ImageLayerDesc metadataLayer, metadataPairedLayer;
+    effect->getMetadataComponents(inputNb, &metadataLayer, &metadataPairedLayer);
+    if (metadataLayer.getNumComponents() > 0) {
+        planes->push_back(metadataLayer);
+    }
+    if (metadataPairedLayer.getNumComponents() > 0) {
+        planes->push_back(metadataPairedLayer);
+    }
+    if (planes->empty()) {
+        planes->push_back(ImageLayerDesc::getRGBAComponents());
+    }
+}
+
+// A selected Color plane is produced at the channel count the clip's metadata declare rather
+// than at the input stream's, so each clip maps it through its own metadata planes.
+static void
+appendSelectedPlanes(const std::vector<ResolvedLayer>& selected,
+                     const std::list<ImageLayerDesc>& metadataPlanes,
+                     std::list<ImageLayerDesc>* planes,
+                     EffectInstance::ProcessChannelsPerPlaneMap* processChannelsPerPlane)
+{
+    for (std::vector<ResolvedLayer>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        if (it->desc.isColorLayer()) {
+            for (std::list<ImageLayerDesc>::const_iterator plane = metadataPlanes.begin(); plane != metadataPlanes.end(); ++plane) {
+                planes->push_back(*plane);
+                if (processChannelsPerPlane) {
+                    (*processChannelsPerPlane)[*plane] = it->channels;
+                }
+            }
+        } else {
+            planes->push_back(it->desc);
+            if (processChannelsPerPlane) {
+                (*processChannelsPerPlane)[it->desc] = it->channels;
+            }
+        }
+    }
 }
 
 void
 EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
                                            EffectInstance::ComponentsNeededMap* comps,
                                            std::list<ImageLayerDesc>* passThroughLayers,
-                                           bool* processAllRequested,
                                            double* passThroughTime,
                                            int* passThroughView,
                                            std::bitset<4>* processChannels,
+                                           ProcessChannelsPerPlaneMap* processChannelsPerPlane,
                                            int* passThroughInputNb)
 {
+    NodePtr node = getNode();
+
     *passThroughTime = time;
     *passThroughView = view;
-    *passThroughInputNb = getNode()->getPreferredInput();
-    *processAllRequested = false;
+    *passThroughInputNb = node->getPreferredInput();
+    passThroughLayers->clear();
+    processChannelsPerPlane->clear();
 
-    {
-        std::list<ImageLayerDesc> upstreamAvailableLayers;
-        if (*passThroughInputNb != -1) {
-            getAvailableLayers(time, view, *passThroughInputNb, &upstreamAvailableLayers);
-        }
-
-        // upstreamAvailableLayers now contain all available layers in input of this node
-        *passThroughLayers = upstreamAvailableLayers;
+    if (*passThroughInputNb != -1) {
+        getAvailableLayers(time, view, *passThroughInputNb, passThroughLayers);
     }
 
- 
-    // Get the output needed components
-    {
-
-        std::vector<ImageLayerDesc> clipPrefsAllComps;
-
-        // The clipPrefsComps is the number of components desired by the plug-in in the
-        // getTimeInvariantMetadatas action (getClipPreferences for OpenFX) mapped to the
-        // color-layer.
-        //
-        // There's a special case for a plug-in that requests a 2 component image:
-        // OpenFX does not support 2-component images by default. 2 types of plug-in
-        // may request such images:
-        // - non multi-planar effect that supports 2 component images, added with the Natron OpenFX extensions
-        // - multi-planar effect that supports The Foundry Furnace plug-in suite: the value returned is either
-        // disparity components or a motion vector components.
-        //
-        ImageLayerDesc metadataLayer, metadataPairedLayer;
-        getMetadataComponents(-1, &metadataLayer, &metadataPairedLayer);
-        // Some plug-ins, such as The Foundry Furnace set the meta-data to disparity/motion vector, requiring
-        // both layers to be computed at once (Forward/Backard for motion vector) (Left/Right for Disparity)
-        if (metadataLayer.getNumComponents() > 0) {
-            clipPrefsAllComps.push_back(metadataLayer);
-        }
-        if (metadataPairedLayer.getNumComponents() > 0) {
-            clipPrefsAllComps.push_back(metadataPairedLayer);
-        }
-        if (clipPrefsAllComps.empty()) {
-            // If metada are not set yet, at least append RGBA
-            clipPrefsAllComps.push_back(ImageLayerDesc::getRGBAComponents());
-        }
-
-        // Natron adds for all non multi-planar effects a default layer selector to emulate
-        // multi-layer even if the plug-in is not aware of it. When fetching an input image, the
-        // plug-in will receive this user-selected layer, mapped to the number of components indicated
-        // by the plug-in in getTimeInvariantMetadatas
-        ImageLayerDesc layer;
-        bool gotUserSelectedLayer;
-        {
-            // In output, the available layers are those pass-through the input + project layers +
-            // layers produced by this node
-            std::list<ImageLayerDesc> availableLayersInOutput = *passThroughLayers;
-            availableLayersInOutput.insert(availableLayersInOutput.end(), clipPrefsAllComps.begin(), clipPrefsAllComps.end());
-
-            {
-                std::list<ImageLayerDesc> projectLayers = getRegisteredProjectLayersList(getApp()->getProject());
-                mergeLayersList(projectLayers, &availableLayersInOutput);
-            }
-
-            gotUserSelectedLayer = getNode()->getSelectedLayer(-1, availableLayersInOutput, processChannels, processAllRequested, &layer);
-        }
-
-        // If the user did not select any components or the layer is the color-layer, fallback on
-        // meta-data color layer
-        if (layer.getNumComponents() == 0 || layer.isColorLayer()) {
-            gotUserSelectedLayer = false;
-        }
-
-        std::list<ImageLayerDesc>& componentsSet = (*comps)[-1];
-
-        if (gotUserSelectedLayer) {
-            componentsSet.push_back(layer);
+    // Resolve the layer knob once against the list it is bound to; the same selection is
+    // read from every non-mask input and written to the output (no-shuffle invariant).
+    KnobIPtr layerKnob = node->getLayerKnob();
+    KnobChannelSet* channelSet = dynamic_cast<KnobChannelSet*>(layerKnob.get());
+    KnobLayerSelect* layerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get());
+    const bool hasLayerKnob = channelSet || layerSelect;
+    std::vector<ResolvedLayer> selected;
+    if (hasLayerKnob) {
+        std::list<ImageLayerDesc> present;
+        node->listLayersForKnob(layerKnob, time, view, &present);
+        if (channelSet) {
+            selected = channelSet->resolve(present);
         } else {
-            componentsSet.insert( componentsSet.end(), clipPrefsAllComps.begin(), clipPrefsAllComps.end() );
+            ResolvedLayer one;
+            if (layerSelect->resolve(present, &one)) {
+                selected.push_back(one);
+            }
         }
     }
 
-    // For each input get their needed components
+    {
+        std::list<ImageLayerDesc> metadataPlanes;
+        getMetadataPlanes(this, -1, &metadataPlanes);
+
+        std::list<ImageLayerDesc>& outputPlanes = (*comps)[-1];
+        outputPlanes.clear();
+        if (hasLayerKnob) {
+            appendSelectedPlanes(selected, metadataPlanes, &outputPlanes, processChannelsPerPlane);
+        }
+        if (outputPlanes.empty()) {
+            outputPlanes = metadataPlanes;
+        }
+    }
+
+    if (!hasLayerKnob) {
+        for (int i = 0; i < 4; ++i) {
+            (*processChannels)[i] = node->getProcessChannel(i);
+        }
+    } else {
+        processChannels->set();
+        ProcessChannelsPerPlaneMap::const_iterator foundColor = processChannelsPerPlane->find(ImageLayerDesc::getRGBAComponents());
+        if (foundColor != processChannelsPerPlane->end()) {
+            *processChannels = foundColor->second;
+        } else if (!processChannelsPerPlane->empty()) {
+            processChannels->reset();
+            for (ProcessChannelsPerPlaneMap::const_iterator it = processChannelsPerPlane->begin(); it != processChannelsPerPlane->end(); ++it) {
+                *processChannels |= it->second;
+            }
+        }
+    }
+
     int maxInput = getNInputs();
     for (int i = 0; i < maxInput; ++i) {
+        std::list<ImageLayerDesc>& inputPlanes = (*comps)[i];
+        inputPlanes.clear();
 
         std::list<ImageLayerDesc> upstreamAvailableLayers;
         getAvailableLayers(time, view, i, &upstreamAvailableLayers);
 
-        std::list<ImageLayerDesc>& componentsSet = (*comps)[i];
-
-        // Get the selected layer from the source channels menu
-        std::bitset<4> inputProcChannels;
-        ImageLayerDesc layer;
-        bool isAll;
-        bool ok = getNode()->getSelectedLayer(i, upstreamAvailableLayers, &inputProcChannels, &isAll, &layer);
-
-        // When color layer or all choice then request the default metadata components
-        if (isAll || layer.isColorLayer()) {
-            ok = false;
-        }
-
-        // For a mask get its selected channel
         ImageLayerDesc maskComp;
-        int channelMask = getNode()->getMaskChannel(i, upstreamAvailableLayers, &maskComp);
-
-        std::vector<ImageLayerDesc> clipPrefsAllComps;
-        {
-            ImageLayerDesc metadataLayer, metadataPairedLayer;
-            getMetadataComponents(i, &metadataLayer, &metadataPairedLayer);
-
-            // Some plug-ins, such as The Foundry Furnace set the meta-data to disparity/motion vector, requiring
-            // both layers to be computed at once (Forward/Backard for motion vector) (Left/Right for Disparity)
-            if (metadataLayer.getNumComponents() > 0) {
-                clipPrefsAllComps.push_back(metadataLayer);
-            }
-            if (metadataPairedLayer.getNumComponents() > 0) {
-                clipPrefsAllComps.push_back(metadataPairedLayer);
-            }
-            if (clipPrefsAllComps.empty()) {
-                // If metada are not set yet, at least append RGBA
-                clipPrefsAllComps.push_back(ImageLayerDesc::getRGBAComponents());
-            }
-        }
-
+        int channelMask = node->getMaskChannel(i, upstreamAvailableLayers, &maskComp);
         if ( (channelMask != -1) && (maskComp.getNumComponents() > 0) ) {
-
-            // If this is a mask, ask for the selected mask layer
-            componentsSet.push_back(maskComp);
-
-        } else if (ok && layer.getNumComponents() > 0) {
-            componentsSet.push_back(layer);
-        } else {
-            //Use regular clip preferences
-            componentsSet.insert( componentsSet.end(), clipPrefsAllComps.begin(), clipPrefsAllComps.end() );
+            inputPlanes.push_back(maskComp);
+            continue;
         }
-        
-    } // for each input
-}
+
+        std::list<ImageLayerDesc> metadataPlanes;
+        getMetadataPlanes(this, i, &metadataPlanes);
+        if (hasLayerKnob) {
+            appendSelectedPlanes(selected, metadataPlanes, &inputPlanes, NULL);
+        }
+        if (inputPlanes.empty()) {
+            inputPlanes = metadataPlanes;
+        }
+    }
+} // EffectInstance::getComponentsNeededDefault
 
 void
 EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
@@ -4347,10 +4344,10 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
                                                       ViewIdx view,
                                                       EffectInstance::ComponentsNeededMap* comps,
                                                       std::list<ImageLayerDesc>* passThroughLayers,
-                                                      bool* processAllRequested,
                                                       double* passThroughTime,
                                                       int* passThroughView,
                                                       std::bitset<4>* processChannels,
+                                                      ProcessChannelsPerPlaneMap* processChannelsPerPlane,
                                                       int* passThroughInputNb)
 
 {
@@ -4358,17 +4355,16 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
 
     {
         ViewIdx ptView;
-        bool foundInCache = _imp->actionsCache->getComponentsNeededResults(hash, time, view, comps, processChannels, processAllRequested, passThroughLayers, passThroughInputNb, &ptView, passThroughTime);
+        bool foundInCache = _imp->actionsCache->getComponentsNeededResults(hash, time, view, comps, processChannels, processChannelsPerPlane, passThroughLayers, passThroughInputNb, &ptView, passThroughTime);
         if (foundInCache) {
             *passThroughView = ptView;
             return;
         }
     }
-    
 
     if ( !isMultiPlanar() ) {
-        getComponentsNeededDefault(time, view, comps, passThroughLayers, processAllRequested, passThroughTime, passThroughView, processChannels, passThroughInputNb);
-        _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processAllRequested, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
+        getComponentsNeededDefault(time, view, comps, passThroughLayers, passThroughTime, passThroughView, processChannels, processChannelsPerPlane, passThroughInputNb);
+        _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
         return;
     }
 
@@ -4412,12 +4408,37 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
     for (int i = 0; i < 4; ++i) {
         (*processChannels)[i] = getNode()->getProcessChannel(i);
     }
-    
-    *processAllRequested = false;
+    processChannelsPerPlane->clear();
 
-    _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processAllRequested, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
+    _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
 
 } // EffectInstance::getComponentsNeededAndProduced_public
+
+std::bitset<4>
+EffectInstance::getProcessChannelsForPlane(U64 hash,
+                                           double time,
+                                           ViewIdx view,
+                                           const ImageLayerDesc& plane)
+{
+    ComponentsNeededMap comps;
+    std::list<ImageLayerDesc> passThroughLayers;
+    double passThroughTime = 0.;
+    int passThroughView = 0;
+    std::bitset<4> processChannels;
+    ProcessChannelsPerPlaneMap processChannelsPerPlane;
+    int passThroughInputNb = -1;
+    getComponentsNeededAndProduced_public(hash, time, view, &comps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInputNb);
+
+    ProcessChannelsPerPlaneMap::const_iterator found = processChannelsPerPlane.find(plane);
+    if (found != processChannelsPerPlane.end()) {
+        return found->second;
+    }
+
+    std::bitset<4> all;
+    all.set();
+
+    return all;
+}
 
 void
 EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* presentLayers)
@@ -4442,10 +4463,10 @@ EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::li
         int passThroughView = 0;
         int passThroughInputNb = -1; // prevent infinite recursion, because getComponentsNeededAndProduced_public() may call getPresentLayers()
         std::bitset<4> processChannels;
-        bool processAll = false;
+        EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
         // Key this query on the queried effect's own hash: it caches into that effect's ActionsCache, and a foreign
         // (caller's) hash would pollute or stale-serve that cache independently of the effect's own invalidation.
-        effect->getComponentsNeededAndProduced_public(effect->getRenderHash(), time, view, &comps, &passThroughLayers, &processAll, &passThroughTime, &passThroughView, &processChannels, &passThroughInputNb);
+        effect->getComponentsNeededAndProduced_public(effect->getRenderHash(), time, view, &comps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInputNb);
 
         // Merge pass-through layers produced + pass-through available layers and make it as the pass-through layers for this node
         // if they are not produced by this node

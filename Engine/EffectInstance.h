@@ -164,6 +164,10 @@ public:
     typedef std::map<int, std::list<ImageLayerDesc>> ComponentsNeededMap;
     typedef std::shared_ptr<ComponentsNeededMap> ComponentsNeededMapPtr;
 
+    // Keyed by layer ID (ImageLayerDesc::operator<), so the metadata-mapped Color plane and
+    // the input's Color plane look up the same entry.
+    typedef std::map<ImageLayerDesc, std::bitset<4>> ProcessChannelsPerPlaneMap;
+
     struct RenderRoIArgs
     {
         // Developer note: the fields were reordered to optimize packing.
@@ -2011,15 +2015,32 @@ private:
     virtual StatusEnum dettachOpenGLContext(const OpenGLContextEffectDataPtr& /*data*/) { return eStatusReplyDefault; }
 
 public:
+    /**
+     * @brief The planes this effect renders (comps[-1]) and reads from each input (comps[i]),
+     * with the pass-through planes of the preferred input.
+     *
+     * processChannelsPerPlane holds, for every plane of comps[-1] the node's layer knob
+     * selected, the channels it processes; a plane not in the map (and every plane of a node
+     * without a layer knob) is processed on all channels. processChannels is the Color plane's
+     * entry, or the union of all entries when no Color plane is selected: the single bitset the
+     * transitional render path still applies to every plane.
+     **/
     void getComponentsNeededAndProduced_public(U64 hash,
                                                double time, ViewIdx view,
                                                EffectInstance::ComponentsNeededMap* comps,
                                                std::list<ImageLayerDesc>* passThroughLayers,
-                                               bool* processAllRequested,
                                                double* passThroughTime,
                                                int* passThroughView,
                                                std::bitset<4>* processChannels,
+                                               ProcessChannelsPerPlaneMap* processChannelsPerPlane,
                                                int* passThroughInput);
+
+    /**
+     * @brief The channels this effect processes on the given plane at (hash, time, view), per
+     * the map documented on getComponentsNeededAndProduced_public(). All-true for a node
+     * without a layer knob or for a plane its knob did not select.
+     **/
+    std::bitset<4> getProcessChannelsForPlane(U64 hash, double time, ViewIdx view, const ImageLayerDesc& plane);
 
     // Produced union pass-through layers only: what the stream actually carries.
     void getPresentLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* presentLayers);
@@ -2033,10 +2054,10 @@ private:
     void getComponentsNeededDefault(double time, ViewIdx view,
                                     EffectInstance::ComponentsNeededMap* comps,
                                     std::list<ImageLayerDesc>* passThroughLayers,
-                                    bool* processAllRequested,
                                     double* passThroughTime,
                                     int* passThroughView,
                                     std::bitset<4>* processChannels,
+                                    ProcessChannelsPerPlaneMap* processChannelsPerPlane,
                                     int* passThroughInput);
 
 public:

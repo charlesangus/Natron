@@ -1372,6 +1372,12 @@ public:
     void listLayersForKnob(const KnobIPtr& knob, std::list<ImageLayerDesc>* layers) const;
 
     /**
+     * @brief Same, with an input-bound knob's present layers taken at the given time and view
+     * instead of the timeline's current frame.
+     **/
+    void listLayersForKnob(const KnobIPtr& knob, double time, ViewIdx view, std::list<ImageLayerDesc>* layers) const;
+
+    /**
      * @brief Registers every non-Color layer this node produces (per
      * getComponentsNeededAndProduced_public()'s output entry) with the project-level
      * LayerRegistry. Main thread only, called at the end of refreshAllInputRelatedData().

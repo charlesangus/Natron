@@ -2289,12 +2289,12 @@ private:
                     // Use needed components to figure out what we need to render
                     EffectInstance::ComponentsNeededMap neededComps;
                     std::list<ImageLayerDesc> passThroughLayers;
-                    bool processAll;
                     double ptTime;
                     int ptView;
                     std::bitset<4> processChannels;
+                    EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
                     int ptInput;
-                    activeInputToRender->getComponentsNeededAndProduced_public(activeInputToRenderHash, time, viewsToRender[view], &neededComps, &passThroughLayers, &processAll, &ptTime, &ptView, &processChannels, &ptInput);
+                    activeInputToRender->getComponentsNeededAndProduced_public(activeInputToRenderHash, time, viewsToRender[view], &neededComps, &passThroughLayers, &ptTime, &ptView, &processChannels, &processChannelsPerPlane, &ptInput);
 
                     // Retrieve bitdepth only
                     imageDepth = activeInputToRender->getBitDepth(-1);

@@ -157,7 +157,8 @@ ActionsCache::setIdentityResult(U64 hash,
 }
 
 bool
-ActionsCache::getComponentsNeededResults(U64 hash, double time, ViewIdx view, EffectInstance::ComponentsNeededMap* neededComps, std::bitset<4>* processChannels, bool* processAll,
+ActionsCache::getComponentsNeededResults(U64 hash, double time, ViewIdx view, EffectInstance::ComponentsNeededMap* neededComps, std::bitset<4>* processChannels,
+                                         EffectInstance::ProcessChannelsPerPlaneMap* processChannelsPerPlane,
                                          std::list<ImageLayerDesc>* passThroughLayers, int* passThroughInputNb, ViewIdx* passThroughView, double* passThroughTime)
 {
     QMutexLocker l(&_cacheMutex);
@@ -176,7 +177,7 @@ ActionsCache::getComponentsNeededResults(U64 hash, double time, ViewIdx view, Ef
                 *passThroughView = found->second.passThroughView;
                 *neededComps = found->second.neededComps;
                 *processChannels = found->second.processChannels;
-                *processAll = found->second.processAll;
+                *processChannelsPerPlane = found->second.processChannelsPerPlane;
                 *passThroughLayers = found->second.passThroughLayers;
                 return true;
             }
@@ -191,7 +192,7 @@ ActionsCache::getComponentsNeededResults(U64 hash, double time, ViewIdx view, Ef
 void
 ActionsCache::setComponentsNeededResults(U64 hash, double time, ViewIdx view, const EffectInstance::ComponentsNeededMap& neededComps,
                                          std::bitset<4> processChannels,
-                                         bool processAll,
+                                         const EffectInstance::ProcessChannelsPerPlaneMap& processChannelsPerPlane,
                                          const std::list<ImageLayerDesc>& passThroughLayers, int passThroughInputNb, ViewIdx passThroughView, double passThroughTime)
 {
     QMutexLocker l(&_cacheMutex);
@@ -208,7 +209,7 @@ ActionsCache::setComponentsNeededResults(U64 hash, double time, ViewIdx view, co
     v.passThroughView = passThroughView;
     v.passThroughInputNb = passThroughInputNb;
     v.processChannels = processChannels;
-    v.processAll = processAll;
+    v.processChannelsPerPlane = processChannelsPerPlane;
     v.passThroughLayers = passThroughLayers;
 }
 

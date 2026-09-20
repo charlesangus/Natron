@@ -42,6 +42,7 @@ set(Tests_SOURCES
     KnobFile_Test.cpp
     KnobLayerSelect_Test.cpp
     Knob_Test.cpp
+    LayerKnobsRender_Test.cpp
     LayerKnobs_Test.cpp
     LayerRegistry_Test.cpp
     Lut_Test.cpp

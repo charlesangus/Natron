@@ -5709,6 +5709,18 @@ void
 Node::listLayersForKnob(const KnobIPtr& knob,
                         std::list<ImageLayerDesc>* layers) const
 {
+    AppInstancePtr app = getApp();
+    double time = app ? app->getTimeLine()->currentFrame() : 0.;
+
+    listLayersForKnob(knob, time, ViewIdx(0), layers);
+}
+
+void
+Node::listLayersForKnob(const KnobIPtr& knob,
+                        double time,
+                        ViewIdx view,
+                        std::list<ImageLayerDesc>* layers) const
+{
     if (!knob) {
         return;
     }
@@ -5717,7 +5729,7 @@ Node::listLayersForKnob(const KnobIPtr& knob,
         EffectInstance* masterEffect = dynamic_cast<EffectInstance*>(master->getHolder());
         NodePtr masterNode = masterEffect ? masterEffect->getNode() : NodePtr();
         if (masterNode && masterNode.get() != this) {
-            masterNode->listLayersForKnob(master, layers);
+            masterNode->listLayersForKnob(master, time, view, layers);
         }
 
         return;
@@ -5747,10 +5759,8 @@ Node::listLayersForKnob(const KnobIPtr& knob,
         inputNb = getPreferredInput();
     }
     std::list<ImageLayerDesc> present;
-    AppInstancePtr app = getApp();
-    if (inputNb >= 0 && app) {
-        double time = app->getTimeLine()->currentFrame();
-        _imp->effect->getPresentLayers(time, ViewIdx(0), inputNb, &present);
+    if (inputNb >= 0) {
+        _imp->effect->getPresentLayers(time, view, inputNb, &present);
     }
 
     // Every image stream carries a Color plane, so an unconnected input still lists it.
@@ -5790,13 +5800,13 @@ Node::registerProducedLayers()
     double time = app->getTimeLine()->currentFrame();
     EffectInstance::ComponentsNeededMap comps;
     std::list<ImageLayerDesc> passThroughLayers;
-    bool processAllRequested;
     double passThroughTime;
     int passThroughView;
     std::bitset<4> processChannels;
+    EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
     int passThroughInputNb;
 
-    _imp->effect->getComponentsNeededAndProduced_public(getHashValue(), time, ViewIdx(0), &comps, &passThroughLayers, &processAllRequested, &passThroughTime, &passThroughView, &processChannels, &passThroughInputNb);
+    _imp->effect->getComponentsNeededAndProduced_public(getHashValue(), time, ViewIdx(0), &comps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInputNb);
 
     EffectInstance::ComponentsNeededMap::const_iterator foundOutput = comps.find(-1);
     if (foundOutput == comps.end()) {

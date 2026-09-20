@@ -68,7 +68,7 @@ struct ComponentsNeededResults
 {
     EffectInstance::ComponentsNeededMap neededComps;
     std::bitset<4> processChannels;
-    bool processAll;
+    EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
     std::list<ImageLayerDesc> passThroughLayers;
     int passThroughInputNb;
     double passThroughTime;
@@ -127,10 +127,12 @@ public:
 
     void setIdentityResult(U64 hash, double time, ViewIdx view, int inputNbIdentity, ViewIdx inputView, double identityTime);
 
-    bool getComponentsNeededResults(U64 hash, double time, ViewIdx view, EffectInstance::ComponentsNeededMap* neededComps, std::bitset<4>* processChannels, bool* processAll,
+    bool getComponentsNeededResults(U64 hash, double time, ViewIdx view, EffectInstance::ComponentsNeededMap* neededComps, std::bitset<4>* processChannels,
+                                    EffectInstance::ProcessChannelsPerPlaneMap* processChannelsPerPlane,
                                     std::list<ImageLayerDesc>* passThroughLayers, int* passThroughInputNb, ViewIdx* passThroughView, double* passThroughTime);
 
-    void setComponentsNeededResults(U64 hash, double time, ViewIdx view, const EffectInstance::ComponentsNeededMap& neededComps, std::bitset<4> processChannels, bool processAll,
+    void setComponentsNeededResults(U64 hash, double time, ViewIdx view, const EffectInstance::ComponentsNeededMap& neededComps, std::bitset<4> processChannels,
+                                    const EffectInstance::ProcessChannelsPerPlaneMap& processChannelsPerPlane,
                                     const std::list<ImageLayerDesc>& passThroughLayers, int passThroughInputNb, ViewIdx passThroughView, double passThroughTime);
 
     void clearComponentsNeededResults();

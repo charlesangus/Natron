@@ -432,41 +432,17 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     ComponentsNeededMapPtr neededComps = std::make_shared<ComponentsNeededMap>();
     ComponentsNeededMap::iterator foundOutputNeededComps;
     std::bitset<4> processChannels;
+    ProcessChannelsPerPlaneMap processChannelsPerPlane;
     std::list<ImageLayerDesc> passThroughLayers;
     int ptInputNb;
     double ptTime;
     int ptView;
     {
-        bool processAllComponentsRequested;
+        getComponentsNeededAndProduced_public(nodeHash, args.time, args.view, neededComps.get(), &passThroughLayers, &ptTime, &ptView, &processChannels, &processChannelsPerPlane, &ptInputNb);
 
-        {
-
-            getComponentsNeededAndProduced_public(nodeHash, args.time, args.view, neededComps.get(), &passThroughLayers, &processAllComponentsRequested, &ptTime, &ptView, &processChannels, &ptInputNb);
-
-            foundOutputNeededComps = neededComps->find(-1);
-            if ( foundOutputNeededComps == neededComps->end() ) {
-                return eRenderRoIRetCodeOk;
-            }
-        }
-        if (processAllComponentsRequested) {
-            std::list<ImageLayerDesc> compVec;
-            for (std::list<ImageLayerDesc>::const_iterator it = args.components.begin(); it != args.components.end(); ++it) {
-                bool found = false;
-                //Change all needed comps in output to the requested components
-                for (std::list<ImageLayerDesc>::const_iterator it2 = foundOutputNeededComps->second.begin(); it2 != foundOutputNeededComps->second.end(); ++it2) {
-                    if ((it2->isColorLayer() && it->isColorLayer())) {
-                        compVec.push_back(*it2);
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    compVec.push_back(*it);
-                }
-            }
-            for (ComponentsNeededMap::iterator it = neededComps->begin(); it != neededComps->end(); ++it) {
-                it->second = compVec;
-            }
+        foundOutputNeededComps = neededComps->find(-1);
+        if (foundOutputNeededComps == neededComps->end()) {
+            return eRenderRoIRetCodeOk;
         }
     }
     const std::list<ImageLayerDesc>& outputComponents = foundOutputNeededComps->second;

@@ -73,7 +73,7 @@ become phases here.
   - verify: `tools/ci/local/test.sh ctest debug` green (WriteAllLayers pixel assertions are an RGBA round trip); `Tests/Image_Test.cpp:261-312` still pass unchanged.
   - size: M
 
-- [ ] M38.P2.T3 — Metadata and OFX boundary: no tracking, constant answer
+- [x] M38.P2.T3 — Metadata and OFX boundary: no tracking, constant answer
   - files: `Engine/NodeMetadata.h`, `Engine/NodeMetadata.cpp`, `Engine/EffectInstance.cpp`, `Engine/OfxClipInstance.cpp`, `Engine/OfxImageEffectInstance.cpp`
   - approach: remove `outputPremult` from `NodeMetadata` (`.cpp:52-53, 77, 95, 135, 187-195`) and `EffectInstance::getPremult` (`EffectInstance.cpp:5564-5569`, decl `.h:950-952`); delete the derivation/forcing in `getDefaultMetadata`/`checkMetadata` (`:5341-5369, 5459-5462, 5481-5485, 5747-5752`) and the `:5675` warning hook; `OfxClipInstance::getPremult` (`:270-290`) returns `kOfxImageUnPreMultiplied` always, per-image property `:1490` likewise; `OfxImageEffectInstance` stops reading the plugin's answer back (`:1304`) and `updatePreferences_safe` (`:1331-1347`) loses the argument; `OfxEffectInstance::ofxGetOutputPremultiplication` (`.cpp:2985-2987`) returns the constant. Callers (`Node.cpp:2095-2109` info tooltip, RenderStats) compile against the constant until T6.
   - verify: `ctest` green; a Python background script connects Read→Grade and asserts `grade.getParam("premult").get()` stays False after connection (the auto-toggle no longer fires); `hasattr(effect, "getPremult")` still True until T6.

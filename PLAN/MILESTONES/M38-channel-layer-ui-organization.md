@@ -129,7 +129,7 @@ become phases here.
   - verify: gtest: `setLayer("diffuse")` after `setChannels({"R"})` on Color yields all of diffuse's channels; a buttonless select serialises an empty `Channels` cell and resolves to all bits; channel select `Color.A` resolves to (Color, 3), `diffuse.G` to (diffuse, 1), unknown → none; both survive a `KnobSerialization` save/load round trip by `typeName()`.
   - size: M
 
-- [ ] M38.P3.T4 — Python wrappers and creation functions
+- [x] M38.P3.T4 — Python wrappers and creation functions
   - files: `Engine/PyParameter.h`, `Engine/PyParameter.cpp`, `Engine/PyNode.h`, `Engine/PyNode.cpp`, `Engine/typesystem_engine.xml`
   - approach: `ChannelSetParam`, `LayerSelectParam`, `ChannelSelectParam` per §1.5 (list-out-param idiom from `PathParam`, `typesystem_engine.xml:1404ff`); branches in `createParamWrapperForKnob` (`PyNode.cpp:390-456`); `Effect.createChannelSetParam/createLayerSelectParam/createChannelSelectParam(name, label)`; include from `Engine/PySide6_Engine_Python.h`.
   - verify: a Python background script on a bare `KnobHolder`-backed node (any Blur, knobs from T5 not required — create the param with `createChannelSetParam` on a Group): `getRows()` shapes, `setLayer/setChannels/addRegex/removeRow`, `removeRow(0)` raises `ValueError`, `setAsAlias` between two groups works.

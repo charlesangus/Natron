@@ -44,6 +44,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
@@ -208,6 +209,148 @@ TEST_F(PyPlugExportTest, ExportedAddProjectLayerCallRepopulatesRegistryOnLoad)
     ImageLayerDesc found;
     ASSERT_TRUE(project->findLayer("mask", &found));
     EXPECT_EQ(std::vector<std::string>(1, "A"), found.getChannels());
+
+    project->reset(false, true);
+}
+
+// A user-created KnobChannelSet param aliased to an inner node's built-in "channels" knob
+// (the EdgeBlur.py "Blur1channels" pattern) needs both its creation and its current rows in
+// the exported script, since the generic alias-link exporter only wires an alias to a param
+// that the script already created under the same name. The round trip below proves the
+// reconstructed alias still forwards the master's rows to the aliased node's knob after reload.
+TEST_F(PyPlugExportTest, UserChannelSetAliasRoundTripsThroughPyPlugExport)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    NodePtr groupNode = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(groupNode));
+    NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(groupNode->getEffectInstance());
+    ASSERT_TRUE(bool(group));
+    NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group);
+    ASSERT_TRUE(bool(collection));
+
+    CreateNodeArgs blurArgs(PLUGINID_OFX_BLURCIMG, collection);
+    NodePtr blur = getApp()->createNode(blurArgs);
+    ASSERT_TRUE(bool(blur));
+    const std::string blurScriptName = blur->getScriptName();
+
+    KnobChannelSetPtr blurChannels = std::dynamic_pointer_cast<KnobChannelSet>(blur->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(blurChannels));
+
+    KnobChannelSetPtr master = groupNode->getEffectInstance()->createChannelSetKnob("Blur1channels", "Channels");
+    ASSERT_TRUE(bool(master));
+    KnobPagePtr userPage = groupNode->getEffectInstance()->getOrCreateUserPageKnob();
+    ASSERT_TRUE(bool(userPage));
+    userPage->addKnob(master);
+
+    std::vector<std::string> maskChannels;
+    maskChannels.push_back("R");
+    maskChannels.push_back("G");
+    master->setLayer(0, "mask", &maskChannels);
+    master->addRegex("Z.*");
+
+    ASSERT_TRUE(blurChannels->setKnobAsAliasOfThis(master, true));
+
+    QString output;
+    group->exportGroupToPython(QString::fromUtf8("test.pyplug.channelset"), QString::fromUtf8("ChannelSetGroup"), QString(), QString(), QString::fromUtf8("Other"), 1, output);
+
+    EXPECT_TRUE(output.contains(QString::fromUtf8("createChannelSetParam(\"Blur1channels\", \"Channels\")")));
+    EXPECT_TRUE(output.contains(QString::fromUtf8(".setAsAlias(param)")));
+
+    project->reset(false, true);
+
+    std::string interpError, interpOutput;
+    ASSERT_TRUE(interpretPythonScript(output.toStdString(), &interpError, &interpOutput)) << interpError;
+
+    CreateNodeArgs containerArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    containerArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    NodePtr container = getApp()->createNode(containerArgs);
+    ASSERT_TRUE(bool(container));
+
+    std::string appVar = getApp()->getAppIDString();
+    std::string callScript = "createInstance(" + appVar + ", " + appVar + "." + container->getFullyQualifiedName() + ")\n";
+    ASSERT_TRUE(interpretPythonScript(callScript, &interpError, &interpOutput)) << interpError;
+
+    KnobChannelSetPtr master2 = std::dynamic_pointer_cast<KnobChannelSet>(container->getKnobByName("Blur1channels"));
+    ASSERT_TRUE(bool(master2));
+
+    std::vector<ChannelSetRow> rows2 = master2->getRows();
+    ASSERT_EQ(std::size_t(2), rows2.size());
+    EXPECT_EQ(ChannelSetRow::eModeLayer, rows2[0].mode);
+    EXPECT_EQ(std::string("mask"), rows2[0].layerOrPattern);
+    EXPECT_EQ(maskChannels, rows2[0].channels);
+    EXPECT_EQ(ChannelSetRow::eModeRegex, rows2[1].mode);
+    EXPECT_EQ(std::string("Z.*"), rows2[1].layerOrPattern);
+
+    NodeCollectionPtr containerCollection = std::dynamic_pointer_cast<NodeCollection>(container->getEffectInstance());
+    ASSERT_TRUE(bool(containerCollection));
+    NodePtr blur2 = containerCollection->getNodeByName(blurScriptName);
+    ASSERT_TRUE(bool(blur2));
+
+    KnobChannelSetPtr blurChannels2 = std::dynamic_pointer_cast<KnobChannelSet>(blur2->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(blurChannels2));
+
+    // The reconstructed alias forwards the rows the master was exported with...
+    EXPECT_EQ(rows2, blurChannels2->getRows());
+
+    // ...and keeps forwarding live changes after reload: setAll() only rewrites row 0
+    // (the regex row is untouched), so the slave must mirror that same partial edit.
+    master2->setAll();
+    std::vector<ChannelSetRow> blurRowsAfterSetAll = blurChannels2->getRows();
+    ASSERT_EQ(std::size_t(2), blurRowsAfterSetAll.size());
+    EXPECT_EQ(ChannelSetRow::eModeAll, blurRowsAfterSetAll[0].mode);
+    EXPECT_EQ(ChannelSetRow::eModeRegex, blurRowsAfterSetAll[1].mode);
+    EXPECT_EQ(std::string("Z.*"), blurRowsAfterSetAll[1].layerOrPattern);
+
+    project->reset(false, true);
+}
+
+// KnobLayerSelect::withChannelButtons is a constructor flag, not a persisted value: a
+// user-created layer select saved and reloaded through ProjectSerialization must still report
+// the flag it was created with (see Tests/ProjectSerialization_Test.cpp for the save/reset/load
+// pattern this reuses).
+TEST_F(PyPlugExportTest, UserLayerSelectWithChannelButtonsSurvivesProjectRoundTrip)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    NodePtr groupNode = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(groupNode));
+
+    KnobLayerSelectPtr master = groupNode->getEffectInstance()->createLayerSelectKnob("userLayer", "User Layer", true);
+    ASSERT_TRUE(bool(master));
+    ASSERT_TRUE(master->getWithChannelButtons());
+    KnobPagePtr userPage = groupNode->getEffectInstance()->getOrCreateUserPageKnob();
+    ASSERT_TRUE(bool(userPage));
+    userPage->addKnob(master);
+
+    const std::string groupName = groupNode->getScriptName();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QString::fromUtf8("/");
+    const QString fileName = QString::fromUtf8("layerselect-roundtrip.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    ASSERT_TRUE(QFile::exists(savedFilePath));
+
+    project->reset(false, true);
+    ASSERT_TRUE(project->getNodeByName(groupName).get() == NULL);
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr groupNode2 = project->getNodeByName(groupName);
+    ASSERT_TRUE(bool(groupNode2));
+
+    KnobLayerSelectPtr master2 = std::dynamic_pointer_cast<KnobLayerSelect>(groupNode2->getKnobByName("userLayer"));
+    ASSERT_TRUE(bool(master2));
+    EXPECT_TRUE(master2->getWithChannelButtons());
 
     project->reset(false, true);
 }

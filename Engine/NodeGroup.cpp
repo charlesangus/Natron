@@ -44,15 +44,18 @@
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/Image.h"
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGraphI.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
-#include "Engine/Project.h"
 #include "Engine/PrecompNode.h"
+#include "Engine/Project.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
@@ -1952,6 +1955,23 @@ exportKnobValues(int indentLevel,
     return hasExportedValue;
 } // exportKnobValues
 
+// Builds the Python list literal a ChannelSetParam/LayerSelectParam channels argument expects.
+static QString
+channelListLiteral(const std::vector<std::string>& channels)
+{
+    QString ret = QString::fromUtf8("[");
+
+    for (std::size_t i = 0; i < channels.size(); ++i) {
+        if (i > 0) {
+            ret += QString::fromUtf8(", ");
+        }
+        ret += ESC(channels[i]);
+    }
+    ret += QString::fromUtf8("]");
+
+    return ret;
+}
+
 static void
 exportUserKnob(int indentLevel,
                const KnobIPtr& knob,
@@ -1973,6 +1993,9 @@ exportUserKnob(int indentLevel,
     KnobButton* isButton = dynamic_cast<KnobButton*>( knob.get() );
     KnobSeparator* isSep = dynamic_cast<KnobSeparator*>( knob.get() );
     KnobParametric* isParametric = dynamic_cast<KnobParametric*>( knob.get() );
+    KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(knob.get());
+    KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(knob.get());
+    KnobChannelSelect* isChannelSelect = dynamic_cast<KnobChannelSelect*>(knob.get());
     KnobIPtr aliasedParam;
     {
         KnobI::ListenerDimsMap listeners;
@@ -2253,6 +2276,62 @@ exportUserKnob(int indentLevel,
                                                  ESC( isParametric->getName() ) +
                                                  QString::fromUtf8(", ") + ESC( isParametric->getLabel() ) +  QString::fromUtf8(", ") +
                                                  NUM_INT( isParametric->getDimension() ) + QString::fromUtf8(")") );
+    } else if (isChannelSet) {
+        WRITE_INDENT(indentLevel);
+        WRITE_STRING(QString::fromUtf8("param = ") + fullyQualifiedNodeName + QString::fromUtf8(".createChannelSetParam(") + ESC(isChannelSet->getName()) + QString::fromUtf8(", ") + ESC(isChannelSet->getLabel()) + QString::fromUtf8(")"));
+
+        std::vector<ChannelSetRow> rows = isChannelSet->getRows();
+        for (std::size_t r = 0; r < rows.size(); ++r) {
+            switch (rows[r].mode) {
+            case ChannelSetRow::eModeNone:
+                WRITE_INDENT(indentLevel);
+                WRITE_STATIC_LINE("param.setNone()");
+                break;
+            case ChannelSetRow::eModeAll:
+                WRITE_INDENT(indentLevel);
+                WRITE_STATIC_LINE("param.setAll()");
+                break;
+            case ChannelSetRow::eModeLayer:
+                if (r == 0) {
+                    WRITE_INDENT(indentLevel);
+                    WRITE_STRING(QString::fromUtf8("param.setLayer(") + ESC(rows[r].layerOrPattern) + QString::fromUtf8(", ") + channelListLiteral(rows[r].channels) + QString::fromUtf8(")"));
+                } else {
+                    WRITE_INDENT(indentLevel);
+                    WRITE_STRING(QString::fromUtf8("param.addLayer(") + ESC(rows[r].layerOrPattern) + QString::fromUtf8(", ") + channelListLiteral(rows[r].channels) + QString::fromUtf8(")"));
+                }
+                break;
+            case ChannelSetRow::eModeRegex:
+                if (r == 0) {
+                    WRITE_INDENT(indentLevel);
+                    WRITE_STRING(QString::fromUtf8("param.setRegex(") + ESC(rows[r].layerOrPattern) + QString::fromUtf8(")"));
+                } else {
+                    WRITE_INDENT(indentLevel);
+                    WRITE_STRING(QString::fromUtf8("param.addRegex(") + ESC(rows[r].layerOrPattern) + QString::fromUtf8(")"));
+                }
+                break;
+            }
+        }
+    } else if (isLayerSelect) {
+        QString withButtonsStr = isLayerSelect->getWithChannelButtons() ? QString::fromUtf8("True") : QString::fromUtf8("False");
+        WRITE_INDENT(indentLevel);
+        WRITE_STRING(QString::fromUtf8("param = ") + fullyQualifiedNodeName + QString::fromUtf8(".createLayerSelectParam(") + ESC(isLayerSelect->getName()) + QString::fromUtf8(", ") + ESC(isLayerSelect->getLabel()) + QString::fromUtf8(", ") + withButtonsStr + QString::fromUtf8(")"));
+
+        WRITE_INDENT(indentLevel);
+        WRITE_STRING(QString::fromUtf8("param.setLayer(") + ESC(isLayerSelect->getLayer()) + QString::fromUtf8(")"));
+        if (isLayerSelect->getWithChannelButtons()) {
+            std::vector<std::string> channels = isLayerSelect->getChannels();
+            if (!channels.empty()) {
+                WRITE_INDENT(indentLevel);
+                WRITE_STRING(QString::fromUtf8("param.setChannels(") + channelListLiteral(channels) + QString::fromUtf8(")"));
+            }
+        }
+    } else if (isChannelSelect) {
+        WRITE_INDENT(indentLevel);
+        WRITE_STRING(QString::fromUtf8("param = ") + fullyQualifiedNodeName + QString::fromUtf8(".createChannelSelectParam(") + ESC(isChannelSelect->getName()) + QString::fromUtf8(", ") + ESC(isChannelSelect->getLabel()) + QString::fromUtf8(")"));
+        if (!isChannelSelect->isNone()) {
+            WRITE_INDENT(indentLevel);
+            WRITE_STRING(QString::fromUtf8("param.set(") + ESC(isChannelSelect->get()) + QString::fromUtf8(")"));
+        }
     }
 
     WRITE_STATIC_LINE("");

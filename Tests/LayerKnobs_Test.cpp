@@ -109,10 +109,9 @@ TEST_F(BaseTest, GradeGetsChannelSetSeededByItsQuad)
     rgb.push_back("B");
     EXPECT_EQ(rgb, rows[0].channels);
 
-    KnobIPtr legacy = grade->getKnobByName(kOutputChannelsKnobName);
-    ASSERT_TRUE(bool(legacy));
-    EXPECT_TRUE(legacy->getIsSecret());
-    EXPECT_FALSE(legacy->getIsPersistent());
+    EXPECT_FALSE(bool(grade->getKnobByName("channels_legacy")));
+    EXPECT_FALSE(bool(grade->getKnobByName("Source_channels_legacy")));
+    EXPECT_FALSE(bool(grade->getKnobByName("processAllLayers")));
 }
 
 TEST_F(BaseTest, InvertGetsChannelSetWithEveryChannel)

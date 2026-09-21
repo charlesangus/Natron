@@ -571,10 +571,10 @@ WriteNodePrivate::takeOverEncoderPlaneParams()
     }
 
     // The encoder's own R/G/B/A quad is adopted like any other node's (Node::adoptChannelQuad):
-    // the channel set is the one channel control. Hidden is locked, not just set, because both
-    // GenericWriter (on every clip-preferences pass) and Node::refreshEnabledKnobsLabel() re-show
-    // the boxes that match the Color component count. GenericWriter only packs channels through
-    // boxes it sees shown, so seen hidden it writes every channel of the plane it fetches.
+    // the channel set is the one channel control. Hidden is locked, not just set, because
+    // GenericWriter re-shows the boxes that match the Color component count on every
+    // clip-preferences pass. GenericWriter only packs channels through boxes it sees shown, so
+    // seen hidden it writes every channel of the plane it fetches.
     static const char* const quadNames[4] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
     for (int i = 0; i < 4; ++i) {
         KnobBoolPtr channel = std::dynamic_pointer_cast<KnobBool>(writeNode->getKnobByName(quadNames[i]));

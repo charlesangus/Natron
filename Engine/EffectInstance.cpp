@@ -4372,20 +4372,14 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
         }
     }
 
-    if (!hasLayerKnob) {
-        for (int i = 0; i < 4; ++i) {
-            (*processChannels)[i] = node->getProcessChannel(i);
-        }
-    } else {
-        processChannels->set();
-        ProcessChannelsPerPlaneMap::const_iterator foundColor = processChannelsPerPlane->find(ImageLayerDesc::getRGBAComponents());
-        if (foundColor != processChannelsPerPlane->end()) {
-            *processChannels = foundColor->second;
-        } else if (!processChannelsPerPlane->empty()) {
-            processChannels->reset();
-            for (ProcessChannelsPerPlaneMap::const_iterator it = processChannelsPerPlane->begin(); it != processChannelsPerPlane->end(); ++it) {
-                *processChannels |= it->second;
-            }
+    processChannels->set();
+    ProcessChannelsPerPlaneMap::const_iterator foundColor = processChannelsPerPlane->find(ImageLayerDesc::getRGBAComponents());
+    if (foundColor != processChannelsPerPlane->end()) {
+        *processChannels = foundColor->second;
+    } else if (!processChannelsPerPlane->empty()) {
+        processChannels->reset();
+        for (ProcessChannelsPerPlaneMap::const_iterator it = processChannelsPerPlane->begin(); it != processChannelsPerPlane->end(); ++it) {
+            *processChannels |= it->second;
         }
     }
 
@@ -4491,9 +4485,7 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
 
     } // if pass-through for layers
 
-    for (int i = 0; i < 4; ++i) {
-        (*processChannels)[i] = getNode()->getProcessChannel(i);
-    }
+    processChannels->set();
     processChannelsPerPlane->clear();
 
     _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
@@ -5750,11 +5742,6 @@ EffectInstance::refreshMetadata_internal()
         // count only once the file is loaded) while the hash does not, so entries keyed on
         // the current hash would otherwise survive this refresh stale.
         _imp->actionsCache->clearComponentsNeededResults();
-
-        NodePtr node = getNode();
-        ImageLayerDesc layer, pairedLayer;
-        getMetadataComponents(-1, &layer, &pairedLayer);
-        node->refreshEnabledKnobsLabel(layer);
     }
 
     return ret;

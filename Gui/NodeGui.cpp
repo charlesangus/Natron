@@ -3211,35 +3211,6 @@ NodeGui::onLayerSelectionChanged()
             extraLayerStr.append(QString::fromUtf8(summary.c_str()));
             extraLayerStr.push_back(QLatin1Char(')'));
         }
-    } else {
-        // Plugin-owned planes: no host layer knob, fall back to the legacy per-output channel selector.
-        KnobBoolPtr processAllKnob = internalNode->getProcessAllLayersKnob();
-        bool processAll = false;
-        if (processAllKnob && processAllKnob->hasModifications()) {
-            processAll = processAllKnob->getValue();
-            if (processAll) {
-                // extraLayerStr.append( QString::fromUtf8("<br />") );
-                extraLayerStr += tr("(All)");
-            }
-        }
-        ImageLayerDesc outputLayer;
-        {
-            bool isAll;
-            std::list<ImageLayerDesc> availableLayers;
-            internalNode->getEffectInstance()->getAvailableLayers(internalNode->getApp()->getTimeLine()->currentFrame(), ViewIdx(0), -1, &availableLayers);
-
-            internalNode->getSelectedLayer(-1, availableLayers, 0, &isAll, &outputLayer);
-        }
-        if (!processAll && outputLayer.getNumComponents() > 0) {
-            if (!outputLayer.isColorLayer()) {
-                if (!extraLayerStr.isEmpty()) {
-                    extraLayerStr.append(QString::fromUtf8("<br />"));
-                }
-                extraLayerStr.push_back(QLatin1Char('('));
-                extraLayerStr.append(QString::fromUtf8(outputLayer.getLayerLabel().c_str()));
-                extraLayerStr.push_back(QLatin1Char(')'));
-            }
-        }
     }
     if (extraLayerStr == _channelsExtraLabel) {
         return;

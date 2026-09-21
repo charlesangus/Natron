@@ -62,15 +62,10 @@ CLANG_DIAG_ON(deprecated)
 #define kMaskChannelKnobName "maskChannel"
 #define kInputChannelKnobName "inputChannel"
 #define kEnablePreviewKnobName "enablePreview"
-#define kOutputChannelsKnobName "channels_legacy"
 #define kNodeParamChannelSet "channels"
 #define kNodeParamChannelSetLabel "Channels"
 #define kNodeParamLayerSelect "layer"
 #define kNodeParamLayerSelectLabel "Layer"
-
-#define kNodeParamProcessAllLayers "processAllLayers"
-#define kNodeParamProcessAllLayersLabel "All Layers"
-#define kNodeParamProcessAllLayersHint "When checked all layers in input will be processed and output to the same layer as in input. It is useful for example to apply a Transform effect on all layers."
 
 #define kOfxMaskInvertParamName "maskInvert"
 #define kOfxMixParamName "mix"
@@ -547,8 +542,6 @@ public:
     bool isDuringPaintStrokeCreation() const;
     ////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////////
-
-    void setProcessChannelsValues(bool doR, bool doG, bool doB, bool doA);
 
 private:
 
@@ -1096,16 +1089,9 @@ private:
 
     void createLabelKnob(const KnobPagePtr& settingsPage, const std::string& label);
 
-    void findOrCreateChannelEnabled(const KnobPagePtr& mainPage);
-
     void createLayerKnob(const LayerKnobSpec& spec, const KnobPagePtr& mainPage);
 
     void adoptChannelQuad();
-
-    void createChannelSelectors(const std::vector<std::pair<bool, bool> >& hasMaskChannelSelector,
-                                const std::vector<std::string>& inputLabels,
-                                const KnobPagePtr& mainPage,
-                                KnobIPtr* lastKnobBeforeAdvancedOption);
 
 public:
 
@@ -1320,28 +1306,21 @@ public:
 
     std::string getPluginPythonModule() const;
 
-    //Returns true if changed
-    bool refreshChannelSelectors();
-
-    bool isPluginUsingHostChannelSelectors() const;
-
-    bool getProcessChannel(int channelIndex) const;
+    /**
+     * @brief Tells the effect and the layer/channel knob GUIs that the layers present on the
+     * inputs may have changed; the knobs list their layers themselves at display time.
+     **/
+    void refreshChannelSelectors();
 
     // True for the handful of plug-ins (see adoptChannelQuad()) whose R/G/B/A quad the host
     // does not adopt as a per-channel mask: their quad stays visible and the layer knob's
     // row-0 channel buttons are ignored (the host treats every plane as fully processed).
     bool pluginOwnsChannelMask() const;
 
-    KnobChoicePtr getChannelSelectorKnob(int inputNb) const;
-
-    KnobBoolPtr getProcessAllLayersKnob() const;
-
-    bool getSelectedLayer(int inputNb, const std::list<ImageLayerDesc>& availableLayers, std::bitset<4>* processChannels, bool* isAll, ImageLayerDesc* layer) const;
-
     /**
      * @brief False when the node's layer knob resolves to no channel at the given time and
-     * view (or, for a node without one, when every legacy channel bool is off), which makes
-     * the node an identity of its preferred input.
+     * view, which makes the node an identity of its preferred input. A node without a layer
+     * knob always has something to process.
      **/
     bool hasAtLeastOneChannelToProcess(double time, ViewIdx view) const;
 
@@ -1358,8 +1337,6 @@ public:
     void forceRefreshAllInputRelatedData();
 
     void markAllInputRelatedDataDirty();
-
-    bool getSelectedLayerChoiceRaw(int inputNb, std::string& layer) const;
 
     /**
      * @brief Fills ids with the layer ID of every layer/channel knob row on this node that
@@ -1452,8 +1429,6 @@ public:
     void clearStreamWarning(StreamWarningEnum warning);
     void getStreamWarnings(std::map<StreamWarningEnum, QString>* warnings) const;
 
-    void refreshEnabledKnobsLabel(const ImageLayerDesc& layer);
-
 private:
 
     bool setStreamWarningInternal(StreamWarningEnum warning, const QString& message);
@@ -1503,8 +1478,6 @@ private:
     void refreshAllInputRelatedData(bool canChangeValues);
 
     bool refreshMaskEnabledNess(int inpubNb);
-
-    bool refreshLayersChoiceSecretness(int inpubNb);
 
     void markInputRelatedDataDirtyRecursive();
 
@@ -1579,9 +1552,8 @@ Q_SIGNALS:
     void layerSelectionChanged();
 
     /**
-     * @brief Emitted after refreshChannelSelectors() has run, whether or not a legacy choice
-     * menu changed: the layer/channel knob GUIs list their layers themselves and only need
-     * to know that the input's present layers may have changed.
+     * @brief Emitted by refreshChannelSelectors(): the layer/channel knob GUIs list their
+     * layers themselves and only need to know that the input's present layers may have changed.
      **/
     void layerListRefreshed();
 

@@ -46,30 +46,6 @@ typedef std::map<NodeWPtr, int32_t, std::owner_less<NodeWPtr>> DeactivatedState;
 typedef std::list<Node::KnobLink> KnobLinkList;
 typedef std::vector<NodeWPtr> InputsV;
 
-
-class ChannelSelector
-{
-public:
-
-    KnobChoiceWPtr layer;
-
-
-    ChannelSelector()
-        : layer()
-    {
-    }
-
-    ChannelSelector(const ChannelSelector& other)
-    {
-        *this = other;
-    }
-
-    void operator=(const ChannelSelector& other)
-    {
-        layer = other.layer;
-    }
-};
-
 class MaskSelector
 {
 public:
@@ -217,8 +193,6 @@ public:
         , beforeRender()
         , afterFrameRender()
         , afterRender()
-        , enabledChan()
-        , channelsSelectors()
         , maskSelectors()
         , layerKnob()
         , layerKnobSpec()
@@ -275,7 +249,6 @@ public:
         , isRefreshingInputRelatedData(false)
         , streamWarnings()
         , requiresGLFinishBeforeRender(false)
-        , hostChannelSelectorEnabled(false)
         , pluginOwnsChannelMask(false)
         , effectiveDataKindMutex()
         , effectiveDataKindCacheSet(false)
@@ -327,15 +300,9 @@ public:
 
     void runInputChangedCallback(int index, const std::string& script);
 
-    void createChannelSelector(int inputNb, const std::string & inputName, bool isOutput, const KnobPagePtr& page, KnobIPtr* lastKnobBeforeAdvancedOption);
-
-    void onLayerChanged(int inputNb, const ChannelSelector& selector);
-
     void onMaskSelectorChanged(int inputNb, const MaskSelector& selector);
 
     void notifyLayerReferencesChanged();
-
-    ImageLayerDesc getSelectedLayerInternal(int inputNb, const std::list<ImageLayerDesc>& availableLayers, const ChannelSelector& selector) const;
 
     Node* _publicInterface;
     NodeCollectionWPtr group;
@@ -423,12 +390,9 @@ public:
     KnobStringWPtr beforeRender;
     KnobStringWPtr afterFrameRender;
     KnobStringWPtr afterRender;
-    KnobBoolWPtr enabledChan[4];
     KnobDoubleWPtr mixWithSource;
     KnobButtonWPtr renderButton; //< render button for writers
     FormatKnob pluginFormatKnobs;
-    KnobBoolWPtr processAllLayersKnob;
-    std::map<int, ChannelSelector> channelsSelectors;
     std::map<int, MaskSelector> maskSelectors;
     KnobIWPtr layerKnob;
     LayerKnobSpec layerKnobSpec;
@@ -517,8 +481,6 @@ public:
     // Some plug-ins (mainly Hitfilm Ignite detected for now) use their own OpenGL context that is sharing resources with our OpenGL contexT.
     // as a result if we don't call glFinish() before calling the render action, the plug-in context might use textures that were not finished yet.
     bool requiresGLFinishBeforeRender;
-
-    bool hostChannelSelectorEnabled;
 
     // True for plug-ins whose R/G/B/A quad is not a per-channel mask (KeyMix picks A vs B per
     // channel, DenoiseSharpen collapses R/G/B into one flag, ClipTest ORs the selection into a

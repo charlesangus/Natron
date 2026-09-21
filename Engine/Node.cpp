@@ -568,31 +568,6 @@ Node::isNodeCreated() const
     return _imp->nodeCreated;
 }
 
-void
-Node::setProcessChannelsValues(bool doR,
-                               bool doG,
-                               bool doB,
-                               bool doA)
-{
-    KnobBoolPtr eR = _imp->enabledChan[0].lock();
-
-    if (eR) {
-        eR->setValue(doR);
-    }
-    KnobBoolPtr eG = _imp->enabledChan[1].lock();
-    if (eG) {
-        eG->setValue(doG);
-    }
-    KnobBoolPtr eB = _imp->enabledChan[2].lock();
-    if (eB) {
-        eB->setValue(doB);
-    }
-    KnobBoolPtr eA = _imp->enabledChan[3].lock();
-    if (eA) {
-        eA->setValue(doA);
-    }
-}
-
 bool
 Node::setStreamWarningInternal(StreamWarningEnum warning,
                                const QString& message)
@@ -2603,67 +2578,6 @@ Node::createLabelKnob(const KnobPagePtr& settingsPage,
 }
 
 void
-Node::findOrCreateChannelEnabled(const KnobPagePtr& mainPage)
-{
-    //Try to find R,G,B,A parameters on the plug-in, if found, use them, otherwise create them
-    static const std::string channelLabels[4] = {kNatronOfxParamProcessRLabel, kNatronOfxParamProcessGLabel, kNatronOfxParamProcessBLabel, kNatronOfxParamProcessALabel};
-    static const std::string channelNames[4] = {kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA};
-    static const std::string channelHints[4] = {kNatronOfxParamProcessRHint, kNatronOfxParamProcessGHint, kNatronOfxParamProcessBHint, kNatronOfxParamProcessAHint};
-    KnobBoolPtr foundEnabled[4];
-    const KnobsVec & knobs = _imp->effect->getKnobs();
-
-    for (int i = 0; i < 4; ++i) {
-        KnobBoolPtr enabled;
-        for (std::size_t j = 0; j < knobs.size(); ++j) {
-            if (knobs[j]->getOriginalName() == channelNames[i]) {
-                foundEnabled[i] = std::dynamic_pointer_cast<KnobBool>(knobs[j]);
-                break;
-            }
-        }
-    }
-
-    bool foundAll = foundEnabled[0] && foundEnabled[1] && foundEnabled[2] && foundEnabled[3];
-    bool isWriter = _imp->effect->isWriter();
-
-    if (foundAll) {
-        for (int i = 0; i < 4; ++i) {
-            // Writers already have their checkboxes places correctly
-            if (!isWriter) {
-                if (foundEnabled[i]->getParentKnob() == mainPage) {
-                    //foundEnabled[i]->setAddNewLine(i == 3);
-                    mainPage->removeKnob( foundEnabled[i].get() );
-                    mainPage->insertKnob(i, foundEnabled[i]);
-                }
-            }
-            _imp->enabledChan[i] = foundEnabled[i];
-        }
-    }
-
-    bool pluginDefaultPref[4];
-    _imp->hostChannelSelectorEnabled = _imp->effect->isHostChannelSelectorSupported(&pluginDefaultPref[0], &pluginDefaultPref[1], &pluginDefaultPref[2], &pluginDefaultPref[3]);
-
-
-    if (_imp->hostChannelSelectorEnabled) {
-        if (foundAll) {
-            std::cerr << getScriptName_mt_safe() << ": WARNING: property " << kNatronOfxImageEffectPropChannelSelector << " is different of " << kOfxImageComponentNone << " but uses its own checkboxes" << std::endl;
-        } else {
-            //Create the selectors
-            for (int i = 0; i < 4; ++i) {
-                foundEnabled[i] =  AppManager::createKnob<KnobBool>(_imp->effect.get(), channelLabels[i], 1, false);
-                foundEnabled[i]->setName(channelNames[i]);
-                foundEnabled[i]->setAnimationEnabled(false);
-                foundEnabled[i]->setAddNewLine(i == 3);
-                foundEnabled[i]->setDefaultValue(pluginDefaultPref[i]);
-                foundEnabled[i]->setHintToolTip(channelHints[i]);
-                mainPage->insertKnob(i, foundEnabled[i]);
-                _imp->enabledChan[i] = foundEnabled[i];
-            }
-            foundAll = true;
-        }
-    }
-} // Node::findOrCreateChannelEnabled
-
-void
 Node::adoptChannelQuad()
 {
     // KeyMix's quad picks source A vs source B per channel, DenoiseSharpen's collapses R/G/B
@@ -2696,7 +2610,7 @@ Node::adoptChannelQuad()
 
     bool foundAll = foundEnabled[0] && foundEnabled[1] && foundEnabled[2] && foundEnabled[3];
     bool pluginDefaultPref[4];
-    _imp->hostChannelSelectorEnabled = _imp->effect->isHostChannelSelectorSupported(&pluginDefaultPref[0], &pluginDefaultPref[1], &pluginDefaultPref[2], &pluginDefaultPref[3]);
+    bool hostChannelSelectorEnabled = _imp->effect->isHostChannelSelectorSupported(&pluginDefaultPref[0], &pluginDefaultPref[1], &pluginDefaultPref[2], &pluginDefaultPref[3]);
 
     bool enabledByDefault[4] = { true, true, true, true };
     if (foundAll) {
@@ -2707,9 +2621,8 @@ Node::adoptChannelQuad()
             foundEnabled[i]->setSecretByDefault(true);
             foundEnabled[i]->setIsPersistent(false);
             foundEnabled[i]->setValue(true);
-            _imp->enabledChan[i] = foundEnabled[i];
         }
-    } else if (_imp->hostChannelSelectorEnabled) {
+    } else if (hostChannelSelectorEnabled) {
         for (int i = 0; i < 4; ++i) {
             enabledByDefault[i] = pluginDefaultPref[i];
         }
@@ -2769,22 +2682,6 @@ Node::createLayerKnob(const LayerKnobSpec& spec,
 } // Node::createLayerKnob
 
 void
-Node::createChannelSelectors(const std::vector<std::pair<bool, bool> >& hasMaskChannelSelector,
-                             const std::vector<std::string>& inputLabels,
-                             const KnobPagePtr& mainPage,
-                             KnobIPtr* lastKnobBeforeAdvancedOption)
-{
-    ///Create input layer selectors
-    for (std::size_t i = 0; i < inputLabels.size(); ++i) {
-        if (!hasMaskChannelSelector[i].first) {
-            _imp->createChannelSelector(i, inputLabels[i], false, mainPage, lastKnobBeforeAdvancedOption);
-        }
-    }
-    ///Create output layer selectors
-    _imp->createChannelSelector(-1, "Output", true, mainPage, lastKnobBeforeAdvancedOption);
-}
-
-void
 Node::initializeDefaultKnobs(bool loadingSerialization)
 {
     //Readers and Writers don't have default knobs since these knobs are on the ReadNode/WriteNode itself
@@ -2841,36 +2738,14 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
     }
 
     LayerKnobSpec layerKnobSpec = _imp->effect->getLayerKnobSpec();
-    bool hasLayerKnob = layerKnobSpec.kind != LayerKnobSpec::eKindNone;
-
-    // The legacy layer choices still drive the render until the layer knob does; they stay
-    // hidden behind it on the nodes that get one.
     KnobIPtr lastKnobBeforeAdvancedOption;
-    if (hasLayerKnob) {
-        if (!mainPage) {
-            mainPage = getOrCreateMainPage();
-        }
-        createChannelSelectors(hasMaskChannelSelector, inputLabels, mainPage, &lastKnobBeforeAdvancedOption);
-        for (std::map<int, ChannelSelector>::iterator it = _imp->channelsSelectors.begin(); it != _imp->channelsSelectors.end(); ++it) {
-            KnobChoicePtr layer = it->second.layer.lock();
-            layer->setSecretByDefault(true);
-            layer->setIsPersistent(false);
-        }
-        KnobBoolPtr processAll = _imp->processAllLayersKnob.lock();
-        if (processAll) {
-            processAll->setSecretByDefault(true);
-            processAll->setIsPersistent(false);
-        }
-    }
 
     if (!mainPage) {
         mainPage = getOrCreateMainPage();
     }
-    if (hasLayerKnob) {
+    if (layerKnobSpec.kind != LayerKnobSpec::eKindNone) {
         createLayerKnob(layerKnobSpec, mainPage);
         adoptChannelQuad();
-    } else {
-        findOrCreateChannelEnabled(mainPage);
     }
 
     ///Find in the plug-in the Mask/Mix related parameter to re-order them so it is consistent across nodes
@@ -3012,62 +2887,6 @@ Node::initializeKnobs(bool loadingSerialization)
 
     Q_EMIT knobsInitialized();
 } // initializeKnobs
-
-void
-Node::Implementation::createChannelSelector(int inputNb,
-                                            const std::string & inputName,
-                                            bool isOutput,
-                                            const KnobPagePtr& page,
-                                            KnobIPtr* lastKnobBeforeAdvancedOption)
-{
-    ChannelSelector sel;
-
-    KnobChoicePtr layer = AppManager::createKnob<KnobChoice>(effect.get(), isOutput ? tr("Output Layer") : tr("%1 Layer").arg( QString::fromUtf8( inputName.c_str() ) ), 1, false);
-    layer->setHostCanAddOptions(isOutput);
-    if (!isOutput) {
-        layer->setName( inputName + std::string("_") + std::string(kOutputChannelsKnobName) );
-    } else {
-        layer->setName(kOutputChannelsKnobName);
-    }
-    if (isOutput) {
-        layer->setHintToolTip( tr("Select here the layer onto which the processing should occur.") );
-    } else {
-        layer->setHintToolTip( tr("Select here the layer that will be used in input by %1.").arg( QString::fromUtf8( inputName.c_str() ) ) );
-    }
-    layer->setAnimationEnabled(false);
-    layer->setSecretByDefault(!isOutput);
-    page->addKnob(layer);
-    sel.layer = layer;
-
-    if (isOutput) {
-        layer->setAddNewLine(false);
-        KnobBoolPtr processAllKnob = AppManager::createKnob<KnobBool>(effect.get(), tr(kNodeParamProcessAllLayersLabel), 1, false);
-        processAllKnob->setName(kNodeParamProcessAllLayers);
-        processAllKnob->setHintToolTip(tr(kNodeParamProcessAllLayersHint));
-        processAllKnob->setAnimationEnabled(false);
-        processAllKnob->setIsMetadataSlave(true);
-        page->addKnob(processAllKnob);
-
-        // If the effect wants by default to render all layers set default value
-        if (isOutput && (effect->isPassThroughForNonRenderedLayers() == EffectInstance::ePassThroughRenderAllRequestedLayers)) {
-            processAllKnob->setDefaultValue(true);
-            //Hide all other input selectors if choice is All in output
-            for (std::map<int, ChannelSelector>::iterator it = channelsSelectors.begin(); it != channelsSelectors.end(); ++it) {
-                it->second.layer.lock()->setSecret(true);
-            }
-        }
-        processAllLayersKnob = processAllKnob;
-    }
-
-
-    layer->setDefaultValue(isOutput ? 0 : 1);
-
-    if (!*lastKnobBeforeAdvancedOption) {
-        *lastKnobBeforeAdvancedOption = layer;
-    }
-
-    channelsSelectors[inputNb] = sel;
-} // Node::Implementation::createChannelSelector
 
 int
 Node::getFrameStepKnobValue() const
@@ -5584,13 +5403,7 @@ Node::onEffectKnobValueChanged(KnobI* what,
         ssinfo << "</font>";
         _imp->nodeInfos.lock()->setValue( ssinfo.str() );
     } else if ( what == _imp->openglRenderingEnabledKnob.lock().get() ) {
-         // Do nothing. Knob value will be checked in getCurrentOpenGLRenderSupport() calls.
-    } else if (what == _imp->processAllLayersKnob.lock().get() ) {
-
-        std::map<int, ChannelSelector>::iterator foundOutput = _imp->channelsSelectors.find(-1);
-        if (foundOutput != _imp->channelsSelectors.end()) {
-            _imp->onLayerChanged(foundOutput->first, foundOutput->second);
-        }
+        // Do nothing. Knob value will be checked in getCurrentOpenGLRenderSupport() calls.
     } else {
         ret = false;
     }
@@ -5606,16 +5419,6 @@ Node::onEffectKnobValueChanged(KnobI* what,
         }
     }
 
-    if (!ret) {
-        for (std::map<int, ChannelSelector>::iterator it = _imp->channelsSelectors.begin(); it != _imp->channelsSelectors.end(); ++it) {
-            if (it->second.layer.lock().get() == what) {
-                _imp->onLayerChanged(it->first, it->second);
-                ret = true;
-                break;
-            }
-        }
-    }
-
     if (!ret && (what == _imp->layerKnob.lock().get())) {
         _imp->notifyLayerReferencesChanged();
         if (_imp->rotoContext) {
@@ -5623,19 +5426,6 @@ Node::onEffectKnobValueChanged(KnobI* what,
         }
         s_layerSelectionChanged();
         ret = true;
-    }
-
-    if (!ret) {
-        for (int i = 0; i < 4; ++i) {
-            KnobBoolPtr enabled = _imp->enabledChan[i].lock();
-            if (!enabled) {
-                break;
-            }
-            if (enabled.get() == what) {
-                ret = true;
-                break;
-            }
-        }
     }
 
     if (!ret) {
@@ -5672,36 +5462,9 @@ Node::onOpenGLEnabledKnobChangedOnProject(bool activated)
     }
 }
 
-bool
-Node::getSelectedLayerChoiceRaw(int inputNb,
-                                std::string& layer) const
-{
-    std::map<int, ChannelSelector>::iterator found = _imp->channelsSelectors.find(inputNb);
-
-    if ( found == _imp->channelsSelectors.end() ) {
-        return false;
-    }
-    KnobChoicePtr layerKnob = found->second.layer.lock();
-    layer = layerKnob->getActiveEntry().label;
-
-    return true;
-}
-
 void
 Node::getReferencedLayerIDs(std::set<std::string>* ids) const
 {
-    for (std::map<int, ChannelSelector>::const_iterator it = _imp->channelsSelectors.begin(); it != _imp->channelsSelectors.end(); ++it) {
-        KnobChoicePtr layerKnob = it->second.layer.lock();
-        if (!layerKnob) {
-            continue;
-        }
-        // getLayerOption() sets the option ID to the layer ID verbatim (Node.cpp refreshChannelSelectors()).
-        const std::string& id = layerKnob->getActiveEntry().id;
-        if (!id.empty() && id != "None") {
-            ids->insert(id);
-        }
-    }
-
     for (std::map<int, MaskSelector>::const_iterator it = _imp->maskSelectors.begin(); it != _imp->maskSelectors.end(); ++it) {
         KnobChannelSelectPtr channelKnob = it->second.channel.lock();
         if (channelKnob) {
@@ -5922,148 +5685,6 @@ Node::registerProducedLayers()
     }
 } // Node::registerProducedLayers
 
-ImageLayerDesc
-Node::Implementation::getSelectedLayerInternal(int inputNb,
-                                               const std::list<ImageLayerDesc>& availableLayers,
-                                               const ChannelSelector& selector) const
-{
-    NodePtr node;
-
-    assert(_publicInterface);
-    if (!_publicInterface) {
-        return ImageLayerDesc();
-    }
-    if (inputNb == -1) {
-        node = _publicInterface->shared_from_this();
-    } else {
-        node = _publicInterface->getInput(inputNb);
-    }
-
-    KnobChoicePtr layerKnob = selector.layer.lock();
-    if (!layerKnob) {
-        return ImageLayerDesc();
-    }
-    ChoiceOption layerID = layerKnob->getActiveEntry();
-
-    for (std::list<ImageLayerDesc>::const_iterator it2 = availableLayers.begin(); it2 != availableLayers.end(); ++it2) {
-
-        const std::string& layerName = it2->getLayerID();
-        if (layerID.id == layerName) {
-            return *it2;
-        }
-    }
-    return ImageLayerDesc();
-} // Node::Implementation::getSelectedLayerInternal
-
-void
-Node::Implementation::onLayerChanged(int inputNb,
-                                     const ChannelSelector& selector)
-{
-    KnobChoicePtr layerKnob = selector.layer.lock();
-    bool outputIsAll = processAllLayersKnob.lock()->getValue();
-
-    if (inputNb == -1) {
-
-        ///Disable all input selectors as it doesn't make sense to edit them whilst output is All
-        for (std::map<int, ChannelSelector>::iterator it = channelsSelectors.begin(); it != channelsSelectors.end(); ++it) {
-
-            NodePtr inp;
-            if (it->first >= 0) {
-                inp = _publicInterface->getInput(it->first);
-            }
-            bool mustBeSecret = (it->first >= 0 && !inp.get()) || outputIsAll || this->layerKnob.lock();
-            it->second.layer.lock()->setSecret(mustBeSecret);
-
-        }
-    }
-    if (!isRefreshingInputRelatedData) {
-        ///Clip preferences have changed
-        effect->refreshMetadata_public(true);
-    }
-    if ( !enabledChan[0].lock() ) {
-        return;
-    }
-
-    if (inputNb == -1) {
-        if (outputIsAll) {
-            for (int i = 0; i < 4; ++i) {
-                enabledChan[i].lock()->setSecret(true);
-            }
-        } else {
-            std::list<ImageLayerDesc> availableLayers;
-            effect->getAvailableLayers(_publicInterface->getApp()->getTimeLine()->currentFrame(), ViewIdx(0), inputNb, &availableLayers);
-
-            ImageLayerDesc comp = getSelectedLayerInternal(inputNb, availableLayers, selector);
-            _publicInterface->refreshEnabledKnobsLabel(comp);
-        }
-
-        _publicInterface->s_layerSelectionChanged();
-    }
-    notifyLayerReferencesChanged();
-}
-
-void
-Node::refreshEnabledKnobsLabel(const ImageLayerDesc& comp)
-{
-    const std::vector<std::string>& channels = comp.getChannels();
-    if (!_imp->enabledChan[0].lock() || _imp->layerKnob.lock()) {
-        return;
-    }
-    switch ( channels.size() ) {
-    case 1: {
-        for (int i = 0; i < 3; ++i) {
-            KnobBoolPtr enabled = _imp->enabledChan[i].lock();
-            enabled->setSecret(true);
-        }
-        KnobBoolPtr alpha = _imp->enabledChan[3].lock();
-        alpha->setSecret(false);
-        alpha->setLabel(channels[0]);
-        break;
-    }
-    case 2: {
-        for (int i = 2; i < 4; ++i) {
-            KnobBoolPtr enabled = _imp->enabledChan[i].lock();
-            enabled->setSecret(true);
-        }
-        for (int i = 0; i < 2; ++i) {
-            KnobBoolPtr enabled = _imp->enabledChan[i].lock();
-            enabled->setSecret(false);
-            enabled->setLabel(channels[i]);
-        }
-        break;
-    }
-    case 3: {
-        for (int i = 3; i < 4; ++i) {
-            KnobBoolPtr enabled = _imp->enabledChan[i].lock();
-            enabled->setSecret(true);
-        }
-        for (int i = 0; i < 3; ++i) {
-            KnobBoolPtr enabled = _imp->enabledChan[i].lock();
-            enabled->setSecret(false);
-            enabled->setLabel(channels[i]);
-        }
-        break;
-    }
-    case 4: {
-        for (int i = 0; i < 4; ++i) {
-            KnobBoolPtr enabled = _imp->enabledChan[i].lock();
-            enabled->setSecret(false);
-            enabled->setLabel(channels[i]);
-        }
-        break;
-    }
-
-    case 0:
-    default: {
-        for (int i = 0; i < 4; ++i) {
-            KnobBoolPtr enabled = _imp->enabledChan[i].lock();
-            enabled->setSecret(true);
-        }
-        break;
-    }
-    } // switch
-} // Node::refreshEnabledKnobsLabel
-
 void
 Node::Implementation::onMaskSelectorChanged(int inputNb,
                                             const MaskSelector& selector)
@@ -6106,88 +5727,9 @@ Node::Implementation::notifyLayerReferencesChanged()
 }
 
 bool
-Node::isPluginUsingHostChannelSelectors() const
-{
-    return _imp->hostChannelSelectorEnabled;
-}
-
-bool
 Node::pluginOwnsChannelMask() const
 {
     return _imp->pluginOwnsChannelMask;
-}
-
-bool
-Node::getProcessChannel(int channelIndex) const
-{
-    if (!isPluginUsingHostChannelSelectors()) {
-        return true;
-    }
-    assert(channelIndex >= 0 && channelIndex < 4);
-    KnobBoolPtr k = _imp->enabledChan[channelIndex].lock();
-    if (k) {
-        return k->getValue();
-    }
-
-    return true;
-}
-
-bool
-Node::getSelectedLayer(int inputNb,
-                       const std::list<ImageLayerDesc>& availableLayers,
-                       std::bitset<4>* processChannels,
-                       bool* isAll,
-                       ImageLayerDesc* layer) const
-{
-    // If there's a mask channel selector, fetch the mask layer
-    int chanIndex = getMaskChannel(inputNb, availableLayers, layer);
-    if (chanIndex != -1) {
-        *isAll = false;
-        Q_UNUSED(chanIndex);
-        if (processChannels) {
-            (*processChannels)[0] = true;
-            (*processChannels)[1] = true;
-            (*processChannels)[2] = true;
-            (*processChannels)[3] = true;
-        }
-
-        return true;
-    }
-
-
-    std::map<int, ChannelSelector>::const_iterator foundSelector = _imp->channelsSelectors.find(inputNb);
-
-    if ( foundSelector == _imp->channelsSelectors.end() ) {
-        // Fetch in input what the user has set for the output
-        foundSelector = _imp->channelsSelectors.find(-1);
-    }
-
-
-    // Check if the checkbox "All layers" is checked or not
-    KnobBoolPtr processAllKnob = _imp->processAllLayersKnob.lock();
-    *isAll = false;
-    if (processAllKnob) {
-        *isAll = processAllKnob->getValue();
-    }
-
-    if (!*isAll && foundSelector != _imp->channelsSelectors.end()) {
-        *layer = _imp->getSelectedLayerInternal(inputNb, availableLayers, foundSelector->second);
-    }
-
-    if (processChannels) {
-        if (_imp->hostChannelSelectorEnabled &&  _imp->enabledChan[0].lock() ) {
-            (*processChannels)[0] = _imp->enabledChan[0].lock()->getValue();
-            (*processChannels)[1] = _imp->enabledChan[1].lock()->getValue();
-            (*processChannels)[2] = _imp->enabledChan[2].lock()->getValue();
-            (*processChannels)[3] = _imp->enabledChan[3].lock()->getValue();
-        } else {
-            (*processChannels)[0] = true;
-            (*processChannels)[1] = true;
-            (*processChannels)[2] = true;
-            (*processChannels)[3] = true;
-        }
-    }
-    return foundSelector != _imp->channelsSelectors.end();
 }
 
 bool
@@ -6195,33 +5737,16 @@ Node::hasAtLeastOneChannelToProcess(double time,
                                     ViewIdx view) const
 {
     std::vector<ResolvedLayer> selected;
-    if (resolveLayerKnob(time, view, &selected)) {
-        for (std::vector<ResolvedLayer>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
-            if (it->channels.any()) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    std::map<int, ChannelSelector>::const_iterator foundSelector = _imp->channelsSelectors.find(-1);
-
-    if ( foundSelector == _imp->channelsSelectors.end() ) {
+    if (!resolveLayerKnob(time, view, &selected)) {
         return true;
     }
-    if ( _imp->enabledChan[0].lock() ) {
-        std::bitset<4> processChannels;
-        processChannels[0] = _imp->enabledChan[0].lock()->getValue();
-        processChannels[1] = _imp->enabledChan[1].lock()->getValue();
-        processChannels[2] = _imp->enabledChan[2].lock()->getValue();
-        processChannels[3] = _imp->enabledChan[3].lock()->getValue();
-        if (!processChannels[0] && !processChannels[1] && !processChannels[2] && !processChannels[3]) {
-            return false;
+    for (std::vector<ResolvedLayer>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        if (it->channels.any()) {
+            return true;
         }
     }
 
-    return true;
+    return false;
 }
 
 void
@@ -6851,37 +6376,6 @@ Node::shouldCacheOutput(bool isFrameVaryingOrAnimated,
 } // Node::shouldCacheOutput
 
 bool
-Node::refreshLayersChoiceSecretness(int inputNb)
-{
-    std::map<int, ChannelSelector>::iterator foundChan = _imp->channelsSelectors.find(inputNb);
-    NodePtr inp = getInputInternal(false /*useGuiInput*/, false /*useGroupRedirections*/, inputNb);
-
-    if ( foundChan != _imp->channelsSelectors.end() ) {
-        std::map<int, ChannelSelector>::iterator foundOuptut = _imp->channelsSelectors.find(-1);
-        bool outputIsAll = false;
-        if ( foundOuptut != _imp->channelsSelectors.end() ) {
-            KnobChoicePtr outputChoice = foundOuptut->second.layer.lock();
-            if (outputChoice) {
-                outputIsAll = _imp->processAllLayersKnob.lock()->getValue();
-            }
-        }
-        KnobChoicePtr chanChoice = foundChan->second.layer.lock();
-        if (chanChoice) {
-            bool isSecret = chanChoice->getIsSecret();
-            bool mustBeSecret = !inp.get() || outputIsAll || _imp->layerKnob.lock();
-            bool changed = isSecret != mustBeSecret;
-            if (changed) {
-                chanChoice->setSecret(mustBeSecret);
-
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-bool
 Node::refreshMaskEnabledNess(int inputNb)
 {
     std::map<int, MaskSelector>::iterator found = _imp->maskSelectors.find(inputNb);
@@ -6971,7 +6465,7 @@ Node::refreshAllInputRelatedData(bool /*canChangeValues*/,
         hasChanged |= _imp->effect->refreshMetadata_public(false);
     }
 
-    hasChanged |= refreshChannelSelectors();
+    refreshChannelSelectors();
 
     registerProducedLayers();
     _imp->notifyLayerReferencesChanged();
@@ -7319,7 +6813,6 @@ Node::attachRotoItem(const RotoDrawableItemPtr& stroke)
     assert( QThread::currentThread() == qApp->thread() );
     _imp->paintStroke = stroke;
     _imp->useAlpha0ToConvertFromRGBToRGBA = true;
-    setProcessChannelsValues(true, true, true, true);
 }
 
 void
@@ -7878,34 +7371,6 @@ Node::Implementation::runInputChangedCallback(int index,
     }
 } // Node::Implementation::runInputChangedCallback
 
-KnobChoicePtr
-Node::getChannelSelectorKnob(int inputNb) const
-{
-    std::map<int, ChannelSelector>::const_iterator found = _imp->channelsSelectors.find(inputNb);
-
-    if ( found == _imp->channelsSelectors.end() ) {
-        if (inputNb == -1) {
-            ///The effect might be multi-planar and supply its own
-            KnobIPtr knob = getKnobByName(kNatronOfxParamOutputChannels);
-            if (!knob) {
-                return KnobChoicePtr();
-            }
-
-            return std::dynamic_pointer_cast<KnobChoice>(knob);
-        }
-
-        return KnobChoicePtr();
-    }
-
-    return found->second.layer.lock();
-}
-
-KnobBoolPtr
-Node::getProcessAllLayersKnob() const
-{
-    return _imp->processAllLayersKnob.lock();
-}
-
 int
 Node::getMaskChannel(int inputNb, const std::list<ImageLayerDesc>& availableLayers, ImageLayerDesc* comps) const
 {
@@ -7930,54 +7395,16 @@ Node::getMaskChannel(int inputNb, const std::list<ImageLayerDesc>& availableLaye
     return channelIndex;
 }
 
-bool
+void
 Node::refreshChannelSelectors()
 {
     if ( !isNodeCreated() ) {
-        return false;
+        return;
     }
 
-    double time = getApp()->getTimeLine()->currentFrame();
-    // Refresh each layer selector (input and output)
-    bool hasChanged = false;
-    for (std::map<int, ChannelSelector>::iterator it = _imp->channelsSelectors.begin(); it != _imp->channelsSelectors.end(); ++it) {
-
-        int inputNb = it->first;
-
-
-        // The Output Layer menu has a All choice, input layers menus have a None choice.
-        std::vector<ChoiceOption> choices;
-        if (inputNb >= 0) {
-            choices.push_back(ChoiceOption("None", "", ""));
-        }
-
-        std::list<ImageLayerDesc> availableComponents;
-        _imp->effect->getAvailableLayers(time, ViewIdx(0), inputNb,  &availableComponents);
-
-        for (std::list<ImageLayerDesc>::const_iterator it2 = availableComponents.begin(); it2 != availableComponents.end(); ++it2) {
-            ChoiceOption layerOption = it2->getLayerOption();
-            choices.push_back(layerOption);
-        }
-
-        {
-            KnobChoicePtr layerKnob = it->second.layer.lock();
-
-            bool menuChanged = layerKnob->populateChoices(choices);
-            if (menuChanged) {
-                hasChanged = true;
-                if (inputNb == -1) {
-                    s_layerSelectionChanged();
-                }
-            }
-        }
-    }  // for each layer selector
-
-    // Mask channel selects list their input's layers at display time; nothing to repopulate.
     _imp->effect->onChannelsSelectorRefreshed();
     Q_EMIT layerListRefreshed();
-
-    return hasChanged;
-} // Node::refreshChannelSelectors()
+}
 
 double
 Node::getHostMixingValue(double time,

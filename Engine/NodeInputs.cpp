@@ -336,11 +336,6 @@ Node::setInputLabel(int inputNb, const std::string& label)
         foundMask->second.channel.lock()->setLabel(label);
     }
 
-    std::map<int, ChannelSelector>::iterator foundChannel = _imp->channelsSelectors.find(inputNb);
-    if (foundChannel != _imp->channelsSelectors.end()) {
-        foundChannel->second.layer.lock()->setLabel(label + std::string(" Layer"));
-    }
-
     Q_EMIT inputEdgeLabelChanged(inputNb, QString::fromUtf8(label.c_str()));
 }
 
@@ -1622,7 +1617,6 @@ Node::onInputChanged(int inputNb,
     }
 
     refreshMaskEnabledNess(inputNb);
-    refreshLayersChoiceSecretness(inputNb);
 
     InspectorNode* isInspector = dynamic_cast<InspectorNode*>(this);
     if (isInspector) {

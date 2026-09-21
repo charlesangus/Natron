@@ -166,10 +166,10 @@ renderAndRead(const AppInstancePtr& app,
 class WriteAllLayersTest
     : public BaseTest {
 protected:
-    void createFixtureWriter()
+    void createFixtureWriter(const std::string& fixtureFile = std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"))
     {
         CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, fixtureFile);
         NodePtr reader = getApp()->createNode(readerArgs);
         ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
 
@@ -454,6 +454,43 @@ TEST_F(WriteAllLayersTest, EncoderChannelQuadIsAdoptedAndStaysHidden)
         EXPECT_TRUE(channels[i]->getIsSecret()) << quad[i];
     }
 } // TEST_F(WriteAllLayersTest, EncoderChannelQuadIsAdoptedAndStaysHidden)
+
+// A source file with no R/G/B/A layer keeps ReadOIIO's default: its first layer ("diffuse") is
+// duplicated into Color as well as staying present under its own name, each with its own pixels
+// -- Color is not an alias, "All Layers" writes both.
+TEST_F(WriteAllLayersTest, WriteAllLayersFromNoColorSourceDuplicatesFirstLayerIntoColor)
+{
+    createFixtureWriter(std::string(NATRON_TESTS_FIXTURES_DIR "/flat-no-color-layers.exr"));
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    _channels->setAll();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string path = (tmp.path() + QLatin1String("/no_color_source.exr")).toStdString();
+    _writer->setOutputFilesForWriter(path);
+
+    AppInstancePtr app = getApp();
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAndRead(app, _writer, path, &image, &error)) << error;
+
+    static const std::set<std::string> expected = { "R", "G", "B", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" };
+    EXPECT_EQ(expected, channelSet(image));
+
+    // Color duplicates the first layer's (diffuse) values.
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "R"), 1e-4f);
+    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "G"), 1e-4f);
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "B"), 1e-4f);
+    expectDiffusePixels(image);
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "specular.R"), 1e-4f);
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "specular.G"), 1e-4f);
+    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "specular.B"), 1e-4f);
+
+    QFile::remove(QString::fromStdString(path));
+} // TEST_F(WriteAllLayersTest, WriteAllLayersFromNoColorSourceDuplicatesFirstLayerIntoColor)
 
 // getPresentLayers() reports only what the stream actually carries (produced union pass-through);
 // getAvailableLayers() adds every layer registered at the project level (built-ins included) on

@@ -27,6 +27,7 @@
 
 #include <list>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,7 @@
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
+#include "Engine/ReadNode.h"
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
@@ -534,3 +536,99 @@ TEST_F(BaseTest, PresentLayersFollowInputMetadataChange)
 
     project->reset(false, true);
 } // TEST_F(BaseTest, PresentLayersFollowInputMetadataChange)
+
+// Read has no layer knob of its own (ReadNode::getLayerKnobSpec() == eNone): the embedded
+// decoder's own plane controls -- outputComponents (the Color-follows-the-file guess, left alone)
+// and outputLayer/outputLayerChoice (the Read-side implicit shuffle) -- are hidden by name and
+// locked, and outputLayer is pinned to the file's Color entry.
+TEST_F(BaseTest, ReadEmbeddedDecoderPlaneKnobsHiddenAndPinnedToColor)
+{
+    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+    NodePtr reader = getApp()->createNode(readerArgs);
+    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+    ReadNode* readNode = dynamic_cast<ReadNode*>(reader->getEffectInstance().get());
+    ASSERT_TRUE(readNode != NULL);
+    NodePtr decoder = readNode->getEmbeddedReader();
+    ASSERT_TRUE(bool(decoder));
+
+    static const char* const hiddenNames[] = { "outputComponents", "outputLayer", "outputLayerChoice" };
+    for (std::size_t i = 0; i < 3; ++i) {
+        KnobIPtr knob = decoder->getKnobByName(hiddenNames[i]);
+        ASSERT_TRUE(bool(knob)) << hiddenNames[i];
+        EXPECT_TRUE(knob->getIsSecret()) << hiddenNames[i];
+        EXPECT_TRUE(knob->isSecretLocked()) << hiddenNames[i];
+    }
+
+    KnobChoice* outputLayer = dynamic_cast<KnobChoice*>(decoder->getKnobByName("outputLayer").get());
+    ASSERT_TRUE(outputLayer != NULL);
+    EXPECT_EQ(0, outputLayer->getActiveEntry().id.compare(0, 6, "Color."));
+} // TEST_F(BaseTest, ReadEmbeddedDecoderPlaneKnobsHiddenAndPinnedToColor)
+
+// A file with an R/G/B/A layer plus named layers reports Color at the file's own RGBA channel
+// count alongside every named layer.
+TEST_F(BaseTest, ReadPresentLayersReportsColorRgbaPlusNamedLayers)
+{
+    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+    NodePtr reader = getApp()->createNode(readerArgs);
+    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+    std::list<ImageLayerDesc> present;
+    reader->getEffectInstance()->getPresentLayers(0, ViewIdx(0), -1, &present);
+
+    static const std::set<std::string> expected = { kNatronColorLayerID, "diffuse", "specular" };
+    std::set<std::string> ids;
+    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+        ids.insert(it->getLayerID());
+        if (it->isColorLayer()) {
+            EXPECT_EQ(4, it->getNumComponents());
+        } else {
+            EXPECT_EQ(3, it->getNumComponents());
+        }
+    }
+    EXPECT_EQ(expected, ids);
+} // TEST_F(BaseTest, ReadPresentLayersReportsColorRgbaPlusNamedLayers)
+
+// A plain RGBA file with no named layers reports Color only.
+TEST_F(BaseTest, ReadPresentLayersRgbaOnlyFileReportsColorOnly)
+{
+    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr"));
+    NodePtr reader = getApp()->createNode(readerArgs);
+    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+    std::list<ImageLayerDesc> present;
+    reader->getEffectInstance()->getPresentLayers(0, ViewIdx(0), -1, &present);
+
+    ASSERT_EQ(std::size_t(1), present.size());
+    EXPECT_EQ(std::string(kNatronColorLayerID), present.front().getLayerID());
+    EXPECT_EQ(4, present.front().getNumComponents());
+} // TEST_F(BaseTest, ReadPresentLayersRgbaOnlyFileReportsColorOnly)
+
+// A file with no R/G/B/A layer at all keeps OIIO's default: the first layer in the file
+// (here "diffuse") is duplicated into Color, and stays present as its own plane too.
+TEST_F(BaseTest, ReadPresentLayersNoColorFileDuplicatesFirstLayerIntoColor)
+{
+    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-no-color-layers.exr"));
+    NodePtr reader = getApp()->createNode(readerArgs);
+    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+    std::list<ImageLayerDesc> present;
+    reader->getEffectInstance()->getPresentLayers(0, ViewIdx(0), -1, &present);
+
+    static const std::set<std::string> expected = { kNatronColorLayerID, "diffuse", "specular" };
+    std::set<std::string> ids;
+    bool foundColor = false;
+    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+        ids.insert(it->getLayerID());
+        if (it->isColorLayer()) {
+            foundColor = true;
+            EXPECT_EQ(3, it->getNumComponents());
+        }
+    }
+    EXPECT_TRUE(foundColor);
+    EXPECT_EQ(expected, ids);
+} // TEST_F(BaseTest, ReadPresentLayersNoColorFileDuplicatesFirstLayerIntoColor)

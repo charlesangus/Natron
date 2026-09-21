@@ -216,8 +216,8 @@ protected:
         KnobChoice* partSplitting = dynamic_cast<KnobChoice*>(writer->getKnobByName("partSplitting").get());
         KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(writer->getKnobByName("bitDepth").get());
         KnobChoice* compression = dynamic_cast<KnobChoice*>(writer->getKnobByName("compression").get());
-        KnobBool* processAllLayers = dynamic_cast<KnobBool*>(writer->getKnobByName("processAllLayers").get());
-        if (!partSplitting || !bitDepth || !compression || !processAllLayers) {
+        KnobChannelSet* writerChannels = dynamic_cast<KnobChannelSet*>(writer->getKnobByName(kNodeParamChannelSet).get());
+        if (!partSplitting || !bitDepth || !compression || !writerChannels) {
             *error = "writer knobs missing";
 
             return false;
@@ -225,7 +225,7 @@ protected:
         partSplitting->setValueFromID("single", 0);
         bitDepth->setValueFromID("32f", 0);
         compression->setValueFromID("none", 0);
-        processAllLayers->setValue(true);
+        writerChannels->setAll();
 
         const std::string path = (tmp.path() + QLatin1String("/out.exr")).toStdString();
         writer->setOutputFilesForWriter(path);

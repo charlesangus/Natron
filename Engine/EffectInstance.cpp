@@ -4513,6 +4513,14 @@ EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::li
 
     mergeLayersList(passThroughLayers, presentLayers);
 
+    if (inputNb >= 0) {
+        NodePtr node = getNode();
+        NodePtr ioContainer = node ? node->getIOContainer() : NodePtr();
+        if (ioContainer) {
+            ioContainer->getEffectInstance()->filterLayersForEmbeddedInput(inputNb, presentLayers);
+        }
+    }
+
 } // getPresentLayers
 
 void

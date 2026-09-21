@@ -576,6 +576,16 @@ public:
     virtual LayerKnobSpec getLayerKnobSpec() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief Called on a Read/Write container's effect whenever its embedded node lists the
+     * layers present on one of its inputs (getPresentLayers() with inputNb >= 0). The container
+     * may narrow the list to what the user selected on it; the default keeps it whole.
+     **/
+    virtual void filterLayersForEmbeddedInput(int /*inputNb*/,
+                                              std::list<ImageLayerDesc>* /*layers*/)
+    {
+    }
+
+    /**
      * @brief Returns the index of the channel to use to produce the mask and the components.
      * None = -1
      * R = 0

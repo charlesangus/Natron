@@ -90,6 +90,7 @@ public:
     virtual bool isGenerator() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isOutput() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void filterLayersForEmbeddedInput(int inputNb, std::list<ImageLayerDesc>* layers) OVERRIDE FINAL;
     virtual bool isHostChannelSelectorSupported(bool* defaultR, bool* defaultG, bool* defaultB, bool* defaultA) const OVERRIDE WARN_UNUSED_RETURN;
     virtual int getMajorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual int getMinorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -113,12 +114,14 @@ public Q_SLOTS:
 
     void onSequenceRenderStarted();
     void onSequenceRenderFinished();
+    void onLayerSelectionChanged();
 
 private:
 
     virtual void getFrameRange(double *first, double *last) OVERRIDE FINAL;
     virtual void initializeKnobs() OVERRIDE FINAL;
     virtual void onKnobsAboutToBeLoaded(const NodeSerializationPtr& serialization) OVERRIDE FINAL;
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec view,

@@ -55,11 +55,12 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
-#include "Engine/Node.h"
-#include "Engine/KnobTypes.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/KnobSerialization.h" // createDefaultValueForParam
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/NodeSerialization.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
@@ -91,6 +92,10 @@ NATRON_NAMESPACE_ENTER
 #define kNatronOfxParamProcessA      "NatronOfxParamProcessA"
 #define kParamOutputSpaceSet "ocioOutputSpaceSet"
 #define kParamExistingInstance "ParamExistingInstance"
+#define kParamOutputComponents "outputComponents"
+#define kParamProcessAllLayers "processAllLayers"
+#define kParamOutputChannels kNatronOfxParamOutputChannels
+#define kNatronWriteNodeParamEncoderHiddenGroup "encoderHiddenParams"
 
 //Generic OCIO
 #define kOCIOParamConfigFile "ocioConfigFile"
@@ -204,6 +209,7 @@ public:
     KnobChoiceWPtr pluginSelectorKnob;
     KnobStringWPtr pluginIDStringKnob;
     KnobSeparatorWPtr separatorKnob;
+    KnobGroupWPtr encoderHiddenGroupKnob;
     KnobButtonWPtr renderButtonKnob;
     std::list<KnobIWPtr> writeNodeKnobs;
 
@@ -214,23 +220,23 @@ public:
     // If this is different, we do not load serialized knobs
     std::string lastPluginIDCreated;
 
-
     WriteNodePrivate(WriteNode* publicInterface)
-    : _publicInterface(publicInterface)
-    , embeddedPlugin()
-    , readBackNode()
-    , inputNode()
-    , outputNode()
-    , genericKnobsSerialization()
-    , outputFileKnob()
-    , frameIncrKnob()
-    , pluginSelectorKnob()
-    , pluginIDStringKnob()
-    , separatorKnob()
-    , renderButtonKnob()
-    , writeNodeKnobs()
-    , creatingWriteNode(0)
-    , lastPluginIDCreated()
+        : _publicInterface(publicInterface)
+        , embeddedPlugin()
+        , readBackNode()
+        , inputNode()
+        , outputNode()
+        , genericKnobsSerialization()
+        , outputFileKnob()
+        , frameIncrKnob()
+        , pluginSelectorKnob()
+        , pluginIDStringKnob()
+        , separatorKnob()
+        , encoderHiddenGroupKnob()
+        , renderButtonKnob()
+        , writeNodeKnobs()
+        , creatingWriteNode(0)
+        , lastPluginIDCreated()
     {
     }
 
@@ -241,6 +247,10 @@ public:
     void createWriteNode(bool throwErrors, const std::string& filename, const NodeSerializationPtr& serialization);
 
     void destroyWriteNode();
+
+    void takeOverEncoderPlaneParams();
+
+    void refreshOutputComponentsFromChannelSet();
 
     void cloneGenericKnobs();
 
@@ -526,6 +536,90 @@ WriteNodePrivate::destroyWriteNode()
     }
     readBackNode.reset();
 } // WriteNodePrivate::destroyWriteNode
+
+void
+WriteNodePrivate::takeOverEncoderPlaneParams()
+{
+    NodePtr writeNode = embeddedPlugin.lock();
+    if (!writeNode) {
+        return;
+    }
+
+    // The encoder enumerates the planes present on its input when "All Layers" is on, and the
+    // host narrows that list to the container's channel set (filterLayersForEmbeddedInput), so
+    // the plugin's own plane selection is neither needed nor shown.
+    KnobBoolPtr processAllLayers = std::dynamic_pointer_cast<KnobBool>(writeNode->getKnobByName(kParamProcessAllLayers));
+    if (processAllLayers) {
+        processAllLayers->setIsPersistent(false);
+        processAllLayers->setSecret(true);
+        if (!processAllLayers->getValue()) {
+            processAllLayers->setValue(true);
+        }
+    }
+    KnobIPtr outputChannels = writeNode->getKnobByName(kParamOutputChannels);
+    if (outputChannels) {
+        outputChannels->setSecret(true);
+    }
+
+    // outputComponents is kept out of the panel but not made secret: GenericWriter only applies
+    // it to its clip preferences while it is not secret, and that is the only thing that pins
+    // the encoder's Color plane at the RGBA/RGB/Alpha superset the channel set drives it to.
+    KnobIPtr outputComponents = writeNode->getKnobByName(kParamOutputComponents);
+    KnobGroupPtr hiddenGroup = encoderHiddenGroupKnob.lock();
+    if (outputComponents && hiddenGroup) {
+        hiddenGroup->addKnob(outputComponents);
+    }
+} // WriteNodePrivate::takeOverEncoderPlaneParams
+
+void
+WriteNodePrivate::refreshOutputComponentsFromChannelSet()
+{
+    NodePtr writeNode = embeddedPlugin.lock();
+    if (!writeNode) {
+        return;
+    }
+    KnobChoicePtr outputComponents = std::dynamic_pointer_cast<KnobChoice>(writeNode->getKnobByName(kParamOutputComponents));
+    if (!outputComponents) {
+        return;
+    }
+
+    std::vector<ResolvedLayer> selected;
+    if (!_publicInterface->getNode()->resolveLayerKnob(_publicInterface->getCurrentTime(), ViewIdx(0), &selected)) {
+        return;
+    }
+    std::bitset<4> colorChannels;
+    for (std::vector<ResolvedLayer>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        if (it->desc.isColorLayer()) {
+            colorChannels = it->channels;
+            break;
+        }
+    }
+    if (colorChannels.none()) {
+        return;
+    }
+
+    std::vector<std::string> candidates;
+    if (colorChannels.count() == 1 && colorChannels[3]) {
+        candidates.push_back("Alpha");
+    } else if (!colorChannels[3]) {
+        candidates.push_back("RGB");
+    }
+    candidates.push_back("RGBA");
+
+    std::vector<ChoiceOption> entries = outputComponents->getEntries_mt_safe();
+    for (std::vector<std::string>::const_iterator candidate = candidates.begin(); candidate != candidates.end(); ++candidate) {
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            if (entries[i].id != *candidate) {
+                continue;
+            }
+            if (outputComponents->getValue() != (int)i) {
+                outputComponents->setValue((int)i);
+            }
+
+            return;
+        }
+    }
+} // WriteNodePrivate::refreshOutputComponentsFromChannelSet
 
 void
 WriteNodePrivate::createDefaultWriteNode()
@@ -825,6 +919,8 @@ WriteNodePrivate::createWriteNode(bool throwErrors,
             if (fileKnob) {
                 fileKnob->setValue(filename);
             }
+            takeOverEncoderPlaneParams();
+            refreshOutputComponentsFromChannelSet();
         }
 
         placeWriteNodeKnobsInPage();
@@ -969,7 +1065,32 @@ WriteNode::isOutput() const
 LayerKnobSpec
 WriteNode::getLayerKnobSpec() const
 {
-    return LayerKnobSpec();
+    return LayerKnobSpec(LayerKnobSpec::eKindChannelSet, LayerKnobSpec::eRoleInputBound, true);
+}
+
+void
+WriteNode::filterLayersForEmbeddedInput(int inputNb,
+                                        std::list<ImageLayerDesc>* layers)
+{
+    if (inputNb < 0) {
+        return;
+    }
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(getNode()->getLayerKnob());
+    if (!channels) {
+        return;
+    }
+
+    std::vector<ResolvedLayer> selected = channels->resolve(*layers);
+    std::list<ImageLayerDesc> kept;
+    for (std::list<ImageLayerDesc>::const_iterator it = layers->begin(); it != layers->end(); ++it) {
+        for (std::vector<ResolvedLayer>::const_iterator sel = selected.begin(); sel != selected.end(); ++sel) {
+            if (sel->desc.getLayerID() == it->getLayerID()) {
+                kept.push_back(*it);
+                break;
+            }
+        }
+    }
+    *layers = kept;
 }
 
 bool
@@ -1078,6 +1199,14 @@ WriteNode::initializeKnobs()
     controlpage->addKnob(pluginID);
     _imp->pluginIDStringKnob = pluginID;
     _imp->writeNodeKnobs.push_back(pluginID);
+
+    KnobGroupPtr encoderHiddenGroup = AppManager::createKnob<KnobGroup>(this, tr("Encoder Plane Parameters"));
+    encoderHiddenGroup->setName(kNatronWriteNodeParamEncoderHiddenGroup);
+    encoderHiddenGroup->setSecretByDefault(true);
+    encoderHiddenGroup->setIsPersistent(false);
+    controlpage->addKnob(encoderHiddenGroup);
+    _imp->encoderHiddenGroupKnob = encoderHiddenGroup;
+    _imp->writeNodeKnobs.push_back(encoderHiddenGroup);
 } // WriteNode::initializeKnobs
 
 void
@@ -1088,6 +1217,7 @@ WriteNode::onEffectCreated(bool mayCreateFileDialog,
     RenderEnginePtr engine = getRenderEngine();
     assert(engine);
     QObject::connect(engine.get(), SIGNAL(renderFinished(int)), this, SLOT(onSequenceRenderFinished()));
+    QObject::connect(getNode().get(), SIGNAL(layerSelectionChanged()), this, SLOT(onLayerSelectionChanged()));
 
     if ( !_imp->renderButtonKnob.lock() ) {
         _imp->renderButtonKnob = std::dynamic_pointer_cast<KnobButton>( getKnobByName(kNatronWriteParamStartRender) );
@@ -1150,6 +1280,15 @@ WriteNode::onKnobsAboutToBeLoaded(const NodeSerializationPtr& serialization)
     //Create the Reader with the serialization
     _imp->createWriteNode(false, filename, serialization);
     _imp->refreshPluginSelectorKnob();
+}
+
+void
+WriteNode::onKnobsLoaded()
+{
+    // Node::loadKnob() restores a serialized value even on a non-persistent knob, so a project
+    // that carries the encoder's own plane selection would undo what createWriteNode() forced.
+    _imp->takeOverEncoderPlaneParams();
+    _imp->refreshOutputComponentsFromChannelSet();
 }
 
 bool
@@ -1311,6 +1450,12 @@ WriteNode::onSequenceRenderStarted()
         outputNode->replaceInput(_imp->inputNode.lock(), 0);
     }
 
+}
+
+void
+WriteNode::onLayerSelectionChanged()
+{
+    _imp->refreshOutputComponentsFromChannelSet();
 }
 
 void

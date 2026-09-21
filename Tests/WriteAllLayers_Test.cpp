@@ -41,10 +41,12 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
+#include "Engine/WriteNode.h"
 
 #include <ofxImageEffect.h>
 
@@ -75,11 +77,39 @@ layerIDSet(const std::list<ImageLayerDesc>& layers)
 }
 
 void
+expectColorPixels(const FlatExrImage& image)
+{
+    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "R"), 1e-4f);
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "G"), 1e-4f);
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "B"), 1e-4f);
+    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "A"), 1e-4f);
+}
+
+void
+expectDiffusePixels(const FlatExrImage& image)
+{
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "diffuse.R"), 1e-4f);
+    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "diffuse.G"), 1e-4f);
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "diffuse.B"), 1e-4f);
+}
+
+void
 expectRgbaOnly(const FlatExrImage& image)
 {
     static const std::set<std::string> expected = { "R", "G", "B", "A" };
 
     EXPECT_EQ(expected, channelSet(image));
+    expectColorPixels(image);
+}
+
+void
+expectColorAndDiffusePixels(const FlatExrImage& image)
+{
+    static const std::set<std::string> expected = { "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B" };
+
+    EXPECT_EQ(expected, channelSet(image));
+    expectColorPixels(image);
+    expectDiffusePixels(image);
 }
 
 void
@@ -90,15 +120,8 @@ expectAllLayerPixels(const FlatExrImage& image)
     };
 
     EXPECT_EQ(expected, channelSet(image));
-
-    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "R"), 1e-4f);
-    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "G"), 1e-4f);
-    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "B"), 1e-4f);
-    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "A"), 1e-4f);
-
-    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "diffuse.R"), 1e-4f);
-    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "diffuse.G"), 1e-4f);
-    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "diffuse.B"), 1e-4f);
+    expectColorPixels(image);
+    expectDiffusePixels(image);
 
     EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "specular.R"), 1e-4f);
     EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "specular.G"), 1e-4f);
@@ -137,46 +160,66 @@ renderAndRead(const AppInstancePtr& app,
 
 } // namespace
 
-// A Write node is a WriteNode container wrapping an embedded encoder (here, WriteOIIO). Toggling
-// "All Layers" on the container after a first render must reach the embedded encoder's hash, so
-// that its cached components-needed plane set is invalidated and the second render fetches (and
-// writes) every layer, not just the color plane it cached the first time around.
-TEST_F(BaseTest, WriteAllLayersToggleAfterRenderWritesEveryLayer)
+// A Write container over WriteOIIO fed by the three-layer fixture, set up to write a
+// single-part, uncompressed 32-bit float EXR. The container's channel set is the only knob a
+// test changes between renders, so nothing else can bump the container's knobsAge in between.
+class WriteAllLayersTest
+    : public BaseTest {
+protected:
+    void createFixtureWriter()
+    {
+        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+        NodePtr reader = getApp()->createNode(readerArgs);
+        ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+        _writer = createNode(_writeOIIOPluginID);
+        ASSERT_TRUE(bool(_writer));
+
+        connectNodes(reader, _writer, 0, true);
+
+        KnobChoice* partSplitting = dynamic_cast<KnobChoice*>(_writer->getKnobByName("partSplitting").get());
+        ASSERT_TRUE(partSplitting != NULL);
+        partSplitting->setValueFromID("single", 0);
+
+        KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(_writer->getKnobByName("bitDepth").get());
+        ASSERT_TRUE(bitDepth != NULL);
+        bitDepth->setValueFromID("32f", 0);
+
+        KnobChoice* compression = dynamic_cast<KnobChoice*>(_writer->getKnobByName("compression").get());
+        ASSERT_TRUE(compression != NULL);
+        compression->setValueFromID("none", 0);
+
+        _channels = dynamic_cast<KnobChannelSet*>(_writer->getKnobByName(kNodeParamChannelSet).get());
+        ASSERT_TRUE(_channels != NULL) << "the Write container has no channel set knob";
+    }
+
+    NodePtr getEmbeddedEncoder() const
+    {
+        WriteNode* container = dynamic_cast<WriteNode*>(_writer->getEffectInstance().get());
+
+        return container ? container->getEmbeddedWriter() : NodePtr();
+    }
+
+    NodePtr _writer;
+    KnobChannelSet* _channels = NULL;
+};
+
+// Switching the container's channel set after a first render must reach the embedded encoder's
+// hash, so that its cached components-needed plane set is invalidated and the next render
+// fetches (and writes) the newly selected layers, not the plane set it cached the first time.
+TEST_F(WriteAllLayersTest, WriteAllLayersToggleAfterRenderWritesEveryLayer)
 {
-    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
-    NodePtr reader = getApp()->createNode(readerArgs);
-    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
-
-    NodePtr writer = createNode(_writeOIIOPluginID);
-    ASSERT_TRUE(bool(writer));
-
-    connectNodes(reader, writer, 0, true);
-
-    KnobChoice* partSplitting = dynamic_cast<KnobChoice*>(writer->getKnobByName("partSplitting").get());
-    ASSERT_TRUE(partSplitting != NULL);
-    partSplitting->setValueFromID("single", 0);
-
-    KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(writer->getKnobByName("bitDepth").get());
-    ASSERT_TRUE(bitDepth != NULL);
-    bitDepth->setValueFromID("32f", 0);
-
-    KnobChoice* compression = dynamic_cast<KnobChoice*>(writer->getKnobByName("compression").get());
-    ASSERT_TRUE(compression != NULL);
-    compression->setValueFromID("none", 0);
-
-    KnobBool* processAllLayers = dynamic_cast<KnobBool*>(writer->getKnobByName(kNodeParamProcessAllLayers).get());
-    ASSERT_TRUE(processAllLayers != NULL);
-    ASSERT_FALSE(processAllLayers->getValue()) << "All Layers must start unchecked for this test to exercise the toggle";
+    createFixtureWriter();
+    if (HasFatalFailure()) {
+        return;
+    }
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
 
-    // A single fixed output path for all three renders: the only knob that changes between them
-    // is processAllLayers, so the container's knobsAge cannot be bumped by anything else (such as
-    // a changed output filename) between checks.
     const std::string path = (tmp.path() + QLatin1String("/out.exr")).toStdString();
-    writer->setOutputFilesForWriter(path);
+    _writer->setOutputFilesForWriter(path);
 
     AppInstancePtr app = getApp();
 
@@ -185,77 +228,136 @@ TEST_F(BaseTest, WriteAllLayersToggleAfterRenderWritesEveryLayer)
 
         FlatExrImage image;
         std::string error;
-        ASSERT_TRUE(renderAndRead(app, writer, path, &image, &error)) << error;
+        ASSERT_TRUE(renderAndRead(app, _writer, path, &image, &error)) << error;
         expectRgbaOnly(image);
     }
 
     {
-        processAllLayers->setValue(true);
+        _channels->setAll();
         QFile::remove(QString::fromStdString(path));
 
         FlatExrImage image;
         std::string error;
-        ASSERT_TRUE(renderAndRead(app, writer, path, &image, &error)) << error;
+        ASSERT_TRUE(renderAndRead(app, _writer, path, &image, &error)) << error;
         expectAllLayerPixels(image);
     }
 
     {
-        processAllLayers->setValue(false);
+        _channels->setLayer(0, kNatronColorLayerID, NULL);
         QFile::remove(QString::fromStdString(path));
 
         FlatExrImage image;
         std::string error;
-        ASSERT_TRUE(renderAndRead(app, writer, path, &image, &error)) << error;
+        ASSERT_TRUE(renderAndRead(app, _writer, path, &image, &error)) << error;
         expectRgbaOnly(image);
     }
 
     QFile::remove(QString::fromStdString(path));
-} // TEST_F(BaseTest, WriteAllLayersToggleAfterRenderWritesEveryLayer)
+} // TEST_F(WriteAllLayersTest, WriteAllLayersToggleAfterRenderWritesEveryLayer)
 
-// The same graph as above, but "All Layers" is checked before the very first render, so the
+// The same graph as above, but every layer is selected before the very first render, so the
 // embedded encoder's components-needed plane set is correct from the start and never needs to
 // be invalidated by a later knob change.
-TEST_F(BaseTest, WriteAllLayersCheckedBeforeFirstRenderWritesEveryLayer)
+TEST_F(WriteAllLayersTest, WriteAllLayersCheckedBeforeFirstRenderWritesEveryLayer)
 {
-    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
-    NodePtr reader = getApp()->createNode(readerArgs);
-    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+    createFixtureWriter();
+    if (HasFatalFailure()) {
+        return;
+    }
 
-    NodePtr writer = createNode(_writeOIIOPluginID);
-    ASSERT_TRUE(bool(writer));
-
-    connectNodes(reader, writer, 0, true);
-
-    KnobChoice* partSplitting = dynamic_cast<KnobChoice*>(writer->getKnobByName("partSplitting").get());
-    ASSERT_TRUE(partSplitting != NULL);
-    partSplitting->setValueFromID("single", 0);
-
-    KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(writer->getKnobByName("bitDepth").get());
-    ASSERT_TRUE(bitDepth != NULL);
-    bitDepth->setValueFromID("32f", 0);
-
-    KnobChoice* compression = dynamic_cast<KnobChoice*>(writer->getKnobByName("compression").get());
-    ASSERT_TRUE(compression != NULL);
-    compression->setValueFromID("none", 0);
-
-    KnobBool* processAllLayers = dynamic_cast<KnobBool*>(writer->getKnobByName(kNodeParamProcessAllLayers).get());
-    ASSERT_TRUE(processAllLayers != NULL);
-    processAllLayers->setValue(true);
+    _channels->setAll();
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     const std::string path = (tmp.path() + QLatin1String("/checked_first.exr")).toStdString();
-    writer->setOutputFilesForWriter(path);
+    _writer->setOutputFilesForWriter(path);
 
     AppInstancePtr app = getApp();
     FlatExrImage image;
     std::string error;
-    ASSERT_TRUE(renderAndRead(app, writer, path, &image, &error)) << error;
+    ASSERT_TRUE(renderAndRead(app, _writer, path, &image, &error)) << error;
     expectAllLayerPixels(image);
 
     QFile::remove(QString::fromStdString(path));
-} // TEST_F(BaseTest, WriteAllLayersCheckedBeforeFirstRenderWritesEveryLayer)
+} // TEST_F(WriteAllLayersTest, WriteAllLayersCheckedBeforeFirstRenderWritesEveryLayer)
+
+// A partial selection (Color plus one of the two extra layers) reaches the file as exactly those
+// planes: the encoder enumerates "all planes present" on its input, and the host narrows that
+// list to the container's channel set. The encoder's own plane selection is forced to "all" and
+// hidden, since the host's answer is the selection.
+TEST_F(WriteAllLayersTest, WriteColorAndOneLayerWritesOnlyThose)
+{
+    createFixtureWriter();
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    NodePtr encoder = getEmbeddedEncoder();
+    ASSERT_TRUE(bool(encoder));
+    KnobBool* processAllLayers = dynamic_cast<KnobBool*>(encoder->getKnobByName("processAllLayers").get());
+    ASSERT_TRUE(processAllLayers != NULL);
+    EXPECT_TRUE(processAllLayers->getValue());
+    EXPECT_TRUE(processAllLayers->getIsSecret());
+    EXPECT_FALSE(processAllLayers->getIsPersistent());
+    KnobIPtr outputChannels = encoder->getKnobByName("outputChannels");
+    ASSERT_TRUE(bool(outputChannels));
+    EXPECT_TRUE(outputChannels->getIsSecret());
+
+    _channels->setLayer(0, kNatronColorLayerID, NULL);
+    _channels->addLayer("diffuse", NULL);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string path = (tmp.path() + QLatin1String("/color_and_diffuse.exr")).toStdString();
+    _writer->setOutputFilesForWriter(path);
+
+    AppInstancePtr app = getApp();
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAndRead(app, _writer, path, &image, &error)) << error;
+    expectColorAndDiffusePixels(image);
+
+    QFile::remove(QString::fromStdString(path));
+} // TEST_F(WriteAllLayersTest, WriteColorAndOneLayerWritesOnlyThose)
+
+// The encoder's colour path has fixed component counts, so a Color row that enables only R, G
+// and B maps to the RGB superset through the encoder's (hidden) outputComponents choice: the
+// file carries R, G and B and no alpha channel.
+TEST_F(WriteAllLayersTest, WriteColorRgbSubsetWritesRgbOnly)
+{
+    createFixtureWriter();
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    NodePtr encoder = getEmbeddedEncoder();
+    ASSERT_TRUE(bool(encoder));
+    KnobChoice* outputComponents = dynamic_cast<KnobChoice*>(encoder->getKnobByName("outputComponents").get());
+    ASSERT_TRUE(outputComponents != NULL);
+    EXPECT_EQ("RGBA", outputComponents->getActiveEntry().id);
+
+    const std::vector<std::string> rgb = { "R", "G", "B" };
+    _channels->setLayer(0, kNatronColorLayerID, &rgb);
+    EXPECT_EQ("RGB", outputComponents->getActiveEntry().id);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string path = (tmp.path() + QLatin1String("/rgb_only.exr")).toStdString();
+    _writer->setOutputFilesForWriter(path);
+
+    AppInstancePtr app = getApp();
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAndRead(app, _writer, path, &image, &error)) << error;
+
+    static const std::set<std::string> expected = { "R", "G", "B" };
+    EXPECT_EQ(expected, channelSet(image));
+    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "R"), 1e-4f);
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "G"), 1e-4f);
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "B"), 1e-4f);
+
+    QFile::remove(QString::fromStdString(path));
+} // TEST_F(WriteAllLayersTest, WriteColorRgbSubsetWritesRgbOnly)
 
 // getPresentLayers() reports only what the stream actually carries (produced union pass-through);
 // getAvailableLayers() adds every layer registered at the project level (built-ins included) on

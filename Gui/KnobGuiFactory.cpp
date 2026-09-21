@@ -31,22 +31,23 @@
 #include "Engine/LibraryBinary.h"
 
 #include "Engine/Knob.h"
-#include "Engine/KnobTypes.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
 
+#include "Gui/DockablePanel.h"
 #include "Gui/KnobGui.h"
-#include "Gui/KnobGuiFile.h"
-#include "Gui/KnobGuiValue.h"
 #include "Gui/KnobGuiBool.h"
 #include "Gui/KnobGuiButton.h"
+#include "Gui/KnobGuiChannelSet.h"
 #include "Gui/KnobGuiChoice.h"
-#include "Gui/KnobGuiSeparator.h"
-#include "Gui/KnobGuiGroup.h"
 #include "Gui/KnobGuiColor.h"
-#include "Gui/KnobGuiString.h"
-#include "Gui/KnobGuiBool.h"
+#include "Gui/KnobGuiFile.h"
+#include "Gui/KnobGuiGroup.h"
 #include "Gui/KnobGuiParametric.h"
-#include "Gui/DockablePanel.h"
+#include "Gui/KnobGuiSeparator.h"
+#include "Gui/KnobGuiString.h"
+#include "Gui/KnobGuiValue.h"
 
 NATRON_NAMESPACE_ENTER
 using std::make_pair;
@@ -104,6 +105,7 @@ KnobGuiFactory::loadBultinKnobs()
     _loadedKnobs.insert( knobGuiFactoryEntry<KnobParametric, KnobGuiParametric>() );
     _loadedKnobs.insert( knobGuiFactoryEntry<KnobPath, KnobGuiPath>() );
     _loadedKnobs.insert( knobGuiFactoryEntry<KnobLayers, KnobGuiLayers>() );
+    _loadedKnobs.insert(knobGuiFactoryEntry<KnobChannelSet, KnobGuiChannelSet>());
 }
 
 KnobGui *

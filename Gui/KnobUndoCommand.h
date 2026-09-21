@@ -115,6 +115,15 @@ public:
     {
     }
 
+    /**
+     * @brief When false, consecutive edits of the same knob stay separate undo steps
+     * instead of being compressed into one.
+     **/
+    void setMergeable(bool mergeable)
+    {
+        _merge = mergeable;
+    }
+
 private:
     virtual void undo() OVERRIDE FINAL
     {

@@ -678,7 +678,8 @@ KnobGui::createAnimationMenu(QMenu* menu,
         }
         hasExpression |= !dimExpr.empty();
     }
-    if ( (knob->getDimension() > 1) && !hasDimensionSlaved && isAppKnob ) {
+    const bool canSetExpression = isAppKnob && knob->supportsExpressions();
+    if ((knob->getDimension() > 1) && !hasDimensionSlaved && canSetExpression) {
         QAction* setExprsAction = new QAction( ( hasExpression ? tr("Edit expression") :
                                                  tr("Set expression") ) + QLatin1Char(' ') + tr("(all dimensions)"), menu );
         setExprsAction->setData(-1);
@@ -698,7 +699,7 @@ KnobGui::createAnimationMenu(QMenu* menu,
             menu->addAction(clearExprAction);
         }
     }
-    if ( ( (dimension != -1) || (knob->getDimension() == 1) ) && !dimensionIsSlaved && isAppKnob ) {
+    if (((dimension != -1) || (knob->getDimension() == 1)) && !dimensionIsSlaved && canSetExpression) {
         QAction* setExprAction = new QAction(dimensionHasExpression ? tr("Edit expression...") : tr("Set expression..."), menu);
         QObject::connect( setExprAction, SIGNAL(triggered()), this, SLOT(onSetExprActionTriggered()) );
         setExprAction->setData(dimension);
@@ -717,7 +718,6 @@ KnobGui::createAnimationMenu(QMenu* menu,
             menu->addAction(clearExprAction);
         }
     }
-
 
     ///find-out to which node that master knob belongs to
     KnobHolder* holder = knob->getHolder();

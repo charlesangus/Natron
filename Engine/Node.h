@@ -1564,6 +1564,13 @@ Q_SIGNALS:
 
     void outputLayerChanged();
 
+    /**
+     * @brief Emitted after refreshChannelSelectors() has run, whether or not a legacy choice
+     * menu changed: the layer/channel knob GUIs list their layers themselves and only need
+     * to know that the input's present layers may have changed.
+     **/
+    void layerListRefreshed();
+
     void mustComputeHashOnMainThread();
 
     void settingsPanelClosed(bool);

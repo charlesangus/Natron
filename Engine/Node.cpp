@@ -7926,6 +7926,7 @@ Node::refreshChannelSelectors()
 
     // Mask channel selects list their input's layers at display time; nothing to repopulate.
     _imp->effect->onChannelsSelectorRefreshed();
+    Q_EMIT layerListRefreshed();
 
     return hasChanged;
 } // Node::refreshChannelSelectors()

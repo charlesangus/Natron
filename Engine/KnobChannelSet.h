@@ -78,6 +78,22 @@ struct ChannelSetRow {
 struct ResolvedLayer {
     ImageLayerDesc desc;
     std::bitset<4> channels;
+
+    /**
+     * @brief The bit of `channels` standing for channel `channelIndex` of `desc`: a one-channel
+     * plane is an alpha plane (see Image::canCallCopyUnProcessedChannels), so its only channel
+     * is bit 3.
+     **/
+    static int channelBit(const ImageLayerDesc& desc,
+                          int channelIndex)
+    {
+        return desc.getNumComponents() == 1 ? 3 : channelIndex;
+    }
+
+    bool isChannelSelected(int channelIndex) const
+    {
+        return channels[channelBit(desc, channelIndex)];
+    }
 };
 
 /**

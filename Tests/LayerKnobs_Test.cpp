@@ -150,9 +150,12 @@ TEST_F(BaseTest, ConstantGetsTargetLayerSelectListingTheRegistry)
     KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(constant->getKnobByName(kNodeParamLayerSelect));
     ASSERT_TRUE(bool(layer));
     EXPECT_EQ(layer, constant->getLayerKnob());
+    EXPECT_TRUE(constant->isTargetLayerKnob(layer));
     EXPECT_TRUE(isFirstOnItsPage(layer));
     EXPECT_TRUE(layer->getWithChannelButtons());
     EXPECT_EQ(std::string(kNatronColorLayerID), layer->getLayer());
+    EXPECT_TRUE(layer->getChannels().empty());
+    EXPECT_FALSE(bool(constant->getKnobByName(kNatronOfxParamProcessR)));
 
     std::list<ImageLayerDesc> listed;
     constant->listLayersForKnob(layer, &listed);
@@ -166,6 +169,67 @@ TEST_F(BaseTest, ConstantGetsTargetLayerSelectListingTheRegistry)
     EXPECT_NE(ids.end(), std::find(ids.begin(), ids.end(), std::string("depth")));
 
     project->reset(false, true);
+}
+
+// Every plug-in declaring the generator context gets the same target layer select; those that
+// ship their own R/G/B/A quad keep it hidden, forced on and unsaved, since the buttons own the
+// channel choice and the host does the masking. A quad whose default is not all four seeds the
+// buttons; otherwise they start empty, meaning every channel of the layer.
+TEST_F(BaseTest, GeneratorsGetTargetLayerSelectWithButtonsAndAdoptedQuads)
+{
+    struct Case {
+        const char* pluginID;
+        bool hasQuad;
+        const char* seededChannels;
+    };
+    static const Case cases[] = {
+        { "net.sf.openfx.ConstantPlugin", false, "" },
+        { "net.sf.openfx.Solid", false, "" },
+        { "net.sf.openfx.Ramp", true, "" },
+        { "net.sf.openfx.Radial", true, "" },
+        { "net.sf.openfx.Rectangle", true, "" },
+        { "net.sf.openfx.CheckerBoardPlugin", false, "" },
+        { "net.sf.openfx.ColorBars", false, "" },
+        { "net.sf.openfx.ColorWheel", false, "" },
+        { "net.sf.openfx.Noise", false, "" },
+        { "net.sf.cimg.CImgPlasma", true, "RGB" },
+        { "fr.inria.openfx.SeExpr", false, "" },
+        { "net.fxarena.openfx.Text", false, "" }
+    };
+    static const char* const quad[4] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
+
+    for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        const char* pluginID = cases[i].pluginID;
+        NodePtr node = createNode(QString::fromUtf8(pluginID));
+        ASSERT_TRUE(bool(node)) << pluginID;
+        EXPECT_TRUE(node->getEffectInstance()->isGenerator()) << pluginID;
+
+        EXPECT_FALSE(bool(node->getKnobByName(kNodeParamChannelSet))) << pluginID;
+        KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(node->getKnobByName(kNodeParamLayerSelect));
+        ASSERT_TRUE(bool(layer)) << pluginID;
+        EXPECT_EQ(layer, node->getLayerKnob()) << pluginID;
+        EXPECT_TRUE(node->isTargetLayerKnob(layer)) << pluginID;
+        EXPECT_TRUE(layer->getWithChannelButtons()) << pluginID;
+        EXPECT_TRUE(isFirstOnItsPage(layer)) << pluginID;
+        EXPECT_EQ(std::string(kNatronColorLayerID), layer->getLayer()) << pluginID;
+
+        std::vector<std::string> seeded;
+        for (const char* c = cases[i].seededChannels; *c; ++c) {
+            seeded.push_back(std::string(1, *c));
+        }
+        EXPECT_EQ(seeded, layer->getChannels()) << pluginID;
+
+        for (int c = 0; c < 4; ++c) {
+            KnobBoolPtr process = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(quad[c]));
+            EXPECT_EQ(cases[i].hasQuad, bool(process)) << pluginID << " " << quad[c];
+            if (!process) {
+                continue;
+            }
+            EXPECT_TRUE(process->getIsSecret()) << pluginID << " " << quad[c];
+            EXPECT_TRUE(process->getValue()) << pluginID << " " << quad[c];
+            EXPECT_FALSE(process->getIsPersistent()) << pluginID << " " << quad[c];
+        }
+    }
 }
 
 TEST_F(BaseTest, BlurMaskChannelSelectDefaultsToColorAlpha)

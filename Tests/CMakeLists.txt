@@ -37,6 +37,7 @@ set(Tests_SOURCES
     DeepReadWrite_Test.cpp
     DeepRenderPipeline_Test.cpp
     FileSystemModel_Test.cpp
+    GeneratorLayer_Test.cpp
     Hash64_Test.cpp
     Image_Test.cpp
     KnobChannelSet_Test.cpp

@@ -217,14 +217,6 @@ KnobLayerSelect::setChannels(const std::vector<std::string>& channels)
     setLayerAndChannels(this, layerID, channels);
 }
 
-static int
-channelBit(const ImageLayerDesc& desc,
-           int channelIndex)
-{
-    // A one-channel plane is an alpha plane: see Image::canCallCopyUnProcessedChannels.
-    return desc.getNumComponents() == 1 ? 3 : channelIndex;
-}
-
 static std::bitset<4>
 allChannelBits(const ImageLayerDesc& desc)
 {
@@ -232,7 +224,7 @@ allChannelBits(const ImageLayerDesc& desc)
     const int count = std::min(desc.getNumComponents(), int(LayerRegistry::kLayerMaxChannels));
 
     for (int c = 0; c < count; ++c) {
-        bits.set(channelBit(desc, c));
+        bits.set(ResolvedLayer::channelBit(desc, c));
     }
 
     return bits;
@@ -248,7 +240,7 @@ namedChannelBits(const ImageLayerDesc& desc,
 
     for (int c = 0; c < count; ++c) {
         if (std::find(names.begin(), names.end(), channels[c]) != names.end()) {
-            bits.set(channelBit(desc, c));
+            bits.set(ResolvedLayer::channelBit(desc, c));
         }
     }
 

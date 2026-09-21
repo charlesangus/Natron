@@ -2396,6 +2396,15 @@ processChannelsForPlane(const EffectInstance::ProcessChannelsPerPlaneMap& perPla
     return found == perPlane.end() ? defaultChannels : found->second;
 }
 
+// A plug-in renders every plane through its Color output clip, so channel i of what it rendered
+// is channel i of the plane. Image::convertToFormat's default fills a one-channel destination
+// from the source's alpha, which is only right when that destination is Color's alpha.
+static int
+channelForAlphaForPlane(const ImageLayerDesc& plane)
+{
+    return plane.isColorLayer() ? -1 : 0;
+}
+
 // The preferred input's image of the given output plane: same layer ID, or any Color plane
 // for a Color plane. Falls back to the first image so an input without that plane still
 // feeds the mask/mix pass.
@@ -2817,7 +2826,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     it->second.tmpImage->convertToFormat(it->second.tmpImage->getBounds(),
                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.renderMappedImage->getBitDepth()),
-                                                         -1, false, it->second.renderMappedImage.get());
+                                                         channelForAlphaForPlane(it->first), false, it->second.renderMappedImage.get());
                 } else {
                     it->second.renderMappedImage->pasteFrom(*(it->second.tmpImage), it->second.tmpImage->getBounds(), false);
                 }
@@ -2888,7 +2897,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     it->second.tmpImage->convertToFormat(renderMappedRectToRender,
                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.fullscaleImage->getBitDepth()),
-                                                         -1, false, tmp.get());
+                                                         channelForAlphaForPlane(it->first), false, tmp.get());
                     tmp->downscaleMipmap( it->second.tmpImage->getRoD(),
                                           renderMappedRectToRender, 0, mipmapLevel, false, it->second.downscaleImage.get() );
                     it->second.fullscaleImage->pasteFrom(*tmp, renderMappedRectToRender, false);
@@ -2919,7 +2928,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                         it->second.tmpImage->convertToFormat(it->second.tmpImage->getBounds(),
                                                              _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
                                                              _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.downscaleImage->getBitDepth()),
-                                                             -1, false, it->second.downscaleImage.get());
+                                                             channelForAlphaForPlane(it->first), false, it->second.downscaleImage.get());
                     } else {
                         /*
                          * No conversion required, copy to output

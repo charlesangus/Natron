@@ -1112,7 +1112,7 @@ WriteNode::filterLayersForEmbeddedInput(int inputNb,
             const std::vector<std::string>& all = it->getChannels();
             std::vector<std::string> enabled;
             for (std::size_t c = 0; c < all.size() && c < sel->channels.size(); ++c) {
-                if (sel->channels[c]) {
+                if (sel->isChannelSelected((int)c)) {
                     enabled.push_back(all[c]);
                 }
             }

@@ -73,6 +73,13 @@ protected:
 private:
     void onLayerChosen(const QString& layerID);
     void onChannelToggled();
+    void onNewLayerRequested();
+
+    /**
+     * @brief Runs NewLayerDialog, registers the layer in the project and selects it as
+     * one undo step. Cancel and a registry refusal leave the knob untouched.
+     **/
+    void openNewLayerDialog();
 
     std::unique_ptr<KnobGuiLayerSelectPrivate> _imp;
 };

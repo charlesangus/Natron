@@ -131,7 +131,7 @@ public:
     bool isChannelEnabled(const std::string& channel) const;
 
     QStringList getComboEntries() const;
-    QString getCurrentComboText() const;
+    Q_INVOKABLE QString getCurrentComboText() const;
     QStringList getChannelButtonNames() const;
     QString getMatchesText() const;
 

@@ -28,13 +28,22 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QHBoxLayout>
+#include <QTimer>
 #include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobLayerSelect.h"
+#include "Engine/LayerRegistry.h"
+#include "Engine/Node.h"
+#include "Engine/Project.h"
 
+#include "Gui/Gui.h"
 #include "Gui/LayerChannelRow.h"
+#include "Gui/NewLayerDialog.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -86,6 +95,9 @@ KnobGuiLayerSelect::createWidget(QHBoxLayout* layout)
     });
     QObject::connect(_imp->row, &LayerChannelRow::channelToggled, this, [this](const QString&, bool) {
         onChannelToggled();
+    });
+    QObject::connect(_imp->row, &LayerChannelRow::newLayerRequested, this, [this]() {
+        onNewLayerRequested();
     });
     getContainerLayout()->addWidget(_imp->row);
 
@@ -145,6 +157,43 @@ KnobGuiLayerSelect::onChannelToggled()
         return;
     }
     pushValue(knob->encode(knob->getLayer(), enabled));
+}
+
+void
+KnobGuiLayerSelect::onNewLayerRequested()
+{
+    // The row is still inside its combo's own change signal; the registry add below
+    // repopulates that combo, so the dialog waits for the event loop.
+    QTimer::singleShot(0, this, [this]() {
+        openNewLayerDialog();
+    });
+}
+
+void
+KnobGuiLayerSelect::openNewLayerDialog()
+{
+    KnobLayerSelectPtr knob = _imp->knob.lock();
+    NodePtr node = getNode();
+    AppInstancePtr app = node ? node->getApp() : AppInstancePtr();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+
+    if (!knob || !project) {
+        return;
+    }
+    NewLayerDialog dialog(ImageLayerDesc::getNoneComponents(), getGui());
+    if (!dialog.exec()) {
+        return;
+    }
+
+    const ImageLayerDesc desc = dialog.getComponents();
+    std::string error;
+    LayerRegistry::AddResultEnum ret = project->addLayer(desc, LayerRegistryEntry::eOriginUser, &error);
+    if (ret == LayerRegistry::eAddResultRefused) {
+        Dialogs::errorDialog(tr("Layer").toStdString(), error);
+
+        return;
+    }
+    pushValue(knob->encode(desc.getLayerID(), std::vector<std::string>()));
 }
 
 NATRON_NAMESPACE_EXIT

@@ -495,4 +495,73 @@ Image::copyUnProcessedChannels(const RectI& roi,
     }
 } // copyUnProcessedChannels
 
+template <typename PIX>
+void
+Image::extractChannelsForDepth(const std::vector<int>& channelIndices,
+                               Image* output) const
+{
+    const int srcNComps = getComponents().getNumComponents();
+    const int dstNComps = (int)channelIndices.size();
+
+    for (int y = _bounds.y1; y < _bounds.y2; ++y) {
+        const PIX* src_pixels = (const PIX*)pixelAt(_bounds.x1, y);
+        PIX* dst_pixels = (PIX*)output->pixelAt(_bounds.x1, y);
+        assert(src_pixels && dst_pixels);
+        for (int x = _bounds.x1; x < _bounds.x2; ++x, src_pixels += srcNComps, dst_pixels += dstNComps) {
+            for (int c = 0; c < dstNComps; ++c) {
+                dst_pixels[c] = src_pixels[channelIndices[c]];
+            }
+        }
+    }
+} // Image::extractChannelsForDepth
+
+ImagePtr
+Image::extractChannels(const std::vector<int>& channelIndices) const
+{
+    if (getStorageMode() == eStorageModeGLTex) {
+        return ImagePtr();
+    }
+
+    const ImageLayerDesc& layer = getComponents();
+    std::vector<std::string> channels;
+    for (std::size_t i = 0; i < channelIndices.size(); ++i) {
+        if (channelIndices[i] < 0 || channelIndices[i] >= layer.getNumComponents()) {
+            return ImagePtr();
+        }
+        channels.push_back(layer.getChannels()[channelIndices[i]]);
+    }
+    if (channels.empty()) {
+        return ImagePtr();
+    }
+    ImageLayerDesc subset(layer.getLayerID(), layer.getLayerLabel(), std::string(), channels);
+
+    ReadAccess acc(this);
+    ImagePtr output = std::make_shared<Image>(subset,
+                                              getRoD(),
+                                              _bounds,
+                                              getMipmapLevel(),
+                                              getPixelAspectRatio(),
+                                              getBitDepth(),
+                                              getFieldingOrder(),
+                                              false);
+    output->setKey(getKey());
+
+    switch (getBitDepth()) {
+    case eImageBitDepthByte:
+        extractChannelsForDepth<unsigned char>(channelIndices, output.get());
+        break;
+    case eImageBitDepthShort:
+        extractChannelsForDepth<unsigned short>(channelIndices, output.get());
+        break;
+    case eImageBitDepthFloat:
+        extractChannelsForDepth<float>(channelIndices, output.get());
+        break;
+    default:
+
+        return ImagePtr();
+    }
+
+    return output;
+} // Image::extractChannels
+
 NATRON_NAMESPACE_EXIT

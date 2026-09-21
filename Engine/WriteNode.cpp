@@ -569,6 +569,25 @@ WriteNodePrivate::takeOverEncoderPlaneParams()
     if (outputComponents && hiddenGroup) {
         hiddenGroup->addKnob(outputComponents);
     }
+
+    // The encoder's own R/G/B/A quad is adopted like any other node's (Node::adoptChannelQuad):
+    // the channel set is the one channel control. Hidden is locked, not just set, because both
+    // GenericWriter (on every clip-preferences pass) and Node::refreshEnabledKnobsLabel() re-show
+    // the boxes that match the Color component count. GenericWriter only packs channels through
+    // boxes it sees shown, so seen hidden it writes every channel of the plane it fetches.
+    static const char* const quadNames[4] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
+    for (int i = 0; i < 4; ++i) {
+        KnobBoolPtr channel = std::dynamic_pointer_cast<KnobBool>(writeNode->getKnobByName(quadNames[i]));
+        if (!channel) {
+            continue;
+        }
+        channel->setIsPersistent(false);
+        if (!channel->getValue()) {
+            channel->setValue(true);
+        }
+        channel->setSecret(true);
+        channel->setSecretLocked(true);
+    }
 } // WriteNodePrivate::takeOverEncoderPlaneParams
 
 void
@@ -1080,14 +1099,29 @@ WriteNode::filterLayersForEmbeddedInput(int inputNb,
         return;
     }
 
+    // The Color row is written through the encoder's fixed RGBA/RGB/Alpha path (outputComponents),
+    // so it keeps the whole layer; any other row becomes a plane listing just its enabled
+    // channels, which the input fetch extracts from the full plane.
     std::vector<ResolvedLayer> selected = channels->resolve(*layers);
     std::list<ImageLayerDesc> kept;
     for (std::list<ImageLayerDesc>::const_iterator it = layers->begin(); it != layers->end(); ++it) {
         for (std::vector<ResolvedLayer>::const_iterator sel = selected.begin(); sel != selected.end(); ++sel) {
-            if (sel->desc.getLayerID() == it->getLayerID()) {
-                kept.push_back(*it);
-                break;
+            if (sel->desc.getLayerID() != it->getLayerID()) {
+                continue;
             }
+            const std::vector<std::string>& all = it->getChannels();
+            std::vector<std::string> enabled;
+            for (std::size_t c = 0; c < all.size() && c < sel->channels.size(); ++c) {
+                if (sel->channels[c]) {
+                    enabled.push_back(all[c]);
+                }
+            }
+            if (it->isColorLayer() || enabled.size() == all.size()) {
+                kept.push_back(*it);
+            } else if (!enabled.empty()) {
+                kept.push_back(ImageLayerDesc(it->getLayerID(), it->getLayerLabel(), std::string(), enabled));
+            }
+            break;
         }
     }
     *layers = kept;

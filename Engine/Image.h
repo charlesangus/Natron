@@ -804,6 +804,13 @@ public:
                                  const OSGLContextPtr& glContext = OSGLContextPtr());
 
     /**
+     * @brief Returns a new local image holding, over the whole bounds, the channels of this image
+     * at channelIndices, in that order. Its layer keeps this image's layer ID and label and lists
+     * just those channels. Returns an empty pointer for OpenGL textures.
+     **/
+    ImagePtr extractChannels(const std::vector<int>& channelIndices) const;
+
+    /**
      * @brief Mask the image by the given mask and also disolves it to the originalImg with the given mix.
      **/
     void applyMaskMix( const RectI& roi,
@@ -894,6 +901,10 @@ private:
     void copyUnProcessedChannelsForDepth(const RectI& roi,
                                          std::bitset<4> processChannels,
                                          const ImagePtr& originalImage);
+
+    template <typename PIX>
+    void extractChannelsForDepth(const std::vector<int>& channelIndices,
+                                 Image* output) const;
 
     /**
      * @brief Given the output buffer,the region of interest and the mip map level, this

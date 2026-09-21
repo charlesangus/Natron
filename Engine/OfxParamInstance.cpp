@@ -353,6 +353,38 @@ OfxParamToKnob::connectDynamicProperties()
     QObject::connect( handler, SIGNAL(helpChanged()), this, SLOT(onHintTooltipChanged()) );
     QObject::connect( handler, SIGNAL(inViewerContextLabelChanged()), this, SLOT(onInViewportLabelChanged()) );
     QObject::connect( handler, SIGNAL(viewerContextSecretChanged()), this, SLOT(onInViewportSecretChanged()) );
+
+    OFX::Host::Param::Instance* param = getOfxParam();
+    if (param) {
+        param->getProperties().setGetHook(kOfxParamPropSecret, this);
+    }
+}
+
+int
+OfxParamToKnob::getIntProperty(const std::string& name,
+                               int index) const OFX_EXCEPTION_SPEC
+{
+    OFX::Host::Param::Instance* param = const_cast<OfxParamToKnob*>(this)->getOfxParam();
+    assert(param);
+    if (name == kOfxParamPropSecret) {
+        // A locked knob reads as the host left it, whatever the plug-in wrote to the property since.
+        KnobIPtr knob = getKnob();
+        if (knob && knob->isSecretLocked()) {
+            return knob->getIsSecret() ? 1 : 0;
+        }
+    }
+
+    return param->getProperties().getIntPropertyRaw(name, index);
+}
+
+void
+OfxParamToKnob::getIntPropertyN(const std::string& name,
+                                int* values,
+                                int count) const OFX_EXCEPTION_SPEC
+{
+    for (int i = 0; i < count; ++i) {
+        values[i] = getIntProperty(name, i);
+    }
 }
 
 void

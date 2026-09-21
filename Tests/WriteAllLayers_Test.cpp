@@ -359,6 +359,102 @@ TEST_F(WriteAllLayersTest, WriteColorRgbSubsetWritesRgbOnly)
     QFile::remove(QString::fromStdString(path));
 } // TEST_F(WriteAllLayersTest, WriteColorRgbSubsetWritesRgbOnly)
 
+// A non-Color row with some channels unchecked reaches the file as exactly those channels: the
+// host lists the plane to the encoder with just the enabled channels, and the encoder's fetch of
+// that plane renders the whole layer and extracts them.
+TEST_F(WriteAllLayersTest, WriteColorAndDiffuseGreenWritesThatChannelOnly)
+{
+    createFixtureWriter();
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    _channels->setLayer(0, kNatronColorLayerID, NULL);
+    const std::vector<std::string> green = { "G" };
+    _channels->addLayer("diffuse", &green);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string path = (tmp.path() + QLatin1String("/color_and_diffuse_g.exr")).toStdString();
+    _writer->setOutputFilesForWriter(path);
+
+    AppInstancePtr app = getApp();
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAndRead(app, _writer, path, &image, &error)) << error;
+
+    static const std::set<std::string> expected = { "R", "G", "B", "A", "diffuse.G" };
+    EXPECT_EQ(expected, channelSet(image));
+    expectColorPixels(image);
+    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "diffuse.G"), 1e-4f);
+
+    QFile::remove(QString::fromStdString(path));
+} // TEST_F(WriteAllLayersTest, WriteColorAndDiffuseGreenWritesThatChannelOnly)
+
+// A two-channel subset of a three-channel layer, alongside Color: the two channels keep their
+// own names and values, with nothing padded in for the missing one.
+TEST_F(WriteAllLayersTest, WriteColorAndSpecularRedBlueWritesThoseChannelsOnly)
+{
+    createFixtureWriter();
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    _channels->setLayer(0, kNatronColorLayerID, NULL);
+    const std::vector<std::string> redBlue = { "R", "B" };
+    _channels->addLayer("specular", &redBlue);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string path = (tmp.path() + QLatin1String("/color_and_specular_rb.exr")).toStdString();
+    _writer->setOutputFilesForWriter(path);
+
+    AppInstancePtr app = getApp();
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAndRead(app, _writer, path, &image, &error)) << error;
+
+    static const std::set<std::string> expected = { "R", "G", "B", "A", "specular.R", "specular.B" };
+    EXPECT_EQ(expected, channelSet(image));
+    expectColorPixels(image);
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "specular.R"), 1e-4f);
+    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "specular.B"), 1e-4f);
+
+    QFile::remove(QString::fromStdString(path));
+} // TEST_F(WriteAllLayersTest, WriteColorAndSpecularRedBlueWritesThoseChannelsOnly)
+
+// The encoder's own R/G/B/A quad is adopted by the container: forced on, non-persistent and
+// locked hidden, since both GenericWriter and the host's own channel-quad refresh would
+// otherwise re-show the boxes matching the Color component count after every metadata pass.
+// Seen hidden, GenericWriter packs nothing, so the Color subset test above keeps its pixels.
+TEST_F(WriteAllLayersTest, EncoderChannelQuadIsAdoptedAndStaysHidden)
+{
+    createFixtureWriter();
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    NodePtr encoder = getEmbeddedEncoder();
+    ASSERT_TRUE(bool(encoder));
+    static const char* const quad[4] = { "NatronOfxParamProcessR", "NatronOfxParamProcessG", "NatronOfxParamProcessB", "NatronOfxParamProcessA" };
+    KnobBool* channels[4];
+    for (int i = 0; i < 4; ++i) {
+        channels[i] = dynamic_cast<KnobBool*>(encoder->getKnobByName(quad[i]).get());
+        ASSERT_TRUE(channels[i] != NULL) << quad[i];
+        EXPECT_TRUE(channels[i]->getValue()) << quad[i];
+        EXPECT_TRUE(channels[i]->getIsSecret()) << quad[i];
+        EXPECT_TRUE(channels[i]->isSecretLocked()) << quad[i];
+        EXPECT_FALSE(channels[i]->getIsPersistent()) << quad[i];
+    }
+
+    const std::vector<std::string> rgb = { "R", "G", "B" };
+    _channels->setLayer(0, kNatronColorLayerID, &rgb);
+    encoder->getEffectInstance()->refreshMetadata_public(true);
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_TRUE(channels[i]->getIsSecret()) << quad[i];
+    }
+} // TEST_F(WriteAllLayersTest, EncoderChannelQuadIsAdoptedAndStaysHidden)
+
 // getPresentLayers() reports only what the stream actually carries (produced union pass-through);
 // getAvailableLayers() adds every layer registered at the project level (built-ins included) on
 // top of that, on the output (inputNb == -1) query only.

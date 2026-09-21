@@ -943,6 +943,14 @@ public:
     virtual bool getIsSecretRecursive() const = 0;
 
     /**
+     * @brief While locked, setSecret() is ignored, so neither the plug-in (whose reads of the
+     * OpenFX secret property then return the knob's state, whatever it wrote there) nor the
+     * host's own refreshes can change whether the knob is secret. Set the state before locking.
+     **/
+    virtual void setSecretLocked(bool locked) = 0;
+    virtual bool isSecretLocked() const = 0;
+
+    /**
      * @biref This is called to notify the gui that the knob shouldn't be editable.
      * Basically this is used when rendering with a Writer or for Trackers while tracking is active.
      **/
@@ -1555,6 +1563,8 @@ public:
     virtual void setSecretByDefault(bool b) OVERRIDE FINAL;
     virtual bool getIsSecret() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool getIsSecretRecursive() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void setSecretLocked(bool locked) OVERRIDE FINAL;
+    virtual bool isSecretLocked() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool getDefaultIsSecret() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setIsFrozen(bool frozen) OVERRIDE FINAL;
     virtual void setDirty(bool d) OVERRIDE FINAL;

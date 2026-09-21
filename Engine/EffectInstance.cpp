@@ -1070,8 +1070,41 @@ EffectInstance::getImage(int inputNb,
     /// The node is connected.
     assert(inputEffect);
 
+    // A plane requested with a channel subset of the one the input produces (a Write container's
+    // channel set narrows its encoder's plane list that way) is rendered whole and the requested
+    // channels are extracted from it, since renderRoI() only matches planes with equal channel counts.
+    std::vector<int> subsetChannelIndices;
+    ImageLayerDesc renderedComps = isMask ? maskComps : components;
+    if (layer && !isMask && !components.isColorLayer()) {
+        std::list<ImageLayerDesc> producedLayers;
+        inputEffect->getPresentLayers(time, view, -1, &producedLayers);
+        for (std::list<ImageLayerDesc>::const_iterator it = producedLayers.begin(); it != producedLayers.end(); ++it) {
+            if (it->getLayerID() != components.getLayerID()) {
+                continue;
+            }
+            if (*it == components) {
+                break;
+            }
+            const std::vector<std::string>& produced = it->getChannels();
+            const std::vector<std::string>& wanted = components.getChannels();
+            std::vector<int> indices;
+            for (std::size_t w = 0; w < wanted.size(); ++w) {
+                std::vector<std::string>::const_iterator found = std::find(produced.begin(), produced.end(), wanted[w]);
+                if (found == produced.end()) {
+                    break;
+                }
+                indices.push_back((int)std::distance(produced.begin(), found));
+            }
+            if (indices.size() == wanted.size()) {
+                subsetChannelIndices = indices;
+                renderedComps = *it;
+            }
+            break;
+        }
+    }
+
     std::list<ImageLayerDesc> requestedComps;
-    requestedComps.push_back(isMask ? maskComps : components);
+    requestedComps.push_back(renderedComps);
     std::map<ImageLayerDesc, ImagePtr> inputImages;
     RenderRoIRetCode retCode = inputEffect->renderRoI(RenderRoIArgs(time,
                                                                     scale,
@@ -1102,6 +1135,13 @@ EffectInstance::getImage(int inputNb,
 #endif
 
         return ImagePtr();
+    }
+
+    if (!subsetChannelIndices.empty()) {
+        inputImg = inputImg->extractChannels(subsetChannelIndices);
+        if (!inputImg) {
+            return ImagePtr();
+        }
     }
 
     /*

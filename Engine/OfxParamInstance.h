@@ -80,8 +80,8 @@ public:
     SET_DYNAMIC_PROPERTY_EDITED();
 
 class OfxParamToKnob
-    : public QObject
-{
+    : public QObject,
+      private OFX::Host::Property::GetHook {
     Q_OBJECT
 
     friend class PropertyModified_RAII;
@@ -119,6 +119,13 @@ public:
 
     void connectDynamicProperties();
 
+private:
+    // The plug-in reads its params' secret flag through the property suite, so a locked knob's
+    // state has to be served from here rather than from the stored property.
+    virtual int getIntProperty(const std::string& name, int index = 0) const OFX_EXCEPTION_SPEC OVERRIDE FINAL;
+    virtual void getIntPropertyN(const std::string& name, int* values, int count) const OFX_EXCEPTION_SPEC OVERRIDE FINAL;
+
+public:
     //these are per ofxparam thread-local data
     struct OfxParamTLSData
     {
@@ -207,7 +214,6 @@ protected:
 
     virtual bool hasDoubleMinMaxProps() const { return true; }
 };
-
 
 class OfxPushButtonInstance
     : public OfxParamToKnob, public OFX::Host::Param::PushbuttonInstance

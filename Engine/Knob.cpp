@@ -407,8 +407,8 @@ struct KnobHelperPrivate
     std::string inViewerContextLabel;
     bool inViewerContextHasShortcut;
     KnobIWPtr parentKnob;
-    mutable QMutex stateMutex; // protects IsSecret defaultIsSecret enabled
-    bool IsSecret, defaultIsSecret, inViewerContextSecret;
+    mutable QMutex stateMutex; // protects IsSecret defaultIsSecret secretLocked enabled
+    bool IsSecret, defaultIsSecret, secretLocked, inViewerContextSecret;
     std::vector<bool> enabled, defaultEnabled;
     bool CanUndo;
     QMutex evaluateOnChangeMutex;
@@ -474,17 +474,17 @@ struct KnobHelperPrivate
     bool isClipPreferenceSlave;
 
     KnobHelperPrivate(KnobHelper* publicInterface_,
-                      KnobHolder*  holder_,
+                      KnobHolder* holder_,
                       int dimension_,
-                      const std::string & label_,
+                      const std::string& label_,
                       bool declaredByPlugin_)
         : publicInterface(publicInterface_)
         , holder(holder_)
         , labelMutex()
         , label(label_)
         , iconFilePath()
-        , name( label_.c_str() )
-        , originalName( label_.c_str() )
+        , name(label_.c_str())
+        , originalName(label_.c_str())
         , newLine(true)
         , addSeparator(false)
         , itemSpacing(0)
@@ -497,6 +497,7 @@ struct KnobHelperPrivate
         , stateMutex()
         , IsSecret(false)
         , defaultIsSecret(false)
+        , secretLocked(false)
         , inViewerContextSecret(false)
         , enabled(dimension_)
         , defaultEnabled(dimension_)
@@ -2068,7 +2069,7 @@ KnobHelper::setSecret(bool b)
 {
     {
         QMutexLocker k(&_imp->stateMutex);
-        if (_imp->IsSecret == b) {
+        if (_imp->secretLocked || _imp->IsSecret == b) {
             return;
         }
         _imp->IsSecret = b;
@@ -3295,6 +3296,22 @@ KnobHelper::getIsSecretRecursive() const
     }
 
     return false;
+}
+
+void
+KnobHelper::setSecretLocked(bool locked)
+{
+    QMutexLocker k(&_imp->stateMutex);
+
+    _imp->secretLocked = locked;
+}
+
+bool
+KnobHelper::isSecretLocked() const
+{
+    QMutexLocker k(&_imp->stateMutex);
+
+    return _imp->secretLocked;
 }
 
 bool

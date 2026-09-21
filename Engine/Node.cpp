@@ -2486,8 +2486,9 @@ Node::createMaskSelectors(const std::vector<std::pair<bool, bool> >& hasMaskChan
         std::string channelKnobName = std::string(hasMaskChannelSelector[i].second ? kMaskChannelKnobName : kInputChannelKnobName) + "_" + inputLabels[i];
         KnobChannelSelectPtr channel = _imp->effect->createChannelSelectKnob(channelKnobName, std::string(), false);
         channel->setAnimationEnabled(false);
-        channel->setHintToolTip(tr("Use this channel from the original input to mix the output with the original input. "
-                                   "Setting this to None is the same as disconnecting the input."));
+        channel->setHintToolTip(tr("One layer.channel of this input, or None. A selected channel this input no longer has "
+                                   "is kept and marked \"(not in input)\". Setting this to None is the same as disconnecting "
+                                   "the input."));
         sel.channel = channel;
         _imp->layerKnobSources[channel.get()] = LayerKnobSource(i, LayerKnobSpec::eRoleInputBound);
         if (mainPage) {
@@ -2663,11 +2664,17 @@ Node::createLayerKnob(const LayerKnobSpec& spec,
 
     if (spec.kind == LayerKnobSpec::eKindChannelSet) {
         KnobChannelSetPtr channelSet = _imp->effect->createChannelSetKnob(kNodeParamChannelSet, tr(kNodeParamChannelSetLabel).toStdString(), false);
-        channelSet->setHintToolTip(tr("The layers and channels this node processes; every other channel of the input passes through unchanged."));
+        channelSet->setHintToolTip(tr("The layers and channels this node processes in place; every other channel of every layer "
+                                      "passes through unchanged. Row 0 can be None, All, a regex over layer names, or a layer; "
+                                      "more rows add layers. A selected layer that the input no longer has is kept and marked "
+                                      "\"(not in input)\"."));
         knob = channelSet;
     } else {
         KnobLayerSelectPtr layerSelect = _imp->effect->createLayerSelectKnob(kNodeParamLayerSelect, tr(kNodeParamLayerSelectLabel).toStdString(), spec.withChannelButtons, false);
-        layerSelect->setHintToolTip(spec.role == LayerKnobSpec::eRoleTarget ? tr("The layer this node writes into.") : tr("The layer of the input this node reads."));
+        layerSelect->setHintToolTip(spec.role == LayerKnobSpec::eRoleTarget ? tr("The layer this node writes into. Choosing \"New layer...\" creates a project layer. "
+                                                                                 "A selected layer no longer in the project is kept and marked \"(not in project)\".")
+                                                                            : tr("The layer of the input this node reads. A selected layer the input no longer has is "
+                                                                                 "kept and marked \"(not in input)\"."));
         knob = layerSelect;
     }
     knob->setAnimationEnabled(false);

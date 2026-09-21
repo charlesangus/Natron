@@ -52,6 +52,7 @@ set(Tests_SOURCES
     ProjectOCIO_Test.cpp
     ProjectSerialization_Test.cpp
     RenderRange_Test.cpp
+    RotoLayer_Test.cpp
     TrackerLayer_Test.cpp
     Tracker_Test.cpp
     TypedPassthrough_Test.cpp

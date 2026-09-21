@@ -282,13 +282,57 @@ TEST_F(BaseTest, TrackerGetsInputBoundLayerSelectWithoutButtons)
     project->reset(false, true);
 }
 
+TEST_F(BaseTest, RotoAndRotoPaintGetTargetLayerSelectWithButtons)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    struct Case {
+        const char* pluginID;
+        std::vector<std::string> defaultChannels;
+    };
+    Case cases[2];
+    cases[0].pluginID = PLUGINID_NATRON_ROTOPAINT;
+    cases[1].pluginID = PLUGINID_NATRON_ROTO;
+    cases[1].defaultChannels.push_back("A");
+
+    for (std::size_t i = 0; i < 2; ++i) {
+        NodePtr roto = createNode(QString::fromUtf8(cases[i].pluginID));
+        ASSERT_TRUE(bool(roto)) << cases[i].pluginID;
+
+        EXPECT_FALSE(bool(roto->getKnobByName(kNodeParamChannelSet))) << cases[i].pluginID;
+        EXPECT_FALSE(bool(roto->getKnobByName(kNatronOfxParamProcessR))) << cases[i].pluginID;
+        EXPECT_FALSE(bool(roto->getKnobByName(kNatronOfxParamProcessG))) << cases[i].pluginID;
+        EXPECT_FALSE(bool(roto->getKnobByName(kNatronOfxParamProcessB))) << cases[i].pluginID;
+        EXPECT_FALSE(bool(roto->getKnobByName(kNatronOfxParamProcessA))) << cases[i].pluginID;
+
+        KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(roto->getKnobByName(kNodeParamLayerSelect));
+        ASSERT_TRUE(bool(layer)) << cases[i].pluginID;
+        EXPECT_EQ(layer, roto->getLayerKnob());
+        EXPECT_TRUE(roto->isTargetLayerKnob(layer)) << cases[i].pluginID;
+        EXPECT_TRUE(layer->getWithChannelButtons()) << cases[i].pluginID;
+        EXPECT_TRUE(isFirstOnItsPage(layer)) << cases[i].pluginID;
+        EXPECT_EQ(std::string(kNatronColorLayerID), layer->getLayer()) << cases[i].pluginID;
+        EXPECT_EQ(cases[i].defaultChannels, layer->getChannels()) << cases[i].pluginID;
+
+        std::list<ImageLayerDesc> listed;
+        roto->listLayersForKnob(layer, &listed);
+        std::vector<std::string> ids = layerIDs(listed);
+        ASSERT_GE(ids.size(), 6u) << cases[i].pluginID;
+        EXPECT_EQ(std::string(kNatronColorLayerID), ids[0]);
+        EXPECT_NE(ids.end(), std::find(ids.begin(), ids.end(), std::string("depth")));
+    }
+
+    project->reset(false, true);
+}
+
 TEST_F(BaseTest, NodesOwningTheirPlanesGetNoLayerKnob)
 {
     const char* ids[] = {
         "fr.natron.DeepMerge",
         "net.sf.openfx.ShufflePlugin",
-        "net.sf.openfx.Premult",
-        "fr.inria.built-in.RotoPaint"
+        "net.sf.openfx.Premult"
     };
 
     for (std::size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); ++i) {

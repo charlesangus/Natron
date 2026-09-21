@@ -46,16 +46,17 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
-#include "Engine/CreateNodeArgs.h"
 #include "Engine/CoonsRegularization.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/FeatherPoint.h"
 #include "Engine/Format.h"
 #include "Engine/Hash64.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
+#include "Engine/Interpolation.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/NodeSerialization.h"
-#include "Engine/Interpolation.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContextSerialization.h"
 #include "Engine/RotoDrawableItem.h"
@@ -64,8 +65,8 @@
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
-#include "Engine/ViewerInstance.h"
 #include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 
 #define kMergeOFXParamOperation "operation"
 #define kMergeOFXParamInvertMask "maskInvert"
@@ -4754,7 +4755,25 @@ RotoContext::refreshRotoPaintTree()
             }
         }
     }
+
+    retargetRotoPaintTree();
 } // RotoContext::refreshRotoPaintTree
+
+void
+RotoContext::retargetRotoPaintTree()
+{
+    KnobLayerSelect* layer = dynamic_cast<KnobLayerSelect*>(getNode()->getLayerKnob().get());
+
+    if (!layer) {
+        return;
+    }
+    const std::string layerID = layer->getLayer();
+    NodesList nodes;
+    getRotoPaintTreeNodes(&nodes);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        (*it)->retargetLayerKnob(layerID);
+    }
+}
 
 void
 RotoContext::onRotoPaintInputChanged(const NodePtr& node)

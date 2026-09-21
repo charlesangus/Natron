@@ -5618,6 +5618,9 @@ Node::onEffectKnobValueChanged(KnobI* what,
 
     if (!ret && (what == _imp->layerKnob.lock().get())) {
         _imp->notifyLayerReferencesChanged();
+        if (_imp->rotoContext) {
+            _imp->rotoContext->retargetRotoPaintTree();
+        }
         s_layerSelectionChanged();
         ret = true;
     }
@@ -5837,6 +5840,31 @@ Node::resolveLayerKnob(double time,
     }
 
     return true;
+}
+
+void
+Node::retargetLayerKnob(const std::string& layerID)
+{
+    KnobIPtr layerKnob = _imp->layerKnob.lock();
+
+    if (!layerKnob) {
+        return;
+    }
+    _imp->layerKnobSpec.role = LayerKnobSpec::eRoleTarget;
+    _imp->layerKnobSources[layerKnob.get()] = LayerKnobSource(-1, LayerKnobSpec::eRoleTarget);
+
+    if (KnobChannelSet* channelSet = dynamic_cast<KnobChannelSet*>(layerKnob.get())) {
+        std::vector<ChannelSetRow> rows(1);
+        rows[0].mode = ChannelSetRow::eModeLayer;
+        rows[0].layerOrPattern = layerID;
+        if (channelSet->getRows() != rows) {
+            channelSet->setRows(rows);
+        }
+    } else if (KnobLayerSelect* layerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get())) {
+        if (layerSelect->getLayer() != layerID || !layerSelect->getChannels().empty()) {
+            layerSelect->setLayer(layerID);
+        }
+    }
 }
 
 void

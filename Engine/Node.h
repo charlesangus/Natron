@@ -1401,6 +1401,14 @@ public:
     bool resolveLayerKnob(double time, ViewIdx view, std::vector<ResolvedLayer>* selected) const;
 
     /**
+     * @brief Points the layer knob at one registry layer, every channel, and makes it resolve
+     * against the registry from now on whatever its inputs carry. The nodes of a RotoPaint
+     * tree take the plane their RotoPaint targets this way: that plane need not exist
+     * upstream yet. No-op on a node without a layer knob.
+     **/
+    void retargetLayerKnob(const std::string& layerID);
+
+    /**
      * @brief Registers every non-Color layer this node produces (per
      * getComponentsNeededAndProduced_public()'s output entry) with the project-level
      * LayerRegistry. Main thread only, called at the end of refreshAllInputRelatedData().

@@ -121,13 +121,12 @@ RotoPaint::isHostChannelSelectorSupported(bool* defaultR,
                                           bool* defaultB,
                                           bool* defaultA) const
 {
-    //Use our own selectors, we don't want Natron to copy back channels
     *defaultR = true;
     *defaultG = true;
     *defaultB = true;
     *defaultA = true;
 
-    return false;
+    return true;
 }
 
 bool
@@ -141,7 +140,7 @@ RotoNode::isHostChannelSelectorSupported(bool* defaultR,
     *defaultB = false;
     *defaultA = true;
 
-    return false;
+    return true;
 }
 
 std::string
@@ -190,28 +189,6 @@ RotoPaint::initializeKnobs()
     KnobPagePtr generalPage = std::dynamic_pointer_cast<KnobPage>( getKnobByName("General") );
 
     assert(generalPage);
-
-
-    KnobSeparatorPtr sep = AppManager::createKnob<KnobSeparator>(this, tr("Output"), 1, false);
-    generalPage->addKnob(sep);
-
-
-    std::string channelNames[4] = {kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA};
-    std::string channelLabels[4] = {"R", "G", "B", "A"};
-    bool defaultValues[4];
-    bool channelSelectorSupported = isHostChannelSelectorSupported(&defaultValues[0], &defaultValues[1], &defaultValues[2], &defaultValues[3]);
-    Q_UNUSED(channelSelectorSupported);
-
-    for (int i = 0; i < 4; ++i) {
-        KnobBoolPtr enabled =  AppManager::createKnob<KnobBool>(this, channelLabels[i], 1, false);
-        enabled->setName(channelNames[i]);
-        enabled->setAnimationEnabled(false);
-        enabled->setAddNewLine(i == 3);
-        enabled->setDefaultValue(defaultValues[i]);
-        enabled->setHintToolTip( tr("Enable drawing onto this channel") );
-        generalPage->addKnob(enabled);
-        _imp->enabledKnobs[i] = enabled;
-    }
 
     RotoContextPtr context = getNode()->getRotoContext();
     assert(context);
@@ -1456,12 +1433,11 @@ RotoPaint::render(const RenderActionArgs& args)
         neededComps.push_back(layer->first);
     }
 
-    if ( items.empty() ) {
-        RectI bgImgRoI;
-        ImagePtr bgImg = getImage(0, args.time, args.mappedScale, args.view, 0, 0, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM /*returnOpenGLtexture*/, 0 /*textureDepth*/, &bgImgRoI);
-
+    if (items.empty()) {
         for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator layer = args.outputLayers.begin();
              layer != args.outputLayers.end(); ++layer) {
+            RectI bgImgRoI;
+            ImagePtr bgImg = getImage(0, args.time, args.mappedScale, args.view, 0, &layer->first, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM /*returnOpenGLtexture*/, 0 /*textureDepth*/, &bgImgRoI);
             if (bgImg) {
                 if (bgImg->getComponents() != layer->second->getComponents()) {
                     bgImg->convertToFormat(args.roi,
@@ -1483,11 +1459,7 @@ RotoPaint::render(const RenderActionArgs& args)
             }
         }
         NodePtr bottomMerge = roto->getRotoPaintBottomMergeNode();
-        RenderingFlagSetter flagIsRendering( bottomMerge );
-        std::bitset<4> copyChannels;
-        for (int i = 0; i < 4; ++i) {
-            copyChannels[i] = _imp->enabledKnobs[i].lock()->getValue();
-        }
+        RenderingFlagSetter flagIsRendering(bottomMerge);
 
         unsigned int mipmapLevel = args.mappedScale.toMipmapLevel();
         RenderRoIArgs rotoPaintArgs(args.time,
@@ -1519,9 +1491,7 @@ RotoPaint::render(const RenderActionArgs& args)
         }
         assert(rotoPaintImages.size() == args.outputLayers.size());
 
-        RectI bgImgRoI;
-        ImagePtr bgImg;
-        bool triedGetImage = false;
+        const U64 hash = getRenderHash();
 
         for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator layer = args.outputLayers.begin();
              layer != args.outputLayers.end(); ++layer) {
@@ -1530,12 +1500,9 @@ RotoPaint::render(const RenderActionArgs& args)
             if ( rotoImagesIt == rotoPaintImages.end() ) {
                 continue;
             }
-            if (!bgImg) {
-                if (!triedGetImage) {
-                    bgImg = getImage(0, args.time, args.mappedScale, args.view, 0, 0, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM /*returnOpenGLtexture*/, 0 /*textureDepth*/, &bgImgRoI);
-                    triedGetImage = true;
-                }
-            }
+            RectI bgImgRoI;
+            ImagePtr bgImg = getImage(0, args.time, args.mappedScale, args.view, 0, &layer->first, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM /*returnOpenGLtexture*/, 0 /*textureDepth*/, &bgImgRoI);
+            const std::bitset<4> copyChannels = getProcessChannelsForPlane(hash, args.time, args.view, layer->first);
             if ( !rotoImagesIt->second->getBounds().contains(args.roi) ) {
                 // We first fill with the bg image because the bounds of the image produced by the last merge of the rotopaint tree
                 // might not be equal to the bounds of the image produced by the rotopaint. This is because the RoD of the rotopaint is the

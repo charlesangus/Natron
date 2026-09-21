@@ -259,7 +259,7 @@ become phases here.
 
 ## Phase 38.8: Deletions, PyPlugs, docs
 
-- [ ] M38.P8.T1 — Delete the old selectors and bools from `Node`
+- [x] M38.P8.T1 — Delete the old selectors and bools from `Node`
   - files: `Engine/Node.cpp`, `Engine/Node.h`, `Engine/NodePrivate.h`, `Engine/NodeInputs.cpp`, `Engine/OfxClipInstance.cpp`
   - approach: §8 Engine list (`createChannelSelector`, `getSelectedLayer*`, `onLayerChanged`, `refreshEnabledKnobsLabel`, `refreshLayersChoiceSecretness`, `getChannelSelectorKnob`, `getProcessAllLayersKnob`, `getMaskChannel`, the choice loop of `refreshChannelSelectors`, `ChannelSelector`, `MaskSelector::compsAvailable`, knob dispatch); `getAvailableLayers` retained for output-clip `ComponentsPresent` and `kNatronOfxExtraCreatedPlanes`; `OfxClipInstance.cpp:876-888` fallback uses `listLayersForKnob`+`resolve`.
   - verify: `grep -n "channelsSelectors\|processAllLayersKnob\|enabledChan\|getSelectedLayer\b" Engine/*.cpp Engine/*.h` returns zero hits; full `ctest` green; `dump.py` shows no `channels` Choice, no `processAllLayers`, no `*_channels` on any node.

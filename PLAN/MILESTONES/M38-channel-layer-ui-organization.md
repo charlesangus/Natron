@@ -193,7 +193,7 @@ become phases here.
   - verify: Xvfb: Blur's mask footer screenshot shows `☑ [ Color.A ▾ ] □ Invert Mask` on one line; a Constant panel shows `Layer [ Color ▾ ] [R][G][B][A]` first; selecting `diffuse.R` on the mask and reconnecting to a plain RGBA Constant shows `diffuse.R (not in input)`.
   - size: M
 
-- [ ] M38.P5.T4 — NodeGui summary label
+- [x] M38.P5.T4 — NodeGui summary label
   - files: `Gui/NodeGui.cpp`, `Gui/NodeGui.h`, `Engine/Node.h`, `Engine/Node.cpp`
   - approach: `outputLayerChanged` → `layerSelectionChanged` (`Node.h:1456, 1512`), emitted on any of the three knobs' value change; `NodeGui::onOutputLayerChanged` (`NodeGui.cpp:3186-3228`) draws `getSummary()` (`(All)`, `(diffuse)`, `(Color.rgb, /spec.*/)`; nothing for the default Color-all row); multiplanar branch kept.
   - verify: Xvfb screen shot: a Blur set to `All` shows `(All)` under its name; back to default shows nothing.

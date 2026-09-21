@@ -48,6 +48,7 @@
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
+#include "Engine/TrackerContext.h"
 
 #include <ofxImageEffect.h>
 #include <ofxNatron.h>
@@ -238,14 +239,56 @@ TEST_F(BaseTest, ChannelSetListsPresentLayersOfPreferredInput)
     project->reset(false, true);
 }
 
+TEST_F(BaseTest, TrackerGetsInputBoundLayerSelectWithoutButtons)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr tracker = createNode(QString::fromUtf8(PLUGINID_NATRON_TRACKER));
+    ASSERT_TRUE(bool(tracker));
+
+    EXPECT_FALSE(bool(tracker->getKnobByName(kNodeParamChannelSet)));
+    EXPECT_FALSE(bool(tracker->getKnobByName("trackRed")));
+    EXPECT_FALSE(bool(tracker->getKnobByName("trackGreen")));
+    EXPECT_FALSE(bool(tracker->getKnobByName("trackBlue")));
+
+    KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(tracker->getKnobByName(kNodeParamLayerSelect));
+    ASSERT_TRUE(bool(layer));
+    EXPECT_EQ(layer, tracker->getLayerKnob());
+    EXPECT_FALSE(tracker->isTargetLayerKnob(layer));
+    EXPECT_FALSE(layer->getWithChannelButtons());
+    EXPECT_EQ(std::string(kNatronColorLayerID), layer->getLayer());
+
+    EXPECT_TRUE(isFirstOnItsPage(layer));
+    KnobPagePtr page = std::dynamic_pointer_cast<KnobPage>(layer->getParentKnob());
+    ASSERT_TRUE(bool(page));
+    EXPECT_EQ(page, tracker->getTrackerContext()->getTrackingPageKnob());
+
+    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), project);
+    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+    NodePtr reader = getApp()->createNode(readerArgs);
+    ASSERT_TRUE(bool(reader));
+    connectNodes(reader, tracker, 0, true);
+
+    std::list<ImageLayerDesc> listed;
+    tracker->listLayersForKnob(layer, &listed);
+    std::vector<std::string> expected;
+    expected.push_back(kNatronColorLayerID);
+    expected.push_back("diffuse");
+    expected.push_back("specular");
+    EXPECT_EQ(expected, layerIDs(listed));
+
+    project->reset(false, true);
+}
+
 TEST_F(BaseTest, NodesOwningTheirPlanesGetNoLayerKnob)
 {
     const char* ids[] = {
         "fr.natron.DeepMerge",
         "net.sf.openfx.ShufflePlugin",
         "net.sf.openfx.Premult",
-        "fr.inria.built-in.RotoPaint",
-        "fr.inria.built-in.Tracker"
+        "fr.inria.built-in.RotoPaint"
     };
 
     for (std::size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); ++i) {

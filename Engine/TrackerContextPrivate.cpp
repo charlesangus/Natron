@@ -35,16 +35,16 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/Curve.h"
-#include "Engine/Project.h"
-#include "Engine/TimeLine.h"
-#include "Engine/KnobTypes.h"
 #include "Engine/Image.h"
+#include "Engine/KnobChannelSet.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Project.h"
 #include "Engine/TLSHolder.h"
+#include "Engine/TimeLine.h"
 #include "Engine/TrackMarker.h"
-#include "Engine/TrackerNode.h"
 #include "Engine/TrackerContext.h"
-
+#include "Engine/TrackerNode.h"
 
 #ifdef DEBUG
 //#define TRACKER_GENERATE_DATA_SEQUENTIALLY
@@ -87,13 +87,10 @@ createDuplicateKnob( const std::string& knobName,
 }
 
 TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
-                                             const NodePtr &node)
+                                             const NodePtr& node)
     : _publicInterface(publicInterface)
     , node(node)
     , perTrackKnobs()
-    , enableTrackRed()
-    , enableTrackGreen()
-    , enableTrackBlue()
     , maxError()
     , maxIterations()
     , bruteForcePreTrack()
@@ -212,35 +209,6 @@ TrackerContextPrivate::TrackerContextPrivate(TrackerContext* publicInterface,
     settingsPage->addKnob(patternMatchingScoreKnob);
     patternMatchingScore = patternMatchingScoreKnob;
 #endif
-
-    KnobBoolPtr enableTrackRedKnob = AppManager::createKnob<KnobBool>(effect.get(), tr(kTrackerParamTrackRedLabel), 1, false);
-    enableTrackRedKnob->setName(kTrackerParamTrackRed);
-    enableTrackRedKnob->setHintToolTip( tr(kTrackerParamTrackRedHint) );
-    enableTrackRedKnob->setDefaultValue(true);
-    enableTrackRedKnob->setAnimationEnabled(false);
-    enableTrackRedKnob->setAddNewLine(false);
-    enableTrackRedKnob->setEvaluateOnChange(false);
-    settingsPage->addKnob(enableTrackRedKnob);
-    enableTrackRed = enableTrackRedKnob;
-
-    KnobBoolPtr enableTrackGreenKnob = AppManager::createKnob<KnobBool>(effect.get(), tr(kTrackerParamTrackGreenLabel), 1, false);
-    enableTrackGreenKnob->setName(kTrackerParamTrackGreen);
-    enableTrackGreenKnob->setHintToolTip( tr(kTrackerParamTrackGreenHint) );
-    enableTrackGreenKnob->setDefaultValue(true);
-    enableTrackGreenKnob->setAnimationEnabled(false);
-    enableTrackGreenKnob->setAddNewLine(false);
-    enableTrackGreenKnob->setEvaluateOnChange(false);
-    settingsPage->addKnob(enableTrackGreenKnob);
-    enableTrackGreen = enableTrackGreenKnob;
-
-    KnobBoolPtr enableTrackBlueKnob = AppManager::createKnob<KnobBool>(effect.get(), tr(kTrackerParamTrackBlueLabel), 1, false);
-    enableTrackBlueKnob->setName(kTrackerParamTrackBlue);
-    enableTrackBlueKnob->setHintToolTip( tr(kTrackerParamTrackBlueHint) );
-    enableTrackBlueKnob->setDefaultValue(true);
-    enableTrackBlueKnob->setAnimationEnabled(false);
-    enableTrackBlueKnob->setEvaluateOnChange(false);
-    settingsPage->addKnob(enableTrackBlueKnob);
-    enableTrackBlue = enableTrackBlueKnob;
 
     KnobDoublePtr maxErrorKnob = AppManager::createKnob<KnobDouble>(effect.get(), tr(kTrackerParamMaxErrorLabel), 1, false);
     maxErrorKnob->setName(kTrackerParamMaxError);
@@ -769,7 +737,6 @@ TrackerContextPrivate::setKnobKeyframesFromMarker(const mv::Marker& mvMarker,
 /// Converts a Natron track marker to the one used in LibMV. This is expensive: many calls to getValue are made
 void
 TrackerContextPrivate::natronTrackerToLibMVTracker(bool isReferenceMarker,
-                                                   bool trackChannels[3],
                                                    const TrackMarker& marker,
                                                    int trackIndex,
                                                    int trackedTime,
@@ -814,11 +781,9 @@ TrackerContextPrivate::natronTrackerToLibMVTracker(bool isReferenceMarker,
     mvMarker->model_id = 0;
     mvMarker->track = trackIndex;
 
-    mvMarker->disabled_channels =
-        (trackChannels[0] ? LIBMV_MARKER_CHANNEL_R : 0) |
-        (trackChannels[1] ? LIBMV_MARKER_CHANNEL_G : 0) |
-        (trackChannels[2] ? LIBMV_MARKER_CHANNEL_B : 0);
-
+    // The frame accessor already folds the selected layer into the mono image libmv sees, so
+    // there is no per-channel transform left for libmv to apply.
+    mvMarker->disabled_channels = 0;
 
     //int searchWinTime = isReferenceMarker ? trackedTime : mvMarker->reference_frame;
 
@@ -1034,9 +999,6 @@ TrackerContextPrivate::trackStepLibMV(int trackIndex,
     const TrackMarkerAndOptionsPtr& track = tracks[trackIndex];
     mv::AutoTrackPtr autoTrack = args.getLibMVAutoTrack();
     QMutex* autoTrackMutex = args.getAutoTrackMutex();
-    bool enabledChans[3];
-    args.getEnabledChannels(&enabledChans[0], &enabledChans[1], &enabledChans[2]);
-
 
     {
         // Add a marker to the auto-track at the tracked time: the mv::Marker struct is filled with the values of the Natron TrackMarker at the trackTime
@@ -1047,7 +1009,7 @@ TrackerContextPrivate::trackStepLibMV(int trackIndex,
             Q_UNUSED(foundStartMarker);
             track->mvMarker.source = mv::Marker::MANUAL;
         } else {
-            natronTrackerToLibMVTracker(false, enabledChans, *track->natronMarker, trackIndex, trackTime, args.getStep(), args.getFormatHeight(), &track->mvMarker);
+            natronTrackerToLibMVTracker(false, *track->natronMarker, trackIndex, trackTime, args.getStep(), args.getFormatHeight(), &track->mvMarker);
             autoTrack->AddMarker(track->mvMarker);
         }
     }
@@ -1065,7 +1027,7 @@ TrackerContextPrivate::trackStepLibMV(int trackIndex,
             QMutexLocker k(autoTrackMutex);
             mv::Marker m;
             if ( !autoTrack->GetMarker(0, track->mvMarker.reference_frame, trackIndex, &m) ) {
-                natronTrackerToLibMVTracker(true, enabledChans, *track->natronMarker, track->mvMarker.track, track->mvMarker.reference_frame, args.getStep(), args.getFormatHeight(), &m);
+                natronTrackerToLibMVTracker(true, *track->natronMarker, track->mvMarker.track, track->mvMarker.reference_frame, args.getStep(), args.getFormatHeight(), &m);
                 autoTrack->AddMarker(m);
             }
         }
@@ -1157,12 +1119,16 @@ TrackerContext::trackMarkers(const std::list<TrackMarkerPtr>& markers,
         viewer = overlayInteract->getInternalViewerNode();
     }
 
-
-    /// The channels we are going to use for tracking
-    bool enabledChannels[3];
-    enabledChannels[0] = _imp->enableTrackRed.lock()->getValue();
-    enabledChannels[1] = _imp->enableTrackGreen.lock()->getValue();
-    enabledChannels[2] = _imp->enableTrackBlue.lock()->getValue();
+    // The layer to track, resolved once against what the source carries at the start frame;
+    // a layer the source does not carry leaves it empty and every frame fetch fails.
+    ImageLayerDesc trackedLayer;
+    {
+        std::vector<ResolvedLayer> selected;
+        getNode()->resolveLayerKnob(start, ViewIdx(0), &selected);
+        if (!selected.empty()) {
+            trackedLayer = selected.front().desc;
+        }
+    }
 
     double formatWidth, formatHeight;
     Format f;
@@ -1173,7 +1139,7 @@ TrackerContext::trackMarkers(const std::list<TrackMarkerPtr>& markers,
     bool autoKeyingOnEnabledParamEnabled = _imp->autoKeyEnabled.lock()->getValue();
     
     /// The accessor and its cache is local to a track operation, it is wiped once the whole sequence track is finished.
-    TrackerFrameAccessorPtr accessor( new TrackerFrameAccessor(this, enabledChannels, formatHeight) );
+    TrackerFrameAccessorPtr accessor(new TrackerFrameAccessor(this, trackedLayer, formatHeight));
     mv::AutoTrackPtr trackContext( new mv::AutoTrack( accessor.get() ) );
     std::vector<TrackMarkerAndOptionsPtr> trackAndOptions;
     mv::TrackRegionOptions mvOptions;
@@ -1253,7 +1219,7 @@ TrackerContext::trackMarkers(const std::list<TrackMarkerPtr>& markers,
 
                     mv::Marker mvMarker;
 
-                    TrackerContextPrivate::natronTrackerToLibMVTracker(true, enabledChannels, *t->natronMarker, trackIndex, prevFramesIt->frame, frameStep, formatHeight, &mvMarker);
+                    TrackerContextPrivate::natronTrackerToLibMVTracker(true, *t->natronMarker, trackIndex, prevFramesIt->frame, frameStep, formatHeight, &mvMarker);
                     trackContext->AddMarker(mvMarker);
 
                     // insert in the front of the list so that the order is reversed
@@ -1269,7 +1235,7 @@ TrackerContext::trackMarkers(const std::list<TrackMarkerPtr>& markers,
 
                     mv::Marker mvMarker;
 
-                    TrackerContextPrivate::natronTrackerToLibMVTracker(true, enabledChannels, *t->natronMarker, trackIndex, prevFramesIt->frame, frameStep, formatHeight, &mvMarker);
+                    TrackerContextPrivate::natronTrackerToLibMVTracker(true, *t->natronMarker, trackIndex, prevFramesIt->frame, frameStep, formatHeight, &mvMarker);
                     trackContext->AddMarker(mvMarker);
 
                     // insert in the front of the list so that the order is reversed
@@ -1279,7 +1245,7 @@ TrackerContext::trackMarkers(const std::list<TrackMarkerPtr>& markers,
                 if (prevFramesIt == previousFramesOrdered.begin() && (int)previouslyComputedMarkersOrdered.size() != max_frames_to_predict_from) {
                     mv::Marker mvMarker;
 
-                    TrackerContextPrivate::natronTrackerToLibMVTracker(true, enabledChannels, *t->natronMarker, trackIndex, prevFramesIt->frame, frameStep, formatHeight, &mvMarker);
+                    TrackerContextPrivate::natronTrackerToLibMVTracker(true, *t->natronMarker, trackIndex, prevFramesIt->frame, frameStep, formatHeight, &mvMarker);
                     trackContext->AddMarker(mvMarker);
 
                     // insert in the front of the list so that the order is reversed
@@ -1463,9 +1429,11 @@ TrackerContextPrivate::refreshVisibilityFromTransformTypeInternal(TrackerTransfo
 
 #ifdef NATRON_TRACKER_ENABLE_TRACKER_PM
     bool usePM = usePatternMatching.lock()->getValue();
-    enableTrackRed.lock()->setSecret(usePM);
-    enableTrackGreen.lock()->setSecret(usePM);
-    enableTrackBlue.lock()->setSecret(usePM);
+    NodePtr trackerNode = node.lock();
+    KnobIPtr layerKnob = trackerNode ? trackerNode->getLayerKnob() : KnobIPtr();
+    if (layerKnob) {
+        layerKnob->setSecret(usePM);
+    }
     maxError.lock()->setSecret(usePM);
     maxIterations.lock()->setSecret(usePM);
     bruteForcePreTrack.lock()->setSecret(usePM);

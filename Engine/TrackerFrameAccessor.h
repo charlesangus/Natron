@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 
 #include <libmv/autotrack/frame_accessor.h>
 
@@ -40,16 +41,15 @@ class TrackerFrameAccessor
     : public mv::FrameAccessor
 {
 public:
-
+    /**
+     * @param layer The plane fetched from the tracker's source for every frame; an empty
+     * (zero-channel) layer makes every GetImage() call fail.
+     **/
     TrackerFrameAccessor(const TrackerContext* context,
-                         bool enabledChannels[3],
+                         const ImageLayerDesc& layer,
                          int formatHeight);
 
     virtual ~TrackerFrameAccessor();
-
-
-    void getEnabledChannels(bool* r, bool* g, bool* b) const;
-
 
     // Get a possibly-filtered version of a frame of a video. Downscale will
     // cause the input image to get downscaled by 2^downscale for pyramid access.

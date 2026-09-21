@@ -2754,7 +2754,7 @@ Node::createLayerKnob(const LayerKnobSpec& spec,
         knob = channelSet;
     } else {
         KnobLayerSelectPtr layerSelect = _imp->effect->createLayerSelectKnob(kNodeParamLayerSelect, tr(kNodeParamLayerSelectLabel).toStdString(), spec.withChannelButtons, false);
-        layerSelect->setHintToolTip(tr("The layer this node writes into."));
+        layerSelect->setHintToolTip(spec.role == LayerKnobSpec::eRoleTarget ? tr("The layer this node writes into.") : tr("The layer of the input this node reads."));
         knob = layerSelect;
     }
     knob->setAnimationEnabled(false);

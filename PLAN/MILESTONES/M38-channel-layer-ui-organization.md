@@ -285,7 +285,7 @@ become phases here.
 
 ## Phase 38.9: Evidence and checkpoint
 
-- [ ] M38.P9.T1 — After-shots
+- [x] M38.P9.T1 — After-shots
   - files: `build/m38scout/gui.py`, `build/m38scout/run.sh`
   - approach: same tags as 38.2.T1 plus Blur (set with three rows), Roto (New layer…), Tracker, mask footer, Write (All), Constant; produce `after-<tag>.png` beside `before-<tag>.png`; `dump.py` → `dump-after.txt`.
   - verify: all after-shots exist; `diff <(grep ChannelSet dump-after.txt | wc -l) …` counts match §3's table (channel set on Blur/Grade/Transform/Write/Merge; layer select on Constant/Ramp/Roto/RotoPaint/Tracker; none on Read/Shuffle/Premult/DeepMerge).

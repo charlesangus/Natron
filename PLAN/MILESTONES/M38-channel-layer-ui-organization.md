@@ -251,7 +251,7 @@ become phases here.
   - verify: Xvfb: Roto panel → "New layer…" → `mask [A]` → the combo shows `mask`, the project Layers page lists it with Used by = 1, Ctrl+Z restores the previous layer while `mask` stays registered; a Blur's channel-set combo has no "New layer…" entry.
   - size: M
 
-- [ ] M38.P7.T2 — PyPlug exporter carries referenced layers
+- [x] M38.P7.T2 — PyPlug exporter carries referenced layers
   - files: `Engine/NodeGroup.cpp`, `Tests/PyPlugExport_Test.cpp`
   - approach: in the export path that previously emitted `addUserLayer` (`NodeGroup.cpp:2733-2745`, removed in 38.1.T4) emit `app.addProjectLayer(name, channels)` once per non-built-in ID referenced by any of the three knob types inside the group, before node creation.
   - verify: gtest: export a group containing a Roto targeting `mask [A]`; the script contains exactly one `addProjectLayer("mask", ["A"])` line before the Roto's creation; re-importing into a fresh project registers `mask`.

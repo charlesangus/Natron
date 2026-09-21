@@ -38,6 +38,9 @@
 #include "Engine/NodeSerialization.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
 
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
+#include "Engine/KnobLayerSelect.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -371,8 +374,11 @@ Node::Implementation::restoreUserKnobsRecursive(const std::list<KnobSerializatio
             KnobButton* isBtn = dynamic_cast<KnobButton*>( sKnob.get() );
             KnobSeparator* isSep = dynamic_cast<KnobSeparator*>( sKnob.get() );
             KnobParametric* isParametric = dynamic_cast<KnobParametric*>( sKnob.get() );
+            KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(sKnob.get());
+            KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(sKnob.get());
+            KnobChannelSelect* isChannelSelect = dynamic_cast<KnobChannelSelect*>(sKnob.get());
 
-            assert(isInt || isDbl || isBool || isChoice || isColor || isStr || isFile || isOutFile || isPath || isBtn || isSep || isParametric);
+            assert(isInt || isDbl || isBool || isChoice || isColor || isStr || isFile || isOutFile || isPath || isBtn || isSep || isParametric || isChannelSet || isLayerSelect || isChannelSelect);
 
             if (isInt) {
                 KnobIntPtr k;
@@ -598,6 +604,40 @@ Node::Implementation::restoreUserKnobsRecursive(const std::list<KnobSerializatio
                     k = AppManager::createKnob<KnobParametric>(effect.get(), isRegular->getLabel(), sKnob->getDimension(), false);
                 } else {
                     k = std::dynamic_pointer_cast<KnobParametric>(found);
+                    if (!k) {
+                        continue;
+                    }
+                }
+                knob = k;
+            } else if (isChannelSet) {
+                KnobChannelSetPtr k;
+                if (!found) {
+                    k = AppManager::createKnob<KnobChannelSet>(effect.get(), isRegular->getLabel(), sKnob->getDimension(), false);
+                } else {
+                    k = std::dynamic_pointer_cast<KnobChannelSet>(found);
+                    if (!k) {
+                        continue;
+                    }
+                }
+                knob = k;
+            } else if (isLayerSelect) {
+                KnobLayerSelectPtr k;
+                if (!found) {
+                    k = AppManager::createKnob<KnobLayerSelect>(effect.get(), isRegular->getLabel(), sKnob->getDimension(), false);
+                    k->setWithChannelButtons(isLayerSelect->getWithChannelButtons());
+                } else {
+                    k = std::dynamic_pointer_cast<KnobLayerSelect>(found);
+                    if (!k) {
+                        continue;
+                    }
+                }
+                knob = k;
+            } else if (isChannelSelect) {
+                KnobChannelSelectPtr k;
+                if (!found) {
+                    k = AppManager::createKnob<KnobChannelSelect>(effect.get(), isRegular->getLabel(), sKnob->getDimension(), false);
+                } else {
+                    k = std::dynamic_pointer_cast<KnobChannelSelect>(found);
                     if (!k) {
                         continue;
                     }

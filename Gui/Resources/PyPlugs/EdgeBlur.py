@@ -38,9 +38,7 @@ def createInstance(app,group):
 
     # Create the user parameters
     lastNode.controlsPage = lastNode.createPageParam("controlsPage", "Controls")
-    param = lastNode.createBooleanParam("Blur1NatronOfxParamProcessR", "R")
-    param.setDefaultValue(True)
-    param.restoreDefaultValue()
+    param = lastNode.createChannelSetParam("Blur1channels", "Channels")
 
     # Add the param to the page
     lastNode.controlsPage.addParam(param)
@@ -48,50 +46,7 @@ def createInstance(app,group):
     # Set param properties
     param.setHelp("")
     param.setAddNewLine(True)
-    param.setAnimationEnabled(False)
-    lastNode.Blur1NatronOfxParamProcessR = param
-    del param
-
-    param = lastNode.createBooleanParam("Blur1NatronOfxParamProcessG", "G")
-    param.setDefaultValue(True)
-    param.restoreDefaultValue()
-
-    # Add the param to the page
-    lastNode.controlsPage.addParam(param)
-
-    # Set param properties
-    param.setHelp("")
-    param.setAddNewLine(False)
-    param.setAnimationEnabled(False)
-    lastNode.Blur1NatronOfxParamProcessG = param
-    del param
-
-    param = lastNode.createBooleanParam("Blur1NatronOfxParamProcessB", "B")
-    param.setDefaultValue(True)
-    param.restoreDefaultValue()
-
-    # Add the param to the page
-    lastNode.controlsPage.addParam(param)
-
-    # Set param properties
-    param.setHelp("")
-    param.setAddNewLine(False)
-    param.setAnimationEnabled(False)
-    lastNode.Blur1NatronOfxParamProcessB = param
-    del param
-
-    param = lastNode.createBooleanParam("Blur1NatronOfxParamProcessA", "A")
-    param.setDefaultValue(True)
-    param.restoreDefaultValue()
-
-    # Add the param to the page
-    lastNode.controlsPage.addParam(param)
-
-    # Set param properties
-    param.setHelp("")
-    param.setAddNewLine(False)
-    param.setAnimationEnabled(False)
-    lastNode.Blur1NatronOfxParamProcessA = param
+    lastNode.Blur1channels = param
     del param
 
     param = lastNode.createBooleanParam("externalMatte", "External Matte")
@@ -213,24 +168,9 @@ def createInstance(app,group):
     lastNode.setColor(0.8, 0.5, 0.3)
     groupEdgeDetect1 = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessR")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessG")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessB")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessA")
-    if param is not None:
-        param.setValue(True)
+        param.setChannels(["A"])
         del param
 
     param = lastNode.getParam("multiChannel")
@@ -255,24 +195,9 @@ def createInstance(app,group):
     lastNode.setColor(0.48, 0.66, 1)
     groupGamma1 = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessR")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessG")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessB")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessA")
-    if param is not None:
-        param.setValue(True)
+        param.setChannels(["A"])
         del param
 
     param = lastNode.getParam("value")
@@ -479,17 +404,8 @@ def createInstance(app,group):
     param.setExpression("thisGroup.edgeMult.get()", False, 2)
     param.setExpression("thisGroup.edgeMult.get()", False, 3)
     del param
-    param = groupBlur1.getParam("NatronOfxParamProcessR")
-    group.getParam("Blur1NatronOfxParamProcessR").setAsAlias(param)
-    del param
-    param = groupBlur1.getParam("NatronOfxParamProcessG")
-    group.getParam("Blur1NatronOfxParamProcessG").setAsAlias(param)
-    del param
-    param = groupBlur1.getParam("NatronOfxParamProcessB")
-    group.getParam("Blur1NatronOfxParamProcessB").setAsAlias(param)
-    del param
-    param = groupBlur1.getParam("NatronOfxParamProcessA")
-    group.getParam("Blur1NatronOfxParamProcessA").setAsAlias(param)
+    param = groupBlur1.getParam("channels")
+    group.getParam("Blur1channels").setAsAlias(param)
     del param
     param = groupBlur1.getParam("size")
     param.slaveTo(groupEdgeDetect1.getParam("blurSize"), 0, 0)

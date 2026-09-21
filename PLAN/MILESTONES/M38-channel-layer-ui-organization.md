@@ -245,7 +245,7 @@ become phases here.
 
 ## Phase 38.7: "New layer…" (M36)
 
-- [ ] M38.P7.T1 — Sentinel entry on target knobs → `NewLayerDialog` → `Project::addLayer` → select
+- [x] M38.P7.T1 — Sentinel entry on target knobs → `NewLayerDialog` → `Project::addLayer` → select
   - files: `Gui/LayerChannelRow.cpp`, `Gui/KnobGuiLayerSelect.cpp`, `Gui/NewLayerDialog.cpp`
   - approach: §7: `addItemNew` on target-role combos; on selection open the dialog, call `Project::addLayer(desc, eOriginUser)`, on success push one `KnobUndoCommand` setting the new ID, on cancel/refusal revert the combo without an undo entry and show the registry's message verbatim.
   - verify: Xvfb: Roto panel → "New layer…" → `mask [A]` → the combo shows `mask`, the project Layers page lists it with Used by = 1, Ctrl+Z restores the previous layer while `mask` stays registered; a Blur's channel-set combo has no "New layer…" entry.

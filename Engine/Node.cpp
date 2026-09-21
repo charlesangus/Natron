@@ -5618,6 +5618,7 @@ Node::onEffectKnobValueChanged(KnobI* what,
 
     if (!ret && (what == _imp->layerKnob.lock().get())) {
         _imp->notifyLayerReferencesChanged();
+        s_layerSelectionChanged();
         ret = true;
     }
 
@@ -5968,7 +5969,7 @@ Node::Implementation::onLayerChanged(int inputNb,
             _publicInterface->refreshEnabledKnobsLabel(comp);
         }
 
-        _publicInterface->s_outputLayerChanged();
+        _publicInterface->s_layerSelectionChanged();
     }
     notifyLayerReferencesChanged();
 }
@@ -7937,7 +7938,7 @@ Node::refreshChannelSelectors()
             if (menuChanged) {
                 hasChanged = true;
                 if (inputNb == -1) {
-                    s_outputLayerChanged();
+                    s_layerSelectionChanged();
                 }
             }
         }

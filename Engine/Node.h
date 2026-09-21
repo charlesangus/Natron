@@ -1512,7 +1512,7 @@ private:
 
     std::string getFullyQualifiedNameInternal(const std::string& scriptName) const;
 
-    void s_outputLayerChanged() { Q_EMIT outputLayerChanged(); }
+    void s_layerSelectionChanged() { Q_EMIT layerSelectionChanged(); }
 
 public Q_SLOTS:
 
@@ -1568,7 +1568,7 @@ Q_SIGNALS:
 
     void availableViewsChanged();
 
-    void outputLayerChanged();
+    void layerSelectionChanged();
 
     /**
      * @brief Emitted after refreshChannelSelectors() has run, whether or not a legacy choice

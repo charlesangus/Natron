@@ -442,7 +442,7 @@ public Q_SLOTS:
 
     void onAvailableViewsChanged();
 
-    void onOutputLayerChanged();
+    void onLayerSelectionChanged();
 
     void onSettingsPanelClosed(bool closed);
 

@@ -52,6 +52,7 @@ set(Tests_SOURCES
     OSGLContext_Test.cpp
     ProjectOCIO_Test.cpp
     ProjectSerialization_Test.cpp
+    PyPlugExport_Test.cpp
     RenderRange_Test.cpp
     RotoLayer_Test.cpp
     TrackerLayer_Test.cpp

@@ -2632,6 +2632,63 @@ exportKnobLinks(int indentLevel,
 } // exportKnobLinks
 
 static void
+exportReferencedProjectLayers(int indentLevel,
+                              const NodeCollection* collection,
+                              QTextStream& ts)
+{
+    assert(collection);
+
+    std::set<std::string> referencedLayerIDs;
+    NodesList nodes;
+    collection->getNodes_recursive(nodes, true);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        (*it)->getReferencedLayerIDs(&referencedLayerIDs);
+    }
+    if (referencedLayerIDs.empty()) {
+        return;
+    }
+
+    AppInstancePtr app = collection->getApplication();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (!project) {
+        return;
+    }
+
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> registrySnapshot = project->getLayerRegistrySnapshot();
+    bool hasEmitted = false;
+    for (std::set<std::string>::const_iterator idIt = referencedLayerIDs.begin(); idIt != referencedLayerIDs.end(); ++idIt) {
+        const LayerRegistryEntry* entry = 0;
+        for (std::vector<LayerRegistryEntry>::const_iterator eIt = registrySnapshot->begin(); eIt != registrySnapshot->end(); ++eIt) {
+            if (eIt->desc.getLayerID() == *idIt) {
+                entry = &(*eIt);
+                break;
+            }
+        }
+        // Built-in layers (Color, disparity, motion, ...) are always available in a fresh project: nothing to recreate.
+        if (!entry || entry->origin == LayerRegistryEntry::eOriginBuiltin) {
+            continue;
+        }
+
+        QString channelsStr = QString::fromUtf8("[");
+        const std::vector<std::string>& channels = entry->desc.getChannels();
+        for (std::size_t c = 0; c < channels.size(); ++c) {
+            if (c > 0) {
+                channelsStr += QString::fromUtf8(", ");
+            }
+            channelsStr += ESC(channels[c]);
+        }
+        channelsStr += QString::fromUtf8("]");
+
+        WRITE_INDENT(indentLevel);
+        WRITE_STRING(QString::fromUtf8("app.addProjectLayer(") + ESC(*idIt) + QString::fromUtf8(", ") + channelsStr + QString::fromUtf8(")"));
+        hasEmitted = true;
+    }
+    if (hasEmitted) {
+        WRITE_STATIC_LINE("");
+    }
+} // exportReferencedProjectLayers
+
+static void
 exportGroupInternal(int indentLevel,
                     const NodeCollection* collection,
                     const NodePtr& upperLevelGroupNode,
@@ -2870,6 +2927,7 @@ NodeCollection::exportGroupToPython(const QString& pluginID,
 
     WRITE_STATIC_LINE("def createInstance(app,group):");
 
+    exportReferencedProjectLayers(1, this, ts);
     exportGroupInternal(1, this, NodePtr(), QString(), ts);
 
     ///Import user hand-written code

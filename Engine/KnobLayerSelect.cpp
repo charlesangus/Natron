@@ -157,10 +157,9 @@ KnobLayerSelect::getLayerAndChannels(std::string* layerID,
     }
 }
 
-static void
-setLayerAndChannels(KnobLayerSelect* knob,
-                    const std::string& layerID,
-                    const std::vector<std::string>& channels)
+std::string
+KnobLayerSelect::encode(const std::string& layerID,
+                        const std::vector<std::string>& channels)
 {
     std::list<std::vector<std::string>> table;
     std::vector<std::string> row(2);
@@ -168,7 +167,16 @@ setLayerAndChannels(KnobLayerSelect* knob,
     row[0] = layerID;
     row[1] = joinChannels(channels);
     table.push_back(row);
-    knob->setValue(knob->encodeToKnobTableFormat(table), ViewSpec::all(), 0, eValueChangedReasonNatronInternalEdited, 0);
+
+    return encodeToKnobTableFormat(table);
+}
+
+static void
+setLayerAndChannels(KnobLayerSelect* knob,
+                    const std::string& layerID,
+                    const std::vector<std::string>& channels)
+{
+    knob->setValue(knob->encode(layerID, channels), ViewSpec::all(), 0, eValueChangedReasonNatronInternalEdited, 0);
 }
 
 std::string

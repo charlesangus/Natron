@@ -1388,6 +1388,12 @@ public:
     void listLayersForKnob(const KnobIPtr& knob, double time, ViewIdx view, std::list<ImageLayerDesc>* layers) const;
 
     /**
+     * @brief Whether listLayersForKnob() lists the project registry for this knob (a target
+     * knob) rather than an input's present layers. An alias reports its master's role.
+     **/
+    bool isTargetLayerKnob(const KnobIPtr& knob) const;
+
+    /**
      * @brief Resolves the layer knob (channel set or layer select) against the layers it is
      * bound to at the given time and view. Returns false when the node has no layer knob,
      * in which case selected is left empty.

@@ -5792,6 +5792,25 @@ Node::listLayersForKnob(const KnobIPtr& knob,
 } // Node::listLayersForKnob
 
 bool
+Node::isTargetLayerKnob(const KnobIPtr& knob) const
+{
+    if (!knob) {
+        return false;
+    }
+    KnobIPtr master = knob->getAliasMaster();
+    if (master) {
+        EffectInstance* masterEffect = dynamic_cast<EffectInstance*>(master->getHolder());
+        NodePtr masterNode = masterEffect ? masterEffect->getNode() : NodePtr();
+
+        return masterNode && masterNode.get() != this && masterNode->isTargetLayerKnob(master);
+    }
+
+    std::map<const KnobI*, LayerKnobSource>::const_iterator found = _imp->layerKnobSources.find(knob.get());
+
+    return found != _imp->layerKnobSources.end() && found->second.role == LayerKnobSpec::eRoleTarget;
+}
+
+bool
 Node::resolveLayerKnob(double time,
                        ViewIdx view,
                        std::vector<ResolvedLayer>* selected) const

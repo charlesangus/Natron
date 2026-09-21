@@ -26,25 +26,18 @@
 #include "KnobGuiChannelSet.h"
 
 #include <algorithm>
-#include <list>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QHBoxLayout>
-#include <QTimer>
 #include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
-#include "Engine/AppInstance.h"
-#include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
-#include "Engine/Node.h"
-#include "Engine/Project.h"
 
 #include "Gui/Button.h"
-#include "Gui/KnobUndoCommand.h"
 #include "Gui/LayerChannelRow.h"
 
 NATRON_NAMESPACE_ENTER
@@ -69,67 +62,18 @@ toRowMode(ChannelSetRow::ModeEnum mode)
 
     return LayerChannelRow::eSetRowModeLayer;
 }
-
-const LayerChannelRow::LayerEntry*
-findEntry(const std::vector<LayerChannelRow::LayerEntry>& layers,
-          const std::string& id)
-{
-    for (std::size_t i = 0; i < layers.size(); ++i) {
-        if (layers[i].id == id) {
-            return &layers[i];
-        }
-    }
-
-    return 0;
-}
-
-bool
-sameLayers(const std::vector<LayerChannelRow::LayerEntry>& a,
-           const std::vector<LayerChannelRow::LayerEntry>& b)
-{
-    if (a.size() != b.size()) {
-        return false;
-    }
-    for (std::size_t i = 0; i < a.size(); ++i) {
-        if (a[i].id != b[i].id || a[i].label != b[i].label || a[i].channels != b[i].channels) {
-            return false;
-        }
-    }
-
-    return true;
-}
 } // namespace
 
 struct KnobGuiChannelSetPrivate {
     KnobChannelSetWPtr knob;
-    QWidget* container;
-    QVBoxLayout* layout;
     std::vector<LayerChannelRow*> rows;
     Button* addLayerButton;
-    std::vector<LayerChannelRow::LayerEntry> layers;
-    int userEditDepth;
-    bool refreshPending;
-    bool relistPending;
 
     KnobGuiChannelSetPrivate()
         : knob()
-        , container(0)
-        , layout(0)
         , rows()
         , addLayerButton(0)
-        , layers()
-        , userEditDepth(0)
-        , refreshPending(false)
-        , relistPending(false)
     {
-    }
-
-    NodePtr getNode() const
-    {
-        KnobChannelSetPtr k = knob.lock();
-        EffectInstance* effect = k ? dynamic_cast<EffectInstance*>(k->getHolder()) : 0;
-
-        return effect ? effect->getNode() : NodePtr();
     }
 
     int indexOf(const LayerChannelRow* row) const
@@ -138,66 +82,24 @@ struct KnobGuiChannelSetPrivate {
 
         return found == rows.end() ? -1 : (int)(found - rows.begin());
     }
-
-    void listLayers()
-    {
-        layers.clear();
-        KnobChannelSetPtr k = knob.lock();
-        NodePtr node = getNode();
-        if (!k || !node) {
-            return;
-        }
-        std::list<ImageLayerDesc> descs;
-        node->listLayersForKnob(k, &descs);
-        descs.sort([](const ImageLayerDesc& a, const ImageLayerDesc& b) {
-            return a.isColorLayer() && !b.isColorLayer();
-        });
-        for (std::list<ImageLayerDesc>::const_iterator it = descs.begin(); it != descs.end(); ++it) {
-            LayerChannelRow::LayerEntry entry;
-            entry.id = it->getLayerID();
-            entry.label = it->getLayerLabel();
-            entry.channels = it->getChannels();
-            layers.push_back(entry);
-        }
-    }
 };
 
 KnobGuiChannelSet::KnobGuiChannelSet(KnobIPtr knob,
                                      KnobGuiContainerI* container)
-    : KnobGui(knob, container)
+    : KnobGuiLayerChannelBase(knob, container)
     , _imp(new KnobGuiChannelSetPrivate())
 {
     _imp->knob = std::dynamic_pointer_cast<KnobChannelSet>(knob);
-
-    NodePtr node = _imp->getNode();
-    if (node) {
-        QObject::connect(node.get(), SIGNAL(layerListRefreshed()), this, SLOT(onLayerListRefreshed()));
-        AppInstancePtr app = node->getApp();
-        ProjectPtr project = app ? app->getProject() : ProjectPtr();
-        if (project) {
-            QObject::connect(project.get(), SIGNAL(projectLayersChanged()), this, SLOT(onLayerListRefreshed()));
-        }
-    }
 }
 
 KnobGuiChannelSet::~KnobGuiChannelSet()
 {
 }
 
-KnobIPtr
-KnobGuiChannelSet::getKnob() const
-{
-    return _imp->knob.lock();
-}
-
 void
 KnobGuiChannelSet::removeSpecificGui()
 {
-    if (_imp->container) {
-        _imp->container->deleteLater();
-    }
-    _imp->container = 0;
-    _imp->layout = 0;
+    KnobGuiLayerChannelBase::removeSpecificGui();
     _imp->rows.clear();
     _imp->addLayerButton = 0;
 }
@@ -227,14 +129,9 @@ KnobGuiChannelSet::getAddLayerButton() const
 void
 KnobGuiChannelSet::createWidget(QHBoxLayout* layout)
 {
-    _imp->container = new QWidget(layout->parentWidget());
-    _imp->layout = new QVBoxLayout(_imp->container);
-    _imp->layout->setContentsMargins(0, 0, 0, 0);
-    _imp->layout->setSpacing(2);
+    createContainer(layout);
 
-    layout->parentWidget()->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-
-    QWidget* addContainer = new QWidget(_imp->container);
+    QWidget* addContainer = new QWidget(getContainer());
     QHBoxLayout* addLayout = new QHBoxLayout(addContainer);
     addLayout->setContentsMargins(0, 0, 0, 0);
     _imp->addLayerButton = new Button(tr("+ Add layer"), addContainer);
@@ -243,27 +140,20 @@ KnobGuiChannelSet::createWidget(QHBoxLayout* layout)
     QObject::connect(_imp->addLayerButton, SIGNAL(clicked()), this, SLOT(onAddLayerClicked()));
     addLayout->addWidget(_imp->addLayerButton);
     addLayout->addStretch();
-    _imp->layout->addWidget(addContainer);
-
-    enableRightClickMenu(_imp->container, 0);
+    getContainerLayout()->addWidget(addContainer);
 
     refresh(true);
-
-    layout->addWidget(_imp->container);
 }
 
 void
-KnobGuiChannelSet::refresh(bool relistLayers)
+KnobGuiChannelSet::refreshWidgets()
 {
     KnobChannelSetPtr knob = _imp->knob.lock();
 
-    if (!knob || !_imp->container) {
+    if (!knob) {
         return;
     }
-    if (relistLayers) {
-        _imp->listLayers();
-    }
-
+    const std::vector<LayerChannelRow::LayerEntry>& layers = getLayers();
     const std::vector<ChannelSetRow> rows = knob->getRows();
 
     while (_imp->rows.size() > rows.size()) {
@@ -271,15 +161,15 @@ KnobGuiChannelSet::refresh(bool relistLayers)
         _imp->rows.pop_back();
         row->hide();
         row->disconnect(this);
-        _imp->layout->removeWidget(row);
+        getContainerLayout()->removeWidget(row);
         row->deleteLater();
     }
     const std::size_t firstNewRow = _imp->rows.size();
     while (_imp->rows.size() < rows.size()) {
         const bool first = _imp->rows.empty();
-        LayerChannelRow* row = new LayerChannelRow(first ? LayerChannelRow::eModeSetRow0 : LayerChannelRow::eModeSetRowN, _imp->container);
+        LayerChannelRow* row = new LayerChannelRow(first ? LayerChannelRow::eModeSetRow0 : LayerChannelRow::eModeSetRowN, getContainer());
         row->setRowRemovable(!first);
-        _imp->layout->insertWidget((int)_imp->rows.size(), row);
+        getContainerLayout()->insertWidget((int)_imp->rows.size(), row);
         QObject::connect(row, &LayerChannelRow::modeChosen, this, [this, row](LayerChannelRow::SetRowModeEnum mode) {
             onRowModeChosen(row, mode);
         });
@@ -302,14 +192,14 @@ KnobGuiChannelSet::refresh(bool relistLayers)
     for (std::size_t i = 0; i < rows.size(); ++i) {
         LayerChannelRow* row = _imp->rows[i];
         const ChannelSetRow& value = rows[i];
-        if (!sameLayers(row->getAvailableLayers(), _imp->layers)) {
-            row->setAvailableLayers(_imp->layers, false);
+        if (!sameLayerEntries(row->getAvailableLayers(), layers)) {
+            row->setAvailableLayers(layers, false);
         }
 
         const LayerChannelRow::SetRowModeEnum mode = toRowMode(value.mode);
         std::vector<std::string> enabled = value.channels;
         if (value.mode == ChannelSetRow::eModeLayer && enabled.empty()) {
-            const LayerChannelRow::LayerEntry* entry = findEntry(_imp->layers, value.layerOrPattern);
+            const LayerChannelRow::LayerEntry* entry = findLayer(value.layerOrPattern);
             if (entry) {
                 enabled = entry->channels;
             }
@@ -324,7 +214,7 @@ KnobGuiChannelSet::refresh(bool relistLayers)
             row->setSetRowValue(mode, value.layerOrPattern, enabled);
         }
         if (i >= firstNewRow) {
-            row->setAbsentMarker(tr("(not in input)"));
+            row->setAbsentMarker(getAbsentMarkerText());
         }
         row->setEnabled(i == 0 || restEnabled);
     }
@@ -333,71 +223,16 @@ KnobGuiChannelSet::refresh(bool relistLayers)
     if (previous) {
         QWidget::setTabOrder(previous, _imp->addLayerButton);
     }
-} // KnobGuiChannelSet::refresh
-
-void
-KnobGuiChannelSet::scheduleRefresh(bool relistLayers)
-{
-    _imp->relistPending = _imp->relistPending || relistLayers;
-    if (_imp->refreshPending) {
-        return;
-    }
-    _imp->refreshPending = true;
-    QTimer::singleShot(0, this, SLOT(onDeferredRefresh()));
-}
-
-void
-KnobGuiChannelSet::onDeferredRefresh()
-{
-    const bool relist = _imp->relistPending;
-
-    _imp->refreshPending = false;
-    _imp->relistPending = false;
-    refresh(relist);
-}
-
-void
-KnobGuiChannelSet::updateGUI(int /*dimension*/)
-{
-    // A row is still inside its own signal emission while the value it asked for is
-    // applied; rebuilding it there would delete the emitting widget.
-    if (_imp->userEditDepth > 0) {
-        scheduleRefresh(false);
-
-        return;
-    }
-    refresh(false);
-}
-
-void
-KnobGuiChannelSet::onLayerListRefreshed()
-{
-    if (_imp->userEditDepth > 0) {
-        scheduleRefresh(true);
-
-        return;
-    }
-    refresh(true);
-}
+} // KnobGuiChannelSet::refreshWidgets
 
 void
 KnobGuiChannelSet::pushRows(const std::vector<ChannelSetRow>& newRows)
 {
     KnobChannelSetPtr knob = _imp->knob.lock();
 
-    if (!knob) {
-        return;
+    if (knob) {
+        pushValue(knob->encodeRows(newRows));
     }
-    const std::string oldValue = knob->getValue();
-    const std::string newValue = knob->encodeRows(newRows);
-    if (oldValue == newValue) {
-        return;
-    }
-    KnobUndoCommand<std::string>* cmd = new KnobUndoCommand<std::string>(shared_from_this(), oldValue, newValue);
-    cmd->setMergeable(false);
-    ++_imp->userEditDepth;
-    pushUndoCommand(cmd);
-    --_imp->userEditDepth;
 }
 
 void
@@ -532,72 +367,15 @@ KnobGuiChannelSet::onAddLayerClicked()
     ChannelSetRow value;
     value.mode = ChannelSetRow::eModeLayer;
     value.layerOrPattern = kNatronColorLayerID;
-    for (std::size_t i = 0; i < _imp->layers.size(); ++i) {
-        if (!ImageLayerDesc::isColorLayer(_imp->layers[i].id)) {
-            value.layerOrPattern = _imp->layers[i].id;
+    const std::vector<LayerChannelRow::LayerEntry>& layers = getLayers();
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        if (!ImageLayerDesc::isColorLayer(layers[i].id)) {
+            value.layerOrPattern = layers[i].id;
             break;
         }
     }
     rows.push_back(value);
     pushRows(rows);
-}
-
-void
-KnobGuiChannelSet::_hide()
-{
-    if (_imp->container) {
-        _imp->container->hide();
-    }
-}
-
-void
-KnobGuiChannelSet::_show()
-{
-    if (_imp->container) {
-        _imp->container->show();
-    }
-}
-
-void
-KnobGuiChannelSet::setEnabled()
-{
-    if (_imp->container) {
-        _imp->container->setEnabled(getKnob()->isEnabled(0));
-    }
-}
-
-void
-KnobGuiChannelSet::setReadOnly(bool readOnly,
-                               int /*dimension*/)
-{
-    if (_imp->container) {
-        _imp->container->setEnabled(!readOnly);
-    }
-}
-
-void
-KnobGuiChannelSet::setDirty(bool /*dirty*/)
-{
-}
-
-void
-KnobGuiChannelSet::reflectAnimationLevel(int /*dimension*/,
-                                         AnimationLevelEnum /*level*/)
-{
-}
-
-void
-KnobGuiChannelSet::reflectExpressionState(int /*dimension*/,
-                                          bool /*hasExpr*/)
-{
-}
-
-void
-KnobGuiChannelSet::updateToolTip()
-{
-    if (_imp->container && hasToolTip()) {
-        _imp->container->setToolTip(toolTip());
-    }
 }
 
 NATRON_NAMESPACE_EXIT

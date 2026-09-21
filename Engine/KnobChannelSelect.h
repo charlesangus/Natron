@@ -105,6 +105,12 @@ public:
 
     void set(const std::string& value);
 
+    /**
+     * @brief The stored form of a value, for callers that apply the change through an
+     * undo command rather than set().
+     **/
+    std::string encode(const std::string& value);
+
     void setNone();
 
     bool isNone() const;

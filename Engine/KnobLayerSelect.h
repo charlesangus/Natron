@@ -131,6 +131,12 @@ public:
      **/
     void setChannels(const std::vector<std::string>& channels);
 
+    /**
+     * @brief The stored form of a layer plus channel selection, for callers that apply
+     * the change through an undo command rather than setLayer()/setChannels().
+     **/
+    std::string encode(const std::string& layerID, const std::vector<std::string>& channels);
+
     bool resolve(const std::list<ImageLayerDesc>& present, ResolvedLayer* resolved) const;
 
     std::string getSummary() const;

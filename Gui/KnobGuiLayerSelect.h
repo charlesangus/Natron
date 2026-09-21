@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef NATRON_GUI_KNOBGUICHANNELSET_H
-#define NATRON_GUI_KNOBGUICHANNELSET_H
+#ifndef NATRON_GUI_KNOBGUILAYERSELECT_H
+#define NATRON_GUI_KNOBGUILAYERSELECT_H
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -29,8 +29,6 @@
 #include "Global/Macros.h"
 
 #include <memory>
-#include <string>
-#include <vector>
 
 #include "Engine/EngineFwd.h"
 
@@ -39,15 +37,14 @@
 
 NATRON_NAMESPACE_ENTER
 
-struct ChannelSetRow;
-struct KnobGuiChannelSetPrivate;
+struct KnobGuiLayerSelectPrivate;
 
 /**
- * @brief The GUI of a KnobChannelSet: one LayerChannelRow per knob row plus an "Add layer"
- * button. Every user action on a row becomes one setValue of the whole encoded table,
- * pushed as its own undo step.
+ * @brief The GUI of a KnobLayerSelect: one LayerChannelRow in layer-select mode, with
+ * channel buttons when the knob was created with them. A target knob's combo also
+ * offers the "New layer..." entry.
  **/
-class KnobGuiChannelSet
+class KnobGuiLayerSelect
     : public KnobGuiLayerChannelBase {
     GCC_DIAG_SUGGEST_OVERRIDE_OFF
     Q_OBJECT
@@ -57,40 +54,29 @@ public:
     static KnobGui* BuildKnobGui(KnobIPtr knob,
                                  KnobGuiContainerI* container)
     {
-        return new KnobGuiChannelSet(knob, container);
+        return new KnobGuiLayerSelect(knob, container);
     }
 
-    KnobGuiChannelSet(KnobIPtr knob,
-                      KnobGuiContainerI* container);
+    KnobGuiLayerSelect(KnobIPtr knob,
+                       KnobGuiContainerI* container);
 
-    virtual ~KnobGuiChannelSet() OVERRIDE;
+    virtual ~KnobGuiLayerSelect() OVERRIDE;
 
     virtual void removeSpecificGui() OVERRIDE FINAL;
 
-    int getRowCount() const;
-    LayerChannelRow* getRow(int index) const;
-    Button* getAddLayerButton() const;
-
-public Q_SLOTS:
-
-    void onAddLayerClicked();
+    LayerChannelRow* getRow() const;
 
 protected:
     virtual void createWidget(QHBoxLayout* layout) OVERRIDE FINAL;
     virtual void refreshWidgets() OVERRIDE FINAL;
 
 private:
-    void onRowModeChosen(LayerChannelRow* row, int setRowMode);
-    void onRowLayerChosen(LayerChannelRow* row, const QString& layerID);
-    void onRowChannelToggled(LayerChannelRow* row);
-    void onRowPatternCommitted(LayerChannelRow* row, const QString& pattern);
-    void onRowRemoveRequested(LayerChannelRow* row);
+    void onLayerChosen(const QString& layerID);
+    void onChannelToggled();
 
-    void pushRows(const std::vector<ChannelSetRow>& newRows);
-
-    std::unique_ptr<KnobGuiChannelSetPrivate> _imp;
+    std::unique_ptr<KnobGuiLayerSelectPrivate> _imp;
 };
 
 NATRON_NAMESPACE_EXIT
 
-#endif // NATRON_GUI_KNOBGUICHANNELSET_H
+#endif // NATRON_GUI_KNOBGUILAYERSELECT_H

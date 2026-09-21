@@ -94,14 +94,21 @@ KnobChannelSelect::get() const
     return _cachedValue;
 }
 
-void
-KnobChannelSelect::set(const std::string& value)
+std::string
+KnobChannelSelect::encode(const std::string& value)
 {
     std::list<std::vector<std::string>> table;
     std::vector<std::string> row(1, value);
 
     table.push_back(row);
-    setValue(encodeToKnobTableFormat(table), ViewSpec::all(), 0, eValueChangedReasonNatronInternalEdited, 0);
+
+    return encodeToKnobTableFormat(table);
+}
+
+void
+KnobChannelSelect::set(const std::string& value)
+{
+    setValue(encode(value), ViewSpec::all(), 0, eValueChangedReasonNatronInternalEdited, 0);
 }
 
 void

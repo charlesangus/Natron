@@ -271,7 +271,7 @@ become phases here.
   - verify: `tools/ci/local/test.sh smoke debug` green; a Python background script instantiates each of the seven PyPlugs and asserts the inner node's `getRows()` matches the intended set (e.g. Fill: `Color [A]`); `ZRemap`/`ZMask` absent from `app.getPluginIDs()`.
   - size: M
 
-- [ ] M38.P8.T2a — User layer-knob params round-trip through PyPlug export and reload
+- [x] M38.P8.T2a — User layer-knob params round-trip through PyPlug export and reload
   - files: `Engine/NodeGroup.cpp`, `Engine/KnobLayerSelect.{h,cpp}`, `Engine/KnobSerialization.cpp` (if the flag needs a field), `Tests/PyPlugExport_Test.cpp`
   - approach: `exportGroupToPython` emits nothing for user-created `KnobChannelSet`/`KnobLayerSelect`/`KnobChannelSelect` params, so re-exporting EdgeBlur from the GUI would drop its `Blur1channels` master; add the `createChannelSetParam`/`createLayerSelectParam`/`createChannelSelectParam` emission (name, label, current value, alias links) next to the other user-param cases. `KnobLayerSelect::withChannelButtons` is a ctor flag not persisted by `KnobSerialization`, so a user-created layer select comes back buttonless after reload; persist it (serialization version bump if a new field is added) and emit it in the export.
   - verify: `Tests/PyPlugExport_Test.cpp`: a group with a user channel-set param aliased to an inner Blur's `channels` exports a `createChannelSetParam` line + the alias, and the round-trip (script executed, `createInstance`) rebuilds the alias so editing the master drives the Blur; a user layer select with buttons saved and reloaded reports `getWithChannelButtons()` true; `ctest -R "PyPlug|KnobLayerSelect"` green; full ctest green.

@@ -181,7 +181,7 @@ become phases here.
   - verify: an offscreen `QApplication` gtest (`QT_QPA_PLATFORM=offscreen`): entries order per mode, buttons rebuilt on layer change with all checked, invalid pattern sets the `dirty` property and tooltip, marker item present only while set; `clang-format` gate passes.
   - size: M
 
-- [ ] M38.P5.T2 — `KnobGuiChannelSet` with add/remove and one undo step per action
+- [x] M38.P5.T2 — `KnobGuiChannelSet` with add/remove and one undo step per action
   - files: `Gui/KnobGuiChannelSet.h`, `Gui/KnobGuiChannelSet.cpp`, `Gui/KnobGuiFactory.cpp`, `Gui/KnobUndoCommand.h`
   - approach: composite `QVBoxLayout` of rows + `[+ Add layer]` (precedent `KnobGuiTable.cpp:206-281`); every row signal → one `KnobUndoCommand<std::string>` with the new `setMergeable(false)`; row-0 `None/All` greys rows 1+; repopulate on `onChannelsSelectorRefreshed` and `projectLayersChanged`; no expression menu entry when `!supportsExpressions()`.
   - verify: Xvfb via `build/m38scout/`: Blur panel screenshot `panel-blur-set-0.png` matches the §2 mockup with rows Color / diffuse / regex; scripted Ctrl+Z after "add row → choose diffuse → toggle G" leaves exactly three undo entries and restores the panel state each step (assert via `getRows()` from `gui.py`).

@@ -225,7 +225,7 @@ become phases here.
   - verify: `Tests/WriteAllLayers_Test.cpp`: rows `specular[R,B]` alone → the EXR has channels `specular.R, specular.B` only (no R/G/B/A); rows `diffuse` alone → `diffuse.R, diffuse.G, diffuse.B`; the existing `Color + …` cases unchanged; `ctest -R WriteAllLayers` green; full `ctest` green; `tools/ci/local/test.sh smoke release` green after the ref bump.
   - size: L
 
-- [ ] M38.P6.T4 — Tracker: layer select, no buttons
+- [x] M38.P6.T4 — Tracker: layer select, no buttons
   - files: `Engine/TrackerContextPrivate.h`, `Engine/TrackerContextPrivate.cpp`, `Engine/TrackerFrameAccessor.cpp`, `Engine/TrackerNode.h`
   - approach: `KnobLayerSelect layer` (input-bound, input 0, no buttons) on the Tracking page where `trackRed/Green/Blue` were (`TrackerContextPrivate.cpp:216-243`, `.h:103-111`, reads `:1162-1165` deleted); `TrackerFrameAccessor.cpp:352-353` requests the resolved layer; `natronImageToLibMvFloatImage` (`:172-205`) averages R,G,B for Color and all channels otherwise; absent layer → no image → existing failure path.
   - verify: gtest (headless): tracking one marker over two frames of a synthetic sequence gives the same result on `Color` as before (golden from the current build) and identical on a `diffuse` copy of the same pixels; `dump.py` shows `[LayerSelect] layer` and no `trackRed`.

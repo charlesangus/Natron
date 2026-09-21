@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: paused
+status: running
 current: M38.P5.T3
-pm_heartbeat: 2026-09-20T21:22:58-04:00
+pm_heartbeat: 2026-09-20T22:11:25-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -240,12 +240,6 @@ future core work has solid ground to build on.
   (`format`, `lint-ci`, `build-and-test`) green throughout.
 
 # Open questions
-
-- **M38 run paused 2026-09-20 at the user's request** after M38.P5.T2 landed. Resume at
-  M38.P5.T3 (`KnobGuiLayerSelect` / `KnobGuiChannelSelect`) on branch
-  `milestone/m38-layer-channel-widget` (28 commits ahead of `main`, ctest 342/342 + smoke
-  green). Phases 38.1–38.4 done, 38.5 half done, 38.6–38.9 remaining; no PR opened yet.
-  Scratch evidence and harness scripts live under `build/m38scout/`.
 
 - **USD Python inside Natron's Python?** M19.P1.T1 builds USD with Python
   OFF (Shiboken6/PySide6 vs pxr coexistence). A Solaris-style "Python over

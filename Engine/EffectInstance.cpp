@@ -4445,7 +4445,9 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
     // Remove from this list all layers produced from this node to get the pass-through layers list
     std::list<ImageLayerDesc>& outputLayers = (*comps)[-1];
 
-    // Ensure the plug-in made the metadata layer available.
+    // Ensure the plug-in made the metadata layer available. An embedded encoder produces it by
+    // fetching it from its pass-through input, so the Write container's selection on that input
+    // decides whether the layer is there to produce at all.
     {
         std::list<ImageLayerDesc> metadataLayers;
         ImageLayerDesc metadataLayer, metadataPairedLayer;
@@ -4455,6 +4457,13 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
         }
         if (metadataLayer.getNumComponents() > 0) {
             metadataLayers.push_back(metadataLayer);
+        }
+        if (*passThroughInputNb >= 0) {
+            NodePtr node = getNode();
+            NodePtr ioContainer = node ? node->getIOContainer() : NodePtr();
+            if (ioContainer) {
+                ioContainer->getEffectInstance()->filterLayersForEmbeddedInput(*passThroughInputNb, &metadataLayers);
+            }
         }
         mergeLayersList(metadataLayers, &outputLayers);
     }

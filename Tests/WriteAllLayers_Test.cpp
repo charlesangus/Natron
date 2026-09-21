@@ -423,6 +423,63 @@ TEST_F(WriteAllLayersTest, WriteColorAndSpecularRedBlueWritesThoseChannelsOnly)
     QFile::remove(QString::fromStdString(path));
 } // TEST_F(WriteAllLayersTest, WriteColorAndSpecularRedBlueWritesThoseChannelsOnly)
 
+// A channel set without a Color row writes no Color: the host stops forcing the encoder's
+// metadata (Color) plane into its produced set once the container excludes it from the
+// encoder's input, and the encoder names a lone non-Color plane's channels after the layer.
+TEST_F(WriteAllLayersTest, WriteSpecularRedBlueAloneWritesNoColor)
+{
+    createFixtureWriter();
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    const std::vector<std::string> redBlue = { "R", "B" };
+    _channels->setLayer(0, "specular", &redBlue);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string path = (tmp.path() + QLatin1String("/specular_rb_only.exr")).toStdString();
+    _writer->setOutputFilesForWriter(path);
+
+    AppInstancePtr app = getApp();
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAndRead(app, _writer, path, &image, &error)) << error;
+
+    static const std::set<std::string> expected = { "specular.R", "specular.B" };
+    EXPECT_EQ(expected, channelSet(image));
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "specular.R"), 1e-4f);
+    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "specular.B"), 1e-4f);
+
+    QFile::remove(QString::fromStdString(path));
+} // TEST_F(WriteAllLayersTest, WriteSpecularRedBlueAloneWritesNoColor)
+
+TEST_F(WriteAllLayersTest, WriteDiffuseAloneWritesNoColor)
+{
+    createFixtureWriter();
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    _channels->setLayer(0, "diffuse", NULL);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string path = (tmp.path() + QLatin1String("/diffuse_only.exr")).toStdString();
+    _writer->setOutputFilesForWriter(path);
+
+    AppInstancePtr app = getApp();
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAndRead(app, _writer, path, &image, &error)) << error;
+
+    static const std::set<std::string> expected = { "diffuse.R", "diffuse.G", "diffuse.B" };
+    EXPECT_EQ(expected, channelSet(image));
+    expectDiffusePixels(image);
+
+    QFile::remove(QString::fromStdString(path));
+} // TEST_F(WriteAllLayersTest, WriteDiffuseAloneWritesNoColor)
+
 // The encoder's own R/G/B/A quad is adopted by the container: forced on, non-persistent and
 // locked hidden, since both GenericWriter and the host's own channel-quad refresh would
 // otherwise re-show the boxes matching the Color component count after every metadata pass.

@@ -151,9 +151,9 @@ fi
 # mystery CI failure on your PR. Bump them deliberately, and re-run this
 # script (it rebuilds when the stamp below no longer matches).
 #
-# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, seven commits ahead of
+# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, six commits ahead of
 # NatronGitHub/openfx-io and zero behind. Fork-and-fix is the standing
-# pattern for small changes to NatronGitHub repos. Five deltas:
+# pattern for small changes to NatronGitHub repos. Six deltas:
 #
 # 1. A CMakeLists.txt fix (SEEXPR2_INCLUDES/SEEXPR2_LIBRARIES ->
 #    SEEXPR2_INCLUDE_DIR/SEEXPR2_LIBRARY): upstream reads variable names its
@@ -237,6 +237,21 @@ fi
 #    EXTRASAMPLES tag now records unassociated rather than associated
 #    alpha; pixel bytes are unchanged either way.
 #
+# 6. A single non-color plane keeps its layer and channel names
+#    (charlesangus/openfx-io#5). GenericWriterPlugin::render sends a
+#    single-view, single-plane render through encode(), which receives only
+#    a channel count, and WriteOIIO::encode maps that count back to a color
+#    plane (1 -> A, 2 -> XY, 3 -> RGB, 4 -> RGBA). Upstream never hits this
+#    with anything but the color plane, but Natron's Write container drives
+#    the encoder from its channel set, so a Write whose set holds only
+#    `specular[R,B]` had those two channels land on disk as `X,Y`. The
+#    multi-plane path (beginEncodeParts/encodePart/endEncodeParts) already
+#    names channels from the plane string with the layer label prefixed,
+#    so the single-plane shortcut is now taken only for the color plane
+#    and a lone non-color plane goes through the parts API. WriteOIIO is
+#    the only multiplanar writer, so it is the only one the host can hand
+#    a non-color plane; the others keep their encode() path unchanged.
+#
 # The -1 sentinel guard is the first of delta 2's two commits and is
 # deliberately self-contained, so it can be offered upstream on its own; so
 # is delta 3, which is one commit and touches nothing else.
@@ -252,7 +267,7 @@ fi
 # openfx-io's own CI pins the same branch. Not forked -- wdas/SeExpr is not
 # a NatronGitHub repo and we carry no changes to it.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="9c1e45279058cc24a910d1ef708230956cc62a0b"
+OPENFX_IO_REF="9b558a7fc08382ebbd4ed0a71c39c63e25666de3"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 

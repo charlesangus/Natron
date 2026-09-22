@@ -40,6 +40,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Button.h"
 #include "Gui/ChannelColor.h"
 #include "Gui/ComboBox.h"
+#include "Gui/GuiDefines.h"
 #include "Gui/Label.h"
 #include "Gui/LineEdit.h"
 
@@ -122,6 +123,12 @@ LayerChannelRow::LayerChannelRow(ModeEnum mode,
     _layout->setContentsMargins(0, 0, 0, 0);
     _layout->setSpacing(3);
 
+    _removeButton = new Button(QString::fromUtf8("−"), this);
+    _removeButton->setToolTip(tr("Remove this layer from the set"));
+    _removeButton->setFocusPolicy(Qt::StrongFocus);
+    _removeButton->setFixedSize(NATRON_SMALL_BUTTON_SIZE, NATRON_SMALL_BUTTON_SIZE);
+    _layout->addWidget(_removeButton);
+
     _combo = new ComboBox(this);
     _layout->addWidget(_combo);
 
@@ -140,11 +147,6 @@ LayerChannelRow::LayerChannelRow(ModeEnum mode,
     _layout->addWidget(_matchesLabel);
 
     _layout->addStretch();
-
-    _removeButton = new Button(QString::fromUtf8("−"), this);
-    _removeButton->setToolTip(tr("Remove this layer from the set"));
-    _removeButton->setFocusPolicy(Qt::StrongFocus);
-    _layout->addWidget(_removeButton);
 
     QObject::connect(_combo, SIGNAL(currentIndexChanged(int)), this, SLOT(onComboIndexChanged(int)));
     QObject::connect(_patternEdit, SIGNAL(editingFinished()), this, SLOT(onPatternEditingFinished()));
@@ -260,6 +262,15 @@ bool
 LayerChannelRow::isRowRemovable() const
 {
     return _removable;
+}
+
+void
+LayerChannelRow::setRemoveColumnReserved(bool reserved)
+{
+    QSizePolicy policy = _removeButton->sizePolicy();
+
+    policy.setRetainSizeWhenHidden(reserved);
+    _removeButton->setSizePolicy(policy);
 }
 
 LayerChannelRow::SetRowModeEnum

@@ -38,6 +38,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/KnobChannelSet.h"
 
 #include "Gui/Button.h"
+#include "Gui/GuiDefines.h"
 #include "Gui/LayerChannelRow.h"
 
 NATRON_NAMESPACE_ENTER
@@ -134,9 +135,12 @@ KnobGuiChannelSet::createWidget(QHBoxLayout* layout)
     QWidget* addContainer = new QWidget(getContainer());
     QHBoxLayout* addLayout = new QHBoxLayout(addContainer);
     addLayout->setContentsMargins(0, 0, 0, 0);
-    _imp->addLayerButton = new Button(tr("+ Add layer"), addContainer);
-    _imp->addLayerButton->setToolTip(tr("Append a layer row to the set"));
+    // Sized and left-aligned like each row's [-] button, so it reads as the next cell of
+    // that column rather than a button of its own.
+    _imp->addLayerButton = new Button(QString::fromUtf8("+"), addContainer);
+    _imp->addLayerButton->setToolTip(tr("Add a layer row"));
     _imp->addLayerButton->setFocusPolicy(Qt::StrongFocus);
+    _imp->addLayerButton->setFixedSize(NATRON_SMALL_BUTTON_SIZE, NATRON_SMALL_BUTTON_SIZE);
     QObject::connect(_imp->addLayerButton, SIGNAL(clicked()), this, SLOT(onAddLayerClicked()));
     addLayout->addWidget(_imp->addLayerButton);
     addLayout->addStretch();
@@ -169,6 +173,7 @@ KnobGuiChannelSet::refreshWidgets()
         const bool first = _imp->rows.empty();
         LayerChannelRow* row = new LayerChannelRow(first ? LayerChannelRow::eModeSetRow0 : LayerChannelRow::eModeSetRowN, getContainer());
         row->setRowRemovable(!first);
+        row->setRemoveColumnReserved(true);
         getContainerLayout()->insertWidget((int)_imp->rows.size(), row);
         QObject::connect(row, &LayerChannelRow::modeChosen, this, [this, row](LayerChannelRow::SetRowModeEnum mode) {
             onRowModeChosen(row, mode);

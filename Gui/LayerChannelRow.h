@@ -45,7 +45,7 @@ class QHBoxLayout;
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief One "[ComboBox] [channel buttons...] | [pattern] matches: ... [-]" row shared by the
+ * @brief One "[-] [ComboBox] [channel buttons...] | [pattern] matches: ..." row shared by the
  * channel-set, layer-select and channel-select knob GUIs. It is a plain Qt widget fed with
  * plain data: it never touches a knob, a node or a project, and only reports user actions
  * through its signals. The owner is expected to apply the change to the knob and call the
@@ -121,6 +121,13 @@ public:
 
     void setRowRemovable(bool removable);
     bool isRowRemovable() const;
+
+    /**
+     * @brief Only rows sharing a "[-]" column with sibling rows (the channel-set) need the
+     * remove button to keep its footprint while hidden, so the combos below stay aligned.
+     * Single-row knob GUIs (layer-select, channel-select) leave this false and get no gap.
+     **/
+    void setRemoveColumnReserved(bool reserved);
 
     SetRowModeEnum getSetRowMode() const;
     std::string getCurrentLayerID() const;

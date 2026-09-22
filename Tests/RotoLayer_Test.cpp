@@ -329,3 +329,75 @@ TEST_F(RotoLayerTest, RotoWritesAlphaOnlyIntoColor)
 
     project->reset(false, true);
 }
+
+// The RotoPaint container is the only knowing reference to "mask": its internal per-item
+// Effect/Merge nodes and its global-merge node only follow the container via
+// Node::retargetLayerKnob and must not each count as a separate user.
+TEST_F(RotoLayerTest, LayerUsersCountOnlyTheRotoPaintContainer)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    std::vector<std::string> a(1, "A");
+    std::string error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", "mask", "", a), LayerRegistryEntry::eOriginUser, &error)) << error;
+
+    KnobLayerSelectPtr layer;
+    NodePtr roto = createRotoOnReader(PLUGINID_NATRON_ROTOPAINT, &layer);
+    ASSERT_TRUE(bool(roto));
+    ASSERT_TRUE(bool(layer));
+    ASSERT_TRUE(bool(addSquare(roto)));
+
+    layer->setLayer("mask");
+
+    std::list<NodePtr> users;
+    project->getLayerUsers("mask", &users);
+    ASSERT_EQ(1u, users.size());
+    EXPECT_EQ(roto.get(), users.front().get());
+
+    EXPECT_FALSE(project->removeLayer("mask", &error));
+    const std::string rotoName = roto->getScriptName_mt_safe();
+    ASSERT_NE(std::string::npos, error.find(rotoName)) << error;
+    EXPECT_EQ(error.find(rotoName), error.rfind(rotoName)) << error;
+    EXPECT_EQ(std::string::npos, error.find("_Effect")) << error;
+    EXPECT_EQ(std::string::npos, error.find("_Merge")) << error;
+    EXPECT_EQ(std::string::npos, error.find("globalMerge")) << error;
+
+    project->reset(false, true);
+}
+
+// Roto (single-shape, non-paint) has the same internal Effect/Merge nodes as RotoPaint but no
+// global-merge node; the container is still the sole user.
+TEST_F(RotoLayerTest, LayerUsersCountOnlyTheRotoContainer)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    std::vector<std::string> a(1, "A");
+    std::string error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", "mask", "", a), LayerRegistryEntry::eOriginUser, &error)) << error;
+
+    KnobLayerSelectPtr layer;
+    NodePtr roto = createRotoOnReader(PLUGINID_NATRON_ROTO, &layer);
+    ASSERT_TRUE(bool(roto));
+    ASSERT_TRUE(bool(layer));
+    ASSERT_TRUE(bool(addSquare(roto)));
+
+    layer->setLayer("mask");
+
+    std::list<NodePtr> users;
+    project->getLayerUsers("mask", &users);
+    ASSERT_EQ(1u, users.size());
+    EXPECT_EQ(roto.get(), users.front().get());
+
+    EXPECT_FALSE(project->removeLayer("mask", &error));
+    const std::string rotoName = roto->getScriptName_mt_safe();
+    ASSERT_NE(std::string::npos, error.find(rotoName)) << error;
+    EXPECT_EQ(error.find(rotoName), error.rfind(rotoName)) << error;
+    EXPECT_EQ(std::string::npos, error.find("_Effect")) << error;
+    EXPECT_EQ(std::string::npos, error.find("_Merge")) << error;
+
+    project->reset(false, true);
+}

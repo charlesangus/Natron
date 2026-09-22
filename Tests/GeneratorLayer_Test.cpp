@@ -387,3 +387,51 @@ TEST_F(GeneratorLayerTest, ConstantOverSourceWritesTwoChannelsOfColor)
 
     project->reset(false, true);
 }
+
+// The plug-in's own "Output Components" choice is redundant with the layer select's channel
+// buttons and openfx-misc's Generator base reads it unconditionally, so the host must hide it.
+// It stays pinned to RGBA regardless of the selection: the buttons choose which channels the
+// plug-in writes, but the others still pass through (or are zero with no source), so the
+// stream itself always carries all four channels.
+TEST_F(GeneratorLayerTest, ConstantOutputComponentsIsLockedToRGBA)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    KnobLayerSelectPtr layer;
+    NodePtr constant = createGenerator("net.sf.openfx.ConstantPlugin", &layer);
+    ASSERT_TRUE(bool(constant));
+    ASSERT_TRUE(bool(layer));
+
+    KnobChoice* outputComponents = dynamic_cast<KnobChoice*>(constant->getKnobByName("outputComponents").get());
+    ASSERT_TRUE(outputComponents);
+
+    // Default target is Color with every channel selected.
+    EXPECT_EQ(std::string(kNatronColorLayerID), layer->getLayer());
+    EXPECT_TRUE(outputComponents->getIsSecret());
+    EXPECT_TRUE(outputComponents->isSecretLocked());
+    EXPECT_FALSE(outputComponents->getIsPersistent());
+    EXPECT_EQ(std::string("RGBA"), outputComponents->getActiveEntry().id);
+
+    layer->setChannels(std::vector<std::string>(1, "A"));
+    EXPECT_TRUE(outputComponents->getIsSecret());
+    EXPECT_FALSE(outputComponents->getIsPersistent());
+    EXPECT_EQ(std::string("RGBA"), outputComponents->getActiveEntry().id);
+
+    std::vector<std::string> rgb;
+    rgb.push_back("R");
+    rgb.push_back("G");
+    rgb.push_back("B");
+    layer->setChannels(rgb);
+    EXPECT_TRUE(outputComponents->getIsSecret());
+    EXPECT_FALSE(outputComponents->getIsPersistent());
+    EXPECT_EQ(std::string("RGBA"), outputComponents->getActiveEntry().id);
+
+    layer->setLayer("depth");
+    EXPECT_TRUE(outputComponents->getIsSecret());
+    EXPECT_FALSE(outputComponents->getIsPersistent());
+    EXPECT_EQ(std::string("RGBA"), outputComponents->getActiveEntry().id);
+
+    project->reset(false, true);
+}

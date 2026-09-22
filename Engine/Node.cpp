@@ -114,6 +114,11 @@
 ///at most every...
 #define NATRON_RENDER_GRAPHS_HINTS_REFRESH_RATE_SECONDS 1
 
+// The openfx-misc generator base's own components choice (ofxsGenerator.h); it reads this
+// unconditionally, so a generator's layer select must keep it in sync rather than leave it
+// as a second, redundant control on the panel.
+#define kParamGeneratorOutputComponents "outputComponents"
+
 NATRON_NAMESPACE_ENTER
 
 using std::make_pair;
@@ -2635,26 +2640,70 @@ Node::adoptChannelQuad()
             enabledChannels.push_back(channelShortNames[i]);
         }
     }
-    if (enabledChannels.size() == 4) {
-        return;
-    }
 
     KnobIPtr layerKnob = _imp->layerKnob.lock();
     KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(layerKnob.get());
     KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get());
-    if (isChannelSet) {
-        std::vector<ChannelSetRow> rows = KnobChannelSet::defaultRows();
-        if (enabledChannels.empty()) {
-            rows[0].mode = ChannelSetRow::eModeNone;
-        } else {
-            rows[0].channels = enabledChannels;
+
+    // All four channels already enabled by default: the layer knob's "every channel" state
+    // already matches, so there is nothing to seed on it.
+    if (enabledChannels.size() != 4) {
+        if (isChannelSet) {
+            std::vector<ChannelSetRow> rows = KnobChannelSet::defaultRows();
+            if (enabledChannels.empty()) {
+                rows[0].mode = ChannelSetRow::eModeNone;
+            } else {
+                rows[0].channels = enabledChannels;
+            }
+            isChannelSet->setDefaultValue(isChannelSet->encodeRows(rows));
+        } else if (isLayerSelect && isLayerSelect->getWithChannelButtons()) {
+            isLayerSelect->setChannels(enabledChannels);
+            isLayerSelect->setDefaultValue(isLayerSelect->getValue());
         }
-        isChannelSet->setDefaultValue(isChannelSet->encodeRows(rows));
-    } else if (isLayerSelect && isLayerSelect->getWithChannelButtons()) {
-        isLayerSelect->setChannels(enabledChannels);
-        isLayerSelect->setDefaultValue(isLayerSelect->getValue());
+    }
+
+    if (isLayerSelect && isLayerSelect->getWithChannelButtons()) {
+        // The layer select now owns which channels the generator writes; the plug-in's own
+        // outputComponents choice would otherwise stay on the panel as a second, redundant
+        // control, and openfx-misc generators read it unconditionally (unlike GenericWriter,
+        // there is no secret gate to piggyback on).
+        KnobChoicePtr outputComponents = _imp->effect->getKnobByNameAndType<KnobChoice>(kParamGeneratorOutputComponents);
+        if (outputComponents) {
+            outputComponents->setSecret(true);
+            outputComponents->setSecretLocked(true);
+            outputComponents->setIsPersistent(false);
+        }
+        refreshGeneratorOutputComponentsKnob();
     }
 } // Node::adoptChannelQuad
+
+void
+Node::refreshGeneratorOutputComponentsKnob()
+{
+    KnobIPtr layerKnob = _imp->layerKnob.lock();
+    KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get());
+    if (!isLayerSelect || !isLayerSelect->getWithChannelButtons()) {
+        return;
+    }
+    KnobChoicePtr outputComponents = _imp->effect->getKnobByNameAndType<KnobChoice>(kParamGeneratorOutputComponents);
+    if (!outputComponents) {
+        return;
+    }
+
+    // The layer select's buttons choose which channels the plug-in writes; the rest pass
+    // through unchanged (or are zero with no source), so the stream itself must always carry
+    // all four channels, whatever the selection: outputComponents is pinned to RGBA.
+    std::vector<ChoiceOption> entries = outputComponents->getEntries_mt_safe();
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].id != "RGBA") {
+            continue;
+        }
+        if (outputComponents->getValue() != (int)i) {
+            outputComponents->setValue((int)i);
+        }
+        break;
+    }
+} // Node::refreshGeneratorOutputComponentsKnob
 
 void
 Node::createLayerKnob(const LayerKnobSpec& spec,
@@ -4790,6 +4839,43 @@ Node::isMaskEnabled(int inputNb) const
     }
 }
 
+// Shared with refreshChannelSelectors(), which pattern-matches this prefix to tell a stale
+// diagnostic of this check's own from an unrelated persistent message before clearing it.
+static const char kMaskChannelMissingMessagePrefix[] = "Mask channel ";
+
+bool
+Node::checkMaskChannelsPresent(std::string* message) const
+{
+    if (_imp->maskSelectors.empty()) {
+        return true;
+    }
+    for (std::map<int, MaskSelector>::const_iterator it = _imp->maskSelectors.begin(); it != _imp->maskSelectors.end(); ++it) {
+        int inputNb = it->first;
+        if (!getInput(inputNb)) {
+            continue;
+        }
+        if (!isMaskEnabled(inputNb)) {
+            continue;
+        }
+        KnobChannelSelectPtr channel = it->second.channel.lock();
+        if (!channel || channel->isNone()) {
+            continue;
+        }
+        std::list<ImageLayerDesc> present;
+        listLayersForKnob(channel, &present);
+        if (channel->resolve(present, 0, 0)) {
+            continue;
+        }
+        if (message) {
+            *message = std::string(kMaskChannelMissingMessagePrefix) + channel->get() + " is not in the " + getInputLabel(inputNb) + " input";
+        }
+
+        return false;
+    }
+
+    return true;
+} // Node::checkMaskChannelsPresent
+
 void
 Node::lock(const ImagePtr & image)
 {
@@ -5485,6 +5571,12 @@ Node::getReferencedLayerIDs(std::set<std::string>* ids) const
     }
 
     KnobIPtr layerKnob = _imp->layerKnob.lock();
+    std::map<const KnobI*, LayerKnobSource>::const_iterator found = _imp->layerKnobSources.find(layerKnob.get());
+    if (found != _imp->layerKnobSources.end() && found->second.drivenByContainer) {
+        // A container (e.g. RotoPaint) drives this knob's value; it is not a separate reference.
+        return;
+    }
+
     if (KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(layerKnob.get())) {
         isChannelSet->getReferencedLayerIDs(ids);
     } else if (KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get())) {
@@ -5626,7 +5718,9 @@ Node::retargetLayerKnob(const std::string& layerID)
         return;
     }
     _imp->layerKnobSpec.role = LayerKnobSpec::eRoleTarget;
-    _imp->layerKnobSources[layerKnob.get()] = LayerKnobSource(-1, LayerKnobSpec::eRoleTarget);
+    LayerKnobSource source(-1, LayerKnobSpec::eRoleTarget);
+    source.drivenByContainer = true;
+    _imp->layerKnobSources[layerKnob.get()] = source;
 
     if (KnobChannelSet* channelSet = dynamic_cast<KnobChannelSet*>(layerKnob.get())) {
         std::vector<ChannelSetRow> rows(1);
@@ -6569,6 +6663,12 @@ Node::forceRefreshAllInputRelatedData()
                 (*it)->refreshInputRelatedDataRecursive();
             }
         }
+        // The traversal above visits the nodes inside the group and never the container, whose
+        // metadata is its output node's; a container with a host layer knob (Write) lists its
+        // own inputs' layers on it, so its selectors need refreshing here like a plain node's.
+        if (_imp->layerKnob.lock()) {
+            refreshChannelSelectors();
+        }
     } else {
         refreshInputRelatedDataRecursive();
     }
@@ -7415,7 +7515,20 @@ Node::refreshChannelSelectors()
     }
 
     _imp->effect->onChannelsSelectorRefreshed();
+
+    if (checkMaskChannelsPresent(0)) {
+        // A persistent message is a single slot with no record of who posted it: only take
+        // back a message that starts with what this check itself would have posted.
+        QString current;
+        int type = 0;
+        getPersistentMessage(&current, &type, false);
+        if ((type == (int)eMessageTypeError) && current.startsWith(QString::fromUtf8(kMaskChannelMissingMessagePrefix))) {
+            clearPersistentMessage(false);
+        }
+    }
+
     Q_EMIT layerListRefreshed();
+    s_layerSelectionChanged();
 }
 
 double

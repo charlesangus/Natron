@@ -309,6 +309,136 @@ TEST_F(ChannelSetRenderTest, GradeSpecularRowLeavesColorAndDiffuseUntouched)
     expectPlane(image, "specular.", 0.f, 0.f, 0.5f);
 }
 
+// --- Grade "(Un)premult by" (net.sf.openfx.GradePlugin, unPremultBy/unPremultByChannel) -
+
+// Constant(1,1,1,0.5) -> Grade(multiply 2 on R/G/B, alpha's multiply left at its default 1,
+// clampWhite on). channels->setAll() is needed because Grade doesn't own its channel mask
+// (see KeyMixQuadIsLeftToThePluginWhileGradeQuadIsAdopted below): the host adopts and forces
+// Grade's own R/G/B/A quad true internally regardless, then normally overwrites any channel
+// outside the layer knob's selected row with the untouched source pixel, which would hide
+// what the plugin's own math actually computed.
+//
+// A bare gain commutes with dividing and re-multiplying by an untouched alpha, so it cannot
+// tell the two states apart (clamp(2*1) == 0.5*clamp(2*(1/0.5))); clampWhite (Grade.cpp's
+// kParamClampWhite, script name "clampWhite") clamps the graded-but-not-yet-premultiplied
+// value to 1 before that re-multiply, which does not commute, so it is the discriminator:
+// ofxsUnPremult()/ofxsPremult() (SupportExt/ofxsMaskMix.h) always divide/multiply by alpha
+// and ignore the unPremultByChannel choice (not yet implemented). With alpha's own multiply
+// left at 1 (identity), grade() leaves alpha unchanged either way, so:
+//   unPremultBy off: r = clamp(multiply * 1) = clamp(2 * 1) = clamp(2) = 1
+//   unPremultBy on:  r = premult(clamp(multiply * unpremult(1, a=0.5)), a=0.5)
+//                      = 0.5 * clamp(2 * (1 / 0.5)) = 0.5 * clamp(4) = 0.5 * 1 = 0.5
+// off clamps in the already-premultiplied domain (nothing left to divide alpha back out of),
+// on clamps in the unpremultiplied domain and then scales the clamped 1 back down by alpha
+// -- the two diverge, which is what makes this pair of renders actually exercise the toggle.
+class ChannelSetRenderGradeUnPremultByTest
+    : public ChannelSetRenderTest {
+protected:
+    NodePtr createConstantIntoGrade(KnobBool** unPremultBy)
+    {
+        NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+        if (!constant) {
+            return NodePtr();
+        }
+        KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName("color").get());
+        if (!color) {
+            return NodePtr();
+        }
+        color->setValues(1., 1., 1., 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+        NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+        if (!grade) {
+            return NodePtr();
+        }
+        connectNodes(constant, grade, 0, true);
+
+        KnobColor* multiply = dynamic_cast<KnobColor*>(grade->getKnobByName("multiply").get());
+        if (!multiply) {
+            return NodePtr();
+        }
+        multiply->setValues(2., 2., 2., 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+        KnobBool* clampWhite = dynamic_cast<KnobBool*>(grade->getKnobByName("clampWhite").get());
+        if (!clampWhite) {
+            return NodePtr();
+        }
+        clampWhite->setValue(true);
+
+        KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(grade->getKnobByName(kNodeParamChannelSet));
+        if (!channels) {
+            return NodePtr();
+        }
+        channels->setAll();
+
+        *unPremultBy = dynamic_cast<KnobBool*>(grade->getKnobByName("unPremultBy").get());
+        if (!*unPremultBy) {
+            return NodePtr();
+        }
+
+        return grade;
+    }
+};
+
+TEST_F(ChannelSetRenderGradeUnPremultByTest, GainMatchesPluginMathWithUnPremultByOff)
+{
+    KnobBool* unPremultBy;
+    NodePtr grade = createConstantIntoGrade(&unPremultBy);
+    ASSERT_TRUE(bool(grade));
+    unPremultBy->setValue(false);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(grade, tmp, &image, &error)) << error;
+
+    expectColor(image, 1.f, 1.f, 1.f, 0.5f);
+}
+
+TEST_F(ChannelSetRenderGradeUnPremultByTest, GainMatchesPluginMathWithUnPremultByOn)
+{
+    KnobBool* unPremultBy;
+    NodePtr grade = createConstantIntoGrade(&unPremultBy);
+    ASSERT_TRUE(bool(grade));
+    unPremultBy->setValue(true);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(grade, tmp, &image, &error)) << error;
+
+    expectColor(image, 0.5f, 0.5f, 0.5f, 0.5f);
+}
+
+// premult/premultChannel are not merely hidden here, they no longer exist on this node at
+// all: SupportExt/ofxsMaskMix.h's ofxsPremultDescribeParams() declares unPremultBy/
+// unPremultByChannel outright, it does not declare the old identifiers alongside them, so
+// getKnobByName finds nothing under the old names to assert secret on. premultChanged is
+// the one param of the three declared under its original name (Grade.cpp's own
+// kParamPremultChanged, untouched by the rename), and stays on the host's hide list.
+TEST_F(ChannelSetRenderTest, GradeUnPremultByVisibleAndOldPremultFamilyGoneOrSecret)
+{
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    ASSERT_TRUE(bool(grade));
+
+    KnobBool* unPremultBy = dynamic_cast<KnobBool*>(grade->getKnobByName("unPremultBy").get());
+    ASSERT_TRUE(unPremultBy != NULL);
+    EXPECT_FALSE(unPremultBy->getIsSecret());
+
+    KnobChoice* unPremultByChannel = dynamic_cast<KnobChoice*>(grade->getKnobByName("unPremultByChannel").get());
+    ASSERT_TRUE(unPremultByChannel != NULL);
+    EXPECT_FALSE(unPremultByChannel->getIsSecret());
+
+    EXPECT_TRUE(grade->getKnobByName("premult").get() == NULL);
+    EXPECT_TRUE(grade->getKnobByName("premultChannel").get() == NULL);
+
+    KnobBool* premultChanged = dynamic_cast<KnobBool*>(grade->getKnobByName("premultChanged").get());
+    ASSERT_TRUE(premultChanged != NULL);
+    EXPECT_TRUE(premultChanged->getIsSecret());
+}
+
 // --- Invert (net.sf.openfx.Invert) -------------------------------------------------------
 
 // Unlike Grade/ColorCorrect/Multiply/Saturation, Invert's own quad defaults processA to true,
@@ -788,6 +918,73 @@ TEST_F(ChannelSetRenderBlurTest, CImgBlurSpecularRowLeavesColorAndDiffuseUntouch
     expectColor(image, 1.f, 0.f, 0.f, 1.f);
     expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
     expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
+// --- Mask channel missing from a connected Mask input -----------------------------------
+
+TEST_F(ChannelSetRenderBlurTest, MaskChannelAbsentFromConnectedMaskFailsThenClearsOnReconnect)
+{
+    KnobChannelSetPtr channels;
+    NodePtr blur = createBlurOnReader(&channels);
+    ASSERT_TRUE(bool(blur));
+    ASSERT_EQ(std::string("Mask"), blur->getInputLabel(1));
+
+    // The mask carries only Color, so diffuse.R cannot resolve against it.
+    NodePtr maskConstant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+    ASSERT_TRUE(bool(maskConstant));
+    connectNodes(maskConstant, blur, 1, true);
+
+    KnobBool* maskEnabled = dynamic_cast<KnobBool*>(blur->getKnobByName("enableMask_Mask").get());
+    ASSERT_TRUE(maskEnabled != NULL);
+    maskEnabled->setValue(true);
+    KnobChannelSelect* maskChannel = dynamic_cast<KnobChannelSelect*>(blur->getKnobByName("maskChannel_Mask").get());
+    ASSERT_TRUE(maskChannel != NULL);
+    maskChannel->set("diffuse.R");
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    EXPECT_FALSE(renderAllLayers(blur, tmp, &image, &error));
+    ASSERT_TRUE(blur->hasPersistentMessage());
+
+    QString message;
+    int type = 0;
+    blur->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("diffuse.R")));
+
+    disconnectNodes(maskConstant, blur, true);
+    NodePtr maskReader = createReader("flat-three-layers.exr");
+    ASSERT_TRUE(bool(maskReader));
+    connectNodes(maskReader, blur, 1, true);
+
+    FlatExrImage image2;
+    std::string error2;
+    EXPECT_TRUE(renderAllLayers(blur, tmp, &image2, &error2)) << error2;
+    EXPECT_FALSE(blur->hasPersistentMessage());
+}
+
+TEST_F(ChannelSetRenderBlurTest, MaskChannelAbsentFromDisconnectedMaskRendersSilently)
+{
+    KnobChannelSetPtr channels;
+    NodePtr blur = createBlurOnReader(&channels);
+    ASSERT_TRUE(bool(blur));
+
+    KnobBool* maskEnabled = dynamic_cast<KnobBool*>(blur->getKnobByName("enableMask_Mask").get());
+    ASSERT_TRUE(maskEnabled != NULL);
+    maskEnabled->setValue(true);
+    KnobChannelSelect* maskChannel = dynamic_cast<KnobChannelSelect*>(blur->getKnobByName("maskChannel_Mask").get());
+    ASSERT_TRUE(maskChannel != NULL);
+    maskChannel->set("diffuse.R");
+
+    ASSERT_FALSE(bool(blur->getInput(1)));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    EXPECT_TRUE(renderAllLayers(blur, tmp, &image, &error)) << error;
+    EXPECT_FALSE(blur->hasPersistentMessage());
 }
 
 // --- Quad-adoption exceptions: KeyMix, DenoiseSharpen, ClipTest --------------------------

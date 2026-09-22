@@ -398,6 +398,13 @@ public:
     bool isMaskEnabled(int inputNb) const;
 
     /**
+     * @brief For every mask input that is connected, enabled and not set to None, checks that
+     * its KnobChannelSelect value resolves against that input's present layers. Returns false
+     * on the first miss and fills *message, leaving a disconnected or None mask input silent.
+     **/
+    bool checkMaskChannelsPresent(std::string* message) const;
+
+    /**
      * @brief Returns a pointer to the input Node at index 'index'
      * or NULL if it couldn't find such node.
      * MT-safe
@@ -1093,6 +1100,8 @@ private:
     void createLayerKnob(const LayerKnobSpec& spec, const KnobPagePtr& mainPage);
 
     void adoptChannelQuad();
+
+    void refreshGeneratorOutputComponentsKnob();
 
 public:
 

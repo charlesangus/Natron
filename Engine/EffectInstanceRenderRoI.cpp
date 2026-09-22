@@ -771,6 +771,13 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         return eRenderRoIRetCodeFailed;
     }
 
+    {
+        std::string maskMessage;
+        if (!getNode()->checkMaskChannelsPresent(&maskMessage)) {
+            setPersistentMessage(eMessageTypeError, maskMessage);
+            return eRenderRoIRetCodeFailed;
+        }
+    }
 
     const bool draftModeSupported = getNode()->isDraftModeUsed();
     const bool isFrameVaryingOrAnimated = isFrameVaryingOrAnimated_Recursive();

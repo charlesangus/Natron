@@ -40,12 +40,19 @@
 #include "FlatExrReader.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/Bezier.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
+#include "Engine/RotoContext.h"
+#include "Engine/ViewIdx.h"
 #include "Engine/WriteNode.h"
 
 #include <ofxImageEffect.h>
@@ -166,17 +173,31 @@ renderAndRead(const AppInstancePtr& app,
 class WriteAllLayersTest
     : public BaseTest {
 protected:
-    void createFixtureWriter(const std::string& fixtureFile = std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"))
+    void createFixtureReader(NodePtr* reader,
+                             const std::string& fixtureFile = std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"))
     {
         CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
         readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, fixtureFile);
-        NodePtr reader = getApp()->createNode(readerArgs);
-        ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+        *reader = getApp()->createNode(readerArgs);
+        ASSERT_TRUE(bool(*reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+    }
 
+    void createFixtureWriter(const std::string& fixtureFile = std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"))
+    {
+        NodePtr reader;
+        createFixtureReader(&reader, fixtureFile);
+        if (HasFatalFailure()) {
+            return;
+        }
+        createWriterOn(reader);
+    }
+
+    void createWriterOn(const NodePtr& input)
+    {
         _writer = createNode(_writeOIIOPluginID);
         ASSERT_TRUE(bool(_writer));
 
-        connectNodes(reader, _writer, 0, true);
+        connectNodes(input, _writer, 0, true);
 
         KnobChoice* partSplitting = dynamic_cast<KnobChoice*>(_writer->getKnobByName("partSplitting").get());
         ASSERT_TRUE(partSplitting != NULL);
@@ -548,6 +569,112 @@ TEST_F(WriteAllLayersTest, WriteAllLayersFromNoColorSourceDuplicatesFirstLayerIn
 
     QFile::remove(QString::fromStdString(path));
 } // TEST_F(WriteAllLayersTest, WriteAllLayersFromNoColorSourceDuplicatesFirstLayerIntoColor)
+
+// A one-channel user layer alongside the fixture's: a Roto targeting a registered `mask [A]`
+// layer feeds Write All. The channel is `mask.A` in the single-part file, and in the encoder's
+// default part-per-layer mode the file reads back with the same four layers -- the color part's
+// channels are unprefixed, so the reader falls back on the part name, which must be the layer's
+// and not the "subimageNN" OpenImageIO synthesises for an unnamed part.
+TEST_F(WriteAllLayersTest, WriteAllWithOneChannelUserLayerNamesItAndReadsBackAsThatLayer)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    std::string error;
+    const std::vector<std::string> alpha(1, "A");
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", "mask", "", alpha), LayerRegistryEntry::eOriginUser, &error)) << error;
+
+    NodePtr reader;
+    createFixtureReader(&reader);
+    if (HasFatalFailure()) {
+        return;
+    }
+    NodePtr roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_TRUE(bool(roto));
+    connectNodes(reader, roto, 0, true);
+
+    // Control points (1, 6), (5, 6), (5, 2), (1, 2): pixel columns 1..4 and rows 2..5, no feather.
+    BezierPtr square = roto->getRotoContext()->makeSquare(1., 6., 4., 1.);
+    ASSERT_TRUE(bool(square));
+    square->getFeatherKnob()->setValue(0.);
+
+    KnobLayerSelectPtr rotoLayer = std::dynamic_pointer_cast<KnobLayerSelect>(roto->getLayerKnob());
+    ASSERT_TRUE(bool(rotoLayer));
+    rotoLayer->setLayer("mask");
+
+    createWriterOn(roto);
+    if (HasFatalFailure()) {
+        return;
+    }
+    _channels->setAll();
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    AppInstancePtr app = getApp();
+
+    static const std::set<std::string> expectedChannels = {
+        "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B", "mask.A"
+    };
+    static const std::set<std::string> expectedLayers = { kNatronColorLayerID, "diffuse", "specular", "mask" };
+
+    const std::string singlePart = (tmp.path() + QLatin1String("/mask_single_part.exr")).toStdString();
+    {
+        _writer->setOutputFilesForWriter(singlePart);
+
+        FlatExrImage image;
+        ASSERT_TRUE(renderAndRead(app, _writer, singlePart, &image, &error)) << error;
+        EXPECT_EQ(expectedChannels, channelSet(image));
+        for (std::size_t i = 0; i < image.channels.size(); ++i) {
+            EXPECT_EQ(std::string::npos, image.channels[i].find("subimage")) << image.channels[i];
+        }
+        expectColorPixels(image);
+        expectDiffusePixels(image);
+        // EXR rows run top-down: Natron's (2, 3) is inside the square, (7, 7) outside.
+        EXPECT_EQ(1.f, image.at(2, image.height - 1 - 3, "mask.A"));
+        EXPECT_EQ(0.f, image.at(7, image.height - 1 - 7, "mask.A"));
+    }
+
+    KnobChoice* partSplitting = dynamic_cast<KnobChoice*>(_writer->getKnobByName("partSplitting").get());
+    ASSERT_TRUE(partSplitting != NULL);
+    partSplitting->setValueFromID("views_layers", 0);
+
+    const std::string perLayerParts = (tmp.path() + QLatin1String("/mask_per_layer_parts.exr")).toStdString();
+    {
+        _writer->setOutputFilesForWriter(perLayerParts);
+
+        OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(_writer->getEffectInstance().get());
+        ASSERT_TRUE(writerEffect != NULL);
+        std::list<AppInstance::RenderWork> works;
+        works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
+        app->startWritersRendering(false, works);
+        ASSERT_TRUE(QFile::exists(QString::fromStdString(perLayerParts))) << "frame was not rendered: " << perLayerParts;
+    }
+
+    const std::string written[2] = { singlePart, perLayerParts };
+    for (int i = 0; i < 2; ++i) {
+        CreateNodeArgs readBackArgs(_readOIIOPluginID.toStdString(), project);
+        readBackArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, written[i]);
+        NodePtr readBack = app->createNode(readBackArgs);
+        ASSERT_TRUE(bool(readBack)) << written[i];
+
+        std::list<ImageLayerDesc> present;
+        readBack->getEffectInstance()->getPresentLayers(0, ViewIdx(0), -1, &present);
+        EXPECT_EQ(expectedLayers, layerIDSet(present)) << written[i];
+        for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+            EXPECT_EQ(std::string::npos, it->getLayerID().find("subimage")) << written[i] << ": " << it->getLayerID();
+            if (it->getLayerID() == kNatronColorLayerID) {
+                EXPECT_EQ(4, it->getNumComponents()) << written[i];
+            } else if (it->getLayerID() == "mask") {
+                EXPECT_EQ(alpha, it->getChannels()) << written[i];
+            }
+        }
+    }
+
+    QFile::remove(QString::fromStdString(singlePart));
+    QFile::remove(QString::fromStdString(perLayerParts));
+    project->reset(false, true);
+} // TEST_F(WriteAllLayersTest, WriteAllWithOneChannelUserLayerNamesItAndReadsBackAsThatLayer)
 
 // getPresentLayers() reports only what the stream actually carries (produced union pass-through);
 // getAvailableLayers() adds every layer registered at the project level (built-ins included) on

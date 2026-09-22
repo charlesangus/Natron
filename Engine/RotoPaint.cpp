@@ -1502,7 +1502,16 @@ RotoPaint::render(const RenderActionArgs& args)
             }
             RectI bgImgRoI;
             ImagePtr bgImg = getImage(0, args.time, args.mappedScale, args.view, 0, &layer->first, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM /*returnOpenGLtexture*/, 0 /*textureDepth*/, &bgImgRoI);
-            const std::bitset<4> copyChannels = getProcessChannelsForPlane(hash, args.time, args.view, layer->first);
+            std::bitset<4> copyChannels = getProcessChannelsForPlane(hash, args.time, args.view, layer->first);
+            // The bits follow the plane's own layout, where a one-channel plane's channel is bit 3,
+            // but the host reads a one-channel non-Color plane back from channel 0 of the wider
+            // image it hands this render (see channelForAlphaForPlane), so that is the channel the
+            // bit must guard; the others are discarded by that conversion.
+            if ((layer->first.getNumComponents() == 1) && !layer->first.isColorLayer() && (layer->second->getComponentsCount() > 1)) {
+                const bool processed = copyChannels[3];
+                copyChannels.set();
+                copyChannels[0] = processed;
+            }
             if ( !rotoImagesIt->second->getBounds().contains(args.roi) ) {
                 // We first fill with the bg image because the bounds of the image produced by the last merge of the rotopaint tree
                 // might not be equal to the bounds of the image produced by the rotopaint. This is because the RoD of the rotopaint is the

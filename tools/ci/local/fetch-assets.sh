@@ -151,9 +151,9 @@ fi
 # mystery CI failure on your PR. Bump them deliberately, and re-run this
 # script (it rebuilds when the stamp below no longer matches).
 #
-# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, six commits ahead of
+# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, seven commits ahead of
 # NatronGitHub/openfx-io and zero behind. Fork-and-fix is the standing
-# pattern for small changes to NatronGitHub repos. Six deltas:
+# pattern for small changes to NatronGitHub repos. Seven deltas:
 #
 # 1. A CMakeLists.txt fix (SEEXPR2_INCLUDES/SEEXPR2_LIBRARIES ->
 #    SEEXPR2_INCLUDE_DIR/SEEXPR2_LIBRARY): upstream reads variable names its
@@ -252,6 +252,30 @@ fi
 #    the only multiplanar writer, so it is the only one the host can hand
 #    a non-color plane; the others keep their encode() path unchanged.
 #
+# 7. Each per-layer EXR part is named after its layer
+#    (charlesangus/openfx-io#6). WriteOIIO's default "Split Views and
+#    Layers" mode writes one OpenEXR part per layer and never set the
+#    part's `name` attribute (oiio:subimagename). OpenEXR requires every
+#    part of a multi-part file to carry a unique name, so OpenImageIO
+#    synthesised `subimageNN` for each. The non-color parts survived that
+#    because their channels carry the layer prefix (`mask.A`, `diffuse.R`),
+#    but the color part's channels are bare `R,G,B,A`, and ReadOIIO falls
+#    back on the part name for unprefixed channels: a Write All over Color,
+#    diffuse, specular and a one-channel `mask` layer read back as diffuse,
+#    specular, mask and a `subimage03` [R,G,B,A] layer, with no Color layer
+#    at all (the reader then duplicated the first layer into Color). The
+#    writer now names each per-layer part after its plane label (`Color`,
+#    `mask`, ...), suffixed with `.<view>` when several views are written
+#    so the names stay unique across parts. The reader ignores a
+#    synthesised `subimageNN` name -- files written before the fix, and by
+#    other OpenImageIO-based writers that leave parts unnamed, read back
+#    with a proper Color layer too -- and drops a trailing `.<view>`
+#    matching one of the file's views before adopting the name as a layer.
+#    Channel names were already `<layer>.<channel>` in all three part
+#    modes; the single-part and split-views modes still write unnamed
+#    parts. Tests/WriteAllLayers_Test.cpp's Read -> Roto (targeting
+#    `mask [A]`) -> Write All case pins this down.
+#
 # The -1 sentinel guard is the first of delta 2's two commits and is
 # deliberately self-contained, so it can be offered upstream on its own; so
 # is delta 3, which is one commit and touches nothing else.
@@ -267,7 +291,7 @@ fi
 # openfx-io's own CI pins the same branch. Not forked -- wdas/SeExpr is not
 # a NatronGitHub repo and we carry no changes to it.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="9b558a7fc08382ebbd4ed0a71c39c63e25666de3"
+OPENFX_IO_REF="e537291a16b1736cf26a969bc688a7e5daaee9ec"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 

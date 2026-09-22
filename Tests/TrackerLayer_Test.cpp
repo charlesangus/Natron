@@ -38,7 +38,6 @@
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
-#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
@@ -53,8 +52,7 @@ NATRON_NAMESPACE_USING
 namespace {
 
 // Tests/fixtures/tracker-patch*.####.exr: a textured 15x15 patch centred at (40, 48) on frame 1
-// moves by (+6, +4) per frame. These are the centres libmv settles on for frames 2 and 3 from
-// the Color plane; a layer that carries the same pixels must land on the same values.
+// moves by (+6, +4) per frame. These are the centres libmv settles on for frames 2 and 3.
 const double kGoldenX[2] = { 45.999671936, 51.9996948242 };
 const double kGoldenY[2] = { 51.9998855591, 55.9998931885 };
 const double kGoldenTolerance = 1e-4;
@@ -90,10 +88,7 @@ protected:
         _context = _tracker->getTrackerContext();
         ASSERT_TRUE(bool(_context));
 
-        _layer = std::dynamic_pointer_cast<KnobLayerSelect>(_tracker->getLayerKnob());
-        ASSERT_TRUE(bool(_layer)) << "the Tracker has no layer select knob";
-        ASSERT_EQ(std::string(kNodeParamLayerSelect), _layer->getName());
-        ASSERT_FALSE(_layer->getWithChannelButtons());
+        ASSERT_FALSE(bool(_tracker->getLayerKnob()));
         ASSERT_FALSE(bool(_tracker->getKnobByName("trackRed")));
 
         _marker = _context->createMarker();
@@ -142,7 +137,6 @@ protected:
     NodePtr _tracker;
     TrackerContextPtr _context;
     TrackMarkerPtr _marker;
-    KnobLayerSelectPtr _layer;
 };
 
 TEST_F(TrackerLayerTest, ColorPlaneTracksToGolden)
@@ -151,62 +145,10 @@ TEST_F(TrackerLayerTest, ColorPlaneTracksToGolden)
     if (HasFatalFailure()) {
         return;
     }
-    EXPECT_EQ(std::string(kNatronColorLayerID), _layer->getLayer());
 
     trackAndWait();
     if (HasFatalFailure()) {
         return;
     }
     expectGoldenTrack();
-}
-
-TEST_F(TrackerLayerTest, DiffuseLayerWithTheSamePixelsTracksToGolden)
-{
-    createTrackerOverFixture("tracker-patch.####.exr");
-    if (HasFatalFailure()) {
-        return;
-    }
-    _layer->setLayer("diffuse");
-
-    trackAndWait();
-    if (HasFatalFailure()) {
-        return;
-    }
-    expectGoldenTrack();
-}
-
-// The Color plane of this sequence is flat: only the diffuse layer carries the patch, so
-// landing on the golden centres proves the tracker read the selected layer, not Color.
-TEST_F(TrackerLayerTest, DiffuseLayerIsReadWhenColorIsFlat)
-{
-    createTrackerOverFixture("tracker-patch-diffuse.####.exr");
-    if (HasFatalFailure()) {
-        return;
-    }
-    _layer->setLayer("diffuse");
-
-    trackAndWait();
-    if (HasFatalFailure()) {
-        return;
-    }
-    expectGoldenTrack();
-}
-
-TEST_F(TrackerLayerTest, AbsentLayerTracksNothing)
-{
-    createTrackerOverFixture("tracker-patch.####.exr");
-    if (HasFatalFailure()) {
-        return;
-    }
-    _layer->setLayer("specular");
-
-    trackAndWait();
-    if (HasFatalFailure()) {
-        return;
-    }
-    KnobDoublePtr center = _marker->getCenterKnob();
-    EXPECT_TRUE(hasKeyframeAt(center, kStartFrame));
-    for (int frame = kStartFrame + 1; frame <= kLastFrame; ++frame) {
-        EXPECT_FALSE(hasKeyframeAt(center, frame)) << "frame " << frame << " was tracked from a layer the source does not carry";
-    }
 }

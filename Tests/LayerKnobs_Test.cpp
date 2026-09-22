@@ -302,7 +302,7 @@ TEST_F(BaseTest, ChannelSetListsPresentLayersOfPreferredInput)
     project->reset(false, true);
 }
 
-TEST_F(BaseTest, TrackerGetsInputBoundLayerSelectWithoutButtons)
+TEST_F(BaseTest, TrackerGetsNoLayerKnob)
 {
     ProjectPtr project = getApp()->getProject();
 
@@ -312,35 +312,12 @@ TEST_F(BaseTest, TrackerGetsInputBoundLayerSelectWithoutButtons)
     ASSERT_TRUE(bool(tracker));
 
     EXPECT_FALSE(bool(tracker->getKnobByName(kNodeParamChannelSet)));
+    EXPECT_FALSE(bool(tracker->getKnobByName(kNodeParamLayerSelect)));
+    EXPECT_FALSE(bool(tracker->getKnobByName(kNodeParamLayerSeparator)));
+    EXPECT_FALSE(bool(tracker->getLayerKnob()));
     EXPECT_FALSE(bool(tracker->getKnobByName("trackRed")));
     EXPECT_FALSE(bool(tracker->getKnobByName("trackGreen")));
     EXPECT_FALSE(bool(tracker->getKnobByName("trackBlue")));
-
-    KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(tracker->getKnobByName(kNodeParamLayerSelect));
-    ASSERT_TRUE(bool(layer));
-    EXPECT_EQ(layer, tracker->getLayerKnob());
-    EXPECT_FALSE(tracker->isTargetLayerKnob(layer));
-    EXPECT_FALSE(layer->getWithChannelButtons());
-    EXPECT_EQ(std::string(kNatronColorLayerID), layer->getLayer());
-
-    EXPECT_TRUE(isFirstOnItsPage(layer));
-    KnobPagePtr page = std::dynamic_pointer_cast<KnobPage>(layer->getParentKnob());
-    ASSERT_TRUE(bool(page));
-    EXPECT_EQ(page, tracker->getTrackerContext()->getTrackingPageKnob());
-
-    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), project);
-    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
-    NodePtr reader = getApp()->createNode(readerArgs);
-    ASSERT_TRUE(bool(reader));
-    connectNodes(reader, tracker, 0, true);
-
-    std::list<ImageLayerDesc> listed;
-    tracker->listLayersForKnob(layer, &listed);
-    std::vector<std::string> expected;
-    expected.push_back(kNatronColorLayerID);
-    expected.push_back("diffuse");
-    expected.push_back("specular");
-    EXPECT_EQ(expected, layerIDs(listed));
 
     project->reset(false, true);
 }

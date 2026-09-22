@@ -1119,17 +1119,6 @@ TrackerContext::trackMarkers(const std::list<TrackMarkerPtr>& markers,
         viewer = overlayInteract->getInternalViewerNode();
     }
 
-    // The layer to track, resolved once against what the source carries at the start frame;
-    // a layer the source does not carry leaves it empty and every frame fetch fails.
-    ImageLayerDesc trackedLayer;
-    {
-        std::vector<ResolvedLayer> selected;
-        getNode()->resolveLayerKnob(start, ViewIdx(0), &selected);
-        if (!selected.empty()) {
-            trackedLayer = selected.front().desc;
-        }
-    }
-
     double formatWidth, formatHeight;
     Format f;
     getNode()->getApp()->getProject()->getProjectDefaultFormat(&f);
@@ -1139,7 +1128,7 @@ TrackerContext::trackMarkers(const std::list<TrackMarkerPtr>& markers,
     bool autoKeyingOnEnabledParamEnabled = _imp->autoKeyEnabled.lock()->getValue();
     
     /// The accessor and its cache is local to a track operation, it is wiped once the whole sequence track is finished.
-    TrackerFrameAccessorPtr accessor(new TrackerFrameAccessor(this, trackedLayer, formatHeight));
+    TrackerFrameAccessorPtr accessor(new TrackerFrameAccessor(this, ImageLayerDesc::getRGBComponents(), formatHeight));
     mv::AutoTrackPtr trackContext( new mv::AutoTrack( accessor.get() ) );
     std::vector<TrackMarkerAndOptionsPtr> trackAndOptions;
     mv::TrackRegionOptions mvOptions;
@@ -1429,11 +1418,6 @@ TrackerContextPrivate::refreshVisibilityFromTransformTypeInternal(TrackerTransfo
 
 #ifdef NATRON_TRACKER_ENABLE_TRACKER_PM
     bool usePM = usePatternMatching.lock()->getValue();
-    NodePtr trackerNode = node.lock();
-    KnobIPtr layerKnob = trackerNode ? trackerNode->getLayerKnob() : KnobIPtr();
-    if (layerKnob) {
-        layerKnob->setSecret(usePM);
-    }
     maxError.lock()->setSecret(usePM);
     maxIterations.lock()->setSecret(usePM);
     bruteForcePreTrack.lock()->setSecret(usePM);

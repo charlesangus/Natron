@@ -117,11 +117,6 @@ public:
         return false;
     }
 
-    virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return LayerKnobSpec(LayerKnobSpec::eKindLayerSelect, LayerKnobSpec::eRoleInputBound, false);
-    }
-
     virtual bool hasOverlay() const OVERRIDE FINAL
     {
         return true;

@@ -283,6 +283,15 @@ checkRowsInvariants(const std::vector<ChannelSetRow>& rows)
             throw std::invalid_argument("\"none\" and \"all\" are only legal on the first row of a channel set");
         }
     }
+    std::set<std::string> layerIDs;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        if (rows[i].mode != ChannelSetRow::eModeLayer) {
+            continue;
+        }
+        if (!layerIDs.insert(rows[i].layerOrPattern).second) {
+            throw std::invalid_argument("A layer can only be chosen by one layer row of a channel set");
+        }
+    }
 }
 
 void
@@ -601,6 +610,65 @@ layerLabelForID(const std::string& layerID)
     return layerID;
 }
 
+static void
+appendSummaryItem(std::string* summary,
+                  const std::string& item)
+{
+    if (!summary->empty()) {
+        *summary += ", ";
+    }
+    *summary += item;
+}
+
+static std::string
+layerRowSummaryItem(const std::string& layerID,
+                    const std::vector<std::string>& channels)
+{
+    std::string item = layerLabelForID(layerID);
+
+    if (!channels.empty()) {
+        item += '.';
+        for (std::size_t c = 0; c < channels.size(); ++c) {
+            if (!channels[c].empty()) {
+                item += (char)std::tolower((unsigned char)channels[c][0]);
+            }
+        }
+    }
+
+    return item;
+}
+
+/**
+ * @brief The item text for a layer a regex row matched, or empty when excludedChannels leaves
+ * that layer with no channel at all (mirrors resolve()'s accumulate(), which then drops it too).
+ **/
+static std::string
+regexMatchSummaryItem(const ImageLayerDesc& desc,
+                      const std::vector<std::string>& excludedChannels)
+{
+    std::string item = desc.getLayerLabel();
+
+    if (excludedChannels.empty()) {
+        return item;
+    }
+
+    const std::bitset<4> kept = allChannelBits(desc) & ~namedChannelBits(desc, excludedChannels);
+    if (kept.none()) {
+        return std::string();
+    }
+
+    item += '.';
+    const std::vector<std::string>& names = desc.getChannels();
+    const int count = std::min((int)names.size(), int(LayerRegistry::kLayerMaxChannels));
+    for (int c = 0; c < count; ++c) {
+        if (kept[ResolvedLayer::channelBit(desc, c)]) {
+            item += (char)std::tolower((unsigned char)names[c][0]);
+        }
+    }
+
+    return item;
+}
+
 std::string
 KnobChannelSet::getSummary() const
 {
@@ -618,26 +686,61 @@ KnobChannelSet::getSummary() const
 
     std::string summary;
     for (std::size_t i = 0; i < rows.size(); ++i) {
-        std::string item;
         if (rows[i].mode == ChannelSetRow::eModeLayer) {
-            item = layerLabelForID(rows[i].layerOrPattern);
-            if (!rows[i].channels.empty()) {
-                item += '.';
-                for (std::size_t c = 0; c < rows[i].channels.size(); ++c) {
-                    if (!rows[i].channels[c].empty()) {
-                        item += (char)std::tolower((unsigned char)rows[i].channels[c][0]);
-                    }
-                }
-            }
+            appendSummaryItem(&summary, layerRowSummaryItem(rows[i].layerOrPattern, rows[i].channels));
         } else if (rows[i].mode == ChannelSetRow::eModeRegex) {
-            item = '/' + rows[i].layerOrPattern + '/';
-        } else {
+            appendSummaryItem(&summary, '/' + rows[i].layerOrPattern + '/');
+        }
+    }
+
+    return summary;
+}
+
+std::string
+KnobChannelSet::getSummary(const std::list<ImageLayerDesc>& present) const
+{
+    std::vector<ChannelSetRow> rows;
+    std::vector<QRegularExpression> patterns;
+
+    getRowsAndPatterns(&rows, &patterns);
+
+    if (rows.empty()) {
+        return std::string();
+    }
+    if (rows[0].mode == ChannelSetRow::eModeNone) {
+        return tr("None").toStdString();
+    }
+    if (rows[0].mode == ChannelSetRow::eModeAll) {
+        return tr("All").toStdString();
+    }
+
+    std::string summary;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        if (rows[i].mode == ChannelSetRow::eModeLayer) {
+            appendSummaryItem(&summary, layerRowSummaryItem(rows[i].layerOrPattern, rows[i].channels));
             continue;
         }
-        if (!summary.empty()) {
-            summary += ", ";
+        if (rows[i].mode != ChannelSetRow::eModeRegex) {
+            continue;
         }
-        summary += item;
+
+        bool matchedAny = false;
+        if (patterns[i].isValid()) {
+            for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+                if (!patterns[i].match(QString::fromUtf8(it->getLayerLabel().c_str())).hasMatch()) {
+                    continue;
+                }
+                std::string item = regexMatchSummaryItem(*it, rows[i].channels);
+                if (item.empty()) {
+                    continue;
+                }
+                appendSummaryItem(&summary, item);
+                matchedAny = true;
+            }
+        }
+        if (!matchedAny) {
+            appendSummaryItem(&summary, tr("(no match)").toStdString());
+        }
     }
 
     return summary;

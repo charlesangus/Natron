@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -41,6 +42,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiFwd.h"
 
 class QHBoxLayout;
+class QVBoxLayout;
 
 NATRON_NAMESPACE_ENTER
 
@@ -97,6 +99,13 @@ public:
 
     const std::vector<LayerEntry>& getAvailableLayers() const;
 
+    /**
+     * @brief Set-row modes only: layer IDs held by sibling layer rows, which a layer pick
+     * on this row would collide with. Excluded from the combo's layer entries regardless
+     * of this row's own mode, except the row's own current layer selection is always kept.
+     **/
+    void setExcludedLayers(const std::set<std::string>& layerIDs);
+
     /// Set-row modes only.
     void setSetRowValue(SetRowModeEnum mode,
                         const std::string& layerOrPattern,
@@ -109,6 +118,14 @@ public:
 
     /// Channel-select mode only: "layer.channel", or empty for None.
     void setChannelSelectValue(const std::string& layerDotChannel);
+
+    /**
+     * @brief Regex set-row mode only: the ordered union of channel names of every layer
+     * the row's pattern currently matches, and which of them are excluded. Drives the
+     * indented channel-toggle line under the row; hidden while unionChannels is empty.
+     **/
+    void setRegexChannels(const std::vector<std::string>& unionChannels,
+                          const std::set<std::string>& excluded);
 
     /**
      * @brief Shows the current value as one extra combo item suffixed with @p text (e.g.
@@ -174,6 +191,7 @@ private:
     void onChannelButtonToggled(Button* button, bool checked);
     void rebuildCombo();
     void rebuildChannelButtons();
+    void placeButtonsContainer(bool onLine2);
     void refreshVisibility();
     void refreshPatternValidity();
     void selectEntryForCurrentValue();
@@ -184,12 +202,15 @@ private:
 
     ModeEnum _mode;
     std::vector<LayerEntry> _layers;
+    std::set<std::string> _excludedLayers;
     bool _listNewLayerEntry;
     SetRowModeEnum _setRowMode;
     std::string _layerID;
     std::string _channelValue;
     std::string _committedPattern;
     std::vector<std::string> _enabledChannels;
+    std::vector<std::string> _regexChannels;
+    std::set<std::string> _regexExcludedChannels;
     bool _withChannelButtons;
     QString _absentMarker;
     bool _removable;
@@ -198,14 +219,18 @@ private:
     int _lastComboIndex;
     std::vector<ComboEntry> _entries;
 
-    QHBoxLayout* _layout;
+    QVBoxLayout* _layout;
+    QHBoxLayout* _line1Layout;
     ComboBox* _combo;
     QWidget* _buttonsContainer;
     QHBoxLayout* _buttonsLayout;
+    bool _buttonsOnLine2;
     std::vector<Button*> _channelButtons;
     LineEdit* _patternEdit;
     Label* _matchesLabel;
     Button* _removeButton;
+    QWidget* _line2Container;
+    QHBoxLayout* _line2Layout;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -169,6 +170,44 @@ TEST(LayerChannelRow, SetRowNEntryOrderKeepsListOrder)
     row.setAvailableLayers(sampleLayers(), false);
 
     EXPECT_EQ(sl("Regex...", "diffuse", "Color", "specular", "depth"), row.getComboEntries());
+}
+
+TEST(LayerChannelRow, ExcludedLayersAreHiddenFromSetRowCombosButKeepOwnSelection)
+{
+    LayerChannelRow row(LayerChannelRow::eModeSetRowN);
+    row.setAvailableLayers(sampleLayers(), false);
+    row.setSetRowValue(LayerChannelRow::eSetRowModeLayer, "diffuse", rgb());
+
+    std::set<std::string> excluded;
+    excluded.insert("Color");
+    excluded.insert("specular");
+    row.setExcludedLayers(excluded);
+    EXPECT_EQ(sl("Regex...", "diffuse", "depth"), row.getComboEntries());
+    EXPECT_EQ(QString::fromUtf8("diffuse"), row.getCurrentComboText());
+
+    // Excluding the row's own current layer does not drop it: another row cannot claim it
+    // out from under this one just by this row refreshing.
+    excluded.insert("diffuse");
+    row.setExcludedLayers(excluded);
+    EXPECT_EQ(sl("Regex...", "diffuse", "depth"), row.getComboEntries());
+
+    row.setExcludedLayers(std::set<std::string>());
+    EXPECT_EQ(sl("Regex...", "diffuse", "Color", "specular", "depth"), row.getComboEntries());
+}
+
+TEST(LayerChannelRow, ExcludedLayersAlsoApplyToARegexRowsLayerEntries)
+{
+    LayerChannelRow row(LayerChannelRow::eModeSetRowN);
+    row.setAvailableLayers(sampleLayers(), false);
+    row.setSetRowValue(LayerChannelRow::eSetRowModeRegex, "diff.*", std::vector<std::string>());
+
+    std::set<std::string> excluded;
+    excluded.insert("Color");
+    row.setExcludedLayers(excluded);
+
+    // A regex row holds no layer of its own, so nothing of its "current selection" needs
+    // keeping: picking any listed layer here would still collide with another layer row.
+    EXPECT_EQ(sl("Regex...", "diffuse", "specular", "depth"), row.getComboEntries());
 }
 
 TEST(LayerChannelRow, LayerSelectEntryOrderWithAndWithoutNewLayer)
@@ -542,4 +581,47 @@ TEST(LayerChannelRow, TabOrderRunsComboButtonsRemove)
     EXPECT_EQ(row.getChannelButton("B"), w);
     w = nextTabStop(w, &row);
     EXPECT_EQ(row.getRemoveButton(), w);
+}
+
+TEST(LayerChannelRow, RegexRowShowsChannelUnionAndTogglesExcluded)
+{
+    LayerChannelRow row(LayerChannelRow::eModeSetRowN);
+    row.setAvailableLayers(sampleLayers(), false);
+    row.setSetRowValue(LayerChannelRow::eSetRowModeRegex, ".*", std::vector<std::string>());
+
+    std::vector<std::string> unionChannels;
+    unionChannels.push_back("R");
+    unionChannels.push_back("G");
+    unionChannels.push_back("B");
+    unionChannels.push_back("A");
+    unionChannels.push_back("Z");
+    std::set<std::string> excluded;
+    excluded.insert("G");
+    row.setRegexChannels(unionChannels, excluded);
+
+    EXPECT_EQ(sl("R", "G", "B", "A", "Z"), row.getChannelButtonNames());
+    EXPECT_TRUE(row.getChannelButton("R")->isChecked());
+    EXPECT_FALSE(row.getChannelButton("G")->isChecked());
+    EXPECT_TRUE(row.getChannelButton("B")->isChecked());
+    EXPECT_TRUE(row.getChannelButton("A")->isChecked());
+    EXPECT_TRUE(row.getChannelButton("Z")->isChecked());
+    EXPECT_TRUE(row.getChannelButton("R")->parentWidget()->isVisibleTo(&row));
+
+    int toggledCount = 0;
+    QString toggledName;
+    bool toggledOn = false;
+    QObject::connect(&row, &LayerChannelRow::channelToggled, [&](const QString& name, bool on) {
+        ++toggledCount;
+        toggledName = name;
+        toggledOn = on;
+    });
+
+    row.getChannelButton("B")->click();
+    EXPECT_EQ(1, toggledCount);
+    EXPECT_EQ(QString::fromUtf8("B"), toggledName);
+    EXPECT_FALSE(toggledOn);
+
+    row.setRegexChannels(std::vector<std::string>(), std::set<std::string>());
+    EXPECT_TRUE(row.getChannelButtonNames().isEmpty());
+    EXPECT_FALSE(row.getChannelButton("R"));
 }

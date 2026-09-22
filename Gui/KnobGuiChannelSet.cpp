@@ -26,10 +26,12 @@
 #include "KnobGuiChannelSet.h"
 
 #include <algorithm>
+#include <set>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QHBoxLayout>
+#include <QRegularExpression>
 #include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -62,6 +64,57 @@ toRowMode(ChannelSetRow::ModeEnum mode)
     }
 
     return LayerChannelRow::eSetRowModeLayer;
+}
+
+/**
+ * @brief The layer IDs held by every eModeLayer row of @p rows except @p self (pass
+ * rows.size() to gather all of them, e.g. for a row not yet added). A layer can be chosen
+ * by only one layer row, so this is what a row's combo must not offer and what a new row
+ * must avoid picking.
+ **/
+std::set<std::string>
+layerIDsHeldByOtherRows(const std::vector<ChannelSetRow>& rows,
+                        std::size_t self)
+{
+    std::set<std::string> ids;
+
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        if (i != self && rows[i].mode == ChannelSetRow::eModeLayer) {
+            ids.insert(rows[i].layerOrPattern);
+        }
+    }
+
+    return ids;
+}
+
+/**
+ * @brief The channel names of every layer @p pattern matches, in first-seen order across
+ * layers, with duplicates collapsed to their first occurrence: the union the regex row's
+ * button line is built from.
+ **/
+std::vector<std::string>
+unionOfMatchedLayerChannels(const std::vector<LayerChannelRow::LayerEntry>& layers,
+                            const std::string& pattern)
+{
+    std::vector<std::string> result;
+    QRegularExpression re(QRegularExpression::anchoredPattern(QString::fromUtf8(pattern.c_str())));
+
+    if (!re.isValid()) {
+        return result;
+    }
+    std::set<std::string> seen;
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        if (!re.match(QString::fromUtf8(layers[i].label.c_str())).hasMatch()) {
+            continue;
+        }
+        for (std::size_t c = 0; c < layers[i].channels.size(); ++c) {
+            if (seen.insert(layers[i].channels[c]).second) {
+                result.push_back(layers[i].channels[c]);
+            }
+        }
+    }
+
+    return result;
 }
 } // namespace
 
@@ -181,8 +234,8 @@ KnobGuiChannelSet::refreshWidgets()
         QObject::connect(row, &LayerChannelRow::layerChosen, this, [this, row](const QString& id) {
             onRowLayerChosen(row, id);
         });
-        QObject::connect(row, &LayerChannelRow::channelToggled, this, [this, row](const QString&, bool) {
-            onRowChannelToggled(row);
+        QObject::connect(row, &LayerChannelRow::channelToggled, this, [this, row](const QString& channel, bool on) {
+            onRowChannelToggled(row, channel, on);
         });
         QObject::connect(row, &LayerChannelRow::patternCommitted, this, [this, row](const QString& pattern) {
             onRowPatternCommitted(row, pattern);
@@ -200,6 +253,7 @@ KnobGuiChannelSet::refreshWidgets()
         if (!sameLayerEntries(row->getAvailableLayers(), layers)) {
             row->setAvailableLayers(layers, false);
         }
+        row->setExcludedLayers(layerIDsHeldByOtherRows(rows, i));
 
         const LayerChannelRow::SetRowModeEnum mode = toRowMode(value.mode);
         std::vector<std::string> enabled = value.channels;
@@ -217,6 +271,10 @@ KnobGuiChannelSet::refreshWidgets()
         }
         if (!current) {
             row->setSetRowValue(mode, value.layerOrPattern, enabled);
+        }
+        if (mode == LayerChannelRow::eSetRowModeRegex) {
+            const std::set<std::string> excluded(value.channels.begin(), value.channels.end());
+            row->setRegexChannels(unionOfMatchedLayerChannels(layers, value.layerOrPattern), excluded);
         }
         if (i >= firstNewRow) {
             row->setAbsentMarker(getAbsentMarkerText());
@@ -290,15 +348,27 @@ KnobGuiChannelSet::onRowLayerChosen(LayerChannelRow* row,
     if (index >= (int)rows.size()) {
         return;
     }
+    const std::string id = layerID.toStdString();
+    if (layerIDsHeldByOtherRows(rows, (std::size_t)index).count(id)) {
+        // The row's combo already excludes layers other layer rows hold, so this can only
+        // reach here from a stale widget state; leave the knob unchanged and let the next
+        // refresh put the row back in sync rather than pushing a value KnobChannelSet
+        // would refuse.
+        scheduleRefresh(false);
+
+        return;
+    }
     ChannelSetRow value;
     value.mode = ChannelSetRow::eModeLayer;
-    value.layerOrPattern = layerID.toStdString();
+    value.layerOrPattern = id;
     rows[index] = value;
     pushRows(rows);
 }
 
 void
-KnobGuiChannelSet::onRowChannelToggled(LayerChannelRow* row)
+KnobGuiChannelSet::onRowChannelToggled(LayerChannelRow* row,
+                                       const QString& channel,
+                                       bool on)
 {
     KnobChannelSetPtr knob = _imp->knob.lock();
     const int index = _imp->indexOf(row);
@@ -307,7 +377,22 @@ KnobGuiChannelSet::onRowChannelToggled(LayerChannelRow* row)
         return;
     }
     std::vector<ChannelSetRow> rows = knob->getRows();
-    if (index >= (int)rows.size() || rows[index].mode != ChannelSetRow::eModeLayer) {
+    if (index >= (int)rows.size()) {
+        return;
+    }
+    if (rows[index].mode == ChannelSetRow::eModeRegex) {
+        std::set<std::string> excluded(rows[index].channels.begin(), rows[index].channels.end());
+        if (on) {
+            excluded.erase(channel.toStdString());
+        } else {
+            excluded.insert(channel.toStdString());
+        }
+        rows[index].channels.assign(excluded.begin(), excluded.end());
+        pushRows(rows);
+
+        return;
+    }
+    if (rows[index].mode != ChannelSetRow::eModeLayer) {
         return;
     }
     const std::vector<std::string> enabled = row->getEnabledChannels();
@@ -369,15 +454,21 @@ KnobGuiChannelSet::onAddLayerClicked()
         return;
     }
     std::vector<ChannelSetRow> rows = knob->getRows();
+    const std::set<std::string> used = layerIDsHeldByOtherRows(rows, rows.size());
     ChannelSetRow value;
     value.mode = ChannelSetRow::eModeLayer;
-    value.layerOrPattern = kNatronColorLayerID;
+    value.layerOrPattern = used.count(kNatronColorLayerID) ? std::string() : kNatronColorLayerID;
     const std::vector<LayerChannelRow::LayerEntry>& layers = getLayers();
     for (std::size_t i = 0; i < layers.size(); ++i) {
-        if (!ImageLayerDesc::isColorLayer(layers[i].id)) {
+        if (!ImageLayerDesc::isColorLayer(layers[i].id) && !used.count(layers[i].id)) {
             value.layerOrPattern = layers[i].id;
             break;
         }
+    }
+    if (value.layerOrPattern.empty()) {
+        // Every present layer is already claimed by a layer row; add a regex row instead
+        // so the click still adds a row and no duplicate layer row is created.
+        value.mode = ChannelSetRow::eModeRegex;
     }
     rows.push_back(value);
     pushRows(rows);

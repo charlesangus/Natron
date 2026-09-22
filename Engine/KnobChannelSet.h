@@ -171,6 +171,12 @@ public:
 
     std::vector<ChannelSetRow> getRows() const;
 
+    /**
+     * @brief Throws std::invalid_argument if two eModeLayer rows name the same layer: a
+     * layer may be chosen by only one layer row, while regex rows do not consume layers.
+     * A value already holding such a duplicate can still be loaded through setValue()
+     * directly, since that path bypasses this check.
+     **/
     void setRows(const std::vector<ChannelSetRow>& rows,
                  ValueChangedReasonEnum reason = eValueChangedReasonNatronInternalEdited);
 
@@ -179,7 +185,8 @@ public:
 
     /**
      * @brief channelsOrAll == NULL stores an empty channel list, which resolves to every
-     * channel of the layer that is present at resolve() time.
+     * channel of the layer that is present at resolve() time. Throws std::invalid_argument
+     * if another eModeLayer row already names layerID.
      **/
     void setLayer(int row, const std::string& layerID, const std::vector<std::string>* channelsOrAll);
     void setChannels(int row, const std::vector<std::string>& channels);
@@ -211,6 +218,14 @@ public:
     bool isPatternValid(int row, QString* error) const;
 
     std::string getSummary() const;
+
+    /**
+     * @brief Same, but a regex row renders the present layers it matches (in present order,
+     * with lowercase channel initials appended when its excluded channels leave a subset of a
+     * matched layer's channels, or "(no match)" when it matches none) instead of its pattern
+     * text, since the pattern alone does not tell a viewer of the node graph what is flowing.
+     **/
+    std::string getSummary(const std::list<ImageLayerDesc>& present) const;
 
     void getReferencedLayerIDs(std::set<std::string>* layerIDs) const;
 

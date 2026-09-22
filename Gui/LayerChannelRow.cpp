@@ -33,6 +33,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QRegularExpression>
+#include <QVBoxLayout>
 #include <QVariant>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -62,6 +63,12 @@ QString
 matchesPrefix()
 {
     return QString::fromUtf8("matches: ");
+}
+
+QString
+regexLineDecoration()
+{
+    return QString::fromUtf8("\xe2\x8c\x8a");
 }
 } // namespace
 
@@ -97,12 +104,15 @@ LayerChannelRow::LayerChannelRow(ModeEnum mode,
     : QWidget(parent)
     , _mode(mode)
     , _layers()
+    , _excludedLayers()
     , _listNewLayerEntry(false)
     , _setRowMode(mode == eModeSetRow0 ? eSetRowModeNone : eSetRowModeLayer)
     , _layerID()
     , _channelValue()
     , _committedPattern()
     , _enabledChannels()
+    , _regexChannels()
+    , _regexExcludedChannels()
     , _withChannelButtons(false)
     , _absentMarker()
     , _removable(false)
@@ -111,42 +121,66 @@ LayerChannelRow::LayerChannelRow(ModeEnum mode,
     , _lastComboIndex(-1)
     , _entries()
     , _layout(0)
+    , _line1Layout(0)
     , _combo(0)
     , _buttonsContainer(0)
     , _buttonsLayout(0)
+    , _buttonsOnLine2(false)
     , _channelButtons()
     , _patternEdit(0)
     , _matchesLabel(0)
     , _removeButton(0)
+    , _line2Container(0)
+    , _line2Layout(0)
 {
-    _layout = new QHBoxLayout(this);
+    _layout = new QVBoxLayout(this);
     _layout->setContentsMargins(0, 0, 0, 0);
-    _layout->setSpacing(3);
+    _layout->setSpacing(1);
+
+    _line1Layout = new QHBoxLayout();
+    _line1Layout->setContentsMargins(0, 0, 0, 0);
+    _line1Layout->setSpacing(3);
+    _layout->addLayout(_line1Layout);
 
     _removeButton = new Button(QString::fromUtf8("−"), this);
     _removeButton->setToolTip(tr("Remove this layer from the set"));
     _removeButton->setFocusPolicy(Qt::StrongFocus);
     _removeButton->setFixedSize(NATRON_SMALL_BUTTON_SIZE, NATRON_SMALL_BUTTON_SIZE);
-    _layout->addWidget(_removeButton);
+    _line1Layout->addWidget(_removeButton);
 
     _combo = new ComboBox(this);
-    _layout->addWidget(_combo);
+    _line1Layout->addWidget(_combo);
 
     _buttonsContainer = new QWidget(this);
     _buttonsLayout = new QHBoxLayout(_buttonsContainer);
     _buttonsLayout->setContentsMargins(0, 0, 0, 0);
     _buttonsLayout->setSpacing(2);
-    _layout->addWidget(_buttonsContainer);
+    _line1Layout->addWidget(_buttonsContainer);
 
     _patternEdit = new LineEdit(this);
     _patternEdit->setPlaceholderText(tr("layer name pattern"));
     _patternEdit->installEventFilter(this);
-    _layout->addWidget(_patternEdit);
+    _line1Layout->addWidget(_patternEdit);
 
     _matchesLabel = new Label(this);
-    _layout->addWidget(_matchesLabel);
+    _line1Layout->addWidget(_matchesLabel);
 
-    _layout->addStretch();
+    _line1Layout->addStretch();
+
+    _line2Container = new QWidget(this);
+    _line2Layout = new QHBoxLayout(_line2Container);
+    _line2Layout->setContentsMargins(0, 0, 0, 0);
+    _line2Layout->setSpacing(3);
+
+    QWidget* line2Indent = new QWidget(_line2Container);
+    line2Indent->setFixedSize(NATRON_SMALL_BUTTON_SIZE, 1);
+    _line2Layout->addWidget(line2Indent);
+
+    Label* line2Decoration = new Label(regexLineDecoration(), _line2Container);
+    _line2Layout->addWidget(line2Decoration);
+
+    _line2Layout->addStretch();
+    _layout->addWidget(_line2Container);
 
     QObject::connect(_combo, SIGNAL(currentIndexChanged(int)), this, SLOT(onComboIndexChanged(int)));
     QObject::connect(_patternEdit, SIGNAL(editingFinished()), this, SLOT(onPatternEditingFinished()));
@@ -183,6 +217,16 @@ const std::vector<LayerChannelRow::LayerEntry>&
 LayerChannelRow::getAvailableLayers() const
 {
     return _layers;
+}
+
+void
+LayerChannelRow::setExcludedLayers(const std::set<std::string>& layerIDs)
+{
+    if (_excludedLayers == layerIDs) {
+        return;
+    }
+    _excludedLayers = layerIDs;
+    rebuildCombo();
 }
 
 void
@@ -223,6 +267,19 @@ LayerChannelRow::setChannelSelectValue(const std::string& layerDotChannel)
 {
     _channelValue = layerDotChannel;
     rebuildCombo();
+}
+
+void
+LayerChannelRow::setRegexChannels(const std::vector<std::string>& unionChannels,
+                                  const std::set<std::string>& excluded)
+{
+    if (_regexChannels == unionChannels && _regexExcludedChannels == excluded) {
+        return;
+    }
+    _regexChannels = unionChannels;
+    _regexExcludedChannels = excluded;
+    rebuildChannelButtons();
+    refreshVisibility();
 }
 
 void
@@ -477,6 +534,7 @@ LayerChannelRow::rebuildCombo()
         break;
     }
 
+    const bool isSetRow = (_mode == eModeSetRow0) || (_mode == eModeSetRowN);
     for (std::size_t i = 0; i < ordered.size(); ++i) {
         if (_mode == eModeChannelSelect) {
             for (std::size_t c = 0; c < ordered[i]->channels.size(); ++c) {
@@ -485,6 +543,10 @@ LayerChannelRow::rebuildCombo()
                                               qs(ordered[i]->label) + QLatin1Char('.') + qs(channel)));
             }
         } else {
+            const bool isOwnLayerSelection = (_setRowMode == eSetRowModeLayer) && (ordered[i]->id == _layerID);
+            if (isSetRow && !isOwnLayerSelection && _excludedLayers.count(ordered[i]->id)) {
+                continue;
+            }
             _entries.push_back(ComboEntry(ComboEntry::eKindLayer, ordered[i]->id, qs(ordered[i]->label)));
         }
     }
@@ -566,21 +628,41 @@ LayerChannelRow::clearChannelButtons()
 }
 
 void
+LayerChannelRow::placeButtonsContainer(bool onLine2)
+{
+    if (onLine2 == _buttonsOnLine2) {
+        return;
+    }
+    if (onLine2) {
+        _line1Layout->removeWidget(_buttonsContainer);
+        _line2Layout->insertWidget(2, _buttonsContainer);
+    } else {
+        _line2Layout->removeWidget(_buttonsContainer);
+        _line1Layout->insertWidget(2, _buttonsContainer);
+    }
+    _buttonsOnLine2 = onLine2;
+}
+
+void
 LayerChannelRow::rebuildChannelButtons()
 {
     clearChannelButtons();
 
-    const LayerEntry* layer = findLayer(_layerID);
+    const bool isSetRow = (_mode == eModeSetRow0) || (_mode == eModeSetRowN);
+    const bool isRegexRow = isSetRow && (_setRowMode == eSetRowModeRegex);
     // An absent layer has no listing to build from, so its remembered channels stand in.
-    const std::vector<std::string>& channels = layer ? layer->channels : _enabledChannels;
+    const LayerEntry* layer = isRegexRow ? 0 : findLayer(_layerID);
+    const std::vector<std::string>& channels = isRegexRow ? _regexChannels : (layer ? layer->channels : _enabledChannels);
     const QString layerLabel = layer ? qs(layer->label) : qs(_layerID);
 
-    QWidget* previous = _combo;
+    placeButtonsContainer(isRegexRow);
+
+    QWidget* previous = isRegexRow ? static_cast<QWidget*>(_patternEdit) : static_cast<QWidget*>(_combo);
     for (std::size_t i = 0; i < channels.size(); ++i) {
         Button* b = new Button(qs(channels[i]), _buttonsContainer);
         b->setCheckable(true);
         b->setFocusPolicy(Qt::StrongFocus);
-        b->setToolTip(layerLabel + QLatin1Char('.') + qs(channels[i]));
+        b->setToolTip(isRegexRow ? qs(channels[i]) : layerLabel + QLatin1Char('.') + qs(channels[i]));
         b->setProperty(kChannelNameProperty, qs(channels[i]));
         QColor color;
         if (getChannelColorFromName(channels[i], &color)) {
@@ -588,7 +670,7 @@ LayerChannelRow::rebuildChannelButtons()
             b->setStyleSheet(QString::fromUtf8("QPushButton:checked { background-color: %1; }").arg(color.name()));
         }
         b->blockSignals(true);
-        b->setChecked(isChannelEnabled(channels[i]));
+        b->setChecked(isRegexRow ? !_regexExcludedChannels.count(channels[i]) : isChannelEnabled(channels[i]));
         b->blockSignals(false);
         QObject::connect(b, &QPushButton::toggled, this, [this, b](bool checked) {
             onChannelButtonToggled(b, checked);
@@ -598,21 +680,29 @@ LayerChannelRow::rebuildChannelButtons()
         QWidget::setTabOrder(previous, b);
         previous = b;
     }
-    QWidget::setTabOrder(previous, _patternEdit);
-    QWidget::setTabOrder(_patternEdit, _removeButton);
+    if (isRegexRow) {
+        QWidget::setTabOrder(_combo, _patternEdit);
+        QWidget::setTabOrder(previous, _removeButton);
+    } else {
+        QWidget::setTabOrder(previous, _patternEdit);
+        QWidget::setTabOrder(_patternEdit, _removeButton);
+    }
 }
 
 void
 LayerChannelRow::refreshVisibility()
 {
     bool isSetRow = (_mode == eModeSetRow0) || (_mode == eModeSetRowN);
+    bool isRegexRow = isSetRow && (_setRowMode == eSetRowModeRegex);
     bool showButtons = (isSetRow && _setRowMode == eSetRowModeLayer) || (_mode == eModeLayerSelect && _withChannelButtons);
-    bool showPattern = isSetRow && (_setRowMode == eSetRowModeRegex);
+    bool showPattern = isRegexRow;
+    bool showRegexButtons = isRegexRow && !_regexChannels.empty();
 
-    _buttonsContainer->setVisible(showButtons);
+    _buttonsContainer->setVisible(showButtons || showRegexButtons);
     _patternEdit->setVisible(showPattern);
     _matchesLabel->setVisible(showPattern);
     _removeButton->setVisible(_removable);
+    _line2Container->setVisible(showRegexButtons);
 }
 
 void
@@ -758,14 +848,24 @@ LayerChannelRow::onChannelButtonToggled(Button* button,
                                         bool checked)
 {
     const QString name = button->property(kChannelNameProperty).toString();
+    const bool isSetRow = (_mode == eModeSetRow0) || (_mode == eModeSetRowN);
 
-    std::vector<std::string> enabled;
-    for (std::size_t i = 0; i < _channelButtons.size(); ++i) {
-        if (_channelButtons[i]->isChecked()) {
-            enabled.push_back(_channelButtons[i]->property(kChannelNameProperty).toString().toStdString());
+    if (isSetRow && _setRowMode == eSetRowModeRegex) {
+        const std::string channel = name.toStdString();
+        if (checked) {
+            _regexExcludedChannels.erase(channel);
+        } else {
+            _regexExcludedChannels.insert(channel);
         }
+    } else {
+        std::vector<std::string> enabled;
+        for (std::size_t i = 0; i < _channelButtons.size(); ++i) {
+            if (_channelButtons[i]->isChecked()) {
+                enabled.push_back(_channelButtons[i]->property(kChannelNameProperty).toString().toStdString());
+            }
+        }
+        _enabledChannels = enabled;
     }
-    _enabledChannels = enabled;
     Q_EMIT channelToggled(name, checked);
 }
 

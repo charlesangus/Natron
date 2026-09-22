@@ -3197,7 +3197,9 @@ NodeGui::onLayerSelectionChanged()
     if (layerKnob) {
         std::string summary;
         if (KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(layerKnob.get())) {
-            summary = isChannelSet->getSummary();
+            std::list<ImageLayerDesc> present;
+            internalNode->listLayersForKnob(layerKnob, &present);
+            summary = isChannelSet->getSummary(present);
         } else if (KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get())) {
             summary = isLayerSelect->getSummary();
         }

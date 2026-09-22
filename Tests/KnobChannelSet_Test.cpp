@@ -290,17 +290,65 @@ TEST(KnobChannelSet, InvalidRegexResolvesToNothing)
 
 TEST(KnobChannelSet, DuplicateLayerIDsAcrossRowsOrTheirBits)
 {
+    // setLayer()/addLayer() refuse a duplicate layer row, so the duplicate is built as a
+    // loaded value would be, via setValue() directly, to check that resolve() ORs the bits.
     KnobChannelSetPtr knob = makeKnob();
-    std::vector<std::string> red = channels("R");
-    std::vector<std::string> alpha = channels("A");
+    std::vector<ChannelSetRow> rows(2);
 
-    knob->setLayer(0, "specular", &red);
-    EXPECT_EQ(1, knob->addLayer("specular", &alpha));
+    rows[0].mode = ChannelSetRow::eModeLayer;
+    rows[0].layerOrPattern = "specular";
+    rows[0].channels = channels("R");
+    rows[1].mode = ChannelSetRow::eModeLayer;
+    rows[1].layerOrPattern = "specular";
+    rows[1].channels = channels("A");
+    knob->setValue(knob->encodeRows(rows));
 
     std::vector<ResolvedLayer> resolved = knob->resolve(presentLayers());
     ASSERT_EQ(1u, resolved.size());
     EXPECT_EQ(std::string("specular"), resolved[0].desc.getLayerID());
     EXPECT_EQ(std::bitset<4>(std::string("1001")), resolved[0].channels);
+}
+
+TEST(KnobChannelSet, ALayerCanBeChosenByOnlyOneLayerRow)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setLayer(0, "diffuse", 0);
+    knob->addLayer("specular", 0);
+    EXPECT_THROW(knob->setLayer(1, "diffuse", 0), std::invalid_argument);
+    EXPECT_EQ(std::string("specular"), knob->getRows()[1].layerOrPattern);
+
+    std::vector<ChannelSetRow> rows = knob->getRows();
+    rows[1].layerOrPattern = "diffuse";
+    EXPECT_THROW(knob->setRows(rows), std::invalid_argument);
+}
+
+TEST(KnobChannelSet, RegexRowsDoNotConsumeLayers)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setLayer(0, "diffuse", 0);
+    EXPECT_NO_THROW(knob->addRegex("diff.*"));
+    ASSERT_EQ(2u, knob->getRows().size());
+    EXPECT_EQ(ChannelSetRow::eModeRegex, knob->getRows()[1].mode);
+}
+
+TEST(KnobChannelSet, DecodingDuplicateLayerRowsFromAValueDoesNotThrow)
+{
+    KnobChannelSetPtr knob = makeKnob();
+    std::vector<ChannelSetRow> rows(2);
+
+    rows[0].mode = ChannelSetRow::eModeLayer;
+    rows[0].layerOrPattern = "diffuse";
+    rows[1].mode = ChannelSetRow::eModeLayer;
+    rows[1].layerOrPattern = "diffuse";
+
+    EXPECT_NO_THROW(knob->setValue(knob->encodeRows(rows)));
+
+    std::vector<ChannelSetRow> decoded = knob->getRows();
+    ASSERT_EQ(2u, decoded.size());
+    EXPECT_EQ(std::string("diffuse"), decoded[0].layerOrPattern);
+    EXPECT_EQ(std::string("diffuse"), decoded[1].layerOrPattern);
 }
 
 TEST(KnobChannelSet, RegexAndLayerRowsMergeOnTheSameID)
@@ -464,6 +512,28 @@ TEST(KnobChannelSet, SummarySamples)
     EXPECT_EQ(1u, ids.count(kNatronColorLayerID));
     EXPECT_EQ(1u, ids.count("depth"));
     EXPECT_EQ(1u, ids.count("diffuse"));
+}
+
+TEST(KnobChannelSet, SummaryWithPresentLayersNamesRegexMatchesInsteadOfPattern)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->addRegex("spec.*");
+
+    std::list<ImageLayerDesc> present;
+    present.push_back(ImageLayerDesc::getRGBAComponents());
+    present.push_back(makeLayer("diffuse", channels("R", "G", "B")));
+    present.push_back(makeLayer("specular", channels("R", "G", "B")));
+
+    EXPECT_EQ(std::string("Color, specular"), knob->getSummary(present));
+
+    knob->setExcludedChannels(1, channels("G"));
+    EXPECT_EQ(std::string("Color, specular.rb"), knob->getSummary(present));
+
+    knob->setRegex(1, "nomatch.*");
+    EXPECT_EQ(std::string("Color, (no match)"), knob->getSummary(present));
+
+    EXPECT_EQ(std::string("Color, /nomatch.*/"), knob->getSummary());
 }
 
 TEST(KnobChannelSet, CacheFollowsRawValueChanges)

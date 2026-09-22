@@ -1,7 +1,7 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M38.P9.T2
+current: null
 pm_heartbeat: 2026-09-21T13:30:37-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
@@ -159,6 +159,12 @@ future core work has solid ground to build on.
   layers + dynamic channel buttons, multiple instances via "Add layer"),
   with nodes processing exactly the selected layers/channels in place and no
   shuffle capability outside the Shuffle node. See M38's `## Decisions`.
+  **M38 UAT round 1 (2026-09-21) did not pass**: the user's findings and
+  design feedback became **Phase 38.10** (14 tasks, placed before Phase 38.9
+  in the file so the PM runs it first), then 38.9 re-takes the after-shots
+  (T1a) and re-runs the checkpoint (T2, round 2). Resume at `M38.P10.T1`.
+  M43 and M36 were absorbed into M38 as Phases 38.2 and 38.7 — their rows are
+  cancelled like M35's.
 
 # Board
 
@@ -190,10 +196,10 @@ future core work has solid ground to build on.
 | M59 | Pre-commit hook that auto-formats staged C/C++ so PRs stop failing CI's `format` check | done | [M59-pre-commit-auto-format.md](PLAN/MILESTONES/M59-pre-commit-auto-format.md) |
 | M38 | Layer/channel selection widget: process-in-place, no implicit shuffling (absorbs M35) | doing | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
 | M60 | Deep images get layers/channels like flat images | todo | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
-| M43 | Drop the premultiplied/unpremultiplied concept | todo | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
+| M43 | ~~Drop the premultiplied/unpremultiplied concept~~ (folded into M38 Phase 38.2) | cancelled | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
 | M34 | New native Shuffle node | todo | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
 | M35 | ~~Remove implicit output-plane shuffling from non-Shuffle nodes~~ (folded into M38) | cancelled | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
-| M36 | Add "new channel/layer" affordance wherever a node outputs channels | todo | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
+| M36 | ~~Add "new channel/layer" affordance wherever a node outputs channels~~ (folded into M38 Phase 38.7) | cancelled | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
 | M37 | Channel/layer management nodes | todo | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |
 | M50 | Proper OCIO support as a project property | todo | [M50-proper-ocio-support.md](PLAN/MILESTONES/M50-proper-ocio-support.md) |
 | M25 | Guard the GL init path against the debug FP traps | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |

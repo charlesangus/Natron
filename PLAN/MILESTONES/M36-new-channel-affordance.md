@@ -1,6 +1,6 @@
-# Milestone 36: Add "new channel/layer" affordance wherever a node outputs channels
+# Milestone 36: ~~Add "new channel/layer" affordance wherever a node outputs channels~~ (folded into M38 Phase 38.7)
 
-> Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
+> Cancelled 2026-09-19 (user decision, recorded in M38's `## Decisions`): delivered as M38 Phase 38.7 — the "New layer…" sentinel on target-role layer knobs. Kept for history.
 
 Anywhere a node has a channel/layer output setting, add a "new" option to
 create a channel/layer on the fly, rather than requiring it to already

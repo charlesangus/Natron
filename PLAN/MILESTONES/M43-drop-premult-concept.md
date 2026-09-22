@@ -1,6 +1,6 @@
-# Milestone 43: Drop the premultiplied/unpremultiplied concept
+# Milestone 43: ~~Drop the premultiplied/unpremultiplied concept~~ (folded into M38 Phase 38.2)
 
-> Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
+> Cancelled 2026-09-19 (user decision, recorded in M38's `## Decisions`): delivered as M38 Phase 38.2. Note the 2026-09-21 amendment there — the colour family's node-level `(Un)premult by` convenience returns as `unPremultBy`/`unPremultByChannel` (M38.P10.T10); only the app-wide premult *concept* is gone. Kept for history.
 
 Remove the app's built-in premultiplied/unpremultiplied tracking and
 handling; treat that as the user's responsibility to manage/track, as in

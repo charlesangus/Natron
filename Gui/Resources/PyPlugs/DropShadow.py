@@ -277,6 +277,11 @@ def createInstance(app,group):
         param.setValue(0.5, 3)
         del param
 
+    param = lastNode.getParam("unPremultBy")
+    if param is not None:
+        param.setValue(True)
+        del param
+
     del lastNode
     # End of node "Multiply1"
 

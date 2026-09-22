@@ -271,10 +271,10 @@ OPENFX_IO_REF="9b558a7fc08382ebbd4ed0a71c39c63e25666de3"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 
-# OPENFX_MISC_REF: charlesangus/openfx-misc -- our fork, one commit ahead of
+# OPENFX_MISC_REF: charlesangus/openfx-misc -- our fork, three commits ahead of
 # NatronGitHub/openfx-misc and zero behind. Fork-and-fix is the standing
 # pattern for small changes to NatronGitHub repos (see OPENFX_IO_REF above).
-# One delta:
+# Two deltas:
 #
 # 1. Premult/Unpremult always multiply/divide by alpha
 #    (charlesangus/openfx-misc#1). Natron no longer tracks whether an image
@@ -303,11 +303,47 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 #    sets an advisory output preference that nothing downstream, including
 #    this plugin, reads back.
 #
+# 2. The colour family's "(Un)premult by <channel>" convenience renamed off
+#    the hidden premult family (charlesangus/openfx-misc#2). Grade,
+#    ColorCorrect, Multiply and the rest of the plugins built on
+#    ofxsPremultDescribeParams() each carry a node-level toggle that
+#    unpremultiplies by a chosen channel, runs the node's own math, and
+#    re-premultiplies -- a per-node convenience, unrelated to the app-wide
+#    premult tracking delta 1 above and OfxEffectInstance's
+#    hideDeprecatedPremultKnobs() removed. Because it was still named
+#    premult/premultChannel, the host's name-based hide list caught it too
+#    and the convenience disappeared along with the concept it never
+#    depended on. The params this rename touches are declared in
+#    SupportExt/ofxsMaskMix.h, a submodule pinned to
+#    NatronGitHub/openfx-supportext, not in this fork's own tree, so the
+#    fix could not land as a change here alone: commit 64769819
+#    (charlesangus/openfx-misc#2) repoints the SupportExt submodule at
+#    charlesangus/openfx-supportext@7c9be374
+#    (charlesangus/openfx-supportext#2), which renames premult ->
+#    unPremultBy and premultChannel -> unPremultByChannel (labels
+#    "(Un)premult" -> "(Un)premult by" and "By" -> "", same-line layout
+#    hint unchanged). premultChanged, declared per-plugin rather than in
+#    ofxsMaskMix.h, keeps its old name and stays on the host's hide list --
+#    its changedClip auto-toggle was already inert against a host that
+#    answers a constant premultiplication state. PIK's own PyPlug script
+#    (PIK/PIKColor.py), which sets premult on the CImgDilate nodes it
+#    embeds, is updated to the new name in the same commit. A second commit,
+#    d30a55d1 (charlesangus/openfx-misc#3), repoints SupportExt again at
+#    charlesangus/openfx-supportext@ac5aa1cf
+#    (charlesangus/openfx-supportext#3): the choice param's own
+#    ChoiceParamDescriptor carried an unconditional setIsSecret(true) ("not
+#    yet implemented") independent of any host, left over from before this
+#    delta, which would have kept unPremultByChannel invisible even after
+#    the rename gave it a name the host stops hiding. ofxsUnPremult()/
+#    ofxsPremult() still ignore the channel argument and always use alpha
+#    -- unhiding the control does not make per-channel selection functional,
+#    only visible, so its hint says so.
+#
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
 # this container with no other source changes needed.
 OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
-OPENFX_MISC_REF="19e52fffb004f4926b219d6ed3eadee156e01b8f"
+OPENFX_MISC_REF="d30a55d1bc02a2152f535b95a7ce1e52feb307a5"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a

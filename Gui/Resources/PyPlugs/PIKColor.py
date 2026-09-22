@@ -980,6 +980,11 @@ def createInstance(app,group):
         param.setValue(False)
         del param
 
+    param = lastNode.getParam("unPremultBy")
+    if param is not None:
+        param.setValue(True)
+        del param
+
     param = lastNode.getParam("userTextArea")
     if param is not None:
         param.setValue("<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">(size/5)*multi*2</font>")
@@ -1006,6 +1011,11 @@ def createInstance(app,group):
     param = lastNode.getParam("expandRoD")
     if param is not None:
         param.setValue(False)
+        del param
+
+    param = lastNode.getParam("unPremultBy")
+    if param is not None:
+        param.setValue(True)
         del param
 
     param = lastNode.getParam("userTextArea")

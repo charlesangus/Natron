@@ -1099,6 +1099,13 @@ public:
     void setChannels(const QStringList& channels, int row = 0);
     void setRegex(const QString& pattern, int row = 0);
 
+    /**
+     * @brief The channels a regex row excludes from its matched layers. Raises ValueError
+     * when row is not a regex row.
+     **/
+    void setExcludedChannels(const QStringList& channels, int row = 0);
+    QStringList getExcludedChannels(int row) const;
+
     int addLayer(const QString& layerID, const QStringList& channels = QStringList());
     int addRegex(const QString& pattern);
 

@@ -191,7 +191,7 @@ KnobChannelSet::encodeRows(const std::vector<ChannelSetRow>& rows)
         if (rows[i].mode == ChannelSetRow::eModeLayer || rows[i].mode == ChannelSetRow::eModeRegex) {
             cells[1] = rows[i].layerOrPattern;
         }
-        if (rows[i].mode == ChannelSetRow::eModeLayer) {
+        if (rows[i].mode == ChannelSetRow::eModeLayer || rows[i].mode == ChannelSetRow::eModeRegex) {
             cells[2] = joinChannels(rows[i].channels);
         }
         table.push_back(cells);
@@ -216,7 +216,7 @@ KnobChannelSet::decodeRows(const std::string& raw)
         if (row.mode == ChannelSetRow::eModeLayer || row.mode == ChannelSetRow::eModeRegex) {
             row.layerOrPattern = (*it)[1];
         }
-        if (row.mode == ChannelSetRow::eModeLayer) {
+        if (row.mode == ChannelSetRow::eModeLayer || row.mode == ChannelSetRow::eModeRegex) {
             row.channels = splitChannels((*it)[2]);
         }
         rows.push_back(row);
@@ -359,11 +359,51 @@ void
 KnobChannelSet::setRegex(int row,
                          const std::string& pattern)
 {
-    ChannelSetRow value;
+    std::vector<ChannelSetRow> rows = getRows();
 
+    if (row < 0 || row >= (int)rows.size()) {
+        throw std::invalid_argument("Channel set row index out of range");
+    }
+
+    ChannelSetRow value;
     value.mode = ChannelSetRow::eModeRegex;
     value.layerOrPattern = pattern;
-    setRowAt(row, value);
+    if (rows[row].mode == ChannelSetRow::eModeRegex) {
+        value.channels = rows[row].channels;
+    }
+    rows[row] = value;
+    setRows(rows);
+}
+
+void
+KnobChannelSet::setExcludedChannels(int row,
+                                    const std::vector<std::string>& names)
+{
+    std::vector<ChannelSetRow> rows = getRows();
+
+    if (row < 0 || row >= (int)rows.size()) {
+        throw std::invalid_argument("Channel set row index out of range");
+    }
+    if (rows[row].mode != ChannelSetRow::eModeRegex) {
+        throw std::invalid_argument("Excluded channels can only be set on a regex row");
+    }
+    rows[row].channels = names;
+    setRows(rows);
+}
+
+std::vector<std::string>
+KnobChannelSet::getExcludedChannels(int row) const
+{
+    std::vector<ChannelSetRow> rows = getRows();
+
+    if (row < 0 || row >= (int)rows.size()) {
+        throw std::invalid_argument("Channel set row index out of range");
+    }
+    if (rows[row].mode != ChannelSetRow::eModeRegex) {
+        throw std::invalid_argument("Excluded channels can only be read from a regex row");
+    }
+
+    return rows[row].channels;
 }
 
 int
@@ -490,7 +530,11 @@ KnobChannelSet::resolve(const std::list<ImageLayerDesc>& present) const
                 }
                 for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
                     if (patterns[i].match(QString::fromUtf8(it->getLayerLabel().c_str())).hasMatch()) {
-                        accumulate(*it, allChannelBits(*it));
+                        std::bitset<4> bits = allChannelBits(*it);
+                        if (!row.channels.empty()) {
+                            bits &= ~namedChannelBits(*it, row.channels);
+                        }
+                        accumulate(*it, bits);
                     }
                 }
             }

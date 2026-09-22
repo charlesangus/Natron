@@ -240,6 +240,39 @@ TEST(KnobChannelSet, RegexIsAnchoredAndCaseSensitive)
     EXPECT_EQ(std::string("/spec.*/"), knob->getSummary());
 }
 
+TEST(KnobChannelSet, RegexExcludedChannelsAreRemovedFromMatchedLayers)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setRegex(0, "spec.*");
+    knob->setExcludedChannels(0, channels("G"));
+
+    std::list<ImageLayerDesc> present;
+    present.push_back(makeLayer("specular", channels("R", "G", "B")));
+    present.push_back(makeLayer("specularZ", channels("X", "Y", "Z")));
+
+    std::vector<ResolvedLayer> resolved = knob->resolve(present);
+    ASSERT_EQ(2u, resolved.size());
+    EXPECT_EQ(std::string("specular"), resolved[0].desc.getLayerID());
+    EXPECT_EQ(std::bitset<4>(std::string("0101")), resolved[0].channels);
+    EXPECT_EQ(std::string("specularZ"), resolved[1].desc.getLayerID());
+    EXPECT_EQ(std::bitset<4>(std::string("0111")), resolved[1].channels);
+
+    EXPECT_EQ(channels("G"), knob->getExcludedChannels(0));
+}
+
+TEST(KnobChannelSet, SetExcludedChannelsOnlyValidOnRegexRow)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    EXPECT_THROW(knob->setExcludedChannels(0, channels("G")), std::invalid_argument);
+    EXPECT_THROW(knob->getExcludedChannels(0), std::invalid_argument);
+
+    knob->setRegex(0, "spec.*");
+    EXPECT_NO_THROW(knob->setExcludedChannels(0, channels("G")));
+    EXPECT_EQ(channels("G"), knob->getExcludedChannels(0));
+}
+
 TEST(KnobChannelSet, InvalidRegexResolvesToNothing)
 {
     KnobChannelSetPtr knob = makeKnob();
@@ -330,6 +363,25 @@ TEST(KnobChannelSet, CodecRoundTripEscapesXML)
     std::vector<ResolvedLayer> resolved = knob->resolve(present);
     ASSERT_EQ(1u, resolved.size());
     EXPECT_EQ(std::bitset<4>(std::string("0011")), resolved[0].channels);
+}
+
+TEST(KnobChannelSet, CodecRoundTripPreservesExcludedChannels)
+{
+    KnobChannelSetPtr knob = makeKnob();
+    std::vector<ChannelSetRow> rows(1);
+
+    rows[0].mode = ChannelSetRow::eModeRegex;
+    rows[0].layerOrPattern = "spec.*";
+    rows[0].channels = channels("G", "B");
+
+    knob->setRows(rows);
+
+    const std::string raw = knob->getValue();
+    EXPECT_NE(std::string::npos, raw.find("<Mode>regex</Mode><Layer>spec.*</Layer><Channels>G,B</Channels>"));
+
+    std::vector<ChannelSetRow> decoded = knob->getRows();
+    ASSERT_EQ(1u, decoded.size());
+    EXPECT_EQ(rows[0], decoded[0]);
 }
 
 TEST(KnobChannelSet, NoneOnRowZeroKeepsButIgnoresLaterRows)

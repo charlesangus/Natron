@@ -1610,6 +1610,23 @@
                 }
             </inject-code>
         </modify-function>
+        <modify-function signature="setExcludedChannels(QStringList,int)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%1, %2);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="getExcludedChannels(int)const">
+            <inject-code class="target" position="beginning">
+                %RETURN_TYPE %0 = %CPPSELF.%FUNCTION_NAME(%1);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+                %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
+            </inject-code>
+        </modify-function>
     </object-type>
 
     <object-type name="LayerSelectParam">

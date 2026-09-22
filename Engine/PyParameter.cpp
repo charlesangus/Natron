@@ -2476,6 +2476,44 @@ ChannelSetParam::setRegex(const QString& pattern,
     }
 }
 
+void
+ChannelSetParam::setExcludedChannels(const QStringList& channels,
+                                     int row)
+{
+    KnobChannelSetPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    std::vector<std::string> chans = channelsFromStringList(channels);
+    try {
+        knob->setExcludedChannels(row, chans);
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+}
+
+QStringList
+ChannelSetParam::getExcludedChannels(int row) const
+{
+    QStringList ret;
+    KnobChannelSetPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return ret;
+    }
+    try {
+        std::vector<std::string> chans = knob->getExcludedChannels(row);
+        for (std::vector<std::string>::const_iterator it = chans.begin(); it != chans.end(); ++it) {
+            ret.push_back(QString::fromUtf8(it->c_str()));
+        }
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+
+    return ret;
+}
+
 int
 ChannelSetParam::addLayer(const QString& layerID,
                           const QStringList& channels)

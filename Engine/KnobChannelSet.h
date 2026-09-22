@@ -55,6 +55,14 @@ struct ChannelSetRow {
 
     ModeEnum mode;
     std::string layerOrPattern;
+
+    /**
+     * @brief eModeLayer: the enabled channels (empty means every channel of the layer at
+     * resolve() time). eModeRegex: the excluded channels instead, because a regex's channel
+     * universe moves with the graph; encoding exclusion rather than inclusion means a newly
+     * matched channel defaults to on without needing a value write from a GUI refresh.
+     * Unused for eModeNone/eModeAll.
+     **/
     std::vector<std::string> channels;
 
     ChannelSetRow()
@@ -175,7 +183,19 @@ public:
      **/
     void setLayer(int row, const std::string& layerID, const std::vector<std::string>* channelsOrAll);
     void setChannels(int row, const std::vector<std::string>& channels);
+
+    /**
+     * @brief Sets the row's pattern. An existing excluded-channel set is kept when the row
+     * was already eModeRegex; otherwise the row starts with nothing excluded.
+     **/
     void setRegex(int row, const std::string& pattern);
+
+    /**
+     * @brief The channels a regex row excludes from its matched layers' resolve() bits.
+     * Valid only on an eModeRegex row; throws std::invalid_argument otherwise.
+     **/
+    void setExcludedChannels(int row, const std::vector<std::string>& names);
+    std::vector<std::string> getExcludedChannels(int row) const;
 
     int addLayer(const std::string& layerID, const std::vector<std::string>* channelsOrAll);
     int addRegex(const std::string& pattern);

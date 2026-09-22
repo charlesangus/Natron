@@ -289,13 +289,13 @@ User acceptance test of the 38.9.T2 AppImage on 2026-09-21 — findings and the 
 
 ### Widget layout and rules
 
-- [ ] M38.P10.T1 — `[−]` on the left of rows 1+, a bare `[+]` aligned under the `[−]` column
+- [x] M38.P10.T1 — `[−]` on the left of rows 1+, a bare `[+]` aligned under the `[−]` column
   - files: `Gui/LayerChannelRow.h`, `Gui/LayerChannelRow.cpp`, `Gui/KnobGuiChannelSet.cpp`
   - approach: in `LayerChannelRow`'s constructor (`LayerChannelRow.cpp:121-147`) move `_removeButton` from the end of the `QHBoxLayout` to index 0; when the row is not removable (row 0, `KnobGuiChannelSet.cpp:171`) put a fixed-width spacer of the same width there instead, so every combo starts at the same x. In `KnobGuiChannelSet::createWidget` (`:130-146`) the `+ Add layer` button becomes a `Button("+")` sized like the `[−]` button, left-aligned in its container, so it reads as the next cell of the `[−]` column. Tooltip on `[+]`: "Add a layer row".
   - verify: Xvfb via `build/m38scout/` (`NODE=blur`, three rows): screenshot shows `[−]` left of rows 1 and 2, no `[−]` on row 0, all three combos left-aligned, and a lone `[+]` directly under the `[−]` column; offscreen `LayerChannelRow` gtest still green; `clang-format` gate passes.
   - size: S
 
-- [ ] M38.P10.T2 — Divider under the channel section
+- [x] M38.P10.T2 — Divider under the channel section
   - files: `Engine/Node.cpp`, `Engine/Node.h`, `Engine/NodePrivate.h`
   - approach: `Node::createLayerKnob` (`Node.cpp:2659-2689`) also creates a `KnobSeparator` (`kNodeParamLayerSeparator`, non-persistent, no label) and inserts it at main-page index 1, right after the channel set / layer select; its secretness follows the layer knob's (set together wherever the layer knob is made secret, e.g. the 38.4.T5 exception list does not hide the knob, so nothing else needed today). Not created for mask footers (`createMaskSelectors`).
   - verify: Xvfb screenshots of Blur, Constant and Roto panels show a horizontal rule between the channel section and the first plugin knob; `dump.py` shows a `[Separator]` at main-page index 1 on Blur/Constant and none on Shuffle/DeepMerge; a saved `.ntp` contains no separator knob entry.
@@ -309,7 +309,7 @@ User acceptance test of the 38.9.T2 AppImage on 2026-09-21 — findings and the 
 
 ### Regex rows get channel buttons
 
-- [ ] M38.P10.T4 — Engine: regex rows carry an excluded-channel set; `resolve()` honours it
+- [x] M38.P10.T4 — Engine: regex rows carry an excluded-channel set; `resolve()` honours it
   - files: `Engine/KnobChannelSet.h`, `Engine/KnobChannelSet.cpp`, `Engine/PyParameter.h`, `Engine/PyParameter.cpp`, `Tests/KnobChannelSet_Test.cpp`
   - approach: for `eModeRegex` rows the `Channels` cell (`ChannelSetRow::channels`, `KnobChannelSet.h:48-76`) now lists the *excluded* channel names — a regex's channel universe is dynamic, so exclusion is the encoding that keeps a newly matched channel on by default and never requires a value write on refresh. `resolve()` (`KnobChannelSet.cpp:443-505`) accumulates `allChannelBits(layer)` minus bits whose names are excluded; `setRegex(row, pattern)` keeps an existing exclusion set when only the pattern changes; new `setExcludedChannels(row, names)`/`getExcludedChannels(row)` valid only on regex rows (`std::invalid_argument` otherwise, same shape as `setNone` on row 1); `ChannelSetParam` gains the two methods. Codec unchanged (same three tags); document the per-mode meaning of `Channels` in the header comment.
   - verify: `ctest -R KnobChannelSet`: regex `spec.*` with excluded `{G}` on present `specular[R,G,B]` → bits `101`; the same row when a `specularZ[X,Y,Z]` layer appears → all of its bits on (nothing excluded); `setExcludedChannels(0, …)` on a layer row throws; codec round trip of a regex row with excluded `{G,B}`; Python background script: `setExcludedChannels(2, ["G"])` then `getExcludedChannels(2) == ["G"]`.
@@ -359,7 +359,7 @@ User acceptance test of the 38.9.T2 AppImage on 2026-09-21 — findings and the 
   - verify: gtest: Blur with Mask = Constant(RGB) and `maskChannel_Mask = diffuse.R` → render returns failed and `hasPersistentMessage()` names `diffuse.R`; reconnecting the Mask to the three-layer Read → render succeeds and the message is gone; Mask disconnected with the same value → render succeeds, no message; Xvfb: the node shows the red error frame and the mask footer still reads `diffuse.R (not in input)`.
   - size: M
 
-- [ ] M38.P10.T12 — Tracker: drop the layer select; always track Color (UAT step 6.2)
+- [x] M38.P10.T12 — Tracker: drop the layer select; always track Color (UAT step 6.2)
   - files: `Engine/TrackerNode.h`, `Engine/TrackerContextPrivate.cpp`, `Engine/TrackerFrameAccessor.cpp`, `Tests/` (the 38.6.T4 tracker gtest)
   - approach: user decision: omit rather than fix — non-RGB tracking waits for the native Shuffle (M34). `TrackerNode::getLayerKnobSpec` (`TrackerNode.h:120-123`) returns `eKindNone`; `resolveLayerKnob`/`getLayerKnob` uses at `TrackerContextPrivate.cpp:1127, 1433` and the `TrackerFrameAccessor` request go back to Color; `natronImageToLibMvFloatImage` keeps the R,G,B average (38.6.T4 already made it channel-count driven). Remove the `diffuse` case from the tracker gtest; keep the Color golden.
   - verify: `dump.py`: Tracker shows none of the three knob types and no `trackRed`; the tracker gtest's Color case is unchanged; full ctest green.

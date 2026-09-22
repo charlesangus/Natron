@@ -66,6 +66,7 @@ CLANG_DIAG_ON(deprecated)
 #define kNodeParamChannelSetLabel "Channels"
 #define kNodeParamLayerSelect "layer"
 #define kNodeParamLayerSelectLabel "Layer"
+#define kNodeParamLayerSeparator "layerSeparator"
 
 #define kOfxMaskInvertParamName "maskInvert"
 #define kOfxMixParamName "mix"

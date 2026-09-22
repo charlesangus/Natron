@@ -2682,6 +2682,11 @@ Node::createLayerKnob(const LayerKnobSpec& spec,
     knob->setAddNewLine(true);
     mainPage->insertKnob(0, knob);
 
+    KnobSeparatorPtr separator = AppManager::createKnob<KnobSeparator>(_imp->effect.get(), std::string(), 1, false);
+    separator->setName(kNodeParamLayerSeparator);
+    separator->setIsPersistent(false);
+    mainPage->insertKnob(1, separator);
+
     int inputNb = spec.role == LayerKnobSpec::eRoleTarget ? -1 : LayerKnobSource::kPreferredInput;
     _imp->layerKnob = knob;
     _imp->layerKnobSpec = spec;

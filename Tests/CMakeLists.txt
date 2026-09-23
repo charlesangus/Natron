@@ -94,6 +94,7 @@ set(GuiTests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
     LayerChannelRow_Test.cpp
+    ShuffleMatrix_Test.cpp
     guimain.cpp
 )
 add_executable(GuiTests ${GuiTests_SOURCES})

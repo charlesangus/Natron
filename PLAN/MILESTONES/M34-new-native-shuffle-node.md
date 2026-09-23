@@ -108,7 +108,7 @@ Execution notes carried over from M38:
   - files: `Engine/NodeGroup.cpp`, `Tests/PyPlugExport_Test.cpp`
   - approach: after the layer selects, emit `getParam("mapping").connect(...)` lines. Referenced custom layers already go out through `addProjectLayer`.
   - verify: `ctest -R PyPlugExport`: a group containing a Shuffle (`in1=diffuse`, `out1=spec2`, `out1.A←1`) exports, re-imports, and has identical knob values.
-  - size: S
+  - size: M
 
 ## Phase 34.3: Matrix UI
 

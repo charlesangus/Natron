@@ -47,9 +47,11 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobShuffleMap.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Project.h"
 
 NATRON_NAMESPACE_USING
@@ -402,6 +404,107 @@ TEST_F(PyPlugExportTest, UserLayerSelectWithChannelButtonsSurvivesProjectRoundTr
     KnobLayerSelectPtr master2 = std::dynamic_pointer_cast<KnobLayerSelect>(groupNode2->getKnobByName("userLayer"));
     ASSERT_TRUE(bool(master2));
     EXPECT_TRUE(master2->getWithChannelButtons());
+
+    project->reset(false, true);
+}
+
+// A Shuffle's mapping knob stores index-based rows (see KnobShuffleMap.h) that only mean
+// something relative to the layers currently selected on its in1/in2/out1/out2 slots. The
+// export must translate a row into a channel-name connect() call instead of the knob's own
+// raw value, and must do so after in1/out1 have already been set so ShuffleMapParam::connect()
+// resolves against the same layers the node had when the row was recorded.
+TEST_F(PyPlugExportTest, ShuffleMappingRoundTripsThroughPyPlugExport)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    std::vector<std::string> diffuseChannels;
+    diffuseChannels.push_back("R");
+    diffuseChannels.push_back("G");
+    diffuseChannels.push_back("B");
+    std::string error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("diffuse", "diffuse", "", diffuseChannels), LayerRegistryEntry::eOriginUser, &error)) << error;
+
+    std::vector<std::string> spec2Channels;
+    spec2Channels.push_back("R");
+    spec2Channels.push_back("G");
+    spec2Channels.push_back("B");
+    spec2Channels.push_back("A");
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("spec2", "spec2", "", spec2Channels), LayerRegistryEntry::eOriginUser, &error)) << error;
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    NodePtr groupNode = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(groupNode));
+    NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(groupNode->getEffectInstance());
+    ASSERT_TRUE(bool(group));
+    NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group);
+    ASSERT_TRUE(bool(collection));
+
+    CreateNodeArgs shuffleArgs(PLUGINID_NATRON_SHUFFLE, collection);
+    NodePtr shuffle = getApp()->createNode(shuffleArgs);
+    ASSERT_TRUE(bool(shuffle)) << "node creation failed for " << PLUGINID_NATRON_SHUFFLE;
+    const std::string shuffleScriptName = shuffle->getScriptName();
+
+    KnobLayerSelectPtr in1 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamIn1));
+    ASSERT_TRUE(bool(in1));
+    in1->setLayer("diffuse");
+
+    KnobLayerSelectPtr out1 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamOut1));
+    ASSERT_TRUE(bool(out1));
+    out1->setLayer("spec2");
+
+    KnobShuffleMapPtr mapping = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle->getKnobByName(kShuffleParamMapping));
+    ASSERT_TRUE(bool(mapping));
+    // out1.A <- 1 ("A" is channel index 3 of spec2's [R, G, B, A]).
+    mapping->setSource(1, 3, ShuffleSource::makeOne());
+    ASSERT_EQ(std::size_t(1), mapping->getRows().size());
+
+    QString output;
+    group->exportGroupToPython(QString::fromUtf8("test.pyplug.shufflemap"), QString::fromUtf8("ShuffleMapGroup"), QString(), QString(), QString::fromUtf8("Other"), 1, output);
+
+    EXPECT_TRUE(output.contains(QString::fromUtf8("app.addProjectLayer(\"diffuse\", [\"R\", \"G\", \"B\"])")));
+    EXPECT_TRUE(output.contains(QString::fromUtf8("app.addProjectLayer(\"spec2\", [\"R\", \"G\", \"B\", \"A\"])")));
+    EXPECT_TRUE(output.contains(QString::fromUtf8("param.connect(\"1\", \"out1.A\")")));
+
+    // The mapping knob's raw (index-based) value must not also be emitted alongside the
+    // connect() call: getParam("mapping") should be fetched exactly once.
+    EXPECT_EQ(1, output.count(QString::fromUtf8("getParam(\"mapping\")")));
+
+    project->reset(false, true);
+
+    std::string interpError, interpOutput;
+    ASSERT_TRUE(interpretPythonScript(output.toStdString(), &interpError, &interpOutput)) << interpError;
+
+    CreateNodeArgs containerArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    containerArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    NodePtr container = getApp()->createNode(containerArgs);
+    ASSERT_TRUE(bool(container));
+
+    std::string appVar = getApp()->getAppIDString();
+    std::string callScript = "createInstance(" + appVar + ", " + appVar + "." + container->getFullyQualifiedName() + ")\n";
+    ASSERT_TRUE(interpretPythonScript(callScript, &interpError, &interpOutput)) << interpError;
+
+    NodeCollectionPtr containerCollection = std::dynamic_pointer_cast<NodeCollection>(container->getEffectInstance());
+    ASSERT_TRUE(bool(containerCollection));
+    NodePtr shuffle2 = containerCollection->getNodeByName(shuffleScriptName);
+    ASSERT_TRUE(bool(shuffle2));
+
+    KnobLayerSelectPtr in1_2 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle2->getKnobByName(kShuffleParamIn1));
+    ASSERT_TRUE(bool(in1_2));
+    EXPECT_EQ(std::string("diffuse"), in1_2->getLayer());
+
+    KnobLayerSelectPtr out1_2 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle2->getKnobByName(kShuffleParamOut1));
+    ASSERT_TRUE(bool(out1_2));
+    EXPECT_EQ(std::string("spec2"), out1_2->getLayer());
+
+    KnobShuffleMapPtr mapping2 = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle2->getKnobByName(kShuffleParamMapping));
+    ASSERT_TRUE(bool(mapping2));
+    std::vector<ShuffleMapRow> rows2 = mapping2->getRows();
+    ASSERT_EQ(std::size_t(1), rows2.size());
+    EXPECT_EQ(1, rows2[0].outSlot);
+    EXPECT_EQ(3, rows2[0].outIndex);
+    EXPECT_EQ(ShuffleSource::eOne, rows2[0].src.kind);
 
     project->reset(false, true);
 }

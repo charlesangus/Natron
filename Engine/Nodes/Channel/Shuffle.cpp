@@ -25,12 +25,15 @@
 
 #include "Shuffle.h"
 
+#include <algorithm>
 #include <list>
+#include <map>
 #include <string>
 #include <vector>
 
 #include "Engine/AppInstance.h"
 #include "Engine/ChoiceOption.h"
+#include "Engine/Image.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
@@ -476,10 +479,196 @@ Shuffle::getFrameRange(double* first,
     NativeEffectBase::getFrameRange(first, last);
 }
 
-StatusEnum
-Shuffle::render(const RenderActionArgs& /*args*/)
+namespace {
+
+struct ChannelFill {
+    ImagePtr image;
+    int channel;
+    float constant;
+
+    ChannelFill()
+        : image()
+        , channel(0)
+        , constant(0.f)
+    {
+    }
+};
+
+std::string
+planeChannelName(const ImageLayerDesc& layer,
+                 int index)
 {
-    return eStatusOK;
+    // Color indexes name R, G, B, A whatever the input's own Color layout, so a wired A reads an
+    // alpha-only Color plane and finds nothing in an RGB one.
+    static const char* const colorChannels[4] = { "R", "G", "B", "A" };
+
+    if (layer.isColorLayer()) {
+        return ((index >= 0) && (index < 4)) ? std::string(colorChannels[index]) : std::string();
+    }
+    const std::vector<std::string>& channels = layer.getChannels();
+
+    return ((index >= 0) && (index < (int)channels.size())) ? channels[index] : std::string();
 }
+
+bool
+findChannelInPlane(const ImagePtr& image,
+                   const std::string& channelName,
+                   ChannelFill* fill)
+{
+    if (!image || channelName.empty()) {
+        return false;
+    }
+    const std::vector<std::string>& channels = image->getComponents().getChannels();
+    const int nComps = (int)image->getComponentsCount();
+    for (int i = 0; (i < (int)channels.size()) && (i < nComps); ++i) {
+        if (channels[i] == channelName) {
+            fill->image = image;
+            fill->channel = i;
+
+            return true;
+        }
+    }
+
+    return false;
+}
+} // namespace
+
+ImagePtr
+Shuffle::fetchInputPlane(const RenderActionArgs& args,
+                         int inputNb,
+                         const std::string& layerID,
+                         std::vector<FetchedPlane>* fetched)
+{
+    for (std::vector<FetchedPlane>::const_iterator it = fetched->begin(); it != fetched->end(); ++it) {
+        if ((it->inputNb == inputNb) && (it->layerID == layerID)) {
+            return it->image;
+        }
+    }
+
+    FetchedPlane plane;
+    plane.inputNb = inputNb;
+    plane.layerID = layerID;
+    if (getInput(inputNb)) {
+        std::list<ImageLayerDesc> present;
+        getPresentLayers(args.time, args.view, inputNb, &present);
+        ImageLayerDesc desc;
+        if (findLayer(present, layerID, &desc)) {
+            RectI inputRoI;
+            plane.image = getImage(inputNb, args.time, args.mappedScale, args.view, NULL, &desc, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
+            if (plane.image && (plane.image->getBitDepth() != eImageBitDepthFloat)) {
+                plane.image.reset();
+            }
+        }
+    }
+    fetched->push_back(plane);
+
+    return plane.image;
+}
+
+StatusEnum
+Shuffle::render(const RenderActionArgs& args)
+{
+    std::shared_ptr<KnobShuffleMap> mapping = _mapping.lock();
+    const std::string outputLayers[2] = { getOutputLayer(1), getOutputLayer(2) };
+    std::vector<FetchedPlane> fetched;
+
+    // Every input plane is fetched before any image is locked: fetching renders upstream, which
+    // may write into a cached image this render would otherwise already hold a read lock on.
+    std::vector<std::vector<ChannelFill>> fills;
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+        const ImageLayerDesc& plane = it->first;
+        int outSlot = 0;
+        for (int slot = 1; slot <= 2; ++slot) {
+            if (!outputLayers[slot - 1].empty() && (outputLayers[slot - 1] == plane.getLayerID())) {
+                outSlot = slot;
+                break;
+            }
+        }
+
+        std::vector<ChannelFill> planeFills((std::size_t)plane.getNumComponents());
+        for (int c = 0; c < plane.getNumComponents(); ++c) {
+            const ShuffleSource src = (mapping && outSlot) ? mapping->getSource(outSlot, c) : ShuffleSource();
+            ChannelFill& fill = planeFills[c];
+            if (src.kind == ShuffleSource::eZero) {
+                continue;
+            }
+            if (src.kind == ShuffleSource::eOne) {
+                fill.constant = 1.f;
+                continue;
+            }
+            if ((src.kind == ShuffleSource::eInput) && ((src.slot == 1) || (src.slot == 2))) {
+                const std::string slotLayer = getSlotLayer(src.slot);
+                if (!slotLayer.empty()) {
+                    const int inputNb = getSlotInput(src.slot);
+                    ImagePtr slotImage = fetchInputPlane(args, inputNb, slotLayer, &fetched);
+                    if (slotImage && findChannelInPlane(slotImage, planeChannelName(slotImage->getComponents(), src.index), &fill)) {
+                        continue;
+                    }
+                }
+            }
+            ImagePtr bImage = fetchInputPlane(args, (int)eInputB, plane.getLayerID(), &fetched);
+            findChannelInPlane(bImage, planeChannelName(plane, c), &fill);
+        }
+        fills.push_back(planeFills);
+    }
+
+    std::map<const Image*, Image::ReadAccessPtr> readAccesses;
+    for (std::vector<FetchedPlane>::const_iterator it = fetched.begin(); it != fetched.end(); ++it) {
+        if (it->image && (readAccesses.find(it->image.get()) == readAccesses.end())) {
+            readAccesses[it->image.get()] = std::make_shared<Image::ReadAccess>(it->image.get());
+        }
+    }
+
+    std::vector<std::vector<ChannelFill>>::const_iterator planeFills = fills.begin();
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it, ++planeFills) {
+        const ImagePtr& outImage = it->second;
+        if (!outImage) {
+            continue;
+        }
+        if (outImage->getBitDepth() != eImageBitDepthFloat) {
+            return eStatusFailed;
+        }
+
+        // The image can be wider than the plane (a plane with no same-sized supported layout);
+        // the host reads channel c of the plane back from channel c of the image.
+        const int dstComps = (int)outImage->getComponentsCount();
+        const int planeComps = std::min(dstComps, (int)planeFills->size());
+        std::vector<const Image::ReadAccess*> sources((std::size_t)planeComps, nullptr);
+        for (int c = 0; c < planeComps; ++c) {
+            const ChannelFill& fill = (*planeFills)[c];
+            if (fill.image) {
+                sources[c] = readAccesses[fill.image.get()].get();
+            }
+        }
+
+        Image::WriteAccess dst(outImage.get());
+        for (int y = args.roi.y1; y < args.roi.y2; ++y) {
+            if (aborted()) {
+                return eStatusOK;
+            }
+            for (int x = args.roi.x1; x < args.roi.x2; ++x) {
+                float* out = (float*)dst.pixelAt(x, y);
+                if (!out) {
+                    continue;
+                }
+                for (int c = 0; c < dstComps; ++c) {
+                    float value = 0.f;
+                    if (c < planeComps) {
+                        const ChannelFill& fill = (*planeFills)[c];
+                        if (sources[c]) {
+                            const float* in = (const float*)sources[c]->pixelAt(x, y);
+                            value = in ? in[fill.channel] : 0.f;
+                        } else {
+                            value = fill.constant;
+                        }
+                    }
+                    out[c] = value;
+                }
+            }
+        }
+    }
+
+    return eStatusOK;
+} // Shuffle::render
 
 NATRON_NAMESPACE_EXIT

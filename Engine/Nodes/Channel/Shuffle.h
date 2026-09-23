@@ -31,6 +31,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
@@ -148,6 +149,28 @@ private:
                             int* inputNb) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    struct FetchedPlane {
+        int inputNb;
+        std::string layerID;
+        ImagePtr image;
+
+        FetchedPlane()
+            : inputNb(-1)
+            , layerID()
+            , image()
+        {
+        }
+    };
+
+    /**
+     * @brief inputNb's plane layerID for this render, fetched once and remembered in fetched.
+     * Null when the input is disconnected or does not carry that layer.
+     **/
+    ImagePtr fetchInputPlane(const RenderActionArgs& args,
+                             int inputNb,
+                             const std::string& layerID,
+                             std::vector<FetchedPlane>* fetched);
 
     void syncSlotInputs();
 

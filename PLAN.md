@@ -162,7 +162,7 @@ future core work has solid ground to build on.
   **M38 UAT round 1 (2026-09-21) did not pass**: the user's findings and
   design feedback became **Phase 38.10** (14 tasks, placed before Phase 38.9
   in the file so the PM runs it first), then 38.9 re-takes the after-shots
-  (T1a) and re-runs the checkpoint (T2, round 2). Resume at `M38.P10.T1`.
+  (T1a) and re-runs the checkpoint (T2, round 2). **Round 2 passed 2026-09-22; PR #30 opened.**
   M43 and M36 were absorbed into M38 as Phases 38.2 and 38.7 — their rows are
   cancelled like M35's.
 

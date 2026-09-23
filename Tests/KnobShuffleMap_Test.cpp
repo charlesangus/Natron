@@ -25,13 +25,30 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <QLatin1Char>
+#include <QObject>
+#include <QString>
+#include <QTemporaryDir>
+
+#include "BaseTest.h"
+
+#include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Knob.h"
 #include "Engine/KnobShuffleMap.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Channel/Shuffle.h"
+#include "Engine/Project.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
 
@@ -194,4 +211,144 @@ TEST(KnobShuffleMap, SettingTheSameOutputTwiceLeavesOneRow)
     EXPECT_EQ(ShuffleSource::eInput, knob->getSource(1, 3).kind);
     EXPECT_EQ(2, knob->getSource(1, 3).slot);
     EXPECT_EQ(0, knob->getSource(1, 3).index);
+}
+
+// The Shuffle node's Mapping knob is a plain user KnobShuffleMap (typeName "ShuffleMap"),
+// registered through KnobFactory/KnobSerialization like any other user knob table: a project
+// save/reset/load round trip must hand back the exact same rows.
+TEST_F(BaseTest, ProjectSaveLoadPreservesKnobShuffleMapRows)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+    ASSERT_TRUE(bool(shuffle)) << "node creation failed for " << PLUGINID_NATRON_SHUFFLE;
+
+    KnobShuffleMapPtr shuffleMapKnob = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle->getKnobByName(kShuffleParamMapping));
+    ASSERT_TRUE(bool(shuffleMapKnob));
+    KnobIPtr shuffleMapKnobAsKnobI = shuffleMapKnob;
+    EXPECT_EQ(std::string("ShuffleMap"), shuffleMapKnobAsKnobI->typeName());
+
+    const std::string shuffleName = shuffle->getScriptName();
+
+    std::vector<ShuffleMapRow> originalRows(3);
+    originalRows[0].outSlot = 1;
+    originalRows[0].outIndex = 0;
+    originalRows[0].src = ShuffleSource::makeInput(1, 0);
+    originalRows[1].outSlot = 1;
+    originalRows[1].outIndex = 1;
+    originalRows[1].src = ShuffleSource::makeZero();
+    originalRows[2].outSlot = 2;
+    originalRows[2].outIndex = 0;
+    originalRows[2].src = ShuffleSource::makeOne();
+
+    const std::string raw = shuffleMapKnob->encodeRows(originalRows);
+    shuffleMapKnob->setValue(raw);
+
+    ASSERT_EQ(originalRows.size(), shuffleMapKnob->getRows().size());
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("shuffle-map-test.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    project->reset(false, true);
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr shuffle2 = project->getNodeByName(shuffleName);
+    ASSERT_TRUE(bool(shuffle2));
+
+    KnobShuffleMapPtr loadedShuffleMapKnob = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle2->getKnobByName(kShuffleParamMapping));
+    ASSERT_TRUE(bool(loadedShuffleMapKnob));
+
+    std::vector<ShuffleMapRow> loadedRows = loadedShuffleMapKnob->getRows();
+    ASSERT_EQ(originalRows.size(), loadedRows.size());
+
+    for (std::size_t i = 0; i < originalRows.size(); ++i) {
+        EXPECT_EQ(originalRows[i].outSlot, loadedRows[i].outSlot);
+        EXPECT_EQ(originalRows[i].outIndex, loadedRows[i].outIndex);
+        EXPECT_EQ(originalRows[i].src.kind, loadedRows[i].src.kind);
+        if (originalRows[i].src.kind == ShuffleSource::eInput) {
+            EXPECT_EQ(originalRows[i].src.slot, loadedRows[i].src.slot);
+            EXPECT_EQ(originalRows[i].src.index, loadedRows[i].src.index);
+        }
+    }
+
+    project->reset(false, true);
+}
+
+// A user-added KnobShuffleMap (e.g. dropped onto a NoOp/Dot node via the same machinery
+// as user KnobChannelSet/KnobLayerSelect/KnobChannelSelect knobs) goes through
+// Node::Implementation::restoreUserKnobsRecursive on load, not Node::loadKnob by name:
+// that path must also carry a KnobShuffleMap branch, or the knob is silently dropped.
+TEST_F(BaseTest, ProjectSaveLoadPreservesUserKnobShuffleMapRows)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    ASSERT_TRUE(bool(dot)) << "node creation failed for " << PLUGINID_NATRON_DOT;
+
+    EffectInstancePtr effect = dot->getEffectInstance();
+    ASSERT_TRUE(bool(effect));
+
+    KnobPagePtr userPage = effect->getOrCreateUserPageKnob();
+    ASSERT_TRUE(bool(userPage));
+
+    KnobShuffleMapPtr userKnob = AppManager::createKnob<KnobShuffleMap>(effect.get(), std::string("myMap"), 1, false);
+    ASSERT_TRUE(bool(userKnob));
+    userKnob->setName("myMap");
+    userKnob->setAsUserKnob(true);
+    userPage->addKnob(userKnob);
+
+    const std::string dotName = dot->getScriptName();
+
+    std::vector<ShuffleMapRow> originalRows(3);
+    originalRows[0].outSlot = 1;
+    originalRows[0].outIndex = 2;
+    originalRows[0].src = ShuffleSource::makeInput(2, 1);
+    originalRows[1].outSlot = 2;
+    originalRows[1].outIndex = 0;
+    originalRows[1].src = ShuffleSource::makeZero();
+    originalRows[2].outSlot = 1;
+    originalRows[2].outIndex = 0;
+    originalRows[2].src = ShuffleSource::makeOne();
+
+    const std::string raw = userKnob->encodeRows(originalRows);
+    userKnob->setValue(raw);
+
+    ASSERT_EQ(originalRows.size(), userKnob->getRows().size());
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("user-shuffle-map-test.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    project->reset(false, true);
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr dot2 = project->getNodeByName(dotName);
+    ASSERT_TRUE(bool(dot2));
+
+    KnobShuffleMapPtr loadedUserKnob = std::dynamic_pointer_cast<KnobShuffleMap>(dot2->getKnobByName("myMap"));
+    ASSERT_TRUE(bool(loadedUserKnob)) << "user KnobShuffleMap was dropped on project load";
+
+    std::vector<ShuffleMapRow> loadedRows = loadedUserKnob->getRows();
+    ASSERT_EQ(originalRows.size(), loadedRows.size());
+
+    for (std::size_t i = 0; i < originalRows.size(); ++i) {
+        EXPECT_EQ(originalRows[i], loadedRows[i]);
+    }
+
+    project->reset(false, true);
 }

@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: M34.P1.T1
-pm_heartbeat: 2026-09-22T21:36:15-04:00
+pm_heartbeat: 2026-09-22T22:12:54-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -166,6 +166,8 @@ future core work has solid ground to build on.
   **M34 (Shuffle) runs next, M60 moved back behind M50 (2026-09-22, user decision).**
   M43 and M36 were absorbed into M38 as Phases 38.2 and 38.7 — their rows are
   cancelled like M35's.
+
+- **Stacked milestone PRs (2026-09-22, user):** from M34 on, every milestone packages an AppImage to `build/appimages/`, opens its PR against the previous milestone's branch, runs its review round, and stays open. The next milestone branches off the previous tip, and the user checks and merges asynchronously. Fixes from a user check are merged up the stack, never rebased. See `DECISIONS/2026-09-22-stacked-milestone-prs.md`.
 
 # Board
 

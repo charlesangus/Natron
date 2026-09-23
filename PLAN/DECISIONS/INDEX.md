@@ -48,3 +48,4 @@
 - 2026-09-18 — geometry-is-a-fourth-data-kind: editable geometry is `eDataKindGeometry` + COW `GeoDetail`, bridged explicitly to/from the scene stack (SOP/LOP split); work is M54 → DECISIONS/2026-09-18-geometry-is-a-fourth-data-kind.md
 - 2026-09-18 — backlog-reorg-and-prioritization: channel/layer → compositing semantics → infra/housekeeping → polish → 3D roadmap; deep work/Nuke ports/M16/M31 deferred → DECISIONS/2026-09-18-backlog-reorg-and-prioritization.md
 - 2026-09-18 — clean-break-no-project-compat: serialized-name renames need no compat shims; pre-fork .ntp/PyPlugs unsupported; OFX ABI names untouched → DECISIONS/2026-09-18-clean-break-no-project-compat.md
+- 2026-09-22 — stacked-milestone-prs: from M34, AppImage per milestone, PRs left open and stacked (next milestone branches off the previous tip), user checks asynchronously → DECISIONS/2026-09-22-stacked-milestone-prs.md

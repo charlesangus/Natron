@@ -33,9 +33,13 @@
  * Engine module.
  **/
 
-#include "Engine/KnobTypes.h"
-#include "Engine/KnobFile.h"
+#include <map>
+#include <string>
+
 #include "Engine/EngineFwd.h"
+#include "Engine/KnobFile.h"
+#include "Engine/KnobShuffleMap.h"
+#include "Engine/KnobTypes.h"
 
 NATRON_NAMESPACE_ENTER;
 NATRON_PYTHON_NAMESPACE_ENTER;
@@ -1168,6 +1172,53 @@ public:
     bool isNone() const;
 
     QString getSummary() const;
+};
+
+/////////////////ShuffleMapParam
+
+class ShuffleMapParam
+    : public StringParamBase {
+    KnobShuffleMapWPtr _tKnob;
+
+public:
+    ShuffleMapParam(const KnobShuffleMapPtr& knob);
+
+    virtual ~ShuffleMapParam();
+
+    /**
+     * @brief Wires dst's channel to src. dst is "out1.<channel>" or "out2.<channel>"; src is
+     * "in1.<channel>", "in2.<channel>", "0" or "1". Channel names resolve against the layer
+     * currently selected on the named slot (in1/in2/out1/out2). Raises ValueError when a slot
+     * or channel name does not resolve.
+     **/
+    void connect(const QString& src, const QString& dst);
+
+    /**
+     * @brief Sets dst back to keep. Raises ValueError when dst does not resolve.
+     **/
+    void disconnect(const QString& dst);
+
+    /**
+     * @brief The source wired to dst, in the same syntax connect() takes, or an empty string
+     * when dst is keep. Raises ValueError when dst does not resolve.
+     **/
+    QString getSource(const QString& dst) const;
+
+    /**
+     * @brief Every non-keep wire, keyed by dst, using the slots' current channel names. A row
+     * whose stored channel index no longer resolves against its slot's current layer is omitted.
+     **/
+    std::map<std::string, std::string> getConnections() const;
+
+    /**
+     * @brief Empties the table: every output channel becomes keep.
+     **/
+    void reset();
+
+    /**
+     * @brief Always raises ValueError: the mapping parameter has no expressions.
+     **/
+    bool setExpression(const QString& expr, bool hasRetVariable, int dimension = 0);
 };
 
 /////////////////ButtonParam

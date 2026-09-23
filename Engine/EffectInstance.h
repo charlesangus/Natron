@@ -938,6 +938,18 @@ public:
 
     virtual void onChannelsSelectorRefreshed() {}
 
+    /**
+     * @brief Extra render-readiness check run by Node::checkSelectedChannelsPresent(), after
+     * the node's own mask and (un)premult channel selectors. The default accepts; an effect
+     * whose own knobs can wire a channel that later goes missing upstream (e.g. Shuffle's
+     * mapping) overrides this and fills *message on a miss, using the same "<channel> is not
+     * in the <input> input" wording a missing mask channel uses.
+     **/
+    virtual bool checkExtraChannelsPresent(std::string* /*message*/) WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
     void setDefaultMetadata();
 
 protected:

@@ -4967,6 +4967,10 @@ Node::checkSelectedChannelsPresent(std::string* message) const
         }
     }
 
+    if (_imp->effect && !_imp->effect->checkExtraChannelsPresent(message)) {
+        return false;
+    }
+
     return true;
 } // Node::checkSelectedChannelsPresent
 
@@ -7644,7 +7648,7 @@ Node::refreshChannelSelectors()
         QString current;
         int type = 0;
         getPersistentMessage(&current, &type, false);
-        if ((type == (int)eMessageTypeError) && (current.startsWith(QString::fromUtf8(kMaskChannelMissingMessagePrefix)) || current.startsWith(QString::fromUtf8(kUnPremultChannelMissingMessagePrefix)))) {
+        if ((type == (int)eMessageTypeError) && (current.startsWith(QString::fromUtf8(kMaskChannelMissingMessagePrefix)) || current.startsWith(QString::fromUtf8(kUnPremultChannelMissingMessagePrefix)) || current.startsWith(QString::fromUtf8(kExtraChannelMissingMessagePrefix)))) {
             clearPersistentMessage(false);
         }
     }

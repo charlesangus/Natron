@@ -79,6 +79,12 @@ CLANG_DIAG_ON(deprecated)
 #define kOfxMaskInvertParamName "maskInvert"
 #define kOfxMixParamName "mix"
 
+// The prefix Node::checkSelectedChannelsPresent() requires of an EffectInstance::
+// checkExtraChannelsPresent() failure message, so refreshChannelSelectors() can tell it apart
+// from an unrelated persistent message before clearing it, the same way it already does for a
+// missing mask or (un)premult channel.
+#define kExtraChannelMissingMessagePrefix "Channel "
+
 #define kReadOIIOAvailableViewsKnobName "availableViews"
 #define kWriteOIIOParamViewsSelector "viewsSelector"
 
@@ -426,8 +432,10 @@ public:
     /**
      * @brief For every mask input that is connected, enabled and not set to None, and for the
      * "(Un)premult by" selector over a connected source, checks that the KnobChannelSelect value
-     * resolves against that input's present layers. Returns false on the first miss and fills
-     * *message, leaving a disconnected input or a None selection silent.
+     * resolves against that input's present layers, then defers to the effect's own
+     * EffectInstance::checkExtraChannelsPresent() for any channel wiring the effect owns
+     * itself (e.g. Shuffle's mapping). Returns false on the first miss and fills *message,
+     * leaving a disconnected input or a None selection silent.
      **/
     bool checkSelectedChannelsPresent(std::string* message) const;
 

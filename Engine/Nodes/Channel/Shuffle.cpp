@@ -671,4 +671,59 @@ Shuffle::render(const RenderActionArgs& args)
     return eStatusOK;
 } // Shuffle::render
 
+bool
+Shuffle::checkExtraChannelsPresent(std::string* message)
+{
+    std::shared_ptr<KnobShuffleMap> mapping = _mapping.lock();
+
+    if (!mapping) {
+        return true;
+    }
+
+    AppInstancePtr app = getApp();
+    const double time = app ? app->getTimeLine()->currentFrame() : 0.;
+    const ViewIdx view(0);
+
+    const std::vector<ShuffleMapRow> rows = mapping->getRows();
+    for (std::vector<ShuffleMapRow>::const_iterator it = rows.begin(); it != rows.end(); ++it) {
+        if (it->src.kind != ShuffleSource::eInput) {
+            continue;
+        }
+        const std::string layerID = getSlotLayer(it->src.slot);
+        if (layerID.empty()) {
+            continue; // A None slot is silent: the row renders as keep.
+        }
+        const int inputNb = getSlotInput(it->src.slot);
+        if (!getInput(inputNb)) {
+            continue; // A disconnected input is silent: the row renders as keep.
+        }
+
+        std::list<ImageLayerDesc> present;
+        getPresentLayers(time, view, inputNb, &present);
+        ImageLayerDesc desc;
+        const bool found = findLayer(present, layerID, &desc);
+        const int nChannels = found ? (desc.isColorLayer() ? 4 : (int)desc.getChannels().size()) : 0;
+        if (found && (it->src.index < nChannels)) {
+            continue; // Readable: nothing to report.
+        }
+
+        if (message) {
+            // Best-effort channel name for the message; falls back to the bare layer name when
+            // even the registry has no descriptor for it (e.g. an unknown/mistyped layer).
+            std::string channelName;
+            ImageLayerDesc named;
+            if (resolveOutputLayerDesc(layerID, time, view, &named)) {
+                channelName = planeChannelName(named, it->src.index);
+            }
+            *message = std::string(kExtraChannelMissingMessagePrefix) + layerID
+                + (channelName.empty() ? std::string() : ("." + channelName))
+                + " is not in the " + getInputLabel(inputNb) + " input";
+        }
+
+        return false;
+    }
+
+    return true;
+} // Shuffle::checkExtraChannelsPresent
+
 NATRON_NAMESPACE_EXIT

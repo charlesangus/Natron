@@ -45,6 +45,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
@@ -165,21 +166,23 @@ protected:
         BaseTest::TearDown();
     }
 
-    void createFixtureReader(NodePtr* reader)
+    void createFixtureReader(NodePtr* reader,
+                             const std::string& fixture = "flat-three-layers.exr")
     {
         CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
         *reader = getApp()->createNode(readerArgs);
         ASSERT_TRUE(bool(*reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
     }
 
-    void createShuffleOnFixture()
+    void createShuffleOnFixture(const std::string& fixture = "flat-three-layers.exr")
     {
         NodePtr reader;
-        createFixtureReader(&reader);
+        createFixtureReader(&reader, fixture);
         if (HasFatalFailure()) {
             return;
         }
+        _reader = reader;
         _shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
         ASSERT_TRUE(bool(_shuffle));
         connectNodes(reader, _shuffle, Shuffle::eInputB, true);
@@ -188,6 +191,17 @@ protected:
         ASSERT_TRUE(bool(_mapping));
 
         createWriterOn(_shuffle);
+    }
+
+    // Switches the fixture reader's file in place and pushes the change downstream the same way
+    // production code does (Gui's file-path widget triggers the same knobChanged path), so the
+    // Shuffle node's channel selectors refresh and a stale persistent error can clear.
+    void switchReaderFixture(const std::string& fixture)
+    {
+        KnobFilePtr fileKnob = std::dynamic_pointer_cast<KnobFile>(_reader->getKnobByName(kOfxImageEffectFileParamName));
+        ASSERT_TRUE(bool(fileKnob));
+        fileKnob->setValue(std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
+        _reader->forceRefreshAllInputRelatedData();
     }
 
     void createWriterOn(const NodePtr& input)
@@ -262,6 +276,7 @@ protected:
         QFile::remove(QString::fromStdString(path));
     }
 
+    NodePtr _reader;
     NodePtr _shuffle;
     NodePtr _writer;
     std::shared_ptr<KnobShuffleMap> _mapping;
@@ -450,4 +465,103 @@ TEST_F(ShuffleRenderTest, ChannelWiredToADisconnectedInputKeepsB)
 
     expectFixtureLayers(image);
     expectColor(image, 1.f, 0.f, 0.f, 1.f);
+}
+
+// --- A wired source that becomes unreadable upstream fails the render, naming the channel ----
+
+TEST_F(ShuffleRenderTest, WiredChannelAbsentFromConnectedInputFailsThenClearsOnFixtureSwitch)
+{
+    createShuffleOnFixture("flat-rgba-only.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+    setLayer(kShuffleParamIn1, "diffuse");
+    if (HasFatalFailure()) {
+        return;
+    }
+    _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 0));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string path = (tmp.path() + QLatin1String("/wired_channel_missing.exr")).toStdString();
+    _writer->setOutputFilesForWriter(path);
+    QFile::remove(QString::fromStdString(path));
+
+    FlatExrImage image;
+    std::string error;
+    EXPECT_FALSE(renderAndRead(getApp(), _writer, path, &image, &error));
+    ASSERT_TRUE(_shuffle->hasPersistentMessage());
+
+    QString message;
+    int type = 0;
+    _shuffle->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("diffuse"))) << message.toStdString();
+
+    // flat-three-layers.exr carries diffuse: the row becomes readable again, and the stale
+    // error clears the same way a mask channel's does on reconnect.
+    switchReaderFixture("flat-three-layers.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    FlatExrImage image2;
+    render(tmp, "wired_channel_recovered.exr", &image2);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    expectFixtureLayers(image2);
+    expectColor(image2, 0.f, 0.f, 0.f, 1.f);
+    expectPlane(image2, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image2, "specular.", 0.f, 0.f, 1.f);
+}
+
+// --- Silent cases: a set-but-unwired slot layer, and a wired row on a None slot --------------
+
+TEST_F(ShuffleRenderTest, UnwiredSlotWithMissingLayerRendersSilently)
+{
+    createShuffleOnFixture("flat-rgba-only.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+    setLayer(kShuffleParamIn1, "diffuse");
+    if (HasFatalFailure()) {
+        return;
+    }
+    // No mapping row references the slot: every output channel keeps B's own value, so the
+    // input's missing "diffuse" layer never surfaces, unlike the wired case above.
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    render(tmp, "unwired_missing_layer.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    expectColor(image, 1.f, 0.f, 0.f, 1.f);
+}
+
+TEST_F(ShuffleRenderTest, WiredRowOnANoneSlotRendersAsKeep)
+{
+    createShuffleOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    // in2 defaults to None; wiring a row to it anyway proves the row itself, not just its
+    // absence, stays silent and keeps B's value.
+    _mapping->setSource(1, 0, ShuffleSource::makeInput(2, 0));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    render(tmp, "none_slot_keeps.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    expectFixtureLayers(image);
+    expectColor(image, 1.f, 0.f, 0.f, 1.f);
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
 }

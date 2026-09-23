@@ -150,6 +150,15 @@ private:
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief A row wired to a slot whose input is connected but that no longer carries the
+     * slot's layer, or whose index is beyond it, fails the render naming that channel. A
+     * disconnected input, a None slot or an unwired channel is silent (keep). The mapping
+     * knob stores overrides only, so this is the node that resolves their readability, mirroring
+     * checkSelectedChannelsPresent()'s mask rule.
+     **/
+    virtual bool checkExtraChannelsPresent(std::string* message) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     struct FetchedPlane {
         int inputNb;
         std::string layerID;

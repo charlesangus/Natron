@@ -47,6 +47,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Project.h"
 #include "Engine/TrackerContext.h"
 
@@ -371,7 +372,7 @@ TEST_F(BaseTest, NodesOwningTheirPlanesGetNoLayerKnob)
 {
     const char* ids[] = {
         "fr.natron.DeepMerge",
-        "net.sf.openfx.ShufflePlugin",
+        PLUGINID_NATRON_SHUFFLE,
         "net.sf.openfx.Premult"
     };
 

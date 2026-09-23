@@ -639,22 +639,6 @@ public:
                 addPluginMatch(m, "net.sf.openfx.IDistort");
                 addPluginMatch(m, "net.sf.openfx.STMap");
             }
-            {
-                KnobMatch& m = addKnobFilter(f, "outputR", equalsStringCaseSensitive);
-                addPluginMatch(m, "net.sf.openfx.ShufflePlugin", 2);
-            }
-            {
-                KnobMatch& m = addKnobFilter(f, "outputG", equalsStringCaseSensitive);
-                addPluginMatch(m, "net.sf.openfx.ShufflePlugin", 2);
-            }
-            {
-                KnobMatch& m = addKnobFilter(f, "outputB", equalsStringCaseSensitive);
-                addPluginMatch(m, "net.sf.openfx.ShufflePlugin", 2);
-            }
-            {
-                KnobMatch& m = addKnobFilter(f, "outputA", equalsStringCaseSensitive);
-                addPluginMatch(m, "net.sf.openfx.ShufflePlugin", 2);
-            }
             setNatronVersionMax(f, 2, 2, 99);
         }
         {

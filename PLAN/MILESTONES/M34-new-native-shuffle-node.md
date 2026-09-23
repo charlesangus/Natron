@@ -142,7 +142,7 @@ Execution notes carried over from M38:
     - `test.sh smoke debug` is green.
     - A background script instantiates each PyPlug, asserts the inner Shuffle's `getConnections()`, and renders one frame of a Constant through it with the expected pixel.
   - size: M
-- [ ] M34.P4.T2 — Port LightWrap and PIKColor; replace PIKColor's `outputA` expression with a callback
+- [x] M34.P4.T2 — Port LightWrap and PIKColor; replace PIKColor's `outputA` expression with a callback
   - files: `Gui/Resources/PyPlugs/LightWrap.py`, `Gui/Resources/PyPlugs/PIKColor.py`
   - approach: the same translation as P4.T1. PIKColor's `screenType` `onParamChanged` callback sets `connect("in2.G"|"in2.B","out1.A")`, following the Glow precedent from M38.8.T2.
   - verify: the P4.T1 script covers both PyPlugs, and toggling `screenType` flips the inner connection.

@@ -190,6 +190,22 @@ private:
                                 ViewIdx view,
                                 ImageLayerDesc* desc) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The display label (e.g. "Color", "diffuse") for layerID, resolved against
+     * inputNb's present layers when the project registry does not know it. Falls back to
+     * the raw ID so an unresolved layer never leaves the sub-label blank.
+     **/
+    std::string resolveLayerLabel(const std::string& layerID, int inputNb, double time, ViewIdx view);
+
+    /**
+     * @brief Builds the node-graph sub-label text (unparenthesized) from the current
+     * in1/in2/out1/out2 selections, following kNatronOfxParamStringSublabelName's
+     * PrecompNode precedent: Node wraps and displays it, this only computes the text.
+     **/
+    std::string buildSubLabel();
+
+    void refreshSubLabel();
+
     KnobChoiceWPtr _in1Input;
     KnobChoiceWPtr _in2Input;
     KnobLayerSelectWPtr _in1;
@@ -197,6 +213,7 @@ private:
     KnobLayerSelectWPtr _out1;
     KnobLayerSelectWPtr _out2;
     std::weak_ptr<KnobShuffleMap> _mapping;
+    KnobStringWPtr _subLabel;
 };
 
 NATRON_NAMESPACE_EXIT

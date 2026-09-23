@@ -31,6 +31,8 @@
 #include <string>
 #include <vector>
 
+#include <ofxNatron.h>
+
 #include "Engine/AppInstance.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
@@ -115,6 +117,7 @@ Shuffle::Shuffle(NodePtr node)
     , _out1()
     , _out2()
     , _mapping()
+    , _subLabel()
 {
 }
 
@@ -203,6 +206,15 @@ Shuffle::initializeKnobs()
     page->addKnob(mapping);
     _mapping = mapping;
 
+    // Follows PrecompNode's kNatronOfxParamStringSublabelName precedent: Node.cpp wraps
+    // this knob's value in parentheses and shows it next to the node's label on its own.
+    KnobStringPtr sublabel = createKnob<KnobString>(tr("SubLabel"));
+    sublabel->setName(kNatronOfxParamStringSublabelName);
+    sublabel->setSecretByDefault(true);
+    sublabel->setAnimationEnabled(false);
+    page->addKnob(sublabel);
+    _subLabel = sublabel;
+
     NodePtr node = getNode();
     if (node) {
         node->declareLayerKnob(in1, getSlotInput(1), LayerKnobSpec::eRoleInputBound);
@@ -210,6 +222,8 @@ Shuffle::initializeKnobs()
         node->declareLayerKnob(out1, -1, LayerKnobSpec::eRoleTarget);
         node->declareLayerKnob(out2, -1, LayerKnobSpec::eRoleTarget);
     }
+
+    refreshSubLabel();
 } // Shuffle::initializeKnobs
 
 int
@@ -281,6 +295,18 @@ Shuffle::knobChanged(KnobI* k,
 
     if ((in1Input && k == in1Input.get()) || (in2Input && k == in2Input.get())) {
         syncSlotInputs();
+        refreshSubLabel();
+
+        return true;
+    }
+
+    KnobLayerSelectPtr in1 = _in1.lock();
+    KnobLayerSelectPtr in2 = _in2.lock();
+    KnobLayerSelectPtr out1 = _out1.lock();
+    KnobLayerSelectPtr out2 = _out2.lock();
+
+    if ((in1 && k == in1.get()) || (in2 && k == in2.get()) || (out1 && k == out1.get()) || (out2 && k == out2.get())) {
+        refreshSubLabel();
 
         return true;
     }
@@ -292,6 +318,7 @@ void
 Shuffle::onKnobsLoaded()
 {
     syncSlotInputs();
+    refreshSubLabel();
 }
 
 bool
@@ -340,6 +367,76 @@ Shuffle::resolveOutputLayerDesc(const std::string& layerID,
     getPresentLayers(time, view, (int)eInputB, &bLayers);
 
     return findLayer(bLayers, layerID, desc);
+}
+
+std::string
+Shuffle::resolveLayerLabel(const std::string& layerID,
+                           int inputNb,
+                           double time,
+                           ViewIdx view)
+{
+    if (layerID.empty()) {
+        return std::string();
+    }
+    if (ImageLayerDesc::isColorLayer(layerID)) {
+        return ImageLayerDesc::getRGBAComponents().getLayerLabel();
+    }
+
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    ImageLayerDesc desc;
+    if (project && project->findLayer(layerID, &desc)) {
+        return desc.getLayerLabel();
+    }
+
+    std::list<ImageLayerDesc> present;
+    getPresentLayers(time, view, inputNb, &present);
+    if (findLayer(present, layerID, &desc)) {
+        return desc.getLayerLabel();
+    }
+
+    return layerID;
+}
+
+std::string
+Shuffle::buildSubLabel()
+{
+    // Escaped rather than a literal glyph so the meaning survives regardless of this file's editor encoding.
+    static const char* const kArrow = " \xE2\x86\x92 ";
+
+    AppInstancePtr app = getApp();
+    const double time = app ? app->getTimeLine()->currentFrame() : 0.;
+    const ViewIdx view(0);
+
+    const std::string in1Layer = getSlotLayer(1);
+    const std::string out1Layer = getOutputLayer(1);
+    const std::string out1Label = resolveLayerLabel(out1Layer, (int)eInputB, time, view);
+
+    std::string result = in1Layer.empty()
+        ? out1Label
+        : resolveLayerLabel(in1Layer, getSlotInput(1), time, view) + kArrow + out1Label;
+
+    const std::string out2Layer = getOutputLayer(2);
+    if (!out2Layer.empty()) {
+        const std::string in2Layer = getSlotLayer(2);
+        const std::string out2Label = resolveLayerLabel(out2Layer, (int)eInputB, time, view);
+        const std::string secondary = in2Layer.empty()
+            ? out2Label
+            : resolveLayerLabel(in2Layer, getSlotInput(2), time, view) + kArrow + out2Label;
+        result += ", " + secondary;
+    }
+
+    return result;
+} // Shuffle::buildSubLabel
+
+void
+Shuffle::refreshSubLabel()
+{
+    KnobStringPtr sublabel = _subLabel.lock();
+
+    if (sublabel) {
+        sublabel->setValue(buildSubLabel());
+    }
 }
 
 void

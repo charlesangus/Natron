@@ -2308,6 +2308,10 @@ exportUserKnob(int indentLevel,
                     WRITE_INDENT(indentLevel);
                     WRITE_STRING(QString::fromUtf8("param.addRegex(") + ESC(rows[r].layerOrPattern) + QString::fromUtf8(")"));
                 }
+                if (!rows[r].channels.empty()) {
+                    WRITE_INDENT(indentLevel);
+                    WRITE_STRING(QString::fromUtf8("param.setExcludedChannels(") + channelListLiteral(rows[r].channels) + QString::fromUtf8(", ") + NUM_INT((int)r) + QString::fromUtf8(")"));
+                }
                 break;
             }
         }
@@ -2328,8 +2332,10 @@ exportUserKnob(int indentLevel,
     } else if (isChannelSelect) {
         WRITE_INDENT(indentLevel);
         WRITE_STRING(QString::fromUtf8("param = ") + fullyQualifiedNodeName + QString::fromUtf8(".createChannelSelectParam(") + ESC(isChannelSelect->getName()) + QString::fromUtf8(", ") + ESC(isChannelSelect->getLabel()) + QString::fromUtf8(")"));
-        if (!isChannelSelect->isNone()) {
-            WRITE_INDENT(indentLevel);
+        WRITE_INDENT(indentLevel);
+        if (isChannelSelect->isNone()) {
+            WRITE_STATIC_LINE("param.setNone()");
+        } else {
             WRITE_STRING(QString::fromUtf8("param.set(") + ESC(isChannelSelect->get()) + QString::fromUtf8(")"));
         }
     }

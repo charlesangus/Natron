@@ -41,6 +41,9 @@ Image::premultByChannelForDepth(const RectI& roi,
                                 int skipChannel)
 {
     const int dstNComps = (int)getComponentsCount();
+    // processChannels follows copyUnProcessedChannels(): a one-channel image's only channel is
+    // bit 3, whatever its index in the pixel.
+    const auto channelBit = [dstNComps](int c) { return dstNComps == 1 ? 3 : c; };
     const unsigned int dstRowElements = _bounds.width() * dstNComps;
     PIX* dst_pixels = (PIX*)pixelAt(roi.x1, roi.y1);
 
@@ -68,7 +71,7 @@ Image::premultByChannelForDepth(const RectI& roi,
                 }
             }
             for (int c = 0; c < dstNComps && c < 4; ++c) {
-                if (!processChannels[c] || (c == skipChannel)) {
+                if (!processChannels[channelBit(c)] || (c == skipChannel)) {
                     continue;
                 }
                 const float v = divide ? ((float)dst_pixels[c] / d) : ((float)dst_pixels[c] * std::max(0.f, d));

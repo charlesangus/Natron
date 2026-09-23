@@ -44,6 +44,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/LayerRegistry.h"
@@ -251,6 +252,8 @@ TEST_F(PyPlugExportTest, UserChannelSetAliasRoundTripsThroughPyPlugExport)
     maskChannels.push_back("G");
     master->setLayer(0, "mask", &maskChannels);
     master->addRegex("Z.*");
+    const std::vector<std::string> excluded(1, "Z");
+    master->setExcludedChannels(1, excluded);
 
     ASSERT_TRUE(blurChannels->setKnobAsAliasOfThis(master, true));
 
@@ -284,6 +287,7 @@ TEST_F(PyPlugExportTest, UserChannelSetAliasRoundTripsThroughPyPlugExport)
     EXPECT_EQ(maskChannels, rows2[0].channels);
     EXPECT_EQ(ChannelSetRow::eModeRegex, rows2[1].mode);
     EXPECT_EQ(std::string("Z.*"), rows2[1].layerOrPattern);
+    EXPECT_EQ(excluded, rows2[1].channels);
 
     NodeCollectionPtr containerCollection = std::dynamic_pointer_cast<NodeCollection>(container->getEffectInstance());
     ASSERT_TRUE(bool(containerCollection));
@@ -304,6 +308,53 @@ TEST_F(PyPlugExportTest, UserChannelSetAliasRoundTripsThroughPyPlugExport)
     EXPECT_EQ(ChannelSetRow::eModeAll, blurRowsAfterSetAll[0].mode);
     EXPECT_EQ(ChannelSetRow::eModeRegex, blurRowsAfterSetAll[1].mode);
     EXPECT_EQ(std::string("Z.*"), blurRowsAfterSetAll[1].layerOrPattern);
+
+    project->reset(false, true);
+}
+
+// A new channel select starts on a channel, so an explicit None has to be written out.
+TEST_F(PyPlugExportTest, UserChannelSelectNoneRoundTripsThroughPyPlugExport)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    NodePtr groupNode = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(groupNode));
+    NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(groupNode->getEffectInstance());
+    ASSERT_TRUE(bool(group));
+
+    KnobChannelSelectPtr master = groupNode->getEffectInstance()->createChannelSelectKnob("userChannel", "User Channel");
+    ASSERT_TRUE(bool(master));
+    ASSERT_FALSE(master->isNone());
+    master->setNone();
+    ASSERT_TRUE(master->isNone());
+    KnobPagePtr userPage = groupNode->getEffectInstance()->getOrCreateUserPageKnob();
+    ASSERT_TRUE(bool(userPage));
+    userPage->addKnob(master);
+
+    QString output;
+    group->exportGroupToPython(QString::fromUtf8("test.pyplug.channelselect"), QString::fromUtf8("ChannelSelectGroup"), QString(), QString(), QString::fromUtf8("Other"), 1, output);
+    EXPECT_TRUE(output.contains(QString::fromUtf8("param.setNone()")));
+
+    project->reset(false, true);
+
+    std::string interpError, interpOutput;
+    ASSERT_TRUE(interpretPythonScript(output.toStdString(), &interpError, &interpOutput)) << interpError;
+
+    CreateNodeArgs containerArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    containerArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    NodePtr container = getApp()->createNode(containerArgs);
+    ASSERT_TRUE(bool(container));
+
+    std::string appVar = getApp()->getAppIDString();
+    std::string callScript = "createInstance(" + appVar + ", " + appVar + "." + container->getFullyQualifiedName() + ")\n";
+    ASSERT_TRUE(interpretPythonScript(callScript, &interpError, &interpOutput)) << interpError;
+
+    KnobChannelSelectPtr master2 = std::dynamic_pointer_cast<KnobChannelSelect>(container->getKnobByName("userChannel"));
+    ASSERT_TRUE(bool(master2));
+    EXPECT_TRUE(master2->isNone());
 
     project->reset(false, true);
 }

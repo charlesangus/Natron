@@ -811,8 +811,8 @@ public:
     ImagePtr extractChannels(const std::vector<int>& channelIndices) const;
 
     /**
-     * @brief Divide, over roi, the channels marked in processChannels by channel divisorChannel
-     * of divisorImg: the host side of the colour family's "(Un)premult by" convenience, applied
+     * @brief Divide, over roi, the channels marked in processChannels (bit 3 for a one-channel
+     * image, as in copyUnProcessedChannels()) by channel divisorChannel of divisorImg: the host side of the colour family's "(Un)premult by" convenience, applied
      * to the image a plug-in is about to be handed. skipChannel is the index, in this image, of
      * the divisor channel itself when the divisor is this image's own plane (-1 when it is any
      * other layer's); it is never divided.

@@ -17,49 +17,10 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-// Audit of every openfx-misc plugin declaring the standard NatronOfxParamProcessR/G/B/A quad,
-// checking whether it reads _processR/G/B/A only to mask (write the computed value or pass the
-// source channel through) or also to change its algorithm. Host masking (this fork forces the
-// quad true and applies copyUnProcessedChannels per plane) is only equivalent to the plugin's
-// own masking for the "mask only" plugins below.
-// Add.cpp — mask only.
-// Clamp.cpp — mask only.
-// CImgFilter.h (shared base of the CImg.* plugins, incl. CImgBlur) — mask only for filters whose
-//   per-channel math is independent (verified for CImgBlur's default Blur mode); it does reduce
-//   the internal channel count passed to CImg when supportsComponentRemapping is set, so
-//   CImg plugins with cross-channel algorithms (ChromaBlur, Sharpen, Bloom, EdgeDetect) are not
-//   covered by this audit.
-// ClipTest.cpp — beyond masking: the zebra-stripe decision ORs the out-of-range test across only
-//   the channels marked processed, then paints every matched channel with the same stripe value;
-//   forcing all four true changes which channels can trigger the stripe for channels that stay
-//   selected. Real finding.
-// ColorCorrect.cpp — mask only (luminance and the S/M/H recombination always read the pixel's raw
-//   r/g/b; the process gate only decides whether a channel's result is written back).
-// ColorMatrix.cpp — mask only (apply() always reads all four raw source components).
-// CopyRectangle.cpp — mask only.
-// DenoiseSharpen.cpp — beyond masking: R/G/B are collapsed into one combined "process color" flag
-//   before filtering, so the plugin itself never processes R independently of G/B. Real finding.
-// Grade.cpp — mask only.
-// Gamma.cpp — mask only.
-// FrameBlend.cpp — mask only.
-// Distortion.cpp — mask only.
-// Log2Lin.cpp — mask only.
-// KeyMix.cpp — beyond masking: the quad IS the plugin's per-channel mix-source selector (clip A
-//   vs. clip B), not a masking convenience. Real finding.
-// Multiply.cpp — mask only.
-// Premult.cpp — mask only (the alpha used to premultiply comes from a separate premult-channel
-//   selection, not from _processA).
-// PLogLin.cpp — mask only.
-// Invert.cpp — mask only.
-// Quantize.cpp — mask only.
-// Radial.cpp — mask only (generator; the gate selects write vs. source passthrough).
-// Roto.cpp — mask only (generator).
-// Rectangle.cpp — mask only (generator).
-// Saturation.cpp — mask only (luminance always reads the raw source r/g/b).
-// Ramp.cpp — mask only (generator).
-// Threshold.cpp — mask only.
-// Templates/{MixableFilter,SimpleFilter,MaskableFilter}.cpp — example sources, not registered in
-//   any CMakeLists of the bundle; not shipped plugins, excluded from this audit.
+// The host masks a plug-in's output itself (forcing its R/G/B/A quad true, then
+// copyUnProcessedChannels() per plane), which only matches the plug-in's own masking when the
+// quad does nothing but mask. The plug-ins tested here all use it that way; the ones that do not
+// are covered by the quad-adoption exceptions near the end of this file.
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -92,6 +53,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/OutputEffectInstance.h"
@@ -453,6 +415,61 @@ TEST_F(ChannelSetRenderUnPremultByTest, DivisorMayBeAChannelOfAnotherLayer)
     ASSERT_TRUE(renderAllLayers(grade, tmp, &image, &error)) << error;
 
     expectColor(image, 0.5f, 0.f, 0.f, 1.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 0.5f);
+}
+
+// A one-channel plane's process bit is bit 3 while its pixel holds the channel at index 0; the
+// multiply back must find the same channel the divide did. Constant writes depth.Z = 1 over the
+// halved specular, then Grade processes depth alone, unpremultiplied by specular.B = 0.5:
+//   depth.Z = 0.5 * clamp(2 * (1 / 0.5)) = 0.5, against clamp(2 * 1) = 1 left divided.
+TEST_F(ChannelSetRenderUnPremultByTest, OneChannelPlaneIsMultipliedBackByAnotherLayersChannel)
+{
+    KnobChannelSetPtr specularChannels;
+    NodePtr halveSpecular = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &specularChannels);
+    ASSERT_TRUE(bool(halveSpecular));
+    ASSERT_TRUE(bool(specularChannels));
+    specularChannels->setLayer(0, "specular", NULL);
+    KnobColor* halveMultiply = dynamic_cast<KnobColor*>(halveSpecular->getKnobByName("multiply").get());
+    ASSERT_TRUE(halveMultiply != NULL);
+    halveMultiply->setValues(0.5, 0.5, 0.5, 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+    NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+    ASSERT_TRUE(bool(constant));
+    connectNodes(halveSpecular, constant, 0, true);
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName("color").get());
+    ASSERT_TRUE(color != NULL);
+    color->setValues(1., 1., 1., 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    KnobLayerSelectPtr constantLayer = std::dynamic_pointer_cast<KnobLayerSelect>(constant->getLayerKnob());
+    ASSERT_TRUE(bool(constantLayer));
+    constantLayer->setLayer("depth");
+
+    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    ASSERT_TRUE(bool(grade));
+    connectNodes(constant, grade, 0, true);
+    KnobChannelSetPtr gradeChannels = std::dynamic_pointer_cast<KnobChannelSet>(grade->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(gradeChannels));
+    gradeChannels->setLayer(0, "depth", NULL);
+
+    KnobColor* multiply = dynamic_cast<KnobColor*>(grade->getKnobByName("multiply").get());
+    ASSERT_TRUE(multiply != NULL);
+    multiply->setValues(2., 2., 2., 2., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    KnobBool* clampWhite = dynamic_cast<KnobBool*>(grade->getKnobByName("clampWhite").get());
+    ASSERT_TRUE(clampWhite != NULL);
+    clampWhite->setValue(true);
+
+    KnobChannelSelectPtr unPremultBy = grade->getUnPremultBySelector();
+    ASSERT_TRUE(bool(unPremultBy));
+    unPremultBy->set("specular.B");
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(grade, tmp, &image, &error)) << error;
+
+    ASSERT_NE(-1, image.channelIndex("depth.Z"));
+    EXPECT_NEAR(0.5f, image.at(kCheckX, kCheckY, "depth.Z"), 1e-5f);
+    expectColor(image, 1.f, 0.f, 0.f, 1.f);
     expectPlane(image, "specular.", 0.f, 0.f, 0.5f);
 }
 
@@ -1098,9 +1115,10 @@ TEST_F(ChannelSetRenderBlurTest, MaskChannelAbsentFromDisconnectedMaskRendersSil
 // --- Quad-adoption exceptions: KeyMix, DenoiseSharpen, ClipTest --------------------------
 //
 // adoptChannelQuad() leaves these three plug-ins' own R/G/B/A quad alone instead of forcing
-// it true and hiding it (see the audit at the top of this file for why each one's quad is not
-// a per-channel mask); Node::pluginOwnsChannelMask() reports that so the host also stops
-// masking their output with the layer knob's row-0 channel bits.
+// it true and hiding it, because none of them uses it as a per-channel mask: KeyMix's quad
+// picks A or B per channel, DenoiseSharpen collapses R/G/B into one flag, and ClipTest ORs its
+// out-of-range test across the marked channels. Node::pluginOwnsChannelMask() reports that so
+// the host also stops masking their output with the layer knob's row-0 channel bits.
 
 TEST_F(ChannelSetRenderTest, KeyMixQuadIsLeftToThePluginWhileGradeQuadIsAdopted)
 {

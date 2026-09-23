@@ -2405,6 +2405,22 @@ channelForAlphaForPlane(const ImageLayerDesc& plane)
     return plane.isColorLayer() ? -1 : 0;
 }
 
+// A one-channel plane's bits name its channel as bit 3. When the plug-in rendered that plane into
+// a wider temporary image, the channel is wherever channelForAlphaForPlane() reads it back from.
+static std::bitset<4>
+processChannelsForImage(const ImageLayerDesc& plane,
+                        const Image& image,
+                        const std::bitset<4>& planeChannels)
+{
+    if ((plane.getNumComponents() != 1) || (image.getComponentsCount() == 1)) {
+        return planeChannels;
+    }
+    std::bitset<4> channels;
+    channels[channelForAlphaForPlane(plane) == 0 ? 0 : 3] = planeChannels[3];
+
+    return channels;
+}
+
 // The preferred input's image of the given output plane: same layer ID, or any Color plane
 // for a Color plane. Falls back to the first image so an input without that plane still
 // feeds the mask/mix pass.
@@ -2853,9 +2869,10 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 assert(it->second.fullscaleImage != it->second.downscaleImage && it->second.renderMappedImage == it->second.fullscaleImage);
 
                 ImagePtr mappedOriginalInputImage = originalInputImage;
+                const std::bitset<4> tmpProcessChannels = processChannelsForImage(it->first, *it->second.tmpImage, planeProcessChannels);
 
                 if ( originalInputImage && (originalInputImage->getMipmapLevel() != 0) ) {
-                    bool mustCopyUnprocessedChannels = it->second.tmpImage->canCallCopyUnProcessedChannels(planeProcessChannels);
+                    bool mustCopyUnprocessedChannels = it->second.tmpImage->canCallCopyUnProcessedChannels(tmpProcessChannels);
                     if (mustCopyUnprocessedChannels || useMaskMix) {
                         ///there is some processing to be done by copyUnProcessedChannels or applyMaskMix
                         ///but originalInputImage is not in the correct mipmapLevel, upscale it
@@ -2875,11 +2892,11 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 }
 
                 if (reUnPremult) {
-                    it->second.tmpImage->premultiplyByChannel(renderMappedRectToRender, unPremultDivisorImage.get(), unPremultDivisorChannel, planeProcessChannels, unPremultSkipChannel);
+                    it->second.tmpImage->premultiplyByChannel(renderMappedRectToRender, unPremultDivisorImage.get(), unPremultDivisorChannel, tmpProcessChannels, unPremultSkipChannel);
                 }
 
                 if (mappedOriginalInputImage) {
-                    it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, planeProcessChannels, mappedOriginalInputImage);
+                    it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, tmpProcessChannels, mappedOriginalInputImage);
                     if (useMaskMix) {
                         it->second.tmpImage->applyMaskMix(renderMappedRectToRender, maskImage.get(), mappedOriginalInputImage.get(), doMask, false, mix);
                     }

@@ -59,7 +59,7 @@ Execution notes carried over from M38:
 
 ## Phase 34.2: The native Shuffle node
 
-- [ ] M34.P2.T1 — Add the Shuffle node skeleton: description, knobs, layer declarations, planes needed/produced, metadata, RoD
+- [x] M34.P2.T1 — Add the Shuffle node skeleton: description, knobs, layer declarations, planes needed/produced, metadata, RoD
   - files: `Engine/Nodes/Channel/Shuffle.h`, `Engine/Nodes/Channel/Shuffle.cpp`, `Engine/AppManager.cpp`, `Tests/Shuffle_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: follow design §1. The node is `fr.natron.Shuffle` on `NativeEffectBase`, with inputs B (0) and A (1). Knobs:
     - `in1Input` and `in2Input`

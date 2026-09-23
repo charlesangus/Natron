@@ -43,6 +43,7 @@ set(Tests_SOURCES
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
     KnobLayerSelect_Test.cpp
+    KnobShuffleMap_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp
     LayerKnobs_Test.cpp

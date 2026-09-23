@@ -29,45 +29,25 @@
 #
 # --- Why the plugins are BUILT here, not downloaded -----------------------
 #
-# This used to `wget` a prebuilt openfx-io bundle
-# (openfx-io-build-ubuntu_22-testing.zip). That bundle cannot load in the
-# CY2027 container and never will: it is an Ubuntu 22 build that needs
-# GLIBCXX_3.4.30 (Rocky 9 ships at most 3.4.29) and links an entire ABI
-# generation behind us -- libOpenColorIO.so.1, libOpenImageIO.so.2.2,
-# libIlmImf-2_5.so.25, libavformat.so.58. Loading it fails with:
-#
-#   couldn't open library .../IO.ofx because /lib64/libstdc++.so.6:
-#   version `GLIBCXX_3.4.30' not found
-#
-# There is no EL9 build published upstream. The answer is to build the
-# plugin against the container's own libraries, which the aswf/ci-vfxall
-# image makes possible -- it ships OpenColorIO, OpenImageIO, OpenEXR,
-# OpenFX and LibRaw, where the older ci-baseqt image shipped none of them.
+# A prebuilt bundle can't load here: it needs GLIBCXX_3.4.30 (Rocky 9 ships
+# at most 3.4.29) and an OCIO/OpenImageIO/OpenEXR ABI generation behind
+# this image's own libraries, and no EL9 build is published upstream.
+# Building against the container's own libraries (aswf/ci-vfxall ships
+# OpenColorIO, OpenImageIO, OpenEXR, OpenFX and LibRaw) is the fix.
 # See PLAN/DECISIONS/2026-08-31-restore-vendored-ofx-plugin-tests.md.
 #
-# SeExpr is built too, because ASWF ships none at any VFX Platform year and
-# openfx-io's SeNoise plugin -- one of the three IDs BaseTest asserts --
-# needs it. It is linked STATICALLY on purpose: that makes the resulting
-# IO.ofx self-contained, so neither this script, test.sh, nor CI has to
-# manage an LD_LIBRARY_PATH for it. Verified: the built IO.ofx has no
-# libSeExpr entry in DT_NEEDED.
+# SeExpr is built too (ASWF ships none) and linked statically into IO.ofx so
+# nothing downstream has to manage an LD_LIBRARY_PATH for it.
 #
-# openfx-misc is built the same way, from our fork: unlike openfx-io it has
-# no dependency on OIIO/OCIO/SeExpr and no CMakeLists.txt bug, so it needs no
-# source changes to build against this container -- the fork exists only so
-# Premult/Unpremult always multiply/divide by alpha (see the comment above
-# OPENFX_MISC_REF below). It does have one build prerequisite its own
-# CMakeLists.txt doesn't handle -- see the comment above the openfx-misc
-# build step below.
+# openfx-misc needs no source changes to build here, but has one build
+# prerequisite its own CMakeLists.txt doesn't handle -- see the comment
+# above the openfx-misc build step below.
 #
-# This script therefore DOES do compile work now, which is the main reason
-# it (like build.sh/test.sh) runs INSIDE the dev container, re-execing
-# itself through devshell.sh exactly once when invoked from the host: the
-# documented local loop (fetch-assets -> build -> test) needs nothing on the
-# host but Docker. See build.sh's big comment block for the full reasoning
-# behind in_container()'s two checks. Under CI this is a no-op: CI=true, so
-# the re-exec is skipped and the script runs directly in the job's own
-# container.
+# This script does compile work, which is why it (like build.sh/test.sh)
+# runs INSIDE the dev container, re-execing itself through devshell.sh once
+# when invoked from the host, so the local loop (fetch-assets -> build ->
+# test) needs nothing on the host but Docker. See build.sh's comment block
+# for in_container()'s two checks. Under CI (CI=true) this is a no-op.
 
 set -euo pipefail
 
@@ -151,217 +131,30 @@ fi
 # mystery CI failure on your PR. Bump them deliberately, and re-run this
 # script (it rebuilds when the stamp below no longer matches).
 #
-# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, seven commits ahead of
-# NatronGitHub/openfx-io and zero behind. Fork-and-fix is the standing
-# pattern for small changes to NatronGitHub repos. Seven deltas:
-#
-# 1. A CMakeLists.txt fix (SEEXPR2_INCLUDES/SEEXPR2_LIBRARIES ->
-#    SEEXPR2_INCLUDE_DIR/SEEXPR2_LIBRARY): upstream reads variable names its
-#    own FindSeExpr2.cmake never sets, so the SeExpr sources compiled but
-#    IO.ofx was never linked against libSeExpr, and the bundle failed to load
-#    with `undefined symbol: _ZTI11SeExprFuncX`. Undefined symbols in a shared
-#    library don't fail a link by default, which is why this went unnoticed
-#    upstream.
-#
-# 2. Colorspace resolution in IOSupport/GenericOCIO.cpp, which is what lets
-#    the bundle work against Natron's default OCIO config
-#    (ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5). Reader and writer
-#    colorspace parameter defaults are computed at describe time and were
-#    never checked against the config actually loaded, so on any config that
-#    defines no `default` role -- every ACES config -- a fresh project failed
-#    to render with `Color space 'default' could not be found.` The fix
-#    guards canonicalizeColorSpace()'s -1 "not found" sentinel (which
-#    otherwise compares equal to the -1 of an undefined role), falls back to
-#    scene_linear rather than to colorspace 0 (display-referred in the ACES
-#    configs), and teaches the fallback chains the ACES spellings
-#    `sRGB - Display` and `Camera Rec.709`. Against the older tarball configs
-#    this is a no-op: renders are byte-identical either side of it.
-#
-# 3. timeOffset consistency in IOSupport/GenericReader.cpp
-#    (charlesangus/openfx-io#2). GenericReaderPlugin keeps one time mapping
-#    in two params -- getTimeDomain() reads startingTime, getSequenceTime()
-#    decodes with `t - timeOffset` -- so they must satisfy
-#    `timeOffset == startingTime - firstFrame`. Every branch of
-#    changedParam() maintained that except kParamOriginalFrameRange, which
-#    resets firstFrame/lastFrame/startingTime to a newly chosen file's range
-#    and left timeOffset holding the old file's value. A reader whose
-#    startingTime had been moved off its first frame then advertised a frame
-#    range it could not decode: every time in it mapped outside the sequence
-#    domain and onMissingFrame's hold collapsed the whole range onto one
-#    frame. That is the defect Tests/fixtures/read-time-offset.ntp and
-#    smoke_test.py's check_reader_cli_time_offset_regression pin down.
-#    Readers already at timeOffset 0 are unaffected -- renders are
-#    pixel-identical either side of it.
-#
-# 4. The Write node's "All Planes"/"All Layers" checkbox
-#    (kMultiPlaneProcessAllPlanesParam, charlesangus/openfx-io#3). Its OFX
-#    param string (processAllPlanes -> processAllLayers), label, and hint
-#    text live in SupportExt/ofxsMultiPlane.h -- SupportExt is a submodule
-#    pinned to NatronGitHub/openfx-supportext, not part of this fork's own
-#    tree, so the rename could not land as a change here. Commit 87264e5
-#    repoints the submodule at charlesangus/openfx-supportext
-#    (charlesangus/openfx-supportext#1), which carries the fix, matching
-#    the layer terminology Natron itself already carries across the OFX
-#    ABI boundary. There is no compatibility shim: a .ntp file saved
-#    against the old param string fails to restore that one value on load
-#    -- accepted, the same tradeoff any other identifier rename across
-#    this boundary would carry.
-#
-# 5. Readers and writers never convert premultiplication
-#    (charlesangus/openfx-io#4). Natron no longer tracks whether an image
-#    is premultiplied: the host answers kOfxImageEffectPropPreMultiplication
-#    with the constant kOfxImageUnPreMultiplied for every clip and hides
-#    the plugins' inputPremult/filePremult/outputPremult params, and the
-#    user alone owns knowing an image's state. Upstream GenericWriter
-#    re-derived inputPremult from that clip property on every connect and
-#    compared it against each format's getExpectedInputPremultiplication()
-#    (PreMultiplied for EXR/OIIO, UnPreMultiplied for PNG/PFM/FFmpeg),
-#    multiplying or dividing RGB by alpha at render time to match -- so
-#    against this host every RGBA render to EXR was premultiplied before
-#    encoding: a Solid (0.8, 0.6, 0.4, a=0.5) landed on disk as (0.4, 0.3,
-#    0.2). GenericReader did the mirror image between filePremult and
-#    outputPremult, with an extra unpremult/premult pair around the OCIO
-#    transform. The fork deletes both conversions and the machinery behind
-#    them (the premult/unPremult pixel helpers, the per-format
-#    getExpectedInputPremultiplication() virtual, guessParamsFromFilename's
-#    filePremult out-param, changedClip's re-derivation, and the
-#    changedParam handlers that forced outputPremult to match components):
-#    pixels go to and from the file exactly as they are. The three params
-#    stay declared so existing .ntp files load; nothing reads them except
-#    the reader's getClipPreferences, which still reports outputPremult to
-#    the host as an advisory the host ignores. WriteOIIO now sets
-#    oiio:UnassociatedAlpha on its output spec -- without it OpenImageIO
-#    itself divides RGB by alpha on the way out for PNG, TGA and WebP
-#    (verified against this image's OIIO 3.1.16) -- matching what ReadOIIO
-#    already asks of it on the way in. The one metadata consequence: TIFF's
-#    EXTRASAMPLES tag now records unassociated rather than associated
-#    alpha; pixel bytes are unchanged either way.
-#
-# 6. A single non-color plane keeps its layer and channel names
-#    (charlesangus/openfx-io#5). GenericWriterPlugin::render sends a
-#    single-view, single-plane render through encode(), which receives only
-#    a channel count, and WriteOIIO::encode maps that count back to a color
-#    plane (1 -> A, 2 -> XY, 3 -> RGB, 4 -> RGBA). Upstream never hits this
-#    with anything but the color plane, but Natron's Write container drives
-#    the encoder from its channel set, so a Write whose set holds only
-#    `specular[R,B]` had those two channels land on disk as `X,Y`. The
-#    multi-plane path (beginEncodeParts/encodePart/endEncodeParts) already
-#    names channels from the plane string with the layer label prefixed,
-#    so the single-plane shortcut is now taken only for the color plane
-#    and a lone non-color plane goes through the parts API. WriteOIIO is
-#    the only multiplanar writer, so it is the only one the host can hand
-#    a non-color plane; the others keep their encode() path unchanged.
-#
-# 7. Each per-layer EXR part is named after its layer
-#    (charlesangus/openfx-io#6). WriteOIIO's default "Split Views and
-#    Layers" mode writes one OpenEXR part per layer and never set the
-#    part's `name` attribute (oiio:subimagename). OpenEXR requires every
-#    part of a multi-part file to carry a unique name, so OpenImageIO
-#    synthesised `subimageNN` for each. The non-color parts survived that
-#    because their channels carry the layer prefix (`mask.A`, `diffuse.R`),
-#    but the color part's channels are bare `R,G,B,A`, and ReadOIIO falls
-#    back on the part name for unprefixed channels: a Write All over Color,
-#    diffuse, specular and a one-channel `mask` layer read back as diffuse,
-#    specular, mask and a `subimage03` [R,G,B,A] layer, with no Color layer
-#    at all (the reader then duplicated the first layer into Color). The
-#    writer now names each per-layer part after its plane label (`Color`,
-#    `mask`, ...), suffixed with `.<view>` when several views are written
-#    so the names stay unique across parts. The reader ignores a
-#    synthesised `subimageNN` name -- files written before the fix, and by
-#    other OpenImageIO-based writers that leave parts unnamed, read back
-#    with a proper Color layer too -- and drops a trailing `.<view>`
-#    matching one of the file's views before adopting the name as a layer.
-#    Channel names were already `<layer>.<channel>` in all three part
-#    modes; the single-part and split-views modes still write unnamed
-#    parts. Tests/WriteAllLayers_Test.cpp's Read -> Roto (targeting
-#    `mask [A]`) -> Write All case pins this down.
-#
-# The -1 sentinel guard is the first of delta 2's two commits and is
-# deliberately self-contained, so it can be offered upstream on its own; so
-# is delta 3, which is one commit and touches nothing else.
+# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, ahead of
+# NatronGitHub/openfx-io. Fork-and-fix is the standing pattern for small
+# changes to NatronGitHub repos. Deltas are recorded at charlesangus/
+# openfx-io PRs #2-#6 (an earlier SEEXPR2_INCLUDES/LIBRARIES CMakeLists.txt
+# fix and an OCIO default-colorspace fallback predate PR tracking); the
+# Write node's layer-naming delta also needed
+# charlesangus/openfx-supportext#1.
 #
 # Verified to build clean against the image's OIIO 3.1.16.0 / OCIO 2.5.2 /
-# OpenEXR 3.4.15 -- openfx-io carries explicit `#if OIIO_VERSION >= 30000`
-# support, so OIIO 3 is a supported configuration upstream, not something we
-# are forcing.
+# OpenEXR 3.4.15.
 #
-# SEEXPR_REF: wdas/SeExpr, branch v1-2.11. NOT the v2/v3 line: openfx-io's
-# SeNoise.cpp includes <SeExprBuiltins.h>/<SeNoise.h> and shims
-# `#define SeExpr2 SeExpr`, i.e. it targets the v1-2.11 header layout.
-# openfx-io's own CI pins the same branch. Not forked -- wdas/SeExpr is not
-# a NatronGitHub repo and we carry no changes to it.
+# SEEXPR_REF: wdas/SeExpr, branch v1-2.11, not v2/v3 -- openfx-io's
+# SeNoise.cpp targets the v1-2.11 header layout. Not forked.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
 OPENFX_IO_REF="e537291a16b1736cf26a969bc688a7e5daaee9ec"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 
-# OPENFX_MISC_REF: charlesangus/openfx-misc -- our fork, three commits ahead of
-# NatronGitHub/openfx-misc and zero behind. Fork-and-fix is the standing
-# pattern for small changes to NatronGitHub repos (see OPENFX_IO_REF above).
-# Two deltas:
-#
-# 1. Premult/Unpremult always multiply/divide by alpha
-#    (charlesangus/openfx-misc#1). Natron no longer tracks whether an image
-#    is premultiplied: the host answers the OFX clip property
-#    kOfxImageEffectPropPreMultiplication with the constant
-#    kOfxImageUnPreMultiplied for every clip, and the user alone owns knowing
-#    an image's state. Upstream Premult.cpp reads that property in three
-#    places to vary its own math: an isIdentity shortcut that skips
-#    processing once the clip already claims the target premult state, a
-#    changedClip auto-toggle of the R/G/B/A process checkboxes (already
-#    disabled upstream, left in as a commented-out block), and an
-#    eImageOpaque branch in render() that treats alpha as 1 and copies
-#    pixels unchanged. Against a host that always answers UnPreMultiplied
-#    none of the three currently fires -- Premult's isIdentity gate requires
-#    PreMultiplied to pass through to a real identity check and so is always
-#    false, and eImageOpaque is never the answer either -- so this is not
-#    fixing an observed bad render; it deletes a class of behavior this
-#    plugin has no business having now that the property it keyed off of
-#    carries no information, so a future change to what the host answers
-#    can't silently revive it. Premult always computes rgb * a and Unpremult
-#    always computes rgb / a (existing divide-by-zero guard preserved) on
-#    whichever channels the R/G/B/A checkboxes select. Also removed: the
-#    Clip Info push button and its changedParam handler, which only ever
-#    displayed that same (now meaningless) clip premult state.
-#    getClipPreferences's setOutputPremultiplication call is untouched -- it
-#    sets an advisory output preference that nothing downstream, including
-#    this plugin, reads back.
-#
-# 2. The colour family's "(Un)premult by <channel>" convenience renamed off
-#    the hidden premult family (charlesangus/openfx-misc#2). Grade,
-#    ColorCorrect, Multiply and the rest of the plugins built on
-#    ofxsPremultDescribeParams() each carry a node-level toggle that
-#    unpremultiplies by a chosen channel, runs the node's own math, and
-#    re-premultiplies -- a per-node convenience, unrelated to the app-wide
-#    premult tracking delta 1 above and OfxEffectInstance's
-#    hideDeprecatedPremultKnobs() removed. Because it was still named
-#    premult/premultChannel, the host's name-based hide list caught it too
-#    and the convenience disappeared along with the concept it never
-#    depended on. The params this rename touches are declared in
-#    SupportExt/ofxsMaskMix.h, a submodule pinned to
-#    NatronGitHub/openfx-supportext, not in this fork's own tree, so the
-#    fix could not land as a change here alone: commit 64769819
-#    (charlesangus/openfx-misc#2) repoints the SupportExt submodule at
-#    charlesangus/openfx-supportext@7c9be374
-#    (charlesangus/openfx-supportext#2), which renames premult ->
-#    unPremultBy and premultChannel -> unPremultByChannel (labels
-#    "(Un)premult" -> "(Un)premult by" and "By" -> "", same-line layout
-#    hint unchanged). premultChanged, declared per-plugin rather than in
-#    ofxsMaskMix.h, keeps its old name and stays on the host's hide list --
-#    its changedClip auto-toggle was already inert against a host that
-#    answers a constant premultiplication state. PIK's own PyPlug script
-#    (PIK/PIKColor.py), which sets premult on the CImgDilate nodes it
-#    embeds, is updated to the new name in the same commit. A second commit,
-#    d30a55d1 (charlesangus/openfx-misc#3), repoints SupportExt again at
-#    charlesangus/openfx-supportext@ac5aa1cf
-#    (charlesangus/openfx-supportext#3): the choice param's own
-#    ChoiceParamDescriptor carried an unconditional setIsSecret(true) ("not
-#    yet implemented") independent of any host, left over from before this
-#    delta, which would have kept unPremultByChannel invisible even after
-#    the rename gave it a name the host stops hiding. ofxsUnPremult()/
-#    ofxsPremult() still ignore the channel argument and always use alpha
-#    -- unhiding the control does not make per-channel selection functional,
-#    only visible, so its hint says so.
+# OPENFX_MISC_REF: charlesangus/openfx-misc -- our fork, ahead of
+# NatronGitHub/openfx-misc. Fork-and-fix is the standing pattern for small
+# changes to NatronGitHub repos (see OPENFX_IO_REF above). Deltas are
+# recorded at charlesangus/openfx-misc PRs #1-#3; the per-channel
+# "(Un)premult by" rename also needed charlesangus/openfx-supportext PRs
+# #2-#3.
 #
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against

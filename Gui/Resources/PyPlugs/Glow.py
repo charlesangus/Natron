@@ -964,7 +964,7 @@ def createInstance(app,group):
     # End of node "Merge4"
 
     # Start of node "Shuffle2"
-    lastNode = app.createNode("net.sf.openfx.ShufflePlugin", 2, group)
+    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
     lastNode.setScriptName("Shuffle2")
     lastNode.setLabel("Shuffle2")
     lastNode.setPosition(957, -113)
@@ -972,24 +972,17 @@ def createInstance(app,group):
     lastNode.setColor(0.6, 0.24, 0.39)
     groupShuffle2 = lastNode
 
-    param = lastNode.getParam("outputR")
+    param = lastNode.getParam("in2")
     if param is not None:
-        param.set("A.uk.co.thefoundry.OfxImagePlaneColour.A")
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour")
         del param
 
-    param = lastNode.getParam("outputG")
+    param = lastNode.getParam("mapping")
     if param is not None:
-        param.set("A.uk.co.thefoundry.OfxImagePlaneColour.A")
-        del param
-
-    param = lastNode.getParam("outputB")
-    if param is not None:
-        param.set("A.uk.co.thefoundry.OfxImagePlaneColour.A")
-        del param
-
-    param = lastNode.getParam("outputA")
-    if param is not None:
-        param.set("0")
+        param.connect("in2.A", "out1.R")
+        param.connect("in2.A", "out1.G")
+        param.connect("in2.A", "out1.B")
+        param.connect("0", "out1.A")
         del param
 
     del lastNode
@@ -1127,7 +1120,7 @@ def createInstance(app,group):
     # End of node "Merge5"
 
     # Start of node "Shuffle1"
-    lastNode = app.createNode("net.sf.openfx.ShufflePlugin", 2, group)
+    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
     lastNode.setScriptName("Shuffle1")
     lastNode.setLabel("Shuffle1")
     lastNode.setPosition(1290, -206)
@@ -1135,19 +1128,17 @@ def createInstance(app,group):
     lastNode.setColor(0.6, 0.24, 0.39)
     groupShuffle1 = lastNode
 
-    param = lastNode.getParam("outputR")
+    param = lastNode.getParam("in2")
     if param is not None:
-        param.set("A.uk.co.thefoundry.OfxImagePlaneColour.A")
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour")
         del param
 
-    param = lastNode.getParam("outputG")
+    param = lastNode.getParam("mapping")
     if param is not None:
-        param.set("A.uk.co.thefoundry.OfxImagePlaneColour.A")
-        del param
-
-    param = lastNode.getParam("outputB")
-    if param is not None:
-        param.set("A.uk.co.thefoundry.OfxImagePlaneColour.A")
+        param.connect("in2.A", "out1.R")
+        param.connect("in2.A", "out1.G")
+        param.connect("in2.A", "out1.B")
+        param.connect("in2.A", "out1.A")
         del param
 
     del lastNode

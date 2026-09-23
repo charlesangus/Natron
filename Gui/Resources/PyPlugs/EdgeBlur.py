@@ -235,7 +235,7 @@ def createInstance(app,group):
     # End of node "Blur1"
 
     # Start of node "Shuffle1"
-    lastNode = app.createNode("net.sf.openfx.ShufflePlugin", 2, group)
+    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
     lastNode.setScriptName("Shuffle1")
     lastNode.setLabel("Shuffle1")
     lastNode.setPosition(768, 104)
@@ -243,9 +243,11 @@ def createInstance(app,group):
     lastNode.setColor(0.6, 0.24, 0.39)
     groupShuffle1 = lastNode
 
-    param = lastNode.getParam("outputComponents")
+    param = lastNode.getParam("mapping")
     if param is not None:
-        param.set("Alpha")
+        param.connect("0", "out1.R")
+        param.connect("0", "out1.G")
+        param.connect("0", "out1.B")
         del param
 
     del lastNode
@@ -384,7 +386,7 @@ def createInstance(app,group):
     groupGamma1.connectInput(0, groupEdgeDetect1)
     groupBlur1.connectInput(0, groupDot1)
     groupBlur1.connectInput(1, groupMerge1)
-    groupShuffle1.connectInput(1, groupDot1)
+    groupShuffle1.connectInput(0, groupDot1)
     groupDot1.connectInput(0, groupSource)
     groupOutput1.connectInput(0, groupBlur1)
     groupMerge1.connectInput(1, groupGamma1)

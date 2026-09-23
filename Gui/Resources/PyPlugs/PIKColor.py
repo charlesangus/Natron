@@ -33,6 +33,12 @@ def getGrouping():
 def getPluginDescription():
     return "This node provides the PIK per-pixel keyer a pseudo clean-plate to be used as color reference.\nThe idea is to remove the foreground image and only leave the shades and hues of the original blue/greenscreen.\nAttach the output of this node to the \'C\' input of a PIK node. Attach the input of this node and the \'PFg\' input of PIK to the original screen, or preferably the denoised screen.\nPick which color your screen type is in both nodes and then while viewing the alpha output from PIK lower the darks.b (if a bluescreen - adjust darks.g if a greenscreen) in this node until you see a change in the garbage area of the matte. Once you see a change then you have gone too far -back off a step. If you are still left with discolored edges you can use the other colors in the lights and darks to eliminate them. Remember the idea is to be left with the original shades of the screen and the foreground blacked out. While swapping between viewing the matte from the PIK and the rgb output of PIKColor adjust the other colors until you see a change in the garbage area of the matte. Simple rule of thumb - if you have a light red discolored area increase the lights.r - if you have a dark green discolored area increase darks.g. If your screen does not have a very saturated hue you may still be left with areas of discoloration after the above process. The \'erode\' slider can help with this - while viewing the rgb output adjust the erode until those areas disappear.\nThe \'Patch Black\' slider allows you to fill in the black areas with screen color. This is not always necessary but if you see blue squares in your composite increase this value and it\'ll fix it.\nThe optional \'InM\' input can be used to provide an inside mask (a.k.a. core matte or holdout matte), which is excluded from the clean plate. If an inside mask is fed into the Keyer (PIK or another Keyer), the same inside mask should be fed inside PIKColor.\nThe above is the only real workflow for this node - working from the top parameter to the bottom parameter- going back to tweak darks/lights with \'erode\' and \'patch black\' activated is not really going to work."
 
+def paramChanged(thisParam, thisNode, thisGroup, app, userEdited):
+    if thisParam.getScriptName() != "screenType":
+        return
+    mapping = thisNode.getNode("Shuffle1").getParam("mapping")
+    mapping.connect("in2.G" if thisParam.get() == 0 else "in2.B", "out1.A")
+
 def createInstance(app,group):
     # Create all nodes in the group
 
@@ -223,6 +229,12 @@ def createInstance(app,group):
     # Refresh the GUI with the newly created parameters
     lastNode.setPagesOrder(['controls', 'Node', 'Settings'])
     lastNode.refreshUserParamsGUI()
+
+    param = lastNode.getParam("onParamChanged")
+    if param is not None:
+        param.setValue("PIKColor.paramChanged")
+        del param
+
     del lastNode
 
     # Start of node "Grade11"
@@ -358,7 +370,7 @@ def createInstance(app,group):
     # End of node "Dot2"
 
     # Start of node "ShuffleCopy3"
-    lastNode = app.createNode("net.sf.openfx.ShufflePlugin", 2, group)
+    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
     lastNode.setScriptName("ShuffleCopy3")
     lastNode.setLabel("ShuffleCopy3")
     lastNode.setPosition(272, 35)
@@ -366,19 +378,14 @@ def createInstance(app,group):
     lastNode.setColor(0.6, 0.24, 0.39)
     groupShuffleCopy3 = lastNode
 
-    param = lastNode.getParam("outputR")
+    param = lastNode.getParam("in2")
     if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.R")
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour")
         del param
 
-    param = lastNode.getParam("outputG")
+    param = lastNode.getParam("mapping")
     if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.G")
-        del param
-
-    param = lastNode.getParam("outputB")
-    if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.B")
+        param.connect("in2.A", "out1.A")
         del param
 
     param = lastNode.getParam("userTextArea")
@@ -461,7 +468,7 @@ def createInstance(app,group):
     # End of node "Clamp1"
 
     # Start of node "ChannelCopy1"
-    lastNode = app.createNode("net.sf.openfx.ShufflePlugin", 2, group)
+    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
     lastNode.setScriptName("ChannelCopy1")
     lastNode.setLabel("ChannelCopy1")
     lastNode.setPosition(411, 292)
@@ -469,19 +476,14 @@ def createInstance(app,group):
     lastNode.setColor(0.6, 0.24, 0.39)
     groupChannelCopy1 = lastNode
 
-    param = lastNode.getParam("outputR")
+    param = lastNode.getParam("in2")
     if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.R")
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour")
         del param
 
-    param = lastNode.getParam("outputG")
+    param = lastNode.getParam("mapping")
     if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.G")
-        del param
-
-    param = lastNode.getParam("outputB")
-    if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.B")
+        param.connect("in2.A", "out1.A")
         del param
 
     param = lastNode.getParam("userTextArea")
@@ -505,7 +507,7 @@ def createInstance(app,group):
     # End of node "Dot4"
 
     # Start of node "ShuffleCopy2"
-    lastNode = app.createNode("net.sf.openfx.ShufflePlugin", 2, group)
+    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
     lastNode.setScriptName("ShuffleCopy2")
     lastNode.setLabel("ShuffleCopy2")
     lastNode.setPosition(413, 602)
@@ -513,19 +515,14 @@ def createInstance(app,group):
     lastNode.setColor(0.6, 0.24, 0.39)
     groupShuffleCopy2 = lastNode
 
-    param = lastNode.getParam("outputR")
+    param = lastNode.getParam("in2")
     if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.R")
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour")
         del param
 
-    param = lastNode.getParam("outputG")
+    param = lastNode.getParam("mapping")
     if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.G")
-        del param
-
-    param = lastNode.getParam("outputB")
-    if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.B")
+        param.connect("in2.A", "out1.A")
         del param
 
     param = lastNode.getParam("userTextArea")
@@ -622,7 +619,7 @@ def createInstance(app,group):
     # End of node "Merge1"
 
     # Start of node "ChannelCopy2"
-    lastNode = app.createNode("net.sf.openfx.ShufflePlugin", 2, group)
+    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
     lastNode.setScriptName("ChannelCopy2")
     lastNode.setLabel("ChannelCopy2")
     lastNode.setPosition(272, 886)
@@ -630,19 +627,14 @@ def createInstance(app,group):
     lastNode.setColor(0.6, 0.24, 0.39)
     groupChannelCopy2 = lastNode
 
-    param = lastNode.getParam("outputR")
+    param = lastNode.getParam("in2")
     if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.R")
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour")
         del param
 
-    param = lastNode.getParam("outputG")
+    param = lastNode.getParam("mapping")
     if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.G")
-        del param
-
-    param = lastNode.getParam("outputB")
-    if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.B")
+        param.connect("in2.A", "out1.A")
         del param
 
     del lastNode
@@ -934,7 +926,7 @@ def createInstance(app,group):
     # End of node "Unpremult2"
 
     # Start of node "Shuffle1"
-    lastNode = app.createNode("net.sf.openfx.ShufflePlugin", 2, group)
+    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
     lastNode.setScriptName("Shuffle1")
     lastNode.setLabel("Shuffle1")
     lastNode.setPosition(418, 225)
@@ -942,14 +934,15 @@ def createInstance(app,group):
     lastNode.setColor(0.6, 0.24, 0.39)
     groupShuffle1 = lastNode
 
-    param = lastNode.getParam("outputComponents")
+    param = lastNode.getParam("in2")
     if param is not None:
-        param.set("Alpha")
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour")
         del param
 
-    param = lastNode.getParam("outputA")
+    # Matches screenType's default (Blue) so the initial render is correct before any edit.
+    param = lastNode.getParam("mapping")
     if param is not None:
-        param.set("A.uk.co.thefoundry.OfxImagePlaneColour.B")
+        param.connect("in2.B", "out1.A")
         del param
 
     param = lastNode.getParam("userTextArea")
@@ -1111,9 +1104,6 @@ def createInstance(app,group):
     param.setExpression("(thisGroup.size.get()/5)*2", False, 0)
     param.setExpression("(thisGroup.size.get()/5)*2", False, 1)
     del param
-    param = groupShuffle1.getParam("outputA")
-    param.setExpression("thisGroup.screenType.get()+1", False, 0)
-    del param
     param = groupDilateFast1.getParam("size")
     param.setExpression("(thisGroup.size.get()/5)*thisGroup.multi.get()*2", False, 0)
     param.setExpression("(thisGroup.size.get()/5)*thisGroup.multi.get()*2", False, 1)
@@ -1122,6 +1112,10 @@ def createInstance(app,group):
     param.setExpression("thisGroup.size.get()/5", False, 0)
     param.setExpression("thisGroup.size.get()/5", False, 1)
     del param
+
+    # Applies the callback once so the initial mapping matches screenType even though
+    # the mapping knob refuses expressions and onParamChanged only fires on edits.
+    paramChanged(group.screenType, group, group, app, False)
 
     try:
         extModule = sys.modules["PIKColorExt"]

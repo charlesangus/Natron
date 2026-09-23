@@ -152,7 +152,7 @@ Execution notes carried over from M38:
   - approach: restore both from `fd33e5ab8^`. Replace the `Source_channels` choice with an inner Shuffle (`in1=depth`, `out1=Color←Z`) whose `in1` is aliased to a group-level layer select.
   - verify: both IDs are in `app.getPluginIDs()`, and Constant → Shuffle(`out1=depth←in1.R`) → ZRemap renders the expected remapped value.
   - size: M
-- [ ] M34.P4.T4 — Delete the host's OFX-Shuffle special cases
+- [x] M34.P4.T4 — Delete the host's OFX-Shuffle special cases
   - files: `Engine/NodeInputs.cpp`, `Engine/EffectInstance.cpp`, `Engine/EffectInstance.h`, `Engine/KnobSerialization.cpp`, `Tests/LayerKnobs_Test.cpp`
   - approach: delete the four `PLUGINID_OFX_SHUFFLE` "A is main" branches, the macro, and the `outputR..A` filter entries (~`KnobSerialization.cpp:640-656`). `LayerKnobs_Test.cpp:374` now asserts on the native Shuffle.
   - verify: `grep -rn PLUGINID_OFX_SHUFFLE Engine Gui` is empty; full ctest green.

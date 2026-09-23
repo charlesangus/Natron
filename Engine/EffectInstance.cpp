@@ -4487,7 +4487,7 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
     // Ensure the plug-in made the metadata layer available. An embedded encoder produces it by
     // fetching it from its pass-through input, so the Write container's selection on that input
     // decides whether the layer is there to produce at all.
-    {
+    if (producesMetadataLayerImplicitly()) {
         std::list<ImageLayerDesc> metadataLayers;
         ImageLayerDesc metadataLayer, metadataPairedLayer;
         getMetadataComponents(-1, &metadataLayer, &metadataPairedLayer);

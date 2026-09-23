@@ -1064,6 +1064,14 @@ public:
         return false;
     }
 
+    // A multiplanar effect that only ever writes a subset of its output layers (e.g. Shuffle)
+    // overrides this to false so the metadata layer, when not one of those layers, is treated
+    // like any other non-produced layer and passes through instead of being force-produced.
+    virtual bool producesMetadataLayerImplicitly() const
+    {
+        return true;
+    }
+
     enum PassThroughEnum {
         ePassThroughBlockNonRenderedLayers,
         ePassThroughPassThroughNonRenderedLayers,

@@ -15,6 +15,7 @@
 
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
+#include "MultiplanarTestEffect.h"
 
 using namespace NATRON_NAMESPACE;
 
@@ -82,6 +83,14 @@ registerDeepRenderTestPlugins()
     registerTestBuiltInPlugin<DeepSyntheticSource>();
     registerTestBuiltInPlugin<ImageRenderTestSource>();
 }
+
+void
+registerMultiplanarTestPlugins()
+{
+    // Registered so LayerKnobsRender_Test.cpp can exercise a multiplanar effect that never
+    // produces Color, which no shipped plugin does today.
+    registerTestBuiltInPlugin<MultiplanarDiffuseOnlyTestEffect>();
+}
 }
 
 #if defined(_WIN32) && defined(UNICODE)
@@ -115,6 +124,7 @@ GTEST_API_ int main(int argc, char **argv)
     }
     registerDataKindTestPlugins();
     registerDeepRenderTestPlugins();
+    registerMultiplanarTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

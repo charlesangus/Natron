@@ -383,3 +383,95 @@ TEST_F(BaseTest, NodesOwningTheirPlanesGetNoLayerKnob)
         EXPECT_FALSE(bool(node->getKnobByName(kNodeParamLayerSelect))) << ids[i];
     }
 }
+
+// A plugin- or node-owned KnobLayerSelect (one the host never created through createLayerKnob())
+// gets no listing role and is invisible to getReferencedLayerIDs() unless the plugin declares it
+// with Node::declareLayerKnob(). declareLayerKnob() reuses the same LayerKnobSource machinery as
+// the host's own layerKnob, so a target-role declared knob lists the project registry exactly
+// like ConstantGetsTargetLayerSelectListingTheRegistry's host-created one.
+TEST_F(BaseTest, DeclaredTargetLayerKnobListsRegistry)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    ASSERT_TRUE(bool(dot));
+
+    KnobLayerSelectPtr userLayer = dot->getEffectInstance()->createLayerSelectKnob("userLayer", "User Layer", false);
+    ASSERT_TRUE(bool(userLayer));
+    KnobPagePtr userPage = dot->getEffectInstance()->getOrCreateUserPageKnob();
+    ASSERT_TRUE(bool(userPage));
+    userPage->addKnob(userLayer);
+    EXPECT_FALSE(bool(dot->isTargetLayerKnob(userLayer)));
+
+    dot->declareLayerKnob(userLayer, -1, LayerKnobSpec::eRoleTarget);
+    EXPECT_TRUE(dot->isTargetLayerKnob(userLayer));
+
+    std::list<ImageLayerDesc> listed;
+    dot->listLayersForKnob(userLayer, &listed);
+    std::vector<std::string> ids = layerIDs(listed);
+    ASSERT_GE(ids.size(), 6u);
+    EXPECT_EQ(std::string(kNatronColorLayerID), ids[0]);
+    EXPECT_NE(ids.end(), std::find(ids.begin(), ids.end(), std::string("depth")));
+
+    project->reset(false, true);
+}
+
+// Merge stands in for a plugin with a declared input-bound knob: both its clips are optional, so
+// input 1 stays unconnected without failing metadata refresh, letting one test cover the listing,
+// the reference count, and setLayerKnobInput()'s relist after the rebind.
+TEST_F(BaseTest, DeclaredInputBoundLayerKnobIsReferencedAndFollowsInputRebind)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr merge = createNode(QString::fromUtf8("net.sf.openfx.MergePlugin"));
+    ASSERT_TRUE(bool(merge));
+
+    KnobLayerSelectPtr userLayer = merge->getEffectInstance()->createLayerSelectKnob("userLayer", "User Layer", false);
+    ASSERT_TRUE(bool(userLayer));
+    KnobPagePtr userPage = merge->getEffectInstance()->getOrCreateUserPageKnob();
+    ASSERT_TRUE(bool(userPage));
+    userPage->addKnob(userLayer);
+
+    merge->declareLayerKnob(userLayer, 0, LayerKnobSpec::eRoleInputBound);
+
+    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), project);
+    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+    NodePtr reader = getApp()->createNode(readerArgs);
+    ASSERT_TRUE(bool(reader));
+
+    connectNodes(reader, merge, 0, true);
+
+    {
+        std::list<ImageLayerDesc> listed;
+        merge->listLayersForKnob(userLayer, &listed);
+        std::vector<std::string> ids = layerIDs(listed);
+        std::vector<std::string> expected;
+        expected.push_back(kNatronColorLayerID);
+        expected.push_back("diffuse");
+        expected.push_back("specular");
+        EXPECT_EQ(expected, ids);
+    }
+
+    userLayer->setLayer("diffuse");
+
+    std::string error;
+    EXPECT_FALSE(project->removeLayer("diffuse", &error));
+    EXPECT_NE(std::string::npos, error.find(merge->getScriptName_mt_safe())) << error;
+
+    merge->setLayerKnobInput(userLayer, 1);
+
+    {
+        std::list<ImageLayerDesc> listed;
+        merge->listLayersForKnob(userLayer, &listed);
+        std::vector<std::string> ids = layerIDs(listed);
+        std::vector<std::string> expected;
+        expected.push_back(kNatronColorLayerID);
+        EXPECT_EQ(expected, ids);
+    }
+
+    project->reset(false, true);
+}

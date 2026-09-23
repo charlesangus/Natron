@@ -2484,7 +2484,7 @@ Node::createUnPremultSelector(const KnobPagePtr& mainPage)
                                "back afterwards. Any layer.channel of the source, or None for no (un)premult. Use it "
                                "where the values being processed are premultiplied, as any correction that moves the "
                                "black point has to be done unpremultiplied."));
-    _imp->layerKnobSources[channel.get()] = LayerKnobSource(LayerKnobSource::kPreferredInput, LayerKnobSpec::eRoleInputBound);
+    _imp->layerKnobSources[channel.get()] = LayerKnobSource(channel, LayerKnobSource::kPreferredInput, LayerKnobSpec::eRoleInputBound);
     if (mainPage) {
         mainPage->addKnob(channel);
     }
@@ -2573,7 +2573,7 @@ Node::createMaskSelectors(const std::vector<std::pair<bool, bool> >& hasMaskChan
                                    "is kept and marked \"(not in input)\". Setting this to None is the same as disconnecting "
                                    "the input."));
         sel.channel = channel;
-        _imp->layerKnobSources[channel.get()] = LayerKnobSource(i, LayerKnobSpec::eRoleInputBound);
+        _imp->layerKnobSources[channel.get()] = LayerKnobSource(channel, i, LayerKnobSpec::eRoleInputBound);
         if (mainPage) {
             mainPage->addKnob(channel);
         }
@@ -2817,7 +2817,7 @@ Node::createLayerKnob(const LayerKnobSpec& spec,
     int inputNb = spec.role == LayerKnobSpec::eRoleTarget ? -1 : LayerKnobSource::kPreferredInput;
     _imp->layerKnob = knob;
     _imp->layerKnobSpec = spec;
-    _imp->layerKnobSources[knob.get()] = LayerKnobSource(inputNb, spec.role);
+    _imp->layerKnobSources[knob.get()] = LayerKnobSource(knob, inputNb, spec.role);
 } // Node::createLayerKnob
 
 void
@@ -5657,24 +5657,26 @@ Node::onOpenGLEnabledKnobChangedOnProject(bool activated)
 void
 Node::getReferencedLayerIDs(std::set<std::string>* ids) const
 {
-    for (std::map<int, MaskSelector>::const_iterator it = _imp->maskSelectors.begin(); it != _imp->maskSelectors.end(); ++it) {
-        KnobChannelSelectPtr channelKnob = it->second.channel.lock();
-        if (channelKnob) {
-            channelKnob->getReferencedLayerIDs(ids);
+    // Walks every declared layer/channel knob (the host's own layerKnob, its mask and
+    // unpremult-by channel selectors, and any plugin- or node-owned knob added through
+    // declareLayerKnob()), not just the host's single layerKnob: each is an independent
+    // reference to the project layer registry unless a container drives its value.
+    for (std::map<const KnobI*, LayerKnobSource>::const_iterator it = _imp->layerKnobSources.begin(); it != _imp->layerKnobSources.end(); ++it) {
+        if (it->second.drivenByContainer) {
+            // A container (e.g. RotoPaint) drives this knob's value; it is not a separate reference.
+            continue;
         }
-    }
-
-    KnobIPtr layerKnob = _imp->layerKnob.lock();
-    std::map<const KnobI*, LayerKnobSource>::const_iterator found = _imp->layerKnobSources.find(layerKnob.get());
-    if (found != _imp->layerKnobSources.end() && found->second.drivenByContainer) {
-        // A container (e.g. RotoPaint) drives this knob's value; it is not a separate reference.
-        return;
-    }
-
-    if (KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(layerKnob.get())) {
-        isChannelSet->getReferencedLayerIDs(ids);
-    } else if (KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get())) {
-        isLayerSelect->getReferencedLayerIDs(ids);
+        KnobIPtr knob = it->second.knob.lock();
+        if (!knob) {
+            continue;
+        }
+        if (KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(knob.get())) {
+            isChannelSet->getReferencedLayerIDs(ids);
+        } else if (KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(knob.get())) {
+            isLayerSelect->getReferencedLayerIDs(ids);
+        } else if (KnobChannelSelect* isChannelSelect = dynamic_cast<KnobChannelSelect*>(knob.get())) {
+            isChannelSelect->getReferencedLayerIDs(ids);
+        }
     }
 } // Node::getReferencedLayerIDs
 
@@ -5812,7 +5814,7 @@ Node::retargetLayerKnob(const std::string& layerID)
         return;
     }
     _imp->layerKnobSpec.role = LayerKnobSpec::eRoleTarget;
-    LayerKnobSource source(-1, LayerKnobSpec::eRoleTarget);
+    LayerKnobSource source(layerKnob, -1, LayerKnobSpec::eRoleTarget);
     source.drivenByContainer = true;
     _imp->layerKnobSources[layerKnob.get()] = source;
 
@@ -5828,6 +5830,32 @@ Node::retargetLayerKnob(const std::string& layerID)
             layerSelect->setLayer(layerID);
         }
     }
+}
+
+void
+Node::declareLayerKnob(const KnobIPtr& knob,
+                       int inputNb,
+                       LayerKnobSpec::RoleEnum role)
+{
+    if (!knob) {
+        return;
+    }
+    _imp->layerKnobSources[knob.get()] = LayerKnobSource(knob, inputNb, role);
+}
+
+void
+Node::setLayerKnobInput(const KnobIPtr& knob,
+                        int inputNb)
+{
+    if (!knob) {
+        return;
+    }
+    std::map<const KnobI*, LayerKnobSource>::iterator found = _imp->layerKnobSources.find(knob.get());
+    if (found == _imp->layerKnobSources.end()) {
+        return;
+    }
+    found->second.inputNb = inputNb;
+    Q_EMIT layerListRefreshed();
 }
 
 void

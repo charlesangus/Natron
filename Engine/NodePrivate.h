@@ -79,6 +79,12 @@ public:
 struct LayerKnobSource {
     static const int kPreferredInput = -2;
 
+    // A weak back-reference to the knob this entry describes: the map this struct lives in
+    // (Node::Implementation::layerKnobSources) is keyed by raw KnobI* for constant-time lookup
+    // from an already-held KnobIPtr, but Node::getReferencedLayerIDs() must also walk every
+    // entry without one, so it needs a way back to a lockable pointer.
+    KnobIWPtr knob;
+
     int inputNb;
     LayerKnobSpec::RoleEnum role;
 
@@ -88,15 +94,18 @@ struct LayerKnobSource {
     bool drivenByContainer;
 
     LayerKnobSource()
-        : inputNb(kPreferredInput)
+        : knob()
+        , inputNb(kPreferredInput)
         , role(LayerKnobSpec::eRoleInputBound)
         , drivenByContainer(false)
     {
     }
 
-    LayerKnobSource(int inputNb_,
+    LayerKnobSource(const KnobIPtr& knob_,
+                    int inputNb_,
                     LayerKnobSpec::RoleEnum role_)
-        : inputNb(inputNb_)
+        : knob(knob_)
+        , inputNb(inputNb_)
         , role(role_)
         , drivenByContainer(false)
     {

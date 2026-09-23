@@ -43,6 +43,7 @@ CLANG_DIAG_ON(deprecated)
 
 #include "Engine/AppManager.h"
 #include "Engine/CacheEntryHolder.h"
+#include "Engine/EffectInstance.h" // for LayerKnobSpec::RoleEnum
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Markdown.h"
@@ -1422,6 +1423,21 @@ public:
      * upstream yet. No-op on a node without a layer knob.
      **/
     void retargetLayerKnob(const std::string& layerID);
+
+    /**
+     * @brief Gives a channel set, layer select or channel select knob a listing role: an
+     * input-bound knob (kPreferredInput's caller-facing spelling is Node::getPreferredInput(),
+     * any other value a literal input number) lists that input's present layers, a target knob
+     * lists the project registry. Works the same for a plugin- or node-owned knob as for the
+     * host's own layerKnob, and makes listLayersForKnob() and getReferencedLayerIDs() see it.
+     **/
+    void declareLayerKnob(const KnobIPtr& knob, int inputNb, LayerKnobSpec::RoleEnum role);
+
+    /**
+     * @brief Repoints an already-declared input-bound layer/channel knob at another input and
+     * emits layerListRefreshed() so its GUI relists. No-op on a knob never declared.
+     **/
+    void setLayerKnobInput(const KnobIPtr& knob, int inputNb);
 
     /**
      * @brief Registers every non-Color layer this node produces (per

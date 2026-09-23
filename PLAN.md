@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M38.P9.T2
-pm_heartbeat: 2026-09-22T04:23:46-04:00
+current: null
+pm_heartbeat: 2026-09-22T20:31:04-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -194,7 +194,7 @@ future core work has solid ground to build on.
 | M57 | Fix Write node plane/layer regressions found while testing M39 | done | [M57-write-node-plane-layer-regressions.md](PLAN/MILESTONES/M57-write-node-plane-layer-regressions.md) |
 | M58 | Write's "All Layers" output copies one layer's pixel data into every layer | done | [M58-write-multiplane-pixel-data-bug.md](PLAN/MILESTONES/M58-write-multiplane-pixel-data-bug.md) |
 | M59 | Pre-commit hook that auto-formats staged C/C++ so PRs stop failing CI's `format` check | done | [M59-pre-commit-auto-format.md](PLAN/MILESTONES/M59-pre-commit-auto-format.md) |
-| M38 | Layer/channel selection widget: process-in-place, no implicit shuffling (absorbs M35) | doing | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
+| M38 | Layer/channel selection widget: process-in-place, no implicit shuffling (absorbs M35) | done | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
 | M60 | Deep images get layers/channels like flat images | todo | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
 | M43 | ~~Drop the premultiplied/unpremultiplied concept~~ (folded into M38 Phase 38.2) | cancelled | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
 | M34 | New native Shuffle node | todo | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |

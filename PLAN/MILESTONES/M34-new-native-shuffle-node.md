@@ -51,7 +51,7 @@ Execution notes carried over from M38:
     - malformed cells decode as keep
     - setting `out1.3` twice leaves one row
   - size: M
-- [ ] M34.P1.T6 — Register `KnobShuffleMap` for creation and project load
+- [x] M34.P1.T6 — Register `KnobShuffleMap` for creation and project load
   - files: `Engine/KnobFactory.cpp`, `Engine/KnobSerialization.cpp`, `Tests/KnobShuffleMap_Test.cpp`
   - approach: one `knobFactoryEntry` and one `KnobSerialization::createKnob` case, the same touch points M38 used for its knob types.
   - verify: gtest: a user `KnobShuffleMap` on a NoOp comes back from a project save/reset/load with identical rows.
@@ -90,7 +90,7 @@ Execution notes carried over from M38:
     - (e) `out1=mask`[A]`←in1.R` → a new `mask` plane of 1; Color untouched
     - (f) `in2Input=A`, A disconnected, `out1.A←in2.A` → alpha kept from B
   - size: L
-- [ ] M34.P2.T3 — Fail the render when a wired source is missing upstream
+- [x] M34.P2.T3 — Fail the render when a wired source is missing upstream
   - files: `Engine/Nodes/Channel/Shuffle.cpp`, `Engine/Node.cpp`, `Engine/Node.h`, `Tests/ShuffleRender_Test.cpp`
   - approach: this is the user decision (design doc "Answers" 2). A mapping row fails the render with a persistent error naming the channel when its slot's input is connected but lacks that slot's layer, or when its channel index is beyond that layer. Reuse or extend `Node::checkSelectedChannelsPresent`, the M38 mask-channel error path, so the badge and the clearing behaviour match. A disconnected input, a None slot and unwired channels stay silent.
   - verify: gtests:
@@ -104,7 +104,7 @@ Execution notes carried over from M38:
   - approach: `connect(src, dst)` (with `"0"` and `"1"` allowed as `src`), `disconnect`, `getSource` (returns `""` for keep), `getConnections` and `reset`. Names resolve against the node's current slot layers; unknown slots or channels raise `ValueError` with the reason.
   - verify: a background-mode script (`-b`, as `build/m38scout/gui.py` does) asserts each API call, a `ValueError` on `"in1.Q"`, and that `setExpression` on `mapping` raises.
   - size: M
-- [ ] M34.P2.T5 — PyPlug export emits Shuffle mappings and round-trips them
+- [x] M34.P2.T5 — PyPlug export emits Shuffle mappings and round-trips them
   - files: `Engine/NodeGroup.cpp`, `Tests/PyPlugExport_Test.cpp`
   - approach: after the layer selects, emit `getParam("mapping").connect(...)` lines. Referenced custom layers already go out through `addProjectLayer`.
   - verify: `ctest -R PyPlugExport`: a group containing a Shuffle (`in1=diffuse`, `out1=spec2`, `out1.A←1`) exports, re-imports, and has identical knob values.

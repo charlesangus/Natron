@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: null
-pm_heartbeat: 2026-09-22T21:30:58-04:00
+current: M34.P1.T1
+pm_heartbeat: 2026-09-22T21:36:15-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -162,7 +162,7 @@ future core work has solid ground to build on.
   **M38 UAT round 1 (2026-09-21) did not pass**: the user's findings and
   design feedback became **Phase 38.10** (14 tasks, placed before Phase 38.9
   in the file so the PM runs it first), then 38.9 re-takes the after-shots
-  (T1a) and re-runs the checkpoint (T2, round 2). **Round 2 passed 2026-09-22; PR #30 opened.**
+  (T1a) and re-runs the checkpoint (T2, round 2). **Shipped 2026-09-22** (PR #30, squash-merge `30c1f0ceb`) after one Codex review round (4 fixed, 2 declined).
   **M34 (Shuffle) runs next, M60 moved back behind M50 (2026-09-22, user decision).**
   M43 and M36 were absorbed into M38 as Phases 38.2 and 38.7 — their rows are
   cancelled like M35's.
@@ -197,7 +197,7 @@ future core work has solid ground to build on.
 | M59 | Pre-commit hook that auto-formats staged C/C++ so PRs stop failing CI's `format` check | done | [M59-pre-commit-auto-format.md](PLAN/MILESTONES/M59-pre-commit-auto-format.md) |
 | M38 | Layer/channel selection widget: process-in-place, no implicit shuffling (absorbs M35) | done | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
 | M43 | ~~Drop the premultiplied/unpremultiplied concept~~ (folded into M38 Phase 38.2) | cancelled | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
-| M34 | New native Shuffle node | todo | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
+| M34 | New native Shuffle node | doing | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
 | M35 | ~~Remove implicit output-plane shuffling from non-Shuffle nodes~~ (folded into M38) | cancelled | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M36 | ~~Add "new channel/layer" affordance wherever a node outputs channels~~ (folded into M38 Phase 38.7) | cancelled | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
 | M37 | Channel/layer management nodes | todo | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |

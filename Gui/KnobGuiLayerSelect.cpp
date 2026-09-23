@@ -88,7 +88,11 @@ KnobGuiLayerSelect::createWidget(QHBoxLayout* layout)
 {
     createContainer(layout);
 
+    KnobLayerSelectPtr knob = _imp->knob.lock();
     _imp->row = new LayerChannelRow(LayerChannelRow::eModeLayerSelect, getContainer());
+    if (knob) {
+        _imp->row->setAllowNone(knob->getAllowNone());
+    }
     _imp->row->setAbsentMarker(getAbsentMarkerText());
     QObject::connect(_imp->row, &LayerChannelRow::layerChosen, this, [this](const QString& id) {
         onLayerChosen(id);

@@ -114,6 +114,7 @@ LayerChannelRow::LayerChannelRow(ModeEnum mode,
     , _regexChannels()
     , _regexExcludedChannels()
     , _withChannelButtons(false)
+    , _allowNone(false)
     , _absentMarker()
     , _removable(false)
     , _patternValid(true)
@@ -260,6 +261,22 @@ LayerChannelRow::setLayerSelectValue(const std::string& layerID,
     rebuildCombo();
     rebuildChannelButtons();
     refreshVisibility();
+}
+
+void
+LayerChannelRow::setAllowNone(bool allowNone)
+{
+    if (_allowNone == allowNone) {
+        return;
+    }
+    _allowNone = allowNone;
+    rebuildCombo();
+}
+
+bool
+LayerChannelRow::getAllowNone() const
+{
+    return _allowNone;
 }
 
 void
@@ -460,6 +477,9 @@ LayerChannelRow::currentValueLabel() const
     if (_mode == eModeChannelSelect) {
         return qs(_channelValue);
     }
+    if (_mode == eModeLayerSelect && _layerID.empty()) {
+        return tr("None");
+    }
     const LayerEntry* layer = findLayer(_layerID);
 
     return layer ? qs(layer->label) : qs(_layerID);
@@ -477,7 +497,9 @@ LayerChannelRow::currentValueIsListed() const
 
         return findLayer(_layerID) != 0;
     case eModeLayerSelect:
-
+        if (_layerID.empty()) {
+            return _allowNone;
+        }
         return findLayer(_layerID) != 0;
     case eModeChannelSelect: {
         if (_channelValue.empty()) {
@@ -528,6 +550,10 @@ LayerChannelRow::rebuildCombo()
         _entries.back().separatorAfter = true;
         break;
     case eModeLayerSelect:
+        if (_allowNone) {
+            _entries.push_back(ComboEntry(ComboEntry::eKindNone, std::string(), tr("None")));
+            _entries.back().separatorAfter = true;
+        }
         break;
     case eModeChannelSelect:
         _entries.push_back(ComboEntry(ComboEntry::eKindNone, std::string(), tr("None")));
@@ -584,7 +610,13 @@ LayerChannelRow::selectEntryForCurrentValue()
         bool hit = false;
         switch (e.kind) {
         case ComboEntry::eKindNone:
-            hit = (_mode == eModeChannelSelect) ? _channelValue.empty() : (_setRowMode == eSetRowModeNone);
+            if (_mode == eModeChannelSelect) {
+                hit = _channelValue.empty();
+            } else if (_mode == eModeLayerSelect) {
+                hit = (_allowNone && _layerID.empty());
+            } else {
+                hit = (_setRowMode == eSetRowModeNone);
+            }
             break;
         case ComboEntry::eKindAll:
             hit = (_setRowMode == eSetRowModeAll);
@@ -650,12 +682,17 @@ LayerChannelRow::rebuildChannelButtons()
 
     const bool isSetRow = (_mode == eModeSetRow0) || (_mode == eModeSetRowN);
     const bool isRegexRow = isSetRow && (_setRowMode == eSetRowModeRegex);
+    const bool isLayerSelectNone = (_mode == eModeLayerSelect) && _layerID.empty();
     // An absent layer has no listing to build from, so its remembered channels stand in.
     const LayerEntry* layer = isRegexRow ? 0 : findLayer(_layerID);
     const std::vector<std::string>& channels = isRegexRow ? _regexChannels : (layer ? layer->channels : _enabledChannels);
     const QString layerLabel = layer ? qs(layer->label) : qs(_layerID);
 
     placeButtonsContainer(isRegexRow);
+
+    if (isLayerSelectNone) {
+        return;
+    }
 
     QWidget* previous = isRegexRow ? static_cast<QWidget*>(_patternEdit) : static_cast<QWidget*>(_combo);
     for (std::size_t i = 0; i < channels.size(); ++i) {
@@ -694,7 +731,8 @@ LayerChannelRow::refreshVisibility()
 {
     bool isSetRow = (_mode == eModeSetRow0) || (_mode == eModeSetRowN);
     bool isRegexRow = isSetRow && (_setRowMode == eSetRowModeRegex);
-    bool showButtons = (isSetRow && _setRowMode == eSetRowModeLayer) || (_mode == eModeLayerSelect && _withChannelButtons);
+    bool isLayerSelectNone = (_mode == eModeLayerSelect) && _layerID.empty();
+    bool showButtons = (isSetRow && _setRowMode == eSetRowModeLayer) || (_mode == eModeLayerSelect && _withChannelButtons && !isLayerSelectNone);
     bool showPattern = isRegexRow;
     bool showRegexButtons = isRegexRow && !_regexChannels.empty();
 
@@ -777,6 +815,16 @@ LayerChannelRow::onComboIndexChanged(int index)
             }
             _lastComboIndex = _combo->activeIndex();
             Q_EMIT channelSelected(QString());
+        } else if (_mode == eModeLayerSelect) {
+            _layerID.clear();
+            _enabledChannels.clear();
+            if (hadMarker) {
+                rebuildCombo();
+            }
+            _lastComboIndex = _combo->activeIndex();
+            rebuildChannelButtons();
+            refreshVisibility();
+            Q_EMIT layerChosen(QString());
         } else {
             _setRowMode = eSetRowModeNone;
             if (hadMarker) {

@@ -10,7 +10,7 @@ Execution notes carried over from M38:
 
 ## Phase 34.1: Engine foundations
 
-- [ ] M34.P1.T1 — Let `KnobLayerSelect` hold an optional None
+- [x] M34.P1.T1 — Let `KnobLayerSelect` hold an optional None
   - files: `Engine/KnobLayerSelect.h`, `Engine/KnobLayerSelect.cpp`, `Engine/Knob.cpp`, `Tests/KnobLayerSelect_Test.cpp`
   - approach: `setAllowNone(bool)` is a per-node-kind flag like `withChannelButtons` and is never persisted. An empty Layer cell means None. With None set, `resolve()` returns false, `getReferencedLayerIDs` adds nothing and `getSummary()` returns "None". `setLayer("")` is refused unless None is allowed. The alias branch (`Knob.cpp` ~4578) copies the flag.
   - verify: `ctest -R KnobLayerSelect` covers: None round-trips through encode/decode; `resolve` returns false; no referenced IDs; `setLayer("")` throws when None is not allowed.
@@ -20,7 +20,7 @@ Execution notes carried over from M38:
   - approach: in `eModeLayer`, prepend an `eKindNone` entry when the knob allows None. Choosing it writes an empty layer as one undo step.
   - verify: `ctest -R LayerChannelRow`: the row lists `None` first only for an allow-None knob; choosing it writes `""`, and one undo restores the previous layer.
   - size: S
-- [ ] M34.P1.T3 — Give plugin-owned layer knobs a listing role and count them as registry references
+- [x] M34.P1.T3 — Give plugin-owned layer knobs a listing role and count them as registry references
   - files: `Engine/Node.h`, `Engine/Node.cpp`, `Engine/NodePrivate.h`, `Tests/LayerKnobs_Test.cpp`
   - approach: add `Node::declareLayerKnob(knob, inputNb, role)` and `Node::setLayerKnobInput(knob, inputNb)`, which add to or update `layerKnobSources`. `getReferencedLayerIDs` walks every declared, non-driven knob, not just the host `layerKnob`. `setLayerKnobInput` emits `layerListRefreshed`.
   - verify: gtest on a user `KnobLayerSelect` created on a NoOp:
@@ -29,7 +29,7 @@ Execution notes carried over from M38:
     - Set to `diffuse`, `removeLayer("diffuse")` is refused and names the NoOp.
     - After `setLayerKnobInput(knob, 1)` with input 1 unconnected, it lists Color only.
   - size: M
-- [ ] M34.P1.T4 — Let a multiplanar effect opt out of implicitly producing its metadata layer
+- [x] M34.P1.T4 — Let a multiplanar effect opt out of implicitly producing its metadata layer
   - files: `Engine/EffectInstance.h`, `Engine/EffectInstance.cpp`, `Tests/MultiplanarTestEffect.h`, `Tests/wmain.cpp`, `Tests/LayerKnobsRender_Test.cpp`
   - approach: a virtual `producesMetadataLayerImplicitly()`, defaulting to true, gates the metadata-layer merge in `getComponentsNeededAndProduced_public` (~`EffectInstance.cpp:4487-4507`). Add a multiplanar test effect that produces only `diffuse`, registered like the DataKind test plugins.
   - verify: gtest with Read(`flat-three-layers.exr`) → test effect:
@@ -37,7 +37,7 @@ Execution notes carried over from M38:
     - Flag true (the default): Color is in `comps[-1]`.
     - Full ctest green.
   - size: M
-- [ ] M34.P1.T5 — Add the `KnobShuffleMap` knob type and its codec
+- [x] M34.P1.T5 — Add the `KnobShuffleMap` knob type and its codec
   - files: `Engine/KnobShuffleMap.h`, `Engine/KnobShuffleMap.cpp`, `Tests/KnobShuffleMap_Test.cpp`, `Tests/CMakeLists.txt`
   - approach:
     - A `KnobTable` subclass with tags `Out` and `Src`, and typeName `ShuffleMap`.

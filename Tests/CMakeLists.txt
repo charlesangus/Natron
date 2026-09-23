@@ -57,6 +57,7 @@ set(Tests_SOURCES
     ReadFormat_Test.cpp
     RenderRange_Test.cpp
     RotoLayer_Test.cpp
+    Shuffle_Test.cpp
     TrackerLayer_Test.cpp
     Tracker_Test.cpp
     TypedPassthrough_Test.cpp

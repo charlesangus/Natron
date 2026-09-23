@@ -4680,6 +4680,7 @@ KnobHelper::createDuplicateOnHolder(KnobHolder* otherHolder,
         output = newKnob;
     } else if (isLayerSelect) {
         KnobLayerSelectPtr newKnob = otherHolder->createLayerSelectKnob(newScriptName, newLabel, isLayerSelect->getWithChannelButtons(), isUserKnob);
+        newKnob->setAllowNone(isLayerSelect->getAllowNone());
         output = newKnob;
     } else if (isChannelSelect) {
         KnobChannelSelectPtr newKnob = otherHolder->createChannelSelectKnob(newScriptName, newLabel, isUserKnob);

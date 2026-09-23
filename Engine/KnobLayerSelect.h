@@ -115,6 +115,21 @@ public:
         return _withChannelButtons;
     }
 
+    /**
+     * @brief Whether this knob allows an empty None selection. Set once by the node
+     * that creates the knob: it describes the node kind, not a project value, so it is
+     * a plain member and is never persisted.
+     **/
+    void setAllowNone(bool allowNone)
+    {
+        _allowNone = allowNone;
+    }
+
+    bool getAllowNone() const
+    {
+        return _allowNone;
+    }
+
     std::string getLayer() const;
 
     /**
@@ -156,6 +171,7 @@ private:
     static const std::string _typeNameStr;
 
     bool _withChannelButtons;
+    bool _allowNone;
 
     mutable QMutex _cacheMutex;
     mutable bool _cacheValid;

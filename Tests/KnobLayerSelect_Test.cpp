@@ -241,6 +241,99 @@ TEST(KnobLayerSelect, GetReferencedLayerIDs)
     EXPECT_EQ(1u, ids.count("diffuse"));
 }
 
+TEST(KnobLayerSelect, AllowNoneFlag)
+{
+    KnobLayerSelectPtr knob = makeLayerSelectKnob();
+
+    EXPECT_FALSE(knob->getAllowNone());
+    knob->setAllowNone(true);
+    EXPECT_TRUE(knob->getAllowNone());
+}
+
+TEST(KnobLayerSelect, SetLayerEmptyThrowsWhenNoneNotAllowed)
+{
+    KnobLayerSelectPtr knob = makeLayerSelectKnob();
+
+    EXPECT_FALSE(knob->getAllowNone());
+    EXPECT_THROW(knob->setLayer(""), std::invalid_argument);
+}
+
+TEST(KnobLayerSelect, SetLayerEmptyAllowedWhenNoneIsSet)
+{
+    KnobLayerSelectPtr knob = makeLayerSelectKnob();
+
+    knob->setAllowNone(true);
+    EXPECT_NO_THROW(knob->setLayer(""));
+    EXPECT_EQ(std::string(""), knob->getLayer());
+}
+
+TEST(KnobLayerSelect, NoneResolvesToFalse)
+{
+    KnobLayerSelectPtr knob = makeLayerSelectKnob();
+
+    knob->setAllowNone(true);
+    knob->setLayer("");
+
+    ResolvedLayer resolved;
+    EXPECT_FALSE(knob->resolve(presentLayers(), &resolved));
+}
+
+TEST(KnobLayerSelect, NoneSummaryIsNone)
+{
+    KnobLayerSelectPtr knob = makeLayerSelectKnob();
+
+    knob->setAllowNone(true);
+    knob->setLayer("");
+
+    EXPECT_EQ(std::string("None"), knob->getSummary());
+}
+
+TEST(KnobLayerSelect, NoneYieldsNoReferencedIDs)
+{
+    KnobLayerSelectPtr knob = makeLayerSelectKnob();
+
+    knob->setAllowNone(true);
+    knob->setLayer("");
+
+    std::set<std::string> ids;
+    knob->getReferencedLayerIDs(&ids);
+    EXPECT_TRUE(ids.empty());
+}
+
+TEST_F(BaseTest, KnobLayerSelectNoneSerializationRoundTrip)
+{
+    NodePtr node = createNode(_generatorPluginID);
+
+    ASSERT_TRUE(bool(node));
+
+    KnobLayerSelectPtr source = AppManager::createKnob<KnobLayerSelect>(node->getEffectInstance().get(), std::string("layer"), 1, false);
+    ASSERT_TRUE(bool(source));
+    source->setAllowNone(true);
+    source->setLayer("");
+
+    std::stringstream buffer;
+    {
+        KnobSerialization serialization(source);
+        boost::archive::xml_oarchive archive(buffer);
+        archive << boost::serialization::make_nvp("Knob", serialization);
+    }
+
+    KnobSerialization loaded;
+    {
+        boost::archive::xml_iarchive archive(buffer);
+        archive >> boost::serialization::make_nvp("Knob", loaded);
+    }
+
+    KnobIPtr loadedKnob = loaded.getKnob();
+    ASSERT_TRUE(bool(loadedKnob));
+    EXPECT_EQ(std::string("LayerSelect"), loadedKnob->typeName());
+
+    KnobLayerSelectPtr loadedSelect = std::dynamic_pointer_cast<KnobLayerSelect>(loadedKnob);
+    ASSERT_TRUE(bool(loadedSelect));
+    EXPECT_EQ(std::string(""), loadedSelect->getLayer());
+    EXPECT_EQ(source->getValue(), loadedSelect->getValue());
+}
+
 TEST_F(BaseTest, KnobLayerSelectSerializationRoundTrip)
 {
     NodePtr node = createNode(_generatorPluginID);

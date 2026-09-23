@@ -49,6 +49,7 @@ KnobLayerSelect::KnobLayerSelect(KnobHolder* holder,
                                  bool declaredByPlugin)
     : KnobTable(holder, description, dimension, declaredByPlugin)
     , _withChannelButtons(false)
+    , _allowNone(false)
     , _cacheMutex()
     , _cacheValid(false)
     , _cachedRaw()
@@ -192,6 +193,9 @@ KnobLayerSelect::getLayer() const
 void
 KnobLayerSelect::setLayer(const std::string& layerID)
 {
+    if (layerID.empty() && !_allowNone) {
+        throw std::invalid_argument("This layer selection does not allow None: an empty layer is not permitted");
+    }
     setLayerAndChannels(this, layerID, std::vector<std::string>());
 }
 
@@ -256,6 +260,10 @@ KnobLayerSelect::resolve(const std::list<ImageLayerDesc>& present,
 
     getLayerAndChannels(&layerID, &channels);
 
+    if (layerID.empty()) {
+        return false;
+    }
+
     for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
         if (it->getLayerID() != layerID) {
             continue;
@@ -292,6 +300,10 @@ KnobLayerSelect::getSummary() const
     std::vector<std::string> channels;
 
     getLayerAndChannels(&layerID, &channels);
+
+    if (layerID.empty()) {
+        return std::string("None");
+    }
 
     std::string summary = layerLabelForID(layerID);
 

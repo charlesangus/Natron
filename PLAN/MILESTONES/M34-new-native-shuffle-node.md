@@ -131,7 +131,7 @@ Execution notes carried over from M38:
   - files: `Engine/Nodes/Channel/Shuffle.cpp`, `build/m34scout/gui.py`, `build/m34scout/run.sh`
   - approach: put `inNInput` on the same line as `inN`, give every knob a hint, and keep a hidden sub-label knob (`kNatronOfxParamStringSublabelName`, the PrecompNode precedent) updated in `knobChanged`, e.g. `(diffuse → Color)`.
   - verify: Xvfb screenshots of the panel for the diffuse→Color example and of the node-graph label.
-  - size: S
+  - size: M
 
 ## Phase 34.4: Replace the OFX Shuffle
 
@@ -156,7 +156,7 @@ Execution notes carried over from M38:
   - files: `Engine/NodeInputs.cpp`, `Engine/EffectInstance.cpp`, `Engine/EffectInstance.h`, `Engine/KnobSerialization.cpp`, `Tests/LayerKnobs_Test.cpp`
   - approach: delete the four `PLUGINID_OFX_SHUFFLE` "A is main" branches, the macro, and the `outputR..A` filter entries (~`KnobSerialization.cpp:640-656`). `LayerKnobs_Test.cpp:374` now asserts on the native Shuffle.
   - verify: `grep -rn PLUGINID_OFX_SHUFFLE Engine Gui` is empty; full ctest green.
-  - size: S
+  - size: M
 - [ ] M34.P4.T5 — Drop Shuffle from the openfx-misc fork build and bump the pin
   - files: `charlesangus/openfx-misc` (a fork PR removing `Shuffle` from its build), `tools/ci/local/fetch-assets.sh` (`OPENFX_MISC_REF`)
   - approach: this is the user decision (design doc "Answers" 3). Graphs containing the OFX Shuffle no longer load it, which the clean-break decision accepts. Keep the fork change minimal: remove the plugin from the build list and its source directory. Leave a one-line pin comment pointing at the fork PR.

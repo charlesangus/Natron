@@ -15,7 +15,7 @@ Execution notes carried over from M38:
   - approach: `setAllowNone(bool)` is a per-node-kind flag like `withChannelButtons` and is never persisted. An empty Layer cell means None. With None set, `resolve()` returns false, `getReferencedLayerIDs` adds nothing and `getSummary()` returns "None". `setLayer("")` is refused unless None is allowed. The alias branch (`Knob.cpp` ~4578) copies the flag.
   - verify: `ctest -R KnobLayerSelect` covers: None round-trips through encode/decode; `resolve` returns false; no referenced IDs; `setLayer("")` throws when None is not allowed.
   - size: S
-- [ ] M34.P1.T2 — Offer a "None" entry in the layer-select row when it is allowed
+- [x] M34.P1.T2 — Offer a "None" entry in the layer-select row when it is allowed
   - files: `Gui/LayerChannelRow.h`, `Gui/LayerChannelRow.cpp`, `Gui/KnobGuiLayerSelect.cpp`, `Tests/LayerChannelRow_Test.cpp`
   - approach: in `eModeLayer`, prepend an `eKindNone` entry when the knob allows None. Choosing it writes an empty layer as one undo step.
   - verify: `ctest -R LayerChannelRow`: the row lists `None` first only for an allow-None knob; choosing it writes `""`, and one undo restores the previous layer.
@@ -76,7 +76,7 @@ Execution notes carried over from M38:
     - `removeLayer("diffuse")` is refused while `in1=diffuse`
     - `isIdentity` is true on a new node
   - size: L
-- [ ] M34.P2.T2 — Render the mapping: input channels, constants and keep
+- [x] M34.P2.T2 — Render the mapping: input channels, constants and keep
   - files: `Engine/Nodes/Channel/Shuffle.cpp`, `Tests/ShuffleRender_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: for each plane in `args.outputLayers`, fetch the slot planes and B's same plane once with `getImage(inputNb, …, &layer, …)` (the RotoPaint pattern), then fill each channel.
     - Keep takes B's same channel, or 0 when B lacks it.
@@ -99,7 +99,7 @@ Execution notes carried over from M38:
     - `in1=diffuse` with no wired rows renders without error.
     - A None slot with a wired row renders as keep.
   - size: M
-- [ ] M34.P2.T4 — Expose `ShuffleMapParam` to Python
+- [x] M34.P2.T4 — Expose `ShuffleMapParam` to Python
   - files: `Engine/PyParameter.h`, `Engine/PyParameter.cpp`, `Engine/PyNode.cpp`, `Engine/typesystem_engine.xml`, `Engine/PySide6_Engine_Python.h`
   - approach: `connect(src, dst)` (with `"0"` and `"1"` allowed as `src`), `disconnect`, `getSource` (returns `""` for keep), `getConnections` and `reset`. Names resolve against the node's current slot layers; unknown slots or channels raise `ValueError` with the reason.
   - verify: a background-mode script (`-b`, as `build/m38scout/gui.py` does) asserts each API call, a `ValueError` on `"in1.Q"`, and that `setExpression` on `mapping` raises.
@@ -196,3 +196,4 @@ Execution notes carried over from M38:
   - The OFX Shuffle is deleted from the openfx-misc fork build rather than hidden.
   - The mapping UI is a toggle matrix.
   - The no-RGBA Read residual was not asked about; the default is taken and it is left alone.
+- 2026-09-23 — **PM resumed after a crashed session**; the Docker daemon had lost the natron-dev image and it was rebuilt via `mirror.gcr.io`. P1.T2, P2.T2 and P2.T4 were found implemented but uncommitted, verified (targeted ctest 44/44 with `OFX_PLUGIN_PATH` set; `build/m34scout/shufflemap_py.py` OK under NatronRenderer -b) and committed. The ShuffleRender segfault reported earlier did not reproduce.

@@ -135,7 +135,7 @@ Execution notes carried over from M38:
 
 ## Phase 34.4: Replace the OFX Shuffle
 
-- [ ] M34.P4.T1 — Port DropShadow, EdgeBlur, Fill and Glow to the native Shuffle
+- [x] M34.P4.T1 — Port DropShadow, EdgeBlur, Fill and Glow to the native Shuffle
   - files: `Gui/Resources/PyPlugs/DropShadow.py`, `Gui/Resources/PyPlugs/EdgeBlur.py`, `Gui/Resources/PyPlugs/Fill.py`, `Gui/Resources/PyPlugs/Glow.py`
   - approach: translate each `outputX = "<in>.<plane>.<chan>"` into `in1`/`in2`/`out1` settings plus `connect()` calls. EdgeBlur's `outputComponents=Alpha` becomes `out1.R/G/B←0` with A kept.
   - verify:

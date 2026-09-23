@@ -197,3 +197,4 @@ Execution notes carried over from M38:
   - The mapping UI is a toggle matrix.
   - The no-RGBA Read residual was not asked about; the default is taken and it is left alone.
 - 2026-09-23 — **PM resumed after a crashed session**; the Docker daemon had lost the natron-dev image and it was rebuilt via `mirror.gcr.io`. P1.T2, P2.T2 and P2.T4 were found implemented but uncommitted, verified (targeted ctest 44/44 with `OFX_PLUGIN_PATH` set; `build/m34scout/shufflemap_py.py` OK under NatronRenderer -b) and committed. The ShuffleRender segfault reported earlier did not reproduce.
+- 2026-09-23 — **User: share UI screenshots before signing off.** P3.T1 (matrix) and P3.T2 (panel/node-graph label) stay unchecked until Xvfb screenshots have been sent to the user and they approve them.

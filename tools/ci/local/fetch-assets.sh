@@ -29,43 +29,25 @@
 #
 # --- Why the plugins are BUILT here, not downloaded -----------------------
 #
-# This used to `wget` a prebuilt openfx-io bundle
-# (openfx-io-build-ubuntu_22-testing.zip). That bundle cannot load in the
-# CY2027 container and never will: it is an Ubuntu 22 build that needs
-# GLIBCXX_3.4.30 (Rocky 9 ships at most 3.4.29) and links an entire ABI
-# generation behind us -- libOpenColorIO.so.1, libOpenImageIO.so.2.2,
-# libIlmImf-2_5.so.25, libavformat.so.58. Loading it fails with:
-#
-#   couldn't open library .../IO.ofx because /lib64/libstdc++.so.6:
-#   version `GLIBCXX_3.4.30' not found
-#
-# There is no EL9 build published upstream. The answer is to build the
-# plugin against the container's own libraries, which the aswf/ci-vfxall
-# image makes possible -- it ships OpenColorIO, OpenImageIO, OpenEXR,
-# OpenFX and LibRaw, where the older ci-baseqt image shipped none of them.
+# A prebuilt bundle can't load here: it needs GLIBCXX_3.4.30 (Rocky 9 ships
+# at most 3.4.29) and an OCIO/OpenImageIO/OpenEXR ABI generation behind
+# this image's own libraries, and no EL9 build is published upstream.
+# Building against the container's own libraries (aswf/ci-vfxall ships
+# OpenColorIO, OpenImageIO, OpenEXR, OpenFX and LibRaw) is the fix.
 # See PLAN/DECISIONS/2026-08-31-restore-vendored-ofx-plugin-tests.md.
 #
-# SeExpr is built too, because ASWF ships none at any VFX Platform year and
-# openfx-io's SeNoise plugin -- one of the three IDs BaseTest asserts --
-# needs it. It is linked STATICALLY on purpose: that makes the resulting
-# IO.ofx self-contained, so neither this script, test.sh, nor CI has to
-# manage an LD_LIBRARY_PATH for it. Verified: the built IO.ofx has no
-# libSeExpr entry in DT_NEEDED.
+# SeExpr is built too (ASWF ships none) and linked statically into IO.ofx so
+# nothing downstream has to manage an LD_LIBRARY_PATH for it.
 #
-# openfx-misc is built the same way and needs no fork: unlike openfx-io it
-# has no dependency on OIIO/OCIO/SeExpr and no CMakeLists.txt bug, so upstream
-# builds clean against this container as-is. It does have one prerequisite
-# its own CMakeLists.txt doesn't handle -- see the comment above the
-# openfx-misc build step below.
+# openfx-misc needs no source changes to build here, but has one build
+# prerequisite its own CMakeLists.txt doesn't handle -- see the comment
+# above the openfx-misc build step below.
 #
-# This script therefore DOES do compile work now, which is the main reason
-# it (like build.sh/test.sh) runs INSIDE the dev container, re-execing
-# itself through devshell.sh exactly once when invoked from the host: the
-# documented local loop (fetch-assets -> build -> test) needs nothing on the
-# host but Docker. See build.sh's big comment block for the full reasoning
-# behind in_container()'s two checks. Under CI this is a no-op: CI=true, so
-# the re-exec is skipped and the script runs directly in the job's own
-# container.
+# This script does compile work, which is why it (like build.sh/test.sh)
+# runs INSIDE the dev container, re-execing itself through devshell.sh once
+# when invoked from the host, so the local loop (fetch-assets -> build ->
+# test) needs nothing on the host but Docker. See build.sh's comment block
+# for in_container()'s two checks. Under CI (CI=true) this is a no-op.
 
 set -euo pipefail
 
@@ -149,90 +131,36 @@ fi
 # mystery CI failure on your PR. Bump them deliberately, and re-run this
 # script (it rebuilds when the stamp below no longer matches).
 #
-# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, six commits ahead of
-# NatronGitHub/openfx-io and zero behind. Fork-and-fix is the standing
-# pattern for small changes to NatronGitHub repos. Four deltas:
-#
-# 1. A CMakeLists.txt fix (SEEXPR2_INCLUDES/SEEXPR2_LIBRARIES ->
-#    SEEXPR2_INCLUDE_DIR/SEEXPR2_LIBRARY): upstream reads variable names its
-#    own FindSeExpr2.cmake never sets, so the SeExpr sources compiled but
-#    IO.ofx was never linked against libSeExpr, and the bundle failed to load
-#    with `undefined symbol: _ZTI11SeExprFuncX`. Undefined symbols in a shared
-#    library don't fail a link by default, which is why this went unnoticed
-#    upstream.
-#
-# 2. Colorspace resolution in IOSupport/GenericOCIO.cpp, which is what lets
-#    the bundle work against Natron's default OCIO config
-#    (ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5). Reader and writer
-#    colorspace parameter defaults are computed at describe time and were
-#    never checked against the config actually loaded, so on any config that
-#    defines no `default` role -- every ACES config -- a fresh project failed
-#    to render with `Color space 'default' could not be found.` The fix
-#    guards canonicalizeColorSpace()'s -1 "not found" sentinel (which
-#    otherwise compares equal to the -1 of an undefined role), falls back to
-#    scene_linear rather than to colorspace 0 (display-referred in the ACES
-#    configs), and teaches the fallback chains the ACES spellings
-#    `sRGB - Display` and `Camera Rec.709`. Against the older tarball configs
-#    this is a no-op: renders are byte-identical either side of it.
-#
-# 3. timeOffset consistency in IOSupport/GenericReader.cpp
-#    (charlesangus/openfx-io#2). GenericReaderPlugin keeps one time mapping
-#    in two params -- getTimeDomain() reads startingTime, getSequenceTime()
-#    decodes with `t - timeOffset` -- so they must satisfy
-#    `timeOffset == startingTime - firstFrame`. Every branch of
-#    changedParam() maintained that except kParamOriginalFrameRange, which
-#    resets firstFrame/lastFrame/startingTime to a newly chosen file's range
-#    and left timeOffset holding the old file's value. A reader whose
-#    startingTime had been moved off its first frame then advertised a frame
-#    range it could not decode: every time in it mapped outside the sequence
-#    domain and onMissingFrame's hold collapsed the whole range onto one
-#    frame. That is the defect Tests/fixtures/read-time-offset.ntp and
-#    smoke_test.py's check_reader_cli_time_offset_regression pin down.
-#    Readers already at timeOffset 0 are unaffected -- renders are
-#    pixel-identical either side of it.
-#
-# 4. The Write node's "All Planes"/"All Layers" checkbox
-#    (kMultiPlaneProcessAllPlanesParam, charlesangus/openfx-io#3). Its OFX
-#    param string (processAllPlanes -> processAllLayers), label, and hint
-#    text live in SupportExt/ofxsMultiPlane.h -- SupportExt is a submodule
-#    pinned to NatronGitHub/openfx-supportext, not part of this fork's own
-#    tree, so the rename could not land as a change here. Commit 87264e5
-#    repoints the submodule at charlesangus/openfx-supportext
-#    (charlesangus/openfx-supportext#1), which carries the fix, matching
-#    the layer terminology Natron itself already carries across the OFX
-#    ABI boundary. There is no compatibility shim: a .ntp file saved
-#    against the old param string fails to restore that one value on load
-#    -- accepted, the same tradeoff any other identifier rename across
-#    this boundary would carry.
-#
-# The -1 sentinel guard is the first of delta 2's two commits and is
-# deliberately self-contained, so it can be offered upstream on its own; so
-# is delta 3, which is one commit and touches nothing else.
+# OPENFX_IO_REF: charlesangus/openfx-io -- our fork, ahead of
+# NatronGitHub/openfx-io. Fork-and-fix is the standing pattern for small
+# changes to NatronGitHub repos. Deltas are recorded at charlesangus/
+# openfx-io PRs #2-#6 (an earlier SEEXPR2_INCLUDES/LIBRARIES CMakeLists.txt
+# fix and an OCIO default-colorspace fallback predate PR tracking); the
+# Write node's layer-naming delta also needed
+# charlesangus/openfx-supportext#1.
 #
 # Verified to build clean against the image's OIIO 3.1.16.0 / OCIO 2.5.2 /
-# OpenEXR 3.4.15 -- openfx-io carries explicit `#if OIIO_VERSION >= 30000`
-# support, so OIIO 3 is a supported configuration upstream, not something we
-# are forcing.
+# OpenEXR 3.4.15.
 #
-# SEEXPR_REF: wdas/SeExpr, branch v1-2.11. NOT the v2/v3 line: openfx-io's
-# SeNoise.cpp includes <SeExprBuiltins.h>/<SeNoise.h> and shims
-# `#define SeExpr2 SeExpr`, i.e. it targets the v1-2.11 header layout.
-# openfx-io's own CI pins the same branch. Not forked -- wdas/SeExpr is not
-# a NatronGitHub repo and we carry no changes to it.
+# SEEXPR_REF: wdas/SeExpr, branch v1-2.11, not v2/v3 -- openfx-io's
+# SeNoise.cpp targets the v1-2.11 header layout. Not forked.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="87264e5f1c76c652e89fff6018b8b963f1029c87"
+OPENFX_IO_REF="e537291a16b1736cf26a969bc688a7e5daaee9ec"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 
-# OPENFX_MISC_REF: NatronGitHub/openfx-misc, upstream directly -- not forked.
+# OPENFX_MISC_REF: charlesangus/openfx-misc -- our fork, ahead of
+# NatronGitHub/openfx-misc. Fork-and-fix is the standing pattern for small
+# changes to NatronGitHub repos (see OPENFX_IO_REF above). Deltas are
+# recorded at charlesangus/openfx-misc PRs #1-#3; the per-channel
+# "(Un)premult by" rename also needed charlesangus/openfx-supportext PRs
+# #2-#3.
+#
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
-# this container with no source changes needed. (If that ever stops being
-# true, fork it the same way -- see
-# PLAN/DECISIONS/2026-08-31-fork-and-fix-natrongithub-repos.md -- rather than
-# patching it from this script.)
-OPENFX_MISC_REPO="https://github.com/NatronGitHub/openfx-misc.git"
-OPENFX_MISC_REF="0abd46b5a8cbc98fa24579042129460d0aa87b8f"
+# this container with no other source changes needed.
+OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
+OPENFX_MISC_REF="d30a55d1bc02a2152f535b95a7ce1e52feb307a5"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a

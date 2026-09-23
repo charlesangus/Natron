@@ -59,12 +59,13 @@ ProjectPrivate::ProjectPrivate(Project* project)
     : _publicInterface(project)
     , projectLock()
     , hasProjectBeenSavedByUser(false)
-    , ageSinceLastSave( QDateTime::currentDateTime() )
+    , ageSinceLastSave(QDateTime::currentDateTime())
     , lastAutoSave()
     , projectCreationTime(ageSinceLastSave)
     , builtinFormats()
     , additionalFormats()
     , formatMutex()
+    , layers(new LayerRegistry())
     , envVars()
     , projectName()
     , projectPath()
@@ -84,16 +85,16 @@ ProjectPrivate::ProjectPrivate(Project* project)
     , onProjectCloseCB()
     , onNodeCreated()
     , onNodeDeleted()
-    , timeline( new TimeLine(project) )
-    , autoSetProjectFormat( appPTR->getCurrentSettings()->isAutoProjectFormatEnabled() )
+    , timeline(new TimeLine(project))
+    , autoSetProjectFormat(appPTR->getCurrentSettings()->isAutoProjectFormatEnabled())
     , isLoadingProjectMutex()
     , isLoadingProject(false)
     , isLoadingProjectInternal(false)
     , isSavingProjectMutex()
     , isSavingProject(false)
-    , autoSaveTimer( new QTimer() )
+    , autoSaveTimer(new QTimer())
     , projectClosing(false)
-    , tlsData( new TLSHolder<Project::ProjectTLSData>() )
+    , tlsData(new TLSHolder<Project::ProjectTLSData>())
 
 {
     autoSaveTimer->setSingleShot(true);
@@ -140,6 +141,13 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
 
         formatKnob->populateChoices(entries);
         autoSetProjectFormat = false;
+
+        // Layers must exist before any node knob (referencing a layer by ID) is restored.
+        layers.reset(new LayerRegistry());
+        const std::list<LayerRegistryEntry>& objLayers = obj.getLayers();
+        for (std::list<LayerRegistryEntry>::const_iterator it = objLayers.begin(); it != objLayers.end(); ++it) {
+            layers->add(it->desc, it->origin, 0);
+        }
 
         const std::list<KnobSerializationPtr> & projectSerializedValues = obj.getProjectKnobsValues();
         const std::vector<KnobIPtr> & projectKnobs = _publicInterface->getKnobs();
@@ -233,6 +241,10 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
     } // CreatingNodeTreeFlag_RAII creatingNodeTreeFlag(_publicInterface->getApp());
 
     _publicInterface->forceComputeInputDependentDataOnAllTrees();
+
+    // Channel selectors were already rebuilt by forceComputeInputDependentDataOnAllTrees()
+    // above; only notify listeners of the final registry state, exactly once.
+    _publicInterface->emitProjectLayersChangedSignal();
 
     QDateTime time = QDateTime::currentDateTime();
     autoSetProjectFormat = false;

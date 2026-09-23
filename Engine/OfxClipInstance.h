@@ -98,11 +98,7 @@ public:
     ///     - kOfxImageComponentAlpha
     virtual const std::string &getUnmappedComponents() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // PreMultiplication -
-    //
-    //  kOfxImageOpaque - the image is opaque and so has no premultiplication state
-    //  kOfxImagePreMultiplied - the image is premultiplied by it's alpha
-    //  kOfxImageUnPreMultiplied - the image is unpremultiplied
+    // Always kOfxImageUnPreMultiplied: the host does not track premultiplication.
     virtual const std::string &getPremult() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     // Pixel Aspect Ratio -
@@ -229,8 +225,6 @@ public:
      **/
     static ImageBitDepthEnum ofxDepthToNatronDepth(const std::string & depth, bool throwOnFailure = true);
     static const std::string& natronsDepthToOfxDepth(ImageBitDepthEnum depth);
-    static ImagePremultiplicationEnum ofxPremultToNatronPremult(const std::string& premult);
-    static const std::string& natronsPremultToOfxPremult(ImagePremultiplicationEnum premult);
     static ImageFieldingOrderEnum ofxFieldingToNatronFielding(const std::string& fielding);
     static const std::string& natronsFieldingToOfxFielding(ImageFieldingOrderEnum fielding);
     struct RenderActionData

@@ -28,11 +28,14 @@
 #include <cassert>
 #include <stdexcept>
 
-#include "Engine/EffectInstance.h"
-#include "Engine/Node.h"
 #include "Engine/AppInstance.h"
-#include "Engine/KnobSerialization.h"
 #include "Engine/Curve.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
+#include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobSerialization.h"
+#include "Engine/Node.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
@@ -2333,6 +2336,386 @@ PathParam::getTable(std::list<std::vector<std::string> >* table) const
     }
 }
 
+////////////////////ChannelSetParam
+
+static std::string
+channelSetRowModeToString(ChannelSetRow::ModeEnum mode)
+{
+    switch (mode) {
+    case ChannelSetRow::eModeNone:
+        return "none";
+    case ChannelSetRow::eModeAll:
+        return "all";
+    case ChannelSetRow::eModeRegex:
+        return "regex";
+    case ChannelSetRow::eModeLayer:
+    default:
+        return "layer";
+    }
+}
+
+static std::vector<std::string>
+channelsFromStringList(const QStringList& channels)
+{
+    std::vector<std::string> ret;
+
+    ret.reserve(channels.size());
+    for (QStringList::const_iterator it = channels.begin(); it != channels.end(); ++it) {
+        ret.push_back(it->toStdString());
+    }
+
+    return ret;
+}
+
+ChannelSetParam::ChannelSetParam(const KnobChannelSetPtr& knob)
+    : StringParamBase(std::dynamic_pointer_cast<KnobStringBase>(knob))
+    , _tKnob(knob)
+{
+}
+
+ChannelSetParam::~ChannelSetParam()
+{
+}
+
+void
+ChannelSetParam::getRows(std::list<std::string>* modes,
+                         std::list<std::string>* layersOrPatterns,
+                         std::list<std::list<std::string>>* channels) const
+{
+    KnobChannelSetPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    std::vector<ChannelSetRow> rows = knob->getRows();
+    for (std::vector<ChannelSetRow>::const_iterator it = rows.begin(); it != rows.end(); ++it) {
+        modes->push_back(channelSetRowModeToString(it->mode));
+        layersOrPatterns->push_back(it->layerOrPattern);
+        channels->push_back(std::list<std::string>(it->channels.begin(), it->channels.end()));
+    }
+}
+
+void
+ChannelSetParam::setNone()
+{
+    KnobChannelSetPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    try {
+        knob->setNone();
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+}
+
+void
+ChannelSetParam::setAll()
+{
+    KnobChannelSetPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    try {
+        knob->setAll();
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+}
+
+void
+ChannelSetParam::setLayer(const QString& layerID,
+                          const QStringList& channels,
+                          int row)
+{
+    KnobChannelSetPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    std::vector<std::string> chans = channelsFromStringList(channels);
+    try {
+        knob->setLayer(row, layerID.toStdString(), &chans);
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+}
+
+void
+ChannelSetParam::setChannels(const QStringList& channels,
+                             int row)
+{
+    KnobChannelSetPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    std::vector<std::string> chans = channelsFromStringList(channels);
+    try {
+        knob->setChannels(row, chans);
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+}
+
+void
+ChannelSetParam::setRegex(const QString& pattern,
+                          int row)
+{
+    KnobChannelSetPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    try {
+        knob->setRegex(row, pattern.toStdString());
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+}
+
+void
+ChannelSetParam::setExcludedChannels(const QStringList& channels,
+                                     int row)
+{
+    KnobChannelSetPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    std::vector<std::string> chans = channelsFromStringList(channels);
+    try {
+        knob->setExcludedChannels(row, chans);
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+}
+
+QStringList
+ChannelSetParam::getExcludedChannels(int row) const
+{
+    QStringList ret;
+    KnobChannelSetPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return ret;
+    }
+    try {
+        std::vector<std::string> chans = knob->getExcludedChannels(row);
+        for (std::vector<std::string>::const_iterator it = chans.begin(); it != chans.end(); ++it) {
+            ret.push_back(QString::fromUtf8(it->c_str()));
+        }
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+
+    return ret;
+}
+
+int
+ChannelSetParam::addLayer(const QString& layerID,
+                          const QStringList& channels)
+{
+    KnobChannelSetPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return -1;
+    }
+    std::vector<std::string> chans = channelsFromStringList(channels);
+
+    return knob->addLayer(layerID.toStdString(), &chans);
+}
+
+int
+ChannelSetParam::addRegex(const QString& pattern)
+{
+    KnobChannelSetPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return -1;
+    }
+
+    return knob->addRegex(pattern.toStdString());
+}
+
+void
+ChannelSetParam::removeRow(int row)
+{
+    KnobChannelSetPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    try {
+        knob->removeRow(row);
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+}
+
+QString
+ChannelSetParam::getSummary() const
+{
+    KnobChannelSetPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return QString();
+    }
+
+    return QString::fromUtf8(knob->getSummary().c_str());
+}
+
+////////////////////LayerSelectParam
+
+LayerSelectParam::LayerSelectParam(const KnobLayerSelectPtr& knob)
+    : StringParamBase(std::dynamic_pointer_cast<KnobStringBase>(knob))
+    , _tKnob(knob)
+{
+}
+
+LayerSelectParam::~LayerSelectParam()
+{
+}
+
+QString
+LayerSelectParam::getLayer() const
+{
+    KnobLayerSelectPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return QString();
+    }
+
+    return QString::fromUtf8(knob->getLayer().c_str());
+}
+
+void
+LayerSelectParam::setLayer(const QString& layerID)
+{
+    KnobLayerSelectPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    knob->setLayer(layerID.toStdString());
+}
+
+QStringList
+LayerSelectParam::getChannels() const
+{
+    QStringList ret;
+    KnobLayerSelectPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return ret;
+    }
+    std::vector<std::string> channels = knob->getChannels();
+    for (std::vector<std::string>::const_iterator it = channels.begin(); it != channels.end(); ++it) {
+        ret.push_back(QString::fromUtf8(it->c_str()));
+    }
+
+    return ret;
+}
+
+void
+LayerSelectParam::setChannels(const QStringList& channels)
+{
+    KnobLayerSelectPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    std::vector<std::string> chans = channelsFromStringList(channels);
+    try {
+        knob->setChannels(chans);
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+}
+
+QString
+LayerSelectParam::getSummary() const
+{
+    KnobLayerSelectPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return QString();
+    }
+
+    return QString::fromUtf8(knob->getSummary().c_str());
+}
+
+////////////////////ChannelSelectParam
+
+ChannelSelectParam::ChannelSelectParam(const KnobChannelSelectPtr& knob)
+    : StringParamBase(std::dynamic_pointer_cast<KnobStringBase>(knob))
+    , _tKnob(knob)
+{
+}
+
+ChannelSelectParam::~ChannelSelectParam()
+{
+}
+
+QString
+ChannelSelectParam::get() const
+{
+    KnobChannelSelectPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return QString();
+    }
+
+    return QString::fromUtf8(knob->get().c_str());
+}
+
+void
+ChannelSelectParam::set(const QString& value)
+{
+    KnobChannelSelectPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    knob->set(value.toStdString());
+}
+
+void
+ChannelSelectParam::setNone()
+{
+    KnobChannelSelectPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    knob->setNone();
+}
+
+bool
+ChannelSelectParam::isNone() const
+{
+    KnobChannelSelectPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return true;
+    }
+
+    return knob->isNone();
+}
+
+QString
+ChannelSelectParam::getSummary() const
+{
+    KnobChannelSelectPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return QString();
+    }
+
+    return QString::fromUtf8(knob->getSummary().c_str());
+}
 
 ////////////////////ButtonParam
 

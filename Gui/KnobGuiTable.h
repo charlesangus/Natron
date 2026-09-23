@@ -54,10 +54,9 @@ public:
 
 public Q_SLOTS:
 
+    virtual void onAddButtonClicked();
 
-    void onAddButtonClicked();
-
-    void onRemoveButtonClicked();
+    virtual void onRemoveButtonClicked();
 
     void onEditButtonClicked();
 
@@ -92,10 +91,27 @@ protected:
     }
 
     virtual void updateToolTip() OVERRIDE;
-    virtual bool addNewUserEntry(QStringList& row) = 0;
+
+    QStringList rowValues(int row) const;
+
+    QList<int> selectedRowIndices() const;
+
+    virtual void createExtraButtons(QWidget* /*parent*/,
+                                    QHBoxLayout* /*layout*/)
+    {
+    }
+
+    virtual bool addNewUserEntry(QStringList& /*row*/)
+    {
+        return false;
+    }
 
     // row has been set-up with old value
-    virtual bool editUserEntry(QStringList& row) = 0;
+    virtual bool editUserEntry(QStringList& /*row*/)
+    {
+        return false;
+    }
+
     virtual void entryRemoved(const QStringList& /*row*/)  {}
 
     virtual void tableChanged(int /*row*/,
@@ -134,16 +150,19 @@ public:
 
     virtual KnobIPtr getKnob() const OVERRIDE FINAL;
 
+public Q_SLOTS:
+
+    virtual void onAddButtonClicked() OVERRIDE FINAL;
+
+    virtual void onRemoveButtonClicked() OVERRIDE FINAL;
+
+    void onRemoveUnusedButtonClicked();
+
 private:
+    virtual void createExtraButtons(QWidget* parent, QHBoxLayout* layout) OVERRIDE FINAL;
 
+    ProjectPtr getProject() const;
 
-    virtual bool addNewUserEntry(QStringList& row) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    // row has been set-up with old value
-    virtual bool editUserEntry(QStringList& row) OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual void entryRemoved(const QStringList& /*row*/)  OVERRIDE {}
-
-    virtual void tableChanged(int row, int col, std::string* newEncodedValue) OVERRIDE FINAL;
     KnobLayersWPtr _knob;
 };
 

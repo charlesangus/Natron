@@ -71,10 +71,9 @@ typedef std::set<AbortableRenderInfoPtr, AbortableRenderInfo_CompareAge> OnGoing
 
 struct RenderViewerArgs
 {
-    RenderViewerArgs(const ImageConstPtr &inputImage_,
-                     const ImageConstPtr &matteImage_,
+    RenderViewerArgs(const ImageConstPtr& inputImage_,
+                     const ImageConstPtr& matteImage_,
                      DisplayChannelsEnum channels_,
-                     ImagePremultiplicationEnum srcPremult_,
                      int bitDepth_,
                      double gain_,
                      double gamma_,
@@ -87,7 +86,6 @@ struct RenderViewerArgs
         : inputImage(inputImage_)
         , matteImage(matteImage_)
         , channels(channels_)
-        , srcPremult(srcPremult_)
         , bitDepth(bitDepth_)
         , gain(gain_)
         , gamma(gamma_)
@@ -103,7 +101,6 @@ struct RenderViewerArgs
     ImageConstPtr inputImage;
     ImageConstPtr matteImage;
     DisplayChannelsEnum channels;
-    ImagePremultiplicationEnum srcPremult;
     int bitDepth;
     double gain;
     double gamma;

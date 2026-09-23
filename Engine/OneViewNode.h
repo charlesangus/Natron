@@ -100,7 +100,7 @@ public:
         return true;
     }
 
-    virtual bool getCreateChannelSelectorKnob() const OVERRIDE FINAL WARN_UNUSED_RETURN { return false; }
+    virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN { return LayerKnobSpec(); }
 
     virtual bool isHostChannelSelectorSupported(bool* /*defaultR*/,
                                                 bool* /*defaultG*/,

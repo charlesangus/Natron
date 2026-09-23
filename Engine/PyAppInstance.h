@@ -322,7 +322,15 @@ public:
     App* newProject();
     std::list<QString> getViewNames() const;
 
+    std::list<ImageLayer> getProjectLayers() const;
+
+    ImageLayer* getProjectLayer(const QString& id) const;
+
     void addProjectLayer(const ImageLayer& layer);
+
+    ImageLayer* addProjectLayer(const QString& id, const QStringList& channels);
+
+    bool removeProjectLayer(const QString& id);
 
 protected:
 

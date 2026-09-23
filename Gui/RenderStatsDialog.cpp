@@ -56,17 +56,16 @@
 #define COL_SUPPORT_RS 4
 #define COL_MIPMAP_LEVEL 5
 #define COL_CHANNELS 6
-#define COL_PREMULT 7
-#define COL_ROD 8
-#define COL_IDENTITY 9
-#define COL_IDENTITY_TILES 10
-#define COL_RENDERED_TILES 11
-#define COL_RENDERED_LAYERS 12
-#define COL_NB_CACHE_HIT 13
-#define COL_NB_CACHE_HIT_DOWNSCALED 14
-#define COL_NB_CACHE_MISS 15
+#define COL_ROD 7
+#define COL_IDENTITY 8
+#define COL_IDENTITY_TILES 9
+#define COL_RENDERED_TILES 10
+#define COL_RENDERED_LAYERS 11
+#define COL_NB_CACHE_HIT 12
+#define COL_NB_CACHE_HIT_DOWNSCALED 13
+#define COL_NB_CACHE_MISS 14
 
-#define NUM_COLS 16
+#define NUM_COLS 15
 
 NATRON_NAMESPACE_ENTER
 
@@ -367,39 +366,6 @@ public:
             }
             if (!exists) {
                 view->setItem(row, COL_CHANNELS, item);
-            }
-        }
-        {
-            TableItem* item = 0;
-            QString str;
-            if (exists) {
-                item = view->item(row, COL_PREMULT);
-            } else {
-                item = new TableItem;
-                QString tt = NATRON_NAMESPACE::convertFromPlainText(tr("The alpha premultiplication of the image produced by this node."), NATRON_NAMESPACE::WhiteSpaceNormal);
-                item->setToolTip(tt);
-                item->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
-            }
-            assert(item);
-            ImagePremultiplicationEnum premult = stats.getOutputPremult();
-            switch (premult) {
-            case eImagePremultiplicationOpaque:
-                str = QString::fromUtf8("Opaque");
-                break;
-            case eImagePremultiplicationPremultiplied:
-                str = QString::fromUtf8("Premultiplied");
-                break;
-            case eImagePremultiplicationUnPremultiplied:
-                str = QString::fromUtf8("Unpremultiplied");
-                break;
-            }
-            item->setText(str);
-            if (nodeUi) {
-                item->setTextColor(Qt::black);
-                item->setBackgroundColor(c);
-            }
-            if (!exists) {
-                view->setItem(row, COL_PREMULT, item);
             }
         }
         {
@@ -883,7 +849,6 @@ RenderStatsDialog::RenderStatsDialog(Gui* gui)
         << tr("Render-scale Support")
         << tr("Mipmap Level(s)")
         << tr("Channels")
-        << tr("Output Premult")
         << tr("RoD")
         << tr("Identity")
         << tr("Identity Tiles")
@@ -951,7 +916,6 @@ RenderStatsDialog::refreshAdvancedColsVisibility()
     _imp->view->setColumnHidden(COL_SUPPORT_RS, !checked);
     _imp->view->setColumnHidden(COL_MIPMAP_LEVEL, !checked);
     _imp->view->setColumnHidden(COL_CHANNELS, !checked);
-    _imp->view->setColumnHidden(COL_PREMULT, !checked);
     _imp->view->setColumnHidden(COL_ROD, !checked);
     _imp->view->setColumnHidden(COL_IDENTITY, !checked);
     _imp->view->setColumnHidden(COL_IDENTITY_TILES, !checked);

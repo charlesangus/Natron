@@ -90,6 +90,8 @@ NATRON_NAMESPACE_ENTER
 #define kParamFilePremult "filePremult"
 #define kParamOutputPremult "outputPremult"
 #define kParamOutputComponents "outputComponents"
+#define kParamOutputLayer "outputLayer"
+#define kParamOutputLayerChoice "outputLayerChoice"
 #define kParamInputSpaceLabel "File Colorspace"
 #define kParamFrameRate "frameRate"
 #define kParamCustomFps "customFps"
@@ -275,6 +277,8 @@ public:
     void refreshPluginSelectorKnob();
 
     void refreshFileInfoVisibility(const std::string& pluginID);
+
+    void refreshEmbeddedReaderPlaneKnobs();
 
     void createDefaultReadNode();
 
@@ -682,6 +686,7 @@ ReadNodePrivate::createReadNode(bool throwErrors,
             embeddedPlugin->getEffectInstance()->onKnobValueChanged_public(fileKnob.get(), eValueChangedReasonNatronInternalEdited, _publicInterface->getCurrentTime(), ViewSpec(0), true);
 
         }
+        refreshEmbeddedReaderPlaneKnobs();
 
         return;
     }
@@ -799,6 +804,8 @@ ReadNodePrivate::createReadNode(bool throwErrors,
     if (knob) {
         inputFileKnob = std::dynamic_pointer_cast<KnobFile>(knob);
     }
+
+    refreshEmbeddedReaderPlaneKnobs();
 } // ReadNodePrivate::createReadNode
 
 void
@@ -814,13 +821,62 @@ ReadNodePrivate::refreshFileInfoVisibility(const std::string& pluginID)
         hasMetadataKnob->setSecret(true);
     }
 
-
-    if ( hasMetadataKnob || ( ReadNode::isVideoReader(pluginID) && hasFfprobe ) ) {
+    if (hasMetadataKnob || (ReadNode::isVideoReader(pluginID) && hasFfprobe)) {
         fileInfos->setSecret(false);
     } else {
         fileInfos->setSecret(true);
     }
 }
+
+void
+ReadNodePrivate::refreshEmbeddedReaderPlaneKnobs()
+{
+    // The "meta node container" mechanism that creates the embedded decoder attaches its knobs
+    // to the container (_publicInterface) itself, so looking them up there reaches the same
+    // objects as looking them up on embeddedPlugin, whether or not a decoder currently exists:
+    // outputComponents is one of the generic knobs createDefaultReadNode()'s destroyReadNode()
+    // call keeps (not deletes) across the bootstrap teardown of its temporary default decoder, so
+    // it is still attached to the container, and still un-hidden, before any file is ever chosen.
+    //
+    // Read has no layer knob of its own (ReadNode::getLayerKnobSpec() == eNone): the decoder's
+    // guess of outputComponents is kept (it makes Color follow the file), but the controls
+    // themselves stay off the panel. Locked, not just secret, because outputComponents and
+    // outputLayerChoice are OFX clip-preferences slave params and outputLayer's menu is rebuilt
+    // by the decoder on every filename change (ReadOIIOPlugin::restoreStateFromParams), any of
+    // which could otherwise re-show them; the plug-in's own reads of kOfxParamPropSecret still
+    // see the locked state.
+    static const char* const hiddenKnobNames[] = { kParamOutputComponents, kParamOutputLayer, kParamOutputLayerChoice, 0 };
+    for (int i = 0; hiddenKnobNames[i]; ++i) {
+        KnobIPtr knob = _publicInterface->getKnobByName(hiddenKnobNames[i]);
+        if (!knob) {
+            continue;
+        }
+        knob->setSecret(true);
+        knob->setSecretLocked(true);
+    }
+
+    // Pinning outputLayer needs its menu, which only exists once a real decoder has read a file.
+    if (!embeddedPlugin) {
+        return;
+    }
+
+    // outputLayer is the Read-side implicit shuffle: whichever entry is current there is the
+    // plane the decoder copies into Color. A file with no Color plane has no such entry, in which
+    // case the decoder's own default (the first layer, already selected) is left alone.
+    KnobChoicePtr outputLayer = std::dynamic_pointer_cast<KnobChoice>(_publicInterface->getKnobByName(kParamOutputLayer));
+    if (!outputLayer) {
+        return;
+    }
+    std::vector<ChoiceOption> entries = outputLayer->getEntries_mt_safe();
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].id.compare(0, 6, "Color.") == 0) {
+            if (outputLayer->getValue() != (int)i) {
+                outputLayer->setValue((int)i);
+            }
+            break;
+        }
+    }
+} // ReadNodePrivate::refreshEmbeddedReaderPlaneKnobs
 
 void
 ReadNodePrivate::refreshPluginSelectorKnob()
@@ -974,10 +1030,10 @@ ReadNode::isPassThroughForNonRenderedLayers() const
     return p ? p->getEffectInstance()->isPassThroughForNonRenderedLayers() : EffectInstance::isPassThroughForNonRenderedLayers();
 }
 
-bool
-ReadNode::getCreateChannelSelectorKnob() const
+LayerKnobSpec
+ReadNode::getLayerKnobSpec() const
 {
-    return false;
+    return LayerKnobSpec();
 }
 
 bool

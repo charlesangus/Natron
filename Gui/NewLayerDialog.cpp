@@ -50,8 +50,10 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/AppManager.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/LayerRegistry.h"
 #include "Engine/Lut.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
@@ -150,7 +152,7 @@ NewLayerDialog::NewLayerDialog(const ImageLayerDesc& original,
     QObject::connect( _imp->setRgbaButton, SIGNAL(clicked(bool)), this, SLOT(onRGBAButtonClicked()) );
 
     _imp->buttons = new DialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, Qt::Horizontal, this);
-    QObject::connect( _imp->buttons, SIGNAL(accepted()), this, SLOT(accept()) );
+    QObject::connect(_imp->buttons, SIGNAL(accepted()), this, SLOT(onOkClicked()));
     QObject::connect( _imp->buttons, SIGNAL(rejected()), this, SLOT(reject()) );
 
     _imp->mainLayout->addWidget(_imp->layerLabel, 0, 0, 1, 1);
@@ -244,78 +246,40 @@ NewLayerDialog::onNumCompsChanged(double value)
 ImageLayerDesc
 NewLayerDialog::getComponents() const
 {
-    QString layer = _imp->layerEdit->text();
-    int nComps = (int)_imp->numCompsBox->value();
-    QString r = _imp->rEdit->text();
-    QString g = _imp->gEdit->text();
-    QString b = _imp->bEdit->text();
-    QString a = _imp->aEdit->text();
-    std::string layerFixed = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendlyWithDots( layer.toStdString() );
-    std::string rFixed = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendlyWithDots( r.toStdString() );
-    std::string gFixed = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendlyWithDots( g.toStdString() );
-    std::string bFixed = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendlyWithDots( b.toStdString() );
-    std::string aFixed = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendlyWithDots( a.toStdString() );
+    const std::string layer = _imp->layerEdit->text().toStdString();
+    const int nComps = (int)_imp->numCompsBox->value();
+    std::vector<std::string> comps;
 
-    if ( layerFixed.empty() ) {
-        return ImageLayerDesc::getNoneComponents();
-    }
-
+    // A single channel is entered in the 4th edit, matching the "alpha" position of RGBA.
     if (nComps == 1) {
-        if ( a.isEmpty() ) {
-            return ImageLayerDesc::getNoneComponents();
+        comps.push_back(_imp->aEdit->text().toStdString());
+    } else {
+        LineEdit* edits[4] = { _imp->rEdit, _imp->gEdit, _imp->bEdit, _imp->aEdit };
+        for (int i = 0; i < nComps && i < 4; ++i) {
+            comps.push_back(edits[i]->text().toStdString());
         }
-        std::vector<std::string> comps;
-        std::string compsGlobal;
-        comps.push_back(aFixed);
-        compsGlobal.append(aFixed);
-
-        return ImageLayerDesc(layerFixed, layerFixed, compsGlobal, comps);
-    } else if (nComps == 2) {
-        if ( rFixed.empty() || gFixed.empty() ) {
-            return ImageLayerDesc::getNoneComponents();
-        }
-        std::vector<std::string> comps;
-        std::string compsGlobal;
-        comps.push_back(rFixed);
-        compsGlobal.append(rFixed);
-        comps.push_back(gFixed);
-        compsGlobal.append(gFixed);
-
-        return ImageLayerDesc(layerFixed, layerFixed, compsGlobal, comps);
-    } else if (nComps == 3) {
-        if ( rFixed.empty() || gFixed.empty() || bFixed.empty() ) {
-            return ImageLayerDesc::getNoneComponents();
-        }
-        std::vector<std::string> comps;
-        std::string compsGlobal;
-        comps.push_back(rFixed);
-        compsGlobal.append(rFixed);
-        comps.push_back(gFixed);
-        compsGlobal.append(gFixed);
-        comps.push_back(bFixed);
-        compsGlobal.append(bFixed);
-
-        return ImageLayerDesc(layerFixed, layerFixed, compsGlobal, comps);
-    } else if (nComps == 4) {
-        if ( rFixed.empty() || gFixed.empty() || bFixed.empty() || aFixed.empty() ) {
-            return ImageLayerDesc::getNoneComponents();
-        }
-        std::vector<std::string> comps;
-        std::string compsGlobal;
-        comps.push_back(rFixed);
-        compsGlobal.append(rFixed);
-        comps.push_back(gFixed);
-        compsGlobal.append(gFixed);
-        comps.push_back(bFixed);
-        compsGlobal.append(bFixed);
-        comps.push_back(aFixed);
-        compsGlobal.append(aFixed);
-
-        return ImageLayerDesc(layerFixed, layerFixed, compsGlobal, comps);
     }
 
-    return ImageLayerDesc::getNoneComponents();
+    std::string compsGlobal;
+    for (std::size_t i = 0; i < comps.size(); ++i) {
+        compsGlobal += comps[i];
+    }
+
+    return ImageLayerDesc(layer, layer, compsGlobal, comps);
 } // NewLayerDialog::getComponents
+
+void
+NewLayerDialog::onOkClicked()
+{
+    std::string error;
+
+    if (!LayerRegistry::validate(getComponents(), false, &error)) {
+        Dialogs::errorDialog(tr("Layer").toStdString(), error);
+
+        return;
+    }
+    accept();
+}
 
 void
 NewLayerDialog::onRGBAButtonClicked()

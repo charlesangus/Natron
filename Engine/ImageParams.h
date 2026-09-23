@@ -109,20 +109,18 @@ public:
         , _components(ImageLayerDesc::getRGBAComponents())
         , _bitdepth(eImageBitDepthFloat)
         , _fielding(eImageFieldingOrderNone)
-        , _premult(eImagePremultiplicationPremultiplied)
         , _mipmapLevel(0)
         , _isRoDProjectFormat(false)
     {
     }
 
-    ImageParams(const ImageParams & other)
+    ImageParams(const ImageParams& other)
         : NonKeyParams(other)
         , _rod(other._rod)
         , _par(other._par)
         , _components(other._components)
         , _bitdepth(other._bitdepth)
         , _fielding(other._fielding)
-        , _premult(other._premult)
         , _mipmapLevel(other._mipmapLevel)
         , _isRoDProjectFormat(other._isRoDProjectFormat)
     {
@@ -134,7 +132,6 @@ public:
                 const RectI& bounds,
                 ImageBitDepthEnum bitdepth,
                 ImageFieldingOrderEnum fielding,
-                ImagePremultiplicationEnum premult,
                 bool isRoDProjectFormat,
                 const ImageLayerDesc& components,
                 StorageModeEnum storageMode,
@@ -145,7 +142,6 @@ public:
         , _components(components)
         , _bitdepth(bitdepth)
         , _fielding(fielding)
-        , _premult(premult)
         , _mipmapLevel(mipmapLevel)
         , _isRoDProjectFormat(isRoDProjectFormat)
     {
@@ -208,16 +204,6 @@ public:
         return _fielding;
     }
 
-    ImagePremultiplicationEnum getPremultiplication() const
-    {
-        return _premult;
-    }
-
-    void setPremultiplication(ImagePremultiplicationEnum premult)
-    {
-        _premult = premult;
-    }
-
     double getPixelAspectRatio() const
     {
         return _par;
@@ -243,11 +229,10 @@ public:
         }
 
         return _rod == other._rod
-               && _components == other._components
-               && _bitdepth == other._bitdepth
-               && _mipmapLevel == other._mipmapLevel
-               && _premult == other._premult
-               && _fielding == other._fielding;
+            && _components == other._components
+            && _bitdepth == other._bitdepth
+            && _mipmapLevel == other._mipmapLevel
+            && _fielding == other._fielding;
     }
 
     bool operator!=(const ImageParams & other) const
@@ -262,7 +247,6 @@ private:
     ImageLayerDesc _components;
     ImageBitDepthEnum _bitdepth;
     ImageFieldingOrderEnum _fielding;
-    ImagePremultiplicationEnum _premult;
     unsigned int _mipmapLevel;
     /// if true then when retrieving the associated image from cache
     /// the caller should update the rod to the current project format.

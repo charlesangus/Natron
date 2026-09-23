@@ -52,6 +52,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/GroupOutput.h"
 #include "Engine/Image.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobChannelSet.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
@@ -262,7 +264,7 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect( internalNode.get(), SIGNAL(disabledKnobToggled(bool)), this, SLOT(onDisabledKnobToggled(bool)) );
     QObject::connect( internalNode.get(), SIGNAL(streamWarningsChanged()), this, SLOT(onStreamWarningsChanged()) );
     QObject::connect( internalNode.get(), SIGNAL(nodeExtraLabelChanged(QString)), this, SLOT(refreshNodeText(QString)) );
-    QObject::connect( internalNode.get(), SIGNAL(outputLayerChanged()), this, SLOT(onOutputLayerChanged()) );
+    QObject::connect(internalNode.get(), SIGNAL(layerSelectionChanged()), this, SLOT(onLayerSelectionChanged()));
     QObject::connect( internalNode.get(), SIGNAL(hideInputsKnobChanged(bool)), this, SLOT(onHideInputsKnobValueChanged(bool)) );
     QObject::connect( internalNode.get(), SIGNAL(availableViewsChanged()), this, SLOT(onAvailableViewsChanged()) );
     QObject::connect( internalNode.get(), SIGNAL(rightClickMenuKnobPopulated()), this, SLOT(onRightClickMenuKnobPopulated()) );
@@ -430,7 +432,7 @@ NodeGui::restoreStateAfterCreation()
     }
     ///Refresh the name in the line edit
     onInternalNameChanged( QString::fromUtf8( internalNode->getLabel().c_str() ) );
-    onOutputLayerChanged();
+    onLayerSelectionChanged();
     internalNode->refreshIdentityState();
     onPersistentMessageChanged();
     onKnobsLinksChanged();
@@ -3183,7 +3185,7 @@ NodeGui::setNameItemHtml(const QString & name,
 } // setNameItemHtml
 
 void
-NodeGui::onOutputLayerChanged()
+NodeGui::onLayerSelectionChanged()
 {
     NodePtr internalNode = getNode();
     if (!internalNode) {
@@ -3191,40 +3193,32 @@ NodeGui::onOutputLayerChanged()
     }
 
     QString extraLayerStr;
-    KnobBoolPtr processAllKnob = internalNode->getProcessAllLayersKnob();
-    bool processAll = false;
-    if (processAllKnob && processAllKnob->hasModifications()) {
-        processAll = processAllKnob->getValue();
-        if (processAll) {
-            //extraLayerStr.append( QString::fromUtf8("<br />") );
-            extraLayerStr += tr("(All)");
+    KnobIPtr layerKnob = internalNode->getLayerKnob();
+    if (layerKnob) {
+        std::string summary;
+        if (KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(layerKnob.get())) {
+            std::list<ImageLayerDesc> present;
+            internalNode->listLayersForKnob(layerKnob, &present);
+            summary = isChannelSet->getSummary(present);
+        } else if (KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get())) {
+            summary = isLayerSelect->getSummary();
         }
-    }
-    KnobChoicePtr layerKnob = internalNode->getChannelSelectorKnob(-1);
-    ImageLayerDesc outputLayer;
-    {
-        bool isAll;
-        std::list<ImageLayerDesc> availableLayers;
-        internalNode->getEffectInstance()->getAvailableLayers(internalNode->getApp()->getTimeLine()->currentFrame(), ViewIdx(0), -1,  &availableLayers);
-
-
-        internalNode->getSelectedLayer(-1, availableLayers, 0, &isAll, &outputLayer);
-    }
-    if (!processAll && outputLayer.getNumComponents() > 0) {
-        if (!outputLayer.isColorLayer()) {
-            if (!extraLayerStr.isEmpty()) {
-                extraLayerStr.append( QString::fromUtf8("<br />") );
-            }
-            extraLayerStr.push_back( QLatin1Char('(') );
-            extraLayerStr.append(QString::fromUtf8(outputLayer.getLayerLabel().c_str()));
-            extraLayerStr.push_back( QLatin1Char(')') );
+        // The bare Color label is the implicit default (every channel of the Color layer);
+        // the knob's persisted default value does not always encode it, so compare on text.
+        if (summary == kNatronColorLayerLabel) {
+            summary.clear();
+        }
+        if (!summary.empty()) {
+            extraLayerStr.push_back(QLatin1Char('('));
+            extraLayerStr.append(QString::fromUtf8(summary.c_str()));
+            extraLayerStr.push_back(QLatin1Char(')'));
         }
     }
     if (extraLayerStr == _channelsExtraLabel) {
         return;
     }
     _channelsExtraLabel = extraLayerStr;
-    setNameItemHtml(QString::fromUtf8( internalNode->getLabel().c_str() ), _nodeLabel);
+    setNameItemHtml(QString::fromUtf8(internalNode->getLabel().c_str()), _nodeLabel);
 }
 
 void

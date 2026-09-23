@@ -31,6 +31,8 @@
 #include "Node.h"
 #include "Timer.h" // gettimeofday()
 
+#include "Engine/EffectInstance.h"
+
 #include <QWaitCondition>
 #include <QReadWriteLock>
 #include <QMutex>
@@ -44,45 +46,16 @@ typedef std::map<NodeWPtr, int32_t, std::owner_less<NodeWPtr>> DeactivatedState;
 typedef std::list<Node::KnobLink> KnobLinkList;
 typedef std::vector<NodeWPtr> InputsV;
 
-
-class ChannelSelector
-{
-public:
-
-    KnobChoiceWPtr layer;
-
-
-    ChannelSelector()
-        : layer()
-    {
-    }
-
-    ChannelSelector(const ChannelSelector& other)
-    {
-        *this = other;
-    }
-
-    void operator=(const ChannelSelector& other)
-    {
-        layer = other.layer;
-    }
-};
-
 class MaskSelector
 {
 public:
 
     KnobBoolWPtr enabled;
-    KnobChoiceWPtr channel;
-    mutable QMutex compsMutex;
-    //Stores the components available at build time of the choice menu
-    std::vector<std::pair<ImageLayerDesc, NodeWPtr>> compsAvailable;
+    KnobChannelSelectWPtr channel;
 
     MaskSelector()
         : enabled()
         , channel()
-        , compsMutex()
-        , compsAvailable()
     {
     }
 
@@ -95,11 +68,40 @@ public:
     {
         enabled = other.enabled;
         channel = other.channel;
-        QMutexLocker k(&compsMutex);
-        compsAvailable = other.compsAvailable;
     }
 };
 
+/**
+ * @brief Where a layer/channel knob's list comes from: the present layers of one input
+ * (kPreferredInput resolves to Node::getPreferredInput() at call time) or the project
+ * registry. A property of the node kind, never persisted.
+ **/
+struct LayerKnobSource {
+    static const int kPreferredInput = -2;
+
+    int inputNb;
+    LayerKnobSpec::RoleEnum role;
+
+    // Set by Node::retargetLayerKnob(): the knob's layer follows a container node's
+    // selection (RotoPaint's internal per-item and global-merge nodes), so it is not an
+    // independent reference to the project layer registry.
+    bool drivenByContainer;
+
+    LayerKnobSource()
+        : inputNb(kPreferredInput)
+        , role(LayerKnobSpec::eRoleInputBound)
+        , drivenByContainer(false)
+    {
+    }
+
+    LayerKnobSource(int inputNb_,
+                    LayerKnobSpec::RoleEnum role_)
+        : inputNb(inputNb_)
+        , role(role_)
+        , drivenByContainer(false)
+    {
+    }
+};
 
 struct PyPlugInfo
 {
@@ -198,9 +200,10 @@ public:
         , beforeRender()
         , afterFrameRender()
         , afterRender()
-        , enabledChan()
-        , channelsSelectors()
         , maskSelectors()
+        , layerKnob()
+        , layerKnobSpec()
+        , layerKnobSources()
         , rotoContext()
         , trackContext()
         , imagesBeingRenderedMutex()
@@ -231,8 +234,6 @@ public:
         , nativeOverlays()
         , nodeCreated(false)
         , wasCreatedSilently(false)
-        , createdComponentsMutex()
-        , createdComponents()
         , paintStroke()
         , pluginsPropMutex()
         , pluginSafety(eRenderSafetyInstanceSafe)
@@ -255,7 +256,7 @@ public:
         , isRefreshingInputRelatedData(false)
         , streamWarnings()
         , requiresGLFinishBeforeRender(false)
-        , hostChannelSelectorEnabled(false)
+        , pluginOwnsChannelMask(false)
         , effectiveDataKindMutex()
         , effectiveDataKindCacheSet(false)
         , effectiveDataKindCache(eDataKindPolymorphic)
@@ -306,13 +307,9 @@ public:
 
     void runInputChangedCallback(int index, const std::string& script);
 
-    void createChannelSelector(int inputNb, const std::string & inputName, bool isOutput, const KnobPagePtr& page, KnobIPtr* lastKnobBeforeAdvancedOption);
-
-    void onLayerChanged(int inputNb, const ChannelSelector& selector);
-
     void onMaskSelectorChanged(int inputNb, const MaskSelector& selector);
 
-    ImageLayerDesc getSelectedLayerInternal(int inputNb, const std::list<ImageLayerDesc>& availableLayers, const ChannelSelector& selector) const;
+    void notifyLayerReferencesChanged();
 
     Node* _publicInterface;
     NodeCollectionWPtr group;
@@ -400,14 +397,14 @@ public:
     KnobStringWPtr beforeRender;
     KnobStringWPtr afterFrameRender;
     KnobStringWPtr afterRender;
-    KnobBoolWPtr enabledChan[4];
-    KnobStringWPtr premultWarning;
     KnobDoubleWPtr mixWithSource;
     KnobButtonWPtr renderButton; //< render button for writers
     FormatKnob pluginFormatKnobs;
-    KnobBoolWPtr processAllLayersKnob;
-    std::map<int, ChannelSelector> channelsSelectors;
     std::map<int, MaskSelector> maskSelectors;
+    KnobChannelSelectWPtr unPremultBySelector;
+    KnobIWPtr layerKnob;
+    LayerKnobSpec layerKnobSpec;
+    std::map<const KnobI*, LayerKnobSource> layerKnobSources;
     RotoContextPtr rotoContext; //< valid when the node has a rotoscoping context (i.e: paint context)
     TrackerContextPtr trackContext;
     mutable QMutex imagesBeingRenderedMutex;
@@ -452,8 +449,6 @@ public:
     std::list<HostOverlayKnobsPtr> nativeOverlays;
     bool nodeCreated;
     bool wasCreatedSilently;
-    mutable QMutex createdComponentsMutex;
-    std::list<ImageLayerDesc> createdComponents; // comps created by the user
     RotoDrawableItemWPtr paintStroke;
 
     // These are dynamic props
@@ -495,7 +490,10 @@ public:
     // as a result if we don't call glFinish() before calling the render action, the plug-in context might use textures that were not finished yet.
     bool requiresGLFinishBeforeRender;
 
-    bool hostChannelSelectorEnabled;
+    // True for plug-ins whose R/G/B/A quad is not a per-channel mask (KeyMix picks A vs B per
+    // channel, DenoiseSharpen collapses R/G/B into one flag, ClipTest ORs the selection into a
+    // zebra decision): adoptChannelQuad() leaves their quad alone instead of forcing it.
+    bool pluginOwnsChannelMask;
 
     // Cache for Node::getEffectiveOutputDataKind(): only ever populated for nodes whose
     // declared output kind is eDataKindPolymorphic, since a non-polymorphic node's kind is a

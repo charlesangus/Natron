@@ -469,8 +469,6 @@ public:
     const std::vector<TrackMarkerAndOptionsPtr>& getTracks() const;
     mv::AutoTrackPtr getLibMVAutoTrack() const;
 
-    void getEnabledChannels(bool* r, bool* g, bool* b) const;
-
     void getRedrawAreasNeeded(int time, std::list<RectD>* canonicalRects) const;
 
 private:

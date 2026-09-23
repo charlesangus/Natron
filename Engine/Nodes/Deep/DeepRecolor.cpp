@@ -47,7 +47,7 @@ namespace {
 // transmittance 1 - a to the same power k leaves the samples' relative coverage alone and
 // takes the pixel's total transmittance to (1 - targetAlpha) when k = log(1 - targetAlpha) /
 // log(1 - flattenedAlpha). A pixel with no coverage, or full coverage, has no such k and keeps
-// its alphas; a target of 1 is the limit k -> infinity, every covering sample going opaque.
+// its alphas; a target of 1 is the limit k -> infinity, every covering sample going to full coverage.
 void
 retargetAlphas(const float* alpha,
                int numSamples,

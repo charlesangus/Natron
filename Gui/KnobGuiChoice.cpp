@@ -332,8 +332,12 @@ KnobGuiChoice::onItemNewSelected()
         assert(effect);
         if (effect) {
             assert( effect->getNode() );
-            if ( !effect->getNode()->addUserComponents(comps) ) {
-                Dialogs::errorDialog( tr("Layer").toStdString(), tr("A Layer with the same name already exists").toStdString() );
+            std::string error;
+            LayerRegistry::AddResultEnum res = effect->getApp()->getProject()->addLayer(comps, LayerRegistryEntry::eOriginUser, &error);
+            if (res == LayerRegistry::eAddResultRefused) {
+                Dialogs::errorDialog(tr("Layer").toStdString(), error);
+            } else {
+                knob->setValueFromID(comps.getLayerID(), 0);
             }
         }
     }

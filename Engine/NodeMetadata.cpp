@@ -47,11 +47,7 @@ struct PerInputData
     }
 };
 
-struct NodeMetadataPrivate
-{
-    //The premult in output of the node
-    ImagePremultiplicationEnum outputPremult;
-
+struct NodeMetadataPrivate {
     //The image fielding in output
     ImageFieldingOrderEnum outputFielding;
 
@@ -72,10 +68,8 @@ struct NodeMetadataPrivate
     // The output format in pixel coords
     RectI outputFormat;
 
-
     NodeMetadataPrivate()
-        : outputPremult(eImagePremultiplicationPremultiplied)
-        , outputFielding(eImageFieldingOrderNone)
+        : outputFielding(eImageFieldingOrderNone)
         , frameRate(24.)
         , outputData()
         , inputsData()
@@ -92,7 +86,6 @@ struct NodeMetadataPrivate
 
     void operator=(const NodeMetadataPrivate& other)
     {
-        outputPremult = other.outputPremult;
         outputFielding = other.outputFielding;
         frameRate = other.frameRate;
         outputData = other.outputData;
@@ -132,9 +125,6 @@ NodeMetadata::operator=(const NodeMetadata& other)
 bool
 NodeMetadata::operator==(const NodeMetadata& other) const
 {
-    if (_imp->outputPremult != other._imp->outputPremult) {
-        return false;
-    }
     if (_imp->outputFielding != other._imp->outputFielding) {
         return false;
     }
@@ -181,18 +171,6 @@ NodeMetadata::operator==(const NodeMetadata& other) const
     }
 
     return true;
-}
-
-void
-NodeMetadata::setOutputPremult(ImagePremultiplicationEnum premult)
-{
-    _imp->outputPremult = premult;
-}
-
-ImagePremultiplicationEnum
-NodeMetadata::getOutputPremult() const
-{
-    return _imp->outputPremult;
 }
 
 void

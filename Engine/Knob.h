@@ -453,6 +453,15 @@ public:
     virtual bool canAnimate() const = 0;
 
     /**
+     * @brief Must return true if this knob accepts a Python expression. Table-valued knobs refuse:
+     * their value is a serialized row set, not a scalar an expression could sensibly produce.
+     **/
+    virtual bool supportsExpressions() const
+    {
+        return true;
+    }
+
+    /**
      * @brief Returns true if the knob has had modifications
      **/
     virtual bool hasModifications() const = 0;
@@ -932,6 +941,14 @@ public:
      * @brief Returns true if a knob is secret because it is either itself secret or one of its parent, recursively
      **/
     virtual bool getIsSecretRecursive() const = 0;
+
+    /**
+     * @brief While locked, setSecret() is ignored, so neither the plug-in (whose reads of the
+     * OpenFX secret property then return the knob's state, whatever it wrote there) nor the
+     * host's own refreshes can change whether the knob is secret. Set the state before locking.
+     **/
+    virtual void setSecretLocked(bool locked) = 0;
+    virtual bool isSecretLocked() const = 0;
 
     /**
      * @biref This is called to notify the gui that the knob shouldn't be editable.
@@ -1546,6 +1563,8 @@ public:
     virtual void setSecretByDefault(bool b) OVERRIDE FINAL;
     virtual bool getIsSecret() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool getIsSecretRecursive() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual void setSecretLocked(bool locked) OVERRIDE FINAL;
+    virtual bool isSecretLocked() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool getDefaultIsSecret() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void setIsFrozen(bool frozen) OVERRIDE FINAL;
     virtual void setDirty(bool d) OVERRIDE FINAL;
@@ -2532,6 +2551,9 @@ public:
     std::shared_ptr<KnobFile> createFileKnob(const std::string& name, const std::string& label, bool userKnob = true);
     std::shared_ptr<KnobOutputFile> createOuptutFileKnob(const std::string& name, const std::string& label, bool userKnob = true);
     std::shared_ptr<KnobPath> createPathKnob(const std::string& name, const std::string& label, bool userKnob = true);
+    std::shared_ptr<KnobChannelSet> createChannelSetKnob(const std::string& name, const std::string& label, bool userKnob = true);
+    std::shared_ptr<KnobLayerSelect> createLayerSelectKnob(const std::string& name, const std::string& label, bool withChannelButtons, bool userKnob = true);
+    std::shared_ptr<KnobChannelSelect> createChannelSelectKnob(const std::string& name, const std::string& label, bool userKnob = true);
     std::shared_ptr<KnobPage> createPageKnob(const std::string& name, const std::string& label, bool userKnob = true);
     std::shared_ptr<KnobGroup> createGroupKnob(const std::string& name, const std::string& label, bool userKnob = true);
     std::shared_ptr<KnobParametric> createParametricKnob(const std::string& name, const std::string& label, int nbCurves, bool userKnob = true);

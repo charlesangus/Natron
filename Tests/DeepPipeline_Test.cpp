@@ -258,13 +258,6 @@ TEST_F(DeepPipelineTest, DeepReadMergeRecolorToImageWriteMatchesTheSerialComposi
         KnobChoice* compression = dynamic_cast<KnobChoice*>(writer->getKnobByName("compression").get());
         ASSERT_TRUE(compression != NULL);
         compression->setValueFromID("none", 0);
-
-        // DeepToImage's output is a front-to-back composite, i.e. premultiplied, and that is what
-        // WriteOIIO expects to encode; saying so keeps the writer from re-premultiplying it.
-        KnobChoice* inputPremult = dynamic_cast<KnobChoice*>(writer->getKnobByName("inputPremult").get());
-        ASSERT_TRUE(inputPremult != NULL);
-        inputPremult->setValueFromID("premult", 0);
-        ASSERT_EQ(1, inputPremult->getValue());
     }
 
     QTemporaryDir tmp;

@@ -281,11 +281,6 @@ def createInstance(app,group):
         param.setValue(False)
         del param
 
-    param = lastNode.getParam("premultChanged")
-    if param is not None:
-        param.setValue(True)
-        del param
-
     param = lastNode.getParam("userTextArea")
     if param is not None:
         param.setValue("<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">>0 (rgb)</font>")
@@ -303,24 +298,9 @@ def createInstance(app,group):
     lastNode.setColor(0.48, 0.66, 1)
     groupInvert1 = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessR")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessG")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessB")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("premultChanged")
-    if param is not None:
-        param.setValue(True)
+        param.setChannels(["A"])
         del param
 
     param = lastNode.getParam("userTextArea")
@@ -343,11 +323,6 @@ def createInstance(app,group):
     param = lastNode.getParam("size")
     if param is not None:
         param.setValue(0, 0)
-        del param
-
-    param = lastNode.getParam("premultChanged")
-    if param is not None:
-        param.setValue(True)
         del param
 
     param = lastNode.getParam("userTextArea")
@@ -477,11 +452,6 @@ def createInstance(app,group):
         param.setValue(True)
         del param
 
-    param = lastNode.getParam("premultChanged")
-    if param is not None:
-        param.setValue(True)
-        del param
-
     param = lastNode.getParam("userTextArea")
     if param is not None:
         param.setValue("<font size=\"6\" color=\"#000000\" face=\"Droid Sans\">(a != 0 -> a)</font>")
@@ -587,19 +557,9 @@ def createInstance(app,group):
     lastNode.setColor(0.48, 0.66, 1)
     groupInvert2 = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessR")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessG")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessB")
-    if param is not None:
-        param.setValue(False)
+        param.setChannels(["A"])
         del param
 
     param = lastNode.getParam("userTextArea")
@@ -889,19 +849,9 @@ def createInstance(app,group):
     lastNode.setColor(0.8, 0.5, 0.3)
     groupBlurBox1 = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessR")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessG")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessB")
-    if param is not None:
-        param.setValue(False)
+        param.setChannels(["A"])
         del param
 
     param = lastNode.getParam("size")
@@ -937,19 +887,9 @@ def createInstance(app,group):
     lastNode.setColor(0.8, 0.5, 0.3)
     groupBlurBox2 = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessR")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessG")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessB")
-    if param is not None:
-        param.setValue(False)
+        param.setChannels(["A"])
         del param
 
     param = lastNode.getParam("size")
@@ -1040,12 +980,7 @@ def createInstance(app,group):
         param.setValue(False)
         del param
 
-    param = lastNode.getParam("premult")
-    if param is not None:
-        param.setValue(True)
-        del param
-
-    param = lastNode.getParam("premultChanged")
+    param = lastNode.getParam("unPremultBy")
     if param is not None:
         param.setValue(True)
         del param
@@ -1078,12 +1013,7 @@ def createInstance(app,group):
         param.setValue(False)
         del param
 
-    param = lastNode.getParam("premult")
-    if param is not None:
-        param.setValue(True)
-        del param
-
-    param = lastNode.getParam("premultChanged")
+    param = lastNode.getParam("unPremultBy")
     if param is not None:
         param.setValue(True)
         del param

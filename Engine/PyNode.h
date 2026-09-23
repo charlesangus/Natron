@@ -185,6 +185,9 @@ public:
     FileParam* createFileParam(const QString& name, const QString& label);
     OutputFileParam* createOutputFileParam(const QString& name, const QString& label);
     PathParam* createPathParam(const QString& name, const QString& label);
+    ChannelSetParam* createChannelSetParam(const QString& name, const QString& label);
+    LayerSelectParam* createLayerSelectParam(const QString& name, const QString& label, bool withChannelButtons);
+    ChannelSelectParam* createChannelSelectParam(const QString& name, const QString& label);
     ButtonParam* createButtonParam(const QString& name, const QString& label);
     SeparatorParam* createSeparatorParam(const QString& name, const QString& label);
     GroupParam* createGroupParam(const QString& name, const QString& label);
@@ -373,8 +376,6 @@ public:
 
     void setSubGraphEditable(bool editable);
 
-    bool addUserLayer(const QString& layerName, const QStringList& channels);
-
     std::list<ImageLayer> getAvailableLayers(int inputNb) const;
 
     RectI getOutputFormat() const;
@@ -384,7 +385,6 @@ public:
     double getPixelAspectRatio() const;
 
     Natron::ImageBitDepthEnum getBitDepth() const;
-    Natron::ImagePremultiplicationEnum getPremult() const;
 
     void setPagesOrder(const QStringList& pages);
 };

@@ -32,6 +32,8 @@
 #include <stdexcept>
 #include <sstream> // stringstream
 
+#include <vector>
+
 #include <QTextStream>
 #include <QDebug>
 #include <QCoreApplication>
@@ -53,6 +55,9 @@
 #include "Engine/TLSHolder.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
+
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 
 #include <nuke/fnOfxExtensions.h>
 #include <ofxOpenGLRender.h>
@@ -267,26 +272,15 @@ OfxClipInstance::getUnmappedComponents() const
     return tls->unmappedComponents;
 }
 
-// PreMultiplication -
-//
-//  kOfxImageOpaque - the image is opaque and so has no premultiplication state
-//  kOfxImagePreMultiplied - the image is premultiplied by it's alpha
-//  kOfxImageUnPreMultiplied - the image is unpremultiplied
+// The host does not track premultiplication. Unpremultiplied is the one answer that
+// triggers nothing in plugins: the Grade family only auto-enables its premult box on
+// kOfxImagePreMultiplied, and kOfxImageOpaque makes Premult treat alpha as 1.
 const std::string &
 OfxClipInstance::getPremult() const
 {
-    EffectInstancePtr effect = getEffectHolder();
+    static const std::string unprem(kOfxImageUnPreMultiplied);
 
-    if (!effect) {
-        return natronsPremultToOfxPremult(eImagePremultiplicationPremultiplied);
-    }
-    if ( isOutput() ) {
-        return natronsPremultToOfxPremult( effect->getPremult() );
-    } else {
-        EffectInstancePtr associatedNode = getAssociatedNode();
-
-        return associatedNode ? natronsPremultToOfxPremult( associatedNode->getPremult() ) : natronsPremultToOfxPremult(eImagePremultiplicationPremultiplied);
-    }
+    return unprem;
 }
 
 const std::vector<std::string>&
@@ -867,7 +861,20 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
                     foundCompsInTLS = true;
                     //qDebug() << _imp->nodeInstance->getScriptName_mt_safe().c_str() << " didn't specify any needed components via getClipComponents for clip " << getName().c_str();
                 } else {
+                    // No-shuffle invariant: a node rendering plane L reads plane L from every
+                    // non-mask input and writes plane L; the channels of L it does not process
+                    // are copied from the preferred input's plane L. The needed list carries
+                    // every plane the node renders, so the entry equivalent to the plane being
+                    // rendered is picked; only a list without it (mask inputs, multiplanar
+                    // effects) yields the front.
                     comp = found->second.front();
+                    ImageLayerDesc layerBeingRendered;
+                    if (effect->getThreadLocalOutputLayerBeingRendered(&layerBeingRendered) && layerBeingRendered.getNumComponents() > 0) {
+                        std::list<ImageLayerDesc>::const_iterator equivalent = ImageLayerDesc::findEquivalentLayer(layerBeingRendered, found->second.begin(), found->second.end());
+                        if (equivalent != found->second.end()) {
+                            comp = *equivalent;
+                        }
+                    }
                     foundCompsInTLS = true;
                 }
             }
@@ -875,13 +882,17 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
 
         if (!foundCompsInTLS) {
             ///We are in analysis or the effect does not have any input
-            std::bitset<4> processChannels;
-            bool isAll;
-
+            NodePtr node = effect->getNode();
             std::list<ImageLayerDesc> availableLayers;
             effect->getAvailableLayers(time, ViewIdx(0), inputnb, &availableLayers);
-            if (!effect->getNode()->getSelectedLayer(inputnb, availableLayers, &processChannels, &isAll, &comp)) {
-                //There's no selector...fallback on the basic components indicated on the clip
+
+            ImageLayerDesc maskComp;
+            std::vector<ResolvedLayer> selected;
+            if ((node->getMaskChannel(inputnb, availableLayers, &maskComp) != -1) && (maskComp.getNumComponents() > 0)) {
+                comp = maskComp;
+            } else if (node->resolveLayerKnob(time, ViewIdx(0), &selected) && !selected.empty() && !selected.front().desc.isColorLayer()) {
+                comp = selected.front().desc;
+            } else {
                 ImageLayerDesc pairedComp;
                 ImageLayerDesc::mapOFXComponentsTypeStringToLayers(thisClipComponents, &comp, &pairedComp);
             }
@@ -1009,6 +1020,53 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
     }
 
     assert(!retTexture || image->getStorageMode() == eStorageModeGLTex);
+
+    // Host-owned "(Un)premult by" (see Node::createUnPremultSelector()): hand the plug-in a
+    // source divided by the selected channel, and record which image and channel that was so
+    // tiledRenderingFunctor() multiplies what the plug-in renders back by the same values.
+    // Only the colour plane of a non-mask clip, and only for a CPU render -- an OpenGL render
+    // has no pixels here to divide, and the multiply is skipped there for the same reason.
+    KnobChannelSelectPtr unPremultBy = effect->getNode()->getUnPremultBySelector();
+    if (retImage && unPremultBy && !unPremultBy->isNone() && !isMask() && mapImageToClipPref && (image->getStorageMode() != eStorageModeGLTex)) {
+        std::list<ImageLayerDesc> availableLayers;
+        effect->getAvailableLayers(time, view, inputnb, &availableLayers);
+
+        ImageLayerDesc divisorComp;
+        const int divisorChannel = effect->getNode()->getUnPremultChannel(availableLayers, &divisorComp);
+        if ((divisorChannel != -1) && (divisorComp.getNumComponents() > 0)) {
+            RectI divisorWindow;
+            Transform::Matrix3x3Ptr divisorTransform;
+            ImagePtr divisorImage = effect->getImage(inputnb, time, renderScale, view,
+                                                     optionalBounds ? &bounds : NULL,
+                                                     &divisorComp,
+                                                     false /*mapToClipPref*/,
+                                                     false /*dontUpscale*/,
+                                                     eStorageModeRAM,
+                                                     textureDepth,
+                                                     &divisorWindow,
+                                                     &divisorTransform);
+            if (divisorImage) {
+                const ImageLayerDesc& imageComps = image->getComponents();
+                const int skipChannel = Node::getUnPremultSkipChannel(imageComps, divisorComp, divisorChannel);
+
+                ImagePtr unPremultiplied = std::make_shared<Image>(imageComps,
+                                                                   image->getRoD(),
+                                                                   image->getBounds(),
+                                                                   image->getMipmapLevel(),
+                                                                   image->getPixelAspectRatio(),
+                                                                   image->getBitDepth(),
+                                                                   image->getFieldingOrder(),
+                                                                   false);
+                unPremultiplied->pasteFrom(*image, image->getBounds(), false);
+                std::bitset<4> allChannels;
+                allChannels.set();
+                unPremultiplied->unPremultiplyByChannel(renderWindow, divisorImage.get(), divisorChannel, allChannels, skipChannel);
+                image = unPremultiplied;
+
+                effect->setThreadLocalUnPremultDivisor(divisorImage, divisorComp, divisorChannel);
+            }
+        }
+    }
 
     std::string components;
     int nComps;
@@ -1252,44 +1310,6 @@ OfxClipInstance::natronsDepthToOfxDepth(ImageBitDepthEnum depth)
     return none;
 }
 
-ImagePremultiplicationEnum
-OfxClipInstance::ofxPremultToNatronPremult(const std::string& str)
-{
-    if (str == kOfxImagePreMultiplied) {
-        return eImagePremultiplicationPremultiplied;
-    } else if (str == kOfxImageUnPreMultiplied) {
-        return eImagePremultiplicationUnPremultiplied;
-    } else if (str == kOfxImageOpaque) {
-        return eImagePremultiplicationOpaque;
-    } else {
-        assert(false);
-
-        return eImagePremultiplicationPremultiplied;
-    }
-}
-
-const std::string&
-OfxClipInstance::natronsPremultToOfxPremult(ImagePremultiplicationEnum premult)
-{
-    static const std::string prem(kOfxImagePreMultiplied);
-    static const std::string unprem(kOfxImageUnPreMultiplied);
-    static const std::string opq(kOfxImageOpaque);
-
-    switch (premult) {
-    case eImagePremultiplicationPremultiplied:
-
-        return prem;
-    case eImagePremultiplicationUnPremultiplied:
-
-        return unprem;
-    case eImagePremultiplicationOpaque:
-
-        return opq;
-    }
-
-    return prem;
-}
-
 ImageFieldingOrderEnum
 OfxClipInstance::ofxFieldingToNatronFielding(const std::string& fielding)
 {
@@ -1487,7 +1507,7 @@ OfxImageCommon::OfxImageCommon(OFX::Host::ImageEffect::ImageBase* ofxImageBase,
 
     ofxImageBase->setStringProperty( kOfxImageEffectPropComponents, components);
     ofxImageBase->setStringProperty( kOfxImageEffectPropPixelDepth, OfxClipInstance::natronsDepthToOfxDepth( internalImage->getBitDepth() ) );
-    ofxImageBase->setStringProperty( kOfxImageEffectPropPreMultiplication, OfxClipInstance::natronsPremultToOfxPremult( internalImage->getPremultiplication() ) );
+    ofxImageBase->setStringProperty(kOfxImageEffectPropPreMultiplication, kOfxImageUnPreMultiplied);
     ofxImageBase->setStringProperty( kOfxImagePropField, OfxClipInstance::natronsFieldingToOfxFielding( internalImage->getFieldingOrder() ) );
     ofxImageBase->setStringProperty( kOfxImagePropUniqueIdentifier, QString::number(internalImage->getHashKey(), 16).toStdString() );
     ofxImageBase->setDoubleProperty( kOfxImagePropPixelAspectRatio, par );

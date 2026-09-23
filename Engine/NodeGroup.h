@@ -356,7 +356,7 @@ public:
     virtual void notifyInputOptionalStateChanged(const NodePtr& node) OVERRIDE FINAL;
     virtual void notifyInputMaskStateChanged(const NodePtr& node) OVERRIDE FINAL;
     virtual void notifyNodeNameChanged(const NodePtr& node) OVERRIDE FINAL;
-    virtual bool getCreateChannelSelectorKnob() const OVERRIDE WARN_UNUSED_RETURN { return false; }
+    virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE WARN_UNUSED_RETURN { return LayerKnobSpec(); }
 
     virtual bool isHostChannelSelectorSupported(bool* defaultR, bool* defaultG, bool* defaultB, bool* defaultA) const OVERRIDE WARN_UNUSED_RETURN;
     virtual void purgeCaches() OVERRIDE FINAL;

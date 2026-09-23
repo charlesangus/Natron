@@ -46,16 +46,17 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
-#include "Engine/CreateNodeArgs.h"
 #include "Engine/CoonsRegularization.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/FeatherPoint.h"
 #include "Engine/Format.h"
 #include "Engine/Hash64.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
+#include "Engine/Interpolation.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/NodeSerialization.h"
-#include "Engine/Interpolation.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContextSerialization.h"
 #include "Engine/RotoDrawableItem.h"
@@ -64,8 +65,8 @@
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
-#include "Engine/ViewerInstance.h"
 #include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 
 #define kMergeOFXParamOperation "operation"
 #define kMergeOFXParamInvertMask "maskInvert"
@@ -2544,19 +2545,17 @@ RotoStrokeItem::renderSingleStroke(const RectD& pointsBbox,
 
     NodePtr node = getContext()->getNode();
     ImageFieldingOrderEnum fielding = node->getEffectInstance()->getFieldingOrder();
-    ImagePremultiplicationEnum premult = node->getEffectInstance()->getPremult();
     bool copyFromImage = false;
     bool mipmapLevelChanged = false;
     if (!source) {
-        source.reset( new Image(components,
-                                pointsBbox,
-                                pixelPointsBbox,
-                                mipmapLevel,
-                                par,
-                                depth,
-                                premult,
-                                fielding,
-                                false) );
+        source.reset(new Image(components,
+                               pointsBbox,
+                               pixelPointsBbox,
+                               mipmapLevel,
+                               par,
+                               depth,
+                               fielding,
+                               false));
         *image = source;
     } else {
         if ( (*image)->getMipmapLevel() > mipmapLevel ) {
@@ -2569,15 +2568,14 @@ RotoStrokeItem::renderSingleStroke(const RectD& pointsBbox,
             const RectI mergeBounds = mergeRoD.toPixelEnclosing(mipmapLevel, par);
 
             //upscale the original image
-            source.reset( new Image(components,
-                                    mergeRoD,
-                                    mergeBounds,
-                                    mipmapLevel,
-                                    par,
-                                    depth,
-                                    premult,
-                                    fielding,
-                                    false) );
+            source.reset(new Image(components,
+                                   mergeRoD,
+                                   mergeBounds,
+                                   mipmapLevel,
+                                   par,
+                                   depth,
+                                   fielding,
+                                   false));
             source->fillZero(pixelPointsBbox);
             (*image)->upscaleMipmap( oldBounds, (*image)->getMipmapLevel(), source->getMipmapLevel(), source.get() );
             *image = source;
@@ -2591,15 +2589,14 @@ RotoStrokeItem::renderSingleStroke(const RectD& pointsBbox,
             const RectI mergeBounds = mergeRoD.toPixelEnclosing(mipmapLevel, par);
 
             //downscale the original image
-            source.reset( new Image(components,
-                                    mergeRoD,
-                                    mergeBounds,
-                                    mipmapLevel,
-                                    par,
-                                    depth,
-                                    premult,
-                                    fielding,
-                                    false) );
+            source.reset(new Image(components,
+                                   mergeRoD,
+                                   mergeBounds,
+                                   mipmapLevel,
+                                   par,
+                                   depth,
+                                   fielding,
+                                   false));
             source->fillZero(pixelPointsBbox);
             (*image)->downscaleMipmap( pointsBbox, oldBounds, (*image)->getMipmapLevel(), source->getMipmapLevel(), false, source.get() );
             *image = source;
@@ -2809,15 +2806,14 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
 
     const RectI pixelRod = rotoBbox.toPixelEnclosing(mipmapLevel, 1.);
 
-    ImageParamsPtr params = Image::makeParams( rotoBbox,
-                                                               pixelRod,
-                                                               1., // par
-                                                               mipmapLevel,
-                                                               false,
-                                                               components,
-                                                               depth,
-                                                               node->getEffectInstance()->getPremult(),
-                                                               node->getEffectInstance()->getFieldingOrder() );
+    ImageParamsPtr params = Image::makeParams(rotoBbox,
+                                              pixelRod,
+                                              1., // par
+                                              mipmapLevel,
+                                              false,
+                                              components,
+                                              depth,
+                                              node->getEffectInstance()->getFieldingOrder());
     /*
        At this point we take the cacheAccessMutex so that no other thread can retrieve this image from the cache while it has not been
        finished rendering. You might wonder why we do this differently here than in EffectInstance::renderRoI, this is because we do not use
@@ -4759,7 +4755,25 @@ RotoContext::refreshRotoPaintTree()
             }
         }
     }
+
+    retargetRotoPaintTree();
 } // RotoContext::refreshRotoPaintTree
+
+void
+RotoContext::retargetRotoPaintTree()
+{
+    KnobLayerSelect* layer = dynamic_cast<KnobLayerSelect*>(getNode()->getLayerKnob().get());
+
+    if (!layer) {
+        return;
+    }
+    const std::string layerID = layer->getLayer();
+    NodesList nodes;
+    getRotoPaintTreeNodes(&nodes);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        (*it)->retargetLayerKnob(layerID);
+    }
+}
 
 void
 RotoContext::onRotoPaintInputChanged(const NodePtr& node)

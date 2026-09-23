@@ -121,8 +121,6 @@ public:
     bool isCreated() const;
     bool isInitialized() const;
 
-    const std::string & ofxGetOutputPremultiplication() const;
-
     /**
      * @brief Calls syncPrivateDataAction from another thread than the main thread. The actual
      * call of the action will take place in the main-thread.
@@ -134,6 +132,7 @@ public:
     virtual int getMajorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual int getMinorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isGenerator() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isReader() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isVideoReader() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool isWriter() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -310,6 +309,8 @@ private:
 
 
     void tryInitializeOverlayInteracts();
+
+    void hideDeprecatedPremultKnobs();
 
 private:
 

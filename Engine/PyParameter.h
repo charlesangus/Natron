@@ -1074,6 +1074,102 @@ public:
     void getTable(std::list<std::vector<std::string> >* table) const;
 };
 
+/////////////////ChannelSetParam
+
+class ChannelSetParam
+    : public StringParamBase {
+    KnobChannelSetWPtr _tKnob;
+
+public:
+    ChannelSetParam(const KnobChannelSetPtr& knob);
+
+    virtual ~ChannelSetParam();
+
+    /**
+     * @brief One (mode, layerOrPattern, channels) triple per row, in row order. mode is
+     * one of "none"/"all"/"layer"/"regex"; channels is only meaningful in "layer" mode,
+     * where an empty list means every channel of the layer at resolve time.
+     **/
+    void getRows(std::list<std::string>* modes, std::list<std::string>* layersOrPatterns, std::list<std::list<std::string>>* channels) const;
+
+    void setNone();
+    void setAll();
+
+    void setLayer(const QString& layerID, const QStringList& channels = QStringList(), int row = 0);
+    void setChannels(const QStringList& channels, int row = 0);
+    void setRegex(const QString& pattern, int row = 0);
+
+    /**
+     * @brief The channels a regex row excludes from its matched layers. Raises ValueError
+     * when row is not a regex row.
+     **/
+    void setExcludedChannels(const QStringList& channels, int row = 0);
+    QStringList getExcludedChannels(int row) const;
+
+    int addLayer(const QString& layerID, const QStringList& channels = QStringList());
+    int addRegex(const QString& pattern);
+
+    /**
+     * @brief Raises ValueError: row 0 cannot be removed, and neither can an out-of-range row.
+     **/
+    void removeRow(int row);
+
+    QString getSummary() const;
+};
+
+/////////////////LayerSelectParam
+
+class LayerSelectParam
+    : public StringParamBase {
+    KnobLayerSelectWPtr _tKnob;
+
+public:
+    LayerSelectParam(const KnobLayerSelectPtr& knob);
+
+    virtual ~LayerSelectParam();
+
+    QString getLayer() const;
+
+    /**
+     * @brief Resets the channel selection to every channel of the new layer.
+     **/
+    void setLayer(const QString& layerID);
+
+    QStringList getChannels() const;
+
+    /**
+     * @brief Raises ValueError when the parameter was created without channel buttons.
+     **/
+    void setChannels(const QStringList& channels);
+
+    QString getSummary() const;
+};
+
+/////////////////ChannelSelectParam
+
+class ChannelSelectParam
+    : public StringParamBase {
+    KnobChannelSelectWPtr _tKnob;
+
+public:
+    ChannelSelectParam(const KnobChannelSelectPtr& knob);
+
+    virtual ~ChannelSelectParam();
+
+    /**
+     * @brief "<layerID>.<channelName>", or an empty string for none.
+     **/
+    QString get() const;
+
+    void set(const QString& value);
+
+    void setNone();
+
+    bool isNone() const;
+
+    QString getSummary() const;
+};
+
 /////////////////ButtonParam
 
 class ButtonParam

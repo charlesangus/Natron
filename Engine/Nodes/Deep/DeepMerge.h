@@ -44,7 +44,7 @@ NATRON_NAMESPACE_ENTER
  * inputs' channels, a channel one input lacks reading as zero on that input's samples.
  *
  * Holdout keeps A's samples only, each attenuated by the transparency B accumulates in front of
- * it: an A sample behind an opaque B sample goes to zero, one behind a half-transparent B sample
+ * it: an A sample behind a fully covering B sample goes to zero, one behind a half-transparent B sample
  * is halved, alpha included, since every channel is premultiplied. Where a B sample overlaps an
  * A sample the overlap is worked out with the OpenEXR "Interpreting Deep Pixels" split and merge
  * rules -- A's sample is cut at B's boundaries, the part of B in front of a piece attenuates it

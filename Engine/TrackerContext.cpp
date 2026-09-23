@@ -1674,14 +1674,6 @@ TrackArgs::getLibMVAutoTrack() const
 }
 
 void
-TrackArgs::getEnabledChannels(bool* r,
-                              bool* g,
-                              bool* b) const
-{
-    _imp->fa->getEnabledChannels(r, g, b);
-}
-
-void
 TrackArgs::getRedrawAreasNeeded(int time,
                                 std::list<RectD>* canonicalRects) const
 {

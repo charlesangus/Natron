@@ -33,6 +33,20 @@ def getGrouping():
 def getPluginDescription():
     return "A glow effect based on the bloom filter node. The mask input limits the area where the glowing elements are. It does not cut off the shine produced by the glow. \n\nFor more interesting looks there are some additional features like stretch, rotation and postgrade.\nWritten by PostPollux"
 
+def paramChanged(thisParam, thisNode, thisGroup, app, userEdited):
+    if thisParam.getScriptName() != "alpha":
+        return
+    colorLayer = "uk.co.thefoundry.OfxImagePlaneColour"
+    withAlpha = thisParam.get()
+    for name in ("PostGrade", "Bloom"):
+        channels = thisNode.getNode(name).getParam("channels")
+        channels.setLayer(colorLayer, ["R", "G", "B", "A"] if withAlpha else ["R", "G", "B"])
+    clampAlpha = thisNode.getNode("ClampAlpha").getParam("channels")
+    if withAlpha:
+        clampAlpha.setLayer(colorLayer, ["A"])
+    else:
+        clampAlpha.setNone()
+
 def createInstance(app,group):
     # Create all nodes in the group
 
@@ -468,6 +482,12 @@ def createInstance(app,group):
     # Refresh the GUI with the newly created parameters
     lastNode.setPagesOrder(['controls', 'Node', 'Settings', 'userNatron'])
     lastNode.refreshUserParamsGUI()
+
+    param = lastNode.getParam("onParamChanged")
+    if param is not None:
+        param.setValue("Glow.paramChanged")
+        del param
+
     del lastNode
 
     # Start of node "Output1"
@@ -871,11 +891,6 @@ def createInstance(app,group):
         param.setValue(True)
         del param
 
-    param = lastNode.getParam("premultChanged")
-    if param is not None:
-        param.setValue(True)
-        del param
-
     del lastNode
     # End of node "Tolerance"
 
@@ -1011,9 +1026,9 @@ def createInstance(app,group):
     lastNode.setColor(0.48, 0.66, 1)
     groupPostGrade = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessA")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(False)
+        param.setChannels(["R", "G", "B"])
         del param
 
     param = lastNode.getParam("toneRanges")
@@ -1026,11 +1041,6 @@ def createInstance(app,group):
         param.deleteAllControlPoints(1)
         param.addControlPoint(1, 0.5, 0, 0, 0, NatronEngine.Natron.KeyframeTypeEnum.eKeyframeTypeHorizontal)
         param.addControlPoint(1, 1, 1, 0, 0, NatronEngine.Natron.KeyframeTypeEnum.eKeyframeTypeHorizontal)
-        del param
-
-    param = lastNode.getParam("premultChanged")
-    if param is not None:
-        param.setValue(True)
         del param
 
     del lastNode
@@ -1205,9 +1215,9 @@ def createInstance(app,group):
     lastNode.setColor(0.8, 0.5, 0.3)
     groupBloom = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessA")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(False)
+        param.setChannels(["R", "G", "B"])
         del param
 
     param = lastNode.getParam("size")
@@ -1229,11 +1239,6 @@ def createInstance(app,group):
     param = lastNode.getParam("expandRoD")
     if param is not None:
         param.setValue(False)
-        del param
-
-    param = lastNode.getParam("premultChanged")
-    if param is not None:
-        param.setValue(True)
         del param
 
     del lastNode
@@ -1423,29 +1428,9 @@ def createInstance(app,group):
     lastNode.setColor(0.48, 0.66, 1)
     groupClampAlpha = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessR")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessG")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessB")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessA")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("premultChanged")
-    if param is not None:
-        param.setValue(True)
+        param.setNone()
         del param
 
     del lastNode
@@ -1551,9 +1536,6 @@ def createInstance(app,group):
     param = groupMerge4.getParam("disableNode")
     param.setExpression("thisGroup.getInput(1) is None", False, 0)
     del param
-    param = groupPostGrade.getParam("NatronOfxParamProcessA")
-    param.setExpression("thisGroup.alpha.get()", False, 0)
-    del param
     param = groupPostGrade.getParam("MasterSaturation")
     group.getParam("PostGradeMasterSaturation").setAsAlias(param)
     del param
@@ -1568,9 +1550,6 @@ def createInstance(app,group):
     del param
     param = groupHSVTool1.getParam("srcColor")
     group.getParam("HSVTool1srcColor").setAsAlias(param)
-    del param
-    param = groupBloom.getParam("NatronOfxParamProcessA")
-    param.setExpression("thisGroup.alpha.get()", False, 0)
     del param
     param = groupBloom.getParam("size")
     param.setExpression("thisGroup.size.get()", False, 0)
@@ -1593,9 +1572,6 @@ def createInstance(app,group):
     del param
     param = groupscreenSwitch.getParam("which")
     param.setExpression("thisGroup.screen.get()", False, 0)
-    del param
-    param = groupClampAlpha.getParam("NatronOfxParamProcessA")
-    param.setExpression("thisGroup.alpha.get()", False, 0)
     del param
 
     try:

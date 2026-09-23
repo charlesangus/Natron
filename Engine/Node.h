@@ -28,11 +28,12 @@
 
 #include "Global/Macros.h"
 
-#include <vector>
-#include <string>
-#include <map>
-#include <list>
 #include <bitset>
+#include <list>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 #include <QMetaType>
@@ -59,13 +60,20 @@ CLANG_DIAG_ON(deprecated)
 #define kEnableMaskKnobName "enableMask"
 #define kEnableInputKnobName "enableInput"
 #define kMaskChannelKnobName "maskChannel"
+
+// The host-owned "(Un)premult by" channel selector, and the plug-in-declared bool and choice
+// it stands in for (openfx-misc's ofxsPremultDescribeParams()), which it switches off.
+#define kUnPremultByKnobName "hostUnPremultBy"
+#define kUnPremultByKnobLabel "(Un)premult by"
+#define kUnPremultByPluginKnobName "unPremultBy"
+#define kUnPremultByChannelPluginKnobName "unPremultByChannel"
 #define kInputChannelKnobName "inputChannel"
 #define kEnablePreviewKnobName "enablePreview"
-#define kOutputChannelsKnobName "channels"
-
-#define kNodeParamProcessAllLayers "processAllLayers"
-#define kNodeParamProcessAllLayersLabel "All Layers"
-#define kNodeParamProcessAllLayersHint "When checked all layers in input will be processed and output to the same layer as in input. It is useful for example to apply a Transform effect on all layers."
+#define kNodeParamChannelSet "channels"
+#define kNodeParamChannelSetLabel "Channels"
+#define kNodeParamLayerSelect "layer"
+#define kNodeParamLayerSelectLabel "Layer"
+#define kNodeParamLayerSeparator "layerSeparator"
 
 #define kOfxMaskInvertParamName "maskInvert"
 #define kOfxMixParamName "mix"
@@ -392,9 +400,35 @@ public:
     int isMaskChannelKnob(const KnobI* knob) const;
 
     /**
+     * @brief The channel the colour family's node-level "(Un)premult by" divides the plug-in's
+     * source by and multiplies its result back by, as an index into *comps, or -1 for none.
+     * The layer is one of availableLayers; a selection the input no longer carries resolves to
+     * none, i.e. no (un)premult, rather than to a different layer.
+     **/
+    int getUnPremultChannel(const std::list<ImageLayerDesc>& availableLayers, ImageLayerDesc* comps) const;
+
+    KnobChannelSelectPtr getUnPremultBySelector() const;
+
+    /**
+     * @brief The index, within plane, of the "(Un)premult by" divisor channel when the divisor
+     * is plane's own (the classic "unpremult by its own alpha"), or -1 when the divisor belongs
+     * to another layer and so is not one of plane's channels. That channel is the divisor, not
+     * something to divide, so it is left alone.
+     **/
+    static int getUnPremultSkipChannel(const ImageLayerDesc& plane, const ImageLayerDesc& divisorLayer, int divisorChannel);
+
+    /**
      * @brief Returns whether masking is enabled or not
      **/
     bool isMaskEnabled(int inputNb) const;
+
+    /**
+     * @brief For every mask input that is connected, enabled and not set to None, and for the
+     * "(Un)premult by" selector over a connected source, checks that the KnobChannelSelect value
+     * resolves against that input's present layers. Returns false on the first miss and fills
+     * *message, leaving a disconnected input or a None selection silent.
+     **/
+    bool checkSelectedChannelsPresent(std::string* message) const;
 
     /**
      * @brief Returns a pointer to the input Node at index 'index'
@@ -542,8 +576,6 @@ public:
     bool isDuringPaintStrokeCreation() const;
     ////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////////
-
-    void setProcessChannelsValues(bool doR, bool doG, bool doB, bool doA);
 
 private:
 
@@ -1061,8 +1093,6 @@ public:
      **/
     void initializeKnobs(bool loadingSerialization);
 
-    void checkForPremultWarningAndCheckboxes();
-
     void findPluginFormatKnobs();
 
 private:
@@ -1083,6 +1113,8 @@ private:
     void createWriterFrameStepKnob(const KnobPagePtr& mainPage);
 #endif
 
+    void createUnPremultSelector(const KnobPagePtr& mainPage);
+
     void createMaskSelectors(const std::vector<std::pair<bool, bool> >& hasMaskChannelSelector,
                              const std::vector<std::string>& inputLabels,
                              const KnobPagePtr& mainPage,
@@ -1093,12 +1125,11 @@ private:
 
     void createLabelKnob(const KnobPagePtr& settingsPage, const std::string& label);
 
-    void findOrCreateChannelEnabled(const KnobPagePtr& mainPage);
+    void createLayerKnob(const LayerKnobSpec& spec, const KnobPagePtr& mainPage);
 
-    void createChannelSelectors(const std::vector<std::pair<bool, bool> >& hasMaskChannelSelector,
-                                const std::vector<std::string>& inputLabels,
-                                const KnobPagePtr& mainPage,
-                                KnobIPtr* lastKnobBeforeAdvancedOption);
+    void adoptChannelQuad();
+
+    void refreshGeneratorOutputComponentsKnob();
 
 public:
 
@@ -1313,24 +1344,23 @@ public:
 
     std::string getPluginPythonModule() const;
 
-    //Returns true if changed
-    bool refreshChannelSelectors();
+    /**
+     * @brief Tells the effect and the layer/channel knob GUIs that the layers present on the
+     * inputs may have changed; the knobs list their layers themselves at display time.
+     **/
+    void refreshChannelSelectors();
 
-    bool isPluginUsingHostChannelSelectors() const;
+    // True for the handful of plug-ins (see adoptChannelQuad()) whose R/G/B/A quad the host
+    // does not adopt as a per-channel mask: their quad stays visible and the layer knob's
+    // row-0 channel buttons are ignored (the host treats every plane as fully processed).
+    bool pluginOwnsChannelMask() const;
 
-    bool getProcessChannel(int channelIndex) const;
-
-    KnobChoicePtr getChannelSelectorKnob(int inputNb) const;
-
-    KnobBoolPtr getProcessAllLayersKnob() const;
-
-    bool getSelectedLayer(int inputNb, const std::list<ImageLayerDesc>& availableLayers, std::bitset<4>* processChannels, bool* isAll, ImageLayerDesc* layer) const;
-
-    bool addUserComponents(const ImageLayerDesc& comps);
-
-    void getUserCreatedComponents(std::list<ImageLayerDesc>* comps);
-
-    bool hasAtLeastOneChannelToProcess() const;
+    /**
+     * @brief False when the node's layer knob resolves to no channel at the given time and
+     * view, which makes the node an identity of its preferred input. A node without a layer
+     * knob always has something to process.
+     **/
+    bool hasAtLeastOneChannelToProcess(double time, ViewIdx view) const;
 
     void removeParameterFromPython(const std::string& parameterName);
 
@@ -1346,7 +1376,59 @@ public:
 
     void markAllInputRelatedDataDirty();
 
-    bool getSelectedLayerChoiceRaw(int inputNb, std::string& layer) const;
+    /**
+     * @brief Fills ids with the layer ID of every layer/channel knob row on this node that
+     * currently targets a non-empty selection. This is the single source of truth
+     * Project::getLayerUsers() relies on to refuse removing a referenced layer.
+     **/
+    virtual void getReferencedLayerIDs(std::set<std::string>* ids) const;
+
+    /**
+     * @brief The channel set or layer select the host created on this node's main page,
+     * or null when getLayerKnobSpec() asked for none.
+     **/
+    KnobIPtr getLayerKnob() const;
+
+    /**
+     * @brief The layers a layer/channel knob of this node may choose from: an input-bound
+     * knob lists the present layers of its input (always including Color), a target knob
+     * lists the project registry. An alias delegates to its master's node.
+     **/
+    void listLayersForKnob(const KnobIPtr& knob, std::list<ImageLayerDesc>* layers) const;
+
+    /**
+     * @brief Same, with an input-bound knob's present layers taken at the given time and view
+     * instead of the timeline's current frame.
+     **/
+    void listLayersForKnob(const KnobIPtr& knob, double time, ViewIdx view, std::list<ImageLayerDesc>* layers) const;
+
+    /**
+     * @brief Whether listLayersForKnob() lists the project registry for this knob (a target
+     * knob) rather than an input's present layers. An alias reports its master's role.
+     **/
+    bool isTargetLayerKnob(const KnobIPtr& knob) const;
+
+    /**
+     * @brief Resolves the layer knob (channel set or layer select) against the layers it is
+     * bound to at the given time and view. Returns false when the node has no layer knob,
+     * in which case selected is left empty.
+     **/
+    bool resolveLayerKnob(double time, ViewIdx view, std::vector<ResolvedLayer>* selected) const;
+
+    /**
+     * @brief Points the layer knob at one registry layer, every channel, and makes it resolve
+     * against the registry from now on whatever its inputs carry. The nodes of a RotoPaint
+     * tree take the plane their RotoPaint targets this way: that plane need not exist
+     * upstream yet. No-op on a node without a layer knob.
+     **/
+    void retargetLayerKnob(const std::string& layerID);
+
+    /**
+     * @brief Registers every non-Color layer this node produces (per
+     * getComponentsNeededAndProduced_public()'s output entry) with the project-level
+     * LayerRegistry. Main thread only, called at the end of refreshAllInputRelatedData().
+     **/
+    void registerProducedLayers();
 
     const std::vector<std::string>& getCreatedViews() const;
 
@@ -1384,8 +1466,6 @@ public:
     void setStreamWarnings(const std::map<StreamWarningEnum, QString>& warnings);
     void clearStreamWarning(StreamWarningEnum warning);
     void getStreamWarnings(std::map<StreamWarningEnum, QString>* warnings) const;
-
-    void refreshEnabledKnobsLabel(const ImageLayerDesc& layer);
 
 private:
 
@@ -1437,8 +1517,6 @@ private:
 
     bool refreshMaskEnabledNess(int inpubNb);
 
-    bool refreshLayersChoiceSecretness(int inpubNb);
-
     void markInputRelatedDataDirtyRecursive();
 
     void markInputRelatedDataDirtyRecursiveInternal(std::list<Node*>& markedNodes, bool recurse);
@@ -1453,7 +1531,7 @@ private:
 
     std::string getFullyQualifiedNameInternal(const std::string& scriptName) const;
 
-    void s_outputLayerChanged() { Q_EMIT outputLayerChanged(); }
+    void s_layerSelectionChanged() { Q_EMIT layerSelectionChanged(); }
 
 public Q_SLOTS:
 
@@ -1509,7 +1587,13 @@ Q_SIGNALS:
 
     void availableViewsChanged();
 
-    void outputLayerChanged();
+    void layerSelectionChanged();
+
+    /**
+     * @brief Emitted by refreshChannelSelectors(): the layer/channel knob GUIs list their
+     * layers themselves and only need to know that the input's present layers may have changed.
+     **/
+    void layerListRefreshed();
 
     void mustComputeHashOnMainThread();
 

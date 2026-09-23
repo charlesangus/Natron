@@ -396,8 +396,6 @@ struct RotoPaintPrivate
 {
     RotoPaint* publicInterface;
     bool isPaintByDefault;
-    KnobBoolWPtr premultKnob;
-    KnobBoolWPtr enabledKnobs[4];
     RotoPaintInteractPtr ui;
 
     RotoPaintPrivate(RotoPaint* publicInterface,

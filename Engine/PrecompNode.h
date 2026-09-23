@@ -103,7 +103,7 @@ public:
     void getPrecompInputs(NodesList* nodes) const;
 
     AppInstancePtr getPrecompApp() const;
-    virtual bool getCreateChannelSelectorKnob() const OVERRIDE FINAL WARN_UNUSED_RETURN { return false; }
+    virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN { return LayerKnobSpec(); }
 
 public Q_SLOTS:
 

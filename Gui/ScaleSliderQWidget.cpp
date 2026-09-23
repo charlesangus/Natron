@@ -546,7 +546,6 @@ ScaleSliderQWidget::paintEvent(QPaintEvent* /*e*/)
                     // draw it with a lower alpha
                     alphaText *= (tickSizePixel - sSizePixel) / (double)minTickSizeTextPixel;
                 }
-                //alphaText = std::min(alphaText, alpha); // don't draw more opaque than ticks
                 QColor c = _imp->readOnly || !isEnabled() ? Qt::black : textColor;
                 c.setAlphaF(alphaText);
                 p.setFont(_imp->font);

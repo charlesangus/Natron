@@ -59,6 +59,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/TimeLine.h"
 
 #include "Gui/Button.h"
+#include "Gui/ChannelColor.h"
 #include "Gui/ClickableLabel.h"
 #include "Gui/ComboBox.h"
 #include "Gui/CurveGui.h"
@@ -277,23 +278,8 @@ KnobGuiBool::onLabelChangedInternal()
     if (!knob) {
         return;
     }
-    const std::string& label = knob->getLabel();
-
-    if ( (label == "R") || (label == "r") || (label == "red") ) {
-        QColor color;
-        color.setRgbF(0.851643, 0.196936, 0.196936);
-        _checkBox->setCustomColor(color, true);
-    } else if ( (label == "G") || (label == "g") || (label == "green") ) {
-        QColor color;
-        color.setRgbF(0, 0.654707, 0);
-        _checkBox->setCustomColor(color, true);
-    } else if ( (label == "B") || (label == "b") || (label == "blue") ) {
-        QColor color;
-        color.setRgbF(0.345293, 0.345293, 1);
-        _checkBox->setCustomColor(color, true);
-    } else if ( (label == "A") || (label == "a") || (label == "alpha") ) {
-        QColor color;
-        color.setRgbF(0.398979, 0.398979, 0.398979);
+    QColor color;
+    if (getChannelColorFromName(knob->getLabel(), &color)) {
         _checkBox->setCustomColor(color, true);
     } else {
         _checkBox->setCustomColor(Qt::black, false);

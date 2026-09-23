@@ -166,7 +166,7 @@ public:
      * @brief To be called once no action is currently being run after getClipPreferences_safe was called.
      * Caller maintains a lock around this call to prevent race conditions.
      **/
-    bool updatePreferences_safe(double frameRate, const std::string& fielding, const std::string& premult,
+    bool updatePreferences_safe(double frameRate, const std::string& fielding,
                                 bool continuous, bool frameVarying);
     ////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////////////////////////////////////////////////////////

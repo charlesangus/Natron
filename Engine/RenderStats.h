@@ -91,9 +91,6 @@ public:
     void setChannelsRendered(std::bitset<4> channelsRendered);
     std::bitset<4> getChannelsRendered() const;
 
-    void setOutputPremult(ImagePremultiplicationEnum premult);
-    ImagePremultiplicationEnum getOutputPremult() const;
-
 private:
 
     std::unique_ptr<NodeRenderStatsPrivate> _imp;
@@ -121,7 +118,6 @@ public:
 
     void setGlobalRenderInfosForNode(const NodePtr& node,
                                      const RectD& rod,
-                                     ImagePremultiplicationEnum outputPremult,
                                      std::bitset<4> channelsRendered,
                                      bool tilesSupported,
                                      bool renderScaleSupported,

@@ -54,12 +54,13 @@ GCC_DIAG_ON(unused-parameter)
 
 #include "Engine/AppInstance.h"
 #include "Engine/KnobSerialization.h"
+#include "Engine/LayerRegistry.h"
 #include "Engine/MemoryInfo.h" // isApplication32Bits
 #include "Engine/Node.h"
-#include "Engine/NodeSerialization.h"
 #include "Engine/NodeGroupSerialization.h"
-#include "Engine/ProjectPrivate.h"
+#include "Engine/NodeSerialization.h"
 #include "Engine/Project.h"
+#include "Engine/ProjectPrivate.h"
 #include "Engine/RectDSerialization.h"
 #include "Engine/RectISerialization.h"
 #include "Engine/TimeLine.h"
@@ -71,7 +72,26 @@ GCC_DIAG_ON(unused-parameter)
 #define PROJECT_SERIALIZATION_REMOVES_TIMELINE_BOUNDS 4
 #define PROJECT_SERIALIZATION_INTRODUCES_GROUPS 5
 #define PROJECT_SERIALIZATION_CHANGE_VERSION_SERIALIZATION 6
-#define PROJECT_SERIALIZATION_VERSION PROJECT_SERIALIZATION_CHANGE_VERSION_SERIALIZATION
+#define PROJECT_SERIALIZATION_ADDS_LAYERS 7
+#define PROJECT_SERIALIZATION_VERSION PROJECT_SERIALIZATION_ADDS_LAYERS
+
+#if !defined(Q_MOC_RUN) && !defined(SBK_RUN)
+namespace boost {
+namespace serialization {
+    template <class Archive>
+    void
+    serialize(Archive& ar,
+              NATRON_NAMESPACE::LayerRegistryEntry& entry,
+              const unsigned int /*version*/)
+    {
+        ar& ::boost::serialization::make_nvp("Desc", entry.desc);
+        int origin = (int)entry.origin;
+        ar& ::boost::serialization::make_nvp("Origin", origin);
+        entry.origin = (NATRON_NAMESPACE::LayerRegistryEntry::OriginEnum)origin;
+    }
+}
+}
+#endif
 
 NATRON_NAMESPACE_ENTER
 
@@ -100,6 +120,7 @@ class ProjectSerialization
 {
     NodeCollectionSerialization _nodes;
     std::list<Format> _additionalFormats;
+    std::list<LayerRegistryEntry> _layers;
     std::list<KnobSerializationPtr> _projectKnobs;
     SequenceTime _timelineCurrent;
     qint64 _creationDate;
@@ -147,6 +168,11 @@ public:
     const std::list<Format> & getAdditionalFormats() const
     {
         return _additionalFormats;
+    }
+
+    const std::list<LayerRegistryEntry>& getLayers() const
+    {
+        return _layers;
     }
 
     const NodeCollectionSerialization & getNodesSerialization() const
@@ -213,6 +239,7 @@ public:
             ar & ::boost::serialization::make_nvp( "item", *(*it) );
         }
         ar & ::boost::serialization::make_nvp("AdditionalFormats", _additionalFormats);
+        ar& ::boost::serialization::make_nvp("Layers", _layers);
         ar & ::boost::serialization::make_nvp("Timeline_current_time", _timelineCurrent);
         ar & ::boost::serialization::make_nvp("CreationDate", _creationDate);
     }
@@ -288,6 +315,9 @@ public:
         }
 
         ar & ::boost::serialization::make_nvp("AdditionalFormats", _additionalFormats);
+        if (version >= PROJECT_SERIALIZATION_ADDS_LAYERS) {
+            ar& ::boost::serialization::make_nvp("Layers", _layers);
+        }
         ar & ::boost::serialization::make_nvp("Timeline_current_time", _timelineCurrent);
         if (version < PROJECT_SERIALIZATION_REMOVES_TIMELINE_BOUNDS) {
             SequenceTime left, right;

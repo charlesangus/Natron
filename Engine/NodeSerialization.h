@@ -70,7 +70,8 @@ GCC_DIAG_ON(unused-parameter)
 #define NODE_SERIALIZATION_SERIALIZE_PYTHON_MODULE_ALWAYS 13
 #define NODE_SERIALIZATION_SERIALIZE_PAGE_INDEX 14
 #define NODE_SERIALIZATION_INTRODUCES_TRACKER_CONTEXT 15
-#define NODE_SERIALIZATION_CURRENT_VERSION NODE_SERIALIZATION_INTRODUCES_TRACKER_CONTEXT
+#define NODE_SERIALIZATION_REMOVES_USER_COMPONENTS 16
+#define NODE_SERIALIZATION_CURRENT_VERSION NODE_SERIALIZATION_REMOVES_USER_COMPONENTS
 
 NATRON_NAMESPACE_ENTER
 
@@ -233,11 +234,6 @@ public:
         return _children;
     }
 
-    const std::list<ImageLayerDesc>& getUserCreatedComponents() const
-    {
-        return _userComponents;
-    }
-
 private:
 
     bool _isNull;
@@ -264,7 +260,6 @@ private:
     std::list<NodeSerializationPtr> _children;
     std::string _pythonModule;
     unsigned int _pythonModuleVersion;
-    std::list<ImageLayerDesc> _userComponents;
 
     friend class ::boost::serialization::access;
     template<class Archive>
@@ -318,7 +313,6 @@ private:
             ar & ::boost::serialization::make_nvp("item", **it);
         }
 
-        ar & ::boost::serialization::make_nvp("UserComponents", _userComponents);
         ar & ::boost::serialization::make_nvp("CacheID", _cacheID);
     } // save
 
@@ -426,8 +420,9 @@ private:
                 _children.push_back(s);
             }
         }
-        if (version >= NODE_SERIALIZATION_INTRODUCES_USER_COMPONENTS) {
-            ar & ::boost::serialization::make_nvp("UserComponents", _userComponents);
+        if (version >= NODE_SERIALIZATION_INTRODUCES_USER_COMPONENTS && version < NODE_SERIALIZATION_REMOVES_USER_COMPONENTS) {
+            std::list<ImageLayerDesc> deprecatedUserComponents;
+            ar& ::boost::serialization::make_nvp("UserComponents", deprecatedUserComponents);
         }
         if (version >= NODE_SERIALIZATION_INTRODUCES_CACHE_ID) {
             ar & ::boost::serialization::make_nvp("CacheID", _cacheID);

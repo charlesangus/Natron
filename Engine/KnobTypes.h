@@ -1113,6 +1113,17 @@ public:
 
     virtual int getColumnsCount() const = 0;
     virtual std::string getColumnLabel(int col) const = 0;
+
+    /**
+     * @brief The XML tag used to persist column "col". Unlike getColumnLabel(), which may be
+     * translated for display, this must be a stable ASCII literal: it is part of the .ntp
+     * on-disk format read by decodeFromKnobTableFormat()/written by encodeToKnobTableFormat().
+     **/
+    virtual std::string getColumnTag(int col) const
+    {
+        return getColumnLabel(col);
+    }
+
     virtual bool isCellEnabled(int row, int col, const QStringList& values) const = 0;
     virtual bool isCellBracketDecorated(int /*row*/,
                                         int /*col*/) const
@@ -1134,6 +1145,11 @@ private:
 
 
     virtual bool canAnimate() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    virtual bool supportsExpressions() const OVERRIDE FINAL
     {
         return false;
     }
@@ -1168,15 +1184,30 @@ public:
 
     virtual int getColumnsCount() const OVERRIDE FINAL
     {
-        return 2;
+        return 3;
     }
 
     virtual std::string getColumnLabel(int col) const OVERRIDE FINAL
     {
         if (col == 0) {
-            return tr("Name").toStdString();
+            return tr("Layer").toStdString();
         } else if (col == 1) {
             return tr("Channels").toStdString();
+        } else if (col == 2) {
+            return tr("Used by").toStdString();
+        } else {
+            return std::string();
+        }
+    }
+
+    virtual std::string getColumnTag(int col) const OVERRIDE FINAL
+    {
+        if (col == 0) {
+            return "Name";
+        } else if (col == 1) {
+            return "Channels";
+        } else if (col == 2) {
+            return "UsedBy";
         } else {
             return std::string();
         }
@@ -1189,14 +1220,17 @@ public:
         return true;
     }
 
-    virtual bool isColumnEditable(int col) OVERRIDE FINAL WARN_UNUSED_RETURN
+    virtual bool isColumnEditable(int /*col*/) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        if (col == 1) {
-            return false;
-        }
-
-        return true;
+        return false;
     }
+
+    virtual bool useEditButton() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    static std::vector<std::string> makeRow(const ImageLayerDesc& layer, int usersCount);
 
     static const std::string & typeNameStatic() WARN_UNUSED_RETURN;
 

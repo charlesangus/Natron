@@ -117,11 +117,6 @@ public:
         return false;
     }
 
-    virtual bool getCreateChannelSelectorKnob() const OVERRIDE FINAL WARN_UNUSED_RETURN
-    {
-        return false;
-    }
-
     virtual bool hasOverlay() const OVERRIDE FINAL
     {
         return true;

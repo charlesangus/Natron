@@ -99,19 +99,6 @@ GCC_DIAG_ON(maybe-uninitialized)
 
 #endif // NATRON_TRACKER_ENABLE_TRACKER_PM
 
-
-#define kTrackerParamTrackRed "trackRed"
-#define kTrackerParamTrackRedLabel "Track Red"
-#define kTrackerParamTrackRedHint "Enable tracking on the red channel"
-
-#define kTrackerParamTrackGreen "trackGreen"
-#define kTrackerParamTrackGreenLabel "Track Green"
-#define kTrackerParamTrackGreenHint "Enable tracking on the green channel"
-
-#define kTrackerParamTrackBlue "trackBlue"
-#define kTrackerParamTrackBlueLabel "Track Blue"
-#define kTrackerParamTrackBlueHint "Enable tracking on the blue channel"
-
 #define kTrackerParamMaxError "maxError"
 #define kTrackerParamMaxErrorLabel "Max. Error"
 #define kTrackerParamMaxErrorHint "This is the minimum necessary error between the final tracked " \
@@ -339,13 +326,6 @@ enum TrackerTransformNodeEnum
     eTrackerTransformNodeCornerPin
 };
 
-enum libmv_MarkerChannelEnum
-{
-    LIBMV_MARKER_CHANNEL_R = (1 << 0),
-    LIBMV_MARKER_CHANNEL_G = (1 << 1),
-    LIBMV_MARKER_CHANNEL_B = (1 << 2),
-};
-
 class TrackMarkerAndOptions
 {
 public:
@@ -374,7 +354,6 @@ public:
 #endif
 
     KnobPageWPtr trackingPageKnob;
-    KnobBoolWPtr enableTrackRed, enableTrackGreen, enableTrackBlue;
     KnobDoubleWPtr maxError;
     KnobIntWPtr maxIterations;
     KnobIntWPtr defaultSearchWinSize, defaultPatternWinSize;
@@ -553,15 +532,13 @@ public:
 
     RectD getInputRoDAtTime(double time) const;
 
-
     static void natronTrackerToLibMVTracker(bool isReferenceMarker,
-                                            bool trackChannels[3],
-                                            const TrackMarker &marker,
+                                            const TrackMarker& marker,
                                             int trackIndex,
                                             int time,
                                             int frameStep,
                                             double formatHeight,
-                                            mv::Marker * mvMarker);
+                                            mv::Marker* mvMarker);
     static void setKnobKeyframesFromMarker(const mv::Marker& mvMarker,
                                            int formatHeight,
                                            const libmv::TrackRegionResult* result,

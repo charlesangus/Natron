@@ -177,8 +177,7 @@ makeLocalImage(const ImageLayerDesc& components,
     RectD rod(bounds.x1, bounds.y1, bounds.x2, bounds.y2);
 
     return std::make_shared<Image>(components, rod, bounds, /*mipmapLevel=*/0, /*par=*/1.,
-                                   depth, eImagePremultiplicationPremultiplied,
-                                   eImageFieldingOrderNone, /*useBitmap=*/false);
+                                   depth, eImageFieldingOrderNone, /*useBitmap=*/false);
 }
 
 void
@@ -214,10 +213,9 @@ TEST(ImageConvertToFormatTest, RoundTripFloatByte)
     setFloatPixel(*srcFloat, 0, 0, original);
 
     srcFloat->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                              /*channelForAlpha=*/-1, /*copyBitmap=*/false,
-                              /*requiresUnpremult=*/false, mid.get());
+                              /*channelForAlpha=*/-1, /*copyBitmap=*/false, mid.get());
     mid->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                         -1, false, false, dstFloat.get());
+                         -1, false, dstFloat.get());
 
     // Same src/dst colorspace means convertToFormatInternal_sameComps takes
     // the plain convertPixelDepth branch (no LUT, no error-diffusion
@@ -243,9 +241,9 @@ TEST(ImageConvertToFormatTest, RoundTripFloatShort)
     setFloatPixel(*srcFloat, 0, 0, original);
 
     srcFloat->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                              -1, false, false, mid.get());
+                              -1, false, mid.get());
     mid->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                         -1, false, false, dstFloat.get());
+                         -1, false, dstFloat.get());
 
     // Same reasoning as the byte round trip, but quantized to 65536 levels
     // instead of 256, so the worst-case error is proportionally smaller.
@@ -258,19 +256,9 @@ TEST(ImageConvertToFormatTest, RoundTripFloatShort)
     }
 }
 
-// Finding: with both colorspaces Linear, requiresUnpremult is silently a
-// no-op. convertToFormatInternalForColorSpace's per-channel branch is
-// gated by `!useColorspaces || (!srcLutOp && !dstLutOp)`
-// (ImageConvert.cpp:391); convertToFormatInternalForUnpremult sets
-// useColorspaces=false whenever both colorspaces are Linear
-// (ImageConvert.cpp:482-486), which forces that gate true and skips the
-// entire unpremult-by-alpha branch (ImageConvert.cpp:399-410) in favor of
-// a plain convertPixelDepth passthrough. So the RGBA->RGB conversion below
-// leaves the color channels untouched instead of dividing them by alpha,
-// contrary to the doc comment on Image::convertToFormat in Image.h, which
-// says the RGB channels "will be divided by the alpha channel" whenever
-// requiresUnpremult is true.
-TEST(ImageConvertToFormatTest, UnpremultHasNoEffectWhenColorSpacesAreLinear)
+// RGBA->RGB with both colorspaces Linear takes the plain convertPixelDepth
+// passthrough: the color channels are copied as-is and alpha is dropped.
+TEST(ImageConvertToFormatTest, RgbaToRgbDropsAlphaWhenColorSpacesAreLinear)
 {
     RectI bounds(0, 0, 1, 1);
     ImagePtr srcRGBA = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
@@ -281,24 +269,22 @@ TEST(ImageConvertToFormatTest, UnpremultHasNoEffectWhenColorSpacesAreLinear)
     setFloatPixel(*srcRGBA, 0, 0, { kColor, kColor, kColor, kAlpha });
 
     srcRGBA->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                             -1, /*copyBitmap=*/false, /*requiresUnpremult=*/true, dstRGB.get());
+                             -1, /*copyBitmap=*/false, dstRGB.get());
 
     std::vector<float> result = getFloatPixel(*dstRGB, 0, 0, 3);
     constexpr float kExactTolerance = 1e-6f;
 
     ASSERT_EQ(result.size(), 3u);
     for (float c : result) {
-        EXPECT_NEAR(c, kColor, kExactTolerance) << "color left unchanged, not divided by alpha";
+        EXPECT_NEAR(c, kColor, kExactTolerance) << "color left unchanged, alpha dropped";
     }
 }
 
-// The unpremult-by-alpha branch only runs when useColorspaces is true,
-// which requires at least one side to be a non-Linear colorspace (see the
-// finding above). Using the same non-Linear colorspace on both ends
-// isolates the unpremult math: fromColorSpace/toColorSpace with the same
-// LUT round-trips back to (approximately) the identity, so what's left is
-// the division by alpha.
-TEST(ImageConvertToFormatTest, UnpremultDoublesColorWhenColorSpaceIsNotLinear)
+// A non-Linear colorspace on both ends exercises the LUT path of the
+// RGBA->RGB conversion: fromColorSpace/toColorSpace with the same LUT
+// round-trips back to (approximately) the identity, and alpha never enters
+// the color channels.
+TEST(ImageConvertToFormatTest, RgbaToRgbLeavesColorUntouchedWhenColorSpaceIsNotLinear)
 {
     RectI bounds(0, 0, 1, 1);
     ImagePtr srcRGBA = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
@@ -309,7 +295,7 @@ TEST(ImageConvertToFormatTest, UnpremultDoublesColorWhenColorSpaceIsNotLinear)
     setFloatPixel(*srcRGBA, 0, 0, { kColor, kColor, kColor, kAlpha });
 
     srcRGBA->convertToFormat(bounds, eViewerColorSpaceSRGB, eViewerColorSpaceSRGB,
-                             -1, /*copyBitmap=*/false, /*requiresUnpremult=*/true, dstRGB.get());
+                             -1, /*copyBitmap=*/false, dstRGB.get());
 
     std::vector<float> result = getFloatPixel(*dstRGB, 0, 0, 3);
     // Matches Lut_Test.cpp's kRoundTripTolerance: the sRGB LUT's
@@ -319,6 +305,6 @@ TEST(ImageConvertToFormatTest, UnpremultDoublesColorWhenColorSpaceIsNotLinear)
 
     ASSERT_EQ(result.size(), 3u);
     for (float c : result) {
-        EXPECT_NEAR(c, kColor / kAlpha, kLutRoundTripTolerance);
+        EXPECT_NEAR(c, kColor, kLutRoundTripTolerance);
     }
 }

@@ -105,7 +105,6 @@ struct TextureInfo
         , gamma(1.)
         , offset(0.)
         , mipmapLevel(0)
-        , premult(eImagePremultiplicationOpaque)
         , time(0)
         , rod()
         , format()
@@ -125,7 +124,6 @@ struct TextureInfo
     double gamma;
     double offset;
     unsigned int mipmapLevel;
-    ImagePremultiplicationEnum premult;
     SequenceTime time;
     RectD rod;
 

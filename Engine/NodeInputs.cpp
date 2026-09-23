@@ -28,19 +28,20 @@
 #include <QDebug>
 #include <QThread>
 
-#include "Engine/NodeGroup.h"
-#include "Engine/PrecompNode.h"
+#include "Engine/AbortableRenderInfo.h"
+#include "Engine/AppInstance.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
-#include "Engine/AppInstance.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/Settings.h"
-#include "Engine/TimeLine.h"
-#include "Engine/Project.h"
-#include "Engine/ViewerInstance.h"
-#include "Engine/AbortableRenderInfo.h"
-#include "Engine/ThreadPool.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/OpenGLViewerI.h"
+#include "Engine/PrecompNode.h"
+#include "Engine/Project.h"
+#include "Engine/Settings.h"
+#include "Engine/ThreadPool.h"
+#include "Engine/TimeLine.h"
+#include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -333,11 +334,6 @@ Node::setInputLabel(int inputNb, const std::string& label)
     std::map<int, MaskSelector>::iterator foundMask = _imp->maskSelectors.find(inputNb);
     if (foundMask != _imp->maskSelectors.end()) {
         foundMask->second.channel.lock()->setLabel(label);
-    }
-
-    std::map<int, ChannelSelector>::iterator foundChannel = _imp->channelsSelectors.find(inputNb);
-    if (foundChannel != _imp->channelsSelectors.end()) {
-        foundChannel->second.layer.lock()->setLabel(label + std::string(" Layer"));
     }
 
     Q_EMIT inputEdgeLabelChanged(inputNb, QString::fromUtf8(label.c_str()));
@@ -1621,7 +1617,6 @@ Node::onInputChanged(int inputNb,
     }
 
     refreshMaskEnabledNess(inputNb);
-    refreshLayersChoiceSecretness(inputNb);
 
     InspectorNode* isInspector = dynamic_cast<InspectorNode*>(this);
     if (isInspector) {

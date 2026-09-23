@@ -25,13 +25,15 @@
 
 #include "Project.h"
 
-#include <fstream>
 #include <algorithm> // min, max
+#include <cassert>
+#include <cerrno> // errno
+#include <cstdlib> // strtoul
+#include <fstream>
 #include <ios>
 #include <limits>
-#include <cstdlib> // strtoul
-#include <cerrno> // errno
-#include <cassert>
+#include <map>
+#include <set>
 #include <stdexcept>
 
 #ifdef __NATRON_WIN32__
@@ -43,18 +45,17 @@
 #include <pwd.h> //for getpwuid
 #endif
 
-
 #include <QCoreApplication>
-#include <QTimer>
-#include <QThread>
+#include <QDebug>
 #include <QDir>
 #include <QDirIterator>
-#include <QTemporaryFile>
 #include <QFileInfo>
-#include <QDebug>
-#include <QTextStream>
 #include <QHostInfo>
 #include <QRegularExpression>
+#include <QTemporaryFile>
+#include <QTextStream>
+#include <QThread>
+#include <QTimer>
 #include <QtConcurrentRun> // QtCore on Qt4, QtConcurrent on Qt5
 
 #include <ofxhXml.h> // OFX::XML::escape
@@ -69,12 +70,13 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
-#include "Engine/CreateNodeArgs.h"
 #include "Engine/BezierCPSerialization.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FormatSerialization.h"
 #include "Engine/Hash64.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProjectPrivate.h"
@@ -84,8 +86,8 @@
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
 #include "Engine/StandardPaths.h"
-#include "Engine/ViewerInstance.h"
 #include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -117,7 +119,7 @@ getUserName()
     // to the environment, then to the raw uid, rather than dereferencing
     // a NULL pointer or inventing a placeholder name that could collide
     // with a real account.
-    const char *envUser = std::getenv("USER");
+    const char* envUser = std::getenv("USER");
     if (!envUser || !envUser[0]) {
         envUser = std::getenv("LOGNAME");
     }
@@ -125,7 +127,7 @@ getUserName()
         return envUser;
     }
 
-    return std::to_string( getuid() );
+    return std::to_string(getuid());
 #endif
 }
 
@@ -627,7 +629,7 @@ findBackups(const QString & filePath)
         ret.append(filePath);
     }
     // find files matching filePath.~[0-9]+~
-    QRegularExpression rx( QString::fromUtf8("\\.~(\\d+)~$") );
+    QRegularExpression rx(QString::fromUtf8("\\.~(\\d+)~$"));
     QFileInfo fileInfo(filePath);
     QString fileName = fileInfo.fileName();
     QDirIterator it(fileInfo.dir());
@@ -644,8 +646,7 @@ findBackups(const QString & filePath)
         // The pattern ends with $, so there is at most one match and
         // lastIndexIn() is just that match.
         QRegularExpressionMatch backupMatch = rx.match(fn);
-        if ( fn.startsWith(fileName) && backupMatch.hasMatch() &&
-             ( backupMatch.capturedStart() == fileName.size() ) ) {
+        if (fn.startsWith(fileName) && backupMatch.hasMatch() && (backupMatch.capturedStart() == fileName.size())) {
             ret.append(file.filePath());
         }
     }
@@ -659,11 +660,11 @@ findBackups(const QString & filePath)
 static QString
 nextBackup(const QString & filePath)
 {
-    QRegularExpression rx( QString::fromUtf8("\\.~(\\d+)~$") );
+    QRegularExpression rx(QString::fromUtf8("\\.~(\\d+)~$"));
     QRegularExpressionMatch match = rx.match(filePath);
-    if ( match.hasMatch() ) {
+    if (match.hasMatch()) {
         int i = match.captured(1).toInt();
-        return filePath.left( match.capturedStart() ) + QString::fromUtf8(".~%1~").arg(i+1);
+        return filePath.left(match.capturedStart()) + QString::fromUtf8(".~%1~").arg(i + 1);
     } else {
         return filePath + QString::fromUtf8(".~1~");
     }
@@ -883,7 +884,7 @@ Project::onAutoSaveTimerTriggered()
     if (canAutoSave) {
         std::shared_ptr<QFutureWatcher<void> > watcher = std::make_shared<QFutureWatcher<void> >();
         QObject::connect( watcher.get(), SIGNAL(finished()), this, SLOT(onAutoSaveFutureFinished()) );
-        watcher->setFuture( QtConcurrent::run(&Project::autoSave, this) );
+        watcher->setFuture(QtConcurrent::run(&Project::autoSave, this));
         _imp->autoSaveFutures.push_back(watcher);
     } else {
         ///If the auto-save failed because a render is in progress, try every 2 seconds to auto-save.
@@ -1091,34 +1092,12 @@ Project::initializeKnobs()
     _imp->defaultLayersList->setHintToolTip( tr("The list of the default layers available in layers menus on nodes.") );
     _imp->defaultLayersList->setAnimationEnabled(false);
     _imp->defaultLayersList->setEvaluateOnChange(false);
-    std::list<std::vector<std::string> > defaultLayers;
-    {
-        std::vector<ImageLayerDesc> defaultComponents;
-        defaultComponents.push_back(ImageLayerDesc::getRGBAComponents());
-        defaultComponents.push_back(ImageLayerDesc::getDisparityLeftComponents());
-        defaultComponents.push_back(ImageLayerDesc::getDisparityRightComponents());
-        defaultComponents.push_back(ImageLayerDesc::getBackwardMotionComponents());
-        defaultComponents.push_back(ImageLayerDesc::getForwardMotionComponents());
-
-        for (std::size_t i = 0; i < defaultComponents.size(); ++i) {
-            const ImageLayerDesc& comps = defaultComponents[i];
-            std::vector<std::string> row(3);
-            row[0] = comps.getLayerLabel();
-            std::string channelsStr;
-            const std::vector<std::string>& channels = comps.getChannels();
-            for (std::size_t c = 0; c < channels.size(); ++c) {
-                if (c > 0) {
-                    channelsStr += ' ';
-                }
-                channelsStr += channels[c];
-            }
-            row[1] = channelsStr;
-            row[2] = comps.getChannelsLabel();
-            defaultLayers.push_back(row);
-        }
-    }
-    std::string encodedDefaultLayers = _imp->defaultLayersList->encodeToKnobTableFormat(defaultLayers);
-    _imp->defaultLayersList->setDefaultValue(encodedDefaultLayers);
+    // The registry owned by ProjectPrivate is the source of truth; this knob is a
+    // read-only view of it and must not be written back to the project file.
+    _imp->defaultLayersList->setIsPersistent(false);
+    // The default value is a fresh registry with no users, which is exactly what
+    // reset() restores when it resets every project knob to its default.
+    _imp->defaultLayersList->setDefaultValue(encodeLayersKnobTable());
     LayersPage->addKnob(_imp->defaultLayersList);
 
     KnobPagePtr lutPages = AppManager::createKnob<KnobPage>( this, tr("LUT") );
@@ -1474,102 +1453,125 @@ Project::isGPURenderingEnabledInProject() const
     return false;
 }
 
-std::list<ImageLayerDesc>
-Project::getProjectDefaultLayers() const
+LayerRegistry::AddResultEnum
+Project::addLayer(const ImageLayerDesc& desc, LayerRegistryEntry::OriginEnum origin, std::string* error)
 {
-    std::list<ImageLayerDesc> ret;
-    std::list<std::vector<std::string> > table;
+    LayerRegistry::AddResultEnum ret = _imp->layers->add(desc, origin, error);
+    if ((ret == LayerRegistry::eAddResultAdded || ret == LayerRegistry::eAddResultGrown) && !isLoadingProject()) {
+        notifyLayersChanged();
+    }
+    return ret;
+}
 
-    _imp->defaultLayersList->getTable(&table);
-    for (std::list<std::vector<std::string> >::iterator it = table.begin();
-         it != table.end(); ++it) {
+bool
+Project::removeLayer(const std::string& id, std::string* error)
+{
+    std::list<NodePtr> users;
 
-        const std::string& layerLabel = (*it)[0];
-        std::string layerID = layerLabel;
-        std::string componentsLabel;
-
-        // The layers knob only propose the user to display the label of the layer desc,
-        // but we need to recover the ID for the built-in layers to ensure compatibility
-        // with the old Nuke multi-plane suite.
-        if (layerID == kNatronColorLayerLabel) {
-            layerID = kNatronColorLayerID;
-        } else if (layerID == kNatronBackwardMotionVectorsLayerLabel) {
-            layerID = kNatronBackwardMotionVectorsLayerID;
-            componentsLabel = kNatronMotionComponentsLabel;
-        } else if (layerID == kNatronForwardMotionVectorsLayerLabel) {
-            layerID = kNatronForwardMotionVectorsLayerID;
-            componentsLabel = kNatronMotionComponentsLabel;
-        } else if (layerID == kNatronDisparityLeftLayerLabel) {
-            layerID = kNatronDisparityLeftLayerID;
-            componentsLabel = kNatronDisparityComponentsLabel;
-        } else if (layerID == kNatronDisparityRightLayerLabel) {
-            layerID = kNatronDisparityRightLayerID;
-            componentsLabel = kNatronDisparityComponentsLabel;
-        }
-
-        bool found = false;
-        for (std::list<ImageLayerDesc>::const_iterator it2 = ret.begin(); it2 != ret.end(); ++it2) {
-            if (it2->getLayerID() == layerID) {
-                found = true;
-                break;
+    getLayerUsers(id, &users);
+    if (!users.empty()) {
+        if (error) {
+            std::string msg = "\"" + id + "\" is used by ";
+            bool first = true;
+            for (std::list<NodePtr>::const_iterator it = users.begin(); it != users.end(); ++it) {
+                if (!first) {
+                    msg += ", ";
+                }
+                first = false;
+                msg += (*it)->getScriptName_mt_safe();
             }
+            msg += ".";
+            *error = msg;
         }
-        if (!found) {
-            std::vector<std::string> componentsName;
-            QString str = QString::fromUtf8( (*it)[1].c_str() );
-            QStringList channels = str.split( QLatin1Char(' ') );
-            componentsName.resize( channels.size() );
-            for (int i = 0; i < channels.size(); ++i) {
-                componentsName[i] = channels[i].toStdString();
-            }
-            ImageLayerDesc c(layerID, layerLabel, componentsLabel, componentsName);
-            ret.push_back(c);
-        }
+        return false;
     }
 
-    return ret;
+    bool ok = _imp->layers->remove(id, error);
+    if (ok && !isLoadingProject()) {
+        notifyLayersChanged();
+    }
+    return ok;
+}
+
+std::shared_ptr<const std::vector<LayerRegistryEntry>>
+Project::getLayerRegistrySnapshot() const
+{
+    return _imp->layers->snapshot();
+}
+
+bool
+Project::findLayer(const std::string& id, ImageLayerDesc* out) const
+{
+    return _imp->layers->find(id, out);
 }
 
 void
-Project::addProjectDefaultLayer(const ImageLayerDesc& comps)
+Project::getLayerUsers(const std::string& id, std::list<NodePtr>* users) const
 {
-    const std::vector<std::string>& channels = comps.getChannels();
-    std::vector<std::string> row(2);
+    NodesList nodes;
 
-    row[0] = comps.getLayerLabel();
-    std::string channelsStr;
-    for (std::size_t i = 0; i < channels.size(); ++i) {
-        channelsStr += channels[i];
-        if ( i < (channels.size() - 1) ) {
-            channelsStr += ' ';
+    getNodes_recursive(nodes, true);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        std::set<std::string> ids;
+        (*it)->getReferencedLayerIDs(&ids);
+        if (ids.find(id) != ids.end()) {
+            users->push_back(*it);
         }
     }
-    row[1] = channelsStr;
-    _imp->defaultLayersList->appendRow(row);
 }
 
-std::vector<std::string>
-Project::getProjectDefaultLayerNames() const
+std::string
+Project::encodeLayersKnobTable() const
 {
-    std::vector<std::string> ret;
-    std::list<std::vector<std::string> > pairs;
-
-    _imp->defaultLayersList->getTable(&pairs);
-    for (std::list<std::vector<std::string> >::iterator it = pairs.begin();
-         it != pairs.end(); ++it) {
-        bool found = false;
-        for (std::size_t i = 0; i < ret.size(); ++i) {
-            if (ret[i] == (*it)[0]) {
-                found = true;
-                break;
+    std::map<std::string, int> usersCount;
+    {
+        NodesList nodes;
+        getNodes_recursive(nodes, true);
+        for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+            std::set<std::string> ids;
+            (*it)->getReferencedLayerIDs(&ids);
+            for (std::set<std::string>::const_iterator id = ids.begin(); id != ids.end(); ++id) {
+                ++usersCount[*id];
             }
-        }
-        if (!found) {
-            ret.push_back( (*it)[0] );
         }
     }
 
-    return ret;
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = _imp->layers->snapshot();
+    std::list<std::vector<std::string>> table;
+    for (std::size_t i = 0; i < snapshot->size(); ++i) {
+        const ImageLayerDesc& desc = (*snapshot)[i].desc;
+        std::map<std::string, int>::const_iterator found = usersCount.find(desc.getLayerID());
+        table.push_back(KnobLayers::makeRow(desc, found == usersCount.end() ? 0 : found->second));
+    }
+
+    return _imp->defaultLayersList->encodeToKnobTableFormat(table);
+}
+
+void
+Project::refreshLayersKnob()
+{
+    _imp->defaultLayersList->setValue(encodeLayersKnobTable());
+}
+
+void
+Project::emitProjectLayersChangedSignal()
+{
+    refreshLayersKnob();
+    Q_EMIT projectLayersChanged();
+}
+
+void
+Project::notifyLayersChanged()
+{
+    NodesList nodes;
+    getNodes_recursive(nodes, true);
+    for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        (*it)->refreshChannelSelectors();
+    }
+
+    // After the selectors: a selector that loses its layer changes "Used by".
+    refreshLayersKnob();
+    Q_EMIT projectLayersChanged();
 }
 
 const std::vector<std::string>&
@@ -1772,12 +1774,6 @@ Project::onKnobValueChanged(KnobI* knob,
             forceComputeInputDependentDataOnAllTrees();
         }
         Q_EMIT projectViewsChanged();
-        shouldAutoSave = true;
-    } else if  ( knob == _imp->defaultLayersList.get() ) {
-        if (reason == eValueChangedReasonUserEdited) {
-            ///default layers change, notify all nodes so they rebuild their layers menus
-            forceComputeInputDependentDataOnAllTrees();
-        }
         shouldAutoSave = true;
     } else if ( knob == _imp->setupForStereoButton.get() ) {
         setupProjectForStereo();
@@ -2168,6 +2164,7 @@ Project::doResetEnd(bool aboutToQuit)
             _imp->setProjectPath("");
             _imp->autoSaveTimer->stop();
             _imp->additionalFormats.clear();
+            _imp->layers.reset(new LayerRegistry());
         }
         getApp()->removeAllKeyframesIndicators();
 

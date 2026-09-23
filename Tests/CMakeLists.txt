@@ -22,6 +22,7 @@ set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
     BaseTest.cpp
+    ChannelSetRender_Test.cpp
     CLArgs_Test.cpp
     Curve_Test.cpp
     DataKind_Test.cpp
@@ -36,15 +37,26 @@ set(Tests_SOURCES
     DeepReadWrite_Test.cpp
     DeepRenderPipeline_Test.cpp
     FileSystemModel_Test.cpp
+    GeneratorLayer_Test.cpp
     Hash64_Test.cpp
     Image_Test.cpp
+    KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
+    KnobLayerSelect_Test.cpp
+    Knob_Test.cpp
+    LayerKnobsRender_Test.cpp
+    LayerKnobs_Test.cpp
+    LayerRegistry_Test.cpp
     Lut_Test.cpp
     Metadata_Test.cpp
     OSGLContext_Test.cpp
     ProjectOCIO_Test.cpp
     ProjectSerialization_Test.cpp
+    PyPlugExport_Test.cpp
+    ReadFormat_Test.cpp
     RenderRange_Test.cpp
+    RotoLayer_Test.cpp
+    TrackerLayer_Test.cpp
     Tracker_Test.cpp
     TypedPassthrough_Test.cpp
     WriteAllLayers_Test.cpp
@@ -71,6 +83,34 @@ target_include_directories(Tests
         google-mock/include
         google-mock
 )
+# Widget tests live in their own binary: they need a QApplication, and the Tests
+# binary's AppManager already owns a QCoreApplication that a QApplication cannot
+# be created next to. guimain.cpp builds the QApplication on the offscreen
+# platform, so the suite runs without a display.
+set(GuiTests_SOURCES
+    google-test/src/gtest-all.cc
+    google-mock/src/gmock-all.cc
+    LayerChannelRow_Test.cpp
+    guimain.cpp
+)
+add_executable(GuiTests ${GuiTests_SOURCES})
+target_link_libraries(GuiTests
+    PRIVATE
+        NatronGui
+        NatronEngine
+        Qt::Core
+        Qt::Widgets
+        Python3::Python
+)
+target_include_directories(GuiTests
+    PRIVATE
+        ..
+        google-test/include
+        google-test
+        google-mock/include
+        google-mock
+)
+
 include(GoogleTest)
 # PRE_TEST, not the default POST_BUILD: discovery runs the binary, which
 # constructs an AppManager and calls load() before RUN_ALL_TESTS() (even
@@ -86,3 +126,4 @@ include(GoogleTest)
 # of all four OFX bundles plus Python and OCIO init before gtest prints the list.
 # Blowing the 5s budget is a FATAL_ERROR that fails ctest before a single test runs.
 gtest_discover_tests(Tests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 300)
+gtest_discover_tests(GuiTests DISCOVERY_MODE PRE_TEST DISCOVERY_TIMEOUT 120 PROPERTIES TIMEOUT 300)

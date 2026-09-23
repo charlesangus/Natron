@@ -169,9 +169,9 @@ def createInstance(app,group):
     lastNode.setColor(0.8, 0.5, 0.3)
     groupBlur2 = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessA")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(True)
+        param.setChannels(["R", "G", "B", "A"])
         del param
 
     param = lastNode.getParam("size")

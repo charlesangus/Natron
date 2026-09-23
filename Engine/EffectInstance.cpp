@@ -48,25 +48,26 @@
 #include "Engine/AppManager.h"
 #include "Engine/BlockingBackgroundRender.h"
 #include "Engine/DiskCacheNode.h"
+#include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Log.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/Node.h"
-#include "Engine/OfxEffectInstance.h"
-#include "Engine/OfxOverlayInteract.h"
-#include "Engine/OfxImageEffectInstance.h"
-#include "Engine/GPUContextPool.h"
 #include "Engine/OSGLContext.h"
+#include "Engine/OfxEffectInstance.h"
+#include "Engine/OfxImageEffectInstance.h"
+#include "Engine/OfxOverlayInteract.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/PluginMemory.h"
 #include "Engine/Project.h"
+#include "Engine/ReadNode.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
-#include "Engine/ReadNode.h"
 #include "Engine/Settings.h"
 #include "Engine/Timer.h"
 #include "Engine/Transform.h"
@@ -163,6 +164,22 @@ mergeLayersList(const std::list<ImageLayerDesc>& inputList,
 } // mergeLayersList
 
 /**
+ * @brief The registry snapshot as a plain list, in registry order (built-ins first), the
+ * shape every getAvailableLayers()-adjacent caller here expects.
+ **/
+static std::list<ImageLayerDesc>
+getRegisteredProjectLayersList(const ProjectPtr& project)
+{
+    std::list<ImageLayerDesc> ret;
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
+
+    for (std::vector<LayerRegistryEntry>::const_iterator it = snapshot->begin(); it != snapshot->end(); ++it) {
+        ret.push_back(it->desc);
+    }
+    return ret;
+}
+
+/**
  * @brief Remove any layer from the toRemove list from toList.
  **/
 static void
@@ -185,11 +202,7 @@ EffectInstance::getUserLayers() const
     assert(tls);
     tls->userLayerStrings.clear();
 
-    std::list<ImageLayerDesc> projectLayers = getApp()->getProject()->getProjectDefaultLayers();
-
-    std::list<ImageLayerDesc> userCreatedLayers;
-    getNode()->getUserCreatedComponents(&userCreatedLayers);
-    mergeLayersList(userCreatedLayers, &projectLayers);
+    std::list<ImageLayerDesc> projectLayers = getRegisteredProjectLayersList(getApp()->getProject());
 
     for (std::list<ImageLayerDesc>::iterator it = projectLayers.begin(); it != projectLayers.end(); ++it) {
         tls->userLayerStrings.push_back(ImageLayerDesc::mapLayerToOFXPlaneString(*it));
@@ -1047,7 +1060,7 @@ EffectInstance::getImage(int inputNb,
         }
 
         if (mapToClipPrefs) {
-            inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, node->usesAlpha0ToConvertFromRGBToRGBA(), eImagePremultiplicationPremultiplied, channelForMask);
+            inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, node->usesAlpha0ToConvertFromRGBToRGBA(), channelForMask);
         }
 
         return inputImg;
@@ -1057,8 +1070,41 @@ EffectInstance::getImage(int inputNb,
     /// The node is connected.
     assert(inputEffect);
 
+    // A plane requested with a channel subset of the one the input produces (a Write container's
+    // channel set narrows its encoder's plane list that way) is rendered whole and the requested
+    // channels are extracted from it, since renderRoI() only matches planes with equal channel counts.
+    std::vector<int> subsetChannelIndices;
+    ImageLayerDesc renderedComps = isMask ? maskComps : components;
+    if (layer && !isMask && !components.isColorLayer()) {
+        std::list<ImageLayerDesc> producedLayers;
+        inputEffect->getPresentLayers(time, view, -1, &producedLayers);
+        for (std::list<ImageLayerDesc>::const_iterator it = producedLayers.begin(); it != producedLayers.end(); ++it) {
+            if (it->getLayerID() != components.getLayerID()) {
+                continue;
+            }
+            if (*it == components) {
+                break;
+            }
+            const std::vector<std::string>& produced = it->getChannels();
+            const std::vector<std::string>& wanted = components.getChannels();
+            std::vector<int> indices;
+            for (std::size_t w = 0; w < wanted.size(); ++w) {
+                std::vector<std::string>::const_iterator found = std::find(produced.begin(), produced.end(), wanted[w]);
+                if (found == produced.end()) {
+                    break;
+                }
+                indices.push_back((int)std::distance(produced.begin(), found));
+            }
+            if (indices.size() == wanted.size()) {
+                subsetChannelIndices = indices;
+                renderedComps = *it;
+            }
+            break;
+        }
+    }
+
     std::list<ImageLayerDesc> requestedComps;
-    requestedComps.push_back(isMask ? maskComps : components);
+    requestedComps.push_back(renderedComps);
     std::map<ImageLayerDesc, ImagePtr> inputImages;
     RenderRoIRetCode retCode = inputEffect->renderRoI(RenderRoIArgs(time,
                                                                     scale,
@@ -1091,6 +1137,13 @@ EffectInstance::getImage(int inputNb,
         return ImagePtr();
     }
 
+    if (!subsetChannelIndices.empty()) {
+        inputImg = inputImg->extractChannels(subsetChannelIndices);
+        if (!inputImg) {
+            return ImagePtr();
+        }
+    }
+
     /*
      * From now on this is the generic part. We first call renderRoI and then convert to the appropriate scale/components if needed.
      * Note that since the image has been pre-rendered before by the recursive nature of the algorithm, the call to renderRoI will be
@@ -1111,8 +1164,8 @@ EffectInstance::getImage(int inputNb,
         ///Resize the image according to the requested scale
         ImageBitDepthEnum bitdepth = inputImg->getBitDepth();
         const RectI bounds = inputImg->getRoD().toPixelEnclosing(0, par);
-        ImagePtr rescaledImg = std::make_shared<Image>( inputImg->getComponents(), inputImg->getRoD(),
-                                                         bounds, 0, par, bitdepth, inputImg->getPremultiplication(), inputImg->getFieldingOrder() );
+        ImagePtr rescaledImg = std::make_shared<Image>(inputImg->getComponents(), inputImg->getRoD(),
+                                                       bounds, 0, par, bitdepth, inputImg->getFieldingOrder());
         inputImg->upscaleMipmap( inputImg->getBounds(), inputImgMipmapLevel, 0, rescaledImg.get() );
         if (roiPixel) {
             if (!inputRoDSet) {
@@ -1128,17 +1181,9 @@ EffectInstance::getImage(int inputNb,
         inputImg = rescaledImg;
     }
 
-
-    //Remap if needed
-    ImagePremultiplicationEnum outputPremult;
-    if (components.isColorLayer()) {
-        outputPremult = inputEffect->getPremult();
-    } else {
-        outputPremult = eImagePremultiplicationOpaque;
-    }
-
+    // Remap if needed
     if (mapToClipPrefs) {
-        inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, node->usesAlpha0ToConvertFromRGBToRGBA(), outputPremult, channelForMask);
+        inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, node->usesAlpha0ToConvertFromRGBToRGBA(), channelForMask);
     }
 
 #ifdef DEBUG
@@ -1568,15 +1613,15 @@ EffectInstance::convertRAMImageToOpenGLTexture(const ImagePtr& image)
     ImagePtr tmpImg;
     if (useTmpImage) {
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-        tmpImg.reset(new Image(ImageLayerDesc::getRGBAComponents(), image->getRoD(), bounds, 0, image->getPixelAspectRatio(), image->getBitDepth(), image->getPremultiplication(), image->getFieldingOrder(), false, eStorageModeRAM));
+        tmpImg.reset(new Image(ImageLayerDesc::getRGBAComponents(), image->getRoD(), bounds, 0, image->getPixelAspectRatio(), image->getBitDepth(), image->getFieldingOrder(), false, eStorageModeRAM));
 #else
-        tmpImg = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), image->getRoD(), bounds, 0, image->getPixelAspectRatio(), image->getBitDepth(), image->getPremultiplication(), image->getFieldingOrder(), false, eStorageModeRAM);
+        tmpImg = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), image->getRoD(), bounds, 0, image->getPixelAspectRatio(), image->getBitDepth(), image->getFieldingOrder(), false, eStorageModeRAM);
 #endif
         tmpImg->setKey(image->getKey());
         if (tmpImg->getComponents() == image->getComponents()) {
             tmpImg->pasteFrom(*image, bounds);
         } else {
-            image->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear, -1, false, false, tmpImg.get());
+            image->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear, -1, false, tmpImg.get());
         }
     }
 
@@ -1737,17 +1782,14 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
                 }
 
                 ImageParamsPtr imageParams = Image::makeParams(rod,
-                                                                               downscaledBounds,
-                                                                               oldParams->getPixelAspectRatio(),
-                                                                               mipmapLevel,
-                                                                               oldParams->isRodProjectFormat(),
-                                                                               oldParams->getComponents(),
-                                                                               oldParams->getBitDepth(),
-                                                                               oldParams->getPremultiplication(),
-                                                                               oldParams->getFieldingOrder(),
-                                                                               eStorageModeRAM);
-
-
+                                                               downscaledBounds,
+                                                               oldParams->getPixelAspectRatio(),
+                                                               mipmapLevel,
+                                                               oldParams->isRodProjectFormat(),
+                                                               oldParams->getComponents(),
+                                                               oldParams->getBitDepth(),
+                                                               oldParams->getFieldingOrder(),
+                                                               eStorageModeRAM);
 
                 ImagePtr img;
                 getOrCreateFromCacheInternal(key, imageParams, imageToConvert->usesBitMap(), &img);
@@ -1961,7 +2003,6 @@ EffectInstance::allocateImageLayer(const ImageKey& key,
                                    bool isProjectFormat,
                                    const ImageLayerDesc& components,
                                    ImageBitDepthEnum depth,
-                                   ImagePremultiplicationEnum premult,
                                    ImageFieldingOrderEnum fielding,
                                    double par,
                                    unsigned int mipmapLevel,
@@ -1974,18 +2015,17 @@ EffectInstance::allocateImageLayer(const ImageKey& key,
     //If we're rendering full scale and with input images at full scale, don't cache the downscale image since it is cheap to
     //recreate, instead cache the full-scale image
     if (renderFullScaleThenDownscale) {
-        *downscaleImage = std::make_shared<Image>(components, rod, downscaleImageBounds, mipmapLevel, par, depth, premult, fielding, true);
+        *downscaleImage = std::make_shared<Image>(components, rod, downscaleImageBounds, mipmapLevel, par, depth, fielding, true);
         ImageParamsPtr upscaledImageParams = Image::makeParams(rod,
-                                                                               fullScaleImageBounds,
-                                                                               par,
-                                                                               0,
-                                                                               isProjectFormat,
-                                                                               components,
-                                                                               depth,
-                                                                               premult,
-                                                                               fielding,
-                                                                               storage,
-                                                                               GL_TEXTURE_2D);
+                                                               fullScaleImageBounds,
+                                                               par,
+                                                               0,
+                                                               isProjectFormat,
+                                                               components,
+                                                               depth,
+                                                               fielding,
+                                                               storage,
+                                                               GL_TEXTURE_2D);
         //The upscaled image will be rendered with input images at full def, it is then the best possibly rendered image so cache it!
 
         fullScaleImage->reset();
@@ -1997,16 +2037,15 @@ EffectInstance::allocateImageLayer(const ImageKey& key,
     } else {
         ///Cache the image with the requested components instead of the remapped ones
         ImageParamsPtr cachedImgParams = Image::makeParams(rod,
-                                                                           downscaleImageBounds,
-                                                                           par,
-                                                                           mipmapLevel,
-                                                                           isProjectFormat,
-                                                                           components,
-                                                                           depth,
-                                                                           premult,
-                                                                           fielding,
-                                                                           storage,
-                                                                           GL_TEXTURE_2D);
+                                                           downscaleImageBounds,
+                                                           par,
+                                                           mipmapLevel,
+                                                           isProjectFormat,
+                                                           components,
+                                                           depth,
+                                                           fielding,
+                                                           storage,
+                                                           GL_TEXTURE_2D);
 
         //Take the lock after getting the image from the cache or while allocating it
         ///to make sure a thread will not attempt to write to the image while its being allocated.
@@ -2245,22 +2284,11 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                 firstFrame,
                                                 lastFrame,
                                                 layers->useOpenGL);
-    ImagePtr originalInputImage, maskImage;
-    ImagePremultiplicationEnum originalImagePremultiplication;
-    EffectInstance::InputImagesMap::const_iterator foundPrefInput = rectToRender.imgs.find(preferredInput);
+    ImagePtr maskImage;
     EffectInstance::InputImagesMap::const_iterator foundMaskInput = rectToRender.imgs.end();
 
     if ( _publicInterface->isHostMaskingEnabled() ) {
         foundMaskInput = rectToRender.imgs.find(_publicInterface->getNInputs() - 1);
-    }
-    if ( ( foundPrefInput != rectToRender.imgs.end() ) && !foundPrefInput->second.empty() ) {
-        originalInputImage = foundPrefInput->second.front();
-    }
-    std::map<int, ImagePremultiplicationEnum>::const_iterator foundPrefPremult = layers->inputPremult.find(preferredInput);
-    if ((foundPrefPremult != layers->inputPremult.end()) && originalInputImage) {
-        originalImagePremultiplication = foundPrefPremult->second;
-    } else {
-        originalImagePremultiplication = eImagePremultiplicationOpaque;
     }
 
     if ( ( foundMaskInput != rectToRender.imgs.end() ) && !foundMaskInput->second.empty() ) {
@@ -2345,9 +2373,8 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
                                                        outputClipPrefDepth,
                                                        outputClipPrefsComps,
                                                        processChannels,
-                                                       originalInputImage,
+                                                       preferredInput,
                                                        maskImage,
-                                                       originalImagePremultiplication,
                                                        *layers);
     if (handlerRet == eRenderingFunctorRetOK) {
         return eRenderingFunctorRetOK;
@@ -2355,6 +2382,67 @@ EffectInstance::Implementation::tiledRenderingFunctor(const RectToRender& rectTo
         return handlerRet;
     }
 } // EffectInstance::tiledRenderingFunctor
+
+// The channels the node processes on the given output plane: the layer knob's bits for that
+// plane, else the node-wide bits (nodes without a layer knob, and planes rendered because the
+// selection resolved to nothing).
+static std::bitset<4>
+processChannelsForPlane(const EffectInstance::ProcessChannelsPerPlaneMap& perPlane,
+                        const ImageLayerDesc& plane,
+                        const std::bitset<4>& defaultChannels)
+{
+    EffectInstance::ProcessChannelsPerPlaneMap::const_iterator found = perPlane.find(plane);
+
+    return found == perPlane.end() ? defaultChannels : found->second;
+}
+
+// A plug-in renders every plane through its Color output clip, so channel i of what it rendered
+// is channel i of the plane. Image::convertToFormat's default fills a one-channel destination
+// from the source's alpha, which is only right when that destination is Color's alpha.
+static int
+channelForAlphaForPlane(const ImageLayerDesc& plane)
+{
+    return plane.isColorLayer() ? -1 : 0;
+}
+
+// A one-channel plane's bits name its channel as bit 3. When the plug-in rendered that plane into
+// a wider temporary image, the channel is wherever channelForAlphaForPlane() reads it back from.
+static std::bitset<4>
+processChannelsForImage(const ImageLayerDesc& plane,
+                        const Image& image,
+                        const std::bitset<4>& planeChannels)
+{
+    if ((plane.getNumComponents() != 1) || (image.getComponentsCount() == 1)) {
+        return planeChannels;
+    }
+    std::bitset<4> channels;
+    channels[channelForAlphaForPlane(plane) == 0 ? 0 : 3] = planeChannels[3];
+
+    return channels;
+}
+
+// The preferred input's image of the given output plane: same layer ID, or any Color plane
+// for a Color plane. Falls back to the first image so an input without that plane still
+// feeds the mask/mix pass.
+static ImagePtr
+findInputImageForPlane(const EffectInstance::InputImagesMap& inputImages,
+                       int inputNb,
+                       const ImageLayerDesc& plane)
+{
+    EffectInstance::InputImagesMap::const_iterator found = inputImages.find(inputNb);
+    if ((found == inputImages.end()) || found->second.empty()) {
+        return ImagePtr();
+    }
+    for (ImageList::const_iterator it = found->second.begin(); it != found->second.end(); ++it) {
+        const ImageLayerDesc& comps = (*it)->getComponents();
+        const bool equivalent = plane.isColorLayer() ? comps.isColorLayer() : comps.getLayerID() == plane.getLayerID();
+        if (equivalent) {
+            return *it;
+        }
+    }
+
+    return found->second.front();
+}
 
 EffectInstance::RenderingFunctorRetEnum
 EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
@@ -2368,9 +2456,8 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                               const ImageBitDepthEnum outputClipPrefDepth,
                                               const ImageLayerDesc& outputClipPrefsComps,
                                               const std::bitset<4>& processChannels,
-                                              const ImagePtr& originalInputImage,
+                                              const int preferredInput,
                                               const ImagePtr& maskImage,
-                                              const ImagePremultiplicationEnum originalImagePremultiplication,
                                               ImageLayersToRender& layers)
 {
     TimeLapsePtr timeRecorder;
@@ -2505,18 +2592,17 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                         ImagePtr sourceImage;
                         if ( ( it->second.fullscaleImage->getComponents() != idIt->second->getComponents() ) || ( it->second.fullscaleImage->getBitDepth() != idIt->second->getBitDepth() ) ) {
                             sourceImage = std::make_shared<Image>(it->second.fullscaleImage->getComponents(),
-                                                                    idIt->second->getRoD(),
-                                                                    idIt->second->getBounds(),
-                                                                    idIt->second->getMipmapLevel(),
-                                                                    idIt->second->getPixelAspectRatio(),
-                                                                    it->second.fullscaleImage->getBitDepth(),
-                                                                    idIt->second->getPremultiplication(),
-                                                                    idIt->second->getFieldingOrder(),
-                                                                    false);
+                                                                  idIt->second->getRoD(),
+                                                                  idIt->second->getBounds(),
+                                                                  idIt->second->getMipmapLevel(),
+                                                                  idIt->second->getPixelAspectRatio(),
+                                                                  it->second.fullscaleImage->getBitDepth(),
+                                                                  idIt->second->getFieldingOrder(),
+                                                                  false);
 
                             ViewerColorSpaceEnum colorspace = _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( idIt->second->getBitDepth() );
                             ViewerColorSpaceEnum dstColorspace = _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.fullscaleImage->getBitDepth() );
-                            idIt->second->convertToFormat( idIt->second->getBounds(), colorspace, dstColorspace, 3, false, false, sourceImage.get() );
+                            idIt->second->convertToFormat(idIt->second->getBounds(), colorspace, dstColorspace, 3, false, sourceImage.get());
                         } else {
                             sourceImage = idIt->second;
                         }
@@ -2530,7 +2616,6 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                                                       it->second.renderMappedImage->getMipmapLevel(),
                                                                       it->second.renderMappedImage->getPixelAspectRatio(),
                                                                       it->second.renderMappedImage->getBitDepth(),
-                                                                      it->second.renderMappedImage->getPremultiplication(),
                                                                       it->second.renderMappedImage->getFieldingOrder(),
                                                                       false);
                         sourceImage->upscaleMipmap(sourceImage->getBounds(), sourceImage->getMipmapLevel(), inputLayer->getMipmapLevel(), inputLayer.get());
@@ -2546,7 +2631,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                             ViewerColorSpaceEnum colorspace = _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( idIt->second->getBitDepth() );
                             ViewerColorSpaceEnum dstColorspace = _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.fullscaleImage->getBitDepth() );
                             const RectI convertWindow = idIt->second->getBounds().intersect(downscaledRectToRender);
-                            idIt->second->convertToFormat( convertWindow, colorspace, dstColorspace, 3, false, false, it->second.downscaleImage.get() );
+                            idIt->second->convertToFormat(convertWindow, colorspace, dstColorspace, 3, false, it->second.downscaleImage.get());
                         } else {
                             it->second.downscaleImage->pasteFrom(*(idIt->second), downscaledRectToRender, false, glContext);
                         }
@@ -2579,14 +2664,13 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         // OpenGL render never use the cache and bitmaps, all images are local to a render.
         if ((it->second.renderMappedImage->usesBitMap() || (prefComp != it->second.renderMappedImage->getComponents()) || (outputClipPrefDepth != it->second.renderMappedImage->getBitDepth())) && !_publicInterface->isPaintingOverItselfEnabled() && !layers.useOpenGL) {
             it->second.tmpImage = std::make_shared<Image>(prefComp,
-                                                            it->second.renderMappedImage->getRoD(),
-                                                            actionArgs.roi,
-                                                            it->second.renderMappedImage->getMipmapLevel(),
-                                                            it->second.renderMappedImage->getPixelAspectRatio(),
-                                                            outputClipPrefDepth,
-                                                            it->second.renderMappedImage->getPremultiplication(),
-                                                            it->second.renderMappedImage->getFieldingOrder(),
-                                                 false); //< no bitmap
+                                                          it->second.renderMappedImage->getRoD(),
+                                                          actionArgs.roi,
+                                                          it->second.renderMappedImage->getMipmapLevel(),
+                                                          it->second.renderMappedImage->getPixelAspectRatio(),
+                                                          outputClipPrefDepth,
+                                                          it->second.renderMappedImage->getFieldingOrder(),
+                                                          false); //< no bitmap
         } else {
             it->second.tmpImage = it->second.renderMappedImage;
         }
@@ -2619,6 +2703,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         if (!multiPlanar) {
             assert( !it->empty() );
             tls->currentRenderArgs.outputLayerBeingRendered = it->front().first;
+            actionArgs.processChannels = processChannelsForPlane(layers.processChannelsPerPlane, it->front().first, processChannels);
         }
         actionArgs.outputLayers = *it;
 
@@ -2716,15 +2801,12 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
     assert(!renderAborted);
 
-    bool unPremultIfNeeded = layers.outputPremult == eImagePremultiplicationPremultiplied;
     bool useMaskMix = _publicInterface->isHostMaskingEnabled() || _publicInterface->isHostMixingEnabled();
     double mix = useMaskMix ? _publicInterface->getNode()->getHostMixingValue(time, view) : 1.;
     bool doMask = useMaskMix ? _publicInterface->getNode()->isMaskEnabled(_publicInterface->getNInputs() - 1) : false;
 
     //Check for NaNs, copy to output image and mark for rendered
     for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = outputLayers.begin(); it != outputLayers.end(); ++it) {
-        bool unPremultRequired = unPremultIfNeeded && it->second.tmpImage->getComponentsCount() == 4 && it->second.renderMappedImage->getComponentsCount() == 3;
-
         if ( frameArgs->doNansHandling && it->second.tmpImage->checkForNaNsAndFix(actionArgs.roi) ) {
             QString warning = QString::fromUtf8( _publicInterface->getNode()->getScriptName_mt_safe().c_str() );
             warning.append( QString::fromUtf8(": ") );
@@ -2740,6 +2822,24 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
             warning.append( tr("contains NaN values. They have been converted to 1.") );
             _publicInterface->setPersistentMessage( eMessageTypeWarning, warning.toStdString() );
         }
+
+        // Per the no-shuffle invariant (see OfxClipInstance::getInputImageInternal), the channels
+        // of plane L the node does not process come from the preferred input's plane L, with
+        // L's own bits: one bitset and one source image for every plane would shuffle planes.
+        const ImagePtr originalInputImage = findInputImageForPlane(tls->currentRenderArgs.inputImages, preferredInput, it->first);
+        const std::bitset<4> planeProcessChannels = processChannelsForPlane(layers.processChannelsPerPlane, it->first, processChannels);
+
+        // The other half of the host-owned "(Un)premult by": the plug-in was handed a source
+        // divided by unPremultDivisorImage, so multiply what it rendered back by the same
+        // channel of the same image. Before copyUnProcessedChannels(), which brings back the
+        // channels the plug-in did not write from the undivided input, and before
+        // applyMaskMix(), which mixes against that same undivided input.
+        ImagePtr unPremultDivisorImage;
+        ImageLayerDesc unPremultDivisorLayer;
+        int unPremultDivisorChannel = -1;
+        const bool reUnPremult = !layers.useOpenGL && _publicInterface->getThreadLocalUnPremultDivisor(&unPremultDivisorImage, &unPremultDivisorLayer, &unPremultDivisorChannel);
+        const int unPremultSkipChannel = reUnPremult ? Node::getUnPremultSkipChannel(it->first, unPremultDivisorLayer, unPremultDivisorChannel) : -1;
+
         if (it->second.isAllocatedOnTheFly) {
             /// Layer allocated on the fly only have a temp image if using the cache and it is defined over the render window only
             if (it->second.tmpImage != it->second.renderMappedImage) {
@@ -2750,10 +2850,10 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
                 if ( ( it->second.renderMappedImage->getComponents() != it->second.tmpImage->getComponents() ) ||
                      ( it->second.renderMappedImage->getBitDepth() != it->second.tmpImage->getBitDepth() ) ) {
-                    it->second.tmpImage->convertToFormat( it->second.tmpImage->getBounds(),
-                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.tmpImage->getBitDepth() ),
-                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.renderMappedImage->getBitDepth() ),
-                                                          -1, false, unPremultRequired, it->second.renderMappedImage.get() );
+                    it->second.tmpImage->convertToFormat(it->second.tmpImage->getBounds(),
+                                                         _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
+                                                         _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.renderMappedImage->getBitDepth()),
+                                                         channelForAlphaForPlane(it->first), false, it->second.renderMappedImage.get());
                 } else {
                     it->second.renderMappedImage->pasteFrom(*(it->second.tmpImage), it->second.tmpImage->getBounds(), false);
                 }
@@ -2769,30 +2869,34 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 assert(it->second.fullscaleImage != it->second.downscaleImage && it->second.renderMappedImage == it->second.fullscaleImage);
 
                 ImagePtr mappedOriginalInputImage = originalInputImage;
+                const std::bitset<4> tmpProcessChannels = processChannelsForImage(it->first, *it->second.tmpImage, planeProcessChannels);
 
                 if ( originalInputImage && (originalInputImage->getMipmapLevel() != 0) ) {
-                    bool mustCopyUnprocessedChannels = it->second.tmpImage->canCallCopyUnProcessedChannels(processChannels);
+                    bool mustCopyUnprocessedChannels = it->second.tmpImage->canCallCopyUnProcessedChannels(tmpProcessChannels);
                     if (mustCopyUnprocessedChannels || useMaskMix) {
                         ///there is some processing to be done by copyUnProcessedChannels or applyMaskMix
                         ///but originalInputImage is not in the correct mipmapLevel, upscale it
                         assert(originalInputImage->getMipmapLevel() > it->second.tmpImage->getMipmapLevel() &&
                                originalInputImage->getMipmapLevel() == mipmapLevel);
                         ImagePtr tmp = std::make_shared<Image>(it->second.tmpImage->getComponents(),
-                                                it->second.tmpImage->getRoD(),
-                                                renderMappedRectToRender,
-                                                0,
-                                                it->second.tmpImage->getPixelAspectRatio(),
-                                                it->second.tmpImage->getBitDepth(),
-                                                it->second.tmpImage->getPremultiplication(),
-                                                it->second.tmpImage->getFieldingOrder(),
-                                                false);
+                                                               it->second.tmpImage->getRoD(),
+                                                               renderMappedRectToRender,
+                                                               0,
+                                                               it->second.tmpImage->getPixelAspectRatio(),
+                                                               it->second.tmpImage->getBitDepth(),
+                                                               it->second.tmpImage->getFieldingOrder(),
+                                                               false);
                         originalInputImage->upscaleMipmap( downscaledRectToRender, originalInputImage->getMipmapLevel(), 0, tmp.get() );
                         mappedOriginalInputImage = tmp;
                     }
                 }
 
+                if (reUnPremult) {
+                    it->second.tmpImage->premultiplyByChannel(renderMappedRectToRender, unPremultDivisorImage.get(), unPremultDivisorChannel, tmpProcessChannels, unPremultSkipChannel);
+                }
+
                 if (mappedOriginalInputImage) {
-                    it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, layers.outputPremult, originalImagePremultiplication, processChannels, mappedOriginalInputImage, true);
+                    it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, tmpProcessChannels, mappedOriginalInputImage);
                     if (useMaskMix) {
                         it->second.tmpImage->applyMaskMix(renderMappedRectToRender, maskImage.get(), mappedOriginalInputImage.get(), doMask, false, mix);
                     }
@@ -2803,31 +2907,29 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                      * BitDepth/Components conversion required as well as downscaling, do conversion to a tmp buffer
                      */
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-                    ImagePtr tmp( new Image(it->second.fullscaleImage->getComponents(),
-                                            it->second.tmpImage->getRoD(),
-                                            renderMappedRectToRender,
-                                            mipmapLevel,
-                                            it->second.tmpImage->getPixelAspectRatio(),
-                                            it->second.fullscaleImage->getBitDepth(),
-                                            it->second.fullscaleImage->getPremultiplication(),
-                                            it->second.fullscaleImage->getFieldingOrder(),
-                                            false) );
+                    ImagePtr tmp(new Image(it->second.fullscaleImage->getComponents(),
+                                           it->second.tmpImage->getRoD(),
+                                           renderMappedRectToRender,
+                                           mipmapLevel,
+                                           it->second.tmpImage->getPixelAspectRatio(),
+                                           it->second.fullscaleImage->getBitDepth(),
+                                           it->second.fullscaleImage->getFieldingOrder(),
+                                           false));
 #else
                     ImagePtr tmp = std::make_shared<Image>(it->second.fullscaleImage->getComponents(),
-                                                             it->second.tmpImage->getRoD(),
-                                                             renderMappedRectToRender,
-                                                             mipmapLevel,
-                                                             it->second.tmpImage->getPixelAspectRatio(),
-                                                             it->second.fullscaleImage->getBitDepth(),
-                                                             it->second.fullscaleImage->getPremultiplication(),
-                                                             it->second.fullscaleImage->getFieldingOrder(),
-                                                             false);
+                                                           it->second.tmpImage->getRoD(),
+                                                           renderMappedRectToRender,
+                                                           mipmapLevel,
+                                                           it->second.tmpImage->getPixelAspectRatio(),
+                                                           it->second.fullscaleImage->getBitDepth(),
+                                                           it->second.fullscaleImage->getFieldingOrder(),
+                                                           false);
 #endif
 
-                    it->second.tmpImage->convertToFormat( renderMappedRectToRender,
-                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.tmpImage->getBitDepth() ),
-                                                          _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.fullscaleImage->getBitDepth() ),
-                                                          -1, false, unPremultRequired, tmp.get() );
+                    it->second.tmpImage->convertToFormat(renderMappedRectToRender,
+                                                         _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
+                                                         _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.fullscaleImage->getBitDepth()),
+                                                         channelForAlphaForPlane(it->first), false, tmp.get());
                     tmp->downscaleMipmap( it->second.tmpImage->getRoD(),
                                           renderMappedRectToRender, 0, mipmapLevel, false, it->second.downscaleImage.get() );
                     it->second.fullscaleImage->pasteFrom(*tmp, renderMappedRectToRender, false);
@@ -2855,11 +2957,10 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                          * BitDepth/Components conversion required
                          */
 
-
-                        it->second.tmpImage->convertToFormat( it->second.tmpImage->getBounds(),
-                                                              _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.tmpImage->getBitDepth() ),
-                                                              _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.downscaleImage->getBitDepth() ),
-                                                              -1, false, unPremultRequired, it->second.downscaleImage.get() );
+                        it->second.tmpImage->convertToFormat(it->second.tmpImage->getBounds(),
+                                                             _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
+                                                             _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.downscaleImage->getBitDepth()),
+                                                             channelForAlphaForPlane(it->first), false, it->second.downscaleImage.get());
                     } else {
                         /*
                          * No conversion required, copy to output
@@ -2869,7 +2970,11 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     }
                 }
 
-                it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, layers.outputPremult, originalImagePremultiplication, processChannels, originalInputImage, true, glContext);
+                if (reUnPremult) {
+                    it->second.downscaleImage->premultiplyByChannel(actionArgs.roi, unPremultDivisorImage.get(), unPremultDivisorChannel, planeProcessChannels, unPremultSkipChannel);
+                }
+
+                it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInputImage, glContext);
                 if (useMaskMix) {
                     it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInputImage.get(), doMask, false, mix, glContext);
                 }
@@ -2922,7 +3027,6 @@ EffectInstance::allocateImageLayerAndSetInThreadLocalStorage(const ImageLayerDes
                                  false /*isProjectFormat*/,
                                  layer,
                                  img->getBitDepth(),
-                                 img->getPremultiplication(),
                                  img->getFieldingOrder(),
                                  img->getPixelAspectRatio(),
                                  img->getMipmapLevel(),
@@ -2942,27 +3046,25 @@ EffectInstance::allocateImageLayerAndSetInThreadLocalStorage(const ImageLayerDes
          */
         if (useCache) {
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-            p.tmpImage.reset( new Image(p.renderMappedImage->getComponents(),
-                                        p.renderMappedImage->getRoD(),
-                                        tls->currentRenderArgs.renderWindowPixel,
-                                        p.renderMappedImage->getMipmapLevel(),
-                                        p.renderMappedImage->getPixelAspectRatio(),
-                                        p.renderMappedImage->getBitDepth(),
-                                        p.renderMappedImage->getPremultiplication(),
-                                        p.renderMappedImage->getFieldingOrder(),
-                                        false /*useBitmap*/,
-                                        img->getParams()->getStorageInfo().mode) );
+            p.tmpImage.reset(new Image(p.renderMappedImage->getComponents(),
+                                       p.renderMappedImage->getRoD(),
+                                       tls->currentRenderArgs.renderWindowPixel,
+                                       p.renderMappedImage->getMipmapLevel(),
+                                       p.renderMappedImage->getPixelAspectRatio(),
+                                       p.renderMappedImage->getBitDepth(),
+                                       p.renderMappedImage->getFieldingOrder(),
+                                       false /*useBitmap*/,
+                                       img->getParams()->getStorageInfo().mode));
 #else
             p.tmpImage = std::make_shared<Image>(p.renderMappedImage->getComponents(),
-                                                   p.renderMappedImage->getRoD(),
-                                                   tls->currentRenderArgs.renderWindowPixel,
-                                                   p.renderMappedImage->getMipmapLevel(),
-                                                   p.renderMappedImage->getPixelAspectRatio(),
-                                                   p.renderMappedImage->getBitDepth(),
-                                                   p.renderMappedImage->getPremultiplication(),
-                                                   p.renderMappedImage->getFieldingOrder(),
-                                                   false /*useBitmap*/,
-                                                   img->getParams()->getStorageInfo().mode);
+                                                 p.renderMappedImage->getRoD(),
+                                                 tls->currentRenderArgs.renderWindowPixel,
+                                                 p.renderMappedImage->getMipmapLevel(),
+                                                 p.renderMappedImage->getPixelAspectRatio(),
+                                                 p.renderMappedImage->getBitDepth(),
+                                                 p.renderMappedImage->getFieldingOrder(),
+                                                 false /*useBitmap*/,
+                                                 img->getParams()->getStorageInfo().mode);
 #endif
         } else {
             p.tmpImage = p.renderMappedImage;
@@ -3755,12 +3857,12 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
 
     bool ret = false;
     RotoDrawableItemPtr rotoItem = getNode()->getAttachedRotoItem();
-    if ( ( rotoItem && !rotoItem->isActivated(time) ) || getNode()->isNodeDisabled() || !getNode()->hasAtLeastOneChannelToProcess() ) {
+    if ((rotoItem && !rotoItem->isActivated(time)) || getNode()->isNodeDisabled() || !getNode()->hasAtLeastOneChannelToProcess(time, view)) {
         ret = true;
         *inputNb = getNode()->getPreferredInput();
         *inputTime = time;
         *inputView = view;
-    } else if ( appPTR->isBackground() && (dynamic_cast<DiskCacheNode*>(this) != NULL) ) {
+    } else if (appPTR->isBackground() && (dynamic_cast<DiskCacheNode*>(this) != NULL)) {
         ret = true;
         *inputNb = 0;
         *inputTime = time;
@@ -4209,167 +4311,139 @@ EffectInstance::getComponentsNeededAndProduced(double time,
                                                int* passThroughView,
                                                int* passThroughInputNb)
 {
-    bool processAllRequested;
     std::bitset<4> processChannels;
+    ProcessChannelsPerPlaneMap processChannelsPerPlane;
     std::list<ImageLayerDesc> passThroughLayers;
-    getComponentsNeededDefault(time, view, comps, &passThroughLayers, &processAllRequested, passThroughTime, passThroughView, &processChannels, passThroughInputNb);
+    getComponentsNeededDefault(time, view, comps, &passThroughLayers, passThroughTime, passThroughView, &processChannels, &processChannelsPerPlane, passThroughInputNb);
+}
+
+// The plane(s) the plug-in declared in its metadata for this clip: the Color plane at the
+// declared channel count, or, for Furnace-style effects, a disparity/motion plane with its
+// paired plane, since both must be rendered at once. RGBA until the metadata are set.
+static void
+getMetadataPlanes(const EffectInstance* effect,
+                  int inputNb,
+                  std::list<ImageLayerDesc>* planes)
+{
+    ImageLayerDesc metadataLayer, metadataPairedLayer;
+    effect->getMetadataComponents(inputNb, &metadataLayer, &metadataPairedLayer);
+    if (metadataLayer.getNumComponents() > 0) {
+        planes->push_back(metadataLayer);
+    }
+    if (metadataPairedLayer.getNumComponents() > 0) {
+        planes->push_back(metadataPairedLayer);
+    }
+    if (planes->empty()) {
+        planes->push_back(ImageLayerDesc::getRGBAComponents());
+    }
+}
+
+// A selected Color plane is produced at the channel count the clip's metadata declare rather
+// than at the input stream's, so each clip maps it through its own metadata planes.
+static void
+appendSelectedPlanes(const std::vector<ResolvedLayer>& selected,
+                     const std::list<ImageLayerDesc>& metadataPlanes,
+                     std::list<ImageLayerDesc>* planes,
+                     EffectInstance::ProcessChannelsPerPlaneMap* processChannelsPerPlane)
+{
+    for (std::vector<ResolvedLayer>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        if (it->desc.isColorLayer()) {
+            for (std::list<ImageLayerDesc>::const_iterator plane = metadataPlanes.begin(); plane != metadataPlanes.end(); ++plane) {
+                planes->push_back(*plane);
+                if (processChannelsPerPlane) {
+                    (*processChannelsPerPlane)[*plane] = it->channels;
+                }
+            }
+        } else {
+            planes->push_back(it->desc);
+            if (processChannelsPerPlane) {
+                (*processChannelsPerPlane)[it->desc] = it->channels;
+            }
+        }
+    }
 }
 
 void
 EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
                                            EffectInstance::ComponentsNeededMap* comps,
                                            std::list<ImageLayerDesc>* passThroughLayers,
-                                           bool* processAllRequested,
                                            double* passThroughTime,
                                            int* passThroughView,
                                            std::bitset<4>* processChannels,
+                                           ProcessChannelsPerPlaneMap* processChannelsPerPlane,
                                            int* passThroughInputNb)
 {
+    NodePtr node = getNode();
+
     *passThroughTime = time;
     *passThroughView = view;
-    *passThroughInputNb = getNode()->getPreferredInput();
-    *processAllRequested = false;
+    *passThroughInputNb = node->getPreferredInput();
+    passThroughLayers->clear();
+    processChannelsPerPlane->clear();
 
-    {
-        std::list<ImageLayerDesc> upstreamAvailableLayers;
-        if (*passThroughInputNb != -1) {
-            getAvailableLayers(time, view, *passThroughInputNb, &upstreamAvailableLayers);
-        }
-
-        // upstreamAvailableLayers now contain all available layers in input of this node
-        *passThroughLayers = upstreamAvailableLayers;
+    if (*passThroughInputNb != -1) {
+        getAvailableLayers(time, view, *passThroughInputNb, passThroughLayers);
     }
 
- 
-    // Get the output needed components
+    // Resolve the layer knob once against the list it is bound to; the same selection is
+    // read from every non-mask input and written to the output (no-shuffle invariant).
+    std::vector<ResolvedLayer> selected;
+    const bool hasLayerKnob = node->resolveLayerKnob(time, view, &selected);
+
     {
+        std::list<ImageLayerDesc> metadataPlanes;
+        getMetadataPlanes(this, -1, &metadataPlanes);
 
-        std::vector<ImageLayerDesc> clipPrefsAllComps;
-
-        // The clipPrefsComps is the number of components desired by the plug-in in the
-        // getTimeInvariantMetadatas action (getClipPreferences for OpenFX) mapped to the
-        // color-layer.
-        //
-        // There's a special case for a plug-in that requests a 2 component image:
-        // OpenFX does not support 2-component images by default. 2 types of plug-in
-        // may request such images:
-        // - non multi-planar effect that supports 2 component images, added with the Natron OpenFX extensions
-        // - multi-planar effect that supports The Foundry Furnace plug-in suite: the value returned is either
-        // disparity components or a motion vector components.
-        //
-        ImageLayerDesc metadataLayer, metadataPairedLayer;
-        getMetadataComponents(-1, &metadataLayer, &metadataPairedLayer);
-        // Some plug-ins, such as The Foundry Furnace set the meta-data to disparity/motion vector, requiring
-        // both layers to be computed at once (Forward/Backard for motion vector) (Left/Right for Disparity)
-        if (metadataLayer.getNumComponents() > 0) {
-            clipPrefsAllComps.push_back(metadataLayer);
+        std::list<ImageLayerDesc>& outputPlanes = (*comps)[-1];
+        outputPlanes.clear();
+        if (hasLayerKnob) {
+            // Plug-ins that own their channel mask (see Node::adoptChannelQuad()) read their
+            // R/G/B/A quad themselves; leaving processChannelsPerPlane empty for them makes
+            // processChannelsForPlane() fall back to the node-wide bitset below, which stays
+            // all-true, instead of the layer knob's row-0 buttons masking their output.
+            appendSelectedPlanes(selected, metadataPlanes, &outputPlanes, node->pluginOwnsChannelMask() ? NULL : processChannelsPerPlane);
         }
-        if (metadataPairedLayer.getNumComponents() > 0) {
-            clipPrefsAllComps.push_back(metadataPairedLayer);
-        }
-        if (clipPrefsAllComps.empty()) {
-            // If metada are not set yet, at least append RGBA
-            clipPrefsAllComps.push_back(ImageLayerDesc::getRGBAComponents());
-        }
-
-        // Natron adds for all non multi-planar effects a default layer selector to emulate
-        // multi-layer even if the plug-in is not aware of it. When fetching an input image, the
-        // plug-in will receive this user-selected layer, mapped to the number of components indicated
-        // by the plug-in in getTimeInvariantMetadatas
-        ImageLayerDesc layer;
-        bool gotUserSelectedLayer;
-        {
-            // In output, the available layers are those pass-through the input + project layers +
-            // layers produced by this node
-            std::list<ImageLayerDesc> availableLayersInOutput = *passThroughLayers;
-            availableLayersInOutput.insert(availableLayersInOutput.end(), clipPrefsAllComps.begin(), clipPrefsAllComps.end());
-
-            {
-                std::list<ImageLayerDesc> projectLayers = getApp()->getProject()->getProjectDefaultLayers();
-                mergeLayersList(projectLayers, &availableLayersInOutput);
-            }
-
-            {
-                std::list<ImageLayerDesc> userCreatedLayers;
-                getNode()->getUserCreatedComponents(&userCreatedLayers);
-                mergeLayersList(userCreatedLayers, &availableLayersInOutput);
-            }
-
-            gotUserSelectedLayer = getNode()->getSelectedLayer(-1, availableLayersInOutput, processChannels, processAllRequested, &layer);
-        }
-
-        // If the user did not select any components or the layer is the color-layer, fallback on
-        // meta-data color layer
-        if (layer.getNumComponents() == 0 || layer.isColorLayer()) {
-            gotUserSelectedLayer = false;
-        }
-
-        std::list<ImageLayerDesc>& componentsSet = (*comps)[-1];
-
-        if (gotUserSelectedLayer) {
-            componentsSet.push_back(layer);
-        } else {
-            componentsSet.insert( componentsSet.end(), clipPrefsAllComps.begin(), clipPrefsAllComps.end() );
+        if (outputPlanes.empty()) {
+            outputPlanes = metadataPlanes;
         }
     }
 
-    // For each input get their needed components
+    processChannels->set();
+    ProcessChannelsPerPlaneMap::const_iterator foundColor = processChannelsPerPlane->find(ImageLayerDesc::getRGBAComponents());
+    if (foundColor != processChannelsPerPlane->end()) {
+        *processChannels = foundColor->second;
+    } else if (!processChannelsPerPlane->empty()) {
+        processChannels->reset();
+        for (ProcessChannelsPerPlaneMap::const_iterator it = processChannelsPerPlane->begin(); it != processChannelsPerPlane->end(); ++it) {
+            *processChannels |= it->second;
+        }
+    }
+
     int maxInput = getNInputs();
     for (int i = 0; i < maxInput; ++i) {
+        std::list<ImageLayerDesc>& inputPlanes = (*comps)[i];
+        inputPlanes.clear();
 
         std::list<ImageLayerDesc> upstreamAvailableLayers;
         getAvailableLayers(time, view, i, &upstreamAvailableLayers);
 
-        std::list<ImageLayerDesc>& componentsSet = (*comps)[i];
-
-        // Get the selected layer from the source channels menu
-        std::bitset<4> inputProcChannels;
-        ImageLayerDesc layer;
-        bool isAll;
-        bool ok = getNode()->getSelectedLayer(i, upstreamAvailableLayers, &inputProcChannels, &isAll, &layer);
-
-        // When color layer or all choice then request the default metadata components
-        if (isAll || layer.isColorLayer()) {
-            ok = false;
-        }
-
-        // For a mask get its selected channel
         ImageLayerDesc maskComp;
-        int channelMask = getNode()->getMaskChannel(i, upstreamAvailableLayers, &maskComp);
-
-        std::vector<ImageLayerDesc> clipPrefsAllComps;
-        {
-            ImageLayerDesc metadataLayer, metadataPairedLayer;
-            getMetadataComponents(i, &metadataLayer, &metadataPairedLayer);
-
-            // Some plug-ins, such as The Foundry Furnace set the meta-data to disparity/motion vector, requiring
-            // both layers to be computed at once (Forward/Backard for motion vector) (Left/Right for Disparity)
-            if (metadataLayer.getNumComponents() > 0) {
-                clipPrefsAllComps.push_back(metadataLayer);
-            }
-            if (metadataPairedLayer.getNumComponents() > 0) {
-                clipPrefsAllComps.push_back(metadataPairedLayer);
-            }
-            if (clipPrefsAllComps.empty()) {
-                // If metada are not set yet, at least append RGBA
-                clipPrefsAllComps.push_back(ImageLayerDesc::getRGBAComponents());
-            }
-        }
-
+        int channelMask = node->getMaskChannel(i, upstreamAvailableLayers, &maskComp);
         if ( (channelMask != -1) && (maskComp.getNumComponents() > 0) ) {
-
-            // If this is a mask, ask for the selected mask layer
-            componentsSet.push_back(maskComp);
-
-        } else if (ok && layer.getNumComponents() > 0) {
-            componentsSet.push_back(layer);
-        } else {
-            //Use regular clip preferences
-            componentsSet.insert( componentsSet.end(), clipPrefsAllComps.begin(), clipPrefsAllComps.end() );
+            inputPlanes.push_back(maskComp);
+            continue;
         }
-        
-    } // for each input
-}
+
+        std::list<ImageLayerDesc> metadataPlanes;
+        getMetadataPlanes(this, i, &metadataPlanes);
+        if (hasLayerKnob) {
+            appendSelectedPlanes(selected, metadataPlanes, &inputPlanes, NULL);
+        }
+        if (inputPlanes.empty()) {
+            inputPlanes = metadataPlanes;
+        }
+    }
+} // EffectInstance::getComponentsNeededDefault
 
 void
 EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
@@ -4377,10 +4451,10 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
                                                       ViewIdx view,
                                                       EffectInstance::ComponentsNeededMap* comps,
                                                       std::list<ImageLayerDesc>* passThroughLayers,
-                                                      bool* processAllRequested,
                                                       double* passThroughTime,
                                                       int* passThroughView,
                                                       std::bitset<4>* processChannels,
+                                                      ProcessChannelsPerPlaneMap* processChannelsPerPlane,
                                                       int* passThroughInputNb)
 
 {
@@ -4388,17 +4462,16 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
 
     {
         ViewIdx ptView;
-        bool foundInCache = _imp->actionsCache->getComponentsNeededResults(hash, time, view, comps, processChannels, processAllRequested, passThroughLayers, passThroughInputNb, &ptView, passThroughTime);
+        bool foundInCache = _imp->actionsCache->getComponentsNeededResults(hash, time, view, comps, processChannels, processChannelsPerPlane, passThroughLayers, passThroughInputNb, &ptView, passThroughTime);
         if (foundInCache) {
             *passThroughView = ptView;
             return;
         }
     }
-    
 
     if ( !isMultiPlanar() ) {
-        getComponentsNeededDefault(time, view, comps, passThroughLayers, processAllRequested, passThroughTime, passThroughView, processChannels, passThroughInputNb);
-        _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processAllRequested, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
+        getComponentsNeededDefault(time, view, comps, passThroughLayers, passThroughTime, passThroughView, processChannels, processChannelsPerPlane, passThroughInputNb);
+        _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
         return;
     }
 
@@ -4411,7 +4484,9 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
     // Remove from this list all layers produced from this node to get the pass-through layers list
     std::list<ImageLayerDesc>& outputLayers = (*comps)[-1];
 
-    // Ensure the plug-in made the metadata layer available.
+    // Ensure the plug-in made the metadata layer available. An embedded encoder produces it by
+    // fetching it from its pass-through input, so the Write container's selection on that input
+    // decides whether the layer is there to produce at all.
     {
         std::list<ImageLayerDesc> metadataLayers;
         ImageLayerDesc metadataLayer, metadataPairedLayer;
@@ -4421,6 +4496,13 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
         }
         if (metadataLayer.getNumComponents() > 0) {
             metadataLayers.push_back(metadataLayer);
+        }
+        if (*passThroughInputNb >= 0) {
+            NodePtr node = getNode();
+            NodePtr ioContainer = node ? node->getIOContainer() : NodePtr();
+            if (ioContainer) {
+                ioContainer->getEffectInstance()->filterLayersForEmbeddedInput(*passThroughInputNb, &metadataLayers);
+            }
         }
         mergeLayersList(metadataLayers, &outputLayers);
     }
@@ -4439,18 +4521,41 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
 
     } // if pass-through for layers
 
-    for (int i = 0; i < 4; ++i) {
-        (*processChannels)[i] = getNode()->getProcessChannel(i);
-    }
-    
-    *processAllRequested = false;
+    processChannels->set();
+    processChannelsPerPlane->clear();
 
-    _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processAllRequested, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
+    _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
 
 } // EffectInstance::getComponentsNeededAndProduced_public
 
+std::bitset<4>
+EffectInstance::getProcessChannelsForPlane(U64 hash,
+                                           double time,
+                                           ViewIdx view,
+                                           const ImageLayerDesc& plane)
+{
+    ComponentsNeededMap comps;
+    std::list<ImageLayerDesc> passThroughLayers;
+    double passThroughTime = 0.;
+    int passThroughView = 0;
+    std::bitset<4> processChannels;
+    ProcessChannelsPerPlaneMap processChannelsPerPlane;
+    int passThroughInputNb = -1;
+    getComponentsNeededAndProduced_public(hash, time, view, &comps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInputNb);
+
+    ProcessChannelsPerPlaneMap::const_iterator found = processChannelsPerPlane.find(plane);
+    if (found != processChannelsPerPlane.end()) {
+        return found->second;
+    }
+
+    std::bitset<4> all;
+    all.set();
+
+    return all;
+}
+
 void
-EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* availableLayers)
+EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* presentLayers)
 {
 
     EffectInstancePtr effect;
@@ -4470,10 +4575,12 @@ EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::
         EffectInstance::ComponentsNeededMap comps;
         double passThroughTime = 0.;
         int passThroughView = 0;
-        int passThroughInputNb = -1; // prevent infinite recursion, because getComponentsNeededAndProduced_public() may call getAvailableLayers()
+        int passThroughInputNb = -1; // prevent infinite recursion, because getComponentsNeededAndProduced_public() may call getPresentLayers()
         std::bitset<4> processChannels;
-        bool processAll = false;
-        effect->getComponentsNeededAndProduced_public(getRenderHash(), time, view, &comps, &passThroughLayers, &processAll, &passThroughTime, &passThroughView, &processChannels, &passThroughInputNb);
+        EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
+        // Key this query on the queried effect's own hash: it caches into that effect's ActionsCache, and a foreign
+        // (caller's) hash would pollute or stale-serve that cache independently of the effect's own invalidation.
+        effect->getComponentsNeededAndProduced_public(effect->getRenderHash(), time, view, &comps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInputNb);
 
         // Merge pass-through layers produced + pass-through available layers and make it as the pass-through layers for this node
         // if they are not produced by this node
@@ -4482,22 +4589,46 @@ EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::
     }
 
     // Ensure the color layer is always the first one available in the list
-    bool hasColorLayer = false;
     for (std::list<ImageLayerDesc>::iterator it = passThroughLayers.begin(); it != passThroughLayers.end(); ++it) {
         if (it->isColorLayer()) {
-            hasColorLayer = true;
-            availableLayers->push_front(*it);
+            presentLayers->push_front(*it);
             passThroughLayers.erase(it);
             break;
         }
     }
 
-    // In output, also make available the default project layers and the user created components
+    mergeLayersList(passThroughLayers, presentLayers);
+
+    if (inputNb >= 0) {
+        NodePtr node = getNode();
+        NodePtr ioContainer = node ? node->getIOContainer() : NodePtr();
+        if (ioContainer) {
+            ioContainer->getEffectInstance()->filterLayersForEmbeddedInput(inputNb, presentLayers);
+        }
+    }
+
+} // getPresentLayers
+
+void
+EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* availableLayers)
+{
+    getPresentLayers(time, view, inputNb, availableLayers);
+
+    // In output, also make available every layer registered at the project level, whether or not
+    // this stream currently carries it (a target knob may create it on write).
     if (inputNb == -1) {
 
-        std::list<ImageLayerDesc> projectLayers = getApp()->getProject()->getProjectDefaultLayers();
+        bool hasColorLayer = false;
+        for (std::list<ImageLayerDesc>::const_iterator it = availableLayers->begin(); it != availableLayers->end(); ++it) {
+            if (it->isColorLayer()) {
+                hasColorLayer = true;
+                break;
+            }
+        }
+
+        std::list<ImageLayerDesc> projectLayers = getRegisteredProjectLayersList(getApp()->getProject());
         if (hasColorLayer) {
-            // Don't add the color layer from the default alyers if already present
+            // Don't add the color layer from the registry if already present
             for (std::list<ImageLayerDesc>::iterator it = projectLayers.begin(); it != projectLayers.end(); ++it) {
                 if (it->isColorLayer()) {
                     projectLayers.erase(it);
@@ -4508,21 +4639,16 @@ EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::
         mergeLayersList(projectLayers, availableLayers);
     }
 
-    mergeLayersList(passThroughLayers, availableLayers);
-
-     {
-         std::list<ImageLayerDesc> userCreatedLayers;
-         getNode()->getUserCreatedComponents(&userCreatedLayers);
-         mergeLayersList(userCreatedLayers, availableLayers);
-    }
-    
 } // getAvailableLayers
 
-bool
-EffectInstance::getCreateChannelSelectorKnob() const
+LayerKnobSpec
+EffectInstance::getLayerKnobSpec() const
 {
-    return ( !isMultiPlanar() && !isReader() && !isWriter() && !isTrackerNodePlugin() &&
-             getPluginID().rfind("uk.co.thefoundry.furnace", 0) == std::string::npos );
+    if (isMultiPlanar() || isReader() || isWriter() || getOutputDataKind() != eDataKindImage || getPluginID().rfind("uk.co.thefoundry.furnace", 0) != std::string::npos) {
+        return LayerKnobSpec();
+    }
+
+    return LayerKnobSpec(LayerKnobSpec::eKindChannelSet, LayerKnobSpec::eRoleInputBound, true);
 }
 
 int
@@ -4564,6 +4690,52 @@ EffectInstance::getThreadLocalRenderedLayers(std::map<ImageLayerDesc, EffectInst
     }
 
     return false;
+}
+
+bool
+EffectInstance::getThreadLocalOutputLayerBeingRendered(ImageLayerDesc* layer) const
+{
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+
+    if (tls && tls->currentRenderArgs.validArgs) {
+        *layer = tls->currentRenderArgs.outputLayerBeingRendered;
+
+        return true;
+    }
+
+    return false;
+}
+
+void
+EffectInstance::setThreadLocalUnPremultDivisor(const ImagePtr& image,
+                                               const ImageLayerDesc& layer,
+                                               int channelIndex)
+{
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+
+    if (!tls || !tls->currentRenderArgs.validArgs) {
+        return;
+    }
+    tls->currentRenderArgs.unPremultDivisorImage = image;
+    tls->currentRenderArgs.unPremultDivisorLayer = layer;
+    tls->currentRenderArgs.unPremultDivisorChannel = channelIndex;
+}
+
+bool
+EffectInstance::getThreadLocalUnPremultDivisor(ImagePtr* image,
+                                               ImageLayerDesc* layer,
+                                               int* channelIndex) const
+{
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+
+    if (!tls || !tls->currentRenderArgs.validArgs || !tls->currentRenderArgs.unPremultDivisorImage) {
+        return false;
+    }
+    *image = tls->currentRenderArgs.unPremultDivisorImage;
+    *layer = tls->currentRenderArgs.unPremultDivisorLayer;
+    *channelIndex = tls->currentRenderArgs.unPremultDivisorChannel;
+
+    return true;
 }
 
 bool
@@ -5338,8 +5510,6 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
 
     double inputPar = 1.;
     bool inputParSet = false;
-    ImagePremultiplicationEnum premult = eImagePremultiplicationOpaque;
-    bool premultSet = false;
     for (int i = 0; i < nInputs; ++i) {
         const EffectInstancePtr& input = inputs[i];
         if (input) {
@@ -5356,19 +5526,6 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
 
         int rawComp = getUnmappedComponentsForInput(this, i, inputs, firstNonOptionalConnectedInputComps);
         ImageBitDepthEnum rawDepth = input ? input->getBitDepth(-1) : eImageBitDepthFloat;
-        ImagePremultiplicationEnum rawPreMult = input ? input->getPremult() : eImagePremultiplicationPremultiplied;
-
-        // Note: first chromatic input gives the default output premult too, even if not connected
-        // (else the output of generators may be opaque even if the host default is premultiplied)
-        if ( ( rawComp == 4 ) && (input || !premultSet) ) {
-            if (rawPreMult == eImagePremultiplicationPremultiplied) {
-                premult = eImagePremultiplicationPremultiplied;
-                premultSet = true;
-            } else if ( (rawPreMult == eImagePremultiplicationUnPremultiplied) && ( !premultSet || (premult != eImagePremultiplicationPremultiplied) ) ) {
-                premult = eImagePremultiplicationUnPremultiplied;
-                premultSet = true;
-            }
-        }
 
         if (input) {
             //Update deepest bitdepth and most components only if the infos are relevant, i.e: only if the clip is connected
@@ -5456,13 +5613,6 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
             remappedComps = findClosestSupportedComponents(i, ImageLayerDesc::mapNCompsToColorLayer(remappedComps)).getNumComponents();
             metadata.setNComps(i, remappedComps);
             metadata.setComponentsType(i, kNatronColorLayerID);
-            if ( (i == -1) && !premultSet &&
-                ( ( remappedComps == 4 ) || ( remappedComps == 1 ) ) ) {
-                premult = eImagePremultiplicationPremultiplied;
-                premultSet = true;
-            }
-
-
             metadata.setBitDepth(i, depth);
         } else {
 
@@ -5476,13 +5626,6 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
             metadata.setComponentsType(i, kNatronColorLayerID);
         }
     }
-    
-    // default to a reasonable value if there is no input
-    if (!premultSet) {
-        premult = eImagePremultiplicationOpaque;
-    }
-    // set output premultiplication
-    metadata.setOutputPremult(premult);
 
     RectI outputFormat;
 
@@ -5559,14 +5702,6 @@ EffectInstance::getAspectRatio(int inputNb) const
     QMutexLocker k(&_imp->metadataMutex);
 
     return _imp->metadata.getPixelAspectRatio(inputNb);
-}
-
-ImagePremultiplicationEnum
-EffectInstance::getPremult() const
-{
-    QMutexLocker k(&_imp->metadataMutex);
-
-    return _imp->metadata.getOutputPremult();
 }
 
 bool
@@ -5671,12 +5806,10 @@ EffectInstance::refreshMetadata_internal()
     bool ret = setMetadataInternal(metadata);
     onMetadataRefreshed(metadata);
     if (ret) {
-        NodePtr node = getNode();
-        node->checkForPremultWarningAndCheckboxes();
-
-        ImageLayerDesc layer, pairedLayer;
-        getMetadataComponents(-1, &layer, &pairedLayer);
-        node->refreshEnabledKnobsLabel(layer);
+        // Produced planes follow the metadata (a reader reports the file's color component
+        // count only once the file is loaded) while the hash does not, so entries keyed on
+        // the current hash would otherwise survive this refresh stale.
+        _imp->actionsCache->clearComponentsNeededResults();
     }
 
     return ret;
@@ -5729,27 +5862,8 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
     for (int i = -1; i < nInputs; ++i) {
         md.setBitDepth( i, node->getClosestSupportedBitDepth( md.getBitDepth(i) ) );
         int nComps = md.getNComps(i);
-        bool isAlpha = false;
-        bool isRGB = false;
-        if (i == -1) {
-            if ( nComps == 3) {
-                isRGB = true;
-            } else if (nComps == 1) {
-                isAlpha = true;
-            }
-        }
-
         if (md.getComponentsType(i) == kNatronColorLayerID) {
             md.setNComps(i, node->findClosestSupportedComponents(i, ImageLayerDesc::mapNCompsToColorLayer(nComps)).getNumComponents());
-        }
-
-        if (i == -1) {
-            //Force opaque for RGB and premult for alpha
-            if (isRGB) {
-                md.setOutputPremult(eImagePremultiplicationOpaque);
-            } else if (isAlpha) {
-                md.setOutputPremult(eImagePremultiplicationPremultiplied);
-            }
         }
     }
 

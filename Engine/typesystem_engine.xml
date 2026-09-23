@@ -219,7 +219,6 @@
     <enum-type name="ValueChangedReasonEnum"/>
     <enum-type name="AnimationLevelEnum"/>
     <enum-type name="ImageBitDepthEnum"/>
-    <enum-type name="ImagePremultiplicationEnum"/>
     <enum-type name="ViewerCompositingOperatorEnum"/>
     <enum-type name="ViewerColorSpaceEnum"/>
     <enum-type name="OrientationEnum"/>
@@ -788,6 +787,23 @@
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
         </modify-function>
+        <modify-function signature="getProjectLayer(QString)const">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
+        <modify-function signature="addProjectLayer(QString,QStringList)">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+            <inject-code class="target" position="beginning">
+                %RETURN_TYPE %0 = %CPPSELF.%FUNCTION_NAME(%1, %2);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+                %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
+            </inject-code>
+        </modify-function>
         <modify-function signature="renderInternal(bool,std::list&lt;Effect*&gt;,std::list&lt;int&gt;,std::list&lt;int&gt;,std::list&lt;int&gt;)" remove="all"/>
         <modify-function signature="renderInternal(bool,Effect*,int,int,int)" remove="all"/>
         <modify-function signature="render(std::list&lt;Effect*&gt;,std::list&lt;int&gt;,std::list&lt;int&gt;,std::list&lt;int&gt;)">
@@ -936,6 +952,21 @@
             </modify-argument>
         </modify-function>
         <modify-function signature="createPathParam(QString,QString)">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
+        <modify-function signature="createChannelSetParam(QString,QString)">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
+        <modify-function signature="createLayerSelectParam(QString,QString,bool)">
+            <modify-argument index="return">
+                <define-ownership class="target" owner="target"/>
+            </modify-argument>
+        </modify-function>
+        <modify-function signature="createChannelSelectParam(QString,QString)">
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>
             </modify-argument>
@@ -1486,6 +1517,130 @@
 
             </inject-code>
         </modify-function>
+    </object-type>
+
+    <object-type name="ChannelSetParam">
+        <modify-function signature="getRows(std::list&lt;std::string&gt;*,std::list&lt;std::string&gt;*,std::list&lt;std::list&lt;std::string&gt; &gt;*)const">
+            <modify-argument index="1">
+                <remove-argument/>
+            </modify-argument>
+            <modify-argument index="2">
+                <remove-argument/>
+            </modify-argument>
+            <modify-argument index="3">
+                <remove-argument/>
+            </modify-argument>
+            <modify-argument index="return">
+                <replace-type modified-type="PySequence"/>
+            </modify-argument>
+            <inject-code class="target" position="beginning">
+                std::list&lt;std::string&gt; modes;
+                std::list&lt;std::string&gt; layersOrPatterns;
+                std::list&lt;std::list&lt;std::string&gt; &gt; channels;
+                %CPPSELF.%FUNCTION_NAME(&amp;modes, &amp;layersOrPatterns, &amp;channels);
+
+                PyObject* outList = PyList_New((int) modes.size());
+
+                std::list&lt;std::string&gt;::const_iterator modeIt = modes.begin();
+                std::list&lt;std::string&gt;::const_iterator layerIt = layersOrPatterns.begin();
+                std::list&lt;std::list&lt;std::string&gt; &gt;::const_iterator chanIt = channels.begin();
+                for (int i = 0; modeIt != modes.end(); ++i, ++modeIt, ++layerIt, ++chanIt) {
+                    PyObject* rowTuple = PyTuple_New(3);
+                    PyTuple_SET_ITEM(rowTuple, 0, %CONVERTTOPYTHON[std::string](*modeIt));
+                    PyTuple_SET_ITEM(rowTuple, 1, %CONVERTTOPYTHON[std::string](*layerIt));
+
+                    PyObject* chanList = PyList_New((int) chanIt->size());
+                    int j = 0;
+                    for (std::list&lt;std::string&gt;::const_iterator cIt = chanIt->begin(); cIt != chanIt->end(); ++cIt, ++j) {
+                        PyList_SET_ITEM(chanList, j, %CONVERTTOPYTHON[std::string](*cIt));
+                    }
+                    PyTuple_SET_ITEM(rowTuple, 2, chanList);
+
+                    PyList_SET_ITEM(outList, i, rowTuple);
+                }
+
+                return outList;
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setNone()">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME();
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setAll()">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME();
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setLayer(QString,QStringList,int)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%1, %2, %3);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setChannels(QStringList,int)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%1, %2);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setRegex(QString,int)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%1, %2);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="removeRow(int)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%1);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="setExcludedChannels(QStringList,int)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%1, %2);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+        <modify-function signature="getExcludedChannels(int)const">
+            <inject-code class="target" position="beginning">
+                %RETURN_TYPE %0 = %CPPSELF.%FUNCTION_NAME(%1);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+                %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
+            </inject-code>
+        </modify-function>
+    </object-type>
+
+    <object-type name="LayerSelectParam">
+        <modify-function signature="setChannels(QStringList)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%1);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
+    </object-type>
+
+    <object-type name="ChannelSelectParam">
     </object-type>
 
     <object-type name="ParametricParam">

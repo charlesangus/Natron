@@ -370,6 +370,12 @@ public:
      **/
     void refreshRotoPaintTree();
 
+    /**
+     * @brief Points the layer knob of every node of the rotopaint tree at the layer the
+     * RotoPaint node targets, so the tree renders that plane in place.
+     **/
+    void retargetRotoPaintTree();
+
     void onRotoPaintInputChanged(const NodePtr& node);
 
     void getRotoPaintTreeNodes(NodesList* nodes) const;

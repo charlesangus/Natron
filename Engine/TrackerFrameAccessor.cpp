@@ -35,6 +35,8 @@ GCC_DIAG_ON(unused-function)
 GCC_DIAG_ON(unused-parameter)
 // clang-format on
 
+#include <algorithm>
+
 #include <QDebug>
 
 #include "Engine/AbortableRenderInfo.h"
@@ -125,20 +127,21 @@ struct FrameAccessorCacheEntry
 
 typedef std::multimap<FrameAccessorCacheKey, FrameAccessorCacheEntry, CacheKey_compare_less > FrameAccessorCache;
 
-
-template <bool doR, bool doG, bool doB>
-void
-natronImageToLibMvFloatImageForChannels(const Image* source,
-                                        const RectI& roi,
-                                        MvFloatImage& mvImg)
+// libmv tracks a single channel. The Color plane collapses to Rec. 709 luma, the weights
+// libmv's own DisableChannelsTransform uses; any other layer has no colour meaning and takes
+// the plain mean of its channels.
+static void
+natronImageToLibMvFloatImage(const Image* source,
+                             const RectI& roi,
+                             MvFloatImage& mvImg)
 {
     //mvImg is expected to have its bounds equal to roi
 
     Image::ReadAccess racc(source);
-    unsigned int compsCount = source->getComponentsCount();
+    const unsigned int compsCount = source->getComponentsCount();
 
-    assert(compsCount == 3);
-    unsigned int srcRowElements = source->getRowElements();
+    assert(compsCount >= 1 && compsCount <= 4);
+    const unsigned int srcRowElements = source->getRowElements();
 
     assert( source->getBounds().contains(roi) );
     const float* src_pixels = (const float*)racc.pixelAt(roi.x1, roi.y1);
@@ -147,11 +150,19 @@ natronImageToLibMvFloatImageForChannels(const Image* source,
     assert(dst_pixels);
     //LibMV images have their origin in the top left hand corner
 
-    // It's important to rescale the resultappropriately so that e.g. if only
-    // blue is selected, it's not zeroed out.
-    float scale = (doR ? 0.2126f : 0.0f) +
-                  (doG ? 0.7152f : 0.0f) +
-                  (doB ? 0.0722f : 0.0f);
+    const bool isColor = source->getComponents().isColorLayer();
+    const unsigned int usedComps = isColor ? std::min(compsCount, 3u) : compsCount;
+    float weights[4] = { 0.f, 0.f, 0.f, 0.f };
+    if (isColor && usedComps == 3) {
+        weights[0] = 0.2126f;
+        weights[1] = 0.7152f;
+        weights[2] = 0.0722f;
+    } else {
+        for (unsigned int c = 0; c < usedComps; ++c) {
+            weights[c] = 1.f / usedComps;
+        }
+    }
+
     int h = roi.height();
     int w = roi.width();
     for ( int y = 0; y < h; ++y,
@@ -159,48 +170,11 @@ natronImageToLibMvFloatImageForChannels(const Image* source,
         for (int x = 0; x < w; ++x,
              src_pixels += compsCount,
              ++dst_pixels) {
-            /// Apply luminance conversion while we copy the image
-            /// This code is taken from DisableChannelsTransform::run in libmv/autotrack/autotrack.cc
-            *dst_pixels = ( 0.2126f * (doR ? src_pixels[0] : 0.0f) +
-                            0.7152f * (doG ? src_pixels[1] : 0.0f) +
-                            0.0722f * (doB ? src_pixels[2] : 0.0f) ) / scale;
-        }
-    }
-}
-
-static void
-natronImageToLibMvFloatImage(bool enabledChannels[3],
-                             const Image* source,
-                             const RectI& roi,
-                             MvFloatImage& mvImg)
-{
-    if (enabledChannels[0]) {
-        if (enabledChannels[1]) {
-            if (enabledChannels[2]) {
-                natronImageToLibMvFloatImageForChannels<true, true, true>(source, roi, mvImg);
-            } else {
-                natronImageToLibMvFloatImageForChannels<true, true, false>(source, roi, mvImg);
+            float sum = 0.f;
+            for (unsigned int c = 0; c < usedComps; ++c) {
+                sum += weights[c] * src_pixels[c];
             }
-        } else {
-            if (enabledChannels[2]) {
-                natronImageToLibMvFloatImageForChannels<true, false, true>(source, roi, mvImg);
-            } else {
-                natronImageToLibMvFloatImageForChannels<true, false, false>(source, roi, mvImg);
-            }
-        }
-    } else {
-        if (enabledChannels[1]) {
-            if (enabledChannels[2]) {
-                natronImageToLibMvFloatImageForChannels<false, true, true>(source, roi, mvImg);
-            } else {
-                natronImageToLibMvFloatImageForChannels<false, true, false>(source, roi, mvImg);
-            }
-        } else {
-            if (enabledChannels[2]) {
-                natronImageToLibMvFloatImageForChannels<false, false, true>(source, roi, mvImg);
-            } else {
-                natronImageToLibMvFloatImageForChannels<false, false, false>(source, roi, mvImg);
-            }
+            *dst_pixels = sum;
         }
     }
 }
@@ -213,47 +187,34 @@ struct TrackerFrameAccessorPrivate
     NodePtr trackerInput;
     mutable QMutex cacheMutex;
     FrameAccessorCache cache;
-    bool enabledChannels[3];
+    ImageLayerDesc layer;
     int formatHeight;
 
     TrackerFrameAccessorPrivate(const TrackerContext* context,
-                                bool enabledChannels[3],
+                                const ImageLayerDesc& layer,
                                 int formatHeight)
         : context(context)
         , trackerInput()
         , cacheMutex()
         , cache()
-        , enabledChannels()
+        , layer(layer)
         , formatHeight(formatHeight)
     {
         trackerInput = context->getNode()->getInput(0);
         assert(trackerInput);
-        for (int i = 0; i < 3; ++i) {
-            this->enabledChannels[i] = enabledChannels[i];
-        }
     }
 };
 
 TrackerFrameAccessor::TrackerFrameAccessor(const TrackerContext* context,
-                                           bool enabledChannels[3],
+                                           const ImageLayerDesc& layer,
                                            int formatHeight)
     : mv::FrameAccessor()
-    , _imp( new TrackerFrameAccessorPrivate(context, enabledChannels, formatHeight) )
+    , _imp(new TrackerFrameAccessorPrivate(context, layer, formatHeight))
 {
 }
 
 TrackerFrameAccessor::~TrackerFrameAccessor()
 {
-}
-
-void
-TrackerFrameAccessor::getEnabledChannels(bool* r,
-                                         bool* g,
-                                         bool* b) const
-{
-    *r = _imp->enabledChannels[0];
-    *g = _imp->enabledChannels[1];
-    *b = _imp->enabledChannels[2];
 }
 
 double
@@ -330,7 +291,7 @@ TrackerFrameAccessor::GetImage(int /*clip*/,
     if (_imp->trackerInput) {
         effect = _imp->trackerInput->getEffectInstance();
     }
-    if (!effect) {
+    if (!effect || (_imp->layer.getNumComponents() == 0)) {
         return (mv::FrameAccessor::Key)0;
     }
 
@@ -350,7 +311,7 @@ TrackerFrameAccessor::GetImage(int /*clip*/,
     }
 
     std::list<ImageLayerDesc> components;
-    components.push_back(ImageLayerDesc::getRGBComponents());
+    components.push_back(_imp->layer);
 
     NodePtr node = _imp->context->getNode();
     const bool isRenderUserInteraction = true;
@@ -421,8 +382,7 @@ TrackerFrameAccessor::GetImage(int /*clip*/,
     entry.image = std::make_shared<MvFloatImage>( intersectedRoI.height(), intersectedRoI.width() );
     entry.bounds = intersectedRoI;
     entry.referenceCount = 1;
-    natronImageToLibMvFloatImage(_imp->enabledChannels,
-                                 sourceImage.get(),
+    natronImageToLibMvFloatImage(sourceImage.get(),
                                  intersectedRoI,
                                  *entry.image);
     // we ignore the transform parameter and do it in natronImageToLibMvFloatImage instead

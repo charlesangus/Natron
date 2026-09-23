@@ -109,6 +109,43 @@
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief Which layer/channel knob, if any, the host creates on a node's main page, and
+ * where that knob's layer list comes from.
+ **/
+struct LayerKnobSpec {
+    enum KindEnum {
+        eKindNone,
+        eKindChannelSet,
+        eKindLayerSelect
+    };
+
+    enum RoleEnum {
+        eRoleInputBound,
+        eRoleTarget
+    };
+
+    KindEnum kind;
+    RoleEnum role;
+    bool withChannelButtons;
+
+    LayerKnobSpec()
+        : kind(eKindNone)
+        , role(eRoleInputBound)
+        , withChannelButtons(false)
+    {
+    }
+
+    LayerKnobSpec(KindEnum kind_,
+                  RoleEnum role_,
+                  bool withChannelButtons_)
+        : kind(kind_)
+        , role(role_)
+        , withChannelButtons(withChannelButtons_)
+    {
+    }
+};
+
+/**
  * @brief This is the base class for visual effects.
  * A live instance is always living throughout the lifetime of a Node and other copies are
  * created on demand when a render is needed.
@@ -126,6 +163,10 @@ public:
     typedef std::map<int, std::list<ImagePtr> > InputImagesMap;
     typedef std::map<int, std::list<ImageLayerDesc>> ComponentsNeededMap;
     typedef std::shared_ptr<ComponentsNeededMap> ComponentsNeededMapPtr;
+
+    // Keyed by layer ID (ImageLayerDesc::operator<), so the metadata-mapped Color plane and
+    // the input's Color plane look up the same entry.
+    typedef std::map<ImageLayerDesc, std::bitset<4>> ProcessChannelsPerPlaneMap;
 
     struct RenderRoIArgs
     {
@@ -528,8 +569,21 @@ public:
 
     virtual bool getMakeSettingsPanel() const { return true; }
 
+    /**
+     * @brief The layer/channel knob the host adds to this effect's main page. Image-producing
+     * effects that own their planes (multiplanar, readers, writers, Furnace) get none.
+     **/
+    virtual LayerKnobSpec getLayerKnobSpec() const WARN_UNUSED_RETURN;
 
-    virtual bool getCreateChannelSelectorKnob() const;
+    /**
+     * @brief Called on a Read/Write container's effect whenever its embedded node lists the
+     * layers present on one of its inputs (getPresentLayers() with inputNb >= 0). The container
+     * may narrow the list to what the user selected on it; the default keeps it whole.
+     **/
+    virtual void filterLayersForEmbeddedInput(int /*inputNb*/,
+                                              std::list<ImageLayerDesc>* /*layers*/)
+    {
+    }
 
     /**
      * @brief Returns the index of the channel to use to produce the mask and the components.
@@ -945,11 +999,6 @@ public:
      * @brief Returns the preferred output frame rate to render with
      **/
     double getFrameRate() const;
-
-    /**
-     * @brief Returns the preferred premultiplication flag for the output image
-     **/
-    ImagePremultiplicationEnum getPremult() const;
 
     /**
      * @brief If true, the plug-in knows how to render frames at non integer times. If false
@@ -1610,16 +1659,14 @@ public:
     struct ImageLayersToRender {
         std::list<RectToRender> rectsToRender;
         std::map<ImageLayerDesc, LayerToRender> layers;
-        std::map<int, ImagePremultiplicationEnum> inputPremult;
-        ImagePremultiplicationEnum outputPremult;
+        ProcessChannelsPerPlaneMap processChannelsPerPlane;
         bool useOpenGL;
         EffectInstance::OpenGLContextEffectDataPtr glContextData;
 
         ImageLayersToRender()
             : rectsToRender()
             , layers()
-            , inputPremult()
-            , outputPremult(eImagePremultiplicationPremultiplied)
+            , processChannelsPerPlane()
             , useOpenGL(false)
             , glContextData()
         {
@@ -1641,6 +1688,22 @@ public:
                                       RectI* renderWindow) const;
 
     bool getThreadLocalNeededComponents(ComponentsNeededMapPtr* neededComps) const;
+
+    /**
+     * @brief The plane the on-going render action of a non-multiplanar effect is writing,
+     * or an empty descriptor when the effect renders all its planes at once. Returns false
+     * outside a render action.
+     **/
+    bool getThreadLocalOutputLayerBeingRendered(ImageLayerDesc* layer) const;
+
+    /**
+     * @brief The source image the host unpremultiplied for this render action, so the result the
+     * plug-in renders from it can be multiplied back by the same channel. See
+     * Node::createUnPremultSelector().
+     **/
+    void setThreadLocalUnPremultDivisor(const ImagePtr& image, const ImageLayerDesc& layer, int channelIndex);
+
+    bool getThreadLocalUnPremultDivisor(ImagePtr* image, ImageLayerDesc* layer, int* channelIndex) const;
 
     /**
      * @brief Called when the associated node's hash has changed.
@@ -1980,16 +2043,37 @@ private:
     virtual StatusEnum dettachOpenGLContext(const OpenGLContextEffectDataPtr& /*data*/) { return eStatusReplyDefault; }
 
 public:
+    /**
+     * @brief The planes this effect renders (comps[-1]) and reads from each input (comps[i]),
+     * with the pass-through planes of the preferred input.
+     *
+     * processChannelsPerPlane holds, for every plane of comps[-1] the node's layer knob
+     * selected, the channels it processes; the render path masks each plane with its own
+     * entry. processChannels is what a plane absent from the map gets: the node's channel
+     * checkboxes for a node without a layer knob, all channels otherwise (for a layer-knob
+     * node it is the Color entry, or the union of all entries when no Color plane is selected).
+     **/
     void getComponentsNeededAndProduced_public(U64 hash,
                                                double time, ViewIdx view,
                                                EffectInstance::ComponentsNeededMap* comps,
                                                std::list<ImageLayerDesc>* passThroughLayers,
-                                               bool* processAllRequested,
                                                double* passThroughTime,
                                                int* passThroughView,
                                                std::bitset<4>* processChannels,
+                                               ProcessChannelsPerPlaneMap* processChannelsPerPlane,
                                                int* passThroughInput);
 
+    /**
+     * @brief The channels this effect processes on the given plane at (hash, time, view), per
+     * the map documented on getComponentsNeededAndProduced_public(). All-true for a node
+     * without a layer knob or for a plane its knob did not select.
+     **/
+    std::bitset<4> getProcessChannelsForPlane(U64 hash, double time, ViewIdx view, const ImageLayerDesc& plane);
+
+    // Produced union pass-through layers only: what the stream actually carries.
+    void getPresentLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* presentLayers);
+
+    // getPresentLayers() plus, for inputNb == -1 only, every layer registered at the project level.
     void getAvailableLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* availableLayers);
 
     const std::vector<std::string>& getUserLayers() const;
@@ -1998,10 +2082,10 @@ private:
     void getComponentsNeededDefault(double time, ViewIdx view,
                                     EffectInstance::ComponentsNeededMap* comps,
                                     std::list<ImageLayerDesc>* passThroughLayers,
-                                    bool* processAllRequested,
                                     double* passThroughTime,
                                     int* passThroughView,
                                     std::bitset<4>* processChannels,
+                                    ProcessChannelsPerPlaneMap* processChannelsPerPlane,
                                     int* passThroughInput);
 
 public:
@@ -2039,6 +2123,15 @@ public:
 
         // This is set only when the plug-in has set ePassThroughRenderAllRequestedLayers
         ImageLayerDesc outputLayerBeingRendered;
+
+        // The image the host divided the plug-in's source by for the node-level "(Un)premult
+        // by" selection, and which layer and channel of it. Written when the plug-in fetches
+        // its source and read back when its result is re-multiplied, so the two halves cannot
+        // disagree about what was divided -- the divisor plane is often not the plane being
+        // rendered, and a node rendering several planes divides each of them by this one.
+        ImagePtr unPremultDivisorImage;
+        ImageLayerDesc unPremultDivisorLayer;
+        int unPremultDivisorChannel;
         ComponentsNeededMapPtr  compsNeeded;
         double firstFrame, lastFrame;
         InputMatrixMapPtr transformRedirections;
@@ -2364,7 +2457,6 @@ private:
                                                  const ImageLayerDesc& targetComponents,
                                                  ImageBitDepthEnum targetDepth,
                                                  bool useAlpha0ForRGBToRGBAConversion,
-                                                 ImagePremultiplicationEnum outputPremult,
                                                  int channelForAlpha);
 
     /**
@@ -2391,7 +2483,6 @@ private:
                             bool isProjectFormat,
                             const ImageLayerDesc& components,
                             ImageBitDepthEnum depth,
-                            ImagePremultiplicationEnum premult,
                             ImageFieldingOrderEnum fielding,
                             double par,
                             unsigned int mipmapLevel,

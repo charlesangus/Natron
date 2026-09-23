@@ -47,8 +47,11 @@
 #include "Engine/Curve.h"
 #include "Engine/DockablePanelI.h"
 #include "Engine/Hash64.h"
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobGuiI.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobSerialization.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
@@ -404,8 +407,8 @@ struct KnobHelperPrivate
     std::string inViewerContextLabel;
     bool inViewerContextHasShortcut;
     KnobIWPtr parentKnob;
-    mutable QMutex stateMutex; // protects IsSecret defaultIsSecret enabled
-    bool IsSecret, defaultIsSecret, inViewerContextSecret;
+    mutable QMutex stateMutex; // protects IsSecret defaultIsSecret secretLocked enabled
+    bool IsSecret, defaultIsSecret, secretLocked, inViewerContextSecret;
     std::vector<bool> enabled, defaultEnabled;
     bool CanUndo;
     QMutex evaluateOnChangeMutex;
@@ -471,17 +474,17 @@ struct KnobHelperPrivate
     bool isClipPreferenceSlave;
 
     KnobHelperPrivate(KnobHelper* publicInterface_,
-                      KnobHolder*  holder_,
+                      KnobHolder* holder_,
                       int dimension_,
-                      const std::string & label_,
+                      const std::string& label_,
                       bool declaredByPlugin_)
         : publicInterface(publicInterface_)
         , holder(holder_)
         , labelMutex()
         , label(label_)
         , iconFilePath()
-        , name( label_.c_str() )
-        , originalName( label_.c_str() )
+        , name(label_.c_str())
+        , originalName(label_.c_str())
         , newLine(true)
         , addSeparator(false)
         , itemSpacing(0)
@@ -494,6 +497,7 @@ struct KnobHelperPrivate
         , stateMutex()
         , IsSecret(false)
         , defaultIsSecret(false)
+        , secretLocked(false)
         , inViewerContextSecret(false)
         , enabled(dimension_)
         , defaultEnabled(dimension_)
@@ -2065,7 +2069,7 @@ KnobHelper::setSecret(bool b)
 {
     {
         QMutexLocker k(&_imp->stateMutex);
-        if (_imp->IsSecret == b) {
+        if (_imp->secretLocked || _imp->IsSecret == b) {
             return;
         }
         _imp->IsSecret = b;
@@ -2828,6 +2832,9 @@ KnobHelper::setExpressionInternal(int dimension,
                                   bool clearResults,
                                   bool failIfInvalid)
 {
+    if (!supportsExpressions()) {
+        throw std::invalid_argument("This parameter does not support expressions");
+    }
 #ifdef NATRON_RUN_WITHOUT_PYTHON
 
     return;
@@ -3289,6 +3296,22 @@ KnobHelper::getIsSecretRecursive() const
     }
 
     return false;
+}
+
+void
+KnobHelper::setSecretLocked(bool locked)
+{
+    QMutexLocker k(&_imp->stateMutex);
+
+    _imp->secretLocked = locked;
+}
+
+bool
+KnobHelper::isSecretLocked() const
+{
+    QMutexLocker k(&_imp->stateMutex);
+
+    return _imp->secretLocked;
 }
 
 bool
@@ -4550,6 +4573,10 @@ KnobHelper::createDuplicateOnHolder(KnobHolder* otherHolder,
     KnobFile* isFile = dynamic_cast<KnobFile*>(this);
     KnobOutputFile* isOutputFile = dynamic_cast<KnobOutputFile*>(this);
     KnobPath* isPath = dynamic_cast<KnobPath*>(this);
+    KnobLayers* isLayers = dynamic_cast<KnobLayers*>(this);
+    KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(this);
+    KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(this);
+    KnobChannelSelect* isChannelSelect = dynamic_cast<KnobChannelSelect*>(this);
     KnobGroup* isGrp = dynamic_cast<KnobGroup*>(this);
     KnobPage* isPage = dynamic_cast<KnobPage*>(this);
     KnobButton* isBtn = dynamic_cast<KnobButton*>(this);
@@ -4643,6 +4670,19 @@ KnobHelper::createDuplicateOnHolder(KnobHolder* otherHolder,
         if ( isPath->isMultiPath() ) {
             newKnob->setMultiPath(true);
         }
+        output = newKnob;
+    } else if (isLayers) {
+        KnobLayersPtr newKnob = AppManager::createKnob<KnobLayers>(otherHolder, newLabel, getDimension(), false);
+        newKnob->setAsUserKnob(isUserKnob);
+        output = newKnob;
+    } else if (isChannelSet) {
+        KnobChannelSetPtr newKnob = otherHolder->createChannelSetKnob(newScriptName, newLabel, isUserKnob);
+        output = newKnob;
+    } else if (isLayerSelect) {
+        KnobLayerSelectPtr newKnob = otherHolder->createLayerSelectKnob(newScriptName, newLabel, isLayerSelect->getWithChannelButtons(), isUserKnob);
+        output = newKnob;
+    } else if (isChannelSelect) {
+        KnobChannelSelectPtr newKnob = otherHolder->createChannelSelectKnob(newScriptName, newLabel, isUserKnob);
         output = newKnob;
     } else if (isGrp) {
         KnobGroupPtr newKnob = otherHolder->createGroupKnob(newScriptName, newLabel, isUserKnob);
@@ -5588,6 +5628,71 @@ KnobHolder::createPathKnob(const std::string& name,
     ret->setAsUserKnob(userKnob);
     /*KnobPagePtr pageknob = getOrCreateUserPageKnob();
        Q_UNUSED(pageknob);*/
+    EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);
+    if (isEffect && userKnob) {
+        isEffect->getNode()->declarePythonFields();
+    }
+
+    return ret;
+}
+
+KnobChannelSetPtr
+KnobHolder::createChannelSetKnob(const std::string& name,
+                                 const std::string& label,
+                                 bool userKnob)
+{
+    KnobIPtr existingKnob = getKnobByName(name);
+
+    if (existingKnob) {
+        return std::dynamic_pointer_cast<KnobChannelSet>(existingKnob);
+    }
+    KnobChannelSetPtr ret = AppManager::createKnob<KnobChannelSet>(this, label, 1, false);
+    ret->setName(name);
+    ret->setAsUserKnob(userKnob);
+    EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);
+    if (isEffect && userKnob) {
+        isEffect->getNode()->declarePythonFields();
+    }
+
+    return ret;
+}
+
+KnobLayerSelectPtr
+KnobHolder::createLayerSelectKnob(const std::string& name,
+                                  const std::string& label,
+                                  bool withChannelButtons,
+                                  bool userKnob)
+{
+    KnobIPtr existingKnob = getKnobByName(name);
+
+    if (existingKnob) {
+        return std::dynamic_pointer_cast<KnobLayerSelect>(existingKnob);
+    }
+    KnobLayerSelectPtr ret = AppManager::createKnob<KnobLayerSelect>(this, label, 1, false);
+    ret->setName(name);
+    ret->setWithChannelButtons(withChannelButtons);
+    ret->setAsUserKnob(userKnob);
+    EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);
+    if (isEffect && userKnob) {
+        isEffect->getNode()->declarePythonFields();
+    }
+
+    return ret;
+}
+
+KnobChannelSelectPtr
+KnobHolder::createChannelSelectKnob(const std::string& name,
+                                    const std::string& label,
+                                    bool userKnob)
+{
+    KnobIPtr existingKnob = getKnobByName(name);
+
+    if (existingKnob) {
+        return std::dynamic_pointer_cast<KnobChannelSelect>(existingKnob);
+    }
+    KnobChannelSelectPtr ret = AppManager::createKnob<KnobChannelSelect>(this, label, 1, false);
+    ret->setName(name);
+    ret->setAsUserKnob(userKnob);
     EffectInstance* isEffect = dynamic_cast<EffectInstance*>(this);
     if (isEffect && userKnob) {
         isEffect->getNode()->declarePythonFields();

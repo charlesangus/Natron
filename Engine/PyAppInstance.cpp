@@ -496,7 +496,78 @@ App::getViewNames() const
 void
 App::addProjectLayer(const ImageLayer& layer)
 {
-    getInternalApp()->getProject()->addProjectDefaultLayer( layer.getInternalComps() );
+    std::string error;
+
+    getInternalApp()->getProject()->addLayer(layer.getInternalComps(), LayerRegistryEntry::eOriginUser, &error);
+}
+
+std::list<ImageLayer>
+App::getProjectLayers() const
+{
+    std::list<ImageLayer> ret;
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = getInternalApp()->getProject()->getLayerRegistrySnapshot();
+
+    for (std::vector<LayerRegistryEntry>::const_iterator it = snapshot->begin(); it != snapshot->end(); ++it) {
+        ret.push_back(ImageLayer(it->desc));
+    }
+
+    return ret;
+}
+
+ImageLayer*
+App::getProjectLayer(const QString& id) const
+{
+    ImageLayerDesc desc;
+
+    if (!getInternalApp()->getProject()->findLayer(id.toStdString(), &desc)) {
+        return 0;
+    }
+
+    return new ImageLayer(desc);
+}
+
+ImageLayer*
+App::addProjectLayer(const QString& id,
+                     const QStringList& channels)
+{
+    std::string idStr = id.toStdString();
+    std::vector<std::string> chans;
+
+    chans.reserve(channels.size());
+    for (QStringList::const_iterator it = channels.begin(); it != channels.end(); ++it) {
+        chans.push_back(it->toStdString());
+    }
+
+    ImageLayerDesc desc(idStr, idStr, "", chans);
+    std::string error;
+    LayerRegistry::AddResultEnum res = getInternalApp()->getProject()->addLayer(desc, LayerRegistryEntry::eOriginUser, &error);
+
+    if (res == LayerRegistry::eAddResultRefused) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+        return 0;
+    }
+
+    // A reserved alias (e.g. "rgba") never enters the registry: it is always the built-in Color layer.
+    const ImageLayerDesc* alias = LayerRegistry::reservedAlias(idStr);
+    if (alias) {
+        return new ImageLayer(*alias);
+    }
+
+    ImageLayerDesc found;
+    if (getInternalApp()->getProject()->findLayer(idStr, &found)) {
+        return new ImageLayer(found);
+    }
+
+    PyErr_SetString(PyExc_ValueError, error.empty() ? "Unknown layer." : error.c_str());
+    return 0;
+}
+
+bool
+App::removeProjectLayer(const QString& id)
+{
+    std::string error;
+
+    return getInternalApp()->getProject()->removeLayer(id.toStdString(), &error);
 }
 
 NATRON_PYTHON_NAMESPACE_EXIT

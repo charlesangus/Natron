@@ -153,15 +153,14 @@ renderSmearDot(const unsigned char* maskData,
     /// First copy the portion of the image around the previous dot into tmpBuf
     RectD prevDotRoD(prev.x - brushSizePixels / 2., prev.y - brushSizePixels / 2., prev.x + brushSizePixels / 2., prev.y + brushSizePixels / 2.);
     const RectI prevDotBounds = prevDotRoD.toPixelEnclosing(0, outputImage->getPixelAspectRatio());
-    ImagePtr tmpBuf( new Image(outputImage->getComponents(),
-                               prevDotRoD,
-                               prevDotBounds,
-                               0,
-                               outputImage->getPixelAspectRatio(),
-                               outputImage->getBitDepth(),
-                               outputImage->getPremultiplication(),
-                               outputImage->getFieldingOrder(),
-                               false) );
+    ImagePtr tmpBuf(new Image(outputImage->getComponents(),
+                              prevDotRoD,
+                              prevDotBounds,
+                              0,
+                              outputImage->getPixelAspectRatio(),
+                              outputImage->getBitDepth(),
+                              outputImage->getFieldingOrder(),
+                              false));
     tmpBuf->pasteFrom(*outputImage, prevDotBounds, false);
 
     Image::ReadAccess tmpAcc( tmpBuf.get() );
@@ -235,12 +234,12 @@ RotoSmear::render(const RenderActionArgs& args)
 
     EffectInstance::ComponentsNeededMap neededComps;
     std::list<ImageLayerDesc> ptLayers;
-    bool processAll;
     std::bitset<4> processChannels;
+    EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
     double ptTime;
     int ptView;
     int ptInput;
-    getComponentsNeededAndProduced_public(getRenderHash(), args.time, args.view, &neededComps, &ptLayers, &processAll, &ptTime, &ptView, &processChannels, &ptInput);
+    getComponentsNeededAndProduced_public(getRenderHash(), args.time, args.view, &neededComps, &ptLayers, &ptTime, &ptView, &processChannels, &processChannelsPerPlane, &ptInput);
 
     EffectInstance::ComponentsNeededMap::iterator foundBg = neededComps.find(0);
     RectI bgImgRoI;

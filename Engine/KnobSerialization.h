@@ -58,6 +58,7 @@ GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_ON
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/StringAnimationManager.h"
 #include "Engine/Variant.h"
@@ -76,7 +77,8 @@ GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_ON
 #define KNOB_SERIALIZATION_REMOVE_SLAVED_TRACKS 12
 #define KNOB_SERIALIZATION_REMOVE_DEFAULT_VALUES 13
 #define KNOB_SERIALIZATION_CHANGE_LAYERS_SERIALIZATION 14
-#define KNOB_SERIALIZATION_VERSION KNOB_SERIALIZATION_CHANGE_LAYERS_SERIALIZATION
+#define KNOB_SERIALIZATION_INTRODUCES_LAYER_SELECT_CHANNEL_BUTTONS 15
+#define KNOB_SERIALIZATION_VERSION KNOB_SERIALIZATION_INTRODUCES_LAYER_SELECT_CHANNEL_BUTTONS
 
 #define VALUE_SERIALIZATION_INTRODUCES_CHOICE_LABEL 2
 #define VALUE_SERIALIZATION_INTRODUCES_EXPRESSIONS 3
@@ -194,6 +196,18 @@ public:
     bool label;
     bool multiLine;
     bool richText;
+};
+
+class LayerSelectExtraData
+    : public TypeExtraData {
+public:
+    LayerSelectExtraData()
+        : TypeExtraData()
+        , withChannelButtons(false)
+    {
+    }
+
+    bool withChannelButtons;
 };
 
 class ValueExtraData
@@ -580,6 +594,7 @@ private:
                 TextExtraData* tdata = dynamic_cast<TextExtraData*>(_extraData);
                 FileExtraData* fdata = dynamic_cast<FileExtraData*>(_extraData);
                 PathExtraData* pdata = dynamic_cast<PathExtraData*>(_extraData);
+                LayerSelectExtraData* lsdata = dynamic_cast<LayerSelectExtraData*>(_extraData);
 
                 if (cdata) {
                     ar & ::boost::serialization::make_nvp("Entries", cdata->_entries);
@@ -593,6 +608,8 @@ private:
                     ar & ::boost::serialization::make_nvp("Sequences", fdata->useSequences);
                 } else if (pdata) {
                     ar & ::boost::serialization::make_nvp("MultiPath", pdata->multiPath);
+                } else if (lsdata) {
+                    ar& ::boost::serialization::make_nvp("WithChannelButtons", lsdata->withChannelButtons);
                 } else if (tdata) {
                     ar & ::boost::serialization::make_nvp("IsLabel", tdata->label);
                     ar & ::boost::serialization::make_nvp("IsMultiLine", tdata->multiLine);
@@ -761,6 +778,15 @@ private:
                     _extraData = extraData;
                 }
 
+                KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(_knob.get());
+                if (isLayerSelect) {
+                    LayerSelectExtraData* extraData = new LayerSelectExtraData;
+                    if (version >= KNOB_SERIALIZATION_INTRODUCES_LAYER_SELECT_CHANNEL_BUTTONS) {
+                        ar& ::boost::serialization::make_nvp("WithChannelButtons", extraData->withChannelButtons);
+                    }
+                    isLayerSelect->setWithChannelButtons(extraData->withChannelButtons);
+                    _extraData = extraData;
+                }
 
                 if ( isDbl && (version >= KNOB_SERIALIZATION_INTRODUCES_NATIVE_OVERLAYS) && (isDbl->getDimension() == 2) ) {
                     ar & ::boost::serialization::make_nvp("HasOverlayHandle", _useHostOverlay);
@@ -907,6 +933,13 @@ public:
             if (isPath) {
                 PathExtraData* extraData = new PathExtraData;
                 extraData->multiPath = isPath->isMultiPath();
+                _extraData = extraData;
+            }
+
+            KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(_knob.get());
+            if (isLayerSelect) {
+                LayerSelectExtraData* extraData = new LayerSelectExtraData;
+                extraData->withChannelButtons = isLayerSelect->getWithChannelButtons();
                 _extraData = extraData;
             }
         }

@@ -121,13 +121,12 @@ RotoPaint::isHostChannelSelectorSupported(bool* defaultR,
                                           bool* defaultB,
                                           bool* defaultA) const
 {
-    //Use our own selectors, we don't want Natron to copy back channels
     *defaultR = true;
     *defaultG = true;
     *defaultB = true;
     *defaultA = true;
 
-    return false;
+    return true;
 }
 
 bool
@@ -141,7 +140,7 @@ RotoNode::isHostChannelSelectorSupported(bool* defaultR,
     *defaultB = false;
     *defaultA = true;
 
-    return false;
+    return true;
 }
 
 std::string
@@ -190,41 +189,6 @@ RotoPaint::initializeKnobs()
     KnobPagePtr generalPage = std::dynamic_pointer_cast<KnobPage>( getKnobByName("General") );
 
     assert(generalPage);
-
-
-    KnobSeparatorPtr sep = AppManager::createKnob<KnobSeparator>(this, tr("Output"), 1, false);
-    generalPage->addKnob(sep);
-
-
-    std::string channelNames[4] = {kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA};
-    std::string channelLabels[4] = {"R", "G", "B", "A"};
-    bool defaultValues[4];
-    bool channelSelectorSupported = isHostChannelSelectorSupported(&defaultValues[0], &defaultValues[1], &defaultValues[2], &defaultValues[3]);
-    Q_UNUSED(channelSelectorSupported);
-
-    for (int i = 0; i < 4; ++i) {
-        KnobBoolPtr enabled =  AppManager::createKnob<KnobBool>(this, channelLabels[i], 1, false);
-        enabled->setName(channelNames[i]);
-        enabled->setAnimationEnabled(false);
-        enabled->setAddNewLine(i == 3);
-        enabled->setDefaultValue(defaultValues[i]);
-        enabled->setHintToolTip( tr("Enable drawing onto this channel") );
-        generalPage->addKnob(enabled);
-        _imp->enabledKnobs[i] = enabled;
-    }
-
-
-    KnobBoolPtr premultKnob = AppManager::createKnob<KnobBool>(this, tr("Premultiply"), 1, false);
-    premultKnob->setName("premultiply");
-    premultKnob->setHintToolTip( tr("When checked, the red, green and blue channels of the output are premultiplied by the alpha channel.\n"
-                                    "This will result in the pixels outside of the shapes and paint strokes being black and transparent.\n"
-                                    "This should only be used if all the inputs are Opaque or UnPremultiplied, and only the Alpha channel "
-                                    "is selected to be drawn by this node.") );
-    premultKnob->setDefaultValue(false);
-    premultKnob->setAnimationEnabled(false);
-    premultKnob->setIsMetadataSlave(true);
-    _imp->premultKnob = premultKnob;
-    generalPage->addKnob(premultKnob);
 
     RotoContextPtr context = getNode()->getRotoContext();
     assert(context);
@@ -1351,25 +1315,6 @@ RotoPaint::getPreferredMetadata(NodeMetadata& metadata)
 {
     metadata.setNComps( -1, 4 );
     metadata.setComponentsType(-1, kNatronColorLayerID);
-    /*KnobBoolPtr premultKnob = _imp->premultKnob.lock();
-       assert(premultKnob);
-       bool premultiply = premultKnob->getValue();
-       if (premultiply) {
-        metadata.setOutputPremult(eImagePremultiplicationPremultiplied);
-       } else {
-        ImagePremultiplicationEnum srcPremult = eImagePremultiplicationOpaque;
-        EffectInstancePtr input = getInput(0);
-        if (input) {
-            srcPremult = input->getPremult();
-        }
-        bool processA = getNode()->getProcessChannel(3);
-        if ( (srcPremult == eImagePremultiplicationOpaque) && processA ) {
-            metadata.setOutputPremult(eImagePremultiplicationUnPremultiplied);
-        } else {
-            metadata.setOutputPremult(eImagePremultiplicationPremultiplied);
-        }
-       }*/
-    metadata.setOutputPremult(eImagePremultiplicationPremultiplied);
 
     return eStatusOK;
 }
@@ -1488,27 +1433,18 @@ RotoPaint::render(const RenderActionArgs& args)
         neededComps.push_back(layer->first);
     }
 
-    KnobBoolPtr premultKnob = _imp->premultKnob.lock();
-    assert(premultKnob);
-    bool premultiply = premultKnob->getValueAtTime(args.time);
-
-    if ( items.empty() ) {
-        RectI bgImgRoI;
-        ImagePtr bgImg = getImage(0, args.time, args.mappedScale, args.view, 0, 0, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM /*returnOpenGLtexture*/, 0 /*textureDepth*/, &bgImgRoI);
-
+    if (items.empty()) {
         for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator layer = args.outputLayers.begin();
              layer != args.outputLayers.end(); ++layer) {
+            RectI bgImgRoI;
+            ImagePtr bgImg = getImage(0, args.time, args.mappedScale, args.view, 0, &layer->first, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM /*returnOpenGLtexture*/, 0 /*textureDepth*/, &bgImgRoI);
             if (bgImg) {
                 if (bgImg->getComponents() != layer->second->getComponents()) {
                     bgImg->convertToFormat(args.roi,
                                            getApp()->getDefaultColorSpaceForBitDepth(bgImg->getBitDepth()),
-                                           getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, false, layer->second.get());
+                                           getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, layer->second.get());
                 } else {
                     layer->second->pasteFrom(*bgImg, args.roi, false);
-                }
-
-                if (premultiply && (layer->second->getComponents() == ImageLayerDesc::getRGBAComponents())) {
-                    layer->second->premultImage(args.roi);
                 }
             } else {
                 layer->second->fillZero(args.roi);
@@ -1523,11 +1459,7 @@ RotoPaint::render(const RenderActionArgs& args)
             }
         }
         NodePtr bottomMerge = roto->getRotoPaintBottomMergeNode();
-        RenderingFlagSetter flagIsRendering( bottomMerge );
-        std::bitset<4> copyChannels;
-        for (int i = 0; i < 4; ++i) {
-            copyChannels[i] = _imp->enabledKnobs[i].lock()->getValue();
-        }
+        RenderingFlagSetter flagIsRendering(bottomMerge);
 
         unsigned int mipmapLevel = args.mappedScale.toMipmapLevel();
         RenderRoIArgs rotoPaintArgs(args.time,
@@ -1559,10 +1491,7 @@ RotoPaint::render(const RenderActionArgs& args)
         }
         assert(rotoPaintImages.size() == args.outputLayers.size());
 
-        RectI bgImgRoI;
-        ImagePtr bgImg;
-        ImagePremultiplicationEnum outputPremult = getPremult();
-        bool triedGetImage = false;
+        const U64 hash = getRenderHash();
 
         for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator layer = args.outputLayers.begin();
              layer != args.outputLayers.end(); ++layer) {
@@ -1571,11 +1500,17 @@ RotoPaint::render(const RenderActionArgs& args)
             if ( rotoImagesIt == rotoPaintImages.end() ) {
                 continue;
             }
-            if (!bgImg) {
-                if (!triedGetImage) {
-                    bgImg = getImage(0, args.time, args.mappedScale, args.view, 0, 0, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM /*returnOpenGLtexture*/, 0 /*textureDepth*/, &bgImgRoI);
-                    triedGetImage = true;
-                }
+            RectI bgImgRoI;
+            ImagePtr bgImg = getImage(0, args.time, args.mappedScale, args.view, 0, &layer->first, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM /*returnOpenGLtexture*/, 0 /*textureDepth*/, &bgImgRoI);
+            std::bitset<4> copyChannels = getProcessChannelsForPlane(hash, args.time, args.view, layer->first);
+            // The bits follow the plane's own layout, where a one-channel plane's channel is bit 3,
+            // but the host reads a one-channel non-Color plane back from channel 0 of the wider
+            // image it hands this render (see channelForAlphaForPlane), so that is the channel the
+            // bit must guard; the others are discarded by that conversion.
+            if ((layer->first.getNumComponents() == 1) && !layer->first.isColorLayer() && (layer->second->getComponentsCount() > 1)) {
+                const bool processed = copyChannels[3];
+                copyChannels.set();
+                copyChannels[0] = processed;
             }
             if ( !rotoImagesIt->second->getBounds().contains(args.roi) ) {
                 // We first fill with the bg image because the bounds of the image produced by the last merge of the rotopaint tree
@@ -1629,7 +1564,7 @@ RotoPaint::render(const RenderActionArgs& args)
                         if (!intersection.isNull()) {
                             bgImg->convertToFormat(intersection,
                                                    getApp()->getDefaultColorSpaceForBitDepth(rotoImagesIt->second->getBitDepth()),
-                                                   getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, false, layer->second.get());
+                                                   getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, layer->second.get());
                         }
                     } else {
                         layer->second->pasteFrom(*bgImg, args.roi, false);
@@ -1642,14 +1577,11 @@ RotoPaint::render(const RenderActionArgs& args)
             if (rotoImagesIt->second->getComponents() != layer->second->getComponents()) {
                 rotoImagesIt->second->convertToFormat(args.roi,
                                                       getApp()->getDefaultColorSpaceForBitDepth(rotoImagesIt->second->getBitDepth()),
-                                                      getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, false, layer->second.get());
+                                                      getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, layer->second.get());
             } else {
                 layer->second->pasteFrom(*(rotoImagesIt->second), args.roi, false);
             }
-            layer->second->copyUnProcessedChannels(args.roi, outputPremult, bgImg ? bgImg->getPremultiplication() : eImagePremultiplicationOpaque, copyChannels, bgImg, false);
-            if (premultiply && (layer->second->getComponents() == ImageLayerDesc::getRGBAComponents())) {
-                layer->second->premultImage(args.roi);
-            }
+            layer->second->copyUnProcessedChannels(args.roi, copyChannels, bgImg);
         }
     } // RenderingFlagSetter
 

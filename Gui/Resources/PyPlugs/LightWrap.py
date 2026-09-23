@@ -1109,9 +1109,9 @@ def createInstance(app,group):
     lastNode.setColor(0.8, 0.5, 0.3)
     groupBGBlur = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessA")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(True)
+        param.setChannels(["R", "G", "B", "A"])
         del param
 
     param = lastNode.getParam("expandRoD")
@@ -1150,9 +1150,9 @@ def createInstance(app,group):
         param.setValue(1, 3)
         del param
 
-    param = lastNode.getParam("NatronOfxParamProcessA")
+    param = lastNode.getParam("layer")
     if param is not None:
-        param.setValue(False)
+        param.setChannels(["R", "G", "B"])
         del param
 
     del lastNode
@@ -1281,24 +1281,9 @@ def createInstance(app,group):
     lastNode.setColor(0.8, 0.5, 0.3)
     groupFGBlur = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessR")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessG")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessB")
-    if param is not None:
-        param.setValue(False)
-        del param
-
-    param = lastNode.getParam("NatronOfxParamProcessA")
-    if param is not None:
-        param.setValue(True)
+        param.setChannels(["A"])
         del param
 
     param = lastNode.getParam("size")
@@ -1413,9 +1398,9 @@ def createInstance(app,group):
     lastNode.setColor(0.8, 0.5, 0.3)
     groupDiffuse = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessA")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(True)
+        param.setChannels(["R", "G", "B", "A"])
         del param
 
     param = lastNode.getParam("size")
@@ -1441,9 +1426,9 @@ def createInstance(app,group):
     lastNode.setColor(0.48, 0.66, 1)
     groupIntensity = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessA")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(True)
+        param.setChannels(["R", "G", "B", "A"])
         del param
 
     param = lastNode.getParam("value")
@@ -1483,9 +1468,9 @@ def createInstance(app,group):
     lastNode.setColor(0.48, 0.66, 1)
     groupColorCorrect1 = lastNode
 
-    param = lastNode.getParam("NatronOfxParamProcessA")
+    param = lastNode.getParam("channels")
     if param is not None:
-        param.setValue(True)
+        param.setChannels(["R", "G", "B", "A"])
         del param
 
     param = lastNode.getParam("toneRanges")

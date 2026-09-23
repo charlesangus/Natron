@@ -28,16 +28,20 @@
 #include <cassert>
 #include <stdexcept>
 
-#include "Engine/Node.h"
-#include "Engine/KnobTypes.h"
-#include "Engine/KnobFile.h"
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Hash64.h"
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobChannelSet.h"
+#include "Engine/KnobFile.h"
+#include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Project.h"
 #include "Engine/PyRoto.h"
 #include "Engine/PyTracker.h"
 #include "Engine/TimeLine.h"
-#include "Engine/Hash64.h"
 
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
@@ -396,6 +400,9 @@ Effect::createParamWrapperForKnob(const KnobIPtr& knob)
     KnobFilePtr isFile = std::dynamic_pointer_cast<KnobFile>(knob);
     KnobOutputFilePtr isOutputFile = std::dynamic_pointer_cast<KnobOutputFile>(knob);
     KnobPathPtr isPath = std::dynamic_pointer_cast<KnobPath>(knob);
+    KnobChannelSetPtr isChannelSet = std::dynamic_pointer_cast<KnobChannelSet>(knob);
+    KnobLayerSelectPtr isLayerSelect = std::dynamic_pointer_cast<KnobLayerSelect>(knob);
+    KnobChannelSelectPtr isChannelSelect = std::dynamic_pointer_cast<KnobChannelSelect>(knob);
     KnobButtonPtr isButton = std::dynamic_pointer_cast<KnobButton>(knob);
     KnobGroupPtr isGroup = std::dynamic_pointer_cast<KnobGroup>(knob);
     KnobPagePtr isPage = std::dynamic_pointer_cast<KnobPage>(knob);
@@ -444,6 +451,12 @@ Effect::createParamWrapperForKnob(const KnobIPtr& knob)
         return new OutputFileParam(isOutputFile);
     } else if (isPath) {
         return new PathParam(isPath);
+    } else if (isChannelSet) {
+        return new ChannelSetParam(isChannelSet);
+    } else if (isLayerSelect) {
+        return new LayerSelectParam(isLayerSelect);
+    } else if (isChannelSelect) {
+        return new ChannelSelectParam(isChannelSelect);
     } else if (isGroup) {
         return new GroupParam(isGroup);
     } else if (isPage) {
@@ -808,6 +821,61 @@ UserParamHolder::createPathParam(const QString& name,
     }
 }
 
+ChannelSetParam*
+UserParamHolder::createChannelSetParam(const QString& name,
+                                       const QString& label)
+{
+    KnobChannelSetPtr knob = _holder->createChannelSetKnob(name.toStdString(), label.toStdString());
+
+    if (knob) {
+        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        if (userPage) {
+            userPage->addKnob(knob);
+        }
+
+        return new ChannelSetParam(knob);
+    } else {
+        return 0;
+    }
+}
+
+LayerSelectParam*
+UserParamHolder::createLayerSelectParam(const QString& name,
+                                        const QString& label,
+                                        bool withChannelButtons)
+{
+    KnobLayerSelectPtr knob = _holder->createLayerSelectKnob(name.toStdString(), label.toStdString(), withChannelButtons);
+
+    if (knob) {
+        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        if (userPage) {
+            userPage->addKnob(knob);
+        }
+
+        return new LayerSelectParam(knob);
+    } else {
+        return 0;
+    }
+}
+
+ChannelSelectParam*
+UserParamHolder::createChannelSelectParam(const QString& name,
+                                          const QString& label)
+{
+    KnobChannelSelectPtr knob = _holder->createChannelSelectKnob(name.toStdString(), label.toStdString());
+
+    if (knob) {
+        KnobPagePtr userPage = _holder->getOrCreateUserPageKnob();
+        if (userPage) {
+            userPage->addKnob(knob);
+        }
+
+        return new ChannelSelectParam(knob);
+    } else {
+        return 0;
+    }
+}
+
 ButtonParam*
 UserParamHolder::createButtonParam(const QString& name,
                                    const QString& label)
@@ -988,26 +1056,6 @@ Effect::setSubGraphEditable(bool editable)
     }
 }
 
-bool
-Effect::addUserLayer(const QString& layerName,
-                     const QStringList& channels)
-{
-    if (layerName.isEmpty() || (channels.size() < 1) || (channels.size() > 4)) {
-        return false;
-    }
-    std::string compsGlobal;
-    std::vector<std::string> chans( channels.size() );
-    int i = 0;
-    for (QStringList::const_iterator it = channels.begin(); it != channels.end(); ++it, ++i) {
-        std::string c = it->toStdString();
-        compsGlobal.append(c);
-        chans[i] = c;
-    }
-    ImageLayerDesc comp(layerName.toStdString(), layerName.toStdString(), compsGlobal, chans);
-
-    return getInternalNode()->addUserComponents(comp);
-}
-
 std::list<ImageLayer>
 Effect::getAvailableLayers(int inputNb) const
 {
@@ -1073,18 +1121,6 @@ Effect::getBitDepth() const
     }
 
     return node->getEffectInstance()->getBitDepth(-1);
-}
-
-ImagePremultiplicationEnum
-Effect::getPremult() const
-{
-    NodePtr node = getInternalNode();
-
-    if (!node) {
-        return eImagePremultiplicationPremultiplied;
-    }
-
-    return node->getEffectInstance()->getPremult();
 }
 
 void

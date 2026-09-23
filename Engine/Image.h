@@ -191,7 +191,6 @@ public:
           unsigned int mipmapLevel,
           double par,
           ImageBitDepthEnum bitdepth,
-          ImagePremultiplicationEnum premult,
           ImageFieldingOrderEnum fielding,
           bool useBitmap = false,
           StorageModeEnum storage = eStorageModeRAM,
@@ -225,7 +224,6 @@ public:
                                      bool isRoDProjectFormat,
                                      const ImageLayerDesc& components,
                                      ImageBitDepthEnum bitdepth,
-                                     ImagePremultiplicationEnum premult,
                                      ImageFieldingOrderEnum fielding,
                                      StorageModeEnum storage = eStorageModeRAM,
                                      U32 textureTarget = GL_TEXTURE_2D);
@@ -236,7 +234,6 @@ public:
                                      bool isRoDProjectFormat,
                                      const ImageLayerDesc& components,
                                      ImageBitDepthEnum bitdepth,
-                                     ImagePremultiplicationEnum premult,
                                      ImageFieldingOrderEnum fielding,
                                      StorageModeEnum storage = eStorageModeRAM,
                                      U32 textureTarget = GL_TEXTURE_2D);
@@ -344,8 +341,6 @@ public:
     }
 
     ImageFieldingOrderEnum getFieldingOrder() const;
-
-    ImagePremultiplicationEnum getPremultiplication() const;
 
     double getPixelAspectRatio() const;
 
@@ -549,51 +544,34 @@ private:
                                                   bool copyBitmap);
 
     template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue, int srcNComps, int dstNComps>
-    static void convertToFormatInternal(const RectI & renderWindow,
-                                        const Image & srcImg,
-                                        Image & dstImg,
+    static void convertToFormatInternal(const RectI& renderWindow,
+                                        const Image& srcImg,
+                                        Image& dstImg,
                                         ViewerColorSpaceEnum srcColorSpace,
                                         ViewerColorSpaceEnum dstColorSpace,
                                         int channelForAlpha,
                                         bool useAlpha0,
-                                        bool copyBitmap,
-                                        bool requiresUnpremult);
+                                        bool copyBitmap);
 
-
-    template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue, int srcNComps, int dstNComps,
-              bool requiresUnpremult>
-    static void convertToFormatInternalForUnpremult(const RectI & renderWindow,
-                                                    const Image & srcImg,
-                                                    Image & dstImg,
-                                                    ViewerColorSpaceEnum srcColorSpace,
-                                                    ViewerColorSpaceEnum dstColorSpace,
-                                                    bool useAlpha0,
-                                                    bool copyBitmap,
-                                                    int channelForAlpha);
-
-
-    template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue, int srcNComps, int dstNComps,
-              bool requiresUnpremult, bool useColorspaces>
-    static void convertToFormatInternalForColorSpace(const RectI & renderWindow,
-                                                     const Image & srcImg,
-                                                     Image & dstImg,
+    template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue, int srcNComps, int dstNComps, bool useColorspaces>
+    static void convertToFormatInternalForColorSpace(const RectI& renderWindow,
+                                                     const Image& srcImg,
+                                                     Image& dstImg,
                                                      bool copyBitmap,
                                                      bool useAlpha0,
                                                      ViewerColorSpaceEnum srcColorSpace,
                                                      ViewerColorSpaceEnum dstColorSpace,
                                                      int channelForAlpha);
 
-
     template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue>
-    static void convertToFormatInternalForDepth(const RectI & renderWindow,
-                                                const Image & srcImg,
-                                                Image & dstImg,
+    static void convertToFormatInternalForDepth(const RectI& renderWindow,
+                                                const Image& srcImg,
+                                                Image& dstImg,
                                                 ViewerColorSpaceEnum srcColorSpace,
                                                 ViewerColorSpaceEnum dstColorSpace,
                                                 int channelForAlpha,
                                                 bool useAlpha0,
-                                                bool copyBitmap,
-                                                bool requiresUnpremult);
+                                                bool copyBitmap);
 
 public:
 
@@ -785,74 +763,76 @@ public:
      *
      * @param copyBitMap The bitmap will also be copied.
      *
-     * @param requiresUnpremult If true, if a component conversion from RGBA to RGB happens
-     * the RGB channels will be divided by the alpha channel when copied to the output image.
-     *
      * Note that this function is mainly used for the following conversion:
      * RGBA --> Alpha
      * or bit depth conversion
      * Implementation should tend to optimize these cases.
      **/
-    void convertToFormat(const RectI & renderWindow,
+    void convertToFormat(const RectI& renderWindow,
                          ViewerColorSpaceEnum srcColorSpace,
                          ViewerColorSpaceEnum dstColorSpace,
                          int channelForAlpha,
                          bool copyBitMap,
-                         bool requiresUnpremult,
                          Image* dstImg) const;
 
-    void convertToFormatAlpha0(const RectI & renderWindow,
+    void convertToFormatAlpha0(const RectI& renderWindow,
                                ViewerColorSpaceEnum srcColorSpace,
                                ViewerColorSpaceEnum dstColorSpace,
                                int channelForAlpha,
                                bool copyBitMap,
-                               bool requiresUnpremult,
                                Image* dstImg) const;
 
 private:
-
-
-    void convertToFormatCommon(const RectI & renderWindow,
+    void convertToFormatCommon(const RectI& renderWindow,
                                ViewerColorSpaceEnum srcColorSpace,
                                ViewerColorSpaceEnum dstColorSpace,
                                int channelForAlpha,
                                bool useAlpha0,
                                bool copyBitMap,
-                               bool requiresUnpremult,
                                Image* dstImg) const;
 
-    template <typename PIX, bool doPremult>
-    void premultInternal(const RectI& roi);
-    template <bool doPremult>
-    void premultForDepth(const RectI& roi);
-
 public:
-
-    /**
-     * @brief Premultiply the image by its alpha channel on the given RoI.
-     * Currently there is no implementation for OpenGL textures.
-     **/
-    void premultImage(const RectI& roi);
-
-    /**
-     * @brief Unpremultiply the image by its alpha channel on the given RoI.
-     * Currently there is no implementation for OpenGL textures.
-     **/
-    void unpremultImage(const RectI& roi);
-
     bool canCallCopyUnProcessedChannels(std::bitset<4> processChannels) const;
 
     /**
      * @brief Given the channels to process, this function copies from the originalImage the channels
      * that are not marked to true in processChannels.
      **/
-    void copyUnProcessedChannels( const RectI& roi,
-                                  ImagePremultiplicationEnum outputPremult,
-                                  ImagePremultiplicationEnum originalImagePremult,
-                                  std::bitset<4> processChannels,
-                                  const ImagePtr& originalImage,
-                                  bool ignorePremult,
-                                  const OSGLContextPtr& glContext = OSGLContextPtr() );
+    void copyUnProcessedChannels(const RectI& roi,
+                                 std::bitset<4> processChannels,
+                                 const ImagePtr& originalImage,
+                                 const OSGLContextPtr& glContext = OSGLContextPtr());
+
+    /**
+     * @brief Returns a new local image holding, over the whole bounds, the channels of this image
+     * at channelIndices, in that order. Its layer keeps this image's layer ID and label and lists
+     * just those channels. Returns an empty pointer for OpenGL textures.
+     **/
+    ImagePtr extractChannels(const std::vector<int>& channelIndices) const;
+
+    /**
+     * @brief Divide, over roi, the channels marked in processChannels (bit 3 for a one-channel
+     * image, as in copyUnProcessedChannels()) by channel divisorChannel of divisorImg: the host side of the colour family's "(Un)premult by" convenience, applied
+     * to the image a plug-in is about to be handed. skipChannel is the index, in this image, of
+     * the divisor channel itself when the divisor is this image's own plane (-1 when it is any
+     * other layer's); it is never divided.
+     **/
+    void unPremultiplyByChannel(const RectI& roi,
+                                const Image* divisorImg,
+                                int divisorChannel,
+                                std::bitset<4> processChannels,
+                                int skipChannel);
+
+    /**
+     * @brief Multiply back by the same channel, to be applied to what the plug-in rendered from
+     * an unPremultiplyByChannel()'d image. Not an exact inverse where the divisor is <= 0: that
+     * divide is identity but this multiply gives 0, as the plug-in's own pair did.
+     **/
+    void premultiplyByChannel(const RectI& roi,
+                              const Image* divisorImg,
+                              int divisorChannel,
+                              std::bitset<4> processChannels,
+                              int skipChannel);
 
     /**
      * @brief Mask the image by the given mask and also disolves it to the originalImg with the given mix.
@@ -886,6 +866,19 @@ public:
     static DSTPIX convertPixelDepth(SRCPIX pix);
 
 private:
+    void premultByChannel(const RectI& roi,
+                          const Image* divisorImg,
+                          int divisorChannel,
+                          std::bitset<4> processChannels,
+                          int skipChannel,
+                          bool divide);
+
+    template <typename PIX, int maxValue, bool divide>
+    void premultByChannelForDepth(const RectI& roi,
+                                  const Image* divisorImg,
+                                  int divisorChannel,
+                                  std::bitset<4> processChannels,
+                                  int skipChannel);
 
     template<int srcNComps, int dstNComps, typename PIX, int maxValue, bool masked, bool maskInvert>
     void applyMaskMixForMaskInvert(const RectI& roi,
@@ -926,50 +919,29 @@ private:
                                       bool maskInvert,
                                       float mix);
 
-    template <typename PIX, int maxValue, int srcNComps, int dstNComps, bool doR, bool doG, bool doB, bool doA, bool premult, bool originalPremult, bool ignorePremult>
-    void copyUnProcessedChannelsForPremult(std::bitset<4> processChannels,
-                                           const RectI& roi,
-                                           const ImagePtr& originalImage);
-
-    template <typename PIX, int maxValue, int srcNComps, int dstNComps, bool ignorePremult>
-    void copyUnProcessedChannelsForPremult(bool premult, bool originalPremult,
-                                           std::bitset<4> processChannels,
-                                           const RectI& roi,
-                                           const ImagePtr& originalImage);
-
     template <typename PIX, int maxValue, int srcNComps, int dstNComps, bool doR, bool doG, bool doB, bool doA>
     void copyUnProcessedChannelsForChannels(const std::bitset<4> processChannels,
-                                            const bool premult,
                                             const RectI& roi,
-                                            const ImagePtr& originalImage,
-                                            const bool originalPremult,
-                                            const bool ignorePremult);
+                                            const ImagePtr& originalImage);
 
     template <typename PIX, int maxValue, int srcNComps, int dstNComps>
     void copyUnProcessedChannelsForChannels(const std::bitset<4> processChannels,
-                                            const bool premult,
                                             const RectI& roi,
-                                            const ImagePtr& originalImage,
-                                            const bool originalPremult,
-                                            const bool ignorePremult);
-
+                                            const ImagePtr& originalImage);
 
     template <typename PIX, int maxValue, int srcNComps, int dstNComps>
-    void copyUnProcessedChannelsForComponents(bool premult,
-                                              const RectI& roi,
+    void copyUnProcessedChannelsForComponents(const RectI& roi,
                                               const std::bitset<4> processChannels,
-                                              const ImagePtr& originalImage,
-                                              const bool originalPremult,
-                                              const bool ignorePremult);
+                                              const ImagePtr& originalImage);
 
     template <typename PIX, int maxValue>
-    void copyUnProcessedChannelsForDepth(bool premult,
-                                         const RectI& roi,
+    void copyUnProcessedChannelsForDepth(const RectI& roi,
                                          std::bitset<4> processChannels,
-                                         const ImagePtr& originalImage,
-                                         bool originalPremult,
-                                         bool ignorePremult);
+                                         const ImagePtr& originalImage);
 
+    template <typename PIX>
+    void extractChannelsForDepth(const std::vector<int>& channelIndices,
+                                 Image* output) const;
 
     /**
      * @brief Given the output buffer,the region of interest and the mip map level, this
@@ -1026,7 +998,6 @@ private:
     RectI _bounds;
     double _par;
     ImageFieldingOrderEnum _fielding;
-    ImagePremultiplicationEnum _premult;
     bool _useBitmap;
     int _nbComponents;
 };

@@ -36,12 +36,16 @@
 #include <QApplication>
 #include <QStyledItemDelegate>
 
-
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/LayerRegistry.h"
+#include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/Utils.h" // convertFromPlainText
 
 #include "Gui/Button.h"
+#include "Gui/Gui.h"
+#include "Gui/GuiAppInstance.h"
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/NewLayerDialog.h"
 #include "Gui/TableModelView.h"
@@ -268,6 +272,7 @@ KnobGuiTable::createWidget(QHBoxLayout* layout)
     buttonsLayout->addWidget(_imp->addPathButton);
     buttonsLayout->addWidget(_imp->removePathButton);
     buttonsLayout->addWidget(_imp->editPathButton);
+    createExtraButtons(buttonsContainer, buttonsLayout);
     buttonsLayout->addStretch();
 
     mainLayout->addWidget(_imp->table);
@@ -458,6 +463,11 @@ KnobGuiTable::updateGUI(int /*dimension*/)
     knob->getTable(&table);
 
     _imp->model->clear();
+    // clear() deletes the items but keeps the row count; drop the rows so a shrinking
+    // table does not leave empty rows behind.
+    if (_imp->model->rowCount() > 0) {
+        _imp->model->removeRows(0, _imp->model->rowCount());
+    }
     _imp->items.clear();
     int i = 0;
     for (std::list<std::vector<std::string> >::const_iterator it = table.begin(); it != table.end(); ++it, ++i) {
@@ -632,6 +642,35 @@ KnobGuiTable::updateToolTip()
     }
 }
 
+QStringList
+KnobGuiTable::rowValues(int row) const
+{
+    QStringList values;
+
+    if ((row < 0) || (row >= (int)_imp->items.size())) {
+        return values;
+    }
+    const Row& r = _imp->items[row];
+    for (std::size_t i = 0; i < r.items.size(); ++i) {
+        values.push_back(r.items[i]->text());
+    }
+
+    return values;
+}
+
+QList<int>
+KnobGuiTable::selectedRowIndices() const
+{
+    QList<int> rows;
+    QModelIndexList selection = _imp->table->selectionModel()->selectedRows();
+
+    for (int i = 0; i < selection.size(); ++i) {
+        rows.push_back(selection[i].row());
+    }
+
+    return rows;
+}
+
 KnobGuiLayers::KnobGuiLayers(KnobIPtr knob,
                              KnobGuiContainerI *container)
     : KnobGuiTable(knob, container)
@@ -643,126 +682,106 @@ KnobGuiLayers::~KnobGuiLayers()
 {
 }
 
-bool
-KnobGuiLayers::addNewUserEntry(QStringList& row)
+ProjectPtr
+KnobGuiLayers::getProject() const
 {
-    NewLayerDialog dialog(ImageLayerDesc::getNoneComponents(), getGui());
+    Gui* gui = getGui();
 
-    if ( dialog.exec() ) {
-        ImageLayerDesc comps = dialog.getComponents();
-        if (comps == ImageLayerDesc::getNoneComponents()) {
-            Dialogs::errorDialog( tr("Layer").toStdString(), tr("A layer must contain at least 1 channel and channel names must be "
-                                                                "Python compliant.").toStdString() );
-
-            return false;
-        }
-        row.push_back(QString::fromUtf8(comps.getLayerLabel().c_str()));
-
-        std::list<std::vector<std::string> > table;
-        KnobLayersPtr knob = _knob.lock();
-        if (!knob) {
-            return false;
-        }
-        knob->getTable(&table);
-        for (std::list<std::vector<std::string> >::iterator it = table.begin(); it != table.end(); ++it) {
-            if ((*it)[0] == comps.getLayerLabel()) {
-                Dialogs::errorDialog( tr("Layer").toStdString(), tr("A Layer with the same name already exists").toStdString() );
-
-                return false;
-            }
-        }
-
-        std::string channelsStr;
-        const std::vector<std::string>& channels = comps.getChannels();
-        for (std::size_t i = 0; i < channels.size(); ++i) {
-            channelsStr += channels[i];
-            if ( i < (channels.size() - 1) ) {
-                channelsStr += ' ';
-            }
-        }
-        row.push_back( QString::fromUtf8( channelsStr.c_str() ) );
-
-        return true;
+    if (!gui) {
+        return ProjectPtr();
+    }
+    GuiAppInstancePtr app = gui->getApp();
+    if (!app) {
+        return ProjectPtr();
     }
 
-    return false;
-}
-
-bool
-KnobGuiLayers::editUserEntry(QStringList& row)
-{
-    std::vector<std::string> channels;
-    QStringList splits = row[1].split( QLatin1Char(' ') );
-
-    for (int i = 0; i < splits.size(); ++i) {
-        channels.push_back( splits[i].toStdString() );
-    }
-    ImageLayerDesc original(row[0].toStdString(), row[0].toStdString(), std::string(), channels);
-    ;
-    NewLayerDialog dialog( original, getGui() );
-    if ( dialog.exec() ) {
-        ImageLayerDesc comps = dialog.getComponents();
-        if (comps == ImageLayerDesc::getNoneComponents()) {
-            Dialogs::errorDialog( tr("Layer").toStdString(), tr("A layer must contain at least 1 channel and channel names must be "
-                                                                "Python compliant.").toStdString() );
-
-            return false;
-        }
-
-        std::string oldLayerName = row[0].toStdString();
-        row[0] = (QString::fromUtf8(comps.getLayerLabel().c_str()));
-
-        KnobLayersPtr knob = _knob.lock();
-        if (!knob) {
-            return false;
-        }
-        std::list<std::vector<std::string> > table;
-        knob->getTable(&table);
-        for (std::list<std::vector<std::string> >::iterator it = table.begin(); it != table.end(); ++it) {
-            if (((*it)[0] == comps.getLayerLabel()) && ((*it)[0] != oldLayerName)) {
-                Dialogs::errorDialog( tr("Layer").toStdString(), tr("A Layer with the same name already exists").toStdString() );
-
-                return false;
-            }
-        }
-
-        std::string channelsStr;
-        const std::vector<std::string>& channels = comps.getChannels();
-        for (std::size_t i = 0; i < channels.size(); ++i) {
-            channelsStr += channels[i];
-            if ( i < (channels.size() - 1) ) {
-                channelsStr += ' ';
-            }
-        }
-        row[1] = ( QString::fromUtf8( channelsStr.c_str() ) );
-
-        return true;
-    }
-
-    return false;
+    return app->getProject();
 }
 
 void
-KnobGuiLayers::tableChanged(int row,
-                            int col,
-                            std::string* newEncodedValue)
+KnobGuiLayers::createExtraButtons(QWidget* parent,
+                                  QHBoxLayout* layout)
 {
-    if (col != 0) {
+    Button* removeUnusedButton = new Button(tr("Remove unused"), parent);
+
+    removeUnusedButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Remove every layer that is not built-in and that no node references."), NATRON_NAMESPACE::WhiteSpaceNormal));
+    QObject::connect(removeUnusedButton, SIGNAL(clicked()), this, SLOT(onRemoveUnusedButtonClicked()));
+    layout->addWidget(removeUnusedButton);
+}
+
+void
+KnobGuiLayers::onAddButtonClicked()
+{
+    ProjectPtr project = getProject();
+
+    if (!project) {
         return;
     }
-    KnobLayersPtr knob = std::dynamic_pointer_cast<KnobLayers>( getKnob() );
-    assert(knob);
-    std::list<std::vector<std::string> > table;
-    knob->decodeFromKnobTableFormat(*newEncodedValue, &table);
+    NewLayerDialog dialog(ImageLayerDesc::getNoneComponents(), getGui());
+    if (!dialog.exec()) {
+        return;
+    }
 
-    if ( row < (int)table.size() ) {
-        std::list<std::vector<std::string> >::iterator it = table.begin();
-        std::advance(it, row);
-        std::string copy = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendlyWithDots( (*it)[0] );
-        if (copy != (*it)[0]) {
-            (*it)[0] = copy;
-            *newEncodedValue = knob->encodeToKnobTableFormat(table);
+    std::string error;
+    LayerRegistry::AddResultEnum ret = project->addLayer(dialog.getComponents(), LayerRegistryEntry::eOriginUser, &error);
+    if (ret == LayerRegistry::eAddResultRefused) {
+        Dialogs::errorDialog(tr("Layer").toStdString(), error);
+    }
+}
+
+void
+KnobGuiLayers::onRemoveButtonClicked()
+{
+    ProjectPtr project = getProject();
+
+    if (!project) {
+        return;
+    }
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
+    QList<int> rows = selectedRowIndices();
+    std::list<std::string> ids;
+    for (int i = 0; i < rows.size(); ++i) {
+        QStringList values = rowValues(rows[i]);
+        if (values.isEmpty()) {
+            continue;
         }
+        const std::string label = values[0].toStdString();
+        for (std::size_t e = 0; e < snapshot->size(); ++e) {
+            if ((*snapshot)[e].desc.getLayerLabel() == label) {
+                ids.push_back((*snapshot)[e].desc.getLayerID());
+                break;
+            }
+        }
+    }
+
+    for (std::list<std::string>::const_iterator it = ids.begin(); it != ids.end(); ++it) {
+        std::string error;
+        if (!project->removeLayer(*it, &error)) {
+            Dialogs::errorDialog(tr("Layer").toStdString(), error);
+        }
+    }
+}
+
+void
+KnobGuiLayers::onRemoveUnusedButtonClicked()
+{
+    ProjectPtr project = getProject();
+
+    if (!project) {
+        return;
+    }
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
+    for (std::size_t e = 0; e < snapshot->size(); ++e) {
+        const LayerRegistryEntry& entry = (*snapshot)[e];
+        if (entry.origin == LayerRegistryEntry::eOriginBuiltin) {
+            continue;
+        }
+        std::list<NodePtr> users;
+        project->getLayerUsers(entry.desc.getLayerID(), &users);
+        if (!users.empty()) {
+            continue;
+        }
+        project->removeLayer(entry.desc.getLayerID(), 0);
     }
 }
 

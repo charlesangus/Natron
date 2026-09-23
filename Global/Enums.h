@@ -409,13 +409,6 @@ enum ImageComponentsEnum {
     eImageComponentXY
 };
 
-enum ImagePremultiplicationEnum
-{
-    eImagePremultiplicationOpaque = 0,
-    eImagePremultiplicationPremultiplied,
-    eImagePremultiplicationUnPremultiplied,
-};
-
 enum ImageFieldingOrderEnum
 {
     eImageFieldingOrderNone, // no fielding

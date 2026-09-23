@@ -199,8 +199,6 @@ NodeSerialization::NodeSerialization(const NodePtr & n,
             }
         }
 
-        n->getUserCreatedComponents(&_userComponents);
-
         _isNull = false;
     }
 }

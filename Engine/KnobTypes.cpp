@@ -45,6 +45,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/Image.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobSerialization.h"
 #include "Engine/Node.h"
@@ -2393,9 +2394,9 @@ KnobTable::decodeFromKnobTableFormat(const std::string& value,
         std::vector<std::string> row;
         bool mustStop = false;
         while (colIndex < colsCount) {
-            QString colLabel = QString::fromUtf8( getColumnLabel(colIndex).c_str() );
-            const QString startToFind = startTag.arg(colLabel);
-            const QString endToFind = endTag.arg(colLabel);
+            QString colTag = QString::fromUtf8(getColumnTag(colIndex).c_str());
+            const QString startToFind = startTag.arg(colTag);
+            const QString endToFind = endTag.arg(colTag);
 
             lastFoundIndex = raw.indexOf(startToFind, lastFoundIndex);
             if (lastFoundIndex == -1) {
@@ -2483,11 +2484,11 @@ KnobTable::encodeToKnobTableFormat(const std::list<std::vector<std::string> >& t
     for (std::list<std::vector<std::string> >::const_iterator it = table.begin(); it != table.end(); ++it) {
         // In order to use XML tags, the text inside the tags has to be escaped.
         for (std::size_t c = 0; c < it->size(); ++c) {
-            std::string label = getColumnLabel(c);
-            ss << "<" << label << ">";
+            std::string tag = getColumnTag(c);
+            ss << "<" << tag << ">";
             std::string value = Project::escapeXML( (*it)[c] );
             ss << value;
-            ss << "</" << label << ">";
+            ss << "</" << tag << ">";
         }
     }
 
@@ -2580,6 +2581,24 @@ const std::string&
 KnobLayers::typeNameStatic()
 {
     return _typeNameStr;
+}
+
+std::vector<std::string>
+KnobLayers::makeRow(const ImageLayerDesc& layer, int usersCount)
+{
+    std::vector<std::string> row(3);
+
+    row[0] = layer.getLayerLabel();
+    const std::vector<std::string>& channels = layer.getChannels();
+    for (std::size_t c = 0; c < channels.size(); ++c) {
+        if (c > 0) {
+            row[1] += ' ';
+        }
+        row[1] += channels[c];
+    }
+    row[2] = std::to_string(usersCount);
+
+    return row;
 }
 
 NATRON_NAMESPACE_EXIT

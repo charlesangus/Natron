@@ -364,6 +364,9 @@ EffectInstance::RenderArgs::RenderArgs()
     , inputImages()
     , outputLayers()
     , outputLayerBeingRendered()
+    , unPremultDivisorImage()
+    , unPremultDivisorLayer()
+    , unPremultDivisorChannel(-1)
     , firstFrame(0)
     , lastFrame(0)
     , transformRedirections()
@@ -384,6 +387,9 @@ EffectInstance::RenderArgs::RenderArgs(const RenderArgs& o)
     , inputImages(o.inputImages)
     , outputLayers(o.outputLayers)
     , outputLayerBeingRendered(o.outputLayerBeingRendered)
+    , unPremultDivisorImage(o.unPremultDivisorImage)
+    , unPremultDivisorLayer(o.unPremultDivisorLayer)
+    , unPremultDivisorChannel(o.unPremultDivisorChannel)
     , firstFrame(o.firstFrame)
     , lastFrame(o.lastFrame)
     , transformRedirections(o.transformRedirections)
@@ -407,6 +413,9 @@ EffectInstance::RenderArgs::operator=(const RenderArgs & o)
     inputImages = o.inputImages;
     outputLayers = o.outputLayers;
     outputLayerBeingRendered = o.outputLayerBeingRendered;
+    unPremultDivisorImage = o.unPremultDivisorImage;
+    unPremultDivisorLayer = o.unPremultDivisorLayer;
+    unPremultDivisorChannel = o.unPremultDivisorChannel;
     firstFrame = o.firstFrame;
     lastFrame = o.lastFrame;
     transformRedirections = o.transformRedirections;
@@ -724,6 +733,9 @@ EffectInstance::Implementation::ScopedRenderArgs::ScopedRenderArgs(const EffectT
     tlsData->currentRenderArgs.lastFrame = lastFrame;
     tlsData->currentRenderArgs.isDoingOpenGLRender = isDoingOpenGLRender;
     tlsData->currentRenderArgs.outputLayerBeingRendered = ImageLayerDesc();
+    tlsData->currentRenderArgs.unPremultDivisorImage.reset();
+    tlsData->currentRenderArgs.unPremultDivisorLayer = ImageLayerDesc();
+    tlsData->currentRenderArgs.unPremultDivisorChannel = -1;
 
     tlsData->currentRenderArgs.validArgs = true;
 }
@@ -740,6 +752,7 @@ EffectInstance::Implementation::ScopedRenderArgs::~ScopedRenderArgs()
     assert(tlsData);
     tlsData->currentRenderArgs.outputLayers.clear();
     tlsData->currentRenderArgs.inputImages.clear();
+    tlsData->currentRenderArgs.unPremultDivisorImage.reset();
     tlsData->currentRenderArgs.validArgs = false;
 }
 

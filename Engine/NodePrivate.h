@@ -401,6 +401,7 @@ public:
     KnobButtonWPtr renderButton; //< render button for writers
     FormatKnob pluginFormatKnobs;
     std::map<int, MaskSelector> maskSelectors;
+    KnobChannelSelectWPtr unPremultBySelector;
     KnobIWPtr layerKnob;
     LayerKnobSpec layerKnobSpec;
     std::map<const KnobI*, LayerKnobSource> layerKnobSources;

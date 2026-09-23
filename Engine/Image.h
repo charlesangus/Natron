@@ -811,6 +811,30 @@ public:
     ImagePtr extractChannels(const std::vector<int>& channelIndices) const;
 
     /**
+     * @brief Divide, over roi, the channels marked in processChannels by channel divisorChannel
+     * of divisorImg: the host side of the colour family's "(Un)premult by" convenience, applied
+     * to the image a plug-in is about to be handed. skipChannel is the index, in this image, of
+     * the divisor channel itself when the divisor is this image's own plane (-1 when it is any
+     * other layer's); it is never divided.
+     **/
+    void unPremultiplyByChannel(const RectI& roi,
+                                const Image* divisorImg,
+                                int divisorChannel,
+                                std::bitset<4> processChannels,
+                                int skipChannel);
+
+    /**
+     * @brief Multiply back by the same channel, to be applied to what the plug-in rendered from
+     * an unPremultiplyByChannel()'d image. Not an exact inverse where the divisor is <= 0: that
+     * divide is identity but this multiply gives 0, as the plug-in's own pair did.
+     **/
+    void premultiplyByChannel(const RectI& roi,
+                              const Image* divisorImg,
+                              int divisorChannel,
+                              std::bitset<4> processChannels,
+                              int skipChannel);
+
+    /**
      * @brief Mask the image by the given mask and also disolves it to the originalImg with the given mix.
      **/
     void applyMaskMix( const RectI& roi,
@@ -842,6 +866,19 @@ public:
     static DSTPIX convertPixelDepth(SRCPIX pix);
 
 private:
+    void premultByChannel(const RectI& roi,
+                          const Image* divisorImg,
+                          int divisorChannel,
+                          std::bitset<4> processChannels,
+                          int skipChannel,
+                          bool divide);
+
+    template <typename PIX, int maxValue, bool divide>
+    void premultByChannelForDepth(const RectI& roi,
+                                  const Image* divisorImg,
+                                  int divisorChannel,
+                                  std::bitset<4> processChannels,
+                                  int skipChannel);
 
     template<int srcNComps, int dstNComps, typename PIX, int maxValue, bool masked, bool maskInvert>
     void applyMaskMixForMaskInvert(const RectI& roi,

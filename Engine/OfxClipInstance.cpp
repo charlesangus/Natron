@@ -56,6 +56,7 @@
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 
 #include <nuke/fnOfxExtensions.h>
@@ -1019,6 +1020,53 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
     }
 
     assert(!retTexture || image->getStorageMode() == eStorageModeGLTex);
+
+    // Host-owned "(Un)premult by" (see Node::createUnPremultSelector()): hand the plug-in a
+    // source divided by the selected channel, and record which image and channel that was so
+    // tiledRenderingFunctor() multiplies what the plug-in renders back by the same values.
+    // Only the colour plane of a non-mask clip, and only for a CPU render -- an OpenGL render
+    // has no pixels here to divide, and the multiply is skipped there for the same reason.
+    KnobChannelSelectPtr unPremultBy = effect->getNode()->getUnPremultBySelector();
+    if (retImage && unPremultBy && !unPremultBy->isNone() && !isMask() && mapImageToClipPref && (image->getStorageMode() != eStorageModeGLTex)) {
+        std::list<ImageLayerDesc> availableLayers;
+        effect->getAvailableLayers(time, view, inputnb, &availableLayers);
+
+        ImageLayerDesc divisorComp;
+        const int divisorChannel = effect->getNode()->getUnPremultChannel(availableLayers, &divisorComp);
+        if ((divisorChannel != -1) && (divisorComp.getNumComponents() > 0)) {
+            RectI divisorWindow;
+            Transform::Matrix3x3Ptr divisorTransform;
+            ImagePtr divisorImage = effect->getImage(inputnb, time, renderScale, view,
+                                                     optionalBounds ? &bounds : NULL,
+                                                     &divisorComp,
+                                                     false /*mapToClipPref*/,
+                                                     false /*dontUpscale*/,
+                                                     eStorageModeRAM,
+                                                     textureDepth,
+                                                     &divisorWindow,
+                                                     &divisorTransform);
+            if (divisorImage) {
+                const ImageLayerDesc& imageComps = image->getComponents();
+                const int skipChannel = Node::getUnPremultSkipChannel(imageComps, divisorComp, divisorChannel);
+
+                ImagePtr unPremultiplied = std::make_shared<Image>(imageComps,
+                                                                   image->getRoD(),
+                                                                   image->getBounds(),
+                                                                   image->getMipmapLevel(),
+                                                                   image->getPixelAspectRatio(),
+                                                                   image->getBitDepth(),
+                                                                   image->getFieldingOrder(),
+                                                                   false);
+                unPremultiplied->pasteFrom(*image, image->getBounds(), false);
+                std::bitset<4> allChannels;
+                allChannels.set();
+                unPremultiplied->unPremultiplyByChannel(renderWindow, divisorImage.get(), divisorChannel, allChannels, skipChannel);
+                image = unPremultiplied;
+
+                effect->setThreadLocalUnPremultDivisor(divisorImage, divisorComp, divisorChannel);
+            }
+        }
+    }
 
     std::string components;
     int nComps;

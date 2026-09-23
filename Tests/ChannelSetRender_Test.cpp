@@ -71,6 +71,7 @@
 
 #include <list>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -309,32 +310,34 @@ TEST_F(ChannelSetRenderTest, GradeSpecularRowLeavesColorAndDiffuseUntouched)
     expectPlane(image, "specular.", 0.f, 0.f, 0.5f);
 }
 
-// --- Grade "(Un)premult by" (net.sf.openfx.GradePlugin, unPremultBy/unPremultByChannel) -
+// --- "(Un)premult by" (host-owned; see Node::createUnPremultSelector()) -----------------
+
+// The colour family's convenience is the host's: the plug-in's own unPremultBy bool and
+// unPremultByChannel choice (SupportExt/ofxsMaskMix.h) are switched off and hidden, and the
+// node carries one KnobChannelSelect over every layer.channel of its source instead. The host
+// divides the plug-in's source by that channel and multiplies its result back.
 
 // Constant(1,1,1,0.5) -> Grade(multiply 2 on R/G/B, alpha's multiply left at its default 1,
 // clampWhite on). channels->setAll() is needed because Grade doesn't own its channel mask
 // (see KeyMixQuadIsLeftToThePluginWhileGradeQuadIsAdopted below): the host adopts and forces
 // Grade's own R/G/B/A quad true internally regardless, then normally overwrites any channel
 // outside the layer knob's selected row with the untouched source pixel, which would hide
-// what the plugin's own math actually computed.
+// what the renders below actually computed.
 //
 // A bare gain commutes with dividing and re-multiplying by an untouched alpha, so it cannot
 // tell the two states apart (clamp(2*1) == 0.5*clamp(2*(1/0.5))); clampWhite (Grade.cpp's
-// kParamClampWhite, script name "clampWhite") clamps the graded-but-not-yet-premultiplied
-// value to 1 before that re-multiply, which does not commute, so it is the discriminator:
-// ofxsUnPremult()/ofxsPremult() (SupportExt/ofxsMaskMix.h) always divide/multiply by alpha
-// and ignore the unPremultByChannel choice (not yet implemented). With alpha's own multiply
-// left at 1 (identity), grade() leaves alpha unchanged either way, so:
-//   unPremultBy off: r = clamp(multiply * 1) = clamp(2 * 1) = clamp(2) = 1
-//   unPremultBy on:  r = premult(clamp(multiply * unpremult(1, a=0.5)), a=0.5)
-//                      = 0.5 * clamp(2 * (1 / 0.5)) = 0.5 * clamp(4) = 0.5 * 1 = 0.5
-// off clamps in the already-premultiplied domain (nothing left to divide alpha back out of),
-// on clamps in the unpremultiplied domain and then scales the clamped 1 back down by alpha
-// -- the two diverge, which is what makes this pair of renders actually exercise the toggle.
-class ChannelSetRenderGradeUnPremultByTest
+// kParamClampWhite, script name "clampWhite") clamps the graded-but-not-yet-re-multiplied
+// value, which does not commute, so it is the discriminator. Alpha is the divisor here and so
+// is never itself divided or re-multiplied (Node::getUnPremultSkipChannel()), and its own
+// multiply is 1, so it comes out unchanged either way:
+//   None:    r = clamp(multiply * 1) = clamp(2 * 1) = clamp(2) = 1
+//   Color.A: r = 0.5 * clamp(2 * (1 / 0.5)) = 0.5 * clamp(4) = 0.5 * 1 = 0.5
+// None clamps in the already-premultiplied domain (nothing divided alpha back out), Color.A
+// clamps in the unpremultiplied domain and then scales the clamped 1 back down by alpha.
+class ChannelSetRenderUnPremultByTest
     : public ChannelSetRenderTest {
 protected:
-    NodePtr createConstantIntoGrade(KnobBool** unPremultBy)
+    NodePtr createConstantIntoGrade(KnobChannelSelectPtr* unPremultBy)
     {
         NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
         if (!constant) {
@@ -370,7 +373,7 @@ protected:
         }
         channels->setAll();
 
-        *unPremultBy = dynamic_cast<KnobBool*>(grade->getKnobByName("unPremultBy").get());
+        *unPremultBy = grade->getUnPremultBySelector();
         if (!*unPremultBy) {
             return NodePtr();
         }
@@ -379,12 +382,12 @@ protected:
     }
 };
 
-TEST_F(ChannelSetRenderGradeUnPremultByTest, GainMatchesPluginMathWithUnPremultByOff)
+TEST_F(ChannelSetRenderUnPremultByTest, GainIsNotUnPremultipliedWhenTheSelectorIsNone)
 {
-    KnobBool* unPremultBy;
+    KnobChannelSelectPtr unPremultBy;
     NodePtr grade = createConstantIntoGrade(&unPremultBy);
     ASSERT_TRUE(bool(grade));
-    unPremultBy->setValue(false);
+    EXPECT_TRUE(unPremultBy->isNone());
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -395,12 +398,12 @@ TEST_F(ChannelSetRenderGradeUnPremultByTest, GainMatchesPluginMathWithUnPremultB
     expectColor(image, 1.f, 1.f, 1.f, 0.5f);
 }
 
-TEST_F(ChannelSetRenderGradeUnPremultByTest, GainMatchesPluginMathWithUnPremultByOn)
+TEST_F(ChannelSetRenderUnPremultByTest, GainIsUnPremultipliedByTheSelectedChannel)
 {
-    KnobBool* unPremultBy;
+    KnobChannelSelectPtr unPremultBy;
     NodePtr grade = createConstantIntoGrade(&unPremultBy);
     ASSERT_TRUE(bool(grade));
-    unPremultBy->setValue(true);
+    unPremultBy->set(ImageLayerDesc::getRGBAComponents().getChannelOption(3).id);
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -411,25 +414,130 @@ TEST_F(ChannelSetRenderGradeUnPremultByTest, GainMatchesPluginMathWithUnPremultB
     expectColor(image, 0.5f, 0.5f, 0.5f, 0.5f);
 }
 
+// The point of the host owning this: the divisor can be a channel of a layer the plug-in never
+// sees. Grade1 writes specular.B = 0.5 (the fixture's own channels are all 0 or 1, so there is
+// no fractional divisor to borrow otherwise), then Grade2 grades Color alone, unpremultiplied
+// by that specular.B. Grade2's default row is Color's R/G/B, so alpha is not processed and
+// comes back from the source untouched:
+//   Color.R = 0.5 * clamp(2 * (1 / 0.5)) = 0.5, against clamp(2 * 1) = 1 with no divisor.
+TEST_F(ChannelSetRenderUnPremultByTest, DivisorMayBeAChannelOfAnotherLayer)
+{
+    KnobChannelSetPtr specularChannels;
+    NodePtr halveSpecular = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &specularChannels);
+    ASSERT_TRUE(bool(halveSpecular));
+    ASSERT_TRUE(bool(specularChannels));
+    specularChannels->setLayer(0, "specular", NULL);
+    KnobColor* halveMultiply = dynamic_cast<KnobColor*>(halveSpecular->getKnobByName("multiply").get());
+    ASSERT_TRUE(halveMultiply != NULL);
+    halveMultiply->setValues(0.5, 0.5, 0.5, 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    ASSERT_TRUE(bool(grade));
+    connectNodes(halveSpecular, grade, 0, true);
+
+    KnobColor* multiply = dynamic_cast<KnobColor*>(grade->getKnobByName("multiply").get());
+    ASSERT_TRUE(multiply != NULL);
+    multiply->setValues(2., 2., 2., 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    KnobBool* clampWhite = dynamic_cast<KnobBool*>(grade->getKnobByName("clampWhite").get());
+    ASSERT_TRUE(clampWhite != NULL);
+    clampWhite->setValue(true);
+
+    KnobChannelSelectPtr unPremultBy = grade->getUnPremultBySelector();
+    ASSERT_TRUE(bool(unPremultBy));
+    unPremultBy->set("specular.B");
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(grade, tmp, &image, &error)) << error;
+
+    expectColor(image, 0.5f, 0.f, 0.f, 1.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 0.5f);
+}
+
+// The selector is offered every layer of the source, not a fixed R/G/B/A: the whole complaint
+// against the plug-in's own choice was that it could only ever name four channels of one plane.
+TEST_F(ChannelSetRenderUnPremultByTest, SelectorListsEveryLayerOfTheSource)
+{
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    ASSERT_TRUE(bool(grade));
+
+    KnobChannelSelectPtr unPremultBy = grade->getUnPremultBySelector();
+    ASSERT_TRUE(bool(unPremultBy));
+
+    std::list<ImageLayerDesc> present;
+    grade->listLayersForKnob(unPremultBy, &present);
+
+    std::set<std::string> ids;
+    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+        ids.insert(it->getLayerID());
+    }
+    EXPECT_EQ(1u, ids.count(kNatronColorLayerID));
+    EXPECT_EQ(1u, ids.count("diffuse"));
+    EXPECT_EQ(1u, ids.count("specular"));
+
+    unPremultBy->set("specular.B");
+    ImageLayerDesc resolved;
+    int channelIndex = -1;
+    EXPECT_TRUE(unPremultBy->resolve(present, &resolved, &channelIndex));
+    EXPECT_EQ(std::string("specular"), resolved.getLayerID());
+    EXPECT_EQ(2, channelIndex);
+}
+
+// A divisor the source does not carry fails the render rather than quietly grading
+// premultiplied values, the same way a missing mask channel does.
+TEST_F(ChannelSetRenderUnPremultByTest, AMissingDivisorChannelFailsTheRender)
+{
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    ASSERT_TRUE(bool(grade));
+
+    KnobChannelSelectPtr unPremultBy = grade->getUnPremultBySelector();
+    ASSERT_TRUE(bool(unPremultBy));
+
+    std::string message;
+    EXPECT_TRUE(grade->checkSelectedChannelsPresent(&message)) << message;
+
+    unPremultBy->set("depth.Z");
+    EXPECT_FALSE(grade->checkSelectedChannelsPresent(&message));
+    EXPECT_NE(std::string::npos, message.find("depth.Z")) << message;
+}
+
 // premult/premultChannel are not merely hidden here, they no longer exist on this node at
 // all: SupportExt/ofxsMaskMix.h's ofxsPremultDescribeParams() declares unPremultBy/
 // unPremultByChannel outright, it does not declare the old identifiers alongside them, so
 // getKnobByName finds nothing under the old names to assert secret on. premultChanged is
 // the one param of the three declared under its original name (Grade.cpp's own
 // kParamPremultChanged, untouched by the rename), and stays on the host's hide list.
-TEST_F(ChannelSetRenderTest, GradeUnPremultByVisibleAndOldPremultFamilyGoneOrSecret)
+TEST_F(ChannelSetRenderTest, GradeUnPremultByIsHostOwnedAndOldPremultFamilyGoneOrSecret)
 {
     KnobChannelSetPtr channels;
     NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
     ASSERT_TRUE(bool(grade));
 
-    KnobBool* unPremultBy = dynamic_cast<KnobBool*>(grade->getKnobByName("unPremultBy").get());
-    ASSERT_TRUE(unPremultBy != NULL);
-    EXPECT_FALSE(unPremultBy->getIsSecret());
+    KnobChannelSelectPtr hostUnPremultBy = grade->getUnPremultBySelector();
+    ASSERT_TRUE(bool(hostUnPremultBy));
+    EXPECT_EQ(hostUnPremultBy, std::dynamic_pointer_cast<KnobChannelSelect>(grade->getKnobByName(kUnPremultByKnobName)));
+    EXPECT_FALSE(hostUnPremultBy->getIsSecret());
+    EXPECT_TRUE(hostUnPremultBy->isNone());
 
-    KnobChoice* unPremultByChannel = dynamic_cast<KnobChoice*>(grade->getKnobByName("unPremultByChannel").get());
+    // The plug-in's own pair is off, hidden and not written to the project: the host does this
+    // now, and openfx-misc's ofxsUnPremult()/ofxsPremult() could only ever divide by a channel
+    // of the plane they were handed.
+    KnobBool* unPremultBy = dynamic_cast<KnobBool*>(grade->getKnobByName(kUnPremultByPluginKnobName).get());
+    ASSERT_TRUE(unPremultBy != NULL);
+    EXPECT_FALSE(unPremultBy->getValue());
+    EXPECT_TRUE(unPremultBy->getIsSecret());
+    EXPECT_TRUE(unPremultBy->isSecretLocked());
+    EXPECT_FALSE(unPremultBy->getIsPersistent());
+
+    KnobChoice* unPremultByChannel = dynamic_cast<KnobChoice*>(grade->getKnobByName(kUnPremultByChannelPluginKnobName).get());
     ASSERT_TRUE(unPremultByChannel != NULL);
-    EXPECT_FALSE(unPremultByChannel->getIsSecret());
+    EXPECT_TRUE(unPremultByChannel->getIsSecret());
+    EXPECT_TRUE(unPremultByChannel->isSecretLocked());
+    EXPECT_FALSE(unPremultByChannel->getIsPersistent());
 
     EXPECT_TRUE(grade->getKnobByName("premult").get() == NULL);
     EXPECT_TRUE(grade->getKnobByName("premultChannel").get() == NULL);

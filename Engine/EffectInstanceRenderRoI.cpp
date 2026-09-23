@@ -772,9 +772,9 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     }
 
     {
-        std::string maskMessage;
-        if (!getNode()->checkMaskChannelsPresent(&maskMessage)) {
-            setPersistentMessage(eMessageTypeError, maskMessage);
+        std::string channelMessage;
+        if (!getNode()->checkSelectedChannelsPresent(&channelMessage)) {
+            setPersistentMessage(eMessageTypeError, channelMessage);
             return eRenderRoIRetCodeFailed;
         }
     }

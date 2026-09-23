@@ -2813,6 +2813,17 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         const ImagePtr originalInputImage = findInputImageForPlane(tls->currentRenderArgs.inputImages, preferredInput, it->first);
         const std::bitset<4> planeProcessChannels = processChannelsForPlane(layers.processChannelsPerPlane, it->first, processChannels);
 
+        // The other half of the host-owned "(Un)premult by": the plug-in was handed a source
+        // divided by unPremultDivisorImage, so multiply what it rendered back by the same
+        // channel of the same image. Before copyUnProcessedChannels(), which brings back the
+        // channels the plug-in did not write from the undivided input, and before
+        // applyMaskMix(), which mixes against that same undivided input.
+        ImagePtr unPremultDivisorImage;
+        ImageLayerDesc unPremultDivisorLayer;
+        int unPremultDivisorChannel = -1;
+        const bool reUnPremult = !layers.useOpenGL && _publicInterface->getThreadLocalUnPremultDivisor(&unPremultDivisorImage, &unPremultDivisorLayer, &unPremultDivisorChannel);
+        const int unPremultSkipChannel = reUnPremult ? Node::getUnPremultSkipChannel(it->first, unPremultDivisorLayer, unPremultDivisorChannel) : -1;
+
         if (it->second.isAllocatedOnTheFly) {
             /// Layer allocated on the fly only have a temp image if using the cache and it is defined over the render window only
             if (it->second.tmpImage != it->second.renderMappedImage) {
@@ -2861,6 +2872,10 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                         originalInputImage->upscaleMipmap( downscaledRectToRender, originalInputImage->getMipmapLevel(), 0, tmp.get() );
                         mappedOriginalInputImage = tmp;
                     }
+                }
+
+                if (reUnPremult) {
+                    it->second.tmpImage->premultiplyByChannel(renderMappedRectToRender, unPremultDivisorImage.get(), unPremultDivisorChannel, planeProcessChannels, unPremultSkipChannel);
                 }
 
                 if (mappedOriginalInputImage) {
@@ -2936,6 +2951,10 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
                         it->second.downscaleImage->pasteFrom(*(it->second.tmpImage), it->second.downscaleImage->getBounds(), false);
                     }
+                }
+
+                if (reUnPremult) {
+                    it->second.downscaleImage->premultiplyByChannel(actionArgs.roi, unPremultDivisorImage.get(), unPremultDivisorChannel, planeProcessChannels, unPremultSkipChannel);
                 }
 
                 it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInputImage, glContext);
@@ -4668,6 +4687,38 @@ EffectInstance::getThreadLocalOutputLayerBeingRendered(ImageLayerDesc* layer) co
     }
 
     return false;
+}
+
+void
+EffectInstance::setThreadLocalUnPremultDivisor(const ImagePtr& image,
+                                               const ImageLayerDesc& layer,
+                                               int channelIndex)
+{
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+
+    if (!tls || !tls->currentRenderArgs.validArgs) {
+        return;
+    }
+    tls->currentRenderArgs.unPremultDivisorImage = image;
+    tls->currentRenderArgs.unPremultDivisorLayer = layer;
+    tls->currentRenderArgs.unPremultDivisorChannel = channelIndex;
+}
+
+bool
+EffectInstance::getThreadLocalUnPremultDivisor(ImagePtr* image,
+                                               ImageLayerDesc* layer,
+                                               int* channelIndex) const
+{
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+
+    if (!tls || !tls->currentRenderArgs.validArgs || !tls->currentRenderArgs.unPremultDivisorImage) {
+        return false;
+    }
+    *image = tls->currentRenderArgs.unPremultDivisorImage;
+    *layer = tls->currentRenderArgs.unPremultDivisorLayer;
+    *channelIndex = tls->currentRenderArgs.unPremultDivisorChannel;
+
+    return true;
 }
 
 bool

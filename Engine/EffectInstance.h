@@ -1697,6 +1697,15 @@ public:
     bool getThreadLocalOutputLayerBeingRendered(ImageLayerDesc* layer) const;
 
     /**
+     * @brief The source image the host unpremultiplied for this render action, so the result the
+     * plug-in renders from it can be multiplied back by the same channel. See
+     * Node::createUnPremultSelector().
+     **/
+    void setThreadLocalUnPremultDivisor(const ImagePtr& image, const ImageLayerDesc& layer, int channelIndex);
+
+    bool getThreadLocalUnPremultDivisor(ImagePtr* image, ImageLayerDesc* layer, int* channelIndex) const;
+
+    /**
      * @brief Called when the associated node's hash has changed.
      * This is always called on the main-thread.
      **/
@@ -2114,6 +2123,15 @@ public:
 
         // This is set only when the plug-in has set ePassThroughRenderAllRequestedLayers
         ImageLayerDesc outputLayerBeingRendered;
+
+        // The image the host divided the plug-in's source by for the node-level "(Un)premult
+        // by" selection, and which layer and channel of it. Written when the plug-in fetches
+        // its source and read back when its result is re-multiplied, so the two halves cannot
+        // disagree about what was divided -- the divisor plane is often not the plane being
+        // rendered, and a node rendering several planes divides each of them by this one.
+        ImagePtr unPremultDivisorImage;
+        ImageLayerDesc unPremultDivisorLayer;
+        int unPremultDivisorChannel;
         ComponentsNeededMapPtr  compsNeeded;
         double firstFrame, lastFrame;
         InputMatrixMapPtr transformRedirections;

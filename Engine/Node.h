@@ -60,6 +60,13 @@ CLANG_DIAG_ON(deprecated)
 #define kEnableMaskKnobName "enableMask"
 #define kEnableInputKnobName "enableInput"
 #define kMaskChannelKnobName "maskChannel"
+
+// The host-owned "(Un)premult by" channel selector, and the plug-in-declared bool and choice
+// it stands in for (openfx-misc's ofxsPremultDescribeParams()), which it switches off.
+#define kUnPremultByKnobName "hostUnPremultBy"
+#define kUnPremultByKnobLabel "(Un)premult by"
+#define kUnPremultByPluginKnobName "unPremultBy"
+#define kUnPremultByChannelPluginKnobName "unPremultByChannel"
 #define kInputChannelKnobName "inputChannel"
 #define kEnablePreviewKnobName "enablePreview"
 #define kNodeParamChannelSet "channels"
@@ -393,16 +400,35 @@ public:
     int isMaskChannelKnob(const KnobI* knob) const;
 
     /**
+     * @brief The channel the colour family's node-level "(Un)premult by" divides the plug-in's
+     * source by and multiplies its result back by, as an index into *comps, or -1 for none.
+     * The layer is one of availableLayers; a selection the input no longer carries resolves to
+     * none, i.e. no (un)premult, rather than to a different layer.
+     **/
+    int getUnPremultChannel(const std::list<ImageLayerDesc>& availableLayers, ImageLayerDesc* comps) const;
+
+    KnobChannelSelectPtr getUnPremultBySelector() const;
+
+    /**
+     * @brief The index, within plane, of the "(Un)premult by" divisor channel when the divisor
+     * is plane's own (the classic "unpremult by its own alpha"), or -1 when the divisor belongs
+     * to another layer and so is not one of plane's channels. That channel is the divisor, not
+     * something to divide, so it is left alone.
+     **/
+    static int getUnPremultSkipChannel(const ImageLayerDesc& plane, const ImageLayerDesc& divisorLayer, int divisorChannel);
+
+    /**
      * @brief Returns whether masking is enabled or not
      **/
     bool isMaskEnabled(int inputNb) const;
 
     /**
-     * @brief For every mask input that is connected, enabled and not set to None, checks that
-     * its KnobChannelSelect value resolves against that input's present layers. Returns false
-     * on the first miss and fills *message, leaving a disconnected or None mask input silent.
+     * @brief For every mask input that is connected, enabled and not set to None, and for the
+     * "(Un)premult by" selector over a connected source, checks that the KnobChannelSelect value
+     * resolves against that input's present layers. Returns false on the first miss and fills
+     * *message, leaving a disconnected input or a None selection silent.
      **/
-    bool checkMaskChannelsPresent(std::string* message) const;
+    bool checkSelectedChannelsPresent(std::string* message) const;
 
     /**
      * @brief Returns a pointer to the input Node at index 'index'
@@ -1086,6 +1112,8 @@ private:
 #ifndef NATRON_ENABLE_IO_META_NODES
     void createWriterFrameStepKnob(const KnobPagePtr& mainPage);
 #endif
+
+    void createUnPremultSelector(const KnobPagePtr& mainPage);
 
     void createMaskSelectors(const std::vector<std::pair<bool, bool> >& hasMaskChannelSelector,
                              const std::vector<std::string>& inputLabels,

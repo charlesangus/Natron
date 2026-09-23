@@ -2450,6 +2450,84 @@ Node::createHostMixKnob(const KnobPagePtr& mainPage)
 }
 
 void
+Node::createUnPremultSelector(const KnobPagePtr& mainPage)
+{
+    // openfx-misc's colour family declares "(Un)premult by" as a bool plus a fixed R/G/B/A
+    // choice, and its ofxsUnPremult()/ofxsPremult() pair can only ever divide by a channel of
+    // the very plane it is handed -- never by another layer's. The host owns the channel
+    // routing, so it owns this convenience too: the plug-in's pair is switched off and hidden,
+    // and one channel selector over every layer of the source takes their place. The divide and
+    // the multiply are then done either side of the plug-in's render action, by
+    // OfxClipInstance::getInputImageInternal() and EffectInstance::tiledRenderingFunctor().
+    KnobBoolPtr pluginEnabled = _imp->effect->getKnobByNameAndType<KnobBool>(kUnPremultByPluginKnobName);
+    KnobChoicePtr pluginChannel = _imp->effect->getKnobByNameAndType<KnobChoice>(kUnPremultByChannelPluginKnobName);
+
+    if (!pluginEnabled || !pluginChannel) {
+        return;
+    }
+
+    pluginEnabled->setValue(false);
+    pluginEnabled->setSecret(true);
+    pluginEnabled->setSecretLocked(true);
+    pluginEnabled->setIsPersistent(false);
+    pluginChannel->setSecret(true);
+    pluginChannel->setSecretLocked(true);
+    pluginChannel->setIsPersistent(false);
+
+    KnobChannelSelectPtr channel = _imp->effect->createChannelSelectKnob(kUnPremultByKnobName, tr(kUnPremultByKnobLabel).toStdString(), false);
+    channel->setAnimationEnabled(false);
+    // A KnobChannelSelect left empty reads as Color.A, which is the right default for a mask
+    // footer but not here: the plug-in's own bool defaulted to off, and quietly unpremultiplying
+    // every colour node by alpha is not something to turn on behind the user's back.
+    channel->setDefaultValue(channel->encode(std::string()));
+    channel->setHintToolTip(tr("Divide the image by this channel of the source before processing, and multiply it "
+                               "back afterwards. Any layer.channel of the source, or None for no (un)premult. Use it "
+                               "where the values being processed are premultiplied, as any correction that moves the "
+                               "black point has to be done unpremultiplied."));
+    _imp->layerKnobSources[channel.get()] = LayerKnobSource(LayerKnobSource::kPreferredInput, LayerKnobSpec::eRoleInputBound);
+    if (mainPage) {
+        mainPage->addKnob(channel);
+    }
+    _imp->unPremultBySelector = channel;
+} // Node::createUnPremultSelector
+
+KnobChannelSelectPtr
+Node::getUnPremultBySelector() const
+{
+    return _imp->unPremultBySelector.lock();
+}
+
+int
+Node::getUnPremultSkipChannel(const ImageLayerDesc& plane,
+                              const ImageLayerDesc& divisorLayer,
+                              int divisorChannel)
+{
+    const bool samePlane = divisorLayer.isColorLayer() ? plane.isColorLayer() : (plane.getLayerID() == divisorLayer.getLayerID());
+
+    return samePlane ? divisorChannel : -1;
+}
+
+int
+Node::getUnPremultChannel(const std::list<ImageLayerDesc>& availableLayers,
+                          ImageLayerDesc* comps) const
+{
+    *comps = ImageLayerDesc::getNoneComponents();
+
+    KnobChannelSelectPtr channel = _imp->unPremultBySelector.lock();
+    if (!channel) {
+        return -1;
+    }
+    int channelIndex = -1;
+    ImageLayerDesc layer;
+    if (!channel->resolve(availableLayers, &layer, &channelIndex)) {
+        return -1;
+    }
+    *comps = layer;
+
+    return channelIndex;
+}
+
+void
 Node::createMaskSelectors(const std::vector<std::pair<bool, bool> >& hasMaskChannelSelector,
                           const std::vector<std::string>& inputLabels,
                           const KnobPagePtr& mainPage,
@@ -2825,6 +2903,8 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
 
 
     assert(foundPluginDefaultKnobsToReorder.size() > 0 && foundPluginDefaultKnobsToReorder[0].first == kOfxMaskInvertParamName);
+
+    createUnPremultSelector(mainPage);
 
     createMaskSelectors(hasMaskChannelSelector, inputLabels, mainPage, !foundPluginDefaultKnobsToReorder[0].second.get(), &lastKnobBeforeAdvancedOption);
 
@@ -4839,16 +4919,14 @@ Node::isMaskEnabled(int inputNb) const
     }
 }
 
-// Shared with refreshChannelSelectors(), which pattern-matches this prefix to tell a stale
+// Shared with refreshChannelSelectors(), which pattern-matches these prefixes to tell a stale
 // diagnostic of this check's own from an unrelated persistent message before clearing it.
 static const char kMaskChannelMissingMessagePrefix[] = "Mask channel ";
+static const char kUnPremultChannelMissingMessagePrefix[] = "(Un)premult by channel ";
 
 bool
-Node::checkMaskChannelsPresent(std::string* message) const
+Node::checkSelectedChannelsPresent(std::string* message) const
 {
-    if (_imp->maskSelectors.empty()) {
-        return true;
-    }
     for (std::map<int, MaskSelector>::const_iterator it = _imp->maskSelectors.begin(); it != _imp->maskSelectors.end(); ++it) {
         int inputNb = it->first;
         if (!getInput(inputNb)) {
@@ -4873,8 +4951,24 @@ Node::checkMaskChannelsPresent(std::string* message) const
         return false;
     }
 
+    // A divisor the source no longer carries would otherwise leave the node rendering
+    // premultiplied values with no sign that the selection was dropped.
+    KnobChannelSelectPtr unPremultBy = _imp->unPremultBySelector.lock();
+    if (unPremultBy && !unPremultBy->isNone()) {
+        const int inputNb = getPreferredInput();
+        std::list<ImageLayerDesc> present;
+        listLayersForKnob(unPremultBy, &present);
+        if ((inputNb >= 0) && getInput(inputNb) && !unPremultBy->resolve(present, 0, 0)) {
+            if (message) {
+                *message = std::string(kUnPremultChannelMissingMessagePrefix) + unPremultBy->get() + " is not in the " + getInputLabel(inputNb) + " input";
+            }
+
+            return false;
+        }
+    }
+
     return true;
-} // Node::checkMaskChannelsPresent
+} // Node::checkSelectedChannelsPresent
 
 void
 Node::lock(const ImagePtr & image)
@@ -7516,13 +7610,13 @@ Node::refreshChannelSelectors()
 
     _imp->effect->onChannelsSelectorRefreshed();
 
-    if (checkMaskChannelsPresent(0)) {
+    if (checkSelectedChannelsPresent(0)) {
         // A persistent message is a single slot with no record of who posted it: only take
         // back a message that starts with what this check itself would have posted.
         QString current;
         int type = 0;
         getPersistentMessage(&current, &type, false);
-        if ((type == (int)eMessageTypeError) && current.startsWith(QString::fromUtf8(kMaskChannelMissingMessagePrefix))) {
+        if ((type == (int)eMessageTypeError) && (current.startsWith(QString::fromUtf8(kMaskChannelMissingMessagePrefix)) || current.startsWith(QString::fromUtf8(kUnPremultChannelMissingMessagePrefix)))) {
             clearPersistentMessage(false);
         }
     }

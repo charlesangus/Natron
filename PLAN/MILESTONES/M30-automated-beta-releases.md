@@ -29,7 +29,7 @@ than re-deriving a cross-workflow AND of `Checks` + `Tests` — see Decisions.
   - verify: with no matching tags, prints `v0.1.0-beta1`; given a tag set containing `v0.1.0-beta1` and `v0.1.0-beta2` (e.g. via a scratch repo or a `git tag` in a tmp dir), prints `v0.1.0-beta3`; a gap (`beta1`, `beta3`) still yields `beta4` (max+1, not fill-the-gap).
   - size: S
 
-- [ ] M30.P1.T2 — Let `release.yml` build a dispatched tag and mark pre-releases
+- [x] M30.P1.T2 — Let `release.yml` build a dispatched tag and mark pre-releases
   - files: `.github/workflows/release.yml`
   - approach: add a required `tag` string input to the `workflow_dispatch` trigger. Add an early step, gated on `github.event_name == 'workflow_dispatch'`, that creates an annotated tag at `inputs.tag` and pushes it to `origin` before the build runs — so the rest of the job (and `gh release create`) has a real tag to work from, same as the existing `push: tags: v*` path. Replace `github.ref_name` throughout with a `TAG` computed as `${{ inputs.tag || github.ref_name }}`. In the `gh release create` step, add `--prerelease` whenever `TAG` contains a `-` (pre-release semver convention — distinguishes `v0.1.0-beta1` from a stable `vX.Y.Z`).
   - verify: `gh workflow run release.yml --ref main -f tag=v0.1.0-beta1` (or a throwaway tag) completes and produces a GitHub Release marked "Pre-release" carrying both the tarball and the AppImage; a plain `git push origin vX.Y.Z` (no dispatch input) still works exactly as before and is **not** marked pre-release.
@@ -68,4 +68,11 @@ unchanged.
   - actionlint and yamllint are clean on every workflow.
   - P1.T2 and P2.T1 can only be verified on GitHub (a dispatch creates a public tag and pre-release), so they wait for the user's go-ahead.
   - Deviation: `beta-release.yml` declares `contents: read` alongside `actions: write`. A job-level `permissions:` block replaces the default scopes, and without it `checkout` would fail.
+- 2026-09-23 — **Dry run with a throwaway tag (user's choice).** `release.yml` was dispatched from the milestone branch with `tag=v0.0.0-test1`. It took three runs; the first two found real bugs, both now fixed:
+  - Tagging inside the container failed git's `safe.directory` check.
+  - The container has no `gh`, so `gh release create` failed with exit 127. The manual `v*` tag path used the same step and was broken the same way. Publishing moved to a separate `publish` job on the hosted runner, which downloads the uploaded artifact.
+
+  Run 3 produced a pre-release with the tarball, the AppImage and both `.sha256` files. The test release and tag were then deleted.
+- 2026-09-23 — **P2.T1 can only be verified after merge.** A `workflow_run` trigger fires only from the default branch's copy of the workflow, so the first merge to `main` after this PR is the check.
+- 2026-09-23 — **Follow-up:** the asset filenames carry the CMake project version (`Natron-2.6.0-…`), not the tag. Every beta would ship files named 2.6.0. This is out of scope here; raise it with the user.
 

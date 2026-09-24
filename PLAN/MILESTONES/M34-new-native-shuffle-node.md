@@ -427,4 +427,5 @@ API pinned for batch 1, which every task codes against:
   - The two-output sub-label becomes one line per output.
   - The ShuffleCopy default (RGB from "2", A from "1") is confirmed.
   - The AppImage is packaged before P4.T5, so it still lists the OFX Shuffle in the menus. P4.T5 follows.
+- 2026-09-24 — **AppImage packaged for UAT** at `build/appimages/M34-90e129f5b.AppImage`, with the UAT script in `build/appimages/M34-uat.md`. Build b10: 44/44 Shuffle ctest; the sub-label renders one line per output. P6.T11 is awaiting the user's check. P4.T5 runs next, and the milestone PR opens after it.
 

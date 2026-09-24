@@ -30,6 +30,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <QThread>
 
@@ -416,11 +417,7 @@ TEST(DeepImageCacheTest, EvictLRUFromMemoryCachesDrainsBothAppWideCaches)
     appPTR->getMemoryStatsForCacheEntryHolder(&holder, &ramBefore, &diskBefore);
     ASSERT_GT(ramBefore, (std::size_t)0);
 
-    // A single pass must evict from the deep cache alongside the node cache, not only after the
-    // node cache is fully drained: that is what distinguishes evicting from both caches on every
-    // pass from a short-circuiting nodeCache->evict() || deepCache->evict() that only reaches the
-    // deep cache once the node cache reports nothing left to evict. With three node cache entries
-    // still resident, the lone deep cache entry must already be gone after this first call.
+    // Must evict from both caches per pass, not short-circuit once the node cache reports empty.
     ASSERT_TRUE(appPTR->evictLRUFromMemoryCaches());
     std::list<DeepImageCacheEntryPtr> foundDeepAfterFirstPass;
     EXPECT_FALSE(appPTR->getDeepImage(deepKey, &foundDeepAfterFirstPass))
@@ -447,9 +444,7 @@ TEST(DeepImageCacheTest, DisableUnreachableRAMPurgingRestoresPreviousValue)
 
     const int original = knob->getValue();
 
-    // A sentinel distinct from both 0 (what the guard pins to) and the knob's original value, so
-    // the assertions below cannot pass by coincidence regardless of what this host's settings
-    // started at.
+    // Distinct from both 0 (what the guard pins to) and original, so the assertions can't pass by coincidence.
     const int sentinel = (original == 37) ? 42 : 37;
     knob->setValue(sentinel);
     ASSERT_EQ(sentinel, knob->getValue());
@@ -463,4 +458,95 @@ TEST(DeepImageCacheTest, DisableUnreachableRAMPurgingRestoresPreviousValue)
         << "the guard must restore the previous value once it goes out of scope";
 
     knob->setValue(original);
+}
+
+namespace {
+
+// Stands in for the node/deep caches' combined getMemoryCacheSize() without needing real cache
+// entries or the host's real memory numbers.
+class FakeAccountedCache {
+public:
+    FakeAccountedCache(std::size_t entryCount,
+                       std::size_t entrySize)
+        : _entries(entryCount, entrySize)
+    {
+    }
+
+    std::size_t accountedMemory() const
+    {
+        std::size_t total = 0;
+        for (std::size_t i = 0; i < _entries.size(); ++i) {
+            total += _entries[i];
+        }
+        return total;
+    }
+
+    bool evictOne()
+    {
+        if (_entries.empty()) {
+            return false;
+        }
+        _entries.pop_back();
+        return true;
+    }
+
+    std::size_t remainingEntryCount() const
+    {
+        return _entries.size();
+    }
+
+private:
+    std::vector<std::size_t> _entries;
+};
+
+} // namespace
+
+TEST(EvictMemoryCachesUntilShortfallCoveredTest, StopsOnceTheShortfallIsFreedRatherThanDrainingTheCache)
+{
+    // 1000 bytes accounted, 300 short of the threshold: exactly 3 entries should be evicted.
+    FakeAccountedCache cache(10, 100);
+    const std::size_t systemRAMToKeepFree = 1000;
+    const std::size_t totalAvailableRAM = 700;
+
+    int evictCalls = 0;
+    evictMemoryCachesUntilShortfallCovered(totalAvailableRAM, systemRAMToKeepFree, [&cache]() { return cache.accountedMemory(); }, [&cache, &evictCalls]() {
+                                               ++evictCalls;
+                                               return cache.evictOne(); });
+
+    EXPECT_EQ(3, evictCalls);
+    EXPECT_EQ((std::size_t)7, cache.remainingEntryCount())
+        << "the loop must stop once the shortfall is covered, not drain the cache";
+    EXPECT_EQ((std::size_t)700, cache.accountedMemory());
+}
+
+TEST(EvictMemoryCachesUntilShortfallCoveredTest, StopsWithoutEvictingWhenAlreadyAboveTheThreshold)
+{
+    FakeAccountedCache cache(10, 100);
+    const std::size_t systemRAMToKeepFree = 1000;
+    const std::size_t totalAvailableRAM = 1500;
+
+    int evictCalls = 0;
+    evictMemoryCachesUntilShortfallCovered(totalAvailableRAM, systemRAMToKeepFree, [&cache]() { return cache.accountedMemory(); }, [&cache, &evictCalls]() {
+                                               ++evictCalls;
+                                               return cache.evictOne(); });
+
+    EXPECT_EQ(0, evictCalls);
+    EXPECT_EQ((std::size_t)10, cache.remainingEntryCount());
+}
+
+TEST(EvictMemoryCachesUntilShortfallCoveredTest, StopsAtAnEmptyCacheWhenTheShortfallExceedsWhatIsAccounted)
+{
+    // Shortfall (2000) exceeds the whole cache (1000): the loop must still terminate rather than spin.
+    FakeAccountedCache cache(10, 100);
+    const std::size_t systemRAMToKeepFree = 2000;
+    const std::size_t totalAvailableRAM = 0;
+
+    int evictCalls = 0;
+    evictMemoryCachesUntilShortfallCovered(totalAvailableRAM, systemRAMToKeepFree, [&cache]() { return cache.accountedMemory(); }, [&cache, &evictCalls]() {
+                                               ++evictCalls;
+                                               return cache.evictOne(); });
+
+    EXPECT_EQ(11, evictCalls);
+    EXPECT_EQ((std::size_t)0, cache.remainingEntryCount());
+    EXPECT_EQ((std::size_t)0, cache.accountedMemory());
 }

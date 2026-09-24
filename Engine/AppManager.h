@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
+#include <functional>
 #include <list>
 #include <string>
 #include <vector>
@@ -85,6 +87,16 @@ public:
 };
 
 typedef std::vector<AppInstancePtr> AppInstanceVec;
+
+/**
+ * @brief Progress is tracked via getAccountedMemory() rather than by re-reading the host: freeing
+ * cache entries returns memory to this process's allocator, not to the OS, so the host reading
+ * would barely move even as eviction makes progress.
+ **/
+void evictMemoryCachesUntilShortfallCovered(std::size_t totalAvailableRAM,
+                                            std::size_t systemRAMToKeepFree,
+                                            const std::function<std::size_t()>& getAccountedMemory,
+                                            const std::function<bool()>& evictOnce);
 
 struct AppManagerPrivate;
 class AppManager

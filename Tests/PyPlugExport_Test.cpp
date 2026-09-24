@@ -558,7 +558,7 @@ TEST_F(PyPlugExportTest, ShuffleMappingRoundTripsThroughPyPlugExport)
 }
 
 // A row can outlive the channel names it was recorded with: its slot set to None, or to a
-// layer with fewer channels. Such a row is written by index ("in2.1"), which getSource()
+// layer with fewer channels. Such a row is written by index ("in2.#1"), which getSource()
 // reports and connect() reads back, so the export neither drops it nor changes it.
 TEST_F(PyPlugExportTest, ShuffleRowOnANoneOrNarrowerSlotRoundTripsByIndex)
 {
@@ -602,17 +602,17 @@ TEST_F(PyPlugExportTest, ShuffleRowOnANoneOrNarrowerSlotRoundTripsByIndex)
     ASSERT_EQ(std::size_t(2), mapping->getRows().size());
 
     ShuffleMapParam param(mapping);
-    EXPECT_EQ(QString::fromUtf8("in2.1"), param.getSource(QString::fromUtf8("out1.R")));
-    EXPECT_EQ(QString::fromUtf8("in1.3"), param.getSource(QString::fromUtf8("out1.G")));
+    EXPECT_EQ(QString::fromUtf8("in2.#1"), param.getSource(QString::fromUtf8("out1.R")));
+    EXPECT_EQ(QString::fromUtf8("in1.#3"), param.getSource(QString::fromUtf8("out1.G")));
     const std::map<std::string, std::string> connections = param.getConnections();
     ASSERT_EQ(std::size_t(1), connections.count("out1.R"));
-    EXPECT_EQ(std::string("in2.1"), connections.find("out1.R")->second);
+    EXPECT_EQ(std::string("in2.#1"), connections.find("out1.R")->second);
 
     QString output;
     group->exportGroupToPython(QString::fromUtf8("test.pyplug.shufflemapindex"), QString::fromUtf8("ShuffleMapIndexGroup"), QString(), QString(), QString::fromUtf8("Other"), 1, output);
 
-    EXPECT_TRUE(output.contains(QString::fromUtf8("param.connect(\"in2.1\", \"out1.R\")"))) << output.toStdString();
-    EXPECT_TRUE(output.contains(QString::fromUtf8("param.connect(\"in1.3\", \"out1.G\")"))) << output.toStdString();
+    EXPECT_TRUE(output.contains(QString::fromUtf8("param.connect(\"in2.#1\", \"out1.R\")"))) << output.toStdString();
+    EXPECT_TRUE(output.contains(QString::fromUtf8("param.connect(\"in1.#3\", \"out1.G\")"))) << output.toStdString();
 
     project->reset(false, true);
 
@@ -638,6 +638,54 @@ TEST_F(PyPlugExportTest, ShuffleRowOnANoneOrNarrowerSlotRoundTripsByIndex)
     EXPECT_EQ(std::size_t(2), mapping2->getRows().size());
     EXPECT_TRUE(ShuffleSource::makeInput(2, 1) == mapping2->getSource(1, 0));
     EXPECT_TRUE(ShuffleSource::makeInput(1, 3) == mapping2->getSource(1, 1));
+
+    project->reset(false, true);
+}
+
+TEST_F(PyPlugExportTest, ShuffleIndexFormIsDistinctFromANumericChannelName)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    // Each channel's name differs from its index, so reading a name as an index, or an index
+    // as a name, lands on a different channel.
+    std::vector<std::string> numberedChannels;
+    numberedChannels.push_back("3");
+    numberedChannels.push_back("2");
+    numberedChannels.push_back("1");
+    numberedChannels.push_back("0");
+    std::string error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("numbered", "numbered", "", numberedChannels), LayerRegistryEntry::eOriginUser, &error)) << error;
+
+    CreateNodeArgs shuffleArgs(PLUGINID_NATRON_SHUFFLE, project);
+    NodePtr shuffle = getApp()->createNode(shuffleArgs);
+    ASSERT_TRUE(bool(shuffle)) << "node creation failed for " << PLUGINID_NATRON_SHUFFLE;
+
+    KnobLayerSelectPtr in1 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamIn1));
+    ASSERT_TRUE(bool(in1));
+    in1->setLayer("numbered");
+    KnobLayerSelectPtr in2 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamIn2));
+    ASSERT_TRUE(bool(in2));
+    ASSERT_TRUE(in2->getLayer().empty());
+
+    KnobShuffleMapPtr mapping = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle->getKnobByName(kShuffleParamMapping));
+    ASSERT_TRUE(bool(mapping));
+
+    ShuffleMapParam param(mapping);
+    param.connect(QString::fromUtf8("in1.3"), QString::fromUtf8("out1.A"));
+    param.connect(QString::fromUtf8("in1.#3"), QString::fromUtf8("out1.R"));
+    param.connect(QString::fromUtf8("in2.#2"), QString::fromUtf8("out1.B"));
+    EXPECT_TRUE(ShuffleSource::makeInput(1, 0) == mapping->getSource(1, 3));
+    EXPECT_TRUE(ShuffleSource::makeInput(1, 3) == mapping->getSource(1, 0));
+    EXPECT_TRUE(ShuffleSource::makeInput(2, 2) == mapping->getSource(1, 2));
+
+    EXPECT_EQ(QString::fromUtf8("in1.3"), param.getSource(QString::fromUtf8("out1.A")));
+    EXPECT_EQ(QString::fromUtf8("in1.0"), param.getSource(QString::fromUtf8("out1.R")));
+    EXPECT_EQ(QString::fromUtf8("in2.#2"), param.getSource(QString::fromUtf8("out1.B")));
+
+    param.connect(param.getSource(QString::fromUtf8("out1.B")), QString::fromUtf8("out1.G"));
+    EXPECT_TRUE(ShuffleSource::makeInput(2, 2) == mapping->getSource(1, 1));
 
     project->reset(false, true);
 }

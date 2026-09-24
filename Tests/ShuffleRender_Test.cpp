@@ -525,8 +525,6 @@ TEST_F(ShuffleRenderTest, SingleChannelOutputLayerIsCreatedAndColorPassesThrough
     expectPlane(image, "specular.", 0.f, 0.f, 1.f);
 }
 
-// --- An explicit row whose source becomes unreadable upstream fails the render, naming it ----
-
 TEST_F(ShuffleRenderTest, ExplicitRowAbsentFromConnectedInputFailsThenClearsOnFixtureSwitch)
 {
     createShuffleOnFixture("flat-rgba-only.exr");
@@ -575,8 +573,6 @@ TEST_F(ShuffleRenderTest, ExplicitRowAbsentFromConnectedInputFailsThenClearsOnFi
     expectPlane(image2, "specular.", 0.f, 0.f, 1.f);
 }
 
-// --- Silent cases: an implicit default on a missing layer, and an explicit row on a None slot ---
-
 TEST_F(ShuffleRenderTest, ImplicitDefaultOnAMissingLayerRendersZeroSilently)
 {
     createShuffleOnFixture("flat-rgba-only.exr");
@@ -622,8 +618,6 @@ TEST_F(ShuffleRenderTest, ExplicitRowOnANoneSlotRendersZeroSilently)
     expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
     expectPlane(image, "specular.", 0.f, 0.f, 1.f);
 }
-
-// --- ShuffleCopy's bbox knob picks the region when both inputs are connected -------------------
 
 namespace {
 
@@ -682,10 +676,8 @@ TEST_F(ShuffleRenderTest, ShuffleCopyBBoxChoosesTheRegionOfTwoConnectedInputs)
         EXPECT_TRUE(rod == cases[i].expected) << cases[i].id << ": " << rectString(rod) << " != " << rectString(cases[i].expected);
     }
 
-    // Only the region follows the knob: the format stays the main input's.
     EXPECT_TRUE(_shuffle->getEffectInstance()->getOutputFormat() == mainInput->getEffectInstance()->getOutputFormat());
 
-    // With input 1 disconnected, input 2's region stands whatever the choice.
     disconnectNodes(constant, _shuffle, true);
     for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         bbox->setValueFromID(cases[i].id, 0);
@@ -728,8 +720,6 @@ TEST_F(ShuffleRenderTest, ShuffleHasNoBBoxKnob)
     EXPECT_FALSE(bool(_shuffle->getKnobByName(kShuffleCopyParamBBox)));
 }
 
-// --- Explicit Color rows are checked against the Color channels the input really has ------------
-
 TEST_F(ShuffleRenderTest, ExplicitRowToTheAlphaOfAnRgbOnlyColorFailsNamingTheChannel)
 {
     createShuffleOnFixture("flat-rgb-only.exr");
@@ -737,7 +727,6 @@ TEST_F(ShuffleRenderTest, ExplicitRowToTheAlphaOfAnRgbOnlyColorFailsNamingTheCha
         return;
     }
 
-    // A channel the RGB Color does have is readable, so the node renders without complaint.
     _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
     ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
     std::string message;
@@ -763,7 +752,37 @@ TEST_F(ShuffleRenderTest, ExplicitRowToTheAlphaOfAnRgbOnlyColorFailsNamingTheCha
     EXPECT_NE(std::string::npos, message.find(std::string(kNatronColorLayerID) + ".A is not in the")) << message;
 }
 
-// The implicit out1.A <- in1.A has no row, so an RGB-only Color leaves it 0 without an error.
+// Every out1 channel reads the same index of the main input's Color, the shape isIdentity()
+// passes through, so the missing A must still fail rather than pass the RGB-only input on.
+TEST_F(ShuffleRenderTest, ShuffleCopyIdentityShapedRowsToTheAlphaOfAnRgbOnlyColorFail)
+{
+    createShuffleOnFixture("flat-rgb-only.exr", PLUGINID_NATRON_SHUFFLECOPY);
+    if (HasFatalFailure()) {
+        return;
+    }
+    wireStraight(1, 2, 4);
+    ASSERT_TRUE(_mapping->hasExplicitSource(1, 3));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    std::string message;
+    renderExpectingFailure(tmp, "copy_rgb_only_alpha.exr", &message);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_NE(std::string::npos, message.find(std::string(kNatronColorLayerID) + ".A is not in the")) << message;
+
+    _mapping->clear(1, 3);
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+
+    FlatExrImage image;
+    render(tmp, "copy_rgb_only_no_alpha_row.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+}
+
 TEST_F(ShuffleRenderTest, ImplicitAlphaOfAnRgbOnlyColorRendersZeroSilently)
 {
     createShuffleOnFixture("flat-rgb-only.exr");
@@ -774,8 +793,6 @@ TEST_F(ShuffleRenderTest, ImplicitAlphaOfAnRgbOnlyColorRendersZeroSilently)
     std::string message;
     EXPECT_TRUE(_shuffle->checkSelectedChannelsPresent(&message)) << message;
 }
-
-// --- A row for an output channel the current output layer lacks is never read ------------------
 
 TEST_F(ShuffleRenderTest, StaleRowBeyondASmallerOutputLayerDoesNotFailTheRender)
 {
@@ -792,7 +809,6 @@ TEST_F(ShuffleRenderTest, StaleRowBeyondASmallerOutputLayerDoesNotFailTheRender)
     if (HasFatalFailure()) {
         return;
     }
-    // out1.A reads in1's diffuse, which this input does not carry: an error while out1 is Color.
     _mapping->setSource(1, 3, ShuffleSource::makeInput(1, 1));
     ASSERT_TRUE(_mapping->hasExplicitSource(1, 3));
     std::string message;
@@ -815,8 +831,6 @@ TEST_F(ShuffleRenderTest, StaleRowBeyondASmallerOutputLayerDoesNotFailTheRender)
     EXPECT_FALSE(_shuffle->hasPersistentMessage());
     EXPECT_EQ(std::size_t(1), channelSet(image).count("mask.A"));
 }
-
-// --- Editing the mapping retires a missing-channel error it no longer causes --------------------
 
 TEST_F(ShuffleRenderTest, DisconnectingTheMissingRowClearsTheError)
 {

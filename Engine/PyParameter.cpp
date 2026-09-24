@@ -2799,30 +2799,30 @@ shuffleMapFindChannelIndex(const std::vector<std::string>& channels,
     return false;
 }
 
-/**
- * @brief A channel written as its index within the slot's layer, all digits.
- **/
+// '#' can't appear in a channel name (LayerRegistry allows only letters, digits and '_'), so
+// "#N" never collides with a channel literally named "N".
+static const char kShuffleMapIndexMarker = '#';
+
 static bool
 shuffleMapParseIndex(const std::string& text,
                      int* index)
 {
-    if (text.empty() || (text.size() > 9)) {
+    if ((text.size() < 2) || (text.size() > 10) || (text[0] != kShuffleMapIndexMarker)) {
         return false;
     }
-    for (std::size_t i = 0; i < text.size(); ++i) {
+    for (std::size_t i = 1; i < text.size(); ++i) {
         if (!std::isdigit((unsigned char)text[i])) {
             return false;
         }
     }
-    *index = std::atoi(text.c_str());
+    *index = std::atoi(text.c_str() + 1);
 
     return true;
 }
 
 /**
- * @brief channel's index on slot: a channel name of the slot's current layer or, when no name
- * matches (the slot is None, its layer does not resolve, or it has fewer channels than a
- * stored row refers to), the index itself written as digits.
+ * @brief channel's index on slot: "#N" for index N, whatever the slot's layer, or else a
+ * channel name of the slot's current layer.
  **/
 static bool
 shuffleMapResolveChannelIndex(const KnobShuffleMapPtr& knob,
@@ -2831,14 +2831,15 @@ shuffleMapResolveChannelIndex(const KnobShuffleMapPtr& knob,
                               int* index,
                               std::string* error)
 {
+    if (shuffleMapParseIndex(channel, index)) {
+        return true;
+    }
+
     std::vector<std::string> channels;
     std::string resolveError;
     const bool resolved = shuffleMapResolveLayerChannels(knob, slot, &channels, &resolveError);
 
     if (resolved && shuffleMapFindChannelIndex(channels, channel, index)) {
-        return true;
-    }
-    if (shuffleMapParseIndex(channel, index)) {
         return true;
     }
     *error = resolved ? ("\"" + channel + "\" is not a channel of " + slot + "'s current layer") : resolveError;
@@ -2847,7 +2848,7 @@ shuffleMapResolveChannelIndex(const KnobShuffleMapPtr& knob,
 }
 
 /**
- * @brief "slot.<name>" for index on slot's current layer, or "slot.<index>" when the slot has
+ * @brief "slot.<name>" for index on slot's current layer, or "slot.#<index>" when the slot has
  * no layer channel at that index, so a stored row always has a form
  * shuffleMapResolveChannelIndex() reads back to the same index.
  **/
@@ -2865,7 +2866,7 @@ shuffleMapFormatChannel(const KnobShuffleMapPtr& knob,
         return slot + "." + channels[index];
     }
 
-    return slot + "." + std::to_string(index);
+    return slot + "." + kShuffleMapIndexMarker + std::to_string(index);
 }
 
 /**

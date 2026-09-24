@@ -80,9 +80,9 @@ CLANG_DIAG_ON(deprecated)
 #define kOfxMixParamName "mix"
 
 // The prefix Node::checkSelectedChannelsPresent() requires of an EffectInstance::
-// checkExtraChannelsPresent() failure message, so refreshChannelSelectors() can tell it apart
-// from an unrelated persistent message before clearing it, the same way it already does for a
-// missing mask or (un)premult channel.
+// checkExtraChannelsPresent() failure message, so refreshChannelSelectors() and the effect
+// itself can tell it apart from an unrelated persistent message before clearing it, the same
+// way refreshChannelSelectors() already does for a missing mask or (un)premult channel.
 #define kExtraChannelMissingMessagePrefix "Channel "
 
 #define kReadOIIOAvailableViewsKnobName "availableViews"

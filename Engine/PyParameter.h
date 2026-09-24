@@ -1188,8 +1188,8 @@ public:
     /**
      * @brief Wires dst's channel to src. dst is "out1.<channel>" or "out2.<channel>"; src is
      * "in1.<channel>", "in2.<channel>", "0" or "1". A channel is a name of the layer currently
-     * selected on the named slot (in1/in2/out1/out2) or, when no such name matches, its index
-     * within that layer written as digits (e.g. "in2.3"). The index form needs no layer, so it
+     * selected on the named slot (in1/in2/out1/out2) or "#" and its index within that layer
+     * (e.g. "in2.#3", distinct from a channel named "3"). The index form needs no layer, so it
      * also addresses a channel of a None slot or one beyond the slot's current layer. Raises
      * ValueError when a slot is unknown, or a channel is neither a name nor an index.
      **/
@@ -1204,7 +1204,7 @@ public:
     /**
      * @brief dst's effective source (the node's Shuffle::getEffectiveSource), in the same
      * syntax connect() takes: by channel name, or by index when the source slot has no channel
-     * of that index (e.g. "in2.3" once in2 is None). Never an empty string. Raises ValueError
+     * of that index (e.g. "in2.#3" once in2 is None). Never an empty string. Raises ValueError
      * when dst does not resolve.
      **/
     QString getSource(const QString& dst) const;

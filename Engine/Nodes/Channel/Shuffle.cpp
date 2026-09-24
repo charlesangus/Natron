@@ -339,11 +339,17 @@ Shuffle::knobChanged(KnobI* k,
     }
     if (mapping && k == mapping.get()) {
         refreshSubLabel();
-        // The layer knobs reach this through their metadata refresh; the mapping is no
-        // metadata, yet fixing or removing a row can still retire a missing-channel error.
+        // Only a render knows the time and view to revalidate at, so the edit just retires
+        // this node's own missing-channel error and the next render posts it again if the
+        // mapping is still unreadable.
         NodePtr node = getNode();
         if (node) {
-            node->refreshChannelSelectors();
+            QString current;
+            int type = 0;
+            node->getPersistentMessage(&current, &type, false);
+            if ((type == (int)eMessageTypeError) && current.startsWith(QString::fromUtf8(kExtraChannelMissingMessagePrefix))) {
+                node->clearPersistentMessage(false);
+            }
         }
     }
 
@@ -585,6 +591,11 @@ Shuffle::isIdentity(double time,
         if ((getSlotInput(src.slot) != (int)eInputMain) || (getSlotLayer(src.slot) != out1Layer)) {
             return false;
         }
+    }
+    // renderRoI() validates the mapping only past its identity shortcut, so an explicit row the
+    // input cannot feed (e.g. A of an RGB-only Color) must keep the render off that shortcut.
+    if (!checkExtraChannelsPresent(time, view, NULL)) {
+        return false;
     }
 
     *inputNb = (int)eInputMain;

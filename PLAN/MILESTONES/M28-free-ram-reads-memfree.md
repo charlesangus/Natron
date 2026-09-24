@@ -25,7 +25,7 @@ hermetically in M18.P1.T5, which does not touch this).
   - verify: unit test parsing a fixture `/proc/meminfo`-shaped buffer (factor the parse out so it is testable without the host's real numbers), covering the field present, absent, and malformed; plus a measured before/after on this host showing the reading move from ~2900 MB to ~10300 MB. Whole ctest suite green.
   - size: M
 
-- [ ] M28.P1.T2 — Make the eviction loop terminate on its own terms
+- [x] M28.P1.T2 — Make the eviction loop terminate on its own terms
   - files: `Engine/AppManager.cpp`, `Tests/` (extend the `evictLRUFromMemoryCaches()` coverage from M18.P1.T4)
   - approach: even with the right reading, the `while` loop in `checkCacheFreeMemoryIsGoodEnough()` re-reads a host-global number that its own evictions barely move, so under genuine pressure it degenerates into "empty both caches". Bound it by what it is actually trying to achieve — evict until the caches' own accounted memory has dropped by the shortfall, with the host reading as the trigger rather than as the loop condition. Do not silently change the trigger threshold; if 20% is the wrong default, say so and raise it separately.
   - verify: a test driving the loop with a stubbed/injected free-memory reading, asserting it stops after freeing the shortfall rather than draining the caches; driven red-then-green. Whole ctest suite green.
@@ -34,5 +34,6 @@ hermetically in M18.P1.T5, which does not touch this).
 ## Decisions
 
 - 2026-09-23 — **P1.T1 landed.** `getAmountFreePhysicalRAM` was renamed to `getAmountAvailablePhysicalRAM` and now reads `MemAvailable` through the testable `parseMemAvailableKB`. The unreachable Windows/BSD/Apple branches in `MemoryInfo.cpp` were deleted. On this host MemFree read 447 MB while MemAvailable read 11.3 GB. The full ctest suite passed, 400/400.
+- 2026-09-23 — **P1.T2 landed** (d66bde20f). The seam is a pure `evictMemoryCachesUntilShortfallCovered(available, keepFree, getAccounted, evictOnce)`: the host reading is only the trigger, and the loop stops once accounted cache memory has dropped by the shortfall. Full ctest passed, 403/403. Gate green; opened PR #32 against `main`.
 
 **Verification gate:** the free-memory reading reflects reclaimable memory on this host; the eviction loop provably stops short of draining the caches under a simulated shortfall; whole ctest suite green.

@@ -157,7 +157,7 @@ Execution notes carried over from M38:
   - approach: delete the four `PLUGINID_OFX_SHUFFLE` "A is main" branches, the macro, and the `outputR..A` filter entries (~`KnobSerialization.cpp:640-656`). `LayerKnobs_Test.cpp:374` now asserts on the native Shuffle.
   - verify: `grep -rn PLUGINID_OFX_SHUFFLE Engine Gui` is empty; full ctest green.
   - size: M
-- [ ] M34.P4.T5 — Drop Shuffle from the openfx-misc fork build and bump the pin
+- [x] M34.P4.T5 — Drop Shuffle from the openfx-misc fork build and bump the pin
   - batch: 3
   - files: `charlesangus/openfx-misc` (a fork PR removing `Shuffle` from its build), `tools/ci/local/fetch-assets.sh` (`OPENFX_MISC_REF`)
   - approach: this is the user decision (design doc "Answers" 3). Graphs containing the OFX Shuffle no longer load it, which the clean-break decision accepts. Keep the fork change minimal: remove the plugin from the build list and its source directory. Leave a one-line pin comment pointing at the fork PR.
@@ -428,4 +428,6 @@ API pinned for batch 1, which every task codes against:
   - The ShuffleCopy default (RGB from "2", A from "1") is confirmed.
   - The AppImage is packaged before P4.T5, so it still lists the OFX Shuffle in the menus. P4.T5 follows.
 - 2026-09-24 — **AppImage packaged for UAT** at `build/appimages/M34-90e129f5b.AppImage`, with the UAT script in `build/appimages/M34-uat.md`. Build b10: 44/44 Shuffle ctest; the sub-label renders one line per output. P6.T11 is awaiting the user's check. P4.T5 runs next, and the milestone PR opens after it.
+- 2026-09-24 — **P4.T5 landed** (1e40279c0). Fork PR charlesangus/openfx-misc#4 (branch `drop-shuffle`, d293dcd64) removes `Shuffle/` from the build, and `OPENFX_MISC_REF` now pins that commit. The fork PR is left open for the user. Its squash-merge would mint a new SHA; the branch commit stays fetchable either way.
+- 2026-09-24 — **Gate green** (build b11): the bundle rebuilt from the new pin; full ctest passed, 459/459; smoke passed; pyplugs_p41/p42, zplugs and shufflemap_py are all OK; the gate greps are empty (the only `in1Input`/`in2Input` hits are tests asserting those knobs are absent). No project-wide decisions were published: the two created during M34 (stacked PRs, parallel worktrees) are PM process, not code. The PR is open for review, and P6.T11 (the user's AppImage check) is asynchronous.
 

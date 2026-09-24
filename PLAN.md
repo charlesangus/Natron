@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: M34.P6.T7
-pm_heartbeat: 2026-09-23T23:41:34-04:00
+pm_heartbeat: 2026-09-24T00:43:01-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -208,7 +208,7 @@ future core work has solid ground to build on.
 | M60 | Deep images get layers/channels like flat images | todo | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
 | M25 | Guard the GL init path against the debug FP traps | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M27 | Make the debug build a debug build again | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
-| M28 | Stop treating page cache as memory pressure | doing | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |
+| M28 | Stop treating page cache as memory pressure | done | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |
 | M22 | Lossless project round-trip with missing plugins | todo | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M29 | Break the link to upstream — an independent repository | todo | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |
 | M30 | Full release + AppImage on every merge, auto-versioned betas from 0.1.0-beta1 | doing | [M30-automated-beta-releases.md](PLAN/MILESTONES/M30-automated-beta-releases.md) |

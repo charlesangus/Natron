@@ -35,5 +35,6 @@ hermetically in M18.P1.T5, which does not touch this).
 
 - 2026-09-23 — **P1.T1 landed.** `getAmountFreePhysicalRAM` was renamed to `getAmountAvailablePhysicalRAM` and now reads `MemAvailable` through the testable `parseMemAvailableKB`. The unreachable Windows/BSD/Apple branches in `MemoryInfo.cpp` were deleted. On this host MemFree read 447 MB while MemAvailable read 11.3 GB. The full ctest suite passed, 400/400.
 - 2026-09-23 — **P1.T2 landed** (d66bde20f). The seam is a pure `evictMemoryCachesUntilShortfallCovered(available, keepFree, getAccounted, evictOnce)`: the host reading is only the trigger, and the loop stops once accounted cache memory has dropped by the shortfall. Full ctest passed, 403/403. Gate green; opened PR #32 against `main`.
+- 2026-09-24 — **PR #32 Codex review (one round): 6 findings, all fixed in bd4ea7b18.** The MemAvailable parser is now strict, the disabled RSS helpers are deleted, and 4 comments were trimmed. Full ctest passed, 408/408. The PR stays open for the user to merge.
 
 **Verification gate:** the free-memory reading reflects reclaimable memory on this host; the eviction loop provably stops short of draining the caches under a simulated shortfall; whole ctest suite green.

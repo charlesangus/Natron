@@ -10,7 +10,7 @@ jobs:
     name: dispatch-beta
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       actions: write
     # `main`'s branch protection already requires the Checks workflow (format,
     # lint-ci) and this Tests workflow's build-and-test job to pass before a
@@ -18,7 +18,10 @@ jobs:
     # passed too. Keying off Tests alone is therefore not a gap; re-checking
     # Checks' conclusion here would just be redundant cross-workflow polling.
     # Revisit only if branch protection on `main` is ever relaxed.
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'push'
     steps:
       - name: Checkout branch
         uses: actions/checkout@v5.0.1
@@ -26,9 +29,30 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Compute next beta tag
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Allocate and push next beta tag
         id: next_tag
-        run: echo "tag=$(tools/release/next-beta-tag.sh)" >> "$GITHUB_OUTPUT"
+        # git's atomic ref push is the lock: two concurrent runs can compute
+        # the same candidate, but only one push for a given tag name can win,
+        # so a loser retries against the now-updated tag set instead of
+        # dispatching a release for a tag someone else already claimed.
+        run: |
+          for attempt in $(seq 1 10); do
+            git fetch origin --tags --force
+            tag="$(tools/release/next-beta-tag.sh)"
+            git tag -a "$tag" -m "$tag"
+            if git push origin "refs/tags/$tag"; then
+              echo "tag=$tag" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            git tag -d "$tag"
+          done
+          echo "::error::Failed to allocate a unique beta tag after 10 attempts" >&2
+          exit 1
 
       - name: Dispatch release workflow
         env:

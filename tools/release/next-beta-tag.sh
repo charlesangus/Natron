@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Compute the next sequential v0.1.0-betaN tag from the current repo's tags.
-# Pure and side-effect-free: prints the next tag to stdout, creates or pushes
-# nothing. Caller is responsible for actually tagging and pushing.
 set -euo pipefail
 
 if [[ $# -ne 0 ]]; then
@@ -9,15 +6,18 @@ if [[ $# -ne 0 ]]; then
     exit 1
 fi
 
+tags="$(git tag -l 'v0.1.0-beta*')"
+
 max=0
 while IFS= read -r tag; do
     [[ -z "$tag" ]] && continue
     if [[ "$tag" =~ ^v0\.1\.0-beta([0-9]+)$ ]]; then
-        n="${BASH_REMATCH[1]}"
+        # 10# forces decimal: an unprefixed "08" is invalid octal and aborts the script.
+        n=$((10#${BASH_REMATCH[1]}))
         if (( n > max )); then
             max="$n"
         fi
     fi
-done < <(git tag -l 'v0.1.0-beta*')
+done <<< "$tags"
 
 echo "v0.1.0-beta$((max + 1))"

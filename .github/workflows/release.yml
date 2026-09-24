@@ -12,7 +12,10 @@ on:
         type: string
 
 concurrency:
-  group: release-${{ github.ref }}
+  # Keyed on the tag, not github.ref: every workflow_dispatch run shares the
+  # same ref (main), so a ref-keyed group would serialize distinct betas and
+  # drop all but the most recently dispatched one.
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -42,12 +45,18 @@ jobs:
 
       - name: Create and push dispatch tag
         if: github.event_name == 'workflow_dispatch'
+        # beta-release.yml pushes the tag itself before dispatching, so it
+        # already exists on ad-hoc/manual dispatches; only create it here.
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "$TAG"
-          git push origin "$TAG"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists on origin, skipping creation"
+          else
+            git tag -a "$TAG" -m "$TAG"
+            git push origin "$TAG"
+          fi
 
       - name: Restore ccache
         id: restore_ccache

@@ -11,7 +11,9 @@ on:
 
 concurrency:
   group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  # Only cancel superseded PR runs. A push to main must run to completion so
+  # beta-release.yml's workflow_run success gate always fires.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

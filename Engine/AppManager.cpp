@@ -2847,7 +2847,6 @@ evictMemoryCachesUntilShortfallCovered(std::size_t totalAvailableRAM,
 void
 AppManager::checkCacheFreeMemoryIsGoodEnough()
 {
-    /// Before allocating the memory check that there's enough space to fit in memory
     size_t systemRAMToKeepFree = getSystemTotalRAM() * appPTR->getCurrentSettings()->getUnreachableRamPercent();
     size_t totalAvailableRAM = getAmountAvailablePhysicalRAM();
 

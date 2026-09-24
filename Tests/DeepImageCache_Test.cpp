@@ -417,11 +417,7 @@ TEST(DeepImageCacheTest, EvictLRUFromMemoryCachesDrainsBothAppWideCaches)
     appPTR->getMemoryStatsForCacheEntryHolder(&holder, &ramBefore, &diskBefore);
     ASSERT_GT(ramBefore, (std::size_t)0);
 
-    // A single pass must evict from the deep cache alongside the node cache, not only after the
-    // node cache is fully drained: that is what distinguishes evicting from both caches on every
-    // pass from a short-circuiting nodeCache->evict() || deepCache->evict() that only reaches the
-    // deep cache once the node cache reports nothing left to evict. With three node cache entries
-    // still resident, the lone deep cache entry must already be gone after this first call.
+    // Must evict from both caches per pass, not short-circuit once the node cache reports empty.
     ASSERT_TRUE(appPTR->evictLRUFromMemoryCaches());
     std::list<DeepImageCacheEntryPtr> foundDeepAfterFirstPass;
     EXPECT_FALSE(appPTR->getDeepImage(deepKey, &foundDeepAfterFirstPass))
@@ -448,9 +444,7 @@ TEST(DeepImageCacheTest, DisableUnreachableRAMPurgingRestoresPreviousValue)
 
     const int original = knob->getValue();
 
-    // A sentinel distinct from both 0 (what the guard pins to) and the knob's original value, so
-    // the assertions below cannot pass by coincidence regardless of what this host's settings
-    // started at.
+    // Distinct from both 0 (what the guard pins to) and original, so the assertions can't pass by coincidence.
     const int sentinel = (original == 37) ? 42 : 37;
     knob->setValue(sentinel);
     ASSERT_EQ(sentinel, knob->getValue());
@@ -468,9 +462,8 @@ TEST(DeepImageCacheTest, DisableUnreachableRAMPurgingRestoresPreviousValue)
 
 namespace {
 
-// Stands in for the node cache and the deep image cache combined: evicting one entry at a time
-// and re-summing what's left mirrors getMemoryCacheSize() on the real Cache<> instances, without
-// needing real cache entries or the host's real memory numbers.
+// Stands in for the node/deep caches' combined getMemoryCacheSize() without needing real cache
+// entries or the host's real memory numbers.
 class FakeAccountedCache {
 public:
     FakeAccountedCache(std::size_t entryCount,
@@ -510,11 +503,7 @@ private:
 
 TEST(EvictMemoryCachesUntilShortfallCoveredTest, StopsOnceTheShortfallIsFreedRatherThanDrainingTheCache)
 {
-    // 10 entries of 100 bytes each = 1000 bytes of accounted cache memory; the host reading is
-    // 300 bytes short of the threshold, so only 3 entries need to be evicted. A loop keyed off a
-    // host reading that eviction does not move has no way to know that 3 is enough and would
-    // keep calling evictOnce() until the cache is empty: remainingEntryCount() below would then
-    // read 0 rather than 7.
+    // 1000 bytes accounted, 300 short of the threshold: exactly 3 entries should be evicted.
     FakeAccountedCache cache(10, 100);
     const std::size_t systemRAMToKeepFree = 1000;
     const std::size_t totalAvailableRAM = 700;
@@ -547,9 +536,7 @@ TEST(EvictMemoryCachesUntilShortfallCoveredTest, StopsWithoutEvictingWhenAlready
 
 TEST(EvictMemoryCachesUntilShortfallCoveredTest, StopsAtAnEmptyCacheWhenTheShortfallExceedsWhatIsAccounted)
 {
-    // The shortfall (2000) exceeds the entire cache (1000 across 10 entries), so no amount of
-    // eviction reaches it: the loop must still terminate, via evictOnce() reporting nothing left
-    // once the cache is empty, rather than spinning.
+    // Shortfall (2000) exceeds the whole cache (1000): the loop must still terminate rather than spin.
     FakeAccountedCache cache(10, 100);
     const std::size_t systemRAMToKeepFree = 2000;
     const std::size_t totalAvailableRAM = 0;

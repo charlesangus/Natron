@@ -89,15 +89,9 @@ public:
 typedef std::vector<AppInstancePtr> AppInstanceVec;
 
 /**
- * @brief Extracted from AppManager::checkCacheFreeMemoryIsGoodEnough() so the eviction loop can
- * be exercised with a stubbed reading and stubbed cache accounting instead of the host's real
- * memory numbers and the real app-wide caches. totalAvailableRAM/systemRAMToKeepFree (the host
- * reading) are consulted once, to decide whether to evict at all and to compute the shortfall to
- * make up; releasing cache entries returns memory to this process's allocator, not to the OS, so
- * re-reading the host afterwards would barely move and the loop would never observe its own
- * progress. Progress is instead measured by watching getAccountedMemory() -- the caches' own
- * bookkeeping of what they hold -- drop by that shortfall, evicting one entry at a time via
- * evictOnce() until it does, or until evictOnce() reports nothing left to evict.
+ * @brief Progress is tracked via getAccountedMemory() rather than by re-reading the host: freeing
+ * cache entries returns memory to this process's allocator, not to the OS, so the host reading
+ * would barely move even as eviction makes progress.
  **/
 void evictMemoryCachesUntilShortfallCovered(std::size_t totalAvailableRAM,
                                             std::size_t systemRAMToKeepFree,

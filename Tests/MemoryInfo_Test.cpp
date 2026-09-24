@@ -71,3 +71,46 @@ TEST(MemoryInfo, ParseMemAvailableEmptyBuffer)
     unsigned long long availableKB = 0;
     EXPECT_FALSE(parseMemAvailableKB(std::string(), &availableKB));
 }
+
+TEST(MemoryInfo, ParseMemAvailableRejectsPrefixMatch)
+{
+    // "NotMemAvailable:" contains "MemAvailable:" as a substring; a line-start match must not
+    // treat it as the field.
+    const std::string meminfo = "NotMemAvailable: 10300000 kB\n";
+
+    unsigned long long availableKB = 0;
+    EXPECT_FALSE(parseMemAvailableKB(meminfo, &availableKB));
+}
+
+TEST(MemoryInfo, ParseMemAvailableRejectsNegativeValue)
+{
+    const std::string meminfo = "MemAvailable: -1 kB\n";
+
+    unsigned long long availableKB = 0;
+    EXPECT_FALSE(parseMemAvailableKB(meminfo, &availableKB));
+}
+
+TEST(MemoryInfo, ParseMemAvailableRejectsWrongUnit)
+{
+    const std::string meminfo = "MemAvailable: 10300000 MB\n";
+
+    unsigned long long availableKB = 0;
+    EXPECT_FALSE(parseMemAvailableKB(meminfo, &availableKB));
+}
+
+TEST(MemoryInfo, ParseMemAvailableRejectsTrailingData)
+{
+    const std::string meminfo = "MemAvailable: 10300000 kB extra\n";
+
+    unsigned long long availableKB = 0;
+    EXPECT_FALSE(parseMemAvailableKB(meminfo, &availableKB));
+}
+
+TEST(MemoryInfo, ParseMemAvailableRejectsValueThatWouldOverflowOnByteConversion)
+{
+    // Fits in the parser's integer type, but multiplying by 1024 to get bytes would wrap.
+    const std::string meminfo = "MemAvailable: 9223372036854775807 kB\n";
+
+    unsigned long long availableKB = 0;
+    EXPECT_FALSE(parseMemAvailableKB(meminfo, &availableKB));
+}

@@ -51,25 +51,8 @@ U64 getSystemTotalRAM_conditionnally();
 // prints RAM value as KB, MB or GB
 QString printAsRAM(U64 bytes);
 
-#if 0 // not used for now
-/**
- * Returns the peak (maximum so far) resident set size (physical
- * memory use) measured in bytes, or zero if the value cannot be
- * determined on this OS.
- */
-std::size_t getPeakRSS( );
-
-/**
- * Returns the current resident set size (physical memory use) measured
- * in bytes, or zero if the value cannot be determined on this OS.
- */
-std::size_t getCurrentRSS( );
-#endif // 0
-
-// Extracted from getAmountAvailablePhysicalRAM() so the /proc/meminfo parse can be
-// exercised with fixture buffers instead of the host's real numbers. Returns false,
-// leaving *outAvailableKB untouched, if the MemAvailable field is absent or its
-// value isn't a valid number.
+// Returns false, leaving *outAvailableKB untouched, if the MemAvailable field is
+// absent or its value isn't a valid non-negative kB quantity.
 bool parseMemAvailableKB(const std::string& meminfoContents, unsigned long long* outAvailableKB);
 
 // Reclaimable physical RAM: MemAvailable on Linux (kernel-estimated, includes

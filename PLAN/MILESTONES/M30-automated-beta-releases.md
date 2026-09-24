@@ -23,7 +23,7 @@ than re-deriving a cross-workflow AND of `Checks` + `Tests` — see Decisions.
 
 ## Phase 30.1: Let `release.yml` build a dispatched tag, and mark pre-releases
 
-- [ ] M30.P1.T1 — Add `tools/release/next-beta-tag.sh`
+- [x] M30.P1.T1 — Add `tools/release/next-beta-tag.sh`
   - files: `tools/release/next-beta-tag.sh` (new)
   - approach: pure, side-effect-free script. Takes the existing tag list (`git tag -l 'v0.1.0-beta*'`), extracts the numeric suffix after `beta` from each, finds the max, and prints `v0.1.0-beta$((max+1))` to stdout. Prints `v0.1.0-beta1` when no matching tag exists yet. Does not create or push anything — that's the caller's job (P2.T1), so this script stays independently testable.
   - verify: with no matching tags, prints `v0.1.0-beta1`; given a tag set containing `v0.1.0-beta1` and `v0.1.0-beta2` (e.g. via a scratch repo or a `git tag` in a tmp dir), prints `v0.1.0-beta3`; a gap (`beta1`, `beta3`) still yields `beta4` (max+1, not fill-the-gap).
@@ -63,3 +63,9 @@ artifacts attached; merging any change to `main` automatically produces a new
 `v0.1.0-betaN` pre-release (N sequential from 1) through the same pipeline
 with no manual step; the pre-existing manual `vX.Y.Z` tag-push release flow is
 unchanged.
+- 2026-09-23 — **All three tasks are implemented** in worktree `build/wt/m30` (commits 2bd31cbfc, f511a101e, d15df9c58).
+  - P1.T1 is verified in scratch repos: no tags gives beta1, beta1+beta2 gives beta3, and a gap (beta1+beta3) gives beta4.
+  - actionlint and yamllint are clean on every workflow.
+  - P1.T2 and P2.T1 can only be verified on GitHub (a dispatch creates a public tag and pre-release), so they wait for the user's go-ahead.
+  - Deviation: `beta-release.yml` declares `contents: read` alongside `actions: write`. A job-level `permissions:` block replaces the default scopes, and without it `checkout` would fail.
+

@@ -248,6 +248,7 @@ def createInstance(app,group):
         param.connect("0", "out1.R")
         param.connect("0", "out1.G")
         param.connect("0", "out1.B")
+        param.connect("in1.A", "out1.A")
         del param
 
     del lastNode

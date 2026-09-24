@@ -206,7 +206,7 @@ def createInstance(app,group):
     # End of node "Solid1"
 
     # Start of node "Shuffle1"
-    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
+    lastNode = app.createNode("fr.natron.ShuffleCopy", 1, group)
     lastNode.setScriptName("Shuffle1")
     lastNode.setLabel("Shuffle1")
     lastNode.setPosition(764, 314)
@@ -214,16 +214,12 @@ def createInstance(app,group):
     lastNode.setColor(0.6, 0.24, 0.39)
     groupShuffle1 = lastNode
 
-    param = lastNode.getParam("in2")
-    if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour")
-        del param
-
     param = lastNode.getParam("mapping")
     if param is not None:
-        param.connect("in2.R", "out1.R")
-        param.connect("in2.G", "out1.G")
-        param.connect("in2.B", "out1.B")
+        param.connect("in1.R", "out1.R")
+        param.connect("in1.G", "out1.G")
+        param.connect("in1.B", "out1.B")
+        param.connect("in2.A", "out1.A")
         del param
 
     del lastNode

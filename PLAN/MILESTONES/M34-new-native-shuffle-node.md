@@ -298,7 +298,7 @@ API pinned for batch 1, which every task codes against:
   - approach: add two free functions, `listLayerEntriesForKnob(node, knob)` (the current `listLayers` body, with Color sorted first) and `runNewLayerDialog(knob, parent, push)`. The existing GUIs call them. No behaviour change.
   - verify: `ctest -R "LayerChannelRow|KnobGuiLayer"` stays green.
   - size: M
-- [ ] M34.P6.T7 — Rebuild the matrix as a 2×2 with embedded layer dropdowns and consistent spacing
+- [x] M34.P6.T7 — Rebuild the matrix as a 2×2 with embedded layer dropdowns and consistent spacing
   - batch: 2
   - files: `Gui/KnobGuiShuffleMap.h`, `Gui/KnobGuiShuffleMap.cpp`, `Tests/ShuffleMatrix_Test.cpp`
   - approach:
@@ -418,4 +418,9 @@ API pinned for batch 1, which every task codes against:
   - An absent mapping row now means identity by index (`outK.i ← inK.i`), or 0 when that source is None or out of range. The render-failure rule applies to explicit rows only.
   - ShuffleCopy defaults to RGB from "2" and A from "1". The user should confirm this at UAT.
 - 2026-09-23 — **P4.T3 committed** after build b5 went green (178/178 targeted ctest, pyplugs_p41/p42/zplugs OK). It landed as two commits: the aliased-knob regression fix and the ZRemap/ZMask restore.
+- 2026-09-24 — **P6.T7 and P6.T10 code landed** (7631ac65a and 4ca566fed): build b9 green, with 88/88 targeted ctest and a clean release build.
+  - Root cause of the geometry test failure: the widget-test app manager returned a DPI of 72 where a ratio was expected, so combos were 1584 px tall and stretched the rows unevenly. The harness now returns a ratio of 1, and the widget pins each out combo to its block's first row.
+  - The sub-label was not refreshing on mapping edits; that is fixed.
+  - P6.T10 stays unchecked until the user approves the screenshots.
+  - Open for the user: the two-output sub-label reads "Color, specular → Color, Color, specular → diffuse", which is hard to parse.
 

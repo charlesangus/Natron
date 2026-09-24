@@ -144,3 +144,20 @@ Color  R   ←       [■] [ ] [ ]      [ ]       [ ]   [ ] [ ]
 3. **Delete the OFX Shuffle from the openfx-misc fork build.** A fork PR drops `Shuffle` from the build, and `OPENFX_MISC_REF` is bumped. Graphs that contain the OFX Shuffle no longer load it, which the clean-break decision accepts. The host special cases are deleted as planned.
 4. **Not asked; default taken.** The no-RGBA Read residual is left alone.
 5. **UI: the toggle matrix.**
+
+### Answers — UAT round 1 (user, 2026-09-23)
+
+These answers supersede §1's keep semantics, the `in1Input`/`in2Input` knobs and the B/A inputs, and §2's keep column and mockup.
+
+1. **Two plugins in one class.** `fr.natron.Shuffle` has one input (`Source`, index 0) that feeds both in1 and in2. `fr.natron.ShuffleCopy` (a subclass) has input 0 = "2", the main input, which feeds in2, and input 1 = "1", which feeds in1. Input 0 is main because `getPreferredInputInternal` picks the first connected optional input, which gives passthrough and auto-connect for free.
+2. **No keep.** An absent mapping row means the default source `outK.i ← inK.i`. `setSource` normalises the default away, so the table stores overrides only. `Shuffle::getEffectiveSource` turns an implicit source into `0` when slot K is None, or when `i` is at or beyond the channel count of slot K's layer (Color counts as RGBA). The render, the matrix's checked cell and Python `getSource` all use it. The missing-source render error applies to explicit rows only.
+3. **Defaults.**
+   - Shuffle: in1 = Color, in2 = None, out1 = Color, out2 = None, with an empty (identity) mapping.
+   - ShuffleCopy: in1 = in2 = Color, out1 = Color, out2 = None, with the default rows `out1.RGB ← in2.RGB` and `out1.A` implicit from `in1.A`.
+   - `reset()` restores the node kind's default value.
+4. **Python.**
+   - `getSource` returns the effective source and never `""`.
+   - `getConnections` lists every output channel of each set output.
+   - `disconnect` removes an override.
+   - The exporter emits only the rows that differ from the default.
+5. **UI.** One grid, laid out left to right: `[in1 block][gap][in2 block][gap][0][1][gap][→ ch][out combo]`. The in1/in2 layer dropdowns head their column blocks. The out1/out2 dropdowns sit on the right of their row blocks, with a gap row between those blocks. Cells have one fixed size and the spacing is constant. The in/out knobs stay real `KnobLayerSelect`s (hidden, and driven by the embedded `LayerChannelRow`s), so aliases, Python and registry references are unchanged.

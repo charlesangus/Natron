@@ -112,7 +112,7 @@ Execution notes carried over from M38:
 
 ## Phase 34.3: Matrix UI
 
-- [ ] M34.P3.T1 — Add the `KnobGuiShuffleMap` toggle matrix
+- [ ] ~~M34.P3.T1~~ (superseded by P6.T7; sign-off moves to P6.T10) — Add the `KnobGuiShuffleMap` toggle matrix
   - files: `Gui/KnobGuiShuffleMap.h`, `Gui/KnobGuiShuffleMap.cpp`, `Gui/KnobGuiFactory.cpp`, `Tests/ShuffleMatrix_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: design §2.
     - Derive from `KnobGuiLayerChannelBase` so it refreshes on `layerListRefreshed` and `projectLayersChanged`.
@@ -127,7 +127,7 @@ Execution notes carried over from M38:
     - `out1=depth` gives 1 row.
     - `out2=None` hides the `out2` rows.
   - size: L
-- [ ] M34.P3.T2 — Panel layout, knob hints and node-graph sub-label
+- [ ] ~~M34.P3.T2~~ (superseded by P6.T10) — Panel layout, knob hints and node-graph sub-label
   - files: `Engine/Nodes/Channel/Shuffle.cpp`, `build/m34scout/gui.py`, `build/m34scout/run.sh`
   - approach: put `inNInput` on the same line as `inN`, give every knob a hint, and keep a hidden sub-label knob (`kNatronOfxParamStringSublabelName`, the PrecompNode precedent) updated in `knobChanged`, e.g. `(diffuse → Color)`.
   - verify: Xvfb screenshots of the panel for the diffuse→Color example and of the node-graph label.
@@ -158,17 +158,18 @@ Execution notes carried over from M38:
   - verify: `grep -rn PLUGINID_OFX_SHUFFLE Engine Gui` is empty; full ctest green.
   - size: M
 - [ ] M34.P4.T5 — Drop Shuffle from the openfx-misc fork build and bump the pin
+  - batch: 3
   - files: `charlesangus/openfx-misc` (a fork PR removing `Shuffle` from its build), `tools/ci/local/fetch-assets.sh` (`OPENFX_MISC_REF`)
   - approach: this is the user decision (design doc "Answers" 3). Graphs containing the OFX Shuffle no longer load it, which the clean-break decision accepts. Keep the fork change minimal: remove the plugin from the build list and its source directory. Leave a one-line pin comment pointing at the fork PR.
   - verify:
     - `tools/ci/local/fetch-assets.sh` rebuilds `Misc.ofx.bundle`.
-    - A gtest asserts `net.sf.openfx.ShufflePlugin` is absent from the plugin list, and that the native Shuffle is the only "Shuffle" in the Channel group.
+    - A gtest asserts `net.sf.openfx.ShufflePlugin` is absent from the plugin list, and that the native Shuffle and ShuffleCopy are the only shuffle plugins in the Channel group.
     - Full ctest green.
   - size: M
 
 ## Phase 34.5: Checkpoint
 
-- [ ] M34.P5.T1 — Packaged release AppImage and user checkpoint
+- [ ] ~~M34.P5.T1~~ (superseded by P6.T11) — Packaged release AppImage and user checkpoint
   - files: none (uses `tools/ci/local/package.sh`)
   - approach: package a release build and give the user a UAT script covering:
     - diffuse→Color
@@ -182,11 +183,214 @@ Execution notes carried over from M38:
   - verify: the user confirms on the AppImage; the milestone PR links the after-shots.
   - size: S
 
+## Phase 34.6: UAT round 1 rework — Shuffle/ShuffleCopy, keep-less 2×2 matrix
+
+User feedback 2026-09-23, recorded in the design doc's "Answers — UAT round 1". This phase supersedes P3.T1 and P3.T2 (their screenshot sign-off moves to P6.T10) and P5.T1 (moved to P6.T11).
+
+Batches have disjoint files so their tasks can be edited in parallel. The PM runs one build and ctest per batch.
+
+API pinned for batch 1, which every task codes against:
+- `ShuffleSource` kinds are `{eInput, eZero, eOne}`.
+- `KnobShuffleMap`:
+  - `getSource` returns the stored row, or `defaultSource(outSlot, outIndex)` = `makeInput(outSlot, outIndex)` when there is none.
+  - `hasExplicitSource(outSlot, outIndex)`.
+  - `setSource` normalises: setting the default removes the row.
+  - `reset()` restores the default value.
+- `Shuffle`:
+  - `enum InputEnum { eInputMain = 0, eInputCopy1 = 1 }`
+  - `getSlotInput(slot)`
+  - `isCopy()`
+  - `ShuffleSource getEffectiveSource(int outSlot, int outIndex)`
+- `PLUGINID_NATRON_SHUFFLECOPY "fr.natron.ShuffleCopy"`. `kShuffleParamIn1Input` and `kShuffleParamIn2Input` are removed.
+- GUI helpers: `listLayerEntriesForKnob(node, knob)` and `runNewLayerDialog(knob, parent, push)`.
+
+- [x] M34.P6.T1 — Amend the design doc with the UAT round 1 answers
+  - batch: 1
+  - files: `PLAN/DESIGN/2026-09-22-native-shuffle.md`
+  - approach: add an "Answers — UAT round 1" section to the design doc that supersedes §1's keep, the `inNInput` knobs, the B/A inputs, and §2's keep column and mockup.
+  - verify: the section exists.
+  - size: S
+- [ ] M34.P6.T2 — KnobShuffleMap: drop keep; an absent row means the identity-by-index default
+  - batch: 1
+  - files: `Engine/KnobShuffleMap.h`, `Engine/KnobShuffleMap.cpp`, `Tests/KnobShuffleMap_Test.cpp`
+  - approach:
+    - Remove `eKeep`.
+    - `getSource` returns the stored row, or `defaultSource = makeInput(outSlot, outIndex)`.
+    - Add `hasExplicitSource`.
+    - `setSource(src == defaultSource)` erases the row, and is still exactly one `setValue`.
+    - `clear()` erases the row. `reset()` resets to the knob's default value.
+    - Malformed cells decode as absent.
+  - verify: `ctest -R KnobShuffleMap` covers:
+    - encode/decode round-trip
+    - an absent `out2.1` reads `in2.1`
+    - `setSource(1, 0, in1.0)` leaves no row
+    - `reset()` restores a default value that has one row
+    - a malformed cell reads as the default
+    - setting `out1.3` twice leaves one row
+    - project save/load keeps the rows identical
+  - size: M
+- [ ] M34.P6.T3 — Split into Shuffle (one input) and ShuffleCopy (inputs "2" main and "1"); resolve effective sources
+  - batch: 1
+  - files: `Engine/Nodes/Channel/Shuffle.h`, `Engine/Nodes/Channel/Shuffle.cpp`, `Engine/AppManager.cpp`, `Tests/Shuffle_Test.cpp`, `Tests/ShuffleRender_Test.cpp`
+  - approach:
+    - Delete `in1Input` and `in2Input`.
+    - Add `class ShuffleCopy : public Shuffle` in the same files. `getNativePluginDescription` becomes protected virtual. Register both plugins.
+    - Inputs:
+      - Shuffle: input 0 = `Source`, which feeds both slots.
+      - ShuffleCopy: input 0 = "2" (main, feeds in2); input 1 = "1" (feeds in1).
+      - `setLayerKnobInput` is called once.
+    - Defaults:
+      - Shuffle: in1 = Color, in2 = None, out1 = Color, out2 = None, empty mapping.
+      - ShuffleCopy: in1 = in2 = Color, out1 = Color, out2 = None. Its mapping default (via `setDefaultValue`) is `out1.R/G/B ← in2.R/G/B`; `out1.A` stays implicit as `in1.A`.
+    - in1, in2, out1 and out2 get `setSecretByDefault(true)`.
+    - `getEffectiveSource`:
+      - An explicit row is returned as stored.
+      - The implicit `inK.i` becomes `0` when slot K is None, or when `i` is at or beyond the channel count of slot K's layer. Color counts as RGBA.
+    - `render`, `mappingReadsInput`, the region of definition and the needed planes use effective sources, and B's copies of the output layers are dropped.
+    - `isIdentity` returns input 0 when out2 is None and every out1 channel's effective source is `inJ.i`, with slot J bound to input 0 and set to the same layer as out1.
+    - Frame range and format come from input 0, or from input 1 when input 0 is disconnected. A source whose input is disconnected renders 0.
+    - `checkExtraChannelsPresent` checks explicit rows only.
+  - verify: `ctest -R "Shuffle_|ShuffleRender"`:
+    - Shuffle has 1 input and ShuffleCopy has 2. ShuffleCopy's labels are {"2","1"}, and its `getPreferredInput` with both connected is 0.
+    - A new Shuffle `isIdentity`.
+    - Pixel tests on `flat-three-layers.exr`:
+      - (a) Shuffle with in1 = diffuse and out1 = Color gives (0,1,0,0)
+      - (b) a two-layer swap in one node
+      - (c) 2×2: `out1.R ← in1.R` and `out1.G ← in2.G`, with in2 = specular
+      - (d) ShuffleCopy with "1" = Constant(0.5) and "2" = Read gives RGB from the Read and A = 0.5
+      - (e) ShuffleCopy with "1" disconnected gives A = 0 and no error
+      - (f) an explicit row to a missing layer fails naming it; an implicit default does not
+    - `removeLayer("diffuse")` is refused while in1 = diffuse.
+  - size: L
+- [ ] M34.P6.T4 — Python and export follow the keep-less semantics
+  - batch: 1
+  - files: `Engine/PyParameter.h`, `Engine/PyParameter.cpp`, `Engine/NodeGroup.cpp`, `Tests/PyPlugExport_Test.cpp`, `build/m34scout/shufflemap_py.py`
+  - approach:
+    - `getSource` returns the formatted `getEffectiveSource`, never `""`.
+    - `getConnections` returns every out1 channel, and every out2 channel when out2 is set.
+    - `disconnect` erases the override. `reset` restores the default.
+    - The exporter emits `connect()` only for channels whose explicit row differs from the default rows. A default row the user removed is emitted as `connect("inK.c","outK.c")`.
+    - Update the doc comments.
+  - verify:
+    - `ctest -R PyPlugExport` round-trips two nodes with identical values:
+      - a Shuffle with in1 = diffuse, out1 = spec2 and `out1.A ← 1`
+      - a ShuffleCopy with its `out1.R` default row removed
+    - `shufflemap_py.py` under `NatronRenderer -b` asserts:
+      - `getSource("out1.R") == "in1.R"` on a new node
+      - `disconnect` restores the default
+      - `"in1.Q"` raises `ValueError`
+  - size: M
+- [ ] M34.P6.T5 — Keep the matrix compiling: drop the keep column and the `inNInput` hookups
+  - batch: 1
+  - files: `Gui/KnobGuiShuffleMap.cpp`, `Tests/ShuffleMatrix_Test.cpp`
+  - approach: a bridge until P6.T7.
+    - Remove the keep column and the `kShuffleParamIn*Input` hookups.
+    - A click stores the value through `setSource`, so it normalises.
+    - The checked button comes from `Shuffle::getEffectiveSource`.
+  - verify: `ctest -R ShuffleMatrix`, with in1 = diffuse and out1 = Color:
+    - 4 rows × (3 + 0 + 1) buttons
+    - every row has exactly one button checked
+    - one click then undo restores the value
+  - size: M
+- [ ] M34.P6.T6 — Factor the layer-list and "New layer…" helpers out of the layer-select GUIs
+  - batch: 1
+  - files: `Gui/KnobGuiLayerChannelBase.h`, `Gui/KnobGuiLayerChannelBase.cpp`, `Gui/KnobGuiLayerSelect.h`, `Gui/KnobGuiLayerSelect.cpp`
+  - approach: add two free functions, `listLayerEntriesForKnob(node, knob)` (the current `listLayers` body, with Color sorted first) and `runNewLayerDialog(knob, parent, push)`. The existing GUIs call them. No behaviour change.
+  - verify: `ctest -R "LayerChannelRow|KnobGuiLayer"` stays green.
+  - size: M
+- [ ] M34.P6.T7 — Rebuild the matrix as a 2×2 with embedded layer dropdowns and consistent spacing
+  - batch: 2
+  - files: `Gui/KnobGuiShuffleMap.h`, `Gui/KnobGuiShuffleMap.cpp`, `Tests/ShuffleMatrix_Test.cpp`
+  - approach:
+    - `shouldCreateLabel()` returns false.
+    - Four persistent `LayerChannelRow`s in `eModeLayerSelect`, bound to in1, in2, out1 and out2 through P6.T6's helpers.
+    - Undo goes through `getContainer()->getKnobGui(knob)` as a non-mergeable `KnobUndoCommand`. Rebuilds triggered from a combo's signal are deferred, and the combos are reparented, never deleted.
+    - One `QGridLayout`, left to right: `[in1 block][gap][in2 block][gap][0][1][gap][→ ch][out combo]`.
+      - The in combos head their blocks.
+      - The out combos sit on the RIGHT, span their block's rows, and are top-aligned.
+      - A fixed gap row separates the out1 and out2 blocks.
+      - Every cell button has one fixed size, computed from font metrics.
+    - When in2 is None, its combo shows with no columns. When out2 is None, a single row shows only its combo.
+    - The Reset button goes below the matrix.
+    - Add accessors for tests.
+  - verify: GUI gtest:
+    - The out combos are to the right of every button, and the in combos are above their blocks.
+    - All buttons are the same size. The x step is constant within a block, and the y step is constant within an out block.
+    - The in1→in2 and out1→out2 gaps are equal and larger than the cell spacing.
+    - in2 = specular adds its columns. out2 = diffuse adds rows, and choosing None removes them.
+    - Choosing a layer in the embedded in1 combo sets `in1`, and one undo restores it.
+    - `in1`'s own row is hidden.
+    - "New layer…" appears on the out1 combo.
+  - size: L
+- [ ] M34.P6.T8 — Port DropShadow, Fill, Glow and EdgeBlur to Shuffle/ShuffleCopy with explicit connections
+  - batch: 2
+  - files: `Gui/Resources/PyPlugs/DropShadow.py`, `Gui/Resources/PyPlugs/Fill.py`, `Gui/Resources/PyPlugs/Glow.py`, `Gui/Resources/PyPlugs/EdgeBlur.py`, `build/m34scout/pyplugs_p41.py`
+  - approach:
+    - DropShadow: ShuffleCopy with RGB ← in2 and A ← in1.A.
+    - Fill: ShuffleCopy with RGB ← in1.RGB and A ← in2.A.
+    - Glow Shuffle1/2: Shuffle. `connectInput(1,…)` becomes `(0,…)` and `in2.A` becomes `in1.A`; Shuffle2 also sets A ← 0.
+    - EdgeBlur: R/G/B ← 0 and A ← in1.A.
+    - Drop the `in2.setLayer` lines, and write all four rows explicitly.
+  - verify:
+    - `test.sh smoke debug` is green.
+    - `pyplugs_p41.py` asserts each inner node's plugin ID and full `getConnections()`, and renders the old expected pixels.
+  - size: M
+- [ ] M34.P6.T9 — Port LightWrap and PIKColor, and re-verify ZRemap and ZMask
+  - batch: 2
+  - files: `Gui/Resources/PyPlugs/LightWrap.py`, `Gui/Resources/PyPlugs/PIKColor.py`, `build/m34scout/pyplugs_p42.py`, `build/m34scout/zplugs.py`
+  - approach:
+    - LightWrap:
+      - Shufflecopy1 becomes a ShuffleCopy with RGB ← in2 and A ← in1.A.
+      - Shuffle1 becomes a Shuffle on input 0, with RGB ← in1.RGB and A ← 0.
+    - PIKColor:
+      - ShuffleCopy2/3 and ChannelCopy1/2 become ShuffleCopy with RGB ← in2 and A ← in1.A.
+      - Shuffle1 becomes a Shuffle on input 0, with R/G/B ← 0.
+      - The `screenType` callback now connects `"in1.G"|"in1.B"` to `out1.A`.
+  - verify:
+    - `pyplugs_p42.py` covers both PyPlugs, including the `screenType` flip.
+    - `zplugs.py` still passes.
+  - size: M
+- [ ] M34.P6.T10 — Panel polish, sub-label, and Xvfb screenshots for user sign-off
+  - batch: 3
+  - files: `Engine/Nodes/Channel/Shuffle.cpp`, `build/m34scout/gui.py`, `build/m34scout/run.sh`
+  - approach:
+    - Every knob gets a hint, with no keep wording.
+    - The sub-label lists the slot layers feeding each set output, e.g. `(diffuse, specular → Color)`. It is empty for an identity.
+    - `gui.py` shoots:
+      - a default Shuffle
+      - diffuse→Color
+      - a 2×2 with in2 and out2 set
+      - a ShuffleCopy panel
+      - the node graph showing ShuffleCopy's "1"/"2" inputs
+  - verify: the screenshots exist and have been sent to the user. The task stays unchecked until the user approves them; that approval is the UI sign-off for P3.T1, P3.T2 and P6.T7.
+  - size: M
+- [ ] M34.P6.T11 — Packaged release AppImage and user checkpoint
+  - batch: 4 (after P6.T10 sign-off and P4.T5)
+  - files: none (uses `tools/ci/local/package.sh`; the AppImage goes to `build/appimages/`)
+  - approach: package a release build and give the user a UAT script covering:
+    - Shuffle diffuse→Color
+    - ShuffleCopy alpha from "1" into "2"
+    - a 2×2 mix of two input layers into one output
+    - a two-layer swap in one node
+    - "New layer…" in the out1 dropdown
+    - None on in2 and out2
+    - undo on the dropdowns and on cells
+    - an explicit missing source failing, then clearing
+    - removal refused on the Layers page while a Shuffle uses the layer
+    - the ported PyPlugs, ZRemap and ZMask
+    - only Shuffle and ShuffleCopy in Tab and the menus
+  - verify: the user confirms on the AppImage, and the milestone PR links the approved screenshots.
+  - size: S
+
 **Verification gate:** all of the following:
-- `tools/ci/local/test.sh ctest debug` and `test.sh smoke debug` are green, including the new KnobShuffleMap, Shuffle, ShuffleRender and ShuffleMatrix tests.
-- `grep -rn "ShufflePlugin" Gui/Resources/PyPlugs` and `grep -rn PLUGINID_OFX_SHUFFLE Engine Gui` are both empty.
-- The Xvfb panel and node-graph shots exist.
-- The user checkpoint on the packaged release AppImage passes.
+- `tools/ci/local/test.sh ctest debug` and `test.sh smoke debug` are green, including the KnobShuffleMap, Shuffle, ShuffleRender, ShuffleMatrix (with the spacing and geometry test) and PyPlugExport tests.
+- These greps are all empty:
+  - `grep -rn "ShufflePlugin" Gui/Resources/PyPlugs`
+  - `grep -rn PLUGINID_OFX_SHUFFLE Engine Gui`
+  - `grep -rn "eKeep\|in1Input\|in2Input" Engine Gui Tests Gui/Resources/PyPlugs`
+- `build/m34scout/{pyplugs_p41,pyplugs_p42,zplugs,shufflemap_py}.py` pass under `NatronRenderer -b`.
+- The user has approved the Xvfb screenshots of the Shuffle and ShuffleCopy panels and the node graph (P6.T10).
+- The user checkpoint on the packaged release AppImage passes (P6.T11).
 
 ## Decisions
 
@@ -200,3 +404,18 @@ Execution notes carried over from M38:
 - 2026-09-23 — **User: share UI screenshots before signing off.** P3.T1 (matrix) and P3.T2 (panel/node-graph label) stay unchecked until Xvfb screenshots have been sent to the user and they approve them.
 - 2026-09-23 — **M38 regression fixed in this milestone (found by P4.T3):** `Node::listLayersForKnob`/`isTargetLayerKnob` resolved an aliased layer knob against its alias master's node (the group param) instead of the knob's own node, so an inner node whose channel set is aliased to a group param resolved no channels and rendered as identity (ZRemap, ZMask, EdgeBlur, Fill). Introduced by 30c1f0ceb (M38), not in RB-2.6. Fixed alongside P4.T3 with gtests in `LayerKnobs_Test.cpp`; PyPlug verify expectations re-checked against the fixed engine.
 - 2026-09-23 — **Follow-up, not fixed here:** a verify script saw a wrong pixel when a disconnected Constant stayed in the graph while a second Constant with a different colour rendered. The consultant suspects some input missing from the node hash (cached images are keyed on hash alone, `Engine/ImageKey.cpp`). Needs its own minimal repro; candidate for M31 or a new milestone.
+- 2026-09-23 — **UAT round 1 (user):**
+  - Outputs go on the right.
+  - The matrix is 2×2: both input layers × both output layers.
+  - The A/B input choice is replaced by two nodes: Shuffle (one input feeds in1 and in2) and ShuffleCopy (inputs "1" and "2", with 2 as main).
+  - The layer dropdowns are embedded in the matrix.
+  - The input blocks and the output blocks are visibly separated.
+  - No keep button.
+  - Spacing is consistent.
+
+  The consultant's resolution is recorded in the design doc's "Answers — UAT round 1", and the work is in Phase 34.6:
+  - One class, with `ShuffleCopy` as a subclass. Input 0 is main.
+  - An absent mapping row now means identity by index (`outK.i ← inK.i`), or 0 when that source is None or out of range. The render-failure rule applies to explicit rows only.
+  - ShuffleCopy defaults to RGB from "2" and A from "1". The user should confirm this at UAT.
+- 2026-09-23 — **P4.T3 committed** after build b5 went green (178/178 targeted ctest, pyplugs_p41/p42/zplugs OK). It landed as two commits: the aliased-knob regression fix and the ZRemap/ZMask restore.
+

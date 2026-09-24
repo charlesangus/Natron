@@ -137,6 +137,89 @@ TEST_F(BaseTest, InvertGetsChannelSetWithEveryChannel)
     EXPECT_TRUE(resolved[0].channels[0] && resolved[0].channels[1] && resolved[0].channels[2] && resolved[0].channels[3]);
 }
 
+// A PyPlug exposes an inner node's channel set as a group param aliased onto it. The inner
+// knob takes its value from that param but must still resolve against its own input; the
+// param's node has no stream for it, so resolving there finds no layers and turns the inner
+// node into an identity at render time.
+TEST_F(BaseTest, AliasedChannelSetResolvesOnTheInnerNode)
+{
+    NodePtr invert = createNode(QString::fromUtf8("net.sf.openfx.Invert"));
+    NodePtr container = createNode(QString::fromUtf8("net.sf.openfx.Invert"));
+
+    ASSERT_TRUE(bool(invert));
+    ASSERT_TRUE(bool(container));
+
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(invert->getLayerKnob());
+    ASSERT_TRUE(bool(channels));
+    EXPECT_TRUE(invert->hasAtLeastOneChannelToProcess(0., ViewIdx(0)));
+
+    KnobIPtr duplicate = channels->createDuplicateOnHolder(container->getEffectInstance().get(),
+                                                           KnobPagePtr(),
+                                                           KnobGroupPtr(),
+                                                           -1,
+                                                           true,
+                                                           "aliasedChannels",
+                                                           "Aliased Channels",
+                                                           "",
+                                                           false,
+                                                           true);
+    KnobChannelSetPtr aliased = std::dynamic_pointer_cast<KnobChannelSet>(duplicate);
+    ASSERT_TRUE(bool(aliased));
+    ASSERT_EQ(duplicate, channels->getAliasMaster());
+
+    aliased->setAll();
+    std::vector<ChannelSetRow> rows = channels->getRows();
+    ASSERT_EQ(1u, rows.size());
+    EXPECT_EQ(ChannelSetRow::eModeAll, rows[0].mode);
+
+    std::list<ImageLayerDesc> innerLayers;
+    invert->listLayersForKnob(channels, &innerLayers);
+    std::vector<std::string> innerIDs = layerIDs(innerLayers);
+    EXPECT_NE(innerIDs.end(), std::find(innerIDs.begin(), innerIDs.end(), std::string(kNatronColorLayerID)));
+    EXPECT_TRUE(invert->hasAtLeastOneChannelToProcess(0., ViewIdx(0)));
+    EXPECT_FALSE(invert->isTargetLayerKnob(channels));
+
+    std::list<ImageLayerDesc> containerLayers;
+    container->listLayersForKnob(aliased, &containerLayers);
+    EXPECT_EQ(innerIDs, layerIDs(containerLayers));
+    EXPECT_FALSE(container->isTargetLayerKnob(aliased));
+}
+
+TEST_F(BaseTest, AliasOfATargetLayerKnobReportsTheTargetRole)
+{
+    NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+    NodePtr container = createNode(QString::fromUtf8("net.sf.openfx.Invert"));
+
+    ASSERT_TRUE(bool(constant));
+    ASSERT_TRUE(bool(container));
+
+    KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(constant->getLayerKnob());
+    ASSERT_TRUE(bool(layer));
+
+    KnobIPtr duplicate = layer->createDuplicateOnHolder(container->getEffectInstance().get(),
+                                                        KnobPagePtr(),
+                                                        KnobGroupPtr(),
+                                                        -1,
+                                                        true,
+                                                        "aliasedLayer",
+                                                        "Aliased Layer",
+                                                        "",
+                                                        false,
+                                                        true);
+    ASSERT_TRUE(bool(duplicate));
+    ASSERT_EQ(duplicate, layer->getAliasMaster());
+
+    EXPECT_TRUE(constant->isTargetLayerKnob(layer));
+    EXPECT_TRUE(container->isTargetLayerKnob(duplicate));
+
+    std::list<ImageLayerDesc> innerLayers;
+    constant->listLayersForKnob(layer, &innerLayers);
+    std::list<ImageLayerDesc> containerLayers;
+    container->listLayersForKnob(duplicate, &containerLayers);
+    EXPECT_FALSE(innerLayers.empty());
+    EXPECT_EQ(layerIDs(innerLayers), layerIDs(containerLayers));
+}
+
 TEST_F(BaseTest, ConstantGetsTargetLayerSelectListingTheRegistry)
 {
     ProjectPtr project = getApp()->getProject();

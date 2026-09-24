@@ -5690,6 +5690,34 @@ Node::getLayerKnob() const
     return _imp->layerKnob.lock();
 }
 
+// An alias slave reads its value from the master but its image stream is its own node's
+// input, so layers are always resolved on the slave's node. A master (typically a group's
+// user param) is not declared on its own node and has no stream: it answers through the
+// inner node that holds its alias slave.
+static KnobIPtr
+findAliasSlaveOnOtherNode(const KnobIPtr& master,
+                          const Node* self,
+                          NodePtr* slaveNode)
+{
+    KnobI::ListenerDimsMap listeners;
+    master->getListeners(listeners);
+    for (KnobI::ListenerDimsMap::const_iterator it = listeners.begin(); it != listeners.end(); ++it) {
+        KnobIPtr listener = it->first.lock();
+        if (!listener || (listener->getAliasMaster() != master)) {
+            continue;
+        }
+        EffectInstance* effect = dynamic_cast<EffectInstance*>(listener->getHolder());
+        NodePtr node = effect ? effect->getNode() : NodePtr();
+        if (node && (node.get() != self)) {
+            *slaveNode = node;
+
+            return listener;
+        }
+    }
+
+    return KnobIPtr();
+}
+
 void
 Node::listLayersForKnob(const KnobIPtr& knob,
                         std::list<ImageLayerDesc>* layers) const
@@ -5709,19 +5737,15 @@ Node::listLayersForKnob(const KnobIPtr& knob,
     if (!knob) {
         return;
     }
-    KnobIPtr master = knob->getAliasMaster();
-    if (master) {
-        EffectInstance* masterEffect = dynamic_cast<EffectInstance*>(master->getHolder());
-        NodePtr masterNode = masterEffect ? masterEffect->getNode() : NodePtr();
-        if (masterNode && masterNode.get() != this) {
-            masterNode->listLayersForKnob(master, time, view, layers);
-        }
-
-        return;
-    }
 
     std::map<const KnobI*, LayerKnobSource>::const_iterator found = _imp->layerKnobSources.find(knob.get());
     if (found == _imp->layerKnobSources.end()) {
+        NodePtr slaveNode;
+        KnobIPtr slave = findAliasSlaveOnOtherNode(knob, this, &slaveNode);
+        if (slave) {
+            slaveNode->listLayersForKnob(slave, time, view, layers);
+        }
+
         return;
     }
 
@@ -5768,17 +5792,16 @@ Node::isTargetLayerKnob(const KnobIPtr& knob) const
     if (!knob) {
         return false;
     }
-    KnobIPtr master = knob->getAliasMaster();
-    if (master) {
-        EffectInstance* masterEffect = dynamic_cast<EffectInstance*>(master->getHolder());
-        NodePtr masterNode = masterEffect ? masterEffect->getNode() : NodePtr();
-
-        return masterNode && masterNode.get() != this && masterNode->isTargetLayerKnob(master);
-    }
 
     std::map<const KnobI*, LayerKnobSource>::const_iterator found = _imp->layerKnobSources.find(knob.get());
+    if (found == _imp->layerKnobSources.end()) {
+        NodePtr slaveNode;
+        KnobIPtr slave = findAliasSlaveOnOtherNode(knob, this, &slaveNode);
 
-    return found != _imp->layerKnobSources.end() && found->second.role == LayerKnobSpec::eRoleTarget;
+        return slave && slaveNode->isTargetLayerKnob(slave);
+    }
+
+    return found->second.role == LayerKnobSpec::eRoleTarget;
 }
 
 bool

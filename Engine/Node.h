@@ -1401,7 +1401,9 @@ public:
     /**
      * @brief The layers a layer/channel knob of this node may choose from: an input-bound
      * knob lists the present layers of its input (always including Color), a target knob
-     * lists the project registry. An alias delegates to its master's node.
+     * lists the project registry. A knob not declared on this node, such as a group's user
+     * param aliased onto an inner node's layer knob, delegates to the node holding that inner
+     * knob; the inner knob itself always resolves against its own node.
      **/
     void listLayersForKnob(const KnobIPtr& knob, std::list<ImageLayerDesc>* layers) const;
 
@@ -1413,7 +1415,8 @@ public:
 
     /**
      * @brief Whether listLayersForKnob() lists the project registry for this knob (a target
-     * knob) rather than an input's present layers. An alias reports its master's role.
+     * knob) rather than an input's present layers. A group param aliased onto an inner node's
+     * layer knob reports the inner knob's role.
      **/
     bool isTargetLayerKnob(const KnobIPtr& knob) const;
 

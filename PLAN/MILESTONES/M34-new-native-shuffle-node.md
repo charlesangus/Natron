@@ -147,7 +147,7 @@ Execution notes carried over from M38:
   - approach: the same translation as P4.T1. PIKColor's `screenType` `onParamChanged` callback sets `connect("in2.G"|"in2.B","out1.A")`, following the Glow precedent from M38.8.T2.
   - verify: the P4.T1 script covers both PyPlugs, and toggling `screenType` flips the inner connection.
   - size: M
-- [ ] M34.P4.T3 — Restore ZRemap and ZMask on the native Shuffle
+- [x] M34.P4.T3 — Restore ZRemap and ZMask on the native Shuffle
   - files: `Gui/Resources/PyPlugs/ZRemap.py`, `Gui/Resources/PyPlugs/ZRemap.png`, `Gui/Resources/PyPlugs/ZMask.py`
   - approach: restore both from `fd33e5ab8^`. Replace the `Source_channels` choice with an inner Shuffle (`in1=depth`, `out1=Color←Z`) whose `in1` is aliased to a group-level layer select.
   - verify: both IDs are in `app.getPluginIDs()`, and Constant → Shuffle(`out1=depth←in1.R`) → ZRemap renders the expected remapped value.

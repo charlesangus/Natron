@@ -350,7 +350,7 @@ API pinned for batch 1, which every task codes against:
     - `pyplugs_p42.py` covers both PyPlugs, including the `screenType` flip.
     - `zplugs.py` still passes.
   - size: M
-- [ ] M34.P6.T10 — Panel polish, sub-label, and Xvfb screenshots for user sign-off
+- [x] M34.P6.T10 — Panel polish, sub-label, and Xvfb screenshots for user sign-off
   - batch: 3
   - files: `Engine/Nodes/Channel/Shuffle.cpp`, `build/m34scout/gui.py`, `build/m34scout/run.sh`
   - approach:
@@ -423,4 +423,8 @@ API pinned for batch 1, which every task codes against:
   - The sub-label was not refreshing on mapping edits; that is fixed.
   - P6.T10 stays unchecked until the user approves the screenshots.
   - Open for the user: the two-output sub-label reads "Color, specular → Color, Color, specular → diffuse", which is hard to parse.
+- 2026-09-24 — **User approved the reworked panels** (this is the UI sign-off for P3.T1, P3.T2, P6.T7 and P6.T10).
+  - The two-output sub-label becomes one line per output.
+  - The ShuffleCopy default (RGB from "2", A from "1") is confirmed.
+  - The AppImage is packaged before P4.T5, so it still lists the OFX Shuffle in the menus. P4.T5 follows.
 

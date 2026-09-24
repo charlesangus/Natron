@@ -35,6 +35,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/LayerRegistry.h"
@@ -177,14 +178,29 @@ void
 KnobGuiLayerSelect::openNewLayerDialog()
 {
     KnobLayerSelectPtr knob = _imp->knob.lock();
-    NodePtr node = getNode();
+
+    if (!knob) {
+        return;
+    }
+    runNewLayerDialog(knob, getGui(), [this, knob](const std::string& layerID, const std::string& /*layerLabel*/) {
+        pushValue(knob->encode(layerID, std::vector<std::string>()));
+    });
+}
+
+void
+runNewLayerDialog(const KnobIPtr& knob,
+                  QWidget* parent,
+                  const std::function<void(const std::string& layerID, const std::string& layerLabel)>& push)
+{
+    EffectInstance* effect = knob ? dynamic_cast<EffectInstance*>(knob->getHolder()) : 0;
+    NodePtr node = effect ? effect->getNode() : NodePtr();
     AppInstancePtr app = node ? node->getApp() : AppInstancePtr();
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
 
-    if (!knob || !project) {
+    if (!project) {
         return;
     }
-    NewLayerDialog dialog(ImageLayerDesc::getNoneComponents(), getGui());
+    NewLayerDialog dialog(ImageLayerDesc::getNoneComponents(), parent);
     if (!dialog.exec()) {
         return;
     }
@@ -193,11 +209,11 @@ KnobGuiLayerSelect::openNewLayerDialog()
     std::string error;
     LayerRegistry::AddResultEnum ret = project->addLayer(desc, LayerRegistryEntry::eOriginUser, &error);
     if (ret == LayerRegistry::eAddResultRefused) {
-        Dialogs::errorDialog(tr("Layer").toStdString(), error);
+        Dialogs::errorDialog(QObject::tr("Layer").toStdString(), error);
 
         return;
     }
-    pushValue(knob->encode(desc.getLayerID(), std::vector<std::string>()));
+    push(desc.getLayerID(), desc.getLayerLabel());
 }
 
 NATRON_NAMESPACE_EXIT

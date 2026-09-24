@@ -26,7 +26,9 @@
 #include "PyParameter.h"
 
 #include <cassert>
+#include <set>
 #include <stdexcept>
+#include <utility>
 
 #include "Engine/AppInstance.h"
 #include "Engine/Curve.h"
@@ -38,6 +40,7 @@
 #include "Engine/KnobSerialization.h"
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
@@ -2913,10 +2916,9 @@ shuffleMapFormatSrc(const KnobShuffleMapPtr& knob,
 
         return slot + "." + channels[src.index];
     }
-    case ShuffleSource::eKeep:
-    default:
-        return std::string();
     }
+
+    return std::string();
 }
 
 static std::string
@@ -2933,6 +2935,84 @@ shuffleMapFormatDst(const KnobShuffleMapPtr& knob,
     }
 
     return slot + "." + channels[outIndex];
+}
+
+/**
+ * @brief dst's channel resolved through the owning Shuffle's getEffectiveSource(), which
+ * turns an implicit source into 0 for a None slot or a channel beyond its layer's channel
+ * count. Falls back to the knob's own stored-or-identity source when the knob is not
+ * currently attached to a Shuffle node.
+ **/
+static ShuffleSource
+shuffleMapEffectiveSource(const KnobShuffleMapPtr& knob,
+                          int outSlot,
+                          int outIndex)
+{
+    Shuffle* effect = dynamic_cast<Shuffle*>(knob->getHolder());
+
+    if (effect) {
+        return effect->getEffectiveSource(outSlot, outIndex);
+    }
+
+    return knob->getSource(outSlot, outIndex);
+}
+
+std::map<std::string, std::string>
+getShuffleMapModifiedConnections(const KnobShuffleMapPtr& knob)
+{
+    std::map<std::string, std::string> ret;
+
+    if (!knob) {
+        return ret;
+    }
+
+    typedef std::map<std::pair<int, int>, ShuffleSource> RowsByChannel;
+    RowsByChannel currentByChannel;
+    std::vector<ShuffleMapRow> currentRows = knob->getRows();
+    for (std::vector<ShuffleMapRow>::const_iterator it = currentRows.begin(); it != currentRows.end(); ++it) {
+        currentByChannel[std::make_pair(it->outSlot, it->outIndex)] = it->src;
+    }
+
+    RowsByChannel defaultByChannel;
+    std::vector<ShuffleMapRow> defaultRows = knob->decodeRows(knob->getDefaultValue(0));
+    for (std::vector<ShuffleMapRow>::const_iterator it = defaultRows.begin(); it != defaultRows.end(); ++it) {
+        defaultByChannel[std::make_pair(it->outSlot, it->outIndex)] = it->src;
+    }
+
+    std::set<std::pair<int, int>> channels;
+    for (RowsByChannel::const_iterator it = currentByChannel.begin(); it != currentByChannel.end(); ++it) {
+        channels.insert(it->first);
+    }
+    for (RowsByChannel::const_iterator it = defaultByChannel.begin(); it != defaultByChannel.end(); ++it) {
+        channels.insert(it->first);
+    }
+
+    for (std::set<std::pair<int, int>>::const_iterator it = channels.begin(); it != channels.end(); ++it) {
+        int outSlot = it->first;
+        int outIndex = it->second;
+
+        RowsByChannel::const_iterator curIt = currentByChannel.find(*it);
+        ShuffleSource currentSrc = (curIt != currentByChannel.end()) ? curIt->second : KnobShuffleMap::defaultSource(outSlot, outIndex);
+
+        RowsByChannel::const_iterator defIt = defaultByChannel.find(*it);
+        ShuffleSource defaultSrc = (defIt != defaultByChannel.end()) ? defIt->second : KnobShuffleMap::defaultSource(outSlot, outIndex);
+
+        if (currentSrc == defaultSrc) {
+            continue;
+        }
+
+        std::string dst = shuffleMapFormatDst(knob, outSlot, outIndex);
+        if (dst.empty()) {
+            continue;
+        }
+        std::string src = shuffleMapFormatSrc(knob, currentSrc);
+        if (src.empty()) {
+            continue;
+        }
+        ret[dst] = src;
+    }
+
+    return ret;
 }
 
 ShuffleMapParam::ShuffleMapParam(const KnobShuffleMapPtr& knob)
@@ -2999,7 +3079,7 @@ ShuffleMapParam::getSource(const QString& dst) const
         PyErr_SetString(PyExc_ValueError, error.c_str());
         return QString();
     }
-    ShuffleSource source = knob->getSource(outSlot, outIndex);
+    ShuffleSource source = shuffleMapEffectiveSource(knob, outSlot, outIndex);
 
     return QString::fromUtf8(shuffleMapFormatSrc(knob, source).c_str());
 }
@@ -3013,17 +3093,24 @@ ShuffleMapParam::getConnections() const
     if (!knob) {
         return ret;
     }
-    std::vector<ShuffleMapRow> rows = knob->getRows();
-    for (std::vector<ShuffleMapRow>::const_iterator it = rows.begin(); it != rows.end(); ++it) {
-        std::string dst = shuffleMapFormatDst(knob, it->outSlot, it->outIndex);
-        if (dst.empty()) {
+
+    static const char* const outSlotNames[2] = { "out1", "out2" };
+    for (int s = 0; s < 2; ++s) {
+        int outSlot = s + 1;
+        std::vector<std::string> channels;
+        std::string error;
+        if (!shuffleMapResolveLayerChannels(knob, outSlotNames[s], &channels, &error)) {
+            // out2 with no layer selected (None) contributes nothing.
             continue;
         }
-        std::string src = shuffleMapFormatSrc(knob, it->src);
-        if (src.empty()) {
-            continue;
+        for (std::size_t i = 0; i < channels.size(); ++i) {
+            ShuffleSource source = shuffleMapEffectiveSource(knob, outSlot, (int)i);
+            std::string src = shuffleMapFormatSrc(knob, source);
+            if (src.empty()) {
+                continue;
+            }
+            ret[std::string(outSlotNames[s]) + "." + channels[i]] = src;
         }
-        ret[dst] = src;
     }
 
     return ret;

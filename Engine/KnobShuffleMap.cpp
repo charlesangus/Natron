@@ -192,8 +192,6 @@ encodeSrc(const ShuffleSource& src)
 
         return oss.str();
     }
-    case ShuffleSource::eKeep:
-        break;
     }
 
     return std::string();
@@ -205,9 +203,6 @@ KnobShuffleMap::encodeRows(const std::vector<ShuffleMapRow>& rows)
     std::list<std::vector<std::string>> table;
 
     for (std::size_t i = 0; i < rows.size(); ++i) {
-        if (rows[i].src.kind == ShuffleSource::eKeep) {
-            continue;
-        }
         std::vector<std::string> cells(2);
         cells[0] = encodeOut(rows[i].outSlot, rows[i].outIndex);
         cells[1] = encodeSrc(rows[i].src);
@@ -259,6 +254,13 @@ KnobShuffleMap::getRows() const
 }
 
 ShuffleSource
+KnobShuffleMap::defaultSource(int outSlot,
+                              int outIndex)
+{
+    return ShuffleSource::makeInput(outSlot, outIndex);
+}
+
+ShuffleSource
 KnobShuffleMap::getSource(int outSlot,
                           int outIndex) const
 {
@@ -270,7 +272,22 @@ KnobShuffleMap::getSource(int outSlot,
         }
     }
 
-    return ShuffleSource();
+    return defaultSource(outSlot, outIndex);
+}
+
+bool
+KnobShuffleMap::hasExplicitSource(int outSlot,
+                                  int outIndex) const
+{
+    std::vector<ShuffleMapRow> rows = getRows();
+
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        if (rows[i].outSlot == outSlot && rows[i].outIndex == outIndex) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void
@@ -279,13 +296,14 @@ KnobShuffleMap::setSource(int outSlot,
                           const ShuffleSource& src)
 {
     std::vector<ShuffleMapRow> rows = getRows();
+    const bool isDefault = (src == defaultSource(outSlot, outIndex));
     bool found = false;
 
     for (std::size_t i = 0; i < rows.size(); ++i) {
         if (rows[i].outSlot != outSlot || rows[i].outIndex != outIndex) {
             continue;
         }
-        if (src.kind == ShuffleSource::eKeep) {
+        if (isDefault) {
             rows.erase(rows.begin() + i);
         } else {
             rows[i].src = src;
@@ -293,7 +311,7 @@ KnobShuffleMap::setSource(int outSlot,
         found = true;
         break;
     }
-    if (!found && src.kind != ShuffleSource::eKeep) {
+    if (!found && !isDefault) {
         ShuffleMapRow row;
         row.outSlot = outSlot;
         row.outIndex = outIndex;
@@ -308,13 +326,22 @@ void
 KnobShuffleMap::clear(int outSlot,
                       int outIndex)
 {
-    setSource(outSlot, outIndex, ShuffleSource());
+    std::vector<ShuffleMapRow> rows = getRows();
+
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        if (rows[i].outSlot == outSlot && rows[i].outIndex == outIndex) {
+            rows.erase(rows.begin() + i);
+            break;
+        }
+    }
+
+    setValue(encodeRows(rows), ViewSpec::all(), 0, eValueChangedReasonNatronInternalEdited, 0);
 }
 
 void
 KnobShuffleMap::reset()
 {
-    setValue(encodeRows(std::vector<ShuffleMapRow>()), ViewSpec::all(), 0, eValueChangedReasonNatronInternalEdited, 0);
+    resetToDefaultValue(0);
 }
 
 NATRON_NAMESPACE_EXIT

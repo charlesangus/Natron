@@ -2543,21 +2543,22 @@ exportRotoLayer(int indentLevel,
 } // exportRotoLayer
 
 // The KnobShuffleMap's own persisted value is index-based (see KnobShuffleMap.h) and is
-// skipped by exportKnobValues() above; this reuses ShuffleMapParam::getConnections() -- the
-// same channel-name resolution connect()/getSource() use -- to emit human-readable
-// connect() calls, once the slots' layer selects (in1/in2/out1/out2) have already been
-// written by the caller's knob loop.
+// skipped by exportKnobValues() above; this reuses getShuffleMapModifiedConnections() --
+// the same channel-name resolution connect()/getSource() use -- to emit human-readable
+// connect() calls for the channels whose value differs from the node kind's default (which
+// includes a default row the user removed, restored explicitly to its identity source), once
+// the slots' layer selects (in1/in2/out1/out2) have already been written by the caller's
+// knob loop.
 static void
 exportShuffleMapConnections(int indentLevel,
                             const KnobShuffleMapPtr& mappingKnob,
                             QTextStream& ts)
 {
-    if (!mappingKnob || mappingKnob->getRows().empty()) {
+    if (!mappingKnob) {
         return;
     }
 
-    NATRON_PYTHON_NAMESPACE::ShuffleMapParam param(mappingKnob);
-    std::map<std::string, std::string> connections = param.getConnections();
+    std::map<std::string, std::string> connections = NATRON_PYTHON_NAMESPACE::getShuffleMapModifiedConnections(mappingKnob);
     if (connections.empty()) {
         return;
     }

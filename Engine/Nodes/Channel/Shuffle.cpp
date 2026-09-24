@@ -34,7 +34,6 @@
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
-#include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobShuffleMap.h"
@@ -74,23 +73,6 @@ appendUnique(const ImageLayerDesc& layer,
     }
 }
 
-KnobChoicePtr
-configureInputChoice(const KnobChoicePtr& choice,
-                     const std::string& name,
-                     int defaultInput)
-{
-    choice->setName(name);
-    choice->setAnimationEnabled(false);
-    choice->setIsMetadataSlave(true);
-    std::vector<ChoiceOption> options;
-    options.push_back(ChoiceOption("B", "B", std::string()));
-    options.push_back(ChoiceOption("A", "A", std::string()));
-    choice->populateChoices(options);
-    choice->setDefaultValue(defaultInput);
-
-    return choice;
-}
-
 void
 configureLayerSelect(const KnobLayerSelectPtr& knob,
                      const std::string& name,
@@ -102,6 +84,7 @@ configureLayerSelect(const KnobLayerSelectPtr& knob,
     knob->setAllowNone(allowNone);
     knob->setAnimationEnabled(false);
     knob->setIsMetadataSlave(true);
+    knob->setSecretByDefault(true);
     if (defaultNone) {
         knob->setDefaultValue(knob->encode(std::string(), std::vector<std::string>()));
     }
@@ -110,8 +93,6 @@ configureLayerSelect(const KnobLayerSelectPtr& knob,
 
 Shuffle::Shuffle(NodePtr node)
     : NativeEffectBase(node)
-    , _in1Input()
-    , _in2Input()
     , _in1()
     , _in2()
     , _out1()
@@ -132,15 +113,15 @@ Shuffle::getNativePluginDescription() const
 
     desc.id = PLUGINID_NATRON_SHUFFLE;
     desc.label = "Shuffle";
-    desc.description = tr("Rearrange channels between layers. Two input slots, each a layer read from B or A, "
-                          "feed two output layers; every output channel takes a slot channel, 0, 1, or keeps "
-                          "B's value. Every layer that is not an output passes through from B unchanged.")
+    desc.description = tr("Rearrange channels between layers. Two input slots, each a layer of the Source input, "
+                          "feed two output layers; every output channel takes a slot channel, 0 or 1, and by "
+                          "default the same channel of its own slot. Every layer that is not an output passes "
+                          "through unchanged.")
                            .toStdString();
     desc.grouping = PLUGIN_GROUP_CHANNEL;
     desc.majorVersion = 1;
     desc.minorVersion = 0;
-    desc.inputs.push_back(NativeInputDescription("B", true, eDataKindImage));
-    desc.inputs.push_back(NativeInputDescription("A", true, eDataKindImage));
+    desc.inputs.push_back(NativeInputDescription("Source", true, eDataKindImage));
     desc.outputKind = eDataKindImage;
 
     return desc;
@@ -156,29 +137,22 @@ void
 Shuffle::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
-
-    KnobChoicePtr in1Input = configureInputChoice(createKnob<KnobChoice>(tr("In 1 Input")), kShuffleParamIn1Input, (int)eInputB);
-    in1Input->setHintToolTip(tr("The input the first slot reads its layer from."));
-    in1Input->setAddNewLine(false);
-    page->addKnob(in1Input);
-    _in1Input = in1Input;
+    const bool copy = isCopy();
 
     KnobLayerSelectPtr in1 = createKnob<KnobLayerSelect>(tr("In 1"));
     configureLayerSelect(in1, kShuffleParamIn1, true, false);
-    in1->setHintToolTip(tr("The layer the first slot reads. A layer the input no longer has is kept and marked "
-                           "\"(not in input)\"."));
+    in1->setHintToolTip(copy
+                            ? tr("The layer the first slot reads from input 1.")
+                            : tr("The layer the first slot reads. A layer the input no longer has is kept and marked "
+                                 "\"(not in input)\"."));
     page->addKnob(in1);
     _in1 = in1;
 
-    KnobChoicePtr in2Input = configureInputChoice(createKnob<KnobChoice>(tr("In 2 Input")), kShuffleParamIn2Input, (int)eInputA);
-    in2Input->setHintToolTip(tr("The input the second slot reads its layer from."));
-    in2Input->setAddNewLine(false);
-    page->addKnob(in2Input);
-    _in2Input = in2Input;
-
     KnobLayerSelectPtr in2 = createKnob<KnobLayerSelect>(tr("In 2"));
-    configureLayerSelect(in2, kShuffleParamIn2, true, true);
-    in2->setHintToolTip(tr("The layer the second slot reads, or None."));
+    configureLayerSelect(in2, kShuffleParamIn2, true, !copy);
+    in2->setHintToolTip(copy
+                            ? tr("The layer the second slot reads from input 2, or None.")
+                            : tr("The layer the second slot reads, or None."));
     page->addKnob(in2);
     _in2 = in2;
 
@@ -201,8 +175,20 @@ Shuffle::initializeKnobs()
     addKnob(mapping);
     mapping->setName(kShuffleParamMapping);
     mapping->setAnimationEnabled(false);
-    mapping->setHintToolTip(tr("The source of every output channel: a slot channel, 0, 1, or keep (B's same channel "
-                               "of the same layer, 0 if B lacks it). An output channel with no source keeps."));
+    mapping->setHintToolTip(tr("The source of every output channel: a slot channel, 0 or 1. An output channel with "
+                               "no source reads the same channel of its own slot, or 0 when that slot is None or "
+                               "has no such channel."));
+    if (copy) {
+        std::vector<ShuffleMapRow> rows;
+        for (int c = 0; c < 3; ++c) {
+            ShuffleMapRow row;
+            row.outSlot = 1;
+            row.outIndex = c;
+            row.src = ShuffleSource::makeInput(2, c);
+            rows.push_back(row);
+        }
+        mapping->setDefaultValue(mapping->encodeRows(rows));
+    }
     page->addKnob(mapping);
     _mapping = mapping;
 
@@ -229,13 +215,7 @@ Shuffle::initializeKnobs()
 int
 Shuffle::getSlotInput(int slot) const
 {
-    KnobChoicePtr choice = (slot == 1) ? _in1Input.lock() : _in2Input.lock();
-
-    if (!choice) {
-        return (slot == 1) ? (int)eInputB : (int)eInputA;
-    }
-
-    return (choice->getValue() == (int)eInputA) ? (int)eInputA : (int)eInputB;
+    return (isCopy() && (slot == 1)) ? (int)eInputCopy1 : (int)eInputMain;
 }
 
 std::string
@@ -265,22 +245,57 @@ Shuffle::getOutputLayer(int slot) const
     return out2Layer;
 }
 
-void
-Shuffle::syncSlotInputs()
+int
+Shuffle::layerChannelCount(const std::string& layerID,
+                           int inputNb) const
 {
-    NodePtr node = getNode();
+    if (layerID.empty()) {
+        return 0;
+    }
+    if (ImageLayerDesc::isColorLayer(layerID)) {
+        return 4;
+    }
 
-    if (!node) {
-        return;
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    ImageLayerDesc desc;
+    if (project && project->findLayer(layerID, &desc)) {
+        return (int)desc.getChannels().size();
     }
-    KnobLayerSelectPtr in1 = _in1.lock();
-    if (in1) {
-        node->setLayerKnobInput(in1, getSlotInput(1));
+
+    const double time = app ? app->getTimeLine()->currentFrame() : 0.;
+    std::list<ImageLayerDesc> present;
+    // getPresentLayers() only reads, but is not declared const.
+    const_cast<Shuffle*>(this)->getPresentLayers(time, ViewIdx(0), inputNb, &present);
+    if (findLayer(present, layerID, &desc)) {
+        return (int)desc.getChannels().size();
     }
-    KnobLayerSelectPtr in2 = _in2.lock();
-    if (in2) {
-        node->setLayerKnobInput(in2, getSlotInput(2));
+
+    return -1;
+}
+
+ShuffleSource
+Shuffle::getEffectiveSource(int outSlot,
+                            int outIndex) const
+{
+    std::shared_ptr<KnobShuffleMap> mapping = _mapping.lock();
+
+    if (mapping && mapping->hasExplicitSource(outSlot, outIndex)) {
+        return mapping->getSource(outSlot, outIndex);
     }
+
+    const std::string slotLayer = getSlotLayer(outSlot);
+    if (slotLayer.empty()) {
+        return ShuffleSource::makeZero();
+    }
+    // A layer neither the registry nor the input knows keeps its implicit source: the render
+    // finds no plane to read and writes 0 all the same.
+    const int nChannels = layerChannelCount(slotLayer, getSlotInput(outSlot));
+    if ((nChannels >= 0) && (outIndex >= nChannels)) {
+        return ShuffleSource::makeZero();
+    }
+
+    return ShuffleSource::makeInput(outSlot, outIndex);
 }
 
 bool
@@ -290,16 +305,6 @@ Shuffle::knobChanged(KnobI* k,
                      double /*time*/,
                      bool /*originatedFromMainThread*/)
 {
-    KnobChoicePtr in1Input = _in1Input.lock();
-    KnobChoicePtr in2Input = _in2Input.lock();
-
-    if ((in1Input && k == in1Input.get()) || (in2Input && k == in2Input.get())) {
-        syncSlotInputs();
-        refreshSubLabel();
-
-        return true;
-    }
-
     KnobLayerSelectPtr in1 = _in1.lock();
     KnobLayerSelectPtr in2 = _in2.lock();
     KnobLayerSelectPtr out1 = _out1.lock();
@@ -317,27 +322,37 @@ Shuffle::knobChanged(KnobI* k,
 void
 Shuffle::onKnobsLoaded()
 {
-    syncSlotInputs();
     refreshSubLabel();
+}
+
+bool
+Shuffle::slotIsRead(int slot) const
+{
+    for (int outSlot = 1; outSlot <= 2; ++outSlot) {
+        const std::string outLayer = getOutputLayer(outSlot);
+        if (outLayer.empty()) {
+            continue;
+        }
+        const int nChannels = layerChannelCount(outLayer, (int)eInputMain);
+        for (int c = 0; c < ((nChannels < 0) ? 4 : nChannels); ++c) {
+            const ShuffleSource src = getEffectiveSource(outSlot, c);
+            if ((src.kind == ShuffleSource::eInput) && (src.slot == slot)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 bool
 Shuffle::mappingReadsInput(int inputNb) const
 {
-    std::shared_ptr<KnobShuffleMap> mapping = _mapping.lock();
-
-    if (!mapping) {
-        return false;
-    }
-    const std::vector<ShuffleMapRow> rows = mapping->getRows();
-    for (std::vector<ShuffleMapRow>::const_iterator it = rows.begin(); it != rows.end(); ++it) {
-        if (it->src.kind != ShuffleSource::eInput) {
+    for (int slot = 1; slot <= 2; ++slot) {
+        if (getSlotLayer(slot).empty() || (getSlotInput(slot) != inputNb)) {
             continue;
         }
-        if (getSlotLayer(it->src.slot).empty()) {
-            continue;
-        }
-        if (getSlotInput(it->src.slot) == inputNb) {
+        if (slotIsRead(slot)) {
             return true;
         }
     }
@@ -363,10 +378,10 @@ Shuffle::resolveOutputLayerDesc(const std::string& layerID,
         return true;
     }
 
-    std::list<ImageLayerDesc> bLayers;
-    getPresentLayers(time, view, (int)eInputB, &bLayers);
+    std::list<ImageLayerDesc> mainLayers;
+    getPresentLayers(time, view, (int)eInputMain, &mainLayers);
 
-    return findLayer(bLayers, layerID, desc);
+    return findLayer(mainLayers, layerID, desc);
 }
 
 std::string
@@ -410,7 +425,7 @@ Shuffle::buildSubLabel()
 
     const std::string in1Layer = getSlotLayer(1);
     const std::string out1Layer = getOutputLayer(1);
-    const std::string out1Label = resolveLayerLabel(out1Layer, (int)eInputB, time, view);
+    const std::string out1Label = resolveLayerLabel(out1Layer, (int)eInputMain, time, view);
 
     std::string result = in1Layer.empty()
         ? out1Label
@@ -419,7 +434,7 @@ Shuffle::buildSubLabel()
     const std::string out2Layer = getOutputLayer(2);
     if (!out2Layer.empty()) {
         const std::string in2Layer = getSlotLayer(2);
-        const std::string out2Label = resolveLayerLabel(out2Layer, (int)eInputB, time, view);
+        const std::string out2Label = resolveLayerLabel(out2Layer, (int)eInputMain, time, view);
         const std::string secondary = in2Layer.empty()
             ? out2Label
             : resolveLayerLabel(in2Layer, getSlotInput(2), time, view) + kArrow + out2Label;
@@ -449,8 +464,7 @@ Shuffle::getComponentsNeededAndProduced(double time,
 {
     *passThroughTime = time;
     *passThroughView = view;
-    // Keep reads B even when only A is connected, so pass-through never falls back to A.
-    *passThroughInputNb = (int)eInputB;
+    *passThroughInputNb = (int)eInputMain;
 
     std::list<ImageLayerDesc>& produced = (*comps)[-1];
     produced.clear();
@@ -465,28 +479,22 @@ Shuffle::getComponentsNeededAndProduced(double time,
         }
     }
 
-    std::list<ImageLayerDesc> present[2];
-    for (int inputNb = 0; inputNb < 2; ++inputNb) {
+    const int nInputs = getNInputs();
+    for (int inputNb = 0; inputNb < nInputs; ++inputNb) {
         (*comps)[inputNb].clear();
-        getPresentLayers(time, view, inputNb, &present[inputNb]);
     }
 
     for (int slot = 1; slot <= 2; ++slot) {
         const std::string layerID = getSlotLayer(slot);
-        if (layerID.empty()) {
+        if (layerID.empty() || !slotIsRead(slot)) {
             continue;
         }
         const int inputNb = getSlotInput(slot);
+        std::list<ImageLayerDesc> present;
+        getPresentLayers(time, view, inputNb, &present);
         ImageLayerDesc desc;
-        if (findLayer(present[inputNb], layerID, &desc)) {
+        if (findLayer(present, layerID, &desc)) {
             appendUnique(desc, &(*comps)[inputNb]);
-        }
-    }
-
-    for (std::list<ImageLayerDesc>::const_iterator it = produced.begin(); it != produced.end(); ++it) {
-        ImageLayerDesc desc;
-        if (findLayer(present[eInputB], it->getLayerID(), &desc)) {
-            appendUnique(desc, &(*comps)[eInputB]);
         }
     }
 } // Shuffle::getComponentsNeededAndProduced
@@ -504,23 +512,22 @@ Shuffle::isIdentity(double time,
         return false;
     }
 
-    std::shared_ptr<KnobShuffleMap> mapping = _mapping.lock();
-    if (mapping) {
-        const std::string out1Layer = getOutputLayer(1);
-        const bool in1IsOut1OnB = getSlotInput(1) == (int)eInputB && !getSlotLayer(1).empty() && getSlotLayer(1) == out1Layer;
-        const std::vector<ShuffleMapRow> rows = mapping->getRows();
-        for (std::vector<ShuffleMapRow>::const_iterator it = rows.begin(); it != rows.end(); ++it) {
-            if (it->outSlot != 1) {
-                continue;
-            }
-            const bool straight = in1IsOut1OnB && it->src.kind == ShuffleSource::eInput && it->src.slot == 1 && it->src.index == it->outIndex;
-            if (!straight) {
-                return false;
-            }
+    const std::string out1Layer = getOutputLayer(1);
+    const int nChannels = layerChannelCount(out1Layer, (int)eInputMain);
+    if (nChannels < 0) {
+        return false;
+    }
+    for (int c = 0; c < nChannels; ++c) {
+        const ShuffleSource src = getEffectiveSource(1, c);
+        if ((src.kind != ShuffleSource::eInput) || (src.index != c)) {
+            return false;
+        }
+        if ((getSlotInput(src.slot) != (int)eInputMain) || (getSlotLayer(src.slot) != out1Layer)) {
+            return false;
         }
     }
 
-    *inputNb = (int)eInputB;
+    *inputNb = (int)eInputMain;
     *inputTime = time;
     *inputView = view;
 
@@ -535,9 +542,10 @@ Shuffle::getRegionOfDefinition(U64 /*hash*/,
                                RectD* rod)
 {
     bool rodSet = false;
+    const int nInputs = getNInputs();
 
-    for (int inputNb = 0; inputNb < 2; ++inputNb) {
-        if ((inputNb == (int)eInputA) && rodSet && !mappingReadsInput(inputNb)) {
+    for (int inputNb = 0; inputNb < nInputs; ++inputNb) {
+        if ((inputNb != (int)eInputMain) && rodSet && !mappingReadsInput(inputNb)) {
             continue;
         }
         EffectInstancePtr input = getInput(inputNb);
@@ -565,7 +573,9 @@ void
 Shuffle::getFrameRange(double* first,
                        double* last)
 {
-    for (int inputNb = 0; inputNb < 2; ++inputNb) {
+    const int nInputs = getNInputs();
+
+    for (int inputNb = 0; inputNb < nInputs; ++inputNb) {
         EffectInstancePtr input = getInput(inputNb);
         if (input) {
             input->getFrameRange_public(input->getRenderHash(), first, last);
@@ -665,7 +675,6 @@ Shuffle::fetchInputPlane(const RenderActionArgs& args,
 StatusEnum
 Shuffle::render(const RenderActionArgs& args)
 {
-    std::shared_ptr<KnobShuffleMap> mapping = _mapping.lock();
     const std::string outputLayers[2] = { getOutputLayer(1), getOutputLayer(2) };
     std::vector<FetchedPlane> fetched;
 
@@ -683,28 +692,24 @@ Shuffle::render(const RenderActionArgs& args)
         }
 
         std::vector<ChannelFill> planeFills((std::size_t)plane.getNumComponents());
-        for (int c = 0; c < plane.getNumComponents(); ++c) {
-            const ShuffleSource src = (mapping && outSlot) ? mapping->getSource(outSlot, c) : ShuffleSource();
+        for (int c = 0; outSlot && (c < plane.getNumComponents()); ++c) {
+            const ShuffleSource src = getEffectiveSource(outSlot, c);
             ChannelFill& fill = planeFills[c];
-            if (src.kind == ShuffleSource::eZero) {
-                continue;
-            }
             if (src.kind == ShuffleSource::eOne) {
                 fill.constant = 1.f;
                 continue;
             }
-            if ((src.kind == ShuffleSource::eInput) && ((src.slot == 1) || (src.slot == 2))) {
-                const std::string slotLayer = getSlotLayer(src.slot);
-                if (!slotLayer.empty()) {
-                    const int inputNb = getSlotInput(src.slot);
-                    ImagePtr slotImage = fetchInputPlane(args, inputNb, slotLayer, &fetched);
-                    if (slotImage && findChannelInPlane(slotImage, planeChannelName(slotImage->getComponents(), src.index), &fill)) {
-                        continue;
-                    }
-                }
+            if ((src.kind != ShuffleSource::eInput) || ((src.slot != 1) && (src.slot != 2))) {
+                continue;
             }
-            ImagePtr bImage = fetchInputPlane(args, (int)eInputB, plane.getLayerID(), &fetched);
-            findChannelInPlane(bImage, planeChannelName(plane, c), &fill);
+            const std::string slotLayer = getSlotLayer(src.slot);
+            if (slotLayer.empty()) {
+                continue;
+            }
+            ImagePtr slotImage = fetchInputPlane(args, getSlotInput(src.slot), slotLayer, &fetched);
+            if (slotImage) {
+                findChannelInPlane(slotImage, planeChannelName(slotImage->getComponents(), src.index), &fill);
+            }
         }
         fills.push_back(planeFills);
     }
@@ -786,13 +791,16 @@ Shuffle::checkExtraChannelsPresent(std::string* message)
         if (it->src.kind != ShuffleSource::eInput) {
             continue;
         }
+        if (getOutputLayer(it->outSlot).empty()) {
+            continue; // The row's output is not produced, so nothing reads it.
+        }
         const std::string layerID = getSlotLayer(it->src.slot);
         if (layerID.empty()) {
-            continue; // A None slot is silent: the row renders as keep.
+            continue; // A None slot is silent: the row renders 0.
         }
         const int inputNb = getSlotInput(it->src.slot);
         if (!getInput(inputNb)) {
-            continue; // A disconnected input is silent: the row renders as keep.
+            continue; // A disconnected input is silent: the row renders 0.
         }
 
         std::list<ImageLayerDesc> present;
@@ -822,5 +830,37 @@ Shuffle::checkExtraChannelsPresent(std::string* message)
 
     return true;
 } // Shuffle::checkExtraChannelsPresent
+
+ShuffleCopy::ShuffleCopy(NodePtr node)
+    : Shuffle(node)
+{
+}
+
+ShuffleCopy::~ShuffleCopy()
+{
+}
+
+NativePluginDescription
+ShuffleCopy::getNativePluginDescription() const
+{
+    NativePluginDescription desc;
+
+    desc.id = PLUGINID_NATRON_SHUFFLECOPY;
+    desc.label = "ShuffleCopy";
+    desc.description = tr("Rearrange channels between layers of two inputs. The second slot reads input 2, the "
+                          "main input, and the first slot reads input 1; each feeds an output layer, and every "
+                          "output channel takes a slot channel, 0 or 1. By default the color comes from input 2 "
+                          "and the alpha from input 1. Every layer that is not an output passes through from "
+                          "input 2 unchanged.")
+                           .toStdString();
+    desc.grouping = PLUGIN_GROUP_CHANNEL;
+    desc.majorVersion = 1;
+    desc.minorVersion = 0;
+    desc.inputs.push_back(NativeInputDescription("2", true, eDataKindImage));
+    desc.inputs.push_back(NativeInputDescription("1", true, eDataKindImage));
+    desc.outputKind = eDataKindImage;
+
+    return desc;
+}
 
 NATRON_NAMESPACE_EXIT

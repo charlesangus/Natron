@@ -63,6 +63,31 @@ sameLayerEntries(const std::vector<LayerChannelRow::LayerEntry>& a,
     return true;
 }
 
+std::vector<LayerChannelRow::LayerEntry>
+listLayerEntriesForKnob(const NodePtr& node,
+                        const KnobIPtr& knob)
+{
+    std::vector<LayerChannelRow::LayerEntry> entries;
+
+    if (!node || !knob) {
+        return entries;
+    }
+    std::list<ImageLayerDesc> descs;
+    node->listLayersForKnob(knob, &descs);
+    descs.sort([](const ImageLayerDesc& a, const ImageLayerDesc& b) {
+        return a.isColorLayer() && !b.isColorLayer();
+    });
+    for (std::list<ImageLayerDesc>::const_iterator it = descs.begin(); it != descs.end(); ++it) {
+        LayerChannelRow::LayerEntry entry;
+        entry.id = it->getLayerID();
+        entry.label = it->getLayerLabel();
+        entry.channels = it->getChannels();
+        entries.push_back(entry);
+    }
+
+    return entries;
+}
+
 struct KnobGuiLayerChannelBasePrivate {
     KnobIWPtr knob;
     QWidget* container;
@@ -192,24 +217,10 @@ KnobGuiLayerChannelBase::findLayer(const std::string& id) const
 void
 KnobGuiLayerChannelBase::listLayers()
 {
-    _imp->layers.clear();
     KnobIPtr k = _imp->knob.lock();
     NodePtr node = getNode();
-    if (!k || !node) {
-        return;
-    }
-    std::list<ImageLayerDesc> descs;
-    node->listLayersForKnob(k, &descs);
-    descs.sort([](const ImageLayerDesc& a, const ImageLayerDesc& b) {
-        return a.isColorLayer() && !b.isColorLayer();
-    });
-    for (std::list<ImageLayerDesc>::const_iterator it = descs.begin(); it != descs.end(); ++it) {
-        LayerChannelRow::LayerEntry entry;
-        entry.id = it->getLayerID();
-        entry.label = it->getLayerLabel();
-        entry.channels = it->getChannels();
-        _imp->layers.push_back(entry);
-    }
+
+    _imp->layers = listLayerEntriesForKnob(node, k);
 }
 
 void

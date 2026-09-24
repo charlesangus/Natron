@@ -81,13 +81,34 @@ TEST(KnobShuffleMap, TypeAndColumns)
     EXPECT_FALSE(asKnobI->supportsExpressions());
 }
 
-TEST(KnobShuffleMap, DefaultIsEmptyMeaningKeepEverywhere)
+TEST(KnobShuffleMap, DefaultIsEmptyMeaningIdentityByIndex)
 {
     std::shared_ptr<KnobShuffleMap> knob = makeKnob();
 
     EXPECT_TRUE(knob->getRows().empty());
-    EXPECT_EQ(ShuffleSource::eKeep, knob->getSource(1, 0).kind);
-    EXPECT_EQ(ShuffleSource::eKeep, knob->getSource(2, 3).kind);
+
+    EXPECT_FALSE(knob->hasExplicitSource(1, 0));
+    EXPECT_EQ(ShuffleSource::eInput, knob->getSource(1, 0).kind);
+    EXPECT_EQ(1, knob->getSource(1, 0).slot);
+    EXPECT_EQ(0, knob->getSource(1, 0).index);
+
+    EXPECT_FALSE(knob->hasExplicitSource(2, 3));
+    EXPECT_EQ(ShuffleSource::eInput, knob->getSource(2, 3).kind);
+    EXPECT_EQ(2, knob->getSource(2, 3).slot);
+    EXPECT_EQ(3, knob->getSource(2, 3).index);
+}
+
+TEST(KnobShuffleMap, AbsentRowReadsTheIdentityByIndexDefault)
+{
+    std::shared_ptr<KnobShuffleMap> knob = makeKnob();
+
+    EXPECT_FALSE(knob->hasExplicitSource(2, 1));
+
+    const ShuffleSource src = knob->getSource(2, 1);
+    EXPECT_EQ(ShuffleSource::eInput, src.kind);
+    EXPECT_EQ(2, src.slot);
+    EXPECT_EQ(1, src.index);
+    EXPECT_TRUE(src == KnobShuffleMap::defaultSource(2, 1));
 }
 
 TEST(KnobShuffleMap, EncodeDecodeRoundTrip)
@@ -125,20 +146,22 @@ TEST(KnobShuffleMap, EncodeDecodeRoundTrip)
     EXPECT_EQ(ShuffleSource::eOne, knob->getSource(2, 1).kind);
 }
 
-TEST(KnobShuffleMap, KeepMeansNoRow)
+TEST(KnobShuffleMap, SettingTheDefaultSourceLeavesNoRow)
 {
     std::shared_ptr<KnobShuffleMap> knob = makeKnob();
+
+    // in1.0 is out1.0's identity-by-index default: writing it back is a no-op.
+    knob->setSource(1, 0, ShuffleSource::makeInput(1, 0));
+    EXPECT_TRUE(knob->getRows().empty());
+    EXPECT_FALSE(knob->hasExplicitSource(1, 0));
 
     knob->setSource(1, 3, ShuffleSource::makeInput(2, 0));
     ASSERT_EQ(1u, knob->getRows().size());
 
-    knob->setSource(1, 3, ShuffleSource());
+    // Writing the default back over an explicit row erases it.
+    knob->setSource(1, 3, ShuffleSource::makeInput(1, 3));
     EXPECT_TRUE(knob->getRows().empty());
-    EXPECT_EQ(ShuffleSource::eKeep, knob->getSource(1, 3).kind);
-
-    // Setting keep on a channel with no row is a no-op, not a stray row.
-    knob->setSource(2, 2, ShuffleSource());
-    EXPECT_TRUE(knob->getRows().empty());
+    EXPECT_FALSE(knob->hasExplicitSource(1, 3));
 }
 
 TEST(KnobShuffleMap, ClearRemovesTheRow)
@@ -152,24 +175,49 @@ TEST(KnobShuffleMap, ClearRemovesTheRow)
     knob->clear(1, 0);
     ASSERT_EQ(1u, knob->getRows().size());
     EXPECT_EQ(1, knob->getRows()[0].outIndex);
-    EXPECT_EQ(ShuffleSource::eKeep, knob->getSource(1, 0).kind);
+    EXPECT_FALSE(knob->hasExplicitSource(1, 0));
+    EXPECT_EQ(ShuffleSource::eInput, knob->getSource(1, 0).kind);
+    EXPECT_EQ(1, knob->getSource(1, 0).slot);
+    EXPECT_EQ(0, knob->getSource(1, 0).index);
 }
 
-TEST(KnobShuffleMap, ResetEmptiesTheTable)
+TEST(KnobShuffleMap, ResetWithNoStoredDefaultEmptiesTheTable)
 {
     std::shared_ptr<KnobShuffleMap> knob = makeKnob();
 
-    knob->setSource(1, 0, ShuffleSource::makeInput(1, 0));
-    knob->setSource(1, 1, ShuffleSource::makeInput(1, 1));
+    knob->setSource(1, 0, ShuffleSource::makeInput(2, 0));
+    knob->setSource(1, 1, ShuffleSource::makeInput(2, 1));
     knob->setSource(2, 3, ShuffleSource::makeZero());
     ASSERT_EQ(3u, knob->getRows().size());
 
     knob->reset();
     EXPECT_TRUE(knob->getRows().empty());
-    EXPECT_EQ(ShuffleSource::eKeep, knob->getSource(1, 0).kind);
+    EXPECT_EQ(ShuffleSource::eInput, knob->getSource(1, 0).kind);
+    EXPECT_EQ(1, knob->getSource(1, 0).slot);
+    EXPECT_EQ(0, knob->getSource(1, 0).index);
 }
 
-TEST(KnobShuffleMap, MalformedCellsDecodeAsKeepAndAreDropped)
+TEST(KnobShuffleMap, ResetRestoresTheKnobsDefaultValue)
+{
+    std::shared_ptr<KnobShuffleMap> knob = makeKnob();
+
+    std::vector<ShuffleMapRow> defaultRows(1);
+    defaultRows[0].outSlot = 1;
+    defaultRows[0].outIndex = 0;
+    defaultRows[0].src = ShuffleSource::makeInput(2, 0);
+    knob->setDefaultValue(knob->encodeRows(defaultRows), 0);
+
+    knob->setSource(2, 3, ShuffleSource::makeZero());
+    ASSERT_FALSE(knob->getRows().empty());
+
+    knob->reset();
+
+    std::vector<ShuffleMapRow> rows = knob->getRows();
+    ASSERT_EQ(1u, rows.size());
+    EXPECT_EQ(defaultRows[0], rows[0]);
+}
+
+TEST(KnobShuffleMap, MalformedCellsDecodeAsTheDefaultAndAreDropped)
 {
     std::shared_ptr<KnobShuffleMap> knob = makeKnob();
     std::string raw;
@@ -195,22 +243,27 @@ TEST(KnobShuffleMap, MalformedCellsDecodeAsKeepAndAreDropped)
     EXPECT_EQ(2, rows[0].src.slot);
     EXPECT_EQ(2, rows[0].src.index);
 
-    EXPECT_EQ(ShuffleSource::eKeep, knob->getSource(1, 2).kind);
-    EXPECT_EQ(ShuffleSource::eKeep, knob->getSource(1, 1).kind);
+    EXPECT_FALSE(knob->hasExplicitSource(1, 2));
+    EXPECT_EQ(ShuffleSource::eInput, knob->getSource(1, 2).kind);
+    EXPECT_EQ(1, knob->getSource(1, 2).slot);
+    EXPECT_EQ(2, knob->getSource(1, 2).index);
+
+    EXPECT_FALSE(knob->hasExplicitSource(1, 1));
+    EXPECT_EQ(ShuffleSource::eInput, knob->getSource(1, 1).kind);
+    EXPECT_EQ(1, knob->getSource(1, 1).slot);
+    EXPECT_EQ(1, knob->getSource(1, 1).index);
 }
 
 TEST(KnobShuffleMap, SettingTheSameOutputTwiceLeavesOneRow)
 {
     std::shared_ptr<KnobShuffleMap> knob = makeKnob();
 
-    knob->setSource(1, 3, ShuffleSource::makeInput(1, 3));
-    ASSERT_EQ(1u, knob->getRows().size());
-
     knob->setSource(1, 3, ShuffleSource::makeInput(2, 0));
     ASSERT_EQ(1u, knob->getRows().size());
-    EXPECT_EQ(ShuffleSource::eInput, knob->getSource(1, 3).kind);
-    EXPECT_EQ(2, knob->getSource(1, 3).slot);
-    EXPECT_EQ(0, knob->getSource(1, 3).index);
+
+    knob->setSource(1, 3, ShuffleSource::makeZero());
+    ASSERT_EQ(1u, knob->getRows().size());
+    EXPECT_EQ(ShuffleSource::eZero, knob->getSource(1, 3).kind);
 }
 
 // The Shuffle node's Mapping knob is a plain user KnobShuffleMap (typeName "ShuffleMap"),

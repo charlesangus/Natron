@@ -40,13 +40,12 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief One output channel's source: another input's channel, a constant 0 or 1, or
- * keep (the in-place value already flowing through). eKeep is never persisted as a row;
- * it is the value getSource() returns for an output channel that has none.
+ * @brief One output channel's source: another input's channel, or a constant 0 or 1.
+ * There is no "keep" kind: an output channel with no stored row uses
+ * KnobShuffleMap::defaultSource(), the identity-by-index source, instead.
  **/
 struct ShuffleSource {
     enum Kind {
-        eKeep,
         eInput,
         eZero,
         eOne
@@ -57,7 +56,7 @@ struct ShuffleSource {
     int index; // channel index within the slot's layer; meaningful only when kind == eInput
 
     ShuffleSource()
-        : kind(eKeep)
+        : kind(eZero)
         , slot(0)
         , index(0)
     {
@@ -111,8 +110,9 @@ struct ShuffleSource {
 };
 
 /**
- * @brief One row of a KnobShuffleMap: the source wired to output slot outSlot's channel
- * outIndex. A channel with no row is keep, so a row's src.kind is never eKeep.
+ * @brief One row of a KnobShuffleMap: an explicit override of the source wired to output
+ * slot outSlot's channel outIndex. A channel with no row uses the identity-by-index
+ * default instead; see KnobShuffleMap::defaultSource().
  **/
 struct ShuffleMapRow {
     int outSlot;
@@ -142,8 +142,9 @@ struct ShuffleMapRow {
  *
  * Rows are persisted as one KnobTable string with the columns Out/Src, e.g.
  * "<Out>out1.3</Out><Src>in2.0</Src>": Out is "out<K>.<channelIndex>" with K in {1,2},
- * Src is "in<J>.<index>" with J in {1,2}, or "0", or "1". Keep is the absence of a row
- * for that output channel, so an empty table is a true identity mapping.
+ * Src is "in<J>.<index>" with J in {1,2}, or "0", or "1". A row is an override; an
+ * output channel with no row reads defaultSource(outSlot, outIndex), the identity-by-index
+ * source, so an empty table is a true identity mapping.
  *
  * The knob stores overrides only; it has no notion of which layers or channels are
  * actually present at render time; readability of a stored source is resolved by the
@@ -197,21 +198,40 @@ public:
 
     std::vector<ShuffleMapRow> getRows() const;
 
+    /**
+     * @brief The identity-by-index default for output slot outSlot's channel outIndex:
+     * makeInput(outSlot, outIndex), i.e. the same slot number and channel index on the
+     * input side.
+     **/
+    static ShuffleSource defaultSource(int outSlot, int outIndex) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The stored row for (outSlot, outIndex), or defaultSource(outSlot, outIndex)
+     * when there is none.
+     **/
     ShuffleSource getSource(int outSlot, int outIndex) const;
 
     /**
-     * @brief Setting eKeep removes the row for (outSlot, outIndex), if any; any other
-     * kind adds or replaces it. Always exactly one setValue() call, hence one undo step.
+     * @brief Whether (outSlot, outIndex) has a stored row, as opposed to falling back to
+     * defaultSource().
+     **/
+    bool hasExplicitSource(int outSlot, int outIndex) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Setting src == defaultSource(outSlot, outIndex) removes the row for
+     * (outSlot, outIndex), if any; any other value adds or replaces it. Always exactly
+     * one setValue() call, hence one undo step.
      **/
     void setSource(int outSlot, int outIndex, const ShuffleSource& src);
 
     /**
-     * @brief Equivalent to setSource(outSlot, outIndex, ShuffleSource()).
+     * @brief Removes the row for (outSlot, outIndex), if any.
      **/
     void clear(int outSlot, int outIndex);
 
     /**
-     * @brief Empties the table: every output channel becomes keep.
+     * @brief Restores the knob's default value (e.g. empty for a new Shuffle, or a node
+     * kind's non-empty default such as ShuffleCopy's).
      **/
     void reset();
 

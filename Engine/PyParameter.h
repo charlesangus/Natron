@@ -1194,24 +1194,26 @@ public:
     void connect(const QString& src, const QString& dst);
 
     /**
-     * @brief Sets dst back to keep. Raises ValueError when dst does not resolve.
+     * @brief Erases dst's override, if any, so it falls back to its default source. Raises
+     * ValueError when dst does not resolve.
      **/
     void disconnect(const QString& dst);
 
     /**
-     * @brief The source wired to dst, in the same syntax connect() takes, or an empty string
-     * when dst is keep. Raises ValueError when dst does not resolve.
+     * @brief dst's effective source (the node's Shuffle::getEffectiveSource), in the same
+     * syntax connect() takes. Never an empty string. Raises ValueError when dst does not
+     * resolve.
      **/
     QString getSource(const QString& dst) const;
 
     /**
-     * @brief Every non-keep wire, keyed by dst, using the slots' current channel names. A row
-     * whose stored channel index no longer resolves against its slot's current layer is omitted.
+     * @brief Every out1 channel's effective source, and every out2 channel's when out2 has a
+     * layer selected, keyed by dst using the slots' current channel names.
      **/
     std::map<std::string, std::string> getConnections() const;
 
     /**
-     * @brief Empties the table: every output channel becomes keep.
+     * @brief Restores the knob's default value (the node kind's default mapping).
      **/
     void reset();
 
@@ -1220,6 +1222,16 @@ public:
      **/
     bool setExpression(const QString& expr, bool hasRetVariable, int dimension = 0);
 };
+
+/**
+ * @brief Every channel whose current source differs from the same channel's row in
+ * mappingKnob's own default value (identity when neither has an explicit row), formatted as
+ * ShuffleMapParam::connect()'s (dst, src) pairs. A default row the current value no longer
+ * carries is reported with its identity source, so replaying these calls on a fresh node
+ * reproduces the current value exactly. Used by the project/PyPlug exporter; not part of the
+ * Python-facing API.
+ **/
+std::map<std::string, std::string> getShuffleMapModifiedConnections(const KnobShuffleMapPtr& mappingKnob);
 
 /////////////////ButtonParam
 

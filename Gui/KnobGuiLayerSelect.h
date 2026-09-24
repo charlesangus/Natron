@@ -28,7 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <memory>
+#include <string>
 
 #include "Engine/EngineFwd.h"
 
@@ -38,6 +40,15 @@
 NATRON_NAMESPACE_ENTER
 
 struct KnobGuiLayerSelectPrivate;
+
+/**
+ * @brief Runs NewLayerDialog for knob's node and, unless the user cancels or the
+ * registry refuses the layer, calls push with the new layer's id and label. Usable for
+ * any knob on the node, not just a KnobLayerSelect.
+ **/
+void runNewLayerDialog(const KnobIPtr& knob,
+                       QWidget* parent,
+                       const std::function<void(const std::string& layerID, const std::string& layerLabel)>& push);
 
 /**
  * @brief The GUI of a KnobLayerSelect: one LayerChannelRow in layer-select mode, with

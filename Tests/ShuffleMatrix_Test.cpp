@@ -164,10 +164,15 @@ protected:
         CreateNodeArgs shuffleArgs(PLUGINID_NATRON_SHUFFLE, _app->getProject());
         _shuffle = _app->createNode(shuffleArgs);
         ASSERT_TRUE(bool(_shuffle));
-        ASSERT_TRUE(_app->getProject()->connectNodes(Shuffle::eInputB, reader, _shuffle));
+        ASSERT_TRUE(_app->getProject()->connectNodes(Shuffle::eInputMain, reader, _shuffle));
 
         _mapping = std::dynamic_pointer_cast<KnobShuffleMap>(_shuffle->getKnobByName(kShuffleParamMapping));
         ASSERT_TRUE(bool(_mapping));
+    }
+
+    Shuffle* shuffleEffect() const
+    {
+        return dynamic_cast<Shuffle*>(_shuffle->getEffectInstance().get());
     }
 
     void setLayer(const char* knobName,
@@ -246,8 +251,8 @@ protected:
     std::shared_ptr<KnobGuiShuffleMap> _gui;
 };
 
-// in2 defaults to None, so it contributes no columns: 3 diffuse channels, keep, 0 and 1.
-TEST_F(ShuffleMatrixTest, ColorFromDiffuseHasFourRowsOfSixButtons)
+// in2 defaults to None, so it contributes no columns: 3 diffuse channels, 0 and 1.
+TEST_F(ShuffleMatrixTest, ColorFromDiffuseHasFourRowsOfFiveButtons)
 {
     createShuffleOnFixture();
     ASSERT_FALSE(HasFatalFailure());
@@ -256,8 +261,8 @@ TEST_F(ShuffleMatrixTest, ColorFromDiffuseHasFourRowsOfSixButtons)
     createGui();
 
     EXPECT_EQ(4, _gui->getOutputRowCount());
-    EXPECT_EQ(6, _gui->getSourceColumnCount());
-    EXPECT_EQ(24, countCellButtons());
+    EXPECT_EQ(5, _gui->getSourceColumnCount());
+    EXPECT_EQ(20, countCellButtons());
 
     const QString in1Header = _gui->getSlotHeaderText(1);
     EXPECT_TRUE(in1Header.contains(QString::fromUtf8("diffuse"))) << in1Header.toStdString();
@@ -267,9 +272,8 @@ TEST_F(ShuffleMatrixTest, ColorFromDiffuseHasFourRowsOfSixButtons)
     EXPECT_EQ(0, _gui->findSourceColumn(ShuffleSource::makeInput(1, 0)));
     EXPECT_EQ(1, _gui->findSourceColumn(ShuffleSource::makeInput(1, 1)));
     EXPECT_EQ(2, _gui->findSourceColumn(ShuffleSource::makeInput(1, 2)));
-    EXPECT_EQ(3, _gui->findSourceColumn(ShuffleSource()));
-    EXPECT_EQ(4, _gui->findSourceColumn(ShuffleSource::makeZero()));
-    EXPECT_EQ(5, _gui->findSourceColumn(ShuffleSource::makeOne()));
+    EXPECT_EQ(3, _gui->findSourceColumn(ShuffleSource::makeZero()));
+    EXPECT_EQ(4, _gui->findSourceColumn(ShuffleSource::makeOne()));
     EXPECT_EQ(-1, _gui->findSourceColumn(ShuffleSource::makeInput(2, 0)));
 
     for (int i = 0; i < 4; ++i) {
@@ -281,12 +285,25 @@ TEST_F(ShuffleMatrixTest, ColorFromDiffuseHasFourRowsOfSixButtons)
     EXPECT_EQ(QString::fromUtf8("G"), _gui->getCellButton(0, 1)->text());
     EXPECT_EQ(QString::fromUtf8("B"), _gui->getCellButton(0, 2)->text());
 
-    // An empty mapping keeps every channel.
-    const int keep = _gui->findSourceColumn(ShuffleSource());
+    // An empty mapping resolves every row to Shuffle::getEffectiveSource's default, and
+    // exactly one button reflects it.
+    Shuffle* shuffle = shuffleEffect();
+    ASSERT_TRUE(shuffle != NULL);
     for (int r = 0; r < _gui->getOutputRowCount(); ++r) {
+        int outSlot = 0;
+        int outIndex = 0;
+        ASSERT_TRUE(_gui->getOutputRow(r, &outSlot, &outIndex));
+        const int expected = _gui->findSourceColumn(shuffle->getEffectiveSource(outSlot, outIndex));
+        ASSERT_GE(expected, 0) << "row " << r;
+        int checkedCount = 0;
         for (int c = 0; c < _gui->getSourceColumnCount(); ++c) {
-            EXPECT_EQ(c == keep, _gui->getCellButton(r, c)->isChecked()) << "row " << r << " column " << c;
+            const bool checked = _gui->getCellButton(r, c)->isChecked();
+            EXPECT_EQ(c == expected, checked) << "row " << r << " column " << c;
+            if (checked) {
+                ++checkedCount;
+            }
         }
+        EXPECT_EQ(1, checkedCount) << "row " << r;
     }
     EXPECT_TRUE(_gui->getResetButton() != NULL);
 }
@@ -335,7 +352,7 @@ TEST_F(ShuffleMatrixTest, OneClickChangesOneValueAndOneUndoRestoresIt)
     }
     EXPECT_TRUE(_mapping->getRows().empty());
     EXPECT_FALSE(cell->isChecked());
-    EXPECT_TRUE(_gui->getCellButton(row, _gui->findSourceColumn(ShuffleSource()))->isChecked());
+    EXPECT_TRUE(_gui->getCellButton(row, _gui->findSourceColumn(ShuffleSource::makeInput(1, 0)))->isChecked());
 }
 
 TEST_F(ShuffleMatrixTest, DepthOutputHasOneRow)
@@ -388,7 +405,7 @@ TEST_F(ShuffleMatrixTest, AbsentSlotLayerGreysItsColumnsAndShowsTheMarker)
     EXPECT_EQ(-1, _gui->findSourceColumn(ShuffleSource::makeInput(1, 1)));
     for (int r = 0; r < _gui->getOutputRowCount(); ++r) {
         EXPECT_FALSE(_gui->getCellButton(r, column)->isEnabled()) << "row " << r;
-        EXPECT_TRUE(_gui->getCellButton(r, _gui->findSourceColumn(ShuffleSource()))->isEnabled()) << "row " << r;
+        EXPECT_TRUE(_gui->getCellButton(r, _gui->findSourceColumn(ShuffleSource::makeZero()))->isEnabled()) << "row " << r;
     }
 }
 

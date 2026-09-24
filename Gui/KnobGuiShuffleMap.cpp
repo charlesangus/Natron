@@ -355,7 +355,7 @@ KnobGuiShuffleMap::KnobGuiShuffleMap(KnobIPtr knob,
     NodePtr node = getNode();
     if (node) {
         static const char* const siblings[] = {
-            kShuffleParamIn1Input, kShuffleParamIn2Input, kShuffleParamIn1, kShuffleParamIn2, kShuffleParamOut1, kShuffleParamOut2
+            kShuffleParamIn1, kShuffleParamIn2, kShuffleParamOut1, kShuffleParamOut2
         };
         for (std::size_t i = 0; i < sizeof(siblings) / sizeof(siblings[0]); ++i) {
             KnobIPtr sibling = node->getKnobByName(siblings[i]);
@@ -392,7 +392,7 @@ KnobGuiShuffleMap::createWidget(QHBoxLayout* layout)
     createContainer(layout);
 
     _imp->resetButton = new Button(tr("Reset"), getContainer());
-    _imp->resetButton->setToolTip(tr("Set every output channel back to keep."));
+    _imp->resetButton->setToolTip(tr("Set every output channel back to its default source."));
     QObject::connect(_imp->resetButton, &QPushButton::clicked, this, [this]() {
         onResetClicked();
     });
@@ -413,7 +413,6 @@ KnobGuiShuffleMap::refreshWidgets()
         const std::vector<ShuffleMapRow> mapRows = mapping->getRows();
         appendSlotColumns(node, shuffle, mapRows, 1, getAbsentMarkerText(), &layout);
         appendSlotColumns(node, shuffle, mapRows, 2, getAbsentMarkerText(), &layout);
-        appendConstantColumn(ShuffleSource(), tr("keep"), tr("Keep B's value of the same channel of the same layer."), &layout);
         appendConstantColumn(ShuffleSource::makeZero(), QString::fromUtf8("0"), tr("A constant 0."), &layout);
         appendConstantColumn(ShuffleSource::makeOne(), QString::fromUtf8("1"), tr("A constant 1."), &layout);
         appendOutputRows(node, shuffle, mapRows, 1, tr("(not in project)"), &layout);
@@ -510,13 +509,14 @@ void
 KnobGuiShuffleMap::syncCheckedButtons()
 {
     std::shared_ptr<KnobShuffleMap> mapping = _imp->knob.lock();
+    Shuffle* shuffle = mapping ? dynamic_cast<Shuffle*>(mapping->getHolder()) : 0;
 
-    if (!mapping) {
+    if (!mapping || !shuffle) {
         return;
     }
     const KnobGuiShuffleMapPrivate::Layout& layout = _imp->layout;
     for (std::size_t r = 0; r < layout.rows.size() && r < _imp->cells.size(); ++r) {
-        const ShuffleSource src = mapping->getSource(layout.rows[r].outSlot, layout.rows[r].outIndex);
+        const ShuffleSource src = shuffle->getEffectiveSource(layout.rows[r].outSlot, layout.rows[r].outIndex);
         const int column = findSourceColumn(src);
         if (column >= 0) {
             if (!_imp->cells[r][column]->isChecked()) {
@@ -547,6 +547,7 @@ KnobGuiShuffleMap::onCellClicked(int row,
     const int outSlot = layout.rows[row].outSlot;
     const int outIndex = layout.rows[row].outIndex;
     const ShuffleSource src = layout.columns[column].src;
+    const ShuffleSource defaultSrc = KnobShuffleMap::defaultSource(outSlot, outIndex);
 
     std::vector<ShuffleMapRow> rows = mapping->getRows();
     bool found = false;
@@ -554,7 +555,7 @@ KnobGuiShuffleMap::onCellClicked(int row,
         if (rows[i].outSlot != outSlot || rows[i].outIndex != outIndex) {
             continue;
         }
-        if (src.kind == ShuffleSource::eKeep) {
+        if (src == defaultSrc) {
             rows.erase(rows.begin() + i);
         } else {
             rows[i].src = src;
@@ -562,7 +563,7 @@ KnobGuiShuffleMap::onCellClicked(int row,
         found = true;
         break;
     }
-    if (!found && src.kind != ShuffleSource::eKeep) {
+    if (!found && src != defaultSrc) {
         ShuffleMapRow added;
         added.outSlot = outSlot;
         added.outIndex = outIndex;
@@ -581,7 +582,7 @@ KnobGuiShuffleMap::onResetClicked()
     std::shared_ptr<KnobShuffleMap> mapping = _imp->knob.lock();
 
     if (mapping) {
-        pushValue(mapping->encodeRows(std::vector<ShuffleMapRow>()));
+        pushValue(mapping->getDefaultValue(0));
     }
 }
 

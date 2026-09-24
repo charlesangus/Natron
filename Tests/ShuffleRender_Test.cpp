@@ -149,8 +149,8 @@ renderAndRead(const AppInstancePtr& app,
 
 } // namespace
 
-// Read(flat-three-layers.exr) -> Shuffle (on B) -> Write, the Write set up to write every layer
-// into a single-part, uncompressed 32-bit float EXR.
+// Read(flat-three-layers.exr) -> Shuffle or ShuffleCopy (on its main input) -> Write, the Write
+// set up to write every layer into a single-part, uncompressed 32-bit float EXR.
 class ShuffleRenderTest
     : public BaseTest {
 protected:
@@ -175,7 +175,8 @@ protected:
         ASSERT_TRUE(bool(*reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
     }
 
-    void createShuffleOnFixture(const std::string& fixture = "flat-three-layers.exr")
+    void createShuffleOnFixture(const std::string& fixture = "flat-three-layers.exr",
+                                const char* pluginID = PLUGINID_NATRON_SHUFFLE)
     {
         NodePtr reader;
         createFixtureReader(&reader, fixture);
@@ -183,9 +184,9 @@ protected:
             return;
         }
         _reader = reader;
-        _shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
-        ASSERT_TRUE(bool(_shuffle));
-        connectNodes(reader, _shuffle, Shuffle::eInputB, true);
+        _shuffle = createNode(QString::fromUtf8(pluginID));
+        ASSERT_TRUE(bool(_shuffle)) << pluginID;
+        connectNodes(reader, _shuffle, Shuffle::eInputMain, true);
 
         _mapping = std::dynamic_pointer_cast<KnobShuffleMap>(_shuffle->getKnobByName(kShuffleParamMapping));
         ASSERT_TRUE(bool(_mapping));
@@ -228,14 +229,29 @@ protected:
         channels->setAll();
     }
 
+    // Sized like the fixture, so reading it does not grow the output's region of definition.
+    void createConstant(double value,
+                        NodePtr* constant)
+    {
+        *constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+        ASSERT_TRUE(bool(*constant));
+        KnobColor* color = dynamic_cast<KnobColor*>((*constant)->getKnobByName("color").get());
+        ASSERT_TRUE(color != NULL);
+        color->setValues(value, value, value, value, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+        KnobChoice* extent = dynamic_cast<KnobChoice*>((*constant)->getKnobByName("extent").get());
+        KnobDouble* size = dynamic_cast<KnobDouble*>((*constant)->getKnobByName("size").get());
+        KnobDouble* bottomLeft = dynamic_cast<KnobDouble*>((*constant)->getKnobByName("bottomLeft").get());
+        ASSERT_TRUE(extent && size && bottomLeft);
+        extent->setValueFromID("size", 0);
+        bottomLeft->setValue(0., ViewSpec::all(), 0);
+        bottomLeft->setValue(0., ViewSpec::all(), 1);
+        size->setValue(kSize, ViewSpec::all(), 0);
+        size->setValue(kSize, ViewSpec::all(), 1);
+    }
+
     KnobLayerSelectPtr layerKnob(const char* name) const
     {
         return std::dynamic_pointer_cast<KnobLayerSelect>(_shuffle->getKnobByName(name));
-    }
-
-    KnobChoicePtr choiceKnob(const char* name) const
-    {
-        return std::dynamic_pointer_cast<KnobChoice>(_shuffle->getKnobByName(name));
     }
 
     void setLayer(const char* knobName,
@@ -244,14 +260,6 @@ protected:
         KnobLayerSelectPtr knob = layerKnob(knobName);
         ASSERT_TRUE(bool(knob)) << knobName;
         knob->setLayer(layerID);
-    }
-
-    void setSlotInput(const char* knobName,
-                      Shuffle::InputEnum input)
-    {
-        KnobChoicePtr knob = choiceKnob(knobName);
-        ASSERT_TRUE(bool(knob)) << knobName;
-        knob->setValue((int)input);
     }
 
     void wireStraight(int outSlot,
@@ -282,14 +290,18 @@ protected:
     std::shared_ptr<KnobShuffleMap> _mapping;
 };
 
-TEST_F(ShuffleRenderTest, InputLayerRoutedIntoColorKeepsTheUnwiredAlpha)
+// diffuse has no fourth channel, so Color's alpha reads 0 rather than keeping the input's 1.
+TEST_F(ShuffleRenderTest, InputLayerIntoColorByDefaultZeroesTheAlphaItLacks)
 {
     createShuffleOnFixture();
     if (HasFatalFailure()) {
         return;
     }
     setLayer(kShuffleParamIn1, "diffuse");
-    wireStraight(1, 1, 3);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_TRUE(_mapping->getRows().empty());
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -300,7 +312,7 @@ TEST_F(ShuffleRenderTest, InputLayerRoutedIntoColorKeepsTheUnwiredAlpha)
     }
 
     expectFixtureLayers(image);
-    expectColor(image, 0.f, 1.f, 0.f, 1.f);
+    expectColor(image, 0.f, 1.f, 0.f, 0.f);
     expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
     expectPlane(image, "specular.", 0.f, 0.f, 1.f);
 }
@@ -311,7 +323,6 @@ TEST_F(ShuffleRenderTest, TwoLayerSwapInOneNodeLeavesColorAlone)
     if (HasFatalFailure()) {
         return;
     }
-    setSlotInput(kShuffleParamIn2Input, Shuffle::eInputB);
     setLayer(kShuffleParamIn1, "diffuse");
     setLayer(kShuffleParamIn2, "specular");
     setLayer(kShuffleParamOut1, "diffuse");
@@ -336,8 +347,38 @@ TEST_F(ShuffleRenderTest, TwoLayerSwapInOneNodeLeavesColorAlone)
     expectPlane(image, "specular.", 0.f, 1.f, 0.f);
 }
 
+// specular's G is 0 like Color's, so its B carries the proof that in2 is read.
+TEST_F(ShuffleRenderTest, OneOutputMixesChannelsOfBothSlots)
+{
+    createShuffleOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    setLayer(kShuffleParamIn2, "specular");
+    if (HasFatalFailure()) {
+        return;
+    }
+    _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 0));
+    _mapping->setSource(1, 1, ShuffleSource::makeInput(2, 1));
+    _mapping->setSource(1, 2, ShuffleSource::makeInput(2, 2));
+    EXPECT_FALSE(_mapping->hasExplicitSource(1, 0));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    render(tmp, "two_by_two.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    expectFixtureLayers(image);
+    expectColor(image, 1.f, 0.f, 1.f, 1.f);
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
 // R is already 1 in the fixture, so G carries the proof that a constant 1 is written.
-TEST_F(ShuffleRenderTest, ConstantsOverwriteTheirChannelsAndTheRestKeep)
+TEST_F(ShuffleRenderTest, ConstantsOverwriteTheirChannelsAndTheRestReadTheirDefault)
 {
     createShuffleOnFixture();
     if (HasFatalFailure()) {
@@ -361,41 +402,23 @@ TEST_F(ShuffleRenderTest, ConstantsOverwriteTheirChannelsAndTheRestKeep)
     expectPlane(image, "specular.", 0.f, 0.f, 1.f);
 }
 
-TEST_F(ShuffleRenderTest, ChannelFromInputAReplacesOnlyItsTarget)
+TEST_F(ShuffleRenderTest, ShuffleCopyTakesColorFromInput2AndAlphaFromInput1)
 {
-    createShuffleOnFixture();
+    createShuffleOnFixture("flat-three-layers.exr", PLUGINID_NATRON_SHUFFLECOPY);
     if (HasFatalFailure()) {
         return;
     }
-
-    // Sized like the fixture, so reading A does not grow the output's region of definition.
-    NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
-    ASSERT_TRUE(bool(constant));
-    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName("color").get());
-    ASSERT_TRUE(color != NULL);
-    color->setValues(0.5, 0.5, 0.5, 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
-    KnobChoice* extent = dynamic_cast<KnobChoice*>(constant->getKnobByName("extent").get());
-    KnobDouble* size = dynamic_cast<KnobDouble*>(constant->getKnobByName("size").get());
-    KnobDouble* bottomLeft = dynamic_cast<KnobDouble*>(constant->getKnobByName("bottomLeft").get());
-    ASSERT_TRUE(extent && size && bottomLeft);
-    extent->setValueFromID("size", 0);
-    bottomLeft->setValue(0., ViewSpec::all(), 0);
-    bottomLeft->setValue(0., ViewSpec::all(), 1);
-    size->setValue(kSize, ViewSpec::all(), 0);
-    size->setValue(kSize, ViewSpec::all(), 1);
-    connectNodes(constant, _shuffle, Shuffle::eInputA, true);
-
-    setSlotInput(kShuffleParamIn2Input, Shuffle::eInputA);
-    setLayer(kShuffleParamIn2, kNatronColorLayerID);
+    NodePtr constant;
+    createConstant(0.5, &constant);
     if (HasFatalFailure()) {
         return;
     }
-    _mapping->setSource(1, 3, ShuffleSource::makeInput(2, 3));
+    connectNodes(constant, _shuffle, Shuffle::eInputCopy1, true);
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     FlatExrImage image;
-    render(tmp, "alpha_from_a.exr", &image);
+    render(tmp, "copy_alpha.exr", &image);
     if (HasFatalFailure()) {
         return;
     }
@@ -404,6 +427,27 @@ TEST_F(ShuffleRenderTest, ChannelFromInputAReplacesOnlyItsTarget)
     expectColor(image, 1.f, 0.f, 0.f, 0.5f);
     expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
     expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
+TEST_F(ShuffleRenderTest, ShuffleCopyWithInput1DisconnectedZeroesTheAlphaSilently)
+{
+    createShuffleOnFixture("flat-three-layers.exr", PLUGINID_NATRON_SHUFFLECOPY);
+    if (HasFatalFailure()) {
+        return;
+    }
+    ASSERT_FALSE(bool(_shuffle->getInput(Shuffle::eInputCopy1)));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    render(tmp, "copy_no_input1.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    expectFixtureLayers(image);
+    expectColor(image, 1.f, 0.f, 0.f, 0.f);
 }
 
 TEST_F(ShuffleRenderTest, SingleChannelOutputLayerIsCreatedAndColorPassesThrough)
@@ -421,7 +465,6 @@ TEST_F(ShuffleRenderTest, SingleChannelOutputLayerIsCreatedAndColorPassesThrough
     if (HasFatalFailure()) {
         return;
     }
-    _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 0));
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -435,41 +478,16 @@ TEST_F(ShuffleRenderTest, SingleChannelOutputLayerIsCreatedAndColorPassesThrough
         "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B", "mask.A"
     };
     EXPECT_EQ(expected, channelSet(image));
+    // mask's only channel reads in1's first channel, Color's R, by default.
     EXPECT_NEAR(1.f, valueAt(image, "mask.A"), 1e-4f);
     expectColor(image, 1.f, 0.f, 0.f, 1.f);
     expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
     expectPlane(image, "specular.", 0.f, 0.f, 1.f);
 }
 
-TEST_F(ShuffleRenderTest, ChannelWiredToADisconnectedInputKeepsB)
-{
-    createShuffleOnFixture();
-    if (HasFatalFailure()) {
-        return;
-    }
-    setSlotInput(kShuffleParamIn2Input, Shuffle::eInputA);
-    setLayer(kShuffleParamIn2, kNatronColorLayerID);
-    if (HasFatalFailure()) {
-        return;
-    }
-    ASSERT_FALSE(bool(_shuffle->getInput(Shuffle::eInputA)));
-    _mapping->setSource(1, 3, ShuffleSource::makeInput(2, 3));
+// --- An explicit row whose source becomes unreadable upstream fails the render, naming it ----
 
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-    FlatExrImage image;
-    render(tmp, "disconnected_a.exr", &image);
-    if (HasFatalFailure()) {
-        return;
-    }
-
-    expectFixtureLayers(image);
-    expectColor(image, 1.f, 0.f, 0.f, 1.f);
-}
-
-// --- A wired source that becomes unreadable upstream fails the render, naming the channel ----
-
-TEST_F(ShuffleRenderTest, WiredChannelAbsentFromConnectedInputFailsThenClearsOnFixtureSwitch)
+TEST_F(ShuffleRenderTest, ExplicitRowAbsentFromConnectedInputFailsThenClearsOnFixtureSwitch)
 {
     createShuffleOnFixture("flat-rgba-only.exr");
     if (HasFatalFailure()) {
@@ -479,11 +497,12 @@ TEST_F(ShuffleRenderTest, WiredChannelAbsentFromConnectedInputFailsThenClearsOnF
     if (HasFatalFailure()) {
         return;
     }
-    _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 0));
+    _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
+    ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
-    const std::string path = (tmp.path() + QLatin1String("/wired_channel_missing.exr")).toStdString();
+    const std::string path = (tmp.path() + QLatin1String("/explicit_row_missing.exr")).toStdString();
     _writer->setOutputFilesForWriter(path);
     QFile::remove(QString::fromStdString(path));
 
@@ -505,20 +524,20 @@ TEST_F(ShuffleRenderTest, WiredChannelAbsentFromConnectedInputFailsThenClearsOnF
     }
 
     FlatExrImage image2;
-    render(tmp, "wired_channel_recovered.exr", &image2);
+    render(tmp, "explicit_row_recovered.exr", &image2);
     if (HasFatalFailure()) {
         return;
     }
     EXPECT_FALSE(_shuffle->hasPersistentMessage());
     expectFixtureLayers(image2);
-    expectColor(image2, 0.f, 0.f, 0.f, 1.f);
+    expectColor(image2, 1.f, 1.f, 0.f, 0.f);
     expectPlane(image2, "diffuse.", 0.f, 1.f, 0.f);
     expectPlane(image2, "specular.", 0.f, 0.f, 1.f);
 }
 
-// --- Silent cases: a set-but-unwired slot layer, and a wired row on a None slot --------------
+// --- Silent cases: an implicit default on a missing layer, and an explicit row on a None slot ---
 
-TEST_F(ShuffleRenderTest, UnwiredSlotWithMissingLayerRendersSilently)
+TEST_F(ShuffleRenderTest, ImplicitDefaultOnAMissingLayerRendersZeroSilently)
 {
     createShuffleOnFixture("flat-rgba-only.exr");
     if (HasFatalFailure()) {
@@ -528,40 +547,38 @@ TEST_F(ShuffleRenderTest, UnwiredSlotWithMissingLayerRendersSilently)
     if (HasFatalFailure()) {
         return;
     }
-    // No mapping row references the slot: every output channel keeps B's own value, so the
-    // input's missing "diffuse" layer never surfaces, unlike the wired case above.
+    EXPECT_TRUE(_mapping->getRows().empty());
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     FlatExrImage image;
-    render(tmp, "unwired_missing_layer.exr", &image);
+    render(tmp, "implicit_missing_layer.exr", &image);
     if (HasFatalFailure()) {
         return;
     }
     EXPECT_FALSE(_shuffle->hasPersistentMessage());
-    expectColor(image, 1.f, 0.f, 0.f, 1.f);
+    expectColor(image, 0.f, 0.f, 0.f, 0.f);
 }
 
-TEST_F(ShuffleRenderTest, WiredRowOnANoneSlotRendersAsKeep)
+TEST_F(ShuffleRenderTest, ExplicitRowOnANoneSlotRendersZeroSilently)
 {
     createShuffleOnFixture();
     if (HasFatalFailure()) {
         return;
     }
-    // in2 defaults to None; wiring a row to it anyway proves the row itself, not just its
-    // absence, stays silent and keeps B's value.
     _mapping->setSource(1, 0, ShuffleSource::makeInput(2, 0));
+    ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     FlatExrImage image;
-    render(tmp, "none_slot_keeps.exr", &image);
+    render(tmp, "none_slot_zero.exr", &image);
     if (HasFatalFailure()) {
         return;
     }
     EXPECT_FALSE(_shuffle->hasPersistentMessage());
     expectFixtureLayers(image);
-    expectColor(image, 1.f, 0.f, 0.f, 1.f);
+    expectColor(image, 0.f, 0.f, 0.f, 1.f);
     expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
     expectPlane(image, "specular.", 0.f, 0.f, 1.f);
 }

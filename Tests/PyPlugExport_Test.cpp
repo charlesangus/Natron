@@ -412,7 +412,10 @@ TEST_F(PyPlugExportTest, UserLayerSelectWithChannelButtonsSurvivesProjectRoundTr
 // something relative to the layers currently selected on its in1/in2/out1/out2 slots. The
 // export must translate a row into a channel-name connect() call instead of the knob's own
 // raw value, and must do so after in1/out1 have already been set so ShuffleMapParam::connect()
-// resolves against the same layers the node had when the row was recorded.
+// resolves against the same layers the node had when the row was recorded. It must also emit
+// only the channels that differ from the node kind's own default rows, which this test
+// exercises on both a Shuffle (whose default mapping is empty) and a ShuffleCopy (whose
+// default mapping wires out1.RGB <- in2.RGB explicitly).
 TEST_F(PyPlugExportTest, ShuffleMappingRoundTripsThroughPyPlugExport)
 {
     ProjectPtr project = getApp()->getProject();
@@ -460,16 +463,36 @@ TEST_F(PyPlugExportTest, ShuffleMappingRoundTripsThroughPyPlugExport)
     mapping->setSource(1, 3, ShuffleSource::makeOne());
     ASSERT_EQ(std::size_t(1), mapping->getRows().size());
 
+    CreateNodeArgs shuffleCopyArgs(PLUGINID_NATRON_SHUFFLECOPY, collection);
+    NodePtr shuffleCopy = getApp()->createNode(shuffleCopyArgs);
+    ASSERT_TRUE(bool(shuffleCopy)) << "node creation failed for " << PLUGINID_NATRON_SHUFFLECOPY;
+    const std::string shuffleCopyScriptName = shuffleCopy->getScriptName();
+
+    KnobShuffleMapPtr mappingCopy = std::dynamic_pointer_cast<KnobShuffleMap>(shuffleCopy->getKnobByName(kShuffleParamMapping));
+    ASSERT_TRUE(bool(mappingCopy));
+    // ShuffleCopy's compiled default explicitly wires out1.R/G/B <- in2.R/G/B (in1 and in2
+    // both default to Color). Removing out1.R's row falls back to its identity default,
+    // in1.0 ("in1.R"), which differs from the compiled default, so the exporter must re-emit
+    // it explicitly for the round trip to reproduce it.
+    mappingCopy->setSource(1, 0, KnobShuffleMap::defaultSource(1, 0));
+    ASSERT_EQ(std::size_t(2), mappingCopy->getRows().size());
+
     QString output;
     group->exportGroupToPython(QString::fromUtf8("test.pyplug.shufflemap"), QString::fromUtf8("ShuffleMapGroup"), QString(), QString(), QString::fromUtf8("Other"), 1, output);
 
     EXPECT_TRUE(output.contains(QString::fromUtf8("app.addProjectLayer(\"diffuse\", [\"R\", \"G\", \"B\"])")));
     EXPECT_TRUE(output.contains(QString::fromUtf8("app.addProjectLayer(\"spec2\", [\"R\", \"G\", \"B\", \"A\"])")));
     EXPECT_TRUE(output.contains(QString::fromUtf8("param.connect(\"1\", \"out1.A\")")));
+    EXPECT_TRUE(output.contains(QString::fromUtf8("param.connect(\"in1.R\", \"out1.R\")")));
+
+    // out1.G and out1.B still match ShuffleCopy's compiled default (in2.G/in2.B), so they
+    // must not be re-emitted.
+    EXPECT_FALSE(output.contains(QString::fromUtf8("out1.G")));
+    EXPECT_FALSE(output.contains(QString::fromUtf8("out1.B")));
 
     // The mapping knob's raw (index-based) value must not also be emitted alongside the
-    // connect() call: getParam("mapping") should be fetched exactly once.
-    EXPECT_EQ(1, output.count(QString::fromUtf8("getParam(\"mapping\")")));
+    // connect() calls: getParam("mapping") should be fetched exactly once per node.
+    EXPECT_EQ(2, output.count(QString::fromUtf8("getParam(\"mapping\")")));
 
     project->reset(false, true);
 
@@ -505,6 +528,28 @@ TEST_F(PyPlugExportTest, ShuffleMappingRoundTripsThroughPyPlugExport)
     EXPECT_EQ(1, rows2[0].outSlot);
     EXPECT_EQ(3, rows2[0].outIndex);
     EXPECT_EQ(ShuffleSource::eOne, rows2[0].src.kind);
+
+    NodePtr shuffleCopy2 = containerCollection->getNodeByName(shuffleCopyScriptName);
+    ASSERT_TRUE(bool(shuffleCopy2));
+
+    KnobShuffleMapPtr mappingCopy2 = std::dynamic_pointer_cast<KnobShuffleMap>(shuffleCopy2->getKnobByName(kShuffleParamMapping));
+    ASSERT_TRUE(bool(mappingCopy2));
+    // Replaying connect("in1.R", "out1.R") on a fresh node (whose default already has
+    // out1.R <- in2.R) normalises the row away again, reproducing mappingCopy's original
+    // two-row state exactly.
+    EXPECT_EQ(std::size_t(2), mappingCopy2->getRows().size());
+    ShuffleSource copyR2 = mappingCopy2->getSource(1, 0);
+    EXPECT_EQ(ShuffleSource::eInput, copyR2.kind);
+    EXPECT_EQ(1, copyR2.slot);
+    EXPECT_EQ(0, copyR2.index);
+    ShuffleSource copyG2 = mappingCopy2->getSource(1, 1);
+    EXPECT_EQ(ShuffleSource::eInput, copyG2.kind);
+    EXPECT_EQ(2, copyG2.slot);
+    EXPECT_EQ(1, copyG2.index);
+    ShuffleSource copyB2 = mappingCopy2->getSource(1, 2);
+    EXPECT_EQ(ShuffleSource::eInput, copyB2.kind);
+    EXPECT_EQ(2, copyB2.slot);
+    EXPECT_EQ(2, copyB2.index);
 
     project->reset(false, true);
 }

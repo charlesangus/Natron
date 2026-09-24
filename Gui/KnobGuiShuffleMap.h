@@ -43,7 +43,7 @@ struct KnobGuiShuffleMapPrivate;
 /**
  * @brief The GUI of the Shuffle node's KnobShuffleMap: a toggle matrix with one exclusive
  * row per output channel of out1 (and of out2 when set), and one column per channel of
- * in1, per channel of in2, then keep, 0 and 1. A slot whose layer its input does not carry
+ * in1, per channel of in2, then 0 and 1. A slot whose layer its input does not carry
  * keeps its columns, greyed out, and its header shows the "(not in input)" marker.
  **/
 class KnobGuiShuffleMap

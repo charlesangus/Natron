@@ -35,12 +35,12 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobShuffleMap.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define PLUGINID_NATRON_SHUFFLE "fr.natron.Shuffle"
+#define PLUGINID_NATRON_SHUFFLECOPY "fr.natron.ShuffleCopy"
 
-#define kShuffleParamIn1Input "in1Input"
-#define kShuffleParamIn2Input "in2Input"
 #define kShuffleParamIn1 "in1"
 #define kShuffleParamIn2 "in2"
 #define kShuffleParamOut1 "out1"
@@ -49,24 +49,22 @@
 
 NATRON_NAMESPACE_ENTER
 
-class KnobShuffleMap;
-
 /**
  * @brief Moves channels between layers: the only node allowed to produce a plane whose
  * channels differ from its source's.
  *
- * Two input slots (in1, in2), each a layer read from input B or A, feed two output layers
- * (out1, out2). Every output channel takes its source from the mapping knob: a slot channel,
- * a constant 0 or 1, or keep, which is B's same channel of the same layer. Only out1 and out2
- * are produced; every other layer of B passes through untouched, Color included unless it is
- * an output.
+ * Two input slots (in1, in2), each a layer, feed two output layers (out1, out2). Shuffle reads
+ * both slots from its one input; ShuffleCopy reads in2 from its main input "2" and in1 from
+ * input "1". Every output channel outK.i takes the source its mapping row names (a slot
+ * channel, 0 or 1), or inK.i when it has no row. Only out1 and out2 are produced; every other
+ * layer of the main input passes through untouched, Color included unless it is an output.
  **/
 class Shuffle
     : public NativeEffectBase {
 public:
     enum InputEnum {
-        eInputB = 0,
-        eInputA = 1
+        eInputMain = 0,
+        eInputCopy1 = 1
     };
 
     static EffectInstance* BuildEffect(NodePtr node)
@@ -102,7 +100,15 @@ public:
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief The input slot slot (1 or 2) reads from: eInputB or eInputA.
+     * @brief Whether this is a ShuffleCopy, whose in1 reads input "1" rather than the main input.
+     **/
+    virtual bool isCopy() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief The input slot (1 or 2) reads from: eInputMain, or eInputCopy1 for a ShuffleCopy's in1.
      **/
     int getSlotInput(int slot) const WARN_UNUSED_RETURN;
 
@@ -117,12 +123,20 @@ public:
      **/
     std::string getOutputLayer(int slot) const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The source outSlot's channel outIndex actually renders from. A mapping row is
+     * returned as stored. Without one, the implicit inK.i (K = outSlot, i = outIndex) is 0 when
+     * slot K is None or when i is at or beyond the channel count of slot K's layer, Color
+     * counting as RGBA.
+     **/
+    ShuffleSource getEffectiveSource(int outSlot, int outIndex) const WARN_UNUSED_RETURN;
+
 protected:
     virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
 
-private:
-    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE WARN_UNUSED_RETURN;
 
+private:
     virtual void initializeKnobs() OVERRIDE FINAL;
 
     virtual bool knobChanged(KnobI* k,
@@ -151,11 +165,11 @@ private:
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief A row wired to a slot whose input is connected but that no longer carries the
-     * slot's layer, or whose index is beyond it, fails the render naming that channel. A
-     * disconnected input, a None slot or an unwired channel is silent (keep). The mapping
-     * knob stores overrides only, so this is the node that resolves their readability, mirroring
-     * checkSelectedChannelsPresent()'s mask rule.
+     * @brief An explicit row wired to a slot whose input is connected but that no longer carries
+     * the slot's layer, or whose index is beyond it, fails the render naming that channel. A
+     * disconnected input, a None slot or a channel with no row is silent and renders 0. The
+     * mapping knob stores overrides only, so this is the node that resolves their readability,
+     * mirroring checkSelectedChannelsPresent()'s mask rule.
      **/
     virtual bool checkExtraChannelsPresent(std::string* message) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -181,7 +195,13 @@ private:
                              const std::string& layerID,
                              std::vector<FetchedPlane>* fetched);
 
-    void syncSlotInputs();
+    /**
+     * @brief The number of channels layerID has, Color counting as RGBA, resolved against the
+     * project registry and then inputNb's present layers. -1 when neither knows the layer.
+     **/
+    int layerChannelCount(const std::string& layerID, int inputNb) const WARN_UNUSED_RETURN;
+
+    bool slotIsRead(int slot) const WARN_UNUSED_RETURN;
 
     bool mappingReadsInput(int inputNb) const WARN_UNUSED_RETURN;
 
@@ -206,14 +226,37 @@ private:
 
     void refreshSubLabel();
 
-    KnobChoiceWPtr _in1Input;
-    KnobChoiceWPtr _in2Input;
     KnobLayerSelectWPtr _in1;
     KnobLayerSelectWPtr _in2;
     KnobLayerSelectWPtr _out1;
     KnobLayerSelectWPtr _out2;
     std::weak_ptr<KnobShuffleMap> _mapping;
     KnobStringWPtr _subLabel;
+};
+
+/**
+ * @brief A Shuffle whose in1 reads a second input: input 0 ("2") is the main input and feeds
+ * in2, input 1 ("1") feeds in1. By default out1's RGB comes from "2" and its alpha from "1".
+ **/
+class ShuffleCopy
+    : public Shuffle {
+public:
+    static EffectInstance* BuildEffect(NodePtr node)
+    {
+        return new ShuffleCopy(node);
+    }
+
+    explicit ShuffleCopy(NodePtr node);
+
+    virtual ~ShuffleCopy();
+
+    virtual bool isCopy() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+protected:
+    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -322,7 +322,7 @@ API pinned for batch 1, which every task codes against:
     - `in1`'s own row is hidden.
     - "New layer…" appears on the out1 combo.
   - size: L
-- [ ] M34.P6.T8 — Port DropShadow, Fill, Glow and EdgeBlur to Shuffle/ShuffleCopy with explicit connections
+- [x] M34.P6.T8 — Port DropShadow, Fill, Glow and EdgeBlur to Shuffle/ShuffleCopy with explicit connections
   - batch: 2
   - files: `Gui/Resources/PyPlugs/DropShadow.py`, `Gui/Resources/PyPlugs/Fill.py`, `Gui/Resources/PyPlugs/Glow.py`, `Gui/Resources/PyPlugs/EdgeBlur.py`, `build/m34scout/pyplugs_p41.py`
   - approach:
@@ -335,7 +335,7 @@ API pinned for batch 1, which every task codes against:
     - `test.sh smoke debug` is green.
     - `pyplugs_p41.py` asserts each inner node's plugin ID and full `getConnections()`, and renders the old expected pixels.
   - size: M
-- [ ] M34.P6.T9 — Port LightWrap and PIKColor, and re-verify ZRemap and ZMask
+- [x] M34.P6.T9 — Port LightWrap and PIKColor, and re-verify ZRemap and ZMask
   - batch: 2
   - files: `Gui/Resources/PyPlugs/LightWrap.py`, `Gui/Resources/PyPlugs/PIKColor.py`, `build/m34scout/pyplugs_p42.py`, `build/m34scout/zplugs.py`
   - approach:

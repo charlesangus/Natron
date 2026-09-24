@@ -37,7 +37,7 @@ def paramChanged(thisParam, thisNode, thisGroup, app, userEdited):
     if thisParam.getScriptName() != "screenType":
         return
     mapping = thisNode.getNode("Shuffle1").getParam("mapping")
-    mapping.connect("in2.G" if thisParam.get() == 0 else "in2.B", "out1.A")
+    mapping.connect("in1.G" if thisParam.get() == 0 else "in1.B", "out1.A")
 
 def createInstance(app,group):
     # Create all nodes in the group
@@ -370,7 +370,7 @@ def createInstance(app,group):
     # End of node "Dot2"
 
     # Start of node "ShuffleCopy3"
-    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
+    lastNode = app.createNode("fr.natron.ShuffleCopy", 1, group)
     lastNode.setScriptName("ShuffleCopy3")
     lastNode.setLabel("ShuffleCopy3")
     lastNode.setPosition(272, 35)
@@ -385,7 +385,10 @@ def createInstance(app,group):
 
     param = lastNode.getParam("mapping")
     if param is not None:
-        param.connect("in2.A", "out1.A")
+        param.connect("in2.R", "out1.R")
+        param.connect("in2.G", "out1.G")
+        param.connect("in2.B", "out1.B")
+        param.connect("in1.A", "out1.A")
         del param
 
     param = lastNode.getParam("userTextArea")
@@ -468,7 +471,7 @@ def createInstance(app,group):
     # End of node "Clamp1"
 
     # Start of node "ChannelCopy1"
-    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
+    lastNode = app.createNode("fr.natron.ShuffleCopy", 1, group)
     lastNode.setScriptName("ChannelCopy1")
     lastNode.setLabel("ChannelCopy1")
     lastNode.setPosition(411, 292)
@@ -483,7 +486,10 @@ def createInstance(app,group):
 
     param = lastNode.getParam("mapping")
     if param is not None:
-        param.connect("in2.A", "out1.A")
+        param.connect("in2.R", "out1.R")
+        param.connect("in2.G", "out1.G")
+        param.connect("in2.B", "out1.B")
+        param.connect("in1.A", "out1.A")
         del param
 
     param = lastNode.getParam("userTextArea")
@@ -507,7 +513,7 @@ def createInstance(app,group):
     # End of node "Dot4"
 
     # Start of node "ShuffleCopy2"
-    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
+    lastNode = app.createNode("fr.natron.ShuffleCopy", 1, group)
     lastNode.setScriptName("ShuffleCopy2")
     lastNode.setLabel("ShuffleCopy2")
     lastNode.setPosition(413, 602)
@@ -522,7 +528,10 @@ def createInstance(app,group):
 
     param = lastNode.getParam("mapping")
     if param is not None:
-        param.connect("in2.A", "out1.A")
+        param.connect("in2.R", "out1.R")
+        param.connect("in2.G", "out1.G")
+        param.connect("in2.B", "out1.B")
+        param.connect("in1.A", "out1.A")
         del param
 
     param = lastNode.getParam("userTextArea")
@@ -619,7 +628,7 @@ def createInstance(app,group):
     # End of node "Merge1"
 
     # Start of node "ChannelCopy2"
-    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
+    lastNode = app.createNode("fr.natron.ShuffleCopy", 1, group)
     lastNode.setScriptName("ChannelCopy2")
     lastNode.setLabel("ChannelCopy2")
     lastNode.setPosition(272, 886)
@@ -634,7 +643,10 @@ def createInstance(app,group):
 
     param = lastNode.getParam("mapping")
     if param is not None:
-        param.connect("in2.A", "out1.A")
+        param.connect("in2.R", "out1.R")
+        param.connect("in2.G", "out1.G")
+        param.connect("in2.B", "out1.B")
+        param.connect("in1.A", "out1.A")
         del param
 
     del lastNode
@@ -934,15 +946,13 @@ def createInstance(app,group):
     lastNode.setColor(0.6, 0.24, 0.39)
     groupShuffle1 = lastNode
 
-    param = lastNode.getParam("in2")
-    if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour")
-        del param
-
     # Matches screenType's default (Blue) so the initial render is correct before any edit.
     param = lastNode.getParam("mapping")
     if param is not None:
-        param.connect("in2.B", "out1.A")
+        param.connect("0", "out1.R")
+        param.connect("0", "out1.G")
+        param.connect("0", "out1.B")
+        param.connect("in1.B", "out1.A")
         del param
 
     param = lastNode.getParam("userTextArea")
@@ -1059,7 +1069,7 @@ def createInstance(app,group):
     groupBlurBox1.connectInput(0, groupDilateFast1)
     groupBlurBox2.connectInput(0, groupDilateFast2)
     groupUnpremult2.connectInput(0, groupMerge1)
-    groupShuffle1.connectInput(1, groupUnpremult4)
+    groupShuffle1.connectInput(0, groupUnpremult4)
     groupDilateFast1.connectInput(0, groupInvert2)
     groupDilateFast2.connectInput(0, groupInvert2)
 

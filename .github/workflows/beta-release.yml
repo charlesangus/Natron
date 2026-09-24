@@ -1,0 +1,36 @@
+name: Beta Release
+
+on:
+  workflow_run:
+    workflows: ['Tests']
+    types: [completed]
+
+jobs:
+  dispatch-beta:
+    name: dispatch-beta
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    # `main`'s branch protection already requires the Checks workflow (format,
+    # lint-ci) and this Tests workflow's build-and-test job to pass before a
+    # merge can land, so a green post-merge Tests run implies Checks already
+    # passed too. Keying off Tests alone is therefore not a gap; re-checking
+    # Checks' conclusion here would just be redundant cross-workflow polling.
+    # Revisit only if branch protection on `main` is ever relaxed.
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v5.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compute next beta tag
+        id: next_tag
+        run: echo "tag=$(tools/release/next-beta-tag.sh)" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch release workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release.yml --ref main -f tag="${{ steps.next_tag.outputs.tag }}"

@@ -43,20 +43,27 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Create and push dispatch tag
+      - name: Resolve dispatch tag
         if: github.event_name == 'workflow_dispatch'
-        # beta-release.yml pushes the tag itself before dispatching, so it
-        # already exists on ad-hoc/manual dispatches; only create it here.
+        # A dispatch always checks out main, but beta-release.yml tags the
+        # commit its Tests run passed on, which main may have moved past.
+        # An existing tag therefore has to be checked out, submodules
+        # included, so the build matches the tag. Only a tag that doesn't
+        # exist yet is created, at the checked-out HEAD.
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists on origin, skipping creation"
+            git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
+            git checkout --force --detach "refs/tags/$TAG"
+            git submodule sync --recursive
+            git submodule update --init --force --recursive
           else
             git tag -a "$TAG" -m "$TAG"
-            git push origin "$TAG"
+            git push origin "refs/tags/$TAG"
           fi
+          echo "Building $TAG at $(git rev-parse HEAD)"
 
       - name: Restore ccache
         id: restore_ccache

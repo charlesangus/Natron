@@ -54,6 +54,7 @@
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
+#include <ofxNatron.h>
 
 NATRON_NAMESPACE_USING
 
@@ -499,4 +500,48 @@ TEST_F(ShuffleTest, EffectiveSourceZeroesAnImplicitChannelTheSlotLacks)
 
     mapping->setSource(1, 1, ShuffleSource::makeInput(2, 1));
     EXPECT_EQ(ShuffleSource::makeInput(2, 1), shuffleFx->getEffectiveSource(1, 1));
+}
+
+TEST_F(ShuffleTest, SubLabelFollowsTheMapping)
+{
+    NodePtr shuffle = createShuffleOnReader();
+
+    ASSERT_TRUE(bool(shuffle));
+    std::shared_ptr<KnobShuffleMap> mapping = mappingKnob(shuffle);
+    KnobLayerSelectPtr in1 = layerKnob(shuffle, kShuffleParamIn1);
+    KnobLayerSelectPtr in2 = layerKnob(shuffle, kShuffleParamIn2);
+    KnobLayerSelectPtr out1 = layerKnob(shuffle, kShuffleParamOut1);
+    KnobLayerSelectPtr out2 = layerKnob(shuffle, kShuffleParamOut2);
+    KnobStringPtr sublabel = std::dynamic_pointer_cast<KnobString>(shuffle->getKnobByName(kNatronOfxParamStringSublabelName));
+    ASSERT_TRUE(bool(mapping));
+    ASSERT_TRUE(bool(in1));
+    ASSERT_TRUE(bool(in2));
+    ASSERT_TRUE(bool(out1));
+    ASSERT_TRUE(bool(out2));
+    ASSERT_TRUE(bool(sublabel));
+
+    in1->setLayer(kNatronColorLayerID);
+    in2->setLayer("specular");
+    out1->setLayer(kNatronColorLayerID);
+    out2->setLayer("diffuse");
+
+    // Out1 only passes Color through, so only out2 (fed by specular) is named.
+    const std::string arrow = " \xE2\x86\x92 ";
+    const std::string specularToDiffuse = sublabel->getValue();
+    const std::size_t arrowPos = specularToDiffuse.find(arrow);
+    ASSERT_NE(std::string::npos, arrowPos) << specularToDiffuse;
+    const std::string specular = specularToDiffuse.substr(0, arrowPos);
+    const std::string diffuse = specularToDiffuse.substr(arrowPos + arrow.size());
+    const std::string color = ImageLayerDesc::getRGBAComponents().getLayerLabel();
+    EXPECT_FALSE(specular.empty());
+    EXPECT_FALSE(diffuse.empty());
+
+    mapping->setSource(1, 0, ShuffleSource::makeInput(2, 0));
+    EXPECT_EQ(color + ", " + specular + arrow + color + ", " + specularToDiffuse, sublabel->getValue());
+
+    mapping->setSource(2, 1, ShuffleSource::makeInput(1, 1));
+    EXPECT_EQ(color + ", " + specular + arrow + color + ", " + color + ", " + specular + arrow + diffuse, sublabel->getValue());
+
+    mapping->setSource(1, 0, ShuffleSource::makeInput(1, 0));
+    EXPECT_EQ(color + ", " + specular + arrow + diffuse, sublabel->getValue());
 }

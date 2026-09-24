@@ -143,8 +143,8 @@ Shuffle::initializeKnobs()
     configureLayerSelect(in1, kShuffleParamIn1, true, false);
     in1->setHintToolTip(copy
                             ? tr("The layer the first slot reads from input 1.")
-                            : tr("The layer the first slot reads. A layer the input no longer has is kept and marked "
-                                 "\"(not in input)\"."));
+                            : tr("The layer the first slot reads. A layer the input no longer has stays selected "
+                                 "and is marked \"(not in input)\"."));
     page->addKnob(in1);
     _in1 = in1;
 
@@ -309,11 +309,15 @@ Shuffle::knobChanged(KnobI* k,
     KnobLayerSelectPtr in2 = _in2.lock();
     KnobLayerSelectPtr out1 = _out1.lock();
     KnobLayerSelectPtr out2 = _out2.lock();
+    std::shared_ptr<KnobShuffleMap> mapping = _mapping.lock();
 
     if ((in1 && k == in1.get()) || (in2 && k == in2.get()) || (out1 && k == out1.get()) || (out2 && k == out2.get())) {
         refreshSubLabel();
 
         return true;
+    }
+    if (mapping && k == mapping.get()) {
+        refreshSubLabel();
     }
 
     return false;
@@ -423,22 +427,63 @@ Shuffle::buildSubLabel()
     const double time = app ? app->getTimeLine()->currentFrame() : 0.;
     const ViewIdx view(0);
 
-    const std::string in1Layer = getSlotLayer(1);
-    const std::string out1Layer = getOutputLayer(1);
-    const std::string out1Label = resolveLayerLabel(out1Layer, (int)eInputMain, time, view);
+    std::string result;
+    for (int outSlot = 1; outSlot <= 2; ++outSlot) {
+        const std::string outLayer = getOutputLayer(outSlot);
+        if (outLayer.empty()) {
+            continue;
+        }
+        const std::string outLabel = resolveLayerLabel(outLayer, (int)eInputMain, time, view);
 
-    std::string result = in1Layer.empty()
-        ? out1Label
-        : resolveLayerLabel(in1Layer, getSlotInput(1), time, view) + kArrow + out1Label;
+        // Walk every channel this output actually produces and note which input slots feed
+        // it, so a slot the mapping never reads (or that is only ever zero/one) is left out.
+        bool usesSlot1 = false;
+        bool usesSlot2 = false;
+        const int nChannels = layerChannelCount(outLayer, (int)eInputMain);
+        for (int c = 0, n = (nChannels < 0) ? 4 : nChannels; c < n; ++c) {
+            const ShuffleSource src = getEffectiveSource(outSlot, c);
+            if (src.kind != ShuffleSource::eInput) {
+                continue;
+            }
+            if (src.slot == 1) {
+                usesSlot1 = true;
+            } else if (src.slot == 2) {
+                usesSlot2 = true;
+            }
+        }
 
-    const std::string out2Layer = getOutputLayer(2);
-    if (!out2Layer.empty()) {
-        const std::string in2Layer = getSlotLayer(2);
-        const std::string out2Label = resolveLayerLabel(out2Layer, (int)eInputMain, time, view);
-        const std::string secondary = in2Layer.empty()
-            ? out2Label
-            : resolveLayerLabel(in2Layer, getSlotInput(2), time, view) + kArrow + out2Label;
-        result += ", " + secondary;
+        std::vector<std::string> feedingLabels;
+        if (usesSlot1) {
+            feedingLabels.push_back(resolveLayerLabel(getSlotLayer(1), getSlotInput(1), time, view));
+        }
+        if (usesSlot2) {
+            const std::string label2 = resolveLayerLabel(getSlotLayer(2), getSlotInput(2), time, view);
+            if (feedingLabels.empty() || feedingLabels.front() != label2) {
+                feedingLabels.push_back(label2);
+            }
+        }
+
+        // A single feeding layer with the same name as the output is a plain passthrough:
+        // nothing to call out, so this output contributes nothing to the sub-label.
+        const bool isIdentity = (feedingLabels.size() == 1) && (feedingLabels.front() == outLabel);
+        if (feedingLabels.empty() || isIdentity) {
+            continue;
+        }
+
+        std::string block;
+        for (std::size_t i = 0; i < feedingLabels.size(); ++i) {
+            if (i > 0) {
+                block += ", ";
+            }
+            block += feedingLabels[i];
+        }
+        block += kArrow;
+        block += outLabel;
+
+        if (!result.empty()) {
+            result += ", ";
+        }
+        result += block;
     }
 
     return result;

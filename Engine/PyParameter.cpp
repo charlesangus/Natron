@@ -26,8 +26,11 @@
 #include "PyParameter.h"
 
 #include <cassert>
+#include <cctype>
+#include <cstdlib>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "Engine/AppInstance.h"
@@ -2797,6 +2800,75 @@ shuffleMapFindChannelIndex(const std::vector<std::string>& channels,
 }
 
 /**
+ * @brief A channel written as its index within the slot's layer, all digits.
+ **/
+static bool
+shuffleMapParseIndex(const std::string& text,
+                     int* index)
+{
+    if (text.empty() || (text.size() > 9)) {
+        return false;
+    }
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (!std::isdigit((unsigned char)text[i])) {
+            return false;
+        }
+    }
+    *index = std::atoi(text.c_str());
+
+    return true;
+}
+
+/**
+ * @brief channel's index on slot: a channel name of the slot's current layer or, when no name
+ * matches (the slot is None, its layer does not resolve, or it has fewer channels than a
+ * stored row refers to), the index itself written as digits.
+ **/
+static bool
+shuffleMapResolveChannelIndex(const KnobShuffleMapPtr& knob,
+                              const std::string& slot,
+                              const std::string& channel,
+                              int* index,
+                              std::string* error)
+{
+    std::vector<std::string> channels;
+    std::string resolveError;
+    const bool resolved = shuffleMapResolveLayerChannels(knob, slot, &channels, &resolveError);
+
+    if (resolved && shuffleMapFindChannelIndex(channels, channel, index)) {
+        return true;
+    }
+    if (shuffleMapParseIndex(channel, index)) {
+        return true;
+    }
+    *error = resolved ? ("\"" + channel + "\" is not a channel of " + slot + "'s current layer") : resolveError;
+
+    return false;
+}
+
+/**
+ * @brief "slot.<name>" for index on slot's current layer, or "slot.<index>" when the slot has
+ * no layer channel at that index, so a stored row always has a form
+ * shuffleMapResolveChannelIndex() reads back to the same index.
+ **/
+static std::string
+shuffleMapFormatChannel(const KnobShuffleMapPtr& knob,
+                        const std::string& slot,
+                        int index)
+{
+    if (index < 0) {
+        return std::string();
+    }
+    std::vector<std::string> channels;
+    std::string error;
+    if (shuffleMapResolveLayerChannels(knob, slot, &channels, &error) && ((std::size_t)index < channels.size())) {
+        return slot + "." + channels[index];
+    }
+
+    return slot + "." + std::to_string(index);
+}
+
+/**
  * @brief Splits "slot.channel" at the first '.'. Neither half may be empty.
  **/
 static bool
@@ -2838,16 +2910,7 @@ shuffleMapParseDst(const KnobShuffleMapPtr& knob,
         return false;
     }
 
-    std::vector<std::string> channels;
-    if (!shuffleMapResolveLayerChannels(knob, slot, &channels, error)) {
-        return false;
-    }
-    if (!shuffleMapFindChannelIndex(channels, channel, outIndex)) {
-        *error = "\"" + channel + "\" is not a channel of " + slot + "'s current layer";
-        return false;
-    }
-
-    return true;
+    return shuffleMapResolveChannelIndex(knob, slot, channel, outIndex, error);
 }
 
 static bool
@@ -2883,13 +2946,8 @@ shuffleMapParseSrc(const KnobShuffleMapPtr& knob,
         return false;
     }
 
-    std::vector<std::string> channels;
-    if (!shuffleMapResolveLayerChannels(knob, slot, &channels, error)) {
-        return false;
-    }
     int index = 0;
-    if (!shuffleMapFindChannelIndex(channels, channel, &index)) {
-        *error = "\"" + channel + "\" is not a channel of " + slot + "'s current layer";
+    if (!shuffleMapResolveChannelIndex(knob, slot, channel, &index, error)) {
         return false;
     }
     *src = ShuffleSource::makeInput(slotNumber, index);
@@ -2906,16 +2964,8 @@ shuffleMapFormatSrc(const KnobShuffleMapPtr& knob,
         return "0";
     case ShuffleSource::eOne:
         return "1";
-    case ShuffleSource::eInput: {
-        std::string slot = (src.slot == 1) ? "in1" : "in2";
-        std::vector<std::string> channels;
-        std::string error;
-        if (!shuffleMapResolveLayerChannels(knob, slot, &channels, &error) || src.index < 0 || (std::size_t)src.index >= channels.size()) {
-            return std::string();
-        }
-
-        return slot + "." + channels[src.index];
-    }
+    case ShuffleSource::eInput:
+        return shuffleMapFormatChannel(knob, (src.slot == 1) ? "in1" : "in2", src.index);
     }
 
     return std::string();
@@ -2926,15 +2976,7 @@ shuffleMapFormatDst(const KnobShuffleMapPtr& knob,
                     int outSlot,
                     int outIndex)
 {
-    std::string slot = (outSlot == 1) ? "out1" : "out2";
-    std::vector<std::string> channels;
-    std::string error;
-
-    if (!shuffleMapResolveLayerChannels(knob, slot, &channels, &error) || outIndex < 0 || (std::size_t)outIndex >= channels.size()) {
-        return std::string();
-    }
-
-    return slot + "." + channels[outIndex];
+    return shuffleMapFormatChannel(knob, (outSlot == 1) ? "out1" : "out2", outIndex);
 }
 
 /**

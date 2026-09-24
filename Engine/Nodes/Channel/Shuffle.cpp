@@ -34,6 +34,7 @@
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
+#include "Engine/ChoiceOption.h"
 #include "Engine/Image.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobShuffleMap.h"
@@ -98,6 +99,7 @@ Shuffle::Shuffle(NodePtr node)
     , _out1()
     , _out2()
     , _mapping()
+    , _bbox()
     , _subLabel()
 {
 }
@@ -191,6 +193,25 @@ Shuffle::initializeKnobs()
     }
     page->addKnob(mapping);
     _mapping = mapping;
+
+    if (copy) {
+        KnobChoicePtr bbox = createKnob<KnobChoice>(tr("BBox"));
+        bbox->setName(kShuffleCopyParamBBox);
+        bbox->setAnimationEnabled(false);
+        std::vector<ChoiceOption> choices;
+        choices.push_back(ChoiceOption("union", tr("Union").toStdString(), tr("The union of both inputs' regions.").toStdString()));
+        choices.push_back(ChoiceOption("2", "2", tr("Input 2's region, the main input.").toStdString()));
+        choices.push_back(ChoiceOption("1", "1", tr("Input 1's region.").toStdString()));
+        choices.push_back(ChoiceOption("intersection", tr("Intersection").toStdString(), tr("Where both inputs' regions overlap; empty when they do not.").toStdString()));
+        bbox->populateChoices(choices);
+        bbox->setDefaultValue((int)eBBoxUnion);
+        bbox->setHintToolTip(tr("The region of definition when both inputs are connected. Union covers both "
+                                "inputs, 2 takes input 2's (the main input), 1 takes input 1's, and Intersection "
+                                "keeps only where they overlap. With one input connected its region is used "
+                                "whatever this is set to. The format always comes from input 2."));
+        page->addKnob(bbox);
+        _bbox = bbox;
+    }
 
     // Follows PrecompNode's kNatronOfxParamStringSublabelName precedent: Node.cpp wraps
     // this knob's value in parentheses and shows it next to the node's label on its own.
@@ -318,6 +339,12 @@ Shuffle::knobChanged(KnobI* k,
     }
     if (mapping && k == mapping.get()) {
         refreshSubLabel();
+        // The layer knobs reach this through their metadata refresh; the mapping is no
+        // metadata, yet fixing or removing a row can still retire a missing-channel error.
+        NodePtr node = getNode();
+        if (node) {
+            node->refreshChannelSelectors();
+        }
     }
 
     return false;
@@ -343,21 +370,6 @@ Shuffle::slotIsRead(int slot) const
             if ((src.kind == ShuffleSource::eInput) && (src.slot == slot)) {
                 return true;
             }
-        }
-    }
-
-    return false;
-}
-
-bool
-Shuffle::mappingReadsInput(int inputNb) const
-{
-    for (int slot = 1; slot <= 2; ++slot) {
-        if (getSlotLayer(slot).empty() || (getSlotInput(slot) != inputNb)) {
-            continue;
-        }
-        if (slotIsRead(slot)) {
-            return true;
         }
     }
 
@@ -589,32 +601,59 @@ Shuffle::getRegionOfDefinition(U64 /*hash*/,
                                ViewIdx view,
                                RectD* rod)
 {
-    bool rodSet = false;
-    const int nInputs = getNInputs();
+    RectD inputRods[2];
+    bool connected[2] = { false, false };
+    const int nInputs = std::min(getNInputs(), 2);
 
     for (int inputNb = 0; inputNb < nInputs; ++inputNb) {
-        if ((inputNb != (int)eInputMain) && rodSet && !mappingReadsInput(inputNb)) {
-            continue;
-        }
         EffectInstancePtr input = getInput(inputNb);
         if (!input) {
             continue;
         }
-        RectD inputRod;
         bool isProjectFormat = false;
-        StatusEnum st = input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, &inputRod, &isProjectFormat);
+        StatusEnum st = input->getRegionOfDefinition_public(input->getRenderHash(), time, scale, view, &inputRods[inputNb], &isProjectFormat);
         if (st == eStatusFailed) {
             return st;
         }
-        if (rodSet) {
-            rod->merge(inputRod);
-        } else {
-            *rod = inputRod;
-            rodSet = true;
-        }
+        connected[inputNb] = true;
     }
 
-    return rodSet ? eStatusOK : eStatusReplyDefault;
+    if (!connected[0] && !connected[1]) {
+        return eStatusReplyDefault;
+    }
+    if (!connected[0] || !connected[1]) {
+        *rod = connected[0] ? inputRods[0] : inputRods[1];
+
+        return eStatusOK;
+    }
+
+    switch (getBBox()) {
+    case eBBoxMain:
+        *rod = inputRods[eInputMain];
+        break;
+    case eBBoxInput1:
+        *rod = inputRods[eInputCopy1];
+        break;
+    case eBBoxIntersection:
+        *rod = inputRods[0].intersect(inputRods[1]);
+        break;
+    case eBBoxUnion:
+    default:
+        *rod = inputRods[0];
+        rod->merge(inputRods[1]);
+        break;
+    }
+
+    return eStatusOK;
+}
+
+Shuffle::BBoxEnum
+Shuffle::getBBox() const
+{
+    KnobChoicePtr bbox = _bbox.lock();
+    const int value = bbox ? bbox->getValue() : (int)eBBoxUnion;
+
+    return ((value >= (int)eBBoxUnion) && (value <= (int)eBBoxIntersection)) ? (BBoxEnum)value : eBBoxUnion;
 }
 
 void
@@ -822,7 +861,9 @@ Shuffle::render(const RenderActionArgs& args)
 } // Shuffle::render
 
 bool
-Shuffle::checkExtraChannelsPresent(std::string* message)
+Shuffle::checkExtraChannelsPresent(double time,
+                                   ViewIdx view,
+                                   std::string* message)
 {
     std::shared_ptr<KnobShuffleMap> mapping = _mapping.lock();
 
@@ -830,17 +871,22 @@ Shuffle::checkExtraChannelsPresent(std::string* message)
         return true;
     }
 
-    AppInstancePtr app = getApp();
-    const double time = app ? app->getTimeLine()->currentFrame() : 0.;
-    const ViewIdx view(0);
+    int outChannels[2] = { 0, 0 };
+    for (int slot = 1; slot <= 2; ++slot) {
+        const std::string outLayer = getOutputLayer(slot);
+        ImageLayerDesc outDesc;
+        if (!outLayer.empty() && resolveOutputLayerDesc(outLayer, time, view, &outDesc)) {
+            outChannels[slot - 1] = outDesc.getNumComponents();
+        }
+    }
 
     const std::vector<ShuffleMapRow> rows = mapping->getRows();
     for (std::vector<ShuffleMapRow>::const_iterator it = rows.begin(); it != rows.end(); ++it) {
         if (it->src.kind != ShuffleSource::eInput) {
             continue;
         }
-        if (getOutputLayer(it->outSlot).empty()) {
-            continue; // The row's output is not produced, so nothing reads it.
+        if ((it->outSlot < 1) || (it->outSlot > 2) || (it->outIndex < 0) || (it->outIndex >= outChannels[it->outSlot - 1])) {
+            continue; // The render produces no such output channel, so nothing reads the row.
         }
         const std::string layerID = getSlotLayer(it->src.slot);
         if (layerID.empty()) {
@@ -854,10 +900,14 @@ Shuffle::checkExtraChannelsPresent(std::string* message)
         std::list<ImageLayerDesc> present;
         getPresentLayers(time, view, inputNb, &present);
         ImageLayerDesc desc;
-        const bool found = findLayer(present, layerID, &desc);
-        const int nChannels = found ? (desc.isColorLayer() ? 4 : (int)desc.getChannels().size()) : 0;
-        if (found && (it->src.index < nChannels)) {
-            continue; // Readable: nothing to report.
+        if (findLayer(present, layerID, &desc)) {
+            // Resolved by name as render() does, so a Color plane's missing R/G/B/A is caught
+            // whatever its channel count.
+            const std::string wanted = planeChannelName(desc, it->src.index);
+            const std::vector<std::string>& channels = desc.getChannels();
+            if (!wanted.empty() && (std::find(channels.begin(), channels.end(), wanted) != channels.end())) {
+                continue;
+            }
         }
 
         if (message) {

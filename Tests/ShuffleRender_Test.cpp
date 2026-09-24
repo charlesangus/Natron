@@ -54,6 +54,8 @@
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
+#include "Engine/RectD.h"
+#include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
@@ -147,6 +149,19 @@ renderAndRead(const AppInstancePtr& app,
     return readFlatExr(path, out, error);
 }
 
+RectD
+regionOfDefinition(const NodePtr& node)
+{
+    EffectInstancePtr effect = node->getEffectInstance();
+    RectD rod;
+    bool isProjectFormat = false;
+    const StatusEnum st = effect->getRegionOfDefinition_public(effect->getRenderHash(), 1., RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat);
+
+    EXPECT_NE(eStatusFailed, st) << node->getScriptName();
+
+    return rod;
+}
+
 } // namespace
 
 // Read(flat-three-layers.exr) -> Shuffle or ShuffleCopy (on its main input) -> Write, the Write
@@ -229,9 +244,12 @@ protected:
         channels->setAll();
     }
 
-    // Sized like the fixture, so reading it does not grow the output's region of definition.
+    // Sized like the fixture by default, so reading it does not grow the output's region of definition.
     void createConstant(double value,
-                        NodePtr* constant)
+                        NodePtr* constant,
+                        int sizePx = kSize,
+                        double left = 0.,
+                        double bottom = 0.)
     {
         *constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
         ASSERT_TRUE(bool(*constant));
@@ -243,10 +261,10 @@ protected:
         KnobDouble* bottomLeft = dynamic_cast<KnobDouble*>((*constant)->getKnobByName("bottomLeft").get());
         ASSERT_TRUE(extent && size && bottomLeft);
         extent->setValueFromID("size", 0);
-        bottomLeft->setValue(0., ViewSpec::all(), 0);
-        bottomLeft->setValue(0., ViewSpec::all(), 1);
-        size->setValue(kSize, ViewSpec::all(), 0);
-        size->setValue(kSize, ViewSpec::all(), 1);
+        bottomLeft->setValue(left, ViewSpec::all(), 0);
+        bottomLeft->setValue(bottom, ViewSpec::all(), 1);
+        size->setValue(sizePx, ViewSpec::all(), 0);
+        size->setValue(sizePx, ViewSpec::all(), 1);
     }
 
     KnobLayerSelectPtr layerKnob(const char* name) const
@@ -282,6 +300,28 @@ protected:
         std::string error;
         ASSERT_TRUE(renderAndRead(getApp(), _writer, path, image, &error)) << error;
         QFile::remove(QString::fromStdString(path));
+    }
+
+    // Renders to fileName expecting the render to fail, and returns the persistent message it posts.
+    void renderExpectingFailure(const QTemporaryDir& tmp,
+                                const char* fileName,
+                                std::string* message)
+    {
+        const std::string path = (tmp.path() + QLatin1String("/") + QString::fromUtf8(fileName)).toStdString();
+        _writer->setOutputFilesForWriter(path);
+        QFile::remove(QString::fromStdString(path));
+
+        FlatExrImage image;
+        std::string error;
+        EXPECT_FALSE(renderAndRead(getApp(), _writer, path, &image, &error));
+        QFile::remove(QString::fromStdString(path));
+        ASSERT_TRUE(_shuffle->hasPersistentMessage());
+
+        QString persistent;
+        int type = 0;
+        _shuffle->getPersistentMessage(&persistent, &type, false);
+        EXPECT_EQ((int)eMessageTypeError, type);
+        *message = persistent.toStdString();
     }
 
     NodePtr _reader;
@@ -581,4 +621,234 @@ TEST_F(ShuffleRenderTest, ExplicitRowOnANoneSlotRendersZeroSilently)
     expectColor(image, 0.f, 0.f, 0.f, 1.f);
     expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
     expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
+// --- ShuffleCopy's bbox knob picks the region when both inputs are connected -------------------
+
+namespace {
+
+std::string
+rectString(const RectD& r)
+{
+    return "(" + std::to_string(r.x1) + ", " + std::to_string(r.y1) + ", " + std::to_string(r.x2) + ", " + std::to_string(r.y2) + ")";
+}
+} // namespace
+
+TEST_F(ShuffleRenderTest, ShuffleCopyBBoxChoosesTheRegionOfTwoConnectedInputs)
+{
+    createShuffleOnFixture("flat-three-layers.exr", PLUGINID_NATRON_SHUFFLECOPY);
+    if (HasFatalFailure()) {
+        return;
+    }
+    KnobChoice* bbox = dynamic_cast<KnobChoice*>(_shuffle->getKnobByName(kShuffleCopyParamBBox).get());
+    ASSERT_TRUE(bbox != NULL);
+    EXPECT_EQ(std::string("union"), bbox->getActiveEntry().id);
+
+    // Overlaps the 8x8 main input only in its top-right corner, so all four choices differ.
+    NodePtr constant;
+    createConstant(0.5, &constant, 4 * kSize, kSize / 2, kSize / 2);
+    if (HasFatalFailure()) {
+        return;
+    }
+    connectNodes(constant, _shuffle, Shuffle::eInputCopy1, true);
+
+    NodePtr mainInput = _shuffle->getInput(Shuffle::eInputMain);
+    ASSERT_TRUE(bool(mainInput));
+    const RectD mainRod = regionOfDefinition(mainInput);
+    const RectD input1Rod = regionOfDefinition(constant);
+    RectD unionRod = mainRod;
+    unionRod.merge(input1Rod);
+    const RectD intersectionRod = mainRod.intersect(input1Rod);
+    ASSERT_FALSE(intersectionRod.isNull());
+    ASSERT_FALSE(mainRod == input1Rod);
+    ASSERT_FALSE(unionRod == mainRod);
+    ASSERT_FALSE(unionRod == input1Rod);
+    ASSERT_FALSE(intersectionRod == mainRod);
+    ASSERT_FALSE(intersectionRod == input1Rod);
+
+    struct Case {
+        const char* id;
+        RectD expected;
+    };
+    const Case cases[] = {
+        { "union", unionRod },
+        { "2", mainRod },
+        { "1", input1Rod },
+        { "intersection", intersectionRod }
+    };
+    for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        bbox->setValueFromID(cases[i].id, 0);
+        const RectD rod = regionOfDefinition(_shuffle);
+        EXPECT_TRUE(rod == cases[i].expected) << cases[i].id << ": " << rectString(rod) << " != " << rectString(cases[i].expected);
+    }
+
+    // Only the region follows the knob: the format stays the main input's.
+    EXPECT_TRUE(_shuffle->getEffectInstance()->getOutputFormat() == mainInput->getEffectInstance()->getOutputFormat());
+
+    // With input 1 disconnected, input 2's region stands whatever the choice.
+    disconnectNodes(constant, _shuffle, true);
+    for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        bbox->setValueFromID(cases[i].id, 0);
+        const RectD rod = regionOfDefinition(_shuffle);
+        EXPECT_TRUE(rod == mainRod) << cases[i].id << ": " << rectString(rod) << " != " << rectString(mainRod);
+    }
+}
+
+TEST_F(ShuffleRenderTest, ShuffleCopyBBoxIntersectionOfDisjointInputsIsEmpty)
+{
+    createShuffleOnFixture("flat-three-layers.exr", PLUGINID_NATRON_SHUFFLECOPY);
+    if (HasFatalFailure()) {
+        return;
+    }
+    KnobChoice* bbox = dynamic_cast<KnobChoice*>(_shuffle->getKnobByName(kShuffleCopyParamBBox).get());
+    ASSERT_TRUE(bbox != NULL);
+
+    NodePtr constant;
+    createConstant(0.5, &constant, kSize, 10 * kSize, 10 * kSize);
+    if (HasFatalFailure()) {
+        return;
+    }
+    connectNodes(constant, _shuffle, Shuffle::eInputCopy1, true);
+
+    NodePtr mainInput = _shuffle->getInput(Shuffle::eInputMain);
+    ASSERT_TRUE(bool(mainInput));
+    ASSERT_FALSE(regionOfDefinition(mainInput).intersects(regionOfDefinition(constant)));
+
+    bbox->setValueFromID("intersection", 0);
+    const RectD rod = regionOfDefinition(_shuffle);
+    EXPECT_TRUE(rod.isNull()) << rectString(rod);
+}
+
+TEST_F(ShuffleRenderTest, ShuffleHasNoBBoxKnob)
+{
+    createShuffleOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(bool(_shuffle->getKnobByName(kShuffleCopyParamBBox)));
+}
+
+// --- Explicit Color rows are checked against the Color channels the input really has ------------
+
+TEST_F(ShuffleRenderTest, ExplicitRowToTheAlphaOfAnRgbOnlyColorFailsNamingTheChannel)
+{
+    createShuffleOnFixture("flat-rgb-only.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    // A channel the RGB Color does have is readable, so the node renders without complaint.
+    _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
+    ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
+    std::string message;
+    EXPECT_TRUE(_shuffle->checkSelectedChannelsPresent(&message)) << message;
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    render(tmp, "rgb_only_green.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+
+    _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 3));
+    ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
+    EXPECT_FALSE(_shuffle->checkSelectedChannelsPresent(&message));
+
+    renderExpectingFailure(tmp, "rgb_only_alpha.exr", &message);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_NE(std::string::npos, message.find(std::string(kNatronColorLayerID) + ".A is not in the")) << message;
+}
+
+// The implicit out1.A <- in1.A has no row, so an RGB-only Color leaves it 0 without an error.
+TEST_F(ShuffleRenderTest, ImplicitAlphaOfAnRgbOnlyColorRendersZeroSilently)
+{
+    createShuffleOnFixture("flat-rgb-only.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_TRUE(_mapping->getRows().empty());
+    std::string message;
+    EXPECT_TRUE(_shuffle->checkSelectedChannelsPresent(&message)) << message;
+}
+
+// --- A row for an output channel the current output layer lacks is never read ------------------
+
+TEST_F(ShuffleRenderTest, StaleRowBeyondASmallerOutputLayerDoesNotFailTheRender)
+{
+    ProjectPtr project = getApp()->getProject();
+    std::string error;
+    const std::vector<std::string> alpha(1, "A");
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", "mask", "", alpha), LayerRegistryEntry::eOriginUser, &error)) << error;
+
+    createShuffleOnFixture("flat-rgba-only.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+    setLayer(kShuffleParamIn1, "diffuse");
+    if (HasFatalFailure()) {
+        return;
+    }
+    // out1.A reads in1's diffuse, which this input does not carry: an error while out1 is Color.
+    _mapping->setSource(1, 3, ShuffleSource::makeInput(1, 1));
+    ASSERT_TRUE(_mapping->hasExplicitSource(1, 3));
+    std::string message;
+    EXPECT_FALSE(_shuffle->checkSelectedChannelsPresent(&message));
+
+    setLayer(kShuffleParamOut1, "mask");
+    if (HasFatalFailure()) {
+        return;
+    }
+    ASSERT_TRUE(_mapping->hasExplicitSource(1, 3));
+    EXPECT_TRUE(_shuffle->checkSelectedChannelsPresent(&message)) << message;
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    render(tmp, "stale_row_mask.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    EXPECT_EQ(std::size_t(1), channelSet(image).count("mask.A"));
+}
+
+// --- Editing the mapping retires a missing-channel error it no longer causes --------------------
+
+TEST_F(ShuffleRenderTest, DisconnectingTheMissingRowClearsTheError)
+{
+    createShuffleOnFixture("flat-rgba-only.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+    setLayer(kShuffleParamIn1, "diffuse");
+    if (HasFatalFailure()) {
+        return;
+    }
+    _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
+    ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    std::string message;
+    renderExpectingFailure(tmp, "missing_row.exr", &message);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_NE(std::string::npos, message.find("diffuse")) << message;
+
+    _mapping->clear(1, 0);
+    EXPECT_FALSE(_mapping->hasExplicitSource(1, 0));
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+
+    FlatExrImage image;
+    render(tmp, "missing_row_removed.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    expectColor(image, 0.f, 0.f, 0.f, 0.f);
 }

@@ -46,6 +46,7 @@
 #define kShuffleParamOut1 "out1"
 #define kShuffleParamOut2 "out2"
 #define kShuffleParamMapping "mapping"
+#define kShuffleCopyParamBBox "bbox"
 
 NATRON_NAMESPACE_ENTER
 
@@ -65,6 +66,17 @@ public:
     enum InputEnum {
         eInputMain = 0,
         eInputCopy1 = 1
+    };
+
+    /**
+     * @brief A ShuffleCopy's region of definition when both inputs are connected, in the
+     * order of its bbox knob's entries.
+     **/
+    enum BBoxEnum {
+        eBBoxUnion = 0,
+        eBBoxMain,
+        eBBoxInput1,
+        eBBoxIntersection
     };
 
     static EffectInstance* BuildEffect(NodePtr node)
@@ -93,11 +105,21 @@ public:
 
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
 
+    /**
+     * @brief The one connected input's region or, with both of a ShuffleCopy's inputs
+     * connected, the combination its bbox knob selects. The format, pixel aspect ratio and
+     * frame range follow input 0 regardless.
+     **/
     virtual StatusEnum getRegionOfDefinition(U64 hash,
                                              double time,
                                              const RenderScale& scale,
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The bbox knob's choice; always eBBoxUnion on a Shuffle, which has no such knob.
+     **/
+    BBoxEnum getBBox() const WARN_UNUSED_RETURN;
 
     /**
      * @brief Whether this is a ShuffleCopy, whose in1 reads input "1" rather than the main input.
@@ -166,12 +188,16 @@ private:
 
     /**
      * @brief An explicit row wired to a slot whose input is connected but that no longer carries
-     * the slot's layer, or whose index is beyond it, fails the render naming that channel. A
-     * disconnected input, a None slot or a channel with no row is silent and renders 0. The
-     * mapping knob stores overrides only, so this is the node that resolves their readability,
-     * mirroring checkSelectedChannelsPresent()'s mask rule.
+     * the slot's layer, or whose plane lacks the row's channel (a Color index names R, G, B or
+     * A, so an RGB-only Color has no A), fails the render naming that channel. A disconnected
+     * input, a None slot or a channel with no row is silent and renders 0, and a row whose
+     * output channel the current output layer does not have is ignored. The mapping knob
+     * stores overrides only, so this is the node that resolves their readability, mirroring
+     * checkSelectedChannelsPresent()'s mask rule.
      **/
-    virtual bool checkExtraChannelsPresent(std::string* message) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool checkExtraChannelsPresent(double time,
+                                           ViewIdx view,
+                                           std::string* message) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     struct FetchedPlane {
         int inputNb;
@@ -203,8 +229,6 @@ private:
 
     bool slotIsRead(int slot) const WARN_UNUSED_RETURN;
 
-    bool mappingReadsInput(int inputNb) const WARN_UNUSED_RETURN;
-
     bool resolveOutputLayerDesc(const std::string& layerID,
                                 double time,
                                 ViewIdx view,
@@ -231,6 +255,7 @@ private:
     KnobLayerSelectWPtr _out1;
     KnobLayerSelectWPtr _out2;
     std::weak_ptr<KnobShuffleMap> _mapping;
+    KnobChoiceWPtr _bbox;
     KnobStringWPtr _subLabel;
 };
 

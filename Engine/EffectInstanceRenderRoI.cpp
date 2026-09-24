@@ -773,7 +773,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
 
     {
         std::string channelMessage;
-        if (!getNode()->checkSelectedChannelsPresent(&channelMessage)) {
+        if (!getNode()->checkSelectedChannelsPresent(args.time, args.view, &channelMessage)) {
             setPersistentMessage(eMessageTypeError, channelMessage);
             return eRenderRoIRetCodeFailed;
         }

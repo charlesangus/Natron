@@ -942,9 +942,12 @@ public:
      * the node's own mask and (un)premult channel selectors. The default accepts; an effect
      * whose own knobs can wire a channel that later goes missing upstream (e.g. Shuffle's
      * mapping) overrides this and fills *message on a miss, using the same "<channel> is not
-     * in the <input> input" wording a missing mask channel uses.
+     * in the <input> input" wording a missing mask channel uses. Layers are read at the given
+     * time and view.
      **/
-    virtual bool checkExtraChannelsPresent(std::string* /*message*/) WARN_UNUSED_RETURN
+    virtual bool checkExtraChannelsPresent(double /*time*/,
+                                           ViewIdx /*view*/,
+                                           std::string* /*message*/) WARN_UNUSED_RETURN
     {
         return true;
     }

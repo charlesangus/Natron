@@ -4927,6 +4927,17 @@ static const char kUnPremultChannelMissingMessagePrefix[] = "(Un)premult by chan
 bool
 Node::checkSelectedChannelsPresent(std::string* message) const
 {
+    AppInstancePtr app = getApp();
+    const double time = app ? app->getTimeLine()->currentFrame() : 0.;
+
+    return checkSelectedChannelsPresent(time, ViewIdx(0), message);
+}
+
+bool
+Node::checkSelectedChannelsPresent(double time,
+                                   ViewIdx view,
+                                   std::string* message) const
+{
     for (std::map<int, MaskSelector>::const_iterator it = _imp->maskSelectors.begin(); it != _imp->maskSelectors.end(); ++it) {
         int inputNb = it->first;
         if (!getInput(inputNb)) {
@@ -4940,7 +4951,7 @@ Node::checkSelectedChannelsPresent(std::string* message) const
             continue;
         }
         std::list<ImageLayerDesc> present;
-        listLayersForKnob(channel, &present);
+        listLayersForKnob(channel, time, view, &present);
         if (channel->resolve(present, 0, 0)) {
             continue;
         }
@@ -4957,7 +4968,7 @@ Node::checkSelectedChannelsPresent(std::string* message) const
     if (unPremultBy && !unPremultBy->isNone()) {
         const int inputNb = getPreferredInput();
         std::list<ImageLayerDesc> present;
-        listLayersForKnob(unPremultBy, &present);
+        listLayersForKnob(unPremultBy, time, view, &present);
         if ((inputNb >= 0) && getInput(inputNb) && !unPremultBy->resolve(present, 0, 0)) {
             if (message) {
                 *message = std::string(kUnPremultChannelMissingMessagePrefix) + unPremultBy->get() + " is not in the " + getInputLabel(inputNb) + " input";
@@ -4967,7 +4978,7 @@ Node::checkSelectedChannelsPresent(std::string* message) const
         }
     }
 
-    if (_imp->effect && !_imp->effect->checkExtraChannelsPresent(message)) {
+    if (_imp->effect && !_imp->effect->checkExtraChannelsPresent(time, view, message)) {
         return false;
     }
 

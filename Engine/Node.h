@@ -435,7 +435,13 @@ public:
      * resolves against that input's present layers, then defers to the effect's own
      * EffectInstance::checkExtraChannelsPresent() for any channel wiring the effect owns
      * itself (e.g. Shuffle's mapping). Returns false on the first miss and fills *message,
-     * leaving a disconnected input or a None selection silent.
+     * leaving a disconnected input or a None selection silent. Layers are read at the given
+     * time and view, those of the render being checked.
+     **/
+    bool checkSelectedChannelsPresent(double time, ViewIdx view, std::string* message) const;
+
+    /**
+     * @brief Same, at the timeline's current frame and view 0, for a check made outside any render.
      **/
     bool checkSelectedChannelsPresent(std::string* message) const;
 

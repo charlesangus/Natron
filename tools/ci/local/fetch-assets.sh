@@ -152,10 +152,12 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # OPENFX_MISC_REF: charlesangus/openfx-misc -- our fork, ahead of
 # NatronGitHub/openfx-misc. Fork-and-fix is the standing pattern for small
 # changes to NatronGitHub repos (see OPENFX_IO_REF above). Deltas are
-# recorded at charlesangus/openfx-misc PRs #1-#4; the per-channel
+# recorded at charlesangus/openfx-misc PRs #1-#3; the per-channel
 # "(Un)premult by" rename also needed charlesangus/openfx-supportext PRs
-# #2-#3. The fourth delta removes redundant Shuffle implementations, which native
-# fr.natron.Shuffle and fr.natron.ShuffleCopy plugins now provide.
+# #2-#3.
+#
+# This revision excludes the OFX Shuffle plugin, so Natron does not ship it
+# alongside the native fr.natron.Shuffle and fr.natron.ShuffleCopy.
 #
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against

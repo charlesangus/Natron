@@ -1187,9 +1187,11 @@ public:
 
     /**
      * @brief Wires dst's channel to src. dst is "out1.<channel>" or "out2.<channel>"; src is
-     * "in1.<channel>", "in2.<channel>", "0" or "1". Channel names resolve against the layer
-     * currently selected on the named slot (in1/in2/out1/out2). Raises ValueError when a slot
-     * or channel name does not resolve.
+     * "in1.<channel>", "in2.<channel>", "0" or "1". A channel is a name of the layer currently
+     * selected on the named slot (in1/in2/out1/out2) or, when no such name matches, its index
+     * within that layer written as digits (e.g. "in2.3"). The index form needs no layer, so it
+     * also addresses a channel of a None slot or one beyond the slot's current layer. Raises
+     * ValueError when a slot is unknown, or a channel is neither a name nor an index.
      **/
     void connect(const QString& src, const QString& dst);
 
@@ -1201,8 +1203,9 @@ public:
 
     /**
      * @brief dst's effective source (the node's Shuffle::getEffectiveSource), in the same
-     * syntax connect() takes. Never an empty string. Raises ValueError when dst does not
-     * resolve.
+     * syntax connect() takes: by channel name, or by index when the source slot has no channel
+     * of that index (e.g. "in2.3" once in2 is None). Never an empty string. Raises ValueError
+     * when dst does not resolve.
      **/
     QString getSource(const QString& dst) const;
 
@@ -1226,7 +1229,8 @@ public:
 /**
  * @brief Every channel whose current source differs from the same channel's row in
  * mappingKnob's own default value (identity when neither has an explicit row), formatted as
- * ShuffleMapParam::connect()'s (dst, src) pairs. A default row the current value no longer
+ * ShuffleMapParam::connect()'s (dst, src) pairs, a channel the slot's current layer cannot
+ * name written by index so no row is dropped. A default row the current value no longer
  * carries is reported with its identity source, so replaying these calls on a fresh node
  * reproduces the current value exactly. Used by the project/PyPlug exporter; not part of the
  * Python-facing API.

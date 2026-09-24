@@ -210,7 +210,7 @@ API pinned for batch 1, which every task codes against:
   - approach: add an "Answers — UAT round 1" section to the design doc that supersedes §1's keep, the `inNInput` knobs, the B/A inputs, and §2's keep column and mockup.
   - verify: the section exists.
   - size: S
-- [ ] M34.P6.T2 — KnobShuffleMap: drop keep; an absent row means the identity-by-index default
+- [x] M34.P6.T2 — KnobShuffleMap: drop keep; an absent row means the identity-by-index default
   - batch: 1
   - files: `Engine/KnobShuffleMap.h`, `Engine/KnobShuffleMap.cpp`, `Tests/KnobShuffleMap_Test.cpp`
   - approach:
@@ -229,7 +229,7 @@ API pinned for batch 1, which every task codes against:
     - setting `out1.3` twice leaves one row
     - project save/load keeps the rows identical
   - size: M
-- [ ] M34.P6.T3 — Split into Shuffle (one input) and ShuffleCopy (inputs "2" main and "1"); resolve effective sources
+- [x] M34.P6.T3 — Split into Shuffle (one input) and ShuffleCopy (inputs "2" main and "1"); resolve effective sources
   - batch: 1
   - files: `Engine/Nodes/Channel/Shuffle.h`, `Engine/Nodes/Channel/Shuffle.cpp`, `Engine/AppManager.cpp`, `Tests/Shuffle_Test.cpp`, `Tests/ShuffleRender_Test.cpp`
   - approach:
@@ -262,7 +262,7 @@ API pinned for batch 1, which every task codes against:
       - (f) an explicit row to a missing layer fails naming it; an implicit default does not
     - `removeLayer("diffuse")` is refused while in1 = diffuse.
   - size: L
-- [ ] M34.P6.T4 — Python and export follow the keep-less semantics
+- [x] M34.P6.T4 — Python and export follow the keep-less semantics
   - batch: 1
   - files: `Engine/PyParameter.h`, `Engine/PyParameter.cpp`, `Engine/NodeGroup.cpp`, `Tests/PyPlugExport_Test.cpp`, `build/m34scout/shufflemap_py.py`
   - approach:
@@ -280,7 +280,7 @@ API pinned for batch 1, which every task codes against:
       - `disconnect` restores the default
       - `"in1.Q"` raises `ValueError`
   - size: M
-- [ ] M34.P6.T5 — Keep the matrix compiling: drop the keep column and the `inNInput` hookups
+- [x] M34.P6.T5 — Keep the matrix compiling: drop the keep column and the `inNInput` hookups
   - batch: 1
   - files: `Gui/KnobGuiShuffleMap.cpp`, `Tests/ShuffleMatrix_Test.cpp`
   - approach: a bridge until P6.T7.
@@ -292,7 +292,7 @@ API pinned for batch 1, which every task codes against:
     - every row has exactly one button checked
     - one click then undo restores the value
   - size: M
-- [ ] M34.P6.T6 — Factor the layer-list and "New layer…" helpers out of the layer-select GUIs
+- [x] M34.P6.T6 — Factor the layer-list and "New layer…" helpers out of the layer-select GUIs
   - batch: 1
   - files: `Gui/KnobGuiLayerChannelBase.h`, `Gui/KnobGuiLayerChannelBase.cpp`, `Gui/KnobGuiLayerSelect.h`, `Gui/KnobGuiLayerSelect.cpp`
   - approach: add two free functions, `listLayerEntriesForKnob(node, knob)` (the current `listLayers` body, with Color sorted first) and `runNewLayerDialog(knob, parent, push)`. The existing GUIs call them. No behaviour change.

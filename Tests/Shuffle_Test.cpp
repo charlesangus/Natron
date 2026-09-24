@@ -537,10 +537,10 @@ TEST_F(ShuffleTest, SubLabelFollowsTheMapping)
     EXPECT_FALSE(diffuse.empty());
 
     mapping->setSource(1, 0, ShuffleSource::makeInput(2, 0));
-    EXPECT_EQ(color + ", " + specular + arrow + color + ", " + specularToDiffuse, sublabel->getValue());
+    EXPECT_EQ(color + ", " + specular + arrow + color + "\n" + specularToDiffuse, sublabel->getValue());
 
     mapping->setSource(2, 1, ShuffleSource::makeInput(1, 1));
-    EXPECT_EQ(color + ", " + specular + arrow + color + ", " + color + ", " + specular + arrow + diffuse, sublabel->getValue());
+    EXPECT_EQ(color + ", " + specular + arrow + color + "\n" + color + ", " + specular + arrow + diffuse, sublabel->getValue());
 
     mapping->setSource(1, 0, ShuffleSource::makeInput(1, 0));
     EXPECT_EQ(color + ", " + specular + arrow + diffuse, sublabel->getValue());

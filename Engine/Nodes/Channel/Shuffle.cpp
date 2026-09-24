@@ -480,8 +480,11 @@ Shuffle::buildSubLabel()
         block += kArrow;
         block += outLabel;
 
+        // A plain "\n" (not "<br>") is correct here: Node::replaceCustomDataInlabel wraps
+        // this whole string in one pair of parentheses and NodeGui::refreshNodeText later
+        // turns embedded "\n" into "<br />" before handing the result to the HTML label item.
         if (!result.empty()) {
-            result += ", ";
+            result += "\n";
         }
         result += block;
     }

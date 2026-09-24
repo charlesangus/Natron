@@ -2821,18 +2821,18 @@ AppManager::checkCacheFreeMemoryIsGoodEnough()
 {
     ///Before allocating the memory check that there's enough space to fit in memory
     size_t systemRAMToKeepFree = getSystemTotalRAM() * appPTR->getCurrentSettings()->getUnreachableRamPercent();
-    size_t totalFreeRAM = getAmountFreePhysicalRAM();
+    size_t totalAvailableRAM = getAmountAvailablePhysicalRAM();
 
-    while (totalFreeRAM <= systemRAMToKeepFree) {
+    while (totalAvailableRAM <= systemRAMToKeepFree) {
 #ifdef NATRON_DEBUG_CACHE
-        qDebug() << "Total system free RAM is below the threshold:" << printAsRAM(totalFreeRAM)
+        qDebug() << "Total system available RAM is below the threshold:" << printAsRAM(totalAvailableRAM)
                  << ", clearing least recently used NodeCache/DeepImageCache image...";
 #endif
         if (!evictLRUFromMemoryCaches()) {
             break;
         }
 
-        totalFreeRAM = getAmountFreePhysicalRAM();
+        totalAvailableRAM = getAmountAvailablePhysicalRAM();
     }
 }
 

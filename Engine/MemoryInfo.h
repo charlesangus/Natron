@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef> // std::size_t
+#include <string>
 
 #include <QString>
 
@@ -65,7 +66,16 @@ std::size_t getPeakRSS( );
 std::size_t getCurrentRSS( );
 #endif // 0
 
-std::size_t getAmountFreePhysicalRAM();
+// Extracted from getAmountAvailablePhysicalRAM() so the /proc/meminfo parse can be
+// exercised with fixture buffers instead of the host's real numbers. Returns false,
+// leaving *outAvailableKB untouched, if the MemAvailable field is absent or its
+// value isn't a valid number.
+bool parseMemAvailableKB(const std::string& meminfoContents, unsigned long long* outAvailableKB);
+
+// Reclaimable physical RAM: MemAvailable on Linux (kernel-estimated, includes
+// reclaimable page cache), falling back to sysinfo's freeram if /proc/meminfo
+// lacks the field (pre-3.14 kernels).
+std::size_t getAmountAvailablePhysicalRAM();
 
 NATRON_NAMESPACE_EXIT
 

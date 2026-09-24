@@ -48,6 +48,7 @@ set(Tests_SOURCES
     LayerKnobs_Test.cpp
     LayerRegistry_Test.cpp
     Lut_Test.cpp
+    MemoryInfo_Test.cpp
     Metadata_Test.cpp
     OSGLContext_Test.cpp
     ProjectOCIO_Test.cpp

@@ -31,44 +31,21 @@
  * License: Creative Commons Attribution 3.0 Unported License
  *          http://creativecommons.org/licenses/by/3.0/deed.en_US
  */
-#include <vector>
-#include <iostream>
-#include <cmath>
 #include <algorithm> // min, max
-#include <stdexcept>
+#include <cmath>
+#include <fstream>
+#include <iostream>
 #include <sstream> // stringstream
+#include <stdexcept>
+#include <vector>
 
-#if defined(_WIN32)
-#  include <windows.h>
-#  include <psapi.h>
-
-#elif defined(__unix__) || defined(__unix) || defined(unix) || (defined(__APPLE__) && defined(__MACH__ ) )
-#  include <unistd.h>
-#  include <sys/resource.h>
-#  if defined(__APPLE__) && defined(__MACH__)
-#    include <mach/mach.h>
-#    include <mach/task.h>
-#    include <mach/task_info.h>
-#    include <sys/sysctl.h>
-#    include <sys/statvfs.h>
-#    include <stdexcept>
-#    include <sys/errno.h>
-#  elif (defined(_AIX) || defined(__TOS__AIX__ ) ) || (defined(__sun__) || defined(__sun) || defined(sun) && (defined(__SVR4) || defined(__svr4__ )  ) )
-#    include <fcntl.h>
-#    include <procfs.h>
-#  elif defined(__linux__) || defined(__linux) || defined(linux) || defined(__gnu_linux__) || defined(__FreeBSD__)
-#    include <stdio.h>
-#    include <unistd.h>
-#    if defined(__FreeBSD__)
-#      include <sys/sysctl.h>
-#      include <sys/types.h>
-#    else
-#      include <sys/sysinfo.h>
-#    endif
-#  endif
-#else
-#  error "Cannot define getPeakRSS( ) or getCurrentRSS( ) for an unknown OS."
-#endif
+// This fork targets Linux only (see README.md); the _WIN32, BSD, Apple, AIX and
+// Solaris branches this file used to carry alongside these are unreachable and
+// have been removed rather than kept up to date for platforms nothing builds.
+#include <stdio.h>
+#include <sys/resource.h>
+#include <sys/sysinfo.h>
+#include <unistd.h>
 
 #include <QString>
 #include <QLocale>
@@ -82,73 +59,10 @@ NATRON_NAMESPACE_ENTER
 U64
 getSystemTotalRAM()
 {
-#if defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__) || defined(__APPLE__)
-    // see http://source.winehq.org/git/wine.git/blob/HEAD:/dlls/kernel32/heap.c
-    uint64_t total;
-#ifdef __APPLE__
-    unsigned int val;
-#else
-    unsigned long val;
-#endif
-    int mib[2];
-    size_t size_sys;
-#ifdef HW_MEMSIZE
-    uint64_t val64 = 0;
-#endif
-    total = 0;
-
-    mib[0] = CTL_HW;
-#ifdef HW_MEMSIZE
-    mib[1] = HW_MEMSIZE;
-    size_sys = sizeof(val64);
-    if (!sysctl(mib, 2, &val64, &size_sys, NULL, 0) && size_sys == sizeof(val64) && val64) {
-        total = val64;
-    }
-#endif
-
-#if defined(__MACH__)
-    if (!total) {
-        host_name_port_t host = mach_host_self();
-        mach_msg_type_number_t count;
-
-        host_basic_info_data_t info;
-        count = HOST_BASIC_INFO_COUNT;
-        if (host_info(host, HOST_BASIC_INFO, (host_info_t)&info, &count) == KERN_SUCCESS) {
-            total = info.max_mem;
-        }
-
-        mach_port_deallocate(mach_task_self(), host);
-    }
-#endif
-
-    if (!total) {
-        mib[1] = HW_PHYSMEM;
-        size_sys = sizeof(val);
-        if (!sysctl(mib, 2, &val, &size_sys, NULL, 0) && size_sys == sizeof(val) && val) {
-            total = val;
-        }
-    }
-    
-    return total;
-    
-#elif defined(_WIN32)
-    ///On Windows, but not Cygwin, the new GlobalMemoryStatusEx( ) function fills a 64-bit
-    ///safe MEMORYSTATUSEX struct with information about physical and virtual memory. Structure fields include:
-    MEMORYSTATUSEX status;
-    status.dwLength = sizeof(status);
-    GlobalMemoryStatusEx(&status);
-
-    return status.ullTotalPhys;
-
-#elif defined(__linux__) || defined(__linux) || defined(linux) || defined(__gnu_linux__) || defined(__FreeBSD__)
-
-
     long pages = sysconf(_SC_PHYS_PAGES);
     long page_size = sysconf(_SC_PAGE_SIZE);
 
     return pages * page_size;
-
-#endif
 }
 
 U64
@@ -300,125 +214,52 @@ getCurrentRSS( )
 } // getCurrentRSS
 #endif // 0
 
+bool
+parseMemAvailableKB(const std::string& meminfoContents,
+                    unsigned long long* outAvailableKB)
+{
+    const std::string key("MemAvailable:");
+    std::string::size_type pos = meminfoContents.find(key);
+
+    if (pos == std::string::npos) {
+        return false;
+    }
+
+    std::istringstream iss(meminfoContents.substr(pos + key.size()));
+    unsigned long long value = 0;
+
+    if (!(iss >> value)) {
+        return false;
+    }
+
+    *outAvailableKB = value;
+
+    return true;
+}
 
 std::size_t
-getAmountFreePhysicalRAM()
+getAmountAvailablePhysicalRAM()
 {
-#if defined(_WIN32)
-    ///On Windows, but not Cygwin, the new GlobalMemoryStatusEx( ) function fills a 64-bit
-    ///safe MEMORYSTATUSEX struct with information about physical and virtual memory. Structure fields include:
-    MEMORYSTATUSEX statex;
-    statex.dwLength = sizeof (statex);
-    GlobalMemoryStatusEx (&statex);
+    std::ifstream meminfoFile("/proc/meminfo");
 
-    return statex.ullAvailPhys;
-#elif defined(__linux__) || defined(__linux) || defined(linux) || defined(__gnu_linux__)
+    if (meminfoFile) {
+        std::stringstream contents;
+        contents << meminfoFile.rdbuf();
+
+        unsigned long long availableKB = 0;
+        if (parseMemAvailableKB(contents.str(), &availableKB)) {
+            return (std::size_t)(availableKB * 1024ULL);
+        }
+    }
+
+    // MemAvailable has been present in /proc/meminfo since Linux 3.14; this is only
+    // reached if that file couldn't be read or predates the field.
     struct sysinfo memInfo;
-    sysinfo (&memInfo);
-    long long totalAvailableRAM = memInfo.freeram;
-    totalAvailableRAM *= memInfo.mem_unit;
+    sysinfo(&memInfo);
+    unsigned long long totalFreeRAM = memInfo.freeram;
+    totalFreeRAM *= memInfo.mem_unit;
 
-    return totalAvailableRAM;
-#elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__) || defined(__APPLE__)
-    // and http://source.winehq.org/git/wine.git/blob/HEAD:/dlls/kernel32/heap.c
-    unsigned long long ullAvailPhys;
-    unsigned long long ullTotalPhys = 0;
-    uint64_t total;
-#ifdef __APPLE__
-    unsigned int val;
-#else
-    unsigned long val;
-#endif
-    int mib[2];
-    size_t size_sys;
-#ifdef HW_MEMSIZE
-    uint64_t val64 = 0;
-#endif
-#if 0
-#ifdef VM_SWAPUSAGE
-    struct xsw_usage swap;
-#endif
-#endif
-
-    total = 0;
-    ullAvailPhys = 0;
-
-    mib[0] = CTL_HW;
-#ifdef HW_MEMSIZE
-    mib[1] = HW_MEMSIZE;
-    size_sys = sizeof(val64);
-    if (!sysctl(mib, 2, &val64, &size_sys, NULL, 0) && size_sys == sizeof(val64) && val64)
-        total = val64;
-#endif
-
-#if defined(__MACH__)
-    // see http://opensource.apple.com/source/system_cmds/system_cmds-498.2/vm_stat.tproj/vm_stat.c
-    {
-        host_name_port_t host = mach_host_self();
-        mach_msg_type_number_t count;
-
-#ifdef HOST_VM_INFO64_COUNT
-        vm_size_t page_size;
-        vm_statistics64_data_t vm_stat;
-
-        count = HOST_VM_INFO64_COUNT;
-        if (host_statistics64(host, HOST_VM_INFO64, (host_info64_t)&vm_stat, &count) == KERN_SUCCESS &&
-            host_page_size(host, &page_size) == KERN_SUCCESS) {
-            ullAvailPhys = (vm_stat.free_count + vm_stat.inactive_count) * (unsigned long long)page_size;
-        }
-#endif
-        if (!total) {
-            host_basic_info_data_t info;
-            count = HOST_BASIC_INFO_COUNT;
-            if (host_info(host, HOST_BASIC_INFO, (host_info_t)&info, &count) == KERN_SUCCESS) {
-                total = info.max_mem;
-            }
-        }
-
-        mach_port_deallocate(mach_task_self(), host);
-    }
-#endif
-
-    if (!total) {
-        mib[1] = HW_PHYSMEM;
-        size_sys = sizeof(val);
-        if (!sysctl(mib, 2, &val, &size_sys, NULL, 0) && size_sys == sizeof(val) && val)
-            total = val;
-    }
-
-    if (total) {
-        ullTotalPhys = total;
-    }
-
-    if (!ullAvailPhys) {
-        mib[1] = HW_USERMEM;
-        size_sys = sizeof(val);
-        if (!sysctl(mib, 2, &val, &size_sys, NULL, 0) && size_sys == sizeof(val) && val)
-            ullAvailPhys = val;
-    }
-
-    if (!ullAvailPhys) {
-        ullAvailPhys = ullTotalPhys;
-    }
-
-#if 0
-    ullTotalPageFile = ullAvailPhys;
-    ullAvailPageFile = ullAvailPhys;
-
-#ifdef VM_SWAPUSAGE
-    mib[0] = CTL_VM;
-    mib[1] = VM_SWAPUSAGE;
-    size_sys = sizeof(swap);
-    if (!sysctl(mib, 2, &swap, &size_sys, NULL, 0) && size_sys == sizeof(swap))
-    {
-        lpmemex->ullTotalPageFile = swap.xsu_total;
-        lpmemex->ullAvailPageFile = swap.xsu_avail;
-    }
-#endif
-#endif
-
-    return ullAvailPhys;
-#endif
+    return (std::size_t)totalFreeRAM;
 }
 
 NATRON_NAMESPACE_EXIT

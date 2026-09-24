@@ -437,3 +437,7 @@ API pinned for batch 1, which every task codes against:
 - 2026-09-24 — **RoD (user decision):** ShuffleCopy gets a `bbox` choice like Nuke's Copy node: union (default), 2 (main), 1, intersection. It applies only when both inputs are connected. This replaces the "input 0 is authoritative" fix.
 - 2026-09-24 — **Round-1 fixes landed** in 6d711baf5: the bbox knob plus findings 2–6 and 8. Full ctest passed, 467/467. All 10 threads have replies (3 declined). A second Codex round is running on the fix commit, because the changes touch the render and validation paths.
 
+- 2026-09-24 — **Codex round 2 (on 6d711baf5): 6 findings, 5 fixed in 5868929fd, 1 declined.**
+  - Fixed: an identity-shaped ShuffleCopy on an RGB-only input skipped validation, so `isIdentity` now validates first. The unresolved-index form is now `inK.#N`. A mapping edit retires the node's own error instead of revalidating at the timeline frame. Two comment nits.
+  - Declined: a test that validation uses the render's time and view. No node reports layers that vary with time; that needs a test-only effect, which is left as follow-up.
+  - Full debug ctest passed, 469/469. This was the second and final review round.

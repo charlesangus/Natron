@@ -152,15 +152,16 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # OPENFX_MISC_REF: charlesangus/openfx-misc -- our fork, ahead of
 # NatronGitHub/openfx-misc. Fork-and-fix is the standing pattern for small
 # changes to NatronGitHub repos (see OPENFX_IO_REF above). Deltas are
-# recorded at charlesangus/openfx-misc PRs #1-#3; the per-channel
+# recorded at charlesangus/openfx-misc PRs #1-#4; the per-channel
 # "(Un)premult by" rename also needed charlesangus/openfx-supportext PRs
-# #2-#3.
+# #2-#3. The fourth delta removes redundant Shuffle implementations, which native
+# fr.natron.Shuffle and fr.natron.ShuffleCopy plugins now provide.
 #
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
 # this container with no other source changes needed.
 OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
-OPENFX_MISC_REF="d30a55d1bc02a2152f535b95a7ce1e52feb307a5"
+OPENFX_MISC_REF="d293dcd64f51f2be8718655e8dc6590f82645d29"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a

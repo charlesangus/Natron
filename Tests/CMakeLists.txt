@@ -58,6 +58,7 @@ set(Tests_SOURCES
     RenderRange_Test.cpp
     RotoLayer_Test.cpp
     Shuffle_Test.cpp
+    ShufflePluginList_Test.cpp
     ShuffleRender_Test.cpp
     TrackerLayer_Test.cpp
     Tracker_Test.cpp

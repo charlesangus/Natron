@@ -45,6 +45,19 @@ QApplication* g_qApp = 0;
 // QCoreApplication that a QApplication can no longer be created next to.
 class WidgetTestAppManager
     : public AppManager {
+public:
+    // AppManager's defaults answer 72, a DPI rather than a ratio, which would scale every
+    // TO_DPIX/TO_DPIY widget size 72 times over. A widget test lays out at the default DPI.
+    virtual double getLogicalDPIXRATIO() const OVERRIDE FINAL
+    {
+        return 1.;
+    }
+
+    virtual double getLogicalDPIYRATIO() const OVERRIDE FINAL
+    {
+        return 1.;
+    }
+
 private:
     virtual void initializeQApp(int& argc,
                                 char** argv) OVERRIDE FINAL

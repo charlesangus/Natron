@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <memory>
+#include <string>
 
 #include "Engine/EngineFwd.h"
 
@@ -41,10 +42,12 @@ struct ShuffleSource;
 struct KnobGuiShuffleMapPrivate;
 
 /**
- * @brief The GUI of the Shuffle node's KnobShuffleMap: a toggle matrix with one exclusive
- * row per output channel of out1 (and of out2 when set), and one column per channel of
- * in1, per channel of in2, then 0 and 1. A slot whose layer its input does not carry
- * keeps its columns, greyed out, and its header shows the "(not in input)" marker.
+ * @brief The GUI of the Shuffle node's KnobShuffleMap: one grid holding the in1 and in2
+ * layer dropdowns over their channel columns, then the 0 and 1 columns, and one exclusive
+ * row of cells per output channel of out1 (and of out2 when set), with the out1 and out2
+ * dropdowns on the right of their rows. The dropdowns drive the node's hidden in/out
+ * KnobLayerSelects. A slot whose layer its input does not carry keeps its columns, greyed
+ * out, and its dropdown shows the "(not in input)" marker.
  **/
 class KnobGuiShuffleMap
     : public KnobGuiLayerChannelBase {
@@ -53,6 +56,13 @@ class KnobGuiShuffleMap
     GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
+    enum LayerRowEnum {
+        eLayerRowIn1,
+        eLayerRowIn2,
+        eLayerRowOut1,
+        eLayerRowOut2
+    };
+
     static KnobGui* BuildKnobGui(KnobIPtr knob,
                                  KnobGuiContainerI* container)
     {
@@ -66,6 +76,11 @@ public:
 
     virtual void removeSpecificGui() OVERRIDE FINAL;
 
+    virtual bool shouldCreateLabel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
     int getOutputRowCount() const;
     int getSourceColumnCount() const;
 
@@ -77,8 +92,11 @@ public:
 
     Button* getCellButton(int row, int column) const;
 
-    /// The header over slot's columns, empty when the slot is None.
-    QString getSlotHeaderText(int slot) const;
+    /// The dropdown bound to the in1, in2, out1 or out2 knob.
+    LayerChannelRow* getLayerRow(LayerRowEnum which) const;
+
+    /// The widget the grid lays out: cells, labels and dropdowns are its direct children.
+    QWidget* getMatrixWidget() const;
 
     Button* getResetButton() const;
 
@@ -87,10 +105,20 @@ protected:
     virtual void refreshWidgets() OVERRIDE FINAL;
 
 private:
+    void createLayerRows();
+    void refreshLayerRows();
     void rebuildMatrix();
     void syncCheckedButtons();
     void onCellClicked(int row, int column);
     void onResetClicked();
+    void onLayerRowChosen(LayerRowEnum which, const QString& layerID);
+    void onLayerRowNewLayerRequested(LayerRowEnum which);
+
+    /**
+     * @brief Applies newValue to one of the node's in/out knobs as one non-mergeable undo
+     * step, through that knob's own GUI so undo drives it like a direct edit.
+     **/
+    void pushLayerValue(LayerRowEnum which, const std::string& newValue);
 
     std::unique_ptr<KnobGuiShuffleMapPrivate> _imp;
 };

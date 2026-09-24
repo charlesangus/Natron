@@ -116,17 +116,6 @@ jobs:
           name: Natron Release Artifacts
           path: /tmp/artifacts/*
 
-      - name: Create GitHub Release
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          prerelease_flag=()
-          if [[ "$TAG" == *-* ]]; then
-            prerelease_flag=(--prerelease)
-          fi
-          gh release create "$TAG" /tmp/artifacts/* --title "Natron $TAG" --generate-notes "${prerelease_flag[@]}"
-
       - name: Save ccache
         if: always()
         uses: actions/cache/save@v6.1.0
@@ -137,3 +126,29 @@ jobs:
       - name: ccache stats
         if: always()
         run: ccache -s
+
+  publish:
+    name: publish-release
+    needs: release
+    # No container here: the release job's image has no `gh` CLI, but the
+    # hosted runner does.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: Natron Release Artifacts
+          path: /tmp/artifacts
+
+      - name: Create GitHub Release
+        run: |
+          prerelease_flag=()
+          if [[ "$TAG" == *-* ]]; then
+            prerelease_flag=(--prerelease)
+          fi
+          gh release create "$TAG" /tmp/artifacts/* --repo "$GITHUB_REPOSITORY" --title "Natron $TAG" --generate-notes "${prerelease_flag[@]}"

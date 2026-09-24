@@ -37,7 +37,7 @@ than re-deriving a cross-workflow AND of `Checks` + `Tests` — see Decisions.
 
 ## Phase 30.2: Fire it automatically on merge
 
-- [ ] M30.P2.T1 — Add `.github/workflows/beta-release.yml`
+- [x] M30.P2.T1 — Add `.github/workflows/beta-release.yml`
   - files: `.github/workflows/beta-release.yml` (new)
   - approach: trigger on `workflow_run` for the `Tests` workflow (`ci.yml`'s `name: Tests`, the one running `build-and-test`), `types: [completed]`. Guard the job with `if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'`. Steps: checkout with `fetch-depth: 0` and tags fetched, run `tools/release/next-beta-tag.sh` to compute `TAG`, then `gh workflow run release.yml --ref main -f tag="$TAG"` using the default `GITHUB_TOKEN` (declare `permissions: actions: write` on the job). Comment the file with the branch-protection gating rationale from this milestone's header so a future reader doesn't "fix" it into a redundant cross-workflow check.
   - verify: merge a trivial change to `main`; `beta-release.yml` fires once `Tests` goes green on the resulting push; it dispatches `release.yml` with the next sequential `v0.1.0-betaN` tag; the resulting GitHub Release is a pre-release carrying the tarball and the AppImage.
@@ -75,4 +75,19 @@ unchanged.
   Run 3 produced a pre-release with the tarball, the AppImage and both `.sha256` files. The test release and tag were then deleted.
 - 2026-09-23 — **P2.T1 can only be verified after merge.** A `workflow_run` trigger fires only from the default branch's copy of the workflow, so the first merge to `main` after this PR is the check.
 - 2026-09-23 — **Follow-up:** the asset filenames carry the CMake project version (`Natron-2.6.0-…`), not the tag. Every beta would ship files named 2.6.0. This is out of scope here; raise it with the user.
+- 2026-09-23 — **PR #31 opened against `main` and given two Codex review rounds** (the maximum). Both rounds are closed with replies.
+  - Round 1 (7 findings, all fixed in 982c216b2):
+    - Post-merge Tests runs are no longer cancelled.
+    - Only push-triggered runs release.
+    - Tags are reserved by an atomic push with retry.
+    - The release concurrency group is keyed on the tag.
+    - `next-beta-tag.sh` parses suffixes as decimal and exits non-zero when git fails.
+    - The reviewer's suggested `queue: max` is not a real concurrency key, so it was not used.
+  - Round 2 (4 findings, all fixed in 0a8fcf93a):
+    - Each Tests push run gets its own concurrency group.
+    - Each allocation writes a unique tag annotation and is checked against the remote after pushing.
+    - The tag points at `workflow_run.head_sha`.
+    - `release.yml` builds from an existing tag's commit.
+  - The existing-tag path in `release.yml` and the allocator itself are lint-checked only. The first merge after this PR is the live check.
+- 2026-09-23 — **The PR stays open for the user to merge.** Merging it arms automatic public beta releases, and the first beta fires on the merge after it.
 

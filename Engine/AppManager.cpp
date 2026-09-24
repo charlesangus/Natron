@@ -2817,23 +2817,41 @@ AppManager::evictLRUFromMemoryCaches()
 }
 
 void
-AppManager::checkCacheFreeMemoryIsGoodEnough()
+evictMemoryCachesUntilShortfallCovered(std::size_t totalAvailableRAM,
+                                       std::size_t systemRAMToKeepFree,
+                                       const std::function<std::size_t()>& getAccountedMemory,
+                                       const std::function<bool()>& evictOnce)
 {
-    ///Before allocating the memory check that there's enough space to fit in memory
-    size_t systemRAMToKeepFree = getSystemTotalRAM() * appPTR->getCurrentSettings()->getUnreachableRamPercent();
-    size_t totalAvailableRAM = getAmountAvailablePhysicalRAM();
+    if (totalAvailableRAM > systemRAMToKeepFree) {
+        return;
+    }
 
-    while (totalAvailableRAM <= systemRAMToKeepFree) {
+    const std::size_t shortfall = systemRAMToKeepFree - totalAvailableRAM;
+    const std::size_t accountedAtStart = getAccountedMemory();
+    std::size_t freedSoFar = 0;
+
+    while (freedSoFar < shortfall) {
 #ifdef NATRON_DEBUG_CACHE
         qDebug() << "Total system available RAM is below the threshold:" << printAsRAM(totalAvailableRAM)
                  << ", clearing least recently used NodeCache/DeepImageCache image...";
 #endif
-        if (!evictLRUFromMemoryCaches()) {
+        if (!evictOnce()) {
             break;
         }
 
-        totalAvailableRAM = getAmountAvailablePhysicalRAM();
+        const std::size_t accountedNow = getAccountedMemory();
+        freedSoFar = (accountedAtStart > accountedNow) ? (accountedAtStart - accountedNow) : 0;
     }
+}
+
+void
+AppManager::checkCacheFreeMemoryIsGoodEnough()
+{
+    /// Before allocating the memory check that there's enough space to fit in memory
+    size_t systemRAMToKeepFree = getSystemTotalRAM() * appPTR->getCurrentSettings()->getUnreachableRamPercent();
+    size_t totalAvailableRAM = getAmountAvailablePhysicalRAM();
+
+    evictMemoryCachesUntilShortfallCovered(totalAvailableRAM, systemRAMToKeepFree, [this]() { return _imp->_nodeCache->getMemoryCacheSize() + _imp->_deepImageCache->getMemoryCacheSize(); }, [this]() { return evictLRUFromMemoryCaches(); });
 }
 
 void

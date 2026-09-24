@@ -30,6 +30,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <QThread>
 
@@ -463,4 +464,102 @@ TEST(DeepImageCacheTest, DisableUnreachableRAMPurgingRestoresPreviousValue)
         << "the guard must restore the previous value once it goes out of scope";
 
     knob->setValue(original);
+}
+
+namespace {
+
+// Stands in for the node cache and the deep image cache combined: evicting one entry at a time
+// and re-summing what's left mirrors getMemoryCacheSize() on the real Cache<> instances, without
+// needing real cache entries or the host's real memory numbers.
+class FakeAccountedCache {
+public:
+    FakeAccountedCache(std::size_t entryCount,
+                       std::size_t entrySize)
+        : _entries(entryCount, entrySize)
+    {
+    }
+
+    std::size_t accountedMemory() const
+    {
+        std::size_t total = 0;
+        for (std::size_t i = 0; i < _entries.size(); ++i) {
+            total += _entries[i];
+        }
+        return total;
+    }
+
+    bool evictOne()
+    {
+        if (_entries.empty()) {
+            return false;
+        }
+        _entries.pop_back();
+        return true;
+    }
+
+    std::size_t remainingEntryCount() const
+    {
+        return _entries.size();
+    }
+
+private:
+    std::vector<std::size_t> _entries;
+};
+
+} // namespace
+
+TEST(EvictMemoryCachesUntilShortfallCoveredTest, StopsOnceTheShortfallIsFreedRatherThanDrainingTheCache)
+{
+    // 10 entries of 100 bytes each = 1000 bytes of accounted cache memory; the host reading is
+    // 300 bytes short of the threshold, so only 3 entries need to be evicted. A loop keyed off a
+    // host reading that eviction does not move has no way to know that 3 is enough and would
+    // keep calling evictOnce() until the cache is empty: remainingEntryCount() below would then
+    // read 0 rather than 7.
+    FakeAccountedCache cache(10, 100);
+    const std::size_t systemRAMToKeepFree = 1000;
+    const std::size_t totalAvailableRAM = 700;
+
+    int evictCalls = 0;
+    evictMemoryCachesUntilShortfallCovered(totalAvailableRAM, systemRAMToKeepFree, [&cache]() { return cache.accountedMemory(); }, [&cache, &evictCalls]() {
+                                               ++evictCalls;
+                                               return cache.evictOne(); });
+
+    EXPECT_EQ(3, evictCalls);
+    EXPECT_EQ((std::size_t)7, cache.remainingEntryCount())
+        << "the loop must stop once the shortfall is covered, not drain the cache";
+    EXPECT_EQ((std::size_t)700, cache.accountedMemory());
+}
+
+TEST(EvictMemoryCachesUntilShortfallCoveredTest, StopsWithoutEvictingWhenAlreadyAboveTheThreshold)
+{
+    FakeAccountedCache cache(10, 100);
+    const std::size_t systemRAMToKeepFree = 1000;
+    const std::size_t totalAvailableRAM = 1500;
+
+    int evictCalls = 0;
+    evictMemoryCachesUntilShortfallCovered(totalAvailableRAM, systemRAMToKeepFree, [&cache]() { return cache.accountedMemory(); }, [&cache, &evictCalls]() {
+                                               ++evictCalls;
+                                               return cache.evictOne(); });
+
+    EXPECT_EQ(0, evictCalls);
+    EXPECT_EQ((std::size_t)10, cache.remainingEntryCount());
+}
+
+TEST(EvictMemoryCachesUntilShortfallCoveredTest, StopsAtAnEmptyCacheWhenTheShortfallExceedsWhatIsAccounted)
+{
+    // The shortfall (2000) exceeds the entire cache (1000 across 10 entries), so no amount of
+    // eviction reaches it: the loop must still terminate, via evictOnce() reporting nothing left
+    // once the cache is empty, rather than spinning.
+    FakeAccountedCache cache(10, 100);
+    const std::size_t systemRAMToKeepFree = 2000;
+    const std::size_t totalAvailableRAM = 0;
+
+    int evictCalls = 0;
+    evictMemoryCachesUntilShortfallCovered(totalAvailableRAM, systemRAMToKeepFree, [&cache]() { return cache.accountedMemory(); }, [&cache, &evictCalls]() {
+                                               ++evictCalls;
+                                               return cache.evictOne(); });
+
+    EXPECT_EQ(11, evictCalls);
+    EXPECT_EQ((std::size_t)0, cache.remainingEntryCount());
+    EXPECT_EQ((std::size_t)0, cache.accountedMemory());
 }

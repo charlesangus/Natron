@@ -1,0 +1,89 @@
+# Milestone 61: Layers that vary with time
+
+M34's second Codex round asked for a test proving that Shuffle validates at the render's time, not the timeline's. The PM declined it: "No node reports layers that vary with time." That's wrong. An input's layers can change from frame to frame, and this milestone makes sure Natron handles that and tests it. Three real graphs must each report different layers on different frames:
+
+1. **EXR sequence with per-frame AOVs.** A Read of a sequence where frame 1 carries `diffuse` and frame 2 doesn't.
+2. **Switch with an animated `which`.** Keyed between a Read that carries `diffuse` and one that doesn't.
+3. **Animated disable upstream.** A node that produces a layer, with its Disable knob keyed on at frame 2.
+
+Any of these that doesn't vary today is a bug, and it's fixed here (user decision, 2026-09-24). The scout found likely causes for all three:
+- (1) ReadOIIO's `getClipComponents` reports `_outputLayerMenu`, which is built once from one frame (`ReadOIIO.cpp` ~769–800, `buildOutputLayerMenu` ~1284).
+- (2) The default passthrough for a non-multiplanar effect is `node->getPreferredInput()`, which ignores time (`EffectInstance::getComponentsNeededDefault`, ~`EffectInstance.cpp:4366-4386`). The OFX Switch picks its input only through `isIdentity(time)`.
+- (3) The Disable knob is created with `setAnimationEnabled(false)` and `setIsMetadataSlave(true)` (`Node.cpp` ~2214-2222), and `Node::isNodeDisabled()` reads `getValue()` with no time argument (`Node.cpp` ~6078).
+
+Execution notes:
+- The `natron-dev` container is single-tenant, so one build runs at a time. Launch builds detached with a done-marker.
+- The debug build defines NDEBUG, so tests use EXPECT/ASSERT, not assert().
+- GUI checks run under Xvfb (recipe `build/deeprepro/run-gui.sh`, fixtures under `build/`).
+- openfx-io changes go through the `charlesangus/openfx-io` fork, followed by an `OPENFX_IO_REF` bump in `tools/ci/local/fetch-assets.sh`. M57.P1.T1 and M34.P4.T5 are the precedent.
+
+## Phase 61.1: Fixture and reproduction
+
+- [ ] M61.P1.T1 — Add a two-frame EXR sequence whose layers differ per frame
+  - files: `Tests/fixtures/make-flat-layers-seq-fixture.py` (new, modelled on `make-flat-layers-fixture.py`), `Tests/fixtures/flat-seq-layers.0001.exr`, `Tests/fixtures/flat-seq-layers.0002.exr`
+  - approach: frame 1 is 8×8 half with RGBA, `diffuse` and `specular`, using the same per-layer constant values as `flat-three-layers.exr`, so existing pixel assertions carry over. Frame 2 is RGBA only, with the same RGBA values. Commit the generated files next to the script, as the other fixtures are.
+  - verify: `oiiotool --info -v` in the container lists `diffuse.*`/`specular.*` channels for 0001 and only `R,G,B,A` for 0002.
+  - size: M
+- [ ] M61.P1.T2 — Write a reproduction test for each of the three graphs
+  - files: `Tests/TimeVaryingLayers_Test.cpp` (new), `Tests/CMakeLists.txt`
+  - approach: each test builds its graph and asserts that `getAvailableLayers(t, ViewIdx(0), -1, …)` on the node under test includes `diffuse` at t=1 and not at t=2. Call it at both times, in both orders, with the timeline parked on the *other* frame, so current-frame leakage fails the test.
+    - (a) Read(`flat-seq-layers.####.exr`), frames 1–2.
+    - (b) OFX Switch (`net.sf.openfx.switchPlugin`): input 0 is Read(`flat-three-layers.exr`), input 1 is Read(`flat-rgba-only.exr`), `which` is keyed 0@1 and 1@2.
+    - (c) Read(`flat-rgba-only.exr`) → native Shuffle writing a constant into a new `diffuse` layer → NoOp. The Shuffle's Disable is keyed off@1 and on@2; query the NoOp. If Disable can't be keyed yet, that's the failure being reproduced.
+    
+    Prefix any test that fails today with `DISABLED_`. Its fix task below removes the prefix. Record pass/fail per graph, with the observed layer lists, in this file's `## Decisions`.
+  - verify: `ctest -R TimeVaryingLayers` is green, with only the failing cases disabled; the Decisions entry names which graphs fail and why.
+  - size: M
+
+## Phase 61.2: Make every graph vary with time
+
+Skip (strike through) any task whose P1.T2 test already passes.
+
+- [ ] M61.P2.T1 — Follow a time-dependent identity when reporting passthrough layers
+  - files: `Engine/EffectInstance.cpp`, `Engine/EffectInstance.h`, `Tests/TimeVaryingLayers_Test.cpp`
+  - approach: in `getComponentsNeededDefault`, and anywhere else the passthrough input is chosen for layer reporting, ask `isIdentity_public` at `(time, view)` first. If the effect is identity onto input k at time t', report input k's layers at t', and set `passThroughInputNb`/`passThroughTime` to match. Otherwise keep `getPreferredInput()`. The actions cache is already keyed by `(hash, time, view)`. Check that `isIdentity` doesn't recurse into layer queries: M34 made Shuffle's `isIdentity` validate first. Guard that recursion rather than dropping the validation.
+  - verify: the Switch test (b) runs undisabled and passes. `ctest -R 'Shuffle|Layer|WriteAllLayers'` and the full debug ctest stay green.
+  - size: L
+- [ ] M61.P2.T2 — Make Disable animatable and honor it at the render's time in the engine
+  - files: `Engine/Node.h`, `Engine/Node.cpp`, `Engine/EffectInstance.cpp`, `Tests/TimeVaryingLayers_Test.cpp`
+  - approach: add `Node::isNodeDisabled(double time) const`, which reads the knob `getValueAtTime(time)`, with the group and IO-container recursion also at `time`. Switch every render, identity, layer and RoD path in `EffectInstance.cpp` (for example ~1932, ~1972, ~3860, ~3963) to the timed form, using the render/action time. Keep the untimed form for UI callers only, reading the current frame. Enable animation on the knob. `setIsMetadataSlave(true)` needs a decision: metadata is time-invariant, so either metadata is computed as if the node were enabled whenever the knob is animated, or it follows the current frame. Pick the option that keeps downstream metadata stable across frames and record it in `## Decisions`. P2.T3 handles serialization and the GUI.
+  - verify: the disable test (c) runs undisabled and passes. A new render test keys Disable on a Grade, then renders frames 1 and 2 with the timeline parked on the other frame, and gets graded pixels at 1 and ungraded at 2. Full debug ctest green.
+  - size: L
+- [ ] M61.P2.T3 — Keyed Disable round-trips through the project and shows per frame in the GUI
+  - files: `Gui/NodeGui.cpp`, `Gui/NodeGui.h`, `Engine/Node.cpp`, `Tests/TimeVaryingLayers_Test.cpp`
+  - approach: the node graph's disabled look (`NodeGui` ~ its `isNodeDisabled()` uses) follows the current frame and refreshes on timeline change, the way other per-frame node-box state does. The Disable checkbox shows keyframe colouring like any animated knob. Check that save → load keeps the keys. Knob curves already serialize, but confirm nothing special-cases `kDisableNodeKnobName`.
+  - verify: gtest saves and reloads a project with keyed Disable, and the keys survive. Xvfb: scrubbing frames 1→2 turns the node box to disabled and back. Share screenshots with the user before sign-off.
+  - size: M
+- [ ] M61.P2.T4 — ReadOIIO reports the layers of the frame being asked about
+  - files: fork `charlesangus/openfx-io`: `OIIO/ReadOIIO.cpp`; this repo: `tools/ci/local/fetch-assets.sh` (the `OPENFX_IO_REF` bump), `Tests/TimeVaryingLayers_Test.cpp`
+  - approach: in `getClipComponents`, resolve `getFilenameAtTime(args.time)`, read that file's subimage specs (reuse the ImageCache/spec path `buildOutputLayerMenu` uses), and report that frame's layers. Fall back to `_outputLayerMenu` only when the frame can't be read. Leave the output-layer menu as it is: it's the UI list, not the per-frame truth. Check whether the Natron-side Read container (`ReadNode`) caches layer lists anywhere, and key any such cache by time. Open the fork PR on a branch, pin the branch commit as M34.P4.T5 did, and leave the fork PR for the user.
+  - verify: the sequence test (a) runs undisabled and passes after the rebuilt plugin bundle. `ctest -R 'Read|WriteAllLayers|Shuffle'` stays green.
+  - size: L
+
+## Phase 61.3: Shuffle validates at the render's time
+
+- [ ] M61.P3.T1 — Add the test M34's review asked for, on all three graphs
+  - files: `Tests/ShuffleRender_Test.cpp`, `Engine/Nodes/Channel/Shuffle.cpp` (only if the test exposes a bug)
+  - approach: for each graph from P1.T2, feed a Shuffle whose explicit row reads `diffuse.r` into `Color.r`.
+    - Park the timeline on frame 2 and render frame 1: it succeeds, with the fixture's diffuse value in R.
+    - Park the timeline on frame 1 and render frame 2: it fails with the missing-layer persistent error naming `diffuse`.
+    - Render frame 1 again: it succeeds and clears the error.
+    
+    Repeat once with a ShuffleCopy reading `diffuse` from input "1". Reuse the `renderExpectingFailure`/`render` helpers, with a frame argument added if they lack one. If any case fails, fix the validation path so it uses the render's `(time, view)`. `getChannelCount` (~`Shuffle.cpp:287`) reads the timeline frame, so check it's reachable only from UI code.
+  - verify: `ctest -R ShuffleRender` green, including the new cases; full debug ctest green.
+  - size: M
+
+## Phase 61.4: Checkpoint
+
+- [ ] M61.P4.T1 — Package an AppImage and write a UAT script for time-varying layers
+  - files: `build/appimages/M61-<sha>.AppImage`, `build/appimages/M61-uat.md`
+  - approach: release `package.sh`. The UAT script walks through the three graphs in the GUI. For each one: scrub frames 1↔2 and watch the Shuffle panel, the viewer, and the error badge. The error appears on frame 2 only and clears on frame 1. The keyed Disable shows in the node graph.
+  - verify: the AppImage launches under Xvfb; the user runs the UAT script and signs off.
+  - size: S
+
+**Verification gate:** `ctest -R 'TimeVaryingLayers|ShuffleRender'` green with no `DISABLED_` cases left in `TimeVaryingLayers_Test.cpp`; full debug ctest green; the openfx-io fork PR is open, and `OPENFX_IO_REF` pins its commit; P2.T3's screenshots and P4.T1's UAT are signed off by the user.
+
+## Decisions
+
+- 2026-09-24 — **Layers vary with time, and every graph must report it per frame** (user): M34's decline rested on a false premise. Sequences with per-frame AOVs, an animated Switch and an animated Disable must each change a downstream node's layers across frames. Any that doesn't is a bug, fixed in this milestone. See `DECISIONS/2026-09-24-layers-vary-with-time.md`.
+- 2026-09-24 — **View is out of scope**: the declined M34 test also mentioned view. Only time was raised, and no fixture varies layers per view. A view case can be added later if multi-view EXRs need it.

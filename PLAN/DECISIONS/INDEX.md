@@ -50,3 +50,4 @@
 - 2026-09-18 — clean-break-no-project-compat: serialized-name renames need no compat shims; pre-fork .ntp/PyPlugs unsupported; OFX ABI names untouched → DECISIONS/2026-09-18-clean-break-no-project-compat.md
 - 2026-09-22 — stacked-milestone-prs: from M34, AppImage per milestone, PRs left open and stacked (next milestone branches off the previous tip), user checks asynchronously → DECISIONS/2026-09-22-stacked-milestone-prs.md
 - 2026-09-23 — parallel-worktree-milestones: M28/M30 run in build/wt worktrees off main alongside M34; not stacked → DECISIONS/2026-09-23-parallel-worktree-milestones.md
+- 2026-09-24 — layers-vary-with-time: available layers are per-frame; validation/render use render (time, view), never the timeline frame; M61 fixes graphs that do not vary → DECISIONS/2026-09-24-layers-vary-with-time.md

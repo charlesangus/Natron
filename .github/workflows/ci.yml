@@ -10,8 +10,12 @@ on:
     - main
 
 concurrency:
-  group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  # Only PR runs share a group, so a newer push supersedes an older one.
+  # Every other run gets a group of its own: a shared group holds just one
+  # pending run and silently replaces it, which would drop a merge to main
+  # from beta-release.yml's workflow_run trigger and skip its beta.
+  group: tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

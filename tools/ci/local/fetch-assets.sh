@@ -156,11 +156,14 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # "(Un)premult by" rename also needed charlesangus/openfx-supportext PRs
 # #2-#3.
 #
+# This revision excludes the OFX Shuffle plugin, so Natron does not ship it
+# alongside the native fr.natron.Shuffle and fr.natron.ShuffleCopy.
+#
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
 # this container with no other source changes needed.
 OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
-OPENFX_MISC_REF="d30a55d1bc02a2152f535b95a7ce1e52feb307a5"
+OPENFX_MISC_REF="d293dcd64f51f2be8718655e8dc6590f82645d29"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a

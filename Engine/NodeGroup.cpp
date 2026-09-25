@@ -48,6 +48,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGraphI.h"
@@ -56,6 +57,7 @@
 #include "Engine/Plugin.h"
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
+#include "Engine/PyParameter.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
@@ -1722,6 +1724,11 @@ exportKnobValues(int indentLevel,
     KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() );
     KnobGroup* isGrp = dynamic_cast<KnobGroup*>( knob.get() );
     KnobString* isStringKnob = dynamic_cast<KnobString*>( knob.get() );
+    // A KnobShuffleMap's raw value is an index-based XML encoding (see KnobShuffleMap.h):
+    // faithful to round-trip on its own, but exportShuffleMapConnections() below re-emits the
+    // same rows as readable connect() calls, so the raw setValue() here is skipped to avoid
+    // writing the mapping twice.
+    KnobShuffleMap* isShuffleMap = dynamic_cast<KnobShuffleMap*>(knob.get());
 
     ///Don't export this kind of parameter. Mainly this is the html label of the node which is 99% of times empty
     if ( isStringKnob &&
@@ -1843,7 +1850,7 @@ exportKnobValues(int indentLevel,
                 }
             }
 
-            if ( ( !curve || (curve->getKeyFramesCount() == 0) ) && knob->hasModifications(i) ) {
+            if ((!curve || (curve->getKeyFramesCount() == 0)) && knob->hasModifications(i) && !isShuffleMap) {
                 if (!hasExportedValue) {
                     hasExportedValue = true;
                     if (mustDefineParam) {
@@ -2535,6 +2542,39 @@ exportRotoLayer(int indentLevel,
     }
 } // exportRotoLayer
 
+// The KnobShuffleMap's own persisted value is index-based (see KnobShuffleMap.h) and is
+// skipped by exportKnobValues() above; this reuses getShuffleMapModifiedConnections() --
+// the same channel-name resolution connect()/getSource() use -- to emit human-readable
+// connect() calls for the channels whose value differs from the node kind's default (which
+// includes a default row the user removed, restored explicitly to its identity source), once
+// the slots' layer selects (in1/in2/out1/out2) have already been written by the caller's
+// knob loop.
+static void
+exportShuffleMapConnections(int indentLevel,
+                            const KnobShuffleMapPtr& mappingKnob,
+                            QTextStream& ts)
+{
+    if (!mappingKnob) {
+        return;
+    }
+
+    std::map<std::string, std::string> connections = NATRON_PYTHON_NAMESPACE::getShuffleMapModifiedConnections(mappingKnob);
+    if (connections.empty()) {
+        return;
+    }
+
+    QString paramFullName = QString::fromUtf8("lastNode.getParam(\"") + QString::fromUtf8(mappingKnob->getName().c_str()) + QString::fromUtf8("\")");
+    WRITE_INDENT(indentLevel);
+    WRITE_STRING(QString::fromUtf8("param = ") + paramFullName);
+    for (std::map<std::string, std::string>::const_iterator it = connections.begin(); it != connections.end(); ++it) {
+        WRITE_INDENT(indentLevel);
+        WRITE_STRING(QString::fromUtf8("param.connect(") + ESC(it->second) + QString::fromUtf8(", ") + ESC(it->first) + QString::fromUtf8(")"));
+    }
+    WRITE_INDENT(indentLevel);
+    WRITE_STATIC_LINE("del param");
+    WRITE_STATIC_LINE("");
+} // exportShuffleMapConnections
+
 static void
 exportAllNodeKnobs(int indentLevel,
                    const NodePtr& node,
@@ -2542,6 +2582,7 @@ exportAllNodeKnobs(int indentLevel,
 {
     const KnobsVec& knobs = node->getKnobs();
     std::list<KnobPage*> userPages;
+    KnobShuffleMapPtr mappingKnob;
 
     for (KnobsVec::const_iterator it2 = knobs.begin(); it2 != knobs.end(); ++it2) {
         if ( (*it2)->getIsPersistent() && !(*it2)->isUserKnob() ) {
@@ -2557,6 +2598,10 @@ exportAllNodeKnobs(int indentLevel,
             }
         }
 
+        if (!mappingKnob) {
+            mappingKnob = std::dynamic_pointer_cast<KnobShuffleMap>(*it2);
+        }
+
         if ( (*it2)->isUserKnob() ) {
             KnobPage* isPage = dynamic_cast<KnobPage*>( it2->get() );
             if (isPage) {
@@ -2564,6 +2609,9 @@ exportAllNodeKnobs(int indentLevel,
             }
         }
     } // for (KnobsVec::const_iterator it2 = knobs.begin(); it2 != knobs.end(); ++it2)
+
+    exportShuffleMapConnections(indentLevel, mappingKnob, ts);
+
     if ( !userPages.empty() ) {
         WRITE_STATIC_LINE("");
         WRITE_INDENT(indentLevel); WRITE_STATIC_LINE("# Create the user parameters");

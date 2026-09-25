@@ -1159,7 +1159,7 @@ def createInstance(app,group):
     # End of node "Constant1"
 
     # Start of node "Shufflecopy1"
-    lastNode = app.createNode("net.sf.openfx.ShufflePlugin", 2, group)
+    lastNode = app.createNode("fr.natron.ShuffleCopy", 1, group)
     lastNode.setScriptName("Shufflecopy1")
     lastNode.setLabel("Shufflecopy1")
     lastNode.setPosition(968, 316)
@@ -1167,19 +1167,17 @@ def createInstance(app,group):
     lastNode.setColor(0.6, 0.24, 0.39)
     groupShufflecopy1 = lastNode
 
-    param = lastNode.getParam("outputR")
+    param = lastNode.getParam("in2")
     if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.R")
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour")
         del param
 
-    param = lastNode.getParam("outputG")
+    param = lastNode.getParam("mapping")
     if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.G")
-        del param
-
-    param = lastNode.getParam("outputB")
-    if param is not None:
-        param.set("B.uk.co.thefoundry.OfxImagePlaneColour.B")
+        param.connect("in2.R", "out1.R")
+        param.connect("in2.G", "out1.G")
+        param.connect("in2.B", "out1.B")
+        param.connect("in1.A", "out1.A")
         del param
 
     del lastNode
@@ -1521,7 +1519,7 @@ def createInstance(app,group):
     # End of node "MaskMerge2"
 
     # Start of node "Shuffle1"
-    lastNode = app.createNode("net.sf.openfx.ShufflePlugin", 2, group)
+    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
     lastNode.setScriptName("Shuffle1")
     lastNode.setLabel("Shuffle1")
     lastNode.setPosition(761, 1026)
@@ -1529,9 +1527,12 @@ def createInstance(app,group):
     lastNode.setColor(0.6, 0.24, 0.39)
     groupShuffle1 = lastNode
 
-    param = lastNode.getParam("outputA")
+    param = lastNode.getParam("mapping")
     if param is not None:
-        param.set("0")
+        param.connect("in1.R", "out1.R")
+        param.connect("in1.G", "out1.G")
+        param.connect("in1.B", "out1.B")
+        param.connect("0", "out1.A")
         del param
 
     del lastNode
@@ -1593,8 +1594,8 @@ def createInstance(app,group):
     groupKeyer1.connectInput(0, groupDot1)
     groupPremult1.connectInput(0, groupKeyer1)
     groupBGBlur.connectInput(0, groupPremult1)
-    groupShufflecopy1.connectInput(0, groupConstant1)
-    groupShufflecopy1.connectInput(1, groupBGBlur)
+    groupShufflecopy1.connectInput(0, groupBGBlur)
+    groupShufflecopy1.connectInput(1, groupConstant1)
     groupPremult2.connectInput(0, groupShufflecopy1)
     groupDisableLuma.connectInput(0, groupPremult2)
     groupDisableLuma.connectInput(1, groupConstant1)
@@ -1615,7 +1616,7 @@ def createInstance(app,group):
     groupColorCorrect1.connectInput(0, groupSaturation1)
     groupMaskMerge2.connectInput(0, groupColorCorrect1)
     groupMaskMerge2.connectInput(1, groupDot2)
-    groupShuffle1.connectInput(1, groupMaskMerge2)
+    groupShuffle1.connectInput(0, groupMaskMerge2)
     groupHighlightMerge.connectInput(0, groupShuffle1)
     groupHighlightMerge.connectInput(1, groupDot2)
     groupDot4.connectInput(0, groupHighlightMerge)

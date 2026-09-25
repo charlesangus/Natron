@@ -47,6 +47,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Project.h"
 #include "Engine/TrackerContext.h"
 
@@ -134,6 +135,89 @@ TEST_F(BaseTest, InvertGetsChannelSetWithEveryChannel)
     ASSERT_EQ(1u, resolved.size());
     EXPECT_TRUE(resolved[0].desc.isColorLayer());
     EXPECT_TRUE(resolved[0].channels[0] && resolved[0].channels[1] && resolved[0].channels[2] && resolved[0].channels[3]);
+}
+
+// A PyPlug exposes an inner node's channel set as a group param aliased onto it. The inner
+// knob takes its value from that param but must still resolve against its own input; the
+// param's node has no stream for it, so resolving there finds no layers and turns the inner
+// node into an identity at render time.
+TEST_F(BaseTest, AliasedChannelSetResolvesOnTheInnerNode)
+{
+    NodePtr invert = createNode(QString::fromUtf8("net.sf.openfx.Invert"));
+    NodePtr container = createNode(QString::fromUtf8("net.sf.openfx.Invert"));
+
+    ASSERT_TRUE(bool(invert));
+    ASSERT_TRUE(bool(container));
+
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(invert->getLayerKnob());
+    ASSERT_TRUE(bool(channels));
+    EXPECT_TRUE(invert->hasAtLeastOneChannelToProcess(0., ViewIdx(0)));
+
+    KnobIPtr duplicate = channels->createDuplicateOnHolder(container->getEffectInstance().get(),
+                                                           KnobPagePtr(),
+                                                           KnobGroupPtr(),
+                                                           -1,
+                                                           true,
+                                                           "aliasedChannels",
+                                                           "Aliased Channels",
+                                                           "",
+                                                           false,
+                                                           true);
+    KnobChannelSetPtr aliased = std::dynamic_pointer_cast<KnobChannelSet>(duplicate);
+    ASSERT_TRUE(bool(aliased));
+    ASSERT_EQ(duplicate, channels->getAliasMaster());
+
+    aliased->setAll();
+    std::vector<ChannelSetRow> rows = channels->getRows();
+    ASSERT_EQ(1u, rows.size());
+    EXPECT_EQ(ChannelSetRow::eModeAll, rows[0].mode);
+
+    std::list<ImageLayerDesc> innerLayers;
+    invert->listLayersForKnob(channels, &innerLayers);
+    std::vector<std::string> innerIDs = layerIDs(innerLayers);
+    EXPECT_NE(innerIDs.end(), std::find(innerIDs.begin(), innerIDs.end(), std::string(kNatronColorLayerID)));
+    EXPECT_TRUE(invert->hasAtLeastOneChannelToProcess(0., ViewIdx(0)));
+    EXPECT_FALSE(invert->isTargetLayerKnob(channels));
+
+    std::list<ImageLayerDesc> containerLayers;
+    container->listLayersForKnob(aliased, &containerLayers);
+    EXPECT_EQ(innerIDs, layerIDs(containerLayers));
+    EXPECT_FALSE(container->isTargetLayerKnob(aliased));
+}
+
+TEST_F(BaseTest, AliasOfATargetLayerKnobReportsTheTargetRole)
+{
+    NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+    NodePtr container = createNode(QString::fromUtf8("net.sf.openfx.Invert"));
+
+    ASSERT_TRUE(bool(constant));
+    ASSERT_TRUE(bool(container));
+
+    KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(constant->getLayerKnob());
+    ASSERT_TRUE(bool(layer));
+
+    KnobIPtr duplicate = layer->createDuplicateOnHolder(container->getEffectInstance().get(),
+                                                        KnobPagePtr(),
+                                                        KnobGroupPtr(),
+                                                        -1,
+                                                        true,
+                                                        "aliasedLayer",
+                                                        "Aliased Layer",
+                                                        "",
+                                                        false,
+                                                        true);
+    ASSERT_TRUE(bool(duplicate));
+    ASSERT_EQ(duplicate, layer->getAliasMaster());
+
+    EXPECT_TRUE(constant->isTargetLayerKnob(layer));
+    EXPECT_TRUE(container->isTargetLayerKnob(duplicate));
+
+    std::list<ImageLayerDesc> innerLayers;
+    constant->listLayersForKnob(layer, &innerLayers);
+    std::list<ImageLayerDesc> containerLayers;
+    container->listLayersForKnob(duplicate, &containerLayers);
+    EXPECT_FALSE(innerLayers.empty());
+    EXPECT_EQ(layerIDs(innerLayers), layerIDs(containerLayers));
 }
 
 TEST_F(BaseTest, ConstantGetsTargetLayerSelectListingTheRegistry)
@@ -371,7 +455,7 @@ TEST_F(BaseTest, NodesOwningTheirPlanesGetNoLayerKnob)
 {
     const char* ids[] = {
         "fr.natron.DeepMerge",
-        "net.sf.openfx.ShufflePlugin",
+        PLUGINID_NATRON_SHUFFLE,
         "net.sf.openfx.Premult"
     };
 
@@ -382,4 +466,96 @@ TEST_F(BaseTest, NodesOwningTheirPlanesGetNoLayerKnob)
         EXPECT_FALSE(bool(node->getKnobByName(kNodeParamChannelSet))) << ids[i];
         EXPECT_FALSE(bool(node->getKnobByName(kNodeParamLayerSelect))) << ids[i];
     }
+}
+
+// A plugin- or node-owned KnobLayerSelect (one the host never created through createLayerKnob())
+// gets no listing role and is invisible to getReferencedLayerIDs() unless the plugin declares it
+// with Node::declareLayerKnob(). declareLayerKnob() reuses the same LayerKnobSource machinery as
+// the host's own layerKnob, so a target-role declared knob lists the project registry exactly
+// like ConstantGetsTargetLayerSelectListingTheRegistry's host-created one.
+TEST_F(BaseTest, DeclaredTargetLayerKnobListsRegistry)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    ASSERT_TRUE(bool(dot));
+
+    KnobLayerSelectPtr userLayer = dot->getEffectInstance()->createLayerSelectKnob("userLayer", "User Layer", false);
+    ASSERT_TRUE(bool(userLayer));
+    KnobPagePtr userPage = dot->getEffectInstance()->getOrCreateUserPageKnob();
+    ASSERT_TRUE(bool(userPage));
+    userPage->addKnob(userLayer);
+    EXPECT_FALSE(bool(dot->isTargetLayerKnob(userLayer)));
+
+    dot->declareLayerKnob(userLayer, -1, LayerKnobSpec::eRoleTarget);
+    EXPECT_TRUE(dot->isTargetLayerKnob(userLayer));
+
+    std::list<ImageLayerDesc> listed;
+    dot->listLayersForKnob(userLayer, &listed);
+    std::vector<std::string> ids = layerIDs(listed);
+    ASSERT_GE(ids.size(), 6u);
+    EXPECT_EQ(std::string(kNatronColorLayerID), ids[0]);
+    EXPECT_NE(ids.end(), std::find(ids.begin(), ids.end(), std::string("depth")));
+
+    project->reset(false, true);
+}
+
+// Merge stands in for a plugin with a declared input-bound knob: both its clips are optional, so
+// input 1 stays unconnected without failing metadata refresh, letting one test cover the listing,
+// the reference count, and setLayerKnobInput()'s relist after the rebind.
+TEST_F(BaseTest, DeclaredInputBoundLayerKnobIsReferencedAndFollowsInputRebind)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr merge = createNode(QString::fromUtf8("net.sf.openfx.MergePlugin"));
+    ASSERT_TRUE(bool(merge));
+
+    KnobLayerSelectPtr userLayer = merge->getEffectInstance()->createLayerSelectKnob("userLayer", "User Layer", false);
+    ASSERT_TRUE(bool(userLayer));
+    KnobPagePtr userPage = merge->getEffectInstance()->getOrCreateUserPageKnob();
+    ASSERT_TRUE(bool(userPage));
+    userPage->addKnob(userLayer);
+
+    merge->declareLayerKnob(userLayer, 0, LayerKnobSpec::eRoleInputBound);
+
+    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), project);
+    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+    NodePtr reader = getApp()->createNode(readerArgs);
+    ASSERT_TRUE(bool(reader));
+
+    connectNodes(reader, merge, 0, true);
+
+    {
+        std::list<ImageLayerDesc> listed;
+        merge->listLayersForKnob(userLayer, &listed);
+        std::vector<std::string> ids = layerIDs(listed);
+        std::vector<std::string> expected;
+        expected.push_back(kNatronColorLayerID);
+        expected.push_back("diffuse");
+        expected.push_back("specular");
+        EXPECT_EQ(expected, ids);
+    }
+
+    userLayer->setLayer("diffuse");
+
+    std::string error;
+    EXPECT_FALSE(project->removeLayer("diffuse", &error));
+    EXPECT_NE(std::string::npos, error.find(merge->getScriptName_mt_safe())) << error;
+
+    merge->setLayerKnobInput(userLayer, 1);
+
+    {
+        std::list<ImageLayerDesc> listed;
+        merge->listLayersForKnob(userLayer, &listed);
+        std::vector<std::string> ids = layerIDs(listed);
+        std::vector<std::string> expected;
+        expected.push_back(kNatronColorLayerID);
+        EXPECT_EQ(expected, ids);
+    }
+
+    project->reset(false, true);
 }

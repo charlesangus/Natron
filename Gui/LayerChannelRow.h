@@ -116,6 +116,11 @@ public:
                              const std::vector<std::string>& enabledChannels,
                              bool withChannelButtons);
 
+    /// Layer-select mode only: whether the combo offers a "None" entry.
+    void setAllowNone(bool allowNone);
+
+    bool getAllowNone() const;
+
     /// Channel-select mode only: "layer.channel", or empty for None.
     void setChannelSelectValue(const std::string& layerDotChannel);
 
@@ -212,6 +217,7 @@ private:
     std::vector<std::string> _regexChannels;
     std::set<std::string> _regexExcludedChannels;
     bool _withChannelButtons;
+    bool _allowNone;
     QString _absentMarker;
     bool _removable;
     bool _patternValid;

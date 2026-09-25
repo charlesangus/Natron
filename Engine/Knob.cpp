@@ -53,6 +53,7 @@
 #include "Engine/KnobGuiI.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobSerialization.h"
+#include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
@@ -4577,6 +4578,7 @@ KnobHelper::createDuplicateOnHolder(KnobHolder* otherHolder,
     KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(this);
     KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(this);
     KnobChannelSelect* isChannelSelect = dynamic_cast<KnobChannelSelect*>(this);
+    KnobShuffleMap* isShuffleMap = dynamic_cast<KnobShuffleMap*>(this);
     KnobGroup* isGrp = dynamic_cast<KnobGroup*>(this);
     KnobPage* isPage = dynamic_cast<KnobPage*>(this);
     KnobButton* isBtn = dynamic_cast<KnobButton*>(this);
@@ -4680,9 +4682,14 @@ KnobHelper::createDuplicateOnHolder(KnobHolder* otherHolder,
         output = newKnob;
     } else if (isLayerSelect) {
         KnobLayerSelectPtr newKnob = otherHolder->createLayerSelectKnob(newScriptName, newLabel, isLayerSelect->getWithChannelButtons(), isUserKnob);
+        newKnob->setAllowNone(isLayerSelect->getAllowNone());
         output = newKnob;
     } else if (isChannelSelect) {
         KnobChannelSelectPtr newKnob = otherHolder->createChannelSelectKnob(newScriptName, newLabel, isUserKnob);
+        output = newKnob;
+    } else if (isShuffleMap) {
+        KnobShuffleMapPtr newKnob = AppManager::createKnob<KnobShuffleMap>(otherHolder, newLabel, getDimension(), false);
+        newKnob->setAsUserKnob(isUserKnob);
         output = newKnob;
     } else if (isGrp) {
         KnobGroupPtr newKnob = otherHolder->createGroupKnob(newScriptName, newLabel, isUserKnob);

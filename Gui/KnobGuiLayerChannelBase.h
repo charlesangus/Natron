@@ -139,6 +139,12 @@ private:
 bool sameLayerEntries(const std::vector<LayerChannelRow::LayerEntry>& a,
                       const std::vector<LayerChannelRow::LayerEntry>& b);
 
+/**
+ * @brief The layers the given node offers for the given knob's role, Color sorted
+ * first. Usable for any knob on the node, not just knobs with a KnobGuiLayerChannelBase.
+ **/
+std::vector<LayerChannelRow::LayerEntry> listLayerEntriesForKnob(const NodePtr& node, const KnobIPtr& knob);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // NATRON_GUI_KNOBGUILAYERCHANNELBASE_H

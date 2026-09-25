@@ -41,6 +41,7 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobShuffleMap.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -377,8 +378,9 @@ Node::Implementation::restoreUserKnobsRecursive(const std::list<KnobSerializatio
             KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(sKnob.get());
             KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(sKnob.get());
             KnobChannelSelect* isChannelSelect = dynamic_cast<KnobChannelSelect*>(sKnob.get());
+            KnobShuffleMap* isShuffleMap = dynamic_cast<KnobShuffleMap*>(sKnob.get());
 
-            assert(isInt || isDbl || isBool || isChoice || isColor || isStr || isFile || isOutFile || isPath || isBtn || isSep || isParametric || isChannelSet || isLayerSelect || isChannelSelect);
+            assert(isInt || isDbl || isBool || isChoice || isColor || isStr || isFile || isOutFile || isPath || isBtn || isSep || isParametric || isChannelSet || isLayerSelect || isChannelSelect || isShuffleMap);
 
             if (isInt) {
                 KnobIntPtr k;
@@ -638,6 +640,17 @@ Node::Implementation::restoreUserKnobsRecursive(const std::list<KnobSerializatio
                     k = AppManager::createKnob<KnobChannelSelect>(effect.get(), isRegular->getLabel(), sKnob->getDimension(), false);
                 } else {
                     k = std::dynamic_pointer_cast<KnobChannelSelect>(found);
+                    if (!k) {
+                        continue;
+                    }
+                }
+                knob = k;
+            } else if (isShuffleMap) {
+                KnobShuffleMapPtr k;
+                if (!found) {
+                    k = AppManager::createKnob<KnobShuffleMap>(effect.get(), isRegular->getLabel(), sKnob->getDimension(), false);
+                } else {
+                    k = std::dynamic_pointer_cast<KnobShuffleMap>(found);
                     if (!k) {
                         continue;
                     }

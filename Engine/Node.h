@@ -43,6 +43,7 @@ CLANG_DIAG_ON(deprecated)
 
 #include "Engine/AppManager.h"
 #include "Engine/CacheEntryHolder.h"
+#include "Engine/EffectInstance.h" // for LayerKnobSpec::RoleEnum
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Markdown.h"
@@ -77,6 +78,12 @@ CLANG_DIAG_ON(deprecated)
 
 #define kOfxMaskInvertParamName "maskInvert"
 #define kOfxMixParamName "mix"
+
+// The prefix Node::checkSelectedChannelsPresent() requires of an EffectInstance::
+// checkExtraChannelsPresent() failure message, so refreshChannelSelectors() and the effect
+// itself can tell it apart from an unrelated persistent message before clearing it, the same
+// way refreshChannelSelectors() already does for a missing mask or (un)premult channel.
+#define kExtraChannelMissingMessagePrefix "Channel "
 
 #define kReadOIIOAvailableViewsKnobName "availableViews"
 #define kWriteOIIOParamViewsSelector "viewsSelector"
@@ -425,8 +432,16 @@ public:
     /**
      * @brief For every mask input that is connected, enabled and not set to None, and for the
      * "(Un)premult by" selector over a connected source, checks that the KnobChannelSelect value
-     * resolves against that input's present layers. Returns false on the first miss and fills
-     * *message, leaving a disconnected input or a None selection silent.
+     * resolves against that input's present layers, then defers to the effect's own
+     * EffectInstance::checkExtraChannelsPresent() for any channel wiring the effect owns
+     * itself (e.g. Shuffle's mapping). Returns false on the first miss and fills *message,
+     * leaving a disconnected input or a None selection silent. Layers are read at the given
+     * time and view, those of the render being checked.
+     **/
+    bool checkSelectedChannelsPresent(double time, ViewIdx view, std::string* message) const;
+
+    /**
+     * @brief Same, at the timeline's current frame and view 0, for a check made outside any render.
      **/
     bool checkSelectedChannelsPresent(std::string* message) const;
 
@@ -1392,7 +1407,9 @@ public:
     /**
      * @brief The layers a layer/channel knob of this node may choose from: an input-bound
      * knob lists the present layers of its input (always including Color), a target knob
-     * lists the project registry. An alias delegates to its master's node.
+     * lists the project registry. A knob not declared on this node, such as a group's user
+     * param aliased onto an inner node's layer knob, delegates to the node holding that inner
+     * knob; the inner knob itself always resolves against its own node.
      **/
     void listLayersForKnob(const KnobIPtr& knob, std::list<ImageLayerDesc>* layers) const;
 
@@ -1404,7 +1421,8 @@ public:
 
     /**
      * @brief Whether listLayersForKnob() lists the project registry for this knob (a target
-     * knob) rather than an input's present layers. An alias reports its master's role.
+     * knob) rather than an input's present layers. A group param aliased onto an inner node's
+     * layer knob reports the inner knob's role.
      **/
     bool isTargetLayerKnob(const KnobIPtr& knob) const;
 
@@ -1422,6 +1440,21 @@ public:
      * upstream yet. No-op on a node without a layer knob.
      **/
     void retargetLayerKnob(const std::string& layerID);
+
+    /**
+     * @brief Gives a channel set, layer select or channel select knob a listing role: an
+     * input-bound knob (kPreferredInput's caller-facing spelling is Node::getPreferredInput(),
+     * any other value a literal input number) lists that input's present layers, a target knob
+     * lists the project registry. Works the same for a plugin- or node-owned knob as for the
+     * host's own layerKnob, and makes listLayersForKnob() and getReferencedLayerIDs() see it.
+     **/
+    void declareLayerKnob(const KnobIPtr& knob, int inputNb, LayerKnobSpec::RoleEnum role);
+
+    /**
+     * @brief Repoints an already-declared input-bound layer/channel knob at another input and
+     * emits layerListRefreshed() so its GUI relists. No-op on a knob never declared.
+     **/
+    void setLayerKnobInput(const KnobIPtr& knob, int inputNb);
 
     /**
      * @brief Registers every non-Color layer this node produces (per

@@ -964,7 +964,7 @@ def createInstance(app,group):
     # End of node "Merge4"
 
     # Start of node "Shuffle2"
-    lastNode = app.createNode("net.sf.openfx.ShufflePlugin", 2, group)
+    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
     lastNode.setScriptName("Shuffle2")
     lastNode.setLabel("Shuffle2")
     lastNode.setPosition(957, -113)
@@ -972,24 +972,12 @@ def createInstance(app,group):
     lastNode.setColor(0.6, 0.24, 0.39)
     groupShuffle2 = lastNode
 
-    param = lastNode.getParam("outputR")
+    param = lastNode.getParam("mapping")
     if param is not None:
-        param.set("A.uk.co.thefoundry.OfxImagePlaneColour.A")
-        del param
-
-    param = lastNode.getParam("outputG")
-    if param is not None:
-        param.set("A.uk.co.thefoundry.OfxImagePlaneColour.A")
-        del param
-
-    param = lastNode.getParam("outputB")
-    if param is not None:
-        param.set("A.uk.co.thefoundry.OfxImagePlaneColour.A")
-        del param
-
-    param = lastNode.getParam("outputA")
-    if param is not None:
-        param.set("0")
+        param.connect("in1.A", "out1.R")
+        param.connect("in1.A", "out1.G")
+        param.connect("in1.A", "out1.B")
+        param.connect("0", "out1.A")
         del param
 
     del lastNode
@@ -1127,7 +1115,7 @@ def createInstance(app,group):
     # End of node "Merge5"
 
     # Start of node "Shuffle1"
-    lastNode = app.createNode("net.sf.openfx.ShufflePlugin", 2, group)
+    lastNode = app.createNode("fr.natron.Shuffle", 1, group)
     lastNode.setScriptName("Shuffle1")
     lastNode.setLabel("Shuffle1")
     lastNode.setPosition(1290, -206)
@@ -1135,19 +1123,12 @@ def createInstance(app,group):
     lastNode.setColor(0.6, 0.24, 0.39)
     groupShuffle1 = lastNode
 
-    param = lastNode.getParam("outputR")
+    param = lastNode.getParam("mapping")
     if param is not None:
-        param.set("A.uk.co.thefoundry.OfxImagePlaneColour.A")
-        del param
-
-    param = lastNode.getParam("outputG")
-    if param is not None:
-        param.set("A.uk.co.thefoundry.OfxImagePlaneColour.A")
-        del param
-
-    param = lastNode.getParam("outputB")
-    if param is not None:
-        param.set("A.uk.co.thefoundry.OfxImagePlaneColour.A")
+        param.connect("in1.A", "out1.R")
+        param.connect("in1.A", "out1.G")
+        param.connect("in1.A", "out1.B")
+        param.connect("in1.A", "out1.A")
         del param
 
     del lastNode
@@ -1467,14 +1448,14 @@ def createInstance(app,group):
     groupMerge3.connectInput(1, groupMerge5)
     groupMerge4.connectInput(0, groupTolerance)
     groupMerge4.connectInput(1, groupShuffle2)
-    groupShuffle2.connectInput(1, groupmask)
+    groupShuffle2.connectInput(0, groupmask)
     groupPostGrade.connectInput(0, groupRoD)
     groupDot15.connectInput(0, groupDot17)
     groupDot20.connectInput(0, groupDot3)
     groupDot3.connectInput(0, groupRoD_2_2)
     groupMerge5.connectInput(0, groupMerge4)
     groupMerge5.connectInput(1, groupShuffle1)
-    groupShuffle1.connectInput(1, groupHSVTool1)
+    groupShuffle1.connectInput(0, groupHSVTool1)
     groupHSVTool1.connectInput(0, groupDot3)
     groupBloom.connectInput(0, groupDot14)
     groupMerge6.connectInput(0, groupDot16)

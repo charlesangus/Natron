@@ -26,16 +26,25 @@
 #include "PyParameter.h"
 
 #include <cassert>
+#include <cctype>
+#include <cstdlib>
+#include <set>
 #include <stdexcept>
+#include <string>
+#include <utility>
 
 #include "Engine/AppInstance.h"
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobSerialization.h"
+#include "Engine/KnobShuffleMap.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Channel/Shuffle.h"
+#include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
@@ -2715,6 +2724,460 @@ ChannelSelectParam::getSummary() const
     }
 
     return QString::fromUtf8(knob->getSummary().c_str());
+}
+
+////////////////////ShuffleMapParam
+
+static KnobLayerSelectPtr
+shuffleMapGetSlotKnob(const KnobShuffleMapPtr& knob,
+                      const std::string& slot)
+{
+    if (!knob) {
+        return KnobLayerSelectPtr();
+    }
+    KnobHolder* holder = knob->getHolder();
+    if (!holder) {
+        return KnobLayerSelectPtr();
+    }
+
+    return holder->getKnobByNameAndType<KnobLayerSelect>(slot);
+}
+
+/**
+ * @brief The channel names of the layer currently selected on "slot" (one of in1/in2/out1/out2),
+ * resolved the same way Shuffle itself resolves an output layer ID: the Color alias, then the
+ * project's layer registry. This is a pure function of the knob's stored selection, independent
+ * of whether the corresponding input is actually connected.
+ **/
+static bool
+shuffleMapResolveLayerChannels(const KnobShuffleMapPtr& knob,
+                               const std::string& slot,
+                               std::vector<std::string>* channels,
+                               std::string* error)
+{
+    KnobLayerSelectPtr slotKnob = shuffleMapGetSlotKnob(knob, slot);
+
+    if (!slotKnob) {
+        *error = "\"" + slot + "\" is not a slot on this node";
+        return false;
+    }
+    std::string layerID = slotKnob->getLayer();
+    if (layerID.empty()) {
+        *error = "slot \"" + slot + "\" has no layer selected";
+        return false;
+    }
+    if (ImageLayerDesc::isColorLayer(layerID)) {
+        *channels = ImageLayerDesc::getRGBAComponents().getChannels();
+        return true;
+    }
+
+    KnobHolder* holder = knob->getHolder();
+    AppInstancePtr app = holder ? holder->getApp() : AppInstancePtr();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    ImageLayerDesc desc;
+    if (project && project->findLayer(layerID, &desc)) {
+        *channels = desc.getChannels();
+        return true;
+    }
+
+    *error = "slot \"" + slot + "\"'s layer is not resolvable";
+    return false;
+}
+
+static bool
+shuffleMapFindChannelIndex(const std::vector<std::string>& channels,
+                           const std::string& channel,
+                           int* index)
+{
+    for (std::size_t i = 0; i < channels.size(); ++i) {
+        if (channels[i] == channel) {
+            *index = (int)i;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// '#' can't appear in a channel name (LayerRegistry allows only letters, digits and '_'), so
+// "#N" never collides with a channel literally named "N".
+static const char kShuffleMapIndexMarker = '#';
+
+static bool
+shuffleMapParseIndex(const std::string& text,
+                     int* index)
+{
+    if ((text.size() < 2) || (text.size() > 10) || (text[0] != kShuffleMapIndexMarker)) {
+        return false;
+    }
+    for (std::size_t i = 1; i < text.size(); ++i) {
+        if (!std::isdigit((unsigned char)text[i])) {
+            return false;
+        }
+    }
+    *index = std::atoi(text.c_str() + 1);
+
+    return true;
+}
+
+/**
+ * @brief channel's index on slot: "#N" for index N, whatever the slot's layer, or else a
+ * channel name of the slot's current layer.
+ **/
+static bool
+shuffleMapResolveChannelIndex(const KnobShuffleMapPtr& knob,
+                              const std::string& slot,
+                              const std::string& channel,
+                              int* index,
+                              std::string* error)
+{
+    if (shuffleMapParseIndex(channel, index)) {
+        return true;
+    }
+
+    std::vector<std::string> channels;
+    std::string resolveError;
+    const bool resolved = shuffleMapResolveLayerChannels(knob, slot, &channels, &resolveError);
+
+    if (resolved && shuffleMapFindChannelIndex(channels, channel, index)) {
+        return true;
+    }
+    *error = resolved ? ("\"" + channel + "\" is not a channel of " + slot + "'s current layer") : resolveError;
+
+    return false;
+}
+
+/**
+ * @brief "slot.<name>" for index on slot's current layer, or "slot.#<index>" when the slot has
+ * no layer channel at that index, so a stored row always has a form
+ * shuffleMapResolveChannelIndex() reads back to the same index.
+ **/
+static std::string
+shuffleMapFormatChannel(const KnobShuffleMapPtr& knob,
+                        const std::string& slot,
+                        int index)
+{
+    if (index < 0) {
+        return std::string();
+    }
+    std::vector<std::string> channels;
+    std::string error;
+    if (shuffleMapResolveLayerChannels(knob, slot, &channels, &error) && ((std::size_t)index < channels.size())) {
+        return slot + "." + channels[index];
+    }
+
+    return slot + "." + kShuffleMapIndexMarker + std::to_string(index);
+}
+
+/**
+ * @brief Splits "slot.channel" at the first '.'. Neither half may be empty.
+ **/
+static bool
+shuffleMapSplit(const std::string& s,
+                std::string* slot,
+                std::string* channel)
+{
+    std::size_t pos = s.find('.');
+
+    if (pos == std::string::npos || pos == 0 || pos == s.size() - 1) {
+        return false;
+    }
+    *slot = s.substr(0, pos);
+    *channel = s.substr(pos + 1);
+
+    return true;
+}
+
+static bool
+shuffleMapParseDst(const KnobShuffleMapPtr& knob,
+                   const QString& dstStr,
+                   int* outSlot,
+                   int* outIndex,
+                   std::string* error)
+{
+    std::string dst = dstStr.toStdString();
+    std::string slot, channel;
+
+    if (!shuffleMapSplit(dst, &slot, &channel)) {
+        *error = "malformed destination \"" + dst + "\"";
+        return false;
+    }
+    if (slot == "out1") {
+        *outSlot = 1;
+    } else if (slot == "out2") {
+        *outSlot = 2;
+    } else {
+        *error = "\"" + slot + "\" is not an output slot";
+        return false;
+    }
+
+    return shuffleMapResolveChannelIndex(knob, slot, channel, outIndex, error);
+}
+
+static bool
+shuffleMapParseSrc(const KnobShuffleMapPtr& knob,
+                   const QString& srcStr,
+                   ShuffleSource* src,
+                   std::string* error)
+{
+    std::string s = srcStr.toStdString();
+
+    if (s == "0") {
+        *src = ShuffleSource::makeZero();
+        return true;
+    }
+    if (s == "1") {
+        *src = ShuffleSource::makeOne();
+        return true;
+    }
+
+    std::string slot, channel;
+    if (!shuffleMapSplit(s, &slot, &channel)) {
+        *error = "malformed source \"" + s + "\"";
+        return false;
+    }
+
+    int slotNumber = 0;
+    if (slot == "in1") {
+        slotNumber = 1;
+    } else if (slot == "in2") {
+        slotNumber = 2;
+    } else {
+        *error = "\"" + slot + "\" is not an input slot";
+        return false;
+    }
+
+    int index = 0;
+    if (!shuffleMapResolveChannelIndex(knob, slot, channel, &index, error)) {
+        return false;
+    }
+    *src = ShuffleSource::makeInput(slotNumber, index);
+
+    return true;
+}
+
+static std::string
+shuffleMapFormatSrc(const KnobShuffleMapPtr& knob,
+                    const ShuffleSource& src)
+{
+    switch (src.kind) {
+    case ShuffleSource::eZero:
+        return "0";
+    case ShuffleSource::eOne:
+        return "1";
+    case ShuffleSource::eInput:
+        return shuffleMapFormatChannel(knob, (src.slot == 1) ? "in1" : "in2", src.index);
+    }
+
+    return std::string();
+}
+
+static std::string
+shuffleMapFormatDst(const KnobShuffleMapPtr& knob,
+                    int outSlot,
+                    int outIndex)
+{
+    return shuffleMapFormatChannel(knob, (outSlot == 1) ? "out1" : "out2", outIndex);
+}
+
+/**
+ * @brief dst's channel resolved through the owning Shuffle's getEffectiveSource(), which
+ * turns an implicit source into 0 for a None slot or a channel beyond its layer's channel
+ * count. Falls back to the knob's own stored-or-identity source when the knob is not
+ * currently attached to a Shuffle node.
+ **/
+static ShuffleSource
+shuffleMapEffectiveSource(const KnobShuffleMapPtr& knob,
+                          int outSlot,
+                          int outIndex)
+{
+    Shuffle* effect = dynamic_cast<Shuffle*>(knob->getHolder());
+
+    if (effect) {
+        return effect->getEffectiveSource(outSlot, outIndex);
+    }
+
+    return knob->getSource(outSlot, outIndex);
+}
+
+std::map<std::string, std::string>
+getShuffleMapModifiedConnections(const KnobShuffleMapPtr& knob)
+{
+    std::map<std::string, std::string> ret;
+
+    if (!knob) {
+        return ret;
+    }
+
+    typedef std::map<std::pair<int, int>, ShuffleSource> RowsByChannel;
+    RowsByChannel currentByChannel;
+    std::vector<ShuffleMapRow> currentRows = knob->getRows();
+    for (std::vector<ShuffleMapRow>::const_iterator it = currentRows.begin(); it != currentRows.end(); ++it) {
+        currentByChannel[std::make_pair(it->outSlot, it->outIndex)] = it->src;
+    }
+
+    RowsByChannel defaultByChannel;
+    std::vector<ShuffleMapRow> defaultRows = knob->decodeRows(knob->getDefaultValue(0));
+    for (std::vector<ShuffleMapRow>::const_iterator it = defaultRows.begin(); it != defaultRows.end(); ++it) {
+        defaultByChannel[std::make_pair(it->outSlot, it->outIndex)] = it->src;
+    }
+
+    std::set<std::pair<int, int>> channels;
+    for (RowsByChannel::const_iterator it = currentByChannel.begin(); it != currentByChannel.end(); ++it) {
+        channels.insert(it->first);
+    }
+    for (RowsByChannel::const_iterator it = defaultByChannel.begin(); it != defaultByChannel.end(); ++it) {
+        channels.insert(it->first);
+    }
+
+    for (std::set<std::pair<int, int>>::const_iterator it = channels.begin(); it != channels.end(); ++it) {
+        int outSlot = it->first;
+        int outIndex = it->second;
+
+        RowsByChannel::const_iterator curIt = currentByChannel.find(*it);
+        ShuffleSource currentSrc = (curIt != currentByChannel.end()) ? curIt->second : KnobShuffleMap::defaultSource(outSlot, outIndex);
+
+        RowsByChannel::const_iterator defIt = defaultByChannel.find(*it);
+        ShuffleSource defaultSrc = (defIt != defaultByChannel.end()) ? defIt->second : KnobShuffleMap::defaultSource(outSlot, outIndex);
+
+        if (currentSrc == defaultSrc) {
+            continue;
+        }
+
+        std::string dst = shuffleMapFormatDst(knob, outSlot, outIndex);
+        if (dst.empty()) {
+            continue;
+        }
+        std::string src = shuffleMapFormatSrc(knob, currentSrc);
+        if (src.empty()) {
+            continue;
+        }
+        ret[dst] = src;
+    }
+
+    return ret;
+}
+
+ShuffleMapParam::ShuffleMapParam(const KnobShuffleMapPtr& knob)
+    : StringParamBase(std::dynamic_pointer_cast<KnobStringBase>(knob))
+    , _tKnob(knob)
+{
+}
+
+ShuffleMapParam::~ShuffleMapParam()
+{
+}
+
+void
+ShuffleMapParam::connect(const QString& src,
+                         const QString& dst)
+{
+    KnobShuffleMapPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    int outSlot = 0, outIndex = 0;
+    std::string error;
+    if (!shuffleMapParseDst(knob, dst, &outSlot, &outIndex, &error)) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+        return;
+    }
+    ShuffleSource source;
+    if (!shuffleMapParseSrc(knob, src, &source, &error)) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+        return;
+    }
+    knob->setSource(outSlot, outIndex, source);
+}
+
+void
+ShuffleMapParam::disconnect(const QString& dst)
+{
+    KnobShuffleMapPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    int outSlot = 0, outIndex = 0;
+    std::string error;
+    if (!shuffleMapParseDst(knob, dst, &outSlot, &outIndex, &error)) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+        return;
+    }
+    knob->clear(outSlot, outIndex);
+}
+
+QString
+ShuffleMapParam::getSource(const QString& dst) const
+{
+    KnobShuffleMapPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return QString();
+    }
+    int outSlot = 0, outIndex = 0;
+    std::string error;
+    if (!shuffleMapParseDst(knob, dst, &outSlot, &outIndex, &error)) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+        return QString();
+    }
+    ShuffleSource source = shuffleMapEffectiveSource(knob, outSlot, outIndex);
+
+    return QString::fromUtf8(shuffleMapFormatSrc(knob, source).c_str());
+}
+
+std::map<std::string, std::string>
+ShuffleMapParam::getConnections() const
+{
+    std::map<std::string, std::string> ret;
+    KnobShuffleMapPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return ret;
+    }
+
+    static const char* const outSlotNames[2] = { "out1", "out2" };
+    for (int s = 0; s < 2; ++s) {
+        int outSlot = s + 1;
+        std::vector<std::string> channels;
+        std::string error;
+        if (!shuffleMapResolveLayerChannels(knob, outSlotNames[s], &channels, &error)) {
+            // out2 with no layer selected (None) contributes nothing.
+            continue;
+        }
+        for (std::size_t i = 0; i < channels.size(); ++i) {
+            ShuffleSource source = shuffleMapEffectiveSource(knob, outSlot, (int)i);
+            std::string src = shuffleMapFormatSrc(knob, source);
+            if (src.empty()) {
+                continue;
+            }
+            ret[std::string(outSlotNames[s]) + "." + channels[i]] = src;
+        }
+    }
+
+    return ret;
+}
+
+void
+ShuffleMapParam::reset()
+{
+    KnobShuffleMapPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    knob->reset();
+}
+
+bool
+ShuffleMapParam::setExpression(const QString& /*expr*/,
+                               bool /*hasRetVariable*/,
+                               int /*dimension*/)
+{
+    PyErr_SetString(PyExc_ValueError, "The mapping parameter does not support expressions");
+
+    return false;
 }
 
 ////////////////////ButtonParam

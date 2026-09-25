@@ -68,8 +68,7 @@
 #define PLUGINID_OFX_RETIME       "net.sf.openfx.Retime"
 #define PLUGINID_OFX_FRAMERANGE   "net.sf.openfx.FrameRange"
 #define PLUGINID_OFX_RUNSCRIPT    "fr.inria.openfx.RunScript"
-#define PLUGINID_OFX_READFFMPEG   "fr.inria.openfx.ReadFFmpeg"
-#define PLUGINID_OFX_SHUFFLE      "net.sf.openfx.ShufflePlugin"
+#define PLUGINID_OFX_READFFMPEG "fr.inria.openfx.ReadFFmpeg"
 #define PLUGINID_OFX_TIMEDISSOLVE "net.sf.openfx.TimeDissolvePlugin"
 #define PLUGINID_OFX_WRITEFFMPEG  "fr.inria.openfx.WriteFFmpeg"
 #define PLUGINID_OFX_READPFM      "fr.inria.openfx.ReadPFM"
@@ -938,6 +937,21 @@ public:
 
     virtual void onChannelsSelectorRefreshed() {}
 
+    /**
+     * @brief Extra render-readiness check run by Node::checkSelectedChannelsPresent(), after
+     * the node's own mask and (un)premult channel selectors. The default accepts; an effect
+     * whose own knobs can wire a channel that later goes missing upstream (e.g. Shuffle's
+     * mapping) overrides this and fills *message on a miss, using the same "<channel> is not
+     * in the <input> input" wording a missing mask channel uses. Layers are read at the given
+     * time and view.
+     **/
+    virtual bool checkExtraChannelsPresent(double /*time*/,
+                                           ViewIdx /*view*/,
+                                           std::string* /*message*/) WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
     void setDefaultMetadata();
 
 protected:
@@ -1062,6 +1076,14 @@ public:
     virtual bool isMultiPlanar() const
     {
         return false;
+    }
+
+    // A multiplanar effect that only ever writes a subset of its output layers (e.g. Shuffle)
+    // overrides this to false so the metadata layer, when not one of those layers, is treated
+    // like any other non-produced layer and passes through instead of being force-produced.
+    virtual bool producesMetadataLayerImplicitly() const
+    {
+        return true;
     }
 
     enum PassThroughEnum {

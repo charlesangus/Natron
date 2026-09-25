@@ -50,6 +50,7 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobShuffleMap.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -172,6 +173,8 @@ KnobSerialization::createKnob(const std::string & typeName,
         ret = std::make_shared<KnobLayerSelect>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobChannelSelect::typeNameStatic()) {
         ret = std::make_shared<KnobChannelSelect>((KnobHolder*)NULL, std::string(), dimension, false);
+    } else if (typeName == KnobShuffleMap::typeNameStatic()) {
+        ret = std::make_shared<KnobShuffleMap>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobFile::typeNameStatic()) {
         ret = std::make_shared<KnobFile>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobOutputFile::typeNameStatic()) {
@@ -635,22 +638,6 @@ public:
                 KnobMatch& m = addKnobFilter(f, "channelV", equalsStringCaseSensitive);
                 addPluginMatch(m, "net.sf.openfx.IDistort");
                 addPluginMatch(m, "net.sf.openfx.STMap");
-            }
-            {
-                KnobMatch& m = addKnobFilter(f, "outputR", equalsStringCaseSensitive);
-                addPluginMatch(m, "net.sf.openfx.ShufflePlugin", 2);
-            }
-            {
-                KnobMatch& m = addKnobFilter(f, "outputG", equalsStringCaseSensitive);
-                addPluginMatch(m, "net.sf.openfx.ShufflePlugin", 2);
-            }
-            {
-                KnobMatch& m = addKnobFilter(f, "outputB", equalsStringCaseSensitive);
-                addPluginMatch(m, "net.sf.openfx.ShufflePlugin", 2);
-            }
-            {
-                KnobMatch& m = addKnobFilter(f, "outputA", equalsStringCaseSensitive);
-                addPluginMatch(m, "net.sf.openfx.ShufflePlugin", 2);
             }
             setNatronVersionMax(f, 2, 2, 99);
         }

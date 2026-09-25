@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <bitset>
 #include <list>
 #include <memory>
@@ -39,6 +40,7 @@
 
 #include "BaseTest.h"
 #include "FlatExrReader.h"
+#include "MultiplanarTestEffect.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
@@ -649,4 +651,48 @@ TEST_F(LayerKnobsRenderTest, SelectingALayerTheInputLacksMakesTheNodeAnIdentity)
 
     expectColor(image, 1.f, 0.f, 0.f, 1.f);
     EXPECT_EQ(-1, image.channelIndex("diffuse.R"));
+}
+
+// A multiplanar effect that only ever writes "diffuse" (a Shuffle writing one output layer, in
+// shape) must not have Color forced into its produced planes: with the opt-out flag set, Color
+// has to come from the pass-through list instead, alongside the other layer the effect ignores.
+TEST_F(LayerKnobsRenderTest, MultiplanarEffectCanOptOutOfProducingTheMetadataLayer)
+{
+    NodePtr reader = createReader();
+    ASSERT_TRUE(bool(reader));
+
+    NodePtr shuffle = createNode(QString::fromUtf8(kTestPluginIDMultiplanarDiffuseOnly));
+    ASSERT_TRUE(bool(shuffle));
+    connectNodes(reader, shuffle, 0, true);
+
+    MultiplanarDiffuseOnlyTestEffect* effect = dynamic_cast<MultiplanarDiffuseOnlyTestEffect*>(shuffle->getEffectInstance().get());
+    ASSERT_TRUE(effect != NULL);
+    effect->setProducesMetadataLayerImplicitly(false);
+
+    NeededComponents needed = queryNeededComponents(shuffle);
+
+    std::vector<std::string> expectedProduced;
+    expectedProduced.push_back("diffuse");
+    EXPECT_EQ(expectedProduced, outputLayerIDs(needed));
+
+    const std::vector<std::string> passThrough = layerIDs(needed.passThroughLayers);
+    EXPECT_NE(passThrough.end(), std::find(passThrough.begin(), passThrough.end(), std::string(kNatronColorLayerID)));
+    EXPECT_NE(passThrough.end(), std::find(passThrough.begin(), passThrough.end(), std::string("specular")));
+}
+
+// The default keeps today's behaviour: an effect that does not opt out still gets Color merged
+// into its produced planes.
+TEST_F(LayerKnobsRenderTest, MultiplanarEffectProducesTheMetadataLayerByDefault)
+{
+    NodePtr reader = createReader();
+    ASSERT_TRUE(bool(reader));
+
+    NodePtr shuffle = createNode(QString::fromUtf8(kTestPluginIDMultiplanarDiffuseOnly));
+    ASSERT_TRUE(bool(shuffle));
+    connectNodes(reader, shuffle, 0, true);
+
+    NeededComponents needed = queryNeededComponents(shuffle);
+
+    const std::vector<std::string> produced = outputLayerIDs(needed);
+    EXPECT_NE(produced.end(), std::find(produced.begin(), produced.end(), std::string(kNatronColorLayerID)));
 }

@@ -17,7 +17,7 @@
 # along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
 # ***** END LICENSE BLOCK *****
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h)
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h MultiplanarTestEffect.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -43,6 +43,7 @@ set(Tests_SOURCES
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
     KnobLayerSelect_Test.cpp
+    KnobShuffleMap_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp
     LayerKnobs_Test.cpp
@@ -57,6 +58,9 @@ set(Tests_SOURCES
     ReadFormat_Test.cpp
     RenderRange_Test.cpp
     RotoLayer_Test.cpp
+    Shuffle_Test.cpp
+    ShufflePluginList_Test.cpp
+    ShuffleRender_Test.cpp
     TrackerLayer_Test.cpp
     Tracker_Test.cpp
     TypedPassthrough_Test.cpp
@@ -92,6 +96,7 @@ set(GuiTests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
     LayerChannelRow_Test.cpp
+    ShuffleMatrix_Test.cpp
     guimain.cpp
 )
 add_executable(GuiTests ${GuiTests_SOURCES})

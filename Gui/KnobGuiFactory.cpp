@@ -35,6 +35,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
 
 #include "Gui/DockablePanel.h"
@@ -50,6 +51,7 @@
 #include "Gui/KnobGuiLayerSelect.h"
 #include "Gui/KnobGuiParametric.h"
 #include "Gui/KnobGuiSeparator.h"
+#include "Gui/KnobGuiShuffleMap.h"
 #include "Gui/KnobGuiString.h"
 #include "Gui/KnobGuiValue.h"
 
@@ -112,6 +114,7 @@ KnobGuiFactory::loadBultinKnobs()
     _loadedKnobs.insert(knobGuiFactoryEntry<KnobChannelSet, KnobGuiChannelSet>());
     _loadedKnobs.insert(knobGuiFactoryEntry<KnobLayerSelect, KnobGuiLayerSelect>());
     _loadedKnobs.insert(knobGuiFactoryEntry<KnobChannelSelect, KnobGuiChannelSelect>());
+    _loadedKnobs.insert(knobGuiFactoryEntry<KnobShuffleMap, KnobGuiShuffleMap>());
 }
 
 KnobGui *

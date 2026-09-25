@@ -220,6 +220,97 @@ TEST(LayerChannelRow, LayerSelectEntryOrderWithAndWithoutNewLayer)
     EXPECT_EQ(sl("diffuse", "Color", "specular", "depth", "New layer..."), row.getComboEntries());
 }
 
+TEST(LayerChannelRow, LayerSelectNoneEntryOnlyWhenAllowed)
+{
+    LayerChannelRow row(LayerChannelRow::eModeLayerSelect);
+    row.setAvailableLayers(sampleLayers(), false);
+    EXPECT_FALSE(row.getAllowNone());
+    EXPECT_EQ(sl("diffuse", "Color", "specular", "depth"), row.getComboEntries());
+
+    row.setAllowNone(true);
+    EXPECT_TRUE(row.getAllowNone());
+    EXPECT_EQ(sl("None", "diffuse", "Color", "specular", "depth"), row.getComboEntries());
+    EXPECT_EQ(QString::fromUtf8("None"), row.getCurrentComboText());
+    EXPECT_TRUE(row.getCurrentLayerID().empty());
+
+    row.setAllowNone(false);
+    EXPECT_FALSE(row.getAllowNone());
+    EXPECT_EQ(sl("diffuse", "Color", "specular", "depth"), row.getComboEntries());
+}
+
+TEST(LayerChannelRow, ChoosingNoneInLayerSelectEmitsAndClearsChannels)
+{
+    LayerChannelRow row(LayerChannelRow::eModeLayerSelect);
+    row.setAvailableLayers(sampleLayers(), false);
+    row.setLayerSelectValue("Color", rgba(), true);
+    row.setAllowNone(true);
+
+    EXPECT_EQ(QString::fromUtf8("Color"), row.getCurrentComboText());
+    EXPECT_EQ("Color", row.getCurrentLayerID());
+    EXPECT_EQ(rgba(), row.getEnabledChannels());
+    EXPECT_EQ(sl("R", "G", "B", "A"), row.getChannelButtonNames());
+
+    int chosenCount = 0;
+    QString chosen;
+    QObject::connect(&row, &LayerChannelRow::layerChosen, [&](const QString& id) {
+        ++chosenCount;
+        chosen = id;
+    });
+
+    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "None"));
+    EXPECT_EQ(1, chosenCount);
+    EXPECT_TRUE(chosen.isEmpty());
+    EXPECT_TRUE(row.getCurrentLayerID().empty());
+    EXPECT_TRUE(row.getEnabledChannels().empty());
+    EXPECT_TRUE(row.getChannelButtonNames().isEmpty());
+    EXPECT_EQ(QString::fromUtf8("None"), row.getCurrentComboText());
+}
+
+// The row never touches the knob or its undo stack: KnobGuiLayerSelect owns that, pushing a
+// KnobUndoCommand on layerChosen and calling setLayerSelectValue() back from refreshWidgets()
+// on both redo and undo. What the row must get right is its side of that contract -- one
+// setLayerSelectValue() call, with the pre-None layer and channels, fully restoring the combo
+// and channel buttons after a None selection, the same call undo() makes.
+TEST(LayerChannelRow, UndoAfterChoosingNoneRestoresPreviousLayerAndChannels)
+{
+    LayerChannelRow row(LayerChannelRow::eModeLayerSelect);
+    row.setAvailableLayers(sampleLayers(), false);
+    row.setLayerSelectValue("Color", rgba(), true);
+    row.setAllowNone(true);
+
+    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "None"));
+    ASSERT_TRUE(row.getCurrentLayerID().empty());
+    ASSERT_TRUE(row.getEnabledChannels().empty());
+
+    row.setLayerSelectValue("Color", rgba(), true);
+
+    EXPECT_EQ("Color", row.getCurrentLayerID());
+    EXPECT_EQ(rgba(), row.getEnabledChannels());
+    EXPECT_EQ(sl("R", "G", "B", "A"), row.getChannelButtonNames());
+    EXPECT_EQ(QString::fromUtf8("Color"), row.getCurrentComboText());
+    EXPECT_TRUE(row.getChannelButton("R")->parentWidget()->isVisibleTo(&row));
+}
+
+TEST(LayerChannelRow, LayerSelectNoneHidesChannelButtons)
+{
+    LayerChannelRow row(LayerChannelRow::eModeLayerSelect);
+    row.setAvailableLayers(sampleLayers(), false);
+    row.setLayerSelectValue("Color", rgba(), true);
+    row.setAllowNone(true);
+
+    EXPECT_TRUE(row.getChannelButton("R")->parentWidget()->isVisibleTo(&row));
+
+    // None has no layer to draw channel buttons for, so ChoosingNoneInLayerSelectEmitsAndClearsChannels
+    // requires the buttons torn down (getChannelButtonNames() empty), not merely made invisible: there
+    // is no "R" button left to query here.
+    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "None"));
+    EXPECT_EQ(0, row.getChannelButton("R"));
+    EXPECT_TRUE(row.getChannelButtonNames().isEmpty());
+
+    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "Color"));
+    EXPECT_TRUE(row.getChannelButton("R")->parentWidget()->isVisibleTo(&row));
+}
+
 TEST(LayerChannelRow, ChannelSelectEntryOrder)
 {
     std::vector<LayerEntry> layers;

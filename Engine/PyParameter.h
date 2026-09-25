@@ -33,9 +33,13 @@
  * Engine module.
  **/
 
-#include "Engine/KnobTypes.h"
-#include "Engine/KnobFile.h"
+#include <map>
+#include <string>
+
 #include "Engine/EngineFwd.h"
+#include "Engine/KnobFile.h"
+#include "Engine/KnobShuffleMap.h"
+#include "Engine/KnobTypes.h"
 
 NATRON_NAMESPACE_ENTER;
 NATRON_PYTHON_NAMESPACE_ENTER;
@@ -1169,6 +1173,69 @@ public:
 
     QString getSummary() const;
 };
+
+/////////////////ShuffleMapParam
+
+class ShuffleMapParam
+    : public StringParamBase {
+    KnobShuffleMapWPtr _tKnob;
+
+public:
+    ShuffleMapParam(const KnobShuffleMapPtr& knob);
+
+    virtual ~ShuffleMapParam();
+
+    /**
+     * @brief Wires dst's channel to src. dst is "out1.<channel>" or "out2.<channel>"; src is
+     * "in1.<channel>", "in2.<channel>", "0" or "1". A channel is a name of the layer currently
+     * selected on the named slot (in1/in2/out1/out2) or "#" and its index within that layer
+     * (e.g. "in2.#3", distinct from a channel named "3"). The index form needs no layer, so it
+     * also addresses a channel of a None slot or one beyond the slot's current layer. Raises
+     * ValueError when a slot is unknown, or a channel is neither a name nor an index.
+     **/
+    void connect(const QString& src, const QString& dst);
+
+    /**
+     * @brief Erases dst's override, if any, so it falls back to its default source. Raises
+     * ValueError when dst does not resolve.
+     **/
+    void disconnect(const QString& dst);
+
+    /**
+     * @brief dst's effective source (the node's Shuffle::getEffectiveSource), in the same
+     * syntax connect() takes: by channel name, or by index when the source slot has no channel
+     * of that index (e.g. "in2.#3" once in2 is None). Never an empty string. Raises ValueError
+     * when dst does not resolve.
+     **/
+    QString getSource(const QString& dst) const;
+
+    /**
+     * @brief Every out1 channel's effective source, and every out2 channel's when out2 has a
+     * layer selected, keyed by dst using the slots' current channel names.
+     **/
+    std::map<std::string, std::string> getConnections() const;
+
+    /**
+     * @brief Restores the knob's default value (the node kind's default mapping).
+     **/
+    void reset();
+
+    /**
+     * @brief Always raises ValueError: the mapping parameter has no expressions.
+     **/
+    bool setExpression(const QString& expr, bool hasRetVariable, int dimension = 0);
+};
+
+/**
+ * @brief Every channel whose current source differs from the same channel's row in
+ * mappingKnob's own default value (identity when neither has an explicit row), formatted as
+ * ShuffleMapParam::connect()'s (dst, src) pairs, a channel the slot's current layer cannot
+ * name written by index so no row is dropped. A default row the current value no longer
+ * carries is reported with its identity source, so replaying these calls on a fresh node
+ * reproduces the current value exactly. Used by the project/PyPlug exporter; not part of the
+ * Python-facing API.
+ **/
+std::map<std::string, std::string> getShuffleMapModifiedConnections(const KnobShuffleMapPtr& mappingKnob);
 
 /////////////////ButtonParam
 

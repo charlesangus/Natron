@@ -441,3 +441,4 @@ API pinned for batch 1, which every task codes against:
   - Fixed: an identity-shaped ShuffleCopy on an RGB-only input skipped validation, so `isIdentity` now validates first. The unresolved-index form is now `inK.#N`. A mapping edit retires the node's own error instead of revalidating at the timeline frame. Two comment nits.
   - Declined: a test that validation uses the render's time and view. No node reports layers that vary with time; that needs a test-only effect, which is left as follow-up.
   - Full debug ctest passed, 469/469. This was the second and final review round.
+- 2026-09-24 — **Merged:** PR #33 squash-merged as `b0e212d5a` with CI green, following the user's merge order (M28, M34, then M30). P6.T11, the user's AppImage check, is still open; any fixes it turns up become a follow-up PR against `main`.

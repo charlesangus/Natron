@@ -91,3 +91,4 @@ unchanged.
   - The existing-tag path in `release.yml` and the allocator itself are lint-checked only. The first merge after this PR is the live check.
 - 2026-09-23 — **The PR stays open for the user to merge.** Merging it arms automatic public beta releases, and the first beta fires on the merge after it.
 
+- 2026-09-24 — **Merged by the PM** as the last in the user's merge order (M28, M34, M30): PR #31 squash-merged as `e8e3c96c4`. The first automatic beta is expected on the next merge to `main`.

@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: running
-current: M34.P6.T11
-pm_heartbeat: 2026-09-24T19:52:42-04:00
+status: paused
+current: null
+pm_heartbeat: 2026-09-24T20:20:04-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -164,6 +164,7 @@ future core work has solid ground to build on.
   in the file so the PM runs it first), then 38.9 re-takes the after-shots
   (T1a) and re-runs the checkpoint (T2, round 2). **Shipped 2026-09-22** (PR #30, squash-merge `30c1f0ceb`) after one Codex review round (4 fixed, 2 declined).
   **M34 (Shuffle) runs next, M60 moved back behind M50 (2026-09-22, user decision).**
+  **M34 shipped 2026-09-24** (PR #33, squash-merge `b0e212d5a`) after two Codex rounds; P6.T11, the user's check of the AppImage, is still outstanding. **M30 merged right after it** (PR #31, `e8e3c96c4`), so automatic beta releases are armed. M37 is next.
   M43 and M36 were absorbed into M38 as Phases 38.2 and 38.7 — their rows are
   cancelled like M35's.
 
@@ -200,7 +201,7 @@ future core work has solid ground to build on.
 | M59 | Pre-commit hook that auto-formats staged C/C++ so PRs stop failing CI's `format` check | done | [M59-pre-commit-auto-format.md](PLAN/MILESTONES/M59-pre-commit-auto-format.md) |
 | M38 | Layer/channel selection widget: process-in-place, no implicit shuffling (absorbs M35) | done | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
 | M43 | ~~Drop the premultiplied/unpremultiplied concept~~ (folded into M38 Phase 38.2) | cancelled | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
-| M34 | New native Shuffle node | doing | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
+| M34 | New native Shuffle node | done | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
 | M35 | ~~Remove implicit output-plane shuffling from non-Shuffle nodes~~ (folded into M38) | cancelled | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M36 | ~~Add "new channel/layer" affordance wherever a node outputs channels~~ (folded into M38 Phase 38.7) | cancelled | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
 | M37 | Channel/layer management nodes | todo | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |
@@ -211,7 +212,7 @@ future core work has solid ground to build on.
 | M28 | Stop treating page cache as memory pressure | done | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |
 | M22 | Lossless project round-trip with missing plugins | todo | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M29 | Break the link to upstream — an independent repository | todo | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |
-| M30 | Full release + AppImage on every merge, auto-versioned betas from 0.1.0-beta1 | doing | [M30-automated-beta-releases.md](PLAN/MILESTONES/M30-automated-beta-releases.md) |
+| M30 | Full release + AppImage on every merge, auto-versioned betas from 0.1.0-beta1 | done | [M30-automated-beta-releases.md](PLAN/MILESTONES/M30-automated-beta-releases.md) |
 | M24 | Node graph aesthetics: category colour and user colour | todo | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
 | M44 | Trackball-style colour editing | todo | [M44-trackball-colour-editing.md](PLAN/MILESTONES/M44-trackball-colour-editing.md) |
 | M55 | Polish — node graph interaction | todo | [M55-polish-node-graph-interaction.md](PLAN/MILESTONES/M55-polish-node-graph-interaction.md) |

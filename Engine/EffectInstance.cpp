@@ -1929,7 +1929,7 @@ EffectInstance::tryConcatenateTransforms(double time,
 
             // recursion upstream
             bool inputCanTransform = false;
-            bool inputIsDisabled  =  input->getNode()->isNodeDisabled();
+            bool inputIsDisabled = input->getNode()->isNodeDisabled(time);
 
             if (!inputIsDisabled) {
                 inputCanTransform = input->getNode()->getCurrentCanTransform();
@@ -1940,7 +1940,7 @@ EffectInstance::tryConcatenateTransforms(double time,
                 //input is either disabled, or identity or can concatenate a transform too
                 if (inputIsDisabled) {
                     int prefInput;
-                    input = input->getNearestNonDisabled();
+                    input = input->getNearestNonDisabled(time);
                     prefInput = input ? input->getNode()->getPreferredInput() : -1;
                     if (prefInput == -1) {
                         break;
@@ -1969,7 +1969,7 @@ EffectInstance::tryConcatenateTransforms(double time,
                 }
 
                 if (input) {
-                    inputIsDisabled = input->getNode()->isNodeDisabled();
+                    inputIsDisabled = input->getNode()->isNodeDisabled(time);
                     if (!inputIsDisabled) {
                         inputCanTransform = input->getNode()->getCurrentCanTransform();
                     }
@@ -3857,7 +3857,7 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
 
     bool ret = false;
     RotoDrawableItemPtr rotoItem = getNode()->getAttachedRotoItem();
-    if ((rotoItem && !rotoItem->isActivated(time)) || getNode()->isNodeDisabled() || !getNode()->hasAtLeastOneChannelToProcess(time, view)) {
+    if ((rotoItem && !rotoItem->isActivated(time)) || getNode()->isNodeDisabled(time) || !getNode()->hasAtLeastOneChannelToProcess(time, view)) {
         ret = true;
         *inputNb = getNode()->getPreferredInput();
         *inputTime = time;
@@ -3960,7 +3960,7 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
             }
         }
 
-        if ( getNode()->isNodeDisabled() ) {
+        if (getNode()->isNodeDisabled(time)) {
             NodePtr preferredInput = getNode()->getPreferredInputNode();
             if (!preferredInput) {
                 return eStatusFailed;
@@ -4317,6 +4317,71 @@ EffectInstance::getComponentsNeededAndProduced(double time,
     getComponentsNeededDefault(time, view, comps, &passThroughLayers, passThroughTime, passThroughView, &processChannels, &processChannelsPerPlane, passThroughInputNb);
 }
 
+namespace {
+class TLSFlagSetter {
+public:
+    explicit TLSFlagSetter(bool* flag)
+        : _flag(flag)
+    {
+        *_flag = true;
+    }
+
+    ~TLSFlagSetter()
+    {
+        *_flag = false;
+    }
+
+    TLSFlagSetter(const TLSFlagSetter&) = delete;
+    TLSFlagSetter& operator=(const TLSFlagSetter&) = delete;
+
+private:
+    bool* _flag;
+};
+} // anon namespace
+
+bool
+EffectInstance::isResolvingLayersPassThrough() const
+{
+    EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+
+    return tls && tls->resolvingLayersPassThrough;
+}
+
+void
+EffectInstance::getLayersPassThroughInput(double time,
+                                          ViewIdx view,
+                                          int* inputNb,
+                                          double* inputTime,
+                                          ViewIdx* inputView)
+{
+    *inputNb = getNode()->getPreferredInput();
+    *inputTime = time;
+    *inputView = view;
+
+    if ((getNInputs() == 0) || isResolvingLayersPassThrough()) {
+        return;
+    }
+
+    EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
+    double identityTime = time;
+    ViewIdx identityView = view;
+    int identityInputNb = -1;
+    bool identity = false;
+    {
+        const TLSFlagSetter resolving(&tls->resolvingLayersPassThrough);
+        // Uncached: the identity cache is keyed on (hash, time, view) only, so this whole-image
+        // answer must neither be served to a render asking about its own window nor, when taken
+        // before an edit the hash does not capture, outlive that edit.
+        identity = isIdentity_public(false, 0, time, RenderScale::identity, getOutputFormat(), view, &identityTime, &identityView, &identityInputNb);
+    }
+
+    if (identity && (identityInputNb >= 0)) {
+        *inputNb = identityInputNb;
+        *inputTime = identityTime;
+        *inputView = identityView;
+    }
+}
+
 // The plane(s) the plug-in declared in its metadata for this clip: the Color plane at the
 // declared channel count, or, for Furnace-style effects, a disparity/motion plane with its
 // paired plane, since both must be rendered at once. RGBA until the metadata are set.
@@ -4375,14 +4440,16 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
 {
     NodePtr node = getNode();
 
-    *passThroughTime = time;
-    *passThroughView = view;
-    *passThroughInputNb = node->getPreferredInput();
+    {
+        ViewIdx ptView;
+        getLayersPassThroughInput(time, view, passThroughInputNb, passThroughTime, &ptView);
+        *passThroughView = ptView;
+    }
     passThroughLayers->clear();
     processChannelsPerPlane->clear();
 
     if (*passThroughInputNb != -1) {
-        getAvailableLayers(time, view, *passThroughInputNb, passThroughLayers);
+        getAvailableLayers(*passThroughTime, ViewIdx(*passThroughView), *passThroughInputNb, passThroughLayers);
     }
 
     // Resolve the layer knob once against the list it is bound to; the same selection is
@@ -4460,6 +4527,10 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
 {
     RECURSIVE_ACTION();
 
+    // Computed while this effect's own isIdentity() is choosing its pass-through input, the
+    // result used the preferred-input fallback and must not outlive that query.
+    const bool cacheResults = !isResolvingLayersPassThrough();
+
     {
         ViewIdx ptView;
         bool foundInCache = _imp->actionsCache->getComponentsNeededResults(hash, time, view, comps, processChannels, processChannelsPerPlane, passThroughLayers, passThroughInputNb, &ptView, passThroughTime);
@@ -4469,9 +4540,38 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
         }
     }
 
+    // A node disabled at `time` renders its pass-through input unchanged, so it produces no layer
+    // of its own there and every layer of that input passes through.
+    if (getNode()->isNodeDisabled(time)) {
+        ViewIdx ptView;
+        getLayersPassThroughInput(time, view, passThroughInputNb, passThroughTime, &ptView);
+        *passThroughView = ptView;
+
+        comps->clear();
+        (*comps)[-1];
+        int maxInput = getNInputs();
+        for (int i = 0; i < maxInput; ++i) {
+            (*comps)[i];
+        }
+
+        passThroughLayers->clear();
+        if (*passThroughInputNb != -1) {
+            getAvailableLayers(*passThroughTime, ptView, *passThroughInputNb, passThroughLayers);
+        }
+        processChannels->set();
+        processChannelsPerPlane->clear();
+
+        if (cacheResults) {
+            _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ptView, *passThroughTime);
+        }
+        return;
+    }
+
     if ( !isMultiPlanar() ) {
         getComponentsNeededDefault(time, view, comps, passThroughLayers, passThroughTime, passThroughView, processChannels, processChannelsPerPlane, passThroughInputNb);
-        _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
+        if (cacheResults) {
+            _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
+        }
         return;
     }
 
@@ -4512,8 +4612,7 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
     if (*passThroughInputNb != -1 && ((passThrough == ePassThroughPassThroughNonRenderedLayers) || (passThrough == ePassThroughRenderAllRequestedLayers))) {
 
         std::list<ImageLayerDesc> upstreamAvailableLayers;
-        getAvailableLayers(time, view, *passThroughInputNb, &upstreamAvailableLayers);
-
+        getAvailableLayers(*passThroughTime, ViewIdx(*passThroughView), *passThroughInputNb, &upstreamAvailableLayers);
 
         removeFromLayersList(outputLayers, &upstreamAvailableLayers);
 
@@ -4524,7 +4623,9 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
     processChannels->set();
     processChannelsPerPlane->clear();
 
-    _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
+    if (cacheResults) {
+        _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ViewIdx(*passThroughView), *passThroughTime);
+    }
 
 } // EffectInstance::getComponentsNeededAndProduced_public
 
@@ -5020,11 +5121,11 @@ EffectInstance::aboutToRestoreDefaultValues()
  * from last to first.
  **/
 EffectInstancePtr
-EffectInstance::getNearestNonDisabled() const
+EffectInstance::getNearestNonDisabled(double time) const
 {
     NodePtr node = getNode();
 
-    if ( !node->isNodeDisabled() ) {
+    if (!node->isNodeDisabled(time)) {
         return node->getEffectInstance();
     } else {
         ///Test all inputs recursively, going from last to first, preferring non optional inputs.
@@ -5065,7 +5166,7 @@ EffectInstance::getNearestNonDisabled() const
 
         ///If we found A or B so far, cycle through them
         for (std::list<EffectInstancePtr> ::iterator it = nonOptionalInputs.begin(); it != nonOptionalInputs.end(); ++it) {
-            EffectInstancePtr inputRet = (*it)->getNearestNonDisabled();
+            EffectInstancePtr inputRet = (*it)->getNearestNonDisabled(time);
             if (inputRet) {
                 return inputRet;
             }
@@ -5088,7 +5189,7 @@ EffectInstance::getNearestNonDisabled() const
 
         ///Cycle through all non optional inputs first
         for (std::list<EffectInstancePtr> ::iterator it = nonOptionalInputs.begin(); it != nonOptionalInputs.end(); ++it) {
-            EffectInstancePtr inputRet = (*it)->getNearestNonDisabled();
+            EffectInstancePtr inputRet = (*it)->getNearestNonDisabled(time);
             if (inputRet) {
                 return inputRet;
             }
@@ -5096,7 +5197,7 @@ EffectInstance::getNearestNonDisabled() const
 
         ///Cycle through optional inputs...
         for (std::list<EffectInstancePtr> ::iterator it = optionalInputs.begin(); it != optionalInputs.end(); ++it) {
-            EffectInstancePtr inputRet = (*it)->getNearestNonDisabled();
+            EffectInstancePtr inputRet = (*it)->getNearestNonDisabled(time);
             if (inputRet) {
                 return inputRet;
             }
@@ -5108,9 +5209,9 @@ EffectInstance::getNearestNonDisabled() const
 } // EffectInstance::getNearestNonDisabled
 
 EffectInstancePtr
-EffectInstance::getNearestNonDisabledPrevious(int* inputNb)
+EffectInstance::getNearestNonDisabledPrevious(double time, int* inputNb)
 {
-    assert( getNode()->isNodeDisabled() );
+    assert(getNode()->isNodeDisabled(time));
 
     ///Test all inputs recursively, going from last to first, preferring non optional inputs.
     std::list<EffectInstancePtr> nonOptionalInputs;
@@ -5152,8 +5253,8 @@ EffectInstance::getNearestNonDisabledPrevious(int* inputNb)
 
     ///If we found A or B so far, cycle through them
     for (std::list<EffectInstancePtr> ::iterator it = nonOptionalInputs.begin(); it != nonOptionalInputs.end(); ++it) {
-        if ( (*it)->getNode()->isNodeDisabled() ) {
-            EffectInstancePtr inputRet = (*it)->getNearestNonDisabledPrevious(inputNb);
+        if ((*it)->getNode()->isNodeDisabled(time)) {
+            EffectInstancePtr inputRet = (*it)->getNearestNonDisabledPrevious(time, inputNb);
             if (inputRet) {
                 return inputRet;
             }
@@ -5184,8 +5285,8 @@ EffectInstance::getNearestNonDisabledPrevious(int* inputNb)
 
     ///Cycle through all non optional inputs first
     for (std::list<EffectInstancePtr> ::iterator it = nonOptionalInputs.begin(); it != nonOptionalInputs.end(); ++it) {
-        if ( (*it)->getNode()->isNodeDisabled() ) {
-            EffectInstancePtr inputRet = (*it)->getNearestNonDisabledPrevious(inputNb);
+        if ((*it)->getNode()->isNodeDisabled(time)) {
+            EffectInstancePtr inputRet = (*it)->getNearestNonDisabledPrevious(time, inputNb);
             if (inputRet) {
                 return inputRet;
             }
@@ -5194,8 +5295,8 @@ EffectInstance::getNearestNonDisabledPrevious(int* inputNb)
 
     ///Cycle through optional inputs...
     for (std::list<EffectInstancePtr> ::iterator it = optionalInputs.begin(); it != optionalInputs.end(); ++it) {
-        if ( (*it)->getNode()->isNodeDisabled() ) {
-            EffectInstancePtr inputRet = (*it)->getNearestNonDisabledPrevious(inputNb);
+        if ((*it)->getNode()->isNodeDisabled(time)) {
+            EffectInstancePtr inputRet = (*it)->getNearestNonDisabledPrevious(time, inputNb);
             if (inputRet) {
                 return inputRet;
             }
@@ -5417,7 +5518,10 @@ EffectInstance::getPreferredMetadata_public(NodeMetadata& metadata)
     if (stat == eStatusFailed) {
         return stat;
     }
-    if (!getNode()->isNodeDisabled()) {
+    // Metadata are time-invariant and not refreshed when the time changes, so a Disable that
+    // varies with time is resolved as enabled: downstream metadata then stay the same on every
+    // frame, and are those of the frames where this node actually renders.
+    if (!getNode()->isNodeDisabledAtAllTimes()) {
         // call syncPrivateData if necessary
         bool mustSyncPrivateData;
         {
@@ -5979,7 +6083,10 @@ EffectInstance::refreshExtraStateAfterTimeChanged(bool isPlayback,
 {
     KnobHolder::refreshExtraStateAfterTimeChanged(isPlayback, time);
 
-    getNode()->refreshIdentityState();
+    NodePtr node = getNode();
+    node->refreshIdentityState();
+    // Layer menus list what the inputs carry at the current frame, which can change with it.
+    node->relistLayerKnobs();
 }
 
 void

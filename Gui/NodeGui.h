@@ -459,6 +459,14 @@ public Q_SLOTS:
     void onDisabledKnobToggled(bool disabled);
 
     /**
+     * @brief Only recomputes the disabled look when the Disable knob is keyed or driven by an
+     * expression: either can flip the render's answer without the knob's stored value
+     * changing, so scrubbing needs its own hook instead of piggy-backing on
+     * disabledKnobToggled(), which only fires when that value actually changes.
+     **/
+    void onTimelineTimeChanged(SequenceTime time, int reason);
+
+    /**
      * @brief Updates the position of the items contained by the node to fit into
      * the new width and height.
      **/

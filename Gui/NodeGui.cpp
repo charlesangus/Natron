@@ -25,8 +25,9 @@
 
 #include "NodeGui.h"
 
-#include <cassert>
 #include <algorithm> // min, max
+#include <cassert>
+#include <cmath>
 #include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
@@ -66,6 +67,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/PyParameter.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
+#include "Engine/TimeLine.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewerInstance.h"
 #include "Global/Enums.h"
@@ -126,6 +128,32 @@ using std::make_pair;
 #define M_PI        3.14159265358979323846264338327950288   /* pi             */
 #define M_PI_2      1.57079632679489661923132169163975144   /* pi/2           */
 #endif
+
+static const qreal kDisabledCrossPenWidth = 2.;
+
+// A wide stroke ending on the box's corners would stick out of the box: pull each end in along
+// the diagonal until both corners of its flat cap sit inside the box.
+static QLineF
+insetDiagonal(const QPointF& from,
+              const QPointF& to,
+              qreal penWidth)
+{
+    const qreal dx = std::abs(to.x() - from.x());
+    const qreal dy = std::abs(to.y() - from.y());
+    const QLineF line(from, to);
+
+    if ((dx <= 0.) || (dy <= 0.)) {
+        return line;
+    }
+    const qreal inset = penWidth / 2. * std::max(dx / dy, dy / dx);
+    const qreal length = line.length();
+    if (2. * inset >= length) {
+        return QLineF(line.center(), line.center());
+    }
+    const QPointF step = (to - from) * (inset / length);
+
+    return QLineF(from + step, to - step);
+}
 
 static void
 replaceLineBreaksWithHtmlParagraph(QString &txt)
@@ -262,6 +290,7 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect( internalNode.get(), SIGNAL(outputsChanged()), this, SLOT(refreshOutputEdgeVisibility()) );
     QObject::connect( internalNode.get(), SIGNAL(previewKnobToggled()), this, SLOT(onPreviewKnobToggled()) );
     QObject::connect( internalNode.get(), SIGNAL(disabledKnobToggled(bool)), this, SLOT(onDisabledKnobToggled(bool)) );
+    QObject::connect(internalNode->getApp()->getTimeLine().get(), SIGNAL(frameChanged(SequenceTime, int)), this, SLOT(onTimelineTimeChanged(SequenceTime, int)));
     QObject::connect( internalNode.get(), SIGNAL(streamWarningsChanged()), this, SLOT(onStreamWarningsChanged()) );
     QObject::connect( internalNode.get(), SIGNAL(nodeExtraLabelChanged(QString)), this, SLOT(refreshNodeText(QString)) );
     QObject::connect(internalNode.get(), SIGNAL(layerSelectionChanged()), this, SLOT(onLayerSelectionChanged()));
@@ -741,6 +770,13 @@ NodeGui::createGui()
     _disabledTopLeftBtmRight = new QGraphicsLineItem(this);
     _disabledTopLeftBtmRight->hide();
     _disabledTopLeftBtmRight->setZValue(depth + 1);
+    QGraphicsLineItem* const disabledCross[2] = { _disabledBtmLeftTopRight, _disabledTopLeftBtmRight };
+    for (QGraphicsLineItem* line : disabledCross) {
+        QPen pen = line->pen();
+        pen.setWidthF(kDisabledCrossPenWidth);
+        pen.setCapStyle(Qt::FlatCap);
+        line->setPen(pen);
+    }
 } // NodeGui::createGui
 
 void
@@ -1056,8 +1092,8 @@ NodeGui::resize(int width,
     _stateIndicator->setRect(topLeft.x() - indicatorOffset, topLeft.y() - indicatorOffset,
                              width + indicatorOffset * 2, height + indicatorOffset * 2);
 
-    _disabledBtmLeftTopRight->setLine( QLineF( bbox.bottomLeft(), bbox.topRight() ) );
-    _disabledTopLeftBtmRight->setLine( QLineF( bbox.topLeft(), bbox.bottomRight() ) );
+    _disabledBtmLeftTopRight->setLine(insetDiagonal(bbox.bottomLeft(), bbox.topRight(), kDisabledCrossPenWidth));
+    _disabledTopLeftBtmRight->setLine(insetDiagonal(bbox.topLeft(), bbox.bottomRight(), kDisabledCrossPenWidth));
 
     resizeExtraContent(width, height, forceSize);
 
@@ -2859,6 +2895,21 @@ NodeGui::onDisabledKnobToggled(bool disabled)
     _disabledTopLeftBtmRight->setVisible(!enabled);
     _disabledBtmLeftTopRight->setVisible(!enabled);
     update();
+}
+
+void
+NodeGui::onTimelineTimeChanged(SequenceTime time,
+                               int /*reason*/)
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    KnobBoolPtr disabledKnob = node->getDisabledKnob();
+    if (!disabledKnob || !disabledKnob->hasAnimation()) {
+        return;
+    }
+    onDisabledKnobToggled(disabledKnob->getValueAtTime(time));
 }
 
 void

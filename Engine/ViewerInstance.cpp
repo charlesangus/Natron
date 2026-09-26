@@ -1271,7 +1271,7 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
     EffectInstancePtr upstreamInput = getInput(outArgs->activeInputIndex);
     outArgs->activeInputToRender.reset();
     if (upstreamInput) {
-        outArgs->activeInputToRender = upstreamInput->getNearestNonDisabled();
+        outArgs->activeInputToRender = upstreamInput->getNearestNonDisabled(time);
     }
     // Detection only: this runs on the main thread, where the resolved kind is a memoized read
     // and no render may be started.

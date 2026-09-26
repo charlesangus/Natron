@@ -147,11 +147,11 @@ public:
 
     /**
      * @brief The source outSlot's channel outIndex actually renders from. A mapping row is
-     * returned as stored. Without one, the implicit inK.i (K = outSlot, i = outIndex) is 0 when
-     * slot K is None or when i is at or beyond the channel count of slot K's layer, Color
-     * counting as RGBA.
+     * returned as stored. Without one, the implicit inK.i (K = outSlot, i = outIndex) is 0 only
+     * when slot K is None; a channel slot K's layer lacks stays inK.i, and
+     * checkExtraChannelsPresent() fails the render on it.
      **/
-    ShuffleSource getEffectiveSource(int outSlot, int outIndex) const WARN_UNUSED_RETURN;
+    ShuffleSource getEffectiveSource(int outSlot, int outIndex, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
 protected:
     virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
@@ -187,12 +187,13 @@ private:
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief An explicit row wired to a slot whose input is connected but that no longer carries
-     * the slot's layer, or whose plane lacks the row's channel (a Color index names R, G, B or
-     * A, so an RGB-only Color has no A), fails the render naming that channel. A disconnected
-     * input, a None slot or a channel with no row is silent and renders 0, and a row whose
-     * output channel the current output layer does not have is ignored. The mapping knob
-     * stores overrides only, so this is the node that resolves their readability, mirroring
+     * @brief Every output channel the render produces is checked through its effective source,
+     * explicit row or implicit inK.i alike: a slot whose input is connected but does not carry
+     * the slot's layer at (time, view), or whose plane lacks the channel (a Color index names
+     * R, G, B or A, so an RGB-only Color has no A), fails the render naming that channel. A
+     * disconnected input or a None slot is silent and renders 0, and a row whose output channel
+     * the current output layer does not have is ignored. The mapping knob stores overrides
+     * only, so this is the node that resolves their readability, mirroring
      * checkSelectedChannelsPresent()'s mask rule.
      **/
     virtual bool checkExtraChannelsPresent(double time,
@@ -222,12 +223,13 @@ private:
                              std::vector<FetchedPlane>* fetched);
 
     /**
-     * @brief The number of channels layerID has, Color counting as RGBA, resolved against the
-     * project registry and then inputNb's present layers. -1 when neither knows the layer.
+     * @brief The number of channels layerID has at (time, view), Color counting as RGBA,
+     * resolved against the project registry and then inputNb's layers present at (time, view).
+     * -1 when neither knows the layer.
      **/
-    int layerChannelCount(const std::string& layerID, int inputNb) const WARN_UNUSED_RETURN;
+    int layerChannelCount(const std::string& layerID, int inputNb, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
-    bool slotIsRead(int slot) const WARN_UNUSED_RETURN;
+    bool slotIsRead(int slot, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     bool resolveOutputLayerDesc(const std::string& layerID,
                                 double time,

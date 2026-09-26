@@ -178,8 +178,9 @@ Shuffle::initializeKnobs()
     mapping->setName(kShuffleParamMapping);
     mapping->setAnimationEnabled(false);
     mapping->setHintToolTip(tr("The source of every output channel: a slot channel, 0 or 1. An output channel with "
-                               "no source reads the same channel of its own slot, or 0 when that slot is None or "
-                               "has no such channel."));
+                               "no source reads the same channel of its own slot, or 0 when that slot is None. "
+                               "Reading a layer or channel the input does not have is an error: set that output "
+                               "channel to 0 or 1 instead."));
     if (copy) {
         std::vector<ShuffleMapRow> rows;
         for (int c = 0; c < 3; ++c) {
@@ -268,7 +269,9 @@ Shuffle::getOutputLayer(int slot) const
 
 int
 Shuffle::layerChannelCount(const std::string& layerID,
-                           int inputNb) const
+                           int inputNb,
+                           double time,
+                           ViewIdx view) const
 {
     if (layerID.empty()) {
         return 0;
@@ -284,10 +287,9 @@ Shuffle::layerChannelCount(const std::string& layerID,
         return (int)desc.getChannels().size();
     }
 
-    const double time = app ? app->getTimeLine()->currentFrame() : 0.;
     std::list<ImageLayerDesc> present;
     // getPresentLayers() only reads, but is not declared const.
-    const_cast<Shuffle*>(this)->getPresentLayers(time, ViewIdx(0), inputNb, &present);
+    const_cast<Shuffle*>(this)->getPresentLayers(time, view, inputNb, &present);
     if (findLayer(present, layerID, &desc)) {
         return (int)desc.getChannels().size();
     }
@@ -297,7 +299,9 @@ Shuffle::layerChannelCount(const std::string& layerID,
 
 ShuffleSource
 Shuffle::getEffectiveSource(int outSlot,
-                            int outIndex) const
+                            int outIndex,
+                            double /*time*/,
+                            ViewIdx /*view*/) const
 {
     std::shared_ptr<KnobShuffleMap> mapping = _mapping.lock();
 
@@ -305,14 +309,9 @@ Shuffle::getEffectiveSource(int outSlot,
         return mapping->getSource(outSlot, outIndex);
     }
 
-    const std::string slotLayer = getSlotLayer(outSlot);
-    if (slotLayer.empty()) {
-        return ShuffleSource::makeZero();
-    }
-    // A layer neither the registry nor the input knows keeps its implicit source: the render
-    // finds no plane to read and writes 0 all the same.
-    const int nChannels = layerChannelCount(slotLayer, getSlotInput(outSlot));
-    if ((nChannels >= 0) && (outIndex >= nChannels)) {
+    // Only a None slot reads 0. A channel the slot's layer lacks stays wired so that
+    // checkExtraChannelsPresent() fails the render on it instead of silently writing 0.
+    if (getSlotLayer(outSlot).empty()) {
         return ShuffleSource::makeZero();
     }
 
@@ -344,12 +343,7 @@ Shuffle::knobChanged(KnobI* k,
         // mapping is still unreadable.
         NodePtr node = getNode();
         if (node) {
-            QString current;
-            int type = 0;
-            node->getPersistentMessage(&current, &type, false);
-            if ((type == (int)eMessageTypeError) && current.startsWith(QString::fromUtf8(kExtraChannelMissingMessagePrefix))) {
-                node->clearPersistentMessage(false);
-            }
+            node->clearChannelSelectorMessage();
         }
     }
 
@@ -363,16 +357,18 @@ Shuffle::onKnobsLoaded()
 }
 
 bool
-Shuffle::slotIsRead(int slot) const
+Shuffle::slotIsRead(int slot,
+                    double time,
+                    ViewIdx view) const
 {
     for (int outSlot = 1; outSlot <= 2; ++outSlot) {
         const std::string outLayer = getOutputLayer(outSlot);
         if (outLayer.empty()) {
             continue;
         }
-        const int nChannels = layerChannelCount(outLayer, (int)eInputMain);
+        const int nChannels = layerChannelCount(outLayer, (int)eInputMain, time, view);
         for (int c = 0; c < ((nChannels < 0) ? 4 : nChannels); ++c) {
-            const ShuffleSource src = getEffectiveSource(outSlot, c);
+            const ShuffleSource src = getEffectiveSource(outSlot, c, time, view);
             if ((src.kind == ShuffleSource::eInput) && (src.slot == slot)) {
                 return true;
             }
@@ -457,9 +453,9 @@ Shuffle::buildSubLabel()
         // it, so a slot the mapping never reads (or that is only ever zero/one) is left out.
         bool usesSlot1 = false;
         bool usesSlot2 = false;
-        const int nChannels = layerChannelCount(outLayer, (int)eInputMain);
+        const int nChannels = layerChannelCount(outLayer, (int)eInputMain, time, view);
         for (int c = 0, n = (nChannels < 0) ? 4 : nChannels; c < n; ++c) {
-            const ShuffleSource src = getEffectiveSource(outSlot, c);
+            const ShuffleSource src = getEffectiveSource(outSlot, c, time, view);
             if (src.kind != ShuffleSource::eInput) {
                 continue;
             }
@@ -552,7 +548,7 @@ Shuffle::getComponentsNeededAndProduced(double time,
 
     for (int slot = 1; slot <= 2; ++slot) {
         const std::string layerID = getSlotLayer(slot);
-        if (layerID.empty() || !slotIsRead(slot)) {
+        if (layerID.empty() || !slotIsRead(slot, time, view)) {
             continue;
         }
         const int inputNb = getSlotInput(slot);
@@ -579,12 +575,12 @@ Shuffle::isIdentity(double time,
     }
 
     const std::string out1Layer = getOutputLayer(1);
-    const int nChannels = layerChannelCount(out1Layer, (int)eInputMain);
+    const int nChannels = layerChannelCount(out1Layer, (int)eInputMain, time, view);
     if (nChannels < 0) {
         return false;
     }
     for (int c = 0; c < nChannels; ++c) {
-        const ShuffleSource src = getEffectiveSource(1, c);
+        const ShuffleSource src = getEffectiveSource(1, c, time, view);
         if ((src.kind != ShuffleSource::eInput) || (src.index != c)) {
             return false;
         }
@@ -592,8 +588,8 @@ Shuffle::isIdentity(double time,
             return false;
         }
     }
-    // renderRoI() validates the mapping only past its identity shortcut, so an explicit row the
-    // input cannot feed (e.g. A of an RGB-only Color) must keep the render off that shortcut.
+    // renderRoI() validates the mapping only past its identity shortcut, so a channel the input
+    // cannot feed (e.g. A of an RGB-only Color) must keep the render off that shortcut.
     if (!checkExtraChannelsPresent(time, view, NULL)) {
         return false;
     }
@@ -791,7 +787,7 @@ Shuffle::render(const RenderActionArgs& args)
 
         std::vector<ChannelFill> planeFills((std::size_t)plane.getNumComponents());
         for (int c = 0; outSlot && (c < plane.getNumComponents()); ++c) {
-            const ShuffleSource src = getEffectiveSource(outSlot, c);
+            const ShuffleSource src = getEffectiveSource(outSlot, c, args.time, args.view);
             ChannelFill& fill = planeFills[c];
             if (src.kind == ShuffleSource::eOne) {
                 fill.constant = 1.f;
@@ -877,64 +873,65 @@ Shuffle::checkExtraChannelsPresent(double time,
                                    std::string* message)
 {
     std::shared_ptr<KnobShuffleMap> mapping = _mapping.lock();
+    // Every output channel is checked, so an input's layers are listed once rather than per channel.
+    std::map<int, std::list<ImageLayerDesc>> presentByInput;
 
-    if (!mapping) {
-        return true;
-    }
-
-    int outChannels[2] = { 0, 0 };
-    for (int slot = 1; slot <= 2; ++slot) {
-        const std::string outLayer = getOutputLayer(slot);
+    for (int outSlot = 1; outSlot <= 2; ++outSlot) {
+        const std::string outLayer = getOutputLayer(outSlot);
         ImageLayerDesc outDesc;
-        if (!outLayer.empty() && resolveOutputLayerDesc(outLayer, time, view, &outDesc)) {
-            outChannels[slot - 1] = outDesc.getNumComponents();
-        }
-    }
-
-    const std::vector<ShuffleMapRow> rows = mapping->getRows();
-    for (std::vector<ShuffleMapRow>::const_iterator it = rows.begin(); it != rows.end(); ++it) {
-        if (it->src.kind != ShuffleSource::eInput) {
-            continue;
-        }
-        if ((it->outSlot < 1) || (it->outSlot > 2) || (it->outIndex < 0) || (it->outIndex >= outChannels[it->outSlot - 1])) {
-            continue; // The render produces no such output channel, so nothing reads the row.
-        }
-        const std::string layerID = getSlotLayer(it->src.slot);
-        if (layerID.empty()) {
-            continue; // A None slot is silent: the row renders 0.
-        }
-        const int inputNb = getSlotInput(it->src.slot);
-        if (!getInput(inputNb)) {
-            continue; // A disconnected input is silent: the row renders 0.
+        if (outLayer.empty() || !resolveOutputLayerDesc(outLayer, time, view, &outDesc)) {
+            continue; // The render produces no channel of this output, so nothing is read for it.
         }
 
-        std::list<ImageLayerDesc> present;
-        getPresentLayers(time, view, inputNb, &present);
-        ImageLayerDesc desc;
-        if (findLayer(present, layerID, &desc)) {
-            // Resolved by name as render() does, so a Color plane's missing R/G/B/A is caught
-            // whatever its channel count.
-            const std::string wanted = planeChannelName(desc, it->src.index);
-            const std::vector<std::string>& channels = desc.getChannels();
-            if (!wanted.empty() && (std::find(channels.begin(), channels.end(), wanted) != channels.end())) {
+        for (int c = 0; c < outDesc.getNumComponents(); ++c) {
+            const ShuffleSource src = getEffectiveSource(outSlot, c, time, view);
+            if (src.kind != ShuffleSource::eInput) {
                 continue;
             }
-        }
-
-        if (message) {
-            // Best-effort channel name for the message; falls back to the bare layer name when
-            // even the registry has no descriptor for it (e.g. an unknown/mistyped layer).
-            std::string channelName;
-            ImageLayerDesc named;
-            if (resolveOutputLayerDesc(layerID, time, view, &named)) {
-                channelName = planeChannelName(named, it->src.index);
+            const std::string layerID = getSlotLayer(src.slot);
+            if (layerID.empty()) {
+                continue; // A None slot is silent: an explicit row to it renders 0.
             }
-            *message = std::string(kExtraChannelMissingMessagePrefix) + layerID
-                + (channelName.empty() ? std::string() : ("." + channelName))
-                + " is not in the " + getInputLabel(inputNb) + " input";
-        }
+            const int inputNb = getSlotInput(src.slot);
+            if (!getInput(inputNb)) {
+                continue; // A disconnected input is silent: the channel renders 0.
+            }
 
-        return false;
+            std::map<int, std::list<ImageLayerDesc>>::iterator present = presentByInput.find(inputNb);
+            if (present == presentByInput.end()) {
+                present = presentByInput.insert(std::make_pair(inputNb, std::list<ImageLayerDesc>())).first;
+                getPresentLayers(time, view, inputNb, &present->second);
+            }
+            ImageLayerDesc desc;
+            if (findLayer(present->second, layerID, &desc)) {
+                // Resolved by name as render() does, so a Color plane's missing R/G/B/A is caught
+                // whatever its channel count.
+                const std::string wanted = planeChannelName(desc, src.index);
+                const std::vector<std::string>& channels = desc.getChannels();
+                if (!wanted.empty() && (std::find(channels.begin(), channels.end(), wanted) != channels.end())) {
+                    continue;
+                }
+            }
+
+            if (message) {
+                std::string channelName;
+                ImageLayerDesc named;
+                if (resolveOutputLayerDesc(layerID, time, view, &named)) {
+                    channelName = planeChannelName(named, src.index);
+                }
+                // An implicit source reads the output channel's own index, so when the slot's
+                // layer is unknown or narrower, that channel's name is the one the user expects.
+                const bool isImplicit = !mapping || !mapping->hasExplicitSource(outSlot, c);
+                if (channelName.empty() && isImplicit) {
+                    channelName = planeChannelName(outDesc, c);
+                }
+                *message = "Channel " + layerID
+                    + (channelName.empty() ? std::string() : ("." + channelName))
+                    + " is not in the " + getInputLabel(inputNb) + " input";
+            }
+
+            return false;
+        }
     }
 
     return true;

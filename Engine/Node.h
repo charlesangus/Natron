@@ -79,12 +79,6 @@ CLANG_DIAG_ON(deprecated)
 #define kOfxMaskInvertParamName "maskInvert"
 #define kOfxMixParamName "mix"
 
-// The prefix Node::checkSelectedChannelsPresent() requires of an EffectInstance::
-// checkExtraChannelsPresent() failure message, so refreshChannelSelectors() and the effect
-// itself can tell it apart from an unrelated persistent message before clearing it, the same
-// way refreshChannelSelectors() already does for a missing mask or (un)premult channel.
-#define kExtraChannelMissingMessagePrefix "Channel "
-
 #define kReadOIIOAvailableViewsKnobName "availableViews"
 #define kWriteOIIOParamViewsSelector "viewsSelector"
 
@@ -931,7 +925,21 @@ public:
      **/
     void clearPersistentMessage(bool recurse);
 
+    /**
+     * @brief Posts the error message of a failed checkSelectedChannelsPresent(), recording
+     * with it that the channel-selector check owns it, so that clearChannelSelectorMessage()
+     * can later take it back. Any other message posted since drops that ownership.
+     **/
+    void setChannelSelectorMessage(const std::string& content);
+
+    /**
+     * @brief Clears the persistent message only if it is still the one setChannelSelectorMessage()
+     * posted; any other message is left alone. The check and the clear are atomic.
+     **/
+    void clearChannelSelectorMessage();
+
 private:
+    void postPersistentMessage(MessageTypeEnum type, const std::string& content, bool fromChannelSelector);
 
     void clearPersistentMessageRecursive(std::list<Node*>& markedNodes);
 
@@ -1019,7 +1027,23 @@ public:
 
     bool onEffectKnobValueChanged(KnobI* what, ValueChangedReasonEnum reason);
 
+    /**
+     * @brief Whether the node is disabled at the timeline's current frame. For the UI only:
+     * anything that renders, or answers an action for a render, must use isNodeDisabled(time).
+     **/
     bool isNodeDisabled() const;
+
+    /**
+     * @brief Whether the node is disabled at `time`, which makes it pass its preferred input through.
+     **/
+    bool isNodeDisabled(double time) const;
+
+    /**
+     * @brief Whether the node is disabled whatever the time: its Disable (or its container's) is
+     * on and neither animated nor driven by an expression. A lifetime range never makes this
+     * true on its own, since the node is enabled inside that range.
+     **/
+    bool isNodeDisabledAtAllTimes() const;
 
     void setNodeDisabled(bool disabled);
 
@@ -1365,6 +1389,13 @@ public:
      **/
     void refreshChannelSelectors();
 
+    /**
+     * @brief Emits layerListRefreshed() and nothing else, so the layer/channel knob GUIs relist
+     * at the timeline's current frame. An input's layers can differ from one frame to the next,
+     * so a list built at another frame can lack layers the input carries now.
+     **/
+    void relistLayerKnobs();
+
     // True for the handful of plug-ins (see adoptChannelQuad()) whose R/G/B/A quad the host
     // does not adopt as a per-channel mask: their quad stays visible and the layer knob's
     // row-0 channel buttons are ignored (the host treats every plane as fully processed).
@@ -1623,8 +1654,9 @@ Q_SIGNALS:
     void layerSelectionChanged();
 
     /**
-     * @brief Emitted by refreshChannelSelectors(): the layer/channel knob GUIs list their
-     * layers themselves and only need to know that the input's present layers may have changed.
+     * @brief Emitted by refreshChannelSelectors() and relistLayerKnobs(): the layer/channel knob
+     * GUIs list their layers themselves and only need to know that the input's present layers
+     * may have changed.
      **/
     void layerListRefreshed();
 

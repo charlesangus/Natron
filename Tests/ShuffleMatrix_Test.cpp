@@ -54,6 +54,7 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Project.h"
+#include "Engine/TimeLine.h"
 
 #include "Gui/Button.h"
 #include "Gui/ComboBox.h"
@@ -357,6 +358,8 @@ TEST_F(ShuffleMatrixTest, ColorFromDiffuseHasFourRowsOfFiveButtons)
     ASSERT_FALSE(HasFatalFailure());
     setLayer(kShuffleParamIn1, "diffuse");
     ASSERT_FALSE(HasFatalFailure());
+    // diffuse has no fourth channel, so A's default source has no column to show it.
+    _mapping->setSource(1, 3, ShuffleSource::makeZero());
     createGui();
 
     EXPECT_EQ(4, _gui->getOutputRowCount());
@@ -388,15 +391,16 @@ TEST_F(ShuffleMatrixTest, ColorFromDiffuseHasFourRowsOfFiveButtons)
     EXPECT_EQ(QString::fromUtf8("G"), _gui->getCellButton(0, 1)->text());
     EXPECT_EQ(QString::fromUtf8("B"), _gui->getCellButton(0, 2)->text());
 
-    // An empty mapping resolves every row to Shuffle::getEffectiveSource's default, and
-    // exactly one button reflects it.
+    // Every row resolves through Shuffle::getEffectiveSource, R, G and B to their defaults and
+    // A to its 0 row, and exactly one button reflects it.
     Shuffle* shuffle = shuffleEffect();
     ASSERT_TRUE(shuffle != NULL);
+    const double time = _app->getTimeLine()->currentFrame();
     for (int r = 0; r < _gui->getOutputRowCount(); ++r) {
         int outSlot = 0;
         int outIndex = 0;
         ASSERT_TRUE(_gui->getOutputRow(r, &outSlot, &outIndex));
-        const int expected = _gui->findSourceColumn(shuffle->getEffectiveSource(outSlot, outIndex));
+        const int expected = _gui->findSourceColumn(shuffle->getEffectiveSource(outSlot, outIndex, time, ViewIdx(0)));
         ASSERT_GE(expected, 0) << "row " << r;
         int checkedCount = 0;
         for (int c = 0; c < _gui->getSourceColumnCount(); ++c) {

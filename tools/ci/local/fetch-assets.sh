@@ -134,7 +134,7 @@ fi
 # OPENFX_IO_REF: charlesangus/openfx-io -- our fork, ahead of
 # NatronGitHub/openfx-io. Fork-and-fix is the standing pattern for small
 # changes to NatronGitHub repos. Deltas are recorded at charlesangus/
-# openfx-io PRs #2-#6 (an earlier SEEXPR2_INCLUDES/LIBRARIES CMakeLists.txt
+# openfx-io PRs #2-#7 (an earlier SEEXPR2_INCLUDES/LIBRARIES CMakeLists.txt
 # fix and an OCIO default-colorspace fallback predate PR tracking); the
 # Write node's layer-naming delta also needed
 # charlesangus/openfx-supportext#1.
@@ -145,7 +145,7 @@ fi
 # SEEXPR_REF: wdas/SeExpr, branch v1-2.11, not v2/v3 -- openfx-io's
 # SeNoise.cpp targets the v1-2.11 header layout. Not forked.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="e537291a16b1736cf26a969bc688a7e5daaee9ec"
+OPENFX_IO_REF="23f8adcfefc8ee4bf5ab7daba12166b05eb16120"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 

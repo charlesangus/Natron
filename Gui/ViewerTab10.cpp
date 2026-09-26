@@ -506,6 +506,9 @@ ViewerTab::onTimeLineTimeChanged(SequenceTime time,
         _imp->currentFrameBox->setValue(time);
     }
 
+    // The inputs' layers can differ from one frame to the next.
+    refreshLayerAndAlphaChannelComboBox(true);
+
     if ( _imp->timeLineGui->getTimeline() != app->getTimeLine() ) {
         _imp->viewerNode->renderCurrentFrame(true);
     }

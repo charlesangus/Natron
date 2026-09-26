@@ -66,6 +66,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/PyParameter.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/Settings.h"
+#include "Engine/TimeLine.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewerInstance.h"
 #include "Global/Enums.h"
@@ -262,6 +263,7 @@ NodeGui::initialize(NodeGraph* dag,
     QObject::connect( internalNode.get(), SIGNAL(outputsChanged()), this, SLOT(refreshOutputEdgeVisibility()) );
     QObject::connect( internalNode.get(), SIGNAL(previewKnobToggled()), this, SLOT(onPreviewKnobToggled()) );
     QObject::connect( internalNode.get(), SIGNAL(disabledKnobToggled(bool)), this, SLOT(onDisabledKnobToggled(bool)) );
+    QObject::connect(internalNode->getApp()->getTimeLine().get(), SIGNAL(frameChanged(SequenceTime, int)), this, SLOT(onTimelineTimeChanged(SequenceTime, int)));
     QObject::connect( internalNode.get(), SIGNAL(streamWarningsChanged()), this, SLOT(onStreamWarningsChanged()) );
     QObject::connect( internalNode.get(), SIGNAL(nodeExtraLabelChanged(QString)), this, SLOT(refreshNodeText(QString)) );
     QObject::connect(internalNode.get(), SIGNAL(layerSelectionChanged()), this, SLOT(onLayerSelectionChanged()));
@@ -2859,6 +2861,21 @@ NodeGui::onDisabledKnobToggled(bool disabled)
     _disabledTopLeftBtmRight->setVisible(!enabled);
     _disabledBtmLeftTopRight->setVisible(!enabled);
     update();
+}
+
+void
+NodeGui::onTimelineTimeChanged(SequenceTime time,
+                               int /*reason*/)
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    KnobBoolPtr disabledKnob = node->getDisabledKnob();
+    if (!disabledKnob || !disabledKnob->isAnimated(0)) {
+        return;
+    }
+    onDisabledKnobToggled(disabledKnob->getValueAtTime(time));
 }
 
 void

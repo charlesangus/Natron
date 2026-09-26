@@ -32,7 +32,9 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 
@@ -252,4 +254,52 @@ TEST_F(TimeVaryingLayersTest, ShuffleDisableDiffuseVariesPerFrame)
 
     expectPresentDiffuseAt(effect, 2, 1, false);
     expectPresentDiffuseAt(effect, 1, 2, true);
+}
+
+// Keys a node's Disable knob off@1, on@2, then checks that both the curve and the timed
+// isNodeDisabled(time) it drives (not the current-frame-only overload) survive a
+// save-to-.ntp/reset/load cycle, the same round trip RoundTripsNodesConnectionsAndKnobValues
+// (Tests/ProjectSerialization_Test.cpp) exercises for other knob kinds.
+TEST_F(TimeVaryingLayersTest, KeyedDisableSurvivesSaveLoad)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    NodePtr node = createNode(_generatorPluginID);
+    ASSERT_TRUE(bool(node));
+    const std::string nodeName = node->getScriptName();
+
+    KnobBoolPtr disable = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kDisableNodeKnobName));
+    ASSERT_TRUE(bool(disable));
+    disable->setValueAtTime(1, false, ViewSpec::all(), 0);
+    disable->setValueAtTime(2, true, ViewSpec::all(), 0);
+    ASSERT_EQ(2, disable->getKeyFramesCount(ViewSpec::all(), 0));
+
+    EXPECT_FALSE(node->isNodeDisabled(1.0));
+    EXPECT_TRUE(node->isNodeDisabled(2.0));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("keyed-disable-roundtrip.ntp");
+
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    ASSERT_TRUE(QFile::exists(savedFilePath));
+
+    project->reset(false, true);
+    ASSERT_TRUE(project->getNodeByName(nodeName).get() == NULL);
+
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr node2 = project->getNodeByName(nodeName);
+    ASSERT_TRUE(bool(node2));
+
+    KnobBoolPtr disable2 = std::dynamic_pointer_cast<KnobBool>(node2->getKnobByName(kDisableNodeKnobName));
+    ASSERT_TRUE(bool(disable2));
+    EXPECT_EQ(2, disable2->getKeyFramesCount(ViewSpec::all(), 0));
+    EXPECT_FALSE(disable2->getValueAtTime(1));
+    EXPECT_TRUE(disable2->getValueAtTime(2));
+
+    EXPECT_FALSE(node2->isNodeDisabled(1.0));
+    EXPECT_TRUE(node2->isNodeDisabled(2.0));
 }

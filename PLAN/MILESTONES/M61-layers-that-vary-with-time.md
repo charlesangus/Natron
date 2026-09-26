@@ -19,7 +19,7 @@ Execution notes:
 
 ## Phase 61.1: Fixture and reproduction
 
-- [ ] M61.P1.T1 — Add a two-frame EXR sequence whose layers differ per frame
+- [x] M61.P1.T1 — Add a two-frame EXR sequence whose layers differ per frame
   - files: `Tests/fixtures/make-flat-layers-seq-fixture.py` (new, modelled on `make-flat-layers-fixture.py`), `Tests/fixtures/flat-seq-layers.0001.exr`, `Tests/fixtures/flat-seq-layers.0002.exr`
   - approach: frame 1 is 8×8 half with RGBA, `diffuse` and `specular`, using the same per-layer constant values as `flat-three-layers.exr`, so existing pixel assertions carry over. Frame 2 is RGBA only, with the same RGBA values. Commit the generated files next to the script, as the other fixtures are.
   - verify: `oiiotool --info -v` in the container lists `diffuse.*`/`specular.*` channels for 0001 and only `R,G,B,A` for 0002.

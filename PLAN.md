@@ -166,7 +166,7 @@ future core work has solid ground to build on.
   **M34 (Shuffle) runs next, M60 moved back behind M50 (2026-09-22, user decision).**
   **M34 shipped 2026-09-24** (PR #33, squash-merge `b0e212d5a`) after two Codex rounds; P6.T11, the user's check of the AppImage, is still outstanding. **M30 merged right after it** (PR #31, `e8e3c96c4`), so automatic beta releases are armed.
   **M61 added 2026-09-24 and runs next, ahead of M37 (user decision):** M34's round-2 review wrongly declined a render-time validation test because it assumed layers never vary with time. M61 makes per-frame AOV sequences, an animated Switch and an animated Disable each vary a node's layers per frame, fixing whichever doesn't, and then adds that test. See `DECISIONS/2026-09-24-layers-vary-with-time.md`.
-  **M61 PR #34 opened 2026-09-26** (CI green, Codex round closed); awaiting the user's check of the disabled-cross width and the UAT on `build/appimages/M61-d92ef11e3.AppImage`. openfx-io#7 is pinned by its branch commit; re-pin it after it merges. **M37 is next**, stacked on M61's branch.
+  **M61 PR #34 opened 2026-09-26** (CI green, Codex round closed); awaiting the user's check of the disabled-cross width and the UAT on `build/appimages/M61-d92ef11e3.AppImage`. openfx-io#7 is pinned by its branch commit; re-pin it after it merges. **M65 is next** (rgba/rgb/alpha/xy colour views, added 2026-09-26), stacked on M61's branch; M37 then stacks on M65.
   M43 and M36 were absorbed into M38 as Phases 38.2 and 38.7 — their rows are
   cancelled like M35's.
 
@@ -206,6 +206,7 @@ future core work has solid ground to build on.
 | M43 | ~~Drop the premultiplied/unpremultiplied concept~~ (folded into M38 Phase 38.2) | cancelled | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
 | M34 | New native Shuffle node | done | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
 | M61 | Layers that vary with time: per-frame layer reporting and Shuffle render-time validation | doing | [M61-layers-that-vary-with-time.md](PLAN/MILESTONES/M61-layers-that-vary-with-time.md) |
+| M65 | rgba, rgb, alpha and xy replace the Color layer (clean break) | todo | [M65-rgba-rgb-alpha-layers.md](PLAN/MILESTONES/M65-rgba-rgb-alpha-layers.md) |
 | M35 | ~~Remove implicit output-plane shuffling from non-Shuffle nodes~~ (folded into M38) | cancelled | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M36 | ~~Add "new channel/layer" affordance wherever a node outputs channels~~ (folded into M38 Phase 38.7) | cancelled | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
 | M37 | Channel/layer management nodes | todo | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |

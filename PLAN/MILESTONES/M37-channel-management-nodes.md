@@ -13,15 +13,20 @@ The engine gains one capability virtual: a per-node filter on pass-through layer
 ## Design questions (awaiting the user)
 
 - **Q1. Is Remove one node or two?** (a) One `Remove` node with an operation choice, remove or keep; the default is remove, with nothing selected. (b) Two nodes, Remove and Keep. (c) Remove only. *Recommend (a).*
-- **Q2. Remove single channels, or whole layers only?** (a) Whole layers only: no channel buttons, and the no-shuffle rule is unchanged. (b) Single channels too, on non-Color layers; this amends the no-shuffle rule and replaces P1.T2 with an L task in P2. (c) Single channels on Color too; +2 L tasks. *Recommend (a); (b) can follow later.*
-- **Q3. Can Color be removed?** (a) No: it's never listed or matched, and keep always keeps it. (b) Yes, but it is zero-filled rather than removed. (c) Truly removed; +1 M task. *Recommend (a).*
+- **Q2. Remove single channels, or whole layers only?** (a) Whole layers only: no channel buttons, and the no-shuffle rule is unchanged. (b) Single channels too, on non-colour layers; this amends the no-shuffle rule and replaces P1.T2 with an L task in P2. (c) Channel removal inside the colour plane too, through the rgba/rgb/alpha views (see Q3(b)); +2 L tasks. *Recommend (a); (b) can follow later.*
+- **Q3. Can the colour views (rgba/rgb/alpha/xy) be removed?** (Reworded after M65.) (a) No: they are never listed or matched, and keep always keeps the colour plane. (b) Removing `alpha` narrows the colour plane to RGB, and removing `rgb` narrows it to Alpha. Since M65 makes missing colour channels read zero, this is close to zero-filling. (c) Removing `rgba` drops the colour plane entirely; +1 M task. *Recommend (a).*
 - **Q4. Wildcard, regex, or both?** (a) Reuse M38's Regex rows. (b) Add a Wildcard mode to `KnobChannelSet` for every node; +1 M engine task, +1 M GUI task. (c) Wildcard on Remove and AddLayers only. *Recommend (a). The risk is people typing globs such as `spec*` as a regex.*
 - **Q5. Is an Add node needed, and what does it do?** (a) `AddLayers`: zero-fills the chosen registry layers only where the input lacks them, leaves present layers untouched, and can add several at once. (b) As (a), plus a fill-colour knob. (c) No node: document the Shuffle and Constant recipes instead. *Recommend (a).*
 - **Q6. Names?** (a) `fr.natron.Remove` "Remove" and `fr.natron.AddLayers` "AddLayers", both in Channel. (b) RemoveLayers and AddLayers. (c) Remove and AddChannels, as in Nuke. *Recommend (a).*
 - **Default taken, not asked:** both nodes resolve their selection per frame at the render's (time, view). A row naming a layer the input doesn't have is silent: it shows "(not in input)" and doesn't fail the render, unlike Shuffle's explicit rows.
 
 Execution notes:
-- Stacked on M61: branch off `milestone/m61-layers-that-vary-with-time` and open the PR against it (`DECISIONS/2026-09-22-stacked-milestone-prs.md`).
+- Stacked on M65: branch off `milestone/m65-rgba-rgb-alpha-layers` and open the PR against it (`DECISIONS/2026-09-22-stacked-milestone-prs.md`).
+- **After M65 (2026-09-26):** "Color" is gone from the user's view. It is replaced by the colour views `rgba`/`rgb`/`alpha`/`xy`, which share one storage colour plane and are always present, with missing colour channels reading zero (`PLAN/DESIGN/2026-09-26-rgba-rgb-alpha-layers.md`). Every "Color" in this file's briefs must be re-read in those terms, and the §5a freshness check at promotion rewrites them:
+  - engine assertions (`getPresentLayers`) stay at storage level, i.e. `kNatronColorLayerID`;
+  - user-facing lists expect the views, e.g. `{rgba, rgb, alpha, diffuse, specular}`;
+  - `listsColor` becomes `listsColorViews`, built on `listLayerViewsForKnob`/`expandColorViews`;
+  - "the input lacks Color" in P3.T1 becomes "the input has no colour plane".
 - The `natron-dev` container is single-tenant. Implementers edit in parallel and don't build. Each batch gets one detached build plus ctest (setsid+nohup, a fresh `.done` marker). Check `pgrep -x ninja` is 0 before relaunching, and never pgrep-wait on a build.
 - Run tests through `build/m61ctest.sh <regex>` (it sets `OFX_PLUGIN_PATH`) or `tools/ci/local/test.sh`.
 - The debug build defines NDEBUG, so tests use EXPECT/ASSERT, never assert().

@@ -52,3 +52,4 @@
 - 2026-09-23 — parallel-worktree-milestones: M28/M30 run in build/wt worktrees off main alongside M34; not stacked → DECISIONS/2026-09-23-parallel-worktree-milestones.md
 - 2026-09-24 — layers-vary-with-time: available layers are per-frame; validation/render use render (time, view), never the timeline frame; M61 fixes graphs that do not vary → DECISIONS/2026-09-24-layers-vary-with-time.md
 - 2026-09-25 — perf-hotspots-before-render-architecture: fix superlinear engine hotspots (M62) before a task-graph scheduler (M63) or tiles (M64); perf runs after channel/layer work → DECISIONS/2026-09-25-perf-hotspots-before-render-architecture.md
+- 2026-09-26 — rgba-rgb-alpha-xy-layers: four colour views with their own IDs replace Color; shared channels; always present (missing reads zero); clean break with old projects → DECISIONS/2026-09-26-rgba-rgb-alpha-xy-layers.md

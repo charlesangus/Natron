@@ -17,6 +17,8 @@ script-level layer registry and the layer/channel knobs M38 introduces): group d
 channels into `ImageLayerDesc` layers, give `DeepFromImage`/`DeepToImage`/`DeepRecolor`
 a channel-set knob, and make `DeepExpression` operate on the channels actually present.
 
+Note (2026-09-26): after M65, deep colour channels must present as the colour views `rgba`/`rgb`/`alpha` through `ImageLayerDesc::expandColorViews`, never as "Color" (`PLAN/DESIGN/2026-09-26-rgba-rgb-alpha-layers.md`).
+
 Blocked on: M38 — the registry and the three layer/channel knob types must exist first.
 
 Acceptance sketch:

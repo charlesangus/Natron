@@ -342,6 +342,8 @@ protected:
         }
         _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
         ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
+        // diffuse has no fourth channel, so the default A would fail at frame 1 too.
+        _mapping->setSource(1, 3, ShuffleSource::makeZero());
 
         QTemporaryDir tmp;
         ASSERT_TRUE(tmp.isValid());
@@ -495,8 +497,8 @@ protected:
     std::shared_ptr<KnobShuffleMap> _mapping;
 };
 
-// diffuse has no fourth channel, so Color's alpha reads 0 rather than keeping the input's 1.
-TEST_F(ShuffleRenderTest, InputLayerIntoColorByDefaultZeroesTheAlphaItLacks)
+// diffuse has no fourth channel, so Color's alpha fails until it is set to a constant.
+TEST_F(ShuffleRenderTest, InputLayerIntoColorFailsOnTheAlphaItLacksUntilThatRowIsZero)
 {
     createShuffleOnFixture();
     if (HasFatalFailure()) {
@@ -510,12 +512,23 @@ TEST_F(ShuffleRenderTest, InputLayerIntoColorByDefaultZeroesTheAlphaItLacks)
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
+    std::string message;
+    renderExpectingFailure(tmp, "diffuse_into_color_no_alpha.exr", &message);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_NE(std::string::npos, message.find("diffuse.A is not in the")) << message;
+
+    _mapping->setSource(1, 3, ShuffleSource::makeZero());
+    ASSERT_TRUE(_mapping->hasExplicitSource(1, 3));
+
     FlatExrImage image;
     render(tmp, "diffuse_into_color.exr", &image);
     if (HasFatalFailure()) {
         return;
     }
 
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
     expectFixtureLayers(image);
     expectColor(image, 0.f, 1.f, 0.f, 0.f);
     expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
@@ -655,6 +668,45 @@ TEST_F(ShuffleRenderTest, ShuffleCopyWithInput1DisconnectedZeroesTheAlphaSilentl
     expectColor(image, 1.f, 0.f, 0.f, 0.f);
 }
 
+TEST_F(ShuffleRenderTest, ShuffleCopyDefaultAlphaFailsWhenInput1HasNoAlpha)
+{
+    NodePtr input2;
+    createFixtureReader(&input2, "flat-three-layers.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+    NodePtr input1;
+    createFixtureReader(&input1, "flat-rgb-only.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+    createShuffleCopyOn(input2, input1);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_mapping->hasExplicitSource(1, 3));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    std::string message;
+    renderExpectingFailure(tmp, "copy_rgb_only_input1.exr", &message);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_NE(std::string::npos, message.find(std::string(kNatronColorLayerID) + ".A is not in the 1 input")) << message;
+
+    _mapping->setSource(1, 3, ShuffleSource::makeOne());
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+
+    FlatExrImage image;
+    render(tmp, "copy_rgb_only_input1_alpha_one.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    expectColor(image, 1.f, 0.f, 0.f, 1.f);
+}
+
 TEST_F(ShuffleRenderTest, SingleChannelOutputLayerIsCreatedAndColorPassesThrough)
 {
     ProjectPtr project = getApp()->getProject();
@@ -702,6 +754,8 @@ TEST_F(ShuffleRenderTest, ExplicitRowAbsentFromConnectedInputFailsThenClearsOnFi
     }
     _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
     ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
+    // diffuse has no fourth channel, so Color's alpha would fail even once diffuse is present.
+    _mapping->setSource(1, 3, ShuffleSource::makeZero());
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -738,7 +792,7 @@ TEST_F(ShuffleRenderTest, ExplicitRowAbsentFromConnectedInputFailsThenClearsOnFi
     expectPlane(image2, "specular.", 0.f, 0.f, 1.f);
 }
 
-TEST_F(ShuffleRenderTest, ImplicitDefaultOnAMissingLayerRendersZeroSilently)
+TEST_F(ShuffleRenderTest, ImplicitDefaultOnAMissingLayerFailsNamingTheChannel)
 {
     createShuffleOnFixture("flat-rgba-only.exr");
     if (HasFatalFailure()) {
@@ -752,13 +806,13 @@ TEST_F(ShuffleRenderTest, ImplicitDefaultOnAMissingLayerRendersZeroSilently)
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
-    FlatExrImage image;
-    render(tmp, "implicit_missing_layer.exr", &image);
+    std::string message;
+    renderExpectingFailure(tmp, "implicit_missing_layer.exr", &message);
     if (HasFatalFailure()) {
         return;
     }
-    EXPECT_FALSE(_shuffle->hasPersistentMessage());
-    expectColor(image, 0.f, 0.f, 0.f, 0.f);
+    // Color's R, the first output channel, is the first to read the missing layer.
+    EXPECT_NE(std::string::npos, message.find("diffuse.R is not in the")) << message;
 }
 
 TEST_F(ShuffleRenderTest, ExplicitRowOnANoneSlotRendersZeroSilently)
@@ -892,6 +946,9 @@ TEST_F(ShuffleRenderTest, ExplicitRowToTheAlphaOfAnRgbOnlyColorFailsNamingTheCha
         return;
     }
 
+    // The default A reads the Color.A this input lacks, so only a constant A lets R's row be
+    // the one under test.
+    _mapping->setSource(1, 3, ShuffleSource::makeOne());
     _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
     ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
     std::string message;
@@ -948,7 +1005,9 @@ TEST_F(ShuffleRenderTest, ShuffleCopyIdentityShapedRowsToTheAlphaOfAnRgbOnlyColo
     EXPECT_FALSE(_shuffle->hasPersistentMessage());
 }
 
-TEST_F(ShuffleRenderTest, ImplicitAlphaOfAnRgbOnlyColorRendersZeroSilently)
+// A fresh Shuffle on an RGB-only input: the identity shape must not pass the input through,
+// and setting A to a constant is the fix.
+TEST_F(ShuffleRenderTest, ImplicitAlphaOfAnRgbOnlyColorFailsNamingTheChannel)
 {
     createShuffleOnFixture("flat-rgb-only.exr");
     if (HasFatalFailure()) {
@@ -956,7 +1015,28 @@ TEST_F(ShuffleRenderTest, ImplicitAlphaOfAnRgbOnlyColorRendersZeroSilently)
     }
     EXPECT_TRUE(_mapping->getRows().empty());
     std::string message;
+    EXPECT_FALSE(_shuffle->checkSelectedChannelsPresent(&message));
+    EXPECT_NE(std::string::npos, message.find(std::string(kNatronColorLayerID) + ".A is not in the")) << message;
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    renderExpectingFailure(tmp, "rgb_only_implicit_alpha.exr", &message);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_NE(std::string::npos, message.find(std::string(kNatronColorLayerID) + ".A is not in the")) << message;
+
+    _mapping->setSource(1, 3, ShuffleSource::makeOne());
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
     EXPECT_TRUE(_shuffle->checkSelectedChannelsPresent(&message)) << message;
+
+    FlatExrImage image;
+    render(tmp, "rgb_only_alpha_one.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    EXPECT_NEAR(1.f, valueAt(image, "A"), 1e-4f);
 }
 
 TEST_F(ShuffleRenderTest, StaleRowBeyondASmallerOutputLayerDoesNotFailTheRender)
@@ -976,6 +1056,8 @@ TEST_F(ShuffleRenderTest, StaleRowBeyondASmallerOutputLayerDoesNotFailTheRender)
     }
     _mapping->setSource(1, 3, ShuffleSource::makeInput(1, 1));
     ASSERT_TRUE(_mapping->hasExplicitSource(1, 3));
+    // mask's only channel would otherwise read the missing diffuse by default.
+    _mapping->setSource(1, 0, ShuffleSource::makeZero());
     std::string message;
     EXPECT_FALSE(_shuffle->checkSelectedChannelsPresent(&message));
 
@@ -1007,6 +1089,10 @@ TEST_F(ShuffleRenderTest, DisconnectingTheMissingRowClearsTheError)
     if (HasFatalFailure()) {
         return;
     }
+    // Only R reads diffuse: the other channels' defaults would read it too.
+    for (int c = 1; c < 4; ++c) {
+        _mapping->setSource(1, c, ShuffleSource::makeZero());
+    }
     _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
     ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
 
@@ -1019,8 +1105,9 @@ TEST_F(ShuffleRenderTest, DisconnectingTheMissingRowClearsTheError)
     }
     EXPECT_NE(std::string::npos, message.find("diffuse")) << message;
 
-    _mapping->clear(1, 0);
-    EXPECT_FALSE(_mapping->hasExplicitSource(1, 0));
+    // Clearing the row would fall back to its default, diffuse's own R, which is missing too.
+    _mapping->setSource(1, 0, ShuffleSource::makeZero());
+    EXPECT_TRUE(_mapping->hasExplicitSource(1, 0));
     EXPECT_FALSE(_shuffle->hasPersistentMessage());
 
     FlatExrImage image;
@@ -1069,6 +1156,47 @@ TEST_F(ShuffleRenderTest, ExplicitRowVariesPerFrameOnReadSequence)
     expectExplicitDiffuseRowVariesPerFrame(source, 1.f);
 }
 
+// R, G and B keep their implicit diffuse sources; only A, which diffuse never has, is set to 0.
+// Each render parks the timeline on the other frame, so validating at the current frame instead
+// of the render's time fails either way.
+TEST_F(ShuffleRenderTest, ImplicitDefaultVariesPerFrameOnReadSequence)
+{
+    NodePtr source = createTimeVaryingReadSequence();
+    ASSERT_TRUE(bool(source));
+    createShuffleOn(source);
+    if (HasFatalFailure()) {
+        return;
+    }
+    setLayer(kShuffleParamIn1, "diffuse");
+    if (HasFatalFailure()) {
+        return;
+    }
+    _mapping->setSource(1, 3, ShuffleSource::makeZero());
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_FALSE(_mapping->hasExplicitSource(1, c)) << c;
+    }
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+
+    getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+    std::string message;
+    renderExpectingFailure(tmp, "implicit_frame2.exr", &message, 2);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_NE(std::string::npos, message.find("diffuse.R is not in the")) << message;
+
+    getApp()->getTimeLine()->seekFrame(2, false, NULL, eTimelineChangeReasonOtherSeek);
+    FlatExrImage image1;
+    render(tmp, "implicit_frame1.exr", &image1, 1);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    expectColor(image1, 0.f, 1.f, 0.f, 0.f);
+}
+
 TEST_F(ShuffleRenderTest, ExplicitRowVariesPerFrameOnSwitch)
 {
     NodePtr source = createTimeVaryingSwitch();
@@ -1109,6 +1237,8 @@ TEST_F(ShuffleRenderTest, ShuffleCopyExplicitRowVariesPerFrameOnInput1)
     // fixtures hold diffuse.r at 0, which can't be told apart from an empty result.
     _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
     ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
+    // The default A reads diffuse's fourth channel, which it never has.
+    _mapping->setSource(1, 3, ShuffleSource::makeZero());
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());

@@ -475,7 +475,7 @@ TEST_F(ShuffleTest, IdentityOnlyWhileEveryOut1ChannelReadsItsOwnChannelOfTheSame
     EXPECT_TRUE(isIdentityOfMain(shuffle));
 }
 
-TEST_F(ShuffleTest, EffectiveSourceZeroesAnImplicitChannelTheSlotLacks)
+TEST_F(ShuffleTest, EffectiveSourceKeepsAnImplicitChannelTheSlotLacksAndTheCheckFailsOnIt)
 {
     NodePtr shuffle = createShuffleOnReader();
 
@@ -494,9 +494,18 @@ TEST_F(ShuffleTest, EffectiveSourceZeroesAnImplicitChannelTheSlotLacks)
         EXPECT_EQ(ShuffleSource::makeZero(), shuffleFx->getEffectiveSource(2, c, time, ViewIdx(0))) << c;
     }
 
+    std::string message;
+    EXPECT_TRUE(shuffle->checkSelectedChannelsPresent(time, ViewIdx(0), &message)) << message;
+
     in1->setLayer("diffuse");
     EXPECT_EQ(ShuffleSource::makeInput(1, 2), shuffleFx->getEffectiveSource(1, 2, time, ViewIdx(0)));
+    EXPECT_EQ(ShuffleSource::makeInput(1, 3), shuffleFx->getEffectiveSource(1, 3, time, ViewIdx(0)));
+    EXPECT_FALSE(shuffle->checkSelectedChannelsPresent(time, ViewIdx(0), &message));
+    EXPECT_NE(std::string::npos, message.find("diffuse.A is not in the")) << message;
+
+    mapping->setSource(1, 3, ShuffleSource::makeZero());
     EXPECT_EQ(ShuffleSource::makeZero(), shuffleFx->getEffectiveSource(1, 3, time, ViewIdx(0)));
+    EXPECT_TRUE(shuffle->checkSelectedChannelsPresent(time, ViewIdx(0), &message)) << message;
 
     // An explicit row is returned as stored, even beyond the slot's layer.
     mapping->setSource(1, 0, ShuffleSource::makeInput(1, 3));

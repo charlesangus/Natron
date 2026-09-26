@@ -160,7 +160,7 @@ TEST_F(TimeVaryingLayersTest, DISABLED_ReadSequenceDiffuseVariesPerFrame)
 // OFX Switch (net.sf.openfx.switchPlugin): input 0 is Read(flat-three-layers.exr) (diffuse +
 // specular), input 1 is Read(flat-rgba-only.exr) (RGBA only). `which` is keyed 0 at frame 1
 // and 1 at frame 2, so the node under test switches streams across the same two frames.
-TEST_F(TimeVaryingLayersTest, DISABLED_SwitchDiffuseVariesPerFrame)
+TEST_F(TimeVaryingLayersTest, SwitchDiffuseVariesPerFrame)
 {
     CreateNodeArgs readerAArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
     readerAArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));

@@ -2101,6 +2101,16 @@ public:
     const std::vector<std::string>& getUserLayers() const;
 
 private:
+    /**
+     * @brief The input whose layers pass through this effect at (time, view), and the time and
+     * view they are read at: the input this effect is an identity of there, otherwise the
+     * preferred input at (time, view).
+     **/
+    void getLayersPassThroughInput(double time, ViewIdx view,
+                                   int* inputNb, double* inputTime, ViewIdx* inputView);
+
+    bool isResolvingLayersPassThrough() const;
+
     void getComponentsNeededDefault(double time, ViewIdx view,
                                     EffectInstance::ComponentsNeededMap* comps,
                                     std::list<ImageLayerDesc>* passThroughLayers,
@@ -2214,6 +2224,10 @@ public:
 
         std::vector<std::string> userLayerStrings;
 
+        // Set while isIdentity() runs to pick the input whose layers pass through: an identity
+        // test that asks for this effect's own layers must not re-enter that choice.
+        bool resolvingLayersPassThrough;
+
         EffectTLSData()
             : beginEndRenderCount(0)
             , actionRecursionLevel(0)
@@ -2223,6 +2237,7 @@ public:
             , frameArgs()
             , currentRenderArgs()
             , userLayerStrings()
+            , resolvingLayersPassThrough(false)
         {
         }
     };

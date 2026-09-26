@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M37 (elaborating)
-pm_heartbeat: 2026-09-26T02:15:43-04:00
+current: M37.P1.T1
+pm_heartbeat: 2026-09-26T02:23:47-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -258,6 +258,8 @@ future core work has solid ground to build on.
   (`format`, `lint-ci`, `build-and-test`) green throughout.
 
 # Open questions
+
+- **M37 design (Q1–Q6)**: the draft in `PLAN/MILESTONES/M37-channel-management-nodes.md` was written against the recommended answers: one Remove node with keep/remove; whole layers only; Color never removable; reuse Regex rows; an AddLayers node that zero-fills; the names Remove/AddLayers. Implementation waits on the user's answers.
 
 - **USD Python inside Natron's Python?** M19.P1.T1 builds USD with Python
   OFF (Shiboken6/PySide6 vs pxr coexistence). A Solaris-style "Python over

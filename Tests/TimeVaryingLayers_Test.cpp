@@ -28,6 +28,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -109,6 +110,15 @@ containsColorLayer(const std::list<ImageLayerDesc>& layers)
 class TimeVaryingLayersTest
     : public BaseTest {
 protected:
+    struct TimeVaryingGraph {
+        NodePtr underTest;
+        // Upstream nodes whose layers are the same on both frames, and whether they carry diffuse:
+        // they guard against the node under test passing because its inputs were already wrong.
+        std::vector<std::pair<NodePtr, bool>> constantInputs;
+    };
+
+    typedef void (TimeVaryingLayersTest::*GraphBuilder)(TimeVaryingGraph*);
+
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();
@@ -136,130 +146,142 @@ protected:
         EXPECT_EQ(expectDiffuse, containsLayer(present, "diffuse"))
             << "queryTime=" << queryTime << " timelineFrame=" << timelineFrame << " present=" << layerIDsString(present);
     }
+
+    // Each query order runs on a graph built from scratch: on a graph an earlier order already
+    // queried, every answer could come from a cache filled in that earlier order.
+    void expectDiffuseOnlyAtFrame1InEitherQueryOrder(GraphBuilder build)
+    {
+        for (int firstFrame = 1; firstFrame <= 2; ++firstFrame) {
+            SCOPED_TRACE("frame " + std::to_string(firstFrame) + " queried first");
+            getApp()->getProject()->reset(false, true);
+
+            TimeVaryingGraph graph;
+            (this->*build)(&graph);
+            if (HasFatalFailure()) {
+                return;
+            }
+            ASSERT_TRUE(bool(graph.underTest));
+            EffectInstancePtr effect = graph.underTest->getEffectInstance();
+            ASSERT_TRUE(bool(effect));
+
+            const int secondFrame = 3 - firstFrame;
+            expectPresentDiffuseAt(effect, firstFrame, secondFrame, firstFrame == 1);
+            expectPresentDiffuseAt(effect, secondFrame, firstFrame, secondFrame == 1);
+
+            for (std::size_t i = 0; i < graph.constantInputs.size(); ++i) {
+                EffectInstancePtr input = graph.constantInputs[i].first->getEffectInstance();
+                expectPresentDiffuseAt(input, 1, 2, graph.constantInputs[i].second);
+                expectPresentDiffuseAt(input, 2, 1, graph.constantInputs[i].second);
+            }
+        }
+    }
+
+    NodePtr createReader(const char* fixturePath)
+    {
+        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(fixturePath));
+        NodePtr reader = getApp()->createNode(readerArgs);
+        EXPECT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+        return reader;
+    }
+
+public:
+    // Public because a TEST_F body could only take a protected member's address through the
+    // test class TEST_F generates, not through this fixture.
+
+    // Read(Tests/fixtures/flat-seq-layers.####.exr): frame 1 carries RGBA + diffuse + specular,
+    // frame 2 carries RGBA only.
+    void buildReadSequence(TimeVaryingGraph* graph)
+    {
+        graph->underTest = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-seq-layers.####.exr");
+    }
+
+    // OFX Switch (net.sf.openfx.switchPlugin): input 0 is Read(flat-three-layers.exr) (diffuse +
+    // specular), input 1 is Read(flat-rgba-only.exr) (RGBA only). `which` is keyed 0 at frame 1
+    // and 1 at frame 2, so the node under test switches streams across the same two frames.
+    void buildSwitch(TimeVaryingGraph* graph)
+    {
+        NodePtr readerA = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr");
+        NodePtr readerB = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr");
+        ASSERT_TRUE(readerA && readerB);
+
+        NodePtr switchNode = createNode(QString::fromUtf8("net.sf.openfx.switchPlugin"));
+        ASSERT_TRUE(bool(switchNode));
+
+        connectNodes(readerA, switchNode, 0, true);
+        connectNodes(readerB, switchNode, 1, true);
+
+        KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName("which"));
+        ASSERT_TRUE(bool(which));
+        which->setValueAtTime(1, 0, ViewSpec::all(), 0);
+        which->setValueAtTime(2, 1, ViewSpec::all(), 0);
+        EXPECT_EQ(0, which->getValueAtTime(1));
+        EXPECT_EQ(1, which->getValueAtTime(2));
+
+        graph->underTest = switchNode;
+        graph->constantInputs.push_back(std::make_pair(readerA, true));
+        graph->constantInputs.push_back(std::make_pair(readerB, false));
+    }
+
+    // Read(flat-rgba-only.exr) -> native Shuffle (writing a constant into a new "diffuse" layer)
+    // -> Dot. The Shuffle's Disable is keyed off at frame 1 and on at frame 2, so the Dot sees the
+    // Shuffle's diffuse output only at frame 1 and a plain passthrough of the reader at frame 2.
+    void buildShuffleDisableChain(TimeVaryingGraph* graph)
+    {
+        ProjectPtr project = getApp()->getProject();
+        std::string error;
+        const std::vector<std::string> rgb = { "R", "G", "B" };
+        ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("diffuse", "diffuse", "", rgb), LayerRegistryEntry::eOriginUser, &error)) << error;
+
+        NodePtr reader = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr");
+        ASSERT_TRUE(bool(reader));
+
+        NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+        ASSERT_TRUE(bool(shuffle));
+        connectNodes(reader, shuffle, Shuffle::eInputMain, true);
+
+        KnobLayerSelectPtr out1 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamOut1));
+        ASSERT_TRUE(bool(out1));
+        out1->setLayer("diffuse");
+
+        KnobShuffleMapPtr mapping = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle->getKnobByName(kShuffleParamMapping));
+        ASSERT_TRUE(bool(mapping));
+        mapping->setSource(1, 0, ShuffleSource::makeOne());
+        mapping->setSource(1, 1, ShuffleSource::makeOne());
+        mapping->setSource(1, 2, ShuffleSource::makeOne());
+
+        NodePtr noop = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+        ASSERT_TRUE(bool(noop));
+        connectNodes(shuffle, noop, 0, true);
+
+        KnobBoolPtr disable = std::dynamic_pointer_cast<KnobBool>(shuffle->getKnobByName(kDisableNodeKnobName));
+        ASSERT_TRUE(bool(disable));
+        disable->setValueAtTime(1, false, ViewSpec::all(), 0);
+        disable->setValueAtTime(2, true, ViewSpec::all(), 0);
+        EXPECT_FALSE(disable->getValueAtTime(1));
+        EXPECT_TRUE(disable->getValueAtTime(2));
+
+        graph->underTest = noop;
+        graph->constantInputs.push_back(std::make_pair(reader, false));
+    }
 };
 
-// Read(Tests/fixtures/flat-seq-layers.####.exr): frame 1 carries RGBA + diffuse + specular,
-// frame 2 carries RGBA only.
 TEST_F(TimeVaryingLayersTest, ReadSequenceDiffuseVariesPerFrame)
 {
-    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-seq-layers.####.exr"));
-    NodePtr reader = getApp()->createNode(readerArgs);
-    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
-
-    EffectInstancePtr effect = reader->getEffectInstance();
-    ASSERT_TRUE(bool(effect));
-
-    expectPresentDiffuseAt(effect, 1, 2, true);
-    expectPresentDiffuseAt(effect, 2, 1, false);
-
-    // Reverse call order: a cache keyed on "last queried time" rather than the passed time
-    // argument would otherwise only be caught by one of the two orderings above.
-    expectPresentDiffuseAt(effect, 2, 1, false);
-    expectPresentDiffuseAt(effect, 1, 2, true);
+    expectDiffuseOnlyAtFrame1InEitherQueryOrder(&TimeVaryingLayersTest::buildReadSequence);
 }
 
-// OFX Switch (net.sf.openfx.switchPlugin): input 0 is Read(flat-three-layers.exr) (diffuse +
-// specular), input 1 is Read(flat-rgba-only.exr) (RGBA only). `which` is keyed 0 at frame 1
-// and 1 at frame 2, so the node under test switches streams across the same two frames.
 TEST_F(TimeVaryingLayersTest, SwitchDiffuseVariesPerFrame)
 {
-    CreateNodeArgs readerAArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-    readerAArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
-    NodePtr readerA = getApp()->createNode(readerAArgs);
-    ASSERT_TRUE(bool(readerA)) << "node creation failed for " << _readOIIOPluginID.toStdString();
-
-    CreateNodeArgs readerBArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-    readerBArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr"));
-    NodePtr readerB = getApp()->createNode(readerBArgs);
-    ASSERT_TRUE(bool(readerB)) << "node creation failed for " << _readOIIOPluginID.toStdString();
-
-    NodePtr switchNode = createNode(QString::fromUtf8("net.sf.openfx.switchPlugin"));
-    ASSERT_TRUE(bool(switchNode));
-
-    connectNodes(readerA, switchNode, 0, true);
-    connectNodes(readerB, switchNode, 1, true);
-
-    KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName("which"));
-    ASSERT_TRUE(bool(which));
-    which->setValueAtTime(1, 0, ViewSpec::all(), 0);
-    which->setValueAtTime(2, 1, ViewSpec::all(), 0);
-    EXPECT_EQ(0, which->getValueAtTime(1));
-    EXPECT_EQ(1, which->getValueAtTime(2));
-
-    expectPresentDiffuseAt(readerA->getEffectInstance(), 1, 2, true);
-    expectPresentDiffuseAt(readerA->getEffectInstance(), 2, 1, true);
-    expectPresentDiffuseAt(readerB->getEffectInstance(), 1, 2, false);
-    expectPresentDiffuseAt(readerB->getEffectInstance(), 2, 1, false);
-
-    EffectInstancePtr effect = switchNode->getEffectInstance();
-    ASSERT_TRUE(bool(effect));
-
-    expectPresentDiffuseAt(effect, 1, 2, true);
-    expectPresentDiffuseAt(effect, 2, 1, false);
-
-    expectPresentDiffuseAt(effect, 2, 1, false);
-    expectPresentDiffuseAt(effect, 1, 2, true);
+    expectDiffuseOnlyAtFrame1InEitherQueryOrder(&TimeVaryingLayersTest::buildSwitch);
 }
 
-// Read(flat-rgba-only.exr) -> native Shuffle (writing a constant into a new "diffuse" layer) ->
-// Dot. The Shuffle's Disable knob (kDisableNodeKnobName) is keyed off at frame 1 and on at
-// frame 2, so the downstream Dot sees the Shuffle's diffuse output only at frame 1 and a plain
-// passthrough of the RGBA-only reader at frame 2.
 TEST_F(TimeVaryingLayersTest, ShuffleDisableDiffuseVariesPerFrame)
 {
-    ProjectPtr project = getApp()->getProject();
-    std::string error;
-    const std::vector<std::string> rgb = { "R", "G", "B" };
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("diffuse", "diffuse", "", rgb), LayerRegistryEntry::eOriginUser, &error)) << error;
-
-    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), project);
-    readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr"));
-    NodePtr reader = getApp()->createNode(readerArgs);
-    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
-
-    NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
-    ASSERT_TRUE(bool(shuffle));
-    connectNodes(reader, shuffle, Shuffle::eInputMain, true);
-
-    KnobLayerSelectPtr out1 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamOut1));
-    ASSERT_TRUE(bool(out1));
-    out1->setLayer("diffuse");
-
-    KnobShuffleMapPtr mapping = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle->getKnobByName(kShuffleParamMapping));
-    ASSERT_TRUE(bool(mapping));
-    mapping->setSource(1, 0, ShuffleSource::makeOne());
-    mapping->setSource(1, 1, ShuffleSource::makeOne());
-    mapping->setSource(1, 2, ShuffleSource::makeOne());
-
-    NodePtr noop = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
-    ASSERT_TRUE(bool(noop));
-    connectNodes(shuffle, noop, 0, true);
-
-    KnobBoolPtr disable = std::dynamic_pointer_cast<KnobBool>(shuffle->getKnobByName(kDisableNodeKnobName));
-    ASSERT_TRUE(bool(disable));
-    disable->setValueAtTime(1, false, ViewSpec::all(), 0);
-    disable->setValueAtTime(2, true, ViewSpec::all(), 0);
-    EXPECT_FALSE(disable->getValueAtTime(1));
-    EXPECT_TRUE(disable->getValueAtTime(2));
-
-    expectPresentDiffuseAt(reader->getEffectInstance(), 1, 2, false);
-    expectPresentDiffuseAt(reader->getEffectInstance(), 2, 1, false);
-
-    EffectInstancePtr effect = noop->getEffectInstance();
-    ASSERT_TRUE(bool(effect));
-
-    expectPresentDiffuseAt(effect, 1, 2, true);
-    expectPresentDiffuseAt(effect, 2, 1, false);
-
-    expectPresentDiffuseAt(effect, 2, 1, false);
-    expectPresentDiffuseAt(effect, 1, 2, true);
+    expectDiffuseOnlyAtFrame1InEitherQueryOrder(&TimeVaryingLayersTest::buildShuffleDisableChain);
 }
 
-// Keys a node's Disable knob off@1, on@2, then checks that both the curve and the timed
-// isNodeDisabled(time) it drives (not the current-frame-only overload) survive a
-// save-to-.ntp/reset/load cycle, the same round trip RoundTripsNodesConnectionsAndKnobValues
-// (Tests/ProjectSerialization_Test.cpp) exercises for other knob kinds.
 TEST_F(TimeVaryingLayersTest, KeyedDisableSurvivesSaveLoad)
 {
     ProjectPtr project = getApp()->getProject();

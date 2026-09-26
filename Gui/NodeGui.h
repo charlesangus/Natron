@@ -459,8 +459,8 @@ public Q_SLOTS:
     void onDisabledKnobToggled(bool disabled);
 
     /**
-     * @brief Only recomputes the disabled look when the Disable knob carries animation:
-     * a keyed Disable can flip the render's answer without the knob's stored value
+     * @brief Only recomputes the disabled look when the Disable knob is keyed or driven by an
+     * expression: either can flip the render's answer without the knob's stored value
      * changing, so scrubbing needs its own hook instead of piggy-backing on
      * disabledKnobToggled(), which only fires when that value actually changes.
      **/

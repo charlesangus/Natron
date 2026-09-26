@@ -4317,6 +4317,28 @@ EffectInstance::getComponentsNeededAndProduced(double time,
     getComponentsNeededDefault(time, view, comps, &passThroughLayers, passThroughTime, passThroughView, &processChannels, &processChannelsPerPlane, passThroughInputNb);
 }
 
+namespace {
+class TLSFlagSetter {
+public:
+    explicit TLSFlagSetter(bool* flag)
+        : _flag(flag)
+    {
+        *_flag = true;
+    }
+
+    ~TLSFlagSetter()
+    {
+        *_flag = false;
+    }
+
+    TLSFlagSetter(const TLSFlagSetter&) = delete;
+    TLSFlagSetter& operator=(const TLSFlagSetter&) = delete;
+
+private:
+    bool* _flag;
+};
+} // anon namespace
+
 bool
 EffectInstance::isResolvingLayersPassThrough() const
 {
@@ -4341,22 +4363,17 @@ EffectInstance::getLayersPassThroughInput(double time,
     }
 
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
-    tls->resolvingLayersPassThrough = true;
-
     double identityTime = time;
     ViewIdx identityView = view;
     int identityInputNb = -1;
     bool identity = false;
-    try {
+    {
+        const TLSFlagSetter resolving(&tls->resolvingLayersPassThrough);
         // Uncached: the identity cache is keyed on (hash, time, view) only, so this whole-image
         // answer must neither be served to a render asking about its own window nor, when taken
         // before an edit the hash does not capture, outlive that edit.
         identity = isIdentity_public(false, 0, time, RenderScale::identity, getOutputFormat(), view, &identityTime, &identityView, &identityInputNb);
-    } catch (...) {
-        identity = false;
     }
-
-    tls->resolvingLayersPassThrough = false;
 
     if (identity && (identityInputNb >= 0)) {
         *inputNb = identityInputNb;

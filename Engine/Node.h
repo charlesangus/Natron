@@ -79,12 +79,6 @@ CLANG_DIAG_ON(deprecated)
 #define kOfxMaskInvertParamName "maskInvert"
 #define kOfxMixParamName "mix"
 
-// The prefix Node::checkSelectedChannelsPresent() requires of an EffectInstance::
-// checkExtraChannelsPresent() failure message, so refreshChannelSelectors() and the effect
-// itself can tell it apart from an unrelated persistent message before clearing it, the same
-// way refreshChannelSelectors() already does for a missing mask or (un)premult channel.
-#define kExtraChannelMissingMessagePrefix "Channel "
-
 #define kReadOIIOAvailableViewsKnobName "availableViews"
 #define kWriteOIIOParamViewsSelector "viewsSelector"
 
@@ -931,7 +925,21 @@ public:
      **/
     void clearPersistentMessage(bool recurse);
 
+    /**
+     * @brief Posts the error message of a failed checkSelectedChannelsPresent(), recording
+     * with it that the channel-selector check owns it, so that clearChannelSelectorMessage()
+     * can later take it back. Any other message posted since drops that ownership.
+     **/
+    void setChannelSelectorMessage(const std::string& content);
+
+    /**
+     * @brief Clears the persistent message only if it is still the one setChannelSelectorMessage()
+     * posted; any other message is left alone. The check and the clear are atomic.
+     **/
+    void clearChannelSelectorMessage();
+
 private:
+    void postPersistentMessage(MessageTypeEnum type, const std::string& content, bool fromChannelSelector);
 
     void clearPersistentMessageRecursive(std::list<Node*>& markedNodes);
 
@@ -1380,16 +1388,6 @@ public:
      * inputs may have changed; the knobs list their layers themselves at display time.
      **/
     void refreshChannelSelectors();
-
-    /**
-     * @brief Clears a persistent error message this node's own channel-selector check
-     * (mask, (un)premult-by, or an effect's checkExtraChannelsPresent()) last posted, if the
-     * current message is still exactly that one; leaves any other message alone. Shared by
-     * refreshChannelSelectors(), which revalidates at the timeline's current frame, and the
-     * render path, which revalidates at the render's own time, so a stale error from a render
-     * at a different time gets retired too.
-     **/
-    void clearStaleChannelSelectorMessage();
 
     // True for the handful of plug-ins (see adoptChannelQuad()) whose R/G/B/A quad the host
     // does not adopt as a per-channel mask: their quad stays visible and the layer knob's

@@ -211,8 +211,6 @@ protected:
         createWriterOn(_shuffle);
     }
 
-    // Wires a native Shuffle or ShuffleCopy directly on top of an already-built source (rather
-    // than a fixture reader this fixture owns), so a graph whose layers vary per frame can feed it.
     void createShuffleOn(const NodePtr& source,
                          const char* pluginID = PLUGINID_NATRON_SHUFFLE)
     {
@@ -226,8 +224,6 @@ protected:
         createWriterOn(_shuffle);
     }
 
-    // Same as createShuffleOn(), but for a ShuffleCopy whose two inputs are wired separately:
-    // input2 feeds the main input ("2"), input1 feeds the copy input ("1").
     void createShuffleCopyOn(const NodePtr& input2,
                              const NodePtr& input1)
     {
@@ -242,9 +238,8 @@ protected:
         createWriterOn(_shuffle);
     }
 
-    // Read(Tests/fixtures/flat-seq-layers.####.exr): frame 1 carries RGBA + diffuse + specular
-    // (the same values as flat-three-layers.exr), frame 2 carries RGBA only. See
-    // Tests/TimeVaryingLayers_Test.cpp, which reads the same sequence through a plain Read.
+    // Frame 1 of flat-seq-layers.####.exr carries RGBA + diffuse + specular (the same values as
+    // flat-three-layers.exr), frame 2 carries RGBA only.
     NodePtr createTimeVaryingReadSequence()
     {
         CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
@@ -255,9 +250,8 @@ protected:
         return reader;
     }
 
-    // OFX Switch between Read(flat-three-layers.exr) (diffuse + specular) and
-    // Read(flat-rgba-only.exr) (RGBA only), `which` keyed 0 at frame 1 and 1 at frame 2. See
-    // Tests/TimeVaryingLayers_Test.cpp's SwitchDiffuseVariesPerFrame.
+    // Carries diffuse at frame 1 only: `which` picks flat-three-layers.exr there and
+    // flat-rgba-only.exr at frame 2.
     NodePtr createTimeVaryingSwitch()
     {
         CreateNodeArgs readerAArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
@@ -285,9 +279,8 @@ protected:
         return switchNode;
     }
 
-    // Read(flat-rgba-only.exr) -> native Shuffle (writing a constant 1 into a new "diffuse"
-    // layer) -> Dot, the Shuffle's Disable keyed off at frame 1 and on at frame 2. See
-    // Tests/TimeVaryingLayers_Test.cpp's ShuffleDisableDiffuseVariesPerFrame.
+    // Carries diffuse at frame 1 only: the Shuffle that writes it is disabled at frame 2, where
+    // the Dot sees the RGBA-only reader instead.
     NodePtr createTimeVaryingShuffleDisableChain()
     {
         ProjectPtr project = getApp()->getProject();
@@ -333,12 +326,9 @@ protected:
         return noop;
     }
 
-    // Builds a native Shuffle on `source` with an explicit row reading diffuse.g into Color.r
-    // (not diffuse.r, which the fixtures hold at 0 and so can't be told apart from an empty
-    // result), then exercises it across the two frames of a graph whose diffuse layer is only
-    // present at frame 1: rendering frame 1 while the timeline sits on frame 2 must succeed with
-    // expectedR in Color's R, rendering frame 2 while the timeline sits on frame 1 must fail
-    // naming "diffuse", and rendering frame 1 again must succeed and clear the error.
+    // The row reads diffuse.g, not diffuse.r, which the fixtures hold at 0 and so can't be told
+    // apart from an empty result. Each render parks the timeline on the other frame, so reading
+    // the current frame instead of the render's time fails either way.
     void expectExplicitDiffuseRowVariesPerFrame(const NodePtr& source,
                                                 float expectedR)
     {
@@ -1042,6 +1032,33 @@ TEST_F(ShuffleRenderTest, DisconnectingTheMissingRowClearsTheError)
     expectColor(image, 0.f, 0.f, 0.f, 0.f);
 }
 
+// Worded like a channel-selector error, so only ownership, not the text, can tell them apart.
+TEST_F(ShuffleRenderTest, PassingRenderAndMappingEditLeaveAnUnrelatedErrorAlone)
+{
+    createShuffleOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    const std::string unrelated("Channel 3 of the capture card dropped out");
+    _shuffle->setPersistentMessage(eMessageTypeError, unrelated);
+    ASSERT_TRUE(_shuffle->hasPersistentMessage());
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    render(tmp, "unrelated_error.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+    _mapping->setSource(1, 0, ShuffleSource::makeOne());
+
+    QString message;
+    int type = 0;
+    _shuffle->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ(unrelated, message.toStdString());
+    EXPECT_EQ((int)eMessageTypeError, type);
+}
+
 // diffuse.G is 1 in the fixture (flat-three-layers.exr and flat-seq-layers.####.exr's frame 1
 // share the same values), so Color's R carries the proof of which frame's diffuse was read.
 TEST_F(ShuffleRenderTest, ExplicitRowVariesPerFrameOnReadSequence)
@@ -1088,9 +1105,8 @@ TEST_F(ShuffleRenderTest, ShuffleCopyExplicitRowVariesPerFrameOnInput1)
     if (HasFatalFailure()) {
         return;
     }
-    // Overrides ShuffleCopy's default row (which reads out1's R from input "2") to read
-    // diffuse.g from input "1" instead (not diffuse.r, which the fixtures hold at 0 and so
-    // can't be told apart from an empty result).
+    // ShuffleCopy's default row reads R from input "2". diffuse.g, not diffuse.r, since the
+    // fixtures hold diffuse.r at 0, which can't be told apart from an empty result.
     _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
     ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
 

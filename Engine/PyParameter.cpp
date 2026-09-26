@@ -2998,7 +2998,7 @@ shuffleMapEffectiveSource(const KnobShuffleMapPtr& knob,
         AppInstancePtr app = effect->getApp();
         const double time = app ? app->getTimeLine()->currentFrame() : 0.;
 
-        return effect->getEffectiveSource(outSlot, outIndex, time);
+        return effect->getEffectiveSource(outSlot, outIndex, time, ViewIdx(0));
     }
 
     return knob->getSource(outSlot, outIndex);

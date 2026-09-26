@@ -717,7 +717,7 @@ KnobGuiShuffleMap::syncCheckedButtons()
     const double time = app ? app->getTimeLine()->currentFrame() : 0.;
     const KnobGuiShuffleMapPrivate::Layout& layout = _imp->layout;
     for (std::size_t r = 0; r < layout.rows.size() && r < _imp->cells.size(); ++r) {
-        const ShuffleSource src = shuffle->getEffectiveSource(layout.rows[r].outSlot, layout.rows[r].outIndex, time);
+        const ShuffleSource src = shuffle->getEffectiveSource(layout.rows[r].outSlot, layout.rows[r].outIndex, time, ViewIdx(0));
         const int column = findSourceColumn(src);
         if (column >= 0) {
             if (!_imp->cells[r][column]->isChecked()) {

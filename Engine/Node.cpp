@@ -4326,6 +4326,20 @@ void
 Node::setPersistentMessage(MessageTypeEnum type,
                            const std::string & content)
 {
+    postPersistentMessage(type, content, false);
+}
+
+void
+Node::setChannelSelectorMessage(const std::string& content)
+{
+    postPersistentMessage(eMessageTypeError, content, true);
+}
+
+void
+Node::postPersistentMessage(MessageTypeEnum type,
+                            const std::string& content,
+                            bool fromChannelSelector)
+{
     if (!_imp->nodeCreated && _imp->wasCreatedSilently) {
         std::cerr << getScriptName_mt_safe() << " message: " << content << std::endl;
         return;
@@ -4336,7 +4350,7 @@ Node::setPersistentMessage(MessageTypeEnum type,
 #ifdef NATRON_ENABLE_IO_META_NODES
         NodePtr ioContainer = getIOContainer();
         if (ioContainer) {
-            ioContainer->setPersistentMessage(type, content);
+            ioContainer->postPersistentMessage(type, content, fromChannelSelector);
 
             return;
         }
@@ -4358,6 +4372,7 @@ Node::setPersistentMessage(MessageTypeEnum type,
         {
             QMutexLocker k(&_imp->persistentMessageMutex);
             QString mess = QString::fromUtf8( content.c_str() );
+            _imp->persistentMessageFromChannelSelector = fromChannelSelector;
             if (mess == _imp->persistentMessage) {
                 return;
             }
@@ -4370,6 +4385,7 @@ Node::setPersistentMessage(MessageTypeEnum type,
 
         QMutexLocker k(&_imp->persistentMessageMutex);
         QString mess = QString::fromUtf8(content.c_str());
+        _imp->persistentMessageFromChannelSelector = fromChannelSelector;
         if (mess != _imp->persistentMessage) {
             _imp->persistentMessageType = (int)type;
             _imp->persistentMessage = mess;
@@ -4457,8 +4473,38 @@ Node::clearPersistentMessageInternal()
     bool changed;
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
+        _imp->persistentMessageFromChannelSelector = false;
         changed = !_imp->persistentMessage.isEmpty();
         if (changed) {
+            _imp->persistentMessage.clear();
+        }
+    }
+
+    if (changed) {
+        Q_EMIT persistentMessageChanged();
+    }
+}
+
+void
+Node::clearChannelSelectorMessage()
+{
+    if (!getApp()) {
+        return;
+    }
+#ifdef NATRON_ENABLE_IO_META_NODES
+    NodePtr ioContainer = getIOContainer();
+    if (ioContainer) {
+        ioContainer->clearChannelSelectorMessage();
+
+        return;
+    }
+#endif
+    bool changed = false;
+    {
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        if (_imp->persistentMessageFromChannelSelector) {
+            _imp->persistentMessageFromChannelSelector = false;
+            changed = !_imp->persistentMessage.isEmpty();
             _imp->persistentMessage.clear();
         }
     }
@@ -4918,11 +4964,6 @@ Node::isMaskEnabled(int inputNb) const
     }
 }
 
-// Shared with refreshChannelSelectors(), which pattern-matches these prefixes to tell a stale
-// diagnostic of this check's own from an unrelated persistent message before clearing it.
-static const char kMaskChannelMissingMessagePrefix[] = "Mask channel ";
-static const char kUnPremultChannelMissingMessagePrefix[] = "(Un)premult by channel ";
-
 bool
 Node::checkSelectedChannelsPresent(std::string* message) const
 {
@@ -4955,7 +4996,7 @@ Node::checkSelectedChannelsPresent(double time,
             continue;
         }
         if (message) {
-            *message = std::string(kMaskChannelMissingMessagePrefix) + channel->get() + " is not in the " + getInputLabel(inputNb) + " input";
+            *message = "Mask channel " + channel->get() + " is not in the " + getInputLabel(inputNb) + " input";
         }
 
         return false;
@@ -4970,7 +5011,7 @@ Node::checkSelectedChannelsPresent(double time,
         listLayersForKnob(unPremultBy, time, view, &present);
         if ((inputNb >= 0) && getInput(inputNb) && !unPremultBy->resolve(present, 0, 0)) {
             if (message) {
-                *message = std::string(kUnPremultChannelMissingMessagePrefix) + unPremultBy->get() + " is not in the " + getInputLabel(inputNb) + " input";
+                *message = "(Un)premult by channel " + unPremultBy->get() + " is not in the " + getInputLabel(inputNb) + " input";
             }
 
             return false;
@@ -4983,19 +5024,6 @@ Node::checkSelectedChannelsPresent(double time,
 
     return true;
 } // Node::checkSelectedChannelsPresent
-
-void
-Node::clearStaleChannelSelectorMessage()
-{
-    // A persistent message is a single slot with no record of who posted it: only take back a
-    // message that starts with what this check itself would have posted.
-    QString current;
-    int type = 0;
-    getPersistentMessage(&current, &type, false);
-    if ((type == (int)eMessageTypeError) && (current.startsWith(QString::fromUtf8(kMaskChannelMissingMessagePrefix)) || current.startsWith(QString::fromUtf8(kUnPremultChannelMissingMessagePrefix)) || current.startsWith(QString::fromUtf8(kExtraChannelMissingMessagePrefix)))) {
-        clearPersistentMessage(false);
-    }
-} // Node::clearStaleChannelSelectorMessage
 
 void
 Node::lock(const ImagePtr & image)
@@ -7733,7 +7761,7 @@ Node::refreshChannelSelectors()
     _imp->effect->onChannelsSelectorRefreshed();
 
     if (checkSelectedChannelsPresent(0)) {
-        clearStaleChannelSelectorMessage();
+        clearChannelSelectorMessage();
     }
 
     Q_EMIT layerListRefreshed();

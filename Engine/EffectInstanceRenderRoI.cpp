@@ -774,13 +774,13 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     {
         std::string channelMessage;
         if (!getNode()->checkSelectedChannelsPresent(args.time, args.view, &channelMessage)) {
-            setPersistentMessage(eMessageTypeError, channelMessage);
+            getNode()->setChannelSelectorMessage(channelMessage);
             return eRenderRoIRetCodeFailed;
         }
-        // Revalidates at the render's own time, not the timeline's current frame that
-        // refreshChannelSelectors() checks, so a stale error from a render at a different
-        // time (a layer that comes and goes per frame) is retired here too.
-        getNode()->clearStaleChannelSelectorMessage();
+        // Any passing render retires the error, whatever time it failed at: the user scrubbing
+        // back to a frame that renders expects the error to go, even though the frame that
+        // failed would still fail.
+        getNode()->clearChannelSelectorMessage();
     }
 
     const bool draftModeSupported = getNode()->isDraftModeUsed();

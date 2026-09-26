@@ -398,7 +398,7 @@ TEST_F(ShuffleMatrixTest, ColorFromDiffuseHasFourRowsOfFiveButtons)
         int outSlot = 0;
         int outIndex = 0;
         ASSERT_TRUE(_gui->getOutputRow(r, &outSlot, &outIndex));
-        const int expected = _gui->findSourceColumn(shuffle->getEffectiveSource(outSlot, outIndex, time));
+        const int expected = _gui->findSourceColumn(shuffle->getEffectiveSource(outSlot, outIndex, time, ViewIdx(0)));
         ASSERT_GE(expected, 0) << "row " << r;
         int checkedCount = 0;
         for (int c = 0; c < _gui->getSourceColumnCount(); ++c) {

@@ -238,6 +238,7 @@ public:
         , persistentMessage()
         , persistentMessageType(0)
         , persistentMessageMutex()
+        , persistentMessageFromChannelSelector(false)
         , dataKindConflictMessage()
         , guiPointer()
         , nativeOverlays()
@@ -449,6 +450,10 @@ public:
     QString persistentMessage;
     int persistentMessageType;
     mutable QMutex persistentMessageMutex;
+
+    // Whether persistentMessage was posted by Node::setChannelSelectorMessage(). Guarded by
+    // persistentMessageMutex.
+    bool persistentMessageFromChannelSelector;
 
     // The text Node::refreshDataKindConflictMessage() last posted into persistentMessage, so it
     // can tell a stale diagnostic of its own from an unrelated message that has since replaced it.

@@ -138,7 +138,7 @@ protected:
 
 // Read(Tests/fixtures/flat-seq-layers.####.exr): frame 1 carries RGBA + diffuse + specular,
 // frame 2 carries RGBA only.
-TEST_F(TimeVaryingLayersTest, DISABLED_ReadSequenceDiffuseVariesPerFrame)
+TEST_F(TimeVaryingLayersTest, ReadSequenceDiffuseVariesPerFrame)
 {
     CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
     readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-seq-layers.####.exr"));

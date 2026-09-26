@@ -1389,6 +1389,13 @@ public:
      **/
     void refreshChannelSelectors();
 
+    /**
+     * @brief Emits layerListRefreshed() and nothing else, so the layer/channel knob GUIs relist
+     * at the timeline's current frame. An input's layers can differ from one frame to the next,
+     * so a list built at another frame can lack layers the input carries now.
+     **/
+    void relistLayerKnobs();
+
     // True for the handful of plug-ins (see adoptChannelQuad()) whose R/G/B/A quad the host
     // does not adopt as a per-channel mask: their quad stays visible and the layer knob's
     // row-0 channel buttons are ignored (the host treats every plane as fully processed).
@@ -1647,8 +1654,9 @@ Q_SIGNALS:
     void layerSelectionChanged();
 
     /**
-     * @brief Emitted by refreshChannelSelectors(): the layer/channel knob GUIs list their
-     * layers themselves and only need to know that the input's present layers may have changed.
+     * @brief Emitted by refreshChannelSelectors() and relistLayerKnobs(): the layer/channel knob
+     * GUIs list their layers themselves and only need to know that the input's present layers
+     * may have changed.
      **/
     void layerListRefreshed();
 

@@ -854,7 +854,7 @@ ViewerTab::onInternalNodeScriptNameChanged(const QString& /*name*/)
 }
 
 void
-ViewerTab::refreshLayerAndAlphaChannelComboBox()
+ViewerTab::refreshLayerAndAlphaChannelComboBox(bool keepAbsentSelection)
 {
     if (!_imp->viewerNode) {
         return;
@@ -862,6 +862,7 @@ ViewerTab::refreshLayerAndAlphaChannelComboBox()
 
     QString layerCurChoice = _imp->layerChoice->getCurrentIndexText();
     QString alphaCurChoice = _imp->alphaChannelChoice->getCurrentIndexText();
+    const QString alphaChoiceBefore = alphaCurChoice;
     std::set<ImageLayerDesc> components;
     _imp->getComponentsAvailabel(&components);
 
@@ -917,74 +918,89 @@ ViewerTab::refreshLayerAndAlphaChannelComboBox()
                 alphaCurChoice = _imp->alphaChannelChoice->itemText(0);
             }
 
-            _imp->viewerNode->setAlphaChannel(*it, alphaChoice, false);
-        }
-    }
-
-    if ( ( layerCurChoice == QString::fromUtf8("-") ) || layerCurChoice.isEmpty() || ( foundCurIt == components.end() ) ) {
-        // Try to find color layer, otherwise fallback on any other layer
-        if ( foundColorIt != components.end() ) {
-            layerCurChoice = QString::fromUtf8(foundColorIt->getLayerLabel().c_str())
-                + QLatin1Char('.') + QString::fromUtf8(foundColorIt->getChannelsLabel().c_str());
-            foundCurIt = foundColorIt;
-        } else if ( foundOtherIt != components.end() ) {
-            layerCurChoice = QString::fromUtf8(foundOtherIt->getLayerLabel().c_str())
-                + QLatin1Char('.') + QString::fromUtf8(foundOtherIt->getChannelsLabel().c_str());
-            foundCurIt = foundOtherIt;
-        } else {
-            layerCurChoice = QString::fromUtf8("-");
-            foundCurIt = components.end();
-        }
-    }
-
-
-    if ( foundCurIt == components.end() ) {
-        _imp->layerChoice->setCurrentText_no_emit(layerCurChoice);
-        _imp->viewerNode->setActiveLayer(ImageLayerDesc::getNoneComponents(), false);
-    } else {
-        int layerIdx = _imp->layerChoice->itemIndex(layerCurChoice);
-        assert(layerIdx != -1);
-        _imp->layerChoice->setCurrentIndex_no_emit(layerIdx);
-        if (foundCurIt->getNumComponents() == 1) {
-            //Switch auto to alpha if there's only this to view
-            _imp->viewerChannels->setCurrentIndex_no_emit(5);
-            setDisplayChannels(5, true);
-            _imp->viewerChannelsAutoswitchedToAlpha = true;
-        } else {
-            //Switch back to RGB if we auto-switched to alpha
-            if ( _imp->viewerChannelsAutoswitchedToAlpha && (foundCurIt->getNumComponents() > 1) && (_imp->viewerChannels->activeIndex() == 5) ) {
-                _imp->viewerChannels->setCurrentIndex_no_emit(1);
-                setDisplayChannels(1, true);
+            // The alpha channel is set again below, except when an absent choice is kept, which
+            // this would silently replace.
+            if (!keepAbsentSelection) {
+                _imp->viewerNode->setAlphaChannel(*it, alphaChoice, false);
             }
         }
-        _imp->viewerNode->setActiveLayer(*foundCurIt, false);
     }
 
-    if ( ( alphaCurChoice == QString::fromUtf8("-") ) || alphaCurChoice.isEmpty() || ( foundCurAlphaIt == components.end() ) ) {
-        /// Try to find color layer, otherwise fallback on any other layer
-        if ( ( foundColorIt != components.end() ) &&
-             ( ( foundColorIt->getChannels().size() == 4) || ( foundColorIt->getChannels().size() == 1) ) ) {
-            std::size_t lastComp = foundColorIt->getChannels().size() - 1;
+    const QString noChoice = QString::fromUtf8("-");
+    const bool keepLayer = keepAbsentSelection && (foundCurIt == components.end()) && !layerCurChoice.isEmpty() && (layerCurChoice != noChoice);
+    const bool keepAlpha = keepAbsentSelection && (foundCurAlphaIt == components.end()) && !alphaChoiceBefore.isEmpty() && (alphaChoiceBefore != noChoice);
 
-            alphaCurChoice = QString::fromUtf8(foundColorIt->getLayerLabel().c_str())
-                + QLatin1Char('.') + QString::fromUtf8(foundColorIt->getChannels()[lastComp].c_str());
-            foundAlphaChannel = foundColorIt->getChannels()[lastComp];
-            foundCurAlphaIt = foundColorIt;
+    if (keepLayer) {
+        _imp->layerChoice->setCurrentText_no_emit(layerCurChoice);
+    } else {
+        if ((layerCurChoice == QString::fromUtf8("-")) || layerCurChoice.isEmpty() || (foundCurIt == components.end())) {
+            // Try to find color layer, otherwise fallback on any other layer
+            if (foundColorIt != components.end()) {
+                layerCurChoice = QString::fromUtf8(foundColorIt->getLayerLabel().c_str())
+                    + QLatin1Char('.') + QString::fromUtf8(foundColorIt->getChannelsLabel().c_str());
+                foundCurIt = foundColorIt;
+            } else if (foundOtherIt != components.end()) {
+                layerCurChoice = QString::fromUtf8(foundOtherIt->getLayerLabel().c_str())
+                    + QLatin1Char('.') + QString::fromUtf8(foundOtherIt->getChannelsLabel().c_str());
+                foundCurIt = foundOtherIt;
+            } else {
+                layerCurChoice = QString::fromUtf8("-");
+                foundCurIt = components.end();
+            }
+        }
+
+        if (foundCurIt == components.end()) {
+            _imp->layerChoice->setCurrentText_no_emit(layerCurChoice);
+            _imp->viewerNode->setActiveLayer(ImageLayerDesc::getNoneComponents(), false);
         } else {
-            alphaCurChoice = QString::fromUtf8("-");
-            foundCurAlphaIt = components.end();
+            int layerIdx = _imp->layerChoice->itemIndex(layerCurChoice);
+            assert(layerIdx != -1);
+            _imp->layerChoice->setCurrentIndex_no_emit(layerIdx);
+            if (foundCurIt->getNumComponents() == 1) {
+                // Switch auto to alpha if there's only this to view
+                _imp->viewerChannels->setCurrentIndex_no_emit(5);
+                setDisplayChannels(5, true);
+                _imp->viewerChannelsAutoswitchedToAlpha = true;
+            } else {
+                // Switch back to RGB if we auto-switched to alpha
+                if (_imp->viewerChannelsAutoswitchedToAlpha && (foundCurIt->getNumComponents() > 1) && (_imp->viewerChannels->activeIndex() == 5)) {
+                    _imp->viewerChannels->setCurrentIndex_no_emit(1);
+                    setDisplayChannels(1, true);
+                }
+            }
+            _imp->viewerNode->setActiveLayer(*foundCurIt, false);
         }
     }
 
-    if ( ( foundCurAlphaIt == components.end() ) || foundAlphaChannel.empty() ) {
+    if (keepAlpha) {
+        alphaCurChoice = alphaChoiceBefore;
         _imp->alphaChannelChoice->setCurrentText_no_emit(alphaCurChoice);
-        _imp->viewerNode->setAlphaChannel(ImageLayerDesc::getNoneComponents(), std::string(), false);
     } else {
-        int layerIdx = _imp->alphaChannelChoice->itemIndex(alphaCurChoice);
-        assert(layerIdx != -1);
-        _imp->alphaChannelChoice->setCurrentIndex_no_emit(layerIdx);
+        if ((alphaCurChoice == QString::fromUtf8("-")) || alphaCurChoice.isEmpty() || (foundCurAlphaIt == components.end())) {
+            /// Try to find color layer, otherwise fallback on any other layer
+            if ((foundColorIt != components.end()) && ((foundColorIt->getChannels().size() == 4) || (foundColorIt->getChannels().size() == 1))) {
+                std::size_t lastComp = foundColorIt->getChannels().size() - 1;
 
-        _imp->viewerNode->setAlphaChannel(*foundCurAlphaIt, foundAlphaChannel, false);
+                alphaCurChoice = QString::fromUtf8(foundColorIt->getLayerLabel().c_str())
+                    + QLatin1Char('.') + QString::fromUtf8(foundColorIt->getChannels()[lastComp].c_str());
+                foundAlphaChannel = foundColorIt->getChannels()[lastComp];
+                foundCurAlphaIt = foundColorIt;
+            } else {
+                alphaCurChoice = QString::fromUtf8("-");
+                foundCurAlphaIt = components.end();
+            }
+        }
+
+        if ((foundCurAlphaIt == components.end()) || foundAlphaChannel.empty()) {
+            _imp->alphaChannelChoice->setCurrentText_no_emit(alphaCurChoice);
+            _imp->viewerNode->setAlphaChannel(ImageLayerDesc::getNoneComponents(), std::string(), false);
+        } else {
+            int layerIdx = _imp->alphaChannelChoice->itemIndex(alphaCurChoice);
+            assert(layerIdx != -1);
+            _imp->alphaChannelChoice->setCurrentIndex_no_emit(layerIdx);
+
+            _imp->viewerNode->setAlphaChannel(*foundCurAlphaIt, foundAlphaChannel, false);
+        }
     }
 
     {

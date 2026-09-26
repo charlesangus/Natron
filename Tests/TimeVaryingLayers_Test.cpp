@@ -34,6 +34,7 @@
 #include <gtest/gtest.h>
 
 #include <QFile>
+#include <QObject>
 #include <QString>
 #include <QTemporaryDir>
 
@@ -324,4 +325,75 @@ TEST_F(TimeVaryingLayersTest, KeyedDisableSurvivesSaveLoad)
 
     EXPECT_FALSE(node2->isNodeDisabled(1.0));
     EXPECT_TRUE(node2->isNodeDisabled(2.0));
+}
+
+// What the layer menus offer, queried the way the GUI queries it: at the timeline's current frame.
+// A Shuffle's In 2 dropdown lists through Node::listLayersForKnob(); the layer menu of a viewer fed
+// by that Shuffle lists getPresentLayers(currentFrame, -1) on the Shuffle. The graph is built with
+// the timeline parked on frame 2, where the sequence lacks diffuse, so a listing that stays at the
+// frame it was first made at fails on frame 1. A single-file Read carries diffuse on every frame.
+TEST_F(TimeVaryingLayersTest, LayerMenusListReadLayersAtCurrentFrame)
+{
+    struct ReadCase {
+        const char* path;
+        bool diffuseAtFrame2;
+    };
+    const ReadCase cases[] = {
+        { NATRON_TESTS_FIXTURES_DIR "/flat-seq-layers.####.exr", false },
+        { NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr", true },
+    };
+
+    for (const ReadCase& readCase : cases) {
+        SCOPED_TRACE(readCase.path);
+        getApp()->getProject()->reset(false, true);
+        getApp()->getTimeLine()->seekFrame(2, false, NULL, eTimelineChangeReasonOtherSeek);
+
+        NodePtr reader = createReader(readCase.path);
+        ASSERT_TRUE(bool(reader));
+        NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+        ASSERT_TRUE(bool(shuffle));
+        connectNodes(reader, shuffle, Shuffle::eInputMain, true);
+        KnobIPtr in2 = shuffle->getKnobByName(kShuffleParamIn2);
+        ASSERT_TRUE(bool(in2));
+
+        const int frames[] = { 2, 1, 2 };
+        for (int frame : frames) {
+            getApp()->getTimeLine()->seekFrame(frame, false, NULL, eTimelineChangeReasonOtherSeek);
+            const bool expectDiffuse = (frame == 1) || readCase.diffuseAtFrame2;
+
+            std::list<ImageLayerDesc> in2Layers;
+            shuffle->listLayersForKnob(in2, &in2Layers);
+            EXPECT_TRUE(containsColorLayer(in2Layers)) << "frame=" << frame << " In 2=" << layerIDsString(in2Layers);
+            EXPECT_EQ(expectDiffuse, containsLayer(in2Layers, "diffuse")) << "frame=" << frame << " In 2=" << layerIDsString(in2Layers);
+
+            std::list<ImageLayerDesc> viewerLayers;
+            shuffle->getEffectInstance()->getPresentLayers(getApp()->getTimeLine()->currentFrame(), ViewIdx(0), -1, &viewerLayers);
+            EXPECT_TRUE(containsColorLayer(viewerLayers)) << "frame=" << frame << " viewer=" << layerIDsString(viewerLayers);
+            EXPECT_EQ(expectDiffuse, containsLayer(viewerLayers, "diffuse")) << "frame=" << frame << " viewer=" << layerIDsString(viewerLayers);
+        }
+    }
+}
+
+// A layer menu is built at whatever frame the timeline is on at that moment, so a time change has
+// to make it relist: a Shuffle set up while parked on frame 2 of the sequence otherwise never
+// offers diffuse on frame 1. The knob GUIs relist on Node::layerListRefreshed(), and the GUI calls
+// refreshAfterTimeChange() on every node whose panel is open when the timeline moves.
+TEST_F(TimeVaryingLayersTest, TimeChangeRelistsLayerMenus)
+{
+    NodePtr reader = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-seq-layers.####.exr");
+    ASSERT_TRUE(bool(reader));
+    NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+    ASSERT_TRUE(bool(shuffle));
+    connectNodes(reader, shuffle, Shuffle::eInputMain, true);
+
+    int relists = 0;
+    struct DisconnectOnExit {
+        QMetaObject::Connection connection;
+        ~DisconnectOnExit() { QObject::disconnect(connection); }
+    } guard;
+    guard.connection = QObject::connect(shuffle.get(), &Node::layerListRefreshed, [&relists]() { ++relists; });
+
+    getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+    shuffle->getEffectInstance()->refreshAfterTimeChange(false, 1);
+    EXPECT_GE(relists, 1) << "moving the timeline did not ask the Shuffle's layer menus to relist";
 }

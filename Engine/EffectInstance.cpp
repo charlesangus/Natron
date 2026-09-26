@@ -6083,7 +6083,10 @@ EffectInstance::refreshExtraStateAfterTimeChanged(bool isPlayback,
 {
     KnobHolder::refreshExtraStateAfterTimeChanged(isPlayback, time);
 
-    getNode()->refreshIdentityState();
+    NodePtr node = getNode();
+    node->refreshIdentityState();
+    // Layer menus list what the inputs carry at the current frame, which can change with it.
+    node->relistLayerKnobs();
 }
 
 void

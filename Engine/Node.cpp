@@ -7768,6 +7768,12 @@ Node::refreshChannelSelectors()
     s_layerSelectionChanged();
 }
 
+void
+Node::relistLayerKnobs()
+{
+    Q_EMIT layerListRefreshed();
+}
+
 double
 Node::getHostMixingValue(double time,
                          ViewIdx view) const

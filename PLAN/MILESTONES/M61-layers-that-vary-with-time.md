@@ -39,7 +39,7 @@ Execution notes:
 
 Skip (strike through) any task whose P1.T2 test already passes.
 
-- [ ] M61.P2.T1 — Follow a time-dependent identity when reporting passthrough layers
+- [x] M61.P2.T1 — Follow a time-dependent identity when reporting passthrough layers
   - files: `Engine/EffectInstance.cpp`, `Engine/EffectInstance.h`, `Tests/TimeVaryingLayers_Test.cpp`
   - approach: in `getComponentsNeededDefault`, and anywhere else the passthrough input is chosen for layer reporting, ask `isIdentity_public` at `(time, view)` first. If the effect is identity onto input k at time t', report input k's layers at t', and set `passThroughInputNb`/`passThroughTime` to match. Otherwise keep `getPreferredInput()`. The actions cache is already keyed by `(hash, time, view)`. Check that `isIdentity` doesn't recurse into layer queries: M34 made Shuffle's `isIdentity` validate first. Guard that recursion rather than dropping the validation.
   - verify: the Switch test (b) runs undisabled and passes. `ctest -R 'Shuffle|Layer|WriteAllLayers'` and the full debug ctest stay green.
@@ -92,3 +92,4 @@ Skip (strike through) any task whose P1.T2 test already passes.
   - (a) Read of `flat-seq-layers.####.exr`: t=1 and t=2 both report Colour, diffuse, specular. `ReadOIIOPlugin::getClipComponents` ignores `args.time` and lists `_outputLayerMenu`.
   - (b) Switch: t=1 and t=2 both report Colour, diffuse, specular. Non-multiplanar, so `getComponentsNeededDefault` passes through `getPreferredInput()` (Read A) regardless of `which`.
   - (c) Read → Shuffle → Dot: t=1 and t=2 both report Colour, diffuse. Disable keys fine; layer reporting never consults Disable, so the disabled Shuffle's produced layer leaks.
+- 2026-09-25 — **Passthrough follows a time-dependent identity; the identity query is uncached** (P2.T1, code `1987bba2d`): `getComponentsNeededDefault` asks `isIdentity_public(false, …)` at the query's (time, view) and reports the identity input's layers. It uses `false` because the identity cache is keyed only on (hash, time, view): caching an empty Roto's identity during a layer query made `RotoLayerTest.RotoWritesAlphaOnlyIntoColor` read a stale answer after the shape was added. Re-entry is guarded by a per-effect TLS flag (`EffectTLSData::resolvingLayersPassThrough`), which also skips caching the fallback answer. Multiplanar plug-ins keep their own passthrough choice; only their upstream query moves to the declared passthrough time/view. Full debug ctest 482/483 (the one failure was the Read test, pending the plugin rebuild).

@@ -51,3 +51,4 @@
 - 2026-09-22 — stacked-milestone-prs: from M34, AppImage per milestone, PRs left open and stacked (next milestone branches off the previous tip), user checks asynchronously → DECISIONS/2026-09-22-stacked-milestone-prs.md
 - 2026-09-23 — parallel-worktree-milestones: M28/M30 run in build/wt worktrees off main alongside M34; not stacked → DECISIONS/2026-09-23-parallel-worktree-milestones.md
 - 2026-09-24 — layers-vary-with-time: available layers are per-frame; validation/render use render (time, view), never the timeline frame; M61 fixes graphs that do not vary → DECISIONS/2026-09-24-layers-vary-with-time.md
+- 2026-09-25 — perf-hotspots-before-render-architecture: fix superlinear engine hotspots (M62) before a task-graph scheduler (M63) or tiles (M64); perf runs after channel/layer work → DECISIONS/2026-09-25-perf-hotspots-before-render-architecture.md

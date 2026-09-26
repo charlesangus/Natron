@@ -60,6 +60,12 @@ Skip (strike through) any task whose P1.T2 test already passes.
   - verify: the sequence test (a) runs undisabled and passes after the rebuilt plugin bundle. `ctest -R 'Read|WriteAllLayers|Shuffle'` stays green.
   - size: L
 
+- [ ] M61.P2.T5 — Thicken the node graph's disabled cross to about the width of the default pipe
+  - files: `Gui/NodeGui.cpp`, `Gui/NodeGui.h`, `Gui/Edge.cpp` (shared pen-width constant)
+  - approach: at least 3x the current line width, matched to the default edge pen width through a shared constant. The lines stay inside the node box, and the colour is unchanged.
+  - verify: Xvfb release screenshots of a disabled node next to a pipe; the user signs off.
+  - size: M
+
 ## Phase 61.3: Shuffle validates at the render's time
 
 - [x] M61.P3.T1 — Add the test M34's review asked for, on all three graphs
@@ -102,3 +108,4 @@ Skip (strike through) any task whose P1.T2 test already passes.
 - 2026-09-25 — **Node box follows a keyed Disable per frame** (P2.T3 code, `ee62af5c0`): `Knob::onTimeChanged` never re-emits `disabledKnobToggled` for an animated knob, so `NodeGui` now connects the timeline's `frameChanged` (RotoPanel/TrackerPanel precedent) and refreshes only when the Disable knob is animated. No serialization special-case existed; `KeyedDisableSurvivesSaveLoad` passes. Checkbox stays open until the Xvfb scrub screenshots are signed off.
 - 2026-09-25 — **Shuffle validates at the render's time; a successful render retires a stale missing-layer error** (P3.T1, code `0006da64c`): `layerChannelCount`/`getEffectiveSource`/`slotIsRead` take an explicit time (render → `args.time`; the sublabel, Python `ShuffleMapParam` and the matrix widget pass the current frame as UI callers). The new tests exposed that the missing-channel persistent error was only cleared by a mapping edit or `refreshChannelSelectors()`, so an error from rendering frame 2 survived a successful frame-1 render; `renderRoI` now calls the extracted `Node::clearStaleChannelSelectorMessage()` when `checkSelectedChannelsPresent` passes. Tests read `diffuse.g` (1.0), not `diffuse.r` (0, indistinguishable from empty). Full debug ctest 490/490.
 - 2026-09-26 — **Gate progress**: PR #34 opened against `main` (M34 already merged, so not stacked). The Codex review round posted 6 findings (3 major: Shuffle view not threaded, the TLS guard swallowing identity exceptions, the stale-message clear lacking ownership/atomicity; 2 minor: NodeGui ignoring expression-driven Disable, reverse-order tests reusing a warm cache; 1 nit comment); a fixer is working on all six. The release AppImage `build/appimages/M61-776ec2ca1.AppImage` and `M61-uat.md` are ready and will be repackaged after the fixes. The Xvfb scrub screenshots (`build/m61-gui/disable-f{1,2,1-again}.png`) show the cross on frame 2 only; they have been sent to the user and await sign-off.
+- 2026-09-26 — **Disabled cross thickened to pipe width** (user, on reviewing the P2.T3 screenshots): at least 3x the current thickness, about the same width as the default pipe. Added as P2.T5 and folded into the review-fix batch, because that batch already touches `NodeGui.cpp`.

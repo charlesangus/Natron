@@ -56,6 +56,7 @@
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
@@ -119,7 +120,7 @@ expectFixtureLayers(const FlatExrImage& image)
     EXPECT_EQ(kSize, image.height);
 }
 
-// Renders frame 1 of `writer` to `path` and parses the result. `path` must already be set as
+// Renders `frame` of `writer` to `path` and parses the result. `path` must already be set as
 // the writer's sole output file (a fixed, unpadded filename, not a `####` sequence pattern),
 // since every render in these tests is a single frame written to its own file.
 bool
@@ -127,7 +128,8 @@ renderAndRead(const AppInstancePtr& app,
               const NodePtr& writer,
               const std::string& path,
               FlatExrImage* out,
-              std::string* error)
+              std::string* error,
+              int frame = 1)
 {
     OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
     if (!writerEffect) {
@@ -137,7 +139,7 @@ renderAndRead(const AppInstancePtr& app,
     }
 
     std::list<AppInstance::RenderWork> works;
-    works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
+    works.push_back(AppInstance::RenderWork(writerEffect, frame, frame, 1, false));
     app->startWritersRendering(false, works);
 
     if (!QFile::exists(QString::fromStdString(path))) {
@@ -207,6 +209,177 @@ protected:
         ASSERT_TRUE(bool(_mapping));
 
         createWriterOn(_shuffle);
+    }
+
+    // Wires a native Shuffle or ShuffleCopy directly on top of an already-built source (rather
+    // than a fixture reader this fixture owns), so a graph whose layers vary per frame can feed it.
+    void createShuffleOn(const NodePtr& source,
+                         const char* pluginID = PLUGINID_NATRON_SHUFFLE)
+    {
+        _shuffle = createNode(QString::fromUtf8(pluginID));
+        ASSERT_TRUE(bool(_shuffle)) << pluginID;
+        connectNodes(source, _shuffle, Shuffle::eInputMain, true);
+
+        _mapping = std::dynamic_pointer_cast<KnobShuffleMap>(_shuffle->getKnobByName(kShuffleParamMapping));
+        ASSERT_TRUE(bool(_mapping));
+
+        createWriterOn(_shuffle);
+    }
+
+    // Same as createShuffleOn(), but for a ShuffleCopy whose two inputs are wired separately:
+    // input2 feeds the main input ("2"), input1 feeds the copy input ("1").
+    void createShuffleCopyOn(const NodePtr& input2,
+                             const NodePtr& input1)
+    {
+        _shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLECOPY));
+        ASSERT_TRUE(bool(_shuffle));
+        connectNodes(input2, _shuffle, Shuffle::eInputMain, true);
+        connectNodes(input1, _shuffle, Shuffle::eInputCopy1, true);
+
+        _mapping = std::dynamic_pointer_cast<KnobShuffleMap>(_shuffle->getKnobByName(kShuffleParamMapping));
+        ASSERT_TRUE(bool(_mapping));
+
+        createWriterOn(_shuffle);
+    }
+
+    // Read(Tests/fixtures/flat-seq-layers.####.exr): frame 1 carries RGBA + diffuse + specular
+    // (the same values as flat-three-layers.exr), frame 2 carries RGBA only. See
+    // Tests/TimeVaryingLayers_Test.cpp, which reads the same sequence through a plain Read.
+    NodePtr createTimeVaryingReadSequence()
+    {
+        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-seq-layers.####.exr"));
+        NodePtr reader = getApp()->createNode(readerArgs);
+        EXPECT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+        return reader;
+    }
+
+    // OFX Switch between Read(flat-three-layers.exr) (diffuse + specular) and
+    // Read(flat-rgba-only.exr) (RGBA only), `which` keyed 0 at frame 1 and 1 at frame 2. See
+    // Tests/TimeVaryingLayers_Test.cpp's SwitchDiffuseVariesPerFrame.
+    NodePtr createTimeVaryingSwitch()
+    {
+        CreateNodeArgs readerAArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+        readerAArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+        NodePtr readerA = getApp()->createNode(readerAArgs);
+        EXPECT_TRUE(bool(readerA)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+        CreateNodeArgs readerBArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+        readerBArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr"));
+        NodePtr readerB = getApp()->createNode(readerBArgs);
+        EXPECT_TRUE(bool(readerB)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+
+        NodePtr switchNode = createNode(QString::fromUtf8("net.sf.openfx.switchPlugin"));
+        EXPECT_TRUE(bool(switchNode));
+        connectNodes(readerA, switchNode, 0, true);
+        connectNodes(readerB, switchNode, 1, true);
+
+        KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName("which"));
+        EXPECT_TRUE(bool(which));
+        if (which) {
+            which->setValueAtTime(1, 0, ViewSpec::all(), 0);
+            which->setValueAtTime(2, 1, ViewSpec::all(), 0);
+        }
+
+        return switchNode;
+    }
+
+    // Read(flat-rgba-only.exr) -> native Shuffle (writing a constant 1 into a new "diffuse"
+    // layer) -> Dot, the Shuffle's Disable keyed off at frame 1 and on at frame 2. See
+    // Tests/TimeVaryingLayers_Test.cpp's ShuffleDisableDiffuseVariesPerFrame.
+    NodePtr createTimeVaryingShuffleDisableChain()
+    {
+        ProjectPtr project = getApp()->getProject();
+        std::string error;
+        const std::vector<std::string> rgb = { "R", "G", "B" };
+        EXPECT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("diffuse", "diffuse", "", rgb), LayerRegistryEntry::eOriginUser, &error)) << error;
+
+        NodePtr reader;
+        createFixtureReader(&reader, "flat-rgba-only.exr");
+        if (HasFatalFailure()) {
+            return NodePtr();
+        }
+
+        NodePtr upstreamShuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+        EXPECT_TRUE(bool(upstreamShuffle));
+        connectNodes(reader, upstreamShuffle, Shuffle::eInputMain, true);
+
+        KnobLayerSelectPtr out1 = std::dynamic_pointer_cast<KnobLayerSelect>(upstreamShuffle->getKnobByName(kShuffleParamOut1));
+        EXPECT_TRUE(bool(out1));
+        if (out1) {
+            out1->setLayer("diffuse");
+        }
+
+        KnobShuffleMapPtr upstreamMapping = std::dynamic_pointer_cast<KnobShuffleMap>(upstreamShuffle->getKnobByName(kShuffleParamMapping));
+        EXPECT_TRUE(bool(upstreamMapping));
+        if (upstreamMapping) {
+            upstreamMapping->setSource(1, 0, ShuffleSource::makeOne());
+            upstreamMapping->setSource(1, 1, ShuffleSource::makeOne());
+            upstreamMapping->setSource(1, 2, ShuffleSource::makeOne());
+        }
+
+        NodePtr noop = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+        EXPECT_TRUE(bool(noop));
+        connectNodes(upstreamShuffle, noop, 0, true);
+
+        KnobBoolPtr disable = std::dynamic_pointer_cast<KnobBool>(upstreamShuffle->getKnobByName(kDisableNodeKnobName));
+        EXPECT_TRUE(bool(disable));
+        if (disable) {
+            disable->setValueAtTime(1, false, ViewSpec::all(), 0);
+            disable->setValueAtTime(2, true, ViewSpec::all(), 0);
+        }
+
+        return noop;
+    }
+
+    // Builds a native Shuffle on `source` with an explicit row reading diffuse.g into Color.r
+    // (not diffuse.r, which the fixtures hold at 0 and so can't be told apart from an empty
+    // result), then exercises it across the two frames of a graph whose diffuse layer is only
+    // present at frame 1: rendering frame 1 while the timeline sits on frame 2 must succeed with
+    // expectedR in Color's R, rendering frame 2 while the timeline sits on frame 1 must fail
+    // naming "diffuse", and rendering frame 1 again must succeed and clear the error.
+    void expectExplicitDiffuseRowVariesPerFrame(const NodePtr& source,
+                                                float expectedR)
+    {
+        createShuffleOn(source);
+        if (HasFatalFailure()) {
+            return;
+        }
+        setLayer(kShuffleParamIn1, "diffuse");
+        if (HasFatalFailure()) {
+            return;
+        }
+        _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
+        ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
+
+        QTemporaryDir tmp;
+        ASSERT_TRUE(tmp.isValid());
+
+        getApp()->getTimeLine()->seekFrame(2, false, NULL, eTimelineChangeReasonOtherSeek);
+        FlatExrImage image1;
+        render(tmp, "row_frame1.exr", &image1, 1);
+        if (HasFatalFailure()) {
+            return;
+        }
+        EXPECT_FALSE(_shuffle->hasPersistentMessage());
+        EXPECT_NEAR(expectedR, valueAt(image1, "R"), 1e-4f);
+
+        getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+        std::string message;
+        renderExpectingFailure(tmp, "row_frame2.exr", &message, 2);
+        if (HasFatalFailure()) {
+            return;
+        }
+        EXPECT_NE(std::string::npos, message.find("diffuse")) << message;
+
+        FlatExrImage image1Again;
+        render(tmp, "row_frame1_again.exr", &image1Again, 1);
+        if (HasFatalFailure()) {
+            return;
+        }
+        EXPECT_FALSE(_shuffle->hasPersistentMessage());
+        EXPECT_NEAR(expectedR, valueAt(image1Again, "R"), 1e-4f);
     }
 
     // Switches the fixture reader's file in place and pushes the change downstream the same way
@@ -291,21 +464,23 @@ protected:
 
     void render(const QTemporaryDir& tmp,
                 const char* fileName,
-                FlatExrImage* image)
+                FlatExrImage* image,
+                int frame = 1)
     {
         const std::string path = (tmp.path() + QLatin1String("/") + QString::fromUtf8(fileName)).toStdString();
         _writer->setOutputFilesForWriter(path);
         QFile::remove(QString::fromStdString(path));
 
         std::string error;
-        ASSERT_TRUE(renderAndRead(getApp(), _writer, path, image, &error)) << error;
+        ASSERT_TRUE(renderAndRead(getApp(), _writer, path, image, &error, frame)) << error;
         QFile::remove(QString::fromStdString(path));
     }
 
-    // Renders to fileName expecting the render to fail, and returns the persistent message it posts.
+    // Renders frame expecting the render to fail, and returns the persistent message it posts.
     void renderExpectingFailure(const QTemporaryDir& tmp,
                                 const char* fileName,
-                                std::string* message)
+                                std::string* message,
+                                int frame = 1)
     {
         const std::string path = (tmp.path() + QLatin1String("/") + QString::fromUtf8(fileName)).toStdString();
         _writer->setOutputFilesForWriter(path);
@@ -313,7 +488,7 @@ protected:
 
         FlatExrImage image;
         std::string error;
-        EXPECT_FALSE(renderAndRead(getApp(), _writer, path, &image, &error));
+        EXPECT_FALSE(renderAndRead(getApp(), _writer, path, &image, &error, frame));
         QFile::remove(QString::fromStdString(path));
         ASSERT_TRUE(_shuffle->hasPersistentMessage());
 
@@ -865,4 +1040,85 @@ TEST_F(ShuffleRenderTest, DisconnectingTheMissingRowClearsTheError)
     }
     EXPECT_FALSE(_shuffle->hasPersistentMessage());
     expectColor(image, 0.f, 0.f, 0.f, 0.f);
+}
+
+// diffuse.G is 1 in the fixture (flat-three-layers.exr and flat-seq-layers.####.exr's frame 1
+// share the same values), so Color's R carries the proof of which frame's diffuse was read.
+TEST_F(ShuffleRenderTest, ExplicitRowVariesPerFrameOnReadSequence)
+{
+    NodePtr source = createTimeVaryingReadSequence();
+    ASSERT_TRUE(bool(source));
+
+    expectExplicitDiffuseRowVariesPerFrame(source, 1.f);
+}
+
+TEST_F(ShuffleRenderTest, ExplicitRowVariesPerFrameOnSwitch)
+{
+    NodePtr source = createTimeVaryingSwitch();
+    ASSERT_TRUE(bool(source));
+
+    expectExplicitDiffuseRowVariesPerFrame(source, 1.f);
+}
+
+// The upstream Shuffle writes a constant 1 into diffuse, so 1 (not the fixture's 0) is the
+// value the explicit row must carry through at frame 1.
+TEST_F(ShuffleRenderTest, ExplicitRowVariesPerFrameOnShuffleDisableChain)
+{
+    NodePtr source = createTimeVaryingShuffleDisableChain();
+    ASSERT_TRUE(bool(source));
+
+    expectExplicitDiffuseRowVariesPerFrame(source, 1.f);
+}
+
+TEST_F(ShuffleRenderTest, ShuffleCopyExplicitRowVariesPerFrameOnInput1)
+{
+    NodePtr input2;
+    createFixtureReader(&input2, "flat-three-layers.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+    NodePtr input1 = createTimeVaryingReadSequence();
+    ASSERT_TRUE(bool(input1));
+
+    createShuffleCopyOn(input2, input1);
+    if (HasFatalFailure()) {
+        return;
+    }
+    setLayer(kShuffleParamIn1, "diffuse");
+    if (HasFatalFailure()) {
+        return;
+    }
+    // Overrides ShuffleCopy's default row (which reads out1's R from input "2") to read
+    // diffuse.g from input "1" instead (not diffuse.r, which the fixtures hold at 0 and so
+    // can't be told apart from an empty result).
+    _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
+    ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+
+    getApp()->getTimeLine()->seekFrame(2, false, NULL, eTimelineChangeReasonOtherSeek);
+    FlatExrImage image1;
+    render(tmp, "copy_row_frame1.exr", &image1, 1);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    EXPECT_NEAR(1.f, valueAt(image1, "R"), 1e-4f);
+
+    getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+    std::string message;
+    renderExpectingFailure(tmp, "copy_row_frame2.exr", &message, 2);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_NE(std::string::npos, message.find("diffuse")) << message;
+
+    FlatExrImage image1Again;
+    render(tmp, "copy_row_frame1_again.exr", &image1Again, 1);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    EXPECT_NEAR(1.f, valueAt(image1Again, "R"), 1e-4f);
 }

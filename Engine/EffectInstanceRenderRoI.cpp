@@ -777,6 +777,10 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             setPersistentMessage(eMessageTypeError, channelMessage);
             return eRenderRoIRetCodeFailed;
         }
+        // Revalidates at the render's own time, not the timeline's current frame that
+        // refreshChannelSelectors() checks, so a stale error from a render at a different
+        // time (a layer that comes and goes per frame) is retired here too.
+        getNode()->clearStaleChannelSelectorMessage();
     }
 
     const bool draftModeSupported = getNode()->isDraftModeUsed();

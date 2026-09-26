@@ -148,10 +148,10 @@ public:
     /**
      * @brief The source outSlot's channel outIndex actually renders from. A mapping row is
      * returned as stored. Without one, the implicit inK.i (K = outSlot, i = outIndex) is 0 when
-     * slot K is None or when i is at or beyond the channel count of slot K's layer, Color
-     * counting as RGBA.
+     * slot K is None or when i is at or beyond the channel count of slot K's layer at time,
+     * Color counting as RGBA.
      **/
-    ShuffleSource getEffectiveSource(int outSlot, int outIndex) const WARN_UNUSED_RETURN;
+    ShuffleSource getEffectiveSource(int outSlot, int outIndex, double time) const WARN_UNUSED_RETURN;
 
 protected:
     virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
@@ -222,12 +222,13 @@ private:
                              std::vector<FetchedPlane>* fetched);
 
     /**
-     * @brief The number of channels layerID has, Color counting as RGBA, resolved against the
-     * project registry and then inputNb's present layers. -1 when neither knows the layer.
+     * @brief The number of channels layerID has at time, Color counting as RGBA, resolved
+     * against the project registry and then inputNb's layers present at time. -1 when neither
+     * knows the layer.
      **/
-    int layerChannelCount(const std::string& layerID, int inputNb) const WARN_UNUSED_RETURN;
+    int layerChannelCount(const std::string& layerID, int inputNb, double time) const WARN_UNUSED_RETURN;
 
-    bool slotIsRead(int slot) const WARN_UNUSED_RETURN;
+    bool slotIsRead(int slot, double time) const WARN_UNUSED_RETURN;
 
     bool resolveOutputLayerDesc(const std::string& layerID,
                                 double time,

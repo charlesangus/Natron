@@ -1381,6 +1381,16 @@ public:
      **/
     void refreshChannelSelectors();
 
+    /**
+     * @brief Clears a persistent error message this node's own channel-selector check
+     * (mask, (un)premult-by, or an effect's checkExtraChannelsPresent()) last posted, if the
+     * current message is still exactly that one; leaves any other message alone. Shared by
+     * refreshChannelSelectors(), which revalidates at the timeline's current frame, and the
+     * render path, which revalidates at the render's own time, so a stale error from a render
+     * at a different time gets retired too.
+     **/
+    void clearStaleChannelSelectorMessage();
+
     // True for the handful of plug-ins (see adoptChannelQuad()) whose R/G/B/A quad the host
     // does not adopt as a per-channel mask: their quad stays visible and the layer knob's
     // row-0 channel buttons are ignored (the host treats every plane as fully processed).

@@ -54,6 +54,7 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Project.h"
+#include "Engine/TimeLine.h"
 
 #include "Gui/Button.h"
 #include "Gui/ComboBox.h"
@@ -392,11 +393,12 @@ TEST_F(ShuffleMatrixTest, ColorFromDiffuseHasFourRowsOfFiveButtons)
     // exactly one button reflects it.
     Shuffle* shuffle = shuffleEffect();
     ASSERT_TRUE(shuffle != NULL);
+    const double time = _app->getTimeLine()->currentFrame();
     for (int r = 0; r < _gui->getOutputRowCount(); ++r) {
         int outSlot = 0;
         int outIndex = 0;
         ASSERT_TRUE(_gui->getOutputRow(r, &outSlot, &outIndex));
-        const int expected = _gui->findSourceColumn(shuffle->getEffectiveSource(outSlot, outIndex));
+        const int expected = _gui->findSourceColumn(shuffle->getEffectiveSource(outSlot, outIndex, time));
         ASSERT_GE(expected, 0) << "row " << r;
         int checkedCount = 0;
         for (int c = 0; c < _gui->getSourceColumnCount(); ++c) {

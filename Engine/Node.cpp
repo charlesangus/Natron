@@ -4985,6 +4985,19 @@ Node::checkSelectedChannelsPresent(double time,
 } // Node::checkSelectedChannelsPresent
 
 void
+Node::clearStaleChannelSelectorMessage()
+{
+    // A persistent message is a single slot with no record of who posted it: only take back a
+    // message that starts with what this check itself would have posted.
+    QString current;
+    int type = 0;
+    getPersistentMessage(&current, &type, false);
+    if ((type == (int)eMessageTypeError) && (current.startsWith(QString::fromUtf8(kMaskChannelMissingMessagePrefix)) || current.startsWith(QString::fromUtf8(kUnPremultChannelMissingMessagePrefix)) || current.startsWith(QString::fromUtf8(kExtraChannelMissingMessagePrefix)))) {
+        clearPersistentMessage(false);
+    }
+} // Node::clearStaleChannelSelectorMessage
+
+void
 Node::lock(const ImagePtr & image)
 {
     QMutexLocker l(&_imp->imagesBeingRenderedMutex);
@@ -7720,14 +7733,7 @@ Node::refreshChannelSelectors()
     _imp->effect->onChannelsSelectorRefreshed();
 
     if (checkSelectedChannelsPresent(0)) {
-        // A persistent message is a single slot with no record of who posted it: only take
-        // back a message that starts with what this check itself would have posted.
-        QString current;
-        int type = 0;
-        getPersistentMessage(&current, &type, false);
-        if ((type == (int)eMessageTypeError) && (current.startsWith(QString::fromUtf8(kMaskChannelMissingMessagePrefix)) || current.startsWith(QString::fromUtf8(kUnPremultChannelMissingMessagePrefix)) || current.startsWith(QString::fromUtf8(kExtraChannelMissingMessagePrefix)))) {
-            clearPersistentMessage(false);
-        }
+        clearStaleChannelSelectorMessage();
     }
 
     Q_EMIT layerListRefreshed();

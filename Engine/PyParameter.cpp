@@ -45,6 +45,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Project.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
@@ -2994,7 +2995,10 @@ shuffleMapEffectiveSource(const KnobShuffleMapPtr& knob,
     Shuffle* effect = dynamic_cast<Shuffle*>(knob->getHolder());
 
     if (effect) {
-        return effect->getEffectiveSource(outSlot, outIndex);
+        AppInstancePtr app = effect->getApp();
+        const double time = app ? app->getTimeLine()->currentFrame() : 0.;
+
+        return effect->getEffectiveSource(outSlot, outIndex, time);
     }
 
     return knob->getSource(outSlot, outIndex);

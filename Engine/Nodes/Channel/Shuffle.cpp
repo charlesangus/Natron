@@ -268,7 +268,8 @@ Shuffle::getOutputLayer(int slot) const
 
 int
 Shuffle::layerChannelCount(const std::string& layerID,
-                           int inputNb) const
+                           int inputNb,
+                           double time) const
 {
     if (layerID.empty()) {
         return 0;
@@ -284,7 +285,6 @@ Shuffle::layerChannelCount(const std::string& layerID,
         return (int)desc.getChannels().size();
     }
 
-    const double time = app ? app->getTimeLine()->currentFrame() : 0.;
     std::list<ImageLayerDesc> present;
     // getPresentLayers() only reads, but is not declared const.
     const_cast<Shuffle*>(this)->getPresentLayers(time, ViewIdx(0), inputNb, &present);
@@ -297,7 +297,8 @@ Shuffle::layerChannelCount(const std::string& layerID,
 
 ShuffleSource
 Shuffle::getEffectiveSource(int outSlot,
-                            int outIndex) const
+                            int outIndex,
+                            double time) const
 {
     std::shared_ptr<KnobShuffleMap> mapping = _mapping.lock();
 
@@ -311,7 +312,7 @@ Shuffle::getEffectiveSource(int outSlot,
     }
     // A layer neither the registry nor the input knows keeps its implicit source: the render
     // finds no plane to read and writes 0 all the same.
-    const int nChannels = layerChannelCount(slotLayer, getSlotInput(outSlot));
+    const int nChannels = layerChannelCount(slotLayer, getSlotInput(outSlot), time);
     if ((nChannels >= 0) && (outIndex >= nChannels)) {
         return ShuffleSource::makeZero();
     }
@@ -363,16 +364,17 @@ Shuffle::onKnobsLoaded()
 }
 
 bool
-Shuffle::slotIsRead(int slot) const
+Shuffle::slotIsRead(int slot,
+                    double time) const
 {
     for (int outSlot = 1; outSlot <= 2; ++outSlot) {
         const std::string outLayer = getOutputLayer(outSlot);
         if (outLayer.empty()) {
             continue;
         }
-        const int nChannels = layerChannelCount(outLayer, (int)eInputMain);
+        const int nChannels = layerChannelCount(outLayer, (int)eInputMain, time);
         for (int c = 0; c < ((nChannels < 0) ? 4 : nChannels); ++c) {
-            const ShuffleSource src = getEffectiveSource(outSlot, c);
+            const ShuffleSource src = getEffectiveSource(outSlot, c, time);
             if ((src.kind == ShuffleSource::eInput) && (src.slot == slot)) {
                 return true;
             }
@@ -457,9 +459,9 @@ Shuffle::buildSubLabel()
         // it, so a slot the mapping never reads (or that is only ever zero/one) is left out.
         bool usesSlot1 = false;
         bool usesSlot2 = false;
-        const int nChannels = layerChannelCount(outLayer, (int)eInputMain);
+        const int nChannels = layerChannelCount(outLayer, (int)eInputMain, time);
         for (int c = 0, n = (nChannels < 0) ? 4 : nChannels; c < n; ++c) {
-            const ShuffleSource src = getEffectiveSource(outSlot, c);
+            const ShuffleSource src = getEffectiveSource(outSlot, c, time);
             if (src.kind != ShuffleSource::eInput) {
                 continue;
             }
@@ -552,7 +554,7 @@ Shuffle::getComponentsNeededAndProduced(double time,
 
     for (int slot = 1; slot <= 2; ++slot) {
         const std::string layerID = getSlotLayer(slot);
-        if (layerID.empty() || !slotIsRead(slot)) {
+        if (layerID.empty() || !slotIsRead(slot, time)) {
             continue;
         }
         const int inputNb = getSlotInput(slot);
@@ -579,12 +581,12 @@ Shuffle::isIdentity(double time,
     }
 
     const std::string out1Layer = getOutputLayer(1);
-    const int nChannels = layerChannelCount(out1Layer, (int)eInputMain);
+    const int nChannels = layerChannelCount(out1Layer, (int)eInputMain, time);
     if (nChannels < 0) {
         return false;
     }
     for (int c = 0; c < nChannels; ++c) {
-        const ShuffleSource src = getEffectiveSource(1, c);
+        const ShuffleSource src = getEffectiveSource(1, c, time);
         if ((src.kind != ShuffleSource::eInput) || (src.index != c)) {
             return false;
         }
@@ -791,7 +793,7 @@ Shuffle::render(const RenderActionArgs& args)
 
         std::vector<ChannelFill> planeFills((std::size_t)plane.getNumComponents());
         for (int c = 0; outSlot && (c < plane.getNumComponents()); ++c) {
-            const ShuffleSource src = getEffectiveSource(outSlot, c);
+            const ShuffleSource src = getEffectiveSource(outSlot, c, args.time);
             ChannelFill& fill = planeFills[c];
             if (src.kind == ShuffleSource::eOne) {
                 fill.constant = 1.f;

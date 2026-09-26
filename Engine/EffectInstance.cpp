@@ -1929,7 +1929,7 @@ EffectInstance::tryConcatenateTransforms(double time,
 
             // recursion upstream
             bool inputCanTransform = false;
-            bool inputIsDisabled  =  input->getNode()->isNodeDisabled();
+            bool inputIsDisabled = input->getNode()->isNodeDisabled(time);
 
             if (!inputIsDisabled) {
                 inputCanTransform = input->getNode()->getCurrentCanTransform();
@@ -1940,7 +1940,7 @@ EffectInstance::tryConcatenateTransforms(double time,
                 //input is either disabled, or identity or can concatenate a transform too
                 if (inputIsDisabled) {
                     int prefInput;
-                    input = input->getNearestNonDisabled();
+                    input = input->getNearestNonDisabled(time);
                     prefInput = input ? input->getNode()->getPreferredInput() : -1;
                     if (prefInput == -1) {
                         break;
@@ -1969,7 +1969,7 @@ EffectInstance::tryConcatenateTransforms(double time,
                 }
 
                 if (input) {
-                    inputIsDisabled = input->getNode()->isNodeDisabled();
+                    inputIsDisabled = input->getNode()->isNodeDisabled(time);
                     if (!inputIsDisabled) {
                         inputCanTransform = input->getNode()->getCurrentCanTransform();
                     }
@@ -3857,7 +3857,7 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
 
     bool ret = false;
     RotoDrawableItemPtr rotoItem = getNode()->getAttachedRotoItem();
-    if ((rotoItem && !rotoItem->isActivated(time)) || getNode()->isNodeDisabled() || !getNode()->hasAtLeastOneChannelToProcess(time, view)) {
+    if ((rotoItem && !rotoItem->isActivated(time)) || getNode()->isNodeDisabled(time) || !getNode()->hasAtLeastOneChannelToProcess(time, view)) {
         ret = true;
         *inputNb = getNode()->getPreferredInput();
         *inputTime = time;
@@ -3960,7 +3960,7 @@ EffectInstance::getRegionOfDefinition_public(U64 hash,
             }
         }
 
-        if ( getNode()->isNodeDisabled() ) {
+        if (getNode()->isNodeDisabled(time)) {
             NodePtr preferredInput = getNode()->getPreferredInputNode();
             if (!preferredInput) {
                 return eStatusFailed;
@@ -4523,6 +4523,33 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
         }
     }
 
+    // A node disabled at `time` renders its pass-through input unchanged, so it produces no layer
+    // of its own there and every layer of that input passes through.
+    if (getNode()->isNodeDisabled(time)) {
+        ViewIdx ptView;
+        getLayersPassThroughInput(time, view, passThroughInputNb, passThroughTime, &ptView);
+        *passThroughView = ptView;
+
+        comps->clear();
+        (*comps)[-1];
+        int maxInput = getNInputs();
+        for (int i = 0; i < maxInput; ++i) {
+            (*comps)[i];
+        }
+
+        passThroughLayers->clear();
+        if (*passThroughInputNb != -1) {
+            getAvailableLayers(*passThroughTime, ptView, *passThroughInputNb, passThroughLayers);
+        }
+        processChannels->set();
+        processChannelsPerPlane->clear();
+
+        if (cacheResults) {
+            _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ptView, *passThroughTime);
+        }
+        return;
+    }
+
     if ( !isMultiPlanar() ) {
         getComponentsNeededDefault(time, view, comps, passThroughLayers, passThroughTime, passThroughView, processChannels, processChannelsPerPlane, passThroughInputNb);
         if (cacheResults) {
@@ -5077,11 +5104,11 @@ EffectInstance::aboutToRestoreDefaultValues()
  * from last to first.
  **/
 EffectInstancePtr
-EffectInstance::getNearestNonDisabled() const
+EffectInstance::getNearestNonDisabled(double time) const
 {
     NodePtr node = getNode();
 
-    if ( !node->isNodeDisabled() ) {
+    if (!node->isNodeDisabled(time)) {
         return node->getEffectInstance();
     } else {
         ///Test all inputs recursively, going from last to first, preferring non optional inputs.
@@ -5122,7 +5149,7 @@ EffectInstance::getNearestNonDisabled() const
 
         ///If we found A or B so far, cycle through them
         for (std::list<EffectInstancePtr> ::iterator it = nonOptionalInputs.begin(); it != nonOptionalInputs.end(); ++it) {
-            EffectInstancePtr inputRet = (*it)->getNearestNonDisabled();
+            EffectInstancePtr inputRet = (*it)->getNearestNonDisabled(time);
             if (inputRet) {
                 return inputRet;
             }
@@ -5145,7 +5172,7 @@ EffectInstance::getNearestNonDisabled() const
 
         ///Cycle through all non optional inputs first
         for (std::list<EffectInstancePtr> ::iterator it = nonOptionalInputs.begin(); it != nonOptionalInputs.end(); ++it) {
-            EffectInstancePtr inputRet = (*it)->getNearestNonDisabled();
+            EffectInstancePtr inputRet = (*it)->getNearestNonDisabled(time);
             if (inputRet) {
                 return inputRet;
             }
@@ -5153,7 +5180,7 @@ EffectInstance::getNearestNonDisabled() const
 
         ///Cycle through optional inputs...
         for (std::list<EffectInstancePtr> ::iterator it = optionalInputs.begin(); it != optionalInputs.end(); ++it) {
-            EffectInstancePtr inputRet = (*it)->getNearestNonDisabled();
+            EffectInstancePtr inputRet = (*it)->getNearestNonDisabled(time);
             if (inputRet) {
                 return inputRet;
             }
@@ -5165,9 +5192,9 @@ EffectInstance::getNearestNonDisabled() const
 } // EffectInstance::getNearestNonDisabled
 
 EffectInstancePtr
-EffectInstance::getNearestNonDisabledPrevious(int* inputNb)
+EffectInstance::getNearestNonDisabledPrevious(double time, int* inputNb)
 {
-    assert( getNode()->isNodeDisabled() );
+    assert(getNode()->isNodeDisabled(time));
 
     ///Test all inputs recursively, going from last to first, preferring non optional inputs.
     std::list<EffectInstancePtr> nonOptionalInputs;
@@ -5209,8 +5236,8 @@ EffectInstance::getNearestNonDisabledPrevious(int* inputNb)
 
     ///If we found A or B so far, cycle through them
     for (std::list<EffectInstancePtr> ::iterator it = nonOptionalInputs.begin(); it != nonOptionalInputs.end(); ++it) {
-        if ( (*it)->getNode()->isNodeDisabled() ) {
-            EffectInstancePtr inputRet = (*it)->getNearestNonDisabledPrevious(inputNb);
+        if ((*it)->getNode()->isNodeDisabled(time)) {
+            EffectInstancePtr inputRet = (*it)->getNearestNonDisabledPrevious(time, inputNb);
             if (inputRet) {
                 return inputRet;
             }
@@ -5241,8 +5268,8 @@ EffectInstance::getNearestNonDisabledPrevious(int* inputNb)
 
     ///Cycle through all non optional inputs first
     for (std::list<EffectInstancePtr> ::iterator it = nonOptionalInputs.begin(); it != nonOptionalInputs.end(); ++it) {
-        if ( (*it)->getNode()->isNodeDisabled() ) {
-            EffectInstancePtr inputRet = (*it)->getNearestNonDisabledPrevious(inputNb);
+        if ((*it)->getNode()->isNodeDisabled(time)) {
+            EffectInstancePtr inputRet = (*it)->getNearestNonDisabledPrevious(time, inputNb);
             if (inputRet) {
                 return inputRet;
             }
@@ -5251,8 +5278,8 @@ EffectInstance::getNearestNonDisabledPrevious(int* inputNb)
 
     ///Cycle through optional inputs...
     for (std::list<EffectInstancePtr> ::iterator it = optionalInputs.begin(); it != optionalInputs.end(); ++it) {
-        if ( (*it)->getNode()->isNodeDisabled() ) {
-            EffectInstancePtr inputRet = (*it)->getNearestNonDisabledPrevious(inputNb);
+        if ((*it)->getNode()->isNodeDisabled(time)) {
+            EffectInstancePtr inputRet = (*it)->getNearestNonDisabledPrevious(time, inputNb);
             if (inputRet) {
                 return inputRet;
             }
@@ -5474,7 +5501,10 @@ EffectInstance::getPreferredMetadata_public(NodeMetadata& metadata)
     if (stat == eStatusFailed) {
         return stat;
     }
-    if (!getNode()->isNodeDisabled()) {
+    // Metadata are time-invariant and not refreshed when the time changes, so a Disable that
+    // varies with time is resolved as enabled: downstream metadata then stay the same on every
+    // frame, and are those of the frames where this node actually renders.
+    if (!getNode()->isNodeDisabledAtAllTimes()) {
         // call syncPrivateData if necessary
         bool mustSyncPrivateData;
         {

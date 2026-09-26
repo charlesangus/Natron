@@ -637,7 +637,7 @@ OfxClipInstance::getRegionOfDefinition(OfxTime time,
 
     /// The node might be disabled, hence we navigate upstream to find the first non disabled node.
     if (associatedNode) {
-        associatedNode = associatedNode->getNearestNonDisabled();
+        associatedNode = associatedNode->getNearestNonDisabled(time);
     }
     ///We don't have to do the same kind of navigation if the effect is identity because the effect is supposed to have
     ///the same RoD as the input if it is identity.
@@ -670,7 +670,7 @@ OfxClipInstance::getRegionOfDefinition(OfxTime time) const
 
     /// The node might be disabled, hence we navigate upstream to find the first non disabled node.
     if (associatedNode) {
-        associatedNode = associatedNode->getNearestNonDisabled();
+        associatedNode = associatedNode->getNearestNonDisabled(time);
     }
     ///We don't have to do the same kind of navigation if the effect is identity because the effect is supposed to have
     ///the same RoD as the input if it is identity.

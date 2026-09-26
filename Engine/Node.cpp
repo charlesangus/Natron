@@ -2213,7 +2213,6 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
 
     KnobBoolPtr disableNodeKnob = AppManager::createKnob<KnobBool>(_imp->effect.get(), tr("Disable"), 1, false);
     assert(disableNodeKnob);
-    disableNodeKnob->setAnimationEnabled(false);
     disableNodeKnob->setIsMetadataSlave(true);
     disableNodeKnob->setName(kDisableNodeKnobName);
     disableNodeKnob->setAddNewLine(false);
@@ -6097,6 +6096,50 @@ Node::isNodeDisabled() const
     bool enabled = ( !lifeTimeEnabled || (curFrame >= lifeTimeFirst && curFrame <= lifeTimeEnd) ) && !thisDisabled;
 
     return !enabled;
+}
+
+bool
+Node::isNodeDisabled(double time) const
+{
+    KnobBoolPtr b = _imp->disableNodeKnob.lock();
+    bool thisDisabled = b ? b->getValueAtTime(time) : false;
+    NodeGroup* isContainerGrp = dynamic_cast<NodeGroup*>(getGroup().get());
+
+    if (isContainerGrp) {
+        return thisDisabled || isContainerGrp->getNode()->isNodeDisabled(time);
+    }
+#ifdef NATRON_ENABLE_IO_META_NODES
+    NodePtr ioContainer = getIOContainer();
+    if (ioContainer) {
+        return ioContainer->isNodeDisabled(time);
+    }
+#endif
+
+    int lifeTimeFirst, lifeTimeEnd;
+    bool lifeTimeEnabled = isLifetimeActivated(&lifeTimeFirst, &lifeTimeEnd);
+    bool enabled = (!lifeTimeEnabled || (time >= lifeTimeFirst && time <= lifeTimeEnd)) && !thisDisabled;
+
+    return !enabled;
+}
+
+bool
+Node::isNodeDisabledAtAllTimes() const
+{
+    KnobBoolPtr b = _imp->disableNodeKnob.lock();
+    bool thisDisabled = b && !b->hasAnimation() && b->getValue();
+    NodeGroup* isContainerGrp = dynamic_cast<NodeGroup*>(getGroup().get());
+
+    if (isContainerGrp) {
+        return thisDisabled || isContainerGrp->getNode()->isNodeDisabledAtAllTimes();
+    }
+#ifdef NATRON_ENABLE_IO_META_NODES
+    NodePtr ioContainer = getIOContainer();
+    if (ioContainer) {
+        return ioContainer->isNodeDisabledAtAllTimes();
+    }
+#endif
+
+    return thisDisabled;
 }
 
 void

@@ -203,10 +203,8 @@ TEST_F(TimeVaryingLayersTest, SwitchDiffuseVariesPerFrame)
 // Read(flat-rgba-only.exr) -> native Shuffle (writing a constant into a new "diffuse" layer) ->
 // Dot. The Shuffle's Disable knob (kDisableNodeKnobName) is keyed off at frame 1 and on at
 // frame 2, so the downstream Dot sees the Shuffle's diffuse output only at frame 1 and a plain
-// passthrough of the RGBA-only reader at frame 2. kDisableNodeKnobName is created with
-// setAnimationEnabled(false) today (Node.cpp), so keying it the way a user would via
-// setValueAtTime() is itself part of what this test exercises.
-TEST_F(TimeVaryingLayersTest, DISABLED_ShuffleDisableDiffuseVariesPerFrame)
+// passthrough of the RGBA-only reader at frame 2.
+TEST_F(TimeVaryingLayersTest, ShuffleDisableDiffuseVariesPerFrame)
 {
     ProjectPtr project = getApp()->getProject();
     std::string error;

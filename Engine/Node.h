@@ -1019,7 +1019,23 @@ public:
 
     bool onEffectKnobValueChanged(KnobI* what, ValueChangedReasonEnum reason);
 
+    /**
+     * @brief Whether the node is disabled at the timeline's current frame. For the UI only:
+     * anything that renders, or answers an action for a render, must use isNodeDisabled(time).
+     **/
     bool isNodeDisabled() const;
+
+    /**
+     * @brief Whether the node is disabled at `time`, which makes it pass its preferred input through.
+     **/
+    bool isNodeDisabled(double time) const;
+
+    /**
+     * @brief Whether the node is disabled whatever the time: its Disable (or its container's) is
+     * on and neither animated nor driven by an expression. A lifetime range never makes this
+     * true on its own, since the node is enabled inside that range.
+     **/
+    bool isNodeDisabledAtAllTimes() const;
 
     void setNodeDisabled(bool disabled);
 

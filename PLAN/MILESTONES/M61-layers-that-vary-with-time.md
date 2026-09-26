@@ -62,7 +62,7 @@ Skip (strike through) any task whose P1.T2 test already passes.
 
 ## Phase 61.3: Shuffle validates at the render's time
 
-- [ ] M61.P3.T1 — Add the test M34's review asked for, on all three graphs
+- [x] M61.P3.T1 — Add the test M34's review asked for, on all three graphs
   - files: `Tests/ShuffleRender_Test.cpp`, `Engine/Nodes/Channel/Shuffle.cpp` (only if the test exposes a bug)
   - approach: for each graph from P1.T2, feed a Shuffle whose explicit row reads `diffuse.r` into `Color.r`.
     - Park the timeline on frame 2 and render frame 1: it succeeds, with the fixture's diffuse value in R.
@@ -100,3 +100,4 @@ Skip (strike through) any task whose P1.T2 test already passes.
   - Caches stay correct per frame because every actions/image cache key carries time and view; the hash is age-based.
   - New `ChannelSetRenderTest.GradeDisableKeyedPerFrameIsHonouredAtTheRenderedFrame` (may also pass on old code via render-thread TLS time; the layer test is the one that failed before). Full debug ctest 485/485.
 - 2026-09-25 — **Node box follows a keyed Disable per frame** (P2.T3 code, `ee62af5c0`): `Knob::onTimeChanged` never re-emits `disabledKnobToggled` for an animated knob, so `NodeGui` now connects the timeline's `frameChanged` (RotoPanel/TrackerPanel precedent) and refreshes only when the Disable knob is animated. No serialization special-case existed; `KeyedDisableSurvivesSaveLoad` passes. Checkbox stays open until the Xvfb scrub screenshots are signed off.
+- 2026-09-25 — **Shuffle validates at the render's time; a successful render retires a stale missing-layer error** (P3.T1, code `0006da64c`): `layerChannelCount`/`getEffectiveSource`/`slotIsRead` take an explicit time (render → `args.time`; the sublabel, Python `ShuffleMapParam` and the matrix widget pass the current frame as UI callers). The new tests exposed that the missing-channel persistent error was only cleared by a mapping edit or `refreshChannelSelectors()`, so an error from rendering frame 2 survived a successful frame-1 render; `renderRoI` now calls the extracted `Node::clearStaleChannelSelectorMessage()` when `checkSelectedChannelsPresent` passes. Tests read `diffuse.g` (1.0), not `diffuse.r` (0, indistinguishable from empty). Full debug ctest 490/490.

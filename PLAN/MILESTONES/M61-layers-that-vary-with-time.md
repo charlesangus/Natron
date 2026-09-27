@@ -97,6 +97,30 @@ Skip (strike through) any task whose P1.T2 test already passes.
     - `ctest -R 'Shuffle|TimeVaryingLayers'` green; full debug ctest green.
   - size: M
 
+## Phase 61.5: UAT round 3 findings
+
+User spot-check of `M61-5509fbcbc.AppImage` (2026-09-27). Each fix ships with automated tests that cover the failure paths, not only the happy path, with Xvfb GUI tests where the behaviour is only visible in the GUI (viewer error display, panel defaults).
+
+- [ ] M61.P5.T1 — Diagnose the three findings (read-only)
+  - approach: consultant scouts the Switch "All" layer reporting, the channel-selector default for all-channel nodes, and the viewer's error display when an upstream Switch changes, and returns root causes plus fix and test plans.
+  - size: L
+- [ ] M61.P5.T2 — Switch set to All passes through only the active input's layers
+  - approach: from P5.T1. With the channel selector on All, the Switch reports and renders the layers of the input it selects at that (time, view), not the union of all inputs.
+  - verify: tests on an animated Switch: All at frame 1 lists input 0's layers only, frame 2 input 1's only; rendering a layer only the inactive input has fails or is absent. Full debug ctest green.
+  - size: L
+- [ ] M61.P5.T3 — Nodes that operate on every channel default to All
+  - approach: from P5.T1. Switch and spatial/routing nodes such as Blur and Transform default their channel selector to All; colour-math nodes keep their current default. Projects saved with an explicit value still load unchanged.
+  - verify: tests assert each listed node's default; a load test for an older project keeps its stored value. Full debug ctest green.
+  - size: M
+- [ ] M61.P5.T4 — The viewer shows a Shuffle's missing-layer error reliably when an upstream Switch changes input
+  - approach: from P5.T1.
+  - verify: an Xvfb GUI test scrubs an animated Switch → Shuffle → Viewer across frames repeatedly and checks the viewer's error state on every frame, both directions. Full debug ctest green.
+  - size: L
+- [ ] M61.P5.T5 — Automated UAT under Xvfb
+  - approach: a scripted Xvfb run of every `M61-uat.md` graph, including the error and recovery paths, against the release build, capturing screenshots and asserting on node error state, viewer state and menu contents.
+  - verify: the script passes on the release build; screenshots go to the user.
+  - size: L
+
 ## Phase 61.4: Checkpoint
 
 - [ ] M61.P4.T1 — Package an AppImage and write a UAT script for time-varying layers
@@ -134,4 +158,4 @@ Skip (strike through) any task whose P1.T2 test already passes.
 - 2026-09-26 — **UAT round 2: menus pass; a read of a missing layer or channel always errors** (user). On `M61-0ed1db2ee.AppImage` the layer menus relist correctly. The Shuffle errored on an invalid In 2 but not on an invalid In 1. The difference wasn't the slot: the UAT's In 2 step uses an explicit mapping row, while In 1 feeds Out 1 through the default, and M34 made `checkExtraChannelsPresent` check explicit rows only (M34.P6 test (f)). A first draft of P3.T2 kept a missing *channel* read through a default silent, so a fresh Shuffle or ShuffleCopy on an RGB-only input wouldn't error on A. The user rejected that as a misfeature: "Missing channel = error, always." This reverses M34's explicit-rows-only check and `getEffectiveSource`'s zeroing beyond a layer's channel count. A None slot and a disconnected input stay silent. After P3.T2 lands, P4.T1 repackages the AppImage and adds In 1/default and RGB-only-alpha steps to `M61-uat.md` for the next round.
 - 2026-09-26 — **A missing layer or channel always errors, defaults included** (P3.T2, code `5509fbcbc`): `getEffectiveSource` zeroes only for a None slot; `checkExtraChannelsPresent` walks every produced channel through its effective source. A default whose layer is missing or too narrow is named after the output channel (`diffuse.A is not in the Source input`). A None slot and a disconnected input stay silent. Tests that relied on the zeroing now set an explicit 0/1 row, including one in `ShuffleMatrix_Test.cpp`. The new time-varying test on graph (a) needs an A ← 0 row, because diffuse has no fourth channel, so it would fail on frame 1 under the new rule. Visible side effect: the mapping matrix shows no checked cell on a default row the slot lacks. Full debug ctest 495/495.
 - 2026-09-26 — **Repackaged for UAT round 3** (P4.T1): `build/appimages/M61-5509fbcbc.AppImage` (sha256 `7f96159857002a65b4cad06af976297d118499303c6330fc0a0222ee743dbc89`) launches under Xvfb. `M61-uat.md` adds Graph 4 (default rows: In 1 `diffuse` per frame, alpha of an RGB-only input, ShuffleCopy's input-1 alpha, and a disconnected input that stays silent). An audit of the 8 bundled PyPlugs that use Shuffle/ShuffleCopy found every channel explicitly mapped, so none is affected by the stricter check. Pushed to PR #34. P2.T3, P2.T5 and P4.T1 await the user's sign-off.
-
+- 2026-09-27 — **UAT round 3 spot-check findings** (user): (1) a Switch whose channel selector is All passes through every input's channels, not just the active input's; (2) Switch, and every node that normally works on all channels (Blur, Transform, …), should default to All; (3) a Shuffle downstream of a switching Switch errors, but the viewer does not show the error reliably. Added as Phase 61.5, run before the P4.T1 repackage. The user also asked for the UAT itself to be run through Xvfb, and for tests to cover failure paths, not just the happy path.

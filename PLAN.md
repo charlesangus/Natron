@@ -260,8 +260,6 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M37 design (Q1–Q6)**: the draft in `PLAN/MILESTONES/M37-channel-management-nodes.md` was written against the recommended answers: one Remove node with keep/remove; whole layers only; Color never removable; reuse Regex rows; an AddLayers node that zero-fills; the names Remove/AddLayers. Implementation waits on the user's answers.
-
 - **USD Python inside Natron's Python?** M19.P1.T1 builds USD with Python
   OFF (Shiboken6/PySide6 vs pxr coexistence). A Solaris-style "Python over
   the stage" node would cover the LOPs long tail cheaply but needs pxr

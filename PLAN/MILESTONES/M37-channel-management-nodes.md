@@ -1,23 +1,23 @@
 # Milestone 37: Channel/layer management nodes
 
-> **Draft (2026-09-26): the consultant's elaboration, written for its recommended answers to Q1–Q6 below. Awaiting the user's answers; do not start implementation until they are recorded under `## Decisions`.**
+> **Draft (2026-09-26), answers recorded 2026-09-27 (see `## Decisions`).** Q3 and Q6 diverge from the recommended defaults this draft was written against. The Q6 rename (Remove → RemoveLayers) is applied throughout below. **Q3(c) is not yet applied**: Phase 37.1–37.3's task briefs (P1.T3, P2.T1's `filterPassThroughLayers` approach, P3.T1) and the P6.T2 UAT script were written for "colour views are never listed or matched" (Q3 recommendation (a)) and need reworking for "removing `rgba` drops the colour plane entirely" (the answered (c)) before implementation starts — that's a real design pass (new matching semantics, +1 M task per the option), better done by `/cat-plan` than a mechanical edit.
 
-Two native nodes in the Channel group. **Remove** takes layers out of the stream, or keeps only the chosen ones. **AddLayers** brings project-registry layers into the stream, zero-filled, wherever the input lacks them. Both choose layers with M38's channel set, including its Regex rows, resolved per frame at the render's (time, view) (`DECISIONS/2026-09-24-layers-vary-with-time.md`).
+Two native nodes in the Channel group. **RemoveLayers** takes layers out of the stream, or keeps only the chosen ones. **AddLayers** brings project-registry layers into the stream, zero-filled, wherever the input lacks them. Both choose layers with M38's channel set, including its Regex rows, resolved per frame at the render's (time, view) (`DECISIONS/2026-09-24-layers-vary-with-time.md`).
 
 Neither node moves data between layers, so the no-shuffle invariant (`PLAN/DESIGN/2026-09-19-layer-channel-widget.md` §5) stands:
-- Remove renders no pixels. Its kept layers are forwarded from the input by the existing pass-through path (`EffectInstanceRenderRoI.cpp` ~462-501).
+- RemoveLayers renders no pixels. Its kept layers are forwarded from the input by the existing pass-through path (`EffectInstanceRenderRoI.cpp` ~462-501).
 - AddLayers writes zeros only into layers its input doesn't carry.
 
 The engine gains one capability virtual: a per-node filter on pass-through layers. Today pass-through is "every input layer the node doesn't produce", with no per-layer opt-out (`EffectInstance.cpp` ~4610-4621). Image data only; deep is M60.
 
 ## Design questions (awaiting the user)
 
-- **Q1. Is Remove one node or two?** (a) One `Remove` node with an operation choice, remove or keep; the default is remove, with nothing selected. (b) Two nodes, Remove and Keep. (c) Remove only. *Recommend (a).*
-- **Q2. Remove single channels, or whole layers only?** (a) Whole layers only: no channel buttons, and the no-shuffle rule is unchanged. (b) Single channels too, on non-colour layers; this amends the no-shuffle rule and replaces P1.T2 with an L task in P2. (c) Channel removal inside the colour plane too, through the rgba/rgb/alpha views (see Q3(b)); +2 L tasks. *Recommend (a); (b) can follow later.*
-- **Q3. Can the colour views (rgba/rgb/alpha/xy) be removed?** (Reworded after M65.) (a) No: they are never listed or matched, and keep always keeps the colour plane. (b) Removing `alpha` narrows the colour plane to RGB, and removing `rgb` narrows it to Alpha. Since M65 makes missing colour channels read zero, this is close to zero-filling. (c) Removing `rgba` drops the colour plane entirely; +1 M task. *Recommend (a).*
-- **Q4. Wildcard, regex, or both?** (a) Reuse M38's Regex rows. (b) Add a Wildcard mode to `KnobChannelSet` for every node; +1 M engine task, +1 M GUI task. (c) Wildcard on Remove and AddLayers only. *Recommend (a). The risk is people typing globs such as `spec*` as a regex.*
-- **Q5. Is an Add node needed, and what does it do?** (a) `AddLayers`: zero-fills the chosen registry layers only where the input lacks them, leaves present layers untouched, and can add several at once. (b) As (a), plus a fill-colour knob. (c) No node: document the Shuffle and Constant recipes instead. *Recommend (a).*
-- **Q6. Names?** (a) `fr.natron.Remove` "Remove" and `fr.natron.AddLayers` "AddLayers", both in Channel. (b) RemoveLayers and AddLayers. (c) Remove and AddChannels, as in Nuke. *Recommend (a).*
+- **Q1. Is Remove one node or two?** (a) One `Remove` node with an operation choice, remove or keep; the default is remove, with nothing selected. (b) Two nodes, Remove and Keep. (c) Remove only. *Recommend (a).* **Answered (a).**
+- **Q2. Remove single channels, or whole layers only?** (a) Whole layers only: no channel buttons, and the no-shuffle rule is unchanged. (b) Single channels too, on non-colour layers; this amends the no-shuffle rule and replaces P1.T2 with an L task in P2. (c) Channel removal inside the colour plane too, through the rgba/rgb/alpha views (see Q3(b)); +2 L tasks. *Recommend (a); (b) can follow later.* **Answered (a).**
+- **Q3. Can the colour views (rgba/rgb/alpha/xy) be removed?** (Reworded after M65.) (a) No: they are never listed or matched, and keep always keeps the colour plane. (b) Removing `alpha` narrows the colour plane to RGB, and removing `rgb` narrows it to Alpha. Since M65 makes missing colour channels read zero, this is close to zero-filling. (c) Removing `rgba` drops the colour plane entirely; +1 M task. *Recommend (a).* **Answered (c) — diverges from the recommendation; the affected task briefs need reworking, see the note above.**
+- **Q4. Wildcard, regex, or both?** (a) Reuse M38's Regex rows. (b) Add a Wildcard mode to `KnobChannelSet` for every node; +1 M engine task, +1 M GUI task. (c) Wildcard on Remove and AddLayers only. *Recommend (a). The risk is people typing globs such as `spec*` as a regex.* **Answered (a).**
+- **Q5. Is an Add node needed, and what does it do?** (a) `AddLayers`: zero-fills the chosen registry layers only where the input lacks them, leaves present layers untouched, and can add several at once. (b) As (a), plus a fill-colour knob. (c) No node: document the Shuffle and Constant recipes instead. *Recommend (a).* **Answered (a).**
+- **Q6. Names?** (a) `fr.natron.Remove` "Remove" and `fr.natron.AddLayers` "AddLayers", both in Channel. (b) RemoveLayers and AddLayers. (c) Remove and AddChannels, as in Nuke. *Recommend (a).* **Answered (b) — renamed to RemoveLayers throughout below.**
 - **Default taken, not asked:** both nodes resolve their selection per frame at the render's (time, view). A row naming a layer the input doesn't have is silent: it shows "(not in input)" and doesn't fail the render, unlike Shuffle's explicit rows.
 
 Execution notes:
@@ -70,12 +70,12 @@ Execution notes:
     - declared as a target with `listsColor=false`, the list has no Color.
   - size: M
 
-## Phase 37.2: Remove
+## Phase 37.2: RemoveLayers
 
-- [ ] M37.P2.T1 — Remove node: keep/remove over a channel set, no pixels rendered (Q1–Q4, Q6)
-  - files: `Engine/Nodes/Channel/Remove.h`, `Engine/Nodes/Channel/Remove.cpp` (new), `Engine/AppManager.cpp` (~1563), `Tests/Remove_Test.cpp` (new), `Tests/CMakeLists.txt`
+- [ ] M37.P2.T1 — RemoveLayers node: keep/remove over a channel set, no pixels rendered (Q1–Q4, Q6)
+  - files: `Engine/Nodes/Channel/RemoveLayers.h`, `Engine/Nodes/Channel/RemoveLayers.cpp` (new), `Engine/AppManager.cpp` (~1563), `Tests/RemoveLayers_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
-    - Plugin: `NativeEffectBase`, `fr.natron.Remove`, label "Remove", `PLUGIN_GROUP_CHANNEL`, one optional input "Source". Multiplanar; `producesMetadataLayerImplicitly` returns false (precedent: `Shuffle.h` ~91-99). All bit depths.
+    - Plugin: `NativeEffectBase`, `fr.natron.RemoveLayers`, label "RemoveLayers", `PLUGIN_GROUP_CHANNEL`, one optional input "Source". Multiplanar; `producesMetadataLayerImplicitly` returns false (precedent: `Shuffle.h` ~91-99). All bit depths.
     - Knobs:
       - `operation`: `KnobChoice` {remove, keep}, default remove, not animated, metadata slave.
       - `channels`: `KnobChannelSet`, buttons off (P1.T2), default None, metadata slave, not animated, declared input-bound on input 0 with `listsColor=false` (P1.T3).
@@ -85,21 +85,21 @@ Execution notes:
     - `isIdentity`: onto input 0 when nothing would be dropped at (time, view).
     - `render`: a no-op returning `eStatusOK`.
     - Register the node next to Shuffle.
-  - verify: `ctest -R Remove_` on Read(`flat-three-layers.exr`) → Remove:
+  - verify: `ctest -R RemoveLayers_` on Read(`flat-three-layers.exr`) → RemoveLayers:
     - the node is registered in Channel, and a new node is identity;
     - `getPresentLayers(1,0,-1)` is `{Color, specular}` when removing `diffuse`, `{Color}` when removing regex `.*`, `{Color, specular}` when keeping `spec.*`, and `{Color}` when keeping None;
     - a downstream Blur's lists follow knob changes;
     - a row naming an absent `depth` posts no error;
-    - `removeLayer("diffuse")` is refused while Remove names it.
+    - `removeLayer("diffuse")` is refused while RemoveLayers names it.
   - size: L
 
-- [ ] M37.P2.T2 — Remove renders and varies per frame
-  - files: `Tests/RemoveRender_Test.cpp` (new; model it on `ShuffleRender_Test.cpp` ~126-152, ~171-496), `Tests/CMakeLists.txt`
-  - approach: Read → Remove → Write (All, single-part 32f).
+- [ ] M37.P2.T2 — RemoveLayers renders and varies per frame
+  - files: `Tests/RemoveLayersRender_Test.cpp` (new; model it on `ShuffleRender_Test.cpp` ~126-152, ~171-496), `Tests/CMakeLists.txt`
+  - approach: Read → RemoveLayers → Write (All, single-part 32f).
     - Removing `diffuse` writes exactly `R,G,B,A,specular.*` with the fixture values; keeping `spec.*` writes the same.
-    - Remove followed by a Grade (All) renders cleanly.
+    - RemoveLayers followed by a Grade (All) renders cleanly.
     - Time: reuse the sequence and Switch builders (~241-330) with remove regex `diff.*`. Frame 1 has no `diffuse.*`; frame 2 is RGBA with the fixture values. Render each frame with the timeline parked on the other frame.
-  - verify: `ctest -R RemoveRender` green; full debug ctest green.
+  - verify: `ctest -R RemoveLayersRender` green; full debug ctest green.
   - size: M
 
 ## Phase 37.3: AddLayers
@@ -146,8 +146,8 @@ Execution notes:
 
 - [ ] M37.P4.T3 — Xvfb screenshots of both panels, the viewer menu and the node graph
   - files: `build/m37-gui/gui.py`, `build/m37-gui/run.sh`
-  - approach: build Read(`flat-three-layers.exr`) → Remove → AddLayers → Viewer and screenshot:
-    - the Remove panel: operation, a `diffuse` row, a regex row with `matches:`, no buttons, no Color;
+  - approach: build Read(`flat-three-layers.exr`) → RemoveLayers → AddLayers → Viewer and screenshot:
+    - the RemoveLayers panel: operation, a `diffuse` row, a regex row with `matches:`, no buttons, no Color;
     - the viewer's layer menu before and after Remove;
     - AddLayers "New layer…" → `mask [A]`, its panel, and Project Settings → Layers showing `mask` used by 1;
     - the node graph with both sublabels.
@@ -157,12 +157,12 @@ Execution notes:
 ## Phase 37.5: Round trip and scripting
 
 - [ ] M37.P5.T1 — Save/load and PyPlug export for Remove and AddLayers
-  - files: `Tests/Remove_Test.cpp`, `Tests/AddLayers_Test.cpp`, `Tests/PyPlugExport_Test.cpp`
+  - files: `Tests/RemoveLayers_Test.cpp`, `Tests/AddLayers_Test.cpp`, `Tests/PyPlugExport_Test.cpp`
   - approach:
-    - Save, reset and load a project containing Remove(keep, `spec.*`) and AddLayers(`mask`). Rows, operation and present layers survive.
+    - Save, reset and load a project containing RemoveLayers(keep, `spec.*`) and AddLayers(`mask`). Rows, operation and present layers survive.
     - Export a group containing AddLayers on `mask [A]`. The script has one `addProjectLayer("mask", ["A"])` before the node is created, and reimporting it registers `mask`.
     - In Python, `setChannels` on either knob raises `ValueError`.
-  - verify: `ctest -R 'Remove_|AddLayers_|PyPlugExport'` green.
+  - verify: `ctest -R 'RemoveLayers_|AddLayers_|PyPlugExport'` green.
   - size: M
 
 ## Phase 37.6: Checkpoint
@@ -176,8 +176,8 @@ Execution notes:
 - [ ] M37.P6.T2 — Packaged release AppImage and user checkpoint
   - files: `build/appimages/M37-<sha>.AppImage`, `build/appimages/M37-uat.md`
   - approach: build with the release `package.sh`. The UAT script walks through:
-    - Remove `diffuse`: the viewer menu and a Write-All EXR no longer have it;
-    - keep `spec.*`, with Color never offered;
+    - RemoveLayers `diffuse`: the viewer menu and a Write-All EXR no longer have it;
+    - keep `spec.*`, with Color's status per Q3(c)'s reworked behaviour (see the note at the top of this file — this step is stale until that rework lands);
     - regex matches updating when the Read's file changes;
     - AddLayers "New layer…" `mask`, then a Grade selecting `mask`;
     - AddLayers on a `diffuse` that's already present leaves it untouched;
@@ -188,9 +188,11 @@ Execution notes:
   - size: S
 
 **Verification gate:**
-- `tools/ci/local/test.sh ctest debug` and `smoke debug` are green. That includes KnobChannelSet, LayerKnobs, Remove, RemoveRender, AddLayers, AddLayersRender, PyPlugExport, TimeVaryingLayers and ShuffleRender, plus GuiTests LayerChannelRow.
+- `tools/ci/local/test.sh ctest debug` and `smoke debug` are green. That includes KnobChannelSet, LayerKnobs, RemoveLayers, RemoveLayersRender, AddLayers, AddLayersRender, PyPlugExport, TimeVaryingLayers and ShuffleRender, plus GuiTests LayerChannelRow.
 - The user has approved the P4.T3 screenshots.
 - The user has signed off the P6.T2 UAT.
 - The decision is published.
 
 ## Decisions
+
+- 2026-09-27 — **Q1–Q6 answered** (user, via `/cat-discuss`): Q1 (a) one `Remove`-shaped node with a remove/keep operation choice; Q2 (a) whole layers only, no channel buttons; Q4 (a) reuse M38's Regex rows; Q5 (a) `AddLayers` zero-fills only, no fill-colour knob. Two answers diverge from the draft's recommendation: **Q3 (c)** — removing `rgba` drops the colour plane entirely (not "never listed or matched"), which the draft's task briefs (P1.T3, P2.T1, P3.T1) and P6.T2's UAT script were not written for; that rework is still needed before implementation starts. **Q6 (b)** — the nodes are named `RemoveLayers` and `AddLayers`; the rename is applied throughout this file already.

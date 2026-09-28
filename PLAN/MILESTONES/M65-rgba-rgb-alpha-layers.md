@@ -251,7 +251,7 @@ Execution notes:
     - An RGB-only input still lists rgba, rgb and alpha.
   - size: M
 
-- [ ] M65.P6.T2 — The viewer's layer and alpha menus use the views
+- [x] M65.P6.T2 — The viewer's layer and alpha menus use the views
   - files: `Gui/ViewerTab40.cpp` (`:856-1010`), `Gui/ViewerTabPrivate.cpp` (`:385`), `Engine/ViewerInstance.cpp`, `Gui/ProjectGuiSerialization.h` (`:119`)
   - approach:
     - The menu entries are `expandColorViews(present)`, labelled by view ID.
@@ -302,7 +302,7 @@ Execution notes:
   - verify: `grep -rn OfxImagePlaneColour Gui/Resources` finds nothing; `ctest -R PyPlugInstantiate` and smoke debug are green.
   - size: M
 
-- [ ] M65.P7.T3 — Old projects load without crashing, with colour knobs reset and a warning
+- [x] M65.P7.T3 — Old projects load without crashing, with colour knobs reset and a warning
   - files: `Engine/KnobSerialization.cpp` (`:576-589`, `:640-726`), `Engine/Node.cpp` (`loadKnobs` `:1452-1481`), `Tests/fixtures/m65-legacy-color.ntp` (new), `Tests/ProjectSerialization_Test.cpp`
   - approach:
     - Delete the colour `KnobChoiceOptionFilter` entries. Keep the motion, disparity and `frameRange` filters.
@@ -384,6 +384,12 @@ Execution notes:
   - **XY:** no fixture yields a real XY colour clip, so XY is covered at engine level only.
   - **Python legacy shim:** `setChannels()`'s row-0 shim now writes `rgba`. Only the pre-v17 load gate still lands on literal Color, for P7.T3.
   - **Bindings:** `LayerSelectParam.setLayer` had no PyErr propagation in `typesystem_engine.xml`; it is added now.
+- 2026-09-28 — **B5 landed** (code `8ed1b6e7b` P6.T2, `0a1fb09bd` P6.T4 edits, `d55b37d7a` P7.T3): full debug ctest 605/605. P6.T4 stays open until its scripts pass under Xvfb (P6.T3's batch).
+  - **Viewer:** `getLayerViewsAvailabelAtTime` expands the views for display and maps picks back to storage. The fallback is the first colour entry (`rgba`).
+  - **Viewer limitation:** picking `xy.X`/`xy.Y` as the alpha channel reads black on non-XY storage.
+  - **P6.T4 re-baselined four M61 Graph 4 steps:** Shuffle default and ShuffleCopy on an RGB-only input, and their A-row-back-to-default variants. They went from error+black to no error+red, per the zero-read colour rule.
+  - **P7.T3:** the rewrite runs at the end of `Node::loadKnobs` and merges into an existing `rgba` row. Defaults are restored from the knob's own pre-load default. The warning is deferred until `nodeCreated`, through a pending flag in `NodePrivate`.
+  - **P7.T3 known gaps:** a GUI preview render (`clearPersistentMessageUnlessFromChannelSelector`) or plug-ins that clear messages in `changedParam` (Transform3x3 family, Reformat) can still erase the warning. The OFX "RGBA" choice test only proves there is no throw. Python `ChoiceParam.set("RGBA")` no longer maps to the storage ID.
 
 ## Risks
 

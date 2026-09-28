@@ -335,7 +335,7 @@ Execution notes:
   - verify: the file carries the design-doc rulings; INDEX already links to it.
   - size: S
 
-- [ ] M65.P8.T2 — Seal the storage plane and add a guard test against user-facing "Color"
+- [x] M65.P8.T2 — Seal the storage plane and add a guard test against user-facing "Color"
   - files: `Engine/ImageLayerDesc.h` (`:55-56`), `Engine/ImageLayerDesc.cpp` (`:184-214`), `Engine/LayerRegistry.cpp` (`:431`), `Tests/ColorViews_Test.cpp`
   - approach:
     - Rename `kNatronColorLayerLabel` to `kNatronColorStorageLabel`, used on the storage descs only.

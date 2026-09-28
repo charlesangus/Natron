@@ -275,7 +275,7 @@ Execution notes:
   - verify: the screenshots are sent to the user, and the task stays open until the user approves them.
   - size: M
 
-- [ ] M65.P6.T4 — Update M61's GUI scripts from "Color" menu text to view IDs
+- [x] M65.P6.T4 — Update M61's GUI scripts from "Color" menu text to view IDs
   - files: `Tests/gui/m61_uat.py`, `Tests/gui/viewer_error_scrub.py`, `Tests/gui/guitest.py`
   - approach: change the lines that assert `"Color"` as viewer or menu text to the matching view ID (`rgba` unless the step means otherwise). Make no other edits.
   - verify: both scripts pass under `Tests/gui/run-gui-test.sh` on the release build (run in P6.T3's batch).

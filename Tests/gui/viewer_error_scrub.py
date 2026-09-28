@@ -14,100 +14,22 @@ Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON
 (default build/gui-test-out/). Exit status 0 only if every check passed.
 """
 import os
-import time
+import sys
 import traceback
 
-ROOT = os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd())
-OUT = os.environ.get("NATRON_GUI_TEST_OUT", os.path.join(ROOT, "build", "gui-test-out"))
-FIXTURES = os.path.join(ROOT, "Tests", "fixtures")
+sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
 POLL_TIMEOUT_S = 20.0
 SETTLE_MS = 400
 STARTUP_TIMEOUT_S = 60.0
 
-if not os.path.isdir(OUT):
-    os.makedirs(OUT)
-_results = open(os.path.join(OUT, "results.txt"), "w")
-_failures = []
-
-
-def report(line):
-    _results.write(line + "\n")
-    _results.flush()
-
-
-def check(ok, label):
-    report(("PASS " if ok else "FAIL ") + label)
-    if not ok:
-        _failures.append(label)
-
-
-def finish():
-    report("SUMMARY %d failure(s)" % len(_failures))
-    _results.close()
-    os._exit(1 if _failures else 0)
-
-
-def require(ok, label, detail=""):
-    """A failed setup step ends the run at once: nothing after it could mean anything."""
-    check(ok, label + (" (" + detail + ")" if detail and not ok else ""))
-    if not ok:
-        finish()
-
-
 try:
-    import NatronEngine
-    from PySide6.QtCore import QMetaObject, QTimer
-    from PySide6.QtGui import QGuiApplication
-    from PySide6.QtWidgets import QApplication
-
-    def class_name(w):
-        return w.metaObject().className().split("::")[-1]
-
-    def widgets_of(name):
-        found = []
-        for w in QApplication.allWidgets():
-            try:
-                if class_name(w) == name:
-                    found.append(w)
-            except RuntimeError:
-                continue
-        return found
-
-    def close_all_panels():
-        for w in QApplication.allWidgets():
-            try:
-                if w.metaObject().indexOfMethod("closePanel()") >= 0 and w.isVisible():
-                    QMetaObject.invokeMethod(w, "closePanel")
-            except RuntimeError:
-                continue
-        QApplication.processEvents()
-
-    def any_panel_open():
-        for w in QApplication.allWidgets():
-            try:
-                if class_name(w) == "NodeSettingsPanel" and w.isVisible():
-                    return True
-            except RuntimeError:
-                continue
-        return False
-
-    def viewer_messages():
-        messages = []
-        for w in widgets_of("ViewerGL"):
-            value = w.property("natronPersistentMessages")
-            if value:
-                messages.extend(str(m) for m in value)
-        return messages
-
-    plugin_ids = set(NatronEngine.natron.getPluginIDs())
+    from guitest import (FIXTURES, any_panel_open, check, close_all_panels, finish, plugin_problem, report,
+                         require, run, shot, viewer_centre_colour, viewer_messages, viewer_up)
 
     def create(plugin_id):
         node = app.createNode(plugin_id)
-        require(node is not None, "create " + plugin_id,
-                "plugin %s; OFX_PLUGIN_PATH=%r" %
-                ("registered but createNode returned None" if plugin_id in plugin_ids else "not registered",
-                 os.environ.get("OFX_PLUGIN_PATH")))
+        require(node is not None, "create " + plugin_id, plugin_problem(plugin_id))
         return node
 
     def create_reader(path):
@@ -163,18 +85,6 @@ try:
     def shuffle_error_in_viewer():
         return any(shuffle_label in m for m in viewer_messages())
 
-    def viewer_centre_colour():
-        """The colour on screen at the centre of the viewer, where the 8x8 image sits: yellow at
-        frame 1, black where frame 2 failed. None if there is no visible viewer."""
-        visible = [w for w in widgets_of("ViewerGL") if w.isVisible()]
-        if not visible:
-            return None
-        w = visible[0]
-        centre = w.mapToGlobal(w.rect().center())
-        image = QGuiApplication.primaryScreen().grabWindow(0).toImage()
-        c = image.pixelColor(centre.x(), centre.y())
-        return (c.red(), c.green(), c.blue())
-
     def image_matches(frame):
         c = viewer_centre_colour()
         if c is None:
@@ -194,15 +104,6 @@ try:
         return "node=%r viewer=%r image=%r" % (shuffle.getPersistentMessage(), viewer_messages(),
                                                viewer_centre_colour())
 
-    def shot(name):
-        QApplication.processEvents()
-        path = os.path.join(OUT, name)
-        # A widget grab of the GL viewer can come out blank under llvmpipe; the screen cannot.
-        if QGuiApplication.primaryScreen().grabWindow(0).save(path):
-            report("SHOT " + path)
-        else:
-            report("NOTE could not save screenshot " + path)
-
     def diagnose(tag, frame):
         """After a failed check, record what the viewer showed and whether a fresh render of the
         same frame, first through the cache and then bypassing it, puts the state right."""
@@ -217,7 +118,7 @@ try:
                 return
 
     def steps():
-        ok = yield ("until", lambda: any(w.isVisible() for w in widgets_of("ViewerGL")), STARTUP_TIMEOUT_S)
+        ok = yield ("until", viewer_up, STARTUP_TIMEOUT_S)
         check(ok, "viewer widget is up")
         if not ok:
             return
@@ -230,7 +131,7 @@ try:
             if mode == "All":
                 channels.setAll()
             else:
-                channels.setLayer("Color")
+                channels.setLayer("uk.co.thefoundry.OfxImagePlaneColour")
             close_all_panels()
             yield ("sleep", 500)
 
@@ -282,40 +183,11 @@ try:
                 if not ok:
                     yield from diagnose("%s-very-fast-scrub-landing%d-frame%d" % (mode.lower(), n + 1, landing), landing)
 
-    def run(gen):
-        def advance(value):
-            try:
-                cmd = gen.send(value)
-            except StopIteration:
-                finish()
-                return
-            except Exception:
-                check(False, "script error: " + traceback.format_exc())
-                finish()
-                return
-            if cmd[0] == "sleep":
-                QTimer.singleShot(cmd[1], lambda: advance(None))
-                return
-            predicate, timeout = cmd[1], cmd[2]
-            deadline = time.time() + timeout
-
-            def poll():
-                try:
-                    ok = bool(predicate())
-                except Exception:
-                    ok = False
-                if ok:
-                    advance(True)
-                elif time.time() > deadline:
-                    advance(False)
-                else:
-                    QTimer.singleShot(50, poll)
-
-            poll()
-
-        QTimer.singleShot(0, lambda: advance(None))
-
     run(steps())
 except Exception:
-    check(False, "setup error: " + traceback.format_exc())
-    finish()
+    try:
+        check(False, "setup error: " + traceback.format_exc())
+        finish()
+    except NameError:
+        traceback.print_exc()
+        os._exit(1)

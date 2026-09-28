@@ -911,6 +911,19 @@ ComboBox::itemText(int index) const
     return QString();
 }
 
+QStringList
+ComboBox::itemTexts() const
+{
+    QStringList texts;
+    const int n = count();
+
+    for (int i = 0; i < n; ++i) {
+        texts.push_back(itemText(i));
+    }
+
+    return texts;
+}
+
 int
 ComboBox::itemIndex(const QString & str) const
 {

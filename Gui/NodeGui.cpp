@@ -2852,7 +2852,11 @@ NodeGui::destroyGui()
         _outputEdge = 0;
     }
 
-    //Delete settings panel
+    // A node destroyed from Python never gets its open panel closed first, and the viewer's
+    // overlay pass walks the opened-panels list on its next paint.
+    if (_settingsPanel) {
+        guiObj->removeVisibleDockablePanel(_settingsPanel);
+    }
     delete _settingsPanel;
     _settingsPanel = 0;
 } // NodeGui::destroyGui

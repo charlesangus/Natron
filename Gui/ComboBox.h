@@ -32,10 +32,11 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
-#include <QSize>
 #include <QFrame>
-#include <QKeySequence>
 #include <QIcon>
+#include <QKeySequence>
+#include <QSize>
+#include <QStringList>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -91,6 +92,10 @@ protected:
 
     bool ignoreWheelEvent;
 
+    // Read-only, so GUI test scripts can check which entries a menu offers.
+    Q_PROPERTY(QStringList natronItems READ itemTexts)
+    Q_PROPERTY(QString natronCurrentText READ getCurrentIndexText)
+
 public:
 
     explicit ComboBox(QWidget* parent = 0);
@@ -132,6 +137,8 @@ public:
     void insertSeparator(int index);
 
     QString itemText(int index) const;
+
+    QStringList itemTexts() const;
 
     int count() const;
 

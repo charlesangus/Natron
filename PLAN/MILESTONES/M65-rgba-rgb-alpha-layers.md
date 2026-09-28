@@ -329,7 +329,7 @@ Execution notes:
 
 ## Phase 65.8: Checkpoint
 
-- [ ] M65.P8.T1 — Publish the M65 decision
+- [x] M65.P8.T1 — Publish the M65 decision
   - files: `PLAN/DECISIONS/2026-09-26-rgba-rgb-alpha-xy-layers.md` (already seeded at plan time; extend it)
   - approach: extend the seeded decision with the design doc's rulings (widen-on-write, missing colour channels read zero) and the consequences of the clean break. The PM publishes the decision to `docs/decisions/` at the gate (PLAN-FORMAT §3a).
   - verify: the file carries the design-doc rulings; INDEX already links to it.

@@ -29,11 +29,12 @@ Execution notes:
 - **Batches.** Tasks within a batch touch disjoint files:
   - B1: P1.T1, P2.T1
   - B2: P3.T1, P3.T2, P3.T3, P3.T4
-  - B3: P4.T1, P5.T1, P7.T2, P7.T4
+  - B3: P4.T1, P5.T1, P7.T2, P7.T4, P3.T5
   - B4: P4.T2, P5.T2, P6.T1, P7.T1
-  - B5: P5.T3, P6.T2, P7.T3
+  - B5: P5.T3, P6.T2, P7.T3, P6.T4
   - B6: P6.T3, P8.T1, P8.T2
   - B7: P8.T3
+- **Line numbers drifted** (freshness check 2026-09-28, after M61's P5 and round-2 work): cites in `Node.cpp`, `EffectInstance.cpp`, `OfxEffectInstance.cpp` and `ViewerTab40.cpp` moved 150-250 lines. Implementers re-grep by function name; don't trust the line numbers.
 - **Shared files:** `Engine/EffectInstance.cpp` and `Engine/Node.cpp` are touched by P3.T1, P4.T1 and P7.T3, all in different batches. `Shuffle.cpp` is touched by P3.T3, P5.T1 and P5.T2, also in different batches. Only P2.T1 and P4.T1 edit `Tests/CMakeLists.txt`.
 
 ## Phase 65.1: Design
@@ -112,6 +113,7 @@ Execution notes:
     - `layerLabelForID` (`:599-611`) returns the view ID.
     - The regex summary lists only the widest view it matched.
     - In the GUI, the default for a new row (`KnobGuiChannelSet.cpp:460`) becomes `rgba`.
+    - `Node::adoptChannelQuad()` (`Node.cpp`) captures `_imp->legacyChannelSetDefault` from `defaultRows()` for M61's version-17 legacy-default gate. Add `KnobChannelSet::legacyColorDefaultRows()`, which still names `kNatronColorLayerID`, and point `adoptChannelQuad()` at it. Otherwise pre-v17 projects silently land on `rgba` with no P7.T3 warning. Leave `setChannels()`'s row-0 shim (`KnobChannelSet.cpp` ~`:364`, which writes `kNatronColorLayerID`) to P7.T1/P7.T3; it's the Python legacy path.
   - verify: `ctest -R 'KnobChannelSet|ChannelSetRender'` passes these cases:
     - The default resolves to the full colour plane.
     - `rgb` resolves to bits 0-2 and `alpha` to bit 3.
@@ -150,6 +152,12 @@ Execution notes:
     - `rgb.A` is rejected.
     - `rgba.A` on RGB storage resolves and reads zero.
     - The retired `…OfxImagePlaneColour.A` resolves to nothing.
+  - size: M
+
+- [ ] M65.P3.T5 — Re-baseline DefaultChannelSet tests for the view rename
+  - files: `Tests/DefaultChannelSet_Test.cpp`
+  - approach: point `isColorRow()` (about 11 call sites) and `RotoKeepsItsAlphaTargetDefault`'s `getLayer()==kNatronColorLayerID` at the new default view ID. Keep `LegacyProjectKeepsColorWhereNoValueWasSaved` and `LegacyColorSurvivesResaving`; for now they still assert literal Color after load (P7.T3 later re-baselines them to rgba plus the warning). Depends on P3.T2 and P3.T3.
+  - verify: `ctest -R DefaultChannelSet` passes.
   - size: M
 
 ## Phase 65.4: Render path and OFX mapping
@@ -244,11 +252,12 @@ Execution notes:
     - `alpha` switches the display to A through the existing auto-switch (`:955-966`); rgba and rgb switch it back.
     - The alpha menu lists `rgba.A` once.
     - A saved `layerName` that is no longer in the menu falls back to `rgba`.
+    - Since `072541618`, the body lives in `refreshLayerAndAlphaChannelComboBoxAtTime(time, keepAbsentSelection)`, and `getComponentsAvailabel(time, view, …)` feeds it. The same `components` iterator both labels the combo and is passed to `setActiveLayer`/`setAlphaChannel` (auto-switch block). Build the menu from `expandColorViews(present)` for display only, and map the chosen entry back to the storage `ImageLayerDesc` (via `isColorLayer()` against the storage-level set) before calling `setActiveLayer`/`setAlphaChannel`. Keep M61's `keepAbsentSelection` behaviour.
   - verify: covered by the P6.T3 Xvfb run; smoke debug is green.
   - size: M
 
 - [ ] M65.P6.T3 — Xvfb screenshots of every place a user sees a layer
-  - files: `build/m65-gui/gui.py`, `build/m65-gui/run.sh`
+  - files: `build/m65-gui/gui.py` (reuse `Tests/gui/guitest.py` and `Tests/gui/run-gui-test.sh`)
   - approach: build the graph Read(`flat-three-layers.exr`) → Grade → Shuffle → Viewer, then screenshot:
     - Grade's row-0 menu;
     - a regex `^rgb` row;
@@ -257,6 +266,12 @@ Execution notes:
     - the viewer with `alpha` chosen;
     - Project Settings → Layers.
   - verify: the screenshots are sent to the user, and the task stays open until the user approves them.
+  - size: M
+
+- [ ] M65.P6.T4 — Update M61's GUI scripts from "Color" menu text to view IDs
+  - files: `Tests/gui/m61_uat.py`, `Tests/gui/viewer_error_scrub.py`, `Tests/gui/guitest.py`
+  - approach: change the lines that assert `"Color"` as viewer or menu text to the matching view ID (`rgba` unless the step means otherwise). Make no other edits.
+  - verify: both scripts pass under `Tests/gui/run-gui-test.sh` on the release build (run in P6.T3's batch).
   - size: M
 
 ## Phase 65.7: Python, serialization and the clean break
@@ -275,17 +290,18 @@ Execution notes:
   - size: M
 
 - [ ] M65.P7.T2 — Move the bundled PyPlugs off the storage ID
-  - files: `Gui/Resources/PyPlugs/Glow.py` (`:39-46`), `Gui/Resources/PyPlugs/PIKColor.py` (`:383`, `:484`, `:526`, `:641`), `Gui/Resources/PyPlugs/LightWrap.py` (`:1172`)
-  - approach: replace the literal with `"rgba"`. In Glow, `setLayer(colorLayer, ["A"])` becomes `setLayer("alpha")`. Make no other edits.
-  - verify: `grep -rn OfxImagePlaneColour Gui/Resources` finds nothing, and smoke debug is green.
-  - size: S
+  - files: `Gui/Resources/PyPlugs/{Glow,PIKColor,LightWrap,DropShadow,AngleBlur,ZMask,EdgeBlur,ZRemap}.py` (27 call sites; M61 pinned five of these files to Color)
+  - approach: rewrite every `setLayer("uk.co.thefoundry.OfxImagePlaneColour", …)`, and Glow's `colorLayer` variable, like this: `["R","G","B","A"]` or no channel list → `setLayer("rgba")`; `["R","G","B"]` → `setLayer("rgb")`; `["A"]` → `setLayer("alpha")`. Any other channel subset: keep it on `rgba` with that channel list. Make no other edits.
+  - verify: `grep -rn OfxImagePlaneColour Gui/Resources` finds nothing; `ctest -R PyPlugInstantiate` and smoke debug are green.
+  - size: M
 
 - [ ] M65.P7.T3 — Old projects load without crashing, with colour knobs reset and a warning
   - files: `Engine/KnobSerialization.cpp` (`:576-589`, `:640-726`), `Engine/Node.cpp` (`loadKnobs` `:1452-1481`), `Tests/fixtures/m65-legacy-color.ntp` (new), `Tests/ProjectSerialization_Test.cpp`
   - approach:
     - Delete the colour `KnobChoiceOptionFilter` entries. Keep the motion, disparity and `frameRange` filters.
     - At the end of `Node::loadKnobs`, reset any layer knob whose value names `kNatronColorLayerID`. Post one persistent warning per node: "Colour layer from an older project was reset to rgba".
-    - Build the fixture by hand, following the `ocio-old-config.ntp` precedent. It needs:
+    - This depends on P3.T2's `legacyColorDefaultRows()`: M61's version-17 gate must still land pre-v17 channel sets on literal Color first, so this scan sees it and posts the warning.
+    - Build the fixture by hand, following the `Tests/fixtures/channel-set-legacy-defaults.ntp` precedent (node-serialization version 16). It needs:
       - Grade `channels` = Color;
       - a Shuffle with Color in and out;
       - a mask set to `Color.A`;
@@ -295,6 +311,7 @@ Execution notes:
     - The reset knobs are at `rgba`/`rgba.A`.
     - The warning is present.
     - The OFX choice falls back to its default without throwing.
+    - A pre-v17 node that now defaults to All (e.g. Blur) with no saved channel set ends at `rgba` *with* the warning; `DefaultChannelSet_Test`'s legacy cases assert the same.
   - size: M
 
 - [ ] M65.P7.T4 — Bump the image cache version
@@ -330,10 +347,10 @@ Execution notes:
     - The viewer with `alpha` chosen.
     - Write All.
     - Regex `^rgb`.
-    - An M61-era project loading with the reset warning.
+    - An M61-era project loading with the reset warning, including a pre-v17 project with a default-All node.
     - The Glow, PIKColor and LightWrap PyPlugs.
   - verify: the AppImage launches under Xvfb via `run-launch-check.sh`, and the user signs off the UAT.
-  - size: S
+  - size: M
 
 **Verification gate:** all of the following hold:
 - `tools/ci/local/test.sh ctest debug` and `smoke debug` are green. That covers ColorViews, ColorViewsRender, LayerRegistry, KnobChannelSet, ChannelSetRender, KnobLayerSelect, LayerKnobs, Shuffle_, ShuffleRender, KnobShuffleMap, WriteAllLayers, TimeVaryingLayers, ProjectSerialization, PyPlugExport and GuiTests LayerChannelRow.
@@ -349,6 +366,7 @@ Execution notes:
 - 2026-09-26 — OFX mapping by component count: RGBA ⇄ rgba, RGB ⇄ rgb, Alpha ⇄ alpha, XY ⇄ xy. openfx-io and openfx-misc are unchanged.
 - 2026-09-26 — Clean break with old projects, no alias: the legacy colour choice filters are deleted. Layer knobs in old projects that named Color reset to `rgba`/`rgba.A` with a per-node warning. Natron ≤2.2 OFX colour choices fall back to the plugin default. Python setters raise on the retired ID. Loading must never crash.
 - 2026-09-26 — Sequencing: M65 is stacked on M61, and M37 builds on M65.
+- 2026-09-28 — **Freshness check at promotion** (M61's P5 and round-2 work landed after this plan was written): P3.T2, P6.T2, P7.T2 and P7.T3 had their approaches revised, and P3.T5 and P6.T4 were added. The biggest catch: M61's version-17 legacy-default gate reads `defaultRows()`, so it would have renamed pre-v17 Color to `rgba` silently, without the clean-break warning. The scope grew to 41 lines in 15 files naming `kNatronColorLayerID`, and 8 PyPlugs carry the storage literal. Also resized to at least M, per the sizing rule: P7.T2 (8 files) and P8.T3 (verify needs judgement). P7.T4 (a one-line bump) and P8.T1 (a plan doc, done by the PM) stay S.
 
 ## Risks
 

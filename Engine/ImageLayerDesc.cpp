@@ -27,6 +27,7 @@
 
 #include <ofxNatron.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <sstream>
@@ -120,7 +121,7 @@ ImageLayerDesc::~ImageLayerDesc()
 bool
 ImageLayerDesc::isColorLayer(const std::string& layerID)
 {
-    return layerID == kNatronColorLayerID;
+    return layerID == kNatronColorLayerID || ImageLayerDesc::isColorViewID(layerID);
 }
 
 bool
@@ -243,6 +244,166 @@ ImageLayerDesc::getDisparityRightComponents()
     static const ImageLayerDesc comp(kNatronDisparityRightLayerID, kNatronDisparityRightLayerLabel, kNatronDisparityComponentsLabel, disparityComps, 2);
 
     return comp;
+}
+
+bool
+ImageLayerDesc::isColorViewID(const std::string& layerID)
+{
+    return layerID == kNatronColorViewRGBA || layerID == kNatronColorViewRGB || layerID == kNatronColorViewAlpha || layerID == kNatronColorViewXY;
+}
+
+const ImageLayerDesc&
+ImageLayerDesc::getColorView(const std::string& viewID)
+{
+    if (viewID == kNatronColorViewRGBA) {
+        static const ImageLayerDesc view(kNatronColorViewRGBA, kNatronColorViewRGBA, "", ImageLayerDesc::getRGBAComponents().getChannels());
+        return view;
+    } else if (viewID == kNatronColorViewRGB) {
+        static const ImageLayerDesc view(kNatronColorViewRGB, kNatronColorViewRGB, "", ImageLayerDesc::getRGBComponents().getChannels());
+        return view;
+    } else if (viewID == kNatronColorViewAlpha) {
+        static const ImageLayerDesc view(kNatronColorViewAlpha, kNatronColorViewAlpha, "", ImageLayerDesc::getAlphaComponents().getChannels());
+        return view;
+    } else if (viewID == kNatronColorViewXY) {
+        static const ImageLayerDesc view(kNatronColorViewXY, kNatronColorViewXY, "", ImageLayerDesc::getXYComponents().getChannels());
+        return view;
+    }
+
+    return ImageLayerDesc::getNoneComponents();
+}
+
+/**
+ * @brief The bit desc's channel channelIndex occupies (mirrors ResolvedLayer::channelBit in
+ * Engine/KnobChannelSet.h, duplicated here rather than shared because KnobChannelSet.h already
+ * includes this header): a single-channel plane is an alpha plane, so its one channel is bit 3.
+ **/
+static int
+colorChannelBit(const ImageLayerDesc& desc,
+                int channelIndex)
+{
+    return desc.getNumComponents() == 1 ? 3 : channelIndex;
+}
+
+static std::bitset<4>
+allColorChannelBits(const ImageLayerDesc& desc)
+{
+    std::bitset<4> bits;
+    const int count = std::min(desc.getNumComponents(), 4);
+
+    for (int c = 0; c < count; ++c) {
+        bits.set(colorChannelBit(desc, c));
+    }
+
+    return bits;
+}
+
+static std::bitset<4>
+namedColorChannelBits(const ImageLayerDesc& desc,
+                      const std::vector<std::string>& names)
+{
+    std::bitset<4> bits;
+    const std::vector<std::string>& channels = desc.getChannels();
+    const int count = std::min((int)channels.size(), 4);
+
+    for (int c = 0; c < count; ++c) {
+        if (std::find(names.begin(), names.end(), channels[c]) != names.end()) {
+            bits.set(colorChannelBit(desc, c));
+        }
+    }
+
+    return bits;
+}
+
+std::bitset<4>
+ImageLayerDesc::colorStorageBits(const ImageLayerDesc& storage)
+{
+    return allColorChannelBits(storage);
+}
+
+std::bitset<4>
+ImageLayerDesc::colorViewMask(const std::string& viewID)
+{
+    return allColorChannelBits(ImageLayerDesc::getColorView(viewID));
+}
+
+void
+ImageLayerDesc::presentColorViews(const ImageLayerDesc& storage,
+                                  std::vector<std::string>* views)
+{
+    views->clear();
+    if (!storage.isColorLayer()) {
+        return;
+    }
+
+    views->push_back(kNatronColorViewRGBA);
+    views->push_back(kNatronColorViewRGB);
+    views->push_back(kNatronColorViewAlpha);
+    if (storage.getNumComponents() == 2) {
+        views->push_back(kNatronColorViewXY);
+    }
+}
+
+void
+ImageLayerDesc::resolveColorView(const std::string& viewID,
+                                 const ImageLayerDesc& storage,
+                                 const std::vector<std::string>& rowChannels,
+                                 std::bitset<4>* bits,
+                                 std::bitset<4>* zeroBits)
+{
+    const ImageLayerDesc& view = ImageLayerDesc::getColorView(viewID);
+    const std::bitset<4> mask = allColorChannelBits(view);
+    const std::bitset<4> rowBits = rowChannels.empty() ? mask : namedColorChannelBits(view, rowChannels);
+    const std::bitset<4> selected = mask & rowBits;
+
+    if (bits) {
+        *bits = selected;
+    }
+    if (zeroBits) {
+        *zeroBits = selected & ~ImageLayerDesc::colorStorageBits(storage);
+    }
+}
+
+const ImageLayerDesc&
+ImageLayerDesc::colorViewForNComps(int nComps)
+{
+    switch (nComps) {
+    case 1:
+        return ImageLayerDesc::getColorView(kNatronColorViewAlpha);
+    case 2:
+        return ImageLayerDesc::getColorView(kNatronColorViewXY);
+    case 3:
+        return ImageLayerDesc::getColorView(kNatronColorViewRGB);
+    case 4:
+        return ImageLayerDesc::getColorView(kNatronColorViewRGBA);
+    default:
+        return ImageLayerDesc::getNoneComponents();
+    }
+}
+
+void
+ImageLayerDesc::expandColorViews(std::list<ImageLayerDesc>* storageList)
+{
+    if (!storageList) {
+        return;
+    }
+
+    std::list<ImageLayerDesc>::iterator it = storageList->begin();
+    while (it != storageList->end()) {
+        if (it->getLayerID() != kNatronColorLayerID) {
+            ++it;
+            continue;
+        }
+
+        std::vector<std::string> views;
+        ImageLayerDesc::presentColorViews(*it, &views);
+
+        std::list<ImageLayerDesc>::iterator insertPos = storageList->erase(it);
+        for (std::vector<std::string>::const_iterator v = views.begin(); v != views.end(); ++v) {
+            insertPos = storageList->insert(insertPos, ImageLayerDesc::getColorView(*v));
+            ++insertPos;
+        }
+        it = insertPos;
+    }
 }
 
 ChoiceOption

@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <bitset>
+#include <list>
 #include <string>
 #include <vector>
 
@@ -54,6 +56,14 @@ GCC_DIAG_ON(unused-parameter)
 
 #define kNatronColorLayerID kFnOfxImagePlaneColour
 #define kNatronColorLayerLabel "Color"
+
+// A colour view is (the colour storage plane, a channel mask): rgba/rgb/alpha are always
+// present on any colour storage, xy only on the 2-channel XY storage layout. Each view's
+// label equals its ID.
+#define kNatronColorViewRGBA "rgba"
+#define kNatronColorViewRGB "rgb"
+#define kNatronColorViewAlpha "alpha"
+#define kNatronColorViewXY "xy"
 
 #define kNatronBackwardMotionVectorsLayerID kFnOfxImagePlaneBackwardMotionVector
 #define kNatronBackwardMotionVectorsLayerLabel "Backward"
@@ -93,7 +103,7 @@ public:
 
     ~ImageLayerDesc();
 
-    // Is it Alpha, RGB or RGBA
+    // Is it Alpha, RGB or RGBA, or a colour view of one of these (see isColorViewID())
     bool isColorLayer() const;
 
     static bool isColorLayer(const std::string& layerID);
@@ -237,6 +247,60 @@ public:
     static const ImageLayerDesc& getDisparityLeftComponents();
     static const ImageLayerDesc& getDisparityRightComponents();
     static const ImageLayerDesc& getXYComponents();
+
+    /**
+     * @brief Is layerID one of kNatronColorViewRGBA/RGB/Alpha/XY.
+     **/
+    static bool isColorViewID(const std::string& layerID);
+
+    /**
+     * @brief Returns the ImageLayerDesc for a colour view id (kNatronColorViewRGBA/RGB/Alpha/XY),
+     * with the view's own ID/label and channel names. Returns getNoneComponents() for any other id.
+     **/
+    static const ImageLayerDesc& getColorView(const std::string& viewID);
+
+    /**
+     * @brief The bits of a std::bitset<4> (see ResolvedLayer::channelBit in KnobChannelSet.h)
+     * that viewID's channels occupy.
+     **/
+    static std::bitset<4> colorViewMask(const std::string& viewID);
+
+    /**
+     * @brief The bits of a std::bitset<4> (see ResolvedLayer::channelBit in KnobChannelSet.h)
+     * that the colour storage plane desc actually carries.
+     **/
+    static std::bitset<4> colorStorageBits(const ImageLayerDesc& storage);
+
+    /**
+     * @brief The colour views storage presents: always rgba, rgb and alpha, plus xy when
+     * storage is the 2-channel XY layout. Does nothing if storage is not the colour layer.
+     **/
+    static void presentColorViews(const ImageLayerDesc& storage, std::vector<std::string>* views);
+
+    /**
+     * @brief Resolves viewID against storage and a channel-set row's selected channels
+     * (rowChannels has the same meaning as ChannelSetRow::channels: empty means every
+     * channel of viewID, otherwise the named channels of viewID -- see KnobChannelSet.h).
+     * *bits is viewID's mask intersected with those selected channels; *zeroBits is the
+     * subset of *bits that storage does not actually carry, and therefore reads as zero.
+     **/
+    static void resolveColorView(const std::string& viewID,
+                                 const ImageLayerDesc& storage,
+                                 const std::vector<std::string>& rowChannels,
+                                 std::bitset<4>* bits,
+                                 std::bitset<4>* zeroBits);
+
+    /**
+     * @brief Maps a channel count to a colour view: 1 -> alpha, 2 -> xy, 3 -> rgb, 4 -> rgba.
+     **/
+    static const ImageLayerDesc& colorViewForNComps(int nComps);
+
+    /**
+     * @brief Replaces, in place, the colour storage entry of storageList with the colour
+     * views it presents (see presentColorViews()), in the order rgba, rgb, alpha, (xy).
+     * Every other entry is left untouched.
+     **/
+    static void expandColorViews(std::list<ImageLayerDesc>* storageList);
 
     template <class Archive>
     void save(Archive& ar, const unsigned int version) const;

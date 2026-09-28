@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M65.P1.T1
-pm_heartbeat: 2026-09-28T10:16:55-04:00
+current: M65.P2.T1
+pm_heartbeat: 2026-09-28T10:36:33-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -259,6 +259,8 @@ future core work has solid ground to build on.
   (`format`, `lint-ci`, `build-and-test`) green throughout.
 
 # Open questions
+
+- **M65: should an RGB stream's missing alpha read 0 everywhere?** The design doc makes it read 0 through the new colour views (`rgba`/`alpha`), but leaves ordinary plugin conversion reading 1 (e.g. a JPEG into Merge's A input), so existing comps don't change. Making it 0 everywhere is a one-flag change plus a cache-version bump. The default, if unanswered: keep them apart. Checked at M65's UAT.
 
 - **M61 awaits the user's sign-off** (row `blocked`, stacked-PR rule: asynchronous). Please run the UAT on `build/appimages/M61-072541618.AppImage` using `build/appimages/M61-uat.md`, and approve the P2.T3 keyed-Disable node-box screenshots and the P2.T5 disabled-cross width (2, i.e. pipe weight). PR #34 is green; its review rounds 1 and 2 are closed. After sign-off: check off P2.T3/P2.T5/P4.T1, mark M61 `done`, and the user merges PR #34.
 

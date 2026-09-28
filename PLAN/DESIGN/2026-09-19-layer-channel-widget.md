@@ -327,3 +327,5 @@ Old .ntp: `channels` Choice skipped by type-mismatch guard (`Node.cpp:1625-1628`
 - Adopt the 28 plugins' RGBA into the widget AND put Merge on a widget variant with no add-rows and no regex. Goal: one consistent channel-selection UI across essentially all nodes, with small variations for specific purposes. Take time; get it right.
 
 ## v1 task list (to be revised): 38.1 harness+engine knob (T1 harness, T2 KnobLayerChannels+tests, T3 Node creation/API, T4 eligibility/defaults, T5 Python LayerChannelsParam); 38.2 render (T1 componentsNeeded, T2 per-plane fetch+masking, T3 identity, T4 regression guards); 38.3 GUI (T1 widget rows/undo, T2 channel buttons+regex editor, T3 NodeGui summary+premult rewire); 38.4 deletions (T1 Node cleanup, T2 cache bump+dump assert, T3 PyPlugs, T4 ZRemap/ZMask); 38.5 openfx-io Read label (fetch-assets.sh:222-223 OPENFX_IO_REF) + docs; 38.6 after-shots + user checkpoint on release AppImage.
+
+Superseded in part by `2026-09-26-rgba-rgb-alpha-layers.md`: Color is replaced by the rgba/rgb/alpha/xy colour views (default row `rgba`, mask default `rgba.A`, combo order rgba, rgb, alpha, xy).

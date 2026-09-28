@@ -231,3 +231,5 @@ Original questions for the record:
 - 2026-09-19 — **No hash or cache-version change for add/remove; union bumps referencing nodes' knobs age**: `ImageKey` has no plane (`ImageKey.cpp:68-79`), `ImageParams::_components` disambiguates; only a channel-count change can alter pixels.
 - 2026-09-19 — **Python surface lives on `App`** (`addProjectLayer/getProjectLayers/removeProjectLayer`): no `Project` wrapper exists (`PyAppInstance.h:306`); `Effect.addUserLayer` deleted.
 - 2026-09-19 — **Deep shares the registry through `groupChannelNames`**: M60 wires DeepRead; the grouping rule is written once, mirroring ReadOIIO (`:1138-1172`).
+
+Superseded in part by `2026-09-26-rgba-rgb-alpha-layers.md`: Color is replaced by the rgba/rgb/alpha/xy colour views (built-in order, reserved names and the removed `reservedAlias` are ruled there).

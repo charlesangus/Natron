@@ -39,7 +39,7 @@ Execution notes:
 
 ## Phase 65.1: Design
 
-- [ ] M65.P1.T1 — Write the colour-views design doc
+- [x] M65.P1.T1 — Write the colour-views design doc
   - files: `.plan/PLAN/DESIGN/2026-09-26-rgba-rgb-alpha-layers.md` (new, in the plan worktree; commit it there)
   - approach: the doc fixes the following points, and every later task cites it:
     - **Model:** one storage colour plane with the internal ID `kNatronColorLayerID`, and four views with masks rgba {0-3}, rgb {0-2}, alpha {3}, xy {0,1}.
@@ -110,10 +110,11 @@ Execution notes:
       - A row that names the retired storage ID matches nothing.
       - Regex rows match the labels from `presentColorViews` and every other layer's label. Results still accumulate by storage ID, so `All`, or a regex that matches several views, yields a single colour entry with the union of their bits.
     - `defaultRows()` (`:101-108`) becomes `rgba`.
+    - `All` and regex rows resolve to the storage's own bits and never widen. Only an explicit view row (e.g. `rgba` over RGB storage) sets zero-read bits that widen the output (design doc, Decisions).
     - `layerLabelForID` (`:599-611`) returns the view ID.
     - The regex summary lists only the widest view it matched.
     - In the GUI, the default for a new row (`KnobGuiChannelSet.cpp:460`) becomes `rgba`.
-    - `Node::adoptChannelQuad()` (`Node.cpp`) captures `_imp->legacyChannelSetDefault` from `defaultRows()` for M61's version-17 legacy-default gate. Add `KnobChannelSet::legacyColorDefaultRows()`, which still names `kNatronColorLayerID`, and point `adoptChannelQuad()` at it. Otherwise pre-v17 projects silently land on `rgba` with no P7.T3 warning. Leave `setChannels()`'s row-0 shim (`KnobChannelSet.cpp` ~`:364`, which writes `kNatronColorLayerID`) to P7.T1/P7.T3; it's the Python legacy path.
+    - `Node::adoptChannelQuad()` (`Node.cpp`) captures `_imp->legacyChannelSetDefault` from `defaultRows()` for M61's version-17 legacy-default gate. Add `KnobChannelSet::legacyColorDefaultRows()`, which still names `kNatronColorLayerID`, and use it **only for the legacy copy**. The same string is also each non-All node's normal default, and that must become `rgba` (design doc). Otherwise pre-v17 projects silently land on `rgba` with no P7.T3 warning. Leave `setChannels()`'s row-0 shim (`KnobChannelSet.cpp` ~`:364`, which writes `kNatronColorLayerID`) to P7.T1/P7.T3; it's the Python legacy path.
   - verify: `ctest -R 'KnobChannelSet|ChannelSetRender'` passes these cases:
     - The default resolves to the full colour plane.
     - `rgb` resolves to bits 0-2 and `alpha` to bit 3.
@@ -167,7 +168,7 @@ Execution notes:
   - approach:
     - `getAvailableLayers` and `listLayersForKnob` stay at storage level. Simplify the registry colour de-dup at `:4719-4741`.
     - Add `Node::listLayerViewsForKnob` (= `expandColorViews(listLayersForKnob)`) for the GUI and Python.
-    - Implement the widen-on-write rule from the design doc where the output colour plane is chosen, and read missing colour channels as zero. Pass-through (`EffectInstanceRenderRoI.cpp:461-491`) and `appendSelectedPlanes` should otherwise need no change; prove that with tests.
+    - Implement widen-on-write per `PLAN/DESIGN/2026-09-26-rgba-rgb-alpha-layers.md`: a new step at the end of `EffectInstance::Implementation::checkMetadata` widens the output and every colour input clip to RGBA together, only when an explicit view row writes a missing channel and the plugin supports RGBA. A per-clip zero-fill flag in `NodeMetadata` is read by `getImage`, and `ImageConvert.cpp` gains a zero-fill branch, so the widened channels read 0, not 1. Pass-through (`EffectInstanceRenderRoI.cpp:461-491`) and `appendSelectedPlanes` should otherwise need no change; prove that with tests.
   - verify: `ctest -R 'ColorViewsRender|TimeVaryingLayers|WriteAllLayers'` passes these cases:
     - `getPresentLayers` never contains a view ID.
     - On `flat-three-layers.exr`, Grade `rgb` gain 2 doubles RGB and keeps A.
@@ -194,9 +195,9 @@ Execution notes:
   - files: `Engine/Nodes/Channel/Shuffle.cpp`, `Engine/Nodes/Channel/Shuffle.h`, `Tests/Shuffle_Test.cpp`
   - approach: change these functions: `layerChannelCount` (`:269-297`), `resolveOutputLayerDesc` (`:382-403`), `getOutputLayer` (`:252-267`), `planeChannelName` (`:700-712`), `getComponentsNeededAndProduced` (`:520-562`), `isIdentity` (`:565-600`) and `checkExtraChannelsPresent` (`:875-948`). The new behaviour:
     - A view has 4, 3, 1 or 2 channels, each named by the view.
-    - Every colour output produces the storage colour plane once.
+    - Every colour output produces the storage colour plane once. It keeps the main input's layout when that covers the written channels, otherwise RGBA; M34's always-RGBA rule is dropped.
     - When the two output views overlap, Out 2 counts as None; when they don't overlap, they merge.
-    - The implicit source between colour views goes by channel name.
+    - The implicit source between colour views goes by channel **position** (so it works for `xy`), per the design doc.
     - Reading a colour channel the input lacks reads zero, per the design doc. This amends M61 P3.T2 for colour channels only; a missing non-colour layer or channel still fails the render.
   - verify: `ctest -R 'Shuffle_|KnobShuffleMap'` passes these cases:
     - The produced lists are right for out `rgb`, `alpha`, rgba+alpha (overlap) and rgb+alpha (merge).
@@ -299,7 +300,7 @@ Execution notes:
   - files: `Engine/KnobSerialization.cpp` (`:576-589`, `:640-726`), `Engine/Node.cpp` (`loadKnobs` `:1452-1481`), `Tests/fixtures/m65-legacy-color.ntp` (new), `Tests/ProjectSerialization_Test.cpp`
   - approach:
     - Delete the colour `KnobChoiceOptionFilter` entries. Keep the motion, disparity and `frameRange` filters.
-    - At the end of `Node::loadKnobs`, reset any layer knob whose value names `kNatronColorLayerID`. Post one persistent warning per node: "Colour layer from an older project was reset to rgba".
+    - At the end of `Node::loadKnobs`, change any layer knob value that names `kNatronColorLayerID` to `rgba`, keeping its channels (not a reset of the whole value). Restore the knob's normal default, and post one persistent warning per node: "Colour layer from an older project was reset to rgba". Post the warning **outside** the channel-selector message path, or M61's clear-on-completed-render erases it.
     - This depends on P3.T2's `legacyColorDefaultRows()`: M61's version-17 gate must still land pre-v17 channel sets on literal Color first, so this scan sees it and posts the warning.
     - Build the fixture by hand, following the `Tests/fixtures/channel-set-legacy-defaults.ntp` precedent (node-serialization version 16). It needs:
       - Grade `channels` = Color;
@@ -367,6 +368,7 @@ Execution notes:
 - 2026-09-26 — Clean break with old projects, no alias: the legacy colour choice filters are deleted. Layer knobs in old projects that named Color reset to `rgba`/`rgba.A` with a per-node warning. Natron ≤2.2 OFX colour choices fall back to the plugin default. Python setters raise on the retired ID. Loading must never crash.
 - 2026-09-26 — Sequencing: M65 is stacked on M61, and M37 builds on M65.
 - 2026-09-28 — **Freshness check at promotion** (M61's P5 and round-2 work landed after this plan was written): P3.T2, P6.T2, P7.T2 and P7.T3 had their approaches revised, and P3.T5 and P6.T4 were added. The biggest catch: M61's version-17 legacy-default gate reads `defaultRows()`, so it would have renamed pre-v17 Color to `rgba` silently, without the clean-break warning. The scope grew to 41 lines in 15 files naming `kNatronColorLayerID`, and 8 PyPlugs carry the storage literal. Also resized to at least M, per the sizing rule: P7.T2 (8 files) and P8.T3 (verify needs judgement). P7.T4 (a one-line bump) and P8.T1 (a plan doc, done by the PM) stay S.
+- 2026-09-28 — **Design doc settled** (P1.T1, `PLAN/DESIGN/2026-09-26-rgba-rgb-alpha-layers.md`): widen-on-write is confirmed but narrowed: only explicit view rows widen, never `All` or regex, so a default-All Blur doesn't turn an RGB JPEG into transparent RGBA. Widened channels zero-fill through a new per-clip `NodeMetadata` flag; today's conversion fills A with 1. Shuffle reads a missing colour channel as zero, wires by position and keeps the input's layout. Old projects: literal Color first (the v17 gate), then the layer becomes `rgba` with its channels kept and a non-channel-selector warning. The P3.T2, P4.T1, P5.T1 and P7.T3 briefs are amended to match. Open for the user: an RGB stream's alpha reads 0 through colour views but 1 through ordinary plugin conversion (e.g. a JPEG into Merge's A). Kept apart on purpose; see `# Open questions`.
 
 ## Risks
 

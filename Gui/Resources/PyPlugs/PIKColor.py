@@ -332,6 +332,11 @@ def createInstance(app,group):
     lastNode.setColor(0.8, 0.5, 0.3)
     groupErode1 = lastNode
 
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
+
     param = lastNode.getParam("size")
     if param is not None:
         param.setValue(0, 0)
@@ -585,6 +590,11 @@ def createInstance(app,group):
     lastNode.setColor(0.3, 0.37, 0.776)
     groupSwitch1 = lastNode
 
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
+
     param = lastNode.getParam("which")
     if param is not None:
         param.setValue(0, 0)
@@ -753,6 +763,11 @@ def createInstance(app,group):
     lastNode.setColor(0.8, 0.5, 0.3)
     groupBlur2 = lastNode
 
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
+
     param = lastNode.getParam("size")
     if param is not None:
         param.setValue(0, 0)
@@ -785,6 +800,11 @@ def createInstance(app,group):
     lastNode.setSize(104, 43)
     lastNode.setColor(0.8, 0.5, 0.3)
     groupBlur4 = lastNode
+
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
 
     param = lastNode.getParam("size")
     if param is not None:
@@ -855,7 +875,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setChannels(["A"])
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["A"])
         del param
 
     param = lastNode.getParam("size")
@@ -893,7 +913,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setChannels(["A"])
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["A"])
         del param
 
     param = lastNode.getParam("size")
@@ -972,6 +992,11 @@ def createInstance(app,group):
     lastNode.setColor(0.8, 0.5, 0.3)
     groupDilateFast1 = lastNode
 
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
+
     param = lastNode.getParam("size")
     if param is not None:
         param.setValue(0, 0)
@@ -1004,6 +1029,11 @@ def createInstance(app,group):
     lastNode.setSize(104, 43)
     lastNode.setColor(0.8, 0.5, 0.3)
     groupDilateFast2 = lastNode
+
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
 
     param = lastNode.getParam("size")
     if param is not None:

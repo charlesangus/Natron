@@ -3611,6 +3611,15 @@ public:
         ViewerInstance::ViewerRenderRetCode stat = ViewerInstance::eViewerRenderRetCodeFail;
         BufferableObjectPtrList ret;
 
+        U64 renderAges[2] = { 0, 0 };
+        bool hadRender[2] = { false, false };
+        for (int i = 0; i < 2; ++i) {
+            if (_args->args[i] && _args->args[i]->params && _args->args[i]->params->abortInfo) {
+                renderAges[i] = _args->args[i]->params->abortInfo->getRenderAge();
+                hadRender[i] = true;
+            }
+        }
+
         try {
             if (!_args->isRotoPaintRequest || _args->isRotoNeatRender) {
                 stat = _args->viewer->renderViewer(_args->view, QThread::currentThread() == qApp->thread(), false, _args->viewerHash, _args->canAbort,
@@ -3623,9 +3632,20 @@ public:
         }
 
         if (stat == ViewerInstance::eViewerRenderRetCodeFail) {
-            ///Don't report any error message otherwise we will flood the viewer with irrelevant messages such as
+            /// Don't report any error message otherwise we will flood the viewer with irrelevant messages such as
             ///"Render failed", instead we let the plug-in that failed post an error message which will be more helpful.
-            _args->viewer->disconnectViewer();
+            // renderViewer() drops the arguments of each input that failed.
+            bool failed[2] = { false, false };
+            bool anyKnownFailure = false;
+            for (int i = 0; i < 2; ++i) {
+                failed[i] = hadRender[i] && !_args->args[i];
+                anyKnownFailure |= failed[i];
+            }
+            if (anyKnownFailure && (!_args->isRotoPaintRequest || _args->isRotoNeatRender)) {
+                _args->viewer->disconnectViewerAfterFailedRender(renderAges, failed);
+            } else {
+                _args->viewer->disconnectViewer();
+            }
             ret.clear();
         } else {
             for (int i = 0; i < 2; ++i) {
@@ -3959,6 +3979,19 @@ ViewerCurrentFrameRequestScheduler::renderCurrentFrame(bool enableRenderStats,
         }
         if (hasTextureCached) {
             _imp->viewer->aboutToUpdateTextures();
+
+            // A cached frame renders nothing, so no render retires the missing-channel error a
+            // frame the user left may have posted. The requests just created superseded every
+            // render still running, so none of those can post after this check.
+            NodesList owners;
+            Node::getNodesOwningChannelSelectorMessage(&owners);
+            if (!owners.empty()) {
+                NodesList nodesWithMessage;
+                _imp->viewer->getUpstreamNodesWithPersistentMessage(&nodesWithMessage);
+                for (NodesList::iterator it = nodesWithMessage.begin(); it != nodesWithMessage.end(); ++it) {
+                    (*it)->refreshChannelSelectorMessageAtTime(frame, view);
+                }
+            }
         }
 
         for (int i = 0; i < 2; ++i) {

@@ -1729,6 +1729,10 @@ exportKnobValues(int indentLevel,
     // same rows as readable connect() calls, so the raw setValue() here is skipped to avoid
     // writing the mapping twice.
     KnobShuffleMap* isShuffleMap = dynamic_cast<KnobShuffleMap*>(knob.get());
+    // A KnobChannelSet's default is per-plugin (see KnobChannelSet::hasModificationsForSerialization),
+    // so leaving it out when the value happens to match today's default would have a future
+    // default change silently reinterpret this exported script's value, same as for .ntp.
+    KnobChannelSet* isChannelSetKnob = dynamic_cast<KnobChannelSet*>(knob.get());
 
     ///Don't export this kind of parameter. Mainly this is the html label of the node which is 99% of times empty
     if ( isStringKnob &&
@@ -1850,7 +1854,7 @@ exportKnobValues(int indentLevel,
                 }
             }
 
-            if ((!curve || (curve->getKeyFramesCount() == 0)) && knob->hasModifications(i) && !isShuffleMap) {
+            if ((!curve || (curve->getKeyFramesCount() == 0)) && (knob->hasModifications(i) || isChannelSetKnob) && !isShuffleMap) {
                 if (!hasExportedValue) {
                     hasExportedValue = true;
                     if (mustDefineParam) {

@@ -156,6 +156,7 @@ public:
             forceRender[i] = false;
             renderAge[i] = 1;
             displayAge[i] = 0;
+            lastRequestSequential[i] = false;
             isViewerPaused[i] = false;
             viewerParamsChannels[i] = eDisplayChannelsRGB;
         }
@@ -218,7 +219,8 @@ public:
      * The age is then incremented so the next call to getRenderAge will return the current value plus one.
      **/
     AbortableRenderInfoPtr createNewRenderRequest(int texIndex,
-                                                  bool canAbort)
+                                                  bool canAbort,
+                                                  bool isSequential)
     {
         QMutexLocker k(&renderAgeMutex);
         U64 ret = renderAge[texIndex];
@@ -230,6 +232,15 @@ public:
         }
 
         AbortableRenderInfoPtr info = AbortableRenderInfo::create(canAbort, ret);
+
+        // Playback renders several frames at once, each still wanted: only a current-frame
+        // request replaces what came before it, and a playback frame replaces a current-frame one.
+        AbortableRenderInfoPtr previous = lastRequest[texIndex].lock();
+        if (previous && (!isSequential || !lastRequestSequential[texIndex])) {
+            previous->setSuperseded();
+        }
+        lastRequest[texIndex] = info;
+        lastRequestSequential[texIndex] = isSequential;
 
         return info;
     }
@@ -422,6 +433,11 @@ public:
     //A priority list recording the ongoing renders. This is used for abortable renders (i.e: when moving a slider or scrubbing the timeline)
     //The purpose of this is to always at least keep 1 active render (non abortable) and abort more recent renders that do no longer make sense
     OnGoingRenders currentRenderAges[2];
+
+    // The request createNewRenderRequest() last made per texture, so that the next one can mark
+    // it superseded. Protected by renderAgeMutex.
+    std::weak_ptr<AbortableRenderInfo> lastRequest[2];
+    bool lastRequestSequential[2];
 };
 
 NATRON_NAMESPACE_EXIT

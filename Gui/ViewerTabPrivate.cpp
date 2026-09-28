@@ -49,7 +49,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-
 ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
                                    ViewerInstance* node)
     : publicInterface(publicInterface)
@@ -65,6 +64,8 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , secondRowLayout(NULL)
     , layerChoice(NULL)
     , alphaChannelChoice(NULL)
+    , layerMenuTime(0.)
+    , layerMenuView(0)
     , viewerChannels(NULL)
     , viewerChannelsAutoswitchedToAlpha(false)
     , zoomCombobox(NULL)
@@ -371,18 +372,19 @@ ViewerTabPrivate::getTimeTransform(double time,
 #endif // ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
 
 void
-ViewerTabPrivate::getComponentsAvailabel(std::set<ImageLayerDesc>* comps) const
+ViewerTabPrivate::getComponentsAvailabel(double time,
+                                         ViewIdx view,
+                                         std::set<ImageLayerDesc>* comps) const
 {
     int activeInputIdx[2];
 
     viewerNode->getActiveInputs(activeInputIdx[0], activeInputIdx[1]);
-    EffectInstancePtr activeInput[2] = {EffectInstancePtr(), EffectInstancePtr()};
-    double time = publicInterface->getGui()->getApp()->getTimeLine()->currentFrame();
+    EffectInstancePtr activeInput[2] = { EffectInstancePtr(), EffectInstancePtr() };
     for (int i = 0; i < 2; ++i) {
         activeInput[i] = viewerNode->getInput(activeInputIdx[i]);
         if (activeInput[i]) {
             std::list<ImageLayerDesc> compsAvailable;
-            activeInput[i]->getPresentLayers(time, ViewIdx(0), -1, &compsAvailable);
+            activeInput[i]->getPresentLayers(time, view, -1, &compsAvailable);
             for (std::list<ImageLayerDesc>::iterator it = compsAvailable.begin(); it != compsAvailable.end(); ++it) {
                 comps->insert(*it);
             }

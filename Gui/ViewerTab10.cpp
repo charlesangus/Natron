@@ -506,6 +506,9 @@ ViewerTab::onTimeLineTimeChanged(SequenceTime time,
         _imp->currentFrameBox->setValue(time);
     }
 
+    // The inputs' layers can differ from one frame to the next.
+    refreshLayerAndAlphaChannelComboBoxAtTime(time, true);
+
     if ( _imp->timeLineGui->getTimeline() != app->getTimeLine() ) {
         _imp->viewerNode->renderCurrentFrame(true);
     }
@@ -1001,6 +1004,8 @@ ViewerTab::onViewsComboboxChanged(int index)
         QMutexLocker l(&_imp->currentViewMutex);
         _imp->currentViewIndex = ViewIdx(index);
     }
+    // The inputs' layers can differ from one view to another.
+    refreshLayerAndAlphaChannelComboBox(true);
     abortRendering();
     _imp->viewerNode->renderCurrentFrame(true);
 }
@@ -1025,6 +1030,7 @@ ViewerTab::previousView()
         QMutexLocker k(&_imp->currentViewMutex);
         _imp->currentViewIndex = idx;
     }
+    refreshLayerAndAlphaChannelComboBox(true);
     abortRendering();
     _imp->viewerNode->renderCurrentFrame(true);
 }
@@ -1049,6 +1055,7 @@ ViewerTab::nextView()
         QMutexLocker k(&_imp->currentViewMutex);
         _imp->currentViewIndex = idx;
     }
+    refreshLayerAndAlphaChannelComboBox(true);
     abortRendering();
     _imp->viewerNode->renderCurrentFrame(true);
 }

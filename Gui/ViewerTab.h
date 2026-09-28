@@ -260,8 +260,16 @@ public:
 
     PlaybackModeEnum getPlaybackMode() const;
 
+    /**
+     * @brief Relists the layer and alpha channel menus from the inputs' layers at this viewer's
+     * current frame and view. With keepAbsentSelection, a chosen layer or alpha channel the
+     * inputs lack at this frame stays chosen instead of falling back to Color, so scrubbing
+     * through a frame that lacks it does not lose the choice.
+     **/
+    void refreshLayerAndAlphaChannelComboBox(bool keepAbsentSelection = false);
 
-    void refreshLayerAndAlphaChannelComboBox();
+    // Same, at the given frame of this viewer's timeline.
+    void refreshLayerAndAlphaChannelComboBoxAtTime(double time, bool keepAbsentSelection);
 
     void setProjection(double zoomLeft, double zoomBottom, double zoomFactor, double zoomAspectRatio);
 

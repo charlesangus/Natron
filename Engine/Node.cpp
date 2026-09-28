@@ -30,6 +30,7 @@
 #include <cassert>
 #include <limits>
 #include <locale>
+#include <map>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
@@ -1464,6 +1465,26 @@ Node::loadKnobs(const NodeSerialization & serialization,
     for (U32 j = 0; j < nodeKnobs.size(); ++j) {
         loadKnob(nodeKnobs[j], serialization, updateKnobGui);
     }
+
+    // Older files saved the channel set only when it differed from its default, and back then
+    // every node defaulted to the Color layer: an absent value means Color, not today's "All".
+    if ((serialization.getVersion() < NODE_SERIALIZATION_ALWAYS_SAVES_CHANNEL_SET) && _imp->effect->defaultProcessesAllLayers()) {
+        KnobChannelSetPtr channelSet = std::dynamic_pointer_cast<KnobChannelSet>(_imp->layerKnob.lock());
+        if (channelSet && !_imp->legacyChannelSetDefault.empty()) {
+            bool saved = false;
+            const NodeSerialization::KnobValues& knobsValues = serialization.getKnobsValues();
+            for (NodeSerialization::KnobValues::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
+                if ((*it)->getName() == channelSet->getName()) {
+                    saved = true;
+                    break;
+                }
+            }
+            if (!saved) {
+                channelSet->setDefaultValue(_imp->legacyChannelSetDefault);
+            }
+        }
+    }
+
     ///now restore the roto context if the node has a roto context
     if (serialization.hasRotoContext() && _imp->rotoContext) {
         _imp->rotoContext->load( serialization.getRotoContext() );
@@ -1963,9 +1984,21 @@ Node::abortAnyProcessing_blocking()
     _imp->abortPreview_blocking(false);
 }
 
+namespace {
+
+// Lets a timeline move revalidate only the nodes owning a channel-selector error instead of
+// every node of the project.
+QMutex channelSelectorOwnersMutex;
+std::map<const Node*, NodeWPtr> channelSelectorOwners;
+
+} // namespace
+
 Node::~Node()
 {
     destroyNode(true, false);
+
+    QMutexLocker k(&channelSelectorOwnersMutex);
+    channelSelectorOwners.erase(this);
 }
 
 
@@ -2213,7 +2246,6 @@ Node::createNodePage(const KnobPagePtr& settingsPage)
 
     KnobBoolPtr disableNodeKnob = AppManager::createKnob<KnobBool>(_imp->effect.get(), tr("Disable"), 1, false);
     assert(disableNodeKnob);
-    disableNodeKnob->setAnimationEnabled(false);
     disableNodeKnob->setIsMetadataSlave(true);
     disableNodeKnob->setName(kDisableNodeKnobName);
     disableNodeKnob->setAddNewLine(false);
@@ -2673,6 +2705,21 @@ Node::adoptChannelQuad()
         "net.sf.openfx.DenoiseSharpen",
         "net.sf.openfx.ClipTestPlugin"
     };
+
+    KnobIPtr layerKnob = _imp->layerKnob.lock();
+    KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(layerKnob.get());
+    KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get());
+    const bool defaultsToAll = isChannelSet && _imp->effect->defaultProcessesAllLayers();
+
+    if (isChannelSet) {
+        _imp->legacyChannelSetDefault = isChannelSet->encodeRows(KnobChannelSet::defaultRows());
+    }
+    if (defaultsToAll) {
+        std::vector<ChannelSetRow> allRows(1);
+        allRows[0].mode = ChannelSetRow::eModeAll;
+        isChannelSet->setDefaultValue(isChannelSet->encodeRows(allRows));
+    }
+
     if (pluginsOwningChannelMask.count(getPluginID()) > 0) {
         _imp->pluginOwnsChannelMask = true;
         return;
@@ -2719,10 +2766,6 @@ Node::adoptChannelQuad()
         }
     }
 
-    KnobIPtr layerKnob = _imp->layerKnob.lock();
-    KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(layerKnob.get());
-    KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get());
-
     // All four channels already enabled by default: the layer knob's "every channel" state
     // already matches, so there is nothing to seed on it.
     if (enabledChannels.size() != 4) {
@@ -2733,7 +2776,10 @@ Node::adoptChannelQuad()
             } else {
                 rows[0].channels = enabledChannels;
             }
-            isChannelSet->setDefaultValue(isChannelSet->encodeRows(rows));
+            _imp->legacyChannelSetDefault = isChannelSet->encodeRows(rows);
+            if (!defaultsToAll) {
+                isChannelSet->setDefaultValue(_imp->legacyChannelSetDefault);
+            }
         } else if (isLayerSelect && isLayerSelect->getWithChannelButtons()) {
             isLayerSelect->setChannels(enabledChannels);
             isLayerSelect->setDefaultValue(isLayerSelect->getValue());
@@ -3842,7 +3888,7 @@ Node::makePreviewImage(SequenceTime time,
         return false;
     }
 
-    effect->clearPersistentMessage(false);
+    effect->getNode()->clearPersistentMessageUnlessFromChannelSelector();
 
     StatusEnum stat = effect->getRegionOfDefinition_public(nodeHash, time, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat);
     if ( (stat == eStatusFailed) || rod.isNull() ) {
@@ -4327,6 +4373,64 @@ void
 Node::setPersistentMessage(MessageTypeEnum type,
                            const std::string & content)
 {
+    postPersistentMessage(type, content, false, 0, NULL);
+}
+
+void
+Node::setChannelSelectorMessage(const std::string& content,
+                                U64 renderSequence)
+{
+    postPersistentMessage(eMessageTypeError, content, true, renderSequence, NULL);
+}
+
+void
+Node::setChannelSelectorMessageFromRender(const std::string& content,
+                                          const AbortableRenderInfoPtr& render)
+{
+    postPersistentMessage(eMessageTypeError, content, true, render ? render->getRenderSequence() : 0, render.get());
+}
+
+bool
+Node::storePersistentMessage(MessageTypeEnum type,
+                             const std::string& content,
+                             bool fromChannelSelector,
+                             U64 renderSequence,
+                             const AbortableRenderInfo* render)
+{
+    QMutexLocker k(&_imp->persistentMessageMutex);
+
+    if (fromChannelSelector && (renderSequence != 0) && (renderSequence <= _imp->channelSelectorResolvedSequence)) {
+        return false;
+    }
+    if (fromChannelSelector && render && (render->isAborted() || render->isSuperseded())) {
+        return false;
+    }
+    QString mess = QString::fromUtf8(content.c_str());
+    if ((mess == _imp->persistentMessage) && ((int)type == _imp->persistentMessageType)) {
+        // The same text posted by the other kind of poster keeps the current owner, so a
+        // generic message cannot take a channel error out of reach of its clear, nor hand a
+        // generic one to it.
+        if (fromChannelSelector && _imp->persistentMessageFromChannelSelector) {
+            _imp->persistentMessageRenderSequence = std::max(_imp->persistentMessageRenderSequence, renderSequence);
+        }
+
+        return false;
+    }
+    setChannelSelectorOwnership(fromChannelSelector);
+    _imp->persistentMessageRenderSequence = fromChannelSelector ? renderSequence : 0;
+    _imp->persistentMessageType = (int)type;
+    _imp->persistentMessage = mess;
+
+    return true;
+}
+
+void
+Node::postPersistentMessage(MessageTypeEnum type,
+                            const std::string& content,
+                            bool fromChannelSelector,
+                            U64 renderSequence,
+                            const AbortableRenderInfo* render)
+{
     if (!_imp->nodeCreated && _imp->wasCreatedSilently) {
         std::cerr << getScriptName_mt_safe() << " message: " << content << std::endl;
         return;
@@ -4337,7 +4441,7 @@ Node::setPersistentMessage(MessageTypeEnum type,
 #ifdef NATRON_ENABLE_IO_META_NODES
         NodePtr ioContainer = getIOContainer();
         if (ioContainer) {
-            ioContainer->setPersistentMessage(type, content);
+            ioContainer->postPersistentMessage(type, content, fromChannelSelector, renderSequence, render);
 
             return;
         }
@@ -4356,25 +4460,13 @@ Node::setPersistentMessage(MessageTypeEnum type,
             return;
         }
 
-        {
-            QMutexLocker k(&_imp->persistentMessageMutex);
-            QString mess = QString::fromUtf8( content.c_str() );
-            if (mess == _imp->persistentMessage) {
-                return;
-            }
-            _imp->persistentMessageType = (int)type;
-            _imp->persistentMessage = mess;
+        if (storePersistentMessage(type, content, fromChannelSelector, renderSequence, render)) {
+            Q_EMIT persistentMessageChanged();
         }
-        Q_EMIT persistentMessageChanged();
     } else {
         std::cout << "Persistent message: " << content << std::endl;
 
-        QMutexLocker k(&_imp->persistentMessageMutex);
-        QString mess = QString::fromUtf8(content.c_str());
-        if (mess != _imp->persistentMessage) {
-            _imp->persistentMessageType = (int)type;
-            _imp->persistentMessage = mess;
-        }
+        storePersistentMessage(type, content, fromChannelSelector, renderSequence, render);
     }
 }
 
@@ -4458,6 +4550,8 @@ Node::clearPersistentMessageInternal()
     bool changed;
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
+        setChannelSelectorOwnership(false);
+        _imp->persistentMessageRenderSequence = 0;
         changed = !_imp->persistentMessage.isEmpty();
         if (changed) {
             _imp->persistentMessage.clear();
@@ -4466,6 +4560,191 @@ Node::clearPersistentMessageInternal()
 
     if (changed) {
         Q_EMIT persistentMessageChanged();
+    }
+}
+
+void
+Node::clearChannelSelectorMessage()
+{
+    if (!getApp()) {
+        return;
+    }
+#ifdef NATRON_ENABLE_IO_META_NODES
+    NodePtr ioContainer = getIOContainer();
+    if (ioContainer) {
+        ioContainer->clearChannelSelectorMessage();
+
+        return;
+    }
+#endif
+    bool changed = false;
+    {
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        _imp->channelSelectorResolvedSequence = std::max(_imp->channelSelectorResolvedSequence, AbortableRenderInfo::getLatestRenderSequence());
+        if (_imp->persistentMessageFromChannelSelector) {
+            setChannelSelectorOwnership(false);
+            _imp->persistentMessageRenderSequence = 0;
+            changed = !_imp->persistentMessage.isEmpty();
+            _imp->persistentMessage.clear();
+        }
+    }
+
+    if (changed) {
+        Q_EMIT persistentMessageChanged();
+    }
+}
+
+void
+Node::clearChannelSelectorMessageFromRender(U64 renderSequence,
+                                            bool renderAborted)
+{
+    if (renderAborted || !getApp()) {
+        return;
+    }
+#ifdef NATRON_ENABLE_IO_META_NODES
+    NodePtr ioContainer = getIOContainer();
+    if (ioContainer) {
+        ioContainer->clearChannelSelectorMessageFromRender(renderSequence, renderAborted);
+
+        return;
+    }
+#endif
+    bool changed = false;
+    {
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        _imp->channelSelectorResolvedSequence = std::max(_imp->channelSelectorResolvedSequence, renderSequence);
+        if (_imp->persistentMessageFromChannelSelector && (renderSequence > _imp->persistentMessageRenderSequence)) {
+            setChannelSelectorOwnership(false);
+            _imp->persistentMessageRenderSequence = 0;
+            changed = !_imp->persistentMessage.isEmpty();
+            _imp->persistentMessage.clear();
+        }
+    }
+
+    if (changed) {
+        Q_EMIT persistentMessageChanged();
+    }
+}
+
+void
+Node::refreshChannelSelectorMessageAtTime(double time,
+                                          const std::list<ViewIdx>& views)
+{
+#ifdef NATRON_ENABLE_IO_META_NODES
+    if (getIOContainer()) {
+        return;
+    }
+#endif
+    {
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        if (!_imp->persistentMessageFromChannelSelector || _imp->persistentMessage.isEmpty()) {
+            return;
+        }
+    }
+    for (std::list<ViewIdx>::const_iterator it = views.begin(); it != views.end(); ++it) {
+        std::string message;
+        if (!checkSelectedChannelsPresent(time, *it, &message)) {
+            return;
+        }
+    }
+    clearChannelSelectorMessage();
+}
+
+void
+Node::refreshChannelSelectorMessageAtTime(double time,
+                                          ViewIdx view)
+{
+    refreshChannelSelectorMessageAtTime(time, std::list<ViewIdx>(1, view));
+}
+
+void
+Node::setChannelSelectorOwnership(bool owned)
+{
+    if (_imp->persistentMessageFromChannelSelector == owned) {
+        return;
+    }
+    _imp->persistentMessageFromChannelSelector = owned;
+
+    QMutexLocker k(&channelSelectorOwnersMutex);
+    if (owned) {
+        channelSelectorOwners[this] = weak_from_this();
+    } else {
+        channelSelectorOwners.erase(this);
+    }
+}
+
+void
+Node::getNodesOwningChannelSelectorMessage(NodesList* nodes)
+{
+    QMutexLocker k(&channelSelectorOwnersMutex);
+
+    for (std::map<const Node*, NodeWPtr>::const_iterator it = channelSelectorOwners.begin(); it != channelSelectorOwners.end(); ++it) {
+        NodePtr node = it->second.lock();
+        if (node) {
+            nodes->push_back(node);
+        }
+    }
+}
+
+void
+Node::clearPersistentMessageUnlessFromChannelSelector()
+{
+    if (!getApp()) {
+        return;
+    }
+#ifdef NATRON_ENABLE_IO_META_NODES
+    NodePtr ioContainer = getIOContainer();
+    if (ioContainer) {
+        ioContainer->clearPersistentMessageUnlessFromChannelSelector();
+
+        return;
+    }
+#endif
+    bool changed = false;
+    {
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        if (!_imp->persistentMessageFromChannelSelector) {
+            changed = !_imp->persistentMessage.isEmpty();
+            _imp->persistentMessage.clear();
+        }
+    }
+
+    if (changed) {
+        Q_EMIT persistentMessageChanged();
+    }
+}
+
+void
+Node::getNodesWithPersistentMessageUpstream(const NodesList& roots,
+                                            NodesList* nodes)
+{
+    std::set<Node*> visited;
+    std::set<Node*> collected;
+    std::list<NodePtr> queue(roots.begin(), roots.end());
+
+    while (!queue.empty()) {
+        NodePtr node = queue.front();
+        queue.pop_front();
+        if (!node || !visited.insert(node.get()).second) {
+            continue;
+        }
+        NodePtr owner = node;
+#ifdef NATRON_ENABLE_IO_META_NODES
+        NodePtr ioContainer = node->getIOContainer();
+        if (ioContainer) {
+            owner = ioContainer;
+        }
+#endif
+        if (owner->hasAnyPersistentMessage() && collected.insert(owner.get()).second) {
+            nodes->push_back(owner);
+        }
+        int nInputs = node->getNInputs();
+        for (int i = 0; i < nInputs; ++i) {
+            // The real input keeps a group (which reports errors of hidden nodes) in the walk,
+            // the redirected one steps into it or out of a GroupInput.
+            queue.push_back(node->getRealInput(i));
+            queue.push_back(node->getInput(i));
+        }
     }
 }
 
@@ -4919,11 +5198,6 @@ Node::isMaskEnabled(int inputNb) const
     }
 }
 
-// Shared with refreshChannelSelectors(), which pattern-matches these prefixes to tell a stale
-// diagnostic of this check's own from an unrelated persistent message before clearing it.
-static const char kMaskChannelMissingMessagePrefix[] = "Mask channel ";
-static const char kUnPremultChannelMissingMessagePrefix[] = "(Un)premult by channel ";
-
 bool
 Node::checkSelectedChannelsPresent(std::string* message) const
 {
@@ -4956,7 +5230,7 @@ Node::checkSelectedChannelsPresent(double time,
             continue;
         }
         if (message) {
-            *message = std::string(kMaskChannelMissingMessagePrefix) + channel->get() + " is not in the " + getInputLabel(inputNb) + " input";
+            *message = "Mask channel " + channel->get() + " is not in the " + getInputLabel(inputNb) + " input";
         }
 
         return false;
@@ -4971,7 +5245,7 @@ Node::checkSelectedChannelsPresent(double time,
         listLayersForKnob(unPremultBy, time, view, &present);
         if ((inputNb >= 0) && getInput(inputNb) && !unPremultBy->resolve(present, 0, 0)) {
             if (message) {
-                *message = std::string(kUnPremultChannelMissingMessagePrefix) + unPremultBy->get() + " is not in the " + getInputLabel(inputNb) + " input";
+                *message = "(Un)premult by channel " + unPremultBy->get() + " is not in the " + getInputLabel(inputNb) + " input";
             }
 
             return false;
@@ -5729,6 +6003,32 @@ findAliasSlaveOnOtherNode(const KnobIPtr& master,
     return KnobIPtr();
 }
 
+static void
+appendInputStreamLayers(const EffectInstancePtr& effect,
+                        int inputNb,
+                        double time,
+                        ViewIdx view,
+                        std::list<ImageLayerDesc>* layers)
+{
+    std::list<ImageLayerDesc> present;
+    if (effect && (inputNb >= 0)) {
+        effect->getPresentLayers(time, view, inputNb, &present);
+    }
+
+    // Every image stream carries a Color plane, so an unconnected input still lists it.
+    bool hasColor = false;
+    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+        if (it->isColorLayer()) {
+            hasColor = true;
+            break;
+        }
+    }
+    if (!hasColor) {
+        layers->push_back(ImageLayerDesc::getRGBAComponents());
+    }
+    layers->insert(layers->end(), present.begin(), present.end());
+}
+
 void
 Node::listLayersForKnob(const KnobIPtr& knob,
                         std::list<ImageLayerDesc>* layers) const
@@ -5775,26 +6075,16 @@ Node::listLayersForKnob(const KnobIPtr& knob,
     }
 
     int inputNb = found->second.inputNb;
+    double inputTime = time;
+    ViewIdx inputView = view;
     if (inputNb == LayerKnobSource::kPreferredInput) {
-        inputNb = getPreferredInput();
-    }
-    std::list<ImageLayerDesc> present;
-    if (inputNb >= 0) {
-        _imp->effect->getPresentLayers(time, view, inputNb, &present);
-    }
-
-    // Every image stream carries a Color plane, so an unconnected input still lists it.
-    bool hasColor = false;
-    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
-        if (it->isColorLayer()) {
-            hasColor = true;
-            break;
+        if (_imp->effect) {
+            _imp->effect->getLayersPassThroughInput(time, view, &inputNb, &inputTime, &inputView);
+        } else {
+            inputNb = -1;
         }
     }
-    if (!hasColor) {
-        layers->push_back(ImageLayerDesc::getRGBAComponents());
-    }
-    layers->insert(layers->end(), present.begin(), present.end());
+    appendInputStreamLayers(_imp->effect, inputNb, inputTime, inputView, layers);
 } // Node::listLayersForKnob
 
 bool
@@ -5815,6 +6105,22 @@ Node::isTargetLayerKnob(const KnobIPtr& knob) const
     return found->second.role == LayerKnobSpec::eRoleTarget;
 }
 
+static void
+resolveAgainstPresentLayers(const KnobChannelSet* channelSet,
+                            const KnobLayerSelect* layerSelect,
+                            const std::list<ImageLayerDesc>& present,
+                            std::vector<ResolvedLayer>* selected)
+{
+    if (channelSet) {
+        *selected = channelSet->resolve(present);
+    } else if (layerSelect) {
+        ResolvedLayer one;
+        if (layerSelect->resolve(present, &one)) {
+            selected->push_back(one);
+        }
+    }
+}
+
 bool
 Node::resolveLayerKnob(double time,
                        ViewIdx view,
@@ -5831,14 +6137,36 @@ Node::resolveLayerKnob(double time,
 
     std::list<ImageLayerDesc> present;
     listLayersForKnob(layerKnob, time, view, &present);
-    if (channelSet) {
-        *selected = channelSet->resolve(present);
-    } else {
-        ResolvedLayer one;
-        if (layerSelect->resolve(present, &one)) {
-            selected->push_back(one);
-        }
+    resolveAgainstPresentLayers(channelSet, layerSelect, present, selected);
+
+    return true;
+}
+
+bool
+Node::resolveLayerKnob(double time,
+                       ViewIdx view,
+                       int passThroughInputNb,
+                       double passThroughTime,
+                       ViewIdx passThroughView,
+                       std::vector<ResolvedLayer>* selected) const
+{
+    selected->clear();
+
+    KnobIPtr layerKnob = getLayerKnob();
+    KnobChannelSet* channelSet = dynamic_cast<KnobChannelSet*>(layerKnob.get());
+    KnobLayerSelect* layerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get());
+    if (!channelSet && !layerSelect) {
+        return false;
     }
+
+    std::list<ImageLayerDesc> present;
+    std::map<const KnobI*, LayerKnobSource>::const_iterator found = _imp->layerKnobSources.find(layerKnob.get());
+    if ((found != _imp->layerKnobSources.end()) && (found->second.role != LayerKnobSpec::eRoleTarget) && (found->second.inputNb == LayerKnobSource::kPreferredInput)) {
+        appendInputStreamLayers(_imp->effect, passThroughInputNb, passThroughTime, passThroughView, &present);
+    } else {
+        listLayersForKnob(layerKnob, time, view, &present);
+    }
+    resolveAgainstPresentLayers(channelSet, layerSelect, present, selected);
 
     return true;
 }
@@ -6097,6 +6425,50 @@ Node::isNodeDisabled() const
     bool enabled = ( !lifeTimeEnabled || (curFrame >= lifeTimeFirst && curFrame <= lifeTimeEnd) ) && !thisDisabled;
 
     return !enabled;
+}
+
+bool
+Node::isNodeDisabled(double time) const
+{
+    KnobBoolPtr b = _imp->disableNodeKnob.lock();
+    bool thisDisabled = b ? b->getValueAtTime(time) : false;
+    NodeGroup* isContainerGrp = dynamic_cast<NodeGroup*>(getGroup().get());
+
+    if (isContainerGrp) {
+        return thisDisabled || isContainerGrp->getNode()->isNodeDisabled(time);
+    }
+#ifdef NATRON_ENABLE_IO_META_NODES
+    NodePtr ioContainer = getIOContainer();
+    if (ioContainer) {
+        return ioContainer->isNodeDisabled(time);
+    }
+#endif
+
+    int lifeTimeFirst, lifeTimeEnd;
+    bool lifeTimeEnabled = isLifetimeActivated(&lifeTimeFirst, &lifeTimeEnd);
+    bool enabled = (!lifeTimeEnabled || (time >= lifeTimeFirst && time <= lifeTimeEnd)) && !thisDisabled;
+
+    return !enabled;
+}
+
+bool
+Node::isNodeDisabledAtAllTimes() const
+{
+    KnobBoolPtr b = _imp->disableNodeKnob.lock();
+    bool thisDisabled = b && !b->hasAnimation() && b->getValue();
+    NodeGroup* isContainerGrp = dynamic_cast<NodeGroup*>(getGroup().get());
+
+    if (isContainerGrp) {
+        return thisDisabled || isContainerGrp->getNode()->isNodeDisabledAtAllTimes();
+    }
+#ifdef NATRON_ENABLE_IO_META_NODES
+    NodePtr ioContainer = getIOContainer();
+    if (ioContainer) {
+        return ioContainer->isNodeDisabledAtAllTimes();
+    }
+#endif
+
+    return thisDisabled;
 }
 
 void
@@ -7677,18 +8049,17 @@ Node::refreshChannelSelectors()
     _imp->effect->onChannelsSelectorRefreshed();
 
     if (checkSelectedChannelsPresent(0)) {
-        // A persistent message is a single slot with no record of who posted it: only take
-        // back a message that starts with what this check itself would have posted.
-        QString current;
-        int type = 0;
-        getPersistentMessage(&current, &type, false);
-        if ((type == (int)eMessageTypeError) && (current.startsWith(QString::fromUtf8(kMaskChannelMissingMessagePrefix)) || current.startsWith(QString::fromUtf8(kUnPremultChannelMissingMessagePrefix)) || current.startsWith(QString::fromUtf8(kExtraChannelMissingMessagePrefix)))) {
-            clearPersistentMessage(false);
-        }
+        clearChannelSelectorMessage();
     }
 
     Q_EMIT layerListRefreshed();
     s_layerSelectionChanged();
+}
+
+void
+Node::relistLayerKnobs()
+{
+    Q_EMIT layerListRefreshed();
 }
 
 double

@@ -353,6 +353,12 @@ public:
     bool isNodeSelected() const;
 
     /**
+     * @brief The error or warning the node currently shows (without the label prefix the
+     * viewer adds), or an empty string if it shows none.
+     **/
+    QString getPersistentMessage() const;
+
+    /**
      * @brief Get the user page param. Note that user created params (with the function above) may only be added to user created pages,
      * that is, the page returned by getUserPageParam() or in any page created by createPageParam().
      * This function never returns NULL, it will ensure that the User page exists.

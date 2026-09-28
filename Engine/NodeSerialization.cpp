@@ -38,9 +38,10 @@
 
 NATRON_NAMESPACE_ENTER
 
-NodeSerialization::NodeSerialization(const NodePtr & n,
+NodeSerialization::NodeSerialization(const NodePtr& n,
                                      bool serializeInputs)
     : _isNull(true)
+    , _version(NODE_SERIALIZATION_CURRENT_VERSION)
     , _nbKnobs(0)
     , _knobsValues()
     , _knobsAge(0)

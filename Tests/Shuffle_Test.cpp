@@ -51,6 +51,7 @@
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
@@ -281,21 +282,23 @@ TEST_F(ShuffleTest, ShuffleCopyHasTwoInputsAndCopiesAlphaFromInput1ByDefault)
 
     expectLayerKnobsHidden(copy);
 
+    const double time = getApp()->getTimeLine()->currentFrame();
+
     std::shared_ptr<KnobShuffleMap> mapping = mappingKnob(copy);
     ASSERT_TRUE(bool(mapping));
     EXPECT_EQ(3u, mapping->getRows().size());
     for (int c = 0; c < 3; ++c) {
         EXPECT_TRUE(mapping->hasExplicitSource(1, c)) << c;
-        EXPECT_EQ(ShuffleSource::makeInput(2, c), copyFx->getEffectiveSource(1, c)) << c;
+        EXPECT_EQ(ShuffleSource::makeInput(2, c), copyFx->getEffectiveSource(1, c, time, ViewIdx(0))) << c;
     }
     EXPECT_FALSE(mapping->hasExplicitSource(1, 3));
-    EXPECT_EQ(ShuffleSource::makeInput(1, 3), copyFx->getEffectiveSource(1, 3));
+    EXPECT_EQ(ShuffleSource::makeInput(1, 3), copyFx->getEffectiveSource(1, 3, time, ViewIdx(0)));
 
     mapping->setSource(1, 0, ShuffleSource::makeOne());
-    EXPECT_EQ(ShuffleSource::makeOne(), copyFx->getEffectiveSource(1, 0));
+    EXPECT_EQ(ShuffleSource::makeOne(), copyFx->getEffectiveSource(1, 0, time, ViewIdx(0)));
     mapping->reset();
     EXPECT_EQ(3u, mapping->getRows().size());
-    EXPECT_EQ(ShuffleSource::makeInput(2, 0), copyFx->getEffectiveSource(1, 0));
+    EXPECT_EQ(ShuffleSource::makeInput(2, 0), copyFx->getEffectiveSource(1, 0, time, ViewIdx(0)));
 }
 
 TEST_F(ShuffleTest, ShuffleCopyPrefersInput2WhenBothAreConnected)
@@ -472,7 +475,7 @@ TEST_F(ShuffleTest, IdentityOnlyWhileEveryOut1ChannelReadsItsOwnChannelOfTheSame
     EXPECT_TRUE(isIdentityOfMain(shuffle));
 }
 
-TEST_F(ShuffleTest, EffectiveSourceZeroesAnImplicitChannelTheSlotLacks)
+TEST_F(ShuffleTest, EffectiveSourceKeepsAnImplicitChannelTheSlotLacksAndTheCheckFailsOnIt)
 {
     NodePtr shuffle = createShuffleOnReader();
 
@@ -484,22 +487,33 @@ TEST_F(ShuffleTest, EffectiveSourceZeroesAnImplicitChannelTheSlotLacks)
     ASSERT_TRUE(bool(mapping));
     ASSERT_TRUE(bool(in1));
 
+    const double time = getApp()->getTimeLine()->currentFrame();
+
     for (int c = 0; c < 4; ++c) {
-        EXPECT_EQ(ShuffleSource::makeInput(1, c), shuffleFx->getEffectiveSource(1, c)) << c;
-        EXPECT_EQ(ShuffleSource::makeZero(), shuffleFx->getEffectiveSource(2, c)) << c;
+        EXPECT_EQ(ShuffleSource::makeInput(1, c), shuffleFx->getEffectiveSource(1, c, time, ViewIdx(0))) << c;
+        EXPECT_EQ(ShuffleSource::makeZero(), shuffleFx->getEffectiveSource(2, c, time, ViewIdx(0))) << c;
     }
 
+    std::string message;
+    EXPECT_TRUE(shuffle->checkSelectedChannelsPresent(time, ViewIdx(0), &message)) << message;
+
     in1->setLayer("diffuse");
-    EXPECT_EQ(ShuffleSource::makeInput(1, 2), shuffleFx->getEffectiveSource(1, 2));
-    EXPECT_EQ(ShuffleSource::makeZero(), shuffleFx->getEffectiveSource(1, 3));
+    EXPECT_EQ(ShuffleSource::makeInput(1, 2), shuffleFx->getEffectiveSource(1, 2, time, ViewIdx(0)));
+    EXPECT_EQ(ShuffleSource::makeInput(1, 3), shuffleFx->getEffectiveSource(1, 3, time, ViewIdx(0)));
+    EXPECT_FALSE(shuffle->checkSelectedChannelsPresent(time, ViewIdx(0), &message));
+    EXPECT_NE(std::string::npos, message.find("diffuse.A is not in the")) << message;
+
+    mapping->setSource(1, 3, ShuffleSource::makeZero());
+    EXPECT_EQ(ShuffleSource::makeZero(), shuffleFx->getEffectiveSource(1, 3, time, ViewIdx(0)));
+    EXPECT_TRUE(shuffle->checkSelectedChannelsPresent(time, ViewIdx(0), &message)) << message;
 
     // An explicit row is returned as stored, even beyond the slot's layer.
     mapping->setSource(1, 0, ShuffleSource::makeInput(1, 3));
     EXPECT_TRUE(mapping->hasExplicitSource(1, 0));
-    EXPECT_EQ(ShuffleSource::makeInput(1, 3), shuffleFx->getEffectiveSource(1, 0));
+    EXPECT_EQ(ShuffleSource::makeInput(1, 3), shuffleFx->getEffectiveSource(1, 0, time, ViewIdx(0)));
 
     mapping->setSource(1, 1, ShuffleSource::makeInput(2, 1));
-    EXPECT_EQ(ShuffleSource::makeInput(2, 1), shuffleFx->getEffectiveSource(1, 1));
+    EXPECT_EQ(ShuffleSource::makeInput(2, 1), shuffleFx->getEffectiveSource(1, 1, time, ViewIdx(0)));
 }
 
 TEST_F(ShuffleTest, SubLabelFollowsTheMapping)

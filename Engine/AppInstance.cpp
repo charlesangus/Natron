@@ -1706,7 +1706,7 @@ AppInstance::startWritersRenderingFromNames(bool enableRenderStats,
                     throw std::invalid_argument("Internal issue with the project loader...viewers should have been evicted from the project.");
                 }
 
-                if (node->isNodeDisabled() || !node->isActivated()) {
+                if (node->isNodeDisabledAtAllTimes() || !node->isActivated()) {
                     continue;
                 }
                 OutputEffectInstance* effect = dynamic_cast<OutputEffectInstance*>( node->getEffectInstance().get() );
@@ -1732,7 +1732,7 @@ AppInstance::startWritersRenderingFromNames(bool enableRenderStats,
             assert(*it2);
             if (*it2) {
 
-                if ((*it2)->getNode()->isNodeDisabled() || !(*it2)->getNode()->isActivated()) {
+                if ((*it2)->getNode()->isNodeDisabledAtAllTimes() || !(*it2)->getNode()->isActivated()) {
                     continue;
                 }
 
@@ -1774,7 +1774,7 @@ AppInstance::startWritersRendering(bool doBlockingRender,
 
     std::list<RenderQueueItem> itemsToQueue;
     for (std::list<RenderWork>::const_iterator it = writers.begin(); it != writers.end(); ++it) {
-        if (it->writer->getNode()->isNodeDisabled() || !it->writer->getNode()->isActivated()) {
+        if (it->writer->getNode()->isNodeDisabledAtAllTimes() || !it->writer->getNode()->isActivated()) {
             continue;
         }
         RenderQueueItem item;

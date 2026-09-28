@@ -203,6 +203,43 @@ TEST(KnobChannelSet, EmptyChannelListAfterSetChannelsContributesNothing)
     EXPECT_TRUE(knob->getRows()[0].channels.empty());
 }
 
+TEST(KnobChannelSet, SetChannelsOnAllRowZeroFallsBackToColor)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setAll();
+    knob->setChannels(0, channels("R", "G", "B", "A"));
+
+    std::vector<ChannelSetRow> rows = knob->getRows();
+    ASSERT_EQ(1u, rows.size());
+    EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
+    EXPECT_EQ(std::string(kNatronColorLayerID), rows[0].layerOrPattern);
+    EXPECT_EQ(channels("R", "G", "B", "A"), rows[0].channels);
+}
+
+TEST(KnobChannelSet, SetChannelsOnNoneRowZeroFallsBackToColor)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setNone();
+    knob->setChannels(0, channels("A"));
+
+    std::vector<ChannelSetRow> rows = knob->getRows();
+    ASSERT_EQ(1u, rows.size());
+    EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
+    EXPECT_EQ(std::string(kNatronColorLayerID), rows[0].layerOrPattern);
+    EXPECT_EQ(channels("A"), rows[0].channels);
+}
+
+TEST(KnobChannelSet, SetChannelsStillThrowsOnRegexRowZero)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setRegex(0, "spec.*");
+    EXPECT_THROW(knob->setChannels(0, channels("R")), std::invalid_argument);
+    EXPECT_EQ(ChannelSetRow::eModeRegex, knob->getRows()[0].mode);
+}
+
 TEST(KnobChannelSet, OneChannelLayerMapsToAlphaBit)
 {
     KnobChannelSetPtr knob = makeKnob();

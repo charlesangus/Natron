@@ -559,6 +559,11 @@ def createInstance(app,group):
     lastNode.setColor(0.3, 0.37, 0.776)
     groupAddInput = lastNode
 
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
+
     param = lastNode.getParam("which")
     if param is not None:
         param.setValue(0, 0)
@@ -620,6 +625,11 @@ def createInstance(app,group):
     lastNode.setColor(0.3, 0.37, 0.776)
     groupPreview = lastNode
 
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
+
     param = lastNode.getParam("which")
     if param is not None:
         param.setValue(0, 0)
@@ -661,6 +671,11 @@ def createInstance(app,group):
     lastNode.setColor(0.3, 0.37, 0.776)
     groupGlowOnly = lastNode
 
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
+
     param = lastNode.getParam("which")
     if param is not None:
         param.setValue(0, 0)
@@ -689,6 +704,11 @@ def createInstance(app,group):
     lastNode.setSize(104, 43)
     lastNode.setColor(0.7, 0.3, 0.1)
     groupRotateIn = lastNode
+
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
 
     param = lastNode.getParam("rotate")
     if param is not None:
@@ -729,6 +749,11 @@ def createInstance(app,group):
     lastNode.setColor(0.7, 0.3, 0.1)
     groupRotateOut = lastNode
 
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
+
     param = lastNode.getParam("rotate")
     if param is not None:
         param.setValue(0, 0)
@@ -756,6 +781,11 @@ def createInstance(app,group):
     lastNode.setSize(104, 32)
     lastNode.setColor(0.7, 0.3, 0.1)
     groupRotateOutPrev = lastNode
+
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
 
     param = lastNode.getParam("rotate")
     if param is not None:
@@ -1198,7 +1228,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setChannels(["R", "G", "B"])
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B"])
         del param
 
     param = lastNode.getParam("size")
@@ -1331,6 +1361,11 @@ def createInstance(app,group):
     lastNode.setSize(104, 43)
     lastNode.setColor(0.3, 0.37, 0.776)
     groupscreenSwitch = lastNode
+
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
 
     param = lastNode.getParam("which")
     if param is not None:

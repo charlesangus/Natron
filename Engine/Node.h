@@ -79,12 +79,6 @@ CLANG_DIAG_ON(deprecated)
 #define kOfxMaskInvertParamName "maskInvert"
 #define kOfxMixParamName "mix"
 
-// The prefix Node::checkSelectedChannelsPresent() requires of an EffectInstance::
-// checkExtraChannelsPresent() failure message, so refreshChannelSelectors() and the effect
-// itself can tell it apart from an unrelated persistent message before clearing it, the same
-// way refreshChannelSelectors() already does for a missing mask or (un)premult channel.
-#define kExtraChannelMissingMessagePrefix "Channel "
-
 #define kReadOIIOAvailableViewsKnobName "availableViews"
 #define kWriteOIIOParamViewsSelector "viewsSelector"
 
@@ -931,7 +925,71 @@ public:
      **/
     void clearPersistentMessage(bool recurse);
 
+    /**
+     * @brief Posts the error message of a failed checkSelectedChannelsPresent(), recording
+     * with it that the channel-selector check owns it, so that clearChannelSelectorMessage()
+     * can later take it back. Any other message posted since drops that ownership.
+     * renderSequence is the AbortableRenderInfo::getRenderSequence() of the failing render, or
+     * 0 outside a render. A render older than the latest clear is stale and posts nothing.
+     **/
+    void setChannelSelectorMessage(const std::string& content, U64 renderSequence = 0);
+
+    /**
+     * @brief What a render whose channel check failed does: setChannelSelectorMessage() with the
+     * render's sequence number, unless the render was aborted or superseded by a newer request
+     * (AbortableRenderInfo::isSuperseded()). That is decided atomically with the post, so a
+     * render superseded before refreshChannelSelectorMessageAtTime() looks at the message
+     * never posts after it.
+     **/
+    void setChannelSelectorMessageFromRender(const std::string& content, const AbortableRenderInfoPtr& render);
+
+    /**
+     * @brief Clears the persistent message only if it is still the one setChannelSelectorMessage()
+     * posted; any other message is left alone. The check and the clear are atomic. Every render
+     * created before this call counts as older than it.
+     **/
+    void clearChannelSelectorMessage();
+
+    /**
+     * @brief What a render does once it delivered its image, its channel check having passed:
+     * clears the channel-selector message like clearChannelSelectorMessage(), but only if the
+     * render was not aborted and is newer (a larger renderSequence) than the render that posted
+     * the message. A render finishing late for a frame the user has left must not retire the
+     * error of the frame now shown.
+     **/
+    void clearChannelSelectorMessageFromRender(U64 renderSequence, bool renderAborted);
+
+    /**
+     * @brief Clears the channel-selector message if the check now passes at the given time in
+     * every one of the given views, the views being displayed. A viewer showing a cached frame
+     * renders nothing, so moving the timeline back to a frame that renders must retire the
+     * error without waiting for a render.
+     **/
+    void refreshChannelSelectorMessageAtTime(double time, const std::list<ViewIdx>& views);
+
+    void refreshChannelSelectorMessageAtTime(double time, ViewIdx view);
+
+    /**
+     * @brief Appends every node, in any app, whose persistent message the channel-selector
+     * check currently owns.
+     **/
+    static void getNodesOwningChannelSelectorMessage(NodesList* nodes);
+
+    /**
+     * @brief Clears the persistent message unless the channel-selector check owns it: that
+     * error stays until a render or check that passes retires it.
+     **/
+    void clearPersistentMessageUnlessFromChannelSelector();
+
 private:
+    void postPersistentMessage(MessageTypeEnum type, const std::string& content, bool fromChannelSelector, U64 renderSequence, const AbortableRenderInfo* render);
+
+    // Returns whether the stored message changed.
+    bool storePersistentMessage(MessageTypeEnum type, const std::string& content, bool fromChannelSelector, U64 renderSequence, const AbortableRenderInfo* render);
+
+    // Sets persistentMessageFromChannelSelector and keeps getNodesOwningChannelSelectorMessage()
+    // in step with it. The caller holds persistentMessageMutex.
+    void setChannelSelectorOwnership(bool owned);
 
     void clearPersistentMessageRecursive(std::list<Node*>& markedNodes);
 
@@ -1019,7 +1077,23 @@ public:
 
     bool onEffectKnobValueChanged(KnobI* what, ValueChangedReasonEnum reason);
 
+    /**
+     * @brief Whether the node is disabled at the timeline's current frame. For the UI only:
+     * anything that renders, or answers an action for a render, must use isNodeDisabled(time).
+     **/
     bool isNodeDisabled() const;
+
+    /**
+     * @brief Whether the node is disabled at `time`, which makes it pass its preferred input through.
+     **/
+    bool isNodeDisabled(double time) const;
+
+    /**
+     * @brief Whether the node is disabled whatever the time: its Disable (or its container's) is
+     * on and neither animated nor driven by an expression. A lifetime range never makes this
+     * true on its own, since the node is enabled inside that range.
+     **/
+    bool isNodeDisabledAtAllTimes() const;
 
     void setNodeDisabled(bool disabled);
 
@@ -1176,6 +1250,11 @@ public:
 
     void getPersistentMessage(QString* message, int* type, bool prefixLabelAndType = true) const;
 
+    /**
+     * @brief Appends to nodes, once each and nearest first, every node in roots or upstream of
+     * them (through every input, into and out of groups) that has a persistent message.
+     **/
+    static void getNodesWithPersistentMessageUpstream(const NodesList& roots, NodesList* nodes);
 
     /**
      * @brief Attempts to detect cycles considering input being an input of this node.
@@ -1365,6 +1444,13 @@ public:
      **/
     void refreshChannelSelectors();
 
+    /**
+     * @brief Emits layerListRefreshed() and nothing else, so the layer/channel knob GUIs relist
+     * at the timeline's current frame. An input's layers can differ from one frame to the next,
+     * so a list built at another frame can lack layers the input carries now.
+     **/
+    void relistLayerKnobs();
+
     // True for the handful of plug-ins (see adoptChannelQuad()) whose R/G/B/A quad the host
     // does not adopt as a per-channel mask: their quad stays visible and the layer knob's
     // row-0 channel buttons are ignored (the host treats every plane as fully processed).
@@ -1407,7 +1493,10 @@ public:
     /**
      * @brief The layers a layer/channel knob of this node may choose from: an input-bound
      * knob lists the present layers of its input (always including Color), a target knob
-     * lists the project registry. A knob not declared on this node, such as a group's user
+     * lists the project registry. A knob bound to the preferred input lists the input the
+     * effect passes through at that time and view (EffectInstance::getLayersPassThroughInput()),
+     * at the time and view it is read at there: a Switch lists the input it routes, a
+     * FrameHold its held frame. A knob not declared on this node, such as a group's user
      * param aliased onto an inner node's layer knob, delegates to the node holding that inner
      * knob; the inner knob itself always resolves against its own node.
      **/
@@ -1432,6 +1521,19 @@ public:
      * in which case selected is left empty.
      **/
     bool resolveLayerKnob(double time, ViewIdx view, std::vector<ResolvedLayer>* selected) const;
+
+    /**
+     * @brief Same, for a caller that already has the effect's layers pass-through input and the
+     * time and view it is read at (EffectInstance::getLayersPassThroughInput()): a knob bound to
+     * the preferred input resolves against that input's present layers there, without asking
+     * the effect's isIdentity() again.
+     **/
+    bool resolveLayerKnob(double time,
+                          ViewIdx view,
+                          int passThroughInputNb,
+                          double passThroughTime,
+                          ViewIdx passThroughView,
+                          std::vector<ResolvedLayer>* selected) const;
 
     /**
      * @brief Points the layer knob at one registry layer, every channel, and makes it resolve
@@ -1623,8 +1725,9 @@ Q_SIGNALS:
     void layerSelectionChanged();
 
     /**
-     * @brief Emitted by refreshChannelSelectors(): the layer/channel knob GUIs list their
-     * layers themselves and only need to know that the input's present layers may have changed.
+     * @brief Emitted by refreshChannelSelectors() and relistLayerKnobs(): the layer/channel knob
+     * GUIs list their layers themselves and only need to know that the input's present layers
+     * may have changed.
      **/
     void layerListRefreshed();
 

@@ -228,6 +228,19 @@ public:
 
     void disconnectTexture(int index, bool clearRod);
 
+    /**
+     * @brief What a failed current-frame render does: clears the viewer, unless a render
+     * requested after one of the failed ones (renderAges[i], for textures with failed[i] set)
+     * has been shown or has failed since. Callable from any thread; the check runs on the main
+     * thread, where frames are shown, so a newer frame shown before it is taken into account.
+     **/
+    void disconnectViewerAfterFailedRender(const U64 renderAges[2], const bool failed[2]);
+
+    /**
+     * @brief Same as disconnectTexture(), under the same condition for the render of the given age.
+     **/
+    void disconnectTextureAfterRender(int index, bool clearRod, U64 renderAge);
+
     int getLutType() const WARN_UNUSED_RETURN;
 
     double getGain() const WARN_UNUSED_RETURN;
@@ -276,6 +289,12 @@ public:
     virtual void onInputChanged(int inputNb) OVERRIDE FINAL;
 
     void getActiveInputs(int & a, int &b) const;
+
+    /**
+     * @brief Every node upstream of the A and B inputs that has a persistent message, nearest
+     * first (see Node::getNodesWithPersistentMessageUpstream()).
+     **/
+    void getUpstreamNodesWithPersistentMessage(NodesList* nodes) const;
 
     void setInputA(int inputNb);
 

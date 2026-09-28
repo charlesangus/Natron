@@ -177,8 +177,8 @@ isColorRow(const ChannelSetRow& row)
     return row.mode == ChannelSetRow::eModeLayer && row.layerOrPattern == kNatronColorViewRGBA;
 }
 
-// A row naming the retired storage ID directly, as only the setChannels() row-0 legacy
-// shim and the pre-v17 legacy-default load gate still produce.
+// A row naming the retired storage ID directly, as only the pre-v17 legacy-default load
+// gate still produces (the setChannels() row-0 shim now falls back to rgba).
 bool
 isLegacyColorRow(const ChannelSetRow& row)
 {
@@ -327,7 +327,7 @@ TEST_F(DefaultChannelSetTest, SetChannelsOnAllDefaultBlurPinsToColor)
 
     std::vector<ChannelSetRow> rows = channels->getRows();
     ASSERT_EQ(1u, rows.size());
-    EXPECT_TRUE(isLegacyColorRow(rows[0]));
+    EXPECT_TRUE(isColorRow(rows[0]));
     EXPECT_EQ(rgba, rows[0].channels);
 }
 
@@ -350,7 +350,7 @@ TEST_F(DefaultChannelSetTest, SetChannelsOnAllDefaultBlurWithSingleChannelPinsTo
 
     std::vector<ChannelSetRow> rows = channels->getRows();
     ASSERT_EQ(1u, rows.size());
-    EXPECT_TRUE(isLegacyColorRow(rows[0]));
+    EXPECT_TRUE(isColorRow(rows[0]));
     EXPECT_EQ(alpha, rows[0].channels);
 }
 
@@ -373,7 +373,7 @@ TEST_F(DefaultChannelSetTest, SetChannelsOnNoneRowOfADefaultAllBlurPinsToColor)
 
     std::vector<ChannelSetRow> rows = channels->getRows();
     ASSERT_EQ(1u, rows.size());
-    EXPECT_TRUE(isLegacyColorRow(rows[0]));
+    EXPECT_TRUE(isColorRow(rows[0]));
     EXPECT_EQ(alpha, rows[0].channels);
 }
 

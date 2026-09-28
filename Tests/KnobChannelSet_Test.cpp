@@ -425,7 +425,7 @@ TEST(KnobChannelSet, SetChannelsOnAllRowZeroFallsBackToColor)
     std::vector<ChannelSetRow> rows = knob->getRows();
     ASSERT_EQ(1u, rows.size());
     EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
-    EXPECT_EQ(std::string(kNatronColorLayerID), rows[0].layerOrPattern);
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), rows[0].layerOrPattern);
     EXPECT_EQ(channels("R", "G", "B", "A"), rows[0].channels);
 }
 
@@ -439,7 +439,7 @@ TEST(KnobChannelSet, SetChannelsOnNoneRowZeroFallsBackToColor)
     std::vector<ChannelSetRow> rows = knob->getRows();
     ASSERT_EQ(1u, rows.size());
     EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
-    EXPECT_EQ(std::string(kNatronColorLayerID), rows[0].layerOrPattern);
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), rows[0].layerOrPattern);
     EXPECT_EQ(channels("A"), rows[0].channels);
 }
 

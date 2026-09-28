@@ -1449,6 +1449,155 @@ Node::refreshDataKindConflictMessage()
     }
 } // refreshDataKindConflictMessage
 
+static bool
+isLayerKnob(const KnobI* knob)
+{
+    return dynamic_cast<const KnobChannelSet*>(knob) || dynamic_cast<const KnobLayerSelect*>(knob) || dynamic_cast<const KnobChannelSelect*>(knob);
+}
+
+static bool
+rewriteLegacyColorRows(std::vector<ChannelSetRow>* rows)
+{
+    bool changed = false;
+    int rgbaRow = -1;
+
+    for (std::size_t i = 0; i < rows->size(); ++i) {
+        if ((*rows)[i].mode == ChannelSetRow::eModeLayer && (*rows)[i].layerOrPattern == kNatronColorViewRGBA) {
+            rgbaRow = (int)i;
+            break;
+        }
+    }
+    for (std::size_t i = 0; i < rows->size();) {
+        ChannelSetRow& row = (*rows)[i];
+        if (row.mode != ChannelSetRow::eModeLayer || row.layerOrPattern != kNatronColorLayerID) {
+            ++i;
+            continue;
+        }
+        changed = true;
+        if (rgbaRow == -1) {
+            row.layerOrPattern = kNatronColorViewRGBA;
+            rgbaRow = (int)i;
+            ++i;
+            continue;
+        }
+
+        // A channel set holds one row per layer, so a row that already names rgba absorbs the
+        // old one. An empty channel list means every channel, which absorbs any other list.
+        std::vector<std::string>& merged = (*rows)[rgbaRow].channels;
+        if (row.channels.empty()) {
+            merged.clear();
+        } else if (!merged.empty()) {
+            for (std::size_t c = 0; c < row.channels.size(); ++c) {
+                if (std::find(merged.begin(), merged.end(), row.channels[c]) == merged.end()) {
+                    merged.push_back(row.channels[c]);
+                }
+            }
+        }
+        rows->erase(rows->begin() + i);
+        if (rgbaRow > (int)i) {
+            --rgbaRow;
+        }
+    }
+
+    return changed;
+}
+
+// Rewrites a raw layer-knob value naming the retired colour storage ID so it names the rgba
+// view instead, channels unchanged. Returns false, leaving *rewritten alone, when there is
+// nothing to rewrite.
+static bool
+rewriteLegacyColorValue(KnobI* knob,
+                        const std::string& raw,
+                        std::string* rewritten)
+{
+    if (raw.empty() || (raw.find(kNatronColorLayerID) == std::string::npos)) {
+        return false;
+    }
+
+    if (KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(knob)) {
+        std::vector<ChannelSetRow> rows = isChannelSet->decodeRows(raw);
+        if (!rewriteLegacyColorRows(&rows)) {
+            return false;
+        }
+        *rewritten = isChannelSet->encodeRows(rows);
+
+        return true;
+    }
+
+    KnobTable* isTable = 0;
+    if (dynamic_cast<KnobLayerSelect*>(knob) || dynamic_cast<KnobChannelSelect*>(knob)) {
+        isTable = dynamic_cast<KnobTable*>(knob);
+    }
+    if (!isTable) {
+        return false;
+    }
+
+    std::list<std::vector<std::string>> table;
+    isTable->decodeFromKnobTableFormat(raw, &table);
+    if (table.empty() || table.front().empty()) {
+        return false;
+    }
+
+    std::string& cell = table.front()[0];
+    const std::string storageID(kNatronColorLayerID);
+    if (cell == storageID) {
+        cell = kNatronColorViewRGBA;
+    } else if ((cell.size() > storageID.size()) && (cell.compare(0, storageID.size(), storageID) == 0) && (cell[storageID.size()] == '.')) {
+        cell = std::string(kNatronColorViewRGBA) + cell.substr(storageID.size());
+    } else {
+        return false;
+    }
+    *rewritten = isTable->encodeToKnobTableFormat(table);
+
+    return true;
+}
+
+bool
+Node::resetLegacyColorLayerKnobs(const std::map<const KnobI*, std::string>& liveDefaults)
+{
+    bool valueChanged = false;
+    const KnobsVec& knobs = getKnobs();
+
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        if (!isLayerKnob(it->get())) {
+            continue;
+        }
+        KnobStringBase* isString = dynamic_cast<KnobStringBase*>(it->get());
+        if (!isString) {
+            continue;
+        }
+
+        std::string rewritten;
+        if (rewriteLegacyColorValue(it->get(), isString->getDefaultValue(0), &rewritten)) {
+            // The file's saved default, or the pre-v17 gate's, names the retired ID; "Reset to
+            // default" must land on the knob's own default instead.
+            std::map<const KnobI*, std::string>::const_iterator live = liveDefaults.find(it->get());
+            std::string unused;
+            if ((live != liveDefaults.end()) && !rewriteLegacyColorValue(it->get(), live->second, &unused)) {
+                rewritten = live->second;
+            }
+            isString->setDefaultValueWithoutApplying(rewritten, 0);
+        }
+
+        if (rewriteLegacyColorValue(it->get(), isString->getValue(), &rewritten)) {
+            isString->setValue(rewritten, ViewSpec::all(), 0, eValueChangedReasonNatronInternalEdited, NULL);
+            valueChanged = true;
+        }
+    }
+
+    return valueChanged;
+}
+
+void
+Node::postPendingLegacyColorLayerWarning()
+{
+    if (!_imp->legacyColorLayerWarningPending) {
+        return;
+    }
+    _imp->legacyColorLayerWarningPending = false;
+    setPersistentMessage(eMessageTypeWarning, tr("Colour layer from an older project was reset to rgba").toStdString());
+}
+
 void
 Node::loadKnobs(const NodeSerialization & serialization,
                 bool updateKnobGui)
@@ -1461,6 +1610,16 @@ Node::loadKnobs(const NodeSerialization & serialization,
     }
 
     const std::vector<KnobIPtr> & nodeKnobs = getKnobs();
+
+    // Loading overwrites each knob's default with the one saved in the file.
+    std::map<const KnobI*, std::string> liveLayerDefaults;
+    for (U32 j = 0; j < nodeKnobs.size(); ++j) {
+        KnobStringBase* isString = dynamic_cast<KnobStringBase*>(nodeKnobs[j].get());
+        if (isString && isLayerKnob(nodeKnobs[j].get())) {
+            liveLayerDefaults[nodeKnobs[j].get()] = isString->getDefaultValue(0);
+        }
+    }
+
     ///for all knobs of the node
     for (U32 j = 0; j < nodeKnobs.size(); ++j) {
         loadKnob(nodeKnobs[j], serialization, updateKnobGui);
@@ -1495,6 +1654,15 @@ Node::loadKnobs(const NodeSerialization & serialization,
     }
 
     restoreUserKnobs(serialization);
+
+    // Only the rgba, rgb, alpha and xy views are valid layer values now; the colour storage ID
+    // resolves to nothing, so an old value naming it would silently process no colour at all.
+    if (resetLegacyColorLayerKnobs(liveLayerDefaults)) {
+        _imp->legacyColorLayerWarningPending = true;
+        if (_imp->nodeCreated) {
+            postPendingLegacyColorLayerWarning();
+        }
+    }
 
     setKnobsAge( serialization.getKnobsAge() );
 

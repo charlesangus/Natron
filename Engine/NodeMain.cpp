@@ -238,6 +238,8 @@ Node::load(const CreateNodeArgs& args)
 
     _imp->nodeCreated = true;
 
+    postPendingLegacyColorLayerWarning();
+
     if ( !getApp()->isCreatingNodeTree() ) {
         refreshAllInputRelatedData(!serialization);
     }

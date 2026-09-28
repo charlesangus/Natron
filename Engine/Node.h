@@ -1218,11 +1218,16 @@ private:
 
     void adoptChannelQuad();
 
+    bool resetLegacyColorLayerKnobs(const std::map<const KnobI*, std::string>& liveDefaults);
+
+    // Knobs are loaded before the node counts as created, and postPersistentMessage() drops
+    // messages from a node still being created silently, so the colour-layer reset warning
+    // waits for this call at the end of creation.
+    void postPendingLegacyColorLayerWarning();
+
     void refreshGeneratorOutputComponentsKnob();
 
 public:
-
-
     void onSetSupportRenderScaleMaybeSet(int support);
 
     bool useScaleOneImagesWhenRenderScaleSupportIsDisabled() const;

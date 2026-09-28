@@ -575,20 +575,6 @@ public:
     {
         {
             KnobChoiceOptionFilter f;
-            f.replacement = kNatronColorLayerID;
-            addKnobFilter(f, "outputChannels", equalsStringCaseSensitive);
-            addKnobFilter(f, "channels", endsWith);
-            setNatronVersionMax(f, 2, 2, 99);
-            addOptionFilter(f, "RGBA", equalsStringCaseInsensitive);
-            addOptionFilter(f, "RGB", equalsStringCaseInsensitive);
-            addOptionFilter(f, "Alpha", equalsStringCaseInsensitive);
-            addOptionFilter(f, "Color.RGBA", equalsStringCaseInsensitive);
-            addOptionFilter(f, "Color.RGB", equalsStringCaseInsensitive);
-            addOptionFilter(f, "Color.Alpha", equalsStringCaseInsensitive);
-            filters.push_back(f);
-        }
-        {
-            KnobChoiceOptionFilter f;
             f.replacement = kNatronBackwardMotionVectorsLayerID "." kNatronMotionComponentsLabel;
             addKnobFilter(f, "outputChannels", equalsStringCaseSensitive);
             addKnobFilter(f, "channels", endsWith);
@@ -624,107 +610,6 @@ public:
             filters.push_back(f);
         }
 
-        KnobChoiceOptionFilter channelsFilterBase;
-        {
-            KnobChoiceOptionFilter& f = channelsFilterBase;
-            addKnobFilter(f, "maskChannel", startsWith);
-            addKnobFilter(f, "premultChannel", equalsStringCaseSensitive);
-            {
-                KnobMatch& m = addKnobFilter(f, "channelU", equalsStringCaseSensitive);
-                addPluginMatch(m, "net.sf.openfx.IDistort");
-                addPluginMatch(m, "net.sf.openfx.STMap");
-            }
-            {
-                KnobMatch& m = addKnobFilter(f, "channelV", equalsStringCaseSensitive);
-                addPluginMatch(m, "net.sf.openfx.IDistort");
-                addPluginMatch(m, "net.sf.openfx.STMap");
-            }
-            setNatronVersionMax(f, 2, 2, 99);
-        }
-        {
-            KnobChoiceOptionFilter f = channelsFilterBase;
-            addOptionFilter(f, "RGBA.R", equalsStringCaseInsensitive);
-            addOptionFilter(f, "UV.r", equalsStringCaseInsensitive);
-            addOptionFilter(f, "red", equalsStringCaseInsensitive);
-            addOptionFilter(f, "r", equalsStringCaseInsensitive);
-            f.replacement = kNatronColorLayerID ".R";
-            filters.push_back(f);
-        }
-        {
-            KnobChoiceOptionFilter f = channelsFilterBase;
-            addOptionFilter(f, "RGBA.G", equalsStringCaseInsensitive);
-            addOptionFilter(f, "UV.g", equalsStringCaseInsensitive);
-            addOptionFilter(f, "green", equalsStringCaseInsensitive);
-            addOptionFilter(f, "g", equalsStringCaseInsensitive);
-            f.replacement = kNatronColorLayerID ".G";
-            filters.push_back(f);
-        }
-        {
-            KnobChoiceOptionFilter f = channelsFilterBase;
-            addOptionFilter(f, "RGBA.B", equalsStringCaseInsensitive);
-            addOptionFilter(f, "UV.b", equalsStringCaseInsensitive);
-            addOptionFilter(f, "blue", equalsStringCaseInsensitive);
-            addOptionFilter(f, "b", equalsStringCaseInsensitive);
-            f.replacement = kNatronColorLayerID ".B";
-            filters.push_back(f);
-        }
-        {
-            KnobChoiceOptionFilter f = channelsFilterBase;
-            addOptionFilter(f, "RGBA.A", equalsStringCaseInsensitive);
-            addOptionFilter(f, "UV.a", equalsStringCaseInsensitive);
-            addOptionFilter(f, "alpha", equalsStringCaseInsensitive);
-            addOptionFilter(f, "a", equalsStringCaseInsensitive);
-            f.replacement = kNatronColorLayerID ".A";
-            filters.push_back(f);
-        }
-        {
-            KnobChoiceOptionFilter f = channelsFilterBase;
-            addOptionFilter(f, "A.r", equalsStringCaseInsensitive);
-            f.replacement = "A." kNatronColorLayerID ".R";
-            filters.push_back(f);
-        }
-        {
-            KnobChoiceOptionFilter f = channelsFilterBase;
-            addOptionFilter(f, "A.g", equalsStringCaseInsensitive);
-            f.replacement = "A." kNatronColorLayerID ".G";
-            filters.push_back(f);
-        }
-        {
-            KnobChoiceOptionFilter f = channelsFilterBase;
-            addOptionFilter(f, "A.b", equalsStringCaseInsensitive);
-            f.replacement = "A." kNatronColorLayerID ".b";
-            filters.push_back(f);
-        }
-        {
-            KnobChoiceOptionFilter f = channelsFilterBase;
-            addOptionFilter(f, "A.a", equalsStringCaseInsensitive);
-            f.replacement = "A." kNatronColorLayerID ".A";
-            filters.push_back(f);
-        }
-        {
-            KnobChoiceOptionFilter f = channelsFilterBase;
-            addOptionFilter(f, "B.r", equalsStringCaseInsensitive);
-            f.replacement = "B." kNatronColorLayerID ".R";
-            filters.push_back(f);
-        }
-        {
-            KnobChoiceOptionFilter f = channelsFilterBase;
-            addOptionFilter(f, "B.g", equalsStringCaseInsensitive);
-            f.replacement = "B." kNatronColorLayerID ".G";
-            filters.push_back(f);
-        }
-        {
-            KnobChoiceOptionFilter f = channelsFilterBase;
-            addOptionFilter(f, "B.b", equalsStringCaseInsensitive);
-            f.replacement = "B." kNatronColorLayerID ".B";
-            filters.push_back(f);
-        }
-        {
-            KnobChoiceOptionFilter f = channelsFilterBase;
-            addOptionFilter(f, "B.a", equalsStringCaseInsensitive);
-            f.replacement = "B." kNatronColorLayerID ".A";
-            filters.push_back(f);
-        }
         {
             KnobChoiceOptionFilter f;
             f.replacement = "project";

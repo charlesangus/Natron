@@ -270,6 +270,7 @@ public:
         , requiresGLFinishBeforeRender(false)
         , pluginOwnsChannelMask(false)
         , legacyChannelSetDefault()
+        , legacyColorLayerWarningPending(false)
         , effectiveDataKindMutex()
         , effectiveDataKindCacheSet(false)
         , effectiveDataKindCache(eDataKindPolymorphic)
@@ -525,6 +526,8 @@ public:
     // "All". A project saved back then stored no value for an untouched knob, so loading it
     // must restore this instead of today's default.
     std::string legacyChannelSetDefault;
+
+    bool legacyColorLayerWarningPending;
 
     // Cache for Node::getEffectiveOutputDataKind(): only ever populated for nodes whose
     // declared output kind is eDataKindPolymorphic, since a non-polymorphic node's kind is a

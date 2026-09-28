@@ -6125,7 +6125,24 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
     // The widened inputs read the missing channels as zero. A writer's channel set only picks what
     // goes to the file, so it never widens: an RGB image would otherwise gain a zero alpha there.
     if (!_publicInterface->isWriter() && (md.getComponentsType(-1) == kNatronColorLayerID)) {
-        const ImageLayerDesc& storage = ImageLayerDesc::mapNCompsToColorLayer(md.getNComps(-1));
+        // md.getNComps(-1) may already have been clamped, above and in getDefaultMetadata, to the
+        // nearest layout this node's clip preferences support (e.g. Alpha clamped to RGB, because
+        // Grade declares no Alpha clip). That clamp can coincidentally already satisfy the write
+        // bits below, hiding a colour channel the real upstream stream never had. Read each
+        // connected input's own unclamped metadata instead, so the check sees the true storage.
+        int rawNComps = md.getNComps(-1);
+        bool hasRawInput = false;
+        for (int i = 0; i < nInputs; ++i) {
+            if (!inputs[i] || _publicInterface->isInputMask(i) || node->isInputOnlyAlpha(i) || (md.getComponentsType(i) != kNatronColorLayerID)) {
+                continue;
+            }
+            const int inputRawNComps = inputs[i]->getMetadataNComps(-1);
+            if (!hasRawInput || inputRawNComps > rawNComps) {
+                rawNComps = inputRawNComps;
+            }
+            hasRawInput = true;
+        }
+        const ImageLayerDesc& storage = ImageLayerDesc::mapNCompsToColorLayer(rawNComps);
         if (storage.getNumComponents() > 0) {
             std::bitset<4> writeBits;
             _publicInterface->getColorWriteBits(storage, &writeBits);

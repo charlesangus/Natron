@@ -129,6 +129,7 @@ expectColor(const FlatExrImage& image,
 
 // flat-three-layers.exr: Color (1, 0, 0, 1), diffuse (0, 1, 0), specular (0, 0, 1).
 // flat-rgb-only.exr: Color (1, 0, 0) and no alpha.
+// flat-alpha-only.exr: Color has only A (1), no R/G/B.
 class ColorViewsRenderTest
     : public BaseTest {
 protected:
@@ -465,4 +466,75 @@ TEST_F(ColorViewsRenderTest, MergeOfRgbIntoRgbaStreamKeepsOrdinaryConversion)
     for (int i = 0; i < effect->getNInputs(); ++i) {
         EXPECT_FALSE(effect->getMetadataColorZeroFill(i)) << "input " << i;
     }
+}
+
+TEST_F(ColorViewsRenderTest, ListLayerViewsForKnobOnAlphaOnlyInputListsRgbaRgbAlpha)
+{
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(kGradePluginID, "flat-alpha-only.exr", &channels);
+    ASSERT_TRUE(bool(grade));
+    ASSERT_TRUE(bool(channels));
+
+    std::list<ImageLayerDesc> views;
+    grade->listLayerViewsForKnob(grade->getLayerKnob(), 1, ViewIdx(0), &views);
+
+    std::vector<std::string> ids;
+    for (std::list<ImageLayerDesc>::const_iterator it = views.begin(); it != views.end(); ++it) {
+        ids.push_back(it->getLayerID());
+    }
+    const std::vector<std::string> expected = { kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha };
+    EXPECT_EQ(expected, ids) << layerIDsString(views);
+
+    std::list<ImageLayerDesc> storage;
+    grade->listLayersForKnob(grade->getLayerKnob(), 1, ViewIdx(0), &storage);
+    ASSERT_EQ(1u, storage.size()) << layerIDsString(storage);
+    EXPECT_EQ(std::string(kNatronColorLayerID), storage.front().getLayerID());
+}
+
+// Grade's rgb view writes bits {0, 1, 2}, which is not a subset of the alpha-only storage's bit
+// {3}, so checkMetadata widens the output to RGBA per the design doc's widen-on-write rule: RGB
+// is graded from a zero fill, and A passes through unchanged (the "Grade rgb over Alpha" example).
+TEST_F(ColorViewsRenderTest, GradeRgbOverAlphaWidensAndGradesRgbFromZero)
+{
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(kGradePluginID, "flat-alpha-only.exr", &channels);
+    ASSERT_TRUE(bool(grade));
+    ASSERT_TRUE(bool(channels));
+    EffectInstancePtr effect = grade->getEffectInstance();
+
+    KnobColor* offset = dynamic_cast<KnobColor*>(grade->getKnobByName("offset").get());
+    ASSERT_TRUE(offset != NULL);
+    offset->setValues(0.3, 0.3, 0.3, 0., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    channels->setLayer(0, kNatronColorViewRGB, NULL);
+
+    EXPECT_EQ(4, effect->getMetadataNComps(-1));
+    EXPECT_EQ(4, effect->getMetadataNComps(0));
+    EXPECT_TRUE(effect->getMetadataColorZeroFill(0));
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(grade, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    ASSERT_GE(image.channelIndex("A"), 0) << "the output widened to RGBA";
+    expectColor(image, 0.3f, 0.3f, 0.3f, 1.f);
+}
+
+// None of this suite's EXR fixtures carry a base layer with exactly two channels that aren't an
+// I+A (luminance+alpha) pair, so ReadOIIO's guessParamsFromFilename never reports
+// ePixelComponentXY for them: there is no genuine 2-channel XY colour clip to render here. This
+// instead exercises the exact composition Node::listLayerViewsForKnob uses,
+// expandColorViews(listLayersForKnob(...)), directly on an XY storage desc, at the engine level.
+TEST_F(ColorViewsRenderTest, ExpandColorViewsOnXYStorageListsAllFourViews)
+{
+    std::list<ImageLayerDesc> storage;
+    storage.push_back(ImageLayerDesc::getXYComponents());
+
+    ImageLayerDesc::expandColorViews(&storage);
+
+    std::vector<std::string> ids;
+    for (std::list<ImageLayerDesc>::const_iterator it = storage.begin(); it != storage.end(); ++it) {
+        ids.push_back(it->getLayerID());
+    }
+    const std::vector<std::string> expected = { kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY };
+    EXPECT_EQ(expected, ids) << layerIDsString(storage);
 }

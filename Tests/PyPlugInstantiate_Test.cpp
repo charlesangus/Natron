@@ -41,6 +41,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
@@ -91,7 +92,8 @@ const char* const kAllBundledPyPlugs[] = {
 
 // The subset of kAllBundledPyPlugs whose exported script pins at least one channel-agnostic
 // inner node (one whose EffectInstance::defaultProcessesAllLayers() is true, e.g. a Blur, a
-// Transform or a Switch) to the Color layer, rather than leaving it on its own All default.
+// Transform or a Switch) to a colour view (rgba/rgb/alpha), rather than leaving it on its own
+// All default.
 const char* const kPyPlugsWithColorPinnedInnerNodes[] = {
     "fr.inria.AngleBlur",
     "fr.inria.DropShadow",
@@ -120,9 +122,9 @@ channelSetOf(const NodePtr& node)
 }
 
 bool
-isColorRow(const ChannelSetRow& row)
+isColorViewRow(const ChannelSetRow& row)
 {
-    return row.mode == ChannelSetRow::eModeLayer && row.layerOrPattern == kNatronColorLayerID;
+    return row.mode == ChannelSetRow::eModeLayer && ImageLayerDesc::isColorViewID(row.layerOrPattern);
 }
 
 } // namespace
@@ -163,7 +165,7 @@ TEST_F(PyPlugInstantiateTest, EveryBundledPyPlugInstantiatesWithoutAPythonExcept
     }
 }
 
-TEST_F(PyPlugInstantiateTest, ChannelAgnosticInnerNodesOfPyPlugsArePinnedToColor)
+TEST_F(PyPlugInstantiateTest, ChannelAgnosticInnerNodesOfPyPlugsArePinnedToColorViews)
 {
     if (!isPluginLoaded(kPyPlugsWithColorPinnedInnerNodes[0])) {
         std::cerr << "Skipping: PyPlugs under " NATRON_TESTS_PYPLUGS_DIR " were not registered as plugins." << std::endl;
@@ -195,7 +197,7 @@ TEST_F(PyPlugInstantiateTest, ChannelAgnosticInnerNodesOfPyPlugsArePinnedToColor
             }
             std::vector<ChannelSetRow> rows = channels->getRows();
             ASSERT_FALSE(rows.empty()) << pluginID << "/" << inner->getScriptName();
-            EXPECT_TRUE(isColorRow(rows[0])) << pluginID << "/" << inner->getScriptName();
+            EXPECT_TRUE(isColorViewRow(rows[0])) << pluginID << "/" << inner->getScriptName();
             ++channelAgnosticNodesChecked;
         }
         EXPECT_GT(channelAgnosticNodesChecked, 0) << pluginID << " has no channel-agnostic inner node to check";

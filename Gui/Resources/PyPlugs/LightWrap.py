@@ -1111,7 +1111,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        param.setLayer("rgba")
         del param
 
     param = lastNode.getParam("expandRoD")
@@ -1169,7 +1169,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("in2")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour")
+        param.setLayer("rgba")
         del param
 
     param = lastNode.getParam("mapping")
@@ -1206,7 +1206,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        param.setLayer("rgba")
         del param
 
     param = lastNode.getParam("which")
@@ -1228,7 +1228,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        param.setLayer("rgba")
         del param
 
     param = lastNode.getParam("which")
@@ -1262,7 +1262,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        param.setLayer("rgba")
         del param
 
     param = lastNode.getParam("which")
@@ -1296,7 +1296,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["A"])
+        param.setLayer("alpha")
         del param
 
     param = lastNode.getParam("size")
@@ -1413,7 +1413,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        param.setLayer("rgba")
         del param
 
     param = lastNode.getParam("size")

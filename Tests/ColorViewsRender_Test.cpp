@@ -51,6 +51,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
@@ -622,4 +623,33 @@ TEST_F(ColorViewsRenderTest, NoUserFacingColor)
     for (std::list<Natron::Python::ImageLayer>::const_iterator it = available.begin(); it != available.end(); ++it) {
         expectNoUserFacingColor(it->getLayerName().toStdString());
     }
+}
+
+// The viewer's info bar (Image::getFormatString()) and a node's Info tab read the image or the
+// layer list at the storage level, so each names the colour storage plane after the view whose
+// channels it carries: an RGB-only stream reads rgb.RGB, not rgba.
+TEST_F(ColorViewsRenderTest, InfoTextsNameTheStorageView)
+{
+    EXPECT_EQ(std::string("rgba.RGBA32f"), Image::getFormatString(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat));
+    EXPECT_EQ(std::string("rgb.RGB16f"), Image::getFormatString(ImageLayerDesc::getRGBComponents(), eImageBitDepthHalf));
+    EXPECT_EQ(std::string("alpha.Alpha8u"), Image::getFormatString(ImageLayerDesc::getAlphaComponents(), eImageBitDepthByte));
+    EXPECT_EQ(std::string("xy.XY32f"), Image::getFormatString(ImageLayerDesc::getXYComponents(), eImageBitDepthFloat));
+
+    const std::vector<std::string> z(1, "Z");
+    const ImageLayerDesc depth("depth", "depth", "", z);
+    EXPECT_EQ(std::string("depth.Z32f"), Image::getFormatString(depth, eImageBitDepthFloat));
+    EXPECT_EQ(std::string(kNatronColorViewAlpha), ImageLayerDesc::getColorView(kNatronColorViewAlpha).getUserFacingLabel());
+
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(kGradePluginID, "flat-rgb-only.exr", &channels);
+    ASSERT_TRUE(bool(grade));
+    KnobButtonPtr refreshInfo = std::dynamic_pointer_cast<KnobButton>(grade->getKnobByName("refreshButton"));
+    KnobStringPtr nodeInfos = std::dynamic_pointer_cast<KnobString>(grade->getKnobByName("nodeInfos"));
+    ASSERT_TRUE(bool(refreshInfo));
+    ASSERT_TRUE(bool(nodeInfos));
+
+    refreshInfo->trigger();
+    const std::string text = nodeInfos->getValue();
+    EXPECT_NE(std::string::npos, text.find("rgb.RGB")) << text;
+    expectNoUserFacingColor(text);
 }

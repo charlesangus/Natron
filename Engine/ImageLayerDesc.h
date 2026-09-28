@@ -126,6 +126,14 @@ public:
     const std::string& getLayerLabel() const;
 
     /**
+     * @brief The layer name for text built from a desc that may be the colour storage plane:
+     * the storage plane is named after the colour view whose channels it carries (see
+     * colorViewForNComps()), since its own label never reaches the user. Any other layer,
+     * colour views included, returns getLayerLabel().
+     **/
+    std::string getUserFacingLabel() const;
+
+    /**
      * @brief Returns the channels composing this layer.
      **/
     const std::vector<std::string>& getChannels() const;

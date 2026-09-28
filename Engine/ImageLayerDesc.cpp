@@ -163,6 +163,20 @@ ImageLayerDesc::getLayerLabel() const
     return _layerLabel;
 }
 
+std::string
+ImageLayerDesc::getUserFacingLabel() const
+{
+    if (_layerID != kNatronColorLayerID) {
+        return _layerLabel;
+    }
+    const ImageLayerDesc& view = ImageLayerDesc::colorViewForNComps(getNumComponents());
+    if (view) {
+        return view.getLayerLabel();
+    }
+
+    return kNatronColorViewRGBA;
+}
+
 const std::string&
 ImageLayerDesc::getChannelsLabel() const
 {

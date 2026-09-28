@@ -2241,7 +2241,7 @@ Node::makeInfoForInput(int inputNumber) const
         }
         for (std::list<ImageLayerDesc>::iterator it = availableLayers.begin(); it != availableLayers.end(); ++it) {
 
-            ss << " " << it->getLayerLabel() << '.' << it->getChannelsLabel();
+            ss << " " << it->getUserFacingLabel() << '.' << it->getChannelsLabel();
             if ( next != availableLayers.end() ) {
                 ss << ", ";
                 ++next;

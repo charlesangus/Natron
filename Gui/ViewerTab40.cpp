@@ -875,6 +875,19 @@ viewerLayerToStorage(const ImageLayerDesc& chosen,
 }
 
 void
+ViewerTab::autoSwitchDisplayChannelsForLayer(const ImageLayerDesc& chosen)
+{
+    if (chosen.getNumComponents() == 1) {
+        _imp->viewerChannels->setCurrentIndex_no_emit(5);
+        setDisplayChannels(5, true);
+        _imp->viewerChannelsAutoswitchedToAlpha = true;
+    } else if (_imp->viewerChannelsAutoswitchedToAlpha && (chosen.getNumComponents() > 1) && (_imp->viewerChannels->activeIndex() == 5)) {
+        _imp->viewerChannels->setCurrentIndex_no_emit(1);
+        setDisplayChannels(1, true);
+    }
+}
+
+void
 ViewerTab::refreshLayerAndAlphaChannelComboBox(bool keepAbsentSelection)
 {
     TimeLinePtr timeline = getTimeLine();
@@ -970,18 +983,7 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
             int layerIdx = _imp->layerChoice->itemIndex(layerCurChoice);
             assert(layerIdx != -1);
             _imp->layerChoice->setCurrentIndex_no_emit(layerIdx);
-            if (foundCurIt->getNumComponents() == 1) {
-                // Switch auto to alpha if there's only this to view
-                _imp->viewerChannels->setCurrentIndex_no_emit(5);
-                setDisplayChannels(5, true);
-                _imp->viewerChannelsAutoswitchedToAlpha = true;
-            } else {
-                // Switch back to RGB if we auto-switched to alpha
-                if (_imp->viewerChannelsAutoswitchedToAlpha && (foundCurIt->getNumComponents() > 1) && (_imp->viewerChannels->activeIndex() == 5)) {
-                    _imp->viewerChannels->setCurrentIndex_no_emit(1);
-                    setDisplayChannels(1, true);
-                }
-            }
+            autoSwitchDisplayChannelsForLayer(*foundCurIt);
             _imp->viewerNode->setActiveLayer(viewerLayerToStorage(*foundCurIt, storageColorLayer), false);
         }
     }
@@ -1075,13 +1077,22 @@ ViewerTab::onLayerComboChanged(int index)
     for (std::list<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it, ++i) {
         chanCount += it->getChannels().size();
         if (i == index) {
-            _imp->viewerNode->setActiveLayer(viewerLayerToStorage(*it, storageColorLayer), true);
+            const ImageLayerDesc& storage = viewerLayerToStorage(*it, storageColorLayer);
+            const std::vector<std::string>& channels = it->getChannels();
 
-            ///If it has an alpha channel, set it
-            if (it->getChannels().size() == 4) {
+            // A single-channel layer is shown through the A display, which reads the alpha menu's
+            // channel rather than the layer's: point the alpha menu at that one channel too, or
+            // picking the alpha view would keep showing the colour image.
+            if ((channels.size() == 4) || (channels.size() == 1)) {
                 _imp->alphaChannelChoice->setCurrentIndex_no_emit(chanCount - 1);
-                _imp->viewerNode->setAlphaChannel(viewerLayerToStorage(*it, storageColorLayer), it->getChannels()[3], true);
+                {
+                    QMutexLocker k(&_imp->currentLayerMutex);
+                    _imp->currentAlphaLayerChoice = _imp->alphaChannelChoice->getCurrentIndexText();
+                }
+                _imp->viewerNode->setAlphaChannel(storage, channels.back(), true);
             }
+            autoSwitchDisplayChannelsForLayer(*it);
+            _imp->viewerNode->setActiveLayer(storage, true);
 
             return;
         }

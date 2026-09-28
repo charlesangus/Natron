@@ -853,6 +853,27 @@ ViewerTab::onInternalNodeScriptNameChanged(const QString& /*name*/)
     }
 }
 
+static ChoiceOption
+viewerLayerChoiceOption(const ImageLayerDesc& layer)
+{
+    // A colour view's label is its own ID ("rgba", not "rgba." + a channels label): getLayerOption()
+    // appends getChannelsLabel(), which views leave empty.
+    if (ImageLayerDesc::isColorViewID(layer.getLayerID())) {
+        return ChoiceOption(layer.getLayerID(), layer.getLayerLabel(), "");
+    }
+
+    return layer.getLayerOption();
+}
+
+static const ImageLayerDesc&
+viewerLayerToStorage(const ImageLayerDesc& chosen,
+                     const ImageLayerDesc& storageColorLayer)
+{
+    // The combo lists colour views for display; the viewer node itself only knows the storage
+    // plane they alias (its render path fetches by storage ID).
+    return chosen.isColorLayer() ? storageColorLayer : chosen;
+}
+
 void
 ViewerTab::refreshLayerAndAlphaChannelComboBox(bool keepAbsentSelection)
 {
@@ -874,8 +895,9 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
     const QString alphaChoiceBefore = alphaCurChoice;
     _imp->layerMenuTime = time;
     _imp->layerMenuView = _imp->viewerNode->getViewerCurrentView();
-    std::set<ImageLayerDesc> components;
-    _imp->getComponentsAvailabel(_imp->layerMenuTime, _imp->layerMenuView, &components);
+    std::list<ImageLayerDesc> components;
+    ImageLayerDesc storageColorLayer;
+    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, &components, &storageColorLayer);
 
     _imp->layerChoice->clear();
     _imp->alphaChannelChoice->clear();
@@ -883,15 +905,15 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
     _imp->layerChoice->addItem( QString::fromUtf8("-") );
     _imp->alphaChannelChoice->addItem( QString::fromUtf8("-") );
 
-    std::set<ImageLayerDesc>::iterator foundColorIt = components.end();
-    std::set<ImageLayerDesc>::iterator foundOtherIt = components.end();
-    std::set<ImageLayerDesc>::iterator foundCurIt = components.end();
-    std::set<ImageLayerDesc>::iterator foundCurAlphaIt = components.end();
+    std::list<ImageLayerDesc>::iterator foundColorIt = components.end();
+    std::list<ImageLayerDesc>::iterator foundOtherIt = components.end();
+    std::list<ImageLayerDesc>::iterator foundCurIt = components.end();
+    std::list<ImageLayerDesc>::iterator foundCurAlphaIt = components.end();
     std::string foundAlphaChannel;
 
-    for (std::set<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it) {
+    for (std::list<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it) {
 
-        ChoiceOption option = it->getLayerOption();
+        ChoiceOption option = viewerLayerChoiceOption(*it);
         _imp->layerChoice->addItem(QString::fromUtf8(option.label.c_str()));
 
         if (option.label == layerCurChoice.toStdString()) {
@@ -899,7 +921,11 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
         }
 
         if (it->isColorLayer()) {
-            foundColorIt = it;
+            // The colour views are always inserted rgba, rgb, alpha, (xy): keep the first (rgba)
+            // as the fallback default, not whichever one this loop reaches last.
+            if (foundColorIt == components.end()) {
+                foundColorIt = it;
+            }
         } else {
             foundOtherIt = it;
         }
@@ -914,27 +940,6 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
             }
             _imp->alphaChannelChoice->addItem(QString::fromUtf8(chanOpt.label.c_str()));
         }
-
-        if (it->isColorLayer()) {
-            //There's RGBA or alpha, set it to A
-            std::string alphaChoice;
-            if (channels.size() == 4) {
-                alphaChoice = channels[3];
-            } else if (channels.size() == 1) {
-                alphaChoice = channels[0];
-            }
-            if ( !alphaChoice.empty() ) {
-                _imp->alphaChannelChoice->setCurrentIndex_no_emit(_imp->alphaChannelChoice->count() - 1);
-            } else {
-                alphaCurChoice = _imp->alphaChannelChoice->itemText(0);
-            }
-
-            // The alpha channel is set again below, except when an absent choice is kept, which
-            // this would silently replace.
-            if (!keepAbsentSelection) {
-                _imp->viewerNode->setAlphaChannel(*it, alphaChoice, false);
-            }
-        }
     }
 
     const QString noChoice = QString::fromUtf8("-");
@@ -947,12 +952,10 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
         if ((layerCurChoice == QString::fromUtf8("-")) || layerCurChoice.isEmpty() || (foundCurIt == components.end())) {
             // Try to find color layer, otherwise fallback on any other layer
             if (foundColorIt != components.end()) {
-                layerCurChoice = QString::fromUtf8(foundColorIt->getLayerLabel().c_str())
-                    + QLatin1Char('.') + QString::fromUtf8(foundColorIt->getChannelsLabel().c_str());
+                layerCurChoice = QString::fromUtf8(viewerLayerChoiceOption(*foundColorIt).label.c_str());
                 foundCurIt = foundColorIt;
             } else if (foundOtherIt != components.end()) {
-                layerCurChoice = QString::fromUtf8(foundOtherIt->getLayerLabel().c_str())
-                    + QLatin1Char('.') + QString::fromUtf8(foundOtherIt->getChannelsLabel().c_str());
+                layerCurChoice = QString::fromUtf8(viewerLayerChoiceOption(*foundOtherIt).label.c_str());
                 foundCurIt = foundOtherIt;
             } else {
                 layerCurChoice = QString::fromUtf8("-");
@@ -979,7 +982,7 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
                     setDisplayChannels(1, true);
                 }
             }
-            _imp->viewerNode->setActiveLayer(*foundCurIt, false);
+            _imp->viewerNode->setActiveLayer(viewerLayerToStorage(*foundCurIt, storageColorLayer), false);
         }
     }
 
@@ -1010,7 +1013,7 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
             assert(layerIdx != -1);
             _imp->alphaChannelChoice->setCurrentIndex_no_emit(layerIdx);
 
-            _imp->viewerNode->setAlphaChannel(*foundCurAlphaIt, foundAlphaChannel, false);
+            _imp->viewerNode->setAlphaChannel(viewerLayerToStorage(*foundCurAlphaIt, storageColorLayer), foundAlphaChannel, false);
         }
     }
 
@@ -1024,23 +1027,24 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
 void
 ViewerTab::onAlphaChannelComboChanged(int index)
 {
-    std::set<ImageLayerDesc> components;
+    std::list<ImageLayerDesc> components;
+    ImageLayerDesc storageColorLayer;
 
-    _imp->getComponentsAvailabel(_imp->layerMenuTime, _imp->layerMenuView, &components);
+    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, &components, &storageColorLayer);
 
     {
         QMutexLocker k(&_imp->currentLayerMutex);
         _imp->currentAlphaLayerChoice = _imp->alphaChannelChoice->getCurrentIndexText();
     }
     int i = 1; // because of the "-" choice
-    for (std::set<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it) {
+    for (std::list<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it) {
         const std::vector<std::string>& channels = it->getChannels();
         if ( index >= ( (int)channels.size() + i ) ) {
             i += channels.size();
         } else {
             for (U32 j = 0; j < channels.size(); ++j, ++i) {
                 if (i == index) {
-                    _imp->viewerNode->setAlphaChannel(*it, channels[j], true);
+                    _imp->viewerNode->setAlphaChannel(viewerLayerToStorage(*it, storageColorLayer), channels[j], true);
 
                     return;
                 }
@@ -1053,9 +1057,10 @@ ViewerTab::onAlphaChannelComboChanged(int index)
 void
 ViewerTab::onLayerComboChanged(int index)
 {
-    std::set<ImageLayerDesc> components;
+    std::list<ImageLayerDesc> components;
+    ImageLayerDesc storageColorLayer;
 
-    _imp->getComponentsAvailabel(_imp->layerMenuTime, _imp->layerMenuView, &components);
+    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, &components, &storageColorLayer);
     {
         QMutexLocker k(&_imp->currentLayerMutex);
         _imp->currentLayerChoice = _imp->layerChoice->getCurrentIndexText();
@@ -1067,15 +1072,15 @@ ViewerTab::onLayerComboChanged(int index)
     }
     int i = 1; // because of the "-" choice
     int chanCount = 1; // because of the "-" choice
-    for (std::set<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it, ++i) {
+    for (std::list<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it, ++i) {
         chanCount += it->getChannels().size();
         if (i == index) {
-            _imp->viewerNode->setActiveLayer(*it, true);
+            _imp->viewerNode->setActiveLayer(viewerLayerToStorage(*it, storageColorLayer), true);
 
             ///If it has an alpha channel, set it
             if (it->getChannels().size() == 4) {
                 _imp->alphaChannelChoice->setCurrentIndex_no_emit(chanCount - 1);
-                _imp->viewerNode->setAlphaChannel(*it, it->getChannels()[3], true);
+                _imp->viewerNode->setAlphaChannel(viewerLayerToStorage(*it, storageColorLayer), it->getChannels()[3], true);
             }
 
             return;

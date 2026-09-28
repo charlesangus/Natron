@@ -189,39 +189,6 @@ findLayerKnob(const NodePtr& node,
     return std::dynamic_pointer_cast<KnobLayerSelect>(node->getKnobByName(kLayerKnobNames[which]));
 }
 
-// listLayerEntriesForKnob() (KnobGuiLayerChannelBase.cpp) still lists through the
-// storage-only listLayersForKnob(), so a row's own default colour view (rgba) reads as
-// absent there and LayerChannelRow appends its "(not in input/project)" marker to a value
-// that is actually present -- widening that row's combo text well past its column block and,
-// through the grid's gap column absorbing the overflow (see createGapWidget()), pulling the
-// whole matrix's horizontal block spacing out of step with its fixed vertical spacing. Listing
-// through listLayerViewsForKnob() here keeps the four dropdowns themselves (as opposed to the
-// matrix's own rows/columns, already fixed via findKnownLayer()) in sync with the view rename.
-std::vector<LayerChannelRow::LayerEntry>
-listLayerViewEntriesForKnob(const NodePtr& node,
-                            const KnobIPtr& knob)
-{
-    std::vector<LayerChannelRow::LayerEntry> entries;
-
-    if (!node || !knob) {
-        return entries;
-    }
-    std::list<ImageLayerDesc> descs;
-    node->listLayerViewsForKnob(knob, &descs);
-    descs.sort([](const ImageLayerDesc& a, const ImageLayerDesc& b) {
-        return a.isColorLayer() && !b.isColorLayer();
-    });
-    for (std::list<ImageLayerDesc>::const_iterator it = descs.begin(); it != descs.end(); ++it) {
-        LayerChannelRow::LayerEntry entry;
-        entry.id = it->getLayerID();
-        entry.label = it->getLayerLabel();
-        entry.channels = it->getChannels();
-        entries.push_back(entry);
-    }
-
-    return entries;
-}
-
 bool
 findLayerDesc(const std::list<ImageLayerDesc>& layers,
               const std::string& layerID,
@@ -578,7 +545,7 @@ KnobGuiShuffleMap::refreshLayerRows()
         if (!row || !knob) {
             continue;
         }
-        const std::vector<LayerChannelRow::LayerEntry> layers = listLayerViewEntriesForKnob(node, knob);
+        const std::vector<LayerChannelRow::LayerEntry> layers = listLayerEntriesForKnob(node, knob);
         if (!sameLayerEntries(row->getAvailableLayers(), layers)) {
             row->setAvailableLayers(layers, node->isTargetLayerKnob(knob));
         }

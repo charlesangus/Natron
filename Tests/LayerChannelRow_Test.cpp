@@ -90,14 +90,29 @@ single(const std::string& c)
     return std::vector<std::string>(1, c);
 }
 
-// Color deliberately not first, so the row-0 hoisting is observable.
+// rgba deliberately not first, so the row-0 hoisting is observable.
 std::vector<LayerEntry>
 sampleLayers()
 {
     std::vector<LayerEntry> layers;
     layers.push_back(makeLayer("diffuse", rgb()));
-    layers.push_back(makeLayer("Color", rgba()));
+    layers.push_back(makeLayer("rgba", rgba()));
     layers.push_back(makeLayer("specular", rgb()));
+    layers.push_back(makeLayer("depth", single("Z")));
+
+    return layers;
+}
+
+// What listLayerEntriesForKnob() hands the row for an RGB-only input: rgba, rgb and alpha
+// (no xy), already sorted ahead of the other layers.
+std::vector<LayerEntry>
+rgbOnlyColorViews()
+{
+    std::vector<LayerEntry> layers;
+    layers.push_back(makeLayer("rgba", rgba()));
+    layers.push_back(makeLayer("rgb", rgb()));
+    layers.push_back(makeLayer("alpha", single("A")));
+    layers.push_back(makeLayer("diffuse", rgb()));
     layers.push_back(makeLayer("depth", single("Z")));
 
     return layers;
@@ -154,14 +169,30 @@ nextTabStop(QWidget* from,
 
 } // namespace
 
-TEST(LayerChannelRow, SetRow0EntryOrderHoistsColor)
+TEST(LayerChannelRow, SetRow0EntryOrderHoistsRgba)
 {
     LayerChannelRow row(LayerChannelRow::eModeSetRow0);
     row.setAvailableLayers(sampleLayers(), false);
 
-    EXPECT_EQ(sl("None", "All", "Regex...", "Color", "diffuse", "specular", "depth"), row.getComboEntries());
+    EXPECT_EQ(sl("None", "All", "Regex...", "rgba", "diffuse", "specular", "depth"), row.getComboEntries());
     EXPECT_EQ(QString::fromUtf8("None"), row.getCurrentComboText());
     EXPECT_FALSE(row.getComboBox()->count() == 0);
+}
+
+TEST(LayerChannelRow, SetRow0EntryOrderListsRgbaRgbAlphaForRGBOnlyInput)
+{
+    LayerChannelRow row(LayerChannelRow::eModeSetRow0);
+    row.setAvailableLayers(rgbOnlyColorViews(), false);
+
+    EXPECT_EQ(sl("None", "All", "Regex...", "rgba", "rgb", "alpha", "diffuse", "depth"), row.getComboEntries());
+}
+
+TEST(LayerChannelRow, LayerSelectListsRgbaRgbAlphaForRGBOnlyInput)
+{
+    LayerChannelRow row(LayerChannelRow::eModeLayerSelect);
+    row.setAvailableLayers(rgbOnlyColorViews(), false);
+
+    EXPECT_EQ(sl("rgba", "rgb", "alpha", "diffuse", "depth"), row.getComboEntries());
 }
 
 TEST(LayerChannelRow, SetRowNEntryOrderKeepsListOrder)
@@ -169,7 +200,7 @@ TEST(LayerChannelRow, SetRowNEntryOrderKeepsListOrder)
     LayerChannelRow row(LayerChannelRow::eModeSetRowN);
     row.setAvailableLayers(sampleLayers(), false);
 
-    EXPECT_EQ(sl("Regex...", "diffuse", "Color", "specular", "depth"), row.getComboEntries());
+    EXPECT_EQ(sl("Regex...", "diffuse", "rgba", "specular", "depth"), row.getComboEntries());
 }
 
 TEST(LayerChannelRow, ExcludedLayersAreHiddenFromSetRowCombosButKeepOwnSelection)
@@ -179,7 +210,7 @@ TEST(LayerChannelRow, ExcludedLayersAreHiddenFromSetRowCombosButKeepOwnSelection
     row.setSetRowValue(LayerChannelRow::eSetRowModeLayer, "diffuse", rgb());
 
     std::set<std::string> excluded;
-    excluded.insert("Color");
+    excluded.insert("rgba");
     excluded.insert("specular");
     row.setExcludedLayers(excluded);
     EXPECT_EQ(sl("Regex...", "diffuse", "depth"), row.getComboEntries());
@@ -192,7 +223,7 @@ TEST(LayerChannelRow, ExcludedLayersAreHiddenFromSetRowCombosButKeepOwnSelection
     EXPECT_EQ(sl("Regex...", "diffuse", "depth"), row.getComboEntries());
 
     row.setExcludedLayers(std::set<std::string>());
-    EXPECT_EQ(sl("Regex...", "diffuse", "Color", "specular", "depth"), row.getComboEntries());
+    EXPECT_EQ(sl("Regex...", "diffuse", "rgba", "specular", "depth"), row.getComboEntries());
 }
 
 TEST(LayerChannelRow, ExcludedLayersAlsoApplyToARegexRowsLayerEntries)
@@ -202,7 +233,7 @@ TEST(LayerChannelRow, ExcludedLayersAlsoApplyToARegexRowsLayerEntries)
     row.setSetRowValue(LayerChannelRow::eSetRowModeRegex, "diff.*", std::vector<std::string>());
 
     std::set<std::string> excluded;
-    excluded.insert("Color");
+    excluded.insert("rgba");
     row.setExcludedLayers(excluded);
 
     // A regex row holds no layer of its own, so nothing of its "current selection" needs
@@ -214,10 +245,10 @@ TEST(LayerChannelRow, LayerSelectEntryOrderWithAndWithoutNewLayer)
 {
     LayerChannelRow row(LayerChannelRow::eModeLayerSelect);
     row.setAvailableLayers(sampleLayers(), false);
-    EXPECT_EQ(sl("diffuse", "Color", "specular", "depth"), row.getComboEntries());
+    EXPECT_EQ(sl("diffuse", "rgba", "specular", "depth"), row.getComboEntries());
 
     row.setAvailableLayers(sampleLayers(), true);
-    EXPECT_EQ(sl("diffuse", "Color", "specular", "depth", "New layer..."), row.getComboEntries());
+    EXPECT_EQ(sl("diffuse", "rgba", "specular", "depth", "New layer..."), row.getComboEntries());
 }
 
 TEST(LayerChannelRow, LayerSelectNoneEntryOnlyWhenAllowed)
@@ -225,28 +256,28 @@ TEST(LayerChannelRow, LayerSelectNoneEntryOnlyWhenAllowed)
     LayerChannelRow row(LayerChannelRow::eModeLayerSelect);
     row.setAvailableLayers(sampleLayers(), false);
     EXPECT_FALSE(row.getAllowNone());
-    EXPECT_EQ(sl("diffuse", "Color", "specular", "depth"), row.getComboEntries());
+    EXPECT_EQ(sl("diffuse", "rgba", "specular", "depth"), row.getComboEntries());
 
     row.setAllowNone(true);
     EXPECT_TRUE(row.getAllowNone());
-    EXPECT_EQ(sl("None", "diffuse", "Color", "specular", "depth"), row.getComboEntries());
+    EXPECT_EQ(sl("None", "diffuse", "rgba", "specular", "depth"), row.getComboEntries());
     EXPECT_EQ(QString::fromUtf8("None"), row.getCurrentComboText());
     EXPECT_TRUE(row.getCurrentLayerID().empty());
 
     row.setAllowNone(false);
     EXPECT_FALSE(row.getAllowNone());
-    EXPECT_EQ(sl("diffuse", "Color", "specular", "depth"), row.getComboEntries());
+    EXPECT_EQ(sl("diffuse", "rgba", "specular", "depth"), row.getComboEntries());
 }
 
 TEST(LayerChannelRow, ChoosingNoneInLayerSelectEmitsAndClearsChannels)
 {
     LayerChannelRow row(LayerChannelRow::eModeLayerSelect);
     row.setAvailableLayers(sampleLayers(), false);
-    row.setLayerSelectValue("Color", rgba(), true);
+    row.setLayerSelectValue("rgba", rgba(), true);
     row.setAllowNone(true);
 
-    EXPECT_EQ(QString::fromUtf8("Color"), row.getCurrentComboText());
-    EXPECT_EQ("Color", row.getCurrentLayerID());
+    EXPECT_EQ(QString::fromUtf8("rgba"), row.getCurrentComboText());
+    EXPECT_EQ("rgba", row.getCurrentLayerID());
     EXPECT_EQ(rgba(), row.getEnabledChannels());
     EXPECT_EQ(sl("R", "G", "B", "A"), row.getChannelButtonNames());
 
@@ -275,19 +306,19 @@ TEST(LayerChannelRow, UndoAfterChoosingNoneRestoresPreviousLayerAndChannels)
 {
     LayerChannelRow row(LayerChannelRow::eModeLayerSelect);
     row.setAvailableLayers(sampleLayers(), false);
-    row.setLayerSelectValue("Color", rgba(), true);
+    row.setLayerSelectValue("rgba", rgba(), true);
     row.setAllowNone(true);
 
     row.getComboBox()->setCurrentIndex(comboIndexOf(row, "None"));
     ASSERT_TRUE(row.getCurrentLayerID().empty());
     ASSERT_TRUE(row.getEnabledChannels().empty());
 
-    row.setLayerSelectValue("Color", rgba(), true);
+    row.setLayerSelectValue("rgba", rgba(), true);
 
-    EXPECT_EQ("Color", row.getCurrentLayerID());
+    EXPECT_EQ("rgba", row.getCurrentLayerID());
     EXPECT_EQ(rgba(), row.getEnabledChannels());
     EXPECT_EQ(sl("R", "G", "B", "A"), row.getChannelButtonNames());
-    EXPECT_EQ(QString::fromUtf8("Color"), row.getCurrentComboText());
+    EXPECT_EQ(QString::fromUtf8("rgba"), row.getCurrentComboText());
     EXPECT_TRUE(row.getChannelButton("R")->parentWidget()->isVisibleTo(&row));
 }
 
@@ -295,7 +326,7 @@ TEST(LayerChannelRow, LayerSelectNoneHidesChannelButtons)
 {
     LayerChannelRow row(LayerChannelRow::eModeLayerSelect);
     row.setAvailableLayers(sampleLayers(), false);
-    row.setLayerSelectValue("Color", rgba(), true);
+    row.setLayerSelectValue("rgba", rgba(), true);
     row.setAllowNone(true);
 
     EXPECT_TRUE(row.getChannelButton("R")->parentWidget()->isVisibleTo(&row));
@@ -307,19 +338,19 @@ TEST(LayerChannelRow, LayerSelectNoneHidesChannelButtons)
     EXPECT_EQ(0, row.getChannelButton("R"));
     EXPECT_TRUE(row.getChannelButtonNames().isEmpty());
 
-    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "Color"));
+    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "rgba"));
     EXPECT_TRUE(row.getChannelButton("R")->parentWidget()->isVisibleTo(&row));
 }
 
 TEST(LayerChannelRow, ChannelSelectEntryOrder)
 {
     std::vector<LayerEntry> layers;
-    layers.push_back(makeLayer("Color", rgba()));
+    layers.push_back(makeLayer("rgba", rgba()));
     layers.push_back(makeLayer("depth", single("Z")));
 
     LayerChannelRow row(LayerChannelRow::eModeChannelSelect);
     row.setAvailableLayers(layers, false);
-    EXPECT_EQ(sl("None", "Color.R", "Color.G", "Color.B", "Color.A", "depth.Z"), row.getComboEntries());
+    EXPECT_EQ(sl("None", "rgba.R", "rgba.G", "rgba.B", "rgba.A", "depth.Z"), row.getComboEntries());
     EXPECT_EQ(QString::fromUtf8("None"), row.getCurrentComboText());
 
     row.setChannelSelectValue("depth.Z");
@@ -331,10 +362,10 @@ TEST(LayerChannelRow, ChannelSelectEntryOrder)
         ++selectedCount;
         selected = v;
     });
-    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "Color.A"));
+    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "rgba.A"));
     EXPECT_EQ(1, selectedCount);
-    EXPECT_EQ(QString::fromUtf8("Color.A"), selected);
-    EXPECT_EQ("Color.A", row.getCurrentChannel());
+    EXPECT_EQ(QString::fromUtf8("rgba.A"), selected);
+    EXPECT_EQ("rgba.A", row.getCurrentChannel());
 
     row.getComboBox()->setCurrentIndex(comboIndexOf(row, "None"));
     EXPECT_EQ(2, selectedCount);
@@ -355,12 +386,12 @@ TEST(LayerChannelRow, ChoosingLayerRebuildsCheckedColouredButtonsAndEmitsOnce)
     });
 
     EXPECT_FALSE(row.getChannelButton("R"));
-    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "Color"));
+    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "rgba"));
 
     EXPECT_EQ(1, chosenCount);
-    EXPECT_EQ(QString::fromUtf8("Color"), chosen);
+    EXPECT_EQ(QString::fromUtf8("rgba"), chosen);
     EXPECT_EQ(LayerChannelRow::eSetRowModeLayer, row.getSetRowMode());
-    EXPECT_EQ("Color", row.getCurrentLayerID());
+    EXPECT_EQ("rgba", row.getCurrentLayerID());
     EXPECT_EQ(sl("R", "G", "B", "A"), row.getChannelButtonNames());
     EXPECT_EQ(rgba(), row.getEnabledChannels());
 
@@ -370,7 +401,7 @@ TEST(LayerChannelRow, ChoosingLayerRebuildsCheckedColouredButtonsAndEmitsOnce)
         ASSERT_TRUE(b);
         EXPECT_TRUE(b->isCheckable());
         EXPECT_TRUE(b->isChecked());
-        EXPECT_EQ(QString::fromUtf8("Color.") + QString::fromUtf8(names[i]), b->toolTip());
+        EXPECT_EQ(QString::fromUtf8("rgba.") + QString::fromUtf8(names[i]), b->toolTip());
         QColor expected;
         ASSERT_TRUE(getChannelColorFromName(names[i], &expected));
         EXPECT_EQ(expected, b->property("channelColor").value<QColor>());
@@ -430,7 +461,7 @@ TEST(LayerChannelRow, NoneAllRegexHideButtonsAndEmitModeOnce)
 {
     LayerChannelRow row(LayerChannelRow::eModeSetRow0);
     row.setAvailableLayers(sampleLayers(), false);
-    row.setSetRowValue(LayerChannelRow::eSetRowModeLayer, "Color", rgba());
+    row.setSetRowValue(LayerChannelRow::eSetRowModeLayer, "rgba", rgba());
     EXPECT_TRUE(row.getChannelButton("R")->parentWidget()->isVisibleTo(&row));
 
     int modeCount = 0;
@@ -527,13 +558,13 @@ TEST(LayerChannelRow, AbsentMarkerItemPresentOnlyWhileSet)
 
     row.setAbsentMarker(QString::fromUtf8("(not in project)"));
     EXPECT_TRUE(row.hasAbsentMarker());
-    EXPECT_EQ(sl("diffuse", "Color", "specular", "depth", "mask (not in project)", "New layer..."), row.getComboEntries());
+    EXPECT_EQ(sl("diffuse", "rgba", "specular", "depth", "mask (not in project)", "New layer..."), row.getComboEntries());
     EXPECT_EQ(QString::fromUtf8("mask (not in project)"), row.getCurrentComboText());
     EXPECT_EQ(sl("R", "G", "B", "A"), row.getChannelButtonNames());
 
     row.clearAbsentMarker();
     EXPECT_FALSE(row.hasAbsentMarker());
-    EXPECT_EQ(sl("diffuse", "Color", "specular", "depth", "New layer..."), row.getComboEntries());
+    EXPECT_EQ(sl("diffuse", "rgba", "specular", "depth", "New layer..."), row.getComboEntries());
 
     row.setAbsentMarker(QString::fromUtf8("(not in project)"));
     EXPECT_TRUE(row.hasAbsentMarker());
@@ -545,10 +576,10 @@ TEST(LayerChannelRow, AbsentMarkerItemPresentOnlyWhileSet)
     row.getComboBox()->setCurrentIndex(comboIndexOf(row, "specular"));
     EXPECT_EQ(1, chosenCount);
     EXPECT_FALSE(row.hasAbsentMarker());
-    EXPECT_EQ(sl("diffuse", "Color", "specular", "depth", "New layer..."), row.getComboEntries());
+    EXPECT_EQ(sl("diffuse", "rgba", "specular", "depth", "New layer..."), row.getComboEntries());
     EXPECT_EQ(QString::fromUtf8("specular"), row.getCurrentComboText());
 
-    row.setLayerSelectValue("Color", rgba(), true);
+    row.setLayerSelectValue("rgba", rgba(), true);
     row.setAbsentMarker(QString::fromUtf8("(not in project)"));
     EXPECT_FALSE(row.hasAbsentMarker());
 }
@@ -642,7 +673,7 @@ TEST(LayerChannelRow, DisablingGreysEveryChild)
 {
     LayerChannelRow row(LayerChannelRow::eModeSetRow0);
     row.setAvailableLayers(sampleLayers(), false);
-    row.setSetRowValue(LayerChannelRow::eSetRowModeLayer, "Color", rgba());
+    row.setSetRowValue(LayerChannelRow::eSetRowModeLayer, "rgba", rgba());
     row.setRowRemovable(true);
 
     row.setEnabled(false);

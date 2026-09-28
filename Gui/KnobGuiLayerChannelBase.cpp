@@ -73,7 +73,7 @@ listLayerEntriesForKnob(const NodePtr& node,
         return entries;
     }
     std::list<ImageLayerDesc> descs;
-    node->listLayersForKnob(knob, &descs);
+    node->listLayerViewsForKnob(knob, &descs);
     descs.sort([](const ImageLayerDesc& a, const ImageLayerDesc& b) {
         return a.isColorLayer() && !b.isColorLayer();
     });

@@ -140,8 +140,9 @@ bool sameLayerEntries(const std::vector<LayerChannelRow::LayerEntry>& a,
                       const std::vector<LayerChannelRow::LayerEntry>& b);
 
 /**
- * @brief The layers the given node offers for the given knob's role, Color sorted
- * first. Usable for any knob on the node, not just knobs with a KnobGuiLayerChannelBase.
+ * @brief The layers the given node offers for the given knob's role, expanded into
+ * colour views (rgba, rgb, alpha, xy) with the views sorted first. Usable for any knob
+ * on the node, not just knobs with a KnobGuiLayerChannelBase.
  **/
 std::vector<LayerChannelRow::LayerEntry> listLayerEntriesForKnob(const NodePtr& node, const KnobIPtr& knob);
 

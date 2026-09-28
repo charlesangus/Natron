@@ -38,6 +38,8 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/ImageLayerDesc.h"
+
 #include "Gui/Button.h"
 #include "Gui/ChannelColor.h"
 #include "Gui/ComboBox.h"
@@ -51,7 +53,7 @@ namespace {
 const char* const kChannelNameProperty = "channelName";
 const char* const kChannelColorProperty = "channelColor";
 const char* const kInvalidProperty = "invalid";
-const char* const kColorLayerID = "Color";
+const char* const kColorLayerID = kNatronColorViewRGBA;
 
 QString
 qs(const std::string& s)

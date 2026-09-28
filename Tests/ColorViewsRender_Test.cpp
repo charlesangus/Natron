@@ -52,14 +52,20 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
+#include "Engine/PyNode.h"
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
+#include <ofxNatron.h>
 
 NATRON_NAMESPACE_USING
 
@@ -96,6 +102,13 @@ containsColorViewID(const std::list<ImageLayerDesc>& layers)
     }
 
     return false;
+}
+
+void
+expectNoUserFacingColor(const std::string& text)
+{
+    EXPECT_EQ(std::string::npos, text.find(kNatronColorStorageLabel)) << text;
+    EXPECT_EQ(std::string::npos, text.find(kNatronColorLayerID)) << text;
 }
 
 int
@@ -537,4 +550,76 @@ TEST_F(ColorViewsRenderTest, ExpandColorViewsOnXYStorageListsAllFourViews)
     }
     const std::vector<std::string> expected = { kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY };
     EXPECT_EQ(expected, ids) << layerIDsString(storage);
+}
+
+// The storage plane's raw ID/label (kNatronColorLayerID / kNatronColorStorageLabel, "Color")
+// must never reach a surface the user reads: the registry snapshot, listLayerViewsForKnob, the
+// three colour-naming knobs' summaries at their defaults, Shuffle's sublabel, and Python's
+// Effect.getAvailableLayers(). Every one of these must speak in views (rgba/rgb/alpha/xy).
+TEST_F(ColorViewsRenderTest, NoUserFacingColor)
+{
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = getApp()->getProject()->getLayerRegistrySnapshot();
+    for (std::vector<LayerRegistryEntry>::const_iterator it = snapshot->begin(); it != snapshot->end(); ++it) {
+        EXPECT_NE(std::string(kNatronColorLayerID), it->desc.getLayerID());
+        expectNoUserFacingColor(it->desc.getLayerLabel());
+    }
+
+    const char* fixtures[] = { "flat-three-layers.exr", "flat-rgb-only.exr" };
+    for (std::size_t f = 0; f < sizeof(fixtures) / sizeof(fixtures[0]); ++f) {
+        SCOPED_TRACE(fixtures[f]);
+
+        KnobChannelSetPtr readerChannels;
+        NodePtr grade = createEffectOnReader(kGradePluginID, fixtures[f], &readerChannels);
+        ASSERT_TRUE(bool(grade));
+
+        std::list<ImageLayerDesc> views;
+        grade->listLayerViewsForKnob(grade->getLayerKnob(), 1, ViewIdx(0), &views);
+        EXPECT_FALSE(views.empty());
+        for (std::list<ImageLayerDesc>::const_iterator it = views.begin(); it != views.end(); ++it) {
+            EXPECT_NE(std::string(kNatronColorLayerID), it->getLayerID());
+            expectNoUserFacingColor(it->getLayerLabel());
+        }
+    }
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    NodePtr groupNode = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(groupNode));
+    EffectInstancePtr groupEffect = groupNode->getEffectInstance();
+    ASSERT_TRUE(bool(groupEffect));
+
+    KnobChannelSetPtr channelSet = groupEffect->createChannelSetKnob("noUserFacingColorChannelSet", "ChannelSet");
+    ASSERT_TRUE(bool(channelSet));
+    expectNoUserFacingColor(channelSet->getSummary());
+
+    KnobLayerSelectPtr layerSelect = groupEffect->createLayerSelectKnob("noUserFacingColorLayerSelect", "LayerSelect", false);
+    ASSERT_TRUE(bool(layerSelect));
+    expectNoUserFacingColor(layerSelect->getSummary());
+
+    KnobChannelSelectPtr channelSelect = groupEffect->createChannelSelectKnob("noUserFacingColorChannelSelect", "ChannelSelect");
+    ASSERT_TRUE(bool(channelSelect));
+    expectNoUserFacingColor(channelSelect->getSummary());
+
+    NodePtr reader = createReader("flat-three-layers.exr");
+    ASSERT_TRUE(bool(reader));
+    NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+    ASSERT_TRUE(bool(shuffle));
+    connectNodes(reader, shuffle, Shuffle::eInputMain, true);
+
+    KnobLayerSelectPtr in2 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamIn2));
+    KnobLayerSelectPtr out2 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamOut2));
+    ASSERT_TRUE(bool(in2));
+    ASSERT_TRUE(bool(out2));
+    in2->setLayer("specular");
+    out2->setLayer("diffuse");
+
+    KnobStringPtr sublabel = std::dynamic_pointer_cast<KnobString>(shuffle->getKnobByName(kNatronOfxParamStringSublabelName));
+    ASSERT_TRUE(bool(sublabel));
+    expectNoUserFacingColor(sublabel->getValue());
+
+    Natron::Python::Effect effect(shuffle);
+    std::list<Natron::Python::ImageLayer> available = effect.getAvailableLayers(-1);
+    EXPECT_FALSE(available.empty());
+    for (std::list<Natron::Python::ImageLayer>::const_iterator it = available.begin(); it != available.end(); ++it) {
+        expectNoUserFacingColor(it->getLayerName().toStdString());
+    }
 }

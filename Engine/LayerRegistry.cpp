@@ -431,7 +431,7 @@ LayerRegistry::groupChannelNames(const std::vector<std::string>& flat, std::vect
                     ordered.push_back(g.channels[c]);
                 }
             }
-            layers->push_back(ImageLayerDesc(kNatronColorLayerID, kNatronColorLayerLabel, "", ordered));
+            layers->push_back(ImageLayerDesc(kNatronColorLayerID, kNatronColorStorageLabel, "", ordered));
             break;
         }
         case eLayerGroupKindDepth:

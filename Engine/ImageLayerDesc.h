@@ -55,7 +55,7 @@ GCC_DIAG_ON(unused-parameter)
 #include <nuke/fnOfxExtensions.h>
 
 #define kNatronColorLayerID kFnOfxImagePlaneColour
-#define kNatronColorLayerLabel "Color"
+#define kNatronColorStorageLabel "Color"
 
 // A colour view is (the colour storage plane, a channel mask): rgba/rgb/alpha are always
 // present on any colour storage, xy only on the 2-channel XY storage layout. Each view's

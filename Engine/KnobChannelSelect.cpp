@@ -220,7 +220,7 @@ layerLabelForID(const std::string& layerID)
         return ImageLayerDesc::getColorView(layerID).getLayerLabel();
     }
     if (layerID == kNatronColorLayerID) {
-        return kNatronColorLayerLabel;
+        return kNatronColorViewRGBA;
     }
     ImageLayerDesc desc = ImageLayerDesc::mapOFXPlaneStringToLayer(layerID);
     if (desc) {

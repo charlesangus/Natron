@@ -185,7 +185,7 @@ ImageLayerDesc::getNoneComponents()
 const ImageLayerDesc&
 ImageLayerDesc::getRGBAComponents()
 {
-    static const ImageLayerDesc comp(kNatronColorLayerID, kNatronColorLayerLabel, "", rgbaComps, 4);
+    static const ImageLayerDesc comp(kNatronColorLayerID, kNatronColorStorageLabel, "", rgbaComps, 4);
 
     return comp;
 }
@@ -193,7 +193,7 @@ ImageLayerDesc::getRGBAComponents()
 const ImageLayerDesc&
 ImageLayerDesc::getRGBComponents()
 {
-    static const ImageLayerDesc comp(kNatronColorLayerID, kNatronColorLayerLabel, "", rgbComps, 3);
+    static const ImageLayerDesc comp(kNatronColorLayerID, kNatronColorStorageLabel, "", rgbComps, 3);
 
     return comp;
 }
@@ -201,7 +201,7 @@ ImageLayerDesc::getRGBComponents()
 const ImageLayerDesc&
 ImageLayerDesc::getXYComponents()
 {
-    static const ImageLayerDesc comp(kNatronColorLayerID, kNatronColorLayerLabel, "XY", xyComps, 2);
+    static const ImageLayerDesc comp(kNatronColorLayerID, kNatronColorStorageLabel, "XY", xyComps, 2);
 
     return comp;
 }
@@ -209,7 +209,7 @@ ImageLayerDesc::getXYComponents()
 const ImageLayerDesc&
 ImageLayerDesc::getAlphaComponents()
 {
-    static const ImageLayerDesc comp(kNatronColorLayerID, kNatronColorLayerLabel, "Alpha", alphaComps, 1);
+    static const ImageLayerDesc comp(kNatronColorLayerID, kNatronColorStorageLabel, "Alpha", alphaComps, 1);
 
     return comp;
 }

@@ -266,6 +266,18 @@ public:
     static std::bitset<4> colorViewMask(const std::string& viewID);
 
     /**
+     * @brief The colour bit (see colorViewMask()) viewID's channel index sits on, -1 past the
+     * view's channels.
+     **/
+    static int colorViewChannelBit(const std::string& viewID, int index);
+
+    /**
+     * @brief The inverse of colorViewChannelBit(): viewID's channel index sitting on bit, -1
+     * when viewID has no channel there.
+     **/
+    static int colorViewChannelIndex(const std::string& viewID, int bit);
+
+    /**
      * @brief The bits of a std::bitset<4> (see ResolvedLayer::channelBit in KnobChannelSet.h)
      * that the colour storage plane desc actually carries.
      **/

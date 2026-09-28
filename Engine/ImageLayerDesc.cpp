@@ -326,6 +326,52 @@ ImageLayerDesc::colorViewMask(const std::string& viewID)
     return allColorChannelBits(ImageLayerDesc::getColorView(viewID));
 }
 
+int
+ImageLayerDesc::colorViewChannelBit(const std::string& viewID,
+                                    int index)
+{
+    if (index < 0) {
+        return -1;
+    }
+
+    const std::bitset<4> mask = ImageLayerDesc::colorViewMask(viewID);
+    int seen = -1;
+
+    for (int b = 0; b < 4; ++b) {
+        if (mask.test(b)) {
+            ++seen;
+            if (seen == index) {
+                return b;
+            }
+        }
+    }
+
+    return -1;
+}
+
+int
+ImageLayerDesc::colorViewChannelIndex(const std::string& viewID,
+                                      int bit)
+{
+    if (bit < 0 || bit > 3) {
+        return -1;
+    }
+
+    const std::bitset<4> mask = ImageLayerDesc::colorViewMask(viewID);
+    if (!mask.test(bit)) {
+        return -1;
+    }
+
+    int index = 0;
+    for (int b = 0; b < bit; ++b) {
+        if (mask.test(b)) {
+            ++index;
+        }
+    }
+
+    return index;
+}
+
 void
 ImageLayerDesc::presentColorViews(const ImageLayerDesc& storage,
                                   std::vector<std::string>* views)

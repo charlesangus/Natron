@@ -82,32 +82,6 @@ colorBitOfIndex(int nComps,
     return (nComps == 1) ? 3 : index;
 }
 
-// The colour bit viewID's channel index sits on, -1 beyond the view.
-int
-viewChannelBit(const std::string& viewID,
-               int index)
-{
-    const int nComps = ImageLayerDesc::getColorView(viewID).getNumComponents();
-
-    return ((index >= 0) && (index < nComps)) ? colorBitOfIndex(nComps, index) : -1;
-}
-
-// viewID's channel index on colour bit, -1 when the view does not cover that bit.
-int
-viewChannelIndex(const std::string& viewID,
-                 int bit)
-{
-    const int nComps = ImageLayerDesc::getColorView(viewID).getNumComponents();
-
-    for (int i = 0; i < nComps; ++i) {
-        if (colorBitOfIndex(nComps, i) == bit) {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
 void
 configureLayerSelect(const KnobLayerSelectPtr& knob,
                      const std::string& name,
@@ -384,8 +358,8 @@ Shuffle::getEffectiveSource(int outSlot,
     // and xy's X read rgba's R.
     const std::string outLayer = getOutputLayer(outSlot);
     if (ImageLayerDesc::isColorViewID(outLayer) && ImageLayerDesc::isColorViewID(slotLayer)) {
-        const int bit = viewChannelBit(outLayer, outIndex);
-        const int slotIndex = (bit < 0) ? -1 : viewChannelIndex(slotLayer, bit);
+        const int bit = ImageLayerDesc::colorViewChannelBit(outLayer, outIndex);
+        const int slotIndex = (bit < 0) ? -1 : ImageLayerDesc::colorViewChannelIndex(slotLayer, bit);
 
         return (slotIndex < 0) ? ShuffleSource::makeZero() : ShuffleSource::makeInput(outSlot, slotIndex);
     }
@@ -723,7 +697,7 @@ Shuffle::isIdentity(double time,
         }
         const std::string slotLayer = getSlotLayer(src.slot);
         if (outIsView) {
-            if (!ImageLayerDesc::isColorViewID(slotLayer) || (viewChannelBit(slotLayer, src.index) != viewChannelBit(out1Layer, c))) {
+            if (!ImageLayerDesc::isColorViewID(slotLayer) || (ImageLayerDesc::colorViewChannelBit(slotLayer, src.index) != ImageLayerDesc::colorViewChannelBit(out1Layer, c))) {
                 return false;
             }
         } else if ((src.index != c) || (slotLayer != out1Layer)) {
@@ -955,7 +929,7 @@ Shuffle::render(const RenderActionArgs& args)
         }
         const int inputNb = getSlotInput(src.slot);
         if (ImageLayerDesc::isColorViewID(slotLayer)) {
-            findColorChannelInPlane(fetchInputPlane(args, inputNb, kNatronColorLayerID, &fetched), viewChannelBit(slotLayer, src.index), fill);
+            findColorChannelInPlane(fetchInputPlane(args, inputNb, kNatronColorLayerID, &fetched), ImageLayerDesc::colorViewChannelBit(slotLayer, src.index), fill);
 
             return;
         }
@@ -982,7 +956,7 @@ Shuffle::render(const RenderActionArgs& args)
                 int outIndex = -1;
                 for (int slot = 1; slot <= 2; ++slot) {
                     if (ImageLayerDesc::isColorViewID(outputLayers[slot - 1])) {
-                        outIndex = viewChannelIndex(outputLayers[slot - 1], bit);
+                        outIndex = ImageLayerDesc::colorViewChannelIndex(outputLayers[slot - 1], bit);
                         if (outIndex >= 0) {
                             outSlot = slot;
                             break;

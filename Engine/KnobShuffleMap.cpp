@@ -25,7 +25,6 @@
 
 #include "KnobShuffleMap.h"
 
-#include <bitset>
 #include <cctype>
 #include <cstdlib>
 #include <list>
@@ -37,62 +36,6 @@
 #include "Engine/Nodes/Channel/Shuffle.h"
 
 NATRON_NAMESPACE_ENTER
-
-namespace {
-
-// The position (0-based, ascending) outIndex occupies within viewID's colour channels sits
-// on the bit ImageLayerDesc::colorViewMask(viewID) sets for it; -1 past the view's channels.
-// This is the same bit a 1-channel view's one channel gets (colorViewMask puts it on bit 3),
-// derived here from the mask alone so it needs no access to Shuffle's own, private version.
-int
-bitAtViewIndex(const std::string& viewID,
-               int index)
-{
-    if (index < 0) {
-        return -1;
-    }
-
-    const std::bitset<4> mask = ImageLayerDesc::colorViewMask(viewID);
-    int seen = -1;
-
-    for (int b = 0; b < 4; ++b) {
-        if (mask.test(b)) {
-            ++seen;
-            if (seen == index) {
-                return b;
-            }
-        }
-    }
-
-    return -1;
-}
-
-// The inverse of bitAtViewIndex(): viewID's channel index sitting on bit, -1 when viewID has
-// no channel there.
-int
-indexAtViewBit(const std::string& viewID,
-               int bit)
-{
-    if (bit < 0) {
-        return -1;
-    }
-
-    const std::bitset<4> mask = ImageLayerDesc::colorViewMask(viewID);
-    if (!mask.test(bit)) {
-        return -1;
-    }
-
-    int index = 0;
-    for (int b = 0; b < bit; ++b) {
-        if (mask.test(b)) {
-            ++index;
-        }
-    }
-
-    return index;
-}
-
-} // namespace
 
 const std::string KnobShuffleMap::_typeNameStr("ShuffleMap");
 
@@ -360,7 +303,7 @@ KnobShuffleMap::implicitDefault(int outSlot,
         const std::string outLayer = shuffle->getOutputLayer(outSlot);
         const std::string slotLayer = shuffle->getSlotLayer(outSlot);
         if (ImageLayerDesc::isColorViewID(outLayer) && ImageLayerDesc::isColorViewID(slotLayer)) {
-            const int slotIndex = indexAtViewBit(slotLayer, bitAtViewIndex(outLayer, outIndex));
+            const int slotIndex = ImageLayerDesc::colorViewChannelIndex(slotLayer, ImageLayerDesc::colorViewChannelBit(outLayer, outIndex));
 
             return (slotIndex < 0) ? ShuffleSource::makeZero() : ShuffleSource::makeInput(outSlot, slotIndex);
         }

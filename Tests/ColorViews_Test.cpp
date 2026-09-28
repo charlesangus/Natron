@@ -167,6 +167,23 @@ TEST(ColorViews, ExpandColorViewsReplacesStorageEntryInPlace)
     EXPECT_EQ(std::string("specular"), layerIDs[4]);
 }
 
+// Shuffle's effective-source logic and KnobShuffleMap::implicitDefault both wire colour
+// channels by this bit<->index rule, so a single test covers the values each of them relies on.
+TEST(ColorViews, ColorViewChannelBitAndIndexAreInverses)
+{
+    EXPECT_EQ(3, ImageLayerDesc::colorViewChannelBit(kNatronColorViewAlpha, 0));
+    EXPECT_EQ(0, ImageLayerDesc::colorViewChannelIndex(kNatronColorViewAlpha, 3));
+
+    EXPECT_EQ(1, ImageLayerDesc::colorViewChannelBit(kNatronColorViewXY, 1));
+    EXPECT_EQ(1, ImageLayerDesc::colorViewChannelIndex(kNatronColorViewXY, 1));
+
+    EXPECT_EQ(2, ImageLayerDesc::colorViewChannelBit(kNatronColorViewRGB, 2));
+    EXPECT_EQ(2, ImageLayerDesc::colorViewChannelIndex(kNatronColorViewRGB, 2));
+
+    EXPECT_EQ(-1, ImageLayerDesc::colorViewChannelBit(kNatronColorViewAlpha, 1));
+    EXPECT_EQ(-1, ImageLayerDesc::colorViewChannelIndex(kNatronColorViewAlpha, 0));
+}
+
 TEST(ColorViews, IsColorLayerCoversEveryViewAndTheStorageButNotAnUnrelatedLayer)
 {
     EXPECT_TRUE(ImageLayerDesc::isColorLayer(std::string(kNatronColorViewRGBA)));

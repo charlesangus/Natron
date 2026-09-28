@@ -260,7 +260,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M65: should an RGB stream's missing alpha read 0 everywhere?** The design doc makes it read 0 through the new colour views (`rgba`/`alpha`), but leaves ordinary plugin conversion reading 1 (e.g. a JPEG into Merge's A input), so existing comps don't change. Making it 0 everywhere is a one-flag change plus a cache-version bump. The default, if unanswered: keep them apart. Checked at M65's UAT.
+- **M65: should an RGB stream's missing alpha read 0 everywhere?** The design doc makes it read 0 through the new colour views (`rgba`/`alpha`), but leaves ordinary plugin conversion reading 1 (e.g. a JPEG into Merge's A input), so existing comps don't change. Making it 0 everywhere is a one-flag change plus a cache-version bump. The default, if unanswered: keep them apart. Checked at M65's UAT. Two consequences from P4.T1 to judge at the same time: (a) Merge (and Invert-family nodes) default to a full `rgba` row, so Merge of **two RGB inputs** now outputs RGBA with alpha 0; Merge with an RGBA input is unchanged. (b) An identity Grade on `rgba` over RGB passes through with alpha 1, not 0.
 
 - **M61 awaits the user's sign-off** (row `blocked`, stacked-PR rule: asynchronous). Please run the UAT on `build/appimages/M61-072541618.AppImage` using `build/appimages/M61-uat.md`, and approve the P2.T3 keyed-Disable node-box screenshots and the P2.T5 disabled-cross width (2, i.e. pipe weight). PR #34 is green; its review rounds 1 and 2 are closed. After sign-off: check off P2.T3/P2.T5/P4.T1, mark M61 `done`, and the user merges PR #34.
 

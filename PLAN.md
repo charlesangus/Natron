@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M65.P6.T3
-pm_heartbeat: 2026-09-28T17:21:07-04:00
+current: M65.P8.T3
+pm_heartbeat: 2026-09-28T17:39:50-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -259,6 +259,8 @@ future core work has solid ground to build on.
   (`format`, `lint-ci`, `build-and-test`) green throughout.
 
 # Open questions
+
+- **M65.P6.T3 awaits your approval of the six Xvfb screenshots** (sent 2026-09-28): Grade's layer menu (rgba/rgb/alpha), regex `^rgb`, the RGB-only Grade still listing alpha, Shuffle Out 1 = alpha, the viewer on `alpha` (white frame; the info bar reads `rgba.RGBA32f`), and Project Settings → Layers. Answer via the inbox or in session.
 
 - **M65: should an RGB stream's missing alpha read 0 everywhere?** The design doc makes it read 0 through the new colour views (`rgba`/`alpha`), but leaves ordinary plugin conversion reading 1 (e.g. a JPEG into Merge's A input), so existing comps don't change. Making it 0 everywhere is a one-flag change plus a cache-version bump. The default, if unanswered: keep them apart. Checked at M65's UAT. Two consequences from P4.T1 to judge at the same time: (a) Merge (and Invert-family nodes) default to a full `rgba` row, so Merge of **two RGB inputs** now outputs RGBA with alpha 0; Merge with an RGBA input is unchanged. (b) An identity Grade on `rgba` over RGB passes through with alpha 1, not 0.
 

@@ -29,8 +29,8 @@ Execution notes:
 - **Batches.** Tasks within a batch touch disjoint files:
   - B1: P1.T1, P2.T1
   - B2: P3.T1, P3.T2, P3.T3, P3.T4
-  - B3: P4.T1, P5.T1, P7.T2, P7.T4, P3.T5
-  - B4: P4.T2, P5.T2, P6.T1, P7.T1
+  - B3 (reordered 2026-09-28): P5.T1+P5.T2 (one agent), P4.T1, P7.T2, P7.T4
+  - B4: P4.T2, P6.T1, P7.T1
   - B5: P5.T3, P6.T2, P7.T3, P6.T4
   - B6: P6.T3, P8.T1, P8.T2
   - B7: P8.T3
@@ -56,7 +56,7 @@ Execution notes:
 
 ## Phase 65.2: Colour-view foundation
 
-- [ ] M65.P2.T1 — Add the colour-view API to ImageLayerDesc
+- [x] M65.P2.T1 — Add the colour-view API to ImageLayerDesc
   - files: `Engine/ImageLayerDesc.h`, `Engine/ImageLayerDesc.cpp`, `Tests/ColorViews_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - Add the ID constants `kNatronColorViewRGBA "rgba"`, `…RGB "rgb"`, `…Alpha "alpha"` and `…XY "xy"`. Each label equals its ID.
@@ -80,7 +80,7 @@ Execution notes:
 
 ## Phase 65.3: Registry and knob model
 
-- [ ] M65.P3.T1 — Make rgba, rgb, alpha and xy the built-in registry layers
+- [x] M65.P3.T1 — Make rgba, rgb, alpha and xy the built-in registry layers
   - files: `Engine/LayerRegistry.h`, `Engine/LayerRegistry.cpp`, `Engine/EffectInstance.cpp`, `Engine/Node.cpp`, `Engine/PyAppInstance.cpp`, `Tests/LayerRegistry_Test.cpp`
   - approach:
     - In the constructor (`LayerRegistry.cpp:173-201`), replace the `getRGBAComponents()` built-in with the four views, in the design-doc order.
@@ -102,7 +102,7 @@ Execution notes:
     `ctest -R 'LayerKnobs|WriteAllLayers|TimeVaryingLayers'` stays green.
   - size: M
 
-- [ ] M65.P3.T2 — Resolve colour views in KnobChannelSet
+- [x] M65.P3.T2 — Resolve colour views in KnobChannelSet
   - files: `Engine/KnobChannelSet.cpp`, `Engine/KnobChannelSet.h`, `Gui/KnobGuiChannelSet.cpp`, `Tests/KnobChannelSet_Test.cpp`, `Tests/ChannelSetRender_Test.cpp`
   - approach:
     - In `resolve()` (`:493-559`):
@@ -125,7 +125,7 @@ Execution notes:
     - Grade on `rgba` over an RGB input processes A as zero and outputs RGBA.
   - size: L
 
-- [ ] M65.P3.T3 — Resolve colour views in KnobLayerSelect and label Shuffle with the view
+- [x] M65.P3.T3 — Resolve colour views in KnobLayerSelect and label Shuffle with the view
   - files: `Engine/KnobLayerSelect.cpp`, `Engine/Nodes/Channel/Shuffle.cpp` (label only, `:414-415`), `Tests/KnobLayerSelect_Test.cpp`, `Tests/Shuffle_Test.cpp`
   - approach:
     - The empty-table default (`KnobLayerSelect.cpp:144`) becomes `rgba`.
@@ -140,7 +140,7 @@ Execution notes:
     - Shuffle's label and sublabel expectations read `rgba`.
   - size: M
 
-- [ ] M65.P3.T4 — Resolve colour views in KnobChannelSelect (mask and premult channels)
+- [x] M65.P3.T4 — Resolve colour views in KnobChannelSelect (mask and premult channels)
   - files: `Engine/KnobChannelSelect.cpp`, `Tests/LayerKnobs_Test.cpp`
   - approach:
     - The default (`:86`) becomes `rgba.A`.
@@ -155,7 +155,7 @@ Execution notes:
     - The retired `…OfxImagePlaneColour.A` resolves to nothing.
   - size: M
 
-- [ ] M65.P3.T5 — Re-baseline DefaultChannelSet tests for the view rename
+- [x] M65.P3.T5 — Re-baseline DefaultChannelSet tests for the view rename
   - files: `Tests/DefaultChannelSet_Test.cpp`
   - approach: point `isColorRow()` (about 11 call sites) and `RotoKeepsItsAlphaTargetDefault`'s `getLayer()==kNatronColorLayerID` at the new default view ID. Keep `LegacyProjectKeepsColorWhereNoValueWasSaved` and `LegacyColorSurvivesResaving`; for now they still assert literal Color after load (P7.T3 later re-baselines them to rgba plus the warning). Depends on P3.T2 and P3.T3.
   - verify: `ctest -R DefaultChannelSet` passes.
@@ -369,6 +369,7 @@ Execution notes:
 - 2026-09-26 — Sequencing: M65 is stacked on M61, and M37 builds on M65.
 - 2026-09-28 — **Freshness check at promotion** (M61's P5 and round-2 work landed after this plan was written): P3.T2, P6.T2, P7.T2 and P7.T3 had their approaches revised, and P3.T5 and P6.T4 were added. The biggest catch: M61's version-17 legacy-default gate reads `defaultRows()`, so it would have renamed pre-v17 Color to `rgba` silently, without the clean-break warning. The scope grew to 41 lines in 15 files naming `kNatronColorLayerID`, and 8 PyPlugs carry the storage literal. Also resized to at least M, per the sizing rule: P7.T2 (8 files) and P8.T3 (verify needs judgement). P7.T4 (a one-line bump) and P8.T1 (a plan doc, done by the PM) stay S.
 - 2026-09-28 — **Design doc settled** (P1.T1, `PLAN/DESIGN/2026-09-26-rgba-rgb-alpha-layers.md`): widen-on-write is confirmed but narrowed: only explicit view rows widen, never `All` or regex, so a default-All Blur doesn't turn an RGB JPEG into transparent RGBA. Widened channels zero-fill through a new per-clip `NodeMetadata` flag; today's conversion fills A with 1. Shuffle reads a missing colour channel as zero, wires by position and keeps the input's layout. Old projects: literal Color first (the v17 gate), then the layer becomes `rgba` with its channels kept and a non-channel-selector warning. The P3.T2, P4.T1, P5.T1 and P7.T3 briefs are amended to match. Open for the user: an RGB stream's alpha reads 0 through colour views but 1 through ordinary plugin conversion (e.g. a JPEG into Merge's A). Kept apart on purpose; see `# Open questions`.
+- 2026-09-28 — **B1+B2 landed red on Shuffle** (code `e342a6f77` P2.T1, `9efea83cc` P3.T1–T5 plus test re-baselines): the debug build is clean, and ctest is 536/568. All 32 failures come from B2 making `rgba` the default of Shuffle's slot knobs while Shuffle still resolves storage IDs only (`Channel rgba.R is not in the Source input`; the matrix shows 0 rows). This covers ShuffleRender ×18, ShuffleMatrix ×6, Shuffle_ ×4, PersistentMessage ×2 (via Shuffle), and `PyPlugInstantiate` (the PyPlugs still name the storage ID, which now resolves to nothing, until P7.T2). Committed red rather than held uncommitted, because the fix is P5's planned work; B3 is reordered to run P5.T1+T2 and P7.T2 first and must return the suite to green. Other B2 calls: regex rows are whole-label anchored, so the verify's `^rgb` means `rgb.*`. Grade's unsaved pre-v17 channel set lands on `rgba` (Grade isn't default-All, so the v17 gate never touches it). Every node whose default is an explicit `rgba` row (Grade, Invert, …) will widen an RGB input to RGBA once P4.T1 lands; flag this at UAT.
 
 ## Risks
 

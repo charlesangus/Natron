@@ -30,6 +30,7 @@
 #include <cassert>
 #include <limits>
 #include <locale>
+#include <map>
 #include <set>
 #include <sstream> // stringstream
 #include <stdexcept>
@@ -1983,9 +1984,21 @@ Node::abortAnyProcessing_blocking()
     _imp->abortPreview_blocking(false);
 }
 
+namespace {
+
+// Lets a timeline move revalidate only the nodes owning a channel-selector error instead of
+// every node of the project.
+QMutex channelSelectorOwnersMutex;
+std::map<const Node*, NodeWPtr> channelSelectorOwners;
+
+} // namespace
+
 Node::~Node()
 {
     destroyNode(true, false);
+
+    QMutexLocker k(&channelSelectorOwnersMutex);
+    channelSelectorOwners.erase(this);
 }
 
 
@@ -4403,7 +4416,7 @@ Node::storePersistentMessage(MessageTypeEnum type,
 
         return false;
     }
-    _imp->persistentMessageFromChannelSelector = fromChannelSelector;
+    setChannelSelectorOwnership(fromChannelSelector);
     _imp->persistentMessageRenderSequence = fromChannelSelector ? renderSequence : 0;
     _imp->persistentMessageType = (int)type;
     _imp->persistentMessage = mess;
@@ -4537,7 +4550,7 @@ Node::clearPersistentMessageInternal()
     bool changed;
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
-        _imp->persistentMessageFromChannelSelector = false;
+        setChannelSelectorOwnership(false);
         _imp->persistentMessageRenderSequence = 0;
         changed = !_imp->persistentMessage.isEmpty();
         if (changed) {
@@ -4569,7 +4582,7 @@ Node::clearChannelSelectorMessage()
         QMutexLocker k(&_imp->persistentMessageMutex);
         _imp->channelSelectorResolvedSequence = std::max(_imp->channelSelectorResolvedSequence, AbortableRenderInfo::getLatestRenderSequence());
         if (_imp->persistentMessageFromChannelSelector) {
-            _imp->persistentMessageFromChannelSelector = false;
+            setChannelSelectorOwnership(false);
             _imp->persistentMessageRenderSequence = 0;
             changed = !_imp->persistentMessage.isEmpty();
             _imp->persistentMessage.clear();
@@ -4601,7 +4614,7 @@ Node::clearChannelSelectorMessageFromRender(U64 renderSequence,
         QMutexLocker k(&_imp->persistentMessageMutex);
         _imp->channelSelectorResolvedSequence = std::max(_imp->channelSelectorResolvedSequence, renderSequence);
         if (_imp->persistentMessageFromChannelSelector && (renderSequence > _imp->persistentMessageRenderSequence)) {
-            _imp->persistentMessageFromChannelSelector = false;
+            setChannelSelectorOwnership(false);
             _imp->persistentMessageRenderSequence = 0;
             changed = !_imp->persistentMessage.isEmpty();
             _imp->persistentMessage.clear();
@@ -4614,7 +4627,8 @@ Node::clearChannelSelectorMessageFromRender(U64 renderSequence,
 }
 
 void
-Node::refreshChannelSelectorMessageAtTime(double time)
+Node::refreshChannelSelectorMessageAtTime(double time,
+                                          const std::list<ViewIdx>& views)
 {
 #ifdef NATRON_ENABLE_IO_META_NODES
     if (getIOContainer()) {
@@ -4627,9 +4641,48 @@ Node::refreshChannelSelectorMessageAtTime(double time)
             return;
         }
     }
-    std::string message;
-    if (checkSelectedChannelsPresent(time, ViewIdx(0), &message)) {
-        clearChannelSelectorMessage();
+    for (std::list<ViewIdx>::const_iterator it = views.begin(); it != views.end(); ++it) {
+        std::string message;
+        if (!checkSelectedChannelsPresent(time, *it, &message)) {
+            return;
+        }
+    }
+    clearChannelSelectorMessage();
+}
+
+void
+Node::refreshChannelSelectorMessageAtTime(double time,
+                                          ViewIdx view)
+{
+    refreshChannelSelectorMessageAtTime(time, std::list<ViewIdx>(1, view));
+}
+
+void
+Node::setChannelSelectorOwnership(bool owned)
+{
+    if (_imp->persistentMessageFromChannelSelector == owned) {
+        return;
+    }
+    _imp->persistentMessageFromChannelSelector = owned;
+
+    QMutexLocker k(&channelSelectorOwnersMutex);
+    if (owned) {
+        channelSelectorOwners[this] = weak_from_this();
+    } else {
+        channelSelectorOwners.erase(this);
+    }
+}
+
+void
+Node::getNodesOwningChannelSelectorMessage(NodesList* nodes)
+{
+    QMutexLocker k(&channelSelectorOwnersMutex);
+
+    for (std::map<const Node*, NodeWPtr>::const_iterator it = channelSelectorOwners.begin(); it != channelSelectorOwners.end(); ++it) {
+        NodePtr node = it->second.lock();
+        if (node) {
+            nodes->push_back(node);
+        }
     }
 }
 

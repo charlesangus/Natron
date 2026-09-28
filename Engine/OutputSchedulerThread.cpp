@@ -3983,10 +3983,14 @@ ViewerCurrentFrameRequestScheduler::renderCurrentFrame(bool enableRenderStats,
             // A cached frame renders nothing, so no render retires the missing-channel error a
             // frame the user left may have posted. The requests just created superseded every
             // render still running, so none of those can post after this check.
-            NodesList nodesWithMessage;
-            _imp->viewer->getUpstreamNodesWithPersistentMessage(&nodesWithMessage);
-            for (NodesList::iterator it = nodesWithMessage.begin(); it != nodesWithMessage.end(); ++it) {
-                (*it)->refreshChannelSelectorMessageAtTime(frame);
+            NodesList owners;
+            Node::getNodesOwningChannelSelectorMessage(&owners);
+            if (!owners.empty()) {
+                NodesList nodesWithMessage;
+                _imp->viewer->getUpstreamNodesWithPersistentMessage(&nodesWithMessage);
+                for (NodesList::iterator it = nodesWithMessage.begin(); it != nodesWithMessage.end(); ++it) {
+                    (*it)->refreshChannelSelectorMessageAtTime(frame, view);
+                }
             }
         }
 

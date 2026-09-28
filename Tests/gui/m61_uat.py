@@ -1,21 +1,9 @@
-"""Scripted run of the layers-vary-with-time UAT (build/appimages/M61-uat.md), graph by graph.
+"""Scrubs graphs whose layers vary with time and checks errors, images and layer menus per frame.
 
-Every graph is built through the Python API in the running GUI, then the timeline is scrubbed
-1 <-> 2 in both directions, repeatedly, and each step's observable result is asserted:
-  - the node's error badge (Effect.getPersistentMessage()) and its text,
-  - the viewer's error overlay (the ViewerGL "natronPersistentMessages" property),
-  - the viewer image, as the colour on screen at the viewer's centre (the fixtures are flat),
-  - layer menus: the Shuffle panel's layer dropdowns and the viewer's layer menu, read from the
-    ComboBox "natronItems"/"natronCurrentText" properties,
-  - keyframe colouring (the "animation" property of the Which spin box and Disable check box),
-  - the node graph's disabled cross, as dark pixels on the node box's diagonals on screen.
+The graph that registers a project layer named diffuse runs last, so that layer stays out of the
+graphs reading diffuse from a file.
 
-Graph order differs from the document: Graph 3 registers a project layer named diffuse, so it
-runs last to keep that layer out of the graphs that read diffuse from a file.
-
-Run through Tests/gui/run-gui-test.sh, e.g.
-  Tests/gui/run-gui-test.sh Tests/gui/m61_uat.py
-Screenshots and results.txt go to $NATRON_GUI_TEST_OUT. Exit status 0 only if every check passed.
+Usage: Tests/gui/run-gui-test.sh Tests/gui/m61_uat.py
 """
 import os
 import sys

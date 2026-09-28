@@ -951,19 +951,29 @@ public:
     void clearChannelSelectorMessage();
 
     /**
-     * @brief What a render whose channel check passed does: clears the channel-selector message
-     * like clearChannelSelectorMessage(), but only if the render was not aborted and is newer
-     * (a larger renderSequence) than the render that posted the message. A render finishing
-     * late for a frame the user has left must not retire the error of the frame now shown.
+     * @brief What a render does once it delivered its image, its channel check having passed:
+     * clears the channel-selector message like clearChannelSelectorMessage(), but only if the
+     * render was not aborted and is newer (a larger renderSequence) than the render that posted
+     * the message. A render finishing late for a frame the user has left must not retire the
+     * error of the frame now shown.
      **/
     void clearChannelSelectorMessageFromRender(U64 renderSequence, bool renderAborted);
 
     /**
-     * @brief Clears the channel-selector message if the check now passes at the given time
-     * (view 0). A viewer showing a cached frame renders nothing, so moving the timeline back
-     * to a frame that renders must retire the error without waiting for a render.
+     * @brief Clears the channel-selector message if the check now passes at the given time in
+     * every one of the given views, the views being displayed. A viewer showing a cached frame
+     * renders nothing, so moving the timeline back to a frame that renders must retire the
+     * error without waiting for a render.
      **/
-    void refreshChannelSelectorMessageAtTime(double time);
+    void refreshChannelSelectorMessageAtTime(double time, const std::list<ViewIdx>& views);
+
+    void refreshChannelSelectorMessageAtTime(double time, ViewIdx view);
+
+    /**
+     * @brief Appends every node, in any app, whose persistent message the channel-selector
+     * check currently owns.
+     **/
+    static void getNodesOwningChannelSelectorMessage(NodesList* nodes);
 
     /**
      * @brief Clears the persistent message unless the channel-selector check owns it: that
@@ -976,6 +986,10 @@ private:
 
     // Returns whether the stored message changed.
     bool storePersistentMessage(MessageTypeEnum type, const std::string& content, bool fromChannelSelector, U64 renderSequence, const AbortableRenderInfo* render);
+
+    // Sets persistentMessageFromChannelSelector and keeps getNodesOwningChannelSelectorMessage()
+    // in step with it. The caller holds persistentMessageMutex.
+    void setChannelSelectorOwnership(bool owned);
 
     void clearPersistentMessageRecursive(std::list<Node*>& markedNodes);
 

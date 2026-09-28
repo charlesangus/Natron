@@ -77,6 +77,15 @@ contains(const NodesList& nodes,
     return std::find(nodes.begin(), nodes.end(), node) != nodes.end();
 }
 
+bool
+isListedAsChannelSelectorOwner(const NodePtr& node)
+{
+    NodesList owners;
+    Node::getNodesOwningChannelSelectorMessage(&owners);
+
+    return contains(owners, node);
+}
+
 } // namespace
 
 class PersistentMessageTest
@@ -104,6 +113,19 @@ protected:
         return reader;
     }
 
+    // Makes shuffle write diffuse.g into Color.r and nothing else from diffuse.
+    void readDiffuseGreenIntoRed(const NodePtr& shuffle)
+    {
+        KnobLayerSelectPtr in1 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamIn1));
+        ASSERT_TRUE(bool(in1));
+        in1->setLayer("diffuse");
+        KnobShuffleMapPtr mapping = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle->getKnobByName(kShuffleParamMapping));
+        ASSERT_TRUE(bool(mapping));
+        mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
+        // diffuse has no fourth channel, so the default A would fail wherever diffuse exists.
+        mapping->setSource(1, 3, ShuffleSource::makeZero());
+    }
+
     // Read(flat-three-layers.exr) at frame 1, Read(flat-rgba-only.exr) at frame 2 -> Switch ->
     // Shuffle writing diffuse.g into Color.r -> Write, so the Shuffle fails at frame 2 only.
     void createSwitchShuffleGraph()
@@ -124,15 +146,10 @@ protected:
         _shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
         ASSERT_TRUE(bool(_shuffle));
         connectNodes(_switch, _shuffle, Shuffle::eInputMain, true);
-
-        KnobLayerSelectPtr in1 = std::dynamic_pointer_cast<KnobLayerSelect>(_shuffle->getKnobByName(kShuffleParamIn1));
-        ASSERT_TRUE(bool(in1));
-        in1->setLayer("diffuse");
-        KnobShuffleMapPtr mapping = std::dynamic_pointer_cast<KnobShuffleMap>(_shuffle->getKnobByName(kShuffleParamMapping));
-        ASSERT_TRUE(bool(mapping));
-        mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
-        // diffuse has no fourth channel, so the default A would fail at frame 1 too.
-        mapping->setSource(1, 3, ShuffleSource::makeZero());
+        readDiffuseGreenIntoRed(_shuffle);
+        if (HasFatalFailure()) {
+            return;
+        }
 
         _writer = createNode(_writeOIIOPluginID);
         ASSERT_TRUE(bool(_writer));
@@ -251,7 +268,7 @@ TEST_F(PersistentMessageTest, RenderOfAFrameTheUserLeftDoesNotPostAfterTheLandin
     // supersedes it, and frame 1 comes from the cache while no error is posted yet.
     AbortableRenderInfoPtr leftFrame = AbortableRenderInfo::create(true, 0);
     leftFrame->setSuperseded();
-    _shuffle->refreshChannelSelectorMessageAtTime(1);
+    _shuffle->refreshChannelSelectorMessageAtTime(1, ViewIdx(0));
     ASSERT_FALSE(_shuffle->hasPersistentMessage());
 
     std::string frame2Error;
@@ -304,10 +321,10 @@ TEST_F(PersistentMessageTest, RenderPostedErrorSurvivesOlderAndAbortedPassesAndC
     _shuffle->clearChannelSelectorMessageFromRender(AbortableRenderInfo::getLatestRenderSequence() + 1, true);
     EXPECT_TRUE(_shuffle->hasPersistentMessage()) << "an aborted render cleared it";
 
-    _shuffle->refreshChannelSelectorMessageAtTime(2);
+    _shuffle->refreshChannelSelectorMessageAtTime(2, ViewIdx(0));
     EXPECT_TRUE(_shuffle->hasPersistentMessage()) << "the frame that fails cleared it";
 
-    _shuffle->refreshChannelSelectorMessageAtTime(1);
+    _shuffle->refreshChannelSelectorMessageAtTime(1, ViewIdx(0));
     EXPECT_FALSE(_shuffle->hasPersistentMessage()) << "moving to a frame that renders left it";
 
     EXPECT_FALSE(renderFrame(tmp, 2));
@@ -381,4 +398,114 @@ TEST_F(PersistentMessageTest, PreviewKeepsAChannelSelectorErrorAndClearsAGeneric
     height = size;
     shuffle->makePreviewImage(1, &width, &height, &buffer[0]);
     EXPECT_FALSE(shuffle->hasPersistentMessage()) << messageOf(shuffle).toStdString();
+}
+
+TEST_F(PersistentMessageTest, RenderFailingAfterItsChannelCheckPassedKeepsTheError)
+{
+    createSwitchShuffleGraph();
+    if (HasFatalFailure()) {
+        return;
+    }
+    // Writing Color.g into Color.r keeps its render off the identity shortcut, so its own
+    // channel check runs, and passes, before its input fails at frame 2.
+    NodePtr downstream = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+    ASSERT_TRUE(bool(downstream));
+    disconnectNodes(_shuffle, _writer, true);
+    connectNodes(_shuffle, downstream, Shuffle::eInputMain, true);
+    connectNodes(downstream, _writer, 0, true);
+    KnobShuffleMapPtr mapping = std::dynamic_pointer_cast<KnobShuffleMap>(downstream->getKnobByName(kShuffleParamMapping));
+    ASSERT_TRUE(bool(mapping));
+    mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
+    mapping->setSource(1, 3, ShuffleSource::makeZero());
+
+    std::string message;
+    ASSERT_TRUE(downstream->checkSelectedChannelsPresent(2, ViewIdx(0), &message)) << message;
+    ASSERT_FALSE(_shuffle->checkSelectedChannelsPresent(2, ViewIdx(0), &message));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString displayedError = QString::fromUtf8("error of the frame still displayed");
+    downstream->setChannelSelectorMessage(displayedError.toStdString());
+    ASSERT_EQ(displayedError, messageOf(downstream));
+
+    EXPECT_FALSE(renderFrame(tmp, 2));
+    EXPECT_TRUE(_shuffle->hasPersistentMessage());
+    EXPECT_EQ(displayedError, messageOf(downstream)) << "a render that delivered no image cleared the error";
+
+    EXPECT_TRUE(renderFrame(tmp, 1));
+    EXPECT_FALSE(downstream->hasPersistentMessage()) << "a render that delivered its image left the error";
+}
+
+TEST_F(PersistentMessageTest, RevalidationKeepsTheErrorOfAViewThatLacksTheChannel)
+{
+    // The fixtures carry a view named Main, so keeping Main as view 0 stops the Reads from
+    // adding views of their own.
+    std::vector<std::string> extraViews;
+    extraViews.push_back("Right");
+    getApp()->getProject()->createProjectViews(extraViews);
+    const std::vector<std::string> viewNames = getApp()->getProject()->getProjectViewNames();
+    ASSERT_EQ(2, (int)viewNames.size());
+    ASSERT_EQ(std::string("Main"), viewNames[0]);
+    ASSERT_EQ(std::string("Right"), viewNames[1]);
+
+    NodePtr mainReader = createReader("flat-three-layers.exr");
+    NodePtr right = createReader("flat-rgba-only.exr");
+    ASSERT_TRUE(mainReader && right);
+    ASSERT_EQ(2, getApp()->getProject()->getProjectViewsCount());
+    NodePtr join = createNode(QString::fromUtf8(PLUGINID_NATRON_JOINVIEWS));
+    ASSERT_TRUE(bool(join));
+    ASSERT_EQ(2, join->getNInputs());
+    for (int i = 0; i < join->getNInputs(); ++i) {
+        const std::string label = join->getInputLabel(i);
+        ASSERT_TRUE((label == viewNames[0]) || (label == viewNames[1])) << label;
+        connectNodes(label == viewNames[0] ? mainReader : right, join, i, true);
+    }
+
+    NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+    ASSERT_TRUE(bool(shuffle));
+    connectNodes(join, shuffle, Shuffle::eInputMain, true);
+    readDiffuseGreenIntoRed(shuffle);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    std::string message;
+    ASSERT_TRUE(shuffle->checkSelectedChannelsPresent(1, ViewIdx(0), &message)) << message;
+    ASSERT_FALSE(shuffle->checkSelectedChannelsPresent(1, ViewIdx(1), &message));
+    shuffle->setChannelSelectorMessage(message);
+    ASSERT_TRUE(shuffle->hasPersistentMessage());
+
+    shuffle->refreshChannelSelectorMessageAtTime(1, ViewIdx(1));
+    EXPECT_TRUE(shuffle->hasPersistentMessage()) << "revalidating the view that lacks diffuse cleared its error";
+
+    std::list<ViewIdx> bothViews;
+    bothViews.push_back(ViewIdx(0));
+    bothViews.push_back(ViewIdx(1));
+    shuffle->refreshChannelSelectorMessageAtTime(1, bothViews);
+    EXPECT_TRUE(shuffle->hasPersistentMessage()) << "a view having diffuse cleared the error another displayed view still has";
+
+    shuffle->refreshChannelSelectorMessageAtTime(1, ViewIdx(0));
+    EXPECT_FALSE(shuffle->hasPersistentMessage()) << "revalidating the view that has diffuse left the error";
+}
+
+TEST_F(PersistentMessageTest, OwnerListFollowsTheChannelSelectorError)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+    ASSERT_TRUE(bool(node));
+    EXPECT_FALSE(isListedAsChannelSelectorOwner(node));
+
+    node->setChannelSelectorMessage("diffuse.G is missing");
+    EXPECT_TRUE(isListedAsChannelSelectorOwner(node));
+
+    node->setPersistentMessage(eMessageTypeError, "generic error");
+    EXPECT_FALSE(isListedAsChannelSelectorOwner(node)) << "a generic message left the node listed";
+
+    node->setChannelSelectorMessage("diffuse.G is missing");
+    EXPECT_TRUE(isListedAsChannelSelectorOwner(node));
+    node->clearChannelSelectorMessage();
+    EXPECT_FALSE(isListedAsChannelSelectorOwner(node));
+
+    node->setChannelSelectorMessage("diffuse.G is missing");
+    node->clearPersistentMessage(false);
+    EXPECT_FALSE(isListedAsChannelSelectorOwner(node));
 }

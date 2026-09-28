@@ -777,10 +777,6 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             getNode()->setChannelSelectorMessageFromRender(channelMessage, abortInfo);
             return eRenderRoIRetCodeFailed;
         }
-        // A newer passing render retires the error whatever time it failed at: the user
-        // scrubbing back to a frame that renders expects the error to go, even though the frame
-        // that failed would still fail.
-        getNode()->clearChannelSelectorMessageFromRender(abortInfo ? abortInfo->getRenderSequence() : 0, aborted());
     }
 
     const bool draftModeSupported = getNode()->isDraftModeUsed();
@@ -1707,6 +1703,12 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
 #endif
 
     assert(!outputLayers->empty());
+
+    // The channel check passed, but only a render that delivers its image retires the error: one
+    // aborted or failed after the check leaves the error of the frame still displayed. A newer
+    // delivering render retires it whatever time it failed at, since the user scrubbing back to
+    // a frame that renders expects the error to go.
+    getNode()->clearChannelSelectorMessageFromRender(abortInfo ? abortInfo->getRenderSequence() : 0, aborted());
 
     return eRenderRoIRetCodeOk;
 } // renderRoI

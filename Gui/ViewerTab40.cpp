@@ -856,6 +856,15 @@ ViewerTab::onInternalNodeScriptNameChanged(const QString& /*name*/)
 void
 ViewerTab::refreshLayerAndAlphaChannelComboBox(bool keepAbsentSelection)
 {
+    TimeLinePtr timeline = getTimeLine();
+
+    refreshLayerAndAlphaChannelComboBoxAtTime(timeline ? timeline->currentFrame() : 0., keepAbsentSelection);
+}
+
+void
+ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
+                                                     bool keepAbsentSelection)
+{
     if (!_imp->viewerNode) {
         return;
     }
@@ -863,8 +872,10 @@ ViewerTab::refreshLayerAndAlphaChannelComboBox(bool keepAbsentSelection)
     QString layerCurChoice = _imp->layerChoice->getCurrentIndexText();
     QString alphaCurChoice = _imp->alphaChannelChoice->getCurrentIndexText();
     const QString alphaChoiceBefore = alphaCurChoice;
+    _imp->layerMenuTime = time;
+    _imp->layerMenuView = _imp->viewerNode->getViewerCurrentView();
     std::set<ImageLayerDesc> components;
-    _imp->getComponentsAvailabel(&components);
+    _imp->getComponentsAvailabel(_imp->layerMenuTime, _imp->layerMenuView, &components);
 
     _imp->layerChoice->clear();
     _imp->alphaChannelChoice->clear();
@@ -1008,14 +1019,14 @@ ViewerTab::refreshLayerAndAlphaChannelComboBox(bool keepAbsentSelection)
         _imp->currentLayerChoice = layerCurChoice;
         _imp->currentAlphaLayerChoice = alphaCurChoice;
     }
-} // ViewerTab::refreshLayerAndAlphaChannelComboBox
+} // ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime
 
 void
 ViewerTab::onAlphaChannelComboChanged(int index)
 {
     std::set<ImageLayerDesc> components;
 
-    _imp->getComponentsAvailabel(&components);
+    _imp->getComponentsAvailabel(_imp->layerMenuTime, _imp->layerMenuView, &components);
 
     {
         QMutexLocker k(&_imp->currentLayerMutex);
@@ -1044,7 +1055,7 @@ ViewerTab::onLayerComboChanged(int index)
 {
     std::set<ImageLayerDesc> components;
 
-    _imp->getComponentsAvailabel(&components);
+    _imp->getComponentsAvailabel(_imp->layerMenuTime, _imp->layerMenuView, &components);
     {
         QMutexLocker k(&_imp->currentLayerMutex);
         _imp->currentLayerChoice = _imp->layerChoice->getCurrentIndexText();

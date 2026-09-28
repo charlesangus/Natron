@@ -178,7 +178,7 @@ Execution notes:
     - `listLayerViewsForKnob` on `flat-rgb-only.exr` returns {rgba, rgb, alpha}.
   - size: L
 
-- [ ] M65.P4.T2 — Map OFX component counts to views and cover RGB, Alpha and XY streams
+- [x] M65.P4.T2 — Map OFX component counts to views and cover RGB, Alpha and XY streams
   - files: `Tests/fixtures/make-flat-alpha-fixture.py` (new), `Tests/fixtures/flat-alpha-only.exr` (new), `Tests/ColorViewsRender_Test.cpp`, `Engine/ImageLayerDesc.cpp` (only if a gap appears)
   - approach:
     - OFX clips keep mapping through storage (`OfxEffectInstance.cpp:1372`, `:2962`; `EffectInstance.cpp:5763`). The user-facing mapping is `colorViewForNComps`.
@@ -230,7 +230,7 @@ Execution notes:
   - verify: GuiTests (offscreen) pass: the row and column counts per view are right, and the overlap column is disabled.
   - size: M
 
-- [ ] M65.P5.T4 — One implicit-source rule for Shuffle and its mapping knob
+- [x] M65.P5.T4 — One implicit-source rule for Shuffle and its mapping knob
   - files: `Engine/Nodes/Channel/Shuffle.{h,cpp}`, `Engine/KnobShuffleMap.{h,cpp}`, `Engine/PyParameter.cpp` (only its `KnobShuffleMap::defaultSource` call)
   - approach: `KnobShuffleMap::implicitDefault` re-derives Shuffle's private view bit⇄index rule (`bitAtViewIndex`/`indexAtViewBit`). Expose one static helper (on `ImageLayerDesc` or Shuffle) that both Shuffle's effective-source logic and `implicitDefault` call. Point PyPlug export's "is this row worth exporting" check at `implicitDefault` too, so an `alpha ← rgba.R` row is exported.
   - verify: `ctest -R 'Shuffle|KnobShuffleMap|PyPlugExport'` green, with a PyPlugExport case for `alpha ← rgba.R`.
@@ -238,7 +238,7 @@ Execution notes:
 
 ## Phase 65.6: GUI
 
-- [ ] M65.P6.T1 — Layer rows, summaries and choice fallbacks list the views
+- [x] M65.P6.T1 — Layer rows, summaries and choice fallbacks list the views
   - files: `Gui/KnobGuiLayerChannelBase.cpp` (`:66-88`), `Gui/LayerChannelRow.cpp` (`:54`, `:534`), `Gui/NodeGui.cpp` (`:3252-3260`), `Gui/KnobGuiChoice.cpp` (`:375-376`), `Tests/LayerChannelRow_Test.cpp`
   - approach:
     - `listLayerEntriesForKnob` uses `listLayerViewsForKnob`, with the views first in the order rgba, rgb, alpha, xy.
@@ -283,7 +283,7 @@ Execution notes:
 
 ## Phase 65.7: Python, serialization and the clean break
 
-- [ ] M65.P7.T1 — The Python API speaks views
+- [x] M65.P7.T1 — The Python API speaks views
   - files: `Engine/PyNode.h`, `Engine/PyNode.cpp` (`:94-160`, `:1064-1080`), `Engine/PyParameter.cpp` (`:2439-2450`, `:2605-2612`), `Tests/PyPlugExport_Test.cpp`
   - approach:
     - `ImageLayer.getRGBAComponents()`, `getRGBComponents()` and `getAlphaComponents()` return the view descs.
@@ -377,6 +377,13 @@ Execution notes:
 - 2026-09-28 — **Design doc settled** (P1.T1, `PLAN/DESIGN/2026-09-26-rgba-rgb-alpha-layers.md`): widen-on-write is confirmed but narrowed: only explicit view rows widen, never `All` or regex, so a default-All Blur doesn't turn an RGB JPEG into transparent RGBA. Widened channels zero-fill through a new per-clip `NodeMetadata` flag; today's conversion fills A with 1. Shuffle reads a missing colour channel as zero, wires by position and keeps the input's layout. Old projects: literal Color first (the v17 gate), then the layer becomes `rgba` with its channels kept and a non-channel-selector warning. The P3.T2, P4.T1, P5.T1 and P7.T3 briefs are amended to match. Open for the user: an RGB stream's alpha reads 0 through colour views but 1 through ordinary plugin conversion (e.g. a JPEG into Merge's A). Kept apart on purpose; see `# Open questions`.
 - 2026-09-28 — **B1+B2 landed red on Shuffle** (code `e342a6f77` P2.T1, `9efea83cc` P3.T1–T5 plus test re-baselines): the debug build is clean, and ctest is 536/568. All 32 failures come from B2 making `rgba` the default of Shuffle's slot knobs while Shuffle still resolves storage IDs only (`Channel rgba.R is not in the Source input`; the matrix shows 0 rows). This covers ShuffleRender ×18, ShuffleMatrix ×6, Shuffle_ ×4, PersistentMessage ×2 (via Shuffle), and `PyPlugInstantiate` (the PyPlugs still name the storage ID, which now resolves to nothing, until P7.T2). Committed red rather than held uncommitted, because the fix is P5's planned work; B3 is reordered to run P5.T1+T2 and P7.T2 first and must return the suite to green. Other B2 calls: regex rows are whole-label anchored, so the verify's `^rgb` means `rgb.*`. Grade's unsaved pre-v17 channel set lands on `rgba` (Grade isn't default-All, so the v17 gate never touches it). Every node whose default is an explicit `rgba` row (Grade, Invert, …) will widen an RGB input to RGBA once P4.T1 lands; flag this at UAT.
 - 2026-09-28 — **B3 landed; suite green again** (code `ef05ffdd1` P7.T2+T4, `9acb5e71d` P4.T1+P5.T1–T3): full debug ctest 590/590. Shuffle and widening are one commit because Shuffle overrides P4.T1's new `EffectInstance::getColorWriteBits(storage, bits*)`. Widening hooks in at the end of `checkMetadata`. It uses a per-input `NodeMetadata::setColorZeroFill` and a 3-value `ImageConvert` fill mode (zero fill beside fill-with-1 and alpha-0). The "use alpha 0" flag isn't dead (Roto and paint use it), so it was kept. Writers never widen. Merge of two RGB inputs now widens (its default is a full `rgba` row); an identity Grade on `rgba` over RGB passes through with alpha 1 (both recorded under the board's open question). Shuffle wires implicit sources by colour bit. A missing colour channel reads 0; a missing non-colour channel still fails. Four M61 "fails on RGB alpha" tests became "reads zero" and were renamed. Overlapping outputs disable Out 2's matrix row with a tooltip. The matrix's dropdowns now list through `listLayerViewsForKnob`: `rgba` had been marked "not in input", which widened the header and broke the grid spacing test. `KnobShuffleMap::implicitDefault` duplicates Shuffle's private bit rule; P5.T4 (added) unifies them. Known gap: `xy` on a target knob is never listed, because the registry folds to RGBA storage; the matrix falls back to `getColorView` for the row count.
+- 2026-09-28 — **B4 landed** (code `101203b14` P5.T4, `ba345b3c7` P4.T2, `2b5bb54bd` P6.T1, `dd6219444` P7.T1): full debug ctest 601/601 after one fix round.
+  - **Widening:** it now reads the storage from the inputs' unclamped layouts. Grade has no Alpha clip, so an alpha-only stream was clamped to RGB before `checkMetadata` widened, and its only channel was dropped.
+  - **PyPlug export:** `shuffleMapResolveLayerChannels` treated every colour view as RGBA, so a row written to `alpha` exported as `out1.R`.
+  - **Tests:** the retired-ID `ValueError` tests now run through `interpretPythonScript`, because calling a setter with no GIL crashed.
+  - **XY:** no fixture yields a real XY colour clip, so XY is covered at engine level only.
+  - **Python legacy shim:** `setChannels()`'s row-0 shim now writes `rgba`. Only the pre-v17 load gate still lands on literal Color, for P7.T3.
+  - **Bindings:** `LayerSelectParam.setLayer` had no PyErr propagation in `typesystem_engine.xml`; it is added now.
 
 ## Risks
 

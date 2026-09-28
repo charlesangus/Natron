@@ -81,6 +81,16 @@ layerIDs(const std::list<ImageLayerDesc>& layers)
     return ids;
 }
 
+static KnobChannelSelectPtr
+makeChannelSelectKnob()
+{
+    KnobChannelSelectPtr knob = std::make_shared<KnobChannelSelect>(static_cast<KnobHolder*>(NULL), std::string("channel"), 1, false);
+
+    knob->populate();
+
+    return knob;
+}
+
 TEST_F(BaseTest, GradeGetsChannelSetSeededByItsQuad)
 {
     NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
@@ -103,7 +113,7 @@ TEST_F(BaseTest, GradeGetsChannelSetSeededByItsQuad)
     std::vector<ChannelSetRow> rows = channels->getRows();
     ASSERT_EQ(1u, rows.size());
     EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
-    EXPECT_EQ(std::string(kNatronColorLayerID), rows[0].layerOrPattern);
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), rows[0].layerOrPattern);
     std::vector<std::string> rgb;
     rgb.push_back("R");
     rgb.push_back("G");
@@ -127,7 +137,7 @@ TEST_F(BaseTest, InvertGetsChannelSetWithEveryChannel)
 
     std::vector<ChannelSetRow> rows = channels->getRows();
     ASSERT_EQ(1u, rows.size());
-    EXPECT_EQ(std::string(kNatronColorLayerID), rows[0].layerOrPattern);
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), rows[0].layerOrPattern);
 
     std::list<ImageLayerDesc> present;
     invert->listLayersForKnob(channels, &present);
@@ -236,7 +246,7 @@ TEST_F(BaseTest, ConstantGetsTargetLayerSelectListingTheRegistry)
     EXPECT_TRUE(constant->isTargetLayerKnob(layer));
     EXPECT_TRUE(isFirstOnItsPage(layer));
     EXPECT_TRUE(layer->getWithChannelButtons());
-    EXPECT_EQ(std::string(kNatronColorLayerID), layer->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), layer->getLayer());
     EXPECT_TRUE(layer->getChannels().empty());
     EXPECT_FALSE(bool(constant->getKnobByName(kNatronOfxParamProcessR)));
 
@@ -294,7 +304,7 @@ TEST_F(BaseTest, GeneratorsGetTargetLayerSelectWithButtonsAndAdoptedQuads)
         EXPECT_TRUE(node->isTargetLayerKnob(layer)) << pluginID;
         EXPECT_TRUE(layer->getWithChannelButtons()) << pluginID;
         EXPECT_TRUE(isFirstOnItsPage(layer)) << pluginID;
-        EXPECT_EQ(std::string(kNatronColorLayerID), layer->getLayer()) << pluginID;
+        EXPECT_EQ(std::string(kNatronColorViewRGBA), layer->getLayer()) << pluginID;
 
         std::vector<std::string> seeded;
         for (const char* c = cases[i].seededChannels; *c; ++c) {
@@ -338,6 +348,87 @@ TEST_F(BaseTest, BlurMaskChannelSelectDefaultsToColorAlpha)
     ImageLayerDesc maskComps;
     EXPECT_EQ(3, blur->getMaskChannel(1, present, &maskComps));
     EXPECT_TRUE(maskComps.isColorLayer());
+}
+
+TEST(KnobChannelSelect, DefaultsToRgbaAlpha)
+{
+    KnobChannelSelectPtr knob = makeChannelSelectKnob();
+
+    EXPECT_EQ(std::string(kNatronColorViewRGBA) + ".A", knob->get());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA) + ".A", knob->getSummary());
+}
+
+TEST(KnobChannelSelect, ColorViewsResolveOnAnyColorStorageAndAlphaIsEquivalentAcrossViews)
+{
+    KnobChannelSelectPtr knob = makeChannelSelectKnob();
+
+    std::list<ImageLayerDesc> rgbaPresent;
+    rgbaPresent.push_back(ImageLayerDesc::getRGBAComponents());
+    std::list<ImageLayerDesc> alphaPresent;
+    alphaPresent.push_back(ImageLayerDesc::getAlphaComponents());
+
+    ImageLayerDesc layer;
+    int channelIndex = -1;
+
+    knob->set(std::string(kNatronColorViewRGBA) + ".A");
+    ASSERT_TRUE(knob->resolve(rgbaPresent, &layer, &channelIndex));
+    EXPECT_TRUE(layer.isColorLayer());
+    EXPECT_EQ(3, channelIndex);
+
+    channelIndex = -1;
+    ASSERT_TRUE(knob->resolve(alphaPresent, &layer, &channelIndex));
+    EXPECT_TRUE(layer.isColorLayer());
+    EXPECT_EQ(3, channelIndex);
+
+    knob->set(std::string(kNatronColorViewAlpha) + ".A");
+    channelIndex = -1;
+    ASSERT_TRUE(knob->resolve(rgbaPresent, &layer, &channelIndex));
+    EXPECT_EQ(3, channelIndex);
+    channelIndex = -1;
+    ASSERT_TRUE(knob->resolve(alphaPresent, &layer, &channelIndex));
+    EXPECT_EQ(3, channelIndex);
+}
+
+TEST(KnobChannelSelect, RgbHasNoAlphaChannel)
+{
+    KnobChannelSelectPtr knob = makeChannelSelectKnob();
+
+    std::list<ImageLayerDesc> rgbaPresent;
+    rgbaPresent.push_back(ImageLayerDesc::getRGBAComponents());
+
+    knob->set(std::string(kNatronColorViewRGB) + ".A");
+    EXPECT_FALSE(knob->resolve(rgbaPresent, 0, 0));
+}
+
+TEST(KnobChannelSelect, RgbaAOnRgbStorageResolvesAndReadsZero)
+{
+    KnobChannelSelectPtr knob = makeChannelSelectKnob();
+
+    std::list<ImageLayerDesc> rgbPresent;
+    rgbPresent.push_back(ImageLayerDesc::getRGBComponents());
+
+    knob->set(std::string(kNatronColorViewRGBA) + ".A");
+
+    ImageLayerDesc layer;
+    int channelIndex = -1;
+    ASSERT_TRUE(knob->resolve(rgbPresent, &layer, &channelIndex));
+    EXPECT_TRUE(layer.isColorLayer());
+    EXPECT_EQ(3, channelIndex);
+
+    // The RGB storage carries no bit-3 channel, so the resolved index reads as zero rather
+    // than as an actual stored value.
+    EXPECT_FALSE(ImageLayerDesc::colorStorageBits(layer).test(channelIndex));
+}
+
+TEST(KnobChannelSelect, RetiredStorageIdResolvesToNothing)
+{
+    KnobChannelSelectPtr knob = makeChannelSelectKnob();
+
+    std::list<ImageLayerDesc> rgbaPresent;
+    rgbaPresent.push_back(ImageLayerDesc::getRGBAComponents());
+
+    knob->set(std::string(kNatronColorLayerID) + ".A");
+    EXPECT_FALSE(knob->resolve(rgbaPresent, 0, 0));
 }
 
 TEST_F(BaseTest, ChannelSetListsPresentLayersOfPreferredInput)
@@ -437,7 +528,7 @@ TEST_F(BaseTest, RotoAndRotoPaintGetTargetLayerSelectWithButtons)
         EXPECT_TRUE(roto->isTargetLayerKnob(layer)) << cases[i].pluginID;
         EXPECT_TRUE(layer->getWithChannelButtons()) << cases[i].pluginID;
         EXPECT_TRUE(isFirstOnItsPage(layer)) << cases[i].pluginID;
-        EXPECT_EQ(std::string(kNatronColorLayerID), layer->getLayer()) << cases[i].pluginID;
+        EXPECT_EQ(std::string(kNatronColorViewRGBA), layer->getLayer()) << cases[i].pluginID;
         EXPECT_EQ(cases[i].defaultChannels, layer->getChannels()) << cases[i].pluginID;
 
         std::list<ImageLayerDesc> listed;

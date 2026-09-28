@@ -302,7 +302,7 @@ TEST_F(RotoLayerTest, RotoWritesAlphaOnlyIntoColor)
     NodePtr roto = createRotoOnReader(PLUGINID_NATRON_ROTO, &layer);
     ASSERT_TRUE(bool(roto));
     ASSERT_TRUE(bool(layer));
-    EXPECT_EQ(std::string(kNatronColorLayerID), layer->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), layer->getLayer());
     EXPECT_EQ(std::vector<std::string>(1, "A"), layer->getChannels());
 
     BezierPtr square = addSquare(roto);

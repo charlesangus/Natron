@@ -457,7 +457,7 @@ KnobGuiChannelSet::onAddLayerClicked()
     const std::set<std::string> used = layerIDsHeldByOtherRows(rows, rows.size());
     ChannelSetRow value;
     value.mode = ChannelSetRow::eModeLayer;
-    value.layerOrPattern = used.count(kNatronColorLayerID) ? std::string() : kNatronColorLayerID;
+    value.layerOrPattern = used.count(kNatronColorViewRGBA) ? std::string() : kNatronColorViewRGBA;
     const std::vector<LayerChannelRow::LayerEntry>& layers = getLayers();
     for (std::size_t i = 0; i < layers.size(); ++i) {
         if (!ImageLayerDesc::isColorLayer(layers[i].id) && !used.count(layers[i].id)) {

@@ -173,9 +173,7 @@ getRegisteredProjectLayersList(const ProjectPtr& project)
     std::list<ImageLayerDesc> ret;
     std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
 
-    for (std::vector<LayerRegistryEntry>::const_iterator it = snapshot->begin(); it != snapshot->end(); ++it) {
-        ret.push_back(it->desc);
-    }
+    LayerRegistry::toStoragePlanes(snapshot, &ret);
     return ret;
 }
 

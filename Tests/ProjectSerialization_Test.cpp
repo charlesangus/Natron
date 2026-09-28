@@ -184,7 +184,7 @@ TEST_F(BaseTest, RoundTripsLayerRegistry)
 
     {
         std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
-        EXPECT_EQ((std::size_t)6, snapshot->size()); // 5 built-ins + depth
+        EXPECT_EQ((std::size_t)9, snapshot->size()); // rgba, rgb, alpha, xy, DisparityLeft, DisparityRight, Backward, Forward + depth
         ImageLayerDesc unused;
         EXPECT_FALSE(project->findLayer("diffuse", &unused));
         EXPECT_FALSE(project->findLayer("specular", &unused));
@@ -227,7 +227,7 @@ TEST_F(BaseTest, RemoveLayerRefusesBuiltinsAllowsUnused)
     project->reset(false, true);
 
     std::string error;
-    EXPECT_FALSE(project->removeLayer(kNatronColorLayerID, &error));
+    EXPECT_FALSE(project->removeLayer(kNatronColorViewRGBA, &error));
     EXPECT_FALSE(error.empty());
 
     error.clear();

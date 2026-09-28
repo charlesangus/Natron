@@ -88,6 +88,14 @@ struct ResolvedLayer {
     std::bitset<4> channels;
 
     /**
+     * @brief The subset of `channels` that `desc` does not carry and that therefore reads as
+     * zero. Only a layer row naming a colour view explicitly sets these bits (e.g. rgba over RGB
+     * storage sets bit 3), which is what asks for the output colour plane to be widened; All and
+     * regex rows resolve colour to the storage's own channels and leave this empty.
+     **/
+    std::bitset<4> zeroChannels;
+
+    /**
      * @brief The bit of `channels` standing for channel `channelIndex` of `desc`: a one-channel
      * plane is an alpha plane (see Image::canCallCopyUnProcessedChannels), so its only channel
      * is bit 3.
@@ -111,6 +119,11 @@ struct ResolvedLayer {
  * Row 0 may be "none" or "all"; any row may name a layer (by ID, with an explicit
  * channel list or an empty list meaning "every channel the layer has at resolve time")
  * or a whole-string, case-sensitive regular expression matched against layer labels.
+ *
+ * The colour plane is named through its views (rgba, rgb, alpha, xy), never through its
+ * storage ID: resolve() maps each view onto the one colour storage layer of the present list,
+ * so every row touching colour accumulates into a single ResolvedLayer whose desc is the
+ * storage layer. A row naming the storage ID itself resolves to nothing.
  *
  * The knob owns no layer list: resolve() is a pure function of the rows and of the
  * caller's list of present layers.
@@ -171,12 +184,19 @@ public:
     }
 
     /**
-     * @brief The rows an empty value stands for: the Color layer, every channel.
+     * @brief The rows an empty value stands for: the rgba colour view, every channel.
      * Knob<T>::populate() resets the value to an empty string after construction, so the
      * type's own default cannot live in the constructor; getRows() substitutes these
      * rows whenever the stored value decodes to no row at all.
      **/
     static std::vector<ChannelSetRow> defaultRows();
+
+    /**
+     * @brief The default rows projects saved before per-node defaults existed stood for: the
+     * colour storage layer ID, every channel. Such a row resolves to nothing; it exists only so
+     * that loading an old project lands on a value the load-time colour-layer rewrite recognises.
+     **/
+    static std::vector<ChannelSetRow> legacyColorDefaultRows();
 
     std::vector<ChannelSetRow> getRows() const;
 
@@ -241,6 +261,7 @@ public:
      * with lowercase channel initials appended when its excluded channels leave a subset of a
      * matched layer's channels, or "(no match)" when it matches none) instead of its pattern
      * text, since the pattern alone does not tell a viewer of the node graph what is flowing.
+     * Colour is rendered once, as the widest colour view the pattern matched.
      **/
     std::string getSummary(const std::list<ImageLayerDesc>& present) const;
 

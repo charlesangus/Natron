@@ -411,8 +411,11 @@ Shuffle::resolveLayerLabel(const std::string& layerID,
     if (layerID.empty()) {
         return std::string();
     }
-    if (ImageLayerDesc::isColorLayer(layerID)) {
-        return ImageLayerDesc::getRGBAComponents().getLayerLabel();
+    if (ImageLayerDesc::isColorViewID(layerID)) {
+        return layerID;
+    }
+    if (layerID == kNatronColorLayerID) {
+        return kNatronColorViewRGBA;
     }
 
     AppInstancePtr app = getApp();

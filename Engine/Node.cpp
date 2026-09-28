@@ -2508,7 +2508,7 @@ Node::createUnPremultSelector(const KnobPagePtr& mainPage)
 
     KnobChannelSelectPtr channel = _imp->effect->createChannelSelectKnob(kUnPremultByKnobName, tr(kUnPremultByKnobLabel).toStdString(), false);
     channel->setAnimationEnabled(false);
-    // A KnobChannelSelect left empty reads as Color.A, which is the right default for a mask
+    // A KnobChannelSelect left empty reads as rgba.A, which is the right default for a mask
     // footer but not here: the plug-in's own bool defaulted to off, and quietly unpremultiplying
     // every colour node by alpha is not something to turn on behind the user's back.
     channel->setDefaultValue(channel->encode(std::string()));
@@ -2712,7 +2712,7 @@ Node::adoptChannelQuad()
     const bool defaultsToAll = isChannelSet && _imp->effect->defaultProcessesAllLayers();
 
     if (isChannelSet) {
-        _imp->legacyChannelSetDefault = isChannelSet->encodeRows(KnobChannelSet::defaultRows());
+        _imp->legacyChannelSetDefault = isChannelSet->encodeRows(KnobChannelSet::legacyColorDefaultRows());
     }
     if (defaultsToAll) {
         std::vector<ChannelSetRow> allRows(1);
@@ -2770,15 +2770,20 @@ Node::adoptChannelQuad()
     // already matches, so there is nothing to seed on it.
     if (enabledChannels.size() != 4) {
         if (isChannelSet) {
+            // The legacy default names the colour storage ID so that an old project it lands on
+            // is recognised and rewritten with a warning on load; the live default names the view.
+            std::vector<ChannelSetRow> legacyRows = KnobChannelSet::legacyColorDefaultRows();
             std::vector<ChannelSetRow> rows = KnobChannelSet::defaultRows();
             if (enabledChannels.empty()) {
+                legacyRows[0].mode = ChannelSetRow::eModeNone;
                 rows[0].mode = ChannelSetRow::eModeNone;
             } else {
+                legacyRows[0].channels = enabledChannels;
                 rows[0].channels = enabledChannels;
             }
-            _imp->legacyChannelSetDefault = isChannelSet->encodeRows(rows);
+            _imp->legacyChannelSetDefault = isChannelSet->encodeRows(legacyRows);
             if (!defaultsToAll) {
-                isChannelSet->setDefaultValue(_imp->legacyChannelSetDefault);
+                isChannelSet->setDefaultValue(isChannelSet->encodeRows(rows));
             }
         } else if (isLayerSelect && isLayerSelect->getWithChannelButtons()) {
             isLayerSelect->setChannels(enabledChannels);
@@ -6067,9 +6072,9 @@ Node::listLayersForKnob(const KnobIPtr& knob,
             return;
         }
         std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
-        for (std::vector<LayerRegistryEntry>::const_iterator it = snapshot->begin(); it != snapshot->end(); ++it) {
-            layers->push_back(it->desc);
-        }
+        std::list<ImageLayerDesc> storagePlanes;
+        LayerRegistry::toStoragePlanes(snapshot, &storagePlanes);
+        layers->insert(layers->end(), storagePlanes.begin(), storagePlanes.end());
 
         return;
     }

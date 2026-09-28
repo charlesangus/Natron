@@ -139,7 +139,7 @@ TEST_F(PyPlugExportTest, BuiltInLayerReferenceEmitsNoAddProjectLayer)
 
     project->reset(false, true);
 
-    NodeGroupPtr group = buildGroupWithRotoTargeting(kNatronColorLayerID);
+    NodeGroupPtr group = buildGroupWithRotoTargeting(kNatronColorViewRGBA);
     ASSERT_TRUE(bool(group));
 
     QString output;

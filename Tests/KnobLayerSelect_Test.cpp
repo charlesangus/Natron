@@ -129,17 +129,64 @@ TEST(KnobLayerSelect, TypeAndColumns)
     EXPECT_FALSE(asKnobI->canAnimate());
 }
 
-TEST(KnobLayerSelect, DefaultIsColorAllChannels)
+TEST(KnobLayerSelect, DefaultIsRGBAAllChannels)
 {
     KnobLayerSelectPtr knob = makeLayerSelectKnob();
 
-    EXPECT_EQ(std::string(kNatronColorLayerID), knob->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), knob->getLayer());
     EXPECT_TRUE(knob->getChannels().empty());
-    EXPECT_EQ(std::string("Color"), knob->getSummary());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), knob->getSummary());
 
     ResolvedLayer resolved;
     ASSERT_TRUE(knob->resolve(presentLayers(), &resolved));
     EXPECT_EQ(std::string(kNatronColorLayerID), resolved.desc.getLayerID());
+    EXPECT_EQ(std::bitset<4>(std::string("1111")), resolved.channels);
+}
+
+TEST(KnobLayerSelect, RetiredStorageIDResolvesToFalse)
+{
+    KnobLayerSelectPtr knob = makeLayerSelectKnob();
+
+    knob->setLayer(kNatronColorLayerID);
+
+    ResolvedLayer resolved;
+    EXPECT_FALSE(knob->resolve(presentLayers(), &resolved));
+}
+
+TEST(KnobLayerSelect, SummaryMapsRetiredStorageIDToRGBALabel)
+{
+    KnobLayerSelectPtr knob = makeLayerSelectKnob();
+
+    knob->setLayer(kNatronColorLayerID);
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), knob->getSummary());
+}
+
+TEST(KnobLayerSelect, AlphaViewResolvesToBit3)
+{
+    KnobLayerSelectPtr knob = makeLayerSelectKnob();
+
+    knob->setLayer(kNatronColorViewAlpha);
+
+    ResolvedLayer resolved;
+    ASSERT_TRUE(knob->resolve(presentLayers(), &resolved));
+    EXPECT_EQ(std::string(kNatronColorLayerID), resolved.desc.getLayerID());
+    EXPECT_EQ(std::bitset<4>(std::string("1000")), resolved.channels);
+    EXPECT_EQ(std::string(kNatronColorViewAlpha), knob->getSummary());
+}
+
+TEST(KnobLayerSelect, RGBAViewOverRGBStorageResolvesFullMaskReadingZero)
+{
+    KnobLayerSelectPtr knob = makeLayerSelectKnob();
+
+    knob->setLayer(kNatronColorViewRGBA);
+
+    std::list<ImageLayerDesc> present;
+    present.push_back(ImageLayerDesc::getRGBComponents());
+
+    ResolvedLayer resolved;
+    ASSERT_TRUE(knob->resolve(present, &resolved));
+    EXPECT_EQ(std::string(kNatronColorLayerID), resolved.desc.getLayerID());
+    EXPECT_EQ(3, resolved.desc.getNumComponents());
     EXPECT_EQ(std::bitset<4>(std::string("1111")), resolved.channels);
 }
 
@@ -164,7 +211,7 @@ TEST(KnobLayerSelect, WithoutButtonsSetChannelsThrowsAndAlwaysResolvesToAll)
 
     // setLayer is always legal (it is setChannels that requires buttons); this also
     // gives the knob a non-empty raw value so the Channels cell can be inspected.
-    knob->setLayer(kNatronColorLayerID);
+    knob->setLayer(kNatronColorViewRGBA);
 
     const std::string raw = knob->getValue();
     EXPECT_NE(std::string::npos, raw.find("<Channels></Channels>"));
@@ -178,7 +225,7 @@ TEST(KnobLayerSelect, ResolveIntersectsPresentChannels)
 {
     KnobLayerSelectPtr knob = makeLayerSelectKnob(true);
 
-    knob->setLayer(kNatronColorLayerID);
+    knob->setLayer(kNatronColorViewRGBA);
     knob->setChannels(channels("R", "G", "Q"));
 
     ResolvedLayer resolved;
@@ -191,9 +238,9 @@ TEST(KnobLayerSelect, SummaryIsLabelDotInitialsForASubset)
 {
     KnobLayerSelectPtr knob = makeLayerSelectKnob(true);
 
-    knob->setLayer(kNatronColorLayerID);
+    knob->setLayer(kNatronColorViewRGBA);
     knob->setChannels(channels("R", "G"));
-    EXPECT_EQ(std::string("Color.rg"), knob->getSummary());
+    EXPECT_EQ(std::string("rgba.rg"), knob->getSummary());
 }
 
 TEST(KnobLayerSelect, ResolveAllChannelsOfALayer)
@@ -383,13 +430,13 @@ TEST(KnobChannelSelect, TypeAndColumns)
     EXPECT_FALSE(asKnobI->canAnimate());
 }
 
-TEST(KnobChannelSelect, DefaultIsColorAlpha)
+TEST(KnobChannelSelect, DefaultIsRgbaAlpha)
 {
     KnobChannelSelectPtr knob = makeChannelSelectKnob();
 
-    EXPECT_EQ(std::string(kNatronColorLayerID) + ".A", knob->get());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA) + ".A", knob->get());
     EXPECT_FALSE(knob->isNone());
-    EXPECT_EQ(std::string("Color.A"), knob->getSummary());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA) + ".A", knob->getSummary());
 
     ImageLayerDesc layer;
     int channelIndex = -1;

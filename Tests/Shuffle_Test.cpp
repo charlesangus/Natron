@@ -219,9 +219,9 @@ TEST_F(ShuffleTest, OwnsItsLayerKnobsAndGetsNoHostLayerKnob)
     ASSERT_TRUE(bool(out1));
     ASSERT_TRUE(bool(out2));
 
-    EXPECT_EQ(std::string(kNatronColorLayerID), in1->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), in1->getLayer());
     EXPECT_EQ(std::string(), in2->getLayer());
-    EXPECT_EQ(std::string(kNatronColorLayerID), out1->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), out1->getLayer());
     EXPECT_EQ(std::string(), out2->getLayer());
 
     EXPECT_TRUE(in1->getAllowNone());
@@ -275,9 +275,9 @@ TEST_F(ShuffleTest, ShuffleCopyHasTwoInputsAndCopiesAlphaFromInput1ByDefault)
     ASSERT_TRUE(bool(in2));
     ASSERT_TRUE(bool(out1));
     ASSERT_TRUE(bool(out2));
-    EXPECT_EQ(std::string(kNatronColorLayerID), in1->getLayer());
-    EXPECT_EQ(std::string(kNatronColorLayerID), in2->getLayer());
-    EXPECT_EQ(std::string(kNatronColorLayerID), out1->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), in1->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), in2->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), out1->getLayer());
     EXPECT_EQ(std::string(), out2->getLayer());
 
     expectLayerKnobsHidden(copy);
@@ -396,7 +396,7 @@ TEST_F(ShuffleTest, ProducesOnlyItsOutputLayerAndPassesTheRestThroughFromTheSour
     EXPECT_TRUE(contains(passThrough, "specular"));
     EXPECT_FALSE(contains(passThrough, "spec2"));
 
-    // spec2's channels read in1's Color by default, and nothing reads the None in2.
+    // spec2's channels read in1's rgba by default, and nothing reads the None in2.
     std::vector<std::string> expectedFromMain;
     expectedFromMain.push_back(kNatronColorLayerID);
     EXPECT_EQ(expectedFromMain, layerIDs(comps[Shuffle::eInputMain]));
@@ -461,17 +461,17 @@ TEST_F(ShuffleTest, IdentityOnlyWhileEveryOut1ChannelReadsItsOwnChannelOfTheSame
     in1->setLayer("diffuse");
     EXPECT_FALSE(isIdentityOfMain(shuffle));
 
-    in1->setLayer(kNatronColorLayerID);
+    in1->setLayer(kNatronColorViewRGBA);
     mapping->setSource(1, 1, ShuffleSource::makeInput(2, 1));
     EXPECT_FALSE(isIdentityOfMain(shuffle));
 
-    in2->setLayer(kNatronColorLayerID);
+    in2->setLayer(kNatronColorViewRGBA);
     EXPECT_TRUE(isIdentityOfMain(shuffle));
 
     out2->setLayer("diffuse");
     EXPECT_FALSE(isIdentityOfMain(shuffle));
 
-    out2->setLayer(kNatronColorLayerID);
+    out2->setLayer(kNatronColorViewRGBA);
     EXPECT_TRUE(isIdentityOfMain(shuffle));
 }
 
@@ -534,19 +534,19 @@ TEST_F(ShuffleTest, SubLabelFollowsTheMapping)
     ASSERT_TRUE(bool(out2));
     ASSERT_TRUE(bool(sublabel));
 
-    in1->setLayer(kNatronColorLayerID);
+    in1->setLayer(kNatronColorViewRGBA);
     in2->setLayer("specular");
-    out1->setLayer(kNatronColorLayerID);
+    out1->setLayer(kNatronColorViewRGBA);
     out2->setLayer("diffuse");
 
-    // Out1 only passes Color through, so only out2 (fed by specular) is named.
+    // Out1 only passes rgba through, so only out2 (fed by specular) is named.
     const std::string arrow = " \xE2\x86\x92 ";
     const std::string specularToDiffuse = sublabel->getValue();
     const std::size_t arrowPos = specularToDiffuse.find(arrow);
     ASSERT_NE(std::string::npos, arrowPos) << specularToDiffuse;
     const std::string specular = specularToDiffuse.substr(0, arrowPos);
     const std::string diffuse = specularToDiffuse.substr(arrowPos + arrow.size());
-    const std::string color = ImageLayerDesc::getRGBAComponents().getLayerLabel();
+    const std::string color = kNatronColorViewRGBA;
     EXPECT_FALSE(specular.empty());
     EXPECT_FALSE(diffuse.empty());
 

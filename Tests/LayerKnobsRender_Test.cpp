@@ -276,7 +276,7 @@ TEST_F(LayerKnobsRenderTest, ChannelSetRowsSelectOutputAndInputPlanesWithPerPlan
 
     const U64 defaultHash = queryNeededComponents(invert).hash;
 
-    channels->setLayer(0, kNatronColorLayerID, NULL);
+    channels->setLayer(0, kNatronColorViewRGBA, NULL);
     std::vector<std::string> rg;
     rg.push_back("R");
     rg.push_back("G");
@@ -457,7 +457,7 @@ TEST_F(LayerKnobsRenderTest, InvertReadsAndMasksEachPlaneOnItsOwn)
 
     std::vector<std::string> r;
     r.push_back("R");
-    channels->setLayer(0, kNatronColorLayerID, &r);
+    channels->setLayer(0, kNatronColorViewRGBA, &r);
     std::vector<std::string> g;
     g.push_back("G");
     channels->addLayer("diffuse", &g);
@@ -616,7 +616,7 @@ TEST_F(LayerKnobsRenderTest, ChannelSetRowWithNoMatchingChannelMakesTheNodeAnIde
 
     std::vector<std::string> q;
     q.push_back("Q");
-    channels->setLayer(0, kNatronColorLayerID, &q);
+    channels->setLayer(0, kNatronColorViewRGBA, &q);
     EXPECT_FALSE(invert->hasAtLeastOneChannelToProcess(0, ViewIdx(0)));
     EXPECT_TRUE(isIdentityOfSource(invert));
 

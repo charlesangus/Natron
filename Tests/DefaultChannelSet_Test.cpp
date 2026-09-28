@@ -174,6 +174,14 @@ channelSetOf(const NodePtr& node)
 bool
 isColorRow(const ChannelSetRow& row)
 {
+    return row.mode == ChannelSetRow::eModeLayer && row.layerOrPattern == kNatronColorViewRGBA;
+}
+
+// A row naming the retired storage ID directly, as only the setChannels() row-0 legacy
+// shim and the pre-v17 legacy-default load gate still produce.
+bool
+isLegacyColorRow(const ChannelSetRow& row)
+{
     return row.mode == ChannelSetRow::eModeLayer && row.layerOrPattern == kNatronColorLayerID;
 }
 
@@ -291,7 +299,7 @@ TEST_F(DefaultChannelSetTest, RotoKeepsItsAlphaTargetDefault)
 
     KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(roto->getKnobByName(kNodeParamLayerSelect));
     ASSERT_TRUE(bool(layer));
-    EXPECT_EQ(std::string(kNatronColorLayerID), layer->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), layer->getLayer());
     std::vector<std::string> alpha;
     alpha.push_back("A");
     EXPECT_EQ(alpha, layer->getChannels());
@@ -319,7 +327,7 @@ TEST_F(DefaultChannelSetTest, SetChannelsOnAllDefaultBlurPinsToColor)
 
     std::vector<ChannelSetRow> rows = channels->getRows();
     ASSERT_EQ(1u, rows.size());
-    EXPECT_TRUE(isColorRow(rows[0]));
+    EXPECT_TRUE(isLegacyColorRow(rows[0]));
     EXPECT_EQ(rgba, rows[0].channels);
 }
 
@@ -342,7 +350,7 @@ TEST_F(DefaultChannelSetTest, SetChannelsOnAllDefaultBlurWithSingleChannelPinsTo
 
     std::vector<ChannelSetRow> rows = channels->getRows();
     ASSERT_EQ(1u, rows.size());
-    EXPECT_TRUE(isColorRow(rows[0]));
+    EXPECT_TRUE(isLegacyColorRow(rows[0]));
     EXPECT_EQ(alpha, rows[0].channels);
 }
 
@@ -365,7 +373,7 @@ TEST_F(DefaultChannelSetTest, SetChannelsOnNoneRowOfADefaultAllBlurPinsToColor)
 
     std::vector<ChannelSetRow> rows = channels->getRows();
     ASSERT_EQ(1u, rows.size());
-    EXPECT_TRUE(isColorRow(rows[0]));
+    EXPECT_TRUE(isLegacyColorRow(rows[0]));
     EXPECT_EQ(alpha, rows[0].channels);
 }
 
@@ -424,7 +432,7 @@ TEST_F(DefaultChannelSetTest, BlurSetToColorStaysColorAfterRoundTrip)
     const std::string name = blur->getScriptName();
     KnobChannelSetPtr channels = channelSetOf(blur);
     ASSERT_TRUE(bool(channels));
-    channels->setLayer(0, kNatronColorLayerID, NULL);
+    channels->setLayer(0, kNatronColorViewRGBA, NULL);
     ASSERT_TRUE(isColorRow(channels->getRows()[0]));
 
     QTemporaryDir tmp;
@@ -484,7 +492,7 @@ TEST_F(DefaultChannelSetTest, LegacyProjectKeepsColorWhereNoValueWasSaved)
     ASSERT_TRUE(bool(blur1Channels));
     std::vector<ChannelSetRow> rows = blur1Channels->getRows();
     ASSERT_EQ(1u, rows.size());
-    EXPECT_TRUE(isColorRow(rows[0]));
+    EXPECT_TRUE(isLegacyColorRow(rows[0]));
     EXPECT_NE(ChannelSetRow::eModeAll, rows[0].mode);
 
     KnobChannelSetPtr blur2Channels = channelSetOf(blur2);
@@ -494,6 +502,9 @@ TEST_F(DefaultChannelSetTest, LegacyProjectKeepsColorWhereNoValueWasSaved)
     EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
     EXPECT_EQ(std::string("specular"), rows[0].layerOrPattern);
 
+    // Grade1 is not caught by the pre-v17 legacy-default load gate: that gate only fires for
+    // defaultProcessesAllLayers() nodes (Blur1's case). Grade1's unsaved channel set simply
+    // falls through to its live per-node default, which is rgba, not the retired storage ID.
     KnobChannelSetPtr grade1Channels = channelSetOf(grade1);
     ASSERT_TRUE(bool(grade1Channels));
     rows = grade1Channels->getRows();
@@ -518,5 +529,5 @@ TEST_F(DefaultChannelSetTest, LegacyColorSurvivesResaving)
     ASSERT_TRUE(bool(channels));
     std::vector<ChannelSetRow> rows = channels->getRows();
     ASSERT_EQ(1u, rows.size());
-    EXPECT_TRUE(isColorRow(rows[0]));
+    EXPECT_TRUE(isLegacyColorRow(rows[0]));
 }

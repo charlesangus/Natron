@@ -83,7 +83,7 @@ KnobChannelSelect::get() const
         if (table.empty()) {
             // Knob<T>::populate() resets the value to an empty string after construction,
             // so the type's own default cannot live in the constructor.
-            _cachedValue = std::string(kNatronColorLayerID) + "." + kDefaultChannelName;
+            _cachedValue = std::string(kNatronColorViewRGBA) + "." + kDefaultChannelName;
         } else {
             _cachedValue = table.front()[0];
         }
@@ -152,6 +152,42 @@ KnobChannelSelect::resolve(const std::list<ImageLayerDesc>& present,
     if (layerID.empty()) {
         return false;
     }
+    if (layerID == kNatronColorLayerID) {
+        // The retired storage ID is never a valid selection any more: only its views (rgba,
+        // rgb, alpha, xy) are.
+        return false;
+    }
+
+    if (ImageLayerDesc::isColorViewID(layerID)) {
+        for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+            if (!it->isColorLayer()) {
+                continue;
+            }
+            std::bitset<4> bits, zeroBits;
+            ImageLayerDesc::resolveColorView(layerID, *it, std::vector<std::string>(1, channelName), &bits, &zeroBits);
+            if (bits.none()) {
+                // channelName is not one of layerID's own channels (e.g. rgb.A).
+                return false;
+            }
+            if (layer) {
+                *layer = *it;
+            }
+            if (channelIndex) {
+                for (int b = 0; b < 4; ++b) {
+                    if (bits.test(b)) {
+                        *channelIndex = b;
+                        break;
+                    }
+                }
+            }
+
+            // A channel the view names but the storage layout lacks (zeroBits) still resolves,
+            // because it reads as zero rather than being absent.
+            return true;
+        }
+
+        return false;
+    }
 
     for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
         if (it->getLayerID() != layerID) {
@@ -180,7 +216,10 @@ KnobChannelSelect::resolve(const std::list<ImageLayerDesc>& present,
 static std::string
 layerLabelForID(const std::string& layerID)
 {
-    if (ImageLayerDesc::isColorLayer(layerID)) {
+    if (ImageLayerDesc::isColorViewID(layerID)) {
+        return ImageLayerDesc::getColorView(layerID).getLayerLabel();
+    }
+    if (layerID == kNatronColorLayerID) {
         return kNatronColorLayerLabel;
     }
     ImageLayerDesc desc = ImageLayerDesc::mapOFXPlaneStringToLayer(layerID);

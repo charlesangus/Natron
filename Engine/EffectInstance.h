@@ -575,6 +575,15 @@ public:
     virtual LayerKnobSpec getLayerKnobSpec() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief True when this effect moves, filters, selects or retimes pixels without giving any
+     * channel a meaning, so its channel-set knob starts on "All" instead of the Color layer.
+     **/
+    virtual bool defaultProcessesAllLayers() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
      * @brief Called on a Read/Write container's effect whenever its embedded node lists the
      * layers present on one of its inputs (getPresentLayers() with inputNb >= 0). The container
      * may narrow the list to what the user selected on it; the default keeps it whole.
@@ -2101,15 +2110,16 @@ public:
 
     const std::vector<std::string>& getUserLayers() const;
 
-private:
     /**
      * @brief The input whose layers pass through this effect at (time, view), and the time and
      * view they are read at: the input this effect is an identity of there, otherwise the
-     * preferred input at (time, view).
+     * preferred input at (time, view). Called again while its own identity query is running,
+     * it answers the preferred input at (time, view) without asking isIdentity() again.
      **/
     void getLayersPassThroughInput(double time, ViewIdx view,
                                    int* inputNb, double* inputTime, ViewIdx* inputView);
 
+private:
     bool isResolvingLayersPassThrough() const;
 
     void getComponentsNeededDefault(double time, ViewIdx view,

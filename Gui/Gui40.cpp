@@ -997,6 +997,15 @@ Gui::renderViewersAndRefreshKnobsAfterTimelineTimeChange(SequenceTime time,
         }
     }
 
+    // Before the viewers render: a cached frame renders nothing, so it would never retire the
+    // missing-channel error of the frame just left.
+    {
+        NodesList allNodes;
+        project->getNodes_recursive(allNodes, true);
+        for (NodesList::iterator it = allNodes.begin(); it != allNodes.end(); ++it) {
+            (*it)->refreshChannelSelectorMessageAtTime(time);
+        }
+    }
 
     ViewerInstance* leadViewer = getApp()->getLastViewerUsingTimeline();
     const std::list<ViewerTab*>& viewers = getViewersList();

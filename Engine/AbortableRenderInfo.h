@@ -116,6 +116,32 @@ public:
     U64 getRenderAge() const;
 
     /**
+     * @brief A number unique to this render request and larger than that of every request
+     * created before it, whatever kind of render it is (viewer, playback, writer, preview...).
+     * Never 0. Unlike the render age, it orders requests of different kinds against each other.
+     **/
+    U64 getRenderSequence() const;
+
+    /**
+     * @brief The sequence number of the most recently created render request, 0 if none was
+     * created yet.
+     **/
+    static U64 getLatestRenderSequence();
+
+    /**
+     * @brief Marks this render as replaced by a newer request for the same output, such as a
+     * viewer request for another frame. Unlike setAborted() it does not stop the render: the
+     * viewer may still let it finish for feedback while scrubbing. Cannot be reversed.
+     **/
+    void setSuperseded();
+
+    /**
+     * @brief True once setSuperseded() was called. A superseded render reports nothing about
+     * the frame it renders, since the user has moved on from it.
+     **/
+    bool isSuperseded() const;
+
+    /**
      * @brief Registers the thread as part of this render request. Whenever AbortableThread::setAbortInfo is called, the thread is automatically registered
      * in this class as to be part of this render. This is used to monitor running threads for a specific render and to know if a thread has stalled when
      * the user called setAborted()

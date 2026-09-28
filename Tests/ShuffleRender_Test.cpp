@@ -432,6 +432,24 @@ protected:
         size->setValue(sizePx, ViewSpec::all(), 1);
     }
 
+    void setChannelsAll(const NodePtr& node)
+    {
+        KnobChannelSet* channels = dynamic_cast<KnobChannelSet*>(node->getKnobByName(kNodeParamChannelSet).get());
+        ASSERT_TRUE(channels != NULL) << node->getScriptName() << " has no channel set knob";
+        channels->setAll();
+    }
+
+    void setChannelsToLayer(const NodePtr& node,
+                            const std::string& layerID)
+    {
+        KnobChannelSet* channels = dynamic_cast<KnobChannelSet*>(node->getKnobByName(kNodeParamChannelSet).get());
+        ASSERT_TRUE(channels != NULL) << node->getScriptName() << " has no channel set knob";
+        std::vector<ChannelSetRow> rows(1);
+        rows[0].mode = ChannelSetRow::eModeLayer;
+        rows[0].layerOrPattern = layerID;
+        channels->setRows(rows);
+    }
+
     KnobLayerSelectPtr layerKnob(const char* name) const
     {
         return std::dynamic_pointer_cast<KnobLayerSelect>(_shuffle->getKnobByName(name));
@@ -1267,4 +1285,119 @@ TEST_F(ShuffleRenderTest, ShuffleCopyExplicitRowVariesPerFrameOnInput1)
     }
     EXPECT_FALSE(_shuffle->hasPersistentMessage());
     EXPECT_NEAR(1.f, valueAt(image1Again, "R"), 1e-4f);
+}
+
+// On All the Switch must hand the Write only the layers of the input it routes: at frame 2 that
+// input has no diffuse, and asking for it anyway writes a diffuse plane of zeros.
+TEST_F(ShuffleRenderTest, SwitchOnAllWritesOnlyTheRoutedInputsLayers)
+{
+    NodePtr source = createTimeVaryingSwitch();
+    ASSERT_TRUE(bool(source));
+    setChannelsAll(source);
+    if (HasFatalFailure()) {
+        return;
+    }
+    createWriterOn(source);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+
+    getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+    FlatExrImage image2;
+    render(tmp, "switch_all_frame2.exr", &image2, 2);
+    if (HasFatalFailure()) {
+        return;
+    }
+    static const std::set<std::string> rgbaOnly = { "R", "G", "B", "A" };
+    EXPECT_EQ(rgbaOnly, channelSet(image2));
+    expectColor(image2, 1.f, 0.f, 0.f, 1.f);
+
+    getApp()->getTimeLine()->seekFrame(2, false, NULL, eTimelineChangeReasonOtherSeek);
+    FlatExrImage image1;
+    render(tmp, "switch_all_frame1.exr", &image1, 1);
+    if (HasFatalFailure()) {
+        return;
+    }
+    expectFixtureLayers(image1);
+    expectColor(image1, 1.f, 0.f, 0.f, 1.f);
+    expectPlane(image1, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image1, "specular.", 0.f, 0.f, 1.f);
+}
+
+// With nothing of its selection in the routed input, the Switch still shows that input rather
+// than falling back to its preferred one. The routed input at frame 2 is a grey constant, which
+// the preferred input's opaque red cannot be mistaken for.
+TEST_F(ShuffleRenderTest, SwitchOnALayerItsRoutedInputLacksShowsTheRoutedInput)
+{
+    NodePtr withDiffuse;
+    createFixtureReader(&withDiffuse);
+    if (HasFatalFailure()) {
+        return;
+    }
+    NodePtr grey;
+    createConstant(0.5, &grey);
+    if (HasFatalFailure()) {
+        return;
+    }
+    KnobColor* color = dynamic_cast<KnobColor*>(grey->getKnobByName("color").get());
+    ASSERT_TRUE(color != NULL);
+    color->setValues(0.5, 0.5, 0.5, 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+    NodePtr switchNode = createNode(QString::fromUtf8("net.sf.openfx.switchPlugin"));
+    ASSERT_TRUE(bool(switchNode));
+    connectNodes(withDiffuse, switchNode, 0, true);
+    connectNodes(grey, switchNode, 1, true);
+    KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName("which"));
+    ASSERT_TRUE(bool(which));
+    which->setValueAtTime(1, 0, ViewSpec::all(), 0);
+    which->setValueAtTime(2, 1, ViewSpec::all(), 0);
+
+    setChannelsToLayer(switchNode, "diffuse");
+    if (HasFatalFailure()) {
+        return;
+    }
+    createWriterOn(switchNode);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+
+    getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+    FlatExrImage image2;
+    render(tmp, "switch_diffuse_row_frame2.exr", &image2, 2);
+    if (HasFatalFailure()) {
+        return;
+    }
+    static const std::set<std::string> rgbaOnly = { "R", "G", "B", "A" };
+    EXPECT_EQ(rgbaOnly, channelSet(image2));
+    expectColor(image2, 0.5f, 0.5f, 0.5f, 1.f);
+
+    getApp()->getTimeLine()->seekFrame(2, false, NULL, eTimelineChangeReasonOtherSeek);
+    FlatExrImage image1;
+    render(tmp, "switch_diffuse_row_frame1.exr", &image1, 1);
+    if (HasFatalFailure()) {
+        return;
+    }
+    expectFixtureLayers(image1);
+    expectColor(image1, 1.f, 0.f, 0.f, 1.f);
+    expectPlane(image1, "diffuse.", 0.f, 1.f, 0.f);
+}
+
+// On All the Switch at frame 2 must not report the diffuse of the input it does not route, or
+// the Shuffle's check passes and its row silently reads zeros.
+TEST_F(ShuffleRenderTest, ExplicitRowVariesPerFrameOnSwitchOnAll)
+{
+    NodePtr source = createTimeVaryingSwitch();
+    ASSERT_TRUE(bool(source));
+    setChannelsAll(source);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    expectExplicitDiffuseRowVariesPerFrame(source, 1.f);
 }

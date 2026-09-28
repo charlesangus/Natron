@@ -999,6 +999,7 @@ ViewerTab::switchInputAAndB()
     }
     _imp->viewerNode->setInputA(inputBIndex);
     _imp->viewerNode->setInputB(inputAIndex);
+    _imp->viewer->updatePersistentMessage();
 
     abortViewersAndRefresh();
 }
@@ -1016,6 +1017,7 @@ ViewerTab::onFirstInputNameChanged(const QString & text)
         }
     }
     _imp->viewerNode->setInputA(inputIndex);
+    _imp->viewer->updatePersistentMessage();
 
     abortViewersAndRefresh();
 }
@@ -1033,6 +1035,7 @@ ViewerTab::onSecondInputNameChanged(const QString & text)
         }
     }
     _imp->viewerNode->setInputB(inputIndex);
+    _imp->viewer->updatePersistentMessage();
     if (inputIndex == -1) {
         manageSlotsForInfoWidget(1, false);
         //setCompositingOperator(eViewerCompositingOperatorNone);
@@ -1104,6 +1107,7 @@ ViewerTab::onActiveInputsChanged()
         //_imp->viewer->resetWipeControls();
         setCompositingOperator(eViewerCompositingOperatorWipeUnder);
     }
+    _imp->viewer->updatePersistentMessage();
 }
 
 void

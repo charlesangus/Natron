@@ -36,6 +36,7 @@ set(Tests_SOURCES
     DeepPixelOps_Test.cpp
     DeepReadWrite_Test.cpp
     DeepRenderPipeline_Test.cpp
+    DefaultChannelSet_Test.cpp
     FileSystemModel_Test.cpp
     GeneratorLayer_Test.cpp
     Hash64_Test.cpp
@@ -52,9 +53,11 @@ set(Tests_SOURCES
     MemoryInfo_Test.cpp
     Metadata_Test.cpp
     OSGLContext_Test.cpp
+    PersistentMessage_Test.cpp
     ProjectOCIO_Test.cpp
     ProjectSerialization_Test.cpp
     PyPlugExport_Test.cpp
+    PyPlugInstantiate_Test.cpp
     ReadFormat_Test.cpp
     RenderRange_Test.cpp
     RotoLayer_Test.cpp
@@ -79,6 +82,7 @@ target_link_libraries(Tests
 target_compile_definitions(Tests
     PRIVATE
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+        NATRON_TESTS_PYPLUGS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Gui/Resources/PyPlugs"
 )
 target_include_directories(Tests
     PRIVATE

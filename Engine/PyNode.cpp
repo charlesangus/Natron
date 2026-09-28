@@ -576,6 +576,16 @@ Effect::isNodeSelected() const
     return getInternalNode()->isUserSelected();
 }
 
+QString
+Effect::getPersistentMessage() const
+{
+    QString message;
+    int type = 0;
+    getInternalNode()->getPersistentMessage(&message, &type, false);
+
+    return message;
+}
+
 void
 Effect::beginChanges()
 {

@@ -43,32 +43,32 @@
 
 #include "Global/QtCompat.h"
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/BlockingBackgroundRender.h"
-#include "Engine/DiskCacheNode.h"
 #include "Engine/Cache.h"
+#include "Engine/DiskCacheNode.h"
+#include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Log.h"
 #include "Engine/Node.h"
-#include "Engine/OfxEffectInstance.h"
+#include "Engine/OSGLContext.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
-#include "Engine/OSGLContext.h"
-#include "Engine/GPUContextPool.h"
 #include "Engine/PluginMemory.h"
 #include "Engine/Project.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/Settings.h"
+#include "Engine/ThreadPool.h"
 #include "Engine/Timer.h"
 #include "Engine/Transform.h"
-#include "Engine/ThreadPool.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -774,13 +774,13 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     {
         std::string channelMessage;
         if (!getNode()->checkSelectedChannelsPresent(args.time, args.view, &channelMessage)) {
-            getNode()->setChannelSelectorMessage(channelMessage);
+            getNode()->setChannelSelectorMessageFromRender(channelMessage, abortInfo);
             return eRenderRoIRetCodeFailed;
         }
-        // Any passing render retires the error, whatever time it failed at: the user scrubbing
-        // back to a frame that renders expects the error to go, even though the frame that
-        // failed would still fail.
-        getNode()->clearChannelSelectorMessage();
+        // A newer passing render retires the error whatever time it failed at: the user
+        // scrubbing back to a frame that renders expects the error to go, even though the frame
+        // that failed would still fail.
+        getNode()->clearChannelSelectorMessageFromRender(abortInfo ? abortInfo->getRenderSequence() : 0, aborted());
     }
 
     const bool draftModeSupported = getNode()->isDraftModeUsed();

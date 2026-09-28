@@ -1055,6 +1055,11 @@
                 %CPPSELF.%FUNCTION_NAME(%1);
             </inject-code>
         </modify-function>
+        <modify-function signature="getPersistentMessage()const">
+            <inject-documentation format="target">
+                Returns the error or warning message the node currently shows, or an empty string if it shows none.
+            </inject-documentation>
+        </modify-function>
         <modify-function signature="setScriptName(QString)">
             <inject-code class="target" position="beginning">
                 %RETURN_TYPE %0 = %CPPSELF.%FUNCTION_NAME(%1);

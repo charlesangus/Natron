@@ -25,9 +25,10 @@
 
 #include "OfxEffectInstance.h"
 
-#include <locale>
-#include <limits>
 #include <cassert>
+#include <limits>
+#include <locale>
+#include <set>
 #include <stdexcept>
 
 #include <QDebug>
@@ -127,6 +128,45 @@ public:
             }
         }
     }
+
+private:
+    OfxImageEffectInstance* effect;
+};
+
+// The render scheduler asks an output for its planes before it sets up the frame's thread
+// storage, so without this the plug-in's clip queries would list the layers at the timeline's
+// frame/view rather than at the frame/view being rendered, and that answer is cached under the latter.
+class ClipsComponentsPresentTimeViewSetter {
+public:
+    ClipsComponentsPresentTimeViewSetter(OfxImageEffectInstance* effect,
+                                         double time,
+                                         ViewIdx view)
+        : effect(effect)
+    {
+        const std::map<std::string, OFX::Host::ImageEffect::ClipInstance*>& clips = effect->getClips();
+
+        for (std::map<std::string, OFX::Host::ImageEffect::ClipInstance*>::const_iterator it = clips.begin(); it != clips.end(); ++it) {
+            OfxClipInstance* clip = dynamic_cast<OfxClipInstance*>(it->second);
+            if (clip) {
+                clip->pushComponentsPresentTimeView(time, view);
+            }
+        }
+    }
+
+    ~ClipsComponentsPresentTimeViewSetter()
+    {
+        const std::map<std::string, OFX::Host::ImageEffect::ClipInstance*>& clips = effect->getClips();
+
+        for (std::map<std::string, OFX::Host::ImageEffect::ClipInstance*>::const_iterator it = clips.begin(); it != clips.end(); ++it) {
+            OfxClipInstance* clip = dynamic_cast<OfxClipInstance*>(it->second);
+            if (clip) {
+                clip->popComponentsPresentTimeView();
+            }
+        }
+    }
+
+    ClipsComponentsPresentTimeViewSetter(const ClipsComponentsPresentTimeViewSetter&) = delete;
+    ClipsComponentsPresentTimeViewSetter& operator=(const ClipsComponentsPresentTimeViewSetter&) = delete;
 
 private:
     OfxImageEffectInstance* effect;
@@ -864,6 +904,123 @@ OfxEffectInstance::getLayerKnobSpec() const
 
     return spec;
 }
+
+bool
+OfxEffectInstance::defaultProcessesAllLayers() const
+{
+    static const std::set<std::string> processAllLayers = {
+        // Transform and distortion
+        "net.sf.openfx.TransformPlugin",
+        "net.sf.openfx.TransformMaskedPlugin",
+        "net.sf.openfx.DirBlur",
+        "net.sf.openfx.CornerPinPlugin",
+        "net.sf.openfx.CornerPinMaskedPlugin",
+        "net.sf.openfx.CropPlugin",
+        "net.sf.openfx.Position",
+        "net.sf.openfx.Reformat",
+        "net.sf.openfx.Card3D",
+        "net.sf.openfx.AdjustRoDPlugin",
+        "net.sf.openfx.SpriteSheet",
+        "net.sf.openfx.Mirror",
+        "net.sf.openfx.IDistort",
+        "net.sf.openfx.STMap",
+        "net.sf.openfx.LensDistortion",
+        "fr.inria.openfx.OIIOResize",
+        "net.fxarena.openfx.Reflection",
+        "net.fxarena.openfx.Tile",
+        "net.fxarena.openfx.Roll",
+        "net.fxarena.openfx.Arc",
+        "net.fxarena.openfx.Polar",
+        "net.fxarena.openfx.Implode",
+        "net.fxarena.openfx.Swirl",
+        "net.fxarena.openfx.Wave",
+        // Time
+        "net.sf.openfx.FrameHold",
+        "net.sf.openfx.timeOffset",
+        "net.sf.openfx.FrameRange",
+        "net.sf.openfx.AppendClip",
+        "net.sf.openfx.Retime",
+        "net.sf.openfx.FrameBlend",
+        "net.sf.openfx.TimeBlur",
+        "net.sf.openfx.NoTimeBlurPlugin",
+        "net.sf.openfx.SlitScan",
+        "net.sf.openfx.Deinterlace",
+        "net.sf.openfx.TimeBufferRead",
+        "net.sf.openfx.TimeBufferWrite",
+        // Filter
+        "net.sf.cimg.CImgBlur",
+        "net.sf.cimg.CImgLaplacian",
+        "net.sf.cimg.CImgSharpen",
+        "net.sf.cimg.CImgSoften",
+        "net.sf.cimg.CImgBloom",
+        "net.sf.cimg.CImgMedian",
+        "net.sf.cimg.CImgErode",
+        "net.sf.cimg.CImgDilate",
+        "net.sf.cimg.CImgErodeSmooth",
+        "net.sf.cimg.CImgBilateral",
+        "net.sf.cimg.CImgBilateralGuided",
+        "net.sf.cimg.CImgGuided",
+        "net.sf.cimg.CImgDenoise",
+        "net.sf.cimg.CImgSmooth",
+        "net.sf.cimg.CImgRollingGuidance",
+        "net.sf.cimg.CImgSharpenInvDiff",
+        "net.sf.cimg.CImgSharpenShock",
+        "eu.cimg.Inpaint",
+        "eu.cimg.ErodeBlur",
+        "eu.cimg.Distance",
+        "eu.cimg.CImgMatrix3x3",
+        "eu.cimg.CImgMatrix5x5",
+        "net.sf.openfx.GodRays",
+        "net.fxarena.openfx.Oilpaint",
+        "net.fxarena.openfx.Charcoal",
+        "net.fxarena.openfx.Edges",
+        "net.fxarena.openfx.Sketch",
+        "net.fxarena.openfx.Morphology",
+        // Routing
+        "net.sf.openfx.switchPlugin",
+        "net.sf.openfx.DissolvePlugin",
+        "net.sf.openfx.TimeDissolvePlugin",
+        "net.sf.openfx.KeyMix",
+        "net.sf.openfx.CopyRectanglePlugin",
+        "net.sf.openfx.ContactSheetOFX",
+        "net.sf.openfx.LayerContactSheetOFX",
+        "net.sf.openfx.NoOpPlugin",
+        "net.sf.openfx.sideBySidePlugin",
+        "net.sf.openfx.reConvergePlugin",
+        "net.sf.openfx.mixViewsPlugin",
+    };
+    // Bundled plug-ins filed under Filter or Transform that still read R, G and B as colour
+    // (or run arbitrary user code); without this list the grouping fallback would catch them.
+    static const std::set<std::string> keepColorLayer = {
+        "net.sf.openfx.Shadertoy",
+        "net.sf.openfx.DenoiseSharpen",
+        "net.sf.openfx.TrackerPM",
+        "net.sf.cimg.CImgExpression",
+        "net.sf.cimg.CImgChromaBlur",
+        "eu.cimg.EdgeDetect",
+        "eu.cimg.EdgeExtend",
+    };
+
+    const std::string pluginID = getPluginID();
+    if (processAllLayers.count(pluginID) > 0) {
+        return true;
+    }
+    if (keepColorLayer.count(pluginID) > 0) {
+        return false;
+    }
+
+    if (!effectInstance()) {
+        return false;
+    }
+    std::string grouping = effectInstance()->getPluginGrouping();
+    static const std::string extraPrefix("Extra/");
+    if (grouping.compare(0, extraPrefix.size(), extraPrefix) == 0) {
+        grouping = grouping.substr(extraPrefix.size());
+    }
+    const std::string topGroup = grouping.substr(0, grouping.find('/'));
+
+    return topGroup == "Transform" || topGroup == "Time" || topGroup == "Filter";
+} // OfxEffectInstance::defaultProcessesAllLayers
 
 bool
 OfxEffectInstance::isReader() const
@@ -2936,6 +3093,7 @@ OfxEffectInstance::getComponentsNeededAndProduced(double time,
         ClipsThreadStorageSetter clipSetter(effectInstance(),
                                             view,
                                             0);
+        ClipsComponentsPresentTimeViewSetter presentTimeViewSetter(effectInstance(), time, view);
         OFX::Host::ImageEffect::ComponentsMap compMap;
         OFX::Host::ImageEffect::ClipInstance* ptClip = 0;
         OfxTime ptTime;

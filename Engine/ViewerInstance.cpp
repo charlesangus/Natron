@@ -442,8 +442,7 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
             break;
         }
 
-        AbortableRenderInfoPtr abortInfo = _imp->createNewRenderRequest(i, canAbort);
-
+        AbortableRenderInfoPtr abortInfo = _imp->createNewRenderRequest(i, canAbort, false);
 
         /*FrameRequestMap request;
            RectI roi;
@@ -681,7 +680,11 @@ ViewerInstance::renderViewer(ViewIdx view,
             }
 
             if (ret[i] == eViewerRenderRetCodeBlack) {
-                disconnectTexture(args[i]->params->textureIndex, false);
+                if (isSequentialRender) {
+                    disconnectTexture(args[i]->params->textureIndex, false);
+                } else {
+                    disconnectTextureAfterRender(args[i]->params->textureIndex, false, args[i]->params->abortInfo->getRenderAge());
+                }
             }
 
             if (ret[i] == eViewerRenderRetCodeFail) {
@@ -815,7 +818,7 @@ ViewerInstance::getRenderViewerArgsAndCheckCache_public(SequenceTime time,
                                                         const RenderStatsPtr& stats,
                                                         ViewerArgs* outArgs)
 {
-    AbortableRenderInfoPtr abortInfo = _imp->createNewRenderRequest(textureIndex, canAbort);
+    AbortableRenderInfoPtr abortInfo = _imp->createNewRenderRequest(textureIndex, canAbort, isSequential);
     ViewerRenderRetCode stat = getRenderViewerArgsAndCheckCache(time, isSequential, view, textureIndex, viewerHash, rotoPaintNode, abortInfo, stats, outArgs);
 
     if ( (stat == eViewerRenderRetCodeFail) || (stat == eViewerRenderRetCodeBlack) ) {
@@ -2848,17 +2851,16 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
     if (params->tiles.empty()) {
         return;
     }
-    bool doUpdate = true;
+    // A render still finishing after a newer request was already shown or failed renders a
+    // frame or a state the user has left, so it must not replace what is on screen. Tiles of
+    // the render last shown carry its own age and still go through.
+    const U64 age = params->abortInfo->getRenderAge();
+    if (!params->isPartialRect && !params->isSequential && !checkAgeNoUpdate(params->textureIndex, age)) {
+        return;
+    }
+    checkAndUpdateDisplayAge(params->textureIndex, age);
 
-
-    bool isImageUpToDate = checkAndUpdateDisplayAge( params->textureIndex, params->abortInfo->getRenderAge() );
-    (void)isImageUpToDate;
-
-    // Don't uncomment: if the image was rendered so far, render it to the display texture so that the user get some feedback
-   /* if ( !params->isPartialRect && !params->isSequential && !isImageUpToDate) {
-        doUpdate = false;
-    }*/
-    if (doUpdate) {
+    {
 
         assert( (params->isPartialRect && params->tiles.size() == 1) || !params->isPartialRect );
 
@@ -3149,6 +3151,42 @@ ViewerInstance::disconnectViewer()
 }
 
 void
+ViewerInstance::disconnectViewerAfterFailedRender(const U64 renderAges[2],
+                                                  const bool failed[2])
+{
+    if (!_imp->uiContext) {
+        return;
+    }
+    const U64 ages[2] = { renderAges[0], renderAges[1] };
+    const bool failedInput[2] = { failed[0], failed[1] };
+    auto disconnectUnlessNewerShown = [this, ages, failedInput]() {
+        for (int i = 0; i < 2; ++i) {
+            if (failedInput[i] && !_imp->checkAgeNoUpdate(i, ages[i])) {
+                return;
+            }
+        }
+        disconnectViewer();
+    };
+    QMetaObject::invokeMethod(this, disconnectUnlessNewerShown, Qt::AutoConnection);
+}
+
+void
+ViewerInstance::disconnectTextureAfterRender(int index,
+                                             bool clearRod,
+                                             U64 renderAge)
+{
+    if (!_imp->uiContext) {
+        return;
+    }
+    auto disconnectUnlessNewerShown = [this, index, clearRod, renderAge]() {
+        if (_imp->checkAgeNoUpdate(index, renderAge)) {
+            executeDisconnectTextureRequestOnMainThread(index, clearRod);
+        }
+    };
+    QMetaObject::invokeMethod(this, disconnectUnlessNewerShown, Qt::AutoConnection);
+}
+
+void
 ViewerInstance::disconnectTexture(int index,bool clearRod)
 {
     if (_imp->uiContext) {
@@ -3327,6 +3365,27 @@ ViewerInstance::getActiveInputs(int & a,
     if (isInspector) {
         isInspector->getActiveInputs(a, b);
     }
+}
+
+void
+ViewerInstance::getUpstreamNodesWithPersistentMessage(NodesList* nodes) const
+{
+    NodePtr viewerNode = getNode();
+    if (!viewerNode) {
+        return;
+    }
+    int activeInputs[2] = { -1, -1 };
+    getActiveInputs(activeInputs[0], activeInputs[1]);
+
+    NodesList roots;
+    for (int i = 0; i < 2; ++i) {
+        if (activeInputs[i] < 0) {
+            continue;
+        }
+        roots.push_back(viewerNode->getRealInput(activeInputs[i]));
+        roots.push_back(viewerNode->getInput(activeInputs[i]));
+    }
+    Node::getNodesWithPersistentMessageUpstream(roots, nodes);
 }
 
 void

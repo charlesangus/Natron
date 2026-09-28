@@ -44,6 +44,7 @@
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
@@ -266,6 +267,139 @@ public:
         graph->underTest = noop;
         graph->constantInputs.push_back(std::make_pair(reader, false));
     }
+
+    // Like buildSwitch(); reversed puts the RGBA-only reader on input 0 and keys `which` 1 at
+    // frame 1 and 0 at frame 2, so the preferred input (0) is the inactive one at frame 1.
+    void buildRoutingSwitch(TimeVaryingGraph* graph,
+                            bool reversed)
+    {
+        NodePtr withDiffuse = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr");
+        NodePtr rgbaOnly = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr");
+        ASSERT_TRUE(withDiffuse && rgbaOnly);
+
+        NodePtr switchNode = createNode(QString::fromUtf8("net.sf.openfx.switchPlugin"));
+        ASSERT_TRUE(bool(switchNode));
+
+        connectNodes(reversed ? rgbaOnly : withDiffuse, switchNode, 0, true);
+        connectNodes(reversed ? withDiffuse : rgbaOnly, switchNode, 1, true);
+
+        KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName("which"));
+        ASSERT_TRUE(bool(which));
+        which->setValueAtTime(1, reversed ? 1 : 0, ViewSpec::all(), 0);
+        which->setValueAtTime(2, reversed ? 0 : 1, ViewSpec::all(), 0);
+        EXPECT_EQ(reversed ? 1 : 0, which->getValueAtTime(1));
+        EXPECT_EQ(reversed ? 0 : 1, which->getValueAtTime(2));
+
+        graph->underTest = switchNode;
+        graph->constantInputs.push_back(std::make_pair(withDiffuse, true));
+        graph->constantInputs.push_back(std::make_pair(rgbaOnly, false));
+    }
+
+    void setChannelsAll(const NodePtr& node)
+    {
+        KnobChannelSet* channels = dynamic_cast<KnobChannelSet*>(node->getKnobByName(kNodeParamChannelSet).get());
+        ASSERT_TRUE(channels != NULL) << node->getScriptName() << " has no channel set knob";
+        channels->setAll();
+    }
+
+    void setChannelsToLayer(const NodePtr& node,
+                            const std::string& layerID)
+    {
+        KnobChannelSet* channels = dynamic_cast<KnobChannelSet*>(node->getKnobByName(kNodeParamChannelSet).get());
+        ASSERT_TRUE(channels != NULL) << node->getScriptName() << " has no channel set knob";
+        std::vector<ChannelSetRow> rows(1);
+        rows[0].mode = ChannelSetRow::eModeLayer;
+        rows[0].layerOrPattern = layerID;
+        channels->setRows(rows);
+        const std::vector<ChannelSetRow> stored = channels->getRows();
+        ASSERT_EQ(std::size_t(1), stored.size());
+        ASSERT_EQ(layerID, stored[0].layerOrPattern);
+    }
+
+    void buildSwitchAll(TimeVaryingGraph* graph)
+    {
+        buildRoutingSwitch(graph, false);
+        if (HasFatalFailure()) {
+            return;
+        }
+        setChannelsAll(graph->underTest);
+    }
+
+    void buildReversedSwitchAll(TimeVaryingGraph* graph)
+    {
+        buildRoutingSwitch(graph, true);
+        if (HasFatalFailure()) {
+            return;
+        }
+        setChannelsAll(graph->underTest);
+    }
+
+    void buildSwitchDiffuseRow(TimeVaryingGraph* graph)
+    {
+        buildRoutingSwitch(graph, false);
+        if (HasFatalFailure()) {
+            return;
+        }
+        setChannelsToLayer(graph->underTest, "diffuse");
+    }
+
+    // The selection is resolved against the input the Switch routes, so the input it routes must
+    // not itself be chosen through that selection: here the preferred input lacks the selected
+    // layer at the frame where the routed input has it.
+    void buildReversedSwitchDiffuseRow(TimeVaryingGraph* graph)
+    {
+        buildRoutingSwitch(graph, true);
+        if (HasFatalFailure()) {
+            return;
+        }
+        setChannelsToLayer(graph->underTest, "diffuse");
+    }
+
+    // The channel selector's menu, queried the way the GUI does (timeline's current frame) and at
+    // an explicit time with the timeline parked on the other frame, plus the selection itself.
+    void expectSwitchSelectorListsRoutedInput(GraphBuilder build)
+    {
+        for (int firstFrame = 1; firstFrame <= 2; ++firstFrame) {
+            SCOPED_TRACE("frame " + std::to_string(firstFrame) + " queried first");
+            getApp()->getProject()->reset(false, true);
+
+            TimeVaryingGraph graph;
+            (this->*build)(&graph);
+            if (HasFatalFailure()) {
+                return;
+            }
+            ASSERT_TRUE(bool(graph.underTest));
+            KnobIPtr channels = graph.underTest->getKnobByName(kNodeParamChannelSet);
+            ASSERT_TRUE(bool(channels));
+
+            const int frames[] = { firstFrame, 3 - firstFrame };
+            for (int frame : frames) {
+                const bool expectDiffuse = (frame == 1);
+
+                getApp()->getTimeLine()->seekFrame(frame, false, NULL, eTimelineChangeReasonOtherSeek);
+                std::list<ImageLayerDesc> menu;
+                graph.underTest->listLayersForKnob(channels, &menu);
+                EXPECT_TRUE(containsColorLayer(menu)) << "frame=" << frame << " menu=" << layerIDsString(menu);
+                EXPECT_EQ(expectDiffuse, containsLayer(menu, "diffuse")) << "frame=" << frame << " menu=" << layerIDsString(menu);
+
+                getApp()->getTimeLine()->seekFrame(3 - frame, false, NULL, eTimelineChangeReasonOtherSeek);
+                std::list<ImageLayerDesc> atTime;
+                graph.underTest->listLayersForKnob(channels, frame, ViewIdx(0), &atTime);
+                EXPECT_TRUE(containsColorLayer(atTime)) << "frame=" << frame << " listed=" << layerIDsString(atTime);
+                EXPECT_EQ(expectDiffuse, containsLayer(atTime, "diffuse")) << "frame=" << frame << " listed=" << layerIDsString(atTime);
+
+                std::vector<ResolvedLayer> selected;
+                ASSERT_TRUE(graph.underTest->resolveLayerKnob(frame, ViewIdx(0), &selected));
+                bool selectedDiffuse = false;
+                for (std::size_t i = 0; i < selected.size(); ++i) {
+                    if (selected[i].desc.getLayerID() == "diffuse") {
+                        selectedDiffuse = true;
+                    }
+                }
+                EXPECT_EQ(expectDiffuse, selectedDiffuse) << "frame=" << frame;
+            }
+        }
+    }
 };
 
 TEST_F(TimeVaryingLayersTest, ReadSequenceDiffuseVariesPerFrame)
@@ -276,6 +410,84 @@ TEST_F(TimeVaryingLayersTest, ReadSequenceDiffuseVariesPerFrame)
 TEST_F(TimeVaryingLayersTest, SwitchDiffuseVariesPerFrame)
 {
     expectDiffuseOnlyAtFrame1InEitherQueryOrder(&TimeVaryingLayersTest::buildSwitch);
+}
+
+// On All the Switch selects every layer of the stream it resolves against; that must be the
+// routed input's, or the preferred input's diffuse is reported at frame 2 too.
+TEST_F(TimeVaryingLayersTest, SwitchOnAllDiffuseVariesPerFrame)
+{
+    expectDiffuseOnlyAtFrame1InEitherQueryOrder(&TimeVaryingLayersTest::buildSwitchAll);
+}
+
+TEST_F(TimeVaryingLayersTest, ReversedSwitchOnAllDiffuseVariesPerFrame)
+{
+    expectDiffuseOnlyAtFrame1InEitherQueryOrder(&TimeVaryingLayersTest::buildReversedSwitchAll);
+}
+
+TEST_F(TimeVaryingLayersTest, SwitchOnDiffuseRowDiffuseVariesPerFrame)
+{
+    expectDiffuseOnlyAtFrame1InEitherQueryOrder(&TimeVaryingLayersTest::buildSwitchDiffuseRow);
+}
+
+TEST_F(TimeVaryingLayersTest, ReversedSwitchOnDiffuseRowDiffuseVariesPerFrame)
+{
+    expectDiffuseOnlyAtFrame1InEitherQueryOrder(&TimeVaryingLayersTest::buildReversedSwitchDiffuseRow);
+}
+
+TEST_F(TimeVaryingLayersTest, SwitchOnAllSelectorListsRoutedInputLayers)
+{
+    expectSwitchSelectorListsRoutedInput(&TimeVaryingLayersTest::buildSwitchAll);
+}
+
+TEST_F(TimeVaryingLayersTest, ReversedSwitchOnAllSelectorListsRoutedInputLayers)
+{
+    expectSwitchSelectorListsRoutedInput(&TimeVaryingLayersTest::buildReversedSwitchAll);
+}
+
+TEST_F(TimeVaryingLayersTest, ReversedSwitchOnDiffuseRowSelectorListsRoutedInputLayers)
+{
+    expectSwitchSelectorListsRoutedInput(&TimeVaryingLayersTest::buildReversedSwitchDiffuseRow);
+}
+
+// A FrameHold passes its input through at the held frame, so its layers are that frame's
+// whatever frame it is queried at: holding frame 1 of the sequence carries diffuse at frame 2,
+// where the sequence itself does not.
+TEST_F(TimeVaryingLayersTest, FrameHoldOnAllReportsHeldFrameLayers)
+{
+    for (int firstFrame = 1; firstFrame <= 2; ++firstFrame) {
+        SCOPED_TRACE("frame " + std::to_string(firstFrame) + " queried first");
+        getApp()->getProject()->reset(false, true);
+
+        NodePtr reader = createReader(NATRON_TESTS_FIXTURES_DIR "/flat-seq-layers.####.exr");
+        ASSERT_TRUE(bool(reader));
+        NodePtr hold = createNode(QString::fromUtf8("net.sf.openfx.FrameHold"));
+        ASSERT_TRUE(bool(hold));
+        connectNodes(reader, hold, 0, true);
+
+        KnobIntPtr firstFrameKnob = std::dynamic_pointer_cast<KnobInt>(hold->getKnobByName("firstFrame"));
+        KnobIntPtr increment = std::dynamic_pointer_cast<KnobInt>(hold->getKnobByName("increment"));
+        ASSERT_TRUE(firstFrameKnob && increment);
+        firstFrameKnob->setValue(1);
+        increment->setValue(0);
+        setChannelsAll(hold);
+        if (HasFatalFailure()) {
+            return;
+        }
+
+        EffectInstancePtr effect = hold->getEffectInstance();
+        ASSERT_TRUE(bool(effect));
+        const int secondFrame = 3 - firstFrame;
+        expectPresentDiffuseAt(effect, firstFrame, secondFrame, true);
+        expectPresentDiffuseAt(effect, secondFrame, firstFrame, true);
+        expectPresentDiffuseAt(reader->getEffectInstance(), 2, 1, false);
+
+        KnobIPtr channels = hold->getKnobByName(kNodeParamChannelSet);
+        ASSERT_TRUE(bool(channels));
+        getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+        std::list<ImageLayerDesc> listed;
+        hold->listLayersForKnob(channels, 2, ViewIdx(0), &listed);
+        EXPECT_TRUE(containsLayer(listed, "diffuse")) << layerIDsString(listed);
+    }
 }
 
 TEST_F(TimeVaryingLayersTest, ShuffleDisableDiffuseVariesPerFrame)

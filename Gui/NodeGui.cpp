@@ -1917,6 +1917,15 @@ NodeGui::connectEdge(int edgeNumber)
 
     refreshEdgesVisility();
 
+    // Any connection can change which nodes feed a viewer, and so whose errors it shows.
+    ProjectPtr project = node->getApp() ? node->getApp()->getProject() : ProjectPtr();
+    if (getDagGui() && getDagGui()->getGui() && project && !project->isLoadingProject()) {
+        const std::list<ViewerTab*>& viewers = getDagGui()->getGui()->getViewersList();
+        for (std::list<ViewerTab*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
+            (*it)->getViewer()->updatePersistentMessage();
+        }
+    }
+
     return true;
 }
 
@@ -2247,24 +2256,23 @@ NodeGui::onPersistentMessageChanged()
 
     if ( !node || message.isEmpty() ) {
         setToolTip( QString() );
-    } else {
+        refreshStateIndicator();
+    } else if ((type == 1) || (type == 2)) {
         if (type == 1) {
             _persistentMessage->setText( tr("ERROR") );
             QColor errColor(128, 0, 0, 255);
             _persistentMessage->setBrush(errColor);
-        } else if (type == 2) {
+        } else {
             _persistentMessage->setText( tr("WARNING") );
             QColor warColor(180, 180, 0, 255);
             _persistentMessage->setBrush(warColor);
-        } else {
-            return;
         }
 
         setToolTip(message);
 
         refreshSize();
+        refreshStateIndicator();
     }
-    refreshStateIndicator();
 
     const std::list<ViewerTab*>& viewers = getDagGui()->getGui()->getViewersList();
     for (std::list<ViewerTab*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {

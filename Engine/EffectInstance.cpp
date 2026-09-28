@@ -3857,11 +3857,18 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
 
     bool ret = false;
     RotoDrawableItemPtr rotoItem = getNode()->getAttachedRotoItem();
-    if ((rotoItem && !rotoItem->isActivated(time)) || getNode()->isNodeDisabled(time) || !getNode()->hasAtLeastOneChannelToProcess(time, view)) {
+    if ((rotoItem && !rotoItem->isActivated(time)) || getNode()->isNodeDisabled(time)) {
         ret = true;
         *inputNb = getNode()->getPreferredInput();
         *inputTime = time;
         *inputView = view;
+    } else if (!isResolvingLayersPassThrough() && !getNode()->hasAtLeastOneChannelToProcess(time, view)) {
+        // The selection is resolved against the pass-through input, so choosing that input
+        // cannot depend on the selection: while it is being chosen only the plug-in answers.
+        // An unprocessed output then shows that input, not the preferred one: a Switch whose
+        // selected layer its routed input lacks still shows the routed input.
+        ret = true;
+        getLayersPassThroughInput(time, view, inputNb, inputTime, inputView);
     } else if (appPTR->isBackground() && (dynamic_cast<DiskCacheNode*>(this) != NULL)) {
         ret = true;
         *inputNb = 0;
@@ -4440,22 +4447,20 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
 {
     NodePtr node = getNode();
 
-    {
-        ViewIdx ptView;
-        getLayersPassThroughInput(time, view, passThroughInputNb, passThroughTime, &ptView);
-        *passThroughView = ptView;
-    }
+    ViewIdx ptView;
+    getLayersPassThroughInput(time, view, passThroughInputNb, passThroughTime, &ptView);
+    *passThroughView = ptView;
     passThroughLayers->clear();
     processChannelsPerPlane->clear();
 
     if (*passThroughInputNb != -1) {
-        getAvailableLayers(*passThroughTime, ViewIdx(*passThroughView), *passThroughInputNb, passThroughLayers);
+        getAvailableLayers(*passThroughTime, ptView, *passThroughInputNb, passThroughLayers);
     }
 
     // Resolve the layer knob once against the list it is bound to; the same selection is
     // read from every non-mask input and written to the output (no-shuffle invariant).
     std::vector<ResolvedLayer> selected;
-    const bool hasLayerKnob = node->resolveLayerKnob(time, view, &selected);
+    const bool hasLayerKnob = node->resolveLayerKnob(time, view, *passThroughInputNb, *passThroughTime, ptView, &selected);
 
     {
         std::list<ImageLayerDesc> metadataPlanes;

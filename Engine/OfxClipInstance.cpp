@@ -297,6 +297,10 @@ OfxClipInstancePrivate::getComponentsPresentInternal(const OfxClipInstance::Clip
 
     double time = effect->getCurrentTime();
     ViewIdx view = effect->getCurrentView();
+    if (!tls->componentsPresentTimeView.empty()) {
+        time = tls->componentsPresentTimeView.back().first;
+        view = tls->componentsPresentTimeView.back().second;
+    }
 
     std::list<ImageLayerDesc> availableLayers;
     effect->getAvailableLayers(time, view, inputNb, &availableLayers);
@@ -1634,6 +1638,27 @@ OfxClipInstance::invalidateClipTLS()
     assert( !tls->renderData.empty() );
     if ( !tls->renderData.empty() ) {
         tls->renderData.pop_back();
+    }
+}
+
+void
+OfxClipInstance::pushComponentsPresentTimeView(double time,
+                                               ViewIdx view)
+{
+    ClipDataTLSPtr tls = _imp->tlsData->getOrCreateTLSData();
+
+    assert(tls);
+    tls->componentsPresentTimeView.push_back(std::make_pair(time, view));
+}
+
+void
+OfxClipInstance::popComponentsPresentTimeView()
+{
+    ClipDataTLSPtr tls = _imp->tlsData->getTLSData();
+
+    assert(tls && !tls->componentsPresentTimeView.empty());
+    if (tls && !tls->componentsPresentTimeView.empty()) {
+        tls->componentsPresentTimeView.pop_back();
     }
 }
 

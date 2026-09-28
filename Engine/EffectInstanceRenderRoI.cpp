@@ -162,7 +162,8 @@ EffectInstance::convertLayersFormatsIfNeeded(const AppInstancePtr& app,
                                              const ImageLayerDesc& targetComponents,
                                              ImageBitDepthEnum targetDepth,
                                              bool useAlpha0ForRGBToRGBAConversion,
-                                             int channelForAlpha)
+                                             int channelForAlpha,
+                                             bool zeroFillMissingChannels)
 {
     // Do not do any conversion for OpenGL textures, OpenGL is managing it for us.
     if (inputImage->getStorageMode() == eStorageModeGLTex) {
@@ -201,7 +202,12 @@ EffectInstance::convertLayersFormatsIfNeeded(const AppInstancePtr& app,
         tmp->setKey(inputImage->getKey());
         const RectI clippedRoi = roi.intersect(bounds);
 
-        if (useAlpha0ForRGBToRGBAConversion) {
+        if (zeroFillMissingChannels) {
+            inputImage->convertToFormatZeroFill(clippedRoi,
+                                                app->getDefaultColorSpaceForBitDepth(inputImage->getBitDepth()),
+                                                app->getDefaultColorSpaceForBitDepth(targetDepth),
+                                                channelForAlpha, false, tmp.get());
+        } else if (useAlpha0ForRGBToRGBAConversion) {
             inputImage->convertToFormatAlpha0(clippedRoi,
                                               app->getDefaultColorSpaceForBitDepth(inputImage->getBitDepth()),
                                               app->getDefaultColorSpaceForBitDepth(targetDepth),

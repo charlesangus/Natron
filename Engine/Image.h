@@ -535,6 +535,20 @@ private:
         _entryLock.unlock();
     }
 
+public:
+    /**
+     * @brief How a conversion to more channels fills the channels the source lacks.
+     * eConvertFillAlphaOne: alpha is 1 and a one-channel source is replicated into every channel.
+     * eConvertFillAlphaZero: the same, except that alpha is 0.
+     * eConvertFillZero: every missing channel is 0, a one-channel source landing in alpha only.
+     **/
+    enum ConvertFillEnum {
+        eConvertFillAlphaOne,
+        eConvertFillAlphaZero,
+        eConvertFillZero
+    };
+
+private:
     template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue>
     static void convertToFormatInternal_sameComps(const RectI & renderWindow,
                                                   const Image & srcImg,
@@ -550,7 +564,7 @@ private:
                                         ViewerColorSpaceEnum srcColorSpace,
                                         ViewerColorSpaceEnum dstColorSpace,
                                         int channelForAlpha,
-                                        bool useAlpha0,
+                                        ConvertFillEnum fill,
                                         bool copyBitmap);
 
     template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue, int srcNComps, int dstNComps, bool useColorspaces>
@@ -558,7 +572,7 @@ private:
                                                      const Image& srcImg,
                                                      Image& dstImg,
                                                      bool copyBitmap,
-                                                     bool useAlpha0,
+                                                     ConvertFillEnum fill,
                                                      ViewerColorSpaceEnum srcColorSpace,
                                                      ViewerColorSpaceEnum dstColorSpace,
                                                      int channelForAlpha);
@@ -570,7 +584,7 @@ private:
                                                 ViewerColorSpaceEnum srcColorSpace,
                                                 ViewerColorSpaceEnum dstColorSpace,
                                                 int channelForAlpha,
-                                                bool useAlpha0,
+                                                ConvertFillEnum fill,
                                                 bool copyBitmap);
 
 public:
@@ -782,12 +796,19 @@ public:
                                bool copyBitMap,
                                Image* dstImg) const;
 
+    void convertToFormatZeroFill(const RectI& renderWindow,
+                                 ViewerColorSpaceEnum srcColorSpace,
+                                 ViewerColorSpaceEnum dstColorSpace,
+                                 int channelForAlpha,
+                                 bool copyBitMap,
+                                 Image* dstImg) const;
+
 private:
     void convertToFormatCommon(const RectI& renderWindow,
                                ViewerColorSpaceEnum srcColorSpace,
                                ViewerColorSpaceEnum dstColorSpace,
                                int channelForAlpha,
-                               bool useAlpha0,
+                               ConvertFillEnum fill,
                                bool copyBitMap,
                                Image* dstImg) const;
 

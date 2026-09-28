@@ -48,6 +48,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/Node.h"
@@ -726,4 +727,74 @@ TEST_F(ShuffleMatrixTest, GridKeepsBlocksAlignedAndSpacingConstant)
     const QPoint resetTop = reset->mapTo(_panel.get(), QPoint(0, 0));
     const QPoint matrixBottom = _gui->getMatrixWidget()->mapTo(_panel.get(), QPoint(0, _gui->getMatrixWidget()->height()));
     EXPECT_GE(resetTop.y(), matrixBottom.y());
+}
+
+// Each colour view lists one row per channel of its own, whatever Out 1's underlying storage
+// layout turns out to be (rgba's four rows was already covered by the tests above).
+TEST_F(ShuffleMatrixTest, ColorViewOutputsListOneRowPerViewChannel)
+{
+    createShuffleOnFixture();
+    ASSERT_FALSE(HasFatalFailure());
+    createGui();
+    ASSERT_FALSE(HasFatalFailure());
+
+    EXPECT_EQ(4, _gui->getOutputRowCount());
+
+    setLayer(kShuffleParamOut1, kNatronColorViewAlpha);
+    ASSERT_FALSE(HasFatalFailure());
+    EXPECT_EQ(1, _gui->getOutputRowCount());
+    EXPECT_EQ(0, findRow(1, 0));
+
+    setLayer(kShuffleParamOut1, kNatronColorViewRGB);
+    ASSERT_FALSE(HasFatalFailure());
+    EXPECT_EQ(3, _gui->getOutputRowCount());
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(i, findRow(1, i));
+    }
+
+    setLayer(kShuffleParamOut1, kNatronColorViewXY);
+    ASSERT_FALSE(HasFatalFailure());
+    EXPECT_EQ(2, _gui->getOutputRowCount());
+    for (int i = 0; i < 2; ++i) {
+        EXPECT_EQ(i, findRow(1, i));
+    }
+
+    setLayer(kShuffleParamOut1, kNatronColorViewRGBA);
+    ASSERT_FALSE(HasFatalFailure());
+    EXPECT_EQ(4, _gui->getOutputRowCount());
+}
+
+// Out 2 sharing a colour bit with Out 1 (rgba and alpha both cover bit 3) is not a plain None
+// -- its own row stays but is disabled, with a tooltip explaining it is ignored -- while a
+// disjoint pair (rgb and alpha) merges into the one colour plane and stays enabled.
+TEST_F(ShuffleMatrixTest, Out2OverlappingOut1DisablesItsRowWithATooltip)
+{
+    createShuffleOnFixture();
+    ASSERT_FALSE(HasFatalFailure());
+    createGui();
+    ASSERT_FALSE(HasFatalFailure());
+
+    LayerChannelRow* out2Row = layerRow(KnobGuiShuffleMap::eLayerRowOut2);
+    ASSERT_TRUE(out2Row != NULL);
+    EXPECT_TRUE(out2Row->isEnabled());
+
+    // Out 1 stays at its rgba default; Out 2's alpha shares rgba's bit 3 with it.
+    setLayer(kShuffleParamOut2, kNatronColorViewAlpha);
+    ASSERT_FALSE(HasFatalFailure());
+
+    EXPECT_EQ(std::string(kNatronColorViewAlpha), layerOf(kShuffleParamOut2));
+    EXPECT_TRUE(shuffleEffect()->getOutputLayer(2).empty());
+    EXPECT_EQ(4, _gui->getOutputRowCount());
+    EXPECT_EQ(-1, findRow(2, 0));
+    EXPECT_FALSE(out2Row->isEnabled());
+    EXPECT_FALSE(out2Row->toolTip().isEmpty());
+
+    // rgb and alpha share no channel, so they merge and Out 2 goes back to normal.
+    setLayer(kShuffleParamOut1, kNatronColorViewRGB);
+    ASSERT_FALSE(HasFatalFailure());
+
+    EXPECT_EQ(std::string(kNatronColorViewAlpha), shuffleEffect()->getOutputLayer(2));
+    EXPECT_TRUE(out2Row->isEnabled());
+    EXPECT_EQ(3 + 1, _gui->getOutputRowCount());
+    EXPECT_EQ(3, findRow(2, 0));
 }

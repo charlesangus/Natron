@@ -37,12 +37,14 @@ struct PerInputData
     int nComps;
     std::string componentsType;
     ImageBitDepthEnum bitdepth;
+    bool colorZeroFill;
 
     PerInputData()
         : pixelAspectRatio(1.)
         , nComps(0)
         , componentsType()
         , bitdepth(eImageBitDepthFloat)
+        , colorZeroFill(false)
     {
     }
 };
@@ -166,6 +168,9 @@ NodeMetadata::operator==(const NodeMetadata& other) const
             return false;
         }
         if (_imp->inputsData[i].nComps != other._imp->inputsData[i].nComps) {
+            return false;
+        }
+        if (_imp->inputsData[i].colorZeroFill != other._imp->inputsData[i].colorZeroFill) {
             return false;
         }
     }
@@ -329,6 +334,25 @@ NodeMetadata::getComponentsType(int inputNb) const
             return kNatronColorLayerID;
         }
     }
+}
+
+void
+NodeMetadata::setColorZeroFill(int inputNb,
+                               bool zeroFill)
+{
+    if ((inputNb >= 0) && (inputNb < (int)_imp->inputsData.size())) {
+        _imp->inputsData[inputNb].colorZeroFill = zeroFill;
+    }
+}
+
+bool
+NodeMetadata::getColorZeroFill(int inputNb) const
+{
+    if ((inputNb >= 0) && (inputNb < (int)_imp->inputsData.size())) {
+        return _imp->inputsData[inputNb].colorZeroFill;
+    }
+
+    return false;
 }
 
 void

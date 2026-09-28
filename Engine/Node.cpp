@@ -6092,6 +6092,28 @@ Node::listLayersForKnob(const KnobIPtr& knob,
     appendInputStreamLayers(_imp->effect, inputNb, inputTime, inputView, layers);
 } // Node::listLayersForKnob
 
+void
+Node::listLayerViewsForKnob(const KnobIPtr& knob,
+                            std::list<ImageLayerDesc>* layers) const
+{
+    std::list<ImageLayerDesc> storage;
+    listLayersForKnob(knob, &storage);
+    ImageLayerDesc::expandColorViews(&storage);
+    layers->insert(layers->end(), storage.begin(), storage.end());
+}
+
+void
+Node::listLayerViewsForKnob(const KnobIPtr& knob,
+                            double time,
+                            ViewIdx view,
+                            std::list<ImageLayerDesc>* layers) const
+{
+    std::list<ImageLayerDesc> storage;
+    listLayersForKnob(knob, time, view, &storage);
+    ImageLayerDesc::expandColorViews(&storage);
+    layers->insert(layers->end(), storage.begin(), storage.end());
+}
+
 bool
 Node::isTargetLayerKnob(const KnobIPtr& knob) const
 {

@@ -53,6 +53,7 @@
 #include "Engine/ImageParams.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Log.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
@@ -1101,6 +1102,19 @@ EffectInstance::getImage(int inputNb,
         }
     }
 
+    // A clip widened because this effect writes a colour channel its input lacks reads that channel
+    // as zero: fetch the input's own colour layout and convert it here, since renderRoI() would
+    // convert it with the ordinary fill, which sets alpha to 1.
+    bool zeroFillColor = false;
+    if (!isMask && (returnStorage == eStorageModeRAM) && components.isColorLayer() && getMetadataColorZeroFill(inputNb)) {
+        ImageLayerDesc upstreamColor, upstreamPairedLayer;
+        inputEffect->getMetadataComponents(-1, &upstreamColor, &upstreamPairedLayer);
+        if (upstreamColor.isColorLayer() && (upstreamColor.getNumComponents() > 0) && (upstreamColor.getNumComponents() < components.getNumComponents())) {
+            renderedComps = upstreamColor;
+            zeroFillColor = true;
+        }
+    }
+
     std::list<ImageLayerDesc> requestedComps;
     requestedComps.push_back(renderedComps);
     std::map<ImageLayerDesc, ImagePtr> inputImages;
@@ -1177,6 +1191,10 @@ EffectInstance::getImage(int inputNb,
         }
 
         inputImg = rescaledImg;
+    }
+
+    if (zeroFillColor) {
+        inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, components, inputImg->getBitDepth(), false, -1, true);
     }
 
     // Remap if needed
@@ -4722,28 +4740,43 @@ EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::
     // this stream currently carries it (a target knob may create it on write).
     if (inputNb == -1) {
 
-        bool hasColorLayer = false;
-        for (std::list<ImageLayerDesc>::const_iterator it = availableLayers->begin(); it != availableLayers->end(); ++it) {
-            if (it->isColorLayer()) {
-                hasColorLayer = true;
-                break;
-            }
-        }
-
         std::list<ImageLayerDesc> projectLayers = getRegisteredProjectLayersList(getApp()->getProject());
-        if (hasColorLayer) {
-            // Don't add the color layer from the registry if already present
-            for (std::list<ImageLayerDesc>::iterator it = projectLayers.begin(); it != projectLayers.end(); ++it) {
-                if (it->isColorLayer()) {
-                    projectLayers.erase(it);
-                    break;
-                }
-            }
+        // The registry's colour entry is the RGBA layout; merging it would replace the stream's own
+        // colour layout, since mergeLayersList() treats every colour layout as the same layer.
+        const bool streamHasColor = std::any_of(availableLayers->begin(), availableLayers->end(),
+                                                [](const ImageLayerDesc& layer) { return layer.isColorLayer(); });
+        if (streamHasColor) {
+            projectLayers.remove_if([](const ImageLayerDesc& layer) { return layer.isColorLayer(); });
         }
         mergeLayersList(projectLayers, availableLayers);
     }
 
 } // getAvailableLayers
+
+void
+EffectInstance::getColorWriteBits(const ImageLayerDesc& storage,
+                                  std::bitset<4>* bits) const
+{
+    bits->reset();
+
+    NodePtr node = getNode();
+    KnobIPtr layerKnob = node ? node->getLayerKnob() : KnobIPtr();
+    const std::list<ImageLayerDesc> present(1, storage);
+    std::vector<ResolvedLayer> selected;
+    if (const KnobChannelSet* channelSet = dynamic_cast<const KnobChannelSet*>(layerKnob.get())) {
+        selected = channelSet->resolve(present);
+    } else if (const KnobLayerSelect* layerSelect = dynamic_cast<const KnobLayerSelect*>(layerKnob.get())) {
+        ResolvedLayer one;
+        if (layerSelect->resolve(present, &one)) {
+            selected.push_back(one);
+        }
+    }
+    for (std::vector<ResolvedLayer>::const_iterator it = selected.begin(); it != selected.end(); ++it) {
+        if (it->desc.isColorLayer()) {
+            *bits |= it->channels;
+        }
+    }
+}
 
 LayerKnobSpec
 EffectInstance::getLayerKnobSpec() const
@@ -5783,6 +5816,13 @@ EffectInstance::getMetadataNComps(int inputNb) const
     return _imp->metadata.getNComps(inputNb);
 }
 
+bool
+EffectInstance::getMetadataColorZeroFill(int inputNb) const
+{
+    QMutexLocker k(&_imp->metadataMutex);
+    return _imp->metadata.getColorZeroFill(inputNb);
+}
+
 ImageBitDepthEnum
 EffectInstance::getBitDepth(int inputNb) const
 {
@@ -6078,6 +6118,41 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
 
 
     node->setStreamWarnings(warnings);
+
+    // An effect that explicitly writes a colour channel its stream lacks (e.g. a Grade on rgba over
+    // RGB) widens its output and every colour input to RGBA together: the plane has to hold that
+    // channel, and plug-ins such as Grade reject a source layout that differs from the output's.
+    // The widened inputs read the missing channels as zero. A writer's channel set only picks what
+    // goes to the file, so it never widens: an RGB image would otherwise gain a zero alpha there.
+    if (!_publicInterface->isWriter() && (md.getComponentsType(-1) == kNatronColorLayerID)) {
+        const ImageLayerDesc& storage = ImageLayerDesc::mapNCompsToColorLayer(md.getNComps(-1));
+        if (storage.getNumComponents() > 0) {
+            std::bitset<4> writeBits;
+            _publicInterface->getColorWriteBits(storage, &writeBits);
+            if ((writeBits & ~ImageLayerDesc::colorStorageBits(storage)).any()) {
+                const ImageLayerDesc& rgba = ImageLayerDesc::getRGBAComponents();
+                bool rgbaSupported = node->findClosestSupportedComponents(-1, rgba) == rgba;
+                std::vector<int> widenedInputs;
+                for (int i = 0; rgbaSupported && i < nInputs; ++i) {
+                    if (!inputs[i] || _publicInterface->isInputMask(i) || node->isInputOnlyAlpha(i) || (md.getComponentsType(i) != kNatronColorLayerID)) {
+                        continue;
+                    }
+                    if (node->findClosestSupportedComponents(i, rgba) == rgba) {
+                        widenedInputs.push_back(i);
+                    } else {
+                        rgbaSupported = false;
+                    }
+                }
+                if (rgbaSupported) {
+                    md.setNComps(-1, 4);
+                    for (std::vector<int>::const_iterator it = widenedInputs.begin(); it != widenedInputs.end(); ++it) {
+                        md.setNComps(*it, 4);
+                        md.setColorZeroFill(*it, true);
+                    }
+                }
+            }
+        }
+    }
 } //refreshMetadataProxy
 
 void

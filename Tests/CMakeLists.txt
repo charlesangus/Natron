@@ -25,6 +25,7 @@ set(Tests_SOURCES
     ChannelSetRender_Test.cpp
     CLArgs_Test.cpp
     ColorViews_Test.cpp
+    ColorViewsRender_Test.cpp
     Curve_Test.cpp
     DataKind_Test.cpp
     DataKindProjectLoad_Test.cpp

@@ -1509,6 +1509,15 @@ public:
     void listLayersForKnob(const KnobIPtr& knob, double time, ViewIdx view, std::list<ImageLayerDesc>* layers) const;
 
     /**
+     * @brief listLayersForKnob() as a user sees it: the colour storage entry is replaced, in
+     * place, by the colour views it presents (ImageLayerDesc::expandColorViews()). This is the
+     * list for the GUI and Python; engine code keeps to the storage-level listLayersForKnob().
+     **/
+    void listLayerViewsForKnob(const KnobIPtr& knob, std::list<ImageLayerDesc>* layers) const;
+
+    void listLayerViewsForKnob(const KnobIPtr& knob, double time, ViewIdx view, std::list<ImageLayerDesc>* layers) const;
+
+    /**
      * @brief Whether listLayersForKnob() lists the project registry for this knob (a target
      * knob) rather than an input's present layers. A group param aliased onto an inner node's
      * layer knob reports the inner knob's role.

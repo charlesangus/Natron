@@ -100,6 +100,21 @@ containsColorLayer(const std::list<ImageLayerDesc>& layers)
     return false;
 }
 
+// Engine layer lists name the colour plane by its storage ID only; the colour views are for the
+// GUI and Python (Node::listLayerViewsForKnob()), and a view ID leaking in here would be masked by
+// isColorLayer() accepting view IDs too.
+bool
+containsColorViewID(const std::list<ImageLayerDesc>& layers)
+{
+    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        if (ImageLayerDesc::isColorViewID(it->getLayerID())) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 } // namespace
 
 // A node's layers are a per-frame fact: the layers its output stream carries at `time`, as
@@ -144,6 +159,8 @@ protected:
         effect->getPresentLayers(queryTime, ViewIdx(0), -1, &present);
         // Guards against a vacuous pass on the "no diffuse" frame when the stream is empty.
         EXPECT_TRUE(containsColorLayer(present))
+            << "queryTime=" << queryTime << " timelineFrame=" << timelineFrame << " present=" << layerIDsString(present);
+        EXPECT_FALSE(containsColorViewID(present))
             << "queryTime=" << queryTime << " timelineFrame=" << timelineFrame << " present=" << layerIDsString(present);
         EXPECT_EQ(expectDiffuse, containsLayer(present, "diffuse"))
             << "queryTime=" << queryTime << " timelineFrame=" << timelineFrame << " present=" << layerIDsString(present);
@@ -380,12 +397,14 @@ public:
                 std::list<ImageLayerDesc> menu;
                 graph.underTest->listLayersForKnob(channels, &menu);
                 EXPECT_TRUE(containsColorLayer(menu)) << "frame=" << frame << " menu=" << layerIDsString(menu);
+                EXPECT_FALSE(containsColorViewID(menu)) << "frame=" << frame << " menu=" << layerIDsString(menu);
                 EXPECT_EQ(expectDiffuse, containsLayer(menu, "diffuse")) << "frame=" << frame << " menu=" << layerIDsString(menu);
 
                 getApp()->getTimeLine()->seekFrame(3 - frame, false, NULL, eTimelineChangeReasonOtherSeek);
                 std::list<ImageLayerDesc> atTime;
                 graph.underTest->listLayersForKnob(channels, frame, ViewIdx(0), &atTime);
                 EXPECT_TRUE(containsColorLayer(atTime)) << "frame=" << frame << " listed=" << layerIDsString(atTime);
+                EXPECT_FALSE(containsColorViewID(atTime)) << "frame=" << frame << " listed=" << layerIDsString(atTime);
                 EXPECT_EQ(expectDiffuse, containsLayer(atTime, "diffuse")) << "frame=" << frame << " listed=" << layerIDsString(atTime);
 
                 std::vector<ResolvedLayer> selected;
@@ -576,11 +595,13 @@ TEST_F(TimeVaryingLayersTest, LayerMenusListReadLayersAtCurrentFrame)
             std::list<ImageLayerDesc> in2Layers;
             shuffle->listLayersForKnob(in2, &in2Layers);
             EXPECT_TRUE(containsColorLayer(in2Layers)) << "frame=" << frame << " In 2=" << layerIDsString(in2Layers);
+            EXPECT_FALSE(containsColorViewID(in2Layers)) << "frame=" << frame << " In 2=" << layerIDsString(in2Layers);
             EXPECT_EQ(expectDiffuse, containsLayer(in2Layers, "diffuse")) << "frame=" << frame << " In 2=" << layerIDsString(in2Layers);
 
             std::list<ImageLayerDesc> viewerLayers;
             shuffle->getEffectInstance()->getPresentLayers(getApp()->getTimeLine()->currentFrame(), ViewIdx(0), -1, &viewerLayers);
             EXPECT_TRUE(containsColorLayer(viewerLayers)) << "frame=" << frame << " viewer=" << layerIDsString(viewerLayers);
+            EXPECT_FALSE(containsColorViewID(viewerLayers)) << "frame=" << frame << " viewer=" << layerIDsString(viewerLayers);
             EXPECT_EQ(expectDiffuse, containsLayer(viewerLayers, "diffuse")) << "frame=" << frame << " viewer=" << layerIDsString(viewerLayers);
         }
     }

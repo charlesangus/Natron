@@ -373,8 +373,7 @@ TEST_F(ChannelSetRenderTest, GradeOnAlphaViewGradesOnlyAlpha)
 // flat-rgb-only.exr's Color is (1, 0, 0) with no alpha. Naming the rgba view explicitly writes
 // A, which the input lacks, so the output widens to RGBA and A is graded from zero: offset 0.25
 // on a zero alpha gives 0.25, which a missing channel (NaN) or an alpha filled with 1 would not.
-// Disabled until checkMetadata widens the output for zero-read write bits.
-TEST_F(ChannelSetRenderTest, DISABLED_GradeOnRgbaOverAnRGBInputOutputsRGBA)
+TEST_F(ChannelSetRenderTest, GradeOnRgbaOverAnRGBInputOutputsRGBA)
 {
     KnobChannelSetPtr channels;
     NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels, "flat-rgb-only.exr");

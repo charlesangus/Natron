@@ -245,7 +245,7 @@ Image::convertToFormatInternalForColorSpace(const RectI& renderWindow,
                                             const Image& srcImg,
                                             Image& dstImg,
                                             bool copyBitmap,
-                                            bool useAlpha0,
+                                            ConvertFillEnum fill,
                                             ViewerColorSpaceEnum srcColorSpace,
                                             ViewerColorSpaceEnum dstColorSpace,
                                             int channelForAlpha)
@@ -361,8 +361,15 @@ Image::convertToFormatInternalForColorSpace(const RectI& renderWindow,
 #                     ifdef DEBUG_NAN
                         assert(  !std::isnan(pix) ); // check for NaN
 #                     endif
-                        for (int k = 0; k < dstNComps; ++k) {
-                            dstPixels[k] = pix;
+                        if (fill == eConvertFillZero) {
+                            // A one-channel source is an alpha plane, so only an alpha destination channel receives it.
+                            for (int k = 0; k < dstNComps; ++k) {
+                                dstPixels[k] = (k == 3) ? pix : DSTPIX(0);
+                            }
+                        } else {
+                            for (int k = 0; k < dstNComps; ++k) {
+                                dstPixels[k] = pix;
+                            }
                         }
                     } else {
                         ///In this case we've XY, RGB or RGBA input and outputs
@@ -422,8 +429,8 @@ Image::convertToFormatInternalForColorSpace(const RectI& renderWindow,
                         } // for (int k = 0; k < k < 3 && k < dstNComps; ++k) {
 
                         if (dstNComps == 4) {
-                            // For alpha channel, fill with 1, we reach here only if converting RGB-->RGBA or XY--->RGBA
-                            dstPixels[3] =  convertPixelDepth<float, DSTPIX>(useAlpha0 ? 0.f : 1.f);
+                            // Only RGB-->RGBA or XY-->RGBA reach here, so the source has no alpha to copy.
+                            dstPixels[3] = convertPixelDepth<float, DSTPIX>(fill == eConvertFillAlphaOne ? 1.f : 0.f);
                         }
                     } // if (srcNComps == 1) {
                 } // if (dstNComps == 1) {
@@ -455,13 +462,13 @@ Image::convertToFormatInternal(const RectI& renderWindow,
                                ViewerColorSpaceEnum srcColorSpace,
                                ViewerColorSpaceEnum dstColorSpace,
                                int channelForAlpha,
-                               bool useAlpha0,
+                               ConvertFillEnum fill,
                                bool copyBitmap)
 {
     if ((srcColorSpace == eViewerColorSpaceLinear) && (dstColorSpace == eViewerColorSpaceLinear)) {
-        convertToFormatInternalForColorSpace<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, srcNComps, dstNComps, false>(renderWindow, srcImg, dstImg, copyBitmap, useAlpha0, srcColorSpace, dstColorSpace, channelForAlpha);
+        convertToFormatInternalForColorSpace<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, srcNComps, dstNComps, false>(renderWindow, srcImg, dstImg, copyBitmap, fill, srcColorSpace, dstColorSpace, channelForAlpha);
     } else {
-        convertToFormatInternalForColorSpace<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, srcNComps, dstNComps, true>(renderWindow, srcImg, dstImg, copyBitmap, useAlpha0, srcColorSpace, dstColorSpace, channelForAlpha);
+        convertToFormatInternalForColorSpace<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, srcNComps, dstNComps, true>(renderWindow, srcImg, dstImg, copyBitmap, fill, srcColorSpace, dstColorSpace, channelForAlpha);
     }
 }
 
@@ -473,7 +480,7 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
                                        ViewerColorSpaceEnum srcColorSpace,
                                        ViewerColorSpaceEnum dstColorSpace,
                                        int channelForAlpha,
-                                       bool useAlpha0,
+                                       ConvertFillEnum fill,
                                        bool copyBitmap)
 {
     int dstNComp = dstImg.getComponents().getNumComponents();
@@ -487,7 +494,7 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
                                                                                     srcColorSpace,
                                                                                     dstColorSpace,
                                                                                     channelForAlpha,
-                                                                                    useAlpha0,
+                                                                                    fill,
                                                                                     copyBitmap);
             break;
         case 3:
@@ -495,7 +502,7 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
                                                                                     srcColorSpace,
                                                                                     dstColorSpace,
                                                                                     channelForAlpha,
-                                                                                    useAlpha0,
+                                                                                    fill,
                                                                                     copyBitmap);
             break;
         case 4:
@@ -503,7 +510,7 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
                                                                                     srcColorSpace,
                                                                                     dstColorSpace,
                                                                                     channelForAlpha,
-                                                                                    useAlpha0,
+                                                                                    fill,
                                                                                     copyBitmap);
             break;
         default:
@@ -518,7 +525,7 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
                                                                                     srcColorSpace,
                                                                                     dstColorSpace,
                                                                                     channelForAlpha,
-                                                                                    useAlpha0,
+                                                                                    fill,
                                                                                     copyBitmap);
             break;
         case 3:
@@ -526,7 +533,7 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
                                                                                     srcColorSpace,
                                                                                     dstColorSpace,
                                                                                     channelForAlpha,
-                                                                                    useAlpha0,
+                                                                                    fill,
                                                                                     copyBitmap);
             break;
         case 4:
@@ -534,7 +541,7 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
                                                                                     srcColorSpace,
                                                                                     dstColorSpace,
                                                                                     channelForAlpha,
-                                                                                    useAlpha0,
+                                                                                    fill,
                                                                                     copyBitmap);
             break;
         default:
@@ -549,7 +556,7 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
                                                                                     srcColorSpace,
                                                                                     dstColorSpace,
                                                                                     channelForAlpha,
-                                                                                    useAlpha0,
+                                                                                    fill,
                                                                                     copyBitmap);
             break;
         case 2:
@@ -557,7 +564,7 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
                                                                                     srcColorSpace,
                                                                                     dstColorSpace,
                                                                                     channelForAlpha,
-                                                                                    useAlpha0,
+                                                                                    fill,
                                                                                     copyBitmap);
             break;
         case 4:
@@ -565,7 +572,7 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
                                                                                     srcColorSpace,
                                                                                     dstColorSpace,
                                                                                     channelForAlpha,
-                                                                                    useAlpha0,
+                                                                                    fill,
                                                                                     copyBitmap);
             break;
         default:
@@ -580,7 +587,7 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
                                                                                     srcColorSpace,
                                                                                     dstColorSpace,
                                                                                     channelForAlpha,
-                                                                                    useAlpha0,
+                                                                                    fill,
                                                                                     copyBitmap);
             break;
         case 2:
@@ -588,7 +595,7 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
                                                                                     srcColorSpace,
                                                                                     dstColorSpace,
                                                                                     channelForAlpha,
-                                                                                    useAlpha0,
+                                                                                    fill,
                                                                                     copyBitmap);
             break;
         case 3:
@@ -596,7 +603,7 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
                                                                                     srcColorSpace,
                                                                                     dstColorSpace,
                                                                                     channelForAlpha,
-                                                                                    useAlpha0,
+                                                                                    fill,
                                                                                     copyBitmap);
             break;
         default:
@@ -614,7 +621,7 @@ Image::convertToFormatCommon(const RectI& renderWindow,
                              ViewerColorSpaceEnum srcColorSpace,
                              ViewerColorSpaceEnum dstColorSpace,
                              int channelForAlpha,
-                             bool useAlpha0,
+                             ConvertFillEnum fill,
                              bool copyBitmap,
                              Image* dstImg) const
 {
@@ -718,7 +725,7 @@ Image::convertToFormatCommon(const RectI& renderWindow,
                                                                                         srcColorSpace,
                                                                                         dstColorSpace,
                                                                                         channelForAlpha,
-                                                                                        useAlpha0,
+                                                                                        fill,
                                                                                         copyBitmap);
                 break;
             case eImageBitDepthShort:
@@ -726,7 +733,7 @@ Image::convertToFormatCommon(const RectI& renderWindow,
                                                                                            srcColorSpace,
                                                                                            dstColorSpace,
                                                                                            channelForAlpha,
-                                                                                           useAlpha0,
+                                                                                           fill,
                                                                                            copyBitmap);
                 break;
             case eImageBitDepthHalf:
@@ -736,7 +743,7 @@ Image::convertToFormatCommon(const RectI& renderWindow,
                                                                               srcColorSpace,
                                                                               dstColorSpace,
                                                                               channelForAlpha,
-                                                                              useAlpha0,
+                                                                              fill,
                                                                               copyBitmap);
 
                 break;
@@ -752,7 +759,7 @@ Image::convertToFormatCommon(const RectI& renderWindow,
                                                                                            srcColorSpace,
                                                                                            dstColorSpace,
                                                                                            channelForAlpha,
-                                                                                           useAlpha0,
+                                                                                           fill,
                                                                                            copyBitmap);
 
                 break;
@@ -761,7 +768,7 @@ Image::convertToFormatCommon(const RectI& renderWindow,
                                                                                               srcColorSpace,
                                                                                               dstColorSpace,
                                                                                               channelForAlpha,
-                                                                                              useAlpha0,
+                                                                                              fill,
                                                                                               copyBitmap);
 
                 break;
@@ -772,7 +779,7 @@ Image::convertToFormatCommon(const RectI& renderWindow,
                                                                                  srcColorSpace,
                                                                                  dstColorSpace,
                                                                                  channelForAlpha,
-                                                                                 useAlpha0,
+                                                                                 fill,
                                                                                  copyBitmap);
                 break;
             case eImageBitDepthNone:
@@ -789,7 +796,7 @@ Image::convertToFormatCommon(const RectI& renderWindow,
                                                                               srcColorSpace,
                                                                               dstColorSpace,
                                                                               channelForAlpha,
-                                                                              useAlpha0,
+                                                                              fill,
                                                                               copyBitmap);
                 break;
             case eImageBitDepthShort:
@@ -797,7 +804,7 @@ Image::convertToFormatCommon(const RectI& renderWindow,
                                                                                  srcColorSpace,
                                                                                  dstColorSpace,
                                                                                  channelForAlpha,
-                                                                                 useAlpha0,
+                                                                                 fill,
                                                                                  copyBitmap);
 
                 break;
@@ -808,7 +815,7 @@ Image::convertToFormatCommon(const RectI& renderWindow,
                                                                     srcColorSpace,
                                                                     dstColorSpace,
                                                                     channelForAlpha,
-                                                                    useAlpha0,
+                                                                    fill,
                                                                     copyBitmap);
                 break;
             case eImageBitDepthNone:
@@ -833,7 +840,7 @@ Image::convertToFormat(const RectI& renderWindow,
 {
     // OpenGL textures are always RGBA anyway
     assert(getStorageMode() != eStorageModeGLTex);
-    convertToFormatCommon(renderWindow, srcColorSpace, dstColorSpace, channelForAlpha, false, copyBitmap, dstImg);
+    convertToFormatCommon(renderWindow, srcColorSpace, dstColorSpace, channelForAlpha, eConvertFillAlphaOne, copyBitmap, dstImg);
 } // convertToFormat
 
 void
@@ -845,7 +852,19 @@ Image::convertToFormatAlpha0(const RectI& renderWindow,
                              Image* dstImg) const
 {
     assert(getStorageMode() != eStorageModeGLTex);
-    convertToFormatCommon(renderWindow, srcColorSpace, dstColorSpace, channelForAlpha, true, copyBitmap, dstImg);
+    convertToFormatCommon(renderWindow, srcColorSpace, dstColorSpace, channelForAlpha, eConvertFillAlphaZero, copyBitmap, dstImg);
+}
+
+void
+Image::convertToFormatZeroFill(const RectI& renderWindow,
+                               ViewerColorSpaceEnum srcColorSpace,
+                               ViewerColorSpaceEnum dstColorSpace,
+                               int channelForAlpha,
+                               bool copyBitmap,
+                               Image* dstImg) const
+{
+    assert(getStorageMode() != eStorageModeGLTex);
+    convertToFormatCommon(renderWindow, srcColorSpace, dstColorSpace, channelForAlpha, eConvertFillZero, copyBitmap, dstImg);
 }
 
 NATRON_NAMESPACE_EXIT

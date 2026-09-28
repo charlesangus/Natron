@@ -686,7 +686,7 @@ TEST_F(ShuffleRenderTest, ShuffleCopyWithInput1DisconnectedZeroesTheAlphaSilentl
     expectColor(image, 1.f, 0.f, 0.f, 0.f);
 }
 
-TEST_F(ShuffleRenderTest, ShuffleCopyDefaultAlphaFailsWhenInput1HasNoAlpha)
+TEST_F(ShuffleRenderTest, ShuffleCopyDefaultAlphaReadsZeroWhenInput1HasNoAlpha)
 {
     NodePtr input2;
     createFixtureReader(&input2, "flat-three-layers.exr");
@@ -703,26 +703,29 @@ TEST_F(ShuffleRenderTest, ShuffleCopyDefaultAlphaFailsWhenInput1HasNoAlpha)
         return;
     }
     EXPECT_FALSE(_mapping->hasExplicitSource(1, 3));
+    std::string message;
+    EXPECT_TRUE(_shuffle->checkSelectedChannelsPresent(&message)) << message;
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
-    std::string message;
-    renderExpectingFailure(tmp, "copy_rgb_only_input1.exr", &message);
+    FlatExrImage image;
+    render(tmp, "copy_rgb_only_input1.exr", &image);
     if (HasFatalFailure()) {
         return;
     }
-    EXPECT_NE(std::string::npos, message.find(std::string(kNatronColorLayerID) + ".A is not in the 1 input")) << message;
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    expectFixtureLayers(image);
+    expectColor(image, 1.f, 0.f, 0.f, 0.f);
 
     _mapping->setSource(1, 3, ShuffleSource::makeOne());
-    EXPECT_FALSE(_shuffle->hasPersistentMessage());
 
-    FlatExrImage image;
-    render(tmp, "copy_rgb_only_input1_alpha_one.exr", &image);
+    FlatExrImage imageAlphaOne;
+    render(tmp, "copy_rgb_only_input1_alpha_one.exr", &imageAlphaOne);
     if (HasFatalFailure()) {
         return;
     }
     EXPECT_FALSE(_shuffle->hasPersistentMessage());
-    expectColor(image, 1.f, 0.f, 0.f, 1.f);
+    expectColor(imageAlphaOne, 1.f, 0.f, 0.f, 1.f);
 }
 
 TEST_F(ShuffleRenderTest, SingleChannelOutputLayerIsCreatedAndColorPassesThrough)
@@ -957,17 +960,15 @@ TEST_F(ShuffleRenderTest, ShuffleHasNoBBoxKnob)
     EXPECT_FALSE(bool(_shuffle->getKnobByName(kShuffleCopyParamBBox)));
 }
 
-TEST_F(ShuffleRenderTest, ExplicitRowToTheAlphaOfAnRgbOnlyColorFailsNamingTheChannel)
+TEST_F(ShuffleRenderTest, ExplicitRowToTheAlphaOfAnRgbOnlyInputReadsZero)
 {
     createShuffleOnFixture("flat-rgb-only.exr");
     if (HasFatalFailure()) {
         return;
     }
 
-    // The default A reads the Color.A this input lacks, so only a constant A lets R's row be
-    // the one under test.
     _mapping->setSource(1, 3, ShuffleSource::makeOne());
-    _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 1));
+    _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 3));
     ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
     std::string message;
     EXPECT_TRUE(_shuffle->checkSelectedChannelsPresent(&message)) << message;
@@ -975,26 +976,17 @@ TEST_F(ShuffleRenderTest, ExplicitRowToTheAlphaOfAnRgbOnlyColorFailsNamingTheCha
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     FlatExrImage image;
-    render(tmp, "rgb_only_green.exr", &image);
+    render(tmp, "rgb_only_alpha_row.exr", &image);
     if (HasFatalFailure()) {
         return;
     }
     EXPECT_FALSE(_shuffle->hasPersistentMessage());
-
-    _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 3));
-    ASSERT_TRUE(_mapping->hasExplicitSource(1, 0));
-    EXPECT_FALSE(_shuffle->checkSelectedChannelsPresent(&message));
-
-    renderExpectingFailure(tmp, "rgb_only_alpha.exr", &message);
-    if (HasFatalFailure()) {
-        return;
-    }
-    EXPECT_NE(std::string::npos, message.find(std::string(kNatronColorLayerID) + ".A is not in the")) << message;
+    expectColor(image, 0.f, 0.f, 0.f, 1.f);
 }
 
-// Every out1 channel reads the same index of the main input's Color, the shape isIdentity()
-// passes through, so the missing A must still fail rather than pass the RGB-only input on.
-TEST_F(ShuffleRenderTest, ShuffleCopyIdentityShapedRowsToTheAlphaOfAnRgbOnlyColorFail)
+// Every out1 channel reads the same channel of the main input's rgba, the shape isIdentity()
+// passes through, but the RGB-only input has no A to pass on: A is written as 0 instead.
+TEST_F(ShuffleRenderTest, ShuffleCopyIdentityShapedRowsToTheAlphaOfAnRgbOnlyInputReadZero)
 {
     createShuffleOnFixture("flat-rgb-only.exr", PLUGINID_NATRON_SHUFFLECOPY);
     if (HasFatalFailure()) {
@@ -1005,27 +997,17 @@ TEST_F(ShuffleRenderTest, ShuffleCopyIdentityShapedRowsToTheAlphaOfAnRgbOnlyColo
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
-    std::string message;
-    renderExpectingFailure(tmp, "copy_rgb_only_alpha.exr", &message);
-    if (HasFatalFailure()) {
-        return;
-    }
-    EXPECT_NE(std::string::npos, message.find(std::string(kNatronColorLayerID) + ".A is not in the")) << message;
-
-    _mapping->clear(1, 3);
-    EXPECT_FALSE(_shuffle->hasPersistentMessage());
-
     FlatExrImage image;
-    render(tmp, "copy_rgb_only_no_alpha_row.exr", &image);
+    render(tmp, "copy_rgb_only_alpha.exr", &image);
     if (HasFatalFailure()) {
         return;
     }
     EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    expectColor(image, 1.f, 0.f, 0.f, 0.f);
 }
 
-// A fresh Shuffle on an RGB-only input: the identity shape must not pass the input through,
-// and setting A to a constant is the fix.
-TEST_F(ShuffleRenderTest, ImplicitAlphaOfAnRgbOnlyColorFailsNamingTheChannel)
+// A fresh Shuffle on an RGB-only input: rgba's A reads 0 and the render succeeds.
+TEST_F(ShuffleRenderTest, ImplicitAlphaOfAnRgbOnlyInputReadsZero)
 {
     createShuffleOnFixture("flat-rgb-only.exr");
     if (HasFatalFailure()) {
@@ -1033,28 +1015,26 @@ TEST_F(ShuffleRenderTest, ImplicitAlphaOfAnRgbOnlyColorFailsNamingTheChannel)
     }
     EXPECT_TRUE(_mapping->getRows().empty());
     std::string message;
-    EXPECT_FALSE(_shuffle->checkSelectedChannelsPresent(&message));
-    EXPECT_NE(std::string::npos, message.find(std::string(kNatronColorLayerID) + ".A is not in the")) << message;
+    EXPECT_TRUE(_shuffle->checkSelectedChannelsPresent(&message)) << message;
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
-    renderExpectingFailure(tmp, "rgb_only_implicit_alpha.exr", &message);
+    FlatExrImage image;
+    render(tmp, "rgb_only_implicit_alpha.exr", &image);
     if (HasFatalFailure()) {
         return;
     }
-    EXPECT_NE(std::string::npos, message.find(std::string(kNatronColorLayerID) + ".A is not in the")) << message;
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    expectColor(image, 1.f, 0.f, 0.f, 0.f);
 
     _mapping->setSource(1, 3, ShuffleSource::makeOne());
-    EXPECT_FALSE(_shuffle->hasPersistentMessage());
-    EXPECT_TRUE(_shuffle->checkSelectedChannelsPresent(&message)) << message;
-
-    FlatExrImage image;
-    render(tmp, "rgb_only_alpha_one.exr", &image);
+    FlatExrImage imageAlphaOne;
+    render(tmp, "rgb_only_alpha_one.exr", &imageAlphaOne);
     if (HasFatalFailure()) {
         return;
     }
     EXPECT_FALSE(_shuffle->hasPersistentMessage());
-    EXPECT_NEAR(1.f, valueAt(image, "A"), 1e-4f);
+    expectColor(imageAlphaOne, 1.f, 0.f, 0.f, 1.f);
 }
 
 TEST_F(ShuffleRenderTest, StaleRowBeyondASmallerOutputLayerDoesNotFailTheRender)
@@ -1400,4 +1380,111 @@ TEST_F(ShuffleRenderTest, ExplicitRowVariesPerFrameOnSwitchOnAll)
     }
 
     expectExplicitDiffuseRowVariesPerFrame(source, 1.f);
+}
+
+// Color is (1, 0, 0, 1): R from B and G from R prove the rgb rows apply, A proves it passes through.
+TEST_F(ShuffleRenderTest, RgbOutputWritesItsRowsAndKeepsTheSourceAlpha)
+{
+    createShuffleOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    setLayer(kShuffleParamOut1, kNatronColorViewRGB);
+    if (HasFatalFailure()) {
+        return;
+    }
+    _mapping->setSource(1, 0, ShuffleSource::makeInput(1, 2));
+    _mapping->setSource(1, 1, ShuffleSource::makeInput(1, 0));
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    render(tmp, "rgb_out_keeps_alpha.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    expectFixtureLayers(image);
+    expectColor(image, 0.f, 1.f, 0.f, 1.f);
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
+// The RGB-only input has no A, so writing alpha widens the colour plane to RGBA around its RGB.
+TEST_F(ShuffleRenderTest, AlphaOutputSetToOneKeepsTheSourceRgb)
+{
+    createShuffleOnFixture("flat-rgb-only.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+    setLayer(kShuffleParamOut1, kNatronColorViewAlpha);
+    if (HasFatalFailure()) {
+        return;
+    }
+    _mapping->setSource(1, 0, ShuffleSource::makeOne());
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    render(tmp, "alpha_out_one.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    expectColor(image, 1.f, 0.f, 0.f, 1.f);
+}
+
+// rgb and alpha share no channel, so both outputs write the one colour plane.
+TEST_F(ShuffleRenderTest, ShuffleCopyRgbFromInput2AndAlphaFromInput1MatchesItsDefault)
+{
+    NodePtr input2;
+    createFixtureReader(&input2, "flat-three-layers.exr");
+    if (HasFatalFailure()) {
+        return;
+    }
+    NodePtr input1;
+    createConstant(0.5, &input1);
+    if (HasFatalFailure()) {
+        return;
+    }
+    createShuffleCopyOn(input2, input1);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage byDefault;
+    render(tmp, "copy_default.exr", &byDefault);
+    if (HasFatalFailure()) {
+        return;
+    }
+    expectColor(byDefault, 1.f, 0.f, 0.f, 0.5f);
+
+    setLayer(kShuffleParamOut1, kNatronColorViewRGB);
+    setLayer(kShuffleParamOut2, kNatronColorViewAlpha);
+    if (HasFatalFailure()) {
+        return;
+    }
+    Shuffle* shuffleFx = dynamic_cast<Shuffle*>(_shuffle->getEffectInstance().get());
+    ASSERT_TRUE(shuffleFx != NULL);
+    ASSERT_EQ(std::string(kNatronColorViewAlpha), shuffleFx->getOutputLayer(2));
+    // out2's own slot is in2, input 2: its alpha is read from in1's rgba instead.
+    _mapping->setSource(2, 0, ShuffleSource::makeInput(1, 3));
+
+    FlatExrImage merged;
+    render(tmp, "copy_rgb_plus_alpha.exr", &merged);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_FALSE(_shuffle->hasPersistentMessage());
+    expectColor(merged, 1.f, 0.f, 0.f, 0.5f);
+
+    ASSERT_EQ(byDefault.channels, merged.channels);
+    ASSERT_EQ(byDefault.width, merged.width);
+    ASSERT_EQ(byDefault.height, merged.height);
+    ASSERT_EQ(byDefault.pixels.size(), merged.pixels.size());
+    for (std::size_t i = 0; i < merged.pixels.size(); ++i) {
+        ASSERT_EQ(byDefault.pixels[i], merged.pixels[i]) << "sample " << i << " of " << byDefault.channels[i % byDefault.channels.size()];
+    }
 }

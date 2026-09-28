@@ -575,6 +575,16 @@ public:
     virtual LayerKnobSpec getLayerKnobSpec() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The colour bits this effect writes on purpose, resolved against `storage`, the
+     * colour storage layout its output would otherwise have (see ResolvedLayer::channelBit). A
+     * bit outside colorStorageBits(storage) is a channel the stream lacks, which widens the
+     * output and the colour inputs to RGBA (Implementation::checkMetadata). The default reads the
+     * layer knob: only a row or selection naming a colour view can yield such a bit, since All
+     * and regex rows resolve colour to the storage's own channels.
+     **/
+    virtual void getColorWriteBits(const ImageLayerDesc& storage, std::bitset<4>* bits) const;
+
+    /**
      * @brief True when this effect moves, filters, selects or retimes pixels without giving any
      * channel a meaning, so its channel-set knob starts on "All" instead of the Color layer.
      **/
@@ -1042,6 +1052,12 @@ public:
     double getAspectRatio(int inputNb) const;
     void getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const;
     int getMetadataNComps(int inputNb) const;
+
+    /**
+     * @brief Whether input inputNb's colour plane converts up to the clip's layout with its
+     * missing channels reading zero (see NodeMetadata::getColorZeroFill()).
+     **/
+    bool getMetadataColorZeroFill(int inputNb) const;
 
     ImageBitDepthEnum getBitDepth(int inputNb) const;
 
@@ -2505,7 +2521,8 @@ private:
                                                  const ImageLayerDesc& targetComponents,
                                                  ImageBitDepthEnum targetDepth,
                                                  bool useAlpha0ForRGBToRGBAConversion,
-                                                 int channelForAlpha);
+                                                 int channelForAlpha,
+                                                 bool zeroFillMissingChannels = false);
 
     /**
      * @brief Called by getImage when the thread-storage was not set by the caller thread (mostly because this is a thread that is not

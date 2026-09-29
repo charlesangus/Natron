@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: M65.P8.T5
-pm_heartbeat: 2026-09-29T06:23:31-04:00
+pm_heartbeat: 2026-09-29T06:43:39-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -207,6 +207,7 @@ future core work has solid ground to build on.
 | M34 | New native Shuffle node | done | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
 | M61 | Layers that vary with time: per-frame layer reporting and Shuffle render-time validation | blocked | [M61-layers-that-vary-with-time.md](PLAN/MILESTONES/M61-layers-that-vary-with-time.md) |
 | M65 | rgba, rgb, alpha and xy replace the Color layer (clean break) | doing | [M65-rgba-rgb-alpha-layers.md](PLAN/MILESTONES/M65-rgba-rgb-alpha-layers.md) |
+| M66 | Remaining OFX plugins accept alpha-only streams (the 12 moderate ones from M65's survey) | todo | [M66-plugin-alpha-only-moderate.md](PLAN/MILESTONES/M66-plugin-alpha-only-moderate.md) |
 | M35 | ~~Remove implicit output-plane shuffling from non-Shuffle nodes~~ (folded into M38) | cancelled | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M36 | ~~Add "new channel/layer" affordance wherever a node outputs channels~~ (folded into M38 Phase 38.7) | cancelled | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
 | M37 | Channel/layer management nodes | todo | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |

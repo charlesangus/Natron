@@ -407,6 +407,30 @@ Execution notes:
   - verify: alpha-only → Grade `alpha` gives Alpha-only out, A graded; alpha-only → Blur All gives Alpha-only; alpha-only → default Grade gives RGBA with A exact; RGB → Grade `alpha` gives RGBA with RGB exact; full debug ctest green.
   - size: L
 
+- [ ] M65.P8.T7 — Plugin library: a missing colour channel reads 0 (openfx-supportext fork)
+  - files: `charlesangus/openfx-supportext` on branch `m65/missing-channel-zero`, off the SHA that openfx-misc `d293dcd6` pins (worktree under `build/wt/`); `ofxsMultiPlane.cpp` `findBuiltInSelectedChannel` and whatever else maps a missing colour channel to constant 1
+  - approach: a selected colour channel the clip's layout lacks reads 0, not 1 (e.g. `Colour.A` on an RGB clip). Leave the explicit `1` constant alone.
+  - verify: the fork builds as part of T10's asset rebuild; `ctest -R 'LayerKnobsRender|ColorViewsRender'` gets a case: IDistort `channelA=rgba.A` over an RGB UV input gives A = 0.
+  - size: M
+
+- [ ] M65.P8.T8 — openfx-misc fork: Grade, Premult, Unpremult, ColorCorrect, ColorSuppress, ContactSheet and LayerContactSheet accept alpha-only
+  - files: `charlesangus/openfx-misc` on branch `m65/alpha-only`, off pin `d293dcd6` (worktree under `build/wt/`); `Grade/Grade.cpp`, `Premult/Premult.cpp`, `ColorCorrect/ColorCorrect.cpp`, `ColorSuppress/ColorSuppress.cpp`, `ContactSheet/ContactSheet.cpp`, `LayerContactSheet/LayerContactSheet.cpp`; bump the SupportExt submodule to T7
+  - approach: declare `ePixelComponentAlpha` on the main clips and add the missing `nComponents == 1` render dispatch; the processors already handle one channel (survey cites).
+  - verify: the plugins build in T10; new ctest cases: alpha-only → Grade on `alpha` gain 2 gives Alpha-only out with A doubled, and alpha-only → Premult is a no-op on A.
+  - size: M
+
+- [ ] M65.P8.T9 — openfx-io and openfx-arena forks: SeGrain, OIIOText, ReadPNG, WritePNG, ReadPSD and OpenRaster accept alpha-only
+  - files: `charlesangus/openfx-io` branch `m65/alpha-only` off `23f8adcf`: `SeExpr/SeGrain.cpp`, `OIIO/OIIOText.cpp`, `PNG/ReadPNG.cpp`, `PNG/WritePNG.cpp`, SupportExt bump to T7. `charlesangus/openfx-arena` branch `m65/alpha-only` off `d29ac7f1`: `ReadPSD.cpp`, the OpenRaster reader, SupportExt bump if it vendors one.
+  - approach: flip `kSupportsAlpha` or uncomment the Alpha declarations; the 1-channel paths already exist (survey cites).
+  - verify: the plugins build in T10; a grey PNG reads as alpha-only… or at least an Alpha output of WritePNG round-trips (the implementer picks a fixture-backed case).
+  - size: M
+
+- [ ] M65.P8.T10 — Push the fork branches, open the fork PRs, re-pin fetch-assets and rebuild the plugin assets
+  - files: `tools/ci/local/fetch-assets.sh` (OPENFX_MISC_REF, OPENFX_IO_REF, the arena ref), the fork PRs
+  - approach: push each fork branch and open a PR on the fork, pin the branch commits (re-pin after merge, as with openfx-io#7), rebuild `build/assets`, then run the full debug ctest plus the new cases from T7–T9.
+  - verify: the full debug ctest is green with the new plugin bundles.
+  - size: M
+
 **Verification gate:** all of the following hold:
 - `tools/ci/local/test.sh ctest debug` and `smoke debug` are green. That covers ColorViews, ColorViewsRender, LayerRegistry, KnobChannelSet, ChannelSetRender, KnobLayerSelect, LayerKnobs, Shuffle_, ShuffleRender, KnobShuffleMap, WriteAllLayers, TimeVaryingLayers, ProjectSerialization, PyPlugExport and GuiTests LayerChannelRow.
 - `grep -rn OfxImagePlaneColour Gui/Resources` finds nothing.
@@ -447,6 +471,7 @@ Execution notes:
 - 2026-09-29 — **Untouched channels pass through (user):** "If an RGB stream is coming in, and a node is set to adjust alpha, then RGB passes through untouched, same as any other layers/channels the node isn't adjusting." Applied to the P8.T4 finding (an alpha-only stream clamped to RGB on a clip without Alpha loses its A): clamping must keep every present colour channel. This becomes P8.T6.
 - 2026-09-29 — **P8.T6 rule clarified (user):** "If alpha only is coming in, and the node is set to alpha, no RGB should be created." Output colour channels = input channels ∪ written channels; the widen target is that union, not always RGBA. Plugins that can't take the layout get a wider internal clip, which the host narrows back.
 - 2026-09-29 — **P8.T5 elaborated** by a consultant into T5a–T5e (above). Open risk: the plugin library's `findBuiltInSelectedChannel` reads `Colour.A` on an RGB clip as constant **1**, which contradicts M65's zero rule (IDistort's default channelA over an RGB UV gives full alpha; Premult by rgba.A on RGB). Resolve it together with the plugin-update survey (pending).
+- 2026-09-29 — **Plugin survey + user decision:** 25 of the 194 shipped OFX plugins can't take alpha-only when they should; 13 are trivial (the declaration or dispatch is all that's missing), and 12 are moderate (9 Arena ImageMagick effects on the RGBA-only `MagickPluginHelperBase`, ReadEXR, TimeBufferRead/Write). The user chose: keep P8.T6's host fallback for everything, patch the 13 trivial plugins and the library's missing-A = 1 default in our forks within M65 (T7–T10), and move the 12 moderate ones to follow-up milestone M66. Side findings for M66: duplicate plugin ID `net.sf.openfx.HueCorrect` (two sources); two `net.fxarena.openfx.Text` versions.
 
 ## Risks
 

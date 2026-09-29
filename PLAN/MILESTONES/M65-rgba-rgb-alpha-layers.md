@@ -401,6 +401,12 @@ Execution notes:
   - verify: the script passes, and the user approves the shots.
   - size: M
 
+- [ ] M65.P8.T5f — Rework the twins after the T5e review: no 0/1 constants, None on channel pickers, and "Layer" with All replacing the plugin's All Planes checkbox
+  - files: `Engine/OfxEffectInstance.{h,cpp}`, `Engine/OfxMultiplaneChoice.{h,cpp}`, `Engine/KnobChannelSelect.{h,cpp}`, `Gui/LayerChannelRow.{h,cpp}`, `Gui/KnobGuiChannelSelect.cpp`, `Engine/KnobLayerSelect.*`, `Engine/PyParameter.cpp`, tests
+  - approach: remove the constants feature from T5a/T5b entirely (no dead code). Channel twins allow None, which pushes the plugin's neutral constant for that param. The plane twin is labelled "Layer", and its menu gains "All", which drives the plugin's all-layers param; that checkbox becomes secret and non-persistent.
+  - verify: full debug ctest green; T5e's script updated and re-run on release; the user approves the new shots.
+  - size: L
+
 - [x] M65.P8.T6 — A node's output colour channels are the input's channels plus the ones it writes, nothing more
   - files: `Engine/EffectInstance.cpp` (`checkMetadata`, output layout advertised downstream), `Engine/EffectInstanceRenderRoI.cpp` (output conversion), `Engine/Node.cpp` (`findClosestSupportedComponents`), `Tests/ColorViewsRender_Test.cpp`
   - approach: output storage layout = the narrowest of Alpha/XY/RGB/RGBA covering (input storage bits ∪ explicit write bits); this replaces "widen to RGBA". A plugin clip that can't take that layout (Grade has no Alpha) gets a wider one internally, via zero fill, and the host narrows the output back. Untouched channels pass through.
@@ -482,6 +488,7 @@ Execution notes:
 - 2026-09-29 — **T5d rescoped (user): no backward compatibility.** The consultant's brief imported old projects' plugin plane/channel values into the twins and decoded Python changes back. The user: "This is a clean break. No backward compatibility is required, and we shouldn't spend any time on that." Mid-run, T5d was cut to pushing saved twins on load plus the 0/1 Python check.
 - 2026-09-29 — **T5d landed, rescoped** (code `e9dfa7e0b`; full debug ctest 639/639). `syncMultiplaneTwinsAfterLoad` is needed for the quad; the choices already come back through each twin's own change callback. The "already selected" check now compares the active entry too, so a parked unlisted value is overwritten. Python raises `ValueError` for disallowed 0/1. **Known gap, left for the review round:** a saved non-colour plane twin (Premult on `diffuse` with a channel subset) can't resolve at load, because inputs aren't connected yet. All four quad channels get pushed, and the `populated()` re-push skips the quad, so the plugin processes every channel until the twin is edited. Colour views are unaffected.
 - 2026-09-29 — **T5e shots taken** (release build, `build/m65-ofx-color/shots-t5e/`, 251/251 checks) and sent to the user. Unpremult also gets `hostUnPremultByChannel`. The PM spotted two leftovers from before M39's terminology change: Premult/Unpremult's twin keeps the plugin label "Plane", and the plugin's own "All Planes" checkbox is still visible (supportext#1, the "All Layers" rename, is still open). Both were put to the user.
+- 2026-09-29 — **T5e review (user):** the 0/1 channel options are unnecessary, so drop them. The layer and channel dropdowns need None and All. Relabel "Plane" to "Layer". The plugin's "All Planes" checkbox goes, replaced by an "All" entry in the layer menu. PM reading: channel pickers get None (a single channel has no All), and the layer picker gets All (it already had None). This becomes T5f; T5e reopens for re-shots.
 
 ## Risks
 

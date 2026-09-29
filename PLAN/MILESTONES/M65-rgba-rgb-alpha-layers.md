@@ -401,7 +401,7 @@ Execution notes:
   - verify: the script passes, and the user approves the shots.
   - size: M
 
-- [ ] M65.P8.T6 — A node's output colour channels are the input's channels plus the ones it writes, nothing more
+- [x] M65.P8.T6 — A node's output colour channels are the input's channels plus the ones it writes, nothing more
   - files: `Engine/EffectInstance.cpp` (`checkMetadata`, output layout advertised downstream), `Engine/EffectInstanceRenderRoI.cpp` (output conversion), `Engine/Node.cpp` (`findClosestSupportedComponents`), `Tests/ColorViewsRender_Test.cpp`
   - approach: output storage layout = the narrowest of Alpha/XY/RGB/RGBA covering (input storage bits ∪ explicit write bits); this replaces "widen to RGBA". A plugin clip that can't take that layout (Grade has no Alpha) gets a wider one internally, via zero fill, and the host narrows the output back. Untouched channels pass through.
   - verify: alpha-only → Grade `alpha` gives Alpha-only out, A graded; alpha-only → Blur All gives Alpha-only; alpha-only → default Grade gives RGBA with A exact; RGB → Grade `alpha` gives RGBA with RGB exact; full debug ctest green.
@@ -475,6 +475,7 @@ Execution notes:
 - 2026-09-29 — **P8.T7 committed** on `charlesangus/openfx-supportext` branch `m65/missing-channel-zero` (`32b4b59b`, base `ac5aa1cf`, local only). `findBuiltInSelectedChannel` returns Constant0 for any missing colour channel. Premult and IDistort consumers need no change. Distortion.cpp's own post-fetch fallback (`fillZero = channelIndex != 3`) still gives 1 for a missing A; this was added to T8.
 - 2026-09-29 — **P8.T9 committed locally:** openfx-io `m65/alpha-only` `f2e4355e` (SeGrain, OIIOText, ReadPNG and WritePNG; a 1-channel PNG now reads and writes as Alpha, and a stale assert was removed) and openfx-arena `m65/alpha-only` `4fb9abd6`. ReadPSD and OpenRaster were not trivial: both always wrote 4 floats per pixel whatever was requested, so enabling Alpha alone would have overflowed the buffer. Both now extract only the requested components.
 - 2026-09-29 — **P8.T8 committed locally** on openfx-misc `m65/alpha-only`: `71265d94` (six plugins) and `16da9001` (Distortion.cpp missing A now reads 0). Real bugs fixed along the way: Premult/Unpremult bound channel 0 to processR, so alpha-only premult was a silent no-op; Premult's `getClipPreferences` forced RGBA on both clips; Grade's process assert allowed only 3/4 components. ColorSuppress's alpha output modes still force RGBA by design.
+- 2026-09-29 — **P8.T6 landed** (code `611880b4f`; full debug ctest 617/617). `NodeMetadata::outputStorageNComps` separates what a node stores and advertises downstream from its plugin output clip. The plugin renders into its clip layout, and the existing conversion narrows the result to the stored layout. Clamping picks the narrowest supported layout that keeps every stored channel. Storage is the union of the input layouts (before, Alpha+RGB counted as RGB and lost A). Keyers that set their own output layout keep it. Only nodes with a layer knob are narrowed (not writers, readers or multi-planar plugins). Not yet checked in the GUI: the viewer info bar on an alpha-only Grade output, to cover at UAT.
 
 ## Risks
 

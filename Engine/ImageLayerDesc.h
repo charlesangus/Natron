@@ -292,6 +292,12 @@ public:
     static std::bitset<4> colorStorageBits(const ImageLayerDesc& storage);
 
     /**
+     * @brief The colour storage layout with the fewest channels (Alpha, XY, RGB, RGBA) whose
+     * colorStorageBits() hold every bit of bits; the None layout when bits is empty.
+     **/
+    static ImageLayerDesc narrowestColorStorageCovering(const std::bitset<4>& bits);
+
+    /**
      * @brief The colour views storage presents: always rgba, rgb and alpha, plus xy when
      * storage is the 2-channel XY layout. Does nothing if storage is not the colour layer.
      **/

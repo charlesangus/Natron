@@ -5563,6 +5563,34 @@ EffectInstance::getPreferredMetadata_public(NodeMetadata& metadata)
 
 }
 
+// The colour channels the streams on the non-mask inputs carry, read from each input's own
+// output metadata rather than from this node's clips, which may already be clamped to wider
+// layouts. False when no such input is connected.
+static bool
+getInputsColorStorageBits(const EffectInstance* self,
+                          const std::vector<EffectInstancePtr>& inputs,
+                          std::bitset<4>* bits)
+{
+    NodePtr node = self->getNode();
+    bool found = false;
+
+    bits->reset();
+    for (std::size_t i = 0; i < inputs.size(); ++i) {
+        if (!inputs[i] || self->isInputMask(i) || (node && node->isInputOnlyAlpha(i))) {
+            continue;
+        }
+        ImageLayerDesc layer, pairedLayer;
+        inputs[i]->getMetadataComponents(-1, &layer, &pairedLayer);
+        if (!layer.isColorLayer() || (layer.getNumComponents() == 0)) {
+            continue;
+        }
+        *bits |= ImageLayerDesc::colorStorageBits(layer);
+        found = true;
+    }
+
+    return found;
+}
+
 static int
 getUnmappedComponentsForInput(EffectInstance* self,
                               int inputNb,
@@ -5730,6 +5758,13 @@ EffectInstance::getDefaultMetadata(NodeMetadata &metadata)
             ImageBitDepthEnum depth = deepestBitDepth;
             int remappedComps = mostComponents;
             remappedComps = findClosestSupportedComponents(i, ImageLayerDesc::mapNCompsToColorLayer(remappedComps)).getNumComponents();
+            std::bitset<4> inputsStorageBits;
+            if ((i == -1) && !isWriter() && node->getLayerKnob() && getInputsColorStorageBits(this, inputs, &inputsStorageBits)) {
+                // Offered unclamped, so checkMetadata() can tell a plug-in that picked its output
+                // layout from one that kept the stream's, whose output it may then narrow.
+                remappedComps = ImageLayerDesc::narrowestColorStorageCovering(inputsStorageBits).getNumComponents();
+                metadata.setOutputStorageNComps(remappedComps);
+            }
             metadata.setNComps(i, remappedComps);
             metadata.setComponentsType(i, kNatronColorLayerID);
             metadata.setBitDepth(i, depth);
@@ -5769,16 +5804,12 @@ EffectInstance::getOutputFormat() const
     return _imp->metadata.getOutputFormat();
 }
 
-void
-EffectInstance::getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const
+static void
+metadataComponentsToLayers(int nComps,
+                           const std::string& componentsType,
+                           ImageLayerDesc* layer,
+                           ImageLayerDesc* pairedLayer)
 {
-    int nComps;
-    std::string componentsType;
-    {
-        QMutexLocker k(&_imp->metadataMutex);
-        nComps = _imp->metadata.getNComps(inputNb);
-        componentsType = _imp->metadata.getComponentsType(inputNb);
-    }
     if (componentsType == kNatronColorLayerID) {
         *layer = ImageLayerDesc::mapNCompsToColorLayer(nComps);
     } else if (componentsType == kNatronDisparityComponentsLabel) {
@@ -5792,11 +5823,48 @@ EffectInstance::getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageL
     }
 }
 
+static int
+metadataNComps(const NodeMetadata& metadata,
+               int inputNb)
+{
+    if ((inputNb == -1) && (metadata.getOutputStorageNComps() > 0) && (metadata.getComponentsType(-1) == kNatronColorLayerID)) {
+        return metadata.getOutputStorageNComps();
+    }
+
+    return metadata.getNComps(inputNb);
+}
+
+void
+EffectInstance::getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const
+{
+    int nComps;
+    std::string componentsType;
+    {
+        QMutexLocker k(&_imp->metadataMutex);
+        nComps = metadataNComps(_imp->metadata, inputNb);
+        componentsType = _imp->metadata.getComponentsType(inputNb);
+    }
+    metadataComponentsToLayers(nComps, componentsType, layer, pairedLayer);
+}
+
+void
+EffectInstance::getMetadataOutputClipComponents(ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const
+{
+    int nComps;
+    std::string componentsType;
+    {
+        QMutexLocker k(&_imp->metadataMutex);
+        nComps = _imp->metadata.getNComps(-1);
+        componentsType = _imp->metadata.getComponentsType(-1);
+    }
+    metadataComponentsToLayers(nComps, componentsType, layer, pairedLayer);
+}
+
 int
 EffectInstance::getMetadataNComps(int inputNb) const
 {
     QMutexLocker k(&_imp->metadataMutex);
-    return _imp->metadata.getNComps(inputNb);
+    return metadataNComps(_imp->metadata, inputNb);
 }
 
 ImageBitDepthEnum
@@ -5978,6 +6046,9 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
     //Make sure it is valid
     int nInputs = node->getNInputs();
 
+    const bool outputKeptInputsStorage = (md.getComponentsType(-1) == kNatronColorLayerID) && (md.getOutputStorageNComps() > 0) && (md.getNComps(-1) == md.getOutputStorageNComps());
+    md.setOutputStorageNComps(0);
+
     for (int i = -1; i < nInputs; ++i) {
         md.setBitDepth( i, node->getClosestSupportedBitDepth( md.getBitDepth(i) ) );
         int nComps = md.getNComps(i);
@@ -6102,24 +6173,17 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
     // goes to the file, so it never widens: an RGB image would otherwise gain a zero alpha there.
     if (!_publicInterface->isWriter() && (md.getComponentsType(-1) == kNatronColorLayerID)) {
         // md.getNComps(-1) may already have been clamped, above and in getDefaultMetadata, to the
-        // nearest layout this node's clip preferences support (e.g. Alpha clamped to RGB, because
+        // nearest layout this node's clip preferences support (e.g. Alpha clamped to RGBA, because
         // Grade declares no Alpha clip). That clamp can coincidentally already satisfy the write
-        // bits below, hiding a colour channel the real upstream stream never had. Read each
-        // connected input's own unclamped metadata instead, so the check sees the true storage.
-        int rawNComps = md.getNComps(-1);
-        bool hasRawInput = false;
-        for (int i = 0; i < nInputs; ++i) {
-            if (!inputs[i] || _publicInterface->isInputMask(i) || node->isInputOnlyAlpha(i) || (md.getComponentsType(i) != kNatronColorLayerID)) {
-                continue;
-            }
-            const int inputRawNComps = inputs[i]->getMetadataNComps(-1);
-            if (!hasRawInput || inputRawNComps > rawNComps) {
-                rawNComps = inputRawNComps;
-            }
-            hasRawInput = true;
+        // bits below, hiding a colour channel the real upstream stream never had. Read the
+        // connected inputs' own unclamped metadata instead, so the check sees the true storage.
+        std::bitset<4> storageBits;
+        const bool hasInputStorage = getInputsColorStorageBits(_publicInterface, inputs, &storageBits);
+        if (!hasInputStorage) {
+            storageBits = ImageLayerDesc::colorStorageBits(ImageLayerDesc::mapNCompsToColorLayer(md.getNComps(-1)));
         }
-        const ImageLayerDesc& storage = ImageLayerDesc::mapNCompsToColorLayer(rawNComps);
-        if (storage.getNumComponents() > 0) {
+        if (storageBits.any()) {
+            const ImageLayerDesc storage = ImageLayerDesc::narrowestColorStorageCovering(storageBits);
             std::bitset<4> writeBits;
             _publicInterface->getColorWriteBits(storage, &writeBits);
             if ((writeBits & ~ImageLayerDesc::colorStorageBits(storage)).any()) {
@@ -6142,6 +6206,15 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
                         md.setNComps(*it, 4);
                     }
                 }
+            }
+
+            // The output holds the stream's channels plus those the node writes, and nothing else:
+            // an Alpha stream through a Grade on alpha stays Alpha even though Grade renders it
+            // as RGBA. A plug-in that picked its own output layout (e.g. a keyer's RGBA) keeps it.
+            const ImageLayerDesc clipLayout = ImageLayerDesc::mapNCompsToColorLayer(md.getNComps(-1));
+            const ImageLayerDesc stored = ImageLayerDesc::narrowestColorStorageCovering(storageBits | writeBits);
+            if (hasInputStorage && outputKeptInputsStorage && (stored.getNumComponents() > 0) && (stored.getNumComponents() < clipLayout.getNumComponents()) && (ImageLayerDesc::colorStorageBits(stored) & ~ImageLayerDesc::colorStorageBits(clipLayout)).none()) {
+                md.setOutputStorageNComps(stored.getNumComponents());
             }
         }
     }

@@ -68,6 +68,8 @@ struct NodeMetadataPrivate {
     // The output format in pixel coords
     RectI outputFormat;
 
+    int outputStorageNComps;
+
     NodeMetadataPrivate()
         : outputFielding(eImageFieldingOrderNone)
         , frameRate(24.)
@@ -76,6 +78,7 @@ struct NodeMetadataPrivate {
         , canRenderAtNonframes(true)
         , isFrameVarying(false)
         , outputFormat()
+        , outputStorageNComps(0)
     {
     }
 
@@ -93,6 +96,7 @@ struct NodeMetadataPrivate {
         canRenderAtNonframes = other.canRenderAtNonframes;
         isFrameVarying = other.isFrameVarying;
         outputFormat = other.outputFormat;
+        outputStorageNComps = other.outputStorageNComps;
     }
 };
 
@@ -155,6 +159,9 @@ NodeMetadata::operator==(const NodeMetadata& other) const
     if (_imp->outputFormat != other._imp->outputFormat) {
         return false;
     }
+    if (_imp->outputStorageNComps != other._imp->outputStorageNComps) {
+        return false;
+    }
     for (std::size_t i = 0; i < _imp->inputsData.size(); ++i) {
         if (_imp->inputsData[i].pixelAspectRatio != other._imp->inputsData[i].pixelAspectRatio) {
             return false;
@@ -171,6 +178,18 @@ NodeMetadata::operator==(const NodeMetadata& other) const
     }
 
     return true;
+}
+
+void
+NodeMetadata::setOutputStorageNComps(int nComps)
+{
+    _imp->outputStorageNComps = nComps;
+}
+
+int
+NodeMetadata::getOutputStorageNComps() const
+{
+    return _imp->outputStorageNComps;
 }
 
 void

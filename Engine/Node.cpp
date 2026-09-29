@@ -5289,6 +5289,30 @@ Node::findClosestInList(const ImageLayerDesc& comp,
     if ( components.empty() ) {
         return ImageLayerDesc::getNoneComponents();
     }
+
+    // A colour layout the clip lacks goes to the narrowest supported layout holding all of its
+    // channels, so none is dropped: Alpha on an RGB/RGBA clip is RGBA, not RGB.
+    if (comp.isColorLayer() && (comp.getNumComponents() > 0)) {
+        const std::bitset<4> storageBits = ImageLayerDesc::colorStorageBits(comp);
+        bool exactMatch = false;
+        std::list<ImageLayerDesc>::const_iterator covering = components.end();
+        for (std::list<ImageLayerDesc>::const_iterator it = components.begin(); it != components.end(); ++it) {
+            if (it->getNumComponents() == comp.getNumComponents()) {
+                exactMatch = true;
+                break;
+            }
+            if (!it->isColorLayer() || (storageBits & ~ImageLayerDesc::colorStorageBits(*it)).any()) {
+                continue;
+            }
+            if ((covering == components.end()) || (it->getNumComponents() < covering->getNumComponents())) {
+                covering = it;
+            }
+        }
+        if (!exactMatch && (covering != components.end())) {
+            return *covering;
+        }
+    }
+
     std::list<ImageLayerDesc>::const_iterator closestComp = components.end();
     for (std::list<ImageLayerDesc>::const_iterator it = components.begin(); it != components.end(); ++it) {
         if ( closestComp == components.end() ) {

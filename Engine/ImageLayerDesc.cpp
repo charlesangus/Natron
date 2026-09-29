@@ -334,6 +334,22 @@ ImageLayerDesc::colorStorageBits(const ImageLayerDesc& storage)
     return allColorChannelBits(storage);
 }
 
+ImageLayerDesc
+ImageLayerDesc::narrowestColorStorageCovering(const std::bitset<4>& bits)
+{
+    if (bits.none()) {
+        return ImageLayerDesc::getNoneComponents();
+    }
+    for (int nComps = 1; nComps <= 4; ++nComps) {
+        const ImageLayerDesc& storage = ImageLayerDesc::mapNCompsToColorLayer(nComps);
+        if ((bits & ~colorStorageBits(storage)).none()) {
+            return storage;
+        }
+    }
+
+    return ImageLayerDesc::getNoneComponents();
+}
+
 std::bitset<4>
 ImageLayerDesc::colorViewMask(const std::string& viewID)
 {

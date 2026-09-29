@@ -1050,8 +1050,19 @@ public:
      * If inputNb equals -1 then this function will check the output components.
      **/
     double getAspectRatio(int inputNb) const;
+
+    /**
+     * @brief For inputNb == -1, the colour layout the output stores and advertises downstream,
+     * which can be narrower than what the plug-in's output clip renders
+     * (see getMetadataOutputClipComponents()).
+     **/
     void getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const;
     int getMetadataNComps(int inputNb) const;
+
+    /**
+     * @brief The components the plug-in's own output clip renders into.
+     **/
+    void getMetadataOutputClipComponents(ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const;
 
     ImageBitDepthEnum getBitDepth(int inputNb) const;
 

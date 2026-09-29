@@ -436,6 +436,9 @@ TEST_F(ColorViewsRenderTest, GradeAlphaOverRgbCopiesRgbAndGradesAlphaFromZero)
     ASSERT_TRUE(render(grade, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
 
     expectColor(image, 1.f, 0.f, 0.f, 0.25f);
+    EXPECT_EQ(1.f, image.at(kCheckX, kCheckY, "R"));
+    EXPECT_EQ(0.f, image.at(kCheckX, kCheckY, "G"));
+    EXPECT_EQ(0.f, image.at(kCheckX, kCheckY, "B"));
 }
 
 TEST_F(ColorViewsRenderTest, BlurOnAllOverRgbDoesNotWiden)
@@ -607,6 +610,92 @@ TEST_F(ColorViewsRenderTest, GradeRgbOverAlphaWidensAndGradesRgbFromZero)
 
     ASSERT_GE(image.channelIndex("A"), 0) << "the output widened to RGBA";
     expectColor(image, 0.3f, 0.3f, 0.3f, 1.f);
+}
+
+// Grade has no Alpha clip, so it renders an Alpha stream as RGBA, but writing only alpha creates
+// no colour channel: the output it advertises and stores stays Alpha, with A graded.
+TEST_F(ColorViewsRenderTest, GradeAlphaOverAlphaStaysAlphaOnly)
+{
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(kGradePluginID, "flat-alpha-only.exr", &channels);
+    ASSERT_TRUE(bool(grade));
+    ASSERT_TRUE(bool(channels));
+    EffectInstancePtr effect = grade->getEffectInstance();
+
+    KnobColor* gain = dynamic_cast<KnobColor*>(grade->getKnobByName("white").get());
+    ASSERT_TRUE(gain != NULL);
+    gain->setValues(2., 2., 2., 2., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    channels->setLayer(0, kNatronColorViewAlpha, NULL);
+
+    EXPECT_EQ(1, effect->getMetadataNComps(-1));
+    EXPECT_EQ(4, effect->getMetadataNComps(0)) << "the Alpha stream reaches Grade as RGBA, keeping its A";
+
+    std::list<ImageLayerDesc> present;
+    effect->getPresentLayers(1, ViewIdx(0), -1, &present);
+    bool foundColor = false;
+    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+        if (it->isColorLayer()) {
+            foundColor = true;
+            EXPECT_EQ(1, it->getNumComponents()) << layerIDsString(present);
+        }
+    }
+    EXPECT_TRUE(foundColor) << layerIDsString(present);
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(grade, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    EXPECT_LT(image.channelIndex("R"), 0) << "Grade on alpha created R";
+    EXPECT_LT(image.channelIndex("G"), 0) << "Grade on alpha created G";
+    EXPECT_LT(image.channelIndex("B"), 0) << "Grade on alpha created B";
+    ASSERT_GE(image.channelIndex("A"), 0);
+    EXPECT_NEAR(2.f, image.at(kCheckX, kCheckY, "A"), 1e-5f);
+}
+
+TEST_F(ColorViewsRenderTest, BlurOnAllOverAlphaStaysAlphaOnly)
+{
+    KnobChannelSetPtr channels;
+    NodePtr blur = createEffectOnReader(kBlurPluginID, "flat-alpha-only.exr", &channels);
+    ASSERT_TRUE(bool(blur));
+    ASSERT_TRUE(bool(channels));
+
+    std::vector<ChannelSetRow> rows = channels->getRows();
+    ASSERT_EQ(1u, rows.size());
+    ASSERT_EQ(ChannelSetRow::eModeAll, rows[0].mode);
+
+    EXPECT_EQ(1, blur->getEffectInstance()->getMetadataNComps(-1));
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(blur, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    EXPECT_LT(image.channelIndex("R"), 0) << "an All row gave an Alpha stream an R";
+    ASSERT_GE(image.channelIndex("A"), 0);
+    EXPECT_EQ(1.f, image.at(kCheckX, kCheckY, "A"));
+}
+
+// The default row writes R, G and B, which the Alpha stream lacks, so the output widens to RGBA:
+// RGB are graded from zero (zero again at default values) and the unwritten A is the input's.
+TEST_F(ColorViewsRenderTest, DefaultGradeOverAlphaKeepsAlphaExactly)
+{
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(kGradePluginID, "flat-alpha-only.exr", &channels);
+    ASSERT_TRUE(bool(grade));
+    ASSERT_TRUE(bool(channels));
+    EffectInstancePtr effect = grade->getEffectInstance();
+
+    EXPECT_EQ(4, effect->getMetadataNComps(-1));
+    EXPECT_EQ(4, effect->getMetadataNComps(0));
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(grade, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    ASSERT_GE(image.channelIndex("A"), 0);
+    EXPECT_EQ(1.f, image.at(kCheckX, kCheckY, "A"));
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "R"), 1e-5f);
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "G"), 1e-5f);
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "B"), 1e-5f);
 }
 
 // None of this suite's EXR fixtures carry a base layer with exactly two channels that aren't an

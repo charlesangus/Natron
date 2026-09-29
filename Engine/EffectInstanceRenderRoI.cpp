@@ -813,7 +813,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
      */
     ImageBitDepthEnum outputDepth = getBitDepth(-1);
     ImageLayerDesc outputClipPrefComps, outputClipPrefCompsPaired;
-    getMetadataComponents(-1, &outputClipPrefComps, &outputClipPrefCompsPaired);
+    getMetadataOutputClipComponents(&outputClipPrefComps, &outputClipPrefCompsPaired);
     ImageLayersToRenderPtr layersToRender = std::make_shared<ImageLayersToRender>();
     layersToRender->useOpenGL = storage == eStorageModeGLTex;
     layersToRender->processChannelsPerPlane = processChannelsPerPlane;

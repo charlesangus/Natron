@@ -80,6 +80,10 @@ const int32_t kCheckY = 1;
 const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
 const char* const kBlurPluginID = "net.sf.cimg.CImgBlur";
 const char* const kMergePluginID = "net.sf.openfx.MergePlugin";
+const char* const kIDistortPluginID = "net.sf.openfx.IDistort";
+const char* const kPremultPluginID = "net.sf.openfx.Premult";
+const char* const kWritePNGPluginID = "fr.inria.openfx.WritePNG";
+const char* const kReadPNGPluginID = "fr.inria.openfx.ReadPNG";
 
 std::string
 layerIDsString(const std::list<ImageLayerDesc>& layers)
@@ -612,8 +616,9 @@ TEST_F(ColorViewsRenderTest, GradeRgbOverAlphaWidensAndGradesRgbFromZero)
     expectColor(image, 0.3f, 0.3f, 0.3f, 1.f);
 }
 
-// Grade has no Alpha clip, so it renders an Alpha stream as RGBA, but writing only alpha creates
-// no colour channel: the output it advertises and stores stays Alpha, with A graded.
+// Grade's patched clip now declares Alpha support, so it renders an Alpha stream as Alpha
+// directly, with no colour channel created: the output it advertises and stores stays Alpha,
+// with A graded.
 TEST_F(ColorViewsRenderTest, GradeAlphaOverAlphaStaysAlphaOnly)
 {
     KnobChannelSetPtr channels;
@@ -628,7 +633,7 @@ TEST_F(ColorViewsRenderTest, GradeAlphaOverAlphaStaysAlphaOnly)
     channels->setLayer(0, kNatronColorViewAlpha, NULL);
 
     EXPECT_EQ(1, effect->getMetadataNComps(-1));
-    EXPECT_EQ(4, effect->getMetadataNComps(0)) << "the Alpha stream reaches Grade as RGBA, keeping its A";
+    EXPECT_EQ(1, effect->getMetadataNComps(0)) << "the Alpha stream reaches Grade as Alpha, since Grade's clip now declares Alpha support";
 
     std::list<ImageLayerDesc> present;
     effect->getPresentLayers(1, ViewIdx(0), -1, &present);
@@ -817,4 +822,138 @@ TEST_F(ColorViewsRenderTest, InfoTextsNameTheStorageView)
     const std::string text = nodeInfos->getValue();
     EXPECT_NE(std::string::npos, text.find("rgb.RGB")) << text;
     expectNoUserFacingColor(text);
+}
+
+// IDistort's channelU/V/A picker is the plugin's own dynamic multiplane menu, built by the
+// SupportExt library every multiplane OFX plugin shares (Natron does not yet replace it with a
+// native knob), so its option ID is that library's plane ID plus the channel letter, not one of
+// Natron's view names: kNatronColorLayerID is that plane ID (it is #defined to the OFX Foundry
+// extension's own constant), so "kNatronColorLayerID + .A" is exactly the option IDistort
+// registers for the Color plane's alpha channel.
+TEST_F(ColorViewsRenderTest, IDistortReadsAMissingUVAlphaChannelAsZero)
+{
+    NodePtr source = createReader("flat-three-layers.exr");
+    NodePtr uv = createReader("flat-rgb-only.exr");
+    ASSERT_TRUE(bool(source) && bool(uv));
+
+    NodePtr idistort = createNode(QString::fromUtf8(kIDistortPluginID));
+    ASSERT_TRUE(bool(idistort));
+
+    int sourceInput = -1;
+    int uvInput = -1;
+    for (int i = 0; i < idistort->getNInputs(); ++i) {
+        const std::string label = idistort->getInputLabel(i);
+        if (label == "Source") {
+            sourceInput = i;
+        } else if (label == "UV") {
+            uvInput = i;
+        }
+    }
+    ASSERT_GE(sourceInput, 0);
+    ASSERT_GE(uvInput, 0);
+    connectNodes(source, idistort, sourceInput, true);
+    connectNodes(uv, idistort, uvInput, true);
+
+    KnobChoice* channelA = dynamic_cast<KnobChoice*>(idistort->getKnobByName("channelA").get());
+    ASSERT_TRUE(channelA != NULL);
+    const std::string colourAlpha = std::string(kNatronColorLayerID) + ".A";
+    channelA->setValueFromID(colourAlpha, 0);
+    EXPECT_EQ(colourAlpha, channelA->getActiveEntry().id);
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(idistort, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    ASSERT_GE(image.channelIndex("A"), 0);
+    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "A"), 1e-5f);
+}
+
+// Grade's own clip preferences now declare Alpha support directly (rather than relying only on
+// the host narrowing an internally-widened RGBA render back down), so an alpha-only stream's
+// single channel round-trips through the file itself, not just through the metadata Natron
+// derives from it.
+TEST_F(ColorViewsRenderTest, GradeAlphaOnlyGainDoublesTheSoleChannel)
+{
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(kGradePluginID, "flat-alpha-only.exr", &channels);
+    ASSERT_TRUE(bool(grade));
+    ASSERT_TRUE(bool(channels));
+    channels->setLayer(0, kNatronColorViewAlpha, NULL);
+
+    KnobColor* gain = dynamic_cast<KnobColor*>(grade->getKnobByName("white").get());
+    ASSERT_TRUE(gain != NULL);
+    gain->setValues(2., 2., 2., 2., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(grade, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    ASSERT_EQ(1u, image.channels.size());
+    EXPECT_EQ(std::string("A"), image.channels.front());
+    EXPECT_NEAR(2.f, image.at(kCheckX, kCheckY, "A"), 1e-5f);
+}
+
+// Premult multiplies by the alpha it reads from its own picked channel; on this fixture that
+// channel is the image's only channel, always 1, so premultiplying (or unpremultiplying) by it
+// is a no-op -- the case this plugin update had to stop losing to an unconditional RGBA request
+// in getClipPreferences.
+TEST_F(ColorViewsRenderTest, PremultOnAlphaOnlyLeavesAlphaUnchanged)
+{
+    NodePtr reader = createReader("flat-alpha-only.exr");
+    ASSERT_TRUE(bool(reader));
+    NodePtr premult = createNode(QString::fromUtf8(kPremultPluginID));
+    ASSERT_TRUE(bool(premult));
+    connectNodes(reader, premult, 0, true);
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(premult, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    ASSERT_EQ(1u, image.channels.size());
+    EXPECT_EQ(std::string("A"), image.channels.front());
+    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "A"), 1e-5f);
+}
+
+// WritePNG/ReadPNG now declare Alpha support (kSupportsAlpha), so a 1-channel PNG keeps its
+// single channel as Alpha end to end instead of being forced wider on write or misread on read.
+TEST_F(ColorViewsRenderTest, AlphaOnlyPngRoundTripsThroughWriteAndRead)
+{
+    NodePtr reader = createReader("flat-alpha-only.exr");
+    ASSERT_TRUE(bool(reader));
+
+    NodePtr writePng = createNode(QString::fromUtf8(kWritePNGPluginID));
+    ASSERT_TRUE(bool(writePng));
+    connectNodes(reader, writePng, 0, true);
+
+    KnobChannelSet* writePngChannels = dynamic_cast<KnobChannelSet*>(writePng->getKnobByName(kNodeParamChannelSet).get());
+    ASSERT_TRUE(writePngChannels != NULL);
+    writePngChannels->setAll();
+    KnobChoice* pngBitDepth = dynamic_cast<KnobChoice*>(writePng->getKnobByName("bitDepth").get());
+    ASSERT_TRUE(pngBitDepth != NULL);
+    pngBitDepth->setValueFromID("8u", 0);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string pngPath = (tmp.path() + QLatin1String("/alpha.png")).toStdString();
+    writePng->setOutputFilesForWriter(pngPath);
+
+    OutputEffectInstance* writePngEffect = dynamic_cast<OutputEffectInstance*>(writePng->getEffectInstance().get());
+    ASSERT_TRUE(writePngEffect != NULL);
+    std::list<AppInstance::RenderWork> writeWorks;
+    writeWorks.push_back(AppInstance::RenderWork(writePngEffect, 1, 1, 1, false));
+    getApp()->startWritersRendering(false, writeWorks);
+    ASSERT_TRUE(QFile::exists(QString::fromStdString(pngPath))) << pngPath;
+
+    CreateNodeArgs readArgs(std::string(kReadPNGPluginID), getApp()->getProject());
+    readArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, pngPath);
+    NodePtr readPng = getApp()->createNode(readArgs);
+    ASSERT_TRUE(bool(readPng));
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(readPng, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    ASSERT_EQ(1u, image.channels.size());
+    EXPECT_EQ(std::string("A"), image.channels.front());
+    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "A"), 1e-4f);
 }

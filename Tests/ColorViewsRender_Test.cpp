@@ -824,12 +824,9 @@ TEST_F(ColorViewsRenderTest, InfoTextsNameTheStorageView)
     expectNoUserFacingColor(text);
 }
 
-// IDistort's channelU/V/A picker is the plugin's own dynamic multiplane menu, built by the
-// SupportExt library every multiplane OFX plugin shares (Natron does not yet replace it with a
-// native knob), so its option ID is that library's plane ID plus the channel letter, not one of
-// Natron's view names: kNatronColorLayerID is that plane ID (it is #defined to the OFX Foundry
-// extension's own constant), so "kNatronColorLayerID + .A" is exactly the option IDistort
-// registers for the Color plane's alpha channel.
+// IDistort's channelU/V/A pickers are Natron's hostChannelU/V/A twins, which push the SupportExt
+// library's own option ID into the hidden plugin menu: every colour view shares that library's
+// single colour plane, so rgba.A arrives as kNatronColorLayerID + ".A".
 TEST_F(ColorViewsRenderTest, IDistortReadsAMissingUVAlphaChannelAsZero)
 {
     NodePtr source = createReader("flat-three-layers.exr");
@@ -854,11 +851,14 @@ TEST_F(ColorViewsRenderTest, IDistortReadsAMissingUVAlphaChannelAsZero)
     connectNodes(source, idistort, sourceInput, true);
     connectNodes(uv, idistort, uvInput, true);
 
+    KnobChannelSelectPtr hostChannelA = std::dynamic_pointer_cast<KnobChannelSelect>(idistort->getKnobByName("hostChannelA"));
+    ASSERT_TRUE(bool(hostChannelA));
     KnobChoice* channelA = dynamic_cast<KnobChoice*>(idistort->getKnobByName("channelA").get());
     ASSERT_TRUE(channelA != NULL);
-    const std::string colourAlpha = std::string(kNatronColorLayerID) + ".A";
-    channelA->setValueFromID(colourAlpha, 0);
-    EXPECT_EQ(colourAlpha, channelA->getActiveEntry().id);
+    hostChannelA->set(std::string(kNatronColorViewRGBA) + ".R");
+    EXPECT_EQ(std::string(kNatronColorLayerID) + ".R", channelA->getActiveEntry().id);
+    hostChannelA->set(std::string(kNatronColorViewRGBA) + ".A");
+    EXPECT_EQ(std::string(kNatronColorLayerID) + ".A", channelA->getActiveEntry().id);
 
     FlatExrImage image;
     std::string error;

@@ -297,6 +297,22 @@ public:
     void onClipLabelChanged(int inputNb, const std::string& label);
     void onClipHintChanged(int inputNb, const std::string& hint);
     void onClipSecretChanged(int inputNb, bool isSecret);
+
+    /**
+     * @brief Replaces the plane and channel choice params that openfx-supportext's
+     * ofxsMultiPlane library builds (e.g. Premult's "inputPlane", IDistort's "channelU") with
+     * native "host<ParamName>" twins: a KnobLayerSelect for a plane choice, a KnobChannelSelect
+     * for a channel choice. The plugin choice is hidden and no longer saved; the twin's value
+     * is pushed into it on every change. Twins without a page of their own go on fallbackPage.
+     **/
+    void takeOverMultiplaneChoices(const KnobPagePtr& fallbackPage);
+
+    /**
+     * @brief If knob is a twin created by takeOverMultiplaneChoices(), pushes its value into
+     * the plugin choice it replaces and returns true. Returns false for any other knob.
+     **/
+    bool onMultiplaneTwinChanged(KnobI* knob);
+
 public Q_SLOTS:
 
     void onSyncPrivateDataRequested();
@@ -312,6 +328,8 @@ private:
     void tryInitializeOverlayInteracts();
 
     void hideDeprecatedPremultKnobs();
+
+    void pushMultiplaneTwin(std::size_t index, bool pushChannelQuad);
 
 private:
 

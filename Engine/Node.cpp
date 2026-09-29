@@ -3117,6 +3117,15 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
 
     createUnPremultSelector(mainPage);
 
+    OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get());
+    if (isOfxEffect && isOfxEffect->isMultiPlanar()
+#ifdef NATRON_ENABLE_IO_META_NODES
+        && !ioContainer
+#endif
+    ) {
+        isOfxEffect->takeOverMultiplaneChoices(mainPage);
+    }
+
     createMaskSelectors(hasMaskChannelSelector, inputLabels, mainPage, !foundPluginDefaultKnobsToReorder[0].second.get(), &lastKnobBeforeAdvancedOption);
 
 
@@ -6086,6 +6095,14 @@ Node::onEffectKnobValueChanged(KnobI* what,
                 gui->showGroupKnobAsDialog(isGroup);
                 ret = true;
             }
+        }
+    }
+
+    if (!ret) {
+        OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get());
+        if (isOfxEffect && isOfxEffect->onMultiplaneTwinChanged(what)) {
+            _imp->notifyLayerReferencesChanged();
+            ret = true;
         }
     }
 

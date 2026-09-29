@@ -407,25 +407,25 @@ Execution notes:
   - verify: alpha-only → Grade `alpha` gives Alpha-only out, A graded; alpha-only → Blur All gives Alpha-only; alpha-only → default Grade gives RGBA with A exact; RGB → Grade `alpha` gives RGBA with RGB exact; full debug ctest green.
   - size: L
 
-- [ ] M65.P8.T7 — Plugin library: a missing colour channel reads 0 (openfx-supportext fork)
+- [x] M65.P8.T7 — Plugin library: a missing colour channel reads 0 (openfx-supportext fork)
   - files: `charlesangus/openfx-supportext` on branch `m65/missing-channel-zero`, off the SHA that openfx-misc `d293dcd6` pins (worktree under `build/wt/`); `ofxsMultiPlane.cpp` `findBuiltInSelectedChannel` and whatever else maps a missing colour channel to constant 1
   - approach: a selected colour channel the clip's layout lacks reads 0, not 1 (e.g. `Colour.A` on an RGB clip). Leave the explicit `1` constant alone.
   - verify: the fork builds as part of T10's asset rebuild; `ctest -R 'LayerKnobsRender|ColorViewsRender'` gets a case: IDistort `channelA=rgba.A` over an RGB UV input gives A = 0.
   - size: M
 
-- [ ] M65.P8.T8 — openfx-misc fork: Grade, Premult, Unpremult, ColorCorrect, ColorSuppress, ContactSheet and LayerContactSheet accept alpha-only
+- [x] M65.P8.T8 — openfx-misc fork: Grade, Premult, Unpremult, ColorCorrect, ColorSuppress, ContactSheet and LayerContactSheet accept alpha-only
   - files: `charlesangus/openfx-misc` on branch `m65/alpha-only`, off pin `d293dcd6` (worktree under `build/wt/`); `Grade/Grade.cpp`, `Premult/Premult.cpp`, `ColorCorrect/ColorCorrect.cpp`, `ColorSuppress/ColorSuppress.cpp`, `ContactSheet/ContactSheet.cpp`, `LayerContactSheet/LayerContactSheet.cpp`; bump the SupportExt submodule to T7
   - approach: declare `ePixelComponentAlpha` on the main clips and add the missing `nComponents == 1` render dispatch; the processors already handle one channel (survey cites).
   - verify: the plugins build in T10; new ctest cases: alpha-only → Grade on `alpha` gain 2 gives Alpha-only out with A doubled, and alpha-only → Premult is a no-op on A.
   - size: M
 
-- [ ] M65.P8.T9 — openfx-io and openfx-arena forks: SeGrain, OIIOText, ReadPNG, WritePNG, ReadPSD and OpenRaster accept alpha-only
+- [x] M65.P8.T9 — openfx-io and openfx-arena forks: SeGrain, OIIOText, ReadPNG, WritePNG, ReadPSD and OpenRaster accept alpha-only
   - files: `charlesangus/openfx-io` branch `m65/alpha-only` off `23f8adcf`: `SeExpr/SeGrain.cpp`, `OIIO/OIIOText.cpp`, `PNG/ReadPNG.cpp`, `PNG/WritePNG.cpp`, SupportExt bump to T7. `charlesangus/openfx-arena` branch `m65/alpha-only` off `d29ac7f1`: `ReadPSD.cpp`, the OpenRaster reader, SupportExt bump if it vendors one.
   - approach: flip `kSupportsAlpha` or uncomment the Alpha declarations; the 1-channel paths already exist (survey cites).
   - verify: the plugins build in T10; a grey PNG reads as alpha-only… or at least an Alpha output of WritePNG round-trips (the implementer picks a fixture-backed case).
   - size: M
 
-- [ ] M65.P8.T10 — Push the fork branches, open the fork PRs, re-pin fetch-assets and rebuild the plugin assets
+- [x] M65.P8.T10 — Push the fork branches, open the fork PRs, re-pin fetch-assets and rebuild the plugin assets
   - files: `tools/ci/local/fetch-assets.sh` (OPENFX_MISC_REF, OPENFX_IO_REF, the arena ref), the fork PRs
   - approach: push each fork branch and open a PR on the fork, pin the branch commits (re-pin after merge, as with openfx-io#7), rebuild `build/assets`, then run the full debug ctest plus the new cases from T7–T9.
   - verify: the full debug ctest is green with the new plugin bundles.
@@ -477,6 +477,7 @@ Execution notes:
 - 2026-09-29 — **P8.T8 committed locally** on openfx-misc `m65/alpha-only`: `71265d94` (six plugins) and `16da9001` (Distortion.cpp missing A now reads 0). Real bugs fixed along the way: Premult/Unpremult bound channel 0 to processR, so alpha-only premult was a silent no-op; Premult's `getClipPreferences` forced RGBA on both clips; Grade's process assert allowed only 3/4 components. ColorSuppress's alpha output modes still force RGBA by design.
 - 2026-09-29 — **P8.T6 landed** (code `611880b4f`; full debug ctest 617/617). `NodeMetadata::outputStorageNComps` separates what a node stores and advertises downstream from its plugin output clip. The plugin renders into its clip layout, and the existing conversion narrows the result to the stored layout. Clamping picks the narrowest supported layout that keeps every stored channel. Storage is the union of the input layouts (before, Alpha+RGB counted as RGB and lost A). Keyers that set their own output layout keep it. Only nodes with a layer knob are narrowed (not writers, readers or multi-planar plugins). Not yet checked in the GUI: the viewer info bar on an alpha-only Grade output, to cover at UAT.
 - 2026-09-29 — **T10 fork PRs opened, re-pinned** (fork branches pushed): supportext#4 (`m65/missing-channel-zero`, with cherry-picks on io's and arena's SupportExt bases), misc#5 (`721e35d7`), io#8 (`91f1a040`, stacked on the still-open io#7) and arena#2 (`387c98e4`; its `.gitmodules` now fetches SupportExt from our fork). `fetch-assets.sh` pins the unmerged heads; re-pin after they merge. T7–T9's new cases are in `ColorViewsRender_Test.cpp`; IDistort's case sets the plugin option ID directly until T5c's twins exist. T5a/T5b written (uncommitted) and ride the same batch build (`build/m65-b8.sh`).
+- 2026-09-29 — **T7–T10 landed** (code `5876d75a3`; full debug ctest 633/633 after one fix round). The new PNG round-trip case caught a real ReadPNG bug: `getPNGInfo` always called `png_set_gray_to_rgb`, so a 1-channel grey PNG never read as Alpha. The fix is on openfx-io `m65/alpha-only` (`55ded52e`, pushed to io#8, re-pinned). The T6 test `GradeAlphaOverAlphaStaysAlphaOnly` now expects Grade's input at 1 component, because Grade accepts Alpha natively. T5a (`9f1897f2c`) and T5b (`5c82be92a`) landed in the same batch.
 
 ## Risks
 

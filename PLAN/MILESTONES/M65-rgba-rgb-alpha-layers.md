@@ -389,10 +389,10 @@ Execution notes:
   - verify: `ctest -R 'LayerKnobsRender|LayerKnobs'`: Premult with `hostInputPlane=diffuse` → `queryNeededComponents` lists diffuse on the output and on input 0; `rgb` → quad R,G,B,!A; IDistort `hostChannelU=diffuse.R` → the UV input needs diffuse; plugin choices are secret and non-persistent; `NodesOwningTheirPlanesGetNoLayerKnob` still passes; full debug ctest green.
   - size: L
 
-- [ ] M65.P8.T5d — Import old projects' plugin plane and channel values into the twins, and keep the plugin params scriptable
+- [ ] M65.P8.T5d — Push saved twin values into the hidden plugin choices on load, and keep ChannelSelectParam's constants honest
   - files: `Engine/Node.cpp`, `Engine/OfxEffectInstance.{h,cpp}`, `Engine/PyParameter.cpp`, `Tests/ProjectSerialization_Test.cpp`
-  - approach: `syncMultiplaneTwinsAfterLoad` before `resetLegacyColorLayerKnobs`. A saved twin is pushed to the plugin; otherwise the plugin's active entry ID (plus the processR..A quad) is decoded into the twin, silently, since the import is lossless. A plugin-choice change made while the guard is unset (Python) is decoded into the twin. `ChannelSelectParam` accepts 0/1 only when constants are allowed.
-  - verify: `ctest -R 'ProjectSerialization|PyPlug'`: an old Premult inputPlane=Colour with processA → `hostInputPlane` rgba{R,G,B,A}; unPremultByChannel=Colour.A → rgba.A; IDistort diffuse.R and 1 load; no warning; the twins round-trip; Python set by ID updates the twin; full debug ctest green.
+  - approach: after `loadKnobs`, push each twin's saved value into its plugin choice and quad. No old-project import and no Python decode from the plugin choice (clean break; see Decisions). `ChannelSelectParam` accepts 0/1 only when constants are allowed.
+  - verify: `ctest -R 'ProjectSerialization|PyPlug'`: a new project's twins round-trip and the plugin choice is pushed to match; the 0/1 check; full debug ctest green.
   - size: L
 
 - [ ] M65.P8.T5e — Xvfb screenshot pass of Premult, Unpremult, IDistort and STMap
@@ -479,6 +479,7 @@ Execution notes:
 - 2026-09-29 — **T10 fork PRs opened, re-pinned** (fork branches pushed): supportext#4 (`m65/missing-channel-zero`, with cherry-picks on io's and arena's SupportExt bases), misc#5 (`721e35d7`), io#8 (`91f1a040`, stacked on the still-open io#7) and arena#2 (`387c98e4`; its `.gitmodules` now fetches SupportExt from our fork). `fetch-assets.sh` pins the unmerged heads; re-pin after they merge. T7–T9's new cases are in `ColorViewsRender_Test.cpp`; IDistort's case sets the plugin option ID directly until T5c's twins exist. T5a/T5b written (uncommitted) and ride the same batch build (`build/m65-b8.sh`).
 - 2026-09-29 — **T7–T10 landed** (code `5876d75a3`; full debug ctest 633/633 after one fix round). The new PNG round-trip case caught a real ReadPNG bug: `getPNGInfo` always called `png_set_gray_to_rgb`, so a 1-channel grey PNG never read as Alpha. The fix is on openfx-io `m65/alpha-only` (`55ded52e`, pushed to io#8, re-pinned). The T6 test `GradeAlphaOverAlphaStaysAlphaOnly` now expects Grade's input at 1 component, because Grade accepts Alpha natively. T5a (`9f1897f2c`) and T5b (`5c82be92a`) landed in the same batch.
 - 2026-09-29 — **T5c landed** (code `e3dd944d8`; full debug ctest 637/637). The push hooks into `Node::onEffectKnobValueChanged`, not `knobChanged`, because host knobs never reach the plugin's `knobChanged` (the same reason as the unpremult selector). Channel choices whose options span several clips are skipped. With no clip prefix, the clip comes from the option tooltip ("R channel from input UV"), or else the first non-mask input. Plane choices are named in a table (Premult/Unpremult `inputPlane` on Source), because their option list is empty at creation. The `populated()` re-push updates only the choice, never the quad. Left for T5d: pushing twins after a load, and decoding plugin-choice changes (guard flag unset) back into the twin.
+- 2026-09-29 — **T5d rescoped (user): no backward compatibility.** The consultant's brief imported old projects' plugin plane/channel values into the twins and decoded Python changes back. The user: "This is a clean break. No backward compatibility is required, and we shouldn't spend any time on that." Mid-run, T5d was cut to pushing saved twins on load plus the 0/1 Python check.
 
 ## Risks
 

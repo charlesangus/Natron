@@ -371,13 +371,13 @@ Execution notes:
   - verify: T5e's Xvfb pass is approved by the user.
   - size: L
 
-- [ ] M65.P8.T5a — Give KnobChannelSelect 0/1 constants and a no-None mode, and add the translation between Natron values and plugin option IDs
+- [x] M65.P8.T5a — Give KnobChannelSelect 0/1 constants and a no-None mode, and add the translation between Natron values and plugin option IDs
   - files: `Engine/KnobChannelSelect.{h,cpp}`, `Engine/OfxMultiplaneChoice.{h,cpp}` (new), `Tests/KnobLayerSelect_Test.cpp`
   - approach: `setAllowNone` (default true) and `setAllowConstants`; "0"/"1" are stored verbatim and `resolve()` returns false for them. Pure functions: `channelValueToPluginOption`, `layerValueToPluginPlaneOption`, the reverse functions (accept `Color.*` label forms, never return the storage ID), and `isMultiplaneChannelChoice(entries,&clip)`. The encoding matches `ofxsMultiPlane.cpp` `getChannelOption`/`getPlaneOption`.
   - verify: `ctest -R KnobLayerSelect`: every view channel translates both ways (rgba.A, rgb.B, alpha.A, xy.X, diffuse.R, 0, 1; planes rgba/rgb/alpha/diffuse); the reverse never yields the storage ID; the detector accepts IDistort's and Premult's option lists and rejects plain R/G/B/A.
   - size: M
 
-- [ ] M65.P8.T5b — Show the constants in the channel-select menu and honour the no-None mode
+- [x] M65.P8.T5b — Show the constants in the channel-select menu and honour the no-None mode
   - files: `Gui/LayerChannelRow.{h,cpp}`, `Gui/KnobGuiChannelSelect.cpp`, `Tests/LayerChannelRow_Test.cpp`
   - approach: in the `eModeChannelSelect` branch, show None only when allowed, and add `eKindConstant` entries 0 and 1 after the colour-view channels; update `currentValueIsListed` and hit-testing. Mask selectors are unchanged.
   - verify: GuiTests `LayerChannelRow`: a constants/no-None row lists rgba.*, rgb.*, alpha.A, 0, 1, diffuse.* with no None; picking 1 emits "1"; the mask rows are unchanged.

@@ -248,14 +248,6 @@ Node::isPartOfPrecomp() const
     return _imp->precomp.lock();
 }
 
-
-
-bool
-Node::usesAlpha0ToConvertFromRGBToRGBA() const
-{
-    return _imp->useAlpha0ToConvertFromRGBToRGBA;
-}
-
 void
 Node::setWhileCreatingPaintStroke(bool creating)
 {
@@ -7651,14 +7643,6 @@ Node::attachRotoItem(const RotoDrawableItemPtr& stroke)
 {
     assert( QThread::currentThread() == qApp->thread() );
     _imp->paintStroke = stroke;
-    _imp->useAlpha0ToConvertFromRGBToRGBA = true;
-}
-
-void
-Node::setUseAlpha0ToConvertFromRGBToRGBA(bool use)
-{
-    assert( QThread::currentThread() == qApp->thread() );
-    _imp->useAlpha0ToConvertFromRGBToRGBA = use;
 }
 
 RotoDrawableItemPtr

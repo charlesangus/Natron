@@ -90,17 +90,6 @@ public:
 
     std::string getComponentsType(int inputNb) const;
 
-    /**
-     * @brief Whether an input clip's colour plane, when converted up to the clip's layout, fills
-     * the channels its upstream layout lacks with zero (alpha included, and without replicating a
-     * one-channel alpha into R, G and B) instead of the ordinary conversion's alpha of 1. Set only
-     * on clips that were widened because the node explicitly writes a colour channel its stream
-     * lacks, so that the channel reads zero.
-     **/
-    void setColorZeroFill(int inputNb, bool zeroFill);
-
-    bool getColorZeroFill(int inputNb) const;
-
     void setOutputFormat(const RectI& format);
 
     const RectI& getOutputFormat() const;

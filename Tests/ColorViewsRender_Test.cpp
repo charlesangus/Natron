@@ -63,6 +63,8 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/PyNode.h"
+#include "Engine/RectI.h"
+#include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
@@ -315,7 +317,6 @@ TEST_F(ColorViewsRenderTest, GradeRgbGain2DoublesRgbAndKeepsAlpha)
     channels->setLayer(0, kNatronColorViewRGB, NULL);
 
     EXPECT_EQ(4, grade->getEffectInstance()->getMetadataNComps(-1));
-    EXPECT_FALSE(grade->getEffectInstance()->getMetadataColorZeroFill(0));
 
     FlatExrImage image;
     std::string error;
@@ -388,8 +389,8 @@ TEST_F(ColorViewsRenderTest, WriteRgbViewWritesRgbOnly)
     EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "B"), 1e-5f);
 }
 
-// Offset 0.25 on alpha shows what alpha the Grade read: 0.25 from a zero-filled alpha, 1.25 from
-// the ordinary conversion's alpha of 1.
+// Offset 0.25 on alpha shows what alpha the Grade read: 0.25 from the zero alpha an RGB stream
+// reads, 1.25 from an alpha of 1.
 TEST_F(ColorViewsRenderTest, GradeRgbaOverRgbWidensAndReadsAlphaAsZero)
 {
     KnobChannelSetPtr channels;
@@ -407,7 +408,6 @@ TEST_F(ColorViewsRenderTest, GradeRgbaOverRgbWidensAndReadsAlphaAsZero)
 
     EXPECT_EQ(4, effect->getMetadataNComps(-1));
     EXPECT_EQ(4, effect->getMetadataNComps(0));
-    EXPECT_TRUE(effect->getMetadataColorZeroFill(0));
 
     FlatExrImage image;
     std::string error;
@@ -452,7 +452,6 @@ TEST_F(ColorViewsRenderTest, BlurOnAllOverRgbDoesNotWiden)
     EffectInstancePtr effect = blur->getEffectInstance();
     EXPECT_EQ(3, effect->getMetadataNComps(-1));
     EXPECT_EQ(3, effect->getMetadataNComps(0));
-    EXPECT_FALSE(effect->getMetadataColorZeroFill(0));
 
     FlatExrImage image;
     std::string error;
@@ -462,9 +461,41 @@ TEST_F(ColorViewsRenderTest, BlurOnAllOverRgbDoesNotWiden)
     EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "R"), 1e-5f);
 }
 
-// An RGB input reaching a Merge whose output is already RGBA is converted by ordinary clip
-// remapping, which keeps its alpha of 1: only a widening converts with zero fill.
-TEST_F(ColorViewsRenderTest, MergeOfRgbIntoRgbaStreamKeepsOrdinaryConversion)
+// A Grade on rgba over RGB with no clamp and default values is an identity, so the render forwards
+// the widened RGBA request straight to the reader instead of running the Grade: the alpha the RGB
+// stream lacks must still read zero, as it does when the Grade processes the pixels.
+TEST_F(ColorViewsRenderTest, IdentityGradeRgbaOverRgbReadsAlphaAsZero)
+{
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(kGradePluginID, "flat-rgb-only.exr", &channels);
+    ASSERT_TRUE(bool(grade));
+    ASSERT_TRUE(bool(channels));
+    KnobBool* clampBlack = dynamic_cast<KnobBool*>(grade->getKnobByName("clampBlack").get());
+    ASSERT_TRUE(clampBlack != NULL);
+    clampBlack->setValue(false);
+    channels->setLayer(0, kNatronColorViewRGBA, NULL);
+
+    EffectInstancePtr effect = grade->getEffectInstance();
+    EXPECT_EQ(4, effect->getMetadataNComps(-1));
+
+    double identityTime = 0.;
+    ViewIdx identityView(0);
+    int identityInputNb = -1;
+    const RectI window(0, 0, 4, 4);
+    EXPECT_TRUE(effect->isIdentity_public(false, effect->getRenderHash(), 1, RenderScale::identity, window, ViewIdx(0), &identityTime, &identityView, &identityInputNb));
+    EXPECT_EQ(0, identityInputNb);
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(grade, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    ASSERT_GE(image.channelIndex("A"), 0) << "the output kept the input's RGB layout";
+    expectColor(image, 1.f, 0.f, 0.f, 0.f);
+}
+
+// Merge's A over B is A + B * (1 - A.alpha). With B = (1, 0, 0, 1), an A input read as
+// (1, 0, 0, 0) gives (2, 0, 0, 1); an alpha of 1 on A would give (1, 0, 0, 1).
+TEST_F(ColorViewsRenderTest, MergeReadsAlphaOfRgbAInputAsZero)
 {
     NodePtr rgba = createReader("flat-three-layers.exr");
     NodePtr rgb = createReader("flat-rgb-only.exr");
@@ -472,14 +503,60 @@ TEST_F(ColorViewsRenderTest, MergeOfRgbIntoRgbaStreamKeepsOrdinaryConversion)
 
     NodePtr merge = createNode(QString::fromUtf8(kMergePluginID));
     ASSERT_TRUE(bool(merge));
-    connectNodes(rgba, merge, 0, true);
-    connectNodes(rgb, merge, 1, true);
-
-    EffectInstancePtr effect = merge->getEffectInstance();
-    EXPECT_EQ(4, effect->getMetadataNComps(-1));
-    for (int i = 0; i < effect->getNInputs(); ++i) {
-        EXPECT_FALSE(effect->getMetadataColorZeroFill(i)) << "input " << i;
+    int inputA = -1;
+    int inputB = -1;
+    for (int i = 0; i < merge->getNInputs(); ++i) {
+        if (merge->getInputLabel(i) == "A") {
+            inputA = i;
+        } else if (merge->getInputLabel(i) == "B") {
+            inputB = i;
+        }
     }
+    ASSERT_GE(inputA, 0);
+    ASSERT_GE(inputB, 0);
+    connectNodes(rgba, merge, inputB, true);
+    connectNodes(rgb, merge, inputA, true);
+
+    EXPECT_EQ(4, merge->getEffectInstance()->getMetadataNComps(-1));
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(merge, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    expectColor(image, 2.f, 0.f, 0.f, 1.f);
+}
+
+// An alpha-only A input over B = (1, 0, 0, 1): A's alpha of 1 hides B entirely, so the result is
+// A's R, G and B, which read zero. Replicating A's alpha into them would give (1, 1, 1, 1).
+TEST_F(ColorViewsRenderTest, MergeReadsRgbOfAlphaOnlyAInputAsZero)
+{
+    NodePtr rgba = createReader("flat-three-layers.exr");
+    NodePtr alpha = createReader("flat-alpha-only.exr");
+    ASSERT_TRUE(rgba && alpha);
+
+    NodePtr merge = createNode(QString::fromUtf8(kMergePluginID));
+    ASSERT_TRUE(bool(merge));
+    int inputA = -1;
+    int inputB = -1;
+    for (int i = 0; i < merge->getNInputs(); ++i) {
+        if (merge->getInputLabel(i) == "A") {
+            inputA = i;
+        } else if (merge->getInputLabel(i) == "B") {
+            inputB = i;
+        }
+    }
+    ASSERT_GE(inputA, 0);
+    ASSERT_GE(inputB, 0);
+    connectNodes(rgba, merge, inputB, true);
+    connectNodes(alpha, merge, inputA, true);
+
+    EXPECT_EQ(4, merge->getEffectInstance()->getMetadataNComps(-1));
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(merge, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    expectColor(image, 0.f, 0.f, 0.f, 1.f);
 }
 
 TEST_F(ColorViewsRenderTest, ListLayerViewsForKnobOnAlphaOnlyInputListsRgbaRgbAlpha)
@@ -523,7 +600,6 @@ TEST_F(ColorViewsRenderTest, GradeRgbOverAlphaWidensAndGradesRgbFromZero)
 
     EXPECT_EQ(4, effect->getMetadataNComps(-1));
     EXPECT_EQ(4, effect->getMetadataNComps(0));
-    EXPECT_TRUE(effect->getMetadataColorZeroFill(0));
 
     FlatExrImage image;
     std::string error;

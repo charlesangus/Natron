@@ -535,20 +535,6 @@ private:
         _entryLock.unlock();
     }
 
-public:
-    /**
-     * @brief How a conversion to more channels fills the channels the source lacks.
-     * eConvertFillAlphaOne: alpha is 1 and a one-channel source is replicated into every channel.
-     * eConvertFillAlphaZero: the same, except that alpha is 0.
-     * eConvertFillZero: every missing channel is 0, a one-channel source landing in alpha only.
-     **/
-    enum ConvertFillEnum {
-        eConvertFillAlphaOne,
-        eConvertFillAlphaZero,
-        eConvertFillZero
-    };
-
-private:
     template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue>
     static void convertToFormatInternal_sameComps(const RectI & renderWindow,
                                                   const Image & srcImg,
@@ -564,7 +550,7 @@ private:
                                         ViewerColorSpaceEnum srcColorSpace,
                                         ViewerColorSpaceEnum dstColorSpace,
                                         int channelForAlpha,
-                                        ConvertFillEnum fill,
+                                        bool zeroFillMissing,
                                         bool copyBitmap);
 
     template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue, int srcNComps, int dstNComps, bool useColorspaces>
@@ -572,7 +558,7 @@ private:
                                                      const Image& srcImg,
                                                      Image& dstImg,
                                                      bool copyBitmap,
-                                                     ConvertFillEnum fill,
+                                                     bool zeroFillMissing,
                                                      ViewerColorSpaceEnum srcColorSpace,
                                                      ViewerColorSpaceEnum dstColorSpace,
                                                      int channelForAlpha);
@@ -584,7 +570,7 @@ private:
                                                 ViewerColorSpaceEnum srcColorSpace,
                                                 ViewerColorSpaceEnum dstColorSpace,
                                                 int channelForAlpha,
-                                                ConvertFillEnum fill,
+                                                bool zeroFillMissing,
                                                 bool copyBitmap);
 
 public:
@@ -777,6 +763,10 @@ public:
      *
      * @param copyBitMap The bitmap will also be copied.
      *
+     * Converting a colour image to more channels fills every colour channel its layout lacks
+     * with 0: RGB to RGBA gives A = 0, Alpha to RGB or RGBA gives R = G = B = 0. A one-channel
+     * image of any other plane is copied into every destination channel, and alpha is 1.
+     *
      * Note that this function is mainly used for the following conversion:
      * RGBA --> Alpha
      * or bit depth conversion
@@ -789,30 +779,6 @@ public:
                          bool copyBitMap,
                          Image* dstImg) const;
 
-    void convertToFormatAlpha0(const RectI& renderWindow,
-                               ViewerColorSpaceEnum srcColorSpace,
-                               ViewerColorSpaceEnum dstColorSpace,
-                               int channelForAlpha,
-                               bool copyBitMap,
-                               Image* dstImg) const;
-
-    void convertToFormatZeroFill(const RectI& renderWindow,
-                                 ViewerColorSpaceEnum srcColorSpace,
-                                 ViewerColorSpaceEnum dstColorSpace,
-                                 int channelForAlpha,
-                                 bool copyBitMap,
-                                 Image* dstImg) const;
-
-private:
-    void convertToFormatCommon(const RectI& renderWindow,
-                               ViewerColorSpaceEnum srcColorSpace,
-                               ViewerColorSpaceEnum dstColorSpace,
-                               int channelForAlpha,
-                               ConvertFillEnum fill,
-                               bool copyBitMap,
-                               Image* dstImg) const;
-
-public:
     bool canCallCopyUnProcessedChannels(std::bitset<4> processChannels) const;
 
     /**

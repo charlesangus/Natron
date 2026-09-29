@@ -1059,7 +1059,7 @@ EffectInstance::getImage(int inputNb,
         }
 
         if (mapToClipPrefs) {
-            inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, node->usesAlpha0ToConvertFromRGBToRGBA(), channelForMask);
+            inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, channelForMask);
         }
 
         return inputImg;
@@ -1099,19 +1099,6 @@ EffectInstance::getImage(int inputNb,
                 renderedComps = *it;
             }
             break;
-        }
-    }
-
-    // A clip widened because this effect writes a colour channel its input lacks reads that channel
-    // as zero: fetch the input's own colour layout and convert it here, since renderRoI() would
-    // convert it with the ordinary fill, which sets alpha to 1.
-    bool zeroFillColor = false;
-    if (!isMask && (returnStorage == eStorageModeRAM) && components.isColorLayer() && getMetadataColorZeroFill(inputNb)) {
-        ImageLayerDesc upstreamColor, upstreamPairedLayer;
-        inputEffect->getMetadataComponents(-1, &upstreamColor, &upstreamPairedLayer);
-        if (upstreamColor.isColorLayer() && (upstreamColor.getNumComponents() > 0) && (upstreamColor.getNumComponents() < components.getNumComponents())) {
-            renderedComps = upstreamColor;
-            zeroFillColor = true;
         }
     }
 
@@ -1193,13 +1180,9 @@ EffectInstance::getImage(int inputNb,
         inputImg = rescaledImg;
     }
 
-    if (zeroFillColor) {
-        inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, components, inputImg->getBitDepth(), false, -1, true);
-    }
-
     // Remap if needed
     if (mapToClipPrefs) {
-        inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, node->usesAlpha0ToConvertFromRGBToRGBA(), channelForMask);
+        inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, channelForMask);
     }
 
 #ifdef DEBUG
@@ -5816,13 +5799,6 @@ EffectInstance::getMetadataNComps(int inputNb) const
     return _imp->metadata.getNComps(inputNb);
 }
 
-bool
-EffectInstance::getMetadataColorZeroFill(int inputNb) const
-{
-    QMutexLocker k(&_imp->metadataMutex);
-    return _imp->metadata.getColorZeroFill(inputNb);
-}
-
 ImageBitDepthEnum
 EffectInstance::getBitDepth(int inputNb) const
 {
@@ -6164,7 +6140,6 @@ EffectInstance::Implementation::checkMetadata(NodeMetadata &md)
                     md.setNComps(-1, 4);
                     for (std::vector<int>::const_iterator it = widenedInputs.begin(); it != widenedInputs.end(); ++it) {
                         md.setNComps(*it, 4);
-                        md.setColorZeroFill(*it, true);
                     }
                 }
             }

@@ -161,9 +161,7 @@ EffectInstance::convertLayersFormatsIfNeeded(const AppInstancePtr& app,
                                              const RectI& roi,
                                              const ImageLayerDesc& targetComponents,
                                              ImageBitDepthEnum targetDepth,
-                                             bool useAlpha0ForRGBToRGBAConversion,
-                                             int channelForAlpha,
-                                             bool zeroFillMissingChannels)
+                                             int channelForAlpha)
 {
     // Do not do any conversion for OpenGL textures, OpenGL is managing it for us.
     if (inputImage->getStorageMode() == eStorageModeGLTex) {
@@ -202,22 +200,10 @@ EffectInstance::convertLayersFormatsIfNeeded(const AppInstancePtr& app,
         tmp->setKey(inputImage->getKey());
         const RectI clippedRoi = roi.intersect(bounds);
 
-        if (zeroFillMissingChannels) {
-            inputImage->convertToFormatZeroFill(clippedRoi,
-                                                app->getDefaultColorSpaceForBitDepth(inputImage->getBitDepth()),
-                                                app->getDefaultColorSpaceForBitDepth(targetDepth),
-                                                channelForAlpha, false, tmp.get());
-        } else if (useAlpha0ForRGBToRGBAConversion) {
-            inputImage->convertToFormatAlpha0(clippedRoi,
-                                              app->getDefaultColorSpaceForBitDepth(inputImage->getBitDepth()),
-                                              app->getDefaultColorSpaceForBitDepth(targetDepth),
-                                              channelForAlpha, false, tmp.get());
-        } else {
-            inputImage->convertToFormat(clippedRoi,
-                                        app->getDefaultColorSpaceForBitDepth(inputImage->getBitDepth()),
-                                        app->getDefaultColorSpaceForBitDepth(targetDepth),
-                                        channelForAlpha, false, tmp.get());
-        }
+        inputImage->convertToFormat(clippedRoi,
+                                    app->getDefaultColorSpaceForBitDepth(inputImage->getBitDepth()),
+                                    app->getDefaultColorSpaceForBitDepth(targetDepth),
+                                    channelForAlpha, false, tmp.get());
 
         return tmp;
     }
@@ -1597,8 +1583,6 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////// Make sure all layers rendered have the requested  format ///////////////////////////
 
-    bool useAlpha0ForRGBToRGBAConversion = args.caller ? args.caller->getNode()->usesAlpha0ToConvertFromRGBToRGBA() : false;
-
     // If the caller is not multiplanar, for the color layer we remap it to the components metadata obtained from the metadata pass, otherwise we stick to returning
     // bool callerIsMultiplanar = args.caller ? args.caller->isMultiPlanar() : false;
 
@@ -1652,7 +1636,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         ///The image might need to be converted to fit the original requested format
         if (comp) {
             const RectI downscaledOriginalRoI = originalRoI.toNewMipmapLevel(originalRoIMipmapLevel, args.mipmapLevel, par, rod);
-            it->second.downscaleImage = convertLayersFormatsIfNeeded(getApp(), it->second.downscaleImage, downscaledOriginalRoI, *comp, args.bitdepth, useAlpha0ForRGBToRGBAConversion, -1);
+            it->second.downscaleImage = convertLayersFormatsIfNeeded(getApp(), it->second.downscaleImage, downscaledOriginalRoI, *comp, args.bitdepth, -1);
             assert(it->second.downscaleImage->getComponents() == *comp && it->second.downscaleImage->getBitDepth() == args.bitdepth);
 
             StorageModeEnum imageStorage = it->second.downscaleImage->getStorageMode();

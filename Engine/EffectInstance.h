@@ -1053,12 +1053,6 @@ public:
     void getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const;
     int getMetadataNComps(int inputNb) const;
 
-    /**
-     * @brief Whether input inputNb's colour plane converts up to the clip's layout with its
-     * missing channels reading zero (see NodeMetadata::getColorZeroFill()).
-     **/
-    bool getMetadataColorZeroFill(int inputNb) const;
-
     ImageBitDepthEnum getBitDepth(int inputNb) const;
 
 
@@ -2520,9 +2514,7 @@ private:
                                                  const RectI& roi,
                                                  const ImageLayerDesc& targetComponents,
                                                  ImageBitDepthEnum targetDepth,
-                                                 bool useAlpha0ForRGBToRGBAConversion,
-                                                 int channelForAlpha,
-                                                 bool zeroFillMissingChannels = false);
+                                                 int channelForAlpha);
 
     /**
      * @brief Called by getImage when the thread-storage was not set by the caller thread (mostly because this is a thread that is not

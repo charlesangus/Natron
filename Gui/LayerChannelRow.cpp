@@ -81,6 +81,7 @@ struct LayerChannelRow::ComboEntry {
         eKindRegex,
         eKindLayer,
         eKindChannel,
+        eKindConstant,
         eKindNewLayer,
         eKindAbsent
     };
@@ -116,7 +117,8 @@ LayerChannelRow::LayerChannelRow(ModeEnum mode,
     , _regexChannels()
     , _regexExcludedChannels()
     , _withChannelButtons(false)
-    , _allowNone(false)
+    , _allowNone(mode == eModeChannelSelect)
+    , _allowConstants(false)
     , _absentMarker()
     , _removable(false)
     , _patternValid(true)
@@ -279,6 +281,22 @@ bool
 LayerChannelRow::getAllowNone() const
 {
     return _allowNone;
+}
+
+void
+LayerChannelRow::setAllowConstants(bool allowConstants)
+{
+    if (_allowConstants == allowConstants) {
+        return;
+    }
+    _allowConstants = allowConstants;
+    rebuildCombo();
+}
+
+bool
+LayerChannelRow::getAllowConstants() const
+{
+    return _allowConstants;
 }
 
 void
@@ -507,6 +525,9 @@ LayerChannelRow::currentValueIsListed() const
         if (_channelValue.empty()) {
             return true;
         }
+        if (_allowConstants && ((_channelValue == "0") || (_channelValue == "1"))) {
+            return true;
+        }
         for (std::size_t i = 0; i < _layers.size(); ++i) {
             for (std::size_t c = 0; c < _layers[i].channels.size(); ++c) {
                 if (_layers[i].id + "." + _layers[i].channels[c] == _channelValue) {
@@ -558,13 +579,23 @@ LayerChannelRow::rebuildCombo()
         }
         break;
     case eModeChannelSelect:
-        _entries.push_back(ComboEntry(ComboEntry::eKindNone, std::string(), tr("None")));
+        if (_allowNone) {
+            _entries.push_back(ComboEntry(ComboEntry::eKindNone, std::string(), tr("None")));
+        }
         break;
     }
 
     const bool isSetRow = (_mode == eModeSetRow0) || (_mode == eModeSetRowN);
+    bool constantsInserted = false;
     for (std::size_t i = 0; i < ordered.size(); ++i) {
         if (_mode == eModeChannelSelect) {
+            // Constants stand for an all-zero/all-one channel, not a real layer's, so they
+            // are listed with the colour-view channels rather than among other layers'.
+            if (_allowConstants && !constantsInserted && !ImageLayerDesc::isColorViewID(ordered[i]->id)) {
+                _entries.push_back(ComboEntry(ComboEntry::eKindConstant, "0", QString::fromUtf8("0")));
+                _entries.push_back(ComboEntry(ComboEntry::eKindConstant, "1", QString::fromUtf8("1")));
+                constantsInserted = true;
+            }
             for (std::size_t c = 0; c < ordered[i]->channels.size(); ++c) {
                 const std::string& channel = ordered[i]->channels[c];
                 _entries.push_back(ComboEntry(ComboEntry::eKindChannel, ordered[i]->id + "." + channel,
@@ -577,6 +608,10 @@ LayerChannelRow::rebuildCombo()
             }
             _entries.push_back(ComboEntry(ComboEntry::eKindLayer, ordered[i]->id, qs(ordered[i]->label)));
         }
+    }
+    if (_mode == eModeChannelSelect && _allowConstants && !constantsInserted) {
+        _entries.push_back(ComboEntry(ComboEntry::eKindConstant, "0", QString::fromUtf8("0")));
+        _entries.push_back(ComboEntry(ComboEntry::eKindConstant, "1", QString::fromUtf8("1")));
     }
 
     if (!_absentMarker.isEmpty() && !currentValueIsListed()) {
@@ -630,6 +665,7 @@ LayerChannelRow::selectEntryForCurrentValue()
             hit = (_setRowMode == eSetRowModeLayer) && (e.value == _layerID);
             break;
         case ComboEntry::eKindChannel:
+        case ComboEntry::eKindConstant:
             hit = (e.value == _channelValue);
             break;
         case ComboEntry::eKindAbsent:
@@ -870,6 +906,7 @@ LayerChannelRow::onComboIndexChanged(int index)
         break;
     }
     case ComboEntry::eKindChannel:
+    case ComboEntry::eKindConstant:
         _channelValue = entry.value;
         if (hadMarker) {
             rebuildCombo();

@@ -116,12 +116,21 @@ public:
                              const std::vector<std::string>& enabledChannels,
                              bool withChannelButtons);
 
-    /// Layer-select mode only: whether the combo offers a "None" entry.
+    /// Layer-select and channel-select modes: whether the combo offers a "None" entry.
     void setAllowNone(bool allowNone);
 
     bool getAllowNone() const;
 
-    /// Channel-select mode only: "layer.channel", or empty for None.
+    /**
+     * @brief Channel-select mode only: whether the combo also offers the constants "0" and
+     * "1", listed after the colour-view channels (rgba.*, rgb.*, alpha.A ...) and before
+     * other layers' channels (diffuse.* ...).
+     **/
+    void setAllowConstants(bool allowConstants);
+
+    bool getAllowConstants() const;
+
+    /// Channel-select mode only: "layer.channel", "0", "1", or empty for None.
     void setChannelSelectValue(const std::string& layerDotChannel);
 
     /**
@@ -218,6 +227,7 @@ private:
     std::set<std::string> _regexExcludedChannels;
     bool _withChannelButtons;
     bool _allowNone;
+    bool _allowConstants;
     QString _absentMarker;
     bool _removable;
     bool _patternValid;

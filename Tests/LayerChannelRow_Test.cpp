@@ -373,6 +373,30 @@ TEST(LayerChannelRow, ChannelSelectEntryOrder)
     EXPECT_TRUE(row.getCurrentChannel().empty());
 }
 
+TEST(LayerChannelRow, ChannelSelectConstantsAndNoNone)
+{
+    LayerChannelRow row(LayerChannelRow::eModeChannelSelect);
+    row.setAvailableLayers(rgbOnlyColorViews(), false);
+    row.setAllowNone(false);
+    row.setAllowConstants(true);
+
+    const QStringList expected = sl("rgba.R", "rgba.G", "rgba.B", "rgba.A", "rgb.R", "rgb.G", "rgb.B", "alpha.A")
+        + sl("0", "1", "diffuse.R", "diffuse.G", "diffuse.B", "depth.Z");
+    EXPECT_EQ(expected, row.getComboEntries());
+    EXPECT_EQ(-1, comboIndexOf(row, "None"));
+
+    int selectedCount = 0;
+    QString selected;
+    QObject::connect(&row, &LayerChannelRow::channelSelected, [&](const QString& v) {
+        ++selectedCount;
+        selected = v;
+    });
+    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "1"));
+    EXPECT_EQ(1, selectedCount);
+    EXPECT_EQ(QString::fromUtf8("1"), selected);
+    EXPECT_EQ("1", row.getCurrentChannel());
+}
+
 TEST(LayerChannelRow, ChoosingLayerRebuildsCheckedColouredButtonsAndEmitsOnce)
 {
     LayerChannelRow row(LayerChannelRow::eModeSetRow0);

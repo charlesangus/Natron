@@ -365,11 +365,41 @@ Execution notes:
   - verify: `ctest -R 'ColorViewsRender|ChannelSetRender|Shuffle|Merge|ImageConvert'`, then the full debug ctest is green. New cases: a JPEG-like RGB input into Merge's A input reads A = 0; an identity Grade `rgba` over RGB outputs A = 0; an Alpha-only stream converted to RGBA reads RGB = 0.
   - size: L
 
-- [ ] M65.P8.T5 — Natron's own layer/channel knobs replace the plugin-owned plane and channel menus on Premult, Unpremult, IDistort and STMap
-  - files: to be elaborated (precedent: `Engine/WriteNode.cpp` `WriteNodePrivate::takeOverEncoderPlaneParams` and `Engine/ReadNode.cpp` `refreshEmbeddedReaderPlaneKnobs`, which hide the embedded plugin's `outputLayer`/`outputChannels` menus behind the host's knobs)
-  - approach: Natron hides the plugins' `inputPlane`, `unPremultByChannel` and `channelU`/`channelV`/`channelA` choices, which are built by `ofxsMultiPlane.cpp` and hard-code "Color", and drives them from native `KnobLayerSelect`/`KnobChannelSelect` knobs that list the colour views. Old projects' plugin values map onto the host knobs. Nuke's model: the host resolves layers and the plugin never labels them. Breakdown pending a consultant scout.
-  - verify: to be elaborated; at minimum, Xvfb shots of the four nodes show rgba/rgb/alpha/xy and no "Color", and renders through a non-colour plane or channel still match.
+- [ ] M65.P8.T5 — Natron's own layer/channel knobs replace the plugin-owned plane and channel menus on Premult, Unpremult, IDistort and STMap (umbrella; done when T5a–T5e are done)
+  - files: see T5a–T5e
+  - approach: a generic host mechanism, following the `Node::createUnPremultSelector` precedent. Native `host<param>` twins (a `KnobLayerSelect` for plane choices, which also owns Premult's processR..A quad; a `KnobChannelSelect` with 0/1 constants and no None for channel choices) hide the plugin choice (secret, locked, non-persistent) and push the encoded option ID (`uk.co.thefoundry.OfxImagePlaneColour[.C]`, `0`/`1`, `layer.C`) through `setValueFromID` in `knobChanged`. Channel choices are auto-detected via `isMultiplaneChannelChoice`, so third-party plugins built on the same library are covered; plane choices come from a table. A twin is registered with `declareLayerKnob(eRoleInputBound)` and is never the node's layerKnob. Nodes inside a Read/Write container are skipped.
+  - verify: T5e's Xvfb pass is approved by the user.
   - size: L
+
+- [ ] M65.P8.T5a — Give KnobChannelSelect 0/1 constants and a no-None mode, and add the translation between Natron values and plugin option IDs
+  - files: `Engine/KnobChannelSelect.{h,cpp}`, `Engine/OfxMultiplaneChoice.{h,cpp}` (new), `Tests/KnobLayerSelect_Test.cpp`
+  - approach: `setAllowNone` (default true) and `setAllowConstants`; "0"/"1" are stored verbatim and `resolve()` returns false for them. Pure functions: `channelValueToPluginOption`, `layerValueToPluginPlaneOption`, the reverse functions (accept `Color.*` label forms, never return the storage ID), and `isMultiplaneChannelChoice(entries,&clip)`. The encoding matches `ofxsMultiPlane.cpp` `getChannelOption`/`getPlaneOption`.
+  - verify: `ctest -R KnobLayerSelect`: every view channel translates both ways (rgba.A, rgb.B, alpha.A, xy.X, diffuse.R, 0, 1; planes rgba/rgb/alpha/diffuse); the reverse never yields the storage ID; the detector accepts IDistort's and Premult's option lists and rejects plain R/G/B/A.
+  - size: M
+
+- [ ] M65.P8.T5b — Show the constants in the channel-select menu and honour the no-None mode
+  - files: `Gui/LayerChannelRow.{h,cpp}`, `Gui/KnobGuiChannelSelect.cpp`, `Tests/LayerChannelRow_Test.cpp`
+  - approach: in the `eModeChannelSelect` branch, show None only when allowed, and add `eKindConstant` entries 0 and 1 after the colour-view channels; update `currentValueIsListed` and hit-testing. Mask selectors are unchanged.
+  - verify: GuiTests `LayerChannelRow`: a constants/no-None row lists rgba.*, rgb.*, alpha.A, 0, 1, diffuse.* with no None; picking 1 emits "1"; the mask rows are unchanged.
+  - size: M
+
+- [ ] M65.P8.T5c — Hide the plugins' plane and channel menus behind native twins and push the twin's value into the plugin
+  - files: `Engine/OfxEffectInstance.{h,cpp}`, `Engine/OfxMultiplaneChoice.cpp`, `Engine/Node.cpp`, `Tests/LayerKnobsRender_Test.cpp`
+  - approach: `OfxEffectInstance::takeOverMultiplaneChoices`, called from `Node::initializeDefaultKnobs` after `createUnPremultSelector` when `isMultiPlanar()` and the node isn't inside an IO container. Twins copy the plugin knob's label, hint and position and are metadata slaves. Push in `knobChanged` behind a guard flag; if the option isn't in the menu yet, use `setActiveEntry`; re-push on the choice's `populated()`.
+  - verify: `ctest -R 'LayerKnobsRender|LayerKnobs'`: Premult with `hostInputPlane=diffuse` → `queryNeededComponents` lists diffuse on the output and on input 0; `rgb` → quad R,G,B,!A; IDistort `hostChannelU=diffuse.R` → the UV input needs diffuse; plugin choices are secret and non-persistent; `NodesOwningTheirPlanesGetNoLayerKnob` still passes; full debug ctest green.
+  - size: L
+
+- [ ] M65.P8.T5d — Import old projects' plugin plane and channel values into the twins, and keep the plugin params scriptable
+  - files: `Engine/Node.cpp`, `Engine/OfxEffectInstance.{h,cpp}`, `Engine/PyParameter.cpp`, `Tests/ProjectSerialization_Test.cpp`
+  - approach: `syncMultiplaneTwinsAfterLoad` before `resetLegacyColorLayerKnobs`. A saved twin is pushed to the plugin; otherwise the plugin's active entry ID (plus the processR..A quad) is decoded into the twin, silently, since the import is lossless. A plugin-choice change made while the guard is unset (Python) is decoded into the twin. `ChannelSelectParam` accepts 0/1 only when constants are allowed.
+  - verify: `ctest -R 'ProjectSerialization|PyPlug'`: an old Premult inputPlane=Colour with processA → `hostInputPlane` rgba{R,G,B,A}; unPremultByChannel=Colour.A → rgba.A; IDistort diffuse.R and 1 load; no warning; the twins round-trip; Python set by ID updates the twin; full debug ctest green.
+  - size: L
+
+- [ ] M65.P8.T5e — Xvfb screenshot pass of Premult, Unpremult, IDistort and STMap
+  - files: `build/m65-ofx-color/ofx_color.py`, `build/m65-ofx-color/run.sh`
+  - approach: run the release build (or a new AppImage) and open the twin combos with `flat-three-layers.exr` connected. Assert the plane menu lists rgba/rgb/alpha/diffuse/specular/depth, the channel menus list rgba.*, rgb.*, alpha.A, 0, 1 and diffuse.*, no visible entry contains "Color", and the plugin combos are gone.
+  - verify: the script passes, and the user approves the shots.
+  - size: M
 
 - [ ] M65.P8.T6 — A node's output colour channels are the input's channels plus the ones it writes, nothing more
   - files: `Engine/EffectInstance.cpp` (`checkMetadata`, output layout advertised downstream), `Engine/EffectInstanceRenderRoI.cpp` (output conversion), `Engine/Node.cpp` (`findClosestSupportedComponents`), `Tests/ColorViewsRender_Test.cpp`
@@ -416,6 +446,7 @@ Execution notes:
 - 2026-09-29 — **Plugin-owned "Color" menus: the host widget takes them over (user).** Research: Nuke's OFX bridge never names layers to plugins (host dump from Nuke 10: no dynamic choices, no channel selector); its native channel knobs pick the layer. Screenshots (`build/m65-ofx-color/shots/`) found "Color" only in Premult/Unpremult `inputPlane` and `unPremultByChannel`, and IDistort/STMap `channelU/V/A`. Read/Write already hide their plugin menus. The user chose the Nuke-style host widget over relabelling the supportext fork; this becomes P8.T5.
 - 2026-09-29 — **Untouched channels pass through (user):** "If an RGB stream is coming in, and a node is set to adjust alpha, then RGB passes through untouched, same as any other layers/channels the node isn't adjusting." Applied to the P8.T4 finding (an alpha-only stream clamped to RGB on a clip without Alpha loses its A): clamping must keep every present colour channel. This becomes P8.T6.
 - 2026-09-29 — **P8.T6 rule clarified (user):** "If alpha only is coming in, and the node is set to alpha, no RGB should be created." Output colour channels = input channels ∪ written channels; the widen target is that union, not always RGBA. Plugins that can't take the layout get a wider internal clip, which the host narrows back.
+- 2026-09-29 — **P8.T5 elaborated** by a consultant into T5a–T5e (above). Open risk: the plugin library's `findBuiltInSelectedChannel` reads `Colour.A` on an RGB clip as constant **1**, which contradicts M65's zero rule (IDistort's default channelA over an RGB UV gives full alpha; Premult by rgba.A on RGB). Resolve it together with the plugin-update survey (pending).
 
 ## Risks
 

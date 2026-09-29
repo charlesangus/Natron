@@ -2710,7 +2710,11 @@ ChannelSelectParam::set(const QString& value)
     if (!knob) {
         return;
     }
-    knob->set(value.toStdString());
+    try {
+        knob->set(value.toStdString());
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
 }
 
 void
@@ -2721,7 +2725,11 @@ ChannelSelectParam::setNone()
     if (!knob) {
         return;
     }
-    knob->setNone();
+    try {
+        knob->setNone();
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
 }
 
 bool

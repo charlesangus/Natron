@@ -1647,6 +1647,10 @@ Node::loadKnobs(const NodeSerialization & serialization,
 
     restoreUserKnobs(serialization);
 
+    if (OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get())) {
+        isOfxEffect->syncMultiplaneTwinsAfterLoad();
+    }
+
     // Only the rgba, rgb, alpha and xy views are valid layer values now; the colour storage ID
     // resolves to nothing, so an old value naming it would silently process no colour at all.
     if (resetLegacyColorLayerKnobs(liveLayerDefaults)) {

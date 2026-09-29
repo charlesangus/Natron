@@ -313,6 +313,13 @@ public:
      **/
     bool onMultiplaneTwinChanged(KnobI* knob);
 
+    /**
+     * @brief Pushes every twin's value into the plugin choice and channel quad it replaces. The
+     * plugin choices are not saved, so after a load they only hold the twins' saved values once
+     * this has run.
+     **/
+    void syncMultiplaneTwinsAfterLoad();
+
 public Q_SLOTS:
 
     void onSyncPrivateDataRequested();

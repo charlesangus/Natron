@@ -1012,17 +1012,20 @@ OfxEffectInstance::pushMultiplaneTwin(std::size_t index,
 
     const std::vector<ChoiceOption> entries = choice->getEntries_mt_safe();
     const int current = choice->getValue();
-    const bool alreadySelected = (current >= 0) && (current < (int)entries.size()) && (entries[current].id == optionID);
-    if (!alreadySelected) {
-        bool listed = false;
-        for (std::size_t i = 0; i < entries.size() && !listed; ++i) {
-            listed = entries[i].id == optionID;
-        }
-        if (listed) {
+    const bool indexSelects = (current >= 0) && (current < (int)entries.size()) && (entries[current].id == optionID);
+    // A value that is not listed yet is parked as the active entry while the index still points
+    // elsewhere, so both have to name the option.
+    const bool activeSelects = choice->getActiveEntry().id == optionID;
+    bool listed = false;
+    for (std::size_t i = 0; i < entries.size() && !listed; ++i) {
+        listed = entries[i].id == optionID;
+    }
+    if (listed) {
+        if (!indexSelects || !activeSelects) {
             choice->setValueFromID(optionID, 0);
-        } else {
-            choice->setActiveEntry(ChoiceOption(optionID));
         }
+    } else if (!activeSelects) {
+        choice->setActiveEntry(ChoiceOption(optionID));
     }
 
     if (pushChannelQuad && layerSelect && twin.channelQuad[0].lock()) {
@@ -1045,6 +1048,14 @@ OfxEffectInstance::pushMultiplaneTwin(std::size_t index,
 
     _imp->pushingMultiplaneTwin = false;
 } // OfxEffectInstance::pushMultiplaneTwin
+
+void
+OfxEffectInstance::syncMultiplaneTwinsAfterLoad()
+{
+    for (std::size_t i = 0; i < _imp->multiplaneTwins.size(); ++i) {
+        pushMultiplaneTwin(i, true);
+    }
+}
 
 OfxEffectInstance::~OfxEffectInstance()
 {

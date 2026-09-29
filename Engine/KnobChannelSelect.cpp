@@ -25,6 +25,8 @@
 
 #include "KnobChannelSelect.h"
 
+#include <stdexcept>
+
 #include <QtCore/QMutexLocker>
 
 NATRON_NAMESPACE_ENTER
@@ -44,6 +46,8 @@ KnobChannelSelect::KnobChannelSelect(KnobHolder* holder,
                                      int dimension,
                                      bool declaredByPlugin)
     : KnobTable(holder, description, dimension, declaredByPlugin)
+    , _allowNone(true)
+    , _allowConstants(false)
     , _cacheMutex()
     , _cacheValid(false)
     , _cachedRaw()
@@ -108,6 +112,15 @@ KnobChannelSelect::encode(const std::string& value)
 void
 KnobChannelSelect::set(const std::string& value)
 {
+    if (value.empty()) {
+        if (!_allowNone) {
+            throw std::invalid_argument("This channel selection does not allow None: an empty channel is not permitted");
+        }
+    } else if ((value == "0") || (value == "1")) {
+        if (!_allowConstants) {
+            throw std::invalid_argument("This channel selection does not allow constants: \"0\"/\"1\" are not permitted");
+        }
+    }
     setValue(encode(value), ViewSpec::all(), 0, eValueChangedReasonNatronInternalEdited, 0);
 }
 
@@ -150,6 +163,9 @@ KnobChannelSelect::resolve(const std::list<ImageLayerDesc>& present,
 
     getLayerIDAndChannel(&layerID, &channelName);
     if (layerID.empty()) {
+        // Also covers a constant ("0"/"1"): with no '.' to split on, getLayerIDAndChannel()
+        // leaves layerID empty, so a constant resolves to false here just like None does. The
+        // caller distinguishes the two with isNone()/get() and treats the constant itself.
         return false;
     }
     if (layerID == kNatronColorLayerID) {
@@ -235,6 +251,12 @@ KnobChannelSelect::getSummary() const
 {
     if (isNone()) {
         return tr("None").toStdString();
+    }
+
+    const std::string value = get();
+    if ((value == "0") || (value == "1")) {
+        // A constant has no layer/channel to look up a label for: it reads verbatim.
+        return value;
     }
 
     std::string layerID, channelName;

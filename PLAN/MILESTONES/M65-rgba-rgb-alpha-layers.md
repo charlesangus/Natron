@@ -371,10 +371,10 @@ Execution notes:
   - verify: to be elaborated; at minimum, Xvfb shots of the four nodes show rgba/rgb/alpha/xy and no "Color", and renders through a non-colour plane or channel still match.
   - size: L
 
-- [ ] M65.P8.T6 — Never drop a colour channel the stream has when a clip's layout is clamped
-  - files: `Engine/EffectInstance.cpp` (`checkMetadata` clamp / widening), `Engine/Node.cpp` (`findClosestSupportedComponents` / `findClosestInList`), `Tests/ColorViewsRender_Test.cpp`
-  - approach: when a colour input or output is clamped to a layout the plugin supports, pick one that keeps every channel the storage carries: Alpha storage on a clip without Alpha goes to RGBA, not RGB, with RGB reading 0 and A kept. Untouched channels then pass through, whatever the rows (All, regex, explicit views).
-  - verify: an alpha-only stream through a default Grade and through a default-All Blur keeps its A exactly, with RGB = 0 (Grade: RGB graded from 0); an RGB stream through Grade on `alpha` keeps RGB exactly; the full debug ctest is green.
+- [ ] M65.P8.T6 — A node's output colour channels are the input's channels plus the ones it writes, nothing more
+  - files: `Engine/EffectInstance.cpp` (`checkMetadata`, output layout advertised downstream), `Engine/EffectInstanceRenderRoI.cpp` (output conversion), `Engine/Node.cpp` (`findClosestSupportedComponents`), `Tests/ColorViewsRender_Test.cpp`
+  - approach: output storage layout = the narrowest of Alpha/XY/RGB/RGBA covering (input storage bits ∪ explicit write bits); this replaces "widen to RGBA". A plugin clip that can't take that layout (Grade has no Alpha) gets a wider one internally, via zero fill, and the host narrows the output back. Untouched channels pass through.
+  - verify: alpha-only → Grade `alpha` gives Alpha-only out, A graded; alpha-only → Blur All gives Alpha-only; alpha-only → default Grade gives RGBA with A exact; RGB → Grade `alpha` gives RGBA with RGB exact; full debug ctest green.
   - size: L
 
 **Verification gate:** all of the following hold:
@@ -415,6 +415,7 @@ Execution notes:
 - 2026-09-29 — **P8.T4 landed** (code `8afb58c62`; full debug ctest 614/614). The root cause of identity A = 1: an identity Grade forwards the widened request to the Reader, which did the ordinary conversion. Fix: `Image::convertToFormat` zero-fills missing channels whenever the **source is the colour plane**, so every path gets the rule. `colorZeroFill`, the 3-value fill enum and the Roto/paint "alpha 0" flag are removed as redundant. Non-colour planes keep the old fill (1-channel replicated, A = 1), because a 1-channel non-colour plane such as depth reaches a plugin through its RGBA clip and is read back from channel 0. Cache version 8.
 - 2026-09-29 — **Plugin-owned "Color" menus: the host widget takes them over (user).** Research: Nuke's OFX bridge never names layers to plugins (host dump from Nuke 10: no dynamic choices, no channel selector); its native channel knobs pick the layer. Screenshots (`build/m65-ofx-color/shots/`) found "Color" only in Premult/Unpremult `inputPlane` and `unPremultByChannel`, and IDistort/STMap `channelU/V/A`. Read/Write already hide their plugin menus. The user chose the Nuke-style host widget over relabelling the supportext fork; this becomes P8.T5.
 - 2026-09-29 — **Untouched channels pass through (user):** "If an RGB stream is coming in, and a node is set to adjust alpha, then RGB passes through untouched, same as any other layers/channels the node isn't adjusting." Applied to the P8.T4 finding (an alpha-only stream clamped to RGB on a clip without Alpha loses its A): clamping must keep every present colour channel. This becomes P8.T6.
+- 2026-09-29 — **P8.T6 rule clarified (user):** "If alpha only is coming in, and the node is set to alpha, no RGB should be created." Output colour channels = input channels ∪ written channels; the widen target is that union, not always RGBA. Plugins that can't take the layout get a wider internal clip, which the host narrows back.
 
 ## Risks
 

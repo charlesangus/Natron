@@ -263,7 +263,7 @@ Execution notes:
   - verify: covered by the P6.T3 Xvfb run; smoke debug is green.
   - size: M
 
-- [ ] M65.P6.T3 — Xvfb screenshots of every place a user sees a layer
+- [x] M65.P6.T3 — Xvfb screenshots of every place a user sees a layer
   - files: `build/m65-gui/gui.py` (reuse `Tests/gui/guitest.py` and `Tests/gui/run-gui-test.sh`)
   - approach: build the graph Read(`flat-three-layers.exr`) → Grade → Shuffle → Viewer, then screenshot:
     - Grade's row-0 menu;
@@ -399,6 +399,7 @@ Execution notes:
 - 2026-09-28 — **B6: the P6.T3 Xvfb run caught two product bugs** (code `9532d030c` P8.T2, `bdd8ca541` fixes; full debug ctest 607/607). The viewer info bar and the node Info tab printed the storage label (`A: Color.RGBA32f`); `ImageLayerDesc::getUserFacingLabel()` now names the storage after the view matching its layout (`rgba.RGBA32f`, `rgb.RGB32f`, …) — the rendered image, not the picked view. Picking `alpha` in the viewer menu left the display on RGB over the storage plane; `onLayerComboChanged` now points the alpha menu at the view's channel and auto-switches the display to A for 1-channel views (shared helper `autoSwitchDisplayChannelsForLayer`). `ViewerInstance`'s `alphaChannelIndex != -1` assert was removed because `rgba.A` on RGB-only is now legitimate (reads black). Grade's `(rgba.rgb)` sublabel is by design: Grade's default row is `rgba` {R,G,B}, and the summary mirrors the widget. P8.T2's guard test lives in `ColorViewsRender_Test.cpp` (it needs a render fixture), still matched by `-R ColorViews`.
 - 2026-09-28 — **P8.T3 packaged:** `build/appimages/M65-bdd8ca541.AppImage` (the `package.sh` artifact from the 17:20 release build of `bdd8ca541`; sha256 `bf88fb93…`). The UAT script is `build/appimages/M65-uat.md`, with fixtures in `build/appimages/m65-uat-fixtures/`. The first launch check on the host hung, but that wasn't a regression: a fresh HOME makes Natron open a modal "check for updates?" dialog before any startup script runs (`GuiAppInstance::load`). Once `checkForUpdates` was saved, M65 passed `run-launch-check.sh` (exit 0), as M61 does. P8.T3 stays open until the user signs off the UAT. The `natron-dev` Docker image is gone from this host, so it has to be rebuilt before any further build.
 - 2026-09-28 — **UAT round 1 answers (user):** (1) a missing colour channel reads 0 everywhere, not only through views. The design doc's split (plain OFX conversion kept A = 1 so old comps didn't change) is dropped: clean break, don't preserve old behaviour. The PM reads "consistent" as covering all implicit colour conversions: Alpha→RGBA zero-fills RGB instead of replicating A, and XY→RGBA zero-fills B and A. (2) Merge of two RGB inputs outputting RGBA with alpha 0 is accepted. (3) An identity Grade `rgba` over RGB must give A = 0, not 1. (4) A mask on `rgba.A` from an RGB input masking everything out is accepted. Items 1 and 3 become P8.T4. (5) The user asked how Nuke maps native layers to OFX, to settle the plugin-owned "Color" menus (research pending).
+- 2026-09-28 — **P6.T3 approved** by the user: all six Xvfb screenshots look good.
 
 ## Risks
 

@@ -868,6 +868,53 @@ TEST_F(ColorViewsRenderTest, IDistortReadsAMissingUVAlphaChannelAsZero)
     EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "A"), 1e-5f);
 }
 
+// With every UV channel None, IDistort is handed its "not used" constants -- no offset and an
+// opaque alpha -- so it leaves the source as it was.
+TEST_F(ColorViewsRenderTest, IDistortWithNoneUVChannelsPassesTheSourceThrough)
+{
+    NodePtr source = createReader("flat-three-layers.exr");
+    NodePtr uv = createReader("flat-rgb-only.exr");
+    ASSERT_TRUE(bool(source) && bool(uv));
+
+    NodePtr idistort = createNode(QString::fromUtf8(kIDistortPluginID));
+    ASSERT_TRUE(bool(idistort));
+
+    int sourceInput = -1;
+    int uvInput = -1;
+    for (int i = 0; i < idistort->getNInputs(); ++i) {
+        const std::string label = idistort->getInputLabel(i);
+        if (label == "Source") {
+            sourceInput = i;
+        } else if (label == "UV") {
+            uvInput = i;
+        }
+    }
+    ASSERT_GE(sourceInput, 0);
+    ASSERT_GE(uvInput, 0);
+    connectNodes(source, idistort, sourceInput, true);
+    connectNodes(uv, idistort, uvInput, true);
+
+    const char* const twins[] = { "hostChannelU", "hostChannelV", "hostChannelA" };
+    for (std::size_t i = 0; i < sizeof(twins) / sizeof(twins[0]); ++i) {
+        KnobChannelSelectPtr twin = std::dynamic_pointer_cast<KnobChannelSelect>(idistort->getKnobByName(twins[i]));
+        ASSERT_TRUE(bool(twin)) << twins[i];
+        twin->setNone();
+    }
+
+    FlatExrImage expected;
+    std::string error;
+    ASSERT_TRUE(render(source, &ColorViewsRenderTest::writeAll, &expected, &error)) << error;
+    FlatExrImage image;
+    ASSERT_TRUE(render(idistort, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    const char* const channels[] = { "R", "G", "B", "A" };
+    for (std::size_t c = 0; c < sizeof(channels) / sizeof(channels[0]); ++c) {
+        ASSERT_GE(expected.channelIndex(channels[c]), 0) << channels[c];
+        ASSERT_GE(image.channelIndex(channels[c]), 0) << channels[c];
+        EXPECT_NEAR(expected.at(kCheckX, kCheckY, channels[c]), image.at(kCheckX, kCheckY, channels[c]), 1e-5f) << channels[c];
+    }
+}
+
 // Grade's own clip preferences now declare Alpha support directly (rather than relying only on
 // the host narrowing an internally-widened RGBA render back down), so an alpha-only stream's
 // single channel round-trips through the file itself, not just through the metadata Natron

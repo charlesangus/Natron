@@ -293,7 +293,9 @@ struct OfxEffectInstancePrivate
         KnobIWPtr twin;
         KnobChoiceWPtr pluginChoice;
         KnobBoolWPtr channelQuad[4];
+        KnobBoolWPtr allPlanes;
         std::string clipPrefix;
+        std::string noneOption;
     };
 
     std::vector<MultiplaneTwin> multiplaneTwins;
@@ -714,14 +716,20 @@ namespace {
 struct PlaneChoiceTakeOver {
     const char* pluginID;
     const char* paramName;
+    const char* twinName;
+    const char* twinLabel;
     const char* clipName;
     bool ownsChannelQuad;
 };
 
 const PlaneChoiceTakeOver kPlaneChoiceTakeOvers[] = {
-    { "net.sf.openfx.Premult", "inputPlane", kOfxImageEffectSimpleSourceClipName, true },
-    { "net.sf.openfx.Unpremult", "inputPlane", kOfxImageEffectSimpleSourceClipName, true },
+    { "net.sf.openfx.Premult", "inputPlane", "hostInputLayer", "Layer", kOfxImageEffectSimpleSourceClipName, true },
+    { "net.sf.openfx.Unpremult", "inputPlane", "hostInputLayer", "Layer", kOfxImageEffectSimpleSourceClipName, true },
 };
+
+// ofxsMultiPlane.h's kMultiPlaneProcessAllPlanesParam: the checkbox that makes a plane choice
+// process every plane of its input, which a plane twin's All entry replaces.
+const char* const kPluginProcessAllPlanesParam = "processAllPlanes";
 
 const PlaneChoiceTakeOver*
 findPlaneChoiceTakeOver(const std::string& pluginID,
@@ -875,6 +883,9 @@ OfxEffectInstance::takeOverMultiplaneChoices(const KnobPagePtr& fallbackPage)
         std::string twinName = paramName;
         twinName[0] = (char)std::toupper((unsigned char)twinName[0]);
         twinName.insert(0, "host");
+        if (plane) {
+            twinName = plane->twinName;
+        }
         if (getKnobByName(twinName)) {
             continue;
         }
@@ -893,9 +904,20 @@ OfxEffectInstance::takeOverMultiplaneChoices(const KnobPagePtr& fallbackPage)
                 hasQuad = bool(quad[c]);
             }
 
-            KnobLayerSelectPtr layerSelect = createLayerSelectKnob(twinName, choice->getLabel(), hasQuad, false);
+            KnobLayerSelectPtr layerSelect = createLayerSelectKnob(twinName, plane->twinLabel, hasQuad, false);
             layerSelect->setAllowNone(true);
-            const std::string defaultLayer = defaultID.empty() ? std::string(kNatronColorViewRGBA) : OfxMultiplaneChoice::pluginPlaneOptionToLayerValue(defaultID);
+            std::string defaultLayer = defaultID.empty() ? std::string(kNatronColorViewRGBA) : OfxMultiplaneChoice::pluginPlaneOptionToLayerValue(defaultID);
+            KnobBoolPtr allPlanes = getKnobByNameAndType<KnobBool>(kPluginProcessAllPlanesParam);
+            if (allPlanes && allPlanes->isDeclaredByPlugin()) {
+                layerSelect->setAllowAll(true);
+                if (allPlanes->getDefaultValue(0)) {
+                    defaultLayer = kNatronLayerSelectAll;
+                }
+                twin.allPlanes = allPlanes;
+                allPlanes->setSecret(true);
+                allPlanes->setSecretLocked(true);
+                allPlanes->setIsPersistent(false);
+            }
             std::vector<std::string> defaultChannels;
             if (hasQuad) {
                 for (int c = 0; c < 4; ++c) {
@@ -915,17 +937,12 @@ OfxEffectInstance::takeOverMultiplaneChoices(const KnobPagePtr& fallbackPage)
             twinKnob = layerSelect;
         } else {
             KnobChannelSelectPtr channelSelect = createChannelSelectKnob(twinName, choice->getLabel(), false);
-            channelSelect->setAllowNone(false);
-            channelSelect->setAllowConstants(true);
+            twin.noneOption = OfxMultiplaneChoice::noneChannelOption(paramName);
             std::string defaultOption = defaultID;
             if (!clipPrefix.empty() && (defaultOption.compare(0, clipPrefix.size() + 1, clipPrefix + ".") == 0)) {
                 defaultOption.erase(0, clipPrefix.size() + 1);
             }
-            std::string defaultChannel = OfxMultiplaneChoice::pluginOptionToChannelValue(defaultOption);
-            if (defaultChannel.empty()) {
-                defaultChannel = std::string(kNatronColorViewRGBA) + ".R";
-            }
-            channelSelect->setDefaultValue(channelSelect->encode(defaultChannel));
+            channelSelect->setDefaultValue(channelSelect->encode(OfxMultiplaneChoice::pluginOptionToChannelValue(defaultOption)));
             twinKnob = channelSelect;
         }
         twin.twin = twinKnob;
@@ -995,48 +1012,73 @@ OfxEffectInstance::pushMultiplaneTwin(std::size_t index,
 
     KnobChannelSelect* channelSelect = dynamic_cast<KnobChannelSelect*>(twinKnob.get());
     KnobLayerSelect* layerSelect = dynamic_cast<KnobLayerSelect*>(twinKnob.get());
+    bool allLayers = false;
     std::string optionID;
     if (channelSelect) {
         const std::string value = channelSelect->get();
-        optionID = OfxMultiplaneChoice::channelValueToPluginOption(value);
-        if (!twin.clipPrefix.empty() && (value != "0") && (value != "1")) {
-            optionID = twin.clipPrefix + "." + optionID;
+        if (value.empty()) {
+            optionID = twin.noneOption;
+        } else {
+            optionID = OfxMultiplaneChoice::channelValueToPluginOption(value);
+            if (!twin.clipPrefix.empty()) {
+                optionID = twin.clipPrefix + "." + optionID;
+            }
         }
     } else if (layerSelect) {
-        optionID = OfxMultiplaneChoice::layerValueToPluginPlaneOption(layerSelect->getLayer());
+        allLayers = layerSelect->getLayer() == kNatronLayerSelectAll;
+        if (!allLayers) {
+            optionID = OfxMultiplaneChoice::layerValueToPluginPlaneOption(layerSelect->getLayer());
+        }
     } else {
         return;
     }
 
     _imp->pushingMultiplaneTwin = true;
 
-    const std::vector<ChoiceOption> entries = choice->getEntries_mt_safe();
-    const int current = choice->getValue();
-    const bool indexSelects = (current >= 0) && (current < (int)entries.size()) && (entries[current].id == optionID);
-    // A value that is not listed yet is parked as the active entry while the index still points
-    // elsewhere, so both have to name the option.
-    const bool activeSelects = choice->getActiveEntry().id == optionID;
-    bool listed = false;
-    for (std::size_t i = 0; i < entries.size() && !listed; ++i) {
-        listed = entries[i].id == optionID;
+    KnobBoolPtr allPlanes = twin.allPlanes.lock();
+    if (allPlanes && (allPlanes->getValue() != allLayers)) {
+        allPlanes->setValue(allLayers);
     }
-    if (listed) {
-        if (!indexSelects || !activeSelects) {
-            choice->setValueFromID(optionID, 0);
+
+    // Under All the plugin ignores its plane choice, so the last layer picked stays in it.
+    if (!allLayers) {
+        const std::vector<ChoiceOption> entries = choice->getEntries_mt_safe();
+        const int current = choice->getValue();
+        const bool indexSelects = (current >= 0) && (current < (int)entries.size()) && (entries[current].id == optionID);
+        // A value that is not listed yet is parked as the active entry while the index still points
+        // elsewhere, so both have to name the option.
+        const bool activeSelects = choice->getActiveEntry().id == optionID;
+        bool listed = false;
+        for (std::size_t i = 0; i < entries.size() && !listed; ++i) {
+            listed = entries[i].id == optionID;
         }
-    } else if (!activeSelects) {
-        choice->setActiveEntry(ChoiceOption(optionID));
+        if (listed) {
+            if (!indexSelects || !activeSelects) {
+                choice->setValueFromID(optionID, 0);
+            }
+        } else if (!activeSelects) {
+            choice->setActiveEntry(ChoiceOption(optionID));
+        }
     }
 
     if (pushChannelQuad && layerSelect && twin.channelQuad[0].lock()) {
-        std::list<ImageLayerDesc> present;
-        getNode()->listLayersForKnob(twinKnob, &present);
-        ResolvedLayer resolved;
         std::bitset<4> bits;
-        if (layerSelect->resolve(present, &resolved)) {
-            bits = resolved.channels;
+        if (allLayers) {
+            // Every plane then goes through the same quad, so the plugin's own default applies:
+            // Premult's leaves alpha out rather than multiplying it by itself.
+            for (int c = 0; c < 4; ++c) {
+                KnobBoolPtr enabled = twin.channelQuad[c].lock();
+                bits.set(c, enabled && enabled->getDefaultValue(0));
+            }
         } else {
-            bits = unresolvedChannelQuad(layerSelect->getLayer(), layerSelect->getChannels());
+            std::list<ImageLayerDesc> present;
+            getNode()->listLayersForKnob(twinKnob, &present);
+            ResolvedLayer resolved;
+            if (layerSelect->resolve(present, &resolved)) {
+                bits = resolved.channels;
+            } else {
+                bits = unresolvedChannelQuad(layerSelect->getLayer(), layerSelect->getChannels());
+            }
         }
         for (int c = 0; c < 4; ++c) {
             KnobBoolPtr enabled = twin.channelQuad[c].lock();

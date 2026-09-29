@@ -38,7 +38,6 @@
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
-#include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
@@ -58,7 +57,6 @@
 #include <ofxNatron.h>
 
 NATRON_NAMESPACE_USING
-NATRON_PYTHON_NAMESPACE_USING
 
 // Exercises Project::saveProject()/loadProject() end to end: builds a generator -> writer graph,
 // sets a distinctive value on one knob of each kind that Engine/*Serialization.h treats
@@ -544,12 +542,6 @@ boolValue(const NodePtr& node,
     return knob && knob->getValue();
 }
 
-std::string
-pythonNode(const NodePtr& node)
-{
-    return node->getApp()->getAppIDString() + "." + node->getFullyQualifiedName();
-}
-
 } // namespace
 
 class MultiplaneTwinProjectTest
@@ -570,19 +562,21 @@ protected:
 
 // The plugin choices a twin replaces are not saved, so without the twins being pushed into them
 // on load the plugins would come back at their defaults. Each value set here differs from its
-// plugin default: channelU from the colour R, channelA from the colour A, and the Premult quad,
-// which defaults to R, G and B only.
+// plugin default: channelU from the colour R, channelA from the colour A, the Premult quad,
+// which defaults to R, G and B only, and Unpremult's all-planes checkbox, which defaults off.
 TEST_F(MultiplaneTwinProjectTest, TwinsRoundTripAndArePushedIntoThePluginChoicesOnLoad)
 {
     ProjectPtr project = getApp()->getProject();
     NodePtr premult = createNode(QString::fromUtf8("net.sf.openfx.Premult"));
     NodePtr idistort = createNode(QString::fromUtf8("net.sf.openfx.IDistort"));
-    ASSERT_TRUE(bool(premult) && bool(idistort));
+    NodePtr unpremult = createNode(QString::fromUtf8("net.sf.openfx.Unpremult"));
+    ASSERT_TRUE(bool(premult) && bool(idistort) && bool(unpremult));
     const std::string premultName = premult->getScriptName();
     const std::string idistortName = idistort->getScriptName();
+    const std::string unpremultName = unpremult->getScriptName();
 
     {
-        KnobLayerSelectPtr inputPlane = std::dynamic_pointer_cast<KnobLayerSelect>(premult->getKnobByName("hostInputPlane"));
+        KnobLayerSelectPtr inputPlane = std::dynamic_pointer_cast<KnobLayerSelect>(premult->getKnobByName("hostInputLayer"));
         KnobChannelSelectPtr unPremultBy = std::dynamic_pointer_cast<KnobChannelSelect>(premult->getKnobByName("hostUnPremultByChannel"));
         KnobChannelSelectPtr channelU = std::dynamic_pointer_cast<KnobChannelSelect>(idistort->getKnobByName("hostChannelU"));
         KnobChannelSelectPtr channelA = std::dynamic_pointer_cast<KnobChannelSelect>(idistort->getKnobByName("hostChannelA"));
@@ -593,7 +587,12 @@ TEST_F(MultiplaneTwinProjectTest, TwinsRoundTripAndArePushedIntoThePluginChoices
         inputPlane->setChannels(std::vector<std::string>());
         unPremultBy->set(kNatronColorViewRGBA ".R");
         channelU->set("diffuse.R");
-        channelA->set("1");
+        channelA->setNone();
+
+        KnobLayerSelectPtr unpremultLayer = std::dynamic_pointer_cast<KnobLayerSelect>(unpremult->getKnobByName("hostInputLayer"));
+        ASSERT_TRUE(bool(unpremultLayer));
+        ASSERT_FALSE(boolValue(unpremult, "processAllPlanes"));
+        unpremultLayer->setLayer(kNatronLayerSelectAll);
     }
 
     QTemporaryDir tmp;
@@ -610,6 +609,7 @@ TEST_F(MultiplaneTwinProjectTest, TwinsRoundTripAndArePushedIntoThePluginChoices
         EXPECT_TRUE(contents.contains(QString::fromUtf8("<Name>hostChannelU</Name>")));
         EXPECT_FALSE(contents.contains(QString::fromUtf8("<Name>channelU</Name>")));
         EXPECT_FALSE(contents.contains(QString::fromUtf8("<Name>" kNatronOfxParamProcessA "</Name>")));
+        EXPECT_FALSE(contents.contains(QString::fromUtf8("<Name>processAllPlanes</Name>")));
     }
 
     project->reset(false, true);
@@ -617,9 +617,10 @@ TEST_F(MultiplaneTwinProjectTest, TwinsRoundTripAndArePushedIntoThePluginChoices
 
     premult = project->getNodeByName(premultName);
     idistort = project->getNodeByName(idistortName);
-    ASSERT_TRUE(bool(premult) && bool(idistort));
+    unpremult = project->getNodeByName(unpremultName);
+    ASSERT_TRUE(bool(premult) && bool(idistort) && bool(unpremult));
 
-    KnobLayerSelectPtr inputPlane = std::dynamic_pointer_cast<KnobLayerSelect>(premult->getKnobByName("hostInputPlane"));
+    KnobLayerSelectPtr inputPlane = std::dynamic_pointer_cast<KnobLayerSelect>(premult->getKnobByName("hostInputLayer"));
     KnobChannelSelectPtr unPremultBy = std::dynamic_pointer_cast<KnobChannelSelect>(premult->getKnobByName("hostUnPremultByChannel"));
     KnobChannelSelectPtr channelU = std::dynamic_pointer_cast<KnobChannelSelect>(idistort->getKnobByName("hostChannelU"));
     KnobChannelSelectPtr channelA = std::dynamic_pointer_cast<KnobChannelSelect>(idistort->getKnobByName("hostChannelA"));
@@ -629,45 +630,19 @@ TEST_F(MultiplaneTwinProjectTest, TwinsRoundTripAndArePushedIntoThePluginChoices
     EXPECT_TRUE(inputPlane->getChannels().empty());
     EXPECT_EQ(std::string(kNatronColorViewRGBA ".R"), unPremultBy->get());
     EXPECT_EQ(std::string("diffuse.R"), channelU->get());
-    EXPECT_EQ(std::string("1"), channelA->get());
+    EXPECT_TRUE(channelA->isNone());
 
     EXPECT_EQ(std::string(kNatronColorLayerID), activeOptionID(premult, "inputPlane"));
     EXPECT_EQ(std::string(kNatronColorLayerID ".R"), activeOptionID(premult, "unPremultByChannel"));
     EXPECT_EQ(std::string("diffuse.R"), activeOptionID(idistort, "channelU"));
     EXPECT_EQ(std::string("1"), activeOptionID(idistort, "channelA"));
+
+    KnobLayerSelectPtr unpremultLayer = std::dynamic_pointer_cast<KnobLayerSelect>(unpremult->getKnobByName("hostInputLayer"));
+    ASSERT_TRUE(bool(unpremultLayer));
+    EXPECT_EQ(std::string(kNatronLayerSelectAll), unpremultLayer->getLayer());
+    EXPECT_TRUE(boolValue(unpremult, "processAllPlanes"));
     EXPECT_TRUE(boolValue(premult, kNatronOfxParamProcessR));
     EXPECT_TRUE(boolValue(premult, kNatronOfxParamProcessG));
     EXPECT_TRUE(boolValue(premult, kNatronOfxParamProcessB));
     EXPECT_TRUE(boolValue(premult, kNatronOfxParamProcessA));
-}
-
-TEST_F(MultiplaneTwinProjectTest, ChannelSelectParamTakesConstantsOnlyWhereTheKnobAllowsThem)
-{
-    NodePtr idistort = createNode(QString::fromUtf8("net.sf.openfx.IDistort"));
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
-    ASSERT_TRUE(bool(idistort) && bool(grade));
-
-    KnobChannelSelectPtr channelU = std::dynamic_pointer_cast<KnobChannelSelect>(idistort->getKnobByName("hostChannelU"));
-    KnobChannelSelectPtr mask = std::dynamic_pointer_cast<KnobChannelSelect>(grade->getKnobByName(std::string(kMaskChannelKnobName) + "_Mask"));
-    ASSERT_TRUE(bool(channelU) && bool(mask));
-    ASSERT_TRUE(channelU->getAllowConstants());
-    ASSERT_FALSE(mask->getAllowConstants());
-    const std::string maskBefore = mask->get();
-
-    const std::string script = pythonNode(idistort) + ".getParam(\"hostChannelU\").set(\"1\")\n"
-                                                      "rejected = []\n"
-                                                      "for value in (\"0\", \"1\"):\n"
-                                                      "    try:\n"
-                                                      "        "
-        + pythonNode(grade) + ".getParam(\"" kMaskChannelKnobName "_Mask\").set(value)\n"
-                              "    except ValueError:\n"
-                              "        rejected.append(value)\n"
-                              "if rejected != [\"0\", \"1\"]:\n"
-                              "    raise RuntimeError(\"constants accepted: \" + str(rejected))\n";
-    std::string interpError, interpOutput;
-    EXPECT_TRUE(interpretPythonScript(script, &interpError, &interpOutput)) << interpError;
-
-    EXPECT_EQ(std::string("1"), channelU->get());
-    EXPECT_EQ(std::string("1"), activeOptionID(idistort, "channelU"));
-    EXPECT_EQ(maskBefore, mask->get());
 }

@@ -37,8 +37,8 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief Translates between Natron's own layer/channel selection values (as read/written by
- * KnobLayerSelect/KnobChannelSelect: a layer ID, "<layerID>.<channelName>", the constants "0"
- * and "1", or empty for None) and the option IDs openfx-supportext's ofxsMultiPlane.cpp encodes
+ * KnobLayerSelect/KnobChannelSelect: a layer ID, "<layerID>.<channelName>", or empty for None)
+ * and the option IDs openfx-supportext's ofxsMultiPlane.cpp encodes
  * into an OFX plugin's own plane/channel choice params -- Premult/Unpremult's "inputPlane" and
  * Premult's own "unPremultByChannel", IDistort's/STMap's "channelU"/"channelV"/"channelA" --
  * that Natron's own layer/channel knobs are meant to replace.
@@ -51,16 +51,26 @@ NATRON_NAMESPACE_ENTER
 namespace OfxMultiplaneChoice {
 
 /**
- * @brief A KnobChannelSelect value ("<layerID>.<channelName>", "0", "1", or empty) to the
- * option ID ofxsMultiPlane.cpp's ImagePlaneDesc::getChannelOption() would produce for it.
+ * @brief A KnobChannelSelect value ("<layerID>.<channelName>") to the option ID
+ * ofxsMultiPlane.cpp's ImagePlaneDesc::getChannelOption() would produce for it. None has no
+ * channel option of its own: see noneChannelOption().
  **/
 std::string channelValueToPluginOption(const std::string& value);
+
+/**
+ * @brief The plugin's constant option ("0" or "1") that stands for a None channel choice: the
+ * one under which the plugin reads nothing and leaves its result as if the param were unused.
+ * An alpha or unpremultiply channel is neutral at 1 (opaque, so nothing is scaled or divided);
+ * any other channel, such as a U or V offset, is neutral at 0.
+ **/
+std::string noneChannelOption(const std::string& paramName);
 
 /**
  * @brief The inverse of channelValueToPluginOption(): a plugin channel option ID to a
  * KnobChannelSelect value. Accepts both the storage plane ID and the retired "Color" label for
  * the colour channels it is handed, but never returns the storage ID itself: colour channels
- * come back as rgba.<C>.
+ * come back as rgba.<C>. An option naming no channel, such as the plugin's "0" and "1"
+ * constants, comes back as None.
  **/
 std::string pluginOptionToChannelValue(const std::string& optionID);
 
@@ -80,8 +90,8 @@ std::string pluginPlaneOptionToLayerValue(const std::string& optionID);
 /**
  * @brief Whether entries is the option list of a multiplane channel choice, as
  * ofxsMultiPlane.cpp's addInputChannelOptionsRGBA()/buildChannelMenus() build it (plane.channel
- * entries, e.g. "uk.co.thefoundry.OfxImagePlaneColour.R" or "diffuse.R", optionally with a
- * "0"/"1" constant, and, when the choice depends on more than one clip, a "<clip>." prefix) --
+ * entries, e.g. "uk.co.thefoundry.OfxImagePlaneColour.R" or "diffuse.R", optionally with the
+ * plugin's "0"/"1" constant options, and, when the choice depends on more than one clip, a "<clip>." prefix) --
  * as opposed to a plain fixed channel choice such as ofxsMaskMix.h's "unPremultByChannel"
  * (option IDs "r", "g", "b", "a": no plane, no constants). When true and a clip prefix was
  * found on at least one recognised entry, *clipName is set to it; otherwise *clipName is

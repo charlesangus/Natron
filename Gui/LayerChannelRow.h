@@ -116,21 +116,20 @@ public:
                              const std::vector<std::string>& enabledChannels,
                              bool withChannelButtons);
 
-    /// Layer-select and channel-select modes: whether the combo offers a "None" entry.
+    /// Layer-select mode only: whether the combo offers a "None" entry.
     void setAllowNone(bool allowNone);
 
     bool getAllowNone() const;
 
     /**
-     * @brief Channel-select mode only: whether the combo also offers the constants "0" and
-     * "1", listed after the colour-view channels (rgba.*, rgb.*, alpha.A ...) and before
-     * other layers' channels (diffuse.* ...).
+     * @brief Layer-select mode only: whether the combo offers an "All" entry, after None and
+     * before the layers. Choosing it emits layerChosen(kNatronLayerSelectAll).
      **/
-    void setAllowConstants(bool allowConstants);
+    void setAllowAll(bool allowAll);
 
-    bool getAllowConstants() const;
+    bool getAllowAll() const;
 
-    /// Channel-select mode only: "layer.channel", "0", "1", or empty for None.
+    /// Channel-select mode only: "layer.channel", or empty for None.
     void setChannelSelectValue(const std::string& layerDotChannel);
 
     /**
@@ -227,7 +226,7 @@ private:
     std::set<std::string> _regexExcludedChannels;
     bool _withChannelButtons;
     bool _allowNone;
-    bool _allowConstants;
+    bool _allowAll;
     QString _absentMarker;
     bool _removable;
     bool _patternValid;

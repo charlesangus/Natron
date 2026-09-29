@@ -50,6 +50,7 @@ KnobLayerSelect::KnobLayerSelect(KnobHolder* holder,
     : KnobTable(holder, description, dimension, declaredByPlugin)
     , _withChannelButtons(false)
     , _allowNone(false)
+    , _allowAll(false)
     , _cacheMutex()
     , _cacheValid(false)
     , _cachedRaw()
@@ -196,6 +197,9 @@ KnobLayerSelect::setLayer(const std::string& layerID)
     if (layerID.empty() && !_allowNone) {
         throw std::invalid_argument("This layer selection does not allow None: an empty layer is not permitted");
     }
+    if ((layerID == kNatronLayerSelectAll) && !_allowAll) {
+        throw std::invalid_argument("This layer selection does not allow All: \"" kNatronLayerSelectAll "\" is not permitted");
+    }
     setLayerAndChannels(this, layerID, std::vector<std::string>());
 }
 
@@ -262,7 +266,7 @@ KnobLayerSelect::resolve(const std::list<ImageLayerDesc>& present,
 
     // A row naming the retired storage ID matches nothing, even though the storage-level
     // colour entry in present carries that same ID: only the view IDs name the colour plane.
-    if (layerID.empty() || layerID == kNatronColorLayerID) {
+    if (layerID.empty() || (layerID == kNatronLayerSelectAll) || (layerID == kNatronColorLayerID)) {
         return false;
     }
 
@@ -327,6 +331,9 @@ KnobLayerSelect::getSummary() const
     if (layerID.empty()) {
         return std::string("None");
     }
+    if (layerID == kNatronLayerSelectAll) {
+        return std::string("All");
+    }
 
     std::string summary = layerLabelForID(layerID);
 
@@ -350,7 +357,7 @@ KnobLayerSelect::getReferencedLayerIDs(std::set<std::string>* layerIDs) const
     std::string layerID;
 
     getLayerAndChannels(&layerID, 0);
-    if (!layerID.empty()) {
+    if (!layerID.empty() && (layerID != kNatronLayerSelectAll)) {
         layerIDs->insert(layerID);
     }
 }

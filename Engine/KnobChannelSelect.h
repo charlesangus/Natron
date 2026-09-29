@@ -115,38 +115,6 @@ public:
 
     bool isNone() const;
 
-    /**
-     * @brief Whether an empty (None) selection is a legal value. Set once by the node that
-     * creates the knob: it describes the node kind, not a project value, so it is a plain
-     * member and is never persisted. True by default, matching this class's original,
-     * always-allow-None behaviour.
-     **/
-    void setAllowNone(bool allowNone)
-    {
-        _allowNone = allowNone;
-    }
-
-    bool getAllowNone() const
-    {
-        return _allowNone;
-    }
-
-    /**
-     * @brief Whether the constant values "0" and "1" (a plugin's channel choice standing for
-     * an all-zero/all-one channel rather than a real one) are legal values. Set once by the
-     * node that creates the knob, never persisted. False by default: most callers resolve()
-     * against a real layer, and a stray "0"/"1" would otherwise silently resolve to nothing.
-     **/
-    void setAllowConstants(bool allowConstants)
-    {
-        _allowConstants = allowConstants;
-    }
-
-    bool getAllowConstants() const
-    {
-        return _allowConstants;
-    }
-
     bool resolve(const std::list<ImageLayerDesc>& present, ImageLayerDesc* layer, int* channelIndex) const;
 
     std::string getSummary() const;
@@ -164,9 +132,6 @@ private:
     void getLayerIDAndChannel(std::string* layerID, std::string* channelName) const;
 
     static const std::string _typeNameStr;
-
-    bool _allowNone;
-    bool _allowConstants;
 
     mutable QMutex _cacheMutex;
     mutable bool _cacheValid;

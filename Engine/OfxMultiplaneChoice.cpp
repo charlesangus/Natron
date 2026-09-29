@@ -33,8 +33,12 @@ namespace OfxMultiplaneChoice {
 
 namespace {
 
-    // ofxsMultiPlane.cpp's kMultiPlanePlaneParamOptionNone.
+    // ofxsMultiPlane.h's kMultiPlanePlaneParamOptionNone.
     const char* const kPluginPlaneOptionNone = "none";
+
+    // ofxsMultiPlane.h's kMultiPlaneChannelParamOption0 and kMultiPlaneChannelParamOption1.
+    const char* const kPluginChannelOption0 = "0";
+    const char* const kPluginChannelOption1 = "1";
 
     bool
     isChannelSuffix(const std::string& s)
@@ -105,10 +109,6 @@ namespace {
 std::string
 channelValueToPluginOption(const std::string& value)
 {
-    if (value.empty() || (value == "0") || (value == "1")) {
-        return value;
-    }
-
     const std::string::size_type dot = value.rfind('.');
     if (dot == std::string::npos) {
         return value;
@@ -126,15 +126,23 @@ channelValueToPluginOption(const std::string& value)
 }
 
 std::string
-pluginOptionToChannelValue(const std::string& optionID)
+noneChannelOption(const std::string& paramName)
 {
-    if (optionID.empty() || (optionID == "0") || (optionID == "1")) {
-        return optionID;
+    // Distortion.cpp multiplies the output alpha by "channelA" (and divides UV by it when
+    // unpremultiplying), and Premult.cpp treats "unPremultByChannel" at 1 as an identity.
+    if ((paramName == "channelA") || (paramName == "unPremultByChannel")) {
+        return kPluginChannelOption1;
     }
 
+    return kPluginChannelOption0;
+}
+
+std::string
+pluginOptionToChannelValue(const std::string& optionID)
+{
     const std::string::size_type dot = optionID.rfind('.');
     if (dot == std::string::npos) {
-        return optionID;
+        return std::string();
     }
 
     const std::string planeID = optionID.substr(0, dot);
@@ -190,7 +198,7 @@ isMultiplaneChannelChoice(const std::vector<std::string>& entries,
     for (std::size_t i = 0; i < entries.size(); ++i) {
         const std::string& entry = entries[i];
 
-        if ((entry == "0") || (entry == "1")) {
+        if ((entry == kPluginChannelOption0) || (entry == kPluginChannelOption1)) {
             found = true;
             continue;
         }

@@ -36,6 +36,8 @@
 
 #include <gtest/gtest.h>
 
+#include "Engine/KnobLayerSelect.h"
+
 #include "Gui/Button.h"
 #include "Gui/ChannelColor.h"
 #include "Gui/ComboBox.h"
@@ -297,6 +299,43 @@ TEST(LayerChannelRow, ChoosingNoneInLayerSelectEmitsAndClearsChannels)
     EXPECT_EQ(QString::fromUtf8("None"), row.getCurrentComboText());
 }
 
+TEST(LayerChannelRow, LayerSelectAllEntryFollowsNoneAndHidesTheChannelButtons)
+{
+    LayerChannelRow row(LayerChannelRow::eModeLayerSelect);
+    row.setAvailableLayers(rgbOnlyColorViews(), false);
+    row.setLayerSelectValue("rgba", rgba(), true);
+    row.setAllowNone(true);
+    EXPECT_FALSE(row.getAllowAll());
+    EXPECT_EQ(-1, comboIndexOf(row, "All"));
+
+    row.setAllowAll(true);
+    EXPECT_TRUE(row.getAllowAll());
+    EXPECT_EQ(sl("None", "All", "rgba", "rgb", "alpha", "diffuse", "depth"), row.getComboEntries());
+    EXPECT_EQ(sl("R", "G", "B", "A"), row.getChannelButtonNames());
+
+    int chosenCount = 0;
+    QString chosen;
+    QObject::connect(&row, &LayerChannelRow::layerChosen, [&](const QString& id) {
+        ++chosenCount;
+        chosen = id;
+    });
+
+    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "All"));
+    EXPECT_EQ(1, chosenCount);
+    EXPECT_EQ(QString::fromUtf8(kNatronLayerSelectAll), chosen);
+    EXPECT_EQ(std::string(kNatronLayerSelectAll), row.getCurrentLayerID());
+    EXPECT_TRUE(row.getEnabledChannels().empty());
+    EXPECT_TRUE(row.getChannelButtonNames().isEmpty());
+    EXPECT_EQ(QString::fromUtf8("All"), row.getCurrentComboText());
+    EXPECT_FALSE(row.hasAbsentMarker());
+
+    row.setLayerSelectValue("rgb", rgb(), true);
+    EXPECT_EQ(QString::fromUtf8("rgb"), row.getCurrentComboText());
+    row.setLayerSelectValue(kNatronLayerSelectAll, std::vector<std::string>(), true);
+    EXPECT_EQ(QString::fromUtf8("All"), row.getCurrentComboText());
+    EXPECT_TRUE(row.getChannelButtonNames().isEmpty());
+}
+
 // The row never touches the knob or its undo stack: KnobGuiLayerSelect owns that, pushing a
 // KnobUndoCommand on layerChosen and calling setLayerSelectValue() back from refreshWidgets()
 // on both redo and undo. What the row must get right is its side of that contract -- one
@@ -371,30 +410,6 @@ TEST(LayerChannelRow, ChannelSelectEntryOrder)
     EXPECT_EQ(2, selectedCount);
     EXPECT_TRUE(selected.isEmpty());
     EXPECT_TRUE(row.getCurrentChannel().empty());
-}
-
-TEST(LayerChannelRow, ChannelSelectConstantsAndNoNone)
-{
-    LayerChannelRow row(LayerChannelRow::eModeChannelSelect);
-    row.setAvailableLayers(rgbOnlyColorViews(), false);
-    row.setAllowNone(false);
-    row.setAllowConstants(true);
-
-    const QStringList expected = sl("rgba.R", "rgba.G", "rgba.B", "rgba.A", "rgb.R", "rgb.G", "rgb.B", "alpha.A")
-        + sl("0", "1", "diffuse.R", "diffuse.G", "diffuse.B", "depth.Z");
-    EXPECT_EQ(expected, row.getComboEntries());
-    EXPECT_EQ(-1, comboIndexOf(row, "None"));
-
-    int selectedCount = 0;
-    QString selected;
-    QObject::connect(&row, &LayerChannelRow::channelSelected, [&](const QString& v) {
-        ++selectedCount;
-        selected = v;
-    });
-    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "1"));
-    EXPECT_EQ(1, selectedCount);
-    EXPECT_EQ(QString::fromUtf8("1"), selected);
-    EXPECT_EQ("1", row.getCurrentChannel());
 }
 
 TEST(LayerChannelRow, ChoosingLayerRebuildsCheckedColouredButtonsAndEmitsOnce)

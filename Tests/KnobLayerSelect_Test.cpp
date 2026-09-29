@@ -349,6 +349,35 @@ TEST(KnobLayerSelect, NoneYieldsNoReferencedIDs)
     EXPECT_TRUE(ids.empty());
 }
 
+TEST(KnobLayerSelect, SetLayerAllThrowsUnlessAllowed)
+{
+    KnobLayerSelectPtr knob = makeLayerSelectKnob();
+
+    EXPECT_FALSE(knob->getAllowAll());
+    EXPECT_THROW(knob->setLayer(kNatronLayerSelectAll), std::invalid_argument);
+
+    knob->setAllowAll(true);
+    EXPECT_TRUE(knob->getAllowAll());
+    EXPECT_NO_THROW(knob->setLayer(kNatronLayerSelectAll));
+    EXPECT_EQ(std::string(kNatronLayerSelectAll), knob->getLayer());
+}
+
+TEST(KnobLayerSelect, AllResolvesToNoSingleLayerAndReferencesNone)
+{
+    KnobLayerSelectPtr knob = makeLayerSelectKnob();
+
+    knob->setAllowAll(true);
+    knob->setLayer(kNatronLayerSelectAll);
+
+    ResolvedLayer resolved;
+    EXPECT_FALSE(knob->resolve(presentLayers(), &resolved));
+    EXPECT_EQ(std::string("All"), knob->getSummary());
+
+    std::set<std::string> ids;
+    knob->getReferencedLayerIDs(&ids);
+    EXPECT_TRUE(ids.empty());
+}
+
 TEST_F(BaseTest, KnobLayerSelectNoneSerializationRoundTrip)
 {
     NodePtr node = createNode(_generatorPluginID);
@@ -545,44 +574,6 @@ TEST_F(BaseTest, KnobChannelSelectSerializationRoundTrip)
     EXPECT_EQ(source->getValue(), loadedSelect->getValue());
 }
 
-TEST(KnobChannelSelect, ConstantsRequireAllowConstants)
-{
-    KnobChannelSelectPtr knob = makeChannelSelectKnob();
-
-    EXPECT_FALSE(knob->getAllowConstants());
-    EXPECT_THROW(knob->set("0"), std::invalid_argument);
-    EXPECT_THROW(knob->set("1"), std::invalid_argument);
-
-    knob->setAllowConstants(true);
-    EXPECT_TRUE(knob->getAllowConstants());
-
-    EXPECT_NO_THROW(knob->set("0"));
-    EXPECT_EQ(std::string("0"), knob->get());
-    EXPECT_FALSE(knob->isNone());
-    EXPECT_EQ(std::string("0"), knob->getSummary());
-
-    ImageLayerDesc layer;
-    int channelIndex = -1;
-    EXPECT_FALSE(knob->resolve(presentLayers(), &layer, &channelIndex));
-
-    EXPECT_NO_THROW(knob->set("1"));
-    EXPECT_EQ(std::string("1"), knob->get());
-    EXPECT_FALSE(knob->resolve(presentLayers(), &layer, &channelIndex));
-}
-
-TEST(KnobChannelSelect, AllowNoneFlagDefaultsTrueAndCanBeDisabled)
-{
-    KnobChannelSelectPtr knob = makeChannelSelectKnob();
-
-    EXPECT_TRUE(knob->getAllowNone());
-    EXPECT_NO_THROW(knob->setNone());
-
-    knob->setAllowNone(false);
-    EXPECT_FALSE(knob->getAllowNone());
-    EXPECT_THROW(knob->setNone(), std::invalid_argument);
-    EXPECT_THROW(knob->set(std::string()), std::invalid_argument);
-}
-
 TEST(OfxMultiplaneChoice, ChannelValueRoundTripsColourViews)
 {
     // Every colour view shares the one storage plane the plugin sees, so the forward direction
@@ -615,12 +606,18 @@ TEST(OfxMultiplaneChoice, ChannelValueRoundTripsNonColourLayer)
     EXPECT_EQ(value, OfxMultiplaneChoice::pluginOptionToChannelValue(pluginOption));
 }
 
-TEST(OfxMultiplaneChoice, ChannelValueRoundTripsConstants)
+TEST(OfxMultiplaneChoice, PluginConstantOptionsComeBackAsNone)
 {
-    EXPECT_EQ(std::string("0"), OfxMultiplaneChoice::channelValueToPluginOption("0"));
-    EXPECT_EQ(std::string("0"), OfxMultiplaneChoice::pluginOptionToChannelValue("0"));
-    EXPECT_EQ(std::string("1"), OfxMultiplaneChoice::channelValueToPluginOption("1"));
-    EXPECT_EQ(std::string("1"), OfxMultiplaneChoice::pluginOptionToChannelValue("1"));
+    EXPECT_EQ(std::string(), OfxMultiplaneChoice::pluginOptionToChannelValue("0"));
+    EXPECT_EQ(std::string(), OfxMultiplaneChoice::pluginOptionToChannelValue("1"));
+}
+
+TEST(OfxMultiplaneChoice, NoneChannelOptionIsTheNeutralConstantPerParam)
+{
+    EXPECT_EQ(std::string("0"), OfxMultiplaneChoice::noneChannelOption("channelU"));
+    EXPECT_EQ(std::string("0"), OfxMultiplaneChoice::noneChannelOption("channelV"));
+    EXPECT_EQ(std::string("1"), OfxMultiplaneChoice::noneChannelOption("channelA"));
+    EXPECT_EQ(std::string("1"), OfxMultiplaneChoice::noneChannelOption("unPremultByChannel"));
 }
 
 TEST(OfxMultiplaneChoice, ChannelReverseAcceptsLegacyColorLabelAndNeverYieldsStorageID)

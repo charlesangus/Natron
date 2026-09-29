@@ -39,6 +39,7 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobLayerSelect.h"
 
 #include "Gui/Button.h"
 #include "Gui/ChannelColor.h"
@@ -81,7 +82,6 @@ struct LayerChannelRow::ComboEntry {
         eKindRegex,
         eKindLayer,
         eKindChannel,
-        eKindConstant,
         eKindNewLayer,
         eKindAbsent
     };
@@ -117,8 +117,8 @@ LayerChannelRow::LayerChannelRow(ModeEnum mode,
     , _regexChannels()
     , _regexExcludedChannels()
     , _withChannelButtons(false)
-    , _allowNone(mode == eModeChannelSelect)
-    , _allowConstants(false)
+    , _allowNone(false)
+    , _allowAll(false)
     , _absentMarker()
     , _removable(false)
     , _patternValid(true)
@@ -284,19 +284,19 @@ LayerChannelRow::getAllowNone() const
 }
 
 void
-LayerChannelRow::setAllowConstants(bool allowConstants)
+LayerChannelRow::setAllowAll(bool allowAll)
 {
-    if (_allowConstants == allowConstants) {
+    if (_allowAll == allowAll) {
         return;
     }
-    _allowConstants = allowConstants;
+    _allowAll = allowAll;
     rebuildCombo();
 }
 
 bool
-LayerChannelRow::getAllowConstants() const
+LayerChannelRow::getAllowAll() const
 {
-    return _allowConstants;
+    return _allowAll;
 }
 
 void
@@ -500,6 +500,9 @@ LayerChannelRow::currentValueLabel() const
     if (_mode == eModeLayerSelect && _layerID.empty()) {
         return tr("None");
     }
+    if (_mode == eModeLayerSelect && _layerID == kNatronLayerSelectAll) {
+        return tr("All");
+    }
     const LayerEntry* layer = findLayer(_layerID);
 
     return layer ? qs(layer->label) : qs(_layerID);
@@ -520,12 +523,12 @@ LayerChannelRow::currentValueIsListed() const
         if (_layerID.empty()) {
             return _allowNone;
         }
+        if (_layerID == kNatronLayerSelectAll) {
+            return _allowAll;
+        }
         return findLayer(_layerID) != 0;
     case eModeChannelSelect: {
         if (_channelValue.empty()) {
-            return true;
-        }
-        if (_allowConstants && ((_channelValue == "0") || (_channelValue == "1"))) {
             return true;
         }
         for (std::size_t i = 0; i < _layers.size(); ++i) {
@@ -575,27 +578,22 @@ LayerChannelRow::rebuildCombo()
     case eModeLayerSelect:
         if (_allowNone) {
             _entries.push_back(ComboEntry(ComboEntry::eKindNone, std::string(), tr("None")));
+        }
+        if (_allowAll) {
+            _entries.push_back(ComboEntry(ComboEntry::eKindAll, std::string(kNatronLayerSelectAll), tr("All")));
+        }
+        if (!_entries.empty()) {
             _entries.back().separatorAfter = true;
         }
         break;
     case eModeChannelSelect:
-        if (_allowNone) {
-            _entries.push_back(ComboEntry(ComboEntry::eKindNone, std::string(), tr("None")));
-        }
+        _entries.push_back(ComboEntry(ComboEntry::eKindNone, std::string(), tr("None")));
         break;
     }
 
     const bool isSetRow = (_mode == eModeSetRow0) || (_mode == eModeSetRowN);
-    bool constantsInserted = false;
     for (std::size_t i = 0; i < ordered.size(); ++i) {
         if (_mode == eModeChannelSelect) {
-            // Constants stand for an all-zero/all-one channel, not a real layer's, so they
-            // are listed with the colour-view channels rather than among other layers'.
-            if (_allowConstants && !constantsInserted && !ImageLayerDesc::isColorViewID(ordered[i]->id)) {
-                _entries.push_back(ComboEntry(ComboEntry::eKindConstant, "0", QString::fromUtf8("0")));
-                _entries.push_back(ComboEntry(ComboEntry::eKindConstant, "1", QString::fromUtf8("1")));
-                constantsInserted = true;
-            }
             for (std::size_t c = 0; c < ordered[i]->channels.size(); ++c) {
                 const std::string& channel = ordered[i]->channels[c];
                 _entries.push_back(ComboEntry(ComboEntry::eKindChannel, ordered[i]->id + "." + channel,
@@ -608,10 +606,6 @@ LayerChannelRow::rebuildCombo()
             }
             _entries.push_back(ComboEntry(ComboEntry::eKindLayer, ordered[i]->id, qs(ordered[i]->label)));
         }
-    }
-    if (_mode == eModeChannelSelect && _allowConstants && !constantsInserted) {
-        _entries.push_back(ComboEntry(ComboEntry::eKindConstant, "0", QString::fromUtf8("0")));
-        _entries.push_back(ComboEntry(ComboEntry::eKindConstant, "1", QString::fromUtf8("1")));
     }
 
     if (!_absentMarker.isEmpty() && !currentValueIsListed()) {
@@ -656,7 +650,11 @@ LayerChannelRow::selectEntryForCurrentValue()
             }
             break;
         case ComboEntry::eKindAll:
-            hit = (_setRowMode == eSetRowModeAll);
+            if (_mode == eModeLayerSelect) {
+                hit = (_allowAll && _layerID == kNatronLayerSelectAll);
+            } else {
+                hit = (_setRowMode == eSetRowModeAll);
+            }
             break;
         case ComboEntry::eKindRegex:
             hit = (_setRowMode == eSetRowModeRegex);
@@ -665,7 +663,6 @@ LayerChannelRow::selectEntryForCurrentValue()
             hit = (_setRowMode == eSetRowModeLayer) && (e.value == _layerID);
             break;
         case ComboEntry::eKindChannel:
-        case ComboEntry::eKindConstant:
             hit = (e.value == _channelValue);
             break;
         case ComboEntry::eKindAbsent:
@@ -720,7 +717,7 @@ LayerChannelRow::rebuildChannelButtons()
 
     const bool isSetRow = (_mode == eModeSetRow0) || (_mode == eModeSetRowN);
     const bool isRegexRow = isSetRow && (_setRowMode == eSetRowModeRegex);
-    const bool isLayerSelectNone = (_mode == eModeLayerSelect) && _layerID.empty();
+    const bool isLayerSelectNoneOrAll = (_mode == eModeLayerSelect) && (_layerID.empty() || _layerID == kNatronLayerSelectAll);
     // An absent layer has no listing to build from, so its remembered channels stand in.
     const LayerEntry* layer = isRegexRow ? 0 : findLayer(_layerID);
     const std::vector<std::string>& channels = isRegexRow ? _regexChannels : (layer ? layer->channels : _enabledChannels);
@@ -728,7 +725,7 @@ LayerChannelRow::rebuildChannelButtons()
 
     placeButtonsContainer(isRegexRow);
 
-    if (isLayerSelectNone) {
+    if (isLayerSelectNoneOrAll) {
         return;
     }
 
@@ -769,8 +766,8 @@ LayerChannelRow::refreshVisibility()
 {
     bool isSetRow = (_mode == eModeSetRow0) || (_mode == eModeSetRowN);
     bool isRegexRow = isSetRow && (_setRowMode == eSetRowModeRegex);
-    bool isLayerSelectNone = (_mode == eModeLayerSelect) && _layerID.empty();
-    bool showButtons = (isSetRow && _setRowMode == eSetRowModeLayer) || (_mode == eModeLayerSelect && _withChannelButtons && !isLayerSelectNone);
+    bool isLayerSelectNoneOrAll = (_mode == eModeLayerSelect) && (_layerID.empty() || _layerID == kNatronLayerSelectAll);
+    bool showButtons = (isSetRow && _setRowMode == eSetRowModeLayer) || (_mode == eModeLayerSelect && _withChannelButtons && !isLayerSelectNoneOrAll);
     bool showPattern = isRegexRow;
     bool showRegexButtons = isRegexRow && !_regexChannels.empty();
 
@@ -874,6 +871,18 @@ LayerChannelRow::onComboIndexChanged(int index)
         }
         break;
     case ComboEntry::eKindAll:
+        if (_mode == eModeLayerSelect) {
+            _layerID = kNatronLayerSelectAll;
+            _enabledChannels.clear();
+            if (hadMarker) {
+                rebuildCombo();
+            }
+            _lastComboIndex = _combo->activeIndex();
+            rebuildChannelButtons();
+            refreshVisibility();
+            Q_EMIT layerChosen(qs(_layerID));
+            break;
+        }
         _setRowMode = eSetRowModeAll;
         if (hadMarker) {
             rebuildCombo();
@@ -906,7 +915,6 @@ LayerChannelRow::onComboIndexChanged(int index)
         break;
     }
     case ComboEntry::eKindChannel:
-    case ComboEntry::eKindConstant:
         _channelValue = entry.value;
         if (hadMarker) {
             rebuildCombo();

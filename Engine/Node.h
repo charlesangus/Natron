@@ -1220,7 +1220,6 @@ private:
     // waits for this call at the end of creation.
     void postPendingLegacyColorLayerWarning();
 
-    // Marks the stored persistent message as a project-load warning if its text is content.
     void markPersistentMessageFromProjectLoad(const std::string& content);
 
     void refreshGeneratorOutputComponentsKnob();

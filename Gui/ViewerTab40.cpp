@@ -26,6 +26,7 @@
 #include "ViewerTab.h"
 #include "ViewerTabPrivate.h"
 
+#include <algorithm>
 #include <cassert>
 #include <stdexcept>
 
@@ -901,6 +902,41 @@ viewerAlphaMenuIndexOfLastChannel(const ImageLayerDesc& layer,
     return -1;
 }
 
+// The alpha menu label of the entry carrying the same logical colour channel as label, or label
+// unchanged when it names no colour channel or the stream's layout has no entry on that channel.
+static QString
+viewerListedAlphaLabel(const QString& label,
+                       const std::list<ImageLayerDesc>& alphaComponents)
+{
+    const std::string text = label.toStdString();
+    const std::string::size_type dot = text.rfind('.');
+    if (dot == std::string::npos) {
+        return label;
+    }
+    const std::string viewID = text.substr(0, dot);
+    if (!ImageLayerDesc::isColorViewID(viewID)) {
+        return label;
+    }
+    const std::vector<std::string>& viewChannels = ImageLayerDesc::getColorView(viewID).getChannels();
+    const std::vector<std::string>::const_iterator found = std::find(viewChannels.begin(), viewChannels.end(), text.substr(dot + 1));
+    if (found == viewChannels.end()) {
+        return label;
+    }
+    const int bit = ImageLayerDesc::colorViewChannelBit(viewID, (int)(found - viewChannels.begin()));
+
+    for (std::list<ImageLayerDesc>::const_iterator it = alphaComponents.begin(); it != alphaComponents.end(); ++it) {
+        if (!it->isColorLayer()) {
+            continue;
+        }
+        const int channel = ImageLayerDesc::colorViewChannelIndex(it->getLayerID(), bit);
+        if (channel != -1) {
+            return QString::fromUtf8(it->getChannelOption(channel).label.c_str());
+        }
+    }
+
+    return label;
+}
+
 void
 ViewerTab::autoSwitchDisplayChannelsForLayer(const ImageLayerDesc& chosen)
 {
@@ -932,13 +968,17 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
 
     QString layerCurChoice = _imp->layerChoice->getCurrentIndexText();
     QString alphaCurChoice = _imp->alphaChannelChoice->getCurrentIndexText();
-    const QString alphaChoiceBefore = alphaCurChoice;
     _imp->layerMenuTime = time;
     _imp->layerMenuView = _imp->viewerNode->getViewerCurrentView();
     std::list<ImageLayerDesc> components;
     std::list<ImageLayerDesc> alphaComponents;
     ImageLayerDesc storageColorLayer;
     _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, &components, &alphaComponents, &storageColorLayer);
+
+    // A colour channel picked under another view (rgba.R after the stream became RGB) is the
+    // listed entry for the same channel, not an absent selection.
+    alphaCurChoice = viewerListedAlphaLabel(alphaCurChoice, alphaComponents);
+    const QString alphaChoiceBefore = alphaCurChoice;
 
     _imp->layerChoice->clear();
     _imp->alphaChannelChoice->clear();
@@ -1123,6 +1163,16 @@ ViewerTab::onLayerComboChanged(int index)
                 {
                     QMutexLocker k(&_imp->currentLayerMutex);
                     _imp->currentAlphaLayerChoice = _imp->alphaChannelChoice->getCurrentIndexText();
+                }
+                _imp->viewerNode->setAlphaChannel(storage, channels.back(), true);
+            } else if (ImageLayerDesc::isColorViewID(it->getLayerID()) && (storage.getNumComponents() > 0) && !channels.empty()) {
+                // The stream lacks this view's last channel. Requesting it by name makes the
+                // viewer resolve it to no channel and read zero; the menu shows it unlisted.
+                const QString absentLabel = QString::fromUtf8(it->getChannelOption((int)channels.size() - 1).label.c_str());
+                _imp->alphaChannelChoice->setCurrentText_no_emit(absentLabel);
+                {
+                    QMutexLocker k(&_imp->currentLayerMutex);
+                    _imp->currentAlphaLayerChoice = absentLabel;
                 }
                 _imp->viewerNode->setAlphaChannel(storage, channels.back(), true);
             }

@@ -513,6 +513,7 @@ Execution notes:
   - An aliased alpha pick maps to its listed entry on relist.
   - Found along the way, and already true on M61: a Switch's output layout covers every connected input (the widest), not the active one. So switching to an RGB-only input still shows `rgba.*`. This was put to the user as a follow-up.
   - The round limit is reached; there will be no third round.
+- 2026-09-30 — **UAT AppImage re-packaged after the review:** `build/appimages/M65-26cc11c9c.AppImage`. Launch check passed 2 of 2. `M65-uat.md` now points at it. PR #35 stays open (stacked on #34) for the user's UAT and async merge.
 
 ## Risks
 

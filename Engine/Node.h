@@ -1516,6 +1516,14 @@ public:
     void listLayerViewsForKnob(const KnobIPtr& knob, double time, ViewIdx view, std::list<ImageLayerDesc>* layers) const;
 
     /**
+     * @brief listLayersForKnob() for a single-channel picker that lists the colour storage
+     * entry as the one colour view matching its channel layout
+     * (ImageLayerDesc::collapseColorToLayoutView()), because rgba.R, rgb.R alias one channel
+     * and must not be offered twice.
+     **/
+    void listChannelViewsForKnob(const KnobIPtr& knob, std::list<ImageLayerDesc>* layers) const;
+
+    /**
      * @brief Whether listLayersForKnob() lists the project registry for this knob (a target
      * knob) rather than an input's present layers. A group param aliased onto an inner node's
      * layer knob reports the inner knob's role.

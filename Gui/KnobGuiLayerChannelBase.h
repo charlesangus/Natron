@@ -110,6 +110,12 @@ protected:
      **/
     void refresh(bool relistLayers);
 
+    /**
+     * @brief Whether the list is for a single-channel picker, which offers the colour
+     * channels once through the view matching the input's layout.
+     **/
+    virtual bool listsChannelViews() const;
+
     /// Rebuilds the widgets from the knob value and getLayers().
     virtual void refreshWidgets() = 0;
 
@@ -142,9 +148,11 @@ bool sameLayerEntries(const std::vector<LayerChannelRow::LayerEntry>& a,
 /**
  * @brief The layers the given node offers for the given knob's role, expanded into
  * colour views (rgba, rgb, alpha, xy) with the views sorted first. Usable for any knob
- * on the node, not just knobs with a KnobGuiLayerChannelBase.
+ * on the node, not just knobs with a KnobGuiLayerChannelBase. With channelViews set, the
+ * colour channels are listed once through the single view matching the input's layout
+ * (Node::listChannelViewsForKnob()) instead of through every view.
  **/
-std::vector<LayerChannelRow::LayerEntry> listLayerEntriesForKnob(const NodePtr& node, const KnobIPtr& knob);
+std::vector<LayerChannelRow::LayerEntry> listLayerEntriesForKnob(const NodePtr& node, const KnobIPtr& knob, bool channelViews = false);
 
 NATRON_NAMESPACE_EXIT
 

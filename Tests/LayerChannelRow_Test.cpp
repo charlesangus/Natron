@@ -412,6 +412,90 @@ TEST(LayerChannelRow, ChannelSelectEntryOrder)
     EXPECT_TRUE(row.getCurrentChannel().empty());
 }
 
+namespace {
+
+std::vector<LayerEntry>
+channelViewLayers(const std::string& colorView,
+                  const std::vector<std::string>& colorChannels)
+{
+    std::vector<LayerEntry> layers;
+    layers.push_back(makeLayer(colorView, colorChannels));
+    layers.push_back(makeLayer("diffuse", rgb()));
+
+    return layers;
+}
+
+} // namespace
+
+TEST(LayerChannelRow, ChannelSelectListsColourChannelsOnceForRGBAStorage)
+{
+    LayerChannelRow row(LayerChannelRow::eModeChannelSelect);
+    row.setAvailableLayers(channelViewLayers("rgba", rgba()), false);
+
+    EXPECT_EQ(sl("None", "rgba.R", "rgba.G", "rgba.B", "rgba.A", "diffuse.R", "diffuse.G", "diffuse.B"), row.getComboEntries());
+}
+
+TEST(LayerChannelRow, ChannelSelectListsColourChannelsOnceForRGBStorage)
+{
+    LayerChannelRow row(LayerChannelRow::eModeChannelSelect);
+    row.setAvailableLayers(channelViewLayers("rgb", rgb()), false);
+
+    EXPECT_EQ(sl("None", "rgb.R", "rgb.G", "rgb.B", "diffuse.R", "diffuse.G", "diffuse.B"), row.getComboEntries());
+}
+
+TEST(LayerChannelRow, ChannelSelectListsASingleAlphaEntryForAlphaStorage)
+{
+    LayerChannelRow row(LayerChannelRow::eModeChannelSelect);
+    row.setAvailableLayers(channelViewLayers("alpha", single("A")), false);
+
+    EXPECT_EQ(sl("None", "alpha", "diffuse.R", "diffuse.G", "diffuse.B"), row.getComboEntries());
+
+    QString selected;
+    QObject::connect(&row, &LayerChannelRow::channelSelected, [&](const QString& v) {
+        selected = v;
+    });
+    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "alpha"));
+    EXPECT_EQ(QString::fromUtf8("alpha.A"), selected);
+    EXPECT_EQ("alpha.A", row.getCurrentChannel());
+}
+
+TEST(LayerChannelRow, ChannelSelectListsXYChannelsForXYStorage)
+{
+    std::vector<std::string> xy;
+    xy.push_back("X");
+    xy.push_back("Y");
+
+    LayerChannelRow row(LayerChannelRow::eModeChannelSelect);
+    row.setAvailableLayers(channelViewLayers("xy", xy), false);
+
+    EXPECT_EQ(sl("None", "xy.X", "xy.Y", "diffuse.R", "diffuse.G", "diffuse.B"), row.getComboEntries());
+}
+
+TEST(LayerChannelRow, ChannelSelectShowsAnAliasedViewAsTheListedChannel)
+{
+    LayerChannelRow row(LayerChannelRow::eModeChannelSelect);
+    row.setAvailableLayers(channelViewLayers("rgba", rgba()), false);
+    row.setAbsentMarker(QString::fromUtf8("(not in input)"));
+
+    row.setChannelSelectValue("rgb.G");
+    EXPECT_FALSE(row.hasAbsentMarker());
+    EXPECT_EQ(QString::fromUtf8("rgba.G"), row.getCurrentComboText());
+
+    row.setChannelSelectValue("alpha.A");
+    EXPECT_FALSE(row.hasAbsentMarker());
+    EXPECT_EQ(QString::fromUtf8("rgba.A"), row.getCurrentComboText());
+    EXPECT_EQ("alpha.A", row.getCurrentChannel());
+
+    row.setAvailableLayers(channelViewLayers("alpha", single("A")), false);
+    row.setChannelSelectValue("rgba.A");
+    EXPECT_FALSE(row.hasAbsentMarker());
+    EXPECT_EQ(QString::fromUtf8("alpha"), row.getCurrentComboText());
+
+    row.setChannelSelectValue("rgba.R");
+    EXPECT_TRUE(row.hasAbsentMarker());
+    EXPECT_EQ(QString::fromUtf8("rgba.R (not in input)"), row.getCurrentComboText());
+}
+
 TEST(LayerChannelRow, ChoosingLayerRebuildsCheckedColouredButtonsAndEmitsOnce)
 {
     LayerChannelRow row(LayerChannelRow::eModeSetRow0);

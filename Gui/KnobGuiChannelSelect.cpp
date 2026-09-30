@@ -89,6 +89,12 @@ KnobGuiChannelSelect::createWidget(QHBoxLayout* layout)
     refresh(true);
 }
 
+bool
+KnobGuiChannelSelect::listsChannelViews() const
+{
+    return true;
+}
+
 void
 KnobGuiChannelSelect::refreshWidgets()
 {

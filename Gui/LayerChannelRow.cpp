@@ -73,6 +73,43 @@ regexLineDecoration()
 {
     return QString::fromUtf8("\xe2\x8c\x8a");
 }
+
+// A colour view lists its channels through one entry per channel of the one layout the input
+// carries, so a value naming the same channel through another view (rgb.R for rgba.R, rgba.A
+// for alpha.A) is shown as the listed entry. Anything else is returned unchanged.
+std::string
+listedChannelValue(const std::vector<LayerChannelRow::LayerEntry>& layers,
+                   const std::string& value)
+{
+    const std::string::size_type dot = value.rfind('.');
+    if (dot == std::string::npos) {
+        return value;
+    }
+    const std::string layerID = value.substr(0, dot);
+    const std::string channel = value.substr(dot + 1);
+    if (!ImageLayerDesc::isColorViewID(layerID)) {
+        return value;
+    }
+    const std::vector<std::string>& viewChannels = ImageLayerDesc::getColorView(layerID).getChannels();
+    const std::vector<std::string>::const_iterator found = std::find(viewChannels.begin(), viewChannels.end(), channel);
+    if (found == viewChannels.end()) {
+        return value;
+    }
+    const int bit = ImageLayerDesc::colorViewChannelBit(layerID, (int)(found - viewChannels.begin()));
+
+    for (std::size_t i = 0; i < layers.size(); ++i) {
+        if (!ImageLayerDesc::isColorViewID(layers[i].id)) {
+            continue;
+        }
+        for (std::size_t c = 0; c < layers[i].channels.size(); ++c) {
+            if (ImageLayerDesc::colorViewChannelBit(layers[i].id, (int)c) == bit) {
+                return layers[i].id + "." + layers[i].channels[c];
+            }
+        }
+    }
+
+    return value;
+}
 } // namespace
 
 struct LayerChannelRow::ComboEntry {
@@ -531,9 +568,10 @@ LayerChannelRow::currentValueIsListed() const
         if (_channelValue.empty()) {
             return true;
         }
+        const std::string listedValue = listedChannelValue(_layers, _channelValue);
         for (std::size_t i = 0; i < _layers.size(); ++i) {
             for (std::size_t c = 0; c < _layers[i].channels.size(); ++c) {
-                if (_layers[i].id + "." + _layers[i].channels[c] == _channelValue) {
+                if (_layers[i].id + "." + _layers[i].channels[c] == listedValue) {
                     return true;
                 }
             }
@@ -596,8 +634,11 @@ LayerChannelRow::rebuildCombo()
         if (_mode == eModeChannelSelect) {
             for (std::size_t c = 0; c < ordered[i]->channels.size(); ++c) {
                 const std::string& channel = ordered[i]->channels[c];
-                _entries.push_back(ComboEntry(ComboEntry::eKindChannel, ordered[i]->id + "." + channel,
-                                              qs(ordered[i]->label) + QLatin1Char('.') + qs(channel)));
+                QString text = qs(ordered[i]->label);
+                if (ordered[i]->id != kNatronColorViewAlpha) {
+                    text += QLatin1Char('.') + qs(channel);
+                }
+                _entries.push_back(ComboEntry(ComboEntry::eKindChannel, ordered[i]->id + "." + channel, text));
             }
         } else {
             const bool isOwnLayerSelection = (_setRowMode == eSetRowModeLayer) && (ordered[i]->id == _layerID);
@@ -636,6 +677,7 @@ void
 LayerChannelRow::selectEntryForCurrentValue()
 {
     int index = -1;
+    const std::string listedValue = listedChannelValue(_layers, _channelValue);
     for (std::size_t i = 0; i < _entries.size(); ++i) {
         const ComboEntry& e = _entries[i];
         bool hit = false;
@@ -663,7 +705,7 @@ LayerChannelRow::selectEntryForCurrentValue()
             hit = (_setRowMode == eSetRowModeLayer) && (e.value == _layerID);
             break;
         case ComboEntry::eKindChannel:
-            hit = (e.value == _channelValue);
+            hit = (e.value == listedValue);
             break;
         case ComboEntry::eKindAbsent:
             hit = true;

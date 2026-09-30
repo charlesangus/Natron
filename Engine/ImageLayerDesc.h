@@ -328,6 +328,13 @@ public:
      **/
     static void expandColorViews(std::list<ImageLayerDesc>* storageList);
 
+    /**
+     * @brief Replaces, in place, the colour storage entry of storageList with the one colour
+     * view matching its channel layout (colorViewForNComps()), so each colour channel is listed
+     * once. A colour entry of an unknown layout becomes rgba. Every other entry is left untouched.
+     **/
+    static void collapseColorToLayoutView(std::list<ImageLayerDesc>* storageList);
+
     template <class Archive>
     void save(Archive& ar, const unsigned int version) const;
 

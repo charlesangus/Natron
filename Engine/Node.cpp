@@ -6319,6 +6319,16 @@ Node::listLayerViewsForKnob(const KnobIPtr& knob,
     layers->insert(layers->end(), storage.begin(), storage.end());
 }
 
+void
+Node::listChannelViewsForKnob(const KnobIPtr& knob,
+                              std::list<ImageLayerDesc>* layers) const
+{
+    std::list<ImageLayerDesc> storage;
+    listLayersForKnob(knob, &storage);
+    ImageLayerDesc::collapseColorToLayoutView(&storage);
+    layers->insert(layers->end(), storage.begin(), storage.end());
+}
+
 bool
 Node::isTargetLayerKnob(const KnobIPtr& knob) const
 {

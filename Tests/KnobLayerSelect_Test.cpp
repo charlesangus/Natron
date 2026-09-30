@@ -115,7 +115,42 @@ presentLayers()
     return present;
 }
 
+std::vector<std::string>
+layerIDs(const std::list<ImageLayerDesc>& layers)
+{
+    std::vector<std::string> ids;
+
+    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        ids.push_back(it->getLayerID());
+    }
+
+    return ids;
+}
+
 } // namespace
+
+TEST(KnobChannelSelect, ColourStorageCollapsesToTheOneViewOfItsLayout)
+{
+    const ImageLayerDesc storages[] = {
+        ImageLayerDesc::getRGBAComponents(),
+        ImageLayerDesc::getRGBComponents(),
+        ImageLayerDesc::getAlphaComponents(),
+        ImageLayerDesc::getXYComponents()
+    };
+    const char* const expected[] = { kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY };
+
+    for (std::size_t i = 0; i < sizeof(storages) / sizeof(storages[0]); ++i) {
+        std::list<ImageLayerDesc> list;
+        list.push_back(storages[i]);
+        list.push_back(makeLayer("diffuse", channels("R", "G", "B")));
+        ImageLayerDesc::collapseColorToLayoutView(&list);
+
+        const std::vector<std::string> ids = layerIDs(list);
+        ASSERT_EQ(2u, ids.size()) << expected[i];
+        EXPECT_EQ(std::string(expected[i]), ids[0]);
+        EXPECT_EQ(std::string("diffuse"), ids[1]);
+    }
+}
 
 TEST(KnobLayerSelect, TypeAndColumns)
 {

@@ -308,6 +308,20 @@ TEST_F(ColorViewsRenderTest, ListLayerViewsForKnobOnRgbOnlyInputListsRgbaRgbAlph
     EXPECT_EQ(std::string(kNatronColorLayerID), storage.front().getLayerID());
 }
 
+TEST_F(ColorViewsRenderTest, ListChannelViewsForKnobOnRgbOnlyInputListsOnlyRgb)
+{
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(kGradePluginID, "flat-rgb-only.exr", &channels);
+    ASSERT_TRUE(bool(grade));
+    ASSERT_TRUE(bool(channels));
+
+    std::list<ImageLayerDesc> views;
+    grade->listChannelViewsForKnob(grade->getLayerKnob(), &views);
+
+    ASSERT_EQ(1u, views.size()) << layerIDsString(views);
+    EXPECT_EQ(std::string(kNatronColorViewRGB), views.front().getLayerID());
+}
+
 TEST_F(ColorViewsRenderTest, GradeRgbGain2DoublesRgbAndKeepsAlpha)
 {
     KnobChannelSetPtr channels;

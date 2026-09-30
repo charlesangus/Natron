@@ -482,6 +482,22 @@ ImageLayerDesc::expandColorViews(std::list<ImageLayerDesc>* storageList)
     }
 }
 
+void
+ImageLayerDesc::collapseColorToLayoutView(std::list<ImageLayerDesc>* storageList)
+{
+    if (!storageList) {
+        return;
+    }
+
+    for (std::list<ImageLayerDesc>::iterator it = storageList->begin(); it != storageList->end(); ++it) {
+        if (it->getLayerID() != kNatronColorLayerID) {
+            continue;
+        }
+        const ImageLayerDesc& view = ImageLayerDesc::colorViewForNComps(it->getNumComponents());
+        *it = view ? view : ImageLayerDesc::getColorView(kNatronColorViewRGBA);
+    }
+}
+
 ChoiceOption
 ImageLayerDesc::getChannelOption(int channelIndex) const
 {

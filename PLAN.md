@@ -261,7 +261,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M65 awaits the user's UAT sign-off (P8.T3):** please run the UAT on `build/appimages/M65-26cc11c9c.AppImage` using `build/appimages/M65-uat.md`. PR #35 is stacked on M61's #34; its review round runs now. Answer via the inbox or in session.
+- **M65 awaits the user's UAT sign-off (P8.T3):** please run the UAT on `build/appimages/M65-26cc11c9c.AppImage` using `build/appimages/M65-uat.md`. PR #35 is stacked on M61's #34; both Codex review rounds are closed (10 findings fixed). Answer via the inbox or in session.
 
 - **M61 awaits the user's sign-off** (row `blocked`, stacked-PR rule: asynchronous). Please run the UAT on `build/appimages/M61-072541618.AppImage` using `build/appimages/M61-uat.md`, and approve the P2.T3 keyed-Disable node-box screenshots and the P2.T5 disabled-cross width (2, i.e. pipe weight). PR #34 is green; its review rounds 1 and 2 are closed. After sign-off: check off P2.T3/P2.T5/P4.T1, mark M61 `done`, and the user merges PR #34.
 

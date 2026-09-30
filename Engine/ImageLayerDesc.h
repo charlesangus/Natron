@@ -256,59 +256,47 @@ public:
     static const ImageLayerDesc& getDisparityRightComponents();
     static const ImageLayerDesc& getXYComponents();
 
-    /**
-     * @brief Is layerID one of kNatronColorViewRGBA/RGB/Alpha/XY.
-     **/
     static bool isColorViewID(const std::string& layerID);
 
     /**
-     * @brief Returns the ImageLayerDesc for a colour view id (kNatronColorViewRGBA/RGB/Alpha/XY),
-     * with the view's own ID/label and channel names. Returns getNoneComponents() for any other id.
+     * @brief The view's own ID, label and channel names; getNoneComponents() for any other ID.
      **/
     static const ImageLayerDesc& getColorView(const std::string& viewID);
 
     /**
-     * @brief The bits of a std::bitset<4> (see ResolvedLayer::channelBit in KnobChannelSet.h)
-     * that viewID's channels occupy.
+     * @brief Colour channels are std::bitset<4> bits R=0, G=1, B=2, A=3 whatever the layout,
+     * so a single-channel view or storage occupies bit 3 (see ResolvedLayer::channelBit in
+     * KnobChannelSet.h).
      **/
     static std::bitset<4> colorViewMask(const std::string& viewID);
 
     /**
-     * @brief The colour bit (see colorViewMask()) viewID's channel index sits on, -1 past the
-     * view's channels.
+     * @brief -1 past the view's channels.
      **/
     static int colorViewChannelBit(const std::string& viewID, int index);
 
     /**
-     * @brief The inverse of colorViewChannelBit(): viewID's channel index sitting on bit, -1
-     * when viewID has no channel there.
+     * @brief -1 when viewID has no channel on bit.
      **/
     static int colorViewChannelIndex(const std::string& viewID, int bit);
 
-    /**
-     * @brief The bits of a std::bitset<4> (see ResolvedLayer::channelBit in KnobChannelSet.h)
-     * that the colour storage plane desc actually carries.
-     **/
     static std::bitset<4> colorStorageBits(const ImageLayerDesc& storage);
 
     /**
-     * @brief The colour storage layout with the fewest channels (Alpha, XY, RGB, RGBA) whose
-     * colorStorageBits() hold every bit of bits; the None layout when bits is empty.
+     * @brief Tries Alpha, XY, RGB, then RGBA; the None layout when bits is empty.
      **/
     static ImageLayerDesc narrowestColorStorageCovering(const std::bitset<4>& bits);
 
     /**
-     * @brief The colour views storage presents: always rgba, rgb and alpha, plus xy when
-     * storage is the 2-channel XY layout. Does nothing if storage is not the colour layer.
+     * @brief rgba, rgb and alpha are presented by every colour storage, whatever its layout, since
+     * a channel the storage lacks reads as zero; xy only by the 2-channel XY layout. Does nothing
+     * if storage is not the colour layer.
      **/
     static void presentColorViews(const ImageLayerDesc& storage, std::vector<std::string>* views);
 
     /**
-     * @brief Resolves viewID against storage and a channel-set row's selected channels
-     * (rowChannels has the same meaning as ChannelSetRow::channels: empty means every
-     * channel of viewID, otherwise the named channels of viewID -- see KnobChannelSet.h).
-     * *bits is viewID's mask intersected with those selected channels; *zeroBits is the
-     * subset of *bits that storage does not actually carry, and therefore reads as zero.
+     * @brief rowChannels has ChannelSetRow::channels' meaning: empty selects every channel of
+     * viewID. *zeroBits is the subset of *bits that storage does not carry and so reads as zero.
      **/
     static void resolveColorView(const std::string& viewID,
                                  const ImageLayerDesc& storage,
@@ -317,21 +305,19 @@ public:
                                  std::bitset<4>* zeroBits);
 
     /**
-     * @brief Maps a channel count to a colour view: 1 -> alpha, 2 -> xy, 3 -> rgb, 4 -> rgba.
+     * @brief 1 -> alpha, 2 -> xy, 3 -> rgb, 4 -> rgba.
      **/
     static const ImageLayerDesc& colorViewForNComps(int nComps);
 
     /**
-     * @brief Replaces, in place, the colour storage entry of storageList with the colour
-     * views it presents (see presentColorViews()), in the order rgba, rgb, alpha, (xy).
-     * Every other entry is left untouched.
+     * @brief Replaces the colour storage entry with every view it presents, in the order rgba,
+     * rgb, alpha, (xy).
      **/
     static void expandColorViews(std::list<ImageLayerDesc>* storageList);
 
     /**
-     * @brief Replaces, in place, the colour storage entry of storageList with the one colour
-     * view matching its channel layout (colorViewForNComps()), so each colour channel is listed
-     * once. A colour entry of an unknown layout becomes rgba. Every other entry is left untouched.
+     * @brief Replaces the colour storage entry with the one view matching its layout, so each
+     * colour channel is listed once; an unknown layout becomes rgba.
      **/
     static void collapseColorToLayoutView(std::list<ImageLayerDesc>* storageList);
 

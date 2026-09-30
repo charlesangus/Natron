@@ -2377,10 +2377,8 @@ channelsFromStringList(const QStringList& channels)
     return ret;
 }
 
-// The retired storage ID still resolves (silently, to nothing) at the KnobLayerSelect/
-// KnobChannelSet level, since a serialized pre-M65 value must not throw on load. The Python
-// setters are a new call the user is making today, so they reject it outright and name the
-// views that replaced it.
+// Project load bypasses this check and resets the retired storage ID instead of throwing; an
+// explicit Python call naming it must fail.
 static bool
 rejectRetiredColorLayerID(const std::string& layerID)
 {
@@ -2710,7 +2708,12 @@ ChannelSelectParam::set(const QString& value)
     if (!knob) {
         return;
     }
-    knob->set(value.toStdString());
+    const std::string channel = value.toStdString();
+    const std::string::size_type dot = channel.rfind('.');
+    if ((dot != std::string::npos) && rejectRetiredColorLayerID(channel.substr(0, dot))) {
+        return;
+    }
+    knob->set(channel);
 }
 
 void

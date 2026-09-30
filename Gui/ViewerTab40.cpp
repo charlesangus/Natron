@@ -874,6 +874,33 @@ viewerLayerToStorage(const ImageLayerDesc& chosen,
     return chosen.isColorLayer() ? storageColorLayer : chosen;
 }
 
+// The alpha menu entry, counting the leading "-", of layer's last channel. A colour view's channel
+// is listed under the one view the alpha menu keeps for the stream's layout, and is absent when
+// that layout lacks it.
+static int
+viewerAlphaMenuIndexOfLastChannel(const ImageLayerDesc& layer,
+                                  const std::list<ImageLayerDesc>& alphaComponents)
+{
+    const int lastChannel = (int)layer.getChannels().size() - 1;
+    const bool isColorView = ImageLayerDesc::isColorViewID(layer.getLayerID());
+    const int bit = isColorView ? ImageLayerDesc::colorViewChannelBit(layer.getLayerID(), lastChannel) : -1;
+    int index = 1;
+
+    for (std::list<ImageLayerDesc>::const_iterator it = alphaComponents.begin(); it != alphaComponents.end(); ++it) {
+        if (isColorView && it->isColorLayer()) {
+            const int channel = ImageLayerDesc::colorViewChannelIndex(it->getLayerID(), bit);
+
+            return (channel == -1) ? -1 : (index + channel);
+        }
+        if (!isColorView && (*it == layer)) {
+            return index + lastChannel;
+        }
+        index += (int)it->getChannels().size();
+    }
+
+    return -1;
+}
+
 void
 ViewerTab::autoSwitchDisplayChannelsForLayer(const ImageLayerDesc& chosen)
 {
@@ -909,8 +936,9 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
     _imp->layerMenuTime = time;
     _imp->layerMenuView = _imp->viewerNode->getViewerCurrentView();
     std::list<ImageLayerDesc> components;
+    std::list<ImageLayerDesc> alphaComponents;
     ImageLayerDesc storageColorLayer;
-    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, &components, &storageColorLayer);
+    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, &components, &alphaComponents, &storageColorLayer);
 
     _imp->layerChoice->clear();
     _imp->alphaChannelChoice->clear();
@@ -921,7 +949,8 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
     std::list<ImageLayerDesc>::iterator foundColorIt = components.end();
     std::list<ImageLayerDesc>::iterator foundOtherIt = components.end();
     std::list<ImageLayerDesc>::iterator foundCurIt = components.end();
-    std::list<ImageLayerDesc>::iterator foundCurAlphaIt = components.end();
+    std::list<ImageLayerDesc>::iterator foundAlphaColorIt = alphaComponents.end();
+    std::list<ImageLayerDesc>::iterator foundCurAlphaIt = alphaComponents.end();
     std::string foundAlphaChannel;
 
     for (std::list<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it) {
@@ -942,6 +971,12 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
         } else {
             foundOtherIt = it;
         }
+    }
+
+    for (std::list<ImageLayerDesc>::iterator it = alphaComponents.begin(); it != alphaComponents.end(); ++it) {
+        if (it->isColorLayer() && (foundAlphaColorIt == alphaComponents.end())) {
+            foundAlphaColorIt = it;
+        }
 
         const std::vector<std::string>& channels = it->getChannels();
         for (U32 i = 0; i < channels.size(); ++i) {
@@ -957,7 +992,7 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
 
     const QString noChoice = QString::fromUtf8("-");
     const bool keepLayer = keepAbsentSelection && (foundCurIt == components.end()) && !layerCurChoice.isEmpty() && (layerCurChoice != noChoice);
-    const bool keepAlpha = keepAbsentSelection && (foundCurAlphaIt == components.end()) && !alphaChoiceBefore.isEmpty() && (alphaChoiceBefore != noChoice);
+    const bool keepAlpha = keepAbsentSelection && (foundCurAlphaIt == alphaComponents.end()) && !alphaChoiceBefore.isEmpty() && (alphaChoiceBefore != noChoice);
 
     if (keepLayer) {
         _imp->layerChoice->setCurrentText_no_emit(layerCurChoice);
@@ -992,22 +1027,22 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time,
         alphaCurChoice = alphaChoiceBefore;
         _imp->alphaChannelChoice->setCurrentText_no_emit(alphaCurChoice);
     } else {
-        if ((alphaCurChoice == QString::fromUtf8("-")) || alphaCurChoice.isEmpty() || (foundCurAlphaIt == components.end())) {
+        if ((alphaCurChoice == QString::fromUtf8("-")) || alphaCurChoice.isEmpty() || (foundCurAlphaIt == alphaComponents.end())) {
             /// Try to find color layer, otherwise fallback on any other layer
-            if ((foundColorIt != components.end()) && ((foundColorIt->getChannels().size() == 4) || (foundColorIt->getChannels().size() == 1))) {
-                std::size_t lastComp = foundColorIt->getChannels().size() - 1;
+            if ((foundAlphaColorIt != alphaComponents.end()) && ((foundAlphaColorIt->getChannels().size() == 4) || (foundAlphaColorIt->getChannels().size() == 1))) {
+                std::size_t lastComp = foundAlphaColorIt->getChannels().size() - 1;
 
-                alphaCurChoice = QString::fromUtf8(foundColorIt->getLayerLabel().c_str())
-                    + QLatin1Char('.') + QString::fromUtf8(foundColorIt->getChannels()[lastComp].c_str());
-                foundAlphaChannel = foundColorIt->getChannels()[lastComp];
-                foundCurAlphaIt = foundColorIt;
+                alphaCurChoice = QString::fromUtf8(foundAlphaColorIt->getLayerLabel().c_str())
+                    + QLatin1Char('.') + QString::fromUtf8(foundAlphaColorIt->getChannels()[lastComp].c_str());
+                foundAlphaChannel = foundAlphaColorIt->getChannels()[lastComp];
+                foundCurAlphaIt = foundAlphaColorIt;
             } else {
                 alphaCurChoice = QString::fromUtf8("-");
-                foundCurAlphaIt = components.end();
+                foundCurAlphaIt = alphaComponents.end();
             }
         }
 
-        if ((foundCurAlphaIt == components.end()) || foundAlphaChannel.empty()) {
+        if ((foundCurAlphaIt == alphaComponents.end()) || foundAlphaChannel.empty()) {
             _imp->alphaChannelChoice->setCurrentText_no_emit(alphaCurChoice);
             _imp->viewerNode->setAlphaChannel(ImageLayerDesc::getNoneComponents(), std::string(), false);
         } else {
@@ -1032,7 +1067,7 @@ ViewerTab::onAlphaChannelComboChanged(int index)
     std::list<ImageLayerDesc> components;
     ImageLayerDesc storageColorLayer;
 
-    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, &components, &storageColorLayer);
+    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, NULL, &components, &storageColorLayer);
 
     {
         QMutexLocker k(&_imp->currentLayerMutex);
@@ -1062,7 +1097,8 @@ ViewerTab::onLayerComboChanged(int index)
     std::list<ImageLayerDesc> components;
     ImageLayerDesc storageColorLayer;
 
-    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, &components, &storageColorLayer);
+    std::list<ImageLayerDesc> alphaComponents;
+    _imp->getLayerViewsAvailabelAtTime(_imp->layerMenuTime, _imp->layerMenuView, &components, &alphaComponents, &storageColorLayer);
     {
         QMutexLocker k(&_imp->currentLayerMutex);
         _imp->currentLayerChoice = _imp->layerChoice->getCurrentIndexText();
@@ -1073,9 +1109,7 @@ ViewerTab::onLayerComboChanged(int index)
         return;
     }
     int i = 1; // because of the "-" choice
-    int chanCount = 1; // because of the "-" choice
     for (std::list<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it, ++i) {
-        chanCount += it->getChannels().size();
         if (i == index) {
             const ImageLayerDesc& storage = viewerLayerToStorage(*it, storageColorLayer);
             const std::vector<std::string>& channels = it->getChannels();
@@ -1083,8 +1117,9 @@ ViewerTab::onLayerComboChanged(int index)
             // A single-channel layer is shown through the A display, which reads the alpha menu's
             // channel rather than the layer's: point the alpha menu at that one channel too, or
             // picking the alpha view would keep showing the colour image.
-            if ((channels.size() == 4) || (channels.size() == 1)) {
-                _imp->alphaChannelChoice->setCurrentIndex_no_emit(chanCount - 1);
+            const int alphaIndex = ((channels.size() == 4) || (channels.size() == 1)) ? viewerAlphaMenuIndexOfLastChannel(*it, alphaComponents) : -1;
+            if (alphaIndex != -1) {
+                _imp->alphaChannelChoice->setCurrentIndex_no_emit(alphaIndex);
                 {
                     QMutexLocker k(&_imp->currentLayerMutex);
                     _imp->currentAlphaLayerChoice = _imp->alphaChannelChoice->getCurrentIndexText();

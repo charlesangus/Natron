@@ -153,8 +153,8 @@ KnobChannelSelect::resolve(const std::list<ImageLayerDesc>& present,
         return false;
     }
     if (layerID == kNatronColorLayerID) {
-        // The retired storage ID is never a valid selection any more: only its views (rgba,
-        // rgb, alpha, xy) are.
+        // present lists the storage entry, which the lookup below would otherwise match; only
+        // its views are selectable.
         return false;
     }
 
@@ -169,20 +169,22 @@ KnobChannelSelect::resolve(const std::list<ImageLayerDesc>& present,
                 // channelName is not one of layerID's own channels (e.g. rgb.A).
                 return false;
             }
-            if (layer) {
-                *layer = *it;
-            }
-            if (channelIndex) {
-                for (int b = 0; b < 4; ++b) {
-                    if (bits.test(b)) {
-                        *channelIndex = b;
-                        break;
-                    }
-                }
+            int bit = 0;
+            while (!bits.test(bit)) {
+                ++bit;
             }
 
-            // A channel the view names but the storage layout lacks (zeroBits) still resolves,
-            // because it reads as zero rather than being absent.
+            // Consumers index the image they fetch in *layer, so a channel the storage lacks
+            // resolves to the narrowest layout that has it: fetching the stream in that layout
+            // zero-fills the channel, which is how a missing colour channel must read.
+            const ImageLayerDesc physical = zeroBits.none() ? *it : ImageLayerDesc::narrowestColorStorageCovering(ImageLayerDesc::colorStorageBits(*it) | bits);
+            if (layer) {
+                *layer = physical;
+            }
+            if (channelIndex) {
+                *channelIndex = ImageLayerDesc::colorViewChannelIndex(ImageLayerDesc::colorViewForNComps(physical.getNumComponents()).getLayerID(), bit);
+            }
+
             return true;
         }
 

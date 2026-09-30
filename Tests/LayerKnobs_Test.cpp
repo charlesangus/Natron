@@ -378,15 +378,18 @@ TEST(KnobChannelSelect, ColorViewsResolveOnAnyColorStorageAndAlphaIsEquivalentAc
     channelIndex = -1;
     ASSERT_TRUE(knob->resolve(alphaPresent, &layer, &channelIndex));
     EXPECT_TRUE(layer.isColorLayer());
-    EXPECT_EQ(3, channelIndex);
+    EXPECT_EQ(1, layer.getNumComponents());
+    EXPECT_EQ(0, channelIndex);
 
     knob->set(std::string(kNatronColorViewAlpha) + ".A");
     channelIndex = -1;
     ASSERT_TRUE(knob->resolve(rgbaPresent, &layer, &channelIndex));
+    EXPECT_EQ(4, layer.getNumComponents());
     EXPECT_EQ(3, channelIndex);
     channelIndex = -1;
     ASSERT_TRUE(knob->resolve(alphaPresent, &layer, &channelIndex));
-    EXPECT_EQ(3, channelIndex);
+    EXPECT_EQ(1, layer.getNumComponents());
+    EXPECT_EQ(0, channelIndex);
 }
 
 TEST(KnobChannelSelect, RgbHasNoAlphaChannel)
@@ -413,11 +416,36 @@ TEST(KnobChannelSelect, RgbaAOnRgbStorageResolvesAndReadsZero)
     int channelIndex = -1;
     ASSERT_TRUE(knob->resolve(rgbPresent, &layer, &channelIndex));
     EXPECT_TRUE(layer.isColorLayer());
+    EXPECT_EQ(4, layer.getNumComponents());
     EXPECT_EQ(3, channelIndex);
+}
 
-    // The RGB storage carries no bit-3 channel, so the resolved index reads as zero rather
-    // than as an actual stored value.
-    EXPECT_FALSE(ImageLayerDesc::colorStorageBits(layer).test(channelIndex));
+TEST(KnobChannelSelect, RgbaROnAlphaStorageResolvesToAWiderLayoutNotTheStoredAlpha)
+{
+    KnobChannelSelectPtr knob = makeChannelSelectKnob();
+
+    std::list<ImageLayerDesc> alphaPresent;
+    alphaPresent.push_back(ImageLayerDesc::getAlphaComponents());
+
+    knob->set(std::string(kNatronColorViewRGBA) + ".R");
+
+    ImageLayerDesc layer;
+    int channelIndex = -1;
+    ASSERT_TRUE(knob->resolve(alphaPresent, &layer, &channelIndex));
+    EXPECT_TRUE(layer.isColorLayer());
+    EXPECT_EQ(4, layer.getNumComponents());
+    EXPECT_EQ(0, channelIndex);
+}
+
+TEST(NodeUnPremultSkipChannel, ColourDivisorIsMatchedByChannelAcrossLayouts)
+{
+    const ImageLayerDesc& rgba = ImageLayerDesc::getRGBAComponents();
+    const ImageLayerDesc& alpha = ImageLayerDesc::getAlphaComponents();
+
+    EXPECT_EQ(3, Node::getUnPremultSkipChannel(rgba, alpha, 0));
+    EXPECT_EQ(0, Node::getUnPremultSkipChannel(alpha, rgba, 3));
+    EXPECT_EQ(-1, Node::getUnPremultSkipChannel(alpha, rgba, 0));
+    EXPECT_EQ(3, Node::getUnPremultSkipChannel(rgba, rgba, 3));
 }
 
 TEST(KnobChannelSelect, RetiredStorageIdResolvesToNothing)

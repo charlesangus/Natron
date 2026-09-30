@@ -604,7 +604,7 @@ TEST_F(ColorViewsRenderTest, ListLayerViewsForKnobOnAlphaOnlyInputListsRgbaRgbAl
 }
 
 // Grade's rgb view writes bits {0, 1, 2}, which is not a subset of the alpha-only storage's bit
-// {3}, so checkMetadata widens the output to RGBA per the design doc's widen-on-write rule: RGB
+// {3}, so checkMetadata widens the output to RGBA (widen-on-write): RGB
 // is graded from a zero fill, and A passes through unchanged (the "Grade rgb over Alpha" example).
 TEST_F(ColorViewsRenderTest, GradeRgbOverAlphaWidensAndGradesRgbFromZero)
 {
@@ -630,7 +630,7 @@ TEST_F(ColorViewsRenderTest, GradeRgbOverAlphaWidensAndGradesRgbFromZero)
     expectColor(image, 0.3f, 0.3f, 0.3f, 1.f);
 }
 
-// Grade's patched clip now declares Alpha support, so it renders an Alpha stream as Alpha
+// Grade's clip declares Alpha support, so it renders an Alpha stream as Alpha
 // directly, with no colour channel created: the output it advertises and stores stays Alpha,
 // with A graded.
 TEST_F(ColorViewsRenderTest, GradeAlphaOverAlphaStaysAlphaOnly)
@@ -929,7 +929,7 @@ TEST_F(ColorViewsRenderTest, IDistortWithNoneUVChannelsPassesTheSourceThrough)
     }
 }
 
-// Grade's own clip preferences now declare Alpha support directly (rather than relying only on
+// Grade's own clip preferences declare Alpha support directly (rather than relying only on
 // the host narrowing an internally-widened RGBA render back down), so an alpha-only stream's
 // single channel round-trips through the file itself, not just through the metadata Natron
 // derives from it.
@@ -956,8 +956,7 @@ TEST_F(ColorViewsRenderTest, GradeAlphaOnlyGainDoublesTheSoleChannel)
 
 // Premult multiplies by the alpha it reads from its own picked channel; on this fixture that
 // channel is the image's only channel, always 1, so premultiplying (or unpremultiplying) by it
-// is a no-op -- the case this plugin update had to stop losing to an unconditional RGBA request
-// in getClipPreferences.
+// is a no-op, provided getClipPreferences keeps the stream alpha-only rather than requesting RGBA.
 TEST_F(ColorViewsRenderTest, PremultOnAlphaOnlyLeavesAlphaUnchanged)
 {
     NodePtr reader = createReader("flat-alpha-only.exr");
@@ -975,7 +974,7 @@ TEST_F(ColorViewsRenderTest, PremultOnAlphaOnlyLeavesAlphaUnchanged)
     EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "A"), 1e-5f);
 }
 
-// WritePNG/ReadPNG now declare Alpha support (kSupportsAlpha), so a 1-channel PNG keeps its
+// WritePNG/ReadPNG declare Alpha support (kSupportsAlpha), so a 1-channel PNG keeps its
 // single channel as Alpha end to end instead of being forced wider on write or misread on read.
 TEST_F(ColorViewsRenderTest, AlphaOnlyPngRoundTripsThroughWriteAndRead)
 {
@@ -1017,4 +1016,138 @@ TEST_F(ColorViewsRenderTest, AlphaOnlyPngRoundTripsThroughWriteAndRead)
     ASSERT_EQ(1u, image.channels.size());
     EXPECT_EQ(std::string("A"), image.channels.front());
     EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "A"), 1e-4f);
+}
+
+// A channel picker naming a colour channel resolves to an index into the layout the stream is
+// fetched in: alpha.A is the only channel of an alpha-only stream, and rgba.R, which that stream
+// lacks, reads as zero rather than as the stored alpha.
+class ColorViewsChannelPickerRenderTest
+    : public ColorViewsRenderTest {
+protected:
+    // flat-alpha-only.exr with its alpha graded down to 0.5, still alpha-only, into a Grade that
+    // offsets R, G and B by 0.3 (widening the stream to RGBA with R = G = B = 0 read in) and is
+    // (un)premultiplied by unPremultBy.
+    NodePtr createOffsetOverHalvedAlpha(const std::string& unPremultBy)
+    {
+        KnobChannelSetPtr halveChannels;
+        NodePtr halve = createEffectOnReader(kGradePluginID, "flat-alpha-only.exr", &halveChannels);
+        if (!halve || !halveChannels) {
+            return NodePtr();
+        }
+        halveChannels->setLayer(0, kNatronColorViewAlpha, NULL);
+        KnobColor* white = dynamic_cast<KnobColor*>(halve->getKnobByName("white").get());
+        if (!white) {
+            return NodePtr();
+        }
+        white->setValues(0.5, 0.5, 0.5, 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+        NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+        if (!grade) {
+            return NodePtr();
+        }
+        connectNodes(halve, grade, 0, true);
+        KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(grade->getKnobByName(kNodeParamChannelSet));
+        KnobColor* offset = dynamic_cast<KnobColor*>(grade->getKnobByName("offset").get());
+        KnobChannelSelectPtr divisor = grade->getUnPremultBySelector();
+        if (!channels || !offset || !divisor) {
+            return NodePtr();
+        }
+        channels->setLayer(0, kNatronColorViewRGB, NULL);
+        offset->setValues(0.3, 0.3, 0.3, 0., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+        divisor->set(unPremultBy);
+
+        return grade;
+    }
+
+    // flat-three-layers.exr, Color (1, 0, 0, 1), into a Grade offsetting R, G and B by 0.3 and
+    // masked by maskChannel of flat-alpha-only.exr.
+    NodePtr createOffsetMaskedByAlphaOnly(const std::string& maskChannel)
+    {
+        KnobChannelSetPtr channels;
+        NodePtr grade = createEffectOnReader(kGradePluginID, "flat-three-layers.exr", &channels);
+        NodePtr mask = createReader("flat-alpha-only.exr");
+        if (!grade || !channels || !mask) {
+            return NodePtr();
+        }
+        channels->setLayer(0, kNatronColorViewRGB, NULL);
+        KnobColor* offset = dynamic_cast<KnobColor*>(grade->getKnobByName("offset").get());
+        if (!offset) {
+            return NodePtr();
+        }
+        offset->setValues(0.3, 0.3, 0.3, 0., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+        int maskInput = -1;
+        for (int i = 0; i < grade->getNInputs(); ++i) {
+            if (grade->getInputLabel(i) == "Mask") {
+                maskInput = i;
+            }
+        }
+        if (maskInput < 0) {
+            return NodePtr();
+        }
+        connectNodes(mask, grade, maskInput, true);
+
+        KnobBool* maskEnabled = dynamic_cast<KnobBool*>(grade->getKnobByName("enableMask_Mask").get());
+        KnobChannelSelect* maskSelect = dynamic_cast<KnobChannelSelect*>(grade->getKnobByName("maskChannel_Mask").get());
+        if (!maskEnabled || !maskSelect) {
+            return NodePtr();
+        }
+        maskEnabled->setValue(true);
+        maskSelect->set(maskChannel);
+
+        return grade;
+    }
+};
+
+// R = 0.5 * (0 / 0.5 + 0.3) = 0.15; dividing by nothing would leave the plain offset, 0.3.
+TEST_F(ColorViewsChannelPickerRenderTest, UnPremultByAlphaAOfAlphaOnlyStreamDividesByTheStoredAlpha)
+{
+    NodePtr grade = createOffsetOverHalvedAlpha(std::string(kNatronColorViewAlpha) + ".A");
+    ASSERT_TRUE(bool(grade));
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(grade, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    expectColor(image, 0.15f, 0.15f, 0.15f, 0.5f);
+}
+
+// A zero divisor leaves the source undivided and multiplies the offset G and B back by zero;
+// dividing by the stored alpha instead would give 0.15. R is the divisor channel itself, which
+// is never divided or multiplied by itself (as A is not when unpremultiplying by A), so it keeps
+// the plain offset.
+TEST_F(ColorViewsChannelPickerRenderTest, UnPremultByMissingRgbaRReadsZeroNotTheStoredAlpha)
+{
+    NodePtr grade = createOffsetOverHalvedAlpha(std::string(kNatronColorViewRGBA) + ".R");
+    ASSERT_TRUE(bool(grade));
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(grade, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    expectColor(image, 0.3f, 0.f, 0.f, 0.5f);
+}
+
+TEST_F(ColorViewsChannelPickerRenderTest, MaskByAlphaAOfAlphaOnlyStreamReadsTheStoredAlpha)
+{
+    NodePtr grade = createOffsetMaskedByAlphaOnly(std::string(kNatronColorViewAlpha) + ".A");
+    ASSERT_TRUE(bool(grade));
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(grade, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    expectColor(image, 1.3f, 0.3f, 0.3f, 1.f);
+}
+
+TEST_F(ColorViewsChannelPickerRenderTest, MaskByMissingRgbaRReadsZeroNotTheStoredAlpha)
+{
+    NodePtr grade = createOffsetMaskedByAlphaOnly(std::string(kNatronColorViewRGBA) + ".R");
+    ASSERT_TRUE(bool(grade));
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(grade, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    expectColor(image, 1.f, 0.f, 0.f, 1.f);
 }

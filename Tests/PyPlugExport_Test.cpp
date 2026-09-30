@@ -828,10 +828,8 @@ TEST_F(PyPlugExportTest, GradeOnRGBLayerRowRoundTripsThroughPyPlugExport)
     project->reset(false, true);
 }
 
-// ChannelSetParam::setLayer() and LayerSelectParam::setLayer() are the Python-facing setters
-// M65's design retires the storage ID from: unlike the knobs they wrap (which still accept
-// it silently, since a serialized pre-M65 value must load without throwing), a script calling
-// one of these today is naming a layer that no longer exists, so it raises instead.
+// The Python layer and channel setters raise on the colour storage ID, which the knobs they
+// wrap still accept so that loading a project can reset it rather than throw.
 //
 // Calling the Param wrapper directly from a gtest body has no Python thread state installed
 // on this thread, so PyErr_SetString() crashes (see PythonGILLocker in AppManager.h): every
@@ -897,9 +895,38 @@ TEST_F(PyPlugExportTest, LayerSelectSetLayerRejectsRetiredColorLayerID)
     project->reset(false, true);
 }
 
+TEST_F(PyPlugExportTest, ChannelSelectSetRejectsRetiredColorLayerID)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    NodePtr groupNode = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(groupNode));
+    const std::string groupName = groupNode->getScriptName();
+
+    KnobChannelSelectPtr master = groupNode->getEffectInstance()->createChannelSelectKnob("retiredChannel", "Retired Channel");
+    ASSERT_TRUE(bool(master));
+    ASSERT_EQ(std::string(kNatronColorViewRGBA) + ".A", master->get());
+
+    const std::string appVar = getApp()->getAppIDString();
+    const std::string script = "retiredChannelParam = " + appVar + ".getNode(\"" + groupName + "\").getParam(\"retiredChannel\")\n"
+                                                                                               "retiredChannelParam.set(\""
+        + std::string(kNatronColorLayerID) + ".A\")\n";
+
+    std::string error, output;
+    EXPECT_FALSE(interpretPythonScript(script, &error, &output));
+    EXPECT_NE(std::string::npos, error.find("ValueError")) << error;
+
+    EXPECT_EQ(std::string(kNatronColorViewRGBA) + ".A", master->get());
+
+    project->reset(false, true);
+}
+
 // Effect::getAvailableLayers() is the Python-facing list (Node::listLayersForKnob() stays at
 // storage level for engine code): the storage colour entry it starts with must come back as
-// its views, in the design doc's order, not as a single "Color" entry.
+// its views, in the order rgba, rgb, alpha, (xy), not as a single "Color" entry.
 TEST_F(PyPlugExportTest, GetAvailableLayersStartsWithColorViews)
 {
     ProjectPtr project = getApp()->getProject();

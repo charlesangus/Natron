@@ -393,7 +393,7 @@ TEST_F(LegacyColorProjectTest, ColorLayerValuesResetToRgbaKeepingChannelsWithAWa
     EXPECT_TRUE(out1->getChannels().empty());
     EXPECT_TRUE(hasLegacyColorWarning(shuffle));
 
-    // Blur defaults to All today, but the pre-v17 gate first restores the Color it defaulted to
+    // Blur defaults to All, but the pre-v17 gate first restores the Color it defaulted to
     // back then; that value resets to rgba (not All, which would process other layers too) and
     // warns, while "Reset to default" still gives All.
     KnobChannelSetPtr blurChannels = std::dynamic_pointer_cast<KnobChannelSet>(blur->getKnobByName(kNodeParamChannelSet));
@@ -480,6 +480,14 @@ TEST_F(LegacyColorProjectTest, LegacyColorWarningSurvivesARender)
     getApp()->startWritersRendering(false, works);
     EXPECT_TRUE(QFile::exists(QString::fromStdString(path)));
 
+    EXPECT_TRUE(hasLegacyColorWarning(grade));
+
+    // A preview render clears the node's other persistent messages first.
+    const int size = 32;
+    std::vector<unsigned int> buffer(size * size, 0);
+    int width = size;
+    int height = size;
+    grade->makePreviewImage(1, &width, &height, &buffer[0]);
     EXPECT_TRUE(hasLegacyColorWarning(grade));
 
     // What a completed render calls to drop a channel-selector error it no longer reproduces.

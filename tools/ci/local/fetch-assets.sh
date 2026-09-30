@@ -139,14 +139,9 @@ fi
 # Write node's layer-naming delta also needed
 # charlesangus/openfx-supportext#1.
 #
-# Currently pinned to the m65/alpha-only branch head, charlesangus/openfx-io
-# PRs #7-#8 stacked together: getClipComponents reporting each frame's
-# layers, plus SeGrain/OIIOText/ReadPNG/WritePNG accepting alpha-only
-# (1-component) images. Both are still open. Its SupportExt submodule bump
-# also depends on the still-open charlesangus/openfx-supportext#4 (a
-# missing colour channel reads zero, not one). Re-pin to the merge commit
-# on master once all three land -- a squash + branch delete orphans this
-# SHA.
+# This revision also has getClipComponents report each frame's layers,
+# SeGrain/OIIOText/ReadPNG/WritePNG accept alpha-only (1-component) images,
+# and its SupportExt read a missing colour channel as zero, not one.
 #
 # SEEXPR_REF: wdas/SeExpr, branch v1-2.11, not v2/v3 -- openfx-io's
 # SeNoise.cpp targets the v1-2.11 header layout. Not forked.
@@ -165,13 +160,10 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # This revision excludes the OFX Shuffle plugin, so Natron does not ship it
 # alongside the native fr.natron.Shuffle and fr.natron.ShuffleCopy.
 #
-# Currently pinned to the m65/alpha-only branch head, still-open
-# charlesangus/openfx-misc#5: Grade, Premult/Unpremult, ColorCorrect,
-# ColorSuppress, ContactSheet and LayerContactSheet accept alpha-only
-# (1-component) images, and the Distortion UV/mask channel pickers read a
-# missing channel, alpha included, as zero rather than one. Its SupportExt
-# submodule bump depends on the still-open charlesangus/openfx-supportext#4.
-# Re-pin to the merge commit on master once both land.
+# It also has Grade, Premult/Unpremult, ColorCorrect, ColorSuppress,
+# ContactSheet and LayerContactSheet accept alpha-only (1-component) images,
+# and the Distortion UV/mask channel pickers and its SupportExt read a
+# missing channel, alpha included, as zero rather than one.
 #
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
@@ -212,13 +204,10 @@ IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 # (librsvg, poppler-glib, libcdr/librevenge) this image does not ship. We
 # turn them OFF below rather than carry the missing libraries.
 #
-# Currently pinned to the m65/alpha-only branch head, still-open
-# charlesangus/openfx-arena#2: ReadPSD and the OpenRaster reader accept
-# alpha-only (1-component) images, and its .gitmodules SupportExt entry is
-# fixed to fetch from our fork (the plain NatronGitHub mirror cannot see the
-# missing-channel fix). That submodule bump depends on the still-open
-# charlesangus/openfx-supportext#4. Re-pin to the merge commit on master
-# once both land.
+# It also has ReadPSD and the OpenRaster reader accept alpha-only
+# (1-component) images, and fetches SupportExt from our fork, since the
+# NatronGitHub mirror lacks the fix that reads a missing colour channel as
+# zero.
 OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
 OPENFX_ARENA_REF="387c98e4e811746cee450e39a9f77ae4e1a55dca"
 

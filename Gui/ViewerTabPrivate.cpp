@@ -395,7 +395,8 @@ ViewerTabPrivate::getComponentsAvailabel(double time,
 void
 ViewerTabPrivate::getLayerViewsAvailabelAtTime(double time,
                                                ViewIdx view,
-                                               std::list<ImageLayerDesc>* views,
+                                               std::list<ImageLayerDesc>* layerViews,
+                                               std::list<ImageLayerDesc>* channelViews,
                                                ImageLayerDesc* storageColorLayer) const
 {
     std::set<ImageLayerDesc> storage;
@@ -409,8 +410,14 @@ ViewerTabPrivate::getLayerViewsAvailabelAtTime(double time,
         }
     }
 
-    views->assign(storage.begin(), storage.end());
-    ImageLayerDesc::expandColorViews(views);
+    if (layerViews) {
+        layerViews->assign(storage.begin(), storage.end());
+        ImageLayerDesc::expandColorViews(layerViews);
+    }
+    if (channelViews) {
+        channelViews->assign(storage.begin(), storage.end());
+        ImageLayerDesc::collapseColorToLayoutView(channelViews);
+    }
 }
 
 std::list<ViewerTabPrivate::PluginViewerContext>::iterator

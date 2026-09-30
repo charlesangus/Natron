@@ -239,6 +239,7 @@ public:
         , persistentMessageType(0)
         , persistentMessageMutex()
         , persistentMessageFromChannelSelector(false)
+        , persistentMessageFromProjectLoad(false)
         , persistentMessageRenderSequence(0)
         , channelSelectorResolvedSequence(0)
         , dataKindConflictMessage()
@@ -457,6 +458,10 @@ public:
     // Whether persistentMessage was posted by Node::setChannelSelectorMessage(). Guarded by
     // persistentMessageMutex.
     bool persistentMessageFromChannelSelector;
+
+    // Whether persistentMessage is a warning about how the project loaded. No render can make
+    // it untrue, so render-driven clears keep it. Guarded by persistentMessageMutex.
+    bool persistentMessageFromProjectLoad;
 
     // The AbortableRenderInfo sequence number of the render that posted the channel-selector
     // message, 0 when it was posted outside a render. Guarded by persistentMessageMutex.

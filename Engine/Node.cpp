@@ -1587,7 +1587,24 @@ Node::postPendingLegacyColorLayerWarning()
         return;
     }
     _imp->legacyColorLayerWarningPending = false;
-    setPersistentMessage(eMessageTypeWarning, tr("Colour layer from an older project was reset to rgba").toStdString());
+    const std::string warning = tr("Colour layer from an older project was reset to rgba").toStdString();
+    setPersistentMessage(eMessageTypeWarning, warning);
+    markPersistentMessageFromProjectLoad(warning);
+}
+
+void
+Node::markPersistentMessageFromProjectLoad(const std::string& content)
+{
+#ifdef NATRON_ENABLE_IO_META_NODES
+    NodePtr ioContainer = getIOContainer();
+    if (ioContainer) {
+        ioContainer->markPersistentMessageFromProjectLoad(content);
+    }
+#endif
+    QMutexLocker k(&_imp->persistentMessageMutex);
+    if (_imp->persistentMessage == QString::fromUtf8(content.c_str())) {
+        _imp->persistentMessageFromProjectLoad = true;
+    }
 }
 
 void
@@ -2698,9 +2715,18 @@ Node::getUnPremultSkipChannel(const ImageLayerDesc& plane,
                               const ImageLayerDesc& divisorLayer,
                               int divisorChannel)
 {
-    const bool samePlane = divisorLayer.isColorLayer() ? plane.isColorLayer() : (plane.getLayerID() == divisorLayer.getLayerID());
+    if (!divisorLayer.isColorLayer()) {
+        return (plane.getLayerID() == divisorLayer.getLayerID()) ? divisorChannel : -1;
+    }
+    if (!plane.isColorLayer()) {
+        return -1;
+    }
 
-    return samePlane ? divisorChannel : -1;
+    // The divisor may have been fetched in a wider colour layout than plane (see
+    // KnobChannelSelect::resolve()), so match the channel by its colour bit, not its index.
+    const int bit = ImageLayerDesc::colorViewChannelBit(ImageLayerDesc::colorViewForNComps(divisorLayer.getNumComponents()).getLayerID(), divisorChannel);
+
+    return ImageLayerDesc::colorViewChannelIndex(ImageLayerDesc::colorViewForNComps(plane.getNumComponents()).getLayerID(), bit);
 }
 
 int
@@ -4066,7 +4092,7 @@ Node::makePreviewImage(SequenceTime time,
         return false;
     }
 
-    effect->getNode()->clearPersistentMessageUnlessFromChannelSelector();
+    effect->getNode()->clearPersistentMessageForPreview();
 
     StatusEnum stat = effect->getRegionOfDefinition_public(nodeHash, time, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat);
     if ( (stat == eStatusFailed) || rod.isNull() ) {
@@ -4595,6 +4621,7 @@ Node::storePersistentMessage(MessageTypeEnum type,
         return false;
     }
     setChannelSelectorOwnership(fromChannelSelector);
+    _imp->persistentMessageFromProjectLoad = false;
     _imp->persistentMessageRenderSequence = fromChannelSelector ? renderSequence : 0;
     _imp->persistentMessageType = (int)type;
     _imp->persistentMessage = mess;
@@ -4729,6 +4756,7 @@ Node::clearPersistentMessageInternal()
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
         setChannelSelectorOwnership(false);
+        _imp->persistentMessageFromProjectLoad = false;
         _imp->persistentMessageRenderSequence = 0;
         changed = !_imp->persistentMessage.isEmpty();
         if (changed) {
@@ -4865,7 +4893,7 @@ Node::getNodesOwningChannelSelectorMessage(NodesList* nodes)
 }
 
 void
-Node::clearPersistentMessageUnlessFromChannelSelector()
+Node::clearPersistentMessageForPreview()
 {
     if (!getApp()) {
         return;
@@ -4873,7 +4901,7 @@ Node::clearPersistentMessageUnlessFromChannelSelector()
 #ifdef NATRON_ENABLE_IO_META_NODES
     NodePtr ioContainer = getIOContainer();
     if (ioContainer) {
-        ioContainer->clearPersistentMessageUnlessFromChannelSelector();
+        ioContainer->clearPersistentMessageForPreview();
 
         return;
     }
@@ -4881,7 +4909,7 @@ Node::clearPersistentMessageUnlessFromChannelSelector()
     bool changed = false;
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
-        if (!_imp->persistentMessageFromChannelSelector) {
+        if (!_imp->persistentMessageFromChannelSelector && !_imp->persistentMessageFromProjectLoad) {
             changed = !_imp->persistentMessage.isEmpty();
             _imp->persistentMessage.clear();
         }

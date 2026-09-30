@@ -414,7 +414,8 @@ public:
      * @brief The index, within plane, of the "(Un)premult by" divisor channel when the divisor
      * is plane's own (the classic "unpremult by its own alpha"), or -1 when the divisor belongs
      * to another layer and so is not one of plane's channels. That channel is the divisor, not
-     * something to divide, so it is left alone.
+     * something to divide, so it is left alone. Colour layouts are matched by channel, so an
+     * rgba.R divisor fetched as RGBA skips nothing in an alpha-only plane.
      **/
     static int getUnPremultSkipChannel(const ImageLayerDesc& plane, const ImageLayerDesc& divisorLayer, int divisorChannel);
 
@@ -969,10 +970,11 @@ public:
     static void getNodesOwningChannelSelectorMessage(NodesList* nodes);
 
     /**
-     * @brief Clears the persistent message unless the channel-selector check owns it: that
-     * error stays until a render or check that passes retires it.
+     * @brief Clears the persistent message before a preview render, except a channel-selector
+     * error, which stays until a render or check that passes retires it, and a project-load
+     * warning, which no render can retire.
      **/
-    void clearPersistentMessageUnlessFromChannelSelector();
+    void clearPersistentMessageForPreview();
 
 private:
     void postPersistentMessage(MessageTypeEnum type, const std::string& content, bool fromChannelSelector, U64 renderSequence, const AbortableRenderInfo* render);
@@ -1217,6 +1219,9 @@ private:
     // messages from a node still being created silently, so the colour-layer reset warning
     // waits for this call at the end of creation.
     void postPendingLegacyColorLayerWarning();
+
+    // Marks the stored persistent message as a project-load warning if its text is content.
+    void markPersistentMessageFromProjectLoad(const std::string& content);
 
     void refreshGeneratorOutputComponentsKnob();
 

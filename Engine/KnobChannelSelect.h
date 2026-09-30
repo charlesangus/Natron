@@ -115,6 +115,10 @@ public:
 
     bool isNone() const;
 
+    /**
+     * @brief *channelIndex indexes an image in the *layer layout. A colour view channel the
+     * colour storage lacks resolves to a wider colour layout in which it reads as zero.
+     **/
     bool resolve(const std::list<ImageLayerDesc>& present, ImageLayerDesc* layer, int* channelIndex) const;
 
     std::string getSummary() const;

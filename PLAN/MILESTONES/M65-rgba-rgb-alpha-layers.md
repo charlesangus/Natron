@@ -365,7 +365,7 @@ Execution notes:
   - verify: `ctest -R 'ColorViewsRender|ChannelSetRender|Shuffle|Merge|ImageConvert'`, then the full debug ctest is green. New cases: a JPEG-like RGB input into Merge's A input reads A = 0; an identity Grade `rgba` over RGB outputs A = 0; an Alpha-only stream converted to RGBA reads RGB = 0.
   - size: L
 
-- [ ] M65.P8.T5 — Natron's own layer/channel knobs replace the plugin-owned plane and channel menus on Premult, Unpremult, IDistort and STMap (umbrella; done when T5a–T5e are done)
+- [x] M65.P8.T5 — Natron's own layer/channel knobs replace the plugin-owned plane and channel menus on Premult, Unpremult, IDistort and STMap (umbrella; done when T5a–T5e are done)
   - files: see T5a–T5e
   - approach: a generic host mechanism, following the `Node::createUnPremultSelector` precedent. Native `host<param>` twins (a `KnobLayerSelect` for plane choices, which also owns Premult's processR..A quad; a `KnobChannelSelect` with 0/1 constants and no None for channel choices) hide the plugin choice (secret, locked, non-persistent) and push the encoded option ID (`uk.co.thefoundry.OfxImagePlaneColour[.C]`, `0`/`1`, `layer.C`) through `setValueFromID` in `knobChanged`. Channel choices are auto-detected via `isMultiplaneChannelChoice`, so third-party plugins built on the same library are covered; plane choices come from a table. A twin is registered with `declareLayerKnob(eRoleInputBound)` and is never the node's layerKnob. Nodes inside a Read/Write container are skipped.
   - verify: T5e's Xvfb pass is approved by the user.
@@ -395,7 +395,7 @@ Execution notes:
   - verify: `ctest -R 'ProjectSerialization|PyPlug'`: a new project's twins round-trip and the plugin choice is pushed to match; the 0/1 check; full debug ctest green.
   - size: L
 
-- [ ] M65.P8.T5e — Xvfb screenshot pass of Premult, Unpremult, IDistort and STMap
+- [x] M65.P8.T5e — Xvfb screenshot pass of Premult, Unpremult, IDistort and STMap
   - files: `build/m65-ofx-color/ofx_color.py`, `build/m65-ofx-color/run.sh`
   - approach: run the release build (or a new AppImage) and open the twin combos with `flat-three-layers.exr` connected. Assert the plane menu lists rgba/rgb/alpha/diffuse/specular/depth, the channel menus list rgba.*, rgb.*, alpha.A, 0, 1 and diffuse.*, no visible entry contains "Color", and the plugin combos are gone.
   - verify: the script passes, and the user approves the shots.
@@ -498,6 +498,7 @@ Execution notes:
 - 2026-09-29 — **T5f landed** (code `1686bd9c3`; full debug ctest 642/642, shots 166/166). The constants are removed (no dead code). A None channel twin pushes 0 for U/V, and 1 for `channelA` and `unPremultByChannel` (1 is identity for the plugin). The plane twin is `hostInputLayer`, labelled "Layer". All is stored as the reserved value `*` (`kNatronLayerSelectAll`). All drives `processAllPlanes`, which is hidden and non-persistent, and hides the quad buttons; the plugin default quad is pushed under All. Cosmetic items for the user: the unpremult-by picker has no label (as in the plugin), and "V Channel" is indented on IDistort/STMap (already so before T5f).
 - 2026-09-30 — **T5f review (user):** the channel pickers list each colour channel three times (under rgba, rgb and alpha), which makes no sense for aliases. Show each once, under the view matching the stream's layout; alpha-only shows as `alpha`. This becomes T5g; T5e stays open for re-shots. The unlabelled unpremult-by picker and the indented "V Channel" on IDistort/STMap go to M56 (visual polish).
 - 2026-09-30 — **T5g landed** (code `10222df70`; full debug ctest 649/649, shots 166/166 on release). `Node::listChannelViewsForKnob` collapses the colour storage entry to the one view matching its layout (`ImageLayerDesc::collapseColorToLayoutView`); only `KnobGuiChannelSelect` uses it, so layer pickers, masks, channel sets and the shuffle map still offer every view. Alpha-only lists one entry, text `alpha`, value `alpha.A`. An aliased saved value (`rgb.G` on RGBA) displays as its listed channel without the absent marker; a value no listed view carries (`rgba.R` on alpha-only) keeps the marker and reads zero. The `natron-dev` image was rebuilt from the gcr mirror first.
+- 2026-09-30 — **T5e/T5 approved** by the user (the T5g re-shots).
 
 ## Risks
 

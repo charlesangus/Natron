@@ -1702,7 +1702,7 @@ std::string
 Image::getFormatString(const ImageLayerDesc& comps,
                        ImageBitDepthEnum depth)
 {
-    std::string s = comps.getLayerLabel() + '.' + comps.getChannelsLabel();
+    std::string s = comps.getUserFacingLabel() + '.' + comps.getChannelsLabel();
 
     s.append( getDepthString(depth) );
 

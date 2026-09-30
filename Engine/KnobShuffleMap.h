@@ -218,7 +218,18 @@ public:
     bool hasExplicitSource(int outSlot, int outIndex) const WARN_UNUSED_RETURN;
 
     /**
-     * @brief Setting src == defaultSource(outSlot, outIndex) removes the row for
+     * @brief (outSlot, outIndex)'s implicit source absent any stored row: defaultSource()
+     * ordinarily, but when this knob's holder is a Shuffle node whose outSlot output and
+     * slot are both colour views (rgba, rgb, alpha, xy), the slot's channel on the colour
+     * bit outIndex occupies in the output view instead -- the same bit wiring
+     * Shuffle::getEffectiveSource() falls back to when there is no explicit row, so the two
+     * always agree on which value is redundant. setSource() uses this, not defaultSource(),
+     * to decide whether a row is worth storing.
+     **/
+    ShuffleSource implicitDefault(int outSlot, int outIndex) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Setting src == implicitDefault(outSlot, outIndex) removes the row for
      * (outSlot, outIndex), if any; any other value adds or replaces it. Always exactly
      * one setValue() call, hence one undo step.
      **/

@@ -144,19 +144,19 @@ ImageLayer::getNoneComponents()
 ImageLayer
 ImageLayer::getRGBAComponents()
 {
-    return ImageLayer(ImageLayerDesc::getRGBAComponents());
+    return ImageLayer(ImageLayerDesc::getColorView(kNatronColorViewRGBA));
 }
 
 ImageLayer
 ImageLayer::getRGBComponents()
 {
-    return ImageLayer(ImageLayerDesc::getRGBComponents());
+    return ImageLayer(ImageLayerDesc::getColorView(kNatronColorViewRGB));
 }
 
 ImageLayer
 ImageLayer::getAlphaComponents()
 {
-    return ImageLayer(ImageLayerDesc::getAlphaComponents());
+    return ImageLayer(ImageLayerDesc::getColorView(kNatronColorViewAlpha));
 }
 
 ImageLayer
@@ -1082,6 +1082,7 @@ Effect::getAvailableLayers(int inputNb) const
 
     std::list<ImageLayerDesc> availComps;
     getInternalNode()->getEffectInstance()->getAvailableLayers(time, ViewIdx(0), inputNb, &availComps);
+    ImageLayerDesc::expandColorViews(&availComps);
     for (std::list<ImageLayerDesc>::iterator it = availComps.begin(); it != availComps.end(); ++it) {
         ret.push_back(ImageLayer(*it));
     }

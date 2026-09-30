@@ -547,12 +547,6 @@ App::addProjectLayer(const QString& id,
         return 0;
     }
 
-    // A reserved alias (e.g. "rgba") never enters the registry: it is always the built-in Color layer.
-    const ImageLayerDesc* alias = LayerRegistry::reservedAlias(idStr);
-    if (alias) {
-        return new ImageLayer(*alias);
-    }
-
     ImageLayerDesc found;
     if (getInternalApp()->getProject()->findLayer(idStr, &found)) {
         return new ImageLayer(found);

@@ -373,7 +373,7 @@ static void
 ensureUnknownChoiceIsNotInternalLayerID(QString& label)
 {
     if (label.contains(QLatin1String(kNatronColorLayerID))) {
-        label.replace(QLatin1String(kNatronColorLayerID), QLatin1String(kNatronColorLayerLabel));
+        label.replace(QLatin1String(kNatronColorLayerID), QLatin1String(kNatronColorViewRGBA));
     } else if (label.contains(QLatin1String(kNatronBackwardMotionVectorsLayerID))) {
         label.replace(QLatin1String(kNatronBackwardMotionVectorsLayerID), QLatin1String(kNatronBackwardMotionVectorsLayerLabel));
     } else if (label.contains(QLatin1String(kNatronForwardMotionVectorsLayerID))) {

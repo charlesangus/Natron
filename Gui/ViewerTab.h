@@ -158,6 +158,12 @@ private:
 
     void setDisplayChannels(int index, bool setBothInputs);
 
+    /**
+     * @brief Switches the display channels to A when the chosen layer (or colour view) has a
+     * single channel, and back to RGB when leaving such a layer if the switch to A was automatic.
+     **/
+    void autoSwitchDisplayChannelsForLayer(const ImageLayerDesc& chosen);
+
 public:
 
     bool isAutoContrastEnabled() const;

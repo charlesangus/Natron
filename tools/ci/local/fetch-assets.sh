@@ -139,13 +139,14 @@ fi
 # Write node's layer-naming delta also needed
 # charlesangus/openfx-supportext#1.
 #
-# Verified to build clean against the image's OIIO 3.1.16.0 / OCIO 2.5.2 /
-# OpenEXR 3.4.15.
+# This revision also has getClipComponents report each frame's layers,
+# SeGrain/OIIOText/ReadPNG/WritePNG accept alpha-only (1-component) images,
+# and its SupportExt read a missing colour channel as zero, not one.
 #
 # SEEXPR_REF: wdas/SeExpr, branch v1-2.11, not v2/v3 -- openfx-io's
 # SeNoise.cpp targets the v1-2.11 header layout. Not forked.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="23f8adcfefc8ee4bf5ab7daba12166b05eb16120"
+OPENFX_IO_REF="55ded52e67d67acfaa9d0bb11654010f12082c83"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 
@@ -159,11 +160,16 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # This revision excludes the OFX Shuffle plugin, so Natron does not ship it
 # alongside the native fr.natron.Shuffle and fr.natron.ShuffleCopy.
 #
+# It also has Grade, Premult/Unpremult, ColorCorrect, ColorSuppress,
+# ContactSheet and LayerContactSheet accept alpha-only (1-component) images,
+# and the Distortion UV/mask channel pickers and its SupportExt read a
+# missing channel, alpha included, as zero rather than one.
+#
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
 # this container with no other source changes needed.
 OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
-OPENFX_MISC_REF="d293dcd64f51f2be8718655e8dc6590f82645d29"
+OPENFX_MISC_REF="721e35d7f8f9486e73c119c3a5ffe3cabb400cf2"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a
@@ -197,8 +203,13 @@ IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 # behaviour is unchanged) that gate the three readers whose dependencies
 # (librsvg, poppler-glib, libcdr/librevenge) this image does not ship. We
 # turn them OFF below rather than carry the missing libraries.
+#
+# It also has ReadPSD and the OpenRaster reader accept alpha-only
+# (1-component) images, and fetches SupportExt from our fork, since the
+# NatronGitHub mirror lacks the fix that reads a missing colour channel as
+# zero.
 OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
-OPENFX_ARENA_REF="d29ac7f180e1ea5cca2b8c0492686638836b605c"
+OPENFX_ARENA_REF="387c98e4e811746cee450e39a9f77ae4e1a55dca"
 
 # OPENFX_METADATA_REF: charlesangus/openfx -- our ASWF-lineage OpenFX fork,
 # whose Support/Plugins/Metadata* examples exercise the clip and image

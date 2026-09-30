@@ -67,6 +67,7 @@ public:
 
 protected:
     virtual void createWidget(QHBoxLayout* layout) OVERRIDE FINAL;
+    virtual bool listsChannelViews() const OVERRIDE FINAL;
     virtual void refreshWidgets() OVERRIDE FINAL;
 
 private:

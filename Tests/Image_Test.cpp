@@ -28,6 +28,7 @@
 #include <cstring>
 #include <gtest/gtest.h>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "Engine/Image.h"
@@ -307,4 +308,69 @@ TEST(ImageConvertToFormatTest, RgbaToRgbLeavesColorUntouchedWhenColorSpaceIsNotL
     for (float c : result) {
         EXPECT_NEAR(c, kColor, kLutRoundTripTolerance);
     }
+}
+
+namespace {
+
+std::vector<float>
+convertOnePixel(const ImageLayerDesc& srcComps,
+                const std::vector<float>& srcPixel,
+                const ImageLayerDesc& dstComps)
+{
+    RectI bounds(0, 0, 1, 1);
+    ImagePtr src = makeLocalImage(srcComps, eImageBitDepthFloat, bounds);
+    ImagePtr dst = makeLocalImage(dstComps, eImageBitDepthFloat, bounds);
+
+    setFloatPixel(*src, 0, 0, srcPixel);
+    src->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear, -1, false, dst.get());
+
+    return getFloatPixel(*dst, 0, 0, dstComps.getNumComponents());
+}
+
+} // namespace
+
+TEST(ImageConvertToFormatTest, RgbToRgbaReadsAlphaAsZero)
+{
+    const std::vector<float> expected = { 0.2f, 0.4f, 0.6f, 0.f };
+
+    EXPECT_EQ(expected, convertOnePixel(ImageLayerDesc::getRGBComponents(), { 0.2f, 0.4f, 0.6f }, ImageLayerDesc::getRGBAComponents()));
+}
+
+TEST(ImageConvertToFormatTest, AlphaToRgbaReadsRgbAsZero)
+{
+    const std::vector<float> expected = { 0.f, 0.f, 0.f, 0.7f };
+
+    EXPECT_EQ(expected, convertOnePixel(ImageLayerDesc::getAlphaComponents(), { 0.7f }, ImageLayerDesc::getRGBAComponents()));
+}
+
+TEST(ImageConvertToFormatTest, AlphaToRgbReadsRgbAsZero)
+{
+    const std::vector<float> expected = { 0.f, 0.f, 0.f };
+
+    EXPECT_EQ(expected, convertOnePixel(ImageLayerDesc::getAlphaComponents(), { 0.7f }, ImageLayerDesc::getRGBComponents()));
+}
+
+TEST(ImageConvertToFormatTest, XyToRgbaReadsBlueAndAlphaAsZero)
+{
+    const std::vector<float> expectedRGBA = { 0.2f, 0.4f, 0.f, 0.f };
+    const std::vector<float> expectedRGB = { 0.2f, 0.4f, 0.f };
+
+    EXPECT_EQ(expectedRGBA, convertOnePixel(ImageLayerDesc::getXYComponents(), { 0.2f, 0.4f }, ImageLayerDesc::getRGBAComponents()));
+    EXPECT_EQ(expectedRGB, convertOnePixel(ImageLayerDesc::getXYComponents(), { 0.2f, 0.4f }, ImageLayerDesc::getRGBComponents()));
+}
+
+// A one-channel plane other than colour reaches a plug-in through its RGBA colour clip and is read
+// back from channel 0, so it must land in every channel, not only alpha.
+TEST(ImageConvertToFormatTest, NonColorPlanesKeepReplicationAndAlphaOne)
+{
+    const ImageLayerDesc depth("depth", "depth", "", std::vector<std::string>(1, "Z"));
+    const std::vector<float> expectedDepth = { 0.7f, 0.7f, 0.7f, 0.7f };
+
+    EXPECT_EQ(expectedDepth, convertOnePixel(depth, { 0.7f }, ImageLayerDesc::getRGBAComponents()));
+
+    const std::vector<std::string> xyz = { "X", "Y", "Z" };
+    const ImageLayerDesc normals("normals", "normals", "", xyz);
+    const std::vector<float> expectedNormals = { 0.2f, 0.4f, 0.6f, 1.f };
+
+    EXPECT_EQ(expectedNormals, convertOnePixel(normals, { 0.2f, 0.4f, 0.6f }, ImageLayerDesc::getRGBAComponents()));
 }

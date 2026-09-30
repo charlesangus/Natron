@@ -392,6 +392,34 @@ ViewerTabPrivate::getComponentsAvailabel(double time,
     }
 }
 
+void
+ViewerTabPrivate::getLayerViewsAvailabelAtTime(double time,
+                                               ViewIdx view,
+                                               std::list<ImageLayerDesc>* layerViews,
+                                               std::list<ImageLayerDesc>* channelViews,
+                                               ImageLayerDesc* storageColorLayer) const
+{
+    std::set<ImageLayerDesc> storage;
+    getComponentsAvailabel(time, view, &storage);
+
+    *storageColorLayer = ImageLayerDesc::getNoneComponents();
+    for (std::set<ImageLayerDesc>::const_iterator it = storage.begin(); it != storage.end(); ++it) {
+        if (it->isColorLayer()) {
+            *storageColorLayer = *it;
+            break;
+        }
+    }
+
+    if (layerViews) {
+        layerViews->assign(storage.begin(), storage.end());
+        ImageLayerDesc::expandColorViews(layerViews);
+    }
+    if (channelViews) {
+        channelViews->assign(storage.begin(), storage.end());
+        ImageLayerDesc::collapseColorToLayoutView(channelViews);
+    }
+}
+
 std::list<ViewerTabPrivate::PluginViewerContext>::iterator
 ViewerTabPrivate::findActiveNodeContextForPlugin(const std::string& pluginID)
 {

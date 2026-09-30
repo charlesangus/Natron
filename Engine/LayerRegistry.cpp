@@ -72,26 +72,29 @@ joinChannels(const std::vector<std::string>& channels)
     return ret;
 }
 
-const ImageLayerDesc*
-LayerRegistry::reservedAlias(const std::string& id)
-{
-    static const char* const aliases[] = { "Color", "rgba", "rgb", "alpha", "RGBA", "RGB", "A", "XY" };
-
-    if (matchesAnyCaseInsensitive(id, aliases, sizeof(aliases) / sizeof(aliases[0]))) {
-        static const ImageLayerDesc colorAlias = ImageLayerDesc::getRGBAComponents();
-        return &colorAlias;
-    }
-    return 0;
-}
-
 static bool
 isRefusedReservedName(const std::string& id)
 {
     static const char* const refused[] = {
-        "none", "all", "Backward", "Forward", "DisparityLeft", "DisparityRight", "Motion", "Disparity"
+        "none", "all", "Backward", "Forward", "DisparityLeft", "DisparityRight", "Motion", "Disparity",
+        "Color", "A", kNatronColorLayerID
     };
 
-    return matchesAnyCaseInsensitive(id, refused, sizeof(refused) / sizeof(refused[0]));
+    if (matchesAnyCaseInsensitive(id, refused, sizeof(refused) / sizeof(refused[0]))) {
+        return true;
+    }
+
+    // The exact colour view IDs are legitimate re-registrations of the built-ins (handled by
+    // add()'s built-in-conflict path below); any other case variant is refused.
+    static const char* const colorViews[] = {
+        kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY
+    };
+    for (std::size_t i = 0; i < sizeof(colorViews) / sizeof(colorViews[0]); ++i) {
+        if (id != colorViews[i] && equalsCaseInsensitive(id, colorViews[i])) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool
@@ -176,7 +179,10 @@ LayerRegistry::LayerRegistry()
     std::vector<LayerRegistryEntry> initial;
 
     static const ImageLayerDesc* const builtins[] = {
-        &ImageLayerDesc::getRGBAComponents(),
+        &ImageLayerDesc::getColorView(kNatronColorViewRGBA),
+        &ImageLayerDesc::getColorView(kNatronColorViewRGB),
+        &ImageLayerDesc::getColorView(kNatronColorViewAlpha),
+        &ImageLayerDesc::getColorView(kNatronColorViewXY),
         &ImageLayerDesc::getDisparityLeftComponents(),
         &ImageLayerDesc::getDisparityRightComponents(),
         &ImageLayerDesc::getBackwardMotionComponents(),
@@ -238,9 +244,6 @@ LayerRegistry::add(const ImageLayerDesc& descIn, LayerRegistryEntry::OriginEnum 
 {
     const std::string& id = descIn.getLayerID();
 
-    if (reservedAlias(id)) {
-        return eAddResultUnchanged;
-    }
     if (isRefusedReservedName(id)) {
         if (error) {
             *error = "\"" + id + "\" is a reserved name and cannot be used for a layer.";
@@ -428,7 +431,7 @@ LayerRegistry::groupChannelNames(const std::vector<std::string>& flat, std::vect
                     ordered.push_back(g.channels[c]);
                 }
             }
-            layers->push_back(ImageLayerDesc(kNatronColorLayerID, kNatronColorLayerLabel, "", ordered));
+            layers->push_back(ImageLayerDesc(kNatronColorLayerID, kNatronColorStorageLabel, "", ordered));
             break;
         }
         case eLayerGroupKindDepth:
@@ -440,5 +443,27 @@ LayerRegistry::groupChannelNames(const std::vector<std::string>& flat, std::vect
         }
     }
 } // groupChannelNames
+
+void
+LayerRegistry::toStoragePlanes(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& snapshot, std::list<ImageLayerDesc>* layers)
+{
+    if (!layers) {
+        return;
+    }
+    layers->clear();
+
+    bool colorAdded = false;
+    for (std::vector<LayerRegistryEntry>::const_iterator it = snapshot->begin(); it != snapshot->end(); ++it) {
+        const ImageLayerDesc& desc = it->desc;
+        if (desc.isColorLayer()) {
+            if (!colorAdded) {
+                layers->push_back(ImageLayerDesc::getRGBAComponents());
+                colorAdded = true;
+            }
+            continue;
+        }
+        layers->push_back(desc);
+    }
+} // toStoragePlanes
 
 NATRON_NAMESPACE_EXIT

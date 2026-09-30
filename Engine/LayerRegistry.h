@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -83,9 +84,15 @@ public:
 
     static bool validate(const ImageLayerDesc& desc, bool fromFile, std::string* error);
 
-    static const ImageLayerDesc* reservedAlias(const std::string& id);
-
     static void groupChannelNames(const std::vector<std::string>& flat, std::vector<ImageLayerDesc>* layers);
+
+    /**
+     * @brief Folds a registry snapshot down to storage-level planes: the colour views
+     * (rgba/rgb/alpha/xy) collapse into the one getRGBAComponents() entry, at the position
+     * of the first view found; every other entry is copied as-is. For OFX-facing consumers,
+     * which must see kFnOfxImagePlaneColour exactly once.
+     **/
+    static void toStoragePlanes(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& snapshot, std::list<ImageLayerDesc>* layers);
 
 private:
     mutable QMutex _mutex;

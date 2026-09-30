@@ -15,8 +15,8 @@ POLL_TIMEOUT_S = 20.0
 SETTLE_MS = 400
 STARTUP_TIMEOUT_S = 60.0
 ROUND_TRIP = (1, 2, 1, 2, 1, 2, 1)
-# The Color layer's ID; "Color" is only its label.
-COLOUR = "uk.co.thefoundry.OfxImagePlaneColour"
+# The whole-plane colour view; the other colour views are rgb, alpha and xy.
+COLOUR = "rgba"
 
 
 class GraphAborted(Exception):
@@ -254,7 +254,7 @@ try:
 
     def check_colour_out(shuffle):
         layer = shuffle.getParam("out1").getLayer()
-        check(layer == COLOUR, "%s's Out 1 is Color (%r)" % (shuffle.getLabel(), layer))
+        check(layer == COLOUR, "%s's Out 1 is rgba (%r)" % (shuffle.getLabel(), layer))
 
     # QGraphicsItems are left alone: they are not QObjects, so PySide cannot tell when Natron
     # deletes one, and a wrapper it hands back for a reused address crashes when used. The node
@@ -406,7 +406,7 @@ try:
             if frame == 2:
                 gt.shot("menus-viewer-keeps-diffuse-frame2.png")
         items = viewer_items() or []
-        back = next((n for n, i in enumerate(items) if "Color" in i or "RGBA" in i), -1)
+        back = next((n for n, i in enumerate(items) if "rgba" in i), -1)
         need(back >= 0, "the viewer's layer menu has a colour entry", repr(items))
         QMetaObject.invokeMethod(combo, "setCurrentIndex", Q_ARG(int, back))
         yield from verify(lambda: "diffuse" not in viewer_current(),
@@ -441,7 +441,7 @@ try:
         need(channels is not None, "the Switch has a channels selector")
 
         per_frame = {1: (None, "red"), 2: (["diffuse.g", "not in the Source input"], "black")}
-        for mode in ("Color", "All"):
+        for mode in ("rgba", "All"):
             if mode == "All":
                 channels.setAll()
             else:
@@ -498,17 +498,18 @@ try:
         connect(viewer, 0, plain)
         for frame in (1, 2, 1):
             seek(frame)
-            yield from verify_node(plain, "RGB-only input, default Shuffle, frame %d: error badge naming Color's A, "
-                                   "no silent pass-through" % frame, [".A", "not in the Source input"], "black")
+            yield from verify_node(plain, "RGB-only input, default Shuffle, frame %d: no error badge, the missing "
+                                   "rgba.A reads 0 silently, viewer renders red" % frame, None, "red")
         gt.shot("g4-rgb-only-alpha-error.png")
         plain.getParam("mapping").connect("1", "out1.#3")
-        yield from verify_node(plain, "A row set to 1: badge clears, viewer renders red", None, "red")
+        yield from verify_node(plain, "A row set to 1: still no error, viewer renders red", None, "red")
         display_channels("Alpha")
         yield from verify_node(plain, "A row set to 1: the viewer's alpha is 1", None, "white")
         gt.shot("g4-rgb-only-alpha-1.png")
         display_channels("RGB")
         plain.getParam("mapping").disconnect("out1.#3")
-        yield from verify_node(plain, "A row back to default: the error returns", [".A"], "black")
+        yield from verify_node(plain, "A row back to default: still no error, the missing rgba.A reads 0 again",
+                               None, "red")
 
         destroy_graph()
         read_rgba = create_reader("flat-rgba-only.exr", 0, 100)
@@ -518,16 +519,16 @@ try:
         connect(copy, 1, read_rgb)
         connect(viewer, 0, copy)
         copy_mapping = copy.getParam("mapping")
-        yield from verify_node(copy, "ShuffleCopy, input 1 RGB-only: error badge naming Color's A from input 1",
-                               [".A", "not in the 1 input"], "black")
+        yield from verify_node(copy, "ShuffleCopy, input 1 RGB-only: no error, the missing rgba.A from input 1 "
+                               "reads 0 silently, viewer renders red", None, "red")
         gt.shot("g4-shufflecopy-alpha-error.png")
         copy_mapping.connect("1", "out1.#3")
-        yield from verify_node(copy, "ShuffleCopy A row set to 1: badge clears", None, "red")
+        yield from verify_node(copy, "ShuffleCopy A row set to 1: still no error", None, "red")
         # With the A row left on the constant 1, nothing would read input 1 once it is
         # disconnected, so the row goes back to its default before the disconnect is checked.
         copy_mapping.disconnect("out1.#3")
-        yield from verify_node(copy, "ShuffleCopy A row back to default: the error returns",
-                               [".A", "not in the 1 input"], "black")
+        yield from verify_node(copy, "ShuffleCopy A row back to default: still no error, the missing rgba.A from "
+                               "input 1 reads 0 again", None, "red")
         copy.disconnectInput(1)
         yield from verify_node(copy, "ShuffleCopy input 1 disconnected: no badge, viewer renders red", None, "red")
         display_channels("Alpha")
@@ -551,7 +552,7 @@ try:
         writer.getParam("out1").setLayer("diffuse")
         need(writer.getParam("out1").getLayer() == "diffuse", "the first Shuffle's Out 1 is diffuse",
              repr(writer.getParam("out1").getLayer()))
-        # diffuse.g takes Color.r (1) rather than Color.g (0), so the downstream read of
+        # diffuse.g takes rgba.r (1) rather than rgba.g (0), so the downstream read of
         # diffuse.g renders red where it succeeds, which black (the error) cannot be mistaken for.
         writer.getParam("mapping").connect("in1.#0", "out1.#1")
         disable = writer.getParam("disableNode")

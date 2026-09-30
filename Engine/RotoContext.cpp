@@ -4680,7 +4680,6 @@ RotoContext::getOrCreateGlobalMergeNode(int *availableInputIndex)
     if (!mergeNode) {
         return mergeNode;
     }
-    mergeNode->setUseAlpha0ToConvertFromRGBToRGBA(true);
     if ( getNode()->isDuringPaintStrokeCreation() ) {
         mergeNode->setWhileCreatingPaintStroke(true);
     }

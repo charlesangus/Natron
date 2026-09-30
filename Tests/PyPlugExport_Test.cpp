@@ -53,6 +53,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Project.h"
+#include "Engine/PyNode.h"
 #include "Engine/PyParameter.h"
 
 NATRON_NAMESPACE_USING
@@ -139,7 +140,7 @@ TEST_F(PyPlugExportTest, BuiltInLayerReferenceEmitsNoAddProjectLayer)
 
     project->reset(false, true);
 
-    NodeGroupPtr group = buildGroupWithRotoTargeting(kNatronColorLayerID);
+    NodeGroupPtr group = buildGroupWithRotoTargeting(kNatronColorViewRGBA);
     ASSERT_TRUE(bool(group));
 
     QString output;
@@ -557,6 +558,83 @@ TEST_F(PyPlugExportTest, ShuffleMappingRoundTripsThroughPyPlugExport)
     project->reset(false, true);
 }
 
+// KnobShuffleMap::implicitDefault() is bit-aware for colour views: an "alpha" output's only
+// channel implicitly reads its main input's A bit, not the input's channel at the same
+// index (0). The exporter must compare a row against implicitDefault(), not the plain
+// identity-by-index defaultSource(), or a row that only overrides the colour bit (out1.A <-
+// in1.R here, in1 being rgba) looks unchanged and is dropped from the exported script.
+TEST_F(PyPlugExportTest, ShuffleColorBitAwareOverrideRoundTripsThroughPyPlugExport)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    NodePtr groupNode = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(groupNode));
+    NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(groupNode->getEffectInstance());
+    ASSERT_TRUE(bool(group));
+    NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group);
+    ASSERT_TRUE(bool(collection));
+
+    CreateNodeArgs shuffleArgs(PLUGINID_NATRON_SHUFFLE, collection);
+    NodePtr shuffle = getApp()->createNode(shuffleArgs);
+    ASSERT_TRUE(bool(shuffle)) << "node creation failed for " << PLUGINID_NATRON_SHUFFLE;
+    const std::string shuffleScriptName = shuffle->getScriptName();
+
+    KnobLayerSelectPtr in1 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamIn1));
+    ASSERT_TRUE(bool(in1));
+    in1->setLayer(kNatronColorViewRGBA);
+
+    KnobLayerSelectPtr out1 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamOut1));
+    ASSERT_TRUE(bool(out1));
+    out1->setLayer(kNatronColorViewAlpha);
+
+    KnobShuffleMapPtr mapping = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle->getKnobByName(kShuffleParamMapping));
+    ASSERT_TRUE(bool(mapping));
+    // out1.A (alpha's only channel, index 0) <- in1.R (rgba's index 0). implicitDefault(1, 0)
+    // is in1's A bit (index 3 on rgba), so this differs from the implicit default and is kept
+    // as an explicit row.
+    mapping->setSource(1, 0, ShuffleSource::makeInput(1, 0));
+    ASSERT_EQ(std::size_t(1), mapping->getRows().size());
+
+    QString output;
+    group->exportGroupToPython(QString::fromUtf8("test.pyplug.shufflecolorbit"), QString::fromUtf8("ShuffleColorBitGroup"), QString(), QString(), QString::fromUtf8("Other"), 1, output);
+
+    EXPECT_TRUE(output.contains(QString::fromUtf8("param.connect(\"in1.R\", \"out1.A\")"))) << output.toStdString();
+
+    project->reset(false, true);
+
+    std::string interpError, interpOutput;
+    ASSERT_TRUE(interpretPythonScript(output.toStdString(), &interpError, &interpOutput)) << interpError;
+
+    CreateNodeArgs containerArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    containerArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    NodePtr container = getApp()->createNode(containerArgs);
+    ASSERT_TRUE(bool(container));
+
+    std::string appVar = getApp()->getAppIDString();
+    std::string callScript = "createInstance(" + appVar + ", " + appVar + "." + container->getFullyQualifiedName() + ")\n";
+    ASSERT_TRUE(interpretPythonScript(callScript, &interpError, &interpOutput)) << interpError;
+
+    NodeCollectionPtr containerCollection = std::dynamic_pointer_cast<NodeCollection>(container->getEffectInstance());
+    ASSERT_TRUE(bool(containerCollection));
+    NodePtr shuffle2 = containerCollection->getNodeByName(shuffleScriptName);
+    ASSERT_TRUE(bool(shuffle2));
+
+    KnobShuffleMapPtr mapping2 = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle2->getKnobByName(kShuffleParamMapping));
+    ASSERT_TRUE(bool(mapping2));
+    std::vector<ShuffleMapRow> rows2 = mapping2->getRows();
+    ASSERT_EQ(std::size_t(1), rows2.size());
+    EXPECT_EQ(1, rows2[0].outSlot);
+    EXPECT_EQ(0, rows2[0].outIndex);
+    EXPECT_EQ(ShuffleSource::eInput, rows2[0].src.kind);
+    EXPECT_EQ(1, rows2[0].src.slot);
+    EXPECT_EQ(0, rows2[0].src.index);
+
+    project->reset(false, true);
+}
+
 // A row can outlive the channel names it was recorded with: its slot set to None, or to a
 // layer with fewer channels. Such a row is written by index ("in2.#1"), which getSource()
 // reports and connect() reads back, so the export neither drops it nor changes it.
@@ -686,6 +764,189 @@ TEST_F(PyPlugExportTest, ShuffleIndexFormIsDistinctFromANumericChannelName)
 
     param.connect(param.getSource(QString::fromUtf8("out1.B")), QString::fromUtf8("out1.G"));
     EXPECT_TRUE(ShuffleSource::makeInput(2, 2) == mapping->getSource(1, 1));
+
+    project->reset(false, true);
+}
+
+// Grade's built-in "channels" knob is not a user knob, so its row is exported through the
+// raw KnobStringBase path (exportKnobValues()'s isChannelSetKnob branch), not the
+// createChannelSetParam()/setLayer() one UserChannelSetAliasRoundTripsThroughPyPlugExport
+// exercises. Either path must round-trip a colour view row correctly.
+TEST_F(PyPlugExportTest, GradeOnRGBLayerRowRoundTripsThroughPyPlugExport)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    NodePtr groupNode = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(groupNode));
+    NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(groupNode->getEffectInstance());
+    ASSERT_TRUE(bool(group));
+    NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group);
+    ASSERT_TRUE(bool(collection));
+
+    CreateNodeArgs gradeArgs(PLUGINID_OFX_GRADE, collection);
+    NodePtr grade = getApp()->createNode(gradeArgs);
+    ASSERT_TRUE(bool(grade)) << "node creation failed for " << PLUGINID_OFX_GRADE;
+    const std::string gradeScriptName = grade->getScriptName();
+
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(grade->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(channels));
+    channels->setLayer(0, kNatronColorViewRGB, NULL);
+    ASSERT_EQ(std::string(kNatronColorViewRGB), channels->getRows()[0].layerOrPattern);
+
+    QString output;
+    group->exportGroupToPython(QString::fromUtf8("test.pyplug.graderdb"), QString::fromUtf8("GradeRGBGroup"), QString(), QString(), QString::fromUtf8("Other"), 1, output);
+
+    project->reset(false, true);
+
+    std::string interpError, interpOutput;
+    ASSERT_TRUE(interpretPythonScript(output.toStdString(), &interpError, &interpOutput)) << interpError;
+
+    CreateNodeArgs containerArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    containerArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    NodePtr container = getApp()->createNode(containerArgs);
+    ASSERT_TRUE(bool(container));
+
+    std::string appVar = getApp()->getAppIDString();
+    std::string callScript = "createInstance(" + appVar + ", " + appVar + "." + container->getFullyQualifiedName() + ")\n";
+    ASSERT_TRUE(interpretPythonScript(callScript, &interpError, &interpOutput)) << interpError;
+
+    NodeCollectionPtr containerCollection = std::dynamic_pointer_cast<NodeCollection>(container->getEffectInstance());
+    ASSERT_TRUE(bool(containerCollection));
+    NodePtr grade2 = containerCollection->getNodeByName(gradeScriptName);
+    ASSERT_TRUE(bool(grade2));
+
+    KnobChannelSetPtr channels2 = std::dynamic_pointer_cast<KnobChannelSet>(grade2->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(channels2));
+    std::vector<ChannelSetRow> rows2 = channels2->getRows();
+    ASSERT_EQ(std::size_t(1), rows2.size());
+    EXPECT_EQ(ChannelSetRow::eModeLayer, rows2[0].mode);
+    EXPECT_EQ(std::string(kNatronColorViewRGB), rows2[0].layerOrPattern);
+
+    project->reset(false, true);
+}
+
+// The Python layer and channel setters raise on the colour storage ID, which the knobs they
+// wrap still accept so that loading a project can reset it rather than throw.
+//
+// Calling the Param wrapper directly from a gtest body has no Python thread state installed
+// on this thread, so PyErr_SetString() crashes (see PythonGILLocker in AppManager.h): every
+// other test in this suite that exercises a raised Python exception instead runs through
+// interpretPythonScript(), whose PythonGILLocker takes the GIL for the call. These do the
+// same, calling the setter the way an actual PyPlug would.
+TEST_F(PyPlugExportTest, ChannelSetLayerRejectsRetiredColorLayerID)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    NodePtr groupNode = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(groupNode));
+    const std::string groupName = groupNode->getScriptName();
+
+    KnobChannelSetPtr master = groupNode->getEffectInstance()->createChannelSetKnob("retiredLayer", "Retired Layer");
+    ASSERT_TRUE(bool(master));
+    ASSERT_EQ(std::string(kNatronColorViewRGBA), master->getRows()[0].layerOrPattern);
+
+    const std::string appVar = getApp()->getAppIDString();
+    const std::string script = "retiredLayerParam = " + appVar + ".getNode(\"" + groupName + "\").getParam(\"retiredLayer\")\n"
+                                                                                             "retiredLayerParam.setLayer(\""
+        + std::string(kNatronColorLayerID) + "\", [\"A\"], 0)\n";
+
+    std::string error, output;
+    EXPECT_FALSE(interpretPythonScript(script, &error, &output));
+    EXPECT_NE(std::string::npos, error.find("ValueError")) << error;
+
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), master->getRows()[0].layerOrPattern);
+
+    project->reset(false, true);
+}
+
+TEST_F(PyPlugExportTest, LayerSelectSetLayerRejectsRetiredColorLayerID)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    NodePtr groupNode = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(groupNode));
+    const std::string groupName = groupNode->getScriptName();
+
+    KnobLayerSelectPtr master = groupNode->getEffectInstance()->createLayerSelectKnob("retiredLayer", "Retired Layer", false);
+    ASSERT_TRUE(bool(master));
+    master->setLayer(kNatronColorViewAlpha);
+    ASSERT_EQ(std::string(kNatronColorViewAlpha), master->getLayer());
+
+    const std::string appVar = getApp()->getAppIDString();
+    const std::string script = "retiredLayerParam = " + appVar + ".getNode(\"" + groupName + "\").getParam(\"retiredLayer\")\n"
+                                                                                             "retiredLayerParam.setLayer(\""
+        + std::string(kNatronColorLayerID) + "\")\n";
+
+    std::string error, output;
+    EXPECT_FALSE(interpretPythonScript(script, &error, &output));
+    EXPECT_NE(std::string::npos, error.find("ValueError")) << error;
+
+    EXPECT_EQ(std::string(kNatronColorViewAlpha), master->getLayer());
+
+    project->reset(false, true);
+}
+
+TEST_F(PyPlugExportTest, ChannelSelectSetRejectsRetiredColorLayerID)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    NodePtr groupNode = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(groupNode));
+    const std::string groupName = groupNode->getScriptName();
+
+    KnobChannelSelectPtr master = groupNode->getEffectInstance()->createChannelSelectKnob("retiredChannel", "Retired Channel");
+    ASSERT_TRUE(bool(master));
+    ASSERT_EQ(std::string(kNatronColorViewRGBA) + ".A", master->get());
+
+    const std::string appVar = getApp()->getAppIDString();
+    const std::string script = "retiredChannelParam = " + appVar + ".getNode(\"" + groupName + "\").getParam(\"retiredChannel\")\n"
+                                                                                               "retiredChannelParam.set(\""
+        + std::string(kNatronColorLayerID) + ".A\")\n";
+
+    std::string error, output;
+    EXPECT_FALSE(interpretPythonScript(script, &error, &output));
+    EXPECT_NE(std::string::npos, error.find("ValueError")) << error;
+
+    EXPECT_EQ(std::string(kNatronColorViewRGBA) + ".A", master->get());
+
+    project->reset(false, true);
+}
+
+// Effect::getAvailableLayers() is the Python-facing list (Node::listLayersForKnob() stays at
+// storage level for engine code): the storage colour entry it starts with must come back as
+// its views, in the order rgba, rgb, alpha, (xy), not as a single "Color" entry.
+TEST_F(PyPlugExportTest, GetAvailableLayersStartsWithColorViews)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    CreateNodeArgs shuffleArgs(PLUGINID_NATRON_SHUFFLE, getApp()->getProject());
+    NodePtr shuffle = getApp()->createNode(shuffleArgs);
+    ASSERT_TRUE(bool(shuffle)) << "node creation failed for " << PLUGINID_NATRON_SHUFFLE;
+
+    Effect effect(shuffle);
+    std::list<ImageLayer> available = effect.getAvailableLayers(-1);
+    ASSERT_GE(available.size(), std::size_t(3));
+
+    std::list<ImageLayer>::const_iterator it = available.begin();
+    EXPECT_EQ(QString::fromUtf8(kNatronColorViewRGBA), it->getLayerName());
+    ++it;
+    EXPECT_EQ(QString::fromUtf8(kNatronColorViewRGB), it->getLayerName());
+    ++it;
+    EXPECT_EQ(QString::fromUtf8(kNatronColorViewAlpha), it->getLayerName());
 
     project->reset(false, true);
 }

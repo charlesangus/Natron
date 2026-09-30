@@ -223,6 +223,14 @@ struct ViewerTabPrivate
 
     void getComponentsAvailabel(double time, ViewIdx view, std::set<ImageLayerDesc>* comps) const;
 
+    // The (time, view) menus the layer and alpha combos are built from. layerViews expands the
+    // storage colour plane to every colour view it presents; channelViews collapses it to the
+    // one view matching its layout, so the alpha menu lists each colour channel once (either
+    // may be null). storageColorLayer is the one storage colour entry a chosen colour view maps
+    // back to before it reaches the viewer node (getNoneComponents() if no input carries a
+    // colour plane).
+    void getLayerViewsAvailabelAtTime(double time, ViewIdx view, std::list<ImageLayerDesc>* layerViews, std::list<ImageLayerDesc>* channelViews, ImageLayerDesc* storageColorLayer) const;
+
     std::list<PluginViewerContext>::iterator findActiveNodeContextForPlugin(const std::string& pluginID);
 
     // Returns true if this node has a viewer context but it is not active

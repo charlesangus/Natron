@@ -42,7 +42,9 @@
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -264,6 +266,49 @@ TEST(KnobShuffleMap, SettingTheSameOutputTwiceLeavesOneRow)
     knob->setSource(1, 3, ShuffleSource::makeZero());
     ASSERT_EQ(1u, knob->getRows().size());
     EXPECT_EQ(ShuffleSource::eZero, knob->getSource(1, 3).kind);
+}
+
+// alpha's one channel (index 0) sits on colour bit 3, so its implicit source is rgba's A
+// (index 3), not rgba's R (index 0, the plain identity-by-index default). setSource() must
+// therefore judge "is this row redundant" by that bit, not by the raw channel index, or a
+// deliberate alpha <- rgba.R override would be silently dropped.
+TEST_F(BaseTest, ShuffleColorViewDefaultRowIsBitBasedNotIndexBased)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+    ASSERT_TRUE(bool(shuffle)) << "node creation failed for " << PLUGINID_NATRON_SHUFFLE;
+
+    KnobLayerSelectPtr out1 = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamOut1));
+    ASSERT_TRUE(bool(out1));
+    std::shared_ptr<KnobShuffleMap> mapping = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle->getKnobByName(kShuffleParamMapping));
+    ASSERT_TRUE(bool(mapping));
+
+    // in1 keeps its own default, rgba; out1 switches to alpha, whose one channel is on
+    // colour bit 3.
+    out1->setLayer(std::string(kNatronColorViewAlpha));
+    ASSERT_EQ(std::string(kNatronColorViewAlpha), out1->getLayer());
+
+    // alpha.0 <- rgba.R (in1 index 0) is not the implicit default (that is rgba.A, index 3),
+    // so it is kept as an explicit row.
+    mapping->setSource(1, 0, ShuffleSource::makeInput(1, 0));
+    EXPECT_TRUE(mapping->hasExplicitSource(1, 0));
+    ASSERT_EQ(1u, mapping->getRows().size());
+    EXPECT_TRUE(ShuffleSource::makeInput(1, 0) == mapping->getSource(1, 0));
+
+    // alpha.0 <- rgba.A (in1 index 3) is the implicit default: writing it back drops the row.
+    mapping->setSource(1, 0, ShuffleSource::makeInput(1, 3));
+    EXPECT_FALSE(mapping->hasExplicitSource(1, 0));
+    EXPECT_TRUE(mapping->getRows().empty());
+
+    // A non-Shuffle holder (or none at all) has no notion of colour-view bits and keeps the
+    // plain identity-by-index rule.
+    std::shared_ptr<KnobShuffleMap> plain = makeKnob();
+    EXPECT_TRUE(plain->implicitDefault(1, 0) == ShuffleSource::makeInput(1, 0));
+
+    project->reset(false, true);
 }
 
 // The Shuffle node's Mapping knob is a plain user KnobShuffleMap (typeName "ShuffleMap"),

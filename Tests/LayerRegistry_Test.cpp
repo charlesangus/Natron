@@ -62,29 +62,32 @@ TEST(LayerRegistry, BuiltinOrder)
     LayerRegistry registry;
     std::shared_ptr<const std::vector<LayerRegistryEntry>> snap = registry.snapshot();
 
-    ASSERT_EQ(6u, snap->size());
-    EXPECT_EQ(std::string(kNatronColorLayerID), (*snap)[0].desc.getLayerID());
+    ASSERT_EQ(9u, snap->size());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), (*snap)[0].desc.getLayerID());
     EXPECT_EQ(LayerRegistryEntry::eOriginBuiltin, (*snap)[0].origin);
-    EXPECT_EQ(std::string(kNatronDisparityLeftLayerID), (*snap)[1].desc.getLayerID());
-    EXPECT_EQ(std::string(kNatronDisparityRightLayerID), (*snap)[2].desc.getLayerID());
-    EXPECT_EQ(std::string(kNatronBackwardMotionVectorsLayerID), (*snap)[3].desc.getLayerID());
-    EXPECT_EQ(std::string(kNatronForwardMotionVectorsLayerID), (*snap)[4].desc.getLayerID());
-    EXPECT_EQ("depth", (*snap)[5].desc.getLayerID());
-    EXPECT_EQ(LayerRegistryEntry::eOriginUser, (*snap)[5].origin);
+    EXPECT_EQ(std::string(kNatronColorViewRGB), (*snap)[1].desc.getLayerID());
+    EXPECT_EQ(std::string(kNatronColorViewAlpha), (*snap)[2].desc.getLayerID());
+    EXPECT_EQ(std::string(kNatronColorViewXY), (*snap)[3].desc.getLayerID());
+    EXPECT_EQ(std::string(kNatronDisparityLeftLayerID), (*snap)[4].desc.getLayerID());
+    EXPECT_EQ(std::string(kNatronDisparityRightLayerID), (*snap)[5].desc.getLayerID());
+    EXPECT_EQ(std::string(kNatronBackwardMotionVectorsLayerID), (*snap)[6].desc.getLayerID());
+    EXPECT_EQ(std::string(kNatronForwardMotionVectorsLayerID), (*snap)[7].desc.getLayerID());
+    EXPECT_EQ("depth", (*snap)[8].desc.getLayerID());
+    EXPECT_EQ(LayerRegistryEntry::eOriginUser, (*snap)[8].origin);
 }
 
-TEST(LayerRegistry, RgbaAliasReturnsColorAndRegistersNothing)
+TEST(LayerRegistry, ColorViewExactReaddIsUnchangedNoOp)
 {
     LayerRegistry registry;
     std::string error;
-    std::vector<std::string> ch(1, "R");
-    ImageLayerDesc rgba("rgba", "rgba", "", ch);
+    ImageLayerDesc rgba = ImageLayerDesc::getColorView(kNatronColorViewRGBA);
 
     EXPECT_EQ(LayerRegistry::eAddResultUnchanged, registry.add(rgba, LayerRegistryEntry::eOriginUser, &error));
 
     ImageLayerDesc found;
-    EXPECT_FALSE(registry.find("rgba", &found));
-    EXPECT_TRUE(registry.find(kNatronColorLayerID, &found));
+    ASSERT_TRUE(registry.find(kNatronColorViewRGBA, &found));
+    ASSERT_EQ(4, found.getNumComponents());
+    EXPECT_EQ("A", found.getChannels()[3]);
 }
 
 TEST(LayerRegistry, ReservedNamesRefused)
@@ -101,6 +104,24 @@ TEST(LayerRegistry, ReservedNamesRefused)
 
     ImageLayerDesc backward("Backward", "Backward", "", ch);
     EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(backward, LayerRegistryEntry::eOriginUser, &error));
+
+    ImageLayerDesc color("Color", "Color", "", ch);
+    EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(color, LayerRegistryEntry::eOriginUser, &error));
+
+    ImageLayerDesc storageId(kNatronColorLayerID, kNatronColorLayerID, "", ch);
+    EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(storageId, LayerRegistryEntry::eOriginUser, &error));
+
+    ImageLayerDesc rgbaUpper("RGBA", "RGBA", "", ch);
+    EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(rgbaUpper, LayerRegistryEntry::eOriginUser, &error));
+
+    ImageLayerDesc xyUpper("XY", "XY", "", ch);
+    EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(xyUpper, LayerRegistryEntry::eOriginUser, &error));
+
+    // "rgba" is a built-in with channels {R,G,B,A}: re-adding it with different channels hits
+    // the built-in-conflict path in add(), not isRefusedReservedName, but is refused all the same.
+    std::vector<std::string> xOnly(1, "X");
+    ImageLayerDesc rgbaWithX(kNatronColorViewRGBA, kNatronColorViewRGBA, "", xOnly);
+    EXPECT_EQ(LayerRegistry::eAddResultRefused, registry.add(rgbaWithX, LayerRegistryEntry::eOriginUser, &error));
 }
 
 TEST(LayerRegistry, DottedIdRefusedUnlessFromFile)
@@ -199,8 +220,31 @@ TEST(LayerRegistry, RemoveBuiltinRefused)
     LayerRegistry registry;
     std::string error;
 
-    EXPECT_FALSE(registry.remove(kNatronColorLayerID, &error));
+    EXPECT_FALSE(registry.remove(kNatronColorViewRGB, &error));
     EXPECT_FALSE(error.empty());
+}
+
+TEST(LayerRegistry, ToStoragePlanesFoldsColorViewsToOneRGBAEntry)
+{
+    LayerRegistry registry;
+    std::shared_ptr<const std::vector<LayerRegistryEntry>> snap = registry.snapshot();
+
+    std::list<ImageLayerDesc> storagePlanes;
+    LayerRegistry::toStoragePlanes(snap, &storagePlanes);
+
+    int colorCount = 0;
+    bool colorIsRgba = false;
+    for (std::list<ImageLayerDesc>::const_iterator it = storagePlanes.begin(); it != storagePlanes.end(); ++it) {
+        if (it->isColorLayer()) {
+            ++colorCount;
+            colorIsRgba = (it->getLayerID() == kNatronColorLayerID && it->getNumComponents() == 4);
+        }
+    }
+    EXPECT_EQ(1, colorCount);
+    EXPECT_TRUE(colorIsRgba);
+
+    // Non-colour entries survive untouched: DisparityLeft, DisparityRight, Backward, Forward, depth.
+    EXPECT_EQ(std::size_t(9 - 4 + 1), storagePlanes.size());
 }
 
 TEST(LayerRegistry, RemoveDepthSucceeds)
@@ -436,10 +480,24 @@ TEST_F(BaseTest, LayersKnobMirrorsRegistryAndUsers)
     EXPECT_EQ(3, layersKnob->getColumnsCount());
 
     std::vector<std::string> row;
-    EXPECT_TRUE(findLayersKnobRow(layersKnob, "Color", &row));
+    EXPECT_TRUE(findLayersKnobRow(layersKnob, "rgba", &row));
     EXPECT_EQ(std::string("R G B A"), row[1]);
     EXPECT_EQ(std::string("0"), row[2]);
     EXPECT_FALSE(findLayersKnobRow(layersKnob, "diffuse", &row));
+
+    {
+        std::list<std::vector<std::string>> table;
+        layersKnob->getTable(&table);
+        ASSERT_GE(table.size(), std::size_t(4));
+        std::list<std::vector<std::string>>::const_iterator rowIt = table.begin();
+        EXPECT_EQ(std::string("rgba"), (*rowIt)[0]);
+        ++rowIt;
+        EXPECT_EQ(std::string("rgb"), (*rowIt)[0]);
+        ++rowIt;
+        EXPECT_EQ(std::string("alpha"), (*rowIt)[0]);
+        ++rowIt;
+        EXPECT_EQ(std::string("xy"), (*rowIt)[0]);
+    }
 
     CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
     readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
@@ -470,7 +528,7 @@ TEST_F(BaseTest, LayersKnobMirrorsRegistryAndUsers)
 
     project->reset(false, true);
     EXPECT_FALSE(findLayersKnobRow(layersKnob, "diffuse", &row));
-    EXPECT_TRUE(findLayersKnobRow(layersKnob, "Color", &row));
+    EXPECT_TRUE(findLayersKnobRow(layersKnob, "rgba", &row));
 } // TEST_F(BaseTest, LayersKnobMirrorsRegistryAndUsers)
 
 static bool

@@ -174,7 +174,25 @@ channelSetOf(const NodePtr& node)
 bool
 isColorRow(const ChannelSetRow& row)
 {
+    return row.mode == ChannelSetRow::eModeLayer && row.layerOrPattern == kNatronColorViewRGBA;
+}
+
+// A row naming the retired colour storage ID, which loading an old project must never leave.
+bool
+isLegacyColorRow(const ChannelSetRow& row)
+{
     return row.mode == ChannelSetRow::eModeLayer && row.layerOrPattern == kNatronColorLayerID;
+}
+
+bool
+hasLegacyColorWarning(const NodePtr& node)
+{
+    QString message;
+    int type = 0;
+
+    node->getPersistentMessage(&message, &type, false);
+
+    return type == eMessageTypeWarning && message == QString::fromUtf8("Colour layer from an older project was reset to rgba");
 }
 
 } // namespace
@@ -291,7 +309,7 @@ TEST_F(DefaultChannelSetTest, RotoKeepsItsAlphaTargetDefault)
 
     KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(roto->getKnobByName(kNodeParamLayerSelect));
     ASSERT_TRUE(bool(layer));
-    EXPECT_EQ(std::string(kNatronColorLayerID), layer->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), layer->getLayer());
     std::vector<std::string> alpha;
     alpha.push_back("A");
     EXPECT_EQ(alpha, layer->getChannels());
@@ -424,7 +442,7 @@ TEST_F(DefaultChannelSetTest, BlurSetToColorStaysColorAfterRoundTrip)
     const std::string name = blur->getScriptName();
     KnobChannelSetPtr channels = channelSetOf(blur);
     ASSERT_TRUE(bool(channels));
-    channels->setLayer(0, kNatronColorLayerID, NULL);
+    channels->setLayer(0, kNatronColorViewRGBA, NULL);
     ASSERT_TRUE(isColorRow(channels->getRows()[0]));
 
     QTemporaryDir tmp;
@@ -467,7 +485,7 @@ TEST_F(DefaultChannelSetTest, DefaultGradeStaysColorAfterRoundTrip)
 // Tests/fixtures/channel-set-legacy-defaults.ntp is written at node serialization version 16:
 // Blur1 and Grade1 store no channel-set value (both were on their Color default), Blur2 stores
 // an explicit "specular" row.
-TEST_F(DefaultChannelSetTest, LegacyProjectKeepsColorWhereNoValueWasSaved)
+TEST_F(DefaultChannelSetTest, LegacyProjectResetsUnsavedColorToRgbaWithAWarning)
 {
     QTemporaryDir tmp;
 
@@ -480,12 +498,20 @@ TEST_F(DefaultChannelSetTest, LegacyProjectKeepsColorWhereNoValueWasSaved)
     NodePtr grade1 = project->getNodeByName("Grade1");
     ASSERT_TRUE(bool(blur1) && bool(blur2) && bool(grade1));
 
+    // The pre-v17 gate lands Blur1 on the old Color default, which then resets to rgba rather
+    // than to Blur's own All default: All would change which layers it processes.
     KnobChannelSetPtr blur1Channels = channelSetOf(blur1);
     ASSERT_TRUE(bool(blur1Channels));
     std::vector<ChannelSetRow> rows = blur1Channels->getRows();
     ASSERT_EQ(1u, rows.size());
     EXPECT_TRUE(isColorRow(rows[0]));
-    EXPECT_NE(ChannelSetRow::eModeAll, rows[0].mode);
+    EXPECT_FALSE(isLegacyColorRow(rows[0]));
+    EXPECT_TRUE(rows[0].channels.empty());
+    EXPECT_TRUE(hasLegacyColorWarning(blur1));
+
+    std::vector<ChannelSetRow> defaultRows = blur1Channels->decodeRows(blur1Channels->getDefaultValue(0));
+    ASSERT_EQ(1u, defaultRows.size());
+    EXPECT_EQ(ChannelSetRow::eModeAll, defaultRows[0].mode);
 
     KnobChannelSetPtr blur2Channels = channelSetOf(blur2);
     ASSERT_TRUE(bool(blur2Channels));
@@ -493,15 +519,20 @@ TEST_F(DefaultChannelSetTest, LegacyProjectKeepsColorWhereNoValueWasSaved)
     ASSERT_EQ(1u, rows.size());
     EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
     EXPECT_EQ(std::string("specular"), rows[0].layerOrPattern);
+    EXPECT_FALSE(hasLegacyColorWarning(blur2));
 
+    // Grade1 is not caught by the pre-v17 legacy-default load gate: that gate only fires for
+    // defaultProcessesAllLayers() nodes (Blur1's case). Grade1's unsaved channel set simply
+    // falls through to its live per-node default, rgba, so nothing named Color and nothing warns.
     KnobChannelSetPtr grade1Channels = channelSetOf(grade1);
     ASSERT_TRUE(bool(grade1Channels));
     rows = grade1Channels->getRows();
     ASSERT_EQ(1u, rows.size());
     EXPECT_TRUE(isColorRow(rows[0]));
+    EXPECT_FALSE(hasLegacyColorWarning(grade1));
 }
 
-TEST_F(DefaultChannelSetTest, LegacyColorSurvivesResaving)
+TEST_F(DefaultChannelSetTest, LegacyColorResetToRgbaSurvivesResaving)
 {
     QTemporaryDir legacyDir;
 
@@ -512,6 +543,13 @@ TEST_F(DefaultChannelSetTest, LegacyColorSurvivesResaving)
     ASSERT_TRUE(tmp.isValid());
     ASSERT_TRUE(saveResetLoad(tmp));
 
+    {
+        QFile f(tmp.path() + QString::fromUtf8("/default-channel-set.ntp"));
+        ASSERT_TRUE(f.open(QIODevice::ReadOnly | QIODevice::Text));
+        const QString contents = QString::fromUtf8(f.readAll());
+        EXPECT_FALSE(contents.contains(QString::fromUtf8("&lt;Layer&gt;" kNatronColorLayerID)));
+    }
+
     NodePtr blur1 = getApp()->getProject()->getNodeByName("Blur1");
     ASSERT_TRUE(bool(blur1));
     KnobChannelSetPtr channels = channelSetOf(blur1);
@@ -519,4 +557,8 @@ TEST_F(DefaultChannelSetTest, LegacyColorSurvivesResaving)
     std::vector<ChannelSetRow> rows = channels->getRows();
     ASSERT_EQ(1u, rows.size());
     EXPECT_TRUE(isColorRow(rows[0]));
+    EXPECT_FALSE(isLegacyColorRow(rows[0]));
+
+    // The re-saved file names rgba and is current, so nothing is reset on this load.
+    EXPECT_FALSE(hasLegacyColorWarning(blur1));
 }

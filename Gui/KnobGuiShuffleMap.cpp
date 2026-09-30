@@ -228,10 +228,53 @@ findRegistryLayer(const NodePtr& node,
     return false;
 }
 
+// layerID's desc and whether it is actually listed for this knob: found in listedViews (the
+// knob's own listLayerViewsForKnob() result, already expanded to rgba/rgb/alpha/(xy)) first;
+// a colour view ID always resolves through ImageLayerDesc::getColorView() even when it isn't
+// listed there (e.g. xy on a target knob, whose registry-level colour entry folds to RGBA and
+// so never expands back to xy), so the matrix still gets the right row or column count for it,
+// just not marked listed; anything else falls back to the raw project registry.
+bool
+findKnownLayer(const std::list<ImageLayerDesc>& listedViews,
+               const NodePtr& node,
+               const std::string& layerID,
+               ImageLayerDesc* desc,
+               bool* listed)
+{
+    if (findLayerDesc(listedViews, layerID, desc)) {
+        *listed = true;
+
+        return true;
+    }
+    *listed = false;
+    if (ImageLayerDesc::isColorViewID(layerID)) {
+        *desc = ImageLayerDesc::getColorView(layerID);
+
+        return true;
+    }
+
+    return findRegistryLayer(node, layerID, desc);
+}
+
 QString
 layerLabel(const ImageLayerDesc& desc)
 {
     return desc.getLayerLabel().empty() ? qs(desc.getLayerID()) : qs(desc.getLayerLabel());
+}
+
+// Shuffle::getOutputLayer(2) resolves to None both when out2 is genuinely unset and when it
+// shares a colour bit with out1 (see Shuffle.cpp); only the second case is worth its own
+// explanation, so this repeats just that one condition to tell the two apart. rawOut2Layer is
+// out2's own stored value, not getOutputLayer(2), which has already collapsed it to empty.
+bool
+out2OverlapsOut1(const std::string& out1Layer,
+                 const std::string& rawOut2Layer)
+{
+    return !rawOut2Layer.empty()
+        && (rawOut2Layer != out1Layer)
+        && ImageLayerDesc::isColorViewID(out1Layer)
+        && ImageLayerDesc::isColorViewID(rawOut2Layer)
+        && (ImageLayerDesc::colorViewMask(out1Layer) & ImageLayerDesc::colorViewMask(rawOut2Layer)).any();
 }
 
 // A layer whose channels are unknown still needs a column or row for every index the
@@ -265,10 +308,10 @@ appendSlotColumns(const NodePtr& node,
     }
 
     std::list<ImageLayerDesc> present;
-    node->listLayersForKnob(node->getKnobByName(slot == 1 ? kShuffleParamIn1 : kShuffleParamIn2), &present);
+    node->listLayerViewsForKnob(node->getKnobByName(slot == 1 ? kShuffleParamIn1 : kShuffleParamIn2), &present);
     ImageLayerDesc desc;
-    const bool listed = findLayerDesc(present, layerID, &desc);
-    const bool known = listed || findRegistryLayer(node, layerID, &desc);
+    bool listed = false;
+    const bool known = findKnownLayer(present, node, layerID, &desc, &listed);
 
     std::vector<std::string> channels;
     if (known) {
@@ -305,6 +348,7 @@ appendOutputRows(const NodePtr& node,
                  Shuffle* shuffle,
                  const std::vector<ShuffleMapRow>& mapRows,
                  int slot,
+                 const QString& notInProjectSuffix,
                  MatrixLayout* layout)
 {
     KnobGuiShuffleMapPrivate::Group group;
@@ -320,17 +364,18 @@ appendOutputRows(const NodePtr& node,
     }
 
     std::list<ImageLayerDesc> registered;
-    node->listLayersForKnob(node->getKnobByName(slot == 1 ? kShuffleParamOut1 : kShuffleParamOut2), &registered);
+    node->listLayerViewsForKnob(node->getKnobByName(slot == 1 ? kShuffleParamOut1 : kShuffleParamOut2), &registered);
     ImageLayerDesc desc;
-    const bool listed = findLayerDesc(registered, layerID, &desc);
+    bool listed = false;
+    const bool known = findKnownLayer(registered, node, layerID, &desc, &listed);
 
     std::vector<std::string> channels;
-    if (listed) {
+    if (known) {
         channels = desc.getChannels();
     }
-    const QString label = listed ? layerLabel(desc) : qs(layerID);
+    const QString label = known ? layerLabel(desc) : qs(layerID);
 
-    if (!listed) {
+    if (!known) {
         int maxIndex = -1;
         for (std::size_t i = 0; i < mapRows.size(); ++i) {
             if (mapRows[i].outSlot == slot) {
@@ -349,6 +394,11 @@ appendOutputRows(const NodePtr& node,
         row.outIndex = (int)i;
         row.channel = channels[i];
         row.toolTip = label + QLatin1Char('.') + qs(channels[i]);
+        // A colour view the target list itself does not carry (xy, whose registry-level
+        // colour entry always folds to RGBA) still gets its row, just flagged like this.
+        if (!listed) {
+            row.toolTip += QLatin1Char(' ') + notInProjectSuffix;
+        }
         layout->rows.push_back(row);
     }
 }
@@ -486,6 +536,8 @@ void
 KnobGuiShuffleMap::refreshLayerRows()
 {
     NodePtr node = getNode();
+    std::shared_ptr<KnobShuffleMap> mapping = _imp->knob.lock();
+    Shuffle* shuffle = mapping ? dynamic_cast<Shuffle*>(mapping->getHolder()) : 0;
 
     for (int i = 0; i < 4; ++i) {
         LayerChannelRow* row = _imp->layerRows[i];
@@ -500,6 +552,13 @@ KnobGuiShuffleMap::refreshLayerRows()
         const std::string layerID = knob->getLayer();
         if (row->getCurrentLayerID() != layerID) {
             row->setLayerSelectValue(layerID, std::vector<std::string>(), false);
+        }
+        if ((i == (int)eLayerRowOut2) && shuffle) {
+            const bool overlaps = out2OverlapsOut1(shuffle->getOutputLayer(1), layerID);
+            row->setEnabled(!overlaps);
+            row->setToolTip(overlaps
+                                ? tr("Ignored: %1 shares a colour channel with Out 1.").arg(qs(layerID))
+                                : qs(knob->getHintToolTip()));
         }
     }
 }
@@ -530,8 +589,9 @@ KnobGuiShuffleMap::refreshWidgets()
         appendSlotColumns(node, shuffle, mapRows, 2, &layout);
         appendConstantColumn(ShuffleSource::makeZero(), QString::fromUtf8("0"), tr("A constant 0."), &layout);
         appendConstantColumn(ShuffleSource::makeOne(), QString::fromUtf8("1"), tr("A constant 1."), &layout);
-        appendOutputRows(node, shuffle, mapRows, 1, &layout);
-        appendOutputRows(node, shuffle, mapRows, 2, &layout);
+        const QString notInProjectSuffix = tr("(not in project)");
+        appendOutputRows(node, shuffle, mapRows, 1, notInProjectSuffix, &layout);
+        appendOutputRows(node, shuffle, mapRows, 2, notInProjectSuffix, &layout);
     }
 
     refreshLayerRows();
@@ -748,7 +808,7 @@ KnobGuiShuffleMap::onCellClicked(int row,
     const int outSlot = layout.rows[row].outSlot;
     const int outIndex = layout.rows[row].outIndex;
     const ShuffleSource src = layout.columns[column].src;
-    const ShuffleSource defaultSrc = KnobShuffleMap::defaultSource(outSlot, outIndex);
+    const ShuffleSource defaultSrc = mapping->implicitDefault(outSlot, outIndex);
 
     std::vector<ShuffleMapRow> rows = mapping->getRows();
     bool found = false;

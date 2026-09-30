@@ -29,6 +29,7 @@
 #include <bitset>
 #include <list>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,7 @@
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
@@ -55,6 +57,7 @@
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
+#include <ofxNatron.h>
 
 NATRON_NAMESPACE_USING
 
@@ -109,6 +112,22 @@ std::vector<std::string>
 outputLayerIDs(const NeededComponents& needed)
 {
     EffectInstance::ComponentsNeededMap::const_iterator found = needed.comps.find(-1);
+
+    return found == needed.comps.end() ? std::vector<std::string>() : layerIDs(found->second);
+}
+
+bool
+containsLayer(const std::vector<std::string>& ids,
+              const std::string& layerID)
+{
+    return std::find(ids.begin(), ids.end(), layerID) != ids.end();
+}
+
+std::vector<std::string>
+inputLayerIDs(const NeededComponents& needed,
+              int inputNb)
+{
+    EffectInstance::ComponentsNeededMap::const_iterator found = needed.comps.find(inputNb);
 
     return found == needed.comps.end() ? std::vector<std::string>() : layerIDs(found->second);
 }
@@ -252,6 +271,32 @@ protected:
         return readFlatExr(path, image, error);
     }
 
+    // The Premult/Unpremult channel quad the hostInputLayer twin drives.
+    std::bitset<4> processQuad(const NodePtr& node)
+    {
+        static const char* const names[4] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
+        std::bitset<4> ret;
+
+        for (int c = 0; c < 4; ++c) {
+            KnobBool* process = dynamic_cast<KnobBool*>(node->getKnobByName(names[c]).get());
+            ret[c] = process && process->getValue();
+        }
+
+        return ret;
+    }
+
+    int inputNamed(const NodePtr& node,
+                   const std::string& label)
+    {
+        for (int i = 0; i < node->getNInputs(); ++i) {
+            if (node->getInputLabel(i) == label) {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
     // True when the node reports itself an identity of its input 0 at frame 0.
     bool isIdentityOfSource(const NodePtr& node)
     {
@@ -276,7 +321,7 @@ TEST_F(LayerKnobsRenderTest, ChannelSetRowsSelectOutputAndInputPlanesWithPerPlan
 
     const U64 defaultHash = queryNeededComponents(invert).hash;
 
-    channels->setLayer(0, kNatronColorLayerID, NULL);
+    channels->setLayer(0, kNatronColorViewRGBA, NULL);
     std::vector<std::string> rg;
     rg.push_back("R");
     rg.push_back("G");
@@ -457,7 +502,7 @@ TEST_F(LayerKnobsRenderTest, InvertReadsAndMasksEachPlaneOnItsOwn)
 
     std::vector<std::string> r;
     r.push_back("R");
-    channels->setLayer(0, kNatronColorLayerID, &r);
+    channels->setLayer(0, kNatronColorViewRGBA, &r);
     std::vector<std::string> g;
     g.push_back("G");
     channels->addLayer("diffuse", &g);
@@ -616,7 +661,7 @@ TEST_F(LayerKnobsRenderTest, ChannelSetRowWithNoMatchingChannelMakesTheNodeAnIde
 
     std::vector<std::string> q;
     q.push_back("Q");
-    channels->setLayer(0, kNatronColorLayerID, &q);
+    channels->setLayer(0, kNatronColorViewRGBA, &q);
     EXPECT_FALSE(invert->hasAtLeastOneChannelToProcess(0, ViewIdx(0)));
     EXPECT_TRUE(isIdentityOfSource(invert));
 
@@ -695,4 +740,225 @@ TEST_F(LayerKnobsRenderTest, MultiplanarEffectProducesTheMetadataLayerByDefault)
 
     const std::vector<std::string> produced = outputLayerIDs(needed);
     EXPECT_NE(produced.end(), std::find(produced.begin(), produced.end(), std::string(kNatronColorLayerID)));
+}
+
+TEST_F(LayerKnobsRenderTest, PremultInputPlaneTwinSelectsTheLayerOnOutputAndSource)
+{
+    NodePtr reader = createReader();
+    ASSERT_TRUE(bool(reader));
+    NodePtr premult = createNode(QString::fromUtf8("net.sf.openfx.Premult"));
+    ASSERT_TRUE(bool(premult));
+    connectNodes(reader, premult, 0, true);
+
+    KnobLayerSelectPtr plane = std::dynamic_pointer_cast<KnobLayerSelect>(premult->getKnobByName("hostInputLayer"));
+    ASSERT_TRUE(bool(plane));
+    EXPECT_NE(plane, premult->getLayerKnob());
+    EXPECT_TRUE(plane->getWithChannelButtons());
+
+    plane->setLayer("diffuse");
+
+    KnobChoice* pluginPlane = dynamic_cast<KnobChoice*>(premult->getKnobByName("inputPlane").get());
+    ASSERT_TRUE(pluginPlane != NULL);
+    EXPECT_EQ(std::string("diffuse"), pluginPlane->getActiveEntry().id);
+
+    NeededComponents needed = queryNeededComponents(premult);
+    EXPECT_TRUE(containsLayer(outputLayerIDs(needed), "diffuse"));
+    EXPECT_TRUE(containsLayer(inputLayerIDs(needed, 0), "diffuse"));
+
+    std::set<std::string> referenced;
+    premult->getReferencedLayerIDs(&referenced);
+    EXPECT_EQ(1u, referenced.count("diffuse"));
+}
+
+TEST_F(LayerKnobsRenderTest, PremultInputPlaneTwinDrivesTheChannelQuad)
+{
+    NodePtr reader = createReader();
+    ASSERT_TRUE(bool(reader));
+    NodePtr premult = createNode(QString::fromUtf8("net.sf.openfx.Premult"));
+    ASSERT_TRUE(bool(premult));
+    connectNodes(reader, premult, 0, true);
+
+    KnobLayerSelectPtr plane = std::dynamic_pointer_cast<KnobLayerSelect>(premult->getKnobByName("hostInputLayer"));
+    ASSERT_TRUE(bool(plane));
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), plane->getLayer());
+    EXPECT_EQ(bits(true, true, true, false), processQuad(premult));
+
+    std::vector<std::string> rgba;
+    rgba.push_back("R");
+    rgba.push_back("G");
+    rgba.push_back("B");
+    rgba.push_back("A");
+    plane->setChannels(rgba);
+    EXPECT_EQ(bits(true, true, true, true), processQuad(premult));
+
+    plane->setLayer(kNatronColorViewRGB);
+    EXPECT_EQ(bits(true, true, true, false), processQuad(premult));
+
+    KnobChoice* pluginPlane = dynamic_cast<KnobChoice*>(premult->getKnobByName("inputPlane").get());
+    ASSERT_TRUE(pluginPlane != NULL);
+    EXPECT_EQ(std::string(kNatronColorLayerID), pluginPlane->getActiveEntry().id);
+}
+
+// The UV input carries diffuse and the Source input does not, so diffuse turning up in the twin's
+// list and on the UV input's needed planes shows the twin is bound to the clip its menu reads.
+TEST_F(LayerKnobsRenderTest, IDistortChannelTwinReadsTheLayerFromTheUVInput)
+{
+    NodePtr source = createReader("flat-rgba-only.exr");
+    NodePtr uv = createReader();
+    ASSERT_TRUE(bool(source) && bool(uv));
+    NodePtr idistort = createNode(QString::fromUtf8("net.sf.openfx.IDistort"));
+    ASSERT_TRUE(bool(idistort));
+
+    const int sourceInput = inputNamed(idistort, "Source");
+    const int uvInput = inputNamed(idistort, "UV");
+    ASSERT_GE(sourceInput, 0);
+    ASSERT_GE(uvInput, 0);
+    connectNodes(source, idistort, sourceInput, true);
+    connectNodes(uv, idistort, uvInput, true);
+
+    KnobChannelSelectPtr channelU = std::dynamic_pointer_cast<KnobChannelSelect>(idistort->getKnobByName("hostChannelU"));
+    ASSERT_TRUE(bool(channelU));
+    EXPECT_NE(channelU, idistort->getLayerKnob());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA) + ".R", channelU->get());
+
+    std::list<ImageLayerDesc> listed;
+    idistort->listLayersForKnob(channelU, &listed);
+    EXPECT_TRUE(containsLayer(layerIDs(listed), "diffuse"));
+
+    channelU->set("diffuse.R");
+
+    KnobChoice* pluginChannelU = dynamic_cast<KnobChoice*>(idistort->getKnobByName("channelU").get());
+    ASSERT_TRUE(pluginChannelU != NULL);
+    EXPECT_EQ(std::string("diffuse.R"), pluginChannelU->getActiveEntry().id);
+
+    NeededComponents needed = queryNeededComponents(idistort);
+    EXPECT_TRUE(containsLayer(inputLayerIDs(needed, uvInput), "diffuse"));
+    EXPECT_FALSE(containsLayer(inputLayerIDs(needed, sourceInput), "diffuse"));
+}
+
+// A None twin cannot leave the plugin choice on a real channel, so it pushes the plugin's own
+// constant under which that param does nothing: no U/V offset, and an opaque alpha or
+// unpremultiply channel.
+TEST_F(LayerKnobsRenderTest, NoneChannelTwinsPushTheNeutralPluginConstant)
+{
+    NodePtr reader = createReader();
+    ASSERT_TRUE(bool(reader));
+    NodePtr idistort = createNode(QString::fromUtf8("net.sf.openfx.IDistort"));
+    NodePtr premult = createNode(QString::fromUtf8("net.sf.openfx.Premult"));
+    ASSERT_TRUE(bool(idistort) && bool(premult));
+    connectNodes(reader, idistort, inputNamed(idistort, "UV"), true);
+    connectNodes(reader, premult, 0, true);
+
+    struct Case {
+        NodePtr node;
+        const char* twin;
+        const char* pluginKnob;
+        const char* neutral;
+    };
+    const Case cases[] = {
+        { idistort, "hostChannelU", "channelU", "0" },
+        { idistort, "hostChannelV", "channelV", "0" },
+        { idistort, "hostChannelA", "channelA", "1" },
+        { premult, "hostUnPremultByChannel", "unPremultByChannel", "1" },
+    };
+    for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        KnobChannelSelectPtr twin = std::dynamic_pointer_cast<KnobChannelSelect>(cases[i].node->getKnobByName(cases[i].twin));
+        KnobChoice* plugin = dynamic_cast<KnobChoice*>(cases[i].node->getKnobByName(cases[i].pluginKnob).get());
+        ASSERT_TRUE(bool(twin) && plugin != NULL) << cases[i].twin;
+        EXPECT_FALSE(twin->isNone()) << cases[i].twin;
+
+        twin->setNone();
+        EXPECT_TRUE(twin->isNone()) << cases[i].twin;
+        EXPECT_EQ(std::string(), twin->get()) << cases[i].twin;
+        EXPECT_EQ(std::string(cases[i].neutral), plugin->getActiveEntry().id) << cases[i].twin;
+
+        twin->set(std::string(kNatronColorViewRGBA) + ".G");
+        EXPECT_EQ(std::string(kNatronColorLayerID) + ".G", plugin->getActiveEntry().id) << cases[i].twin;
+    }
+}
+
+TEST_F(LayerKnobsRenderTest, LayerTwinAllTurnsThePluginAllPlanesCheckboxOn)
+{
+    NodePtr reader = createReader();
+    ASSERT_TRUE(bool(reader));
+    NodePtr premult = createNode(QString::fromUtf8("net.sf.openfx.Premult"));
+    ASSERT_TRUE(bool(premult));
+    connectNodes(reader, premult, 0, true);
+
+    KnobLayerSelectPtr layer = std::dynamic_pointer_cast<KnobLayerSelect>(premult->getKnobByName("hostInputLayer"));
+    KnobBool* allPlanes = dynamic_cast<KnobBool*>(premult->getKnobByName("processAllPlanes").get());
+    ASSERT_TRUE(bool(layer) && allPlanes != NULL);
+    EXPECT_TRUE(layer->getAllowAll());
+    EXPECT_TRUE(layer->getAllowNone());
+    EXPECT_FALSE(allPlanes->getValue());
+    EXPECT_TRUE(allPlanes->getIsSecret());
+    EXPECT_FALSE(allPlanes->getIsPersistent());
+
+    std::vector<std::string> rgbaChannels;
+    rgbaChannels.push_back("R");
+    rgbaChannels.push_back("G");
+    rgbaChannels.push_back("B");
+    rgbaChannels.push_back("A");
+    layer->setChannels(rgbaChannels);
+    EXPECT_EQ(bits(true, true, true, true), processQuad(premult));
+
+    layer->setLayer(kNatronLayerSelectAll);
+    EXPECT_TRUE(allPlanes->getValue());
+    EXPECT_TRUE(allPlanes->getIsSecret());
+    EXPECT_EQ(bits(true, true, true, false), processQuad(premult));
+
+    std::set<std::string> referenced;
+    premult->getReferencedLayerIDs(&referenced);
+    EXPECT_EQ(0u, referenced.count(kNatronLayerSelectAll));
+
+    layer->setLayer("diffuse");
+    EXPECT_FALSE(allPlanes->getValue());
+    KnobChoice* pluginPlane = dynamic_cast<KnobChoice*>(premult->getKnobByName("inputPlane").get());
+    ASSERT_TRUE(pluginPlane != NULL);
+    EXPECT_EQ(std::string("diffuse"), pluginPlane->getActiveEntry().id);
+    EXPECT_TRUE(pluginPlane->getIsSecret());
+}
+
+TEST_F(LayerKnobsRenderTest, PluginPlaneAndChannelChoicesAreHiddenAndNotSaved)
+{
+    NodePtr premult = createNode(QString::fromUtf8("net.sf.openfx.Premult"));
+    ASSERT_TRUE(bool(premult));
+    NodePtr idistort = createNode(QString::fromUtf8("net.sf.openfx.IDistort"));
+    ASSERT_TRUE(bool(idistort));
+
+    struct Case {
+        NodePtr node;
+        const char* pluginKnob;
+        const char* twin;
+    };
+    const Case cases[] = {
+        { premult, "inputPlane", "hostInputLayer" },
+        { premult, "processAllPlanes", "hostInputLayer" },
+        { premult, "unPremultByChannel", "hostUnPremultByChannel" },
+        { idistort, "channelU", "hostChannelU" },
+        { idistort, "channelV", "hostChannelV" },
+        { idistort, "channelA", "hostChannelA" },
+    };
+    for (std::size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        KnobIPtr pluginKnob = cases[i].node->getKnobByName(cases[i].pluginKnob);
+        ASSERT_TRUE(bool(pluginKnob)) << cases[i].pluginKnob;
+        EXPECT_TRUE(pluginKnob->getIsSecret()) << cases[i].pluginKnob;
+        EXPECT_FALSE(pluginKnob->getIsPersistent()) << cases[i].pluginKnob;
+
+        KnobIPtr twin = cases[i].node->getKnobByName(cases[i].twin);
+        ASSERT_TRUE(bool(twin)) << cases[i].twin;
+        EXPECT_FALSE(twin->getIsSecret()) << cases[i].twin;
+        EXPECT_TRUE(twin->getIsPersistent()) << cases[i].twin;
+        EXPECT_TRUE(twin->getIsMetadataSlave()) << cases[i].twin;
+        EXPECT_EQ(pluginKnob->getParentKnob(), twin->getParentKnob()) << cases[i].twin;
+    }
+    EXPECT_EQ(std::string("Layer"), premult->getKnobByName("hostInputLayer")->getLabel());
+
+    const char* quad[] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
+    for (std::size_t i = 0; i < sizeof(quad) / sizeof(quad[0]); ++i) {
+        KnobIPtr process = premult->getKnobByName(quad[i]);
+        ASSERT_TRUE(bool(process)) << quad[i];
+        EXPECT_TRUE(process->getIsSecret()) << quad[i];
+        EXPECT_FALSE(process->getIsPersistent()) << quad[i];
+    }
 }

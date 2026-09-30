@@ -550,7 +550,7 @@ private:
                                         ViewerColorSpaceEnum srcColorSpace,
                                         ViewerColorSpaceEnum dstColorSpace,
                                         int channelForAlpha,
-                                        bool useAlpha0,
+                                        bool zeroFillMissing,
                                         bool copyBitmap);
 
     template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue, int srcNComps, int dstNComps, bool useColorspaces>
@@ -558,7 +558,7 @@ private:
                                                      const Image& srcImg,
                                                      Image& dstImg,
                                                      bool copyBitmap,
-                                                     bool useAlpha0,
+                                                     bool zeroFillMissing,
                                                      ViewerColorSpaceEnum srcColorSpace,
                                                      ViewerColorSpaceEnum dstColorSpace,
                                                      int channelForAlpha);
@@ -570,7 +570,7 @@ private:
                                                 ViewerColorSpaceEnum srcColorSpace,
                                                 ViewerColorSpaceEnum dstColorSpace,
                                                 int channelForAlpha,
-                                                bool useAlpha0,
+                                                bool zeroFillMissing,
                                                 bool copyBitmap);
 
 public:
@@ -763,6 +763,10 @@ public:
      *
      * @param copyBitMap The bitmap will also be copied.
      *
+     * Converting a colour image to more channels fills every colour channel its layout lacks
+     * with 0: RGB to RGBA gives A = 0, Alpha to RGB or RGBA gives R = G = B = 0. A one-channel
+     * image of any other plane is copied into every destination channel, and alpha is 1.
+     *
      * Note that this function is mainly used for the following conversion:
      * RGBA --> Alpha
      * or bit depth conversion
@@ -775,23 +779,6 @@ public:
                          bool copyBitMap,
                          Image* dstImg) const;
 
-    void convertToFormatAlpha0(const RectI& renderWindow,
-                               ViewerColorSpaceEnum srcColorSpace,
-                               ViewerColorSpaceEnum dstColorSpace,
-                               int channelForAlpha,
-                               bool copyBitMap,
-                               Image* dstImg) const;
-
-private:
-    void convertToFormatCommon(const RectI& renderWindow,
-                               ViewerColorSpaceEnum srcColorSpace,
-                               ViewerColorSpaceEnum dstColorSpace,
-                               int channelForAlpha,
-                               bool useAlpha0,
-                               bool copyBitMap,
-                               Image* dstImg) const;
-
-public:
     bool canCallCopyUnProcessedChannels(std::bitset<4> processChannels) const;
 
     /**

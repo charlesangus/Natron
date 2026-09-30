@@ -1635,6 +1635,14 @@
     </object-type>
 
     <object-type name="LayerSelectParam">
+        <modify-function signature="setLayer(QString)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%1);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
         <modify-function signature="setChannels(QStringList)">
             <inject-code class="target" position="beginning">
                 %CPPSELF.%FUNCTION_NAME(%1);
@@ -1646,6 +1654,14 @@
     </object-type>
 
     <object-type name="ChannelSelectParam">
+        <modify-function signature="set(QString)">
+            <inject-code class="target" position="beginning">
+                %CPPSELF.%FUNCTION_NAME(%1);
+                if (PyErr_Occurred()) {
+                    return nullptr;
+                }
+            </inject-code>
+        </modify-function>
     </object-type>
 
     <object-type name="ShuffleMapParam">

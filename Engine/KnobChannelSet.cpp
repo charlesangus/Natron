@@ -103,6 +103,17 @@ KnobChannelSet::defaultRows()
     std::vector<ChannelSetRow> rows(1);
 
     rows[0].mode = ChannelSetRow::eModeLayer;
+    rows[0].layerOrPattern = kNatronColorViewRGBA;
+
+    return rows;
+}
+
+std::vector<ChannelSetRow>
+KnobChannelSet::legacyColorDefaultRows()
+{
+    std::vector<ChannelSetRow> rows(1);
+
+    rows[0].mode = ChannelSetRow::eModeLayer;
     rows[0].layerOrPattern = kNatronColorLayerID;
 
     return rows;
@@ -358,10 +369,10 @@ KnobChannelSet::setChannels(int row,
         throw std::invalid_argument("Channel set row index out of range");
     }
     if (row == 0 && (rows[row].mode == ChannelSetRow::eModeNone || rows[row].mode == ChannelSetRow::eModeAll)) {
-        // Pre-per-row-layer scripts called setChannels() expecting the then-implicit Color
-        // row; turning a None/All row 0 into Color here instead of throwing keeps them loading.
+        // Pre-per-row-layer scripts called setChannels() expecting the then-implicit colour
+        // row; turning a None/All row 0 into rgba here instead of throwing keeps them loading.
         rows[row].mode = ChannelSetRow::eModeLayer;
-        rows[row].layerOrPattern = kNatronColorLayerID;
+        rows[row].layerOrPattern = kNatronColorViewRGBA;
     } else if (rows[row].mode != ChannelSetRow::eModeLayer) {
         throw std::invalid_argument("Channels can only be set on a layer row");
     }
@@ -494,6 +505,65 @@ namedChannelBits(const ImageLayerDesc& desc,
     return bits;
 }
 
+static bool
+isColorStorage(const ImageLayerDesc& desc)
+{
+    return desc.getLayerID() == kNatronColorLayerID;
+}
+
+static const ImageLayerDesc*
+findColorStorage(const std::list<ImageLayerDesc>& present)
+{
+    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+        if (isColorStorage(*it)) {
+            return &(*it);
+        }
+    }
+
+    return 0;
+}
+
+/**
+ * @brief What a regex row selects of the colour storage plane: the union, over the views the
+ * storage presents whose label the pattern matches, of each view's channels minus the row's
+ * excluded ones, restricted to the channels the storage carries (a regex selects what the stream
+ * has, it never asks for a missing channel). *widestView receives the matched view with the most
+ * channels, or is left empty when no view matched.
+ **/
+static std::bitset<4>
+regexColorBits(const QRegularExpression& pattern,
+               const ImageLayerDesc& storage,
+               const std::vector<std::string>& excludedChannels,
+               std::string* widestView)
+{
+    std::vector<std::string> views;
+    std::bitset<4> bits;
+    std::size_t widestCount = 0;
+
+    widestView->clear();
+    ImageLayerDesc::presentColorViews(storage, &views);
+    for (std::vector<std::string>::const_iterator view = views.begin(); view != views.end(); ++view) {
+        const ImageLayerDesc& viewDesc = ImageLayerDesc::getColorView(*view);
+        if (!pattern.match(QString::fromUtf8(viewDesc.getLayerLabel().c_str())).hasMatch()) {
+            continue;
+        }
+        const std::bitset<4> mask = ImageLayerDesc::colorViewMask(*view);
+        std::bitset<4> viewBits = mask;
+        if (!excludedChannels.empty()) {
+            std::bitset<4> excludedBits;
+            ImageLayerDesc::resolveColorView(*view, storage, excludedChannels, &excludedBits, 0);
+            viewBits &= ~excludedBits;
+        }
+        bits |= viewBits;
+        if (widestView->empty() || (mask.count() > widestCount)) {
+            *widestView = *view;
+            widestCount = mask.count();
+        }
+    }
+
+    return bits & ImageLayerDesc::colorStorageBits(storage);
+}
+
 std::vector<ResolvedLayer>
 KnobChannelSet::resolve(const std::list<ImageLayerDesc>& present) const
 {
@@ -504,18 +574,20 @@ KnobChannelSet::resolve(const std::list<ImageLayerDesc>& present) const
 
     std::vector<ResolvedLayer> out;
     std::map<std::string, std::size_t> indexByID;
-    auto accumulate = [&out, &indexByID](const ImageLayerDesc& desc, const std::bitset<4>& bits) {
+    auto accumulate = [&out, &indexByID](const ImageLayerDesc& desc, const std::bitset<4>& bits, const std::bitset<4>& zeroBits) {
         if (bits.none()) {
             return;
         }
         std::map<std::string, std::size_t>::const_iterator found = indexByID.find(desc.getLayerID());
         if (found != indexByID.end()) {
             out[found->second].channels |= bits;
+            out[found->second].zeroChannels |= zeroBits;
             return;
         }
         ResolvedLayer resolved;
         resolved.desc = desc;
         resolved.channels = bits;
+        resolved.zeroChannels = zeroBits;
         indexByID[desc.getLayerID()] = out.size();
         out.push_back(resolved);
     };
@@ -526,29 +598,47 @@ KnobChannelSet::resolve(const std::list<ImageLayerDesc>& present) const
 
     if (rows[0].mode == ChannelSetRow::eModeAll) {
         for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
-            accumulate(*it, allChannelBits(*it));
+            accumulate(*it, allChannelBits(*it), std::bitset<4>());
         }
     } else {
+        const ImageLayerDesc* colorStorage = findColorStorage(present);
         for (std::size_t i = 0; i < rows.size(); ++i) {
             const ChannelSetRow& row = rows[i];
             if (row.mode == ChannelSetRow::eModeLayer) {
+                if (ImageLayerDesc::isColorViewID(row.layerOrPattern)) {
+                    if (colorStorage) {
+                        std::bitset<4> bits;
+                        std::bitset<4> zeroBits;
+                        ImageLayerDesc::resolveColorView(row.layerOrPattern, *colorStorage, row.channels, &bits, &zeroBits);
+                        accumulate(*colorStorage, bits, zeroBits);
+                    }
+                    continue;
+                }
+                if (row.layerOrPattern == kNatronColorLayerID) {
+                    continue;
+                }
                 for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
                     if (it->getLayerID() != row.layerOrPattern) {
                         continue;
                     }
-                    accumulate(*it, row.channels.empty() ? allChannelBits(*it) : namedChannelBits(*it, row.channels));
+                    accumulate(*it, row.channels.empty() ? allChannelBits(*it) : namedChannelBits(*it, row.channels), std::bitset<4>());
                 }
             } else if (row.mode == ChannelSetRow::eModeRegex) {
                 if (!patterns[i].isValid()) {
                     continue;
                 }
                 for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+                    if (isColorStorage(*it)) {
+                        std::string widestView;
+                        accumulate(*it, regexColorBits(patterns[i], *it, row.channels, &widestView), std::bitset<4>());
+                        continue;
+                    }
                     if (patterns[i].match(QString::fromUtf8(it->getLayerLabel().c_str())).hasMatch()) {
                         std::bitset<4> bits = allChannelBits(*it);
                         if (!row.channels.empty()) {
                             bits &= ~namedChannelBits(*it, row.channels);
                         }
-                        accumulate(*it, bits);
+                        accumulate(*it, bits, std::bitset<4>());
                     }
                 }
             }
@@ -604,8 +694,11 @@ KnobChannelSet::isPatternValid(int row,
 static std::string
 layerLabelForID(const std::string& layerID)
 {
-    if (ImageLayerDesc::isColorLayer(layerID)) {
-        return kNatronColorLayerLabel;
+    if (ImageLayerDesc::isColorViewID(layerID)) {
+        return layerID;
+    }
+    if (layerID == kNatronColorLayerID) {
+        return kNatronColorViewRGBA;
     }
     ImageLayerDesc desc = ImageLayerDesc::mapOFXPlaneStringToLayer(layerID);
     if (desc) {
@@ -644,13 +737,41 @@ layerRowSummaryItem(const std::string& layerID,
 }
 
 /**
- * @brief The item text for a layer a regex row matched, or empty when excludedChannels leaves
- * that layer with no channel at all (mirrors resolve()'s accumulate(), which then drops it too).
+ * @brief The item text for a present layer under a regex row, or empty when the pattern does not
+ * match it or excludedChannels leaves it with no channel at all (mirrors resolve()'s accumulate(),
+ * which then drops it too). The colour storage layer is matched through its views.
  **/
 static std::string
-regexMatchSummaryItem(const ImageLayerDesc& desc,
+regexMatchSummaryItem(const QRegularExpression& pattern,
+                      const ImageLayerDesc& desc,
                       const std::vector<std::string>& excludedChannels)
 {
+    if (isColorStorage(desc)) {
+        std::string widestView;
+        const std::bitset<4> kept = regexColorBits(pattern, desc, excludedChannels, &widestView);
+        if (widestView.empty() || kept.none()) {
+            return std::string();
+        }
+        std::string item = widestView;
+        if (excludedChannels.empty()) {
+            return item;
+        }
+        item += '.';
+        const ImageLayerDesc& viewDesc = ImageLayerDesc::getColorView(widestView);
+        const std::vector<std::string>& names = viewDesc.getChannels();
+        for (int c = 0; c < (int)names.size(); ++c) {
+            if (kept[ResolvedLayer::channelBit(viewDesc, c)]) {
+                item += (char)std::tolower((unsigned char)names[c][0]);
+            }
+        }
+
+        return item;
+    }
+
+    if (!pattern.match(QString::fromUtf8(desc.getLayerLabel().c_str())).hasMatch()) {
+        return std::string();
+    }
+
     std::string item = desc.getLayerLabel();
 
     if (excludedChannels.empty()) {
@@ -732,10 +853,7 @@ KnobChannelSet::getSummary(const std::list<ImageLayerDesc>& present) const
         bool matchedAny = false;
         if (patterns[i].isValid()) {
             for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
-                if (!patterns[i].match(QString::fromUtf8(it->getLayerLabel().c_str())).hasMatch()) {
-                    continue;
-                }
-                std::string item = regexMatchSummaryItem(*it, rows[i].channels);
+                std::string item = regexMatchSummaryItem(patterns[i], *it, rows[i].channels);
                 if (item.empty()) {
                     continue;
                 }

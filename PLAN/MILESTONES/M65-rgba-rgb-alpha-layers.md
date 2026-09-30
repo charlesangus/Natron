@@ -500,6 +500,19 @@ Execution notes:
 - 2026-09-30 — **T5g landed** (code `10222df70`; full debug ctest 649/649, shots 166/166 on release). `Node::listChannelViewsForKnob` collapses the colour storage entry to the one view matching its layout (`ImageLayerDesc::collapseColorToLayoutView`); only `KnobGuiChannelSelect` uses it, so layer pickers, masks, channel sets and the shuffle map still offer every view. Alpha-only lists one entry, text `alpha`, value `alpha.A`. An aliased saved value (`rgb.G` on RGBA) displays as its listed channel without the absent marker; a value no listed view carries (`rgba.R` on alpha-only) keeps the marker and reads zero. The `natron-dev` image was rebuilt from the gcr mirror first.
 - 2026-09-30 — **T5e/T5 approved** by the user (the T5g re-shots).
 - 2026-09-30 — **P8.T3 re-packaged:** `build/appimages/M65-10222df70.AppImage` (sha256 `80daec5b…`). It passed `run-launch-check.sh` on 2 of 3 runs. The first run timed out on a cold start in the freshly rebuilt container (the M61 control passed; the next two M65 runs passed). The UAT script was updated for P8.T4–T6, T5 and T7–T9 (sections 11–15, plus a new alpha-only PNG fixture). Smoke debug is green, the decision is published (`2e0cb7aad`), and PR #35 is open against M61's branch.
+- 2026-09-30 — **Review round 1 (Codex, 7 findings) fixed** (code `d55b2b0be`; full debug ctest 656/656, and the viewer alpha menu checked under Xvfb):
+  - `KnobChannelSelect::resolve()` now returns an index into the layout it fetches. A missing channel resolves to the narrowest colour layout that has it, and so reads zero.
+  - The unpremult divisor now matches the colour channel by channel.
+  - The legacy warning now survives preview clears.
+  - The viewer alpha menu lists each colour channel once.
+  - `ChannelSelectParam.set` rejects the retired ID.
+  - Comments are trimmed.
+  - A consultant corrected one test expectation: unpremult by a missing `rgba.R` leaves R at its graded value, because the divisor channel is skipped.
+- 2026-09-30 — **Review round 2 (Codex, on the fix commit, 3 findings) fixed** (code `26cc11c9c`; ctest 656/656, Xvfb 0 failures):
+  - A viewer colour view whose channel is missing now reads black.
+  - An aliased alpha pick maps to its listed entry on relist.
+  - Found along the way, and already true on M61: a Switch's output layout covers every connected input (the widest), not the active one. So switching to an RGB-only input still shows `rgba.*`. This was put to the user as a follow-up.
+  - The round limit is reached; there will be no third round.
 
 ## Risks
 

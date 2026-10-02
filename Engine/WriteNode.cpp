@@ -999,6 +999,10 @@ WriteNodePrivate::createWriteNode(bool throwErrors,
     if (knob) {
         outputFileKnob = std::dynamic_pointer_cast<KnobOutputFile>(knob);
     }
+
+    // A new encoder starts from its own ocioConfigFile, or from the previous encoder's when it
+    // is the same plug-in, not from the project's.
+    _publicInterface->getApp()->getProject()->pushOCIOConfigToNode(thisNode);
 } // WriteNodePrivate::createWriteNode
 
 void

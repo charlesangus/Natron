@@ -81,6 +81,7 @@
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProjectPrivate.h"
 #include "Engine/ProjectSerialization.h"
+#include "Engine/ReadNode.h"
 #include "Engine/RectDSerialization.h"
 #include "Engine/RectISerialization.h"
 #include "Engine/RotoLayer.h"
@@ -88,6 +89,7 @@
 #include "Engine/StandardPaths.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
+#include "Engine/WriteNode.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -318,49 +320,72 @@ getStringKnobValue(const NodePtr& node,
     return stringKnob->getValue();
 }
 
-OCIO_NAMESPACE::ConstConfigRcPtr
-createOcioConfig(const std::string& configFile)
+void
+setOCIOConfigKnob(const NodePtr& node,
+                  const std::string& source)
 {
-    try {
-        if (configFile.empty()) {
-            return OCIO_NAMESPACE::Config::CreateFromEnv();
-        }
-
-        return OCIO_NAMESPACE::Config::CreateFromFile(configFile.c_str());
-    } catch (...) {
-        return OCIO_NAMESPACE::ConstConfigRcPtr();
+    if (!node) {
+        return;
     }
+    KnobStringBasePtr knob = std::dynamic_pointer_cast<KnobStringBase>(node->getKnobByName(ocioConfigFileKnobName));
+    if (!knob) {
+        return;
+    }
+    if (knob->getValue() != source) {
+        knob->setValue(source, ViewSpec::all(), 0, eValueChangedReasonPluginEdited, 0);
+    }
+    // The secret state is serialized, so a loaded node may have brought it back visible.
+    knob->setSecret(true);
 }
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 void
-Project::reportUnresolvedOCIOColorSpaces()
+Project::pushOCIOConfigToNode(const NodePtr& node)
+{
+    if (!node) {
+        return;
+    }
+    const std::string source = getOCIOConfigSource();
+    setOCIOConfigKnob(node, source);
+
+    EffectInstancePtr effect = node->getEffectInstance();
+    if (ReadNode* isRead = dynamic_cast<ReadNode*>(effect.get())) {
+        setOCIOConfigKnob(isRead->getEmbeddedReader(), source);
+    } else if (WriteNode* isWrite = dynamic_cast<WriteNode*>(effect.get())) {
+        setOCIOConfigKnob(isWrite->getEmbeddedWriter(), source);
+    }
+}
+
+void
+Project::pushOCIOConfigToNodes()
 {
     NodesList nodes;
 
     getNodes_recursive(nodes, false);
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        pushOCIOConfigToNode(*it);
+    }
+}
 
-    std::map<std::string, OCIO_NAMESPACE::ConstConfigRcPtr> configs;
+void
+Project::reportUnresolvedOCIOColorSpaces()
+{
+    const OCIO_NAMESPACE::ConstConfigRcPtr config = _imp->colorManagement->getConfig();
+
+    if (!config) {
+        return;
+    }
+    // Marks the messages this function sets, so that it clears its own and no other.
+    const QString header = tr("Unresolved OpenColorIO colorspaces:") + QLatin1Char('\n');
+
+    NodesList nodes;
+    getNodes_recursive(nodes, false);
 
     for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         // The decoder/encoder a Read/Write node wraps carries the same knobs under a
         // name the user never sees, so reporting it too would name each problem twice.
         if ((*it)->getIOContainer()) {
-            continue;
-        }
-        std::string configFile = getStringKnobValue(*it, ocioConfigFileKnobName);
-        canonicalizePath(configFile);
-
-        std::map<std::string, OCIO_NAMESPACE::ConstConfigRcPtr>::const_iterator foundConfig = configs.find(configFile);
-        if (foundConfig == configs.end()) {
-            foundConfig = configs.insert(std::make_pair(configFile, createOcioConfig(configFile))).first;
-        }
-        const OCIO_NAMESPACE::ConstConfigRcPtr& config = foundConfig->second;
-        // A config that will not load at all is a different failure, reported by the
-        // plug-in itself; treating it as "every colorspace is unresolvable" here would
-        // bury that message under this one.
-        if (!config) {
             continue;
         }
 
@@ -375,8 +400,16 @@ Project::reportUnresolvedOCIOColorSpaces()
                                      .arg(QString::fromUtf8(colorSpace.c_str()))
                                      .arg(QString::fromUtf8(config->getName())));
         }
+
         if (!unresolved.isEmpty()) {
-            (*it)->setPersistentMessage(eMessageTypeError, unresolved.join(QString::fromUtf8("\n")).toStdString());
+            (*it)->setPersistentMessage(eMessageTypeError, (header + unresolved.join(QString::fromUtf8("\n"))).toStdString());
+            continue;
+        }
+        QString current;
+        int type;
+        (*it)->getPersistentMessage(&current, &type, false);
+        if (current.startsWith(header)) {
+            (*it)->clearPersistentMessage(false);
         }
     }
 } // Project::reportUnresolvedOCIOColorSpaces
@@ -473,6 +506,8 @@ Project::loadProjectInternal(const QString & path,
         throw std::runtime_error( tr("Unrecognized or damaged project file").toStdString() );
     }
 
+    // After every node is restored, so that no node's saved config wins.
+    pushOCIOConfigToNodes();
     reportUnresolvedOCIOColorSpaces();
     reportDataKindConflicts();
 
@@ -1615,6 +1650,9 @@ Project::refreshColorManagement(bool warnOnFallback)
 
     cm.setWorkingSpace(getWorkingColorSpace());
     cm.notifyConfigChanged();
+
+    pushOCIOConfigToNodes();
+    reportUnresolvedOCIOColorSpaces();
 } // Project::refreshColorManagement
 
 void

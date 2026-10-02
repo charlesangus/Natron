@@ -806,6 +806,10 @@ ReadNodePrivate::createReadNode(bool throwErrors,
     }
 
     refreshEmbeddedReaderPlaneKnobs();
+
+    // A new decoder starts from its own ocioConfigFile, or from the previous decoder's when it
+    // is the same plug-in, not from the project's.
+    _publicInterface->getApp()->getProject()->pushOCIOConfigToNode(thisNode);
 } // ReadNodePrivate::createReadNode
 
 void

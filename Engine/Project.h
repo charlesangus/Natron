@@ -275,11 +275,23 @@ public:
     static bool hasUriScheme(const std::string& str);
 
     /**
-     * @brief Puts every node asking for an OpenColorIO colorspace the config it uses does
-     * not define into an error state naming those parameters. Nodes whose colorspaces all
-     * resolve are left untouched.
+     * @brief Puts every node asking for an OpenColorIO colorspace the project's effective
+     * config does not define into an error state naming those parameters, and clears that
+     * error, and only that one, from nodes whose colorspaces all resolve.
      **/
     void reportUnresolvedOCIOColorSpaces();
+
+    /**
+     * @brief Sets the "ocioConfigFile" parameter of every node that has one to
+     * getOCIOConfigSource() and hides it, so a node's own or saved value never wins.
+     **/
+    void pushOCIOConfigToNodes();
+
+    /**
+     * @brief As pushOCIOConfigToNodes() for one node; a Read or Write also pushes to the
+     * decoder or encoder it embeds.
+     **/
+    void pushOCIOConfigToNode(const NodePtr& node);
 
     /**
      * @brief Puts every node holding an input whose data kind it cannot handle into an error

@@ -361,3 +361,4 @@ Execution notes:
     - an identity route such as Switch now ignores its unrouted inputs when deciding colour.
     - Full ctest 733/733.
   - **Known gap:** Write's channel set follows metadata, so a frame whose real colour layout differs from the metadata writes zero-filled channels. This predates M37.
+- 2026-10-02 — AppImage `build/appimages/M37-70fda8e85.AppImage` launch-checked. P4.T3 shot approval and P6.T2 UAT deferred to the parcel UAT.

@@ -672,7 +672,7 @@ LayerChannelRow::rebuildCombo()
                                       currentValueLabel() + QLatin1Char(' ') + _absentMarker));
     }
 
-    if (_mode == eModeLayerSelect && _listNewLayerEntry) {
+    if ((_mode == eModeLayerSelect || isSetRow) && _listNewLayerEntry) {
         if (!_entries.empty()) {
             _entries.back().separatorAfter = true;
         }

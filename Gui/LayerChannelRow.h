@@ -90,7 +90,7 @@ public:
     ModeEnum getMode() const;
 
     /**
-     * @brief Replaces the layers the combo offers. In layer-select mode listNewLayerEntry
+     * @brief Replaces the layers the combo offers. In layer-select and set-row modes listNewLayerEntry
      * appends a "New layer..." entry after a separator. The current value is kept and
      * re-resolved against the new list.
      **/

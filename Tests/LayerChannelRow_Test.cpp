@@ -744,6 +744,50 @@ TEST(LayerChannelRow, NewLayerEntryEmitsAndReverts)
     EXPECT_EQ("specular", row.getCurrentLayerID());
 }
 
+TEST(LayerChannelRow, SetRowListsNewLayerLastOnlyWhenRequested)
+{
+    const LayerChannelRow::ModeEnum modes[] = { LayerChannelRow::eModeSetRow0, LayerChannelRow::eModeSetRowN };
+    for (int i = 0; i < 2; ++i) {
+        LayerChannelRow row(modes[i]);
+        row.setAvailableLayers(sampleLayers(), false);
+        EXPECT_FALSE(row.getComboEntries().contains(QString::fromUtf8("New layer...")));
+
+        row.setAvailableLayers(sampleLayers(), true);
+        const QStringList entries = row.getComboEntries();
+        ASSERT_FALSE(entries.isEmpty());
+        EXPECT_EQ(QString::fromUtf8("New layer..."), entries.last());
+        EXPECT_EQ(1, entries.count(QString::fromUtf8("New layer...")));
+    }
+}
+
+TEST(LayerChannelRow, SetRowNewLayerEntryEmitsAndRevertsToTheCurrentLayer)
+{
+    LayerChannelRow row(LayerChannelRow::eModeSetRowN);
+    row.setAvailableLayers(sampleLayers(), true);
+    row.setSetRowValue(LayerChannelRow::eSetRowModeLayer, "specular", std::vector<std::string>());
+
+    int newCount = 0;
+    int chosenCount = 0;
+    int modeCount = 0;
+    QObject::connect(&row, &LayerChannelRow::newLayerRequested, [&]() {
+        ++newCount;
+    });
+    QObject::connect(&row, &LayerChannelRow::layerChosen, [&](const QString&) {
+        ++chosenCount;
+    });
+    QObject::connect(&row, &LayerChannelRow::modeChosen, [&](LayerChannelRow::SetRowModeEnum) {
+        ++modeCount;
+    });
+
+    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "New layer..."));
+    EXPECT_EQ(1, newCount);
+    EXPECT_EQ(0, chosenCount);
+    EXPECT_EQ(0, modeCount);
+    EXPECT_EQ(QString::fromUtf8("specular"), row.getCurrentComboText());
+    EXPECT_EQ("specular", row.getCurrentLayerID());
+    EXPECT_EQ(LayerChannelRow::eSetRowModeLayer, row.getSetRowMode());
+}
+
 TEST(LayerChannelRow, RemoveButtonFollowsRemovableAndEmitsOnce)
 {
     LayerChannelRow row(LayerChannelRow::eModeSetRowN);

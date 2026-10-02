@@ -82,6 +82,7 @@ protected:
 private:
     void onRowModeChosen(LayerChannelRow* row, int setRowMode);
     void onRowLayerChosen(LayerChannelRow* row, const QString& layerID);
+    void onRowNewLayerRequested(LayerChannelRow* row);
     void onRowChannelToggled(LayerChannelRow* row, const QString& channel, bool on);
     void onRowPatternCommitted(LayerChannelRow* row, const QString& pattern);
     void onRowRemoveRequested(LayerChannelRow* row);

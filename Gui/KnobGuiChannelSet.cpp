@@ -32,6 +32,7 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QHBoxLayout>
 #include <QRegularExpression>
+#include <QTimer>
 #include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -40,7 +41,9 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/KnobChannelSet.h"
 
 #include "Gui/Button.h"
+#include "Gui/Gui.h"
 #include "Gui/GuiDefines.h"
+#include "Gui/KnobGuiLayerSelect.h"
 #include "Gui/LayerChannelRow.h"
 
 NATRON_NAMESPACE_ENTER
@@ -234,6 +237,9 @@ KnobGuiChannelSet::refreshWidgets()
         QObject::connect(row, &LayerChannelRow::layerChosen, this, [this, row](const QString& id) {
             onRowLayerChosen(row, id);
         });
+        QObject::connect(row, &LayerChannelRow::newLayerRequested, this, [this, row]() {
+            onRowNewLayerRequested(row);
+        });
         QObject::connect(row, &LayerChannelRow::channelToggled, this, [this, row](const QString& channel, bool on) {
             onRowChannelToggled(row, channel, on);
         });
@@ -250,8 +256,8 @@ KnobGuiChannelSet::refreshWidgets()
     for (std::size_t i = 0; i < rows.size(); ++i) {
         LayerChannelRow* row = _imp->rows[i];
         const ChannelSetRow& value = rows[i];
-        if (!sameLayerEntries(row->getAvailableLayers(), layers)) {
-            row->setAvailableLayers(layers, false);
+        if (i >= firstNewRow || !sameLayerEntries(row->getAvailableLayers(), layers)) {
+            row->setAvailableLayers(layers, isTargetKnob());
         }
         row->setExcludedLayers(layerIDsHeldByOtherRows(rows, i));
         row->setSetRowWithChannelButtons(knob->getWithChannelButtons());
@@ -364,6 +370,24 @@ KnobGuiChannelSet::onRowLayerChosen(LayerChannelRow* row,
     value.layerOrPattern = id;
     rows[index] = value;
     pushRows(rows);
+}
+
+void
+KnobGuiChannelSet::onRowNewLayerRequested(LayerChannelRow* row)
+{
+    // The row is still inside its combo's own change signal; the registry add repopulates
+    // that combo, so the dialog waits for the event loop.
+    QTimer::singleShot(0, this, [this, row]() {
+        KnobChannelSetPtr knob = _imp->knob.lock();
+        const int index = _imp->indexOf(row);
+
+        if (!knob || index < 0) {
+            return;
+        }
+        runNewLayerDialog(knob, getGui(), [this, row](const std::string& layerID, const std::string& /*layerLabel*/) {
+            onRowLayerChosen(row, QString::fromStdString(layerID));
+        });
+    });
 }
 
 void

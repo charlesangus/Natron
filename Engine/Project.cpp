@@ -938,6 +938,191 @@ Project::findAutoSaveForProject(const QString& projectPath,
     return false;
 }
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+const char* const kCustomOCIOConfigID = "Custom config";
+const char* const kDefaultOCIOConfigURI = "ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5";
+const char* const kDefaultColorSpace8Bit = "sRGB Encoded Rec.709 (sRGB)";
+const char* const kDefaultColorSpace16Bit = "sRGB Encoded Rec.709 (sRGB)";
+const char* const kDefaultColorSpaceLog = "ACEScct";
+const char* const kDefaultColorSpaceFloat = "ACEScg";
+
+QString
+ocioConfigToolTip()
+{
+    return Project::tr("The OpenColorIO config of this project. It provides the colorspaces of the "
+                       "working space, of the file defaults and of every Read, Write and OCIO node, "
+                       "and the displays and views of the viewers. "
+                       "When \"%1\" is selected, the \"OpenColorIO config file\" parameter is used.")
+        .arg(QString::fromUtf8(kCustomOCIOConfigID));
+}
+
+QString
+ocioConfigFileToolTip()
+{
+    return Project::tr("The OpenColorIO config file (config.ocio) used when the OpenColorIO config is \"%1\". "
+                       "A relative path or one starting with [%2] is resolved against the project directory.")
+        .arg(QString::fromUtf8(kCustomOCIOConfigID))
+        .arg(QString::fromUtf8(NATRON_PROJECT_ENV_VAR_NAME));
+}
+
+std::vector<ChoiceOption>
+namesToOptions(const std::vector<std::string>& names)
+{
+    std::vector<ChoiceOption> ret;
+
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (!names[i].empty()) {
+            ret.push_back(ChoiceOption(names[i], names[i], std::string()));
+        }
+    }
+
+    return ret;
+}
+
+std::vector<ChoiceOption>
+colorSpaceOptions(const ProjectColorManagement& cm)
+{
+    std::vector<ChoiceOption> ret;
+    OCIO_NAMESPACE::ConstConfigRcPtr config = cm.getConfig();
+    const std::vector<std::string> names = cm.getColorSpaces();
+
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (names[i].empty()) {
+            continue;
+        }
+        std::string description;
+        if (config) {
+            OCIO_NAMESPACE::ConstColorSpaceRcPtr cs = config->getColorSpace(names[i].c_str());
+            if (cs && cs->getDescription()) {
+                description = cs->getDescription();
+            }
+        }
+        ret.push_back(ChoiceOption(names[i], names[i], description));
+    }
+
+    return ret;
+}
+
+bool
+hasOption(const std::vector<ChoiceOption>& options,
+          const std::string& id)
+{
+    for (std::size_t i = 0; i < options.size(); ++i) {
+        if (options[i].id == id) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::string
+firstPresent(const std::vector<ChoiceOption>& options,
+             const std::vector<std::string>& candidates)
+{
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        if (!candidates[i].empty() && hasOption(options, candidates[i])) {
+            return candidates[i];
+        }
+    }
+
+    return options.empty() ? std::string() : options.front().id;
+}
+
+template <std::size_t N>
+std::vector<std::string>
+resolveRoles(const ProjectColorManagement& cm,
+             const char* const (&roles)[N])
+{
+    std::vector<std::string> ret;
+
+    for (std::size_t i = 0; i < N; ++i) {
+        ret.push_back(cm.resolveRoleOrName(roles[i]));
+    }
+
+    return ret;
+}
+
+const char* const kWorkingSpaceRoles[] = { "scene_linear" };
+const char* const kLogRoles[] = { "compositing_log", "scene_linear" };
+const char* const kIntegerRoles[] = { "texture_paint", "color_picking", "scene_linear" };
+
+/*
+ * Repopulates the knob and, when its active name is not among the new options, switches it to
+ * the first available fallback, recording "label: old -> new" in fallbacks.
+ */
+void
+repopulateWithFallback(const KnobChoicePtr& knob,
+                       const std::vector<ChoiceOption>& options,
+                       const std::vector<std::string>& fallbackNames,
+                       QStringList* fallbacks)
+{
+    const std::string old = knob->getActiveEntry().id;
+
+    knob->populateChoices(options);
+    if (!old.empty() && knob->isActiveEntryPresentInEntries()) {
+        return;
+    }
+    const std::string target = firstPresent(options, fallbackNames);
+    if (target.empty()) {
+        return;
+    }
+    knob->setValueFromID(target, 0);
+    if (!old.empty() && (old != target) && fallbacks) {
+        fallbacks->push_back(QString::fromUtf8("%1: %2 -> %3")
+                                 .arg(QString::fromUtf8(knob->getLabel().c_str()))
+                                 .arg(QString::fromUtf8(old.c_str()))
+                                 .arg(QString::fromUtf8(target.c_str())));
+    }
+}
+
+void
+repopulateViewerViews(ProjectPrivate* imp,
+                      QStringList* fallbacks)
+{
+    const ProjectColorManagement& cm = *imp->colorManagement;
+    const std::string display = imp->viewerDisplay->getActiveEntry().id;
+    std::vector<std::string> fallbackNames(1, cm.getDefaultView(display));
+
+    repopulateWithFallback(imp->viewerView, namesToOptions(cm.getViews(display)), fallbackNames, fallbacks);
+}
+
+/*
+ * Sets each knob's value, or its default value, by name. The file defaults are the literal
+ * names of the user's per-category choice, so they stay stable if a future config moves a role;
+ * a config that lacks one gets the same role fallback as a config switch.
+ */
+void
+applyChoiceDefault(const KnobChoicePtr& knob,
+                   const std::vector<std::string>& candidates,
+                   bool asKnobDefault)
+{
+    const std::string id = firstPresent(knob->getEntries_mt_safe(), candidates);
+
+    if (id.empty()) {
+        return;
+    }
+    if (asKnobDefault) {
+        knob->setDefaultValueFromID(id, 0);
+    } else {
+        knob->setValueFromID(id, 0);
+    }
+}
+
+std::vector<std::string>
+withRoles(const char* name,
+          const std::vector<std::string>& roles)
+{
+    std::vector<std::string> ret(1, std::string(name));
+
+    ret.insert(ret.end(), roles.begin(), roles.end());
+
+    return ret;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
 void
 Project::initializeKnobs()
 {
@@ -1099,6 +1284,68 @@ Project::initializeKnobs()
     // reset() restores when it resets every project knob to its default.
     _imp->defaultLayersList->setDefaultValue(encodeLayersKnobTable());
     LayersPage->addKnob(_imp->defaultLayersList);
+
+    KnobPagePtr colorPage = AppManager::createKnob<KnobPage>(this, tr("Color"));
+
+    _imp->ocioConfig = AppManager::createKnob<KnobChoice>(this, tr("OpenColorIO config"));
+    _imp->ocioConfig->setName("ocioConfig");
+    _imp->ocioConfig->setHintToolTip(ocioConfigToolTip());
+    _imp->ocioConfig->setAnimationEnabled(false);
+    _imp->ocioConfig->populateChoices(ProjectColorManagement::builtinConfigOptions());
+    _imp->ocioConfig->setDefaultValueFromID(kDefaultOCIOConfigURI, 0);
+    colorPage->addKnob(_imp->ocioConfig);
+
+    _imp->ocioConfigFile = AppManager::createKnob<KnobFile>(this, tr("OpenColorIO config file"));
+    _imp->ocioConfigFile->setName("ocioConfigFile");
+    _imp->ocioConfigFile->setHintToolTip(ocioConfigFileToolTip());
+    _imp->ocioConfigFile->setAnimationEnabled(false);
+    _imp->ocioConfigFile->setDefaultAllDimensionsEnabled(false);
+    colorPage->addKnob(_imp->ocioConfigFile);
+
+    _imp->workingSpace = AppManager::createKnob<KnobChoice>(this, tr("Working space"));
+    _imp->workingSpace->setName("workingSpace");
+    _imp->workingSpace->setHintToolTip(tr("The colorspace images are processed in. It defaults to the colorspace of the config's scene_linear role."));
+    _imp->workingSpace->setAnimationEnabled(false);
+    colorPage->addKnob(_imp->workingSpace);
+
+    _imp->colorSpace8Bit = AppManager::createKnob<KnobChoice>(this, tr("8-bit files"));
+    _imp->colorSpace8Bit->setName("colorSpace8Bit");
+    _imp->colorSpace8Bit->setHintToolTip(tr("The default colorspace of new Read and Write nodes for 8-bit files."));
+    _imp->colorSpace8Bit->setAnimationEnabled(false);
+    colorPage->addKnob(_imp->colorSpace8Bit);
+
+    _imp->colorSpace16Bit = AppManager::createKnob<KnobChoice>(this, tr("16-bit files"));
+    _imp->colorSpace16Bit->setName("colorSpace16Bit");
+    _imp->colorSpace16Bit->setHintToolTip(tr("The default colorspace of new Read and Write nodes for 16-bit integer files."));
+    _imp->colorSpace16Bit->setAnimationEnabled(false);
+    colorPage->addKnob(_imp->colorSpace16Bit);
+
+    _imp->colorSpaceLog = AppManager::createKnob<KnobChoice>(this, tr("Log files"));
+    _imp->colorSpaceLog->setName("colorSpaceLog");
+    _imp->colorSpaceLog->setHintToolTip(tr("The default colorspace of new Read and Write nodes for log-encoded files, such as Cineon and DPX."));
+    _imp->colorSpaceLog->setAnimationEnabled(false);
+    colorPage->addKnob(_imp->colorSpaceLog);
+
+    _imp->colorSpaceFloat = AppManager::createKnob<KnobChoice>(this, tr("Floating-point files"));
+    _imp->colorSpaceFloat->setName("colorSpaceFloat");
+    _imp->colorSpaceFloat->setHintToolTip(tr("The default colorspace of new Read and Write nodes for floating-point files."));
+    _imp->colorSpaceFloat->setAnimationEnabled(false);
+    colorPage->addKnob(_imp->colorSpaceFloat);
+
+    _imp->viewerDisplay = AppManager::createKnob<KnobChoice>(this, tr("Viewer display"));
+    _imp->viewerDisplay->setName("viewerDisplay");
+    _imp->viewerDisplay->setHintToolTip(tr("The display new viewers start with."));
+    _imp->viewerDisplay->setAnimationEnabled(false);
+    colorPage->addKnob(_imp->viewerDisplay);
+
+    _imp->viewerView = AppManager::createKnob<KnobChoice>(this, tr("Viewer view"));
+    _imp->viewerView->setName("viewerView");
+    _imp->viewerView->setHintToolTip(tr("The view new viewers start with."));
+    _imp->viewerView->setAnimationEnabled(false);
+    colorPage->addKnob(_imp->viewerView);
+
+    refreshColorManagement(false);
+    applyColorManagementDefaults(true);
 
     KnobPagePtr lutPages = AppManager::createKnob<KnobPage>( this, tr("LUT") );
     std::vector<ChoiceOption> colorSpaces;
@@ -1286,6 +1533,143 @@ Project::initializeKnobs()
 
     Q_EMIT knobsInitialized();
 } // initializeKnobs
+
+void
+Project::applyColorManagementDefaults(bool asKnobDefaults)
+{
+    const ProjectColorManagement& cm = *_imp->colorManagement;
+
+    applyChoiceDefault(_imp->workingSpace, resolveRoles(cm, kWorkingSpaceRoles), asKnobDefaults);
+    applyChoiceDefault(_imp->colorSpace8Bit, withRoles(kDefaultColorSpace8Bit, resolveRoles(cm, kIntegerRoles)), asKnobDefaults);
+    applyChoiceDefault(_imp->colorSpace16Bit, withRoles(kDefaultColorSpace16Bit, resolveRoles(cm, kIntegerRoles)), asKnobDefaults);
+    applyChoiceDefault(_imp->colorSpaceLog, withRoles(kDefaultColorSpaceLog, resolveRoles(cm, kLogRoles)), asKnobDefaults);
+    applyChoiceDefault(_imp->colorSpaceFloat, withRoles(kDefaultColorSpaceFloat, resolveRoles(cm, kWorkingSpaceRoles)), asKnobDefaults);
+    applyChoiceDefault(_imp->viewerDisplay, std::vector<std::string>(1, cm.getDefaultDisplay()), asKnobDefaults);
+
+    // The view menu depends on the display that was just set.
+    repopulateViewerViews(_imp.get(), 0);
+    applyChoiceDefault(_imp->viewerView, std::vector<std::string>(1, cm.getDefaultView(_imp->viewerDisplay->getActiveEntry().id)), asKnobDefaults);
+
+    _imp->colorManagement->setWorkingSpace(getWorkingColorSpace());
+}
+
+void
+Project::refreshColorManagement(bool warnOnFallback)
+{
+    FlagSetter suppressRefresh(true, &_imp->suppressColorManagementRefresh);
+    ProjectColorManagement& cm = *_imp->colorManagement;
+    const bool isCustom = _imp->ocioConfig->getActiveEntry().id == kCustomOCIOConfigID;
+    const std::string source = getOCIOConfigSource();
+
+    // Choosing Custom before picking a file is an intermediate state, not an error.
+    if (!source.empty() && (!cm.getConfig() || (source != cm.getConfigSource()))) {
+        std::string error;
+        // The Color page is built before the project path knob exists.
+        if (cm.load(source, _imp->projectPath ? _imp->getProjectPath() : std::string(), &error) != ProjectColorManagement::eLoadErrorNone) {
+            const QString message = tr("Could not load the OpenColorIO config \"%1\": %2\nThe previous config stays in use.")
+                                        .arg(QString::fromUtf8(source.c_str()))
+                                        .arg(QString::fromUtf8(error.c_str()));
+            appPTR->writeToErrorLog_mt_safe(tr("Color management"), QDateTime::currentDateTime(), message);
+            getApp()->errorDialog(tr("Color management").toStdString(), message.toStdString(), false);
+        }
+    }
+    if (!cm.getConfig()) {
+        cm.load(kDefaultOCIOConfigURI, std::string(), 0);
+    }
+
+    QStringList fallbacks;
+    const std::vector<ChoiceOption> spaces = colorSpaceOptions(cm);
+    repopulateWithFallback(_imp->workingSpace, spaces, resolveRoles(cm, kWorkingSpaceRoles), &fallbacks);
+    repopulateWithFallback(_imp->colorSpace8Bit, spaces, resolveRoles(cm, kIntegerRoles), &fallbacks);
+    repopulateWithFallback(_imp->colorSpace16Bit, spaces, resolveRoles(cm, kIntegerRoles), &fallbacks);
+    repopulateWithFallback(_imp->colorSpaceLog, spaces, resolveRoles(cm, kLogRoles), &fallbacks);
+    repopulateWithFallback(_imp->colorSpaceFloat, spaces, resolveRoles(cm, kWorkingSpaceRoles), &fallbacks);
+    repopulateWithFallback(_imp->viewerDisplay, namesToOptions(cm.getDisplays()), std::vector<std::string>(1, cm.getDefaultDisplay()), &fallbacks);
+    repopulateViewerViews(_imp.get(), &fallbacks);
+
+    if (warnOnFallback && !fallbacks.isEmpty()) {
+        const QString message = tr("The OpenColorIO config \"%1\" does not define some of the project's colorspaces, displays or views. "
+                                   "They now use these instead:\n%2")
+                                    .arg(QString::fromUtf8(cm.getConfigSource().c_str()))
+                                    .arg(fallbacks.join(QString::fromUtf8("\n")));
+        appPTR->writeToErrorLog_mt_safe(tr("Color management"), QDateTime::currentDateTime(), message);
+        getApp()->warningDialog(tr("Color management").toStdString(), message.toStdString(), false);
+    }
+
+    _imp->ocioConfig->setAllDimensionsEnabled(true);
+    _imp->ocioConfig->setHintToolTip(ocioConfigToolTip());
+    _imp->ocioConfigFile->setAllDimensionsEnabled(isCustom);
+    _imp->ocioConfigFile->setHintToolTip(ocioConfigFileToolTip());
+
+    cm.setWorkingSpace(getWorkingColorSpace());
+    cm.notifyConfigChanged();
+} // Project::refreshColorManagement
+
+std::string
+Project::getOCIOConfigSource() const
+{
+    if (!_imp->ocioConfig) {
+        return kDefaultOCIOConfigURI;
+    }
+    const std::string id = _imp->ocioConfig->getActiveEntry().id;
+    if (id != kCustomOCIOConfigID) {
+        return id;
+    }
+    std::string path = _imp->ocioConfigFile->getValue();
+    if (!path.empty()) {
+        // canonicalizePath only reads the project paths.
+        const_cast<Project*>(this)->canonicalizePath(path);
+    }
+
+    return path;
+}
+
+std::string
+Project::getWorkingColorSpace() const
+{
+    return _imp->workingSpace ? _imp->workingSpace->getActiveEntry().id : std::string();
+}
+
+std::string
+Project::getFileColorSpace(FileColorCategoryEnum category) const
+{
+    KnobChoicePtr knob;
+
+    switch (category) {
+    case eFileColorCategory8Bit:
+        knob = _imp->colorSpace8Bit;
+        break;
+    case eFileColorCategory16Bit:
+        knob = _imp->colorSpace16Bit;
+        break;
+    case eFileColorCategoryLog:
+        knob = _imp->colorSpaceLog;
+        break;
+    case eFileColorCategoryFloat:
+        knob = _imp->colorSpaceFloat;
+        break;
+    }
+
+    return knob ? knob->getActiveEntry().id : std::string();
+}
+
+void
+Project::getDefaultDisplayView(std::string* display,
+                               std::string* view) const
+{
+    if (display) {
+        *display = _imp->viewerDisplay ? _imp->viewerDisplay->getActiveEntry().id : std::string();
+    }
+    if (view) {
+        *view = _imp->viewerView ? _imp->viewerView->getActiveEntry().id : std::string();
+    }
+}
+
+ProjectColorManagementPtr
+Project::getColorManagement() const
+{
+    return _imp->colorManagement;
+}
 
 // don't return a reference to a mutex-protected object!
 void
@@ -1821,22 +2205,25 @@ Project::onKnobValueChanged(KnobI* knob,
 
         refreshOpenGLRenderingFlagOnNodes();
         shouldAutoSave = true;
+    } else if (knob == _imp->ocioConfig.get() || knob == _imp->ocioConfigFile.get()) {
+        if (!_imp->suppressColorManagementRefresh) {
+            refreshColorManagement(true);
+        }
+        shouldAutoSave = true;
+    } else if (knob == _imp->viewerDisplay.get()) {
+        if (!_imp->suppressColorManagementRefresh) {
+            repopulateViewerViews(_imp.get(), 0);
+        }
+        shouldAutoSave = true;
+    } else if (knob == _imp->workingSpace.get()) {
+        _imp->colorManagement->setWorkingSpace(getWorkingColorSpace());
+        shouldAutoSave = true;
     } else {
         ret = false;
     }
 
     // others knobs that should trigger auto save
-    if ( knob == _imp->colorSpace8u.get() ||
-         knob == _imp->colorSpace16u.get() ||
-         knob == _imp->colorSpace32f.get() ||
-         knob == _imp->lockFrameRange.get() ||
-         knob == _imp->onProjectLoadCB.get() ||
-         knob == _imp->onProjectSaveCB.get() ||
-         knob == _imp->onProjectCloseCB.get() ||
-         knob == _imp->onNodeCreated.get() ||
-         knob == _imp->onNodeDeleted.get() ||
-         knob == _imp->envVars.get() )
-    {
+    if (knob == _imp->colorSpace8u.get() || knob == _imp->colorSpace16u.get() || knob == _imp->colorSpace32f.get() || knob == _imp->colorSpace8Bit.get() || knob == _imp->colorSpace16Bit.get() || knob == _imp->colorSpaceLog.get() || knob == _imp->colorSpaceFloat.get() || knob == _imp->viewerView.get() || knob == _imp->lockFrameRange.get() || knob == _imp->onProjectLoadCB.get() || knob == _imp->onProjectSaveCB.get() || knob == _imp->onProjectCloseCB.get() || knob == _imp->onNodeCreated.get() || knob == _imp->onNodeDeleted.get() || knob == _imp->envVars.get()) {
         shouldAutoSave = true;
     }
 
@@ -2172,14 +2559,22 @@ Project::doResetEnd(bool aboutToQuit)
         const KnobsVec & knobs = getKnobs();
 
         beginChanges();
-        for (U32 i = 0; i < knobs.size(); ++i) {
-            for (int j = 0; j < knobs[i]->getDimension(); ++j) {
-                knobs[i]->resetToDefaultValue(j);
+        {
+            // Refreshing midway would apply fallbacks to colourspaces that are about to be reset.
+            FlagSetter suppressRefresh(true, &_imp->suppressColorManagementRefresh);
+            for (U32 i = 0; i < knobs.size(); ++i) {
+                for (int j = 0; j < knobs[i]->getDimension(); ++j) {
+                    knobs[i]->resetToDefaultValue(j);
+                }
             }
         }
 
-
         onOCIOConfigPathChanged(appPTR->getOCIOConfigPath(), true);
+
+        // The colourspace defaults are indices into the default config's menus, which the
+        // reset above may have applied to another config's menus; re-apply them by name.
+        refreshColorManagement(false);
+        applyColorManagementDefaults(false);
 
         endChanges(true);
     }

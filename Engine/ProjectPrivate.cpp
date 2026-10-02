@@ -75,6 +75,17 @@ ProjectPrivate::ProjectPrivate(Project* project)
     , colorSpace8u()
     , colorSpace16u()
     , colorSpace32f()
+    , ocioConfig()
+    , ocioConfigFile()
+    , workingSpace()
+    , colorSpace8Bit()
+    , colorSpace16Bit()
+    , colorSpaceLog()
+    , colorSpaceFloat()
+    , viewerDisplay()
+    , viewerView()
+    , colorManagement(std::make_shared<ProjectColorManagement>())
+    , suppressColorManagementRefresh(false)
     , natronVersion()
     , originalAuthorName()
     , lastAuthorName()
@@ -202,6 +213,10 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
                 }
             }
         }
+
+        // Choice ids that did not match the previous config's entries are still pending and
+        // re-match here, so the order in which the Color page knobs restored does not matter.
+        _publicInterface->refreshColorManagement(true);
 
         /// 2) restore the timeline
         timeline->seekFrame(obj.getCurrentTime(), false, 0, eTimelineChangeReasonOtherSeek);

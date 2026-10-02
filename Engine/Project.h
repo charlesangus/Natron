@@ -46,6 +46,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Knob.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/ProjectColorManagement.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -63,10 +64,12 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
     Q_OBJECT
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
-    struct MakeSharedEnabler;
+friend struct ProjectPrivate;
 
-    // constructors should be privatized in any class that derives from std::enable_shared_from_this<>
-    Project(const AppInstancePtr& appInstance);
+struct MakeSharedEnabler;
+
+// constructors should be privatized in any class that derives from std::enable_shared_from_this<>
+Project(const AppInstancePtr& appInstance);
 
 public:
     static ProjectPtr create(const AppInstancePtr& appInstance);
@@ -213,6 +216,19 @@ public:
      **/
     ViewerColorSpaceEnum getDefaultColorSpaceForBitDepth(ImageBitDepthEnum bitdepth) const;
 
+    /**
+     * @brief The OpenColorIO config the project uses: an "ocio://" URI or an absolute path.
+     * Nothing else may read the project's config knobs.
+     **/
+    std::string getOCIOConfigSource() const;
+
+    std::string getWorkingColorSpace() const;
+
+    std::string getFileColorSpace(FileColorCategoryEnum category) const;
+
+    void getDefaultDisplayView(std::string* display, std::string* view) const;
+
+    ProjectColorManagementPtr getColorManagement() const;
 
     /**
      * @brief Remove all the autosave files from the disk.
@@ -428,6 +444,15 @@ private:
 
 
     void doResetEnd(bool aboutToQuit);
+
+    /**
+     * @brief Loads getOCIOConfigSource(), repopulates the Color page menus with fallbacks for
+     * names the config lacks, re-derives the config knobs' enabled state and fires configChanged.
+     * Enabled is serialized, so this must run after every restore.
+     **/
+    void refreshColorManagement(bool warnOnFallback);
+
+    void applyColorManagementDefaults(bool asKnobDefaults);
 
     /**
      * @brief Must be implemented to initialize any knob using the

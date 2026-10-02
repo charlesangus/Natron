@@ -89,6 +89,17 @@ public:
     KnobChoicePtr colorSpace8u;
     KnobChoicePtr colorSpace16u;
     KnobChoicePtr colorSpace32f;
+    KnobChoicePtr ocioConfig;
+    KnobFilePtr ocioConfigFile;
+    KnobChoicePtr workingSpace;
+    KnobChoicePtr colorSpace8Bit;
+    KnobChoicePtr colorSpace16Bit;
+    KnobChoicePtr colorSpaceLog;
+    KnobChoicePtr colorSpaceFloat;
+    KnobChoicePtr viewerDisplay;
+    KnobChoicePtr viewerView;
+    ProjectColorManagementPtr colorManagement;
+    bool suppressColorManagementRefresh; // main thread only
     KnobDoublePtr frameRate;
     KnobChoicePtr gpuSupport;
     KnobIntPtr frameRange;

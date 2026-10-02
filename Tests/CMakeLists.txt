@@ -59,6 +59,8 @@ set(Tests_SOURCES
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
     PluginIdentity_Test.cpp
+    ProjectColorManagement_Test.cpp
+    ViewerDisplayTransform_Test.cpp
     ProjectOCIO_Test.cpp
     ProjectSerialization_Test.cpp
     PyPlugExport_Test.cpp

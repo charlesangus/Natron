@@ -21,6 +21,7 @@ set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h DataKindTestEffect.h Dee
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
+    AddLayers_Test.cpp
     BaseTest.cpp
     ChannelSetRender_Test.cpp
     CLArgs_Test.cpp

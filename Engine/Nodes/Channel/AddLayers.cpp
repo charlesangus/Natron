@@ -440,7 +440,7 @@ AddLayers::buildSubLabel()
     std::list<ImageLayerDesc> registryPlanes;
     listRegistryPlanes(time, ViewIdx(0), &registryPlanes);
 
-    return layers->getSummary(registryPlanes);
+    return layers->getShortSummary(registryPlanes, KnobChannelSet::kSubLabelSummaryLength);
 }
 
 void

@@ -539,7 +539,8 @@ RemoveLayers::buildSubLabel()
 
     const std::string verb = (operation == eOperationKeep) ? tr("keep").toStdString() : tr("remove").toStdString();
 
-    return verb + " " + channels->getSummary(present);
+    // The verb gets its own line so that neither line is much wider than the node box.
+    return verb + "\n" + channels->getShortSummary(present, KnobChannelSet::kSubLabelSummaryLength);
 }
 
 void

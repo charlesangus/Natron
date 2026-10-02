@@ -462,14 +462,17 @@ TEST_F(RemoveLayersTest, SubLabelNamesTheOperationAndSelection)
 
     channels->setLayer(0, "diffuse", NULL);
     channels->addLayer(kNatronColorViewAlpha, NULL);
-    EXPECT_EQ(std::string("remove diffuse, alpha"), sublabel->getValue());
+    EXPECT_EQ(std::string("remove\ndiffuse +1"), sublabel->getValue());
+
+    channels->addRegex("spec.*");
+    EXPECT_EQ(std::string("remove\ndiffuse +2"), sublabel->getValue());
 
     setKeep(remove);
     std::vector<ChannelSetRow> rows(1);
     rows[0].mode = ChannelSetRow::eModeRegex;
     rows[0].layerOrPattern = "spec.*";
     channels->setRows(rows);
-    EXPECT_EQ(std::string("keep specular"), sublabel->getValue());
+    EXPECT_EQ(std::string("keep\nspecular"), sublabel->getValue());
 }
 
 TEST_F(RemoveLayersTest, KeepSelectionSurvivesSaveResetLoad)

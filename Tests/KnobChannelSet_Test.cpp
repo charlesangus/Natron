@@ -314,6 +314,19 @@ TEST(KnobChannelSet, RegexMatchesViewLabelsNotTheStorageLabel)
     EXPECT_EQ(std::string("rgba, diffuse, motion, depth, specular"), knob->getSummary(presentLayers()));
 }
 
+TEST(KnobChannelSet, ShortSummaryCountsTheItemsThatDoNotFit)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setRegex(0, ".*");
+    EXPECT_EQ(std::string("rgba, diffuse +3"), knob->getShortSummary(presentLayers(), 14));
+    EXPECT_EQ(std::string("rgba +4"), knob->getShortSummary(presentLayers(), 4));
+    EXPECT_EQ(std::string("rgba, diffuse, motion, depth, specular"), knob->getShortSummary(presentLayers(), 100));
+
+    knob->setRegex(0, "specular");
+    EXPECT_EQ(std::string("specular"), knob->getShortSummary(presentLayers(), 1));
+}
+
 TEST(KnobChannelSet, RegexExcludedChannelsApplyToColorViews)
 {
     KnobChannelSetPtr knob = makeKnob();

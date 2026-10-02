@@ -282,6 +282,16 @@ public:
      **/
     std::string getSummary(const std::list<ImageLayerDesc>& present) const;
 
+    /**
+     * @brief Same items as getSummary(present), but only as many as fit in maxLength
+     * characters (always at least one), followed by " +N" for the N left out. For text
+     * with little room, such as a node's sublabel in the node graph.
+     **/
+    std::string getShortSummary(const std::list<ImageLayerDesc>& present, std::size_t maxLength) const;
+
+    // Sized so that a sublabel line stays about as wide as a node box at the default zoom.
+    static const std::size_t kSubLabelSummaryLength = 10;
+
     void getReferencedLayerIDs(std::set<std::string>* layerIDs) const;
 
     std::string encodeRows(const std::vector<ChannelSetRow>& rows);
@@ -296,6 +306,8 @@ private:
     }
 
     void getRowsAndPatterns(std::vector<ChannelSetRow>* rows, std::vector<QRegularExpression>* patterns) const;
+
+    std::vector<std::string> getSummaryItems(const std::list<ImageLayerDesc>& present) const;
 
     void setRowAt(int row, const ChannelSetRow& value);
 

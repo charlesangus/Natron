@@ -810,6 +810,52 @@ TEST_F(RemoveLayersRenderTest, MergeOnAllKeepsTheColourOfAOverAColourlessB)
     expectNoPersistentMessage(_writer);
 }
 
+// The Switch renders only the input it routes to, so the colour of the input it does not route to
+// must not let an All row bring back a colour plane the routed stream lacks.
+TEST_F(RemoveLayersRenderTest, BlurOnAllOverASwitchRoutedToAColourlessStreamWritesNoColourChannels)
+{
+    createRemoveOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    _channels->setLayer(0, kNatronColorViewRGBA, NULL);
+    NodePtr colored = createReader("flat-rgba-only.exr");
+    ASSERT_TRUE(bool(colored));
+
+    NodePtr switchNode = createNode(QString::fromUtf8("net.sf.openfx.switchPlugin"));
+    ASSERT_TRUE(bool(switchNode));
+    connectNodes(_remove, switchNode, 0, true);
+    connectNodes(colored, switchNode, 1, true);
+    KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName("which"));
+    ASSERT_TRUE(bool(which));
+    which->setValue(0);
+    _last = switchNode;
+
+    std::list<ImageLayerDesc> present;
+    switchNode->getEffectInstance()->getPresentLayers(1., ViewIdx(0), -1, &present);
+    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+        EXPECT_FALSE(it->isColorLayer()) << "the Switch presents a colour plane its routed input lacks";
+    }
+
+    NodePtr blur = appendBlurOnAll();
+    if (HasFatalFailure() || !blur) {
+        return;
+    }
+
+    FlatExrImage image;
+    render("remove_rgba_switch_blur_all.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    EXPECT_EQ(names({ "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelSet(image));
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+    expectNoPersistentMessage(switchNode);
+    expectNoPersistentMessage(blur);
+    expectNoPersistentMessage(_writer);
+}
+
 // The multiplanar effect produces the colour plane itself, so a colourless pass-through input
 // does not take it away; only an encoder's colour comes from that input alone.
 TEST_F(RemoveLayersRenderTest, AMultiplanarEffectOverAColourlessStreamStillProducesColour)

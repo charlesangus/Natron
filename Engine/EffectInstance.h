@@ -2153,9 +2153,12 @@ public:
      * view they are read at: the input this effect is an identity of there, otherwise the
      * preferred input at (time, view). Called again while its own identity query is running,
      * it answers the preferred input at (time, view) without asking isIdentity() again.
+     * `isIdentity`, when given, tells whether the input was chosen because this effect is an
+     * identity of it, in which case no other input contributes at (time, view).
      **/
     void getLayersPassThroughInput(double time, ViewIdx view,
-                                   int* inputNb, double* inputTime, ViewIdx* inputView);
+                                   int* inputNb, double* inputTime, ViewIdx* inputView,
+                                   bool* isIdentity = NULL);
 
 private:
     bool isResolvingLayersPassThrough() const;

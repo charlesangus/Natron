@@ -4464,11 +4464,15 @@ EffectInstance::getLayersPassThroughInput(double time,
                                           ViewIdx view,
                                           int* inputNb,
                                           double* inputTime,
-                                          ViewIdx* inputView)
+                                          ViewIdx* inputView,
+                                          bool* isIdentity)
 {
     *inputNb = getNode()->getPreferredInput();
     *inputTime = time;
     *inputView = view;
+    if (isIdentity) {
+        *isIdentity = false;
+    }
 
     if ((getNInputs() == 0) || isResolvingLayersPassThrough()) {
         return;
@@ -4491,6 +4495,9 @@ EffectInstance::getLayersPassThroughInput(double time,
         *inputNb = identityInputNb;
         *inputTime = identityTime;
         *inputView = identityView;
+        if (isIdentity) {
+            *isIdentity = true;
+        }
     }
 }
 
@@ -4553,7 +4560,8 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
     NodePtr node = getNode();
 
     ViewIdx ptView;
-    getLayersPassThroughInput(time, view, passThroughInputNb, passThroughTime, &ptView);
+    bool routesPassThroughInputOnly = false;
+    getLayersPassThroughInput(time, view, passThroughInputNb, passThroughTime, &ptView, &routesPassThroughInputOnly);
     *passThroughView = ptView;
     passThroughLayers->clear();
     processChannelsPerPlane->clear();
@@ -4565,8 +4573,9 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
         filterPassThroughLayers(*passThroughTime, ptView, passThroughLayers);
     }
     // Colour read from another input still makes the output's colour, e.g. Merge's A over a
-    // colourless B.
-    for (int i = 0; sourceInputsAreColorless && (i < getNInputs()); ++i) {
+    // colourless B. An effect that is an identity of its pass-through input, such as a Switch,
+    // reads no other input, so another input's colour is not the output's.
+    for (int i = 0; sourceInputsAreColorless && !routesPassThroughInputOnly && (i < getNInputs()); ++i) {
         if ((i != *passThroughInputNb) && !isInputMask(i) && inputPresentsColorStorage(this, time, view, i)) {
             sourceInputsAreColorless = false;
         }

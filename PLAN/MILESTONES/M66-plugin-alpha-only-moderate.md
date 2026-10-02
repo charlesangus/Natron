@@ -132,7 +132,7 @@ Execution notes:
   - verify: the file is present and indexed.
   - size: S
 
-- [ ] M66.P6.T2 — Push fork branches, open fork PRs, re-pin fetch-assets, rebuild assets, run full ctest
+- [x] M66.P6.T2 — Push fork branches, open fork PRs, re-pin fetch-assets, rebuild assets, run full ctest
   - files: `tools/ci/local/fetch-assets.sh` (OPENFX_IO_REF, OPENFX_MISC_REF, OPENFX_ARENA_REF and their comments)
   - approach: push `m66/alpha-only` on the three forks, open PRs on `charlesangus/*`, and pin the branch SHAs. Run a fresh fetch-assets (re-cloned plugin sources, no dirty trees), then a detached build and the full `tools/ci/local/test.sh ctest debug`.
   - verify: the plugin pins match the three SHAs; full ctest green.
@@ -158,3 +158,4 @@ Execution notes:
   - **Fixes in that round:** the matte-mode Magick effects now composite the alpha path the same way as the RGBA path. Arc and Polar resampling overshot to 1.04 without ImageMagick's composite clamp. The ReadEXR test creates the deprecated plugin with `AllowNonUserCreatablePlugins` and sets the file after creation, which is how the reader infers its layout.
   - **TimeBuffer:** openfx-misc builds TimeBuffer only under `DEBUG` (upstream: "not yet supported by Natron", no sequential render), so the release bundle doesn't ship it. Its alpha change is kept, and its test skips when the plugin is absent. Verified separately against a DEBUG Misc build. It stays out of release.
   - **Follow-up, not fixed:** a plugin with a Source input that also supports the Generator context (TimeBufferRead) is treated as a generator by `OfxEffectInstance::isGenerator`/`getLayerKnobSpec`, and its target-layer picker defaults to `rgba`, which widens alpha-only streams.
+- 2026-10-02 — **Gate run:** forks pushed (misc#6, io#9, arena#3, each stacked on its m65 PR), pins committed in `7d…`/`8ef99725d` (decision published); fresh fetch-assets + full debug ctest 662/662 + smoke green. PR #36 opened against M65's branch; Codex round 1 posted 8 findings (6 accepted, #7 PR-ledger comment declined as pre-existing reference). First AppImage `M66-8ef99725d` launch-checked; repackage after the review fixes.

@@ -25,6 +25,8 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <bitset>
 #include <list>
 #include <map>
 #include <memory>
@@ -40,6 +42,7 @@
 
 #include "BaseTest.h"
 #include "FlatExrReader.h"
+#include "MultiplanarTestEffect.h"
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
@@ -72,6 +75,7 @@ const int32_t kCheckX = 1;
 const int32_t kCheckY = 1;
 const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
 const char* const kBlurPluginID = "net.sf.cimg.CImgBlur";
+const char* const kMergePluginID = "net.sf.openfx.MergePlugin";
 
 std::set<std::string>
 channelSet(const FlatExrImage& image)
@@ -688,4 +692,209 @@ TEST_F(RemoveLayersRenderTest, ViewerRenderOfAColourlessStreamIsBlackOnRgbaAndGr
     EXPECT_NEAR(0.f, pixel[0], 1e-4f);
     EXPECT_NEAR(1.f, pixel[1], 1e-4f);
     EXPECT_NEAR(0.f, pixel[2], 1e-4f);
+}
+
+// The rows hidden behind a row-0 All select nothing, so an rgba row among them must not bring
+// back a colour plane the stream lacks.
+TEST_F(RemoveLayersRenderTest, BlurOnAllWithAHiddenRgbaRowOverAColourlessStreamWritesNoColourChannels)
+{
+    createRemoveOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    _channels->setLayer(0, kNatronColorViewRGBA, NULL);
+
+    NodePtr blur = appendBlurOnAll();
+    if (HasFatalFailure() || !blur) {
+        return;
+    }
+    KnobChannelSetPtr blurChannels = std::dynamic_pointer_cast<KnobChannelSet>(blur->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(blurChannels));
+    blurChannels->addLayer(kNatronColorViewRGBA, NULL);
+    ASSERT_EQ(2u, blurChannels->getRows().size());
+    EXPECT_EQ(ChannelSetRow::eModeAll, blurChannels->getRows()[0].mode);
+
+    FlatExrImage image;
+    render("remove_rgba_blur_all_hidden_rgba.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    EXPECT_EQ(names({ "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelSet(image));
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+    expectNoPersistentMessage(blur);
+    expectNoPersistentMessage(_writer);
+}
+
+TEST_F(RemoveLayersRenderTest, BlurOnNoneOverAColourlessStreamProducesNoColourPlane)
+{
+    createRemoveOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    _channels->setLayer(0, kNatronColorViewRGBA, NULL);
+
+    NodePtr blur = appendBlurOnAll();
+    if (HasFatalFailure() || !blur) {
+        return;
+    }
+    KnobChannelSetPtr blurChannels = std::dynamic_pointer_cast<KnobChannelSet>(blur->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(blurChannels));
+    blurChannels->setNone();
+
+    std::list<ImageLayerDesc> present;
+    blur->getEffectInstance()->getPresentLayers(1., ViewIdx(0), -1, &present);
+    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+        EXPECT_FALSE(it->isColorLayer()) << "the Blur presents a colour plane its input lacks";
+    }
+
+    FlatExrImage image;
+    render("remove_rgba_blur_none.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    EXPECT_EQ(names({ "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelSet(image));
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+    expectNoPersistentMessage(blur);
+    expectNoPersistentMessage(_writer);
+}
+
+// B is the colourless stream and Merge's pass-through input, but A brings colour: A over a zero
+// B is A, (1, 0, 0, 1).
+TEST_F(RemoveLayersRenderTest, MergeOnAllKeepsTheColourOfAOverAColourlessB)
+{
+    createRemoveOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    _channels->setLayer(0, kNatronColorViewRGBA, NULL);
+    NodePtr colored = createReader("flat-rgba-only.exr");
+    ASSERT_TRUE(bool(colored));
+
+    NodePtr merge = createNode(QString::fromUtf8(kMergePluginID));
+    ASSERT_TRUE(bool(merge));
+    int inputA = -1;
+    int inputB = -1;
+    for (int i = 0; i < merge->getNInputs(); ++i) {
+        if (merge->getInputLabel(i) == "A") {
+            inputA = i;
+        } else if (merge->getInputLabel(i) == "B") {
+            inputB = i;
+        }
+    }
+    ASSERT_GE(inputA, 0);
+    ASSERT_GE(inputB, 0);
+    connectNodes(_remove, merge, inputB, true);
+    connectNodes(colored, merge, inputA, true);
+    KnobChannelSetPtr mergeChannels = std::dynamic_pointer_cast<KnobChannelSet>(merge->getKnobByName(kNodeParamChannelSet));
+    ASSERT_TRUE(bool(mergeChannels));
+    mergeChannels->setAll();
+    _last = merge;
+
+    FlatExrImage image;
+    render("remove_rgba_merge_a.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    const std::set<std::string> written = channelSet(image);
+    for (const char* channel : { "R", "G", "B", "A" }) {
+        EXPECT_EQ(1u, written.count(channel)) << channel << " was not written";
+    }
+    expectPlane(image, "", 1.f, 0.f, 0.f);
+    expectChannel(image, "A", 1.f);
+    expectNoPersistentMessage(merge);
+    expectNoPersistentMessage(_writer);
+}
+
+// The multiplanar effect produces the colour plane itself, so a colourless pass-through input
+// does not take it away; only an encoder's colour comes from that input alone.
+TEST_F(RemoveLayersRenderTest, AMultiplanarEffectOverAColourlessStreamStillProducesColour)
+{
+    createRemoveOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    _channels->setLayer(0, kNatronColorViewRGBA, NULL);
+
+    NodePtr multiplanar = createNode(QString::fromUtf8(kTestPluginIDMultiplanarDiffuseOnly));
+    ASSERT_TRUE(bool(multiplanar));
+    connectNodes(_remove, multiplanar, 0, true);
+
+    EffectInstancePtr effect = multiplanar->getEffectInstance();
+    EffectInstance::ComponentsNeededMap comps;
+    std::list<ImageLayerDesc> passThroughLayers;
+    double passThroughTime = 0.;
+    int passThroughView = 0;
+    std::bitset<4> processChannels;
+    EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
+    int passThroughInputNb = -1;
+    effect->getComponentsNeededAndProduced_public(effect->getRenderHash(), 1., ViewIdx(0), &comps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInputNb);
+    ASSERT_EQ(0, passThroughInputNb);
+
+    const std::list<ImageLayerDesc>& produced = comps[-1];
+    EXPECT_TRUE(std::any_of(produced.begin(), produced.end(), [](const ImageLayerDesc& layer) {
+        return layer.isColorLayer() && (layer.getNumComponents() > 0);
+    })) << "the colour plane the effect produces was dropped";
+
+    std::list<ImageLayerDesc> present;
+    effect->getPresentLayers(1., ViewIdx(0), -1, &present);
+    EXPECT_TRUE(std::any_of(present.begin(), present.end(), [](const ImageLayerDesc& layer) {
+        return layer.isColorLayer();
+    }));
+}
+
+// An upstream RemoveLayers takes alpha out on frame 1 only, being disabled on frame 2, so the
+// stream's colour plane is RGB on frame 1 and RGBA on frame 2. Removing rgb then drops the plane on
+// frame 1 and narrows it to alpha on frame 2. Metadata hold for every frame, so they follow the
+// input's own RGB metadata whichever frame the timeline is on when they are computed.
+TEST_F(RemoveLayersRenderTest, MetadataDoNotDependOnTheFrameTheTimelineIsOn)
+{
+    createRemoveOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    NodePtr upstream = _remove;
+    _channels->setLayer(0, kNatronColorViewAlpha, NULL);
+    KnobBoolPtr disable = upstream->getDisabledKnob();
+    ASSERT_TRUE(bool(disable));
+    disable->setValueAtTime(1, false, ViewSpec::all(), 0);
+    disable->setValueAtTime(2, true, ViewSpec::all(), 0);
+
+    getApp()->getTimeLine()->seekFrame(2, false, NULL, eTimelineChangeReasonOtherSeek);
+    createRemoveOn(upstream);
+    if (HasFatalFailure()) {
+        return;
+    }
+    _channels->setLayer(0, kNatronColorViewRGB, NULL);
+
+    RemoveLayers* remove = dynamic_cast<RemoveLayers*>(_remove->getEffectInstance().get());
+    ASSERT_TRUE(remove != NULL);
+    ASSERT_EQ(RemoveLayers::ColorOutcome::eKindDropped, remove->computeColorOutcome(1., ViewIdx(0)).kind);
+    ASSERT_EQ(RemoveLayers::ColorOutcome::eKindNarrowed, remove->computeColorOutcome(2., ViewIdx(0)).kind);
+
+    remove->refreshMetadata_public(true);
+    const int nCompsParkedOnFrame2 = remove->getMetadataNComps(-1);
+
+    getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+    remove->refreshMetadata_public(true);
+    const int nCompsParkedOnFrame1 = remove->getMetadataNComps(-1);
+
+    EXPECT_EQ(nCompsParkedOnFrame1, nCompsParkedOnFrame2);
+    EXPECT_EQ(3, nCompsParkedOnFrame2);
+
+    // The encoder's clip keeps the RGB layout the metadata advertise, so the frame whose colour
+    // plane is alpha alone is written with its R, G and B read as zero.
+    FlatExrImage image;
+    render("frame2_parked_on_1.exr", &image, 2);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_EQ(names({ "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelSet(image));
+    expectPlane(image, "", 0.f, 0.f, 0.f);
+    expectChannel(image, "A", 1.f);
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
 }

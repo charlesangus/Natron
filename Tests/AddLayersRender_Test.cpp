@@ -397,3 +397,55 @@ TEST_F(AddLayersRenderTest, RegisteringTheNamedLayerBetweenRendersProducesIt)
     expectChannel(after, "mask.A", 0.f);
     expectPlane(after, "diffuse.", 0.f, 1.f, 0.f);
 }
+
+// A RemoveLayers takes alpha out on frame 1 only, being disabled on frame 2, so the stream's
+// colour plane is RGB on frame 1 and RGBA on frame 2. Adding alpha then widens the plane on frame
+// 1 and leaves it alone on frame 2. Metadata hold for every frame, so they must come out the same
+// whichever frame the timeline is on when they are computed.
+TEST_F(AddLayersRenderTest, MetadataDoNotDependOnTheFrameTheTimelineIsOn)
+{
+    NodePtr reader = createReader("flat-three-layers.exr");
+    ASSERT_TRUE(bool(reader));
+    NodePtr remove = createNode(QString::fromUtf8(PLUGINID_NATRON_REMOVELAYERS));
+    ASSERT_TRUE(bool(remove));
+    connectNodes(reader, remove, 0, true);
+    KnobChannelSetPtr removed = std::dynamic_pointer_cast<KnobChannelSet>(remove->getKnobByName(kRemoveLayersParamChannels));
+    ASSERT_TRUE(bool(removed));
+    removed->setLayer(0, kNatronColorViewAlpha, NULL);
+    KnobBoolPtr disable = remove->getDisabledKnob();
+    ASSERT_TRUE(bool(disable));
+    disable->setValueAtTime(1, false, ViewSpec::all(), 0);
+    disable->setValueAtTime(2, true, ViewSpec::all(), 0);
+
+    getApp()->getTimeLine()->seekFrame(2, false, NULL, eTimelineChangeReasonOtherSeek);
+    createAddOn(remove);
+    if (HasFatalFailure()) {
+        return;
+    }
+    _layers->setLayer(0, kNatronColorViewAlpha, NULL);
+
+    AddLayers* add = dynamic_cast<AddLayers*>(_add->getEffectInstance().get());
+    ASSERT_TRUE(add != NULL);
+    ASSERT_TRUE(add->computeOutcome(1., ViewIdx(0)).widensColor);
+    ASSERT_FALSE(add->computeOutcome(2., ViewIdx(0)).widensColor);
+
+    add->refreshMetadata_public(true);
+    const int nCompsParkedOnFrame2 = add->getMetadataNComps(-1);
+
+    getApp()->getTimeLine()->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+    add->refreshMetadata_public(true);
+    const int nCompsParkedOnFrame1 = add->getMetadataNComps(-1);
+
+    EXPECT_EQ(nCompsParkedOnFrame1, nCompsParkedOnFrame2);
+    EXPECT_EQ(4, nCompsParkedOnFrame2);
+
+    getApp()->getTimeLine()->seekFrame(2, false, NULL, eTimelineChangeReasonOtherSeek);
+    FlatExrImage image;
+    render("frame1_parked_on_2.exr", &image, 1);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_EQ(names({ "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelSet(image));
+    expectPlane(image, "", 1.f, 0.f, 0.f);
+    expectChannel(image, "A", 0.f);
+}

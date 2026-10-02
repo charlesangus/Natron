@@ -43,105 +43,9 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/TimeLine.h"
 
+#include "ChannelCopy.h"
+
 NATRON_NAMESPACE_ENTER
-
-namespace {
-
-const ImageLayerDesc*
-findColorStorage(const std::list<ImageLayerDesc>& layers)
-{
-    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
-        if (it->isColorLayer() && (it->getNumComponents() > 0)) {
-            return &(*it);
-        }
-    }
-
-    return NULL;
-}
-
-// Mirrors ResolvedLayer::channelBit: a single-channel colour plane is alpha, on bit 3.
-int
-colorBitOfIndex(int nComps,
-                int index)
-{
-    return (nComps == 1) ? 3 : index;
-}
-
-int
-colorChannelOnBit(const ImageLayerDesc& layout,
-                  int nAvailable,
-                  int bit)
-{
-    const int nComps = layout.getNumComponents();
-
-    for (int i = 0; (i < nComps) && (i < nAvailable) && (i < 4); ++i) {
-        if (colorBitOfIndex(nComps, i) == bit) {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
-template <typename SRCPIX, typename DSTPIX>
-void
-copyRow(const Image::ReadAccess* src,
-        Image::WriteAccess* dst,
-        int y,
-        int x1,
-        int x2,
-        int dstComps,
-        const std::vector<int>& srcChannels)
-{
-    for (int x = x1; x < x2; ++x) {
-        DSTPIX* out = (DSTPIX*)dst->pixelAt(x, y);
-        if (!out) {
-            continue;
-        }
-        const SRCPIX* in = src ? (const SRCPIX*)src->pixelAt(x, y) : NULL;
-        for (int c = 0; c < dstComps; ++c) {
-            const int s = (c < (int)srcChannels.size()) ? srcChannels[c] : -1;
-            out[c] = (in && (s >= 0)) ? Image::convertPixelDepth<SRCPIX, DSTPIX>(in[s]) : DSTPIX(0);
-        }
-    }
-}
-
-typedef void (*CopyRowFunc)(const Image::ReadAccess*, Image::WriteAccess*, int, int, int, int, const std::vector<int>&);
-
-template <typename DSTPIX>
-CopyRowFunc
-selectCopyRowForSource(ImageBitDepthEnum srcDepth)
-{
-    switch (srcDepth) {
-    case eImageBitDepthByte:
-        return &copyRow<unsigned char, DSTPIX>;
-    case eImageBitDepthShort:
-        return &copyRow<unsigned short, DSTPIX>;
-    case eImageBitDepthFloat:
-        return &copyRow<float, DSTPIX>;
-    default:
-        return NULL;
-    }
-}
-
-// The input is fetched without mapping to this node's clip preferences, so its depth can
-// differ from the output's.
-CopyRowFunc
-selectCopyRow(ImageBitDepthEnum srcDepth,
-              ImageBitDepthEnum dstDepth)
-{
-    switch (dstDepth) {
-    case eImageBitDepthByte:
-        return selectCopyRowForSource<unsigned char>(srcDepth);
-    case eImageBitDepthShort:
-        return selectCopyRowForSource<unsigned short>(srcDepth);
-    case eImageBitDepthFloat:
-        return selectCopyRowForSource<float>(srcDepth);
-    default:
-        return NULL;
-    }
-}
-} // namespace
 
 RemoveLayers::RemoveLayers(NodePtr node)
     : NativeEffectBase(node)
@@ -265,7 +169,7 @@ RemoveLayers::colorOutcomeFor(const std::list<ImageLayerDesc>& present,
 {
     ColorOutcome outcome;
 
-    const ImageLayerDesc* storage = findColorStorage(present);
+    const ImageLayerDesc* storage = ChannelCopy::findColorStorage(present);
     if (!storage) {
         return outcome;
     }
@@ -385,9 +289,19 @@ RemoveLayers::getPreferredMetadata(NodeMetadata& metadata)
         return eStatusOK;
     }
 
-    AppInstancePtr app = getApp();
-    const double time = app ? app->getTimeLine()->currentFrame() : 0.;
-    const ColorOutcome outcome = computeColorOutcome(time, ViewIdx(0));
+    // Resolved against the input's metadata layout, not its layers at some frame: colour rows
+    // resolve against the colour layout alone, and metadata must not depend on the current frame.
+    std::list<ImageLayerDesc> metadataLayers;
+    const ImageLayerDesc storage = ChannelCopy::metadataColorStorage(*this, 0);
+    if (storage.getNumComponents() > 0) {
+        metadataLayers.push_back(storage);
+    }
+    std::vector<ResolvedLayer> resolved;
+    KnobChannelSetPtr channels = _channels.lock();
+    if (channels) {
+        resolved = channels->resolve(metadataLayers);
+    }
+    const ColorOutcome outcome = colorOutcomeFor(metadataLayers, resolved);
     if (outcome.kind == ColorOutcome::eKindNarrowed) {
         metadata.setNComps(-1, outcome.outputStorage.getNumComponents());
     }
@@ -460,19 +374,12 @@ RemoveLayers::render(const RenderActionArgs& args)
             copy.source = getImage(0, args.time, args.mappedScale, args.view, NULL, &sourceDesc, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
         }
 
-        if (copy.source) {
-            const ImageLayerDesc& sourceLayout = copy.source->getComponents();
+        if (copy.source && plane.isColorLayer()) {
+            copy.srcChannels = ChannelCopy::mapColorChannels(plane, *copy.source, outcome.keptBits);
+        } else if (copy.source) {
             const int nAvailable = (int)copy.source->getComponentsCount();
-            const int nPlaneComps = plane.getNumComponents();
-            for (int c = 0; c < nPlaneComps; ++c) {
-                if (plane.isColorLayer()) {
-                    const int bit = colorBitOfIndex(nPlaneComps, c);
-                    if ((c < 4) && outcome.keptBits[bit]) {
-                        copy.srcChannels[c] = colorChannelOnBit(sourceLayout, nAvailable, bit);
-                    }
-                } else if (c < nAvailable) {
-                    copy.srcChannels[c] = c;
-                }
+            for (int c = 0; (c < plane.getNumComponents()) && (c < nAvailable); ++c) {
+                copy.srcChannels[c] = c;
             }
         }
         copies.push_back(copy);
@@ -494,20 +401,9 @@ RemoveLayers::render(const RenderActionArgs& args)
 
         const Image::ReadAccess* src = copy->source ? readAccesses[copy->source.get()].get() : NULL;
         const ImageBitDepthEnum srcDepth = copy->source ? copy->source->getBitDepth() : outImage->getBitDepth();
-        const CopyRowFunc copyRowFunc = selectCopyRow(srcDepth, outImage->getBitDepth());
-        if (!copyRowFunc) {
-            return eStatusFailed;
-        }
-
-        // The image can be wider than the plane (a plane with no same-sized supported layout);
-        // its extra channels are written as 0.
-        const int dstComps = (int)outImage->getComponentsCount();
-        Image::WriteAccess dst(outImage.get());
-        for (int y = args.roi.y1; y < args.roi.y2; ++y) {
-            if (aborted()) {
-                return eStatusOK;
-            }
-            copyRowFunc(src, &dst, y, args.roi.x1, args.roi.x2, dstComps, copy->srcChannels);
+        const StatusEnum stat = ChannelCopy::copyChannels(src, srcDepth, outImage.get(), args.roi, copy->srcChannels, *this);
+        if ((stat != eStatusOK) || aborted()) {
+            return stat;
         }
     }
 

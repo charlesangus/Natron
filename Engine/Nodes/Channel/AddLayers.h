@@ -168,6 +168,12 @@ private:
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
+     * @brief What this node produces given the registry planes the rows resolve against and the
+     * input's `present` layers, by the rule in the class comment.
+     **/
+    Outcome outcomeFor(const std::list<ImageLayerDesc>& registryPlanes, const std::list<ImageLayerDesc>& present) const WARN_UNUSED_RETURN;
+
+    /**
      * @brief The registry's storage planes, colour folded to RGBA, that the rows resolve against.
      **/
     void listRegistryPlanes(double time, ViewIdx view, std::list<ImageLayerDesc>* planes) const;

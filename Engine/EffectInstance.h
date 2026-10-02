@@ -1117,6 +1117,15 @@ public:
         return true;
     }
 
+    // True when the colour plane this effect produces implicitly can only be made from its
+    // pass-through input's colour, as for an encoder writing that input out: when the input has
+    // no colour plane, the effect then produces none either. Also asked of a Read/Write container
+    // on behalf of the effect embedded in it.
+    virtual bool producesColorOnlyFromPassThroughInput() const
+    {
+        return false;
+    }
+
     enum PassThroughEnum {
         ePassThroughBlockNonRenderedLayers,
         ePassThroughPassThroughNonRenderedLayers,

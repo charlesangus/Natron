@@ -211,7 +211,6 @@ NewLayerDialog::onNumCompsChanged(double value)
     }
     const int nComps = (int)value;
     for (int i = 0; i < 4; ++i) {
-        // A single channel is entered in the 4th edit, matching the "alpha" position of RGBA.
         const bool shown = (nComps == 1) ? (i == 3) : (i < nComps);
         labels[i]->setVisible(shown);
         edits[i]->setVisible(shown);
@@ -225,7 +224,6 @@ NewLayerDialog::getComponents() const
     const int nComps = (int)_imp->numCompsBox->value();
     std::vector<std::string> comps;
 
-    // A single channel is entered in the 4th edit, matching the "alpha" position of RGBA.
     if (nComps == 1) {
         comps.push_back(_imp->aEdit->text().toStdString());
     } else {

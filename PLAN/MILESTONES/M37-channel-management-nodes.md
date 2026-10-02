@@ -81,7 +81,7 @@ Execution notes:
 
 ## Phase 37.1: Engine foundations
 
-- [ ] M37.P1.T1 — Add a per-node filter on pass-through layers
+- [x] M37.P1.T1 — Add a per-node filter on pass-through layers
   - files: `Engine/EffectInstance.h` (~1110-1129, next to `producesMetadataLayerImplicitly`/`isPassThroughForNonRenderedLayers`), `Engine/EffectInstance.cpp` (`getComponentsNeededDefault` ~4438-4517, its pass-through fill ~4453-4456; multiplanar branch of `getComponentsNeededAndProduced_public` ~4613-4623)
   - approach:
     - Add the virtual `filterPassThroughLayers(double time, ViewIdx view, std::list<ImageLayerDesc>* layers)`, a no-op by default. Document it next to `isPassThroughForNonRenderedLayers`: it may drop entries, including the colour storage entry, but never add or reshape them.
@@ -94,7 +94,7 @@ Execution notes:
   - verify: full debug ctest green. There's no behaviour change yet: P2.T1 is the first node to override it and carries the behaviour tests.
   - size: M
 
-- [ ] M37.P1.T2 — Let a channel set hide its channel buttons (Q2)
+- [x] M37.P1.T2 — Let a channel set hide its channel buttons (Q2)
   - files: `Engine/KnobChannelSet.h` (class at ~131; `setChannels`/`setExcludedChannels`/`resolve` declarations ~220-255), `Engine/KnobChannelSet.cpp` (`resolve` ~568-650), `Engine/PyParameter.cpp` (`ChannelSetParam`), `Tests/KnobChannelSet_Test.cpp`
   - approach:
     - Add `setWithChannelButtons(bool)` / `getWithChannelButtons()` as a non-persistent member, default true (precedent: `KnobLayerSelect.h` ~115-122).
@@ -118,7 +118,7 @@ Execution notes:
 
 ## Phase 37.2: RemoveLayers
 
-- [ ] M37.P2.T1 — RemoveLayers node: keep/remove over a channel set, narrowing or dropping the colour plane (Q1–Q4, Q6)
+- [x] M37.P2.T1 — RemoveLayers node: keep/remove over a channel set, narrowing or dropping the colour plane (Q1–Q4, Q6)
   - files: `Engine/Nodes/Channel/RemoveLayers.h`, `Engine/Nodes/Channel/RemoveLayers.cpp` (new), `Engine/AppManager.cpp` (~1565, after ShuffleCopy's registration), `Engine/CMakeLists.txt` / sources list if Shuffle is listed there, `Tests/RemoveLayers_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - **Plugin.** `NativeEffectBase`, `fr.natron.RemoveLayers`, label "RemoveLayers", `PLUGIN_GROUP_CHANNEL`, one optional input "Source". Multiplanar; `producesMetadataLayerImplicitly` returns false (precedent: `Shuffle.h` ~96-104). All bit depths. `addAcceptedComponents` adds XY to the base list.
@@ -239,7 +239,7 @@ Execution notes:
 
 ## Phase 37.4: GUI
 
-- [ ] M37.P4.T1 — Channel-set rows without channel buttons (Q2)
+- [x] M37.P4.T1 — Channel-set rows without channel buttons (Q2)
   - files: `Gui/LayerChannelRow.h`, `Gui/LayerChannelRow.cpp` (button visibility ~812, `matches:` label ~68), `Gui/KnobGuiChannelSet.cpp`, `Tests/LayerChannelRow_Test.cpp`
   - approach:
     - `LayerChannelRow` set rows take `withChannelButtons`.
@@ -334,3 +334,4 @@ Execution notes:
   - **New P2.T3** (the +1 M): colourless streams read zero downstream, and Write All omits R/G/B/A.
   - **Rewritten** to M65 vocabulary and current line numbers: P1.T1, P1.T2, P2.T1, P2.T2 (sequence frames had been inverted), P3.T1, P3.T2, P4.T2 (`runNewLayerDialog` already declared), P4.T3, P5.T1, P6.T1, P6.T2.
   - **Stacking:** M37 now stacks on M66 (`milestone/m66-plugin-alpha-only-moderate`), and the batches were re-cut into B1–B6 so no two tasks in a batch edit `Tests/CMakeLists.txt` or `AppManager.cpp`.
+- 2026-10-02 — **B1+B2 landed** (`5d4dfd0f4` P1.T1, `9c31a8dcc` P1.T2, `bf5a43d9e` P2.T1, `e61e3aa0e` P4.T1), with the full debug ctest at 689/689. Where the P1.T2 brief and existing code disagree, the existing convention wins: over RGB storage an `rgba` row resolves to channels 1111 with zeroChannels 1000, as `DefaultOverRGBStorageReportsAlphaAsReadingZero` expects. RemoveLayers accepts every bit depth, converting with `convertPixelDepth`. Its sublabel shows a regex row's matched layers, so it reads "keep specular" rather than "keep spec.*".

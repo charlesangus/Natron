@@ -262,7 +262,7 @@ Execution notes:
     - the dialog flow is covered by P4.T3.
   - size: M
 
-- [ ] M37.P4.T3 — Xvfb screenshots of both panels, the viewer menu and the node graph
+- [x] M37.P4.T3 — Xvfb screenshots of both panels, the viewer menu and the node graph
   - files: `build/m37-gui/gui.py`, `build/m37-gui/run.sh`
   - approach: build Read(`flat-three-layers.exr`) → RemoveLayers → AddLayers → Viewer and screenshot:
     - **RemoveLayers panel:** operation, rows `diffuse` and `alpha`, a regex row with `matches:`, no channel buttons, and the colour views offered in the row menu.
@@ -343,3 +343,9 @@ Execution notes:
     - A default (identity) Grade(`rgba`) over a colourless stream passes through and writes no RGBA.
     - AddLayers' render hash doesn't include the project registry, so registering or removing a layer may leave stale cached results until a knob changes.
 - 2026-10-02 — **B5 landed** (P3.T2, P5.T1), full debug ctest 724/724. AddLayers now folds a registry signature (each row's resolved layer and bits) into its age through `onChannelsSelectorRefreshed`, so registering a layer a row names re-renders it. This closes B4's stale-cache gap. Only the add direction is testable, because removing a referenced layer is refused.
+- 2026-10-02 — **P4.T3 screenshot pass** (`build/m37-gui/`) found 2 product defects and 2 UI issues, fixed in `ec94c9f98`..`4aaa591bc`:
+  - the Layers table's Used-by count didn't refresh for target-role knobs; it now refreshes on any declared layer knob change;
+  - the properties tab widget reserved a fixed 20 px for a ~37 px tab bar, squeezing every panel's rows, so it now reserves the real height and every node panel is ~17 px taller (flag at UAT);
+  - NewLayerDialog's duplicated `value == 3` branch meant 4 channels was never handled;
+  - long sublabels overflowed the node box and are now elided as `remove` / `diffuse +2`.
+  After the fixes: full ctest 726/726, GUI script 68 PASS / 0 FAIL. The shots await the user at the parcel UAT. Decision published in `baee2b24d`.

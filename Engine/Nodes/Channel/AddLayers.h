@@ -172,12 +172,21 @@ private:
      **/
     void listRegistryPlanes(double time, ViewIdx view, std::list<ImageLayerDesc>* planes) const;
 
+    /**
+     * @brief Moves the node's hash and metadata when the rows now resolve to other registry layers.
+     *
+     * The registry is project state, not a knob, so registering or removing a layer would
+     * otherwise leave cached renders of this node stale.
+     **/
+    void refreshForRegistryChange();
+
     std::string buildSubLabel();
 
     void refreshSubLabel();
 
     KnobChannelSetWPtr _layers;
     KnobStringWPtr _subLabel;
+    std::string _registrySignature;
 };
 
 NATRON_NAMESPACE_EXIT

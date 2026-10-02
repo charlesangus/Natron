@@ -145,6 +145,7 @@ AddLayers::AddLayers(NodePtr node)
     : NativeEffectBase(node)
     , _layers()
     , _subLabel()
+    , _registrySignature()
 {
 }
 
@@ -477,8 +478,38 @@ AddLayers::onKnobsLoaded()
 }
 
 void
+AddLayers::refreshForRegistryChange()
+{
+    KnobChannelSetPtr layers = _layers.lock();
+    NodePtr node = getNode();
+    AppInstancePtr app = getApp();
+
+    if (!layers || !node || !app) {
+        return;
+    }
+
+    std::list<ImageLayerDesc> registryPlanes;
+    listRegistryPlanes(app->getTimeLine()->currentFrame(), ViewIdx(0), &registryPlanes);
+
+    std::string signature;
+    const std::vector<ResolvedLayer> resolved = layers->resolve(registryPlanes);
+    for (std::vector<ResolvedLayer>::const_iterator it = resolved.begin(); it != resolved.end(); ++it) {
+        signature += it->desc.getLayerID() + ":" + it->channels.to_string() + ":" + it->zeroChannels.to_string() + ";";
+    }
+
+    if (signature == _registrySignature) {
+        return;
+    }
+    _registrySignature = signature;
+
+    node->incrementKnobsAge();
+    refreshMetadata_public(true);
+}
+
+void
 AddLayers::onChannelsSelectorRefreshed()
 {
+    refreshForRegistryChange();
     refreshSubLabel();
 }
 

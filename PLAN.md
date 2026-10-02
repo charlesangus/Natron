@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M66.P6.T3
-pm_heartbeat: 2026-10-02T07:05:12-04:00
+current: M37.P1.T1
+pm_heartbeat: 2026-10-02T08:07:45-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -208,10 +208,10 @@ future core work has solid ground to build on.
 | M34 | New native Shuffle node | done | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
 | M61 | Layers that vary with time: per-frame layer reporting and Shuffle render-time validation | blocked | [M61-layers-that-vary-with-time.md](PLAN/MILESTONES/M61-layers-that-vary-with-time.md) |
 | M65 | rgba, rgb, alpha and xy replace the Color layer (clean break) | blocked | [M65-rgba-rgb-alpha-layers.md](PLAN/MILESTONES/M65-rgba-rgb-alpha-layers.md) |
-| M66 | Remaining OFX plugins accept alpha-only streams (the 12 moderate ones from M65's survey) | doing | [M66-plugin-alpha-only-moderate.md](PLAN/MILESTONES/M66-plugin-alpha-only-moderate.md) |
+| M66 | Remaining OFX plugins accept alpha-only streams (the 12 moderate ones from M65's survey) | blocked | [M66-plugin-alpha-only-moderate.md](PLAN/MILESTONES/M66-plugin-alpha-only-moderate.md) |
 | M35 | ~~Remove implicit output-plane shuffling from non-Shuffle nodes~~ (folded into M38) | cancelled | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M36 | ~~Add "new channel/layer" affordance wherever a node outputs channels~~ (folded into M38 Phase 38.7) | cancelled | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
-| M37 | Channel/layer management nodes | todo | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |
+| M37 | Channel/layer management nodes | doing | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |
 | M50 | Proper OCIO support as a project property | todo | [M50-proper-ocio-support.md](PLAN/MILESTONES/M50-proper-ocio-support.md) |
 | M60 | Deep images get layers/channels like flat images | todo | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
 | M62 | Render scaling: fix the algorithmic hotspots (bench harness, O(N²)/exponential walks, TLS copy, host copies) | todo | [M62-render-scaling-hotspots.md](PLAN/MILESTONES/M62-render-scaling-hotspots.md) |
@@ -263,6 +263,8 @@ future core work has solid ground to build on.
 # Open questions
 
 - **M65 awaits the user's UAT sign-off (P8.T3), deferred to the parcel UAT:** `build/appimages/M65-26cc11c9c.AppImage` with `build/appimages/M65-uat.md`. PR #35 is stacked on M61's #34; both Codex review rounds are closed.
+
+- **M66 awaits the parcel UAT (P6.T3):** `build/appimages/M66-a82886de7.AppImage` with `build/appimages/M66-uat.md`. PR #36 is stacked on #35, and both Codex rounds are closed. Fork PRs: openfx-misc#6, openfx-io#9, openfx-arena#3. Re-pin after they merge.
 
 - **M61 awaits the user's sign-off** (row `blocked`, stacked-PR rule: asynchronous). Please run the UAT on `build/appimages/M61-072541618.AppImage` using `build/appimages/M61-uat.md`, and approve the P2.T3 keyed-Disable node-box screenshots and the P2.T5 disabled-cross width (2, i.e. pipe weight). PR #34 is green; its review rounds 1 and 2 are closed. After sign-off: check off P2.T3/P2.T5/P4.T1, mark M61 `done`, and the user merges PR #34.
 

@@ -349,3 +349,15 @@ Execution notes:
   - NewLayerDialog's duplicated `value == 3` branch meant 4 channels was never handled;
   - long sublabels overflowed the node box and are now elided as `remove` / `diffuse +2`.
   After the fixes: full ctest 726/726, GUI script 68 PASS / 0 FAIL. The shots await the user at the parcel UAT. Decision published in `baee2b24d`.
+- 2026-10-02 — **Review closed.**
+  - **Round 1** (6 findings, all fixed in `f6f28ec7f`):
+    - implicit-colour suppression was app-wide; it is now opt-in through `producesColorOnlyFromPassThroughInput`, which only Write overrides;
+    - suppression is decided from the active rows;
+    - metadata comes from the input's layout, not the current frame;
+    - GL fetches get an uncached zero texture;
+    - a shared `ChannelCopy` helper.
+    - Full ctest 732/732.
+  - **Round 2** (3 findings: 2 fixed in `70fda8e85`, the GL test declined because the CI image has no GLX):
+    - an identity route such as Switch now ignores its unrouted inputs when deciding colour.
+    - Full ctest 733/733.
+  - **Known gap:** Write's channel set follows metadata, so a frame whose real colour layout differs from the metadata writes zero-filled channels. This predates M37.

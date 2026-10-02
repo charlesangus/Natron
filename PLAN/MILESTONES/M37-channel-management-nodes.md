@@ -220,7 +220,7 @@ Execution notes:
     - a new node is identity.
   - size: L
 
-- [ ] M37.P3.T2 — AddLayers renders zeros, never overwrites, and varies per frame
+- [x] M37.P3.T2 — AddLayers renders zeros, never overwrites, and varies per frame
   - files: `Tests/AddLayersRender_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - **Fixture graph.** Read(`flat-three-layers.exr`) → AddLayers(`mask`, `diffuse`) → Write(All):
@@ -274,7 +274,7 @@ Execution notes:
 
 ## Phase 37.5: Round trip and scripting
 
-- [ ] M37.P5.T1 — Save/load and PyPlug export for RemoveLayers and AddLayers
+- [x] M37.P5.T1 — Save/load and PyPlug export for RemoveLayers and AddLayers
   - files: `Tests/RemoveLayers_Test.cpp`, `Tests/AddLayers_Test.cpp`, `Tests/PyPlugExport_Test.cpp`
   - approach:
     - **Save/load.** Save, reset and load a project containing RemoveLayers(keep, `spec.*` + `alpha`) and AddLayers(`mask`, `rgba`). Rows, operation and present layers survive, including the Alpha-only colour layout downstream of RemoveLayers.
@@ -342,3 +342,4 @@ Execution notes:
     - A Merge with All drops colour when only its pass-through B input is colourless.
     - A default (identity) Grade(`rgba`) over a colourless stream passes through and writes no RGBA.
     - AddLayers' render hash doesn't include the project registry, so registering or removing a layer may leave stale cached results until a knob changes.
+- 2026-10-02 — **B5 landed** (P3.T2, P5.T1), full debug ctest 724/724. AddLayers now folds a registry signature (each row's resolved layer and bits) into its age through `onChannelsSelectorRefreshed`, so registering a layer a row names re-renders it. This closes B4's stale-cache gap. Only the add direction is testable, because removing a referenced layer is refused.

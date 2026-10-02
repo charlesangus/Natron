@@ -132,6 +132,7 @@
 #include "Engine/TrackerNode.h"
 #include "Engine/ThreadPool.h"
 
+#include "Engine/Nodes/Channel/RemoveLayers.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Deep/DeepCrop.h"
 #include "Engine/Nodes/Deep/DeepExpression.h"
@@ -1562,6 +1563,7 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
     registerBuiltInPlugin<DeepReformat>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<Shuffle>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<ShuffleCopy>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<RemoveLayers>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DiskCacheNode>(QString::fromUtf8(NATRON_IMAGES_PATH "diskcache_icon.png"), false, false);
     registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_IMAGES_PATH "GroupingIcons/Set2/paint_grouping_2.png"), false, false);
     registerBuiltInPlugin<RotoNode>(QString::fromUtf8(NATRON_IMAGES_PATH "rotoNodeIcon.png"), false, false);

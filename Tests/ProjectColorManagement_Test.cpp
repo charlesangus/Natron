@@ -32,6 +32,7 @@
 
 #include <list>
 
+#include <QByteArray>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -45,6 +46,7 @@
 #include "Engine/LogEntry.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
+#include "Engine/Settings.h"
 
 NATRON_NAMESPACE_USING
 
@@ -481,4 +483,198 @@ TEST_F(ProjectColorManagementPageTest, ConfigFileEnabledStateIsRederivedAfterLoa
     EXPECT_EQ(std::string(kCustomConfigID), activeID("ocioConfig"));
     EXPECT_TRUE(configFileKnob()->isEnabled(0));
     EXPECT_TRUE(hasEntry("workingSpace", "raw"));
+}
+
+namespace {
+const char* const kOCIOVar = "OCIO";
+const char* const kPreferenceMarkerVar = "NATRON_OCIO_ENV_IS_PREFERENCE";
+
+struct SavedEnvVar {
+    bool wasSet;
+    QByteArray value;
+};
+
+SavedEnvVar
+saveEnvVar(const char* name)
+{
+    SavedEnvVar ret;
+
+    ret.wasSet = qEnvironmentVariableIsSet(name);
+    ret.value = qgetenv(name);
+
+    return ret;
+}
+
+void
+restoreEnvVar(const char* name,
+              const SavedEnvVar& saved)
+{
+    if (saved.wasSet) {
+        qputenv(name, saved.value);
+    } else {
+        qunsetenv(name);
+    }
+}
+
+KnobChoicePtr
+preferenceConfigKnob()
+{
+    return appPTR->getCurrentSettings()->getKnobByNameAndType<KnobChoice>("ocioConfig");
+}
+
+std::string
+overrideToolTip(const char* value)
+{
+    return std::string("Overridden by the OCIO environment variable (") + value + ")";
+}
+} // namespace
+
+class ProjectOCIOEnvOverrideTest
+    : public ProjectColorManagementPageTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        _savedOCIO = saveEnvVar(kOCIOVar);
+        _savedMarker = saveEnvVar(kPreferenceMarkerVar);
+        ASSERT_TRUE(preferenceConfigKnob() != NULL);
+        _savedPreference = preferenceConfigKnob()->getActiveEntry().id;
+        setEnvironment(0, false);
+        ProjectColorManagementPageTest::SetUp();
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        // Setting the preference re-exports OCIO, so the environment is restored after it.
+        if (preferenceConfigKnob()->getActiveEntry().id != _savedPreference) {
+            preferenceConfigKnob()->setValueFromID(_savedPreference, 0);
+        }
+        restoreEnvVar(kOCIOVar, _savedOCIO);
+        restoreEnvVar(kPreferenceMarkerVar, _savedMarker);
+        Settings::recaptureOCIOEnvOverrideForTests();
+        ProjectColorManagementPageTest::TearDown();
+    }
+
+    void setEnvironment(const char* ocio,
+                        bool preferenceMarker)
+    {
+        if (ocio) {
+            qputenv(kOCIOVar, QByteArray(ocio));
+        } else {
+            qunsetenv(kOCIOVar);
+        }
+        if (preferenceMarker) {
+            qputenv(kPreferenceMarkerVar, QByteArray("1"));
+        } else {
+            qunsetenv(kPreferenceMarkerVar);
+        }
+        Settings::recaptureOCIOEnvOverrideForTests();
+    }
+
+    void expectConfigKnobsOverridden(const char* value)
+    {
+        EXPECT_FALSE(choiceKnob("ocioConfig")->isEnabled(0));
+        EXPECT_FALSE(configFileKnob()->isEnabled(0));
+        EXPECT_EQ(overrideToolTip(value), choiceKnob("ocioConfig")->getHintToolTip());
+        EXPECT_EQ(overrideToolTip(value), configFileKnob()->getHintToolTip());
+    }
+
+private:
+    SavedEnvVar _savedOCIO;
+    SavedEnvVar _savedMarker;
+    std::string _savedPreference;
+};
+
+TEST_F(ProjectOCIOEnvOverrideTest, WithoutOCIOANewProjectTakesThePreference)
+{
+    preferenceConfigKnob()->setValueFromID(kCGURI, 0);
+    ASSERT_EQ(std::string(kCGURI), appPTR->getCurrentSettings()->getDefaultOCIOConfigSourceForNewProjects());
+    setEnvironment(0, false);
+    ASSERT_TRUE(appPTR->getCurrentSettings()->getOCIOEnvOverride().empty());
+
+    project()->reset(false, true);
+
+    EXPECT_EQ(std::string(kCGURI), activeID("ocioConfig"));
+    EXPECT_EQ(std::string(kCGURI), project()->getOCIOConfigSource());
+    EXPECT_EQ(std::string(kCGURI), project()->getColorManagement()->getConfigSource());
+    EXPECT_TRUE(choiceKnob("ocioConfig")->isEnabled(0));
+    EXPECT_FALSE(configFileKnob()->isEnabled(0));
+    EXPECT_NE(overrideToolTip(kCGURI), choiceKnob("ocioConfig")->getHintToolTip());
+}
+
+TEST_F(ProjectOCIOEnvOverrideTest, OCIOForcesTheConfigOfANewProjectAndDisablesItsConfigKnobs)
+{
+    setEnvironment(kCGURI, false);
+    ASSERT_EQ(std::string(kCGURI), appPTR->getCurrentSettings()->getOCIOEnvOverride());
+
+    project()->reset(false, true);
+
+    EXPECT_EQ(std::string(kStudioURI), activeID("ocioConfig"));
+    EXPECT_EQ(std::string(kCGURI), project()->getOCIOConfigSource());
+    EXPECT_EQ(std::string(kCGURI), project()->getColorManagement()->getConfigSource());
+    expectConfigKnobsOverridden(kCGURI);
+}
+
+TEST_F(ProjectOCIOEnvOverrideTest, OCIOExportedFromThePreferenceIsNoOverride)
+{
+    setEnvironment(kCGURI, true);
+
+    EXPECT_TRUE(appPTR->getCurrentSettings()->getOCIOEnvOverride().empty());
+
+    project()->reset(false, true);
+
+    EXPECT_EQ(std::string(kStudioURI), project()->getOCIOConfigSource());
+    EXPECT_TRUE(choiceKnob("ocioConfig")->isEnabled(0));
+}
+
+TEST_F(ProjectOCIOEnvOverrideTest, ASavedConfigIsIgnoredUnderOCIOAndComesBackWithoutIt)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    QString saved;
+
+    choiceKnob("ocioConfig")->setValueFromID(kCGURI, 0);
+    ASSERT_EQ(std::string(kCGURI), project()->getColorManagement()->getConfigSource());
+    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("cg.ntp"), &saved));
+
+    setEnvironment(kStudioURI, false);
+    project()->reset(false, true);
+    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("cg.ntp")));
+
+    EXPECT_EQ(std::string(kStudioURI), project()->getOCIOConfigSource());
+    EXPECT_EQ(std::string(kStudioURI), project()->getColorManagement()->getConfigSource());
+    EXPECT_EQ(std::string(kCGURI), activeID("ocioConfig"));
+    expectConfigKnobsOverridden(kStudioURI);
+    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("cg-under-override.ntp"), &saved));
+
+    setEnvironment(0, false);
+    project()->reset(false, true);
+    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("cg-under-override.ntp")));
+
+    EXPECT_EQ(std::string(kCGURI), activeID("ocioConfig"));
+    EXPECT_EQ(std::string(kCGURI), project()->getOCIOConfigSource());
+    EXPECT_EQ(std::string(kCGURI), project()->getColorManagement()->getConfigSource());
+    EXPECT_TRUE(choiceKnob("ocioConfig")->isEnabled(0));
+    EXPECT_FALSE(configFileKnob()->isEnabled(0));
+    EXPECT_NE(overrideToolTip(kStudioURI), choiceKnob("ocioConfig")->getHintToolTip());
+}
+
+TEST_F(ProjectOCIOEnvOverrideTest, AProjectSavedOnTheStudioDefaultLoadsAsStudioWhateverThePreference)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    QString saved;
+
+    ASSERT_EQ(std::string(kStudioURI), activeID("ocioConfig"));
+    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("studio.ntp"), &saved));
+
+    preferenceConfigKnob()->setValueFromID(kCGURI, 0);
+    setEnvironment(0, false);
+    project()->reset(false, true);
+    ASSERT_EQ(std::string(kCGURI), activeID("ocioConfig"));
+    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("studio.ntp")));
+
+    EXPECT_EQ(std::string(kStudioURI), activeID("ocioConfig"));
+    EXPECT_EQ(std::string(kStudioURI), project()->getColorManagement()->getConfigSource());
 }

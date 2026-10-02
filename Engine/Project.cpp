@@ -1300,7 +1300,12 @@ Project::initializeKnobs()
     _imp->ocioConfigFile->setHintToolTip(ocioConfigFileToolTip());
     _imp->ocioConfigFile->setAnimationEnabled(false);
     _imp->ocioConfigFile->setDefaultAllDimensionsEnabled(false);
+    // The first default is the one serialization compares against, so it must not depend on
+    // this machine's preference.
+    _imp->ocioConfigFile->setDefaultValue(std::string(), 0);
     colorPage->addKnob(_imp->ocioConfigFile);
+
+    applyNewProjectOCIOConfigDefaults();
 
     _imp->workingSpace = AppManager::createKnob<KnobChoice>(this, tr("Working space"));
     _imp->workingSpace->setName("workingSpace");
@@ -1596,18 +1601,55 @@ Project::refreshColorManagement(bool warnOnFallback)
         getApp()->warningDialog(tr("Color management").toStdString(), message.toStdString(), false);
     }
 
-    _imp->ocioConfig->setAllDimensionsEnabled(true);
-    _imp->ocioConfig->setHintToolTip(ocioConfigToolTip());
-    _imp->ocioConfigFile->setAllDimensionsEnabled(isCustom);
-    _imp->ocioConfigFile->setHintToolTip(ocioConfigFileToolTip());
+    const std::string envOverride = appPTR->getCurrentSettings()->getOCIOEnvOverride();
+    if (envOverride.empty()) {
+        _imp->ocioConfig->setAllDimensionsEnabled(true);
+        _imp->ocioConfig->setHintToolTip(ocioConfigToolTip());
+        _imp->ocioConfigFile->setAllDimensionsEnabled(isCustom);
+        _imp->ocioConfigFile->setHintToolTip(ocioConfigFileToolTip());
+    } else {
+        const QString toolTip = tr("Overridden by the OCIO environment variable (%1)").arg(QString::fromUtf8(envOverride.c_str()));
+        _imp->ocioConfig->setAllDimensionsEnabled(false);
+        _imp->ocioConfig->setHintToolTip(toolTip);
+        _imp->ocioConfigFile->setAllDimensionsEnabled(false);
+        _imp->ocioConfigFile->setHintToolTip(toolTip);
+    }
 
     cm.setWorkingSpace(getWorkingColorSpace());
     cm.notifyConfigChanged();
 } // Project::refreshColorManagement
 
+void
+Project::applyNewProjectOCIOConfigDefaults()
+{
+    const std::string source = appPTR->getCurrentSettings()->getDefaultOCIOConfigSourceForNewProjects();
+    const std::string uriPrefix("ocio://");
+    const bool isURI = source.compare(0, uriPrefix.size(), uriPrefix) == 0;
+
+    try {
+        _imp->ocioConfig->setDefaultValueFromID(isURI ? source : std::string(kCustomOCIOConfigID), 0);
+    } catch (const std::runtime_error&) {
+        _imp->ocioConfig->setDefaultValueFromID(kDefaultOCIOConfigURI, 0);
+    }
+    _imp->ocioConfigFile->setDefaultValue(isURI ? std::string() : source, 0);
+}
+
+void
+Project::resetOCIOConfigKnobsForRestore()
+{
+    FlagSetter suppressRefresh(true, &_imp->suppressColorManagementRefresh);
+
+    _imp->ocioConfig->setValueFromID(kDefaultOCIOConfigURI, 0);
+    _imp->ocioConfigFile->setValue(std::string());
+}
+
 std::string
 Project::getOCIOConfigSource() const
 {
+    const std::string envOverride = appPTR->getCurrentSettings()->getOCIOEnvOverride();
+    if (!envOverride.empty()) {
+        return envOverride;
+    }
     if (!_imp->ocioConfig) {
         return kDefaultOCIOConfigURI;
     }
@@ -2562,6 +2604,7 @@ Project::doResetEnd(bool aboutToQuit)
         {
             // Refreshing midway would apply fallbacks to colourspaces that are about to be reset.
             FlagSetter suppressRefresh(true, &_imp->suppressColorManagementRefresh);
+            applyNewProjectOCIOConfigDefaults();
             for (U32 i = 0; i < knobs.size(); ++i) {
                 for (int j = 0; j < knobs[i]->getDimension(); ++j) {
                     knobs[i]->resetToDefaultValue(j);

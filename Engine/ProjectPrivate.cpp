@@ -163,6 +163,8 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
         const std::list<KnobSerializationPtr> & projectSerializedValues = obj.getProjectKnobsValues();
         const std::vector<KnobIPtr> & projectKnobs = _publicInterface->getKnobs();
 
+        _publicInterface->resetOCIOConfigKnobsForRestore();
+
         /// 1) restore project's knobs.
         for (U32 i = 0; i < projectKnobs.size(); ++i) {
             ///try to find a serialized value for this knob

@@ -455,6 +455,18 @@ private:
     void applyColorManagementDefaults(bool asKnobDefaults);
 
     /**
+     * @brief Makes the preference's config the default of the config knobs. Callers must
+     * suppress the colour management refresh.
+     **/
+    void applyNewProjectOCIOConfigDefaults();
+
+    /**
+     * @brief A config knob missing from a project file held the Studio default when it was saved,
+     * whatever this machine's new-project preference is.
+     **/
+    void resetOCIOConfigKnobsForRestore();
+
+    /**
      * @brief Must be implemented to initialize any knob using the
      * KnobFactory.
      **/

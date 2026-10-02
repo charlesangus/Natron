@@ -43,14 +43,13 @@
 #include <QAction>
 #include <QApplication> // qApp
 
-
 #include "Engine/CLArgs.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Image.h"
-#include "Engine/Lut.h" // floatToInt, LutManager
+#include "Engine/Lut.h" // floatToInt
 #include "Engine/Node.h"
-#include "Engine/Project.h"
 #include "Engine/ProcessHandler.h"
+#include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -631,8 +630,14 @@ Gui::debugImage(const Image* image,
         }
     }
     QImage output(renderWindow.width(), renderWindow.height(), QImage::Format_ARGB32);
-    const Color::Lut* lut = Color::LutManager::sRGBLut();
-    lut->validate();
+    ProjectColorManagementPtr colorManagement;
+    {
+        AppInstancePtr app = appPTR->getTopLevelInstance();
+        ProjectPtr project = app ? app->getProject() : ProjectPtr();
+        if (project) {
+            colorManagement = project->getColorManagement();
+        }
+    }
     Image::ReadAccess acc = image->getReadRights();
     const float* from = (const float*)acc.pixelAt( renderWindow.left(), renderWindow.bottom() );
     assert(from);
@@ -643,10 +648,6 @@ Gui::debugImage(const Image* image,
           from += ( srcRowElements - srcNComps * renderWindow.width() ) ) {
         QRgb* dstPixels = (QRgb*)output.scanLine(y);
         assert(dstPixels);
-
-        unsigned error_r = 0x80;
-        unsigned error_g = 0x80;
-        unsigned error_b = 0x80;
 
         for (int x = 0; x < renderWindow.width(); ++x, from += srcNComps, ++dstPixels) {
             float r, g, b, a;
@@ -678,14 +679,13 @@ Gui::debugImage(const Image* image,
 
                 return;
             }
-            error_r = (error_r & 0xff) + lut->toColorSpaceUint8xxFromLinearFloatFast(r);
-            error_g = (error_g & 0xff) + lut->toColorSpaceUint8xxFromLinearFloatFast(g);
-            error_b = (error_b & 0xff) + lut->toColorSpaceUint8xxFromLinearFloatFast(b);
-            assert(error_r < 0x10000 && error_g < 0x10000 && error_b < 0x10000);
-            *dstPixels = qRgba( U8(error_r >> 8),
-                                U8(error_g >> 8),
-                                U8(error_b >> 8),
-                                U8(a * 255) );
+            if (colorManagement) {
+                colorManagement->workingToColorPicking(&r, &g, &b);
+            }
+            *dstPixels = qRgba(U8(Color::floatToInt<256>(r)),
+                               U8(Color::floatToInt<256>(g)),
+                               U8(Color::floatToInt<256>(b)),
+                               U8(a * 255));
         }
     }
 
@@ -977,7 +977,8 @@ Gui::renderViewersAndRefreshKnobsAfterTimelineTimeChange(SequenceTime time,
         }
     }
 
-    ProjectPtr project = getApp()->getProject();
+    AppInstancePtr app = appPTR->getTopLevelInstance();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
     bool isPlayback = reason == eTimelineChangeReasonPlaybackSeek;
 
     ///Refresh all visible knobs at the current time

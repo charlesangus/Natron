@@ -28,15 +28,18 @@
 
 #include <limits>
 
+#include "Engine/AppInstance.h"
 #include "Engine/Image.h"
 #include "Engine/Lut.h"
 #include "Engine/Node.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/Project.h"
+#include "Engine/ProjectColorManagement.h"
 #include "Engine/TimeLine.h"
-#include "Engine/TrackerNode.h"
-#include "Engine/TrackerContext.h"
 #include "Engine/TrackMarker.h"
+#include "Engine/TrackerContext.h"
+#include "Engine/TrackerNode.h"
 #include "Engine/ViewerInstance.h"
 
 NATRON_NAMESPACE_ENTER
@@ -1145,9 +1148,9 @@ toBGRA(unsigned char r,
 }
 
 void
-TrackerNodeInteract::convertImageTosRGBOpenGLTexture(const ImagePtr& image,
-                                                     const TexturePtr& tex,
-                                                     const RectI& renderWindow)
+TrackerNodeInteract::convertImageToDisplayOpenGLTexture(const ImagePtr& image,
+                                                        const TexturePtr& tex,
+                                                        const RectI& renderWindow)
 {
     RectI bounds;
     RectI roi;
@@ -1212,9 +1215,13 @@ TrackerNodeInteract::convertImageTosRGBOpenGLTexture(const ImagePtr& image,
 
             int w = roi.width();
             int srcRowElements = bounds.width() * srcNComps;
-            const Color::Lut* lut = Color::LutManager::sRGBLut();
-            lut->validate();
-            assert(lut);
+            ProjectColorManagementPtr colorManagement;
+            {
+                ProjectPtr project = _p->publicInterface->getNode()->getApp()->getProject();
+                if (project) {
+                    colorManagement = project->getColorManagement();
+                }
+            }
 
             unsigned char alpha = 255;
 
@@ -1233,10 +1240,13 @@ TrackerNodeInteract::convertImageTosRGBOpenGLTexture(const ImagePtr& image,
                         float r = srcPixels[index * srcNComps];
                         float g = srcPixels[index * srcNComps + 1];
                         float b = srcPixels[index * srcNComps + 2];
+                        if (colorManagement) {
+                            colorManagement->workingToColorPicking(&r, &g, &b);
+                        }
 
-                        error_r = (error_r & 0xff) + lut->toColorSpaceUint8xxFromLinearFloatFast(r);
-                        error_g = (error_g & 0xff) + lut->toColorSpaceUint8xxFromLinearFloatFast(g);
-                        error_b = (error_b & 0xff) + lut->toColorSpaceUint8xxFromLinearFloatFast(b);
+                        error_r = (error_r & 0xff) + Color::floatToInt<0xff01>(r);
+                        error_g = (error_g & 0xff) + Color::floatToInt<0xff01>(g);
+                        error_b = (error_b & 0xff) + Color::floatToInt<0xff01>(b);
                         assert(error_r < 0x10000 && error_g < 0x10000 && error_b < 0x10000);
 
                         dstPixels[index] = toBGRA( (U8)(error_r >> 8),
@@ -1270,7 +1280,7 @@ TrackerNodeInteract::convertImageTosRGBOpenGLTexture(const ImagePtr& image,
     glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, currentBoundPBO);
 
     glCheckError();
-} // TrackerNodeInteract::convertImageTosRGBOpenGLTexture
+} // TrackerNodeInteract::convertImageToDisplayOpenGLTexture
 
 void
 TrackerNodeInteract::onTrackingStarted(int step)
@@ -1357,7 +1367,7 @@ TrackerNodeInteract::onTrackImageRenderingFinished()
     selectedMarkerTextureTime = (int)ret.first->getTime();
     selectedMarkerTextureRoI = ret.second;
 
-    convertImageTosRGBOpenGLTexture(ret.first, selectedMarkerTexture, ret.second);
+    convertImageToDisplayOpenGLTexture(ret.first, selectedMarkerTexture, ret.second);
 
     _p->publicInterface->redrawOverlayInteract();
 }
@@ -1395,7 +1405,7 @@ TrackerNodeInteract::onKeyFrameImageRenderingFinished()
             GLTexturePtr tex( new Texture(GL_TEXTURE_2D, GL_LINEAR, GL_NEAREST, GL_CLAMP_TO_EDGE, Texture::eDataTypeByte,
                                           format, internalFormat, glType) );
             keyTextures[it->first.time] = tex;
-            convertImageTosRGBOpenGLTexture(ret.first, tex, ret.second);
+            convertImageToDisplayOpenGLTexture(ret.first, tex, ret.second);
 
             trackRequestsMap.erase(it);
 

@@ -60,6 +60,7 @@ KnobChannelSet::KnobChannelSet(KnobHolder* holder,
     , _cachedRaw()
     , _cachedRows()
     , _cachedPatterns()
+    , _withChannelButtons(true)
 {
 }
 
@@ -363,6 +364,9 @@ void
 KnobChannelSet::setChannels(int row,
                             const std::vector<std::string>& channels)
 {
+    if (!_withChannelButtons) {
+        throw std::invalid_argument("This channel set selects whole layers; its channels cannot be set");
+    }
     std::vector<ChannelSetRow> rows = getRows();
 
     if (row < 0 || row >= (int)rows.size()) {
@@ -404,6 +408,9 @@ void
 KnobChannelSet::setExcludedChannels(int row,
                                     const std::vector<std::string>& names)
 {
+    if (!_withChannelButtons) {
+        throw std::invalid_argument("This channel set selects whole layers; its excluded channels cannot be set");
+    }
     std::vector<ChannelSetRow> rows = getRows();
 
     if (row < 0 || row >= (int)rows.size()) {
@@ -594,6 +601,12 @@ KnobChannelSet::resolve(const std::list<ImageLayerDesc>& present) const
 
     if (rows.empty() || rows[0].mode == ChannelSetRow::eModeNone) {
         return out;
+    }
+
+    if (!_withChannelButtons) {
+        for (std::size_t i = 0; i < rows.size(); ++i) {
+            rows[i].channels.clear();
+        }
     }
 
     if (rows[0].mode == ChannelSetRow::eModeAll) {

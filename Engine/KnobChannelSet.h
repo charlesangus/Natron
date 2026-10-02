@@ -213,6 +213,23 @@ public:
     void setAll();
 
     /**
+     * @brief Whether rows may narrow a layer to chosen channels. Set once by the node that
+     * creates the knob: it describes the node kind, not a project value, so it is a plain
+     * member and is never persisted. With it off, resolve() ignores every row's stored
+     * channels and selects whole layers, and setChannels()/setExcludedChannels() throw
+     * std::invalid_argument.
+     **/
+    void setWithChannelButtons(bool withChannelButtons)
+    {
+        _withChannelButtons = withChannelButtons;
+    }
+
+    bool getWithChannelButtons() const
+    {
+        return _withChannelButtons;
+    }
+
+    /**
      * @brief channelsOrAll == NULL stores an empty channel list, which resolves to every
      * channel of the layer that is present at resolve() time. Throws std::invalid_argument
      * if another eModeLayer row already names layerID.
@@ -289,6 +306,7 @@ private:
     mutable std::string _cachedRaw;
     mutable std::vector<ChannelSetRow> _cachedRows;
     mutable std::vector<QRegularExpression> _cachedPatterns;
+    bool _withChannelButtons;
 };
 
 NATRON_NAMESPACE_EXIT

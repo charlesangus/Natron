@@ -178,6 +178,21 @@ protected:
         return describe(comps[-1]);
     }
 
+    static std::string usedBy(const KnobTablePtr& table,
+                              const std::string& label)
+    {
+        std::list<std::vector<std::string>> rows;
+
+        table->getTable(&rows);
+        for (std::list<std::vector<std::string>>::const_iterator it = rows.begin(); it != rows.end(); ++it) {
+            if (((*it).size() == 3) && ((*it)[0] == label)) {
+                return (*it)[2];
+            }
+        }
+
+        return std::string();
+    }
+
     static bool isIdentityOfSource(const NodePtr& node)
     {
         EffectInstancePtr effect = node->getEffectInstance();
@@ -354,6 +369,26 @@ TEST_F(AddLayersTest, RemovingALayerItNamesIsRefused)
     EXPECT_NE(std::string::npos, error.find(add->getScriptName_mt_safe())) << error;
 }
 
+TEST_F(AddLayersTest, NamingALayerCountsAsAUserAsSoonAsTheRowIsSet)
+{
+    NodePtr add = createAddLayers();
+
+    ASSERT_TRUE(bool(add));
+    KnobChannelSetPtr layers = layersKnob(add);
+    ASSERT_TRUE(bool(layers));
+    KnobTablePtr table = std::dynamic_pointer_cast<KnobTable>(getApp()->getProject()->getKnobByName("defaultLayers"));
+    ASSERT_TRUE(bool(table));
+    EXPECT_EQ(std::string("0"), usedBy(table, "mask"));
+
+    layers->setLayer(0, "mask", NULL);
+    EXPECT_EQ(std::string("1"), usedBy(table, "mask"));
+
+    std::vector<ChannelSetRow> none(1);
+    none[0].mode = ChannelSetRow::eModeNone;
+    layers->setRows(none);
+    EXPECT_EQ(std::string("0"), usedBy(table, "mask"));
+}
+
 TEST_F(AddLayersTest, SubLabelNamesTheAddedLayers)
 {
     NodePtr add = createAddOnReader();
@@ -368,7 +403,7 @@ TEST_F(AddLayersTest, SubLabelNamesTheAddedLayers)
 
     layers->setLayer(0, "diffuse", NULL);
     layers->addLayer("mask", NULL);
-    EXPECT_EQ(std::string("diffuse, mask"), sublabel->getValue());
+    EXPECT_EQ(std::string("diffuse +1"), sublabel->getValue());
 
     std::vector<ChannelSetRow> rows(1);
     rows[0].mode = ChannelSetRow::eModeLayer;

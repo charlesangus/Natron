@@ -169,7 +169,7 @@ Colour management becomes a property of the project, and all of it goes through 
     `tools/ci/local/test.sh smoke debug` stays green (the default-config check).
   - size: M
 
-- [ ] M50.P2.T4 — Point the project's [OCIO] path variable at the project config, and remove the AppManager broadcast
+- [x] M50.P2.T4 — Point the project's [OCIO] path variable at the project config, and remove the AppManager broadcast
   - files: `Engine/Project.cpp`, `Engine/ProjectPrivate.cpp`, `Engine/AppManager.cpp`/`Engine/AppManager.h`/`Engine/AppManagerPrivate.h`, `Engine/AppInstance.cpp`/`Engine/AppInstance.h`
   - approach:
     - Delete `AppManager::onOCIOConfigPathChanged`, `getOCIOConfigPath` and `currentOCIOConfigPath` (in `AppManagerPrivate.h`), and `AppInstance::onOCIOConfigPathChanged`.
@@ -258,7 +258,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: the fork builds in natron-dev. Behaviour is verified host-side in P3.T6.
   - size: M
 
-- [ ] M50.P3.T5 — Pin the openfx-io fork and carry it into openfx-arena
+- [x] M50.P3.T5 — Pin the openfx-io fork and carry it into openfx-arena
   - files: `tools/ci/local/fetch-assets.sh` (`OPENFX_IO_REF`, `OPENFX_ARENA_REF` and their delta comments), charlesangus/openfx-arena (`OpenFX-IO` submodule bump)
   - approach:
     - The P3.T3/P3.T4/P3.T8/P3.T9 commits sit on a branch descending from m66 (649ce94), so the bump also brings 40764b2 (`existingColorSpaceOrFallback`) into arena (design §10.9).
@@ -360,7 +360,7 @@ Colour management becomes a property of the project, and all of it goes through 
 
 ## Phase 50.5: Retire the built-in LUTs
 
-- [ ] M50.P5.T1 — Make bit-depth conversion colour-neutral (Q2)
+- [x] M50.P5.T1 — Make bit-depth conversion colour-neutral (Q2)
   - files: `Engine/ImageConvert.cpp`, `Engine/Image.h`, `Tests/ImageConvert_Test.cpp` (new), `Tests/CMakeLists.txt`, `Tests/Image_Test.cpp`
   - approach:
     - Integer↔float conversion becomes plain linear quantisation, `Image::convertPixelDepth` semantics: scale, clamp, round, with **no** error-diffusion dither (the 0.5 → 128 anchor requires it, design §10.11). Delete `lutFromColorspace` and `convertToFormatInternalForColorSpace`; the colourspace parameters are still accepted but ignored until P5.T5 removes them.
@@ -496,3 +496,6 @@ Execution notes:
 - 2026-10-02 — **B4 landed** (Natron `1b5fdc3d3` P3.T7, `13789370e` P2.T3; io `547aa04` P3.T9), full debug ctest 756/756.
   - **P2.T3 extra (accepted):** before a load, the config knobs are reset to Studio and "". Otherwise a project left on the Studio default, which doesn't save the knob, would load as whatever the machine's preference is.
   - **P3.T9 extra (accepted):** a default-off `guessFileColourspaceFromMetadata` reader hook keeps a file's valid `oiio:ColorSpace` over the category default.
+- 2026-10-02 — **B5 landed** (`fe43bf859` P5.T1, `dc67345bb` P2.T4, `ca8a6486e` pins: io `547aa04`, arena `49f5dd2`), with the full debug ctest at 763/763.
+  - **Arena wasn't build-clean against the new io, despite the design doc.** The new GenericReader dropped the `filePremult` out-parameter, so six arena readers were updated. Arena's `.gitmodules` now points OpenFX-IO at charlesangus/openfx-io.
+  - **P5.T1 also removed the error-diffusion dither** from float-to-int conversion, which follows from Q2's plain quantisation.

@@ -31,7 +31,9 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
+#include <iostream>
 #include <list>
 #include <memory>
 #include <string>
@@ -49,12 +51,14 @@ CLANG_DIAG_ON(deprecated)
 #include "FlatExrReader.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
@@ -84,6 +88,9 @@ const char* const kIDistortPluginID = "net.sf.openfx.IDistort";
 const char* const kPremultPluginID = "net.sf.openfx.Premult";
 const char* const kWritePNGPluginID = "fr.inria.openfx.WritePNG";
 const char* const kReadPNGPluginID = "fr.inria.openfx.ReadPNG";
+const char* const kReadEXRPluginID = "fr.inria.openfx.ReadEXR";
+const char* const kTimeBufferReadPluginID = "net.sf.openfx.TimeBufferRead";
+const char* const kTimeBufferWritePluginID = "net.sf.openfx.TimeBufferWrite";
 
 std::string
 layerIDsString(const std::list<ImageLayerDesc>& layers)
@@ -181,11 +188,12 @@ protected:
     }
 
     // Appends a WriteOIIO writing a single-part, uncompressed 32-bit float EXR of `node`, with
-    // its channel set chosen by `setChannels`, renders frame 1 and parses the result.
+    // its channel set chosen by `setChannels`, renders `frame` and parses the result.
     bool render(const NodePtr& node,
                 const std::function<void(KnobChannelSet*)>& setChannels,
                 FlatExrImage* image,
-                std::string* error)
+                std::string* error,
+                int frame = 1)
     {
         NodePtr writer = createNode(_writeOIIOPluginID);
         if (!writer) {
@@ -224,7 +232,7 @@ protected:
             return false;
         }
         std::list<AppInstance::RenderWork> works;
-        works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
+        works.push_back(AppInstance::RenderWork(writerEffect, frame, frame, 1, false));
         getApp()->startWritersRendering(false, works);
 
         if (!QFile::exists(QString::fromStdString(path))) {
@@ -1018,6 +1026,146 @@ TEST_F(ColorViewsRenderTest, AlphaOnlyPngRoundTripsThroughWriteAndRead)
     EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "A"), 1e-4f);
 }
 
+// ReadEXR is deprecated and loses the reader evaluation to ReadOIIO, so it is created by ID.
+// It only guesses its output layout from a file set after creation, as ReadNode sets it; a file
+// given as a creation default leaves the layout at RGBA.
+static NodePtr
+createReadExr(const AppInstancePtr& app,
+              const std::string& fixture)
+{
+    CreateNodeArgs readArgs(std::string(kReadEXRPluginID), app->getProject());
+    readArgs.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+    NodePtr reader = app->createNode(readArgs);
+    KnobFile* file = reader ? dynamic_cast<KnobFile*>(reader->getKnobByName(kOfxImageEffectFileParamName).get()) : NULL;
+    if (!file) {
+        return NodePtr();
+    }
+    file->setValue(std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
+
+    return reader;
+}
+
+// Declaring Alpha support lets ReadEXR decode a single-A file straight into a 1-component buffer
+// instead of the host widening it to RGBA and narrowing back.
+TEST_F(ColorViewsRenderTest, ReadExrDecodesAlphaOnlyFileIntoOneChannel)
+{
+    NodePtr reader = createReadExr(getApp(), "flat-alpha-only.exr");
+    ASSERT_TRUE(bool(reader));
+
+    EXPECT_TRUE(reader->isSupportedComponent(-1, ImageLayerDesc::getAlphaComponents()));
+    EXPECT_EQ(1, reader->getEffectInstance()->getMetadataNComps(-1));
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(reader, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    ASSERT_EQ(1u, image.channels.size());
+    EXPECT_EQ(std::string("A"), image.channels.front());
+    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "A"), 1e-5f);
+}
+
+TEST_F(ColorViewsRenderTest, ReadExrStillDecodesRgbaFileIntoFourChannels)
+{
+    NodePtr reader = createReadExr(getApp(), "flat-rgba-only.exr");
+    ASSERT_TRUE(bool(reader));
+
+    EXPECT_EQ(4, reader->getEffectInstance()->getMetadataNComps(-1));
+
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(render(reader, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
+
+    ASSERT_EQ(4u, image.channels.size());
+    EXPECT_GE(image.channelIndex("R"), 0);
+    EXPECT_GE(image.channelIndex("G"), 0);
+    EXPECT_GE(image.channelIndex("B"), 0);
+    EXPECT_GE(image.channelIndex("A"), 0);
+    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "A"), 1e-5f);
+}
+
+// TimeBufferWrite stores the layout of the stream it is fed and TimeBufferRead hands it back at
+// the next frame, so an alpha-only stream must stay alpha-only through both nodes.
+TEST_F(ColorViewsRenderTest, TimeBufferCarriesAnAlphaOnlyStreamToTheNextFrame)
+{
+    // openfx-misc compiles TimeBuffer only into DEBUG builds, so release plug-in sets lack it.
+    bool timeBufferLoaded = false;
+    try {
+        timeBufferLoaded = appPTR->getPluginBinary(QString::fromUtf8(kTimeBufferReadPluginID), -1, -1, false) != NULL;
+    } catch (const std::exception&) {
+    }
+    if (!timeBufferLoaded) {
+        std::cout << "TimeBuffer plug-ins not loaded; nothing to check" << std::endl;
+
+        return;
+    }
+    NodePtr reader = createReader("flat-alpha-only.exr");
+    ASSERT_TRUE(bool(reader));
+    NodePtr bufferRead = createNode(QString::fromUtf8(kTimeBufferReadPluginID));
+    NodePtr bufferWrite = createNode(QString::fromUtf8(kTimeBufferWritePluginID));
+    ASSERT_TRUE(bool(bufferRead));
+    ASSERT_TRUE(bool(bufferWrite));
+
+    const char* const bufferName = "m66AlphaBuffer";
+    KnobString* readName = dynamic_cast<KnobString*>(bufferRead->getKnobByName("bufferName").get());
+    KnobString* writeName = dynamic_cast<KnobString*>(bufferWrite->getKnobByName("bufferName").get());
+    KnobInt* startFrame = dynamic_cast<KnobInt*>(bufferRead->getKnobByName("startFrame").get());
+    ASSERT_TRUE(readName != NULL);
+    ASSERT_TRUE(writeName != NULL);
+    ASSERT_TRUE(startFrame != NULL);
+    readName->setValue(std::string(bufferName));
+    writeName->setValue(std::string(bufferName));
+    startFrame->setValue(1);
+    // TimeBufferRead also has a Generator context, so Natron gives it a target layer, and the
+    // default rgba target would widen the alpha-only stream it hands back.
+    KnobLayerSelectPtr readLayer = std::dynamic_pointer_cast<KnobLayerSelect>(bufferRead->getLayerKnob());
+    ASSERT_TRUE(bool(readLayer));
+    readLayer->setLayer(kNatronColorViewAlpha);
+
+    int readSource = -1;
+    for (int i = 0; i < bufferRead->getNInputs(); ++i) {
+        if (bufferRead->getInputLabel(i) == "Source") {
+            readSource = i;
+        }
+    }
+    int writeSource = -1;
+    int writeSync = -1;
+    for (int i = 0; i < bufferWrite->getNInputs(); ++i) {
+        if (bufferWrite->getInputLabel(i) == "Source") {
+            writeSource = i;
+        } else if (bufferWrite->getInputLabel(i) == "Sync") {
+            writeSync = i;
+        }
+    }
+    ASSERT_GE(readSource, 0);
+    ASSERT_GE(writeSource, 0);
+    ASSERT_GE(writeSync, 0);
+    connectNodes(reader, bufferRead, readSource, true);
+    connectNodes(bufferRead, bufferWrite, writeSync, true);
+    connectNodes(reader, bufferWrite, writeSource, true);
+
+    EXPECT_TRUE(bufferRead->isSupportedComponent(0, ImageLayerDesc::getAlphaComponents()));
+    EXPECT_TRUE(bufferRead->isSupportedComponent(-1, ImageLayerDesc::getAlphaComponents()));
+    EXPECT_TRUE(bufferWrite->isSupportedComponent(0, ImageLayerDesc::getAlphaComponents()));
+    EXPECT_TRUE(bufferWrite->isSupportedComponent(-1, ImageLayerDesc::getAlphaComponents()));
+    EXPECT_EQ(1, bufferRead->getEffectInstance()->getMetadataNComps(0));
+    EXPECT_EQ(1, bufferRead->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(1, bufferWrite->getEffectInstance()->getMetadataNComps(0));
+    EXPECT_EQ(1, bufferWrite->getEffectInstance()->getMetadataNComps(-1));
+
+    FlatExrImage frame1;
+    std::string error;
+    ASSERT_TRUE(render(bufferWrite, &ColorViewsRenderTest::writeAll, &frame1, &error, 1)) << error;
+    ASSERT_EQ(1u, frame1.channels.size());
+    EXPECT_EQ(std::string("A"), frame1.channels.front());
+    EXPECT_NEAR(1.f, frame1.at(kCheckX, kCheckY, "A"), 1e-5f);
+
+    FlatExrImage frame2;
+    ASSERT_TRUE(render(bufferRead, &ColorViewsRenderTest::writeAll, &frame2, &error, 2)) << error;
+    ASSERT_EQ(1u, frame2.channels.size());
+    EXPECT_EQ(std::string("A"), frame2.channels.front());
+    EXPECT_NEAR(frame1.at(kCheckX, kCheckY, "A"), frame2.at(kCheckX, kCheckY, "A"), 1e-5f);
+}
+
 // A channel picker naming a colour channel resolves to an index into the layout the stream is
 // fetched in: alpha.A is the only channel of an alpha-only stream, and rgba.R, which that stream
 // lacks, reads as zero rather than as the stored alpha.
@@ -1150,4 +1298,77 @@ TEST_F(ColorViewsChannelPickerRenderTest, MaskByMissingRgbaRReadsZeroNotTheStore
     ASSERT_TRUE(render(grade, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
 
     expectColor(image, 1.f, 0.f, 0.f, 1.f);
+}
+
+// Both fixtures carry a constant alpha of 1, so the matte comparison cannot catch a geometric
+// effect that moves coverage to the wrong place; it catches an alpha-only stream being widened,
+// narrowed or stylised differently from the RGBA path.
+TEST_F(ColorViewsRenderTest, MagickEffectsAcceptAlphaOnlyStreamsNatively)
+{
+    struct Row {
+        const char* pluginID;
+        bool matte;
+    };
+    const Row rows[] = {
+        { "net.fxarena.openfx.Arc", true },
+        { "net.fxarena.openfx.Implode", true },
+        { "net.fxarena.openfx.Polar", true },
+        { "net.fxarena.openfx.Reflection", true },
+        { "net.fxarena.openfx.Tile", true },
+        { "net.fxarena.openfx.Charcoal", false },
+        { "net.fxarena.openfx.Sketch", false },
+        { "net.fxarena.openfx.Oilpaint", false },
+        { "net.fxarena.openfx.Edges", false },
+    };
+
+    for (std::size_t r = 0; r < sizeof(rows) / sizeof(rows[0]); ++r) {
+        const char* pluginID = rows[r].pluginID;
+        SCOPED_TRACE(pluginID);
+
+        NodePtr alphaReader = createReader("flat-alpha-only.exr");
+        ASSERT_TRUE(bool(alphaReader));
+        NodePtr effect = createNode(QString::fromUtf8(pluginID));
+        ASSERT_TRUE(bool(effect));
+        connectNodes(alphaReader, effect, 0, true);
+
+        EXPECT_TRUE(effect->isSupportedComponent(0, ImageLayerDesc::getAlphaComponents()));
+        EXPECT_TRUE(effect->isSupportedComponent(-1, ImageLayerDesc::getAlphaComponents()));
+        EXPECT_EQ(1, effect->getEffectInstance()->getMetadataNComps(0));
+        EXPECT_EQ(1, effect->getEffectInstance()->getMetadataNComps(-1));
+
+        FlatExrImage alphaImage;
+        std::string error;
+        ASSERT_TRUE(render(effect, &ColorViewsRenderTest::writeAll, &alphaImage, &error)) << error;
+
+        ASSERT_EQ(1u, alphaImage.channels.size());
+        EXPECT_EQ(std::string("A"), alphaImage.channels.front());
+        ASSERT_FALSE(alphaImage.pixels.empty());
+        for (std::size_t i = 0; i < alphaImage.pixels.size(); ++i) {
+            ASSERT_TRUE(std::isfinite(alphaImage.pixels[i])) << "pixel " << i;
+        }
+
+        if (!rows[r].matte) {
+            continue;
+        }
+
+        NodePtr rgbaReader = createReader("flat-rgba-only.exr");
+        ASSERT_TRUE(bool(rgbaReader));
+        NodePtr rgbaEffect = createNode(QString::fromUtf8(pluginID));
+        ASSERT_TRUE(bool(rgbaEffect));
+        connectNodes(rgbaReader, rgbaEffect, 0, true);
+
+        FlatExrImage rgbaImage;
+        ASSERT_TRUE(render(rgbaEffect, &ColorViewsRenderTest::writeAll, &rgbaImage, &error)) << error;
+
+        ASSERT_GE(rgbaImage.channelIndex("A"), 0);
+        ASSERT_EQ(rgbaImage.width, alphaImage.width);
+        ASSERT_EQ(rgbaImage.height, alphaImage.height);
+        for (int32_t y = 0; y < alphaImage.height; ++y) {
+            for (int32_t x = 0; x < alphaImage.width; ++x) {
+                EXPECT_NEAR(rgbaImage.at(rgbaImage.x1 + x, rgbaImage.y1 + y, "A"),
+                            alphaImage.at(alphaImage.x1 + x, alphaImage.y1 + y, "A"), 1e-4f)
+                    << "(" << x << ", " << y << ")";
+            }
+        }
+    }
 }

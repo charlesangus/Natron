@@ -536,19 +536,15 @@ private:
     }
 
     template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue>
-    static void convertToFormatInternal_sameComps(const RectI & renderWindow,
-                                                  const Image & srcImg,
-                                                  Image & dstImg,
-                                                  ViewerColorSpaceEnum srcColorSpace,
-                                                  ViewerColorSpaceEnum dstColorSpace,
+    static void convertToFormatInternal_sameComps(const RectI& renderWindow,
+                                                  const Image& srcImg,
+                                                  Image& dstImg,
                                                   bool copyBitmap);
 
     template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue, int srcNComps, int dstNComps>
     static void convertToFormatInternal(const RectI& renderWindow,
                                         const Image& srcImg,
                                         Image& dstImg,
-                                        ViewerColorSpaceEnum srcColorSpace,
-                                        ViewerColorSpaceEnum dstColorSpace,
                                         int channelForAlpha,
                                         bool zeroFillMissing,
                                         bool copyBitmap);
@@ -557,8 +553,6 @@ private:
     static void convertToFormatInternalForDepth(const RectI& renderWindow,
                                                 const Image& srcImg,
                                                 Image& dstImg,
-                                                ViewerColorSpaceEnum srcColorSpace,
-                                                ViewerColorSpaceEnum dstColorSpace,
                                                 int channelForAlpha,
                                                 bool zeroFillMissing,
                                                 bool copyBitmap);
@@ -745,10 +739,6 @@ public:
      *
      * @param renderWindow The rectangle to convert
      *
-     * @param srcColorSpace Ignored: no colour transform is ever applied.
-     *
-     * @param dstColorSpace Ignored: no colour transform is ever applied.
-     *
      * @param channelForAlpha is used in cases 2) and 4) to determine from which channel we should
      * fill the alpha. If it is -1 it indicates you want to clear the mask.
      *
@@ -764,8 +754,6 @@ public:
      * Implementation should tend to optimize these cases.
      **/
     void convertToFormat(const RectI& renderWindow,
-                         ViewerColorSpaceEnum srcColorSpace,
-                         ViewerColorSpaceEnum dstColorSpace,
                          int channelForAlpha,
                          bool copyBitMap,
                          Image* dstImg) const;

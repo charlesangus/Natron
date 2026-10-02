@@ -213,10 +213,8 @@ TEST(ImageConvertToFormatTest, RoundTripFloatByte)
 
     setFloatPixel(*srcFloat, 0, 0, original);
 
-    srcFloat->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                              /*channelForAlpha=*/-1, /*copyBitmap=*/false, mid.get());
-    mid->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                         -1, false, dstFloat.get());
+    srcFloat->convertToFormat(bounds, /*channelForAlpha=*/-1, /*copyBitmap=*/false, mid.get());
+    mid->convertToFormat(bounds, -1, false, dstFloat.get());
 
     // floatToInt<256>/intToFloat<256> can land up to half an 8-bit code
     // value away from the original in either direction.
@@ -239,10 +237,8 @@ TEST(ImageConvertToFormatTest, RoundTripFloatShort)
 
     setFloatPixel(*srcFloat, 0, 0, original);
 
-    srcFloat->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                              -1, false, mid.get());
-    mid->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                         -1, false, dstFloat.get());
+    srcFloat->convertToFormat(bounds, -1, false, mid.get());
+    mid->convertToFormat(bounds, -1, false, dstFloat.get());
 
     // Same reasoning as the byte round trip, but quantized to 65536 levels
     // instead of 256, so the worst-case error is proportionally smaller.
@@ -255,9 +251,7 @@ TEST(ImageConvertToFormatTest, RoundTripFloatShort)
     }
 }
 
-// RGBA->RGB with both colorspaces Linear takes the plain convertPixelDepth
-// passthrough: the color channels are copied as-is and alpha is dropped.
-TEST(ImageConvertToFormatTest, RgbaToRgbDropsAlphaWhenColorSpacesAreLinear)
+TEST(ImageConvertToFormatTest, RgbaToRgbDropsAlpha)
 {
     RectI bounds(0, 0, 1, 1);
     ImagePtr srcRGBA = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
@@ -267,8 +261,7 @@ TEST(ImageConvertToFormatTest, RgbaToRgbDropsAlphaWhenColorSpacesAreLinear)
 
     setFloatPixel(*srcRGBA, 0, 0, { kColor, kColor, kColor, kAlpha });
 
-    srcRGBA->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                             -1, /*copyBitmap=*/false, dstRGB.get());
+    srcRGBA->convertToFormat(bounds, -1, /*copyBitmap=*/false, dstRGB.get());
 
     std::vector<float> result = getFloatPixel(*dstRGB, 0, 0, 3);
     constexpr float kExactTolerance = 1e-6f;
@@ -291,7 +284,7 @@ convertOnePixel(const ImageLayerDesc& srcComps,
     ImagePtr dst = makeLocalImage(dstComps, eImageBitDepthFloat, bounds);
 
     setFloatPixel(*src, 0, 0, srcPixel);
-    src->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear, -1, false, dst.get());
+    src->convertToFormat(bounds, -1, false, dst.get());
 
     return getFloatPixel(*dst, 0, 0, dstComps.getNumComponents());
 }

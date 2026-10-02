@@ -1440,9 +1440,7 @@ RotoPaint::render(const RenderActionArgs& args)
             ImagePtr bgImg = getImage(0, args.time, args.mappedScale, args.view, 0, &layer->first, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM /*returnOpenGLtexture*/, 0 /*textureDepth*/, &bgImgRoI);
             if (bgImg) {
                 if (bgImg->getComponents() != layer->second->getComponents()) {
-                    bgImg->convertToFormat(args.roi,
-                                           getApp()->getDefaultColorSpaceForBitDepth(bgImg->getBitDepth()),
-                                           getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, layer->second.get());
+                    bgImg->convertToFormat(args.roi, 3, false, layer->second.get());
                 } else {
                     layer->second->pasteFrom(*bgImg, args.roi, false);
                 }
@@ -1562,9 +1560,7 @@ RotoPaint::render(const RenderActionArgs& args)
                     if (bgImg->getComponents() != layer->second->getComponents()) {
                         const RectI intersection = args.roi.intersect(bgImg->getBounds());
                         if (!intersection.isNull()) {
-                            bgImg->convertToFormat(intersection,
-                                                   getApp()->getDefaultColorSpaceForBitDepth(rotoImagesIt->second->getBitDepth()),
-                                                   getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, layer->second.get());
+                            bgImg->convertToFormat(intersection, 3, false, layer->second.get());
                         }
                     } else {
                         layer->second->pasteFrom(*bgImg, args.roi, false);
@@ -1575,9 +1571,7 @@ RotoPaint::render(const RenderActionArgs& args)
             }
 
             if (rotoImagesIt->second->getComponents() != layer->second->getComponents()) {
-                rotoImagesIt->second->convertToFormat(args.roi,
-                                                      getApp()->getDefaultColorSpaceForBitDepth(rotoImagesIt->second->getBitDepth()),
-                                                      getApp()->getDefaultColorSpaceForBitDepth(layer->second->getBitDepth()), 3, false, layer->second.get());
+                rotoImagesIt->second->convertToFormat(args.roi, 3, false, layer->second.get());
             } else {
                 layer->second->pasteFrom(*(rotoImagesIt->second), args.roi, false);
             }

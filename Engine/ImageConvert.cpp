@@ -108,8 +108,6 @@ void
 Image::convertToFormatInternal_sameComps(const RectI& renderWindow,
                                          const Image& srcImg,
                                          Image& dstImg,
-                                         ViewerColorSpaceEnum /*srcColorSpace*/,
-                                         ViewerColorSpaceEnum /*dstColorSpace*/,
                                          bool copyBitmap)
 {
     const RectI & r = srcImg._bounds;
@@ -144,8 +142,6 @@ void
 Image::convertToFormatInternal(const RectI& renderWindow,
                                const Image& srcImg,
                                Image& dstImg,
-                               ViewerColorSpaceEnum /*srcColorSpace*/,
-                               ViewerColorSpaceEnum /*dstColorSpace*/,
                                int channelForAlpha,
                                bool zeroFillMissing,
                                bool copyBitmap)
@@ -281,8 +277,6 @@ void
 Image::convertToFormatInternalForDepth(const RectI& renderWindow,
                                        const Image& srcImg,
                                        Image& dstImg,
-                                       ViewerColorSpaceEnum srcColorSpace,
-                                       ViewerColorSpaceEnum dstColorSpace,
                                        int channelForAlpha,
                                        bool zeroFillMissing,
                                        bool copyBitmap)
@@ -295,24 +289,18 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
         switch (dstNComp) {
         case 2:
             convertToFormatInternal<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, 1, 2>(renderWindow, srcImg, dstImg,
-                                                                                    srcColorSpace,
-                                                                                    dstColorSpace,
                                                                                     channelForAlpha,
                                                                                     zeroFillMissing,
                                                                                     copyBitmap);
             break;
         case 3:
             convertToFormatInternal<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, 1, 3>(renderWindow, srcImg, dstImg,
-                                                                                    srcColorSpace,
-                                                                                    dstColorSpace,
                                                                                     channelForAlpha,
                                                                                     zeroFillMissing,
                                                                                     copyBitmap);
             break;
         case 4:
             convertToFormatInternal<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, 1, 4>(renderWindow, srcImg, dstImg,
-                                                                                    srcColorSpace,
-                                                                                    dstColorSpace,
                                                                                     channelForAlpha,
                                                                                     zeroFillMissing,
                                                                                     copyBitmap);
@@ -326,24 +314,18 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
         switch (dstNComp) {
         case 1:
             convertToFormatInternal<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, 2, 1>(renderWindow, srcImg, dstImg,
-                                                                                    srcColorSpace,
-                                                                                    dstColorSpace,
                                                                                     channelForAlpha,
                                                                                     zeroFillMissing,
                                                                                     copyBitmap);
             break;
         case 3:
             convertToFormatInternal<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, 2, 3>(renderWindow, srcImg, dstImg,
-                                                                                    srcColorSpace,
-                                                                                    dstColorSpace,
                                                                                     channelForAlpha,
                                                                                     zeroFillMissing,
                                                                                     copyBitmap);
             break;
         case 4:
             convertToFormatInternal<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, 2, 4>(renderWindow, srcImg, dstImg,
-                                                                                    srcColorSpace,
-                                                                                    dstColorSpace,
                                                                                     channelForAlpha,
                                                                                     zeroFillMissing,
                                                                                     copyBitmap);
@@ -357,24 +339,18 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
         switch (dstNComp) {
         case 1:
             convertToFormatInternal<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, 3, 1>(renderWindow, srcImg, dstImg,
-                                                                                    srcColorSpace,
-                                                                                    dstColorSpace,
                                                                                     channelForAlpha,
                                                                                     zeroFillMissing,
                                                                                     copyBitmap);
             break;
         case 2:
             convertToFormatInternal<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, 3, 2>(renderWindow, srcImg, dstImg,
-                                                                                    srcColorSpace,
-                                                                                    dstColorSpace,
                                                                                     channelForAlpha,
                                                                                     zeroFillMissing,
                                                                                     copyBitmap);
             break;
         case 4:
             convertToFormatInternal<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, 3, 4>(renderWindow, srcImg, dstImg,
-                                                                                    srcColorSpace,
-                                                                                    dstColorSpace,
                                                                                     channelForAlpha,
                                                                                     zeroFillMissing,
                                                                                     copyBitmap);
@@ -388,24 +364,18 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
         switch (dstNComp) {
         case 1:
             convertToFormatInternal<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, 4, 1>(renderWindow, srcImg, dstImg,
-                                                                                    srcColorSpace,
-                                                                                    dstColorSpace,
                                                                                     channelForAlpha,
                                                                                     zeroFillMissing,
                                                                                     copyBitmap);
             break;
         case 2:
             convertToFormatInternal<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, 4, 2>(renderWindow, srcImg, dstImg,
-                                                                                    srcColorSpace,
-                                                                                    dstColorSpace,
                                                                                     channelForAlpha,
                                                                                     zeroFillMissing,
                                                                                     copyBitmap);
             break;
         case 3:
             convertToFormatInternal<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, 4, 3>(renderWindow, srcImg, dstImg,
-                                                                                    srcColorSpace,
-                                                                                    dstColorSpace,
                                                                                     channelForAlpha,
                                                                                     zeroFillMissing,
                                                                                     copyBitmap);
@@ -422,8 +392,6 @@ Image::convertToFormatInternalForDepth(const RectI& renderWindow,
 
 void
 Image::convertToFormat(const RectI& renderWindow,
-                       ViewerColorSpaceEnum srcColorSpace,
-                       ViewerColorSpaceEnum dstColorSpace,
                        int channelForAlpha,
                        bool copyBitmap,
                        Image* dstImg) const
@@ -447,21 +415,15 @@ Image::convertToFormat(const RectI& renderWindow,
             switch ( getBitDepth() ) {
             case eImageBitDepthByte:
                 ///Same as a copy
-                convertToFormatInternal_sameComps<unsigned char, unsigned char, 255, 255>(renderWindow, *this, *dstImg,
-                                                                                          srcColorSpace,
-                                                                                          dstColorSpace, copyBitmap);
+                convertToFormatInternal_sameComps<unsigned char, unsigned char, 255, 255>(renderWindow, *this, *dstImg, copyBitmap);
                 break;
             case eImageBitDepthShort:
-                convertToFormatInternal_sameComps<unsigned short, unsigned char, 65535, 255>(renderWindow, *this, *dstImg,
-                                                                                             srcColorSpace,
-                                                                                             dstColorSpace, copyBitmap);
+                convertToFormatInternal_sameComps<unsigned short, unsigned char, 65535, 255>(renderWindow, *this, *dstImg, copyBitmap);
                 break;
             case eImageBitDepthHalf:
                 break;
             case eImageBitDepthFloat:
-                convertToFormatInternal_sameComps<float, unsigned char, 1, 255>(renderWindow, *this, *dstImg,
-                                                                                srcColorSpace,
-                                                                                dstColorSpace, copyBitmap);
+                convertToFormatInternal_sameComps<float, unsigned char, 1, 255>(renderWindow, *this, *dstImg, copyBitmap);
                 break;
             case eImageBitDepthNone:
                 break;
@@ -472,22 +434,16 @@ Image::convertToFormat(const RectI& renderWindow,
         case eImageBitDepthShort: {
             switch ( getBitDepth() ) {
             case eImageBitDepthByte:
-                convertToFormatInternal_sameComps<unsigned char, unsigned short, 255, 65535>(renderWindow, *this, *dstImg,
-                                                                                             srcColorSpace,
-                                                                                             dstColorSpace, copyBitmap);
+                convertToFormatInternal_sameComps<unsigned char, unsigned short, 255, 65535>(renderWindow, *this, *dstImg, copyBitmap);
                 break;
             case eImageBitDepthShort:
                 ///Same as a copy
-                convertToFormatInternal_sameComps<unsigned short, unsigned short, 65535, 65535>(renderWindow, *this, *dstImg,
-                                                                                                srcColorSpace,
-                                                                                                dstColorSpace, copyBitmap);
+                convertToFormatInternal_sameComps<unsigned short, unsigned short, 65535, 65535>(renderWindow, *this, *dstImg, copyBitmap);
                 break;
             case eImageBitDepthHalf:
                 break;
             case eImageBitDepthFloat:
-                convertToFormatInternal_sameComps<float, unsigned short, 1, 65535>(renderWindow, *this, *dstImg,
-                                                                                   srcColorSpace,
-                                                                                   dstColorSpace, copyBitmap);
+                convertToFormatInternal_sameComps<float, unsigned short, 1, 65535>(renderWindow, *this, *dstImg, copyBitmap);
                 break;
             case eImageBitDepthNone:
                 break;
@@ -501,22 +457,16 @@ Image::convertToFormat(const RectI& renderWindow,
         case eImageBitDepthFloat: {
             switch ( getBitDepth() ) {
             case eImageBitDepthByte:
-                convertToFormatInternal_sameComps<unsigned char, float, 255, 1>(renderWindow, *this, *dstImg,
-                                                                                srcColorSpace,
-                                                                                dstColorSpace, copyBitmap);
+                convertToFormatInternal_sameComps<unsigned char, float, 255, 1>(renderWindow, *this, *dstImg, copyBitmap);
                 break;
             case eImageBitDepthShort:
-                convertToFormatInternal_sameComps<unsigned short, float, 65535, 1>(renderWindow, *this, *dstImg,
-                                                                                   srcColorSpace,
-                                                                                   dstColorSpace, copyBitmap);
+                convertToFormatInternal_sameComps<unsigned short, float, 65535, 1>(renderWindow, *this, *dstImg, copyBitmap);
                 break;
             case eImageBitDepthHalf:
                 break;
             case eImageBitDepthFloat:
                 ///Same as a copy
-                convertToFormatInternal_sameComps<float, float, 1, 1>(renderWindow, *this, *dstImg,
-                                                                      srcColorSpace,
-                                                                      dstColorSpace, copyBitmap);
+                convertToFormatInternal_sameComps<float, float, 1, 1>(renderWindow, *this, *dstImg, copyBitmap);
                 break;
             case eImageBitDepthNone:
                 break;
@@ -533,16 +483,12 @@ Image::convertToFormat(const RectI& renderWindow,
             switch ( getBitDepth() ) {
             case eImageBitDepthByte:
                 convertToFormatInternalForDepth<unsigned char, unsigned char, 255, 255>(renderWindow, *this, *dstImg,
-                                                                                        srcColorSpace,
-                                                                                        dstColorSpace,
                                                                                         channelForAlpha,
                                                                                         zeroFillMissing,
                                                                                         copyBitmap);
                 break;
             case eImageBitDepthShort:
                 convertToFormatInternalForDepth<unsigned short, unsigned char, 65535, 255>(renderWindow, *this, *dstImg,
-                                                                                           srcColorSpace,
-                                                                                           dstColorSpace,
                                                                                            channelForAlpha,
                                                                                            zeroFillMissing,
                                                                                            copyBitmap);
@@ -551,8 +497,6 @@ Image::convertToFormat(const RectI& renderWindow,
                 break;
             case eImageBitDepthFloat:
                 convertToFormatInternalForDepth<float, unsigned char, 1, 255>(renderWindow, *this, *dstImg,
-                                                                              srcColorSpace,
-                                                                              dstColorSpace,
                                                                               channelForAlpha,
                                                                               zeroFillMissing,
                                                                               copyBitmap);
@@ -567,8 +511,6 @@ Image::convertToFormat(const RectI& renderWindow,
             switch ( getBitDepth() ) {
             case eImageBitDepthByte:
                 convertToFormatInternalForDepth<unsigned char, unsigned short, 255, 65535>(renderWindow, *this, *dstImg,
-                                                                                           srcColorSpace,
-                                                                                           dstColorSpace,
                                                                                            channelForAlpha,
                                                                                            zeroFillMissing,
                                                                                            copyBitmap);
@@ -576,8 +518,6 @@ Image::convertToFormat(const RectI& renderWindow,
                 break;
             case eImageBitDepthShort:
                 convertToFormatInternalForDepth<unsigned short, unsigned short, 65535, 65535>(renderWindow, *this, *dstImg,
-                                                                                              srcColorSpace,
-                                                                                              dstColorSpace,
                                                                                               channelForAlpha,
                                                                                               zeroFillMissing,
                                                                                               copyBitmap);
@@ -587,8 +527,6 @@ Image::convertToFormat(const RectI& renderWindow,
                 break;
             case eImageBitDepthFloat:
                 convertToFormatInternalForDepth<float, unsigned short, 1, 65535>(renderWindow, *this, *dstImg,
-                                                                                 srcColorSpace,
-                                                                                 dstColorSpace,
                                                                                  channelForAlpha,
                                                                                  zeroFillMissing,
                                                                                  copyBitmap);
@@ -604,16 +542,12 @@ Image::convertToFormat(const RectI& renderWindow,
             switch ( getBitDepth() ) {
             case eImageBitDepthByte:
                 convertToFormatInternalForDepth<unsigned char, float, 255, 1>(renderWindow, *this, *dstImg,
-                                                                              srcColorSpace,
-                                                                              dstColorSpace,
                                                                               channelForAlpha,
                                                                               zeroFillMissing,
                                                                               copyBitmap);
                 break;
             case eImageBitDepthShort:
                 convertToFormatInternalForDepth<unsigned short, float, 65535, 1>(renderWindow, *this, *dstImg,
-                                                                                 srcColorSpace,
-                                                                                 dstColorSpace,
                                                                                  channelForAlpha,
                                                                                  zeroFillMissing,
                                                                                  copyBitmap);
@@ -623,8 +557,6 @@ Image::convertToFormat(const RectI& renderWindow,
                 break;
             case eImageBitDepthFloat:
                 convertToFormatInternalForDepth<float, float, 1, 1>(renderWindow, *this, *dstImg,
-                                                                    srcColorSpace,
-                                                                    dstColorSpace,
                                                                     channelForAlpha,
                                                                     zeroFillMissing,
                                                                     copyBitmap);

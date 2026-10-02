@@ -74,13 +74,11 @@ getRow(const Image& img, std::size_t count)
 
 void
 convert(const Image& src,
-        Image& dst,
-        ViewerColorSpaceEnum srcColorSpace = eViewerColorSpaceLinear,
-        ViewerColorSpaceEnum dstColorSpace = eViewerColorSpaceLinear)
+        Image& dst)
 {
     RectI bounds = src.getBounds();
 
-    src.convertToFormat(bounds, srcColorSpace, dstColorSpace, /*channelForAlpha=*/-1, /*copyBitMap=*/false, &dst);
+    src.convertToFormat(bounds, /*channelForAlpha=*/-1, /*copyBitMap=*/false, &dst);
 }
 
 } // namespace
@@ -187,32 +185,4 @@ TEST(ImageConvertTest, FloatToByteHasNoDither)
         EXPECT_EQ(64, fromRGB[x * 4 + 2]) << "pixel " << x;
         EXPECT_EQ(0, fromRGB[x * 4 + 3]) << "pixel " << x;
     }
-}
-
-TEST(ImageConvertTest, ColourSpaceArgumentsApplyNoTransform)
-{
-    const std::vector<float> original = { 0.18f, 0.5f, 0.8f, 0.6f };
-    ImagePtr srcFloat = makeImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, 1);
-    ImagePtr srcRGBA = makeImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, 1);
-    ImagePtr linearBytes = makeImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthByte, 1);
-    ImagePtr srgbBytes = makeImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthByte, 1);
-    ImagePtr rec709Shorts = makeImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthShort, 1);
-    ImagePtr linearShorts = makeImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthShort, 1);
-    ImagePtr srgbRGB = makeImage(ImageLayerDesc::getRGBComponents(), eImageBitDepthFloat, 1);
-
-    setRow<float>(*srcFloat, original);
-    setRow<float>(*srcRGBA, original);
-    convert(*srcFloat, *linearBytes);
-    convert(*srcFloat, *srgbBytes, eViewerColorSpaceLinear, eViewerColorSpaceSRGB);
-    convert(*srcFloat, *linearShorts);
-    convert(*srcFloat, *rec709Shorts, eViewerColorSpaceLinear, eViewerColorSpaceRec709);
-    convert(*srcRGBA, *srgbRGB, eViewerColorSpaceSRGB, eViewerColorSpaceLinear);
-
-    EXPECT_EQ(getRow<unsigned char>(*linearBytes, 4), getRow<unsigned char>(*srgbBytes, 4));
-    EXPECT_EQ(getRow<unsigned short>(*linearShorts, 4), getRow<unsigned short>(*rec709Shorts, 4));
-
-    const std::vector<float> rgb = getRow<float>(*srgbRGB, 3);
-    EXPECT_FLOAT_EQ(rgb[0], original[0]);
-    EXPECT_FLOAT_EQ(rgb[1], original[1]);
-    EXPECT_FLOAT_EQ(rgb[2], original[2]);
 }

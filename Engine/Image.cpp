@@ -1337,7 +1337,7 @@ Image::pasteFrom(const Image & src,
 
         // Ok now convert from RGBA to this image format if needed
         if ( tmpImg->getComponentsCount() != getComponentsCount() ) {
-            tmpImg->convertToFormat(roi, eViewerColorSpaceLinear, eViewerColorSpaceLinear, 3, false, this);
+            tmpImg->convertToFormat(roi, 3, false, this);
         } else {
             pasteFrom(*tmpImg, roi, false);
         }

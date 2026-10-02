@@ -19,6 +19,8 @@
 
 #include "ColorSelectorWidget.h"
 
+#include <algorithm>
+
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QHBoxLayout>
@@ -33,6 +35,7 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Lut.h"
+#include "Engine/ProjectColorManagement.h"
 #include "Gui/Label.h"
 
 #define COLOR_SELECTOR_BUTTON_PROPERTY "ColorButtonType"
@@ -40,6 +43,30 @@ CLANG_DIAG_ON(uninitialized)
 #define COLOR_SELECTOR_BUTTON_HSV 1
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+void
+workingToPicking(const ProjectColorManagementPtr& cm,
+                 float* r,
+                 float* g,
+                 float* b)
+{
+    if (cm) {
+        cm->workingToColorPicking(r, g, b);
+    }
+}
+
+void
+pickingToWorking(const ProjectColorManagementPtr& cm,
+                 float* r,
+                 float* g,
+                 float* b)
+{
+    if (cm) {
+        cm->colorPickingToWorking(r, g, b);
+    }
+}
+}
 
 ColorSelectorPaletteButton::ColorSelectorPaletteButton(QWidget *parent)
     : Button(parent)
@@ -92,6 +119,13 @@ ColorSelectorPaletteButton::getColor(float *r,
 }
 
 void
+ColorSelectorPaletteButton::setColorManagement(const ProjectColorManagementPtr& colorManagement)
+{
+    _colorManagement = colorManagement;
+    updateColor(false);
+}
+
+void
 ColorSelectorPaletteButton::clearColor()
 {
     _r = COLOR_SELECTOR_PALETTE_DEFAULT_COLOR;
@@ -120,9 +154,11 @@ void
 ColorSelectorPaletteButton::updateColor(bool signal)
 {
     QColor color;
-    color.setRgbF(Color::to_func_srgb(_r),
-                  Color::to_func_srgb(_g),
-                  Color::to_func_srgb(_b),
+    float r = _r, g = _g, b = _b;
+    workingToPicking(_colorManagement, &r, &g, &b);
+    color.setRgbF(std::min(std::max(r, 0.f), 1.f),
+                  std::min(std::max(g, 0.f), 1.f),
+                  std::min(std::max(b, 0.f), 1.f),
                   _a);
     QPixmap pixColor(COLOR_SELECTOR_PALETTE_ICON_SIZE,
                      COLOR_SELECTOR_PALETTE_ICON_SIZE);
@@ -168,26 +204,29 @@ ColorSelectorPaletteButton::mouseReleaseEvent(QMouseEvent *e)
     Button::mouseReleaseEvent(e);
 }
 
-ColorSelectorWidget::ColorSelectorWidget(bool withAlpha, QWidget *parent)
-  : QWidget(parent)
-  , _spinR(0)
-  , _spinG(0)
-  , _spinB(0)
-  , _spinH(0)
-  , _spinS(0)
-  , _spinV(0)
-  , _spinA(0)
-  , _slideR(0)
-  , _slideG(0)
-  , _slideB(0)
-  , _slideH(0)
-  , _slideS(0)
-  , _slideV(0)
-  , _slideA(0)
-  , _triangle(0)
-  , _hex(0)
-  , _buttonColorGroup(0)
-  , _stack(0)
+ColorSelectorWidget::ColorSelectorWidget(bool withAlpha,
+                                         const ProjectColorManagementPtr& colorManagement,
+                                         QWidget* parent)
+    : QWidget(parent)
+    , _spinR(0)
+    , _spinG(0)
+    , _spinB(0)
+    , _spinH(0)
+    , _spinS(0)
+    , _spinV(0)
+    , _spinA(0)
+    , _slideR(0)
+    , _slideG(0)
+    , _slideB(0)
+    , _slideH(0)
+    , _slideS(0)
+    , _slideV(0)
+    , _slideA(0)
+    , _triangle(0)
+    , _hex(0)
+    , _buttonColorGroup(0)
+    , _stack(0)
+    , _colorManagement(colorManagement)
 {
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
 
@@ -813,9 +852,10 @@ ColorSelectorWidget::setTriangle(float r,
                                  float a)
 {
     QColor color = _triangle->color();
-    color.setRgbF( Color::to_func_srgb(r),
-                   Color::to_func_srgb(g),
-                   Color::to_func_srgb(b) );
+    workingToPicking(_colorManagement, &r, &g, &b);
+    color.setRgbF(std::min(std::max(r, 0.f), 1.f),
+                  std::min(std::max(g, 0.f), 1.f),
+                  std::min(std::max(b, 0.f), 1.f));
     color.setAlphaF(_slideA ? a : 1.);
 
     _triangle->blockSignals(true);
@@ -883,6 +923,7 @@ ColorSelectorWidget::initPaletteButtons(QWidget *widget,
             QObject::connect( button, SIGNAL( colorPicked(float,float,float,float) ),
                               this, SLOT( setColorFromPalette(float,float,float,float) ) );
             colLayout->addWidget(button);
+            button->setColorManagement(_colorManagement);
             _paletteButtons << button;
         }
     }
@@ -955,9 +996,11 @@ void
 ColorSelectorWidget::handleTriangleColorChanged(const QColor &color,
                                                 bool announce)
 {
-    setRedChannel( Color::from_func_srgb( color.redF() ) );
-    setGreenChannel( Color::from_func_srgb( color.greenF() ) );
-    setBlueChannel( Color::from_func_srgb( color.blueF() ) );
+    float r = color.redF(), g = color.greenF(), b = color.blueF();
+    pickingToWorking(_colorManagement, &r, &g, &b);
+    setRedChannel(r);
+    setGreenChannel(g);
+    setBlueChannel(b);
     setHueChannel( color.toHsv().hueF() );
     setSaturationChannel( color.toHsv().saturationF() );
     setValueChannel( color.toHsv().valueF() );

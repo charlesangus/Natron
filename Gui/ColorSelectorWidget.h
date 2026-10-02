@@ -65,6 +65,8 @@ public:
 
     void getColor(float *r, float *g, float *b, float *a);
 
+    void setColorManagement(const ProjectColorManagementPtr& colorManagement);
+
 Q_SIGNALS:
 
     void colorChanged(float r, float g, float b, float a);
@@ -82,6 +84,7 @@ private:
     float _b;
     float _a;
     bool _modified;
+    ProjectColorManagementPtr _colorManagement;
 
     void updateColor(bool signal = true);
 
@@ -99,8 +102,9 @@ class ColorSelectorWidget : public QWidget
     Q_OBJECT
 
 public:
-
-    explicit ColorSelectorWidget(bool withAlpha, QWidget *parent = NULL);
+    explicit ColorSelectorWidget(bool withAlpha,
+                                 const ProjectColorManagementPtr& colorManagement,
+                                 QWidget* parent = NULL);
     void getColor(float *r, float *g, float *b, float *a);
 
 Q_SIGNALS:
@@ -140,6 +144,8 @@ private:
     QStackedWidget *_stack;
 
     QVector<ColorSelectorPaletteButton*> _paletteButtons;
+
+    ProjectColorManagementPtr _colorManagement;
 
     void setRedChannel(float value);
     void setGreenChannel(float value);

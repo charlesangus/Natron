@@ -36,13 +36,17 @@
 #include <QPainter>
 #include <QCoreApplication>
 
+#include "Engine/AppInstance.h"
 #include "Engine/DeepPixelOps.h"
 #include "Engine/Image.h"
 #include "Engine/Lut.h"
+#include "Engine/Project.h"
+#include "Engine/ProjectColorManagement.h"
 #include "Engine/ViewerInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/Label.h"
 #include "Gui/ViewerGL.h"
+#include "Gui/ViewerTab.h"
 
 using std::cout; using std::endl;
 NATRON_NAMESPACE_ENTER
@@ -438,11 +442,16 @@ InfoViewerWidget::setColor(float r,
     // Nuke's HSV display is based on sRGB until Nuke 8, an L is Rec.709.
     // see https://community.foundry.com/discuss/topic/100271
     // This was changed in Nuke 9 to use linear values.
-    double srgb_r = Color::to_func_srgb(r);
-    double srgb_g = Color::to_func_srgb(g);
-    double srgb_b = Color::to_func_srgb(b);
+    float pick[3] = { r, g, b };
+    ViewerTab* tab = qobject_cast<ViewerTab*>(parentWidget());
+    if (tab && tab->getInternalNode() && tab->getInternalNode()->getApp()) {
+        ProjectColorManagementPtr colorManagement = tab->getInternalNode()->getApp()->getProject()->getColorManagement();
+        if (colorManagement) {
+            colorManagement->workingToColorPicking(&pick[0], &pick[1], &pick[2]);
+        }
+    }
     QColor col;
-    col.setRgbF( Image::clamp(srgb_r, 0., 1.), Image::clamp(srgb_g, 0., 1.), Image::clamp(srgb_b, 0., 1.) );
+    col.setRgbF(Image::clamp<double>(pick[0], 0., 1.), Image::clamp<double>(pick[1], 0., 1.), Image::clamp<double>(pick[2], 0., 1.));
     QPixmap pix(15, 15);
     pix.fill(col);
     color->setPixmap(pix);

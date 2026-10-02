@@ -50,11 +50,12 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+#include "Engine/AppInstance.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/Lut.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
+#include "Engine/ProjectColorManagement.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Utils.h" // convertFromPlainText
@@ -319,7 +320,11 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
     _colorSelectorButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Open Color Selector"), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _colorSelectorButton->setFocusPolicy(Qt::NoFocus);
 
-    _colorSelector = new ColorSelectorWidget( knob->getDimension() == 4, containerLayout->widget() );
+    ProjectColorManagementPtr colorManagement;
+    if (!_useSimplifiedUI && knob->getHolder() && knob->getHolder()->getApp()) {
+        colorManagement = knob->getHolder()->getApp()->getProject()->getColorManagement();
+    }
+    _colorSelector = new ColorSelectorWidget(knob->getDimension() == 4, colorManagement, containerLayout->widget());
     QObject::connect( _colorSelector, SIGNAL( colorChanged(float, float, float, float) ),
                       this, SLOT( onColorSelectorChanged(float, float, float, float) ) );
     QObject::connect( _colorSelector, SIGNAL( updateColor() ),
@@ -380,12 +385,19 @@ KnobGuiColor::updateLabel(double r,
 {
     QColor color;
     KnobColorPtr knob = _knob.lock();
-    bool simple = _useSimplifiedUI;
+    float fr = r, fg = g, fb = b;
 
-    color.setRgbF( Image::clamp<qreal>(simple ? r : Color::to_func_srgb(r), 0., 1.),
-                   Image::clamp<qreal>(simple ? g : Color::to_func_srgb(g), 0., 1.),
-                   Image::clamp<qreal>(simple ? b : Color::to_func_srgb(b), 0., 1.),
-                   Image::clamp<qreal>(a, 0., 1.) );
+    if (!_useSimplifiedUI && knob && knob->getHolder() && knob->getHolder()->getApp()) {
+        ProjectColorManagementPtr colorManagement = knob->getHolder()->getApp()->getProject()->getColorManagement();
+        if (colorManagement) {
+            colorManagement->workingToColorPicking(&fr, &fg, &fb);
+        }
+    }
+
+    color.setRgbF(Image::clamp<qreal>(fr, 0., 1.),
+                  Image::clamp<qreal>(fg, 0., 1.),
+                  Image::clamp<qreal>(fb, 0., 1.),
+                  Image::clamp<qreal>(a, 0., 1.));
     _colorLabel->setColor(color);
 }
 

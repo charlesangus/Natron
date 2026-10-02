@@ -1128,6 +1128,14 @@ public:
         return ePassThroughPassThroughNonRenderedLayers;
     }
 
+    // Lets a node hide some of the layers it would otherwise pass through from its pass-through
+    // input. Called with that input's (time, view) on the list of storage-level layers about to be
+    // reported as passed through. An override may drop entries, including the colour storage
+    // entry, but must never add or reshape them.
+    virtual void filterPassThroughLayers(double /*time*/, ViewIdx /*view*/, std::list<ImageLayerDesc>* /*layers*/)
+    {
+    }
+
     virtual bool isViewAware() const
     {
         return false;

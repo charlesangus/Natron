@@ -4454,6 +4454,7 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
 
     if (*passThroughInputNb != -1) {
         getAvailableLayers(*passThroughTime, ptView, *passThroughInputNb, passThroughLayers);
+        filterPassThroughLayers(*passThroughTime, ptView, passThroughLayers);
     }
 
     // Resolve the layer knob once against the list it is bound to; the same selection is
@@ -4619,6 +4620,8 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
         getAvailableLayers(*passThroughTime, ViewIdx(*passThroughView), *passThroughInputNb, &upstreamAvailableLayers);
 
         removeFromLayersList(outputLayers, &upstreamAvailableLayers);
+
+        filterPassThroughLayers(*passThroughTime, ViewIdx(*passThroughView), &upstreamAvailableLayers);
 
         *passThroughLayers = upstreamAvailableLayers;
 

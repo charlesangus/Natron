@@ -52,7 +52,8 @@ GCC_DIAG_ON(unused-parameter)
 #define FRAME_KEY_HANDLE_FP_CORRECTLY 6
 #define FRAME_KEY_INTRODUCES_DRAFT 7
 #define FRAME_KEY_INTRODUCES_CACHE_HOLDER_ID 8
-#define FRAME_KEY_VERSION FRAME_KEY_INTRODUCES_CACHE_HOLDER_ID
+#define FRAME_KEY_REPLACES_LUT_WITH_DISPLAY_TRANSFORM_HASH 9
+#define FRAME_KEY_VERSION FRAME_KEY_REPLACES_LUT_WITH_DISPLAY_TRANSFORM_HASH
 
 NATRON_NAMESPACE_ENTER
 
@@ -68,7 +69,7 @@ FrameKey::serialize(Archive & ar,
     if (version >= FRAME_KEY_INTRODUCES_GAMMA) {
         ar & ::boost::serialization::make_nvp("Gamma", _gamma);
     }
-    ar & ::boost::serialization::make_nvp("Lut", _lut);
+    ar& ::boost::serialization::make_nvp("DisplayTransformHash", _displayTransformHash);
     ar & ::boost::serialization::make_nvp("BitDepth", _bitDepth);
     if (version < FRAME_KEY_CHANGES_BITDEPTH_ENUM) {
         _bitDepth += 1;

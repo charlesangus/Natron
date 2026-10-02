@@ -38,7 +38,7 @@ FrameKey::FrameKey()
     , _treeVersion(0)
     , _gain(1)
     , _gamma(1)
-    , _lut(0)
+    , _displayTransformHash(0)
     , _bitDepth(0)
     , _channels(0)
     , _view(0)
@@ -56,7 +56,7 @@ FrameKey::FrameKey(const CacheEntryHolder* holder,
                    U64 treeVersion,
                    double gain,
                    double gamma,
-                   int lut,
+                   U64 displayTransformHash,
                    int bitDepth,
                    int channels,
                    ViewIdx view,
@@ -72,7 +72,7 @@ FrameKey::FrameKey(const CacheEntryHolder* holder,
     , _treeVersion(treeVersion)
     , _gain(gain)
     , _gamma(gamma)
-    , _lut(lut)
+    , _displayTransformHash(displayTransformHash)
     , _bitDepth(bitDepth)
     , _channels(channels)
     , _view(view)
@@ -94,7 +94,7 @@ FrameKey::fillHash(Hash64* hash) const
     if (!_useShaders) {
         hash->append(_gain);
         hash->append(_gamma);
-        hash->append(_lut);
+        hash->append(_displayTransformHash);
     }
     hash->append(_bitDepth);
     hash->append(_channels);
@@ -121,20 +121,7 @@ FrameKey::fillHash(Hash64* hash) const
 bool
 FrameKey::operator==(const FrameKey & other) const
 {
-    return _time == other._time &&
-           _treeVersion == other._treeVersion &&
-           ( (_gain == other._gain &&
-              _gamma == other._gamma &&
-              _lut == other._lut) || (_useShaders && other._useShaders) ) &&
-           _bitDepth == other._bitDepth &&
-           _channels == other._channels &&
-           _view == other._view &&
-           _textureRect == other._textureRect &&
-           _mipmapLevel == other._mipmapLevel &&
-           _inputName == other._inputName &&
-           _layer == other._layer &&
-           _alphaChannelFullName == other._alphaChannelFullName &&
-           _draftMode == other._draftMode;
+    return _time == other._time && _treeVersion == other._treeVersion && ((_gain == other._gain && _gamma == other._gamma && _displayTransformHash == other._displayTransformHash) || (_useShaders && other._useShaders)) && _bitDepth == other._bitDepth && _channels == other._channels && _view == other._view && _textureRect == other._textureRect && _mipmapLevel == other._mipmapLevel && _inputName == other._inputName && _layer == other._layer && _alphaChannelFullName == other._alphaChannelFullName && _draftMode == other._draftMode;
 }
 
 NATRON_NAMESPACE_EXIT

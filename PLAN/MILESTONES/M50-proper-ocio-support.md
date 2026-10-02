@@ -98,7 +98,7 @@ Colour management becomes a property of the project, and all of it goes through 
 
 ## Phase 50.2: Engine foundation
 
-- [ ] M50.P2.T1 — Add a ProjectColorManagement service that owns the project's OCIO config
+- [x] M50.P2.T1 — Add a ProjectColorManagement service that owns the project's OCIO config
   - files: `Engine/ProjectColorManagement.h` (new), `Engine/ProjectColorManagement.cpp` (new), `Engine/EngineFwd.h`, `Engine/CMakeLists.txt`, `Tests/ProjectColorManagement_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - In `Engine/CMakeLists.txt`, move `OpenColorIO::OpenColorIO` from `PRIVATE` to `PUBLIC`. The header exposes OCIO types, and `Gui/ViewerGL*` (P4.T2) and the tests need the OCIO headers (design §10.1).
@@ -124,7 +124,7 @@ Colour management becomes a property of the project, and all of it goes through 
     - `builtinConfigOptions()` lists the 8 registry configs plus Custom.
   - size: M
 
-- [ ] M50.P2.T2 — Add the project Color page: config, working space, file defaults and viewer defaults
+- [x] M50.P2.T2 — Add the project Color page: config, working space, file defaults and viewer defaults
   - files: `Engine/Project.cpp`, `Engine/Project.h`, `Engine/ProjectPrivate.h`, `Engine/ProjectPrivate.cpp`, `Tests/ProjectColorManagement_Test.cpp`
   - approach:
     - `ProjectPrivate` owns a `ProjectColorManagement`. Add the design-doc knobs on a new "Color" page, **in the creation order of design §2** (`ocioConfig`, `ocioConfigFile`, `workingSpace`, the 4 file defaults, `viewerDisplay`, `viewerView`): restore follows creation order. Colourspace entries are ids = names; defaults are set by id after the Studio config is populated. Leave the old "LUT" page in place until P5.T2.
@@ -180,7 +180,7 @@ Colour management becomes a property of the project, and all of it goes through 
 
 ## Phase 50.3: OFX plugins follow the project config
 
-- [ ] M50.P3.T1 — Declare the OCIO colour props in the openfx-natron fork (headers and HostSupport)
+- [x] M50.P3.T1 — Declare the OCIO colour props in the openfx-natron fork (headers and HostSupport)
   - files: `libs/OpenFX` (submodule charlesangus/openfx-natron): `include/ofxColour.h` (new, verbatim from ASWF openfx 1.5, copy in `build/assets/plugin-src/openfx-metadata/include/`), `include/ofxNatron.h`, `HostSupport/src/ofxhImageEffect.cpp`, `HostSupport/include/ofxhImageEffect.h`; the submodule pin in Natron
   - approach:
     - Add `NatronOfxImageEffectPropOCIOWorkingColourspace` (string, dim 1) and `NatronOfxImageEffectPropOCIOFileColourspaces` (string, dim 4: 8-bit, 16-bit, log, float) to `ofxNatron.h`.
@@ -217,7 +217,7 @@ Colour management becomes a property of the project, and all of it goes through 
     - With the P3.T5 pin: OCIOLookTransform's look menu and OCIODisplay's `displayIndex` entries rebuild after a project switch, and OCIOCDLTransform/OCIOFileTransform carry the pushed `ocioConfigFile` (P3.T3, P3.T8).
   - size: L
 
-- [ ] M50.P3.T3 — openfx-io fork: GenericOCIO and OCIOLookTransform take their config from the host
+- [x] M50.P3.T3 — openfx-io fork: GenericOCIO and OCIOLookTransform take their config from the host
   - files (charlesangus/openfx-io): `IOSupport/GenericOCIO.h`, `IOSupport/GenericOCIO.cpp`, `OCIO/OCIOLookTransform.cpp`
   - approach:
     - Work on a branch that descends from m66 (`OPENFX_IO_REF` 649ce94), so the later arena bump also brings commit 40764b2 (`existingColorSpaceOrFallback`), which arena's `OpenFX-IO` (f30a6a8) lacks (design §10.9).
@@ -229,7 +229,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: the fork builds in natron-dev (`build/build-m65-plugins.sh`-style one-off). Host-side behaviour is checked in P3.T2 after the P3.T5 pin.
   - size: M
 
-- [ ] M50.P3.T8 — openfx-io fork: OCIODisplay, OCIOLogConvert, OCIOCDLTransform and OCIOFileTransform use the instance config
+- [x] M50.P3.T8 — openfx-io fork: OCIODisplay, OCIOLogConvert, OCIOCDLTransform and OCIOFileTransform use the instance config
   - files (charlesangus/openfx-io): `OCIO/OCIODisplay.cpp`, `OCIO/OCIOLogConvert.cpp`, `OCIO/OCIOCDLTransform.cpp`, `OCIO/OCIOFileTransform.cpp`
   - approach (design §4.2, §10.6), on the same m66-descended branch as P3.T3:
     - OCIODisplay builds its display/view menus once from `OCIO::GetCurrentConfig()` in its constructor. Build them from the instance config instead, and rebuild them on every non-`eChangeTime` `ocioConfigFile` change.
@@ -238,7 +238,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: the fork builds in natron-dev. Host-side behaviour is checked in P3.T2 after the P3.T5 pin.
   - size: M
 
-- [ ] M50.P3.T4 — openfx-io fork: new Reads and Writes take the working space and per-file-type defaults from the host
+- [x] M50.P3.T4 — openfx-io fork: new Reads and Writes take the working space and per-file-type defaults from the host
   - files (charlesangus/openfx-io): `IOSupport/GenericReader.cpp`, `IOSupport/GenericReader.h`, `IOSupport/GenericWriter.cpp`, `IOSupport/GenericWriter.h`
   - approach (design §4.2, §4.3), on the same m66-descended branch as P3.T3:
     - Add the virtual `guessFileColourCategory(...)` to `GenericReaderPlugin` (from the legacy guess string) and `GenericWriterPlugin` (from the filename and bit depth), with the default rule: `scene_linear`/Linear → float; KodakLog/Cineon/ADX/`compositing_log` → log; otherwise 8-bit. The defaults live here, so arena readers need no change.
@@ -290,7 +290,7 @@ Colour management becomes a property of the project, and all of it goes through 
 
 ## Phase 50.4: Viewer display through OCIO
 
-- [ ] M50.P4.T5 — Key the viewer texture cache on a display-transform hash instead of a LUT int
+- [x] M50.P4.T5 — Key the viewer texture cache on a display-transform hash instead of a LUT int
   - files: `Engine/FrameKey.h`, `Engine/FrameKey.cpp`, `Engine/FrameEntrySerialization.h`, `Engine/ViewerInstance.cpp` (the two `FrameKey` construction sites), `Tests/ViewerDisplayTransform_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - Replace `int _lut`/`getLut()` with `U64 _displayTransformHash`. It stays in `fillHash` and `operator==` only when `!_useShaders`, as today.
@@ -487,3 +487,9 @@ Execution notes:
   - **Q2:** explicit handling, no magic. Integer-only stages get plain linear quantisation (scale, clamp, round) with no implicit colour transform. Colourspace changes are made by the user (for example with OCIOColorSpace) or by the plugin's own mapping option.
   - **Q3:** defaults are ACEScg for float, `sRGB Encoded Rec.709 (sRGB)` for 8-bit and 16-bit, and ACEScct for log.
 - 2026-10-02 — Plan corrections from the design doc (`DESIGN/2026-10-02-project-ocio.md` §10), applied to the briefs. P1.T1 is done, and its wording no longer cites an FFmpeg trc or deletes the non-OCIO legacy fixtures (`m65-legacy-color.ntp` and `channel-set-legacy-defaults.ntp` stay). P2.T1 makes OCIO a PUBLIC Engine link, drops exposure/gamma from `getDisplayProcessor`, and takes over the colour-picking helpers from P5.T3. P2.T2/P2.T3 add the single `refreshColorManagement` point, which re-derives the serialized Enabled state after restore, plus the knob order and the `NATRON_OCIO_ENV_IS_PREFERENCE` marker for child processes. In P4.T1/P4.T2, gain/offset/gamma stay Natron-side around the OCIO pipeline, and the `lut` argument goes from `OpenGLViewerI`. P3.T2 re-applies Secret on every push and reaches the embedded Read/Write nodes. P3.T4 stops the writer re-guessing on restore. P4.T4 names `loadNodeGuiSerialization` and version 15. P5.T4 also deletes the transfer curves and greps commented code. To stay within the sizing rule, these tasks split. P3.T1 is the OFX submodule (now with HostSupport) and P3.T7 the Natron hooks. P3.T3 is GenericOCIO plus LookTransform, and P3.T8 is Display/LogConvert/CDL/FileTransform, which have no GenericOCIO config. P3.T4 is the generic reader/writer, and P3.T9 the per-plugin PNG/OIIO depth categories. P3.T5 is the pins (on an m66-descended branch), and P3.T10 drops the OpenColorIO-Configs fetch, bundling and CI cache. P4.T5 is the FrameKey hash. P5.T1 is the colour-neutral, dither-free conversion, and P5.T5 is the mechanical `convertToFormat` signature change across all callers, including the missed RenderRoI/pasteFrom/premult/GL-texture/Image_Test sites. P5.T3 is the Gui swatches plus InfoViewer, and P5.T6 the tracker overlay plus `Gui::debugImage`. The batches are re-cut, and P4.T1–P4.T4 share one batch because the viewer API cutover only compiles as a whole.
+- 2026-10-02 — **B2+B3 landed.**
+  - **Commits.** Natron: `c20213cc1` P4.T5, `8de19f3d3` P2.T1+P2.T2, `38ce7f853` pin. openfx-natron: `72b20b81` P3.T1. openfx-io: `773512e` P3.T3+P3.T4, `1ce6864` P3.T8.
+  - **Tests.** Full debug ctest 749/749. The fix round fixed a null `projectPath` knob at `initializeKnobs` time.
+  - **P3.T3 extra guard (accepted).** Colourspace rewrites run only when the config source actually changes, so a host push on load doesn't rename explicit spaces to roles or hide unresolved ones.
+  - **P3.T4 writer gate (accepted).** It skips the re-guess on the restore path (a non-user-edit, existing instance) and whenever `ocioOutputSpaceSet`. A user filename edit still re-guesses, because the output space depends on the format. Gating on the existing-instance flag alone would have starved new Writes, since the flag is already set before their first filename.
+  - **Build note.** `tools/ci/local/build.sh` resets submodules to their pins, so the openfx-natron branch has to be pinned before a build sees it.

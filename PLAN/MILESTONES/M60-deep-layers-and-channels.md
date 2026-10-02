@@ -1,6 +1,6 @@
 # Milestone 60: Deep images get layers/channels like flat images
 
-> **Elaborated 2026-10-02** (planning consultant) from the 2026-09-19 stub. Three design questions remain open, and each has a default taken, so implementation need not wait (see `## Design questions`).
+> **Elaborated 2026-10-02** (planning consultant) from the 2026-09-19 stub. The user answered the three design questions on 2026-10-02: Q1 and Q2 as defaulted, Q3 against the default (deep alpha is structural). See `## Design questions`.
 
 A deep stream already carries named channels (`R`, `G`, `B`, `A`, `Z`, `ZBack` and any AOV such as `diffuse.R`), but the layer model never sees them. Every deep node reports one metadata colour plane as its layers, the viewer always flattens RGBA, `DeepFromImage` only ever makes RGBA, and `DeepToImage` only ever flattens RGBA. This milestone gives a deep stream real layers:
 - Its channels are grouped into storage-level `ImageLayerDesc`s: one colour storage plane whose layout covers the colour channels present, plus one layer per AOV.
@@ -70,22 +70,36 @@ The deep grouping wraps it with those three fixes.
 
 **Registration and build.** Deep nodes are registered at `Engine/AppManager.cpp:1554-1562`. `Engine/CMakeLists.txt:36-44` globs `*.cpp` and `Nodes/**/*.cpp`, so new engine files need no CMake edit. New test files need a line in `Tests/CMakeLists.txt`.
 
-## Design questions
+## Design questions (answered by the user, 2026-10-02)
 
-- **Q1. RemoveLayers/AddLayers on deep streams: in M60, and in what shape?**
-  - (a) In M60, as two new native deep nodes, `DeepRemoveLayers` and `DeepAddLayers`, in `Engine/Nodes/Deep/`, with the same knobs and remove/keep semantics as M37's nodes.
-  - (b) In M60, by making M37's RemoveLayers/AddLayers polymorphic (image | deep).
-  - (c) A follow-up milestone.
-  - **Default taken: (a).** Without it, a deep comp has no way to drop an AOV before DeepWrite, which writes every channel, and none to create one for DeepExpression to fill. On deep these are cheap channel-map edits on the COW model. (b) would make M37's image nodes the first polymorphic nodes that actually *render* both kinds; today only identity nodes such as `TypedPassthrough` are polymorphic. It would also change typed-edge resolution for every M37 graph. That risk doesn't belong in this milestone.
-- **Q2. DeepExpression's knob shape.**
-  - (a) One `layer` layer-select, input-bound on Source and defaulting to `rgba`. It has four expression fields that are relabelled with that layer's channel names, and fixed `Z`/`ZBack` fields.
-  - (b) A dynamic expression field per channel present (knobs created and destroyed as the input changes).
-  - (c) Several (layer, expressions) row groups.
-  - **Default taken: (a).** Dynamic knobs (b) fight serialisation and the per-frame layer rule. (a) keeps today's capability when the layer is `rgba` and reaches any AOV. Expressions for two layers need two nodes.
-- **Q3. Removing alpha from a deep stream.** In deep, `A` drives sample compositing.
-  - (a) Allow it: DeepRemoveLayers `alpha`/`rgba` drops the `A` channel. Downstream, flatten reads alpha as zero, and DeepMerge holdout and DeepRecolor post their existing "needs an alpha channel" errors.
-  - (b) Refuse it: colour rows never remove `A` on deep.
-  - **Default taken: (a),** as M65's "missing reads zero" rule applied consistently. It is called out in the UAT.
+- **Q1. RemoveLayers/AddLayers on deep streams.** **Answered (a), the default:** they are in M60, as two new native nodes, `DeepRemoveLayers` and `DeepAddLayers`, in `Engine/Nodes/Deep/`. Their knobs and remove/keep semantics follow M37's nodes, except that alpha is structural (Q3). The rejected options were:
+  - (b) making M37's nodes polymorphic. They would become the first polymorphic nodes that render both kinds, and every M37 graph's typed-edge resolution would change.
+  - (c) a follow-up milestone.
+- **Q2. DeepExpression's knob shape.** **Answered (a), the default:**
+  - one `layer` layer select, input-bound on Source, default `rgba`;
+  - four expression fields, relabelled with that layer's channel names;
+  - fixed `Z`/`ZBack` fields.
+- **Q3. Removing alpha from a deep stream.** **Answered (b), against the default:** deep `A` is structural and is never removed. The rule, applied everywhere below:
+  - **Invariant.** Every deep stream with samples carries an `A` channel. Every deep source creates one:
+    - DeepRead refuses a file without `A`, with a persistent error, as it does for a file with no channels;
+    - DeepFromImage always writes `A`;
+    - DeepAddLayers never needs to add it.
+  - **No other node can drop it:**
+    - DeepRecolor and DeepExpression may rewrite `A` but never remove it;
+    - DeepMerge, DeepCrop and DeepReformat carry it through;
+    - DeepRemoveLayers never drops it.
+    - `renderDeepRoI` enforces this. A deep render whose output has samples but no `A` fails with a persistent error naming the node (P2.T6), so a future node can't break it silently.
+  - **Colour storage is always Alpha or RGBA.** It is `narrowestColorStorageCovering(R/G/B bits present ∪ {A})`. A deep stream therefore never presents RGB storage. The views still list `rgba, rgb, alpha` (M65's present rule), and R/G/B missing from an Alpha storage read zero.
+  - **Colour rows on deep can only take away R, G and B.** Let S = the stream's colour bits and C = the bits the rows select. Then:
+    - remove mode keeps `(S \ C) ∪ {A}`;
+    - keep mode keeps `(S ∩ C) ∪ {A}`.
+    - Consequences:
+      - removing `rgba` and removing `rgb` are the same: both drop R, G and B and leave Alpha storage;
+      - removing `alpha` changes nothing in the colour plane (identity, if no other row applies);
+      - keep None or keep `spec.*` still carries `A`;
+      - regex `.*` in remove mode leaves `A` alone.
+    - The DeepRemoveLayers tooltip and sublabel say "A is always kept".
+  - **Flat outputs may still leave A out.** DeepToImage's channel set selects which *flat* planes it outputs. Leaving `A` out of its rows omits A from the image, but the flatten always composites with the deep `A`. DeepToImage outputs an image, so it can't produce a deep stream at all.
 
 **Defaults taken, not asked:**
 - **Z and ZBack are not layers.**
@@ -93,12 +107,11 @@ The deep grouping wraps it with those three fixes.
   - DeepExpression keeps dedicated Z/ZBack fields.
   - DeepToImage emits no depth layer (a front-depth `depth.Z` output is a follow-up).
   - A deep channel literally named `depth.Z` is an ordinary AOV.
-- **The deep colour storage plane.** It is `narrowestColorStorageCovering(bits of the R/G/B/A channels present)`. For example:
+- **The deep colour storage plane (Q3).** It is `narrowestColorStorageCovering(R/G/B bits present ∪ {A})`, so it is always Alpha or RGBA. For example:
   - `{R,G,B,A}` gives RGBA;
-  - `{R,G,B}` gives RGB;
-  - `{A}` gives Alpha;
   - `{R,A}` gives RGBA, with G and B reading zero;
-  - no R/G/B/A gives no colour plane, and M65's present rule still lists `rgba`/`rgb`/`alpha`, reading zero.
+  - `{A}` gives Alpha.
+  - A deep stream always has a colour plane.
 - **Other layers.**
   - Bare non-colour names (`AOV`, `Y`, `I`) are one-channel layers named after the channel.
   - Dotted names group on the last dot, as `groupChannelNames` does.
@@ -106,23 +119,23 @@ The deep grouping wraps it with those three fixes.
 - **Per frame.** Deep layers are resolved at the query's (time, view) (`DECISIONS/2026-09-24-layers-vary-with-time.md`). DeepRead reads the header of the file *at that time*.
 - **DeepFromImage.**
   - It gets a `channels` channel set, input-bound on Source, default **All**.
-  - `A` is always written, taken from the Source colour plane fetched as RGBA, which is today's conversion: an RGB source gives A = 1. Sample existence and compositing need it, so an AOV-only selection still carries `A`.
+  - `A` is always written (Q3), taken from the Source colour plane fetched as RGBA, which is today's conversion: an RGB source gives A = 1. Rows can't leave it out. An AOV-only selection still carries `A`, and a selection without `alpha` still writes it.
   - Values are copied verbatim (treated as premultiplied), as colour is today.
   - Z comes from a `zChannel` channel select, input-bound on the Z input, default `rgba.R` (today's "first channel"). An absent channel reads zero.
 - **DeepToImage.**
   - It gets a `channels` channel set, input-bound on the deep input, default **All**.
-  - Each selected layer is flattened front-to-back with the deep `A` as coverage. A missing channel, `A` included, reads zero.
+  - Each selected layer is flattened front-to-back, always with the deep `A` as coverage, whether or not the rows select `alpha` (Q3). A missing AOV or colour channel reads zero.
   - Output colour layout follows M65 §3: All/regex rows give the deep colour storage; a view row gives `narrowestColorStorageCovering(storage bits ∪ view mask)`.
-  - With no colour selected or present, the stream has no colour plane (M37 P2.T3 semantics).
+  - With no colour row selected (e.g. rows `diffuse` alone), the flat output has no colour plane (M37 P2.T3 semantics).
 - **DeepRecolor.**
   - It gets a `channels` channel set, input-bound on the Color input, default **`rgb`**.
   - Each selected Color-image channel is written to the deep channel of the same name, scaled by sample alpha over colour alpha as today. A non-colour layer the deep input lacks is created.
   - A row's `A` bit is ignored, because alpha stays under **Target Input Alpha**. The knob tooltip says so.
   - A row naming a layer absent from the Color image is skipped silently, leaving the deep channel untouched. A colour-view channel missing from Color's storage reads zero (M65).
 - **DeepWrite gets no channel knob.** It keeps writing every channel; put DeepRemoveLayers upstream instead.
-- **DeepRemoveLayers / DeepAddLayers mirror M37's rules.** On deep there is no storage layout to narrow; colour bits are simply which of `R/G/B/A` exist.
-  - Remove/keep computes the kept channel names and drops the rest from the channel map.
-  - AddLayers adds zero-filled buffers for target-registry channels the input lacks: a colour view adds only its missing R/G/B/A. Present channels are never touched.
+- **DeepRemoveLayers / DeepAddLayers mirror M37's rules,** with Q3's structural alpha. On deep there is no storage layout to narrow; colour bits are simply which of `R/G/B` exist, beside the ever-present `A`.
+  - Remove/keep computes the kept channel names with Q3's colour rule, and drops the rest from the channel map. `A`, `Z` and `ZBack` are always kept.
+  - AddLayers adds zero-filled buffers for target-registry channels the input lacks: a colour view adds only its missing R/G/B. An `alpha` row is a no-op, because A is always present. Present channels are never touched.
   - Both use M37's buttonless channel set (M37 P1.T2) and Regex rows, and resolve per frame.
 - **The viewer on a deep input** lists the deep layers (as views) and flattens the selected layer. Alpha and matte display read the deep `A`. The flattened image is cached per (node hash, layer).
 - **Produced vs pass-through.**
@@ -136,17 +149,18 @@ The deep grouping wraps it with those three fixes.
   - approach: Add a namespace `DeepLayers` with three functions.
     - `groupDeepChannels(const std::vector<std::string>& names, std::list<ImageLayerDesc>* layers)`:
       - strip `Z`, `ZBack` and `Zback`;
-      - collect the R/G/B/A bits and emit `narrowestColorStorageCovering(bits)` first, or no colour entry when the bits are empty;
+      - collect the R/G/B bits and emit `narrowestColorStorageCovering(bits ∪ {A})` first, *always* (Q3: Alpha or RGBA, even if the name list lacks `A`; P2.T6 makes such a stream an error at render);
       - group the rest by reusing `LayerRegistry::groupChannelNames`, after removing the colour names and remapping its bare `I`/`Y`/`Z` special cases to plain one-channel layers;
       - keep the input order otherwise.
     - `channelName(const ImageLayerDesc& layer, int index)` and its inverse `findChannel(name, layers, &layer, &index)`. The colour storage gives bare `R/G/B/A` by bit (`ResolvedLayer::channelBit` rule), a bare one-channel layer gives its own name, and anything else gives `L.c`.
-    - `colorBits(const DeepImage&)` / `colorBits(names)`.
+    - `colorBits(const DeepImage&)` / `colorBits(names)`, where bit 3 (A) is always set.
     - Plain functions, with no EffectInstance dependency (as `DeepFlatten` is).
   - verify: `build/m61ctest.sh DeepLayers` covers:
     - `{R,G,B,A,Z,ZBack,diffuse.R,diffuse.G,diffuse.B}` → `{Color(4), diffuse(R,G,B)}`;
     - `{Z,ZBack,A,AOV}` → `{Color(1), AOV(AOV)}`;
     - `{R,A}` → `Color(4)`;
-    - `{Z}` → `{}`;
+    - `{Z}` → `{Color(1)}`;
+    - `{R,G,B,Z}` → `{Color(4)}` (never RGB storage);
     - `{Y, depth.Z}` → `{Y(Y), depth(Z)}`;
     - `channelName`/`findChannel` round-trip for each;
     - `expandColorViews` on the result lists `rgba, rgb, alpha` first.
@@ -181,6 +195,7 @@ The deep grouping wraps it with those three fixes.
       - takes `spec().channelnames` and runs `DeepLayers::groupDeepChannels`;
       - keeps a one-entry (filename → layers) memo under a mutex so scrubbing doesn't reopen the header on every uncached query;
       - returns empty when there's no file.
+    - **Structural alpha (Q3).** `renderDeep` posts a persistent error "<file> has no alpha (A) channel; deep data needs one" and fails when the file has no `A`, next to the existing no-channels check (`DeepRead.cpp:231-236`).
     - **Fixtures.** Extend the generator so that it writes, leaving existing outputs byte-identical:
       - `deep-layers.exr`: the PIXELS structure with `R,G,B,A,Z,ZBack,diffuse.R,diffuse.G,diffuse.B,specular.R,specular.G,specular.B`, where diffuse = (0,1,0)·A and specular = (0,0,1)·A per sample;
       - `deep-seq-layers.0001.exr` (as `deep-layers.exr`) and `deep-seq-layers.0002.exr` (RGBAZZBack only).
@@ -190,6 +205,7 @@ The deep grouping wraps it with those three fixes.
     - `deep-scanline.exr` presents `{Color(4), AOV}`;
     - on the sequence, frame 1 presents diffuse and frame 2 doesn't, each queried with the timeline parked on the other frame;
     - after `refreshAllInputRelatedData`, the project registry contains `diffuse` and `specular`;
+    - a temp file written by the test with `R,G,B,Z` and no `A` fails with that error;
     - DeepRead→DeepWrite of `deep-layers.exr` writes all 12 channels back exactly.
   - size: M
 
@@ -201,7 +217,7 @@ The deep grouping wraps it with those three fixes.
     - DeepCrop and DeepReformat rely on the default.
   - verify: `build/m61ctest.sh DeepNodes` green, with new cases on synthetic sources:
     - combine of `{R,G,B,A,diffuse.*}` and `{R,G,B,A,specular.*}` presents `{Color(4), diffuse, specular}`, and the rendered image has exactly those channels;
-    - combine of an A-only and an RGB source presents `Color(4)`;
+    - combine of an A-only and an RGBA source presents `Color(4)`, and combine of two A-only sources presents `Color(1)`;
     - holdout presents A's layers;
     - DeepCrop and DeepReformat present their input's.
   - size: M
@@ -218,13 +234,14 @@ The deep grouping wraps it with those three fixes.
     - **`renderInputImage`.** Fetch the resolved planes plus the RGBA colour plane (for A) in one `renderRoI`. Fetch the Z input's chosen plane and read the selected channel; a missing one gives 0.
     - **`renderDeep`.**
       - Sample existence is still `A > 0`.
-      - Write `A`, plus every resolved channel under `DeepLayers::channelName`. Colour bits the Source storage lacks are not written.
+      - Always write `A` (Q3), plus every other resolved channel under `DeepLayers::channelName`. Colour bits the Source storage lacks are not written, and an `alpha` bit in the rows changes nothing.
       - Drop the 4-component check.
     - **`getDeepLayers`** = `groupDeepChannels` of exactly those names (colour bits ∪ {A}).
     - **Description.** Update the plugin description text.
   - verify: `build/m61ctest.sh 'DeepLayers|DeepNodes'`:
     - Read(`flat-three-layers.exr`)→DeepFromImage (All) presents `{Color(4), diffuse, specular}`, and its deep render has `R,G,B,A,diffuse.R/G/B,specular.R/G/B` with the fixture values on every covered pixel;
     - rows `diffuse` alone give `{Color(1), diffuse}` with channels `A, diffuse.*`;
+    - rows `rgb` alone give `Color(4)` with channels `R,G,B,A`, so A is still written;
     - Read(`flat-rgb-only.exr`) gives `A = 1` samples;
     - `zChannel` = `diffuse.G` places samples at depth 1;
     - on `flat-seq-layers` frame 2 (no diffuse) with a `diffuse` row, there's no diffuse channel and no error;
@@ -252,10 +269,11 @@ The deep grouping wraps it with those three fixes.
     - **Knob.** `channels`: `KnobChannelSet`, default All, declared input-bound on input 0 (the deep input; it lists through P1.T2's path).
     - **`getComponentsNeededAndProduced`.** Produced = the resolved storage layers at (time, view); colour layout per the header default (All gives the deep storage, a view row widens); no pass-through.
     - **`getPreferredMetadata`.** Sets `nComps(-1)` to the colour layout. A colourless result follows M37 P2.T3.
-    - **`render`.** One `renderDeepRoI`, then one `flattenLayersToImages` over `args.outputLayers`, mapping each output plane's channels through `DeepLayers::channelName`.
+    - **`render`.** One `renderDeepRoI`, then one `flattenLayersToImages` over `args.outputLayers`, mapping each output plane's channels through `DeepLayers::channelName`. Coverage is always the deep `A`, whatever the rows say (Q3).
   - verify: `build/m61ctest.sh 'DeepPipeline|DeepNodes|WriteAllLayers'`:
     - DeepRead(`deep-layers.exr`)→DeepToImage→Write (All, 32f EXR) writes exactly `R,G,B,A,diffuse.*,specular.*`, with diffuse = flatten of the diffuse samples;
-    - rows `diffuse` alone write `diffuse.*` only;
+    - rows `diffuse` alone write `diffuse.*` only, with values equal to the All render's `diffuse.*` (still alpha-composited);
+    - rows `rgb` write `R,G,B` only, equal to the All render's;
     - `deep-noncanonical.exr` with All writes `A,AOV`;
     - with row `rgba` it writes `R,G,B,A` with RGB = 0;
     - on the sequence, frame 2 writes no diffuse;
@@ -290,15 +308,30 @@ The deep grouping wraps it with those three fixes.
     - **`getExpressions(time)`.** Map slot i to `DeepLayers::channelName` of the layer resolved at (time, view). A colour view writes its channels by bit, so `alpha`'s slot 0 is `A`.
     - **Unresolved layer.** If the layer is absent at that frame, post M61's "Layer X is not in the Source input" persistent error. Exception: colour views always resolve, and writing a missing colour channel creates it, as today.
     - **`getDeepLayers`** = input layers merged with the written names.
-    - **Tests.** Update the description and the test helper `expressionsRGBAZZBack` to the new knob names.
+    - **Tests.** Update the description and the test helper `expressionsRGBAZZBack` to the new knob names. Re-base `CreatesAChannelTheInputLacks` on an A-only synthetic source that gains `R` through layer `rgba`, so it no longer builds an A-less deep stream (Q3; P2.T6 makes those an error).
+    - **Structural alpha (Q3).** Rewriting `A` is allowed; nothing in DeepExpression removes it.
   - verify: `build/m61ctest.sh 'DeepNodes|DeepExpression'`:
-    - all existing DeepExpression tests are green against the renamed knobs, including `CreatesAChannelTheInputLacks`;
+    - all existing DeepExpression tests are green against the renamed knobs, including the re-based `CreatesAChannelTheInputLacks`;
     - new cases:
       - layer `diffuse` with `expression1 = "diffuse.G * 2"` doubles diffuse.G and shares every other channel;
       - layer `alpha` slot 0 rewrites A;
       - a `diffuse` layer on a frame where the input lacks it posts the error, and the next valid frame clears it;
       - Z and ZBack fields behave as before.
   - size: L
+
+- [ ] M60.P2.T6 — Enforce structural deep alpha in the render pipeline (Q3)
+  - files: `Engine/EffectInstanceRenderDeep.cpp`, `Tests/DeepNodes_Test.cpp`, `Tests/DeepRenderPipeline_Test.cpp`
+  - approach:
+    - **Check.** In `renderDeepRoI`, right after a successful `renderDeep` and before the result is cached, fail the render if `getSampleTable().getTotalSampleCount() > 0` and `!hasChannel("A")`. Post the persistent error "<node> produced deep data without an alpha (A) channel", and insert nothing into the deep cache.
+    - **Exempt.** Empty images (no samples) are exempt.
+    - **Old checks.** DeepMerge's and DeepRecolor's "needs an alpha channel" checks stay as defensive code.
+    - **Test rewrite.** `DeepRecolorRendersNothingWithoutAAndFailsWithAMessageWithoutAlphaOnA` (`DeepNodes_Test.cpp:1530`) uses an A-less synthetic source. It now expects the source's own render to fail with the new error, and DeepRecolor to fail downstream.
+  - verify: `build/m61ctest.sh 'DeepNodes|DeepRenderPipeline|DeepReadWrite|DeepPipeline'` green, with new cases:
+    - a synthetic `{R,G,B}` source with samples fails with the error and leaves no deep cache entry;
+    - a synthetic empty source without `A` renders OK;
+    - every DeepRemoveLayers/DeepAddLayers/DeepFromImage case from earlier batches still renders.
+    - Then full debug ctest green.
+  - size: M
 
 ## Phase 60.3: Viewer
 
@@ -346,9 +379,11 @@ The deep grouping wraps it with those three fixes.
       - `channels`: `KnobChannelSet`, buttons off (M37 P1.T2), default None, input-bound on input 0;
       - a secret sublabel from `getSummary`, as M37 does.
     - **Kept names.**
-      - Resolve against input 0's `getPresentLayers` at (time, view). C = the resolved colour bits plus every channel of the resolved non-colour layers.
-      - Remove mode keeps the input's channels outside C; keep mode keeps those inside C.
-      - Z and ZBack are always kept.
+      - Resolve against input 0's `getPresentLayers` at (time, view).
+      - C = the resolved colour bits minus A, plus every channel of the resolved non-colour layers.
+      - Remove mode keeps the input's channels outside C; keep mode keeps those inside C (Q3's colour rule).
+      - `A`, `Z` and `ZBack` are always kept.
+      - The tooltip and sublabel say "A is always kept".
     - **Node actions.**
       - `isIdentity` when nothing would be dropped;
       - `getDeepLayers` = the groups of the kept names.
@@ -356,11 +391,13 @@ The deep grouping wraps it with those three fixes.
   - verify: `build/m61ctest.sh DeepChannelNodes`, on a synthetic source `{R,G,B,A,diffuse.*,specular.*}`:
     - a new node is identity;
     - remove `diffuse` presents `{Color(4), specular}`, and the render lacks `diffuse.*` while sharing every other buffer and the sample table with the input;
-    - remove `alpha` gives `Color(3)`, with channels R,G,B (Q3(a));
-    - remove `rgba` gives `{diffuse, specular}`;
-    - keep `spec.*` (regex) gives `{specular}`;
-    - keep None gives only Z/ZBack;
+    - remove `alpha` alone is identity (Q3);
+    - remove `rgba`, and separately remove `rgb`, gives `{Color(1), diffuse, specular}`, with channels `A, diffuse.*, specular.*`, and A shares storage with the input;
+    - keep `spec.*` (regex) gives `{Color(1), specular}`;
+    - keep `alpha` gives `{Color(1)}`;
+    - keep None gives only `A, Z, ZBack`;
     - remove regex `.*` gives the same;
+    - the output of every case above has an `A` channel;
     - a downstream DeepToImage (All) of remove `diffuse` writes no diffuse.
   - size: L
 
@@ -378,6 +415,7 @@ The deep grouping wraps it with those three fixes.
   - verify: `build/m61ctest.sh DeepChannelNodes`, with `mask [A]` registered:
     - on `{R,G,B,A,diffuse.*}`, rows `mask` + `diffuse` add `mask.A` = 0 on every sample and leave diffuse sharing the input's storage;
     - on an A-only source, `rgb` adds R,G,B = 0 and presents `Color(4)`;
+    - a row `alpha` alone is identity (A is always present);
     - on DeepRead(`deep-seq-layers`) with row `diffuse`, frame 1 is identity and frame 2 adds zeros;
     - DeepAddLayers(`mask`)→DeepExpression(layer `mask`, `expression0 = "A"`) writes A into `mask.A`;
     - `removeLayer("mask")` is refused while the node names it.
@@ -418,7 +456,7 @@ The deep grouping wraps it with those three fixes.
     - the `getDeepLayers` hook and the produced/pass-through split;
     - each node's knob and default;
     - the viewer's per-layer flatten;
-    - Q1–Q3 as answered or defaulted.
+    - the Q1–Q3 answers, with Q3's structural-alpha rule and its enforcement point.
   - verify: the file exists and INDEX links to it.
   - size: S
 
@@ -431,7 +469,10 @@ The deep grouping wraps it with those three fixes.
     - DeepFromImage on a three-layer EXR, then DeepToImage, round-trips the layers;
     - DeepRecolor with a `diffuse` row;
     - DeepExpression on `diffuse`;
-    - DeepRemoveLayers `diffuse`, then `alpha` (Q3: the merge/recolor error appears downstream);
+    - DeepRemoveLayers `diffuse`, then `rgba` (Q3): R, G and B are gone, A is kept, and the viewer's `alpha` still shows coverage;
+    - DeepRemoveLayers `alpha` changes nothing;
+    - keep None leaves an alpha-only stream that DeepMerge still composites;
+    - DeepToImage with rows `rgb` gives an RGB image composited with deep alpha;
     - DeepAddLayers "New layer…" `mask` → DeepExpression on `mask`;
     - scrubbing `deep-seq-layers` 1↔2;
     - undo.
@@ -461,25 +502,27 @@ Execution notes:
   - B2: P1.T2, P4.T1
   - B3: P1.T3, P1.T4, P2.T1, P4.T2
   - B4: P2.T3, P2.T4, P2.T5, P3.T1, P4.T3
-  - B5: P5.T1, P5.T2, P6.T1
+  - B5: P2.T6, P5.T1, P5.T2, P6.T1
   - B6: P6.T2
 - **Shared-file constraints:**
   - `Tests/DeepLayers_Test.cpp`: P1.T1 (B1), P1.T2 (B2), P2.T1 (B3), P2.T4 (B4), P5.T2 (B5).
-  - `Tests/DeepNodes_Test.cpp`: P1.T4 (B3), P2.T5 (B4).
+  - `Tests/DeepNodes_Test.cpp`: P1.T4 (B3), P2.T5 (B4), P2.T6 (B5).
   - `Tests/CMakeLists.txt`: P1.T1 (B1), P4.T2 (B3).
   - `Engine/AppManager.cpp` and `Tests/DeepChannelNodes_Test.cpp`: P4.T2 (B3), P4.T3 (B4).
-  - `Tests/DeepRenderPipeline_Test.cpp`: P4.T1 (B2), P3.T1 (B4).
+  - `Tests/DeepRenderPipeline_Test.cpp`: P4.T1 (B2), P3.T1 (B4), P2.T6 (B5).
+  - `Engine/EffectInstanceRenderDeep.cpp`: P3.T1 (B4), P2.T6 (B5).
   - `Engine/EffectInstance.h`: P1.T2 (B2), P3.T1 (B4).
   - `Engine/DeepFlatten.*`: P2.T2 only. P2.T3 and P3.T1 call its new API from B4.
 - **Verify dependencies:**
   - P4.T2 tests on synthetic sources, so it doesn't need P1.T3's fixtures from the same batch.
   - P2.T3 and P4.T3 use `deep-layers.exr`/`deep-seq-layers` from P1.T3 (B3).
+  - P2.T6 runs last among the engine tasks, so that every earlier test that might build an A-less stream has already been re-based (P2.T5).
 
 ## Decisions
 
 - 2026-10-02 — **Elaborated** (planning consultant). Scouting showed that deep processing nodes already preserve AOVs, contrary to the stub. The holes are DeepFromImage, DeepToImage, DeepRecolor, DeepExpression, the viewer flatten, and the absence of any deep layer reporting.
   - **Design:**
-    - group deep channels into storage-level layers (colour storage = narrowest layout covering R/G/B/A bits; Z/ZBack excluded);
+    - group deep channels into storage-level layers (colour storage = narrowest layout covering R/G/B/A bits; Z/ZBack excluded; superseded by Q3 below: R/G/B bits ∪ A);
     - report them through a new `EffectInstance::getDeepLayers` virtual, inside `getComponentsNeededAndProduced_public`, so `getPresentLayers`, M38's knobs, M65's views, the viewer menu, the registry and Python need no deep-specific path.
   - **Defaults taken:**
     - DeepFromImage/DeepToImage channel sets default to All;
@@ -487,4 +530,12 @@ Execution notes:
     - DeepExpression gets one layer select with four relabelled slots plus Z/ZBack (Q2(a));
     - the viewer flattens the selected layer;
     - DeepWrite gets no knob.
-  - **RemoveLayers/AddLayers on deep are in M60** as separate `DeepRemoveLayers`/`DeepAddLayers` nodes (Q1(a)), not as polymorphic M37 nodes. Removing deep alpha is allowed (Q3(a)).
+  - **RemoveLayers/AddLayers on deep are in M60** as separate `DeepRemoveLayers`/`DeepAddLayers` nodes (Q1(a)), not as polymorphic M37 nodes. Removing deep alpha is allowed (Q3(a); reversed by the user below).
+- 2026-10-02 — **Q1–Q3 answered by the user** (via the coordinator). Q1(a) and Q2(a) confirm the defaults.
+  - **Q3(b): deep alpha is structural.**
+    - Every deep stream with samples carries `A`. DeepRead refuses files without it (P1.T3), DeepFromImage always writes it (P2.T1), and `renderDeepRoI` rejects any deep output with samples and no `A` (new P2.T6, B5).
+    - Deep colour storage is `narrowestColorStorageCovering(R/G/B ∪ A)`, so always Alpha or RGBA (P1.T1).
+    - DeepRemoveLayers keeps `(S \ C) ∪ {A}` in remove mode and `(S ∩ C) ∪ {A}` in keep mode. So removing `rgba` drops R/G/B and keeps A, removing `alpha` is a no-op, and keep None leaves A + Z/ZBack (P4.T2).
+    - DeepAddLayers treats `alpha` as a no-op (P4.T3).
+    - DeepToImage's rows may omit A from the *flat* output, but it always composites with the deep `A` (P2.T3).
+  - **Revised:** P1.T1, P1.T3, P1.T4, P2.T1, P2.T3, P2.T5 (`CreatesAChannelTheInputLacks` re-based on an A-only source), P4.T2, P4.T3, P6.T1, the P6.T2 UAT, and the batches (P2.T6 joins B5).

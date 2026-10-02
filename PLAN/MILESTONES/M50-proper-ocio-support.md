@@ -199,7 +199,7 @@ Colour management becomes a property of the project, and all of it goes through 
     - After switching the project to CG, the same instance returns the CG URI with no node recreation.
   - size: M
 
-- [ ] M50.P3.T2 — Push the project config into every OCIO node's ocioConfigFile, and check colourspaces against it
+- [x] M50.P3.T2 — Push the project config into every OCIO node's ocioConfigFile, and check colourspaces against it
   - files: `Engine/Project.cpp`, `Engine/Node.cpp`, `Engine/ReadNode.cpp`, `Engine/WriteNode.cpp`, `Tests/ProjectOCIO_Test.cpp`
   - approach:
     - Add `Project::pushOCIOConfigToNodes()` (design §4.1). For each node with a `KnobStringBase` named `ocioConfigFile`, set it to the **effective** config (`getOCIOConfigSource()`, which is the `OCIO` override when one is set) with `eValueChangedReasonPluginEdited`, then `setSecret(true)`. Secret is serialized, so it is re-applied on **every** push, not once (design §10.3).
@@ -238,7 +238,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: the fork builds in natron-dev. Host-side behaviour is checked in P3.T2 after the P3.T5 pin.
   - size: M
 
-- [ ] M50.P3.T11 — On a config switch, keep a node's colourspace name the new config lacks, so the host flags it instead of the plugin remapping it
+- [x] M50.P3.T11 — On a config switch, keep a node's colourspace name the new config lacks, so the host flags it instead of the plugin remapping it
   - files: openfx-io fork `IOSupport/GenericOCIO.cpp` (the config-source-changed branch of `changedParam` that applies `existingColorSpaceOrFallback`, plus the persistent-message clear); `Tests/ProjectOCIO_Test.cpp`
   - approach: when the host provides `kOfxImageEffectPropOCIOConfig` and the config source changes, leave unresolved input/output colourspace names untouched and don't clear the node's persistent message. Without the host prop, the old fallback stays. `Project::reportUnresolvedOCIOColorSpaces`, which runs after every push, then flags the node.
   - verify: `ctest -R ProjectOCIO_` passes the new case: a node holding `Camera Rec.709` keeps the name after a switch to CG, shows the persistent error, and clears it when switched back to Studio. All existing ProjectOCIO_ cases still pass.
@@ -273,7 +273,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: `tools/ci/local/fetch-assets.sh` rebuilds the plugins. `PLUGINS_WANT` shows the new refs, arena builds against the bumped `OpenFX-IO`, and the smoke test stays green.
   - size: M
 
-- [ ] M50.P3.T10 — Stop fetching, bundling and caching the 2018 OpenColorIO-Configs tarball
+- [x] M50.P3.T10 — Stop fetching, bundling and caching the 2018 OpenColorIO-Configs tarball
   - files: `tools/ci/local/fetch-assets.sh`, `tools/release/stage-bundle.sh`, `cmake/NatronBundleAssets.cmake`, `.github/workflows/ci.yml`, `.github/workflows/nightly.yml`, `.github/workflows/release.yml`
   - approach (design §10.9): nothing reads `share/OpenColorIO-Configs` after P2.T3.
     - Drop the tarball fetch in `fetch-assets.sh` (`:80-120`) and its staging in `stage-bundle.sh` (`:321-331`).
@@ -376,7 +376,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: `ctest -R 'ImageConvert|Image_'` passes: float 0.5 → byte gives 128 → 0.50196; float → short → float round-trips within 1/65535; values above 1 clamp to 255/65535. The full debug ctest is green.
   - size: M
 
-- [ ] M50.P5.T5 — Drop the colourspace parameters from convertToFormat and update every caller
+- [x] M50.P5.T5 — Drop the colourspace parameters from convertToFormat and update every caller
   - files: `Engine/Image.h`, `Engine/ImageConvert.cpp`, `Engine/EffectInstance.cpp`, `Engine/EffectInstanceRenderRoI.cpp`, `Engine/Image.cpp`, `Engine/ImagePremult.cpp`, `Engine/RotoPaint.cpp`, `Engine/DiskCacheNode.cpp`, `Tests/Image_Test.cpp`
   - approach: a mechanical signature change that must land atomically, so it stays one task despite the file count (design §6, §10.11).
     - New signature: `void convertToFormat(const RectI& renderWindow, int channelForAlpha, bool copyBitMap, Image* dstImg) const;` Remove the `srcColorSpace`/`dstColorSpace` parameters from the private converters too.
@@ -392,7 +392,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: the debug build is clean. `git grep -n getDefaultColorSpaceForBitDepth Engine Gui` is empty. A new case in `ProjectColorManagement_Test` renders the preview of a constant 0.18 ACEScg node and gets the ACES SDR value (89 ±2) at its centre.
   - size: M
 
-- [ ] M50.P5.T3 — Convert colour swatches, the colour selector and the picker swatch through OCIO
+- [x] M50.P5.T3 — Convert colour swatches, the colour selector and the picker swatch through OCIO
   - files: `Gui/KnobGuiColor.cpp`, `Gui/ColorSelectorWidget.cpp`, `Gui/ColorSelectorWidget.h`, `Gui/InfoViewerWidget.cpp`
   - approach (design §6, §10.12), using P2.T1's `workingToColorPicking`/`colorPickingToWorking`:
     - `KnobGuiColor::updateLabel` uses `workingToColorPicking` unless `_useSimplifiedUI` (simplified knobs hold UI colours and stay identity). Knobs without an `AppInstance` (Settings) use identity.
@@ -401,7 +401,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: the debug build is clean, and `git grep -nE 'to_func_srgb|from_func_srgb' Gui/KnobGuiColor.cpp Gui/ColorSelectorWidget.cpp Gui/InfoViewerWidget.cpp` is empty. The Xvfb script `build/m50-gui/project_color_page.py` grabs the Project Settings "Color" page, a Grade's colour swatch and the colour selector. Share the screenshots with the user.
   - size: M
 
-- [ ] M50.P5.T6 — Convert the tracker overlay and the debug image dump through OCIO
+- [x] M50.P5.T6 — Convert the tracker overlay and the debug image dump through OCIO
   - files: `Engine/TrackerNodeInteract.cpp`, `Engine/TrackerNodeInteract.h`, `Gui/Gui40.cpp`
   - approach (design §6, §10.12):
     - Rename `TrackerNodeInteract::convertImageTosRGBOpenGLTexture` to `convertImageToDisplayOpenGLTexture`. It drops `LutManager::sRGBLut()` for `workingToColorPicking` per pixel, then `floatToInt<0xff01>` with the existing dither.
@@ -506,3 +506,7 @@ Execution notes:
   - **Arena wasn't build-clean against the new io, despite the design doc.** The new GenericReader dropped the `filePremult` out-parameter, so six arena readers were updated. Arena's `.gitmodules` now points OpenFX-IO at charlesangus/openfx-io.
   - **P5.T1 also removed the error-diffusion dither** from float-to-int conversion, which follows from Q2's plain quantisation.
 - 2026-10-02 — **Unresolved colourspace on a config switch (user): flag an error and keep the name.** A node whose colourspace the new config lacks keeps the saved name and shows the persistent unresolved-colourspace error until it's fixed or the config is switched back. Nothing is remapped silently. New task P3.T11 turns off the io fork's switch-time `existingColorSpaceOrFallback` when the host supplies the config.
+- 2026-10-02 — **B6 landed** (`ac4b7f398` P5.T5, `66f3075eb` P5.T3, `de23eca99` P5.T6, `a80d12b95` P3.T10, `a20ee3ec3` P3.T2+P3.T11 + pins io `a7a511e`/arena `d51cb41`), with the full debug ctest at 769/769.
+  - **P3.T2:** the config is pushed at the end of `Node::load` (NodeMain.cpp) and in the Read/Write `create*Node`. That covers new, pasted and swapped nodes.
+  - **Open, for review:** an OCIOColorSpace created with no env config gets an empty output colourspace by default, because the plugin's describe-time default comes from the process env. In the GUI, Natron exports OCIO at startup, so the default resolves against the preference config.
+  - **Fixed in the B6 round:** `Gui::debugImage` (static) used `getApp()`, so it now goes through `appPTR->getTopLevelInstance()`.

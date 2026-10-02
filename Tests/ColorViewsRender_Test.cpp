@@ -249,6 +249,8 @@ protected:
         channels->setAll();
     }
 
+    void createTimeBufferPair(const NodePtr& readSource, const NodePtr& writeSource, NodePtr* bufferRead, NodePtr* bufferWrite);
+
     QTemporaryDir _tmp;
     int _renderCount = 0;
 };
@@ -1083,32 +1085,128 @@ TEST_F(ColorViewsRenderTest, ReadExrStillDecodesRgbaFileIntoFourChannels)
     EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "A"), 1e-5f);
 }
 
-// TimeBufferWrite stores the layout of the stream it is fed and TimeBufferRead hands it back at
-// the next frame, so an alpha-only stream must stay alpha-only through both nodes.
-TEST_F(ColorViewsRenderTest, TimeBufferCarriesAnAlphaOnlyStreamToTheNextFrame)
+// Both fixtures put a 6x4 data window at file x = -1 inside a display window whose origin is
+// (-2, -1); OpenEXR addresses scanline samples by absolute file x, so a reader ignoring either
+// origin shifts the samples or writes past the row. ReadOIIO is the reference placement for
+// every channel it decodes. In the RGB-and-A fixture R and G hold each sample's file x and y,
+// so A must cover exactly the pixels whose R and G follow one consistent offset; B is absent
+// there and reads 0, as does every pixel outside the data window.
+TEST_F(ColorViewsRenderTest, ReadExrPlacesAnOffsetDataWindowLikeReadOIIOAndZeroFillsTheRest)
 {
-    // openfx-misc compiles TimeBuffer only into DEBUG builds, so release plug-in sets lack it.
-    bool timeBufferLoaded = false;
+    const char* const fixtures[] = { "flat-rgb-a-offset-window.exr", "flat-alpha-offset-window.exr" };
+    for (std::size_t f = 0; f < sizeof(fixtures) / sizeof(fixtures[0]); ++f) {
+        SCOPED_TRACE(fixtures[f]);
+
+        NodePtr exrReader = createReadExr(getApp(), fixtures[f]);
+        NodePtr oiioReader = createReader(fixtures[f]);
+        ASSERT_TRUE(bool(exrReader));
+        ASSERT_TRUE(bool(oiioReader));
+
+        FlatExrImage exr;
+        FlatExrImage reference;
+        std::string error;
+        ASSERT_TRUE(render(exrReader, &ColorViewsRenderTest::writeAll, &exr, &error)) << error;
+        ASSERT_TRUE(render(oiioReader, &ColorViewsRenderTest::writeAll, &reference, &error)) << error;
+        ASSERT_GE(exr.channelIndex("A"), 0);
+        const bool encodesPosition = exr.channelIndex("R") >= 0;
+
+        int covered = 0;
+        bool haveOffset = false;
+        int32_t offsetX = 0;
+        int32_t offsetY = 0;
+        std::vector<bool> seenX(6, false);
+        std::vector<bool> seenY(4, false);
+        for (int32_t y = exr.y1; y < exr.y1 + exr.height; ++y) {
+            for (int32_t x = exr.x1; x < exr.x1 + exr.width; ++x) {
+                const bool isCovered = exr.at(x, y, "A") > 0.f;
+                if (isCovered) {
+                    ++covered;
+                }
+                for (std::size_t c = 0; c < exr.channels.size(); ++c) {
+                    const std::string& channel = exr.channels[c];
+                    const float value = exr.at(x, y, channel);
+                    if (!isCovered || (channel == "B")) {
+                        EXPECT_EQ(0.f, value) << channel << " at (" << x << ", " << y << ")";
+                    } else if (reference.channelIndex(channel) >= 0) {
+                        EXPECT_NEAR(reference.at(x, y, channel), value, 1e-5f) << channel << " at (" << x << ", " << y << ")";
+                    }
+                }
+                if (!encodesPosition || !isCovered) {
+                    continue;
+                }
+                const int32_t fileX = static_cast<int32_t>(exr.at(x, y, "R"));
+                const int32_t fileY = static_cast<int32_t>(exr.at(x, y, "G"));
+                if (!haveOffset) {
+                    offsetX = x - fileX;
+                    offsetY = y - fileY;
+                    haveOffset = true;
+                }
+                EXPECT_EQ(offsetX, x - fileX) << "at (" << x << ", " << y << ")";
+                EXPECT_EQ(offsetY, y - fileY) << "at (" << x << ", " << y << ")";
+                if ((fileX >= -1) && (fileX < 5) && (fileY >= 2) && (fileY < 6)) {
+                    seenX[fileX + 1] = true;
+                    seenY[fileY - 2] = true;
+                }
+            }
+        }
+        EXPECT_EQ(6 * 4, covered);
+        if (encodesPosition) {
+            EXPECT_EQ(std::vector<bool>(6, true), seenX);
+            EXPECT_EQ(std::vector<bool>(4, true), seenY);
+        }
+    }
+}
+
+// openfx-misc compiles TimeBuffer only into DEBUG builds, so release plug-in sets lack it.
+static bool
+timeBufferPluginsLoaded()
+{
+    bool loaded = false;
     try {
-        timeBufferLoaded = appPTR->getPluginBinary(QString::fromUtf8(kTimeBufferReadPluginID), -1, -1, false) != NULL;
+        const bool readLoaded = appPTR->getPluginBinary(QString::fromUtf8(kTimeBufferReadPluginID), -1, -1, false) != NULL;
+        const bool writeLoaded = appPTR->getPluginBinary(QString::fromUtf8(kTimeBufferWritePluginID), -1, -1, false) != NULL;
+        loaded = readLoaded && writeLoaded;
     } catch (const std::exception&) {
     }
-    if (!timeBufferLoaded) {
-        std::cout << "TimeBuffer plug-ins not loaded; nothing to check" << std::endl;
-
-        return;
+    if (!loaded) {
+        std::cout << "TimeBuffer plug-ins not loaded: openfx-misc builds them only with DEBUG defined, "
+                     "so point OFX_PLUGIN_PATH at such a build to run this check"
+                  << std::endl;
     }
-    NodePtr reader = createReader("flat-alpha-only.exr");
-    ASSERT_TRUE(bool(reader));
-    NodePtr bufferRead = createNode(QString::fromUtf8(kTimeBufferReadPluginID));
-    NodePtr bufferWrite = createNode(QString::fromUtf8(kTimeBufferWritePluginID));
-    ASSERT_TRUE(bool(bufferRead));
-    ASSERT_TRUE(bool(bufferWrite));
+
+    return loaded;
+}
+
+static int
+inputIndexByLabel(const NodePtr& node,
+                  const std::string& label)
+{
+    for (int i = 0; i < node->getNInputs(); ++i) {
+        if (node->getInputLabel(i) == label) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+// Wires readSource into TimeBufferRead and writeSource into TimeBufferWrite, sharing one buffer
+// from frame 1, with TimeBufferRead's output on TimeBufferWrite's Sync input.
+void
+ColorViewsRenderTest::createTimeBufferPair(const NodePtr& readSource,
+                                           const NodePtr& writeSource,
+                                           NodePtr* bufferRead,
+                                           NodePtr* bufferWrite)
+{
+    *bufferRead = createNode(QString::fromUtf8(kTimeBufferReadPluginID));
+    *bufferWrite = createNode(QString::fromUtf8(kTimeBufferWritePluginID));
+    ASSERT_TRUE(bool(*bufferRead));
+    ASSERT_TRUE(bool(*bufferWrite));
 
     const char* const bufferName = "m66AlphaBuffer";
-    KnobString* readName = dynamic_cast<KnobString*>(bufferRead->getKnobByName("bufferName").get());
-    KnobString* writeName = dynamic_cast<KnobString*>(bufferWrite->getKnobByName("bufferName").get());
-    KnobInt* startFrame = dynamic_cast<KnobInt*>(bufferRead->getKnobByName("startFrame").get());
+    KnobString* readName = dynamic_cast<KnobString*>((*bufferRead)->getKnobByName("bufferName").get());
+    KnobString* writeName = dynamic_cast<KnobString*>((*bufferWrite)->getKnobByName("bufferName").get());
+    KnobInt* startFrame = dynamic_cast<KnobInt*>((*bufferRead)->getKnobByName("startFrame").get());
     ASSERT_TRUE(readName != NULL);
     ASSERT_TRUE(writeName != NULL);
     ASSERT_TRUE(startFrame != NULL);
@@ -1117,31 +1215,34 @@ TEST_F(ColorViewsRenderTest, TimeBufferCarriesAnAlphaOnlyStreamToTheNextFrame)
     startFrame->setValue(1);
     // TimeBufferRead also has a Generator context, so Natron gives it a target layer, and the
     // default rgba target would widen the alpha-only stream it hands back.
-    KnobLayerSelectPtr readLayer = std::dynamic_pointer_cast<KnobLayerSelect>(bufferRead->getLayerKnob());
+    KnobLayerSelectPtr readLayer = std::dynamic_pointer_cast<KnobLayerSelect>((*bufferRead)->getLayerKnob());
     ASSERT_TRUE(bool(readLayer));
     readLayer->setLayer(kNatronColorViewAlpha);
 
-    int readSource = -1;
-    for (int i = 0; i < bufferRead->getNInputs(); ++i) {
-        if (bufferRead->getInputLabel(i) == "Source") {
-            readSource = i;
-        }
+    const int readSourceInput = inputIndexByLabel(*bufferRead, "Source");
+    const int writeSourceInput = inputIndexByLabel(*bufferWrite, "Source");
+    const int writeSyncInput = inputIndexByLabel(*bufferWrite, "Sync");
+    ASSERT_GE(readSourceInput, 0);
+    ASSERT_GE(writeSourceInput, 0);
+    ASSERT_GE(writeSyncInput, 0);
+    connectNodes(readSource, *bufferRead, readSourceInput, true);
+    connectNodes(*bufferRead, *bufferWrite, writeSyncInput, true);
+    connectNodes(writeSource, *bufferWrite, writeSourceInput, true);
+}
+
+// TimeBufferWrite stores the layout of the stream it is fed and TimeBufferRead hands it back at
+// the next frame, so an alpha-only stream must stay alpha-only through both nodes.
+TEST_F(ColorViewsRenderTest, TimeBufferCarriesAnAlphaOnlyStreamToTheNextFrame)
+{
+    if (!timeBufferPluginsLoaded()) {
+        return;
     }
-    int writeSource = -1;
-    int writeSync = -1;
-    for (int i = 0; i < bufferWrite->getNInputs(); ++i) {
-        if (bufferWrite->getInputLabel(i) == "Source") {
-            writeSource = i;
-        } else if (bufferWrite->getInputLabel(i) == "Sync") {
-            writeSync = i;
-        }
-    }
-    ASSERT_GE(readSource, 0);
-    ASSERT_GE(writeSource, 0);
-    ASSERT_GE(writeSync, 0);
-    connectNodes(reader, bufferRead, readSource, true);
-    connectNodes(bufferRead, bufferWrite, writeSync, true);
-    connectNodes(reader, bufferWrite, writeSource, true);
+    NodePtr reader = createReader("flat-alpha-pattern.exr");
+    ASSERT_TRUE(bool(reader));
+    NodePtr bufferRead;
+    NodePtr bufferWrite;
+    createTimeBufferPair(reader, reader, &bufferRead, &bufferWrite);
+    ASSERT_FALSE(HasFatalFailure());
 
     EXPECT_TRUE(bufferRead->isSupportedComponent(0, ImageLayerDesc::getAlphaComponents()));
     EXPECT_TRUE(bufferRead->isSupportedComponent(-1, ImageLayerDesc::getAlphaComponents()));
@@ -1157,13 +1258,54 @@ TEST_F(ColorViewsRenderTest, TimeBufferCarriesAnAlphaOnlyStreamToTheNextFrame)
     ASSERT_TRUE(render(bufferWrite, &ColorViewsRenderTest::writeAll, &frame1, &error, 1)) << error;
     ASSERT_EQ(1u, frame1.channels.size());
     EXPECT_EQ(std::string("A"), frame1.channels.front());
-    EXPECT_NEAR(1.f, frame1.at(kCheckX, kCheckY, "A"), 1e-5f);
 
     FlatExrImage frame2;
     ASSERT_TRUE(render(bufferRead, &ColorViewsRenderTest::writeAll, &frame2, &error, 2)) << error;
     ASSERT_EQ(1u, frame2.channels.size());
     EXPECT_EQ(std::string("A"), frame2.channels.front());
-    EXPECT_NEAR(frame1.at(kCheckX, kCheckY, "A"), frame2.at(kCheckX, kCheckY, "A"), 1e-5f);
+    ASSERT_EQ(frame1.width, frame2.width);
+    ASSERT_EQ(frame1.height, frame2.height);
+    for (int32_t y = 0; y < frame1.height; ++y) {
+        for (int32_t x = 0; x < frame1.width; ++x) {
+            EXPECT_NEAR(frame1.at(frame1.x1 + x, frame1.y1 + y, "A"),
+                        frame2.at(frame2.x1 + x, frame2.y1 + y, "A"), 1e-5f)
+                << "(" << x << ", " << y << ")";
+        }
+    }
+}
+
+// TimeBufferRead's output takes the layout of its Source input, so a buffer written from an RGBA
+// stream cannot be handed back through an alpha-only Source; the read fails with an error
+// rather than reinterpreting four channels as one.
+TEST_F(ColorViewsRenderTest, TimeBufferReadFailsWhenTheBufferLayoutDiffersFromItsSource)
+{
+    if (!timeBufferPluginsLoaded()) {
+        return;
+    }
+    NodePtr alphaReader = createReader("flat-alpha-pattern.exr");
+    NodePtr rgbaReader = createReader("flat-rgba-pattern.exr");
+    ASSERT_TRUE(bool(alphaReader));
+    ASSERT_TRUE(bool(rgbaReader));
+    NodePtr bufferRead;
+    NodePtr bufferWrite;
+    createTimeBufferPair(alphaReader, rgbaReader, &bufferRead, &bufferWrite);
+    ASSERT_FALSE(HasFatalFailure());
+
+    EXPECT_EQ(1, bufferRead->getEffectInstance()->getMetadataNComps(-1));
+    EXPECT_EQ(4, bufferWrite->getEffectInstance()->getMetadataNComps(-1));
+
+    FlatExrImage frame1;
+    std::string error;
+    ASSERT_TRUE(render(bufferWrite, &ColorViewsRenderTest::writeAll, &frame1, &error, 1)) << error;
+    EXPECT_EQ(4u, frame1.channels.size());
+
+    FlatExrImage frame2;
+    EXPECT_FALSE(render(bufferRead, &ColorViewsRenderTest::writeAll, &frame2, &error, 2));
+    ASSERT_TRUE(bufferRead->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    bufferRead->getPersistentMessage(&message, &type, false);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("different pixel layout"))) << message.toStdString();
 }
 
 // A channel picker naming a colour channel resolves to an index into the layout the stream is
@@ -1300,9 +1442,9 @@ TEST_F(ColorViewsChannelPickerRenderTest, MaskByMissingRgbaRReadsZeroNotTheStore
     expectColor(image, 1.f, 0.f, 0.f, 1.f);
 }
 
-// Both fixtures carry a constant alpha of 1, so the matte comparison cannot catch a geometric
-// effect that moves coverage to the wrong place; it catches an alpha-only stream being widened,
-// narrowed or stylised differently from the RGBA path.
+// flat-alpha-pattern.exr's alpha varies across the frame with no symmetry, so a geometric effect
+// that misplaces coverage, or a stride or row-order error on the one-channel path, shows up
+// against the same effect on flat-rgba-pattern.exr, which carries that alpha under RGB.
 TEST_F(ColorViewsRenderTest, MagickEffectsAcceptAlphaOnlyStreamsNatively)
 {
     struct Row {
@@ -1321,11 +1463,18 @@ TEST_F(ColorViewsRenderTest, MagickEffectsAcceptAlphaOnlyStreamsNatively)
         { "net.fxarena.openfx.Edges", false },
     };
 
+    NodePtr sourceReader = createReader("flat-alpha-pattern.exr");
+    ASSERT_TRUE(bool(sourceReader));
+    FlatExrImage source;
+    std::string error;
+    ASSERT_TRUE(render(sourceReader, &ColorViewsRenderTest::writeAll, &source, &error)) << error;
+    ASSERT_EQ(1u, source.channels.size());
+
     for (std::size_t r = 0; r < sizeof(rows) / sizeof(rows[0]); ++r) {
         const char* pluginID = rows[r].pluginID;
         SCOPED_TRACE(pluginID);
 
-        NodePtr alphaReader = createReader("flat-alpha-only.exr");
+        NodePtr alphaReader = createReader("flat-alpha-pattern.exr");
         ASSERT_TRUE(bool(alphaReader));
         NodePtr effect = createNode(QString::fromUtf8(pluginID));
         ASSERT_TRUE(bool(effect));
@@ -1337,7 +1486,6 @@ TEST_F(ColorViewsRenderTest, MagickEffectsAcceptAlphaOnlyStreamsNatively)
         EXPECT_EQ(1, effect->getEffectInstance()->getMetadataNComps(-1));
 
         FlatExrImage alphaImage;
-        std::string error;
         ASSERT_TRUE(render(effect, &ColorViewsRenderTest::writeAll, &alphaImage, &error)) << error;
 
         ASSERT_EQ(1u, alphaImage.channels.size());
@@ -1348,10 +1496,22 @@ TEST_F(ColorViewsRenderTest, MagickEffectsAcceptAlphaOnlyStreamsNatively)
         }
 
         if (!rows[r].matte) {
+            bool changed = false;
+            bool nonZero = false;
+            for (int32_t y = alphaImage.y1; y < alphaImage.y1 + alphaImage.height; ++y) {
+                for (int32_t x = alphaImage.x1; x < alphaImage.x1 + alphaImage.width; ++x) {
+                    const float value = alphaImage.at(x, y, "A");
+                    const float input = source.at(x, y, "A");
+                    changed = changed || !(std::fabs(value - input) <= 1e-4f);
+                    nonZero = nonZero || value != 0.f;
+                }
+            }
+            EXPECT_TRUE(changed) << "the effect passed its input through unchanged";
+            EXPECT_TRUE(nonZero) << "the effect produced an all-zero image";
             continue;
         }
 
-        NodePtr rgbaReader = createReader("flat-rgba-only.exr");
+        NodePtr rgbaReader = createReader("flat-rgba-pattern.exr");
         ASSERT_TRUE(bool(rgbaReader));
         NodePtr rgbaEffect = createNode(QString::fromUtf8(pluginID));
         ASSERT_TRUE(bool(rgbaEffect));
@@ -1361,14 +1521,20 @@ TEST_F(ColorViewsRenderTest, MagickEffectsAcceptAlphaOnlyStreamsNatively)
         ASSERT_TRUE(render(rgbaEffect, &ColorViewsRenderTest::writeAll, &rgbaImage, &error)) << error;
 
         ASSERT_GE(rgbaImage.channelIndex("A"), 0);
+        ASSERT_EQ(rgbaImage.x1, alphaImage.x1);
+        ASSERT_EQ(rgbaImage.y1, alphaImage.y1);
         ASSERT_EQ(rgbaImage.width, alphaImage.width);
         ASSERT_EQ(rgbaImage.height, alphaImage.height);
-        for (int32_t y = 0; y < alphaImage.height; ++y) {
-            for (int32_t x = 0; x < alphaImage.width; ++x) {
-                EXPECT_NEAR(rgbaImage.at(rgbaImage.x1 + x, rgbaImage.y1 + y, "A"),
-                            alphaImage.at(alphaImage.x1 + x, alphaImage.y1 + y, "A"), 1e-4f)
-                    << "(" << x << ", " << y << ")";
+        int mismatches = 0;
+        for (int32_t y = alphaImage.y1; y < alphaImage.y1 + alphaImage.height; ++y) {
+            for (int32_t x = alphaImage.x1; x < alphaImage.x1 + alphaImage.width; ++x) {
+                const float expected = rgbaImage.at(x, y, "A");
+                const float actual = alphaImage.at(x, y, "A");
+                if (!(std::fabs(expected - actual) <= 1e-4f) && (++mismatches <= 5)) {
+                    ADD_FAILURE() << "A at (" << x << ", " << y << "): RGBA path " << expected << ", alpha-only path " << actual;
+                }
             }
         }
+        EXPECT_EQ(0, mismatches);
     }
 }

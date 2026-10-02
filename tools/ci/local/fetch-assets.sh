@@ -143,13 +143,12 @@ fi
 # SeGrain/OIIOText/ReadPNG/WritePNG accept alpha-only (1-component) images,
 # and its SupportExt read a missing colour channel as zero, not one.
 #
-# ReadEXR also decodes alpha-only and RGB files into 1- and 3-component
-# buffers.
+# ReadEXR also decodes alpha-only files into 1-component buffers.
 #
 # SEEXPR_REF: wdas/SeExpr, branch v1-2.11, not v2/v3 -- openfx-io's
 # SeNoise.cpp targets the v1-2.11 header layout. Not forked.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="22ba2e7393a0e4c8ef93da0cdaa1fd19ace07289"
+OPENFX_IO_REF="649ce948600e8560d87921f1180ac24e9150dc57"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 
@@ -176,7 +175,7 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
 # this container with no other source changes needed.
 OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
-OPENFX_MISC_REF="0916b1ce6fa7e95cad831646ad7608ff7e2491db"
+OPENFX_MISC_REF="49e084678685d0127642faa2d64950c76ac066c3"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a
@@ -222,7 +221,7 @@ IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 # net.fxarena.openfx.MagickText so only the pango Text owns
 # net.fxarena.openfx.Text.
 OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
-OPENFX_ARENA_REF="f0088662618cb9e183a3704dd716a0197f29e9b9"
+OPENFX_ARENA_REF="45235bdb07771ca80b466d42487d9e2dd22a27a9"
 
 # OPENFX_METADATA_REF: charlesangus/openfx -- our ASWF-lineage OpenFX fork,
 # whose Support/Plugins/Metadata* examples exercise the clip and image

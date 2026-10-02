@@ -1,7 +1,7 @@
 #!/bin/bash
 # regenerate static documentation.
 # Should be used using a snapshot build, eg:
-# env FONTCONFIG_FILE=/Applications/Natron.app/Contents/Resources/etc/fonts/fonts.conf OCIO=/Applications/Natron.app/Contents/Resources/OpenColorIO-Configs/nuke-default/config.ocio OFX_PLUGIN_PATH=/Applications/Natron.app/Contents/Plugins ./genStaticDocs.sh ~/Development/Natron-2.1/Renderer/build/Debug/NatronRenderer  /var/tmp/natrondocs ~/Development/Natron-2.1/Documentation
+# env FONTCONFIG_FILE=/Applications/Natron.app/Contents/Resources/etc/fonts/fonts.conf OFX_PLUGIN_PATH=/Applications/Natron.app/Contents/Plugins ./genStaticDocs.sh ~/Development/Natron-2.1/Renderer/build/Debug/NatronRenderer  /var/tmp/natrondocs ~/Development/Natron-2.1/Documentation
 
 #set -v
 #set -x

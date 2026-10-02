@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 #
 # Prepare the external assets the test suite and Natron's shipped plugin set
-# need: the OpenColorIO-Configs tarball, the openfx-io OFX plugin bundle that
-# Tests/BaseTest.cpp loads through OFX_PLUGIN_PATH, and the openfx-misc/
+# need: the openfx-io OFX plugin bundle that Tests/BaseTest.cpp loads
+# through OFX_PLUGIN_PATH, and the openfx-misc/
 # openfx-arena/openfx-metadata OFX plugin bundles that ship with Natron but
 # that no test currently loads -- they are built here so CI proves they
 # still build against the pinned toolchain, the same way the rest of Natron
 # is proven to build.
 #
 # Result (idempotent, safe to re-run):
-#   build/assets/OpenColorIO-Configs/
 #   build/assets/Plugins/IO.ofx.bundle/
 #   build/assets/Plugins/Misc.ofx.bundle/
 #   build/assets/Plugins/CImg.ofx.bundle/
@@ -24,7 +23,7 @@
 #   build/assets/plugin-src/deps-install/  (lcms2, libzip, ImageMagick --
 #                                           for openfx-arena)
 #
-# A second run does no network or compile work if both targets already look
+# A second run does no network or compile work if the plugin bundles already look
 # complete and the plugin stamp matches the pins below.
 #
 # --- Why the plugins are BUILT here, not downloaded -----------------------
@@ -77,48 +76,12 @@ fi
 # --- from here on, we are inside the dev container (or CI's container) -----
 
 ASSETS_DIR="${REPO_ROOT}/build/assets"
-OCIO_CONFIG_VERSION="${OCIO_CONFIG_VERSION:-2.5}"
 
 mkdir -p "${ASSETS_DIR}"
 
 echo "== fetch-assets.sh =="
 echo "Repo root:   ${REPO_ROOT}"
 echo "Assets dir:  ${ASSETS_DIR}"
-echo "OCIO_CONFIG_VERSION=${OCIO_CONFIG_VERSION}"
-
-# ---------------------------------------------------------------------------
-# OpenColorIO-Configs
-# ---------------------------------------------------------------------------
-OCIO_TARGET="${ASSETS_DIR}/OpenColorIO-Configs"
-OCIO_MARKER="${OCIO_TARGET}/blender/config.ocio"
-
-if [ -e "${OCIO_MARKER}" ]; then
-    echo "[OpenColorIO-Configs] already present and looks complete (${OCIO_MARKER}) -- skipping."
-else
-    echo "[OpenColorIO-Configs] fetching v${OCIO_CONFIG_VERSION}..."
-
-    TMP_DIR="$(mktemp -d "${ASSETS_DIR}/.ocio-fetch.XXXXXX")"
-    trap 'rm -rf "${TMP_DIR}"' EXIT
-
-    TARBALL="${TMP_DIR}/Natron-v${OCIO_CONFIG_VERSION}.tar.gz"
-    wget -O "${TARBALL}" \
-        "https://github.com/NatronGitHub/OpenColorIO-Configs/archive/Natron-v${OCIO_CONFIG_VERSION}.tar.gz"
-    tar xzf "${TARBALL}" -C "${TMP_DIR}"
-
-    UNPACKED="${TMP_DIR}/OpenColorIO-Configs-Natron-v${OCIO_CONFIG_VERSION}"
-    if [ ! -d "${UNPACKED}" ]; then
-        echo "[OpenColorIO-Configs] ERROR: expected directory not found after unpack: ${UNPACKED}" >&2
-        exit 1
-    fi
-
-    rm -rf "${OCIO_TARGET}"
-    mv "${UNPACKED}" "${OCIO_TARGET}"
-
-    rm -rf "${TMP_DIR}"
-    trap - EXIT
-
-    echo "[OpenColorIO-Configs] done -> ${OCIO_TARGET}"
-fi
 
 # ---------------------------------------------------------------------------
 # Plugins (openfx-io and openfx-misc, built from source against this

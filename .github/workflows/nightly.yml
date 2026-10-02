@@ -110,17 +110,15 @@ jobs:
       #
       # Keyed on fetch-assets.sh's own hash, which covers BOTH pinned SHAs and
       # the build recipe -- change either and the cache correctly misses and
-      # rebuilds. Only the two output dirs are cached, not build/assets in
+      # rebuilds. Only the output dir is cached, not build/assets in
       # full: plugin-src/ is 62 MB of checkouts and object files needed solely
       # to *produce* Plugins/, and on a cache hit nothing reads it. The cached
-      # pair is ~52 MB, negligible against the 10 GB per-repo actions/cache
+      # dir is ~52 MB, negligible against the 10 GB per-repo actions/cache
       # quota that the ccache entries above actually have to live within.
       - name: Cache test assets
         uses: actions/cache@v6.1.0
         with:
-          path: |
-            build/assets/Plugins
-            build/assets/OpenColorIO-Configs
+          path: build/assets/Plugins
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
       - name: Fetch test assets

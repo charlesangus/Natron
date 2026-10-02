@@ -720,6 +720,71 @@ EffectInstance::getThreadLocalOpenGLContext() const
     return tls->frameArgs.back()->openGLContext.lock();
 }
 
+static bool
+containsColorStorage(const std::list<ImageLayerDesc>& layers)
+{
+    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        if (it->isColorLayer() && (it->getNumComponents() > 0)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Metadata always declare a colour layout, so a stream whose colour plane was removed upstream
+// is told apart only by its present layers. An unconnected input presents nothing, yet reads as
+// an ordinary colour stream, so it never counts as colourless.
+static bool
+inputPresentsNoColorStorage(EffectInstance* effect,
+                            double time,
+                            ViewIdx view,
+                            int inputNb)
+{
+    if ((inputNb < 0) || !effect->getInput(inputNb)) {
+        return false;
+    }
+
+    std::list<ImageLayerDesc> present;
+    effect->getAvailableLayers(time, view, inputNb, &present);
+
+    return !containsColorStorage(present);
+}
+
+static void
+removeColorLayers(std::list<ImageLayerDesc>* layers)
+{
+    for (std::list<ImageLayerDesc>::iterator it = layers->begin(); it != layers->end();) {
+        if (it->isColorLayer()) {
+            it = layers->erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+// Only a row naming a colour view writes colour on purpose; All and regex rows select the
+// channels the stream has, so they must not create a colour plane the stream lacks.
+static bool
+layerKnobNamesColorView(const KnobIPtr& knob)
+{
+    if (const KnobChannelSet* channelSet = dynamic_cast<const KnobChannelSet*>(knob.get())) {
+        const std::vector<ChannelSetRow> rows = channelSet->getRows();
+        for (std::vector<ChannelSetRow>::const_iterator it = rows.begin(); it != rows.end(); ++it) {
+            if ((it->mode == ChannelSetRow::eModeLayer) && ImageLayerDesc::isColorViewID(it->layerOrPattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+    if (const KnobLayerSelect* layerSelect = dynamic_cast<const KnobLayerSelect*>(knob.get())) {
+        return ImageLayerDesc::isColorViewID(layerSelect->getLayer());
+    }
+
+    return false;
+}
+
 ImagePtr
 EffectInstance::getImage(int inputNb,
                          const double time,
@@ -1120,12 +1185,35 @@ EffectInstance::getImage(int inputNb,
                                                                     thisEffectRenderTime,
                                                                     inputImagesThreadLocal), &inputImages);
 
-    if ( inputImages.empty() || (retCode != eRenderRoIRetCodeOk) ) {
+    if (retCode != eRenderRoIRetCodeOk) {
         return ImagePtr();
     }
-    assert(inputImages.size() == 1);
-
-    inputImg = inputImages.begin()->second;
+    if (inputImages.empty()) {
+        // A colourless input reads as zero in every colour channel. The plane is built here, not
+        // in renderRoI(), so that no cache ever holds pixels the input never produced.
+        if (isMask || (returnStorage != eStorageModeRAM) || !renderedComps.isColorLayer()) {
+            return ImagePtr();
+        }
+        std::list<ImageLayerDesc> inputPresentLayers;
+        inputEffect->getPresentLayers(time, view, -1, &inputPresentLayers);
+        if (containsColorStorage(inputPresentLayers)) {
+            return ImagePtr();
+        }
+        RectD zeroRoD;
+        bool zeroRoDIsProjectFormat = false;
+        if (inputEffect->getRegionOfDefinition_public(inputEffect->getRenderHash(), time, RenderScale::fromMipmapLevel(renderMappedMipmapLevel), view, &zeroRoD, &zeroRoDIsProjectFormat) == eStatusFailed) {
+            return ImagePtr();
+        }
+        const RectI zeroBounds = pixelRoI.intersect(zeroRoD.toPixelEnclosing(renderMappedMipmapLevel, par));
+        if (zeroBounds.isNull()) {
+            return ImagePtr();
+        }
+        inputImg = std::make_shared<Image>(renderedComps, zeroRoD, zeroBounds, renderMappedMipmapLevel, par, depth, inputEffect->getFieldingOrder(), false, eStorageModeRAM);
+        inputImg->fillZero(zeroBounds);
+    } else {
+        assert(inputImages.size() == 1);
+        inputImg = inputImages.begin()->second;
+    }
 
     if ( !pixelRoI.intersects( inputImg->getBounds() ) ) {
         //The RoI requested does not intersect with the bounds of the input image, return a NULL image.
@@ -4452,8 +4540,10 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
     passThroughLayers->clear();
     processChannelsPerPlane->clear();
 
+    bool passThroughInputIsColorless = false;
     if (*passThroughInputNb != -1) {
         getAvailableLayers(*passThroughTime, ptView, *passThroughInputNb, passThroughLayers);
+        passThroughInputIsColorless = getInput(*passThroughInputNb) && !containsColorStorage(*passThroughLayers);
         filterPassThroughLayers(*passThroughTime, ptView, passThroughLayers);
     }
 
@@ -4461,6 +4551,18 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
     // read from every non-mask input and written to the output (no-shuffle invariant).
     std::vector<ResolvedLayer> selected;
     const bool hasLayerKnob = node->resolveLayerKnob(time, view, *passThroughInputNb, *passThroughTime, ptView, &selected);
+
+    // The knob lists a colour plane on every stream, so on a colourless one an All or regex row
+    // would otherwise resolve to colour and the node would produce a plane its input lacks.
+    bool droppedColor = false;
+    const KnobIPtr layerKnob = node->getLayerKnob();
+    if (passThroughInputIsColorless && hasLayerKnob && !node->isTargetLayerKnob(layerKnob) && !layerKnobNamesColorView(layerKnob)) {
+        std::vector<ResolvedLayer>::iterator newEnd = std::remove_if(selected.begin(), selected.end(), [](const ResolvedLayer& layer) {
+            return layer.desc.isColorLayer();
+        });
+        droppedColor = (newEnd != selected.end());
+        selected.erase(newEnd, selected.end());
+    }
 
     {
         std::list<ImageLayerDesc> metadataPlanes;
@@ -4475,7 +4577,7 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
             // all-true, instead of the layer knob's row-0 buttons masking their output.
             appendSelectedPlanes(selected, metadataPlanes, &outputPlanes, node->pluginOwnsChannelMask() ? NULL : processChannelsPerPlane);
         }
-        if (outputPlanes.empty()) {
+        if (outputPlanes.empty() && !droppedColor) {
             outputPlanes = metadataPlanes;
         }
     }
@@ -4603,6 +4705,11 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
             metadataLayers.push_back(metadataLayer);
         }
         if (*passThroughInputNb >= 0) {
+            // A stream whose colour plane was removed upstream has nothing to produce it from:
+            // an encoder would write zeros for it and any other node would invent the plane.
+            if (inputPresentsNoColorStorage(this, *passThroughTime, ViewIdx(*passThroughView), *passThroughInputNb)) {
+                removeColorLayers(&metadataLayers);
+            }
             NodePtr node = getNode();
             NodePtr ioContainer = node ? node->getIOContainer() : NodePtr();
             if (ioContainer) {

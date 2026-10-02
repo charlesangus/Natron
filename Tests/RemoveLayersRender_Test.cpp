@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -40,16 +41,22 @@
 #include "BaseTest.h"
 #include "FlatExrReader.h"
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/RemoveLayers.h"
 #include "Engine/OutputEffectInstance.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
+#include "Engine/RectD.h"
+#include "Engine/RectI.h"
+#include "Engine/RenderScale.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -64,6 +71,7 @@ namespace {
 const int32_t kCheckX = 1;
 const int32_t kCheckY = 1;
 const char* const kGradePluginID = "net.sf.openfx.GradePlugin";
+const char* const kBlurPluginID = "net.sf.cimg.CImgBlur";
 
 std::set<std::string>
 channelSet(const FlatExrImage& image)
@@ -299,6 +307,112 @@ protected:
         expectPlane(image2, "", 1.f, 0.f, 0.f);
     }
 
+    // A constant plane blurred with nearest-pixel borders is itself, so the Blur really renders
+    // (it is not an identity) and still leaves every value unchanged.
+    NodePtr appendBlurOnAll()
+    {
+        NodePtr blur = createNode(QString::fromUtf8(kBlurPluginID));
+        EXPECT_TRUE(bool(blur));
+        if (!blur) {
+            return blur;
+        }
+        connectNodes(_last, blur, 0, true);
+
+        KnobDouble* size = dynamic_cast<KnobDouble*>(blur->getKnobByName("size").get());
+        EXPECT_TRUE(size != NULL);
+        if (size) {
+            size->setValues(3., 3., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+        }
+        KnobChoice* boundary = dynamic_cast<KnobChoice*>(blur->getKnobByName("boundary").get());
+        EXPECT_TRUE(boundary != NULL);
+        if (boundary) {
+            boundary->setValueFromID("nearest", 0);
+        }
+        KnobBool* expandRoD = dynamic_cast<KnobBool*>(blur->getKnobByName("expandRoD").get());
+        EXPECT_TRUE(expandRoD != NULL);
+        if (expandRoD) {
+            expandRoD->setValue(false);
+        }
+        KnobChannelSetPtr blurChannels = std::dynamic_pointer_cast<KnobChannelSet>(blur->getKnobByName(kNodeParamChannelSet));
+        EXPECT_TRUE(bool(blurChannels));
+        if (blurChannels) {
+            blurChannels->setAll();
+        }
+        _last = blur;
+
+        return blur;
+    }
+
+    static void expectNoPersistentMessage(const NodePtr& node)
+    {
+        ASSERT_TRUE(bool(node));
+        QString message;
+        int type = 0;
+        node->getPersistentMessage(&message, &type);
+        EXPECT_FALSE(node->hasPersistentMessage()) << node->getScriptName() << ": " << message.toStdString();
+    }
+
+    // Asks node for one plane over its whole RoD the way ViewerInstance::renderViewer_internal()
+    // does: a plain renderRoI() under a request pass. An Ok render with no image is what the
+    // viewer shows as black.
+    EffectInstance::RenderRoIRetCode renderPlaneLikeTheViewer(const NodePtr& node,
+                                                              const ImageLayerDesc& plane,
+                                                              ImagePtr* image)
+    {
+        image->reset();
+
+        const double time = 1.;
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        ParallelRenderArgsSetter frameRenderArgs(time,
+                                                 ViewIdx(0),
+                                                 true /*isRenderUserInteraction*/,
+                                                 false /*isSequential*/,
+                                                 abortInfo,
+                                                 node,
+                                                 0 /*textureIndex*/,
+                                                 getApp()->getTimeLine().get(),
+                                                 NodePtr(),
+                                                 false /*isAnalysis*/,
+                                                 false /*draftMode*/,
+                                                 RenderStatsPtr());
+        EffectInstancePtr effect = node->getEffectInstance();
+
+        RectD rod;
+        bool isProjectFormat = false;
+        if (effect->getRegionOfDefinition_public(node->getHashValue(), time, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat) == eStatusFailed) {
+            return EffectInstance::eRenderRoIRetCodeFailed;
+        }
+
+        FrameRequestMap request;
+        if (EffectInstance::computeRequestPass(time, ViewIdx(0), 0 /*mipmapLevel*/, rod, node, request) == eStatusFailed) {
+            return EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        frameRenderArgs.updateNodesRequest(request);
+
+        std::list<ImageLayerDesc> components;
+        components.push_back(plane);
+        EffectInstance::RenderRoIArgs args(time,
+                                           RenderScale::identity,
+                                           0 /*mipmapLevel*/,
+                                           ViewIdx(0),
+                                           false /*byPassCache*/,
+                                           rod.toPixelEnclosing(0, effect->getAspectRatio(-1)),
+                                           rod,
+                                           components,
+                                           eImageBitDepthFloat,
+                                           false /*calledFromGetImage*/,
+                                           0 /*caller*/,
+                                           eStorageModeRAM,
+                                           time);
+        std::map<ImageLayerDesc, ImagePtr> layers;
+        const EffectInstance::RenderRoIRetCode code = effect->renderRoI(args, &layers);
+        if ((code == EffectInstance::eRenderRoIRetCodeOk) && !layers.empty()) {
+            *image = layers.begin()->second;
+        }
+
+        return code;
+    }
+
     QTemporaryDir _tmp;
     NodePtr _remove;
     NodePtr _last;
@@ -451,4 +565,127 @@ TEST_F(RemoveLayersRenderTest, RegexRemovalVariesPerFrameOverASequence)
 TEST_F(RemoveLayersRenderTest, RegexRemovalVariesPerFrameOverASwitch)
 {
     expectDiffuseRemovedPerFrame(createTimeVaryingSwitch());
+}
+
+TEST_F(RemoveLayersRenderTest, RemovingRgbaWritesNoColourChannels)
+{
+    createRemoveOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    _channels->setLayer(0, kNatronColorViewRGBA, NULL);
+
+    FlatExrImage image;
+    render("remove_rgba.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    EXPECT_EQ(names({ "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelSet(image));
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+    expectNoPersistentMessage(_remove);
+    expectNoPersistentMessage(_writer);
+}
+
+// An All row selects the layers the stream has, so over a colourless stream it must not bring
+// back a colour plane for the Write to pick up.
+TEST_F(RemoveLayersRenderTest, BlurOnAllOverAColourlessStreamWritesNoColourChannels)
+{
+    createRemoveOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    _channels->setLayer(0, kNatronColorViewRGBA, NULL);
+
+    NodePtr blur = appendBlurOnAll();
+    if (HasFatalFailure() || !blur) {
+        return;
+    }
+
+    FlatExrImage image;
+    render("remove_rgba_blur_all.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    EXPECT_EQ(names({ "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelSet(image));
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+    expectNoPersistentMessage(blur);
+    expectNoPersistentMessage(_writer);
+}
+
+// The multiply is 2 so the Grade really renders; its source colour reads zero, so does its output.
+TEST_F(RemoveLayersRenderTest, GradeOnRgbaOverAColourlessStreamWritesAZeroColourPlane)
+{
+    createRemoveOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    _channels->setLayer(0, kNatronColorViewRGBA, NULL);
+
+    KnobChannelSetPtr gradeChannels;
+    NodePtr grade = appendGrade(&gradeChannels);
+    if (HasFatalFailure() || !grade || !gradeChannels) {
+        return;
+    }
+    gradeChannels->setLayer(0, kNatronColorViewRGBA, NULL);
+    KnobColor* offset = dynamic_cast<KnobColor*>(grade->getKnobByName("offset").get());
+    ASSERT_TRUE(offset != NULL);
+    offset->setValues(0., 0., 0., 0., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    KnobColor* multiply = dynamic_cast<KnobColor*>(grade->getKnobByName("multiply").get());
+    ASSERT_TRUE(multiply != NULL);
+    multiply->setValues(2., 2., 2., 2., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+    FlatExrImage image;
+    render("remove_rgba_grade_rgba.exr", &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    EXPECT_EQ(names({ "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelSet(image));
+    expectPlane(image, "", 0.f, 0.f, 0.f);
+    expectChannel(image, "A", 0.f);
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+    expectNoPersistentMessage(grade);
+    expectNoPersistentMessage(_writer);
+}
+
+TEST_F(RemoveLayersRenderTest, ViewerRenderOfAColourlessStreamIsBlackOnRgbaAndGreenOnDiffuse)
+{
+    createRemoveOnFixture();
+    if (HasFatalFailure()) {
+        return;
+    }
+    _channels->setLayer(0, kNatronColorViewRGBA, NULL);
+
+    ImagePtr colorImage;
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderPlaneLikeTheViewer(_remove, ImageLayerDesc::getRGBAComponents(), &colorImage));
+    EXPECT_FALSE(bool(colorImage)) << "the colour plane the stream lacks was rendered";
+    expectNoPersistentMessage(_remove);
+
+    std::list<ImageLayerDesc> present;
+    _remove->getEffectInstance()->getPresentLayers(1., ViewIdx(0), -1, &present);
+    ImageLayerDesc diffuse;
+    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+        if (it->getLayerID() == "diffuse") {
+            diffuse = *it;
+        }
+    }
+    ASSERT_EQ(3, diffuse.getNumComponents()) << "the stream lost its diffuse layer";
+
+    ImagePtr diffuseImage;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderPlaneLikeTheViewer(_remove, diffuse, &diffuseImage));
+    ASSERT_TRUE(bool(diffuseImage));
+    ASSERT_EQ(eImageBitDepthFloat, diffuseImage->getBitDepth());
+    ASSERT_EQ(3, (int)diffuseImage->getComponentsCount());
+    const RectI bounds = diffuseImage->getBounds();
+    Image::ReadAccess access = diffuseImage->getReadRights();
+    const float* pixel = (const float*)access.pixelAt(bounds.x1 + kCheckX, bounds.y1 + kCheckY);
+    ASSERT_TRUE(pixel != NULL);
+    EXPECT_NEAR(0.f, pixel[0], 1e-4f);
+    EXPECT_NEAR(1.f, pixel[1], 1e-4f);
+    EXPECT_NEAR(0.f, pixel[2], 1e-4f);
 }

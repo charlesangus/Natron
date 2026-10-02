@@ -2,6 +2,8 @@
 
 > **Draft (2026-09-26), answers recorded 2026-09-27 (see `## Decisions`).** Q3 and Q6 diverge from the recommended defaults this draft was written against. The Q6 rename (Remove → RemoveLayers) is applied throughout below. **Q3(c) is not yet applied**: Phase 37.1–37.3's task briefs (P1.T3, P2.T1's `filterPassThroughLayers` approach, P3.T1) and the P6.T2 UAT script were written for "colour views are never listed or matched" (Q3 recommendation (a)) and need reworking for "removing `rgba` drops the colour plane entirely" (the answered (c)) before implementation starts — that's a real design pass (new matching semantics, +1 M task per the option), better done by `/cat-plan` than a mechanical edit.
 
+- 2026-10-02 — Q3(c) extended (user): in RemoveLayers, colour views narrow the colour plane. Removing `alpha` leaves RGB storage; removing `rgb` leaves Alpha-only; removing `rgba` (or both `rgb` and `alpha`) drops the colour plane. Keep mode mirrors it (keeping only `alpha` narrows to Alpha-only, etc.).
+
 Two native nodes in the Channel group. **RemoveLayers** takes layers out of the stream, or keeps only the chosen ones. **AddLayers** brings project-registry layers into the stream, zero-filled, wherever the input lacks them. Both choose layers with M38's channel set, including its Regex rows, resolved per frame at the render's (time, view) (`DECISIONS/2026-09-24-layers-vary-with-time.md`).
 
 Neither node moves data between layers, so the no-shuffle invariant (`PLAN/DESIGN/2026-09-19-layer-channel-widget.md` §5) stands:

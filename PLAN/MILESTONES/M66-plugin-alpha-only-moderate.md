@@ -9,3 +9,7 @@ Blocked on: M65 shipping its host fallback (P8.T6) and the fork workflow from P8
 Acceptance sketch:
 - An alpha-only stream through each of the 12 plugins stays alpha-only, with no host round-trip.
 - Only one plugin registers `net.sf.openfx.HueCorrect`.
+
+## Decisions
+
+- 2026-10-02 — Duplicate plugin IDs (user): keep both implementations; the older one is re-registered under a distinct ID, rather than deleted.

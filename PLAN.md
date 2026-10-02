@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: paused
-current: M65.P8.T3
-pm_heartbeat: 2026-09-30T07:48:38-04:00
+status: running
+current: M66.P1.T1
+pm_heartbeat: 2026-10-02T00:06:08-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -167,6 +167,7 @@ future core work has solid ground to build on.
   **M34 shipped 2026-09-24** (PR #33, squash-merge `b0e212d5a`) after two Codex rounds; P6.T11, the user's check of the AppImage, is still outstanding. **M30 merged right after it** (PR #31, `e8e3c96c4`), so automatic beta releases are armed.
   **M61 added 2026-09-24 and runs next, ahead of M37 (user decision):** M34's round-2 review wrongly declined a render-time validation test because it assumed layers never vary with time. M61 makes per-frame AOV sequences, an animated Switch and an animated Disable each vary a node's layers per frame, fixing whichever doesn't, and then adds that test. See `DECISIONS/2026-09-24-layers-vary-with-time.md`.
   **M61 PR #34 opened 2026-09-26** (CI green, Codex round closed); awaiting the user's check of the disabled-cross width and the UAT on `build/appimages/M61-d92ef11e3.AppImage`. openfx-io#7 is pinned by its branch commit; re-pin it after it merges. **M65 is next** (rgba/rgb/alpha/xy colour views, added 2026-09-26), stacked on M61's branch; M37 then stacks on M65.
+  **Parcel run (2026-10-02, user):** M66 → M37 → M50 → M60 run autonomously, each stacked on the previous branch (M66 on M65's tip). The user UATs the whole parcel, M61 through M60, then merges bottom-up. M65 is `blocked` awaiting that UAT.
   M43 and M36 were absorbed into M38 as Phases 38.2 and 38.7 — their rows are
   cancelled like M35's.
 
@@ -206,8 +207,8 @@ future core work has solid ground to build on.
 | M43 | ~~Drop the premultiplied/unpremultiplied concept~~ (folded into M38 Phase 38.2) | cancelled | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
 | M34 | New native Shuffle node | done | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
 | M61 | Layers that vary with time: per-frame layer reporting and Shuffle render-time validation | blocked | [M61-layers-that-vary-with-time.md](PLAN/MILESTONES/M61-layers-that-vary-with-time.md) |
-| M65 | rgba, rgb, alpha and xy replace the Color layer (clean break) | doing | [M65-rgba-rgb-alpha-layers.md](PLAN/MILESTONES/M65-rgba-rgb-alpha-layers.md) |
-| M66 | Remaining OFX plugins accept alpha-only streams (the 12 moderate ones from M65's survey) | todo | [M66-plugin-alpha-only-moderate.md](PLAN/MILESTONES/M66-plugin-alpha-only-moderate.md) |
+| M65 | rgba, rgb, alpha and xy replace the Color layer (clean break) | blocked | [M65-rgba-rgb-alpha-layers.md](PLAN/MILESTONES/M65-rgba-rgb-alpha-layers.md) |
+| M66 | Remaining OFX plugins accept alpha-only streams (the 12 moderate ones from M65's survey) | doing | [M66-plugin-alpha-only-moderate.md](PLAN/MILESTONES/M66-plugin-alpha-only-moderate.md) |
 | M35 | ~~Remove implicit output-plane shuffling from non-Shuffle nodes~~ (folded into M38) | cancelled | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M36 | ~~Add "new channel/layer" affordance wherever a node outputs channels~~ (folded into M38 Phase 38.7) | cancelled | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
 | M37 | Channel/layer management nodes | todo | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |
@@ -261,7 +262,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M65 awaits the user's UAT sign-off (P8.T3):** please run the UAT on `build/appimages/M65-26cc11c9c.AppImage` using `build/appimages/M65-uat.md`. PR #35 is stacked on M61's #34; both Codex review rounds are closed (10 findings fixed). Answer via the inbox or in session.
+- **M65 awaits the user's UAT sign-off (P8.T3), deferred to the parcel UAT:** `build/appimages/M65-26cc11c9c.AppImage` with `build/appimages/M65-uat.md`. PR #35 is stacked on M61's #34; both Codex review rounds are closed.
 
 - **M61 awaits the user's sign-off** (row `blocked`, stacked-PR rule: asynchronous). Please run the UAT on `build/appimages/M61-072541618.AppImage` using `build/appimages/M61-uat.md`, and approve the P2.T3 keyed-Disable node-box screenshots and the P2.T5 disabled-cross width (2, i.e. pipe weight). PR #34 is green; its review rounds 1 and 2 are closed. After sign-off: check off P2.T3/P2.T5/P4.T1, mark M61 `done`, and the user merges PR #34.
 

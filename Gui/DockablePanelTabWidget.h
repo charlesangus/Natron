@@ -61,6 +61,7 @@ public:
     }
 
 private:
+    int getTabBarAndFrameHeight() const;
 
     virtual void keyPressEvent(QKeyEvent* event) OVERRIDE FINAL;
 };

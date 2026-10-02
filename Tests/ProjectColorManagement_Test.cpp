@@ -31,6 +31,7 @@
 #include <gtest/gtest.h>
 
 #include <list>
+#include <map>
 
 #include <QByteArray>
 #include <QDir>
@@ -677,4 +678,72 @@ TEST_F(ProjectOCIOEnvOverrideTest, AProjectSavedOnTheStudioDefaultLoadsAsStudioW
 
     EXPECT_EQ(std::string(kStudioURI), activeID("ocioConfig"));
     EXPECT_EQ(std::string(kStudioURI), project()->getColorManagement()->getConfigSource());
+}
+
+namespace {
+bool
+ocioPathVariable(std::string* value)
+{
+    std::map<std::string, std::string> env;
+
+    project()->getEnvironmentVariables(env);
+    const std::map<std::string, std::string>::const_iterator it = env.find("OCIO");
+    if (it == env.end()) {
+        return false;
+    }
+    *value = it->second;
+
+    return true;
+}
+} // namespace
+
+TEST_F(ProjectOCIOEnvOverrideTest, OCIOPathVariableFollowsTheCustomConfigDirectoryAndIsRemovedForBuiltins)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    ASSERT_TRUE(QDir(tmp.path()).mkpath(QString::fromUtf8("cfg")));
+    const QString file = QDir(tmp.path()).filePath(QString::fromUtf8("cfg/config.ocio"));
+    {
+        std::ofstream out(file.toStdString());
+        OCIO_NAMESPACE::Config::CreateRaw()->serialize(out);
+    }
+    const std::string cfgDir = QFileInfo(file).absolutePath().toStdString();
+    std::string value;
+
+    EXPECT_FALSE(ocioPathVariable(&value));
+
+    configFileKnob()->setValue(file.toStdString());
+    choiceKnob("ocioConfig")->setValueFromID(kCustomConfigID, 0);
+    ASSERT_TRUE(ocioPathVariable(&value));
+    EXPECT_EQ(cfgDir, value);
+
+    choiceKnob("ocioConfig")->setValueFromID(kStudioURI, 0);
+    EXPECT_FALSE(ocioPathVariable(&value));
+
+    choiceKnob("ocioConfig")->setValueFromID(kCGURI, 0);
+    EXPECT_FALSE(ocioPathVariable(&value));
+}
+
+TEST_F(ProjectOCIOEnvOverrideTest, OCIOPathVariableUsesTheOverrideDirectoryAndIsRestoredOnLoad)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString file = writeRawConfig(tmp);
+    const std::string cfgDir = QFileInfo(file).absolutePath().toStdString();
+    QString saved;
+    std::string value;
+
+    setEnvironment(file.toStdString().c_str(), false);
+    project()->reset(false, true);
+    ASSERT_TRUE(ocioPathVariable(&value));
+    EXPECT_EQ(cfgDir, value);
+    ASSERT_TRUE(project()->saveProject(dirPath, QString::fromUtf8("override.ntp"), &saved));
+
+    setEnvironment(0, false);
+    project()->reset(false, true);
+    EXPECT_FALSE(ocioPathVariable(&value));
+    ASSERT_TRUE(project()->loadProject(dirPath, QString::fromUtf8("override.ntp")));
+    EXPECT_EQ(std::string(kStudioURI), project()->getOCIOConfigSource());
+    EXPECT_FALSE(ocioPathVariable(&value));
 }

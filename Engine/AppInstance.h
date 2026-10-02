@@ -289,10 +289,6 @@ public:
 
     virtual std::string saveImageFileDialog() { return std::string(); }
 
-
-    void onOCIOConfigPathChanged(const std::string& path);
-
-
     /**
      * @brief Given writer names, start rendering the given RenderRequest. If empty all Writers in the project
      * will be rendered using the frame ranges.

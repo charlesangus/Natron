@@ -2063,12 +2063,6 @@ AppInstance::getDefaultColorSpaceForBitDepth(ImageBitDepthEnum bitdepth) const
 }
 
 void
-AppInstance::onOCIOConfigPathChanged(const std::string& path)
-{
-    _imp->_currentProject->onOCIOConfigPathChanged(path, false);
-}
-
-void
 AppInstance::declareCurrentAppVariable_Python()
 {
 #ifdef NATRON_RUN_WITHOUT_PYTHON

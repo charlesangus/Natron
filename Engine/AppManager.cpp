@@ -2861,28 +2861,6 @@ AppManager::checkCacheFreeMemoryIsGoodEnough()
 }
 
 void
-AppManager::onOCIOConfigPathChanged(const std::string& path)
-{
-    _imp->currentOCIOConfigPath = path;
-
-    AppInstanceVec copy;
-    {
-        QMutexLocker k(&_imp->_appInstancesMutex);
-        copy = _imp->_appInstances;
-    }
-
-    for (AppInstanceVec::iterator it = copy.begin(); it != copy.end(); ++it) {
-        (*it)->onOCIOConfigPathChanged(path);
-    }
-}
-
-const std::string&
-AppManager::getOCIOConfigPath() const
-{
-    return _imp->currentOCIOConfigPath;
-}
-
-void
 AppManager::setNThreadsToRender(int nThreads)
 {
     QMutexLocker l(&_imp->nThreadsMutex);

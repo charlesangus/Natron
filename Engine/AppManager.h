@@ -395,11 +395,6 @@ public:
 
     void onCheckerboardSettingsChanged() { Q_EMIT checkerboardSettingsChanged(); }
 
-    void onOCIOConfigPathChanged(const std::string& path);
-    ///Non MT-safe!
-    const std::string& getOCIOConfigPath() const;
-
-
     int getHardwareIdealThreadCount();
     int getMaxThreadCount(); //!<  actual number of threads in the thread pool (depends on application settings)
 

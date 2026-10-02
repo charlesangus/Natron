@@ -1149,10 +1149,6 @@ Project::initializeKnobs()
     _imp->envVars->setSecret(false);
     _imp->envVars->setMultiPath(true);
 
-
-    ///Initialize the OCIO Config
-    onOCIOConfigPathChanged(appPTR->getOCIOConfigPath(), false);
-
     page->addKnob(_imp->envVars);
 
     _imp->formatKnob = AppManager::createKnob<KnobChoice>( this, tr("Project Format") );
@@ -1614,6 +1610,8 @@ Project::refreshColorManagement(bool warnOnFallback)
         _imp->ocioConfigFile->setAllDimensionsEnabled(false);
         _imp->ocioConfigFile->setHintToolTip(toolTip);
     }
+
+    onOCIOConfigPathChanged(cm.getConfigDirectory(), false);
 
     cm.setWorkingSpace(getWorkingColorSpace());
     cm.notifyConfigChanged();
@@ -2612,8 +2610,6 @@ Project::doResetEnd(bool aboutToQuit)
             }
         }
 
-        onOCIOConfigPathChanged(appPTR->getOCIOConfigPath(), true);
-
         // The colourspace defaults are indices into the default config's menus, which the
         // reset above may have applied to another config's menus; re-apply them by name.
         refreshColorManagement(false);
@@ -3171,16 +3167,20 @@ Project::onOCIOConfigPathChanged(const std::string& path,
         std::list<std::vector<std::string> > table;
         _imp->envVars->decodeFromKnobTableFormat(oldEnv, &table);
 
-        ///If there was already a OCIO variable, update it, otherwise create it
+        // An empty value would make simplifyPath rewrite every path as relative to [OCIO].
         bool found = false;
         for (std::list<std::vector<std::string> >::iterator it = table.begin(); it != table.end(); ++it) {
-            if ( (*it)[0] == NATRON_OCIO_ENV_VAR_NAME ) {
-                (*it)[1] = path;
+            if ((*it)[0] == NATRON_OCIO_ENV_VAR_NAME) {
                 found = true;
+                if (path.empty()) {
+                    table.erase(it);
+                } else {
+                    (*it)[1] = path;
+                }
                 break;
             }
         }
-        if (!found) {
+        if (!found && !path.empty()) {
             std::vector<std::string> vec(2);
             vec[0] = NATRON_OCIO_ENV_VAR_NAME;
             vec[1] = path;
@@ -3190,7 +3190,7 @@ Project::onOCIOConfigPathChanged(const std::string& path,
         std::string newEnv = _imp->envVars->encodeToKnobTableFormat(table);
 
         if (oldEnv != newEnv) {
-            if ( appPTR->getCurrentSettings()->isAutoFixRelativeFilePathEnabled() ) {
+            if (!path.empty() && appPTR->getCurrentSettings()->isAutoFixRelativeFilePathEnabled()) {
                 fixRelativeFilePaths(NATRON_OCIO_ENV_VAR_NAME, path, block);
             }
             _imp->envVars->setValue(newEnv);

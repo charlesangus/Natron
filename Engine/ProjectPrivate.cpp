@@ -207,7 +207,6 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
                 if (appPTR->getAppType() != AppManager::eAppTypeBackgroundAutoRunLaunchedFromGui) {
                     autoSetProjectDirectory(path);
                 }
-                _publicInterface->onOCIOConfigPathChanged(appPTR->getOCIOConfigPath(), false);
             } else if (projectKnobs[i] == natronVersion) {
                 std::string v = natronVersion->getValue();
                 if (v == "Natron v1.0.0") {

@@ -106,7 +106,6 @@ public:
     size_t maxCacheFiles; //< the maximum number of files the application can open for caching. This is the hard limit * 0.9
     size_t currentCacheFilesCount; //< the number of cache files currently opened in the application
     mutable QMutex currentCacheFilesCountMutex; //< protects currentCacheFilesCount
-    std::string currentOCIOConfigPath; //< the currentOCIO config path
     int idealThreadCount; // return value of QThread::idealThreadCount() cached here
     int nThreadsToRender; // the value held by the corresponding Knob in the Settings, stored here for faster access (3 RW lock vs 1 mutex here)
     int nThreadsPerEffect;  // the value held by the corresponding Knob in the Settings, stored here for faster access (3 RW lock vs 1 mutex here)

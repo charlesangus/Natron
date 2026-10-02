@@ -111,6 +111,15 @@ public:
                         const std::string& layerOrPattern,
                         const std::vector<std::string>& enabledChannels);
 
+    /**
+     * @brief Set-row modes only: whether layer rows (colour views included) show their channel
+     * buttons and regex rows their channel-toggle line. Defaults to true. The "matches:" label
+     * is unaffected.
+     **/
+    void setSetRowWithChannelButtons(bool withChannelButtons);
+
+    bool getSetRowWithChannelButtons() const;
+
     /// Layer-select mode only.
     void setLayerSelectValue(const std::string& layerID,
                              const std::vector<std::string>& enabledChannels,
@@ -225,6 +234,7 @@ private:
     std::vector<std::string> _regexChannels;
     std::set<std::string> _regexExcludedChannels;
     bool _withChannelButtons;
+    bool _setRowWithChannelButtons;
     bool _allowNone;
     bool _allowAll;
     QString _absentMarker;

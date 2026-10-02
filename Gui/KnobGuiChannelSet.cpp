@@ -254,6 +254,7 @@ KnobGuiChannelSet::refreshWidgets()
             row->setAvailableLayers(layers, false);
         }
         row->setExcludedLayers(layerIDsHeldByOtherRows(rows, i));
+        row->setSetRowWithChannelButtons(knob->getWithChannelButtons());
 
         const LayerChannelRow::SetRowModeEnum mode = toRowMode(value.mode);
         std::vector<std::string> enabled = value.channels;

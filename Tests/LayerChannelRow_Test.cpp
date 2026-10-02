@@ -870,3 +870,55 @@ TEST(LayerChannelRow, RegexRowShowsChannelUnionAndTogglesExcluded)
     EXPECT_TRUE(row.getChannelButtonNames().isEmpty());
     EXPECT_FALSE(row.getChannelButton("R"));
 }
+
+TEST(LayerChannelRow, SetRowWithoutChannelButtonsHidesLayerAndColourViewButtons)
+{
+    const char* layerIDs[] = { "diffuse", "alpha", "rgba" };
+    for (int i = 0; i < 3; ++i) {
+        LayerChannelRow row(LayerChannelRow::eModeSetRowN);
+        row.setAvailableLayers(rgbOnlyColorViews(), false);
+        row.setSetRowWithChannelButtons(false);
+        row.getComboBox()->setCurrentIndex(comboIndexOf(row, layerIDs[i]));
+
+        EXPECT_EQ(layerIDs[i], row.getCurrentLayerID());
+        EXPECT_TRUE(row.getChannelButtonNames().isEmpty());
+        EXPECT_FALSE(row.getChannelButton("R"));
+        EXPECT_FALSE(row.getChannelButton("A"));
+        EXPECT_FALSE(row.getChannelButton("Z"));
+    }
+}
+
+TEST(LayerChannelRow, SetRowWithoutChannelButtonsKeepsMatchesLabelOnRegexRows)
+{
+    LayerChannelRow row(LayerChannelRow::eModeSetRowN);
+    row.setAvailableLayers(sampleLayers(), false);
+    row.setSetRowWithChannelButtons(false);
+    row.setSetRowValue(LayerChannelRow::eSetRowModeRegex, "diff.*", std::vector<std::string>());
+
+    std::vector<std::string> unionChannels;
+    unionChannels.push_back("R");
+    unionChannels.push_back("G");
+    unionChannels.push_back("B");
+    row.setRegexChannels(unionChannels, std::set<std::string>());
+
+    EXPECT_TRUE(row.getChannelButtonNames().isEmpty());
+    EXPECT_FALSE(row.getChannelButton("R"));
+    EXPECT_EQ(QString::fromUtf8("matches: diffuse"), row.getMatchesText());
+}
+
+TEST(LayerChannelRow, SetRowWithChannelButtonsDefaultsOnAndRestoresButtons)
+{
+    LayerChannelRow row(LayerChannelRow::eModeSetRowN);
+    row.setAvailableLayers(sampleLayers(), false);
+    EXPECT_TRUE(row.getSetRowWithChannelButtons());
+
+    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "diffuse"));
+    EXPECT_EQ(sl("R", "G", "B"), row.getChannelButtonNames());
+
+    row.setSetRowWithChannelButtons(false);
+    EXPECT_TRUE(row.getChannelButtonNames().isEmpty());
+
+    row.setSetRowWithChannelButtons(true);
+    EXPECT_EQ(sl("R", "G", "B"), row.getChannelButtonNames());
+    EXPECT_TRUE(row.getChannelButton("R")->isChecked());
+}

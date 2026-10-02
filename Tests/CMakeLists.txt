@@ -63,6 +63,7 @@ set(Tests_SOURCES
     PyPlugInstantiate_Test.cpp
     ReadFormat_Test.cpp
     RemoveLayers_Test.cpp
+    RemoveLayersRender_Test.cpp
     RenderRange_Test.cpp
     RotoLayer_Test.cpp
     Shuffle_Test.cpp

@@ -147,7 +147,7 @@ Colour management becomes a property of the project, and all of it goes through 
     `ctest -R ProjectSerialization` stays green.
   - size: L
 
-- [ ] M50.P2.T3 — Let the OCIO env var override every project's config, make the preference the new-project default, and drop restart-era OCIO plumbing
+- [x] M50.P2.T3 — Let the OCIO env var override every project's config, make the preference the new-project default, and drop restart-era OCIO plumbing
   - files: `Engine/Settings.cpp`, `Engine/Settings.h`, `Gui/GuiAppInstance.cpp`, `Engine/Project.cpp`, `Tests/ProjectColorManagement_Test.cpp`
   - approach:
     - Relabel `ocioConfig`/`ocioCustomConfigFile` as "Default OpenColorIO config for new projects" / "Custom OpenColorIO config file for new projects", listing `ProjectColorManagement::builtinConfigOptions()`. When an override is set, disable these preference knobs too, with the same tooltip.
@@ -189,7 +189,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: the debug build is clean against the bumped pin, and the full debug ctest stays green (the default virtuals return empty, so behaviour is unchanged).
   - size: M
 
-- [ ] M50.P3.T7 — Answer the OCIO colour props from the project in OfxImageEffectInstance
+- [x] M50.P3.T7 — Answer the OCIO colour props from the project in OfxImageEffectInstance
   - files: `Engine/OfxImageEffectInstance.cpp`, `Engine/OfxImageEffectInstance.h`, `Tests/ProjectOCIOPlugins_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - In the constructor, register `setGetHook` for the 3 props next to `kNatronOfxExtraCreatedPlanes`.
@@ -248,7 +248,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: the fork builds in natron-dev. Behaviour is verified host-side in P3.T6.
   - size: L
 
-- [ ] M50.P3.T9 — openfx-io fork: depth-aware file categories for PNG and OIIO, and drop metadata-derived display names
+- [x] M50.P3.T9 — openfx-io fork: depth-aware file categories for PNG and OIIO, and drop metadata-derived display names
   - files (charlesangus/openfx-io): `PNG/ReadPNG.cpp`, `OIIO/ReadOIIO.cpp`, `PNG/WritePNG.cpp`, `OIIO/WriteOIIO.cpp`
   - approach: GenericReader/GenericWriter don't know the file bit depth, so these plugins override `guessFileColourCategory` (design §4.3, §10.7):
     - ReadPNG (`getPNGInfo`): 16-bit → 16-bit; 8-bit and below → 8-bit. With the host props present, drop the gAMA → Gamma1.8/2.2 and sRGB-chunk → sRGB display-name chain.
@@ -493,3 +493,6 @@ Execution notes:
   - **P3.T3 extra guard (accepted).** Colourspace rewrites run only when the config source actually changes, so a host push on load doesn't rename explicit spaces to roles or hide unresolved ones.
   - **P3.T4 writer gate (accepted).** It skips the re-guess on the restore path (a non-user-edit, existing instance) and whenever `ocioOutputSpaceSet`. A user filename edit still re-guesses, because the output space depends on the format. Gating on the existing-instance flag alone would have starved new Writes, since the flag is already set before their first filename.
   - **Build note.** `tools/ci/local/build.sh` resets submodules to their pins, so the openfx-natron branch has to be pinned before a build sees it.
+- 2026-10-02 — **B4 landed** (Natron `1b5fdc3d3` P3.T7, `13789370e` P2.T3; io `547aa04` P3.T9), full debug ctest 756/756.
+  - **P2.T3 extra (accepted):** before a load, the config knobs are reset to Studio and "". Otherwise a project left on the Studio default, which doesn't save the knob, would load as whatever the machine's preference is.
+  - **P3.T9 extra (accepted):** a default-off `guessFileColourspaceFromMetadata` reader hook keeps a file's valid `oiio:ColorSpace` over the category default.

@@ -159,7 +159,7 @@ Execution notes:
     - `removeLayer("diffuse")` is refused while RemoveLayers names it.
   - size: L
 
-- [ ] M37.P2.T2 — RemoveLayers renders, narrows the colour plane and varies per frame
+- [x] M37.P2.T2 — RemoveLayers renders, narrows the colour plane and varies per frame
   - files: `Tests/RemoveLayersRender_Test.cpp` (new; model it on `ShuffleRender_Test.cpp`: fixture writer helpers at the top, `createTimeVaryingReadSequence` ~243, `createTimeVaryingSwitch` ~255), `Tests/CMakeLists.txt`
   - approach: Read(`flat-three-layers.exr`) → RemoveLayers → Write (All, single-part 32f).
     - **Non-colour removal.** Removing `diffuse` writes exactly `R,G,B,A,specular.*` with the fixture values.
@@ -250,7 +250,7 @@ Execution notes:
     - with buttons on, nothing changes.
   - size: M
 
-- [ ] M37.P4.T2 — "New layer…" on channel-set rows of a target knob (Q5)
+- [x] M37.P4.T2 — "New layer…" on channel-set rows of a target knob (Q5)
   - files: `Gui/LayerChannelRow.cpp` (the "New layer..." entry is gated on `_mode == eModeLayerSelect` at ~656-661), `Gui/KnobGuiChannelSet.h`, `Gui/KnobGuiChannelSet.cpp` (~254, `setAvailableLayers(layers, false)`), `Tests/LayerChannelRow_Test.cpp`
   - approach:
     - Let set rows append "New layer..." when `listNewLayerEntry` is set, and pass `isTargetKnob()` at ~254.

@@ -35,7 +35,9 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 
@@ -58,6 +60,7 @@
 #include <ofxNatron.h>
 
 NATRON_NAMESPACE_USING
+NATRON_PYTHON_NAMESPACE_USING
 
 namespace {
 
@@ -372,4 +375,64 @@ TEST_F(AddLayersTest, SubLabelNamesTheAddedLayers)
     rows[0].layerOrPattern = kNatronColorViewAlpha;
     layers->setRows(rows);
     EXPECT_EQ(std::string("alpha"), sublabel->getValue());
+}
+
+TEST_F(AddLayersTest, SelectionSurvivesSaveResetLoad)
+{
+    NodePtr add = createAddOnReader("flat-rgb-only.exr");
+
+    ASSERT_TRUE(bool(add));
+    KnobChannelSetPtr layers = layersKnob(add);
+    ASSERT_TRUE(bool(layers));
+    layers->setLayer(0, "mask", NULL);
+    layers->addLayer(kNatronColorViewRGBA, NULL);
+
+    const std::string addName = add->getScriptName();
+    const std::vector<ChannelSetRow> savedRows = layers->getRows();
+    ASSERT_EQ(2u, savedRows.size());
+    ASSERT_EQ(ids({ "Color(4)", "mask" }), present(add));
+
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("add-layers.ntp");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    project->reset(false, true);
+    ASSERT_TRUE(project->getNodeByName(addName).get() == NULL);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    ImageLayerDesc mask;
+    EXPECT_TRUE(project->findLayer("mask", &mask));
+
+    NodePtr add2 = project->getNodeByName(addName);
+    ASSERT_TRUE(bool(add2));
+    KnobChannelSetPtr layers2 = layersKnob(add2);
+    ASSERT_TRUE(bool(layers2));
+
+    EXPECT_EQ(savedRows, layers2->getRows());
+    EXPECT_EQ(ids({ "Color(4)", "mask" }), present(add2));
+    EXPECT_EQ(4, add2->getEffectInstance()->getMetadataNComps(-1));
+}
+
+TEST_F(AddLayersTest, SetChannelsRaisesValueErrorFromPython)
+{
+    NodePtr add = createAddOnReader();
+
+    ASSERT_TRUE(bool(add));
+    KnobChannelSetPtr layers = layersKnob(add);
+    ASSERT_TRUE(bool(layers));
+    layers->setLayer(0, "mask", NULL);
+    const std::vector<ChannelSetRow> before = layers->getRows();
+
+    const std::string appVar = getApp()->getAppIDString();
+    const std::string script = "layersParam = " + appVar + ".getNode(\"" + add->getScriptName() + "\").getParam(\"" + kAddLayersParamLayers + "\")\n"
+        + "layersParam.setChannels([\"A\"], 0)\n";
+
+    std::string error, output;
+    EXPECT_FALSE(interpretPythonScript(script, &error, &output));
+    EXPECT_NE(std::string::npos, error.find("ValueError")) << error;
+    EXPECT_EQ(before, layers->getRows());
 }

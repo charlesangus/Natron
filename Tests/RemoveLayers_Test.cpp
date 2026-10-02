@@ -33,7 +33,9 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 
@@ -55,6 +57,7 @@
 #include <ofxNatron.h>
 
 NATRON_NAMESPACE_USING
+NATRON_PYTHON_NAMESPACE_USING
 
 namespace {
 
@@ -467,4 +470,65 @@ TEST_F(RemoveLayersTest, SubLabelNamesTheOperationAndSelection)
     rows[0].layerOrPattern = "spec.*";
     channels->setRows(rows);
     EXPECT_EQ(std::string("keep specular"), sublabel->getValue());
+}
+
+TEST_F(RemoveLayersTest, KeepSelectionSurvivesSaveResetLoad)
+{
+    NodePtr remove = createRemoveOnReader();
+
+    ASSERT_TRUE(bool(remove));
+    KnobChannelSetPtr channels = channelsKnob(remove);
+    ASSERT_TRUE(bool(channels));
+    setKeep(remove);
+    channels->setRegex(0, "spec.*");
+    channels->addLayer(kNatronColorViewAlpha, NULL);
+
+    const std::string removeName = remove->getScriptName();
+    const std::vector<ChannelSetRow> savedRows = channels->getRows();
+    ASSERT_EQ(2u, savedRows.size());
+    ASSERT_EQ(ids({ "Color(1)", "specular" }), present(remove));
+
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("remove-layers.ntp");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    project->reset(false, true);
+    ASSERT_TRUE(project->getNodeByName(removeName).get() == NULL);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr remove2 = project->getNodeByName(removeName);
+    ASSERT_TRUE(bool(remove2));
+    KnobChannelSetPtr channels2 = channelsKnob(remove2);
+    KnobChoicePtr operation2 = operationKnob(remove2);
+    ASSERT_TRUE(bool(channels2));
+    ASSERT_TRUE(bool(operation2));
+
+    EXPECT_EQ((int)RemoveLayers::eOperationKeep, operation2->getValue());
+    EXPECT_EQ(savedRows, channels2->getRows());
+    EXPECT_EQ(ids({ "Color(1)", "specular" }), present(remove2));
+    EXPECT_EQ(1, remove2->getEffectInstance()->getMetadataNComps(-1));
+}
+
+TEST_F(RemoveLayersTest, SetChannelsRaisesValueErrorFromPython)
+{
+    NodePtr remove = createRemoveOnReader();
+
+    ASSERT_TRUE(bool(remove));
+    KnobChannelSetPtr channels = channelsKnob(remove);
+    ASSERT_TRUE(bool(channels));
+    channels->setLayer(0, "diffuse", NULL);
+    const std::vector<ChannelSetRow> before = channels->getRows();
+
+    const std::string appVar = getApp()->getAppIDString();
+    const std::string script = "channelsParam = " + appVar + ".getNode(\"" + remove->getScriptName() + "\").getParam(\"" + kRemoveLayersParamChannels + "\")\n"
+        + "channelsParam.setChannels([\"R\"], 0)\n";
+
+    std::string error, output;
+    EXPECT_FALSE(interpretPythonScript(script, &error, &output));
+    EXPECT_NE(std::string::npos, error.find("ValueError")) << error;
+    EXPECT_EQ(before, channels->getRows());
 }

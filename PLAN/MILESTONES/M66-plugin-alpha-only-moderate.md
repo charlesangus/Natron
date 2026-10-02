@@ -35,7 +35,7 @@ Execution notes:
 
 ## Phase 66.1: Fork setup
 
-- [ ] M66.P1.T1 — Create m66 branches on the three forks at the pinned SHAs and point the local plugin build at them
+- [x] M66.P1.T1 — Create m66 branches on the three forks at the pinned SHAs and point the local plugin build at them
   - files: `build/wt/m66-misc`, `build/wt/m66-io`, `build/openfx-arena-fork` (new), `build/build-m66-plugins.sh` (scratch, a copy of `build-m65-plugins.sh`)
   - approach:
     - `git -C build/openfx-misc-fork worktree add build/wt/m66-misc -b m66/alpha-only 721e35d7`, and the same for io at `55ded52e`.

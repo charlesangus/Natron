@@ -47,7 +47,7 @@ Execution notes:
 
 ## Phase 66.2: openfx-arena Magick effects take Alpha
 
-- [ ] M66.P2.T1 — Add a shared one-channel Magick read/write helper and use it in Charcoal
+- [x] M66.P2.T1 — Add a shared one-channel Magick read/write helper and use it in Charcoal
   - files: `Magick/MagickCommon.h`, `Magick/Charcoal.cpp`
   - approach:
     - The helper reads src as `"RGBA"`, or as `"I"` for Alpha. In matte mode it then calls `alphaChannel(CopyAlphaChannel)`.
@@ -56,25 +56,25 @@ Execution notes:
   - verify: arena builds; Charcoal is covered by P2.T5.
   - size: M
 
-- [ ] M66.P2.T2 — Accept Alpha in Sketch, Oilpaint and Edges via the helper (gray mode)
+- [x] M66.P2.T2 — Accept Alpha in Sketch, Oilpaint and Edges via the helper (gray mode)
   - files: `Magick/Sketch.cpp`, `Magick/Oilpaint.cpp`, `Magick/Edges.cpp`
   - approach: as Charcoal. Edges on Alpha skips the IM≥7.0.8 alpha save/restore workaround and the Gray quantize. Confirm that the brightness `evaluate` on Red/Green/Blue hits the gray channel.
   - verify: arena builds; P2.T5 cases.
   - size: M
 
-- [ ] M66.P2.T3 — Accept Alpha in Arc, Implode and Polar via the helper (matte mode)
+- [x] M66.P2.T3 — Accept Alpha in Arc, Implode and Polar via the helper (matte mode)
   - files: `Magick/Arc.cpp`, `Magick/Implode.cpp`, `Magick/Polar.cpp`
   - approach: clip declarations, the component check and the asserts; matte-mode read and write; the Matte param is a no-op on Alpha.
   - verify: arena builds; P2.T5 cases, where the alpha equals the fallback's alpha.
   - size: M
 
-- [ ] M66.P2.T4 — Accept Alpha in Reflection and Tile via the helper (matte mode)
+- [x] M66.P2.T4 — Accept Alpha in Reflection and Tile via the helper (matte mode)
   - files: `Magick/Reflection.cpp`, `Magick/Tile.cpp`
   - approach: export `"A"` from `container`. The containers stay rgba(0,0,0,0), so the composites carry alpha. Tile's per-tile fetch (`:271`) also goes through the helper. Matte is a no-op on Alpha.
   - verify: arena builds; P2.T5 cases.
   - size: M
 
-- [ ] M66.P2.T5 — Test that the nine Magick effects run natively on an alpha-only stream
+- [x] M66.P2.T5 — Test that the nine Magick effects run natively on an alpha-only stream
   - files: `Tests/ColorViewsRender_Test.cpp`
   - approach: run a table of the nine IDs on `flat-alpha-only.exr` and assert:
     - `isSupportedComponent(0 and -1, Alpha)`;
@@ -86,7 +86,7 @@ Execution notes:
 
 ## Phase 66.3: ReadEXR decodes Alpha
 
-- [ ] M66.P3.T1 — Let ReadEXR decode into an Alpha (1-component) buffer, with a test
+- [x] M66.P3.T1 — Let ReadEXR decode into an Alpha (1-component) buffer, with a test
   - files: openfx-io `EXR/ReadEXR.cpp`; `Tests/ColorViewsRender_Test.cpp`
   - approach: set `kSupportsAlpha` true, and let `decode()` take RGBA or Alpha. Stride = `pixelComponentCount*sizeof(float)`. Each channel's offset is mapped through the layout (Alpha: A→0), and channels the layout lacks are skipped. The test creates `fr.inria.openfx.ReadEXR` by ID.
   - verify: on `flat-alpha-only.exr`, `getMetadataNComps(-1) == 1` and the render is one channel "A" = 1; an RGBA fixture still reads 4 channels, unchanged.
@@ -94,7 +94,7 @@ Execution notes:
 
 ## Phase 66.4: TimeBuffer carries Alpha
 
-- [ ] M66.P4.T1 — Let TimeBufferRead/Write take Alpha streams through the shared buffer, with a test
+- [x] M66.P4.T1 — Let TimeBufferRead/Write take Alpha streams through the shared buffer, with a test
   - files: openfx-misc `TimeBuffer/TimeBuffer.cpp`; `Tests/ColorViewsRender_Test.cpp`
   - approach:
     - Add Alpha to Read's src/dst and Write's src/sync/dst, and drop the RGBA asserts.
@@ -106,19 +106,19 @@ Execution notes:
 
 ## Phase 66.5: One plugin per ID
 
-- [ ] M66.P5.T1 — Re-register HueCorrect 1.0 as `net.sf.openfx.HueCorrect1`
+- [x] M66.P5.T1 — Re-register HueCorrect 1.0 as `net.sf.openfx.HueCorrect1`
   - files: openfx-misc `HueCorrect/HueCorrect1.cpp` (`:55` kPluginName "HueCorrect1OFX", `:74` kPluginIdentifier "net.sf.openfx.HueCorrect1"), `HueCorrect/net.sf.openfx.HueCorrect1.png/.svg` (copies), `CMakeLists.txt:271-274`
   - approach: exactly those edits; keep version 1.0 and `setIsDeprecated(true)`.
   - verify: Misc builds; `strings Misc.ofx | grep -Fx net.sf.openfx.HueCorrect1`.
   - size: M (resized from S: three files, including the CMake icon list)
 
-- [ ] M66.P5.T2 — Re-register the ImageMagick Text 5.7 as `net.fxarena.openfx.MagickText`
+- [x] M66.P5.T2 — Re-register the ImageMagick Text 5.7 as `net.fxarena.openfx.MagickText`
   - files: openfx-arena `Magick/Text.cpp` (`:34` kPluginName "MagickTextOFX", `:36` kPluginIdentifier "net.fxarena.openfx.MagickText"), `Magick/net.fxarena.openfx.MagickText.png/.svg` (copies)
   - approach: exactly those edits; keep 5.7 and deprecated.
   - verify: Arena builds; `strings Arena.ofx | grep -Fx net.fxarena.openfx.MagickText`.
   - size: M (resized from S: several files)
 
-- [ ] M66.P5.T3 — Test plugin identity and update the host references to the Magick Text ID
+- [x] M66.P5.T3 — Test plugin identity and update the host references to the Magick Text ID
   - files: `Tests/PluginIdentity_Test.cpp` (new), `Tests/CMakeLists.txt`, `Engine/NodeDocumentation.cpp:239`, `tools/ci/local/fetch-assets.sh:567`
   - approach: assert one entry each for `net.sf.openfx.HueCorrect` (major 2), `net.sf.openfx.HueCorrect1` (1), `net.fxarena.openfx.Text` (6) and `net.fxarena.openfx.MagickText` (5). Add MagickText to the font-knob doc special case, and make the fetch-assets probe check MagickText as the Magick-backed ID.
   - verify: `build/m61ctest.sh PluginIdentity` passes against the rebuilt bundles.
@@ -154,3 +154,7 @@ Execution notes:
 
 - 2026-10-02 — Duplicate plugin IDs (user): keep both implementations, and re-register the older one under a distinct ID rather than deleting it.
 - 2026-10-02 — Elaborated from a consultant scout. Each pair already differs in major version, which OFX allows, so the rename is a policy choice rather than a collision fix. TimeBufferRead's output follows its Source input, and a buffer/output component mismatch is a persistent error.
+- 2026-10-02 — **B1+B2 landed** (Natron `2d13b87da` P5.T3, `5abe974b6` tests for P2.T5/P3.T1/P4.T1; misc `2ea8f2fa` P5.T1, `0916b1ce` P4.T1; io `22ba2e7` P3.T1; arena `116a047` P2.T1+T2, `2c25aac` P2.T3+T4, `f008866` P5.T2). Full debug ctest was 658/662 before the fix round; then `ColorViewsRender|PluginIdentity` passed 32/32.
+  - **Fixes in that round:** the matte-mode Magick effects now composite the alpha path the same way as the RGBA path. Arc and Polar resampling overshot to 1.04 without ImageMagick's composite clamp. The ReadEXR test creates the deprecated plugin with `AllowNonUserCreatablePlugins` and sets the file after creation, which is how the reader infers its layout.
+  - **TimeBuffer:** openfx-misc builds TimeBuffer only under `DEBUG` (upstream: "not yet supported by Natron", no sequential render), so the release bundle doesn't ship it. Its alpha change is kept, and its test skips when the plugin is absent. Verified separately against a DEBUG Misc build. It stays out of release.
+  - **Follow-up, not fixed:** a plugin with a Source input that also supports the Generator context (TimeBufferRead) is treated as a generator by `OfxEffectInstance::isGenerator`/`getLayerKnobSpec`, and its target-layer picker defaults to `rgba`, which widens alpha-only streams.

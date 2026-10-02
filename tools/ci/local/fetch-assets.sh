@@ -145,10 +145,18 @@ fi
 #
 # ReadEXR also decodes alpha-only files into 1-component buffers.
 #
+# It also takes the OCIO config from the host's instance property and
+# the working space and per-file-type colourspaces (8-bit, 16-bit, log,
+# float) as defaults for new Reads and Writes, rebuilding the colourspace
+# menus when the config changes. OCIODisplay, OCIOLogConvert,
+# OCIOCDLTransform and OCIOFileTransform use that instance config instead
+# of the process-wide OCIO variable, and ReadPNG/ReadOIIO/WritePNG/
+# WriteOIIO classify files by bit depth for those defaults.
+#
 # SEEXPR_REF: wdas/SeExpr, branch v1-2.11, not v2/v3 -- openfx-io's
 # SeNoise.cpp targets the v1-2.11 header layout. Not forked.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="649ce948600e8560d87921f1180ac24e9150dc57"
+OPENFX_IO_REF="547aa049719fd97931a503e8dd23cf53d3d00f75"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 
@@ -220,8 +228,15 @@ IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 # deprecated ImageMagick Text 5.7 is registered as
 # net.fxarena.openfx.MagickText so only the pango Text owns
 # net.fxarena.openfx.Text.
+#
+# Its OpenFX-IO submodule now points at charlesangus/openfx-io (the
+# OPENFX_IO_REF commit above), which brings the host-supplied OCIO config
+# and file colourspace defaults to its readers, and
+# existingColorSpaceOrFallback, which the earlier pin lacked. Its six
+# readers (ReadPSD, ReadMisc, ReadSVG, ReadCDR, ReadKrita, OpenRaster)
+# drop the filePremult out-parameter that GenericReader no longer has.
 OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
-OPENFX_ARENA_REF="45235bdb07771ca80b466d42487d9e2dd22a27a9"
+OPENFX_ARENA_REF="49f5dd29170e3e264a163eac59b01df3bbbd827d"
 
 # OPENFX_METADATA_REF: charlesangus/openfx -- our ASWF-lineage OpenFX fork,
 # whose Support/Plugins/Metadata* examples exercise the clip and image

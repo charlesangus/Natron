@@ -54,3 +54,4 @@
 - 2026-09-25 — perf-hotspots-before-render-architecture: fix superlinear engine hotspots (M62) before a task-graph scheduler (M63) or tiles (M64); perf runs after channel/layer work → DECISIONS/2026-09-25-perf-hotspots-before-render-architecture.md
 - 2026-09-26 — rgba-rgb-alpha-xy-layers: four colour views with their own IDs replace Color; shared channels; always present (missing reads zero); clean break with old projects → DECISIONS/2026-09-26-rgba-rgb-alpha-xy-layers.md
 - 2026-10-02 — duplicate-ofx-plugin-ids: older duplicate plugins re-registered under distinct IDs (HueCorrect1, MagickText); Magick effects on alpha = coverage (geometric) or grayscale picture (content) → DECISIONS/2026-10-02-duplicate-ofx-plugin-ids.md
+- 2026-10-02 — remove-and-add-layers: RemoveLayers/AddLayers semantics, colour narrowing/widening by view bits, colourless streams, pass-through filter hook → DECISIONS/2026-10-02-remove-and-add-layers.md

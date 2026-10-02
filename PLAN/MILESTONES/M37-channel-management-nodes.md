@@ -287,7 +287,7 @@ Execution notes:
 
 ## Phase 37.6: Checkpoint
 
-- [ ] M37.P6.T1 — Publish the M37 decision
+- [x] M37.P6.T1 — Publish the M37 decision
   - files: `docs/decisions/<date>-remove-and-add-layers.md` (new), its `PLAN/DECISIONS/` mirror, `PLAN/DECISIONS/INDEX.md`
   - approach: record, in the style of `2026-09-26-rgba-rgb-alpha-xy-layers.md`:
     - the Q1–Q6 answers;

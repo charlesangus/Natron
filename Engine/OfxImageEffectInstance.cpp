@@ -47,9 +47,10 @@ CLANG_DIAG_ON(uninitialized)
 //for parametric params properties
 #include <ofxParametricParam.h>
 
+#include <ofxColour.h>
 #include <ofxNatron.h>
-#include <ofxhUtilities.h> // for StatStr
 #include <ofxhPluginCache.h>
+#include <ofxhUtilities.h> // for StatStr
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -113,7 +114,9 @@ OfxImageEffectInstance::OfxImageEffectInstance(OFX::Host::ImageEffect::ImageEffe
     , _ofxEffectInstance()
 {
     getProps().setGetHook(kNatronOfxExtraCreatedPlanes, (OFX::Host::Property::GetHook*)this);
-
+    getProps().setGetHook(kOfxImageEffectPropOCIOConfig, (OFX::Host::Property::GetHook*)this);
+    getProps().setGetHook(NatronOfxImageEffectPropOCIOWorkingColourspace, (OFX::Host::Property::GetHook*)this);
+    getProps().setGetHook(NatronOfxImageEffectPropOCIOFileColourspaces, (OFX::Host::Property::GetHook*)this);
 }
 
 OfxImageEffectInstance::OfxImageEffectInstance(const OfxImageEffectInstance& other)
@@ -291,6 +294,56 @@ OfxImageEffectInstance::getUserCreatedPlanes() const
     OfxEffectInstancePtr effect = _ofxEffectInstance.lock();
     const std::vector<std::string>& ofxPlanes = effect->getUserLayers();
     return ofxPlanes;
+}
+
+ProjectPtr
+OfxImageEffectInstance::getOCIOProject() const
+{
+    OfxEffectInstancePtr effect = _ofxEffectInstance.lock();
+    if (!effect || !effect->getApp()) {
+        return ProjectPtr();
+    }
+
+    return effect->getApp()->getProject();
+}
+
+const std::string&
+OfxImageEffectInstance::getOCIOConfigSource() const
+{
+    const ProjectPtr project = getOCIOProject();
+    QMutexLocker k(&_ocioMutex);
+
+    _ocioConfigSource = project ? project->getOCIOConfigSource() : std::string();
+
+    return _ocioConfigSource;
+}
+
+const std::string&
+OfxImageEffectInstance::getOCIOWorkingColourspace() const
+{
+    const ProjectPtr project = getOCIOProject();
+    QMutexLocker k(&_ocioMutex);
+
+    _ocioWorkingColourspace = project ? project->getWorkingColorSpace() : std::string();
+
+    return _ocioWorkingColourspace;
+}
+
+const std::vector<std::string>&
+OfxImageEffectInstance::getOCIOFileColourspaces() const
+{
+    const ProjectPtr project = getOCIOProject();
+    QMutexLocker k(&_ocioMutex);
+
+    _ocioFileColourspaces.clear();
+    if (project) {
+        _ocioFileColourspaces.push_back(project->getFileColorSpace(eFileColorCategory8Bit));
+        _ocioFileColourspaces.push_back(project->getFileColorSpace(eFileColorCategory16Bit));
+        _ocioFileColourspaces.push_back(project->getFileColorSpace(eFileColorCategoryLog));
+        _ocioFileColourspaces.push_back(project->getFileColorSpace(eFileColorCategoryFloat));
+    }
+
+    return _ocioFileColourspaces;
 }
 
 int

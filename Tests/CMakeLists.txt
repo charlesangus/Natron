@@ -61,6 +61,7 @@ set(Tests_SOURCES
     PluginIdentity_Test.cpp
     ProjectColorManagement_Test.cpp
     ViewerDisplayTransform_Test.cpp
+    ProjectOCIOPlugins_Test.cpp
     ProjectOCIO_Test.cpp
     ProjectSerialization_Test.cpp
     PyPlugExport_Test.cpp

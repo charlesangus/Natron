@@ -28,12 +28,14 @@
 
 #include "Global/Macros.h"
 
-#include <string>
 #include <cstdarg>
+#include <string>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QCoreApplication>
+#include <QMutex>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -108,6 +110,10 @@ public:
     // live parameters
     //
     virtual const std::vector<std::string>& getUserCreatedPlanes() const OVERRIDE FINAL;
+
+    virtual const std::string& getOCIOConfigSource() const OVERRIDE FINAL;
+    virtual const std::string& getOCIOWorkingColourspace() const OVERRIDE FINAL;
+    virtual const std::vector<std::string>& getOCIOFileColourspaces() const OVERRIDE FINAL;
 
     // The size of the current project in canonical coordinates.
     // The size of a project is a sub set of the kOfxImageEffectPropProjectExtent. For example a
@@ -253,6 +259,14 @@ public:
     static const OFX::Host::Property::PropSpec* getOfxParamOverlayInteractDescProps();
 
 private:
+    ProjectPtr getOCIOProject() const;
+
+    // Plugins read these by reference, so each getter refreshes its string under the mutex
+    // and returns it; the value is only stable until the next get.
+    mutable QMutex _ocioMutex;
+    mutable std::string _ocioConfigSource;
+    mutable std::string _ocioWorkingColourspace;
+    mutable std::vector<std::string> _ocioFileColourspaces;
     OfxEffectInstanceWPtr _ofxEffectInstance; /* FIXME: OfxImageEffectInstance should be able to work without the node_ //
                                                               Not easy since every Knob need a valid pointer to a node when
                                                               AppManager::createKnob() is called. That's why we need to pass a pointer

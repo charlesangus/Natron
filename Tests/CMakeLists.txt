@@ -56,6 +56,7 @@ set(Tests_SOURCES
     Metadata_Test.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
+    PluginIdentity_Test.cpp
     ProjectOCIO_Test.cpp
     ProjectSerialization_Test.cpp
     PyPlugExport_Test.cpp

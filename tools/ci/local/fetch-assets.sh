@@ -564,7 +564,7 @@ else
     # comment by ARENA_PROBE_OUT for why `strings` can't see it.)
     ARENA_SYMBOLS="${ARENA_BUILD}/arena-symbols.txt"
     strings "${ARENA_OFX}" > "${ARENA_SYMBOLS}"
-    for id in net.fxarena.openfx.Text net.fxarena.openfx.ReadPSD; do
+    for id in net.fxarena.openfx.MagickText net.fxarena.openfx.ReadPSD; do
         if ! grep -Fxq -- "${id}" "${ARENA_SYMBOLS}"; then
             echo "[Plugins] ERROR: built bundle does not export ${id}" >&2
             exit 1

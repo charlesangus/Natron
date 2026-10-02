@@ -182,19 +182,18 @@ NewLayerDialog::NewLayerDialog(const ImageLayerDesc& original,
     if (original.getNumComponents() != 0) {
         _imp->layerEdit->setText(QString::fromUtf8(original.getLayerLabel().c_str()));
 
-        LineEdit* edits[4] = {_imp->rEdit, _imp->gEdit, _imp->bEdit, _imp->aEdit};
-        Label* labels[4] = {_imp->rLabel, _imp->gLabel, _imp->bLabel, _imp->aLabel};
         const std::vector<std::string>& channels = original.getChannels();
-        for (int i = 0; i < 4; ++i) {
-            if ( i >= (int)channels.size() ) {
-                edits[i]->setVisible(false);
-                labels[i]->setVisible(false);
-            } else {
+        if (channels.size() == 1) {
+            _imp->aEdit->setText(QString::fromUtf8(channels[0].c_str()));
+        } else {
+            LineEdit* edits[4] = { _imp->rEdit, _imp->gEdit, _imp->bEdit, _imp->aEdit };
+            for (std::size_t i = 0; i < channels.size() && i < 4; ++i) {
                 edits[i]->setText( QString::fromUtf8( channels[i].c_str() ) );
             }
         }
         _imp->numCompsBox->setValue( (double)channels.size() );
     }
+    onNumCompsChanged(_imp->numCompsBox->value());
 }
 
 NewLayerDialog::~NewLayerDialog()
@@ -204,42 +203,18 @@ NewLayerDialog::~NewLayerDialog()
 void
 NewLayerDialog::onNumCompsChanged(double value)
 {
-    if (value == 1) {
-        _imp->rLabel->setVisible(false);
-        _imp->rEdit->setVisible(false);
-        _imp->gLabel->setVisible(false);
-        _imp->gEdit->setVisible(false);
-        _imp->bLabel->setVisible(false);
-        _imp->bEdit->setVisible(false);
-        _imp->aLabel->setVisible(true);
-        _imp->aEdit->setVisible(true);
-    } else if (value == 2) {
-        _imp->rLabel->setVisible(true);
-        _imp->rEdit->setVisible(true);
-        _imp->gLabel->setVisible(true);
-        _imp->gEdit->setVisible(true);
-        _imp->bLabel->setVisible(false);
-        _imp->bEdit->setVisible(false);
-        _imp->aLabel->setVisible(false);
-        _imp->aEdit->setVisible(false);
-    } else if (value == 3) {
-        _imp->rLabel->setVisible(true);
-        _imp->rEdit->setVisible(true);
-        _imp->gLabel->setVisible(true);
-        _imp->gEdit->setVisible(true);
-        _imp->bLabel->setVisible(true);
-        _imp->bEdit->setVisible(true);
-        _imp->aLabel->setVisible(false);
-        _imp->aEdit->setVisible(false);
-    } else if (value == 3) {
-        _imp->rLabel->setVisible(true);
-        _imp->rEdit->setVisible(true);
-        _imp->gLabel->setVisible(true);
-        _imp->gEdit->setVisible(true);
-        _imp->bLabel->setVisible(true);
-        _imp->bEdit->setVisible(true);
-        _imp->aLabel->setVisible(true);
-        _imp->aEdit->setVisible(true);
+    Label* labels[4] = { _imp->rLabel, _imp->gLabel, _imp->bLabel, _imp->aLabel };
+    LineEdit* edits[4] = { _imp->rEdit, _imp->gEdit, _imp->bEdit, _imp->aEdit };
+
+    if (!edits[3]) {
+        return;
+    }
+    const int nComps = (int)value;
+    for (int i = 0; i < 4; ++i) {
+        // A single channel is entered in the 4th edit, matching the "alpha" position of RGBA.
+        const bool shown = (nComps == 1) ? (i == 3) : (i < nComps);
+        labels[i]->setVisible(shown);
+        edits[i]->setVisible(shown);
     }
 }
 
@@ -288,15 +263,8 @@ NewLayerDialog::onRGBAButtonClicked()
     _imp->gEdit->setText( QString::fromUtf8("G") );
     _imp->bEdit->setText( QString::fromUtf8("B") );
     _imp->aEdit->setText( QString::fromUtf8("A") );
-
-    _imp->rLabel->setVisible(true);
-    _imp->rEdit->setVisible(true);
-    _imp->gLabel->setVisible(true);
-    _imp->gEdit->setVisible(true);
-    _imp->bLabel->setVisible(true);
-    _imp->bEdit->setVisible(true);
-    _imp->aLabel->setVisible(true);
-    _imp->aEdit->setVisible(true);
+    _imp->numCompsBox->setValue(4);
+    onNumCompsChanged(4);
 }
 
 NATRON_NAMESPACE_EXIT

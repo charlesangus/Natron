@@ -177,7 +177,7 @@ Execution notes:
   - verify: `ctest -R RemoveLayersRender` green; full debug ctest green.
   - size: M
 
-- [ ] M37.P2.T3 — Carry a stream that has no colour plane: reads zero downstream, Write All omits it (Q3(c))
+- [x] M37.P2.T3 — Carry a stream that has no colour plane: reads zero downstream, Write All omits it (Q3(c))
   - files: `Engine/EffectInstance.cpp` (`getComponentsNeededAndProduced_public`'s implicit metadata layer ~4594-4612; `getImage` ~724), `Engine/EffectInstanceRenderRoI.cpp` (~444-490), `Engine/ViewerInstance.cpp` if the viewer path needs it, `Tests/RemoveLayersRender_Test.cpp`
   - approach: RemoveLayers(remove `rgba`) on `flat-three-layers.exr` is the first source whose present layers have no colour storage while its metadata still says colour. Make that stream behave as M65's "missing colour channels read zero":
     - **(1) No forced colour plane.** `producesMetadataLayerImplicitly` must not add the metadata colour layer when the node's pass-through input presents no colour storage. This covers Write's embedded encoder, so Write All writes no R/G/B/A.
@@ -194,7 +194,7 @@ Execution notes:
 
 ## Phase 37.3: AddLayers
 
-- [ ] M37.P3.T1 — AddLayers node: zero-fill registry layers and colour bits the input lacks (Q5, Q6)
+- [x] M37.P3.T1 — AddLayers node: zero-fill registry layers and colour bits the input lacks (Q5, Q6)
   - files: `Engine/Nodes/Channel/AddLayers.h`, `Engine/Nodes/Channel/AddLayers.cpp` (new), `Engine/AppManager.cpp` (~1566), `Tests/AddLayers_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - **Plugin.** `fr.natron.AddLayers`, label "AddLayers", Channel group, optional input "Source". Multiplanar; `producesMetadataLayerImplicitly` returns false; `addAcceptedComponents` adds XY.
@@ -335,3 +335,10 @@ Execution notes:
   - **Rewritten** to M65 vocabulary and current line numbers: P1.T1, P1.T2, P2.T1, P2.T2 (sequence frames had been inverted), P3.T1, P3.T2, P4.T2 (`runNewLayerDialog` already declared), P4.T3, P5.T1, P6.T1, P6.T2.
   - **Stacking:** M37 now stacks on M66 (`milestone/m66-plugin-alpha-only-moderate`), and the batches were re-cut into B1–B6 so no two tasks in a batch edit `Tests/CMakeLists.txt` or `AppManager.cpp`.
 - 2026-10-02 — **B1+B2 landed** (`5d4dfd0f4` P1.T1, `9c31a8dcc` P1.T2, `bf5a43d9e` P2.T1, `e61e3aa0e` P4.T1), with the full debug ctest at 689/689. Where the P1.T2 brief and existing code disagree, the existing convention wins: over RGB storage an `rgba` row resolves to channels 1111 with zeroChannels 1000, as `DefaultOverRGBStorageReportsAlphaAsReadingZero` expects. RemoveLayers accepts every bit depth, converting with `convertPixelDepth`. Its sublabel shows a regex row's matched layers, so it reads "keep specular" rather than "keep spec.*".
+- 2026-10-02 — **B3+B4 landed** (`3c372022c` P2.T2, `7863f98f5` P4.T2, then the P2.T3 and P3.T1 commits), full debug ctest 713/713.
+  - **P2.T3 went beyond its brief in two places (accepted).** (a) Over a colourless input, `getComponentsNeededDefault` drops colour from a non-target knob's selection when no row names a colour view. So All/regex rows never fabricate a colour plane, which matches the design rule that All never widens. An explicit `rgba` row still produces zeros. (b) The viewer's layer menu (`ViewerTabPrivate::getComponentsAvailabel`) adds RGBA when a connected input shows no colour, so the views stay listed.
+  - **Known gaps, not fixed:**
+    - A non-multiplanar node without a layer knob (a Dot) still reports colour over a colourless stream.
+    - A Merge with All drops colour when only its pass-through B input is colourless.
+    - A default (identity) Grade(`rgba`) over a colourless stream passes through and writes no RGBA.
+    - AddLayers' render hash doesn't include the project registry, so registering or removing a layer may leave stale cached results until a knob changes.

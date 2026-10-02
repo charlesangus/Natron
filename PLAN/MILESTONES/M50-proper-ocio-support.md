@@ -238,6 +238,12 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: the fork builds in natron-dev. Host-side behaviour is checked in P3.T2 after the P3.T5 pin.
   - size: M
 
+- [ ] M50.P3.T11 — On a config switch, keep a node's colourspace name the new config lacks, so the host flags it instead of the plugin remapping it
+  - files: openfx-io fork `IOSupport/GenericOCIO.cpp` (the config-source-changed branch of `changedParam` that applies `existingColorSpaceOrFallback`, plus the persistent-message clear); `Tests/ProjectOCIO_Test.cpp`
+  - approach: when the host provides `kOfxImageEffectPropOCIOConfig` and the config source changes, leave unresolved input/output colourspace names untouched and don't clear the node's persistent message. Without the host prop, the old fallback stays. `Project::reportUnresolvedOCIOColorSpaces`, which runs after every push, then flags the node.
+  - verify: `ctest -R ProjectOCIO_` passes the new case: a node holding `Camera Rec.709` keeps the name after a switch to CG, shows the persistent error, and clears it when switched back to Studio. All existing ProjectOCIO_ cases still pass.
+  - size: M
+
 - [x] M50.P3.T4 — openfx-io fork: new Reads and Writes take the working space and per-file-type defaults from the host
   - files (charlesangus/openfx-io): `IOSupport/GenericReader.cpp`, `IOSupport/GenericReader.h`, `IOSupport/GenericWriter.cpp`, `IOSupport/GenericWriter.h`
   - approach (design §4.2, §4.3), on the same m66-descended branch as P3.T3:
@@ -499,3 +505,4 @@ Execution notes:
 - 2026-10-02 — **B5 landed** (`fe43bf859` P5.T1, `dc67345bb` P2.T4, `ca8a6486e` pins: io `547aa04`, arena `49f5dd2`), with the full debug ctest at 763/763.
   - **Arena wasn't build-clean against the new io, despite the design doc.** The new GenericReader dropped the `filePremult` out-parameter, so six arena readers were updated. Arena's `.gitmodules` now points OpenFX-IO at charlesangus/openfx-io.
   - **P5.T1 also removed the error-diffusion dither** from float-to-int conversion, which follows from Q2's plain quantisation.
+- 2026-10-02 — **Unresolved colourspace on a config switch (user): flag an error and keep the name.** A node whose colourspace the new config lacks keeps the saved name and shows the persistent unresolved-colourspace error until it's fixed or the config is switched back. Nothing is remapped silently. New task P3.T11 turns off the io fork's switch-time `existingColorSpaceOrFallback` when the host supplies the config.

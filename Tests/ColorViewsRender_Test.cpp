@@ -1157,6 +1157,76 @@ TEST_F(ColorViewsRenderTest, ReadExrPlacesAnOffsetDataWindowLikeReadOIIOAndZeroF
     }
 }
 
+// The RGB-only counterpart of the offset fixtures: with no A channel in the file, ReadEXR decodes
+// into RGBA and must fill A with 0 over the whole display window, while R, G and B land where
+// ReadOIIO puts them. R and G hold each sample's file x and y, and B is 0.5 over the data window.
+TEST_F(ColorViewsRenderTest, ReadExrZeroFillsTheAlphaOfAnOffsetRgbOnlyFile)
+{
+    NodePtr exrReader = createReadExr(getApp(), "flat-rgb-offset-window.exr");
+    NodePtr oiioReader = createReader("flat-rgb-offset-window.exr");
+    ASSERT_TRUE(bool(exrReader));
+    ASSERT_TRUE(bool(oiioReader));
+
+    FlatExrImage exr;
+    FlatExrImage reference;
+    std::string error;
+    ASSERT_TRUE(render(exrReader, &ColorViewsRenderTest::writeAll, &exr, &error)) << error;
+    ASSERT_TRUE(render(oiioReader, &ColorViewsRenderTest::writeAll, &reference, &error)) << error;
+    ASSERT_EQ(4u, exr.channels.size());
+    ASSERT_GE(exr.channelIndex("R"), 0);
+    ASSERT_GE(exr.channelIndex("G"), 0);
+    ASSERT_GE(exr.channelIndex("B"), 0);
+    ASSERT_GE(exr.channelIndex("A"), 0);
+    ASSERT_GE(reference.channelIndex("R"), 0);
+    ASSERT_GE(reference.channelIndex("G"), 0);
+    ASSERT_GE(reference.channelIndex("B"), 0);
+    ASSERT_EQ(reference.x1, exr.x1);
+    ASSERT_EQ(reference.y1, exr.y1);
+    ASSERT_EQ(reference.width, exr.width);
+    ASSERT_EQ(reference.height, exr.height);
+
+    const char* const colorChannels[] = { "R", "G", "B" };
+    int covered = 0;
+    bool haveOffset = false;
+    int32_t offsetX = 0;
+    int32_t offsetY = 0;
+    std::vector<bool> seenX(6, false);
+    std::vector<bool> seenY(4, false);
+    for (int32_t y = exr.y1; y < exr.y1 + exr.height; ++y) {
+        for (int32_t x = exr.x1; x < exr.x1 + exr.width; ++x) {
+            EXPECT_EQ(0.f, exr.at(x, y, "A")) << "A at (" << x << ", " << y << ")";
+            for (std::size_t c = 0; c < 3; ++c) {
+                EXPECT_NEAR(reference.at(x, y, colorChannels[c]), exr.at(x, y, colorChannels[c]), 1e-5f)
+                    << colorChannels[c] << " at (" << x << ", " << y << ")";
+            }
+            const bool isCovered = exr.at(x, y, "B") > 0.f;
+            if (!isCovered) {
+                EXPECT_EQ(0.f, exr.at(x, y, "R")) << "R at (" << x << ", " << y << ")";
+                EXPECT_EQ(0.f, exr.at(x, y, "G")) << "G at (" << x << ", " << y << ")";
+                continue;
+            }
+            ++covered;
+            EXPECT_NEAR(0.5f, exr.at(x, y, "B"), 1e-5f) << "B at (" << x << ", " << y << ")";
+            const int32_t fileX = static_cast<int32_t>(exr.at(x, y, "R"));
+            const int32_t fileY = static_cast<int32_t>(exr.at(x, y, "G"));
+            if (!haveOffset) {
+                offsetX = x - fileX;
+                offsetY = y - fileY;
+                haveOffset = true;
+            }
+            EXPECT_EQ(offsetX, x - fileX) << "at (" << x << ", " << y << ")";
+            EXPECT_EQ(offsetY, y - fileY) << "at (" << x << ", " << y << ")";
+            if ((fileX >= -1) && (fileX < 5) && (fileY >= 2) && (fileY < 6)) {
+                seenX[fileX + 1] = true;
+                seenY[fileY - 2] = true;
+            }
+        }
+    }
+    EXPECT_EQ(6 * 4, covered);
+    EXPECT_EQ(std::vector<bool>(6, true), seenX);
+    EXPECT_EQ(std::vector<bool>(4, true), seenY);
+}
+
 // openfx-misc compiles TimeBuffer only into DEBUG builds, so release plug-in sets lack it.
 static bool
 timeBufferPluginsLoaded()
@@ -1190,8 +1260,6 @@ inputIndexByLabel(const NodePtr& node,
     return -1;
 }
 
-// Wires readSource into TimeBufferRead and writeSource into TimeBufferWrite, sharing one buffer
-// from frame 1, with TimeBufferRead's output on TimeBufferWrite's Sync input.
 void
 ColorViewsRenderTest::createTimeBufferPair(const NodePtr& readSource,
                                            const NodePtr& writeSource,
@@ -1444,23 +1512,33 @@ TEST_F(ColorViewsChannelPickerRenderTest, MaskByMissingRgbaRReadsZeroNotTheStore
 
 // flat-alpha-pattern.exr's alpha varies across the frame with no symmetry, so a geometric effect
 // that misplaces coverage, or a stride or row-order error on the one-channel path, shows up
-// against the same effect on flat-rgba-pattern.exr, which carries that alpha under RGB.
+// against the same effect on flat-rgba-pattern.exr, which carries that alpha under RGB. The gray
+// effects read the matte as intensity instead, so their reference is flat-rgba-gray-pattern.exr,
+// the same values as R = G = B under an opaque A, and the R channel of their RGBA result.
 TEST_F(ColorViewsRenderTest, MagickEffectsAcceptAlphaOnlyStreamsNatively)
 {
+    // mismatchBudget counts pixels allowed to differ from the RGBA path; random marks an effect
+    // whose output is seeded fresh on every render, so no two renders of it agree.
     struct Row {
         const char* pluginID;
         bool matte;
+        int mismatchBudget;
+        bool random;
     };
+    // On the 16x16 pattern ImageMagick's Charcoal, on a gray image, differs from the same image
+    // read with an opaque alpha channel at exactly eight pixels: its edge and normalise steps see
+    // that channel. The same call with the alpha channel switched off reproduces the alpha-only
+    // output, so the difference is ImageMagick's, not a read or write error in the plug-in.
     const Row rows[] = {
-        { "net.fxarena.openfx.Arc", true },
-        { "net.fxarena.openfx.Implode", true },
-        { "net.fxarena.openfx.Polar", true },
-        { "net.fxarena.openfx.Reflection", true },
-        { "net.fxarena.openfx.Tile", true },
-        { "net.fxarena.openfx.Charcoal", false },
-        { "net.fxarena.openfx.Sketch", false },
-        { "net.fxarena.openfx.Oilpaint", false },
-        { "net.fxarena.openfx.Edges", false },
+        { "net.fxarena.openfx.Arc", true, 0, false },
+        { "net.fxarena.openfx.Implode", true, 0, false },
+        { "net.fxarena.openfx.Polar", true, 0, false },
+        { "net.fxarena.openfx.Reflection", true, 0, false },
+        { "net.fxarena.openfx.Tile", true, 0, false },
+        { "net.fxarena.openfx.Charcoal", false, 8, false },
+        { "net.fxarena.openfx.Sketch", false, 0, true },
+        { "net.fxarena.openfx.Oilpaint", false, 0, false },
+        { "net.fxarena.openfx.Edges", false, 0, false },
     };
 
     NodePtr sourceReader = createReader("flat-alpha-pattern.exr");
@@ -1495,23 +1573,7 @@ TEST_F(ColorViewsRenderTest, MagickEffectsAcceptAlphaOnlyStreamsNatively)
             ASSERT_TRUE(std::isfinite(alphaImage.pixels[i])) << "pixel " << i;
         }
 
-        if (!rows[r].matte) {
-            bool changed = false;
-            bool nonZero = false;
-            for (int32_t y = alphaImage.y1; y < alphaImage.y1 + alphaImage.height; ++y) {
-                for (int32_t x = alphaImage.x1; x < alphaImage.x1 + alphaImage.width; ++x) {
-                    const float value = alphaImage.at(x, y, "A");
-                    const float input = source.at(x, y, "A");
-                    changed = changed || !(std::fabs(value - input) <= 1e-4f);
-                    nonZero = nonZero || value != 0.f;
-                }
-            }
-            EXPECT_TRUE(changed) << "the effect passed its input through unchanged";
-            EXPECT_TRUE(nonZero) << "the effect produced an all-zero image";
-            continue;
-        }
-
-        NodePtr rgbaReader = createReader("flat-rgba-pattern.exr");
+        NodePtr rgbaReader = createReader(rows[r].matte ? "flat-rgba-pattern.exr" : "flat-rgba-gray-pattern.exr");
         ASSERT_TRUE(bool(rgbaReader));
         NodePtr rgbaEffect = createNode(QString::fromUtf8(pluginID));
         ASSERT_TRUE(bool(rgbaEffect));
@@ -1520,21 +1582,44 @@ TEST_F(ColorViewsRenderTest, MagickEffectsAcceptAlphaOnlyStreamsNatively)
         FlatExrImage rgbaImage;
         ASSERT_TRUE(render(rgbaEffect, &ColorViewsRenderTest::writeAll, &rgbaImage, &error)) << error;
 
-        ASSERT_GE(rgbaImage.channelIndex("A"), 0);
+        const char* const referenceChannel = rows[r].matte ? "A" : "R";
+        ASSERT_GE(rgbaImage.channelIndex(referenceChannel), 0);
         ASSERT_EQ(rgbaImage.x1, alphaImage.x1);
         ASSERT_EQ(rgbaImage.y1, alphaImage.y1);
         ASSERT_EQ(rgbaImage.width, alphaImage.width);
         ASSERT_EQ(rgbaImage.height, alphaImage.height);
+        // The alpha-only path writes the intensity as it is, and Edges' brightness takes it above
+        // 1, while the RGBA path composites it over opaque black, which clamps it to 1.
         int mismatches = 0;
         for (int32_t y = alphaImage.y1; y < alphaImage.y1 + alphaImage.height; ++y) {
             for (int32_t x = alphaImage.x1; x < alphaImage.x1 + alphaImage.width; ++x) {
-                const float expected = rgbaImage.at(x, y, "A");
-                const float actual = alphaImage.at(x, y, "A");
-                if (!(std::fabs(expected - actual) <= 1e-4f) && (++mismatches <= 5)) {
-                    ADD_FAILURE() << "A at (" << x << ", " << y << "): RGBA path " << expected << ", alpha-only path " << actual;
+                const float expected = rgbaImage.at(x, y, referenceChannel);
+                float actual = alphaImage.at(x, y, "A");
+                if (!rows[r].matte) {
+                    actual = std::min(std::max(actual, 0.f), 1.f);
+                }
+                if (rows[r].random) {
+                    EXPECT_EQ(source.at(x, y, "A") == 0.f, actual == 0.f) << "alpha-only path at (" << x << ", " << y << ")";
+                    EXPECT_EQ(source.at(x, y, "A") == 0.f, expected == 0.f) << "RGBA path at (" << x << ", " << y << ")";
+                } else if (!(std::fabs(expected - actual) <= 1e-4f) && (++mismatches > rows[r].mismatchBudget)) {
+                    ADD_FAILURE() << "pixel (" << x << ", " << y << "): RGBA path's " << referenceChannel << " " << expected << ", alpha-only path " << actual;
                 }
             }
         }
-        EXPECT_EQ(0, mismatches);
+        EXPECT_LE(mismatches, rows[r].mismatchBudget);
+
+        if (!rows[r].matte) {
+            bool changed = false;
+            bool nonZero = false;
+            for (int32_t y = alphaImage.y1; y < alphaImage.y1 + alphaImage.height; ++y) {
+                for (int32_t x = alphaImage.x1; x < alphaImage.x1 + alphaImage.width; ++x) {
+                    const float value = alphaImage.at(x, y, "A");
+                    changed = changed || !(std::fabs(value - source.at(x, y, "A")) <= 1e-4f);
+                    nonZero = nonZero || value != 0.f;
+                }
+            }
+            EXPECT_TRUE(changed) << "the effect passed its input through unchanged";
+            EXPECT_TRUE(nonZero) << "the effect produced an all-zero image";
+        }
     }
 }

@@ -126,7 +126,7 @@ Execution notes:
 
 ## Phase 66.6: Checkpoint
 
-- [ ] M66.P6.T1 — Publish the duplicate-ID and alpha-only Magick semantics decision
+- [x] M66.P6.T1 — Publish the duplicate-ID and alpha-only Magick semantics decision
   - files: `PLAN/DECISIONS/2026-10-02-duplicate-ofx-plugin-ids.md`, then `docs/decisions/` at the gate
   - approach: older duplicates are re-registered under a distinct ID, never deleted. Magick content effects treat a matte as a grayscale picture; geometric effects treat it as alpha.
   - verify: the file is present and indexed.

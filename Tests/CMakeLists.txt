@@ -79,6 +79,7 @@ set(Tests_SOURCES
     Tracker_Test.cpp
     TypedPassthrough_Test.cpp
     WriteAllLayers_Test.cpp
+    ImageConvert_Test.cpp
     wmain.cpp
 )
 add_executable(Tests ${Tests_HEADERS} ${Tests_SOURCES})

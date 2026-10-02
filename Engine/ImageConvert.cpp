@@ -103,41 +103,13 @@ Image::convertPixelDepth(float pix)
     return pix;
 }
 
-static const Color::Lut*
-lutFromColorspace(ViewerColorSpaceEnum cs)
-{
-    const Color::Lut* lut;
-
-    switch (cs) {
-    case eViewerColorSpaceSRGB:
-        lut = Color::LutManager::sRGBLut();
-        break;
-    case eViewerColorSpaceRec709:
-        lut = Color::LutManager::Rec709Lut();
-        break;
-    case eViewerColorSpaceBT1886:
-        lut = Color::LutManager::BT1886Lut();
-        break;
-    case eViewerColorSpaceLinear:
-    default:
-        lut = 0;
-        break;
-    }
-    if (lut) {
-        lut->validate();
-    }
-
-    return lut;
-}
-
-///Fast version when components are the same
 template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue>
 void
-Image::convertToFormatInternal_sameComps(const RectI & renderWindow,
-                                         const Image & srcImg,
-                                         Image & dstImg,
-                                         ViewerColorSpaceEnum srcColorSpace,
-                                         ViewerColorSpaceEnum dstColorSpace,
+Image::convertToFormatInternal_sameComps(const RectI& renderWindow,
+                                         const Image& srcImg,
+                                         Image& dstImg,
+                                         ViewerColorSpaceEnum /*srcColorSpace*/,
+                                         ViewerColorSpaceEnum /*dstColorSpace*/,
                                          bool copyBitmap)
 {
     const RectI & r = srcImg._bounds;
@@ -147,90 +119,18 @@ Image::convertToFormatInternal_sameComps(const RectI & renderWindow,
         return;
     }
 
-    ImageBitDepthEnum dstDepth = dstImg.getBitDepth();
-    ImageBitDepthEnum srcDepth = srcImg.getBitDepth();
-    int nComp = (int)srcImg.getComponentsCount();
-    const Color::Lut* const srcLut = lutFromColorspace(srcColorSpace);
-    const Color::Lut* const dstLut = lutFromColorspace(dstColorSpace);
+    const int nComp = (int)srcImg.getComponentsCount();
+    const int rowElements = intersection.width() * nComp;
 
-
-    ///no colorspace conversion applied when luts are the same
-    bool srcLutOp = srcLut != dstLut && srcLut != nullptr;
-    bool dstLutOp = srcLut != dstLut && dstLut != nullptr;
-    if ( intersection.isNull() ) {
-        return;
-    }
     for (int y = 0; y < intersection.height(); ++y) {
-        // coverity[dont_call]
-        int start = rand() % intersection.width();
-        const SRCPIX* srcPixels = (const SRCPIX*)srcImg.pixelAt(intersection.x1 + start, intersection.y1 + y);
-        DSTPIX* dstPixels = (DSTPIX*)dstImg.pixelAt(intersection.x1 + start, intersection.y1 + y);
-        const SRCPIX* srcStart = srcPixels;
-        DSTPIX* dstStart = dstPixels;
+        const SRCPIX* srcPixels = (const SRCPIX*)srcImg.pixelAt(intersection.x1, intersection.y1 + y);
+        DSTPIX* dstPixels = (DSTPIX*)dstImg.pixelAt(intersection.x1, intersection.y1 + y);
 
-        for (int backward = 0; backward < 2; ++backward) {
-            int x = backward ? start - 1 : start;
-            int end = backward ? -1 : intersection.width();
-            unsigned error[3] = {
-                0x80, 0x80, 0x80
-            };
-
-            while ( x != end && x >= 0 && x < intersection.width() ) {
-                for (int k = 0; k < nComp; ++k) {
-#                 ifdef DEBUG_NAN
-                    assert( !std::isnan(srcPixels[k]) ); // check for NaN
-#                 endif
-                    DSTPIX pix;
-                    if ( (k == 3) || (!srcLutOp && !dstLutOp) ) {
-                        pix = convertPixelDepth<SRCPIX, DSTPIX>(srcPixels[k]);
-                    } else {
-                        float pixFloat;
-
-                        if (srcLut) {
-                            if (srcDepth == eImageBitDepthByte) {
-                                pixFloat = srcLut->fromColorSpaceUint8ToLinearFloatFast(srcPixels[k]);
-                            } else if (srcDepth == eImageBitDepthShort) {
-                                pixFloat = srcLut->fromColorSpaceUint16ToLinearFloatFast(srcPixels[k]);
-                            } else {
-                                pixFloat = srcLut->fromColorSpaceFloatToLinearFloat(srcPixels[k]);
-                            }
-                        } else {
-                            pixFloat = convertPixelDepth<SRCPIX, float>(srcPixels[k]);
-                        }
-
-                        if (dstDepth == eImageBitDepthByte) {
-                            ///small increase in perf we use Luts. This should be anyway the most used case.
-                            error[k] = (error[k] & 0xff) + ( dstLutOp ? dstLut->toColorSpaceUint8xxFromLinearFloatFast(pixFloat) :
-                                                             Color::floatToInt<0xff01>(pixFloat) );
-                            pix = error[k] >> 8;
-                        } else if (dstDepth == eImageBitDepthShort) {
-                            pix = dstLutOp ? dstLut->toColorSpaceUint16FromLinearFloatFast(pixFloat) :
-                                  convertPixelDepth<float, DSTPIX>(pixFloat);
-                        } else {
-                            if (dstLutOp) {
-                                pixFloat = dstLut->toColorSpaceFloatFromLinearFloat(pixFloat);
-                            }
-                            pix = convertPixelDepth<float, DSTPIX>(pixFloat);
-                        }
-                    }
-                    dstPixels[k] =  pix;
-#                 ifdef DEBUG_NAN
-                    assert( !std::isnan(dstPixels[k]) ); // check for NaN
-#                 endif
-                }
-
-                if (backward) {
-                    --x;
-                    srcPixels -= nComp;
-                    dstPixels -= nComp;
-                } else {
-                    ++x;
-                    srcPixels += nComp;
-                    dstPixels += nComp;
-                }
-            }
-            srcPixels = srcStart - nComp;
-            dstPixels = dstStart - nComp;
+        for (int i = 0; i < rowElements; ++i) {
+#ifdef DEBUG_NAN
+            assert(!std::isnan(srcPixels[i])); // check for NaN
+#endif
+            dstPixels[i] = convertPixelDepth<SRCPIX, DSTPIX>(srcPixels[i]);
         }
 
         if (copyBitmap) {
@@ -239,16 +139,16 @@ Image::convertToFormatInternal_sameComps(const RectI & renderWindow,
     }
 } // convertToFormatInternal_sameComps
 
-template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue, int srcNComps, int dstNComps, bool useColorspaces>
+template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue, int srcNComps, int dstNComps>
 void
-Image::convertToFormatInternalForColorSpace(const RectI& renderWindow,
-                                            const Image& srcImg,
-                                            Image& dstImg,
-                                            bool copyBitmap,
-                                            bool zeroFillMissing,
-                                            ViewerColorSpaceEnum srcColorSpace,
-                                            ViewerColorSpaceEnum dstColorSpace,
-                                            int channelForAlpha)
+Image::convertToFormatInternal(const RectI& renderWindow,
+                               const Image& srcImg,
+                               Image& dstImg,
+                               ViewerColorSpaceEnum /*srcColorSpace*/,
+                               ViewerColorSpaceEnum /*dstColorSpace*/,
+                               int channelForAlpha,
+                               bool zeroFillMissing,
+                               bool copyBitmap)
 {
     /*
      * If channelForAlpha is -1 the user wants to convert using the default
@@ -300,177 +200,81 @@ Image::convertToFormatInternalForColorSpace(const RectI& renderWindow,
         return;
     }
 
-    const Color::Lut* const srcLut = lutFromColorspace( (ViewerColorSpaceEnum)srcColorSpace );
-    const Color::Lut* const dstLut = lutFromColorspace( (ViewerColorSpaceEnum)dstColorSpace );
-    bool srcLutOp = useColorspaces && srcLut != nullptr;
-    bool dstLutOp = useColorspaces && dstLut != nullptr;
-
     for (int y = 0; y < renderWindow.height(); ++y) {
-        ///Start of the line for error diffusion
-        // coverity[dont_call]
-        int start = rand() % renderWindow.width();
-        const SRCPIX* srcPixels = (const SRCPIX*)srcImg.pixelAt(renderWindow.x1 + start, renderWindow.y1 + y);
-        DSTPIX* dstPixels = (DSTPIX*)dstImg.pixelAt(renderWindow.x1 + start, renderWindow.y1 + y);
-        const SRCPIX* srcStart = srcPixels;
-        DSTPIX* dstStart = dstPixels;
+        const SRCPIX* srcPixels = (const SRCPIX*)srcImg.pixelAt(renderWindow.x1, renderWindow.y1 + y);
+        DSTPIX* dstPixels = (DSTPIX*)dstImg.pixelAt(renderWindow.x1, renderWindow.y1 + y);
 
-        for (int backward = 0; backward < 2; ++backward) {
-            ///We do twice the loop, once from starting point to end and once from starting point - 1 to real start
-            int x = backward ? start - 1 : start;
+        for (int x = 0; x < renderWindow.width(); ++x, srcPixels += srcNComps, dstPixels += dstNComps) {
+            if (dstNComps == 1) {
+                /// If we're converting to alpha, we just have to handle pixel depth conversion
+                DSTPIX pix;
 
-            //End is pointing to the first pixel outside the line a la stl
-            int end = backward ? -1 : renderWindow.width();
-            unsigned error[3] = {
-                0x80, 0x80, 0x80
-            };
-
-            while ( x != end && x >= 0 && x < renderWindow.width() ) {
-                if (dstNComps == 1) {
-                    ///If we're converting to alpha, we just have to handle pixel depth conversion
-                    DSTPIX pix;
-
-                    // convertPixelDepth is optimized when SRCPIX == DSTPIX
-
-                    switch (srcNComps) {
-                    case 4:
-                        //channel for alpha must be valid
-                        assert(channelForAlpha > -1 && channelForAlpha <= 3);
-                        pix = convertPixelDepth<SRCPIX, DSTPIX>(srcPixels[channelForAlpha]);
-                        break;
-                    case 3:
-                        // RGB has no alpha, unless channelForAlpha is 0-2
-                        pix = convertPixelDepth<SRCPIX, DSTPIX>(channelForAlpha == -1 ? 0. : srcPixels[channelForAlpha]);
-                        break;
-                    case 2:
-                        // XY has no alpha, unless channelForAlpha is 0-1
-                        pix = convertPixelDepth<SRCPIX, DSTPIX>(channelForAlpha == -1 ? 0. : srcPixels[channelForAlpha]);
-                        break;
-                    case 1:
-                        // just copy alpha disregarding channelForAlpha
-                        pix  = convertPixelDepth<SRCPIX, DSTPIX>(*srcPixels);
-                        break;
-                    }
-
-                    dstPixels[0] = pix;
-#                 ifdef DEBUG_NAN
-                    assert( !std::isnan(dstPixels[0]) ); // check for NaN
-#                 endif
-                } else { // if (dstNComps == 1) {
-                    if (srcNComps == 1) {
-                        DSTPIX pix = convertPixelDepth<SRCPIX, DSTPIX>(srcPixels[0]);
-#                     ifdef DEBUG_NAN
-                        assert(  !std::isnan(pix) ); // check for NaN
-#                     endif
-                        if (zeroFillMissing) {
-                            // A one-channel colour source is the alpha layout, so only an alpha destination channel receives it.
-                            for (int k = 0; k < dstNComps; ++k) {
-                                dstPixels[k] = (k == 3) ? pix : DSTPIX(0);
-                            }
-                        } else {
-                            for (int k = 0; k < dstNComps; ++k) {
-                                dstPixels[k] = pix;
-                            }
-                        }
-                    } else {
-                        ///In this case we've XY, RGB or RGBA input and outputs
-                        assert(srcNComps != dstNComps);
-
-                        for (int k = 0; k < 3 && k < dstNComps; ++k) {
-                            if (k >= srcNComps) { // e.g. srcNComps = 2 && dstNComps == 3 or 4
-                                dstPixels[k] =  0;
-                                continue;
-                            }
-                            SRCPIX sourcePixel = srcPixels[k];
-                            DSTPIX pix;
-                            if ( !useColorspaces || (!srcLutOp && !dstLutOp) ) {
-                                if (dstMaxValue == 255) {
-                                    float pixFloat = convertPixelDepth<SRCPIX, float>(sourcePixel);
-                                    error[k] = (error[k] & 0xff) + Color::floatToInt<0xff01>(pixFloat);
-                                    pix = error[k] >> 8;
-                                } else {
-                                    pix = convertPixelDepth<SRCPIX, DSTPIX>(sourcePixel);
-                                }
-                            } else {
-                                ///For RGB channels
-                                float pixFloat;
-
-                                if (srcLutOp) {
-                                    if (srcMaxValue == 255) {
-                                        pixFloat = srcLut->fromColorSpaceUint8ToLinearFloatFast(sourcePixel);
-                                    } else if (srcMaxValue == 65535) {
-                                        pixFloat = srcLut->fromColorSpaceUint16ToLinearFloatFast(sourcePixel);
-                                    } else {
-                                        pixFloat = srcLut->fromColorSpaceFloatToLinearFloat(sourcePixel);
-                                    }
-                                } else {
-                                    pixFloat = convertPixelDepth<SRCPIX, float>(sourcePixel);
-                                }
-
-                                ///Apply dst color-space
-                                if (dstMaxValue == 255) {
-                                    assert(k < 3);
-                                    error[k] = (error[k] & 0xff) + ( dstLutOp ? dstLut->toColorSpaceUint8xxFromLinearFloatFast(pixFloat) :
-                                                                     Color::floatToInt<0xff01>(pixFloat) );
-                                    pix = error[k] >> 8;
-                                } else if (dstMaxValue == 65535) {
-                                    pix = dstLutOp ? dstLut->toColorSpaceUint16FromLinearFloatFast(pixFloat) :
-                                          convertPixelDepth<float, DSTPIX>(pixFloat);
-                                } else {
-                                    if (dstLutOp) {
-                                        pixFloat = dstLut->toColorSpaceFloatFromLinearFloat(pixFloat);
-                                    }
-                                    pix = convertPixelDepth<float, DSTPIX>(pixFloat);
-                                }
-                            } // if (!useColorspaces || (!srcLut && !dstLut)) {
-                            dstPixels[k] =  pix;
-#                 ifdef DEBUG_NAN
-                            assert( (std::isnan)(srcPixels[k]) || !std::isnan(dstPixels[k]) ); // check for NaN
-#                 endif
-                        } // for (int k = 0; k < k < 3 && k < dstNComps; ++k) {
-
-                        if (dstNComps == 4) {
-                            // Only RGB-->RGBA or XY-->RGBA reach here, so the source has no alpha to copy.
-                            dstPixels[3] = convertPixelDepth<float, DSTPIX>(zeroFillMissing ? 0.f : 1.f);
-                        }
-                    } // if (srcNComps == 1) {
-                } // if (dstNComps == 1) {
-                if (backward) {
-                    --x;
-                    srcPixels -= srcNComps;
-                    dstPixels -= dstNComps;
-                } else {
-                    ++x;
-                    srcPixels += srcNComps;
-                    dstPixels += dstNComps;
+                switch (srcNComps) {
+                case 4:
+                    // channel for alpha must be valid
+                    assert(channelForAlpha > -1 && channelForAlpha <= 3);
+                    pix = convertPixelDepth<SRCPIX, DSTPIX>(srcPixels[channelForAlpha]);
+                    break;
+                case 3:
+                    // RGB has no alpha, unless channelForAlpha is 0-2
+                    pix = convertPixelDepth<SRCPIX, DSTPIX>(channelForAlpha == -1 ? 0. : srcPixels[channelForAlpha]);
+                    break;
+                case 2:
+                    // XY has no alpha, unless channelForAlpha is 0-1
+                    pix = convertPixelDepth<SRCPIX, DSTPIX>(channelForAlpha == -1 ? 0. : srcPixels[channelForAlpha]);
+                    break;
+                case 1:
+                    // just copy alpha disregarding channelForAlpha
+                    pix = convertPixelDepth<SRCPIX, DSTPIX>(*srcPixels);
+                    break;
                 }
-            } // while ( x != end && x >= 0 && x < renderWindow.width() ) {
-            srcPixels = srcStart - srcNComps;
-            dstPixels = dstStart - dstNComps;
-        } // for (int backward = 0; backward < 2; ++backward) {
-    }  // for (int y = 0; y < renderWindow.height(); ++y) {
+
+                dstPixels[0] = pix;
+#ifdef DEBUG_NAN
+                assert(!std::isnan(dstPixels[0])); // check for NaN
+#endif
+            } else if (srcNComps == 1) {
+                DSTPIX pix = convertPixelDepth<SRCPIX, DSTPIX>(srcPixels[0]);
+#ifdef DEBUG_NAN
+                assert(!std::isnan(pix)); // check for NaN
+#endif
+                if (zeroFillMissing) {
+                    // A one-channel colour source is the alpha layout, so only an alpha destination channel receives it.
+                    for (int k = 0; k < dstNComps; ++k) {
+                        dstPixels[k] = (k == 3) ? pix : DSTPIX(0);
+                    }
+                } else {
+                    for (int k = 0; k < dstNComps; ++k) {
+                        dstPixels[k] = pix;
+                    }
+                }
+            } else {
+                /// In this case we've XY, RGB or RGBA input and outputs
+                assert(srcNComps != dstNComps);
+
+                for (int k = 0; k < 3 && k < dstNComps; ++k) {
+                    if (k >= srcNComps) { // e.g. srcNComps = 2 && dstNComps == 3 or 4
+                        dstPixels[k] = 0;
+                        continue;
+                    }
+                    dstPixels[k] = convertPixelDepth<SRCPIX, DSTPIX>(srcPixels[k]);
+#ifdef DEBUG_NAN
+                    assert((std::isnan)(srcPixels[k]) || !std::isnan(dstPixels[k])); // check for NaN
+#endif
+                }
+
+                if (dstNComps == 4) {
+                    // Only RGB-->RGBA or XY-->RGBA reach here, so the source has no alpha to copy.
+                    dstPixels[3] = convertPixelDepth<float, DSTPIX>(zeroFillMissing ? 0.f : 1.f);
+                }
+            }
+        }
+    }
 
     if (copyBitmap) {
         dstImg.copyBitmapPortion(renderWindow, srcImg);
     }
-} // Image::convertToFormatInternalForColorSpace
-
-template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue, int srcNComps, int dstNComps>
-void
-Image::convertToFormatInternal(const RectI& renderWindow,
-                               const Image& srcImg,
-                               Image& dstImg,
-                               ViewerColorSpaceEnum srcColorSpace,
-                               ViewerColorSpaceEnum dstColorSpace,
-                               int channelForAlpha,
-                               bool zeroFillMissing,
-                               bool copyBitmap)
-{
-    if ((srcColorSpace == eViewerColorSpaceLinear) && (dstColorSpace == eViewerColorSpaceLinear)) {
-        convertToFormatInternalForColorSpace<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, srcNComps, dstNComps, false>(renderWindow, srcImg, dstImg, copyBitmap, zeroFillMissing, srcColorSpace, dstColorSpace, channelForAlpha);
-    } else {
-        convertToFormatInternalForColorSpace<SRCPIX, DSTPIX, srcMaxValue, dstMaxValue, srcNComps, dstNComps, true>(renderWindow, srcImg, dstImg, copyBitmap, zeroFillMissing, srcColorSpace, dstColorSpace, channelForAlpha);
-    }
-}
+} // Image::convertToFormatInternal
 
 template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue>
 void

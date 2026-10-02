@@ -134,7 +134,7 @@ fi
 # OPENFX_IO_REF: charlesangus/openfx-io -- our fork, ahead of
 # NatronGitHub/openfx-io. Fork-and-fix is the standing pattern for small
 # changes to NatronGitHub repos. Deltas are recorded at charlesangus/
-# openfx-io PRs #2-#7 (an earlier SEEXPR2_INCLUDES/LIBRARIES CMakeLists.txt
+# openfx-io PRs #2-#9 (an earlier SEEXPR2_INCLUDES/LIBRARIES CMakeLists.txt
 # fix and an OCIO default-colorspace fallback predate PR tracking); the
 # Write node's layer-naming delta also needed
 # charlesangus/openfx-supportext#1.
@@ -143,17 +143,20 @@ fi
 # SeGrain/OIIOText/ReadPNG/WritePNG accept alpha-only (1-component) images,
 # and its SupportExt read a missing colour channel as zero, not one.
 #
+# ReadEXR also decodes alpha-only and RGB files into 1- and 3-component
+# buffers.
+#
 # SEEXPR_REF: wdas/SeExpr, branch v1-2.11, not v2/v3 -- openfx-io's
 # SeNoise.cpp targets the v1-2.11 header layout. Not forked.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="55ded52e67d67acfaa9d0bb11654010f12082c83"
+OPENFX_IO_REF="22ba2e7393a0e4c8ef93da0cdaa1fd19ace07289"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 
 # OPENFX_MISC_REF: charlesangus/openfx-misc -- our fork, ahead of
 # NatronGitHub/openfx-misc. Fork-and-fix is the standing pattern for small
 # changes to NatronGitHub repos (see OPENFX_IO_REF above). Deltas are
-# recorded at charlesangus/openfx-misc PRs #1-#3; the per-channel
+# recorded at charlesangus/openfx-misc PRs #1-#6; the per-channel
 # "(Un)premult by" rename also needed charlesangus/openfx-supportext PRs
 # #2-#3.
 #
@@ -165,11 +168,15 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # and the Distortion UV/mask channel pickers and its SupportExt read a
 # missing channel, alpha included, as zero rather than one.
 #
+# TimeBufferRead/Write accept alpha-only images too (they build only under
+# DEBUG), and the deprecated HueCorrect 1.0 is registered as
+# net.sf.openfx.HueCorrect1 so only HueCorrect 2.0 owns net.sf.openfx.HueCorrect.
+#
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
 # this container with no other source changes needed.
 OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
-OPENFX_MISC_REF="721e35d7f8f9486e73c119c3a5ffe3cabb400cf2"
+OPENFX_MISC_REF="0916b1ce6fa7e95cad831646ad7608ff7e2491db"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a
@@ -208,8 +215,14 @@ IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 # (1-component) images, and fetches SupportExt from our fork, since the
 # NatronGitHub mirror lacks the fix that reads a missing colour channel as
 # zero.
+#
+# Its nine ImageMagick effects (Arc, Charcoal, Edges, Implode, Oilpaint,
+# Polar, Reflection, Sketch, Tile) also accept alpha-only images, and the
+# deprecated ImageMagick Text 5.7 is registered as
+# net.fxarena.openfx.MagickText so only the pango Text owns
+# net.fxarena.openfx.Text.
 OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
-OPENFX_ARENA_REF="387c98e4e811746cee450e39a9f77ae4e1a55dca"
+OPENFX_ARENA_REF="f0088662618cb9e183a3704dd716a0197f29e9b9"
 
 # OPENFX_METADATA_REF: charlesangus/openfx -- our ASWF-lineage OpenFX fork,
 # whose Support/Plugins/Metadata* examples exercise the clip and image

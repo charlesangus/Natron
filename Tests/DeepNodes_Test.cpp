@@ -27,8 +27,11 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <initializer_list>
 #include <list>
 #include <map>
+#include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -49,6 +52,7 @@
 #include "Engine/DeepImage.h"
 #include "Engine/DeepImageCacheEntry.h"
 #include "Engine/DeepImageKey.h"
+#include "Engine/DeepLayers.h"
 #include "Engine/DeepPixelOps.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
@@ -2341,4 +2345,158 @@ TEST_F(DeepNodesTest, DeepExpressionThatDoesNotCompileFailsWithAMessageNamingThe
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(expression, 1., bounds, &out));
     ASSERT_TRUE(out != NULL);
     EXPECT_FALSE(expression->hasPersistentMessage());
+}
+
+namespace {
+
+const double kLayersTime = 1.;
+
+std::vector<std::string>
+describeLayers(const std::list<ImageLayerDesc>& layers)
+{
+    std::vector<std::string> ids;
+
+    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        if (it->isColorLayer()) {
+            std::ostringstream os;
+            os << "Color(" << it->getNumComponents() << ")";
+            ids.push_back(os.str());
+        } else {
+            ids.push_back(it->getLayerID());
+        }
+    }
+    std::sort(ids.begin(), ids.end());
+
+    return ids;
+}
+
+std::vector<std::string>
+presentLayerIDs(const NodePtr& node)
+{
+    std::list<ImageLayerDesc> layers;
+
+    node->getEffectInstance()->getPresentLayers(kLayersTime, ViewIdx(0), -1, &layers);
+
+    return describeLayers(layers);
+}
+
+std::vector<std::string>
+idList(std::initializer_list<const char*> list)
+{
+    std::vector<std::string> ids;
+
+    for (const char* id : list) {
+        ids.push_back(id);
+    }
+    std::sort(ids.begin(), ids.end());
+
+    return ids;
+}
+
+SynthPixels
+onePixel(const std::vector<float>& values)
+{
+    SynthPixels pixels;
+
+    pixels.push_back(SynthPixel(1, 1));
+    pixels.back().samples.push_back(DeepSample(1.f, 1.f, values));
+
+    return pixels;
+}
+
+std::vector<std::string>
+rgbaWithLayer(const char* layer)
+{
+    std::vector<std::string> names = rgbaChannelNames();
+    const std::string id(layer);
+
+    names.push_back(id + ".R");
+    names.push_back(id + ".G");
+    names.push_back(id + ".B");
+
+    return names;
+}
+
+} // anonymous namespace
+
+TEST_F(DeepNodesTest, DeepMergeCombinePresentsTheUnionOfBothInputsLayersAndRendersExactlyThoseChannels)
+{
+    const RectI bounds(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
+    const std::vector<std::string> namesA = rgbaWithLayer("diffuse");
+    const std::vector<std::string> namesB = rgbaWithLayer("specular");
+
+    NodePtr sourceA = createSyntheticSource(makeDeepImage(bounds, namesA, onePixel(std::vector<float>(namesA.size(), 0.5f)), true));
+    NodePtr sourceB = createSyntheticSource(makeDeepImage(bounds, namesB, onePixel(std::vector<float>(namesB.size(), 0.25f)), true));
+    NodePtr merge = createDeepMerge(DeepMerge::eOperationCombine);
+    ASSERT_TRUE(sourceA && sourceB && merge);
+    connectNodes(sourceA, merge, 0, true);
+    connectNodes(sourceB, merge, 1, true);
+
+    EXPECT_EQ(idList({ "Color(4)", "diffuse", "specular" }), presentLayerIDs(merge));
+
+    DeepImagePtr merged;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(merge, 1., bounds, &merged));
+    ASSERT_TRUE(merged != NULL);
+    std::set<std::string> rendered;
+    for (std::map<std::string, DeepChannelBuffer>::const_iterator it = merged->getChannels().begin(); it != merged->getChannels().end(); ++it) {
+        rendered.insert(it->first);
+    }
+    std::set<std::string> expected;
+    expected.insert("Z");
+    expected.insert("ZBack");
+    expected.insert(namesA.begin(), namesA.end());
+    expected.insert(namesB.begin(), namesB.end());
+    EXPECT_EQ(expected, rendered);
+}
+
+TEST_F(DeepNodesTest, DeepMergeCombineWidensTheColourStorageToCoverBothInputs)
+{
+    const RectI bounds(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
+    const std::vector<std::string> alphaOnly(1, "A");
+
+    NodePtr alphaA = createSyntheticSource(makeDeepImage(bounds, alphaOnly, onePixel(std::vector<float>(1, 0.5f)), true));
+    NodePtr alphaB = createSyntheticSource(makeDeepImage(bounds, alphaOnly, onePixel(std::vector<float>(1, 0.5f)), true));
+    NodePtr rgba = createSyntheticSource(makeDeepImage(bounds, rgbaChannelNames(), onePixel(std::vector<float>(4, 0.5f)), true));
+    NodePtr alphaAndRgba = createDeepMerge(DeepMerge::eOperationCombine);
+    NodePtr alphaAndAlpha = createDeepMerge(DeepMerge::eOperationCombine);
+    ASSERT_TRUE(alphaA && alphaB && rgba && alphaAndRgba && alphaAndAlpha);
+    connectNodes(alphaA, alphaAndRgba, 0, true);
+    connectNodes(rgba, alphaAndRgba, 1, true);
+    connectNodes(alphaA, alphaAndAlpha, 0, true);
+    connectNodes(alphaB, alphaAndAlpha, 1, true);
+
+    EXPECT_EQ(idList({ "Color(4)" }), presentLayerIDs(alphaAndRgba));
+    EXPECT_EQ(idList({ "Color(1)" }), presentLayerIDs(alphaAndAlpha));
+}
+
+TEST_F(DeepNodesTest, DeepMergeHoldoutPresentsInputAsLayers)
+{
+    const RectI bounds(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
+    const std::vector<std::string> namesA = rgbaWithLayer("diffuse");
+    const std::vector<std::string> namesB = rgbaWithLayer("specular");
+
+    NodePtr sourceA = createSyntheticSource(makeDeepImage(bounds, namesA, onePixel(std::vector<float>(namesA.size(), 0.5f)), true));
+    NodePtr sourceB = createSyntheticSource(makeDeepImage(bounds, namesB, onePixel(std::vector<float>(namesB.size(), 0.25f)), true));
+    NodePtr merge = createDeepMerge(DeepMerge::eOperationHoldout);
+    ASSERT_TRUE(sourceA && sourceB && merge);
+    connectNodes(sourceA, merge, 0, true);
+    connectNodes(sourceB, merge, 1, true);
+
+    EXPECT_EQ(idList({ "Color(4)", "diffuse" }), presentLayerIDs(merge));
+}
+
+TEST_F(DeepNodesTest, DeepCropAndDeepReformatPresentTheirInputsLayers)
+{
+    const RectI bounds(0, 0, kDeepFixtureWidth, kDeepFixtureHeight);
+    const std::vector<std::string> names = rgbaWithLayer("diffuse");
+
+    NodePtr source = createSyntheticSource(makeDeepImage(bounds, names, onePixel(std::vector<float>(names.size(), 0.5f)), true));
+    NodePtr crop = createDeepCrop(0., 0., 2., 2., true, 0., 0., false, false);
+    NodePtr reformat = createDeepReformat(8, 8, true, true);
+    ASSERT_TRUE(source && crop && reformat);
+    connectNodes(source, crop, 0, true);
+    connectNodes(source, reformat, 0, true);
+
+    EXPECT_EQ(idList({ "Color(4)", "diffuse" }), presentLayerIDs(crop));
+    EXPECT_EQ(idList({ "Color(4)", "diffuse" }), presentLayerIDs(reformat));
 }

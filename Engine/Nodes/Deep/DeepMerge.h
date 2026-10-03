@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <list>
+
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
@@ -80,6 +82,10 @@ public:
                                              const RenderScale& scale,
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void getDeepLayers(double time,
+                               ViewIdx view,
+                               std::list<ImageLayerDesc>* layers) OVERRIDE FINAL;
 
 private:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;

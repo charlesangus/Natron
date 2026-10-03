@@ -90,6 +90,17 @@ createReader(const std::string& decoderID,
     return appPTR->getTopLevelInstance()->createNode(args);
 }
 
+// Silent, so that no file dialog is offered and the Read starts with no decoder.
+NodePtr
+createEmptyRead()
+{
+    CreateNodeArgs args(PLUGINID_NATRON_READ, project());
+
+    args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
+
+    return appPTR->getTopLevelInstance()->createNode(args);
+}
+
 NodePtr
 createWriter(const std::string& encoderID,
              const std::string& file)
@@ -460,6 +471,69 @@ TEST_F(ProjectOCIODefaultsTest, AFilenameEditReGuessesWhenTheInputSpaceIsNotUser
     changeReaderFile(reader, fixture("png-16bit.png"));
 
     EXPECT_EQ(std::string(kGamma22Space), stringValue(reader, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kWorkingSpace), stringValue(reader, kOutputSpaceKnob));
+}
+
+TEST_F(ProjectOCIODefaultsTest, AnEmptyReadGivenAnEightBitPngTakesTheProjectDefaults)
+{
+    NodePtr reader = createEmptyRead();
+
+    ASSERT_TRUE(bool(reader));
+    ASSERT_FALSE(bool(embeddedNode(reader)));
+
+    changeReaderFile(reader, fixture("png-8bit.png"));
+
+    ASSERT_TRUE(bool(embeddedNode(reader)));
+    EXPECT_EQ(std::string(kSRGBSpace), canonicalSpace(stringValue(reader, kInputSpaceKnob)));
+    EXPECT_EQ(std::string(kWorkingSpace), stringValue(reader, kOutputSpaceKnob));
+    KnobBoolPtr guessed = boolKnob(reader, kExistingInstanceKnob);
+    ASSERT_TRUE(bool(guessed));
+    EXPECT_TRUE(guessed->getValue());
+    KnobBoolPtr userSet = boolKnob(reader, kInputSpaceSetKnob);
+    ASSERT_TRUE(bool(userSet));
+    EXPECT_FALSE(userSet->getValue());
+}
+
+TEST_F(ProjectOCIODefaultsTest, AReadWhoseFilenameIsClearedAndSetToAnExrTakesTheFloatDefault)
+{
+    NodePtr reader = createReader(PLUGINID_OFX_READPNG, fixture("png-8bit.png"));
+
+    ASSERT_TRUE(bool(reader));
+    ASSERT_EQ(std::string(kSRGBSpace), stringValue(reader, kInputSpaceKnob));
+
+    changeReaderFile(reader, std::string());
+    changeReaderFile(reader, fixture("flat-rgb-only.exr"));
+
+    ASSERT_TRUE(bool(embeddedNode(reader)));
+    EXPECT_EQ(project()->getFileColorSpace(eFileColorCategoryFloat), stringValue(reader, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kWorkingSpace), stringValue(reader, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kWorkingSpace), stringValue(reader, kOutputSpaceKnob));
+}
+
+TEST_F(ProjectOCIODefaultsTest, AReloadedReadKeepsTheSpacesItsLateDecoderTook)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+
+    NodePtr reader = createEmptyRead();
+
+    ASSERT_TRUE(bool(reader));
+    changeReaderFile(reader, fixture("png-8bit.png"));
+    const std::string inputSpace = stringValue(reader, kInputSpaceKnob);
+    ASSERT_EQ(std::string(kSRGBSpace), canonicalSpace(inputSpace));
+    ASSERT_EQ(std::string(kWorkingSpace), stringValue(reader, kOutputSpaceKnob));
+    const std::string name = reader->getScriptName_mt_safe();
+
+    // A restored decoder that guessed again would take this new 8-bit default.
+    setProjectFileSpace("colorSpace8Bit", kGamma22Space);
+
+    saveResetAndLoad(tmp, "late-decoder.ntp");
+
+    ASSERT_EQ(std::string(kGamma22Space), project()->getFileColorSpace(eFileColorCategory8Bit));
+    reader = project()->getNodeByName(name);
+    ASSERT_TRUE(bool(reader));
+    ASSERT_TRUE(bool(embeddedNode(reader)));
+    EXPECT_EQ(inputSpace, stringValue(reader, kInputSpaceKnob));
     EXPECT_EQ(std::string(kWorkingSpace), stringValue(reader, kOutputSpaceKnob));
 }
 

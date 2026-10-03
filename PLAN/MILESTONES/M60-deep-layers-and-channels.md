@@ -24,21 +24,21 @@ A deep stream already carries named channels (`R`, `G`, `B`, `A`, `Z`, `ZBack` a
   - `DeepToImage` accepts RGBA only (`DeepToImage.cpp:69-74`) and flattens the four RGBA channels (`:129-142`).
   - `DeepRecolor` renders the Color input as RGBA (`DeepRecolor.cpp:150-151`), requires 4 components (`:204-206`), and writes RGB, or RGBA with Target Input Alpha (`:210-211`).
   - `DeepExpression` has fixed `{R,G,B,A,Z,ZBack}` expression knobs (`DeepExpression.cpp:42-43, 84-95`). It already *reads* any input channel by name, dotted names included (`DeepExpressionEvaluator.h:46, 64-66`; input names built at `DeepExpression.cpp:174-180`).
-  - The viewer flattens deep input to RGBA whatever layer is selected (`Engine/ViewerInstance.cpp:1434-1440`), and so does `renderDeepRoIFlattened` (`Engine/EffectInstanceRenderDeep.cpp:543-544, 657`).
+  - The viewer flattens deep input to RGBA whatever layer is selected (`Engine/ViewerInstance.cpp:1450-1457`, flatten call `:1545-1566`), and so does `renderDeepRoIFlattened` (`Engine/EffectInstanceRenderDeep.cpp:543-544, 657`).
   - `DeepFlatten::flattenToImage` fails if any named channel is missing (`Engine/DeepFlatten.h:48-68`), so with today's API M65's "missing colour channel reads zero" cannot hold for deep.
 
 **How layer listing works today, and why deep needs its own source.**
-- `Node::listLayersForKnob` (`Engine/Node.cpp:6271-6326`) → `appendInputStreamLayers` (`:6245-6268`) → `EffectInstance::getPresentLayers(time, view, inputNb)` (`Engine/EffectInstance.cpp:4663-4715`). That calls the *input's* `getComponentsNeededAndProduced_public` (`:4520-4632`), cached in `ActionsCache` keyed on (hash, time, view) (`:4539-4545`), and merges output (`comps[-1]`) with pass-through layers.
-- `listLayerViewsForKnob` (`Node.cpp:6329-6348`) runs `ImageLayerDesc::expandColorViews` on that list. The viewer menu uses `getPresentLayers(-1)` on its active input (`Gui/ViewerTabPrivate.cpp:375-393`), and Python `Effect.getAvailableLayers` uses `getAvailableLayers` (`Engine/PyNode.cpp:1074-1084`).
-- Deep nodes are not multiplanar, so they fall into `getComponentsNeededDefault` (`EffectInstance.cpp:4438-4517`). Today they report only the **metadata colour plane** plus their input's pass-through, never the channels in the deep data.
-- Hooking in at `getComponentsNeededAndProduced_public` (one branch for deep-producing effects, `producesDeepData()` at `EffectInstanceRenderDeep.cpp:162-173`) makes every consumer above, including the actions cache, work unchanged.
+- `Node::listLayersForKnob` (`Engine/Node.cpp:6291-6346`) → `appendInputStreamLayers` (`:6265-6288`) → `EffectInstance::getPresentLayers(time, view, inputNb)` (`Engine/EffectInstance.cpp:4799-4851`). That calls the *input's* `getComponentsNeededAndProduced_public` (`:4647-4770`), cached in `ActionsCache` keyed on (hash, time, view) (`:4665-4672`), and merges output (`comps[-1]`) with pass-through layers. `mergeLayersList`/`removeFromLayersList` (`:151-195`) match layers through `findEquivalentLayer`, which treats every colour layout as the same layer.
+- `listLayerViewsForKnob` (`Node.cpp:6349-6378`) runs `ImageLayerDesc::expandColorViews` on that list. The viewer menu uses `getPresentLayers(-1)` on its active input (`Gui/ViewerTabPrivate.cpp:380-408`), and Python `Effect.getAvailableLayers` uses `getAvailableLayers` (`Engine/PyNode.cpp:1074-1084`).
+- Deep nodes are not multiplanar, so they fall into `getComponentsNeededDefault` (`EffectInstance.cpp:4538-4644`; since M37 it also runs `filterPassThroughLayers` and the colourless-stream suppression). Today they report only the **metadata colour plane** plus their input's pass-through, never the channels in the deep data.
+- Hooking in at `getComponentsNeededAndProduced_public` (one branch for deep-producing effects, `producesDeepData()` at `EffectInstanceRenderDeep.cpp:164`) makes every consumer above, including the actions cache, work unchanged.
 - **The deep layers must be computable without rendering.**
   - `DeepRead` can read the OIIO header, as its `getPreferredMetadata` already does (`DeepRead.cpp:147-172`, which uses `getCurrentTime()`, not the query time).
   - The processing nodes derive their layers from their inputs and knobs.
   - The test stub `DeepSyntheticSource` (`Tests/DeepRenderTestEffect.h:329-440`) holds its `DeepImage`, so it can report its layers directly.
-- **Layer knobs today.** `EffectInstance::getLayerKnobSpec` (`EffectInstance.cpp:4765-4771`) gives no host layer knob to non-image outputs, so deep-output nodes have none. `DeepToImage` (image output, not multiplanar) appears to get the host channel set, but its render ignores it. P2.T3 makes it multiplanar with its own knob.
-- **Declaring knobs.** `Node::declareLayerKnob` (`Node.cpp:6472-6481`) is used from `initializeKnobs`, with Shuffle as the precedent (`Engine/Nodes/Channel/Shuffle.cpp:237-243`).
-- **Registering produced layers.** `Node::registerProducedLayers` (`Node.cpp:~6505-6540`) registers every non-colour layer in `comps[-1]`. M38 left it "not gated on output data kind (M60 will call it from DeepRead)". So deep layers reported as *produced* by DeepRead reach the registry for free, and a downstream deep node should report its input's layers as *pass-through*, not produced.
+- **Layer knobs today.** `EffectInstance::getLayerKnobSpec` (`EffectInstance.cpp:4901-4908`) gives no host layer knob to non-image outputs, so deep-output nodes have none. `DeepToImage` (image output, not multiplanar) appears to get the host channel set, but its render ignores it. P2.T3 makes it multiplanar with its own knob.
+- **Declaring knobs.** `Node::declareLayerKnob` (`Node.cpp:6492-6500`) is used from `initializeKnobs`, with Shuffle (`Engine/Nodes/Channel/Shuffle.cpp:239-242`) and M37's RemoveLayers/AddLayers (`RemoveLayers.cpp:136`, `AddLayers.cpp:121`) as precedents.
+- **Registering produced layers.** `Node::registerProducedLayers` (`Node.cpp:6518-6570`) registers every non-colour layer in `comps[-1]`. M38 left it "not gated on output data kind (M60 will call it from DeepRead)". So deep layers reported as *produced* by DeepRead reach the registry for free, and a downstream deep node should report its input's layers as *pass-through*, not produced.
 
 **Grouping helper.** `LayerRegistry::groupChannelNames` (`Engine/LayerRegistry.cpp:362-445`) groups flat names into dotted layers. It is unused by the engine (only `Tests/LayerRegistry_Test.cpp:271` calls it). It isn't right for deep as-is:
 - it treats `Z` as a `depth` layer;
@@ -56,7 +56,7 @@ The deep grouping wraps it with those three fixes.
 - `build/make_big_deep.py` is reference only: a 640×360 RGBAZZBack two-disc file written into `build/deeprepro/`.
 - Flat fixtures that M37 relies on are reused here: `flat-three-layers.exr`, `flat-rgb-only.exr`, `flat-alpha-only.exr` and `flat-seq-layers.000{1,2}.exr`.
 
-**Existing deep tests** (all in `Tests/CMakeLists.txt:32-40`):
+**Existing deep tests** (all in `Tests/CMakeLists.txt:34-42`):
 - `DeepImage_Test` (COW model);
 - `DeepPixelOps_Test`;
 - `DeepFlatten_Test` (flatten + probe);
@@ -68,7 +68,7 @@ The deep grouping wraps it with those three fixes.
 - `DeepExpressionEvaluator_Test`.
 - None of them asserts anything about layers.
 
-**Registration and build.** Deep nodes are registered at `Engine/AppManager.cpp:1554-1562`. `Engine/CMakeLists.txt:36-44` globs `*.cpp` and `Nodes/**/*.cpp`, so new engine files need no CMake edit. New test files need a line in `Tests/CMakeLists.txt`.
+**Registration and build.** Deep nodes are registered at `Engine/AppManager.cpp:1556-1564`, followed by Shuffle, ShuffleCopy and M37's RemoveLayers/AddLayers (`:1565-1568`). `Engine/CMakeLists.txt:36-44` globs `*.cpp` and `Nodes/**/*.cpp`, so new engine files need no CMake edit. New test files need a line in `Tests/CMakeLists.txt`.
 
 ## Design questions (answered by the user, 2026-10-02)
 
@@ -125,7 +125,7 @@ The deep grouping wraps it with those three fixes.
 - **DeepToImage.**
   - It gets a `channels` channel set, input-bound on the deep input, default **All**.
   - Each selected layer is flattened front-to-back, always with the deep `A` as coverage, whether or not the rows select `alpha` (Q3). A missing AOV or colour channel reads zero.
-  - Output colour layout follows M65 §3: All/regex rows give the deep colour storage; a view row gives `narrowestColorStorageCovering(storage bits ∪ view mask)`.
+  - Output colour layout: All/regex rows give the deep colour storage. View rows give `narrowestColorStorageCovering(union of the rows' view bits)`, so `rgb` gives RGB, `alpha` gives Alpha, and `rgba` over Alpha storage gives RGBA with RGB = 0. This is M37 RemoveLayers' "keep" narrowing, and it is what Q3's "leaving `A` out of its rows omits A" requires. (Corrected 2026-10-03: the earlier "storage bits ∪ view mask" would have kept A on an `rgb` row.)
   - With no colour row selected (e.g. rows `diffuse` alone), the flat output has no colour plane (M37 P2.T3 semantics).
 - **DeepRecolor.**
   - It gets a `channels` channel set, input-bound on the Color input, default **`rgb`**.
@@ -170,17 +170,21 @@ The deep grouping wraps it with those three fixes.
   - files: `Engine/EffectInstance.h`, `Engine/EffectInstance.cpp`, `Tests/DeepRenderTestEffect.h`, `Tests/DeepLayers_Test.cpp`
   - approach:
     - **New virtual** `EffectInstance::getDeepLayers(double time, ViewIdx view, std::list<ImageLayerDesc>* layers)`, storage level, Z/ZBack never included. The default is the layers-pass-through input's `getPresentLayers(-1)` at its pass-through time and view (`getLayersPassThroughInput`), or empty when there is none. Dot, Switch, TypedPassthrough and DeepCrop/DeepReformat need nothing more.
-    - **New branch** in `getComponentsNeededAndProduced_public` (`EffectInstance.cpp:4520`), after the disabled-node branch and before the `isMultiPlanar()` split: `if (producesDeepData())`, fill the result from `getDeepLayers`:
-      - `passThroughLayers` = the pass-through input's present layers;
-      - `comps[-1]` = the deep layers minus those (`removeFromLayersList`);
-      - input entries empty, `processChannels` all set;
+    - **New branch** in `getComponentsNeededAndProduced_public` (`EffectInstance.cpp:4647-4770`), after the disabled-node branch (`:4676-4699`) and before the `isMultiPlanar()` split (`:4701`): `if (producesDeepData())`, fill the result from `getDeepLayers` and return. Deep nodes then no longer reach `getComponentsNeededDefault`, so M37's colourless-stream suppression and identity-route handling there never apply to them; deep streams always carry colour (Q3).
+      - Let D = `getDeepLayers(time, view)` and P = the pass-through input's present layers (`getLayersPassThroughInput`, then `getAvailableLayers(ptTime, ptView, ptInput)`).
+      - `passThroughLayers` = the entries of P that appear in D with the **identical** desc (colour compared by layout, so `Color(4)` ≠ `Color(1)`). Then call `filterPassThroughLayers(ptTime, ptView, &passThroughLayers)`, keeping M37's contract (it may only drop entries).
+      - `comps[-1]` = the entries of D not kept as pass-through.
+      - **Do not use `removeFromLayersList`/plain `mergeLayersList` for this split.** They match through `findEquivalentLayer`, which treats every colour layout as one layer (`:151-195`). A node that narrows colour (DeepRemoveLayers `rgba`: Color(4)→Color(1)) or widens it (DeepRecolor writing R on an A-only stream) would otherwise present its input's layout. A layer the node dropped would also still be presented as pass-through. `getPresentLayers` (`:4799-4851`) then does `mergeLayersList(comps[-1], &passThrough)`, which is correct once the split is exact.
+      - input entries empty, `processChannels` all set, `processChannelsPerPlane` empty;
       - cached through the same `ActionsCache` call, honouring `cacheResults`.
     - **Nothing else changes.** `getPresentLayers`, `listLayersForKnob`, `listLayerViewsForKnob`, the viewer menu, Python and `registerProducedLayers` are untouched and now see deep layers.
-    - **Test stub.** `DeepSyntheticSource` overrides `getDeepLayers` with `DeepLayers::groupDeepChannels` over its image's channel names.
+    - **Test stub.** `DeepSyntheticSource` (`Tests/DeepRenderTestEffect.h:329`) overrides `getDeepLayers` with `DeepLayers::groupDeepChannels` over its image's channel names. Add a small test deep effect (same header) whose `getDeepLayers` returns a list the test sets, to exercise the split.
   - verify: `build/m61ctest.sh 'DeepLayers|DeepNodes|DeepRenderPipeline|DataKind'` green, with new cases:
     - a synthetic source with `R,G,B,A,diffuse.R,G,B` presents `{Color(4), diffuse}` at storage level;
     - a Dot and a TypedPassthrough downstream present the same;
     - a disabled deep node presents its input's;
+    - a downstream test deep effect reporting `{Color(1)}` over that source presents exactly `{Color(1)}`: no `diffuse`, and not the input's Color(4). Its `comps[-1]` is `{Color(1)}`;
+    - one reporting `{Color(4), diffuse}` over an A-only source presents `Color(4)` and has `diffuse` and `Color(4)` in `comps[-1]`;
     - `Node::listLayerViewsForKnob` on a knob declared input-bound on a test node fed by the source lists `rgba, rgb, alpha, diffuse`;
     - an A-only source presents `{Color(1)}` and lists `rgba, rgb, alpha`;
     - `registerProducedLayers` on the source registers `diffuse`.
@@ -231,7 +235,10 @@ The deep grouping wraps it with those three fixes.
       - `channels`: `KnobChannelSet`, default All, not animated, declared input-bound on input 0 in `initializeKnobs` (Shuffle precedent).
       - `zChannel`: `KnobChannelSelect`, input-bound on input 1, default `rgba.R`.
     - **Resolution.** At (time, view), resolve against Source's `getPresentLayers` (not `listLayersForKnob`, which adds a fake RGBA).
-    - **`renderInputImage`.** Fetch the resolved planes plus the RGBA colour plane (for A) in one `renderRoI`. Fetch the Z input's chosen plane and read the selected channel; a missing one gives 0.
+    - **`renderInputImage`** (`DeepFromImage.cpp:96-146`).
+      - Fetch the resolved planes, each as the Source's present storage desc, since `renderRoI` only matches planes with equal channel counts.
+      - Fetch the RGBA colour plane (for A) only when the Source presents colour storage. Since M37 a stream can be colourless (RemoveLayers `rgba`), and `renderRoI` builds no zero plane for one; only `getImage` does (M37's zero-fill). A colourless Source therefore gives A = 0 everywhere, hence no samples and no error.
+      - Fetch the Z input's chosen plane and read the selected channel; a missing one gives 0.
     - **`renderDeep`.**
       - Sample existence is still `A > 0`.
       - Always write `A` (Q3), plus every other resolved channel under `DeepLayers::channelName`. Colour bits the Source storage lacks are not written, and an `alpha` bit in the rows changes nothing.
@@ -245,6 +252,7 @@ The deep grouping wraps it with those three fixes.
     - Read(`flat-rgb-only.exr`) gives `A = 1` samples;
     - `zChannel` = `diffuse.G` places samples at depth 1;
     - on `flat-seq-layers` frame 2 (no diffuse) with a `diffuse` row, there's no diffuse channel and no error;
+    - Read(`flat-three-layers.exr`)→RemoveLayers(`rgba`) (a colourless stream, M37)→DeepFromImage renders an empty deep image with no error;
     - the existing DeepFromImage tests are unchanged and green.
   - size: L
 
@@ -265,14 +273,18 @@ The deep grouping wraps it with those three fixes.
 - [ ] M60.P2.T3 — DeepToImage flattens the layers its channel set selects
   - files: `Engine/Nodes/Deep/DeepToImage.h`, `Engine/Nodes/Deep/DeepToImage.cpp`, `Tests/DeepPipeline_Test.cpp`
   - approach:
-    - **Multiplanar.** Make DeepToImage multiplanar (so `getLayerKnobSpec` gives no host knob) and accept RGB/RGBA/Alpha/XY.
+    - **Multiplanar, the RemoveLayers way.** Copy M37's RemoveLayers overrides (`RemoveLayers.h:110-118`):
+      - `isMultiPlanar()` true, so `getLayerKnobSpec` (`EffectInstance.cpp:4901-4908`) gives no host knob;
+      - `producesMetadataLayerImplicitly()` false. Otherwise the multiplanar branch of `getComponentsNeededAndProduced_public` (`:4721-4746`) force-merges the metadata colour plane, and rows `diffuse` alone would still produce colour.
+      - Also override `isPassThroughForNonRenderedLayers()` to `ePassThroughBlockNonRenderedLayers`. Its input is deep, so its layers must not be reported as flat pass-through (`:4749-4761`).
+      - Accept RGB/RGBA/Alpha/XY (`addAcceptedComponents`, `DeepToImage.cpp:70-74`).
     - **Knob.** `channels`: `KnobChannelSet`, default All, declared input-bound on input 0 (the deep input; it lists through P1.T2's path).
-    - **`getComponentsNeededAndProduced`.** Produced = the resolved storage layers at (time, view); colour layout per the header default (All gives the deep storage, a view row widens); no pass-through.
-    - **`getPreferredMetadata`.** Sets `nComps(-1)` to the colour layout. A colourless result follows M37 P2.T3.
-    - **`render`.** One `renderDeepRoI`, then one `flattenLayersToImages` over `args.outputLayers`, mapping each output plane's channels through `DeepLayers::channelName`. Coverage is always the deep `A`, whatever the rows say (Q3).
+    - **`getComponentsNeededAndProduced`.** Produced = the resolved storage layers at (time, view), with the colour layout from the Defaults rule (All/regex: the deep storage; view rows: narrowest covering their bits). No colour row means no colour plane. Use `ChannelCopy::findColorStorage` (`Engine/Nodes/Channel/ChannelCopy.h`) on the present list.
+    - **`getPreferredMetadata`.** Sets `nComps(-1)` to the colour layout, resolved against a fixed RGBA storage, never against the input's layers at the current frame. This is M37 review round 1's rule (see `RemoveLayers::getPreferredMetadata`). If no colour row is selected, leave `nComps` alone: M37 tells colourless streams apart by present layers only, and `getImage`'s zero-fill covers downstream reads. Metadata can then disagree with an Alpha-storage frame under All. That is M37's accepted "Write follows metadata" gap.
+    - **`render`** (`DeepToImage.cpp:103-148`). One `renderDeepRoI`, then one `flattenLayersToImages` over `args.outputLayers`, mapping each output plane's channels through `DeepLayers::channelName`. Coverage is always the deep `A`, whatever the rows say (Q3).
   - verify: `build/m61ctest.sh 'DeepPipeline|DeepNodes|WriteAllLayers'`:
     - DeepRead(`deep-layers.exr`)→DeepToImage→Write (All, 32f EXR) writes exactly `R,G,B,A,diffuse.*,specular.*`, with diffuse = flatten of the diffuse samples;
-    - rows `diffuse` alone write `diffuse.*` only, with values equal to the All render's `diffuse.*` (still alpha-composited);
+    - rows `diffuse` alone write `diffuse.*` only, with values equal to the All render's `diffuse.*` (still alpha-composited). `getPresentLayers(-1)` on DeepToImage is exactly `{diffuse}`: no colour plane and no `specular` passed through;
     - rows `rgb` write `R,G,B` only, equal to the All render's;
     - `deep-noncanonical.exr` with All writes `A,AOV`;
     - with row `rgba` it writes `R,G,B,A` with RGB = 0;
@@ -341,7 +353,7 @@ The deep grouping wraps it with those three fixes.
     - **`renderDeepRoIFlattened`** (`EffectInstance.h:776`) gains `const std::list<ImageLayerDesc>& layers`, default `{RGBA}`.
       - It looks up, and stores, one cached image per layer. `ImageParams` components already distinguish them under the same node-hash key, so the existing hash purge stays exact.
       - It flattens missing ones in one `flattenLayersToImages` pass.
-    - **Viewer.** In `ViewerInstance.cpp:1434-1440`, replace the forced RGBA:
+    - **Viewer.** M50 rewrote much of `ViewerInstance.cpp`, but the deep path is intact. In the `inArgs.deepUpstream` branch that forces RGBA and `alphaChannelIndex = 3` (`ViewerInstance.cpp:1450-1457`), and in the `renderDeepRoIFlattened` call that sets `alphaImage = colorImage` for matte (`:1545-1566`), replace the forced RGBA:
       - request `params->layer` (a view maps to its storage through `isColorLayer`, as M65 §8 does);
       - for the A or matte display, request `params->alphaLayer` and pick `alphaChannelName`'s index. Absent means black, as for flat.
       - Nothing in `Gui/` changes, because the menu already comes from `getPresentLayers` (P1.T2).
@@ -376,18 +388,19 @@ The deep grouping wraps it with those three fixes.
     - **Plugin.** `fr.natron.DeepRemoveLayers`, label "DeepRemoveLayers", Deep group, deep in and out.
     - **Knobs.**
       - `operation` {remove, keep}, default remove;
-      - `channels`: `KnobChannelSet`, buttons off (M37 P1.T2), default None, input-bound on input 0;
-      - a secret sublabel from `getSummary`, as M37 does.
-    - **Kept names.**
-      - Resolve against input 0's `getPresentLayers` at (time, view).
-      - C = the resolved colour bits minus A, plus every channel of the resolved non-colour layers.
+      - `channels`: `KnobChannelSet` with `setWithChannelButtons(false)`, default a single None row (`encodeRows`), not animated, declared `eRoleInputBound` on input 0. Mirror `RemoveLayers::initializeKnobs` (`Engine/Nodes/Channel/RemoveLayers.cpp:92-140`), including its tooltip text plus "A is always kept".
+      - a secret `kNatronOfxParamStringSublabelName` sublabel, built like `RemoveLayers::buildSubLabel` (`:413-440`): the verb on its own line, then `getShortSummary(present, KnobChannelSet::kSubLabelSummaryLength)`. Refresh it from `knobChanged`, `onKnobsLoaded` and `onChannelsSelectorRefreshed`.
+    - **Kept names.** Follow M37's selection logic, `RemoveLayers::colorOutcomeFor`/`droppedLayerIDs` (`:166-237`). Those are private members over flat storage, so re-implement them here; don't share them.
+      - Resolve with `KnobChannelSet::resolve` against input 0's `getPresentLayers` at (time, view). Find the colour storage with `ChannelCopy::findColorStorage` (`Engine/Nodes/Channel/ChannelCopy.h`).
+      - C = OR of `channels | zeroChannels` over colour rows (M37 B1+B2: a view's bits the storage lacks come back in `zeroChannels`), minus A. Non-colour layers are matched by `getLayerID()`.
       - Remove mode keeps the input's channels outside C; keep mode keeps those inside C (Q3's colour rule).
       - `A`, `Z` and `ZBack` are always kept.
-      - The tooltip and sublabel say "A is always kept".
+      - **Not reused from M37:** `ChannelCopy::mapColorChannels`/`copyChannels` (flat pixel copy) and `metadataColorStorage` (deep has no metadata colour layout). Deep keeps buffers by name through P4.T1.
     - **Node actions.**
       - `isIdentity` when nothing would be dropped;
       - `getDeepLayers` = the groups of the kept names.
-    - **Registration.** Register after DeepReformat (`AppManager.cpp:~1562`; M37 moves it).
+      - No `filterPassThroughLayers` override. P1.T2's exact split already turns `getDeepLayers` into the presented list, so a dropped layer or a narrowed colour plane is never passed through. M37's flat RemoveLayers needs that override only because its colour path is the default one.
+    - **Registration.** Register after DeepReformat (`AppManager.cpp:1564`), before Shuffle.
   - verify: `build/m61ctest.sh DeepChannelNodes`, on a synthetic source `{R,G,B,A,diffuse.*,specular.*}`:
     - a new node is identity;
     - remove `diffuse` presents `{Color(4), specular}`, and the render lacks `diffuse.*` while sharing every other buffer and the sample table with the input;
@@ -405,8 +418,9 @@ The deep grouping wraps it with those three fixes.
   - files: `Engine/Nodes/Deep/DeepAddLayers.h`, `Engine/Nodes/Deep/DeepAddLayers.cpp` (new), `Engine/AppManager.cpp`, `Tests/DeepChannelNodes_Test.cpp`
   - approach:
     - **Plugin.** `fr.natron.DeepAddLayers`, Deep group.
-    - **Knob.** `layers`: `KnobChannelSet`, buttons off, default None, declared as a target. It lists the registry as views, and M37 P4.T2's "New layer…" works here.
-    - **Added names.** Resolve against the registry storage planes. addZero = the resolved channel names the input lacks at (time, view): a colour view adds only its missing R/G/B/A, and registry layers use `DeepLayers::channelName`.
+    - **Knob.** `layers`: `KnobChannelSet` with `setWithChannelButtons(false)`, default None, declared `eRoleTarget` on input 0, mirroring `AddLayers::initializeKnobs` (`Engine/Nodes/Channel/AddLayers.cpp:90-125`). It lists the registry as views, and M37 P4.T2's "New layer…" works here. A secret sublabel uses `getShortSummary` over the registry planes, as `AddLayers::buildSubLabel` (`:323-343`) does.
+    - **Registry changes re-render (M37 B5).** Copy `AddLayers::refreshForRegistryChange` (`:379-406`), called from `onChannelsSelectorRefreshed`. It builds a signature of each resolved row's layer ID and bits, and on a change calls `node->incrementKnobsAge()`. Otherwise registering a layer a row names leaves a stale deep-cache entry, because the render hash doesn't include the registry. The `refreshMetadata_public` call isn't needed, since deep metadata has no colour layout to widen.
+    - **Added names.** Resolve with `KnobChannelSet::resolve` against the registry storage planes from `node->listLayersForKnob(layers, …)` (`AddLayers::listRegistryPlanes`, `:127-138`). addZero = the resolved channel names the input lacks at (time, view): a colour view adds only its missing R/G/B/A, and registry layers use `DeepLayers::channelName`.
     - **Render.** `renderDeepReshapingChannels(args, input, {}, addZero)`.
     - **Node actions.**
       - `isIdentity` when addZero is empty;
@@ -418,7 +432,8 @@ The deep grouping wraps it with those three fixes.
     - a row `alpha` alone is identity (A is always present);
     - on DeepRead(`deep-seq-layers`) with row `diffuse`, frame 1 is identity and frame 2 adds zeros;
     - DeepAddLayers(`mask`)→DeepExpression(layer `mask`, `expression0 = "A"`) writes A into `mask.A`;
-    - `removeLayer("mask")` is refused while the node names it.
+    - `removeLayer("mask")` is refused while the node names it;
+    - registering `mask` after a row already names it bumps the node's age, and the next render adds `mask.A`.
   - size: L
 
 ## Phase 60.5: GUI and round trip
@@ -486,13 +501,13 @@ The deep grouping wraps it with those three fixes.
 - The decision is published.
 
 Execution notes:
-- **Stacking.** M60 stacks on M50. Branch `milestone/m60-deep-layers-and-channels` off `milestone/m50-proper-ocio-support` and open the PR against it (`DECISIONS/2026-09-22-stacked-milestone-prs.md`). It is the last link of the 2026-10-02 parcel (M66 → M37 → M50 → M60), and the PR stays open until the parcel UAT.
+- **Stacking.** M60 stacks on M50. Branch `milestone/m60-deep-layers-and-channels` off `milestone/m50-proper-ocio-support`, which already contains M65, M66, M37 and M50. The M60 PR targets `milestone/m50-proper-ocio-support`, not `main` (`DECISIONS/2026-09-22-stacked-milestone-prs.md`). It is the last link of the 2026-10-02 parcel (M66 → M37 → M50 → M60), and the PR stays open until the parcel UAT.
 - **It relies on M37's code:**
   - the buttonless channel set (P1.T2);
   - "New layer…" on target rows (P4.T2);
   - the colourless-stream semantics (P2.T3);
   - M37's AppManager registrations.
-- **Line numbers are as of 2026-10-02.** M37 (new Channel nodes in `AppManager.cpp`, `EffectInstance.cpp` pass-through filter and colourless changes) and M50 will move some of them, so re-find by function name.
+- **Line numbers were re-verified on 2026-10-03** against `milestone/m50-proper-ocio-support` at `9247f995a`, after M37 and M50 landed. Deep files, `DeepImage`, `DeepFlatten`, `NativeEffectBase` and `LayerRegistry` are unchanged since M66; `EffectInstance.cpp`, `Node.cpp`, `AppManager.cpp`, `ViewerInstance.cpp` and `Tests/CMakeLists.txt` moved. Still re-find by function name if a later batch shifts them.
 - **M65 vocabulary is in force.** Engine lists stay storage-level; users see views via `listLayerViewsForKnob`/`expandColorViews`. Resolve a node's own selection against the input's real `getPresentLayers`, not `listLayersForKnob`, which adds an RGBA entry to colourless streams.
 - **Container and builds.** The `natron-dev` container is single-tenant. Implementers edit in parallel and don't build. Each batch gets one detached build plus ctest (setsid+nohup, a fresh `.done` marker). Check `pgrep -x ninja` is 0 before relaunching, and never pgrep-wait on a build. New engine `.cpp` files are globbed, but they need a CMake re-configure, which the batch build does.
 - **Tests.** Run them through `build/m61ctest.sh <regex>` or `tools/ci/local/test.sh ctest debug`. The debug build defines NDEBUG, so tests use EXPECT/ASSERT, never assert().
@@ -539,3 +554,12 @@ Execution notes:
     - DeepAddLayers treats `alpha` as a no-op (P4.T3).
     - DeepToImage's rows may omit A from the *flat* output, but it always composites with the deep `A` (P2.T3).
   - **Revised:** P1.T1, P1.T3, P1.T4, P2.T1, P2.T3, P2.T5 (`CreatesAChannelTheInputLacks` re-based on an A-only source), P4.T2, P4.T3, P6.T1, the P6.T2 UAT, and the batches (P2.T6 joins B5).
+- 2026-10-03 — **§5a freshness check against M37 and M50** (planning consultant, tip `9247f995a`).
+  - **Unchanged:** every cited file and symbol still exists, and deep code is untouched since M66. M50's `convertToFormat`/`Lut.h` changes touch no M60 task.
+  - **Rewritten:**
+    - **P1.T2:** the deep branch splits pass-through from produced by *exact* desc, then applies `filterPassThroughLayers`. `removeFromLayersList`/`findEquivalentLayer` treat all colour layouts as one, which would make a narrowing or dropping deep node present its input's layers. New verify cases cover this.
+    - **P2.T1:** a colourless Source (M37) gives no samples rather than a failed `renderRoI`.
+    - **P2.T3:** DeepToImage copies RemoveLayers' `producesMetadataLayerImplicitly()=false`, blocks pass-through of the deep input's layers, and keeps metadata independent of the frame (M37 review round 1). Its view-row colour layout is corrected to the rows' bits alone, so `rgb` gives RGB, matching Q3 and its own verify; the Defaults bullet is fixed to match.
+    - **P3.T1:** viewer line numbers (M50 rewrote `ViewerInstance.cpp`).
+    - **P4.T2/P4.T3:** name M37's APIs (`setWithChannelButtons(false)`, the `getShortSummary` sublabel, `channels|zeroChannels` colour bits, `ChannelCopy::findColorStorage`). DeepAddLayers copies AddLayers' registry-signature age bump (M37 B5), or its deep cache goes stale. M37's flat `ChannelCopy` pixel copy and `filterPassThroughLayers` override are deliberately not reused.
+  - Scout-note line numbers updated. Batches unchanged, since no file overlaps changed. Stacking note restated: the PR targets `milestone/m50-proper-ocio-support`.

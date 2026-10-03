@@ -1233,3 +1233,15 @@ TEST_F(DeepFlattenLayersTest, AlphaDisplayOnAnAlphaOnlySourceShowsItsAlpha)
     EXPECT_EQ(0.f, pixel[2]);
     EXPECT_FLOAT_EQ(layeredFlattenAlpha(0) + (1.f - layeredFlattenAlpha(0)) * layeredFlattenAlpha(1), pixel[3]);
 }
+
+TEST_F(DeepFlattenLayersTest, ASourceWithSamplesButNoAlphaFailsAndLeavesNoDeepCacheEntry)
+{
+    NodePtr source = createSyntheticSource(std::vector<std::string>({ "R", "G", "B" }));
+    ASSERT_TRUE(source != NULL);
+
+    const RectI roi(0, 0, kLayeredFlattenSize, kLayeredFlattenSize);
+    DeepImagePtr out;
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed, renderDeepFrame(source, 1., roi, &out));
+    EXPECT_TRUE(source->hasPersistentMessage());
+    EXPECT_TRUE(cachedDeepEntryBounds(source, 1.).empty());
+}

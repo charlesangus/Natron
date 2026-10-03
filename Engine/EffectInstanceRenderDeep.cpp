@@ -518,6 +518,15 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
         return eRenderRoIRetCodeFailed;
     }
 
+    if (renderedImage->getSampleTable().getTotalSampleCount() > 0 && !renderedImage->hasChannel("A")) {
+        if (cacheEntry) {
+            appPTR->removeFromDeepImageCache(cacheEntry);
+        }
+        setPersistentMessage(eMessageTypeError, getScriptName_mt_safe() + " produced deep data without an alpha (A) channel");
+
+        return eRenderRoIRetCodeFailed;
+    }
+
     if (cacheEntry) {
         // The one point at which the cache captures this entry's byte cost, so it must happen
         // after renderDeep() has populated the sample table and the channel buffers.

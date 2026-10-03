@@ -1533,7 +1533,7 @@ TEST_F(DeepNodesTest, DeepRecolorOverAWiderCachedInputCopiesAndMatchesTheAliased
     }
 }
 
-TEST_F(DeepNodesTest, DeepRecolorRendersNothingWithoutAAndFailsWithAMessageWithoutAlphaOnA)
+TEST_F(DeepNodesTest, DeepRecolorRendersNothingWithoutAAndFailsDownstreamOfASourceWithoutAlpha)
 {
     const RectI frame(0, 0, kImageRenderTestWidth, kImageRenderTestHeight);
 
@@ -1560,8 +1560,31 @@ TEST_F(DeepNodesTest, DeepRecolorRendersNothingWithoutAAndFailsWithAMessageWitho
     connectNodes(noAlpha, recolor, 0, true);
 
     out.reset();
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed, renderDeepFrame(noAlpha, 1., frame, &out));
+    EXPECT_TRUE(noAlpha->hasPersistentMessage());
+    QString message;
+    int type = 0;
+    noAlpha->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ(QString::fromStdString(noAlpha->getScriptName_mt_safe() + " produced deep data without an alpha (A) channel"), message);
+
+    out.reset();
     EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed, renderDeepFrame(recolor, 1., frame, &out));
-    EXPECT_TRUE(recolor->hasPersistentMessage());
+}
+
+TEST_F(DeepNodesTest, ASyntheticSourceWithoutSamplesAndWithoutAlphaRendersOk)
+{
+    const RectI frame(0, 0, kImageRenderTestWidth, kImageRenderTestHeight);
+
+    std::vector<std::string> rgbOnly = rgbaChannelNames();
+    rgbOnly.pop_back();
+    NodePtr empty = createSyntheticSource(makeDeepImage(frame, rgbOnly, SynthPixels(), true));
+    ASSERT_TRUE(empty != NULL);
+
+    DeepImagePtr out;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(empty, 1., frame, &out));
+    ASSERT_TRUE(out != NULL);
+    EXPECT_EQ((U64)0, out->getSampleTable().getTotalSampleCount());
+    EXPECT_FALSE(empty->hasPersistentMessage());
 }
 
 TEST_F(DeepNodesTest, DeepCropIsRegisteredAndInstantiable)

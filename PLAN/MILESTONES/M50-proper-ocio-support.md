@@ -282,7 +282,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: a fresh `fetch-assets.sh` no longer creates `build/assets/OpenColorIO-Configs`; a configure with `NATRON_BUNDLE_ASSETS=ON` and no such directory succeeds; `git grep -n OpenColorIO-Configs tools cmake .github` is empty; the smoke test stays green.
   - size: M
 
-- [ ] M50.P3.T6 — Test the Read and Write defaults against the project settings
+- [x] M50.P3.T6 — Test the Read and Write defaults against the project settings
   - files: `Tests/ProjectOCIODefaults_Test.cpp` (new), `Tests/CMakeLists.txt`, `Tests/fixtures/` (reuse the existing flat EXR/PNG fixtures; add an 8-bit PNG and a 16-bit PNG only if none exists)
   - approach: drive a real ReadOIIO/ReadPNG/ReadEXR and WritePNG/WriteEXR through the Natron Read/Write wrappers in the test project.
   - verify: `ctest -R ProjectOCIODefaults` passes these cases:
@@ -305,7 +305,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: `ctest -R ViewerDisplayTransform` passes: two `FrameKey`s differing only in `_displayTransformHash` hash differently with 8-bit textures and identically with shaders, and a key round-trips through serialization. The full debug ctest stays green.
   - size: S
 
-- [ ] M50.P4.T1 — Run the viewer's CPU (8-bit texture) path through the OCIO display processor
+- [x] M50.P4.T1 — Run the viewer's CPU (8-bit texture) path through the OCIO display processor
   - files: `Engine/ViewerInstance.cpp`, `Engine/ViewerInstance.h`, `Engine/ViewerInstancePrivate.h`, `Engine/UpdateViewerParams.h`, `Tests/ViewerDisplayTransform_Test.cpp`
   - approach (design §5.1, §5.2, §10.4):
     - Replace `viewerParamsLut`/`onColorSpaceChanged` with `setDisplayTransform(display, view, look)` (`viewerParamsDisplay/View/Look` under `viewerParamsMutex`; it triggers a re-render). `UpdateViewerParams::lut` becomes `ProjectColorManagement::DisplayProcessorPtr displayProcessor`, filled in `setupMinimalUpdateViewerParams`. Delete `getLutType` and `lutFromColorspace`.
@@ -324,7 +324,7 @@ Colour management becomes a property of the project, and all of it goes through 
     - A one-off timing logged in the test shows a 1920×1080 frame transformed in under 150 ms on the container's threads. Record the figure; it doesn't fail the test.
   - size: L
 
-- [ ] M50.P4.T2 — Generate the 32f viewer shader from OCIO and upload its LUT textures
+- [x] M50.P4.T2 — Generate the 32f viewer shader from OCIO and upload its LUT textures
   - files: `Gui/ViewerGL.cpp`, `Gui/ViewerGL.h`, `Gui/ViewerGLPrivate.cpp`, `Gui/ViewerGLPrivate.h`, `Gui/Shaders.cpp`/`Gui/Shaders.h`, `Engine/OpenGLViewerI.h`
   - approach (design §5.3, §10.4):
     - Replace `fragRGB`'s LUT branches with a runtime-composed source: the OCIO shader text (`GpuShaderDesc`, `GPU_LANGUAGE_GLSL_1_2`, function `OCIODisplay`, resource prefix `ocio_`), and a `main()` that does `rgb*gain + offset` → `OCIODisplay` → gamma (threshold when ≤ 0). Gain, offset and gamma are plain uniforms, not OCIO dynamic properties.
@@ -336,7 +336,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: the Xvfb script `build/m50-gui/viewer_32f.py` (recipe `build/m61-gui/run-gui.sh`) sets `texturesBitDepth`=32f and views a constant 0.18 ACEScg. It grabs the viewer and checks that the centre pixel is 89 ±2, and within 2 code values of the 8-bit path for the same view, both at default gain/gamma and at gain 2. The script logs no GL shader compile error.
   - size: L
 
-- [ ] M50.P4.T3 — Replace the viewer colourspace combo with Display/View/Look menus
+- [x] M50.P4.T3 — Replace the viewer colourspace combo with Display/View/Look menus
   - files: `Gui/ViewerTab.cpp`, `Gui/ViewerTab.h`, `Gui/ViewerTab10.cpp`, `Gui/ViewerTab30.cpp`, `Gui/ViewerTabPrivate.h` (the serialization change is in P4.T4)
   - approach:
     - Swap `viewerColorSpace` for three `ComboBox`es:
@@ -355,13 +355,31 @@ Colour management becomes a property of the project, and all of it goes through 
     Share the screenshots with the user before sign-off.
   - size: M
 
-- [ ] M50.P4.T4 — Save each viewer's display, view and look in the project GUI state
+- [x] M50.P4.T4 — Save each viewer's display, view and look in the project GUI state
   - files: `Gui/ProjectGuiSerialization.h`, `Gui/ProjectGuiSerialization.cpp`, `Gui/ProjectGui.cpp`, `Tests/ProjectColorManagement_Test.cpp` (or a GuiTests case if the GUI state can't be reached from the Engine tests)
   - approach:
     - Replace `ViewerData::colorSpace` with `display`, `view` and `look`. Add `VIEWER_DATA_INTRODUCES_OCIO_DISPLAY 15` and make it `VIEWER_DATA_SERIALIZATION_VERSION`.
     - The writer is `ProjectGuiSerialization::initialize` (`tab->getDisplayTransform`). The restore site is the static `loadNodeGuiSerialization` in `Gui/ProjectGui.cpp`: it calls `tab->setDisplayTransform`, falling back to the project defaults when a name doesn't resolve.
     - Don't read the retired `ColorSpace` nvp at any version.
   - verify: a GuiTests (offscreen) or Engine test round-trips `ViewerData` with a non-default view and look. The P4.T3 Xvfb script additionally saves the project, reloads it, and checks that the menus keep `Un-tone-mapped`.
+  - size: M
+
+- [ ] M50.P3.T12 — A decoder the Read wrapper creates after the node exists still takes the project's per-file-type defaults
+  - files: `Engine/ReadNode.cpp` (decoder creation when a file is set on an empty Read, or after a filename is cleared and set again); the io fork's `GenericReader` guess gating if needed; `Tests/ProjectOCIODefaults_Test.cpp`
+  - approach: today a Read created empty and then given a file, or one whose filename is cleared and set again, gets a fresh decoder that never runs the guess, so it keeps `sRGB - Display`/`scene_linear`. A newly created decoder must run the same new-node guess as a decoder created with its file, so it takes the project defaults. A decoder restored from a saved project must not re-guess.
+  - verify: `ctest -R ProjectOCIODefaults` passes new cases: an empty Read given an 8-bit PNG gets `sRGB Encoded Rec.709 (sRGB)`/ACEScg; a Read whose filename is cleared and set to an EXR gets ACEScg; a saved and reloaded Read keeps its spaces.
+  - size: M
+
+- [ ] M50.P4.T6 — Keep the 8-bit viewer's CPU display transform within the frame budget
+  - files: `Engine/ViewerInstance.cpp` (`applyViewerDisplayTransform`, the 8-bit scanline path), `Engine/ProjectColorManagement.{h,cpp}` (processor creation), `Tests/ViewerDisplayTransform_Test.cpp`
+  - approach: the ACES 2.0 SDR CPU processor takes about 290 ms on a 1080p frame (4 threads, release), against the 150 ms target. Measure first. Try an OCIO optimization flag (`OPTIMIZATION_LOSSY` / `getOptimizedCPUProcessor` options), then baking the display transform to a shaper + 3D LUT for the 8-bit path, as the design's risk note allows, accepting at most 1 code value of error at 8 bits. Keep the 32f GPU path exact.
+  - verify: the logged release timing is under 150 ms at 1080p; the CPU-path value checks (89/118/46 ±1) still pass; the 8-bit and 32f paths agree within 2 code values in `build/m50-gui/viewer_32f.py`.
+  - size: M
+
+- [ ] M50.P4.T7 — Make the viewer's Display/View/Look combos wide enough for their names
+  - files: `Gui/ViewerTab.cpp` (combo creation)
+  - approach: long view and look names clip ("Un-tone-mappe", "ACES 1.3 Reference Gamu"). Size each combo to its contents (`QComboBox::AdjustToContents` or a minimum-contents length), keep the toolbar from overflowing, and put the full name in a tooltip.
+  - verify: re-run `build/m50-gui/viewer_menus.py`; the screenshots show the full names; share them with the user.
   - size: M
 
 ## Phase 50.5: Retire the built-in LUTs
@@ -510,3 +528,15 @@ Execution notes:
   - **P3.T2:** the config is pushed at the end of `Node::load` (NodeMain.cpp) and in the Read/Write `create*Node`. That covers new, pasted and swapped nodes.
   - **Open, for review:** an OCIOColorSpace created with no env config gets an empty output colourspace by default, because the plugin's describe-time default comes from the process env. In the GUI, Natron exports OCIO at startup, so the default resolves against the preference config.
   - **Fixed in the B6 round:** `Gui::debugImage` (static) used `getApp()`, so it now goes through `appPTR->getTopLevelInstance()`.
+- 2026-10-02 — **B7 landed** (\`6362fa529\` P4.T1–T4, \`af15f4ecb\` P3.T6). Full debug ctest 789/789; the Xvfb viewer_32f, viewer_menus and colour-page scripts pass on release (8u = 32f = 89; Raw 46; the swatch is 118).
+  - **Fixes during the build:**
+    - the shader needs \`#version 120\` because of OCIO's GLSL 1.2 array constructors;
+    - a pre-existing bug where a bit-depth switch uploaded into the old texture;
+    - a crash when the config callback fired after the viewer node was discarded;
+    - a working-space change now notifies \`configChanged\`.
+  - **Test moved:** the ViewerData round-trip moved to GuiTests, because it doesn't link in the Engine test binary in release.
+  - **Follow-ups found and added as tasks:**
+    - P3.T12: a decoder the Read wrapper creates later skips the defaults guess;
+    - P4.T6: the CPU path takes about 290 ms at 1080p against the 150 ms target;
+    - P4.T7: viewer combos are too narrow.
+  - **Batches:** P4.T6 and P4.T7 run in B8 with P5.T2; P3.T12 runs in B8 too.

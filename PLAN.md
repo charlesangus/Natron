@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: running
+status: paused
 current: M60.P6.T2
-pm_heartbeat: 2026-10-03T10:06:39-04:00
+pm_heartbeat: 2026-10-03T13:08:46-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -213,7 +213,7 @@ future core work has solid ground to build on.
 | M36 | ~~Add "new channel/layer" affordance wherever a node outputs channels~~ (folded into M38 Phase 38.7) | cancelled | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
 | M37 | Channel/layer management nodes | blocked | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |
 | M50 | Proper OCIO support as a project property | blocked | [M50-proper-ocio-support.md](PLAN/MILESTONES/M50-proper-ocio-support.md) |
-| M60 | Deep images get layers/channels like flat images | doing | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
+| M60 | Deep images get layers/channels like flat images | blocked | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
 | M62 | Render scaling: fix the algorithmic hotspots (bench harness, O(N²)/exponential walks, TLS copy, host copies) | todo | [M62-render-scaling-hotspots.md](PLAN/MILESTONES/M62-render-scaling-hotspots.md) |
 | M63 | Task-graph render scheduler (stub) | todo | [M63-task-graph-render-scheduler.md](PLAN/MILESTONES/M63-task-graph-render-scheduler.md) |
 | M64 | Tiled / fused rendering for bandwidth-bound chains (stub) | todo | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
@@ -263,6 +263,21 @@ future core work has solid ground to build on.
 # Open questions
 
 - **M65 awaits the user's UAT sign-off (P8.T3), deferred to the parcel UAT:** `build/appimages/M65-26cc11c9c.AppImage` with `build/appimages/M65-uat.md`. PR #35 is stacked on M61's #34; both Codex review rounds are closed.
+
+- **Parcel UAT (M61 → M65 → M66 → M37 → M50 → M60), awaiting the user.** Every PR is stacked (#34 ← #35 ← #36 ← #37 ← #38 ← #39), and every Codex round is closed. Merge bottom-up after the UAT. The top AppImage, `build/appimages/M60-ab2b06c90.AppImage`, contains everything. Each milestone's UAT script is `build/appimages/M<id>-uat.md`.
+  - **Fork PRs, merge with their milestone:**
+    - M65: openfx-misc#5, openfx-io#8, openfx-arena#2.
+    - M66: openfx-misc#6, openfx-io#9, openfx-arena#3.
+    - M50: openfx-io#10, openfx-arena#4, openfx-natron#3.
+
+    Re-pin `tools/ci/local/fetch-assets.sh` and `libs/OpenFX` to the merge SHAs afterwards.
+  - **Screenshots to approve:**
+    - M37: `build/m37-gui/shots/`;
+    - M50: `build/m50-gui/*.png`;
+    - M60: `build/m60-gui/shots/`.
+  - **Decision for you:** deep nodes draw black labels on dark navy in the node graph, which predates this work. Fix it now, or file it under M24 (node graph colour)?
+
+- **M60 awaits the parcel UAT (P5.T1 shots, P6.T2):** PR #39 is stacked on #38.
 
 - **M50 awaits the parcel UAT (screenshots and P6.T2):** run `build/appimages/M50-da55c7b39.AppImage` with `build/appimages/M50-uat.md`. The screenshots are in `build/m50-gui/`. PR #38 is stacked on #37 and both Codex rounds are closed. Fork PRs: openfx-io#10, openfx-arena#4, openfx-natron#3. Re-pin after they merge.
 

@@ -583,3 +583,12 @@ Execution notes:
   - **Defects found by the GUI pass, outside M60:**
     - The viewer toolbar's OCIO row is about 1375 px wide since M50.P4.T7 fitted the combos to their contents. It squeezes the Properties pane at 1600 px. Fixed on M50's branch and merged up.
     - Deep nodes draw black label text on dark navy in the node graph. This predates M60 and is filed for UAT.
+- 2026-10-03 — **Gate, review and package.** PR #39 is open against M50's branch.
+  - **Codex round 1:** 5 findings, all fixed in `64ee0296a`:
+    - the per-layer flatten cache no longer renders into, or retracts, another render's entry;
+    - same-ID/same-width layouts are told apart by their channels (`ImageParams::operator==` now compares channel names);
+    - DeepRead's memo is keyed by mtime and size;
+    - DeepFromImage and DeepRecolor treat a flat input with no alpha as opaque even when it has no colour plane. This replaces the planning-time "colourless source gives an empty deep image" default, which contradicted RGB-without-A = opaque.
+  - **Codex round 2:** 3 findings, 2 fixed in `ab2b06c90` (colourless DeepRecolor coverage now spans the input's region of definition). The sub-millisecond, same-size memo collision was declined.
+  - **De-flake from M66:** the M66 Magick test compared the randomly seeded Sketch per pixel. That comparison was dropped in `9c9f21f2f` on M66 and merged up through M37, M50 and M60.
+  - **Result:** full ctest 885/885, and the release AppImage `build/appimages/M60-ab2b06c90.AppImage` is launch-checked. P5.T1 shot approval and P6.T2 UAT are deferred to the parcel UAT.

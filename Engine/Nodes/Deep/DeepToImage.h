@@ -28,21 +28,34 @@
 
 #include "Global/Macros.h"
 
+#include <bitset>
 #include <list>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define PLUGINID_NATRON_DEEPTOIMAGE "fr.natron.DeepToImage"
 
+#define kDeepToImageParamChannels "channels"
+
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Flattens its deep input into a float RGBA image: every pixel's samples composited
- * front-to-back, tidied first if the input does not declare them tidy. This is the same flatten
- * the Viewer applies to a deep stream it displays, but as a node in the graph -- the one way to
- * carry on with deep data as an image mid-graph, so that the point where the depth information
- * is thrown away is always visible.
+ * @brief Flattens the layers of its deep input that its channel set selects into float images:
+ * every pixel's samples composited front-to-back, tidied first if the input does not declare
+ * them tidy. This is the same flatten the Viewer applies to a deep stream it displays, but as a
+ * node in the graph -- the one way to carry on with deep data as an image mid-graph, so that the
+ * point where the depth information is thrown away is always visible.
+ *
+ * Every layer is composited with the deep alpha A, whether or not the rows select alpha. The
+ * output colour plane is the narrowest colour layout covering the colour bits the rows select,
+ * so rgb gives RGB and leaves A out of the image; with no colour row there is no colour plane.
+ * A selected channel the deep stream lacks reads zero. None of the deep input's layers pass
+ * through: the output holds only what is flattened here.
  **/
 class DeepToImage
     : public NativeEffectBase {
@@ -54,7 +67,24 @@ public:
 
     explicit DeepToImage(NodePtr node)
         : NativeEffectBase(node)
+        , _channels()
     {
+    }
+
+    virtual bool isMultiPlanar() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual bool producesMetadataLayerImplicitly() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    // The input is deep: its layers are not flat images this node could hand on unrendered.
+    virtual EffectInstance::PassThroughEnum isPassThroughForNonRenderedLayers() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return EffectInstance::ePassThroughBlockNonRenderedLayers;
     }
 
     virtual bool supportsTiles() const OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -82,11 +112,39 @@ public:
                                       RoIMap* ret) OVERRIDE FINAL;
 
 private:
+    /**
+     * @brief What the rows select: the colour bits flattened from the deep R, G, B and A (none
+     * when no colour row is selected), and each other layer with the deep channel name of each of
+     * its channels, empty for a channel the rows leave out.
+     **/
+    struct Selection {
+        std::bitset<4> colorBits;
+        std::vector<std::pair<ImageLayerDesc, std::vector<std::string>>> layers;
+    };
+
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
+    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void getComponentsNeededAndProduced(double time,
+                                                ViewIdx view,
+                                                EffectInstance::ComponentsNeededMap* comps,
+                                                double* passThroughTime,
+                                                int* passThroughView,
+                                                int* passThroughInputNb) OVERRIDE FINAL;
+
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The rows resolved against the deep input's present layers at (time, view).
+     **/
+    Selection resolveSelection(double time, ViewIdx view) WARN_UNUSED_RETURN;
+
+    Selection selectionFor(const std::list<ImageLayerDesc>& present) const WARN_UNUSED_RETURN;
+
+    KnobChannelSetWPtr _channels;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -1383,38 +1383,6 @@ Project::initializeKnobs()
     refreshColorManagement(false);
     applyColorManagementDefaults(true);
 
-    KnobPagePtr lutPages = AppManager::createKnob<KnobPage>( this, tr("LUT") );
-    std::vector<ChoiceOption> colorSpaces;
-    // Keep it in sync with ViewerColorSpaceEnum
-    colorSpaces.push_back(ChoiceOption("Linear","",""));
-    colorSpaces.push_back(ChoiceOption("sRGB","",""));
-    colorSpaces.push_back(ChoiceOption("Rec.709","",""));
-    colorSpaces.push_back(ChoiceOption("BT1886","",""));
-
-    _imp->colorSpace8u = AppManager::createKnob<KnobChoice>( this, tr("8-Bit LUT") );
-    _imp->colorSpace8u->setName("defaultColorSpace8u");
-    _imp->colorSpace8u->setHintToolTip( tr("Defines the 1D LUT used to convert to 8-bit image data if an effect cannot process floating-point images.") );
-    _imp->colorSpace8u->setAnimationEnabled(false);
-    _imp->colorSpace8u->populateChoices(colorSpaces);
-    _imp->colorSpace8u->setDefaultValue(1);
-    lutPages->addKnob(_imp->colorSpace8u);
-
-    _imp->colorSpace16u = AppManager::createKnob<KnobChoice>( this, tr("16-Bit LUT") );
-    _imp->colorSpace16u->setName("defaultColorSpace16u");
-    _imp->colorSpace16u->setHintToolTip( tr("Defines the 1D LUT used to convert to 16-bit image data if an effect cannot process floating-point images.") );
-    _imp->colorSpace16u->setAnimationEnabled(false);
-    _imp->colorSpace16u->populateChoices(colorSpaces);
-    _imp->colorSpace16u->setDefaultValue(2);
-    lutPages->addKnob(_imp->colorSpace16u);
-
-    _imp->colorSpace32f = AppManager::createKnob<KnobChoice>( this, tr("32-Bit Floating Point LUT ") );
-    _imp->colorSpace32f->setName("defaultColorSpace32f");
-    _imp->colorSpace32f->setHintToolTip( tr("Defines the 1D LUT used to convert from 32-bit floating-point image data if an effect cannot process floating-point images.") );
-    _imp->colorSpace32f->setAnimationEnabled(false);
-    _imp->colorSpace32f->populateChoices(colorSpaces);
-    _imp->colorSpace32f->setDefaultValue(0);
-    lutPages->addKnob(_imp->colorSpace32f);
-
     KnobPagePtr infoPage = AppManager::createKnob<KnobPage>( this, tr("Info").toStdString() );
 
     _imp->projectName = AppManager::createKnob<KnobString>( this, tr("Project Name") );
@@ -2305,7 +2273,7 @@ Project::onKnobValueChanged(KnobI* knob,
     }
 
     // others knobs that should trigger auto save
-    if (knob == _imp->colorSpace8u.get() || knob == _imp->colorSpace16u.get() || knob == _imp->colorSpace32f.get() || knob == _imp->colorSpace8Bit.get() || knob == _imp->colorSpace16Bit.get() || knob == _imp->colorSpaceLog.get() || knob == _imp->colorSpaceFloat.get() || knob == _imp->viewerView.get() || knob == _imp->lockFrameRange.get() || knob == _imp->onProjectLoadCB.get() || knob == _imp->onProjectSaveCB.get() || knob == _imp->onProjectCloseCB.get() || knob == _imp->onNodeCreated.get() || knob == _imp->onNodeDeleted.get() || knob == _imp->envVars.get()) {
+    if (knob == _imp->colorSpace8Bit.get() || knob == _imp->colorSpace16Bit.get() || knob == _imp->colorSpaceLog.get() || knob == _imp->colorSpaceFloat.get() || knob == _imp->viewerView.get() || knob == _imp->lockFrameRange.get() || knob == _imp->onProjectLoadCB.get() || knob == _imp->onProjectSaveCB.get() || knob == _imp->onProjectCloseCB.get() || knob == _imp->onNodeCreated.get() || knob == _imp->onNodeDeleted.get() || knob == _imp->envVars.get()) {
         shouldAutoSave = true;
     }
 
@@ -2809,42 +2777,6 @@ Project::getProjectCreationTime() const
     QMutexLocker l(&_imp->projectLock);
 
     return _imp->projectCreationTime.toMSecsSinceEpoch();
-}
-
-inline ViewerColorSpaceEnum colorspaceParamIndexToEnum(int index)
-{
-    switch (index) {
-        case 0:
-            return eViewerColorSpaceLinear;
-        case 1:
-            return eViewerColorSpaceSRGB;
-        case 2:
-            return eViewerColorSpaceRec709;
-        default:
-            return eViewerColorSpaceLinear;
-    }
-}
-
-ViewerColorSpaceEnum
-Project::getDefaultColorSpaceForBitDepth(ImageBitDepthEnum bitdepth) const
-{
-    switch (bitdepth) {
-    case eImageBitDepthByte:
-
-        return colorspaceParamIndexToEnum(_imp->colorSpace8u->getValue());
-    case eImageBitDepthShort:
-
-        return colorspaceParamIndexToEnum(_imp->colorSpace16u->getValue());
-    case eImageBitDepthHalf: // same colorspace as float
-    case eImageBitDepthFloat:
-
-        return colorspaceParamIndexToEnum(_imp->colorSpace32f->getValue());
-    case eImageBitDepthNone:
-        assert(false);
-        break;
-    }
-
-    return eViewerColorSpaceLinear;
 }
 
 // Functions to escape / unescape characters from UTF-8 XML strings.

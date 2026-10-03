@@ -32,6 +32,7 @@
 
 #include <list>
 #include <map>
+#include <vector>
 
 #include <QByteArray>
 #include <QDir>
@@ -42,9 +43,11 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LogEntry.h"
+#include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/Settings.h"
@@ -484,6 +487,31 @@ TEST_F(ProjectColorManagementPageTest, ConfigFileEnabledStateIsRederivedAfterLoa
     EXPECT_EQ(std::string(kCustomConfigID), activeID("ocioConfig"));
     EXPECT_TRUE(configFileKnob()->isEnabled(0));
     EXPECT_TRUE(hasEntry("workingSpace", "raw"));
+}
+
+TEST_F(ProjectColorManagementPageTest, NodePreviewGoesThroughTheDefaultDisplayAndView)
+{
+    ASSERT_EQ(std::string("ACEScg"), project()->getWorkingColorSpace());
+
+    CreateNodeArgs args("net.sf.openfx.ConstantPlugin", project());
+    NodePtr constant = appPTR->getTopLevelInstance()->createNode(args);
+    ASSERT_TRUE(bool(constant));
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName("color").get());
+    ASSERT_TRUE(color != NULL);
+    color->setValues(0.18, 0.18, 0.18, 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+    const int size = 64;
+    std::vector<unsigned int> buffer(size * size, 0);
+    int width = size;
+    int height = size;
+    ASSERT_TRUE(constant->makePreviewImage(1, &width, &height, &buffer[0]));
+    ASSERT_GT(width, 0);
+    ASSERT_GT(height, 0);
+
+    const unsigned int centre = buffer[(height / 2) * width + width / 2];
+    EXPECT_NEAR(89, (int)((centre >> 16) & 0xff), 2);
+    EXPECT_NEAR(89, (int)((centre >> 8) & 0xff), 2);
+    EXPECT_NEAR(89, (int)(centre & 0xff), 2);
 }
 
 namespace {

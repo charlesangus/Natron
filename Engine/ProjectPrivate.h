@@ -86,9 +86,6 @@ public:
     KnobLayersPtr defaultLayersList;
     KnobButtonPtr setupForStereoButton;
     KnobBoolPtr previewMode; //< auto or manual
-    KnobChoicePtr colorSpace8u;
-    KnobChoicePtr colorSpace16u;
-    KnobChoicePtr colorSpace32f;
     KnobChoicePtr ocioConfig;
     KnobFilePtr ocioConfigFile;
     KnobChoicePtr workingSpace;

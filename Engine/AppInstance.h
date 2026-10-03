@@ -281,8 +281,6 @@ public:
     {
     }
 
-    Natron::ViewerColorSpaceEnum getDefaultColorSpaceForBitDepth(Natron::ImageBitDepthEnum bitdepth) const;
-
     double getProjectFrameRate() const;
 
     virtual std::string openImageFileDialog() { return std::string(); }

@@ -209,13 +209,6 @@ public:
 
     qint64 getProjectCreationTime() const;
 
-
-    /**
-     * @brief Called exclusively by the Node class when it needs to retrieve the shared ptr
-     * from the "this" pointer.
-     **/
-    ViewerColorSpaceEnum getDefaultColorSpaceForBitDepth(ImageBitDepthEnum bitdepth) const;
-
     /**
      * @brief The OpenColorIO config the project uses: an "ocio://" URI or an absolute path.
      * Nothing else may read the project's config knobs.

@@ -2056,12 +2056,6 @@ AppInstance::quitNow()
     appPTR->quitNow( shared_from_this() );
 }
 
-ViewerColorSpaceEnum
-AppInstance::getDefaultColorSpaceForBitDepth(ImageBitDepthEnum bitdepth) const
-{
-    return _imp->_currentProject->getDefaultColorSpaceForBitDepth(bitdepth);
-}
-
 void
 AppInstance::declareCurrentAppVariable_Python()
 {

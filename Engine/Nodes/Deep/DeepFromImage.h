@@ -28,18 +28,30 @@
 
 #include "Global/Macros.h"
 
+#include <bitset>
+#include <list>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define PLUGINID_NATRON_DEEPFROMIMAGE "fr.natron.DeepFromImage"
 
+#define kDeepFromImageParamChannels "channels"
+#define kDeepFromImageParamZChannel "zChannel"
+
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Turns an RGBA image into deep data: one point sample per pixel, whose R, G, B and A
- * are the pixel's and whose depth comes from the first channel of the optional Z input, or from
- * the depth knob when nothing is connected there. Every pixel gets its sample, a fully
- * transparent one included, so flattening the result gives back exactly the image that went in.
+ * @brief Turns an image into deep data: one point sample per pixel holding the pixel's value of
+ * every channel the channels knob selects, under the deep channel names DeepLayers::channelName()
+ * gives them. A is always written, taken from the Source's colour plane read as RGBA, because
+ * deep alpha is structural; a pixel whose A is not positive gets no sample. The depth comes from
+ * the zChannel channel of the optional Z input, or from the depth knob when nothing is
+ * connected there.
  **/
 class DeepFromImage
     : public NativeEffectBase {
@@ -52,6 +64,8 @@ public:
     explicit DeepFromImage(NodePtr node)
         : NativeEffectBase(node)
         , _depth()
+        , _channels()
+        , _zChannel()
     {
     }
 
@@ -66,18 +80,57 @@ public:
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual void getDeepLayers(double time, ViewIdx view, std::list<ImageLayerDesc>* layers) OVERRIDE FINAL;
+
 private:
+    /**
+     * @brief What a render at some (time, view) converts. hasColor is whether the Source presents
+     * a colour plane at all; colorBits are the R/G/B bits written, bit 3 (A) always set; planes
+     * are the other selected Source layers, each with the indices of its selected channels.
+     * opaque is set when the Source's colour storage has no alpha, which then reads as 1.
+     **/
+    struct Selection {
+        bool hasColor;
+        bool opaque;
+        std::bitset<4> colorBits;
+        std::vector<std::pair<ImageLayerDesc, std::vector<int>>> planes;
+
+        Selection()
+            : hasColor(false)
+            , opaque(false)
+            , colorBits()
+            , planes()
+        {
+        }
+    };
+
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual void initializeKnobs() OVERRIDE FINAL;
 
+    virtual void filterPassThroughLayers(double time, ViewIdx view, std::list<ImageLayerDesc>* layers) OVERRIDE FINAL;
+
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    ImagePtr renderInputImage(int inputNb,
+    Selection resolveSelection(double time, ViewIdx view) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The deep channel name of each written channel, in the order: colour bits R, G, B, A,
+     * then each plane's selected channels. Z and ZBack never appear and no name repeats.
+     * (*sources)[i] is the (plane index, channel index) the i-th name reads, plane -1 standing
+     * for the colour plane read as RGBA.
+     **/
+    static std::vector<std::string> channelNames(const Selection& selection,
+                                                 std::vector<std::pair<int, int>>* sources);
+
+    ImagePtr renderInputPlane(int inputNb,
+                              const ImageLayerDesc& layer,
                               const DeepRenderActionArgs& args,
                               bool* failed) WARN_UNUSED_RETURN;
 
     KnobDoubleWPtr _depth;
+    KnobChannelSetWPtr _channels;
+    KnobChannelSelectWPtr _zChannel;
 };
 
 NATRON_NAMESPACE_EXIT

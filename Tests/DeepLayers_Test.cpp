@@ -25,10 +25,13 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <bitset>
 #include <initializer_list>
 #include <list>
+#include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -40,19 +43,31 @@
 #include "BaseTest.h"
 #include "DeepRenderTestEffect.h"
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
+#include "Engine/DeepFlatten.h"
 #include "Engine/DeepImage.h"
 #include "Engine/DeepLayers.h"
+#include "Engine/DeepPixelOps.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Channel/RemoveLayers.h"
+#include "Engine/Nodes/Deep/DeepFromImage.h"
 #include "Engine/Nodes/TypedPassthrough.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
+#include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
+
+#include <ofxImageEffect.h>
 
 NATRON_NAMESPACE_USING
 
@@ -108,6 +123,36 @@ TEST(DeepLayers, ColorAndDottedAov)
     EXPECT_EQ("diffuse.G", DeepLayers::channelName(layers.back(), 1));
     EXPECT_EQ("B", DeepLayers::channelName(layers.front(), 2));
     expectRoundTrip(layers);
+}
+
+TEST(DeepLayers, AovChannelOrderIsCanonical)
+{
+    const char* const reversed[] = { "diffuse.B", "diffuse.G", "diffuse.R", "uv.V", "uv.U" };
+    const char* const forward[] = { "uv.U", "uv.V", "diffuse.R", "diffuse.G", "diffuse.B" };
+    const std::list<ImageLayerDesc> a = group(names(reversed, 5));
+    const std::list<ImageLayerDesc> b = group(names(forward, 5));
+
+    ASSERT_EQ(3u, a.size());
+    ASSERT_EQ(3u, b.size());
+    std::list<ImageLayerDesc>::const_iterator ia = a.begin();
+    ++ia;
+    EXPECT_EQ("diffuse", ia->getLayerID());
+    ASSERT_EQ(3, ia->getNumComponents());
+    EXPECT_EQ("R", ia->getChannels()[0]);
+    EXPECT_EQ("G", ia->getChannels()[1]);
+    EXPECT_EQ("B", ia->getChannels()[2]);
+    ++ia;
+    EXPECT_EQ("uv", ia->getLayerID());
+    ASSERT_EQ(2, ia->getNumComponents());
+    EXPECT_EQ("U", ia->getChannels()[0]);
+    EXPECT_EQ("V", ia->getChannels()[1]);
+
+    std::list<ImageLayerDesc>::const_iterator ib = b.begin();
+    ++ib;
+    ++ib;
+    EXPECT_EQ("diffuse", ib->getLayerID());
+    EXPECT_EQ(std::vector<std::string>({ "R", "G", "B" }), ib->getChannels());
+    expectRoundTrip(a);
 }
 
 TEST(DeepLayers, NonCanonicalAlphaPlusBareAov)
@@ -514,4 +559,316 @@ TEST_F(DeepLayersGraphTest, SourceRegistersItsAovs)
     ImageLayerDesc diffuse;
     ASSERT_TRUE(getApp()->getProject()->findLayer("diffuse", &diffuse));
     EXPECT_EQ(3, diffuse.getNumComponents());
+}
+
+class DeepFromImageLayersTest
+    : public BaseTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        getApp()->getProject()->reset(false, true);
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        getApp()->getProject()->reset(false, true);
+        BaseTest::TearDown();
+    }
+
+    NodePtr createReader(const std::string& fixture)
+    {
+        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+
+        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
+
+        return getApp()->createNode(readerArgs);
+    }
+
+    NodePtr createFromImageOn(const NodePtr& source)
+    {
+        NodePtr fromImage = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPFROMIMAGE));
+
+        if (!fromImage || !source) {
+            return NodePtr();
+        }
+        connectNodes(source, fromImage, 0, true);
+
+        return fromImage;
+    }
+
+    static void setRows(const NodePtr& fromImage,
+                        std::initializer_list<const char*> layers)
+    {
+        KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(fromImage->getKnobByName(kDeepFromImageParamChannels));
+        ASSERT_TRUE(bool(channels));
+
+        std::vector<ChannelSetRow> rows;
+        for (const char* layer : layers) {
+            ChannelSetRow row;
+            row.mode = ChannelSetRow::eModeLayer;
+            row.layerOrPattern = layer;
+            rows.push_back(row);
+        }
+        channels->setRows(rows);
+    }
+
+    EffectInstance::RenderRoIRetCode renderDeepFrame(const NodePtr& node,
+                                                     double time,
+                                                     DeepImagePtr* outputDeepImage)
+    {
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        ParallelRenderArgsSetter frameRenderArgs(time,
+                                                 ViewIdx(0),
+                                                 true /*isRenderUserInteraction*/,
+                                                 false /*isSequential*/,
+                                                 abortInfo,
+                                                 node,
+                                                 0 /*textureIndex*/,
+                                                 getApp()->getTimeLine().get(),
+                                                 NodePtr(),
+                                                 false /*isAnalysis*/,
+                                                 false /*draftMode*/,
+                                                 RenderStatsPtr());
+        EffectInstance::RenderDeepRoIArgs args(time,
+                                               RenderScale::identity,
+                                               0 /*mipmapLevel*/,
+                                               ViewIdx(0),
+                                               false /*byPassCache*/,
+                                               kFrame,
+                                               RectD(),
+                                               0 /*caller*/,
+                                               time);
+
+        return node->getEffectInstance()->renderDeepRoI(args, outputDeepImage);
+    }
+
+    static std::set<std::string> channelNamesOf(const DeepImage& image)
+    {
+        std::set<std::string> names;
+        const std::map<std::string, DeepChannelBuffer>& channels = image.getChannels();
+
+        for (std::map<std::string, DeepChannelBuffer>::const_iterator it = channels.begin(); it != channels.end(); ++it) {
+            names.insert(it->first);
+        }
+
+        return names;
+    }
+
+    static std::set<std::string> nameSet(std::initializer_list<const char*> list)
+    {
+        std::set<std::string> result;
+
+        for (const char* name : list) {
+            result.insert(name);
+        }
+
+        return result;
+    }
+
+    static std::vector<std::string> present(const NodePtr& node,
+                                            double time = kTime)
+    {
+        std::list<ImageLayerDesc> layers;
+
+        node->getEffectInstance()->getPresentLayers(time, ViewIdx(0), -1, &layers);
+
+        return describe(layers);
+    }
+
+    // Every pixel of the frame holds exactly one sample whose channels have the expected values
+    // and whose depth is expectedDepth.
+    static void expectOneSamplePerPixel(const DeepImage& image,
+                                        const std::map<std::string, float>& expected,
+                                        float expectedDepth)
+    {
+        for (int y = kFrame.y1; y < kFrame.y2; ++y) {
+            for (int x = kFrame.x1; x < kFrame.x2; ++x) {
+                std::vector<std::string> names;
+                std::vector<DeepSample> samples;
+                ASSERT_TRUE(DeepFlatten::getSamplesAtPixel(image, x, y, &names, &samples)) << "at pixel (" << x << ", " << y << ")";
+                ASSERT_EQ((std::size_t)1, samples.size()) << "at pixel (" << x << ", " << y << ")";
+                EXPECT_EQ(expectedDepth, samples[0].z) << "at pixel (" << x << ", " << y << ")";
+                EXPECT_EQ(expectedDepth, samples[0].zback) << "at pixel (" << x << ", " << y << ")";
+                for (std::map<std::string, float>::const_iterator it = expected.begin(); it != expected.end(); ++it) {
+                    const std::vector<std::string>::const_iterator found = std::find(names.begin(), names.end(), it->first);
+                    ASSERT_TRUE(found != names.end()) << it->first;
+                    EXPECT_EQ(it->second, samples[0].channels[found - names.begin()]) << "at pixel (" << x << ", " << y << ") channel " << it->first;
+                }
+            }
+        }
+    }
+
+    static const RectI kFrame;
+};
+
+const RectI DeepFromImageLayersTest::kFrame(0, 0, 8, 8);
+
+TEST_F(DeepFromImageLayersTest, AllConvertsEveryLayer)
+{
+    NodePtr fromImage = createFromImageOn(createReader("flat-three-layers.exr"));
+    ASSERT_TRUE(bool(fromImage));
+
+    EXPECT_EQ(ids({ "Color(4)", "diffuse", "specular" }), present(fromImage));
+
+    DeepImagePtr deep;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(fromImage, kTime, &deep));
+    ASSERT_TRUE(deep != NULL);
+    EXPECT_EQ(nameSet({ "R", "G", "B", "A", "Z", "ZBack", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelNamesOf(*deep));
+
+    std::map<std::string, float> expected;
+    expected["R"] = 1.f;
+    expected["G"] = 0.f;
+    expected["B"] = 0.f;
+    expected["A"] = 1.f;
+    expected["diffuse.R"] = 0.f;
+    expected["diffuse.G"] = 1.f;
+    expected["diffuse.B"] = 0.f;
+    expected["specular.R"] = 0.f;
+    expected["specular.G"] = 0.f;
+    expected["specular.B"] = 1.f;
+    expectOneSamplePerPixel(*deep, expected, 1.f);
+}
+
+TEST_F(DeepFromImageLayersTest, AovRowAloneStillWritesAlpha)
+{
+    NodePtr fromImage = createFromImageOn(createReader("flat-three-layers.exr"));
+    ASSERT_TRUE(bool(fromImage));
+    setRows(fromImage, { "diffuse" });
+
+    EXPECT_EQ(ids({ "Color(1)", "diffuse" }), present(fromImage));
+
+    DeepImagePtr deep;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(fromImage, kTime, &deep));
+    ASSERT_TRUE(deep != NULL);
+    EXPECT_EQ(nameSet({ "A", "Z", "ZBack", "diffuse.R", "diffuse.G", "diffuse.B" }), channelNamesOf(*deep));
+
+    std::map<std::string, float> expected;
+    expected["A"] = 1.f;
+    expected["diffuse.G"] = 1.f;
+    expectOneSamplePerPixel(*deep, expected, 1.f);
+}
+
+TEST_F(DeepFromImageLayersTest, RgbRowStillWritesAlpha)
+{
+    NodePtr fromImage = createFromImageOn(createReader("flat-three-layers.exr"));
+    ASSERT_TRUE(bool(fromImage));
+    setRows(fromImage, { kNatronColorViewRGB });
+
+    EXPECT_EQ(ids({ "Color(4)" }), present(fromImage));
+
+    DeepImagePtr deep;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(fromImage, kTime, &deep));
+    ASSERT_TRUE(deep != NULL);
+    EXPECT_EQ(nameSet({ "R", "G", "B", "A", "Z", "ZBack" }), channelNamesOf(*deep));
+}
+
+TEST_F(DeepFromImageLayersTest, RgbSourceGivesOpaqueSamples)
+{
+    NodePtr fromImage = createFromImageOn(createReader("flat-rgb-only.exr"));
+    ASSERT_TRUE(bool(fromImage));
+
+    EXPECT_EQ(ids({ "Color(4)" }), present(fromImage));
+
+    DeepImagePtr deep;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(fromImage, kTime, &deep));
+    ASSERT_TRUE(deep != NULL);
+    EXPECT_EQ(nameSet({ "R", "G", "B", "A", "Z", "ZBack" }), channelNamesOf(*deep));
+
+    std::map<std::string, float> expected;
+    expected["R"] = 1.f;
+    expected["A"] = 1.f;
+    expectOneSamplePerPixel(*deep, expected, 1.f);
+}
+
+TEST_F(DeepFromImageLayersTest, ZChannelChoosesTheDepth)
+{
+    NodePtr reader = createReader("flat-three-layers.exr");
+    NodePtr fromImage = createFromImageOn(reader);
+    ASSERT_TRUE(bool(fromImage));
+    connectNodes(reader, fromImage, 1, true);
+
+    KnobDouble* depth = dynamic_cast<KnobDouble*>(fromImage->getKnobByName("depth").get());
+    ASSERT_TRUE(depth != NULL);
+    // A decoy: with Z connected it must never be read.
+    depth->setValue(5.);
+    KnobChannelSelectPtr zChannel = std::dynamic_pointer_cast<KnobChannelSelect>(fromImage->getKnobByName(kDeepFromImageParamZChannel));
+    ASSERT_TRUE(bool(zChannel));
+    EXPECT_EQ(std::string("rgba.R"), zChannel->get());
+
+    {
+        DeepImagePtr deep;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(fromImage, kTime, &deep));
+        ASSERT_TRUE(deep != NULL);
+        expectOneSamplePerPixel(*deep, std::map<std::string, float>(), 1.f);
+    }
+
+    zChannel->set("diffuse.B");
+    {
+        DeepImagePtr deep;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(fromImage, kTime, &deep));
+        ASSERT_TRUE(deep != NULL);
+        expectOneSamplePerPixel(*deep, std::map<std::string, float>(), 0.f);
+    }
+
+    zChannel->set("diffuse.G");
+    {
+        DeepImagePtr deep;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(fromImage, kTime, &deep));
+        ASSERT_TRUE(deep != NULL);
+        expectOneSamplePerPixel(*deep, std::map<std::string, float>(), 1.f);
+    }
+
+    zChannel->set("nosuchlayer.X");
+    {
+        DeepImagePtr deep;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(fromImage, kTime, &deep));
+        ASSERT_TRUE(deep != NULL);
+        expectOneSamplePerPixel(*deep, std::map<std::string, float>(), 0.f);
+    }
+}
+
+TEST_F(DeepFromImageLayersTest, LayerMissingOnAFrameIsSkipped)
+{
+    getApp()->getTimeLine()->seekFrame(2, false, NULL, eTimelineChangeReasonOtherSeek);
+    NodePtr fromImage = createFromImageOn(createReader("flat-seq-layers.####.exr"));
+    ASSERT_TRUE(bool(fromImage));
+    setRows(fromImage, { "diffuse" });
+
+    EXPECT_EQ(ids({ "Color(1)", "diffuse" }), present(fromImage, 1.));
+    EXPECT_EQ(ids({ "Color(1)" }), present(fromImage, 2.));
+
+    DeepImagePtr deep;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(fromImage, 2., &deep));
+    ASSERT_TRUE(deep != NULL);
+    EXPECT_EQ(nameSet({ "A", "Z", "ZBack" }), channelNamesOf(*deep));
+    EXPECT_FALSE(fromImage->hasPersistentMessage());
+
+    std::map<std::string, float> expected;
+    expected["A"] = 1.f;
+    expectOneSamplePerPixel(*deep, expected, 1.f);
+}
+
+TEST_F(DeepFromImageLayersTest, ColourlessSourceGivesAnEmptyDeepImage)
+{
+    NodePtr reader = createReader("flat-three-layers.exr");
+    NodePtr remove = createNode(QString::fromUtf8(PLUGINID_NATRON_REMOVELAYERS));
+    ASSERT_TRUE(reader && remove);
+    connectNodes(reader, remove, 0, true);
+    KnobChannelSetPtr removed = std::dynamic_pointer_cast<KnobChannelSet>(remove->getKnobByName(kRemoveLayersParamChannels));
+    ASSERT_TRUE(bool(removed));
+    std::vector<ChannelSetRow> rows(1);
+    rows[0].mode = ChannelSetRow::eModeLayer;
+    rows[0].layerOrPattern = kNatronColorViewRGBA;
+    removed->setRows(rows);
+    ASSERT_EQ(ids({ "diffuse", "specular" }), present(remove));
+
+    NodePtr fromImage = createFromImageOn(remove);
+    ASSERT_TRUE(bool(fromImage));
+
+    DeepImagePtr deep;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(fromImage, kTime, &deep));
+    ASSERT_TRUE(deep != NULL);
+    EXPECT_EQ((U64)0, deep->getSampleTable().getTotalSampleCount());
+    EXPECT_FALSE(fromImage->hasPersistentMessage());
 }

@@ -191,7 +191,7 @@ The deep grouping wraps it with those three fixes.
     - Then full debug ctest green.
   - size: L
 
-- [ ] M60.P1.T3 — DeepRead reports its file's layers per frame; add dotted-AOV fixtures
+- [x] M60.P1.T3 — DeepRead reports its file's layers per frame; add dotted-AOV fixtures
   - files: `Engine/Nodes/Deep/DeepRead.h`, `Engine/Nodes/Deep/DeepRead.cpp`, `Tests/fixtures/make-deep-fixtures.py` (+ the new `.exr` outputs), `Tests/DeepReadWrite_Test.cpp`
   - approach:
     - **`DeepRead::getDeepLayers`:**
@@ -213,7 +213,7 @@ The deep grouping wraps it with those three fixes.
     - DeepRead→DeepWrite of `deep-layers.exr` writes all 12 channels back exactly.
   - size: M
 
-- [ ] M60.P1.T4 — DeepMerge reports the union of its inputs' layers; Crop and Reformat pass theirs through
+- [x] M60.P1.T4 — DeepMerge reports the union of its inputs' layers; Crop and Reformat pass theirs through
   - files: `Engine/Nodes/Deep/DeepMerge.h`, `Engine/Nodes/Deep/DeepMerge.cpp`, `Tests/DeepNodes_Test.cpp`
   - approach: `DeepMerge::getDeepLayers`:
     - in combine mode, the merge (`mergeLayersList`) of A's and B's present layers at (time, view), with the colour storage being `narrowestColorStorageCovering` of the union of both colour bit sets. This matches the render's channel union (`DeepMerge.cpp:465-472`).
@@ -228,7 +228,7 @@ The deep grouping wraps it with those three fixes.
 
 ## Phase 60.2: Deep nodes choose layers
 
-- [ ] M60.P2.T1 — DeepFromImage converts the layers its channel set selects
+- [x] M60.P2.T1 — DeepFromImage converts the layers its channel set selects
   - files: `Engine/Nodes/Deep/DeepFromImage.h`, `Engine/Nodes/Deep/DeepFromImage.cpp`, `Tests/DeepLayers_Test.cpp`
   - approach:
     - **Knobs.**
@@ -381,7 +381,7 @@ The deep grouping wraps it with those three fixes.
     - the existing renderDeepFromInput tests stay green.
   - size: M
 
-- [ ] M60.P4.T2 — DeepRemoveLayers node: remove or keep layers of a deep stream
+- [x] M60.P4.T2 — DeepRemoveLayers node: remove or keep layers of a deep stream
   - files: `Engine/Nodes/Deep/DeepRemoveLayers.h`, `Engine/Nodes/Deep/DeepRemoveLayers.cpp` (new), `Engine/AppManager.cpp`, `Tests/DeepChannelNodes_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - **Render.** Built on P4.T1's helper.
@@ -567,3 +567,11 @@ Execution notes:
   - **Note for P1.T3 and later:** P1.T2's `containsIdenticalLayer` compares layer IDs and ordered channel lists, so a node that reports its input's layers with channels in a different order counts them as produced, not passed through.
   - **Order source:** `DeepSyntheticSource` gets `diffuse` as B,G,R from a sorted map. `groupDeepChannels` must give a canonical channel order, or the comparison must ignore order.
   - **P1.T3's implementer decides which,** keeping the colour storage's bit order.
+- 2026-10-03 — **B3 landed** (`ec44b3f1a` P1.T3, `dd4641a41` P1.T4, `b60f57365` P2.T1, `3e9df7ba5` P4.T2). Full debug ctest 850/850.
+  - **Channel order.** `groupDeepChannels` now orders non-colour channels canonically: R, G, B, A, then the rest alphabetically. A deep image's channel map is sorted, so input order isn't usable.
+  - **DeepFromImage choices (accepted).**
+    - It clears pass-through, so every deep layer it reports counts as produced.
+    - With Z connected, a missing Z value reads 0.
+    - An alpha-less Source gives A = 1 samples, fixed in the B3 build round.
+  - **DeepRemoveLayers sublabel.** It adds "A is always kept" only when the rows read as if they'd drop A.
+  - **Open for review.** DeepRead's layer memo is keyed on filename only, so a file rewritten on disk keeps its old layers.

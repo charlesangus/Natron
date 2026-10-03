@@ -142,6 +142,7 @@
 #include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepRecolor.h"
 #include "Engine/Nodes/Deep/DeepReformat.h"
+#include "Engine/Nodes/Deep/DeepRemoveLayers.h"
 #include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
 #include "Engine/Nodes/TypedPassthrough.h"
@@ -1562,6 +1563,7 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
     registerBuiltInPlugin<DeepCrop>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DeepExpression>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<DeepReformat>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<DeepRemoveLayers>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<Shuffle>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<ShuffleCopy>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<RemoveLayers>(QString::fromUtf8(""), false, false);

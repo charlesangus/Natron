@@ -31,6 +31,7 @@ set(Tests_SOURCES
     Curve_Test.cpp
     DataKind_Test.cpp
     DataKindProjectLoad_Test.cpp
+    DeepChannelNodes_Test.cpp
     DeepExpressionEvaluator_Test.cpp
     DeepFlatten_Test.cpp
     DeepImage_Test.cpp

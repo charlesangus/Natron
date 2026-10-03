@@ -427,7 +427,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: the debug build is clean, and `git grep -nE 'LutManager|sRGBLut' Engine/TrackerNodeInteract.* Gui/Gui40.cpp` is empty. An Xvfb grab of a Tracker's selected-marker overlay on a constant 0.18 ACEScg source shows ≈ 118 (0.4613 sRGB) ±2. Share the screenshot with the user.
   - size: S
 
-- [ ] M50.P5.T4 — Delete the LUT classes, the named transfer curves and ViewerColorSpaceEnum
+- [x] M50.P5.T4 — Delete the LUT classes, the named transfer curves and ViewerColorSpaceEnum
   - files: `Engine/Lut.h`, `Engine/Lut.cpp`, `Global/Enums.h`, `Engine/typesystem_engine.xml`, `Tests/Lut_Test.cpp`
   - approach:
     - Remove `LutManager`, `Lut` and every named LUT (`sRGBLut` … `VLogLut`), and the `to_func_*`/`from_func_*` curve pairs (sRGB, Rec709, BT1886 and the rest); after P5.T2, P5.T3 and P5.T6 they have no users (design §10.13). Keep `floatToInt`, `intToFloat`, `rgb_to_hsv`, `hsv_to_rgb` and the `uint8xx` helpers.
@@ -544,3 +544,11 @@ Execution notes:
   - **P4.T6 hybrid display path:** a 65³ shaper+3D LUT, with each cell checked against the exact processor and failing cells and out-of-domain pixels routed to exact. A 1080p 8-bit frame drops from 282 ms to 25.6 ms (release, 4 threads) and stays within 1 code value. The first 8-bit frame after a view change pays a ~380 ms LUT build. Cheap processors (Raw, Un-tone-mapped) stay exact. The picker and previews stay exact.
   - **P3.T12:** the Read wrapper reused a `ParamExistingInstance=true` knob left by its temporary default decoder. A decoder created on a Read that had none now clears the flag and sends a user-edited filename change, so it guesses. Decoder swaps keep their spaces.
   - **UAT note:** with full names, the viewer toolbar is about 1400 px wide, so a narrow viewer crops it. There is no overflow handling.
+- 2026-10-03 — **Gate and round 1.** P5.T4 landed in `75c1cdc5b`: full ctest 792/792, smoke and release green, gate grep empty. Decision published in `9247f995a`. PR #38 opened against M37's branch.
+  - **Codex round 1:** 10 findings, all addressed in `0ac03b046` (forks io `af11bff`, arena `0f79170`).
+  - **Effective vs requested config:** separated, and a broken env override fails renders.
+  - **Working space:** pushed to existing Reads/Writes through a hidden `ocioWorkingSpace` param.
+  - **Thread safety:** the OFX getters return thread_local snapshots, and LUT-bake exceptions no longer terminate.
+  - **Checked LUT:** limited to built-in configs (narrowed from a provable bound).
+  - **Legacy data:** ViewerData loads discard the old ColorSpace, and `NATRON_CACHE_VERSION` goes 8 → 9.
+  - **Tests:** 800/800, with smoke and the viewer GUI green.

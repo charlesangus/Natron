@@ -464,7 +464,7 @@ The deep grouping wraps it with those three fixes.
 
 ## Phase 60.6: Checkpoint
 
-- [ ] M60.P6.T1 — Publish the M60 decision
+- [x] M60.P6.T1 — Publish the M60 decision
   - files: `docs/decisions/2026-10-<dd>-deep-layers-and-channels.md` (new), its `PLAN/DECISIONS/` mirror, `PLAN/DECISIONS/INDEX.md`
   - approach: Record, in the style of `2026-09-26-rgba-rgb-alpha-xy-layers.md`:
     - the deep grouping rule (colour storage by bits, Z/ZBack excluded, the channel-name mapping);

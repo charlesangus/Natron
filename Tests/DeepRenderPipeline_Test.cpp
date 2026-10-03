@@ -884,9 +884,9 @@ layeredFlattenValue(const std::string& channel,
     if (channel == "A") {
         return layeredFlattenAlpha(sample);
     }
-    const char* const names[] = { "R", "G", "B", "diffuse.R", "diffuse.G", "diffuse.B" };
+    const char* const names[] = { "R", "G", "B", "diffuse.R", "diffuse.G", "diffuse.B", "diffuse.X", "diffuse.Y", "diffuse.Z" };
     int c = 0;
-    while ((c < 6) && (channel != names[c])) {
+    while ((c < 9) && (channel != names[c])) {
         ++c;
     }
 
@@ -933,6 +933,19 @@ diffuseLayer()
     channels.push_back("R");
     channels.push_back("G");
     channels.push_back("B");
+
+    return ImageLayerDesc("diffuse", "diffuse", "", channels);
+}
+
+// The same layer ID and width as diffuseLayer(), over other channels.
+ImageLayerDesc
+diffuseXyzLayer()
+{
+    std::vector<std::string> channels;
+
+    channels.push_back("X");
+    channels.push_back("Y");
+    channels.push_back("Z");
 
     return ImageLayerDesc("diffuse", "diffuse", "", channels);
 }
@@ -1183,6 +1196,68 @@ TEST_F(DeepFlattenLayersTest, EachLayerKeepsItsOwnCacheEntry)
     EXPECT_EQ(rgba.get(), rgbaAgain.get());
     EXPECT_FLOAT_EQ(-1.f, readSentinel(diffuseAgain));
     EXPECT_FLOAT_EQ(-2.f, readSentinel(rgbaAgain));
+}
+
+TEST_F(DeepFlattenLayersTest, LayersSharingAnIdAndWidthButNotChannelsAreFlattenedApart)
+{
+    std::vector<std::string> channels;
+    channels.push_back("A");
+    channels.push_back("diffuse.R");
+    channels.push_back("diffuse.G");
+    channels.push_back("diffuse.B");
+    channels.push_back("diffuse.X");
+    channels.push_back("diffuse.Y");
+    channels.push_back("diffuse.Z");
+    NodePtr source = createSyntheticSource(channels);
+    ASSERT_TRUE(source != NULL);
+
+    std::vector<std::string> rgbChannels;
+    rgbChannels.push_back("diffuse.R");
+    rgbChannels.push_back("diffuse.G");
+    rgbChannels.push_back("diffuse.B");
+    std::vector<std::string> xyzChannels;
+    xyzChannels.push_back("diffuse.X");
+    xyzChannels.push_back("diffuse.Y");
+    xyzChannels.push_back("diffuse.Z");
+
+    {
+        std::list<ImageLayerDesc> layers;
+        layers.push_back(diffuseLayer());
+        layers.push_back(diffuseXyzLayer());
+        std::list<ImagePtr> images;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderFlattenedLayers(source, layers, &images));
+        ASSERT_EQ((std::size_t)2, images.size());
+        EXPECT_NE(images.front().get(), images.back().get());
+        expectLayeredFlatten(images.front(), rgbChannels);
+        expectLayeredFlatten(images.back(), xyzChannels);
+    }
+
+    const ImagePtr rgb = renderFlattenedLayer(source, diffuseLayer());
+    const ImagePtr xyz = renderFlattenedLayer(source, diffuseXyzLayer());
+    ASSERT_TRUE(rgb != NULL);
+    ASSERT_TRUE(xyz != NULL);
+    EXPECT_NE(rgb.get(), xyz.get());
+    EXPECT_EQ(diffuseLayer().getChannels(), rgb->getComponents().getChannels());
+    EXPECT_EQ(diffuseXyzLayer().getChannels(), xyz->getComponents().getChannels());
+    expectLayeredFlatten(rgb, rgbChannels);
+    expectLayeredFlatten(xyz, xyzChannels);
+
+    // Both layouts keep their own cache entry, so each re-render is a hit on its own.
+    writeSentinel(rgb, -1.f);
+    writeSentinel(xyz, -2.f);
+    const ImagePtr rgbAgain = renderFlattenedLayer(source, diffuseLayer());
+    const ImagePtr xyzAgain = renderFlattenedLayer(source, diffuseXyzLayer());
+    EXPECT_EQ(rgb.get(), rgbAgain.get());
+    EXPECT_EQ(xyz.get(), xyzAgain.get());
+    EXPECT_FLOAT_EQ(-1.f, readSentinel(rgbAgain));
+    EXPECT_FLOAT_EQ(-2.f, readSentinel(xyzAgain));
+
+    // The image cache's own match tells the two layouts apart, not just this lookup.
+    ImagePtr fromCache;
+    EXPECT_TRUE(appPTR->getImageOrCreate(rgb->getKey(), xyz->getParams(), &fromCache));
+    EXPECT_EQ(xyz.get(), fromCache.get());
+    EXPECT_TRUE(appPTR->getImageOrCreate(rgb->getKey(), rgb->getParams(), &fromCache));
+    EXPECT_EQ(rgb.get(), fromCache.get());
 }
 
 TEST_F(DeepFlattenLayersTest, AHashChangePurgesEveryLayer)

@@ -712,6 +712,29 @@ protected:
         }
     }
 
+    // flat-three-layers.exr with its colour removed, so only diffuse and specular remain.
+    NodePtr createColourlessThreeLayers()
+    {
+        NodePtr reader = createReader("flat-three-layers.exr");
+        NodePtr remove = createNode(QString::fromUtf8(PLUGINID_NATRON_REMOVELAYERS));
+
+        if (!reader || !remove) {
+            return NodePtr();
+        }
+        connectNodes(reader, remove, 0, true);
+        KnobChannelSetPtr removed = std::dynamic_pointer_cast<KnobChannelSet>(remove->getKnobByName(kRemoveLayersParamChannels));
+        if (!removed) {
+            return NodePtr();
+        }
+        std::vector<ChannelSetRow> rows(1);
+        rows[0].mode = ChannelSetRow::eModeLayer;
+        rows[0].layerOrPattern = kNatronColorViewRGBA;
+        removed->setRows(rows);
+        EXPECT_EQ(ids({ "diffuse", "specular" }), present(remove));
+
+        return remove;
+    }
+
     static const RectI kFrame;
 };
 
@@ -862,19 +885,10 @@ TEST_F(DeepFromImageLayersTest, LayerMissingOnAFrameIsSkipped)
     expectOneSamplePerPixel(*deep, expected, 1.f);
 }
 
-TEST_F(DeepFromImageLayersTest, ColourlessSourceGivesAnEmptyDeepImage)
+TEST_F(DeepFromImageLayersTest, ColourlessSourceGivesOpaqueSamplesCarryingItsLayers)
 {
-    NodePtr reader = createReader("flat-three-layers.exr");
-    NodePtr remove = createNode(QString::fromUtf8(PLUGINID_NATRON_REMOVELAYERS));
-    ASSERT_TRUE(reader && remove);
-    connectNodes(reader, remove, 0, true);
-    KnobChannelSetPtr removed = std::dynamic_pointer_cast<KnobChannelSet>(remove->getKnobByName(kRemoveLayersParamChannels));
-    ASSERT_TRUE(bool(removed));
-    std::vector<ChannelSetRow> rows(1);
-    rows[0].mode = ChannelSetRow::eModeLayer;
-    rows[0].layerOrPattern = kNatronColorViewRGBA;
-    removed->setRows(rows);
-    ASSERT_EQ(ids({ "diffuse", "specular" }), present(remove));
+    NodePtr remove = createColourlessThreeLayers();
+    ASSERT_TRUE(bool(remove));
 
     NodePtr fromImage = createFromImageOn(remove);
     ASSERT_TRUE(bool(fromImage));
@@ -882,8 +896,18 @@ TEST_F(DeepFromImageLayersTest, ColourlessSourceGivesAnEmptyDeepImage)
     DeepImagePtr deep;
     ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(fromImage, kTime, &deep));
     ASSERT_TRUE(deep != NULL);
-    EXPECT_EQ((U64)0, deep->getSampleTable().getTotalSampleCount());
     EXPECT_FALSE(fromImage->hasPersistentMessage());
+    EXPECT_EQ(nameSet({ "A", "Z", "ZBack", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelNamesOf(*deep));
+
+    std::map<std::string, float> expected;
+    expected["A"] = 1.f;
+    expected["diffuse.R"] = 0.f;
+    expected["diffuse.G"] = 1.f;
+    expected["diffuse.B"] = 0.f;
+    expected["specular.R"] = 0.f;
+    expected["specular.G"] = 0.f;
+    expected["specular.B"] = 1.f;
+    expectOneSamplePerPixel(*deep, expected, 1.f);
 }
 
 class DeepRecolorLayersTest
@@ -1041,6 +1065,28 @@ TEST_F(DeepRecolorLayersTest, RowForALayerTheColorImageLacksLeavesTheDeepChannel
     expected["R"] = 0.25f;
     expected["specular.G"] = 0.25f;
     expected["A"] = 0.5f;
+    expectOneSamplePerPixel(*deep, expected, 1.f);
+}
+
+TEST_F(DeepRecolorLayersTest, ColourlessColorInputIsOpaqueForItsAovs)
+{
+    NodePtr source = createDeepSource({ "R", "G", "B", "A" }, 0.25f, 0.5f);
+    NodePtr color = createColourlessThreeLayers();
+    NodePtr recolor = createRecolor(source, color, { "diffuse" });
+    ASSERT_TRUE(source && color && recolor);
+
+    DeepImagePtr deep;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(recolor, kTime, &deep));
+    ASSERT_TRUE(deep != NULL);
+    EXPECT_FALSE(recolor->hasPersistentMessage());
+    EXPECT_EQ(nameSet({ "R", "G", "B", "A", "Z", "ZBack", "diffuse.R", "diffuse.G", "diffuse.B" }), channelNamesOf(*deep));
+
+    std::map<std::string, float> expected;
+    expected["R"] = 0.25f;
+    expected["A"] = 0.5f;
+    expected["diffuse.R"] = 0.f;
+    expected["diffuse.G"] = 0.5f;
+    expected["diffuse.B"] = 0.f;
     expectOneSamplePerPixel(*deep, expected, 1.f);
 }
 

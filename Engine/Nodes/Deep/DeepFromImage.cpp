@@ -145,7 +145,7 @@ DeepFromImage::resolveSelection(double time,
     const ImageLayerDesc* storage = ChannelCopy::findColorStorage(present);
     selection.hasColor = (storage != NULL);
     const std::bitset<4> storageBits = storage ? ImageLayerDesc::colorStorageBits(*storage) : std::bitset<4>();
-    selection.opaque = storage && !storageBits[3];
+    selection.opaque = !storageBits[3];
 
     KnobChannelSetPtr channels = _channels.lock();
     if (!channels) {
@@ -305,7 +305,6 @@ DeepFromImage::renderDeep(const DeepRenderActionArgs& args)
 
     // Every input plane is fetched before any image is locked: fetching renders upstream, which
     // may write into a cached image this render would otherwise already hold a read lock on.
-    // Without a colour plane there is no alpha, hence no sample, so nothing else is needed.
     bool failed = false;
     ImagePtr color;
     std::vector<ImagePtr> planes(selection.planes.size());
@@ -314,12 +313,12 @@ DeepFromImage::renderDeep(const DeepRenderActionArgs& args)
         if (failed) {
             return eStatusFailed;
         }
-        if (color) {
-            for (std::size_t p = 0; p < selection.planes.size(); ++p) {
-                planes[p] = renderInputPlane(0, selection.planes[p].first, args, &failed);
-                if (failed) {
-                    return eStatusFailed;
-                }
+    }
+    if (color || !selection.hasColor) {
+        for (std::size_t p = 0; p < selection.planes.size(); ++p) {
+            planes[p] = renderInputPlane(0, selection.planes[p].first, args, &failed);
+            if (failed) {
+                return eStatusFailed;
             }
         }
     }
@@ -386,8 +385,14 @@ DeepFromImage::renderDeep(const DeepRenderActionArgs& args)
     clearPersistentMessage(false);
 
     const bool opaque = selection.opaque;
+    // A Source with no colour storage has no alpha to leave pixels uncovered, so, like RGB without
+    // A, it is opaque, and over the whole window it renders since no colour plane bounds it.
+    const bool coversWindow = !selection.hasColor;
 
-    return renderDeepTwoPass(args, names, alphaIndex, [&colorRead, opaque](int x, int y) -> U32 {
+    return renderDeepTwoPass(args, names, alphaIndex, [&colorRead, opaque, coversWindow](int x, int y) -> U32 {
+        if (coversWindow) {
+            return 1;
+        }
         if (!colorRead.access || !colorRead.bounds.contains(x, y)) {
             return 0;
         }

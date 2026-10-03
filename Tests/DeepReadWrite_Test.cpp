@@ -920,6 +920,31 @@ TEST_F(DeepReadWriteTest, LayersFollowTheFrameWhateverTheTimelineIsOn)
     }
 }
 
+TEST_F(DeepReadWriteTest, LayersFollowAFileRewrittenInPlace)
+{
+    QTemporaryDir tmp;
+
+    ASSERT_TRUE(tmp.isValid());
+    const QString rewritten = tmp.path() + QString::fromUtf8("/rewritten.exr");
+    ASSERT_TRUE(QFile::copy(fixturePath("deep-layers.exr"), rewritten));
+
+    NodePtr read = createDeepRead(rewritten);
+    ASSERT_TRUE(bool(read));
+    EXPECT_EQ(strings({ "Color(4)", "diffuse", "specular" }), presentLayersAt(read, 1.));
+
+    QFile replacement(fixturePath("deep-noncanonical.exr"));
+    ASSERT_TRUE(replacement.open(QIODevice::ReadOnly));
+    const QByteArray bytes = replacement.readAll();
+    QFile target(rewritten);
+    ASSERT_TRUE(target.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    ASSERT_EQ((qint64)bytes.size(), target.write(bytes));
+    target.close();
+
+    // A reload bumps the node's hash, which only clears the actions cached under the old one.
+    read->incrementKnobsAge();
+    EXPECT_EQ(strings({ "Color(1)", "AOV" }), presentLayersAt(read, 1.));
+}
+
 TEST_F(DeepReadWriteTest, RegistersTheFilesLayersInTheProject)
 {
     NodePtr read = createDeepRead(fixturePath("deep-layers.exr"));

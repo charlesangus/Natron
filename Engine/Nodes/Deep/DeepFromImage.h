@@ -87,7 +87,8 @@ private:
      * @brief What a render at some (time, view) converts. hasColor is whether the Source presents
      * a colour plane at all; colorBits are the R/G/B bits written, bit 3 (A) always set; planes
      * are the other selected Source layers, each with the indices of its selected channels.
-     * opaque is set when the Source's colour storage has no alpha, which then reads as 1.
+     * opaque is set when the Source has no alpha, whether or not it has colour storage, and A
+     * then reads as 1.
      **/
     struct Selection {
         bool hasColor;

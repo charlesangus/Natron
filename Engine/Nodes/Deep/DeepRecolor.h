@@ -95,9 +95,9 @@ private:
     /**
      * @brief What a render at some (time, view) writes. hasColor is whether the Color input
      * presents a colour plane at all; storageBits are the colour channels that plane has and
-     * opaque is set when it has no alpha, which then reads as 1. colorBits are the R/G/B bits
-     * selected, whether or not the storage has them. planes are the other selected Color layers,
-     * each with the indices of its selected channels.
+     * opaque is set when the input has no alpha, colour plane or not, which then reads as 1.
+     * colorBits are the R/G/B bits selected, whether or not the storage has them. planes are the
+     * other selected Color layers, each with the indices of its selected channels.
      **/
     struct Selection {
         bool hasColor;

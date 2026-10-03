@@ -178,7 +178,7 @@ DeepRecolor::resolveSelection(double time,
     const ImageLayerDesc* storage = ChannelCopy::findColorStorage(present);
     selection.hasColor = (storage != NULL);
     selection.storageBits = storage ? ImageLayerDesc::colorStorageBits(*storage) : std::bitset<4>();
-    selection.opaque = storage && !selection.storageBits[3];
+    selection.opaque = !selection.storageBits[3];
 
     KnobChannelSetPtr channels = _channels.lock();
     if (!channels) {
@@ -427,10 +427,21 @@ DeepRecolor::renderDeep(const DeepRenderActionArgs& args)
         planeReads.push_back(readerFor(planes[p]));
     }
     const bool opaque = selection.opaque;
+    // With no colour storage the Color input has no alpha, so, like RGB without A, it is opaque
+    // wherever one of its selected planes has pixels.
+    const bool colourless = !selection.hasColor;
 
-    return renderDeepFromInput(args, a, channelsToWrite, alphaChannelIndex, [&colorRead, &planeReads, &written, opaque, targetInputAlpha, alphaChannelIndex](int x, int y, const DeepPixelView& in, const MutableDeepPixelView& out) {
+    return renderDeepFromInput(args, a, channelsToWrite, alphaChannelIndex, [&colorRead, &planeReads, &written, opaque, colourless, targetInputAlpha, alphaChannelIndex](int x, int y, const DeepPixelView& in, const MutableDeepPixelView& out) {
         const float* const colorPixel = (colorRead.access && colorRead.bounds.contains(x, y)) ? (const float*)colorRead.access->pixelAt(x, y) : nullptr;
-        const float colorAlpha = colorPixel ? (opaque ? 1.f : colorPixel[3]) : 0.f;
+        float colorAlpha = colorPixel ? (opaque ? 1.f : colorPixel[3]) : 0.f;
+        if (colourless) {
+            for (std::size_t p = 0; p < planeReads.size(); ++p) {
+                if (planeReads[p].access && planeReads[p].bounds.contains(x, y)) {
+                    colorAlpha = 1.f;
+                    break;
+                }
+            }
+        }
         const float* alpha = in.channels[in.alphaChannelIndex];
 
         if (targetInputAlpha) {

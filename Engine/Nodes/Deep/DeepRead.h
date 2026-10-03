@@ -88,9 +88,12 @@ private:
     KnobFileWPtr _filename;
 
     // The header of the last file asked about, so scrubbing between uncached queries of one
-    // frame does not reopen it each time.
+    // frame does not reopen it each time. The file's modification time and size are part of the
+    // key because a file rewritten in place keeps its name but can change its channels.
     std::mutex _layersMemoMutex;
     std::string _layersMemoFilename;
+    long long _layersMemoModified = 0;
+    long long _layersMemoSize = -1;
     std::list<ImageLayerDesc> _layersMemo;
 };
 

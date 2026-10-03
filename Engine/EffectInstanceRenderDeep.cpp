@@ -166,6 +166,15 @@ flattenedLayerStorage(const ImageLayerDesc& layer)
     return layer.isColorLayer() ? ImageLayerDesc::mapNCompsToColorLayer(layer.getNumComponents()) : layer;
 }
 
+// ImageLayerDesc::operator==() ignores channel names, but two layers with one ID and one width can
+// still flatten different deep channels, so a flattened image only stands in for its exact layout.
+bool
+isSameFlattenedLayout(const ImageLayerDesc& a,
+                      const ImageLayerDesc& b)
+{
+    return (a == b) && (a.getChannels() == b.getChannels());
+}
+
 // Every flattened layer of a frame shares one ImageKey, so its entry is told apart by components.
 // EffectInstance::getImageFromCacheAndConvertIfNeeded() cannot do that: it treats any two colour
 // layouts as interchangeable, and would hand an Alpha flatten back for an RGBA request.
@@ -182,7 +191,7 @@ findFlattenedLayerInCache(const ImageKey& key,
         if (!*it || (*it)->getBounds().isNull()) {
             continue;
         }
-        if (((*it)->getComponents() == layer) && ((*it)->getMipmapLevel() == mipmapLevel) && ((*it)->getBitDepth() == eImageBitDepthFloat)) {
+        if (isSameFlattenedLayout((*it)->getComponents(), layer) && ((*it)->getMipmapLevel() == mipmapLevel) && ((*it)->getBitDepth() == eImageBitDepthFloat)) {
             return *it;
         }
     }
@@ -618,7 +627,7 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
         }
         int found = -1;
         for (std::size_t i = 0; i < distinct.size(); ++i) {
-            if (distinct[i].storage == storage) {
+            if (isSameFlattenedLayout(distinct[i].storage, storage)) {
                 found = (int)i;
                 break;
             }
@@ -721,18 +730,21 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
     ////////////////////////////// Allocate the flattened images ///////////////////////////////
 
     std::vector<ImagePtr> created;
+    std::vector<std::size_t> targetLayers;
     std::vector<DeepFlatten::FlattenTarget> targets;
     // Each entry is sealed the moment it is created, before it holds anything, so a flatten that
     // does not finish has to take every one of them back out itself -- otherwise every later
-    // request for this frame is served a half-filled image.
+    // request for this frame is served a half-filled image. Only entries this call created are
+    // taken back: an entry found here belongs to whichever render created it.
     const auto retractCreated = [&created]() {
         for (std::vector<ImagePtr>::const_iterator it = created.begin(); it != created.end(); ++it) {
             appPTR->removeFromNodeCache(*it);
         }
     };
 
-    for (std::vector<FlattenedLayer>::const_iterator it = distinct.begin(); it != distinct.end(); ++it) {
-        if (!it->needsFlatten) {
+    for (std::size_t i = 0; i < distinct.size(); ++i) {
+        FlattenedLayer& layer = distinct[i];
+        if (!layer.needsFlatten) {
             continue;
         }
         ImageParamsPtr params = Image::makeParams(rod,
@@ -740,25 +752,51 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
                                                   par,
                                                   args.mipmapLevel,
                                                   false /*isRoDProjectFormat*/,
-                                                  it->storage,
+                                                  layer.storage,
                                                   eImageBitDepthFloat,
                                                   getFieldingOrder());
         ImagePtr image;
-        appPTR->getImageOrCreate(key, params, &image);
+        const bool foundInCache = appPTR->getImageOrCreate(key, params, &image);
         if (!image) {
             retractCreated();
 
             return eRenderRoIRetCodeFailed;
         }
-        image->allocateMemory();
-        created.push_back(image);
+        if (foundInCache) {
+            // Another render created this entry between the lookup above and here. Its bounds
+            // need not cover this request and it may still be filling in, so it is only served
+            // once complete over the RoI; flattening into it would race its owner.
+            image->allocateMemory();
+            std::list<RectI> restToRender;
+            image->getRestToRender(args.roi, restToRender);
+            if (!args.byPassCache && isSameFlattenedLayout(image->getComponents(), layer.storage) && image->getBounds().contains(args.roi) && restToRender.empty()) {
+                layer.image = image;
+                layer.needsFlatten = false;
+                continue;
+            }
+            image = std::make_shared<Image>(key, params);
+        } else {
+            image->allocateMemory();
+            created.push_back(image);
+        }
 
         DeepFlatten::FlattenTarget target;
-        for (int c = 0; c < it->storage.getNumComponents(); ++c) {
-            target.channelNames.push_back(DeepLayers::channelName(it->storage, c));
+        for (int c = 0; c < layer.storage.getNumComponents(); ++c) {
+            target.channelNames.push_back(DeepLayers::channelName(layer.storage, c));
         }
         target.dst = image;
         targets.push_back(target);
+        targetLayers.push_back(i);
+    }
+
+    if (targets.empty()) {
+        if (outputDeepImage) {
+            const DeepImageKey deepKey(getNode().get(), nodeHash, args.time, args.view, args.scale);
+            lookupCachedDeepImage(deepKey, args.roi, outputDeepImage);
+        }
+        publishImages();
+
+        return eRenderRoIRetCodeOk;
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////
@@ -797,12 +835,10 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
         return eRenderRoIRetCodeFailed;
     }
 
-    std::size_t createdIndex = 0;
-    for (std::vector<FlattenedLayer>::iterator it = distinct.begin(); it != distinct.end(); ++it) {
-        if (it->needsFlatten) {
-            it->image = created[createdIndex++];
-            it->image->markForRendered(boundsToRender);
-        }
+    for (std::size_t t = 0; t < targets.size(); ++t) {
+        FlattenedLayer& layer = distinct[targetLayers[t]];
+        layer.image = targets[t].dst;
+        layer.image->markForRendered(boundsToRender);
     }
     publishImages();
     if (outputDeepImage) {

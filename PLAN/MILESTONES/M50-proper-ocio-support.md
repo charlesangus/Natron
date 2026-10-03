@@ -552,3 +552,4 @@ Execution notes:
   - **Checked LUT:** limited to built-in configs (narrowed from a provable bound).
   - **Legacy data:** ViewerData loads discard the old ColorSpace, and `NATRON_CACHE_VERSION` goes 8 → 9.
   - **Tests:** 800/800, with smoke and the viewer GUI green.
+- 2026-10-03 — **Review closed.** Round 2 (2 findings: push to nodes before notifying the viewers, reserve threads before starting them) fixed in `da55c7b39`; ctest 800/800. AppImage `build/appimages/M50-da55c7b39.AppImage` launch-checked. The P4.T2/P4.T3/P5.T3 shot approval and the P6.T2 UAT are deferred to the parcel UAT.

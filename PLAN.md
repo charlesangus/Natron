@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M50.P6.T2
-pm_heartbeat: 2026-10-03T04:25:46-04:00
+current: M60.P1.T1
+pm_heartbeat: 2026-10-03T05:39:31-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -212,8 +212,8 @@ future core work has solid ground to build on.
 | M35 | ~~Remove implicit output-plane shuffling from non-Shuffle nodes~~ (folded into M38) | cancelled | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M36 | ~~Add "new channel/layer" affordance wherever a node outputs channels~~ (folded into M38 Phase 38.7) | cancelled | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
 | M37 | Channel/layer management nodes | blocked | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |
-| M50 | Proper OCIO support as a project property | doing | [M50-proper-ocio-support.md](PLAN/MILESTONES/M50-proper-ocio-support.md) |
-| M60 | Deep images get layers/channels like flat images | todo | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
+| M50 | Proper OCIO support as a project property | blocked | [M50-proper-ocio-support.md](PLAN/MILESTONES/M50-proper-ocio-support.md) |
+| M60 | Deep images get layers/channels like flat images | doing | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
 | M62 | Render scaling: fix the algorithmic hotspots (bench harness, O(N²)/exponential walks, TLS copy, host copies) | todo | [M62-render-scaling-hotspots.md](PLAN/MILESTONES/M62-render-scaling-hotspots.md) |
 | M63 | Task-graph render scheduler (stub) | todo | [M63-task-graph-render-scheduler.md](PLAN/MILESTONES/M63-task-graph-render-scheduler.md) |
 | M64 | Tiled / fused rendering for bandwidth-bound chains (stub) | todo | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
@@ -263,6 +263,8 @@ future core work has solid ground to build on.
 # Open questions
 
 - **M65 awaits the user's UAT sign-off (P8.T3), deferred to the parcel UAT:** `build/appimages/M65-26cc11c9c.AppImage` with `build/appimages/M65-uat.md`. PR #35 is stacked on M61's #34; both Codex review rounds are closed.
+
+- **M50 awaits the parcel UAT (screenshots and P6.T2):** run `build/appimages/M50-da55c7b39.AppImage` with `build/appimages/M50-uat.md`. The screenshots are in `build/m50-gui/`. PR #38 is stacked on #37 and both Codex rounds are closed. Fork PRs are still to open: openfx-io `m50/project-ocio`, openfx-arena `m50/project-ocio` and openfx-natron `m50/ocio-colour-props`. Re-pin after they merge.
 
 - **M37 awaits the parcel UAT (P4.T3 shots, P6.T2):** run `build/appimages/M37-70fda8e85.AppImage` with `build/appimages/M37-uat.md`; the shots are in `build/m37-gui/shots/`. PR #37 is stacked on #36, and both Codex rounds are closed. Every properties panel is now ~17 px taller (tab-bar height fix), so look at that during the UAT.
 

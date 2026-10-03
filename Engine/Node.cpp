@@ -5986,6 +5986,12 @@ Node::onEffectKnobValueChanged(KnobI* what,
         }
     }
 
+    // Every declared layer knob is a reference counted in the project's "Used by" column,
+    // whatever its role; a target-role knob changes no input, so nothing else refreshes it.
+    if (_imp->layerKnobSources.find(what) != _imp->layerKnobSources.end()) {
+        _imp->notifyLayerReferencesChanged();
+    }
+
     bool ret = true;
     if ( what == _imp->previewEnabledKnob.lock().get() ) {
         if ( (reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonSlaveRefresh) || (reason == eValueChangedReasonNatronInternalEdited) ) {
@@ -6139,7 +6145,6 @@ Node::onEffectKnobValueChanged(KnobI* what,
     }
 
     if (!ret && (what == _imp->layerKnob.lock().get())) {
-        _imp->notifyLayerReferencesChanged();
         if (_imp->rotoContext) {
             _imp->rotoContext->retargetRotoPaintTree();
         }
@@ -6570,7 +6575,6 @@ Node::Implementation::onMaskSelectorChanged(int inputNb,
         ///Clip preferences have changed
         effect->refreshMetadata_public(true);
     }
-    notifyLayerReferencesChanged();
 }
 
 void

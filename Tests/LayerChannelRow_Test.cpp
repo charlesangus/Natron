@@ -744,6 +744,50 @@ TEST(LayerChannelRow, NewLayerEntryEmitsAndReverts)
     EXPECT_EQ("specular", row.getCurrentLayerID());
 }
 
+TEST(LayerChannelRow, SetRowListsNewLayerLastOnlyWhenRequested)
+{
+    const LayerChannelRow::ModeEnum modes[] = { LayerChannelRow::eModeSetRow0, LayerChannelRow::eModeSetRowN };
+    for (int i = 0; i < 2; ++i) {
+        LayerChannelRow row(modes[i]);
+        row.setAvailableLayers(sampleLayers(), false);
+        EXPECT_FALSE(row.getComboEntries().contains(QString::fromUtf8("New layer...")));
+
+        row.setAvailableLayers(sampleLayers(), true);
+        const QStringList entries = row.getComboEntries();
+        ASSERT_FALSE(entries.isEmpty());
+        EXPECT_EQ(QString::fromUtf8("New layer..."), entries.last());
+        EXPECT_EQ(1, entries.count(QString::fromUtf8("New layer...")));
+    }
+}
+
+TEST(LayerChannelRow, SetRowNewLayerEntryEmitsAndRevertsToTheCurrentLayer)
+{
+    LayerChannelRow row(LayerChannelRow::eModeSetRowN);
+    row.setAvailableLayers(sampleLayers(), true);
+    row.setSetRowValue(LayerChannelRow::eSetRowModeLayer, "specular", std::vector<std::string>());
+
+    int newCount = 0;
+    int chosenCount = 0;
+    int modeCount = 0;
+    QObject::connect(&row, &LayerChannelRow::newLayerRequested, [&]() {
+        ++newCount;
+    });
+    QObject::connect(&row, &LayerChannelRow::layerChosen, [&](const QString&) {
+        ++chosenCount;
+    });
+    QObject::connect(&row, &LayerChannelRow::modeChosen, [&](LayerChannelRow::SetRowModeEnum) {
+        ++modeCount;
+    });
+
+    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "New layer..."));
+    EXPECT_EQ(1, newCount);
+    EXPECT_EQ(0, chosenCount);
+    EXPECT_EQ(0, modeCount);
+    EXPECT_EQ(QString::fromUtf8("specular"), row.getCurrentComboText());
+    EXPECT_EQ("specular", row.getCurrentLayerID());
+    EXPECT_EQ(LayerChannelRow::eSetRowModeLayer, row.getSetRowMode());
+}
+
 TEST(LayerChannelRow, RemoveButtonFollowsRemovableAndEmitsOnce)
 {
     LayerChannelRow row(LayerChannelRow::eModeSetRowN);
@@ -869,4 +913,56 @@ TEST(LayerChannelRow, RegexRowShowsChannelUnionAndTogglesExcluded)
     row.setRegexChannels(std::vector<std::string>(), std::set<std::string>());
     EXPECT_TRUE(row.getChannelButtonNames().isEmpty());
     EXPECT_FALSE(row.getChannelButton("R"));
+}
+
+TEST(LayerChannelRow, SetRowWithoutChannelButtonsHidesLayerAndColourViewButtons)
+{
+    const char* layerIDs[] = { "diffuse", "alpha", "rgba" };
+    for (int i = 0; i < 3; ++i) {
+        LayerChannelRow row(LayerChannelRow::eModeSetRowN);
+        row.setAvailableLayers(rgbOnlyColorViews(), false);
+        row.setSetRowWithChannelButtons(false);
+        row.getComboBox()->setCurrentIndex(comboIndexOf(row, layerIDs[i]));
+
+        EXPECT_EQ(layerIDs[i], row.getCurrentLayerID());
+        EXPECT_TRUE(row.getChannelButtonNames().isEmpty());
+        EXPECT_FALSE(row.getChannelButton("R"));
+        EXPECT_FALSE(row.getChannelButton("A"));
+        EXPECT_FALSE(row.getChannelButton("Z"));
+    }
+}
+
+TEST(LayerChannelRow, SetRowWithoutChannelButtonsKeepsMatchesLabelOnRegexRows)
+{
+    LayerChannelRow row(LayerChannelRow::eModeSetRowN);
+    row.setAvailableLayers(sampleLayers(), false);
+    row.setSetRowWithChannelButtons(false);
+    row.setSetRowValue(LayerChannelRow::eSetRowModeRegex, "diff.*", std::vector<std::string>());
+
+    std::vector<std::string> unionChannels;
+    unionChannels.push_back("R");
+    unionChannels.push_back("G");
+    unionChannels.push_back("B");
+    row.setRegexChannels(unionChannels, std::set<std::string>());
+
+    EXPECT_TRUE(row.getChannelButtonNames().isEmpty());
+    EXPECT_FALSE(row.getChannelButton("R"));
+    EXPECT_EQ(QString::fromUtf8("matches: diffuse"), row.getMatchesText());
+}
+
+TEST(LayerChannelRow, SetRowWithChannelButtonsDefaultsOnAndRestoresButtons)
+{
+    LayerChannelRow row(LayerChannelRow::eModeSetRowN);
+    row.setAvailableLayers(sampleLayers(), false);
+    EXPECT_TRUE(row.getSetRowWithChannelButtons());
+
+    row.getComboBox()->setCurrentIndex(comboIndexOf(row, "diffuse"));
+    EXPECT_EQ(sl("R", "G", "B"), row.getChannelButtonNames());
+
+    row.setSetRowWithChannelButtons(false);
+    EXPECT_TRUE(row.getChannelButtonNames().isEmpty());
+
+    row.setSetRowWithChannelButtons(true);
+    EXPECT_EQ(sl("R", "G", "B"), row.getChannelButtonNames());
+    EXPECT_TRUE(row.getChannelButton("R")->isChecked());
 }

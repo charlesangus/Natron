@@ -720,6 +720,84 @@ EffectInstance::getThreadLocalOpenGLContext() const
     return tls->frameArgs.back()->openGLContext.lock();
 }
 
+static bool
+containsColorStorage(const std::list<ImageLayerDesc>& layers)
+{
+    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        if (it->isColorLayer() && (it->getNumComponents() > 0)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Metadata always declare a colour layout, so a stream whose colour plane was removed upstream
+// is told apart only by its present layers. An unconnected input presents nothing, yet reads as
+// an ordinary colour stream, so it never counts as colourless.
+static bool
+inputPresentsColorStorage(EffectInstance* effect,
+                          double time,
+                          ViewIdx view,
+                          int inputNb)
+{
+    if ((inputNb < 0) || !effect->getInput(inputNb)) {
+        return false;
+    }
+
+    std::list<ImageLayerDesc> present;
+    effect->getAvailableLayers(time, view, inputNb, &present);
+
+    return containsColorStorage(present);
+}
+
+static bool
+inputPresentsNoColorStorage(EffectInstance* effect,
+                            double time,
+                            ViewIdx view,
+                            int inputNb)
+{
+    return (inputNb >= 0) && effect->getInput(inputNb) && !inputPresentsColorStorage(effect, time, view, inputNb);
+}
+
+static void
+removeColorLayers(std::list<ImageLayerDesc>* layers)
+{
+    for (std::list<ImageLayerDesc>::iterator it = layers->begin(); it != layers->end();) {
+        if (it->isColorLayer()) {
+            it = layers->erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+// Only an active row naming a colour view writes colour on purpose; All and regex rows select
+// the channels the stream has, so they must not create a colour plane the stream lacks. A row-0
+// None or All hides every later row from resolve(), so those rows name nothing.
+static bool
+layerKnobSelectsColorView(const KnobIPtr& knob)
+{
+    if (const KnobChannelSet* channelSet = dynamic_cast<const KnobChannelSet*>(knob.get())) {
+        const std::vector<ChannelSetRow> rows = channelSet->getRows();
+        if (rows.empty() || (rows[0].mode == ChannelSetRow::eModeNone) || (rows[0].mode == ChannelSetRow::eModeAll)) {
+            return false;
+        }
+        for (std::vector<ChannelSetRow>::const_iterator it = rows.begin(); it != rows.end(); ++it) {
+            if ((it->mode == ChannelSetRow::eModeLayer) && ImageLayerDesc::isColorViewID(it->layerOrPattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+    if (const KnobLayerSelect* layerSelect = dynamic_cast<const KnobLayerSelect*>(knob.get())) {
+        return ImageLayerDesc::isColorViewID(layerSelect->getLayer());
+    }
+
+    return false;
+}
+
 ImagePtr
 EffectInstance::getImage(int inputNb,
                          const double time,
@@ -1120,12 +1198,40 @@ EffectInstance::getImage(int inputNb,
                                                                     thisEffectRenderTime,
                                                                     inputImagesThreadLocal), &inputImages);
 
-    if ( inputImages.empty() || (retCode != eRenderRoIRetCodeOk) ) {
+    if (retCode != eRenderRoIRetCodeOk) {
         return ImagePtr();
     }
-    assert(inputImages.size() == 1);
-
-    inputImg = inputImages.begin()->second;
+    if (inputImages.empty()) {
+        // A colourless input reads as zero in every colour channel. The plane is built here, not
+        // in renderRoI(), so that no cache ever holds pixels the input never produced.
+        if (isMask || !renderedComps.isColorLayer()) {
+            return ImagePtr();
+        }
+        std::list<ImageLayerDesc> inputPresentLayers;
+        inputEffect->getPresentLayers(time, view, -1, &inputPresentLayers);
+        if (containsColorStorage(inputPresentLayers)) {
+            return ImagePtr();
+        }
+        RectD zeroRoD;
+        bool zeroRoDIsProjectFormat = false;
+        if (inputEffect->getRegionOfDefinition_public(inputEffect->getRenderHash(), time, RenderScale::fromMipmapLevel(renderMappedMipmapLevel), view, &zeroRoD, &zeroRoDIsProjectFormat) == eStatusFailed) {
+            return ImagePtr();
+        }
+        const RectI zeroBounds = pixelRoI.intersect(zeroRoD.toPixelEnclosing(renderMappedMipmapLevel, par));
+        if (zeroBounds.isNull()) {
+            return ImagePtr();
+        }
+        // Textures are always 32-bit float, so the plane uploaded to one is built at that depth.
+        const ImageBitDepthEnum zeroDepth = (returnStorage == eStorageModeGLTex) ? eImageBitDepthFloat : depth;
+        inputImg = std::make_shared<Image>(renderedComps, zeroRoD, zeroBounds, renderMappedMipmapLevel, par, zeroDepth, inputEffect->getFieldingOrder(), false, eStorageModeRAM);
+        inputImg->fillZero(zeroBounds);
+        if (returnStorage == eStorageModeGLTex) {
+            inputImg = convertRAMImageToOpenGLTexture(inputImg);
+        }
+    } else {
+        assert(inputImages.size() == 1);
+        inputImg = inputImages.begin()->second;
+    }
 
     if ( !pixelRoI.intersects( inputImg->getBounds() ) ) {
         //The RoI requested does not intersect with the bounds of the input image, return a NULL image.
@@ -4358,11 +4464,15 @@ EffectInstance::getLayersPassThroughInput(double time,
                                           ViewIdx view,
                                           int* inputNb,
                                           double* inputTime,
-                                          ViewIdx* inputView)
+                                          ViewIdx* inputView,
+                                          bool* isIdentity)
 {
     *inputNb = getNode()->getPreferredInput();
     *inputTime = time;
     *inputView = view;
+    if (isIdentity) {
+        *isIdentity = false;
+    }
 
     if ((getNInputs() == 0) || isResolvingLayersPassThrough()) {
         return;
@@ -4385,6 +4495,9 @@ EffectInstance::getLayersPassThroughInput(double time,
         *inputNb = identityInputNb;
         *inputTime = identityTime;
         *inputView = identityView;
+        if (isIdentity) {
+            *isIdentity = true;
+        }
     }
 }
 
@@ -4447,19 +4560,43 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
     NodePtr node = getNode();
 
     ViewIdx ptView;
-    getLayersPassThroughInput(time, view, passThroughInputNb, passThroughTime, &ptView);
+    bool routesPassThroughInputOnly = false;
+    getLayersPassThroughInput(time, view, passThroughInputNb, passThroughTime, &ptView, &routesPassThroughInputOnly);
     *passThroughView = ptView;
     passThroughLayers->clear();
     processChannelsPerPlane->clear();
 
+    bool sourceInputsAreColorless = false;
     if (*passThroughInputNb != -1) {
         getAvailableLayers(*passThroughTime, ptView, *passThroughInputNb, passThroughLayers);
+        sourceInputsAreColorless = getInput(*passThroughInputNb) && !containsColorStorage(*passThroughLayers);
+        filterPassThroughLayers(*passThroughTime, ptView, passThroughLayers);
+    }
+    // Colour read from another input still makes the output's colour, e.g. Merge's A over a
+    // colourless B. An effect that is an identity of its pass-through input, such as a Switch,
+    // reads no other input, so another input's colour is not the output's.
+    for (int i = 0; sourceInputsAreColorless && !routesPassThroughInputOnly && (i < getNInputs()); ++i) {
+        if ((i != *passThroughInputNb) && !isInputMask(i) && inputPresentsColorStorage(this, time, view, i)) {
+            sourceInputsAreColorless = false;
+        }
     }
 
     // Resolve the layer knob once against the list it is bound to; the same selection is
     // read from every non-mask input and written to the output (no-shuffle invariant).
     std::vector<ResolvedLayer> selected;
     const bool hasLayerKnob = node->resolveLayerKnob(time, view, *passThroughInputNb, *passThroughTime, ptView, &selected);
+
+    // The knob lists a colour plane on every stream, so on a colourless one an All or regex row
+    // would otherwise resolve to colour, and a None row would fall back to the metadata colour
+    // plane, either way producing a plane the inputs lack.
+    const KnobIPtr layerKnob = node->getLayerKnob();
+    const bool suppressColor = sourceInputsAreColorless && hasLayerKnob && !node->isTargetLayerKnob(layerKnob) && !layerKnobSelectsColorView(layerKnob);
+    if (suppressColor) {
+        std::vector<ResolvedLayer>::iterator newEnd = std::remove_if(selected.begin(), selected.end(), [](const ResolvedLayer& layer) {
+            return layer.desc.isColorLayer();
+        });
+        selected.erase(newEnd, selected.end());
+    }
 
     {
         std::list<ImageLayerDesc> metadataPlanes;
@@ -4476,6 +4613,9 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
         }
         if (outputPlanes.empty()) {
             outputPlanes = metadataPlanes;
+            if (suppressColor) {
+                removeColorLayers(&outputPlanes);
+            }
         }
     }
 
@@ -4604,6 +4744,13 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
         if (*passThroughInputNb >= 0) {
             NodePtr node = getNode();
             NodePtr ioContainer = node ? node->getIOContainer() : NodePtr();
+            // Most effects can make colour without their pass-through input's (a generator, or one
+            // reading another input), so only an effect whose colour comes from that input alone
+            // loses the plane when the input has none; an encoder would otherwise write zeros.
+            const bool colorOnlyFromPassThrough = producesColorOnlyFromPassThroughInput() || (ioContainer && ioContainer->getEffectInstance()->producesColorOnlyFromPassThroughInput());
+            if (colorOnlyFromPassThrough && inputPresentsNoColorStorage(this, *passThroughTime, ViewIdx(*passThroughView), *passThroughInputNb)) {
+                removeColorLayers(&metadataLayers);
+            }
             if (ioContainer) {
                 ioContainer->getEffectInstance()->filterLayersForEmbeddedInput(*passThroughInputNb, &metadataLayers);
             }
@@ -4619,6 +4766,8 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
         getAvailableLayers(*passThroughTime, ViewIdx(*passThroughView), *passThroughInputNb, &upstreamAvailableLayers);
 
         removeFromLayersList(outputLayers, &upstreamAvailableLayers);
+
+        filterPassThroughLayers(*passThroughTime, ViewIdx(*passThroughView), &upstreamAvailableLayers);
 
         *passThroughLayers = upstreamAvailableLayers;
 

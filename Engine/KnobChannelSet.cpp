@@ -60,6 +60,7 @@ KnobChannelSet::KnobChannelSet(KnobHolder* holder,
     , _cachedRaw()
     , _cachedRows()
     , _cachedPatterns()
+    , _withChannelButtons(true)
 {
 }
 
@@ -363,6 +364,9 @@ void
 KnobChannelSet::setChannels(int row,
                             const std::vector<std::string>& channels)
 {
+    if (!_withChannelButtons) {
+        throw std::invalid_argument("This channel set selects whole layers; its channels cannot be set");
+    }
     std::vector<ChannelSetRow> rows = getRows();
 
     if (row < 0 || row >= (int)rows.size()) {
@@ -404,6 +408,9 @@ void
 KnobChannelSet::setExcludedChannels(int row,
                                     const std::vector<std::string>& names)
 {
+    if (!_withChannelButtons) {
+        throw std::invalid_argument("This channel set selects whole layers; its excluded channels cannot be set");
+    }
     std::vector<ChannelSetRow> rows = getRows();
 
     if (row < 0 || row >= (int)rows.size()) {
@@ -594,6 +601,12 @@ KnobChannelSet::resolve(const std::list<ImageLayerDesc>& present) const
 
     if (rows.empty() || rows[0].mode == ChannelSetRow::eModeNone) {
         return out;
+    }
+
+    if (!_withChannelButtons) {
+        for (std::size_t i = 0; i < rows.size(); ++i) {
+            rows[i].channels.clear();
+        }
     }
 
     if (rows[0].mode == ChannelSetRow::eModeAll) {
@@ -822,28 +835,32 @@ KnobChannelSet::getSummary() const
     return summary;
 }
 
-std::string
-KnobChannelSet::getSummary(const std::list<ImageLayerDesc>& present) const
+std::vector<std::string>
+KnobChannelSet::getSummaryItems(const std::list<ImageLayerDesc>& present) const
 {
     std::vector<ChannelSetRow> rows;
     std::vector<QRegularExpression> patterns;
+    std::vector<std::string> items;
 
     getRowsAndPatterns(&rows, &patterns);
 
     if (rows.empty()) {
-        return std::string();
+        return items;
     }
     if (rows[0].mode == ChannelSetRow::eModeNone) {
-        return tr("None").toStdString();
+        items.push_back(tr("None").toStdString());
+
+        return items;
     }
     if (rows[0].mode == ChannelSetRow::eModeAll) {
-        return tr("All").toStdString();
+        items.push_back(tr("All").toStdString());
+
+        return items;
     }
 
-    std::string summary;
     for (std::size_t i = 0; i < rows.size(); ++i) {
         if (rows[i].mode == ChannelSetRow::eModeLayer) {
-            appendSummaryItem(&summary, layerRowSummaryItem(rows[i].layerOrPattern, rows[i].channels));
+            items.push_back(layerRowSummaryItem(rows[i].layerOrPattern, rows[i].channels));
             continue;
         }
         if (rows[i].mode != ChannelSetRow::eModeRegex) {
@@ -857,13 +874,49 @@ KnobChannelSet::getSummary(const std::list<ImageLayerDesc>& present) const
                 if (item.empty()) {
                     continue;
                 }
-                appendSummaryItem(&summary, item);
+                items.push_back(item);
                 matchedAny = true;
             }
         }
         if (!matchedAny) {
-            appendSummaryItem(&summary, tr("(no match)").toStdString());
+            items.push_back(tr("(no match)").toStdString());
         }
+    }
+
+    return items;
+}
+
+std::string
+KnobChannelSet::getSummary(const std::list<ImageLayerDesc>& present) const
+{
+    const std::vector<std::string> items = getSummaryItems(present);
+    std::string summary;
+
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        appendSummaryItem(&summary, items[i]);
+    }
+
+    return summary;
+}
+
+std::string
+KnobChannelSet::getShortSummary(const std::list<ImageLayerDesc>& present,
+                                std::size_t maxLength) const
+{
+    const std::vector<std::string> items = getSummaryItems(present);
+    std::string summary;
+    std::size_t shown = 0;
+
+    for (; shown < items.size(); ++shown) {
+        std::string longer = summary;
+        appendSummaryItem(&longer, items[shown]);
+        if ((shown > 0) && (longer.size() > maxLength)) {
+            break;
+        }
+        summary = longer;
+    }
+    if (shown < items.size()) {
+        summary += " +" + std::to_string(items.size() - shown);
     }
 
     return summary;

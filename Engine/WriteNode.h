@@ -91,6 +91,10 @@ public:
     virtual bool isOutput() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void filterLayersForEmbeddedInput(int inputNb, std::list<ImageLayerDesc>* layers) OVERRIDE FINAL;
+    virtual bool producesColorOnlyFromPassThroughInput() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
     virtual bool isHostChannelSelectorSupported(bool* defaultR, bool* defaultG, bool* defaultB, bool* defaultA) const OVERRIDE WARN_UNUSED_RETURN;
     virtual int getMajorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual int getMinorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN;

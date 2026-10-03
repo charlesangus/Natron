@@ -51,12 +51,19 @@
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobFile.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Deep/DeepAddLayers.h"
+#include "Engine/Nodes/Deep/DeepExpression.h"
+#include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepRemoveLayers.h"
 #include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Plugin.h"
+#include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -167,6 +174,28 @@ makeLayeredImage()
     return image;
 }
 
+// Same layout and values as makeLayeredImage(), but holding only alpha besides the depths.
+DeepImagePtr
+makeAlphaOnlyImage()
+{
+    DeepImagePtr image = makeLayeredImage();
+    const std::size_t nChannels = sizeof(kLayeredChannels) / sizeof(kLayeredChannels[0]);
+
+    for (std::size_t c = 0; c < nChannels; ++c) {
+        if (std::string(kLayeredChannels[c]) != "A") {
+            image->removeChannel(kLayeredChannels[c]);
+        }
+    }
+
+    return image;
+}
+
+QString
+fixturePath(const char* name)
+{
+    return QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/") + QString::fromUtf8(name);
+}
+
 } // namespace
 
 class DeepChannelNodesTest
@@ -192,6 +221,8 @@ protected:
         }
         _nodes.clear();
         deepSyntheticSourceImages().clear();
+        std::string error;
+        getApp()->getProject()->removeLayer("mask", &error);
         BaseTest::TearDown();
     }
 
@@ -262,14 +293,15 @@ protected:
         return describe(layers);
     }
 
-    static bool isIdentityOfSource(const NodePtr& node)
+    static bool isIdentityOfSource(const NodePtr& node,
+                                   double time = kTime)
     {
         EffectInstancePtr effect = node->getEffectInstance();
         const RectI window(0, 0, kWidth, kHeight);
         double inputTime = 0.;
         ViewIdx inputView(0);
         int inputNb = -1;
-        const bool identity = effect->isIdentity_public(false, effect->getRenderHash(), kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb);
+        const bool identity = effect->isIdentity_public(false, effect->getRenderHash(), time, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb);
 
         return identity && (inputNb == 0);
     }
@@ -277,11 +309,12 @@ protected:
     // Renders node's deep data the way the scheduler does, under frame args carrying an abort
     // flag for EffectInstance::aborted() to read.
     EffectInstance::RenderRoIRetCode renderDeepFrame(const NodePtr& node,
-                                                     DeepImagePtr* outputDeepImage)
+                                                     DeepImagePtr* outputDeepImage,
+                                                     double time = kTime)
     {
         const RectI roi(0, 0, kWidth, kHeight);
         AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
-        ParallelRenderArgsSetter frameRenderArgs(kTime,
+        ParallelRenderArgsSetter frameRenderArgs(time,
                                                  ViewIdx(0),
                                                  true /*isRenderUserInteraction*/,
                                                  false /*isSequential*/,
@@ -293,7 +326,7 @@ protected:
                                                  false /*isAnalysis*/,
                                                  false /*draftMode*/,
                                                  RenderStatsPtr());
-        EffectInstance::RenderDeepRoIArgs args(kTime,
+        EffectInstance::RenderDeepRoIArgs args(time,
                                                RenderScale::identity,
                                                0 /*mipmapLevel*/,
                                                ViewIdx(0),
@@ -301,14 +334,16 @@ protected:
                                                roi,
                                                RectD(),
                                                0 /*caller*/,
-                                               kTime);
+                                               time);
 
         return node->getEffectInstance()->renderDeepRoI(args, outputDeepImage);
     }
 
-    // Renders node's float RGBA image through the ordinary image path, request pass included.
+    // Renders node's float image of layer through the ordinary image path, request pass
+    // included. *outputImage stays NULL when node does not output layer.
     EffectInstance::RenderRoIRetCode renderImageFrame(const NodePtr& node,
-                                                      ImagePtr* outputImage)
+                                                      ImagePtr* outputImage,
+                                                      const ImageLayerDesc& layer = ImageLayerDesc::getRGBAComponents())
     {
         outputImage->reset();
 
@@ -341,7 +376,7 @@ protected:
         frameRenderArgs.updateNodesRequest(request);
 
         std::list<ImageLayerDesc> components;
-        components.push_back(ImageLayerDesc::getRGBAComponents());
+        components.push_back(layer);
         EffectInstance::RenderRoIArgs args(kTime,
                                            RenderScale::identity,
                                            0 /*mipmapLevel*/,
@@ -385,6 +420,71 @@ protected:
         EXPECT_EQ(input->getSampleTable().getTotalSampleCount(), output->getSampleTable().getTotalSampleCount());
         for (std::set<std::string>::const_iterator it = expected.begin(); it != expected.end(); ++it) {
             EXPECT_TRUE(output->sharesChannelStorageWith(*input, *it)) << *it;
+        }
+    }
+
+    NodePtr createDeepRead(const QString& filename)
+    {
+        NodePtr read = createTrackedNode(PLUGINID_NATRON_DEEPREAD);
+
+        if (!read) {
+            return read;
+        }
+        KnobFile* knob = dynamic_cast<KnobFile*>(read->getKnobByName("filename").get());
+        if (!knob) {
+            return NodePtr();
+        }
+        knob->setValue(filename.toStdString());
+
+        return read;
+    }
+
+    // A DeepAddLayers fed by input, its layers knob returned in *layers.
+    NodePtr createAddOn(const NodePtr& input,
+                        KnobChannelSetPtr* layers)
+    {
+        NodePtr add = createTrackedNode(PLUGINID_NATRON_DEEPADDLAYERS);
+
+        if (!add) {
+            return add;
+        }
+        if (input) {
+            connectNodes(input, add, 0, true);
+        }
+        *layers = std::dynamic_pointer_cast<KnobChannelSet>(add->getKnobByName(kDeepAddLayersParamLayers));
+        if (!*layers) {
+            return NodePtr();
+        }
+
+        return add;
+    }
+
+    void registerLayer(const std::string& id,
+                       const std::vector<std::string>& channels)
+    {
+        std::string error;
+        const LayerRegistry::AddResultEnum result = getApp()->getProject()->addLayer(ImageLayerDesc(id, id, "", channels), LayerRegistryEntry::eOriginUser, &error);
+
+        EXPECT_NE(LayerRegistry::eAddResultRefused, result) << id << ": " << error;
+    }
+
+    void registerMask()
+    {
+        registerLayer("mask", std::vector<std::string>(1, "A"));
+    }
+
+    // Every sample of channel in image reads value.
+    static void expectChannelIs(const DeepImage& image,
+                                const std::string& channel,
+                                float value)
+    {
+        const DeepChannelBuffer* buffer = image.getChannel(channel);
+
+        ASSERT_TRUE(buffer != NULL) << channel;
+        const std::size_t total = (std::size_t)image.getSampleTable().getTotalSampleCount();
+        ASSERT_EQ(total, buffer->size()) << channel;
+        for (std::size_t s = 0; s < total; ++s) {
+            EXPECT_EQ(value, buffer->data()[s]) << channel << " sample " << s;
         }
     }
 
@@ -549,13 +649,267 @@ TEST_F(DeepChannelNodesTest, DeepToImageAfterRemovingDiffuseHasNoDiffuse)
     ASSERT_TRUE(bool(toImage));
     connectNodes(remove, toImage, 0, true);
 
-    const std::vector<std::string> layers = present(toImage);
-    for (std::vector<std::string>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
-        EXPECT_NE(std::string("diffuse"), *it);
+    EXPECT_EQ(ids({ "Color(4)", "specular" }), present(toImage));
+
+    std::list<ImageLayerDesc> sourceLayers;
+    source->getEffectInstance()->getPresentLayers(kTime, ViewIdx(0), -1, &sourceLayers);
+    const ImageLayerDesc* diffuse = NULL;
+    const ImageLayerDesc* specular = NULL;
+    for (std::list<ImageLayerDesc>::const_iterator it = sourceLayers.begin(); it != sourceLayers.end(); ++it) {
+        if (it->getLayerID() == "diffuse") {
+            diffuse = &*it;
+        } else if (it->getLayerID() == "specular") {
+            specular = &*it;
+        }
     }
+    ASSERT_TRUE(diffuse != NULL);
+    ASSERT_TRUE(specular != NULL);
 
     ImagePtr image;
     EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderImageFrame(toImage, &image));
     EXPECT_TRUE(image != NULL);
+
+    ImagePtr specularImage;
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderImageFrame(toImage, &specularImage, *specular));
+    ASSERT_TRUE(specularImage != NULL);
+    EXPECT_EQ(3u, specularImage->getComponentsCount());
+
+    ImagePtr diffuseImage;
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderImageFrame(toImage, &diffuseImage, *diffuse));
+    EXPECT_TRUE(diffuseImage == NULL);
     EXPECT_FALSE(toImage->hasPersistentMessage());
+}
+
+TEST_F(DeepChannelNodesTest, DeepAddLayersIsRegisteredAsADeepNodeSelectingNothing)
+{
+    const PluginsMap& plugins = appPTR->getPluginsList();
+
+    ASSERT_TRUE(plugins.find(PLUGINID_NATRON_DEEPADDLAYERS) != plugins.end());
+
+    NodePtr source = createSyntheticSource(makeLayeredImage());
+    ASSERT_TRUE(bool(source));
+    KnobChannelSetPtr layers;
+    NodePtr add = createAddOn(source, &layers);
+    ASSERT_TRUE(bool(add));
+    EffectInstancePtr effect = add->getEffectInstance();
+    EXPECT_EQ(1, effect->getNInputs());
+    EXPECT_EQ(eDataKindDeep, effect->getInputDataKind(0));
+    EXPECT_EQ(eDataKindDeep, effect->getOutputDataKind());
+    {
+        std::list<std::string> grouping;
+        effect->getPluginGrouping(&grouping);
+        ASSERT_EQ((std::size_t)1, grouping.size());
+        EXPECT_EQ(PLUGIN_GROUP_DEEP, grouping.front());
+    }
+
+    EXPECT_FALSE(layers->getWithChannelButtons());
+    const std::vector<ChannelSetRow> rows = layers->getRows();
+    ASSERT_EQ((std::size_t)1, rows.size());
+    EXPECT_EQ(ChannelSetRow::eModeNone, rows[0].mode);
+    EXPECT_TRUE(isIdentityOfSource(add));
+}
+
+TEST_F(DeepChannelNodesTest, DeepAddLayersAddsZeroMaskAndLeavesThePresentDiffuseShared)
+{
+    registerMask();
+    NodePtr source = createSyntheticSource(makeLayeredImage());
+    ASSERT_TRUE(bool(source));
+    KnobChannelSetPtr layers;
+    NodePtr add = createAddOn(source, &layers);
+    ASSERT_TRUE(bool(add));
+    layers->setLayer(0, "mask", NULL);
+    layers->addLayer("diffuse", NULL);
+
+    EXPECT_FALSE(isIdentityOfSource(add));
+    EXPECT_EQ(ids({ "Color(4)", "diffuse", "specular", "mask" }), present(add));
+
+    DeepImagePtr input;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(source, &input));
+    ASSERT_TRUE(input != NULL);
+    DeepImagePtr output;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(add, &output));
+    ASSERT_TRUE(output != NULL);
+    EXPECT_FALSE(add->hasPersistentMessage());
+
+    std::set<std::string> expected = channelNamesOf(*input);
+    expected.insert("mask.A");
+    EXPECT_EQ(expected, channelNamesOf(*output));
+    EXPECT_TRUE(output->sharesSampleTableWith(*input));
+    expectChannelIs(*output, "mask.A", 0.f);
+    const std::set<std::string> inputNames = channelNamesOf(*input);
+    for (std::set<std::string>::const_iterator it = inputNames.begin(); it != inputNames.end(); ++it) {
+        EXPECT_TRUE(output->sharesChannelStorageWith(*input, *it)) << *it;
+    }
+}
+
+TEST_F(DeepChannelNodesTest, DeepAddLayersAddsZeroRgbToAnAlphaOnlyStream)
+{
+    NodePtr source = createSyntheticSource(makeAlphaOnlyImage());
+    ASSERT_TRUE(bool(source));
+    KnobChannelSetPtr layers;
+    NodePtr add = createAddOn(source, &layers);
+    ASSERT_TRUE(bool(add));
+    EXPECT_EQ(ids({ "Color(1)" }), present(source));
+    layers->setLayer(0, kNatronColorViewRGB, NULL);
+
+    EXPECT_FALSE(isIdentityOfSource(add));
+    EXPECT_EQ(ids({ "Color(4)" }), present(add));
+
+    DeepImagePtr input;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(source, &input));
+    ASSERT_TRUE(input != NULL);
+    DeepImagePtr output;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(add, &output));
+    ASSERT_TRUE(output != NULL);
+
+    EXPECT_EQ(nameSet({ "R", "G", "B", "A", "Z", "ZBack" }), channelNamesOf(*output));
+    expectChannelIs(*output, "R", 0.f);
+    expectChannelIs(*output, "G", 0.f);
+    expectChannelIs(*output, "B", 0.f);
+    EXPECT_TRUE(output->sharesChannelStorageWith(*input, "A"));
+}
+
+TEST_F(DeepChannelNodesTest, DeepAddLayersAddingAlphaAloneIsAnIdentity)
+{
+    NodePtr source = createSyntheticSource(makeAlphaOnlyImage());
+    ASSERT_TRUE(bool(source));
+    KnobChannelSetPtr layers;
+    NodePtr add = createAddOn(source, &layers);
+    ASSERT_TRUE(bool(add));
+    layers->setLayer(0, kNatronColorViewAlpha, NULL);
+
+    EXPECT_TRUE(isIdentityOfSource(add));
+    EXPECT_EQ(ids({ "Color(1)" }), present(add));
+}
+
+// Frame 1 of deep-seq-layers carries diffuse and frame 2 does not.
+TEST_F(DeepChannelNodesTest, DeepAddLayersAddsDiffuseOnlyOnTheFrameThatLacksIt)
+{
+    registerLayer("diffuse", std::vector<std::string>({ "R", "G", "B" }));
+    NodePtr read = createDeepRead(fixturePath("deep-seq-layers.####.exr"));
+    ASSERT_TRUE(bool(read));
+    KnobChannelSetPtr layers;
+    NodePtr add = createAddOn(read, &layers);
+    ASSERT_TRUE(bool(add));
+    layers->setLayer(0, "diffuse", NULL);
+
+    EXPECT_TRUE(isIdentityOfSource(add, 1.));
+    EXPECT_FALSE(isIdentityOfSource(add, 2.));
+
+    DeepImagePtr input;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, &input, 2.));
+    ASSERT_TRUE(input != NULL);
+    EXPECT_FALSE(input->hasChannel("diffuse.R"));
+    DeepImagePtr output;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(add, &output, 2.));
+    ASSERT_TRUE(output != NULL);
+    EXPECT_FALSE(add->hasPersistentMessage());
+
+    std::set<std::string> expected = channelNamesOf(*input);
+    expected.insert("diffuse.R");
+    expected.insert("diffuse.G");
+    expected.insert("diffuse.B");
+    EXPECT_EQ(expected, channelNamesOf(*output));
+    expectChannelIs(*output, "diffuse.R", 0.f);
+    expectChannelIs(*output, "diffuse.G", 0.f);
+    expectChannelIs(*output, "diffuse.B", 0.f);
+}
+
+TEST_F(DeepChannelNodesTest, DeepExpressionWritesAlphaIntoTheMaskDeepAddLayersAdded)
+{
+    registerMask();
+    NodePtr source = createSyntheticSource(makeLayeredImage());
+    ASSERT_TRUE(bool(source));
+    KnobChannelSetPtr layers;
+    NodePtr add = createAddOn(source, &layers);
+    ASSERT_TRUE(bool(add));
+    layers->setLayer(0, "mask", NULL);
+
+    NodePtr expression = createTrackedNode(PLUGINID_NATRON_DEEPEXPRESSION);
+    ASSERT_TRUE(bool(expression));
+    connectNodes(add, expression, 0, true);
+    KnobLayerSelect* layer = dynamic_cast<KnobLayerSelect*>(expression->getKnobByName(kDeepExpressionParamLayer).get());
+    KnobString* field0 = dynamic_cast<KnobString*>(expression->getKnobByName("expression0").get());
+    ASSERT_TRUE(layer && field0);
+    layer->setLayer("mask");
+    field0->setValue("A");
+
+    DeepImagePtr input;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(source, &input));
+    ASSERT_TRUE(input != NULL);
+    DeepImagePtr output;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(expression, &output));
+    ASSERT_TRUE(output != NULL);
+    EXPECT_FALSE(expression->hasPersistentMessage());
+
+    const DeepChannelBuffer* alpha = input->getChannel("A");
+    const DeepChannelBuffer* mask = output->getChannel("mask.A");
+    ASSERT_TRUE(alpha != NULL);
+    ASSERT_TRUE(mask != NULL);
+    ASSERT_EQ(alpha->size(), mask->size());
+    for (std::size_t s = 0; s < alpha->size(); ++s) {
+        EXPECT_EQ(alpha->data()[s], mask->data()[s]) << "sample " << s;
+    }
+    EXPECT_TRUE(output->sharesChannelStorageWith(*input, "A"));
+}
+
+TEST_F(DeepChannelNodesTest, RemovingALayerDeepAddLayersNamesIsRefused)
+{
+    registerMask();
+    NodePtr source = createSyntheticSource(makeLayeredImage());
+    ASSERT_TRUE(bool(source));
+    KnobChannelSetPtr layers;
+    NodePtr add = createAddOn(source, &layers);
+    ASSERT_TRUE(bool(add));
+    layers->setLayer(0, "mask", NULL);
+
+    std::string error;
+    EXPECT_FALSE(getApp()->getProject()->removeLayer("mask", &error));
+    EXPECT_NE(std::string::npos, error.find(add->getScriptName_mt_safe())) << error;
+}
+
+// The render hash does not cover the project registry, so without the age bump the render
+// before the registration would be served again from the deep cache.
+TEST_F(DeepChannelNodesTest, RegisteringALayerARowAlreadyNamesBumpsTheAgeAndTheNextRenderAddsIt)
+{
+    std::string error;
+    getApp()->getProject()->removeLayer("mask", &error);
+    ImageLayerDesc unused;
+    ASSERT_FALSE(getApp()->getProject()->findLayer("mask", &unused));
+
+    NodePtr source = createSyntheticSource(makeLayeredImage());
+    ASSERT_TRUE(bool(source));
+    KnobChannelSetPtr layers;
+    NodePtr add = createAddOn(source, &layers);
+    ASSERT_TRUE(bool(add));
+    layers->setLayer(0, "mask", NULL);
+
+    DeepImagePtr before;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(add, &before));
+    ASSERT_TRUE(before != NULL);
+    EXPECT_FALSE(before->hasChannel("mask.A"));
+
+    const U64 age = add->getKnobsAge();
+    registerMask();
+    EXPECT_GT(add->getKnobsAge(), age);
+
+    DeepImagePtr after;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(add, &after));
+    ASSERT_TRUE(after != NULL);
+    EXPECT_TRUE(after->hasChannel("mask.A"));
+}
+
+TEST_F(DeepChannelNodesTest, UnconnectedDeepAddLayersRendersAnEmptyDeepImage)
+{
+    registerMask();
+    KnobChannelSetPtr layers;
+    NodePtr add = createAddOn(NodePtr(), &layers);
+    ASSERT_TRUE(bool(add));
+    layers->setLayer(0, "mask", NULL);
+
+    DeepImagePtr output;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(add, &output));
+    ASSERT_TRUE(output != NULL);
+    EXPECT_EQ(0u, (unsigned)output->getSampleTable().getTotalSampleCount());
+    EXPECT_FALSE(add->hasPersistentMessage());
 }

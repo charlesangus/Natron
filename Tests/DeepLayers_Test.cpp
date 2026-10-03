@@ -58,6 +58,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/RemoveLayers.h"
 #include "Engine/Nodes/Deep/DeepFromImage.h"
+#include "Engine/Nodes/Deep/DeepRecolor.h"
 #include "Engine/Nodes/TypedPassthrough.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
@@ -871,4 +872,162 @@ TEST_F(DeepFromImageLayersTest, ColourlessSourceGivesAnEmptyDeepImage)
     ASSERT_TRUE(deep != NULL);
     EXPECT_EQ((U64)0, deep->getSampleTable().getTotalSampleCount());
     EXPECT_FALSE(fromImage->hasPersistentMessage());
+}
+
+class DeepRecolorLayersTest
+    : public DeepFromImageLayersTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        DeepFromImageLayersTest::SetUp();
+        deepSyntheticSourceImages().clear();
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        deepSyntheticSourceImages().clear();
+        DeepFromImageLayersTest::TearDown();
+    }
+
+    // One sample at depth 1 per pixel of the frame, every channel of names holding value, except
+    // A, which holds alpha.
+    NodePtr createDeepSource(std::initializer_list<const char*> names,
+                             float value,
+                             float alpha)
+    {
+        DeepImagePtr image = std::make_shared<DeepImage>(kFrame, RenderScale::identity, ViewIdx(0));
+        SampleTable& table = image->getSampleTableForWriting();
+
+        for (int y = kFrame.y1; y < kFrame.y2; ++y) {
+            for (int x = kFrame.x1; x < kFrame.x2; ++x) {
+                std::size_t index;
+                EXPECT_TRUE(deepRenderTestPixelIndex(*image, x, y, &index));
+                table.setCount(index, 1);
+            }
+        }
+        table.recomputeOffsets();
+
+        const std::size_t total = (std::size_t)kFrame.width() * (std::size_t)kFrame.height();
+        float* z = image->getChannelForWriting("Z").dataForWriting();
+        float* zback = image->getChannelForWriting("ZBack").dataForWriting();
+        for (std::size_t i = 0; i < total; ++i) {
+            z[i] = 1.f;
+            zback[i] = 1.f;
+        }
+        for (const char* name : names) {
+            float* data = image->getChannelForWriting(name).dataForWriting();
+            for (std::size_t i = 0; i < total; ++i) {
+                data[i] = (std::string(name) == "A") ? alpha : value;
+            }
+        }
+        image->setTidy(true);
+
+        const int slot = _nextSlot++;
+        deepSyntheticSourceImages()[slot] = image;
+        NodePtr node = createNode(QString::fromUtf8(kTestPluginIDDeepSyntheticSource));
+        if (!node) {
+            return node;
+        }
+        KnobInt* knob = dynamic_cast<KnobInt*>(node->getKnobByName("slot").get());
+        if (!knob) {
+            return NodePtr();
+        }
+        knob->setValue(slot);
+
+        return node;
+    }
+
+    NodePtr createRecolor(const NodePtr& deep,
+                          const NodePtr& color,
+                          std::initializer_list<const char*> layers)
+    {
+        NodePtr recolor = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPRECOLOR));
+
+        if (!recolor || !deep || !color) {
+            return NodePtr();
+        }
+        connectNodes(deep, recolor, 0, true);
+        connectNodes(color, recolor, 1, true);
+
+        KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(recolor->getKnobByName(kDeepRecolorParamChannels));
+        if (!channels) {
+            return NodePtr();
+        }
+        std::vector<ChannelSetRow> rows;
+        for (const char* layer : layers) {
+            ChannelSetRow row;
+            row.mode = ChannelSetRow::eModeLayer;
+            row.layerOrPattern = layer;
+            rows.push_back(row);
+        }
+        channels->setRows(rows);
+
+        return recolor;
+    }
+
+    int _nextSlot = 1;
+};
+
+TEST_F(DeepRecolorLayersTest, ColourAndAovRowsWriteTheirChannelsAndCreateMissingOnes)
+{
+    NodePtr source = createDeepSource({ "R", "G", "B", "A" }, 0.25f, 0.5f);
+    NodePtr color = createReader("flat-three-layers.exr");
+    NodePtr recolor = createRecolor(source, color, { kNatronColorViewRGB, "diffuse" });
+    ASSERT_TRUE(source && color && recolor);
+
+    EXPECT_EQ(ids({ "Color(4)", "diffuse" }), present(recolor));
+
+    DeepImagePtr input;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(source, kTime, &input));
+    ASSERT_TRUE(input != NULL);
+    DeepImagePtr deep;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(recolor, kTime, &deep));
+    ASSERT_TRUE(deep != NULL);
+    EXPECT_FALSE(recolor->hasPersistentMessage());
+    EXPECT_EQ(nameSet({ "R", "G", "B", "A", "Z", "ZBack", "diffuse.R", "diffuse.G", "diffuse.B" }), channelNamesOf(*deep));
+
+    std::map<std::string, float> expected;
+    expected["R"] = 0.5f;
+    expected["G"] = 0.f;
+    expected["B"] = 0.f;
+    expected["A"] = 0.5f;
+    expected["diffuse.R"] = 0.f;
+    expected["diffuse.G"] = 0.5f;
+    expected["diffuse.B"] = 0.f;
+    expectOneSamplePerPixel(*deep, expected, 1.f);
+
+    EXPECT_TRUE(deep->sharesSampleTableWith(*input));
+    EXPECT_TRUE(deep->sharesChannelStorageWith(*input, "A"));
+    EXPECT_TRUE(deep->sharesChannelStorageWith(*input, "Z"));
+    EXPECT_TRUE(deep->sharesChannelStorageWith(*input, "ZBack"));
+    EXPECT_FALSE(deep->sharesChannelStorageWith(*input, "R"));
+}
+
+TEST_F(DeepRecolorLayersTest, RowForALayerTheColorImageLacksLeavesTheDeepChannelsAlone)
+{
+    NodePtr source = createDeepSource({ "R", "G", "B", "A", "specular.R", "specular.G", "specular.B" }, 0.25f, 0.5f);
+    NodePtr color = createReader("flat-rgb-only.exr");
+    NodePtr recolor = createRecolor(source, color, { "specular" });
+    ASSERT_TRUE(source && color && recolor);
+
+    EXPECT_EQ(ids({ "Color(4)", "specular" }), present(recolor));
+
+    DeepImagePtr input;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(source, kTime, &input));
+    ASSERT_TRUE(input != NULL);
+    DeepImagePtr deep;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(recolor, kTime, &deep));
+    ASSERT_TRUE(deep != NULL);
+    EXPECT_FALSE(recolor->hasPersistentMessage());
+
+    EXPECT_TRUE(deep->sharesChannelStorageWith(*input, "specular.R"));
+    EXPECT_TRUE(deep->sharesChannelStorageWith(*input, "specular.G"));
+    EXPECT_TRUE(deep->sharesChannelStorageWith(*input, "specular.B"));
+    EXPECT_TRUE(deep->sharesChannelStorageWith(*input, "R"));
+
+    std::map<std::string, float> expected;
+    expected["R"] = 0.25f;
+    expected["specular.G"] = 0.25f;
+    expected["A"] = 0.5f;
+    expectOneSamplePerPixel(*deep, expected, 1.f);
 }

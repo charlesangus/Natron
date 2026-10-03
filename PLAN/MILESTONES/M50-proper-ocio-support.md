@@ -528,12 +528,12 @@ Execution notes:
   - **P3.T2:** the config is pushed at the end of `Node::load` (NodeMain.cpp) and in the Read/Write `create*Node`. That covers new, pasted and swapped nodes.
   - **Open, for review:** an OCIOColorSpace created with no env config gets an empty output colourspace by default, because the plugin's describe-time default comes from the process env. In the GUI, Natron exports OCIO at startup, so the default resolves against the preference config.
   - **Fixed in the B6 round:** `Gui::debugImage` (static) used `getApp()`, so it now goes through `appPTR->getTopLevelInstance()`.
-- 2026-10-02 — **B7 landed** (\`6362fa529\` P4.T1–T4, \`af15f4ecb\` P3.T6). Full debug ctest 789/789; the Xvfb viewer_32f, viewer_menus and colour-page scripts pass on release (8u = 32f = 89; Raw 46; the swatch is 118).
+- 2026-10-02 — **B7 landed** (`6362fa529` P4.T1–T4, `af15f4ecb` P3.T6). Full debug ctest 789/789; the Xvfb viewer_32f, viewer_menus and colour-page scripts pass on release (8u = 32f = 89; Raw 46; the swatch is 118).
   - **Fixes during the build:**
-    - the shader needs \`#version 120\` because of OCIO's GLSL 1.2 array constructors;
+    - the shader needs `#version 120` because of OCIO's GLSL 1.2 array constructors;
     - a pre-existing bug where a bit-depth switch uploaded into the old texture;
     - a crash when the config callback fired after the viewer node was discarded;
-    - a working-space change now notifies \`configChanged\`.
+    - a working-space change now notifies `configChanged`.
   - **Test moved:** the ViewerData round-trip moved to GuiTests, because it doesn't link in the Engine test binary in release.
   - **Follow-ups found and added as tasks:**
     - P3.T12: a decoder the Read wrapper creates later skips the defaults guess;

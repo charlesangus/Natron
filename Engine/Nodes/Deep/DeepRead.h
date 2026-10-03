@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <list>
+#include <mutex>
 #include <string>
 
 #include "Engine/EngineFwd.h"
@@ -77,11 +79,19 @@ private:
 
     virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual void getDeepLayers(double time, ViewIdx view, std::list<ImageLayerDesc>* layers) OVERRIDE FINAL;
+
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     std::string getFilenameAtTime(double time) const WARN_UNUSED_RETURN;
 
     KnobFileWPtr _filename;
+
+    // The header of the last file asked about, so scrubbing between uncached queries of one
+    // frame does not reopen it each time.
+    std::mutex _layersMemoMutex;
+    std::string _layersMemoFilename;
+    std::list<ImageLayerDesc> _layersMemo;
 };
 
 NATRON_NAMESPACE_EXIT

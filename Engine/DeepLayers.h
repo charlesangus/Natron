@@ -53,7 +53,9 @@ std::bitset<4> colorBits(const DeepImage& image);
 /**
  * @brief Groups names into layers. The colour storage comes first and is always present, the
  * narrowest of Alpha or RGBA covering the R/G/B bits found plus A. Every other name joins the
- * layer before its last dot, or is a one-channel layer named after itself, in input order.
+ * layer before its last dot, or is a one-channel layer named after itself, in input order. A
+ * layer's channels are canonical: R, G, B, A when present, then the rest sorted, so a node that
+ * re-derives its input's layers reports them identically.
  **/
 void groupDeepChannels(const std::vector<std::string>& names, std::list<ImageLayerDesc>* layers);
 

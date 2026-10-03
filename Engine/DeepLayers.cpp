@@ -25,6 +25,7 @@
 
 #include "DeepLayers.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <map>
 
@@ -57,6 +58,31 @@ bareColorBit(const std::string& name)
     }
 
     return -1;
+}
+
+// R, G, B, A first, then the rest sorted, so every node reports a layer's channels in the same
+// order whatever order the file or a std::map gave them in.
+std::vector<std::string>
+canonicalChannelOrder(const std::vector<std::string>& channels)
+{
+    static const char* const kRgba[4] = { "R", "G", "B", "A" };
+    std::vector<std::string> ordered;
+    std::vector<std::string> rest;
+
+    for (int i = 0; i < 4; ++i) {
+        if (std::find(channels.begin(), channels.end(), kRgba[i]) != channels.end()) {
+            ordered.push_back(kRgba[i]);
+        }
+    }
+    for (std::size_t i = 0; i < channels.size(); ++i) {
+        if (bareColorBit(channels[i]) < 0) {
+            rest.push_back(channels[i]);
+        }
+    }
+    std::sort(rest.begin(), rest.end());
+    ordered.insert(ordered.end(), rest.begin(), rest.end());
+
+    return ordered;
 }
 
 // Marks a bare I/Y so LayerRegistry::groupChannelNames, which folds them into colour, makes each
@@ -125,7 +151,7 @@ DeepLayers::groupDeepChannels(const std::vector<std::string>& names,
             const std::string bare = id.substr(1);
             layers->push_back(ImageLayerDesc(bare, bare, "", std::vector<std::string>(1, bare)));
         } else {
-            layers->push_back(desc);
+            layers->push_back(ImageLayerDesc(id, desc.getLayerLabel(), "", canonicalChannelOrder(desc.getChannels())));
         }
     }
 }

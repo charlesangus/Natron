@@ -25,6 +25,7 @@
 
 #include "DeepRead.h"
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -35,6 +36,8 @@
 #include <QString>
 
 #include "Engine/DeepImage.h"
+#include "Engine/DeepLayers.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeMetadata.h"
@@ -172,6 +175,39 @@ DeepRead::getPreferredMetadata(NodeMetadata& metadata)
     return eStatusOK;
 }
 
+void
+DeepRead::getDeepLayers(double time,
+                        ViewIdx /*view*/,
+                        std::list<ImageLayerDesc>* layers)
+{
+    layers->clear();
+
+    const std::string filename = getFilenameAtTime(time);
+    if (filename.empty()) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> locker(_layersMemoMutex);
+        if (filename == _layersMemoFilename) {
+            *layers = _layersMemo;
+
+            return;
+        }
+    }
+
+    OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::open(filename);
+    if (!input || !input->spec().deep) {
+        return;
+    }
+
+    DeepLayers::groupDeepChannels(input->spec().channelnames, layers);
+
+    std::lock_guard<std::mutex> locker(_layersMemoMutex);
+    _layersMemoFilename = filename;
+    _layersMemo = *layers;
+}
+
 StatusEnum
 DeepRead::renderDeep(const DeepRenderActionArgs& args)
 {
@@ -234,8 +270,13 @@ DeepRead::renderDeep(const DeepRenderActionArgs& args)
         return eStatusFailed;
     }
 
-    // Only the views handed to the fill pass carry this, and nothing this node does with them
-    // reads it, so a file with no alpha at all still has a well-formed index to report.
+    // A file with no alpha can't be given a structural one: its samples carry no coverage.
+    if (std::find(channelNames.begin(), channelNames.end(), "A") == channelNames.end()) {
+        setPersistentMessage(eMessageTypeError, tr("%1 has no alpha (A) channel; deep data needs one.").arg(QString::fromUtf8(filename.c_str())).toStdString());
+
+        return eStatusFailed;
+    }
+
     int alphaChannelIndex = 0;
     for (std::size_t c = 0; c < channelNames.size(); ++c) {
         if (channelNames[c] == "A") {

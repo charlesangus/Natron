@@ -34,15 +34,22 @@
 #include "Global/GLIncludes.h" //!<must be included before QGlWidget because of gl.h and glew.h
 #include <QApplication> // qApp
 
+#include <QDateTime>
+#include <QDebug>
 #include <QOpenGLShaderProgram>
 
+#include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/Lut.h" // Color
+#include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/Texture.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h" // appFont
 #include "Gui/Menu.h"
+#include "Gui/Shaders.h"
 #include "Gui/ViewerTab.h"
 
 #include <QOpenGLContext>
@@ -75,11 +82,17 @@ ViewerGL::Implementation::Implementation(ViewerGL* this_,
     , shaderRGB()
     , shaderBlack()
     , shaderLoaded(false)
+    , displayName()
+    , viewName()
+    , lookName()
+    , shaderCacheID()
+    , ocioTextures()
+    , ocioShaderDesc()
+    , shaderFailed(false)
     , infoViewer()
     , viewerTab(parent)
     , zoomOrPannedSinceLastFit(false)
     , oldClick()
-    , displayingImageLut(eViewerColorSpaceSRGB)
     , ms(eMouseStateUndefined)
     , hs(eHoverStateNothing)
     , textRenderingColor(200, 200, 200, 255)
@@ -90,7 +103,7 @@ ViewerGL::Implementation::Implementation(ViewerGL* this_,
     , overlay(true)
     , updatingTexture(false)
     , clearColor(0, 0, 0, 255)
-    , menu( new Menu(_this) )
+    , menu(new Menu(_this))
     , persistentMessages()
     , persistentMessageType(0)
     , displayPersistentMessage(false)
@@ -104,15 +117,15 @@ ViewerGL::Implementation::Implementation(ViewerGL* this_,
     , currentViewerInfo_resolutionOverlay()
     , pickerState(ePickerStateInactive)
     , lastPickerPos()
-    , userRoIEnabled(false)   // protected by mutex
-    , userRoI()   // protected by mutex
+    , userRoIEnabled(false) // protected by mutex
+    , userRoI() // protected by mutex
     , buildUserRoIOnNextPress(false)
     , draggedUserRoI()
-    , zoomCtx(0.01, 1024.)   // protected by mutex
-    , clipToDisplayWindow(true)   // protected by mutex
+    , zoomCtx(0.01, 1024.) // protected by mutex
+    , clipToDisplayWindow(true) // protected by mutex
     , wipeControlsMutex()
-    , mixAmount(1.)   // protected by mutex
-    , wipeAngle(M_PI_2)   // protected by mutex
+    , mixAmount(1.) // protected by mutex
+    , wipeAngle(M_PI_2) // protected by mutex
     , wipeCenter()
     , wipeInitialized(false)
     , selectionRectangle()
@@ -149,6 +162,7 @@ ViewerGL::Implementation::~Implementation()
     assert( qApp && qApp->thread() == QThread::currentThread() );
     _this->makeCurrent();
 
+    deleteOCIOTextures();
     if (shaderRGB) {
         shaderRGB->removeAllShaders();
         shaderRGB.reset();
@@ -648,7 +662,9 @@ ViewerGL::Implementation::bindTextureAndActivateShader(int i,
     //GLfloat d;
     //glReadPixels(0, 0, 1, 1, GL_RED, GL_FLOAT, &d);
     if (useShader) {
-        activateShaderRGB(i);
+        if (!activateShaderRGB(i)) {
+            glUseProgram(0);
+        }
     }
     glCheckError();
 }
@@ -657,7 +673,14 @@ void
 ViewerGL::Implementation::unbindTextureAndReleaseShader(bool useShader)
 {
     if (useShader) {
-        shaderRGB->release();
+        if (shaderRGB) {
+            shaderRGB->release();
+        }
+        for (std::size_t i = 0; i < ocioTextures.size(); ++i) {
+            glActiveTexture((GLenum)(GL_TEXTURE1 + i));
+            glBindTexture(ocioTextures[i].target, 0);
+        }
+        glActiveTexture(GL_TEXTURE0);
     }
     glCheckError();
     glBindTexture(GL_TEXTURE_2D, prevBoundTexture);
@@ -801,27 +824,282 @@ ViewerGL::Implementation::initializeCheckerboardTexture(bool mustCreateTexture)
     checkerboardTileSize = appPTR->getCurrentSettings()->getCheckerboardTileSize();
 }
 
+ProjectColorManagement::DisplayProcessorPtr
+ViewerGL::Implementation::getDisplayProcessor() const
+{
+    ViewerInstance* node = _this->getInternalNode();
+    AppInstancePtr app = node ? node->getApp() : AppInstancePtr();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
+    if (!colorManagement) {
+        return ProjectColorManagement::DisplayProcessorPtr();
+    }
+    std::string display = displayName;
+    std::string view = viewName;
+    if (display.empty() || view.empty()) {
+        project->getDefaultDisplayView(&display, &view);
+    }
+
+    return colorManagement->getDisplayProcessor(project->getWorkingColorSpace(), display, view, lookName);
+}
+
 void
+ViewerGL::Implementation::deleteOCIOTextures()
+{
+    for (std::size_t i = 0; i < ocioTextures.size(); ++i) {
+        glDeleteTextures(1, &ocioTextures[i].id);
+    }
+    ocioTextures.clear();
+}
+
+static void
+setOCIOTextureParameters(GLenum target,
+                         OCIO_NAMESPACE::Interpolation interpolation)
+{
+    const GLint filter = (interpolation == OCIO_NAMESPACE::INTERP_NEAREST) ? GL_NEAREST : GL_LINEAR;
+
+    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, filter);
+    glTexParameteri(target, GL_TEXTURE_MAG_FILTER, filter);
+    glTexParameteri(target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    if (target != GL_TEXTURE_1D) {
+        glTexParameteri(target, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    if (target == GL_TEXTURE_3D) {
+        glTexParameteri(target, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    }
+}
+
+bool
+ViewerGL::Implementation::buildShaderRGB(const ProjectColorManagement::DisplayProcessorPtr& processor)
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+
+    deleteOCIOTextures();
+    ocioShaderDesc.reset();
+    shaderCacheID.clear();
+    if (shaderRGB) {
+        shaderRGB->removeAllShaders();
+        shaderRGB.reset();
+    }
+
+    QString error;
+    OCIO_NAMESPACE::GpuShaderDescRcPtr desc;
+    std::string ocioShaderText;
+    if (!processor || !processor->processor) {
+        error = QString::fromUtf8("the OpenColorIO config cannot build the display transform");
+    } else {
+        try {
+            desc = OCIO_NAMESPACE::GpuShaderDesc::CreateShaderDesc();
+            desc->setLanguage(OCIO_NAMESPACE::GPU_LANGUAGE_GLSL_1_2);
+            desc->setFunctionName("OCIODisplay");
+            desc->setResourcePrefix("ocio_");
+            processor->processor->getDefaultGPUProcessor()->extractGpuShaderInfo(desc);
+            ocioShaderText = desc->getShaderText();
+        } catch (const std::exception& e) {
+            error = QString::fromUtf8(e.what());
+        }
+    }
+
+    if (error.isEmpty()) {
+        // A bound unpack PBO would otherwise be read as the LUT source.
+        GLint prevUnpackBuffer = 0;
+        glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING_ARB, &prevUnpackBuffer);
+        if (prevUnpackBuffer) {
+            glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
+        }
+        GLint prevActiveTexture = GL_TEXTURE0;
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActiveTexture);
+
+        try {
+            GLenum unit = GL_TEXTURE1;
+            const unsigned num3D = desc->getNum3DTextures();
+            for (unsigned idx = 0; idx < num3D; ++idx, ++unit) {
+                const char* textureName = 0;
+                const char* samplerName = 0;
+                unsigned edgelen = 0;
+                OCIO_NAMESPACE::Interpolation interpolation = OCIO_NAMESPACE::INTERP_LINEAR;
+                desc->get3DTexture(idx, textureName, samplerName, edgelen, interpolation);
+                const float* values = 0;
+                desc->get3DTextureValues(idx, values);
+                if (!samplerName || !values || (edgelen == 0)) {
+                    throw std::runtime_error("an OpenColorIO 3D LUT has no data");
+                }
+
+                OCIOLutTexture texture;
+                texture.target = GL_TEXTURE_3D;
+                texture.samplerName = samplerName;
+                glGenTextures(1, &texture.id);
+                ocioTextures.push_back(texture);
+                glActiveTexture(unit);
+                glBindTexture(GL_TEXTURE_3D, texture.id);
+                setOCIOTextureParameters(GL_TEXTURE_3D, interpolation);
+                glTexImage3D(GL_TEXTURE_3D, 0, GL_RGB32F_ARB, edgelen, edgelen, edgelen, 0, GL_RGB, GL_FLOAT, values);
+            }
+
+            const unsigned numTextures = desc->getNumTextures();
+            for (unsigned idx = 0; idx < numTextures; ++idx, ++unit) {
+                const char* textureName = 0;
+                const char* samplerName = 0;
+                unsigned width = 0;
+                unsigned height = 0;
+                OCIO_NAMESPACE::GpuShaderDesc::TextureType channel = OCIO_NAMESPACE::GpuShaderDesc::TEXTURE_RGB_CHANNEL;
+                OCIO_NAMESPACE::Interpolation interpolation = OCIO_NAMESPACE::INTERP_LINEAR;
+#if OCIO_VERSION_HEX >= 0x02030000
+                OCIO_NAMESPACE::GpuShaderCreator::TextureDimensions dimensions = OCIO_NAMESPACE::GpuShaderCreator::TEXTURE_2D;
+                desc->getTexture(idx, textureName, samplerName, width, height, channel, dimensions, interpolation);
+                const bool is1D = (dimensions == OCIO_NAMESPACE::GpuShaderCreator::TEXTURE_1D);
+#else
+                desc->getTexture(idx, textureName, samplerName, width, height, channel, interpolation);
+                const bool is1D = (height <= 1);
+#endif
+                const float* values = 0;
+                desc->getTextureValues(idx, values);
+                if (!samplerName || !values || (width == 0)) {
+                    throw std::runtime_error("an OpenColorIO LUT has no data");
+                }
+                if (height == 0) {
+                    height = 1;
+                }
+
+                std::vector<float> rgb;
+                const float* pixels = values;
+                if (channel == OCIO_NAMESPACE::GpuShaderCreator::TEXTURE_RED_CHANNEL) {
+                    // Expanded to RGB because GL 2.0 has no single-channel float texture format.
+                    const std::size_t count = (std::size_t)width * height;
+                    rgb.resize(3 * count);
+                    for (std::size_t i = 0; i < count; ++i) {
+                        rgb[3 * i] = rgb[3 * i + 1] = rgb[3 * i + 2] = values[i];
+                    }
+                    pixels = &rgb[0];
+                }
+
+                OCIOLutTexture texture;
+                texture.target = is1D ? GL_TEXTURE_1D : GL_TEXTURE_2D;
+                texture.samplerName = samplerName;
+                glGenTextures(1, &texture.id);
+                ocioTextures.push_back(texture);
+                glActiveTexture(unit);
+                glBindTexture(texture.target, texture.id);
+                setOCIOTextureParameters(texture.target, interpolation);
+                if (is1D) {
+                    glTexImage1D(GL_TEXTURE_1D, 0, GL_RGB32F_ARB, width, 0, GL_RGB, GL_FLOAT, pixels);
+                } else {
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F_ARB, width, height, 0, GL_RGB, GL_FLOAT, pixels);
+                }
+            }
+        } catch (const std::exception& e) {
+            error = QString::fromUtf8(e.what());
+        }
+
+        for (std::size_t i = 0; i < ocioTextures.size(); ++i) {
+            glActiveTexture((GLenum)(GL_TEXTURE1 + i));
+            glBindTexture(ocioTextures[i].target, 0);
+        }
+        glActiveTexture((GLenum)prevActiveTexture);
+        if (prevUnpackBuffer) {
+            glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, (GLuint)prevUnpackBuffer);
+        }
+    }
+
+    if (error.isEmpty()) {
+        shaderRGB.reset(new QOpenGLShaderProgram(_this->context()));
+        const std::string fragmentSource = composeViewerFragmentShader(ocioShaderText);
+        if (!shaderRGB->addShaderFromSourceCode(QOpenGLShader::Vertex, vertRGB) || !shaderRGB->addShaderFromSourceCode(QOpenGLShader::Fragment, QString::fromUtf8(fragmentSource.c_str())) || !shaderRGB->link()) {
+            error = shaderRGB->log();
+            if (error.isEmpty()) {
+                error = QString::fromUtf8("unknown compile or link error");
+            }
+        }
+    }
+
+    if (!error.isEmpty()) {
+        deleteOCIOTextures();
+        if (shaderRGB) {
+            shaderRGB->removeAllShaders();
+            shaderRGB.reset();
+        }
+        const QString message = QString::fromUtf8("The viewer's OpenColorIO display shader could not be built (%1); "
+                                                  "the viewer falls back to 8-bit textures transformed on the CPU.")
+                                    .arg(error);
+        qWarning() << "Viewer GL shader compile error:" << qPrintable(message);
+        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("Viewer"), QDateTime::currentDateTime(), message);
+        shaderFailed = true;
+        ViewerGL* viewer = _this;
+        QMetaObject::invokeMethod(viewer, [viewer]() {
+            ViewerInstance* node = viewer->getInternalNode();
+            if (node) {
+                node->renderCurrentFrame(true);
+            } }, Qt::QueuedConnection);
+
+        return false;
+    }
+
+    ocioShaderDesc = desc;
+    shaderCacheID = processor->cacheID;
+
+    return true;
+} // buildShaderRGB
+
+bool
 ViewerGL::Implementation::activateShaderRGB(int texIndex)
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
-    // we assume that:
-    // - 8-bits textures are stored non-linear and must be displayer as is
-    // - floating-point textures are linear and must be decompressed according to the given lut
+    if (shaderFailed) {
+        return false;
+    }
+    ProjectColorManagement::DisplayProcessorPtr processor = getDisplayProcessor();
+    if (!shaderRGB || !processor || (processor->cacheID != shaderCacheID)) {
+        if (!buildShaderRGB(processor)) {
+            return false;
+        }
+    }
 
     if ( !shaderRGB->bind() ) {
         qDebug() << "Error when binding shader" << qPrintable( shaderRGB->log() );
+
+        return false;
     }
 
     shaderRGB->setUniformValue("Tex", 0);
     shaderRGB->setUniformValue("gain", (float)displayTextures[texIndex].gain);
     shaderRGB->setUniformValue("offset", (float)displayTextures[texIndex].offset);
-    shaderRGB->setUniformValue("lut", (GLint)displayingImageLut);
-    float gamma = displayTextures[texIndex].gamma;
-    shaderRGB->setUniformValue("gamma", gamma);
-}
+    shaderRGB->setUniformValue("gamma", (float)displayTextures[texIndex].gamma);
+
+    for (std::size_t i = 0; i < ocioTextures.size(); ++i) {
+        glActiveTexture((GLenum)(GL_TEXTURE1 + i));
+        glBindTexture(ocioTextures[i].target, ocioTextures[i].id);
+        shaderRGB->setUniformValue(ocioTextures[i].samplerName.c_str(), (GLint)(1 + i));
+    }
+    glActiveTexture(GL_TEXTURE0);
+
+    if (ocioShaderDesc) {
+        const unsigned numUniforms = ocioShaderDesc->getNumUniforms();
+        for (unsigned i = 0; i < numUniforms; ++i) {
+            OCIO_NAMESPACE::GpuShaderDesc::UniformData data;
+            const char* name = ocioShaderDesc->getUniform(i, data);
+            const GLint location = name ? shaderRGB->uniformLocation(name) : -1;
+            if (location < 0) {
+                continue;
+            }
+            if (data.m_getDouble) {
+                glUniform1f(location, (GLfloat)data.m_getDouble());
+            } else if (data.m_getBool) {
+                glUniform1f(location, data.m_getBool() ? 1.f : 0.f);
+            } else if (data.m_getFloat3) {
+                glUniform3f(location, data.m_getFloat3()[0], data.m_getFloat3()[1], data.m_getFloat3()[2]);
+            } else if (data.m_vectorFloat.m_getSize && data.m_vectorFloat.m_getVector) {
+                glUniform1fv(location, (GLsizei)data.m_vectorFloat.m_getSize(), (const GLfloat*)data.m_vectorFloat.m_getVector());
+            } else if (data.m_vectorInt.m_getSize && data.m_vectorInt.m_getVector) {
+                glUniform1iv(location, (GLsizei)data.m_vectorInt.m_getSize(), (const GLint*)data.m_vectorInt.m_getVector());
+            }
+        }
+    }
+
+    return true;
+} // activateShaderRGB
 
 bool
 ViewerGL::Implementation::isNearbyWipeCenter(const QPointF & pos,

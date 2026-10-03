@@ -27,19 +27,22 @@
 #include "ViewerInstancePrivate.h"
 
 #include <algorithm> // min, max
-#include <stdexcept>
 #include <cassert>
+#include <cmath>
 #include <cstring> // for std::memcpy
 #include <limits>
+#include <stdexcept>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
-#include <QtGlobal>
-#include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
+#include <QCoreApplication>
+#include <QDebug>
 #include <QFutureWatcher>
 #include <QMutex>
-#include <QWaitCondition>
-#include <QCoreApplication>
 #include <QThreadPool>
+#include <QWaitCondition>
+#include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
+#include <QtGlobal>
 CLANG_DIAG_ON(deprecated)
 
 #include "Engine/AppInstance.h"
@@ -128,31 +131,51 @@ toBGRA(unsigned char r,
     return (a << 24) | (r << 16) | (g << 8) | b;
 }
 
-const Color::Lut*
-ViewerInstance::lutFromColorspace(ViewerColorSpaceEnum cs)
+void
+applyViewerDisplayTransform(const ProjectColorManagement::DisplayProcessor& processor,
+                            float* rgba,
+                            int width,
+                            double gain,
+                            double offset,
+                            double gamma)
 {
-    const Color::Lut* lut;
-
-    switch (cs) {
-    case eViewerColorSpaceSRGB:
-        lut = Color::LutManager::sRGBLut();
-        break;
-    case eViewerColorSpaceRec709:
-        lut = Color::LutManager::Rec709Lut();
-        break;
-    case eViewerColorSpaceBT1886:
-        lut = Color::LutManager::BT1886Lut();
-        break;
-    case eViewerColorSpaceLinear:
-    default:
-        lut = 0;
-        break;
+    if (width <= 0) {
+        return;
     }
-    if (lut) {
-        lut->validate();
+    const float fGain = (float)gain;
+    const float fOffset = (float)offset;
+    if ((fGain != 1.f) || (fOffset != 0.f)) {
+        for (int x = 0; x < width; ++x) {
+            float* p = rgba + 4 * x;
+            p[0] = p[0] * fGain + fOffset;
+            p[1] = p[1] * fGain + fOffset;
+            p[2] = p[2] * fGain + fOffset;
+        }
     }
-
-    return lut;
+    if (processor.cpu) {
+        try {
+            OCIO_NAMESPACE::PackedImageDesc desc(rgba, width, 1, 4);
+            processor.cpu->apply(desc);
+        } catch (const std::exception& e) {
+            qDebug() << "applyViewerDisplayTransform:" << e.what();
+        }
+    }
+    if (gamma <= 0.) {
+        for (int x = 0; x < width; ++x) {
+            float* p = rgba + 4 * x;
+            p[0] = (p[0] >= 1.f) ? 1.f : 0.f;
+            p[1] = (p[1] >= 1.f) ? 1.f : 0.f;
+            p[2] = (p[2] >= 1.f) ? 1.f : 0.f;
+        }
+    } else if (gamma != 1.) {
+        const float invGamma = (float)(1. / gamma);
+        for (int x = 0; x < width; ++x) {
+            float* p = rgba + 4 * x;
+            p[0] = std::pow(std::max(p[0], 0.f), invGamma);
+            p[1] = std::pow(std::max(p[1], 0.f), invGamma);
+            p[2] = std::pow(std::max(p[2], 0.f), invGamma);
+        }
+    }
 }
 
 EffectInstance*
@@ -933,25 +956,13 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
         outArgs->channels = _imp->viewerParamsChannels[textureIndex];
         outArgs->params->gain = _imp->viewerParamsGain;
         outArgs->params->gamma = _imp->viewerParamsGamma;
-        outArgs->params->lut = _imp->viewerParamsLut;
         outArgs->params->layer = _imp->viewerParamsLayer;
         outArgs->params->alphaLayer = _imp->viewerParamsAlphaLayer;
         outArgs->params->alphaChannelName = _imp->viewerParamsAlphaChannelName;
         outArgs->isDoingPartialUpdates = _imp->isDoingPartialUpdates;
     }
 
-    // Fill the gamma LUT if it has never been filled yet
-    bool gammaLookupEmpty;
-    {
-        QReadLocker k(&_imp->gammaLookupMutex);
-        gammaLookupEmpty = _imp->gammaLookup.empty();
-    }
-    if (gammaLookupEmpty) {
-        QWriteLocker k(&_imp->gammaLookupMutex);
-        if ( _imp->gammaLookup.empty() ) {
-            _imp->fillGammaLut(outArgs->params->gamma);
-        }
-    }
+    outArgs->params->displayProcessor = getDisplayProcessor();
 
     // Flag that we are going to render
     outArgs->isRenderingFlag = std::make_shared<RenderingFlagSetter>( getNode() );
@@ -1078,7 +1089,7 @@ ViewerInstance::getViewerRoIAndTexture(const RectD& rod,
                          viewerHash,
                          outArgs->params->gain,
                          outArgs->params->gamma,
-                         static_cast<U64>(outArgs->params->lut),
+                         outArgs->params->displayProcessor ? outArgs->params->displayProcessor->cacheHash : 0,
                          (int)outArgs->params->depth,
                          outArgs->channels,
                          outArgs->params->view,
@@ -1627,7 +1638,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         }*/
 
         const bool viewerRenderRoiOnly = !useTextureCache;
-        ViewerColorSpaceEnum srcColorSpace = colorImage ? getApp()->getDefaultColorSpaceForBitDepth( colorImage->getBitDepth() ) : eViewerColorSpaceSRGB;
 
         if ( ( (inArgs.channels == eDisplayChannelsA) && ( !colorImage || (alphaChannelIndex < 0) || ( alphaChannelIndex >= (int)colorImage->getComponentsCount() ) ) ) ||
             ( ( inArgs.channels == eDisplayChannelsMatte) && ( !alphaImage || ( alphaChannelIndex < 0) || ( alphaChannelIndex >= (int)alphaImage->getComponentsCount() ) ) ) ) {
@@ -1775,7 +1785,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                  viewerHash,
                                  inArgs.params->gain,
                                  inArgs.params->gamma,
-                                 static_cast<U64>(inArgs.params->lut),
+                                 inArgs.params->displayProcessor ? inArgs.params->displayProcessor->cacheHash : 0,
                                  (int)inArgs.params->depth,
                                  inArgs.channels,
                                  inArgs.params->view,
@@ -1872,12 +1882,10 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                         updateParams->gain,
                                         updateParams->gamma,
                                         updateParams->offset,
-                                        lutFromColorspace(srcColorSpace),
-                                        lutFromColorspace(updateParams->lut),
+                                        updateParams->displayProcessor,
                                         alphaChannelIndex,
                                         viewerRenderRoiOnly,
                                         tileRowElements);
-            QReadLocker k(&_imp->gammaLookupMutex);
             for (std::list<UpdateViewerParams::CachedTile>::iterator it = unCachedTiles.begin(); it != unCachedTiles.end(); ++it) {
                 renderFunctor(viewerRenderRoI,
                               args,
@@ -1938,20 +1946,17 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                         updateParams->gain,
                                         updateParams->gamma,
                                         updateParams->offset,
-                                        lutFromColorspace(srcColorSpace),
-                                        lutFromColorspace(updateParams->lut),
+                                        updateParams->displayProcessor,
                                         alphaChannelIndex,
                                         viewerRenderRoiOnly,
                                         tileRowElements);
 
             if (runInCurrentThread) {
-                QReadLocker k(&_imp->gammaLookupMutex);
                 for (std::list<UpdateViewerParams::CachedTile>::iterator it = unCachedTiles.begin(); it != unCachedTiles.end(); ++it) {
                     renderFunctor(viewerRenderRoI,
                                   args, this, *it);
                 }
             } else {
-                QReadLocker k(&_imp->gammaLookupMutex);
                 QtConcurrent::map( unCachedTiles,
                                    [&](const UpdateViewerParams::CachedTile &tile) {
                                     renderFunctor(viewerRenderRoI, args, this, tile);
@@ -2146,19 +2151,28 @@ findAutoContrastVminVmax(const ImagePtr inputImage,
     }
 } // findAutoContrastVminVmax
 
+template <typename PIX, int maxValue>
+inline float
+viewerPixelToFloat(PIX v)
+{
+    if (maxValue == 1) {
+        return (float)v;
+    }
+
+    return Color::intToFloat<maxValue + 1>((int)v);
+}
+
 template <typename PIX, int maxValue, bool applyMatte, int rOffset, int gOffset, int bOffset>
 void
 scaleToTexture8bits_generic(const RectI& roi,
                             const RenderViewerArgs& args,
                             int nComps,
-                            ViewerInstance* viewer,
+                            ViewerInstance* /*viewer*/,
                             const UpdateViewerParams::CachedTile& tile,
                             U32* tileBuffer)
 {
-    const size_t pixelSize = sizeof(PIX);
     const bool luminance = (args.channels == eDisplayChannelsY);
-    Image::ReadAccess acc = Image::ReadAccess( args.inputImage.get() );
-    const RectI srcImgBounds = args.inputImage->getBounds();
+    Image::ReadAccess acc = Image::ReadAccess(args.inputImage.get());
 
     if ( (args.renderOnlyRoI && !tile.rect.contains(roi)) || (!args.renderOnlyRoI && !roi.contains(tile.rect)) ) {
         return;
@@ -2179,6 +2193,10 @@ scaleToTexture8bits_generic(const RectI& roi,
     const int y2 = args.renderOnlyRoI ? roi.y2 : tile.rect.y2;
     const int x1 = args.renderOnlyRoI ? roi.x1 : tile.rect.x1;
     const int x2 = args.renderOnlyRoI ? roi.x2 : tile.rect.x2;
+    const int width = x2 - x1;
+    if (width <= 0) {
+        return;
+    }
     const PIX* src_pixels = (const PIX*)acc.pixelAt(x1, y1);
     const int srcRowElements = (int)args.inputImage->getRowElements();
     Image::ReadAccessPtr matteAcc;
@@ -2186,189 +2204,141 @@ scaleToTexture8bits_generic(const RectI& roi,
         matteAcc = std::make_shared<Image::ReadAccess>( args.matteImage.get() );
     }
 
+    const ProjectColorManagement::DisplayProcessor noTransform;
+    const ProjectColorManagement::DisplayProcessor& processor = args.displayProcessor ? *args.displayProcessor : noTransform;
+
+    std::vector<float> scanline(4 * width);
+    std::vector<U8> alphas(width);
+    std::vector<float> matteScanline(applyMatte ? 4 * width : 0);
+
     for (int y = y1; y < y2;
          ++y,
          dst_pixels += dstRowElements) {
-        // coverity[dont_call]
-        int start = (int)( rand() % (x2 - x1) );
+        for (int x = 0; x < width; ++x) {
+            float r = 0.f;
+            float g = 0.f;
+            float b = 0.f;
+            float a = 0.f;
+            if (src_pixels) {
+                const PIX* pix = src_pixels + x * nComps;
+                if (nComps >= 4) {
+                    r = viewerPixelToFloat<PIX, maxValue>(pix[rOffset]);
+                    g = viewerPixelToFloat<PIX, maxValue>(pix[gOffset]);
+                    b = viewerPixelToFloat<PIX, maxValue>(pix[bOffset]);
+                    a = viewerPixelToFloat<PIX, maxValue>(pix[3]);
+                } else if (nComps == 3) {
+                    // coverity[dead_error_line]
+                    r = (rOffset < nComps) ? viewerPixelToFloat<PIX, maxValue>(pix[rOffset]) : 0.f;
+                    // coverity[dead_error_line]
+                    g = (gOffset < nComps) ? viewerPixelToFloat<PIX, maxValue>(pix[gOffset]) : 0.f;
+                    // coverity[dead_error_line]
+                    b = (bOffset < nComps) ? viewerPixelToFloat<PIX, maxValue>(pix[bOffset]) : 0.f;
+                    a = 1.f;
+                } else if (nComps == 2) {
+                    // coverity[dead_error_line]
+                    r = (rOffset < nComps) ? viewerPixelToFloat<PIX, maxValue>(pix[rOffset]) : 0.f;
+                    // coverity[dead_error_line]
+                    g = (gOffset < nComps) ? viewerPixelToFloat<PIX, maxValue>(pix[gOffset]) : 0.f;
+                    a = 1.f;
+                } else if (nComps == 1) {
+                    // coverity[dead_error_line]
+                    r = (rOffset < nComps) ? viewerPixelToFloat<PIX, maxValue>(pix[rOffset]) : 0.f;
+                    g = b = r;
+                    a = 1.f;
+                } else {
+                    assert(false);
+                }
+            }
 
+            if (applyMatte) {
+                float alphaMatteValue = 0.f;
+                if (args.matteImage == args.inputImage) {
+                    switch (args.alphaChannelIndex) {
+                    case 0:
+                        alphaMatteValue = r;
+                        break;
+                    case 1:
+                        alphaMatteValue = g;
+                        break;
+                    case 2:
+                        alphaMatteValue = b;
+                        break;
+                    case 3:
+                        alphaMatteValue = a;
+                        break;
+                    default:
+                        break;
+                    }
+                } else {
+                    const PIX* mattePixels = (const PIX*)matteAcc->pixelAt(x1 + x, y);
+                    if (mattePixels) {
+                        alphaMatteValue = viewerPixelToFloat<PIX, maxValue>(mattePixels[args.alphaChannelIndex]);
+                    }
+                }
+                float* m = &matteScanline[4 * x];
+                m[0] = m[1] = m[2] = alphaMatteValue;
+                m[3] = 1.f;
+            }
+
+            if (luminance) {
+                r = 0.299f * r + 0.587f * g + 0.114f * b;
+                g = r;
+                b = r;
+            }
+
+            float* p = &scanline[4 * x];
+            p[0] = r;
+            p[1] = g;
+            p[2] = b;
+            p[3] = a;
+            alphas[x] = (U8)Color::floatToInt<256>(a);
+        }
+
+        applyViewerDisplayTransform(processor, &scanline[0], width, args.gain, args.offset, args.gamma);
+        if (applyMatte) {
+            applyViewerDisplayTransform(processor, &matteScanline[0], width, 1., 0., 1.);
+        }
+
+        // coverity[dont_call]
+        int start = (int)(rand() % width);
 
         for (int backward = 0; backward < 2; ++backward) {
             int index = backward ? start - 1 : start;
 
-            assert( backward == 1 || ( index >= 0 && index < (x2 - x1) ) );
+            assert(backward == 1 || (index >= 0 && index < width));
 
             unsigned error_r = 0x80;
             unsigned error_g = 0x80;
             unsigned error_b = 0x80;
 
-            while (index < (x2 - x1) && index >= 0) {
-                double r = 0.;
-                double g = 0.;
-                double b = 0.;
-                int uA = 0;
-                double a = 0;
-                if (nComps >= 4) {
-                    r = (src_pixels ? src_pixels[index * nComps + rOffset] : 0.);
-                    g = (src_pixels ? src_pixels[index * nComps + gOffset] : 0.);
-                    b = (src_pixels ? src_pixels[index * nComps + bOffset] : 0.);
-                    a = src_pixels ? src_pixels[index * nComps + 3] : 0;
-                    uA = Color::floatToInt<256>(a);
-                } else if (nComps == 3) {
-                    // coverity[dead_error_line]
-                    r = (src_pixels && rOffset < nComps) ? src_pixels[index * nComps + rOffset] : 0.;
-                    // coverity[dead_error_line]
-                    g = (src_pixels && gOffset < nComps) ? src_pixels[index * nComps + gOffset] : 0.;
-                    // coverity[dead_error_line]
-                    b = (src_pixels && bOffset < nComps) ? src_pixels[index * nComps + bOffset] : 0.;
-                    a = (src_pixels ? 1 : 0);
-                    uA = a * 255;
-                } else if (nComps == 2) {
-                    // coverity[dead_error_line]
-                    r = (src_pixels && rOffset < nComps) ? src_pixels[index * nComps + rOffset] : 0.;
-                    // coverity[dead_error_line]
-                    g = (src_pixels && gOffset < nComps) ? src_pixels[index * nComps + gOffset] : 0.;
-                    b = 0;
-                    a = (src_pixels ? 1 : 0);
-                    uA = a * 255;
-                } else if (nComps == 1) {
-                    // coverity[dead_error_line]
-                    r = (src_pixels && rOffset < nComps) ? src_pixels[index * nComps + rOffset] : 0.;
-                    g = b = r;
-                    a = (src_pixels ? 1 : 0);
-                    uA = a * 255;
-                } else {
-                    assert(false);
-                }
-
-
-                switch (pixelSize) {
-                case sizeof(unsigned char):     //byte
-                    if (args.srcColorSpace) {
-                        r = args.srcColorSpace->fromColorSpaceUint8ToLinearFloatFast( (unsigned char)r );
-                        g = args.srcColorSpace->fromColorSpaceUint8ToLinearFloatFast( (unsigned char)g );
-                        b = args.srcColorSpace->fromColorSpaceUint8ToLinearFloatFast( (unsigned char)b );
-                    } else {
-                        r = (double)Image::convertPixelDepth<unsigned char, float>( (unsigned char)r );
-                        g = (double)Image::convertPixelDepth<unsigned char, float>( (unsigned char)g );
-                        b = (double)Image::convertPixelDepth<unsigned char, float>( (unsigned char)b );
-                    }
-                    break;
-                case sizeof(unsigned short):     //short
-                    if (args.srcColorSpace) {
-                        r = args.srcColorSpace->fromColorSpaceUint16ToLinearFloatFast( (unsigned short)r );
-                        g = args.srcColorSpace->fromColorSpaceUint16ToLinearFloatFast( (unsigned short)g );
-                        b = args.srcColorSpace->fromColorSpaceUint16ToLinearFloatFast( (unsigned short)b );
-                    } else {
-                        r = (double)Image::convertPixelDepth<unsigned short, float>( (unsigned char)r );
-                        g = (double)Image::convertPixelDepth<unsigned short, float>( (unsigned char)g );
-                        b = (double)Image::convertPixelDepth<unsigned short, float>( (unsigned char)b );
-                    }
-                    break;
-                case sizeof(float):     //float
-                    if (args.srcColorSpace) {
-                        r = args.srcColorSpace->fromColorSpaceFloatToLinearFloat(r);
-                        g = args.srcColorSpace->fromColorSpaceFloatToLinearFloat(g);
-                        b = args.srcColorSpace->fromColorSpaceFloatToLinearFloat(b);
-                    }
-                    break;
-                default:
-                    break;
-                }
-
-                r = r * args.gain + args.offset;
-                g = g * args.gain + args.offset;
-                b = b * args.gain + args.offset;
-                if  (args.gamma <= 0) {
-                    r = (r < 1.) ? 0. : (r == 1. ? 1. : std::numeric_limits<double>::infinity() );
-                    g = (g < 1.) ? 0. : (g == 1. ? 1. : std::numeric_limits<double>::infinity() );
-                    b = (b < 1.) ? 0. : (b == 1. ? 1. : std::numeric_limits<double>::infinity() );
-                } else if (args.gamma != 1.) {
-                    r = viewer->interpolateGammaLut(r);
-                    g = viewer->interpolateGammaLut(g);
-                    b = viewer->interpolateGammaLut(b);
-                }
-
-
-                if (luminance) {
-                    r = 0.299 * r + 0.587 * g + 0.114 * b;
-                    g = r;
-                    b = r;
-                }
-
-
-                U8 uR, uG, uB;
-                if (!args.colorSpace) {
-                    uR = Color::floatToInt<256>(r);
-                    uG = Color::floatToInt<256>(g);
-                    uB = Color::floatToInt<256>(b);
-                } else {
-                    error_r = (error_r & 0xff) + args.colorSpace->toColorSpaceUint8xxFromLinearFloatFast(r);
-                    error_g = (error_g & 0xff) + args.colorSpace->toColorSpaceUint8xxFromLinearFloatFast(g);
-                    error_b = (error_b & 0xff) + args.colorSpace->toColorSpaceUint8xxFromLinearFloatFast(b);
-                    assert(error_r < 0x10000 && error_g < 0x10000 && error_b < 0x10000);
-                    uR = (U8)(error_r >> 8);
-                    uG = (U8)(error_g >> 8);
-                    uB = (U8)(error_b >> 8);
-                }
+            while (index < width && index >= 0) {
+                const float* p = &scanline[4 * index];
+                error_r = (error_r & 0xff) + Color::floatToInt<0xff01>(p[0]);
+                error_g = (error_g & 0xff) + Color::floatToInt<0xff01>(p[1]);
+                error_b = (error_b & 0xff) + Color::floatToInt<0xff01>(p[2]);
+                assert(error_r < 0x10000 && error_g < 0x10000 && error_b < 0x10000);
+                U8 uR = (U8)(error_r >> 8);
+                const U8 uG = (U8)(error_g >> 8);
+                const U8 uB = (U8)(error_b >> 8);
 
                 if (applyMatte) {
-                    double alphaMatteValue = 0;
-                    if (args.matteImage == args.inputImage) {
-                        switch (args.alphaChannelIndex) {
-                        case 0:
-                            alphaMatteValue = r;
-                            break;
-                        case 1:
-                            alphaMatteValue = g;
-                            break;
-                        case 2:
-                            alphaMatteValue = b;
-                            break;
-                        case 3:
-                            alphaMatteValue = a;
-                            break;
-                        default:
-                            break;
-                        }
-                    } else {
-                        const PIX* src_pixels = (const PIX*)matteAcc->pixelAt(x1 + index, y);
-                        if (src_pixels) {
-                            alphaMatteValue = (double)src_pixels[args.alphaChannelIndex];
-                            switch (pixelSize) {
-                            case sizeof(unsigned char):     //byte
-                                alphaMatteValue = (double)Image::convertPixelDepth<unsigned char, float>( (unsigned char)r );
-                                break;
-                            case sizeof(unsigned short):     //short
-                                alphaMatteValue = (double)Image::convertPixelDepth<unsigned short, float>( (unsigned short)r );
-                                break;
-                            default:
-                                break;
-                            }
-                        }
-                    }
-                    U8 matteA;
-                    if (args.colorSpace) {
-                        matteA = args.colorSpace->toColorSpaceUint8FromLinearFloatFast(alphaMatteValue) / 2;
-                    } else {
-                        matteA = Color::floatToInt<256>(alphaMatteValue) / 2;
-                    }
-                    uR = Image::clampIfInt<U8>( (double)uR + matteA );
+                    const U8 matteA = (U8)(Color::floatToInt<256>(matteScanline[4 * index]) / 2);
+                    uR = Image::clampIfInt<U8>((float)uR + matteA);
                 }
 
-                dst_pixels[index] = toBGRA(uR, uG, uB, uA);
+                dst_pixels[index] = toBGRA(uR, uG, uB, alphas[index]);
 
                 if (backward) {
                     --index;
                 } else {
                     ++index;
                 }
-            } // while (index < args.texRect.w && index >= 0) {
-        } // for (int backward = 0; backward < 2; ++backward) {
+            }
+        }
         if (src_pixels) {
             src_pixels += srcRowElements;
         }
-    } // for (int y = yRange.first; y < yRange.second;
+    }
 } // scaleToTexture8bits_generic
 
 template <typename PIX, int maxValue, int nComps, bool matteOverlay, int rOffset, int gOffset, int bOffset>
@@ -2510,12 +2480,6 @@ scaleToTexture8bits(const RectI& roi,
     }
 } // scaleToTexture8bits
 
-float
-ViewerInstance::interpolateGammaLut(float value)
-{
-    return _imp->lookupGammaLut(value);
-}
-
 void
 ViewerInstance::markAllOnGoingRendersAsAborted(bool keepOldestRender)
 {
@@ -2548,7 +2512,6 @@ scaleToTexture32bitsGeneric(const RectI& roi,
                             const UpdateViewerParams::CachedTile& tile,
                             float* tileBuffer)
 {
-    const size_t pixelSize = sizeof(PIX);
     const bool luminance = (args.channels == eDisplayChannelsY);
     const int dstRowElements = args.renderOnlyRoI ? tile.rect.width() * 4 : args.tileRowElements;
     Image::ReadAccess acc = Image::ReadAccess( args.inputImage.get() );
@@ -2572,7 +2535,7 @@ scaleToTexture32bitsGeneric(const RectI& roi,
     const int y2 = args.renderOnlyRoI ? roi.y2 : tile.rect.y2;
     const int x1 = args.renderOnlyRoI ? roi.x1 : tile.rect.x1;
     const int x2 = args.renderOnlyRoI ? roi.x2 : tile.rect.x2;
-    const float* src_pixels = (const float*)acc.pixelAt(x1, y1);
+    const PIX* src_pixels = (const PIX*)acc.pixelAt(x1, y1);
     const int srcRowElements = (const int)args.inputImage->getRowElements();
 
     for (int y = y1; y < y2;
@@ -2614,41 +2577,14 @@ scaleToTexture32bitsGeneric(const RectI& roi,
                 assert(false);
             }
 
-
-            switch (pixelSize) {
-            case sizeof(unsigned char):
-                if (args.srcColorSpace) {
-                    r = args.srcColorSpace->fromColorSpaceUint8ToLinearFloatFast( (unsigned char)r );
-                    g = args.srcColorSpace->fromColorSpaceUint8ToLinearFloatFast( (unsigned char)g );
-                    b = args.srcColorSpace->fromColorSpaceUint8ToLinearFloatFast( (unsigned char)b );
-                } else {
-                    r = (double)Image::convertPixelDepth<unsigned char, float>( (unsigned char)r );
-                    g = (double)Image::convertPixelDepth<unsigned char, float>( (unsigned char)g );
-                    b = (double)Image::convertPixelDepth<unsigned char, float>( (unsigned char)b );
+            if (maxValue != 1) {
+                r = Color::intToFloat<maxValue + 1>((int)r);
+                g = Color::intToFloat<maxValue + 1>((int)g);
+                b = Color::intToFloat<maxValue + 1>((int)b);
+                if (nComps >= 4) {
+                    a = Color::intToFloat<maxValue + 1>((int)a);
                 }
-                break;
-            case sizeof(unsigned short):
-                if (args.srcColorSpace) {
-                    r = args.srcColorSpace->fromColorSpaceUint16ToLinearFloatFast( (unsigned short)r );
-                    g = args.srcColorSpace->fromColorSpaceUint16ToLinearFloatFast( (unsigned short)g );
-                    b = args.srcColorSpace->fromColorSpaceUint16ToLinearFloatFast( (unsigned short)b );
-                } else {
-                    r = (double)Image::convertPixelDepth<unsigned short, float>( (unsigned char)r );
-                    g = (double)Image::convertPixelDepth<unsigned short, float>( (unsigned char)g );
-                    b = (double)Image::convertPixelDepth<unsigned short, float>( (unsigned char)b );
-                }
-                break;
-            case sizeof(float):
-                if (args.srcColorSpace) {
-                    r = args.srcColorSpace->fromColorSpaceFloatToLinearFloat(r);
-                    g = args.srcColorSpace->fromColorSpaceFloatToLinearFloat(g);
-                    b = args.srcColorSpace->fromColorSpaceFloatToLinearFloat(b);
-                }
-                break;
-            default:
-                break;
             }
-
 
             if (luminance) {
                 r = 0.299 * r + 0.587 * g + 0.114 * b;
@@ -2676,19 +2612,9 @@ scaleToTexture32bitsGeneric(const RectI& roi,
                         break;
                     }
                 } else {
-                    const PIX* src_pixels = (const PIX*)matteAcc->pixelAt(x, y);
-                    if (src_pixels) {
-                        alphaMatteValue = (double)src_pixels[args.alphaChannelIndex];
-                        switch (pixelSize) {
-                        case sizeof(unsigned char):     //byte
-                            alphaMatteValue = (double)Image::convertPixelDepth<unsigned char, float>( (unsigned char)r );
-                            break;
-                        case sizeof(unsigned short):     //short
-                            alphaMatteValue = (double)Image::convertPixelDepth<unsigned short, float>( (unsigned short)r );
-                            break;
-                        default:
-                            break;
-                        }
+                    const PIX* mattePixels = (const PIX*)matteAcc->pixelAt(x1 + x, y);
+                    if (mattePixels) {
+                        alphaMatteValue = viewerPixelToFloat<PIX, maxValue>(mattePixels[args.alphaChannelIndex]);
                     }
                 }
                 r += alphaMatteValue * 0.5;
@@ -2911,7 +2837,7 @@ ViewerInstance::ViewerInstancePrivate::updateViewer(UpdateViewerParamsPtr params
             }
         }
 
-        uiContext->endTransferBufferFromRAMToGPU(params->textureIndex, texture, originalImage, params->time, params->rod, params->pixelAspectRatio, depth, params->mipmapLevel, params->gain, params->gamma, params->offset, params->lut, params->recenterViewport, params->viewportCenter, params->isPartialRect);
+        uiContext->endTransferBufferFromRAMToGPU(params->textureIndex, texture, originalImage, params->time, params->rod, params->pixelAspectRatio, depth, params->mipmapLevel, params->gain, params->gamma, params->offset, params->recenterViewport, params->viewportCenter, params->isPartialRect);
         if (!params->isPartialRect && originalImage) {
             uiContext->setLastRenderedDeepImage(params->textureIndex, params->mipmapLevel, deepImage);
         }
@@ -2955,10 +2881,6 @@ ViewerInstance::onGammaChanged(double value)
             _imp->viewerParamsGamma = value;
             changed = true;
         }
-    }
-    if (changed) {
-        QWriteLocker k(&_imp->gammaLookupMutex);
-        _imp->fillGammaLut(value);
     }
     assert(_imp->uiContext);
     if (changed) {
@@ -3047,17 +2969,21 @@ ViewerInstance::isAutoContrastEnabled() const
 }
 
 void
-ViewerInstance::onColorSpaceChanged(ViewerColorSpaceEnum colorspace)
+ViewerInstance::setDisplayTransform(const std::string& display,
+                                    const std::string& view,
+                                    const std::string& look)
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
 
     {
         QMutexLocker l(&_imp->viewerParamsMutex);
-        if (_imp->viewerParamsLut == colorspace) {
+        if ((_imp->viewerParamsDisplay == display) && (_imp->viewerParamsView == view) && (_imp->viewerParamsLook == look)) {
             return;
         }
-        _imp->viewerParamsLut = colorspace;
+        _imp->viewerParamsDisplay = display;
+        _imp->viewerParamsView = view;
+        _imp->viewerParamsLook = look;
     }
     assert(_imp->uiContext);
     if ( ( (_imp->uiContext->getBitDepth() == eImageBitDepthByte) )
@@ -3215,14 +3141,27 @@ ViewerInstance::redrawViewerNow()
     _imp->uiContext->redrawNow();
 }
 
-int
-ViewerInstance::getLutType() const
+ProjectColorManagement::DisplayProcessorPtr
+ViewerInstance::getDisplayProcessor() const
 {
-    // MT-SAFE: called from main thread and Serialization (pooled) thread
+    std::string display, view, look;
+    {
+        QMutexLocker l(&_imp->viewerParamsMutex);
+        display = _imp->viewerParamsDisplay;
+        view = _imp->viewerParamsView;
+        look = _imp->viewerParamsLook;
+    }
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
+    if (!colorManagement) {
+        return ProjectColorManagement::DisplayProcessorPtr();
+    }
+    if (display.empty() || view.empty()) {
+        project->getDefaultDisplayView(&display, &view);
+    }
 
-    QMutexLocker l(&_imp->viewerParamsMutex);
-
-    return _imp->viewerParamsLut;
+    return colorManagement->getDisplayProcessor(project->getWorkingColorSpace(), display, view, look);
 }
 
 double

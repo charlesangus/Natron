@@ -1417,18 +1417,6 @@ ViewerGL::initShaderGLSL()
         if ( !_imp->shaderBlack->link() ) {
             qDebug() << qPrintable( _imp->shaderBlack->log() );
         }
-
-        _imp->shaderRGB.reset( new QOpenGLShaderProgram( context() ) );
-        if ( !_imp->shaderRGB->addShaderFromSourceCode(QOpenGLShader::Vertex, vertRGB) ) {
-            qDebug() << qPrintable( _imp->shaderRGB->log() );
-        }
-        if ( !_imp->shaderRGB->addShaderFromSourceCode(QOpenGLShader::Fragment, fragRGB) ) {
-            qDebug() << qPrintable( _imp->shaderRGB->log() );
-        }
-
-        if ( !_imp->shaderRGB->link() ) {
-            qDebug() << qPrintable( _imp->shaderRGB->log() );
-        }
         _imp->shaderLoaded = true;
     }
 }
@@ -1469,7 +1457,6 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
                                         double gain,
                                         double gamma,
                                         double offset,
-                                        int lut,
                                         bool recenterViewer,
                                         const Point& viewportCenter,
                                         bool isPartialRect)
@@ -1503,7 +1490,6 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
         _imp->displayTextures[textureIndex].gamma = gamma;
         _imp->displayTextures[textureIndex].offset = offset;
         _imp->displayTextures[textureIndex].mipmapLevel = mipmapLevel;
-        _imp->displayingImageLut = (ViewerColorSpaceEnum)lut;
         _imp->displayTextures[textureIndex].time = time;
 
         if (_imp->displayTextures[textureIndex].memoryHeldByLastRenderedImages > 0) {
@@ -1628,6 +1614,7 @@ ViewerGL::transferBufferFromRAMtoGPU(const unsigned char* ramBuffer,
                 Texture::getRecommendedTexParametersForRGBAByteTexture(&format, &internalFormat, &glType);
             }
             _imp->displayTextures[textureIndex].texture.reset( new Texture(GL_TEXTURE_2D, GL_LINEAR, GL_NEAREST, GL_CLAMP_TO_EDGE, dataType, format, internalFormat, glType) );
+            tex = _imp->displayTextures[textureIndex].texture;
         }
         textureRectangle.set(roiRoundedToTileSize);
         _imp->displayTextures[textureIndex].roiNotRoundedToTileSize.set(roi);
@@ -1740,11 +1727,24 @@ ViewerGL::setGamma(double g)
 }
 
 void
-ViewerGL::setLut(int lut)
+ViewerGL::setDisplayTransform(const std::string& display,
+                              const std::string& view,
+                              const std::string& look)
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
-    _imp->displayingImageLut = (ViewerColorSpaceEnum)lut;
+    _imp->displayName = display;
+    _imp->viewName = view;
+    _imp->lookName = look;
+    // A new transform gets a new chance at the shader path; the textures rendered for the 8-bit
+    // fallback must then be re-rendered as float.
+    if (_imp->shaderFailed.exchange(false)) {
+        ViewerInstance* node = getInternalNode();
+        if (node) {
+            node->renderCurrentFrame(true);
+        }
+    }
+    update();
 }
 
 void
@@ -3182,6 +3182,10 @@ ViewerGL::resizeEvent(QResizeEvent* e)
 ImageBitDepthEnum
 ViewerGL::getBitDepth() const
 {
+    if (_imp->shaderFailed) {
+        return eImageBitDepthByte;
+    }
+
     return appPTR->getCurrentSettings()->getViewersBitDepth();
 }
 
@@ -4239,14 +4243,10 @@ ViewerGL::getCurrentMipmapLevel() const
 }
 
 template <typename PIX, int maxValue>
-static
-bool
+static bool
 getColorAtInternal(const ImagePtr& image,
                    int x,
-                   int y,             // in pixel coordinates
-                   bool forceLinear,
-                   const Color::Lut* srcColorSpace,
-                   const Color::Lut* dstColorSpace,
+                   int y, // in pixel coordinates
                    float* r,
                    float* g,
                    float* b,
@@ -4280,27 +4280,6 @@ getColorAtInternal(const ImagePtr& image,
             *r = *g = *b = *a = pix[0] * (1.f / maxValue);
         }
 
-
-        ///convert to linear
-        if (srcColorSpace) {
-            *r = srcColorSpace->fromColorSpaceFloatToLinearFloat(*r);
-            *g = srcColorSpace->fromColorSpaceFloatToLinearFloat(*g);
-            *b = srcColorSpace->fromColorSpaceFloatToLinearFloat(*b);
-        }
-
-        if (!forceLinear && dstColorSpace) {
-            ///convert to dst color space
-            float from[3];
-            from[0] = *r;
-            from[1] = *g;
-            from[2] = *b;
-            float to[3];
-            dstColorSpace->to_float_planar(to, from, 3);
-            *r = to[0];
-            *g = to[1];
-            *b = to[2];
-        }
-
         return true;
     }
 
@@ -4331,41 +4310,9 @@ ViewerGL::getColorAt(double x,
 
     if (!image) {
         return false;
-        ///Don't do this as this is 8bit data
-        /*double colorGPU[4];
-           getTextureColorAt(x, y, &colorGPU[0], &colorGPU[1], &colorGPU[2], &colorGPU[3]);
-         * a = colorGPU[3];
-           if ( forceLinear && (_imp->displayingImageLut != eViewerColorSpaceLinear) ) {
-            const Color::Lut* srcColorSpace = ViewerInstance::lutFromColorspace(_imp->displayingImageLut);
-
-         * r = srcColorSpace->fromColorSpaceFloatToLinearFloat(colorGPU[0]);
-         * g = srcColorSpace->fromColorSpaceFloatToLinearFloat(colorGPU[1]);
-         * b = srcColorSpace->fromColorSpaceFloatToLinearFloat(colorGPU[2]);
-           } else {
-         * r = colorGPU[0];
-         * g = colorGPU[1];
-         * b = colorGPU[2];
-           }
-           return true;*/
     }
 
     ImageBitDepthEnum depth = image->getBitDepth();
-    ViewerColorSpaceEnum srcCS = _imp->viewerTab->getGui()->getApp()->getDefaultColorSpaceForBitDepth(depth);
-    const Color::Lut* dstColorSpace;
-    const Color::Lut* srcColorSpace;
-    if ( (srcCS == _imp->displayingImageLut)
-         && ( (_imp->displayingImageLut == eViewerColorSpaceLinear) || !forceLinear ) ) {
-        // identity transform
-        srcColorSpace = 0;
-        dstColorSpace = 0;
-    } else {
-        if (image->getComponents().isColorLayer()) {
-            srcColorSpace = ViewerInstance::lutFromColorspace(srcCS);
-            dstColorSpace = ViewerInstance::lutFromColorspace(_imp->displayingImageLut);
-        } else {
-            srcColorSpace = dstColorSpace = 0;
-        }
-    }
 
     const double par = image->getPixelAspectRatio();
     double scale = 1. / ( 1 << image->getMipmapLevel() );
@@ -4376,34 +4323,30 @@ ViewerGL::getColorAt(double x,
     bool gotval;
     switch (depth) {
     case eImageBitDepthByte:
-        gotval = getColorAtInternal<unsigned char, 255>(image,
-                                                        xPixel, yPixel,
-                                                        forceLinear,
-                                                        srcColorSpace,
-                                                        dstColorSpace,
-                                                        r, g, b, a);
+        gotval = getColorAtInternal<unsigned char, 255>(image, xPixel, yPixel, r, g, b, a);
         break;
     case eImageBitDepthShort:
-        gotval = getColorAtInternal<unsigned short, 65535>(image,
-                                                           xPixel, yPixel,
-                                                           forceLinear,
-                                                           srcColorSpace,
-                                                           dstColorSpace,
-                                                           r, g, b, a);
+        gotval = getColorAtInternal<unsigned short, 65535>(image, xPixel, yPixel, r, g, b, a);
         break;
     case eImageBitDepthFloat:
-        gotval = getColorAtInternal<float, 1>(image,
-                                              xPixel, yPixel,
-                                              forceLinear,
-                                              srcColorSpace,
-                                              dstColorSpace,
-                                              r, g, b, a);
+        gotval = getColorAtInternal<float, 1>(image, xPixel, yPixel, r, g, b, a);
         break;
     default:
         gotval = false;
         break;
     }
     *imgMmlevel = image->getMipmapLevel();
+
+    if (gotval && !forceLinear && image->getComponents().isColorLayer()) {
+        ProjectColorManagement::DisplayProcessorPtr processor = _imp->getDisplayProcessor();
+        if (processor) {
+            float rgba[4] = { *r, *g, *b, *a };
+            applyViewerDisplayTransform(*processor, rgba, 1, 1., 0., 1.);
+            *r = rgba[0];
+            *g = rgba[1];
+            *b = rgba[2];
+        }
+    }
 
     return gotval;
 } // getColorAt
@@ -4520,147 +4463,57 @@ ViewerGL::getColorAtRect(const RectD &rect, // rectangle in canonical coordinate
     double aSum = 0.;
     if (!image) {
         return false;
-        //don't do this as this is 8 bit
-        /*
-           Texture::DataTypeEnum type;
-           if (_imp->displayTextures[0]) {
-            type = _imp->displayTextures[0]->type();
-           } else if (_imp->displayTextures[1]) {
-            type = _imp->displayTextures[1]->type();
-           } else {
-            return false;
-           }
-
-           if ( (type == Texture::eDataTypeByte) ) {
-            std::vector<U32> pixels(rectPixel.width() * rectPixel.height());
-            glReadBuffer(GL_FRONT);
-            glReadPixels(rectPixel.left(), rectPixel.right(), rectPixel.width(), rectPixel.height(),
-                         GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, &pixels.front());
-            double rF,gF,bF,aF;
-            for (U32 i = 0 ; i < pixels.size(); ++i) {
-                U8 red = 0, green = 0, blue = 0, alpha = 0;
-                blue |= pixels[i];
-                green |= (pixels[i] >> 8);
-                red |= (pixels[i] >> 16);
-                alpha |= (pixels[i] >> 24);
-                rF = (double)red * (1. / 255);
-                gF = (double)green * (1. / 255);
-                bF = (double)blue * (1. / 255);
-                aF = (double)alpha * (1. / 255);
-
-                aSum += aF;
-                if ( forceLinear && (_imp->displayingImageLut != eViewerColorSpaceLinear) ) {
-                    const Color::Lut* srcColorSpace = ViewerInstance::lutFromColorspace(_imp->displayingImageLut);
-
-                    rSum += srcColorSpace->fromColorSpaceFloatToLinearFloat(rF);
-                    gSum += srcColorSpace->fromColorSpaceFloatToLinearFloat(gF);
-                    bSum += srcColorSpace->fromColorSpaceFloatToLinearFloat(bF);
-                } else {
-                    rSum += rF;
-                    gSum += gF;
-                    bSum += bF;
-                }
-
-            }
-
-            glCheckError();
-           } else if ( (type == Texture::eDataTypeFloat)) {
-            std::vector<float> pixels(rectPixel.width() * rectPixel.height() * 4);
-            glReadPixels(rectPixel.left(), rectPixel.right(), rectPixel.width(), rectPixel.height(),
-                         GL_RGBA, GL_FLOAT, &pixels.front());
-
-            int rowSize = rectPixel.width() * 4;
-            for (int y = 0; y < rectPixel.height(); ++y) {
-                for (int x = 0; x < rectPixel.width(); ++x) {
-                    double rF = pixels[y * rowSize + (4 * x)];
-                    double gF = pixels[y * rowSize + (4 * x) + 1];
-                    double bF = pixels[y * rowSize + (4 * x) + 2];
-                    double aF = pixels[y * rowSize + (4 * x) + 3];
-
-                    aSum += aF;
-                    if ( forceLinear && (_imp->displayingImageLut != eViewerColorSpaceLinear) ) {
-                        const Color::Lut* srcColorSpace = ViewerInstance::lutFromColorspace(_imp->displayingImageLut);
-
-                        rSum += srcColorSpace->fromColorSpaceFloatToLinearFloat(rF);
-                        gSum += srcColorSpace->fromColorSpaceFloatToLinearFloat(gF);
-                        bSum += srcColorSpace->fromColorSpaceFloatToLinearFloat(bF);
-                    } else {
-                        rSum += rF;
-                        gSum += gF;
-                        bSum += bF;
-                    }
-                }
-            }
-
-
-            glCheckError();
-           }
-
-         * r = rSum / rectPixel.area();
-         * g = gSum / rectPixel.area();
-         * b = bSum / rectPixel.area();
-         * a = aSum / rectPixel.area();
-
-           return true;*/
     }
-
 
     ImageBitDepthEnum depth = image->getBitDepth();
-    ViewerColorSpaceEnum srcCS = _imp->viewerTab->getGui()->getApp()->getDefaultColorSpaceForBitDepth(depth);
-    const Color::Lut* dstColorSpace;
-    const Color::Lut* srcColorSpace;
-    if ( (srcCS == _imp->displayingImageLut) && ( (_imp->displayingImageLut == eViewerColorSpaceLinear) || !forceLinear ) ) {
-        // identity transform
-        srcColorSpace = 0;
-        dstColorSpace = 0;
-    } else {
-        srcColorSpace = ViewerInstance::lutFromColorspace(srcCS);
-        dstColorSpace = ViewerInstance::lutFromColorspace(_imp->displayingImageLut);
+    ProjectColorManagement::DisplayProcessorPtr processor;
+    if (!forceLinear && image->getComponents().isColorLayer()) {
+        processor = _imp->getDisplayProcessor();
     }
+    std::vector<float> row;
 
     unsigned long area = 0;
     for (int yPixel = rectPixel.bottom(); yPixel < rectPixel.top(); ++yPixel) {
+        row.clear();
         for (int xPixel = rectPixel.x1; xPixel < rectPixel.x2; ++xPixel) {
             float rPix, gPix, bPix, aPix;
             bool gotval = false;
             switch (depth) {
             case eImageBitDepthByte:
-                gotval = getColorAtInternal<unsigned char, 255>(image,
-                                                                xPixel, yPixel,
-                                                                forceLinear,
-                                                                srcColorSpace,
-                                                                dstColorSpace,
-                                                                &rPix, &gPix, &bPix, &aPix);
+                gotval = getColorAtInternal<unsigned char, 255>(image, xPixel, yPixel, &rPix, &gPix, &bPix, &aPix);
                 break;
             case eImageBitDepthShort:
-                gotval = getColorAtInternal<unsigned short, 65535>(image,
-                                                                   xPixel, yPixel,
-                                                                   forceLinear,
-                                                                   srcColorSpace,
-                                                                   dstColorSpace,
-                                                                   &rPix, &gPix, &bPix, &aPix);
+                gotval = getColorAtInternal<unsigned short, 65535>(image, xPixel, yPixel, &rPix, &gPix, &bPix, &aPix);
                 break;
             case eImageBitDepthHalf:
                 break;
             case eImageBitDepthFloat:
-                gotval = getColorAtInternal<float, 1>(image,
-                                                      xPixel, yPixel,
-                                                      forceLinear,
-                                                      srcColorSpace,
-                                                      dstColorSpace,
-                                                      &rPix, &gPix, &bPix, &aPix);
+                gotval = getColorAtInternal<float, 1>(image, xPixel, yPixel, &rPix, &gPix, &bPix, &aPix);
                 break;
             case eImageBitDepthNone:
                 break;
             }
             if (gotval) {
-                rSum += rPix;
-                gSum += gPix;
-                bSum += bPix;
-                aSum += aPix;
-                ++area;
+                row.push_back(rPix);
+                row.push_back(gPix);
+                row.push_back(bPix);
+                row.push_back(aPix);
             }
         }
+        if (row.empty()) {
+            continue;
+        }
+        const int count = (int)row.size() / 4;
+        if (processor) {
+            applyViewerDisplayTransform(*processor, &row[0], count, 1., 0., 1.);
+        }
+        for (int i = 0; i < count; ++i) {
+            rSum += row[4 * i];
+            gSum += row[4 * i + 1];
+            bSum += row[4 * i + 2];
+            aSum += row[4 * i + 3];
+        }
+        area += count;
     }
 
     if (area > 0) {

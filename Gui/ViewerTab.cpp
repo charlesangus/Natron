@@ -30,6 +30,7 @@
 #include <stdexcept>
 
 #include <QDebug>
+#include <QPointer>
 #include <QTimer>
 
 #include <QAction>
@@ -481,7 +482,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->secondRowLayout->addWidget(_imp->toggleGammaButton);
 
     _imp->gammaBox = new SpinBox(_imp->secondSettingsRow, SpinBox::eSpinBoxTypeDouble);
-    QString gammaTt = NATRON_NAMESPACE::convertFromPlainText(tr("Viewer gamma correction level (applied after gain and before colorspace correction)."), NATRON_NAMESPACE::WhiteSpaceNormal);
+    QString gammaTt = NATRON_NAMESPACE::convertFromPlainText(tr("Viewer gamma correction level (applied after the gain and the display transform)."), NATRON_NAMESPACE::WhiteSpaceNormal);
     _imp->gammaBox->setToolTip(gammaTt);
     QObject::connect( _imp->gammaBox, SIGNAL(valueChanged(double)), this, SLOT(onGammaSpinBoxValueChanged(double)) );
     _imp->gammaBox->setValue(1.0);
@@ -493,19 +494,24 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QObject::connect( _imp->gammaSlider, SIGNAL(positionChanged(double)), this, SLOT(onGammaSliderValueChanged(double)) );
     _imp->secondRowLayout->addWidget(_imp->gammaSlider);
 
-    _imp->viewerColorSpace = new ComboBox(_imp->secondSettingsRow);
-    _imp->viewerColorSpace->setToolTip( QString::fromUtf8( "<p><b>") + tr("Viewer color process:") + QString::fromUtf8("</b></p><p>") + tr(
-                                            "The operation applied to the image before it is displayed "
-                                            "on screen. All the color pipeline "
-                                            "is linear, thus the process converts from linear "
-                                            "to your monitor's colorspace.") + QString::fromUtf8("</p>") );
-    _imp->secondRowLayout->addWidget(_imp->viewerColorSpace);
+    _imp->viewerDisplay = new ComboBox(_imp->secondSettingsRow);
+    _imp->viewerDisplay->setToolTip(QString::fromUtf8("<p><b>") + tr("Display:") + QString::fromUtf8("</b></p><p>") + tr("The display device the image is shown on, from the project's OpenColorIO config. "
+                                                                                                                         "Images are converted from the project's working space to this display "
+                                                                                                                         "through the selected view.")
+                                    + QString::fromUtf8("</p>"));
+    _imp->secondRowLayout->addWidget(_imp->viewerDisplay);
 
-    _imp->viewerColorSpace->addItem( QString::fromUtf8("Linear(None)") );
-    _imp->viewerColorSpace->addItem( QString::fromUtf8("sRGB") );
-    _imp->viewerColorSpace->addItem( QString::fromUtf8("Rec.709") );
-    _imp->viewerColorSpace->addItem( QString::fromUtf8("BT1886") );
-    _imp->viewerColorSpace->setCurrentIndex(1);
+    _imp->viewerView = new ComboBox(_imp->secondSettingsRow);
+    _imp->viewerView->setToolTip(QString::fromUtf8("<p><b>") + tr("View:") + QString::fromUtf8("</b></p><p>") + tr("How the image is rendered for the selected display, for example a tone-mapped "
+                                                                                                                   "or an un-tone-mapped view.")
+                                 + QString::fromUtf8("</p>"));
+    _imp->secondRowLayout->addWidget(_imp->viewerView);
+
+    _imp->viewerLook = new ComboBox(_imp->secondSettingsRow);
+    _imp->viewerLook->setToolTip(QString::fromUtf8("<p><b>") + tr("Look:") + QString::fromUtf8("</b></p><p>") + tr("A creative look from the config applied before the display transform. "
+                                                                                                                   "None keeps the looks the view itself defines.")
+                                 + QString::fromUtf8("</p>"));
+    _imp->secondRowLayout->addWidget(_imp->viewerLook);
 
     QPixmap pixCheckerboardEnabled, pixCheckerboardDisabld;
     appPTR->getIcon(NATRON_PIXMAP_VIEWER_CHECKERBOARD_ENABLED, pixmapIconSize, &pixCheckerboardEnabled);
@@ -1036,8 +1042,12 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     if (isInspector) {
         QObject::connect( isInspector, SIGNAL(activeInputsChanged()), this, SLOT(onActiveInputsChanged()) );
     }
-    QObject::connect( _imp->viewerColorSpace, SIGNAL(currentIndexChanged(int)), this,
-                      SLOT(onColorSpaceComboBoxChanged(int)) );
+    QObject::connect(_imp->viewerDisplay, SIGNAL(currentIndexChanged(int)), this,
+                     SLOT(onDisplayTransformComboBoxChanged(int)));
+    QObject::connect(_imp->viewerView, SIGNAL(currentIndexChanged(int)), this,
+                     SLOT(onDisplayTransformComboBoxChanged(int)));
+    QObject::connect(_imp->viewerLook, SIGNAL(currentIndexChanged(int)), this,
+                     SLOT(onDisplayTransformComboBoxChanged(int)));
     QObject::connect( _imp->zoomCombobox, SIGNAL(currentIndexChanged(int)), this, SLOT(onZoomComboboxCurrentIndexChanged(int)) );
     QObject::connect( _imp->viewer, SIGNAL(zoomChanged(int)), this, SLOT(updateZoomComboBox(int)) );
     QObject::connect( _imp->gainBox, SIGNAL(valueChanged(double)), this, SLOT(onGainSpinBoxValueChanged(double)) );
@@ -1088,6 +1098,20 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
     _imp->viewerNode->setUiContext( getViewer() );
+
+    {
+        ProjectPtr project = getGui()->getApp()->getProject();
+        _imp->colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
+        if (_imp->colorManagement) {
+            QPointer<ViewerTab> self(this);
+            _imp->configChangedCallbackId = _imp->colorManagement->addConfigChangedCallback([self]() {
+                if (self) {
+                    QMetaObject::invokeMethod(self.data(), "onProjectColorConfigChanged", Qt::AutoConnection);
+                }
+            });
+        }
+        setDisplayTransform(std::string(), std::string(), std::string());
+    }
 
     refreshLayerAndAlphaChannelComboBox();
 

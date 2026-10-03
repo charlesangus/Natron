@@ -70,7 +70,8 @@ GCC_DIAG_ON(unused-parameter)
 #define VIEWER_DATA_INTRODUCES_PAUSE_VIEWER 12
 #define VIEWER_DATA_INTRODUCES_LAYER 13
 #define VIEWER_DATA_INTRODUCES_FULL_FRAME_PROC 14
-#define VIEWER_DATA_SERIALIZATION_VERSION VIEWER_DATA_INTRODUCES_FULL_FRAME_PROC
+#define VIEWER_DATA_INTRODUCES_OCIO_DISPLAY 15
+#define VIEWER_DATA_SERIALIZATION_VERSION VIEWER_DATA_INTRODUCES_OCIO_DISPLAY
 
 #define PROJECT_GUI_INTRODUCES_BACKDROPS 2
 #define PROJECT_GUI_REMOVES_ALL_NODE_PREVIEW_TOGGLED 3
@@ -114,7 +115,9 @@ struct ViewerData
     double gamma;
     bool renderScaleActivated;
     unsigned int mipmapLevel;
-    std::string colorSpace;
+    std::string display;
+    std::string view;
+    std::string look; // empty: no look override
     std::string channels;
     std::string layerName, alphaLayerName;
     bool zoomOrPanSinceLastFit;
@@ -157,7 +160,9 @@ struct ViewerData
         } else {
             gamma = 1.;
         }
-        ar & ::boost::serialization::make_nvp("ColorSpace", colorSpace);
+        ar& ::boost::serialization::make_nvp("Display", display);
+        ar& ::boost::serialization::make_nvp("View", view);
+        ar& ::boost::serialization::make_nvp("Look", look);
         if (version >= VIEWER_DATA_INTRODUCES_LAYER) {
             ar & ::boost::serialization::make_nvp("Layer", layerName);
             ar & ::boost::serialization::make_nvp("AlphaLayer", alphaLayerName);

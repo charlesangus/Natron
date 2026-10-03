@@ -30,9 +30,10 @@
 
 #include <string>
 
-#include "Engine/OutputEffectInstance.h"
-#include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/OutputEffectInstance.h"
+#include "Engine/ProjectColorManagement.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -241,8 +242,6 @@ public:
      **/
     void disconnectTextureAfterRender(int index, bool clearRod, U64 renderAge);
 
-    int getLutType() const WARN_UNUSED_RETURN;
-
     double getGain() const WARN_UNUSED_RETURN;
 
     unsigned int getMipmapLevel() const WARN_UNUSED_RETURN;
@@ -284,7 +283,17 @@ public:
 
     double getGamma() const WARN_UNUSED_RETURN;
 
-    void onColorSpaceChanged(ViewerColorSpaceEnum colorspace);
+    /**
+     * @brief Sets the display, view and look the 8-bit texture path renders through. An empty
+     * display or view uses the project's defaults; an empty look applies no look override.
+     **/
+    void setDisplayTransform(const std::string& display, const std::string& view, const std::string& look);
+
+    /**
+     * @brief The processor for the current display, view and look, from the project's working
+     * space. Null when the config cannot build it. MT-safe.
+     **/
+    ProjectColorManagement::DisplayProcessorPtr getDisplayProcessor() const;
 
     virtual void onInputChanged(int inputNb) OVERRIDE FINAL;
 
@@ -308,7 +317,6 @@ public:
 
     void getTimelineBounds(int* first, int* last) const;
 
-    static const Color::Lut* lutFromColorspace(ViewerColorSpaceEnum cs) WARN_UNUSED_RETURN;
     virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
     virtual void onChannelsSelectorRefreshed() OVERRIDE FINAL;
 
@@ -317,8 +325,6 @@ public:
     void callRedrawOnMainThread() { Q_EMIT s_callRedrawOnMainThread(); }
 
     struct ViewerInstancePrivate;
-
-    float interpolateGammaLut(float value);
 
     void markAllOnGoingRendersAsAborted(bool keepOldestRender);
 
@@ -468,6 +474,18 @@ private:
 
     std::unique_ptr<ViewerInstancePrivate> _imp;
 };
+
+/**
+ * @brief Transforms one RGBA F32 scanline of \p width pixels in place: rgb * gain + offset in the
+ * working space, then the processor (look + display/view), then gamma (a threshold at 1 when
+ * gamma <= 0). Alpha is untouched.
+ **/
+void applyViewerDisplayTransform(const ProjectColorManagement::DisplayProcessor& processor,
+                                 float* rgba,
+                                 int width,
+                                 double gain,
+                                 double offset,
+                                 double gamma);
 
 NATRON_NAMESPACE_EXIT
 

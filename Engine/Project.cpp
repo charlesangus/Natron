@@ -2295,6 +2295,10 @@ Project::onKnobValueChanged(KnobI* knob,
         shouldAutoSave = true;
     } else if (knob == _imp->workingSpace.get()) {
         _imp->colorManagement->setWorkingSpace(getWorkingColorSpace());
+        // The viewers' display processors start from the working space, so they must be rebuilt.
+        if (!_imp->suppressColorManagementRefresh) {
+            _imp->colorManagement->notifyConfigChanged();
+        }
         shouldAutoSave = true;
     } else {
         ret = false;

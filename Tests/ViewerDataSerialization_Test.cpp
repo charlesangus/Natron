@@ -17,9 +17,6 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Natron_shaders_h
-#define Natron_shaders_h
-
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
 // "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
@@ -28,29 +25,43 @@
 
 #include "Global/Macros.h"
 
+#include <sstream>
 #include <string>
 
-NATRON_NAMESPACE_ENTER
+#include <gtest/gtest.h>
 
-/**
- * @brief The viewer's 32f fragment shader around \p ocioShaderText, which must define
- * vec4 OCIODisplay(vec4): rgb * gain + offset, then OCIODisplay, then gamma (a threshold at 1
- * when gamma <= 0).
- **/
-std::string composeViewerFragmentShader(const std::string& ocioShaderText);
-extern const char* vertRGB;
+#include "Engine/RectDSerialization.h"
+#include "Gui/ProjectGuiSerialization.h"
 
-/*There's a black texture used for when the user disconnect the viewer
-   It's not just a shader,because we still need coordinates feedback.
- */
-extern const char* blackFrag;
-extern const char *histogramComputation_frag;
-extern const char *histogramComputationVertex_vert;
-extern const char *histogramRendering_frag;
-extern const char *histogramRenderingVertex_vert;
-extern const char* minimal_vert;
-extern const char *histogramMaximum_frag;
+NATRON_NAMESPACE_USING
 
-NATRON_NAMESPACE_EXIT
+TEST(ViewerDataSerialization, RoundTripsTheDisplayTransform)
+{
+    ViewerData original = ViewerData();
+    original.zoomFactor = 1.;
+    original.gain = 1.;
+    original.gamma = 1.;
+    original.fps = 24.;
+    original.aChoice = original.bChoice = -1;
+    original.display = "sRGB - Display";
+    original.view = "Un-tone-mapped";
+    original.look = "ACES 1.3 Reference Gamut Compression";
 
-#endif
+    std::stringstream stream;
+    {
+        boost::archive::xml_oarchive oArchive(stream);
+        oArchive << boost::serialization::make_nvp("ViewerData", original);
+    }
+
+    ViewerData restored = ViewerData();
+    {
+        boost::archive::xml_iarchive iArchive(stream);
+        iArchive >> boost::serialization::make_nvp("ViewerData", restored);
+    }
+
+    EXPECT_EQ((unsigned int)VIEWER_DATA_INTRODUCES_OCIO_DISPLAY, restored.version);
+    EXPECT_EQ(original.display, restored.display);
+    EXPECT_EQ(original.view, restored.view);
+    EXPECT_EQ(original.look, restored.look);
+    EXPECT_EQ(std::string::npos, stream.str().find("ColorSpace"));
+}

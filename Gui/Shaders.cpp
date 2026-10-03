@@ -26,59 +26,38 @@
 #include "Shaders.h"
 
 #include <stdexcept>
+#include <string>
 
 NATRON_NAMESPACE_ENTER
 
-const char* fragRGB =
-    "uniform sampler2D Tex;\n"
-    "uniform float gain;\n"
-    "uniform float offset;\n"
-    "uniform int lut;\n"
-    "uniform float gamma;\n"
-    "\n"
-    "float linear_to_srgb(float c) {\n"
-    "    return (c<=0.0031308) ? (12.92*c) : (((1.0+0.055)*pow(c,1.0/2.4))-0.055);\n"
-    "}\n"
-    "float linear_to_rec709(float c) {"
-    "    return (c<0.018) ? (4.500*c) : (1.099*pow(c,0.45) - 0.099);\n"
-    "}\n"
-    "float linear_to_bt1886(float c) {"
-    "    return pow(c,1.0/2.4);\n"
-    "}\n"
-    "void main() {\n"
-    "    vec4 color_tmp = texture2D(Tex,gl_TexCoord[0].st);\n"
-    "    color_tmp.rgb = (color_tmp.rgb * gain) + offset;\n"
-    "    if (lut == 0) { // srgb\n"
-// << TO SRGB
-    "       color_tmp.r = linear_to_srgb(color_tmp.r);\n"
-    "       color_tmp.g = linear_to_srgb(color_tmp.g);\n"
-    "       color_tmp.b = linear_to_srgb(color_tmp.b);\n"
-// << END TO SRGB
-    "   } else if (lut == 2) { // Rec 709\n"
-// << TO REC 709
-    "       color_tmp.r = linear_to_rec709(color_tmp.r);\n"
-    "       color_tmp.g = linear_to_rec709(color_tmp.g);\n"
-    "       color_tmp.b = linear_to_rec709(color_tmp.b);\n"
-// << END TO REC 709
-    "   } else if (lut == 3) { // BT1886\n"
-// << TO BT1886
-    "       color_tmp.r = linear_to_bt1886(color_tmp.r);\n"
-    "       color_tmp.g = linear_to_bt1886(color_tmp.g);\n"
-    "       color_tmp.b = linear_to_bt1886(color_tmp.b);\n"
-// << END TO BT1886
-    "   }\n"
-    "   if (gamma <= 0.) {\n"
-    "       color_tmp.r = (color_tmp.r >= 1.) ? 1. : 0.;\n"
-    "       color_tmp.g = (color_tmp.g >= 1.) ? 1. : 0.;\n"
-    "       color_tmp.b = (color_tmp.b >= 1.) ? 1. : 0.;\n"
-    "   } else {\n"
-    "       color_tmp.r = pow(color_tmp.r, 1./gamma);\n"
-    "       color_tmp.g = pow(color_tmp.g, 1./gamma);\n"
-    "       color_tmp.b = pow(color_tmp.b, 1./gamma);\n"
-    "   }\n"
-    "	gl_FragColor = color_tmp;\n"
-    "}\n"
-;
+std::string
+composeViewerFragmentShader(const std::string& ocioShaderText)
+{
+    // OCIO's GLSL 1.2 text needs 1.20 features (array constructors for its LUT tables); without
+    // a #version line the driver compiles it as GLSL 1.10 and rejects it.
+    std::string source = "#version 120\n"
+                         "uniform sampler2D Tex;\n"
+                         "uniform float gain;\n"
+                         "uniform float offset;\n"
+                         "uniform float gamma;\n"
+                         "\n";
+    source += ocioShaderText;
+    source += "\n"
+              "void main() {\n"
+              "    vec4 c = texture2D(Tex, gl_TexCoord[0].st);\n"
+              "    c.rgb = c.rgb * gain + offset;\n"
+              "    c = OCIODisplay(c);\n"
+              "    if (gamma <= 0.) {\n"
+              "        c.rgb = vec3(greaterThanEqual(c.rgb, vec3(1.)));\n"
+              "    } else {\n"
+              "        c.rgb = pow(max(c.rgb, vec3(0.)), vec3(1. / gamma));\n"
+              "    }\n"
+              "    gl_FragColor = c;\n"
+              "}\n";
+
+    return source;
+}
+
 const char* vertRGB =
     "void main()\n"
     "{\n"

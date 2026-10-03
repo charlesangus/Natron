@@ -61,6 +61,7 @@ set(Tests_SOURCES
     PluginIdentity_Test.cpp
     ProjectColorManagement_Test.cpp
     ViewerDisplayTransform_Test.cpp
+    ProjectOCIODefaults_Test.cpp
     ProjectOCIOPlugins_Test.cpp
     ProjectOCIO_Test.cpp
     ProjectSerialization_Test.cpp
@@ -113,6 +114,7 @@ set(GuiTests_SOURCES
     google-mock/src/gmock-all.cc
     LayerChannelRow_Test.cpp
     ShuffleMatrix_Test.cpp
+    ViewerDataSerialization_Test.cpp
     guimain.cpp
 )
 add_executable(GuiTests ${GuiTests_SOURCES})
@@ -127,6 +129,7 @@ target_link_libraries(GuiTests
 target_include_directories(GuiTests
     PRIVATE
         ..
+        ../libs/SequenceParsing
         google-test/include
         google-test
         google-mock/include

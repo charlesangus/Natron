@@ -331,7 +331,7 @@ The deep grouping wraps it with those three fixes.
       - Z and ZBack fields behave as before.
   - size: L
 
-- [ ] M60.P2.T6 — Enforce structural deep alpha in the render pipeline (Q3)
+- [x] M60.P2.T6 — Enforce structural deep alpha in the render pipeline (Q3)
   - files: `Engine/EffectInstanceRenderDeep.cpp`, `Tests/DeepNodes_Test.cpp`, `Tests/DeepRenderPipeline_Test.cpp`
   - approach:
     - **Check.** In `renderDeepRoI`, right after a successful `renderDeep` and before the result is cached, fail the render if `getSampleTable().getTotalSampleCount() > 0` and `!hasChannel("A")`. Post the persistent error "<node> produced deep data without an alpha (A) channel", and insert nothing into the deep cache.
@@ -438,7 +438,7 @@ The deep grouping wraps it with those three fixes.
 
 ## Phase 60.5: GUI and round trip
 
-- [ ] M60.P5.T1 — Xvfb screenshots of the deep nodes' panels and the viewer's deep layer menu
+- [x] M60.P5.T1 — Xvfb screenshots of the deep nodes' panels and the viewer's deep layer menu
   - files: `build/m60-gui/run-gui.sh` (copy of `build/m61-gui/run-gui.sh`), `build/m60-gui/deep_panels.py`, `build/m60-gui/*.png`, fixture copies under `build/m60-gui/`
   - approach: Pre-seed `checkForUpdates=false` (fixtures must live under `build/`). Build DeepRead(`deep-layers.exr`) → DeepRemoveLayers → DeepAddLayers → DeepExpression → DeepRecolor (Color = Read `flat-three-layers.exr`) → DeepToImage → Viewer, plus a DeepFromImage on the flat Read. Take one shot each of:
     - every node's panel, with `channels` rows showing `rgba, rgb, alpha, diffuse, specular`;
@@ -448,7 +448,7 @@ The deep grouping wraps it with those three fixes.
   - verify: the PNGs exist and the script exits 0. The shots are shared with the user, who approves them at the parcel UAT.
   - size: M
 
-- [ ] M60.P5.T2 — Save/load and Python round trip of the deep layer knobs
+- [x] M60.P5.T2 — Save/load and Python round trip of the deep layer knobs
   - files: `Tests/DeepLayers_Test.cpp`
   - approach: Build a project with non-default values on each new knob, then save, close, reload and compare:
     - DeepFromImage `channels`/`zChannel`;
@@ -579,3 +579,7 @@ Execution notes:
   - **Lost edit recovered.** Parallel edits to `DeepChannelNodes_Test.cpp` dropped P4.T3's tests. The build round rewrote them from the brief.
   - **P3.T1 cache lookup.** The deep flatten cache matches exact components and mip level, because the generic lookup treats colour layouts as interchangeable. As a result, a deep view at a new zoom level re-renders rather than downscaling a cached flatten.
   - **P2.T5 known gaps.** The DeepExpression field labels don't follow the timeline, and changing the layer doesn't clear an existing error until the next render.
+- 2026-10-03 — **B5 landed** (`033298539` P2.T6, `41b0035d2` P5.T2, `742f67578` decision published). Full debug ctest 881/881, smoke green, release builds. The P5.T1 Xvfb pass is 159/159 across 20 shots in `build/m60-gui/shots/`.
+  - **Defects found by the GUI pass, outside M60:**
+    - The viewer toolbar's OCIO row is about 1375 px wide since M50.P4.T7 fitted the combos to their contents. It squeezes the Properties pane at 1600 px. Fixed on M50's branch and merged up.
+    - Deep nodes draw black label text on dark navy in the node graph. This predates M60 and is filed for UAT.

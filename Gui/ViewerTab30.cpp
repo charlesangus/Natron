@@ -86,9 +86,11 @@ containsName(const std::vector<std::string>& names,
     return !name.empty() && std::find(names.begin(), names.end(), name) != names.end();
 }
 
-// ComboBox shrinks its minimum width to the current text on every selection, and its text area
-// is narrower than that width by the indent, so long names clip. Reserve room for the widest
-// item so the combo neither clips nor resizes as the selection changes.
+// The widest names run to 35 characters, which would make the toolbar row wider than a typical
+// screen. Cap each combo's width and elide the middle of the text; the tooltip and the popup
+// list keep the full names. A fixed width also stops the combo resizing as the selection changes.
+const int kMenuMaxWidth = 180;
+
 void
 fitMenuToItems(ComboBox* menu)
 {
@@ -98,7 +100,7 @@ fitMenuToItems(ComboBox* menu)
     for (int i = 0; i < menu->count(); ++i) {
         widest = std::max(widest, fm.horizontalAdvance(menu->itemText(i)));
     }
-    menu->setMinimumWidth(widest + 2 * DROP_DOWN_ICON_SIZE + indent);
+    menu->setElidedWidth(std::min(widest + 2 * DROP_DOWN_ICON_SIZE + indent, TO_DPIX(kMenuMaxWidth)));
 
     const QString base = menu->property("baseToolTip").toString();
     const QString current = menu->getCurrentIndexText().toHtmlEscaped();

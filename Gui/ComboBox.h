@@ -87,6 +87,7 @@ private:
     mutable bool _validHints;
     unsigned short _align;
     int _currentDelta; // accumulated wheel delta
+    int _elidedWidth;
 
 protected:
 
@@ -171,6 +172,10 @@ public:
     void setReadOnly(bool readOnly);
 
     bool getEnabled_natron() const;
+
+    // Fixes the widget at w pixels and paints the current text middle-elided to fit; 0 restores
+    // the default behaviour of sizing to the text.
+    void setElidedWidth(int w);
 
     void setAltered(bool b);
     bool getAltered() const;

@@ -337,8 +337,6 @@ GuiAppInstance::loadInternal(const CLArgs& cl,
             throw std::runtime_error( missingOpenGLError.toStdString() );
         }
 
-        appPTR->getCurrentSettings()->doOCIOStartupCheckIfNeeded();
-
         if ( !appPTR->isShorcutVersionUpToDate() ) {
             StandardButtonEnum reply = questionDialog(tr("Shortcuts").toStdString(),
                                                       tr("Default shortcuts for %1 have changed, "

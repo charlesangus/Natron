@@ -72,9 +72,19 @@ ProjectPrivate::ProjectPrivate(Project* project)
     , formatKnob()
     , addFormatKnob()
     , previewMode()
-    , colorSpace8u()
-    , colorSpace16u()
-    , colorSpace32f()
+    , ocioConfig()
+    , ocioConfigFile()
+    , workingSpace()
+    , colorSpace8Bit()
+    , colorSpace16Bit()
+    , colorSpaceLog()
+    , colorSpaceFloat()
+    , viewerDisplay()
+    , viewerView()
+    , colorManagement(std::make_shared<ProjectColorManagement>())
+    , suppressColorManagementRefresh(false)
+    , ocioConfigErrorMutex()
+    , ocioConfigError()
     , natronVersion()
     , originalAuthorName()
     , lastAuthorName()
@@ -152,6 +162,8 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
         const std::list<KnobSerializationPtr> & projectSerializedValues = obj.getProjectKnobsValues();
         const std::vector<KnobIPtr> & projectKnobs = _publicInterface->getKnobs();
 
+        _publicInterface->resetOCIOConfigKnobsForRestore();
+
         /// 1) restore project's knobs.
         for (U32 i = 0; i < projectKnobs.size(); ++i) {
             ///try to find a serialized value for this knob
@@ -194,7 +206,6 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
                 if (appPTR->getAppType() != AppManager::eAppTypeBackgroundAutoRunLaunchedFromGui) {
                     autoSetProjectDirectory(path);
                 }
-                _publicInterface->onOCIOConfigPathChanged(appPTR->getOCIOConfigPath(), false);
             } else if (projectKnobs[i] == natronVersion) {
                 std::string v = natronVersion->getValue();
                 if (v == "Natron v1.0.0") {
@@ -202,6 +213,10 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
                 }
             }
         }
+
+        // Choice ids that did not match the previous config's entries are still pending and
+        // re-match here, so the order in which the Color page knobs restored does not matter.
+        _publicInterface->refreshColorManagement(true);
 
         /// 2) restore the timeline
         timeline->seekFrame(obj.getCurrentTime(), false, 0, eTimelineChangeReasonOtherSeek);

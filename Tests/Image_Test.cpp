@@ -213,15 +213,11 @@ TEST(ImageConvertToFormatTest, RoundTripFloatByte)
 
     setFloatPixel(*srcFloat, 0, 0, original);
 
-    srcFloat->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                              /*channelForAlpha=*/-1, /*copyBitmap=*/false, mid.get());
-    mid->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                         -1, false, dstFloat.get());
+    srcFloat->convertToFormat(bounds, /*channelForAlpha=*/-1, /*copyBitmap=*/false, mid.get());
+    mid->convertToFormat(bounds, -1, false, dstFloat.get());
 
-    // Same src/dst colorspace means convertToFormatInternal_sameComps takes
-    // the plain convertPixelDepth branch (no LUT, no error-diffusion
-    // dithering), so floatToInt<256>/intToFloat<256> can land up to half an
-    // 8-bit code value away from the original in either direction.
+    // floatToInt<256>/intToFloat<256> can land up to half an 8-bit code
+    // value away from the original in either direction.
     constexpr float kByteRoundTripTolerance = 1.f / 255.f;
     std::vector<float> roundTripped = getFloatPixel(*dstFloat, 0, 0, 4);
 
@@ -241,10 +237,8 @@ TEST(ImageConvertToFormatTest, RoundTripFloatShort)
 
     setFloatPixel(*srcFloat, 0, 0, original);
 
-    srcFloat->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                              -1, false, mid.get());
-    mid->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                         -1, false, dstFloat.get());
+    srcFloat->convertToFormat(bounds, -1, false, mid.get());
+    mid->convertToFormat(bounds, -1, false, dstFloat.get());
 
     // Same reasoning as the byte round trip, but quantized to 65536 levels
     // instead of 256, so the worst-case error is proportionally smaller.
@@ -257,9 +251,7 @@ TEST(ImageConvertToFormatTest, RoundTripFloatShort)
     }
 }
 
-// RGBA->RGB with both colorspaces Linear takes the plain convertPixelDepth
-// passthrough: the color channels are copied as-is and alpha is dropped.
-TEST(ImageConvertToFormatTest, RgbaToRgbDropsAlphaWhenColorSpacesAreLinear)
+TEST(ImageConvertToFormatTest, RgbaToRgbDropsAlpha)
 {
     RectI bounds(0, 0, 1, 1);
     ImagePtr srcRGBA = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
@@ -269,8 +261,7 @@ TEST(ImageConvertToFormatTest, RgbaToRgbDropsAlphaWhenColorSpacesAreLinear)
 
     setFloatPixel(*srcRGBA, 0, 0, { kColor, kColor, kColor, kAlpha });
 
-    srcRGBA->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear,
-                             -1, /*copyBitmap=*/false, dstRGB.get());
+    srcRGBA->convertToFormat(bounds, -1, /*copyBitmap=*/false, dstRGB.get());
 
     std::vector<float> result = getFloatPixel(*dstRGB, 0, 0, 3);
     constexpr float kExactTolerance = 1e-6f;
@@ -278,35 +269,6 @@ TEST(ImageConvertToFormatTest, RgbaToRgbDropsAlphaWhenColorSpacesAreLinear)
     ASSERT_EQ(result.size(), 3u);
     for (float c : result) {
         EXPECT_NEAR(c, kColor, kExactTolerance) << "color left unchanged, alpha dropped";
-    }
-}
-
-// A non-Linear colorspace on both ends exercises the LUT path of the
-// RGBA->RGB conversion: fromColorSpace/toColorSpace with the same LUT
-// round-trips back to (approximately) the identity, and alpha never enters
-// the color channels.
-TEST(ImageConvertToFormatTest, RgbaToRgbLeavesColorUntouchedWhenColorSpaceIsNotLinear)
-{
-    RectI bounds(0, 0, 1, 1);
-    ImagePtr srcRGBA = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, bounds);
-    ImagePtr dstRGB = makeLocalImage(ImageLayerDesc::getRGBComponents(), eImageBitDepthFloat, bounds);
-    constexpr float kColor = 0.2f;
-    constexpr float kAlpha = 0.5f;
-
-    setFloatPixel(*srcRGBA, 0, 0, { kColor, kColor, kColor, kAlpha });
-
-    srcRGBA->convertToFormat(bounds, eViewerColorSpaceSRGB, eViewerColorSpaceSRGB,
-                             -1, /*copyBitmap=*/false, dstRGB.get());
-
-    std::vector<float> result = getFloatPixel(*dstRGB, 0, 0, 3);
-    // Matches Lut_Test.cpp's kRoundTripTolerance: the sRGB LUT's
-    // fromColorSpaceFloatToLinearFloat/toColorSpaceFloatFromLinearFloat
-    // pair is only an approximate inverse of itself in float math.
-    constexpr float kLutRoundTripTolerance = 1e-4f;
-
-    ASSERT_EQ(result.size(), 3u);
-    for (float c : result) {
-        EXPECT_NEAR(c, kColor, kLutRoundTripTolerance);
     }
 }
 
@@ -322,7 +284,7 @@ convertOnePixel(const ImageLayerDesc& srcComps,
     ImagePtr dst = makeLocalImage(dstComps, eImageBitDepthFloat, bounds);
 
     setFloatPixel(*src, 0, 0, srcPixel);
-    src->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear, -1, false, dst.get());
+    src->convertToFormat(bounds, -1, false, dst.get());
 
     return getFloatPixel(*dst, 0, 0, dstComps.getNumComponents());
 }

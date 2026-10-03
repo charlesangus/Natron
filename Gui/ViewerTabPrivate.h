@@ -117,7 +117,12 @@ struct ViewerTabPrivate
     double lastGammaValue;
     Button* toggleGammaButton;
     ScaleSliderQWidget* gammaSlider;
-    ComboBox* viewerColorSpace;
+    ComboBox* viewerDisplay;
+    ComboBox* viewerView;
+    ComboBox* viewerLook; // item 0 is "None"
+    bool populatingDisplayTransform; // set while the three menus above are refilled, so their signals are ignored
+    ProjectColorManagementPtr colorManagement;
+    int configChangedCallbackId;
     Button* checkerboardButton;
     Button* pickerButton;
     ComboBox* viewsComboBox;

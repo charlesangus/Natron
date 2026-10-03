@@ -35,6 +35,7 @@
 #include "Global/Enums.h"
 
 #include "Engine/BufferableObject.h"
+#include "Engine/ProjectColorManagement.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/TextureRect.h"
@@ -74,7 +75,7 @@ public:
         , gamma(1.)
         , offset(0.)
         , mipmapLevel(0)
-        , lut(eViewerColorSpaceSRGB)
+        , displayProcessor()
         , layer()
         , alphaLayer()
         , alphaChannelName()
@@ -122,7 +123,7 @@ public:
     double gamma; // viewer gamma
     double offset; // viewer offset
     unsigned int mipmapLevel; // viewer mipmaplevel
-    ViewerColorSpaceEnum lut; // the viewer colorspace lut
+    ProjectColorManagement::DisplayProcessorPtr displayProcessor; // look + display/view; null applies no transform
     ImageLayerDesc layer; // the image layer
     ImageLayerDesc alphaLayer; // the alpha layer
     std::string alphaChannelName; // the alpha channel name

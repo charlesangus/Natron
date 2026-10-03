@@ -28,6 +28,10 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
+#include <string>
+#include <vector>
+
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QMutex>
@@ -36,6 +40,7 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Image.h"
+#include "Engine/ProjectColorManagement.h"
 
 #include "Gui/TextRenderer.h"
 #include "Gui/ViewerGL.h"
@@ -94,6 +99,12 @@ enum PickerStateEnum
     ePickerStateInactive = 0,
     ePickerStatePoint,
     ePickerStateRectangle
+};
+
+struct OCIOLutTexture {
+    GLuint id;
+    GLenum target;
+    std::string samplerName;
 };
 
 struct TextureInfo
@@ -169,11 +180,19 @@ struct ViewerGL::Implementation
     std::unique_ptr<QOpenGLShaderProgram> shaderRGB; /*!< The shader program used to render RGB data*/
     std::unique_ptr<QOpenGLShaderProgram> shaderBlack; /*!< The shader program used when the viewer is disconnected.*/
     bool shaderLoaded; /*!< Flag to check whether the shaders have already been loaded.*/
+    std::string displayName; // the display transform, shared by the A and B textures; empty uses the project defaults
+    std::string viewName;
+    std::string lookName;
+    std::string shaderCacheID; // cache ID of the processor shaderRGB was built from
+    std::vector<OCIOLutTexture> ocioTextures; // bound to texture units 1..N
+    OCIO_NAMESPACE::GpuShaderDescRcPtr ocioShaderDesc;
+    // Set when the driver rejects the generated shader: the viewer then renders 8-bit textures on the CPU.
+    // Read from render threads through getBitDepth().
+    std::atomic<bool> shaderFailed;
     InfoViewerWidget* infoViewer[2]; /*!< Pointer to the info bar below the viewer holding pixel/mouse/format related info*/
     ViewerTab* const viewerTab; /*!< Pointer to the viewer tab GUI*/
     bool zoomOrPannedSinceLastFit; //< true if the user zoomed or panned the image since the last call to fitToRoD
     QPoint oldClick;
-    ViewerColorSpaceEnum displayingImageLut;
     MouseStateEnum ms; /*!< Holds the mouse state*/
     HoverStateEnum hs;
     const QColor textRenderingColor;
@@ -259,9 +278,23 @@ public:
     void unbindTextureAndReleaseShader(bool useShader);
 
     /**
-     *@brief Starts using the RGB shader to display the frame
+     *@brief Starts using the RGB shader to display the frame. Returns false when no usable shader
+     * could be built for the current display transform.
      **/
-    void activateShaderRGB(int texIndex);
+    bool activateShaderRGB(int texIndex);
+
+    /**
+     * @brief The processor for the current display, view and look, from the project's working space.
+     **/
+    ProjectColorManagement::DisplayProcessorPtr getDisplayProcessor() const;
+
+    /**
+     * @brief Rebuilds shaderRGB and its LUT textures from \p processor. On failure logs the
+     * compile log, sets shaderFailed and returns false.
+     **/
+    bool buildShaderRGB(const ProjectColorManagement::DisplayProcessorPtr& processor);
+
+    void deleteOCIOTextures();
 
     enum WipePolygonEnum
     {

@@ -1137,7 +1137,7 @@ EffectInstance::getImage(int inputNb,
         }
 
         if (mapToClipPrefs) {
-            inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, channelForMask);
+            inputImg = convertLayersFormatsIfNeeded(inputImg, pixelRoI, clipPrefComps, depth, channelForMask);
         }
 
         return inputImg;
@@ -1288,7 +1288,7 @@ EffectInstance::getImage(int inputNb,
 
     // Remap if needed
     if (mapToClipPrefs) {
-        inputImg = convertLayersFormatsIfNeeded(getApp(), inputImg, pixelRoI, clipPrefComps, depth, channelForMask);
+        inputImg = convertLayersFormatsIfNeeded(inputImg, pixelRoI, clipPrefComps, depth, channelForMask);
     }
 
 #ifdef DEBUG
@@ -1726,7 +1726,7 @@ EffectInstance::convertRAMImageToOpenGLTexture(const ImagePtr& image)
         if (tmpImg->getComponents() == image->getComponents()) {
             tmpImg->pasteFrom(*image, bounds);
         } else {
-            image->convertToFormat(bounds, eViewerColorSpaceLinear, eViewerColorSpaceLinear, -1, false, tmpImg.get());
+            image->convertToFormat(bounds, -1, false, tmpImg.get());
         }
     }
 
@@ -2705,9 +2705,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                                                   idIt->second->getFieldingOrder(),
                                                                   false);
 
-                            ViewerColorSpaceEnum colorspace = _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( idIt->second->getBitDepth() );
-                            ViewerColorSpaceEnum dstColorspace = _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.fullscaleImage->getBitDepth() );
-                            idIt->second->convertToFormat(idIt->second->getBounds(), colorspace, dstColorspace, 3, false, sourceImage.get());
+                            idIt->second->convertToFormat(idIt->second->getBounds(), 3, false, sourceImage.get());
                         } else {
                             sourceImage = idIt->second;
                         }
@@ -2732,11 +2730,9 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                         }
 
                         ///Convert format if needed or copy
-                        if ( ( it->second.downscaleImage->getComponents() != idIt->second->getComponents() ) || ( it->second.downscaleImage->getBitDepth() != idIt->second->getBitDepth() ) ) {
-                            ViewerColorSpaceEnum colorspace = _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( idIt->second->getBitDepth() );
-                            ViewerColorSpaceEnum dstColorspace = _publicInterface->getApp()->getDefaultColorSpaceForBitDepth( it->second.fullscaleImage->getBitDepth() );
+                        if ((it->second.downscaleImage->getComponents() != idIt->second->getComponents()) || (it->second.downscaleImage->getBitDepth() != idIt->second->getBitDepth())) {
                             const RectI convertWindow = idIt->second->getBounds().intersect(downscaledRectToRender);
-                            idIt->second->convertToFormat(convertWindow, colorspace, dstColorspace, 3, false, it->second.downscaleImage.get());
+                            idIt->second->convertToFormat(convertWindow, 3, false, it->second.downscaleImage.get());
                         } else {
                             it->second.downscaleImage->pasteFrom(*(idIt->second), downscaledRectToRender, false, glContext);
                         }
@@ -2955,10 +2951,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
                 if ( ( it->second.renderMappedImage->getComponents() != it->second.tmpImage->getComponents() ) ||
                      ( it->second.renderMappedImage->getBitDepth() != it->second.tmpImage->getBitDepth() ) ) {
-                    it->second.tmpImage->convertToFormat(it->second.tmpImage->getBounds(),
-                                                         _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
-                                                         _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.renderMappedImage->getBitDepth()),
-                                                         channelForAlphaForPlane(it->first), false, it->second.renderMappedImage.get());
+                    it->second.tmpImage->convertToFormat(it->second.tmpImage->getBounds(), channelForAlphaForPlane(it->first), false, it->second.renderMappedImage.get());
                 } else {
                     it->second.renderMappedImage->pasteFrom(*(it->second.tmpImage), it->second.tmpImage->getBounds(), false);
                 }
@@ -3031,10 +3024,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                                            false);
 #endif
 
-                    it->second.tmpImage->convertToFormat(renderMappedRectToRender,
-                                                         _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
-                                                         _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.fullscaleImage->getBitDepth()),
-                                                         channelForAlphaForPlane(it->first), false, tmp.get());
+                    it->second.tmpImage->convertToFormat(renderMappedRectToRender, channelForAlphaForPlane(it->first), false, tmp.get());
                     tmp->downscaleMipmap( it->second.tmpImage->getRoD(),
                                           renderMappedRectToRender, 0, mipmapLevel, false, it->second.downscaleImage.get() );
                     it->second.fullscaleImage->pasteFrom(*tmp, renderMappedRectToRender, false);
@@ -3062,10 +3052,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                          * BitDepth/Components conversion required
                          */
 
-                        it->second.tmpImage->convertToFormat(it->second.tmpImage->getBounds(),
-                                                             _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.tmpImage->getBitDepth()),
-                                                             _publicInterface->getApp()->getDefaultColorSpaceForBitDepth(it->second.downscaleImage->getBitDepth()),
-                                                             channelForAlphaForPlane(it->first), false, it->second.downscaleImage.get());
+                        it->second.tmpImage->convertToFormat(it->second.tmpImage->getBounds(), channelForAlphaForPlane(it->first), false, it->second.downscaleImage.get());
                     } else {
                         /*
                          * No conversion required, copy to output

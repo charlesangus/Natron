@@ -26,12 +26,16 @@
 #include "ViewerTab.h"
 #include "ViewerTabPrivate.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <stdexcept>
 #include <sstream> // stringstream
+#include <stdexcept>
+#include <string>
+#include <vector>
 
 #include <QDebug>
+#include <QFontMetrics>
 
 #include <QVBoxLayout>
 #include <QCheckBox>
@@ -71,31 +75,152 @@ ViewerTab::isClippedToProject() const
     return _imp->viewer->isClippingImageToFormat();
 }
 
-std::string
-ViewerTab::getColorSpace() const
+namespace {
+
+const char* const kViewerLookNone = "None";
+
+bool
+containsName(const std::vector<std::string>& names,
+             const std::string& name)
 {
-    ViewerColorSpaceEnum lut = (ViewerColorSpaceEnum)_imp->viewerNode->getLutType();
+    return !name.empty() && std::find(names.begin(), names.end(), name) != names.end();
+}
 
-    switch (lut) {
-    case eViewerColorSpaceLinear:
+// The widest names run to 35 characters, which would make the toolbar row wider than a typical
+// screen. Cap each combo's width and elide the middle of the text; the tooltip and the popup
+// list keep the full names. A fixed width also stops the combo resizing as the selection changes.
+const int kMenuMaxWidth = 180;
 
-        return "Linear(None)";
-        break;
-    case eViewerColorSpaceSRGB:
+void
+fitMenuToItems(ComboBox* menu)
+{
+    const QFontMetrics fm = menu->fontMetrics();
+    const int indent = fm.horizontalAdvance(QLatin1Char('x'));
+    int widest = 0;
+    for (int i = 0; i < menu->count(); ++i) {
+        widest = std::max(widest, fm.horizontalAdvance(menu->itemText(i)));
+    }
+    menu->setElidedWidth(std::min(widest + 2 * DROP_DOWN_ICON_SIZE + indent, TO_DPIX(kMenuMaxWidth)));
 
-        return "sRGB";
-        break;
-    case eViewerColorSpaceRec709:
+    const QString base = menu->property("baseToolTip").toString();
+    const QString current = menu->getCurrentIndexText().toHtmlEscaped();
+    if (!base.isEmpty() && !current.isEmpty()) {
+        menu->setToolTip(base + QString::fromUtf8("<p>") + current + QString::fromUtf8("</p>"));
+    }
+}
 
-        return "Rec.709";
-        break;
-    case eViewerColorSpaceBT1886:
+void
+fillMenu(ComboBox* menu,
+         const std::vector<std::string>& names,
+         const std::string& selected)
+{
+    menu->clear();
+    int index = 0;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        menu->addItem(QString::fromUtf8(names[i].c_str()));
+        if (names[i] == selected) {
+            index = (int)i;
+        }
+    }
+    if (!names.empty()) {
+        menu->setCurrentIndex_no_emit(index);
+    }
+    if (!menu->property("fitConnected").toBool()) {
+        menu->setProperty("fitConnected", true);
+        menu->setProperty("baseToolTip", menu->toolTip());
+        QObject::connect(menu, QOverload<int>::of(&ComboBox::currentIndexChanged), menu, [menu](int) { fitMenuToItems(menu); });
+    }
+    fitMenuToItems(menu);
+}
 
-        return "BT1886";
-        break;
-    default:
-        return "";
-        break;
+} // anon namespace
+
+void
+ViewerTab::getDisplayTransform(std::string* display,
+                               std::string* view,
+                               std::string* look) const
+{
+    if (display) {
+        *display = _imp->viewerDisplay->getCurrentIndexText().toStdString();
+    }
+    if (view) {
+        *view = _imp->viewerView->getCurrentIndexText().toStdString();
+    }
+    if (look) {
+        *look = (_imp->viewerLook->activeIndex() <= 0) ? std::string() : _imp->viewerLook->getCurrentIndexText().toStdString();
+    }
+}
+
+void
+ViewerTab::setDisplayTransform(const std::string& display,
+                               const std::string& view,
+                               const std::string& look)
+{
+    populateDisplayTransformMenus(display, view, look);
+    applyDisplayTransform();
+}
+
+void
+ViewerTab::populateDisplayTransformMenus(const std::string& display,
+                                         const std::string& view,
+                                         const std::string& look)
+{
+    ProjectPtr project = getGui() ? getGui()->getApp()->getProject() : ProjectPtr();
+    ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
+    std::vector<std::string> displays, views, looks;
+    std::string projectDisplay, projectView;
+    std::string chosenDisplay, chosenView, chosenLook;
+
+    if (colorManagement) {
+        project->getDefaultDisplayView(&projectDisplay, &projectView);
+        displays = colorManagement->getDisplays();
+        if (containsName(displays, display)) {
+            chosenDisplay = display;
+        } else if (containsName(displays, projectDisplay)) {
+            chosenDisplay = projectDisplay;
+        } else if (containsName(displays, colorManagement->getDefaultDisplay())) {
+            chosenDisplay = colorManagement->getDefaultDisplay();
+        } else if (!displays.empty()) {
+            chosenDisplay = displays.front();
+        }
+
+        views = colorManagement->getViews(chosenDisplay);
+        if (containsName(views, view)) {
+            chosenView = view;
+        } else if (containsName(views, projectView)) {
+            chosenView = projectView;
+        } else if (containsName(views, colorManagement->getDefaultView(chosenDisplay))) {
+            chosenView = colorManagement->getDefaultView(chosenDisplay);
+        } else if (!views.empty()) {
+            chosenView = views.front();
+        }
+
+        looks = colorManagement->getLooks();
+        if (containsName(looks, look)) {
+            chosenLook = look;
+        }
+    }
+
+    std::vector<std::string> lookItems(1, std::string(kViewerLookNone));
+    lookItems.insert(lookItems.end(), looks.begin(), looks.end());
+
+    _imp->populatingDisplayTransform = true;
+    fillMenu(_imp->viewerDisplay, displays, chosenDisplay);
+    fillMenu(_imp->viewerView, views, chosenView);
+    fillMenu(_imp->viewerLook, lookItems, chosenLook.empty() ? std::string(kViewerLookNone) : chosenLook);
+    _imp->populatingDisplayTransform = false;
+}
+
+void
+ViewerTab::applyDisplayTransform()
+{
+    std::string display, view, look;
+
+    getDisplayTransform(&display, &view, &look);
+    _imp->viewer->setDisplayTransform(display, view, look);
+    // Null once the viewer node is deleted, while the tab can still see a project reset.
+    if (_imp->viewerNode) {
+        _imp->viewerNode->setDisplayTransform(display, view, look);
     }
 }
 
@@ -146,16 +271,6 @@ bool
 ViewerTab::isFullFrameProcessingEnabled() const
 {
     return _imp->viewerNode->isFullFrameProcessingEnabled();
-}
-
-void
-ViewerTab::setColorSpace(const std::string & colorSpaceName)
-{
-    int index = _imp->viewerColorSpace->itemIndex( QString::fromUtf8( colorSpaceName.c_str() ) );
-
-    if (index != -1) {
-        _imp->viewerColorSpace->setCurrentIndex(index);
-    }
 }
 
 void

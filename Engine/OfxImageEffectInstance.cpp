@@ -47,9 +47,10 @@ CLANG_DIAG_ON(uninitialized)
 //for parametric params properties
 #include <ofxParametricParam.h>
 
+#include <ofxColour.h>
 #include <ofxNatron.h>
-#include <ofxhUtilities.h> // for StatStr
 #include <ofxhPluginCache.h>
+#include <ofxhUtilities.h> // for StatStr
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -113,7 +114,9 @@ OfxImageEffectInstance::OfxImageEffectInstance(OFX::Host::ImageEffect::ImageEffe
     , _ofxEffectInstance()
 {
     getProps().setGetHook(kNatronOfxExtraCreatedPlanes, (OFX::Host::Property::GetHook*)this);
-
+    getProps().setGetHook(kOfxImageEffectPropOCIOConfig, (OFX::Host::Property::GetHook*)this);
+    getProps().setGetHook(NatronOfxImageEffectPropOCIOWorkingColourspace, (OFX::Host::Property::GetHook*)this);
+    getProps().setGetHook(NatronOfxImageEffectPropOCIOFileColourspaces, (OFX::Host::Property::GetHook*)this);
 }
 
 OfxImageEffectInstance::OfxImageEffectInstance(const OfxImageEffectInstance& other)
@@ -291,6 +294,59 @@ OfxImageEffectInstance::getUserCreatedPlanes() const
     OfxEffectInstancePtr effect = _ofxEffectInstance.lock();
     const std::vector<std::string>& ofxPlanes = effect->getUserLayers();
     return ofxPlanes;
+}
+
+ProjectPtr
+OfxImageEffectInstance::getOCIOProject() const
+{
+    OfxEffectInstancePtr effect = _ofxEffectInstance.lock();
+    if (!effect || !effect->getApp()) {
+        return ProjectPtr();
+    }
+
+    return effect->getApp()->getProject();
+}
+
+// The property suite hands the plug-in a pointer into the returned string, which it reads after
+// this returns while other render threads may query the same property; a per-thread snapshot
+// stays valid until this thread asks again.
+const std::string&
+OfxImageEffectInstance::getOCIOConfigSource() const
+{
+    thread_local std::string snapshot;
+    const ProjectPtr project = getOCIOProject();
+
+    snapshot = project ? project->getOCIOConfigSource() : std::string();
+
+    return snapshot;
+}
+
+const std::string&
+OfxImageEffectInstance::getOCIOWorkingColourspace() const
+{
+    thread_local std::string snapshot;
+    const ProjectPtr project = getOCIOProject();
+
+    snapshot = project ? project->getWorkingColorSpace() : std::string();
+
+    return snapshot;
+}
+
+const std::vector<std::string>&
+OfxImageEffectInstance::getOCIOFileColourspaces() const
+{
+    thread_local std::vector<std::string> snapshot;
+    const ProjectPtr project = getOCIOProject();
+
+    snapshot.clear();
+    if (project) {
+        snapshot.push_back(project->getFileColorSpace(eFileColorCategory8Bit));
+        snapshot.push_back(project->getFileColorSpace(eFileColorCategory16Bit));
+        snapshot.push_back(project->getFileColorSpace(eFileColorCategoryLog));
+        snapshot.push_back(project->getFileColorSpace(eFileColorCategoryFloat));
+    }
+
+    return snapshot;
 }
 
 int

@@ -143,9 +143,9 @@ fi
 
 export OFX_PLUGIN_PATH
 
-# Unset rather than pointed at build/assets/OpenColorIO-Configs, so that what the
-# tests run against is the config Natron itself resolves -- the one users get --
-# instead of an on-disk config no default install has. smoke_test.py asserts which
+# Unset, so that what the tests run against is the config Natron itself
+# resolves -- the one users get -- instead of an on-disk config no default
+# install has. smoke_test.py asserts which
 # config that turned out to be; an inherited OCIO would silently defeat it.
 unset OCIO
 

@@ -28,9 +28,16 @@
 
 #include "Global/Macros.h"
 
+#include <string>
+
 NATRON_NAMESPACE_ENTER
 
-extern const char* fragRGB;
+/**
+ * @brief The viewer's 32f fragment shader around \p ocioShaderText, which must define
+ * vec4 OCIODisplay(vec4): rgb * gain + offset, then OCIODisplay, then gamma (a threshold at 1
+ * when gamma <= 0).
+ **/
+std::string composeViewerFragmentShader(const std::string& ocioShaderText);
 extern const char* vertRGB;
 
 /*There's a black texture used for when the user disconnect the viewer

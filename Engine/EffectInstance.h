@@ -2540,8 +2540,7 @@ private:
                                              EffectInstance::InputImagesMap *inputImages,
                                              RoIMap* inputsRoI);
 
-    static ImagePtr convertLayersFormatsIfNeeded(const AppInstancePtr& app,
-                                                 const ImagePtr& inputImage,
+    static ImagePtr convertLayersFormatsIfNeeded(const ImagePtr& inputImage,
                                                  const RectI& roi,
                                                  const ImageLayerDesc& targetComponents,
                                                  ImageBitDepthEnum targetDepth,

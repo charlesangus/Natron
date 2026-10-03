@@ -318,19 +318,6 @@ else
     echo "warning: Run tools/ci/local/fetch-assets.sh and stage again." >&2
 fi
 
-# Settings::getDefaultOcioConfigPaths() searches <bin>/../share/OpenColorIO-
-# Configs and <bin>/../Resources/OpenColorIO-Configs for the named on-disk
-# configs. Natron's default is the built-in "ocio://" URI, which libOpenColorIO
-# resolves without any files at all, so an absent asset tree is not an error --
-# only the named legacy configs become unselectable.
-OCIO_ASSETS="$ASSETS_DIR/OpenColorIO-Configs"
-if [[ -d "$OCIO_ASSETS" ]]; then
-    echo "==> Staging OpenColorIO configs from $OCIO_ASSETS"
-    copy_tree "$OCIO_ASSETS" "$STAGE_DIR/Resources/OpenColorIO-Configs"
-else
-    echo "==> No $OCIO_ASSETS — shipping the built-in OpenColorIO config only"
-fi
-
 resolve_deps() {
     local binary="$1"
     ldd "$binary" 2>/dev/null | while read -r line; do

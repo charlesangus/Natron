@@ -156,8 +156,7 @@ optimizeRectsToRender(EffectInstance* self,
 } // optimizeRectsToRender
 
 ImagePtr
-EffectInstance::convertLayersFormatsIfNeeded(const AppInstancePtr& app,
-                                             const ImagePtr& inputImage,
+EffectInstance::convertLayersFormatsIfNeeded(const ImagePtr& inputImage,
                                              const RectI& roi,
                                              const ImageLayerDesc& targetComponents,
                                              ImageBitDepthEnum targetDepth,
@@ -200,10 +199,7 @@ EffectInstance::convertLayersFormatsIfNeeded(const AppInstancePtr& app,
         tmp->setKey(inputImage->getKey());
         const RectI clippedRoi = roi.intersect(bounds);
 
-        inputImage->convertToFormat(clippedRoi,
-                                    app->getDefaultColorSpaceForBitDepth(inputImage->getBitDepth()),
-                                    app->getDefaultColorSpaceForBitDepth(targetDepth),
-                                    channelForAlpha, false, tmp.get());
+        inputImage->convertToFormat(clippedRoi, channelForAlpha, false, tmp.get());
 
         return tmp;
     }
@@ -314,6 +310,17 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     // If so, forward the call to the main instance
     if (_imp->mainInstance) {
         return _imp->mainInstance->renderRoI(args, outputLayers);
+    }
+
+    {
+        const AppInstancePtr app = getApp();
+        const ProjectPtr project = app ? app->getProject() : ProjectPtr();
+        std::string ocioError;
+        if (project && project->getOCIOConfigError(&ocioError)) {
+            setPersistentMessage(eMessageTypeError, ocioError);
+
+            return eRenderRoIRetCodeFailed;
+        }
     }
 
     //Create the TLS data for this node if it did not exist yet
@@ -1636,7 +1643,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         ///The image might need to be converted to fit the original requested format
         if (comp) {
             const RectI downscaledOriginalRoI = originalRoI.toNewMipmapLevel(originalRoIMipmapLevel, args.mipmapLevel, par, rod);
-            it->second.downscaleImage = convertLayersFormatsIfNeeded(getApp(), it->second.downscaleImage, downscaledOriginalRoI, *comp, args.bitdepth, -1);
+            it->second.downscaleImage = convertLayersFormatsIfNeeded(it->second.downscaleImage, downscaledOriginalRoI, *comp, args.bitdepth, -1);
             assert(it->second.downscaleImage->getComponents() == *comp && it->second.downscaleImage->getBitDepth() == args.bitdepth);
 
             StorageModeEnum imageStorage = it->second.downscaleImage->getStorageMode();

@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 #
 # Prepare the external assets the test suite and Natron's shipped plugin set
-# need: the OpenColorIO-Configs tarball, the openfx-io OFX plugin bundle that
-# Tests/BaseTest.cpp loads through OFX_PLUGIN_PATH, and the openfx-misc/
+# need: the openfx-io OFX plugin bundle that Tests/BaseTest.cpp loads
+# through OFX_PLUGIN_PATH, and the openfx-misc/
 # openfx-arena/openfx-metadata OFX plugin bundles that ship with Natron but
 # that no test currently loads -- they are built here so CI proves they
 # still build against the pinned toolchain, the same way the rest of Natron
 # is proven to build.
 #
 # Result (idempotent, safe to re-run):
-#   build/assets/OpenColorIO-Configs/
 #   build/assets/Plugins/IO.ofx.bundle/
 #   build/assets/Plugins/Misc.ofx.bundle/
 #   build/assets/Plugins/CImg.ofx.bundle/
@@ -24,7 +23,7 @@
 #   build/assets/plugin-src/deps-install/  (lcms2, libzip, ImageMagick --
 #                                           for openfx-arena)
 #
-# A second run does no network or compile work if both targets already look
+# A second run does no network or compile work if the plugin bundles already look
 # complete and the plugin stamp matches the pins below.
 #
 # --- Why the plugins are BUILT here, not downloaded -----------------------
@@ -77,48 +76,12 @@ fi
 # --- from here on, we are inside the dev container (or CI's container) -----
 
 ASSETS_DIR="${REPO_ROOT}/build/assets"
-OCIO_CONFIG_VERSION="${OCIO_CONFIG_VERSION:-2.5}"
 
 mkdir -p "${ASSETS_DIR}"
 
 echo "== fetch-assets.sh =="
 echo "Repo root:   ${REPO_ROOT}"
 echo "Assets dir:  ${ASSETS_DIR}"
-echo "OCIO_CONFIG_VERSION=${OCIO_CONFIG_VERSION}"
-
-# ---------------------------------------------------------------------------
-# OpenColorIO-Configs
-# ---------------------------------------------------------------------------
-OCIO_TARGET="${ASSETS_DIR}/OpenColorIO-Configs"
-OCIO_MARKER="${OCIO_TARGET}/blender/config.ocio"
-
-if [ -e "${OCIO_MARKER}" ]; then
-    echo "[OpenColorIO-Configs] already present and looks complete (${OCIO_MARKER}) -- skipping."
-else
-    echo "[OpenColorIO-Configs] fetching v${OCIO_CONFIG_VERSION}..."
-
-    TMP_DIR="$(mktemp -d "${ASSETS_DIR}/.ocio-fetch.XXXXXX")"
-    trap 'rm -rf "${TMP_DIR}"' EXIT
-
-    TARBALL="${TMP_DIR}/Natron-v${OCIO_CONFIG_VERSION}.tar.gz"
-    wget -O "${TARBALL}" \
-        "https://github.com/NatronGitHub/OpenColorIO-Configs/archive/Natron-v${OCIO_CONFIG_VERSION}.tar.gz"
-    tar xzf "${TARBALL}" -C "${TMP_DIR}"
-
-    UNPACKED="${TMP_DIR}/OpenColorIO-Configs-Natron-v${OCIO_CONFIG_VERSION}"
-    if [ ! -d "${UNPACKED}" ]; then
-        echo "[OpenColorIO-Configs] ERROR: expected directory not found after unpack: ${UNPACKED}" >&2
-        exit 1
-    fi
-
-    rm -rf "${OCIO_TARGET}"
-    mv "${UNPACKED}" "${OCIO_TARGET}"
-
-    rm -rf "${TMP_DIR}"
-    trap - EXIT
-
-    echo "[OpenColorIO-Configs] done -> ${OCIO_TARGET}"
-fi
 
 # ---------------------------------------------------------------------------
 # Plugins (openfx-io and openfx-misc, built from source against this
@@ -145,10 +108,18 @@ fi
 #
 # ReadEXR also decodes alpha-only files into 1-component buffers.
 #
+# It also takes the OCIO config from the host's instance property and
+# the working space and per-file-type colourspaces (8-bit, 16-bit, log,
+# float) as defaults for new Reads and Writes, rebuilding the colourspace
+# menus when the config changes. OCIODisplay, OCIOLogConvert,
+# OCIOCDLTransform and OCIOFileTransform use that instance config instead
+# of the process-wide OCIO variable, and ReadPNG/ReadOIIO/WritePNG/
+# WriteOIIO classify files by bit depth for those defaults.
+#
 # SEEXPR_REF: wdas/SeExpr, branch v1-2.11, not v2/v3 -- openfx-io's
 # SeNoise.cpp targets the v1-2.11 header layout. Not forked.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="649ce948600e8560d87921f1180ac24e9150dc57"
+OPENFX_IO_REF="af11bffa2690f1eb4c29a613bffe396867e16967"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 
@@ -220,8 +191,15 @@ IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 # deprecated ImageMagick Text 5.7 is registered as
 # net.fxarena.openfx.MagickText so only the pango Text owns
 # net.fxarena.openfx.Text.
+#
+# Its OpenFX-IO submodule now points at charlesangus/openfx-io (the
+# OPENFX_IO_REF commit above), which brings the host-supplied OCIO config
+# and file colourspace defaults to its readers, and
+# existingColorSpaceOrFallback, which the earlier pin lacked. Its six
+# readers (ReadPSD, ReadMisc, ReadSVG, ReadCDR, ReadKrita, OpenRaster)
+# drop the filePremult out-parameter that GenericReader no longer has.
 OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
-OPENFX_ARENA_REF="45235bdb07771ca80b466d42487d9e2dd22a27a9"
+OPENFX_ARENA_REF="0f791700006c75d7f4a5e26ced11bf16e528c964"
 
 # OPENFX_METADATA_REF: charlesangus/openfx -- our ASWF-lineage OpenFX fork,
 # whose Support/Plugins/Metadata* examples exercise the clip and image

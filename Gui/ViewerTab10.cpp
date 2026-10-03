@@ -40,6 +40,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/OutputSchedulerThread.h" // RenderEngine
+#include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
@@ -64,26 +65,30 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 NATRON_NAMESPACE_ENTER
 
+void
+ViewerTab::onDisplayTransformComboBoxChanged(int /*index*/)
+{
+    if (_imp->populatingDisplayTransform) {
+        return;
+    }
+    std::string display, view, look;
+    getDisplayTransform(&display, &view, &look);
+    // Refilled so that the View menu lists the views of the display just picked.
+    setDisplayTransform(display, view, look);
+}
 
 void
-ViewerTab::onColorSpaceComboBoxChanged(int v)
+ViewerTab::onProjectColorConfigChanged()
 {
-    ViewerColorSpaceEnum colorspace = eViewerColorSpaceSRGB;
+    std::string display, view, look;
+    getDisplayTransform(&display, &view, &look);
+    setDisplayTransform(display, view, look);
 
-    if (v == 0) {
-        colorspace = eViewerColorSpaceLinear;
-    } else if (v == 1) {
-        colorspace = eViewerColorSpaceSRGB;
-    } else if (v == 2) {
-        colorspace = eViewerColorSpaceRec709;
-    } else if (v == 3) {
-        colorspace = eViewerColorSpaceBT1886;
-    } else {
-        assert(false);
-        throw std::logic_error("ViewerTab::onColorSpaceComboBoxChanged(): unknown colorspace");
+    ProjectPtr project = getGui() ? getGui()->getApp()->getProject() : ProjectPtr();
+    if (project && !project->isLoadingProject() && _imp->viewerNode) {
+        // Same names can still mean a different transform under the new config.
+        _imp->viewerNode->renderCurrentFrame(true);
     }
-    _imp->viewer->setLut( (int)colorspace );
-    _imp->viewerNode->onColorSpaceChanged(colorspace);
 }
 
 void
@@ -560,6 +565,9 @@ ViewerTab::~ViewerTab()
         }
     }
     _imp->nodesContext.clear();
+    if (_imp->colorManagement && _imp->configChangedCallbackId >= 0) {
+        _imp->colorManagement->removeConfigChangedCallback(_imp->configChangedCallbackId);
+    }
 }
 
 void

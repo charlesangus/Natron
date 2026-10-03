@@ -372,7 +372,7 @@ loadNodeGuiSerialization(Gui* gui,
             ViewerTab* tab = gui->getApp()->getGui()->getViewerTabForInstance(viewer);
             tab->setProjection(found->second.zoomLeft, found->second.zoomBottom, found->second.zoomFactor, 1.);
             tab->setChannels(found->second.channels);
-            tab->setColorSpace(found->second.colorSpace);
+            tab->setDisplayTransform(found->second.display, found->second.view, found->second.look);
             tab->setGain(found->second.gain);
             tab->setGamma(found->second.gamma);
             tab->setUserRoIEnabled(found->second.userRoIenabled);

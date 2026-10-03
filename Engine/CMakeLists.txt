@@ -92,10 +92,10 @@ target_link_libraries(NatronEngine
         PkgConfig::Cairo
         harfbuzz::harfbuzz
         Freetype::Freetype
+        OpenColorIO::OpenColorIO
     PRIVATE
         ${SHIBOKEN_LIB}
         ${PYSIDE_LIB}
-        OpenColorIO::OpenColorIO
         OpenImageIO::OpenImageIO
         Qt::Core
         Qt::Concurrent

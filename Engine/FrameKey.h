@@ -47,7 +47,7 @@ public:
              U64 treeVersion,
              double gain,
              double gamma,
-             int lut,
+             U64 displayTransformHash,
              int bitDepth,
              int channels,
              ViewIdx view,
@@ -88,9 +88,9 @@ public:
         return _gamma;
     }
 
-    int getLut() const WARN_UNUSED_RETURN
+    U64 getDisplayTransformHash() const WARN_UNUSED_RETURN
     {
-        return _lut;
+        return _displayTransformHash;
     }
 
     int getChannels() const WARN_UNUSED_RETURN
@@ -126,7 +126,7 @@ private:
     U64 _treeVersion; // The hash of the viewer node
     double _gain; // The gain on the viewer (if we don't apply it through GLSL shaders)
     double _gamma;  // The gamma on the viewer (if we don't apply it through GLSL shaders)
-    int _lut;  // The lut on the viewer (if we don't apply it through GLSL shaders)
+    U64 _displayTransformHash; // The hash of the display transform on the viewer (if we don't apply it through GLSL shaders)
     int _bitDepth;  // The bitdepth of the texture (i.e: 8bit or 32bit fp)
     int _channels; // The display channels, as requested by the user. Note that this will make a new cache entry whenever the user
                    // picks a new value in dropdown on the GUI

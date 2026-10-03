@@ -30,11 +30,12 @@
 #include <stdexcept>
 
 #include <QDebug>
-#include <QDir>
+#include <QFile>
+#include <QMutex>
 #include <QSettings>
-#include <QThreadPool>
-#include <QThread>
 #include <QTextStream>
+#include <QThread>
+#include <QThreadPool>
 
 #ifdef WINDOWS
 #include <tchar.h>
@@ -44,8 +45,8 @@
 
 #include "Global/StrUtils.h"
 
-#include "Engine/AppManager.h"
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/KnobFactory.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -56,14 +57,13 @@
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
+#include "Engine/ProjectColorManagement.h"
 #include "Engine/StandardPaths.h"
 #include "Engine/Utils.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/GuiDefines.h"
-
-#include <SequenceParsing.h> // for removePath
 
 #ifdef WINDOWS
 #include <ofxhPluginCache.h>
@@ -72,11 +72,12 @@
 // The three versions in this name are independent and do not increment together:
 // v4.0.0 is the colorspace set, aces-v2.0 the ACES spec, ocio-v2.5 the library.
 #define NATRON_DEFAULT_OCIO_CONFIG_NAME "ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5"
-#define NATRON_DEFAULT_OCIO_CONFIG_LABEL "ACES 2.0 Studio (built-in)"
 
 #define NATRON_OCIO_BUILTIN_CONFIG_PREFIX "ocio://"
 
 #define NATRON_CUSTOM_OCIO_CONFIG_NAME "Custom config"
+
+#define NATRON_OCIO_ENV_IS_PREFERENCE_VAR_NAME "NATRON_OCIO_ENV_IS_PREFERENCE"
 
 #define NATRON_DEFAULT_APPEARANCE_VERSION 1
 
@@ -85,35 +86,63 @@
 NATRON_NAMESPACE_ENTER
 
 Settings::Settings()
-    : KnobHolder( AppInstancePtr() ) // < Settings are process wide and do not belong to a single AppInstance
+    : KnobHolder(AppInstancePtr()) // < Settings are process wide and do not belong to a single AppInstance
     , _restoringSettings(false)
-    , _ocioRestored(false)
     , _settingsExisted(false)
     , _defaultAppearanceOutdated(false)
 {
 }
 
-static QStringList
-getDefaultOcioConfigPaths()
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+QMutex ocioEnvOverrideMutex;
+bool ocioEnvOverrideCaptured = false;
+std::string ocioEnvOverride;
+
+void
+captureOCIOEnvOverride(bool force)
 {
-    QString binaryPath = appPTR->getApplicationBinaryPath();
-    StrUtils::ensureLastPathSeparator(binaryPath);
+    QMutexLocker k(&ocioEnvOverrideMutex);
 
-#ifdef __NATRON_LINUX__
-    QStringList ret;
-    ret.push_back( QString::fromUtf8("/usr/share/OpenColorIO-Configs") );
-    ret.push_back( QString( binaryPath + QString::fromUtf8("../share/OpenColorIO-Configs") ) );
-    ret.push_back( QString( binaryPath + QString::fromUtf8("../Resources/OpenColorIO-Configs") ) );
-
-    return ret;
-#elif defined(__NATRON_WIN32__)
-
-    return QStringList( QString( binaryPath + QString::fromUtf8("../Resources/OpenColorIO-Configs") ) );
-#elif defined(__NATRON_OSX__)
-
-    return QStringList( QString( binaryPath + QString::fromUtf8("../Resources/OpenColorIO-Configs") ) );
-#endif
+    if (ocioEnvOverrideCaptured && !force) {
+        return;
+    }
+    ocioEnvOverrideCaptured = true;
+    // A parent Natron exports its preference into OCIO for plug-ins and OIIO; the marker tells
+    // the child processes that inherit it that this is no user override.
+    if (qgetenv(NATRON_OCIO_ENV_IS_PREFERENCE_VAR_NAME) == QByteArray("1")) {
+        ocioEnvOverride.clear();
+    } else {
+        ocioEnvOverride = QFile::decodeName(qgetenv(NATRON_OCIO_ENV_VAR_NAME)).toStdString();
+    }
 }
+
+QString
+ocioEnvOverrideToolTip(const std::string& value)
+{
+    return Settings::tr("Overridden by the OCIO environment variable (%1)").arg(QString::fromUtf8(value.c_str()));
+}
+
+QString
+ocioConfigPreferenceToolTip()
+{
+    return Settings::tr("The OpenColorIO config new projects start with. Each project then keeps its own config, "
+                        "set on the Color page of the project settings. "
+                        "When \"%1\" is selected, the \"Custom OpenColorIO config file for new projects\" parameter is used. "
+                        "The %2 environment variable, when set, overrides the config of every project.")
+        .arg(QString::fromUtf8(NATRON_CUSTOM_OCIO_CONFIG_NAME))
+        .arg(QString::fromUtf8(NATRON_OCIO_ENV_VAR_NAME));
+}
+
+QString
+customOcioConfigFilePreferenceToolTip()
+{
+    return Settings::tr("The OpenColorIO config file (config.ocio) new projects start with when \"%1\" "
+                        "is selected as the default OpenColorIO config.")
+        .arg(QString::fromUtf8(NATRON_CUSTOM_OCIO_CONFIG_NAME));
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 static bool
 isBuiltinOcioConfig(const QString& config)
@@ -660,59 +689,18 @@ void
 Settings::initializeKnobsColorManagement()
 {
     _ocioTab = AppManager::createKnob<KnobPage>( this, tr("Color Management") );
-    _ocioConfigKnob = AppManager::createKnob<KnobChoice>( this, tr("OpenColorIO configuration") );
+    _ocioConfigKnob = AppManager::createKnob<KnobChoice>(this, tr("Default OpenColorIO config for new projects"));
     _ocioConfigKnob->setName("ocioConfig");
-
-    std::vector<ChoiceOption> configs;
-    configs.push_back(ChoiceOption(NATRON_DEFAULT_OCIO_CONFIG_NAME,
-                                   NATRON_DEFAULT_OCIO_CONFIG_LABEL,
-                                   tr("Academy Color Encoding System - Studio Config [COLORSPACES v4.0.0] [ACES v2.0] [OCIO v2.5]. "
-                                      "This configuration is built into OpenColorIO and needs no files on disk.")
-                                       .toStdString()));
-    const int defaultIndex = (int)configs.size() - 1;
-
-    QStringList defaultOcioConfigsPaths = getDefaultOcioConfigPaths();
-    Q_FOREACH(const QString &defaultOcioConfigsDir, defaultOcioConfigsPaths) {
-        QDir ocioConfigsDir(defaultOcioConfigsDir);
-
-        if ( ocioConfigsDir.exists() ) {
-            QStringList entries = ocioConfigsDir.entryList(QDir::AllDirs | QDir::NoDotAndDotDot);
-            for (int j = 0; j < entries.size(); ++j) {
-                configs.push_back(ChoiceOption( entries[j].toStdString() ));
-            }
-
-            break; //if we found 1 OpenColorIO-Configs directory, skip the next
-        }
-    }
-    configs.push_back(ChoiceOption(NATRON_CUSTOM_OCIO_CONFIG_NAME));
-    _ocioConfigKnob->populateChoices(configs);
-    _ocioConfigKnob->setDefaultValue(defaultIndex, 0);
-    _ocioConfigKnob->setHintToolTip( tr("Select the OpenColorIO configuration you would like to use globally for all "
-                                        "operators and plugins that use OpenColorIO, by setting the \"OCIO\" "
-                                        "environment variable. Only nodes created after changing this parameter will take "
-                                        "it into account, and it is better to restart the application after changing it. "
-                                        "When \"%1\" is selected, the "
-                                        "\"Custom OpenColorIO config file\" parameter is used.").arg( QString::fromUtf8(NATRON_CUSTOM_OCIO_CONFIG_NAME) ) );
-
+    _ocioConfigKnob->populateChoices(ProjectColorManagement::builtinConfigOptions());
+    _ocioConfigKnob->setDefaultValueFromID(NATRON_DEFAULT_OCIO_CONFIG_NAME, 0);
+    _ocioConfigKnob->setHintToolTip(ocioConfigPreferenceToolTip());
     _ocioTab->addKnob(_ocioConfigKnob);
 
-    _customOcioConfigFile = AppManager::createKnob<KnobFile>( this, tr("Custom OpenColorIO configuration file") );
+    _customOcioConfigFile = AppManager::createKnob<KnobFile>(this, tr("Custom OpenColorIO config file for new projects"));
     _customOcioConfigFile->setName("ocioCustomConfigFile");
-
     _customOcioConfigFile->setDefaultAllDimensionsEnabled(false);
-
-    _customOcioConfigFile->setHintToolTip( tr("OpenColorIO configuration file (config.ocio) to use when \"%1\" "
-                                              "is selected as the OpenColorIO config.").arg( QString::fromUtf8(NATRON_CUSTOM_OCIO_CONFIG_NAME) ) );
+    _customOcioConfigFile->setHintToolTip(customOcioConfigFilePreferenceToolTip());
     _ocioTab->addKnob(_customOcioConfigFile);
-
-    _warnOcioConfigKnobChanged = AppManager::createKnob<KnobBool>( this, tr("Warn on OpenColorIO config change") );
-    _warnOcioConfigKnobChanged->setName("warnOCIOChanged");
-    _warnOcioConfigKnobChanged->setHintToolTip( tr("Show a warning dialog when changing the OpenColorIO config to remember that a restart is required.") );
-    _ocioTab->addKnob(_warnOcioConfigKnobChanged);
-
-    _ocioStartupCheck = AppManager::createKnob<KnobBool>( this, tr("Warn on startup if OpenColorIO config is not the default") );
-    _ocioStartupCheck->setName("startupCheckOCIO");
-    _ocioTab->addKnob(_ocioStartupCheck);
 } // Settings::initializeKnobsColorManagement
 
 void
@@ -1545,12 +1533,6 @@ Settings::setDefaultValues()
     _enableConsoleWindow->setDefaultValue(false);
 #endif
 
-    // Color-Management
-    //_ocioConfigKnob
-    _warnOcioConfigKnobChanged->setDefaultValue(true);
-    _ocioStartupCheck->setDefaultValue(true);
-    //_customOcioConfigFile
-
     // Caching
     _aggressiveCaching->setDefaultValue(false);
     _maxRAMPercent->setDefaultValue(50, 0);
@@ -1782,7 +1764,6 @@ void
 Settings::warnChangedKnobs(const std::vector<KnobI*>& knobs)
 {
     bool didFontWarn = false;
-    bool didOCIOWarn = false;
     bool didOFXCacheWarn = false;
 
     for (U32 i = 0; i < knobs.size(); ++i) {
@@ -1790,22 +1771,8 @@ Settings::warnChangedKnobs(const std::vector<KnobI*>& knobs)
                ( knobs[i] == _systemFontChoice.get() ) )
              && !didFontWarn ) {
             didFontWarn = true;
-            Dialogs::warningDialog( tr("Font change").toStdString(),
-                                    tr("Changing the font requires a restart of %1.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ).toStdString() );
-        } else if ( ( ( knobs[i] == _ocioConfigKnob.get() ) ||
-                      ( knobs[i] == _customOcioConfigFile.get() ) )
-                    && !didOCIOWarn ) {
-            didOCIOWarn = true;
-            bool warnOcioChanged = _warnOcioConfigKnobChanged->getValue();
-            if (warnOcioChanged) {
-                bool stopAsking = false;
-                Dialogs::warningDialog(tr("OCIO config changed").toStdString(),
-                                       tr("The OpenColorIO config change requires a restart of %1 to be effective.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ).toStdString(), &stopAsking);
-                if (stopAsking) {
-                    _warnOcioConfigKnobChanged->setValue(false);
-                    saveSetting( _warnOcioConfigKnobChanged.get() );
-                }
-            }
+            Dialogs::warningDialog(tr("Font change").toStdString(),
+                                   tr("Changing the font requires a restart of %1.").arg(QString::fromUtf8(NATRON_APPLICATION_NAME)).toStdString());
         } else if ( knobs[i] == _texturesMode.get() ) {
             AppInstanceVec apps = appPTR->getAppInstances();
             for (AppInstanceVec::iterator it = apps.begin(); it != apps.end(); ++it) {
@@ -2107,10 +2074,7 @@ Settings::restoreSettings(bool useDefault)
         restoreKnobsFromSettings(knobs);
     }
 
-    if (!_ocioRestored) {
-        ///Load even though there's no settings!
-        tryLoadOpenColorIOConfig();
-    }
+    tryLoadOpenColorIOConfig();
 
     // Restore opengl renderer
     {
@@ -2190,75 +2154,23 @@ Settings::restoreSettings(bool useDefault)
 bool
 Settings::tryLoadOpenColorIOConfig()
 {
-    // the default value is the environment variable "OCIO"
-    QString configFile = QFile::decodeName( qgetenv(NATRON_OCIO_ENV_VAR_NAME) );
+    captureOCIOEnvOverride(false);
+    const std::string envOverride = getOCIOEnvOverride();
 
-    // OCIO environment variable overrides everything, then try the custom config...
-    if ( configFile.isEmpty() && _customOcioConfigFile->isEnabled(0) ) {
-        ///try to load from the file
-        std::string file;
-        try {
-            file = _customOcioConfigFile->getValue();
-        } catch (...) {
-            // ignore exceptions
-        }
-        if ( file.empty() ) {
-            return false;
-        }
-        configFile = QString::fromUtf8( file.c_str() );
-    }
-    if ( !configFile.isEmpty() ) {
-        if (!isBuiltinOcioConfig(configFile) && !QFile::exists(configFile)) {
-            Dialogs::errorDialog( "OpenColorIO", tr("%1: No such file.").arg(configFile).toStdString() );
-
-            return false;
-        }
+    if (envOverride.empty()) {
+        _ocioConfigKnob->setAllDimensionsEnabled(true);
+        _ocioConfigKnob->setHintToolTip(ocioConfigPreferenceToolTip());
+        _customOcioConfigFile->setAllDimensionsEnabled(_ocioConfigKnob->getActiveEntry().id == NATRON_CUSTOM_OCIO_CONFIG_NAME);
+        _customOcioConfigFile->setHintToolTip(customOcioConfigFilePreferenceToolTip());
     } else {
-        // ... and finally try the setting from the choice menu.
-        try {
-            ///try to load from the combobox
-            QString activeEntryText  = QString::fromUtf8( _ocioConfigKnob->getActiveEntry().id.c_str() );
-            if (isBuiltinOcioConfig(activeEntryText)) {
-                configFile = activeEntryText;
-            } else {
-                QString configFileName = QString(activeEntryText + QString::fromUtf8(".ocio"));
-                QStringList defaultConfigsPaths = getDefaultOcioConfigPaths();
-                Q_FOREACH (const QString& defaultConfigsDirStr, defaultConfigsPaths) {
-                    QDir defaultConfigsDir(defaultConfigsDirStr);
-
-                    if (!defaultConfigsDir.exists()) {
-                        qDebug() << "Attempt to read an OpenColorIO configuration but the configuration directory"
-                                 << defaultConfigsDirStr << "does not exist.";
-                        continue;
-                    }
-                    /// try to open the .ocio config file first in the defaultConfigsDir
-                    /// if we can't find it, try to look in a subdirectory with the name of the config for the file config.ocio
-                    if (!defaultConfigsDir.exists(configFileName)) {
-                        QDir subDir(defaultConfigsDirStr + QDir::separator() + activeEntryText);
-                        if (!subDir.exists()) {
-                            Dialogs::errorDialog("OpenColorIO", tr("%1: No such file or directory.").arg(subDir.absoluteFilePath(QString::fromUtf8("config.ocio"))).toStdString());
-
-                            return false;
-                        }
-                        if (!subDir.exists(QString::fromUtf8("config.ocio"))) {
-                            Dialogs::errorDialog("OpenColorIO", tr("%1: No such file or directory.").arg(subDir.absoluteFilePath(QString::fromUtf8("config.ocio"))).toStdString());
-
-                            return false;
-                        }
-                        configFile = subDir.absoluteFilePath(QString::fromUtf8("config.ocio"));
-                    } else {
-                        configFile = defaultConfigsDir.absoluteFilePath(configFileName);
-                    }
-                }
-            }
-        } catch (...) {
-            // ignore exceptions
-        }
-
-        if ( configFile.isEmpty() ) {
-            return false;
-        }
+        const QString toolTip = ocioEnvOverrideToolTip(envOverride);
+        _ocioConfigKnob->setAllDimensionsEnabled(false);
+        _ocioConfigKnob->setHintToolTip(toolTip);
+        _customOcioConfigFile->setAllDimensionsEnabled(false);
+        _customOcioConfigFile->setHintToolTip(toolTip);
     }
+
+    const QString configFile = QString::fromUtf8((envOverride.empty() ? getDefaultOCIOConfigSourceForNewProjects() : envOverride).c_str());
     if (isBuiltinOcioConfig(configFile)) {
         QString error;
         if (!loadBuiltinOcioConfig(configFile, &error)) {
@@ -2266,33 +2178,54 @@ Settings::tryLoadOpenColorIOConfig()
 
             return false;
         }
+    } else if (!QFile::exists(configFile)) {
+        Dialogs::errorDialog("OpenColorIO", tr("%1: No such file.").arg(configFile).toStdString());
+
+        return false;
     }
-    _ocioRestored = true;
 #ifdef DEBUG
     qDebug() << "setting OCIO=" << configFile;
 #endif
-    std::string stdConfigFile = configFile.toStdString();
-#if 0 //def __NATRON_WIN32__ // commented out in https://github.com/NatronGitHub/Natron/commit/3445d671f15fbd97bca164b53ceb41cef47c61c3
-    _wputenv_s(L"OCIO", StrUtils::utf8_to_utf16(stdConfigFile).c_str());
-#else
-    qputenv( NATRON_OCIO_ENV_VAR_NAME, stdConfigFile.c_str() );
-#endif
-
-    // A built-in config has no containing directory. Leaving the project's [OCIO]
-    // variable empty is deliberate: Project::simplifyPath() would otherwise rewrite a
-    // path equal to the URI down to the bare "[OCIO]" token, which is too short for
-    // Project::expandVariable() to expand back.
-    std::string configPath;
-    if (!isBuiltinOcioConfig(configFile)) {
-        configPath = SequenceParsing::removePath(stdConfigFile);
-        if (!configPath.empty() && (configPath[configPath.size() - 1] == '/')) {
-            configPath.erase(configPath.size() - 1, 1);
-        }
+    // Plug-in describe-time defaults and OIIO read the process-wide config from OCIO.
+    qputenv(NATRON_OCIO_ENV_VAR_NAME, QFile::encodeName(configFile));
+    if (envOverride.empty()) {
+        qputenv(NATRON_OCIO_ENV_IS_PREFERENCE_VAR_NAME, QByteArray("1"));
     }
-    appPTR->onOCIOConfigPathChanged(configPath);
 
     return true;
 } // tryLoadOpenColorIOConfig
+
+std::string
+Settings::getOCIOEnvOverride() const
+{
+    captureOCIOEnvOverride(false);
+    QMutexLocker k(&ocioEnvOverrideMutex);
+
+    return ocioEnvOverride;
+}
+
+void
+Settings::recaptureOCIOEnvOverrideForTests()
+{
+    captureOCIOEnvOverride(true);
+}
+
+std::string
+Settings::getDefaultOCIOConfigSourceForNewProjects() const
+{
+    const std::string id = _ocioConfigKnob->getActiveEntry().id;
+
+    if (id == NATRON_CUSTOM_OCIO_CONFIG_NAME) {
+        const std::string path = _customOcioConfigFile->getValue();
+        if (!path.empty()) {
+            return path;
+        }
+    } else if (isBuiltinOcioConfig(QString::fromUtf8(id.c_str()))) {
+        return id;
+    }
+
+    return NATRON_DEFAULT_OCIO_CONFIG_NAME;
+}
 
 bool
 Settings::onKnobValueChanged(KnobI* k,
@@ -2344,29 +2277,13 @@ Settings::onKnobValueChanged(KnobI* k,
         }
     } else if (k == _nThreadsPerEffect.get()) {
         appPTR->setNThreadsPerEffect( getNumberOfThreadsPerEffect() );
-    } else if (k == _ocioConfigKnob.get()) {
-        if (_ocioConfigKnob->getActiveEntry().id == NATRON_CUSTOM_OCIO_CONFIG_NAME) {
-            _customOcioConfigFile->setAllDimensionsEnabled(true);
-        } else {
-            _customOcioConfigFile->setAllDimensionsEnabled(false);
+    } else if ((k == _ocioConfigKnob.get()) || (k == _customOcioConfigFile.get())) {
+        if (!_restoringSettings) {
+            tryLoadOpenColorIOConfig();
         }
-        tryLoadOpenColorIOConfig();
     } else if (k == _useThreadPool.get()) {
         bool useTP = _useThreadPool->getValue();
         appPTR->setUseThreadPool(useTP);
-    } else if (k == _customOcioConfigFile.get()) {
-        if ( _customOcioConfigFile->isEnabled(0) ) {
-            tryLoadOpenColorIOConfig();
-            bool warnOcioChanged = _warnOcioConfigKnobChanged->getValue();
-            if ( warnOcioChanged && appPTR->getTopLevelInstance() ) {
-                bool stopAsking = false;
-                Dialogs::warningDialog(tr("OCIO config changed").toStdString(),
-                                       tr("The OpenColorIO config change requires a restart of %1 to be effective.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ).toStdString(), &stopAsking);
-                if (stopAsking) {
-                    _warnOcioConfigKnobChanged->setValue(false);
-                }
-            }
-        }
     } else if (k == _maxUndoRedoNodeGraph.get()) {
         appPTR->setUndoRedoStackLimit( _maxUndoRedoNodeGraph->getValue() );
     } else if (k == _maxPanelsOpened.get()) {
@@ -3229,63 +3146,6 @@ Settings::useInputAForMergeAutoConnect() const
 {
     return _useInputAForMergeAutoConnect->getValue();
 }
-
-void
-Settings::doOCIOStartupCheckIfNeeded()
-{
-    bool docheck = _ocioStartupCheck->getValue();
-    AppInstancePtr mainInstance = appPTR->getTopLevelInstance();
-
-    if (!mainInstance) {
-        qDebug() << "WARNING: doOCIOStartupCheckIfNeeded() called without a AppInstance";
-
-        return;
-    }
-
-    if (docheck && mainInstance) {
-        int entry_i = _ocioConfigKnob->getValue();
-        std::vector<ChoiceOption> entries = _ocioConfigKnob->getEntries_mt_safe();
-        std::string warnText;
-        if ( (entry_i < 0) || ( entry_i >= (int)entries.size() ) ) {
-            warnText = tr("The current OCIO config selected in the preferences is invalid, would you like to set it to the default config (%1)?").arg(QString::fromUtf8(NATRON_DEFAULT_OCIO_CONFIG_LABEL)).toStdString();
-        } else if (entries[entry_i].id != NATRON_DEFAULT_OCIO_CONFIG_NAME) {
-            warnText = tr("The current OCIO config selected in the preferences is not the default one (%1), would you like to set it to the default config?").arg(QString::fromUtf8(NATRON_DEFAULT_OCIO_CONFIG_LABEL)).toStdString();
-        } else {
-            return;
-        }
-
-        bool stopAsking = false;
-        StandardButtonEnum reply = mainInstance->questionDialog("OCIO config", warnText, false,
-                                                                StandardButtons(eStandardButtonYes | eStandardButtonNo),
-                                                                eStandardButtonYes,
-                                                                &stopAsking);
-        if (stopAsking != !docheck) {
-            _ocioStartupCheck->setValue(!stopAsking);
-            saveSetting( _ocioStartupCheck.get() );
-        }
-
-        if (reply == eStandardButtonYes) {
-            int defaultIndex = -1;
-            for (unsigned i = 0; i < entries.size(); ++i) {
-                if (entries[i].id == NATRON_DEFAULT_OCIO_CONFIG_NAME) {
-                    defaultIndex = i;
-                    break;
-                }
-            }
-            if (defaultIndex != -1) {
-                _ocioConfigKnob->setValue(defaultIndex);
-                saveSetting( _ocioConfigKnob.get() );
-            } else {
-                Dialogs::warningDialog("OCIO config", tr("The %2 OCIO config could not be found.\n"
-                                                         "This is probably because you're not using the OpenColorIO-Configs folder that should "
-                                                         "be bundled with your %1 installation.")
-                                                          .arg(QString::fromUtf8(NATRON_APPLICATION_NAME))
-                                                          .arg(QString::fromUtf8(NATRON_DEFAULT_OCIO_CONFIG_LABEL))
-                                                          .toStdString());
-            }
-        }
-    }
-} // Settings::doOCIOStartupCheckIfNeeded
 
 bool
 Settings::didSettingsExistOnStartup() const

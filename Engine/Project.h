@@ -46,6 +46,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Knob.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/ProjectColorManagement.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -63,10 +64,12 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
     Q_OBJECT
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
-    struct MakeSharedEnabler;
+friend struct ProjectPrivate;
 
-    // constructors should be privatized in any class that derives from std::enable_shared_from_this<>
-    Project(const AppInstancePtr& appInstance);
+struct MakeSharedEnabler;
+
+// constructors should be privatized in any class that derives from std::enable_shared_from_this<>
+Project(const AppInstancePtr& appInstance);
 
 public:
     static ProjectPtr create(const AppInstancePtr& appInstance);
@@ -206,13 +209,31 @@ public:
 
     qint64 getProjectCreationTime() const;
 
+    /**
+     * @brief The OpenColorIO config the project actually uses: an "ocio://" URI or an absolute
+     * path. After a failed load this is the config still in use, not the requested one.
+     **/
+    std::string getOCIOConfigSource() const;
 
     /**
-     * @brief Called exclusively by the Node class when it needs to retrieve the shared ptr
-     * from the "this" pointer.
+     * @brief The config the OCIO environment variable or the project's config knobs ask for.
+     * Nothing else may read the project's config knobs.
      **/
-    ViewerColorSpaceEnum getDefaultColorSpaceForBitDepth(ImageBitDepthEnum bitdepth) const;
+    std::string getRequestedOCIOConfigSource() const;
 
+    /**
+     * @brief True, filling \p error, while the config the OCIO environment variable forces cannot
+     * be loaded. Renders must fail then rather than go through another config.
+     **/
+    bool getOCIOConfigError(std::string* error) const;
+
+    std::string getWorkingColorSpace() const;
+
+    std::string getFileColorSpace(FileColorCategoryEnum category) const;
+
+    void getDefaultDisplayView(std::string* display, std::string* view) const;
+
+    ProjectColorManagementPtr getColorManagement() const;
 
     /**
      * @brief Remove all the autosave files from the disk.
@@ -259,11 +280,24 @@ public:
     static bool hasUriScheme(const std::string& str);
 
     /**
-     * @brief Puts every node asking for an OpenColorIO colorspace the config it uses does
-     * not define into an error state naming those parameters. Nodes whose colorspaces all
-     * resolve are left untouched.
+     * @brief Puts every node asking for an OpenColorIO colorspace the project's effective
+     * config does not define into an error state naming those parameters, and clears that
+     * error, and only that one, from nodes whose colorspaces all resolve.
      **/
     void reportUnresolvedOCIOColorSpaces();
+
+    /**
+     * @brief Sets the "ocioConfigFile" parameter of every node that has one to
+     * getOCIOConfigSource() and hides it, so a node's own or saved value never wins, then sets
+     * the hidden "ocioWorkingSpace" parameter to getWorkingColorSpace().
+     **/
+    void pushOCIOConfigToNodes();
+
+    /**
+     * @brief As pushOCIOConfigToNodes() for one node; a Read or Write also pushes to the
+     * decoder or encoder it embeds.
+     **/
+    void pushOCIOConfigToNode(const NodePtr& node);
 
     /**
      * @brief Puts every node holding an input whose data kind it cannot handle into an error
@@ -428,6 +462,27 @@ private:
 
 
     void doResetEnd(bool aboutToQuit);
+
+    /**
+     * @brief Loads getRequestedOCIOConfigSource(), repopulates the Color page menus with fallbacks for
+     * names the config lacks, re-derives the config knobs' enabled state and fires configChanged.
+     * Enabled is serialized, so this must run after every restore.
+     **/
+    void refreshColorManagement(bool warnOnFallback);
+
+    void applyColorManagementDefaults(bool asKnobDefaults);
+
+    /**
+     * @brief Makes the preference's config the default of the config knobs. Callers must
+     * suppress the colour management refresh.
+     **/
+    void applyNewProjectOCIOConfigDefaults();
+
+    /**
+     * @brief A config knob missing from a project file held the Studio default when it was saved,
+     * whatever this machine's new-project preference is.
+     **/
+    void resetOCIOConfigKnobsForRestore();
 
     /**
      * @brief Must be implemented to initialize any knob using the

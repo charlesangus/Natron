@@ -263,11 +263,19 @@ public:
     bool useInputAForMergeAutoConnect() const;
 
     /**
-     * @brief If the OCIO startup check parameter is set to true, warn the user if the OCIO config is different
-     * from the default value held by NATRON_CUSTOM_OCIO_CONFIG_NAME
-     * This can only be called once the 1st AppInstance has been loaded otherwise dialogs could not be created.
+     * @brief The OCIO environment variable as it was when Natron started. It is empty when OCIO
+     * was unset, or when it was exported by a parent Natron process from its preference
+     * (NATRON_OCIO_ENV_IS_PREFERENCE=1). When non-empty it overrides every project's config.
      **/
-    void doOCIOStartupCheckIfNeeded();
+    std::string getOCIOEnvOverride() const;
+
+    static void recaptureOCIOEnvOverrideForTests();
+
+    /**
+     * @brief The preference's built-in config URI, or the custom config file path; the Studio
+     * config URI when neither is set.
+     **/
+    std::string getDefaultOCIOConfigSourceForNewProjects() const;
 
     /**
      * @brief Returns true if the QSettings existed prior to loading the settings
@@ -490,8 +498,6 @@ private:
     // Color-Management
     KnobPagePtr _ocioTab;
     KnobChoicePtr _ocioConfigKnob;
-    KnobBoolPtr _warnOcioConfigKnobChanged;
-    KnobBoolPtr _ocioStartupCheck;
     KnobFilePtr _customOcioConfigFile;
 
     // Caching
@@ -643,7 +649,6 @@ private:
     KnobColorPtr _defaultDeepGroupColor;
     std::vector<ChoiceOption> _knownHostNames;
     bool _restoringSettings;
-    bool _ocioRestored;
     bool _settingsExisted;
     bool _defaultAppearanceOutdated;
 };

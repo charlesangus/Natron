@@ -124,8 +124,6 @@ Image::premultByChannel(const RectI& roi,
                                                    divisorImg->getFieldingOrder(),
                                                    false);
         divisorImg->convertToFormat(divisorImg->getBounds(),
-                                    eViewerColorSpaceLinear,
-                                    eViewerColorSpaceLinear,
                                     -1,
                                     false,
                                     convertedDivisor.get());

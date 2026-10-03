@@ -184,7 +184,6 @@ public:
                                                double gain,
                                                double gamma,
                                                double offset,
-                                               int lut,
                                                bool recenterViewer,
                                                const Point& viewportCenter,
                                                bool isPartialRect) OVERRIDE FINAL;
@@ -395,7 +394,11 @@ public:
 
     void setGamma(double g);
 
-    void setLut(int lut);
+    /**
+     * @brief Sets the display, view and look the 32f shader and the colour picker use, for both
+     * the A and B textures. An empty display or view uses the project's defaults.
+     **/
+    void setDisplayTransform(const std::string& display, const std::string& view, const std::string& look);
 
     bool isWipeHandleVisible() const;
 
@@ -429,9 +432,8 @@ public:
 
     /**
      * @brief Get the color of the currently displayed image at position x,y.
-     * @param forceLinear If true, then it will not use the viewer current colorspace
-     * to get r,g and b values, otherwise the color returned will be in the same color-space
-     * than the one chosen by the user on the gui.
+     * @param forceLinear If true, r, g and b are the image values, otherwise they go through
+     * the viewer's display transform (without gain, offset or gamma).
      * X and Y are in CANONICAL COORDINATES
      * @return true if the point is inside the image and colors were set
      **/

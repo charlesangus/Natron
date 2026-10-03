@@ -138,8 +138,10 @@ runInParallel(int count, const F& f)
     };
     std::vector<std::thread> threads;
     try {
+        // Reserved up front so a failed reallocation cannot destroy a running temporary thread, which would terminate.
+        threads.reserve(nThreads - 1);
         for (int t = 1; t < nThreads; ++t) {
-            threads.push_back(std::thread(work));
+            threads.emplace_back(work);
         }
     } catch (...) {
         std::lock_guard<std::mutex> lock(errorMutex);

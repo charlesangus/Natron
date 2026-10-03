@@ -1637,9 +1637,9 @@ Project::refreshColorManagement(bool warnOnFallback)
     onOCIOConfigPathChanged(cm.getConfigDirectory(), false);
 
     cm.setWorkingSpace(getWorkingColorSpace());
+    pushOCIOConfigToNodes();
     cm.notifyConfigChanged();
 
-    pushOCIOConfigToNodes();
     reportUnresolvedOCIOColorSpaces();
 } // Project::refreshColorManagement
 
@@ -2308,8 +2308,8 @@ Project::onKnobValueChanged(KnobI* knob,
         _imp->colorManagement->setWorkingSpace(getWorkingColorSpace());
         // The viewers' display processors start from the working space, so they must be rebuilt.
         if (!_imp->suppressColorManagementRefresh) {
-            _imp->colorManagement->notifyConfigChanged();
             pushOCIOConfigToNodes();
+            _imp->colorManagement->notifyConfigChanged();
         }
         shouldAutoSave = true;
     } else {

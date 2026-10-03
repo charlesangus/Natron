@@ -364,19 +364,19 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: a GuiTests (offscreen) or Engine test round-trips `ViewerData` with a non-default view and look. The P4.T3 Xvfb script additionally saves the project, reloads it, and checks that the menus keep `Un-tone-mapped`.
   - size: M
 
-- [ ] M50.P3.T12 — A decoder the Read wrapper creates after the node exists still takes the project's per-file-type defaults
+- [x] M50.P3.T12 — A decoder the Read wrapper creates after the node exists still takes the project's per-file-type defaults
   - files: `Engine/ReadNode.cpp` (decoder creation when a file is set on an empty Read, or after a filename is cleared and set again); the io fork's `GenericReader` guess gating if needed; `Tests/ProjectOCIODefaults_Test.cpp`
   - approach: today a Read created empty and then given a file, or one whose filename is cleared and set again, gets a fresh decoder that never runs the guess, so it keeps `sRGB - Display`/`scene_linear`. A newly created decoder must run the same new-node guess as a decoder created with its file, so it takes the project defaults. A decoder restored from a saved project must not re-guess.
   - verify: `ctest -R ProjectOCIODefaults` passes new cases: an empty Read given an 8-bit PNG gets `sRGB Encoded Rec.709 (sRGB)`/ACEScg; a Read whose filename is cleared and set to an EXR gets ACEScg; a saved and reloaded Read keeps its spaces.
   - size: M
 
-- [ ] M50.P4.T6 — Keep the 8-bit viewer's CPU display transform within the frame budget
+- [x] M50.P4.T6 — Keep the 8-bit viewer's CPU display transform within the frame budget
   - files: `Engine/ViewerInstance.cpp` (`applyViewerDisplayTransform`, the 8-bit scanline path), `Engine/ProjectColorManagement.{h,cpp}` (processor creation), `Tests/ViewerDisplayTransform_Test.cpp`
   - approach: the ACES 2.0 SDR CPU processor takes about 290 ms on a 1080p frame (4 threads, release), against the 150 ms target. Measure first. Try an OCIO optimization flag (`OPTIMIZATION_LOSSY` / `getOptimizedCPUProcessor` options), then baking the display transform to a shaper + 3D LUT for the 8-bit path, as the design's risk note allows, accepting at most 1 code value of error at 8 bits. Keep the 32f GPU path exact.
   - verify: the logged release timing is under 150 ms at 1080p; the CPU-path value checks (89/118/46 ±1) still pass; the 8-bit and 32f paths agree within 2 code values in `build/m50-gui/viewer_32f.py`.
   - size: M
 
-- [ ] M50.P4.T7 — Make the viewer's Display/View/Look combos wide enough for their names
+- [x] M50.P4.T7 — Make the viewer's Display/View/Look combos wide enough for their names
   - files: `Gui/ViewerTab.cpp` (combo creation)
   - approach: long view and look names clip ("Un-tone-mappe", "ACES 1.3 Reference Gamu"). Size each combo to its contents (`QComboBox::AdjustToContents` or a minimum-contents length), keep the toolbar from overflowing, and put the full name in a tooltip.
   - verify: re-run `build/m50-gui/viewer_menus.py`; the screenshots show the full names; share them with the user.
@@ -402,7 +402,7 @@ Colour management becomes a property of the project, and all of it goes through 
   - verify: the debug build is clean; `git grep -n getDefaultColorSpaceForBitDepth Engine/EffectInstance*.cpp Engine/RotoPaint.cpp Engine/DiskCacheNode.cpp Engine/Image*.cpp` is empty. The full debug ctest is green, including the RotoPaint and DiskCache-touching tests.
   - size: M
 
-- [ ] M50.P5.T2 — Remove the project LUT page, and render node previews through the default display/view
+- [x] M50.P5.T2 — Remove the project LUT page, and render node previews through the default display/view
   - files: `Engine/Project.cpp`, `Engine/Project.h`, `Engine/ProjectPrivate.h`, `Engine/AppInstance.cpp`/`Engine/AppInstance.h`, `Engine/Node.cpp`, `Tests/ProjectColorManagement_Test.cpp`
   - approach:
     - Delete `defaultColorSpace8u/16u/32f`, the "LUT" page, `colorspaceParamIndexToEnum`, `getDefaultColorSpaceForBitDepth` (both in Project and AppInstance) and the LUT auto-save branch in `Project::onKnobValueChanged`. P4.T1 and P5.T5 removed the last callers.
@@ -540,3 +540,7 @@ Execution notes:
     - P4.T6: the CPU path takes about 290 ms at 1080p against the 150 ms target;
     - P4.T7: viewer combos are too narrow.
   - **Batches:** P4.T6 and P4.T7 run in B8 with P5.T2; P3.T12 runs in B8 too.
+- 2026-10-03 — **B8 landed** (`b3291b668` P5.T2, `c8f7d6331` P3.T12, `a0d84b5b1` P4.T6, `dc3903d7a` P4.T7). Full debug ctest 794/794; release builds; viewer_32f and viewer_menus pass, with the full names uncropped.
+  - **P4.T6 hybrid display path:** a 65³ shaper+3D LUT, with each cell checked against the exact processor and failing cells and out-of-domain pixels routed to exact. A 1080p 8-bit frame drops from 282 ms to 25.6 ms (release, 4 threads) and stays within 1 code value. The first 8-bit frame after a view change pays a ~380 ms LUT build. Cheap processors (Raw, Un-tone-mapped) stay exact. The picker and previews stay exact.
+  - **P3.T12:** the Read wrapper reused a `ParamExistingInstance=true` knob left by its temporary default decoder. A decoder created on a Read that had none now clears the flag and sends a user-edited filename change, so it guesses. Decoder swaps keep their spaces.
+  - **UAT note:** with full names, the viewer toolbar is about 1400 px wide, so a narrow viewer crops it. There is no overflow handling.

@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <list>
 #include <string>
@@ -650,6 +651,114 @@ TEST_F(DeepRenderPipelineTest, TwoPassHelperMatchesSerialReference)
     ASSERT_GT(reference.getSampleTable().getTotalSampleCount(), (U64)0);
 
     expectDeepImagesIdentical(*rendered, reference);
+}
+
+class DeepReshapeTest
+    : public DeepRenderPipelineTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        DeepRenderPipelineTest::SetUp();
+
+        deepRenderTestReshapeConfig() = DeepRenderTestReshapeConfig();
+        _reshape = createNode(QString::fromUtf8(kTestPluginIDDeepReshape));
+        ASSERT_TRUE(_reshape != NULL);
+        connectNodes(_source, _reshape, 0, true);
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        if (_reshape) {
+            _reshape->destroyNode(false, false);
+            _reshape.reset();
+        }
+        deepRenderTestReshapeConfig() = DeepRenderTestReshapeConfig();
+        DeepRenderPipelineTest::TearDown();
+    }
+
+    // The reshaped image holds exactly the source formulas over roi in the kept channels, and
+    // the added channel is zero and as long as the sample table says.
+    void expectReshapedSamples(const DeepImagePtr& image,
+                               const RectI& roi)
+    {
+        EXPECT_FALSE(image->hasChannel("G"));
+        const DeepChannelBuffer* added = image->getChannel("AOV");
+        ASSERT_TRUE(added != NULL);
+        ASSERT_EQ((std::size_t)image->getSampleTable().getTotalSampleCount(), added->size());
+        for (std::size_t s = 0; s < added->size(); ++s) {
+            ASSERT_EQ(0.f, added->data()[s]) << "sample " << s;
+        }
+
+        const int kept[] = { 0, 2, 3 };
+        const char* const names[] = { "R", "B", "A" };
+        for (int k = 0; k < 3; ++k) {
+            const DeepChannelBuffer* channel = image->getChannel(names[k]);
+            ASSERT_TRUE(channel != NULL) << "missing channel " << names[k];
+            for (int y = roi.y1; y < roi.y2; ++y) {
+                for (int x = roi.x1; x < roi.x2; ++x) {
+                    std::size_t index;
+                    ASSERT_TRUE(deepRenderTestPixelIndex(*image, x, y, &index));
+                    const U32 count = image->getSampleTable().getCount(index);
+                    const U64 offset = image->getSampleTable().getOffset(index);
+                    ASSERT_EQ(deepRenderTestSampleCount(x, y), count) << "at pixel (" << x << ", " << y << ")";
+                    for (U32 s = 0; s < count; ++s) {
+                        ASSERT_FLOAT_EQ(deepRenderTestChannel(x, y, (int)s, kept[k]), channel->data()[offset + s])
+                            << "at pixel (" << x << ", " << y << ") sample " << s << " channel " << names[k];
+                    }
+                }
+            }
+        }
+        ASSERT_TRUE(image->hasChannel("Z"));
+        ASSERT_TRUE(image->hasChannel("ZBack"));
+    }
+
+    NodePtr _reshape;
+};
+
+TEST_F(DeepReshapeTest, AliasingPathDropsAndZeroAddsWhileSharingTheRest)
+{
+    const RectI fullFrame(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+
+    deepRenderTestReshapeConfig().drop.push_back("G");
+    deepRenderTestReshapeConfig().addZero.push_back("AOV");
+
+    DeepImagePtr reshaped;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_reshape, 1., fullFrame, &reshaped));
+    ASSERT_TRUE(reshaped != NULL);
+    ASSERT_EQ(1, deepRenderTestReshapeConfig().renderCount);
+    ASSERT_TRUE(fullFrame == reshaped->getBounds());
+
+    expectReshapedSamples(reshaped, fullFrame);
+
+    EXPECT_TRUE(deepRenderTestReshapeConfig().sharedSampleTable);
+    const std::vector<std::string>& shared = deepRenderTestReshapeConfig().sharedChannels;
+    const char* const expectShared[] = { "R", "B", "A", "Z", "ZBack" };
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_TRUE(std::find(shared.begin(), shared.end(), expectShared[i]) != shared.end()) << expectShared[i];
+    }
+    EXPECT_TRUE(std::find(shared.begin(), shared.end(), "AOV") == shared.end());
+}
+
+TEST_F(DeepReshapeTest, CopyPathOverAWiderCachedInputMatchesTheAliasingRender)
+{
+    const RectI fullFrame(0, 0, kDeepRenderTestWidth, kDeepRenderTestHeight);
+    const RectI leftHalf(0, 0, kDeepRenderTestWidth / 2, kDeepRenderTestHeight);
+
+    deepRenderTestReshapeConfig().drop.push_back("G");
+    deepRenderTestReshapeConfig().addZero.push_back("AOV");
+
+    DeepImagePtr wideSource;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_source, 1., fullFrame, &wideSource));
+    ASSERT_TRUE(wideSource != NULL);
+
+    DeepImagePtr reshaped;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(_reshape, 1., leftHalf, &reshaped));
+    ASSERT_TRUE(reshaped != NULL);
+    ASSERT_EQ(1, deepRenderTestReshapeConfig().renderCount);
+    ASSERT_TRUE(leftHalf == reshaped->getBounds());
+
+    EXPECT_FALSE(deepRenderTestReshapeConfig().sharedSampleTable);
+    expectReshapedSamples(reshaped, leftHalf);
 }
 
 TEST_F(DeepRenderPipelineTest, SecondFlattenOfTheSameFrameIsACacheHit)

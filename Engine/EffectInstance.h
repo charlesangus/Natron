@@ -1145,6 +1145,15 @@ public:
     {
     }
 
+    /**
+     * @brief The storage-level layers of the deep stream this effect outputs at (time, view),
+     * computed without rendering; Z and ZBack are sample depths and never appear. Only asked of
+     * an effect that producesDeepData(). The default reports the present layers of the input
+     * getLayersPassThroughInput() names, at its time and view, or nothing without one: right
+     * for any effect that carries its input's channels through unchanged.
+     **/
+    virtual void getDeepLayers(double time, ViewIdx view, std::list<ImageLayerDesc>* layers);
+
     virtual bool isViewAware() const
     {
         return false;

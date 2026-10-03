@@ -35,6 +35,7 @@ set(Tests_SOURCES
     DeepFlatten_Test.cpp
     DeepImage_Test.cpp
     DeepImageCache_Test.cpp
+    DeepLayers_Test.cpp
     DeepNodes_Test.cpp
     DeepPipeline_Test.cpp
     DeepPixelOps_Test.cpp

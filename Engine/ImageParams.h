@@ -228,8 +228,12 @@ public:
             return false;
         }
 
+        // ImageLayerDesc::operator==() ignores channel names, so they are compared here too:
+        // otherwise getOrCreate() would hand a layout's request an entry holding another layout's
+        // channels under the same layer ID and width.
         return _rod == other._rod
             && _components == other._components
+            && _components.getChannels() == other._components.getChannels()
             && _bitdepth == other._bitdepth
             && _mipmapLevel == other._mipmapLevel
             && _fielding == other._fielding;

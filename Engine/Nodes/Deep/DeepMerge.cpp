@@ -34,6 +34,7 @@
 
 #include "Engine/ChoiceOption.h"
 #include "Engine/DeepImage.h"
+#include "Engine/DeepLayers.h"
 #include "Engine/DeepPixelOps.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/RectD.h"
@@ -430,6 +431,43 @@ DeepMerge::getRegionOfDefinition(U64 hash,
     bool isProjectFormat = false;
 
     return a->getRegionOfDefinition_public(hash, time, scale, view, rod, &isProjectFormat);
+}
+
+void
+DeepMerge::getDeepLayers(double time,
+                         ViewIdx view,
+                         std::list<ImageLayerDesc>* layers)
+{
+    std::list<ImageLayerDesc> fromA;
+    getPresentLayers(time, view, 0, &fromA);
+    if (getOperation() == eOperationHoldout) {
+        *layers = fromA;
+
+        return;
+    }
+
+    std::list<ImageLayerDesc> fromB;
+    getPresentLayers(time, view, 1, &fromB);
+    if (fromA.empty() && fromB.empty()) {
+        return;
+    }
+
+    // Going through channel names, rather than merging the layer lists, is what makes the colour
+    // storage the narrowest one covering both inputs' colour: the render's channel union.
+    std::vector<std::string> names;
+    std::set<std::string> seen;
+    for (int input = 0; input < 2; ++input) {
+        const std::list<ImageLayerDesc>& inputLayers = (input == 0) ? fromA : fromB;
+        for (std::list<ImageLayerDesc>::const_iterator it = inputLayers.begin(); it != inputLayers.end(); ++it) {
+            for (int c = 0; c < it->getNumComponents(); ++c) {
+                const std::string name = DeepLayers::channelName(*it, c);
+                if (!name.empty() && seen.insert(name).second) {
+                    names.push_back(name);
+                }
+            }
+        }
+    }
+    DeepLayers::groupDeepChannels(names, layers);
 }
 
 StatusEnum

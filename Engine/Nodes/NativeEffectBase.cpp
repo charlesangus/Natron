@@ -306,6 +306,64 @@ NativeEffectBase::renderDeepTwoPass(const DeepRenderActionArgs& args,
 } // NativeEffectBase::renderDeepTwoPass
 
 StatusEnum
+NativeEffectBase::copyDeepInputOverOutputBounds(const DeepRenderActionArgs& args,
+                                                const DeepImagePtr& input,
+                                                const std::vector<std::string>& dropNames,
+                                                const std::vector<std::string>& extraNames)
+{
+    std::vector<std::string> copyNames;
+    std::vector<const float*> inputChannels;
+    int alphaChannelIndex = -1;
+    for (std::map<std::string, DeepChannelBuffer>::const_iterator it = input->getChannels().begin(); it != input->getChannels().end(); ++it) {
+        if (isDepthChannelName(it->first) || (std::find(dropNames.begin(), dropNames.end(), it->first) != dropNames.end())) {
+            continue;
+        }
+        if (it->first == "A") {
+            alphaChannelIndex = (int)copyNames.size();
+        }
+        copyNames.push_back(it->first);
+        inputChannels.push_back(it->second.data());
+    }
+    for (std::size_t c = 0; c < extraNames.size(); ++c) {
+        if (!isDepthChannelName(extraNames[c]) && (std::find(copyNames.begin(), copyNames.end(), extraNames[c]) == copyNames.end())) {
+            copyNames.push_back(extraNames[c]);
+        }
+    }
+    // Only the views handed to the fill pass carry this, and the copy reads nothing through
+    // it, so an input with no alpha at all still has a well-formed index to report.
+    const int copyAlphaChannelIndex = std::max(0, alphaChannelIndex);
+
+    const DeepChannelBuffer* const inputZ = input->getChannel("Z");
+    const DeepChannelBuffer* const inputZBack = input->getChannel("ZBack");
+    const float* const inputZData = inputZ ? inputZ->data() : nullptr;
+    const float* const inputZBackData = inputZBack ? inputZBack->data() : nullptr;
+    const RectI& inputBounds = input->getBounds();
+    const SampleTable& inputTable = input->getSampleTable();
+    const std::size_t inputRowWidth = (std::size_t)inputBounds.width();
+    const auto inputPixelIndex = [&inputBounds, inputRowWidth](int x, int y) -> std::size_t {
+        return ((std::size_t)(y - inputBounds.y1) * inputRowWidth) + (std::size_t)(x - inputBounds.x1);
+    };
+
+    return renderDeepTwoPass(args, copyNames, copyAlphaChannelIndex, [&](int x, int y) -> U32 {
+        if (!inputZData || !inputBounds.contains(x, y)) {
+            return 0;
+        }
+
+        return inputTable.getCount(inputPixelIndex(x, y)); }, [&](int x, int y, const MutableDeepPixelView& dst) {
+        const U64 offset = inputTable.getOffset(inputPixelIndex(x, y));
+
+        for (int s = 0; s < dst.numSamples; ++s) {
+            dst.z[s] = inputZData[offset + s];
+            dst.zback[s] = inputZBackData ? inputZBackData[offset + s] : dst.z[s];
+        }
+        for (std::size_t c = 0; c < inputChannels.size(); ++c) {
+            for (int s = 0; s < dst.numSamples; ++s) {
+                dst.channels[c][s] = inputChannels[c][offset + s];
+            }
+        } }, input->isTidy());
+}
+
+StatusEnum
 NativeEffectBase::renderDeepFromInput(const DeepRenderActionArgs& args,
                                       const DeepImagePtr& input,
                                       const std::vector<std::string>& channelsToWrite,
@@ -346,33 +404,7 @@ NativeEffectBase::renderDeepFromInput(const DeepRenderActionArgs& args,
     };
 
     if (!out->aliasContentsOf(*input)) {
-        std::vector<std::string> copyNames = inputChannelNames;
-        for (std::size_t c = 0; c < channelsToWrite.size(); ++c) {
-            if (!isDepthChannelName(channelsToWrite[c]) && (std::find(copyNames.begin(), copyNames.end(), channelsToWrite[c]) == copyNames.end())) {
-                copyNames.push_back(channelsToWrite[c]);
-            }
-        }
-        // Only the views handed to the fill pass carry this, and the copy reads nothing through
-        // it, so an input with no alpha at all still has a well-formed index to report.
-        const int copyAlphaChannelIndex = std::max(0, inputAlphaChannelIndex);
-
-        const StatusEnum copied = renderDeepTwoPass(args, copyNames, copyAlphaChannelIndex, [&](int x, int y) -> U32 {
-            if (!inputZData || !inputBounds.contains(x, y)) {
-                return 0;
-            }
-
-            return inputTable.getCount(inputPixelIndex(x, y)); }, [&](int x, int y, const MutableDeepPixelView& dst) {
-            const U64 offset = inputTable.getOffset(inputPixelIndex(x, y));
-
-            for (int s = 0; s < dst.numSamples; ++s) {
-                dst.z[s] = inputZData[offset + s];
-                dst.zback[s] = inputZBackData ? inputZBackData[offset + s] : dst.z[s];
-            }
-            for (std::size_t c = 0; c < inputChannels.size(); ++c) {
-                for (int s = 0; s < dst.numSamples; ++s) {
-                    dst.channels[c][s] = inputChannels[c][offset + s];
-                }
-            } }, input->isTidy());
+        const StatusEnum copied = copyDeepInputOverOutputBounds(args, input, std::vector<std::string>(), channelsToWrite);
         if (copied != eStatusOK) {
             return copied;
         }
@@ -444,5 +476,39 @@ NativeEffectBase::renderDeepFromInput(const DeepRenderActionArgs& args,
 
     return rewritten ? eStatusOK : eStatusFailed;
 } // NativeEffectBase::renderDeepFromInput
+
+StatusEnum
+NativeEffectBase::renderDeepReshapingChannels(const DeepRenderActionArgs& args,
+                                              const DeepImagePtr& input,
+                                              const std::vector<std::string>& drop,
+                                              const std::vector<std::string>& addZero)
+{
+    const DeepImagePtr& out = args.outputDeepImage;
+
+    if (!out || !input) {
+        return eStatusFailed;
+    }
+
+    if (out->aliasContentsOf(*input)) {
+        for (std::size_t c = 0; c < drop.size(); ++c) {
+            if (!isDepthChannelName(drop[c])) {
+                out->removeChannel(drop[c]);
+            }
+        }
+    } else {
+        const StatusEnum copied = copyDeepInputOverOutputBounds(args, input, drop, addZero);
+        if (copied != eStatusOK) {
+            return copied;
+        }
+    }
+
+    for (std::size_t c = 0; c < addZero.size(); ++c) {
+        if (!isDepthChannelName(addZero[c]) && !out->hasChannel(addZero[c])) {
+            out->getChannelForWriting(addZero[c]);
+        }
+    }
+
+    return eStatusOK;
+}
 
 NATRON_NAMESPACE_EXIT

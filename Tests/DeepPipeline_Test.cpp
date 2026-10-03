@@ -27,7 +27,10 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <initializer_list>
 #include <list>
+#include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -45,6 +48,8 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -183,6 +188,74 @@ fixturePath(const char* name)
     return QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/") + QString::fromUtf8(name);
 }
 
+// The flattened deep alpha of deep-scanline.exr at (x, y). deep-layers.exr and
+// deep-noncanonical.exr hold the same samples, and deep-layers.exr's diffuse.G and specular.B
+// equal each sample's alpha, so they flatten to this too.
+float
+expectedLayerAlpha(int x,
+                   int y)
+{
+    std::vector<FixtureSample> samples;
+
+    appendFixtureSamples(kScanlinePixels, sizeof(kScanlinePixels) / sizeof(kScanlinePixels[0]), x, y, &samples);
+    std::stable_sort(samples.begin(), samples.end(), &frontToBack);
+
+    float alpha = 0.f;
+    float transmittance = 1.f;
+    for (std::size_t s = 0; s < samples.size(); ++s) {
+        alpha += transmittance * samples[s].alpha;
+        transmittance *= 1.f - samples[s].alpha;
+    }
+
+    return alpha;
+}
+
+std::set<std::string>
+channelSet(const FlatExrImage& image)
+{
+    return std::set<std::string>(image.channels.begin(), image.channels.end());
+}
+
+std::set<std::string>
+names(std::initializer_list<const char*> list)
+{
+    std::set<std::string> result;
+
+    for (const char* name : list) {
+        result.insert(name);
+    }
+
+    return result;
+}
+
+// The colour storage entry is named by its layout, e.g. "Color(1)".
+std::vector<std::string>
+describeLayers(const std::list<ImageLayerDesc>& layers)
+{
+    std::vector<std::string> ids;
+
+    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        if (it->isColorLayer()) {
+            std::ostringstream os;
+            os << "Color(" << it->getNumComponents() << ")";
+            ids.push_back(os.str());
+        } else {
+            ids.push_back(it->getLayerID());
+        }
+    }
+
+    return ids;
+}
+
+float
+writtenAt(const FlatExrImage& image,
+          int x,
+          int y,
+          const std::string& channel)
+{
+    return image.at(image.x1 + x, image.y1 + (kDeepFixtureHeight - 1 - y), channel);
+}
+
 } // namespace
 
 class DeepPipelineTest
@@ -203,6 +276,88 @@ protected:
 
         return read;
     }
+
+    // DeepRead(fixture) -> DeepToImage -> WriteOIIO, the writer set to write every layer it is
+    // given as a single-part, uncompressed 32-bit float EXR.
+    void createFlattenGraph(const char* fixture,
+                            NodePtr* toImage,
+                            NodePtr* writer)
+    {
+        Format format(0, 0, kDeepFixtureWidth, kDeepFixtureHeight, "deepPipelineFormat", 1.);
+        getApp()->getProject()->setOrAddProjectFormat(format);
+
+        NodePtr read = createDeepRead(fixturePath(fixture));
+        *toImage = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPTOIMAGE));
+        *writer = createNode(_writeOIIOPluginID);
+        ASSERT_TRUE(read && *toImage && *writer);
+
+        connectNodes(read, *toImage, 0, true);
+        connectNodes(*toImage, *writer, 0, true);
+
+        KnobChoice* partSplitting = dynamic_cast<KnobChoice*>((*writer)->getKnobByName("partSplitting").get());
+        ASSERT_TRUE(partSplitting != NULL);
+        partSplitting->setValueFromID("single", 0);
+
+        KnobChoice* bitDepth = dynamic_cast<KnobChoice*>((*writer)->getKnobByName("bitDepth").get());
+        ASSERT_TRUE(bitDepth != NULL);
+        bitDepth->setValueFromID("32f", 0);
+
+        KnobChoice* compression = dynamic_cast<KnobChoice*>((*writer)->getKnobByName("compression").get());
+        ASSERT_TRUE(compression != NULL);
+        compression->setValueFromID("none", 0);
+
+        KnobChannelSet* writerChannels = dynamic_cast<KnobChannelSet*>((*writer)->getKnobByName(kNodeParamChannelSet).get());
+        ASSERT_TRUE(writerChannels != NULL);
+        writerChannels->setAll();
+    }
+
+    static KnobChannelSetPtr toImageChannels(const NodePtr& toImage)
+    {
+        return std::dynamic_pointer_cast<KnobChannelSet>(toImage->getKnobByName(kDeepToImageParamChannels));
+    }
+
+    // Renders frame through writer into a fresh file and reads it back.
+    void writeAndRead(const NodePtr& writer,
+                      int frame,
+                      FlatExrImage* image)
+    {
+        ASSERT_TRUE(_tmp.isValid());
+        std::ostringstream name;
+        name << "/flatten" << _nextOutput++ << ".####.exr";
+        const std::string pattern = (_tmp.path() + QString::fromStdString(name.str())).toStdString();
+        writer->setOutputFilesForWriter(pattern);
+
+        OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
+        ASSERT_TRUE(writerEffect != NULL);
+
+        std::list<AppInstance::RenderWork> works;
+        works.push_back(AppInstance::RenderWork(writerEffect, frame, frame, 1, false));
+        getApp()->startWritersRendering(true, works);
+
+        const std::vector<std::string>& viewNames = getApp()->getProject()->getProjectViewNames();
+        const std::string path = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, 0);
+        ASSERT_TRUE(QFile::exists(QString::fromStdString(path))) << "the frame was not rendered: " << path;
+
+        std::string error;
+        ASSERT_TRUE(readFlatExr(path, image, &error)) << error;
+        ASSERT_EQ(kDeepFixtureWidth, image->width);
+        ASSERT_EQ(kDeepFixtureHeight, image->height);
+    }
+
+    // The All render of deep-layers.exr, which the narrower selections are compared against.
+    void writeAllOfDeepLayers(FlatExrImage* image)
+    {
+        NodePtr toImage;
+        NodePtr writer;
+        createFlattenGraph("deep-layers.exr", &toImage, &writer);
+        if (HasFatalFailure()) {
+            return;
+        }
+        writeAndRead(writer, 1, image);
+    }
+
+    QTemporaryDir _tmp;
+    int _nextOutput = 0;
 };
 
 // The deep chain end to end, the way a user's render runs it: DeepRead x2 -> DeepMerge ->
@@ -301,3 +456,198 @@ TEST_F(DeepPipelineTest, DeepReadMergeRecolorToImageWriteMatchesTheSerialComposi
         }
     }
 } // TEST_F(DeepPipelineTest, DeepReadMergeRecolorToImageWriteMatchesTheSerialComposite)
+
+// With the default All, every layer of the deep file is flattened, each composited with the deep
+// alpha: deep-layers.exr's diffuse.G and specular.B equal each sample's alpha, so they flatten to
+// the flattened alpha, and its other AOV channels are zero.
+TEST_F(DeepPipelineTest, DeepToImageAllWritesEveryDeepLayerFlattened)
+{
+    FlatExrImage image;
+    writeAllOfDeepLayers(&image);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    EXPECT_EQ(names({ "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelSet(image));
+    for (int y = 0; y < kDeepFixtureHeight; ++y) {
+        for (int x = 0; x < kDeepFixtureWidth; ++x) {
+            const float alpha = expectedLayerAlpha(x, y);
+            EXPECT_NEAR(alpha, writtenAt(image, x, y, "A"), 1e-6f) << "at (" << x << ", " << y << ")";
+            EXPECT_NEAR(0.f, writtenAt(image, x, y, "diffuse.R"), 1e-6f) << "at (" << x << ", " << y << ")";
+            EXPECT_NEAR(alpha, writtenAt(image, x, y, "diffuse.G"), 1e-6f) << "at (" << x << ", " << y << ")";
+            EXPECT_NEAR(0.f, writtenAt(image, x, y, "diffuse.B"), 1e-6f) << "at (" << x << ", " << y << ")";
+            EXPECT_NEAR(0.f, writtenAt(image, x, y, "specular.R"), 1e-6f) << "at (" << x << ", " << y << ")";
+            EXPECT_NEAR(0.f, writtenAt(image, x, y, "specular.G"), 1e-6f) << "at (" << x << ", " << y << ")";
+            EXPECT_NEAR(alpha, writtenAt(image, x, y, "specular.B"), 1e-6f) << "at (" << x << ", " << y << ")";
+        }
+    }
+}
+
+// Rows naming diffuse alone output diffuse alone: no colour plane, nothing passed through from
+// the deep input, and diffuse still composited with the deep alpha.
+TEST_F(DeepPipelineTest, DeepToImageDiffuseRowWritesOnlyDiffuse)
+{
+    FlatExrImage all;
+    writeAllOfDeepLayers(&all);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    NodePtr toImage;
+    NodePtr writer;
+    createFlattenGraph("deep-layers.exr", &toImage, &writer);
+    if (HasFatalFailure()) {
+        return;
+    }
+    KnobChannelSetPtr channels = toImageChannels(toImage);
+    ASSERT_TRUE(bool(channels));
+    channels->setLayer(0, "diffuse", NULL);
+
+    std::list<ImageLayerDesc> present;
+    toImage->getEffectInstance()->getPresentLayers(1., ViewIdx(0), -1, &present);
+    EXPECT_EQ(std::vector<std::string>(1, "diffuse"), describeLayers(present));
+
+    FlatExrImage image;
+    writeAndRead(writer, 1, &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    EXPECT_EQ(names({ "diffuse.R", "diffuse.G", "diffuse.B" }), channelSet(image));
+    static const char* const kDiffuse[3] = { "diffuse.R", "diffuse.G", "diffuse.B" };
+    for (int y = 0; y < kDeepFixtureHeight; ++y) {
+        for (int x = 0; x < kDeepFixtureWidth; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                EXPECT_NEAR(writtenAt(all, x, y, kDiffuse[c]), writtenAt(image, x, y, kDiffuse[c]), 1e-6f) << "at (" << x << ", " << y << ") " << kDiffuse[c];
+            }
+        }
+    }
+    EXPECT_FALSE(toImage->hasPersistentMessage());
+}
+
+// An rgb row gives an RGB colour plane: A is left out of the image, though the colour is still
+// composited with the deep alpha.
+TEST_F(DeepPipelineTest, DeepToImageRgbRowWritesRgbWithoutAlpha)
+{
+    FlatExrImage all;
+    writeAllOfDeepLayers(&all);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    NodePtr toImage;
+    NodePtr writer;
+    createFlattenGraph("deep-layers.exr", &toImage, &writer);
+    if (HasFatalFailure()) {
+        return;
+    }
+    KnobChannelSetPtr channels = toImageChannels(toImage);
+    ASSERT_TRUE(bool(channels));
+    channels->setLayer(0, kNatronColorViewRGB, NULL);
+
+    FlatExrImage image;
+    writeAndRead(writer, 1, &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    EXPECT_EQ(names({ "R", "G", "B" }), channelSet(image));
+    static const char* const kRGB[3] = { "R", "G", "B" };
+    for (int y = 0; y < kDeepFixtureHeight; ++y) {
+        for (int x = 0; x < kDeepFixtureWidth; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                EXPECT_NEAR(writtenAt(all, x, y, kRGB[c]), writtenAt(image, x, y, kRGB[c]), 1e-6f) << "at (" << x << ", " << y << ") " << kRGB[c];
+            }
+        }
+    }
+}
+
+// deep-noncanonical.exr has no R, G or B: All gives an Alpha colour plane beside its AOV layer.
+TEST_F(DeepPipelineTest, DeepToImageAllOnAnAlphaOnlyStreamWritesAlphaAndTheAov)
+{
+    NodePtr toImage;
+    NodePtr writer;
+    createFlattenGraph("deep-noncanonical.exr", &toImage, &writer);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    FlatExrImage image;
+    writeAndRead(writer, 1, &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    const std::set<std::string> written = channelSet(image);
+    ASSERT_EQ((std::size_t)2, written.size());
+    EXPECT_TRUE(written.count("A") == 1);
+    std::string aov;
+    for (std::set<std::string>::const_iterator it = written.begin(); it != written.end(); ++it) {
+        if (*it != "A") {
+            aov = *it;
+        }
+    }
+    EXPECT_EQ(std::string("AOV"), aov.substr(0, 3)) << aov;
+    for (int y = 0; y < kDeepFixtureHeight; ++y) {
+        for (int x = 0; x < kDeepFixtureWidth; ++x) {
+            EXPECT_NEAR(expectedLayerAlpha(x, y), writtenAt(image, x, y, "A"), 1e-6f) << "at (" << x << ", " << y << ")";
+        }
+    }
+}
+
+// An rgba row over a stream without R, G or B widens the colour plane to RGBA, the missing
+// channels reading zero.
+TEST_F(DeepPipelineTest, DeepToImageRgbaRowOnAnAlphaOnlyStreamWritesZeroRgb)
+{
+    NodePtr toImage;
+    NodePtr writer;
+    createFlattenGraph("deep-noncanonical.exr", &toImage, &writer);
+    if (HasFatalFailure()) {
+        return;
+    }
+    KnobChannelSetPtr channels = toImageChannels(toImage);
+    ASSERT_TRUE(bool(channels));
+    channels->setLayer(0, kNatronColorViewRGBA, NULL);
+
+    FlatExrImage image;
+    writeAndRead(writer, 1, &image);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    EXPECT_EQ(names({ "R", "G", "B", "A" }), channelSet(image));
+    for (int y = 0; y < kDeepFixtureHeight; ++y) {
+        for (int x = 0; x < kDeepFixtureWidth; ++x) {
+            EXPECT_EQ(0.f, writtenAt(image, x, y, "R")) << "at (" << x << ", " << y << ")";
+            EXPECT_EQ(0.f, writtenAt(image, x, y, "G")) << "at (" << x << ", " << y << ")";
+            EXPECT_EQ(0.f, writtenAt(image, x, y, "B")) << "at (" << x << ", " << y << ")";
+            EXPECT_NEAR(expectedLayerAlpha(x, y), writtenAt(image, x, y, "A"), 1e-6f) << "at (" << x << ", " << y << ")";
+        }
+    }
+}
+
+// The layers follow the frame: frame 2 of deep-seq-layers has no AOV layers, so nothing but the
+// colour plane is written there.
+TEST_F(DeepPipelineTest, DeepToImageLayersFollowTheFrame)
+{
+    NodePtr toImage;
+    NodePtr writer;
+    createFlattenGraph("deep-seq-layers.####.exr", &toImage, &writer);
+    if (HasFatalFailure()) {
+        return;
+    }
+
+    FlatExrImage first;
+    writeAndRead(writer, 1, &first);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_EQ(names({ "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" }), channelSet(first));
+
+    FlatExrImage second;
+    writeAndRead(writer, 2, &second);
+    if (HasFatalFailure()) {
+        return;
+    }
+    EXPECT_EQ(names({ "R", "G", "B", "A" }), channelSet(second));
+}

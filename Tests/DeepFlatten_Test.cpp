@@ -173,6 +173,45 @@ makeFlattenDestination(const RectI& bounds)
                                    eImageBitDepthFloat, eImageFieldingOrderNone, false /*useBitmap*/);
 }
 
+ImagePtr
+makeFlattenDestinationWithLayout(const RectI& bounds,
+                                 const ImageLayerDesc& layout)
+{
+    const RectD rod(bounds.x1, bounds.y1, bounds.x2, bounds.y2);
+
+    return std::make_shared<Image>(layout, rod, bounds, 0 /*mipmapLevel*/, 1. /*par*/,
+                                   eImageBitDepthFloat, eImageFieldingOrderNone, false /*useBitmap*/);
+}
+
+void
+addDiffuseChannels(const DeepImagePtr& image,
+                   const TestPixels& pixels)
+{
+    const SampleTable& table = image->getSampleTable();
+    const char* names[3] = { "diffuse.R", "diffuse.G", "diffuse.B" };
+    for (int c = 0; c < 3; ++c) {
+        float* values = image->getChannelForWriting(names[c]).dataForWriting();
+        for (std::size_t i = 0; i < pixels.size(); ++i) {
+            const U64 offset = table.getOffset(i);
+            for (std::size_t s = 0; s < pixels[i].size(); ++s) {
+                values[offset + s] = pixels[i][s].channels[c] * 0.5f + 0.125f * (float)(c + 1);
+            }
+        }
+    }
+}
+
+std::vector<std::string>
+diffuseChannelNames()
+{
+    std::vector<std::string> names;
+
+    names.push_back("diffuse.R");
+    names.push_back("diffuse.G");
+    names.push_back("diffuse.B");
+
+    return names;
+}
+
 // The three formulas "Interpreting Deep Pixels" gives, written out here independently of
 // DeepPixelOps so that the reference below is a second opinion rather than a rerun.
 
@@ -336,6 +375,126 @@ TEST(DeepFlattenTest, FlattenToImageMatchesSerialReference)
             for (int c = 0; c < kFlattenTestNumChannels; ++c) {
                 ASSERT_NEAR(expected[c], actual[c], 1e-5f) << "at pixel (" << x << ", " << y << ") channel " << c;
             }
+        }
+    }
+}
+
+TEST(DeepFlattenTest, FlattenLayersToImagesMatchesSingleLayerFlattens)
+{
+    const RectI bounds(0, 0, kFlattenTestWidth, kFlattenTestHeight);
+    const TestPixels pixels = makeTestPixels();
+    const DeepImagePtr src = makeTestDeepImage(pixels, bounds);
+    addDiffuseChannels(src, pixels);
+
+    DeepPixelScratch scratch;
+    DeepTidyWorkspace work;
+
+    const ImagePtr rgbaRef = makeFlattenDestination(bounds);
+    ASSERT_EQ(eStatusOK, DeepFlatten::flattenToImage(*src, bounds, flattenTestChannelNames(), kFlattenTestAlphaIndex, &scratch, &work, rgbaRef));
+
+    std::vector<std::string> diffuseWithAlpha = diffuseChannelNames();
+    diffuseWithAlpha.push_back("A");
+    const ImagePtr diffuseRef = makeFlattenDestination(bounds);
+    ASSERT_EQ(eStatusOK, DeepFlatten::flattenToImage(*src, bounds, diffuseWithAlpha, 3, &scratch, &work, diffuseRef));
+
+    std::vector<DeepFlatten::FlattenTarget> targets(2);
+    targets[0].channelNames = flattenTestChannelNames();
+    targets[0].dst = makeFlattenDestination(bounds);
+    targets[1].channelNames = diffuseChannelNames();
+    targets[1].dst = makeFlattenDestinationWithLayout(bounds, ImageLayerDesc::getRGBComponents());
+    ASSERT_EQ(eStatusOK, DeepFlatten::flattenLayersToImages(*src, bounds, "A", targets, &scratch, &work));
+
+    Image::ReadAccess rgbaRefAccess = rgbaRef->getReadRights();
+    Image::ReadAccess diffuseRefAccess = diffuseRef->getReadRights();
+    Image::ReadAccess rgbaAccess = targets[0].dst->getReadRights();
+    Image::ReadAccess diffuseAccess = targets[1].dst->getReadRights();
+    for (int y = bounds.y1; y < bounds.y2; ++y) {
+        for (int x = bounds.x1; x < bounds.x2; ++x) {
+            const float* rgbaExpected = (const float*)rgbaRefAccess.pixelAt(x, y);
+            const float* diffuseExpected = (const float*)diffuseRefAccess.pixelAt(x, y);
+            const float* rgbaActual = (const float*)rgbaAccess.pixelAt(x, y);
+            const float* diffuseActual = (const float*)diffuseAccess.pixelAt(x, y);
+            ASSERT_TRUE(rgbaExpected && diffuseExpected && rgbaActual && diffuseActual);
+            for (int c = 0; c < 4; ++c) {
+                EXPECT_EQ(rgbaExpected[c], rgbaActual[c]) << "rgba at (" << x << ", " << y << ") channel " << c;
+            }
+            for (int c = 0; c < 3; ++c) {
+                EXPECT_EQ(diffuseExpected[c], diffuseActual[c]) << "diffuse at (" << x << ", " << y << ") channel " << c;
+            }
+        }
+    }
+}
+
+TEST(DeepFlattenTest, FlattenLayersToImagesReadsAbsentChannelsAsZero)
+{
+    const RectI bounds(0, 0, kFlattenTestWidth, kFlattenTestHeight);
+    const TestPixels pixels = makeTestPixels();
+    const DeepImagePtr src = makeTestDeepImage(pixels, bounds);
+
+    DeepPixelScratch scratch;
+    DeepTidyWorkspace work;
+
+    std::vector<DeepFlatten::FlattenTarget> targets(2);
+    targets[0].channelNames = flattenTestChannelNames();
+    targets[0].dst = makeFlattenDestination(bounds);
+    targets[1].channelNames = diffuseChannelNames();
+    targets[1].dst = makeFlattenDestinationWithLayout(bounds, ImageLayerDesc::getRGBComponents());
+    ASSERT_EQ(eStatusOK, DeepFlatten::flattenLayersToImages(*src, bounds, "A", targets, &scratch, &work));
+
+    const ImagePtr rgbaRef = makeFlattenDestination(bounds);
+    ASSERT_EQ(eStatusOK, DeepFlatten::flattenToImage(*src, bounds, flattenTestChannelNames(), kFlattenTestAlphaIndex, &scratch, &work, rgbaRef));
+
+    Image::ReadAccess refAccess = rgbaRef->getReadRights();
+    Image::ReadAccess rgbaAccess = targets[0].dst->getReadRights();
+    Image::ReadAccess diffuseAccess = targets[1].dst->getReadRights();
+    for (int y = bounds.y1; y < bounds.y2; ++y) {
+        for (int x = bounds.x1; x < bounds.x2; ++x) {
+            const float* expected = (const float*)refAccess.pixelAt(x, y);
+            const float* rgba = (const float*)rgbaAccess.pixelAt(x, y);
+            const float* diffuse = (const float*)diffuseAccess.pixelAt(x, y);
+            ASSERT_TRUE(expected && rgba && diffuse);
+            for (int c = 0; c < 4; ++c) {
+                EXPECT_EQ(expected[c], rgba[c]);
+            }
+            for (int c = 0; c < 3; ++c) {
+                EXPECT_EQ(0.f, diffuse[c]);
+            }
+        }
+    }
+}
+
+TEST(DeepFlattenTest, FlattenLayersToImagesWithoutAlphaSumsTheSamples)
+{
+    const RectI bounds(0, 0, kFlattenTestWidth, kFlattenTestHeight);
+    const TestPixels pixels = makeTestPixels();
+    const DeepImagePtr src = makeTestDeepImage(pixels, bounds);
+    src->removeChannel("A");
+
+    DeepPixelScratch scratch;
+    DeepTidyWorkspace work;
+
+    std::vector<std::string> redOnly(1, "R");
+    std::vector<DeepFlatten::FlattenTarget> targets(2);
+    targets[0].channelNames = redOnly;
+    targets[0].dst = makeFlattenDestinationWithLayout(bounds, ImageLayerDesc::getAlphaComponents());
+    targets[1].channelNames = std::vector<std::string>(1, "A");
+    targets[1].dst = makeFlattenDestinationWithLayout(bounds, ImageLayerDesc::getAlphaComponents());
+    ASSERT_EQ(eStatusOK, DeepFlatten::flattenLayersToImages(*src, bounds, "A", targets, &scratch, &work));
+
+    Image::ReadAccess redAccess = targets[0].dst->getReadRights();
+    Image::ReadAccess alphaAccess = targets[1].dst->getReadRights();
+    for (int y = bounds.y1; y < bounds.y2; ++y) {
+        for (int x = bounds.x1; x < bounds.x2; ++x) {
+            const std::size_t index = (std::size_t)(y * kFlattenTestWidth + x);
+            float sum = 0.f;
+            for (std::size_t s = 0; s < pixels[index].size(); ++s) {
+                sum += pixels[index][s].channels[0];
+            }
+            const float* red = (const float*)redAccess.pixelAt(x, y);
+            const float* alpha = (const float*)alphaAccess.pixelAt(x, y);
+            ASSERT_TRUE(red && alpha);
+            EXPECT_NEAR(sum, red[0], 1e-5f) << "at pixel (" << x << ", " << y << ")";
+            EXPECT_EQ(0.f, alpha[0]);
         }
     }
 }

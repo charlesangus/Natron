@@ -25,22 +25,29 @@
 
 #include "DeepExpression.h"
 
+#include <list>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
+#include "Engine/AppInstance.h"
 #include "Engine/DeepImage.h"
+#include "Engine/DeepLayers.h"
 #include "Engine/DeepPixelOps.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Deep/DeepExpressionEvaluator.h"
+#include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/TimeLine.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
-const char* const kOutputChannels[] = { "R", "G", "B", "A", "Z", "ZBack" };
-const std::size_t kOutputChannelCount = sizeof(kOutputChannels) / sizeof(kOutputChannels[0]);
+const char* const kDefaultSlotLabels[kDeepExpressionLayerSlotCount] = { "R", "G", "B", "A" };
 
 bool
 isBlank(const std::string& s)
@@ -53,6 +60,26 @@ isDepthChannel(const std::string& name)
 {
     return (name == "Z") || (name == "ZBack");
 }
+
+void
+addExpression(const KnobStringWPtr& weakKnob,
+              double time,
+              const std::string& channel,
+              std::vector<std::string>* channels,
+              std::vector<std::string>* expressions)
+{
+    KnobStringPtr knob = weakKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    const std::string expression = knob->getValueAtTime(time);
+    if (isBlank(expression)) {
+        return;
+    }
+    channels->push_back(channel);
+    expressions->push_back(expression);
+}
 } // anonymous namespace
 
 NativePluginDescription
@@ -62,14 +89,17 @@ DeepExpression::getNativePluginDescription() const
 
     desc.id = PLUGINID_NATRON_DEEPEXPRESSION;
     desc.label = "DeepExpression";
-    desc.description = tr("Rewrite the R, G, B, A, Z and ZBack channels of the deep input, each "
-                          "from its own expression evaluated once per sample. An expression reads "
-                          "the input's channels by name (R, G, B, A, Z, ZBack and any AOV), the "
-                          "pixel's x and y, the sample's sampleIndex and its pixel's sampleCount, "
-                          "frame and pi, with the usual arithmetic, comparison, logical and "
-                          "conditional operators and the functions abs, floor, ceil, round, sqrt, "
-                          "exp, log, pow, min, max, clamp, lerp, step, smoothstep, sin, cos, tan "
-                          "and atan2. A channel whose expression is empty is passed through.")
+    desc.description = tr("Rewrite the channels of one layer of the deep input, and the Z and ZBack "
+                          "depths, each from its own expression evaluated once per sample. Layer "
+                          "picks the layer, and the expression fields below it take that layer's "
+                          "channel names. An expression reads the input's channels by name (R, G, B, "
+                          "A, Z, ZBack and any AOV, such as diffuse.R), the pixel's x and y, the "
+                          "sample's sampleIndex and its pixel's sampleCount, frame and pi, with the "
+                          "usual arithmetic, comparison, logical and conditional operators and the "
+                          "functions abs, floor, ceil, round, sqrt, exp, log, pow, min, max, clamp, "
+                          "lerp, step, smoothstep, sin, cos, tan and atan2. A channel whose "
+                          "expression is empty is passed through. Writing a colour channel the input "
+                          "lacks creates it; a layer the input lacks at a frame is an error there.")
                            .toStdString();
     desc.grouping = PLUGIN_GROUP_DEEP;
     desc.majorVersion = 1;
@@ -85,33 +115,243 @@ DeepExpression::initializeKnobs()
 {
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
 
-    for (std::size_t c = 0; c < kOutputChannelCount; ++c) {
-        KnobStringPtr knob = createKnob<KnobString>(QString::fromUtf8(kOutputChannels[c]));
-        knob->setName(std::string("expression") + kOutputChannels[c]);
-        knob->setHintToolTip(tr("The expression giving every sample's %1, or nothing to leave the channel as it is.").arg(QString::fromUtf8(kOutputChannels[c])));
+    KnobLayerSelectPtr layer = createKnob<KnobLayerSelect>(tr("Layer"));
+    layer->setName(kDeepExpressionParamLayer);
+    layer->setWithChannelButtons(false);
+    layer->setAllowNone(false);
+    layer->setAnimationEnabled(false);
+    layer->setIsMetadataSlave(true);
+    layer->setDefaultValue(layer->encode(kNatronColorViewRGBA, std::vector<std::string>()));
+    layer->setHintToolTip(tr("The layer of the Source whose channels the expression fields below rewrite, "
+                             "one field per channel. A colour view's channels are R, G, B and A; writing "
+                             "one the input lacks creates it."));
+    page->addKnob(layer);
+    _layer = layer;
+
+    for (int i = 0; i < kDeepExpressionLayerSlotCount; ++i) {
+        KnobStringPtr knob = createKnob<KnobString>(QString::fromUtf8(kDefaultSlotLabels[i]));
+        knob->setName(std::string(kDeepExpressionParamExpressionPrefix) + std::to_string(i));
+        knob->setIsMetadataSlave(true);
+        knob->setHintToolTip(tr("The expression giving every sample's value of this channel of Layer, or "
+                                "nothing to leave the channel as it is."));
         page->addKnob(knob);
-        _expressions.push_back(knob);
+        _layerExpressions.push_back(knob);
     }
+
+    KnobStringPtr z = createKnob<KnobString>(QString::fromUtf8("Z"));
+    z->setName(kDeepExpressionParamExpressionZ);
+    z->setHintToolTip(tr("The expression giving every sample's front depth Z, or nothing to leave it as it is."));
+    page->addKnob(z);
+    _expressionZ = z;
+
+    KnobStringPtr zBack = createKnob<KnobString>(QString::fromUtf8("ZBack"));
+    zBack->setName(kDeepExpressionParamExpressionZBack);
+    zBack->setHintToolTip(tr("The expression giving every sample's back depth ZBack, or nothing to leave it as it is."));
+    page->addKnob(zBack);
+    _expressionZBack = zBack;
+
+    NodePtr node = getNode();
+    if (node) {
+        node->declareLayerKnob(layer, 0, LayerKnobSpec::eRoleInputBound);
+    }
+}
+
+bool
+DeepExpression::resolveLayerChannels(double time,
+                                     ViewIdx view,
+                                     std::vector<std::string>* names,
+                                     std::vector<std::string>* labels)
+{
+    KnobLayerSelectPtr layer = _layer.lock();
+
+    if (!layer) {
+        return false;
+    }
+    const std::string layerID = layer->getLayer();
+
+    if (ImageLayerDesc::isColorViewID(layerID)) {
+        const std::vector<std::string>& viewChannels = ImageLayerDesc::getColorView(layerID).getChannels();
+        const ImageLayerDesc& rgba = ImageLayerDesc::getRGBAComponents();
+        for (int i = 0; i < kDeepExpressionLayerSlotCount; ++i) {
+            const int bit = ImageLayerDesc::colorViewChannelBit(layerID, i);
+            if (bit < 0) {
+                break;
+            }
+            names->push_back(DeepLayers::channelName(rgba, bit));
+            labels->push_back((i < (int)viewChannels.size()) ? viewChannels[i] : names->back());
+        }
+
+        return true;
+    }
+
+    if (!getInput(0)) {
+        return false;
+    }
+    std::list<ImageLayerDesc> present;
+    getPresentLayers(time, view, 0, &present);
+    ResolvedLayer resolved;
+    if (!layer->resolve(present, &resolved)) {
+        return false;
+    }
+    const std::vector<std::string>& channels = resolved.desc.getChannels();
+    for (int i = 0; (i < kDeepExpressionLayerSlotCount) && (i < resolved.desc.getNumComponents()); ++i) {
+        const std::string name = DeepLayers::channelName(resolved.desc, i);
+        if (name.empty()) {
+            break;
+        }
+        names->push_back(name);
+        labels->push_back((i < (int)channels.size()) ? channels[i] : name);
+    }
+
+    return true;
 }
 
 void
 DeepExpression::getExpressions(double time,
+                               ViewIdx view,
                                std::vector<std::string>* channels,
-                               std::vector<std::string>* expressions) const
+                               std::vector<std::string>* expressions,
+                               bool* layerMissing)
 {
-    for (std::size_t c = 0; c < _expressions.size(); ++c) {
-        KnobStringPtr knob = _expressions[c].lock();
+    *layerMissing = false;
 
+    std::vector<std::string> slotExpressions(_layerExpressions.size());
+    bool anySlot = false;
+    for (std::size_t i = 0; i < _layerExpressions.size(); ++i) {
+        KnobStringPtr knob = _layerExpressions[i].lock();
         if (!knob) {
             continue;
         }
         const std::string expression = knob->getValueAtTime(time);
-        if (isBlank(expression)) {
+        if (!isBlank(expression)) {
+            slotExpressions[i] = expression;
+            anySlot = true;
+        }
+    }
+
+    if (anySlot) {
+        std::vector<std::string> names;
+        std::vector<std::string> labels;
+        if (resolveLayerChannels(time, view, &names, &labels)) {
+            for (std::size_t i = 0; (i < names.size()) && (i < slotExpressions.size()); ++i) {
+                if (!slotExpressions[i].empty()) {
+                    channels->push_back(names[i]);
+                    expressions->push_back(slotExpressions[i]);
+                }
+            }
+        } else {
+            *layerMissing = true;
+        }
+    }
+
+    addExpression(_expressionZ, time, "Z", channels, expressions);
+    addExpression(_expressionZBack, time, "ZBack", channels, expressions);
+}
+
+void
+DeepExpression::refreshExpressionLabels()
+{
+    AppInstancePtr app = getApp();
+    const double time = app ? app->getTimeLine()->currentFrame() : 0.;
+    std::vector<std::string> names;
+    std::vector<std::string> labels;
+
+    if (!resolveLayerChannels(time, ViewIdx(0), &names, &labels)) {
+        labels.clear();
+        // The Source lacks the layer at this frame, so the project's definition of it is the
+        // best guess at the channels the fields will write once it is there.
+        KnobLayerSelectPtr layer = _layer.lock();
+        ProjectPtr project = app ? app->getProject() : ProjectPtr();
+        ImageLayerDesc desc;
+        if (layer && project && project->findLayer(layer->getLayer(), &desc)) {
+            const std::vector<std::string>& channels = desc.getChannels();
+            for (std::size_t i = 0; (i < channels.size()) && (i < (std::size_t)kDeepExpressionLayerSlotCount); ++i) {
+                labels.push_back(channels[i]);
+            }
+        }
+        if (labels.empty()) {
+            for (int i = 0; i < kDeepExpressionLayerSlotCount; ++i) {
+                labels.push_back(std::to_string(i + 1));
+            }
+        }
+    }
+
+    for (std::size_t i = 0; i < _layerExpressions.size(); ++i) {
+        KnobStringPtr knob = _layerExpressions[i].lock();
+        if (!knob) {
             continue;
         }
-        channels->push_back(kOutputChannels[c]);
-        expressions->push_back(expression);
+        if (i < labels.size()) {
+            knob->setLabel(labels[i]);
+        }
+        knob->setSecret(i >= labels.size());
     }
+}
+
+bool
+DeepExpression::knobChanged(KnobI* k,
+                            ValueChangedReasonEnum /*reason*/,
+                            ViewSpec /*view*/,
+                            double /*time*/,
+                            bool /*originatedFromMainThread*/)
+{
+    KnobLayerSelectPtr layer = _layer.lock();
+
+    if (layer && (k == layer.get())) {
+        refreshExpressionLabels();
+
+        return true;
+    }
+
+    return false;
+}
+
+void
+DeepExpression::onKnobsLoaded()
+{
+    refreshExpressionLabels();
+}
+
+void
+DeepExpression::onChannelsSelectorRefreshed()
+{
+    refreshExpressionLabels();
+}
+
+void
+DeepExpression::getDeepLayers(double time,
+                              ViewIdx view,
+                              std::list<ImageLayerDesc>* layers)
+{
+    if (!getInput(0)) {
+        return;
+    }
+
+    std::list<ImageLayerDesc> present;
+    getPresentLayers(time, view, 0, &present);
+
+    std::vector<std::string> names;
+    std::set<std::string> taken;
+    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+        for (int c = 0; c < it->getNumComponents(); ++c) {
+            const std::string name = DeepLayers::channelName(*it, c);
+            if (!name.empty() && taken.insert(name).second) {
+                names.push_back(name);
+            }
+        }
+    }
+
+    std::vector<std::string> written;
+    std::vector<std::string> expressions;
+    bool layerMissing = false;
+    getExpressions(time, view, &written, &expressions, &layerMissing);
+    for (std::size_t i = 0; i < written.size(); ++i) {
+        if (!isDepthChannel(written[i]) && taken.insert(written[i]).second) {
+            names.push_back(written[i]);
+        }
+    }
+
+    DeepLayers::groupDeepChannels(names, layers);
 }
 
 StatusEnum
@@ -142,9 +382,10 @@ DeepExpression::isIdentity(double time,
 {
     std::vector<std::string> channels;
     std::vector<std::string> expressions;
+    bool layerMissing = false;
 
-    getExpressions(time, &channels, &expressions);
-    if (!channels.empty()) {
+    getExpressions(time, view, &channels, &expressions, &layerMissing);
+    if (!channels.empty() || layerMissing) {
         return false;
     }
 
@@ -181,7 +422,14 @@ DeepExpression::renderDeep(const DeepRenderActionArgs& args)
 
     std::vector<std::string> channelsToWrite;
     std::vector<std::string> sources;
-    getExpressions(args.time, &channelsToWrite, &sources);
+    bool layerMissing = false;
+    getExpressions(args.time, args.view, &channelsToWrite, &sources, &layerMissing);
+    if (layerMissing) {
+        KnobLayerSelectPtr layer = _layer.lock();
+        setPersistentMessage(eMessageTypeError, "Layer " + (layer ? layer->getLayer() : std::string()) + " is not in the " + getInputLabel(0) + " input");
+
+        return eStatusFailed;
+    }
 
     std::vector<DeepExpressionEvaluator> programs(channelsToWrite.size());
     int alphaChannelIndex = -1;

@@ -144,7 +144,7 @@ The deep grouping wraps it with those three fixes.
 
 ## Phase 60.1: Deep layer model
 
-- [ ] M60.P1.T1 — Group deep channel names into storage-level layers
+- [x] M60.P1.T1 — Group deep channel names into storage-level layers
   - files: `Engine/DeepLayers.h`, `Engine/DeepLayers.cpp` (new), `Tests/DeepLayers_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: Add a namespace `DeepLayers` with three functions.
     - `groupDeepChannels(const std::vector<std::string>& names, std::list<ImageLayerDesc>* layers)`:
@@ -166,7 +166,7 @@ The deep grouping wraps it with those three fixes.
     - `expandColorViews` on the result lists `rgba, rgb, alpha` first.
   - size: M
 
-- [ ] M60.P1.T2 — Report a deep stream's layers through `getComponentsNeededAndProduced_public`
+- [x] M60.P1.T2 — Report a deep stream's layers through `getComponentsNeededAndProduced_public`
   - files: `Engine/EffectInstance.h`, `Engine/EffectInstance.cpp`, `Tests/DeepRenderTestEffect.h`, `Tests/DeepLayers_Test.cpp`
   - approach:
     - **New virtual** `EffectInstance::getDeepLayers(double time, ViewIdx view, std::list<ImageLayerDesc>* layers)`, storage level, Z/ZBack never included. The default is the layers-pass-through input's `getPresentLayers(-1)` at its pass-through time and view (`getLayersPassThroughInput`), or empty when there is none. Dot, Switch, TypedPassthrough and DeepCrop/DeepReformat need nothing more.
@@ -256,7 +256,7 @@ The deep grouping wraps it with those three fixes.
     - the existing DeepFromImage tests are unchanged and green.
   - size: L
 
-- [ ] M60.P2.T2 — Flatten several layers in one pass, reading missing channels as zero
+- [x] M60.P2.T2 — Flatten several layers in one pass, reading missing channels as zero
   - files: `Engine/DeepFlatten.h`, `Engine/DeepFlatten.cpp`, `Tests/DeepFlatten_Test.cpp`
   - approach:
     - **New `DeepFlatten::flattenLayersToImages`.** It takes `src`, `roi`, an `alphaChannelName` (`"A"`) and a list of `{std::vector<std::string> channelNames, ImagePtr dst}` targets.
@@ -369,7 +369,7 @@ The deep grouping wraps it with those three fixes.
 
 ## Phase 60.4: DeepRemoveLayers and DeepAddLayers (Q1(a))
 
-- [ ] M60.P4.T1 — Add a deep render helper that drops and zero-adds channels without touching the rest
+- [x] M60.P4.T1 — Add a deep render helper that drops and zero-adds channels without touching the rest
   - files: `Engine/Nodes/NativeEffectBase.h`, `Engine/Nodes/NativeEffectBase.cpp`, `Tests/DeepRenderPipeline_Test.cpp`
   - approach: New `NativeEffectBase::renderDeepReshapingChannels(args, input, const std::vector<std::string>& drop, const std::vector<std::string>& addZero)`.
     - It aliases the input (`aliasContentsOf`), or copies it over the output bounds the way `renderDeepFromInput` does (`NativeEffectBase.cpp:345-381`). Factor that copy into a shared private step rather than duplicating it.
@@ -563,3 +563,7 @@ Execution notes:
     - **P3.T1:** viewer line numbers (M50 rewrote `ViewerInstance.cpp`).
     - **P4.T2/P4.T3:** name M37's APIs (`setWithChannelButtons(false)`, the `getShortSummary` sublabel, `channels|zeroChannels` colour bits, `ChannelCopy::findColorStorage`). DeepAddLayers copies AddLayers' registry-signature age bump (M37 B5), or its deep cache goes stale. M37's flat `ChannelCopy` pixel copy and `filterPassThroughLayers` override are deliberately not reused.
   - Scout-note line numbers updated. Batches unchanged, since no file overlaps changed. Stacking note restated: the PR targets `milestone/m50-proper-ocio-support`.
+- 2026-10-03 — **B1+B2 landed:** P2.T2, then P1.T1+P1.T2+P4.T1 in one commit, because they share the test effect header and `DeepLayers_Test`. Full debug ctest 823/823.
+  - **Note for P1.T3 and later:** P1.T2's `containsIdenticalLayer` compares layer IDs and ordered channel lists, so a node that reports its input's layers with channels in a different order counts them as produced, not passed through.
+  - **Order source:** `DeepSyntheticSource` gets `diffuse` as B,G,R from a sorted map. `groupDeepChannels` must give a canonical channel order, or the comparison must ignore order.
+  - **P1.T3's implementer decides which,** keeping the colour storage's bit order.

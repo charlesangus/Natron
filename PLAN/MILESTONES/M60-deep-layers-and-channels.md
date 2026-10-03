@@ -270,7 +270,7 @@ The deep grouping wraps it with those three fixes.
     - `FlattenToImageMatchesSerialReference` stays green.
   - size: M
 
-- [ ] M60.P2.T3 — DeepToImage flattens the layers its channel set selects
+- [x] M60.P2.T3 — DeepToImage flattens the layers its channel set selects
   - files: `Engine/Nodes/Deep/DeepToImage.h`, `Engine/Nodes/Deep/DeepToImage.cpp`, `Tests/DeepPipeline_Test.cpp`
   - approach:
     - **Multiplanar, the RemoveLayers way.** Copy M37's RemoveLayers overrides (`RemoveLayers.h:110-118`):
@@ -292,7 +292,7 @@ The deep grouping wraps it with those three fixes.
     - the existing DeepFromImage→DeepToImage round-trip test is green.
   - size: L
 
-- [ ] M60.P2.T4 — DeepRecolor recolours the channels its channel set selects
+- [x] M60.P2.T4 — DeepRecolor recolours the channels its channel set selects
   - files: `Engine/Nodes/Deep/DeepRecolor.h`, `Engine/Nodes/Deep/DeepRecolor.cpp`, `Tests/DeepLayers_Test.cpp`
   - approach:
     - **Knob.** `channels`: `KnobChannelSet`, default `rgb`, input-bound on input 1 (Color). Its tooltip says alpha follows Target Input Alpha.
@@ -309,7 +309,7 @@ The deep grouping wraps it with those three fixes.
     - the existing DeepRecolor tests are green unchanged.
   - size: M
 
-- [ ] M60.P2.T5 — DeepExpression rewrites the channels of a chosen layer
+- [x] M60.P2.T5 — DeepExpression rewrites the channels of a chosen layer
   - files: `Engine/Nodes/Deep/DeepExpression.h`, `Engine/Nodes/Deep/DeepExpression.cpp`, `Tests/DeepNodes_Test.cpp`
   - approach: Q2(a).
     - **Knobs.**
@@ -347,7 +347,7 @@ The deep grouping wraps it with those three fixes.
 
 ## Phase 60.3: Viewer
 
-- [ ] M60.P3.T1 — The viewer flattens the selected deep layer
+- [x] M60.P3.T1 — The viewer flattens the selected deep layer
   - files: `Engine/EffectInstance.h`, `Engine/EffectInstanceRenderDeep.cpp`, `Engine/ViewerInstance.cpp`, `Tests/DeepRenderPipeline_Test.cpp`
   - approach:
     - **`renderDeepRoIFlattened`** (`EffectInstance.h:776`) gains `const std::list<ImageLayerDesc>& layers`, default `{RGBA}`.
@@ -414,7 +414,7 @@ The deep grouping wraps it with those three fixes.
     - a downstream DeepToImage (All) of remove `diffuse` writes no diffuse.
   - size: L
 
-- [ ] M60.P4.T3 — DeepAddLayers node: zero-fill registry layers a deep stream lacks
+- [x] M60.P4.T3 — DeepAddLayers node: zero-fill registry layers a deep stream lacks
   - files: `Engine/Nodes/Deep/DeepAddLayers.h`, `Engine/Nodes/Deep/DeepAddLayers.cpp` (new), `Engine/AppManager.cpp`, `Tests/DeepChannelNodes_Test.cpp`
   - approach:
     - **Plugin.** `fr.natron.DeepAddLayers`, Deep group.
@@ -575,3 +575,7 @@ Execution notes:
     - An alpha-less Source gives A = 1 samples, fixed in the B3 build round.
   - **DeepRemoveLayers sublabel.** It adds "A is always kept" only when the rows read as if they'd drop A.
   - **Open for review.** DeepRead's layer memo is keyed on filename only, so a file rewritten on disk keeps its old layers.
+- 2026-10-03 — **B4 landed** (`c650f13fe` P2.T4, `a3aa0107b` P2.T5, `c1228c937` P3.T1, `05746e5d9` P2.T3, `62630f6f4` P4.T3). Full debug ctest 877/877.
+  - **Lost edit recovered.** Parallel edits to `DeepChannelNodes_Test.cpp` dropped P4.T3's tests. The build round rewrote them from the brief.
+  - **P3.T1 cache lookup.** The deep flatten cache matches exact components and mip level, because the generic lookup treats colour layouts as interchangeable. As a result, a deep view at a new zoom level re-renders rather than downscaling a cached flatten.
+  - **P2.T5 known gaps.** The DeepExpression field labels don't follow the timeline, and changing the layer doesn't clear an existing error until the next render.

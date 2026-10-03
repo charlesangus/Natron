@@ -35,6 +35,7 @@
 #include <vector>
 
 #include <QDebug>
+#include <QFontMetrics>
 
 #include <QVBoxLayout>
 #include <QCheckBox>
@@ -85,6 +86,27 @@ containsName(const std::vector<std::string>& names,
     return !name.empty() && std::find(names.begin(), names.end(), name) != names.end();
 }
 
+// ComboBox shrinks its minimum width to the current text on every selection, and its text area
+// is narrower than that width by the indent, so long names clip. Reserve room for the widest
+// item so the combo neither clips nor resizes as the selection changes.
+void
+fitMenuToItems(ComboBox* menu)
+{
+    const QFontMetrics fm = menu->fontMetrics();
+    const int indent = fm.horizontalAdvance(QLatin1Char('x'));
+    int widest = 0;
+    for (int i = 0; i < menu->count(); ++i) {
+        widest = std::max(widest, fm.horizontalAdvance(menu->itemText(i)));
+    }
+    menu->setMinimumWidth(widest + 2 * DROP_DOWN_ICON_SIZE + indent);
+
+    const QString base = menu->property("baseToolTip").toString();
+    const QString current = menu->getCurrentIndexText().toHtmlEscaped();
+    if (!base.isEmpty() && !current.isEmpty()) {
+        menu->setToolTip(base + QString::fromUtf8("<p>") + current + QString::fromUtf8("</p>"));
+    }
+}
+
 void
 fillMenu(ComboBox* menu,
          const std::vector<std::string>& names,
@@ -101,6 +123,12 @@ fillMenu(ComboBox* menu,
     if (!names.empty()) {
         menu->setCurrentIndex_no_emit(index);
     }
+    if (!menu->property("fitConnected").toBool()) {
+        menu->setProperty("fitConnected", true);
+        menu->setProperty("baseToolTip", menu->toolTip());
+        QObject::connect(menu, QOverload<int>::of(&ComboBox::currentIndexChanged), menu, [menu](int) { fitMenuToItems(menu); });
+    }
+    fitMenuToItems(menu);
 }
 
 } // anon namespace

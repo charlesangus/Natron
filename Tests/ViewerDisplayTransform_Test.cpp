@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -123,14 +124,37 @@ fillGray(std::vector<float>* rgba,
 int
 displayCodeValue(const ProjectColorManagement::DisplayProcessor& p,
                  float linear,
-                 double gain = 1.,
-                 double offset = 0.,
-                 double gamma = 1.)
+                 ViewerDisplayOutputEnum output = eViewerDisplayOutputEightBit)
 {
     float rgba[4] = { linear, linear, linear, 1.f };
-    applyViewerDisplayTransform(p, rgba, 1, gain, offset, gamma);
+    applyViewerDisplayTransform(p, rgba, 1, 1., 0., 1., output);
 
     return Color::floatToInt<256>(rgba[1]);
+}
+
+std::vector<float>
+eightBitAccuracyColors()
+{
+    std::vector<float> rgba;
+    for (int i = 0; i <= 200; ++i) {
+        const float v = std::exp2(-12.f + 20.f * i / 200.f);
+        rgba.insert(rgba.end(), { v, v, v, 1.f });
+    }
+    for (int r = 0; r < 17; ++r) {
+        for (int g = 0; g < 17; ++g) {
+            for (int b = 0; b < 17; ++b) {
+                rgba.insert(rgba.end(), { std::exp2(-9.f + 13.f * r / 16.f), std::exp2(-9.f + 13.f * g / 16.f), std::exp2(-9.f + 13.f * b / 16.f), 1.f });
+            }
+        }
+    }
+    const float outOfRange[] = { -1.f, -0.01f, 0.f, 1e-4f, 0.18f, 1.f, 16.f, 300.f, 1e5f };
+    for (float a : outOfRange) {
+        for (float b : outOfRange) {
+            rgba.insert(rgba.end(), { a, b, 0.18f, 1.f });
+        }
+    }
+
+    return rgba;
 }
 
 } // namespace
@@ -140,6 +164,7 @@ TEST_F(ViewerDisplayTransformOCIO, SDRViewMatchesTheMeasuredCodeValue)
     ProjectColorManagement::DisplayProcessorPtr p = processor(kSDRView);
     ASSERT_TRUE(p && p->cpu);
     EXPECT_NEAR(89, displayCodeValue(*p, 0.18f), 1);
+    EXPECT_NEAR(89, displayCodeValue(*p, 0.18f, eViewerDisplayOutputExact), 1);
 }
 
 TEST_F(ViewerDisplayTransformOCIO, UnToneMappedAndRawViews)
@@ -149,6 +174,41 @@ TEST_F(ViewerDisplayTransformOCIO, UnToneMappedAndRawViews)
     ASSERT_TRUE(untoned && raw);
     EXPECT_NEAR(118, displayCodeValue(*untoned, 0.18f), 1);
     EXPECT_NEAR(46, displayCodeValue(*raw, 0.18f), 1);
+}
+
+TEST_F(ViewerDisplayTransformOCIO, EightBitOutputStaysWithinOneCodeValue)
+{
+    const char* const views[] = { kSDRView, "Un-tone-mapped", "Raw" };
+    for (const char* view : views) {
+        ProjectColorManagement::DisplayProcessorPtr p = processor(view);
+        ASSERT_TRUE(p && p->cpu);
+
+        const std::vector<float> input = eightBitAccuracyColors();
+        std::vector<float> exact = input;
+        std::vector<float> eightBit = input;
+        const int width = (int)input.size() / 4;
+        applyViewerDisplayTransform(*p, &exact[0], width, 1., 0., 1., eViewerDisplayOutputExact);
+        applyViewerDisplayTransform(*p, &eightBit[0], width, 1., 0., 1., eViewerDisplayOutputEightBit);
+        int worst = 0;
+        for (std::size_t i = 0; i < input.size(); ++i) {
+            if (i % 4 == 3) {
+                EXPECT_EQ(input[i], eightBit[i]);
+                continue;
+            }
+            const int diff = std::abs(Color::floatToInt<256>(exact[i]) - Color::floatToInt<256>(eightBit[i]));
+            EXPECT_LE(diff, 1) << view << " input (" << input[i / 4 * 4] << ", " << input[i / 4 * 4 + 1] << ", " << input[i / 4 * 4 + 2] << ")";
+            worst = std::max(worst, diff);
+        }
+        std::cout << "[ViewerDisplayTransform] 8-bit output through " << view << " differs by at most " << worst << " code value" << std::endl;
+
+        float gammaExact[8] = { 0.18f, 0.18f, 0.18f, 1.f, 0.02f, 0.5f, 3.f, 1.f };
+        float gammaEightBit[8] = { 0.18f, 0.18f, 0.18f, 1.f, 0.02f, 0.5f, 3.f, 1.f };
+        applyViewerDisplayTransform(*p, gammaExact, 2, 1., 0., 2.2, eViewerDisplayOutputExact);
+        applyViewerDisplayTransform(*p, gammaEightBit, 2, 1., 0., 2.2, eViewerDisplayOutputEightBit);
+        for (int i = 0; i < 8; ++i) {
+            EXPECT_EQ(gammaExact[i], gammaEightBit[i]) << view << " gamma 2.2, index " << i;
+        }
+    }
 }
 
 TEST_F(ViewerDisplayTransformOCIO, GainTwoEqualsOneStopOfExposure)
@@ -267,24 +327,40 @@ TEST_F(ViewerDisplayTransformOCIO, FullHDFrameTiming)
     fillGray(&frame, 0.18f, 1.f);
 
     const int nThreads = std::max(1, (int)std::thread::hardware_concurrency());
-    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-    std::vector<std::thread> threads;
-    for (int t = 0; t < nThreads; ++t) {
-        threads.push_back(std::thread([&, t]() {
-            for (int y = t; y < height; y += nThreads) {
-                applyViewerDisplayTransform(*p, &frame[4 * width * y], width, 1., 0., 1.);
-            }
-        }));
-    }
-    for (std::size_t t = 0; t < threads.size(); ++t) {
-        threads[t].join();
-    }
-    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    const auto timeFrame = [&](ViewerDisplayOutputEnum output) {
+        fillGray(&frame, 0.18f, 1.f);
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        std::vector<std::thread> threads;
+        for (int t = 0; t < nThreads; ++t) {
+            threads.push_back(std::thread([&, t]() {
+                for (int y = t; y < height; y += nThreads) {
+                    applyViewerDisplayTransform(*p, &frame[4 * width * y], width, 1., 0., 1., output);
+                }
+            }));
+        }
+        for (std::size_t t = 0; t < threads.size(); ++t) {
+            threads[t].join();
+        }
+
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    };
+
+    const double exactMs = timeFrame(eViewerDisplayOutputExact);
+    EXPECT_NEAR(89, Color::floatToInt<256>(frame[4 * (width * (height / 2) + width / 2)]), 1);
+
+    float warmUp[4] = { 0.18f, 0.18f, 0.18f, 1.f };
+    const std::chrono::steady_clock::time_point bakeStart = std::chrono::steady_clock::now();
+    applyViewerDisplayTransform(*p, warmUp, 1, 1., 0., 1., eViewerDisplayOutputEightBit);
+    const double bakeMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bakeStart).count();
+
+    const double ms = timeFrame(eViewerDisplayOutputEightBit);
+    EXPECT_NEAR(89, Color::floatToInt<256>(frame[4 * (width * (height / 2) + width / 2)]), 1);
 
     std::cout << "[ViewerDisplayTransform] 1920x1080 through " << kSDRView << " on " << nThreads
-              << " threads: " << ms << " ms" << std::endl;
+              << " threads: " << ms << " ms for 8-bit output (" << exactMs << " ms exact, "
+              << bakeMs << " ms to build the 8-bit LUT)" << std::endl;
     RecordProperty("FullHDFrameMilliseconds", (int)ms);
-    EXPECT_NEAR(89, Color::floatToInt<256>(frame[4 * (width * (height / 2) + width / 2)]), 1);
+    RecordProperty("FullHDFrameExactMilliseconds", (int)exactMs);
 }
 
 TEST(ViewerDisplayTransform, FrameKeyHashDependsOnTransformWithoutShaders)

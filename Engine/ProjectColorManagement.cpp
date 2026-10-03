@@ -25,9 +25,15 @@
 
 #include "ProjectColorManagement.h"
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
 #include <exception>
+#include <thread>
 #include <utility>
 
+#include <QDebug>
 #include <QDir>
 #include <QFileInfo>
 #include <QString>
@@ -56,6 +62,332 @@ fromCString(const char* s)
 {
     return s ? std::string(s) : std::string();
 }
+}
+
+class EightBitDisplayLut {
+public:
+    static std::shared_ptr<const EightBitDisplayLut> bake(const OCIO::ConstCPUProcessorRcPtr& cpu);
+
+    void apply(const OCIO::CPUProcessor& cpu, float* rgba, int width) const;
+
+private:
+    static constexpr int kSize = 65;
+    static constexpr int kCells = kSize - 1;
+
+    EightBitDisplayLut();
+
+    float shape(float x) const
+    {
+        return (x > _break) ? (std::log2(x) - _log2Min) * _invLog2Range : _shapedBreak + (x - _break) * _linearSlope;
+    }
+
+    float unshape(float s) const
+    {
+        return (s > _shapedBreak) ? std::exp2(s * _log2Range + _log2Min) : _break + (s - _shapedBreak) / _linearSlope;
+    }
+
+    void interpolate(const float shaped[3], float out[3], int* cell) const;
+
+    bool evaluateGrid(const OCIO::CPUProcessor& cpu);
+    void checkCells(const OCIO::CPUProcessor& cpu);
+
+    float _log2Min;
+    float _log2Range;
+    float _invLog2Range;
+    float _break;
+    float _shapedBreak;
+    float _linearSlope;
+    float _domainMin;
+    float _domainMax;
+    std::vector<float> _lut;
+    std::vector<unsigned char> _cellNeedsExact;
+};
+
+namespace {
+// Pixels go through the LUT only where it stays this close to the processor, so that rounding to
+// 8 bits moves them by at most one code value.
+const float kEightBitTolerance = 0.35f / 255.f;
+
+// The LUT path costs about 60 ns per pixel; a cheaper processor runs exact.
+const double kSlowProcessorNanosecondsPerPixel = 150.;
+
+template <typename F>
+void
+runInParallel(int count, const F& f)
+{
+    const int nThreads = std::max(1, std::min(count, (int)std::thread::hardware_concurrency()));
+    std::atomic<int> next(0);
+    std::vector<std::thread> threads;
+    for (int t = 1; t < nThreads; ++t) {
+        threads.push_back(std::thread([&]() {
+            for (int i = next++; i < count; i = next++) {
+                f(i);
+            }
+        }));
+    }
+    for (int i = next++; i < count; i = next++) {
+        f(i);
+    }
+    for (std::size_t t = 0; t < threads.size(); ++t) {
+        threads[t].join();
+    }
+}
+}
+
+EightBitDisplayLut::EightBitDisplayLut()
+    : _log2Min(-10.f)
+    , _log2Range(18.f)
+    , _invLog2Range(1.f / 18.f)
+    , _break(std::exp2(-8.f))
+    , _shapedBreak(2.f / 18.f)
+    , _linearSlope(1.f / (18.f * std::exp2(-8.f) * std::log(2.f)))
+    , _domainMin(0.f)
+    , _domainMax(0.f)
+    , _lut(3 * kSize * kSize * kSize)
+    , _cellNeedsExact(kCells * kCells * kCells, 0)
+{
+    _domainMin = unshape(0.f);
+    _domainMax = unshape(1.f);
+}
+
+void
+EightBitDisplayLut::interpolate(const float shaped[3],
+                                float out[3],
+                                int* cell) const
+{
+    int i[3];
+    float f[3];
+    for (int k = 0; k < 3; ++k) {
+        const float pos = shaped[k] * kCells;
+        i[k] = std::min((int)pos, kCells - 1);
+        f[k] = pos - i[k];
+    }
+    *cell = (i[2] * kCells + i[1]) * kCells + i[0];
+
+    const int dr = 3;
+    const int dg = 3 * kSize;
+    const int db = 3 * kSize * kSize;
+    const float* c000 = &_lut[3 * ((i[2] * kSize + i[1]) * kSize + i[0])];
+    const float* c111 = c000 + dr + dg + db;
+    const float fr = f[0];
+    const float fg = f[1];
+    const float fb = f[2];
+    const float* c1;
+    const float* c2;
+    float w0, w1, w2, w3;
+    if (fr > fg) {
+        if (fg > fb) {
+            c1 = c000 + dr;
+            c2 = c000 + dr + dg;
+            w0 = 1.f - fr;
+            w1 = fr - fg;
+            w2 = fg - fb;
+            w3 = fb;
+        } else if (fr > fb) {
+            c1 = c000 + dr;
+            c2 = c000 + dr + db;
+            w0 = 1.f - fr;
+            w1 = fr - fb;
+            w2 = fb - fg;
+            w3 = fg;
+        } else {
+            c1 = c000 + db;
+            c2 = c000 + dr + db;
+            w0 = 1.f - fb;
+            w1 = fb - fr;
+            w2 = fr - fg;
+            w3 = fg;
+        }
+    } else {
+        if (fb > fg) {
+            c1 = c000 + db;
+            c2 = c000 + dg + db;
+            w0 = 1.f - fb;
+            w1 = fb - fg;
+            w2 = fg - fr;
+            w3 = fr;
+        } else if (fb > fr) {
+            c1 = c000 + dg;
+            c2 = c000 + dg + db;
+            w0 = 1.f - fg;
+            w1 = fg - fb;
+            w2 = fb - fr;
+            w3 = fr;
+        } else {
+            c1 = c000 + dg;
+            c2 = c000 + dr + dg;
+            w0 = 1.f - fg;
+            w1 = fg - fr;
+            w2 = fr - fb;
+            w3 = fb;
+        }
+    }
+    for (int k = 0; k < 3; ++k) {
+        out[k] = w0 * c000[k] + w1 * c1[k] + w2 * c2[k] + w3 * c111[k];
+    }
+}
+
+bool
+EightBitDisplayLut::evaluateGrid(const OCIO::CPUProcessor& cpu)
+{
+    const int slab = kSize * kSize;
+    std::vector<std::vector<float>> buffers(kSize);
+    const auto fillSlab = [&](int b) {
+        std::vector<float>& buf = buffers[b];
+        buf.resize(4 * slab);
+        for (int g = 0; g < kSize; ++g) {
+            for (int r = 0; r < kSize; ++r) {
+                float* p = &buf[4 * (g * kSize + r)];
+                p[0] = unshape(r / (float)kCells);
+                p[1] = unshape(g / (float)kCells);
+                p[2] = unshape(b / (float)kCells);
+                p[3] = 1.f;
+            }
+        }
+        OCIO::PackedImageDesc desc(&buf[0], slab, 1, 4);
+        cpu.apply(desc);
+        float* dst = &_lut[3 * slab * b];
+        for (int i = 0; i < slab; ++i) {
+            dst[3 * i] = buf[4 * i];
+            dst[3 * i + 1] = buf[4 * i + 1];
+            dst[3 * i + 2] = buf[4 * i + 2];
+        }
+        std::vector<float>().swap(buf);
+    };
+
+    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    fillSlab(0);
+    const double ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - start).count();
+    if (ns / slab < kSlowProcessorNanosecondsPerPixel) {
+        return false;
+    }
+    runInParallel(kSize - 1, [&](int i) { fillSlab(i + 1); });
+
+    return true;
+}
+
+void
+EightBitDisplayLut::checkCells(const OCIO::CPUProcessor& cpu)
+{
+    // Sample points inside a cell, as fractions of its size: the centre, then one point inside
+    // each of the six tetrahedra that the interpolation splits the cell into.
+    static const float kSamples[7][3] = {
+        { 0.5f, 0.5f, 0.5f },
+        { 0.75f, 0.25f, 0.25f },
+        { 0.25f, 0.75f, 0.25f },
+        { 0.25f, 0.25f, 0.75f },
+        { 0.75f, 0.75f, 0.25f },
+        { 0.75f, 0.25f, 0.75f },
+        { 0.25f, 0.75f, 0.75f }
+    };
+    const int nSamples = 7;
+    const int slab = kCells * kCells;
+
+    runInParallel(kCells, [&](int b) {
+        std::vector<float> shapedIn(3 * slab * nSamples);
+        std::vector<float> values(4 * slab * nSamples);
+        for (int g = 0; g < kCells; ++g) {
+            for (int r = 0; r < kCells; ++r) {
+                for (int s = 0; s < nSamples; ++s) {
+                    const int idx = (g * kCells + r) * nSamples + s;
+                    float* sh = &shapedIn[3 * idx];
+                    sh[0] = (r + kSamples[s][0]) / kCells;
+                    sh[1] = (g + kSamples[s][1]) / kCells;
+                    sh[2] = (b + kSamples[s][2]) / kCells;
+                    float* p = &values[4 * idx];
+                    p[0] = unshape(sh[0]);
+                    p[1] = unshape(sh[1]);
+                    p[2] = unshape(sh[2]);
+                    p[3] = 1.f;
+                }
+            }
+        }
+        OCIO::PackedImageDesc desc(&values[0], slab * nSamples, 1, 4);
+        cpu.apply(desc);
+        for (int c = 0; c < slab; ++c) {
+            bool close = true;
+            for (int s = 0; s < nSamples && close; ++s) {
+                const int idx = c * nSamples + s;
+                float approx[3];
+                int cell;
+                interpolate(&shapedIn[3 * idx], approx, &cell);
+                for (int k = 0; k < 3; ++k) {
+                    const float e = std::min(std::max(values[4 * idx + k], 0.f), 1.f);
+                    const float a = std::min(std::max(approx[k], 0.f), 1.f);
+                    if (!(std::fabs(e - a) <= kEightBitTolerance)) {
+                        close = false;
+                    }
+                }
+            }
+            _cellNeedsExact[b * slab + c] = close ? 0 : 1;
+        }
+    });
+}
+
+std::shared_ptr<const EightBitDisplayLut>
+EightBitDisplayLut::bake(const OCIO::ConstCPUProcessorRcPtr& cpu)
+{
+    if (!cpu || cpu->isNoOp()) {
+        return std::shared_ptr<const EightBitDisplayLut>();
+    }
+    try {
+        std::shared_ptr<EightBitDisplayLut> lut(new EightBitDisplayLut);
+        if (!lut->evaluateGrid(*cpu)) {
+            return std::shared_ptr<const EightBitDisplayLut>();
+        }
+        lut->checkCells(*cpu);
+
+        return lut;
+    } catch (const std::exception& e) {
+        qDebug() << "EightBitDisplayLut::bake:" << e.what();
+
+        return std::shared_ptr<const EightBitDisplayLut>();
+    }
+}
+
+void
+EightBitDisplayLut::apply(const OCIO::CPUProcessor& cpu,
+                          float* rgba,
+                          int width) const
+{
+    std::vector<int> exactPixels;
+    std::vector<float> exactValues;
+    for (int x = 0; x < width; ++x) {
+        float* p = rgba + 4 * x;
+        bool inDomain = true;
+        float shaped[3];
+        for (int k = 0; k < 3; ++k) {
+            if (!(p[k] >= _domainMin && p[k] <= _domainMax)) {
+                inDomain = false;
+                break;
+            }
+            shaped[k] = std::min(std::max(shape(p[k]), 0.f), 1.f);
+        }
+        if (inDomain) {
+            float out[3];
+            int cell;
+            interpolate(shaped, out, &cell);
+            if (!_cellNeedsExact[cell]) {
+                p[0] = out[0];
+                p[1] = out[1];
+                p[2] = out[2];
+                continue;
+            }
+        }
+        exactPixels.push_back(x);
+        exactValues.insert(exactValues.end(), p, p + 4);
+    }
+    if (exactPixels.empty()) {
+        return;
+    }
+    OCIO::PackedImageDesc desc(&exactValues[0], (long)exactPixels.size(), 1, 4);
+    cpu.apply(desc);
+    for (std::size_t i = 0; i < exactPixels.size(); ++i) {
+        float* p = rgba + 4 * exactPixels[i];
+        p[0] = exactValues[4 * i];
+        p[1] = exactValues[4 * i + 1];
+        p[2] = exactValues[4 * i + 2];
+    }
 }
 
 ProjectColorManagement::ProjectColorManagement()
@@ -327,6 +659,25 @@ ProjectColorManagement::getDisplayProcessor(const std::string& src,
     std::pair<std::map<std::string, DisplayProcessorPtr>::iterator, bool> inserted = _displayCache.insert(std::make_pair(key, shared));
 
     return inserted.first->second;
+}
+
+void
+ProjectColorManagement::DisplayProcessor::applyForEightBitOutput(float* rgba,
+                                                                 int width) const
+{
+    if (!cpu || (width <= 0)) {
+        return;
+    }
+    std::call_once(_eightBitLutOnce, [this]() {
+        _eightBitLut = EightBitDisplayLut::bake(cpu);
+    });
+    if (_eightBitLut) {
+        _eightBitLut->apply(*cpu, rgba, width);
+
+        return;
+    }
+    OCIO::PackedImageDesc desc(rgba, width, 1, 4);
+    cpu->apply(desc);
 }
 
 OCIO::ConstCPUProcessorRcPtr

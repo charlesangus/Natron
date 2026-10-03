@@ -31,6 +31,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,8 @@ enum FileColorCategoryEnum {
     eFileColorCategoryFloat
 };
 
+class EightBitDisplayLut;
+
 class ProjectColorManagement {
 public:
     enum LoadErrorEnum {
@@ -71,6 +74,18 @@ public:
             : cacheHash(0)
         {
         }
+
+        /**
+         * @brief Applies cpu in place to \p width packed RGBA pixels whose result is quantised to
+         * 8 bits. A processor too slow for the 8-bit viewer is approximated by a shaper + 3D LUT,
+         * built on the first call, within a code value of cpu; pixels outside the LUT's domain or in
+         * a cell where the LUT strays go through cpu. Alpha is untouched. May throw what cpu throws.
+         **/
+        void applyForEightBitOutput(float* rgba, int width) const;
+
+    private:
+        mutable std::once_flag _eightBitLutOnce;
+        mutable std::shared_ptr<const EightBitDisplayLut> _eightBitLut;
     };
 
     typedef std::shared_ptr<const DisplayProcessor> DisplayProcessorPtr;

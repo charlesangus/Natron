@@ -475,17 +475,25 @@ private:
     std::unique_ptr<ViewerInstancePrivate> _imp;
 };
 
+enum ViewerDisplayOutputEnum {
+    eViewerDisplayOutputExact,
+    eViewerDisplayOutputEightBit
+};
+
 /**
  * @brief Transforms one RGBA F32 scanline of \p width pixels in place: rgb * gain + offset in the
  * working space, then the processor (look + display/view), then gamma (a threshold at 1 when
  * gamma <= 0). Alpha is untouched.
+ * With eViewerDisplayOutputEightBit and gamma 1, the processor may be approximated within a code
+ * value of the 8-bit result (DisplayProcessor::applyForEightBitOutput).
  **/
 void applyViewerDisplayTransform(const ProjectColorManagement::DisplayProcessor& processor,
                                  float* rgba,
                                  int width,
                                  double gain,
                                  double offset,
-                                 double gamma);
+                                 double gamma,
+                                 ViewerDisplayOutputEnum output = eViewerDisplayOutputExact);
 
 NATRON_NAMESPACE_EXIT
 

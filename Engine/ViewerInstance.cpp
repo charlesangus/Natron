@@ -137,7 +137,8 @@ applyViewerDisplayTransform(const ProjectColorManagement::DisplayProcessor& proc
                             int width,
                             double gain,
                             double offset,
-                            double gamma)
+                            double gamma,
+                            ViewerDisplayOutputEnum output)
 {
     if (width <= 0) {
         return;
@@ -154,8 +155,13 @@ applyViewerDisplayTransform(const ProjectColorManagement::DisplayProcessor& proc
     }
     if (processor.cpu) {
         try {
-            OCIO_NAMESPACE::PackedImageDesc desc(rgba, width, 1, 4);
-            processor.cpu->apply(desc);
+            // Any other gamma would amplify the approximation's error past a code value.
+            if ((output == eViewerDisplayOutputEightBit) && (gamma == 1.)) {
+                processor.applyForEightBitOutput(rgba, width);
+            } else {
+                OCIO_NAMESPACE::PackedImageDesc desc(rgba, width, 1, 4);
+                processor.cpu->apply(desc);
+            }
         } catch (const std::exception& e) {
             qDebug() << "applyViewerDisplayTransform:" << e.what();
         }
@@ -2294,9 +2300,9 @@ scaleToTexture8bits_generic(const RectI& roi,
             alphas[x] = (U8)Color::floatToInt<256>(a);
         }
 
-        applyViewerDisplayTransform(processor, &scanline[0], width, args.gain, args.offset, args.gamma);
+        applyViewerDisplayTransform(processor, &scanline[0], width, args.gain, args.offset, args.gamma, eViewerDisplayOutputEightBit);
         if (applyMatte) {
-            applyViewerDisplayTransform(processor, &matteScanline[0], width, 1., 0., 1.);
+            applyViewerDisplayTransform(processor, &matteScanline[0], width, 1., 0., 1., eViewerDisplayOutputEightBit);
         }
 
         // coverity[dont_call]

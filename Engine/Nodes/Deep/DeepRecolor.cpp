@@ -428,19 +428,23 @@ DeepRecolor::renderDeep(const DeepRenderActionArgs& args)
     }
     const bool opaque = selection.opaque;
     // With no colour storage the Color input has no alpha, so, like RGB without A, it is opaque
-    // wherever one of its selected planes has pixels.
+    // across its region of definition whatever channels are selected.
     const bool colourless = !selection.hasColor;
+    RectI colourlessCoverage;
+    if (colourless) {
+        EffectInstancePtr colorInput = getInput(1);
+        RectD rod;
+        bool isProjectFormat = false;
+        if (colorInput && (colorInput->getRegionOfDefinition_public(colorInput->getHash(), args.time, args.scale, args.view, &rod, &isProjectFormat) != eStatusFailed)) {
+            colourlessCoverage = rod.toPixelEnclosing(args.mipmapLevel, colorInput->getAspectRatio(-1));
+        }
+    }
 
-    return renderDeepFromInput(args, a, channelsToWrite, alphaChannelIndex, [&colorRead, &planeReads, &written, opaque, colourless, targetInputAlpha, alphaChannelIndex](int x, int y, const DeepPixelView& in, const MutableDeepPixelView& out) {
+    return renderDeepFromInput(args, a, channelsToWrite, alphaChannelIndex, [&colorRead, &planeReads, &written, &colourlessCoverage, opaque, colourless, targetInputAlpha, alphaChannelIndex](int x, int y, const DeepPixelView& in, const MutableDeepPixelView& out) {
         const float* const colorPixel = (colorRead.access && colorRead.bounds.contains(x, y)) ? (const float*)colorRead.access->pixelAt(x, y) : nullptr;
         float colorAlpha = colorPixel ? (opaque ? 1.f : colorPixel[3]) : 0.f;
-        if (colourless) {
-            for (std::size_t p = 0; p < planeReads.size(); ++p) {
-                if (planeReads[p].access && planeReads[p].bounds.contains(x, y)) {
-                    colorAlpha = 1.f;
-                    break;
-                }
-            }
+        if (colourless && colourlessCoverage.contains(x, y)) {
+            colorAlpha = 1.f;
         }
         const float* alpha = in.channels[in.alphaChannelIndex];
 

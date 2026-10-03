@@ -712,7 +712,6 @@ protected:
         }
     }
 
-    // flat-three-layers.exr with its colour removed, so only diffuse and specular remain.
     NodePtr createColourlessThreeLayers()
     {
         NodePtr reader = createReader("flat-three-layers.exr");
@@ -1087,6 +1086,28 @@ TEST_F(DeepRecolorLayersTest, ColourlessColorInputIsOpaqueForItsAovs)
     expected["diffuse.R"] = 0.f;
     expected["diffuse.G"] = 0.5f;
     expected["diffuse.B"] = 0.f;
+    expectOneSamplePerPixel(*deep, expected, 1.f);
+}
+
+TEST_F(DeepRecolorLayersTest, ColourlessColorInputKeepsCoverageWhenNoAovIsSelectedAndTargetInputAlphaIsOn)
+{
+    NodePtr source = createDeepSource({ "R", "G", "B", "A" }, 0.25f, 0.5f);
+    NodePtr color = createColourlessThreeLayers();
+    NodePtr recolor = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPRECOLOR));
+    ASSERT_TRUE(source && color && recolor);
+    connectNodes(source, recolor, 0, true);
+    connectNodes(color, recolor, 1, true);
+    KnobBool* targetInputAlpha = dynamic_cast<KnobBool*>(recolor->getKnobByName("targetInputAlpha").get());
+    ASSERT_TRUE(targetInputAlpha != NULL);
+    targetInputAlpha->setValue(true);
+
+    DeepImagePtr deep;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(recolor, kTime, &deep));
+    ASSERT_TRUE(deep != NULL);
+    EXPECT_FALSE(recolor->hasPersistentMessage());
+
+    std::map<std::string, float> expected;
+    expected["A"] = 1.f;
     expectOneSamplePerPixel(*deep, expected, 1.f);
 }
 

@@ -30,6 +30,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <vector>
 
 #include <QDebug>
 #include <QThread>
@@ -40,6 +41,7 @@
 #include "Engine/DeepImageCacheEntry.h"
 #include "Engine/DeepImageKey.h"
 #include "Engine/DeepImageParams.h"
+#include "Engine/DeepLayers.h"
 #include "Engine/DeepPixelOps.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
@@ -156,6 +158,36 @@ lookupCachedDeepImage(const DeepImageKey& key,
     }
 
     return false;
+}
+
+const ImageLayerDesc&
+flattenedLayerStorage(const ImageLayerDesc& layer)
+{
+    return layer.isColorLayer() ? ImageLayerDesc::mapNCompsToColorLayer(layer.getNumComponents()) : layer;
+}
+
+// Every flattened layer of a frame shares one ImageKey, so its entry is told apart by components.
+// EffectInstance::getImageFromCacheAndConvertIfNeeded() cannot do that: it treats any two colour
+// layouts as interchangeable, and would hand an Alpha flatten back for an RGBA request.
+ImagePtr
+findFlattenedLayerInCache(const ImageKey& key,
+                          const ImageLayerDesc& layer,
+                          unsigned int mipmapLevel)
+{
+    std::list<ImagePtr> cached;
+    if (!appPTR->getImage(key, &cached)) {
+        return ImagePtr();
+    }
+    for (std::list<ImagePtr>::const_iterator it = cached.begin(); it != cached.end(); ++it) {
+        if (!*it || (*it)->getBounds().isNull()) {
+            continue;
+        }
+        if (((*it)->getComponents() == layer) && ((*it)->getMipmapLevel() == mipmapLevel) && ((*it)->getBitDepth() == eImageBitDepthFloat)) {
+            return *it;
+        }
+    }
+
+    return ImagePtr();
 }
 
 } // anonymous namespace
@@ -511,6 +543,27 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
         return eRenderRoIRetCodeFailed;
     }
     outputImage->reset();
+
+    std::list<ImagePtr> images;
+    const RenderRoIRetCode code = renderDeepRoIFlattened(args, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &images, outputDeepImage);
+    if (!images.empty()) {
+        *outputImage = images.front();
+    }
+
+    return code;
+}
+
+EffectInstance::RenderRoIRetCode
+EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
+                                       const std::list<ImageLayerDesc>& layers,
+                                       std::list<ImagePtr>* outputImages,
+                                       DeepImagePtr* outputDeepImage)
+{
+    assert(outputImages);
+    if (!outputImages) {
+        return eRenderRoIRetCodeFailed;
+    }
+    outputImages->clear();
     if (outputDeepImage) {
         outputDeepImage->reset();
     }
@@ -520,7 +573,7 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
     }
 
     if (_imp->mainInstance) {
-        return _imp->mainInstance->renderDeepRoIFlattened(args, outputImage, outputDeepImage);
+        return _imp->mainInstance->renderDeepRoIFlattened(args, layers, outputImages, outputDeepImage);
     }
 
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
@@ -540,15 +593,52 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
 
     const U64 nodeHash = frameArgs->nodeHash;
     const double par = getAspectRatio(-1);
-    const ImageLayerDesc& components = ImageLayerDesc::getRGBAComponents();
-    const std::vector<std::string>& channelOrder = components.getChannels();
+
+    struct FlattenedLayer {
+        ImageLayerDesc storage;
+        ImagePtr image;
+        bool needsFlatten;
+    };
+    std::vector<FlattenedLayer> distinct;
+    std::vector<int> distinctIndexOfLayer;
+    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        const ImageLayerDesc& storage = flattenedLayerStorage(*it);
+        if (storage.getNumComponents() == 0) {
+            distinctIndexOfLayer.push_back(-1);
+            continue;
+        }
+        int found = -1;
+        for (std::size_t i = 0; i < distinct.size(); ++i) {
+            if (distinct[i].storage == storage) {
+                found = (int)i;
+                break;
+            }
+        }
+        if (found == -1) {
+            found = (int)distinct.size();
+            FlattenedLayer entry;
+            entry.storage = storage;
+            entry.needsFlatten = false;
+            distinct.push_back(entry);
+        }
+        distinctIndexOfLayer.push_back(found);
+    }
+
+    const auto publishImages = [&distinct, &distinctIndexOfLayer, outputImages]() {
+        outputImages->clear();
+        for (std::size_t i = 0; i < distinctIndexOfLayer.size(); ++i) {
+            const int index = distinctIndexOfLayer[i];
+            outputImages->push_back((index < 0) ? ImagePtr() : distinct[index].image);
+        }
+    };
 
     ////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////// Look-up the image cache /////////////////////////////////////
 
     // An effect whose output kind is eDataKindDeep never produces Cache<Image> entries of its own
     // -- its renders live in the deep cache under DeepImageKey -- so this node's hash identifies
-    // the flattened image and nothing else, and the purge fired on any hash change is exact.
+    // the flattened layers and nothing else, and the purge fired on any hash change is exact.
+    // Every layer shares this key; ImageParams' components keep their entries apart.
     const ImageKey key(getNode().get(),
                        nodeHash,
                        true /*frameVaryingOrAnimated*/,
@@ -559,10 +649,11 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
                        false /*fullScaleWithDownscaleInputs*/);
 
     RectI boundsToRender = args.roi;
-    {
-        ImagePtr cached;
-        getImageFromCacheAndConvertIfNeeded(true, eStorageModeRAM, eStorageModeRAM, key, args.mipmapLevel, NULL, NULL, RectI(), eImageBitDepthFloat, components, InputImagesMap(), RenderStatsPtr(), OSGLContextAttacherPtr(), &cached);
+    bool anyLayerToFlatten = false;
+    for (std::vector<FlattenedLayer>::iterator it = distinct.begin(); it != distinct.end(); ++it) {
+        ImagePtr cached = findFlattenedLayerInCache(key, it->storage, args.mipmapLevel);
         if (cached) {
+            cached->allocateMemory();
             // A cache entry can be found here before the thread that created it has reached
             // markForRendered() below, so bounds alone do not prove it is actually filled in --
             // check the bitmap the same way the image path's own cache consumers do (e.g. the
@@ -570,13 +661,8 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
             std::list<RectI> restToRender;
             cached->getRestToRender(args.roi, restToRender);
             if (!args.byPassCache && cached->getBounds().contains(args.roi) && restToRender.empty()) {
-                if (outputDeepImage) {
-                    const DeepImageKey deepKey(getNode().get(), nodeHash, args.time, args.view, args.scale);
-                    lookupCachedDeepImage(deepKey, args.roi, outputDeepImage);
-                }
-                *outputImage = cached;
-
-                return eRenderRoIRetCodeOk;
+                it->image = cached;
+                continue;
             }
             // Bounds growth, not tiling, the same way renderDeepRoI() handles it: re-flatten over
             // the union of what was asked for rather than mint a narrower entry that the next,
@@ -588,6 +674,18 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
             boundsToRender.merge(cached->getBounds());
             appPTR->removeFromNodeCache(cached);
         }
+        it->needsFlatten = true;
+        anyLayerToFlatten = true;
+    }
+
+    if (!anyLayerToFlatten) {
+        if (outputDeepImage && !distinct.empty()) {
+            const DeepImageKey deepKey(getNode().get(), nodeHash, args.time, args.view, args.scale);
+            lookupCachedDeepImage(deepKey, args.roi, outputDeepImage);
+        }
+        publishImages();
+
+        return eRenderRoIRetCodeOk;
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////
@@ -611,22 +709,48 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////
-    ////////////////////////////// Allocate the flattened image ////////////////////////////////
+    ////////////////////////////// Allocate the flattened images ///////////////////////////////
 
-    ImageParamsPtr params = Image::makeParams(rod,
-                                              boundsToRender,
-                                              par,
-                                              args.mipmapLevel,
-                                              false /*isRoDProjectFormat*/,
-                                              components,
-                                              eImageBitDepthFloat,
-                                              getFieldingOrder());
-    ImagePtr image;
-    appPTR->getImageOrCreate(key, params, &image);
-    if (!image) {
-        return eRenderRoIRetCodeFailed;
+    std::vector<ImagePtr> created;
+    std::vector<DeepFlatten::FlattenTarget> targets;
+    // Each entry is sealed the moment it is created, before it holds anything, so a flatten that
+    // does not finish has to take every one of them back out itself -- otherwise every later
+    // request for this frame is served a half-filled image.
+    const auto retractCreated = [&created]() {
+        for (std::vector<ImagePtr>::const_iterator it = created.begin(); it != created.end(); ++it) {
+            appPTR->removeFromNodeCache(*it);
+        }
+    };
+
+    for (std::vector<FlattenedLayer>::const_iterator it = distinct.begin(); it != distinct.end(); ++it) {
+        if (!it->needsFlatten) {
+            continue;
+        }
+        ImageParamsPtr params = Image::makeParams(rod,
+                                                  boundsToRender,
+                                                  par,
+                                                  args.mipmapLevel,
+                                                  false /*isRoDProjectFormat*/,
+                                                  it->storage,
+                                                  eImageBitDepthFloat,
+                                                  getFieldingOrder());
+        ImagePtr image;
+        appPTR->getImageOrCreate(key, params, &image);
+        if (!image) {
+            retractCreated();
+
+            return eRenderRoIRetCodeFailed;
+        }
+        image->allocateMemory();
+        created.push_back(image);
+
+        DeepFlatten::FlattenTarget target;
+        for (int c = 0; c < it->storage.getNumComponents(); ++c) {
+            target.channelNames.push_back(DeepLayers::channelName(it->storage, c));
+        }
+        target.dst = image;
+        targets.push_back(target);
     }
-    image->allocateMemory();
 
     ////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////// Pull the deep data and flatten it ///////////////////////////
@@ -638,37 +762,40 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
 
     const RenderRoIRetCode deepCode = renderDeepRoI(deepArgs, &deepImage);
     if ((deepCode != eRenderRoIRetCodeOk) || !deepImage) {
-        // The entry was sealed the moment it was created, before it held anything, so a render
-        // that does not finish has to take it back out itself -- otherwise every later request
-        // for this frame is served a half-filled image.
-        appPTR->removeFromNodeCache(image);
+        retractCreated();
 
         return (deepCode == eRenderRoIRetCodeOk) ? eRenderRoIRetCodeFailed : deepCode;
     }
 
     if (aborted()) {
-        appPTR->removeFromNodeCache(image);
+        retractCreated();
 
         return eRenderRoIRetCodeAborted;
     }
 
     DeepPixelScratch scratch;
     DeepTidyWorkspace work;
-    const StatusEnum stat = DeepFlatten::flattenToImage(*deepImage, boundsToRender, channelOrder, 3 /*alphaChannelIndex*/, &scratch, &work, image);
+    const StatusEnum stat = DeepFlatten::flattenLayersToImages(*deepImage, boundsToRender, "A", targets, &scratch, &work);
 
     if (aborted()) {
-        appPTR->removeFromNodeCache(image);
+        retractCreated();
 
         return eRenderRoIRetCodeAborted;
     }
     if (stat != eStatusOK) {
-        appPTR->removeFromNodeCache(image);
+        retractCreated();
 
         return eRenderRoIRetCodeFailed;
     }
 
-    image->markForRendered(boundsToRender);
-    *outputImage = image;
+    std::size_t createdIndex = 0;
+    for (std::vector<FlattenedLayer>::iterator it = distinct.begin(); it != distinct.end(); ++it) {
+        if (it->needsFlatten) {
+            it->image = created[createdIndex++];
+            it->image->markForRendered(boundsToRender);
+        }
+    }
+    publishImages();
     if (outputDeepImage) {
         *outputDeepImage = deepImage;
     }

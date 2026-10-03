@@ -1448,14 +1448,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
     ImageBitDepthEnum imageDepth = inArgs.activeInputToRender->getBitDepth(-1);
     std::list<ImageLayerDesc> requestedComponents;
     int alphaChannelIndex = -1;
-    if (inArgs.deepUpstream) {
-        // Deep channels are not Natron layers, so there is no layer for the GUI to have selected
-        // and nothing to ask the upstream node for its available layers: the v1 contract is a
-        // flatten to RGBA, and this is the layer that flatten writes.
-        components = ImageLayerDesc::getRGBAComponents();
-        imageDepth = eImageBitDepthFloat;
-        alphaChannelIndex = 3;
-    } else if ((inArgs.channels != eDisplayChannelsA) && (inArgs.channels != eDisplayChannelsMatte)) {
+    if ((inArgs.channels != eDisplayChannelsA) && (inArgs.channels != eDisplayChannelsMatte)) {
         ///We fetch the Layer specified in the gui
         if (inArgs.params->layer.getNumComponents() > 0) {
             requestedComponents.push_back(inArgs.params->layer);
@@ -1482,7 +1475,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         }
     }
 
-    if (!inArgs.deepUpstream && requestedComponents.empty()) {
+    if (requestedComponents.empty()) {
         return eViewerRenderRetCodeBlack;
     }
 
@@ -1556,15 +1549,25 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                            this,
                                                            inArgs.params->time);
                 DeepImagePtr deepImage;
-                retCode = inArgs.activeInputToRender->renderDeepRoIFlattened(deepArgs, &colorImage, &deepImage);
-                if (colorImage && (retCode == EffectInstance::eRenderRoIRetCodeOk)) {
-                    if (inArgs.channels == eDisplayChannelsMatte) {
-                        alphaImage = colorImage;
+                std::list<ImagePtr> flattened;
+                retCode = inArgs.activeInputToRender->renderDeepRoIFlattened(deepArgs, requestedComponents, &flattened, &deepImage);
+                if ((retCode == EffectInstance::eRenderRoIRetCodeOk) && !flattened.empty()) {
+                    // Two layers only for the matte overlay, which requested the alpha layer first.
+                    if (flattened.size() == 2) {
+                        alphaImage = flattened.front();
+                        colorImage = flattened.back();
+                    } else {
+                        colorImage = flattened.front();
+                        if ((inArgs.channels == eDisplayChannelsMatte) && (inArgs.params->alphaLayer == inArgs.params->layer)) {
+                            alphaImage = colorImage;
+                        }
                     }
+                }
+                if (colorImage) {
                     inArgs.params->colorImage = colorImage;
                     inArgs.params->deepImage = deepImage;
                 } else {
-                    colorImage.reset();
+                    alphaImage.reset();
                 }
             } else {
                 std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs;

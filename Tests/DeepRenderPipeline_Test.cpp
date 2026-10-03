@@ -28,12 +28,14 @@
 #include <algorithm>
 #include <cstddef>
 #include <list>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include <QString>
+#include <QThread>
 
 #include "BaseTest.h"
 #include "CacheMemoryPressureGuard.h"
@@ -48,6 +50,8 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/ImageKey.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
@@ -859,4 +863,373 @@ TEST_F(DeepRenderPipelineTest, FlattenCacheInvalidatesWhenTheDeepNodesHashChange
     EXPECT_EQ(secondHash, second->getKey().getTreeVersion());
     EXPECT_EQ(2, deepRenderTestSourceRenderCount().load());
     expectFlattenedImageMatchesSource(second, roi);
+}
+
+namespace {
+
+const int kLayeredFlattenSize = 4;
+const int kLayeredFlattenSamples = 2;
+
+float
+layeredFlattenAlpha(int sample)
+{
+    return (sample == 0) ? 0.5f : 0.25f;
+}
+
+float
+layeredFlattenValue(const std::string& channel,
+                    int pixel,
+                    int sample)
+{
+    if (channel == "A") {
+        return layeredFlattenAlpha(sample);
+    }
+    const char* const names[] = { "R", "G", "B", "diffuse.R", "diffuse.G", "diffuse.B" };
+    int c = 0;
+    while ((c < 6) && (channel != names[c])) {
+        ++c;
+    }
+
+    return 0.1f * (float)(c + 1) + 0.01f * (float)sample + 0.001f * (float)pixel;
+}
+
+// Two point samples per pixel at depths 1 and 2, so the flatten is sample 0 plus sample 1 seen
+// through sample 0's alpha, with no tidying in between.
+DeepImagePtr
+makeLayeredFlattenImage(const std::vector<std::string>& channels)
+{
+    const RectI bounds(0, 0, kLayeredFlattenSize, kLayeredFlattenSize);
+    DeepImagePtr image = std::make_shared<DeepImage>(bounds, RenderScale::identity, ViewIdx(0));
+
+    SampleTable& table = image->getSampleTableForWriting();
+    for (std::size_t p = 0; p < (std::size_t)(kLayeredFlattenSize * kLayeredFlattenSize); ++p) {
+        table.setCount(p, (U32)kLayeredFlattenSamples);
+    }
+    table.recomputeOffsets();
+
+    const std::size_t total = (std::size_t)table.getTotalSampleCount();
+    float* z = image->getChannelForWriting("Z").dataForWriting();
+    float* zBack = image->getChannelForWriting("ZBack").dataForWriting();
+    for (std::size_t s = 0; s < total; ++s) {
+        z[s] = 1.f + (float)(s % kLayeredFlattenSamples);
+        zBack[s] = z[s];
+    }
+    for (std::size_t c = 0; c < channels.size(); ++c) {
+        float* data = image->getChannelForWriting(channels[c]).dataForWriting();
+        for (std::size_t s = 0; s < total; ++s) {
+            data[s] = layeredFlattenValue(channels[c], (int)(s / kLayeredFlattenSamples), (int)(s % kLayeredFlattenSamples));
+        }
+    }
+    image->setTidy(true);
+
+    return image;
+}
+
+ImageLayerDesc
+diffuseLayer()
+{
+    std::vector<std::string> channels;
+
+    channels.push_back("R");
+    channels.push_back("G");
+    channels.push_back("B");
+
+    return ImageLayerDesc("diffuse", "diffuse", "", channels);
+}
+
+// Every pixel of image holds the front-to-back flatten of the named deep channels, in order.
+void
+expectLayeredFlatten(const ImagePtr& image,
+                     const std::vector<std::string>& channels)
+{
+    ASSERT_TRUE(image != NULL);
+    ASSERT_EQ(channels.size(), (std::size_t)image->getComponentsCount());
+    Image::ReadAccess access = image->getReadRights();
+
+    for (int y = 0; y < kLayeredFlattenSize; ++y) {
+        for (int x = 0; x < kLayeredFlattenSize; ++x) {
+            const int pixel = y * kLayeredFlattenSize + x;
+            const float* actual = (const float*)access.pixelAt(x, y);
+            ASSERT_TRUE(actual != NULL) << "at pixel (" << x << ", " << y << ")";
+            for (std::size_t c = 0; c < channels.size(); ++c) {
+                const float expected = layeredFlattenValue(channels[c], pixel, 0) + (1.f - layeredFlattenAlpha(0)) * layeredFlattenValue(channels[c], pixel, 1);
+                EXPECT_FLOAT_EQ(expected, actual[c]) << "at pixel (" << x << ", " << y << ") channel " << channels[c];
+            }
+        }
+    }
+}
+
+void
+writeSentinel(const ImagePtr& image,
+              float value)
+{
+    Image::WriteAccess access = image->getWriteRights();
+    float* pixel = (float*)access.pixelAt(1, 2);
+
+    ASSERT_TRUE(pixel != NULL);
+    pixel[0] = value;
+}
+
+float
+readSentinel(const ImagePtr& image)
+{
+    Image::ReadAccess access = image->getReadRights();
+    const float* pixel = (const float*)access.pixelAt(1, 2);
+
+    return pixel ? pixel[0] : 0.f;
+}
+
+// The hash purge runs on the cache's cleaner thread, so poll for it, bounded, so the test fails
+// rather than hangs if it never happens.
+bool
+waitUntilFlattenedImagesAbsent(const ImageKey& key,
+                               int timeoutMs = 5000)
+{
+    for (int waited = 0; waited <= timeoutMs; waited += 5) {
+        std::list<ImagePtr> found;
+        if (!appPTR->getImage(key, &found)) {
+            return true;
+        }
+        QThread::msleep(5);
+    }
+
+    return false;
+}
+
+} // namespace
+
+class DeepFlattenLayersTest
+    : public DeepRenderPipelineTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        DeepRenderPipelineTest::SetUp();
+        deepSyntheticSourceImages().clear();
+        _nextSlot = 1;
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        for (std::vector<NodePtr>::reverse_iterator it = _synthetic.rbegin(); it != _synthetic.rend(); ++it) {
+            (*it)->destroyNode(false, false);
+        }
+        _synthetic.clear();
+        deepSyntheticSourceImages().clear();
+        DeepRenderPipelineTest::TearDown();
+    }
+
+    NodePtr createSyntheticSource(const std::vector<std::string>& channels)
+    {
+        const int slot = _nextSlot++;
+
+        deepSyntheticSourceImages()[slot] = makeLayeredFlattenImage(channels);
+        NodePtr node = createNode(QString::fromUtf8(kTestPluginIDDeepSyntheticSource));
+        if (!node) {
+            return node;
+        }
+        _synthetic.push_back(node);
+        KnobInt* knob = dynamic_cast<KnobInt*>(node->getKnobByName("slot").get());
+        if (!knob) {
+            return NodePtr();
+        }
+        knob->setValue(slot);
+
+        return node;
+    }
+
+    NodePtr createLayeredSource()
+    {
+        std::vector<std::string> channels;
+
+        channels.push_back("R");
+        channels.push_back("G");
+        channels.push_back("B");
+        channels.push_back("A");
+        channels.push_back("diffuse.R");
+        channels.push_back("diffuse.G");
+        channels.push_back("diffuse.B");
+
+        return createSyntheticSource(channels);
+    }
+
+    // The viewer's deep path: the selected layers flattened under the scheduler's frame args.
+    EffectInstance::RenderRoIRetCode renderFlattenedLayers(const NodePtr& node,
+                                                           const std::list<ImageLayerDesc>& layers,
+                                                           std::list<ImagePtr>* outputImages)
+    {
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        ParallelRenderArgsSetter frameRenderArgs(1.,
+                                                 ViewIdx(0),
+                                                 true /*isRenderUserInteraction*/,
+                                                 false /*isSequential*/,
+                                                 abortInfo,
+                                                 node,
+                                                 0 /*textureIndex*/,
+                                                 getApp()->getTimeLine().get(),
+                                                 NodePtr(),
+                                                 false /*isAnalysis*/,
+                                                 false /*draftMode*/,
+                                                 RenderStatsPtr());
+        EffectInstance::RenderDeepRoIArgs args(1.,
+                                               RenderScale::identity,
+                                               0 /*mipmapLevel*/,
+                                               ViewIdx(0),
+                                               false /*byPassCache*/,
+                                               RectI(0, 0, kLayeredFlattenSize, kLayeredFlattenSize),
+                                               RectD(),
+                                               0 /*caller*/,
+                                               1.);
+
+        return node->getEffectInstance()->renderDeepRoIFlattened(args, layers, outputImages);
+    }
+
+    ImagePtr renderFlattenedLayer(const NodePtr& node,
+                                  const ImageLayerDesc& layer)
+    {
+        std::list<ImagePtr> images;
+
+        if (renderFlattenedLayers(node, std::list<ImageLayerDesc>(1, layer), &images) != EffectInstance::eRenderRoIRetCodeOk) {
+            return ImagePtr();
+        }
+
+        return (images.size() == 1) ? images.front() : ImagePtr();
+    }
+
+    std::vector<NodePtr> _synthetic;
+    int _nextSlot;
+};
+
+TEST_F(DeepFlattenLayersTest, TheSelectedLayerIsFlattenedWithTheDeepAlpha)
+{
+    NodePtr source = createLayeredSource();
+    ASSERT_TRUE(source != NULL);
+
+    std::vector<std::string> diffuseChannels;
+    diffuseChannels.push_back("diffuse.R");
+    diffuseChannels.push_back("diffuse.G");
+    diffuseChannels.push_back("diffuse.B");
+
+    const ImagePtr diffuse = renderFlattenedLayer(source, diffuseLayer());
+    ASSERT_TRUE(diffuse != NULL);
+    EXPECT_TRUE(diffuse->getComponents() == diffuseLayer());
+    expectLayeredFlatten(diffuse, diffuseChannels);
+}
+
+TEST_F(DeepFlattenLayersTest, SeveralLayersInOneCallMatchTheirOwnFlattens)
+{
+    NodePtr source = createLayeredSource();
+    ASSERT_TRUE(source != NULL);
+
+    std::list<ImageLayerDesc> layers;
+    layers.push_back(ImageLayerDesc::getRGBAComponents());
+    layers.push_back(diffuseLayer());
+    std::list<ImagePtr> images;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderFlattenedLayers(source, layers, &images));
+    ASSERT_EQ((std::size_t)2, images.size());
+
+    std::vector<std::string> rgba;
+    rgba.push_back("R");
+    rgba.push_back("G");
+    rgba.push_back("B");
+    rgba.push_back("A");
+    std::vector<std::string> diffuseChannels;
+    diffuseChannels.push_back("diffuse.R");
+    diffuseChannels.push_back("diffuse.G");
+    diffuseChannels.push_back("diffuse.B");
+    expectLayeredFlatten(images.front(), rgba);
+    expectLayeredFlatten(images.back(), diffuseChannels);
+}
+
+TEST_F(DeepFlattenLayersTest, ReRenderingALayerIsACacheHit)
+{
+    NodePtr source = createLayeredSource();
+    ASSERT_TRUE(source != NULL);
+
+    const ImagePtr first = renderFlattenedLayer(source, diffuseLayer());
+    ASSERT_TRUE(first != NULL);
+    const float sentinel = -1234.5f;
+    writeSentinel(first, sentinel);
+
+    const ImagePtr second = renderFlattenedLayer(source, diffuseLayer());
+    ASSERT_TRUE(second != NULL);
+    EXPECT_EQ(first.get(), second.get());
+    EXPECT_FLOAT_EQ(sentinel, readSentinel(second));
+}
+
+TEST_F(DeepFlattenLayersTest, EachLayerKeepsItsOwnCacheEntry)
+{
+    NodePtr source = createLayeredSource();
+    ASSERT_TRUE(source != NULL);
+
+    const ImagePtr diffuse = renderFlattenedLayer(source, diffuseLayer());
+    ASSERT_TRUE(diffuse != NULL);
+    writeSentinel(diffuse, -1.f);
+
+    const ImagePtr rgba = renderFlattenedLayer(source, ImageLayerDesc::getRGBAComponents());
+    ASSERT_TRUE(rgba != NULL);
+    EXPECT_NE(diffuse.get(), rgba.get());
+    EXPECT_EQ(4, (int)rgba->getComponentsCount());
+    writeSentinel(rgba, -2.f);
+
+    // Both entries live under one key, the node's hash, which is what keeps the hash purge exact.
+    EXPECT_TRUE(diffuse->getKey() == rgba->getKey());
+    std::list<ImagePtr> cached;
+    ASSERT_TRUE(appPTR->getImage(diffuse->getKey(), &cached));
+    EXPECT_EQ((std::size_t)2, cached.size());
+
+    const ImagePtr diffuseAgain = renderFlattenedLayer(source, diffuseLayer());
+    const ImagePtr rgbaAgain = renderFlattenedLayer(source, ImageLayerDesc::getRGBAComponents());
+    EXPECT_EQ(diffuse.get(), diffuseAgain.get());
+    EXPECT_EQ(rgba.get(), rgbaAgain.get());
+    EXPECT_FLOAT_EQ(-1.f, readSentinel(diffuseAgain));
+    EXPECT_FLOAT_EQ(-2.f, readSentinel(rgbaAgain));
+}
+
+TEST_F(DeepFlattenLayersTest, AHashChangePurgesEveryLayer)
+{
+    NodePtr source = createLayeredSource();
+    ASSERT_TRUE(source != NULL);
+
+    const ImagePtr diffuse = renderFlattenedLayer(source, diffuseLayer());
+    const ImagePtr rgba = renderFlattenedLayer(source, ImageLayerDesc::getRGBAComponents());
+    ASSERT_TRUE(diffuse != NULL);
+    ASSERT_TRUE(rgba != NULL);
+    const ImageKey oldKey = diffuse->getKey();
+    EXPECT_EQ(source->getHashValue(), oldKey.getTreeVersion());
+
+    source->incrementKnobsAge();
+    ASSERT_NE(oldKey.getTreeVersion(), source->getHashValue());
+    EXPECT_TRUE(waitUntilFlattenedImagesAbsent(oldKey));
+
+    const ImagePtr diffuseAfter = renderFlattenedLayer(source, diffuseLayer());
+    const ImagePtr rgbaAfter = renderFlattenedLayer(source, ImageLayerDesc::getRGBAComponents());
+    ASSERT_TRUE(diffuseAfter != NULL);
+    ASSERT_TRUE(rgbaAfter != NULL);
+    EXPECT_NE(diffuse.get(), diffuseAfter.get());
+    EXPECT_NE(rgba.get(), rgbaAfter.get());
+    EXPECT_EQ(source->getHashValue(), diffuseAfter->getKey().getTreeVersion());
+}
+
+TEST_F(DeepFlattenLayersTest, AlphaDisplayOnAnAlphaOnlySourceShowsItsAlpha)
+{
+    NodePtr source = createSyntheticSource(std::vector<std::string>(1, "A"));
+    ASSERT_TRUE(source != NULL);
+
+    // The viewer's A display asks for the stream's colour storage, Alpha here, and reads "A".
+    const ImagePtr alpha = renderFlattenedLayer(source, ImageLayerDesc::getAlphaComponents());
+    ASSERT_TRUE(alpha != NULL);
+    expectLayeredFlatten(alpha, std::vector<std::string>(1, "A"));
+
+    // RGBA over Alpha storage is a different entry, with the colour it lacks read as zero.
+    const ImagePtr rgba = renderFlattenedLayer(source, ImageLayerDesc::getRGBAComponents());
+    ASSERT_TRUE(rgba != NULL);
+    EXPECT_NE(alpha.get(), rgba.get());
+    ASSERT_EQ(4, (int)rgba->getComponentsCount());
+    Image::ReadAccess access = rgba->getReadRights();
+    const float* pixel = (const float*)access.pixelAt(0, 0);
+    ASSERT_TRUE(pixel != NULL);
+    EXPECT_EQ(0.f, pixel[0]);
+    EXPECT_EQ(0.f, pixel[1]);
+    EXPECT_EQ(0.f, pixel[2]);
+    EXPECT_FLOAT_EQ(layeredFlattenAlpha(0) + (1.f - layeredFlattenAlpha(0)) * layeredFlattenAlpha(1), pixel[3]);
 }

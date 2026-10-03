@@ -288,9 +288,6 @@ class ViewerArgs;
 class ViewerCurrentFrameRequestSchedulerStartArgs;
 class ViewerInstance;
 class ViewerParallelRenderArgsSetter;
-namespace Color {
-class Lut;
-}
 namespace Transform {
 struct Matrix3x3;
 typedef std::shared_ptr<Matrix3x3> Matrix3x3Ptr;

@@ -264,7 +264,7 @@ future core work has solid ground to build on.
 
 - **M65 awaits the user's UAT sign-off (P8.T3), deferred to the parcel UAT:** `build/appimages/M65-26cc11c9c.AppImage` with `build/appimages/M65-uat.md`. PR #35 is stacked on M61's #34; both Codex review rounds are closed.
 
-- **M50 awaits the parcel UAT (screenshots and P6.T2):** run `build/appimages/M50-da55c7b39.AppImage` with `build/appimages/M50-uat.md`. The screenshots are in `build/m50-gui/`. PR #38 is stacked on #37 and both Codex rounds are closed. Fork PRs are still to open: openfx-io `m50/project-ocio`, openfx-arena `m50/project-ocio` and openfx-natron `m50/ocio-colour-props`. Re-pin after they merge.
+- **M50 awaits the parcel UAT (screenshots and P6.T2):** run `build/appimages/M50-da55c7b39.AppImage` with `build/appimages/M50-uat.md`. The screenshots are in `build/m50-gui/`. PR #38 is stacked on #37 and both Codex rounds are closed. Fork PRs: openfx-io#10, openfx-arena#4, openfx-natron#3. Re-pin after they merge.
 
 - **M37 awaits the parcel UAT (P4.T3 shots, P6.T2):** run `build/appimages/M37-70fda8e85.AppImage` with `build/appimages/M37-uat.md`; the shots are in `build/m37-gui/shots/`. PR #37 is stacked on #36, and both Codex rounds are closed. Every properties panel is now ~17 px taller (tab-bar height fix), so look at that during the UAT.
 

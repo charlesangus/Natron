@@ -438,7 +438,7 @@ Colour management becomes a property of the project, and all of it goes through 
 
 ## Phase 50.6: Checkpoint
 
-- [ ] M50.P6.T1 — Publish the project-OCIO decision
+- [x] M50.P6.T1 — Publish the project-OCIO decision
   - files: `.plan/PLAN/DECISIONS/2026-10-02-project-ocio-full-replacement.md` (new), `.plan/PLAN/DECISIONS/INDEX.md`
   - approach: record:
     - the project config as the single source of truth;

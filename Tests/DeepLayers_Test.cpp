@@ -39,29 +39,40 @@
 #include <gtest/gtest.h>
 
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 #include "DeepRenderTestEffect.h"
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/DeepFlatten.h"
 #include "Engine/DeepImage.h"
 #include "Engine/DeepLayers.h"
 #include "Engine/DeepPixelOps.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobFile.h"
+#include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/RemoveLayers.h"
+#include "Engine/Nodes/Deep/DeepAddLayers.h"
+#include "Engine/Nodes/Deep/DeepExpression.h"
 #include "Engine/Nodes/Deep/DeepFromImage.h"
+#include "Engine/Nodes/Deep/DeepRead.h"
 #include "Engine/Nodes/Deep/DeepRecolor.h"
+#include "Engine/Nodes/Deep/DeepRemoveLayers.h"
+#include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/Nodes/TypedPassthrough.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
+#include "Engine/PyNode.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -71,6 +82,7 @@
 #include <ofxImageEffect.h>
 
 NATRON_NAMESPACE_USING
+NATRON_PYTHON_NAMESPACE_USING
 
 namespace {
 std::vector<std::string>
@@ -1030,4 +1042,357 @@ TEST_F(DeepRecolorLayersTest, RowForALayerTheColorImageLacksLeavesTheDeepChannel
     expected["specular.G"] = 0.25f;
     expected["A"] = 0.5f;
     expectOneSamplePerPixel(*deep, expected, 1.f);
+}
+
+class DeepLayersRoundTripTest
+    : public DeepFromImageLayersTest {
+protected:
+    struct Graph {
+        std::string fromImage;
+        std::string recolor;
+        std::string expression;
+        std::string toImage;
+        std::string remove;
+        std::string add;
+    };
+
+    NodePtr nodeNamed(const std::string& name)
+    {
+        return getApp()->getProject()->getNodeByName(name);
+    }
+
+    static std::vector<ChannelSetRow> layerRows(std::initializer_list<const char*> layers)
+    {
+        std::vector<ChannelSetRow> rows;
+
+        for (const char* layer : layers) {
+            ChannelSetRow row;
+            row.mode = ChannelSetRow::eModeLayer;
+            row.layerOrPattern = layer;
+            rows.push_back(row);
+        }
+
+        return rows;
+    }
+
+    static KnobChannelSetPtr channelSetOf(const NodePtr& node,
+                                          const char* name)
+    {
+        return std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(name));
+    }
+
+    void registerMask()
+    {
+        std::string error;
+        const LayerRegistry::AddResultEnum result = getApp()->getProject()->addLayer(ImageLayerDesc("mask", "mask", "", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &error);
+
+        EXPECT_NE(LayerRegistry::eAddResultRefused, result) << error;
+    }
+
+    // Reader -> DeepFromImage -> DeepRecolor -> DeepExpression, which then feeds both a
+    // DeepToImage and a DeepRemoveLayers -> DeepAddLayers, every layer knob off its default.
+    bool buildGraph(Graph* graph)
+    {
+        registerMask();
+
+        NodePtr reader = createReader("flat-three-layers.exr");
+        NodePtr fromImage = createFromImageOn(reader);
+        NodePtr color = createReader("flat-three-layers.exr");
+        if (!reader || !fromImage || !color) {
+            return false;
+        }
+        connectNodes(reader, fromImage, 1, true);
+        channelSetOf(fromImage, kDeepFromImageParamChannels)->setRows(layerRows({ "diffuse", "specular" }));
+        std::dynamic_pointer_cast<KnobChannelSelect>(fromImage->getKnobByName(kDeepFromImageParamZChannel))->set("diffuse.G");
+
+        NodePtr recolor = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPRECOLOR));
+        NodePtr expression = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPEXPRESSION));
+        NodePtr toImage = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPTOIMAGE));
+        NodePtr remove = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPREMOVELAYERS));
+        NodePtr add = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPADDLAYERS));
+        if (!recolor || !expression || !toImage || !remove || !add) {
+            return false;
+        }
+        connectNodes(fromImage, recolor, 0, true);
+        connectNodes(color, recolor, 1, true);
+        channelSetOf(recolor, kDeepRecolorParamChannels)->setRows(layerRows({ "diffuse" }));
+
+        connectNodes(recolor, expression, 0, true);
+        std::dynamic_pointer_cast<KnobLayerSelect>(expression->getKnobByName(kDeepExpressionParamLayer))->setLayer("diffuse");
+        std::dynamic_pointer_cast<KnobString>(expression->getKnobByName("expression1"))->setValue("diffuse.G * 2");
+
+        connectNodes(expression, toImage, 0, true);
+        channelSetOf(toImage, kDeepToImageParamChannels)->setRows(layerRows({ "diffuse", "specular" }));
+
+        connectNodes(expression, remove, 0, true);
+        std::dynamic_pointer_cast<KnobChoice>(remove->getKnobByName(kDeepRemoveLayersParamOperation))->setValue((int)DeepRemoveLayers::eOperationKeep);
+        channelSetOf(remove, kDeepRemoveLayersParamChannels)->setRegex(0, "spec.*");
+
+        connectNodes(remove, add, 0, true);
+        channelSetOf(add, kDeepAddLayersParamLayers)->setLayer(0, "mask", NULL);
+
+        graph->fromImage = fromImage->getScriptName();
+        graph->recolor = recolor->getScriptName();
+        graph->expression = expression->getScriptName();
+        graph->toImage = toImage->getScriptName();
+        graph->remove = remove->getScriptName();
+        graph->add = add->getScriptName();
+
+        return true;
+    }
+
+    struct KnobValues {
+        std::vector<ChannelSetRow> fromImageRows;
+        std::string zChannel;
+        std::vector<ChannelSetRow> toImageRows;
+        std::vector<ChannelSetRow> recolorRows;
+        std::string expressionLayer;
+        std::string expression1;
+        int removeOperation;
+        std::vector<ChannelSetRow> removeRows;
+        std::vector<ChannelSetRow> addRows;
+    };
+
+    KnobValues readKnobs(const Graph& graph)
+    {
+        KnobValues values;
+        const NodePtr fromImage = nodeNamed(graph.fromImage);
+        const NodePtr recolor = nodeNamed(graph.recolor);
+        const NodePtr expression = nodeNamed(graph.expression);
+        const NodePtr toImage = nodeNamed(graph.toImage);
+        const NodePtr remove = nodeNamed(graph.remove);
+        const NodePtr add = nodeNamed(graph.add);
+
+        EXPECT_TRUE(fromImage && recolor && expression && toImage && remove && add);
+        if (!(fromImage && recolor && expression && toImage && remove && add)) {
+            return values;
+        }
+        values.fromImageRows = channelSetOf(fromImage, kDeepFromImageParamChannels)->getRows();
+        values.zChannel = std::dynamic_pointer_cast<KnobChannelSelect>(fromImage->getKnobByName(kDeepFromImageParamZChannel))->get();
+        values.toImageRows = channelSetOf(toImage, kDeepToImageParamChannels)->getRows();
+        values.recolorRows = channelSetOf(recolor, kDeepRecolorParamChannels)->getRows();
+        values.expressionLayer = std::dynamic_pointer_cast<KnobLayerSelect>(expression->getKnobByName(kDeepExpressionParamLayer))->getLayer();
+        values.expression1 = std::dynamic_pointer_cast<KnobString>(expression->getKnobByName("expression1"))->getValue();
+        values.removeOperation = std::dynamic_pointer_cast<KnobChoice>(remove->getKnobByName(kDeepRemoveLayersParamOperation))->getValue();
+        values.removeRows = channelSetOf(remove, kDeepRemoveLayersParamChannels)->getRows();
+        values.addRows = channelSetOf(add, kDeepAddLayersParamLayers)->getRows();
+
+        return values;
+    }
+
+    ImagePtr renderImageFrame(const NodePtr& node,
+                              const ImageLayerDesc& layer)
+    {
+        const RectI roi = kFrame;
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        ParallelRenderArgsSetter frameRenderArgs(kTime,
+                                                 ViewIdx(0),
+                                                 true /*isRenderUserInteraction*/,
+                                                 false /*isSequential*/,
+                                                 abortInfo,
+                                                 node,
+                                                 0 /*textureIndex*/,
+                                                 getApp()->getTimeLine().get(),
+                                                 NodePtr(),
+                                                 false /*isAnalysis*/,
+                                                 false /*draftMode*/,
+                                                 RenderStatsPtr());
+        EffectInstancePtr effect = node->getEffectInstance();
+
+        RectD rod;
+        bool isProjectFormat = false;
+        if (effect->getRegionOfDefinition_public(node->getHashValue(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat) == eStatusFailed) {
+            return ImagePtr();
+        }
+        FrameRequestMap request;
+        if (EffectInstance::computeRequestPass(kTime, ViewIdx(0), 0 /*mipmapLevel*/, rod, node, request) == eStatusFailed) {
+            return ImagePtr();
+        }
+        frameRenderArgs.updateNodesRequest(request);
+
+        std::list<ImageLayerDesc> components;
+        components.push_back(layer);
+        EffectInstance::RenderRoIArgs args(kTime,
+                                           RenderScale::identity,
+                                           0 /*mipmapLevel*/,
+                                           ViewIdx(0),
+                                           false /*byPassCache*/,
+                                           roi,
+                                           rod,
+                                           components,
+                                           eImageBitDepthFloat,
+                                           false /*calledFromGetImage*/,
+                                           0 /*caller*/,
+                                           eStorageModeRAM,
+                                           kTime);
+        std::map<ImageLayerDesc, ImagePtr> layers;
+        const EffectInstance::RenderRoIRetCode code = effect->renderRoI(args, &layers);
+        if ((code != EffectInstance::eRenderRoIRetCodeOk) || layers.empty()) {
+            return ImagePtr();
+        }
+
+        return layers.begin()->second;
+    }
+
+    // The flattened pixels of every layer toImage presents, keyed by layer ID.
+    std::map<std::string, std::vector<float>> renderToImageLayers(const NodePtr& toImage)
+    {
+        std::map<std::string, std::vector<float>> result;
+        std::list<ImageLayerDesc> layers;
+
+        toImage->getEffectInstance()->getPresentLayers(kTime, ViewIdx(0), -1, &layers);
+        for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+            ImagePtr image = renderImageFrame(toImage, *it);
+            EXPECT_TRUE(image != NULL) << it->getLayerID();
+            if (!image) {
+                continue;
+            }
+            const unsigned int nComps = image->getComponentsCount();
+            std::vector<float>& pixels = result[it->getLayerID()];
+            Image::ReadAccess access = image->getReadRights();
+            for (int y = kFrame.y1; y < kFrame.y2; ++y) {
+                for (int x = kFrame.x1; x < kFrame.x2; ++x) {
+                    const float* pixel = (const float*)access.pixelAt(x, y);
+                    EXPECT_TRUE(pixel != NULL);
+                    if (!pixel) {
+                        return result;
+                    }
+                    pixels.insert(pixels.end(), pixel, pixel + nComps);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    std::set<std::string> renderedChannels(const NodePtr& node)
+    {
+        DeepImagePtr deep;
+
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(node, kTime, &deep));
+        if (!deep) {
+            return std::set<std::string>();
+        }
+
+        return channelNamesOf(*deep);
+    }
+};
+
+TEST_F(DeepLayersRoundTripTest, LayerKnobsSurviveSaveResetLoadAndRenderIdentically)
+{
+    Graph graph;
+    ASSERT_TRUE(buildGraph(&graph));
+
+    const KnobValues before = readKnobs(graph);
+    ASSERT_EQ(2u, before.fromImageRows.size());
+    ASSERT_EQ(std::string("diffuse.G"), before.zChannel);
+    ASSERT_EQ(2u, before.toImageRows.size());
+    ASSERT_EQ(1u, before.recolorRows.size());
+    ASSERT_EQ(std::string("diffuse"), before.expressionLayer);
+    ASSERT_EQ(std::string("diffuse.G * 2"), before.expression1);
+    ASSERT_EQ((int)DeepRemoveLayers::eOperationKeep, before.removeOperation);
+    ASSERT_EQ(1u, before.removeRows.size());
+    ASSERT_EQ(ChannelSetRow::eModeRegex, before.removeRows[0].mode);
+    ASSERT_EQ(1u, before.addRows.size());
+
+    NodePtr toImage = nodeNamed(graph.toImage);
+    NodePtr add = nodeNamed(graph.add);
+    const std::map<std::string, std::vector<float>> imagesBefore = renderToImageLayers(toImage);
+    ASSERT_EQ(2u, imagesBefore.size());
+    for (std::map<std::string, std::vector<float>>::const_iterator it = imagesBefore.begin(); it != imagesBefore.end(); ++it) {
+        EXPECT_FALSE(it->second.empty()) << it->first;
+    }
+    const std::set<std::string> channelsBefore = renderedChannels(add);
+    EXPECT_TRUE(channelsBefore.count("specular.R") == 1);
+    EXPECT_TRUE(channelsBefore.count("diffuse.R") == 0);
+    EXPECT_TRUE(channelsBefore.count("mask.A") == 1);
+    EXPECT_TRUE(channelsBefore.count("A") == 1);
+
+    std::list<ImageLayerDesc> presentBefore;
+    toImage->getEffectInstance()->getPresentLayers(kTime, ViewIdx(0), -1, &presentBefore);
+
+    ProjectPtr project = getApp()->getProject();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString dirPath = tmp.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("deep-layers-roundtrip.ntp");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+
+    project->reset(false, true);
+    ASSERT_TRUE(project->getNodeByName(graph.fromImage).get() == NULL);
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    const KnobValues after = readKnobs(graph);
+    EXPECT_EQ(before.fromImageRows, after.fromImageRows);
+    EXPECT_EQ(before.zChannel, after.zChannel);
+    EXPECT_EQ(before.toImageRows, after.toImageRows);
+    EXPECT_EQ(before.recolorRows, after.recolorRows);
+    EXPECT_EQ(before.expressionLayer, after.expressionLayer);
+    EXPECT_EQ(before.expression1, after.expression1);
+    EXPECT_EQ(before.removeOperation, after.removeOperation);
+    EXPECT_EQ(before.removeRows, after.removeRows);
+    EXPECT_EQ(before.addRows, after.addRows);
+
+    ImageLayerDesc mask;
+    EXPECT_TRUE(project->findLayer("mask", &mask));
+
+    NodePtr toImage2 = nodeNamed(graph.toImage);
+    NodePtr add2 = nodeNamed(graph.add);
+    ASSERT_TRUE(toImage2 && add2);
+    std::list<ImageLayerDesc> presentAfter;
+    toImage2->getEffectInstance()->getPresentLayers(kTime, ViewIdx(0), -1, &presentAfter);
+    EXPECT_EQ(describe(presentBefore), describe(presentAfter));
+
+    const std::map<std::string, std::vector<float>> imagesAfter = renderToImageLayers(toImage2);
+    EXPECT_EQ(imagesBefore, imagesAfter);
+    EXPECT_EQ(channelsBefore, renderedChannels(add2));
+}
+
+TEST_F(DeepLayersRoundTripTest, PythonListsTheDeepLayersAndTheRegistryLayers)
+{
+    registerMask();
+
+    NodePtr read = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPREAD));
+    ASSERT_TRUE(bool(read));
+    KnobFile* file = dynamic_cast<KnobFile*>(read->getKnobByName("filename").get());
+    ASSERT_TRUE(file != NULL);
+    file->setValue(std::string(NATRON_TESTS_FIXTURES_DIR "/deep-layers.exr"));
+    read->registerProducedLayers();
+
+    NodePtr toImage = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPTOIMAGE));
+    ASSERT_TRUE(bool(toImage));
+    connectNodes(read, toImage, 0, true);
+
+    const char* const colorViews[] = { "rgba", "rgb", "alpha" };
+    const NodePtr nodes[] = { read, toImage };
+    for (const NodePtr& node : nodes) {
+        SCOPED_TRACE(node->getScriptName());
+
+        // The registry already holds diffuse and specular, so only the stream's own list proves
+        // that this node carries them.
+        std::list<ImageLayerDesc> present;
+        node->getEffectInstance()->getPresentLayers(kTime, ViewIdx(0), -1, &present);
+        EXPECT_EQ(std::vector<std::string>({ "Color(4)", "diffuse", "specular" }), describe(present));
+
+        Effect effect(node);
+        std::list<ImageLayer> available = effect.getAvailableLayers(-1);
+        std::vector<std::string> names;
+        for (std::list<ImageLayer>::const_iterator it = available.begin(); it != available.end(); ++it) {
+            names.push_back(it->getLayerName().toStdString());
+        }
+        ASSERT_GE(names.size(), std::size_t(6));
+        for (std::size_t i = 0; i < 3; ++i) {
+            EXPECT_EQ(std::string(colorViews[i]), names[i]);
+        }
+        EXPECT_TRUE(std::find(names.begin(), names.end(), "mask") != names.end());
+        EXPECT_EQ(1, std::count(names.begin(), names.end(), "diffuse"));
+        EXPECT_EQ(1, std::count(names.begin(), names.end(), "specular"));
+
+        const std::string script = "names = [layer.getLayerName() for layer in " + getApp()->getAppIDString() + ".getNode(\"" + node->getScriptName() + "\").getAvailableLayers(-1)]\n"
+            + "if names[:3] != [\"rgba\", \"rgb\", \"alpha\"] or any(names.count(n) != 1 for n in (\"diffuse\", \"specular\", \"mask\")):\n"
+            + "    raise ValueError(str(names))\n";
+        std::string error, output;
+        EXPECT_TRUE(interpretPythonScript(script, &error, &output)) << error;
+    }
 }

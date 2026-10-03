@@ -104,6 +104,7 @@ ComboBox::ComboBox(QWidget* parent)
     , _validHints(false)
     , _align(Qt::AlignLeft | Qt::AlignVCenter | Qt::TextExpandTabs)
     , _currentDelta(0)
+    , _elidedWidth(0)
     , ignoreWheelEvent(false)
 {
     _rootNode = std::make_shared<ComboBoxMenuNode>();
@@ -172,7 +173,7 @@ ComboBox::sizeForWidth(int w) const
         br = fm.boundingRect(0, 0, w / 4, 2000, flags, _currentText);
     }
 
-    const QSize contentsSize(br.width() + hextra, br.height() + vextra);
+    const QSize contentsSize(_elidedWidth > 0 ? _elidedWidth : br.width() + hextra, br.height() + vextra);
 
     return (contentsSize + contentsMargin).expandedTo( minimumSize() );
 } // ComboBox::sizeForWidth
@@ -360,7 +361,8 @@ ComboBox::paintEvent(QPaintEvent* /*e*/)
         p.setPen(pen);
 
         QRectF lr = layoutRect().toAlignedRect();
-        p.drawText(lr.toRect(), flags, _currentText);
+        const QString shown = _elidedWidth > 0 ? p.fontMetrics().elidedText(_currentText, Qt::ElideMiddle, lr.toRect().width()) : _currentText;
+        p.drawText(lr.toRect(), flags, shown);
     }
 
     {
@@ -738,7 +740,7 @@ ComboBox::setCurrentText_internal(const QString & text)
 void
 ComboBox::setMaximumWidthFromText(const QString & str)
 {
-    if (_sizePolicy.horizontalPolicy() == QSizePolicy::Fixed) {
+    if (_elidedWidth > 0 || _sizePolicy.horizontalPolicy() == QSizePolicy::Fixed) {
         return;
     }
     int w = fontMetrics().horizontalAdvance(str);
@@ -755,6 +757,19 @@ ComboBox::growMaximumWidthFromText(const QString & str)
     if ( w > maximumWidth() ) {
         setMaximumWidth(w);
     }
+}
+
+void
+ComboBox::setElidedWidth(int w)
+{
+    _elidedWidth = std::max(w, 0);
+    if (_elidedWidth > 0) {
+        setFixedWidth(_elidedWidth);
+    } else {
+        setMinimumWidth(0);
+        setMaximumWidth(QWIDGETSIZE_MAX);
+    }
+    updateLabel();
 }
 
 int
@@ -838,7 +853,7 @@ ComboBox::setCurrentIndex_internal(int index)
 
     str = strippedText(text);
 
-    if (_sizePolicy.horizontalPolicy() != QSizePolicy::Fixed) {
+    if (_elidedWidth == 0 && _sizePolicy.horizontalPolicy() != QSizePolicy::Fixed) {
         QFontMetrics m = fontMetrics();
         int w = m.horizontalAdvance(str) + 2 * DROP_DOWN_ICON_SIZE;
         setMinimumWidth(w);

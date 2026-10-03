@@ -23,17 +23,20 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include <list>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include <QByteArray>
+#include <QFile>
 #include <QString>
 #include <QTemporaryDir>
 
 #include <OpenColorIO/OpenColorIO.h>
 
+#include <ofxColour.h>
 #include <ofxImageEffect.h>
 
 #include "Engine/AppInstance.h"
@@ -43,6 +46,9 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/OfxEffectInstance.h"
+#include "Engine/OfxImageEffectInstance.h"
+#include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/ReadNode.h"
@@ -232,6 +238,29 @@ restoreEnvVar(const char* name,
     } else {
         qunsetenv(name);
     }
+}
+
+std::string
+ofxConfigProperty(const NodePtr& node)
+{
+    OfxEffectInstance* effect = node ? dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get()) : NULL;
+
+    EXPECT_TRUE(effect != NULL);
+    if (!effect || !effect->effectInstance()) {
+        return std::string();
+    }
+
+    return effect->effectInstance()->getProps().getStringProperty(kOfxImageEffectPropOCIOConfig, 0);
+}
+
+void
+setWorkingSpace(const char* name)
+{
+    KnobChoicePtr workingSpace = project()->getKnobByNameAndType<KnobChoice>("workingSpace");
+
+    ASSERT_TRUE(bool(workingSpace));
+    workingSpace->setValueFromID(name, 0);
+    ASSERT_EQ(std::string(name), project()->getWorkingColorSpace());
 }
 
 void
@@ -545,4 +574,149 @@ TEST_F(ProjectOCIOTest, CDLAndFileTransformsCarryThePushedConfig)
 
     expectCarriesConfig(cdl, kCGURI);
     expectCarriesConfig(fileTransform, kCGURI);
+}
+
+TEST_F(ProjectOCIOTest, AHostOwnedConfigSwitchLeavesARoleNamedColorSpaceAsWritten)
+{
+    ASSERT_TRUE(configDefines(kCGURI, "scene_linear"));
+
+    NodePtr colorSpace = createNode(kOCIOColorSpaceID);
+    ASSERT_TRUE(bool(colorSpace));
+    plantInputSpace(colorSpace, "scene_linear");
+    plantSpace(colorSpace, "ocioOutputSpace", "color_picking");
+
+    switchProjectConfig(kCGURI);
+
+    EXPECT_EQ(std::string("scene_linear"), stringKnob(colorSpace, "ocioInputSpace")->getValue());
+    EXPECT_EQ(std::string("color_picking"), stringKnob(colorSpace, "ocioOutputSpace")->getValue());
+    EXPECT_FALSE(colorSpace->hasPersistentMessage());
+}
+
+TEST_F(ProjectOCIOTest, ChangingTheWorkingSpaceMovesOnlyTheTechnicalSideOfExistingReadsAndWrites)
+{
+    NodePtr read = createReader("flat-rgb-only.exr");
+    NodePtr write = createNode(PLUGINID_OFX_WRITEOIIO);
+    NodePtr colorSpace = createNode(kOCIOColorSpaceID);
+    ASSERT_TRUE(bool(embeddedNode(read)));
+    ASSERT_TRUE(bool(embeddedNode(write)));
+    ASSERT_TRUE(bool(colorSpace));
+    plantInputSpace(colorSpace, kSharedSpace);
+    plantSpace(colorSpace, "ocioOutputSpace", kSharedSpace);
+
+    const NodePtr decoder = embeddedNode(read);
+    const NodePtr encoder = embeddedNode(write);
+    ASSERT_EQ(std::string(kSharedSpace), stringKnob(decoder, "ocioOutputSpace")->getValue());
+    ASSERT_EQ(std::string(kSharedSpace), stringKnob(encoder, "ocioInputSpace")->getValue());
+    const std::string readFileSpace = stringKnob(decoder, "ocioInputSpace")->getValue();
+    const std::string writeFileSpace = stringKnob(encoder, "ocioOutputSpace")->getValue();
+
+    setWorkingSpace("ACEScct");
+
+    EXPECT_EQ(std::string("ACEScct"), stringKnob(decoder, "ocioOutputSpace")->getValue());
+    EXPECT_EQ(std::string("ACEScct"), stringKnob(encoder, "ocioInputSpace")->getValue());
+    EXPECT_EQ(readFileSpace, stringKnob(decoder, "ocioInputSpace")->getValue());
+    EXPECT_EQ(writeFileSpace, stringKnob(encoder, "ocioOutputSpace")->getValue());
+    EXPECT_EQ(std::string(kSharedSpace), stringKnob(colorSpace, "ocioInputSpace")->getValue());
+    EXPECT_EQ(std::string(kSharedSpace), stringKnob(colorSpace, "ocioOutputSpace")->getValue());
+
+    setWorkingSpace(kSharedSpace);
+
+    EXPECT_EQ(std::string(kSharedSpace), stringKnob(decoder, "ocioOutputSpace")->getValue());
+    EXPECT_EQ(std::string(kSharedSpace), stringKnob(encoder, "ocioInputSpace")->getValue());
+    EXPECT_EQ(readFileSpace, stringKnob(decoder, "ocioInputSpace")->getValue());
+    EXPECT_EQ(writeFileSpace, stringKnob(encoder, "ocioOutputSpace")->getValue());
+}
+
+TEST_F(ProjectOCIOTest, AConfigFileThatFailsToLoadKeepsTheKnobButPublishesTheConfigInUse)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string missing = (tmp.path() + QString::fromUtf8("/missing.ocio")).toStdString();
+
+    NodePtr read = createReader("flat-rgb-only.exr");
+    ASSERT_TRUE(bool(embeddedNode(read)));
+
+    KnobChoicePtr config = project()->getKnobByNameAndType<KnobChoice>("ocioConfig");
+    KnobStringBasePtr configFile = project()->getKnobByNameAndType<KnobStringBase>("ocioConfigFile");
+    ASSERT_TRUE(bool(config));
+    ASSERT_TRUE(bool(configFile));
+    config->setValueFromID("Custom config", 0);
+    configFile->setValue(missing);
+
+    EXPECT_EQ(missing, configFile->getValue());
+    EXPECT_EQ(missing, project()->getRequestedOCIOConfigSource());
+    EXPECT_EQ(std::string(kStudioURI), project()->getColorManagement()->getConfigSource());
+    EXPECT_EQ(std::string(kStudioURI), project()->getOCIOConfigSource());
+    EXPECT_FALSE(project()->getOCIOConfigError(0));
+    expectCarriesConfig(read, kStudioURI);
+    expectCarriesConfig(embeddedNode(read), kStudioURI);
+    EXPECT_EQ(std::string(kStudioURI), ofxConfigProperty(embeddedNode(read)));
+}
+
+namespace {
+NodePtr
+createConstantIntoPngWriter(const std::string& path)
+{
+    NodePtr constant = createNode("net.sf.openfx.ConstantPlugin");
+    CreateNodeArgs writerArgs(PLUGINID_OFX_WRITEPNG, project());
+    writerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, path);
+    NodePtr writer = appPTR->getTopLevelInstance()->createNode(writerArgs);
+    EXPECT_TRUE(bool(constant));
+    EXPECT_TRUE(bool(writer));
+    if (!constant || !writer || !project()->connectNodes(0, constant, writer)) {
+        return NodePtr();
+    }
+
+    return writer;
+}
+
+bool
+renderFrameOne(const NodePtr& writer)
+{
+    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
+    if (!writerEffect) {
+        return false;
+    }
+    std::list<AppInstance::RenderWork> works;
+    works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
+    appPTR->getTopLevelInstance()->startWritersRendering(false, works);
+
+    return true;
+}
+} // namespace
+
+TEST_F(ProjectOCIOTest, AnOCIOOverrideThatFailsToLoadFailsRendersInsteadOfUsingAnotherConfig)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string missing = (tmp.path() + QString::fromUtf8("/missing.ocio")).toStdString();
+    const std::string failedPath = (tmp.path() + QString::fromUtf8("/failed.png")).toStdString();
+    const std::string renderedPath = (tmp.path() + QString::fromUtf8("/rendered.png")).toStdString();
+
+    setOCIOOverride(missing.c_str());
+    project()->reset(false, true);
+
+    EXPECT_EQ(missing, project()->getRequestedOCIOConfigSource());
+    const std::string inUse = project()->getColorManagement()->getConfigSource();
+    ASSERT_FALSE(inUse.empty());
+    EXPECT_NE(missing, inUse);
+    EXPECT_EQ(inUse, project()->getOCIOConfigSource());
+    std::string error;
+    ASSERT_TRUE(project()->getOCIOConfigError(&error));
+    EXPECT_NE(std::string::npos, error.find(missing)) << error;
+
+    NodePtr writer = createConstantIntoPngWriter(failedPath);
+    ASSERT_TRUE(bool(writer));
+    expectCarriesConfig(embeddedNode(writer), inUse);
+    ASSERT_TRUE(renderFrameOne(writer));
+    EXPECT_FALSE(QFile::exists(QString::fromStdString(failedPath)));
+
+    setOCIOOverride(0);
+    project()->reset(false, true);
+    EXPECT_FALSE(project()->getOCIOConfigError(0));
+
+    writer = createConstantIntoPngWriter(renderedPath);
+    ASSERT_TRUE(bool(writer));
+    ASSERT_TRUE(renderFrameOne(writer));
+    EXPECT_TRUE(QFile::exists(QString::fromStdString(renderedPath)));
 }

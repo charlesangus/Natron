@@ -261,12 +261,6 @@ public:
 private:
     ProjectPtr getOCIOProject() const;
 
-    // Plugins read these by reference, so each getter refreshes its string under the mutex
-    // and returns it; the value is only stable until the next get.
-    mutable QMutex _ocioMutex;
-    mutable std::string _ocioConfigSource;
-    mutable std::string _ocioWorkingColourspace;
-    mutable std::vector<std::string> _ocioFileColourspaces;
     OfxEffectInstanceWPtr _ofxEffectInstance; /* FIXME: OfxImageEffectInstance should be able to work without the node_ //
                                                               Not easy since every Knob need a valid pointer to a node when
                                                               AppManager::createKnob() is called. That's why we need to pass a pointer

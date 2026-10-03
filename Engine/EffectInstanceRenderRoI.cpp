@@ -312,6 +312,17 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         return _imp->mainInstance->renderRoI(args, outputLayers);
     }
 
+    {
+        const AppInstancePtr app = getApp();
+        const ProjectPtr project = app ? app->getProject() : ProjectPtr();
+        std::string ocioError;
+        if (project && project->getOCIOConfigError(&ocioError)) {
+            setPersistentMessage(eMessageTypeError, ocioError);
+
+            return eRenderRoIRetCodeFailed;
+        }
+    }
+
     //Create the TLS data for this node if it did not exist yet
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     assert(tls);

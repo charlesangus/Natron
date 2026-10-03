@@ -119,7 +119,7 @@ echo "Assets dir:  ${ASSETS_DIR}"
 # SEEXPR_REF: wdas/SeExpr, branch v1-2.11, not v2/v3 -- openfx-io's
 # SeNoise.cpp targets the v1-2.11 header layout. Not forked.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="a7a511eed8c52763a49157000617c0afac151659"
+OPENFX_IO_REF="af11bffa2690f1eb4c29a613bffe396867e16967"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 
@@ -199,7 +199,7 @@ IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 # readers (ReadPSD, ReadMisc, ReadSVG, ReadCDR, ReadKrita, OpenRaster)
 # drop the filePremult out-parameter that GenericReader no longer has.
 OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
-OPENFX_ARENA_REF="d51cb41b0a72719cb85c1d73951ce466a1a3e4b7"
+OPENFX_ARENA_REF="0f791700006c75d7f4a5e26ced11bf16e528c964"
 
 # OPENFX_METADATA_REF: charlesangus/openfx -- our ASWF-lineage OpenFX fork,
 # whose Support/Plugins/Metadata* examples exercise the clip and image

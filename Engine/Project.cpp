@@ -301,6 +301,7 @@ NATRON_NAMESPACE_ANONYMOUS_ENTER
 // writes or converts through OpenColorIO (see IOSupport/GenericOCIO.h), also
 // mirrored by Engine/ReadNode.cpp and Engine/WriteNode.cpp.
 const char* const ocioConfigFileKnobName = "ocioConfigFile";
+const char* const ocioWorkingSpaceKnobName = "ocioWorkingSpace";
 const char* const ocioColorSpaceKnobNames[] = { "ocioInputSpace", "ocioOutputSpace" };
 
 std::string
@@ -321,18 +322,19 @@ getStringKnobValue(const NodePtr& node,
 }
 
 void
-setOCIOConfigKnob(const NodePtr& node,
-                  const std::string& source)
+setHostOCIOKnob(const NodePtr& node,
+                const char* knobName,
+                const std::string& value)
 {
     if (!node) {
         return;
     }
-    KnobStringBasePtr knob = std::dynamic_pointer_cast<KnobStringBase>(node->getKnobByName(ocioConfigFileKnobName));
+    KnobStringBasePtr knob = std::dynamic_pointer_cast<KnobStringBase>(node->getKnobByName(knobName));
     if (!knob) {
         return;
     }
-    if (knob->getValue() != source) {
-        knob->setValue(source, ViewSpec::all(), 0, eValueChangedReasonPluginEdited, 0);
+    if (knob->getValue() != value) {
+        knob->setValue(value, ViewSpec::all(), 0, eValueChangedReasonPluginEdited, 0);
     }
     // The secret state is serialized, so a loaded node may have brought it back visible.
     knob->setSecret(true);
@@ -347,14 +349,20 @@ Project::pushOCIOConfigToNode(const NodePtr& node)
         return;
     }
     const std::string source = getOCIOConfigSource();
-    setOCIOConfigKnob(node, source);
-
+    const std::string workingSpace = getWorkingColorSpace();
+    NodePtr embedded;
     EffectInstancePtr effect = node->getEffectInstance();
     if (ReadNode* isRead = dynamic_cast<ReadNode*>(effect.get())) {
-        setOCIOConfigKnob(isRead->getEmbeddedReader(), source);
+        embedded = isRead->getEmbeddedReader();
     } else if (WriteNode* isWrite = dynamic_cast<WriteNode*>(effect.get())) {
-        setOCIOConfigKnob(isWrite->getEmbeddedWriter(), source);
+        embedded = isWrite->getEmbeddedWriter();
     }
+
+    // The working space is a name in the config, so the plug-in must have loaded the config first.
+    setHostOCIOKnob(node, ocioConfigFileKnobName, source);
+    setHostOCIOKnob(embedded, ocioConfigFileKnobName, source);
+    setHostOCIOKnob(node, ocioWorkingSpaceKnobName, workingSpace);
+    setHostOCIOKnob(embedded, ocioWorkingSpaceKnobName, workingSpace);
 }
 
 void
@@ -1563,19 +1571,32 @@ Project::refreshColorManagement(bool warnOnFallback)
     FlagSetter suppressRefresh(true, &_imp->suppressColorManagementRefresh);
     ProjectColorManagement& cm = *_imp->colorManagement;
     const bool isCustom = _imp->ocioConfig->getActiveEntry().id == kCustomOCIOConfigID;
-    const std::string source = getOCIOConfigSource();
+    const std::string source = getRequestedOCIOConfigSource();
+    const std::string envOverride = appPTR->getCurrentSettings()->getOCIOEnvOverride();
+    std::string envOverrideError;
 
     // Choosing Custom before picking a file is an intermediate state, not an error.
     if (!source.empty() && (!cm.getConfig() || (source != cm.getConfigSource()))) {
         std::string error;
         // The Color page is built before the project path knob exists.
         if (cm.load(source, _imp->projectPath ? _imp->getProjectPath() : std::string(), &error) != ProjectColorManagement::eLoadErrorNone) {
-            const QString message = tr("Could not load the OpenColorIO config \"%1\": %2\nThe previous config stays in use.")
+            const QString consequence = envOverride.empty()
+                ? tr("The previous config stays in use.")
+                : tr("Nothing renders until the OCIO environment variable names a config that loads.");
+            const QString message = tr("Could not load the OpenColorIO config \"%1\": %2\n%3")
                                         .arg(QString::fromUtf8(source.c_str()))
-                                        .arg(QString::fromUtf8(error.c_str()));
+                                        .arg(QString::fromUtf8(error.c_str()))
+                                        .arg(consequence);
+            if (!envOverride.empty()) {
+                envOverrideError = message.toStdString();
+            }
             appPTR->writeToErrorLog_mt_safe(tr("Color management"), QDateTime::currentDateTime(), message);
             getApp()->errorDialog(tr("Color management").toStdString(), message.toStdString(), false);
         }
+    }
+    {
+        QMutexLocker k(&_imp->ocioConfigErrorMutex);
+        _imp->ocioConfigError = envOverrideError;
     }
     if (!cm.getConfig()) {
         cm.load(kDefaultOCIOConfigURI, std::string(), 0);
@@ -1600,7 +1621,6 @@ Project::refreshColorManagement(bool warnOnFallback)
         getApp()->warningDialog(tr("Color management").toStdString(), message.toStdString(), false);
     }
 
-    const std::string envOverride = appPTR->getCurrentSettings()->getOCIOEnvOverride();
     if (envOverride.empty()) {
         _imp->ocioConfig->setAllDimensionsEnabled(true);
         _imp->ocioConfig->setHintToolTip(ocioConfigToolTip());
@@ -1649,6 +1669,29 @@ Project::resetOCIOConfigKnobsForRestore()
 
 std::string
 Project::getOCIOConfigSource() const
+{
+    const std::string effective = _imp->colorManagement->getConfigSource();
+
+    return effective.empty() ? getRequestedOCIOConfigSource() : effective;
+}
+
+bool
+Project::getOCIOConfigError(std::string* error) const
+{
+    QMutexLocker k(&_imp->ocioConfigErrorMutex);
+
+    if (_imp->ocioConfigError.empty()) {
+        return false;
+    }
+    if (error) {
+        *error = _imp->ocioConfigError;
+    }
+
+    return true;
+}
+
+std::string
+Project::getRequestedOCIOConfigSource() const
 {
     const std::string envOverride = appPTR->getCurrentSettings()->getOCIOEnvOverride();
     if (!envOverride.empty()) {
@@ -2266,6 +2309,7 @@ Project::onKnobValueChanged(KnobI* knob,
         // The viewers' display processors start from the working space, so they must be rebuilt.
         if (!_imp->suppressColorManagementRefresh) {
             _imp->colorManagement->notifyConfigChanged();
+            pushOCIOConfigToNodes();
         }
         shouldAutoSave = true;
     } else {

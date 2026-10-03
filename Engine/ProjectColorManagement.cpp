@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cmath>
 #include <exception>
+#include <mutex>
 #include <thread>
 #include <utility>
 
@@ -111,25 +112,48 @@ const float kEightBitTolerance = 0.35f / 255.f;
 // The LUT path costs about 60 ns per pixel; a cheaper processor runs exact.
 const double kSlowProcessorNanosecondsPerPixel = 150.;
 
+// Rethrows, after every thread has joined, the first exception any call to f threw; the
+// remaining indices are skipped once one has failed.
 template <typename F>
 void
 runInParallel(int count, const F& f)
 {
     const int nThreads = std::max(1, std::min(count, (int)std::thread::hardware_concurrency()));
     std::atomic<int> next(0);
-    std::vector<std::thread> threads;
-    for (int t = 1; t < nThreads; ++t) {
-        threads.push_back(std::thread([&]() {
-            for (int i = next++; i < count; i = next++) {
+    std::atomic<bool> failed(false);
+    std::mutex errorMutex;
+    std::exception_ptr error;
+    const auto work = [&]() {
+        try {
+            for (int i = next++; (i < count) && !failed; i = next++) {
                 f(i);
             }
-        }));
+        } catch (...) {
+            std::lock_guard<std::mutex> lock(errorMutex);
+            if (!error) {
+                error = std::current_exception();
+            }
+            failed = true;
+        }
+    };
+    std::vector<std::thread> threads;
+    try {
+        for (int t = 1; t < nThreads; ++t) {
+            threads.push_back(std::thread(work));
+        }
+    } catch (...) {
+        std::lock_guard<std::mutex> lock(errorMutex);
+        if (!error) {
+            error = std::current_exception();
+        }
+        failed = true;
     }
-    for (int i = next++; i < count; i = next++) {
-        f(i);
-    }
+    work();
     for (std::size_t t = 0; t < threads.size(); ++t) {
         threads[t].join();
+    }
+    if (error) {
+        std::rethrow_exception(error);
     }
 }
 }
@@ -341,6 +365,8 @@ EightBitDisplayLut::bake(const OCIO::ConstCPUProcessorRcPtr& cpu)
     } catch (const std::exception& e) {
         qDebug() << "EightBitDisplayLut::bake:" << e.what();
 
+        return std::shared_ptr<const EightBitDisplayLut>();
+    } catch (...) {
         return std::shared_ptr<const EightBitDisplayLut>();
     }
 }
@@ -605,6 +631,7 @@ ProjectColorManagement::getDisplayProcessor(const std::string& src,
 {
     const std::string key = src + "|" + display + "|" + view + "|" + look;
     OCIO::ConstConfigRcPtr config;
+    bool builtinConfig = false;
     {
         QMutexLocker k(&_mutex);
         std::map<std::string, DisplayProcessorPtr>::const_iterator it = _displayCache.find(key);
@@ -612,6 +639,7 @@ ProjectColorManagement::getDisplayProcessor(const std::string& src,
             return it->second;
         }
         config = _config;
+        builtinConfig = isURI(_source);
     }
     if (!config) {
         if (error) {
@@ -622,6 +650,7 @@ ProjectColorManagement::getDisplayProcessor(const std::string& src,
     }
 
     std::shared_ptr<DisplayProcessor> result = std::make_shared<DisplayProcessor>();
+    result->eightBitLutAllowed = builtinConfig;
     try {
         OCIO::DisplayViewTransformRcPtr transform = OCIO::DisplayViewTransform::Create();
         transform->setSrc(src.c_str());
@@ -669,7 +698,9 @@ ProjectColorManagement::DisplayProcessor::applyForEightBitOutput(float* rgba,
         return;
     }
     std::call_once(_eightBitLutOnce, [this]() {
-        _eightBitLut = EightBitDisplayLut::bake(cpu);
+        if (eightBitLutAllowed) {
+            _eightBitLut = EightBitDisplayLut::bake(cpu);
+        }
     });
     if (_eightBitLut) {
         _eightBitLut->apply(*cpu, rgba, width);

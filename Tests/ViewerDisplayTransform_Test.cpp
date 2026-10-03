@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -34,6 +35,8 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+
+#include <QTemporaryDir>
 
 #include <boost/archive/binary_iarchive.hpp>
 #include <boost/archive/binary_oarchive.hpp>
@@ -208,6 +211,40 @@ TEST_F(ViewerDisplayTransformOCIO, EightBitOutputStaysWithinOneCodeValue)
         for (int i = 0; i < 8; ++i) {
             EXPECT_EQ(gammaExact[i], gammaEightBit[i]) << view << " gamma 2.2, index " << i;
         }
+    }
+}
+
+TEST_F(ViewerDisplayTransformOCIO, ACustomConfigFileAlwaysRunsTheExactProcessorForEightBitOutput)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string path = (tmp.path() + QString::fromUtf8("/studio-copy.ocio")).toStdString();
+    {
+        std::ofstream out(path.c_str());
+        _cm.getConfig()->serialize(out);
+        ASSERT_TRUE(out.good());
+    }
+
+    ProjectColorManagement custom;
+    std::string error;
+    ASSERT_EQ(ProjectColorManagement::eLoadErrorNone, custom.load(path, std::string(), &error)) << error;
+    custom.setWorkingSpace(kWorkingSpace);
+
+    ProjectColorManagement::DisplayProcessorPtr builtin = processor(kSDRView);
+    ProjectColorManagement::DisplayProcessorPtr fromFile = custom.getDisplayProcessor(kWorkingSpace, kDisplay, kSDRView, std::string(), &error);
+    ASSERT_TRUE(builtin && builtin->cpu);
+    ASSERT_TRUE(fromFile && fromFile->cpu) << error;
+    EXPECT_TRUE(builtin->eightBitLutAllowed);
+    EXPECT_FALSE(fromFile->eightBitLutAllowed);
+
+    const std::vector<float> input = eightBitAccuracyColors();
+    std::vector<float> exact = input;
+    std::vector<float> eightBit = input;
+    const int width = (int)input.size() / 4;
+    applyViewerDisplayTransform(*fromFile, &exact[0], width, 1., 0., 1., eViewerDisplayOutputExact);
+    applyViewerDisplayTransform(*fromFile, &eightBit[0], width, 1., 0., 1., eViewerDisplayOutputEightBit);
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        ASSERT_EQ(exact[i], eightBit[i]) << "index " << i;
     }
 }
 
@@ -403,4 +440,24 @@ TEST(ViewerDisplayTransform, FrameKeyRoundTripsThroughSerialization)
     EXPECT_EQ(original.getDisplayTransformHash(), restored.getDisplayTransformHash());
     EXPECT_TRUE(original == restored);
     EXPECT_EQ(original.getHash(), restored.getHash());
+}
+
+TEST(ViewerDisplayTransform, AFrameKeyFromBeforeTheDisplayTransformHashIsRejected)
+{
+    std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        boost::archive::binary_oarchive oArchive(stream);
+        const int time = 10;
+        const U64 treeVersion = 1234;
+        const double gain = 1.5;
+        const double gamma = 0.75;
+        const int lut = 2;
+        const int bitDepth = 1;
+        oArchive << time << treeVersion << gain << gamma << lut << bitDepth;
+    }
+
+    FrameKey restored;
+    boost::archive::binary_iarchive iArchive(stream);
+    EXPECT_THROW(restored.serialize(iArchive, FRAME_KEY_INTRODUCES_CACHE_HOLDER_ID), std::runtime_error);
+    EXPECT_EQ(0U, restored.getDisplayTransformHash());
 }

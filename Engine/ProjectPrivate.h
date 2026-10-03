@@ -97,6 +97,8 @@ public:
     KnobChoicePtr viewerView;
     ProjectColorManagementPtr colorManagement;
     bool suppressColorManagementRefresh; // main thread only
+    mutable QMutex ocioConfigErrorMutex;
+    std::string ocioConfigError; // non-empty while the OCIO override cannot be loaded
     KnobDoublePtr frameRate;
     KnobChoicePtr gpuSupport;
     KnobIntPtr frameRange;

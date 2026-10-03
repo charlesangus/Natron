@@ -307,43 +307,46 @@ OfxImageEffectInstance::getOCIOProject() const
     return effect->getApp()->getProject();
 }
 
+// The property suite hands the plug-in a pointer into the returned string, which it reads after
+// this returns while other render threads may query the same property; a per-thread snapshot
+// stays valid until this thread asks again.
 const std::string&
 OfxImageEffectInstance::getOCIOConfigSource() const
 {
+    thread_local std::string snapshot;
     const ProjectPtr project = getOCIOProject();
-    QMutexLocker k(&_ocioMutex);
 
-    _ocioConfigSource = project ? project->getOCIOConfigSource() : std::string();
+    snapshot = project ? project->getOCIOConfigSource() : std::string();
 
-    return _ocioConfigSource;
+    return snapshot;
 }
 
 const std::string&
 OfxImageEffectInstance::getOCIOWorkingColourspace() const
 {
+    thread_local std::string snapshot;
     const ProjectPtr project = getOCIOProject();
-    QMutexLocker k(&_ocioMutex);
 
-    _ocioWorkingColourspace = project ? project->getWorkingColorSpace() : std::string();
+    snapshot = project ? project->getWorkingColorSpace() : std::string();
 
-    return _ocioWorkingColourspace;
+    return snapshot;
 }
 
 const std::vector<std::string>&
 OfxImageEffectInstance::getOCIOFileColourspaces() const
 {
+    thread_local std::vector<std::string> snapshot;
     const ProjectPtr project = getOCIOProject();
-    QMutexLocker k(&_ocioMutex);
 
-    _ocioFileColourspaces.clear();
+    snapshot.clear();
     if (project) {
-        _ocioFileColourspaces.push_back(project->getFileColorSpace(eFileColorCategory8Bit));
-        _ocioFileColourspaces.push_back(project->getFileColorSpace(eFileColorCategory16Bit));
-        _ocioFileColourspaces.push_back(project->getFileColorSpace(eFileColorCategoryLog));
-        _ocioFileColourspaces.push_back(project->getFileColorSpace(eFileColorCategoryFloat));
+        snapshot.push_back(project->getFileColorSpace(eFileColorCategory8Bit));
+        snapshot.push_back(project->getFileColorSpace(eFileColorCategory16Bit));
+        snapshot.push_back(project->getFileColorSpace(eFileColorCategoryLog));
+        snapshot.push_back(project->getFileColorSpace(eFileColorCategoryFloat));
     }
 
-    return _ocioFileColourspaces;
+    return snapshot;
 }
 
 int

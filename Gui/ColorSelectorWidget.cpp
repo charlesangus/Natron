@@ -719,8 +719,10 @@ ColorSelectorWidget::setColor(float r,
                               float b,
                               float a)
 {
+    float pr = r, pg = g, pb = b;
+    workingToPicking(_colorManagement, &pr, &pg, &pb);
     float h, s, v;
-    Color::rgb_to_hsv(r, g, b, &h, &s, &v);
+    Color::rgb_to_hsv(pr, pg, pb, &h, &s, &v);
 
     setRedChannel(r);
     setGreenChannel(g);
@@ -1017,8 +1019,10 @@ void ColorSelectorWidget::manageColorRGBChanged(bool announce)
     float g = _spinG->value();
     float b = _spinB->value();
     float a = _slideA ? _spinA->value() : 1.;
+    float pr = r, pg = g, pb = b;
+    workingToPicking(_colorManagement, &pr, &pg, &pb);
     float h, s, v;
-    Color::rgb_to_hsv(r, g, b, &h, &s, &v);
+    Color::rgb_to_hsv(pr, pg, pb, &h, &s, &v);
 
     setHueChannel(h);
     setSaturationChannel(s);
@@ -1040,6 +1044,7 @@ ColorSelectorWidget::manageColorHSVChanged(bool announce)
     float a = _slideA ? _spinA->value() : 1.;
     float r, g, b;
     Color::hsv_to_rgb(h, s, v, &r, &g, &b);
+    pickingToWorking(_colorManagement, &r, &g, &b);
 
     setRedChannel(r);
     setGreenChannel(g);

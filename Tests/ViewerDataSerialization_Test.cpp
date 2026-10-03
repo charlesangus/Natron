@@ -30,10 +30,124 @@
 
 #include <gtest/gtest.h>
 
+#include <boost/archive/binary_iarchive.hpp>
+#include <boost/archive/binary_oarchive.hpp>
+
 #include "Engine/RectDSerialization.h"
 #include "Gui/ProjectGuiSerialization.h"
 
 NATRON_NAMESPACE_USING
+
+namespace {
+
+// The ViewerData layout of the version before the OCIO display fields, which stored a viewer
+// colourspace where Display, View and Look now are.
+struct LegacyViewerData {
+    double zoomLeft = 12.;
+    double zoomBottom = -3.;
+    double zoomFactor = 0.5;
+    bool userRoIenabled = true;
+    RectD userRoI = RectD(1., 2., 30., 40.);
+    bool isClippedToProject = false;
+    bool autoContrastEnabled = true;
+    double gain = 2.;
+    double gamma = 1.5;
+    std::string colorSpace = "Linear(None)";
+    std::string layerName = "Color";
+    std::string alphaLayerName = "Color.A";
+    std::string channels = "Luminance";
+    bool renderScaleActivated = true;
+    unsigned int mipmapLevel = 2;
+    bool zoomOrPanSinceLastFit = true;
+    int wipeCompositingOp = 3;
+    int leftBound = 5;
+    int rightBound = 50;
+    bool leftToolbarVisible = false;
+    bool rightToolbarVisible = true;
+    bool topToolbarVisible = false;
+    bool playerVisible = true;
+    bool timelineVisible = false;
+    bool infobarVisible = true;
+    bool isInputAPaused = true;
+    bool isInputBPaused = false;
+    bool checkerboardEnabled = true;
+    double fps = 30.;
+    bool fpsLocked = false;
+    int aChoice = 1;
+    int bChoice = 2;
+    bool fullFrame = true;
+
+    template <class Archive>
+    void serialize(Archive& ar,
+                   const unsigned int /*version*/)
+    {
+        ar& ::boost::serialization::make_nvp("zoomLeft", zoomLeft);
+        ar& ::boost::serialization::make_nvp("zoomBottom", zoomBottom);
+        ar& ::boost::serialization::make_nvp("zoomFactor", zoomFactor);
+        ar& ::boost::serialization::make_nvp("UserRoIEnabled", userRoIenabled);
+        ar& ::boost::serialization::make_nvp("UserRoI", userRoI);
+        ar& ::boost::serialization::make_nvp("ClippedToProject", isClippedToProject);
+        ar& ::boost::serialization::make_nvp("AutoContrast", autoContrastEnabled);
+        ar& ::boost::serialization::make_nvp("Gain", gain);
+        ar& ::boost::serialization::make_nvp("Gain", gamma);
+        ar& ::boost::serialization::make_nvp("ColorSpace", colorSpace);
+        ar& ::boost::serialization::make_nvp("Layer", layerName);
+        ar& ::boost::serialization::make_nvp("AlphaLayer", alphaLayerName);
+        ar& ::boost::serialization::make_nvp("Channels", channels);
+        ar& ::boost::serialization::make_nvp("RenderScaleActivated", renderScaleActivated);
+        ar& ::boost::serialization::make_nvp("MipMapLevel", mipmapLevel);
+        ar& ::boost::serialization::make_nvp("ZoomOrPanSinceFit", zoomOrPanSinceLastFit);
+        ar& ::boost::serialization::make_nvp("CompositingOP", wipeCompositingOp);
+        ar& ::boost::serialization::make_nvp("LeftBound", leftBound);
+        ar& ::boost::serialization::make_nvp("RightBound", rightBound);
+        ar& ::boost::serialization::make_nvp("LeftToolbarVisible", leftToolbarVisible);
+        ar& ::boost::serialization::make_nvp("RightToolbarVisible", rightToolbarVisible);
+        ar& ::boost::serialization::make_nvp("TopToolbarVisible", topToolbarVisible);
+        ar& ::boost::serialization::make_nvp("PlayerVisible", playerVisible);
+        ar& ::boost::serialization::make_nvp("TimelineVisible", timelineVisible);
+        ar& ::boost::serialization::make_nvp("InfobarVisible", infobarVisible);
+        ar& ::boost::serialization::make_nvp("isInputAPaused", isInputAPaused);
+        ar& ::boost::serialization::make_nvp("isInputBPaused", isInputBPaused);
+        ar& ::boost::serialization::make_nvp("CheckerboardEnabled", checkerboardEnabled);
+        ar& ::boost::serialization::make_nvp("Fps", fps);
+        ar& ::boost::serialization::make_nvp("FpsLocked", fpsLocked);
+        ar& ::boost::serialization::make_nvp("aInput", aChoice);
+        ar& ::boost::serialization::make_nvp("bInput", bChoice);
+        ar& ::boost::serialization::make_nvp("fullFrame", fullFrame);
+    }
+};
+
+void
+expectLegacyFieldsLoaded(const LegacyViewerData& legacy,
+                         const ViewerData& restored)
+{
+    EXPECT_EQ((unsigned int)VIEWER_DATA_INTRODUCES_FULL_FRAME_PROC, restored.version);
+    EXPECT_EQ(std::string(), restored.display);
+    EXPECT_EQ(std::string(), restored.view);
+    EXPECT_EQ(std::string(), restored.look);
+    EXPECT_EQ(legacy.zoomLeft, restored.zoomLeft);
+    EXPECT_EQ(legacy.zoomFactor, restored.zoomFactor);
+    EXPECT_EQ(legacy.userRoI.x2, restored.userRoI.x2);
+    EXPECT_EQ(legacy.gain, restored.gain);
+    EXPECT_EQ(legacy.gamma, restored.gamma);
+    EXPECT_EQ(legacy.layerName, restored.layerName);
+    EXPECT_EQ(legacy.alphaLayerName, restored.alphaLayerName);
+    EXPECT_EQ(legacy.channels, restored.channels);
+    EXPECT_EQ(legacy.mipmapLevel, restored.mipmapLevel);
+    EXPECT_EQ(legacy.wipeCompositingOp, restored.wipeCompositingOp);
+    EXPECT_EQ(legacy.rightBound, restored.rightBound);
+    EXPECT_EQ(legacy.timelineVisible, restored.timelineVisible);
+    EXPECT_EQ(legacy.isInputAPaused, restored.isPauseEnabled[0]);
+    EXPECT_EQ(legacy.fps, restored.fps);
+    EXPECT_EQ(legacy.fpsLocked, restored.fpsLocked);
+    EXPECT_EQ(legacy.aChoice, restored.aChoice);
+    EXPECT_EQ(legacy.bChoice, restored.bChoice);
+    EXPECT_EQ(legacy.fullFrame, restored.isFullFrameProcessEnabled);
+}
+
+} // namespace
+
+BOOST_CLASS_VERSION(LegacyViewerData, VIEWER_DATA_INTRODUCES_FULL_FRAME_PROC)
 
 TEST(ViewerDataSerialization, RoundTripsTheDisplayTransform)
 {
@@ -64,4 +178,43 @@ TEST(ViewerDataSerialization, RoundTripsTheDisplayTransform)
     EXPECT_EQ(original.view, restored.view);
     EXPECT_EQ(original.look, restored.look);
     EXPECT_EQ(std::string::npos, stream.str().find("ColorSpace"));
+}
+
+TEST(ViewerDataSerialization, AnXmlArchiveFromBeforeTheDisplayTransformLoadsWithEmptyDisplayFields)
+{
+    const LegacyViewerData legacy;
+    std::stringstream stream;
+    {
+        boost::archive::xml_oarchive oArchive(stream);
+        oArchive << boost::serialization::make_nvp("ViewerData", legacy);
+    }
+    ASSERT_NE(std::string::npos, stream.str().find("ColorSpace"));
+
+    ViewerData restored = ViewerData();
+    restored.display = restored.view = restored.look = "stale";
+    {
+        boost::archive::xml_iarchive iArchive(stream);
+        ASSERT_NO_THROW(iArchive >> boost::serialization::make_nvp("ViewerData", restored));
+    }
+
+    expectLegacyFieldsLoaded(legacy, restored);
+}
+
+TEST(ViewerDataSerialization, ABinaryArchiveFromBeforeTheDisplayTransformLoadsWithEmptyDisplayFields)
+{
+    const LegacyViewerData legacy;
+    std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        boost::archive::binary_oarchive oArchive(stream);
+        oArchive << legacy;
+    }
+
+    ViewerData restored = ViewerData();
+    restored.display = restored.view = restored.look = "stale";
+    {
+        boost::archive::binary_iarchive iArchive(stream);
+        ASSERT_NO_THROW(iArchive >> restored);
+    }
+
+    expectLegacyFieldsLoaded(legacy, restored);
 }

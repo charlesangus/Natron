@@ -69,17 +69,22 @@ public:
         OCIO_NAMESPACE::ConstCPUProcessorRcPtr cpu;
         std::string cacheID;
         U64 cacheHash;
+        // Only the built-in configs have been checked against the LUT's sampling; a custom
+        // config may hide detail between the samples, so it always runs exact.
+        bool eightBitLutAllowed;
 
         DisplayProcessor()
             : cacheHash(0)
+            , eightBitLutAllowed(false)
         {
         }
 
         /**
          * @brief Applies cpu in place to \p width packed RGBA pixels whose result is quantised to
-         * 8 bits. A processor too slow for the 8-bit viewer is approximated by a shaper + 3D LUT,
-         * built on the first call, within a code value of cpu; pixels outside the LUT's domain or in
-         * a cell where the LUT strays go through cpu. Alpha is untouched. May throw what cpu throws.
+         * 8 bits. When eightBitLutAllowed, a processor too slow for the 8-bit viewer is approximated
+         * by a shaper + 3D LUT, built on the first call, within a code value of cpu; pixels outside
+         * the LUT's domain or in a cell where the LUT strays go through cpu. Otherwise cpu is applied
+         * exactly. Alpha is untouched. May throw what cpu throws.
          **/
         void applyForEightBitOutput(float* rgba, int width) const;
 

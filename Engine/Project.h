@@ -210,10 +210,22 @@ public:
     qint64 getProjectCreationTime() const;
 
     /**
-     * @brief The OpenColorIO config the project uses: an "ocio://" URI or an absolute path.
-     * Nothing else may read the project's config knobs.
+     * @brief The OpenColorIO config the project actually uses: an "ocio://" URI or an absolute
+     * path. After a failed load this is the config still in use, not the requested one.
      **/
     std::string getOCIOConfigSource() const;
+
+    /**
+     * @brief The config the OCIO environment variable or the project's config knobs ask for.
+     * Nothing else may read the project's config knobs.
+     **/
+    std::string getRequestedOCIOConfigSource() const;
+
+    /**
+     * @brief True, filling \p error, while the config the OCIO environment variable forces cannot
+     * be loaded. Renders must fail then rather than go through another config.
+     **/
+    bool getOCIOConfigError(std::string* error) const;
 
     std::string getWorkingColorSpace() const;
 
@@ -276,7 +288,8 @@ public:
 
     /**
      * @brief Sets the "ocioConfigFile" parameter of every node that has one to
-     * getOCIOConfigSource() and hides it, so a node's own or saved value never wins.
+     * getOCIOConfigSource() and hides it, so a node's own or saved value never wins, then sets
+     * the hidden "ocioWorkingSpace" parameter to getWorkingColorSpace().
      **/
     void pushOCIOConfigToNodes();
 
@@ -451,7 +464,7 @@ private:
     void doResetEnd(bool aboutToQuit);
 
     /**
-     * @brief Loads getOCIOConfigSource(), repopulates the Color page menus with fallbacks for
+     * @brief Loads getRequestedOCIOConfigSource(), repopulates the Color page menus with fallbacks for
      * names the config lacks, re-derives the config knobs' enabled state and fires configChanged.
      * Enabled is serialized, so this must run after every restore.
      **/

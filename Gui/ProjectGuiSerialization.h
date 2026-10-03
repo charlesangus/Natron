@@ -160,9 +160,18 @@ struct ViewerData
         } else {
             gamma = 1.;
         }
-        ar& ::boost::serialization::make_nvp("Display", display);
-        ar& ::boost::serialization::make_nvp("View", view);
-        ar& ::boost::serialization::make_nvp("Look", look);
+        if (version >= VIEWER_DATA_INTRODUCES_OCIO_DISPLAY) {
+            ar& ::boost::serialization::make_nvp("Display", display);
+            ar& ::boost::serialization::make_nvp("View", view);
+            ar& ::boost::serialization::make_nvp("Look", look);
+        } else {
+            // The old viewer colourspace has no meaning under OCIO; the project's defaults apply.
+            std::string colorSpace;
+            ar& ::boost::serialization::make_nvp("ColorSpace", colorSpace);
+            display.clear();
+            view.clear();
+            look.clear();
+        }
         if (version >= VIEWER_DATA_INTRODUCES_LAYER) {
             ar & ::boost::serialization::make_nvp("Layer", layerName);
             ar & ::boost::serialization::make_nvp("AlphaLayer", alphaLayerName);

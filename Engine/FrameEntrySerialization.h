@@ -39,6 +39,8 @@ GCC_DIAG_ON(unused-parameter)
 // clang-format on
 #endif
 
+#include <stdexcept>
+
 #include "Engine/FrameEntry.h"
 #include "Engine/ImageParamsSerialization.h"
 #include "Engine/TextureRectSerialization.h"
@@ -68,6 +70,13 @@ FrameKey::serialize(Archive & ar,
 
     if (version >= FRAME_KEY_INTRODUCES_GAMMA) {
         ar & ::boost::serialization::make_nvp("Gamma", _gamma);
+    }
+    if (version < FRAME_KEY_REPLACES_LUT_WITH_DISPLAY_TRANSFORM_HASH) {
+        // A texture made through a built-in LUT matches no display transform, and restoring
+        // the cache wipes it whole when an entry throws.
+        int lut;
+        ar& ::boost::serialization::make_nvp("Lut", lut);
+        throw std::runtime_error("Viewer cache entry predates OpenColorIO display transforms");
     }
     ar& ::boost::serialization::make_nvp("DisplayTransformHash", _displayTransformHash);
     ar & ::boost::serialization::make_nvp("BitDepth", _bitDepth);

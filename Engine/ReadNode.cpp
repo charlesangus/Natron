@@ -100,6 +100,7 @@ NATRON_NAMESPACE_ENTER
 
 //Generic OCIO
 #define kOCIOParamConfigFile "ocioConfigFile"
+#define kOCIOParamWorkingSpace "ocioWorkingSpace"
 #define kOCIOParamInputSpace "ocioInputSpace"
 #define kOCIOParamOutputSpace "ocioOutputSpace"
 #define kOCIOParamInputSpaceChoice "ocioInputSpaceIndex"
@@ -122,43 +123,43 @@ struct GenericKnob
     bool mustKeepValue;
 };
 
-static GenericKnob genericReaderKnobNames[] =
-{
-    {kParamFilename, false},
-    {kParamProxy, false},
-    {kParamProxyThreshold, false},
-    {kParamOriginalProxyScale, false},
-    {kParamCustomProxyScale, false},
-    {kParamOnMissingFrame, true},
-    {kParamFrameMode, true},
-    {kParamTimeOffset, false},
-    {kParamStartingTime, false},
-    {kParamOriginalFrameRange, false},
-    {kParamFirstFrame, false},
-    {kParamLastFrame, false},
-    {kParamBefore, true},
-    {kParamAfter, true},
-    {kParamTimeDomainUserEdited, false},
-    {kParamFilePremult, true}, // keep: don't change useful params behind the user's back
-    {kParamOutputPremult, true}, // keep: don't change useful params behind the user's back
-    {kParamOutputComponents, true}, // keep: don't change useful params behind the user's back
-    {kParamInputSpaceLabel, false},
-    {kParamFrameRate, true}, // keep: don't change useful params behind the user's back
-    {kParamCustomFps, true}, // if custom fps was checked, don't uncheck it
-    {kParamInputSpaceSet, true},
-    {kParamExistingInstance, true}, // don't automatically set parameters when changing the filename, see GenericReaderPlugin::inputFileChanged()
+static GenericKnob genericReaderKnobNames[] = {
+    { kParamFilename, false },
+    { kParamProxy, false },
+    { kParamProxyThreshold, false },
+    { kParamOriginalProxyScale, false },
+    { kParamCustomProxyScale, false },
+    { kParamOnMissingFrame, true },
+    { kParamFrameMode, true },
+    { kParamTimeOffset, false },
+    { kParamStartingTime, false },
+    { kParamOriginalFrameRange, false },
+    { kParamFirstFrame, false },
+    { kParamLastFrame, false },
+    { kParamBefore, true },
+    { kParamAfter, true },
+    { kParamTimeDomainUserEdited, false },
+    { kParamFilePremult, true }, // keep: don't change useful params behind the user's back
+    { kParamOutputPremult, true }, // keep: don't change useful params behind the user's back
+    { kParamOutputComponents, true }, // keep: don't change useful params behind the user's back
+    { kParamInputSpaceLabel, false },
+    { kParamFrameRate, true }, // keep: don't change useful params behind the user's back
+    { kParamCustomFps, true }, // if custom fps was checked, don't uncheck it
+    { kParamInputSpaceSet, true },
+    { kParamExistingInstance, true }, // don't automatically set parameters when changing the filename, see GenericReaderPlugin::inputFileChanged()
 
-    {kOCIOParamConfigFile, true},
-    {kNatronReadNodeOCIOParamInputSpace, false},
-    {kOCIOParamInputSpace, false}, // input colorspace must not be kept (depends on file format)
-    {kOCIOParamOutputSpace, true}, // output colorspace must be kept
-    {kOCIOParamInputSpaceChoice, false},
-    {kOCIOParamOutputSpaceChoice, true},
-    {kOCIOHelpButton, false},
-    {kOCIOHelpLooksButton, false},
-    {kOCIOHelpDisplaysButton, false},
-    {kOCIOParamContext, false},
-    {0, false}
+    { kOCIOParamConfigFile, true },
+    { kOCIOParamWorkingSpace, false }, // the project pushes it to every new decoder or encoder
+    { kNatronReadNodeOCIOParamInputSpace, false },
+    { kOCIOParamInputSpace, false }, // input colorspace must not be kept (depends on file format)
+    { kOCIOParamOutputSpace, true }, // output colorspace must be kept
+    { kOCIOParamInputSpaceChoice, false },
+    { kOCIOParamOutputSpaceChoice, true },
+    { kOCIOHelpButton, false },
+    { kOCIOHelpLooksButton, false },
+    { kOCIOHelpDisplaysButton, false },
+    { kOCIOParamContext, false },
+    { 0, false }
 };
 static bool
 isGenericKnob(const std::string& knobName,
@@ -826,8 +827,8 @@ ReadNodePrivate::createReadNode(bool throwErrors,
 
     refreshEmbeddedReaderPlaneKnobs();
 
-    // A new decoder starts from its own ocioConfigFile, or from the previous decoder's when it
-    // is the same plug-in, not from the project's.
+    // Recreating the decoder brings back its own or its predecessor's ocioConfigFile, so the
+    // project's config must be pushed again.
     _publicInterface->getApp()->getProject()->pushOCIOConfigToNode(thisNode);
 } // ReadNodePrivate::createReadNode
 

@@ -25,10 +25,14 @@
 
 #include "Global/Macros.h"
 
+#include <bitset>
+#include <cstddef>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <limits>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "Engine/Image.h"
@@ -335,4 +339,250 @@ TEST(ImageConvertToFormatTest, NonColorPlanesKeepReplicationAndAlphaOne)
     const std::vector<float> expectedNormals = { 0.2f, 0.4f, 0.6f, 1.f };
 
     EXPECT_EQ(expectedNormals, convertOnePixel(normals, { 0.2f, 0.4f, 0.6f }, ImageLayerDesc::getRGBAComponents()));
+}
+
+namespace {
+
+const ImageLayerDesc&
+componentsForCount(int nComps)
+{
+    switch (nComps) {
+    case 1:
+        return ImageLayerDesc::getAlphaComponents();
+    case 2:
+        return ImageLayerDesc::getXYComponents();
+    case 3:
+        return ImageLayerDesc::getRGBComponents();
+    default:
+        return ImageLayerDesc::getRGBAComponents();
+    }
+}
+
+template <typename PIX>
+PIX
+patternValue(std::size_t i,
+             unsigned int seed)
+{
+    if constexpr (std::is_floating_point_v<PIX>) {
+        return (PIX)((i * 37 + seed) % 1000) / (PIX)997 - (PIX)0.25;
+    } else {
+        return (PIX)((i * 7919 + seed) % ((std::size_t)std::numeric_limits<PIX>::max() + 1));
+    }
+}
+
+template <typename PIX>
+std::vector<PIX>
+fillWithPattern(Image& img,
+                int nComps,
+                unsigned int seed)
+{
+    const RectI bounds = img.getBounds();
+    std::vector<PIX> values((std::size_t)bounds.area() * nComps);
+
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        values[i] = patternValue<PIX>(i, seed);
+    }
+    Image::WriteAccess w = img.getWriteRights();
+    std::memcpy(w.pixelAt(bounds.x1, bounds.y1), values.data(), values.size() * sizeof(PIX));
+
+    return values;
+}
+
+template <typename PIX>
+std::vector<PIX>
+readWholeBuffer(const Image& img,
+                int nComps)
+{
+    const RectI bounds = img.getBounds();
+    std::vector<PIX> values((std::size_t)bounds.area() * nComps);
+    Image::ReadAccess r = img.getReadRights();
+
+    std::memcpy(values.data(), r.pixelAt(bounds.x1, bounds.y1), values.size() * sizeof(PIX));
+
+    return values;
+}
+
+// Bit-exact oracle: looks every source pixel up independently, so partial source bounds need no
+// row clipping logic that could share a bug with the code under test.
+template <typename PIX, int maxValue>
+void
+referenceCopyUnProcessedChannels(const std::bitset<4> processChannels,
+                                 const RectI& roi,
+                                 PIX* dstData,
+                                 const RectI& dstBounds,
+                                 int dstNComps,
+                                 const PIX* srcData,
+                                 const RectI& srcBounds,
+                                 int srcNComps)
+{
+    const int dstRowElements = dstNComps * dstBounds.width();
+    PIX* dst_pixels = (PIX*)Image::pixelAtStatic(roi.x1, roi.y1, dstBounds, dstNComps, sizeof(PIX), (unsigned char*)dstData);
+    const bool doR = !processChannels[0] && (dstNComps >= 2);
+    const bool doG = !processChannels[1] && (dstNComps >= 2);
+    const bool doB = !processChannels[2] && (dstNComps >= 3);
+    const bool doA = !processChannels[3] && (dstNComps == 1 || dstNComps == 4);
+
+    for (int y = roi.y1; y < roi.y2; ++y, dst_pixels += (dstRowElements - (roi.x2 - roi.x1) * dstNComps)) {
+        for (int x = roi.x1; x < roi.x2; ++x, dst_pixels += dstNComps) {
+            const PIX* src_pixels = srcData ? (const PIX*)Image::pixelAtStatic(x, y, srcBounds, srcNComps, sizeof(PIX), (unsigned char*)srcData) : 0;
+            PIX srcA = src_pixels ? maxValue : 0;
+            if (((srcNComps == 1) || (srcNComps == 4)) && src_pixels) {
+                srcA = src_pixels[srcNComps - 1];
+            }
+            if (doR) {
+                dst_pixels[0] = (!src_pixels || 0 >= srcNComps) ? 0 : src_pixels[0];
+            }
+            if (doG) {
+                dst_pixels[1] = (!src_pixels || 1 >= srcNComps) ? 0 : src_pixels[1];
+            }
+            if (doB) {
+                dst_pixels[2] = (!src_pixels || 2 >= srcNComps) ? 0 : src_pixels[2];
+            }
+            if (doA) {
+                dst_pixels[dstNComps - 1] = srcA;
+            }
+        }
+    }
+}
+
+// Runs every processChannels mask, which reaches every branch of the compile-time channel dispatch.
+// srcNComps == 0 stands for "no source image", the dispatch's 0-component case.
+template <typename PIX, int maxValue>
+void
+expectCopyUnProcessedMatchesReference(ImageBitDepthEnum depth,
+                                      int dstNComps,
+                                      int srcNComps,
+                                      const RectI& dstBounds,
+                                      const RectI& srcBounds,
+                                      const RectI& roi)
+{
+    for (unsigned int bits = 0; bits < 16; ++bits) {
+        const std::bitset<4> processChannels(bits);
+        ImagePtr dst = makeLocalImage(componentsForCount(dstNComps), depth, dstBounds);
+        ImagePtr src = (srcNComps > 0) ? makeLocalImage(componentsForCount(srcNComps), depth, srcBounds) : ImagePtr();
+        std::vector<PIX> expected = fillWithPattern<PIX>(*dst, dstNComps, 1 + bits);
+        std::vector<PIX> srcValues;
+
+        if (src) {
+            srcValues = fillWithPattern<PIX>(*src, srcNComps, 500 + bits);
+        }
+        if (dst->canCallCopyUnProcessedChannels(processChannels)) {
+            referenceCopyUnProcessedChannels<PIX, maxValue>(processChannels, roi, expected.data(), dstBounds, dstNComps,
+                                                            src ? srcValues.data() : nullptr, srcBounds, srcNComps);
+        }
+
+        dst->copyUnProcessedChannels(roi, processChannels, src);
+
+        const std::vector<PIX> actual = readWholeBuffer<PIX>(*dst, dstNComps);
+        ASSERT_EQ(expected.size(), actual.size());
+        EXPECT_EQ(0, std::memcmp(expected.data(), actual.data(), expected.size() * sizeof(PIX)))
+            << "dstNComps " << dstNComps << " srcNComps " << srcNComps << " processChannels " << processChannels.to_string();
+    }
+}
+
+template <typename PIX, int maxValue>
+void
+expectAllComponentCountsMatchReference(ImageBitDepthEnum depth,
+                                       const RectI& dstBounds,
+                                       const RectI& srcBounds,
+                                       const RectI& roi)
+{
+    for (int dstNComps = 1; dstNComps <= 4; ++dstNComps) {
+        for (int srcNComps = 0; srcNComps <= 4; ++srcNComps) {
+            expectCopyUnProcessedMatchesReference<PIX, maxValue>(depth, dstNComps, srcNComps, dstBounds, srcBounds, roi);
+        }
+    }
+}
+
+void
+expectAllDepthsMatchReference(const RectI& dstBounds,
+                              const RectI& srcBounds,
+                              const RectI& roi)
+{
+    {
+        SCOPED_TRACE("byte");
+        expectAllComponentCountsMatchReference<unsigned char, 255>(eImageBitDepthByte, dstBounds, srcBounds, roi);
+    }
+    {
+        SCOPED_TRACE("short");
+        expectAllComponentCountsMatchReference<unsigned short, 65535>(eImageBitDepthShort, dstBounds, srcBounds, roi);
+    }
+    {
+        SCOPED_TRACE("float");
+        expectAllComponentCountsMatchReference<float, 1>(eImageBitDepthFloat, dstBounds, srcBounds, roi);
+    }
+}
+
+} // namespace
+
+TEST(ImageCopyUnProcessedChannelsTest, SourceCoversRoi)
+{
+    const RectI bounds(0, 0, 13, 9);
+
+    expectAllDepthsMatchReference(bounds, bounds, bounds);
+    expectAllDepthsMatchReference(RectI(-3, -2, 16, 12), RectI(-3, -2, 16, 12), RectI(1, 1, 12, 8));
+}
+
+TEST(ImageCopyUnProcessedChannelsTest, SourceInsideRoi)
+{
+    expectAllDepthsMatchReference(RectI(-2, -1, 14, 11), RectI(3, 2, 9, 7), RectI(0, 0, 12, 10));
+}
+
+TEST(ImageCopyUnProcessedChannelsTest, SourceOffsetFromRoi)
+{
+    const RectI dstBounds(-2, -1, 14, 11);
+    const RectI roi(0, 0, 12, 10);
+
+    expectAllDepthsMatchReference(dstBounds, RectI(8, 6, 20, 15), roi);
+    expectAllDepthsMatchReference(dstBounds, RectI(-5, -4, 4, 3), roi);
+    expectAllDepthsMatchReference(dstBounds, RectI(-6, 4, 30, 5), roi);
+}
+
+TEST(ImageCopyUnProcessedChannelsTest, SourceDisjointFromRoi)
+{
+    expectAllDepthsMatchReference(RectI(0, 0, 10, 8), RectI(30, 30, 35, 35), RectI(0, 0, 10, 8));
+}
+
+// Restoring alpha behind an RGB-only plug-in: alpha comes from the source alpha, reads as opaque for
+// a source without alpha, and as zero where there is no source pixel at all.
+TEST(ImageCopyUnProcessedChannelsTest, AlphaRestoredFromSource)
+{
+    const RectI dstBounds(0, 0, 2, 1);
+    const RectI srcBounds(0, 0, 1, 1);
+    const std::bitset<4> rgbProcessed(0x7);
+    constexpr float kProcessed = 0.9f;
+    constexpr float kSourceAlpha = 0.25f;
+
+    ImagePtr srcRGBA = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, srcBounds);
+    setFloatPixel(*srcRGBA, 0, 0, { 0.1f, 0.2f, 0.3f, kSourceAlpha });
+    ImagePtr dst = makeLocalImage(ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, dstBounds);
+    setFloatPixel(*dst, 0, 0, { kProcessed, kProcessed, kProcessed, kProcessed });
+    setFloatPixel(*dst, 1, 0, { kProcessed, kProcessed, kProcessed, kProcessed });
+    dst->copyUnProcessedChannels(dstBounds, rgbProcessed, srcRGBA);
+    EXPECT_EQ((std::vector<float> { kProcessed, kProcessed, kProcessed, kSourceAlpha }), getFloatPixel(*dst, 0, 0, 4));
+    EXPECT_EQ((std::vector<float> { kProcessed, kProcessed, kProcessed, 0.f }), getFloatPixel(*dst, 1, 0, 4));
+
+    ImagePtr srcRGB = makeLocalImage(ImageLayerDesc::getRGBComponents(), eImageBitDepthFloat, srcBounds);
+    setFloatPixel(*srcRGB, 0, 0, { 0.1f, 0.2f, 0.3f });
+    setFloatPixel(*dst, 0, 0, { kProcessed, kProcessed, kProcessed, kProcessed });
+    dst->copyUnProcessedChannels(dstBounds, rgbProcessed, srcRGB);
+    EXPECT_EQ((std::vector<float> { kProcessed, kProcessed, kProcessed, 1.f }), getFloatPixel(*dst, 0, 0, 4));
+
+    setFloatPixel(*dst, 0, 0, { kProcessed, kProcessed, kProcessed, kProcessed });
+    dst->copyUnProcessedChannels(dstBounds, rgbProcessed, ImagePtr());
+    EXPECT_EQ((std::vector<float> { kProcessed, kProcessed, kProcessed, 0.f }), getFloatPixel(*dst, 0, 0, 4));
+}
+
+// Larger than the area above which the copy is split into row bands across idle pool threads.
+TEST(ImageCopyUnProcessedChannelsTest, LargeRoiMatchesReference)
+{
+    const RectI dstBounds(-4, -3, 600, 300);
+    const RectI srcBounds(37, 11, 555, 290);
+    const RectI roi(0, 0, 590, 297);
+
+    expectCopyUnProcessedMatchesReference<float, 1>(eImageBitDepthFloat, 4, 4, dstBounds, srcBounds, roi);
+    expectCopyUnProcessedMatchesReference<float, 1>(eImageBitDepthFloat, 4, 3, dstBounds, srcBounds, roi);
+    expectCopyUnProcessedMatchesReference<float, 1>(eImageBitDepthFloat, 1, 4, dstBounds, srcBounds, roi);
+    expectCopyUnProcessedMatchesReference<unsigned char, 255>(eImageBitDepthByte, 4, 4, dstBounds, srcBounds, roi);
+    expectCopyUnProcessedMatchesReference<unsigned short, 65535>(eImageBitDepthShort, 3, 1, dstBounds, srcBounds, roi);
 }

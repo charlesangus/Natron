@@ -432,6 +432,13 @@ public:
      **/
     int getNRunningThreads() const;
 
+    /**
+     * @brief Returns how many threads (at least 1, counting the calling thread) a single effect may
+     * use right now for its own SMP work without oversubscribing the machine, given the thread
+     * settings, the busy thread-pool workers and the render threads already running.
+     **/
+    int getNCPUsAvailableForEffect();
+
     void setThreadAsActionCaller(OfxImageEffectInstance* instance, bool actionCaller);
 
     /**

@@ -486,7 +486,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                         }
 
                         std::map<ImageLayerDesc, ImagePtr> inputLayers;
-                        RenderRoIRetCode inputRetCode = passThroughInput->renderRoI(*inArgs, &inputLayers);
+                        RenderRoIRetCode inputRetCode = renderInputOrTakeFromStore(passThroughInput, ptInputNb, inArgs.get(), &inputLayers);
                         assert(inputLayers.size() == 1 || inputLayers.empty());
                         if ((inputRetCode == eRenderRoIRetCodeAborted) || (inputRetCode == eRenderRoIRetCodeFailed) || inputLayers.empty()) {
                             return inputRetCode;
@@ -591,7 +591,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                 inputArgs->components = requestedComponents;
 
                 std::map<ImageLayerDesc, ImagePtr> identityLayers;
-                RenderRoIRetCode ret = inputEffectIdentity->renderRoI(*inputArgs, &identityLayers);
+                RenderRoIRetCode ret = renderInputOrTakeFromStore(inputEffectIdentity, inputNbIdentity, inputArgs.get(), &identityLayers);
                 if (ret != eRenderRoIRetCodeOk) {
                     return ret;
                 }

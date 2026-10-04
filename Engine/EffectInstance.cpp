@@ -48,6 +48,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/BlockingBackgroundRender.h"
 #include "Engine/DiskCacheNode.h"
+#include "Engine/FrameRenderContext.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
@@ -70,6 +71,7 @@
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/Settings.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/Timer.h"
 #include "Engine/Transform.h"
 #include "Engine/UndoCommand.h"
@@ -846,6 +848,102 @@ layerKnobSelectsColorView(const KnobIPtr& knob)
     return false;
 }
 
+bool
+EffectInstance::lookupFrameStore(const EffectInstancePtr& input,
+                                 double time,
+                                 ViewIdx view,
+                                 unsigned mipmap,
+                                 const std::list<ImageLayerDesc>& comps,
+                                 const RectI& pixelRoI,
+                                 std::list<ImagePtr>* out)
+{
+    const FrameRenderContext* context = AppTLS::currentFrameContext();
+    if (!context || !input || comps.empty() || pixelRoI.isNull()) {
+        return false;
+    }
+    FrameStore::TaskKey key;
+    key.node = input->getNode();
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = mipmap;
+    if (!key.node) {
+        return false;
+    }
+    RectI neededRoI = pixelRoI;
+    ParallelRenderArgsPtr inputFrameArgs = input->getParallelRenderArgsTLS();
+    const FrameViewRequest* request = (inputFrameArgs && inputFrameArgs->request) ? inputFrameArgs->request->getFrameViewRequest(time, view) : 0;
+    if (request) {
+        // Stored images stop at the region of definition, which a requested RoI may exceed.
+        neededRoI = neededRoI.intersect(request->globalData.rod.toPixelEnclosing(mipmap, input->getAspectRatio(-1)));
+        if (neededRoI.isNull()) {
+            return false;
+        }
+    }
+
+    return context->getStore().find(key, comps, neededRoI, out);
+}
+
+bool
+EffectInstance::frameStoreImagesMatch(const std::list<ImagePtr>& images,
+                                      ImageBitDepthEnum depth,
+                                      StorageModeEnum storage)
+{
+    for (std::list<ImagePtr>::const_iterator it = images.begin(); it != images.end(); ++it) {
+        if (!*it || ((*it)->getBitDepth() != depth) || ((*it)->getStorageMode() != storage)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+EffectInstance::RenderRoIRetCode
+EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
+                                           int inputNb,
+                                           RenderRoIArgs* args,
+                                           std::map<ImageLayerDesc, ImagePtr>* layers)
+{
+    std::list<ImagePtr> stored;
+    const bool fromStore = lookupFrameStore(input, args->time, args->view, args->mipmapLevel, args->components, args->roi, &stored);
+    if (fromStore) {
+        noteFrameStoreHit();
+    } else if (!args->roi.isNull()) {
+        noteUnplannedPull();
+    }
+    if (fromStore && frameStoreImagesMatch(stored, args->bitdepth, args->returnStorage)) {
+        std::list<ImagePtr>::const_iterator image = stored.begin();
+        for (std::list<ImageLayerDesc>::const_iterator comp = args->components.begin(); comp != args->components.end(); ++comp, ++image) {
+            layers->insert(std::make_pair(*comp, *image));
+        }
+
+        return eRenderRoIRetCodeOk;
+    }
+    if (fromStore) {
+        ImageList& seeded = args->inputImagesList[inputNb];
+        seeded.insert(seeded.end(), stored.begin(), stored.end());
+    }
+
+    return input->renderRoI(*args, layers);
+}
+
+void
+EffectInstance::noteFrameStoreHit()
+{
+    const FrameRenderContext* context = AppTLS::currentFrameContext();
+    if (context && context->getStats()) {
+        context->getStats()->incFrameStoreHits();
+    }
+}
+
+void
+EffectInstance::noteUnplannedPull()
+{
+    const FrameRenderContext* context = AppTLS::currentFrameContext();
+    if (context && context->getStats()) {
+        context->getStats()->incUnplannedPulls();
+    }
+}
+
 ImagePtr
 EffectInstance::getImage(int inputNb,
                          const double time,
@@ -1255,23 +1353,48 @@ EffectInstance::getImage(int inputNb,
     std::list<ImageLayerDesc> requestedComps;
     requestedComps.push_back(renderedComps);
     std::map<ImageLayerDesc, ImagePtr> inputImages;
-    RenderRoIRetCode retCode = inputEffect->renderRoI(RenderRoIArgs(time,
-                                                                    scale,
-                                                                    renderMappedMipmapLevel,
-                                                                    view,
-                                                                    byPassCache,
-                                                                    pixelRoI,
-                                                                    RectD(),
-                                                                    requestedComps,
-                                                                    depth,
-                                                                    true,
-                                                                    this,
-                                                                    returnStorage,
-                                                                    thisEffectRenderTime,
-                                                                    inputImagesThreadLocal), &inputImages);
+    std::list<ImagePtr> storedImages;
+    const bool fromStore = lookupFrameStore(inputEffect, time, view, renderMappedMipmapLevel, requestedComps, pixelRoI, &storedImages);
+    if (fromStore) {
+        // The pre-render of this render already counted the store images it handed over.
+        bool handedOverByPreRender = false;
+        EffectInstance::InputImagesMap::const_iterator preRendered = inputImagesThreadLocal.find(inputNb);
+        if (preRendered != inputImagesThreadLocal.end()) {
+            handedOverByPreRender = std::find(preRendered->second.begin(), preRendered->second.end(), storedImages.front()) != preRendered->second.end();
+        }
+        if (!handedOverByPreRender) {
+            noteFrameStoreHit();
+        }
+    }
+    if (fromStore && frameStoreImagesMatch(storedImages, depth, returnStorage)) {
+        inputImages.insert(std::make_pair(renderedComps, storedImages.front()));
+    } else {
+        // Store images in another depth or storage go through renderRoI(), which finds them by key and converts them.
+        EffectInstance::InputImagesMap seededInputImages;
+        if (fromStore) {
+            seededInputImages = inputImagesThreadLocal;
+            ImageList& seeded = seededInputImages[inputNb];
+            seeded.insert(seeded.end(), storedImages.begin(), storedImages.end());
+        }
+        RenderRoIRetCode retCode = inputEffect->renderRoI(RenderRoIArgs(time,
+                                                                        scale,
+                                                                        renderMappedMipmapLevel,
+                                                                        view,
+                                                                        byPassCache,
+                                                                        pixelRoI,
+                                                                        RectD(),
+                                                                        requestedComps,
+                                                                        depth,
+                                                                        true,
+                                                                        this,
+                                                                        returnStorage,
+                                                                        thisEffectRenderTime,
+                                                                        fromStore ? seededInputImages : inputImagesThreadLocal),
+                                                          &inputImages);
 
-    if (retCode != eRenderRoIRetCodeOk) {
-        return ImagePtr();
+        if (retCode != eRenderRoIRetCodeOk) {
+            return ImagePtr();
+        }
     }
     if (inputImages.empty()) {
         // A colourless input reads as zero in every colour channel. The plane is built here, not

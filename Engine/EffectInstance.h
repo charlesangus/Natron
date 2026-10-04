@@ -967,6 +967,44 @@ public:
                                                                bool byPassCache);
 
     /**
+     * @brief Appends to out the images of comps that the task rendering input at time/view/mipmap left in the store of
+     * the frame installed on this thread, if they cover pixelRoI. Returns false without looking anything up when no
+     * frame is installed.
+     **/
+    static bool lookupFrameStore(const EffectInstancePtr& input,
+                                 double time,
+                                 ViewIdx view,
+                                 unsigned mipmap,
+                                 const std::list<ImageLayerDesc>& comps,
+                                 const RectI& pixelRoI,
+                                 std::list<ImagePtr>* out);
+
+    /**
+     * @brief Whether images from the store are already in the depth and storage renderRoI() would return, so that they
+     * can stand in for its result without a conversion.
+     **/
+    static bool frameStoreImagesMatch(const std::list<ImagePtr>& images,
+                                      ImageBitDepthEnum depth,
+                                      StorageModeEnum storage);
+
+    /**
+     * @brief Calls input->renderRoI(*args, layers) unless the frame installed on this thread stored what it asks for,
+     * in which case the stored images are returned in its place. Stored images needing a conversion are passed to
+     * renderRoI() in args->inputImagesList under inputNb, where it finds them by key.
+     **/
+    static RenderRoIRetCode renderInputOrTakeFromStore(const EffectInstancePtr& input,
+                                                       int inputNb,
+                                                       RenderRoIArgs* args,
+                                                       std::map<ImageLayerDesc, ImagePtr>* layers);
+
+    /**
+     * @brief Count, in the stats of the frame installed on this thread, an input taken from the store or one rendered
+     * by pulling it. Nothing is counted when no frame is installed.
+     **/
+    static void noteFrameStoreHit();
+    static void noteUnplannedPull();
+
+    /**
      * @brief Don't override this one, override onKnobValueChanged instead.
      **/
     virtual bool onKnobValueChanged_public(KnobI* k, ValueChangedReasonEnum reason, double time, ViewSpec view, bool originatedFromMainThread) OVERRIDE FINAL;

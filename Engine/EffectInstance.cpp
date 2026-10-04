@@ -1617,7 +1617,8 @@ EffectInstance::getFrameRange(double *first,
         EffectInstancePtr input = getInput(i);
         if (input) {
             double inpFirst, inpLast;
-            input->getFrameRange(&inpFirst, &inpLast);
+            // Through the cached action: a graph whose inputs fan out and rejoin would otherwise be walked once per path.
+            input->getFrameRange_public(input->getRenderHash(), &inpFirst, &inpLast);
             if (i == 0) {
                 *first = inpFirst;
                 *last = inpLast;

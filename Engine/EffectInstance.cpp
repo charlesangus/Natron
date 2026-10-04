@@ -5728,35 +5728,46 @@ EffectInstance::checkCanSetValueAndWarn() const
 
 #endif
 
-static
-void
+static bool
 isFrameVaryingOrAnimated_impl(const EffectInstance* node,
-                              bool *ret)
+                              std::map<const EffectInstance*, bool>& memo)
 {
-    if ( node->isFrameVarying() || node->getHasAnimation() || node->getNode()->getRotoContext() ) {
-        *ret = true;
-    } else {
+    std::map<const EffectInstance*, bool>::iterator found = memo.find(node);
+    if (found != memo.end()) {
+        return found->second;
+    }
+    // Inserted as false before recursing so a node reached again while its inputs are still being walked does not loop.
+    std::map<const EffectInstance*, bool>::iterator slot = memo.insert(std::make_pair(node, false)).first;
+    bool ret = node->isFrameVarying() || node->getHasAnimation() || node->getNode()->getRotoContext();
+    if (!ret) {
         int maxInputs = node->getNInputs();
         for (int i = 0; i < maxInputs; ++i) {
             EffectInstancePtr input = node->getInput(i);
-            if (input) {
-                isFrameVaryingOrAnimated_impl(input.get(), ret);
-                if (*ret) {
-                    return;
-                }
+            if (input && isFrameVaryingOrAnimated_impl(input.get(), memo)) {
+                ret = true;
+                break;
             }
         }
     }
+    slot->second = ret;
+
+    return ret;
 }
 
 bool
 EffectInstance::isFrameVaryingOrAnimated_Recursive() const
 {
-    bool ret = false;
+    std::map<const EffectInstance*, bool> memo;
 
-    isFrameVaryingOrAnimated_impl(this, &ret);
+    return isFrameVaryingOrAnimated_impl(this, memo);
+}
 
-    return ret;
+bool
+EffectInstance::isFrameVaryingOrAnimated_Recursive(std::map<const EffectInstance*, bool>* memo) const
+{
+    assert(memo);
+
+    return isFrameVaryingOrAnimated_impl(this, *memo);
 }
 
 bool

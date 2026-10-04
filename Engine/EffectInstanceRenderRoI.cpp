@@ -779,7 +779,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     }
 
     const bool draftModeSupported = getNode()->isDraftModeUsed();
-    const bool isFrameVaryingOrAnimated = isFrameVaryingOrAnimated_Recursive();
+    const bool isFrameVaryingOrAnimated = frameArgs->frameVaryingComputed ? frameArgs->isFrameVaryingOrAnimated : isFrameVaryingOrAnimated_Recursive();
     bool createInCache;
     // Do not use the cache for OpenGL rendering
     if (storage == eStorageModeGLTex) {

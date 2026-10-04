@@ -721,6 +721,7 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
         dependenciesMap.insert(std::make_pair(treeRoot, n));
     }
 
+    std::map<const EffectInstance*, bool> frameVaryingMemo;
     for (FindDependenciesMap::iterator it = dependenciesMap.begin(); it != dependenciesMap.end(); ++it) {
 
         const NodePtr& node = it->first;
@@ -741,6 +742,15 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
             U64 nodeHash = node->getHashValue();
             liveInstance->setParallelRenderArgsTLS(time, view, isRenderUserInteraction, isSequential, nodeHash,
                                                    abortInfo, treeRoot, it->second.visitCounter, NodeFrameRequestPtr(), glContext,  textureIndex, timeline, isAnalysis, duringPaintStrokeCreation, rotoPaintNodes, safety, glSupport, doNanHandling, draftMode, stats);
+        }
+        // Only nodes the render pulls through inputs get the value: walking upstream of an expression dependency, or
+        // of the lone root when upstream args are skipped, would visit nodes this setter never collected.
+        if (setUpstreamArgs && it->second.recursed) {
+            ParallelRenderArgsPtr installed = liveInstance->getParallelRenderArgsTLS();
+            if (installed) {
+                installed->isFrameVaryingOrAnimated = liveInstance->isFrameVaryingOrAnimated_Recursive(&frameVaryingMemo);
+                installed->frameVaryingComputed = true;
+            }
         }
         for (NodesList::iterator it2 = rotoPaintNodes.begin(); it2 != rotoPaintNodes.end(); ++it2) {
             U64 nodeHash = (*it2)->getHashValue();
@@ -896,6 +906,8 @@ ParallelRenderArgs::ParallelRenderArgs()
     , doNansHandling(true)
     , draftMode(false)
     , tilesSupported(false)
+    , isFrameVaryingOrAnimated(false)
+    , frameVaryingComputed(false)
 {
 }
 

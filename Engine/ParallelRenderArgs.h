@@ -149,6 +149,10 @@ public:
     ///The support for tiles is local to a render and may change depending on GPU usage or other parameters
     bool tilesSupported : 1;
 
+    /// Whether this node or anything upstream of it is frame varying or animated; only meaningful if frameVaryingComputed
+    bool isFrameVaryingOrAnimated : 1;
+    bool frameVaryingComputed : 1;
+
     ParallelRenderArgs();
 
     bool isCurrentFrameRenderNotAbortable() const;

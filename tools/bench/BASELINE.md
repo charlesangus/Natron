@@ -379,3 +379,115 @@ comp 100 hd:                 wide 100 hd:
 ```
 
 Mean running threads: comp 2.14, wide 2.16. Share of samples at 4 running threads: comp 0%, wide 0.8%. Three threads were the ceiling in practice on both graphs.
+
+## After M63 (2026-10-04, e0ae0a582)
+
+Machine: 4-core Intel N100, 15 GB RAM; `build/release` at `e0ae0a582` in the `natron-dev` container, one configuration at a time. Every matrix, states and stack run was started only after `/proc/loadavg` (1-minute) read below 1.5; the value seen before each run is listed. Modes are selected with `BENCH_SETTINGS=renderSchedulerMode=0` (Legacy) and `=1` (Task graph); `compare.py` keys on `settings`, so the modes were compared by hand. The machine was quiet (unlike the invalid M63-start section), and Legacy matches After M62 within noise.
+
+Load before each run: HD legacy 0.73, tiny legacy 0.91, HD taskgraph 1.05, tiny taskgraph 1.22, first occupancy set (the comp/wide runs of it were overwritten by a script naming bug and rerun, see below) 0.95-1.26, P=8 sweep 1.17, P=16 sweep 1.41, pixel renders 1.07 / 1.23 / 1.19 / 1.08, occupancy rerun legacy comp 0.14, wide 1.35, chain 1.26, taskgraph comp 1.03, wide 1.36, chain 1.10, stack profiles comp 1.20, wide 1.45.
+
+Commands run from the repo root (`BENCH_TIMEOUT=3600` throughout; `<M>` is 0 for legacy and 1 for taskgraph):
+
+```
+BENCH_SETTINGS=renderSchedulerMode=<M> tools/bench/run_matrix.sh m63after-<legacy|taskgraph>-hd hd 3 8 chain:30,100 wide:100 comp:100 mixed:100
+BENCH_SETTINGS=renderSchedulerMode=<M> tools/bench/run_matrix.sh m63after-<legacy|taskgraph>-tiny tiny 5 0 chain:1000,3000 wide:1000 comp:300
+SAMPLER=states tools/bench/profile_run.sh m63after-<mode>-<comp|wide>100 120 0.5 BENCH_TOPO=<comp|wide> BENCH_N=100 BENCH_FRAMES=20 BENCH_RES=hd BENCH_SETTINGS=renderSchedulerMode=<M>
+SAMPLER=states tools/bench/profile_run.sh m63after-<mode>-chain30r8 120 0.5 BENCH_TOPO=chain BENCH_N=30 BENCH_FRAMES=1 BENCH_RANGE=8 BENCH_RES=hd BENCH_SETTINGS=renderSchedulerMode=<M>
+(same chain run again at interval 0.1 as ...-chain30r8-fine, because the 0.5 s run ends after 6-8 s)
+BENCH_SETTINGS="renderSchedulerMode=1;noRenderThreads=<8|16>" tools/bench/run_matrix.sh m63after-taskgraph-p<8|16> hd 3 0 comp:100 wide:100
+BENCH_FRAMES=0 BENCH_WORK=build/bench/pix/<legacy|tg4|tg8|tg16> graph_bench.py (comp 100 hd, frame 1 only) in each configuration, then cmp
+tools/bench/profile_run.sh m63after-tg-<comp|wide>100 60 0.5 BENCH_TOPO=<comp|wide> BENCH_N=100 BENCH_FRAMES=20 BENCH_RES=hd BENCH_SETTINGS=renderSchedulerMode=1
+```
+
+Results: `build/bench/results-m63after-{legacy,taskgraph}-{hd,tiny}.jsonl`, `results-m63after-taskgraph-p{8,16}.jsonl`. All configurations exited 0. The whole run (first pass 2271 s plus the 876 s rerun) took about 53 minutes. The first occupancy and stack runs for comp and wide wrote to a shared file name (a `$c100` shell typo), so only wide survived; the rerun produced `states-m63after-<mode>-{comp,wide}100.txt` and `samples-m63after-tg-{comp,wide}100.txt`.
+
+### HD (3 timed frames; range of 8 frames)
+
+Ratio is taskgraph / legacy (below 1 is faster for taskgraph). Parallelism and RSS columns read legacy / taskgraph.
+
+| topo | n | build s (L / T) | legacy frame s | taskgraph frame s | ratio | parallelism | range per-frame s (L / T) | range ratio | RSS before MB |
+|---|---|---|---|---|---|---|---|---|---|
+| chain | 30 | 0.093 / 0.092 | 0.9939 | 1.5114 | 1.52 | 3.17 / 2.62 | 0.847 / 1.610 | 1.90 | 129 / 129 |
+| chain | 100 | 0.315 / 0.304 | 4.9201 | 5.2390 | 1.06 | 3.26 / 2.65 | 4.610 / 5.143 | 1.12 | 172 / 172 |
+| wide | 100 | 0.476 / 0.465 | 3.1868 | 3.0666 | 0.96 | 2.91 / 3.30 | 2.907 / 2.880 | 0.99 | 208 / 208 |
+| comp | 100 | 0.384 / 0.382 | 6.2120 | 6.2841 | 1.01 | 3.07 / 2.64 | 5.723 / 5.823 | 1.02 | 194 / 194 |
+| mixed | 100 | 0.357 / 0.378 | 10.9764 | 12.0348 | 1.10 | 3.08 / 2.49 | 10.453 / 11.381 | 1.09 | 189 / 189 |
+
+The chain 30 taskgraph row is noisy: the 1-frame rerun in the occupancy session gave 1.135 s frame and 0.995 s per range frame against 0.976 s and 0.886 s legacy (ratios 1.16 and 1.12). Three timed frames per config is a small sample; frame-to-frame variation inside the 20-frame runs is up to 2x on wide (see below).
+
+### Tiny (5 timed frames, no range)
+
+| topo | n | build s (L / T) | legacy frame s | taskgraph frame s | ratio | parallelism (L / T) | RSS before MB |
+|---|---|---|---|---|---|---|---|
+| chain | 1000 | 6.51 / 6.53 | 0.3320 | 0.3234 | 0.97 | 1.00 / 1.01 | 729 / 729 |
+| chain | 3000 | 46.74 / 46.72 | 1.0712 | 1.0267 | 0.96 | 1.00 / 1.01 | 1966 / 1966 |
+| wide | 1000 | 7.03 / 7.02 | 0.6805 | 0.5178 | 0.76 | 1.00 / 1.44 | 1108 / 1109 |
+| comp | 300 | 1.32 / 1.36 | 0.2497 | 0.2169 | 0.87 | 1.26 / 1.55 | 357 / 357 |
+
+### Legacy against After M62
+
+`compare.py results-m62after-hd.jsonl results-m63after-legacy-hd.jsonl` matches nothing (After M62 rows have `settings=''`, these have `renderSchedulerMode=0`), so the median frame was compared by hand:
+
+| config | After M62 s | M63 legacy s | ratio |
+|---|---|---|---|
+| chain 30 hd | 1.2958 | 0.9939 | 0.77 |
+| chain 100 hd | 5.3744 | 4.9201 | 0.92 |
+| wide 100 hd | 3.2296 | 3.1868 | 0.99 |
+| comp 100 hd | 6.6549 | 6.2120 | 0.93 |
+| mixed 100 hd | 12.2405 | 10.9764 | 0.90 |
+| chain 1000 tiny | 0.3203 | 0.3320 | 1.04 |
+| chain 3000 tiny | 1.1225 | 1.0712 | 0.95 |
+| wide 1000 tiny | 0.6497 | 0.6805 | 1.05 |
+| comp 300 tiny | 0.2676 | 0.2497 | 0.93 |
+
+### Occupancy
+
+`SAMPLER=states`, HD, single frame repeated 20 times (comp, wide) or one warm frame, one timed frame and an 8-frame range (chain 30). 120 samples at 0.5 s; runs that ended earlier have fewer samples. Histograms are samples by running-thread count; D-state threads were 0 in every sample. Mean includes any 0-1 thread samples at the ends of a run.
+
+| run | samples | 1 | 2 | 3 | 4 | 5+ | mean running | share at 4 |
+|---|---|---|---|---|---|---|---|---|
+| legacy comp 100 | 120 | 43 | 7 | 3 | 67 | 0 | 2.78 | 55.8% |
+| taskgraph comp 100 | 120 | 17 | 8 | 89 | 6 | 0 | 2.70 | 5.0% |
+| legacy wide 100 | 105 | 44 | 6 | 2 | 53 | 0 | 2.61 | 50.5% |
+| taskgraph wide 100 | 97 | 11 | 7 | 19 | 59 | 1 | 3.33 | 60.8% |
+| legacy chain 30 range 8 (0.5 s) | 12 | 0 | 2 | 4 | 6 | 0 | 3.33 | 50.0% |
+| taskgraph chain 30 range 8 (0.5 s) | 15 | 1 | 5 | 3 | 5 | 1 (10) | 3.33 | 33.3% |
+| legacy chain 30 range 8 (0.1 s) | 51 | 0 | 8 | 5 | 34 | 4 | 3.73 | 66.7% |
+| taskgraph chain 30 range 8 (0.1 s) | 63 | 3 | 22 | 14 | 23 | 1 | 2.95 | 36.5% |
+
+Task graph keeps comp at exactly 3 running threads (89 of 120 samples) and rarely reaches 4; wide reaches 4 in 61% of samples. On chain 30 the Task graph is below legacy (2.95 against 3.73), the opposite of the intent. The 1-sample 10-thread reading in the 0.5 s taskgraph chain run is a transient. In the 20-frame wide runs frame time is bimodal (about 1.7 s for the first 4 frames, then about 3.2 s) in both modes' 20-frame runs and in the P=8/16 and stack runs; the 3-frame matrix rows are all in the slow mode.
+
+### Pool-size sweep (Task graph, HD, 3 timed frames)
+
+| P | comp frame s | comp rss_peak MB | wide frame s | wide rss_peak MB | pixels identical (comp, frame 1) |
+|---|---|---|---|---|---|
+| 4 (default) | 6.2841 | 3794 | 3.0666 | 1220 | yes (vs legacy) |
+| 8 | 5.9640 | 1932 | 2.9715 | 1371 | yes |
+| 16 | 3.8314 | 2395 | 2.9917 | 1926 | yes |
+
+Pixel check: one frame of comp 100 HD rendered in Legacy and Task graph at P=4, 8 and 16 (uncompressed EXR, 294054 bytes each, under `build/bench/pix/`). `cmp -l` against legacy shows exactly 2 differing bytes per file, at offsets 67-70 inside the `capDate` header string; every pixel byte is identical. The comp peak RSS at P=4 (3794 MB, and 3655 MB legacy) is higher than at P=8/16, so peak RSS on comp is not monotonic in P; it varies by GB between runs.
+
+### Gate checks
+
+- FAIL: comp 100 HD Task graph mean running threads >= 3.2. 2.70 (89 of 120 samples at exactly 3; 5% at 4).
+- PASS: wide 100 HD Task graph mean running threads >= 3.2. 3.33.
+- FAIL: comp 100 HD single frame Task graph <= 0.8x Legacy. 6.2841 / 6.2120 = x1.01 (occupancy run: 6.2369 / 6.0039 = x1.04).
+- FAIL: wide 100 HD single frame Task graph <= 0.8x Legacy. 3.0666 / 3.1868 = x0.96 (occupancy run: 2.9646 / 3.0774 = x0.96).
+- FAIL: HD chain 30 Task graph <= 1.1x Legacy. 1.5114 / 0.9939 = x1.52 (noisy; occupancy rerun x1.16).
+- PASS: HD chain 100 <= 1.1x. 5.2390 / 4.9201 = x1.06.
+- PASS: tiny chain 1000 <= 1.1x. 0.3234 / 0.3320 = x0.97. PASS: tiny chain 3000 <= 1.1x. 1.0267 / 1.0712 = x0.96.
+- FAIL: chain 30 HD range 8 per-frame wall Task graph <= 0.85x Legacy. 1.610 / 0.847 = x1.90 (occupancy rerun: 0.995 / 0.886 = x1.12).
+- FAIL: mixed 100 HD Task graph <= 1.0x. 12.0348 / 10.9764 = x1.10.
+- PASS: P=8/16 sweep pixels identical (only the `capDate` header seconds differ).
+- PASS (with a note): peak RSS growth <= ~66 MB per added pool thread. Against P=4: wide +151 MB at P=8 (38 MB/thread), +706 MB at P=16 (59 MB/thread); comp falls (3794 -> 1932 -> 2395). Between P=8 and P=16 alone, wide grows 555 MB = 69 MB/thread and comp 463 MB = 58 MB/thread, so the wide step slightly exceeds 66.
+- PASS: Legacy vs After M62, no row slower than 1.15x. Worst 1.05 (wide 1000 tiny); chain 1000 tiny 1.04.
+
+### Input for M64
+
+`samples-m63after-tg-comp100.txt` and `samples-m63after-tg-wide100.txt` (Task graph, HD, 20 frames, 60 eu-stack samples; eu-stack stops the process, so absolute concurrency is understated).
+
+comp 100: 406 busy thread-samples. 65.5% of them (266) are `gomp_barrier_wait_end` in libgomp threads, i.e. OpenMP workers spinning in the CImg plugins' parallel regions; they are not Natron pool threads and are counted as running by `sample_states.sh` too, which inflates comp's 3-thread occupancy. Excluding them (140 busy samples): plugin render pixel work 79 (56%: Misc.ofx `ofxsMaskMixPix`, transform, filter, CImg), plugin other (begin/end/props and ImageProcessor glue) 47 (34%), engine per-image passes 14 (10%: `checkForNaNsAndFix`, alloc/fill, `copyUnProcessed`), engine other (host overhead: request pass, scheduler, metadata) about 0 in samples. Of the blocked samples, 60 of 63 are the writer waiting in `FrameFuture::wait`.
+
+wide 100: 190 busy thread-samples. plugin render 149 (78.4%; `ofxsMaskMixPix` 24.7% self, other Misc.ofx frames 56%), engine image alloc/fill and NaN passes 22 (11.6%; `checkForNaNsAndFix` 6.8% self), plugin other 17 (8.9%), engine other (host overhead) 1 (0.5%), libc 1 (0.5%). 56 of 58 blocked samples are `FrameFuture::wait`.
+
+So at HD host overhead is negligible in both graphs and the remaining levers are the plugin pixel loops (about 80-95% of non-spin busy time), the per-image NaN/copy passes (10-12%), and keeping the pool fed: comp sits at 3 running threads with an additional OpenMP spin pool competing for the 4 cores. Worth checking in M64 whether `OMP_WAIT_POLICY=passive` or `OMP_NUM_THREADS` coordination changes comp's occupancy and frame time.

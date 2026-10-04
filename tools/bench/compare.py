@@ -43,6 +43,18 @@ def median_of(records, field):
     return statistics.median(vals) if vals else None
 
 
+def khz_note(label, before, after):
+    b = median_of(before, "cpu_khz_mean")
+    a = median_of(after, "cpu_khz_mean")
+    if b is None and a is None:
+        return None
+    text = "khz_mean %s->%s" % (fmt(b), fmt(a))
+    if b and a and abs(a - b) / min(a, b) > 0.10:
+        print("note: %s: cpu clock differs by more than 10%% (%s kHz vs %s kHz); timings are not comparable"
+              % (label, fmt(b), fmt(a)))
+    return text
+
+
 def fmt(v):
     return "-" if v is None else "%.4g" % v
 
@@ -97,6 +109,9 @@ def main():
             cells.append("%s %s->%s x%s" % (label, fmt(b), fmt(a), r))
         flagged_any = flagged_any or flagged
         head = "%s n=%s res=%s named=%s%s" % (topo, n, res, named, " settings=" + settings if settings else "")
+        khz = khz_note(head, before[key], after[key])
+        if khz:
+            cells.append(khz)
         print("%-34s %s%s" % (head, "  ".join(cells), "  FLAGGED" if flagged else ""))
 
     missing = sorted(set(before) - set(after), key=key_sort)

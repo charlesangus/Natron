@@ -5,6 +5,9 @@
 #   tools/bench/run_matrix.sh <tag> <res> <frames> <range> <topo:n,n,n> [<topo:n,n> ...]
 #   e.g. tools/bench/run_matrix.sh overhead tiny 5 0 chain:0,10,100 wide:10,100
 # BENCH_SETTINGS="name=value;name=value" is passed to NatronRenderer as --setting arguments.
+# Each configuration waits for the load average to drop (BENCH_MAX_LOAD, BENCH_COOLDOWN_TIMEOUT)
+# and then sleeps BENCH_COOLDOWN seconds, and its CPU clock is logged to
+# build/bench/freq-<tag>-<topo>-<n>.txt and summarised into the result record.
 set -u
 status=0
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -19,18 +22,29 @@ out=$repo/build/bench/results-$tag.jsonl
 inner='cd "$REPO" && args=(); IFS=";" read -ra kv <<< "${BENCH_SETTINGS:-}"; for s in "${kv[@]}"; do args+=(--setting "$s"); done; timeout "$BENCH_TIMEOUT" xvfb-run --auto-servernum build/release/Renderer/NatronRenderer "${args[@]}" -b tools/bench/graph_bench.py'
 logs=$repo/build/bench/logs
 mkdir -p "$logs"
+# shellcheck source=lib.sh
+. "$repo/tools/bench/lib.sh"
 for spec in "$@"; do
     topo=${spec%%:*}
     IFS=, read -ra sizes <<< "${spec#*:}"
     for n in "${sizes[@]}"; do
         log=$logs/$tag-$topo-$n-$res.log
+        freq=$repo/build/bench/freq-$tag-$topo-$n.txt
+        bench_cooldown
+        before=$(wc -l < "$out" 2>/dev/null || echo 0)
         start=$(date +%s)
+        bench_freq_start "$freq"
         docker exec -e BENCH_TOPO="$topo" -e BENCH_N="$n" -e BENCH_RES="$res" \
             -e BENCH_FRAMES="$frames" -e BENCH_RANGE="$range" -e BENCH_OUT="$out" -e BENCH_NAMED="${BENCH_NAMED:-1}" \
             -e BENCH_SETTINGS="${BENCH_SETTINGS:-}" -e BENCH_TIMEOUT="${BENCH_TIMEOUT:-1800}" -e REPO="$repo" \
+            -e OMP_WAIT_POLICY -e GOMP_SPINCOUNT -e OMP_THREAD_LIMIT -e OMP_DISPLAY_ENV \
             -e OFX_PLUGIN_PATH="$repo"/build/assets/Plugins natron-dev bash -lc "$inner" \
             > "$log" 2>&1
         code=$?
+        bench_freq_stop
+        if [ "$(wc -l < "$out" 2>/dev/null || echo 0)" -gt "$before" ]; then
+            bench_record_freq "$out" "$freq"
+        fi
         if [ "$code" -ne 0 ]; then status=1; fi
         rm -f "$repo"/build/bench/work/*.exr
         echo "$tag $topo n=$n res=$res exit=$code $(( $(date +%s) - start ))s"

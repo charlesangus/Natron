@@ -229,13 +229,18 @@ def main():
     path = os.path.join(WORK, "%s_%d_%s_####.exr" % (TOPO, N, RES))
     writer = app.createWriter(path)
     writer.connectInput(0, root)
-    for name, value in (("compression", "No Compression"),):
+    for name, value in (("compression", "none"),):
         p = writer.getParam(name)
         if p is not None:
             try:
                 p.set(value)
             except Exception as e:
                 log("could not set writer %s: %s" % (name, e))
+    comp = writer.getParam("compression")
+    shown = None
+    if comp is not None:
+        shown = comp.getOption(comp.get()) if hasattr(comp, "getOption") else comp.get()
+    log("writer compression=%s" % shown)
 
     n_nodes = sum(counts.values())
     log("built %s N=%d nodes=%d in %.2fs" % (TOPO, N, n_nodes, build_s))

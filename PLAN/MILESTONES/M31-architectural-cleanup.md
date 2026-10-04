@@ -15,4 +15,34 @@ rather than folding them into the milestone that found them.
   - verify: whole ctest suite green, including M18's `renderFullSequence()`-driven `DeepWrite` test and the CLI/Python entry-point tests from M18.P3.T8c; `grep -r OutputEffectInstance Engine Gui` returns nothing; a non-output node (`Dot`, `Blur`, `DeepRecolor`) has no engine (`Node::getRenderEngine()` null) and the Viewer, a Write, and a `DeepWrite` each have one; GUI smoke under Xvfb (`build/deeprepro/run-gui.sh`): playback, a Write render with progress/abort, and node deletion mid-render all behave as before.
   - size: L
 
+## Phase 31.2: Per-node memory (speculative, from M62.P5.T1; take only if needed)
+
+M62.P5.T1 (2026-10-03, massif on a 300-node OFX Grade chain, release build at `ab2b06c90`) measured ~0.65 MB of heap per idle node: 518 KB useful + 135 KB malloc overhead. 75–80% is OpenFX-specific. User decision 2026-10-03: none of these fixes go into M62; they are parked here as speculative and only worth doing if memory per node still matters once core nodes are native (M67). Numbers are per node.
+
+- [ ] M31.P2.T1 — Copy-on-write instance property sets in the OpenFX host library (speculative)
+  - files: `libs/OpenFX` fork (`HostSupport` `Property::Set`, `Param::Instance`, `ClipInstance`, `ImageEffect::Instance`)
+  - approach: instances deep-copy their descriptor's `Property::Set` (250 KB param instances, 31 KB clips, 25 KB effect instance, 16 KB interact descriptors; `Property::Set` copy-construction alone is 286 KB). Make the instance set an overlay over the shared descriptor set: lookups check the overlay then the descriptor; a write materialises only that property. Care with properties the host mutates per instance (enabled, secret, values).
+  - verify: massif per-node heap on the same chain drops by ≥150 KB; full ctest and the OFX plugin tests green.
+  - size: L
+- [ ] M31.P2.T2 — Build interact descriptors lazily so NatronRenderer never allocates them (speculative)
+  - files: `Engine/OfxEffectInstance.cpp`, `Engine/OfxOverlayInteract.*`
+  - approach: `Interact::Descriptor` property sets are built per instance even with no GUI (16 KB). Create them on first overlay use.
+  - verify: massif shows no `Interact::Descriptor` allocations in a renderer run; GUI overlays still appear under Xvfb.
+  - size: M
+- [ ] M31.P2.T3 — Connect OFX dynamic-property signals lazily (speculative)
+  - files: `Engine/OfxParamInstance.cpp` (`OfxParamToKnob::connectDynamicProperties`)
+  - approach: per-param `QObject::connect` calls cost 29 KB per node; connect on first change or share one connection per knob group. Needs a GUI check that enabled/secret/label mirroring still updates.
+  - verify: massif delta ≥20 KB per node; Xvfb check of a plugin toggling a param's secret/enabled state.
+  - size: M
+- [ ] M31.P2.T4 — Lazy per-knob `Curve` and deferred GUI-only default pages (speculative)
+  - files: `Engine/Knob.cpp`, `Engine/Node.cpp` (`createNodePage`, info page)
+  - approach: a `Curve` per knob (6 KB) and GUI-only pages (20 KB) are allocated for every node; defer them. Touches serialization and Python's expectation of which knobs exist.
+  - verify: project save/load and Python knob listing unchanged; massif delta.
+  - size: M
+- [ ] M31.P2.T5 — Unify OFX param and knob state (structural)
+  - files: `Engine/Knob*.h/.cpp`, `Engine/OfxParamInstance.*`, `libs/OpenFX` HostSupport
+  - approach: params and knobs hold the same parameter twice (OFX `Param::Instance` 250 KB + Natron knob 117 KB). One object owning descriptor-backed state would remove most of it; architecture-level, crosses serialization and GUI. Likely moot for nodes rewritten natively in M67.
+  - verify: to be elaborated.
+  - size: L
+
 **Verification gate:** every task's verify holds; whole ctest suite green; AppImage packaged and a manual GUI session (playback, render-to-disk with abort, Python `app.render()`) reports no regression.

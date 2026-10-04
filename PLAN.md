@@ -171,6 +171,7 @@ future core work has solid ground to build on.
   M43 and M36 were absorbed into M38 as Phases 38.2 and 38.7 — their rows are
   cancelled like M35's.
 
+- **M67 (rewrite core nodes as native nodes) added 2026-10-03 as a stub** after M62.P5.T1 showed 75–80% of per-node memory is OpenFX-specific; its first task is the native-vs-OFX chain benchmark. The memory proposals went to M31 Phase 31.2 as speculative. See `DECISIONS/2026-10-03-native-core-nodes-over-ofx-memory-fixes.md`.
 - **M62–M64 (performance and render strategy) added 2026-09-25** from a side session's benchmarks (`tools/bench/`, results in `build/bench/`). Runs **after the channel/layer work (M61, M37, M50, M60) and ahead of infra/housekeeping** (user decision). M62 fixes the superlinear engine hotspots and commits the bench as the regression harness. M63 (task-graph scheduler) and M64 (tiles) are stubs, each blocked on the previous milestone's re-benchmark. See `DECISIONS/2026-09-25-perf-hotspots-before-render-architecture.md`.
 - **Stacked milestone PRs (2026-09-22, user):** from M34 on, every milestone packages an AppImage to `build/appimages/`, opens its PR against the previous milestone's branch, runs its review round, and stays open. The next milestone branches off the previous tip, and the user checks and merges asynchronously. Fixes from a user check are merged up the stack, never rebased. See `DECISIONS/2026-09-22-stacked-milestone-prs.md`.
 - **Parallel milestones in worktrees (2026-09-23, user):** M28 and M30 run alongside M34 in worktrees under `build/wt/` (inside the container mount), each branched off `main` and PR'd against `main`, not stacked. Builds still serialize through the one natron-dev container. See `DECISIONS/2026-09-23-parallel-worktree-milestones.md`.
@@ -217,6 +218,7 @@ future core work has solid ground to build on.
 | M62 | Render scaling: fix the algorithmic hotspots (bench harness, O(N²)/exponential walks, TLS copy, host copies) | doing | [M62-render-scaling-hotspots.md](PLAN/MILESTONES/M62-render-scaling-hotspots.md) |
 | M63 | Task-graph render scheduler (stub) | todo | [M63-task-graph-render-scheduler.md](PLAN/MILESTONES/M63-task-graph-render-scheduler.md) |
 | M64 | Tiled / fused rendering for bandwidth-bound chains (stub) | todo | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
+| M67 | Rewrite core nodes as native nodes (stub) | todo | [M67-native-core-nodes.md](PLAN/MILESTONES/M67-native-core-nodes.md) |
 | M25 | Guard the GL init path against the debug FP traps | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M27 | Make the debug build a debug build again | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M28 | Stop treating page cache as memory pressure | done | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |
@@ -262,7 +264,6 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M62.P5.T1 memory proposals, your call:** massif on a 300-node Grade chain attributes the ~0.65 MB per idle node as: OFX param instances deep-copying their descriptor `Property::Set` 250 KB (48%), Natron knobs 117 KB (23%: `connectDynamicProperties` 29 KB, `OfxParamToKnob` 38 KB, default pages 20 KB, per-knob `Curve` 6 KB), OFX clip property sets 31 KB, `ImageEffect::Instance` set 25 KB, `Interact::Descriptor` sets 16 KB, plus 135 KB malloc overhead. Proposed: (1) copy-on-write overlay for instance property sets in the `libs/OpenFX` fork (~150–200 KB/node); (2) skip interact descriptors in the renderer (16 KB); (3) lazy `connectDynamicProperties` (~20 KB); (4) lazy `Curve`/deferred GUI-only pages (up to 20 KB); (5)/(6) structural knob/param unification → M31. Which of (1)–(4) go into M62 as new P5 tasks, if any? Default if unanswered: none now; all six are filed under M31.
 - **M65 awaits the user's UAT sign-off (P8.T3), deferred to the parcel UAT:** `build/appimages/M65-26cc11c9c.AppImage` with `build/appimages/M65-uat.md`. PR #35 is stacked on M61's #34; both Codex review rounds are closed.
 
 - **Parcel UAT (M61 → M65 → M66 → M37 → M50 → M60), awaiting the user.** Every PR is stacked (#34 ← #35 ← #36 ← #37 ← #38 ← #39), and every Codex round is closed. Merge bottom-up after the UAT. The top AppImage, `build/appimages/M60-ab2b06c90.AppImage`, contains everything. Each milestone's UAT script is `build/appimages/M<id>-uat.md`.

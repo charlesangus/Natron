@@ -29,16 +29,16 @@ Execution notes:
 - The debug build defines NDEBUG, so tests use EXPECT/ASSERT, not assert().
 - Timing assertions in gtest must be generous structural bounds (such as "a 30-level diamond finishes in under 5 s", where the exponential version needs hours), never tight wall-clock thresholds that flake on CI.
 - Every task re-runs the bench configurations it targets, before and after, and records the ratio in this file's `## Decisions`. "Before" means P1.T3's baseline on the branch point.
-- Order: P1.T1 → P1.T2 → P1.T3 (bench run, container exclusive) → P2.T1 → P2.T2 → P2.T4 → P2.T3 → P3.T1 → P3.T2 → P4.T1 → P5.T1 → P6.T1. P2.T1/P2.T2/P2.T4 may be implemented in parallel (disjoint files, except `Tests/GraphScaling_Test.cpp`: P2.T1 creates it, P2.T2 and P2.T4 add their own test functions by targeted edits after it exists) with one debug build per batch.
+- Order: P1.T1 → P1.T2 → P1.T3 (bench run, container exclusive) → P2.T1 → P2.T2 → P2.T4 → P2.T3 → P3.T1 → P3.T2 → P4.T1 → P5.T1 → P6.T1. P2.T1/P2.T2/P2.T4 are implemented in parallel with one debug build for the batch; each writes its own test file (`GraphScaling_Test.cpp`, `GraphScalingNaming_Test.cpp`, `GraphScalingExpressionDeps_Test.cpp`) and P2.T1 alone edits `Tests/CMakeLists.txt`, registering all three.
 
 ## Phase 62.1: Benchmark harness in the repo
 
-- [ ] M62.P1.T1 — Commit tools/bench with its README and a baseline summary
+- [x] M62.P1.T1 — Commit tools/bench with its README and a baseline summary
   - files: `tools/bench/*` (currently untracked: `graph_bench.py`, `run_matrix.sh`, `profile_run.sh`, `sample_stacks.sh`, `sample_states.sh`, `analyze_stacks.py`, `stream_bench.c`, `README.md`), `tools/bench/BASELINE.md` (new)
   - approach: Bring comments to the comment policy (about 5 lines: `stream_bench.c` line 3's "(Natron today)" goes stale; keep the rest, they are genuine *why*s). Run `clang-format -i` on `stream_bench.c` (CI's `format` job checks every new `.c` line with clang-format 21.1.8). Derive the repo root from the script's own location instead of the hardcoded `/home/bosley/git/Natron` in `run_matrix.sh`, `profile_run.sh` and `graph_bench.py` (`BENCH_WORK` default); that is the only behaviour change. Extend the `lint-ci` shellcheck step in `.github/workflows/checks.yml` from `tools/ci/local/*.sh` to also cover `tools/bench/*.sh`, and fix what it reports (expect unquoted `$repo` in docker args, SC2086). CI has no Python linter; don't add ruff. `BASELINE.md` records the 2026-09-25 numbers in this file's table plus the machine, commit and exact commands, generated from `build/bench/results-{tiny,hd,hdrange}.jsonl`. Don't commit the jsonl, sample or log files; they stay in `build/bench/`.
   - verify: `clang-format --dry-run tools/bench/stream_bench.c` is clean; `shellcheck tools/bench/*.sh` is clean; `format`, `lint-ci` and `build-and-test` stay green. `tools/bench/run_matrix.sh smoke tiny 2 0 chain:10 wide:10` runs in the container against `build/release` and appends two result lines.
   - size: M
-- [ ] M62.P1.T2 — Add a results comparison script
+- [x] M62.P1.T2 — Add a results comparison script
   - files: `tools/bench/compare.py` (new), `tools/bench/README.md`
   - approach: `compare.py BEFORE.jsonl AFTER.jsonl` matches rows on (topo, n, res, named) and prints build time, median frame time, parallelism and RSS before/after as ratios, flagging any regression beyond a `--threshold` (default 1.5x, given the 2x run-to-run noise). Standard library only.
   - verify: comparing `results-tiny.jsonl` with itself prints all ratios 1.00 and exits 0. A hand-edited copy with one frame time tripled is flagged and exits non-zero.
@@ -57,7 +57,7 @@ Execution notes:
   - verify: a new gtest builds a diamond ladder 40 levels deep (each level is two nodes reading the previous level's pair, then merging) and connects a node at the bottom. It must finish in under 5 s where the old code would need ~2^40 visits. A second gtest checks that connecting a node into its own upstream is still refused. Full debug ctest green.
   - size: M
 - [ ] M62.P2.T2 — Make auto-naming linear per node
-  - files: `Engine/NodeGroup.cpp`, `Tests/GraphScaling_Test.cpp`, `tools/bench/README.md`, `tools/bench/graph_bench.py`
+  - files: `Engine/NodeGroup.cpp`, `Tests/GraphScalingNaming_Test.cpp` (new), `tools/bench/README.md`, `tools/bench/graph_bench.py`
   - approach: in `NodeCollection::checkNodeName`, collect the script names of the other activated nodes into an `std::unordered_set<std::string>` once, under `nodesMutex`, then probe candidate suffixes against it. Keep today's semantics exactly: the lowest free suffix from 1, other activated nodes only, and the same errors for `errorIfExists`/`!appendDigit` and for group-knob collisions; the other callers (`Engine/NodeName.cpp:314`, `:326`, `:432` with `errorIfExists=true` on rename, and `NodeGroup.cpp:553`) must see no change. Then update the "O(N^2) unique-name search" sentences in `tools/bench/README.md` and the comment in `tools/bench/graph_bench.py`, which become false.
   - verify: gtest: create 2000 Grades with default names through `AppInstance::createNode`; names are `Grade1`..`Grade2000` with no gaps, and after deleting `Grade7` the next Grade is named `Grade7`. Bench: `BENCH_NAMED=0` tiny chain 1000 build time drops by at least 10x against the baseline (compare.py).
   - size: M
@@ -68,7 +68,7 @@ Execution notes:
   - size: L
 
 - [ ] M62.P2.T4 — Make the upstream walk actually collect expression dependencies
-  - files: `Engine/ParallelRenderArgs.cpp`, `Tests/GraphScaling_Test.cpp`
+  - files: `Engine/ParallelRenderArgs.cpp`, `Tests/GraphScalingExpressionDeps_Test.cpp` (new)
   - approach: in `getAllUpstreamNodesRecursiveWithDependencies_internal` (`ParallelRenderArgs.cpp:633–689`) the expression-dependency loop inserts `std::make_pair(node, n)` keyed on the node being visited, not on the dependency `*it`, so dependency nodes are never added and never get frame TLS; today they are only reached through the eager TLS copy that P3.T2 removes. Insert the dependency (and recurse into it) instead. Keep the visited map so a dependency reachable both as an input and as an expression target is added once.
   - verify: gtest: a Grade whose knob has an expression reading a Constant that is not connected upstream; after building a `ParallelRenderArgsSetter` on the Grade, the Constant's effect has frame args (`getParallelRenderArgsTLS()` non-null). Full debug ctest green.
   - size: M
@@ -122,3 +122,4 @@ Execution notes:
   - **P1.T3 (re-baseline):** the 2026-09-25 numbers predate the whole channel/layer/OCIO parcel, and run-to-run noise is already 2x, so every ratio in this milestone is measured against a fresh baseline on the branch point, not the September one. The September table stays in `BASELINE.md` as history.
   - **P2.T4 (expression dependencies):** `getAllUpstreamNodesRecursiveWithDependencies_internal` inserts the visited node instead of its expression dependency, so dependency nodes never get frame TLS and are reached today only through P3.T2's eager copy. Fixed as its own task ahead of P2.T3/P3.T1/P3.T2 rather than slipped into one of them, because it changes the node set every later task measures and relies on. Reversible by inbox if the user prefers to leave the walk as is.
 - 2026-10-03 — **Stacking.** M62 branches off M60's tip `ab2b06c90` as `milestone/m62-render-scaling-hotspots` and its PR targets `milestone/m60-deep-layers-and-channels`, per the stacked-PR rule; the M61→M60 parcel is still awaiting the user's UAT. The container had to be recreated this session (fresh Docker daemon: no images, no containers); `build/release`, `build/debug` and `.ccache` survived on the host bind mount.
+- 2026-10-03 — **P1.T1 and P1.T2 landed** (`bf43bc62b`, `7071cf08f`). `graph_bench.py` cannot use `__file__` (NatronRenderer execs the script, so it is undefined); its `BENCH_WORK` default is relative to the cwd, which `run_matrix.sh`/`profile_run.sh` set to the repo root. Smoke run green (chain 10 and wide 10, tiny). The P2 gtests go in three files, one per task, so the three implementers can run in parallel without sharing a file.

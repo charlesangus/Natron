@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: M63.P2.T3
-pm_heartbeat: 2026-10-04T07:20:30-04:00
+pm_heartbeat: 2026-10-04T07:39:57-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---

@@ -154,3 +154,161 @@ Top 10 self-time functions, chain:30 hd (109 busy thread-samples):
 | 3.7 | `void OFX::ofxsPremult<float, 4, 1>` (Misc.ofx) |
 
 Activity, chain:30 hd: plugin:other 58.7%, engine:image alloc/fill 21.1%, engine:other 11.0%, plugin:render 7.3%. 25 thread-samples were blocked, 24 of them in `Natron::OfxHost::multiThread`.
+
+## After M62 (2026-10-04, 07349f257)
+
+Machine: 4-core Intel N100, 15 GB RAM; `build/release` at `07349f257` running in the `natron-dev` container, one configuration at a time. Run-to-run noise is up to 2x, so compare ratios between rows. The "before" for every ratio is the M62-start baseline above (`results-m62base-*.jsonl`); rows without an m62base counterpart are compared by hand against the September `results-tiny.jsonl` / `results-hd.jsonl`.
+
+Commands run from the repo root (`BENCH_TIMEOUT=3600` throughout):
+
+```
+tools/bench/run_matrix.sh m62after-tiny tiny 5 0 chain:100,1000,3000 wide:1000,3000 comp:300,1000
+BENCH_NAMED=0 tools/bench/run_matrix.sh m62after-tiny-unnamed tiny 5 0 chain:100,1000
+tools/bench/run_matrix.sh m62after-hd hd 3 0 chain:30,100 mixed:100 wide:100 comp:100
+tools/bench/profile_run.sh m62after-chain1000 60 0.5 BENCH_TOPO=chain BENCH_N=1000 BENCH_FRAMES=40 BENCH_RES=tiny
+tools/bench/profile_run.sh m62after-comp300 60 0.5 BENCH_TOPO=comp BENCH_N=300 BENCH_FRAMES=40 BENCH_RES=tiny
+tools/bench/profile_run.sh m62after-hdchain30 60 0.5 BENCH_TOPO=chain BENCH_N=30 BENCH_FRAMES=20 BENCH_RES=hd
+python3 tools/bench/analyze_stacks.py build/bench/samples-m62after-<name>.txt --top 15
+tools/bench/sample_states.sh <pid> 600 0.1     # on a live chain:30 hd, 20 frames run; output in build/bench/states-hdchain30.txt
+python3 tools/bench/compare.py build/bench/results-m62base-<tiny|tiny-unnamed|hd>.jsonl build/bench/results-m62after-<...>.jsonl
+```
+
+Results are in `build/bench/results-m62after-tiny.jsonl`, `results-m62after-tiny-unnamed.jsonl` and `results-m62after-hd.jsonl`. All 14 configurations exited 0; the whole matrix, profiles and states run took about 8 minutes.
+
+| topo | n | res | named | build (s) | median frame (s) | parallelism | RSS before render (MB) |
+|---|---|---|---|---|---|---|---|
+| chain | 100 | tiny | True | 0.34 | 0.0306 | 1.0 | 173 |
+| chain | 1000 | tiny | True | 6.55 | 0.3203 | 1.0 | 730 |
+| chain | 3000 | tiny | True | 47.01 | 1.1225 | 1.0 | 1967 |
+| wide | 1000 | tiny | True | 7.05 | 0.6497 | 1.0 | 1110 |
+| wide | 3000 | tiny | True | 41.52 | 2.0576 | 1.0 | 3111 |
+| comp | 300 | tiny | True | 1.32 | 0.2676 | 1.28 | 359 |
+| comp | 1000 | tiny | True | 6.81 | 3.4466 | 2.09 | 921 |
+| chain | 100 | tiny | False | 0.31 | 0.0301 | 1.0 | 173 |
+| chain | 1000 | tiny | False | 6.93 | 0.3159 | 1.0 | 730 |
+| chain | 30 | hd | True | 0.09 | 1.2958 | 2.61 | 130 |
+| chain | 100 | hd | True | 0.31 | 5.3744 | 2.67 | 173 |
+| mixed | 100 | hd | True | 0.36 | 12.2405 | 2.54 | 190 |
+| wide | 100 | hd | True | 0.44 | 3.2296 | 2.55 | 209 |
+| comp | 100 | hd | True | 0.38 | 6.6549 | 2.58 | 195 |
+
+### Against the M62-start baseline
+
+`compare.py` output (matching records; "only in after" notes trimmed to the rows handled by hand below):
+
+```
+tiny:
+chain n=100 res=tiny named=True    build_s 0.4031->0.3426 x0.85  frame_s 0.0332->0.0306 x0.92  parallelism 1->1 x1.00  rss_mb 173->173 x1.00
+chain n=1000 res=tiny named=True   build_s 16.77->6.551 x0.39  frame_s 0.7266->0.3203 x0.44  parallelism 1->1 x1.00  rss_mb 731->730 x1.00
+comp n=300 res=tiny named=True     build_s 2.105->1.318 x0.63  frame_s 0.8374->0.2676 x0.32  parallelism 1.42->1.28 x0.90  rss_mb 359->359 x1.00
+wide n=1000 res=tiny named=True    build_s 7.119->7.05 x0.99  frame_s 0.6223->0.6497 x1.04  parallelism 1->1 x1.00  rss_mb 1111->1110 x1.00
+
+tiny-unnamed:
+chain n=100 res=tiny named=False   build_s 0.4361->0.3059 x0.70  frame_s 0.0344->0.0301 x0.88  parallelism 1->1 x1.00  rss_mb 173->173 x1.00
+chain n=1000 res=tiny named=False  build_s 23.07->6.932 x0.30  frame_s 0.7253->0.3159 x0.44  parallelism 1->1 x1.00  rss_mb 731->730 x1.00
+
+hd:
+chain n=30 res=hd named=True       build_s 0.095->0.0903 x0.95  frame_s 1.752->1.296 x0.74  parallelism 2.38->2.61 x1.10  rss_mb 130->130 x1.00
+```
+
+No row is flagged at the 1.5 threshold. Rows with no m62base record, compared by hand against September (build s, median frame s):
+
+| config | September | After M62 | build ratio | frame ratio |
+|---|---|---|---|---|
+| chain 3000 tiny | 914.37, 16.42 | 47.01, 1.1225 | x0.051 | x0.068 |
+| wide 3000 tiny | 68.53, 3.386 | 41.52, 2.0576 | x0.61 | x0.61 |
+| comp 1000 tiny | never finished building | 6.81, 3.4466 | | |
+| chain 100 hd | 0.77, 19.61 | 0.31, 5.3744 | x0.40 | x0.27 |
+| mixed 100 hd | 0.95, 23.88 | 0.36, 12.2405 | x0.38 | x0.51 |
+| wide 100 hd | 0.79, 6.473 | 0.44, 3.2296 | x0.55 | x0.50 |
+| comp 100 hd | 0.82, 11.71 | 0.38, 6.6549 | x0.46 | x0.57 |
+
+Chain tiny frame time per node: 0.306 ms (n=100), 0.320 ms (n=1000), 0.374 ms (n=3000). wide:1000 tiny did not change against m62base (build x0.99, frame x1.04).
+
+### Profiles
+
+Stack samples: `build/bench/samples-m62after-chain1000.txt`, `samples-m62after-comp300.txt`, `samples-m62after-hdchain30.txt`. The runs finished before the 60 samples were taken (render is much faster now), so the sample counts are 22, 16 and 47 and the busy thread-sample counts are 15, 19 and 114. The chain:1000 and comp:300 percentages rest on 15 and 19 thread-samples and are low confidence. Mean busy threads per sample: 0.68, 1.19, 2.43 (eu-stack stops the process while walking, so these understate concurrency).
+
+chain:1000 tiny, top 10 self time (15 busy thread-samples; activity: plugin:render 46.7%, engine:other 26.7%, libc alloc/copy 13.3%, plugin:beginEnd 6.7%, engine:components 6.7%):
+
+| % | function |
+|---|---|
+| 20.0 | `_int_malloc` (libc) |
+| 13.3 | `unlink_chunk.constprop.0` (libc) |
+| 6.7 | `Natron::OfxBooleanInstance::get` |
+| 6.7 | `OFX::Image::getPixelAddress` (Misc.ofx) |
+| 6.7 | `OFX::PropertySet::propGetString` (Misc.ofx) |
+| 6.7 | `Natron::KnobHelper::getAllExpressionDependenciesRecursive` |
+| 6.7 | `Natron::Node::setNodeIsRenderingInternal` |
+| 6.7 | `void` (Misc.ofx) |
+| 6.7 | `free` (libc) |
+| 6.7 | `OFX::Host::Property::PropertyTemplate<IntValue>::getValue` |
+
+Top inclusive, chain:1000: `renderRoI`, `treeRecurseFunctor`, `renderInputImagesForRoI` 86.7%; `renderRoIInternal` 66.7%; `OfxEffectInstance::render`, `renderHandler`, `OFX::Host::ImageEffect::Instance::mainEntry`, `renderAction`, `tiledRenderingFunctor`, `render_public` 53.3%; `_int_malloc` 33.3%; `operator new` 26.7%; `OFX::Host::Property::Set::Set` / `createProperty` 20.0%. `isFrameVaryingOrAnimated_impl`, `getInput`, `applyNodeRedirectionsUpstream` (56%, 46%, 30% at m62base) no longer appear. `copyTLSFromSpawnerThreadInternal` and `cleanupTLSForThread`: 0 samples in any of the three files.
+
+comp:300 tiny, top 10 self time (19 busy thread-samples; activity: plugin:other 47.4%, plugin:render 36.8%, engine:other 10.5%, engine:image alloc/fill 5.3%; 5 blocked samples, all in `OfxHost::multiThread`):
+
+| % | function |
+|---|---|
+| 26.3 | (unnamed frame) (Misc.ofx) |
+| 10.5 | `ofxsMaskMixPix<float, 4, 1, true>` (Misc.ofx) |
+| 10.5 | `CImg<float>::_cimg_recursive_apply` (CImg.ofx) |
+| 5.3 | `double` (Misc.ofx) |
+| 5.3 | `Image::checkForNaNsAndFix` |
+| 5.3 | `_Sp_counted_ptr_inplace<std::map<int, std::map<ViewIdx, vector<OfxRangeD>>>>` |
+| 5.3 | `OFX::Host::Property::Set::fetchProperty` |
+| 5.3 | `QObject::thread` |
+| 5.3 | `PixelCopierPremultMaskMix<float,4,1,float,4,1>::multiThreadProcessImages` (CImg.ofx) |
+| 5.3 | `EffectInstance::aborted` |
+
+Top inclusive, comp:300: `OFX::ImageProcessor::multiThreadFunction` 57.9%, `QThreadPoolThread::run` 52.6%, `renderInputImagesForRoI`/`renderRoI`/`treeRecurseFunctor` 47.4%, `renderHandler`/`renderRoIInternal`/`tiledRenderingFunctor` 42.1%, `OfxEffectInstance::render` 36.8%, `DefaultRenderFrameRunnable::renderFrame` 31.6%.
+
+chain:30 hd, top 10 self time (114 busy thread-samples; activity: plugin:other 80.7%, engine:image alloc/fill 12.3%, engine:other 4.4%, plugin:render 2.6%; 36 blocked samples: 27 in `OfxHost::multiThread`, 6 in `Natron::` (unnamed), 3 in `OpenEXROutput::write_scanlines`):
+
+| % | function |
+|---|---|
+| 36.8 | (unnamed frame) (Misc.ofx) |
+| 23.7 | `void` (Misc.ofx) |
+| 8.8 | `ofxsPremult<float, 4, 1>` (Misc.ofx) |
+| 7.9 | `Image::copyUnProcessedChannelsForChannels<float,1,4,4,false,false,false,true>` row lambda (NatronRenderer) |
+| 7.0 | `ofxsMaskMixPix<float, 4, 1, true>` (Misc.ofx) |
+| 4.4 | `Image::checkForNaNsAndFix` |
+| 2.6 | `OFX::Image::getPixelAddress` (Misc.ofx) |
+| 1.8 | `internal_exr_apply_zip` (OpenEXR) |
+| 1.8 | `deflate_compress_greedy` (libdeflate) |
+| 0.9 | `__memcpy_avx_unaligned_erms` (libc) |
+
+Top inclusive, chain:30 hd: `QtConcurrent::ThreadEngineBase::run` 88.6%, `OFX::ImageProcessor::multiThreadFunction` 79.8%, `MapKernel<RectI>` / `forEachCopyUnProcessedRowBand` 7.9%, `tiledRenderingFunctor` / `renderRoIInternal` / `renderRoI` 7.0%, `DefaultRenderFrameRunnable::renderFrame` 5.3%, `Image::checkForNaNsAndFix` 4.4%, `internal_exr_apply_zip` 3.5%. `Image::pixelAt` does not appear (m62base: 6.4%).
+
+hdchain30 thread-state histogram (`sample_states.sh`, 279 samples at 0.1 s plus overhead over one live chain:30 hd, 20-frame run; count of samples by running-thread count, D-state count was 0 in every sample):
+
+| running threads | samples | share |
+|---|---|---|
+| 0 | 2 | 0.7% |
+| 1 | 33 | 11.8% |
+| 2 | 6 | 2.2% |
+| 3 | 233 | 83.5% |
+| 4 | 5 | 1.8% |
+
+Mean running threads 2.74. The window includes about 2 s before rendering starts and the process exit.
+
+### Gate checks
+
+- FAIL: tiny chain 1000 frame >=3x faster than m62base. 0.7266 s -> 0.3203 s, x2.27 faster (needed <=0.242 s).
+- PASS: tiny chain 3000 frame under 3 s. 1.1225 s.
+- PASS: chain 3000 frame <= ~3.5x chain 1000 frame. 1.1225 / 0.3203 = x3.50.
+- PASS: comp 1000 builds and renders. Build 6.81 s, median frame 3.4466 s (September: never finished building).
+- PASS: `BENCH_NAMED=0` chain 1000 build within 1.2x of named. 6.932 s / 6.551 s = x1.06 (m62base: x1.38).
+- FAIL: chain 1000 build (named) >=5x faster than m62base. 16.77 s -> 6.551 s, x2.56 faster (needed <=3.35 s).
+- PASS: HD chain 30 frame improved vs m62base 1.752 s: 1.2958 s (x0.74). PASS: `copyUnProcessedChannels*` below 10% of busy self time: 7.9% (m62base 10.1%), `pixelAt` absent (m62base 6.4%).
+- PASS: `copyTLSFromSpawnerThreadInternal` / `cleanupTLSForThread` absent or <2% self time in the chain1000 profile: 0 samples (15 busy thread-samples, so the bound is coarse).
+- PASS: tiny wide 1000 and HD chain 30 not slower than 1.5x m62base. wide 1000 x1.04 (0.6223 -> 0.6497 s); HD chain 30 x0.74.
+- PASS: no configuration more than 1.5x slower than m62base. `compare.py` flagged nothing; unmatched rows are all faster than September (table above).
+
+### Input for M63 (task-graph scheduler)
+
+HD chain 30 (20 frames, 1.2958 s median frame, parallelism 2.61 from the matrix run): in the live thread-state histogram 274 of 279 samples (98.2%) had fewer than 4 threads running; 83.5% had exactly 3, 11.8% had 1 and 1.8% had 4. A frame never keeps the 4 cores fully busy; the dominant state is 3 running threads.
+
+Split of the per-frame cost in the hdchain30 profile (114 busy thread-samples, share of busy self time): plugin pixel work (Misc.ofx frames: unnamed 36.8%, `void` 23.7%, `ofxsPremult` 8.8%, `ofxsMaskMixPix` 7.0%, `getPixelAddress` 2.6%) is 78.9%. Engine per-image work (row-based unprocessed-channel copy 7.9%, `checkForNaNsAndFix` 4.4%, `aborted` 0.9%, memcpy/fill 0.9%) is about 14%. The EXR writer (zip, deflate, convert) is about 5%. The per-node serial host work (request pass, render-args setup, metadata, identity, cache, TLS) does not register as a self-time function at HD; `engine:other` is 4.4% of busy samples.
+
+Per-node serial host overhead measured directly from the tiny chain, where plugin pixel work is negligible: 0.32 ms per node per frame (chain 1000: 0.3203 s; chain 3000: 0.374 ms per node). HD chain 30 costs 1.2958 s / 30 = 43.2 ms per node per frame, so the host overhead is at most about 0.7% of the HD per-node cost; at HD the remaining per-frame cost is plugin pixel work and image-sized engine passes. In the chain:1000 tiny profile (15 busy thread-samples) plugin render and begin/end frames are 53% and engine/libc frames 47%, dominated by property-set construction (`Property::Set::Set`, 20% inclusive) and malloc/free (33% inclusive).

@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: M62.P6.T1
-pm_heartbeat: 2026-10-04T02:17:46-04:00
+pm_heartbeat: 2026-10-04T02:45:16-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -264,7 +264,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M62 PR #40 opened 2026-10-04**, stacked on #39 (M60): gate green locally (ctest 900/900 ×3, bench gate per `tools/bench/BASELINE.md`, Xvfb smoke), CI and the Codex round in progress. AppImage `build/appimages/M62-<sha>.AppImage` with `build/appimages/M62-uat.md` once packaged. UAT with the parcel.
+- **M62 PR #40 opened 2026-10-04**, stacked on #39 (M60): gate green locally (ctest 900/900 ×3, bench gate per `tools/bench/BASELINE.md`, Xvfb smoke), CI and the Codex round in progress. AppImage `build/appimages/M62-318bdea87.AppImage` (launch-checked) with `build/appimages/M62-uat.md`. UAT with the parcel.
 - **M65 awaits the user's UAT sign-off (P8.T3), deferred to the parcel UAT:** `build/appimages/M65-26cc11c9c.AppImage` with `build/appimages/M65-uat.md`. PR #35 is stacked on M61's #34; both Codex review rounds are closed.
 
 - **Parcel UAT (M61 → M65 → M66 → M37 → M50 → M60), awaiting the user.** Every PR is stacked (#34 ← #35 ← #36 ← #37 ← #38 ← #39), and every Codex round is closed. Merge bottom-up after the UAT. The top AppImage, `build/appimages/M60-ab2b06c90.AppImage`, contains everything. Each milestone's UAT script is `build/appimages/M<id>-uat.md`.

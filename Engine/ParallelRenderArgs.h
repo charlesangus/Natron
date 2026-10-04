@@ -28,17 +28,18 @@
 
 #include "Global/Macros.h"
 
-#include <set>
-#include <map>
 #include <list>
+#include <map>
+#include <set>
+#include <vector>
 
 #include "Global/GlobalDefines.h"
 
+#include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
-
 
 //This controls how many frames a plug-in can pre-fetch (per view and per input)
 //This is to avoid cases where the user would for example use the FrameBlend node with a huge amount of frames so that they
@@ -196,6 +197,19 @@ struct FrameViewPerRequestData
 
 struct FrameViewRequest
 {
+    /**
+     * @brief One renderRoI call this frame/view makes on an upstream frame/view before rendering. An identity
+     * frame/view has a single edge to the frame/view it forwards its render to, with inputNb the identity input
+     * (-2 when identity of itself at another time).
+     **/
+    struct TaskEdge {
+        NodeWPtr node;
+        double time;
+        ViewIdx view;
+        unsigned int mipmapLevel;
+        int inputNb;
+    };
+
     ///All different requests led by different branches in the tree
     //std::list<std::pair<RectD, FrameViewPerRequestData> > requests;
 
@@ -204,6 +218,18 @@ struct FrameViewRequest
 
     ///Global datas for this frame/view set upon first request
     FrameViewRequestGlobalData globalData;
+
+    /// Frames past NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING are left to getImage during the render and have no edge here
+    std::vector<TaskEdge> dependencies;
+
+    /// Number of distinct (consumer frame/view, input) edges pointing at this frame/view
+    int consumers = 0;
+
+    /// Union of the layers requested from this frame/view by its consumers, including getImage pulls past the pre-fetch cap
+    std::list<ImageLayerDesc> componentsRequested;
+
+    /// Every dependency reachable on the first walk of this frame/view has a lower number
+    int dfsPostOrder = -1;
 };
 
 struct FrameView_compare_less
@@ -241,9 +267,19 @@ public:
     bool getFrameViewCanonicalRoI(double time, ViewIdx view, RectD* roi) const;
 
     const FrameViewRequest* getFrameViewRequest(double time, ViewIdx view) const;
+
+    FrameViewRequest* findFrameViewRequest(double time, ViewIdx view);
 };
 
-typedef std::map<NodePtr, NodeFrameRequestPtr> FrameRequestMap;
+class FrameRequestMap
+    : public std::map<NodePtr, NodeFrameRequestPtr> {
+public:
+    FrameViewRequest* findFrameViewRequest(const NodePtr& node, double time, ViewIdx view);
+
+    const FrameViewRequest* findFrameViewRequest(const NodePtr& node, double time, ViewIdx view) const;
+
+    int nextDfsPostOrder = 0;
+};
 
 /**
  * @brief Per-render context is captured up front into thread-local storage

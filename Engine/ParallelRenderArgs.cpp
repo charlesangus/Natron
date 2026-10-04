@@ -25,6 +25,7 @@
 
 #include "ParallelRenderArgs.h"
 
+#include <algorithm>
 #include <cassert>
 #include <stdexcept>
 
@@ -42,6 +43,77 @@
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
+
+static void
+mergeRequestedComponents(FrameRequestMap& requests,
+                         FrameViewRequest* target,
+                         const std::list<ImageLayerDesc>& comps)
+{
+    // An identity frame/view renders nothing itself, so whatever is requested from it is requested from its alias
+    // target. Targets already hold everything their identity source held, so the walk stops once nothing is new.
+    while (target) {
+        bool added = false;
+        for (std::list<ImageLayerDesc>::const_iterator it = comps.begin(); it != comps.end(); ++it) {
+            if (std::find(target->componentsRequested.begin(), target->componentsRequested.end(), *it) == target->componentsRequested.end()) {
+                target->componentsRequested.push_back(*it);
+                added = true;
+            }
+        }
+        if (!added || !target->globalData.isIdentity || target->dependencies.empty()) {
+            return;
+        }
+        const FrameViewRequest::TaskEdge& alias = target->dependencies.front();
+        NodePtr aliasNode = alias.node.lock();
+        target = aliasNode ? requests.findFrameViewRequest(aliasNode, alias.time, alias.view) : 0;
+    }
+}
+
+static void
+addTaskEdge(FrameRequestMap& requests,
+            FrameViewRequest* consumer,
+            const NodePtr& inputNode,
+            double inputTime,
+            ViewIdx inputView,
+            unsigned int mipmapLevel,
+            int inputNb,
+            const std::list<ImageLayerDesc>& comps)
+{
+    FrameViewRequest* input = requests.findFrameViewRequest(inputNode, inputTime, inputView);
+
+    if (!consumer || !input) {
+        return;
+    }
+
+    // A consumer whose RoI grows is walked again and makes the same calls, which must not count twice.
+    bool alreadyThere = false;
+    for (std::vector<FrameViewRequest::TaskEdge>::const_iterator it = consumer->dependencies.begin(); it != consumer->dependencies.end(); ++it) {
+        if ((it->time == inputTime) && (it->view == inputView) && (it->mipmapLevel == mipmapLevel) && (it->inputNb == inputNb) && (it->node.lock() == inputNode)) {
+            alreadyThere = true;
+            break;
+        }
+    }
+    if (!alreadyThere) {
+        FrameViewRequest::TaskEdge edge;
+        edge.node = inputNode;
+        edge.time = inputTime;
+        edge.view = inputView;
+        edge.mipmapLevel = mipmapLevel;
+        edge.inputNb = inputNb;
+        consumer->dependencies.push_back(edge);
+        ++input->consumers;
+    }
+
+    mergeRequestedComponents(requests, input, comps);
+}
+
+static void
+assignDfsPostOrder(FrameRequestMap& requests,
+                   FrameViewRequest* fvRequest)
+{
+    if (fvRequest->dfsPostOrder == -1) {
+        fvRequest->dfsPostOrder = requests.nextDfsPostOrder++;
+    }
+}
 
 EffectInstance::RenderRoIRetCode
 EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
@@ -130,6 +202,8 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
         }
     }
 
+    FrameViewRequest* consumerRequest = isRenderFunctor ? 0 : requests->findFrameViewRequest(node, time, view);
+
     for (PreRenderFrames::const_iterator it = framesToRender.begin(); it != framesToRender.end(); ++it) {
         const EffectInstancePtr& inputEffect = it->first;
         NodePtr inputNode = inputEffect->getNode();
@@ -197,10 +271,10 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
 
         if (neededComps) {
             EffectInstance::ComponentsNeededMap::const_iterator foundCompsNeeded = neededComps->find(inputNb);
-            if ( foundCompsNeeded == neededComps->end() ) {
-                continue;
-            } else {
+            if (foundCompsNeeded != neededComps->end()) {
                 compsNeeded = &foundCompsNeeded->second;
+            } else if (isRenderFunctor) {
+                continue;
             }
         }
 
@@ -226,13 +300,17 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
                     if ( (viewIt->second[range].min == (int)viewIt->second[range].min) &&
                          ( viewIt->second[range].max == (int)viewIt->second[range].max) ) {
                         for (double f = viewIt->second[range].min;
-                             f <= viewIt->second[range].max  && nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING;
+                             f <= viewIt->second[range].max && (!isRenderFunctor || nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING);
                              f += 1.) {
                             if (!isRenderFunctor) {
+                                // Same level as the render functor below picks for this input.
+                                const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
+                                // Frames past the pre-fetch cap are still walked: getImage pulls them during the
+                                // render and their renderRoI uses this request data.
                                 StatusEnum stat = EffectInstance::getInputsRoIsFunctor(useTransforms,
                                                                                        f,
                                                                                        viewIt->first,
-                                                                                       originalMipmapLevel,
+                                                                                       upstreamMipmapLevel,
                                                                                        inputNode,
                                                                                        node,
                                                                                        treeRoot,
@@ -243,8 +321,14 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
                                     return EffectInstance::eRenderRoIRetCodeFailed;
                                 }
 
-                                ///Do not count frames pre-fetched in RoI functor mode, it is harmless and may
-                                ///limit calculations that will be done later on anyway.
+                                if ((inputNb != -1) && compsNeeded && !compsNeeded->empty()) {
+                                    if (nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING) {
+                                        addTaskEdge(*requests, consumerRequest, inputNode, f, viewIt->first, upstreamMipmapLevel, inputNb, *compsNeeded);
+                                        ++nbFramesPreFetched;
+                                    } else {
+                                        mergeRequestedComponents(*requests, requests->findFrameViewRequest(inputNode, f, viewIt->first), *compsNeeded);
+                                    }
+                                }
                             } else {
                                 ///Render the input image with the bit depth of its preference
                                 ImageBitDepthEnum inputPrefDepth = inputEffect->getBitDepth(-1);
@@ -447,6 +531,11 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
                                                    treeRoot,
                                                    canonicalRenderWindow,
                                                    requests);
+            if (stat != eStatusFailed) {
+                const std::list<ImageLayerDesc> comps = fvRequest->componentsRequested;
+                addTaskEdge(requests, fvRequest, node, fvRequest->globalData.inputIdentityTime, inputView, originalMipmapLevel, -2, comps);
+                assignDfsPostOrder(requests, fvRequest);
+            }
 
             return stat;
         }
@@ -468,6 +557,11 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
                                                    treeRoot,
                                                    canonicalRenderWindow,
                                                    requests);
+            if (stat != eStatusFailed) {
+                const std::list<ImageLayerDesc> comps = fvRequest->componentsRequested;
+                addTaskEdge(requests, fvRequest, inputIdentityNode, fvRequest->globalData.inputIdentityTime, fvRequest->globalData.identityView, originalMipmapLevel, fvRequest->globalData.identityInputNb, comps);
+                assignDfsPostOrder(requests, fvRequest);
+            }
 
             return stat;
         }
@@ -486,6 +580,8 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
            return eStatusFailed;*/
 
         // EDIT: always accept if identity has no input, it will produce a black image in the worst case scenario.
+        assignDfsPostOrder(requests, fvRequest);
+
         return eStatusOK;
     }
 
@@ -513,6 +609,23 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     // Append the request
     //fvRequest->requests.push_back( std::make_pair(canonicalRenderWindow, fvPerRequestData) );
 
+    EffectInstance::ComponentsNeededMap neededComps;
+    {
+        std::list<ImageLayerDesc> passThroughLayers;
+        double passThroughTime;
+        int passThroughView;
+        std::bitset<4> processChannels;
+        ProcessChannelsPerPlaneMap processChannelsPerPlane;
+        int passThroughInput;
+        effect->getComponentsNeededAndProduced_public(nodeRequest->nodeHash, time, view, &neededComps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInput);
+    }
+
+    // Mirrors the choice renderRoI makes before renderInputImagesForRoI.
+    bool useScaleOneInputs = node->useScaleOneImagesWhenRenderScaleSupportIsDisabled();
+    if (!useScaleOneInputs && !effect->supportsMultiResolution()) {
+        useScaleOneInputs = true;
+    }
+
     EffectInstance::RenderRoIRetCode ret = treeRecurseFunctor(false,
                                                               node,
                                                               fvRequest->globalData.frameViewsNeeded,
@@ -526,12 +639,13 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
                                                               treeRoot,
                                                               &requests,
                                                               0,
-                                                              0,
-                                                              false,
+                                                              &neededComps,
+                                                              useScaleOneInputs,
                                                               false);
     if (ret == EffectInstance::eRenderRoIRetCodeFailed) {
         return eStatusFailed;
     }
+    assignDfsPostOrder(requests, fvRequest);
 
     return eStatusOK;
 } // EffectInstance::getInputsRoIsFunctor
@@ -595,6 +709,46 @@ NodeFrameRequest::getFrameViewRequest(double time,
     }
 
     return 0;
+}
+
+FrameViewRequest*
+NodeFrameRequest::findFrameViewRequest(double time,
+                                       ViewIdx view)
+{
+    FrameViewPair frameView;
+    frameView.time = time;
+    frameView.view = view;
+    NodeFrameViewRequestData::iterator found = frames.find(frameView);
+
+    return found == frames.end() ? 0 : &found->second;
+}
+
+FrameViewRequest*
+FrameRequestMap::findFrameViewRequest(const NodePtr& node,
+                                      double time,
+                                      ViewIdx view)
+{
+    iterator found = find(node);
+
+    if ((found == end()) || !found->second) {
+        return 0;
+    }
+
+    return found->second->findFrameViewRequest(time, view);
+}
+
+const FrameViewRequest*
+FrameRequestMap::findFrameViewRequest(const NodePtr& node,
+                                      double time,
+                                      ViewIdx view) const
+{
+    const_iterator found = find(node);
+
+    if ((found == end()) || !found->second) {
+        return 0;
+    }
+
+    return found->second->findFrameViewRequest(time, view);
 }
 
 bool

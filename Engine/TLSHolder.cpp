@@ -52,6 +52,7 @@ const int kMaxSpawnerChainDepth = 16;
 thread_local std::vector<TLSHolderBaseConstWPtr> tHoldersWithData;
 thread_local std::size_t tHoldersPruneThreshold = 64;
 thread_local std::size_t tNumInheritedCopies = 0;
+thread_local const FrameRenderContext* tCurrentFrameContext = 0;
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
@@ -95,6 +96,19 @@ void
 AppTLS::notifyInheritedCopy()
 {
     ++tNumInheritedCopies;
+}
+
+std::size_t
+AppTLS::getNumHoldersWithDataForCurrentThread()
+{
+    return (std::size_t)std::count_if(tHoldersWithData.begin(), tHoldersWithData.end(),
+                                      [](const TLSHolderBaseConstWPtr& w) { return !w.expired(); });
+}
+
+const FrameRenderContext*
+AppTLS::currentFrameContext()
+{
+    return tCurrentFrameContext;
 }
 
 void
@@ -201,6 +215,21 @@ AppTLS::SpawnedThreadScope::SpawnedThreadScope(QThread* fromThread,
 AppTLS::SpawnedThreadScope::~SpawnedThreadScope()
 {
     if (_spawned) {
+        appPTR->getAppTLS()->cleanupTLSForThread();
+    }
+}
+
+AppTLS::FrameContextScope::FrameContextScope(const FrameRenderContext* context)
+    : _previous(tCurrentFrameContext)
+{
+    tCurrentFrameContext = context;
+}
+
+AppTLS::FrameContextScope::~FrameContextScope()
+{
+    tCurrentFrameContext = _previous;
+    // A task run inline from within another task's scope must not drop the data the outer task is rendering with.
+    if (!_previous) {
         appPTR->getAppTLS()->cleanupTLSForThread();
     }
 }

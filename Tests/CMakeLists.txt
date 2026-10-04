@@ -45,6 +45,7 @@ set(Tests_SOURCES
     DefaultChannelSet_Test.cpp
     FileSystemModel_Test.cpp
     FrameGraphBuild_Test.cpp
+    FrameRenderContext_Test.cpp
     GeneratorLayer_Test.cpp
     GraphScaling_Test.cpp
     GraphScalingExpressionDeps_Test.cpp
@@ -98,6 +99,7 @@ target_link_libraries(Tests
     PRIVATE
         NatronEngine
         Qt::Core
+        Qt::Concurrent
         Python3::Python
         openMVG
 )

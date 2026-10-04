@@ -27,7 +27,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <iterator>
+#include <memory>
 #include <stdexcept>
+#include <vector>
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
@@ -115,40 +118,25 @@ assignDfsPostOrder(FrameRequestMap& requests,
     }
 }
 
-EffectInstance::RenderRoIRetCode
-EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
-                                   const NodePtr& node,
-                                   const FramesNeededMap& framesNeeded,
-                                   const RoIMap& inputRois,
-                                   const InputMatrixMapPtr& reroutesMap,
-                                   bool useTransforms, // roi functor specific
-                                   StorageModeEnum renderStorageMode, // if the render of this node is in OpenGL
-                                   unsigned int originalMipmapLevel, // roi functor specific
-                                   double time,
-                                   ViewIdx view,
-                                   const NodePtr& treeRoot,
-                                   FrameRequestMap* requests,  // roi functor specific
-                                   EffectInstance::InputImagesMap* inputImages, // render functor specific
-                                   const EffectInstance::ComponentsNeededMap* neededComps, // render functor specific
-                                   bool useScaleOneInputs, // render functor specific
-                                   bool byPassCache) // render functor specific
+/// Keyed like FramesNeededMap but by the effect each input resolves to once transform reroutes are applied
+typedef std::map<EffectInstancePtr, std::pair</*inputNb*/ int, FrameRangesMap>> PreRenderFrames;
+
+static void
+collectPreRenderFrames(const NodePtr& node,
+                       const FramesNeededMap& framesNeeded,
+                       const InputMatrixMapPtr& reroutesMap,
+                       double time,
+                       ViewIdx view,
+                       bool includeRotoPaintTree,
+                       PreRenderFrames* framesToRender)
 {
-    ///For all frames/views needed, call recursively on inputs with the appropriate RoI
-
     EffectInstancePtr effect = node->getEffectInstance();
-    bool isRoto = node->isRotoPaintingNode();
 
-    //Same as FramesNeededMap but we also get a pointer to EffectInstance* as key
-    typedef std::map<EffectInstancePtr, std::pair</*inputNb*/ int, FrameRangesMap> > PreRenderFrames;
-
-    PreRenderFrames framesToRender;
-    //Add frames needed to the frames to render
     for (FramesNeededMap::const_iterator it = framesNeeded.begin(); it != framesNeeded.end(); ++it) {
         int inputNb = it->first;
         bool inputIsMask = effect->isInputMask(inputNb);
         ImageLayerDesc maskComps;
         int channelForAlphaInput;
-        // if (inputIsMask) {
         if ( !effect->isMaskEnabled(inputNb) ) {
             continue;
         }
@@ -157,8 +145,6 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
         effect->getAvailableLayers(time, view, inputNb, &availableLayers);
 
         channelForAlphaInput = effect->getMaskChannel(inputNb, availableLayers, &maskComps);
-        // } else {
-        //}
 
         //No mask
         if ( inputIsMask && ( (channelForAlphaInput == -1) || (maskComps.getNumComponents() == 0) ) ) {
@@ -175,7 +161,7 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
         }
 
         if (!inputEffect) {
-            inputEffect = node->getEffectInstance()->getInput(inputNb);
+            inputEffect = effect->getInput(inputNb);
         }
 
         //Never pre-render the mask if we are rendering a node of the rotopaint tree
@@ -184,12 +170,13 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
         }
 
         if (inputEffect) {
-            framesToRender[inputEffect] = std::make_pair(inputNb, it->second);
+            (*framesToRender)[inputEffect] = std::make_pair(inputNb, it->second);
         }
     }
 
-    if (isRoto && !isRenderFunctor) {
-        //Also add internal rotopaint tree RoIs
+    // The render pass does not pre-render the internal rotopaint tree: RotoPaint::render pulls it with getImage()
+    // on the bottom Merge. Only the request pass walks it, as inputNb -1.
+    if (includeRotoPaintTree && node->isRotoPaintingNode()) {
         NodePtr btmMerge = effect->getNode()->getRotoContext()->getRotoPaintBottomMergeNode();
         if (btmMerge) {
             FrameRangesMap frames;
@@ -198,29 +185,37 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
             r.min = r.max = time;
             vec.push_back(r);
             frames[view] = vec;
-            framesToRender[btmMerge->getEffectInstance()] = std::make_pair(-1, frames);
+            (*framesToRender)[btmMerge->getEffectInstance()] = std::make_pair(-1, frames);
         }
     }
+}
 
-    FrameViewRequest* consumerRequest = isRenderFunctor ? 0 : requests->findFrameViewRequest(node, time, view);
+EffectInstance::RenderRoIRetCode
+EffectInstance::treeRecurseFunctor(const NodePtr& node,
+                                   const FramesNeededMap& framesNeeded,
+                                   const RoIMap& inputRois,
+                                   const InputMatrixMapPtr& reroutesMap,
+                                   StorageModeEnum renderStorageMode, // if the render of this node is in OpenGL
+                                   unsigned int originalMipmapLevel,
+                                   double time,
+                                   ViewIdx view,
+                                   EffectInstance::InputImagesMap* inputImages,
+                                   const EffectInstance::ComponentsNeededMap* neededComps,
+                                   bool useScaleOneInputs,
+                                   bool byPassCache)
+{
+    EffectInstancePtr effect = node->getEffectInstance();
+
+    PreRenderFrames framesToRender;
+    collectPreRenderFrames(node, framesNeeded, reroutesMap, time, view, false /*includeRotoPaintTree*/, &framesToRender);
 
     for (PreRenderFrames::const_iterator it = framesToRender.begin(); it != framesToRender.end(); ++it) {
         const EffectInstancePtr& inputEffect = it->first;
-        NodePtr inputNode = inputEffect->getNode();
-        assert(inputNode);
 
         int inputNb = it->second.first;
-        if ( (inputNb == -1) && isRenderFunctor ) {
-            /*
-               We use inputNb=-1 for the RotoPaint node to recurse the RoI computations on the internal rotopaint tree.
-               Note that when we are in the render functor, we do not pre-render the rotopaint tree, instead we wait for
-               the getImage() call on the bottom Merge node from the RotoPaint::render function
-             */
-            continue;
-        }
 
         ImageList* inputImagesList = 0;
-        if (isRenderFunctor) {
+        {
             EffectInstance::InputImagesMap::iterator foundInputImages = inputImages->find(inputNb);
             if ( foundInputImages == inputImages->end() ) {
                 std::pair<InputImagesMap::iterator, bool> ret = inputImages->insert( std::make_pair( inputNb, ImageList() ) );
@@ -232,12 +227,9 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
         ///What region are we interested in for this input effect ? (This is in Canonical coords)
         RectD roi;
         bool roiIsInRequestPass = false;
-        ParallelRenderArgsPtr frameArgs;
-        if (isRenderFunctor) {
-            frameArgs = inputEffect->getParallelRenderArgsTLS();
-            if (frameArgs && frameArgs->request) {
-                roiIsInRequestPass = true;
-            }
+        ParallelRenderArgsPtr frameArgs = inputEffect->getParallelRenderArgsTLS();
+        if (frameArgs && frameArgs->request) {
+            roiIsInRequestPass = true;
         }
 
         if (!roiIsInRequestPass) {
@@ -273,7 +265,7 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
             EffectInstance::ComponentsNeededMap::const_iterator foundCompsNeeded = neededComps->find(inputNb);
             if (foundCompsNeeded != neededComps->end()) {
                 compsNeeded = &foundCompsNeeded->second;
-            } else if (isRenderFunctor) {
+            } else {
                 continue;
             }
         }
@@ -285,10 +277,8 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
         {
             ///Notify the node that we're going to render something with the input
             EffectInstance::NotifyInputNRenderingStarted_RAIIPtr inputNIsRendering_RAII;
-            if (isRenderFunctor) {
-                assert(it->second.first != -1); //< see getInputNumber
-                inputNIsRendering_RAII.reset( new EffectInstance::NotifyInputNRenderingStarted_RAII(node.get(), inputNb) );
-            }
+            assert(inputNb != -1); //< see getInputNumber
+            inputNIsRendering_RAII.reset(new EffectInstance::NotifyInputNRenderingStarted_RAII(node.get(), inputNb));
 
             ///For all views requested in input
             for (FrameRangesMap::const_iterator viewIt = it->second.second.begin(); viewIt != it->second.second.end(); ++viewIt) {
@@ -300,88 +290,59 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
                     if ( (viewIt->second[range].min == (int)viewIt->second[range].min) &&
                          ( viewIt->second[range].max == (int)viewIt->second[range].max) ) {
                         for (double f = viewIt->second[range].min;
-                             f <= viewIt->second[range].max && (!isRenderFunctor || nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING);
+                             f <= viewIt->second[range].max && nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING;
                              f += 1.) {
-                            if (!isRenderFunctor) {
-                                // Same level as the render functor below picks for this input.
-                                const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
-                                // Frames past the pre-fetch cap are still walked: getImage pulls them during the
-                                // render and their renderRoI uses this request data.
-                                StatusEnum stat = EffectInstance::getInputsRoIsFunctor(useTransforms,
-                                                                                       f,
-                                                                                       viewIt->first,
-                                                                                       upstreamMipmapLevel,
-                                                                                       inputNode,
-                                                                                       node,
-                                                                                       treeRoot,
-                                                                                       roi,
-                                                                                       *requests);
+                            /// Render the input image with the bit depth of its preference
+                            ImageBitDepthEnum inputPrefDepth = inputEffect->getBitDepth(-1);
 
-                                if (stat == eStatusFailed) {
-                                    return EffectInstance::eRenderRoIRetCodeFailed;
+                            if (!compsNeeded || compsNeeded->empty()) {
+                                continue;
+                            }
+
+                            if (roiIsInRequestPass) {
+                                frameArgs->request->getFrameViewCanonicalRoI(f, viewIt->first, &roi);
+                            }
+
+                            const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
+                            const RenderScale upstreamScale = useScaleOneInputs ? RenderScale::identity : RenderScale::fromMipmapLevel(originalMipmapLevel);
+                            const RectI inputRoIPixelCoords = roi.toPixelEnclosing(upstreamMipmapLevel, inputPar);
+
+                            std::map<ImageLayerDesc, ImagePtr> inputImgs;
+                            {
+                                std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs;
+                                renderArgs.reset(new EffectInstance::RenderRoIArgs(f, //< time
+                                                                                   upstreamScale, //< scale
+                                                                                   upstreamMipmapLevel, //< mipmapLevel (redundant with the scale)
+                                                                                   viewIt->first, //< view
+                                                                                   byPassCache,
+                                                                                   inputRoIPixelCoords, //< roi in pixel coordinates
+                                                                                   RectD(), // < did we precompute any RoD to speed-up the call ?
+                                                                                   *compsNeeded, //< requested comps
+                                                                                   inputPrefDepth,
+                                                                                   false,
+                                                                                   effect.get(),
+                                                                                   renderStorageMode /*returnStorage*/,
+                                                                                   time /*callerRenderTime*/));
+
+                                EffectInstance::RenderRoIRetCode ret;
+                                ret = inputEffect->renderRoI(*renderArgs, &inputImgs); //< requested bitdepth
+                                if (ret != EffectInstance::eRenderRoIRetCodeOk) {
+                                    return ret;
                                 }
-
-                                if ((inputNb != -1) && compsNeeded && !compsNeeded->empty()) {
-                                    if (nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING) {
-                                        addTaskEdge(*requests, consumerRequest, inputNode, f, viewIt->first, upstreamMipmapLevel, inputNb, *compsNeeded);
-                                        ++nbFramesPreFetched;
-                                    } else {
-                                        mergeRequestedComponents(*requests, requests->findFrameViewRequest(inputNode, f, viewIt->first), *compsNeeded);
-                                    }
+                            }
+                            for (std::map<ImageLayerDesc, ImagePtr>::iterator it3 = inputImgs.begin(); it3 != inputImgs.end(); ++it3) {
+                                if (inputImagesList && it3->second) {
+                                    inputImagesList->push_back(it3->second);
                                 }
-                            } else {
-                                ///Render the input image with the bit depth of its preference
-                                ImageBitDepthEnum inputPrefDepth = inputEffect->getBitDepth(-1);
+                            }
 
-                                if ( !compsNeeded || compsNeeded->empty() ) {
-                                    continue;
-                                }
+                            if (effect->aborted()) {
+                                return EffectInstance::eRenderRoIRetCodeAborted;
+                            }
 
-                                if (roiIsInRequestPass) {
-                                    frameArgs->request->getFrameViewCanonicalRoI(f, viewIt->first, &roi);
-                                }
-
-                                const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
-                                const RenderScale upstreamScale = useScaleOneInputs ? RenderScale::identity : RenderScale::fromMipmapLevel(originalMipmapLevel);
-                                const RectI inputRoIPixelCoords = roi.toPixelEnclosing(upstreamMipmapLevel, inputPar);
-
-                                std::map<ImageLayerDesc, ImagePtr> inputImgs;
-                                {
-                                    std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs;
-                                    renderArgs.reset( new EffectInstance::RenderRoIArgs( f, //< time
-                                                                                         upstreamScale, //< scale
-                                                                                         upstreamMipmapLevel, //< mipmapLevel (redundant with the scale)
-                                                                                         viewIt->first, //< view
-                                                                                         byPassCache,
-                                                                                         inputRoIPixelCoords, //< roi in pixel coordinates
-                                                                                         RectD(), // < did we precompute any RoD to speed-up the call ?
-                                                                                         *compsNeeded, //< requested comps
-                                                                                         inputPrefDepth,
-                                                                                         false,
-                                                                                         effect.get(),
-                                                                                         renderStorageMode /*returnStorage*/,
-                                                                                         time /*callerRenderTime*/) );
-
-                                    EffectInstance::RenderRoIRetCode ret;
-                                    ret = inputEffect->renderRoI(*renderArgs, &inputImgs); //< requested bitdepth
-                                    if (ret != EffectInstance::eRenderRoIRetCodeOk) {
-                                        return ret;
-                                    }
-                                }
-                                for (std::map<ImageLayerDesc, ImagePtr>::iterator it3 = inputImgs.begin(); it3 != inputImgs.end(); ++it3) {
-                                    if (inputImagesList && it3->second) {
-                                        inputImagesList->push_back(it3->second);
-                                    }
-                                }
-
-                                if ( effect->aborted() ) {
-                                    return EffectInstance::eRenderRoIRetCodeAborted;
-                                }
-
-                                if ( !inputImgs.empty() ) {
-                                    ++nbFramesPreFetched;
-                                }
-                            } // if (!isRenderFunctor) {
+                            if (!inputImgs.empty()) {
+                                ++nbFramesPreFetched;
+                            }
                         } // for all frames
                     }
                 } // for all ranges
@@ -391,17 +352,85 @@ EffectInstance::treeRecurseFunctor(bool isRenderFunctor,
     return EffectInstance::eRenderRoIRetCodeOk;
 } // EffectInstance::treeRecurseFunctor
 
-StatusEnum
-EffectInstance::getInputsRoIsFunctor(bool useTransforms,
-                                     double time,
-                                     ViewIdx view,
-                                     unsigned originalMipmapLevel,
-                                     const NodePtr& node,
-                                     const NodePtr& /*callerNode*/,
-                                     const NodePtr& treeRoot,
-                                     const RectD& canonicalRenderWindow,
-                                     FrameRequestMap& requests)
+namespace {
+
+/**
+ * @brief One step of the request pass. A visit is one RoI request on a frame/view. The other kinds are work the
+ * requesting frame/view does once the visit pushed just above them has walked everything upstream of it, so edges,
+ * consumer counts, components and post-order numbers come out as they would from a depth-first recursion.
+ **/
+struct RequestPassItem {
+    enum KindEnum {
+        eKindVisit,
+        eKindInputEdge,
+        eKindInputComponents,
+        eKindIdentityEdge,
+        eKindFinish
+    };
+
+    KindEnum kind = eKindVisit;
+    NodePtr node;
+    double time = 0.;
+    ViewIdx view;
+    unsigned int mipmapLevel = 0;
+    RectD roi;
+    FrameViewRequest* consumer = 0;
+    int inputNb = -1;
+    std::shared_ptr<const std::list<ImageLayerDesc>> comps;
+};
+
+RequestPassItem
+makeVisitItem(const NodePtr& node,
+              double time,
+              ViewIdx view,
+              unsigned int mipmapLevel,
+              const RectD& roi)
 {
+    RequestPassItem item;
+
+    item.kind = RequestPassItem::eKindVisit;
+    item.node = node;
+    item.time = time;
+    item.view = view;
+    item.mipmapLevel = mipmapLevel;
+    item.roi = roi;
+
+    return item;
+}
+
+RequestPassItem
+makeConsumerItem(RequestPassItem::KindEnum kind,
+                 FrameViewRequest* consumer,
+                 const NodePtr& inputNode,
+                 double inputTime,
+                 ViewIdx inputView,
+                 unsigned int mipmapLevel,
+                 int inputNb)
+{
+    RequestPassItem item;
+
+    item.kind = kind;
+    item.consumer = consumer;
+    item.node = inputNode;
+    item.time = inputTime;
+    item.view = inputView;
+    item.mipmapLevel = mipmapLevel;
+    item.inputNb = inputNb;
+
+    return item;
+}
+
+StatusEnum
+visitRequestPassItem(bool useTransforms,
+                     const RequestPassItem& item,
+                     FrameRequestMap& requests,
+                     std::vector<RequestPassItem>* stack)
+{
+    const NodePtr& node = item.node;
+    const double time = item.time;
+    const ViewIdx view = item.view;
+    const unsigned int originalMipmapLevel = item.mipmapLevel;
+    const RectD& canonicalRenderWindow = item.roi;
     NodeFrameRequestPtr nodeRequest;
     EffectInstancePtr effect = node->getEffectInstance();
 
@@ -443,8 +472,7 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     FrameViewRequest* fvRequest = 0;
     NodeFrameViewRequestData::iterator foundFrameView = nodeRequest->frames.find(frameView);
     double par = effect->getAspectRatio(-1);
-    ViewInvarianceLevel viewInvariance = effect->isViewInvariant();
-
+    EffectInstance::ViewInvarianceLevel viewInvariance = effect->isViewInvariant();
 
     if ( foundFrameView != nodeRequest->frames.end() ) {
         fvRequest = &foundFrameView->second;
@@ -463,7 +491,7 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
 
         const RectI identityRegionPixel = canonicalRenderWindow.toPixelEnclosing(mappedLevel, par);
 
-        if ( (view != 0) && (viewInvariance == eViewInvarianceAllViewsInvariant) ) {
+        if ((view != 0) && (viewInvariance == EffectInstance::eViewInvarianceAllViewsInvariant)) {
             fvRequest->globalData.isIdentity = true;
             fvRequest->globalData.identityInputNb = -2;
             fvRequest->globalData.inputIdentityTime = time;
@@ -516,28 +544,14 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     }
 
     if (fvRequest->globalData.identityInputNb == -2) {
-        assert(fvRequest->globalData.inputIdentityTime != time || viewInvariance == eViewInvarianceAllViewsInvariant);
+        assert(fvRequest->globalData.inputIdentityTime != time || viewInvariance == EffectInstance::eViewInvarianceAllViewsInvariant);
         // be safe in release mode otherwise we hit an infinite recursion
-        if ( (fvRequest->globalData.inputIdentityTime != time) || (viewInvariance == eViewInvarianceAllViewsInvariant) ) {
-            //fvRequest->requests.push_back( std::make_pair( canonicalRenderWindow, FrameViewPerRequestData() ) );
+        if ((fvRequest->globalData.inputIdentityTime != time) || (viewInvariance == EffectInstance::eViewInvarianceAllViewsInvariant)) {
+            ViewIdx inputView = (view != 0 && viewInvariance == EffectInstance::eViewInvarianceAllViewsInvariant) ? ViewIdx(0) : view;
+            stack->push_back(makeConsumerItem(RequestPassItem::eKindIdentityEdge, fvRequest, node, fvRequest->globalData.inputIdentityTime, inputView, originalMipmapLevel, -2));
+            stack->push_back(makeVisitItem(node, fvRequest->globalData.inputIdentityTime, inputView, originalMipmapLevel, canonicalRenderWindow));
 
-            ViewIdx inputView = (view != 0 && viewInvariance == eViewInvarianceAllViewsInvariant) ? ViewIdx(0) : view;
-            StatusEnum stat = getInputsRoIsFunctor(useTransforms,
-                                                   fvRequest->globalData.inputIdentityTime,
-                                                   inputView,
-                                                   originalMipmapLevel,
-                                                   node,
-                                                   node,
-                                                   treeRoot,
-                                                   canonicalRenderWindow,
-                                                   requests);
-            if (stat != eStatusFailed) {
-                const std::list<ImageLayerDesc> comps = fvRequest->componentsRequested;
-                addTaskEdge(requests, fvRequest, node, fvRequest->globalData.inputIdentityTime, inputView, originalMipmapLevel, -2, comps);
-                assignDfsPostOrder(requests, fvRequest);
-            }
-
-            return stat;
+            return eStatusOK;
         }
 
         //Should fail on the assert above
@@ -545,41 +559,14 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     } else if (fvRequest->globalData.identityInputNb != -1) {
         EffectInstancePtr inputEffectIdentity = effect->getInput(fvRequest->globalData.identityInputNb);
         if (inputEffectIdentity) {
-            //fvRequest->requests.push_back( std::make_pair( canonicalRenderWindow, FrameViewPerRequestData() ) );
-
             NodePtr inputIdentityNode = inputEffectIdentity->getNode();
-            StatusEnum stat = getInputsRoIsFunctor(useTransforms,
-                                                   fvRequest->globalData.inputIdentityTime,
-                                                   fvRequest->globalData.identityView,
-                                                   originalMipmapLevel,
-                                                   inputIdentityNode,
-                                                   node,
-                                                   treeRoot,
-                                                   canonicalRenderWindow,
-                                                   requests);
-            if (stat != eStatusFailed) {
-                const std::list<ImageLayerDesc> comps = fvRequest->componentsRequested;
-                addTaskEdge(requests, fvRequest, inputIdentityNode, fvRequest->globalData.inputIdentityTime, fvRequest->globalData.identityView, originalMipmapLevel, fvRequest->globalData.identityInputNb, comps);
-                assignDfsPostOrder(requests, fvRequest);
-            }
+            stack->push_back(makeConsumerItem(RequestPassItem::eKindIdentityEdge, fvRequest, inputIdentityNode, fvRequest->globalData.inputIdentityTime, fvRequest->globalData.identityView, originalMipmapLevel, fvRequest->globalData.identityInputNb));
+            stack->push_back(makeVisitItem(inputIdentityNode, fvRequest->globalData.inputIdentityTime, fvRequest->globalData.identityView, originalMipmapLevel, canonicalRenderWindow));
 
-            return stat;
+            return eStatusOK;
         }
 
-        //Identity but no input, if it's optional ignore, otherwise fail
-        /*if (callerNode && callerNode != node) {
-
-            int inputIndex = callerNode->getInputIndex(node.get());
-            if (callerNode->getEffectInstance()->isInputOptional(inputIndex)
-         || callerNode->getEffectInstance()->isInputMask(inputIndex)) {
-
-
-                return eStatusOK;
-            }
-           }
-           return eStatusFailed;*/
-
-        // EDIT: always accept if identity has no input, it will produce a black image in the worst case scenario.
+        // Always accept if identity has no input, it will produce a black image in the worst case scenario.
         assignDfsPostOrder(requests, fvRequest);
 
         return eStatusOK;
@@ -594,20 +581,9 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     if (useTransforms) {
         if (fvRequest->globalData.transforms) {
             fvRequest->globalData.reroutesMap.reset( new std::map<int, EffectInstancePtr>() );
-            transformInputRois( effect.get(), fvRequest->globalData.transforms, par, nodeRequest->mappedScale, &fvPerRequestData.inputsRoi, fvRequest->globalData.reroutesMap.get() );
+            EffectInstance::transformInputRois(effect.get(), fvRequest->globalData.transforms, par, nodeRequest->mappedScale, &fvPerRequestData.inputsRoi, fvRequest->globalData.reroutesMap.get());
         }
     }
-
-    /*qDebug() << node->getFullyQualifiedName().c_str() << "RoI request: x1="<<canonicalRenderWindow.x1<<"y1="<<canonicalRenderWindow.y1<<"x2="<<canonicalRenderWindow.x2<<"y2="<<canonicalRenderWindow.y2;
-       qDebug() << "Input RoIs:";
-       for (RoIMap::iterator it = fvPerRequestData.inputsRoi.begin(); it!=fvPerRequestData.inputsRoi.end(); ++it) {
-        qDebug() << it->first->getNode()->getFullyQualifiedName().c_str()<<"x1="<<it->second.x1<<"y1="<<it->second.y1<<"x2="<<it->second.x2<<"y2"<<it->second.y2;
-       }*/
-
-
-
-    // Append the request
-    //fvRequest->requests.push_back( std::make_pair(canonicalRenderWindow, fvPerRequestData) );
 
     EffectInstance::ComponentsNeededMap neededComps;
     {
@@ -615,7 +591,7 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
         double passThroughTime;
         int passThroughView;
         std::bitset<4> processChannels;
-        ProcessChannelsPerPlaneMap processChannelsPerPlane;
+        EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
         int passThroughInput;
         effect->getComponentsNeededAndProduced_public(nodeRequest->nodeHash, time, view, &neededComps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInput);
     }
@@ -625,27 +601,113 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     if (!useScaleOneInputs && !effect->supportsMultiResolution()) {
         useScaleOneInputs = true;
     }
+    // Same level as treeRecurseFunctor picks for this input when rendering.
+    const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
 
-    EffectInstance::RenderRoIRetCode ret = treeRecurseFunctor(false,
-                                                              node,
-                                                              fvRequest->globalData.frameViewsNeeded,
-                                                              fvPerRequestData.inputsRoi,
-                                                              fvRequest->globalData.transforms,
-                                                              useTransforms,
-                                                              eStorageModeRAM /*returnStorage*/,
-                                                              originalMipmapLevel,
-                                                              time,
-                                                              view,
-                                                              treeRoot,
-                                                              &requests,
-                                                              0,
-                                                              &neededComps,
-                                                              useScaleOneInputs,
-                                                              false);
-    if (ret == EffectInstance::eRenderRoIRetCodeFailed) {
-        return eStatusFailed;
+    PreRenderFrames framesToRender;
+    collectPreRenderFrames(node, fvRequest->globalData.frameViewsNeeded, fvRequest->globalData.transforms, time, view, true /*includeRotoPaintTree*/, &framesToRender);
+
+    std::vector<RequestPassItem> inputItems;
+    for (PreRenderFrames::const_iterator it = framesToRender.begin(); it != framesToRender.end(); ++it) {
+        const EffectInstancePtr& inputEffect = it->first;
+        NodePtr inputNode = inputEffect->getNode();
+        assert(inputNode);
+
+        int inputNb = it->second.first;
+
+        RoIMap::const_iterator foundInputRoI = fvPerRequestData.inputsRoi.find(inputEffect);
+        // An infinite RoI is fine: it is intersected with the source RoD, and composed Transforms often produce one.
+        if ((foundInputRoI == fvPerRequestData.inputsRoi.end()) || foundInputRoI->second.isNull()) {
+            continue;
+        }
+        const RectD& roi = foundInputRoI->second;
+
+        std::shared_ptr<const std::list<ImageLayerDesc>> compsNeeded;
+        EffectInstance::ComponentsNeededMap::const_iterator foundCompsNeeded = neededComps.find(inputNb);
+        if ((inputNb != -1) && (foundCompsNeeded != neededComps.end()) && !foundCompsNeeded->second.empty()) {
+            compsNeeded = std::make_shared<std::list<ImageLayerDesc>>(foundCompsNeeded->second);
+        }
+
+        for (FrameRangesMap::const_iterator viewIt = it->second.second.begin(); viewIt != it->second.second.end(); ++viewIt) {
+            for (U32 range = 0; range < viewIt->second.size(); ++range) {
+                int nbFramesPreFetched = 0;
+
+                // if the range bounds are not ints, the fetched images will probably anywhere within this range - no need to pre-render
+                if ((viewIt->second[range].min == (int)viewIt->second[range].min) && (viewIt->second[range].max == (int)viewIt->second[range].max)) {
+                    for (double f = viewIt->second[range].min; f <= viewIt->second[range].max; f += 1.) {
+                        // Frames past the pre-fetch cap are still walked: getImage pulls them during the
+                        // render and their renderRoI uses this request data.
+                        inputItems.push_back(makeVisitItem(inputNode, f, viewIt->first, upstreamMipmapLevel, roi));
+                        if (compsNeeded) {
+                            const bool preFetched = nbFramesPreFetched < NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING;
+                            RequestPassItem consumerItem = makeConsumerItem(preFetched ? RequestPassItem::eKindInputEdge : RequestPassItem::eKindInputComponents,
+                                                                            fvRequest, inputNode, f, viewIt->first, upstreamMipmapLevel, inputNb);
+                            consumerItem.comps = compsNeeded;
+                            inputItems.push_back(consumerItem);
+                            if (preFetched) {
+                                ++nbFramesPreFetched;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
-    assignDfsPostOrder(requests, fvRequest);
+
+    stack->push_back(makeConsumerItem(RequestPassItem::eKindFinish, fvRequest, NodePtr(), time, view, originalMipmapLevel, -1));
+    // Reversed so the first input frame is walked first and each edge item pops right after its visit's whole subtree.
+    stack->insert(stack->end(), std::make_move_iterator(inputItems.rbegin()), std::make_move_iterator(inputItems.rend()));
+
+    return eStatusOK;
+} // visitRequestPassItem
+
+} // namespace
+
+StatusEnum
+EffectInstance::getInputsRoIsFunctor(bool useTransforms,
+                                     double time,
+                                     ViewIdx view,
+                                     unsigned originalMipmapLevel,
+                                     const NodePtr& node,
+                                     const NodePtr& /*callerNode*/,
+                                     const NodePtr& /*treeRoot*/,
+                                     const RectD& canonicalRenderWindow,
+                                     FrameRequestMap& requests)
+{
+    // An explicit stack rather than recursion: the walk is as deep as the longest upstream chain, and request passes
+    // run on pool threads with default-sized stacks.
+    std::vector<RequestPassItem> stack;
+
+    stack.push_back(makeVisitItem(node, time, view, originalMipmapLevel, canonicalRenderWindow));
+
+    while (!stack.empty()) {
+        const RequestPassItem item = std::move(stack.back());
+        stack.pop_back();
+
+        switch (item.kind) {
+        case RequestPassItem::eKindVisit:
+            if (visitRequestPassItem(useTransforms, item, requests, &stack) == eStatusFailed) {
+                return eStatusFailed;
+            }
+            break;
+        case RequestPassItem::eKindInputEdge:
+            addTaskEdge(requests, item.consumer, item.node, item.time, item.view, item.mipmapLevel, item.inputNb, *item.comps);
+            break;
+        case RequestPassItem::eKindInputComponents:
+            mergeRequestedComponents(requests, requests.findFrameViewRequest(item.node, item.time, item.view), *item.comps);
+            break;
+        case RequestPassItem::eKindIdentityEdge: {
+            // The alias carries what consumers had requested from the identity frame/view before its target was walked.
+            const std::list<ImageLayerDesc> comps = item.consumer->componentsRequested;
+            addTaskEdge(requests, item.consumer, item.node, item.time, item.view, item.mipmapLevel, item.inputNb, comps);
+            assignDfsPostOrder(requests, item.consumer);
+            break;
+        }
+        case RequestPassItem::eKindFinish:
+            assignDfsPostOrder(requests, item.consumer);
+            break;
+        }
+    }
 
     return eStatusOK;
 } // EffectInstance::getInputsRoIsFunctor
@@ -862,6 +924,36 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
 
     _openGLContext = glContext;
 
+    std::map<NodePtr, ParallelRenderArgsPtr> built;
+    ArgsInstallSequence installSequence;
+    buildArgsMap(time, view, isRenderUserInteraction, isSequential, abortInfo, treeRoot, textureIndex, timeline,
+                 activeRotoPaintNode, isAnalysis, draftMode, stats, setUpstreamArgs, glContext, &built, &installSequence, &nodes);
+    for (ArgsInstallSequence::const_iterator it = installSequence.begin(); it != installSequence.end(); ++it) {
+        it->first->getEffectInstance()->setParallelRenderArgsTLS(it->second);
+    }
+}
+
+void
+ParallelRenderArgsSetter::buildArgsMap(double time,
+                                       ViewIdx view,
+                                       bool isRenderUserInteraction,
+                                       bool isSequential,
+                                       const AbortableRenderInfoPtr& abortInfo,
+                                       const NodePtr& treeRoot,
+                                       int textureIndex,
+                                       const TimeLine* timeline,
+                                       const NodePtr& activeRotoPaintNode,
+                                       bool isAnalysis,
+                                       bool draftMode,
+                                       const RenderStatsPtr& stats,
+                                       bool setUpstreamArgs,
+                                       const OSGLContextPtr& glContext,
+                                       std::map<NodePtr, ParallelRenderArgsPtr>* out,
+                                       ArgsInstallSequence* installSequence,
+                                       NodesList* collectedNodes)
+{
+    assert(treeRoot);
+    assert(out);
 
     bool doNanHandling = appPTR->getCurrentSettings()->isNaNHandlingEnabled();
 
@@ -875,11 +967,20 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
         dependenciesMap.insert(std::make_pair(treeRoot, n));
     }
 
+    auto add = [out, installSequence](const NodePtr& node, const ParallelRenderArgsPtr& args) {
+        (*out)[node] = args;
+        if (installSequence) {
+            installSequence->push_back(std::make_pair(node, args));
+        }
+    };
+
     std::map<const EffectInstance*, bool> frameVaryingMemo;
     for (FindDependenciesMap::iterator it = dependenciesMap.begin(); it != dependenciesMap.end(); ++it) {
 
         const NodePtr& node = it->first;
-        nodes.push_back(node);
+        if (collectedNodes) {
+            collectedNodes->push_back(node);
+        }
 
         EffectInstancePtr liveInstance = node->getEffectInstance();
         assert(liveInstance);
@@ -892,19 +993,18 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
             roto->getRotoPaintTreeNodes(&rotoPaintNodes);
         }
 
+        ParallelRenderArgsPtr nodeArgs;
         {
             U64 nodeHash = node->getHashValue();
-            liveInstance->setParallelRenderArgsTLS(time, view, isRenderUserInteraction, isSequential, nodeHash,
-                                                   abortInfo, treeRoot, it->second.visitCounter, NodeFrameRequestPtr(), glContext,  textureIndex, timeline, isAnalysis, duringPaintStrokeCreation, rotoPaintNodes, safety, glSupport, doNanHandling, draftMode, stats);
+            nodeArgs = liveInstance->createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash,
+                                                              abortInfo, treeRoot, it->second.visitCounter, NodeFrameRequestPtr(), glContext, textureIndex, timeline, isAnalysis, duringPaintStrokeCreation, rotoPaintNodes, safety, glSupport, doNanHandling, draftMode, stats);
+            add(node, nodeArgs);
         }
         // Only nodes the render pulls through inputs get the value: walking upstream of an expression dependency, or
         // of the lone root when upstream args are skipped, would visit nodes this setter never collected.
         if (setUpstreamArgs && it->second.recursed) {
-            ParallelRenderArgsPtr installed = liveInstance->getParallelRenderArgsTLS();
-            if (installed) {
-                installed->isFrameVaryingOrAnimated = liveInstance->isFrameVaryingOrAnimated_Recursive(&frameVaryingMemo);
-                installed->frameVaryingComputed = true;
-            }
+            nodeArgs->isFrameVaryingOrAnimated = liveInstance->isFrameVaryingOrAnimated_Recursive(&frameVaryingMemo);
+            nodeArgs->frameVaryingComputed = true;
         }
         for (NodesList::iterator it2 = rotoPaintNodes.begin(); it2 != rotoPaintNodes.end(); ++it2) {
             U64 nodeHash = (*it2)->getHashValue();
@@ -914,7 +1014,7 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
             (*it2)->getOutputs_mt_safe(outputs);
             int visitsCounter = (int)outputs.size();
 
-            (*it2)->getEffectInstance()->setParallelRenderArgsTLS(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, visitsCounter, NodeFrameRequestPtr(), glContext, textureIndex, timeline, isAnalysis, activeRotoPaintNode && (*it2)->isDuringPaintStrokeCreation(), NodesList(), (*it2)->getCurrentRenderThreadSafety(),  (*it2)->getCurrentOpenGLRenderSupport(),doNanHandling, draftMode, stats);
+            add(*it2, (*it2)->getEffectInstance()->createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, visitsCounter, NodeFrameRequestPtr(), glContext, textureIndex, timeline, isAnalysis, activeRotoPaintNode && (*it2)->isDuringPaintStrokeCreation(), NodesList(), (*it2)->getCurrentRenderThreadSafety(), (*it2)->getCurrentOpenGLRenderSupport(), doNanHandling, draftMode, stats));
         }
 
         if ( node->isMultiInstance() ) {
@@ -930,17 +1030,11 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
                 assert(childLiveInstance);
                 RenderSafetyEnum childSafety = (*it2)->getCurrentRenderThreadSafety();
                 PluginOpenGLRenderSupport childGlSupport = (*it2)->getCurrentOpenGLRenderSupport();
-                childLiveInstance->setParallelRenderArgsTLS(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, 1, NodeFrameRequestPtr(), glContext, textureIndex, timeline, isAnalysis, false, NodesList(), childSafety, childGlSupport, doNanHandling, draftMode, stats);
+                add(*it2, childLiveInstance->createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, 1, NodeFrameRequestPtr(), glContext, textureIndex, timeline, isAnalysis, false, NodesList(), childSafety, childGlSupport, doNanHandling, draftMode, stats));
             }
         }
-
-
-        /* NodeGroup* isGrp = node->isEffectGroup();
-           if (isGrp) {
-             isGrp->setParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, canAbort,  renderAge, treeRoot, request, textureIndex, timeline, activeRotoPaintNode, isAnalysis, draftMode,stats);
-           }*/
     }
-}
+} // ParallelRenderArgsSetter::buildArgsMap
 
 void
 ParallelRenderArgsSetter::updateNodesRequest(const FrameRequestMap& request)

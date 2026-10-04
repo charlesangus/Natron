@@ -322,6 +322,32 @@ public:
 
     ParallelRenderArgsSetter(const std::shared_ptr<std::map<NodePtr, ParallelRenderArgsPtr> >& args);
 
+    typedef std::vector<std::pair<NodePtr, ParallelRenderArgsPtr>> ArgsInstallSequence;
+
+    /**
+     * @brief Creates the frame args the first constructor installs, without installing them. out maps each node to
+     * the args getParallelRenderArgsTLS() returns once they are installed. installSequence, when given, receives
+     * every installation in order, including a node installed twice, and collectedNodes the nodes whose args the
+     * destructor invalidates.
+     **/
+    static void buildArgsMap(double time,
+                             ViewIdx view,
+                             bool isRenderUserInteraction,
+                             bool isSequential,
+                             const AbortableRenderInfoPtr& abortInfo,
+                             const NodePtr& treeRoot,
+                             int textureIndex,
+                             const TimeLine* timeline,
+                             const NodePtr& activeRotoPaintNode,
+                             bool isAnalysis,
+                             bool draftMode,
+                             const RenderStatsPtr& stats,
+                             bool setUpstreamArgs,
+                             const OSGLContextPtr& glContext,
+                             std::map<NodePtr, ParallelRenderArgsPtr>* out,
+                             ArgsInstallSequence* installSequence = 0,
+                             NodesList* collectedNodes = 0);
+
     void updateNodesRequest(const FrameRequestMap& request);
 
     virtual ~ParallelRenderArgsSetter();

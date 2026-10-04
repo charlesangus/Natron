@@ -34,6 +34,7 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FrameRenderContext.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -162,6 +163,29 @@ TLSHolder<T>::inheritFromSpawner([[maybe_unused]] const QThread* curThread) cons
 
 template <typename T>
 std::shared_ptr<T>
+TLSHolder<T>::createFromFrameContext([[maybe_unused]] const QThread* curThread) const
+{
+    if constexpr (!std::is_same<T, EffectInstance::EffectTLSData>::value) {
+        return std::shared_ptr<T>();
+    } else {
+        const FrameRenderContext* context = AppTLS::currentFrameContext();
+        if (!context) {
+            return std::shared_ptr<T>();
+        }
+        ParallelRenderArgsPtr args = context->getArgsForHolder(this);
+        if (!args) {
+            return std::shared_ptr<T>();
+        }
+
+        std::shared_ptr<T> data = std::make_shared<T>();
+        data->frameArgs.push_back(args);
+
+        return insertForThread(curThread, data);
+    }
+}
+
+template <typename T>
+std::shared_ptr<T>
 TLSHolder<T>::getTLSData() const
 {
     QThread* curThread  = QThread::currentThread();
@@ -171,7 +195,12 @@ TLSHolder<T>::getTLSData() const
         return ret;
     }
 
-    return inheritFromSpawner(curThread);
+    ret = inheritFromSpawner(curThread);
+    if (ret) {
+        return ret;
+    }
+
+    return createFromFrameContext(curThread);
 }
 
 template <typename T>
@@ -186,6 +215,11 @@ TLSHolder<T>::getOrCreateTLSData() const
     }
 
     ret = inheritFromSpawner(curThread);
+    if (ret) {
+        return ret;
+    }
+
+    ret = createFromFrameContext(curThread);
     if (ret) {
         return ret;
     }

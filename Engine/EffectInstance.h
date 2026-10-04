@@ -885,6 +885,35 @@ public:
                                   bool draftMode,
                                   const RenderStatsPtr & stats);
 
+    /**
+     * @brief The frame args setParallelRenderArgsTLS() would install, without installing them.
+     **/
+    ParallelRenderArgsPtr createParallelRenderArgs(double time,
+                                                   ViewIdx view,
+                                                   bool isRenderUserInteraction,
+                                                   bool isSequential,
+                                                   U64 nodeHash,
+                                                   const AbortableRenderInfoPtr& abortInfo,
+                                                   const NodePtr& treeRoot,
+                                                   int visitsCount,
+                                                   const NodeFrameRequestPtr& nodeRequest,
+                                                   const OSGLContextPtr& glContext,
+                                                   int textureIndex,
+                                                   const TimeLine* timeline,
+                                                   bool isAnalysis,
+                                                   bool isDuringPaintStrokeCreation,
+                                                   const NodesList& rotoPaintNodes,
+                                                   RenderSafetyEnum currentThreadSafety,
+                                                   PluginOpenGLRenderSupport currentOpenGLSupport,
+                                                   bool doNanHandling,
+                                                   bool draftMode,
+                                                   const RenderStatsPtr& stats) const;
+
+    /**
+     * @brief The holder of this effect's thread-local data, shared with its render clones.
+     **/
+    const TLSHolderBase* getTLSHolder() const;
+
     void setDuringPaintStrokeCreationThreadLocal(bool duringPaintStroke);
 
     void setNodeRequestThreadLocal(const NodeFrameRequestPtr & nodeRequest);
@@ -921,24 +950,21 @@ public:
                                          const NodePtr & treeRoot,
                                          FrameRequestMap & request);
 
-    // Implem is in ParallelRenderArgs.cpp
-    static EffectInstance::RenderRoIRetCode treeRecurseFunctor(bool isRenderFunctor,
-                                                               const NodePtr & node,
-                                                               const FramesNeededMap & framesNeeded,
-                                                               const RoIMap & inputRois,
-                                                               const InputMatrixMapPtr & reroutesMap,
-                                                               bool useTransforms,         // roi functor specific
+    /**
+     * @brief Pre-renders the input frames node needs before rendering. Implem is in ParallelRenderArgs.cpp
+     **/
+    static EffectInstance::RenderRoIRetCode treeRecurseFunctor(const NodePtr& node,
+                                                               const FramesNeededMap& framesNeeded,
+                                                               const RoIMap& inputRois,
+                                                               const InputMatrixMapPtr& reroutesMap,
                                                                StorageModeEnum renderStorageMode, // The storage of the image returned by the current Render
-                                                               unsigned int originalMipmapLevel,         // roi functor specific
+                                                               unsigned int originalMipmapLevel,
                                                                double time,
                                                                ViewIdx view,
-                                                               const NodePtr & treeRoot,
-                                                               FrameRequestMap* requests,          // roi functor specific
-                                                               EffectInstance::InputImagesMap* inputImages,         // render functor specific
-                                                               const EffectInstance::ComponentsNeededMap* neededComps,         // render functor specific
-                                                               bool useScaleOneInputs,         // render functor specific
-                                                               bool byPassCache);         // render functor specific
-
+                                                               EffectInstance::InputImagesMap* inputImages,
+                                                               const EffectInstance::ComponentsNeededMap* neededComps,
+                                                               bool useScaleOneInputs,
+                                                               bool byPassCache);
 
     /**
      * @brief Don't override this one, override onKnobValueChanged instead.

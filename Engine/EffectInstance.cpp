@@ -313,6 +313,33 @@ EffectInstance::setParallelRenderArgsTLS(double time,
 {
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     std::list<ParallelRenderArgsPtr>& argsList = tls->frameArgs;
+    ParallelRenderArgsPtr args = createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, visitsCount, nodeRequest, glContext, textureIndex, timeline, isAnalysis, isDuringPaintStrokeCreation, rotoPaintNodes, currentThreadSafety, currentOpenGLSupport, doNanHandling, draftMode, stats);
+
+    argsList.push_back(args);
+}
+
+ParallelRenderArgsPtr
+EffectInstance::createParallelRenderArgs(double time,
+                                         ViewIdx view,
+                                         bool isRenderUserInteraction,
+                                         bool isSequential,
+                                         U64 nodeHash,
+                                         const AbortableRenderInfoPtr& abortInfo,
+                                         const NodePtr& treeRoot,
+                                         int visitsCount,
+                                         const NodeFrameRequestPtr& nodeRequest,
+                                         const OSGLContextPtr& glContext,
+                                         int textureIndex,
+                                         const TimeLine* timeline,
+                                         bool isAnalysis,
+                                         bool isDuringPaintStrokeCreation,
+                                         const NodesList& rotoPaintNodes,
+                                         RenderSafetyEnum currentThreadSafety,
+                                         PluginOpenGLRenderSupport currentOpenGLSupport,
+                                         bool doNanHandling,
+                                         bool draftMode,
+                                         const RenderStatsPtr& stats) const
+{
     ParallelRenderArgsPtr args = std::make_shared<ParallelRenderArgs>();
 
     args->time = time;
@@ -341,7 +368,14 @@ EffectInstance::setParallelRenderArgsTLS(double time,
     args->tilesSupported = getNode()->getCurrentSupportTiles();
     args->stats = stats;
     args->openGLContext = glContext;
-    argsList.push_back(args);
+
+    return args;
+}
+
+const TLSHolderBase*
+EffectInstance::getTLSHolder() const
+{
+    return _imp->tlsData.get();
 }
 
 bool
@@ -2254,20 +2288,20 @@ EffectInstance::transformInputRois(const EffectInstance* self,
 
 EffectInstance::RenderRoIRetCode
 EffectInstance::renderInputImagesForRoI(const FrameViewRequest* request,
-                                        bool useTransforms,
+                                        bool /*useTransforms*/,
                                         StorageModeEnum renderStorageMode,
                                         double time,
                                         ViewIdx view,
-                                        const RectD & rod,
-                                        const RectD & canonicalRenderWindow,
+                                        const RectD& rod,
+                                        const RectD& canonicalRenderWindow,
                                         const InputMatrixMapPtr& inputTransforms,
                                         unsigned int mipmapLevel,
-                                        const RenderScale & renderMappedScale,
+                                        const RenderScale& renderMappedScale,
                                         bool useScaleOneInputImages,
                                         bool byPassCache,
-                                        const FramesNeededMap & framesNeeded,
-                                        const EffectInstance::ComponentsNeededMap & neededComps,
-                                        EffectInstance::InputImagesMap *inputImages,
+                                        const FramesNeededMap& framesNeeded,
+                                        const EffectInstance::ComponentsNeededMap& neededComps,
+                                        EffectInstance::InputImagesMap* inputImages,
                                         RoIMap* inputsRoi)
 {
     if (!request) {
@@ -2280,19 +2314,14 @@ EffectInstance::renderInputImagesForRoI(const FrameViewRequest* request,
     }
 #endif
 
-
-    return treeRecurseFunctor(true,
-                              getNode(),
+    return treeRecurseFunctor(getNode(),
                               framesNeeded,
                               *inputsRoi,
                               inputTransforms,
-                              useTransforms,
                               renderStorageMode,
                               mipmapLevel,
                               time,
                               view,
-                              NodePtr(),
-                              0,
                               inputImages,
                               &neededComps,
                               useScaleOneInputImages,

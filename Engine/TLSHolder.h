@@ -118,6 +118,17 @@ public:
     static void notifyInheritedCopy();
 
     /**
+     * @brief Number of live holders with data for the current thread.
+     **/
+    static std::size_t getNumHoldersWithDataForCurrentThread();
+
+    /**
+     * @brief The frame installed on the current thread by the innermost FrameContextScope, or null. An effect without
+     * data on this thread that no spawner provides gets its frame args from it.
+     **/
+    static const FrameRenderContext* currentFrameContext();
+
+    /**
      * @brief Calls softCopy() from the current thread on construction and cleanupTLSForThread()
      * on destruction, unless the current thread is fromThread itself.
      **/
@@ -132,6 +143,23 @@ public:
 
     private:
         bool _spawned;
+    };
+
+    /**
+     * @brief Installs a frame on the current thread for the time of a task. The outermost scope cleans up the
+     * thread's TLS on destruction.
+     **/
+    class FrameContextScope {
+    public:
+        explicit FrameContextScope(const FrameRenderContext* context);
+
+        ~FrameContextScope();
+
+        FrameContextScope(const FrameContextScope&) = delete;
+        FrameContextScope& operator=(const FrameContextScope&) = delete;
+
+    private:
+        const FrameRenderContext* _previous;
     };
 
 private:
@@ -181,6 +209,7 @@ private:
 
     std::shared_ptr<T> findDataForThread(const QThread* curThread) const WARN_UNUSED_RETURN;
     std::shared_ptr<T> inheritFromSpawner(const QThread* curThread) const WARN_UNUSED_RETURN;
+    std::shared_ptr<T> createFromFrameContext(const QThread* curThread) const WARN_UNUSED_RETURN;
     std::shared_ptr<T> insertForThread(const QThread* curThread, const std::shared_ptr<T>& value) const WARN_UNUSED_RETURN;
 
     mutable QReadWriteLock perThreadDataMutex;

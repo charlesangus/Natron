@@ -87,6 +87,7 @@ set(Tests_SOURCES
     RenderSchedulerAbort_Test.cpp
     RenderSchedulerMode_Test.cpp
     RotoLayer_Test.cpp
+    SchedulerEquivalence_Test.cpp
     SchedulerWriters_Test.cpp
     Shuffle_Test.cpp
     ShufflePluginList_Test.cpp

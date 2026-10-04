@@ -692,8 +692,9 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
                                                    const NodePtr& activeRotoPaintNode,
                                                    bool isAnalysis,
                                                    bool draftMode,
-                                                   const RenderStatsPtr& stats)
-    :  argsMap()
+                                                   const RenderStatsPtr& stats,
+                                                   bool setUpstreamArgs)
+    : argsMap()
 {
     assert(treeRoot);
 
@@ -711,8 +712,14 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
     bool doNanHandling = appPTR->getCurrentSettings()->isNaNHandlingEnabled();
 
     FindDependenciesMap dependenciesMap;
-    getAllUpstreamNodesRecursiveWithDependencies_internal(treeRoot, dependenciesMap);
-
+    if (setUpstreamArgs) {
+        getAllUpstreamNodesRecursiveWithDependencies_internal(treeRoot, dependenciesMap);
+    } else if (treeRoot->isNodeCreated()) {
+        FindDependenciesNode n;
+        n.recursed = true;
+        n.visitCounter = 1;
+        dependenciesMap.insert(std::make_pair(treeRoot, n));
+    }
 
     for (FindDependenciesMap::iterator it = dependenciesMap.begin(); it != dependenciesMap.end(); ++it) {
 

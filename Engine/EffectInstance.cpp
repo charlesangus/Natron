@@ -998,7 +998,31 @@ EffectInstance::getImage(int inputNb,
         return ImagePtr();
     }
 
-
+    // Callers outside a render (input or knob changes) only give frame args to this node; the input
+    // and its upstream get them here, for the duration of this fetch only, so renderRoI() does not
+    // fall back to pushing args it never pops.
+    ParallelRenderArgsSetterPtr inputFrameArgsSetter;
+    if (inputEffect && !useRotoInput && (!tls || !tls->currentRenderArgs.validArgs) && !inputEffect->getParallelRenderArgsTLS()) {
+        NodePtr inputNode = inputEffect->getNode();
+        if (inputNode) {
+            const bool isRenderUserInteraction = (tls && !tls->frameArgs.empty()) ? tls->frameArgs.back()->isRenderResponseToUserInteraction : true;
+            if (!renderInfo) {
+                renderInfo = AbortableRenderInfo::create(false, 0);
+            }
+            inputFrameArgsSetter = std::make_shared<ParallelRenderArgsSetter>(time,
+                                                                              view,
+                                                                              isRenderUserInteraction,
+                                                                              false, // isSequential
+                                                                              renderInfo,
+                                                                              inputNode,
+                                                                              0, // texture index
+                                                                              getApp()->getTimeLine().get(),
+                                                                              NodePtr(), // activeRotoPaintNode
+                                                                              isAnalysisPass,
+                                                                              false, // draftMode
+                                                                              RenderStatsPtr());
+        }
+    }
 
     RectD inputRoD;
     bool inputRoDSet = false;
@@ -5224,8 +5248,7 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
         QMutexLocker l(&_imp->mustSyncPrivateDataMutex);
         _imp->mustSyncPrivateData = true;
     } else if (kh && kh->isDeclaredByPlugin() && !wasFormatKnobCaught) {
-        ////We set the thread storage render args so that if the instance changed action
-        ////tries to call getImage it can render with good parameters.
+        // Upstream frame args are installed on demand by getImage if instanceChanged pulls an input.
         ParallelRenderArgsSetterPtr setter;
         if (reason != eValueChangedReasonTimeChanged) {
             AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
@@ -5236,31 +5259,33 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
                 isAbortable->setAbortInfo( isRenderUserInteraction, abortInfo, node->getEffectInstance() );
             }
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-            setter.reset( new ParallelRenderArgsSetter( time,
-                                                        viewIdx, //view
-                                                        isRenderUserInteraction, // isRenderUserInteraction
-                                                        isSequentialRender, // isSequential
-                                                        abortInfo, // abortInfo
-                                                        node, // treeRoot
-                                                        0, //texture index
-                                                        getApp()->getTimeLine().get(),
-                                                        NodePtr(), // activeRotoPaintNode
-                                                        true, // isAnalysis
-                                                        false, // draftMode
-                                                        RenderStatsPtr() ) );
+            setter.reset(new ParallelRenderArgsSetter(time,
+                                                      viewIdx, // view
+                                                      isRenderUserInteraction, // isRenderUserInteraction
+                                                      isSequentialRender, // isSequential
+                                                      abortInfo, // abortInfo
+                                                      node, // treeRoot
+                                                      0, // texture index
+                                                      getApp()->getTimeLine().get(),
+                                                      NodePtr(), // activeRotoPaintNode
+                                                      true, // isAnalysis
+                                                      false, // draftMode
+                                                      RenderStatsPtr(),
+                                                      false)); // setUpstreamArgs
 #else
-            setter = std::make_shared<ParallelRenderArgsSetter>( time,
-                                                                  viewIdx, //view
-                                                                  isRenderUserInteraction, // isRenderUserInteraction
-                                                                  isSequentialRender, // isSequential
-                                                                  abortInfo, // abortInfo
-                                                                  node, // treeRoot
-                                                                  0, //texture index
-                                                                  getApp()->getTimeLine().get(),
-                                                                  NodePtr(), // activeRotoPaintNode
-                                                                  true, // isAnalysis
-                                                                  false, // draftMode
-                                                                  RenderStatsPtr() );
+            setter = std::make_shared<ParallelRenderArgsSetter>(time,
+                                                                viewIdx, // view
+                                                                isRenderUserInteraction, // isRenderUserInteraction
+                                                                isSequentialRender, // isSequential
+                                                                abortInfo, // abortInfo
+                                                                node, // treeRoot
+                                                                0, // texture index
+                                                                getApp()->getTimeLine().get(),
+                                                                NodePtr(), // activeRotoPaintNode
+                                                                true, // isAnalysis
+                                                                false, // draftMode
+                                                                RenderStatsPtr(),
+                                                                false); // setUpstreamArgs
 #endif
         }
         {

@@ -1638,9 +1638,7 @@ Node::onInputChanged(int inputNb,
         ///related data such as clip preferences
         ///Exception for the Rotopaint node which needs to setup its own graph internally
 
-        /**
-         * The plug-in might call getImage, set a valid thread storage on the tree.
-         **/
+        // Upstream frame args are installed on demand by EffectInstance::getImage if the plug-in pulls an input.
         double time = getApp()->getTimeLine()->currentFrame();
         AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
         const bool isRenderUserInteraction = true;
@@ -1649,19 +1647,19 @@ Node::onInputChanged(int inputNb,
         if (isAbortable) {
             isAbortable->setAbortInfo( isRenderUserInteraction, abortInfo, getEffectInstance() );
         }
-        ParallelRenderArgsSetter frameRenderArgs( time,
-                                                  ViewIdx(0),
-                                                  isRenderUserInteraction,
-                                                  isSequentialRender,
-                                                  abortInfo,
-                                                  shared_from_this(),
-                                                  0, //texture index
-                                                  getApp()->getTimeLine().get(),
-                                                  NodePtr(),
-                                                  false,
-                                                  false,
-                                                  RenderStatsPtr() );
-
+        ParallelRenderArgsSetter frameRenderArgs(time,
+                                                 ViewIdx(0),
+                                                 isRenderUserInteraction,
+                                                 isSequentialRender,
+                                                 abortInfo,
+                                                 shared_from_this(),
+                                                 0, // texture index
+                                                 getApp()->getTimeLine().get(),
+                                                 NodePtr(),
+                                                 false,
+                                                 false,
+                                                 RenderStatsPtr(),
+                                                 false);
 
         ///Don't do clip preferences while loading a project, they will be refreshed globally once the project is loaded.
         _imp->effect->onInputChanged(inputNb);

@@ -31,12 +31,15 @@
 #include <gtest/gtest.h>
 
 #include "BaseTest.h"
+#include "InputChangedFetchTestEffect.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
 
@@ -126,4 +129,40 @@ TEST_F(GraphScalingTest, ConnectingIntoOwnUpstreamIsRefused)
     EXPECT_FALSE(a->isInputConnected(0));
     EXPECT_EQ(a, b->getInput(0));
     EXPECT_EQ(b, c->getInput(0));
+}
+
+TEST_F(GraphScalingTest, InputFetchedFromOnInputChangedLeavesNoFrameArgsUpstream)
+{
+    const AppInstancePtr app = getApp();
+
+    NodePtr constant = createNamedNode(app, PLUGINID_OFX_CONSTANT, "FetchConstant");
+    NodePtr gradeA = createNamedNode(app, PLUGINID_OFX_GRADE, "FetchGradeA");
+    NodePtr gradeB = createNamedNode(app, PLUGINID_OFX_GRADE, "FetchGradeB");
+    NodePtr fetcher = createNamedNode(app, kTestPluginIDInputChangedFetch, "Fetcher");
+    ASSERT_TRUE(bool(constant));
+    ASSERT_TRUE(bool(gradeA));
+    ASSERT_TRUE(bool(gradeB));
+    ASSERT_TRUE(bool(fetcher));
+
+    InputChangedFetchTestEffect* fetchEffect = dynamic_cast<InputChangedFetchTestEffect*>(fetcher->getEffectInstance().get());
+    ASSERT_TRUE(fetchEffect != NULL);
+
+    ASSERT_TRUE(gradeA->connectInput(constant, 0));
+    ASSERT_TRUE(gradeB->connectInput(gradeA, 0));
+    ASSERT_TRUE(fetcher->connectInput(gradeB, 0));
+
+    EXPECT_TRUE(bool(fetchEffect->getFetchedImage()));
+
+    EXPECT_FALSE(bool(constant->getEffectInstance()->getParallelRenderArgsTLS()));
+    EXPECT_FALSE(bool(gradeA->getEffectInstance()->getParallelRenderArgsTLS()));
+    EXPECT_FALSE(bool(gradeB->getEffectInstance()->getParallelRenderArgsTLS()));
+    EXPECT_FALSE(bool(fetcher->getEffectInstance()->getParallelRenderArgsTLS()));
+
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName("color").get());
+    ASSERT_TRUE(color != NULL);
+    const U64 hashBeforeEdit = gradeA->getEffectInstance()->getHash();
+    color->setValues(0.5, 0.25, 0.125, 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+    EXPECT_NE(hashBeforeEdit, gradeA->getEffectInstance()->getHash());
+    EXPECT_EQ(gradeA->getEffectInstance()->getHash(), gradeA->getEffectInstance()->getRenderHash());
 }

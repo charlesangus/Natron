@@ -257,13 +257,14 @@ protected:
     OSGLContextWPtr _openGLContext;
 
 public:
-
     /**
      * @brief Set the TLS for rendering a frame on the tree upstream of treeRoot (including it) and all nodes that
      * can be reached through expressions.
      * We do this because TLS is needed to know the correct frame, view at which the frame is evaluated (i.e rendered)
      * even in nodes that do not belong in the tree. The reason why is because the nodes in the tree may have parameters
      * relying on other nodes that do not belong in the tree through expressions.
+     * When setUpstreamArgs is false only treeRoot gets TLS: callers that do not render use this to avoid walking the
+     * whole graph, and EffectInstance::getImage installs args on an input lazily if it ends up being pulled.
      **/
     ParallelRenderArgsSetter(double time,
                              ViewIdx view,
@@ -276,7 +277,8 @@ public:
                              const NodePtr& activeRotoPaintNode,
                              bool isAnalysis,
                              bool draftMode,
-                             const RenderStatsPtr& stats);
+                             const RenderStatsPtr& stats,
+                             bool setUpstreamArgs = true);
 
     ParallelRenderArgsSetter(const std::shared_ptr<std::map<NodePtr, ParallelRenderArgsPtr> >& args);
 

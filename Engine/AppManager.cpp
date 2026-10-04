@@ -120,20 +120,21 @@
 #include "Engine/Log.h"
 #include "Engine/MemoryInfo.h" // getSystemTotalRAM, printAsRAM
 #include "Engine/Node.h"
-#include "Engine/OfxImageEffectInstance.h"
+#include "Engine/OSGLContext.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxHost.h"
-#include "Engine/OSGLContext.h"
+#include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OneViewNode.h"
+#include "Engine/PrecompNode.h"
 #include "Engine/ProcessHandler.h" // ProcessInputChannel
 #include "Engine/Project.h"
-#include "Engine/PrecompNode.h"
 #include "Engine/ReadNode.h"
+#include "Engine/RenderScheduler.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoSmear.h"
 #include "Engine/StandardPaths.h"
-#include "Engine/TrackerNode.h"
 #include "Engine/ThreadPool.h"
+#include "Engine/TrackerNode.h"
 
 #include "Engine/Nodes/Channel/AddLayers.h"
 #include "Engine/Nodes/Channel/RemoveLayers.h"
@@ -475,6 +476,11 @@ AppManager::~AppManager()
 
     ///Caches may have launched some threads to delete images, wait for them to be done
     QThreadPool::globalInstance()->waitForDone();
+
+    {
+        QMutexLocker k(&_imp->renderSchedulerMutex);
+        _imp->renderScheduler.reset();
+    }
 
     ///Kill caches now because decreaseNCacheFilesOpened can be called
     if (_imp->_nodeCache) {
@@ -3448,6 +3454,17 @@ AppManager::getAppTLS() const
     return &_imp->globalTLS;
 }
 
+RenderScheduler*
+AppManager::getRenderScheduler()
+{
+    QMutexLocker k(&_imp->renderSchedulerMutex);
+
+    if (!_imp->renderScheduler) {
+        _imp->renderScheduler = std::make_shared<RenderScheduler>();
+    }
+
+    return _imp->renderScheduler.get();
+}
 
 QString
 AppManager::getBoostVersion() const

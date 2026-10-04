@@ -557,6 +557,11 @@ public:
     OFX::Host::ImageEffect::Descriptor* getPluginContextAndDescribe(OFX::Host::ImageEffect::ImageEffectPlugin* plugin,
                                                                     Natron::ContextEnum* ctx);
     AppTLS* getAppTLS() const;
+
+    /**
+     * @brief Created on first use, destroyed once the global pool has been drained at shutdown.
+     **/
+    RenderScheduler* getRenderScheduler();
     const OfxHost* getOFXHost() const;
     GPUContextPool* getGPUContextPool() const;
 

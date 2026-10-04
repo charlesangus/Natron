@@ -193,6 +193,8 @@ public:
 #endif
 
     std::unique_ptr<GPUContextPool> renderingContextPool;
+    mutable QMutex renderSchedulerMutex;
+    RenderSchedulerPtr renderScheduler;
     std::list<OpenGLRendererInfo> openGLRenderers;
     std::unique_ptr<QCoreApplication> _qApp;
 

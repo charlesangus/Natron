@@ -13,6 +13,7 @@
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
 
+#include "CountingTestEffect.h"
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
@@ -102,6 +103,14 @@ registerGraphScalingTestPlugins()
     // shipped native node does.
     registerTestBuiltInPlugin<InputChangedFetchTestEffect>();
 }
+
+void
+registerRenderSchedulerTestPlugins()
+{
+    // Registered so RenderScheduler_Test.cpp can count the render calls of every task, which no shipped plugin exposes.
+    registerTestBuiltInPlugin<CountingTestEffect>();
+    registerTestBuiltInPlugin<CountingMergeTestEffect>();
+}
 }
 
 #if defined(_WIN32) && defined(UNICODE)
@@ -137,6 +146,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerDeepRenderTestPlugins();
     registerMultiplanarTestPlugins();
     registerGraphScalingTestPlugins();
+    registerRenderSchedulerTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

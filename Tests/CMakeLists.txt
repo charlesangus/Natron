@@ -17,7 +17,7 @@
 # along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
 # ***** END LICENSE BLOCK *****
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h RenderBothWays.h)
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h RenderBothWays.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -46,6 +46,7 @@ set(Tests_SOURCES
     FileSystemModel_Test.cpp
     FrameGraphBuild_Test.cpp
     FrameRenderContext_Test.cpp
+    FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
     GraphScaling_Test.cpp
     GraphScalingExpressionDeps_Test.cpp
@@ -81,6 +82,7 @@ set(Tests_SOURCES
     RenderBothWays.cpp
     RenderBothWaysSelf_Test.cpp
     RenderRange_Test.cpp
+    RenderScheduler_Test.cpp
     RenderSchedulerMode_Test.cpp
     RotoLayer_Test.cpp
     Shuffle_Test.cpp

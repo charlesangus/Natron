@@ -142,10 +142,35 @@ jobs:
       - name: Build (debug)
         run: tools/ci/local/build.sh debug --no-ccache-stats
 
-      - name: Run ctest suite (debug)
+      # Both render scheduler modes run in this one job rather than as a
+      # matrix: a matrix would build the debug tree twice and rename the
+      # required `build-and-test` check to `build-and-test (legacy)` etc.,
+      # which branch protection would no longer match. The taskgraph
+      # smoke leg compares its PNG byte for byte against the one the
+      # legacy leg left in smoke-reference.
+      - name: Run ctest suite (debug, legacy scheduler)
+        env:
+          NATRON_RENDER_SCHEDULER: legacy
         run: tools/ci/local/test.sh ctest debug
 
-      - name: Python bindings smoke test (debug)
+      - name: Run ctest suite (debug, taskgraph scheduler)
+        if: success() || failure()
+        env:
+          NATRON_RENDER_SCHEDULER: taskgraph
+        run: tools/ci/local/test.sh ctest debug
+
+      - name: Python bindings smoke test (debug, legacy scheduler)
+        if: success() || failure()
+        env:
+          NATRON_RENDER_SCHEDULER: legacy
+          NATRON_SMOKE_OUTPUT_DIR: ${{ github.workspace }}/build/smoke-reference
+        run: tools/ci/local/test.sh smoke debug
+
+      - name: Python bindings smoke test (debug, taskgraph scheduler)
+        if: success() || failure()
+        env:
+          NATRON_RENDER_SCHEDULER: taskgraph
+          NATRON_SMOKE_REFERENCE_DIR: ${{ github.workspace }}/build/smoke-reference
         run: tools/ci/local/test.sh smoke debug
 
       # if: always() is load-bearing: a step defaults to success() and is

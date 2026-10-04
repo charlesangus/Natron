@@ -10,7 +10,18 @@
 # test" steps).
 #
 # Usage:
-#   tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
+#   [NATRON_RENDER_SCHEDULER=legacy|taskgraph] tools/ci/local/test.sh <ctest|smoke> [debug|release|fast] [--gdb]
+#   [NATRON_SMOKE_OUTPUT_DIR=<dir>|NATRON_SMOKE_REFERENCE_DIR=<dir>] tools/ci/local/test.sh smoke ...
+#
+#   NATRON_RENDER_SCHEDULER -> selects the render scheduler for ctest and the
+#                              smoke test; unset leaves Natron's default.
+#                              Forwarded into the container when set.
+#   NATRON_SMOKE_OUTPUT_DIR -> smoke only: the graded PNG is copied here.
+#   NATRON_SMOKE_REFERENCE_DIR -> smoke only: the graded PNG must be
+#                              byte-identical to the same-named file there
+#                              (a previous run's NATRON_SMOKE_OUTPUT_DIR).
+#                              Both smoke dirs must be paths the container
+#                              sees, i.e. under the repo.
 #
 #   ctest                  -> `ctest -V` in the build dir, exactly as ci.yml.
 #   smoke                  -> tools/ci/smoke_test.py run through the built
@@ -108,7 +119,17 @@ in_container() {
 # --- host-side: hop into the container --------------------------------------
 if ! in_container; then
     echo "== test.sh: entering dev container via devshell.sh =="
-    exec "${SCRIPT_DIR}/devshell.sh" "${REPO_ROOT}/tools/ci/local/test.sh" "$@"
+    # `docker exec` does not carry the caller's environment into the
+    # long-lived container, so variables that steer the run are re-applied
+    # through env(1) on the container side.
+    forwarded_env=()
+    for var in NATRON_RENDER_SCHEDULER NATRON_SMOKE_OUTPUT_DIR NATRON_SMOKE_REFERENCE_DIR; do
+        if [[ -n "${!var:-}" ]]; then
+            forwarded_env+=("${var}=${!var}")
+        fi
+    done
+    exec "${SCRIPT_DIR}/devshell.sh" env ${forwarded_env[@]+"${forwarded_env[@]}"} \
+        "${REPO_ROOT}/tools/ci/local/test.sh" "$@"
 fi
 
 # --- from here on, we are inside the dev container ---------------------------

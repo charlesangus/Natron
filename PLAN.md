@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: M63.P4.T2
-pm_heartbeat: 2026-10-04T13:23:00-04:00
+pm_heartbeat: 2026-10-04T13:25:20-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -264,7 +264,6 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M63 performance decision needed.** The task-graph scheduler is bit-exact and the legacy path is unchanged, but on the 4-core host it is not faster at HD: wide 100 ×0.96, comp 100 ×1.01, chain 100 ×1.06, mixed ×1.10 (chain 30 noisy ×1.16–1.52). It wins where plugin pixel work is small (tiny wide ×0.76, tiny comp ×0.87) and at P=16 comp drops from 6.3 s to 3.8 s on the same 4 cores, so the pool is under-used at P=4. The HD comp profile is 65% OpenMP barrier spin from the CImg plugins' own threads competing with the pool. Options: (a) investigate the plugin-thread interaction before shipping (`OMP_WAIT_POLICY=passive` / `OMP_NUM_THREADS` tied to free pool slots, `multiThreadNumCPUS` vs scheduler occupancy, why P=4 under-uses the pool, the wide frame-time jump after frame 4) as new P4 tasks; (b) ship M63 with the default on Legacy, as verified infrastructure, and revisit the numbers on a many-core machine; (c) flip the default on anyway (not recommended: slower on chains here). Default if unanswered: (a), time-boxed to one investigation task, then (b).
 - **M62 awaits the parcel UAT (PR #40, stacked on #39):** gate green (ctest 900/900 ×3, bench gate in `tools/bench/BASELINE.md`, Xvfb smoke, manually dispatched CI green on both workflows), Codex round 1 closed (6 fixed). AppImage `build/appimages/M62-318bdea87.AppImage` with `build/appimages/M62-uat.md`. Merge after #39, then re-run `tools/bench/run_matrix.sh` on `main` once to refresh `BASELINE.md`'s provenance.
 - **M65 awaits the user's UAT sign-off (P8.T3), deferred to the parcel UAT:** `build/appimages/M65-26cc11c9c.AppImage` with `build/appimages/M65-uat.md`. PR #35 is stacked on M61's #34; both Codex review rounds are closed.
 

@@ -158,6 +158,12 @@ jobs:
           set -euo pipefail
           shellcheck tools/ci/local/*.sh
 
+      - name: shellcheck tools/bench
+        shell: bash
+        run: |
+          set -euo pipefail
+          shellcheck tools/bench/*.sh
+
       - name: actionlint workflows
         shell: bash
         run: |

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Runs graph_bench.py over a matrix of topologies, sizes and resolutions, one NatronRenderer
+# process per configuration, from the host. Results go to build/bench/results-<tag>.jsonl.
+#
+#   tools/bench/run_matrix.sh <tag> <res> <frames> <range> <topo:n,n,n> [<topo:n,n> ...]
+#   e.g. tools/bench/run_matrix.sh overhead tiny 5 0 chain:0,10,100 wide:10,100
+set -u
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+tag=$1
+res=$2
+frames=$3
+range=$4
+shift 4
+out=$repo/build/bench/results-$tag.jsonl
+logs=$repo/build/bench/logs
+mkdir -p "$logs"
+for spec in "$@"; do
+    topo=${spec%%:*}
+    IFS=, read -ra sizes <<< "${spec#*:}"
+    for n in "${sizes[@]}"; do
+        log=$logs/$tag-$topo-$n-$res.log
+        start=$(date +%s)
+        docker exec -e BENCH_TOPO="$topo" -e BENCH_N="$n" -e BENCH_RES="$res" \
+            -e BENCH_FRAMES="$frames" -e BENCH_RANGE="$range" -e BENCH_OUT="$out" \
+            -e OFX_PLUGIN_PATH="$repo"/build/assets/Plugins natron-dev bash -lc \
+            "cd $repo && timeout ${BENCH_TIMEOUT:-1800} xvfb-run --auto-servernum build/release/Renderer/NatronRenderer -b tools/bench/graph_bench.py" \
+            > "$log" 2>&1
+        code=$?
+        rm -f "$repo"/build/bench/work/*.exr
+        echo "$tag $topo n=$n res=$res exit=$code $(( $(date +%s) - start ))s"
+    done
+done

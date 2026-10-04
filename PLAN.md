@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: null
-pm_heartbeat: 2026-10-04T02:59:52-04:00
+pm_heartbeat: 2026-10-04T03:05:25-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -216,7 +216,7 @@ future core work has solid ground to build on.
 | M50 | Proper OCIO support as a project property | blocked | [M50-proper-ocio-support.md](PLAN/MILESTONES/M50-proper-ocio-support.md) |
 | M60 | Deep images get layers/channels like flat images | blocked | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
 | M62 | Render scaling: fix the algorithmic hotspots (bench harness, O(N²)/exponential walks, TLS copy, host copies) | blocked | [M62-render-scaling-hotspots.md](PLAN/MILESTONES/M62-render-scaling-hotspots.md) |
-| M63 | Task-graph render scheduler (stub) | todo | [M63-task-graph-render-scheduler.md](PLAN/MILESTONES/M63-task-graph-render-scheduler.md) |
+| M63 | Task-graph render scheduler (stub) | doing | [M63-task-graph-render-scheduler.md](PLAN/MILESTONES/M63-task-graph-render-scheduler.md) |
 | M64 | Tiled / fused rendering for bandwidth-bound chains (stub) | todo | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
 | M67 | Rewrite core nodes as native nodes (stub) | todo | [M67-native-core-nodes.md](PLAN/MILESTONES/M67-native-core-nodes.md) |
 | M25 | Guard the GL init path against the debug FP traps | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |

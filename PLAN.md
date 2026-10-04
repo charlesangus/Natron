@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: M62.P2.T3
-pm_heartbeat: 2026-10-03T22:39:32-04:00
+pm_heartbeat: 2026-10-03T22:48:47-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -262,6 +262,7 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **M62.P5.T1 memory proposals, your call:** massif on a 300-node Grade chain attributes the ~0.65 MB per idle node as: OFX param instances deep-copying their descriptor `Property::Set` 250 KB (48%), Natron knobs 117 KB (23%: `connectDynamicProperties` 29 KB, `OfxParamToKnob` 38 KB, default pages 20 KB, per-knob `Curve` 6 KB), OFX clip property sets 31 KB, `ImageEffect::Instance` set 25 KB, `Interact::Descriptor` sets 16 KB, plus 135 KB malloc overhead. Proposed: (1) copy-on-write overlay for instance property sets in the `libs/OpenFX` fork (~150–200 KB/node); (2) skip interact descriptors in the renderer (16 KB); (3) lazy `connectDynamicProperties` (~20 KB); (4) lazy `Curve`/deferred GUI-only pages (up to 20 KB); (5)/(6) structural knob/param unification → M31. Which of (1)–(4) go into M62 as new P5 tasks, if any? Default if unanswered: none now; all six are filed under M31.
 - **M65 awaits the user's UAT sign-off (P8.T3), deferred to the parcel UAT:** `build/appimages/M65-26cc11c9c.AppImage` with `build/appimages/M65-uat.md`. PR #35 is stacked on M61's #34; both Codex review rounds are closed.
 
 - **Parcel UAT (M61 → M65 → M66 → M37 → M50 → M60), awaiting the user.** Every PR is stacked (#34 ← #35 ← #36 ← #37 ← #38 ← #39), and every Codex round is closed. Merge bottom-up after the UAT. The top AppImage, `build/appimages/M60-ab2b06c90.AppImage`, contains everything. Each milestone's UAT script is `build/appimages/M<id>-uat.md`.

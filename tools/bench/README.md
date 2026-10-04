@@ -33,6 +33,6 @@ eu-stack stops the process while it walks stacks, so samples in which no thread 
 an artifact; take concurrency from `sample_states.sh` instead. perf is not installed in the
 container and the container has no package network.
 
-`BENCH_NAMED=1` (the default) gives every node an explicit name, which skips the O(N^2)
+`BENCH_NAMED=1` (the default) gives every node an explicit name, which skips the default
 unique-name search in `NodeCollection::checkNodeName`; set it to 0 to measure the default
 `app.createNode()` path.

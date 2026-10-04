@@ -30,7 +30,7 @@ OUT = os.environ.get("BENCH_OUT", "")
 SEED = int(os.environ.get("BENCH_SEED", "1"))
 HOLD = float(os.environ.get("BENCH_HOLD", "0"))
 WORK = os.environ.get("BENCH_WORK", os.path.join(os.getcwd(), "build", "bench", "work"))
-# Explicit names skip the default unique-name search, which is O(N^2) per created node.
+# Explicit names bypass the default unique-name search; BENCH_NAMED=0 measures that path.
 NAMED = os.environ.get("BENCH_NAMED", "1") != "0"
 
 LAST_FRAME = 1 + FRAMES + max(RANGE, 0) + 1

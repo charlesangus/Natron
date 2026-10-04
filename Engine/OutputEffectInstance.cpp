@@ -436,6 +436,7 @@ OutputEffectInstance::reportStats(int time,
     ofile << "Time spent to render frame (wall clock time): " << Timer::printAsTime(wallTime, false).toStdString() << std::endl;
     if (renderStats) {
         ofile << "Tasks run: " << renderStats->getTasksRun() << std::endl;
+        ofile << "Max concurrent tasks: " << renderStats->getMaxConcurrentTasks() << std::endl;
         ofile << "Frame store hits: " << renderStats->getFrameStoreHits() << std::endl;
         ofile << "Unplanned pulls: " << renderStats->getUnplannedPulls() << std::endl;
         ofile << "Legacy fallbacks: " << renderStats->getLegacyFallbacks() << std::endl;

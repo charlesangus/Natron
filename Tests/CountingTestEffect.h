@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <functional>
 #include <list>
 #include <map>
@@ -67,12 +68,47 @@ public:
 
     typedef std::function<void(const Node* node)> RenderHook;
 
+    /**
+     * @brief Counts the render calls running at once for its lifetime.
+     **/
+    class ConcurrentRender {
+    public:
+        ConcurrentRender()
+        {
+            const int running = ++rendering();
+            int seen = maxRendering().load();
+
+            while ((running > seen) && !maxRendering().compare_exchange_weak(seen, running)) {
+            }
+        }
+
+        ~ConcurrentRender()
+        {
+            --rendering();
+        }
+
+        ConcurrentRender(const ConcurrentRender&) = delete;
+        ConcurrentRender& operator=(const ConcurrentRender&) = delete;
+    };
+
+    /**
+     * @brief Leaves the count of the renders running untouched, so that a render in progress still balances it.
+     **/
     static void reset()
     {
         std::lock_guard<std::mutex> k(mutex());
 
         records().clear();
         hook() = RenderHook();
+        maxRendering() = 0;
+    }
+
+    /**
+     * @brief The most render calls of counting effects that ran at once since the last reset.
+     **/
+    static int maxConcurrentRenders()
+    {
+        return maxRendering().load();
     }
 
     /**
@@ -154,12 +190,27 @@ private:
 
         return h;
     }
+
+    static std::atomic<int>& rendering()
+    {
+        static std::atomic<int> n(0);
+
+        return n;
+    }
+
+    static std::atomic<int>& maxRendering()
+    {
+        static std::atomic<int> n(0);
+
+        return n;
+    }
 };
 
 /**
  * @brief Fills its output with a constant: its "value" knob plus the sum of what its connected inputs hold at the
- * corner of the render window. Never caches its output, so that every renderRoI on it reaches render(), and fails
- * when its "fail" knob is set.
+ * corner of the render window. Never caches its output, so that every renderRoI on it reaches render(), fails
+ * when its "fail" knob is set, and sleeps for its "delayMs" knob first, so that the renders of concurrent tasks
+ * overlap.
  **/
 class CountingTestEffectBase
     : public NativeEffectBase {
@@ -168,6 +219,7 @@ public:
         : NativeEffectBase(n)
         , _value()
         , _fail()
+        , _delayMs()
     {
     }
 
@@ -238,11 +290,24 @@ private:
         fail->setDefaultValue(false);
         page->addKnob(fail);
         _fail = fail;
+
+        KnobIntPtr delayMs = createKnob<KnobInt>(std::string("Delay"));
+        delayMs->setName("delayMs");
+        delayMs->setAnimationEnabled(false);
+        delayMs->setDefaultValue(0);
+        page->addKnob(delayMs);
+        _delayMs = delayMs;
     }
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
+        CountingTestRegistry::ConcurrentRender concurrent;
         CountingTestRegistry::noteRender(getNode().get());
+
+        KnobIntPtr delayKnob = _delayMs.lock();
+        if (delayKnob && (delayKnob->getValue() > 0)) {
+            QThread::msleep((unsigned long)delayKnob->getValue());
+        }
 
         KnobBoolPtr failKnob = _fail.lock();
         if (failKnob && failKnob->getValue()) {
@@ -294,6 +359,7 @@ private:
 
     KnobDoubleWPtr _value;
     KnobBoolWPtr _fail;
+    KnobIntWPtr _delayMs;
 };
 
 class CountingTestEffect

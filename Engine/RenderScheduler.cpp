@@ -192,6 +192,7 @@ estimateBytes(const RectI& roi,
 RenderScheduler::RenderScheduler()
     : _mutex()
     , _freeReady()
+    , _admittedReady()
     , _gatedReady()
     , _activeFrames()
     , _framesByAbortInfo()
@@ -201,6 +202,7 @@ RenderScheduler::RenderScheduler()
     , _reservedBytes(0)
     , _bytesBudget(std::numeric_limits<std::size_t>::max())
     , _peakBytesInFlight(0)
+    , _tasksRendering(0)
 {
     SettingsPtr settings = appPTR ? appPTR->getCurrentSettings() : SettingsPtr();
 
@@ -533,19 +535,20 @@ RenderScheduler::popLocked(FramePtr* frame,
                            std::vector<FramePtr>* finished)
 {
     discardStaleTopsLocked(&_freeReady, finished);
+    discardStaleTopsLocked(&_admittedReady, finished);
     discardStaleTopsLocked(&_gatedReady, finished);
 
     const bool freeAvailable = !_freeReady.empty();
-    const bool gatedAvailable = !_gatedReady.empty() && (isGatedTopAdmissibleLocked() || ((_runningTasks == 0) && !freeAvailable));
-    if (!freeAvailable && !gatedAvailable) {
+    const bool admittedAvailable = !_admittedReady.empty();
+    if (!freeAvailable && !admittedAvailable) {
         return false;
     }
 
     ReadyHeap* heap;
-    if (freeAvailable && gatedAvailable) {
-        heap = ReadyRefWorse()(_freeReady.front(), _gatedReady.front()) ? &_gatedReady : &_freeReady;
+    if (freeAvailable && admittedAvailable) {
+        heap = ReadyRefWorse()(_freeReady.front(), _admittedReady.front()) ? &_admittedReady : &_freeReady;
     } else {
-        heap = freeAvailable ? &_freeReady : &_gatedReady;
+        heap = freeAvailable ? &_freeReady : &_admittedReady;
     }
     std::pop_heap(heap->begin(), heap->end(), ReadyRefWorse());
     ReadyRef ref = std::move(heap->back());
@@ -555,7 +558,9 @@ RenderScheduler::popLocked(FramePtr* frame,
     *task = ref.task;
     ++ref.frame->runningTasks;
     ++_runningTasks;
-    _reservedBytes += ref.frame->graph.tasks[ref.task].estimatedBytes;
+    if (heap == &_freeReady) {
+        _reservedBytes += ref.frame->graph.tasks[ref.task].estimatedBytes;
+    }
 
     return true;
 }
@@ -587,6 +592,10 @@ RenderScheduler::executeTask(const FramePtr& frame,
                                            eStorageModeRAM,
                                            caller.key.time);
         AppTLS::FrameContextScope scope(frame->context.get());
+        const int rendering = ++_tasksRendering;
+        if (frame->context->getStats()) {
+            frame->context->getStats()->noteConcurrentTasks(rendering);
+        }
         try {
             retCode = effect->renderRoI(args, &planes);
         } catch (const std::exception&) {
@@ -594,6 +603,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
         } catch (...) {
             retCode = EffectInstance::eRenderRoIRetCodeFailed;
         }
+        --_tasksRendering;
     }
 
     if (retCode == EffectInstance::eRenderRoIRetCodeOk) {
@@ -683,6 +693,9 @@ RenderScheduler::discardStaleTopsLocked(ReadyHeap* heap,
 {
     while (!heap->empty() && isStaleLocked(heap->front())) {
         FramePtr frame = heap->front().frame;
+        if (heap == &_admittedReady) {
+            _reservedBytes -= frame->graph.tasks[heap->front().task].estimatedBytes;
+        }
         std::pop_heap(heap->begin(), heap->end(), ReadyRefWorse());
         heap->pop_back();
         if (frame->finished) {
@@ -698,22 +711,38 @@ RenderScheduler::discardStaleTopsLocked(ReadyHeap* heap,
     }
 }
 
-bool
-RenderScheduler::isGatedTopAdmissibleLocked() const
+void
+RenderScheduler::admitGatedLocked(int maxRunnables)
 {
     if (_gatedReady.empty()) {
-        return false;
+        return;
     }
-    const ReadyRef& top = _gatedReady.front();
-    if (isStaleLocked(top)) {
-        return true;
+    // Admitting more than the threads that could take them would only hold their bytes back from other branches.
+    int slots = maxRunnables - _runningTasks - (int)_admittedReady.size();
+    if (slots <= 0) {
+        return;
     }
-    const std::size_t estimated = top.frame->graph.tasks[top.task].estimatedBytes;
-    if (estimated > _bytesBudget) {
-        return false;
-    }
+    const std::size_t inFlight = bytesInFlightLocked();
 
-    return bytesInFlightLocked() + _reservedBytes <= _bytesBudget - estimated;
+    while ((slots > 0) && !_gatedReady.empty()) {
+        const ReadyRef& top = _gatedReady.front();
+        const std::size_t estimated = top.frame->graph.tasks[top.task].estimatedBytes;
+        // A stale task is admitted only to be dropped by the next pop, which releases its reservation.
+        const bool fits = isStaleLocked(top) || ((estimated <= _bytesBudget) && (inFlight + _reservedBytes <= _bytesBudget - estimated));
+        const bool idle = (_runningTasks == 0) && _freeReady.empty() && _admittedReady.empty();
+        // Stopping at the first task that does not fit, rather than skipping to smaller ones, keeps a large branch
+        // from being starved by the small ones behind it.
+        if (!fits && !idle) {
+            break;
+        }
+        std::pop_heap(_gatedReady.begin(), _gatedReady.end(), ReadyRefWorse());
+        ReadyRef ref = std::move(_gatedReady.back());
+        _gatedReady.pop_back();
+        _admittedReady.push_back(std::move(ref));
+        std::push_heap(_admittedReady.begin(), _admittedReady.end(), ReadyRefWorse());
+        _reservedBytes += estimated;
+        --slots;
+    }
 }
 
 std::size_t
@@ -772,13 +801,16 @@ void
 RenderScheduler::purgeQueuedLocked(const FramePtr& frame,
                                    std::vector<int>* purged)
 {
-    ReadyHeap* const heaps[] = { &_freeReady, &_gatedReady };
+    ReadyHeap* const heaps[] = { &_freeReady, &_admittedReady, &_gatedReady };
     const std::size_t purgedBefore = purged->size();
 
     for (ReadyHeap* heap : heaps) {
         ReadyHeap::iterator kept = heap->begin();
         for (ReadyHeap::iterator it = heap->begin(); it != heap->end(); ++it) {
             if (it->frame == frame) {
+                if (heap == &_admittedReady) {
+                    _reservedBytes -= frame->graph.tasks[it->task].estimatedBytes;
+                }
                 purged->push_back(it->task);
             } else {
                 if (kept != it) {
@@ -849,12 +881,11 @@ int
 RenderScheduler::reserveRunnablesLocked(int* priority)
 {
     const int maxRunnables = std::max(1, QThreadPool::globalInstance()->maxThreadCount());
-    const int idleRunnables = _outstandingRunnables - _runningTasks;
-    int wanted = (int)_freeReady.size();
 
-    if (!_gatedReady.empty() && (isGatedTopAdmissibleLocked() || ((_runningTasks == 0) && _freeReady.empty()))) {
-        ++wanted;
-    }
+    admitGatedLocked(maxRunnables);
+
+    const int idleRunnables = _outstandingRunnables - _runningTasks;
+    const int wanted = (int)(_freeReady.size() + _admittedReady.size());
     const int toStart = std::min(wanted - idleRunnables, maxRunnables - _outstandingRunnables);
     if (toStart <= 0) {
         return 0;
@@ -865,7 +896,7 @@ RenderScheduler::reserveRunnablesLocked(int* priority)
     if (!_freeReady.empty() && (_freeReady.front().frame->priority == Priority::Interactive)) {
         interactive = true;
     }
-    if (!_gatedReady.empty() && (_gatedReady.front().frame->priority == Priority::Interactive)) {
+    if (!_admittedReady.empty() && (_admittedReady.front().frame->priority == Priority::Interactive)) {
         interactive = true;
     }
     *priority = interactive ? 1 : 0;

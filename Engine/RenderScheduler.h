@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <cstddef>
 #include <list>
 #include <map>
@@ -131,8 +132,10 @@ private:
  * pool thread.
  *
  * Starting a branch is held back while the images in flight exceed a budget, so that a wide graph does not render
- * all its leaves before merging any; tasks continuing a started branch always run, and a branch is always admitted
- * when nothing else runs, so every frame completes.
+ * all its leaves before merging any: every branch that fits the bytes left once the images in the stores and the
+ * outputs of the admitted and running tasks are counted is admitted at once, up to the threads of the pool. Tasks
+ * continuing a started branch always run, and a branch is always admitted when nothing else runs or is ready, so
+ * every frame completes.
  **/
 class RenderScheduler {
 public:
@@ -233,7 +236,7 @@ private:
 
     void discardStaleTopsLocked(ReadyHeap* heap, std::vector<FramePtr>* finished);
 
-    bool isGatedTopAdmissibleLocked() const;
+    void admitGatedLocked(int maxRunnables);
 
     std::size_t bytesInFlightLocked() const;
 
@@ -251,8 +254,10 @@ private:
 
     mutable QMutex _mutex;
 
-    // Ready tasks continuing a branch, and ready tasks starting one, both kept as heaps by ReadyRefWorse.
+    // Ready tasks continuing a branch, ready tasks starting one that were admitted under the budget, and ready tasks
+    // starting one still held back, all kept as heaps by ReadyRefWorse.
     ReadyHeap _freeReady;
+    ReadyHeap _admittedReady;
     ReadyHeap _gatedReady;
     std::list<FramePtr> _activeFrames;
 
@@ -261,9 +266,14 @@ private:
     unsigned long long _nextFrameSequence;
     int _outstandingRunnables;
     int _runningTasks;
+
+    // The estimated outputs of the admitted tasks and of the running ones, released when the task finished.
     std::size_t _reservedBytes;
     std::size_t _bytesBudget;
     std::size_t _peakBytesInFlight;
+
+    // The tasks inside renderRoI, counted without the mutex.
+    std::atomic<int> _tasksRendering;
 };
 
 NATRON_NAMESPACE_EXIT

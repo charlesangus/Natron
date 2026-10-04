@@ -141,6 +141,13 @@ public:
     int getTasksRun() const;
 
     /**
+     * @brief Raises the high-water mark of the tasks rendering at once to running, the count that includes the
+     * caller's task.
+     **/
+    void noteConcurrentTasks(int running);
+    int getMaxConcurrentTasks() const;
+
+    /**
      * @brief Counts one queued task of an aborted or failed frame that was dropped without running.
      **/
     void incTasksPurged();

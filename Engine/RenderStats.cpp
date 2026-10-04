@@ -300,6 +300,7 @@ struct RenderStatsPrivate
     NodeInfosMap nodeInfos;
 
     std::atomic<int> tasksRun;
+    std::atomic<int> maxConcurrentTasks;
     std::atomic<int> tasksPurged;
     std::atomic<int> frameStoreHits;
     std::atomic<int> unplannedPulls;
@@ -315,6 +316,7 @@ struct RenderStatsPrivate
         , doNodesProfiling(false)
         , nodeInfos()
         , tasksRun(0)
+        , maxConcurrentTasks(0)
         , tasksPurged(0)
         , frameStoreHits(0)
         , unplannedPulls(0)
@@ -462,6 +464,21 @@ int
 RenderStats::getTasksRun() const
 {
     return _imp->tasksRun.load();
+}
+
+void
+RenderStats::noteConcurrentTasks(int running)
+{
+    int seen = _imp->maxConcurrentTasks.load();
+
+    while ((running > seen) && !_imp->maxConcurrentTasks.compare_exchange_weak(seen, running)) {
+    }
+}
+
+int
+RenderStats::getMaxConcurrentTasks() const
+{
+    return _imp->maxConcurrentTasks.load();
 }
 
 void

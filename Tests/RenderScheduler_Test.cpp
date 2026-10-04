@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <map>
 #include <memory>
@@ -34,6 +35,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QElapsedTimer>
 #include <QString>
 #include <QThread>
 #include <QThreadPool>
@@ -64,6 +66,9 @@ NATRON_NAMESPACE_USING
 namespace {
 
 const int kPoolSizes[] = { 1, 2, 4, 8, 16 };
+
+// Long enough that the tasks started together are all inside render at once, even on a loaded machine.
+const int kOverlapDelayMs = 20;
 
 class PoolSizeGuard {
 public:
@@ -315,13 +320,18 @@ protected:
 
     /**
      * @brief Renders root at each of times at once and checks that every task ran exactly once, off this thread, that
-     * the stores emptied, and that the root holds expectedValue.
+     * the stores emptied, and that the root holds expectedValue. maxConcurrentTasks, when given, receives the
+     * largest RenderStats::getMaxConcurrentTasks() of the frames.
      **/
     void renderFrames(const NodePtr& root,
                       const std::vector<NodePtr>& nodes,
                       const std::vector<double>& times,
-                      float expectedValue)
+                      float expectedValue,
+                      int* maxConcurrentTasks = NULL)
     {
+        if (maxConcurrentTasks) {
+            *maxConcurrentTasks = 0;
+        }
         std::vector<FrameRun> runs(times.size());
         for (std::size_t i = 0; i < times.size(); ++i) {
             std::string error;
@@ -336,6 +346,9 @@ protected:
             EXPECT_TRUE(runs[i].future->isFinished());
             EXPECT_EQ(0u, runs[i].context->getStore().bytesInFlight());
             EXPECT_EQ((int)runs[i].numTasks, runs[i].stats->getTasksRun());
+            if (maxConcurrentTasks) {
+                *maxConcurrentTasks = std::max(*maxConcurrentTasks, runs[i].stats->getMaxConcurrentTasks());
+            }
 
             const std::map<ImageLayerDesc, ImagePtr> planes = runs[i].future->getRootPlanes();
             ASSERT_FALSE(planes.empty());
@@ -357,14 +370,20 @@ protected:
 
     /**
      * @brief Renders the frames at every pool size with the given budget, and checks the images in flight never
-     * exceeded it by more than one output.
+     * exceeded it by more than one output, and that at least min(pool size, concurrentBranches) renders ran at once.
+     *
+     * Admitting several branches at once does not loosen the bound: a branch is only admitted when the images in
+     * the stores plus the outputs of every admitted and running task still fit the budget, and a task continuing a
+     * branch releases its inputs before storing its output. Only the branch admitted when nothing else runs may go
+     * over, by its one output.
      **/
     void renderAtEveryPoolSize(const NodePtr& root,
                                const std::vector<NodePtr>& nodes,
                                const std::vector<double>& times,
                                float expectedValue,
                                std::size_t budget,
-                               std::size_t oneOutput)
+                               std::size_t oneOutput,
+                               int concurrentBranches = 1)
     {
         _scheduler->setBytesBudgetForTests(budget);
         for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
@@ -376,7 +395,29 @@ protected:
             renderFrames(root, nodes, times, expectedValue);
 
             EXPECT_LE(_scheduler->getPeakBytesInFlight(), budget + oneOutput);
+            EXPECT_GE(CountingTestRegistry::maxConcurrentRenders(), std::min(kPoolSizes[p], concurrentBranches));
         }
+    }
+
+    // The runnables that took no task leave the pool after the frame finished.
+    void expectRunnablesDrained()
+    {
+        QElapsedTimer timer;
+
+        timer.start();
+        while ((_scheduler->getOutstandingRunnables() > 0) && (timer.elapsed() < 5000)) {
+            QThread::msleep(1);
+        }
+        EXPECT_EQ(0, _scheduler->getOutstandingRunnables());
+    }
+
+    void setDelay(const NodePtr& node,
+                  int delayMs)
+    {
+        KnobInt* delay = dynamic_cast<KnobInt*>(node->getKnobByName("delayMs").get());
+
+        ASSERT_TRUE(delay != NULL);
+        delay->setValue(delayMs);
     }
 
     void setFail(const NodePtr& node)
@@ -406,10 +447,35 @@ TEST_F(RenderSchedulerTest, WideMergeTree)
     const std::size_t oneOutput = measureOneOutputBytes();
     ASSERT_GT(oneOutput, 0u);
 
+    const int leaves = 64;
     std::vector<NodePtr> nodes;
-    ASSERT_TRUE(buildWide(64, &nodes));
+    ASSERT_TRUE(buildWide(leaves, &nodes));
     // Merging 64 leaves depth first holds one image per level of the tree, 7 in all.
     renderAtEveryPoolSize(nodes.back(), nodes, std::vector<double>(1, 1.), 64.f, 7 * oneOutput, oneOutput);
+
+    // With a budget holding every image of the tree, the leaves are only bounded by the threads.
+    for (int i = 0; i < leaves; ++i) {
+        setDelay(nodes[i], kOverlapDelayMs);
+    }
+    const std::size_t roomy = nodes.size() * oneOutput;
+    _scheduler->setBytesBudgetForTests(roomy);
+    const int concurrentPoolSizes[] = { 4, 8, 16 };
+    for (std::size_t p = 0; p < sizeof(concurrentPoolSizes) / sizeof(concurrentPoolSizes[0]); ++p) {
+        const int poolSize = concurrentPoolSizes[p];
+        SCOPED_TRACE("concurrent, pool size " + std::to_string(poolSize));
+        PoolSizeGuard pool(poolSize);
+        CountingTestRegistry::reset();
+        _scheduler->resetPeakBytesInFlight();
+
+        int maxConcurrentTasks = 0;
+        renderFrames(nodes.back(), nodes, std::vector<double>(1, 1.), 64.f, &maxConcurrentTasks);
+
+        EXPECT_LE(_scheduler->getPeakBytesInFlight(), roomy);
+        EXPECT_GE(CountingTestRegistry::maxConcurrentRenders(), std::min(poolSize, leaves / 2));
+        // Both cap at the pool size, which the renders reach, so the tasks inside renderRoI agree with them.
+        EXPECT_EQ(CountingTestRegistry::maxConcurrentRenders(), maxConcurrentTasks);
+        expectRunnablesDrained();
+    }
 }
 
 TEST_F(RenderSchedulerTest, DiamondLadder)
@@ -419,8 +485,13 @@ TEST_F(RenderSchedulerTest, DiamondLadder)
 
     std::vector<NodePtr> nodes;
     ASSERT_TRUE(buildDiamondLadder(40, &nodes));
+    // The two sides of each rung run together.
+    for (std::size_t i = 1; i < nodes.size(); i += 3) {
+        setDelay(nodes[i], kOverlapDelayMs);
+        setDelay(nodes[i + 1], kOverlapDelayMs);
+    }
     // Both sides of a rung must be held for its merge.
-    renderAtEveryPoolSize(nodes.back(), nodes, std::vector<double>(1, 1.), (float)(1ULL << 40), oneOutput, oneOutput);
+    renderAtEveryPoolSize(nodes.back(), nodes, std::vector<double>(1, 1.), (float)(1ULL << 40), oneOutput, oneOutput, 2);
 }
 
 TEST_F(RenderSchedulerTest, TwoFramesAtOnce)

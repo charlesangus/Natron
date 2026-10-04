@@ -21,7 +21,7 @@ for spec in "$@"; do
         log=$logs/$tag-$topo-$n-$res.log
         start=$(date +%s)
         docker exec -e BENCH_TOPO="$topo" -e BENCH_N="$n" -e BENCH_RES="$res" \
-            -e BENCH_FRAMES="$frames" -e BENCH_RANGE="$range" -e BENCH_OUT="$out" \
+            -e BENCH_FRAMES="$frames" -e BENCH_RANGE="$range" -e BENCH_OUT="$out" -e BENCH_NAMED="${BENCH_NAMED:-1}" \
             -e OFX_PLUGIN_PATH="$repo"/build/assets/Plugins natron-dev bash -lc \
             "cd $repo && timeout ${BENCH_TIMEOUT:-1800} xvfb-run --auto-servernum build/release/Renderer/NatronRenderer -b tools/bench/graph_bench.py" \
             > "$log" 2>&1

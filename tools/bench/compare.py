@@ -16,6 +16,12 @@ METRICS = [
     ("rss_mb", "rss_before_mb", True),
 ]
 
+# Printed only when both files have the field; range_wall_s is divided by range_frames per record.
+RANGE_METRICS = [
+    ("range_frame_s", "range_frame_s", True),
+    ("range_par", "range_parallelism", False),
+]
+
 
 def load(path):
     groups = {}
@@ -25,7 +31,9 @@ def load(path):
             if not line:
                 continue
             rec = json.loads(line)
-            key = (rec.get("topo"), rec.get("n"), rec.get("res"), rec.get("named"))
+            if rec.get("range_wall_s") and rec.get("range_frames"):
+                rec["range_frame_s"] = rec["range_wall_s"] / rec["range_frames"]
+            key = (rec.get("topo"), rec.get("n"), rec.get("res"), rec.get("named"), rec.get("settings") or "")
             groups.setdefault(key, []).append(rec)
     return groups
 
@@ -44,6 +52,7 @@ def key_sort(key):
         key[1] if isinstance(key[1], int) else -1,
         str(key[2]),
         str(key[3]),
+        key[4],
     )
 
 
@@ -74,25 +83,27 @@ def main():
     flagged_any = False
 
     for key in common:
-        topo, n, res, named = key
+        topo, n, res, named, settings = key
         cells = []
         flagged = False
-        for label, field, higher_is_worse in METRICS:
+        for label, field, higher_is_worse in METRICS + RANGE_METRICS:
             b = median_of(before[key], field)
             a = median_of(after[key], field)
+            if (b is None or a is None) and (label, field, higher_is_worse) in RANGE_METRICS:
+                continue
             ratio, bad = compare_metric(b, a, higher_is_worse, args.threshold)
             flagged = flagged or bad
             r = "-" if ratio is None else "%.2f" % ratio
             cells.append("%s %s->%s x%s" % (label, fmt(b), fmt(a), r))
         flagged_any = flagged_any or flagged
-        head = "%s n=%s res=%s named=%s" % (topo, n, res, named)
+        head = "%s n=%s res=%s named=%s%s" % (topo, n, res, named, " settings=" + settings if settings else "")
         print("%-34s %s%s" % (head, "  ".join(cells), "  FLAGGED" if flagged else ""))
 
     missing = sorted(set(before) - set(after), key=key_sort)
     for key in missing:
-        print("FLAGGED missing from after: topo=%s n=%s res=%s named=%s" % key)
+        print("FLAGGED missing from after: topo=%s n=%s res=%s named=%s settings=%r" % key)
     for key in sorted(set(after) - set(before), key=key_sort):
-        print("note: only in after: topo=%s n=%s res=%s named=%s" % key)
+        print("note: only in after: topo=%s n=%s res=%s named=%s settings=%r" % key)
 
     if not common:
         print("FLAGGED: no matching records")

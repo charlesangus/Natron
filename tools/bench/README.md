@@ -8,7 +8,7 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 |---|---|
 | `graph_bench.py` | Builds one synthetic graph in NatronRenderer, renders it, appends a JSON result line. |
 | `run_matrix.sh` | Runs `graph_bench.py` over topologies and sizes, one process per configuration. |
-| `profile_run.sh` | Runs one configuration and samples its stacks with eu-stack once the graph is built. |
+| `profile_run.sh` | Runs one configuration and samples its stacks with eu-stack once the graph is built; `SAMPLER=states` samples thread states instead. |
 | `sample_stacks.sh` | The eu-stack sampler (needs `docker exec -u root --privileged` for ptrace). |
 | `sample_states.sh` | Counts running threads from `/proc` without stopping the process; use it for concurrency. |
 | `analyze_stacks.py` | Summarises eu-stack samples: busy/blocked/idle, activity, self and inclusive functions. |
@@ -36,3 +36,16 @@ container and the container has no package network.
 `BENCH_NAMED=1` (the default) gives every node an explicit name, which skips the default
 unique-name search in `NodeCollection::checkNodeName`; set it to 0 to measure the default
 `app.createNode()` path.
+
+`BENCH_SETTINGS="name=value;name=value"` sets Natron settings for a run. `run_matrix.sh` and
+`profile_run.sh` expand it into repeated `--setting name=value` arguments for NatronRenderer, and
+`graph_bench.py` records the string as `settings` (empty when unset). `compare.py` only matches
+records with the same `settings`, and records without the field count as empty.
+
+With `BENCH_RANGE` > 0 the record carries `range_frames`, `range_wall_s`, `range_cpu_s` and
+`range_parallelism` (`range_cpu_s / range_wall_s`, null without a range). `compare.py` prints the
+range per-frame wall time (`range_wall_s / range_frames`) and `range_parallelism` as extra columns
+when both files have them.
+
+`SAMPLER=states tools/bench/profile_run.sh <name> <count> <interval> VAR=...` writes the
+running-thread histogram to `build/bench/states-<name>.txt`.

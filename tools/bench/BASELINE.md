@@ -312,3 +312,70 @@ HD chain 30 (20 frames, 1.2958 s median frame, parallelism 2.61 from the matrix 
 Split of the per-frame cost in the hdchain30 profile (114 busy thread-samples, share of busy self time): plugin pixel work (Misc.ofx frames: unnamed 36.8%, `void` 23.7%, `ofxsPremult` 8.8%, `ofxsMaskMixPix` 7.0%, `getPixelAddress` 2.6%) is 78.9%. Engine per-image work (row-based unprocessed-channel copy 7.9%, `checkForNaNsAndFix` 4.4%, `aborted` 0.9%, memcpy/fill 0.9%) is about 14%. The EXR writer (zip, deflate, convert) is about 5%. The per-node serial host work (request pass, render-args setup, metadata, identity, cache, TLS) does not register as a self-time function at HD; `engine:other` is 4.4% of busy samples.
 
 Per-node serial host overhead measured directly from the tiny chain, where plugin pixel work is negligible: 0.32 ms per node per frame (chain 1000: 0.3203 s; chain 3000: 0.374 ms per node). HD chain 30 costs 1.2958 s / 30 = 43.2 ms per node per frame, so the host overhead is at most about 0.7% of the HD per-node cost; at HD the remaining per-frame cost is plugin pixel work and image-sized engine passes. In the chain:1000 tiny profile (15 busy thread-samples) plugin render and begin/end frames are 53% and engine/libc frames 47%, dominated by property-set construction (`Property::Set::Set`, 20% inclusive) and malloc/free (33% inclusive).
+
+## M63 start (2026-10-04, 20aa6f102)
+
+Machine: 4-core Intel N100, 15 GB RAM; `build/release` at `20aa6f102` (code identical to `07349f257`; only comments and scripts differ) in the `natron-dev` container, one configuration at a time. Single-frame numbers here are about 1.4-1.5x slower than After M62 on every row, including single-threaded graph builds, in two full runs (the first is kept in `build/bench/contended/`). The host load average was 12-19 with nothing of ours running, so another tenant was using the CPUs. Treat these as the M63-start reference for this machine state and compare M63 results against them, not against After M62, only when the machine is similarly loaded; ratios within one run are unaffected.
+
+Commands run from the repo root (`BENCH_TIMEOUT=3600` throughout):
+
+```
+tools/bench/run_matrix.sh m63start-hd hd 3 8 chain:30,100 wide:100 comp:100 mixed:100
+tools/bench/run_matrix.sh m63start-tiny tiny 5 0 chain:1000,3000 wide:1000 comp:300
+SAMPLER=states tools/bench/profile_run.sh m63start-comp100 120 0.5 BENCH_TOPO=comp BENCH_N=100 BENCH_FRAMES=20 BENCH_RES=hd
+SAMPLER=states tools/bench/profile_run.sh m63start-wide100 120 0.5 BENCH_TOPO=wide BENCH_N=100 BENCH_FRAMES=20 BENCH_RES=hd
+python3 tools/bench/compare.py build/bench/results-m62after-<hd|tiny>.jsonl build/bench/results-m63start-<hd|tiny>.jsonl
+```
+
+Results are in `build/bench/results-m63start-hd.jsonl` and `results-m63start-tiny.jsonl`. All 9 configurations exited 0; the whole run took 954 s.
+
+| topo | n | res | named | settings | build (s) | median frame (s) | parallelism | range frames | range per-frame wall (s) | range_parallelism | RSS before render (MB) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| chain | 30 | hd | True | - | 0.1255 | 2.6371 | 1.95 | 8 | 2.172 | 2.32 | 129 |
+| chain | 100 | hd | True | - | 0.4758 | 7.6613 | 2.01 | 8 | 7.162 | 2.21 | 173 |
+| wide | 100 | hd | True | - | 0.6591 | 4.888 | 1.9 | 8 | 4.514 | 2.2 | 209 |
+| comp | 100 | hd | True | - | 0.4844 | 9.508 | 2.08 | 8 | 8.923 | 2.26 | 195 |
+| mixed | 100 | hd | True | - | 0.7435 | 17.3746 | 2.09 | 8 | 16.541 | 2.28 | 190 |
+| chain | 1000 | tiny | True | - | 10.0627 | 0.4537 | 1.0 | - | - | - | 730 |
+| chain | 3000 | tiny | True | - | 69.3674 | 1.529 | 1.0 | - | - | - | 1967 |
+| wide | 1000 | tiny | True | - | 10.9216 | 1.0536 | 1.0 | - | - | - | 1109 |
+| comp | 300 | tiny | True | - | 2.3371 | 0.4762 | 1.11 | - | - | - | 358 |
+
+### Against After M62
+
+`compare.py` output (the range columns are absent because the After M62 records have no range):
+
+```
+hd:
+chain n=30 res=hd named=True       build_s 0.0903->0.1255 x1.39  frame_s 1.296->2.637 x2.04  parallelism 2.61->1.95 x0.75  rss_mb 130->129 x0.99  FLAGGED
+chain n=100 res=hd named=True      build_s 0.3123->0.4758 x1.52  frame_s 5.374->7.661 x1.43  parallelism 2.67->2.01 x0.75  rss_mb 173->173 x1.00  FLAGGED
+comp n=100 res=hd named=True       build_s 0.3753->0.4844 x1.29  frame_s 6.655->9.508 x1.43  parallelism 2.58->2.08 x0.81  rss_mb 195->195 x1.00
+mixed n=100 res=hd named=True      build_s 0.3626->0.7435 x2.05  frame_s 12.24->17.37 x1.42  parallelism 2.54->2.09 x0.82  rss_mb 190->190 x1.00  FLAGGED
+wide n=100 res=hd named=True       build_s 0.4378->0.6591 x1.51  frame_s 3.23->4.888 x1.51  parallelism 2.55->1.9 x0.75  rss_mb 209->209 x1.00  FLAGGED
+
+tiny:
+chain n=1000 res=tiny named=True   build_s 6.551->10.06 x1.54  frame_s 0.3203->0.4537 x1.42  parallelism 1->1 x1.00  rss_mb 730->730 x1.00  FLAGGED
+chain n=3000 res=tiny named=True   build_s 47.01->69.37 x1.48  frame_s 1.123->1.529 x1.36  parallelism 1->1 x1.00  rss_mb 1967->1967 x1.00
+comp n=300 res=tiny named=True     build_s 1.318->2.337 x1.77  frame_s 0.2676->0.4762 x1.78  parallelism 1.28->1.11 x0.87  rss_mb 359->358 x1.00  FLAGGED
+wide n=1000 res=tiny named=True    build_s 7.05->10.92 x1.55  frame_s 0.6497->1.054 x1.62  parallelism 1->1 x1.00  rss_mb 1110->1109 x1.00  FLAGGED
+FLAGGED missing from after: topo=chain n=100 res=tiny named=True settings=''
+FLAGGED missing from after: topo=comp n=1000 res=tiny named=True settings=''
+FLAGGED missing from after: topo=wide n=3000 res=tiny named=True settings=''
+```
+
+The "missing" rows are configurations After M62 ran that this baseline does not (chain 100, comp 1000, wide 3000 tiny). Every present row is 1.3-2.0x slower and many are flagged at 1.5, uniformly across build time, single-threaded tiny frames and HD frames, which points at the machine and not the code.
+
+### Occupancy
+
+`build/bench/states-m63start-comp100.txt` and `states-m63start-wide100.txt`: HD single-frame run (20 frames), 120 samples at 0.5 s (first 60 s of the run). Columns are samples, running threads, uninterruptible threads.
+
+```
+comp 100 hd:                 wide 100 hd:
+     38 1 0                       1 0 0
+     26 2 0                      42 1 0
+     55 3 0                      15 2 0
+                                 61 3 0
+                                  1 4 0
+```
+
+Mean running threads: comp 2.14, wide 2.16. Share of samples at 4 running threads: comp 0%, wide 0.8%. Three threads were the ceiling in practice on both graphs.

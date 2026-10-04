@@ -10,6 +10,8 @@
 #   BENCH_RANGE   frames rendered as one range, to measure frame-parallel throughput (default 0)
 #   BENCH_OUT     JSON-lines file the result is appended to
 #   BENCH_SEED    seed for the comp topology (default 1)
+#   BENCH_SETTINGS  semicolon-separated name=value Natron settings, recorded as "settings"; the shell
+#                 scripts pass them to NatronRenderer as --setting arguments (default empty)
 #   BENCH_HOLD    seconds to sleep before rendering, so a sampler can attach (default 0)
 
 import json
@@ -29,6 +31,7 @@ RANGE = int(os.environ.get("BENCH_RANGE", "0"))
 OUT = os.environ.get("BENCH_OUT", "")
 SEED = int(os.environ.get("BENCH_SEED", "1"))
 HOLD = float(os.environ.get("BENCH_HOLD", "0"))
+SETTINGS = os.environ.get("BENCH_SETTINGS", "")
 WORK = os.environ.get("BENCH_WORK", os.path.join(os.getcwd(), "build", "bench", "work"))
 # Explicit names bypass the default unique-name search; BENCH_NAMED=0 measures that path.
 NAMED = os.environ.get("BENCH_NAMED", "1") != "0"
@@ -269,6 +272,8 @@ def main():
         "range_frames": RANGE,
         "range_wall_s": round(range_wall, 4) if range_wall is not None else None,
         "range_cpu_s": round(range_cpu, 4) if range_cpu is not None else None,
+        "range_parallelism": round(range_cpu / range_wall, 2) if range_wall else None,
+        "settings": SETTINGS,
         "rss_before_mb": rss_before,
         "rss_peak_mb": vm("VmHWM"),
         "counts": counts,

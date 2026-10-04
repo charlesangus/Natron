@@ -204,11 +204,14 @@ AppTLS::cleanupTLSForThread()
 }
 
 AppTLS::SpawnedThreadScope::SpawnedThreadScope(QThread* fromThread,
+                                               const FrameRenderContext* frameContext,
                                                SpawnKindEnum kind)
     : _spawned(fromThread && fromThread != QThread::currentThread())
+    , _previousFrameContext(tCurrentFrameContext)
 {
     if (_spawned) {
         appPTR->getAppTLS()->softCopy(fromThread, QThread::currentThread(), kind);
+        tCurrentFrameContext = frameContext;
     }
 }
 
@@ -216,6 +219,7 @@ AppTLS::SpawnedThreadScope::~SpawnedThreadScope()
 {
     if (_spawned) {
         appPTR->getAppTLS()->cleanupTLSForThread();
+        tCurrentFrameContext = _previousFrameContext;
     }
 }
 

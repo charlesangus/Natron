@@ -29,7 +29,9 @@
 #include <cassert>
 #include <iterator>
 #include <memory>
+#include <set>
 #include <stdexcept>
+#include <tuple>
 #include <vector>
 
 #include "Engine/AbortableRenderInfo.h"
@@ -358,6 +360,9 @@ namespace {
  * @brief One step of the request pass. A visit is one RoI request on a frame/view. The other kinds are work the
  * requesting frame/view does once the visit pushed just above them has walked everything upstream of it, so edges,
  * consumer counts, components and post-order numbers come out as they would from a depth-first recursion.
+ * A warm item caches one node's RoD at a frame/view and mipmap level, and its needed components at that frame/view,
+ * once its own inputs' are cached, so that no RoD query nor layer resolution (both of whose defaults recurse into the
+ * inputs' results) goes more than one node deep.
  **/
 struct RequestPassItem {
     enum KindEnum {
@@ -365,7 +370,8 @@ struct RequestPassItem {
         eKindInputEdge,
         eKindInputComponents,
         eKindIdentityEdge,
-        eKindFinish
+        eKindFinish,
+        eKindWarmRoD
     };
 
     KindEnum kind = eKindVisit;
@@ -398,6 +404,112 @@ makeVisitItem(const NodePtr& node,
     return item;
 }
 
+/**
+ * @brief The RoD cache keys the pass has already checked or scheduled: effect, time, view and mipmap level.
+ **/
+typedef std::set<std::tuple<const EffectInstance*, double, int, unsigned int>> WarmedRoDSet;
+
+/**
+ * @brief Collects a warm item for each input frame/view the effect needs at time/view whose components, or RoD at the
+ * level the effect's own RoD query at rodMipmapLevel forwards to its inputs, are not cached, skipping keys already in
+ * warmed.
+ **/
+void
+collectInputRoDWarmItems(const EffectInstancePtr& effect,
+                         U64 hash,
+                         double time,
+                         ViewIdx view,
+                         unsigned int framesNeededMipmapLevel,
+                         unsigned int rodMipmapLevel,
+                         WarmedRoDSet* warmed,
+                         std::vector<RequestPassItem>* warmItems)
+{
+    const FramesNeededMap framesNeeded = effect->getFramesNeeded_public(hash, time, view, framesNeededMipmapLevel);
+    // getRegionOfDefinition_public runs the action at scale 1 for effects without render scale support.
+    const unsigned int inputLevel = (effect->supportsRenderScaleMaybe() == EffectInstance::eSupportsNo) ? 0 : rodMipmapLevel;
+    const RenderScale inputScale = RenderScale::fromMipmapLevel(inputLevel);
+
+    for (FramesNeededMap::const_iterator it = framesNeeded.begin(); it != framesNeeded.end(); ++it) {
+        const EffectInstancePtr input = effect->getInput(it->first);
+        if (!input) {
+            continue;
+        }
+        for (FrameRangesMap::const_iterator viewIt = it->second.begin(); viewIt != it->second.end(); ++viewIt) {
+            for (std::vector<RangeD>::const_iterator range = viewIt->second.begin(); range != viewIt->second.end(); ++range) {
+                if ((range->min != (int)range->min) || (range->max != (int)range->max)) {
+                    continue;
+                }
+                for (double f = range->min; f <= range->max; f += 1.) {
+                    // Clips query the nearest enabled node upstream, with its own render hash.
+                    const EffectInstancePtr target = input->getNearestNonDisabled(f);
+                    if (!target || !warmed->insert(std::make_tuple(target.get(), f, viewIt->first.value(), inputLevel)).second) {
+                        continue;
+                    }
+                    const U64 targetHash = target->getRenderHash();
+                    RectD rod;
+                    if ((target->getRegionOfDefinitionFromCache(targetHash, f, inputScale, viewIt->first, &rod, NULL) == eStatusOK) && target->hasComponentsNeededInCache(targetHash, f, viewIt->first)) {
+                        continue;
+                    }
+                    RequestPassItem warmItem;
+                    warmItem.kind = RequestPassItem::eKindWarmRoD;
+                    warmItem.node = target->getNode();
+                    warmItem.time = f;
+                    warmItem.view = viewIt->first;
+                    warmItem.mipmapLevel = inputLevel;
+                    warmItems->push_back(warmItem);
+                }
+            }
+        }
+    }
+}
+
+/**
+ * @brief Pushes item back under the warm items when there are any, so it runs again once they have all completed.
+ **/
+bool
+deferUnderWarmItems(const RequestPassItem& item,
+                    std::vector<RequestPassItem>& warmItems,
+                    std::vector<RequestPassItem>* stack)
+{
+    if (warmItems.empty()) {
+        return false;
+    }
+    stack->push_back(item);
+    stack->insert(stack->end(), std::make_move_iterator(warmItems.begin()), std::make_move_iterator(warmItems.end()));
+
+    return true;
+}
+
+void
+warmRoDItem(const RequestPassItem& item,
+            WarmedRoDSet* warmed,
+            std::vector<RequestPassItem>* stack)
+{
+    const EffectInstancePtr effect = item.node->getEffectInstance();
+    const U64 hash = effect->getRenderHash();
+    std::vector<RequestPassItem> warmItems;
+
+    collectInputRoDWarmItems(effect, hash, item.time, item.view, item.mipmapLevel, item.mipmapLevel, warmed, &warmItems);
+    if (deferUnderWarmItems(item, warmItems, stack)) {
+        return;
+    }
+
+    RectD rod;
+    bool isProjectFormat = false;
+    // A failure is cached too, and the visit that needs this RoD reports it.
+    ignore_result(effect->getRegionOfDefinition_public(hash, item.time, RenderScale::fromMipmapLevel(item.mipmapLevel), item.view, &rod, &isProjectFormat));
+
+    // A consumer's isIdentity and layer queries read these through getPresentLayers, keyed on this effect's own hash.
+    EffectInstance::ComponentsNeededMap comps;
+    std::list<ImageLayerDesc> passThroughLayers;
+    double passThroughTime = 0.;
+    int passThroughView = 0;
+    std::bitset<4> processChannels;
+    EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
+    int passThroughInputNb = -1;
+    effect->getComponentsNeededAndProduced_public(hash, item.time, item.view, &comps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInputNb);
+}
+
 RequestPassItem
 makeConsumerItem(RequestPassItem::KindEnum kind,
                  FrameViewRequest* consumer,
@@ -424,6 +536,7 @@ StatusEnum
 visitRequestPassItem(bool useTransforms,
                      const RequestPassItem& item,
                      FrameRequestMap& requests,
+                     WarmedRoDSet* warmed,
                      std::vector<RequestPassItem>* stack)
 {
     const NodePtr& node = item.node;
@@ -479,6 +592,13 @@ visitRequestPassItem(bool useTransforms,
     } else {
         ///Set up global data specific for this frame view, this is the first time it has been requested so far
 
+        {
+            std::vector<RequestPassItem> warmItems;
+            collectInputRoDWarmItems(effect, nodeRequest->nodeHash, time, view, mappedLevel, nodeRequest->mappedScale.toMipmapLevel(), warmed, &warmItems);
+            if (deferUnderWarmItems(item, warmItems, stack)) {
+                return eStatusOK;
+            }
+        }
 
         fvRequest = &nodeRequest->frames[frameView];
 
@@ -677,6 +797,7 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     // An explicit stack rather than recursion: the walk is as deep as the longest upstream chain, and request passes
     // run on pool threads with default-sized stacks.
     std::vector<RequestPassItem> stack;
+    WarmedRoDSet warmed;
 
     stack.push_back(makeVisitItem(node, time, view, originalMipmapLevel, canonicalRenderWindow));
 
@@ -686,7 +807,7 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
 
         switch (item.kind) {
         case RequestPassItem::eKindVisit:
-            if (visitRequestPassItem(useTransforms, item, requests, &stack) == eStatusFailed) {
+            if (visitRequestPassItem(useTransforms, item, requests, &warmed, &stack) == eStatusFailed) {
                 return eStatusFailed;
             }
             break;
@@ -705,6 +826,9 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
         }
         case RequestPassItem::eKindFinish:
             assignDfsPostOrder(requests, item.consumer);
+            break;
+        case RequestPassItem::eKindWarmRoD:
+            warmRoDItem(item, &warmed, &stack);
             break;
         }
     }
@@ -924,10 +1048,9 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
 
     _openGLContext = glContext;
 
-    std::map<NodePtr, ParallelRenderArgsPtr> built;
     ArgsInstallSequence installSequence;
     buildArgsMap(time, view, isRenderUserInteraction, isSequential, abortInfo, treeRoot, textureIndex, timeline,
-                 activeRotoPaintNode, isAnalysis, draftMode, stats, setUpstreamArgs, glContext, &built, &installSequence, &nodes);
+                 activeRotoPaintNode, isAnalysis, draftMode, stats, setUpstreamArgs, glContext, &_installedArgs, &installSequence, &nodes);
     for (ArgsInstallSequence::const_iterator it = installSequence.begin(); it != installSequence.end(); ++it) {
         it->first->getEffectInstance()->setParallelRenderArgsTLS(it->second);
     }

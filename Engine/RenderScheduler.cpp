@@ -194,6 +194,7 @@ RenderScheduler::RenderScheduler()
     , _freeReady()
     , _gatedReady()
     , _activeFrames()
+    , _framesByAbortInfo()
     , _nextFrameSequence(0)
     , _outstandingRunnables(0)
     , _runningTasks(0)
@@ -351,6 +352,9 @@ RenderScheduler::submit(const FrameRenderContextPtr& context,
         QMutexLocker k(&_mutex);
         frame->sequence = _nextFrameSequence++;
         _activeFrames.push_back(frame);
+        if (context->getAbortInfo()) {
+            _framesByAbortInfo.emplace(context->getAbortInfo().get(), frame);
+        }
         for (std::size_t i = 0; i < frame->graph.tasks.size(); ++i) {
             FrameGraph::Task& task = frame->graph.tasks[i];
             task.remainingDeps = (int)task.dependencies.size();
@@ -363,6 +367,88 @@ RenderScheduler::submit(const FrameRenderContextPtr& context,
     startRunnables(toStart, runnablePriority);
 
     return future;
+}
+
+void
+RenderScheduler::abort(const FrameRenderContextPtr& context)
+{
+    if (!context) {
+        return;
+    }
+
+    std::vector<ReadyRef> purged;
+    std::vector<FramePtr> finished;
+    bool aborted = false;
+    {
+        QMutexLocker k(&_mutex);
+        std::vector<FramePtr> frames;
+        for (std::list<FramePtr>::const_iterator it = _activeFrames.begin(); it != _activeFrames.end(); ++it) {
+            if ((*it)->context == context) {
+                frames.push_back(*it);
+            }
+        }
+        for (std::vector<FramePtr>::const_iterator it = frames.begin(); it != frames.end(); ++it) {
+            abortLocked(*it, &purged, &finished);
+        }
+        aborted = !frames.empty();
+    }
+    if (!aborted) {
+        return;
+    }
+    if (context->getAbortInfo()) {
+        context->getAbortInfo()->setAborted();
+    }
+    finishAbort(purged, finished);
+}
+
+void
+RenderScheduler::abort(const AbortableRenderInfoPtr& abortInfo)
+{
+    if (!abortInfo) {
+        return;
+    }
+
+    std::vector<ReadyRef> purged;
+    std::vector<FramePtr> finished;
+    bool aborted = false;
+    {
+        QMutexLocker k(&_mutex);
+        std::vector<FramePtr> frames;
+        typedef std::multimap<const AbortableRenderInfo*, FramePtr>::const_iterator RegistryIt;
+        const std::pair<RegistryIt, RegistryIt> range = _framesByAbortInfo.equal_range(abortInfo.get());
+        for (RegistryIt it = range.first; it != range.second; ++it) {
+            frames.push_back(it->second);
+        }
+        // Collected first: aborting a frame with no running task finishes it, which erases it from the registry.
+        for (std::vector<FramePtr>::const_iterator it = frames.begin(); it != frames.end(); ++it) {
+            abortLocked(*it, &purged, &finished);
+        }
+        aborted = !frames.empty();
+    }
+    if (!aborted) {
+        return;
+    }
+    abortInfo->setAborted();
+    finishAbort(purged, finished);
+}
+
+int
+RenderScheduler::getFramesInFlight(const AbortableRenderInfoPtr& abortInfo) const
+{
+    if (!abortInfo) {
+        return 0;
+    }
+    QMutexLocker k(&_mutex);
+
+    return (int)_framesByAbortInfo.count(abortInfo.get());
+}
+
+int
+RenderScheduler::getOutstandingRunnables() const
+{
+    QMutexLocker k(&_mutex);
+
+    return _outstandingRunnables;
 }
 
 std::size_t
@@ -517,7 +603,9 @@ RenderScheduler::executeTask(const FramePtr& frame,
         for (std::vector<int>::const_iterator it = task.dependencies.begin(); it != task.dependencies.end(); ++it) {
             store.release(frame->graph.tasks[*it].key);
         }
-        if (task.consumers > 0) {
+        const AbortableRenderInfoPtr& abortInfo = frame->context->getAbortInfo();
+        // The consumers of a task of an aborted frame never run, so its planes would only be held until it finishes.
+        if ((task.consumers > 0) && !(abortInfo && abortInfo->isAborted())) {
             store.put(task.key, planes, task.consumers);
         }
         if (frame->context->getStats()) {
@@ -600,6 +688,9 @@ RenderScheduler::discardStaleTopsLocked(ReadyHeap* heap,
         if (frame->finished) {
             continue;
         }
+        if (frame->context->getStats()) {
+            frame->context->getStats()->incTasksPurged();
+        }
         markDeadLocked(frame, EffectInstance::eRenderRoIRetCodeAborted);
         if (frame->runningTasks == 0) {
             finishLocked(frame, finished);
@@ -658,15 +749,100 @@ RenderScheduler::finishLocked(const FramePtr& frame,
     frame->finished = true;
     _activeFrames.remove(frame);
 
-    const auto ofFrame = [&frame](const ReadyRef& ref) {
-        return ref.frame == frame;
-    };
-    _freeReady.erase(std::remove_if(_freeReady.begin(), _freeReady.end(), ofFrame), _freeReady.end());
-    std::make_heap(_freeReady.begin(), _freeReady.end(), ReadyRefWorse());
-    _gatedReady.erase(std::remove_if(_gatedReady.begin(), _gatedReady.end(), ofFrame), _gatedReady.end());
-    std::make_heap(_gatedReady.begin(), _gatedReady.end(), ReadyRefWorse());
+    const AbortableRenderInfoPtr& abortInfo = frame->context->getAbortInfo();
+    if (abortInfo) {
+        typedef std::multimap<const AbortableRenderInfo*, FramePtr>::iterator RegistryIt;
+        const std::pair<RegistryIt, RegistryIt> range = _framesByAbortInfo.equal_range(abortInfo.get());
+        for (RegistryIt it = range.first; it != range.second; ++it) {
+            if (it->second == frame) {
+                _framesByAbortInfo.erase(it);
+                break;
+            }
+        }
+    }
+
+    // The store is cleared by finalizeFrames(), so the inputs of the purged tasks need no release.
+    std::vector<int> purged;
+    purgeQueuedLocked(frame, &purged);
 
     finished->push_back(frame);
+}
+
+void
+RenderScheduler::purgeQueuedLocked(const FramePtr& frame,
+                                   std::vector<int>* purged)
+{
+    ReadyHeap* const heaps[] = { &_freeReady, &_gatedReady };
+    const std::size_t purgedBefore = purged->size();
+
+    for (ReadyHeap* heap : heaps) {
+        ReadyHeap::iterator kept = heap->begin();
+        for (ReadyHeap::iterator it = heap->begin(); it != heap->end(); ++it) {
+            if (it->frame == frame) {
+                purged->push_back(it->task);
+            } else {
+                if (kept != it) {
+                    *kept = std::move(*it);
+                }
+                ++kept;
+            }
+        }
+        if (kept != heap->end()) {
+            heap->erase(kept, heap->end());
+            std::make_heap(heap->begin(), heap->end(), ReadyRefWorse());
+        }
+    }
+
+    const RenderStatsPtr& stats = frame->context->getStats();
+    if (stats) {
+        for (std::size_t i = purgedBefore; i < purged->size(); ++i) {
+            stats->incTasksPurged();
+        }
+    }
+}
+
+void
+RenderScheduler::abortLocked(const FramePtr& frame,
+                             std::vector<ReadyRef>* purged,
+                             std::vector<FramePtr>* finished)
+{
+    if (frame->finished) {
+        return;
+    }
+    markDeadLocked(frame, EffectInstance::eRenderRoIRetCodeAborted);
+
+    std::vector<int> tasks;
+    purgeQueuedLocked(frame, &tasks);
+    if (frame->runningTasks == 0) {
+        finishLocked(frame, finished);
+
+        return;
+    }
+    for (std::vector<int>::const_iterator it = tasks.begin(); it != tasks.end(); ++it) {
+        ReadyRef ref;
+        ref.frame = frame;
+        ref.task = *it;
+        purged->push_back(std::move(ref));
+    }
+}
+
+void
+RenderScheduler::finishAbort(const std::vector<ReadyRef>& purged,
+                             const std::vector<FramePtr>& finished)
+{
+    // The running tasks of these frames may still read their inputs from the store, so it is not cleared until the
+    // last of them returned; only the entries the purged tasks would have released go now.
+    for (std::vector<ReadyRef>::const_iterator it = purged.begin(); it != purged.end(); ++it) {
+        const FrameGraph& graph = it->frame->graph;
+        const std::vector<int>& dependencies = graph.tasks[it->task].dependencies;
+        for (std::vector<int>::const_iterator dep = dependencies.begin(); dep != dependencies.end(); ++dep) {
+            it->frame->context->getStore().release(graph.tasks[*dep].key);
+        }
+    }
+    if (!finished.empty()) {
+        finalizeFrames(finished);
+    }
+    reevaluate();
 }
 
 int

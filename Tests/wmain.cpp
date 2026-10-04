@@ -18,6 +18,7 @@
 #include "DeepRenderTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
+#include "PassThroughRoDTestEffect.h"
 
 using namespace NATRON_NAMESPACE;
 
@@ -111,6 +112,14 @@ registerRenderSchedulerTestPlugins()
     registerTestBuiltInPlugin<CountingTestEffect>();
     registerTestBuiltInPlugin<CountingMergeTestEffect>();
 }
+
+void
+registerFrameGraphBuildTestPlugins()
+{
+    // Registered so FrameGraphBuild_Test.cpp can build a chain thousands of nodes deep whose RoD queries recurse
+    // upstream like OpenFX filters' do, without the cost of creating that many OpenFX nodes.
+    registerTestBuiltInPlugin<PassThroughRoDTestEffect>();
+}
 }
 
 #if defined(_WIN32) && defined(UNICODE)
@@ -147,6 +156,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerMultiplanarTestPlugins();
     registerGraphScalingTestPlugins();
     registerRenderSchedulerTestPlugins();
+    registerFrameGraphBuildTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

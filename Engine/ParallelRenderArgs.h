@@ -350,7 +350,19 @@ public:
 
     void updateNodesRequest(const FrameRequestMap& request);
 
+    /**
+     * @brief The frame args the first constructor installed on this thread, each node mapped to the args
+     * getParallelRenderArgsTLS() returns for it. Empty when built from an existing args map.
+     **/
+    const std::map<NodePtr, ParallelRenderArgsPtr>& getInstalledArgs() const
+    {
+        return _installedArgs;
+    }
+
     virtual ~ParallelRenderArgsSetter();
+
+private:
+    std::map<NodePtr, ParallelRenderArgsPtr> _installedArgs;
 };
 
 NATRON_NAMESPACE_EXIT

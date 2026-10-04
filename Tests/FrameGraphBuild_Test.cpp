@@ -44,6 +44,7 @@
 #include <QtCore/QThreadPool>
 
 #include "BaseTest.h"
+#include "PassThroughRoDTestEffect.h"
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
@@ -153,6 +154,15 @@ setGradeMultiply(const NodePtr& grade,
     ASSERT_TRUE(multiply != NULL) << grade->getScriptName();
     for (int d = 0; d < multiply->getDimension(); ++d) {
         multiply->setValue(value, ViewSpec::all(), d);
+    }
+}
+
+// Node creation and connection query RoDs, so the pass would otherwise start with the whole chain already cached.
+void
+clearActionsCaches(const std::vector<NodePtr>& nodes)
+{
+    for (std::vector<NodePtr>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        (*it)->getEffectInstance()->clearActionsCache();
     }
 }
 
@@ -348,9 +358,8 @@ TEST_F(FrameGraphBuild, ChainOfFiftyWalksEachNodeOnce)
 TEST_F(FrameGraphBuild, DeepChainRequestPassFitsAPoolThreadStack)
 {
     const AppInstancePtr app = getApp();
-    // A recursive pass takes about 2.2 kB of stack per node (treeRecurseFunctor 1360 B + getInputsRoIsFunctor 848 B
-    // in a debug build), over 4 MB for this chain. A 2 MB pool thread checks that the stack does not grow with depth
-    // without building the 4000+ node chain it would take to overflow the default 8 MB.
+    // A recursive pass, or a cold RoD query on the root recursing through each Grade's default RoD, takes about
+    // 2.2 kB of stack per node, over 4 MB for this chain. A 2 MB pool thread checks that neither grows with depth.
     const int nGrades = 2000;
     const int poolStackBytes = 2 * 1024 * 1024;
     std::vector<NodePtr> chain;
@@ -368,15 +377,7 @@ TEST_F(FrameGraphBuild, DeepChainRequestPassFitsAPoolThreadStack)
         chain.push_back(grade);
     }
     const NodePtr root = chain.back();
-
-    // A Grade's RoD defaults to its source clip's, so a cold RoD query on the root recurses down the whole chain
-    // inside the OFX host whatever the pass does. Warming the cache bottom-up keeps this test on the pass's own stack.
-    for (std::size_t i = 0; i < chain.size(); ++i) {
-        const EffectInstancePtr effect = chain[i]->getEffectInstance();
-        RectD rod;
-        bool isProjectFormat = false;
-        ASSERT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), 1., RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat)) << chain[i]->getScriptName();
-    }
+    clearActionsCaches(chain);
     const std::chrono::steady_clock::time_point passStart = std::chrono::steady_clock::now();
 
     FrameRequestMap request;
@@ -411,6 +412,60 @@ TEST_F(FrameGraphBuild, DeepChainRequestPassFitsAPoolThreadStack)
     ASSERT_TRUE(rootRequest != NULL);
     EXPECT_EQ(0, constantRequest->dfsPostOrder);
     EXPECT_EQ(nGrades, rootRequest->dfsPostOrder);
+}
+
+TEST_F(FrameGraphBuild, DeepChainOfFourThousandRequestPassOnDefaultStack)
+{
+    const AppInstancePtr app = getApp();
+    const int nPassThroughs = 4000;
+    std::vector<NodePtr> chain;
+
+    const std::chrono::steady_clock::time_point buildStart = std::chrono::steady_clock::now();
+    NodePtr source = createNamedNode(app, kTestPluginIDPassThroughRoD, "PassThroughSource");
+    ASSERT_TRUE(bool(source));
+    chain.push_back(source);
+    for (int i = 1; i <= nPassThroughs; ++i) {
+        NodePtr passThrough = createNamedNode(app, kTestPluginIDPassThroughRoD, "PassThrough" + std::to_string(i));
+        ASSERT_TRUE(bool(passThrough));
+        ASSERT_TRUE(passThrough->connectInput(chain.back(), 0));
+        chain.push_back(passThrough);
+    }
+    const NodePtr root = chain.back();
+    clearActionsCaches(chain);
+    const std::chrono::steady_clock::time_point passStart = std::chrono::steady_clock::now();
+
+    FrameRequestMap request;
+    StatusEnum stat = eStatusFailed;
+    // Its own pool: the global pool's threads have an enlarged stack that would hide a recursion.
+    QThreadPool defaultStackPool;
+    QFuture<void> future = QtConcurrent::run(&defaultStackPool, [&]() {
+        const RectD canonicalWindow(0., 0., kPassThroughRoDTestSize, kPassThroughRoDTestSize);
+
+        stat = EffectInstance::computeRequestPass(1., ViewIdx(0), 0 /*mipmapLevel*/, canonicalWindow, root, request);
+        appPTR->getAppTLS()->cleanupTLSForThread();
+    });
+    future.waitForFinished();
+    defaultStackPool.waitForDone();
+    const std::chrono::steady_clock::time_point passEnd = std::chrono::steady_clock::now();
+    std::cout << "DeepChain " << nPassThroughs << " pass-throughs: build+connect "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(passStart - buildStart).count()
+              << " ms, request pass "
+              << std::chrono::duration_cast<std::chrono::milliseconds>(passEnd - passStart).count() << " ms"
+              << std::endl;
+
+    ASSERT_EQ(eStatusOK, stat);
+    EXPECT_EQ(chain.size(), request.size());
+
+    EdgeSummary summary;
+    ASSERT_NO_FATAL_FAILURE(collectEdges(request, &summary));
+    EXPECT_EQ((std::size_t)nPassThroughs, summary.count);
+
+    for (std::size_t i = 0; i < chain.size(); ++i) {
+        const FrameViewRequest* fv = request.findFrameViewRequest(chain[i], 1., ViewIdx(0));
+        ASSERT_TRUE(fv != NULL) << chain[i]->getScriptName();
+        EXPECT_EQ((int)i, fv->dfsPostOrder) << chain[i]->getScriptName();
+    }
+    EXPECT_EQ((int)chain.size(), request.nextDfsPostOrder);
 }
 
 TEST_F(FrameGraphBuild, DiamondLadderCountsBothConsumers)

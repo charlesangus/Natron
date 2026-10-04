@@ -1550,6 +1550,8 @@ public:
                                               RectD* rod,
                                               bool* isProjectFormat) WARN_UNUSED_RETURN;
 
+    bool hasComponentsNeededInCache(U64 hash, double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
 public:
 
 

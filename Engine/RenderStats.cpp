@@ -300,6 +300,7 @@ struct RenderStatsPrivate
     NodeInfosMap nodeInfos;
 
     std::atomic<int> tasksRun;
+    std::atomic<int> tasksPurged;
     std::atomic<int> frameStoreHits;
     std::atomic<int> unplannedPulls;
     std::atomic<int> legacyFallbacks;
@@ -314,6 +315,7 @@ struct RenderStatsPrivate
         , doNodesProfiling(false)
         , nodeInfos()
         , tasksRun(0)
+        , tasksPurged(0)
         , frameStoreHits(0)
         , unplannedPulls(0)
         , legacyFallbacks(0)
@@ -460,6 +462,18 @@ int
 RenderStats::getTasksRun() const
 {
     return _imp->tasksRun.load();
+}
+
+void
+RenderStats::incTasksPurged()
+{
+    ++_imp->tasksPurged;
+}
+
+int
+RenderStats::getTasksPurged() const
+{
+    return _imp->tasksPurged.load();
 }
 
 void

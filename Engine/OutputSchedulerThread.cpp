@@ -25,14 +25,15 @@
 
 #include "OutputSchedulerThread.h"
 
-#include <iostream>
-#include <set>
-#include <limits>
-#include <list>
 #include <algorithm> // min, max
 #include <cassert>
-#include <stdexcept>
+#include <iostream>
+#include <limits>
+#include <list>
+#include <set>
 #include <sstream> // stringstream
+#include <stdexcept>
+#include <utility>
 
 #include <QMetaType>
 #include <QMutex>
@@ -49,21 +50,24 @@
 #include "Global/FloatingPointExceptions.h"
 #endif
 #include "Engine/AbortableRenderInfo.h"
-#include "Engine/AppManager.h"
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FrameRenderContext.h"
+#include "Engine/GenericSchedulerThreadWatcher.h"
 #include "Engine/Image.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
 #include "Engine/OpenGLViewerI.h"
-#include "Engine/GenericSchedulerThreadWatcher.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
+#include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
 #include "Engine/Settings.h"
-#include "Engine/Timer.h"
-#include "Engine/TimeLine.h"
 #include "Engine/TLSHolder.h"
+#include "Engine/TimeLine.h"
+#include "Engine/Timer.h"
 #include "Engine/UpdateViewerParams.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
@@ -1470,6 +1474,7 @@ OutputSchedulerThread::onAbortRequested(bool /*keepOldestRender*/)
     ///resetting the processRunning flag
     // Flag directly all threads that they are aborted, this enables each thread to have a shorter code-path
     // when checking for abortion and will generally abort faster
+    std::vector<AbortableRenderInfoPtr> abortedRenders;
     {
         QMutexLocker l(&_imp->renderThreadsMutex);
         for (RenderThreads::iterator it = _imp->renderThreads.begin(); it != _imp->renderThreads.end(); ++it) {
@@ -1481,8 +1486,18 @@ OutputSchedulerThread::onAbortRequested(bool /*keepOldestRender*/)
                 isAbortableThread->getAbortInfo(&userInteraction, &abortInfo, &treeRoot);
                 if (abortInfo) {
                     abortInfo->setAborted();
+                    abortedRenders.push_back(abortInfo);
                 }
             }
+        }
+    }
+
+    // Otherwise the queued tasks of a frame submitted to the RenderScheduler are only dropped as they are popped, and
+    // its future finishes late. Outside renderThreadsMutex so that no lock is held while the scheduler's is taken.
+    if (!abortedRenders.empty() && (appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph)) {
+        RenderScheduler* renderScheduler = appPTR->getRenderScheduler();
+        for (std::vector<AbortableRenderInfoPtr>::const_iterator it = abortedRenders.begin(); it != abortedRenders.end(); ++it) {
+            renderScheduler->abort(*it);
         }
     }
 
@@ -1515,8 +1530,12 @@ OutputSchedulerThread::adjustNumberOfThreads(int* newNThreads,
     ///How many parallel renders the user wants
     int userSettingParallelThreads = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
 
+    // In Task graph mode the frame threads only wait for the scheduler, which runs the frames' work on the global
+    // pool: busy pool threads are that work, not competition for the cores.
+    const bool taskGraphMode = appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph;
+
     ///How many threads are running in the application
-    int runningThreads = appPTR->getNRunningThreads() + QThreadPool::globalInstance()->activeThreadCount();
+    int runningThreads = appPTR->getNRunningThreads() + (taskGraphMode ? 0 : QThreadPool::globalInstance()->activeThreadCount());
 
     ///How many current threads are used by THIS renderer
     int currentParallelRenders = getNRenderThreads();
@@ -1526,7 +1545,7 @@ OutputSchedulerThread::adjustNumberOfThreads(int* newNThreads,
     if (userSettingParallelThreads == 0) {
         ///User wants it to be automatically computed, do a simple heuristic: launch as many parallel renders
         ///as there are cores
-        optimalNThreads = appPTR->getHardwareIdealThreadCount();
+        optimalNThreads = taskGraphMode ? QThreadPool::globalInstance()->maxThreadCount() : appPTR->getHardwareIdealThreadCount();
     } else {
         optimalNThreads = userSettingParallelThreads;
     }
@@ -2154,6 +2173,83 @@ DefaultScheduler::~DefaultScheduler()
 {
 }
 
+namespace {
+
+struct FrameStatsObserverSlot {
+    QMutex mutex;
+    DefaultScheduler::FrameStatsObserver observer;
+};
+
+FrameStatsObserverSlot&
+frameStatsObserverSlot()
+{
+    static FrameStatsObserverSlot slot;
+
+    return slot;
+}
+
+void
+notifyFrameStatsObserver(int time,
+                         ViewIdx view,
+                         const RenderStatsPtr& stats)
+{
+    DefaultScheduler::FrameStatsObserver observer;
+    {
+        FrameStatsObserverSlot& slot = frameStatsObserverSlot();
+        QMutexLocker k(&slot.mutex);
+        observer = slot.observer;
+    }
+    if (observer) {
+        observer(time, view, stats);
+    }
+}
+
+/**
+ * @brief Why the frame whose args setter installed on this thread cannot be rendered by the RenderScheduler, or null if
+ * it can.
+ **/
+const char*
+taskGraphIneligibility(const ParallelRenderArgsSetter& setter)
+{
+    // FrameFuture::wait() on a pool thread could wait for the very thread it blocks.
+    if (QThreadPool::globalInstance()->contains(QThread::currentThread())) {
+        return "frame thread is a pool thread";
+    }
+    const std::map<NodePtr, ParallelRenderArgsPtr>& args = setter.getInstalledArgs();
+    if (args.empty()) {
+        return "no frame args";
+    }
+    for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = args.begin(); it != args.end(); ++it) {
+        const ParallelRenderArgsPtr& nodeArgs = it->second;
+        if (!nodeArgs) {
+            continue;
+        }
+        // The context was attached to this thread; a task on a pool thread cannot make it current.
+        if (nodeArgs->openGLContext.lock() && (nodeArgs->currentOpenglSupport != ePluginOpenGLRenderSupportNone)) {
+            return "OpenGL render";
+        }
+        if (nodeArgs->isDuringPaintStrokeCreation) {
+            return "paint stroke";
+        }
+        if (nodeArgs->isAnalysis) {
+            return "analysis";
+        }
+    }
+
+    return 0;
+}
+
+} // namespace
+
+void
+DefaultScheduler::setFrameStatsObserverForTests(const FrameStatsObserver& observer)
+{
+    FrameStatsObserverSlot& slot = frameStatsObserverSlot();
+    QMutexLocker k(&slot.mutex);
+
+    slot.observer = observer;
+}
+
 class DefaultRenderFrameRunnable
     : public RenderThreadTask
 {
@@ -2327,21 +2423,43 @@ private:
                                                          false,
                                                          stats);
 
-                {
-                    FrameRequestMap request;
-                    stat = EffectInstance::computeRequestPass(time, viewsToRender[view], mipmapLevel, rod, activeInputNode, request);
-                    if (stat == eStatusFailed) {
-                        _imp->scheduler->notifyRenderFailure("Error caught while rendering");
+                std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+                stat = EffectInstance::computeRequestPass(time, viewsToRender[view], mipmapLevel, rod, activeInputNode, *request);
+                if (stat == eStatusFailed) {
+                    _imp->scheduler->notifyRenderFailure("Error caught while rendering");
 
-                        return;
-                    }
-                    frameRenderArgs.updateNodesRequest(request);
+                    return;
                 }
+                frameRenderArgs.updateNodesRequest(*request);
+
+                const bool taskGraphMode = appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph;
                 RenderingFlagSetter flagIsRendering(activeInputToRender->getNode());
                 EffectInstance::RenderRoIRetCode retCode;
                 switch (outputKind) {
                 case eDataKindImage: {
                     std::map<ImageLayerDesc, ImagePtr> layers;
+                    FrameFuturePtr future;
+                    if (taskGraphMode) {
+                        const char* fallbackReason = taskGraphIneligibility(frameRenderArgs);
+                        if (!fallbackReason) {
+                            FrameRenderContextPtr context = FrameRenderContext::createFromSetter(frameRenderArgs, abortInfo, stats, time, viewsToRender[view]);
+                            context->setRequest(request);
+                            FrameGraph graph = RenderScheduler::buildGraph(context, activeInputNode, time, viewsToRender[view], mipmapLevel);
+                            if (graph.tasks.empty()) {
+                                fallbackReason = "request does not reach the writer";
+                            } else {
+                                future = appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Background);
+                            }
+                        }
+                        if (fallbackReason && stats) {
+                            stats->incLegacyFallbacks(fallbackReason);
+                        }
+                    }
+                    if (future) {
+                        retCode = future->wait();
+                        layers = future->getRootPlanes();
+                        break;
+                    }
                     std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs(new EffectInstance::RenderRoIArgs(time, //< the time at which to render
                                                                                                                 scale, //< the scale at which to render
                                                                                                                 mipmapLevel, //< the mipmap level (redundant with the scale)
@@ -2359,6 +2477,9 @@ private:
                     break;
                 }
                 case eDataKindDeep: {
+                    if (taskGraphMode && stats) {
+                        stats->incLegacyFallbacks("deep output");
+                    }
                     DeepImagePtr deepImage;
                     EffectInstance::RenderDeepRoIArgs renderArgs(time,
                                                                  scale,
@@ -2393,6 +2514,7 @@ private:
                         _imp->scheduler->appendToBuffer(time, viewsToRender[view], stats, std::dynamic_pointer_cast<BufferableObject>(it->second));
                     }
                    } else {*/
+                notifyFrameStatsObserver(time, viewsToRender[view], stats);
                 _imp->scheduler->notifyFrameRendered(time, viewsToRender[view], viewsToRender, stats, eSchedulingPolicyFFA);
                 //}
             }

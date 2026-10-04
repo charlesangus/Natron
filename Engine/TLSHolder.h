@@ -129,12 +129,16 @@ public:
     static const FrameRenderContext* currentFrameContext();
 
     /**
-     * @brief Calls softCopy() from the current thread on construction and cleanupTLSForThread()
-     * on destruction, unless the current thread is fromThread itself.
+     * @brief Unless the current thread is fromThread itself: calls softCopy() from the current thread and installs
+     * frameContext as the current thread's frame on construction, then restores the previous frame and calls
+     * cleanupTLSForThread() on destruction. frameContext must be the spawner's currentFrameContext(), read on the
+     * spawner before it hands the work out, since another thread cannot read the spawner's.
      **/
     class SpawnedThreadScope {
     public:
-        explicit SpawnedThreadScope(QThread* fromThread, SpawnKindEnum kind = eSpawnKindMultiThreadSuite);
+        SpawnedThreadScope(QThread* fromThread,
+                           const FrameRenderContext* frameContext,
+                           SpawnKindEnum kind = eSpawnKindMultiThreadSuite);
 
         ~SpawnedThreadScope();
 
@@ -143,6 +147,7 @@ public:
 
     private:
         bool _spawned;
+        const FrameRenderContext* _previousFrameContext;
     };
 
     /**

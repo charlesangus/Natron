@@ -145,6 +145,16 @@ public:
                                         bool draftMode,
                                         const RenderStatsPtr& stats);
 
+    /**
+     * @brief Shares the frame args setter installed on the calling thread instead of building new ones, so that the
+     * tasks and the thread that ran the request pass see the same hashes and requests.
+     **/
+    static FrameRenderContextPtr createFromSetter(const ParallelRenderArgsSetter& setter,
+                                                  const AbortableRenderInfoPtr& abortInfo,
+                                                  const RenderStatsPtr& stats,
+                                                  double time,
+                                                  ViewIdx view);
+
     ~FrameRenderContext();
 
     FrameRenderContext(const FrameRenderContext&) = delete;

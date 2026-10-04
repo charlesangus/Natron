@@ -61,11 +61,13 @@
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/PluginMemory.h"
+#include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/Settings.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/ThreadPool.h"
 #include "Engine/Timer.h"
 #include "Engine/Transform.h"
@@ -1776,16 +1778,6 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
         renderingNotifier = std::make_shared<NotifyRenderingStarted_RAII>( self->getNode().get() );
     }
 
-    std::shared_ptr<std::map<NodePtr, ParallelRenderArgsPtr> > tlsCopy;
-    if (safety == eRenderSafetyFullySafeFrame) {
-        tlsCopy = std::make_shared<std::map<NodePtr, ParallelRenderArgsPtr> >();
-        /*
-         * Since we're about to start new threads potentially, copy all the thread-local storage on all nodes (any node may be involved in
-         * expressions, and we need to retrieve the exact local time of render).
-         */
-        self->getApp()->getProject()->getParallelRenderArgs(*tlsCopy);
-    }
-
     double firstFrame, lastFrame;
     self->getFrameRange_public(nodeHash, &firstFrame, &lastFrame);
 
@@ -1824,6 +1816,7 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
             QThread* currentThread = QThread::currentThread();
             std::unique_ptr<Implementation::TiledRenderingFunctorArgs> tiledArgs(new Implementation::TiledRenderingFunctorArgs);
             tiledArgs->renderFullScaleThenDownscale = renderFullScaleThenDownscale;
+            tiledArgs->isSequentialRender = isSequentialRender;
             tiledArgs->isRenderResponseToUserInteraction = isRenderMadeInResponseToUserInteraction;
             tiledArgs->firstFrame = firstFrame;
             tiledArgs->lastFrame = lastFrame;
@@ -1840,7 +1833,7 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
             tiledArgs->processChannels = processChannels;
             tiledArgs->layers = layersToRender;
             tiledArgs->compsNeeded = compsNeeded;
-
+            tiledArgs->frameContext = AppTLS::currentFrameContext();
 
 #ifdef NATRON_HOSTFRAMETHREADING_SEQUENTIAL
             std::vector<EffectInstance::RenderingFunctorRetEnum> ret( tiledData.size() );
@@ -1854,13 +1847,16 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
 
 #else
 
-            std::function<RenderingFunctorRetEnum(const RectToRender&)> render = [&](const RectToRender& rect) {
-                return self->_imp->tiledRenderingFunctor(*tiledArgs, rect, currentThread);
+            std::vector<const RectToRender*> rects;
+            for (std::list<RectToRender>::const_iterator it = layersToRender->rectsToRender.begin(); it != layersToRender->rectsToRender.end(); ++it) {
+                rects.push_back(&*it);
+            }
+            std::vector<EffectInstance::RenderingFunctorRetEnum> ret(rects.size(), EffectInstance::eRenderingFunctorRetFailed);
+            const std::function<void(int)> render = [&](int i) {
+                ret[i] = self->_imp->tiledRenderingFunctor(*tiledArgs, *rects[i], currentThread);
             };
-
-            QFuture<RenderingFunctorRetEnum> ret = QtConcurrent::mapped(layersToRender->rectsToRender, render);
-            ret.waitForFinished();
-            QFuture<EffectInstance::RenderingFunctorRetEnum>::const_iterator it2;
+            parallelForOnGlobalPool((int)rects.size(), appPTR->getNCPUsAvailableForEffect(), render);
+            std::vector<EffectInstance::RenderingFunctorRetEnum>::const_iterator it2;
 
 #endif
             for (it2 = ret.begin(); it2 != ret.end(); ++it2) {

@@ -68,6 +68,7 @@ set(Tests_SOURCES
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
     PluginIdentity_Test.cpp
+    PoolSharing_Test.cpp
     ProjectColorManagement_Test.cpp
     ViewerDisplayTransform_Test.cpp
     ProjectOCIODefaults_Test.cpp
@@ -83,8 +84,10 @@ set(Tests_SOURCES
     RenderBothWaysSelf_Test.cpp
     RenderRange_Test.cpp
     RenderScheduler_Test.cpp
+    RenderSchedulerAbort_Test.cpp
     RenderSchedulerMode_Test.cpp
     RotoLayer_Test.cpp
+    SchedulerWriters_Test.cpp
     Shuffle_Test.cpp
     ShufflePluginList_Test.cpp
     ShuffleRender_Test.cpp

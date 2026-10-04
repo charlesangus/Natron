@@ -2984,15 +2984,12 @@ AppManager::getNCPUsAvailableForEffect()
         return 1;
     }
 
-    // activeThreadCount may be negative (for example if releaseThread() is called)
-    int activeThreadsCount = QThreadPool::globalInstance()->activeThreadCount();
-
-    // Add the number of threads already running by the multiThreadSuite + parallel renders
+    // Threads already running for the multiThreadSuite + parallel renders
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    activeThreadsCount += getNRunningThreads();
+    const int runningThreadsCount = getNRunningThreads();
+#else
+    const int runningThreadsCount = 0;
 #endif
-
-    activeThreadsCount = std::max(0, activeThreadsCount);
 
     // better than QThread::idealThreadCount();, because it can be set by a global preference:
     int maxThreadsCount = QThreadPool::globalInstance()->maxThreadCount();
@@ -3004,8 +3001,20 @@ AppManager::getNCPUsAvailableForEffect()
         nThreadsPerEffect = (hwConcurrency <= 0) ? 1 : hwConcurrency;
     }
 
-    // +1 because the calling thread waits during the parallel work, so it should not count as busy.
-    return std::max(1, std::min(maxThreadsCount - activeThreadsCount + 1, nThreadsPerEffect));
+    return computeNCPUsAvailable(maxThreadsCount, QThreadPool::globalInstance()->activeThreadCount(), runningThreadsCount, nThreadsPerEffect);
+}
+
+int
+AppManager::computeNCPUsAvailable(int poolMax,
+                                  int active,
+                                  int running,
+                                  int perEffect)
+{
+    // activeThreadCount may be negative (for example if releaseThread() is called)
+    const int busy = std::max(0, active + running);
+
+    // +1 because the calling thread runs a share of the parallel work itself, so it should not count as busy.
+    return std::max(1, std::min(poolMax - busy + 1, perEffect));
 }
 
 void

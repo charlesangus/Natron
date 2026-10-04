@@ -228,6 +228,30 @@ FrameRenderContext::create(double time,
     return ret;
 }
 
+FrameRenderContextPtr
+FrameRenderContext::createFromSetter(const ParallelRenderArgsSetter& setter,
+                                     const AbortableRenderInfoPtr& abortInfo,
+                                     const RenderStatsPtr& stats,
+                                     double time,
+                                     ViewIdx view)
+{
+    FrameRenderContextPtr ret(new FrameRenderContext());
+
+    ret->_time = time;
+    ret->_view = view;
+    ret->_abortInfo = abortInfo;
+    ret->_stats = stats;
+    ret->_argsMap = setter.getInstalledArgs();
+    for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = ret->_argsMap.begin(); it != ret->_argsMap.end(); ++it) {
+        EffectInstancePtr effect = it->first->getEffectInstance();
+        if (effect) {
+            ret->_argsByHolder[effect->getTLSHolder()] = it->second;
+        }
+    }
+
+    return ret;
+}
+
 void
 FrameRenderContext::setRequest(const std::shared_ptr<FrameRequestMap>& request)
 {

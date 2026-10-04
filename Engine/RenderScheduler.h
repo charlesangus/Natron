@@ -126,8 +126,9 @@ private:
  * post-order, so that a branch is finished before the next one is started.
  *
  * It cannot deadlock the pool: a task never waits for another task, it only runs once its inputs are in the frame's
- * store; and the fork-join waits plug-ins do inside a task (QtConcurrent in the multithread suite, host frame
- * threading) run their own queued runnables on the waiting thread on Qt 6 rather than wait for a free pool thread.
+ * store; and the fork-joins done inside a task (the multithread suite, host frame threading, row bands) have the
+ * caller run work items itself (parallelForOnGlobalPool) and only wait for items already running, never for a free
+ * pool thread.
  *
  * Starting a branch is held back while the images in flight exceed a budget, so that a wide graph does not render
  * all its leaves before merging any; tasks continuing a started branch always run, and a branch is always admitted
@@ -164,6 +165,29 @@ public:
      **/
     FrameFuturePtr submit(const FrameRenderContextPtr& context, FrameGraph&& graph, Priority priority);
 
+    /**
+     * @brief Sets the AbortableRenderInfo of context aborted, so that the running tasks of its frame return early, and
+     * drops its queued tasks at once. The future finishes with eRenderRoIRetCodeAborted when the last running task
+     * returned. Does nothing for a frame that already finished. Never blocks on a task, so it may be called from one.
+     **/
+    void abort(const FrameRenderContextPtr& context);
+
+    /**
+     * @brief Like abort(context), for every frame in flight whose context holds abortInfo. Does nothing when there is
+     * none, so that a render thread that did not submit its frame here may be aborted through it unconditionally.
+     **/
+    void abort(const AbortableRenderInfoPtr& abortInfo);
+
+    /**
+     * @brief The frames submitted with a context holding abortInfo that have not finished yet.
+     **/
+    int getFramesInFlight(const AbortableRenderInfoPtr& abortInfo) const;
+
+    /**
+     * @brief The runnables started on the global pool that have not taken their task, or not finished it, yet.
+     **/
+    int getOutstandingRunnables() const;
+
     std::size_t getBytesBudget() const;
 
     void setBytesBudgetForTests(std::size_t bytes);
@@ -199,6 +223,12 @@ private:
 
     void pushReadyLocked(const FramePtr& frame, int task);
 
+    void purgeQueuedLocked(const FramePtr& frame, std::vector<int>* purged);
+
+    void abortLocked(const FramePtr& frame, std::vector<ReadyRef>* purged, std::vector<FramePtr>* finished);
+
+    void finishAbort(const std::vector<ReadyRef>& purged, const std::vector<FramePtr>& finished);
+
     bool isStaleLocked(const ReadyRef& ref) const;
 
     void discardStaleTopsLocked(ReadyHeap* heap, std::vector<FramePtr>* finished);
@@ -225,6 +255,9 @@ private:
     ReadyHeap _freeReady;
     ReadyHeap _gatedReady;
     std::list<FramePtr> _activeFrames;
+
+    // The unfinished frames by the AbortableRenderInfo of their context, which each frame keeps alive.
+    std::multimap<const AbortableRenderInfo*, FramePtr> _framesByAbortInfo;
     unsigned long long _nextFrameSequence;
     int _outstandingRunnables;
     int _runningTasks;

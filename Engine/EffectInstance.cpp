@@ -1543,7 +1543,7 @@ EffectInstance::getRegionOfDefinition(U64 hash,
         if (input) {
             RectD inputRod;
             bool isProjectFormat;
-            StatusEnum st = input->getRegionOfDefinition_public(hash, time, renderMappedScale, view, &inputRod, &isProjectFormat);
+            StatusEnum st = input->getRegionOfDefinition_public(input->getRenderHash(), time, renderMappedScale, view, &inputRod, &isProjectFormat);
             assert(inputRod.x2 >= inputRod.x1 && inputRod.y2 >= inputRod.y1);
             if (st == eStatusFailed) {
                 return st;
@@ -1601,7 +1601,7 @@ EffectInstance::ifInfiniteApplyHeuristic(U64 hash,
                 if (input->supportsRenderScaleMaybe() == eSupportsNo) {
                     inputScale = RenderScale::identity;
                 }
-                StatusEnum st = input->getRegionOfDefinition_public(hash, time, inputScale, view, &inputRod, &isProjectFormat);
+                StatusEnum st = input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &inputRod, &isProjectFormat);
                 if (st != eStatusFailed) {
                     if (firstInput) {
                         inputsUnion = inputRod;
@@ -2458,7 +2458,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(EffectInstance::Implementa
                                                       QThread* callingThread)
 {
     ///Make the thread-storage live as long as the render action is called if we're in a newly launched thread in eRenderSafetyFullySafeFrame mode
-    AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, AppTLS::eSpawnKindHostFrameThreading);
+    AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, args.frameContext, AppTLS::eSpawnKindHostFrameThreading);
 
     EffectInstance::RenderingFunctorRetEnum ret = tiledRenderingFunctor(specificData,
                                                                         args.renderFullScaleThenDownscale,
@@ -4199,6 +4199,22 @@ EffectInstance::getRegionOfDefinitionFromCache(U64 hash,
     }
 
     return eStatusFailed;
+}
+
+bool
+EffectInstance::hasComponentsNeededInCache(U64 hash,
+                                           double time,
+                                           ViewIdx view) const
+{
+    ComponentsNeededMap comps;
+    std::bitset<4> processChannels;
+    ProcessChannelsPerPlaneMap processChannelsPerPlane;
+    std::list<ImageLayerDesc> passThroughLayers;
+    int passThroughInputNb = -1;
+    ViewIdx passThroughView;
+    double passThroughTime = 0.;
+
+    return _imp->actionsCache->getComponentsNeededResults(hash, time, view, &comps, &processChannels, &processChannelsPerPlane, &passThroughLayers, &passThroughInputNb, &passThroughView, &passThroughTime);
 }
 
 StatusEnum

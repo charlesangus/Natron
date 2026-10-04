@@ -457,6 +457,13 @@ public:
      **/
     int getNCPUsAvailableForEffect();
 
+    /**
+     * @brief The arithmetic of getNCPUsAvailableForEffect(): poolMax is the global pool's maximum thread count,
+     * active its active thread count, running the render threads started outside of it, and perEffect the
+     * per-effect thread limit.
+     **/
+    static int computeNCPUsAvailable(int poolMax, int active, int running, int perEffect);
+
     void setThreadAsActionCaller(OfxImageEffectInstance* instance, bool actionCaller);
 
     /**

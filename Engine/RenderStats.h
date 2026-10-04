@@ -140,6 +140,12 @@ public:
     void incTasksRun();
     int getTasksRun() const;
 
+    /**
+     * @brief Counts one queued task of an aborted or failed frame that was dropped without running.
+     **/
+    void incTasksPurged();
+    int getTasksPurged() const;
+
     void incFrameStoreHits();
     int getFrameStoreHits() const;
 

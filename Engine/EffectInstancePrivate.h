@@ -341,6 +341,7 @@ public:
         bool byPassCache;
         std::bitset<4> processChannels;
         ImageLayersToRenderPtr layers;
+        const FrameRenderContext* frameContext;
     };
 
     RenderingFunctorRetEnum tiledRenderingFunctor(TiledRenderingFunctorArgs & args,  const RectToRender & specificData,

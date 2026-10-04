@@ -633,10 +633,6 @@ static void
 getAllUpstreamNodesRecursiveWithDependencies_internal(const NodePtr& node,
                                                       FindDependenciesMap& finalNodes)
 {
-    //There may be cases where nodes gets added to the finalNodes in getAllExpressionDependenciesRecursive(), but we still
-    //want to recurse upstream for them too
-    bool foundButDidntRecursivelyCallUpstream = false;
-
     if ( !node || !node->isNodeCreated() ) {
         return;
     }
@@ -646,37 +642,34 @@ getAllUpstreamNodesRecursiveWithDependencies_internal(const NodePtr& node,
         if (found != finalNodes.end()) {
             if (found->second.recursed) {
                 ++found->second.visitCounter;
-                //We already called getAllUpstreamNodesRecursiveWithDependencies on its inputs
-                return;
-            } else {
-                //Now we set the recurse flag below
-                finalNodes.erase(found);
-                foundButDidntRecursivelyCallUpstream = true;
-            }
 
+                return;
+            }
+            finalNodes.erase(found);
         }
     }
-    
+
     {
-        //Add this node to the set
         FindDependenciesNode n;
         n.recursed = true;
         n.visitCounter = 1;
-        finalNodes.insert(std::make_pair(node,n));
+        finalNodes.insert(std::make_pair(node, n));
     }
 
-    //If we already called it, don't do it again
-    if (!foundButDidntRecursivelyCallUpstream) {
-        std::set<NodePtr> expressionsDeps;
-        node->getEffectInstance()->getAllExpressionDependenciesRecursive(expressionsDeps);
-
-        //Also add all expression dependencies but mark them as we did not recursed on them yet
-        for (std::set<NodePtr>::iterator it = expressionsDeps.begin(); it != expressionsDeps.end(); ++it) {
-            FindDependenciesNode n;
-            n.recursed = false;
-            n.visitCounter = 0;
-            finalNodes.insert(std::make_pair(node, n));
+    // Expression dependencies are already transitive through knobs, and the render never pulls images from them, so
+    // they get frame args with no visit and their inputs are not walked; if the render does reach one through an
+    // input later, the branch above upgrades it to a visited node.
+    std::set<NodePtr> expressionsDeps;
+    node->getEffectInstance()->getAllExpressionDependenciesRecursive(expressionsDeps);
+    for (std::set<NodePtr>::iterator it = expressionsDeps.begin(); it != expressionsDeps.end(); ++it) {
+        const NodePtr& dep = *it;
+        if (!dep || !dep->isNodeCreated() || !dep->getEffectInstance()) {
+            continue;
         }
+        FindDependenciesNode n;
+        n.recursed = false;
+        n.visitCounter = 0;
+        finalNodes.insert(std::make_pair(dep, n));
     }
 
     int maxInputs = node->getNInputs();
@@ -687,7 +680,6 @@ getAllUpstreamNodesRecursiveWithDependencies_internal(const NodePtr& node,
         }
     }
 } // getAllUpstreamNodesRecursiveWithDependencies_internal
-
 
 ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
                                                    ViewIdx view,

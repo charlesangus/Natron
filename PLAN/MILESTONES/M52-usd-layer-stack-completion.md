@@ -78,3 +78,6 @@ layer each via `SceneOps`, memoized per M19.P1.T3, registered in
   - size: S
 
 **Verification gate:** CI green including M52.P3.T4; `EditPrim3D` over a camera prim exports exactly the touched attributes and nothing else; `Variant3D` switches a variant visible in `Viewport3D` on real hardware; every M20 pattern knob is a `PrimSelector` and M20-era projects still load; pre-existing ctest suite green.
+
+## Decisions
+- 2026-10-03 — **USD Python coexistence spike (user decision):** after M52's gate, run a time-boxed spike testing whether pxr Python bindings can load into Natron's Shiboken6/PySide6 interpreter (M19 builds USD with Python OFF). A Solaris-style Python-over-the-stage node depends on the outcome; `SetAttribute3D` (P3.T3) stays the no-Python substitute meanwhile. Add the spike as a trailing task when M52 is promoted.

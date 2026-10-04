@@ -235,3 +235,4 @@ and the selection halo are still tellable apart; a deep node and a scene node sh
 their silhouettes with no colour outside the shape; and a graph with deep, scene and
 image edges all at uniform width. Plus a round-trip check that a project saved before
 this milestone loads with its recoloured nodes still recoloured.
+- 2026-10-03 — **Deep nodes draw black label text on dark navy in the node graph** (found in M60's GUI pass, predates M60). User decision: fix it here, with the node colour rework, not on the M60 branch. Add a task when M24 is elaborated/started.

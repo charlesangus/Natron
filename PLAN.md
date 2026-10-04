@@ -276,7 +276,6 @@ future core work has solid ground to build on.
     - M37: `build/m37-gui/shots/`;
     - M50: `build/m50-gui/*.png`;
     - M60: `build/m60-gui/shots/`.
-  - **Decision for you:** deep nodes draw black labels on dark navy in the node graph, which predates this work. Fix it now, or file it under M24 (node graph colour)?
 
 - **M60 awaits the parcel UAT (P5.T1 shots, P6.T2):** PR #39 is stacked on #38.
 
@@ -287,10 +286,3 @@ future core work has solid ground to build on.
 - **M66 awaits the parcel UAT (P6.T3):** `build/appimages/M66-a82886de7.AppImage` with `build/appimages/M66-uat.md`. PR #36 is stacked on #35, and both Codex rounds are closed. Fork PRs: openfx-misc#6, openfx-io#9, openfx-arena#3. Re-pin after they merge.
 
 - **M61 awaits the user's sign-off** (row `blocked`, stacked-PR rule: asynchronous). Please run the UAT on `build/appimages/M61-072541618.AppImage` using `build/appimages/M61-uat.md`, and approve the P2.T3 keyed-Disable node-box screenshots and the P2.T5 disabled-cross width (2, i.e. pipe weight). PR #34 is green; its review rounds 1 and 2 are closed. After sign-off: check off P2.T3/P2.T5/P4.T1, mark M61 `done`, and the user merges PR #34.
-
-- **USD Python inside Natron's Python?** M19.P1.T1 builds USD with Python
-  OFF (Shiboken6/PySide6 vs pxr coexistence). A Solaris-style "Python over
-  the stage" node would cover the LOPs long tail cheaply but needs pxr
-  bindings loaded into Natron's interpreter. M52.P3.T3's `SetAttribute3D`
-  is the no-Python substitute for now. Decide whether to spike pxr-in-Natron
-  coexistence after M52 ships, or leave it out of scope.

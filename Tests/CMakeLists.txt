@@ -45,6 +45,9 @@ set(Tests_SOURCES
     DefaultChannelSet_Test.cpp
     FileSystemModel_Test.cpp
     GeneratorLayer_Test.cpp
+    GraphScaling_Test.cpp
+    GraphScalingExpressionDeps_Test.cpp
+    GraphScalingNaming_Test.cpp
     Hash64_Test.cpp
     Image_Test.cpp
     KnobChannelSet_Test.cpp

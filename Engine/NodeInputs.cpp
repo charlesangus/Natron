@@ -27,6 +27,8 @@
 
 #include <QDebug>
 #include <QThread>
+#include <unordered_set>
+#include <vector>
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
@@ -594,28 +596,33 @@ Node::isNodeUpstream(const Node* input,
         return;
     }
 
-    ///No need to lock guiInputs is only written to by the main-thread
-
-    for (U32 i = 0; i  < _imp->inputs.size(); ++i) {
-        if (_imp->inputs[i].lock().get() == input) {
-            *ok = true;
-
-            return;
-        }
-    }
+    // A diamond-shaped graph has exponentially many paths but linearly many nodes.
     *ok = false;
-    for (U32 i = 0; i  < _imp->inputs.size(); ++i) {
-        NodePtr in = _imp->inputs[i].lock();
-        if (in) {
-            in->isNodeUpstream(input, ok);
-            if (*ok) {
+
+    std::unordered_set<const Node*> visited;
+    std::vector<const Node*> stack;
+    visited.insert(this);
+    stack.push_back(this);
+    while (!stack.empty()) {
+        const Node* node = stack.back();
+        stack.pop_back();
+        /// No need to lock guiInputs is only written to by the main-thread
+        for (U32 i = 0; i < node->_imp->inputs.size(); ++i) {
+            NodePtr in = node->_imp->inputs[i].lock();
+            if (!in) {
+                continue;
+            }
+            if (in.get() == input) {
+                *ok = true;
+
                 return;
+            }
+            if (visited.insert(in.get()).second) {
+                stack.push_back(in.get());
             }
         }
     }
 }
-
-
 
 static Node::CanConnectInputReturnValue
 checkCanConnectNoMultiRes(const Node* output,

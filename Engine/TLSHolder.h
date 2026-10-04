@@ -28,11 +28,14 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <list>
 #include <map>
-#include <vector>
-#include <string>
+#include <memory>
 #include <set>
+#include <string>
+#include <vector>
 
 #include "Global/GlobalDefines.h"
 
@@ -59,116 +62,96 @@ public:
     virtual ~TLSHolderBase() {}
 
 protected:
-
-    /**
-     * @brief Returns true if cleanupPerThreadData would do anything OR would return true.
-     * It does not return the same value as cleanupPerThreadData, since cleanupPerThreadData
-     * may do something and return false.
-     * This is much faster than cleanupPerThreadData as it does not take any write lock.
-     **/
-    virtual bool canCleanupPerThreadData(const QThread* curThread) const = 0;
-
     /**
      * @brief Must clean-up any data stored for the given thread 'curThread'
-     * @returns True if this object no longer holds any per-thread data
      **/
-    virtual bool cleanupPerThreadData(const QThread* curThread) const = 0;
-
-    /**
-     * @brief Copy all the TLS from fromThread to toThread
-     **/
-    virtual void copyTLS(const QThread* fromThread, const QThread* toThread) const = 0;
+    virtual void cleanupPerThreadData(const QThread* curThread) const = 0;
 };
 
-
 /**
- * @brief Stores globally to the application any thread-local storage object so that it gets
- * destroyed when all threads are shutdown.
+ * @brief Links threads spawned for a render to the thread that spawned them, so that a spawned
+ * thread inherits the spawner's thread-local data of the holders it touches, and cleans up the
+ * per-thread data of the holders the current thread used.
  **/
-class AppTLS
-{
-    //This is the object in the QThreadStorage, it is duplicated on every thread
-
-    typedef std::set<TLSHolderBaseConstWPtr, std::owner_less<TLSHolderBaseConstWPtr>> TLSObjects;
-    struct GlobalTLSObject
-    {
-        TLSObjects objects;
+class AppTLS {
+public:
+    enum SpawnKindEnum {
+        // The spawned thread runs a plug-in thread function: it inherits all the data.
+        eSpawnKindMultiThreadSuite = 0,
+        // The spawned thread sets up its own render args: it inherits only the frame args and counters.
+        eSpawnKindHostFrameThreading
     };
 
-    typedef std::shared_ptr<GlobalTLSObject> GlobalTLSObjectPtr;
+    struct SpawnerLink {
+        const QThread* thread;
+        // How the thread before this one in the chain was spawned by 'thread'.
+        SpawnKindEnum kind;
+    };
 
-    //<spawned thread, spawner thread>
-    typedef std::map<uintptr_t, const QThread*> ThreadSpawnMap;
-
-public:
-
-    AppTLS();
-
-    virtual ~AppTLS();
+    typedef std::vector<SpawnerLink> SpawnerChain;
 
     /**
-     * @brief Registers the holder as using TLS.
+     * @brief Registers fromThread for the current thread toThread, as soon as toThread starts
+     * its task. A holder touched by toThread without data for it copies the data of the closest
+     * thread up the spawner chain that has some. Any data toThread still holds from a previous
+     * task is dropped first.
      **/
-    void registerTLSHolder(const TLSHolderBaseConstPtr& holder);
-
-
-    /**
-     * @brief Copy all the TLS from fromThread to toThread
-     **/
-    void copyTLS(QThread* fromThread, QThread* toThread);
-
-    /**
-     * @brief This function registers fromThread as a thread who spawned toThread.
-     * The first time attempting to call getOrCreateTLSData() for toThread, it will
-     * call copyTLS() first before returning the TLS value.
-     * This is to ensure that threads that "may" need TLS do not always copy the TLS
-     * if it is not needed.
-     * Note that when calling softCopy,  fromThread may not already have
-     * the TLS that may be required for the copy to happen, in which case a new value will
-     * be constructed.
-     **/
-    void softCopy(QThread* fromThread, QThread* toThread);
-
-    /**
-     * @brief Same as copyTLS() except that if a spawner thread was register for curThread beforehand
-     * with softCopy() then the TLS will be copied from the spawner thread.
-     * This function also returns the TLS for the given holder for convenience.
-     **/
-    template <typename T>
-    std::shared_ptr<T> copyTLSFromSpawnerThread(const TLSHolderBase* holder,
-                                                  const QThread* curThread);
-
+    void softCopy(QThread* fromThread, QThread* toThread, SpawnKindEnum kind = eSpawnKindMultiThreadSuite);
 
     /**
      * @brief Should be called by any thread using TLS when done to cleanup its TLS
      **/
     void cleanupTLSForThread();
 
+    /**
+     * @brief Spawner of curThread, its spawner, and so on.
+     **/
+    void getSpawnerChain(const QThread* curThread, SpawnerChain* chain) const;
+
+    static void recordHolderForCurrentThread(const TLSHolderBaseConstWPtr& holder);
+
+    /**
+     * @brief Number of holders whose data the current thread copied from a spawner thread.
+     **/
+    static std::size_t getNumInheritedCopies();
+
+    static void notifyInheritedCopy();
+
+    /**
+     * @brief Calls softCopy() from the current thread on construction and cleanupTLSForThread()
+     * on destruction, unless the current thread is fromThread itself.
+     **/
+    class SpawnedThreadScope {
+    public:
+        explicit SpawnedThreadScope(QThread* fromThread, SpawnKindEnum kind = eSpawnKindMultiThreadSuite);
+
+        ~SpawnedThreadScope();
+
+        SpawnedThreadScope(const SpawnedThreadScope&) = delete;
+        SpawnedThreadScope& operator=(const SpawnedThreadScope&) = delete;
+
+    private:
+        bool _spawned;
+    };
+
 private:
+    static void cleanupHoldersOfCurrentThread(const QThread* curThread);
 
-    template <typename T>
-    std::shared_ptr<T> copyTLSFromSpawnerThreadInternal(const TLSHolderBase* holder,
-                                                          const QThread* curThread,
-                                                          const QThread* spawnerThread);
+    struct SpawnEntry {
+        const QThread* spawner;
+        SpawnKindEnum kind;
+    };
 
+    //<spawned thread, spawner thread>
+    typedef std::map<uintptr_t, SpawnEntry> ThreadSpawnMap;
 
-    //This is the "TLS" object: it stores a set of all TLSHolder's who used the TLS to clean it up afterwards
-    mutable QReadWriteLock _objectMutex;
-    GlobalTLSObjectPtr _object;
-
-    //if a thread is a spawned thread, then copy the tls from the spawner thread instead
-    //of creating a new object and no longer mark it as spawned
     mutable QReadWriteLock _spawnsMutex;
     ThreadSpawnMap _spawns;
 };
 
-
 /**
  * @brief Use this class if you need to hold TLS data on an object.
  * @param T is the data type held in the thread-local storage.
- * @param multipleInstance If true, then the TLS object will be mapped against this object
- * so that there can be multiple instance of it in the global TLS. Otherwise only
- * a single instance of the TLS object will be present.
  **/
 template <typename T>
 class TLSHolder
@@ -194,13 +177,12 @@ public:
     std::shared_ptr<T> getOrCreateTLSData() const;
 
 private:
+    virtual void cleanupPerThreadData(const QThread* curThread) const OVERRIDE FINAL;
 
-    virtual bool canCleanupPerThreadData(const QThread* curThread) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual bool cleanupPerThreadData(const QThread* curThread) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual void copyTLS(const QThread* fromThread, const QThread* toThread) const OVERRIDE FINAL;
-    std::shared_ptr<T> copyAndReturnNewTLS(const QThread* fromThread, const QThread* toThread) const WARN_UNUSED_RETURN;
+    std::shared_ptr<T> findDataForThread(const QThread* curThread) const WARN_UNUSED_RETURN;
+    std::shared_ptr<T> inheritFromSpawner(const QThread* curThread) const WARN_UNUSED_RETURN;
+    std::shared_ptr<T> insertForThread(const QThread* curThread, const std::shared_ptr<T>& value) const WARN_UNUSED_RETURN;
 
-    //Store a cache on the object to be faster than using the getOrCreate... function from AppTLS
     mutable QReadWriteLock perThreadDataMutex;
     mutable ThreadDataMap perThreadData;
 };

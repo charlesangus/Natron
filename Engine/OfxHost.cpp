@@ -1220,13 +1220,10 @@ threadFunctionWrapper(OfxThreadFunctionV1 func,
                                                            boost_adaptbx::floating_point::exception_trapping::overflow);
 #endif
     assert(threadIndex < threadMax);
+    // Before any thread-local data is fetched: registering the spawner drops what the thread kept.
+    AppTLS::SpawnedThreadScope spawnedThreadTLS(spawnerThread);
     OfxHost::OfxHostDataTLSPtr tls = appPTR->getOFXHost()->getTLSData();
     tls->threadIndexes.push_back( (int)threadIndex );
-
-    QThread* spawnedThread = QThread::currentThread();
-    if (spawnedThread != spawnerThread) {
-        appPTR->getAppTLS()->softCopy(spawnerThread, spawnedThread);
-    }
 
     OfxStatus ret = kOfxStatOK;
     try {
@@ -1243,10 +1240,6 @@ threadFunctionWrapper(OfxThreadFunctionV1 func,
 
     ///reset back the index otherwise it could mess up the indexes if the same thread is re-used
     tls->threadIndexes.pop_back();
-
-    if (spawnedThread != spawnerThread) {
-        appPTR->getAppTLS()->cleanupTLSForThread();
-    }
 
     return ret;
 }
@@ -1282,24 +1275,22 @@ public:
                                                                boost_adaptbx::floating_point::exception_trapping::overflow);
 #endif
        assert(_threadIndex < _threadMax);
-        OfxHost::OfxHostDataTLSPtr tls = appPTR->getOFXHost()->getTLSData();
-        tls->threadIndexes.push_back( (int)_threadIndex );
+       // Before any thread-local data is fetched: registering the spawner drops what the thread kept.
+       AppTLS::SpawnedThreadScope spawnedThreadTLS(_spawnerThread);
+       OfxHost::OfxHostDataTLSPtr tls = appPTR->getOFXHost()->getTLSData();
+       tls->threadIndexes.push_back((int)_threadIndex);
 
-        appPTR->getAppTLS()->softCopy(_spawnerThread, this);
-
-        assert(*_stat == kOfxStatFailed);
-        try {
-            _func(_threadIndex, _threadMax, _customArg);
-            *_stat = kOfxStatOK;
-        } catch (const std::bad_alloc & ba) {
-            *_stat = kOfxStatErrMemory;
-        } catch (...) {
+       assert(*_stat == kOfxStatFailed);
+       try {
+           _func(_threadIndex, _threadMax, _customArg);
+           *_stat = kOfxStatOK;
+       } catch (const std::bad_alloc& ba) {
+           *_stat = kOfxStatErrMemory;
+       } catch (...) {
         }
 
         ///reset back the index otherwise it could mess up the indexes if the same thread is re-used
         tls->threadIndexes.pop_back();
-
-        appPTR->getAppTLS()->cleanupTLSForThread();
     }
 
 private:

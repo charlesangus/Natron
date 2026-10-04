@@ -48,6 +48,7 @@ set(Tests_SOURCES
     GraphScaling_Test.cpp
     GraphScalingExpressionDeps_Test.cpp
     GraphScalingNaming_Test.cpp
+    GraphScalingTLS_Test.cpp
     Hash64_Test.cpp
     Image_Test.cpp
     KnobChannelSet_Test.cpp

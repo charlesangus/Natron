@@ -37,7 +37,7 @@ for spec in "$@"; do
         docker exec -e BENCH_TOPO="$topo" -e BENCH_N="$n" -e BENCH_RES="$res" \
             -e BENCH_FRAMES="$frames" -e BENCH_RANGE="$range" -e BENCH_OUT="$out" -e BENCH_NAMED="${BENCH_NAMED:-1}" \
             -e BENCH_SETTINGS="${BENCH_SETTINGS:-}" -e BENCH_TIMEOUT="${BENCH_TIMEOUT:-1800}" -e REPO="$repo" \
-            -e OMP_WAIT_POLICY -e GOMP_SPINCOUNT -e OMP_THREAD_LIMIT -e OMP_DISPLAY_ENV \
+            -e OMP_WAIT_POLICY -e GOMP_SPINCOUNT -e OMP_THREAD_LIMIT -e OMP_DISPLAY_ENV -e BENCH_RENDER_STATS \
             -e OFX_PLUGIN_PATH="$repo"/build/assets/Plugins natron-dev bash -lc "$inner" \
             > "$log" 2>&1
         code=$?

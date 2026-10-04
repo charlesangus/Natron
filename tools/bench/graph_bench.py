@@ -12,12 +12,19 @@
 #   BENCH_SEED    seed for the comp topology (default 1)
 #   BENCH_SETTINGS  semicolon-separated name=value Natron settings, recorded as "settings"; the shell
 #                 scripts pass them to NatronRenderer as --setting arguments (default empty)
+#   BENCH_RENDER_STATS  1 saves the project after the timed frames and renders one frame of it with
+#                 NatronRenderer --render-stats (app.render cannot enable stats); "Tasks run" and
+#                 "Max concurrent tasks" from the -stats.txt file are recorded as tasks_run and
+#                 max_concurrent_tasks. Needs the stats-capable CLI path, so it is a separate cold render.
+#   BENCH_RENDERER  NatronRenderer binary for that render (default build/release/Renderer/NatronRenderer)
 #   BENCH_HOLD    seconds to sleep before rendering, so a sampler can attach (default 0)
 
 import json
 import os
 import random
+import re
 import resource
+import subprocess
 import sys
 import time
 
@@ -213,6 +220,33 @@ def render(writer, first, last):
     return t1 - t0, c1 - c0
 
 
+def render_stats(writer):
+    # The CLI path (-w) honours --render-stats; the Python app.render does not.
+    proj = os.path.join(WORK, "stats_%s_%d.ntp" % (TOPO, N))
+    app.saveProject(proj)
+    exe = os.environ.get("BENCH_RENDERER", os.path.join(os.getcwd(), "build", "release", "Renderer", "NatronRenderer"))
+    cmd = [exe]
+    for s in SETTINGS.split(";"):
+        if s:
+            cmd += ["--setting", s]
+    frame = 2
+    cmd += ["--render-stats", "-w", writer.getScriptName(), "%d-%d" % (frame, frame), proj]
+    out = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    log("stats render exit=%d" % out.returncode)
+    stats = os.path.join(WORK, "%s_%d_%s_%04d-stats.txt" % (TOPO, N, RES, frame))
+    found = {}
+    try:
+        text = open(stats).read()
+    except OSError:
+        log("no stats file at %s; output tail: %s" % (stats, out.stdout[-300:]))
+        return found
+    for key, field in (("Tasks run", "tasks_run"), ("Max concurrent tasks", "max_concurrent_tasks")):
+        m = re.search(r"^%s: (\d+)" % key, text, re.M)
+        if m:
+            found[field] = int(m.group(1))
+    return found
+
+
 def main():
     if RES == "hd":
         app.getProjectParam("outputFormat").set("HD")
@@ -260,6 +294,7 @@ def main():
         first = 2 + FRAMES
         range_wall, range_cpu = render(writer, first, first + RANGE - 1)
 
+    stats_fields = render_stats(writer) if os.environ.get("BENCH_RENDER_STATS") == "1" else {}
     med = sorted(walls)[len(walls) // 2] if walls else None
     result = {
         "topo": TOPO,
@@ -283,6 +318,7 @@ def main():
         "rss_peak_mb": vm("VmHWM"),
         "counts": counts,
     }
+    result.update(stats_fields)
     line = json.dumps(result)
     log("RESULT " + line)
     if OUT:

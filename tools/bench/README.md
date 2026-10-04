@@ -75,3 +75,7 @@ while 20-frame runs throttle. Compare only runs of equal length that started fro
 - The writer's compression is set to `none` and read back as `[bench] writer compression=<value>`
   in the log. Earlier records were written with an invalid option (`No Compression`) that was
   silently ignored, so all of them wrote ZIP-compressed half-float EXR.
+- Render stats: `BENCH_RENDER_STATS=1` makes `graph_bench.py` save the project after the timed frames
+  and render frame 2 once more with `NatronRenderer --render-stats -w` (`app.render` cannot enable
+  stats), recording `tasks_run` and `max_concurrent_tasks` from the `-stats.txt` file. It is a separate
+  cold render; Legacy reports 0.

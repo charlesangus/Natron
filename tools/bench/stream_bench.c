@@ -32,8 +32,6 @@ main(int argc, char** argv)
     }
     memcpy(b, a, count * sizeof(float));
 
-    // Node-at-a-time: every op is a separate pass with its own output buffer, like one node's
-    // render into a fresh image. Ping-pong between two full-size buffers.
     double t0 = now();
     for (int k = 0; k < n; ++k) {
         const float* src = (k & 1) ? b : a;
@@ -46,7 +44,6 @@ main(int argc, char** argv)
     }
     double pass = now() - t0;
 
-    // Tiled: each thread takes a tile and runs it through all N ops in a small scratch buffer.
     memcpy(b, a, count * sizeof(float));
     int tx = (w + tile - 1) / tile, ty = (h + tile - 1) / tile;
     t0 = now();
@@ -81,7 +78,6 @@ main(int argc, char** argv)
     }
     double tiled = now() - t0;
 
-    // Fused: a single pass.
     t0 = now();
 #pragma omp parallel for schedule(static)
     for (size_t i = 0; i < count; ++i) {

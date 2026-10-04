@@ -103,7 +103,6 @@ protected:
         return args;
     }
 
-    // Renders a width x height window of node at time into pixels, as RGBA floats row by row.
     bool renderWindow(const NodePtr& node,
                       double time,
                       int width,

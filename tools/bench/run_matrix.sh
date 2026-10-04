@@ -5,6 +5,7 @@
 #   tools/bench/run_matrix.sh <tag> <res> <frames> <range> <topo:n,n,n> [<topo:n,n> ...]
 #   e.g. tools/bench/run_matrix.sh overhead tiny 5 0 chain:0,10,100 wide:10,100
 set -u
+status=0
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 tag=$1
 res=$2
@@ -26,7 +27,9 @@ for spec in "$@"; do
             "cd $repo && timeout ${BENCH_TIMEOUT:-1800} xvfb-run --auto-servernum build/release/Renderer/NatronRenderer -b tools/bench/graph_bench.py" \
             > "$log" 2>&1
         code=$?
+        if [ "$code" -ne 0 ]; then status=1; fi
         rm -f "$repo"/build/bench/work/*.exr
         echo "$tag $topo n=$n res=$res exit=$code $(( $(date +%s) - start ))s"
     done
 done
+exit "$status"

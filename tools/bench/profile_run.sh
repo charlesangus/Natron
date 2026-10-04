@@ -13,9 +13,21 @@ for kv in "$@"; do envs+=(-e "$kv"); done
 log=$repo/build/bench/logs/profile-$name.log
 docker exec "${envs[@]}" -e OFX_PLUGIN_PATH="$repo"/build/assets/Plugins natron-dev bash -lc \
     "cd $repo && timeout 3600 xvfb-run -a build/release/Renderer/NatronRenderer -b tools/bench/graph_bench.py" > "$log" 2>&1 &
+bg=$!
+waited=0
 until grep -q "\[bench\] built" "$log" 2>/dev/null; do
     grep -q "Traceback\|RESULT" "$log" 2>/dev/null && break
+    if ! kill -0 "$bg" 2>/dev/null; then
+        echo "profile_run: benchmark exited before the graph was built; see $log" >&2
+        exit 1
+    fi
+    if [ "$waited" -ge 600 ]; then
+        echo "profile_run: graph not built after 600s; see $log" >&2
+        kill "$bg" 2>/dev/null
+        exit 1
+    fi
     sleep 1
+    waited=$((waited + 1))
 done
 pid=$(docker exec natron-dev bash -lc 'pgrep -x NatronRenderer' 2>/dev/null | grep -v '^id' | head -1)
 sleep 2

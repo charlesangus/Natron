@@ -118,7 +118,6 @@ copyUnProcessedRows(const CopyUnProcessedRowsArgs<PIX>& args,
     for (int y = y1; y < y2; ++y) {
         PIX* dst_pixels = args.dstOrigin + (std::ptrdiff_t)(y - roi.y1) * args.dstRowElements;
 
-        // Pixels in [srcX1, srcX2) have source data; every other pixel of the row reads as "no source".
         int srcX1 = roi.x1;
         int srcX2 = roi.x1;
         const PIX* src_pixels = 0;

@@ -88,13 +88,16 @@ def main():
         head = "%s n=%s res=%s named=%s" % (topo, n, res, named)
         print("%-34s %s%s" % (head, "  ".join(cells), "  FLAGGED" if flagged else ""))
 
-    for name, only in (("before", set(before) - set(after)), ("after", set(after) - set(before))):
-        for key in sorted(only, key=key_sort):
-            print("note: only in %s: topo=%s n=%s res=%s named=%s" % ((name,) + key))
+    missing = sorted(set(before) - set(after), key=key_sort)
+    for key in missing:
+        print("FLAGGED missing from after: topo=%s n=%s res=%s named=%s" % key)
+    for key in sorted(set(after) - set(before), key=key_sort):
+        print("note: only in after: topo=%s n=%s res=%s named=%s" % key)
 
     if not common:
-        print("note: no matching records")
-    return 1 if flagged_any else 0
+        print("FLAGGED: no matching records")
+        return 1
+    return 1 if flagged_any or missing else 0
 
 
 if __name__ == "__main__":

@@ -28,17 +28,19 @@
 
 #include "Global/Macros.h"
 
+#include <bitset>
 #include <list>
 #include <map>
 #include <set>
 #include <string>
-#include <bitset>
+#include <tuple>
 
 #include "Global/GlobalDefines.h"
 
-#include "Engine/RectI.h"
-#include "Engine/RectD.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/RectD.h"
+#include "Engine/RectI.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -134,6 +136,29 @@ public:
                                double timeSpent);
 
     std::map<NodePtr, NodeRenderStats > getStats(double *totalTimeSpent) const;
+
+    void incTasksRun();
+    int getTasksRun() const;
+
+    void incFrameStoreHits();
+    int getFrameStoreHits() const;
+
+    void incUnplannedPulls();
+    int getUnplannedPulls() const;
+
+    void incLegacyFallbacks(const std::string& reason);
+    int getLegacyFallbacks() const;
+    std::map<std::string, int> getLegacyFallbackReasons() const;
+
+    /**
+     * @brief Counts one EffectInstance::renderRoI call for the node at the given time and view.
+     **/
+    void noteRenderRoI(const NodePtr& node, double time, ViewIdx view);
+
+    /**
+     * @brief Calls per (node script name, time, view).
+     **/
+    std::map<std::tuple<std::string, double, int>, int> getRenderRoICalls() const;
 
 private:
 

@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <functional>
 #include <list>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -419,6 +420,23 @@ public:
 
     void getNThreadsSettings(int* nThreadsToRender, int* nThreadsPerEffect) const;
     bool getUseThreadPool() const;
+
+    /**
+     * @brief Parses a NATRON_RENDER_SCHEDULER value: "legacy" or "taskgraph". Returns nothing for anything else.
+     **/
+    static std::optional<RenderSchedulerModeEnum> parseRenderSchedulerModeEnv(const char* value);
+
+    RenderSchedulerModeEnum getRenderSchedulerMode() const;
+
+    /**
+     * @brief Overrides the mode, whatever its source, until the next Settings change.
+     **/
+    void setRenderSchedulerMode(RenderSchedulerModeEnum mode);
+
+    /**
+     * @brief Called by the Settings when the knob changes. Ignored while the environment variable override is active.
+     **/
+    void onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode);
 
     /**
      * @brief Updates the global runningThreadsCount maintained across the whole application

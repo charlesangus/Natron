@@ -3474,7 +3474,8 @@ void
 ViewerInstance::reportStats(int time,
                             ViewIdx view,
                             double wallTime,
-                            const RenderStatsMap& stats)
+                            const RenderStatsMap& stats,
+                            const RenderStatsPtr& /*renderStats*/)
 {
     Q_EMIT renderStatsAvailable(time, view, wallTime, stats);
 }

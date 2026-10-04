@@ -341,7 +341,7 @@ public:
     void setDoingPartialUpdates(bool doing);
     bool isDoingPartialUpdates() const;
 
-    virtual void reportStats(int time, ViewIdx view, double wallTime, const RenderStatsMap& stats) OVERRIDE FINAL;
+    virtual void reportStats(int time, ViewIdx view, double wallTime, const RenderStatsMap& stats, const RenderStatsPtr& renderStats) OVERRIDE FINAL;
 
     ///Only callable on MT
     void setActivateInputChangeRequestedFromViewer(bool fromViewer);

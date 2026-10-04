@@ -51,8 +51,10 @@
 #include <clocale>
 #include <csignal>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring> // for std::memcpy
 #include <locale>
+#include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
 
@@ -288,6 +290,15 @@ AppManager::AppManager()
 {
     assert(!_instance);
     _instance = this;
+
+    // Read before the settings load: CI selects the scheduler per job through the environment.
+    {
+        std::optional<RenderSchedulerModeEnum> envMode = parseRenderSchedulerModeEnv(std::getenv("NATRON_RENDER_SCHEDULER"));
+        if (envMode) {
+            _imp->renderSchedulerMode = (int)*envMode;
+            _imp->renderSchedulerEnvOverride = true;
+        }
+    }
 
     QObject::connect( this, SIGNAL(s_requestOFXDialogOnMainThread(OfxImageEffectInstance*,void*)), this, SLOT(onOFXDialogOnMainThreadReceived(OfxImageEffectInstance*,void*)) );
 
@@ -2889,6 +2900,44 @@ AppManager::setNThreadsPerEffect(int nThreadsPerEffect)
     QMutexLocker l(&_imp->nThreadsMutex);
 
     _imp->nThreadsPerEffect = nThreadsPerEffect;
+}
+
+std::optional<RenderSchedulerModeEnum>
+AppManager::parseRenderSchedulerModeEnv(const char* value)
+{
+    if (!value) {
+        return std::nullopt;
+    }
+    const std::string str(value);
+    if (str == "legacy") {
+        return eRenderSchedulerModeLegacy;
+    }
+    if (str == "taskgraph") {
+        return eRenderSchedulerModeTaskGraph;
+    }
+
+    return std::nullopt;
+}
+
+RenderSchedulerModeEnum
+AppManager::getRenderSchedulerMode() const
+{
+    return (RenderSchedulerModeEnum)_imp->renderSchedulerMode.load();
+}
+
+void
+AppManager::setRenderSchedulerMode(RenderSchedulerModeEnum mode)
+{
+    _imp->renderSchedulerMode = (int)mode;
+}
+
+void
+AppManager::onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode)
+{
+    if (_imp->renderSchedulerEnvOverride) {
+        return;
+    }
+    _imp->renderSchedulerMode = (int)mode;
 }
 
 void

@@ -1571,7 +1571,7 @@ OutputSchedulerThread::notifyFrameRendered(int frame,
         double timeSpentForFrame;
         std::map<NodePtr, NodeRenderStats > statResults = stats->getStats(&timeSpentForFrame);
         if ( !statResults.empty() ) {
-            effect->reportStats(frame, viewIndex, timeSpentForFrame, statResults);
+            effect->reportStats(frame, viewIndex, timeSpentForFrame, statResults, stats);
         }
     }
 
@@ -3837,7 +3837,7 @@ ViewerCurrentFrameRequestSchedulerPrivate::processProducedFrame(const RenderStat
             if (stats) {
                 double timeSpent;
                 std::map<NodePtr, NodeRenderStats > ret = stats->getStats(&timeSpent);
-                viewer->reportStats(0, ViewIdx(0), timeSpent, ret);
+                viewer->reportStats(0, ViewIdx(0), timeSpent, ret, stats);
             }
 
             viewer->updateViewer(params);
@@ -4002,7 +4002,7 @@ ViewerCurrentFrameRequestScheduler::renderCurrentFrame(bool enableRenderStats,
                 if ( stats && (i == 0) ) {
                     double timeSpent;
                     std::map<NodePtr, NodeRenderStats > statResults = stats->getStats(&timeSpent);
-                    _imp->viewer->reportStats(frame, view, timeSpent, statResults);
+                    _imp->viewer->reportStats(frame, view, timeSpent, statResults, stats);
                 }
                 _imp->viewer->updateViewer(args[i]->params);
                 args[i].reset();

@@ -28,10 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <list>
+#include <map>
 #include <string>
 #include <vector>
-#include <map>
 
 #include <QtGlobal> // for Q_OS_*
 #include <QMutex>
@@ -111,6 +112,11 @@ public:
     int nThreadsPerEffect;  // the value held by the corresponding Knob in the Settings, stored here for faster access (3 RW lock vs 1 mutex here)
     bool useThreadPool; // whether the multi-thread suite should use the global thread pool (of QtConcurrent) or not
     mutable QMutex nThreadsMutex; // protects nThreadsToRender & nThreadsPerEffect & useThreadPool
+
+    // Read on render threads, so atomic rather than behind nThreadsMutex.
+    std::atomic<int> renderSchedulerMode;
+    // NATRON_RENDER_SCHEDULER was set to a valid value at startup; settings changes must not override it.
+    bool renderSchedulerEnvOverride;
 
     //The idea here is to keep track of the number of threads launched by Natron (except the ones of the global thread pool of QtConcurrent)
     //So that we can properly have an estimation of how much the cores of the CPU are used.

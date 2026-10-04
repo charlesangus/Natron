@@ -356,6 +356,10 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         assert(!frameArgs->request || frameArgs->nodeHash == frameArgs->request->nodeHash);
     }
 
+    if (frameArgs->stats) {
+        frameArgs->stats->noteRenderRoI(getNode(), args.time, args.view);
+    }
+
     ///For writer we never want to cache otherwise the next time we want to render it will skip writing the image on disk!
     bool byPassCache = args.byPassCache;
 

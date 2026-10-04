@@ -286,6 +286,8 @@ public:
 
     bool isAggressiveCachingEnabled() const;
 
+    RenderSchedulerModeEnum getRenderSchedulerMode() const;
+
     bool isAutoTurboEnabled() const;
 
     void setAutoTurboModeEnabled(bool e);
@@ -445,6 +447,7 @@ private:
     KnobIntPtr _numberOfParallelRenders;
     KnobBoolPtr _useThreadPool;
     KnobIntPtr _nThreadsPerEffect;
+    KnobChoicePtr _renderSchedulerMode;
     KnobBoolPtr _renderInSeparateProcess;
     KnobBoolPtr _queueRenders;
 

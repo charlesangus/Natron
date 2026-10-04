@@ -25,6 +25,7 @@
 
 #include "RenderStats.h"
 
+#include <atomic>
 #include <bitset>
 #include <cassert>
 #include <stdexcept>
@@ -298,12 +299,26 @@ struct RenderStatsPrivate
     typedef std::map<NodeWPtr, NodeRenderStats, std::owner_less<NodeWPtr>> NodeInfosMap;
     NodeInfosMap nodeInfos;
 
+    std::atomic<int> tasksRun;
+    std::atomic<int> frameStoreHits;
+    std::atomic<int> unplannedPulls;
+    std::atomic<int> legacyFallbacks;
+
+    // Both guarded by lock.
+    std::map<std::string, int> legacyFallbackReasons;
+    std::map<std::tuple<std::string, double, int>, int> renderRoICalls;
 
     RenderStatsPrivate()
         : lock()
         , totalTimeSpentForFrameTimer()
         , doNodesProfiling(false)
         , nodeInfos()
+        , tasksRun(0)
+        , frameStoreHits(0)
+        , unplannedPulls(0)
+        , legacyFallbacks(0)
+        , legacyFallbackReasons()
+        , renderRoICalls()
     {
     }
 
@@ -433,6 +448,82 @@ RenderStats::getStats(double *totalTimeSpent) const
     *totalTimeSpent = _imp->totalTimeSpentForFrameTimer.getTimeSinceCreation();
 
     return ret;
+}
+
+void
+RenderStats::incTasksRun()
+{
+    ++_imp->tasksRun;
+}
+
+int
+RenderStats::getTasksRun() const
+{
+    return _imp->tasksRun.load();
+}
+
+void
+RenderStats::incFrameStoreHits()
+{
+    ++_imp->frameStoreHits;
+}
+
+int
+RenderStats::getFrameStoreHits() const
+{
+    return _imp->frameStoreHits.load();
+}
+
+void
+RenderStats::incUnplannedPulls()
+{
+    ++_imp->unplannedPulls;
+}
+
+int
+RenderStats::getUnplannedPulls() const
+{
+    return _imp->unplannedPulls.load();
+}
+
+void
+RenderStats::incLegacyFallbacks(const std::string& reason)
+{
+    ++_imp->legacyFallbacks;
+    QMutexLocker k(&_imp->lock);
+    ++_imp->legacyFallbackReasons[reason];
+}
+
+int
+RenderStats::getLegacyFallbacks() const
+{
+    return _imp->legacyFallbacks.load();
+}
+
+std::map<std::string, int>
+RenderStats::getLegacyFallbackReasons() const
+{
+    QMutexLocker k(&_imp->lock);
+
+    return _imp->legacyFallbackReasons;
+}
+
+void
+RenderStats::noteRenderRoI(const NodePtr& node,
+                           double time,
+                           ViewIdx view)
+{
+    const std::string name = node->getScriptName_mt_safe();
+    QMutexLocker k(&_imp->lock);
+    ++_imp->renderRoICalls[std::make_tuple(name, time, view.value())];
+}
+
+std::map<std::tuple<std::string, double, int>, int>
+RenderStats::getRenderRoICalls() const
+{
+    QMutexLocker k(&_imp->lock);
+
+    return _imp->renderRoICalls;
 }
 
 NATRON_NAMESPACE_EXIT

@@ -129,10 +129,22 @@ public:
     static const FrameRenderContext* currentFrameContext();
 
     /**
+     * @brief Threads the task running on the current thread may use for its own parallelism, as granted by the
+     * scheduler; 0 when no scope set it.
+     **/
+    static int currentThreadBudget();
+
+    /**
+     * @brief Pool priority of the task running on the current thread; 0 when no scope set it.
+     **/
+    static int currentRunnablePriority();
+
+    /**
      * @brief Unless the current thread is fromThread itself: calls softCopy() from the current thread and installs
-     * frameContext as the current thread's frame on construction, then restores the previous frame and calls
-     * cleanupTLSForThread() on destruction. frameContext must be the spawner's currentFrameContext(), read on the
-     * spawner before it hands the work out, since another thread cannot read the spawner's.
+     * frameContext as the current thread's frame and a thread budget of 1 on construction, then restores the previous
+     * frame and budget and calls cleanupTLSForThread() on destruction. frameContext must be the spawner's
+     * currentFrameContext(), read on the spawner before it hands the work out, since another thread cannot read the
+     * spawner's.
      **/
     class SpawnedThreadScope {
     public:
@@ -148,15 +160,18 @@ public:
     private:
         bool _spawned;
         const FrameRenderContext* _previousFrameContext;
+        int _previousBudget;
     };
 
     /**
-     * @brief Installs a frame on the current thread for the time of a task. The outermost scope cleans up the
-     * thread's TLS on destruction.
+     * @brief Installs a frame, the task's thread budget and its pool priority on the current thread for the time of
+     * a task. The outermost scope cleans up the thread's TLS on destruction.
      **/
     class FrameContextScope {
     public:
-        explicit FrameContextScope(const FrameRenderContext* context);
+        explicit FrameContextScope(const FrameRenderContext* context,
+                                   int budget = 0,
+                                   int runnablePriority = 0);
 
         ~FrameContextScope();
 
@@ -165,6 +180,24 @@ public:
 
     private:
         const FrameRenderContext* _previous;
+        int _previousBudget;
+        int _previousPriority;
+    };
+
+    /**
+     * @brief Sets the current thread's budget for the lifetime of the scope.
+     **/
+    class ThreadBudgetScope {
+    public:
+        explicit ThreadBudgetScope(int budget);
+
+        ~ThreadBudgetScope();
+
+        ThreadBudgetScope(const ThreadBudgetScope&) = delete;
+        ThreadBudgetScope& operator=(const ThreadBudgetScope&) = delete;
+
+    private:
+        int _previous;
     };
 
 private:

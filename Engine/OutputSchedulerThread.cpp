@@ -1530,22 +1530,43 @@ OutputSchedulerThread::adjustNumberOfThreads(int* newNThreads,
     ///How many parallel renders the user wants
     int userSettingParallelThreads = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
 
-    // In Task graph mode the frame threads only wait for the scheduler, which runs the frames' work on the global
-    // pool: busy pool threads are that work, not competition for the cores.
-    const bool taskGraphMode = appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph;
-
-    ///How many threads are running in the application
-    int runningThreads = appPTR->getNRunningThreads() + (taskGraphMode ? 0 : QThreadPool::globalInstance()->activeThreadCount());
-
     ///How many current threads are used by THIS renderer
     int currentParallelRenders = getNRenderThreads();
 
     *lastNThreads = currentParallelRenders;
 
+    if (appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph) {
+        // The frame threads only wait for the scheduler, which runs the frames' work on the global pool, so another
+        // frame is opened only while the work already queued cannot keep every pool thread busy.
+        QThreadPool* pool = QThreadPool::globalInstance();
+        const int poolMax = std::max(1, pool->maxThreadCount());
+        const int cap = (userSettingParallelThreads > 0) ? userSettingParallelThreads : poolMax;
+        int schedulerRunning = 0;
+        int schedulerReady = 0;
+        appPTR->getRenderScheduler()->getLoad(&schedulerRunning, &schedulerReady);
+
+        if ((currentParallelRenders == 0) || ((currentParallelRenders < cap) && (schedulerRunning + schedulerReady < poolMax) && (pool->activeThreadCount() < poolMax))) {
+            QMutexLocker l(&_imp->renderThreadsMutex);
+
+            _imp->appendRunnable(createRunnable());
+            *newNThreads = currentParallelRenders + 1;
+        } else if (currentParallelRenders > cap) {
+            stopRenderThreads(1);
+            *newNThreads = currentParallelRenders - 1;
+        } else {
+            *newNThreads = currentParallelRenders;
+        }
+
+        return;
+    }
+
+    /// How many threads are running in the application
+    int runningThreads = appPTR->getNRunningThreads() + QThreadPool::globalInstance()->activeThreadCount();
+
     if (userSettingParallelThreads == 0) {
         ///User wants it to be automatically computed, do a simple heuristic: launch as many parallel renders
         ///as there are cores
-        optimalNThreads = taskGraphMode ? QThreadPool::globalInstance()->maxThreadCount() : appPTR->getHardwareIdealThreadCount();
+        optimalNThreads = appPTR->getHardwareIdealThreadCount();
     } else {
         optimalNThreads = userSettingParallelThreads;
     }

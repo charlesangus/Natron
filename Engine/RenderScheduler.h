@@ -191,6 +191,18 @@ public:
      **/
     int getOutstandingRunnables() const;
 
+    /**
+     * @brief The tasks running, and the tasks ready to run including those held back by the bytes budget.
+     **/
+    void getLoad(int* running, int* ready) const;
+
+    /**
+     * @brief The threads a task may use for its own parallelism: an even share of the pool among the running tasks
+     * (this one included) and the ready ones, and never more than the pool threads they leave idle, the cores, or
+     * perEffect when it is positive. At least 1.
+     **/
+    static int computeTaskBudget(int poolMax, int running, int ready, int cores, int perEffect);
+
     std::size_t getBytesBudget() const;
 
     void setBytesBudgetForTests(std::size_t bytes);
@@ -220,9 +232,9 @@ private:
 
     void runOneTask();
 
-    bool popLocked(FramePtr* frame, int* task, std::vector<FramePtr>* finished);
+    bool popLocked(FramePtr* frame, int* task, int* budget, std::vector<FramePtr>* finished);
 
-    void executeTask(const FramePtr& frame, int task, std::vector<FramePtr>* finished);
+    void executeTask(const FramePtr& frame, int task, int budget, std::vector<FramePtr>* finished);
 
     void pushReadyLocked(const FramePtr& frame, int task);
 

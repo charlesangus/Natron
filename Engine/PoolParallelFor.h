@@ -32,13 +32,14 @@
 #include <atomic>
 #include <exception>
 #include <functional>
-#include <limits>
 #include <memory>
 
 #include <QMutex>
 #include <QMutexLocker>
 #include <QThreadPool>
 #include <QWaitCondition>
+
+#include "Engine/TLSHolder.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -103,15 +104,22 @@ parallelForOnGlobalPool(int count,
     state->body = &body;
     state->count = count;
 
-    // Ahead of tasks waiting to start: finishing a started task releases its inputs sooner than starting another.
-    const int helperPriority = std::numeric_limits<int>::max();
+    // Ahead of the tasks of the same priority waiting to start, since finishing a started task releases its inputs
+    // sooner than starting another, but behind those of a more urgent frame.
+    const int helperPriority = AppTLS::currentRunnablePriority() + 1;
     const int numHelpers = std::min(count, std::max(1, maxThreads)) - 1;
     QThreadPool* pool = QThreadPool::globalInstance();
     for (int i = 0; i < numHelpers; ++i) {
         pool->start([state]() { PoolParallelForDetail::drain(*state); }, helperPriority);
     }
 
-    PoolParallelForDetail::drain(*state);
+    if (numHelpers > 0) {
+        // The caller is one of the threads this split was sized for, so the work items it runs must not split again.
+        AppTLS::ThreadBudgetScope budget(1);
+        PoolParallelForDetail::drain(*state);
+    } else {
+        PoolParallelForDetail::drain(*state);
+    }
 
     {
         QMutexLocker locker(&state->mutex);

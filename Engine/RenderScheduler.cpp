@@ -33,6 +33,10 @@
 #include <unordered_map>
 #include <utility>
 
+#ifdef __linux__
+#include <dlfcn.h>
+#endif
+
 #include <QMutexLocker>
 #include <QRunnable>
 #include <QThread>
@@ -142,6 +146,43 @@ private:
 };
 
 namespace {
+
+const int kBackgroundRunnablePriority = 0;
+const int kInteractiveRunnablePriority = 2;
+
+int
+runnablePriorityOf(RenderScheduler::Priority priority)
+{
+    return (priority == RenderScheduler::Priority::Interactive) ? kInteractiveRunnablePriority : kBackgroundRunnablePriority;
+}
+
+#ifdef __linux__
+typedef void (*OmpSetNumThreadsFn)(int);
+
+// OpenMP plug-ins size their teams from the calling thread's nthreads ICV, which only the task's thread can set.
+// libgomp is looked up among the loaded objects only, and again on later tasks until a plug-in brought it in.
+void
+setOpenMPThreadsOfCurrentThread(int threads)
+{
+    static std::atomic<OmpSetNumThreadsFn> cached(nullptr);
+    OmpSetNumThreadsFn fn = cached.load(std::memory_order_acquire);
+
+    if (!fn) {
+        void* lib = dlopen("libgomp.so.1", RTLD_LAZY | RTLD_NOLOAD);
+        if (!lib) {
+            return;
+        }
+        fn = reinterpret_cast<OmpSetNumThreadsFn>(dlsym(lib, "omp_set_num_threads"));
+        if (!fn) {
+            dlclose(lib);
+
+            return;
+        }
+        cached.store(fn, std::memory_order_release);
+    }
+    fn(threads);
+}
+#endif
 
 void
 getOutputComponents(const EffectInstancePtr& effect,
@@ -453,6 +494,31 @@ RenderScheduler::getOutstandingRunnables() const
     return _outstandingRunnables;
 }
 
+void
+RenderScheduler::getLoad(int* running,
+                         int* ready) const
+{
+    QMutexLocker k(&_mutex);
+
+    *running = _runningTasks;
+    *ready = (int)(_freeReady.size() + _admittedReady.size() + _gatedReady.size());
+}
+
+int
+RenderScheduler::computeTaskBudget(int poolMax,
+                                   int running,
+                                   int ready,
+                                   int cores,
+                                   int perEffect)
+{
+    const int coreCap = std::max(1, (perEffect > 0) ? std::min(cores, perEffect) : cores);
+    const int idle = std::min(std::max(poolMax - running - ready + 1, 1), coreCap);
+    const int sharers = std::max(1, running + ready);
+    const int share = std::max(1, (poolMax + sharers - 1) / sharers);
+
+    return std::min(idle, share);
+}
+
 std::size_t
 RenderScheduler::getBytesBudget() const
 {
@@ -512,16 +578,17 @@ RenderScheduler::runOneTask()
     std::vector<FramePtr> finished;
     FramePtr frame;
     int task = -1;
+    int budget = 1;
     bool popped;
     {
         QMutexLocker k(&_mutex);
-        popped = popLocked(&frame, &task, &finished);
+        popped = popLocked(&frame, &task, &budget, &finished);
         if (!popped) {
             --_outstandingRunnables;
         }
     }
     if (popped) {
-        executeTask(frame, task, &finished);
+        executeTask(frame, task, budget, &finished);
     }
     if (!finished.empty()) {
         finalizeFrames(finished);
@@ -532,6 +599,7 @@ RenderScheduler::runOneTask()
 bool
 RenderScheduler::popLocked(FramePtr* frame,
                            int* task,
+                           int* budget,
                            std::vector<FramePtr>* finished)
 {
     discardStaleTopsLocked(&_freeReady, finished);
@@ -562,12 +630,26 @@ RenderScheduler::popLocked(FramePtr* frame,
         _reservedBytes += ref.frame->graph.tasks[ref.task].estimatedBytes;
     }
 
+    const int poolMax = std::max(1, QThreadPool::globalInstance()->maxThreadCount());
+    int nThreadsToRender = 0;
+    int nThreadsPerEffect = 0;
+    int cores = poolMax;
+    if (appPTR) {
+        appPTR->getNThreadsSettings(&nThreadsToRender, &nThreadsPerEffect);
+        cores = appPTR->getHardwareIdealThreadCount();
+    }
+    // The gated tasks are left out: they cannot start before a running task finished, so they do not compete for
+    // threads now.
+    const int ready = (int)(_freeReady.size() + _admittedReady.size());
+    *budget = computeTaskBudget(poolMax, _runningTasks, ready, cores, nThreadsPerEffect);
+
     return true;
 }
 
 void
 RenderScheduler::executeTask(const FramePtr& frame,
                              int taskIndex,
+                             int budget,
                              std::vector<FramePtr>* finished)
 {
     const FrameGraph::Task& task = frame->graph.tasks[taskIndex];
@@ -591,7 +673,10 @@ RenderScheduler::executeTask(const FramePtr& frame,
                                            callerEffect.get(),
                                            eStorageModeRAM,
                                            caller.key.time);
-        AppTLS::FrameContextScope scope(frame->context.get());
+        AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
+#ifdef __linux__
+        setOpenMPThreadsOfCurrentThread(budget);
+#endif
         const int rendering = ++_tasksRendering;
         if (frame->context->getStats()) {
             frame->context->getStats()->noteConcurrentTasks(rendering);
@@ -899,7 +984,7 @@ RenderScheduler::reserveRunnablesLocked(int* priority)
     if (!_admittedReady.empty() && (_admittedReady.front().frame->priority == Priority::Interactive)) {
         interactive = true;
     }
-    *priority = interactive ? 1 : 0;
+    *priority = interactive ? kInteractiveRunnablePriority : kBackgroundRunnablePriority;
 
     return toStart;
 }

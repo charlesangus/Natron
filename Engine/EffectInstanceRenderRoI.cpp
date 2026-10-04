@@ -1160,12 +1160,11 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     RenderSafetyEnum safety = frameArgs->currentThreadSafety;
     if (safety == eRenderSafetyFullySafeFrame) {
         int nbThreads = appPTR->getCurrentSettings()->getNumberOfThreads();
+        const int budget = AppTLS::currentThreadBudget();
         // If the plug-in is eRenderSafetyFullySafeFrame that means it wants the host to perform SMP aka slice up the RoI into chunks
         // but if the effect doesn't support tiles it won't work.
         // Also check that the number of threads indicating by the settings are appropriate for this render mode.
-        if ( !frameArgs->tilesSupported || (nbThreads == -1) || (nbThreads == 1) ||
-            ( (nbThreads == 0) && (appPTR->getHardwareIdealThreadCount() == 1) ) ||
-            ( QThreadPool::globalInstance()->activeThreadCount() >= QThreadPool::globalInstance()->maxThreadCount() )) {
+        if (!frameArgs->tilesSupported || (nbThreads == -1) || (nbThreads == 1) || ((nbThreads == 0) && (appPTR->getHardwareIdealThreadCount() == 1)) || ((budget > 0) ? (budget <= 1) : (QThreadPool::globalInstance()->activeThreadCount() >= QThreadPool::globalInstance()->maxThreadCount()))) {
             safety = eRenderSafetyFullySafe;
         }
     }

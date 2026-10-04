@@ -53,6 +53,8 @@ thread_local std::vector<TLSHolderBaseConstWPtr> tHoldersWithData;
 thread_local std::size_t tHoldersPruneThreshold = 64;
 thread_local std::size_t tNumInheritedCopies = 0;
 thread_local const FrameRenderContext* tCurrentFrameContext = 0;
+thread_local int tThreadBudget = 0;
+thread_local int tRunnablePriority = 0;
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
@@ -109,6 +111,18 @@ const FrameRenderContext*
 AppTLS::currentFrameContext()
 {
     return tCurrentFrameContext;
+}
+
+int
+AppTLS::currentThreadBudget()
+{
+    return tThreadBudget;
+}
+
+int
+AppTLS::currentRunnablePriority()
+{
+    return tRunnablePriority;
 }
 
 void
@@ -208,10 +222,13 @@ AppTLS::SpawnedThreadScope::SpawnedThreadScope(QThread* fromThread,
                                                SpawnKindEnum kind)
     : _spawned(fromThread && fromThread != QThread::currentThread())
     , _previousFrameContext(tCurrentFrameContext)
+    , _previousBudget(tThreadBudget)
 {
     if (_spawned) {
         appPTR->getAppTLS()->softCopy(fromThread, QThread::currentThread(), kind);
         tCurrentFrameContext = frameContext;
+        // The spawner already counted this thread as one of its own; nesting more parallelism here oversubscribes.
+        tThreadBudget = 1;
     }
 }
 
@@ -220,22 +237,42 @@ AppTLS::SpawnedThreadScope::~SpawnedThreadScope()
     if (_spawned) {
         appPTR->getAppTLS()->cleanupTLSForThread();
         tCurrentFrameContext = _previousFrameContext;
+        tThreadBudget = _previousBudget;
     }
 }
 
-AppTLS::FrameContextScope::FrameContextScope(const FrameRenderContext* context)
+AppTLS::FrameContextScope::FrameContextScope(const FrameRenderContext* context,
+                                             int budget,
+                                             int runnablePriority)
     : _previous(tCurrentFrameContext)
+    , _previousBudget(tThreadBudget)
+    , _previousPriority(tRunnablePriority)
 {
     tCurrentFrameContext = context;
+    tThreadBudget = budget;
+    tRunnablePriority = runnablePriority;
 }
 
 AppTLS::FrameContextScope::~FrameContextScope()
 {
     tCurrentFrameContext = _previous;
+    tThreadBudget = _previousBudget;
+    tRunnablePriority = _previousPriority;
     // A task run inline from within another task's scope must not drop the data the outer task is rendering with.
     if (!_previous) {
         appPTR->getAppTLS()->cleanupTLSForThread();
     }
+}
+
+AppTLS::ThreadBudgetScope::ThreadBudgetScope(int budget)
+    : _previous(tThreadBudget)
+{
+    tThreadBudget = budget;
+}
+
+AppTLS::ThreadBudgetScope::~ThreadBudgetScope()
+{
+    tThreadBudget = _previous;
 }
 
 template class TLSHolder<EffectInstance::EffectTLSData>;

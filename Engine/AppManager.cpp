@@ -133,6 +133,7 @@
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoSmear.h"
 #include "Engine/StandardPaths.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/ThreadPool.h"
 #include "Engine/TrackerNode.h"
 
@@ -2984,6 +2985,11 @@ AppManager::getNCPUsAvailableForEffect()
         return 1;
     }
 
+    const int budget = AppTLS::currentThreadBudget();
+    if (budget > 0) {
+        return std::min(budget, (nThreadsPerEffect > 0) ? nThreadsPerEffect : budget);
+    }
+
     // Threads already running for the multiThreadSuite + parallel renders
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     const int runningThreadsCount = getNRunningThreads();
@@ -2996,7 +3002,9 @@ AppManager::getNCPUsAvailableForEffect()
     assert(maxThreadsCount >= 0);
 
     if (nThreadsPerEffect == 0) {
-        int hwConcurrency = getMaxThreadCount();
+        // A pool larger than the machine serves concurrent tasks; one effect splitting past the cores only adds
+        // context switches.
+        const int hwConcurrency = std::min(maxThreadsCount, getHardwareIdealThreadCount());
 
         nThreadsPerEffect = (hwConcurrency <= 0) ? 1 : hwConcurrency;
     }

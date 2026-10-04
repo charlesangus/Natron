@@ -25,12 +25,15 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstring>
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -44,6 +47,7 @@
 #include <QThreadPool>
 
 #include "BaseTest.h"
+#include "CountingTestEffect.h"
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
@@ -136,6 +140,7 @@ struct SuiteProbe {
     bool expectHelper = false;
     std::vector<const FrameRenderContext*> contexts;
     std::vector<Qt::HANDLE> threads;
+    std::vector<int> budgets;
     std::atomic<bool> helperRan { false };
 };
 
@@ -149,6 +154,7 @@ probeThreadFunction(unsigned int threadIndex,
 
     probe->contexts[threadIndex] = AppTLS::currentFrameContext();
     probe->threads[threadIndex] = self;
+    probe->budgets[threadIndex] = AppTLS::currentThreadBudget();
     if (self != probe->caller) {
         probe->helperRan = true;
     } else if (probe->expectHelper) {
@@ -394,6 +400,105 @@ protected:
         return true;
     }
 
+    NodePtr createCounting(const char* pluginID,
+                           double value,
+                           int delayMs)
+    {
+        NodePtr node = createNode(QString::fromUtf8(pluginID));
+
+        if (!node) {
+            return node;
+        }
+        KnobDouble* valueKnob = dynamic_cast<KnobDouble*>(node->getKnobByName("value").get());
+        KnobInt* delayKnob = dynamic_cast<KnobInt*>(node->getKnobByName("delayMs").get());
+        if (!valueKnob || !delayKnob) {
+            return NodePtr();
+        }
+        valueKnob->setValue(value);
+        delayKnob->setValue(delayMs);
+
+        return node;
+    }
+
+    // Renders root, a tree of counting effects, through the scheduler, giving up after kRenderTimeoutMs.
+    bool renderCounting(const NodePtr& root,
+                        std::string* error)
+    {
+        const RectD window(0., 0., kCountingTestSize, kCountingTestSize);
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+        FrameRenderContextPtr context;
+        FrameGraph graph;
+        {
+            ParallelRenderArgsSetter frameArgs(kTime,
+                                               ViewIdx(0),
+                                               false /*isRenderUserInteraction*/,
+                                               false /*isSequential*/,
+                                               abortInfo,
+                                               root,
+                                               0 /*textureIndex*/,
+                                               getApp()->getTimeLine().get(),
+                                               NodePtr(),
+                                               false /*isAnalysis*/,
+                                               false /*draftMode*/,
+                                               RenderStatsPtr());
+            std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+            if (EffectInstance::computeRequestPass(kTime, ViewIdx(0), 0 /*mipmapLevel*/, window, root, *request) == eStatusFailed) {
+                *error = "request pass failed";
+
+                return false;
+            }
+            frameArgs.updateNodesRequest(*request);
+
+            context = makeContext(root, abortInfo, RenderStatsPtr());
+            context->setRequest(request);
+            graph = RenderScheduler::buildGraph(context, root, kTime, ViewIdx(0), 0 /*mipmapLevel*/);
+        }
+        if (graph.tasks.empty()) {
+            *error = "empty graph";
+
+            return false;
+        }
+
+        FrameFuturePtr future = appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Interactive);
+        QElapsedTimer timer;
+        timer.start();
+        while (!future->isFinished()) {
+            if (timer.elapsed() > kRenderTimeoutMs) {
+                *error = "the frame did not finish in time";
+
+                return false;
+            }
+            QThread::msleep(2);
+        }
+        if (future->wait() != EffectInstance::eRenderRoIRetCodeOk) {
+            *error = "the frame failed";
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * @brief What getNCPUsAvailableForEffect() returns in a task the scheduler popped with running tasks (itself
+     * included) and ready ones, given the user's thread settings.
+     **/
+    static int expectedTaskNCPUs(int poolMax,
+                                 int running,
+                                 int ready)
+    {
+        int nThreadsToRender = 0;
+        int nThreadsPerEffect = 0;
+
+        appPTR->getNThreadsSettings(&nThreadsToRender, &nThreadsPerEffect);
+        if (nThreadsToRender == -1) {
+            return 1;
+        }
+        const int budget = RenderScheduler::computeTaskBudget(poolMax, running, ready, appPTR->getHardwareIdealThreadCount(), nThreadsPerEffect);
+
+        return (nThreadsPerEffect > 0) ? std::min(budget, nThreadsPerEffect) : budget;
+    }
+
     void expectTaskGraphMatchesLegacy(const NodePtr& root)
     {
         std::string error;
@@ -440,6 +545,223 @@ TEST_F(PoolSharing, NCPUsAvailableCountsTheCallerAsAWorker)
 
     // A negative active count, after releaseThread(), counts as none.
     EXPECT_EQ(5, AppManager::computeNCPUsAvailable(4, -1, 0, kNoLimit));
+}
+
+TEST_F(PoolSharing, TaskBudgetSharesThePool)
+{
+    const int kManyCores = 1024;
+
+    // A task alone gets the whole pool.
+    EXPECT_EQ(4, RenderScheduler::computeTaskBudget(4, 1, 0, kManyCores, 0));
+    EXPECT_EQ(64, RenderScheduler::computeTaskBudget(64, 1, 0, kManyCores, 0));
+
+    // Two running tasks split it evenly.
+    EXPECT_EQ(2, RenderScheduler::computeTaskBudget(4, 2, 0, kManyCores, 0));
+    EXPECT_EQ(32, RenderScheduler::computeTaskBudget(64, 2, 0, kManyCores, 0));
+
+    // Ready tasks are sharers too: at P=4 they leave no thread idle, at P=64 the share rounds up.
+    EXPECT_EQ(1, RenderScheduler::computeTaskBudget(4, 2, 3, kManyCores, 0));
+    EXPECT_EQ(13, RenderScheduler::computeTaskBudget(64, 2, 3, kManyCores, 0));
+    for (int running = 1; running <= 5; ++running) {
+        EXPECT_EQ(2, RenderScheduler::computeTaskBudget(8, running, 5 - running, kManyCores, 0)) << running << " running";
+    }
+
+    // A pool full of tasks leaves each one thread.
+    EXPECT_EQ(1, RenderScheduler::computeTaskBudget(4, 4, 0, kManyCores, 0));
+    EXPECT_EQ(1, RenderScheduler::computeTaskBudget(64, 64, 0, kManyCores, 0));
+    EXPECT_EQ(1, RenderScheduler::computeTaskBudget(4, 4, 12, kManyCores, 0));
+
+    // The cores and the per-effect limit cap it.
+    EXPECT_EQ(2, RenderScheduler::computeTaskBudget(64, 1, 0, 2, 0));
+    EXPECT_EQ(8, RenderScheduler::computeTaskBudget(64, 1, 0, kManyCores, 8));
+    EXPECT_EQ(4, RenderScheduler::computeTaskBudget(64, 1, 0, 4, 8));
+
+    // Degenerate inputs still grant one thread.
+    EXPECT_EQ(4, RenderScheduler::computeTaskBudget(4, 0, 0, kManyCores, 0));
+    EXPECT_EQ(1, RenderScheduler::computeTaskBudget(0, 0, 0, 0, 0));
+    EXPECT_EQ(1, RenderScheduler::computeTaskBudget(4, 0, 0, 0, 0));
+}
+
+TEST_F(PoolSharing, NCPUsOutsideATaskUseTheLegacyFormula)
+{
+    PoolSizeGuard pool(4);
+    ASSERT_TRUE(QThreadPool::globalInstance()->waitForDone((int)kRenderTimeoutMs));
+
+    int nThreadsToRender = 0;
+    int nThreadsPerEffect = 0;
+    appPTR->getNThreadsSettings(&nThreadsToRender, &nThreadsPerEffect);
+    ASSERT_NE(-1, nThreadsToRender) << "rendering is set single-threaded";
+
+    ASSERT_EQ(0, AppTLS::currentThreadBudget());
+#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
+    const int running = appPTR->getNRunningThreads();
+#else
+    const int running = 0;
+#endif
+    const int perEffect = (nThreadsPerEffect > 0) ? nThreadsPerEffect : std::min(4, appPTR->getHardwareIdealThreadCount());
+    EXPECT_EQ(AppManager::computeNCPUsAvailable(4, QThreadPool::globalInstance()->activeThreadCount(), running, std::max(1, perEffect)),
+              appPTR->getNCPUsAvailableForEffect());
+
+    {
+        AppTLS::ThreadBudgetScope budget(3);
+        EXPECT_EQ((nThreadsPerEffect > 0) ? std::min(3, nThreadsPerEffect) : 3, appPTR->getNCPUsAvailableForEffect());
+        {
+            AppTLS::ThreadBudgetScope inner(1);
+            EXPECT_EQ(1, appPTR->getNCPUsAvailableForEffect());
+        }
+        EXPECT_EQ(3, AppTLS::currentThreadBudget());
+    }
+    EXPECT_EQ(0, AppTLS::currentThreadBudget());
+}
+
+TEST_F(PoolSharing, ChainAloneGetsThePoolUpToTheCores)
+{
+    const int kLength = 6;
+    PoolSizeGuard pool(4);
+    CountingTestRegistry::reset();
+
+    std::vector<NodePtr> nodes;
+    for (int i = 0; i < kLength; ++i) {
+        NodePtr node = createCounting(kTestPluginIDCounting, 1., 0);
+        ASSERT_TRUE(bool(node));
+        if (!nodes.empty()) {
+            connectNodes(nodes.back(), node, 0, true);
+        }
+        nodes.push_back(node);
+    }
+
+    std::mutex mutex;
+    std::map<const Node*, int> seen;
+    CountingTestRegistry::setRenderHook([&](const Node* node) {
+        const int n = appPTR->getNCPUsAvailableForEffect();
+        std::lock_guard<std::mutex> k(mutex);
+        seen[node] = n;
+    });
+    std::string error;
+    const bool ok = renderCounting(nodes.back(), &error);
+    CountingTestRegistry::reset();
+    ASSERT_TRUE(ok) << error;
+
+    // min(4, cores) under the default per-effect limit.
+    const int expected = expectedTaskNCPUs(4, 1, 0);
+    ASSERT_EQ((std::size_t)kLength, seen.size());
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        EXPECT_EQ(expected, seen[nodes[i].get()]) << "node " << i;
+    }
+}
+
+TEST_F(PoolSharing, WideGraphLeavesGetOneThreadEach)
+{
+    const int kLeaves = 64;
+    // Every task takes long enough that the tasks admitted together are still running when the next leaf starts.
+    const int kDelayMs = 10;
+    PoolSizeGuard pool(4);
+    CountingTestRegistry::reset();
+
+    std::vector<NodePtr> leaves;
+    std::vector<NodePtr> level;
+    for (int i = 0; i < kLeaves; ++i) {
+        NodePtr leaf = createCounting(kTestPluginIDCounting, 1., kDelayMs);
+        ASSERT_TRUE(bool(leaf));
+        leaves.push_back(leaf);
+        level.push_back(leaf);
+    }
+    while (level.size() > 1) {
+        std::vector<NodePtr> next;
+        for (std::size_t i = 0; i + 1 < level.size(); i += 2) {
+            NodePtr merge = createCounting(kTestPluginIDCountingMerge, 0., kDelayMs);
+            ASSERT_TRUE(bool(merge));
+            connectNodes(level[i], merge, 0, true);
+            connectNodes(level[i + 1], merge, 1, true);
+            next.push_back(merge);
+        }
+        level.swap(next);
+    }
+
+    std::mutex mutex;
+    std::map<const Node*, int> seen;
+    CountingTestRegistry::setRenderHook([&](const Node* node) {
+        const int n = appPTR->getNCPUsAvailableForEffect();
+        std::lock_guard<std::mutex> k(mutex);
+        seen[node] = n;
+    });
+    std::string error;
+    const bool ok = renderCounting(level.front(), &error);
+    CountingTestRegistry::reset();
+    ASSERT_TRUE(ok) << error;
+
+    for (std::size_t i = 0; i < leaves.size(); ++i) {
+        ASSERT_EQ(1u, seen.count(leaves[i].get())) << "leaf " << i << " never rendered";
+        EXPECT_EQ(1, seen[leaves[i].get()]) << "leaf " << i;
+    }
+}
+
+TEST_F(PoolSharing, ConcurrentLeavesShareThePoolEvenly)
+{
+    const int kLeaves = 5;
+    const int kDelayMs = 200;
+    const int kPool = 8;
+    PoolSizeGuard pool(kPool);
+    CountingTestRegistry::reset();
+
+    std::set<const Node*> leafSet;
+    std::vector<NodePtr> leaves;
+    for (int i = 0; i < kLeaves; ++i) {
+        NodePtr leaf = createCounting(kTestPluginIDCounting, 1., kDelayMs);
+        ASSERT_TRUE(bool(leaf));
+        leaves.push_back(leaf);
+        leafSet.insert(leaf.get());
+    }
+    NodePtr root = leaves.front();
+    for (int i = 1; i < kLeaves; ++i) {
+        NodePtr merge = createCounting(kTestPluginIDCountingMerge, 0., 0);
+        ASSERT_TRUE(bool(merge));
+        connectNodes(root, merge, 0, true);
+        connectNodes(leaves[i], merge, 1, true);
+        root = merge;
+    }
+
+    std::mutex mutex;
+    std::map<const Node*, int> seen;
+    std::atomic<int> leavesRendering(0);
+    std::atomic<bool> allOverlapped(true);
+    CountingTestRegistry::setRenderHook([&](const Node* node) {
+        if (!leafSet.count(node)) {
+            return;
+        }
+        const int n = appPTR->getNCPUsAvailableForEffect();
+        {
+            std::lock_guard<std::mutex> k(mutex);
+            seen[node] = n;
+        }
+        ++leavesRendering;
+        QElapsedTimer timer;
+        timer.start();
+        while (leavesRendering.load() < kLeaves) {
+            if (timer.elapsed() > 10000) {
+                allOverlapped = false;
+
+                return;
+            }
+            QThread::msleep(1);
+        }
+    });
+    std::string error;
+    const bool ok = renderCounting(root, &error);
+    CountingTestRegistry::reset();
+    ASSERT_TRUE(ok) << error;
+    EXPECT_TRUE(allOverlapped.load()) << "the leaves did not all render at once";
+
+    // Every leaf is popped with the five leaves running or ready: min(clamp(8 - 5 + 1, 1, cores), ceil(8 / 5)), so 2
+    // on a machine with two cores or more under the default per-effect limit.
+    const int expected = expectedTaskNCPUs(kPool, kLeaves, 0);
+    for (int running = 1; running <= kLeaves; ++running) {
+        EXPECT_EQ(expected, expectedTaskNCPUs(kPool, running, kLeaves - running));
+    }
+    for (std::size_t i = 0; i < leaves.size(); ++i) {
+        ASSERT_EQ(1u, seen.count(leaves[i].get())) << "leaf " << i << " never rendered";
+        EXPECT_EQ(expected, seen[leaves[i].get()]) << "leaf " << i;
+    }
 }
 
 TEST_F(PoolSharing, MultithreadedChainMatchesLegacy)
@@ -493,13 +815,19 @@ TEST_F(PoolSharing, SpawnedThreadScopeInstallsTheSpawnersFrame)
     const FrameRenderContext* before = context.get();
     const FrameRenderContext* inside = NULL;
     const FrameRenderContext* after = context.get();
+    int budgetInside = 0;
+    int nCPUsInside = 0;
+    int budgetAfter = -1;
     QThread* worker = QThread::create([&]() {
         before = AppTLS::currentFrameContext();
         {
             AppTLS::SpawnedThreadScope scope(spawner, context.get());
             inside = AppTLS::currentFrameContext();
+            budgetInside = AppTLS::currentThreadBudget();
+            nCPUsInside = appPTR->getNCPUsAvailableForEffect();
         }
         after = AppTLS::currentFrameContext();
+        budgetAfter = AppTLS::currentThreadBudget();
     });
     worker->start();
     worker->wait();
@@ -508,6 +836,9 @@ TEST_F(PoolSharing, SpawnedThreadScopeInstallsTheSpawnersFrame)
     EXPECT_TRUE(before == NULL);
     EXPECT_EQ(context.get(), inside);
     EXPECT_TRUE(after == NULL);
+    EXPECT_EQ(1, budgetInside);
+    EXPECT_EQ(1, nCPUsInside);
+    EXPECT_EQ(0, budgetAfter);
 }
 
 TEST_F(PoolSharing, SuiteWorkersOfATaskSeeItsFrame)
@@ -523,6 +854,7 @@ TEST_F(PoolSharing, SuiteWorkersOfATaskSeeItsFrame)
     SuiteProbe probe;
     probe.contexts.assign(kThreads, NULL);
     probe.threads.assign(kThreads, nullptr);
+    probe.budgets.assign(kThreads, 0);
     OfxStatus status = kOfxStatFailed;
     const FrameRenderContext* callerAfter = NULL;
     QSemaphore taskDone;
@@ -542,6 +874,9 @@ TEST_F(PoolSharing, SuiteWorkersOfATaskSeeItsFrame)
     EXPECT_EQ(kOfxStatOK, status);
     for (unsigned int i = 0; i < kThreads; ++i) {
         EXPECT_EQ(context.get(), probe.contexts[i]) << "thread index " << i;
+        if (probe.threads[i] != probe.caller) {
+            EXPECT_EQ(1, probe.budgets[i]) << "a helper must not split its work again, thread index " << i;
+        }
     }
     if (probe.expectHelper) {
         EXPECT_TRUE(probe.helperRan) << "no thread function ran off the task's thread";

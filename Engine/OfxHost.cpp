@@ -1287,10 +1287,10 @@ public:
        } catch (const std::bad_alloc& ba) {
            *_stat = kOfxStatErrMemory;
        } catch (...) {
-        }
+       }
 
         ///reset back the index otherwise it could mess up the indexes if the same thread is re-used
-        tls->threadIndexes.pop_back();
+       tls->threadIndexes.pop_back();
     }
 
 private:

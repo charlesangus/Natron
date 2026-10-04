@@ -475,7 +475,7 @@ The deep grouping wraps it with those three fixes.
   - verify: the file exists and INDEX links to it.
   - size: S
 
-- [ ] M60.P6.T2 — Package the release AppImage for the user checkpoint
+- [x] M60.P6.T2 — Package the release AppImage for the user checkpoint
   - files: `build/appimages/M60-<sha>.AppImage`, `build/appimages/M60-uat.md`
   - approach: Build with the release `package.sh`. The UAT script walks through:
     - DeepRead `deep-layers.exr`: the viewer menu lists `diffuse`/`specular` and shows each;

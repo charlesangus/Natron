@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M63.P6.T2
-pm_heartbeat: 2026-10-05T10:33:06-04:00
+current: null
+pm_heartbeat: 2026-10-05T10:43:36-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -216,7 +216,7 @@ future core work has solid ground to build on.
 | M50 | Proper OCIO support as a project property | blocked | [M50-proper-ocio-support.md](PLAN/MILESTONES/M50-proper-ocio-support.md) |
 | M60 | Deep images get layers/channels like flat images | blocked | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
 | M62 | Render scaling: fix the algorithmic hotspots (bench harness, O(N²)/exponential walks, TLS copy, host copies) | blocked | [M62-render-scaling-hotspots.md](PLAN/MILESTONES/M62-render-scaling-hotspots.md) |
-| M63 | Task-graph render scheduler (stub) | doing | [M63-task-graph-render-scheduler.md](PLAN/MILESTONES/M63-task-graph-render-scheduler.md) |
+| M63 | Task-graph render scheduler | blocked | [M63-task-graph-render-scheduler.md](PLAN/MILESTONES/M63-task-graph-render-scheduler.md) |
 | M64 | Tiled / fused rendering for bandwidth-bound chains (stub) | todo | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
 | M67 | Rewrite core nodes as native nodes (stub) | todo | [M67-native-core-nodes.md](PLAN/MILESTONES/M67-native-core-nodes.md) |
 | M25 | Guard the GL init path against the debug FP traps | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
@@ -264,10 +264,11 @@ future core work has solid ground to build on.
 
 # Open questions
 
+- **M63 awaits the parcel UAT (PR #41, stacked on #40):** gate green (full ctest 987/987 in both modes, CI green on `18aab690f`, strict GL tests under Xvfb, viewer and GL GUI checks, benchmarks in `tools/bench/BASELINE.md`), two review rounds closed. AppImage `build/appimages/M63-18aab690f.AppImage` with `build/appimages/M63-uat.md`. Decision for you: P5.T4 (EGL surfaceless backend so a GPU passed into the container, and headless NatronRenderer/ctest, get real GL) is filed in M63 as a follow-up; say go to run it, otherwise it waits with M64.
 - **M62 awaits the parcel UAT (PR #40, stacked on #39):** gate green (ctest 900/900 ×3, bench gate in `tools/bench/BASELINE.md`, Xvfb smoke, manually dispatched CI green on both workflows), Codex round 1 closed (6 fixed). AppImage `build/appimages/M62-318bdea87.AppImage` with `build/appimages/M62-uat.md`. Merge after #39, then re-run `tools/bench/run_matrix.sh` on `main` once to refresh `BASELINE.md`'s provenance.
 - **M65 awaits the user's UAT sign-off (P8.T3), deferred to the parcel UAT:** `build/appimages/M65-26cc11c9c.AppImage` with `build/appimages/M65-uat.md`. PR #35 is stacked on M61's #34; both Codex review rounds are closed.
 
-- **Parcel UAT (M61 → M65 → M66 → M37 → M50 → M60), awaiting the user.** Every PR is stacked (#34 ← #35 ← #36 ← #37 ← #38 ← #39), and every Codex round is closed. Merge bottom-up after the UAT. The top AppImage is now `build/appimages/M62-318bdea87.AppImage` (M62 adds no UI; its UAT is a scale check). Each milestone's UAT script is `build/appimages/M<id>-uat.md`.
+- **Parcel UAT (M61 → M65 → M66 → M37 → M50 → M60), awaiting the user.** Every PR is stacked (#34 ← #35 ← #36 ← #37 ← #38 ← #39), and every Codex round is closed. Merge bottom-up after the UAT. The top AppImage is now `build/appimages/M63-18aab690f.AppImage` (task-graph scheduler on by default; `build/appimages/M63-uat.md`). Each milestone's UAT script is `build/appimages/M<id>-uat.md`.
   - **Fork PRs, merge with their milestone:**
     - M65: openfx-misc#5, openfx-io#8, openfx-arena#2.
     - M66: openfx-misc#6, openfx-io#9, openfx-arena#3.

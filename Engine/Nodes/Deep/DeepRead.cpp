@@ -148,6 +148,25 @@ DeepRead::getRegionOfDefinition(U64 /*hash*/,
     return eStatusOK;
 }
 
+static bool
+isFrameSequencePattern(const std::string& pattern)
+{
+    if (pattern.find('#') != std::string::npos) {
+        return true;
+    }
+    for (std::size_t i = pattern.find('%'); i != std::string::npos; i = pattern.find('%', i + 1)) {
+        std::size_t j = i + 1;
+        while (j < pattern.size() && pattern[j] >= '0' && pattern[j] <= '9') {
+            ++j;
+        }
+        if (j < pattern.size() && pattern[j] == 'd') {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 StatusEnum
 DeepRead::getPreferredMetadata(NodeMetadata& metadata)
 {
@@ -173,6 +192,11 @@ DeepRead::getPreferredMetadata(NodeMetadata& metadata)
     // same way the data window is mirrored into the RoD above, always lands it at [0, full_height).
     const RectI format(0, 0, spec.full_x + spec.full_width, spec.full_height);
     metadata.setOutputFormat(format);
+
+    // The render cache keys on time only for frame-varying nodes; without this every frame of a
+    // sequence would be served frame 1's samples.
+    KnobFilePtr filenameKnob = _filename.lock();
+    metadata.setIsFrameVarying(filenameKnob && isFrameSequencePattern(filenameKnob->getValue()));
 
     return eStatusOK;
 }

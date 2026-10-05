@@ -10,3 +10,6 @@ Acceptance sketch:
 - HD chain 30/100 of tile-capable point ops renders at least 1.5x faster than after M63, with lower peak RSS.
 - Non-tile-capable plugins and deep/3D data kinds fall back to whole-image rendering with identical pixels.
 - Cache semantics (which intermediate images are kept) stay correct and are covered by tests.
+
+## Decisions
+- 2026-10-05 — **Premise updated after M63:** tiles are tasks inside M63's frame graph (one task per node per frame today; M64 would split tile-capable chains into per-tile tasks and pipeline the per-image engine passes). M63's measurements: HD chains are kernel-CPU-bound within 2–3x of the memory-bandwidth floor and serial spines gain nothing from branch parallelism, so M64 is the lever for chains; the realistic workloads showed nothing IO- or RAM-bound on the dev box. Still blocked on the user's go-ahead.

@@ -45,4 +45,17 @@ M62.P5.T1 (2026-10-03, massif on a 300-node OFX Grade chain, release build at `a
   - verify: to be elaborated.
   - size: L
 
+## Phase 31.3: Render-engine hand-offs from M63 (speculative)
+
+- [ ] M31.P3.T1 — Per-render context object replacing per-effect TLS frame args
+  - files: `Engine/TLSHolder*`, `Engine/ParallelRenderArgs.*`, `Engine/FrameRenderContext.*`, `Engine/EffectInstance*`
+  - approach: M63 materialises `EffectTLSData` from a per-frame context on demand and inherits it along spawner chains; the end state is tasks reading a `FrameRenderContext` directly (args map, request, abort info) with no per-effect thread-local frame args at all. Also fix `FrameView_compare_less` (`ParallelRenderArgs.h`: returns true for `lhs.view > rhs.view`, not a strict weak ordering; multi-view only).
+  - verify: whole ctest both scheduler modes; `GraphScalingTLS` and `FrameRenderContext` suites rewritten to the new model.
+  - size: L
+- [ ] M31.P3.T2 — Collapse `RenderThreadTask` frame feeders into the scheduler and delete the dead FFA `processFrame` image path
+  - files: `Engine/OutputSchedulerThread.*`, `Engine/RenderScheduler.*`
+  - approach: writers' frames are fed by `RenderThreadTask` QThreads that only block on a future in task-graph mode; the scheduler could own frame admission itself. `processFrame` (`OutputSchedulerThread.cpp:~2432`) is dead for FFA renders.
+  - verify: whole ctest both modes; the writer abort tests; bench range renders no slower.
+  - size: L
+
 **Verification gate:** every task's verify holds; whole ctest suite green; AppImage packaged and a manual GUI session (playback, render-to-disk with abort, Python `app.render()`) reports no regression.

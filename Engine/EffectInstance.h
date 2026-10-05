@@ -1005,6 +1005,12 @@ public:
     static void noteUnplannedPull();
 
     /**
+     * @brief Whether input belongs to the internal tree of a RotoPaint node of the frame installed on this thread. The
+     * RotoPaint task renders that tree itself, so pulling its nodes is not work the scheduler left unplanned.
+     **/
+    static bool isRotoPaintTreePull(const EffectInstancePtr& input);
+
+    /**
      * @brief Don't override this one, override onKnobValueChanged instead.
      **/
     virtual bool onKnobValueChanged_public(KnobI* k, ValueChangedReasonEnum reason, double time, ViewSpec view, bool originatedFromMainThread) OVERRIDE FINAL;

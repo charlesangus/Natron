@@ -65,9 +65,11 @@
 #include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
+#include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -461,10 +463,11 @@ protected:
     // kSomeUnplannedPulls). Every frame's count is printed so the actual values are on record.
     void checkObserved(const char* label,
                        int passes,
-                       int expectedUnplannedPulls)
+                       int expectedUnplannedPulls,
+                       int framesPerPass = kFramesPerPass)
     {
         std::lock_guard<std::mutex> k(_observed->mutex);
-        const std::size_t framesPerPool = static_cast<std::size_t>(passes) * kFramesPerPass;
+        const std::size_t framesPerPool = static_cast<std::size_t>(passes) * framesPerPass;
         EXPECT_EQ(poolSizes().size() * framesPerPool, _observed->frames.size()) << label;
         std::ostringstream pulls;
         for (std::size_t i = 0; i < _observed->frames.size(); ++i) {
@@ -490,6 +493,18 @@ protected:
         const RenderMismatch m = renderBothWays(writer, kFirstFrame, kLastFrame, poolSizes());
         EXPECT_FALSE(m.any) << describe(m);
         checkObserved(writer->getScriptName().c_str(), 1, expectedUnplannedPulls);
+    }
+
+    void renderRangeAndCheck(const NodePtr& writer,
+                             int firstFrame,
+                             int lastFrame,
+                             int expectedUnplannedPulls)
+    {
+        ASSERT_TRUE(bool(writer));
+        clearObserved();
+        const RenderMismatch m = renderBothWays(writer, firstFrame, lastFrame, poolSizes());
+        EXPECT_FALSE(m.any) << describe(m);
+        checkObserved(writer->getScriptName().c_str(), 1, expectedUnplannedPulls, lastFrame - firstFrame + 1);
     }
 
 private:
@@ -614,10 +629,9 @@ TEST_F(SchedulerEquivalence, MergeMaskedByRoto)
     ASSERT_TRUE(maskEnabled != NULL);
     maskEnabled->setValue(true);
 
-    // The Roto node renders its internal tree through a nested pull that
-    // the request pass does not record, so one pull per frame bypasses the
-    // store until that path is routed through it.
-    renderAndCheck(createWriter(merge), 1);
+    // The Roto task renders its internal tree itself, which no task of the frame stores, so pulling
+    // that tree is not counted as unplanned.
+    renderAndCheck(createWriter(merge), 0);
 }
 
 TEST_F(SchedulerEquivalence, DisabledNodeInAChain)
@@ -735,4 +749,127 @@ TEST_F(SchedulerEquivalence, SwitchWithAnimatedWhich)
     ASSERT_TRUE(bool(grade));
 
     renderAndCheck(createWriter(grade));
+}
+
+namespace {
+
+class ParallelRendersGuard {
+public:
+    explicit ParallelRendersGuard(int parallelRenders)
+        : _saved(appPTR->getCurrentSettings()->getNumberOfParallelRenders())
+    {
+        appPTR->getCurrentSettings()->setNumberOfParallelRenders(parallelRenders);
+    }
+
+    ~ParallelRendersGuard()
+    {
+        appPTR->getCurrentSettings()->setNumberOfParallelRenders(_saved);
+    }
+
+    ParallelRendersGuard(const ParallelRendersGuard&) = delete;
+    ParallelRendersGuard& operator=(const ParallelRendersGuard&) = delete;
+
+private:
+    int _saved;
+};
+
+// Effects read the plug-in's render scale preference when they are constructed, so the nodes
+// created while this guard lives do not support render scale and later ones do again.
+class RenderScaleDisabledGuard {
+public:
+    explicit RenderScaleDisabledGuard(const char* pluginID)
+        : _plugin(appPTR->getPluginBinary(QString::fromUtf8(pluginID), -1, -1, false))
+        , _saved(_plugin ? _plugin->isRenderScaleEnabled() : true)
+    {
+        if (_plugin) {
+            _plugin->setRenderScaleEnabled(false);
+        }
+    }
+
+    ~RenderScaleDisabledGuard()
+    {
+        if (_plugin) {
+            _plugin->setRenderScaleEnabled(_saved);
+        }
+    }
+
+    RenderScaleDisabledGuard(const RenderScaleDisabledGuard&) = delete;
+    RenderScaleDisabledGuard& operator=(const RenderScaleDisabledGuard&) = delete;
+
+    bool valid() const
+    {
+        return _plugin != NULL;
+    }
+
+private:
+    Plugin* _plugin;
+    bool _saved;
+};
+
+} // namespace
+
+// Each TimeOffset is an identity of its input at another time, so the outer one is an alias of an
+// alias: the frame stores one image under three keys, and FrameHold's alias is shared by every
+// frame that holds the same time.
+TEST_F(SchedulerEquivalence, IdentitiesAtAnotherTime)
+{
+    NodePtr grade = createGrade(createChecker(), 1.);
+    ASSERT_TRUE(bool(grade));
+    ASSERT_NO_FATAL_FAILURE(animateMultiply(grade, { { -2., 0.3 }, { 4., 1.7 } }));
+
+    NodePtr inner = createTimeOffset(grade, -1);
+    ASSERT_TRUE(bool(inner));
+    NodePtr outer = createTimeOffset(inner, -1);
+    ASSERT_TRUE(bool(outer));
+
+    NodePtr hold = createNode(QString::fromUtf8(PLUGINID_OFX_FRAMEHOLD));
+    ASSERT_TRUE(bool(hold));
+    connectNodes(grade, hold, 0, true);
+    KnobInt* firstFrame = dynamic_cast<KnobInt*>(hold->getKnobByName("firstFrame").get());
+    ASSERT_TRUE(firstFrame != NULL);
+    firstFrame->setValue(2);
+
+    NodePtr merge = createMerge(outer, hold);
+    ASSERT_TRUE(bool(merge));
+
+    renderAndCheck(createWriter(merge));
+}
+
+// Nothing is animated, so both frames' tasks for each node share one cache key while the two
+// frames render at the same time.
+TEST_F(SchedulerEquivalence, StaticCompTwoFramesInParallel)
+{
+    NodePtr upstream = createTransform(createGrade(createChecker(), 0.7), 3., -2.);
+    ASSERT_TRUE(bool(upstream));
+    NodePtr merge = createMerge(upstream, createGrade(createChecker(), 1.2));
+    ASSERT_TRUE(bool(merge));
+    NodePtr writer = createWriter(createGrade(merge, 0.9));
+    ASSERT_TRUE(bool(writer));
+
+    ParallelRendersGuard parallelRenders(2);
+    renderRangeAndCheck(writer, 1, 2, 0);
+}
+
+// The middle Grade does not support render scale, so at mipmap > 0 it renders at full scale and
+// takes its input from the store at level 0 while the rest of the chain renders at the requested level.
+TEST_F(SchedulerEquivalence, MipmapAcrossANodeWithoutRenderScale)
+{
+    NodePtr upper = createGrade(createChecker(), 0.85);
+    ASSERT_TRUE(bool(upper));
+    NodePtr fullScale;
+    {
+        RenderScaleDisabledGuard noRenderScale(PLUGINID_OFX_GRADE);
+        ASSERT_TRUE(noRenderScale.valid());
+        fullScale = createGrade(upper, 1.15);
+    }
+    ASSERT_TRUE(bool(fullScale));
+    ASSERT_EQ(EffectInstance::eSupportsNo, fullScale->getEffectInstance()->supportsRenderScaleMaybe());
+    NodePtr lower = createGrade(fullScale, 0.95);
+    ASSERT_TRUE(bool(lower));
+
+    for (unsigned mipmapLevel = 1; mipmapLevel <= 2; ++mipmapLevel) {
+        const int size = kFormatSize >> mipmapLevel;
+        const RenderMismatch m = renderBothWaysDirect(lower, 1., ViewIdx(0), mipmapLevel, RectI(0, 0, size, size), poolSizes());
+        EXPECT_FALSE(m.any) << describe(m);
+    }
 }

@@ -200,6 +200,8 @@ TLSHolder<T>::getTLSData() const
         return ret;
     }
 
+    // Even a const read installs the frame's args on this thread, so peeking at another effect's args belongs in the
+    // FrameRenderContext. On a task thread, null args mean the frame does not reach this effect, not that nothing renders.
     return createFromFrameContext(curThread);
 }
 

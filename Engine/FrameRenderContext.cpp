@@ -58,6 +58,7 @@ FrameStore::TaskKeyHash::operator()(const TaskKey& key) const
 FrameStore::FrameStore()
     : _entriesMutex()
     , _entries()
+    , _imageRefs()
     , _bytesInFlight(0)
 {
 }
@@ -100,10 +101,46 @@ FrameStore::put(const TaskKey& key,
         std::shared_ptr<Entry>& slot = _entries[key];
         replaced.swap(slot);
         slot = entry;
-        _bytesInFlight += entry->bytes;
+        addImageRefsLocked(*entry);
         if (replaced) {
-            _bytesInFlight -= replaced->bytes;
+            removeImageRefsLocked(*replaced);
         }
+    }
+}
+
+void
+FrameStore::addImageRefsLocked(const Entry& entry)
+{
+    for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = entry.layers.begin(); it != entry.layers.end(); ++it) {
+        if (!it->second) {
+            continue;
+        }
+        ImageRefs& refs = _imageRefs[it->second.get()];
+        if (refs.refs++ > 0) {
+            continue;
+        }
+        // The image cache counts the memory of the images it allocated until they are destroyed, evicted or not.
+        refs.bytes = it->second->getCacheAPI() ? 0 : it->second->size();
+        _bytesInFlight += refs.bytes;
+    }
+}
+
+void
+FrameStore::removeImageRefsLocked(const Entry& entry)
+{
+    for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = entry.layers.begin(); it != entry.layers.end(); ++it) {
+        if (!it->second) {
+            continue;
+        }
+        ImageRefsMap::iterator found = _imageRefs.find(it->second.get());
+        if (found == _imageRefs.end()) {
+            continue;
+        }
+        if (--found->second.refs > 0) {
+            continue;
+        }
+        _bytesInFlight -= found->second.bytes;
+        _imageRefs.erase(found);
     }
 }
 
@@ -158,7 +195,7 @@ FrameStore::release(const TaskKey& key)
         }
         erased.swap(found->second);
         _entries.erase(found);
-        _bytesInFlight -= erased->bytes;
+        removeImageRefsLocked(*erased);
     }
 }
 
@@ -175,6 +212,7 @@ FrameStore::clear()
     {
         std::lock_guard<std::mutex> k(_entriesMutex);
         erased.swap(_entries);
+        _imageRefs.clear();
         _bytesInFlight = 0;
     }
 }
@@ -182,6 +220,7 @@ FrameStore::clear()
 FrameRenderContext::FrameRenderContext()
     : _argsMap()
     , _argsByHolder()
+    , _rotoPaintTreeNodes()
     , _request()
     , _abortInfo()
     , _stats()
@@ -218,12 +257,7 @@ FrameRenderContext::create(double time,
     ParallelRenderArgsSetter::buildArgsMap(time, view, isRenderUserInteraction, isSequential, abortInfo, treeRoot, textureIndex, timeline,
                                            activeRotoPaintNode, isAnalysis, draftMode, stats, true /*setUpstreamArgs*/, OSGLContextPtr(),
                                            &ret->_argsMap);
-    for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = ret->_argsMap.begin(); it != ret->_argsMap.end(); ++it) {
-        EffectInstancePtr effect = it->first->getEffectInstance();
-        if (effect) {
-            ret->_argsByHolder[effect->getTLSHolder()] = it->second;
-        }
-    }
+    ret->indexArgs();
 
     return ret;
 }
@@ -242,14 +276,25 @@ FrameRenderContext::createFromSetter(const ParallelRenderArgsSetter& setter,
     ret->_abortInfo = abortInfo;
     ret->_stats = stats;
     ret->_argsMap = setter.getInstalledArgs();
-    for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = ret->_argsMap.begin(); it != ret->_argsMap.end(); ++it) {
-        EffectInstancePtr effect = it->first->getEffectInstance();
-        if (effect) {
-            ret->_argsByHolder[effect->getTLSHolder()] = it->second;
-        }
-    }
+    ret->indexArgs();
 
     return ret;
+}
+
+void
+FrameRenderContext::indexArgs()
+{
+    for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = _argsMap.begin(); it != _argsMap.end(); ++it) {
+        EffectInstancePtr effect = it->first->getEffectInstance();
+        if (effect) {
+            _argsByHolder[effect->getTLSHolder()] = it->second;
+        }
+        if (it->second) {
+            for (NodesList::const_iterator node = it->second->rotoPaintNodes.begin(); node != it->second->rotoPaintNodes.end(); ++node) {
+                _rotoPaintTreeNodes.insert(node->get());
+            }
+        }
+    }
 }
 
 void
@@ -281,6 +326,12 @@ FrameRenderContext::getArgsForHolder(const TLSHolderBase* holder) const
     std::unordered_map<const TLSHolderBase*, ParallelRenderArgsPtr>::const_iterator found = _argsByHolder.find(holder);
 
     return found == _argsByHolder.end() ? ParallelRenderArgsPtr() : found->second;
+}
+
+bool
+FrameRenderContext::isRotoPaintTreeNode(const Node* node) const
+{
+    return node && (_rotoPaintTreeNodes.find(node) != _rotoPaintTreeNodes.end());
 }
 
 NATRON_NAMESPACE_EXIT

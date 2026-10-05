@@ -35,6 +35,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "Global/GlobalDefines.h"
 
@@ -70,6 +71,8 @@ public:
         // Intersection of the bounds of all layers.
         RectI bounds;
         std::atomic<int> consumersLeft;
+
+        // Size of the layers, whether or not bytesInFlight() counts them.
         std::size_t bytes;
 
         Entry()
@@ -106,6 +109,10 @@ public:
      **/
     void release(const TaskKey& key);
 
+    /**
+     * @brief The bytes of the stored images the image cache does not already account for, each image counted once
+     * however many keys it is stored under.
+     **/
     std::size_t bytesInFlight() const;
 
     void clear();
@@ -113,8 +120,24 @@ public:
 private:
     typedef std::unordered_map<TaskKey, std::shared_ptr<Entry>, TaskKeyHash> EntryMap;
 
+    struct ImageRefs {
+        int refs = 0;
+
+        // The size counted when the image was first stored, as an image may grow while it is stored.
+        std::size_t bytes = 0;
+    };
+
+    typedef std::unordered_map<const Image*, ImageRefs> ImageRefsMap;
+
+    void addImageRefsLocked(const Entry& entry);
+
+    void removeImageRefsLocked(const Entry& entry);
+
     mutable std::mutex _entriesMutex;
     EntryMap _entries;
+
+    // An identity task stores the image of its input under its own key too.
+    ImageRefsMap _imageRefs;
     std::atomic<std::size_t> _bytesInFlight;
 };
 
@@ -183,6 +206,11 @@ public:
      **/
     ParallelRenderArgsPtr getArgsForHolder(const TLSHolderBase* holder) const;
 
+    /**
+     * @brief Whether node belongs to the internal tree of a RotoPaint node this frame reaches.
+     **/
+    bool isRotoPaintTreeNode(const Node* node) const;
+
     const AbortableRenderInfoPtr& getAbortInfo() const
     {
         return _abortInfo;
@@ -209,10 +237,13 @@ public:
     }
 
 private:
+    void indexArgs();
+
     std::map<NodePtr, ParallelRenderArgsPtr> _argsMap;
 
     // Effects share the holder of their render clones, so a clone finds the args of its node.
     std::unordered_map<const TLSHolderBase*, ParallelRenderArgsPtr> _argsByHolder;
+    std::unordered_set<const Node*> _rotoPaintTreeNodes;
     std::shared_ptr<FrameRequestMap> _request;
     AbortableRenderInfoPtr _abortInfo;
     RenderStatsPtr _stats;

@@ -870,7 +870,8 @@ EffectInstance::lookupFrameStore(const EffectInstancePtr& input,
         return false;
     }
     RectI neededRoI = pixelRoI;
-    ParallelRenderArgsPtr inputFrameArgs = input->getParallelRenderArgsTLS();
+    // Read from the frame rather than the input's TLS, which would install the input's args on this thread.
+    ParallelRenderArgsPtr inputFrameArgs = context->getArgsForHolder(input->getTLSHolder());
     const FrameViewRequest* request = (inputFrameArgs && inputFrameArgs->request) ? inputFrameArgs->request->getFrameViewRequest(time, view) : 0;
     if (request) {
         // Stored images stop at the region of definition, which a requested RoI may exceed.
@@ -907,7 +908,7 @@ EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
     const bool fromStore = lookupFrameStore(input, args->time, args->view, args->mipmapLevel, args->components, args->roi, &stored);
     if (fromStore) {
         noteFrameStoreHit();
-    } else if (!args->roi.isNull()) {
+    } else if (!args->roi.isNull() && !isRotoPaintTreePull(input)) {
         noteUnplannedPull();
     }
     if (fromStore && frameStoreImagesMatch(stored, args->bitdepth, args->returnStorage)) {
@@ -924,6 +925,14 @@ EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
     }
 
     return input->renderRoI(*args, layers);
+}
+
+bool
+EffectInstance::isRotoPaintTreePull(const EffectInstancePtr& input)
+{
+    const FrameRenderContext* context = AppTLS::currentFrameContext();
+
+    return context && input && context->isRotoPaintTreeNode(input->getNode().get());
 }
 
 void
@@ -2845,7 +2854,8 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
             return eRenderingFunctorRetOK;
         } else {
             EffectInstance::RenderRoIRetCode renderOk;
-            renderOk = tls->currentRenderArgs.identityInput->renderRoI(*renderArgs, &identityLayers);
+            // renderRoI() finds store images needing a conversion by key, whatever input number they are filed under.
+            renderOk = EffectInstance::renderInputOrTakeFromStore(tls->currentRenderArgs.identityInput, -1, renderArgs.get(), &identityLayers);
             if (renderOk == eRenderRoIRetCodeAborted) {
                 return eRenderingFunctorRetAborted;
             } else if (renderOk == eRenderRoIRetCodeFailed) {

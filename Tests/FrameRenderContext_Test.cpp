@@ -218,3 +218,49 @@ TEST_F(FrameRenderContextTest, FrameStorePutFindRelease)
     std::list<ImagePtr> afterClear;
     EXPECT_FALSE(store.find(key, neededRGBA, RectI(2, 2, 6, 6), &afterClear));
 }
+
+TEST_F(FrameRenderContextTest, FrameStoreCountsAnImageStoredUnderTwoKeysOnce)
+{
+    FrameStore store;
+    ImagePtr rgba = makeLocalImage(ImageLayerDesc::getRGBAComponents(), RectI(0, 0, 8, 8));
+    ASSERT_TRUE(bool(rgba));
+    const std::size_t imageBytes = rgba->size();
+    ASSERT_GT(imageBytes, 0u);
+
+    std::map<ImageLayerDesc, ImagePtr> layers;
+    layers[ImageLayerDesc::getRGBAComponents()] = rgba;
+    const FrameStore::TaskKey input = makeKey(NodePtr(), 1.);
+    const FrameStore::TaskKey identity = makeKey(NodePtr(), 2.);
+
+    store.put(input, layers, 1);
+    EXPECT_EQ(imageBytes, store.bytesInFlight());
+    store.put(identity, layers, 1);
+    EXPECT_EQ(imageBytes, store.bytesInFlight());
+
+    store.put(identity, layers, 1);
+    EXPECT_EQ(imageBytes, store.bytesInFlight()) << "storing the same image again under a key must not change the count";
+
+    store.release(input);
+    EXPECT_EQ(imageBytes, store.bytesInFlight()) << "the image is still stored under the other key";
+    std::list<ImageLayerDesc> needed;
+    needed.push_back(ImageLayerDesc::getRGBAComponents());
+    std::list<ImagePtr> found;
+    EXPECT_TRUE(store.find(identity, needed, RectI(0, 0, 8, 8), &found));
+
+    store.release(identity);
+    EXPECT_EQ(0u, store.bytesInFlight());
+
+    ImagePtr other = makeLocalImage(ImageLayerDesc::getRGBAComponents(), RectI(0, 0, 4, 4));
+    ASSERT_TRUE(bool(other));
+    std::map<ImageLayerDesc, ImagePtr> otherLayers;
+    otherLayers[ImageLayerDesc::getRGBAComponents()] = other;
+    store.put(input, layers, 1);
+    store.put(identity, otherLayers, 1);
+    EXPECT_EQ(imageBytes + other->size(), store.bytesInFlight());
+    store.clear();
+    EXPECT_EQ(0u, store.bytesInFlight());
+    store.put(input, layers, 1);
+    EXPECT_EQ(imageBytes, store.bytesInFlight()) << "clear() must forget the images it counted";
+    store.release(input);
+    EXPECT_EQ(0u, store.bytesInFlight());
+}

@@ -26,8 +26,10 @@
 #include "RenderScheduler.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bitset>
 #include <cassert>
+#include <chrono>
 #include <exception>
 #include <limits>
 #include <unordered_map>
@@ -160,14 +162,21 @@ runnablePriorityOf(RenderScheduler::Priority priority)
 typedef void (*OmpSetNumThreadsFn)(int);
 
 // OpenMP plug-ins size their teams from the calling thread's nthreads ICV, which only the task's thread can set.
-// libgomp is looked up among the loaded objects only, and again on later tasks until a plug-in brought it in.
+// libgomp is looked up among the loaded objects only. Graphs without an OpenMP plug-in never load it, so a failed
+// lookup is retried at most once a second, by one thread, rather than on every task.
 void
 setOpenMPThreadsOfCurrentThread(int threads)
 {
     static std::atomic<OmpSetNumThreadsFn> cached(nullptr);
+    static std::atomic<long long> nextRetryNs(0);
     OmpSetNumThreadsFn fn = cached.load(std::memory_order_acquire);
 
     if (!fn) {
+        const long long now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        long long due = nextRetryNs.load(std::memory_order_relaxed);
+        if (now < due || !nextRetryNs.compare_exchange_strong(due, now + 1000000000LL, std::memory_order_relaxed)) {
+            return;
+        }
         void* lib = dlopen("libgomp.so.1", RTLD_LAZY | RTLD_NOLOAD);
         if (!lib) {
             return;

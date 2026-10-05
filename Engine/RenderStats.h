@@ -164,12 +164,19 @@ public:
     std::map<std::string, int> getLegacyFallbackReasons() const;
 
     /**
-     * @brief Counts one EffectInstance::renderRoI call for the node at the given time and view.
+     * @brief Off by default: counting takes the node's script name and this object's lock on every renderRoI call,
+     * which every task of the frame would contend on.
+     **/
+    void setTrackRenderRoICalls(bool track);
+    bool isTrackingRenderRoICalls() const;
+
+    /**
+     * @brief Counts one EffectInstance::renderRoI call for the node at the given time and view, unless tracking is off.
      **/
     void noteRenderRoI(const NodePtr& node, double time, ViewIdx view);
 
     /**
-     * @brief Calls per (node script name, time, view).
+     * @brief Calls per (node script name, time, view), counted while tracking was on.
      **/
     std::map<std::tuple<std::string, double, int>, int> getRenderRoICalls() const;
 

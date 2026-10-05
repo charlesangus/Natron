@@ -2086,11 +2086,6 @@ Settings::restoreKnobsFromSettings(const KnobsVec& knobs)
 void
 Settings::restoreSettings(bool useDefault)
 {
-    // A cold RoD query on a deep chain recurses through the OFX host at about 2 kB of stack per node. Only the pages a
-    // thread touches are committed. The size only applies to threads the pool creates later, and the first call
-    // is made at startup before it has created any.
-    QThreadPool::globalInstance()->setStackSize(64 * 1024 * 1024);
-
     _restoringSettings = true;
 
     // call restoreKnobsFromSettings only if --no-settings is not part of the command-line arguments

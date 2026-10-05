@@ -569,6 +569,11 @@ public:
      * @brief Created on first use, destroyed once the global pool has been drained at shutdown.
      **/
     RenderScheduler* getRenderScheduler();
+
+    /**
+     * @brief Whether getRenderScheduler() has created the scheduler, without creating it.
+     **/
+    bool hasRenderScheduler() const;
     const OfxHost* getOFXHost() const;
     GPUContextPool* getGPUContextPool() const;
 

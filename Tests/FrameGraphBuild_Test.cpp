@@ -208,6 +208,7 @@ protected:
 
         AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
         RenderStatsPtr stats = std::make_shared<RenderStats>(false);
+        stats->setTrackRenderRoICalls(true);
         ParallelRenderArgsSetter frameRenderArgs(time,
                                                  ViewIdx(0),
                                                  false /*isRenderUserInteraction*/,

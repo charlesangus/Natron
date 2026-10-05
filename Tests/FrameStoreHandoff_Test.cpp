@@ -321,6 +321,7 @@ protected:
 
         appPTR->clearAllCaches();
         RenderStatsPtr stats = std::make_shared<RenderStats>(false);
+        stats->setTrackRenderRoICalls(true);
         FrameRenderContextPtr context = makeContext(consumer, stats);
         ASSERT_TRUE(bool(context));
         putInStore(context, input, inputLayers);
@@ -367,12 +368,14 @@ TEST_F(FrameStoreHandoff, EmptyStorePullsInputLikeLegacy)
 
     appPTR->clearAllCaches();
     RenderStatsPtr legacyStats = std::make_shared<RenderStats>(false);
+    legacyStats->setTrackRenderRoICalls(true);
     std::map<ImageLayerDesc, ImagePtr> legacyConsumer;
     ASSERT_TRUE(renderLegacy(consumer, legacyStats, &legacyConsumer, &error)) << error;
     const std::vector<float> expected = readWindow(legacyConsumer.begin()->second, window);
 
     appPTR->clearAllCaches();
     RenderStatsPtr stats = std::make_shared<RenderStats>(false);
+    stats->setTrackRenderRoICalls(true);
     FrameRenderContextPtr context = makeContext(consumer, stats);
     ASSERT_TRUE(bool(context));
 

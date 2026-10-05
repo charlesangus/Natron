@@ -1493,8 +1493,9 @@ OutputSchedulerThread::onAbortRequested(bool /*keepOldestRender*/)
     }
 
     // Otherwise the queued tasks of a frame submitted to the RenderScheduler are only dropped as they are popped, and
-    // its future finishes late. Outside renderThreadsMutex so that no lock is held while the scheduler's is taken.
-    if (!abortedRenders.empty() && (appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph)) {
+    // its future finishes late. Not tied to the current mode, which may have changed since the frames were submitted.
+    // Outside renderThreadsMutex so that no lock is held while the scheduler's is taken.
+    if (!abortedRenders.empty() && appPTR->hasRenderScheduler()) {
         RenderScheduler* renderScheduler = appPTR->getRenderScheduler();
         for (std::vector<AbortableRenderInfoPtr>::const_iterator it = abortedRenders.begin(); it != abortedRenders.end(); ++it) {
             renderScheduler->abort(*it);

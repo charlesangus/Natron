@@ -305,6 +305,7 @@ struct RenderStatsPrivate
     std::atomic<int> frameStoreHits;
     std::atomic<int> unplannedPulls;
     std::atomic<int> legacyFallbacks;
+    std::atomic<bool> trackRenderRoICalls;
 
     // Both guarded by lock.
     std::map<std::string, int> legacyFallbackReasons;
@@ -321,6 +322,7 @@ struct RenderStatsPrivate
         , frameStoreHits(0)
         , unplannedPulls(0)
         , legacyFallbacks(0)
+        , trackRenderRoICalls(false)
         , legacyFallbackReasons()
         , renderRoICalls()
     {
@@ -540,10 +542,25 @@ RenderStats::getLegacyFallbackReasons() const
 }
 
 void
+RenderStats::setTrackRenderRoICalls(bool track)
+{
+    _imp->trackRenderRoICalls = track;
+}
+
+bool
+RenderStats::isTrackingRenderRoICalls() const
+{
+    return _imp->trackRenderRoICalls.load(std::memory_order_relaxed);
+}
+
+void
 RenderStats::noteRenderRoI(const NodePtr& node,
                            double time,
                            ViewIdx view)
 {
+    if (!isTrackingRenderRoICalls()) {
+        return;
+    }
     const std::string name = node->getScriptName_mt_safe();
     QMutexLocker k(&_imp->lock);
     ++_imp->renderRoICalls[std::make_tuple(name, time, view.value())];

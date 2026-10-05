@@ -358,7 +358,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         assert(!frameArgs->request || frameArgs->nodeHash == frameArgs->request->nodeHash);
     }
 
-    if (frameArgs->stats) {
+    if (frameArgs->stats && frameArgs->stats->isTrackingRenderRoICalls()) {
         frameArgs->stats->noteRenderRoI(getNode(), args.time, args.view);
     }
 

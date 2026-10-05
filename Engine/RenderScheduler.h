@@ -33,6 +33,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <tuple>
 #include <vector>
 
 #include <QMutex>
@@ -76,6 +77,11 @@ struct FrameGraph {
         // Every dependency is a leaf (vacuously so for a leaf): running it starts holding a new branch in memory.
         bool startsBranch = false;
         std::size_t estimatedBytes = 0;
+
+        // Its output goes to the image cache under a key without the time, so a task of the same node at another
+        // time with the same hash renders the same cached image and would wait inside renderRoI for this one.
+        bool sharesCachedOutput = false;
+        U64 nodeHash = 0;
 
         // Only read or written under the scheduler's mutex once the graph is submitted.
         int remainingDeps = 0;
@@ -136,6 +142,12 @@ private:
  * outputs of the admitted and running tasks are counted is admitted at once, up to the threads of the pool. Tasks
  * continuing a started branch always run, and a branch is always admitted when nothing else runs or is ready, so
  * every frame completes.
+ *
+ * A ready task whose cached output another running task is rendering is held back until that task finished, rather
+ * than occupying a pool thread waiting for the image inside renderRoI.
+ *
+ * A failed task aborts its frame, and every frame of the same AbortableRenderInfo, as abort() does, but the frame
+ * finishes with eRenderRoIRetCodeFailed.
  **/
 class RenderScheduler {
 public:
@@ -192,7 +204,8 @@ public:
     int getOutstandingRunnables() const;
 
     /**
-     * @brief The tasks running, and the tasks ready to run including those held back by the bytes budget.
+     * @brief The tasks running, and the tasks ready to run including those held back by the bytes budget or by a
+     * running task rendering their cached output.
      **/
     void getLoad(int* running, int* ready) const;
 
@@ -230,6 +243,12 @@ private:
 
     typedef std::vector<ReadyRef> ReadyHeap;
 
+    typedef std::tuple<const Node*, U64, int, unsigned int> SharedOutputKey;
+
+    static SharedOutputKey sharedOutputKeyOf(const FrameGraph::Task& task);
+
+    void releaseSharedOutputLocked(const FrameGraph::Task& task);
+
     void runOneTask();
 
     bool popLocked(FramePtr* frame, int* task, int* budget, std::vector<FramePtr>* finished);
@@ -243,6 +262,8 @@ private:
     void abortLocked(const FramePtr& frame, std::vector<ReadyRef>* purged, std::vector<FramePtr>* finished);
 
     void finishAbort(const std::vector<ReadyRef>& purged, const std::vector<FramePtr>& finished);
+
+    void releasePurgedInputs(const std::vector<ReadyRef>& purged);
 
     bool isStaleLocked(const ReadyRef& ref) const;
 
@@ -271,6 +292,11 @@ private:
     ReadyHeap _freeReady;
     ReadyHeap _admittedReady;
     ReadyHeap _gatedReady;
+
+    // The running tasks by the cached output they render, and the ready tasks rendering the same output, held back
+    // until the last of those finished.
+    std::map<SharedOutputKey, int> _sharedOutputsRunning;
+    std::multimap<SharedOutputKey, ReadyRef> _deferredReady;
     std::list<FramePtr> _activeFrames;
 
     // The unfinished frames by the AbortableRenderInfo of their context, which each frame keeps alive.

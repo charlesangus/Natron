@@ -235,6 +235,8 @@ RenderScheduler::RenderScheduler()
     , _freeReady()
     , _admittedReady()
     , _gatedReady()
+    , _sharedOutputsRunning()
+    , _deferredReady()
     , _activeFrames()
     , _framesByAbortInfo()
     , _nextFrameSequence(0)
@@ -353,6 +355,14 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
             estimatedRoI = task.roi.intersect(fvRequest->globalData.rod.toPixelEnclosing(task.key.mipmapLevel, par));
         }
         task.estimatedBytes = estimateBytes(estimatedRoI, task.components, task.bitdepth);
+
+        if (!task.isIdentity) {
+            ParallelRenderArgsPtr frameArgs = effect->getParallelRenderArgsTLS();
+            if (frameArgs && frameArgs->frameVaryingComputed && !frameArgs->isFrameVaryingOrAnimated && effect->shouldCacheOutput(false, task.key.time, task.key.view, frameArgs->visitsCount)) {
+                task.sharesCachedOutput = true;
+                task.nodeHash = nodeRequest->second->nodeHash;
+            }
+        }
     }
 
     for (std::size_t i = 0; i < graph.tasks.size(); ++i) {
@@ -501,7 +511,7 @@ RenderScheduler::getLoad(int* running,
     QMutexLocker k(&_mutex);
 
     *running = _runningTasks;
-    *ready = (int)(_freeReady.size() + _admittedReady.size() + _gatedReady.size());
+    *ready = (int)(_freeReady.size() + _admittedReady.size() + _gatedReady.size() + _deferredReady.size());
 }
 
 int
@@ -602,25 +612,44 @@ RenderScheduler::popLocked(FramePtr* frame,
                            int* budget,
                            std::vector<FramePtr>* finished)
 {
-    discardStaleTopsLocked(&_freeReady, finished);
-    discardStaleTopsLocked(&_admittedReady, finished);
-    discardStaleTopsLocked(&_gatedReady, finished);
+    ReadyHeap* heap = NULL;
+    ReadyRef ref;
+    for (;;) {
+        discardStaleTopsLocked(&_freeReady, finished);
+        discardStaleTopsLocked(&_admittedReady, finished);
+        discardStaleTopsLocked(&_gatedReady, finished);
 
-    const bool freeAvailable = !_freeReady.empty();
-    const bool admittedAvailable = !_admittedReady.empty();
-    if (!freeAvailable && !admittedAvailable) {
-        return false;
-    }
+        const bool freeAvailable = !_freeReady.empty();
+        const bool admittedAvailable = !_admittedReady.empty();
+        if (!freeAvailable && !admittedAvailable) {
+            return false;
+        }
 
-    ReadyHeap* heap;
-    if (freeAvailable && admittedAvailable) {
-        heap = ReadyRefWorse()(_freeReady.front(), _admittedReady.front()) ? &_admittedReady : &_freeReady;
-    } else {
-        heap = freeAvailable ? &_freeReady : &_admittedReady;
+        if (freeAvailable && admittedAvailable) {
+            heap = ReadyRefWorse()(_freeReady.front(), _admittedReady.front()) ? &_admittedReady : &_freeReady;
+        } else {
+            heap = freeAvailable ? &_freeReady : &_admittedReady;
+        }
+        std::pop_heap(heap->begin(), heap->end(), ReadyRefWorse());
+        ref = std::move(heap->back());
+        heap->pop_back();
+
+        const FrameGraph::Task& popped = ref.frame->graph.tasks[ref.task];
+        if (!popped.sharesCachedOutput) {
+            break;
+        }
+        const SharedOutputKey key = sharedOutputKeyOf(popped);
+        std::map<SharedOutputKey, int>::iterator running = _sharedOutputsRunning.find(key);
+        if (running == _sharedOutputsRunning.end()) {
+            _sharedOutputsRunning.emplace(key, 1);
+            break;
+        }
+        // Its reservation is dropped: once released it goes through admission again if it starts a branch.
+        if (heap == &_admittedReady) {
+            _reservedBytes -= popped.estimatedBytes;
+        }
+        _deferredReady.emplace(key, std::move(ref));
     }
-    std::pop_heap(heap->begin(), heap->end(), ReadyRefWorse());
-    ReadyRef ref = std::move(heap->back());
-    heap->pop_back();
 
     *frame = ref.frame;
     *task = ref.task;
@@ -638,8 +667,8 @@ RenderScheduler::popLocked(FramePtr* frame,
         appPTR->getNThreadsSettings(&nThreadsToRender, &nThreadsPerEffect);
         cores = appPTR->getHardwareIdealThreadCount();
     }
-    // The gated tasks are left out: they cannot start before a running task finished, so they do not compete for
-    // threads now.
+    // The gated and deferred tasks are left out: they cannot start before a running task finished, so they do not
+    // compete for threads now.
     const int ready = (int)(_freeReady.size() + _admittedReady.size());
     *budget = computeTaskBudget(poolMax, _runningTasks, ready, cores, nThreadsPerEffect);
 
@@ -710,6 +739,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
 
     int toStart = 0;
     int runnablePriority = 0;
+    std::vector<ReadyRef> purgedOnFailure;
     {
         QMutexLocker k(&_mutex);
         --_outstandingRunnables;
@@ -717,9 +747,15 @@ RenderScheduler::executeTask(const FramePtr& frame,
         _reservedBytes -= task.estimatedBytes;
         --frame->runningTasks;
         _peakBytesInFlight = std::max(_peakBytesInFlight, bytesInFlightLocked());
+        if (task.sharesCachedOutput) {
+            releaseSharedOutputLocked(task);
+        }
 
         if (retCode != EffectInstance::eRenderRoIRetCodeOk) {
             markDeadLocked(frame, retCode);
+            if (retCode == EffectInstance::eRenderRoIRetCodeFailed) {
+                abortLocked(frame, &purgedOnFailure, finished);
+            }
         } else if (frame->context->getAbortInfo() && frame->context->getAbortInfo()->isAborted()) {
             markDeadLocked(frame, EffectInstance::eRenderRoIRetCodeAborted);
         }
@@ -746,7 +782,46 @@ RenderScheduler::executeTask(const FramePtr& frame,
         toStart = reserveRunnablesLocked(&runnablePriority);
     }
     startRunnables(toStart, runnablePriority);
+
+    if (retCode == EffectInstance::eRenderRoIRetCodeFailed) {
+        releasePurgedInputs(purgedOnFailure);
+        // The running siblings would otherwise render in full for a frame whose result is dropped. The frame keeps its
+        // failed code, since markDeadLocked() never overwrites the code of a frame already dead.
+        const AbortableRenderInfoPtr& abortInfo = frame->context->getAbortInfo();
+        if (abortInfo) {
+            abortInfo->setAborted();
+            abort(abortInfo);
+        }
+    }
 } // RenderScheduler::executeTask
+
+RenderScheduler::SharedOutputKey
+RenderScheduler::sharedOutputKeyOf(const FrameGraph::Task& task)
+{
+    return SharedOutputKey(task.key.node.get(), task.nodeHash, task.key.view.value(), task.key.mipmapLevel);
+}
+
+void
+RenderScheduler::releaseSharedOutputLocked(const FrameGraph::Task& task)
+{
+    const SharedOutputKey key = sharedOutputKeyOf(task);
+    std::map<SharedOutputKey, int>::iterator running = _sharedOutputsRunning.find(key);
+
+    if (running == _sharedOutputsRunning.end()) {
+        return;
+    }
+    if (--running->second > 0) {
+        return;
+    }
+    _sharedOutputsRunning.erase(running);
+
+    typedef std::multimap<SharedOutputKey, ReadyRef>::iterator DeferredIt;
+    const std::pair<DeferredIt, DeferredIt> range = _deferredReady.equal_range(key);
+    for (DeferredIt it = range.first; it != range.second; ++it) {
+        pushReadyLocked(it->second.frame, it->second.task);
+    }
+    _deferredReady.erase(range.first, range.second);
+}
 
 void
 RenderScheduler::pushReadyLocked(const FramePtr& frame,
@@ -909,6 +984,14 @@ RenderScheduler::purgeQueuedLocked(const FramePtr& frame,
             std::make_heap(heap->begin(), heap->end(), ReadyRefWorse());
         }
     }
+    for (std::multimap<SharedOutputKey, ReadyRef>::iterator it = _deferredReady.begin(); it != _deferredReady.end();) {
+        if (it->second.frame == frame) {
+            purged->push_back(it->second.task);
+            it = _deferredReady.erase(it);
+        } else {
+            ++it;
+        }
+    }
 
     const RenderStatsPtr& stats = frame->context->getStats();
     if (stats) {
@@ -944,8 +1027,7 @@ RenderScheduler::abortLocked(const FramePtr& frame,
 }
 
 void
-RenderScheduler::finishAbort(const std::vector<ReadyRef>& purged,
-                             const std::vector<FramePtr>& finished)
+RenderScheduler::releasePurgedInputs(const std::vector<ReadyRef>& purged)
 {
     // The running tasks of these frames may still read their inputs from the store, so it is not cleared until the
     // last of them returned; only the entries the purged tasks would have released go now.
@@ -956,6 +1038,13 @@ RenderScheduler::finishAbort(const std::vector<ReadyRef>& purged,
             it->frame->context->getStore().release(graph.tasks[*dep].key);
         }
     }
+}
+
+void
+RenderScheduler::finishAbort(const std::vector<ReadyRef>& purged,
+                             const std::vector<FramePtr>& finished)
+{
+    releasePurgedInputs(purged);
     if (!finished.empty()) {
         finalizeFrames(finished);
     }

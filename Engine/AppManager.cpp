@@ -396,7 +396,14 @@ AppManager::loadFromArgs(const CLArgs& cl)
 
     _imp->idealThreadCount = QThread::idealThreadCount();
 
-
+    // A cold RoD query on a deep chain recurses through the OFX host at about 2 kB of stack per node; only the pages a
+    // thread touches are committed. The size only applies to threads the pool creates later, and pool threads never
+    // expire, so a thread created before this call would keep the default stack for the life of the process.
+    if (QThreadPool::globalInstance()->activeThreadCount() > 0) {
+        qDebug() << "The global thread pool already has" << QThreadPool::globalInstance()->activeThreadCount()
+                 << "active threads, which keep the default stack size";
+    }
+    QThreadPool::globalInstance()->setStackSize(64 * 1024 * 1024);
     QThreadPool::globalInstance()->setExpiryTimeout(-1); //< make threads never exit on their own
     //otherwise it might crash with thread-local storage
 
@@ -3481,6 +3488,14 @@ AppManager::getRenderScheduler()
     }
 
     return _imp->renderScheduler.get();
+}
+
+bool
+AppManager::hasRenderScheduler() const
+{
+    QMutexLocker k(&_imp->renderSchedulerMutex);
+
+    return bool(_imp->renderScheduler);
 }
 
 QString

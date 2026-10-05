@@ -145,6 +145,10 @@ public:
      * frame and budget and calls cleanupTLSForThread() on destruction. frameContext must be the spawner's
      * currentFrameContext(), read on the spawner before it hands the work out, since another thread cannot read the
      * spawner's.
+     *
+     * The OpenMP workers a plug-in spawns on its own get neither scope, so they run without a frame or a budget. That
+     * is safe because their parallel regions are pure pixel loops: abort() and clipGetImage are only called from the
+     * suite's thread, which has its frame installed.
      **/
     class SpawnedThreadScope {
     public:

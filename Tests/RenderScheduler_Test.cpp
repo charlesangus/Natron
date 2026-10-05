@@ -26,9 +26,11 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -70,6 +72,9 @@ const int kPoolSizes[] = { 1, 2, 4, 8, 16 };
 // Long enough that the tasks started together are all inside render at once, even on a loaded machine.
 const int kOverlapDelayMs = 20;
 
+// How long a leaf rendering beside a failing one takes unless it notices the abort.
+const qint64 kSiblingRenderMs = 200;
+
 class PoolSizeGuard {
 public:
     explicit PoolSizeGuard(int maxThreads)
@@ -97,6 +102,14 @@ struct FrameRun {
     FrameGraph graph;
     std::size_t numTasks = 0;
     FrameFuturePtr future;
+};
+
+// Shared with the render hook, which outlives a failed assertion of the test body until the hook is reset.
+struct SiblingState {
+    std::set<const Node*> siblings;
+    std::atomic<int> started { 0 };
+    std::atomic<int> bailed { 0 };
+    std::atomic<int> ranFull { 0 };
 };
 
 } // namespace
@@ -557,5 +570,87 @@ TEST_F(RenderSchedulerTest, AbortStopsTheFrame)
         EXPECT_EQ(0u, run.context->getStore().bytesInFlight());
         EXPECT_EQ(1, CountingTestRegistry::totalRenders());
         CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
+    }
+}
+
+// A failed leaf aborts its frame: the leaves running beside it stop early instead of rendering in full, the queued ones
+// never start, and the frame finishes as failed rather than aborted.
+TEST_F(RenderSchedulerTest, FailedTaskStopsSiblings)
+{
+    const int leaves = 16;
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildWide(leaves, &nodes));
+    const NodePtr root = nodes.back();
+
+    // The leaf first in the post-order is started first, so every sibling started with it is still rendering when it
+    // fails.
+    NodePtr failing;
+    {
+        FrameRun probe;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(root, 1., true, &probe, &error)) << error;
+        int first = -1;
+        for (std::size_t i = 0; i < probe.graph.tasks.size(); ++i) {
+            const FrameGraph::Task& task = probe.graph.tasks[i];
+            if (task.dependencies.empty() && ((first < 0) || (task.dfsPostOrder < first))) {
+                first = task.dfsPostOrder;
+                failing = task.key.node;
+            }
+        }
+    }
+    ASSERT_TRUE(bool(failing));
+    setFail(failing);
+
+    const int poolSizes[] = { 4, 16 };
+    for (std::size_t p = 0; p < sizeof(poolSizes) / sizeof(poolSizes[0]); ++p) {
+        const int poolSize = poolSizes[p];
+        SCOPED_TRACE("pool size " + std::to_string(poolSize));
+        PoolSizeGuard pool(poolSize);
+        CountingTestRegistry::reset();
+
+        std::shared_ptr<SiblingState> state = std::make_shared<SiblingState>();
+        for (int i = 0; i < leaves; ++i) {
+            if (nodes[i] != failing) {
+                state->siblings.insert(nodes[i].get());
+            }
+        }
+        CountingTestRegistry::setRenderHook([state](const Node* node) {
+            if (!state->siblings.count(node)) {
+                return;
+            }
+            ++state->started;
+            QElapsedTimer slow;
+            slow.start();
+            while (!node->aborted() && (slow.elapsed() < kSiblingRenderMs)) {
+                QThread::msleep(2);
+            }
+            if (node->aborted()) {
+                ++state->bailed;
+            } else {
+                ++state->ranFull;
+            }
+        });
+
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(root, 1., true, &run, &error)) << error;
+        submit(&run);
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed, run.future->wait());
+        CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
+
+        EXPECT_TRUE(run.abortInfo->isAborted());
+        EXPECT_TRUE(run.future->getRootPlanes().empty());
+        EXPECT_EQ(0u, run.context->getStore().bytesInFlight());
+        EXPECT_EQ(0, _scheduler->getFramesInFlight(run.abortInfo));
+        EXPECT_EQ(1, CountingTestRegistry::renders(failing));
+        EXPECT_EQ(0, state->ranFull.load()) << "a sibling rendered in full after the failure";
+        EXPECT_EQ(state->started.load(), state->bailed.load());
+        // Only the leaves handed to a pool thread before the failure may start, one per thread at most.
+        EXPECT_LE(CountingTestRegistry::totalRenders(), poolSize);
+        for (std::size_t i = leaves; i < nodes.size(); ++i) {
+            EXPECT_EQ(0, CountingTestRegistry::renders(nodes[i])) << nodes[i]->getScriptName();
+        }
+        EXPECT_GE(run.stats->getTasksPurged(), leaves - poolSize);
+        expectRunnablesDrained();
     }
 }

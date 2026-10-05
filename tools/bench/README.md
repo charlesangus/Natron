@@ -114,6 +114,10 @@ unique-name search in `NodeCollection::checkNodeName`; set it to 0 to measure th
 `graph_bench.py` records the string as `settings` (empty when unset). `compare.py` only matches
 records with the same `settings`, and records without the field count as empty.
 
+`BENCH_SETTINGS=renderSchedulerMode=0|1` selects the render scheduler: 1 (Task graph) is the
+default when unset, 0 selects Legacy pull. A run with empty `settings` therefore measures the
+Task graph scheduler.
+
 With `BENCH_RANGE` > 0 the record carries `range_frames`, `range_wall_s`, `range_cpu_s` and
 `range_parallelism` (`range_cpu_s / range_wall_s`, null without a range). `compare.py` prints the
 range per-frame wall time (`range_wall_s / range_frames`) and `range_parallelism` as extra columns

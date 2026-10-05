@@ -399,8 +399,8 @@ Settings::initializeKnobsThreading()
                                        tr("Schedule the nodes of a frame as tasks on the shared thread pool.").toStdString()));
         _renderSchedulerMode->populateChoices(entries);
     }
-    _renderSchedulerMode->setHintToolTip(tr("How the nodes of a frame are scheduled. \"Task graph\" schedules them on the shared thread pool, "
-                                            "while \"Legacy pull\" renders them recursively. "
+    _renderSchedulerMode->setHintToolTip(tr("How the nodes of a frame are scheduled. \"Task graph\" (the default) schedules them on the shared thread pool, "
+                                            "while \"Legacy pull\" renders them recursively and is the fallback. "
                                             "The NATRON_RENDER_SCHEDULER environment variable (legacy or taskgraph) takes precedence over this setting."));
     _threadingPage->addKnob(_renderSchedulerMode);
 
@@ -1507,7 +1507,7 @@ Settings::setDefaultValues()
 #endif
     _useThreadPool->setDefaultValue(true);
     _nThreadsPerEffect->setDefaultValue(0);
-    _renderSchedulerMode->setDefaultValue((int)eRenderSchedulerModeLegacy);
+    _renderSchedulerMode->setDefaultValue((int)eRenderSchedulerModeTaskGraph);
     _renderInSeparateProcess->setDefaultValue(false, 0);
     _queueRenders->setDefaultValue(false);
 

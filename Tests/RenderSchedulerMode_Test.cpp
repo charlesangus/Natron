@@ -90,7 +90,7 @@ TEST_F(RenderSchedulerModeTest, KnobExistsWithLegacyAndTaskGraphEntries)
     KnobChoicePtr k = knob();
     ASSERT_TRUE(k != NULL);
     EXPECT_EQ(2, (int)k->getNumEntries());
-    EXPECT_EQ((int)eRenderSchedulerModeLegacy, k->getDefaultValue(0));
+    EXPECT_EQ((int)eRenderSchedulerModeTaskGraph, k->getDefaultValue(0));
 }
 
 TEST_F(RenderSchedulerModeTest, KnobChangeIsReadBackUnlessEnvironmentOverrides)

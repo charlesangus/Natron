@@ -3,9 +3,12 @@
 #   BENCH_TOPO=chain BENCH_N=100 BENCH_RES=hd NatronRenderer -b tools/bench/graph_bench.py
 #
 # Environment:
-#   BENCH_TOPO    chain | mixed | wide | comp
+#   BENCH_TOPO    chain | mixed | wide | comp (generator-fed), or the plate-fed families
+#                 readchain | footagecomp | iobound | rambound | deepcomp (see README "Realistic workloads")
 #   BENCH_N       approximate number of processing nodes
-#   BENCH_RES     tiny (32x32, isolates per-node overhead) | hd (1920x1080) | uhd (3840x2160)
+#   BENCH_RES     tiny (32x32, isolates per-node overhead) | hd (1920x1080) | uhd (3840x2160); for the
+#                 plate-fed families it also picks the plate resolution (deepcomp always uses HD)
+#   BENCH_PLATES_DIR  where make_plates.py wrote the plates (default build/bench/fixtures)
 #   BENCH_FRAMES  frames timed one at a time after the warm-up frame (default 3)
 #   BENCH_RANGE   frames rendered as one range, to measure frame-parallel throughput (default 0)
 #   BENCH_OUT     JSON-lines file the result is appended to
@@ -18,7 +21,10 @@
 #                 max_concurrent_tasks. Needs the stats-capable CLI path, so it is a separate cold render.
 #   BENCH_RENDERER  NatronRenderer binary for that render (default build/release/Renderer/NatronRenderer)
 #   BENCH_HOLD    seconds to sleep before rendering, so a sampler can attach (default 0)
+#   BENCH_DRY_RUN 1 builds the graph against stand-in objects and prints the planned nodes without
+#                 Natron (python3 tools/bench/graph_bench.py on the host); nothing is rendered
 
+import glob
 import json
 import os
 import random
@@ -28,7 +34,76 @@ import subprocess
 import sys
 import time
 
-import NatronEngine
+DRY_RUN = os.environ.get("BENCH_DRY_RUN") == "1"
+if DRY_RUN:
+    class _Param(object):
+        def __init__(self):
+            self.value = None
+
+        def set(self, *values):
+            self.value = values[0]
+
+        def get(self):
+            return self.value
+
+        def getOption(self, value):
+            return value
+
+        def setValueAtTime(self, *args):
+            pass
+
+    class _Shapes(object):
+        def createEllipse(self, *args):
+            return True
+
+        def createRectangle(self, *args):
+            return True
+
+    class _Node(object):
+        def __init__(self, plugin_id):
+            self.plugin_id = plugin_id
+            self.params = {}
+
+        def getParam(self, name):
+            return self.params.setdefault(name, _Param())
+
+        def connectInput(self, index, node):
+            pass
+
+        def getMaxInputCount(self):
+            return 4
+
+        def getInputLabel(self, index):
+            return ("B", "A", "Mask", "A_2")[index]
+
+        def getRotoContext(self):
+            return _Shapes()
+
+        def getScriptName(self):
+            return self.plugin_id
+
+        def getPluginID(self):
+            return self.plugin_id
+
+    class _App(object):
+        def createNode(self, plugin_id, *args):
+            return _Node(plugin_id)
+
+        def createReader(self, path, *args):
+            return _Node("fr.inria.built-in.Read")
+
+        def createWriter(self, path, *args):
+            return _Node("fr.inria.built-in.Write")
+
+        def getProjectParam(self, name):
+            return _Param()
+
+    class NatronEngine(object):
+        StringNodeCreationProperty = staticmethod(lambda value: value)
+
+    app = _App()
+else:
+    import NatronEngine
 
 TOPO = os.environ.get("BENCH_TOPO", "chain")
 N = int(os.environ.get("BENCH_N", "10"))
@@ -40,12 +115,19 @@ SEED = int(os.environ.get("BENCH_SEED", "1"))
 HOLD = float(os.environ.get("BENCH_HOLD", "0"))
 SETTINGS = os.environ.get("BENCH_SETTINGS", "")
 WORK = os.environ.get("BENCH_WORK", os.path.join(os.getcwd(), "build", "bench", "work"))
+PLATES = os.environ.get("BENCH_PLATES_DIR") or os.path.join(os.getcwd(), "build", "bench", "fixtures")
 # Explicit names bypass the default unique-name search; BENCH_NAMED=0 measures that path.
 NAMED = os.environ.get("BENCH_NAMED", "1") != "0"
 
 LAST_FRAME = 1 + FRAMES + max(RANGE, 0) + 1
 
+READ_TOPOS = ("readchain", "footagecomp", "iobound", "deepcomp")
+PLATE_RES = "hd" if TOPO == "deepcomp" else RES
+SIZES = {"tiny": (32, 32), "hd": (1920, 1080), "uhd": (3840, 2160)}
+
 counts = {}
+# Per frame, the plate file bytes the graph decodes: one entry per Read/DeepRead node.
+plate_reads = []
 
 
 def log(msg):
@@ -71,6 +153,62 @@ def param(node, name):
     if p is None:
         raise RuntimeError("%s has no param %s" % (node.getPluginID(), name))
     return p
+
+
+def set_choice(node, name, value):
+    p = param(node, name)
+    p.set(value)
+    shown = p.getOption(p.get()) if hasattr(p, "getOption") else p.get()
+    if str(shown).lower() != value.lower():
+        log("%s.%s is %s after setting %s" % (node.getScriptName(), name, shown, value))
+
+
+def sequence(stem):
+    # Plate sequences are stem.####.exr in PLATES, written by make_plates.py.
+    pattern = os.path.join(PLATES, stem + ".####.exr")
+    files = sorted(glob.glob(os.path.join(PLATES, stem + ".[0-9][0-9][0-9][0-9].exr")))
+    if not files and not DRY_RUN:
+        raise RuntimeError("no plate %s; run tools/bench/make_plates.py first" % pattern)
+    sizes = [os.path.getsize(f) for f in files]
+    return pattern, len(files), (sum(sizes) // len(sizes) if sizes else 0)
+
+
+def read(index):
+    # index cycles the three plates; looping keeps every timed frame a distinct decode.
+    pattern, n_frames, frame_bytes = sequence("plate_%s_%d" % (PLATE_RES, index % 3 + 1))
+    if NAMED:
+        name = "n%d" % sum(counts.values())
+        props = {"CreateNodeArgsPropNodeInitialName": NatronEngine.StringNodeCreationProperty(name)}
+        node = app.createReader(pattern, None, props)
+    else:
+        node = app.createReader(pattern)
+    if node is None:
+        raise RuntimeError("could not create a reader for " + pattern)
+    counts["fr.inria.built-in.Read"] = counts.get("fr.inria.built-in.Read", 0) + 1
+    for name in ("before", "after"):
+        if node.getParam(name) is not None:
+            set_choice(node, name, "loop")
+        else:
+            log("reader has no %s param; frames past %d may hold" % (name, n_frames))
+    plate_reads.append(frame_bytes)
+    return node
+
+
+def deep_read():
+    pattern, n_frames, frame_bytes = sequence("deep_hd")
+    if n_frames and n_frames < LAST_FRAME:
+        raise RuntimeError("deepcomp renders frames 1-%d but %s has %d frames; DeepRead cannot loop, so "
+                           "regenerate with BENCH_PLATE_FRAMES=%d or lower BENCH_FRAMES/BENCH_RANGE"
+                           % (LAST_FRAME, pattern, n_frames, LAST_FRAME))
+    node = make("fr.natron.DeepRead")
+    param(node, "filename").set(pattern)
+    # DeepRead does not report itself frame-varying, so without an animated knob every frame after
+    # the first reuses the first frame's cached samples instead of reading its own file.
+    disabled = param(node, "disableNode")
+    for f in range(1, LAST_FRAME + 1):
+        disabled.setValueAtTime(False, f)
+    plate_reads.append(frame_bytes)
+    return node
 
 
 def source(index):
@@ -115,11 +253,43 @@ def blur(inp, i):
     return n
 
 
-def merge(a, b):
+def merge(a, b, mask=None):
     n = make("net.sf.openfx.MergePlugin")
     n.connectInput(0, b)
     n.connectInput(1, a)
     param(n, "mix").set(0.5)
+    if mask is not None:
+        idx = [i for i in range(n.getMaxInputCount()) if n.getInputLabel(i) == "Mask"]
+        if not idx:
+            raise RuntimeError("Merge has no Mask input")
+        n.connectInput(idx[0], mask)
+        param(n, "enableMask_Mask").set(True)
+    return n
+
+
+def moving(inp, i):
+    # A small per-frame translate, like a stabilised plate drifting, so no frame repeats another.
+    n = make("net.sf.openfx.TransformPlugin")
+    n.connectInput(0, inp)
+    t = param(n, "translate")
+    for f in range(1, LAST_FRAME + 1):
+        t.setValueAtTime(0.5 * f + 0.25 * (i % 4), f, 0)
+        t.setValueAtTime(0.25 * f, f, 1)
+    return n
+
+
+def roto(i):
+    n = make("fr.inria.built-in.Roto")
+    ctx = n.getRotoContext()
+    if ctx is None:
+        raise RuntimeError("Roto node has no Python roto context")
+    w, h = SIZES[PLATE_RES]
+    if i % 2 == 0:
+        shape = ctx.createEllipse(w * 0.5, h * 0.5, h * 0.6, True, 1)
+    else:
+        shape = ctx.createRectangle(w * 0.2, h * 0.8, h * 0.5, 1)
+    if shape is None:
+        raise RuntimeError("could not create a roto shape")
     return n
 
 
@@ -144,18 +314,74 @@ def build_mixed():
     return out
 
 
-def build_wide():
-    # Leaves of (source -> grade), reduced by a balanced tree of merges: about 3 nodes per leaf.
-    leaves = max(2, (N + 1) // 3)
-    level = [grade(source(i), i) for i in range(leaves)]
+def merge_tree(level, masked=0):
+    # Pairwise reduction; the first `masked` merges made (the leaf level first) get a Roto mask.
+    made = 0
     while len(level) > 1:
         nxt = []
         for j in range(0, len(level) - 1, 2):
-            nxt.append(merge(level[j], level[j + 1]))
+            mask = roto(made) if made < masked else None
+            nxt.append(merge(level[j], level[j + 1], mask))
+            made += 1
         if len(level) % 2:
             nxt.append(level[-1])
         level = nxt
     return level[0]
+
+
+def build_wide():
+    # Leaves of (source -> grade), reduced by a balanced tree of merges: about 3 nodes per leaf.
+    leaves = max(2, (N + 1) // 3)
+    return merge_tree([grade(source(i), i) for i in range(leaves)])
+
+
+def build_rambound():
+    # The wide shape meant for UHD: with N=192 its 64 leaf outputs of 133 MB each (float RGBA)
+    # add up to more than the cache budget of a 15 GB machine.
+    if RES != "uhd":
+        log("rambound is meant for BENCH_RES=uhd, running at %s" % RES)
+    return build_wide()
+
+
+def build_readchain():
+    out = read(0)
+    for i in range(N):
+        out = grade(out, i)
+    return out
+
+
+def build_footagecomp():
+    # K plates, each graded, drifting and (every other one) blurred, merged pairwise; the first
+    # half of the merges are held out by a Roto matte, as a comp's leaf merges usually are.
+    k = max(2, N // 4)
+    branches = []
+    for i in range(k):
+        b = moving(grade(read(i), i), i)
+        if i % 2 == 0:
+            b = blur(b, i)
+        branches.append(b)
+    return merge_tree(branches, masked=(k - 1) // 2)
+
+
+def build_iobound():
+    k = max(2, (N + 1) // 2)
+    out = read(0)
+    for i in range(1, k):
+        out = merge(read(i), out)
+    return out
+
+
+def build_deepcomp():
+    k = max(2, N // 2)
+    out = deep_read()
+    for _ in range(1, k):
+        m = make("fr.natron.DeepMerge")
+        m.connectInput(0, deep_read())
+        m.connectInput(1, out)
+        out = m
+    flat = make("fr.natron.DeepToImage")
+    flat.connectInput(0, out)
+    return merge(flat, read(0))
 
 
 def build_comp():
@@ -213,11 +439,59 @@ def vm(field):
     return -1
 
 
+IO_FIELDS = (("rchar", "io_rchar"), ("wchar", "io_wchar"), ("read_bytes", "io_read_bytes"),
+             ("write_bytes", "io_write_bytes"))
+
+
+def proc_io():
+    # /proc/self/io sums every thread of the process, so decoder and writer threads count too.
+    vals = {}
+    try:
+        with open("/proc/self/io") as f:
+            for line in f:
+                k, v = line.split(":")
+                vals[k.strip()] = int(v)
+    except (OSError, ValueError):
+        return None
+    vals["majflt"] = resource.getrusage(resource.RUSAGE_SELF).ru_majflt
+    return vals
+
+
+def io_delta(before, after):
+    if before is None or after is None:
+        return dict((field, None) for _, field in IO_FIELDS + (("majflt", "majflt"),))
+    out = dict((field, after[k] - before[k]) for k, field in IO_FIELDS)
+    out["majflt"] = after["majflt"] - before["majflt"]
+    return out
+
+
+def io_sum(deltas):
+    if not deltas:
+        return io_delta(None, None)
+    total = {}
+    for d in deltas:
+        for k, v in d.items():
+            total[k] = None if v is None or total.get(k, 0) is None else total.get(k, 0) + v
+    return total
+
+
 def render(writer, first, last):
+    io0 = proc_io()
     c0, t0 = rusage(), time.time()
     app.render(writer, first, last)
     t1, c1 = time.time(), rusage()
-    return t1 - t0, c1 - c0
+    return t1 - t0, c1 - c0, io_delta(io0, proc_io())
+
+
+def mem_total_mb():
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    return None
 
 
 def render_stats(writer):
@@ -248,19 +522,31 @@ def render_stats(writer):
 
 
 def main():
-    if RES == "hd":
+    if TOPO in READ_TOPOS and PLATE_RES not in ("hd", "uhd"):
+        raise RuntimeError("%s reads plates and needs BENCH_RES=hd or uhd" % TOPO)
+    fmt = PLATE_RES if TOPO in READ_TOPOS else RES
+    if fmt == "hd":
         app.getProjectParam("outputFormat").set("HD")
-    elif RES == "uhd":
+    elif fmt == "uhd":
         app.getProjectParam("outputFormat").set("UHD_4K")
     app.getProjectParam("frameRange").set(1, LAST_FRAME)
 
-    builders = {"chain": build_chain, "mixed": build_mixed, "wide": build_wide, "comp": build_comp}
+    builders = {"chain": build_chain, "mixed": build_mixed, "wide": build_wide, "comp": build_comp,
+                "readchain": build_readchain, "footagecomp": build_footagecomp, "iobound": build_iobound,
+                "rambound": build_rambound, "deepcomp": build_deepcomp}
     t0 = time.time()
     root = builders[TOPO]()
     build_s = time.time() - t0
+    if DRY_RUN:
+        log("dry run: %s N=%d nodes=%d %s" % (TOPO, N, sum(counts.values()), json.dumps(counts, sort_keys=True)))
+        log("dry run: plate bytes per frame %d over %d reads" % (sum(plate_reads), len(plate_reads)))
+        return
 
     os.makedirs(WORK, exist_ok=True)
     path = os.path.join(WORK, "%s_%d_%s_####.exr" % (TOPO, N, RES))
+    written = os.path.join(WORK, "%s_%d_%s_[0-9][0-9][0-9][0-9].exr" % (TOPO, N, RES))
+    for stale in glob.glob(written):
+        os.remove(stale)
     writer = app.createWriter(path)
     writer.connectInput(0, root)
     for name, value in (("compression", "none"),):
@@ -283,16 +569,19 @@ def main():
         time.sleep(HOLD)
 
     rss_before = vm("VmRSS")
-    warm_wall, warm_cpu = render(writer, 1, 1)
-    walls, cpus = [], []
+    warm_wall, warm_cpu, warm_io = render(writer, 1, 1)
+    walls, cpus, ios = [], [], []
     for f in range(2, 2 + FRAMES):
-        w, c = render(writer, f, f)
+        w, c, io = render(writer, f, f)
         walls.append(w)
         cpus.append(c)
-    range_wall = range_cpu = None
+        ios.append(io)
+    range_wall = range_cpu = range_io = None
     if RANGE > 0:
         first = 2 + FRAMES
-        range_wall, range_cpu = render(writer, first, first + RANGE - 1)
+        range_wall, range_cpu, range_io = render(writer, first, first + RANGE - 1)
+    outputs = glob.glob(written)
+    output_bytes = sum(os.path.getsize(p) for p in outputs)
 
     stats_fields = render_stats(writer) if os.environ.get("BENCH_RENDER_STATS") == "1" else {}
     med = sorted(walls)[len(walls) // 2] if walls else None
@@ -317,7 +606,17 @@ def main():
         "rss_before_mb": rss_before,
         "rss_peak_mb": vm("VmHWM"),
         "counts": counts,
+        "pixels": SIZES[fmt][0] * SIZES[fmt][1] if fmt in SIZES else None,
+        "cpus": os.cpu_count(),
+        "mem_total_mb": mem_total_mb(),
+        "plate_res": PLATE_RES if TOPO in READ_TOPOS else None,
+        "plate_bytes": sum(plate_reads),
+        "output_bytes": output_bytes,
+        "output_frames": len(outputs),
+        "io_phases": {"warm": warm_io, "frames": io_sum(ios), "range": range_io},
     }
+    # The top-level IO fields cover the timed frames, like frame_wall_s.
+    result.update(io_sum(ios))
     result.update(stats_fields)
     line = json.dumps(result)
     log("RESULT " + line)

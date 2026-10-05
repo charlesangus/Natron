@@ -5,6 +5,8 @@
 #   tools/bench/run_matrix.sh <tag> <res> <frames> <range> <topo:n,n,n> [<topo:n,n> ...]
 #   e.g. tools/bench/run_matrix.sh overhead tiny 5 0 chain:0,10,100 wide:10,100
 # BENCH_SETTINGS="name=value;name=value" is passed to NatronRenderer as --setting arguments.
+# BENCH_KEEP=1 copies each configuration's written frames to build/bench/keep/<tag>/ first.
+# BENCH_PLATES_DIR (plates from make_plates.py, default build/bench/fixtures) is forwarded when set.
 # Each configuration waits for the load average to drop (BENCH_MAX_LOAD, BENCH_COOLDOWN_TIMEOUT)
 # and then sleeps BENCH_COOLDOWN seconds, and its CPU clock is logged to
 # build/bench/freq-<tag>-<topo>-<n>.txt and summarised into the result record.
@@ -37,7 +39,7 @@ for spec in "$@"; do
         docker exec -e BENCH_TOPO="$topo" -e BENCH_N="$n" -e BENCH_RES="$res" \
             -e BENCH_FRAMES="$frames" -e BENCH_RANGE="$range" -e BENCH_OUT="$out" -e BENCH_NAMED="${BENCH_NAMED:-1}" \
             -e BENCH_SETTINGS="${BENCH_SETTINGS:-}" -e BENCH_TIMEOUT="${BENCH_TIMEOUT:-1800}" -e REPO="$repo" \
-            -e OMP_WAIT_POLICY -e GOMP_SPINCOUNT -e OMP_THREAD_LIMIT -e OMP_DISPLAY_ENV -e BENCH_RENDER_STATS \
+            -e OMP_WAIT_POLICY -e GOMP_SPINCOUNT -e OMP_THREAD_LIMIT -e OMP_DISPLAY_ENV -e BENCH_RENDER_STATS -e BENCH_PLATES_DIR \
             -e OFX_PLUGIN_PATH="$repo"/build/assets/Plugins natron-dev bash -lc "$inner" \
             > "$log" 2>&1
         code=$?
@@ -46,6 +48,10 @@ for spec in "$@"; do
             bench_record_freq "$out" "$freq"
         fi
         if [ "$code" -ne 0 ]; then status=1; fi
+        if [ -n "${BENCH_KEEP:-}" ]; then
+            mkdir -p "$repo/build/bench/keep/$tag"
+            cp "$repo"/build/bench/work/*.exr "$repo/build/bench/keep/$tag/" 2>/dev/null
+        fi
         rm -f "$repo"/build/bench/work/*.exr
         echo "$tag $topo n=$n res=$res exit=$code $(( $(date +%s) - start ))s"
     done

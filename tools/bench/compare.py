@@ -22,6 +22,13 @@ RANGE_METRICS = [
     ("range_par", "range_parallelism", False),
 ]
 
+# Block IO of the timed frames in MB; printed when both files have it and never flagged, since a
+# change in IO volume is a property of the workload rather than a regression.
+IO_METRICS = [
+    ("io_r", "io_read_mb"),
+    ("io_w", "io_write_mb"),
+]
+
 
 def load(path):
     groups = {}
@@ -33,6 +40,9 @@ def load(path):
             rec = json.loads(line)
             if rec.get("range_wall_s") and rec.get("range_frames"):
                 rec["range_frame_s"] = rec["range_wall_s"] / rec["range_frames"]
+            for src, dst in (("io_read_bytes", "io_read_mb"), ("io_write_bytes", "io_write_mb")):
+                if isinstance(rec.get(src), (int, float)):
+                    rec[dst] = rec[src] / 1e6
             key = (rec.get("topo"), rec.get("n"), rec.get("res"), rec.get("named"), rec.get("settings") or "")
             groups.setdefault(key, []).append(rec)
     return groups
@@ -107,6 +117,12 @@ def main():
             flagged = flagged or bad
             r = "-" if ratio is None else "%.2f" % ratio
             cells.append("%s %s->%s x%s" % (label, fmt(b), fmt(a), r))
+        for label, field in IO_METRICS:
+            b = median_of(before[key], field)
+            a = median_of(after[key], field)
+            if b is None or a is None:
+                continue
+            cells.append("%s %sMB->%sMB x%s" % (label, fmt(b), fmt(a), "-" if not b else "%.2f" % (a / b)))
         flagged_any = flagged_any or flagged
         head = "%s n=%s res=%s named=%s%s" % (topo, n, res, named, " settings=" + settings if settings else "")
         khz = khz_note(head, before[key], after[key])

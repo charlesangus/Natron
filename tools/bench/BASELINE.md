@@ -713,3 +713,47 @@ Top busy self time: unresolved `[Misc.ofx]` 35.2%; `ofxsMaskMixPix<float,4,1,tru
 - FAIL: peak RSS growth <= ~66 MB per added pool thread. Wide: +466 MB at P=8 (116 MB/thread), +629 MB from 8 to 16 (79 MB/thread), +1095 MB from 4 to 16 (91 MB/thread); comp +88 MB at P=8 (22 MB/thread), +593 MB from 8 to 16 (74 MB/thread), +681 MB from 4 to 16 (57 MB/thread). The P=4 wide base (981 MB) is lower than other wide P=4 measurements (1220-1267 MB), which inflates the wide growth; against 1257 MB wide is +190 MB at P=8 and +819 MB at P=16 (68 MB/thread).
 - PASS: Legacy vs After M62, no row slower than 1.15x. Worst 1.02 (chain 1000 tiny).
 - FLAG: no pair of counterpart runs differs by more than 10% in `cpu_khz_mean` except the sweep's comp P=8 against P=16 (14.7%).
+
+## Realistic workloads (2026-10-04, 2db83845a)
+
+Machine and harness as in "After admission fix": `build/release` at `2db83845a`, one configuration at a time, default cooldowns (load before each configuration 0.46-0.49), clock logged. Modes: `BENCH_SETTINGS=renderSchedulerMode=0` (Legacy) and `=1` (Task graph, with `BENCH_RENDER_STATS=1`). Every configuration exited 0; the real set took 1910 s.
+
+Plates (`make_plates.py`, `BENCH_PLATES_RES=all BENCH_PLATE_FRAMES=13`, about 55 s): `plate_hd_1..3` 9.4-9.5 MB per frame (122-124 MB per sequence, half RGBA; 1 and 2 ZIP, 3 PIZ), `plate_uhd_1..3` 37.3-37.7 MB per frame (485-490 MB per sequence), `deep_hd` 31.6 MB per frame (410 MB; one sample per pixel, R G B A Z ZBack float, ZIPS, Z 1-100), 2239 MB in all.
+
+Commands (repo root; `<M>` 0 for legacy, 1 for taskgraph):
+
+```
+docker exec -e BENCH_PLATES_RES=all -e BENCH_PLATE_FRAMES=13 -e REPO="$PWD" -e OFX_PLUGIN_PATH="$PWD"/build/assets/Plugins natron-dev \
+    bash -lc 'cd "$REPO" && xvfb-run --auto-servernum build/release/Renderer/NatronRenderer -b tools/bench/make_plates.py'
+BENCH_TIMEOUT=3600 BENCH_SETTINGS=renderSchedulerMode=<M> tools/bench/run_matrix.sh t9-<legacy|taskgraph>-hd hd 3 8 readchain:30 footagecomp:32 deepcomp:8
+BENCH_TIMEOUT=3600 BENCH_SETTINGS=renderSchedulerMode=<M> tools/bench/run_matrix.sh t9-<legacy|taskgraph>-uhd uhd 3 0 iobound:8 rambound:192
+python3 tools/bench/classify.py build/bench/results-t9-*.jsonl
+```
+
+Results: `build/bench/results-t9-*.jsonl`, logs `build/bench/logs/t9-*`, clocks `build/bench/freq-t9-*.txt`.
+
+Frame columns are the median of 3 timed frames; ratio is taskgraph / legacy. IO columns are the timed frames' totals (3 frames). Plate MB/frame is the plate file bytes the graph decodes per frame; output MB/frame is the written EXR (`none` compression).
+
+| topo | n | nodes | legacy frame s | taskgraph frame s | ratio | range/frame s (L / T) | parallelism (L / T) | io_read / io_write MB (L / T) | rchar MB (L / T) | plate MB/frame | output MB/frame | rss_peak MB (L / T) | max concurrent tasks (tasks run) | cpu_khz_mean MHz (L / T) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| readchain | 30 hd | 31 | 1.1281 | 1.1260 | 1.00 | 0.917 / 0.902 | 3.01 / 3.01 | 5 / 50, 0 / 50 | 28 / 28 | 9.4 | 16.6 | 1248 / 1346 | 1 (32) | 2615 / 2595 |
+| footagecomp | 32 hd | 38 | 1.5764 | 1.3040 | 0.83 | 1.655 / 1.296 | 2.76 / 3.27 | 19 / 51, 0 / 51 | 227 / 227 | 75.3 | 16.8 | 4581 / 4758 | 4 (39) | 2388 / 2485 |
+| deepcomp | 8 hd | 10 | 2.0270 | 2.1573 | 1.06 | 1.604 / 1.585 | 1.85 / 1.67 | 0 / 50, 0 / 50 | 416 / 416 | 135.6 | 16.6 | 6129 / 4685 | 2 (4) | 2413 / 2550 |
+| iobound | 8 uhd | 7 | 1.3458 | 0.9743 | 0.72 | - / - | 2.07 / 2.97 | 35 / 199, 0 / 199 | 451 / 451 | 149.8 | 66.4 | 3074 / 3079 | 4 (8) | 2440 / 2407 |
+| rambound | 192 uhd | 191 | 27.0630 | 24.3242 | 0.90 | - / - | 2.92 / 3.65 | 0 / 199, 0 / 199 | 0 / 1 | 0.0 | 66.4 | 1735 / 2439 | 4 (192) | 1973 / 1739 |
+
+Classifier verdicts (`classify.py`, legacy / taskgraph):
+
+| topo | verdict (L / T) | numbers (taskgraph) |
+|---|---|---|
+| readchain 30 hd | CPU-bound / CPU-bound | parallelism 3.01 of 4; est. 1.83 GB/s moved; file bytes 26 MB/frame = 0.023 GB/s; 36 ms/node |
+| footagecomp 32 hd | under-occupied / CPU-bound | parallelism 2.76 / 3.27; est. 2.11 GB/s moved; file bytes 92 MB/frame = 0.071 GB/s; rss 4.8 GB of a 7.9 GB budget |
+| deepcomp 8 hd | under-occupied / under-occupied | parallelism 1.85 / 1.67; file bytes 152 MB/frame = 0.071 GB/s; rss 6.1 / 4.7 GB; 216 ms/node |
+| iobound 8 uhd | under-occupied / CPU-bound | parallelism 2.07 / 2.97; file bytes 216 MB/frame = 0.22 GB/s (11% of the 2 GB/s disk threshold); block reads 35 MB legacy, 0 taskgraph |
+| rambound 192 uhd | CPU-bound / CPU-bound | parallelism 2.92 / 3.65; rss_peak 1.7 / 2.4 GB of 7.9 GB; est. 2.43 GB/s moved; 127 ms/node |
+
+- No family is IO-bound: with the plates in the page cache block reads are 0-35 MB over three frames, and even counted as disk traffic the plate and output bytes reach at most 0.22 GB/s (UHD iobound). Decode cost shows up as CPU (EXR decompression), not as IO wait.
+- `rambound` is not RAM-bound: peak RSS is 1.7 GB (legacy) and 2.4 GB (taskgraph), not the 8.5 GB that 64 live UHD leaves would need, because each leaf's image is released once its merge has consumed it. Its rambound clocks differ by 12% (1973 vs 1739 MHz, taskgraph lower), so its x0.90 understates the taskgraph gain.
+- Task graph wins where there are independent branches: UHD iobound x0.72 (4 concurrent tasks), footagecomp x0.83, rambound x0.90. readchain (a serial chain) is even at x1.00. deepcomp is x1.06 with 2 concurrent tasks and only 4 tasks run for 10 nodes, so most of the deep chain runs inside a single task.
+- Pixel identity: in a 2-frame smoke (`BENCH_KEEP=1`, frames 1-3 of readchain 10, footagecomp 16, iobound 8, deepcomp 8 at HD and iobound 8, rambound 30 at UHD) every legacy and taskgraph EXR is byte-identical except for 2-3 bytes inside the `capDate` header.
+- DeepRead does not report itself frame-varying, so within one process every frame of a `####` deep sequence after the first returned the first frame's samples: frame 2 rendered after frame 1 was byte-identical to frame 1 apart from `capDate`, while frame 2 rendered alone differed in 11.5M bytes. Both modes reproduce it. `graph_bench.py` works around it by keyframing each DeepRead's `disableNode`; the reader itself still needs the fix.

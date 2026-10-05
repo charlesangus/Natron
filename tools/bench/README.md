@@ -15,6 +15,8 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `analyze_stacks.py` | Summarises eu-stack samples: busy/blocked/idle, activity, self and inclusive functions. |
 | `compare.py` | Compares two result files per (topology, n, resolution, named); exits non-zero on a regression past `--threshold`. |
 | `stream_bench.c` | Node-at-a-time vs tiled vs fused cost of a chain of point ops on this machine. |
+| `make_plates.py` | Writes the synthetic EXR plates and the deep sequence the plate-fed families read. |
+| `classify.py` | Prints a boundedness verdict (CPU, bandwidth, IO, RAM, host overhead) per result record. |
 
 Topologies: `chain` (N Grades in series), `mixed` (Grade/Blur/Transform/ColorCorrect in series),
 `wide` (sources merged by a balanced tree), `comp` (seeded random DAG with fan-out and merges).
@@ -29,6 +31,75 @@ python3 tools/bench/compare.py build/bench/results-before.jsonl build/bench/resu
 ```
 
 Results land in `build/bench/results-<tag>.jsonl`, logs in `build/bench/logs/`.
+
+## Realistic workloads
+
+The generator-fed families above decode nothing and keep every image far below the cache budget,
+so they cannot show IO or memory limits. These families read plates from disk:
+
+| `BENCH_TOPO` | graph | nodes |
+|---|---|---|
+| `readchain` | Read (plate 1) -> N Grades -> Write | N + 1 |
+| `footagecomp` | K = N/4 Reads cycling the three plates, each -> Grade -> Transform (translate drifting per frame) -> CImgBlur on every other branch, merged pairwise; the first half of the merges (the leaf level first) masked by a Roto node holding one ellipse or rectangle | about 4.5 K |
+| `iobound` | K = N/2 Reads -> one Merge chain -> Write (writer compression `none`) | about N |
+| `rambound` | the `wide` tree (CheckerBoard -> Grade leaves, Merge tree), meant for `BENCH_RES=uhd`: at N=192 its 64 leaf images of 133 MB (float RGBA) exceed the 7.5 GB cache budget of this 15 GB machine | about N |
+| `deepcomp` | K = N/2 DeepReads of the deep sequence -> DeepMerge chain -> DeepToImage -> Merge over HD plate 1 -> Write | about N |
+
+`BENCH_RES` (`hd` or `uhd`) picks the plate resolution and project format of `readchain`,
+`footagecomp` and `iobound`; `deepcomp` always uses HD. Reads loop their 8-frame sequence (`before`
+and `after` set to `loop`), so every timed frame decodes a different frame. DeepRead cannot loop:
+`deepcomp` needs `1 + BENCH_FRAMES + BENCH_RANGE + 1` frames on disk and fails early otherwise, so
+use `BENCH_FRAMES=3 BENCH_RANGE=3` with the default plates or regenerate them with a larger
+`BENCH_PLATE_FRAMES`. The deep chain's sample count grows by one per merge (K samples per pixel at
+the end, about 50 MB of samples per layer at HD), so keep `deepcomp` at N <= 16 on this machine.
+DeepRead does not report itself frame-varying, so a sequence read through it would reuse the first
+frame's samples on every later frame of the process; `graph_bench.py` keyframes each DeepRead's
+`disableNode` (always off) so every frame reads its own file. The Roto shapes are not animated, so each Roto matte is rendered once per frame like any other
+input.
+
+Plates: `make_plates.py` writes, per resolution, `plate_<hd|uhd>_<1|2|3>.####.exr` (frames 1-8,
+half-float RGBA; plates 1 and 2 ZIP, plate 3 PIZ), and `deep_hd.####.exr` (DeepFromImage of the
+HD plate 1 image with a Z ramp from 1 to 100, written by DeepWrite). Each image is a checkerboard
+mixed with full-frame noise reseeded per frame, so frames differ and compress as poorly as grainy
+footage. Existing complete sequences are skipped and every sequence's size is logged.
+`BENCH_PLATES_RES=hd|uhd|all` (default `all`), `BENCH_PLATES_DIR` (default `build/bench/fixtures`,
+gitignored), `BENCH_PLATE_FRAMES` (default 8).
+
+```
+docker exec -e BENCH_PLATES_RES=all -e REPO="$PWD" -e OFX_PLUGIN_PATH="$PWD"/build/assets/Plugins natron-dev \
+    bash -lc 'cd "$REPO" && xvfb-run --auto-servernum build/release/Renderer/NatronRenderer -b tools/bench/make_plates.py'
+tools/bench/run_matrix.sh real-hd hd 3 0 readchain:30 footagecomp:64 iobound:16 deepcomp:16
+tools/bench/run_matrix.sh real-uhd uhd 3 0 iobound:16 rambound:192
+python3 tools/bench/classify.py build/bench/results-real-hd.jsonl build/bench/results-real-uhd.jsonl
+```
+
+`BENCH_KEEP=1 tools/bench/run_matrix.sh ...` copies each configuration's written frames to
+`build/bench/keep/<tag>/` before deleting them, e.g. to compare the two scheduler modes byte for
+byte (the EXR `capDate` header differs between runs).
+
+IO counters: around every timed phase `graph_bench.py` reads `/proc/self/io` and records the
+deltas. The top-level `io_rchar`, `io_wchar` (bytes passed through read/write calls, page-cache hits
+included), `io_read_bytes`, `io_write_bytes` (block IO) and `majflt` (major page faults) cover the
+timed frames; `io_phases` holds the same for `warm`, `frames` and `range`. `plate_bytes` is the plate
+file bytes the graph decodes per frame (the mean frame size of each Read's sequence, summed over
+Read and DeepRead nodes), `output_bytes` and `output_frames` the size and count of the frames the
+writer produced, measured before `run_matrix.sh` deletes them. `compare.py` prints `io_r`/`io_w`
+(block IO MB of the timed frames) with their ratio when both files have them; they are never
+flagged. Plates just written sit in the page cache, so block reads are usually 0 unless the cache is
+dropped first (`sync; echo 3 > /proc/sys/vm/drop_caches` as root on the host).
+
+`classify.py <results.jsonl>...` prints one line per record: the verdicts and the numbers behind
+them. The thresholds are heuristics (see the script's docstring): RAM-bound when `rss_peak_mb` is
+at least 80% of the cache budget (half of total RAM, or `BENCH_CACHE_MB`) or the timed frames took
+major page faults; IO-bound when block IO or the plate plus output file bytes per frame reach half
+of `BENCH_DISK_GBPS` (default 2); bandwidth-bound when the estimated bytes moved per frame (pixels
+x 16 x (2 x nodes + merges)) reach half of `BENCH_STREAM_GBPS` (default 7); host-overhead-bound
+when the frame takes under 1 ms per node at parallelism <= 1.3; CPU-bound when parallelism is at
+least 70% of the cores with no other signal; otherwise under-occupied. Natron prints nothing when
+its cache evicts, so there is no purge count.
+
+`BENCH_DRY_RUN=1 BENCH_TOPO=<topo> BENCH_N=<n> python3 tools/bench/graph_bench.py` builds a graph
+against stand-in objects on the host and prints its node counts, without Natron.
 
 eu-stack stops the process while it walks stacks, so samples in which no thread looks busy are
 an artifact; take concurrency from `sample_states.sh` instead. perf is not installed in the

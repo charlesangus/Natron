@@ -209,7 +209,7 @@ template <typename T>
 std::shared_ptr<T>
 TLSHolder<T>::getOrCreateTLSData() const
 {
-    QThread* curThread  = QThread::currentThread();
+    QThread* curThread = QThread::currentThread();
     std::shared_ptr<T> ret = findDataForThread(curThread);
 
     if (ret) {

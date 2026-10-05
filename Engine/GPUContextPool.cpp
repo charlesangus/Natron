@@ -25,10 +25,12 @@
 
 #include "GPUContextPool.h"
 
+#include <map>
 #include <set>
 #include <stdexcept>
 
 #include <QMutex>
+#include <QThread>
 #include <QWaitCondition>
 
 #include "Engine/AppManager.h"
@@ -51,11 +53,14 @@ struct GPUContextPoolPrivate
     std::set<attachedGLContexts> attachedGLContexts;
 #endif
 
+    // protected by contextPoolMutex. A thread that exits leaves its context here unbound; a later thread created at
+    // the same address takes it over, which is safe because an unbound context may be made current on any thread.
+    std::map<QThread*, OSGLContextPtr> threadContexts;
+
     // The OpenGL context to use for sharing
     OSGLContextWPtr glShareContext;
 
     int currentOpenGLRendererMaxTexSize;
-
 
     GPUContextPoolPrivate()
         : contextPoolMutex()
@@ -66,6 +71,7 @@ struct GPUContextPoolPrivate
         , glContextPoolEmpty()
         , attachedGLContexts()
 #endif
+        , threadContexts()
         , glShareContext()
         , currentOpenGLRendererMaxTexSize(0)
     {
@@ -87,6 +93,7 @@ GPUContextPool::clear()
     QMutexLocker k(&_imp->contextPoolMutex);
 
     _imp->glContextPool.clear();
+    _imp->threadContexts.clear();
 }
 
 
@@ -185,6 +192,72 @@ GPUContextPool::attachGLContextToRender(bool checkIfGLLoaded)
 
     return newContext;
 } // GPUContextPool::attachGLContextToRender
+
+OSGLContextPtr
+GPUContextPool::getOrCreateContextForCurrentThread()
+{
+    if (!appPTR->isOpenGLLoaded() || !appPTR->getCurrentSettings()->isOpenGLRenderingEnabled()) {
+        return OSGLContextPtr();
+    }
+    QThread* const thread = QThread::currentThread();
+    QMutexLocker k(&_imp->contextPoolMutex);
+
+    std::map<QThread*, OSGLContextPtr>::const_iterator found = _imp->threadContexts.find(thread);
+    if (found != _imp->threadContexts.end()) {
+        return found->second;
+    }
+
+    SettingsPtr settings = appPTR->getCurrentSettings();
+    GLRendererID rendererID;
+    if (settings) {
+        rendererID = settings->getActiveOpenGLRendererID();
+    }
+
+    OSGLContextPtr newContext;
+    try {
+        newContext = std::make_shared<OSGLContext>(FramebufferConfig(), nullptr, GLVersion.major, GLVersion.minor, rendererID, false /*coreProfile*/, true /*threadExclusive*/);
+    } catch (const std::exception&) {
+        return OSGLContextPtr();
+    }
+
+    // Binding the new context to read the limit would unbind whatever context the thread is rendering with.
+    if (settings && !_imp->currentOpenGLRendererMaxTexSize && !OSGLContext::threadHasACurrentContext()) {
+        newContext->setContextCurrentNoRender();
+        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &_imp->currentOpenGLRendererMaxTexSize);
+        newContext->unsetCurrentContextNoRender();
+    }
+
+    _imp->threadContexts.insert(std::make_pair(thread, newContext));
+
+    return newContext;
+} // GPUContextPool::getOrCreateContextForCurrentThread
+
+OSGLContextPtr
+GPUContextPool::getContextForCurrentThread() const
+{
+    QThread* const thread = QThread::currentThread();
+    QMutexLocker k(&_imp->contextPoolMutex);
+
+    std::map<QThread*, OSGLContextPtr>::const_iterator found = _imp->threadContexts.find(thread);
+
+    return found == _imp->threadContexts.end() ? OSGLContextPtr() : found->second;
+}
+
+std::size_t
+GPUContextPool::getNumThreadContextsUsedForRender() const
+{
+    QMutexLocker k(&_imp->contextPoolMutex);
+    std::size_t n = 0;
+
+    for (std::map<QThread*, OSGLContextPtr>::const_iterator it = _imp->threadContexts.begin(); it != _imp->threadContexts.end(); ++it) {
+        // The PBO is created the first time a render binds the context.
+        if (it->second->getPBOId() != 0) {
+            ++n;
+        }
+    }
+
+    return n;
+}
 
 void
 GPUContextPool::releaseGLContextFromRender(const OSGLContextPtr& context)

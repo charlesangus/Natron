@@ -2243,7 +2243,6 @@ taskGraphIneligibility(const ParallelRenderArgsSetter& setter)
         "deep input",
         "paint stroke",
         "refresh",
-        "OpenGL render",
         "analysis",
     };
     const std::map<NodePtr, ParallelRenderArgsPtr>& args = setter.getInstalledArgs();

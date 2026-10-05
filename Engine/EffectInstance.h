@@ -1188,6 +1188,13 @@ public:
 
     OSGLContextPtr getThreadLocalOpenGLContext() const;
 
+    /**
+     * @brief The OpenGL context a render of this effect uses on the calling thread: the thread's own context inside a
+     * RenderScheduler task, since a frame's tasks run concurrently on several threads, and the context attached to
+     * the frame otherwise.
+     **/
+    static OSGLContextPtr getRenderGLContext(const ParallelRenderArgsPtr& frameArgs);
+
     void getThreadLocalInputImages(InputImagesMap* images) const;
 
     void addThreadLocalInputImageTempPointer(int inputNb, const ImagePtr & img);

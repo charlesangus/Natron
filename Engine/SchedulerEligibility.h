@@ -49,7 +49,6 @@ struct SchedulerEligibility {
 
     // A refresh bypasses the cache for the viewer input, which the scheduler's tasks never do.
     bool forceRender = false;
-    bool openGLRender = false;
     bool analysis = false;
     bool onPoolThread = false;
     bool onMainThread = false;
@@ -67,12 +66,11 @@ struct SchedulerIneligibilityReasons {
     const char* deepUpstream;
     const char* paintStroke;
     const char* forceRender;
-    const char* openGLRender;
     const char* analysis;
 };
 
 /**
- * @brief Sets the OpenGL, paint stroke and analysis flags of eligibility from the frame args of every node of a frame.
+ * @brief Sets the paint stroke and analysis flags of eligibility from the frame args of every node of a frame.
  **/
 inline void
 scanFrameArgsForScheduler(const std::map<NodePtr, ParallelRenderArgsPtr>& args,
@@ -82,10 +80,6 @@ scanFrameArgsForScheduler(const std::map<NodePtr, ParallelRenderArgsPtr>& args,
         const ParallelRenderArgsPtr& nodeArgs = it->second;
         if (!nodeArgs) {
             continue;
-        }
-        // The context was attached to the frame's render thread; a task on a pool thread cannot make it current.
-        if (nodeArgs->openGLContext.lock() && (nodeArgs->currentOpenglSupport != ePluginOpenGLRenderSupportNone)) {
-            eligibility->openGLRender = true;
         }
         if (nodeArgs->isDuringPaintStrokeCreation) {
             eligibility->paintStroke = true;
@@ -125,8 +119,6 @@ isFrameEligibleForScheduler(const SchedulerEligibility& eligibility,
         cause = reasons.paintStroke;
     } else if (eligibility.forceRender) {
         cause = reasons.forceRender;
-    } else if (eligibility.openGLRender) {
-        cause = reasons.openGLRender;
     } else if (eligibility.analysis) {
         cause = reasons.analysis;
     }

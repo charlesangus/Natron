@@ -135,18 +135,20 @@ struct OSGLContextPrivate;
 class OSGLContext
 {
 public:
-
     /**
      * @brief Creates a new OpenGL context for offscreen rendering. The constructor may throw an exception if the context
      * creation failed.
      * The context must be made current with makeContextCurrent before being ready to use.
+     * A threadExclusive context is only ever made current by one thread at a time, so it is never handed over between
+     * renders: binding it for a render does not wait for another render to release it.
      **/
     explicit OSGLContext(const FramebufferConfig& pixelFormatAttrs,
                          const OSGLContext* shareContext,
                          int major = GLVersion.major,
                          int minor = GLVersion.minor,
                          const GLRendererID& rendererID = GLRendererID(),
-                         bool coreProfile = false);
+                         bool coreProfile = false,
+                         bool threadExclusive = false);
 
     virtual ~OSGLContext();
 
@@ -190,6 +192,14 @@ public:
      * @brief Returns true if a context is currently set on the current thread.
      **/
     static bool threadHasACurrentContext();
+
+    bool isThreadExclusive() const;
+
+    /**
+     * @brief Number of OSGLContextAttacher currently holding this context bound for a render.
+     **/
+    int getRenderBindCount() const;
+
 private:
 
 

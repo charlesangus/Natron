@@ -48,6 +48,7 @@ set(Tests_SOURCES
     FrameRenderContext_Test.cpp
     FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
+    GLScheduler_Test.cpp
     GraphScaling_Test.cpp
     GraphScalingExpressionDeps_Test.cpp
     GraphScalingNaming_Test.cpp

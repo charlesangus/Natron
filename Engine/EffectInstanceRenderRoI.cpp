@@ -349,7 +349,10 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     } else {
         //The hash must not have changed if we did a pre-pass.
         frameArgs = tls->frameArgs.back();
-        glContext = frameArgs->openGLContext.lock();
+        // A task asks for its thread's context, which it creates on first use: CPU-only renders never ask.
+        if ((frameArgs->currentOpenglSupport != ePluginOpenGLRenderSupportNone) || (args.returnStorage == eStorageModeGLTex)) {
+            glContext = getRenderGLContext(frameArgs);
+        }
         abortInfo = frameArgs->abortInfo.lock();
         if (!abortInfo) {
             // If we don't have info to identify the render, we cannot manage the OpenGL context properly, so don't try to render with OpenGL.

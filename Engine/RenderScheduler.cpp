@@ -34,17 +34,21 @@
 #include <unordered_map>
 #include <utility>
 
+#include <QDateTime>
 #include <QMutexLocker>
 #include <QRunnable>
+#include <QString>
 #include <QThread>
 #include <QThreadPool>
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
+#include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/MemoryInfo.h"
 #include "Engine/Node.h"
 #include "Engine/NonKeyParams.h"
+#include "Engine/OSGLContext.h"
 #include "Engine/OpenMPThreads.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectD.h"
@@ -660,6 +664,21 @@ RenderScheduler::popLocked(FramePtr* frame,
     return true;
 }
 
+namespace {
+
+void
+failTaskWithReason(const EffectInstancePtr& effect,
+                   const char* reason)
+{
+    if (!appPTR) {
+        return;
+    }
+    const QString name = QString::fromUtf8(effect->getScriptName_mt_safe().c_str());
+    appPTR->writeToErrorLog_mt_safe(name, QDateTime::currentDateTime(), QString::fromUtf8("Render task failed: the node %1").arg(QString::fromUtf8(reason)));
+}
+
+} // namespace
+
 void
 RenderScheduler::executeTask(const FramePtr& frame,
                              int taskIndex,
@@ -701,6 +720,33 @@ RenderScheduler::executeTask(const FramePtr& frame,
             retCode = EffectInstance::eRenderRoIRetCodeFailed;
         }
         --_tasksRendering;
+
+        bool glPlanes = false;
+        for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = planes.begin(); it != planes.end(); ++it) {
+            if (it->second && (it->second->getStorageMode() == eStorageModeGLTex)) {
+                glPlanes = true;
+                break;
+            }
+        }
+        if (glPlanes && (retCode == EffectInstance::eRenderRoIRetCodeOk)) {
+            // A texture lives on the context of the thread that made it, so no other task could read it.
+            failTaskWithReason(effect, "returned an OpenGL texture instead of a RAM image");
+            retCode = EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        const OSGLContextPtr threadContext = appPTR ? appPTR->getGPUContextPool()->getContextForCurrentThread() : OSGLContextPtr();
+        if (threadContext) {
+            if (threadContext->getRenderBindCount() != 0) {
+                failTaskWithReason(effect, "left its thread's OpenGL context bound");
+                retCode = EffectInstance::eRenderRoIRetCodeFailed;
+            }
+            if (glPlanes) {
+                // A texture is deleted on whatever context is current, which must be the one that made it.
+                threadContext->setContextCurrentNoRender();
+                planes.clear();
+            }
+            // The next task on this thread may belong to another frame and must find no context current.
+            OSGLContext::unsetCurrentContextNoRender();
+        }
     }
 
     if (retCode == EffectInstance::eRenderRoIRetCodeOk) {

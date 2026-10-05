@@ -464,7 +464,6 @@ ViewerInstance::isFrameEligibleForScheduler(const SchedulerEligibility& eligibil
         "deep input",
         "paint stroke",
         "refresh",
-        "OpenGL render",
         "analysis",
     };
 

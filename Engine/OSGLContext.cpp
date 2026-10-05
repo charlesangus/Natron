@@ -247,6 +247,8 @@ struct OSGLContextPrivate
     GLShaderPtr applyMaskMixShader[2];
     GLShaderPtr copyUnprocessedChannelsShader[16];
 
+    bool threadExclusive;
+
     OSGLContextPrivate()
         : _platformContext()
 #ifdef NATRON_RENDER_SHARED_CONTEXT
@@ -263,6 +265,7 @@ struct OSGLContextPrivate
         , fillImageShader()
         , applyMaskMixShader()
         , copyUnprocessedChannelsShader()
+        , threadExclusive(false)
     {
     }
 
@@ -274,10 +277,12 @@ OSGLContext::OSGLContext(const FramebufferConfig& pixelFormatAttrs,
                          const OSGLContext* shareContext,
                          int major,
                          int minor,
-                         const GLRendererID &rendererID,
-                         bool coreProfile)
-    : _imp( new OSGLContextPrivate() )
+                         const GLRendererID& rendererID,
+                         bool coreProfile,
+                         bool threadExclusive)
+    : _imp(new OSGLContextPrivate())
 {
+    _imp->threadExclusive = threadExclusive;
     if (coreProfile) {
         // Don't bother with core profile with OpenGL < 3
         if (major < 3) {
@@ -360,10 +365,12 @@ OSGLContext::setContextCurrent(const AbortableRenderInfoPtr& abortInfo
 
 #ifdef NATRON_RENDER_SHARED_CONTEXT
     QMutexLocker k(&_imp->renderOwningContextMutex);
-    while (_imp->renderOwningContext && _imp->renderOwningContext != abortInfo) {
-        _imp->renderOwningContextCond.wait(k.mutex());
+    if (!_imp->threadExclusive) {
+        while (_imp->renderOwningContext && _imp->renderOwningContext != abortInfo) {
+            _imp->renderOwningContextCond.wait(k.mutex());
+        }
+        _imp->renderOwningContext = abortInfo;
     }
-    _imp->renderOwningContext = abortInfo;
 #ifdef DEBUG
     if (!_imp->renderOwningContextCount) {
         _imp->renderOwningContextFrameTime = frameTime;
@@ -410,6 +417,17 @@ OSGLContext::unsetCurrentContext(const AbortableRenderInfoPtr& abortInfo)
 {
 #ifdef NATRON_RENDER_SHARED_CONTEXT
     QMutexLocker k(&_imp->renderOwningContextMutex);
+    if (_imp->threadExclusive) {
+        if (_imp->renderOwningContextCount <= 0) {
+            return;
+        }
+        --_imp->renderOwningContextCount;
+        if (!_imp->renderOwningContextCount) {
+            unsetCurrentContextNoRender();
+        }
+
+        return;
+    }
     if (abortInfo != _imp->renderOwningContext) {
         return;
     }
@@ -425,6 +443,25 @@ OSGLContext::unsetCurrentContext(const AbortableRenderInfoPtr& abortInfo)
     }
 #else
     unsetCurrentContextNoRender();
+#endif
+}
+
+bool
+OSGLContext::isThreadExclusive() const
+{
+    return _imp->threadExclusive;
+}
+
+int
+OSGLContext::getRenderBindCount() const
+{
+#ifdef NATRON_RENDER_SHARED_CONTEXT
+    QMutexLocker k(&_imp->renderOwningContextMutex);
+
+    return _imp->renderOwningContextCount;
+#else
+
+    return 0;
 #endif
 }
 

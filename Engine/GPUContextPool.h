@@ -29,6 +29,8 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
+
 #include "Engine/EngineFwd.h"
 
 NATRON_NAMESPACE_ENTER
@@ -71,6 +73,27 @@ public:
      * from the function attachGLContextToRender().
      **/
     void releaseGLContextFromRender(const OSGLContextPtr& context);
+
+    /**
+     * @brief Returns the thread-exclusive OpenGL context of the calling thread, creating it on first use, or null when
+     * OpenGL rendering is unavailable or disabled. These contexts are not part of the pool handed out by
+     * attachGLContextToRender() and share nothing with any other context, so a texture made on one is only valid on it.
+     * The caller must leave the context unbound when it is done rendering, so that the context is never current on a
+     * thread other than the one it belongs to.
+     **/
+    OSGLContextPtr getOrCreateContextForCurrentThread();
+
+    /**
+     * @brief The context getOrCreateContextForCurrentThread() returned on the calling thread, or null if it never ran
+     * there. Never creates one.
+     **/
+    OSGLContextPtr getContextForCurrentThread() const;
+
+    /**
+     * @brief Number of live contexts created by getOrCreateContextForCurrentThread() that were bound for a render at
+     * least once.
+     **/
+    std::size_t getNumThreadContextsUsedForRender() const;
 
     /**
      * @brief Returns the max texture size, i.e: the value returned by glGetIntegerv(GL_MAX_TEXTURE_SIZE,&v)

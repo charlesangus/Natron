@@ -759,15 +759,28 @@ EffectInstance::getThreadLocalRegionsOfInterests(RoIMap & roiMap) const
 }
 
 OSGLContextPtr
+EffectInstance::getRenderGLContext(const ParallelRenderArgsPtr& frameArgs)
+{
+    if (AppTLS::currentFrameContext()) {
+        return appPTR->getGPUContextPool()->getOrCreateContextForCurrentThread();
+    }
+    if (!frameArgs) {
+        return OSGLContextPtr();
+    }
+
+    return frameArgs->openGLContext.lock();
+}
+
+OSGLContextPtr
 EffectInstance::getThreadLocalOpenGLContext() const
 {
     EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
 
     if ( !tls || tls->frameArgs.empty() ) {
-        return OSGLContextPtr();
+        return getRenderGLContext(ParallelRenderArgsPtr());
     }
 
-    return tls->frameArgs.back()->openGLContext.lock();
+    return getRenderGLContext(tls->frameArgs.back());
 }
 
 static bool
@@ -1112,7 +1125,9 @@ EffectInstance::getImage(int inputNb,
             nodeHash = frameRenderArgs->nodeHash;
             duringPaintStroke = frameRenderArgs->isDuringPaintStrokeCreation;
             isAnalysisPass = frameRenderArgs->isAnalysis;
-            glContext = frameRenderArgs->openGLContext.lock();
+            if (returnStorage == eStorageModeGLTex) {
+                glContext = getRenderGLContext(frameRenderArgs);
+            }
             renderInfo = frameRenderArgs->abortInfo.lock();
         } else {
             //This is a bug, when entering here, frameArgs TLS should always have been set, except for unknown threads.
@@ -2793,7 +2808,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
     std::unique_ptr<OSGLContextAttacher> glContextAttacher;
     if (layers.useOpenGL) {
         // Setup the viewport and the framebuffer
-        glContext = frameArgs->openGLContext.lock();
+        glContext = getRenderGLContext(frameArgs);
         AbortableRenderInfoPtr abortInfo = frameArgs->abortInfo.lock();
         assert(abortInfo);
         assert(glContext);

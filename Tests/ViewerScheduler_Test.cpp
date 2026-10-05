@@ -219,10 +219,6 @@ TEST_F(ViewerScheduler, IneligibleFrames)
     EXPECT_EQ("deep input", reasonOf(e));
 
     e = eligibleFrame();
-    e.openGLRender = true;
-    EXPECT_EQ("OpenGL render", reasonOf(e));
-
-    e = eligibleFrame();
     e.paintStroke = true;
     EXPECT_EQ("paint stroke", reasonOf(e));
 
@@ -264,19 +260,19 @@ TEST_F(ViewerScheduler, FrameArgsScan)
     {
         ViewerInstance::SchedulerEligibility e = eligibleFrame();
         ViewerInstance::scanFrameArgsForScheduler(args, &e);
-        EXPECT_FALSE(e.openGLRender);
         EXPECT_FALSE(e.paintStroke);
         EXPECT_FALSE(e.analysis);
         EXPECT_TRUE(ViewerInstance::isFrameEligibleForScheduler(e, NULL));
     }
 
-    // OpenGL support alone, without a context attached to the frame, renders on the CPU.
-    args[first]->currentOpenglSupport = ePluginOpenGLRenderSupportYes;
+    // Tasks render GL nodes on their own thread's context, so OpenGL support keeps the frame on the scheduler.
+    args[first]->currentOpenglSupport = ePluginOpenGLRenderSupportNeeded;
     {
         ViewerInstance::SchedulerEligibility e = eligibleFrame();
         ViewerInstance::scanFrameArgsForScheduler(args, &e);
-        EXPECT_FALSE(e.openGLRender);
+        EXPECT_TRUE(ViewerInstance::isFrameEligibleForScheduler(e, NULL));
     }
+    args[first]->currentOpenglSupport = ePluginOpenGLRenderSupportNone;
 
     args[second]->isDuringPaintStrokeCreation = true;
     {

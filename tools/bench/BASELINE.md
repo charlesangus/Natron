@@ -611,3 +611,105 @@ Top busy self time: unresolved `[Misc.ofx]` frames 29.9%; `ofxsMaskMixPix<float,
 - SKIPPED: P=8/16 sweep pixels identical (done in After M63).
 - PASS (with a note): peak RSS growth <= ~66 MB per added pool thread. Wide against P=4: +158 MB at P=8 (40 MB/thread), +882 MB at P=16 (74 MB/thread; 90 MB/thread between P=8 and P=16, over the limit). Comp falls (3631 -> 1809 -> 2307).
 - PASS: Legacy vs After M62, no row slower than 1.15x. Worst 1.02 (chain 1000 tiny); the HD rows are 0.56-0.81 because After M62 ran without cooldown.
+
+## After thread budget (2026-10-04, 2db83845a)
+
+Machine: 4-core Intel N100, 15 GB RAM; `build/release` at `2db83845a` in the `natron-dev` container, one configuration at a time, harness defaults (1-minute load average below 0.5, then a 60 s sleep). Modes: `BENCH_SETTINGS=renderSchedulerMode=0` (Legacy) and `=1` (Task graph); every configuration exited 0. The whole session took 5560 s (92.7 min), driven by `build/bench/m63final.sh`. Changes since After admission fix: a scheduler-owned per-task thread budget (a lone task gets the pool capped at cores, P tasks get 1 each; the OFX suite, host frame threading and CImg's OpenMP team obey it), feeders opened only while the ready set cannot fill the pool, helpers queued just above node tasks, and the hygiene fixes (stats off the hot path, same-key deferral across frames, failed tasks abort siblings).
+
+Load seen at the end of each cooldown (all below 0.5): HD legacy chain 30 0.47, chain 100 0.47, wide 0.48, comp 0.49, mixed 0.48; HD taskgraph 0.46, 0.47, 0.47, 0.48, 0.49; tiny legacy 0.49, 0.36, 0.30; tiny taskgraph 0.23, 0.44, 0.44; occupancy legacy comp 0.33, wide 0.48, chain 0.48; taskgraph comp 0.46, wide 0.49, chain 0.48; sweep P=4 comp 0.47, wide 0.46; P=8 comp 0.47, wide 0.49; P=16 comp 0.49, wide 0.48; stack profile 0.46. `cpu_khz_mean` per run is in the tables (HD and tiny) and below (sweep, occupancy, stack).
+
+Commands (repo root; `BENCH_TIMEOUT=3600`; `<M>` is 0 for legacy and 1 for taskgraph; `BENCH_RENDER_STATS=1` on the Task graph matrices only):
+
+```
+BENCH_SETTINGS=renderSchedulerMode=<M> tools/bench/run_matrix.sh m63final-<legacy|taskgraph>-hd hd 3 8 chain:30,100 wide:100 comp:100 mixed:100
+BENCH_SETTINGS=renderSchedulerMode=<M> tools/bench/run_matrix.sh m63final-<legacy|taskgraph>-tiny tiny 5 0 chain:1000 wide:1000 comp:300
+SAMPLER=states tools/bench/profile_run.sh m63final-<mode>-<comp|wide>100 120 0.5 BENCH_TOPO=<comp|wide> BENCH_N=100 BENCH_FRAMES=6 BENCH_RES=hd BENCH_SETTINGS=renderSchedulerMode=<M>
+SAMPLER=states tools/bench/profile_run.sh m63final-<mode>-chain30 120 0.5 BENCH_TOPO=chain BENCH_N=30 BENCH_FRAMES=6 BENCH_RANGE=8 BENCH_RES=hd BENCH_SETTINGS=renderSchedulerMode=<M>
+BENCH_SETTINGS=renderSchedulerMode=1 tools/bench/run_matrix.sh m63final-sweep4 hd 3 0 comp:100 wide:100
+BENCH_SETTINGS="renderSchedulerMode=1;noRenderThreads=<8|16>" tools/bench/run_matrix.sh m63final-p<8|16> hd 3 0 comp:100 wide:100
+tools/bench/profile_run.sh m63final-tg-comp100 60 0.5 BENCH_TOPO=comp BENCH_N=100 BENCH_FRAMES=6 BENCH_RES=hd BENCH_SETTINGS=renderSchedulerMode=1
+python3 tools/bench/analyze_stacks.py build/bench/samples-m63final-tg-comp100.txt
+```
+
+Results: `build/bench/results-m63final-*.jsonl`, `states-m63final-*.txt`, `samples-m63final-tg-comp100.txt`, `freq-m63final-*.txt`.
+
+### HD (3 timed frames; range of 8 frames) and tiny (5 timed frames)
+
+Ratio is taskgraph / legacy of the median frame. Parallelism, RSS and clock read legacy / taskgraph. `max concurrent tasks` is the Task graph value from the separate stats pass.
+
+| topo | n | build s (L / T) | legacy frame s | taskgraph frame s | ratio | parallelism (L / T) | range per-frame s (L / T) | range ratio | RSS before MB | max concurrent tasks (tasks run) | cpu_khz_mean MHz (L / T) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| chain | 30 hd | 0.095 / 0.094 | 1.0460 | 1.0125 | 0.97 | 3.03 / 3.09 | 0.890 / 0.864 | 0.97 | 130 / 130 | 1 (32) | 2560 / 2598 |
+| chain | 100 hd | 0.309 / 0.309 | 3.3652 | 3.0829 | 0.92 | 2.95 / 3.24 | 4.751 / 4.581 | 0.96 | 173 / 173 | 1 (102) | 1985 / 2021 |
+| wide | 100 hd | 0.463 / 0.464 | 1.9467 | 1.5406 | 0.79 | 2.94 / 3.57 | 2.395 / 2.175 | 0.91 | 209 / 209 | 4 (99) | 2186 / 2154 |
+| comp | 100 hd | 0.387 / 0.387 | 3.9715 | 3.6881 | 0.93 | 3.10 / 3.23 | 5.706 / 5.516 | 0.97 | 195 / 195 | 4 (103) | 2004 / 1944 |
+| mixed | 100 hd | 0.374 / 0.365 | 10.9741 | 10.4686 | 0.95 | 3.08 / 3.00 | 10.543 / 10.593 | 1.00 | 190 / 190 | 1 (102) | 1914 / 1918 |
+| chain | 1000 tiny | 6.509 / 6.517 | 0.3254 | 0.3980 | 1.22 | 1.00 / 1.01 | - | - | 730 / 730 | 1 (1002) | 2480 / 2612 |
+| wide | 1000 tiny | 6.979 / 7.001 | 0.6354 | 0.4952 | 0.78 | 1.00 / 1.57 | - | - | 1110 / 1110 | 4 (999) | 2604 / 2665 |
+| comp | 300 tiny | 1.327 / 1.308 | 0.2535 | 0.2087 | 0.82 | 1.27 / 1.59 | - | - | 359 / 359 | 4 (304) | 2269 / 2355 |
+
+No counterpart pair differs by more than 10% in `cpu_khz_mean` (largest: tiny chain 1000, +5.3%, Task graph higher). The frame columns are the median of three; for HD comp, wide and chain the three frames are within 5% of each other, for mixed the frames throttle (legacy 7.26, 10.97, 11.38 s; taskgraph 7.50, 10.47, 11.27 s), so the median is a throttled frame and the first-frame ratio is 1.03. First-frame ratios for the rest: chain 30 1.00, chain 100 0.94, wide 0.80, comp 0.93. Task graph tiny chain 1000 is slower than legacy in every frame (0.38-0.41 s against 0.32-0.33 s) and its warm frame too (0.406 against 0.343 s).
+
+Against After admission fix (Task graph, what the thread budget changed): chain 30 HD 1.1217 -> 1.0125 s (ratio 1.07 -> 0.97); chain 100 HD 3.4686 -> 3.0829 s (1.15 -> 0.92); wide 100 HD 1.6945 -> 1.5406 s (0.87 -> 0.79, parallelism 3.30 -> 3.57); comp 100 HD 4.1545 -> 3.6881 s (1.05 -> 0.93, parallelism 2.66 -> 3.23); mixed 100 HD 11.7099 -> 10.4686 s (1.18 -> 0.95, ratio of the range 1.06 -> 1.00); range per-frame ratios chain 30 1.09 -> 0.97, chain 100 1.07 -> 0.96, wide 0.98 -> 0.91, comp 1.02 -> 0.97; tiny chain 1000 0.3332 -> 0.3980 s (1.02 -> 1.22, worse); tiny wide 1000 0.4526 -> 0.4952 s (0.71 -> 0.78, worse); tiny comp 300 0.2156 -> 0.2087 s (0.86 -> 0.82). Legacy did not move (comp 3.9560 -> 3.9715 s). The HD Task graph rows all gained 8-12% (the per-task thread budget keeps lone tasks on the whole pool); the tiny chain and wide rows lost 9-19%, so per-task budget bookkeeping costs on 1000-task serial graphs.
+
+### Legacy against After M62
+
+Median frame of Legacy now against After M62 (`settings=''`; After M62 had no cooldown, so the HD ratios mostly measure that):
+
+| config | After M62 s | legacy now s | ratio |
+|---|---|---|---|
+| chain 30 hd | 1.2958 | 1.0460 | 0.81 |
+| chain 100 hd | 5.3744 | 3.3652 | 0.63 |
+| wide 100 hd | 3.2296 | 1.9467 | 0.60 |
+| comp 100 hd | 6.6549 | 3.9715 | 0.60 |
+| mixed 100 hd | 12.2405 | 10.9741 | 0.90 |
+| chain 1000 tiny | 0.3203 | 0.3254 | 1.02 |
+| wide 1000 tiny | 0.6497 | 0.6354 | 0.98 |
+| comp 300 tiny | 0.2676 | 0.2535 | 0.95 |
+
+### Occupancy
+
+`SAMPLER=states`, HD, 6 timed frames plus the warm frame (chain 30 also an 8-frame range), 120 samples requested at 0.5 s; the runs end earlier, so sample counts are 17-73 and the 1-thread samples include the build tail and exit. D-state threads were not counted. Mean includes the 1-thread samples.
+
+| run | samples | 1 | 2 | 3 | 4 | 5+ | mean running | share at 4 | cpu_khz_mean MHz | frame s |
+|---|---|---|---|---|---|---|---|---|---|---|
+| legacy comp 100 | 73 | 24 | 10 | 7 | 32 | 0 | 2.64 | 43.8% | 2200 | 4.62 5.25 7.41 6.53 6.16 6.25 |
+| taskgraph comp 100 | 61 | 10 | 8 | 4 | 38 | 1 | 3.20 (3.197) | 63.9% | 2175 | 3.75 3.78 4.08 6.19 5.98 6.44 |
+| legacy wide 100 | 22 | 13 | 1 | 0 | 8 | 0 | 2.14 | 36.4% | 2630 | 1.99 1.97 1.96 1.94 1.95 1.93 |
+| taskgraph wide 100 | 17 | 2 | 1 | 0 | 14 | 0 | 3.53 | 82.4% | 2586 | 1.67 1.60 1.63 1.67 1.64 1.62 |
+| legacy chain 30 range 8 | 23 | 7 | 1 | 1 | 14 | 0 | 2.96 | 60.9% | 2590 | 0.98 1.09 1.12 1.07 1.28 1.04 |
+| taskgraph chain 30 range 8 | 22 | 5 | 0 | 4 | 13 | 0 | 3.14 | 59.1% | 2624 | 0.98 1.08 1.01 1.04 1.00 1.10 |
+
+Against After admission fix: Task graph comp mean 2.62 -> 3.20 and share at 4 from 4.5% to 63.9% (the 44-of-66 samples stuck at exactly 3 are now 4 of 61); wide 3.38 -> 3.53 (62.5% -> 82.4%); chain 30 Task graph went from below legacy (After M63: 2.95 against 3.73) to above (3.14 against 2.96). The wide runs are 11-12 s long with 17-22 samples, so the legacy wide mean is dominated by build and exit samples. The comp runs exceed the ~12 s throttling window (frames 4-6 take about 6 s against 3.8-4.1 s).
+
+### Pool-size sweep (Task graph, HD, 3 timed frames, no range, no stats pass)
+
+The P=4 rows were rerun without range and stats (`m63final-sweep4`), so the clock state matches the P=8/16 rows. Median frame is the middle of three; the third comp frame at P=4 and P=8 is a throttling outlier (6.91 s and 6.95 s), so the first frame is listed too.
+
+| P | comp frames s | comp median | comp rss_peak MB | comp khz_mean MHz | wide frames s | wide median | wide rss_peak MB | wide khz_mean MHz |
+|---|---|---|---|---|---|---|---|---|
+| 4 (default) | 3.77 4.32 6.91 | 4.3159 | 1688 | 2338 | 1.55 1.63 1.62 | 1.6248 | 981 | 2491 |
+| 8 | 3.96 6.34 6.95 | 6.3439 | 1776 | 2197 | 1.67 1.72 1.63 | 1.6701 | 1447 | 2522 |
+| 16 | 3.89 4.16 5.15 | 4.1597 | 2369 | 2521 | 1.58 1.66 1.70 | 1.6604 | 2076 | 2428 |
+
+FLAG: comp `cpu_khz_mean` at P=8 (2197) is 14.7% below P=16 (2521) and 6% below P=4; the comp frames throttle in the second and third frame in all three runs, so comp medians here are throttle-dominated and only the first frame (3.77 / 3.96 / 3.89 s) is comparable. Wide is flat in P (first frames 1.55 / 1.67 / 1.58 s) and its clocks agree within 4%. Larger pools do not help any more because the per-task budget already puts the whole pool behind a lone task. The P=4 wide RSS (981 MB) is lower than the 1257 MB of the matrix row, which also ran the range and stats.
+
+### Stack profile (Task graph, HD comp 100, 6 timed frames, 60 eu-stack samples)
+
+`samples-m63final-tg-comp100.txt`; load before 0.46, `cpu_khz_mean` 2144 MHz. 48 samples, 22.9 threads per sample. Split of 1097 thread-samples: idle 82.5% (905), busy 11.7% (128), blocked inside a render 5.3% (58; 46 writer in `FrameFuture::wait`, 11 `parallelForOnGlobalPool`, 1 `renderAction`), unknown 0.5%. Mean busy threads per sample 2.67 (eu-stack stops the process, so this is understated). Busy activity: plugin other 52.3%, plugin render 37.5%, engine image alloc/fill 7.8%, libc alloc/copy 2.3%.
+
+Top busy self time: unresolved `[Misc.ofx]` 35.2%; `ofxsMaskMixPix<float,4,1,true>` (Misc.ofx) 14.8%; `ofxsFilterInterpolate2D<float,4,...>` 10.9%; `CImg::_cimg_recursive_apply` (vanvliet blur) 7.8%; `void [Misc.ofx]` 4.7%; a `std::_Function_handler` in NatronRenderer 4.7%; `PixelCopierUnPremult` 3.1%; `Transform3x3Processor` 2.3%; `Natron::Image::checkForNaNsAndFix` 2.3%. Inclusive: `PoolParallelForDetail::drain` 81.2%, `ImageProcessor::multiThreadFunction` 72.7%, `RenderScheduler::runOneTask` 43.8%, `OfxHost::multiThread` 28.1%, `gomp_thread_start` 4.7%. Against After admission fix: `checkForNaNsAndFix` fell 4.5% -> 2.3% and engine alloc/fill 9.7% -> 7.8%; the busy set is now almost entirely pool threads running plugin code (OpenMP 4.5% -> 4.7%, unchanged).
+
+### Gate checks
+
+- FAIL (marginal): comp 100 HD Task graph mean running threads >= 3.2. 3.197 (rounds to 3.20; 38 of 61 samples at 4, up from 3 at 4.5%).
+- PASS: wide 100 HD Task graph mean running threads >= 3.2. 3.53 (17 samples).
+- FAIL: comp 100 HD single frame Task graph <= 0.8x Legacy. 3.6881 / 3.9715 = x0.93 (first frame x0.93; occupancy run first frame 3.75 / 4.62 = x0.81, but that Legacy frame ran at a lower clock, 2200 vs 2175 MHz, and its frames 2-3 are throttle outliers).
+- PASS (borderline): wide 100 HD single frame Task graph <= 0.8x Legacy. 1.5406 / 1.9467 = x0.79 (first frame x0.80; occupancy run 1.67 / 1.99 = x0.84; tiny wide 1000 is x0.78).
+- PASS: HD chain 30 <= 1.1x. 1.0125 / 1.0460 = x0.97. PASS: HD chain 100 <= 1.1x. 3.0829 / 3.3652 = x0.92.
+- FAIL: tiny chain 1000 <= 1.1x. 0.3980 / 0.3254 = x1.22 (clocks within 5.3%, every frame slower; was x1.02 in After admission fix).
+- FAIL: chain 30 HD range 8 per-frame wall Task graph <= 0.85x Legacy. 0.864 / 0.890 = x0.97 (was x1.09).
+- PASS: mixed 100 HD Task graph <= 1.0x. 10.4686 / 10.9741 = x0.95 (first frame x1.03, range per-frame x1.00; the median is a throttled frame).
+- FAIL: peak RSS growth <= ~66 MB per added pool thread. Wide: +466 MB at P=8 (116 MB/thread), +629 MB from 8 to 16 (79 MB/thread), +1095 MB from 4 to 16 (91 MB/thread); comp +88 MB at P=8 (22 MB/thread), +593 MB from 8 to 16 (74 MB/thread), +681 MB from 4 to 16 (57 MB/thread). The P=4 wide base (981 MB) is lower than other wide P=4 measurements (1220-1267 MB), which inflates the wide growth; against 1257 MB wide is +190 MB at P=8 and +819 MB at P=16 (68 MB/thread).
+- PASS: Legacy vs After M62, no row slower than 1.15x. Worst 1.02 (chain 1000 tiny).
+- FLAG: no pair of counterpart runs differs by more than 10% in `cpu_khz_mean` except the sweep's comp P=8 against P=16 (14.7%).

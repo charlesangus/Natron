@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <map>
 #include <string>
 
 #include "Engine/EngineFwd.h"
@@ -122,6 +123,37 @@ public:
                                                                 const NodePtr& rotoPaintNode,
                                                                 const RenderStatsPtr& stats,
                                                                 ViewerArgs* outArgs);
+
+    /**
+     * @brief What decides whether a viewer frame may be rendered by the RenderScheduler.
+     **/
+    struct SchedulerEligibility {
+        bool hasFrameArgs = false;
+
+        // The input of a viewer outside the project (a file dialog preview) gets its frame args outside the setter.
+        bool inputHasFrameArgs = false;
+        bool isDoingPartialUpdates = false;
+        bool deepUpstream = false;
+        bool paintStroke = false;
+
+        // A refresh bypasses the cache for the viewer input, which the scheduler's tasks never do.
+        bool forceRender = false;
+        bool openGLRender = false;
+        bool analysis = false;
+        bool onPoolThread = false;
+        bool onMainThread = false;
+    };
+
+    /**
+     * @brief Sets the OpenGL, paint stroke and analysis flags of eligibility from the frame args of every node of a frame.
+     **/
+    static void scanFrameArgsForScheduler(const std::map<NodePtr, ParallelRenderArgsPtr>& args, SchedulerEligibility* eligibility);
+
+    /**
+     * @brief Whether the frame eligibility describes may be rendered by the RenderScheduler. When it may not and
+     * reason is not null, *reason names the first cause.
+     **/
+    static bool isFrameEligibleForScheduler(const SchedulerEligibility& eligibility, const char** reason);
 
 private:
     /**

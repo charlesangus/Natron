@@ -39,6 +39,7 @@ CLANG_DIAG_OFF(deprecated)
 #include <QDebug>
 #include <QFutureWatcher>
 #include <QMutex>
+#include <QThread>
 #include <QThreadPool>
 #include <QWaitCondition>
 #include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
@@ -57,7 +58,9 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
+#include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoPaint.h"
@@ -440,6 +443,120 @@ public:
         }
     }
 };
+
+void
+ViewerInstance::scanFrameArgsForScheduler(const std::map<NodePtr, ParallelRenderArgsPtr>& args,
+                                          SchedulerEligibility* eligibility)
+{
+    for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = args.begin(); it != args.end(); ++it) {
+        const ParallelRenderArgsPtr& nodeArgs = it->second;
+        if (!nodeArgs) {
+            continue;
+        }
+        // The context was attached to the viewer's render thread; a task on a pool thread cannot make it current.
+        if (nodeArgs->openGLContext.lock() && (nodeArgs->currentOpenglSupport != ePluginOpenGLRenderSupportNone)) {
+            eligibility->openGLRender = true;
+        }
+        if (nodeArgs->isDuringPaintStrokeCreation) {
+            eligibility->paintStroke = true;
+        }
+        if (nodeArgs->isAnalysis) {
+            eligibility->analysis = true;
+        }
+    }
+}
+
+bool
+ViewerInstance::isFrameEligibleForScheduler(const SchedulerEligibility& eligibility,
+                                            const char** reason)
+{
+    const char* cause = 0;
+
+    if (eligibility.onPoolThread) {
+        // FrameFuture::wait() on a pool thread could wait for the very thread it blocks.
+        cause = "render thread is a pool thread";
+    } else if (eligibility.onMainThread) {
+        // Code a task runs may wait for the main thread, which would be waiting for the frame.
+        cause = "render thread is the main thread";
+    } else if (!eligibility.hasFrameArgs) {
+        cause = "no frame args";
+    } else if (!eligibility.inputHasFrameArgs) {
+        cause = "input outside the frame args";
+    } else if (eligibility.isDoingPartialUpdates) {
+        cause = "partial updates";
+    } else if (eligibility.deepUpstream) {
+        cause = "deep input";
+    } else if (eligibility.paintStroke) {
+        cause = "paint stroke";
+    } else if (eligibility.forceRender) {
+        cause = "refresh";
+    } else if (eligibility.openGLRender) {
+        cause = "OpenGL render";
+    } else if (eligibility.analysis) {
+        cause = "analysis";
+    }
+    if (reason) {
+        *reason = cause;
+    }
+
+    return cause == 0;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// Submits the viewer input's render of one frame to the RenderScheduler, or returns null and counts why it falls
+// back to renderRoI. The root task renders exactly what renderRoI would: the viewer's RoI and displayed layers.
+FrameFuturePtr
+submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
+                                   const std::shared_ptr<FrameRequestMap>& request,
+                                   const ViewerArgs& inArgs,
+                                   bool hasRotoPaintNode,
+                                   ViewIdx view,
+                                   const RectI& roi,
+                                   const std::list<ImageLayerDesc>& components,
+                                   ImageBitDepthEnum bitdepth,
+                                   const RenderStatsPtr& stats)
+{
+    const NodePtr inputNode = inArgs.activeInputToRender->getNode();
+    ViewerInstance::SchedulerEligibility eligibility;
+
+    eligibility.hasFrameArgs = setter && request;
+    if (setter) {
+        const std::map<NodePtr, ParallelRenderArgsPtr>& installedArgs = setter->getInstalledArgs();
+        ViewerInstance::scanFrameArgsForScheduler(installedArgs, &eligibility);
+        eligibility.inputHasFrameArgs = installedArgs.find(inputNode) != installedArgs.end();
+    }
+    eligibility.isDoingPartialUpdates = inArgs.isDoingPartialUpdates;
+    eligibility.deepUpstream = inArgs.deepUpstream;
+    eligibility.paintStroke = eligibility.paintStroke || hasRotoPaintNode;
+    eligibility.forceRender = inArgs.forceRender;
+    eligibility.onPoolThread = QThreadPool::globalInstance()->contains(QThread::currentThread());
+    eligibility.onMainThread = QCoreApplication::instance() && (QThread::currentThread() == QCoreApplication::instance()->thread());
+
+    const char* reason = 0;
+    if (ViewerInstance::isFrameEligibleForScheduler(eligibility, &reason)) {
+        FrameRenderContextPtr context = FrameRenderContext::createFromSetter(*setter, inArgs.params->abortInfo, stats, inArgs.params->time, view);
+        context->setRequest(request);
+        FrameGraph graph = RenderScheduler::buildGraph(context, inputNode, inArgs.params->time, view, inArgs.params->mipmapLevel);
+        if (graph.tasks.empty()) {
+            reason = "request does not reach the viewer input";
+        } else {
+            FrameGraph::Task& root = graph.tasks.front();
+            root.roi = roi;
+            root.components = components;
+            root.bitdepth = bitdepth;
+
+            return appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Interactive);
+        }
+    }
+    if (reason && stats) {
+        stats->incLegacyFallbacks(std::string("viewer: ") + reason);
+    }
+
+    return FrameFuturePtr();
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 ViewerInstance::ViewerRenderRetCode
 ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
@@ -1418,19 +1535,19 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
     ///Notify the gui we're rendering.
     EffectInstance::NotifyRenderingStarted_RAII renderingNotifier( getNode().get() );
 
-
+    std::shared_ptr<FrameRequestMap> requestPassData;
     if (useTLS) {
         const RectD canonicalRoi = roi.toCanonical(inArgs.params->mipmapLevel, inArgs.params->pixelAspectRatio, inArgs.params->rod);
 
-        FrameRequestMap requestPassData;
-        StatusEnum stat = EffectInstance::computeRequestPass(inArgs.params->time, view, inArgs.params->mipmapLevel, canonicalRoi, getNode(), requestPassData);
+        requestPassData = std::make_shared<FrameRequestMap>();
+        StatusEnum stat = EffectInstance::computeRequestPass(inArgs.params->time, view, inArgs.params->mipmapLevel, canonicalRoi, getNode(), *requestPassData);
         if (stat == eStatusFailed) {
             return eViewerRenderRetCodeFail;
         }
 
-
-        frameArgs->updateNodesRequest(requestPassData);
+        frameArgs->updateNodesRequest(*requestPassData);
     }
+    const bool taskGraphMode = appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph;
 
     const double par = inArgs.activeInputToRender->getAspectRatio(-1);
 
@@ -1536,6 +1653,9 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             std::map<ImageLayerDesc, ImagePtr> layers;
             EffectInstance::RenderRoIRetCode retCode;
             if (inArgs.deepUpstream) {
+                if (taskGraphMode && stats) {
+                    stats->incLegacyFallbacks("viewer: deep input");
+                }
                 // Only isDoingPartialUpdates (RotoPaint) ever splits the RoI, and deep has no
                 // tiling, so there is exactly one rect to flatten.
                 assert(splitRoi.size() == 1);
@@ -1570,21 +1690,30 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                     alphaImage.reset();
                 }
             } else {
-                std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs;
-                renderArgs.reset( new EffectInstance::RenderRoIArgs(inArgs.params->time,
-                                                                    RenderScale::fromMipmapLevel(inArgs.params->mipmapLevel),
-                                                                    inArgs.params->mipmapLevel,
-                                                                    view,
-                                                                    inArgs.forceRender,
-                                                                    splitRoi[rectIndex],
-                                                                    inArgs.params->rod,
-                                                                    requestedComponents,
-                                                                    imageDepth,
-                                                                    false /*calledFromGetImage*/,
-                                                                    this,
-                                                                    eStorageModeRAM /*returnStorage*/,
-                                                                    inArgs.params->time) );
-                retCode = inArgs.activeInputToRender->renderRoI(*renderArgs, &layers);
+                FrameFuturePtr future;
+                if (taskGraphMode) {
+                    future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats);
+                }
+                if (future) {
+                    retCode = future->wait();
+                    layers = future->getRootPlanes();
+                } else {
+                    std::unique_ptr<EffectInstance::RenderRoIArgs> renderArgs;
+                    renderArgs.reset(new EffectInstance::RenderRoIArgs(inArgs.params->time,
+                                                                       RenderScale::fromMipmapLevel(inArgs.params->mipmapLevel),
+                                                                       inArgs.params->mipmapLevel,
+                                                                       view,
+                                                                       inArgs.forceRender,
+                                                                       splitRoi[rectIndex],
+                                                                       inArgs.params->rod,
+                                                                       requestedComponents,
+                                                                       imageDepth,
+                                                                       false /*calledFromGetImage*/,
+                                                                       this,
+                                                                       eStorageModeRAM /*returnStorage*/,
+                                                                       inArgs.params->time));
+                    retCode = inArgs.activeInputToRender->renderRoI(*renderArgs, &layers);
+                }
             }
             // Either rendering failed or we have 2 layers (alpha mask and color image) or we have a single layer (color image)
             assert(layers.size() == 0 || layers.size() <= 2);
@@ -2494,21 +2623,34 @@ ViewerInstance::markAllOnGoingRendersAsAborted(bool keepOldestRender)
 {
     //Do not abort the oldest render while scrubbing timeline or sliders so that the user gets some feedback
     bool keepOldest = getApp()->isDraftRenderEnabled() || isDoingPartialUpdates() || keepOldestRender;
-    QMutexLocker k(&_imp->renderAgeMutex);
+    std::vector<AbortableRenderInfoPtr> abortedRenders;
+    {
+        QMutexLocker k(&_imp->renderAgeMutex);
 
-    for (int i = 0; i < 2; ++i) {
-        if ( _imp->currentRenderAges[i].empty() ) {
-            continue;
+        for (int i = 0; i < 2; ++i) {
+            if (_imp->currentRenderAges[i].empty()) {
+                continue;
+            }
+
+            // Do not abort the oldest render, let it finish
+            OnGoingRenders::iterator it = _imp->currentRenderAges[i].begin();
+            if (keepOldest) {
+                ++it;
+            }
+
+            for (; it != _imp->currentRenderAges[i].end(); ++it) {
+                (*it)->setAborted();
+                abortedRenders.push_back(*it);
+            }
         }
+    }
 
-        //Do not abort the oldest render, let it finish
-        OnGoingRenders::iterator it = _imp->currentRenderAges[i].begin();
-        if (keepOldest) {
-            ++it;
-        }
-
-        for (; it != _imp->currentRenderAges[i].end(); ++it) {
-            (*it)->setAborted();
+    // Otherwise the queued tasks of a frame submitted to the RenderScheduler are only dropped as they are popped, and
+    // its future finishes late. Outside renderAgeMutex so that no lock is held while the scheduler's is taken.
+    if (!abortedRenders.empty() && appPTR->hasRenderScheduler()) {
+        RenderScheduler* renderScheduler = appPTR->getRenderScheduler();
+        for (std::vector<AbortableRenderInfoPtr>::const_iterator it = abortedRenders.begin(); it != abortedRenders.end(); ++it) {
+            renderScheduler->abort(*it);
         }
     }
 }

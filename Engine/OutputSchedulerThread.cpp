@@ -4213,7 +4213,10 @@ ViewerCurrentFrameRequestScheduler::renderCurrentFrame(bool enableRenderStats,
         if (rotoUse1Thread || isTracking) {
             maxThreads = 1;
         }
-        if ( (maxThreads == 1) || (_imp->threadPool->activeThreadCount() >= maxThreads - 1) ) {
+        // In Task graph mode the render thread waits for the RenderScheduler, which a pool thread must never do; the
+        // frame's work runs on the pool anyway.
+        const bool taskGraphMode = appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph;
+        if (taskGraphMode || (maxThreads == 1) || (_imp->threadPool->activeThreadCount() >= maxThreads - 1)) {
             _imp->backupThread.startTask(functorArgs);
         } else {
             RenderCurrentFrameFunctorRunnable* task = new RenderCurrentFrameFunctorRunnable(functorArgs);

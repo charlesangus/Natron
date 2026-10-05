@@ -71,6 +71,7 @@ set(Tests_SOURCES
     PoolSharing_Test.cpp
     ProjectColorManagement_Test.cpp
     ViewerDisplayTransform_Test.cpp
+    ViewerScheduler_Test.cpp
     ProjectOCIODefaults_Test.cpp
     ProjectOCIOPlugins_Test.cpp
     ProjectOCIO_Test.cpp

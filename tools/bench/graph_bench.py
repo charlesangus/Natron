@@ -202,11 +202,6 @@ def deep_read():
                            % (LAST_FRAME, pattern, n_frames, LAST_FRAME))
     node = make("fr.natron.DeepRead")
     param(node, "filename").set(pattern)
-    # DeepRead does not report itself frame-varying, so without an animated knob every frame after
-    # the first reuses the first frame's cached samples instead of reading its own file.
-    disabled = param(node, "disableNode")
-    for f in range(1, LAST_FRAME + 1):
-        disabled.setValueAtTime(False, f)
     plate_reads.append(frame_bytes)
     return node
 

@@ -33,6 +33,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <set>
 #include <tuple>
 #include <vector>
 
@@ -60,6 +61,9 @@ struct FrameGraph {
 
         // In pixel coordinates at key.mipmapLevel.
         RectI roi;
+
+        // roi clipped to the region of definition, which renderRoI renders no further.
+        RectI renderedRoI;
         std::list<ImageLayerDesc> components;
         ImageBitDepthEnum bitdepth = eImageBitDepthFloat;
 
@@ -78,10 +82,15 @@ struct FrameGraph {
         bool startsBranch = false;
         std::size_t estimatedBytes = 0;
 
-        // Its output goes to the image cache under a key without the time, so a task of the same node at another
-        // time with the same hash renders the same cached image and would wait inside renderRoI for this one.
+        // Its output goes to the image cache, where another task of the same node rendering the same cached image
+        // would wait inside renderRoI for this one: one at another time when the key has no time, or one at another
+        // mipmap level that renderRoI maps to the same level.
         bool sharesCachedOutput = false;
         U64 nodeHash = 0;
+        bool cacheKeyHasTime = false;
+
+        // The level renderRoI renders at: 0 for an effect without render scale support.
+        unsigned int cacheMipmapLevel = 0;
 
         // Only read or written under the scheduler's mutex once the graph is submitted.
         int remainingDeps = 0;
@@ -227,6 +236,11 @@ public:
 
     void resetPeakBytesInFlight();
 
+    /**
+     * @brief The estimated outputs of the admitted and running tasks, which is 0 once every frame finished.
+     **/
+    std::size_t getReservedBytesForTests() const;
+
 private:
     class NodeTask;
     struct Frame;
@@ -243,7 +257,7 @@ private:
 
     typedef std::vector<ReadyRef> ReadyHeap;
 
-    typedef std::tuple<const Node*, U64, int, unsigned int> SharedOutputKey;
+    typedef std::tuple<const Node*, U64, int, unsigned int, bool, double> SharedOutputKey;
 
     static SharedOutputKey sharedOutputKeyOf(const FrameGraph::Task& task);
 
@@ -293,9 +307,9 @@ private:
     ReadyHeap _admittedReady;
     ReadyHeap _gatedReady;
 
-    // The running tasks by the cached output they render, and the ready tasks rendering the same output, held back
-    // until the last of those finished.
-    std::map<SharedOutputKey, int> _sharedOutputsRunning;
+    // The cached outputs the running tasks render, and the ready tasks rendering one of them, held back until the
+    // task rendering it finished.
+    std::set<SharedOutputKey> _sharedOutputsRunning;
     std::multimap<SharedOutputKey, ReadyRef> _deferredReady;
     std::list<FramePtr> _activeFrames;
 

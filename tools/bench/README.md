@@ -52,9 +52,7 @@ and `after` set to `loop`), so every timed frame decodes a different frame. Deep
 use `BENCH_FRAMES=3 BENCH_RANGE=3` with the default plates or regenerate them with a larger
 `BENCH_PLATE_FRAMES`. The deep chain's sample count grows by one per merge (K samples per pixel at
 the end, about 50 MB of samples per layer at HD), so keep `deepcomp` at N <= 16 on this machine.
-DeepRead does not report itself frame-varying, so a sequence read through it would reuse the first
-frame's samples on every later frame of the process; `graph_bench.py` keyframes each DeepRead's
-`disableNode` (always off) so every frame reads its own file. The Roto shapes are not animated, so each Roto matte is rendered once per frame like any other
+The Roto shapes are not animated, so each Roto matte is rendered once per frame like any other
 input.
 
 Plates: `make_plates.py` writes, per resolution, `plate_<hd|uhd>_<1|2|3>.####.exr` (frames 1-8,
@@ -113,6 +111,11 @@ unique-name search in `NodeCollection::checkNodeName`; set it to 0 to measure th
 `profile_run.sh` expand it into repeated `--setting name=value` arguments for NatronRenderer, and
 `graph_bench.py` records the string as `settings` (empty when unset). `compare.py` only matches
 records with the same `settings`, and records without the field count as empty.
+To compare runs made under different settings, pass `--pair-settings BEFORE_SETTINGS AFTER_SETTINGS`:
+rows of the first file whose `settings` equal the first value pair with rows of the second file whose
+`settings` equal the second, and `default` selects rows with empty `settings`. For example
+`compare.py --pair-settings renderSchedulerMode=0 renderSchedulerMode=1 legacy.jsonl taskgraph.jsonl`
+prints the Task graph / Legacy ratios.
 
 `BENCH_SETTINGS=renderSchedulerMode=0|1` selects the render scheduler: 1 (Task graph) is the
 default when unset, 0 selects Legacy pull. A run with empty `settings` therefore measures the

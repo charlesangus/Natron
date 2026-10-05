@@ -297,7 +297,7 @@ protected:
         key.time = kTime;
         key.view = ViewIdx(0);
         key.mipmapLevel = 0;
-        context->getStore().put(key, layers, 1);
+        context->getStore().put(key, layers, RectI(0, 0, kSize, kSize), 1);
     }
 
     // Stores the input's legacy render, renders the consumer in a frame context and checks that the input was taken

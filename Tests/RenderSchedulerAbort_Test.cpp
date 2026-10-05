@@ -212,6 +212,7 @@ protected:
     RenderSchedulerAbort()
         : BaseTest()
         , _scheduler(0)
+        , _savedBudget(0)
     {
     }
 
@@ -221,10 +222,12 @@ protected:
         getApp()->getProject()->reset(false, true);
         CountingTestRegistry::reset();
         _scheduler = appPTR->getRenderScheduler();
+        _savedBudget = _scheduler->getBytesBudget();
     }
 
     virtual void TearDown() OVERRIDE
     {
+        _scheduler->setBytesBudgetForTests(_savedBudget);
         CountingTestRegistry::reset();
         getApp()->getProject()->reset(false, true);
         BaseTest::TearDown();
@@ -399,14 +402,16 @@ protected:
         QElapsedTimer timer;
 
         timer.start();
-        while (((QThreadPool::globalInstance()->activeThreadCount() > 0) || (_scheduler->getOutstandingRunnables() > 0)) && (timer.elapsed() < kAbortDeadlineMs)) {
+        while (((QThreadPool::globalInstance()->activeThreadCount() > 0) || (_scheduler->getOutstandingRunnables() > 0) || (_scheduler->getReservedBytesForTests() > 0)) && (timer.elapsed() < kAbortDeadlineMs)) {
             QThread::msleep(5);
         }
         EXPECT_EQ(0, _scheduler->getOutstandingRunnables());
+        EXPECT_EQ(0u, _scheduler->getReservedBytesForTests());
         EXPECT_EQ(0, QThreadPool::globalInstance()->activeThreadCount());
     }
 
     RenderScheduler* _scheduler;
+    std::size_t _savedBudget;
 };
 
 // Aborting from inside the first leaf drops the queued leaves without rendering them, lets the leaves already running
@@ -489,6 +494,72 @@ TEST_F(RenderSchedulerAbort, AbortDropsQueuedTasksAndWaitsForRunningOnes)
         ASSERT_EQ(legacy.values.size(), taskGraph.values.size());
         EXPECT_EQ(0, std::memcmp(legacy.values.data(), taskGraph.values.data(), legacy.values.size() * sizeof(float)));
         EXPECT_FLOAT_EQ((float)kLeaves, taskGraph.values[0]);
+        expectPoolDrained();
+    }
+}
+
+// A budget of one output holds every branch but the first back, so an abort must also release the reservations of the
+// admitted tasks and drop the gated ones.
+TEST_F(RenderSchedulerAbort, AbortUnderAOneOutputBudgetReleasesEverything)
+{
+    const int leaves = 16;
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildWide(leaves, &nodes));
+    const NodePtr root = nodes.back();
+
+    std::string error;
+    std::size_t oneOutput = 0;
+    {
+        FrameRun probe;
+        ASSERT_TRUE(prepareFrame(root, false, &probe, &error)) << error;
+        oneOutput = probe.graph.tasks.front().estimatedBytes;
+    }
+    ASSERT_GT(oneOutput, 0u);
+
+    for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+        const int poolSize = kPoolSizes[p];
+        SCOPED_TRACE("pool size " + std::to_string(poolSize));
+        PoolSizeGuard pool(poolSize);
+        CountingTestRegistry::reset();
+        _scheduler->setBytesBudgetForTests(oneOutput);
+
+        FrameRun run;
+        ASSERT_TRUE(prepareFrame(root, true, &run, &error)) << error;
+        std::shared_ptr<AbortState> state = std::make_shared<AbortState>();
+        for (int i = 0; i < leaves; ++i) {
+            state->leaves.insert(nodes[i].get());
+        }
+        state->scheduler = _scheduler;
+        state->context = run.context;
+        state->abortInfo = run.abortInfo;
+        CountingTestRegistry::setRenderHook([state](const Node* node) {
+            if (!state->leaves.count(node)) {
+                return;
+            }
+            bool expected = false;
+            if (state->abortClaimed.compare_exchange_strong(expected, true)) {
+                state->abortInfo->setAborted();
+                state->scheduler->abort(state->context);
+            }
+        });
+
+        submit(&run);
+        QElapsedTimer timer;
+        timer.start();
+        while (!run.future->isFinished() && (timer.elapsed() < 10 * kAbortDeadlineMs)) {
+            QThread::msleep(2);
+        }
+        const bool finishedInTime = run.future->isFinished();
+        if (!finishedInTime) {
+            _scheduler->abort(run.context);
+        }
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, run.future->wait());
+        CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
+        EXPECT_TRUE(finishedInTime) << "the aborted frame did not finish in time";
+
+        EXPECT_TRUE(run.future->getRootPlanes().empty());
+        EXPECT_EQ(0u, run.context->getStore().bytesInFlight());
+        EXPECT_EQ(0, _scheduler->getFramesInFlight(run.abortInfo));
         expectPoolDrained();
     }
 }

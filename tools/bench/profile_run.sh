@@ -5,6 +5,7 @@
 # BENCH_SETTINGS="name=value;name=value" becomes --setting arguments. With SAMPLER=states the
 # thread-state sampler runs instead of eu-stack and writes build/bench/states-<name>.txt.
 # Like run_matrix.sh it cools down first and logs the CPU clock to build/bench/freq-<name>.txt.
+# shellcheck source-path=SCRIPTDIR
 set -u
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 name=$1

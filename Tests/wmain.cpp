@@ -108,7 +108,7 @@ registerGraphScalingTestPlugins()
 void
 registerRenderSchedulerTestPlugins()
 {
-    // Registered so RenderScheduler_Test.cpp can count the render calls of every task, which no shipped plugin exposes.
+    // Registered to count the render calls of every task, which no shipped plugin exposes.
     registerTestBuiltInPlugin<CountingTestEffect>();
     registerTestBuiltInPlugin<CountingMergeTestEffect>();
 }

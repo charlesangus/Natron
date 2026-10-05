@@ -173,19 +173,20 @@ compareImages(const FlatExrImage& legacy,
     return RenderMismatch();
 }
 
-// Restores the pool size, Legacy mode and empty caches however a joint comparison exits, so a
-// failed comparison cannot leak Task graph state into later tests.
+// Restores the pool size and the mode the app was in, with empty caches, however a joint
+// comparison exits, so a failed comparison cannot leak its state into later tests.
 class JointRenderGuard {
 public:
     JointRenderGuard()
         : _savedPoolSize(QThreadPool::globalInstance()->maxThreadCount())
+        , _savedMode(appPTR->getRenderSchedulerMode())
     {
     }
 
     ~JointRenderGuard()
     {
         QThreadPool::globalInstance()->setMaxThreadCount(_savedPoolSize);
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
+        appPTR->setRenderSchedulerMode(_savedMode);
         appPTR->clearAllCaches();
     }
 
@@ -194,6 +195,7 @@ public:
 
 private:
     int _savedPoolSize;
+    RenderSchedulerModeEnum _savedMode;
 };
 
 struct JointOutput {
@@ -727,6 +729,38 @@ TEST_F(SchedulerEquivalence, DeepBranchFlattenedAndMerged)
     ASSERT_TRUE(bool(merge));
 
     renderAndCheck(createWriter(merge));
+}
+
+// Each view of the project gets its own graded branch through JoinViews, so the writer's two views
+// differ and both are rendered, written to their own file and compared.
+TEST_F(SchedulerEquivalence, TwoViewsJoinedFromDifferentBranches)
+{
+    std::vector<std::string> extraViews;
+    extraViews.push_back("Right");
+    getApp()->getProject()->createProjectViews(extraViews);
+    const std::vector<std::string> viewNames = getApp()->getProject()->getProjectViewNames();
+    ASSERT_EQ(2u, viewNames.size());
+
+    NodePtr left = createGrade(createChecker(), 0.4);
+    NodePtr right = createGrade(createChecker(), 1.6);
+    ASSERT_TRUE(left && right);
+    NodePtr join = createNode(QString::fromUtf8(PLUGINID_NATRON_JOINVIEWS));
+    ASSERT_TRUE(bool(join));
+    ASSERT_EQ(2, join->getNInputs());
+    for (int i = 0; i < join->getNInputs(); ++i) {
+        const std::string label = join->getInputLabel(i);
+        ASSERT_TRUE((label == viewNames[0]) || (label == viewNames[1])) << label;
+        connectNodes(label == viewNames[0] ? left : right, join, i, true);
+    }
+    NodePtr grade = createGrade(join, 0.9);
+    ASSERT_TRUE(bool(grade));
+    NodePtr writer = createWriter(grade);
+    ASSERT_TRUE(bool(writer));
+
+    clearObserved();
+    const RenderMismatch m = renderBothWays(writer, kFirstFrame, kLastFrame, poolSizes());
+    EXPECT_FALSE(m.any) << describe(m);
+    checkObserved("two views", 1, 0, kFramesPerPass * (int)viewNames.size());
 }
 
 TEST_F(SchedulerEquivalence, SwitchWithAnimatedWhich)

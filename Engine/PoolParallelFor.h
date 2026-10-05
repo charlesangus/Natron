@@ -39,6 +39,7 @@
 #include <QThreadPool>
 #include <QWaitCondition>
 
+#include "Engine/OpenMPThreads.h"
 #include "Engine/TLSHolder.h"
 
 NATRON_NAMESPACE_ENTER
@@ -109,13 +110,18 @@ parallelForOnGlobalPool(int count,
     const int helperPriority = AppTLS::currentRunnablePriority() + 1;
     const int numHelpers = std::min(count, std::max(1, maxThreads)) - 1;
     QThreadPool* pool = QThreadPool::globalInstance();
+    const std::function<void()> helper = [state]() {
+        OpenMPThreadsScope openMPThreads(1);
+        PoolParallelForDetail::drain(*state);
+    };
     for (int i = 0; i < numHelpers; ++i) {
-        pool->start([state]() { PoolParallelForDetail::drain(*state); }, helperPriority);
+        pool->start(helper, helperPriority);
     }
 
     if (numHelpers > 0) {
         // The caller is one of the threads this split was sized for, so the work items it runs must not split again.
         AppTLS::ThreadBudgetScope budget(1);
+        OpenMPThreadsScope openMPThreads(1);
         PoolParallelForDetail::drain(*state);
     } else {
         PoolParallelForDetail::drain(*state);

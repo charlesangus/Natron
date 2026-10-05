@@ -27,10 +27,12 @@
 
 #include <cstddef>
 #include <cstring>
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
 #include <sstream>
+#include <utility>
 
 #include <QFile>
 #include <QMetaObject>
@@ -48,6 +50,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FrameRenderContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -58,6 +61,8 @@
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
+#include "Engine/RenderScheduler.h"
+#include "Engine/RenderStats.h"
 #include "Engine/TimeLine.h"
 
 NATRON_NAMESPACE_ENTER
@@ -83,20 +88,26 @@ private:
     int _saved;
 };
 
-// Leaves the app in Legacy mode with empty caches however the comparison exits, so a failing or
-// throwing comparison cannot leak Task graph mode or Task graph cache entries into later tests.
+// Restores the mode the app was in, with empty caches, however the comparison exits, so a failing
+// or throwing comparison cannot leak a mode or the cache entries of either pass into later tests.
 class SchedulerModeGuard {
 public:
-    SchedulerModeGuard() = default;
+    SchedulerModeGuard()
+        : _saved(appPTR->getRenderSchedulerMode())
+    {
+    }
 
     ~SchedulerModeGuard()
     {
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
+        appPTR->setRenderSchedulerMode(_saved);
         appPTR->clearAllCaches();
     }
 
     SchedulerModeGuard(const SchedulerModeGuard&) = delete;
     SchedulerModeGuard& operator=(const SchedulerModeGuard&) = delete;
+
+private:
+    RenderSchedulerModeEnum _saved;
 };
 
 void
@@ -113,12 +124,14 @@ enterMode(RenderSchedulerModeEnum mode,
 RenderMismatch
 failure(const std::string& error,
         int frame,
-        const std::string& file = std::string())
+        const std::string& file = std::string(),
+        int view = 0)
 {
     RenderMismatch m;
 
     m.any = true;
     m.frame = frame;
+    m.view = view;
     m.file = file;
     m.error = error;
 
@@ -193,8 +206,11 @@ renderWriterBlocking(OutputEffectInstance* writerEffect,
     return finishedCode;
 }
 
+// Keyed by (frame, view).
+typedef std::map<std::pair<int, int>, FlatExrImage> SequenceFrames;
+
 struct WriterPass {
-    std::map<int, FlatExrImage> frames;
+    SequenceFrames frames;
     RenderMismatch error;
 };
 
@@ -206,9 +222,12 @@ renderAndReadSequence(OutputEffectInstance* writerEffect,
                       int lastFrame)
 {
     WriterPass pass;
+    const int numViews = static_cast<int>(viewNames.size());
 
     for (int frame = firstFrame; frame <= lastFrame; ++frame) {
-        QFile::remove(QString::fromStdString(SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, 0)));
+        for (int view = 0; view < numViews; ++view) {
+            QFile::remove(QString::fromStdString(SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, view)));
+        }
     }
 
     const int code = renderWriterBlocking(writerEffect, firstFrame, lastFrame);
@@ -219,17 +238,19 @@ renderAndReadSequence(OutputEffectInstance* writerEffect,
     }
 
     for (int frame = firstFrame; frame <= lastFrame; ++frame) {
-        const std::string path = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, 0);
-        if (!QFile::exists(QString::fromStdString(path))) {
-            pass.error = failure("frame was not rendered", frame, path);
+        for (int view = 0; view < numViews; ++view) {
+            const std::string path = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, view);
+            if (!QFile::exists(QString::fromStdString(path))) {
+                pass.error = failure("frame was not rendered", frame, path, view);
 
-            return pass;
-        }
-        std::string readError;
-        if (!readFlatExr(path, &pass.frames[frame], &readError)) {
-            pass.error = failure("cannot read output: " + readError, frame, path);
+                return pass;
+            }
+            std::string readError;
+            if (!readFlatExr(path, &pass.frames[std::make_pair(frame, view)], &readError)) {
+                pass.error = failure("cannot read output: " + readError, frame, path, view);
 
-            return pass;
+                return pass;
+            }
         }
     }
 
@@ -242,13 +263,14 @@ compareSequences(const WriterPass& legacy,
                  const std::string& pattern,
                  const std::vector<std::string>& viewNames)
 {
-    for (std::map<int, FlatExrImage>::const_iterator it = legacy.frames.begin(); it != legacy.frames.end(); ++it) {
-        const int frame = it->first;
-        const std::string path = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, 0);
+    for (SequenceFrames::const_iterator it = legacy.frames.begin(); it != legacy.frames.end(); ++it) {
+        const int frame = it->first.first;
+        const int view = it->first.second;
+        const std::string path = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, view);
         const FlatExrImage& a = it->second;
-        std::map<int, FlatExrImage>::const_iterator found = taskGraph.frames.find(frame);
+        SequenceFrames::const_iterator found = taskGraph.frames.find(it->first);
         if (found == taskGraph.frames.end()) {
-            return failure("frame missing from the Task graph render", frame, path);
+            return failure("frame missing from the Task graph render", frame, path, view);
         }
         const FlatExrImage& b = found->second;
         if ((a.x1 != b.x1) || (a.y1 != b.y1) || (a.width != b.width) || (a.height != b.height)) {
@@ -256,14 +278,15 @@ compareSequences(const WriterPass& legacy,
             ss << "data window differs: legacy (" << a.x1 << "," << a.y1 << " " << a.width << "x" << a.height
                << "), task graph (" << b.x1 << "," << b.y1 << " " << b.width << "x" << b.height << ")";
 
-            return failure(ss.str(), frame, path);
+            return failure(ss.str(), frame, path, view);
         }
         if (a.channels != b.channels) {
-            return failure("channel list differs: legacy [" + joinChannels(a.channels) + "], task graph [" + joinChannels(b.channels) + "]", frame, path);
+            return failure("channel list differs: legacy [" + joinChannels(a.channels) + "], task graph [" + joinChannels(b.channels) + "]", frame, path, view);
         }
         RenderMismatch m;
         if (firstDifference(a.pixels, b.pixels, a.channels, a.x1, a.y1, a.width, &m)) {
             m.frame = frame;
+            m.view = view;
             m.file = path;
 
             return m;
@@ -274,22 +297,25 @@ compareSequences(const WriterPass& legacy,
 }
 
 struct DirectPass {
-    RectI bounds;
-    std::vector<std::string> channels;
-    std::vector<float> pixels;
+    ImagePtr image;
+    int tasksRun = 0;
     RenderMismatch error;
 };
 
+// Renders through renderRoI on this thread, or, with throughScheduler, as a frame of tasks run on
+// the global pool by the RenderScheduler, the way a writer's frame is in Task graph mode.
 DirectPass
 renderDirect(const NodePtr& node,
              double time,
              ViewIdx view,
              unsigned mipmapLevel,
-             const RectI& roi)
+             const RectI& roi,
+             bool throughScheduler)
 {
     DirectPass pass;
     const int frame = static_cast<int>(time);
     AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+    RenderStatsPtr stats = throughScheduler ? std::make_shared<RenderStats>(false) : RenderStatsPtr();
     ParallelRenderArgsSetter frameRenderArgs(time,
                                              view,
                                              false /*isRenderUserInteraction*/,
@@ -301,66 +327,91 @@ renderDirect(const NodePtr& node,
                                              NodePtr(),
                                              false /*isAnalysis*/,
                                              false /*draftMode*/,
-                                             RenderStatsPtr());
+                                             stats);
     EffectInstancePtr effect = node->getEffectInstance();
     const RectD canonicalWindow = roi.toCanonical_noClipping(mipmapLevel, effect->getAspectRatio(-1));
 
-    FrameRequestMap request;
-    if (EffectInstance::computeRequestPass(time, view, mipmapLevel, canonicalWindow, node, request) == eStatusFailed) {
+    std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+    if (EffectInstance::computeRequestPass(time, view, mipmapLevel, canonicalWindow, node, *request) == eStatusFailed) {
         pass.error = failure("request pass failed", frame);
 
         return pass;
     }
-    frameRenderArgs.updateNodesRequest(request);
+    frameRenderArgs.updateNodesRequest(*request);
 
-    std::list<ImageLayerDesc> components;
-    components.push_back(ImageLayerDesc::getRGBAComponents());
-    // An empty preComputedRoD makes renderRoI compute the node's own region of definition, which
-    // the image bounds at mipmapLevel > 0 have to be derived from.
-    EffectInstance::RenderRoIArgs args(time,
-                                       RenderScale::fromMipmapLevel(mipmapLevel),
-                                       mipmapLevel,
-                                       view,
-                                       true /*byPassCache*/,
-                                       roi,
-                                       RectD(),
-                                       components,
-                                       eImageBitDepthFloat,
-                                       false /*calledFromGetImage*/,
-                                       0 /*caller*/,
-                                       eStorageModeRAM,
-                                       time);
     std::map<ImageLayerDesc, ImagePtr> layers;
-    if ((effect->renderRoI(args, &layers) != EffectInstance::eRenderRoIRetCodeOk) || layers.empty()) {
-        pass.error = failure("renderRoI failed", frame);
+    if (throughScheduler) {
+        FrameRenderContextPtr context = FrameRenderContext::createFromSetter(frameRenderArgs, abortInfo, stats, time, view);
+        context->setRequest(request);
+        FrameGraph graph = RenderScheduler::buildGraph(context, node, time, view, mipmapLevel);
+        if (graph.tasks.empty()) {
+            pass.error = failure("the request pass does not reach the node, so the scheduler has no task to run", frame);
+
+            return pass;
+        }
+        FrameFuturePtr future = appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Background);
+        if (future->wait() != EffectInstance::eRenderRoIRetCodeOk) {
+            pass.error = failure("the scheduler did not complete the frame", frame);
+
+            return pass;
+        }
+        layers = future->getRootPlanes();
+        pass.tasksRun = stats->getTasksRun();
+    } else {
+        std::list<ImageLayerDesc> components;
+        components.push_back(ImageLayerDesc::getRGBAComponents());
+        // An empty preComputedRoD makes renderRoI compute the node's own region of definition, which
+        // the image bounds at mipmapLevel > 0 have to be derived from.
+        EffectInstance::RenderRoIArgs args(time,
+                                           RenderScale::fromMipmapLevel(mipmapLevel),
+                                           mipmapLevel,
+                                           view,
+                                           true /*byPassCache*/,
+                                           roi,
+                                           RectD(),
+                                           components,
+                                           eImageBitDepthFloat,
+                                           false /*calledFromGetImage*/,
+                                           0 /*caller*/,
+                                           eStorageModeRAM,
+                                           time);
+        if (effect->renderRoI(args, &layers) != EffectInstance::eRenderRoIRetCodeOk) {
+            pass.error = failure("renderRoI failed", frame);
+
+            return pass;
+        }
+    }
+    if (layers.empty()) {
+        pass.error = failure("the render produced no plane", frame);
 
         return pass;
     }
-    ImagePtr image = layers.begin()->second;
-    if (!image || (image->getBitDepth() != eImageBitDepthFloat)) {
+
+    std::map<ImageLayerDesc, ImagePtr>::const_iterator rgba = layers.find(ImageLayerDesc::getRGBAComponents());
+    pass.image = (rgba != layers.end()) ? rgba->second : layers.begin()->second;
+    if (!pass.image || (pass.image->getBitDepth() != eImageBitDepthFloat)) {
         pass.error = failure("render did not produce a float image", frame);
-
-        return pass;
-    }
-
-    pass.bounds = image->getBounds();
-    pass.channels = image->getComponents().getChannels();
-    const RectI window = roi.intersect(pass.bounds);
-    if (window.isNull()) {
-        pass.error = failure("rendered image does not overlap the RoI", frame);
-
-        return pass;
-    }
-    const std::size_t nComps = image->getComponentsCount();
-    const std::size_t rowFloats = static_cast<std::size_t>(window.width()) * nComps;
-    pass.pixels.resize(rowFloats * window.height());
-    Image::ReadAccess access = image->getReadRights();
-    for (int y = window.y1; y < window.y2; ++y) {
-        const float* row = reinterpret_cast<const float*>(access.pixelAt(window.x1, y));
-        std::memcpy(&pass.pixels[static_cast<std::size_t>(y - window.y1) * rowFloats], row, rowFloats * sizeof(float));
+        pass.image.reset();
     }
 
     return pass;
+} // renderDirect
+
+// Row-major over window, interleaved in the image's channel order.
+std::vector<float>
+readWindow(const ImagePtr& image,
+           const RectI& window)
+{
+    const std::size_t rowFloats = static_cast<std::size_t>(window.width()) * image->getComponentsCount();
+    std::vector<float> pixels(rowFloats * window.height());
+    Image::ReadAccess access = image->getReadRights();
+
+    for (int y = window.y1; y < window.y2; ++y) {
+        const float* row = reinterpret_cast<const float*>(access.pixelAt(window.x1, y));
+        std::memcpy(&pixels[static_cast<std::size_t>(y - window.y1) * rowFloats], row, rowFloats * sizeof(float));
+    }
+
+    return pixels;
 }
 
 } // namespace
@@ -369,7 +420,8 @@ RenderMismatch
 renderBothWays(const NodePtr& writer,
                int firstFrame,
                int lastFrame,
-               const std::vector<int>& poolSizes)
+               const std::vector<int>& poolSizes,
+               const std::function<void()>& beforeTaskGraph)
 {
     OutputEffectInstance* writerEffect = writer ? dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get()) : 0;
     if (!writerEffect) {
@@ -388,9 +440,12 @@ renderBothWays(const NodePtr& writer,
     if (!tmp.isValid()) {
         return failure("cannot create a temporary directory", firstFrame);
     }
-    const std::string pattern = (tmp.path() + QLatin1String("/both.####.exr")).toStdString();
-    writer->setOutputFilesForWriter(pattern);
     const std::vector<std::string> viewNames = writer->getApp()->getProject()->getProjectViewNames();
+    // With a view pattern the writer renders each view into its own single-part file, which is
+    // what FlatExrReader reads; without one it would only render the main view.
+    const QString fileName = (viewNames.size() > 1) ? QLatin1String("/both.%V.####.exr") : QLatin1String("/both.####.exr");
+    const std::string pattern = (tmp.path() + fileName).toStdString();
+    writer->setOutputFilesForWriter(pattern);
 
     DisableUnreachableRAMPurging noPurge;
     ThreadPoolSizeGuard poolGuard;
@@ -405,6 +460,9 @@ renderBothWays(const NodePtr& writer,
         return m;
     }
 
+    if (beforeTaskGraph) {
+        beforeTaskGraph();
+    }
     for (std::size_t i = 0; i < poolSizes.size(); ++i) {
         enterMode(eRenderSchedulerModeTaskGraph, poolSizes[i]);
         const WriterPass taskGraph = renderAndReadSequence(writerEffect, pattern, viewNames, firstFrame, lastFrame);
@@ -425,7 +483,8 @@ renderBothWaysDirect(const NodePtr& node,
                      ViewIdx view,
                      unsigned mipmapLevel,
                      const RectI& roi,
-                     const std::vector<int>& poolSizes)
+                     const std::vector<int>& poolSizes,
+                     const std::function<void()>& beforeTaskGraph)
 {
     const int frame = static_cast<int>(time);
     if (!node) {
@@ -437,32 +496,44 @@ renderBothWaysDirect(const NodePtr& node,
     SchedulerModeGuard modeGuard;
 
     enterMode(eRenderSchedulerModeLegacy, 0);
-    const DirectPass legacy = renderDirect(node, time, view, mipmapLevel, roi);
+    const DirectPass legacy = renderDirect(node, time, view, mipmapLevel, roi, false /*throughScheduler*/);
     if (legacy.error.any) {
         RenderMismatch m = legacy.error;
         m.error = "Legacy: " + m.error;
 
         return m;
     }
+    const RectI window = roi.intersect(legacy.image->getBounds());
+    if (window.isNull()) {
+        return failure("Legacy: rendered image does not overlap the RoI", frame);
+    }
+    const std::vector<std::string> legacyChannels = legacy.image->getComponents().getChannels();
+    const std::vector<float> legacyPixels = readWindow(legacy.image, window);
 
-    const RectI window = roi.intersect(legacy.bounds);
+    if (beforeTaskGraph) {
+        beforeTaskGraph();
+    }
     for (std::size_t i = 0; i < poolSizes.size(); ++i) {
         enterMode(eRenderSchedulerModeTaskGraph, poolSizes[i]);
-        const DirectPass taskGraph = renderDirect(node, time, view, mipmapLevel, roi);
+        const DirectPass taskGraph = renderDirect(node, time, view, mipmapLevel, roi, true /*throughScheduler*/);
         RenderMismatch m;
         if (taskGraph.error.any) {
             m = taskGraph.error;
-        } else if (!(taskGraph.bounds == legacy.bounds)) {
+        } else if (taskGraph.tasksRun <= 0) {
+            m = failure("the scheduler ran no task, so the Task graph pass would have compared Legacy with itself", frame);
+        } else if (!taskGraph.image->getBounds().contains(window)) {
+            const RectI& b = taskGraph.image->getBounds();
             std::ostringstream ss;
-            ss << "image bounds differ: legacy (" << legacy.bounds.x1 << "," << legacy.bounds.y1 << ")-(" << legacy.bounds.x2 << "," << legacy.bounds.y2
-               << "), task graph (" << taskGraph.bounds.x1 << "," << taskGraph.bounds.y1 << ")-(" << taskGraph.bounds.x2 << "," << taskGraph.bounds.y2 << ")";
+            ss << "task graph image (" << b.x1 << "," << b.y1 << ")-(" << b.x2 << "," << b.y2 << ") does not cover the legacy window ("
+               << window.x1 << "," << window.y1 << ")-(" << window.x2 << "," << window.y2 << ")";
             m = failure(ss.str(), frame);
-        } else if (taskGraph.channels != legacy.channels) {
-            m = failure("channel list differs: legacy [" + joinChannels(legacy.channels) + "], task graph [" + joinChannels(taskGraph.channels) + "]", frame);
-        } else if (firstDifference(legacy.pixels, taskGraph.pixels, legacy.channels, window.x1, window.y1, window.width(), &m)) {
+        } else if (taskGraph.image->getComponents().getChannels() != legacyChannels) {
+            m = failure("channel list differs: legacy [" + joinChannels(legacyChannels) + "], task graph [" + joinChannels(taskGraph.image->getComponents().getChannels()) + "]", frame);
+        } else if (firstDifference(legacyPixels, readWindow(taskGraph.image, window), legacyChannels, window.x1, window.y1, window.width(), &m)) {
             m.frame = frame;
         }
         if (m.any) {
+            m.view = view;
             m.error = "Task graph, pool size " + std::to_string(poolSizes[i]) + ", mipmap " + std::to_string(mipmapLevel) + (m.error.empty() ? std::string() : ": " + m.error);
 
             return m;
@@ -481,6 +552,9 @@ describe(const RenderMismatch& m)
     std::ostringstream ss;
     ss.precision(9);
     ss << "frame " << m.frame;
+    if (m.view != 0) {
+        ss << " view " << m.view;
+    }
     if (!m.file.empty()) {
         ss << " (" << m.file << ")";
     }

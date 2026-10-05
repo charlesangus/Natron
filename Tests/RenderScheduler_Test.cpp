@@ -75,6 +75,12 @@ const int kOverlapDelayMs = 20;
 // How long a leaf rendering beside a failing one takes unless it notices the abort.
 const qint64 kSiblingRenderMs = 200;
 
+// How long the leaves held in render wait for the others to join them before giving up.
+const qint64 kLatchTimeoutMs = 10000;
+
+// A frame still unfinished after this is taken as hung.
+const qint64 kFrameTimeoutMs = 30000;
+
 class PoolSizeGuard {
 public:
     explicit PoolSizeGuard(int maxThreads)
@@ -110,6 +116,14 @@ struct SiblingState {
     std::atomic<int> started { 0 };
     std::atomic<int> bailed { 0 };
     std::atomic<int> ranFull { 0 };
+};
+
+// Shared with the render hook, like SiblingState.
+struct LeafLatch {
+    std::set<const Node*> leaves;
+    int target = 0;
+    std::atomic<int> arrived { 0 };
+    std::atomic<bool> timedOut { false };
 };
 
 } // namespace
@@ -412,6 +426,38 @@ protected:
         }
     }
 
+    // The runnables that took no task leave the pool after the frame finished, and no task keeps bytes reserved.
+    void expectSchedulerIdle()
+    {
+        QElapsedTimer timer;
+
+        timer.start();
+        while (((_scheduler->getOutstandingRunnables() > 0) || (_scheduler->getReservedBytesForTests() > 0)) && (timer.elapsed() < 5000)) {
+            QThread::msleep(1);
+        }
+        EXPECT_EQ(0, _scheduler->getOutstandingRunnables());
+        EXPECT_EQ(0u, _scheduler->getReservedBytesForTests());
+    }
+
+    // Aborts the frame and waits for it on a timeout, so that the project is never reset under its live tasks.
+    bool waitOrAbort(FrameRun* run)
+    {
+        QElapsedTimer timer;
+
+        timer.start();
+        while (!run->future->isFinished()) {
+            if (timer.elapsed() > kFrameTimeoutMs) {
+                _scheduler->abort(run->context);
+                run->future->wait();
+
+                return false;
+            }
+            QThread::msleep(1);
+        }
+
+        return true;
+    }
+
     // The runnables that took no task leave the pool after the frame finished.
     void expectRunnablesDrained()
     {
@@ -435,10 +481,37 @@ protected:
 
     void setFail(const NodePtr& node)
     {
-        KnobBool* fail = dynamic_cast<KnobBool*>(node->getKnobByName("fail").get());
+        setBool(node, "fail", true);
+    }
 
-        ASSERT_TRUE(fail != NULL);
-        fail->setValue(true);
+    void setBool(const NodePtr& node,
+                 const char* name,
+                 bool value)
+    {
+        KnobBool* knob = dynamic_cast<KnobBool*>(node->getKnobByName(name).get());
+
+        ASSERT_TRUE(knob != NULL) << name;
+        knob->setValue(value);
+    }
+
+    // The leaf first in the post-order, which the scheduler starts first.
+    NodePtr firstLeafInPostOrder(const NodePtr& root)
+    {
+        FrameRun probe;
+        std::string error;
+        NodePtr first;
+        int firstOrder = -1;
+
+        EXPECT_TRUE(prepareFrame(root, 1., true, &probe, &error)) << error;
+        for (std::size_t i = 0; i < probe.graph.tasks.size(); ++i) {
+            const FrameGraph::Task& task = probe.graph.tasks[i];
+            if (task.dependencies.empty() && ((firstOrder < 0) || (task.dfsPostOrder < firstOrder))) {
+                firstOrder = task.dfsPostOrder;
+                first = task.key.node;
+            }
+        }
+
+        return first;
     }
 
     RenderScheduler* _scheduler;
@@ -466,27 +539,53 @@ TEST_F(RenderSchedulerTest, WideMergeTree)
     // Merging 64 leaves depth first holds one image per level of the tree, 7 in all.
     renderAtEveryPoolSize(nodes.back(), nodes, std::vector<double>(1, 1.), 64.f, 7 * oneOutput, oneOutput);
 
-    // With a budget holding every image of the tree, the leaves are only bounded by the threads.
+    // With a budget holding every image of the tree, the leaves are only bounded by the threads. Each leaf is held in
+    // render until a pool's worth of leaves are in render with it, which no merge can join before then.
+    std::set<const Node*> leafSet;
     for (int i = 0; i < leaves; ++i) {
-        setDelay(nodes[i], kOverlapDelayMs);
+        leafSet.insert(nodes[i].get());
     }
     const std::size_t roomy = nodes.size() * oneOutput;
     _scheduler->setBytesBudgetForTests(roomy);
     const int concurrentPoolSizes[] = { 4, 8, 16 };
     for (std::size_t p = 0; p < sizeof(concurrentPoolSizes) / sizeof(concurrentPoolSizes[0]); ++p) {
         const int poolSize = concurrentPoolSizes[p];
+        const int target = std::min(poolSize, leaves);
         SCOPED_TRACE("concurrent, pool size " + std::to_string(poolSize));
         PoolSizeGuard pool(poolSize);
         CountingTestRegistry::reset();
         _scheduler->resetPeakBytesInFlight();
 
+        std::shared_ptr<LeafLatch> latch = std::make_shared<LeafLatch>();
+        latch->leaves = leafSet;
+        latch->target = target;
+        CountingTestRegistry::setRenderHook([latch](const Node* node) {
+            if (!latch->leaves.count(node)) {
+                return;
+            }
+            ++latch->arrived;
+            QElapsedTimer timer;
+            timer.start();
+            while (latch->arrived.load() < latch->target) {
+                if (timer.elapsed() > kLatchTimeoutMs) {
+                    latch->timedOut = true;
+
+                    return;
+                }
+                QThread::msleep(1);
+            }
+        });
+
         int maxConcurrentTasks = 0;
         renderFrames(nodes.back(), nodes, std::vector<double>(1, 1.), 64.f, &maxConcurrentTasks);
+        CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
 
+        EXPECT_FALSE(latch->timedOut.load()) << "fewer than " << target << " leaves were ever in render at once";
         EXPECT_LE(_scheduler->getPeakBytesInFlight(), roomy);
-        EXPECT_GE(CountingTestRegistry::maxConcurrentRenders(), std::min(poolSize, leaves / 2));
-        // Both cap at the pool size, which the renders reach, so the tasks inside renderRoI agree with them.
-        EXPECT_EQ(CountingTestRegistry::maxConcurrentRenders(), maxConcurrentTasks);
+        EXPECT_GE(CountingTestRegistry::maxConcurrentRenders(), target);
+        EXPECT_LE(CountingTestRegistry::maxConcurrentRenders(), poolSize);
+        EXPECT_GE(maxConcurrentTasks, target);
+        EXPECT_LE(maxConcurrentTasks, poolSize);
         expectRunnablesDrained();
     }
 }
@@ -652,5 +751,138 @@ TEST_F(RenderSchedulerTest, FailedTaskStopsSiblings)
         }
         EXPECT_GE(run.stats->getTasksPurged(), leaves - poolSize);
         expectRunnablesDrained();
+    }
+}
+
+// Nothing varies with time, so the task of each caching node in the second frame renders the same cached image as the
+// one in the first frame: it is held back while that one renders, and still runs once it finished.
+TEST_F(RenderSchedulerTest, CachedOutputsOfTwoFramesAtOnce)
+{
+    const int leaves = 8;
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildWide(leaves, &nodes));
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        ASSERT_NO_FATAL_FAILURE(setBool(nodes[i], "cacheOutput", true));
+    }
+    // Long enough that the second frame's leaves are ready while the first frame's still render.
+    for (int i = 0; i < leaves; ++i) {
+        ASSERT_NO_FATAL_FAILURE(setDelay(nodes[i], kOverlapDelayMs));
+    }
+
+    const int poolSizes[] = { 1, 4, 16 };
+    for (std::size_t p = 0; p < sizeof(poolSizes) / sizeof(poolSizes[0]); ++p) {
+        SCOPED_TRACE("pool size " + std::to_string(poolSizes[p]));
+        PoolSizeGuard pool(poolSizes[p]);
+        appPTR->clearAllCaches();
+        CountingTestRegistry::reset();
+
+        std::vector<FrameRun> runs(2);
+        int sharing = 0;
+        for (std::size_t i = 0; i < runs.size(); ++i) {
+            std::string error;
+            ASSERT_TRUE(prepareFrame(nodes.back(), 1. + i, false, &runs[i], &error)) << error;
+            ASSERT_EQ(nodes.size(), runs[i].numTasks);
+            for (std::size_t t = 0; t < runs[i].graph.tasks.size(); ++t) {
+                if (runs[i].graph.tasks[t].sharesCachedOutput) {
+                    ++sharing;
+                }
+            }
+        }
+        EXPECT_GT(sharing, 0) << "no task renders a cached output shared across frames, so nothing is exercised";
+        for (std::size_t i = 0; i < runs.size(); ++i) {
+            submit(&runs[i]);
+        }
+
+        for (std::size_t i = 0; i < runs.size(); ++i) {
+            SCOPED_TRACE("frame " + std::to_string(i + 1));
+            ASSERT_TRUE(waitOrAbort(&runs[i])) << "the frame did not finish within " << kFrameTimeoutMs << " ms";
+            ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, runs[i].future->wait());
+            EXPECT_EQ((int)runs[i].numTasks, runs[i].stats->getTasksRun());
+            EXPECT_EQ(0u, runs[i].context->getStore().bytesInFlight());
+
+            const std::map<ImageLayerDesc, ImagePtr> planes = runs[i].future->getRootPlanes();
+            ASSERT_FALSE(planes.empty());
+            const ImagePtr& image = planes.begin()->second;
+            ASSERT_TRUE(bool(image));
+            ASSERT_EQ(eImageBitDepthFloat, image->getBitDepth());
+            Image::ReadAccess access = image->getReadRights();
+            const float* pixel = (const float*)access.pixelAt(0, 0);
+            ASSERT_TRUE(pixel != NULL);
+            EXPECT_FLOAT_EQ((float)leaves, pixel[0]);
+        }
+        // The task that found the image in the cache did not render it again.
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            EXPECT_GE(CountingTestRegistry::renders(nodes[i]), 1) << nodes[i]->getScriptName();
+            EXPECT_LE(CountingTestRegistry::renders(nodes[i]), 2) << nodes[i]->getScriptName();
+        }
+        expectSchedulerIdle();
+    }
+    appPTR->clearAllCaches();
+}
+
+TEST_F(RenderSchedulerTest, ThrowingTaskFailsTheFrame)
+{
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(10, &nodes));
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[5], "throwInRender", true));
+
+    for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+        SCOPED_TRACE("pool size " + std::to_string(kPoolSizes[p]));
+        PoolSizeGuard pool(kPoolSizes[p]);
+        CountingTestRegistry::reset();
+
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &run, &error)) << error;
+        submit(&run);
+        ASSERT_TRUE(waitOrAbort(&run)) << "the frame did not finish within " << kFrameTimeoutMs << " ms";
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed, run.future->wait());
+        EXPECT_TRUE(run.future->getRootPlanes().empty());
+        EXPECT_EQ(0u, run.context->getStore().bytesInFlight());
+        EXPECT_EQ(0, _scheduler->getFramesInFlight(run.abortInfo));
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            EXPECT_EQ(i <= 5 ? 1 : 0, CountingTestRegistry::renders(nodes[i])) << "node " << i;
+        }
+        expectSchedulerIdle();
+    }
+}
+
+// A budget of one output holds every branch but the first back, so a failure must also release the reservations of
+// the admitted tasks and drop the gated ones.
+TEST_F(RenderSchedulerTest, FailureUnderAOneOutputBudgetReleasesEverything)
+{
+    const std::size_t oneOutput = measureOneOutputBytes();
+    ASSERT_GT(oneOutput, 0u);
+
+    const int leaves = 16;
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildWide(leaves, &nodes));
+    const NodePtr root = nodes.back();
+    const NodePtr failing = firstLeafInPostOrder(root);
+    ASSERT_TRUE(bool(failing));
+
+    const char* const failKnobs[] = { "fail", "throwInRender" };
+    for (std::size_t k = 0; k < sizeof(failKnobs) / sizeof(failKnobs[0]); ++k) {
+        SCOPED_TRACE(failKnobs[k]);
+        ASSERT_NO_FATAL_FAILURE(setBool(failing, failKnobs[k], true));
+        for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+            SCOPED_TRACE("pool size " + std::to_string(kPoolSizes[p]));
+            PoolSizeGuard pool(kPoolSizes[p]);
+            CountingTestRegistry::reset();
+            _scheduler->setBytesBudgetForTests(oneOutput);
+
+            FrameRun run;
+            std::string error;
+            ASSERT_TRUE(prepareFrame(root, 1., true, &run, &error)) << error;
+            submit(&run);
+            ASSERT_TRUE(waitOrAbort(&run)) << "the frame did not finish within " << kFrameTimeoutMs << " ms";
+            EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed, run.future->wait());
+            EXPECT_TRUE(run.future->getRootPlanes().empty());
+            EXPECT_EQ(0u, run.context->getStore().bytesInFlight());
+            EXPECT_EQ(0, _scheduler->getFramesInFlight(run.abortInfo));
+            EXPECT_EQ(1, CountingTestRegistry::renders(failing));
+            expectSchedulerIdle();
+        }
+        ASSERT_NO_FATAL_FAILURE(setBool(failing, failKnobs[k], false));
     }
 }

@@ -122,3 +122,41 @@ TEST_F(RenderBothWaysSelf, DirectRenderMatchesAtMipmapZeroAndOne)
         EXPECT_FALSE(m.any) << "mipmap " << mipmapLevel << ": " << describe(m);
     }
 }
+
+// A comparison that cannot tell the two passes apart would pass whatever the Task graph renders,
+// so changing the last Grade between the passes must be reported as a pixel mismatch.
+TEST_F(RenderBothWaysSelf, WriterSequenceReportsAKnobChangedBeforeTheTaskGraphPass)
+{
+    NodePtr lastGrade;
+    NodePtr writer;
+    buildChain(&lastGrade, &writer);
+    if (HasFatalFailure()) {
+        return;
+    }
+    KnobColor* multiply = dynamic_cast<KnobColor*>(lastGrade->getKnobByName("multiply").get());
+    ASSERT_TRUE(multiply != NULL);
+
+    const RenderMismatch m = renderBothWays(writer, 1, 1, std::vector<int> { 2 }, [multiply]() {
+        multiply->setValues(0.3, 0.3, 0.3, 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    });
+    EXPECT_TRUE(m.any) << "the changed multiply went unnoticed";
+    EXPECT_FALSE(m.channel.empty()) << "expected a pixel mismatch, got: " << describe(m);
+}
+
+TEST_F(RenderBothWaysSelf, DirectRenderReportsAKnobChangedBeforeTheTaskGraphPass)
+{
+    NodePtr lastGrade;
+    NodePtr writer;
+    buildChain(&lastGrade, &writer);
+    if (HasFatalFailure()) {
+        return;
+    }
+    KnobColor* multiply = dynamic_cast<KnobColor*>(lastGrade->getKnobByName("multiply").get());
+    ASSERT_TRUE(multiply != NULL);
+
+    const RenderMismatch m = renderBothWaysDirect(lastGrade, 1., ViewIdx(0), 0, RectI(0, 0, 256, 256), std::vector<int> { 2 }, [multiply]() {
+        multiply->setValues(0.3, 0.3, 0.3, 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    });
+    EXPECT_TRUE(m.any) << "the changed multiply went unnoticed";
+    EXPECT_FALSE(m.channel.empty()) << "expected a pixel mismatch, got: " << describe(m);
+}

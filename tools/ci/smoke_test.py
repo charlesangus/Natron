@@ -818,10 +818,39 @@ def check_reader_cli_time_offset_regression():
           "despite a stale non-zero timeOffset" % (frame_paths,))
 
 
+_RENDER_SCHEDULER_MODES = ("legacy", "taskgraph")
+
+
+def _report_render_scheduler_mode():
+    # The engine's resolved mode has no Python getter, so it is derived the
+    # way AppManager resolves it: a valid NATRON_RENDER_SCHEDULER overrides
+    # the renderSchedulerMode preference.
+    env = os.environ.get("NATRON_RENDER_SCHEDULER")
+    try:
+        import NatronEngine
+        param = NatronEngine.natron.getSettings().getParam(
+            "renderSchedulerMode")
+        index = param.getValue()
+        setting = (_RENDER_SCHEDULER_MODES[index]
+                   if 0 <= index < len(_RENDER_SCHEDULER_MODES)
+                   else "unknown index %r" % (index,))
+    except Exception as e:
+        setting = None
+        _mark("[smoke] WARNING: cannot read the renderSchedulerMode "
+              "setting: %r" % (e,))
+    if env in _RENDER_SCHEDULER_MODES:
+        resolved, source = env, "NATRON_RENDER_SCHEDULER"
+    elif setting is not None:
+        resolved, source = setting, "renderSchedulerMode setting"
+    else:
+        resolved, source = "unknown", "neither source readable"
+    _mark("[smoke] render scheduler mode: %s (from %s; env=%r, setting=%r)"
+          % (resolved, source, env, setting))
+
+
 def main():
     _mark("[smoke] script started")
-    _mark("[smoke] render scheduler mode: %s"
-          % (os.environ.get("NATRON_RENDER_SCHEDULER") or "default"))
+    _report_render_scheduler_mode()
 
     global app
     try:

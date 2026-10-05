@@ -70,16 +70,17 @@ public:
 
         // Intersection of the bounds of all layers.
         RectI bounds;
-        std::atomic<int> consumersLeft;
 
-        // Size of the layers, whether or not bytesInFlight() counts them.
-        std::size_t bytes;
+        // A cached image grows to the union of every RoI rendered under its key, while only this part is known to be
+        // rendered by the task that stored it.
+        RectI renderedRoI;
+        std::atomic<int> consumersLeft;
 
         Entry()
             : layers()
             , bounds()
+            , renderedRoI()
             , consumersLeft(0)
-            , bytes(0)
         {
         }
     };
@@ -92,14 +93,14 @@ public:
     FrameStore& operator=(const FrameStore&) = delete;
 
     /**
-     * @brief Stores the layers rendered for key until it has been released consumers times, replacing any entry
-     * already stored for key. Nothing is stored when consumers is not positive.
+     * @brief Stores the layers rendered for key over renderedRoI until it has been released consumers times,
+     * replacing any entry already stored for key. Nothing is stored when consumers is not positive.
      **/
-    void put(const TaskKey& key, std::map<ImageLayerDesc, ImagePtr> layers, int consumers);
+    void put(const TaskKey& key, std::map<ImageLayerDesc, ImagePtr> layers, const RectI& renderedRoI, int consumers);
 
     /**
-     * @brief Appends to out the image of each needed layer, in order, if all of them are stored for key and their
-     * bounds contain pixelRoI. Returns false and leaves out untouched otherwise.
+     * @brief Appends to out the image of each needed layer, in order, if all of them are stored for key and both
+     * their bounds and the RoI rendered for key contain pixelRoI. Returns false and leaves out untouched otherwise.
      **/
     bool find(const TaskKey& key, const std::list<ImageLayerDesc>& needed, const RectI& pixelRoI, std::list<ImagePtr>* out) const;
 

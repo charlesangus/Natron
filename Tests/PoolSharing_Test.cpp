@@ -84,7 +84,8 @@ const double kTime = 1.;
 const int kSize = 128;
 const int kChainLength = 50;
 const int kNumBranches = 16;
-const qint64 kRenderTimeoutMs = 100000;
+// Three pool sizes per test must fit well inside ctest's 300 s timeout.
+const qint64 kRenderTimeoutMs = 45000;
 const int kPoolSizes[] = { 1, 2, 4 };
 
 class PoolSizeGuard {
@@ -369,15 +370,10 @@ protected:
         }
 
         FrameFuturePtr future = appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Interactive);
-        QElapsedTimer timer;
-        timer.start();
-        while (!future->isFinished()) {
-            if (timer.elapsed() > kRenderTimeoutMs) {
-                *error = "the frame did not finish in time";
+        if (!waitOrAbort(context, future)) {
+            *error = "the frame did not finish in time";
 
-                return false;
-            }
-            QThread::msleep(2);
+            return false;
         }
         if (future->wait() != EffectInstance::eRenderRoIRetCodeOk) {
             *error = "the frame failed";
@@ -398,6 +394,37 @@ protected:
         *pixels = readWindow(planes.begin()->second, window);
 
         return true;
+    }
+
+    // On a timeout the frame is aborted and waited for, so that the project is never reset under its live tasks.
+    static bool waitOrAbort(const FrameRenderContextPtr& context,
+                            const FrameFuturePtr& future)
+    {
+        QElapsedTimer timer;
+
+        timer.start();
+        while (!future->isFinished()) {
+            if (timer.elapsed() > kRenderTimeoutMs) {
+                appPTR->getRenderScheduler()->abort(context);
+                future->wait();
+
+                return false;
+            }
+            QThread::msleep(2);
+        }
+
+        return true;
+    }
+
+    // The expected thread counts below are derived for these settings.
+    static void assertDefaultThreadSettings()
+    {
+        int nThreadsToRender = 0;
+        int nThreadsPerEffect = 0;
+
+        appPTR->getNThreadsSettings(&nThreadsToRender, &nThreadsPerEffect);
+        ASSERT_NE(-1, nThreadsToRender) << "rendering is set single-threaded";
+        ASSERT_EQ(0, nThreadsPerEffect) << "a per-effect thread limit is set";
     }
 
     NodePtr createCounting(const char* pluginID,
@@ -460,15 +487,10 @@ protected:
         }
 
         FrameFuturePtr future = appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Interactive);
-        QElapsedTimer timer;
-        timer.start();
-        while (!future->isFinished()) {
-            if (timer.elapsed() > kRenderTimeoutMs) {
-                *error = "the frame did not finish in time";
+        if (!waitOrAbort(context, future)) {
+            *error = "the frame did not finish in time";
 
-                return false;
-            }
-            QThread::msleep(2);
+            return false;
         }
         if (future->wait() != EffectInstance::eRenderRoIRetCodeOk) {
             *error = "the frame failed";
@@ -477,26 +499,6 @@ protected:
         }
 
         return true;
-    }
-
-    /**
-     * @brief What getNCPUsAvailableForEffect() returns in a task the scheduler popped with running tasks (itself
-     * included) and ready ones, given the user's thread settings.
-     **/
-    static int expectedTaskNCPUs(int poolMax,
-                                 int running,
-                                 int ready)
-    {
-        int nThreadsToRender = 0;
-        int nThreadsPerEffect = 0;
-
-        appPTR->getNThreadsSettings(&nThreadsToRender, &nThreadsPerEffect);
-        if (nThreadsToRender == -1) {
-            return 1;
-        }
-        const int budget = RenderScheduler::computeTaskBudget(poolMax, running, ready, appPTR->getHardwareIdealThreadCount(), nThreadsPerEffect);
-
-        return (nThreadsPerEffect > 0) ? std::min(budget, nThreadsPerEffect) : budget;
     }
 
     void expectTaskGraphMatchesLegacy(const NodePtr& root)
@@ -617,6 +619,7 @@ TEST_F(PoolSharing, NCPUsOutsideATaskUseTheLegacyFormula)
 TEST_F(PoolSharing, ChainAloneGetsThePoolUpToTheCores)
 {
     const int kLength = 6;
+    ASSERT_NO_FATAL_FAILURE(assertDefaultThreadSettings());
     PoolSizeGuard pool(4);
     CountingTestRegistry::reset();
 
@@ -642,8 +645,8 @@ TEST_F(PoolSharing, ChainAloneGetsThePoolUpToTheCores)
     CountingTestRegistry::reset();
     ASSERT_TRUE(ok) << error;
 
-    // min(4, cores) under the default per-effect limit.
-    const int expected = expectedTaskNCPUs(4, 1, 0);
+    // A task alone gets the whole pool, capped by the cores.
+    const int expected = std::min(4, appPTR->getHardwareIdealThreadCount());
     ASSERT_EQ((std::size_t)kLength, seen.size());
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         EXPECT_EQ(expected, seen[nodes[i].get()]) << "node " << i;
@@ -701,6 +704,7 @@ TEST_F(PoolSharing, ConcurrentLeavesShareThePoolEvenly)
     const int kLeaves = 5;
     const int kDelayMs = 200;
     const int kPool = 8;
+    ASSERT_NO_FATAL_FAILURE(assertDefaultThreadSettings());
     PoolSizeGuard pool(kPool);
     CountingTestRegistry::reset();
 
@@ -753,11 +757,8 @@ TEST_F(PoolSharing, ConcurrentLeavesShareThePoolEvenly)
     EXPECT_TRUE(allOverlapped.load()) << "the leaves did not all render at once";
 
     // Every leaf is popped with the five leaves running or ready: min(clamp(8 - 5 + 1, 1, cores), ceil(8 / 5)), so 2
-    // on a machine with two cores or more under the default per-effect limit.
-    const int expected = expectedTaskNCPUs(kPool, kLeaves, 0);
-    for (int running = 1; running <= kLeaves; ++running) {
-        EXPECT_EQ(expected, expectedTaskNCPUs(kPool, running, kLeaves - running));
-    }
+    // on a machine with two cores or more.
+    const int expected = std::min(2, appPTR->getHardwareIdealThreadCount());
     for (std::size_t i = 0; i < leaves.size(); ++i) {
         ASSERT_EQ(1u, seen.count(leaves[i].get())) << "leaf " << i << " never rendered";
         EXPECT_EQ(expected, seen[leaves[i].get()]) << "leaf " << i;

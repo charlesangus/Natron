@@ -64,6 +64,7 @@
 #include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
+#include "Engine/SchedulerEligibility.h"
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
@@ -2233,32 +2234,30 @@ notifyFrameStatsObserver(int time,
 const char*
 taskGraphIneligibility(const ParallelRenderArgsSetter& setter)
 {
-    // FrameFuture::wait() on a pool thread could wait for the very thread it blocks.
-    if (QThreadPool::globalInstance()->contains(QThread::currentThread())) {
-        return "frame thread is a pool thread";
-    }
+    static const SchedulerIneligibilityReasons writerReasons = {
+        "frame thread is a pool thread",
+        "frame thread is the main thread",
+        "no frame args",
+        "input outside the frame args",
+        "partial updates",
+        "deep input",
+        "paint stroke",
+        "refresh",
+        "OpenGL render",
+        "analysis",
+    };
     const std::map<NodePtr, ParallelRenderArgsPtr>& args = setter.getInstalledArgs();
-    if (args.empty()) {
-        return "no frame args";
-    }
-    for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = args.begin(); it != args.end(); ++it) {
-        const ParallelRenderArgsPtr& nodeArgs = it->second;
-        if (!nodeArgs) {
-            continue;
-        }
-        // The context was attached to this thread; a task on a pool thread cannot make it current.
-        if (nodeArgs->openGLContext.lock() && (nodeArgs->currentOpenglSupport != ePluginOpenGLRenderSupportNone)) {
-            return "OpenGL render";
-        }
-        if (nodeArgs->isDuringPaintStrokeCreation) {
-            return "paint stroke";
-        }
-        if (nodeArgs->isAnalysis) {
-            return "analysis";
-        }
-    }
+    SchedulerEligibility eligibility;
 
-    return 0;
+    eligibility.onPoolThread = QThreadPool::globalInstance()->contains(QThread::currentThread());
+    eligibility.hasFrameArgs = !args.empty();
+    eligibility.inputHasFrameArgs = true;
+    scanFrameArgsForScheduler(args, &eligibility);
+
+    const char* reason = 0;
+    isFrameEligibleForScheduler(eligibility, writerReasons, &reason);
+
+    return reason;
 }
 
 } // namespace

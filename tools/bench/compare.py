@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare two graph_bench.py result files and flag regressions.
 
-usage: compare.py BEFORE.jsonl AFTER.jsonl [--threshold 1.5]
+usage: compare.py BEFORE.jsonl AFTER.jsonl [--threshold 1.5] [--pair-settings BEFORE_SETTINGS AFTER_SETTINGS]
 """
 import argparse
 import json
@@ -30,7 +30,7 @@ IO_METRICS = [
 ]
 
 
-def load(path):
+def load(path, only_settings=None):
     groups = {}
     with open(path) as fh:
         for line in fh:
@@ -43,7 +43,12 @@ def load(path):
             for src, dst in (("io_read_bytes", "io_read_mb"), ("io_write_bytes", "io_write_mb")):
                 if isinstance(rec.get(src), (int, float)):
                     rec[dst] = rec[src] / 1e6
-            key = (rec.get("topo"), rec.get("n"), rec.get("res"), rec.get("named"), rec.get("settings") or "")
+            settings = rec.get("settings") or ""
+            if only_settings is not None:
+                if settings != only_settings:
+                    continue
+                settings = ""
+            key = (rec.get("topo"), rec.get("n"), rec.get("res"), rec.get("named"), settings)
             groups.setdefault(key, []).append(rec)
     return groups
 
@@ -97,10 +102,20 @@ def main():
         default=1.5,
         help="flag a ratio beyond this factor (default 1.5; run-to-run noise reaches 2x)",
     )
+    ap.add_argument(
+        "--pair-settings",
+        nargs=2,
+        metavar=("BEFORE_SETTINGS", "AFTER_SETTINGS"),
+        help="match rows whose settings equal BEFORE_SETTINGS in the first file against rows whose "
+        "settings equal AFTER_SETTINGS in the second; 'default' selects rows with empty settings",
+    )
     args = ap.parse_args()
 
-    before = load(args.before)
-    after = load(args.after)
+    only_before = only_after = None
+    if args.pair_settings:
+        only_before, only_after = ("" if v == "default" else v for v in args.pair_settings)
+    before = load(args.before, only_before)
+    after = load(args.after, only_after)
     common = sorted(set(before) & set(after), key=key_sort)
     flagged_any = False
 

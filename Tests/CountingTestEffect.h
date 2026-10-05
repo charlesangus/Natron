@@ -34,6 +34,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -208,9 +209,9 @@ private:
 
 /**
  * @brief Fills its output with a constant: its "value" knob plus the sum of what its connected inputs hold at the
- * corner of the render window. Never caches its output, so that every renderRoI on it reaches render(), fails
- * when its "fail" knob is set, and sleeps for its "delayMs" knob first, so that the renders of concurrent tasks
- * overlap.
+ * corner of the render window. Caches its output only when its "cacheOutput" knob is set, so that by default every
+ * renderRoI on it reaches render(). Fails when its "fail" knob is set, throws when its "throwInRender" knob is set,
+ * and sleeps for its "delayMs" knob first, so that the renders of concurrent tasks overlap.
  **/
 class CountingTestEffectBase
     : public NativeEffectBase {
@@ -220,6 +221,8 @@ public:
         , _value()
         , _fail()
         , _delayMs()
+        , _cacheOutput()
+        , _throwInRender()
     {
     }
 
@@ -244,7 +247,9 @@ public:
                                    ViewIdx /*view*/,
                                    int /*visitsCount*/) const OVERRIDE FINAL
     {
-        return false;
+        KnobBoolPtr cacheKnob = _cacheOutput.lock();
+
+        return cacheKnob && cacheKnob->getValue();
     }
 
     virtual StatusEnum getRegionOfDefinition(U64 /*hash*/,
@@ -297,6 +302,20 @@ private:
         delayMs->setDefaultValue(0);
         page->addKnob(delayMs);
         _delayMs = delayMs;
+
+        KnobBoolPtr cacheOutput = createKnob<KnobBool>(std::string("Cache Output"));
+        cacheOutput->setName("cacheOutput");
+        cacheOutput->setAnimationEnabled(false);
+        cacheOutput->setDefaultValue(false);
+        page->addKnob(cacheOutput);
+        _cacheOutput = cacheOutput;
+
+        KnobBoolPtr throwInRender = createKnob<KnobBool>(std::string("Throw In Render"));
+        throwInRender->setName("throwInRender");
+        throwInRender->setAnimationEnabled(false);
+        throwInRender->setDefaultValue(false);
+        page->addKnob(throwInRender);
+        _throwInRender = throwInRender;
     }
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
@@ -312,6 +331,11 @@ private:
         KnobBoolPtr failKnob = _fail.lock();
         if (failKnob && failKnob->getValue()) {
             return eStatusFailed;
+        }
+
+        KnobBoolPtr throwKnob = _throwInRender.lock();
+        if (throwKnob && throwKnob->getValue()) {
+            throw std::runtime_error("CountingTestEffect: throwInRender is set");
         }
 
         KnobDoublePtr valueKnob = _value.lock();
@@ -360,6 +384,8 @@ private:
     KnobDoubleWPtr _value;
     KnobBoolWPtr _fail;
     KnobIntWPtr _delayMs;
+    KnobBoolWPtr _cacheOutput;
+    KnobBoolWPtr _throwInRender;
 };
 
 class CountingTestEffect

@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,7 @@ NATRON_NAMESPACE_ENTER
 struct RenderMismatch {
     bool any = false;
     int frame = 0;
+    int view = 0;
     int x = 0;
     int y = 0;
     std::string channel;
@@ -56,23 +58,29 @@ struct RenderMismatch {
 
 // Renders frames [firstFrame, lastFrame] through `writer` (a WriteOIIO node) once in Legacy
 // mode, then once in Task graph mode per entry of `poolSizes` with the global thread pool capped
-// at that size, and compares every output EXR bit for bit against the Legacy one. The writer's
-// output file, bitDepth and compression knobs are overwritten so its output lands in a temporary
-// directory in the layout FlatExrReader parses; the directory is removed before returning.
+// at that size, and compares every output EXR of every project view bit for bit against the
+// Legacy one. The writer's output file, bitDepth and compression knobs are overwritten so its
+// output lands in a temporary directory in the layout FlatExrReader parses, one file per view
+// when the project has several; the directory is removed before returning.
+// `beforeTaskGraph`, when set, is called once between the Legacy pass and the first Task graph
+// pass, so a self-test can make the two renders differ on purpose.
 RenderMismatch renderBothWays(const NodePtr& writer,
                               int firstFrame,
                               int lastFrame,
-                              const std::vector<int>& poolSizes);
+                              const std::vector<int>& poolSizes,
+                              const std::function<void()>& beforeTaskGraph = std::function<void()>());
 
-// Renders `roi` (in pixel coordinates at `mipmapLevel`) of `node`'s RGBA float output directly
-// through renderRoI, bypassing the cache, in Legacy mode and then in Task graph mode per pool
-// size, and compares the pixels inside `roi` bit for bit.
+// Renders `roi` (in pixel coordinates at `mipmapLevel`) of `node`'s RGBA float output once in
+// Legacy mode directly through renderRoI, bypassing the cache, then per pool size as a frame
+// built and run by the RenderScheduler, and compares the pixels inside `roi` bit for bit. A Task
+// graph pass that runs no task through the scheduler is reported as a mismatch.
 RenderMismatch renderBothWaysDirect(const NodePtr& node,
                                     double time,
                                     ViewIdx view,
                                     unsigned mipmapLevel,
                                     const RectI& roi,
-                                    const std::vector<int>& poolSizes);
+                                    const std::vector<int>& poolSizes,
+                                    const std::function<void()>& beforeTaskGraph = std::function<void()>());
 
 std::string describe(const RenderMismatch& m);
 

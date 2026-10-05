@@ -178,7 +178,7 @@ TEST_F(FrameRenderContextTest, FrameStorePutFindRelease)
     const FrameStore::TaskKey key = makeKey(NodePtr(), 1.);
     std::map<ImageLayerDesc, ImagePtr> layers;
     layers[ImageLayerDesc::getRGBAComponents()] = rgba;
-    store.put(key, layers, 2);
+    store.put(key, layers, bounds, 2);
     EXPECT_GT(store.bytesInFlight(), 0u);
 
     std::list<ImageLayerDesc> neededRGBA;
@@ -211,12 +211,34 @@ TEST_F(FrameRenderContextTest, FrameStorePutFindRelease)
     EXPECT_FALSE(store.find(key, neededRGBA, RectI(2, 2, 6, 6), &afterLastRelease));
     EXPECT_EQ(0u, store.bytesInFlight());
 
-    store.put(key, layers, 1);
+    store.put(key, layers, bounds, 1);
     EXPECT_GT(store.bytesInFlight(), 0u);
     store.clear();
     EXPECT_EQ(0u, store.bytesInFlight());
     std::list<ImagePtr> afterClear;
     EXPECT_FALSE(store.find(key, neededRGBA, RectI(2, 2, 6, 6), &afterClear));
+}
+
+// A cached image may be larger than what the task that stored it rendered, so only that part may be found.
+TEST_F(FrameRenderContextTest, FrameStoreFindsOnlyTheRenderedRoI)
+{
+    FrameStore store;
+    ImagePtr rgba = makeLocalImage(ImageLayerDesc::getRGBAComponents(), RectI(0, 0, 8, 8));
+    ASSERT_TRUE(bool(rgba));
+
+    const FrameStore::TaskKey key = makeKey(NodePtr(), 1.);
+    std::map<ImageLayerDesc, ImagePtr> layers;
+    layers[ImageLayerDesc::getRGBAComponents()] = rgba;
+    store.put(key, layers, RectI(0, 0, 4, 4), 1);
+
+    std::list<ImageLayerDesc> needed;
+    needed.push_back(ImageLayerDesc::getRGBAComponents());
+    std::list<ImagePtr> inside;
+    EXPECT_TRUE(store.find(key, needed, RectI(1, 1, 4, 4), &inside));
+    std::list<ImagePtr> pastRendered;
+    EXPECT_FALSE(store.find(key, needed, RectI(2, 2, 6, 6), &pastRendered));
+    EXPECT_TRUE(pastRendered.empty());
+    store.release(key);
 }
 
 TEST_F(FrameRenderContextTest, FrameStoreCountsAnImageStoredUnderTwoKeysOnce)
@@ -231,13 +253,14 @@ TEST_F(FrameRenderContextTest, FrameStoreCountsAnImageStoredUnderTwoKeysOnce)
     layers[ImageLayerDesc::getRGBAComponents()] = rgba;
     const FrameStore::TaskKey input = makeKey(NodePtr(), 1.);
     const FrameStore::TaskKey identity = makeKey(NodePtr(), 2.);
+    const RectI rendered(0, 0, 8, 8);
 
-    store.put(input, layers, 1);
+    store.put(input, layers, rendered, 1);
     EXPECT_EQ(imageBytes, store.bytesInFlight());
-    store.put(identity, layers, 1);
+    store.put(identity, layers, rendered, 1);
     EXPECT_EQ(imageBytes, store.bytesInFlight());
 
-    store.put(identity, layers, 1);
+    store.put(identity, layers, rendered, 1);
     EXPECT_EQ(imageBytes, store.bytesInFlight()) << "storing the same image again under a key must not change the count";
 
     store.release(input);
@@ -254,12 +277,12 @@ TEST_F(FrameRenderContextTest, FrameStoreCountsAnImageStoredUnderTwoKeysOnce)
     ASSERT_TRUE(bool(other));
     std::map<ImageLayerDesc, ImagePtr> otherLayers;
     otherLayers[ImageLayerDesc::getRGBAComponents()] = other;
-    store.put(input, layers, 1);
-    store.put(identity, otherLayers, 1);
+    store.put(input, layers, rendered, 1);
+    store.put(identity, otherLayers, RectI(0, 0, 4, 4), 1);
     EXPECT_EQ(imageBytes + other->size(), store.bytesInFlight());
     store.clear();
     EXPECT_EQ(0u, store.bytesInFlight());
-    store.put(input, layers, 1);
+    store.put(input, layers, rendered, 1);
     EXPECT_EQ(imageBytes, store.bytesInFlight()) << "clear() must forget the images it counted";
     store.release(input);
     EXPECT_EQ(0u, store.bytesInFlight());

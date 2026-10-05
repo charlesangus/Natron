@@ -96,6 +96,7 @@ TEST_F(RenderSchedulerModeTest, KnobExistsWithLegacyAndTaskGraphEntries)
 TEST_F(RenderSchedulerModeTest, KnobChangeIsReadBackUnlessEnvironmentOverrides)
 {
     if (envOverrideActive()) {
+        EXPECT_EQ(*AppManager::parseRenderSchedulerModeEnv(std::getenv("NATRON_RENDER_SCHEDULER")), appPTR->getRenderSchedulerMode());
         const RenderSchedulerModeEnum before = appPTR->getRenderSchedulerMode();
         knob()->setValue((int)eRenderSchedulerModeTaskGraph);
         knob()->setValue((int)eRenderSchedulerModeLegacy);

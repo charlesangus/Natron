@@ -10,6 +10,7 @@
 # Each configuration waits for the load average to drop (BENCH_MAX_LOAD, BENCH_COOLDOWN_TIMEOUT)
 # and then sleeps BENCH_COOLDOWN seconds, and its CPU clock is logged to
 # build/bench/freq-<tag>-<topo>-<n>.txt and summarised into the result record.
+# shellcheck source-path=SCRIPTDIR
 set -u
 status=0
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)

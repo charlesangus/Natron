@@ -70,6 +70,7 @@ FrameStore::~FrameStore()
 void
 FrameStore::put(const TaskKey& key,
                 std::map<ImageLayerDesc, ImagePtr> layers,
+                const RectI& renderedRoI,
                 int consumers)
 {
     if (consumers <= 0) {
@@ -89,9 +90,9 @@ FrameStore::put(const TaskKey& key,
             entry->bounds = layerBounds;
             boundsSet = true;
         }
-        entry->bytes += it->second->size();
     }
     entry->layers = std::move(layers);
+    entry->renderedRoI = renderedRoI;
     entry->consumersLeft = consumers;
 
     // Destroyed once the lock is released, so that freeing its images does not happen under it.
@@ -161,8 +162,8 @@ FrameStore::find(const TaskKey& key,
         entry = found->second;
     }
 
-    // Only consumersLeft changes once an entry is stored, so its layers and bounds can be read without the lock.
-    if (!entry->bounds.contains(pixelRoI)) {
+    // Only consumersLeft changes once an entry is stored, so its other fields can be read without the lock.
+    if (!entry->bounds.contains(pixelRoI) || !entry->renderedRoI.contains(pixelRoI)) {
         return false;
     }
     std::list<ImagePtr> images;

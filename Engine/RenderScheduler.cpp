@@ -29,15 +29,10 @@
 #include <atomic>
 #include <bitset>
 #include <cassert>
-#include <chrono>
 #include <exception>
 #include <limits>
 #include <unordered_map>
 #include <utility>
-
-#ifdef __linux__
-#include <dlfcn.h>
-#endif
 
 #include <QMutexLocker>
 #include <QRunnable>
@@ -50,6 +45,7 @@
 #include "Engine/MemoryInfo.h"
 #include "Engine/Node.h"
 #include "Engine/NonKeyParams.h"
+#include "Engine/OpenMPThreads.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
@@ -157,41 +153,6 @@ runnablePriorityOf(RenderScheduler::Priority priority)
 {
     return (priority == RenderScheduler::Priority::Interactive) ? kInteractiveRunnablePriority : kBackgroundRunnablePriority;
 }
-
-#ifdef __linux__
-typedef void (*OmpSetNumThreadsFn)(int);
-
-// OpenMP plug-ins size their teams from the calling thread's nthreads ICV, which only the task's thread can set.
-// libgomp is looked up among the loaded objects only. Graphs without an OpenMP plug-in never load it, so a failed
-// lookup is retried at most once a second, by one thread, rather than on every task.
-void
-setOpenMPThreadsOfCurrentThread(int threads)
-{
-    static std::atomic<OmpSetNumThreadsFn> cached(nullptr);
-    static std::atomic<long long> nextRetryNs(0);
-    OmpSetNumThreadsFn fn = cached.load(std::memory_order_acquire);
-
-    if (!fn) {
-        const long long now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        long long due = nextRetryNs.load(std::memory_order_relaxed);
-        if (now < due || !nextRetryNs.compare_exchange_strong(due, now + 1000000000LL, std::memory_order_relaxed)) {
-            return;
-        }
-        void* lib = dlopen("libgomp.so.1", RTLD_LAZY | RTLD_NOLOAD);
-        if (!lib) {
-            return;
-        }
-        fn = reinterpret_cast<OmpSetNumThreadsFn>(dlsym(lib, "omp_set_num_threads"));
-        if (!fn) {
-            dlclose(lib);
-
-            return;
-        }
-        cached.store(fn, std::memory_order_release);
-    }
-    fn(threads);
-}
-#endif
 
 void
 getOutputComponents(const EffectInstancePtr& effect,
@@ -358,18 +319,27 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
             getOutputComponents(effect, nodeRequest->second->nodeHash, task.key.time, task.key.view, &task.components);
         }
 
+        ParallelRenderArgsPtr frameArgs = effect->getParallelRenderArgsTLS();
+
         // Composed transforms can ask for an infinite RoI, which renderRoI clips to the RoD.
         RectI estimatedRoI = task.roi;
+        task.renderedRoI = task.roi;
         if (!fvRequest->globalData.rod.isNull()) {
-            estimatedRoI = task.roi.intersect(fvRequest->globalData.rod.toPixelEnclosing(task.key.mipmapLevel, par));
+            const RectI pixelRoD = fvRequest->globalData.rod.toPixelEnclosing(task.key.mipmapLevel, par);
+            estimatedRoI = task.roi.intersect(pixelRoD);
+            // An effect without tiles support renders its whole RoD whatever the RoI.
+            task.renderedRoI = (frameArgs && !frameArgs->tilesSupported && !task.isIdentity) ? pixelRoD : estimatedRoI;
         }
         task.estimatedBytes = estimateBytes(estimatedRoI, task.components, task.bitdepth);
 
         if (!task.isIdentity) {
-            ParallelRenderArgsPtr frameArgs = effect->getParallelRenderArgsTLS();
-            if (frameArgs && frameArgs->frameVaryingComputed && !frameArgs->isFrameVaryingOrAnimated && effect->shouldCacheOutput(false, task.key.time, task.key.view, frameArgs->visitsCount)) {
+            if (frameArgs && frameArgs->frameVaryingComputed && effect->shouldCacheOutput(false, task.key.time, task.key.view, frameArgs->visitsCount)) {
                 task.sharesCachedOutput = true;
                 task.nodeHash = nodeRequest->second->nodeHash;
+                task.cacheKeyHasTime = frameArgs->isFrameVaryingOrAnimated;
+                // The same rule renderRoI uses to render at full scale then downscale.
+                const bool rendersFullScale = (task.key.mipmapLevel != 0) && (effect->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes);
+                task.cacheMipmapLevel = rendersFullScale ? 0 : task.key.mipmapLevel;
             }
         }
     }
@@ -572,6 +542,14 @@ RenderScheduler::resetPeakBytesInFlight()
     _peakBytesInFlight = 0;
 }
 
+std::size_t
+RenderScheduler::getReservedBytesForTests() const
+{
+    QMutexLocker k(&_mutex);
+
+    return _reservedBytes;
+}
+
 bool
 RenderScheduler::ReadyRefWorse::operator()(const ReadyRef& a,
                                            const ReadyRef& b) const
@@ -648,9 +626,7 @@ RenderScheduler::popLocked(FramePtr* frame,
             break;
         }
         const SharedOutputKey key = sharedOutputKeyOf(popped);
-        std::map<SharedOutputKey, int>::iterator running = _sharedOutputsRunning.find(key);
-        if (running == _sharedOutputsRunning.end()) {
-            _sharedOutputsRunning.emplace(key, 1);
+        if (_sharedOutputsRunning.insert(key).second) {
             break;
         }
         // Its reservation is dropped: once released it goes through admission again if it starts a branch.
@@ -712,9 +688,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
                                            eStorageModeRAM,
                                            caller.key.time);
         AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
-#ifdef __linux__
-        setOpenMPThreadsOfCurrentThread(budget);
-#endif
+        OpenMPThreadsScope openMPThreads(budget);
         const int rendering = ++_tasksRendering;
         if (frame->context->getStats()) {
             frame->context->getStats()->noteConcurrentTasks(rendering);
@@ -739,7 +713,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
         const AbortableRenderInfoPtr& abortInfo = frame->context->getAbortInfo();
         // The consumers of a task of an aborted frame never run, so its planes would only be held until it finishes.
         if ((task.consumers > 0) && !(abortInfo && abortInfo->isAborted())) {
-            store.put(task.key, planes, task.consumers);
+            store.put(task.key, planes, task.renderedRoI, task.consumers);
         }
         if (frame->context->getStats()) {
             frame->context->getStats()->incTasksRun();
@@ -794,8 +768,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
 
     if (retCode == EffectInstance::eRenderRoIRetCodeFailed) {
         releasePurgedInputs(purgedOnFailure);
-        // The running siblings would otherwise render in full for a frame whose result is dropped. The frame keeps its
-        // failed code, since markDeadLocked() never overwrites the code of a frame already dead.
+        // The running siblings would otherwise render in full for a frame whose result is dropped.
         const AbortableRenderInfoPtr& abortInfo = frame->context->getAbortInfo();
         if (abortInfo) {
             abortInfo->setAborted();
@@ -807,22 +780,19 @@ RenderScheduler::executeTask(const FramePtr& frame,
 RenderScheduler::SharedOutputKey
 RenderScheduler::sharedOutputKeyOf(const FrameGraph::Task& task)
 {
-    return SharedOutputKey(task.key.node.get(), task.nodeHash, task.key.view.value(), task.key.mipmapLevel);
+    const double time = task.cacheKeyHasTime ? task.key.time : 0.;
+
+    return SharedOutputKey(task.key.node.get(), task.nodeHash, task.key.view.value(), task.cacheMipmapLevel, task.cacheKeyHasTime, time);
 }
 
 void
 RenderScheduler::releaseSharedOutputLocked(const FrameGraph::Task& task)
 {
     const SharedOutputKey key = sharedOutputKeyOf(task);
-    std::map<SharedOutputKey, int>::iterator running = _sharedOutputsRunning.find(key);
 
-    if (running == _sharedOutputsRunning.end()) {
+    if (_sharedOutputsRunning.erase(key) == 0) {
         return;
     }
-    if (--running->second > 0) {
-        return;
-    }
-    _sharedOutputsRunning.erase(running);
 
     typedef std::multimap<SharedOutputKey, ReadyRef>::iterator DeferredIt;
     const std::pair<DeferredIt, DeferredIt> range = _deferredReady.equal_range(key);

@@ -33,6 +33,7 @@
 #include "Engine/OfxClipInstance.h"
 #include "Engine/OfxHost.h"
 #include "Engine/OfxParamInstance.h"
+#include "Engine/OpenMPThreads.h"
 #include "Engine/Project.h"
 #include "Engine/ThreadPool.h"
 
@@ -223,12 +224,14 @@ AppTLS::SpawnedThreadScope::SpawnedThreadScope(QThread* fromThread,
     : _spawned(fromThread && fromThread != QThread::currentThread())
     , _previousFrameContext(tCurrentFrameContext)
     , _previousBudget(tThreadBudget)
+    , _previousOpenMPThreads(0)
 {
     if (_spawned) {
         appPTR->getAppTLS()->softCopy(fromThread, QThread::currentThread(), kind);
         tCurrentFrameContext = frameContext;
         // The spawner already counted this thread as one of its own; nesting more parallelism here oversubscribes.
         tThreadBudget = 1;
+        _previousOpenMPThreads = setOpenMPThreadsOfCurrentThread(1);
     }
 }
 
@@ -238,6 +241,9 @@ AppTLS::SpawnedThreadScope::~SpawnedThreadScope()
         appPTR->getAppTLS()->cleanupTLSForThread();
         tCurrentFrameContext = _previousFrameContext;
         tThreadBudget = _previousBudget;
+        if (_previousOpenMPThreads > 0) {
+            setOpenMPThreadsOfCurrentThread(_previousOpenMPThreads);
+        }
     }
 }
 

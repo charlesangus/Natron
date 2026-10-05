@@ -25,6 +25,9 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <cctype>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -33,7 +36,10 @@
 
 #include <gtest/gtest.h>
 
+#include <QMetaObject>
+#include <QObject>
 #include <QString>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 #include "RenderBothWays.h"
@@ -45,11 +51,15 @@
 #include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/AddLayers.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
+#include "Engine/Nodes/Deep/DeepRead.h"
+#include "Engine/Nodes/Deep/DeepWrite.h"
+#include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
 #include "Engine/RenderStats.h"
@@ -88,6 +98,41 @@ describeReasons(const std::map<std::string, int>& reasons)
 
     return out;
 }
+
+bool
+hasReasonMentioning(const std::map<std::string, int>& reasons,
+                    const std::string& word)
+{
+    for (std::map<std::string, int>::const_iterator it = reasons.begin(); it != reasons.end(); ++it) {
+        std::string lower = it->first;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        if ((lower.find(word) != std::string::npos) && (it->second > 0)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+class SchedulerModeGuard {
+public:
+    explicit SchedulerModeGuard(RenderSchedulerModeEnum mode)
+        : _saved(appPTR->getRenderSchedulerMode())
+    {
+        appPTR->setRenderSchedulerMode(mode);
+    }
+
+    ~SchedulerModeGuard()
+    {
+        appPTR->setRenderSchedulerMode(_saved);
+    }
+
+    SchedulerModeGuard(const SchedulerModeGuard&) = delete;
+    SchedulerModeGuard& operator=(const SchedulerModeGuard&) = delete;
+
+private:
+    RenderSchedulerModeEnum _saved;
+};
 
 } // namespace
 
@@ -186,6 +231,13 @@ protected:
         }
     }
 
+    std::vector<ObservedFrame> observedFrames()
+    {
+        std::lock_guard<std::mutex> k(_observed->mutex);
+
+        return _observed->frames;
+    }
+
 private:
     struct Observed {
         std::mutex mutex;
@@ -275,4 +327,51 @@ TEST_F(SchedulerWriters, AddLayersAndShuffle)
     ASSERT_TRUE(bool(grade));
 
     renderAndCheck(createWriter(grade));
+}
+
+// The scheduler only runs image tasks, so a deep writer's frames must each fall back to Legacy and
+// say why, rather than silently skipping the scheduler.
+TEST_F(SchedulerWriters, DeepOutputFramesFallBackToLegacyAndNameTheReason)
+{
+    NodePtr read = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPREAD));
+    ASSERT_TRUE(bool(read));
+    KnobFile* file = dynamic_cast<KnobFile*>(read->getKnobByName("filename").get());
+    ASSERT_TRUE(file != NULL);
+    file->setValue(std::string(NATRON_TESTS_FIXTURES_DIR "/deep-scanline.exr"));
+
+    NodePtr write = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPWRITE));
+    ASSERT_TRUE(bool(write));
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    KnobOutputFile* output = dynamic_cast<KnobOutputFile*>(write->getKnobByName("filename").get());
+    ASSERT_TRUE(output != NULL);
+    output->setValue((tmp.path() + QString::fromUtf8("/deep.####.exr")).toStdString());
+    connectNodes(read, write, 0, true);
+    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(write->getEffectInstance().get());
+    ASSERT_TRUE(writerEffect != NULL);
+
+    const int firstFrame = 1;
+    const int lastFrame = 2;
+    {
+        SchedulerModeGuard mode(eRenderSchedulerModeTaskGraph);
+        int finishedCode = -1;
+        RenderEnginePtr engine = writerEffect->getRenderEngine();
+        // renderFinished() is emitted from the scheduler thread while this thread is blocked, so only a direct
+        // connection observes it.
+        QMetaObject::Connection connection = QObject::connect(engine.get(), &RenderEngine::renderFinished, engine.get(), [&finishedCode](int retCode) { finishedCode = retCode; }, Qt::DirectConnection);
+        std::list<AppInstance::RenderWork> works;
+        works.push_back(AppInstance::RenderWork(writerEffect, firstFrame, lastFrame, 1, false));
+        getApp()->startWritersRendering(true, works);
+        QObject::disconnect(connection);
+        EXPECT_EQ(0, finishedCode);
+    }
+
+    const std::vector<ObservedFrame> frames = observedFrames();
+    EXPECT_EQ((std::size_t)(lastFrame - firstFrame + 1), frames.size());
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        const ObservedFrame& frame = frames[i];
+        EXPECT_EQ(0, frame.tasksRun) << "frame " << frame.time;
+        EXPECT_GE(frame.legacyFallbacks, 1) << "frame " << frame.time;
+        EXPECT_TRUE(hasReasonMentioning(frame.fallbackReasons, "deep")) << "frame " << frame.time << ": " << describeReasons(frame.fallbackReasons);
+    }
 }

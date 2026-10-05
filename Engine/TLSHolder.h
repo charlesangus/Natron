@@ -141,8 +141,8 @@ public:
 
     /**
      * @brief Unless the current thread is fromThread itself: calls softCopy() from the current thread and installs
-     * frameContext as the current thread's frame and a thread budget of 1 on construction, then restores the previous
-     * frame and budget and calls cleanupTLSForThread() on destruction. frameContext must be the spawner's
+     * frameContext as the current thread's frame, a thread budget of 1 and an OpenMP nthreads ICV of 1 on
+     * construction, then restores the previous frame, budget and ICV and calls cleanupTLSForThread() on destruction. frameContext must be the spawner's
      * currentFrameContext(), read on the spawner before it hands the work out, since another thread cannot read the
      * spawner's.
      *
@@ -165,6 +165,7 @@ public:
         bool _spawned;
         const FrameRenderContext* _previousFrameContext;
         int _previousBudget;
+        int _previousOpenMPThreads;
     };
 
     /**

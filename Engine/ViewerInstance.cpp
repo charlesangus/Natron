@@ -448,58 +448,27 @@ void
 ViewerInstance::scanFrameArgsForScheduler(const std::map<NodePtr, ParallelRenderArgsPtr>& args,
                                           SchedulerEligibility* eligibility)
 {
-    for (std::map<NodePtr, ParallelRenderArgsPtr>::const_iterator it = args.begin(); it != args.end(); ++it) {
-        const ParallelRenderArgsPtr& nodeArgs = it->second;
-        if (!nodeArgs) {
-            continue;
-        }
-        // The context was attached to the viewer's render thread; a task on a pool thread cannot make it current.
-        if (nodeArgs->openGLContext.lock() && (nodeArgs->currentOpenglSupport != ePluginOpenGLRenderSupportNone)) {
-            eligibility->openGLRender = true;
-        }
-        if (nodeArgs->isDuringPaintStrokeCreation) {
-            eligibility->paintStroke = true;
-        }
-        if (nodeArgs->isAnalysis) {
-            eligibility->analysis = true;
-        }
-    }
+    NATRON_NAMESPACE::scanFrameArgsForScheduler(args, eligibility);
 }
 
 bool
 ViewerInstance::isFrameEligibleForScheduler(const SchedulerEligibility& eligibility,
                                             const char** reason)
 {
-    const char* cause = 0;
+    static const SchedulerIneligibilityReasons viewerReasons = {
+        "render thread is a pool thread",
+        "render thread is the main thread",
+        "no frame args",
+        "input outside the frame args",
+        "partial updates",
+        "deep input",
+        "paint stroke",
+        "refresh",
+        "OpenGL render",
+        "analysis",
+    };
 
-    if (eligibility.onPoolThread) {
-        // FrameFuture::wait() on a pool thread could wait for the very thread it blocks.
-        cause = "render thread is a pool thread";
-    } else if (eligibility.onMainThread) {
-        // Code a task runs may wait for the main thread, which would be waiting for the frame.
-        cause = "render thread is the main thread";
-    } else if (!eligibility.hasFrameArgs) {
-        cause = "no frame args";
-    } else if (!eligibility.inputHasFrameArgs) {
-        cause = "input outside the frame args";
-    } else if (eligibility.isDoingPartialUpdates) {
-        cause = "partial updates";
-    } else if (eligibility.deepUpstream) {
-        cause = "deep input";
-    } else if (eligibility.paintStroke) {
-        cause = "paint stroke";
-    } else if (eligibility.forceRender) {
-        cause = "refresh";
-    } else if (eligibility.openGLRender) {
-        cause = "OpenGL render";
-    } else if (eligibility.analysis) {
-        cause = "analysis";
-    }
-    if (reason) {
-        *reason = cause;
-    }
-
-    return cause == 0;
+    return NATRON_NAMESPACE::isFrameEligibleForScheduler(eligibility, viewerReasons, reason);
 }
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER

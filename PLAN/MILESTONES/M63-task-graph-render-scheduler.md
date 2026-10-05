@@ -156,7 +156,7 @@ Replaces the recursive pull-per-node execution of a frame with a scheduled task 
   - size: M
 
 ## Phase 63.6: Decision, default, UAT
-- [ ] M63.P6.T1 — Publish the decision and update dependent milestones
+- [x] M63.P6.T1 — Publish the decision and update dependent milestones
   - files: `PLAN/DECISIONS/2026-10-04-task-graph-render-scheduler.md`, `PLAN/DECISIONS/INDEX.md`, `docs/decisions/` copy, `PLAN/MILESTONES/M64-tiled-rendering.md`, `PLAN/MILESTONES/M31-architectural-cleanup.md`, `PLAN.md` (PM work)
   - approach: finalise the decision with the After-M63 numbers; M64 notes it tiles tasks; M31 gets the hand-offs listed below.
   - verify: files present, INDEX row updated, repo copy committed.

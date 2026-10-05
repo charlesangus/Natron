@@ -325,24 +325,27 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
 
         ParallelRenderArgsPtr frameArgs = effect->getParallelRenderArgsTLS();
 
+        // renderRoI renders at full scale then downscales for eSupportsNo, and also for eSupportsMaybe, which it
+        // switches to full scale once the identity check is done.
+        const bool rendersFullScale = (task.key.mipmapLevel != 0) && (effect->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes);
+
         // Composed transforms can ask for an infinite RoI, which renderRoI clips to the RoD.
-        RectI estimatedRoI = task.roi;
         task.renderedRoI = task.roi;
         if (!fvRequest->globalData.rod.isNull()) {
             const RectI pixelRoD = fvRequest->globalData.rod.toPixelEnclosing(task.key.mipmapLevel, par);
-            estimatedRoI = task.roi.intersect(pixelRoD);
-            // An effect without tiles support renders its whole RoD whatever the RoI.
-            task.renderedRoI = (frameArgs && !frameArgs->tilesSupported && !task.isIdentity) ? pixelRoD : estimatedRoI;
+            const RectI estimatedRoI = task.roi.intersect(pixelRoD);
+            // An effect without tiles support renders its whole RoD whatever the RoI, but when it renders at full
+            // scale only the RoI is downscaled.
+            const bool rendersWholeRoD = frameArgs && !frameArgs->tilesSupported && !task.isIdentity && !rendersFullScale;
+            task.renderedRoI = rendersWholeRoD ? pixelRoD : estimatedRoI;
         }
-        task.estimatedBytes = estimateBytes(estimatedRoI, task.components, task.bitdepth);
+        task.estimatedBytes = estimateBytes(task.renderedRoI, task.components, task.bitdepth);
 
         if (!task.isIdentity) {
             if (frameArgs && frameArgs->frameVaryingComputed && effect->shouldCacheOutput(false, task.key.time, task.key.view, frameArgs->visitsCount)) {
                 task.sharesCachedOutput = true;
                 task.nodeHash = nodeRequest->second->nodeHash;
                 task.cacheKeyHasTime = frameArgs->isFrameVaryingOrAnimated;
-                // The same rule renderRoI uses to render at full scale then downscale.
-                const bool rendersFullScale = (task.key.mipmapLevel != 0) && (effect->supportsRenderScaleMaybe() != EffectInstance::eSupportsYes);
                 task.cacheMipmapLevel = rendersFullScale ? 0 : task.key.mipmapLevel;
             }
         }

@@ -76,7 +76,7 @@ public:
 
     /**
      * @brief Returns the thread-exclusive OpenGL context of the calling thread, creating it on first use, or null when
-     * OpenGL rendering is unavailable or disabled. These contexts are not part of the pool handed out by
+     * OpenGL rendering is unavailable or disabled, or when Settings::getMaxOpenGLContexts() threads already have one. These contexts are not part of the pool handed out by
      * attachGLContextToRender() and share nothing with any other context, so a texture made on one is only valid on it.
      * The caller must leave the context unbound when it is done rendering, so that the context is never current on a
      * thread other than the one it belongs to.

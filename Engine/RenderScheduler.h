@@ -62,7 +62,8 @@ struct FrameGraph {
         // In pixel coordinates at key.mipmapLevel.
         RectI roi;
 
-        // roi clipped to the region of definition, which renderRoI renders no further.
+        // What the task's images hold: roi clipped to the region of definition, or the whole region of definition
+        // when the effect does not support tiles and renders at key.mipmapLevel.
         RectI renderedRoI;
         std::list<ImageLayerDesc> components;
         ImageBitDepthEnum bitdepth = eImageBitDepthFloat;

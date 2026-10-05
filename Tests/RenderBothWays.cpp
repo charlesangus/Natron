@@ -25,6 +25,7 @@
 
 #include "RenderBothWays.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <functional>
@@ -162,14 +163,37 @@ firstDifference(const std::vector<float>& legacy,
                 int x1,
                 int y1,
                 int width,
+                float tolerance,
                 RenderMismatch* m)
 {
-    if (legacy.empty() || (std::memcmp(legacy.data(), taskGraph.data(), legacy.size() * sizeof(float)) == 0)) {
+    if (legacy.empty()) {
+        return false;
+    }
+    if ((tolerance <= 0.f) && (std::memcmp(legacy.data(), taskGraph.data(), legacy.size() * sizeof(float)) == 0)) {
         return false;
     }
     const std::size_t nComps = channels.size();
+    bool found = false;
+    float maxDiff = 0.f;
     for (std::size_t i = 0; i < legacy.size(); ++i) {
-        if (std::memcmp(&legacy[i], &taskGraph[i], sizeof(float)) != 0) {
+        bool differs;
+        if (tolerance > 0.f) {
+            const float a = legacy[i];
+            const float b = taskGraph[i];
+            if (std::isnan(a) || std::isnan(b)) {
+                differs = std::isnan(a) != std::isnan(b);
+            } else {
+                const float d = std::fabs(a - b);
+                differs = !(d <= tolerance);
+                if (d > maxDiff) {
+                    maxDiff = d;
+                }
+            }
+        } else {
+            differs = std::memcmp(&legacy[i], &taskGraph[i], sizeof(float)) != 0;
+        }
+        if (differs && !found) {
+            found = true;
             const std::size_t pixel = i / nComps;
             m->any = true;
             m->x = x1 + static_cast<int>(pixel % width);
@@ -177,12 +201,16 @@ firstDifference(const std::vector<float>& legacy,
             m->channel = channels[i % nComps];
             m->legacy = legacy[i];
             m->taskGraph = taskGraph[i];
-
-            return true;
+            if (tolerance <= 0.f) {
+                return true;
+            }
         }
     }
+    if (found) {
+        m->maxAbsDiff = maxDiff;
+    }
 
-    return false;
+    return found;
 }
 
 // Returns 0 for a completed sequence, 1 for an aborted one, -1 if the engine never reported.
@@ -261,7 +289,8 @@ RenderMismatch
 compareSequences(const WriterPass& legacy,
                  const WriterPass& taskGraph,
                  const std::string& pattern,
-                 const std::vector<std::string>& viewNames)
+                 const std::vector<std::string>& viewNames,
+                 float tolerance)
 {
     for (SequenceFrames::const_iterator it = legacy.frames.begin(); it != legacy.frames.end(); ++it) {
         const int frame = it->first.first;
@@ -284,7 +313,7 @@ compareSequences(const WriterPass& legacy,
             return failure("channel list differs: legacy [" + joinChannels(a.channels) + "], task graph [" + joinChannels(b.channels) + "]", frame, path, view);
         }
         RenderMismatch m;
-        if (firstDifference(a.pixels, b.pixels, a.channels, a.x1, a.y1, a.width, &m)) {
+        if (firstDifference(a.pixels, b.pixels, a.channels, a.x1, a.y1, a.width, tolerance, &m)) {
             m.frame = frame;
             m.view = view;
             m.file = path;
@@ -421,7 +450,8 @@ renderBothWays(const NodePtr& writer,
                int firstFrame,
                int lastFrame,
                const std::vector<int>& poolSizes,
-               const std::function<void()>& beforeTaskGraph)
+               const std::function<void()>& beforeTaskGraph,
+               float tolerance)
 {
     OutputEffectInstance* writerEffect = writer ? dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get()) : 0;
     if (!writerEffect) {
@@ -466,7 +496,7 @@ renderBothWays(const NodePtr& writer,
     for (std::size_t i = 0; i < poolSizes.size(); ++i) {
         enterMode(eRenderSchedulerModeTaskGraph, poolSizes[i]);
         const WriterPass taskGraph = renderAndReadSequence(writerEffect, pattern, viewNames, firstFrame, lastFrame);
-        RenderMismatch m = taskGraph.error.any ? taskGraph.error : compareSequences(legacy, taskGraph, pattern, viewNames);
+        RenderMismatch m = taskGraph.error.any ? taskGraph.error : compareSequences(legacy, taskGraph, pattern, viewNames, tolerance);
         if (m.any) {
             m.error = "Task graph, pool size " + std::to_string(poolSizes[i]) + (m.error.empty() ? std::string() : ": " + m.error);
 
@@ -484,7 +514,8 @@ renderBothWaysDirect(const NodePtr& node,
                      unsigned mipmapLevel,
                      const RectI& roi,
                      const std::vector<int>& poolSizes,
-                     const std::function<void()>& beforeTaskGraph)
+                     const std::function<void()>& beforeTaskGraph,
+                     float tolerance)
 {
     const int frame = static_cast<int>(time);
     if (!node) {
@@ -529,7 +560,7 @@ renderBothWaysDirect(const NodePtr& node,
             m = failure(ss.str(), frame);
         } else if (taskGraph.image->getComponents().getChannels() != legacyChannels) {
             m = failure("channel list differs: legacy [" + joinChannels(legacyChannels) + "], task graph [" + joinChannels(taskGraph.image->getComponents().getChannels()) + "]", frame);
-        } else if (firstDifference(legacyPixels, readWindow(taskGraph.image, window), legacyChannels, window.x1, window.y1, window.width(), &m)) {
+        } else if (firstDifference(legacyPixels, readWindow(taskGraph.image, window), legacyChannels, window.x1, window.y1, window.width(), tolerance, &m)) {
             m.frame = frame;
         }
         if (m.any) {
@@ -560,6 +591,9 @@ describe(const RenderMismatch& m)
     }
     if (!m.channel.empty()) {
         ss << ": pixel (" << m.x << "," << m.y << ") channel " << m.channel << " legacy=" << m.legacy << " taskGraph=" << m.taskGraph;
+        if (m.maxAbsDiff > 0.f) {
+            ss << " (max abs diff " << m.maxAbsDiff << ")";
+        }
     }
     if (!m.error.empty()) {
         ss << " [" << m.error << "]";

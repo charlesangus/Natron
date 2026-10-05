@@ -810,8 +810,11 @@ TEST_F(RenderSchedulerTest, CachedOutputsOfTwoFramesAtOnce)
             ASSERT_TRUE(pixel != NULL);
             EXPECT_FLOAT_EQ((float)leaves, pixel[0]);
         }
-        // The task that found the image in the cache did not render it again.
-        for (std::size_t i = 0; i < nodes.size(); ++i) {
+        // A leaf's second task waits for the first one and then finds its image in the cache.
+        for (int i = 0; i < leaves; ++i) {
+            EXPECT_EQ(1, CountingTestRegistry::renders(nodes[i])) << nodes[i]->getScriptName();
+        }
+        for (std::size_t i = leaves; i < nodes.size(); ++i) {
             EXPECT_GE(CountingTestRegistry::renders(nodes[i]), 1) << nodes[i]->getScriptName();
             EXPECT_LE(CountingTestRegistry::renders(nodes[i]), 2) << nodes[i]->getScriptName();
         }

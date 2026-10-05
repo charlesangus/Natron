@@ -349,15 +349,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     } else {
         //The hash must not have changed if we did a pre-pass.
         frameArgs = tls->frameArgs.back();
-        // A task asks for its thread's context, which it creates on first use: CPU-only renders never ask.
-        if ((frameArgs->currentOpenglSupport != ePluginOpenGLRenderSupportNone) || (args.returnStorage == eStorageModeGLTex)) {
-            glContext = getRenderGLContext(frameArgs);
-        }
         abortInfo = frameArgs->abortInfo.lock();
-        if (!abortInfo) {
-            // If we don't have info to identify the render, we cannot manage the OpenGL context properly, so don't try to render with OpenGL.
-            glContext.reset();
-        }
         assert(!frameArgs->request || frameArgs->nodeHash == frameArgs->request->nodeHash);
     }
 
@@ -703,10 +695,38 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     StorageModeEnum storage = eStorageModeRAM;
     OSGLContextAttacherPtr glContextLocker;
 
+    bool wantsGLStorage = false;
     if ( dynamic_cast<DiskCacheNode*>(this) ) {
         storage = eStorageModeDisk;
-    } else if ( glContext && ( (openGLSupport == ePluginOpenGLRenderSupportNeeded) ||
-                             ( ( openGLSupport == ePluginOpenGLRenderSupportYes) && args.allowGPURendering) ) ) {
+    } else if (abortInfo && ((openGLSupport == ePluginOpenGLRenderSupportNeeded) || ((openGLSupport == ePluginOpenGLRenderSupportYes) && args.allowGPURendering))) {
+        wantsGLStorage = true;
+        // If the plug-in knows how to render on CPU, check if we actually should not render on CPU instead.
+        if (openGLSupport == ePluginOpenGLRenderSupportYes) {
+            // User want to force caching of this node but we cannot cache OpenGL renders, so fallback on CPU.
+            // If a node has multiple outputs, do not render it on OpenGL since we do not use the cache. We could end-up with this render being executed multiple times.
+            // Also, if the render time is different from the caller render time, don't render using OpenGL otherwise we could computed this render multiple times.
+            if (getNode()->isForceCachingEnabled() || (frameArgs->visitsCount > 1) || (args.time != args.callerRenderTime)) {
+                wantsGLStorage = false;
+            }
+        }
+    }
+
+    // A task creates its thread's context on first use, so only the renders that will use one may ask for it. Without
+    // info to identify the render, the context cannot be managed properly, so such a render never uses OpenGL.
+    if (abortInfo && (wantsGLStorage || (args.returnStorage == eStorageModeGLTex))) {
+        glContext = getRenderGLContext(frameArgs);
+    }
+
+    // The limit is only known once a context exists.
+    if (glContext && wantsGLStorage && (openGLSupport == ePluginOpenGLRenderSupportYes)) {
+        int maxTextureSize = appPTR->getGPUContextPool()->getCurrentOpenGLRendererMaxTextureSize();
+        if ((roi.width() >= maxTextureSize) || (roi.height() >= maxTextureSize)) {
+            // Fallback on CPU rendering since the image is larger than the maximum allowed OpenGL texture size
+            wantsGLStorage = false;
+        }
+    }
+
+    if (glContext && wantsGLStorage) {
         // Enable GPU render if the plug-in cannot render another way or if all conditions are met
 
         if (openGLSupport == ePluginOpenGLRenderSupportNeeded && !getNode()->getPlugin()->isOpenGLEnabled()) {
@@ -727,54 +747,28 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                                                   );
         storage = eStorageModeGLTex;
 
-        // If the plug-in knows how to render on CPU, check if we actually should not render on CPU instead.
-        if (openGLSupport == ePluginOpenGLRenderSupportYes) {
-            // User want to force caching of this node but we cannot cache OpenGL renders, so fallback on CPU.
-            if ( getNode()->isForceCachingEnabled() ) {
-                storage = eStorageModeRAM;
-                glContextLocker.reset();
-            }
-
-            // If a node has multiple outputs, do not render it on OpenGL since we do not use the cache. We could end-up with this render being executed multiple times.
-            // Also, if the render time is different from the caller render time, don't render using OpenGL otherwise we could computed this render multiple times.
-
-            if (storage == eStorageModeGLTex) {
-                if ( (frameArgs->visitsCount > 1) ||
-                     ( args.time != args.callerRenderTime) ) {
-                    storage = eStorageModeRAM;
-                    glContextLocker.reset();
+        // OpenGL renders always support render scale...
+        if (renderFullScaleThenDownscale) {
+            renderFullScaleThenDownscale = false;
+            renderMappedMipmapLevel = args.mipmapLevel;
+            renderMappedScale = RenderScale::fromMipmapLevel(renderMappedMipmapLevel);
+            if (frameArgs->tilesSupported) {
+                roi = args.roi.intersect(downscaledImageBoundsNc);
+                if (roi.isNull()) {
+                    return eRenderRoIRetCodeOk;
                 }
-            }
-
-            // Ensure that the texture will be at least smaller than the maximum OpenGL texture size
-            if (storage == eStorageModeGLTex) {
-                int maxTextureSize = appPTR->getGPUContextPool()->getCurrentOpenGLRendererMaxTextureSize();
-                if ( (roi.width() >= maxTextureSize) ||
-                     ( roi.height() >= maxTextureSize) ) {
-                    // Fallback on CPU rendering since the image is larger than the maximum allowed OpenGL texture size
-                    storage = eStorageModeRAM;
-                    glContextLocker.reset();
-                }
+            } else {
+                roi = downscaledImageBoundsNc;
             }
         }
-        if (storage == eStorageModeGLTex) {
-            // OpenGL renders always support render scale...
-            if (renderFullScaleThenDownscale) {
-                renderFullScaleThenDownscale = false;
-                renderMappedMipmapLevel = args.mipmapLevel;
-                renderMappedScale = RenderScale::fromMipmapLevel(renderMappedMipmapLevel);
-                if (frameArgs->tilesSupported) {
-                    roi = args.roi.intersect(downscaledImageBoundsNc);
-                    if ( roi.isNull() ) {
-                        return eRenderRoIRetCodeOk;
-                    }
-                } else {
-                    roi = downscaledImageBoundsNc;
-                }
-            }
-        }
-    } else if ( appPTR->isOpenGLLoaded() && !appPTR->getCurrentSettings()->isOpenGLRenderingEnabled() && openGLSupport == ePluginOpenGLRenderSupportNeeded ) {
+    } else if (appPTR->isOpenGLLoaded() && !appPTR->getCurrentSettings()->isOpenGLRenderingEnabled() && openGLSupport == ePluginOpenGLRenderSupportNeeded) {
         QString message = tr("OpenGL render is required for a plugin but it's currently disabled, please consider passing `--opengl enabled` to %1").arg(QString::fromUtf8(NATRON_APPLICATION_NAME));
+        setPersistentMessage(eMessageTypeError, message.toStdString());
+        return eRenderRoIRetCodeFailed;
+    } else if (wantsGLStorage && (openGLSupport == ePluginOpenGLRenderSupportNeeded)) {
+        // The thread is beyond the OpenGL context limit or its context could not be created, and the plug-in has no
+        // CPU path to fall back on.
+        QString message = tr("OpenGL render is required for %1 but no OpenGL context is available").arg(QString::fromUtf8(getNode()->getLabel().c_str()));
         setPersistentMessage(eMessageTypeError, message.toStdString());
         return eRenderRoIRetCodeFailed;
     }

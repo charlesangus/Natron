@@ -4547,7 +4547,8 @@ EffectInstance::dettachAllOpenGLContexts()
 
     for (EffectInstance::OpenGLContextEffectsMap::iterator it = _imp->attachedContexts.begin(); it != _imp->attachedContexts.end(); ++it) {
         OSGLContextPtr context = it->first.lock();
-        if (!context) {
+        // A context bound for a render is current on the render's thread, where a thread-exclusive one must stay.
+        if (!context || (context->getRenderBindCount() != 0)) {
             continue;
         }
         context->setContextCurrentNoRender();

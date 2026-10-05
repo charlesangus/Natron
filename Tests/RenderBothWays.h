@@ -52,6 +52,7 @@ struct RenderMismatch {
     std::string channel;
     float legacy = 0.f;
     float taskGraph = 0.f;
+    float maxAbsDiff = 0.f;
     std::string file;
     std::string error;
 };
@@ -63,12 +64,14 @@ struct RenderMismatch {
 // output lands in a temporary directory in the layout FlatExrReader parses, one file per view
 // when the project has several; the directory is removed before returning.
 // `beforeTaskGraph`, when set, is called once between the Legacy pass and the first Task graph
-// pass, so a self-test can make the two renders differ on purpose.
+// pass, so a self-test can make the two renders differ on purpose. A `tolerance` above zero
+// replaces the bit-exact comparison with a per-float absolute difference bound.
 RenderMismatch renderBothWays(const NodePtr& writer,
                               int firstFrame,
                               int lastFrame,
                               const std::vector<int>& poolSizes,
-                              const std::function<void()>& beforeTaskGraph = std::function<void()>());
+                              const std::function<void()>& beforeTaskGraph = std::function<void()>(),
+                              float tolerance = 0.f);
 
 // Renders `roi` (in pixel coordinates at `mipmapLevel`) of `node`'s RGBA float output once in
 // Legacy mode directly through renderRoI, bypassing the cache, then per pool size as a frame
@@ -80,7 +83,8 @@ RenderMismatch renderBothWaysDirect(const NodePtr& node,
                                     unsigned mipmapLevel,
                                     const RectI& roi,
                                     const std::vector<int>& poolSizes,
-                                    const std::function<void()>& beforeTaskGraph = std::function<void()>());
+                                    const std::function<void()>& beforeTaskGraph = std::function<void()>(),
+                                    float tolerance = 0.f);
 
 std::string describe(const RenderMismatch& m);
 

@@ -39,6 +39,11 @@
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+// Lets getContextForCurrentThread() skip the pool mutex on the threads that never asked for a context.
+thread_local bool tThreadAskedForContext = false;
+}
+
 struct GPUContextPoolPrivate
 {
     mutable QMutex contextPoolMutex;
@@ -202,12 +207,17 @@ GPUContextPool::getOrCreateContextForCurrentThread()
     QThread* const thread = QThread::currentThread();
     QMutexLocker k(&_imp->contextPoolMutex);
 
+    tThreadAskedForContext = true;
     std::map<QThread*, OSGLContextPtr>::const_iterator found = _imp->threadContexts.find(thread);
     if (found != _imp->threadContexts.end()) {
         return found->second;
     }
 
     SettingsPtr settings = appPTR->getCurrentSettings();
+    const int maxContexts = settings ? std::max(settings->getMaxOpenGLContexts(), 1) : 1;
+    if ((int)_imp->threadContexts.size() >= maxContexts) {
+        return OSGLContextPtr();
+    }
     GLRendererID rendererID;
     if (settings) {
         rendererID = settings->getActiveOpenGLRendererID();
@@ -235,6 +245,9 @@ GPUContextPool::getOrCreateContextForCurrentThread()
 OSGLContextPtr
 GPUContextPool::getContextForCurrentThread() const
 {
+    if (!tThreadAskedForContext) {
+        return OSGLContextPtr();
+    }
     QThread* const thread = QThread::currentThread();
     QMutexLocker k(&_imp->contextPoolMutex);
 

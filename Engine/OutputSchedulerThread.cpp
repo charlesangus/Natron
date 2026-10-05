@@ -2234,21 +2234,19 @@ notifyFrameStatsObserver(int time,
 const char*
 taskGraphIneligibility(const ParallelRenderArgsSetter& setter)
 {
+    // Only the flags a writer frame can set have a reason.
     static const SchedulerIneligibilityReasons writerReasons = {
-        "frame thread is a pool thread",
-        "frame thread is the main thread",
-        "no frame args",
-        "input outside the frame args",
-        "partial updates",
-        "deep input",
-        "paint stroke",
-        "refresh",
-        "analysis",
+        .onPoolThread = "frame thread is a pool thread",
+        .onMainThread = "frame thread is the main thread",
+        .noFrameArgs = "no frame args",
+        .paintStroke = "paint stroke",
+        .analysis = "analysis",
     };
     const std::map<NodePtr, ParallelRenderArgsPtr>& args = setter.getInstalledArgs();
     SchedulerEligibility eligibility;
 
     eligibility.onPoolThread = QThreadPool::globalInstance()->contains(QThread::currentThread());
+    eligibility.onMainThread = QCoreApplication::instance() && (QThread::currentThread() == QCoreApplication::instance()->thread());
     eligibility.hasFrameArgs = !args.empty();
     eligibility.inputHasFrameArgs = true;
     scanFrameArgsForScheduler(args, &eligibility);

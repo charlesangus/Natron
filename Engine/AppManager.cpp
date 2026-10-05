@@ -760,6 +760,7 @@ AppManager::loadInternal(const CLArgs& cl)
     // Settings: always call restoreSettings, but call restoreKnobsFromSettings conditionally
     // Call restore after initializing knobs
     _imp->_settings->restoreSettings( cl.isLoadedUsingDefaultSettings() );
+    onRenderSchedulerModeSettingChanged(_imp->_settings->getRenderSchedulerMode());
     if (cl.isLoadedUsingDefaultSettings()) {
         _imp->_settings->setSaveSettings(false);
     }

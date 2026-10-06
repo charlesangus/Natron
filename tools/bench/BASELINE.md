@@ -773,3 +773,23 @@ Native Grade versus OFX Grade (`net.sf.openfx.GradePlugin` major 3 versus 2), re
 Gate: mem <= 0.50 passes (0.216), build <= 1.15 passes (0.884), tiny <= 1.15 passes (0.503), hd <= 1.05 fails (1.697). Verdict NO-GO.
 
 Median frame wall (s), per config: tiny 1000 ofx 0.337 / native 0.170; hd 30 ofx 1.01 / native 1.62; hd 100 ofx 3.12 / native 5.17. RSS before the first frame (MB), tiny 0 / 1000: ofx 112 / 731, native 112 / 246.
+
+### M67 gate (run 2, after the band split) (2026-10-06)
+
+The same comparison and settings as the section above (`tools/bench/native_vs_ofx.sh m67gate2 3`, release build, three ABAB rounds), re-run after native point ops began splitting their render window into row bands on the global pool. Results: `build/bench/results-m67gate2-r<1..3>-{ofx,native}.jsonl`; the harness summary is `build/m67-perf/gate2.log`.
+
+The run was contended, so the ratios are the result and the absolute numbers are not references. 4 of the 12 OFX configurations started at load1 0.54-1.59 (round 2 hd 100 at 1.11, round 2 tiny 1000 at 0.54, round 3 tiny 1000 at 1.59, round 3 hd 30 at 0.55), while every native configuration started quiet (load1 0.15-0.48, cpu `some avg10` at most 0.74%, io at most 0.18%, no memory pressure). The OFX side was therefore the more disturbed one, which can only have flattered the native ratios slightly; the spread across rounds is at most 0.037.
+
+| round | mem | build | tiny | hd | KB/node ofx -> native | HD ms/node ofx -> native |
+|---|---|---|---|---|---|---|
+| 1 | 0.216 | 0.871 | 0.498 | 0.700 | 634 -> 137 | 29.99 -> 20.98 |
+| 2 | 0.216 | 0.857 | 0.493 | 0.715 | 634 -> 137 | 30.29 -> 21.66 |
+| 3 | 0.216 | 0.894 | 0.502 | 0.700 | 634 -> 137 | 29.91 -> 20.95 |
+| median | 0.216 | 0.871 | 0.498 | 0.700 | 634 -> 137 | 29.99 -> 20.98 |
+| spread | 0.000 | 0.037 | 0.009 | 0.015 | | |
+
+Gate: mem <= 0.50 passes (0.216), build <= 1.15 passes (0.871), tiny <= 1.15 passes (0.498), hd <= 1.05 passes (0.700). Verdict GO, with HD 0.700 (run 1: 1.697).
+
+Cause of run 1's 1.70x: the native point ops ran single-threaded (parallelism 1.0 against the OFX Grade's 3.0), because the host never splits a single render window across threads. They now split their window into row bands on the global pool, within the host's thread budget.
+
+Median frame wall (s), per config: tiny 1000 ofx 0.334 / native 0.167; hd 30 ofx 1.006 / native 0.725; hd 100 ofx 3.105 / native 2.198. RSS before the first frame (MB), tiny 0 / 1000: ofx 112 / 731, native 112 / 246.

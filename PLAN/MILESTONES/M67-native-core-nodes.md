@@ -440,7 +440,7 @@ Shared rules for every node task in this phase:
   - verify: Full ctest green in both scheduler modes. Each changed test has a one-line reason in the commit message.
   - size: M
 
-- [ ] M67.P2.T8 — Colour-family GUI check under Xvfb, OFX and native side by side
+- [x] M67.P2.T8 — Colour-family GUI check under Xvfb, OFX and native side by side
   - files: `build/m67-gui/run-gui.sh` (new, untracked; copy of `build/m63-gui/run-gui.sh`), `build/m67-gui/panels_check.py` (new, untracked)
   - approach:
     - Release build, container exclusive, `checkForUpdates=false` pre-seeded (`run-gui.sh` checks it). `NATRON_M67_FAMILY=colour`.
@@ -459,7 +459,7 @@ Shared rules for every node task in this phase:
   - verify: `git status` shows only `.f32` files under the eight IDs, and the same ctest filter passes again.
   - size: S
 
-- [ ] M67.P2.T10 — Retire the colour family's OFX plugins (fork PR, pin, smoke test, host lists)
+- [x] M67.P2.T10 — Retire the colour family's OFX plugins (fork PR, pin, smoke test, host lists)
   - files: `tools/ci/local/fetch-assets.sh`, `tools/ci/smoke_test.py`, `Engine/OfxEffectInstance.cpp`, `Tests/Native/NativePluginList_Test.cpp` (new), plus in the fork `charlesangus/openfx-misc`: `CMakeLists.txt`
   - approach:
     - Fork:
@@ -483,7 +483,7 @@ Shared rules for every node task in this phase:
 
 ## Phase 67.3: Merge and generators (Merge, Dissolve, Constant, CheckerBoard)
 
-- [ ] M67.P3.T1 — Rectangle host overlay for Crop and generator extents
+- [x] M67.P3.T1 — Rectangle host overlay for Crop and generator extents
   - files: `Engine/HostOverlaySupport.h`, `Engine/HostOverlaySupport.cpp`, `Engine/NodeOverlay.cpp`, `Engine/Node.h`, `Gui/HostOverlay.cpp`
   - approach:
     - Add `HostOverlayKnobsRectangle` with knobs `bottomLeft` and `size`, an optional `interactive` bool and an optional enable bool. Add `Node::addRectangleInteract(bottomLeft, size, interactive, enable)`, mirroring `addPositionInteract` (`NodeOverlay.cpp:295`), and a `RectangleInteract` in `Gui/HostOverlay.cpp` next to `PositionInteract` (`:257`).
@@ -493,7 +493,7 @@ Shared rules for every node task in this phase:
     - The interaction is checked in P3.T7's GUI run: a drag on the generator rectangle changes `size`.
   - size: L
 
-- [ ] M67.P3.T2 — Native generator base and Constant/Solid (`net.sf.openfx.ConstantPlugin` 2.0, `net.sf.openfx.Solid` 2.0)
+- [x] M67.P3.T2 — Native generator base and Constant/Solid (`net.sf.openfx.ConstantPlugin` 2.0, `net.sf.openfx.Solid` 2.0)
   - files: `Engine/Nodes/Image/NativeGenerator.h` (new), `Engine/Nodes/Image/NativeGenerator.cpp` (new), `Engine/Nodes/Generator/Constant.h` (new), `Engine/Nodes/Generator/Constant.cpp` (new), `Tests/Native/NativeConstant_Test.cpp` (new)
   - approach:
     - `NativeGenerator : NativeImageEffect` uses the generator flag: LayerSelect, Target, with channel buttons, and no hidden `outputComponents`. The layer knob owns that, as `adoptChannelQuad` does for OFX generators.
@@ -520,7 +520,7 @@ Shared rules for every node task in this phase:
     - `renderBothWaysDirect` bit-exact.
   - size: L
 
-- [ ] M67.P3.T3 — Native CheckerBoard (`net.sf.openfx.CheckerBoardPlugin` 2.0)
+- [x] M67.P3.T3 — Native CheckerBoard (`net.sf.openfx.CheckerBoardPlugin` 2.0)
   - files: `Engine/Nodes/Generator/CheckerBoard.h`, `Engine/Nodes/Generator/CheckerBoard.cpp`, `Tests/Native/NativeCheckerBoard_Test.cpp`
   - approach:
     - On `NativeGenerator`. Components RGBA, RGB, Alpha.
@@ -537,7 +537,7 @@ Shared rules for every node task in this phase:
     - `graph_bench.py`'s chain source now runs native. Re-run `BENCH_DRY_RUN` and add the CheckerBoard row to the `BENCH_IMPL` table so P6.T1 can bench OFX-source chains.
   - size: M
 
-- [ ] M67.P3.T4 — Merge operator library (pure functions, all 39 operators)
+- [x] M67.P3.T4 — Merge operator library (pure functions, all 39 operators)
   - files: `Engine/Nodes/Merge/MergeOperators.h` (new), `Engine/Nodes/Merge/MergeOperators.cpp` (new), `Tests/Native/MergeOperators_Test.cpp` (new)
   - approach:
     - Port `SupportExt/ofxsMerging.h` as plain float functions over premultiplied A, B, a and b:
@@ -1057,3 +1057,4 @@ Notes:
 - 2026-10-06 — **P2.T7 closed with no change:** the B5 full ctest had no failures, so every old colour-node test now passes on the native nodes and none needed re-pointing.
 - 2026-10-06 — **P2.T9 recorded** (`bf6b3a6dc`): 44 `.f32` files, 1.35 MB, replay passes 84/84. **PM decision: the per-family reference cap is raised from 600 KB to 1.5 MB** rather than cutting coverage, because the references are the only parity check left once the OFX plugins are retired. `test.sh` has no `-R` and doesn't forward `NATRON_PARITY_RECORD_DIR`; recording ran `ctest -R` directly (`build/m67-gui/record.sh`).
 - 2026-10-06 — **P2.T8 GUI check run** (`build/m67-gui/`, Natron exit 0): knob order is identical for all 8 pairs apart from the 7 documented hidden OFX knobs, and the panels are pixel-identical except two native defects now being fixed: ColorCorrect's Shadows/Midtones/Highlights children are parented to the page rather than their group (so they never fold), and Clamp's colour knobs aren't folded to one value. P2.T8 stays open until a re-shoot after the fix. Screenshots go to the parcel UAT.
+- 2026-10-06 — **B7 landed** (`a206d9191`..`0aaff24f7`): panel fixes re-shot and matching OFX (`build/m67-gui/colour-{colorcorrect,clamp}-native-fixed.png`, `gen-constant-native-overlay.png`); colour family retired via openfx-misc#7 (head `47293e94`, merges with M67's PR); rectangle overlay, generators (Constant/Solid/CheckerBoard parity 0 vs OFX major 1) and the Merge operator library landed. Full ctest passes 1093/1093 in both modes, and smoke passes. Engine fix: `Project::reset` left stale format-menu entries. **After retirement, unrecorded colour parity cases and the OFX knob-parity tests were deleted** (Design §6: about 3 recorded cases per node remain, 19 in total). OFX-hosting tests were re-pointed at ColorMatrix/Quantize, and OFX Constant tests are pinned to major 1 until P3.T7. Lesson for later families: decide which cases to keep **before** the record step, because unrecorded cases die at retirement. `run-gui.sh` deletes `colour-*.png`, so the B7 shots used `build/m67-b7/run-gui-b7.sh`.

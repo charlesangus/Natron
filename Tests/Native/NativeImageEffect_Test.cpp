@@ -303,6 +303,35 @@ protected:
         selector->set(channel);
     }
 
+    // A CheckerBoard of width x height at the origin, large enough for render() to split its
+    // window into several row bands. The extent is set on the node because the project format
+    // only takes the first time a test process sets one.
+    NodePtr createLargeSource(int width,
+                              int height)
+    {
+        NodePtr source = createNode(QString::fromUtf8("net.sf.openfx.CheckerBoardPlugin"));
+
+        EXPECT_TRUE(bool(source));
+        if (!source) {
+            return source;
+        }
+        EXPECT_TRUE(setKnobValue(source, "extent", "size"));
+        std::vector<double> bottomLeft(2, 0.);
+        EXPECT_TRUE(setKnobValues(source, "bottomLeft", bottomLeft));
+        std::vector<double> size;
+        size.push_back(width);
+        size.push_back(height);
+        EXPECT_TRUE(setKnobValues(source, "size", size));
+
+        EffectInstancePtr effect = source->getEffectInstance();
+        RectD rod;
+        bool isProjectFormat = false;
+        EXPECT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+        EXPECT_EQ(RectD(0, 0, width, height), rod);
+
+        return source;
+    }
+
     NodePtr createThreeLayerReader()
     {
         CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
@@ -322,7 +351,7 @@ TEST_F(NativeImageEffectTest, BaseDeclaresTheHostFacingFlags)
     EXPECT_TRUE(effect->supportsTiles());
     EXPECT_TRUE(effect->supportsMultiResolution());
     EXPECT_EQ(EffectInstance::eSupportsYes, effect->supportsRenderScaleMaybe());
-    EXPECT_EQ(eRenderSafetyFullySafeFrame, effect->renderThreadSafety());
+    EXPECT_EQ(eRenderSafetyFullySafe, effect->renderThreadSafety());
     EXPECT_TRUE(effect->rendersUnprocessedChannels());
     EXPECT_FALSE(effect->isMultiPlanar());
 
@@ -591,5 +620,105 @@ TEST_F(NativeImageEffectTest, ChannelsAllRendersEveryPlaneOfAThreeLayerInput)
             }
         }
         EXPECT_EQ(0, differing) << "plane " << in[p].layer.getLayerID();
+    }
+}
+
+namespace {
+
+void
+expectBandsPartition(const RectI& roi,
+                     int nThreads,
+                     std::size_t expectedCount)
+{
+    std::vector<RectI> bands;
+
+    NativeImageEffect::makeRowBands(roi, nThreads, &bands);
+    ASSERT_EQ(expectedCount, bands.size()) << nThreads << " threads, " << roi.width() << "x" << roi.height();
+    int y = roi.y1;
+    for (std::size_t i = 0; i < bands.size(); ++i) {
+        EXPECT_EQ(roi.x1, bands[i].x1);
+        EXPECT_EQ(roi.x2, bands[i].x2);
+        EXPECT_EQ(y, bands[i].y1);
+        EXPECT_LT(bands[i].y1, bands[i].y2);
+        y = bands[i].y2;
+    }
+    EXPECT_EQ(roi.y2, y);
+}
+
+} // namespace
+
+TEST(NativeImageEffectBands, PartitionCoversTheWindowOnceAndScalesWithThreads)
+{
+    expectBandsPartition(RectI(0, 0, 1920, 1080), 1, 1);
+    expectBandsPartition(RectI(0, 0, 1920, 1080), 4, 16);
+    expectBandsPartition(RectI(0, 0, 1920, 1080), 64, 120);
+    expectBandsPartition(RectI(0, 0, 32, 32), 8, 1);
+    expectBandsPartition(RectI(0, 0, 64, 48), 8, 1);
+    expectBandsPartition(RectI(10, -5, 30, 2000), 8, 2);
+    expectBandsPartition(RectI(0, 0, 100000, 2), 8, 2);
+
+    std::vector<RectI> bands;
+    NativeImageEffect::makeRowBands(RectI(0, 0, 0, 10), 4, &bands);
+    EXPECT_TRUE(bands.empty());
+}
+
+TEST_F(NativeImageEffectTest, AWindowSplitIntoBandsIsRenderedWhole)
+{
+    const int width = 512;
+    const int height = 256;
+    NodePtr source = createLargeSource(width, height);
+    NodePtr op = createOp(source);
+    ASSERT_TRUE(bool(op));
+
+    const RectI window(0, 0, width, height);
+    std::vector<RectI> bands;
+    NativeImageEffect::makeRowBands(window, 4, &bands);
+    ASSERT_GT(bands.size(), 1u);
+
+    RenderedPlane in;
+    RenderedPlane out;
+    ASSERT_TRUE(renderColorPlane(source, window, &in));
+    ASSERT_TRUE(renderColorPlane(op, window, &out));
+    ASSERT_EQ(in.channels.size(), out.channels.size());
+    const int nComps = (int)out.channels.size();
+    ASSERT_GE(nComps, 3);
+    int differing = 0;
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            for (int c = 0; c < nComps; ++c) {
+                const float s = planeValue(in, x, y, c);
+                const float expected = (c < 3) ? 2.f * s : s;
+                if (planeValue(out, x, y, c) != expected) {
+                    ++differing;
+                }
+            }
+        }
+    }
+    EXPECT_EQ(0, differing);
+}
+
+TEST_F(NativeImageEffectTest, BandsAgreeInBothSchedulerModesWithNoUnplannedPull)
+{
+    const int width = 512;
+    const int height = 256;
+    NodePtr source = createLargeSource(width, height);
+    NodePtr op = createOp(source);
+    ASSERT_TRUE(bool(op));
+    ASSERT_TRUE(bool(connectMask(op, 200, 100)));
+    ASSERT_TRUE(setKnobValues(op, kOfxMixParamName, std::vector<double>(1, 0.75)));
+    setUnPremultBy(op, "rgba.A");
+
+    std::vector<int> poolSizes;
+    poolSizes.push_back(1);
+    poolSizes.push_back(4);
+    for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+        const RectI window(0, 0, width >> mipmapLevel, height >> mipmapLevel);
+        std::vector<int> unplannedPulls;
+        const RenderMismatch m = renderBothWaysDirect(op, kTime, ViewIdx(0), mipmapLevel, window, poolSizes, std::function<void()>(), 0.f, &unplannedPulls);
+        EXPECT_FALSE(m.any) << "mipmap " << mipmapLevel << ": " << describe(m);
+        ASSERT_EQ(poolSizes.size(), unplannedPulls.size());
+        for (std::size_t i = 0; i < unplannedPulls.size(); ++i) {
+            EXPECT_EQ(0, unplannedPulls[i]) << "mipmap " << mipmapLevel << ", pool " << poolSizes[i];
+        }
     }
 }

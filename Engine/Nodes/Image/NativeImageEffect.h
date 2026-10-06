@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
@@ -64,10 +65,13 @@ struct NativeImageTraits {
 
 /**
  * @brief Base for flat 2D native image nodes: float-only, tile-capable, multi-resolution, render
- * scale supported, and FullySafeFrame, so the host slices a render window over its pool and the
- * node spawns no threads of its own. It is not multiplanar: the host's layer knob decides which
- * planes are rendered and which channels of each are processed, and render() is called once per
- * plane.
+ * scale supported, and FullySafe. The host does not split a render window across threads, so a
+ * point operator's render() splits it into row bands itself, over the global pool and within the
+ * thread budget the host grants the render (AppManager::getNCPUsAvailableForEffect()), the way
+ * an OpenFX plug-in does through the multithread suite; the bands only run the pure pixel
+ * pipeline, so the kernel must be safe to call concurrently. It is not multiplanar: the host's
+ * layer knob decides which planes are rendered and which channels of each are processed, and
+ * render() is called once per plane.
  *
  * A point operator returns true from isPointOp() and builds a PixelKernel in makeKernel(); the
  * base's render() then does the whole per-pixel pipeline in one pass over each row of the
@@ -104,6 +108,11 @@ public:
     virtual bool supportsMultiResolution() const OVERRIDE WARN_UNUSED_RETURN
     {
         return true;
+    }
+
+    virtual RenderSafetyEnum renderThreadSafety() const OVERRIDE WARN_UNUSED_RETURN
+    {
+        return eRenderSafetyFullySafe;
     }
 
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE;
@@ -144,6 +153,15 @@ public:
      * @brief The input render() reads as its mask: the first input described as a mask, or -1.
      **/
     int getMaskInput() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Splits roi into the horizontal row bands a point operator's render() runs in
+     * parallel for nThreads threads: one band when nThreads is 1 or the window is too small to
+     * be worth sharing. Exposed so tests can reason about the partition.
+     **/
+    static void makeRowBands(const RectI& roi,
+                             int nThreads,
+                             std::vector<RectI>* bands);
 
 protected:
     /**

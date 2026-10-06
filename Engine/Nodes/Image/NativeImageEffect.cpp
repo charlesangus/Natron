@@ -26,15 +26,21 @@
 #include "NativeImageEffect.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
+#include <functional>
 #include <list>
 #include <memory>
 #include <vector>
 
+#include <QThread>
+
+#include "Engine/AppManager.h"
 #include "Engine/Image.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/PoolParallelFor.h"
 #include "Engine/RectD.h"
 
 NATRON_NAMESPACE_ENTER
@@ -71,6 +77,33 @@ processedBitsForImage(const ImageLayerDesc& plane,
 
     return bits;
 }
+
+// Below this many pixels a band is not worth handing to another thread.
+const std::size_t kMinBandPixels = 16384;
+// Bands per available thread, so a helper that starts late, on a pool busy with other tasks,
+// finds work left rather than leaving the band it would have had to the others.
+const int kBandsPerThread = 4;
+
+struct PlaneAccess {
+    std::shared_ptr<Image::ReadAccess> src;
+    std::shared_ptr<Image::ReadAccess> divisor;
+    std::shared_ptr<Image::WriteAccess> dst;
+};
+
+struct RowBand {
+    std::size_t job;
+    int y1;
+    int y2;
+
+    RowBand(std::size_t jobIndex,
+            int firstRow,
+            int endRow)
+        : job(jobIndex)
+        , y1(firstRow)
+        , y2(endRow)
+    {
+    }
+};
 
 struct PlaneJob {
     ImagePtr dst;
@@ -343,6 +376,28 @@ NativeImageEffect::isIdentity(double time,
     return false;
 } // NativeImageEffect::isIdentity
 
+void
+NativeImageEffect::makeRowBands(const RectI& roi,
+                                int nThreads,
+                                std::vector<RectI>* bands)
+{
+    bands->clear();
+    const int height = roi.height();
+    if ((height <= 0) || (roi.width() <= 0)) {
+        return;
+    }
+    const std::size_t pixels = (std::size_t)roi.width() * height;
+    std::size_t nBands = 1;
+    if (nThreads > 1) {
+        nBands = std::min((std::size_t)nThreads * kBandsPerThread, pixels / kMinBandPixels);
+        nBands = std::max((std::size_t)1, std::min(nBands, (std::size_t)height));
+    }
+    const int rowsPerBand = (int)((height + nBands - 1) / nBands);
+    for (int y = roi.y1; y < roi.y2; y += rowsPerBand) {
+        bands->push_back(RectI(roi.x1, y, roi.x2, std::min(y + rowsPerBand, roi.y2)));
+    }
+}
+
 StatusEnum
 NativeImageEffect::render(const RenderActionArgs& args)
 {
@@ -439,53 +494,74 @@ NativeImageEffect::render(const RenderActionArgs& args)
     if (mask) {
         maskAccess = std::make_shared<Image::ReadAccess>(mask.get());
     }
-    std::vector<float> maskRow(doMask ? width : 0);
-    std::vector<float> divisorRow;
 
-    for (std::vector<PlaneJob>::const_iterator job = jobs.begin(); job != jobs.end(); ++job) {
-        if (!job->dst) {
+    // Images are locked here, on the calling thread, for the whole render; the band threads only
+    // compute pixel addresses through these accesses.
+    std::vector<PlaneAccess> accesses(jobs.size());
+    std::vector<RowBand> bands;
+    const int nThreads = appPTR->getNCPUsAvailableForEffect();
+    std::vector<RectI> bandRects;
+    makeRowBands(roi, nThreads, &bandRects);
+    for (std::size_t j = 0; j < jobs.size(); ++j) {
+        if (!jobs[j].dst) {
             continue;
         }
-        const int nComps = (int)job->dst->getComponentsCount();
+        if (jobs[j].src) {
+            accesses[j].src = std::make_shared<Image::ReadAccess>(jobs[j].src.get());
+        }
+        if (jobs[j].divisor) {
+            accesses[j].divisor = std::make_shared<Image::ReadAccess>(jobs[j].divisor.get());
+        }
+        accesses[j].dst = std::make_shared<Image::WriteAccess>(jobs[j].dst.get());
+        for (std::size_t b = 0; b < bandRects.size(); ++b) {
+            bands.push_back(RowBand(j, bandRects[b].y1, bandRects[b].y2));
+        }
+    }
+
+    QThread* const callingThread = QThread::currentThread();
+    std::atomic<bool> wasAborted(false);
+
+    const std::function<void(int)> renderBand = [&](int bandIndex) {
+        const RowBand& band = bands[bandIndex];
+        const PlaneJob& job = jobs[band.job];
+        const PlaneAccess& access = accesses[band.job];
+        const int nComps = (int)job.dst->getComponentsCount();
         const std::size_t rowSize = (std::size_t)width * nComps;
         std::vector<float> sourceRow(rowSize);
         std::vector<float> dividedRow(rowSize);
         std::vector<float> kernelRow(rowSize);
-        if (job->divisor) {
-            divisorRow.resize(width);
-        }
-
-        std::shared_ptr<Image::ReadAccess> srcAccess;
-        if (job->src) {
-            srcAccess = std::make_shared<Image::ReadAccess>(job->src.get());
-        }
-        std::shared_ptr<Image::ReadAccess> divisorAccess;
-        if (job->divisor) {
-            divisorAccess = std::make_shared<Image::ReadAccess>(job->divisor.get());
-        }
-        Image::WriteAccess dstAccess(job->dst.get());
+        std::vector<float> maskRow(doMask ? width : 0);
+        std::vector<float> divisorRow(job.divisor ? width : 0);
 
         RowIO io;
         io.src[0] = &dividedRow[0];
         io.nSrc = 1;
         io.mask = doMask ? &maskRow[0] : 0;
-        io.divisor = job->divisor ? &divisorRow[0] : 0;
-        io.divisorSkipChannel = job->divisor ? job->skipChannel : -1;
+        io.divisor = job.divisor ? &divisorRow[0] : 0;
+        io.divisorSkipChannel = job.divisor ? job.skipChannel : -1;
         io.dst = &kernelRow[0];
         io.x0 = roi.x1;
         io.width = width;
         io.nComps = nComps;
-        io.channels = job->channels;
+        io.channels = job.channels;
 
-        for (int y = roi.y1; y < roi.y2; ++y) {
-            if ((((y - roi.y1) % kAbortCheckRows) == 0) && aborted()) {
-                return eStatusOK;
+        for (int y = band.y1; y < band.y2; ++y) {
+            if (((y - band.y1) % kAbortCheckRows) == 0) {
+                if (wasAborted.load(std::memory_order_relaxed)) {
+                    return;
+                }
+                // Only the calling thread carries the render's TLS, so only it may ask.
+                if ((QThread::currentThread() == callingThread) && aborted()) {
+                    wasAborted = true;
+
+                    return;
+                }
             }
 
-            readSourceRow(job->src.get(), srcAccess.get(), roi.x1, y, width, nComps, &sourceRow[0]);
+            readSourceRow(job.src.get(), access.src.get(), roi.x1, y, width, nComps, &sourceRow[0]);
             std::copy(sourceRow.begin(), sourceRow.end(), dividedRow.begin());
-            if (job->divisor) {
-                readChannelRow(job->divisor.get(), divisorAccess.get(), job->divisorChannel, roi.x1, y, width, 1.f, &divisorRow[0]);
+            if (job.divisor) {
+                readChannelRow(job.divisor.get(), access.divisor.get(), job.divisorChannel, roi.x1, y, width, 1.f, &divisorRow[0]);
                 for (int i = 0; i < width; ++i) {
                     const float d = divisorRow[i];
                     if (!Image::unPremultDivisorIsUsable(d)) {
@@ -493,7 +569,7 @@ NativeImageEffect::render(const RenderActionArgs& args)
                     }
                     float* pix = &dividedRow[(std::size_t)i * nComps];
                     for (int c = 0; (c < nComps) && (c < 4); ++c) {
-                        if (c != job->skipChannel) {
+                        if (c != job.skipChannel) {
                             pix[c] = Image::unPremultiplyValue(pix[c], d);
                         }
                     }
@@ -506,7 +582,7 @@ NativeImageEffect::render(const RenderActionArgs& args)
             io.y = y;
             kernel->processRow(io);
 
-            float* dstPix = (float*)dstAccess.pixelAt(roi.x1, y);
+            float* dstPix = (float*)access.dst->pixelAt(roi.x1, y);
             if (!dstPix) {
                 continue;
             }
@@ -519,12 +595,12 @@ NativeImageEffect::render(const RenderActionArgs& args)
                     alpha = maskScale * mix;
                 }
                 for (int c = 0; c < nComps; ++c) {
-                    if ((c >= 4) || !job->channels[pixelKernelChannelBit(nComps, c)]) {
+                    if ((c >= 4) || !job.channels[pixelKernelChannelBit(nComps, c)]) {
                         dstPix[c] = srcPix[c];
                         continue;
                     }
                     float v = outPix[c];
-                    if (job->divisor && (c != job->skipChannel)) {
+                    if (job.divisor && (c != job.skipChannel)) {
                         v = Image::premultiplyValue(v, divisorRow[i]);
                     }
                     if (alpha == 0.f) {
@@ -536,7 +612,8 @@ NativeImageEffect::render(const RenderActionArgs& args)
                 }
             }
         }
-    }
+    };
+    parallelForOnGlobalPool((int)bands.size(), nThreads, renderBand);
 
     return eStatusOK;
 } // NativeImageEffect::render

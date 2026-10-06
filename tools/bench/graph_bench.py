@@ -20,6 +20,8 @@
 #                 "Max concurrent tasks" from the -stats.txt file are recorded as tasks_run and
 #                 max_concurrent_tasks. Needs the stats-capable CLI path, so it is a separate cold render.
 #   BENCH_RENDERER  NatronRenderer binary for that render (default build/release/Renderer/NatronRenderer)
+#   BENCH_IMPL    native (default) | ofx: which implementation of the IDs in NATIVE_MAJORS to create; the
+#                 OFX plugin and its native replacement share an ID and differ by major version
 #   BENCH_HOLD    seconds to sleep before rendering, so a sampler can attach (default 0)
 #   BENCH_DRY_RUN 1 builds the graph against stand-in objects and prints the planned nodes without
 #                 Natron (python3 tools/bench/graph_bench.py on the host); nothing is rendered
@@ -118,6 +120,15 @@ WORK = os.environ.get("BENCH_WORK", os.path.join(os.getcwd(), "build", "bench", 
 PLATES = os.environ.get("BENCH_PLATES_DIR") or os.path.join(os.getcwd(), "build", "bench", "fixtures")
 # Explicit names bypass the default unique-name search; BENCH_NAMED=0 measures that path.
 NAMED = os.environ.get("BENCH_NAMED", "1") != "0"
+IMPL = os.environ.get("BENCH_IMPL", "native")
+if IMPL not in ("ofx", "native"):
+    raise SystemExit("BENCH_IMPL must be ofx or native, got %r" % IMPL)
+
+# plugin ID -> (OFX major, native major). A native node takes over its OFX ID at the next major, so
+# an unversioned request already resolves to it; only the benchmark needs to pick one explicitly.
+NATIVE_MAJORS = {
+    "net.sf.openfx.GradePlugin": (2, 3),
+}
 
 LAST_FRAME = 1 + FRAMES + max(RANGE, 0) + 1
 
@@ -126,6 +137,7 @@ PLATE_RES = "hd" if TOPO == "deepcomp" else RES
 SIZES = {"tiny": (32, 32), "hd": (1920, 1080), "uhd": (3840, 2160)}
 
 counts = {}
+majors = {}
 # Per frame, the plate file bytes the graph decodes: one entry per Read/DeepRead node.
 plate_reads = []
 
@@ -136,12 +148,15 @@ def log(msg):
 
 
 def make(plugin_id):
+    pair = NATIVE_MAJORS.get(plugin_id)
+    major = -1 if pair is None else pair[0 if IMPL == "ofx" else 1]
+    majors[plugin_id] = major
     if NAMED:
         name = "n%d" % sum(counts.values())
         props = {"CreateNodeArgsPropNodeInitialName": NatronEngine.StringNodeCreationProperty(name)}
-        node = app.createNode(plugin_id, -1, None, props)
+        node = app.createNode(plugin_id, major, None, props)
     else:
-        node = app.createNode(plugin_id)
+        node = app.createNode(plugin_id, major)
     if node is None:
         raise RuntimeError("could not create " + plugin_id)
     counts[plugin_id] = counts.get(plugin_id, 0) + 1
@@ -470,6 +485,34 @@ def io_sum(deltas):
     return total
 
 
+PRESSURE_RESOURCES = ("cpu", "io", "memory")
+
+
+def pressure_some10(resource_name):
+    # None when the kernel has no PSI or the sandbox hides it.
+    try:
+        with open("/proc/pressure/" + resource_name) as f:
+            for line in f:
+                m = re.match(r"some .*avg10=([0-9.]+)", line)
+                if m:
+                    return float(m.group(1))
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def load_pressure():
+    try:
+        with open("/proc/loadavg") as f:
+            load1 = float(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        load1 = None
+    out = {"load1": load1}
+    for name in PRESSURE_RESOURCES:
+        out["psi_%s_some10" % name] = pressure_some10(name)
+    return out
+
+
 def render(writer, first, last):
     io0 = proc_io()
     c0, t0 = rusage(), time.time()
@@ -534,6 +577,7 @@ def main():
     build_s = time.time() - t0
     if DRY_RUN:
         log("dry run: %s N=%d nodes=%d %s" % (TOPO, N, sum(counts.values()), json.dumps(counts, sort_keys=True)))
+        log("dry run: impl=%s majors %s" % (IMPL, json.dumps(majors, sort_keys=True)))
         log("dry run: plate bytes per frame %d over %d reads" % (sum(plate_reads), len(plate_reads)))
         return
 
@@ -564,6 +608,7 @@ def main():
         time.sleep(HOLD)
 
     rss_before = vm("VmRSS")
+    pressure_start = load_pressure()
     warm_wall, warm_cpu, warm_io = render(writer, 1, 1)
     walls, cpus, ios = [], [], []
     for f in range(2, 2 + FRAMES):
@@ -575,6 +620,7 @@ def main():
     if RANGE > 0:
         first = 2 + FRAMES
         range_wall, range_cpu, range_io = render(writer, first, first + RANGE - 1)
+    pressure_end = load_pressure()
     outputs = glob.glob(written)
     output_bytes = sum(os.path.getsize(p) for p in outputs)
 
@@ -601,6 +647,8 @@ def main():
         "rss_before_mb": rss_before,
         "rss_peak_mb": vm("VmHWM"),
         "counts": counts,
+        "impl": IMPL,
+        "majors": majors,
         "pixels": SIZES[fmt][0] * SIZES[fmt][1] if fmt in SIZES else None,
         "cpus": os.cpu_count(),
         "mem_total_mb": mem_total_mb(),
@@ -610,6 +658,10 @@ def main():
         "output_frames": len(outputs),
         "io_phases": {"warm": warm_io, "frames": io_sum(ios), "range": range_io},
     }
+    for key, value in pressure_start.items():
+        result[key if key != "load1" else "load1_start"] = value
+    for key, value in pressure_end.items():
+        result[(key if key != "load1" else "load1") + "_end"] = value
     # The top-level IO fields cover the timed frames, like frame_wall_s.
     result.update(io_sum(ios))
     result.update(stats_fields)

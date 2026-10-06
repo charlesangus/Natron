@@ -3,6 +3,19 @@
 # The host clock drops after 10-16 s of full load, so runs are only comparable when they start
 # from the same thermal state and their mean clock is known.
 
+# Prints "load1=<x> psi_cpu=<x> psi_io=<x> psi_memory=<x>" with the `some avg10` percentages, "na" where
+# the kernel exposes no PSI. Load alone misses stalls caused outside the sandbox, such as IO pressure.
+bench_pressure() {
+    local out r v load
+    load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo na)
+    out="load1=$load"
+    for r in cpu io memory; do
+        v=$(sed -n 's/^some .*avg10=\([0-9.]*\).*/\1/p' "/proc/pressure/$r" 2>/dev/null)
+        out="$out psi_${r}=${v:-na}"
+    done
+    echo "$out"
+}
+
 bench_cooldown() {
     local max_load=${BENCH_MAX_LOAD:-0.5}
     local timeout=${BENCH_COOLDOWN_TIMEOUT:-600}
@@ -22,6 +35,7 @@ bench_cooldown() {
     local rest=${BENCH_COOLDOWN:-60}
     echo "cooldown: waited ${waited}s for load < $max_load (now $load), sleeping ${rest}s"
     sleep "$rest"
+    echo "pressure: $(bench_pressure)"
 }
 
 # Appends "epoch_seconds khz_cpu0 khz_cpu1 ..." every 0.5 s to $1 until bench_freq_stop.

@@ -157,6 +157,8 @@
 #include "Engine/Nodes/Deep/DeepRemoveLayers.h"
 #include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
+#include "Engine/Nodes/Generator/CheckerBoard.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/TypedPassthrough.h"
 
 #include "Engine/Utils.h"
@@ -1611,6 +1613,9 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
     registerBuiltInPlugin<ColorMathAdd>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.AddPlugin.png"), false, false);
     registerBuiltInPlugin<ColorMathMultiply>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MultiplyPlugin.png"), false, false);
     registerBuiltInPlugin<ColorMathGamma>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.GammaPlugin.png"), false, false);
+    registerBuiltInPlugin<Constant>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ConstantPlugin.png"), false, false);
+    registerBuiltInPlugin<Solid>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Solid.png"), false, false);
+    registerBuiltInPlugin<CheckerBoard>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.CheckerBoardPlugin.png"), false, false);
     registerBuiltInPlugin<DiskCacheNode>(QString::fromUtf8(NATRON_IMAGES_PATH "diskcache_icon.png"), false, false);
     registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_IMAGES_PATH "GroupingIcons/Set2/paint_grouping_2.png"), false, false);
     registerBuiltInPlugin<RotoNode>(QString::fromUtf8(NATRON_IMAGES_PATH "rotoNodeIcon.png"), false, false);

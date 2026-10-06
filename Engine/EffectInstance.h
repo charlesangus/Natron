@@ -575,6 +575,16 @@ public:
     virtual LayerKnobSpec getLayerKnobSpec() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The colour bits this effect writes on purpose, resolved against `storage`, the
+     * colour storage layout its output would otherwise have (see ResolvedLayer::channelBit). A
+     * bit outside colorStorageBits(storage) is a channel the stream lacks, which widens the
+     * output and the colour inputs to RGBA (Implementation::checkMetadata). The default reads the
+     * layer knob: only a row or selection naming a colour view can yield such a bit, since All
+     * and regex rows resolve colour to the storage's own channels.
+     **/
+    virtual void getColorWriteBits(const ImageLayerDesc& storage, std::bitset<4>* bits) const;
+
+    /**
      * @brief True when this effect moves, filters, selects or retimes pixels without giving any
      * channel a meaning, so its channel-set knob starts on "All" instead of the Color layer.
      **/
@@ -1040,8 +1050,19 @@ public:
      * If inputNb equals -1 then this function will check the output components.
      **/
     double getAspectRatio(int inputNb) const;
+
+    /**
+     * @brief For inputNb == -1, the colour layout the output stores and advertises downstream,
+     * which can be narrower than what the plug-in's output clip renders
+     * (see getMetadataOutputClipComponents()).
+     **/
     void getMetadataComponents(int inputNb, ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const;
     int getMetadataNComps(int inputNb) const;
+
+    /**
+     * @brief The components the plug-in's own output clip renders into.
+     **/
+    void getMetadataOutputClipComponents(ImageLayerDesc* layer, ImageLayerDesc* pairedLayer) const;
 
     ImageBitDepthEnum getBitDepth(int inputNb) const;
 
@@ -2504,7 +2525,6 @@ private:
                                                  const RectI& roi,
                                                  const ImageLayerDesc& targetComponents,
                                                  ImageBitDepthEnum targetDepth,
-                                                 bool useAlpha0ForRGBToRGBAConversion,
                                                  int channelForAlpha);
 
     /**

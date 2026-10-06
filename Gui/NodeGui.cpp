@@ -3266,9 +3266,9 @@ NodeGui::onLayerSelectionChanged()
         } else if (KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(layerKnob.get())) {
             summary = isLayerSelect->getSummary();
         }
-        // The bare Color label is the implicit default (every channel of the Color layer);
+        // The bare rgba label is the implicit default (every channel of the colour plane);
         // the knob's persisted default value does not always encode it, so compare on text.
-        if (summary == kNatronColorLayerLabel) {
+        if (summary == kNatronColorViewRGBA) {
             summary.clear();
         }
         if (!summary.empty()) {

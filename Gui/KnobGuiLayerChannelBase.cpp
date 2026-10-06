@@ -65,7 +65,8 @@ sameLayerEntries(const std::vector<LayerChannelRow::LayerEntry>& a,
 
 std::vector<LayerChannelRow::LayerEntry>
 listLayerEntriesForKnob(const NodePtr& node,
-                        const KnobIPtr& knob)
+                        const KnobIPtr& knob,
+                        bool channelViews)
 {
     std::vector<LayerChannelRow::LayerEntry> entries;
 
@@ -73,7 +74,11 @@ listLayerEntriesForKnob(const NodePtr& node,
         return entries;
     }
     std::list<ImageLayerDesc> descs;
-    node->listLayersForKnob(knob, &descs);
+    if (channelViews) {
+        node->listChannelViewsForKnob(knob, &descs);
+    } else {
+        node->listLayerViewsForKnob(knob, &descs);
+    }
     descs.sort([](const ImageLayerDesc& a, const ImageLayerDesc& b) {
         return a.isColorLayer() && !b.isColorLayer();
     });
@@ -220,7 +225,13 @@ KnobGuiLayerChannelBase::listLayers()
     KnobIPtr k = _imp->knob.lock();
     NodePtr node = getNode();
 
-    _imp->layers = listLayerEntriesForKnob(node, k);
+    _imp->layers = listLayerEntriesForKnob(node, k, listsChannelViews());
+}
+
+bool
+KnobGuiLayerChannelBase::listsChannelViews() const
+{
+    return false;
 }
 
 void

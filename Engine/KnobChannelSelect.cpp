@@ -83,7 +83,7 @@ KnobChannelSelect::get() const
         if (table.empty()) {
             // Knob<T>::populate() resets the value to an empty string after construction,
             // so the type's own default cannot live in the constructor.
-            _cachedValue = std::string(kNatronColorLayerID) + "." + kDefaultChannelName;
+            _cachedValue = std::string(kNatronColorViewRGBA) + "." + kDefaultChannelName;
         } else {
             _cachedValue = table.front()[0];
         }
@@ -152,6 +152,44 @@ KnobChannelSelect::resolve(const std::list<ImageLayerDesc>& present,
     if (layerID.empty()) {
         return false;
     }
+    if (layerID == kNatronColorLayerID) {
+        // present lists the storage entry, which the lookup below would otherwise match; only
+        // its views are selectable.
+        return false;
+    }
+
+    if (ImageLayerDesc::isColorViewID(layerID)) {
+        for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+            if (!it->isColorLayer()) {
+                continue;
+            }
+            std::bitset<4> bits, zeroBits;
+            ImageLayerDesc::resolveColorView(layerID, *it, std::vector<std::string>(1, channelName), &bits, &zeroBits);
+            if (bits.none()) {
+                // channelName is not one of layerID's own channels (e.g. rgb.A).
+                return false;
+            }
+            int bit = 0;
+            while (!bits.test(bit)) {
+                ++bit;
+            }
+
+            // Consumers index the image they fetch in *layer, so a channel the storage lacks
+            // resolves to the narrowest layout that has it: fetching the stream in that layout
+            // zero-fills the channel, which is how a missing colour channel must read.
+            const ImageLayerDesc physical = zeroBits.none() ? *it : ImageLayerDesc::narrowestColorStorageCovering(ImageLayerDesc::colorStorageBits(*it) | bits);
+            if (layer) {
+                *layer = physical;
+            }
+            if (channelIndex) {
+                *channelIndex = ImageLayerDesc::colorViewChannelIndex(ImageLayerDesc::colorViewForNComps(physical.getNumComponents()).getLayerID(), bit);
+            }
+
+            return true;
+        }
+
+        return false;
+    }
 
     for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
         if (it->getLayerID() != layerID) {
@@ -180,8 +218,11 @@ KnobChannelSelect::resolve(const std::list<ImageLayerDesc>& present,
 static std::string
 layerLabelForID(const std::string& layerID)
 {
-    if (ImageLayerDesc::isColorLayer(layerID)) {
-        return kNatronColorLayerLabel;
+    if (ImageLayerDesc::isColorViewID(layerID)) {
+        return ImageLayerDesc::getColorView(layerID).getLayerLabel();
+    }
+    if (layerID == kNatronColorLayerID) {
+        return kNatronColorViewRGBA;
     }
     ImageLayerDesc desc = ImageLayerDesc::mapOFXPlaneStringToLayer(layerID);
     if (desc) {

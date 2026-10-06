@@ -36,14 +36,13 @@ def getPluginDescription():
 def paramChanged(thisParam, thisNode, thisGroup, app, userEdited):
     if thisParam.getScriptName() != "alpha":
         return
-    colorLayer = "uk.co.thefoundry.OfxImagePlaneColour"
     withAlpha = thisParam.get()
     for name in ("PostGrade", "Bloom"):
         channels = thisNode.getNode(name).getParam("channels")
-        channels.setLayer(colorLayer, ["R", "G", "B", "A"] if withAlpha else ["R", "G", "B"])
+        channels.setLayer("rgba" if withAlpha else "rgb")
     clampAlpha = thisNode.getNode("ClampAlpha").getParam("channels")
     if withAlpha:
-        clampAlpha.setLayer(colorLayer, ["A"])
+        clampAlpha.setLayer("alpha")
     else:
         clampAlpha.setNone()
 
@@ -561,7 +560,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        param.setLayer("rgba")
         del param
 
     param = lastNode.getParam("which")
@@ -627,7 +626,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        param.setLayer("rgba")
         del param
 
     param = lastNode.getParam("which")
@@ -673,7 +672,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        param.setLayer("rgba")
         del param
 
     param = lastNode.getParam("which")
@@ -707,7 +706,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        param.setLayer("rgba")
         del param
 
     param = lastNode.getParam("rotate")
@@ -751,7 +750,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        param.setLayer("rgba")
         del param
 
     param = lastNode.getParam("rotate")
@@ -784,7 +783,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        param.setLayer("rgba")
         del param
 
     param = lastNode.getParam("rotate")
@@ -1228,7 +1227,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B"])
+        param.setLayer("rgb")
         del param
 
     param = lastNode.getParam("size")
@@ -1364,7 +1363,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        param.setLayer("rgba")
         del param
 
     param = lastNode.getParam("which")

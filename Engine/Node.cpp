@@ -248,14 +248,6 @@ Node::isPartOfPrecomp() const
     return _imp->precomp.lock();
 }
 
-
-
-bool
-Node::usesAlpha0ToConvertFromRGBToRGBA() const
-{
-    return _imp->useAlpha0ToConvertFromRGBToRGBA;
-}
-
 void
 Node::setWhileCreatingPaintStroke(bool creating)
 {
@@ -1449,6 +1441,172 @@ Node::refreshDataKindConflictMessage()
     }
 } // refreshDataKindConflictMessage
 
+static bool
+isLayerKnob(const KnobI* knob)
+{
+    return dynamic_cast<const KnobChannelSet*>(knob) || dynamic_cast<const KnobLayerSelect*>(knob) || dynamic_cast<const KnobChannelSelect*>(knob);
+}
+
+static bool
+rewriteLegacyColorRows(std::vector<ChannelSetRow>* rows)
+{
+    bool changed = false;
+    int rgbaRow = -1;
+
+    for (std::size_t i = 0; i < rows->size(); ++i) {
+        if ((*rows)[i].mode == ChannelSetRow::eModeLayer && (*rows)[i].layerOrPattern == kNatronColorViewRGBA) {
+            rgbaRow = (int)i;
+            break;
+        }
+    }
+    for (std::size_t i = 0; i < rows->size();) {
+        ChannelSetRow& row = (*rows)[i];
+        if (row.mode != ChannelSetRow::eModeLayer || row.layerOrPattern != kNatronColorLayerID) {
+            ++i;
+            continue;
+        }
+        changed = true;
+        if (rgbaRow == -1) {
+            row.layerOrPattern = kNatronColorViewRGBA;
+            rgbaRow = (int)i;
+            ++i;
+            continue;
+        }
+
+        // A channel set holds one row per layer, so a row that already names rgba absorbs the
+        // old one. An empty channel list means every channel, which absorbs any other list.
+        std::vector<std::string>& merged = (*rows)[rgbaRow].channels;
+        if (row.channels.empty()) {
+            merged.clear();
+        } else if (!merged.empty()) {
+            for (std::size_t c = 0; c < row.channels.size(); ++c) {
+                if (std::find(merged.begin(), merged.end(), row.channels[c]) == merged.end()) {
+                    merged.push_back(row.channels[c]);
+                }
+            }
+        }
+        rows->erase(rows->begin() + i);
+        if (rgbaRow > (int)i) {
+            --rgbaRow;
+        }
+    }
+
+    return changed;
+}
+
+// Rewrites a raw layer-knob value naming the retired colour storage ID so it names the rgba
+// view instead, channels unchanged. Returns false, leaving *rewritten alone, when there is
+// nothing to rewrite.
+static bool
+rewriteLegacyColorValue(KnobI* knob,
+                        const std::string& raw,
+                        std::string* rewritten)
+{
+    if (raw.empty() || (raw.find(kNatronColorLayerID) == std::string::npos)) {
+        return false;
+    }
+
+    if (KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(knob)) {
+        std::vector<ChannelSetRow> rows = isChannelSet->decodeRows(raw);
+        if (!rewriteLegacyColorRows(&rows)) {
+            return false;
+        }
+        *rewritten = isChannelSet->encodeRows(rows);
+
+        return true;
+    }
+
+    KnobTable* isTable = 0;
+    if (dynamic_cast<KnobLayerSelect*>(knob) || dynamic_cast<KnobChannelSelect*>(knob)) {
+        isTable = dynamic_cast<KnobTable*>(knob);
+    }
+    if (!isTable) {
+        return false;
+    }
+
+    std::list<std::vector<std::string>> table;
+    isTable->decodeFromKnobTableFormat(raw, &table);
+    if (table.empty() || table.front().empty()) {
+        return false;
+    }
+
+    std::string& cell = table.front()[0];
+    const std::string storageID(kNatronColorLayerID);
+    if (cell == storageID) {
+        cell = kNatronColorViewRGBA;
+    } else if ((cell.size() > storageID.size()) && (cell.compare(0, storageID.size(), storageID) == 0) && (cell[storageID.size()] == '.')) {
+        cell = std::string(kNatronColorViewRGBA) + cell.substr(storageID.size());
+    } else {
+        return false;
+    }
+    *rewritten = isTable->encodeToKnobTableFormat(table);
+
+    return true;
+}
+
+bool
+Node::resetLegacyColorLayerKnobs(const std::map<const KnobI*, std::string>& liveDefaults)
+{
+    bool valueChanged = false;
+    const KnobsVec& knobs = getKnobs();
+
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        if (!isLayerKnob(it->get())) {
+            continue;
+        }
+        KnobStringBase* isString = dynamic_cast<KnobStringBase*>(it->get());
+        if (!isString) {
+            continue;
+        }
+
+        std::string rewritten;
+        if (rewriteLegacyColorValue(it->get(), isString->getDefaultValue(0), &rewritten)) {
+            // The file's saved default, or the pre-v17 gate's, names the retired ID; "Reset to
+            // default" must land on the knob's own default instead.
+            std::map<const KnobI*, std::string>::const_iterator live = liveDefaults.find(it->get());
+            std::string unused;
+            if ((live != liveDefaults.end()) && !rewriteLegacyColorValue(it->get(), live->second, &unused)) {
+                rewritten = live->second;
+            }
+            isString->setDefaultValueWithoutApplying(rewritten, 0);
+        }
+
+        if (rewriteLegacyColorValue(it->get(), isString->getValue(), &rewritten)) {
+            isString->setValue(rewritten, ViewSpec::all(), 0, eValueChangedReasonNatronInternalEdited, NULL);
+            valueChanged = true;
+        }
+    }
+
+    return valueChanged;
+}
+
+void
+Node::postPendingLegacyColorLayerWarning()
+{
+    if (!_imp->legacyColorLayerWarningPending) {
+        return;
+    }
+    _imp->legacyColorLayerWarningPending = false;
+    const std::string warning = tr("Colour layer from an older project was reset to rgba").toStdString();
+    setPersistentMessage(eMessageTypeWarning, warning);
+    markPersistentMessageFromProjectLoad(warning);
+}
+
+void
+Node::markPersistentMessageFromProjectLoad(const std::string& content)
+{
+#ifdef NATRON_ENABLE_IO_META_NODES
+    NodePtr ioContainer = getIOContainer();
+    if (ioContainer) {
+        ioContainer->markPersistentMessageFromProjectLoad(content);
+    }
+#endif
+    QMutexLocker k(&_imp->persistentMessageMutex);
+    if (_imp->persistentMessage == QString::fromUtf8(content.c_str())) {
+        _imp->persistentMessageFromProjectLoad = true;
+    }
+}
+
 void
 Node::loadKnobs(const NodeSerialization & serialization,
                 bool updateKnobGui)
@@ -1461,6 +1619,16 @@ Node::loadKnobs(const NodeSerialization & serialization,
     }
 
     const std::vector<KnobIPtr> & nodeKnobs = getKnobs();
+
+    // Loading overwrites each knob's default with the one saved in the file.
+    std::map<const KnobI*, std::string> liveLayerDefaults;
+    for (U32 j = 0; j < nodeKnobs.size(); ++j) {
+        KnobStringBase* isString = dynamic_cast<KnobStringBase*>(nodeKnobs[j].get());
+        if (isString && isLayerKnob(nodeKnobs[j].get())) {
+            liveLayerDefaults[nodeKnobs[j].get()] = isString->getDefaultValue(0);
+        }
+    }
+
     ///for all knobs of the node
     for (U32 j = 0; j < nodeKnobs.size(); ++j) {
         loadKnob(nodeKnobs[j], serialization, updateKnobGui);
@@ -1495,6 +1663,19 @@ Node::loadKnobs(const NodeSerialization & serialization,
     }
 
     restoreUserKnobs(serialization);
+
+    if (OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get())) {
+        isOfxEffect->syncMultiplaneTwinsAfterLoad();
+    }
+
+    // Only the rgba, rgb, alpha and xy views are valid layer values now; the colour storage ID
+    // resolves to nothing, so an old value naming it would silently process no colour at all.
+    if (resetLegacyColorLayerKnobs(liveLayerDefaults)) {
+        _imp->legacyColorLayerWarningPending = true;
+        if (_imp->nodeCreated) {
+            postPendingLegacyColorLayerWarning();
+        }
+    }
 
     setKnobsAge( serialization.getKnobsAge() );
 
@@ -2073,7 +2254,7 @@ Node::makeInfoForInput(int inputNumber) const
         }
         for (std::list<ImageLayerDesc>::iterator it = availableLayers.begin(); it != availableLayers.end(); ++it) {
 
-            ss << " " << it->getLayerLabel() << '.' << it->getChannelsLabel();
+            ss << " " << it->getUserFacingLabel() << '.' << it->getChannelsLabel();
             if ( next != availableLayers.end() ) {
                 ss << ", ";
                 ++next;
@@ -2508,7 +2689,7 @@ Node::createUnPremultSelector(const KnobPagePtr& mainPage)
 
     KnobChannelSelectPtr channel = _imp->effect->createChannelSelectKnob(kUnPremultByKnobName, tr(kUnPremultByKnobLabel).toStdString(), false);
     channel->setAnimationEnabled(false);
-    // A KnobChannelSelect left empty reads as Color.A, which is the right default for a mask
+    // A KnobChannelSelect left empty reads as rgba.A, which is the right default for a mask
     // footer but not here: the plug-in's own bool defaulted to off, and quietly unpremultiplying
     // every colour node by alpha is not something to turn on behind the user's back.
     channel->setDefaultValue(channel->encode(std::string()));
@@ -2534,9 +2715,18 @@ Node::getUnPremultSkipChannel(const ImageLayerDesc& plane,
                               const ImageLayerDesc& divisorLayer,
                               int divisorChannel)
 {
-    const bool samePlane = divisorLayer.isColorLayer() ? plane.isColorLayer() : (plane.getLayerID() == divisorLayer.getLayerID());
+    if (!divisorLayer.isColorLayer()) {
+        return (plane.getLayerID() == divisorLayer.getLayerID()) ? divisorChannel : -1;
+    }
+    if (!plane.isColorLayer()) {
+        return -1;
+    }
 
-    return samePlane ? divisorChannel : -1;
+    // The divisor may have been fetched in a wider colour layout than plane (see
+    // KnobChannelSelect::resolve()), so match the channel by its colour bit, not its index.
+    const int bit = ImageLayerDesc::colorViewChannelBit(ImageLayerDesc::colorViewForNComps(divisorLayer.getNumComponents()).getLayerID(), divisorChannel);
+
+    return ImageLayerDesc::colorViewChannelIndex(ImageLayerDesc::colorViewForNComps(plane.getNumComponents()).getLayerID(), bit);
 }
 
 int
@@ -2712,7 +2902,7 @@ Node::adoptChannelQuad()
     const bool defaultsToAll = isChannelSet && _imp->effect->defaultProcessesAllLayers();
 
     if (isChannelSet) {
-        _imp->legacyChannelSetDefault = isChannelSet->encodeRows(KnobChannelSet::defaultRows());
+        _imp->legacyChannelSetDefault = isChannelSet->encodeRows(KnobChannelSet::legacyColorDefaultRows());
     }
     if (defaultsToAll) {
         std::vector<ChannelSetRow> allRows(1);
@@ -2770,15 +2960,20 @@ Node::adoptChannelQuad()
     // already matches, so there is nothing to seed on it.
     if (enabledChannels.size() != 4) {
         if (isChannelSet) {
+            // The legacy default names the colour storage ID so that an old project it lands on
+            // is recognised and rewritten with a warning on load; the live default names the view.
+            std::vector<ChannelSetRow> legacyRows = KnobChannelSet::legacyColorDefaultRows();
             std::vector<ChannelSetRow> rows = KnobChannelSet::defaultRows();
             if (enabledChannels.empty()) {
+                legacyRows[0].mode = ChannelSetRow::eModeNone;
                 rows[0].mode = ChannelSetRow::eModeNone;
             } else {
+                legacyRows[0].channels = enabledChannels;
                 rows[0].channels = enabledChannels;
             }
-            _imp->legacyChannelSetDefault = isChannelSet->encodeRows(rows);
+            _imp->legacyChannelSetDefault = isChannelSet->encodeRows(legacyRows);
             if (!defaultsToAll) {
-                isChannelSet->setDefaultValue(_imp->legacyChannelSetDefault);
+                isChannelSet->setDefaultValue(isChannelSet->encodeRows(rows));
             }
         } else if (isLayerSelect && isLayerSelect->getWithChannelButtons()) {
             isLayerSelect->setChannels(enabledChannels);
@@ -2951,6 +3146,15 @@ Node::initializeDefaultKnobs(bool loadingSerialization)
     assert(foundPluginDefaultKnobsToReorder.size() > 0 && foundPluginDefaultKnobsToReorder[0].first == kOfxMaskInvertParamName);
 
     createUnPremultSelector(mainPage);
+
+    OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get());
+    if (isOfxEffect && isOfxEffect->isMultiPlanar()
+#ifdef NATRON_ENABLE_IO_META_NODES
+        && !ioContainer
+#endif
+    ) {
+        isOfxEffect->takeOverMultiplaneChoices(mainPage);
+    }
 
     createMaskSelectors(hasMaskChannelSelector, inputLabels, mainPage, !foundPluginDefaultKnobsToReorder[0].second.get(), &lastKnobBeforeAdvancedOption);
 
@@ -3888,7 +4092,7 @@ Node::makePreviewImage(SequenceTime time,
         return false;
     }
 
-    effect->getNode()->clearPersistentMessageUnlessFromChannelSelector();
+    effect->getNode()->clearPersistentMessageForPreview();
 
     StatusEnum stat = effect->getRegionOfDefinition_public(nodeHash, time, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat);
     if ( (stat == eStatusFailed) || rod.isNull() ) {
@@ -4417,6 +4621,7 @@ Node::storePersistentMessage(MessageTypeEnum type,
         return false;
     }
     setChannelSelectorOwnership(fromChannelSelector);
+    _imp->persistentMessageFromProjectLoad = false;
     _imp->persistentMessageRenderSequence = fromChannelSelector ? renderSequence : 0;
     _imp->persistentMessageType = (int)type;
     _imp->persistentMessage = mess;
@@ -4551,6 +4756,7 @@ Node::clearPersistentMessageInternal()
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
         setChannelSelectorOwnership(false);
+        _imp->persistentMessageFromProjectLoad = false;
         _imp->persistentMessageRenderSequence = 0;
         changed = !_imp->persistentMessage.isEmpty();
         if (changed) {
@@ -4687,7 +4893,7 @@ Node::getNodesOwningChannelSelectorMessage(NodesList* nodes)
 }
 
 void
-Node::clearPersistentMessageUnlessFromChannelSelector()
+Node::clearPersistentMessageForPreview()
 {
     if (!getApp()) {
         return;
@@ -4695,7 +4901,7 @@ Node::clearPersistentMessageUnlessFromChannelSelector()
 #ifdef NATRON_ENABLE_IO_META_NODES
     NodePtr ioContainer = getIOContainer();
     if (ioContainer) {
-        ioContainer->clearPersistentMessageUnlessFromChannelSelector();
+        ioContainer->clearPersistentMessageForPreview();
 
         return;
     }
@@ -4703,7 +4909,7 @@ Node::clearPersistentMessageUnlessFromChannelSelector()
     bool changed = false;
     {
         QMutexLocker k(&_imp->persistentMessageMutex);
-        if (!_imp->persistentMessageFromChannelSelector) {
+        if (!_imp->persistentMessageFromChannelSelector && !_imp->persistentMessageFromProjectLoad) {
             changed = !_imp->persistentMessage.isEmpty();
             _imp->persistentMessage.clear();
         }
@@ -5124,6 +5330,30 @@ Node::findClosestInList(const ImageLayerDesc& comp,
     if ( components.empty() ) {
         return ImageLayerDesc::getNoneComponents();
     }
+
+    // A colour layout the clip lacks goes to the narrowest supported layout holding all of its
+    // channels, so none is dropped: Alpha on an RGB/RGBA clip is RGBA, not RGB.
+    if (comp.isColorLayer() && (comp.getNumComponents() > 0)) {
+        const std::bitset<4> storageBits = ImageLayerDesc::colorStorageBits(comp);
+        bool exactMatch = false;
+        std::list<ImageLayerDesc>::const_iterator covering = components.end();
+        for (std::list<ImageLayerDesc>::const_iterator it = components.begin(); it != components.end(); ++it) {
+            if (it->getNumComponents() == comp.getNumComponents()) {
+                exactMatch = true;
+                break;
+            }
+            if (!it->isColorLayer() || (storageBits & ~ImageLayerDesc::colorStorageBits(*it)).any()) {
+                continue;
+            }
+            if ((covering == components.end()) || (it->getNumComponents() < covering->getNumComponents())) {
+                covering = it;
+            }
+        }
+        if (!exactMatch && (covering != components.end())) {
+            return *covering;
+        }
+    }
+
     std::list<ImageLayerDesc>::const_iterator closestComp = components.end();
     for (std::list<ImageLayerDesc>::const_iterator it = components.begin(); it != components.end(); ++it) {
         if ( closestComp == components.end() ) {
@@ -5900,6 +6130,14 @@ Node::onEffectKnobValueChanged(KnobI* what,
         }
     }
 
+    if (!ret) {
+        OfxEffectInstance* isOfxEffect = dynamic_cast<OfxEffectInstance*>(_imp->effect.get());
+        if (isOfxEffect && isOfxEffect->onMultiplaneTwinChanged(what)) {
+            _imp->notifyLayerReferencesChanged();
+            ret = true;
+        }
+    }
+
     if (!ret && (what == _imp->layerKnob.lock().get())) {
         _imp->notifyLayerReferencesChanged();
         if (_imp->rotoContext) {
@@ -6067,9 +6305,9 @@ Node::listLayersForKnob(const KnobIPtr& knob,
             return;
         }
         std::shared_ptr<const std::vector<LayerRegistryEntry>> snapshot = project->getLayerRegistrySnapshot();
-        for (std::vector<LayerRegistryEntry>::const_iterator it = snapshot->begin(); it != snapshot->end(); ++it) {
-            layers->push_back(it->desc);
-        }
+        std::list<ImageLayerDesc> storagePlanes;
+        LayerRegistry::toStoragePlanes(snapshot, &storagePlanes);
+        layers->insert(layers->end(), storagePlanes.begin(), storagePlanes.end());
 
         return;
     }
@@ -6086,6 +6324,38 @@ Node::listLayersForKnob(const KnobIPtr& knob,
     }
     appendInputStreamLayers(_imp->effect, inputNb, inputTime, inputView, layers);
 } // Node::listLayersForKnob
+
+void
+Node::listLayerViewsForKnob(const KnobIPtr& knob,
+                            std::list<ImageLayerDesc>* layers) const
+{
+    std::list<ImageLayerDesc> storage;
+    listLayersForKnob(knob, &storage);
+    ImageLayerDesc::expandColorViews(&storage);
+    layers->insert(layers->end(), storage.begin(), storage.end());
+}
+
+void
+Node::listLayerViewsForKnob(const KnobIPtr& knob,
+                            double time,
+                            ViewIdx view,
+                            std::list<ImageLayerDesc>* layers) const
+{
+    std::list<ImageLayerDesc> storage;
+    listLayersForKnob(knob, time, view, &storage);
+    ImageLayerDesc::expandColorViews(&storage);
+    layers->insert(layers->end(), storage.begin(), storage.end());
+}
+
+void
+Node::listChannelViewsForKnob(const KnobIPtr& knob,
+                              std::list<ImageLayerDesc>* layers) const
+{
+    std::list<ImageLayerDesc> storage;
+    listLayersForKnob(knob, &storage);
+    ImageLayerDesc::collapseColorToLayoutView(&storage);
+    layers->insert(layers->end(), storage.begin(), storage.end());
+}
 
 bool
 Node::isTargetLayerKnob(const KnobIPtr& knob) const
@@ -7456,14 +7726,6 @@ Node::attachRotoItem(const RotoDrawableItemPtr& stroke)
 {
     assert( QThread::currentThread() == qApp->thread() );
     _imp->paintStroke = stroke;
-    _imp->useAlpha0ToConvertFromRGBToRGBA = true;
-}
-
-void
-Node::setUseAlpha0ToConvertFromRGBToRGBA(bool use)
-{
-    assert( QThread::currentThread() == qApp->thread() );
-    _imp->useAlpha0ToConvertFromRGBToRGBA = use;
 }
 
 RotoDrawableItemPtr

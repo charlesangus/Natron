@@ -41,6 +41,13 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 
+/**
+ * @brief The stored Layer cell of a KnobLayerSelect set to "All": every layer of the input
+ * rather than one of them. A layer ID never is "*" in practice, and an empty cell already
+ * spells None.
+ **/
+#define kNatronLayerSelectAll "*"
+
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -130,6 +137,21 @@ public:
         return _allowNone;
     }
 
+    /**
+     * @brief Whether this knob allows the kNatronLayerSelectAll selection, standing for every
+     * layer of the input. Set once by the node that creates the knob and never persisted, like
+     * setAllowNone(). An All selection resolves to no single layer and references none.
+     **/
+    void setAllowAll(bool allowAll)
+    {
+        _allowAll = allowAll;
+    }
+
+    bool getAllowAll() const
+    {
+        return _allowAll;
+    }
+
     std::string getLayer() const;
 
     /**
@@ -172,6 +194,7 @@ private:
 
     bool _withChannelButtons;
     bool _allowNone;
+    bool _allowAll;
 
     mutable QMutex _cacheMutex;
     mutable bool _cacheValid;

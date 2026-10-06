@@ -264,7 +264,7 @@ TEST_F(WriteAllLayersTest, WriteAllLayersToggleAfterRenderWritesEveryLayer)
     }
 
     {
-        _channels->setLayer(0, kNatronColorLayerID, NULL);
+        _channels->setLayer(0, kNatronColorViewRGBA, NULL);
         QFile::remove(QString::fromStdString(path));
 
         FlatExrImage image;
@@ -324,7 +324,7 @@ TEST_F(WriteAllLayersTest, WriteColorAndOneLayerWritesOnlyThose)
     ASSERT_TRUE(bool(outputChannels));
     EXPECT_TRUE(outputChannels->getIsSecret());
 
-    _channels->setLayer(0, kNatronColorLayerID, NULL);
+    _channels->setLayer(0, kNatronColorViewRGBA, NULL);
     _channels->addLayer("diffuse", NULL);
 
     QTemporaryDir tmp;
@@ -358,7 +358,7 @@ TEST_F(WriteAllLayersTest, WriteColorRgbSubsetWritesRgbOnly)
     EXPECT_EQ("RGBA", outputComponents->getActiveEntry().id);
 
     const std::vector<std::string> rgb = { "R", "G", "B" };
-    _channels->setLayer(0, kNatronColorLayerID, &rgb);
+    _channels->setLayer(0, kNatronColorViewRGBA, &rgb);
     EXPECT_EQ("RGB", outputComponents->getActiveEntry().id);
 
     QTemporaryDir tmp;
@@ -390,7 +390,7 @@ TEST_F(WriteAllLayersTest, WriteColorAndDiffuseGreenWritesThatChannelOnly)
         return;
     }
 
-    _channels->setLayer(0, kNatronColorLayerID, NULL);
+    _channels->setLayer(0, kNatronColorViewRGBA, NULL);
     const std::vector<std::string> green = { "G" };
     _channels->addLayer("diffuse", &green);
 
@@ -421,7 +421,7 @@ TEST_F(WriteAllLayersTest, WriteColorAndSpecularRedBlueWritesThoseChannelsOnly)
         return;
     }
 
-    _channels->setLayer(0, kNatronColorLayerID, NULL);
+    _channels->setLayer(0, kNatronColorViewRGBA, NULL);
     const std::vector<std::string> redBlue = { "R", "B" };
     _channels->addLayer("specular", &redBlue);
 
@@ -526,7 +526,7 @@ TEST_F(WriteAllLayersTest, EncoderChannelQuadIsAdoptedAndStaysHidden)
     }
 
     const std::vector<std::string> rgb = { "R", "G", "B" };
-    _channels->setLayer(0, kNatronColorLayerID, &rgb);
+    _channels->setLayer(0, kNatronColorViewRGBA, &rgb);
     encoder->getEffectInstance()->refreshMetadata_public(true);
     for (int i = 0; i < 4; ++i) {
         EXPECT_TRUE(channels[i]->getIsSecret()) << quad[i];

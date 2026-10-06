@@ -414,7 +414,8 @@ public:
      * @brief The index, within plane, of the "(Un)premult by" divisor channel when the divisor
      * is plane's own (the classic "unpremult by its own alpha"), or -1 when the divisor belongs
      * to another layer and so is not one of plane's channels. That channel is the divisor, not
-     * something to divide, so it is left alone.
+     * something to divide, so it is left alone. Colour layouts are matched by channel, so an
+     * rgba.R divisor fetched as RGBA skips nothing in an alpha-only plane.
      **/
     static int getUnPremultSkipChannel(const ImageLayerDesc& plane, const ImageLayerDesc& divisorLayer, int divisorChannel);
 
@@ -739,13 +740,6 @@ public:
     void attachRotoItem(const RotoDrawableItemPtr& stroke);
     RotoDrawableItemPtr getAttachedRotoItem() const;
 
-
-    //This flag is used for the Roto plug-in and for the Merge inside the rotopaint tree
-    //so that if the input of the roto node is RGB, it gets converted with alpha = 0, otherwise the user
-    //won't be able to paint the alpha channel
-    bool usesAlpha0ToConvertFromRGBToRGBA() const;
-    void setUseAlpha0ToConvertFromRGBToRGBA(bool use);
-
 protected:
 
     void runInputChangedCallback(int index);
@@ -976,10 +970,11 @@ public:
     static void getNodesOwningChannelSelectorMessage(NodesList* nodes);
 
     /**
-     * @brief Clears the persistent message unless the channel-selector check owns it: that
-     * error stays until a render or check that passes retires it.
+     * @brief Clears the persistent message before a preview render, except a channel-selector
+     * error, which stays until a render or check that passes retires it, and a project-load
+     * warning, which no render can retire.
      **/
-    void clearPersistentMessageUnlessFromChannelSelector();
+    void clearPersistentMessageForPreview();
 
 private:
     void postPersistentMessage(MessageTypeEnum type, const std::string& content, bool fromChannelSelector, U64 renderSequence, const AbortableRenderInfo* render);
@@ -1218,11 +1213,18 @@ private:
 
     void adoptChannelQuad();
 
+    bool resetLegacyColorLayerKnobs(const std::map<const KnobI*, std::string>& liveDefaults);
+
+    // Knobs are loaded before the node counts as created, and postPersistentMessage() drops
+    // messages from a node still being created silently, so the colour-layer reset warning
+    // waits for this call at the end of creation.
+    void postPendingLegacyColorLayerWarning();
+
+    void markPersistentMessageFromProjectLoad(const std::string& content);
+
     void refreshGeneratorOutputComponentsKnob();
 
 public:
-
-
     void onSetSupportRenderScaleMaybeSet(int support);
 
     bool useScaleOneImagesWhenRenderScaleSupportIsDisabled() const;
@@ -1507,6 +1509,23 @@ public:
      * instead of the timeline's current frame.
      **/
     void listLayersForKnob(const KnobIPtr& knob, double time, ViewIdx view, std::list<ImageLayerDesc>* layers) const;
+
+    /**
+     * @brief listLayersForKnob() as a user sees it: the colour storage entry is replaced, in
+     * place, by the colour views it presents (ImageLayerDesc::expandColorViews()). This is the
+     * list for the GUI and Python; engine code keeps to the storage-level listLayersForKnob().
+     **/
+    void listLayerViewsForKnob(const KnobIPtr& knob, std::list<ImageLayerDesc>* layers) const;
+
+    void listLayerViewsForKnob(const KnobIPtr& knob, double time, ViewIdx view, std::list<ImageLayerDesc>* layers) const;
+
+    /**
+     * @brief listLayersForKnob() for a single-channel picker that lists the colour storage
+     * entry as the one colour view matching its channel layout
+     * (ImageLayerDesc::collapseColorToLayoutView()), because rgba.R, rgb.R alias one channel
+     * and must not be offered twice.
+     **/
+    void listChannelViewsForKnob(const KnobIPtr& knob, std::list<ImageLayerDesc>* layers) const;
 
     /**
      * @brief Whether listLayersForKnob() lists the project registry for this knob (a target

@@ -109,18 +109,19 @@ protected:
         BaseTest::TearDown();
     }
 
-    NodePtr createReader()
+    NodePtr createReader(const std::string& fixture = "flat-three-layers.exr")
     {
         CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
 
-        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
 
         return getApp()->createNode(readerArgs);
     }
 
-    NodePtr createShuffleOnReader(const char* pluginID = PLUGINID_NATRON_SHUFFLE)
+    NodePtr createShuffleOnReader(const char* pluginID = PLUGINID_NATRON_SHUFFLE,
+                                  const std::string& fixture = "flat-three-layers.exr")
     {
-        NodePtr reader = createReader();
+        NodePtr reader = createReader(fixture);
         if (!reader) {
             return NodePtr();
         }
@@ -157,6 +158,40 @@ protected:
         node->listLayersForKnob(knob, &layers);
 
         return layerIDs(layers);
+    }
+
+    static std::list<ImageLayerDesc> producedLayers(const NodePtr& node)
+    {
+        EffectInstancePtr effect = node->getEffectInstance();
+        EffectInstance::ComponentsNeededMap comps;
+        std::list<ImageLayerDesc> passThroughLayers;
+        double passThroughTime = 0.;
+        int passThroughView = 0;
+        std::bitset<4> processChannels;
+        EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
+        int passThroughInputNb = -1;
+
+        effect->getComponentsNeededAndProduced_public(effect->getRenderHash(), 0, ViewIdx(0), &comps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInputNb);
+
+        return comps[-1];
+    }
+
+    // The one colour plane produced, with the channel count of its layout; 0 when none is.
+    static int producedColorChannels(const NodePtr& node)
+    {
+        const std::list<ImageLayerDesc> produced = producedLayers(node);
+        int count = 0;
+        int nColorPlanes = 0;
+
+        for (std::list<ImageLayerDesc>::const_iterator it = produced.begin(); it != produced.end(); ++it) {
+            if (it->getLayerID() == kNatronColorLayerID) {
+                count = it->getNumComponents();
+                ++nColorPlanes;
+            }
+        }
+        EXPECT_GE(1, nColorPlanes);
+
+        return count;
     }
 
     static bool isIdentityOfMain(const NodePtr& node)
@@ -219,9 +254,9 @@ TEST_F(ShuffleTest, OwnsItsLayerKnobsAndGetsNoHostLayerKnob)
     ASSERT_TRUE(bool(out1));
     ASSERT_TRUE(bool(out2));
 
-    EXPECT_EQ(std::string(kNatronColorLayerID), in1->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), in1->getLayer());
     EXPECT_EQ(std::string(), in2->getLayer());
-    EXPECT_EQ(std::string(kNatronColorLayerID), out1->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), out1->getLayer());
     EXPECT_EQ(std::string(), out2->getLayer());
 
     EXPECT_TRUE(in1->getAllowNone());
@@ -275,9 +310,9 @@ TEST_F(ShuffleTest, ShuffleCopyHasTwoInputsAndCopiesAlphaFromInput1ByDefault)
     ASSERT_TRUE(bool(in2));
     ASSERT_TRUE(bool(out1));
     ASSERT_TRUE(bool(out2));
-    EXPECT_EQ(std::string(kNatronColorLayerID), in1->getLayer());
-    EXPECT_EQ(std::string(kNatronColorLayerID), in2->getLayer());
-    EXPECT_EQ(std::string(kNatronColorLayerID), out1->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), in1->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), in2->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), out1->getLayer());
     EXPECT_EQ(std::string(), out2->getLayer());
 
     expectLayerKnobsHidden(copy);
@@ -396,7 +431,7 @@ TEST_F(ShuffleTest, ProducesOnlyItsOutputLayerAndPassesTheRestThroughFromTheSour
     EXPECT_TRUE(contains(passThrough, "specular"));
     EXPECT_FALSE(contains(passThrough, "spec2"));
 
-    // spec2's channels read in1's Color by default, and nothing reads the None in2.
+    // spec2's channels read in1's rgba by default, and nothing reads the None in2.
     std::vector<std::string> expectedFromMain;
     expectedFromMain.push_back(kNatronColorLayerID);
     EXPECT_EQ(expectedFromMain, layerIDs(comps[Shuffle::eInputMain]));
@@ -461,17 +496,17 @@ TEST_F(ShuffleTest, IdentityOnlyWhileEveryOut1ChannelReadsItsOwnChannelOfTheSame
     in1->setLayer("diffuse");
     EXPECT_FALSE(isIdentityOfMain(shuffle));
 
-    in1->setLayer(kNatronColorLayerID);
+    in1->setLayer(kNatronColorViewRGBA);
     mapping->setSource(1, 1, ShuffleSource::makeInput(2, 1));
     EXPECT_FALSE(isIdentityOfMain(shuffle));
 
-    in2->setLayer(kNatronColorLayerID);
+    in2->setLayer(kNatronColorViewRGBA);
     EXPECT_TRUE(isIdentityOfMain(shuffle));
 
     out2->setLayer("diffuse");
     EXPECT_FALSE(isIdentityOfMain(shuffle));
 
-    out2->setLayer(kNatronColorLayerID);
+    out2->setLayer(kNatronColorViewRGBA);
     EXPECT_TRUE(isIdentityOfMain(shuffle));
 }
 
@@ -534,19 +569,19 @@ TEST_F(ShuffleTest, SubLabelFollowsTheMapping)
     ASSERT_TRUE(bool(out2));
     ASSERT_TRUE(bool(sublabel));
 
-    in1->setLayer(kNatronColorLayerID);
+    in1->setLayer(kNatronColorViewRGBA);
     in2->setLayer("specular");
-    out1->setLayer(kNatronColorLayerID);
+    out1->setLayer(kNatronColorViewRGBA);
     out2->setLayer("diffuse");
 
-    // Out1 only passes Color through, so only out2 (fed by specular) is named.
+    // Out1 only passes rgba through, so only out2 (fed by specular) is named.
     const std::string arrow = " \xE2\x86\x92 ";
     const std::string specularToDiffuse = sublabel->getValue();
     const std::size_t arrowPos = specularToDiffuse.find(arrow);
     ASSERT_NE(std::string::npos, arrowPos) << specularToDiffuse;
     const std::string specular = specularToDiffuse.substr(0, arrowPos);
     const std::string diffuse = specularToDiffuse.substr(arrowPos + arrow.size());
-    const std::string color = ImageLayerDesc::getRGBAComponents().getLayerLabel();
+    const std::string color = kNatronColorViewRGBA;
     EXPECT_FALSE(specular.empty());
     EXPECT_FALSE(diffuse.empty());
 
@@ -558,4 +593,136 @@ TEST_F(ShuffleTest, SubLabelFollowsTheMapping)
 
     mapping->setSource(1, 0, ShuffleSource::makeInput(1, 0));
     EXPECT_EQ(color + ", " + specular + arrow + diffuse, sublabel->getValue());
+}
+
+TEST_F(ShuffleTest, ProducedColorPlaneKeepsTheMainLayoutWhenItCoversTheOutputViews)
+{
+    NodePtr shuffle = createShuffleOnReader(PLUGINID_NATRON_SHUFFLE, "flat-rgb-only.exr");
+
+    ASSERT_TRUE(bool(shuffle));
+    Shuffle* shuffleFx = shuffleEffect(shuffle);
+    KnobLayerSelectPtr out1 = layerKnob(shuffle, kShuffleParamOut1);
+    KnobLayerSelectPtr out2 = layerKnob(shuffle, kShuffleParamOut2);
+    ASSERT_TRUE(shuffleFx != NULL);
+    ASSERT_TRUE(bool(out1));
+    ASSERT_TRUE(bool(out2));
+
+    out1->setLayer(kNatronColorViewRGB);
+    EXPECT_EQ(std::bitset<4>(0x7), shuffleFx->getOutputColorBits());
+    EXPECT_EQ(3, producedColorChannels(shuffle));
+
+    // The RGB input has no A to keep, so writing alpha needs the RGBA layout.
+    out1->setLayer(kNatronColorViewAlpha);
+    EXPECT_EQ(std::bitset<4>(0x8), shuffleFx->getOutputColorBits());
+    EXPECT_EQ(4, producedColorChannels(shuffle));
+
+    out1->setLayer(kNatronColorViewRGBA);
+    EXPECT_EQ(4, producedColorChannels(shuffle));
+}
+
+TEST_F(ShuffleTest, OverlappingOutputViewsMakeOut2NoneAndDisjointOnesMerge)
+{
+    NodePtr shuffle = createShuffleOnReader(PLUGINID_NATRON_SHUFFLE, "flat-rgb-only.exr");
+
+    ASSERT_TRUE(bool(shuffle));
+    Shuffle* shuffleFx = shuffleEffect(shuffle);
+    KnobLayerSelectPtr out1 = layerKnob(shuffle, kShuffleParamOut1);
+    KnobLayerSelectPtr out2 = layerKnob(shuffle, kShuffleParamOut2);
+    ASSERT_TRUE(shuffleFx != NULL);
+    ASSERT_TRUE(bool(out1));
+    ASSERT_TRUE(bool(out2));
+
+    out1->setLayer(kNatronColorViewRGBA);
+    out2->setLayer(kNatronColorViewAlpha);
+    EXPECT_EQ(std::string(kNatronColorViewAlpha), out2->getLayer());
+    EXPECT_EQ(std::string(), shuffleFx->getOutputLayer(2));
+    EXPECT_EQ(std::bitset<4>(0xf), shuffleFx->getOutputColorBits());
+    EXPECT_EQ(1u, producedLayers(shuffle).size());
+    EXPECT_EQ(4, producedColorChannels(shuffle));
+
+    out1->setLayer(kNatronColorViewRGB);
+    EXPECT_EQ(std::string(kNatronColorViewAlpha), shuffleFx->getOutputLayer(2));
+    EXPECT_EQ(std::bitset<4>(0xf), shuffleFx->getOutputColorBits());
+    EXPECT_EQ(1u, producedLayers(shuffle).size());
+    EXPECT_EQ(4, producedColorChannels(shuffle));
+
+    out1->setLayer(kNatronColorViewXY);
+    EXPECT_EQ(std::string(kNatronColorViewAlpha), shuffleFx->getOutputLayer(2));
+    EXPECT_EQ(std::bitset<4>(0xb), shuffleFx->getOutputColorBits());
+
+    out2->setLayer(kNatronColorViewRGB);
+    EXPECT_EQ(std::string(), shuffleFx->getOutputLayer(2));
+}
+
+TEST_F(ShuffleTest, ImplicitSourcesBetweenColorViewsWireByChannelBit)
+{
+    NodePtr shuffle = createShuffleOnReader();
+
+    ASSERT_TRUE(bool(shuffle));
+    Shuffle* shuffleFx = shuffleEffect(shuffle);
+    KnobLayerSelectPtr in1 = layerKnob(shuffle, kShuffleParamIn1);
+    KnobLayerSelectPtr out1 = layerKnob(shuffle, kShuffleParamOut1);
+    ASSERT_TRUE(shuffleFx != NULL);
+    ASSERT_TRUE(bool(in1));
+    ASSERT_TRUE(bool(out1));
+    const double time = getApp()->getTimeLine()->currentFrame();
+
+    out1->setLayer(kNatronColorViewAlpha);
+    EXPECT_EQ(ShuffleSource::makeInput(1, 3), shuffleFx->getEffectiveSource(1, 0, time, ViewIdx(0)));
+
+    out1->setLayer(kNatronColorViewXY);
+    EXPECT_EQ(ShuffleSource::makeInput(1, 0), shuffleFx->getEffectiveSource(1, 0, time, ViewIdx(0)));
+    EXPECT_EQ(ShuffleSource::makeInput(1, 1), shuffleFx->getEffectiveSource(1, 1, time, ViewIdx(0)));
+
+    out1->setLayer(kNatronColorViewRGBA);
+    in1->setLayer(kNatronColorViewAlpha);
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_EQ(ShuffleSource::makeZero(), shuffleFx->getEffectiveSource(1, c, time, ViewIdx(0))) << c;
+    }
+    EXPECT_EQ(ShuffleSource::makeInput(1, 0), shuffleFx->getEffectiveSource(1, 3, time, ViewIdx(0)));
+
+    in1->setLayer(kNatronColorViewRGB);
+    EXPECT_EQ(ShuffleSource::makeInput(1, 2), shuffleFx->getEffectiveSource(1, 2, time, ViewIdx(0)));
+    EXPECT_EQ(ShuffleSource::makeZero(), shuffleFx->getEffectiveSource(1, 3, time, ViewIdx(0)));
+
+    std::string message;
+    EXPECT_TRUE(shuffle->checkSelectedChannelsPresent(time, ViewIdx(0), &message)) << message;
+}
+
+TEST_F(ShuffleTest, AColorChannelTheInputLacksReadsZeroWithoutFailing)
+{
+    NodePtr shuffle = createShuffleOnReader(PLUGINID_NATRON_SHUFFLE, "flat-rgb-only.exr");
+
+    ASSERT_TRUE(bool(shuffle));
+    Shuffle* shuffleFx = shuffleEffect(shuffle);
+    std::shared_ptr<KnobShuffleMap> mapping = mappingKnob(shuffle);
+    ASSERT_TRUE(shuffleFx != NULL);
+    ASSERT_TRUE(bool(mapping));
+    const double time = getApp()->getTimeLine()->currentFrame();
+
+    EXPECT_EQ(ShuffleSource::makeInput(1, 3), shuffleFx->getEffectiveSource(1, 3, time, ViewIdx(0)));
+    std::string message;
+    EXPECT_TRUE(shuffle->checkSelectedChannelsPresent(time, ViewIdx(0), &message)) << message;
+    // Passing the RGB input through would drop the A that reads 0.
+    EXPECT_FALSE(isIdentityOfMain(shuffle));
+
+    mapping->setSource(1, 0, ShuffleSource::makeInput(1, 3));
+    ASSERT_TRUE(mapping->hasExplicitSource(1, 0));
+    EXPECT_TRUE(shuffle->checkSelectedChannelsPresent(time, ViewIdx(0), &message)) << message;
+}
+
+TEST_F(ShuffleTest, AMissingNonColorLayerStillFailsNamingTheChannel)
+{
+    NodePtr shuffle = createShuffleOnReader(PLUGINID_NATRON_SHUFFLE, "flat-rgba-only.exr");
+
+    ASSERT_TRUE(bool(shuffle));
+    KnobLayerSelectPtr in1 = layerKnob(shuffle, kShuffleParamIn1);
+    ASSERT_TRUE(bool(in1));
+    const double time = getApp()->getTimeLine()->currentFrame();
+
+    in1->setLayer("diffuse");
+    std::string message;
+    EXPECT_FALSE(shuffle->checkSelectedChannelsPresent(time, ViewIdx(0), &message));
+    EXPECT_NE(std::string::npos, message.find("Channel diffuse.R is not in the Source input")) << message;
+    EXPECT_FALSE(isIdentityOfMain(shuffle));
 }

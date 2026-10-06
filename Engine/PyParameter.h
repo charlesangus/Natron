@@ -1235,12 +1235,12 @@ public:
 
 /**
  * @brief Every channel whose current source differs from the same channel's row in
- * mappingKnob's own default value (identity when neither has an explicit row), formatted as
- * ShuffleMapParam::connect()'s (dst, src) pairs, a channel the slot's current layer cannot
- * name written by index so no row is dropped. A default row the current value no longer
- * carries is reported with its identity source, so replaying these calls on a fresh node
- * reproduces the current value exactly. Used by the project/PyPlug exporter; not part of the
- * Python-facing API.
+ * mappingKnob's own default value (mappingKnob's implicitDefault() when neither has an
+ * explicit row), formatted as ShuffleMapParam::connect()'s (dst, src) pairs, a channel the
+ * slot's current layer cannot name written by index so no row is dropped. A default row the
+ * current value no longer carries is reported with its implicit source, so replaying these
+ * calls on a fresh node reproduces the current value exactly. Used by the project/PyPlug
+ * exporter; not part of the Python-facing API.
  **/
 std::map<std::string, std::string> getShuffleMapModifiedConnections(const KnobShuffleMapPtr& mappingKnob);
 

@@ -120,22 +120,234 @@ TEST(KnobChannelSet, TypeAndColumns)
     EXPECT_FALSE(asKnobI->canAnimate());
 }
 
-TEST(KnobChannelSet, DefaultRowIsColorAllChannels)
+TEST(KnobChannelSet, DefaultRowIsRgbaAllChannels)
 {
     KnobChannelSetPtr knob = makeKnob();
     std::vector<ChannelSetRow> rows = knob->getRows();
 
     ASSERT_EQ(1u, rows.size());
     EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
-    EXPECT_EQ(std::string(kNatronColorLayerID), rows[0].layerOrPattern);
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), rows[0].layerOrPattern);
     EXPECT_TRUE(rows[0].channels.empty());
+}
 
+TEST(KnobChannelSet, DefaultResolvesToTheFullColorPlane)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    std::vector<ResolvedLayer> resolved = knob->resolve(presentLayers());
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::string(kNatronColorLayerID), resolved[0].desc.getLayerID());
+    EXPECT_EQ(4, resolved[0].desc.getNumComponents());
+    EXPECT_EQ(std::bitset<4>(std::string("1111")), resolved[0].channels);
+    EXPECT_TRUE(resolved[0].zeroChannels.none());
+}
+
+TEST(KnobChannelSet, DefaultOverRGBStorageReportsAlphaAsReadingZero)
+{
+    KnobChannelSetPtr knob = makeKnob();
     std::list<ImageLayerDesc> present;
+
     present.push_back(ImageLayerDesc::getRGBComponents());
     std::vector<ResolvedLayer> resolved = knob->resolve(present);
     ASSERT_EQ(1u, resolved.size());
     EXPECT_EQ(std::string(kNatronColorLayerID), resolved[0].desc.getLayerID());
+    EXPECT_EQ(3, resolved[0].desc.getNumComponents());
+    EXPECT_EQ(std::bitset<4>(std::string("1111")), resolved[0].channels);
+    EXPECT_EQ(std::bitset<4>(std::string("1000")), resolved[0].zeroChannels);
+}
+
+TEST(KnobChannelSet, LegacyColorDefaultRowsNameTheStorageID)
+{
+    std::vector<ChannelSetRow> rows = KnobChannelSet::legacyColorDefaultRows();
+
+    ASSERT_EQ(1u, rows.size());
+    EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
+    EXPECT_EQ(std::string(kNatronColorLayerID), rows[0].layerOrPattern);
+    EXPECT_TRUE(rows[0].channels.empty());
+}
+
+TEST(KnobChannelSet, RgbViewResolvesToBitsZeroToTwoAndAlphaToBitThree)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setLayer(0, kNatronColorViewRGB, 0);
+    std::vector<ResolvedLayer> resolved = knob->resolve(presentLayers());
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::string(kNatronColorLayerID), resolved[0].desc.getLayerID());
     EXPECT_EQ(std::bitset<4>(std::string("0111")), resolved[0].channels);
+    EXPECT_TRUE(resolved[0].zeroChannels.none());
+
+    knob->setLayer(0, kNatronColorViewAlpha, 0);
+    resolved = knob->resolve(presentLayers());
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::string(kNatronColorLayerID), resolved[0].desc.getLayerID());
+    EXPECT_EQ(std::bitset<4>(std::string("1000")), resolved[0].channels);
+    EXPECT_TRUE(resolved[0].zeroChannels.none());
+}
+
+TEST(KnobChannelSet, RgbAndAlphaRowsResolveToOneColorEntry)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setLayer(0, kNatronColorViewRGB, 0);
+    knob->addLayer(kNatronColorViewAlpha, 0);
+    knob->addLayer("depth", 0);
+
+    std::vector<ResolvedLayer> resolved = knob->resolve(presentLayers());
+    ASSERT_EQ(2u, resolved.size());
+    EXPECT_EQ(std::string(kNatronColorLayerID), resolved[0].desc.getLayerID());
+    EXPECT_EQ(std::bitset<4>(std::string("1111")), resolved[0].channels);
+    EXPECT_EQ(std::string("depth"), resolved[1].desc.getLayerID());
+}
+
+TEST(KnobChannelSet, StorageIDRowResolvesToNothing)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setLayer(0, kNatronColorLayerID, 0);
+    EXPECT_TRUE(knob->resolve(presentLayers()).empty());
+
+    std::vector<std::string> red = channels("R");
+    knob->setLayer(0, kNatronColorLayerID, &red);
+    EXPECT_TRUE(knob->resolve(presentLayers()).empty());
+}
+
+TEST(KnobChannelSet, ViewRowWithoutColorStorageResolvesToNothing)
+{
+    KnobChannelSetPtr knob = makeKnob();
+    std::list<ImageLayerDesc> present;
+
+    present.push_back(makeLayer("depth", channels("Z")));
+    EXPECT_TRUE(knob->resolve(present).empty());
+}
+
+TEST(KnobChannelSet, ExplicitViewOverMissingChannelsReportsZeroBits)
+{
+    KnobChannelSetPtr knob = makeKnob();
+    std::list<ImageLayerDesc> rgb;
+    std::list<ImageLayerDesc> alpha;
+
+    rgb.push_back(ImageLayerDesc::getRGBComponents());
+    alpha.push_back(ImageLayerDesc::getAlphaComponents());
+
+    knob->setLayer(0, kNatronColorViewAlpha, 0);
+    std::vector<ResolvedLayer> resolved = knob->resolve(rgb);
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::bitset<4>(std::string("1000")), resolved[0].channels);
+    EXPECT_EQ(std::bitset<4>(std::string("1000")), resolved[0].zeroChannels);
+
+    knob->setLayer(0, kNatronColorViewRGB, 0);
+    resolved = knob->resolve(alpha);
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(1, resolved[0].desc.getNumComponents());
+    EXPECT_EQ(std::bitset<4>(std::string("0111")), resolved[0].channels);
+    EXPECT_EQ(std::bitset<4>(std::string("0111")), resolved[0].zeroChannels);
+    EXPECT_FALSE(resolved[0].isChannelSelected(0));
+
+    std::vector<std::string> rg = channels("R", "G");
+    knob->setLayer(0, kNatronColorViewRGBA, &rg);
+    resolved = knob->resolve(rgb);
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::bitset<4>(std::string("0011")), resolved[0].channels);
+    EXPECT_TRUE(resolved[0].zeroChannels.none());
+}
+
+TEST(KnobChannelSet, XYViewAliasesTheFirstTwoColorBits)
+{
+    KnobChannelSetPtr knob = makeKnob();
+    std::list<ImageLayerDesc> xy;
+
+    xy.push_back(ImageLayerDesc::getXYComponents());
+
+    knob->setLayer(0, kNatronColorViewXY, 0);
+    std::vector<ResolvedLayer> resolved = knob->resolve(xy);
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::string(kNatronColorLayerID), resolved[0].desc.getLayerID());
+    EXPECT_EQ(std::bitset<4>(std::string("0011")), resolved[0].channels);
+    EXPECT_TRUE(resolved[0].zeroChannels.none());
+
+    resolved = knob->resolve(presentLayers());
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::bitset<4>(std::string("0011")), resolved[0].channels);
+}
+
+TEST(KnobChannelSet, RegexMatchingSeveralViewsYieldsOneColorEntry)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    // Patterns are anchored to the whole label, so "rgb.*" is the form that matches both
+    // rgba and rgb.
+    knob->setRegex(0, "rgb.*");
+    std::vector<ResolvedLayer> resolved = knob->resolve(presentLayers());
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::string(kNatronColorLayerID), resolved[0].desc.getLayerID());
+    EXPECT_EQ(std::bitset<4>(std::string("1111")), resolved[0].channels);
+    EXPECT_EQ(std::string("rgba"), knob->getSummary(presentLayers()));
+
+    knob->setRegex(0, "rgb");
+    resolved = knob->resolve(presentLayers());
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::bitset<4>(std::string("0111")), resolved[0].channels);
+    EXPECT_EQ(std::string("rgb"), knob->getSummary(presentLayers()));
+
+    knob->setRegex(0, "rgb|alpha");
+    resolved = knob->resolve(presentLayers());
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::bitset<4>(std::string("1111")), resolved[0].channels);
+    EXPECT_EQ(std::string("rgb"), knob->getSummary(presentLayers()));
+}
+
+TEST(KnobChannelSet, RegexMatchesViewLabelsNotTheStorageLabel)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setRegex(0, "Color");
+    EXPECT_TRUE(knob->resolve(presentLayers()).empty());
+    EXPECT_EQ(std::string("(no match)"), knob->getSummary(presentLayers()));
+
+    knob->setRegex(0, ".*");
+    std::vector<ResolvedLayer> resolved = knob->resolve(presentLayers());
+    ASSERT_EQ(5u, resolved.size());
+    EXPECT_EQ(std::string(kNatronColorLayerID), resolved[0].desc.getLayerID());
+    EXPECT_EQ(std::bitset<4>(std::string("1111")), resolved[0].channels);
+    EXPECT_EQ(std::string("rgba, diffuse, motion, depth, specular"), knob->getSummary(presentLayers()));
+}
+
+TEST(KnobChannelSet, RegexExcludedChannelsApplyToColorViews)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setRegex(0, "rgba");
+    knob->setExcludedChannels(0, channels("G"));
+
+    std::vector<ResolvedLayer> resolved = knob->resolve(presentLayers());
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::bitset<4>(std::string("1101")), resolved[0].channels);
+    EXPECT_EQ(std::string("rgba.rba"), knob->getSummary(presentLayers()));
+}
+
+TEST(KnobChannelSet, AllAndRegexNeverWidenColor)
+{
+    KnobChannelSetPtr knob = makeKnob();
+    std::list<ImageLayerDesc> rgb;
+
+    rgb.push_back(ImageLayerDesc::getRGBComponents());
+
+    knob->setAll();
+    std::vector<ResolvedLayer> resolved = knob->resolve(rgb);
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::bitset<4>(std::string("0111")), resolved[0].channels);
+    EXPECT_TRUE(resolved[0].zeroChannels.none());
+
+    knob->setRegex(0, "rgba");
+    resolved = knob->resolve(rgb);
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::bitset<4>(std::string("0111")), resolved[0].channels);
+    EXPECT_TRUE(resolved[0].zeroChannels.none());
+
+    knob->setRegex(0, "alpha");
+    EXPECT_TRUE(knob->resolve(rgb).empty());
 }
 
 TEST(KnobChannelSet, NoneResolvesToNothing)
@@ -181,7 +393,7 @@ TEST(KnobChannelSet, LayerRowIntersectsPresentChannels)
     KnobChannelSetPtr knob = makeKnob();
     std::vector<std::string> wanted = channels("R", "G", "Q");
 
-    knob->setLayer(0, kNatronColorLayerID, &wanted);
+    knob->setLayer(0, kNatronColorViewRGBA, &wanted);
 
     std::vector<ResolvedLayer> resolved = knob->resolve(presentLayers());
     ASSERT_EQ(1u, resolved.size());
@@ -194,7 +406,7 @@ TEST(KnobChannelSet, EmptyChannelListAfterSetChannelsContributesNothing)
     KnobChannelSetPtr knob = makeKnob();
     std::vector<std::string> wanted = channels("R");
 
-    knob->setLayer(0, kNatronColorLayerID, &wanted);
+    knob->setLayer(0, kNatronColorViewRGBA, &wanted);
     ASSERT_EQ(1u, knob->resolve(presentLayers()).size());
 
     std::vector<std::string> none;
@@ -213,7 +425,7 @@ TEST(KnobChannelSet, SetChannelsOnAllRowZeroFallsBackToColor)
     std::vector<ChannelSetRow> rows = knob->getRows();
     ASSERT_EQ(1u, rows.size());
     EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
-    EXPECT_EQ(std::string(kNatronColorLayerID), rows[0].layerOrPattern);
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), rows[0].layerOrPattern);
     EXPECT_EQ(channels("R", "G", "B", "A"), rows[0].channels);
 }
 
@@ -227,7 +439,7 @@ TEST(KnobChannelSet, SetChannelsOnNoneRowZeroFallsBackToColor)
     std::vector<ChannelSetRow> rows = knob->getRows();
     ASSERT_EQ(1u, rows.size());
     EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
-    EXPECT_EQ(std::string(kNatronColorLayerID), rows[0].layerOrPattern);
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), rows[0].layerOrPattern);
     EXPECT_EQ(channels("A"), rows[0].channels);
 }
 
@@ -407,7 +619,7 @@ TEST(KnobChannelSet, ColorIsSortedFirst)
 
     knob->setLayer(0, "diffuse", 0);
     knob->addLayer("depth", 0);
-    knob->addLayer(kNatronColorLayerID, 0);
+    knob->addLayer(kNatronColorViewRGBA, 0);
 
     std::vector<ResolvedLayer> resolved = knob->resolve(presentLayers());
     ASSERT_EQ(3u, resolved.size());
@@ -519,7 +731,7 @@ TEST(KnobChannelSet, InvariantsThrow)
     EXPECT_THROW(knob->setRows(std::vector<ChannelSetRow>()), std::invalid_argument);
 
     ASSERT_EQ(1u, knob->getRows().size());
-    EXPECT_EQ(std::string(kNatronColorLayerID), knob->getRows()[0].layerOrPattern);
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), knob->getRows()[0].layerOrPattern);
 
     knob->addRegex("spec.*");
     EXPECT_THROW(knob->setChannels(1, channels("R")), std::invalid_argument);
@@ -531,22 +743,26 @@ TEST(KnobChannelSet, SummarySamples)
 {
     KnobChannelSetPtr knob = makeKnob();
 
-    EXPECT_EQ(std::string("Color"), knob->getSummary());
+    EXPECT_EQ(std::string("rgba"), knob->getSummary());
 
     std::vector<std::string> rgb = channels("R", "G", "B");
-    knob->setLayer(0, kNatronColorLayerID, &rgb);
-    EXPECT_EQ(std::string("Color.rgb"), knob->getSummary());
+    knob->setLayer(0, kNatronColorViewRGBA, &rgb);
+    EXPECT_EQ(std::string("rgba.rgb"), knob->getSummary());
 
     std::vector<std::string> z = channels("Z");
     knob->addLayer("depth", &z);
     knob->addRegex("spec.*");
     knob->addLayer("diffuse", 0);
-    EXPECT_EQ(std::string("Color.rgb, depth.z, /spec.*/, diffuse"), knob->getSummary());
+    EXPECT_EQ(std::string("rgba.rgb, depth.z, /spec.*/, diffuse"), knob->getSummary());
+
+    knob->addLayer(kNatronColorViewAlpha, 0);
+    EXPECT_EQ(std::string("rgba.rgb, depth.z, /spec.*/, diffuse, alpha"), knob->getSummary());
 
     std::set<std::string> ids;
     knob->getReferencedLayerIDs(&ids);
-    ASSERT_EQ(3u, ids.size());
-    EXPECT_EQ(1u, ids.count(kNatronColorLayerID));
+    ASSERT_EQ(4u, ids.size());
+    EXPECT_EQ(1u, ids.count(kNatronColorViewRGBA));
+    EXPECT_EQ(1u, ids.count(kNatronColorViewAlpha));
     EXPECT_EQ(1u, ids.count("depth"));
     EXPECT_EQ(1u, ids.count("diffuse"));
 }
@@ -562,15 +778,15 @@ TEST(KnobChannelSet, SummaryWithPresentLayersNamesRegexMatchesInsteadOfPattern)
     present.push_back(makeLayer("diffuse", channels("R", "G", "B")));
     present.push_back(makeLayer("specular", channels("R", "G", "B")));
 
-    EXPECT_EQ(std::string("Color, specular"), knob->getSummary(present));
+    EXPECT_EQ(std::string("rgba, specular"), knob->getSummary(present));
 
     knob->setExcludedChannels(1, channels("G"));
-    EXPECT_EQ(std::string("Color, specular.rb"), knob->getSummary(present));
+    EXPECT_EQ(std::string("rgba, specular.rb"), knob->getSummary(present));
 
     knob->setRegex(1, "nomatch.*");
-    EXPECT_EQ(std::string("Color, (no match)"), knob->getSummary(present));
+    EXPECT_EQ(std::string("rgba, (no match)"), knob->getSummary(present));
 
-    EXPECT_EQ(std::string("Color, /nomatch.*/"), knob->getSummary());
+    EXPECT_EQ(std::string("rgba, /nomatch.*/"), knob->getSummary());
 }
 
 TEST(KnobChannelSet, CacheFollowsRawValueChanges)
@@ -600,7 +816,7 @@ TEST_F(BaseTest, KnobChannelSetSerializationRoundTrip)
     ASSERT_TRUE(bool(source));
 
     std::vector<std::string> rg = channels("R", "G");
-    source->setLayer(0, kNatronColorLayerID, &rg);
+    source->setLayer(0, kNatronColorViewRGBA, &rg);
     source->addRegex("spec.*");
     source->addLayer("depth", 0);
     const std::vector<ChannelSetRow> expected = source->getRows();

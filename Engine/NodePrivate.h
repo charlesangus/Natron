@@ -239,6 +239,7 @@ public:
         , persistentMessageType(0)
         , persistentMessageMutex()
         , persistentMessageFromChannelSelector(false)
+        , persistentMessageFromProjectLoad(false)
         , persistentMessageRenderSequence(0)
         , channelSelectorResolvedSequence(0)
         , dataKindConflictMessage()
@@ -259,7 +260,6 @@ public:
         , duringPaintStrokeCreation(false)
         , lastStrokeMovementMutex()
         , strokeBitmapCleared(false)
-        , useAlpha0ToConvertFromRGBToRGBA(false)
         , isBeingDestroyedMutex()
         , isBeingDestroyed(false)
         , inputModifiedRecursion(0)
@@ -270,6 +270,7 @@ public:
         , requiresGLFinishBeforeRender(false)
         , pluginOwnsChannelMask(false)
         , legacyChannelSetDefault()
+        , legacyColorLayerWarningPending(false)
         , effectiveDataKindMutex()
         , effectiveDataKindCacheSet(false)
         , effectiveDataKindCache(eDataKindPolymorphic)
@@ -458,6 +459,10 @@ public:
     // persistentMessageMutex.
     bool persistentMessageFromChannelSelector;
 
+    // Whether persistentMessage is a warning about how the project loaded. No render can make
+    // it untrue, so render-driven clears keep it. Guarded by persistentMessageMutex.
+    bool persistentMessageFromProjectLoad;
+
     // The AbortableRenderInfo sequence number of the render that posted the channel-selector
     // message, 0 when it was posted outside a render. Guarded by persistentMessageMutex.
     U64 persistentMessageRenderSequence;
@@ -489,11 +494,6 @@ public:
     mutable QMutex lastStrokeMovementMutex;
     bool strokeBitmapCleared;
 
-
-    //This flag is used for the Roto plug-in and for the Merge inside the rotopaint tree
-    //so that if the input of the roto node is RGB, it gets converted with alpha = 0, otherwise the user
-    //won't be able to paint the alpha channel
-    bool useAlpha0ToConvertFromRGBToRGBA;
     mutable QMutex isBeingDestroyedMutex;
     bool isBeingDestroyed;
     NodeRenderWatcherPtr renderWatcher;
@@ -525,6 +525,8 @@ public:
     // "All". A project saved back then stored no value for an untouched knob, so loading it
     // must restore this instead of today's default.
     std::string legacyChannelSetDefault;
+
+    bool legacyColorLayerWarningPending;
 
     // Cache for Node::getEffectiveOutputDataKind(): only ever populated for nodes whose
     // declared output kind is eDataKindPolymorphic, since a non-polymorphic node's kind is a

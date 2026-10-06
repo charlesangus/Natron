@@ -1454,7 +1454,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                     break;
                 }
             }
-            assert(alphaChannelIndex != -1);
+            // alphaChannelIndex stays -1 when the colour views name an A the stream lacks (an
+            // RGB-only plane): that alpha reads as zero, so the A display below renders black.
         }
         if (inArgs.channels == eDisplayChannelsMatte) {
             //For the matte overlay also display the alpha mask on top of the red channel of the image

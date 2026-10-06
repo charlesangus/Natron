@@ -218,7 +218,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        param.setLayer("rgba")
         del param
 
     param = lastNode.getParam("translate")
@@ -340,7 +340,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        param.setLayer("rgba")
         del param
 
     del lastNode

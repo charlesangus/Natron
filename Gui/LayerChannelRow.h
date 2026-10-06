@@ -121,6 +121,14 @@ public:
 
     bool getAllowNone() const;
 
+    /**
+     * @brief Layer-select mode only: whether the combo offers an "All" entry, after None and
+     * before the layers. Choosing it emits layerChosen(kNatronLayerSelectAll).
+     **/
+    void setAllowAll(bool allowAll);
+
+    bool getAllowAll() const;
+
     /// Channel-select mode only: "layer.channel", or empty for None.
     void setChannelSelectValue(const std::string& layerDotChannel);
 
@@ -218,6 +226,7 @@ private:
     std::set<std::string> _regexExcludedChannels;
     bool _withChannelButtons;
     bool _allowNone;
+    bool _allowAll;
     QString _absentMarker;
     bool _removable;
     bool _patternValid;

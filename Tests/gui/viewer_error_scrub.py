@@ -2,8 +2,8 @@
 other, however fast the timeline moves, with every settings panel closed.
 
 Graph: Read(flat-three-layers.exr) and Read(flat-rgba-only.exr) -> Switch (which keyed 0@1,
-1@2) -> Shuffle (diffuse.g into Color.r) -> Viewer. diffuse reaches the Shuffle at frame 1
-only, so it fails at frame 2. Runs once with the Switch's channels on Color and once on All.
+1@2) -> Shuffle (diffuse.g into rgba.r) -> Viewer. diffuse reaches the Shuffle at frame 1
+only, so it fails at frame 2. Runs once with the Switch's channels on rgba and once on All.
 
 After every seek it polls, with a timeout, both the ViewerGL widget's
 "natronPersistentMessages" property, Effect.getPersistentMessage() and the colour on screen at
@@ -127,11 +127,11 @@ try:
         close_all_panels()
         check(not any_panel_open(), "every settings panel is closed")
 
-        for mode in ("Color", "All"):
+        for mode in ("rgba", "All"):
             if mode == "All":
                 channels.setAll()
             else:
-                channels.setLayer("uk.co.thefoundry.OfxImagePlaneColour")
+                channels.setLayer("rgba")
             close_all_panels()
             yield ("sleep", 500)
 

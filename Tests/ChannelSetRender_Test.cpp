@@ -268,7 +268,7 @@ TEST_F(ChannelSetRenderTest, GradeColorRSingleChannelTouchesOnlyR)
     multiply->setValues(0.5, 0.5, 0.5, 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
     std::vector<std::string> r;
     r.push_back("R");
-    channels->setLayer(0, kNatronColorLayerID, &r);
+    channels->setLayer(0, kNatronColorViewRGBA, &r);
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -302,6 +302,100 @@ TEST_F(ChannelSetRenderTest, GradeSpecularRowLeavesColorAndDiffuseUntouched)
     expectColor(image, 1.f, 0.f, 0.f, 1.f);
     expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
     expectPlane(image, "specular.", 0.f, 0.f, 0.5f);
+}
+
+TEST_F(ChannelSetRenderTest, GradeDefaultRowNamesTheRgbaView)
+{
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    ASSERT_TRUE(bool(grade));
+    ASSERT_TRUE(bool(channels));
+
+    std::vector<ChannelSetRow> rows = channels->getRows();
+    ASSERT_EQ(1u, rows.size());
+    EXPECT_EQ(ChannelSetRow::eModeLayer, rows[0].mode);
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), rows[0].layerOrPattern);
+    std::vector<std::string> rgb;
+    rgb.push_back("R");
+    rgb.push_back("G");
+    rgb.push_back("B");
+    EXPECT_EQ(rgb, rows[0].channels);
+}
+
+// flat-three-layers.exr's Color is (1, 0, 0, 1); multiply 0.5 on all four channels shows which
+// of them the view let through.
+TEST_F(ChannelSetRenderTest, GradeOnRgbViewLeavesAlphaUntouched)
+{
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    ASSERT_TRUE(bool(grade));
+    ASSERT_TRUE(bool(channels));
+
+    KnobColor* multiply = dynamic_cast<KnobColor*>(grade->getKnobByName("multiply").get());
+    ASSERT_TRUE(multiply != NULL);
+    multiply->setValues(0.5, 0.5, 0.5, 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    channels->setLayer(0, kNatronColorViewRGB, NULL);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(grade, tmp, &image, &error)) << error;
+
+    expectColor(image, 0.5f, 0.f, 0.f, 1.f);
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
+TEST_F(ChannelSetRenderTest, GradeOnAlphaViewGradesOnlyAlpha)
+{
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    ASSERT_TRUE(bool(grade));
+    ASSERT_TRUE(bool(channels));
+
+    KnobColor* multiply = dynamic_cast<KnobColor*>(grade->getKnobByName("multiply").get());
+    ASSERT_TRUE(multiply != NULL);
+    multiply->setValues(0.5, 0.5, 0.5, 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    channels->setLayer(0, kNatronColorViewAlpha, NULL);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(grade, tmp, &image, &error)) << error;
+
+    expectColor(image, 1.f, 0.f, 0.f, 0.5f);
+    expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
+    expectPlane(image, "specular.", 0.f, 0.f, 1.f);
+}
+
+// flat-rgb-only.exr's Color is (1, 0, 0) with no alpha. Naming the rgba view explicitly writes
+// A, which the input lacks, so the output widens to RGBA and A is graded from zero: offset 0.25
+// on a zero alpha gives 0.25, which a missing channel (NaN) or an alpha filled with 1 would not.
+TEST_F(ChannelSetRenderTest, GradeOnRgbaOverAnRGBInputOutputsRGBA)
+{
+    KnobChannelSetPtr channels;
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels, "flat-rgb-only.exr");
+    ASSERT_TRUE(bool(grade));
+    ASSERT_TRUE(bool(channels));
+
+    KnobColor* multiply = dynamic_cast<KnobColor*>(grade->getKnobByName("multiply").get());
+    ASSERT_TRUE(multiply != NULL);
+    multiply->setValues(0.5, 0.5, 0.5, 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    KnobColor* offset = dynamic_cast<KnobColor*>(grade->getKnobByName("offset").get());
+    ASSERT_TRUE(offset != NULL);
+    offset->setValues(0., 0., 0., 0.25, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+    channels->setLayer(0, kNatronColorViewRGBA, NULL);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    FlatExrImage image;
+    std::string error;
+    ASSERT_TRUE(renderAllLayers(grade, tmp, &image, &error)) << error;
+
+    ASSERT_GE(image.channelIndex("A"), 0) << "the output kept the input's RGB layout";
+    expectColor(image, 0.5f, 0.f, 0.f, 0.25f);
 }
 
 // Constant(0.25, 0.25, 0.25, 1) -> Grade(multiply 2 on R/G/B) with the Grade's Disable keyed
@@ -441,7 +535,7 @@ TEST_F(ChannelSetRenderUnPremultByTest, GainIsUnPremultipliedByTheSelectedChanne
     KnobChannelSelectPtr unPremultBy;
     NodePtr grade = createConstantIntoGrade(&unPremultBy);
     ASSERT_TRUE(bool(grade));
-    unPremultBy->set(ImageLayerDesc::getRGBAComponents().getChannelOption(3).id);
+    unPremultBy->set(ImageLayerDesc::getColorView(kNatronColorViewRGBA).getChannelOption(3).id);
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -690,7 +784,7 @@ TEST_F(ChannelSetRenderTest, InvertColorRSingleChannelTouchesOnlyR)
 
     std::vector<std::string> r;
     r.push_back("R");
-    channels->setLayer(0, kNatronColorLayerID, &r);
+    channels->setLayer(0, kNatronColorViewRGBA, &r);
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -781,7 +875,7 @@ TEST_F(ChannelSetRenderTest, ColorCorrectColorRSingleChannelTouchesOnlyR)
     masterGain->setValues(0.5, 0.5, 0.5, 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
     std::vector<std::string> r;
     r.push_back("R");
-    channels->setLayer(0, kNatronColorLayerID, &r);
+    channels->setLayer(0, kNatronColorViewRGBA, &r);
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -875,7 +969,7 @@ TEST_F(ChannelSetRenderTest, MultiplyColorRSingleChannelTouchesOnlyR)
     value->setValues(0.5, 0.5, 0.5, 0.5, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
     std::vector<std::string> r;
     r.push_back("R");
-    channels->setLayer(0, kNatronColorLayerID, &r);
+    channels->setLayer(0, kNatronColorViewRGBA, &r);
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -973,7 +1067,7 @@ TEST_F(ChannelSetRenderTest, SaturationColorRSingleChannelTouchesOnlyR)
     saturation->setValue(0.);
     std::vector<std::string> r;
     r.push_back("R");
-    channels->setLayer(0, kNatronColorLayerID, &r);
+    channels->setLayer(0, kNatronColorViewRGBA, &r);
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -1088,7 +1182,7 @@ TEST_F(ChannelSetRenderBlurTest, CImgBlurColorRSingleChannelTouchesOnlyR)
 
     std::vector<std::string> r;
     r.push_back("R");
-    channels->setLayer(0, kNatronColorLayerID, &r);
+    channels->setLayer(0, kNatronColorViewRGBA, &r);
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -1285,7 +1379,7 @@ TEST_F(ChannelSetRenderTest, KeyMixRChannelFromAAndGBAlphaFromBIgnoringTheMeanin
     maskEnabled->setValue(true);
     KnobChannelSelect* maskChannel = dynamic_cast<KnobChannelSelect*>(keyMix->getKnobByName("maskChannel_Mask").get());
     ASSERT_TRUE(maskChannel != NULL);
-    maskChannel->set(ImageLayerDesc::getRGBAComponents().getChannelOption(3).id);
+    maskChannel->set(ImageLayerDesc::getColorView(kNatronColorViewRGBA).getChannelOption(3).id);
 
     KnobBool* processR = dynamic_cast<KnobBool*>(keyMix->getKnobByName(kNatronOfxParamProcessR).get());
     KnobBool* processG = dynamic_cast<KnobBool*>(keyMix->getKnobByName(kNatronOfxParamProcessG).get());
@@ -1307,7 +1401,7 @@ TEST_F(ChannelSetRenderTest, KeyMixRChannelFromAAndGBAlphaFromBIgnoringTheMeanin
     gba.push_back("G");
     gba.push_back("B");
     gba.push_back("A");
-    channels->setLayer(0, kNatronColorLayerID, &gba);
+    channels->setLayer(0, kNatronColorViewRGBA, &gba);
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());

@@ -86,6 +86,15 @@ public:
 
     int getNComps(int inputNb) const;
 
+    /**
+     * @brief The colour channel count the output advertises downstream when it differs from the
+     * output clip's getNComps(-1), e.g. an Alpha stream a plug-in without an Alpha clip renders
+     * as RGBA. 0 means the output stores what its clip holds.
+     **/
+    void setOutputStorageNComps(int nComps);
+
+    int getOutputStorageNComps() const;
+
     void setComponentsType(int inputNb,const std::string& componentsType);
 
     std::string getComponentsType(int inputNb) const;

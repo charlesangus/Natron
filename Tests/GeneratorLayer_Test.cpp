@@ -366,7 +366,7 @@ TEST_F(GeneratorLayerTest, ConstantOverSourceWritesTwoChannelsOfColor)
     connectNodes(reader, constant, 0, true);
     setColor(constant, "color", kConstantR, kConstantG, kConstantB, kConstantA);
 
-    EXPECT_EQ(std::string(kNatronColorLayerID), layer->getLayer());
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), layer->getLayer());
     std::vector<std::string> rg;
     rg.push_back("R");
     rg.push_back("G");
@@ -407,8 +407,8 @@ TEST_F(GeneratorLayerTest, ConstantOutputComponentsIsLockedToRGBA)
     KnobChoice* outputComponents = dynamic_cast<KnobChoice*>(constant->getKnobByName("outputComponents").get());
     ASSERT_TRUE(outputComponents);
 
-    // Default target is Color with every channel selected.
-    EXPECT_EQ(std::string(kNatronColorLayerID), layer->getLayer());
+    // Default target is the rgba view with every channel selected.
+    EXPECT_EQ(std::string(kNatronColorViewRGBA), layer->getLayer());
     EXPECT_TRUE(outputComponents->getIsSecret());
     EXPECT_TRUE(outputComponents->isSecretLocked());
     EXPECT_FALSE(outputComponents->getIsPersistent());

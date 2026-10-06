@@ -32,6 +32,9 @@
 
 #include <QtCore/QMutexLocker>
 
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/Nodes/Channel/Shuffle.h"
+
 NATRON_NAMESPACE_ENTER
 
 const std::string KnobShuffleMap::_typeNameStr("ShuffleMap");
@@ -290,13 +293,32 @@ KnobShuffleMap::hasExplicitSource(int outSlot,
     return false;
 }
 
+ShuffleSource
+KnobShuffleMap::implicitDefault(int outSlot,
+                                int outIndex) const
+{
+    const Shuffle* shuffle = dynamic_cast<const Shuffle*>(getHolder());
+
+    if (shuffle) {
+        const std::string outLayer = shuffle->getOutputLayer(outSlot);
+        const std::string slotLayer = shuffle->getSlotLayer(outSlot);
+        if (ImageLayerDesc::isColorViewID(outLayer) && ImageLayerDesc::isColorViewID(slotLayer)) {
+            const int slotIndex = ImageLayerDesc::colorViewChannelIndex(slotLayer, ImageLayerDesc::colorViewChannelBit(outLayer, outIndex));
+
+            return (slotIndex < 0) ? ShuffleSource::makeZero() : ShuffleSource::makeInput(outSlot, slotIndex);
+        }
+    }
+
+    return defaultSource(outSlot, outIndex);
+}
+
 void
 KnobShuffleMap::setSource(int outSlot,
                           int outIndex,
                           const ShuffleSource& src)
 {
     std::vector<ShuffleMapRow> rows = getRows();
-    const bool isDefault = (src == defaultSource(outSlot, outIndex));
+    const bool isDefault = (src == implicitDefault(outSlot, outIndex));
     bool found = false;
 
     for (std::size_t i = 0; i < rows.size(); ++i) {

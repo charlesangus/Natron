@@ -74,6 +74,14 @@ appendUnique(const ImageLayerDesc& layer,
     }
 }
 
+// Mirrors ResolvedLayer::channelBit: a single-channel colour plane or view is alpha, on bit 3.
+int
+colorBitOfIndex(int nComps,
+                int index)
+{
+    return (nComps == 1) ? 3 : index;
+}
+
 void
 configureLayerSelect(const KnobLayerSelectPtr& knob,
                      const std::string& name,
@@ -166,7 +174,8 @@ Shuffle::initializeKnobs()
 
     KnobLayerSelectPtr out2 = createKnob<KnobLayerSelect>(tr("Out 2"));
     configureLayerSelect(out2, kShuffleParamOut2, true, true);
-    out2->setHintToolTip(tr("The second layer this node writes, or None. The same layer as Out 1 counts as None."));
+    out2->setHintToolTip(tr("The second layer this node writes, or None. The same layer as Out 1, or a colour layer "
+                            "sharing a channel with Out 1's (alpha with rgba), counts as None; rgb and alpha merge."));
     page->addKnob(out2);
     _out2 = out2;
 
@@ -179,8 +188,10 @@ Shuffle::initializeKnobs()
     mapping->setAnimationEnabled(false);
     mapping->setHintToolTip(tr("The source of every output channel: a slot channel, 0 or 1. An output channel with "
                                "no source reads the same channel of its own slot, or 0 when that slot is None. "
-                               "Reading a layer or channel the input does not have is an error: set that output "
-                               "channel to 0 or 1 instead."));
+                               "Between rgba, rgb, alpha and xy the same channel means the same colour channel "
+                               "(alpha reads rgba's A), and a colour channel the input does not have reads 0. "
+                               "Reading any other layer or channel the input does not have is an error: set that "
+                               "output channel to 0 or 1 instead."));
     if (copy) {
         std::vector<ShuffleMapRow> rows;
         for (int c = 0; c < 3; ++c) {
@@ -263,8 +274,34 @@ Shuffle::getOutputLayer(int slot) const
     if (out2Layer.empty() || out2Layer == out1Layer) {
         return std::string();
     }
+    // Both views write the one colour plane, so a shared bit would have two sources.
+    if (ImageLayerDesc::isColorViewID(out1Layer) && ImageLayerDesc::isColorViewID(out2Layer) && (ImageLayerDesc::colorViewMask(out1Layer) & ImageLayerDesc::colorViewMask(out2Layer)).any()) {
+        return std::string();
+    }
 
     return out2Layer;
+}
+
+std::bitset<4>
+Shuffle::getOutputColorBits() const
+{
+    std::bitset<4> bits;
+
+    for (int slot = 1; slot <= 2; ++slot) {
+        const std::string layerID = getOutputLayer(slot);
+        if (ImageLayerDesc::isColorViewID(layerID)) {
+            bits |= ImageLayerDesc::colorViewMask(layerID);
+        }
+    }
+
+    return bits;
+}
+
+void
+Shuffle::getColorWriteBits(const ImageLayerDesc& /*storage*/,
+                           std::bitset<4>* bits) const
+{
+    *bits = getOutputColorBits();
 }
 
 int
@@ -275,6 +312,9 @@ Shuffle::layerChannelCount(const std::string& layerID,
 {
     if (layerID.empty()) {
         return 0;
+    }
+    if (ImageLayerDesc::isColorViewID(layerID)) {
+        return ImageLayerDesc::getColorView(layerID).getNumComponents();
     }
     if (ImageLayerDesc::isColorLayer(layerID)) {
         return 4;
@@ -309,12 +349,23 @@ Shuffle::getEffectiveSource(int outSlot,
         return mapping->getSource(outSlot, outIndex);
     }
 
-    // Only a None slot reads 0. A channel the slot's layer lacks stays wired so that
-    // checkExtraChannelsPresent() fails the render on it instead of silently writing 0.
-    if (getSlotLayer(outSlot).empty()) {
+    const std::string slotLayer = getSlotLayer(outSlot);
+    if (slotLayer.empty()) {
         return ShuffleSource::makeZero();
     }
 
+    // Colour views alias one plane by bit, so wiring by bit is what lets alpha read rgba's A
+    // and xy's X read rgba's R.
+    const std::string outLayer = getOutputLayer(outSlot);
+    if (ImageLayerDesc::isColorViewID(outLayer) && ImageLayerDesc::isColorViewID(slotLayer)) {
+        const int bit = ImageLayerDesc::colorViewChannelBit(outLayer, outIndex);
+        const int slotIndex = (bit < 0) ? -1 : ImageLayerDesc::colorViewChannelIndex(slotLayer, bit);
+
+        return (slotIndex < 0) ? ShuffleSource::makeZero() : ShuffleSource::makeInput(outSlot, slotIndex);
+    }
+
+    // A channel a non-colour slot's layer lacks stays wired so that checkExtraChannelsPresent()
+    // fails the render on it instead of silently writing 0.
     return ShuffleSource::makeInput(outSlot, outIndex);
 }
 
@@ -384,6 +435,11 @@ Shuffle::resolveOutputLayerDesc(const std::string& layerID,
                                 ViewIdx view,
                                 ImageLayerDesc* desc)
 {
+    if (ImageLayerDesc::isColorViewID(layerID)) {
+        *desc = getOutputColorStorage(time, view);
+
+        return true;
+    }
     if (ImageLayerDesc::isColorLayer(layerID)) {
         *desc = ImageLayerDesc::getRGBAComponents();
 
@@ -402,6 +458,42 @@ Shuffle::resolveOutputLayerDesc(const std::string& layerID,
     return findLayer(mainLayers, layerID, desc);
 }
 
+bool
+Shuffle::getInputColorStorage(int inputNb,
+                              double time,
+                              ViewIdx view,
+                              ImageLayerDesc* storage)
+{
+    if (!getInput(inputNb)) {
+        return false;
+    }
+
+    std::list<ImageLayerDesc> present;
+    getPresentLayers(time, view, inputNb, &present);
+    for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
+        if (it->isColorLayer() && (it->getNumComponents() > 0)) {
+            *storage = ImageLayerDesc::mapNCompsToColorLayer(it->getNumComponents());
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+ImageLayerDesc
+Shuffle::getOutputColorStorage(double time,
+                               ViewIdx view)
+{
+    ImageLayerDesc mainColor;
+
+    if (getInputColorStorage((int)eInputMain, time, view, &mainColor) && (getOutputColorBits() & ~ImageLayerDesc::colorStorageBits(mainColor)).none()) {
+        return mainColor;
+    }
+
+    return ImageLayerDesc::getRGBAComponents();
+}
+
 std::string
 Shuffle::resolveLayerLabel(const std::string& layerID,
                            int inputNb,
@@ -411,8 +503,11 @@ Shuffle::resolveLayerLabel(const std::string& layerID,
     if (layerID.empty()) {
         return std::string();
     }
-    if (ImageLayerDesc::isColorLayer(layerID)) {
-        return ImageLayerDesc::getRGBAComponents().getLayerLabel();
+    if (ImageLayerDesc::isColorViewID(layerID)) {
+        return layerID;
+    }
+    if (layerID == kNatronColorLayerID) {
+        return kNatronColorViewRGBA;
     }
 
     AppInstancePtr app = getApp();
@@ -552,11 +647,26 @@ Shuffle::getComponentsNeededAndProduced(double time,
             continue;
         }
         const int inputNb = getSlotInput(slot);
+        ImageLayerDesc desc;
+        if (ImageLayerDesc::isColorViewID(layerID)) {
+            if (getInputColorStorage(inputNb, time, view, &desc)) {
+                appendUnique(desc, &(*comps)[inputNb]);
+            }
+            continue;
+        }
         std::list<ImageLayerDesc> present;
         getPresentLayers(time, view, inputNb, &present);
-        ImageLayerDesc desc;
         if (findLayer(present, layerID, &desc)) {
             appendUnique(desc, &(*comps)[inputNb]);
+        }
+    }
+
+    // The colour bits no output view writes are copied from the main input's colour plane.
+    const std::bitset<4> writtenBits = getOutputColorBits();
+    if (writtenBits.any() && (ImageLayerDesc::colorStorageBits(getOutputColorStorage(time, view)) & ~writtenBits).any()) {
+        ImageLayerDesc mainColor;
+        if (getInputColorStorage((int)eInputMain, time, view, &mainColor)) {
+            appendUnique(mainColor, &(*comps)[(int)eInputMain]);
         }
     }
 } // Shuffle::getComponentsNeededAndProduced
@@ -575,21 +685,35 @@ Shuffle::isIdentity(double time,
     }
 
     const std::string out1Layer = getOutputLayer(1);
+    const bool outIsView = ImageLayerDesc::isColorViewID(out1Layer);
     const int nChannels = layerChannelCount(out1Layer, (int)eInputMain, time, view);
     if (nChannels < 0) {
         return false;
     }
     for (int c = 0; c < nChannels; ++c) {
         const ShuffleSource src = getEffectiveSource(1, c, time, view);
-        if ((src.kind != ShuffleSource::eInput) || (src.index != c)) {
+        if ((src.kind != ShuffleSource::eInput) || (getSlotInput(src.slot) != (int)eInputMain)) {
             return false;
         }
-        if ((getSlotInput(src.slot) != (int)eInputMain) || (getSlotLayer(src.slot) != out1Layer)) {
+        const std::string slotLayer = getSlotLayer(src.slot);
+        if (outIsView) {
+            if (!ImageLayerDesc::isColorViewID(slotLayer) || (ImageLayerDesc::colorViewChannelBit(slotLayer, src.index) != ImageLayerDesc::colorViewChannelBit(out1Layer, c))) {
+                return false;
+            }
+        } else if ((src.index != c) || (slotLayer != out1Layer)) {
+            return false;
+        }
+    }
+    // A colour channel the main input lacks is written as 0 into a wider plane, which passing
+    // the input through would not do.
+    if (outIsView) {
+        ImageLayerDesc mainColor;
+        if (getInputColorStorage((int)eInputMain, time, view, &mainColor) && (ImageLayerDesc::colorViewMask(out1Layer) & ~ImageLayerDesc::colorStorageBits(mainColor)).any()) {
             return false;
         }
     }
     // renderRoI() validates the mapping only past its identity shortcut, so a channel the input
-    // cannot feed (e.g. A of an RGB-only Color) must keep the render off that shortcut.
+    // cannot feed (e.g. a layer it does not carry) must keep the render off that shortcut.
     if (!checkExtraChannelsPresent(time, view, NULL)) {
         return false;
     }
@@ -699,16 +823,33 @@ std::string
 planeChannelName(const ImageLayerDesc& layer,
                  int index)
 {
-    // Color indexes name R, G, B, A whatever the input's own Color layout, so a wired A reads an
-    // alpha-only Color plane and finds nothing in an RGB one.
-    static const char* const colorChannels[4] = { "R", "G", "B", "A" };
-
-    if (layer.isColorLayer()) {
-        return ((index >= 0) && (index < 4)) ? std::string(colorChannels[index]) : std::string();
-    }
     const std::vector<std::string>& channels = layer.getChannels();
 
     return ((index >= 0) && (index < (int)channels.size())) ? channels[index] : std::string();
+}
+
+// Finds the channel on colour bit in a colour plane of any layout, so an RGB plane has no A
+// and an alpha plane's only channel is A.
+bool
+findColorChannelInPlane(const ImagePtr& image,
+                        int bit,
+                        ChannelFill* fill)
+{
+    if (!image || (bit < 0)) {
+        return false;
+    }
+    const int nChannels = image->getComponents().getNumComponents();
+    const int nComps = (int)image->getComponentsCount();
+    for (int i = 0; (i < nChannels) && (i < nComps) && (i < 4); ++i) {
+        if (colorBitOfIndex(nChannels, i) == bit) {
+            fill->image = image;
+            fill->channel = i;
+
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool
@@ -772,37 +913,72 @@ Shuffle::render(const RenderActionArgs& args)
     const std::string outputLayers[2] = { getOutputLayer(1), getOutputLayer(2) };
     std::vector<FetchedPlane> fetched;
 
+    const auto fillFromSource = [&](const ShuffleSource& src,
+                                    ChannelFill* fill) {
+        if (src.kind == ShuffleSource::eOne) {
+            fill->constant = 1.f;
+
+            return;
+        }
+        if ((src.kind != ShuffleSource::eInput) || ((src.slot != 1) && (src.slot != 2))) {
+            return;
+        }
+        const std::string slotLayer = getSlotLayer(src.slot);
+        if (slotLayer.empty()) {
+            return;
+        }
+        const int inputNb = getSlotInput(src.slot);
+        if (ImageLayerDesc::isColorViewID(slotLayer)) {
+            findColorChannelInPlane(fetchInputPlane(args, inputNb, kNatronColorLayerID, &fetched), ImageLayerDesc::colorViewChannelBit(slotLayer, src.index), fill);
+
+            return;
+        }
+        ImagePtr slotImage = fetchInputPlane(args, inputNb, slotLayer, &fetched);
+        if (slotImage) {
+            findChannelInPlane(slotImage, planeChannelName(slotImage->getComponents(), src.index), fill);
+        }
+    };
+
     // Every input plane is fetched before any image is locked: fetching renders upstream, which
     // may write into a cached image this render would otherwise already hold a read lock on.
     std::vector<std::vector<ChannelFill>> fills;
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
         const ImageLayerDesc& plane = it->first;
-        int outSlot = 0;
-        for (int slot = 1; slot <= 2; ++slot) {
-            if (!outputLayers[slot - 1].empty() && (outputLayers[slot - 1] == plane.getLayerID())) {
-                outSlot = slot;
-                break;
-            }
-        }
+        const int nPlaneComps = plane.getNumComponents();
+        std::vector<ChannelFill> planeFills((std::size_t)nPlaneComps);
 
-        std::vector<ChannelFill> planeFills((std::size_t)plane.getNumComponents());
-        for (int c = 0; outSlot && (c < plane.getNumComponents()); ++c) {
-            const ShuffleSource src = getEffectiveSource(outSlot, c, args.time, args.view);
-            ChannelFill& fill = planeFills[c];
-            if (src.kind == ShuffleSource::eOne) {
-                fill.constant = 1.f;
-                continue;
+        if (plane.isColorLayer()) {
+            // The output views share this one plane by bit: a bit a view covers takes that
+            // view's source, every other bit is the main input's.
+            for (int c = 0; (c < nPlaneComps) && (c < 4); ++c) {
+                const int bit = colorBitOfIndex(nPlaneComps, c);
+                int outSlot = 0;
+                int outIndex = -1;
+                for (int slot = 1; slot <= 2; ++slot) {
+                    if (ImageLayerDesc::isColorViewID(outputLayers[slot - 1])) {
+                        outIndex = ImageLayerDesc::colorViewChannelIndex(outputLayers[slot - 1], bit);
+                        if (outIndex >= 0) {
+                            outSlot = slot;
+                            break;
+                        }
+                    }
+                }
+                if (outSlot) {
+                    fillFromSource(getEffectiveSource(outSlot, outIndex, args.time, args.view), &planeFills[c]);
+                } else {
+                    findColorChannelInPlane(fetchInputPlane(args, (int)eInputMain, kNatronColorLayerID, &fetched), bit, &planeFills[c]);
+                }
             }
-            if ((src.kind != ShuffleSource::eInput) || ((src.slot != 1) && (src.slot != 2))) {
-                continue;
+        } else {
+            int outSlot = 0;
+            for (int slot = 1; slot <= 2; ++slot) {
+                if (!outputLayers[slot - 1].empty() && (outputLayers[slot - 1] == plane.getLayerID())) {
+                    outSlot = slot;
+                    break;
+                }
             }
-            const std::string slotLayer = getSlotLayer(src.slot);
-            if (slotLayer.empty()) {
-                continue;
-            }
-            ImagePtr slotImage = fetchInputPlane(args, getSlotInput(src.slot), slotLayer, &fetched);
-            if (slotImage) {
-                findChannelInPlane(slotImage, planeChannelName(slotImage->getComponents(), src.index), &fill);
+            for (int c = 0; outSlot && (c < nPlaneComps); ++c) {
+                fillFromSource(getEffectiveSource(outSlot, c, args.time, args.view), &planeFills[c]);
             }
         }
         fills.push_back(planeFills);
@@ -879,7 +1055,12 @@ Shuffle::checkExtraChannelsPresent(double time,
     for (int outSlot = 1; outSlot <= 2; ++outSlot) {
         const std::string outLayer = getOutputLayer(outSlot);
         ImageLayerDesc outDesc;
-        if (outLayer.empty() || !resolveOutputLayerDesc(outLayer, time, view, &outDesc)) {
+        if (outLayer.empty()) {
+            continue;
+        }
+        if (ImageLayerDesc::isColorViewID(outLayer)) {
+            outDesc = ImageLayerDesc::getColorView(outLayer);
+        } else if (!resolveOutputLayerDesc(outLayer, time, view, &outDesc)) {
             continue; // The render produces no channel of this output, so nothing is read for it.
         }
 
@@ -891,6 +1072,9 @@ Shuffle::checkExtraChannelsPresent(double time,
             const std::string layerID = getSlotLayer(src.slot);
             if (layerID.empty()) {
                 continue; // A None slot is silent: an explicit row to it renders 0.
+            }
+            if (ImageLayerDesc::isColorViewID(layerID)) {
+                continue; // A colour channel the input lacks reads 0.
             }
             const int inputNb = getSlotInput(src.slot);
             if (!getInput(inputNb)) {
@@ -904,8 +1088,7 @@ Shuffle::checkExtraChannelsPresent(double time,
             }
             ImageLayerDesc desc;
             if (findLayer(present->second, layerID, &desc)) {
-                // Resolved by name as render() does, so a Color plane's missing R/G/B/A is caught
-                // whatever its channel count.
+                // Resolved by name as render() does.
                 const std::string wanted = planeChannelName(desc, src.index);
                 const std::vector<std::string>& channels = desc.getChannels();
                 if (!wanted.empty() && (std::find(channels.begin(), channels.end(), wanted) != channels.end())) {

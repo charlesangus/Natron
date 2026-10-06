@@ -235,7 +235,11 @@ OfxClipInstance::getUnmappedComponents() const
         ClipDataTLSPtr tls = _imp->tlsData->getOrCreateTLSData();
 
         ImageLayerDesc metadataLayer, metadataPairedLayer;
-        effect->getMetadataComponents(-1, &metadataLayer, &metadataPairedLayer);
+        if (_isOutput) {
+            effect->getMetadataOutputClipComponents(&metadataLayer, &metadataPairedLayer);
+        } else {
+            effect->getMetadataComponents(-1, &metadataLayer, &metadataPairedLayer);
+        }
 
         // Default to RGBA
         if (metadataLayer.getNumComponents() == 0) {

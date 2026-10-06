@@ -99,6 +99,7 @@ NATRON_NAMESPACE_ENTER
 
 //Generic OCIO
 #define kOCIOParamConfigFile "ocioConfigFile"
+#define kOCIOParamWorkingSpace "ocioWorkingSpace"
 #define kOCIOParamInputSpace "ocioInputSpace"
 #define kOCIOParamOutputSpace "ocioOutputSpace"
 #define kOCIOParamInputSpaceChoice "ocioInputSpaceIndex"
@@ -118,38 +119,37 @@ struct GenericKnob
     bool mustKeepValue;
 };
 
-static GenericKnob genericWriterKnobNames[] =
-{
-    {kParamFilename, false},
-    {kParamOutputFormat, true},
-    {kParamFormatType, true},
-    {kParamFormatSize, true},
-    {kParamFormatPar, true},
-    {kParamFrameRange, true},
-    {kParamFirstFrame, true},
-    {kParamLastFrame, true},
-    {kParamInputPremult, true}, // keep: don't change useful params behind the user's back
-    {kParamClipInfo, false},
-    {kParamOutputSpaceLabel, false},
-    {kParamClipToProject, true}, // keep: don't change useful params behind the user's back
-    {kNatronOfxParamProcessR, true},
-    {kNatronOfxParamProcessG, true},
-    {kNatronOfxParamProcessB, true},
-    {kNatronOfxParamProcessA, true},
-    {kParamOutputSpaceSet, true}, // keep: don't change useful params behind the user's back
-    {kParamExistingInstance, true}, // don't automatically set parameters when changing the filename, see GenericWriterPlugin::outputFileChanged()
+static GenericKnob genericWriterKnobNames[] = {
+    { kParamFilename, false },
+    { kParamOutputFormat, true },
+    { kParamFormatType, true },
+    { kParamFormatSize, true },
+    { kParamFormatPar, true },
+    { kParamFrameRange, true },
+    { kParamFirstFrame, true },
+    { kParamLastFrame, true },
+    { kParamInputPremult, true }, // keep: don't change useful params behind the user's back
+    { kParamClipInfo, false },
+    { kParamOutputSpaceLabel, false },
+    { kParamClipToProject, true }, // keep: don't change useful params behind the user's back
+    { kNatronOfxParamProcessR, true },
+    { kNatronOfxParamProcessG, true },
+    { kNatronOfxParamProcessB, true },
+    { kNatronOfxParamProcessA, true },
+    { kParamOutputSpaceSet, true }, // keep: don't change useful params behind the user's back
+    { kParamExistingInstance, true }, // don't automatically set parameters when changing the filename, see GenericWriterPlugin::outputFileChanged()
 
-
-    {kOCIOParamConfigFile, true},
-    {kOCIOParamInputSpace, true}, // keep: don't change useful params behind the user's back
-    {kOCIOParamOutputSpace, false}, // don't keep: depends on format
-    {kOCIOParamInputSpaceChoice, true},
-    {kOCIOParamOutputSpaceChoice, false},
-    {kOCIOHelpButton, false},
-    {kOCIOHelpLooksButton, false},
-    {kOCIOHelpDisplaysButton, false},
-    {kOCIOParamContext, false},
-    {0, false}
+    { kOCIOParamConfigFile, true },
+    { kOCIOParamWorkingSpace, false }, // the project pushes it to every new decoder or encoder
+    { kOCIOParamInputSpace, true }, // keep: don't change useful params behind the user's back
+    { kOCIOParamOutputSpace, false }, // don't keep: depends on format
+    { kOCIOParamInputSpaceChoice, true },
+    { kOCIOParamOutputSpaceChoice, false },
+    { kOCIOHelpButton, false },
+    { kOCIOHelpLooksButton, false },
+    { kOCIOHelpDisplaysButton, false },
+    { kOCIOParamContext, false },
+    { 0, false }
 };
 static bool
 isGenericKnob(const std::string& knobName,
@@ -999,6 +999,10 @@ WriteNodePrivate::createWriteNode(bool throwErrors,
     if (knob) {
         outputFileKnob = std::dynamic_pointer_cast<KnobOutputFile>(knob);
     }
+
+    // Recreating the encoder brings back its own or its predecessor's ocioConfigFile, so the
+    // project's config must be pushed again.
+    _publicInterface->getApp()->getProject()->pushOCIOConfigToNode(thisNode);
 } // WriteNodePrivate::createWriteNode
 
 void

@@ -49,10 +49,9 @@
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/ProjectColorManagement.h"
 #include "Engine/Settings.h"
 #include "Engine/TextureRect.h"
-
-#define GAMMA_LUT_NB_VALUES 1023
 
 NATRON_NAMESPACE_ENTER
 
@@ -78,8 +77,7 @@ struct RenderViewerArgs
                      double gain_,
                      double gamma_,
                      double offset_,
-                     const Color::Lut* srcColorSpace_,
-                     const Color::Lut* colorSpace_,
+                     const ProjectColorManagement::DisplayProcessorPtr& displayProcessor_,
                      int alphaChannelIndex_,
                      bool renderOnlyRoI_,
                      std::size_t tileRowElements_)
@@ -90,8 +88,7 @@ struct RenderViewerArgs
         , gain(gain_)
         , gamma(gamma_)
         , offset(offset_)
-        , srcColorSpace(srcColorSpace_)
-        , colorSpace(colorSpace_)
+        , displayProcessor(displayProcessor_)
         , alphaChannelIndex(alphaChannelIndex_)
         , renderOnlyRoI(renderOnlyRoI_)
         , tileRowElements(tileRowElements_)
@@ -105,8 +102,7 @@ struct RenderViewerArgs
     double gain;
     double gamma;
     double offset;
-    const Color::Lut* srcColorSpace;
-    const Color::Lut* colorSpace;
+    ProjectColorManagement::DisplayProcessorPtr displayProcessor;
     int alphaChannelIndex;
     bool renderOnlyRoI;
     std::size_t tileRowElements;
@@ -131,7 +127,9 @@ public:
         , viewerParamsMutex()
         , viewerParamsGain(1.)
         , viewerParamsGamma(1.)
-        , viewerParamsLut(eViewerColorSpaceSRGB)
+        , viewerParamsDisplay()
+        , viewerParamsView()
+        , viewerParamsLook()
         , viewerParamsAutoContrast(false)
         , viewerParamsChannels()
         , viewerParamsLayer( ImageLayerDesc::getRGBAComponents() )
@@ -140,8 +138,6 @@ public:
         , viewerMipmapLevel(0)
         , fullFrameProcessingEnabled(false)
         , activateInputChangedFromViewer(false)
-        , gammaLookupMutex()
-        , gammaLookup()
         , lastRenderParamsMutex()
         , lastRenderParams()
         , partialUpdateRects()
@@ -324,41 +320,6 @@ public:
         return false;
     }
 
-    void fillGammaLut(double gamma)
-    {
-        // gammaLookupMutex should already be locked
-        gammaLookup.resize(GAMMA_LUT_NB_VALUES + 1);
-        if (gamma <= 0) {
-            // gamma = 0: everything is zero, except gamma(1)=1
-            std::fill(gammaLookup.begin(), gammaLookup.begin() + GAMMA_LUT_NB_VALUES, 0.f);
-            gammaLookup[GAMMA_LUT_NB_VALUES] = 1.f;
-            return;
-        }
-        for (int position = 0; position <= GAMMA_LUT_NB_VALUES; ++position) {
-            double parametricPos = double(position) / GAMMA_LUT_NB_VALUES;
-            double value = std::pow(parametricPos, 1. / gamma);
-            // set that in the lut
-            gammaLookup[position] = (float)std::max( 0., std::min(1., value) );
-        }
-    }
-
-    float lookupGammaLut(float value) const
-    {
-        if (value < 0.) {
-            return 0.;
-        } else if (value > 1.) {
-            return 1.;
-        } else {
-            int i = (int)(value * GAMMA_LUT_NB_VALUES);
-            assert(0 <= i && i <= GAMMA_LUT_NB_VALUES);
-            float alpha = std::max( 0.f, std::min(value * GAMMA_LUT_NB_VALUES - i, 1.f) );
-            float a = gammaLookup[i];
-            float b = (i  < GAMMA_LUT_NB_VALUES) ? gammaLookup[i + 1] : 0.f;
-
-            return a * (1.f - alpha) + b * alpha;
-        }
-    }
-
 public Q_SLOTS:
 
     /**
@@ -386,11 +347,12 @@ public:
 
 
     // viewerParams: The viewer parameters that may be accessed from the GUI
-    mutable QMutex viewerParamsMutex;   //< protects viewerParamsGain, viewerParamsLut, viewerParamsAutoContrast, viewerParamsChannels
+    mutable QMutex viewerParamsMutex; //< protects viewerParamsGain, viewerParamsDisplay/View/Look, viewerParamsAutoContrast, viewerParamsChannels
     double viewerParamsGain;           /*!< Current gain setting in the GUI. Not affected by autoContrast. */
     double viewerParamsGamma;          /*!< Current gamma setting in the GUI. Not affected by autoContrast. */
-    ViewerColorSpaceEnum viewerParamsLut; /*!< a value coding the current color-space used to render.
-                                                 0 = sRGB ,  1 = linear , 2 = Rec 709*/
+    std::string viewerParamsDisplay; // empty: the project's default display and view
+    std::string viewerParamsView;
+    std::string viewerParamsLook; // empty: no look override
     bool viewerParamsAutoContrast;
     DisplayChannelsEnum viewerParamsChannels[2];
     ImageLayerDesc viewerParamsLayer;
@@ -404,8 +366,6 @@ public:
     mutable QMutex textureBeingRenderedMutex;
     QWaitCondition textureBeingRenderedCond;
     std::list<FrameEntryPtr> textureBeingRendered; ///< a list of all the texture being rendered simultaneously
-    mutable QReadWriteLock gammaLookupMutex;
-    std::vector<float> gammaLookup; // protected by gammaLookupMutex
 
     //When painting, this is the last texture we've drawn onto so that we can update only the specific portion needed
     mutable QMutex lastRenderParamsMutex;

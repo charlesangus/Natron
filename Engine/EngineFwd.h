@@ -244,6 +244,7 @@ class ProcessHandler;
 class ProcessInputChannel;
 class Project;
 class ProjectBeingLoadedInfo;
+class ProjectColorManagement;
 class ProjectSerialization;
 class RectD;
 class RectI;
@@ -287,9 +288,6 @@ class ViewerArgs;
 class ViewerCurrentFrameRequestSchedulerStartArgs;
 class ViewerInstance;
 class ViewerParallelRenderArgsSetter;
-namespace Color {
-class Lut;
-}
 namespace Transform {
 struct Matrix3x3;
 typedef std::shared_ptr<Matrix3x3> Matrix3x3Ptr;
@@ -426,6 +424,7 @@ typedef std::shared_ptr<PluginMemory> PluginMemoryPtr;
 typedef std::shared_ptr<PrecompNode> PrecompNodePtr;
 typedef std::shared_ptr<ProcessHandler> ProcessHandlerPtr;
 typedef std::shared_ptr<Project> ProjectPtr;
+typedef std::shared_ptr<ProjectColorManagement> ProjectColorManagementPtr;
 typedef std::shared_ptr<RenderEngine> RenderEnginePtr;
 typedef std::shared_ptr<RenderStats> RenderStatsPtr;
 typedef std::shared_ptr<RenderingFlagSetter> RenderingFlagSetterPtr;

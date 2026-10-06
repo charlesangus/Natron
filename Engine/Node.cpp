@@ -3929,12 +3929,12 @@ Node::getKnobByName(const std::string & name) const
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
 ///output is always RGBA with alpha = 255
-template<typename PIX, int maxValue, int srcNComps>
+template <typename PIX, int maxValue, int srcNComps>
 void
-renderPreview(const Image & srcImg,
-              int *dstWidth,
-              int *dstHeight,
-              bool convertToSrgb,
+renderPreview(const Image& srcImg,
+              int* dstWidth,
+              int* dstHeight,
+              const ProjectColorManagement::DisplayProcessor* processor,
               unsigned int* dstPixels)
 {
 #if defined(DEBUG) && !defined(DEBUG_NAN)
@@ -3957,58 +3957,68 @@ renderPreview(const Image & srcImg,
 
     Image::ReadAccess acc = srcImg.getReadRights();
 
+    std::vector<float> scanline((std::size_t)*dstWidth * 4);
+    std::vector<char> inBounds((std::size_t)*dstWidth);
 
     for (int i = 0; i < *dstHeight; ++i) {
         double y = (i - *dstHeight / 2.) / zoomFactor + (srcBounds.y1 + srcBounds.y2) / 2.;
         int yi = std::floor(y + 0.5);
         U32 *dst_pixels = dstPixels + *dstWidth * (*dstHeight - 1 - i);
         const PIX* src_pixels = (const PIX*)acc.pixelAt(srcBounds.x1, yi);
-        if (!src_pixels) {
-            // out of bounds
-            for (int j = 0; j < *dstWidth; ++j) {
-#ifndef __NATRON_WIN32__
-                dst_pixels[j] = toBGRA(0, 0, 0, 0);
-#else
-                dst_pixels[j] = toBGRA(0, 0, 0, 255);
-#endif
-            }
-        } else {
+        std::fill(inBounds.begin(), inBounds.end(), 0);
+        if (src_pixels) {
             for (int j = 0; j < *dstWidth; ++j) {
                 // bilinear interpolation is pointless when downscaling a lot, and this is a preview anyway.
                 // just use nearest neighbor
                 double x = (j - *dstWidth / 2.) / zoomFactor + (srcBounds.x1 + srcBounds.x2) / 2.;
                 int xi = std::floor(x + 0.5) - srcBounds.x1;     // round to nearest
                 if ( (xi < 0) || ( xi >= (srcBounds.x2 - srcBounds.x1) ) ) {
-#ifndef __NATRON_WIN32__
-                    dst_pixels[j] = toBGRA(0, 0, 0, 0);
-#else
-                    dst_pixels[j] = toBGRA(0, 0, 0, 255);
-#endif
-                } else {
-                    float rFilt = src_pixels[xi * srcNComps] * (1.f / maxValue);
-                    float gFilt = srcNComps < 2 ? 0 : src_pixels[xi * srcNComps + 1] * (1.f / maxValue);
-                    float bFilt = srcNComps < 3 ? 0 : src_pixels[xi * srcNComps + 2] * (1.f / maxValue);
-                    if (srcNComps == 1) {
-                        gFilt = bFilt = rFilt;
-                    }
-                    int r = Color::floatToInt<256>(convertToSrgb ? Color::to_func_srgb(rFilt) : rFilt);
-                    int g = Color::floatToInt<256>(convertToSrgb ? Color::to_func_srgb(gFilt) : gFilt);
-                    int b = Color::floatToInt<256>(convertToSrgb ? Color::to_func_srgb(bFilt) : bFilt);
-                    dst_pixels[j] = toBGRA(r, g, b, 255);
+                    continue;
                 }
+                float* px = &scanline[(std::size_t)j * 4];
+                const PIX* src = src_pixels + xi * srcNComps;
+                if (maxValue == 1) {
+                    px[0] = (float)src[0];
+                    px[1] = srcNComps < 2 ? px[0] : (float)src[1];
+                    px[2] = srcNComps < 3 ? (srcNComps == 1 ? px[0] : 0.f) : (float)src[2];
+                } else {
+                    px[0] = Color::intToFloat<maxValue + 1>((int)src[0]);
+                    px[1] = srcNComps < 2 ? px[0] : Color::intToFloat<maxValue + 1>((int)src[1]);
+                    px[2] = srcNComps < 3 ? (srcNComps == 1 ? px[0] : 0.f) : Color::intToFloat<maxValue + 1>((int)src[2]);
+                }
+                px[3] = 1.f;
+                inBounds[j] = 1;
+            }
+            if (processor) {
+                applyViewerDisplayTransform(*processor, &scanline[0], *dstWidth, 1., 0., 1.);
+            }
+        }
+        for (int j = 0; j < *dstWidth; ++j) {
+            if (!inBounds[j]) {
+#ifndef __NATRON_WIN32__
+                dst_pixels[j] = toBGRA(0, 0, 0, 0);
+#else
+                dst_pixels[j] = toBGRA(0, 0, 0, 255);
+#endif
+            } else {
+                const float* px = &scanline[(std::size_t)j * 4];
+                dst_pixels[j] = toBGRA(Color::floatToInt<256>(px[0]),
+                                       Color::floatToInt<256>(px[1]),
+                                       Color::floatToInt<256>(px[2]),
+                                       255);
             }
         }
     }
 }     // renderPreview
 
 ///output is always RGBA with alpha = 255
-template<typename PIX, int maxValue>
+template <typename PIX, int maxValue>
 void
-renderPreviewForDepth(const Image & srcImg,
+renderPreviewForDepth(const Image& srcImg,
                       int elemCount,
-                      int *dstWidth,
-                      int *dstHeight,
-                      bool convertToSrgb,
+                      int* dstWidth,
+                      int* dstHeight,
+                      const ProjectColorManagement::DisplayProcessor* processor,
                       unsigned int* dstPixels)
 {
     switch (elemCount) {
@@ -4016,16 +4026,16 @@ renderPreviewForDepth(const Image & srcImg,
 
         return;
     case 1:
-        renderPreview<PIX, maxValue, 1>(srcImg, dstWidth, dstHeight, convertToSrgb, dstPixels);
+        renderPreview<PIX, maxValue, 1>(srcImg, dstWidth, dstHeight, processor, dstPixels);
         break;
     case 2:
-        renderPreview<PIX, maxValue, 2>(srcImg, dstWidth, dstHeight, convertToSrgb, dstPixels);
+        renderPreview<PIX, maxValue, 2>(srcImg, dstWidth, dstHeight, processor, dstPixels);
         break;
     case 3:
-        renderPreview<PIX, maxValue, 3>(srcImg, dstWidth, dstHeight, convertToSrgb, dstPixels);
+        renderPreview<PIX, maxValue, 3>(srcImg, dstWidth, dstHeight, processor, dstPixels);
         break;
     case 4:
-        renderPreview<PIX, maxValue, 4>(srcImg, dstWidth, dstHeight, convertToSrgb, dstPixels);
+        renderPreview<PIX, maxValue, 4>(srcImg, dstWidth, dstHeight, processor, dstPixels);
         break;
     default:
         break;
@@ -4186,23 +4196,28 @@ Node::makePreviewImage(SequenceTime time,
         const ImageLayerDesc& components = img->getComponents();
         int elemCount = components.getNumComponents();
 
-        ///we convert only when input is Linear.
-        //Rec709 and srGB is acceptable for preview
-        bool convertToSrgb = getApp()->getDefaultColorSpaceForBitDepth( img->getBitDepth() ) == eViewerColorSpaceLinear;
+        ProjectColorManagement::DisplayProcessorPtr processor;
+        {
+            const ProjectPtr project = getApp()->getProject();
+            const ProjectColorManagementPtr colorManagement = project->getColorManagement();
+            std::string display, view;
+            project->getDefaultDisplayView(&display, &view);
+            processor = colorManagement->getDisplayProcessor(project->getWorkingColorSpace(), display, view, std::string());
+        }
 
         switch ( img->getBitDepth() ) {
         case eImageBitDepthByte: {
-            renderPreviewForDepth<unsigned char, 255>(*img, elemCount, width, height, convertToSrgb, buf);
+            renderPreviewForDepth<unsigned char, 255>(*img, elemCount, width, height, processor.get(), buf);
             break;
         }
         case eImageBitDepthShort: {
-            renderPreviewForDepth<unsigned short, 65535>(*img, elemCount, width, height, convertToSrgb, buf);
+            renderPreviewForDepth<unsigned short, 65535>(*img, elemCount, width, height, processor.get(), buf);
             break;
         }
         case eImageBitDepthHalf:
             break;
         case eImageBitDepthFloat: {
-            renderPreviewForDepth<float, 1>(*img, elemCount, width, height, convertToSrgb, buf);
+            renderPreviewForDepth<float, 1>(*img, elemCount, width, height, processor.get(), buf);
             break;
         }
         case eImageBitDepthNone:

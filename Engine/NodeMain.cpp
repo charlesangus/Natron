@@ -236,6 +236,8 @@ Node::load(const CreateNodeArgs& args)
         refreshAllInputRelatedData(!serialization);
     }
 
+    // After the knobs are loaded, so a pasted or duplicated node's saved config does not win.
+    getApp()->getProject()->pushOCIOConfigToNode(thisShared);
 
     _imp->runOnNodeCreatedCB(!serialization && !isLoadingPyPlug);
 } // load

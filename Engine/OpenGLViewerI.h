@@ -127,7 +127,6 @@ public:
                                                double gain,
                                                double gamma,
                                                double offset,
-                                               int lut,
                                                bool recenterViewer,
                                                const Point& viewportCenter,
                                                bool isPartialRect)

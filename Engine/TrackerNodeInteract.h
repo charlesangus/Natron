@@ -434,7 +434,7 @@ public:
 
     void refreshSelectedMarkerTexture();
 
-    void convertImageTosRGBOpenGLTexture(const ImagePtr& image, const TexturePtr& tex, const RectI& renderWindow);
+    void convertImageToDisplayOpenGLTexture(const ImagePtr& image, const TexturePtr& tex, const RectI& renderWindow);
 
     void makeMarkerKeyTexture(int time, const TrackMarkerPtr& track);
 

@@ -536,39 +536,23 @@ private:
     }
 
     template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue>
-    static void convertToFormatInternal_sameComps(const RectI & renderWindow,
-                                                  const Image & srcImg,
-                                                  Image & dstImg,
-                                                  ViewerColorSpaceEnum srcColorSpace,
-                                                  ViewerColorSpaceEnum dstColorSpace,
+    static void convertToFormatInternal_sameComps(const RectI& renderWindow,
+                                                  const Image& srcImg,
+                                                  Image& dstImg,
                                                   bool copyBitmap);
 
     template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue, int srcNComps, int dstNComps>
     static void convertToFormatInternal(const RectI& renderWindow,
                                         const Image& srcImg,
                                         Image& dstImg,
-                                        ViewerColorSpaceEnum srcColorSpace,
-                                        ViewerColorSpaceEnum dstColorSpace,
                                         int channelForAlpha,
                                         bool zeroFillMissing,
                                         bool copyBitmap);
-
-    template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue, int srcNComps, int dstNComps, bool useColorspaces>
-    static void convertToFormatInternalForColorSpace(const RectI& renderWindow,
-                                                     const Image& srcImg,
-                                                     Image& dstImg,
-                                                     bool copyBitmap,
-                                                     bool zeroFillMissing,
-                                                     ViewerColorSpaceEnum srcColorSpace,
-                                                     ViewerColorSpaceEnum dstColorSpace,
-                                                     int channelForAlpha);
 
     template <typename SRCPIX, typename DSTPIX, int srcMaxValue, int dstMaxValue>
     static void convertToFormatInternalForDepth(const RectI& renderWindow,
                                                 const Image& srcImg,
                                                 Image& dstImg,
-                                                ViewerColorSpaceEnum srcColorSpace,
-                                                ViewerColorSpaceEnum dstColorSpace,
                                                 int channelForAlpha,
                                                 bool zeroFillMissing,
                                                 bool copyBitmap);
@@ -747,16 +731,13 @@ public:
      * 3) RGB to RGBA
      * 4) RGB to alpha
      *
-     * Also this function converts to the output bit depth.
+     * Also this function converts to the output bit depth. Bit-depth conversion is colour-neutral
+     * linear quantisation (scale, clamp, round, no dither): float 0.5 becomes byte 128.
      *
      * This function only works for images with the same region of definition and mipmaplevel.
      *
      *
      * @param renderWindow The rectangle to convert
-     *
-     * @param srcColorSpace Input data will be taken to be in this color-space
-     *
-     * @param dstColorSpace Output data will be converted to this color-space.
      *
      * @param channelForAlpha is used in cases 2) and 4) to determine from which channel we should
      * fill the alpha. If it is -1 it indicates you want to clear the mask.
@@ -773,8 +754,6 @@ public:
      * Implementation should tend to optimize these cases.
      **/
     void convertToFormat(const RectI& renderWindow,
-                         ViewerColorSpaceEnum srcColorSpace,
-                         ViewerColorSpaceEnum dstColorSpace,
                          int channelForAlpha,
                          bool copyBitMap,
                          Image* dstImg) const;

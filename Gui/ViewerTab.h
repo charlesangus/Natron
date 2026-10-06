@@ -125,7 +125,10 @@ public:
     ///////////// so the viewer can restore the exact same settings to the user.
     bool isClippedToProject() const;
 
-    std::string getColorSpace() const;
+    /**
+     * @brief The display, view and look shown in the menus; look is empty for "None".
+     **/
+    void getDisplayTransform(std::string* display, std::string* view, std::string* look) const;
 
     void setUserRoIEnabled(bool b);
 
@@ -137,7 +140,11 @@ public:
 
     bool isFullFrameProcessingEnabled() const;
 
-    void setColorSpace(const std::string & colorSpaceName);
+    /**
+     * @brief Selects the given display, view and look. A name the config lacks falls back to the
+     * project's default display and view, then to the config's defaults; an unknown look to "None".
+     **/
+    void setDisplayTransform(const std::string& display, const std::string& view, const std::string& look);
 
     void setGain(double d);
 
@@ -367,7 +374,9 @@ public Q_SLOTS:
 
     void onRenderScaleButtonClicked(bool checked);
 
-    void onColorSpaceComboBoxChanged(int v);
+    void onDisplayTransformComboBoxChanged(int index);
+
+    void onProjectColorConfigChanged();
 
     void onCompositingOperatorIndexChanged(int index);
 
@@ -466,6 +475,17 @@ public Q_SLOTS:
 private:
 
     void abortViewersAndRefresh();
+
+    /**
+     * @brief Refills the Display/View/Look menus from the project's config and selects the given
+     * names, with the fallbacks of setDisplayTransform(). Emits no signal.
+     **/
+    void populateDisplayTransformMenus(const std::string& display, const std::string& view, const std::string& look);
+
+    /**
+     * @brief Hands the menus' selection to the GL viewer and the viewer node.
+     **/
+    void applyDisplayTransform();
 
     void refreshFPSBoxFromClipPreferences();
 

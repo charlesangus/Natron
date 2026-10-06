@@ -281,17 +281,11 @@ public:
     {
     }
 
-    Natron::ViewerColorSpaceEnum getDefaultColorSpaceForBitDepth(Natron::ImageBitDepthEnum bitdepth) const;
-
     double getProjectFrameRate() const;
 
     virtual std::string openImageFileDialog() { return std::string(); }
 
     virtual std::string saveImageFileDialog() { return std::string(); }
-
-
-    void onOCIOConfigPathChanged(const std::string& path);
-
 
     /**
      * @brief Given writer names, start rendering the given RenderRequest. If empty all Writers in the project

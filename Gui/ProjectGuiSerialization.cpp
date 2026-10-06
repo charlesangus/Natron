@@ -100,7 +100,7 @@ ProjectGuiSerialization::initialize(const ProjectGui* projectGui)
                         viewerData.autoContrastEnabled = tab->isAutoContrastEnabled();
                         viewerData.gain = tab->getGain();
                         viewerData.gamma = tab->getGamma();
-                        viewerData.colorSpace = tab->getColorSpace();
+                        tab->getDisplayTransform(&viewerData.display, &viewerData.view, &viewerData.look);
                         viewerData.channels = tab->getChannelsString();
                         viewerData.renderScaleActivated = tab->getRenderScaleActivated();
                         viewerData.mipmapLevel = tab->getMipmapLevel();

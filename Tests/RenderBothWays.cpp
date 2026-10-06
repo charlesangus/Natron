@@ -327,19 +327,23 @@ compareSequences(const WriterPass& legacy,
 
 struct DirectPass {
     ImagePtr image;
+    std::map<ImageLayerDesc, ImagePtr> planes;
     int tasksRun = 0;
     RenderMismatch error;
 };
 
 // Renders through renderRoI on this thread, or, with throughScheduler, as a frame of tasks run on
 // the global pool by the RenderScheduler, the way a writer's frame is in Task graph mode.
+// `components` only applies to the renderRoI path, and an empty list there means RGBA: a
+// scheduled frame renders whatever planes the request pass planned for the root.
 DirectPass
 renderDirect(const NodePtr& node,
              double time,
              ViewIdx view,
              unsigned mipmapLevel,
              const RectI& roi,
-             bool throughScheduler)
+             bool throughScheduler,
+             const std::list<ImageLayerDesc>& requestedComponents = std::list<ImageLayerDesc>())
 {
     DirectPass pass;
     const int frame = static_cast<int>(time);
@@ -387,8 +391,10 @@ renderDirect(const NodePtr& node,
         layers = future->getRootPlanes();
         pass.tasksRun = stats->getTasksRun();
     } else {
-        std::list<ImageLayerDesc> components;
-        components.push_back(ImageLayerDesc::getRGBAComponents());
+        std::list<ImageLayerDesc> components = requestedComponents;
+        if (components.empty()) {
+            components.push_back(ImageLayerDesc::getRGBAComponents());
+        }
         // An empty preComputedRoD makes renderRoI compute the node's own region of definition, which
         // the image bounds at mipmapLevel > 0 have to be derived from.
         EffectInstance::RenderRoIArgs args(time,
@@ -422,6 +428,7 @@ renderDirect(const NodePtr& node,
         pass.error = failure("render did not produce a float image", frame);
         pass.image.reset();
     }
+    pass.planes = layers;
 
     return pass;
 } // renderDirect
@@ -443,7 +450,101 @@ readWindow(const ImagePtr& image,
     return pixels;
 }
 
+// Like readWindow(), but over all of `window`: a pixel outside the image's bounds lies outside the
+// region of definition the render was clipped to, which is black by definition.
+std::vector<float>
+readWindowZeroOutside(const ImagePtr& image,
+                      const RectI& window)
+{
+    const std::size_t nComps = image->getComponentsCount();
+    const std::size_t rowFloats = static_cast<std::size_t>(window.width()) * nComps;
+    std::vector<float> pixels(rowFloats * window.height(), 0.f);
+    const RectI covered = window.intersect(image->getBounds());
+
+    if (covered.isNull()) {
+        return pixels;
+    }
+    Image::ReadAccess access = image->getReadRights();
+    const std::size_t coveredFloats = static_cast<std::size_t>(covered.width()) * nComps;
+    for (int y = covered.y1; y < covered.y2; ++y) {
+        const float* row = reinterpret_cast<const float*>(access.pixelAt(covered.x1, y));
+        const std::size_t offset = static_cast<std::size_t>(y - window.y1) * rowFloats + static_cast<std::size_t>(covered.x1 - window.x1) * nComps;
+        std::memcpy(&pixels[offset], row, coveredFloats * sizeof(float));
+    }
+
+    return pixels;
+}
+
 } // namespace
+
+bool
+renderNodePlanesDirect(const NodePtr& node,
+                       double time,
+                       ViewIdx view,
+                       unsigned mipmapLevel,
+                       const RectI& roi,
+                       const std::list<ImageLayerDesc>& layers,
+                       std::vector<RenderedPlane>* out,
+                       std::string* error)
+{
+    out->clear();
+    if (!node) {
+        if (error) {
+            *error = "no node";
+        }
+
+        return false;
+    }
+    if (layers.empty() || roi.isNull()) {
+        if (error) {
+            *error = "no plane or an empty window was requested";
+        }
+
+        return false;
+    }
+
+    DisableUnreachableRAMPurging noPurge;
+    SchedulerModeGuard modeGuard;
+    enterMode(eRenderSchedulerModeLegacy, 0);
+
+    const DirectPass pass = renderDirect(node, time, view, mipmapLevel, roi, false /*throughScheduler*/, layers);
+    if (pass.error.any) {
+        if (error) {
+            *error = pass.error.error;
+        }
+
+        return false;
+    }
+
+    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        std::map<ImageLayerDesc, ImagePtr>::const_iterator found = pass.planes.find(*it);
+        if ((found == pass.planes.end()) || !found->second) {
+            if (error) {
+                *error = "the render produced no " + it->getLayerID() + " plane";
+            }
+            out->clear();
+
+            return false;
+        }
+        const ImagePtr& image = found->second;
+        if (image->getBitDepth() != eImageBitDepthFloat) {
+            if (error) {
+                *error = "the " + it->getLayerID() + " plane is not float";
+            }
+            out->clear();
+
+            return false;
+        }
+        RenderedPlane plane;
+        plane.layer = *it;
+        plane.window = roi;
+        plane.channels = image->getComponents().getChannels();
+        plane.pixels = readWindowZeroOutside(image, roi);
+        out->push_back(plane);
+    }
+
+    return true;
+} // renderNodePlanesDirect
 
 RenderMismatch
 renderBothWays(const NodePtr& writer,

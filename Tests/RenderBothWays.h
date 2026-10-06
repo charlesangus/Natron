@@ -29,10 +29,12 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <list>
 #include <string>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
 
@@ -87,6 +89,29 @@ RenderMismatch renderBothWaysDirect(const NodePtr& node,
                                     float tolerance = 0.f);
 
 std::string describe(const RenderMismatch& m);
+
+// One plane read back by renderNodePlanesDirect(). `pixels` is row-major over `window` from its
+// bottom row, with the values of one pixel interleaved as listed in `channels`.
+struct RenderedPlane {
+    ImageLayerDesc layer;
+    RectI window;
+    std::vector<std::string> channels;
+    std::vector<float> pixels;
+};
+
+// Renders the planes in `layers` of `node` over `roi` (pixel coordinates at `mipmapLevel`) in one
+// Legacy-mode renderRoI call that bypasses the cache, and reads each back as float over the whole
+// of `roi`, zero where the render was clipped to the node's region of definition. `out` gets one
+// plane for each entry of `layers`, in the same order. The scheduler mode and the caches are
+// restored before returning. On failure `out` is empty and `error`, when given, says why.
+bool renderNodePlanesDirect(const NodePtr& node,
+                            double time,
+                            ViewIdx view,
+                            unsigned mipmapLevel,
+                            const RectI& roi,
+                            const std::list<ImageLayerDesc>& layers,
+                            std::vector<RenderedPlane>* out,
+                            std::string* error = 0);
 
 NATRON_NAMESPACE_EXIT
 

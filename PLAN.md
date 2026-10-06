@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M64.P1.T1
-pm_heartbeat: 2026-10-06T04:49:53-04:00
+current: M67 (elaboration)
+pm_heartbeat: 2026-10-06T05:23:11-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -219,8 +219,8 @@ future core work has solid ground to build on.
 | M60 | Deep images get layers/channels like flat images | done | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
 | M62 | Render scaling: fix the algorithmic hotspots (bench harness, O(N²)/exponential walks, TLS copy, host copies) | done | [M62-render-scaling-hotspots.md](PLAN/MILESTONES/M62-render-scaling-hotspots.md) |
 | M63 | Task-graph render scheduler | blocked | [M63-task-graph-render-scheduler.md](PLAN/MILESTONES/M63-task-graph-render-scheduler.md) |
-| M64 | Tiled / fused rendering for bandwidth-bound chains | doing | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
-| M67 | Rewrite core nodes as native nodes (stub) | todo | [M67-native-core-nodes.md](PLAN/MILESTONES/M67-native-core-nodes.md) |
+| M64 | Tiled / fused rendering for bandwidth-bound chains | blocked | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
+| M67 | Rewrite core nodes as native nodes | doing | [M67-native-core-nodes.md](PLAN/MILESTONES/M67-native-core-nodes.md) |
 | M68 | Headless GL: EGL surfaceless/device backend (deferred) | todo | [M68-headless-gl-egl-backend.md](PLAN/MILESTONES/M68-headless-gl-egl-backend.md) |
 | M25 | Guard the GL init path against the debug FP traps | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M27 | Make the debug build a debug build again | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
@@ -268,3 +268,4 @@ future core work has solid ground to build on.
 # Open questions
 
 - **M63 awaits the parcel-2 UAT (PR #41):** gate green, two review rounds closed. AppImage `build/appimages/M63-18aab690f.AppImage` with `build/appimages/M63-uat.md`. It will be UAT'd together with M64 and M67 on top.
+- **M64 is parked on kill gate 1:** the strip-pull spike measured 0.6–0.7x on HD chain 30 and 1.14–1.21x on chain 100, below the 1.3x gate, but on a host saturated from outside the sandbox (load ~21 on 4 cores, IO pressure ~95%). M67 runs meanwhile, stacked on #41. To do: re-run the spike when the host is quiet (`NATRON_TILE_SPIKE=1 Tests --gtest_filter=TileSpike.*` in `build/wt/m64`). If it still misses, M64 waits for M67.

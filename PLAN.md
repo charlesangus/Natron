@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M67 (elaboration)
-pm_heartbeat: 2026-10-06T05:23:11-04:00
+current: M67.P1.T4
+pm_heartbeat: 2026-10-06T09:09:58-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -268,4 +268,4 @@ future core work has solid ground to build on.
 # Open questions
 
 - **M63 awaits the parcel-2 UAT (PR #41):** gate green, two review rounds closed. AppImage `build/appimages/M63-18aab690f.AppImage` with `build/appimages/M63-uat.md`. It will be UAT'd together with M64 and M67 on top.
-- **M64 is parked on kill gate 1:** the strip-pull spike measured 0.6–0.7x on HD chain 30 and 1.14–1.21x on chain 100, below the 1.3x gate, but on a host saturated from outside the sandbox (load ~21 on 4 cores, IO pressure ~95%). M67 runs meanwhile, stacked on #41. To do: re-run the spike when the host is quiet (`NATRON_TILE_SPIKE=1 Tests --gtest_filter=TileSpike.*` in `build/wt/m64`). If it still misses, M64 waits for M67.
+- **M64 is parked on kill gate 1 (confirmed on a quiet host 2026-10-06):** best strip pull is 1.17x on chain 30 and 1.15x on chain 100 (gate 1.3x). It waits for M67; see its Decisions.

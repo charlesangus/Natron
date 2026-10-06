@@ -208,7 +208,7 @@ Facts that shape the design:
 
 ## Phase 67.1: Benchmark harness, native Grade, go/no-go gate
 
-- [ ] M67.P1.T1 — Extend the bench harness for native-vs-OFX runs with load and pressure recorded
+- [x] M67.P1.T1 — Extend the bench harness for native-vs-OFX runs with load and pressure recorded
   - files: `tools/bench/graph_bench.py`, `tools/bench/lib.sh`, `tools/bench/run_matrix.sh`, `tools/bench/compare.py`, `tools/bench/native_vs_ofx.sh` (new)
   - approach:
     - `graph_bench.py`:
@@ -226,7 +226,7 @@ Facts that shape the design:
     - `shellcheck` is clean on the shell files.
   - size: M
 
-- [ ] M67.P1.T2 — Engine hooks for native flat nodes: shared input-plane resolution, host unpremult selector, unprocessed-channel ownership
+- [x] M67.P1.T2 — Engine hooks for native flat nodes: shared input-plane resolution, host unpremult selector, unprocessed-channel ownership
   - files: `Engine/EffectInstance.h`, `Engine/EffectInstance.cpp`, `Engine/OfxClipInstance.cpp`, `Engine/Node.cpp`, `Tests/Native/EngineHooks_Test.cpp` (new; built by P1.T3's glob)
   - approach:
     - (a) Move the plane-selection logic at `OfxClipInstance.cpp:850-915` into a public helper: `bool EffectInstance::resolveInputPlaneForRender(int inputNb, double time, ViewIdx view, ImageLayerDesc* layer, int* maskChannel) const`. It chooses the needed-components entry equivalent to the output layer being rendered, then the mask channel through `getMaskChannel`, then the layer knob, then the clip components. `maskChannel` is -1 for non-masks. `OfxClipInstance` calls the helper with no behaviour change.
@@ -240,7 +240,7 @@ Facts that shape the design:
       - `resolveInputPlaneForRender` returns the rendered-plane-equivalent layer for an OFX Grade on a three-layer input, and the selected mask channel when `maskChannel_Mask` names `spec.G`.
   - size: L
 
-- [ ] M67.P1.T3 — Parity harness: deterministic test source, OFX-vs-native renderer, knob parity, reference record and replay
+- [x] M67.P1.T3 — Parity harness: deterministic test source, OFX-vs-native renderer, knob parity, reference record and replay
   - files: `Tests/NativeParity.h` (new), `Tests/NativeParity.cpp` (new), `Tests/RenderBothWays.h`, `Tests/RenderBothWays.cpp`, `Tests/wmain.cpp`, `Tests/CMakeLists.txt`, `Tests/Native/NativeParitySelf_Test.cpp` (new)
   - approach:
     - `Tests/CMakeLists.txt`: `file(GLOB Tests_NATIVE_SOURCES Native/*_Test.cpp)` appended to `Tests_SOURCES`, plus `NativeParity.cpp`. This is the last hand-edit of the list this milestone, outside P6.
@@ -1049,3 +1049,4 @@ Notes:
   - **Plugin bundle:** one fork PR, `m67/retire-native-core`, takes one commit per family.
 - 2026-10-06 — **User decisions on the elaboration's questions:** (1) native Saturation uses the real ACES AP1 coefficients rather than copying the OFX plugin's CCIR 601 bug, with its parity case exempt for that option; (2) keep P5.T6, the native ColorLookup ramp/histogram curve background; (3) the P1.T6 gate thresholds stand as proposed. Work runs in worktree `build/wt/m64` (directory name kept so its build dirs stay valid), on branch `milestone/m67-native-core-nodes`, off #41's tip `ce575b4d2`.
 - 2026-10-06 — **B1 implemented (P1.T1–T3), not yet built.** Deviations: P1.T2 also edits `Engine/ImagePremult.cpp` and `Engine/Image.h` (shared premult helpers so both paths stay identical), the resolver is two non-const overloads, and the test plane is `specular`. P1.T3 puts NativeParity in `Tests/` (task list) rather than `Tests/Native/` (Design §6), writes one reference file per plane with `.mip<N>` in the name, and `makeParityPair` takes an `AppInstancePtr`.
+- 2026-10-06 — **B1 landed** (`e5c5120ed`, `0c0fda301`, `209406e51` on `milestone/m67-native-core-nodes`): it compiled with no fixes, targeted tests passed 64/64, and full debug ctest passed 999/999 in both scheduler modes. Assets were re-fetched for the re-pinned forks.

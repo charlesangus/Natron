@@ -757,3 +757,19 @@ Classifier verdicts (`classify.py`, legacy / taskgraph):
 - Task graph wins where there are independent branches: UHD iobound x0.72 (4 concurrent tasks), footagecomp x0.83, rambound x0.90. readchain (a serial chain) is even at x1.00. deepcomp is x1.06 with 2 concurrent tasks and only 4 tasks run for 10 nodes, so most of the deep chain runs inside a single task.
 - Pixel identity: in a 2-frame smoke (`BENCH_KEEP=1`, frames 1-3 of readchain 10, footagecomp 16, iobound 8, deepcomp 8 at HD and iobound 8, rambound 30 at UHD) every legacy and taskgraph EXR is byte-identical except for 2-3 bytes inside the `capDate` header.
 - DeepRead does not report itself frame-varying, so within one process every frame of a `####` deep sequence after the first returned the first frame's samples: frame 2 rendered after frame 1 was byte-identical to frame 1 apart from `capDate`, while frame 2 rendered alone differed in 11.5M bytes. Both modes reproduce it. `graph_bench.py` works around it by keyframing each DeepRead's `disableNode`; the reader itself still needs the fix.
+
+## M67 gate (contended) (2026-10-06)
+
+Native Grade versus OFX Grade (`net.sf.openfx.GradePlugin` major 3 versus 2), release build, `tools/bench/native_vs_ofx.sh m67gate 3`: three ABAB rounds, each a tiny chain of 0 and 1000 Grades (5 frames) and an HD chain of 30 and 100 Grades (3 frames). Results: `build/bench/results-m67gate-r<1..3>-{ofx,native}.jsonl`. The host was quiet when the run started (load1 0.33), but 3 of the 24 configurations began at load1 0.54-0.70 (the previous configuration's tail), so the harness labels the run contended and the absolute numbers are not references. The ratios are, since each round is interleaved and the spread across rounds is at most 0.06.
+
+| round | mem | build | tiny | hd | KB/node ofx -> native | HD ms/node ofx -> native |
+|---|---|---|---|---|---|---|
+| 1 | 0.216 | 0.886 | 0.503 | 1.731 | 634 -> 137 | 29.34 -> 50.79 |
+| 2 | 0.216 | 0.884 | 0.511 | 1.672 | 634 -> 137 | 30.18 -> 50.45 |
+| 3 | 0.216 | 0.874 | 0.497 | 1.697 | 634 -> 137 | 29.87 -> 50.69 |
+| median | 0.216 | 0.884 | 0.503 | 1.697 | 634 -> 137 | 29.87 -> 50.69 |
+| spread | 0.000 | 0.012 | 0.014 | 0.059 | | |
+
+Gate: mem <= 0.50 passes (0.216), build <= 1.15 passes (0.884), tiny <= 1.15 passes (0.503), hd <= 1.05 fails (1.697). Verdict NO-GO.
+
+Median frame wall (s), per config: tiny 1000 ofx 0.337 / native 0.170; hd 30 ofx 1.01 / native 1.62; hd 100 ofx 3.12 / native 5.17. RSS before the first frame (MB), tiny 0 / 1000: ofx 112 / 731, native 112 / 246.

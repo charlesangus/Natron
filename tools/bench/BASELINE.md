@@ -757,3 +757,131 @@ Classifier verdicts (`classify.py`, legacy / taskgraph):
 - Task graph wins where there are independent branches: UHD iobound x0.72 (4 concurrent tasks), footagecomp x0.83, rambound x0.90. readchain (a serial chain) is even at x1.00. deepcomp is x1.06 with 2 concurrent tasks and only 4 tasks run for 10 nodes, so most of the deep chain runs inside a single task.
 - Pixel identity: in a 2-frame smoke (`BENCH_KEEP=1`, frames 1-3 of readchain 10, footagecomp 16, iobound 8, deepcomp 8 at HD and iobound 8, rambound 30 at UHD) every legacy and taskgraph EXR is byte-identical except for 2-3 bytes inside the `capDate` header.
 - DeepRead does not report itself frame-varying, so within one process every frame of a `####` deep sequence after the first returned the first frame's samples: frame 2 rendered after frame 1 was byte-identical to frame 1 apart from `capDate`, while frame 2 rendered alone differed in 11.5M bytes. Both modes reproduce it. `graph_bench.py` works around it by keyframing each DeepRead's `disableNode`; the reader itself still needs the fix.
+
+## M64 start (2026-10-06, 18aab690f)
+
+Machine: 4-core Intel N100, 15 GB RAM, `build/release` of the M64 worktree (`build/wt/m64`, `milestone/m64-tiled-rendering` at `18aab690f`) in the `natron-dev` container, one configuration at a time, default scheduler (Task graph). **This run is not a clean baseline.** The host was shared with another tenant for the whole session: the load average was 1.7-17.5 at the start of every configuration (never below the 0.5 gate; the cooldown gave up after `BENCH_COOLDOWN_TIMEOUT=240` s each time), with no process of ours running; `/proc/pressure/io` showed `some avg60` 76-95 and 15-20 blocked tasks in `vmstat` that are not visible from this PID namespace (swap in use, 227 MB free). Mean clocks were 1.72-2.05 GHz on the HD configs against 1.9-2.6 GHz in `results-m63final-*`. The absolute times below are therefore 1.5-2.9x slower than After M63 and must not be read as a regression; ratios inside one run are usable with care. Re-run on a quiet host before using any of them as a reference.
+
+Commands (repo root of the worktree; `BENCH_TIMEOUT=3600`, `BENCH_COOLDOWN_TIMEOUT=240`, `BENCH_PLATES_DIR=/home/bosley/git/Natron/build/bench/fixtures`):
+
+```
+BENCH_RENDER_STATS=1 tools/bench/run_matrix.sh m64start-hd hd 3 8 chain:30,100 wide:100 comp:100 mixed:100
+tools/bench/run_matrix.sh m64start-tiny tiny 5 0 chain:1000 wide:1000 comp:300
+tools/bench/run_matrix.sh m64start-real hd 3 8 readchain:30 footagecomp:32
+BENCH_SETTINGS=renderSchedulerMode=0 tools/bench/run_matrix.sh m64start-sched0-hd hd 3 8 chain:30,100
+gcc -O2 -fopenmp -o build/bench/stream_bench tools/bench/stream_bench.c
+python3 tools/bench/compare.py build/bench/results-m63final-taskgraph-<hd|tiny>.jsonl build/bench/results-m64start-<hd|tiny>.jsonl --threshold 1.15 --pair-settings renderSchedulerMode=1 ''
+```
+
+Every configuration exited 0. Results: `build/bench/results-m64start-{hd,tiny,real,sched0-hd}.jsonl` in the worktree, logs in `build/bench/logs/m64start-*`, clocks in `build/bench/freq-m64start-*.txt`. An earlier launch with a 600 s cooldown was stopped after its first configuration and discarded (`/tmp/m64old`).
+
+| topo | n | res | load at start | build (s) | median frame (s) | parallelism | range per-frame wall (s) | range_parallelism | RSS before (MB) | rss_peak (MB) | clock (MHz) | tasks run / max concurrent |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| chain | 30 | hd | 1.67 | 0.1161 | 1.6009 | 1.87 | 2.412 | 2.09 | 131 | 880 | 2048 | 32 / 1 |
+| chain | 100 | hd | 8.45 | 0.5913 | 8.2994 | 1.91 | 7.230 | 2.23 | 174 | 884 | 1751 | 102 / 1 |
+| wide | 100 | hd | 11.73 | 0.5597 | 4.4452 | 2.24 | 4.144 | 2.38 | 210 | 1260 | 1722 | 99 / 4 |
+| comp | 100 | hd | 15.54 | 0.5240 | 8.7066 | 2.23 | 7.667 | 2.58 | 196 | 3757 | 1753 | 103 / 4 |
+| mixed | 100 | hd | 16.11 | 0.4783 | 18.2467 | 1.95 | 15.635 | 2.29 | 191 | 1361 | 1780 | 102 / 1 |
+| chain | 1000 | tiny | 7.44 | 15.0511 | 0.5777 | 0.95 | - | - | 731 | 761 | 1825 | - |
+| wide | 1000 | tiny | 14.40 | 8.7830 | 0.5570 | 1.32 | - | - | 1111 | 1227 | 2602 | - |
+| comp | 300 | tiny | 16.63 | 1.7698 | 0.2597 | 1.46 | - | - | 360 | 409 | 2274 | - |
+| readchain | 30 | hd | 16.26 | 0.2101 | 1.5237 | 2.12 | 2.504 | 2.10 | 134 | 1301 | 1987 | - |
+| footagecomp | 32 | hd | 17.48 | 0.6437 | 3.1651 | 2.13 | 3.446 | 2.20 | 170 | 4720 | 1808 | - |
+
+Legacy (`renderSchedulerMode=0`), chain HD, for continuity:
+
+| topo | n | load at start | median frame (s) | parallelism | range per-frame wall (s) | range_parallelism | rss_peak (MB) | clock (MHz) | Task graph / Legacy frame |
+|---|---|---|---|---|---|---|---|---|---|
+| chain | 30 | 16.09 | 1.7408 | 1.83 | 2.713 | 2.00 | 832 | 1854 | x0.92 |
+| chain | 100 | 17.15 | 9.7165 | 1.68 | 7.625 | 2.13 | 878 | 1744 | x0.85 |
+
+Per-node marginal cost at HD, (chain 100 - chain 30) / 70: Task graph 95.7 ms per node for the single frame (8.2994 - 1.6009) and 68.8 ms per node for the range frames (7.230 - 2.412); Legacy 114 ms (single) and 73 ms (range). After M63 on the quiet host the single-frame figure was about 30 ms ((3.083 - 1.012) / 70 = 29.6 ms), so this run's marginal cost is 3.2x inflated, which is the contention and not the code.
+
+### Against After M63 (`compare.py`, threshold 1.15)
+
+Every Task graph row is flagged, and every HD row carries the "clock differs by more than 10%, timings are not comparable" note:
+
+```
+chain n=30 hd    frame_s 1.012->1.601 x1.58  parallelism 3.09->1.87  khz 2.598e6->2.048e6  FLAGGED
+chain n=100 hd   frame_s 3.083->8.299 x2.69  parallelism 3.24->1.91  khz 2.021e6->1.751e6  FLAGGED
+comp n=100 hd    frame_s 3.688->8.707 x2.36  parallelism 3.23->2.23  khz 1.944e6->1.753e6  FLAGGED
+mixed n=100 hd   frame_s 10.47->18.25 x1.74  parallelism 3.00->1.95  khz 1.918e6->1.78e6   FLAGGED
+wide n=100 hd    frame_s 1.541->4.445 x2.89  parallelism 3.57->2.24  khz 2.154e6->1.722e6  FLAGGED
+chain n=1000 tiny  build_s 6.517->15.05 x2.31  frame_s 0.398->0.5777 x1.45  khz 2.612e6->1.825e6  FLAGGED
+comp n=300 tiny    build_s 1.308->1.770 x1.35  frame_s 0.2087->0.2597 x1.24                         FLAGGED
+wide n=1000 tiny   build_s 7.001->8.783 x1.25  frame_s 0.4952->0.557 x1.12                          FLAGGED
+```
+
+The two metrics a contended host cannot fake are the parallelism and the memory columns. Parallelism fell on every HD row (3.0-3.6 to 1.9-2.2), i.e. the 4 cores were being shared; RSS before render matches After M63 to within 1 MB on every row (131, 174, 196, 191, 210, 731, 360, 1111 MB), so the engine's memory footprint is unchanged. Nothing in the build or the code between `07349f257`-era M63 and this tip is implicated by these numbers, but nothing exonerates it either; the verify step "compare.py flags nothing beyond 1.15x" is not met on this host.
+
+### Bandwidth floor (`stream_bench`, 4 threads, this contended host)
+
+`stream_bench W H N TILE`; `pass` is the node-at-a-time chain, `tiled` the cache-resident strip chain, `fused` one pass applying all N ops. Times are seconds; `pass/tiled` is the headroom that tiling alone could take from a memory-bound chain of trivial ops.
+
+| size | N | tile | pass_s | tiled_s | fused_s | pass GB/s | per node pass ms | per node tiled ms | pass/tiled |
+|---|---|---|---|---|---|---|---|---|---|
+| 1920x1080 | 30 | 64 | 0.1691 | 0.0444 | 0.1471 | 11.77 | 5.638 | 1.481 | 3.81x |
+| 1920x1080 | 30 | 128 | 0.2771 | 0.0560 | 0.2066 | 7.18 | 9.236 | 1.866 | 4.95x |
+| 1920x1080 | 30 | 256 | 0.1978 | 0.0793 | 0.1588 | 10.06 | 6.593 | 2.643 | 2.49x |
+| 1920x1080 | 100 | 64 | 0.6165 | 0.1359 | 0.4770 | 10.76 | 6.165 | 1.359 | 4.54x |
+| 1920x1080 | 100 | 128 | 0.6325 | 0.1354 | 0.5614 | 10.49 | 6.325 | 1.354 | 4.67x |
+| 1920x1080 | 100 | 256 | 0.9887 | 0.4616 | 1.0243 | 6.71 | 9.887 | 4.616 | 2.14x |
+| 3840x2160 | 30 | 128 | 0.8232 | 0.2897 | 1.1657 | 9.67 | 27.439 | 9.657 | 2.84x |
+
+The single-run rows swing by 1.5-2x (same configuration class, 7-12 GB/s) with the host's load of 6-25 during the runs, so read them as an order of magnitude: a memory-bound node costs 5-10 ms per HD node-at-a-time and 1.4-2.6 ms tiled, against about 30 ms (quiet) to 95 ms (this run) per Grade node in the engine. Fusing is not faster than tiling here (the fused loop is a single serial dependency per pixel).
+
+## M64 spike (2026-10-06, 18aab690f)
+
+`Tests/TileSpike_Test.cpp` in `build/release/Tests/Tests`, `NATRON_TILE_SPIKE=1`, `--gtest_filter='TileSpike.*'` inside `natron-dev` under `xvfb-run`. CheckerBoard -> N Grades, 1920x1080 RGBA float, frame 3.0, pool 4 threads, median of 5 warm runs. "Whole" is one frame of the tail through the M63 scheduler; "strip" is S full-width strips, each pulled on its own pool thread with its own request pass, written into the shared frame by row copy. The host was contended as above (load 24-25 at both starts, `/proc/pressure/io` some avg10 60-98), and the whole-frame chain 100 time (8.1-8.8 s) is 2.6-2.9x the quiet M63 figure (3.08 s) while chain 30 (1.2-1.3 s) is about 1.2x, so chain 100's whole-frame baseline is probably inflated (thermal throttling and neighbour load build up over the long run). Two complete runs are shown.
+
+Run 1 (load 23.7 at start, 409 s):
+
+| N | mode | strips | ms | speed-up | ms/node | pixels |
+|---|---|---|---|---|---|---|
+| 30 | whole | 1 | 1208.0 | 1.00x | 40.3 | reference |
+| 30 | strip 8 | 135 | 2516.3 | 0.48x | 83.9 | identical |
+| 30 | strip 16 | 68 | 2144.5 | 0.56x | 71.5 | identical |
+| 30 | strip 32 | 34 | 2453.9 | 0.49x | 81.8 | identical |
+| 30 | strip 64 | 17 | 2019.6 | 0.60x | 67.3 | identical |
+| 30 | strip 128 | 9 | 2204.7 | 0.55x | 73.5 | identical |
+| 30 | strip 270 | 4 | 2060.6 | 0.59x | 68.7 | identical |
+| 100 | whole | 1 | 8101.6 | 1.00x | 81.0 | reference |
+| 100 | strip 8 | 135 | 8019.7 | 1.01x | 80.2 | identical |
+| 100 | strip 16 | 68 | 7738.9 | 1.05x | 77.4 | identical |
+| 100 | strip 32 | 34 | 7450.1 | 1.09x | 74.5 | identical |
+| 100 | strip 64 | 17 | 7134.6 | 1.14x | 71.3 | identical |
+| 100 | strip 128 | 9 | 7109.4 | 1.14x | 71.1 | identical |
+| 100 | strip 270 | 4 | 7138.0 | 1.13x | 71.4 | identical |
+
+Run 2 (load 25.2 at start, 463 s):
+
+| N | mode | strips | ms | speed-up | ms/node | pixels |
+|---|---|---|---|---|---|---|
+| 30 | whole | 1 | 1293.5 | 1.00x | 43.1 | reference |
+| 30 | strip 8 | 135 | 2977.9 | 0.43x | 99.3 | identical |
+| 30 | strip 16 | 68 | 2564.0 | 0.50x | 85.5 | identical |
+| 30 | strip 32 | 34 | 2660.6 | 0.49x | 88.7 | identical |
+| 30 | strip 64 | 17 | 2081.7 | 0.62x | 69.4 | identical |
+| 30 | strip 128 | 9 | 1803.1 | 0.72x | 60.1 | identical |
+| 30 | strip 270 | 4 | 3157.7 | 0.41x | 105.3 | identical |
+| 100 | whole | 1 | 8801.7 | 1.00x | 88.0 | reference |
+| 100 | strip 8 | 135 | 10028.9 | 0.88x | 100.3 | identical |
+| 100 | strip 16 | 68 | 9351.2 | 0.94x | 93.5 | identical |
+| 100 | strip 32 | 34 | 8365.6 | 1.05x | 83.7 | identical |
+| 100 | strip 64 | 17 | 7297.4 | 1.21x | 73.0 | identical |
+| 100 | strip 128 | 9 | 7482.7 | 1.18x | 74.8 | identical |
+| 100 | strip 270 | 4 | 7505.6 | 1.17x | 75.1 | identical |
+
+Best strip pull: N=30 64 rows 2019.6 ms vs whole 1208.0 ms (0.60x; run 2: 128 rows, 0.72x); N=100 128 rows 7109.4 ms vs whole 8101.6 ms (1.14x; run 2: 64 rows, 1.21x). Pixels: `memcmp` over the RoD is identical for every strip height and both N in both runs, so Grade is RoI-invariant under strip pulls.
+
+Per-call fixed cost (one thread, `renderRoI` only, 1920-pixel rows, median of 31 runs; cost ~ a + b * area):
+
+| call | 1 row (ms) | 64 rows (ms) | a (ms) | b (ns/px) | HD est. (ms) |
+|---|---|---|---|---|---|
+| CheckerBoard | 0.2114 | 1.5323 | 0.1904 | 10.920 | 22.83 |
+| Grade + input | 0.6130 | 10.1688 | 0.4613 | 79.000 | 164.28 |
+| Grade alone | 0.4016 | 8.6365 | 0.2708 | 68.080 | 141.44 |
+
+Run 2 agrees to within 6% (Grade alone a = 0.264 ms, b = 68.5 ns/px). The fit is `Grade alone`, the Grade call minus the CheckerBoard call it pulls: a = 0.27 ms per call and b = 68 ns per pixel, i.e. 141 ms of single-thread pixel work per HD Grade. Per-call overhead for 30 Grades x 17 strips (64 rows) is 0.27 x 30 x 17 = 138 ms of CPU, 3% of the 4.2 s of pixel work, so the fixed cost alone does not explain why chain 30 strips are 0.6-0.7x of the whole frame (the whole frame also parallelises inside each Grade via the OFX multithread suite across the 4 pool threads). On the quiet host chain 100 whole frame ran at about 31 ms per node, against the 71-75 ms per node of any strip height here; the strip pull is in the same range as this run's inflated whole frame, so the 1.14-1.21x for chain 100 is a ratio against a throttled denominator and should be re-measured quiet before the gate is judged.
+
+Gate 1 (best strip-pull speed-up at least 1.3x on either chain): chain 30 best 0.60x (0.72x run 2), chain 100 best 1.14x (1.21x run 2). Both are below 1.3x on this contended host, so the literal gate result is to stop; the measurement conditions make it not decisive (see above).

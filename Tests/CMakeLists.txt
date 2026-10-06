@@ -95,6 +95,7 @@ set(Tests_SOURCES
     Shuffle_Test.cpp
     ShufflePluginList_Test.cpp
     ShuffleRender_Test.cpp
+    TileSpike_Test.cpp
     TimeVaryingLayers_Test.cpp
     TrackerLayer_Test.cpp
     Tracker_Test.cpp

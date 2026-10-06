@@ -378,5 +378,34 @@
         <file>Resources/Images/motionTypeT.png</file>
         <file>Resources/Images/patternSize.png</file>
         <file>Resources/Images/searchSize.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.GradePlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.ColorCorrectPlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.SaturationPlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.Clamp.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.Invert.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.AddPlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.MultiplyPlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.GammaPlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.MergePlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.MergePlus.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.MergeMultiply.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.MergeIn.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.MergeOut.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.MergeScreen.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.MergeMax.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.MergeMin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.MergeDifference.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.DissolvePlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.ConstantPlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.Solid.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.CheckerBoardPlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.TransformPlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.TransformMaskedPlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.CropPlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.Reformat.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.Position.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.KeyerPlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.ChromaKeyerPlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.openfx.ColorLookupPlugin.png</file>
     </qresource>
 </RCC>

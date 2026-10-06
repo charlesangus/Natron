@@ -265,7 +265,7 @@ Facts that shape the design:
     Full ctest green.
   - size: L
 
-- [ ] M67.P1.T4 — `NativeImageEffect` base: point-op kernel, in-kernel unpremult/mask/mix/pass-through, host flags
+- [x] M67.P1.T4 — `NativeImageEffect` base: point-op kernel, in-kernel unpremult/mask/mix/pass-through, host flags
   - files: `Engine/Nodes/Image/NativeImageEffect.h` (new), `Engine/Nodes/Image/NativeImageEffect.cpp` (new), `Engine/Nodes/Image/PixelKernel.h` (new), `Engine/Nodes/Image/ColorMath.h` (new), `Engine/Nodes/NativeEffectBase.h`, `Engine/Nodes/NativeEffectBase.cpp`, `Tests/Native/NativeImageEffect_Test.cpp` (new; it defines its test point op and registers it through a test-local fixture `SetUp` helper if `wmain.cpp` registration is unavoidable. If so, `wmain.cpp` is this task's, and P1.T3 has finished with it in the previous batch)
   - approach:
     - `NativeEffectBase`:
@@ -300,7 +300,7 @@ Facts that shape the design:
     Full ctest green.
   - size: L
 
-- [ ] M67.P1.T5 — Native Grade (`net.sf.openfx.GradePlugin` 3.0)
+- [x] M67.P1.T5 — Native Grade (`net.sf.openfx.GradePlugin` 3.0)
   - files: `Engine/Nodes/Color/Grade.h` (new), `Engine/Nodes/Color/Grade.cpp` (new), `Engine/AppManager.cpp`, `Tests/Native/NativeGrade_Test.cpp` (new)
   - approach:
     - Inputs: `Source`, then `Mask` (optional, `isMask`). Components RGBA, RGB, Alpha. Grouping `Color`.
@@ -1050,3 +1050,4 @@ Notes:
 - 2026-10-06 — **User decisions on the elaboration's questions:** (1) native Saturation uses the real ACES AP1 coefficients rather than copying the OFX plugin's CCIR 601 bug, with its parity case exempt for that option; (2) keep P5.T6, the native ColorLookup ramp/histogram curve background; (3) the P1.T6 gate thresholds stand as proposed. Work runs in worktree `build/wt/m64` (directory name kept so its build dirs stay valid), on branch `milestone/m67-native-core-nodes`, off #41's tip `ce575b4d2`.
 - 2026-10-06 — **B1 implemented (P1.T1–T3), not yet built.** Deviations: P1.T2 also edits `Engine/ImagePremult.cpp` and `Engine/Image.h` (shared premult helpers so both paths stay identical), the resolver is two non-const overloads, and the test plane is `specular`. P1.T3 puts NativeParity in `Tests/` (task list) rather than `Tests/Native/` (Design §6), writes one reference file per plane with `.mip<N>` in the name, and `makeParityPair` takes an `AppInstancePtr`.
 - 2026-10-06 — **B1 landed** (`e5c5120ed`, `0c0fda301`, `209406e51` on `milestone/m67-native-core-nodes`): it compiled with no fixes, targeted tests passed 64/64, and full debug ctest passed 999/999 in both scheduler modes. Assets were re-fetched for the re-pinned forks.
+- 2026-10-06 — **P1.T4/P1.T5 landed** (`593a878d6`, `0d6c0307c`): native-vs-host comparisons are bit-exact; Grade parity max diff is 0, except 2.98e-8 on multiply-offset at mipmap 0; both modes are bit-exact with 0 unplanned pulls. Deviations: divisor planning goes in the default `getComponentsNeededDefault` path (non-multiplanar effects never call the override), so OFX nodes using `hostUnPremultBy` on another layer get it planned too. **A pre-existing engine bug was fixed:** two paths cached a window-dependent identity answer computed on the project format (`getNearestNonIdentity`, `addIdentityNodesRecursively`), so those no longer cache. Traits are fixed in the subclass constructor rather than in `NativePluginDescription`. With unpremult and mask/mix both on, mix blends with the undivided source, which differs from OFX only where divisor ≤ ε. Six old tests that assume an unversioned Grade is OFX are being pinned to major 2 ahead of P2.T7.

@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: M64.P1.T1
-pm_heartbeat: 2026-10-06T00:27:53-04:00
+pm_heartbeat: 2026-10-06T04:49:53-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -176,7 +176,7 @@ future core work has solid ground to build on.
 - **Stacked milestone PRs (2026-09-22, user):** from M34 on, every milestone packages an AppImage to `build/appimages/`, opens its PR against the previous milestone's branch, runs its review round, and stays open. The next milestone branches off the previous tip, and the user checks and merges asynchronously. Fixes from a user check are merged up the stack, never rebased. See `DECISIONS/2026-09-22-stacked-milestone-prs.md`.
 - **Parallel milestones in worktrees (2026-09-23, user):** M28 and M30 run alongside M34 in worktrees under `build/wt/` (inside the container mount), each branched off `main` and PR'd against `main`, not stacked. Builds still serialize through the one natron-dev container. See `DECISIONS/2026-09-23-parallel-worktree-milestones.md`.
 
-- **Parcel 2 (2026-10-06, user):** parcel 1 (M61 → M62, PRs #34–#40) passed UAT and is being merged bottom-up by the PM. Next, M64 (tiles), then M67 (native core nodes: colour → merge/generators → spatial → keying/misc), each stacked on the previous branch starting from M63's #41, for one UAT. M68 (headless GL, ex-M63.P5.T4) is deferred until the user gives the go-ahead. See `DECISIONS/2026-10-06-m67-core-node-families.md`.
+- **Parcel 2 (2026-10-06, user):** parcel 1 (M61 → M62, PRs #34–#40) passed UAT and **merged 2026-10-06** (squashes a83bc9a7f … 1c2f9d62e on `main`; fork PRs merged with merge commits and re-pinned in d1111ef8f, which rode #40). #41 now targets `main` (head ce575b4d2). Next, M64 (tiles), then M67 (native core nodes: colour → merge/generators → spatial → keying/misc), each stacked on the previous branch starting from M63's #41, for one UAT. M68 (headless GL, ex-M63.P5.T4) is deferred until the user gives the go-ahead. See `DECISIONS/2026-10-06-m67-core-node-families.md`.
 
 # Board
 
@@ -209,15 +209,15 @@ future core work has solid ground to build on.
 | M38 | Layer/channel selection widget: process-in-place, no implicit shuffling (absorbs M35) | done | [M38-channel-layer-ui-organization.md](PLAN/MILESTONES/M38-channel-layer-ui-organization.md) |
 | M43 | ~~Drop the premultiplied/unpremultiplied concept~~ (folded into M38 Phase 38.2) | cancelled | [M43-drop-premult-concept.md](PLAN/MILESTONES/M43-drop-premult-concept.md) |
 | M34 | New native Shuffle node | done | [M34-new-native-shuffle-node.md](PLAN/MILESTONES/M34-new-native-shuffle-node.md) |
-| M61 | Layers that vary with time: per-frame layer reporting and Shuffle render-time validation | blocked | [M61-layers-that-vary-with-time.md](PLAN/MILESTONES/M61-layers-that-vary-with-time.md) |
-| M65 | rgba, rgb, alpha and xy replace the Color layer (clean break) | blocked | [M65-rgba-rgb-alpha-layers.md](PLAN/MILESTONES/M65-rgba-rgb-alpha-layers.md) |
-| M66 | Remaining OFX plugins accept alpha-only streams (the 12 moderate ones from M65's survey) | blocked | [M66-plugin-alpha-only-moderate.md](PLAN/MILESTONES/M66-plugin-alpha-only-moderate.md) |
+| M61 | Layers that vary with time: per-frame layer reporting and Shuffle render-time validation | done | [M61-layers-that-vary-with-time.md](PLAN/MILESTONES/M61-layers-that-vary-with-time.md) |
+| M65 | rgba, rgb, alpha and xy replace the Color layer (clean break) | done | [M65-rgba-rgb-alpha-layers.md](PLAN/MILESTONES/M65-rgba-rgb-alpha-layers.md) |
+| M66 | Remaining OFX plugins accept alpha-only streams (the 12 moderate ones from M65's survey) | done | [M66-plugin-alpha-only-moderate.md](PLAN/MILESTONES/M66-plugin-alpha-only-moderate.md) |
 | M35 | ~~Remove implicit output-plane shuffling from non-Shuffle nodes~~ (folded into M38) | cancelled | [M35-remove-implicit-shuffle-elsewhere.md](PLAN/MILESTONES/M35-remove-implicit-shuffle-elsewhere.md) |
 | M36 | ~~Add "new channel/layer" affordance wherever a node outputs channels~~ (folded into M38 Phase 38.7) | cancelled | [M36-new-channel-affordance.md](PLAN/MILESTONES/M36-new-channel-affordance.md) |
-| M37 | Channel/layer management nodes | blocked | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |
-| M50 | Proper OCIO support as a project property | blocked | [M50-proper-ocio-support.md](PLAN/MILESTONES/M50-proper-ocio-support.md) |
-| M60 | Deep images get layers/channels like flat images | blocked | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
-| M62 | Render scaling: fix the algorithmic hotspots (bench harness, O(N²)/exponential walks, TLS copy, host copies) | blocked | [M62-render-scaling-hotspots.md](PLAN/MILESTONES/M62-render-scaling-hotspots.md) |
+| M37 | Channel/layer management nodes | done | [M37-channel-management-nodes.md](PLAN/MILESTONES/M37-channel-management-nodes.md) |
+| M50 | Proper OCIO support as a project property | done | [M50-proper-ocio-support.md](PLAN/MILESTONES/M50-proper-ocio-support.md) |
+| M60 | Deep images get layers/channels like flat images | done | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
+| M62 | Render scaling: fix the algorithmic hotspots (bench harness, O(N²)/exponential walks, TLS copy, host copies) | done | [M62-render-scaling-hotspots.md](PLAN/MILESTONES/M62-render-scaling-hotspots.md) |
 | M63 | Task-graph render scheduler | blocked | [M63-task-graph-render-scheduler.md](PLAN/MILESTONES/M63-task-graph-render-scheduler.md) |
 | M64 | Tiled / fused rendering for bandwidth-bound chains | doing | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
 | M67 | Rewrite core nodes as native nodes (stub) | todo | [M67-native-core-nodes.md](PLAN/MILESTONES/M67-native-core-nodes.md) |
@@ -268,4 +268,3 @@ future core work has solid ground to build on.
 # Open questions
 
 - **M63 awaits the parcel-2 UAT (PR #41):** gate green, two review rounds closed. AppImage `build/appimages/M63-18aab690f.AppImage` with `build/appimages/M63-uat.md`. It will be UAT'd together with M64 and M67 on top.
-- **Parcel 1 merge in progress (PM):** fork PRs first (merge commits, branches kept so pinned SHAs stay reachable), then #34 → #40 squash-merged bottom-up, with `main` merged into each next branch (no rebase). The re-pin of `fetch-assets.sh`/`libs/OpenFX` rides on #40. The `BASELINE.md` refresh on `main` folds into M64's re-baseline.

@@ -96,10 +96,10 @@ inline KnobChoicePtr
 addLuminanceMathKnob(KnobHolder* holder,
                      const KnobPagePtr& page)
 {
-    KnobChoicePtr knob = AppManager::createKnob<KnobChoice>(holder, kColorMathParamLuminanceMathLabel);
+    KnobChoicePtr knob = AppManager::createKnob<KnobChoice>(holder, std::string(kColorMathParamLuminanceMathLabel));
 
     knob->setName(kColorMathParamLuminanceMath);
-    knob->setHintToolTip(kColorMathParamLuminanceMathHint);
+    knob->setHintToolTip(std::string(kColorMathParamLuminanceMathHint));
     std::vector<ChoiceOption> options;
     options.push_back(ChoiceOption("rec709", "Rec. 709", "Use Rec. 709 (0.2126r + 0.7152g + 0.0722b)."));
     options.push_back(ChoiceOption("rec2020", "Rec. 2020", "Use Rec. 2020 (0.2627r + 0.6780g + 0.0593b)."));

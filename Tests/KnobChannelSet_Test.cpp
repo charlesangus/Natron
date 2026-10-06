@@ -314,6 +314,19 @@ TEST(KnobChannelSet, RegexMatchesViewLabelsNotTheStorageLabel)
     EXPECT_EQ(std::string("rgba, diffuse, motion, depth, specular"), knob->getSummary(presentLayers()));
 }
 
+TEST(KnobChannelSet, ShortSummaryCountsTheItemsThatDoNotFit)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setRegex(0, ".*");
+    EXPECT_EQ(std::string("rgba, diffuse +3"), knob->getShortSummary(presentLayers(), 14));
+    EXPECT_EQ(std::string("rgba +4"), knob->getShortSummary(presentLayers(), 4));
+    EXPECT_EQ(std::string("rgba, diffuse, motion, depth, specular"), knob->getShortSummary(presentLayers(), 100));
+
+    knob->setRegex(0, "specular");
+    EXPECT_EQ(std::string("specular"), knob->getShortSummary(presentLayers(), 1));
+}
+
 TEST(KnobChannelSet, RegexExcludedChannelsApplyToColorViews)
 {
     KnobChannelSetPtr knob = makeKnob();
@@ -520,6 +533,82 @@ TEST(KnobChannelSet, SetExcludedChannelsOnlyValidOnRegexRow)
     knob->setRegex(0, "spec.*");
     EXPECT_NO_THROW(knob->setExcludedChannels(0, channels("G")));
     EXPECT_EQ(channels("G"), knob->getExcludedChannels(0));
+}
+
+TEST(KnobChannelSet, WithoutChannelButtonsALayerRowResolvesToEveryChannel)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    EXPECT_TRUE(knob->getWithChannelButtons());
+
+    std::vector<std::string> r = channels("R");
+    knob->setLayer(0, "diffuse", &r);
+
+    std::vector<ResolvedLayer> resolved = knob->resolve(presentLayers());
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::bitset<4>(std::string("0001")), resolved[0].channels);
+
+    knob->setWithChannelButtons(false);
+    EXPECT_FALSE(knob->getWithChannelButtons());
+    resolved = knob->resolve(presentLayers());
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::string("diffuse"), resolved[0].desc.getLayerID());
+    EXPECT_EQ(std::bitset<4>(std::string("0111")), resolved[0].channels);
+}
+
+TEST(KnobChannelSet, WithoutChannelButtonsAColorViewRowIgnoresItsStoredChannels)
+{
+    KnobChannelSetPtr knob = makeKnob();
+    std::list<ImageLayerDesc> rgba;
+    std::list<ImageLayerDesc> rgb;
+
+    rgba.push_back(ImageLayerDesc::getRGBAComponents());
+    rgb.push_back(ImageLayerDesc::getRGBComponents());
+
+    std::vector<std::string> rgbChannels = channels("R", "G", "B");
+    knob->setLayer(0, kNatronColorViewRGBA, &rgbChannels);
+    knob->setWithChannelButtons(false);
+
+    std::vector<ResolvedLayer> resolved = knob->resolve(rgba);
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::bitset<4>(std::string("1111")), resolved[0].channels);
+    EXPECT_TRUE(resolved[0].zeroChannels.none());
+
+    resolved = knob->resolve(rgb);
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::bitset<4>(std::string("1111")), resolved[0].channels);
+    EXPECT_EQ(std::bitset<4>(std::string("1000")), resolved[0].zeroChannels);
+}
+
+TEST(KnobChannelSet, WithoutChannelButtonsSettingChannelsThrows)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setWithChannelButtons(false);
+    EXPECT_THROW(knob->setChannels(0, channels("R")), std::invalid_argument);
+
+    knob->setNone();
+    EXPECT_THROW(knob->setChannels(0, channels("R")), std::invalid_argument);
+    EXPECT_EQ(ChannelSetRow::eModeNone, knob->getRows()[0].mode);
+
+    knob->setRegex(0, "spec.*");
+    EXPECT_THROW(knob->setExcludedChannels(0, channels("G")), std::invalid_argument);
+}
+
+TEST(KnobChannelSet, WithoutChannelButtonsARegexRowIgnoresItsExclusions)
+{
+    KnobChannelSetPtr knob = makeKnob();
+
+    knob->setRegex(0, "spec.*");
+    knob->setExcludedChannels(0, channels("G"));
+    knob->setWithChannelButtons(false);
+
+    std::list<ImageLayerDesc> present;
+    present.push_back(makeLayer("specular", channels("R", "G", "B")));
+
+    std::vector<ResolvedLayer> resolved = knob->resolve(present);
+    ASSERT_EQ(1u, resolved.size());
+    EXPECT_EQ(std::bitset<4>(std::string("0111")), resolved[0].channels);
 }
 
 TEST(KnobChannelSet, InvalidRegexResolvesToNothing)

@@ -154,6 +154,7 @@ LayerChannelRow::LayerChannelRow(ModeEnum mode,
     , _regexChannels()
     , _regexExcludedChannels()
     , _withChannelButtons(false)
+    , _setRowWithChannelButtons(true)
     , _allowNone(false)
     , _allowAll(false)
     , _absentMarker()
@@ -288,6 +289,23 @@ LayerChannelRow::setSetRowValue(SetRowModeEnum mode,
     rebuildChannelButtons();
     refreshPatternValidity();
     refreshVisibility();
+}
+
+void
+LayerChannelRow::setSetRowWithChannelButtons(bool withChannelButtons)
+{
+    if (_setRowWithChannelButtons == withChannelButtons) {
+        return;
+    }
+    _setRowWithChannelButtons = withChannelButtons;
+    rebuildChannelButtons();
+    refreshVisibility();
+}
+
+bool
+LayerChannelRow::getSetRowWithChannelButtons() const
+{
+    return _setRowWithChannelButtons;
 }
 
 void
@@ -654,7 +672,7 @@ LayerChannelRow::rebuildCombo()
                                       currentValueLabel() + QLatin1Char(' ') + _absentMarker));
     }
 
-    if (_mode == eModeLayerSelect && _listNewLayerEntry) {
+    if ((_mode == eModeLayerSelect || isSetRow) && _listNewLayerEntry) {
         if (!_entries.empty()) {
             _entries.back().separatorAfter = true;
         }
@@ -767,7 +785,7 @@ LayerChannelRow::rebuildChannelButtons()
 
     placeButtonsContainer(isRegexRow);
 
-    if (isLayerSelectNoneOrAll) {
+    if (isLayerSelectNoneOrAll || (isSetRow && !_setRowWithChannelButtons)) {
         return;
     }
 
@@ -809,9 +827,9 @@ LayerChannelRow::refreshVisibility()
     bool isSetRow = (_mode == eModeSetRow0) || (_mode == eModeSetRowN);
     bool isRegexRow = isSetRow && (_setRowMode == eSetRowModeRegex);
     bool isLayerSelectNoneOrAll = (_mode == eModeLayerSelect) && (_layerID.empty() || _layerID == kNatronLayerSelectAll);
-    bool showButtons = (isSetRow && _setRowMode == eSetRowModeLayer) || (_mode == eModeLayerSelect && _withChannelButtons && !isLayerSelectNoneOrAll);
+    bool showButtons = (isSetRow && _setRowWithChannelButtons && _setRowMode == eSetRowModeLayer) || (_mode == eModeLayerSelect && _withChannelButtons && !isLayerSelectNoneOrAll);
     bool showPattern = isRegexRow;
-    bool showRegexButtons = isRegexRow && !_regexChannels.empty();
+    bool showRegexButtons = isRegexRow && _setRowWithChannelButtons && !_regexChannels.empty();
 
     _buttonsContainer->setVisible(showButtons || showRegexButtons);
     _patternEdit->setVisible(showPattern);

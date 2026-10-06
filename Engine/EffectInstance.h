@@ -1117,6 +1117,15 @@ public:
         return true;
     }
 
+    // True when the colour plane this effect produces implicitly can only be made from its
+    // pass-through input's colour, as for an encoder writing that input out: when the input has
+    // no colour plane, the effect then produces none either. Also asked of a Read/Write container
+    // on behalf of the effect embedded in it.
+    virtual bool producesColorOnlyFromPassThroughInput() const
+    {
+        return false;
+    }
+
     enum PassThroughEnum {
         ePassThroughBlockNonRenderedLayers,
         ePassThroughPassThroughNonRenderedLayers,
@@ -1126,6 +1135,14 @@ public:
     virtual EffectInstance::PassThroughEnum isPassThroughForNonRenderedLayers() const
     {
         return ePassThroughPassThroughNonRenderedLayers;
+    }
+
+    // Lets a node hide some of the layers it would otherwise pass through from its pass-through
+    // input. Called with that input's (time, view) on the list of storage-level layers about to be
+    // reported as passed through. An override may drop entries, including the colour storage
+    // entry, but must never add or reshape them.
+    virtual void filterPassThroughLayers(double /*time*/, ViewIdx /*view*/, std::list<ImageLayerDesc>* /*layers*/)
+    {
     }
 
     virtual bool isViewAware() const
@@ -2136,9 +2153,12 @@ public:
      * view they are read at: the input this effect is an identity of there, otherwise the
      * preferred input at (time, view). Called again while its own identity query is running,
      * it answers the preferred input at (time, view) without asking isIdentity() again.
+     * `isIdentity`, when given, tells whether the input was chosen because this effect is an
+     * identity of it, in which case no other input contributes at (time, view).
      **/
     void getLayersPassThroughInput(double time, ViewIdx view,
-                                   int* inputNb, double* inputTime, ViewIdx* inputView);
+                                   int* inputNb, double* inputTime, ViewIdx* inputView,
+                                   bool* isIdentity = NULL);
 
 private:
     bool isResolvingLayersPassThrough() const;

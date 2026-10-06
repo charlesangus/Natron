@@ -213,6 +213,23 @@ public:
     void setAll();
 
     /**
+     * @brief Whether rows may narrow a layer to chosen channels. Set once by the node that
+     * creates the knob: it describes the node kind, not a project value, so it is a plain
+     * member and is never persisted. With it off, resolve() ignores every row's stored
+     * channels and selects whole layers, and setChannels()/setExcludedChannels() throw
+     * std::invalid_argument.
+     **/
+    void setWithChannelButtons(bool withChannelButtons)
+    {
+        _withChannelButtons = withChannelButtons;
+    }
+
+    bool getWithChannelButtons() const
+    {
+        return _withChannelButtons;
+    }
+
+    /**
      * @brief channelsOrAll == NULL stores an empty channel list, which resolves to every
      * channel of the layer that is present at resolve() time. Throws std::invalid_argument
      * if another eModeLayer row already names layerID.
@@ -265,6 +282,16 @@ public:
      **/
     std::string getSummary(const std::list<ImageLayerDesc>& present) const;
 
+    /**
+     * @brief Same items as getSummary(present), but only as many as fit in maxLength
+     * characters (always at least one), followed by " +N" for the N left out. For text
+     * with little room, such as a node's sublabel in the node graph.
+     **/
+    std::string getShortSummary(const std::list<ImageLayerDesc>& present, std::size_t maxLength) const;
+
+    // Sized so that a sublabel line stays about as wide as a node box at the default zoom.
+    static const std::size_t kSubLabelSummaryLength = 10;
+
     void getReferencedLayerIDs(std::set<std::string>* layerIDs) const;
 
     std::string encodeRows(const std::vector<ChannelSetRow>& rows);
@@ -280,6 +307,8 @@ private:
 
     void getRowsAndPatterns(std::vector<ChannelSetRow>* rows, std::vector<QRegularExpression>* patterns) const;
 
+    std::vector<std::string> getSummaryItems(const std::list<ImageLayerDesc>& present) const;
+
     void setRowAt(int row, const ChannelSetRow& value);
 
     static const std::string _typeNameStr;
@@ -289,6 +318,7 @@ private:
     mutable std::string _cachedRaw;
     mutable std::vector<ChannelSetRow> _cachedRows;
     mutable std::vector<QRegularExpression> _cachedPatterns;
+    bool _withChannelButtons;
 };
 
 NATRON_NAMESPACE_EXIT

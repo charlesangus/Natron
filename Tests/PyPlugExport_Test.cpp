@@ -51,6 +51,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Channel/AddLayers.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Project.h"
 #include "Engine/PyNode.h"
@@ -947,6 +948,83 @@ TEST_F(PyPlugExportTest, GetAvailableLayersStartsWithColorViews)
     EXPECT_EQ(QString::fromUtf8(kNatronColorViewRGB), it->getLayerName());
     ++it;
     EXPECT_EQ(QString::fromUtf8(kNatronColorViewAlpha), it->getLayerName());
+
+    project->reset(false, true);
+}
+
+// The colour views name the built-in colour plane, so only the user layer needs recreating,
+// and it has to exist before the AddLayers node that names it is created.
+TEST_F(PyPlugExportTest, AddLayersExportRecreatesItsProjectLayerAndRoundTrips)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+
+    std::vector<std::string> channels(1, "A");
+    std::string error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", "mask", "", channels), LayerRegistryEntry::eOriginUser, &error)) << error;
+
+    CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    NodePtr groupNode = getApp()->createNode(groupArgs);
+    ASSERT_TRUE(bool(groupNode));
+    NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(groupNode->getEffectInstance());
+    ASSERT_TRUE(bool(group));
+    NodeCollectionPtr collection = std::dynamic_pointer_cast<NodeCollection>(group);
+    ASSERT_TRUE(bool(collection));
+
+    CreateNodeArgs addArgs(PLUGINID_NATRON_ADDLAYERS, collection);
+    NodePtr add = getApp()->createNode(addArgs);
+    ASSERT_TRUE(bool(add));
+    const std::string addScriptName = add->getScriptName();
+
+    KnobChannelSetPtr layers = std::dynamic_pointer_cast<KnobChannelSet>(add->getKnobByName(kAddLayersParamLayers));
+    ASSERT_TRUE(bool(layers));
+    layers->setLayer(0, "mask", NULL);
+    layers->addLayer(kNatronColorViewRGBA, NULL);
+    const std::vector<ChannelSetRow> exportedRows = layers->getRows();
+    ASSERT_EQ(std::size_t(2), exportedRows.size());
+
+    QString output;
+    group->exportGroupToPython(QString::fromUtf8("test.pyplug.addlayers"), QString::fromUtf8("AddLayersGroup"), QString(), QString(), QString::fromUtf8("Other"), 1, output);
+
+    const QString maskLine = QString::fromUtf8(kExpectedMaskLine);
+    EXPECT_EQ(1, output.count(maskLine));
+    EXPECT_EQ(1, output.count(QString::fromUtf8("addProjectLayer")));
+
+    const QString nodeCreation = QString::fromUtf8("\"") + QString::fromUtf8(PLUGINID_NATRON_ADDLAYERS) + QString::fromUtf8("\"");
+    const int maskLineIndex = output.indexOf(maskLine);
+    const int nodeCreationIndex = output.indexOf(nodeCreation);
+    ASSERT_NE(-1, maskLineIndex);
+    ASSERT_NE(-1, nodeCreationIndex);
+    EXPECT_LT(maskLineIndex, nodeCreationIndex);
+
+    project->reset(false, true);
+    ImageLayerDesc unused;
+    ASSERT_FALSE(project->findLayer("mask", &unused));
+
+    std::string interpError, interpOutput;
+    ASSERT_TRUE(interpretPythonScript(output.toStdString(), &interpError, &interpOutput)) << interpError;
+
+    CreateNodeArgs containerArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+    containerArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+    NodePtr container = getApp()->createNode(containerArgs);
+    ASSERT_TRUE(bool(container));
+
+    std::string appVar = getApp()->getAppIDString();
+    std::string callScript = "createInstance(" + appVar + ", " + appVar + "." + container->getFullyQualifiedName() + ")\n";
+    ASSERT_TRUE(interpretPythonScript(callScript, &interpError, &interpOutput)) << interpError;
+
+    ImageLayerDesc found;
+    ASSERT_TRUE(project->findLayer("mask", &found));
+    EXPECT_EQ(channels, found.getChannels());
+
+    NodeCollectionPtr containerCollection = std::dynamic_pointer_cast<NodeCollection>(container->getEffectInstance());
+    ASSERT_TRUE(bool(containerCollection));
+    NodePtr add2 = containerCollection->getNodeByName(addScriptName);
+    ASSERT_TRUE(bool(add2));
+    KnobChannelSetPtr layers2 = std::dynamic_pointer_cast<KnobChannelSet>(add2->getKnobByName(kAddLayersParamLayers));
+    ASSERT_TRUE(bool(layers2));
+    EXPECT_EQ(exportedRows, layers2->getRows());
 
     project->reset(false, true);
 }

@@ -27,6 +27,7 @@
 
 #include <stdexcept>
 
+#include <QStyle>
 #include <QTabBar>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 //// /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
@@ -98,16 +99,26 @@ DockablePanelTabWidget::keyPressEvent(QKeyEvent* event)
     }
 }
 
+int
+DockablePanelTabWidget::getTabBarAndFrameHeight() const
+{
+    // The tab bar's height follows the font and style, so a fixed allowance can leave the
+    // page shorter than its minimum and squeeze its rows over one another.
+    const int tabBarHeight = tabBar()->isHidden() ? 0 : tabBar()->sizeHint().height();
+
+    return tabBarHeight + 2 * style()->pixelMetric(QStyle::PM_DefaultFrameWidth, 0, this);
+}
+
 QSize
 DockablePanelTabWidget::sizeHint() const
 {
-    return currentWidget() ? currentWidget()->sizeHint() + QSize(0, 20) : QSize(300, 100);
+    return currentWidget() ? currentWidget()->sizeHint() + QSize(0, getTabBarAndFrameHeight()) : QSize(300, 100);
 }
 
 QSize
 DockablePanelTabWidget::minimumSizeHint() const
 {
-    return currentWidget() ? currentWidget()->minimumSizeHint() + QSize(0, 20) : QSize(300, 100);
+    return currentWidget() ? currentWidget()->minimumSizeHint() + QSize(0, getTabBarAndFrameHeight()) : QSize(300, 100);
 }
 
 NATRON_NAMESPACE_EXIT

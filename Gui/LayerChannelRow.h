@@ -90,7 +90,7 @@ public:
     ModeEnum getMode() const;
 
     /**
-     * @brief Replaces the layers the combo offers. In layer-select mode listNewLayerEntry
+     * @brief Replaces the layers the combo offers. In layer-select and set-row modes listNewLayerEntry
      * appends a "New layer..." entry after a separator. The current value is kept and
      * re-resolved against the new list.
      **/
@@ -110,6 +110,15 @@ public:
     void setSetRowValue(SetRowModeEnum mode,
                         const std::string& layerOrPattern,
                         const std::vector<std::string>& enabledChannels);
+
+    /**
+     * @brief Set-row modes only: whether layer rows (colour views included) show their channel
+     * buttons and regex rows their channel-toggle line. Defaults to true. The "matches:" label
+     * is unaffected.
+     **/
+    void setSetRowWithChannelButtons(bool withChannelButtons);
+
+    bool getSetRowWithChannelButtons() const;
 
     /// Layer-select mode only.
     void setLayerSelectValue(const std::string& layerID,
@@ -225,6 +234,7 @@ private:
     std::vector<std::string> _regexChannels;
     std::set<std::string> _regexExcludedChannels;
     bool _withChannelButtons;
+    bool _setRowWithChannelButtons;
     bool _allowNone;
     bool _allowAll;
     QString _absentMarker;

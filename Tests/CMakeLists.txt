@@ -21,6 +21,8 @@ set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h DataKindTestEffect.h Dee
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
+    AddLayers_Test.cpp
+    AddLayersRender_Test.cpp
     BaseTest.cpp
     ChannelSetRender_Test.cpp
     CLArgs_Test.cpp
@@ -62,6 +64,8 @@ set(Tests_SOURCES
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
     ReadFormat_Test.cpp
+    RemoveLayers_Test.cpp
+    RemoveLayersRender_Test.cpp
     RenderRange_Test.cpp
     RotoLayer_Test.cpp
     Shuffle_Test.cpp

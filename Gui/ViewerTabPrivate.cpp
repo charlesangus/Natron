@@ -380,15 +380,25 @@ ViewerTabPrivate::getComponentsAvailabel(double time,
 
     viewerNode->getActiveInputs(activeInputIdx[0], activeInputIdx[1]);
     EffectInstancePtr activeInput[2] = { EffectInstancePtr(), EffectInstancePtr() };
+    bool anyInput = false;
+    bool hasColor = false;
     for (int i = 0; i < 2; ++i) {
         activeInput[i] = viewerNode->getInput(activeInputIdx[i]);
         if (activeInput[i]) {
+            anyInput = true;
             std::list<ImageLayerDesc> compsAvailable;
             activeInput[i]->getPresentLayers(time, view, -1, &compsAvailable);
             for (std::list<ImageLayerDesc>::iterator it = compsAvailable.begin(); it != compsAvailable.end(); ++it) {
+                hasColor = hasColor || it->isColorLayer();
                 comps->insert(*it);
             }
         }
+    }
+
+    // A stream whose colour plane was removed upstream still lists the colour views, which read
+    // zero there, as every other layer menu does.
+    if (anyInput && !hasColor) {
+        comps->insert(ImageLayerDesc::getRGBAComponents());
     }
 }
 

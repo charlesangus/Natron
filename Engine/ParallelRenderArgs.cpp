@@ -633,10 +633,6 @@ static void
 getAllUpstreamNodesRecursiveWithDependencies_internal(const NodePtr& node,
                                                       FindDependenciesMap& finalNodes)
 {
-    //There may be cases where nodes gets added to the finalNodes in getAllExpressionDependenciesRecursive(), but we still
-    //want to recurse upstream for them too
-    bool foundButDidntRecursivelyCallUpstream = false;
-
     if ( !node || !node->isNodeCreated() ) {
         return;
     }
@@ -646,37 +642,34 @@ getAllUpstreamNodesRecursiveWithDependencies_internal(const NodePtr& node,
         if (found != finalNodes.end()) {
             if (found->second.recursed) {
                 ++found->second.visitCounter;
-                //We already called getAllUpstreamNodesRecursiveWithDependencies on its inputs
-                return;
-            } else {
-                //Now we set the recurse flag below
-                finalNodes.erase(found);
-                foundButDidntRecursivelyCallUpstream = true;
-            }
 
+                return;
+            }
+            finalNodes.erase(found);
         }
     }
-    
+
     {
-        //Add this node to the set
         FindDependenciesNode n;
         n.recursed = true;
         n.visitCounter = 1;
-        finalNodes.insert(std::make_pair(node,n));
+        finalNodes.insert(std::make_pair(node, n));
     }
 
-    //If we already called it, don't do it again
-    if (!foundButDidntRecursivelyCallUpstream) {
-        std::set<NodePtr> expressionsDeps;
-        node->getEffectInstance()->getAllExpressionDependenciesRecursive(expressionsDeps);
-
-        //Also add all expression dependencies but mark them as we did not recursed on them yet
-        for (std::set<NodePtr>::iterator it = expressionsDeps.begin(); it != expressionsDeps.end(); ++it) {
-            FindDependenciesNode n;
-            n.recursed = false;
-            n.visitCounter = 0;
-            finalNodes.insert(std::make_pair(node, n));
+    // Expression dependencies are already transitive through knobs, and the render never pulls images from them, so
+    // they get frame args with no visit and their inputs are not walked; if the render does reach one through an
+    // input later, the branch above upgrades it to a visited node.
+    std::set<NodePtr> expressionsDeps;
+    node->getEffectInstance()->getAllExpressionDependenciesRecursive(expressionsDeps);
+    for (std::set<NodePtr>::iterator it = expressionsDeps.begin(); it != expressionsDeps.end(); ++it) {
+        const NodePtr& dep = *it;
+        if (!dep || !dep->isNodeCreated() || !dep->getEffectInstance()) {
+            continue;
         }
+        FindDependenciesNode n;
+        n.recursed = false;
+        n.visitCounter = 0;
+        finalNodes.insert(std::make_pair(dep, n));
     }
 
     int maxInputs = node->getNInputs();
@@ -687,7 +680,6 @@ getAllUpstreamNodesRecursiveWithDependencies_internal(const NodePtr& node,
         }
     }
 } // getAllUpstreamNodesRecursiveWithDependencies_internal
-
 
 ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
                                                    ViewIdx view,
@@ -700,8 +692,9 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
                                                    const NodePtr& activeRotoPaintNode,
                                                    bool isAnalysis,
                                                    bool draftMode,
-                                                   const RenderStatsPtr& stats)
-    :  argsMap()
+                                                   const RenderStatsPtr& stats,
+                                                   bool setUpstreamArgs)
+    : argsMap()
 {
     assert(treeRoot);
 
@@ -719,9 +712,16 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
     bool doNanHandling = appPTR->getCurrentSettings()->isNaNHandlingEnabled();
 
     FindDependenciesMap dependenciesMap;
-    getAllUpstreamNodesRecursiveWithDependencies_internal(treeRoot, dependenciesMap);
+    if (setUpstreamArgs) {
+        getAllUpstreamNodesRecursiveWithDependencies_internal(treeRoot, dependenciesMap);
+    } else if (treeRoot->isNodeCreated()) {
+        FindDependenciesNode n;
+        n.recursed = true;
+        n.visitCounter = 1;
+        dependenciesMap.insert(std::make_pair(treeRoot, n));
+    }
 
-
+    std::map<const EffectInstance*, bool> frameVaryingMemo;
     for (FindDependenciesMap::iterator it = dependenciesMap.begin(); it != dependenciesMap.end(); ++it) {
 
         const NodePtr& node = it->first;
@@ -742,6 +742,15 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
             U64 nodeHash = node->getHashValue();
             liveInstance->setParallelRenderArgsTLS(time, view, isRenderUserInteraction, isSequential, nodeHash,
                                                    abortInfo, treeRoot, it->second.visitCounter, NodeFrameRequestPtr(), glContext,  textureIndex, timeline, isAnalysis, duringPaintStrokeCreation, rotoPaintNodes, safety, glSupport, doNanHandling, draftMode, stats);
+        }
+        // Only nodes the render pulls through inputs get the value: walking upstream of an expression dependency, or
+        // of the lone root when upstream args are skipped, would visit nodes this setter never collected.
+        if (setUpstreamArgs && it->second.recursed) {
+            ParallelRenderArgsPtr installed = liveInstance->getParallelRenderArgsTLS();
+            if (installed) {
+                installed->isFrameVaryingOrAnimated = liveInstance->isFrameVaryingOrAnimated_Recursive(&frameVaryingMemo);
+                installed->frameVaryingComputed = true;
+            }
         }
         for (NodesList::iterator it2 = rotoPaintNodes.begin(); it2 != rotoPaintNodes.end(); ++it2) {
             U64 nodeHash = (*it2)->getHashValue();
@@ -897,6 +906,8 @@ ParallelRenderArgs::ParallelRenderArgs()
     , doNansHandling(true)
     , draftMode(false)
     , tilesSupported(false)
+    , isFrameVaryingOrAnimated(false)
+    , frameVaryingComputed(false)
 {
 }
 

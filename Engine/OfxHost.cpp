@@ -1220,13 +1220,10 @@ threadFunctionWrapper(OfxThreadFunctionV1 func,
                                                            boost_adaptbx::floating_point::exception_trapping::overflow);
 #endif
     assert(threadIndex < threadMax);
+    // Before any thread-local data is fetched: registering the spawner drops what the thread kept.
+    AppTLS::SpawnedThreadScope spawnedThreadTLS(spawnerThread);
     OfxHost::OfxHostDataTLSPtr tls = appPTR->getOFXHost()->getTLSData();
     tls->threadIndexes.push_back( (int)threadIndex );
-
-    QThread* spawnedThread = QThread::currentThread();
-    if (spawnedThread != spawnerThread) {
-        appPTR->getAppTLS()->softCopy(spawnerThread, spawnedThread);
-    }
 
     OfxStatus ret = kOfxStatOK;
     try {
@@ -1243,10 +1240,6 @@ threadFunctionWrapper(OfxThreadFunctionV1 func,
 
     ///reset back the index otherwise it could mess up the indexes if the same thread is re-used
     tls->threadIndexes.pop_back();
-
-    if (spawnedThread != spawnerThread) {
-        appPTR->getAppTLS()->cleanupTLSForThread();
-    }
 
     return ret;
 }
@@ -1282,24 +1275,22 @@ public:
                                                                boost_adaptbx::floating_point::exception_trapping::overflow);
 #endif
        assert(_threadIndex < _threadMax);
-        OfxHost::OfxHostDataTLSPtr tls = appPTR->getOFXHost()->getTLSData();
-        tls->threadIndexes.push_back( (int)_threadIndex );
+       // Before any thread-local data is fetched: registering the spawner drops what the thread kept.
+       AppTLS::SpawnedThreadScope spawnedThreadTLS(_spawnerThread);
+       OfxHost::OfxHostDataTLSPtr tls = appPTR->getOFXHost()->getTLSData();
+       tls->threadIndexes.push_back((int)_threadIndex);
 
-        appPTR->getAppTLS()->softCopy(_spawnerThread, this);
-
-        assert(*_stat == kOfxStatFailed);
-        try {
-            _func(_threadIndex, _threadMax, _customArg);
-            *_stat = kOfxStatOK;
-        } catch (const std::bad_alloc & ba) {
-            *_stat = kOfxStatErrMemory;
-        } catch (...) {
-        }
+       assert(*_stat == kOfxStatFailed);
+       try {
+           _func(_threadIndex, _threadMax, _customArg);
+           *_stat = kOfxStatOK;
+       } catch (const std::bad_alloc& ba) {
+           *_stat = kOfxStatErrMemory;
+       } catch (...) {
+       }
 
         ///reset back the index otherwise it could mess up the indexes if the same thread is re-used
-        tls->threadIndexes.pop_back();
-
-        appPTR->getAppTLS()->cleanupTLSForThread();
+       tls->threadIndexes.pop_back();
     }
 
 private:
@@ -1438,49 +1429,7 @@ OfxHost::multiThreadNumCPUS(unsigned int *nCPUs) const
         return kOfxStatFailed;
     }
 
-    int nThreadsToRender, nThreadsPerEffect;
-    appPTR->getNThreadsSettings(&nThreadsToRender, &nThreadsPerEffect);
-
-    if (nThreadsToRender == -1) {
-        *nCPUs = 1;
-    } else {
-        // activeThreadCount may be negative (for example if releaseThread() is called)
-        int activeThreadsCount = QThreadPool::globalInstance()->activeThreadCount();
-
-        // Add the number of threads already running by the multiThreadSuite + parallel renders
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-        activeThreadsCount += appPTR->getNRunningThreads();
-#endif
-
-        // Clamp to 0
-        activeThreadsCount = std::max( 0, activeThreadsCount);
-
-        assert(activeThreadsCount >= 0);
-
-        // better than QThread::idealThreadCount();, because it can be set by a global preference:
-        int maxThreadsCount = QThreadPool::globalInstance()->maxThreadCount();
-        assert(maxThreadsCount >= 0);
-
-        if (nThreadsPerEffect == 0) {
-            ///Simple heuristic: limit 1 effect to start at most 8 threads because otherwise it might spend too much
-            ///time scheduling than just processing
-            int hwConcurrency = appPTR->getMaxThreadCount();
-
-            if (hwConcurrency <= 0) {
-                nThreadsPerEffect = 1;
-            } else {
-                nThreadsPerEffect = hwConcurrency;
-            }
-            /*else if (hwConcurrency <= NATRON_MULTI_THREAD_SUITE_MAX_NUM_CPU) {
-                nThreadsPerEffect = hwConcurrency;
-               } else {
-                nThreadsPerEffect = NATRON_MULTI_THREAD_SUITE_MAX_NUM_CPU;
-               }*/
-        }
-        ///+1 because the current thread is going to wait during the multiThread call so we're better off
-        ///not counting it.
-        *nCPUs = std::max( 1, std::min(maxThreadsCount - activeThreadsCount + 1, nThreadsPerEffect) );
-    }
+    *nCPUs = appPTR->getNCPUsAvailableForEffect();
 
     return kOfxStatOK;
 }

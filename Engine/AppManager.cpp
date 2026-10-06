@@ -46,14 +46,15 @@
 #endif
 #endif
 
+#include <algorithm>
+#include <cassert>
 #include <clocale>
 #include <csignal>
 #include <cstddef>
-#include <cassert>
-#include <stdexcept>
 #include <cstring> // for std::memcpy
-#include <sstream> // stringstream
 #include <locale>
+#include <sstream> // stringstream
+#include <stdexcept>
 
 #include <QtGlobal> // for Q_OS_*
 #if defined(Q_OS_LINUX)
@@ -2916,6 +2917,40 @@ int
 AppManager::getNRunningThreads() const
 {
     return (int)_imp->runningThreadsCount;
+}
+
+int
+AppManager::getNCPUsAvailableForEffect()
+{
+    int nThreadsToRender, nThreadsPerEffect;
+    getNThreadsSettings(&nThreadsToRender, &nThreadsPerEffect);
+
+    if (nThreadsToRender == -1) {
+        return 1;
+    }
+
+    // activeThreadCount may be negative (for example if releaseThread() is called)
+    int activeThreadsCount = QThreadPool::globalInstance()->activeThreadCount();
+
+    // Add the number of threads already running by the multiThreadSuite + parallel renders
+#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
+    activeThreadsCount += getNRunningThreads();
+#endif
+
+    activeThreadsCount = std::max(0, activeThreadsCount);
+
+    // better than QThread::idealThreadCount();, because it can be set by a global preference:
+    int maxThreadsCount = QThreadPool::globalInstance()->maxThreadCount();
+    assert(maxThreadsCount >= 0);
+
+    if (nThreadsPerEffect == 0) {
+        int hwConcurrency = getMaxThreadCount();
+
+        nThreadsPerEffect = (hwConcurrency <= 0) ? 1 : hwConcurrency;
+    }
+
+    // +1 because the calling thread waits during the parallel work, so it should not count as busy.
+    return std::max(1, std::min(maxThreadsCount - activeThreadsCount + 1, nThreadsPerEffect));
 }
 
 void

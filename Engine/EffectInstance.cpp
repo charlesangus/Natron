@@ -998,7 +998,31 @@ EffectInstance::getImage(int inputNb,
         return ImagePtr();
     }
 
-
+    // Callers outside a render (input or knob changes) only give frame args to this node; the input
+    // and its upstream get them here, for the duration of this fetch only, so renderRoI() does not
+    // fall back to pushing args it never pops.
+    ParallelRenderArgsSetterPtr inputFrameArgsSetter;
+    if (inputEffect && !useRotoInput && (!tls || !tls->currentRenderArgs.validArgs) && !inputEffect->getParallelRenderArgsTLS()) {
+        NodePtr inputNode = inputEffect->getNode();
+        if (inputNode) {
+            const bool isRenderUserInteraction = (tls && !tls->frameArgs.empty()) ? tls->frameArgs.back()->isRenderResponseToUserInteraction : true;
+            if (!renderInfo) {
+                renderInfo = AbortableRenderInfo::create(false, 0);
+            }
+            inputFrameArgsSetter = std::make_shared<ParallelRenderArgsSetter>(time,
+                                                                              view,
+                                                                              isRenderUserInteraction,
+                                                                              false, // isSequential
+                                                                              renderInfo,
+                                                                              inputNode,
+                                                                              0, // texture index
+                                                                              getApp()->getTimeLine().get(),
+                                                                              NodePtr(), // activeRotoPaintNode
+                                                                              isAnalysisPass,
+                                                                              false, // draftMode
+                                                                              RenderStatsPtr());
+        }
+    }
 
     RectD inputRoD;
     bool inputRoDSet = false;
@@ -2281,14 +2305,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(EffectInstance::Implementa
                                                       QThread* callingThread)
 {
     ///Make the thread-storage live as long as the render action is called if we're in a newly launched thread in eRenderSafetyFullySafeFrame mode
-    QThread* curThread = QThread::currentThread();
-
-    if (callingThread != curThread) {
-        ///We are in the case of host frame threading, see kOfxImageEffectPluginPropHostFrameThreading
-        ///We know that in the renderAction, TLS will be needed, so we do a deep copy of the TLS from the caller thread
-        ///to this thread
-        appPTR->getAppTLS()->copyTLS(callingThread, curThread);
-    }
+    AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, AppTLS::eSpawnKindHostFrameThreading);
 
     EffectInstance::RenderingFunctorRetEnum ret = tiledRenderingFunctor(specificData,
                                                                         args.renderFullScaleThenDownscale,
@@ -2309,9 +2326,6 @@ EffectInstance::Implementation::tiledRenderingFunctor(EffectInstance::Implementa
                                                                         args.compsNeeded,
                                                                         args.processChannels,
                                                                         args.layers);
-
-    //Exit of the host frame threading thread
-    appPTR->getAppTLS()->cleanupTLSForThread();
 
     return ret;
 }
@@ -5224,8 +5238,7 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
         QMutexLocker l(&_imp->mustSyncPrivateDataMutex);
         _imp->mustSyncPrivateData = true;
     } else if (kh && kh->isDeclaredByPlugin() && !wasFormatKnobCaught) {
-        ////We set the thread storage render args so that if the instance changed action
-        ////tries to call getImage it can render with good parameters.
+        // Upstream frame args are installed on demand by getImage if instanceChanged pulls an input.
         ParallelRenderArgsSetterPtr setter;
         if (reason != eValueChangedReasonTimeChanged) {
             AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
@@ -5236,31 +5249,33 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
                 isAbortable->setAbortInfo( isRenderUserInteraction, abortInfo, node->getEffectInstance() );
             }
 #ifdef BOOST_NO_CXX11_VARIADIC_TEMPLATES
-            setter.reset( new ParallelRenderArgsSetter( time,
-                                                        viewIdx, //view
-                                                        isRenderUserInteraction, // isRenderUserInteraction
-                                                        isSequentialRender, // isSequential
-                                                        abortInfo, // abortInfo
-                                                        node, // treeRoot
-                                                        0, //texture index
-                                                        getApp()->getTimeLine().get(),
-                                                        NodePtr(), // activeRotoPaintNode
-                                                        true, // isAnalysis
-                                                        false, // draftMode
-                                                        RenderStatsPtr() ) );
+            setter.reset(new ParallelRenderArgsSetter(time,
+                                                      viewIdx, // view
+                                                      isRenderUserInteraction, // isRenderUserInteraction
+                                                      isSequentialRender, // isSequential
+                                                      abortInfo, // abortInfo
+                                                      node, // treeRoot
+                                                      0, // texture index
+                                                      getApp()->getTimeLine().get(),
+                                                      NodePtr(), // activeRotoPaintNode
+                                                      true, // isAnalysis
+                                                      false, // draftMode
+                                                      RenderStatsPtr(),
+                                                      false)); // setUpstreamArgs
 #else
-            setter = std::make_shared<ParallelRenderArgsSetter>( time,
-                                                                  viewIdx, //view
-                                                                  isRenderUserInteraction, // isRenderUserInteraction
-                                                                  isSequentialRender, // isSequential
-                                                                  abortInfo, // abortInfo
-                                                                  node, // treeRoot
-                                                                  0, //texture index
-                                                                  getApp()->getTimeLine().get(),
-                                                                  NodePtr(), // activeRotoPaintNode
-                                                                  true, // isAnalysis
-                                                                  false, // draftMode
-                                                                  RenderStatsPtr() );
+            setter = std::make_shared<ParallelRenderArgsSetter>(time,
+                                                                viewIdx, // view
+                                                                isRenderUserInteraction, // isRenderUserInteraction
+                                                                isSequentialRender, // isSequential
+                                                                abortInfo, // abortInfo
+                                                                node, // treeRoot
+                                                                0, // texture index
+                                                                getApp()->getTimeLine().get(),
+                                                                NodePtr(), // activeRotoPaintNode
+                                                                true, // isAnalysis
+                                                                false, // draftMode
+                                                                RenderStatsPtr(),
+                                                                false); // setUpstreamArgs
 #endif
         }
         {
@@ -5703,35 +5718,46 @@ EffectInstance::checkCanSetValueAndWarn() const
 
 #endif
 
-static
-void
+static bool
 isFrameVaryingOrAnimated_impl(const EffectInstance* node,
-                              bool *ret)
+                              std::map<const EffectInstance*, bool>& memo)
 {
-    if ( node->isFrameVarying() || node->getHasAnimation() || node->getNode()->getRotoContext() ) {
-        *ret = true;
-    } else {
+    std::map<const EffectInstance*, bool>::iterator found = memo.find(node);
+    if (found != memo.end()) {
+        return found->second;
+    }
+    // Inserted as false before recursing so a node reached again while its inputs are still being walked does not loop.
+    std::map<const EffectInstance*, bool>::iterator slot = memo.insert(std::make_pair(node, false)).first;
+    bool ret = node->isFrameVarying() || node->getHasAnimation() || node->getNode()->getRotoContext();
+    if (!ret) {
         int maxInputs = node->getNInputs();
         for (int i = 0; i < maxInputs; ++i) {
             EffectInstancePtr input = node->getInput(i);
-            if (input) {
-                isFrameVaryingOrAnimated_impl(input.get(), ret);
-                if (*ret) {
-                    return;
-                }
+            if (input && isFrameVaryingOrAnimated_impl(input.get(), memo)) {
+                ret = true;
+                break;
             }
         }
     }
+    slot->second = ret;
+
+    return ret;
 }
 
 bool
 EffectInstance::isFrameVaryingOrAnimated_Recursive() const
 {
-    bool ret = false;
+    std::map<const EffectInstance*, bool> memo;
 
-    isFrameVaryingOrAnimated_impl(this, &ret);
+    return isFrameVaryingOrAnimated_impl(this, memo);
+}
 
-    return ret;
+bool
+EffectInstance::isFrameVaryingOrAnimated_Recursive(std::map<const EffectInstance*, bool>* memo) const
+{
+    assert(memo);
+
+    return isFrameVaryingOrAnimated_impl(this, *memo);
 }
 
 bool

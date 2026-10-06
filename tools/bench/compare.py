@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Compare two graph_bench.py result files and flag regressions.
+
+usage: compare.py BEFORE.jsonl AFTER.jsonl [--threshold 1.5]
+"""
+import argparse
+import json
+import statistics
+import sys
+
+# (label, record field, True if a larger value is worse)
+METRICS = [
+    ("build_s", "build_s", True),
+    ("frame_s", "frame_wall_med_s", True),
+    ("parallelism", "parallelism", False),
+    ("rss_mb", "rss_before_mb", True),
+]
+
+
+def load(path):
+    groups = {}
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            key = (rec.get("topo"), rec.get("n"), rec.get("res"), rec.get("named"))
+            groups.setdefault(key, []).append(rec)
+    return groups
+
+
+def median_of(records, field):
+    vals = [r[field] for r in records if isinstance(r.get(field), (int, float))]
+    return statistics.median(vals) if vals else None
+
+
+def fmt(v):
+    return "-" if v is None else "%.4g" % v
+
+
+def key_sort(key):
+    return tuple("" if k is None else str(k) for k in key[:1]) + (
+        key[1] if isinstance(key[1], int) else -1,
+        str(key[2]),
+        str(key[3]),
+    )
+
+
+def compare_metric(before, after, higher_is_worse, threshold):
+    if before is None or after is None or before == 0:
+        return None, False
+    ratio = after / before
+    if higher_is_worse:
+        return ratio, ratio > threshold
+    return ratio, ratio < 1.0 / threshold
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("before")
+    ap.add_argument("after")
+    ap.add_argument(
+        "--threshold",
+        type=float,
+        default=1.5,
+        help="flag a ratio beyond this factor (default 1.5; run-to-run noise reaches 2x)",
+    )
+    args = ap.parse_args()
+
+    before = load(args.before)
+    after = load(args.after)
+    common = sorted(set(before) & set(after), key=key_sort)
+    flagged_any = False
+
+    for key in common:
+        topo, n, res, named = key
+        cells = []
+        flagged = False
+        for label, field, higher_is_worse in METRICS:
+            b = median_of(before[key], field)
+            a = median_of(after[key], field)
+            ratio, bad = compare_metric(b, a, higher_is_worse, args.threshold)
+            flagged = flagged or bad
+            r = "-" if ratio is None else "%.2f" % ratio
+            cells.append("%s %s->%s x%s" % (label, fmt(b), fmt(a), r))
+        flagged_any = flagged_any or flagged
+        head = "%s n=%s res=%s named=%s" % (topo, n, res, named)
+        print("%-34s %s%s" % (head, "  ".join(cells), "  FLAGGED" if flagged else ""))
+
+    missing = sorted(set(before) - set(after), key=key_sort)
+    for key in missing:
+        print("FLAGGED missing from after: topo=%s n=%s res=%s named=%s" % key)
+    for key in sorted(set(after) - set(before), key=key_sort):
+        print("note: only in after: topo=%s n=%s res=%s named=%s" % key)
+
+    if not common:
+        print("FLAGGED: no matching records")
+        return 1
+    return 1 if flagged_any or missing else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -15,6 +15,7 @@
 
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
+#include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
 
 using namespace NATRON_NAMESPACE;
@@ -93,6 +94,14 @@ registerMultiplanarTestPlugins()
     // produces Color, which no shipped plugin does today.
     registerTestBuiltInPlugin<MultiplanarDiffuseOnlyTestEffect>();
 }
+
+void
+registerGraphScalingTestPlugins()
+{
+    // Registered so GraphScaling_Test.cpp can pull an input from inside onInputChanged, which no
+    // shipped native node does.
+    registerTestBuiltInPlugin<InputChangedFetchTestEffect>();
+}
 }
 
 #if defined(_WIN32) && defined(UNICODE)
@@ -127,6 +136,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerDataKindTestPlugins();
     registerDeepRenderTestPlugins();
     registerMultiplanarTestPlugins();
+    registerGraphScalingTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

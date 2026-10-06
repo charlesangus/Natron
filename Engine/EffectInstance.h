@@ -1046,6 +1046,11 @@ public:
     bool isFrameVaryingOrAnimated_Recursive() const;
 
     /**
+     * @brief Same as above, sharing the memo across calls so that evaluating many nodes of one graph visits each node once.
+     **/
+    bool isFrameVaryingOrAnimated_Recursive(std::map<const EffectInstance*, bool>* memo) const;
+
+    /**
      * @brief Returns the preferred output frame rate to render with
      **/
     double getFrameRate() const;

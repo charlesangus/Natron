@@ -25,14 +25,15 @@
 
 #include "NodeGroup.h"
 
-#include <set>
-#include <locale>
-#include <limits>
 #include <algorithm> // min, max
 #include <cassert>
-#include <stdexcept>
-#include <sstream> // stringstream
 #include <limits>
+#include <locale>
+#include <set>
+#include <sstream> // stringstream
+#include <stdexcept>
+#include <string>
+#include <unordered_set>
 
 #include <QCoreApplication>
 #include <QTextStream>
@@ -501,9 +502,17 @@ NodeCollection::checkNodeName(const Node* node,
             }
         }
     }
-    bool foundNodeWithName = false;
-    int no = 1;
+    std::unordered_set<std::string> usedNames;
+    {
+        QMutexLocker l(&_imp->nodesMutex);
+        for (NodesList::iterator it = _imp->nodes.begin(); it != _imp->nodes.end(); ++it) {
+            if ((it->get() != node) && (*it)->isActivated()) {
+                usedNames.insert((*it)->getScriptName_mt_safe());
+            }
+        }
+    }
 
+    int no = 1;
     {
         std::stringstream ss;
         ss << cpy;
@@ -512,29 +521,17 @@ NodeCollection::checkNodeName(const Node* node,
         }
         *nodeName = ss.str();
     }
-    do {
-        foundNodeWithName = false;
-        QMutexLocker l(&_imp->nodesMutex);
-        for (NodesList::iterator it = _imp->nodes.begin(); it != _imp->nodes.end(); ++it) {
-            if ( (it->get() != node) && (*it)->isActivated() && ( (*it)->getScriptName_mt_safe() == *nodeName ) ) {
-                foundNodeWithName = true;
-                break;
-            }
-        }
-        if (foundNodeWithName) {
-            if (errorIfExists || !appendDigit) {
-                throw std::runtime_error( tr("A node with the script-name %1 already exists.").arg( QString::fromUtf8( nodeName->c_str() ) ).toStdString() );
+    while (usedNames.find(*nodeName) != usedNames.end()) {
+        if (errorIfExists || !appendDigit) {
+            throw std::runtime_error(tr("A node with the script-name %1 already exists.").arg(QString::fromUtf8(nodeName->c_str())).toStdString());
 
-                return;
-            }
-            ++no;
-            {
-                std::stringstream ss;
-                ss << cpy << no;
-                *nodeName = ss.str();
-            }
+            return;
         }
-    } while (foundNodeWithName);
+        ++no;
+        std::stringstream ss;
+        ss << cpy << no;
+        *nodeName = ss.str();
+    }
 } // NodeCollection::checkNodeName
 
 void

@@ -199,19 +199,12 @@ NativeEffectBase::forEachDeepChunk(const std::vector<RectI>& chunks,
     std::atomic<bool> wasAborted(false);
 
     QtConcurrent::blockingMap(chunks, [&](RectI chunk) {
-        QThread* const curThread = QThread::currentThread();
-        const bool spawnedThread = (curThread != callingThread);
+        AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, AppTLS::eSpawnKindHostFrameThreading);
 
-        if (spawnedThread) {
-            appPTR->getAppTLS()->copyTLS(callingThread, curThread);
-        }
         if (aborted()) {
             wasAborted = true;
         } else {
             body(chunk);
-        }
-        if (spawnedThread) {
-            appPTR->getAppTLS()->cleanupTLSForThread();
         }
     });
 

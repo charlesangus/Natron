@@ -26,6 +26,7 @@
 #include "TLSHolder.h"
 #include "TLSHolderImpl.h"
 
+#include <algorithm>
 #include <cassert>
 #include <stdexcept>
 
@@ -41,30 +42,18 @@
 
 NATRON_NAMESPACE_ENTER
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-AppTLS::AppTLS()
-    : _objectMutex()
-    , _object( new GlobalTLSObject() )
-    , _spawnsMutex()
-    , _spawns()
-{
-}
+// Bounds the walk up the spawn map; render threads never nest anywhere near this deep.
+const int kMaxSpawnerChainDepth = 16;
 
-AppTLS::~AppTLS()
-{
-}
+// Holders with data for the current thread, so that cleaning up a thread visits only those
+// instead of every holder of the application.
+thread_local std::vector<TLSHolderBaseConstWPtr> tHoldersWithData;
+thread_local std::size_t tHoldersPruneThreshold = 64;
+thread_local std::size_t tNumInheritedCopies = 0;
 
-void
-AppTLS::registerTLSHolder(const TLSHolderBaseConstPtr& holder)
-{
-    //This must be the first time for this thread that we reach here since cleanupTLSForThread() was made, otherwise
-    //the TLS data should always be available on the TLSHolder
-    {
-        QWriteLocker k(&_objectMutex);
-        //The insert call might not succeed because another thread inserted this holder in the set already, that's fine
-        _object->objects.insert(holder);
-    }
-}
+NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 static void
 copyAbortInfo(QThread* fromThread,
@@ -83,38 +72,103 @@ copyAbortInfo(QThread* fromThread,
 }
 
 void
-AppTLS::copyTLS(QThread* fromThread,
-                QThread* toThread)
+AppTLS::recordHolderForCurrentThread(const TLSHolderBaseConstWPtr& holder)
 {
-    if ( (fromThread == toThread) || !fromThread || !toThread ) {
-        return;
+    // Threads that never clean up, such as the main thread, would otherwise keep a dead entry per
+    // holder ever destroyed.
+    if (tHoldersWithData.size() >= tHoldersPruneThreshold) {
+        tHoldersWithData.erase(std::remove_if(tHoldersWithData.begin(), tHoldersWithData.end(),
+                                              [](const TLSHolderBaseConstWPtr& w) { return w.expired(); }),
+                               tHoldersWithData.end());
+        tHoldersPruneThreshold = std::max<std::size_t>(64, tHoldersWithData.size() * 2);
     }
+    tHoldersWithData.push_back(holder);
+}
 
-    copyAbortInfo(fromThread, toThread);
+std::size_t
+AppTLS::getNumInheritedCopies()
+{
+    return tNumInheritedCopies;
+}
 
-    QReadLocker k(&_objectMutex);
-    const TLSObjects& objectsCRef = _object->objects; // take a const ref, since it's a read lock
-    for (TLSObjects::const_iterator it = objectsCRef.begin();
-         it != objectsCRef.end(); ++it) {
-        TLSHolderBaseConstPtr p = (*it).lock();
+void
+AppTLS::notifyInheritedCopy()
+{
+    ++tNumInheritedCopies;
+}
+
+void
+AppTLS::cleanupHoldersOfCurrentThread(const QThread* curThread)
+{
+    std::vector<TLSHolderBaseConstWPtr> holders;
+
+    holders.swap(tHoldersWithData);
+    tHoldersPruneThreshold = 64;
+    for (std::vector<TLSHolderBaseConstWPtr>::const_iterator it = holders.begin(); it != holders.end(); ++it) {
+        TLSHolderBaseConstPtr p = it->lock();
         if (p) {
-            p->copyTLS(fromThread, toThread);
+            p->cleanupPerThreadData(curThread);
         }
     }
 }
 
 void
 AppTLS::softCopy(QThread* fromThread,
-                 QThread* toThread)
+                 QThread* toThread,
+                 SpawnKindEnum kind)
 {
     if ( (fromThread == toThread) || !fromThread || !toThread ) {
         return;
     }
+    assert(toThread == QThread::currentThread());
 
     copyAbortInfo(fromThread, toThread);
 
+    // A pool thread whose previous task skipped its cleanup would otherwise find that task's data
+    // instead of inheriting the spawner's.
+    cleanupHoldersOfCurrentThread(toThread);
+
+    SpawnEntry entry;
+    entry.spawner = fromThread;
+    entry.kind = kind;
     QWriteLocker k(&_spawnsMutex);
-    _spawns[uintptr_t(toThread)] = fromThread;
+    _spawns[uintptr_t(toThread)] = entry;
+}
+
+void
+AppTLS::getSpawnerChain(const QThread* curThread,
+                        SpawnerChain* chain) const
+{
+    chain->clear();
+
+    QReadLocker k(&_spawnsMutex);
+    const ThreadSpawnMap& spawnsCRef = _spawns; // take a const ref, since it's a read lock
+    const QThread* thread = curThread;
+    for (int depth = 0; depth < kMaxSpawnerChainDepth; ++depth) {
+        ThreadSpawnMap::const_iterator found = spawnsCRef.find(uintptr_t(thread));
+        if (found == spawnsCRef.end()) {
+            break;
+        }
+        const QThread* spawner = found->second.spawner;
+        if (spawner == curThread) {
+            break;
+        }
+        bool visited = false;
+        for (SpawnerChain::const_iterator it = chain->begin(); it != chain->end(); ++it) {
+            if (it->thread == spawner) {
+                visited = true;
+                break;
+            }
+        }
+        if (visited) {
+            break;
+        }
+        SpawnerLink link;
+        link.thread = spawner;
+        link.kind = found->second.kind;
+        chain->push_back(link);
+        thread = spawner;
+    }
 }
 
 void
@@ -127,67 +181,29 @@ AppTLS::cleanupTLSForThread()
         isAbortableThread->clearAbortInfo();
     }
 
-    //Cleanup any cached data on the TLSHolder
     {
         QWriteLocker l(&_spawnsMutex);
+        _spawns.erase(uintptr_t(curThread));
+    }
 
-        //This thread was spawned, but TLS not used, do not bother to clean-up
-        ThreadSpawnMap::iterator foundSpawned = _spawns.find(uintptr_t(curThread));
-        if ( foundSpawned != _spawns.end() ) {
-            _spawns.erase(foundSpawned);
+    cleanupHoldersOfCurrentThread(curThread);
+}
 
-            return;
-        }
+AppTLS::SpawnedThreadScope::SpawnedThreadScope(QThread* fromThread,
+                                               SpawnKindEnum kind)
+    : _spawned(fromThread && fromThread != QThread::currentThread())
+{
+    if (_spawned) {
+        appPTR->getAppTLS()->softCopy(fromThread, QThread::currentThread(), kind);
     }
-    std::list<TLSHolderBaseConstPtr> objectsToClean;
-    {
-        QReadLocker k (&_objectMutex);
-        const TLSObjects& objectsCRef = _object->objects;
-        for (TLSObjects::iterator it = objectsCRef.begin();
-             it != objectsCRef.end();
-             ++it) {
-            TLSHolderBaseConstPtr p = (*it).lock();
-            if (p) {
-                if ( p->canCleanupPerThreadData(curThread) ) {
-                    objectsToClean.push_back(p);
-                }
-            }
-        }
+}
+
+AppTLS::SpawnedThreadScope::~SpawnedThreadScope()
+{
+    if (_spawned) {
+        appPTR->getAppTLS()->cleanupTLSForThread();
     }
-    if ( !objectsToClean.empty() ) {
-#if 1
-        // version from 1a0712b
-        // should be OK, since the bug in 1a0712b was in canCleanupPerThreadData
-        QWriteLocker k (&_objectMutex);
-        for (std::list<TLSHolderBaseConstPtr>::iterator it = objectsToClean.begin();
-             it != objectsToClean.end();
-             ++it) {
-            if ( (*it)->cleanupPerThreadData(curThread) ) {
-                TLSObjects::iterator found = _object->objects.find(*it);
-                if ( found != _object->objects.end() ) {
-                    _object->objects.erase(found);
-                }
-            }
-        }
-#else
-        // original version
-        TLSObjects newObjects;
-        QWriteLocker k (&_objectMutex);
-        for (TLSObjects::iterator it = _object->objects.begin();
-             it != _object->objects.end(); ++it) {
-            TLSHolderBaseConstPtr p = (*it).lock();
-            if (p) {
-                if ( !p->cleanupPerThreadData(curThread) ) {
-                    //The TLSHolder still has TLS on it for another thread and is still alive,
-                    //then leave it in the set
-                    newObjects.insert(p);
-                }
-            }
-        }
-        _object->objects = newObjects;
-#endif
-    }
-} // AppTLS::cleanupTLSForThread
+}
 
 template class TLSHolder<EffectInstance::EffectTLSData>;
 template class TLSHolder<NATRON_NAMESPACE::OfxHost::OfxHostTLSData>;

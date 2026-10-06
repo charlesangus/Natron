@@ -2672,20 +2672,25 @@ Node::createUnPremultSelector(const KnobPagePtr& mainPage)
     // and one channel selector over every layer of the source takes their place. The divide and
     // the multiply are then done either side of the plug-in's render action, by
     // OfxClipInstance::getInputImageInternal() and EffectInstance::tiledRenderingFunctor().
+    // An effect asking through wantsHostUnPremultSelector() has no such pair to hide, and does
+    // the divide and the multiply in its own render.
     KnobBoolPtr pluginEnabled = _imp->effect->getKnobByNameAndType<KnobBool>(kUnPremultByPluginKnobName);
     KnobChoicePtr pluginChannel = _imp->effect->getKnobByNameAndType<KnobChoice>(kUnPremultByChannelPluginKnobName);
+    const bool pluginDeclaresPair = pluginEnabled && pluginChannel;
 
-    if (!pluginEnabled || !pluginChannel) {
+    if (!pluginDeclaresPair && !_imp->effect->wantsHostUnPremultSelector()) {
         return;
     }
 
-    pluginEnabled->setValue(false);
-    pluginEnabled->setSecret(true);
-    pluginEnabled->setSecretLocked(true);
-    pluginEnabled->setIsPersistent(false);
-    pluginChannel->setSecret(true);
-    pluginChannel->setSecretLocked(true);
-    pluginChannel->setIsPersistent(false);
+    if (pluginDeclaresPair) {
+        pluginEnabled->setValue(false);
+        pluginEnabled->setSecret(true);
+        pluginEnabled->setSecretLocked(true);
+        pluginEnabled->setIsPersistent(false);
+        pluginChannel->setSecret(true);
+        pluginChannel->setSecretLocked(true);
+        pluginChannel->setIsPersistent(false);
+    }
 
     KnobChannelSelectPtr channel = _imp->effect->createChannelSelectKnob(kUnPremultByKnobName, tr(kUnPremultByKnobLabel).toStdString(), false);
     channel->setAnimationEnabled(false);

@@ -3111,6 +3111,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
     bool useMaskMix = _publicInterface->isHostMaskingEnabled() || _publicInterface->isHostMixingEnabled();
     double mix = useMaskMix ? _publicInterface->getNode()->getHostMixingValue(time, view) : 1.;
     bool doMask = useMaskMix ? _publicInterface->getNode()->isMaskEnabled(_publicInterface->getNInputs() - 1) : false;
+    const bool rendersUnprocessed = _publicInterface->rendersUnprocessedChannels();
 
     //Check for NaNs, copy to output image and mark for rendered
     for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::const_iterator it = outputLayers.begin(); it != outputLayers.end(); ++it) {
@@ -3130,7 +3131,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
             _publicInterface->setPersistentMessage( eMessageTypeWarning, warning.toStdString() );
         }
 
-        // Per the no-shuffle invariant (see OfxClipInstance::getInputImageInternal), the channels
+        // Per the no-shuffle invariant (see EffectInstance::resolveInputPlaneForRender), the channels
         // of plane L the node does not process come from the preferred input's plane L, with
         // L's own bits: one bitset and one source image for every plane would shuffle planes.
         const ImagePtr originalInputImage = findInputImageForPlane(tls->currentRenderArgs.inputImages, preferredInput, it->first);
@@ -3144,7 +3145,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
         ImagePtr unPremultDivisorImage;
         ImageLayerDesc unPremultDivisorLayer;
         int unPremultDivisorChannel = -1;
-        const bool reUnPremult = !layers.useOpenGL && _publicInterface->getThreadLocalUnPremultDivisor(&unPremultDivisorImage, &unPremultDivisorLayer, &unPremultDivisorChannel);
+        const bool reUnPremult = !rendersUnprocessed && !layers.useOpenGL && _publicInterface->getThreadLocalUnPremultDivisor(&unPremultDivisorImage, &unPremultDivisorLayer, &unPremultDivisorChannel);
         const int unPremultSkipChannel = reUnPremult ? Node::getUnPremultSkipChannel(it->first, unPremultDivisorLayer, unPremultDivisorChannel) : -1;
 
         if (it->second.isAllocatedOnTheFly) {
@@ -3176,7 +3177,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 const std::bitset<4> tmpProcessChannels = processChannelsForImage(it->first, *it->second.tmpImage, planeProcessChannels);
 
                 if ( originalInputImage && (originalInputImage->getMipmapLevel() != 0) ) {
-                    bool mustCopyUnprocessedChannels = it->second.tmpImage->canCallCopyUnProcessedChannels(tmpProcessChannels);
+                    bool mustCopyUnprocessedChannels = !rendersUnprocessed && it->second.tmpImage->canCallCopyUnProcessedChannels(tmpProcessChannels);
                     if (mustCopyUnprocessedChannels || useMaskMix) {
                         ///there is some processing to be done by copyUnProcessedChannels or applyMaskMix
                         ///but originalInputImage is not in the correct mipmapLevel, upscale it
@@ -3200,7 +3201,9 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                 }
 
                 if (mappedOriginalInputImage) {
-                    it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, tmpProcessChannels, mappedOriginalInputImage);
+                    if (!rendersUnprocessed) {
+                        it->second.tmpImage->copyUnProcessedChannels(renderMappedRectToRender, tmpProcessChannels, mappedOriginalInputImage);
+                    }
                     if (useMaskMix) {
                         it->second.tmpImage->applyMaskMix(renderMappedRectToRender, maskImage.get(), mappedOriginalInputImage.get(), doMask, false, mix);
                     }
@@ -3272,7 +3275,9 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     it->second.downscaleImage->premultiplyByChannel(actionArgs.roi, unPremultDivisorImage.get(), unPremultDivisorChannel, planeProcessChannels, unPremultSkipChannel);
                 }
 
-                it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInputImage, glContext);
+                if (!rendersUnprocessed) {
+                    it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInputImage, glContext);
+                }
                 if (useMaskMix) {
                     it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInputImage.get(), doMask, false, mix, glContext);
                 }
@@ -5202,6 +5207,98 @@ EffectInstance::isMaskEnabled(int inputNb) const
 {
     return getNode()->isMaskEnabled(inputNb);
 }
+
+bool
+EffectInstance::resolveInputPlaneForRender(int inputNb,
+                                           double time,
+                                           ViewIdx view,
+                                           ImageLayerDesc* layer,
+                                           int* maskChannel)
+{
+    ImageLayerDesc metadataLayer, metadataPairedLayer;
+
+    getMetadataComponents(inputNb, &metadataLayer, &metadataPairedLayer);
+
+    return resolveInputPlaneForRender(inputNb, time, view, metadataLayer, layer, maskChannel);
+}
+
+bool
+EffectInstance::resolveInputPlaneForRender(int inputNb,
+                                           double time,
+                                           ViewIdx view,
+                                           const ImageLayerDesc& fallbackLayer,
+                                           ImageLayerDesc* layer,
+                                           int* maskChannel)
+{
+    *layer = ImageLayerDesc();
+    if (maskChannel) {
+        *maskChannel = -1;
+    }
+
+    NodePtr node = getNode();
+    std::list<ImageLayerDesc> availableLayers;
+    ImageLayerDesc maskLayer;
+    int maskChannelIndex = -1;
+    bool maskResolved = false;
+
+    ComponentsNeededMapPtr neededComps;
+    getThreadLocalNeededComponents(&neededComps);
+    const std::list<ImageLayerDesc>* neededPlanes = NULL;
+    if (neededComps) {
+        ComponentsNeededMap::const_iterator found = neededComps->find(inputNb);
+        if (found != neededComps->end()) {
+            neededPlanes = &found->second;
+        }
+    }
+
+    if (neededPlanes) {
+        if (neededPlanes->empty()) {
+            // A multiplanar effect, or a mask input, that declared no plane for this input.
+            *layer = fallbackLayer;
+        } else {
+            // No-shuffle invariant: a node rendering plane L reads plane L from every
+            // non-mask input and writes plane L; the channels of L it does not process
+            // are copied from the preferred input's plane L. The needed list carries
+            // every plane the node renders, so the entry equivalent to the plane being
+            // rendered is picked; only a list without it (mask inputs, multiplanar
+            // effects) yields the front.
+            *layer = neededPlanes->front();
+            ImageLayerDesc layerBeingRendered;
+            if (getThreadLocalOutputLayerBeingRendered(&layerBeingRendered) && (layerBeingRendered.getNumComponents() > 0)) {
+                std::list<ImageLayerDesc>::const_iterator equivalent = ImageLayerDesc::findEquivalentLayer(layerBeingRendered, neededPlanes->begin(), neededPlanes->end());
+                if (equivalent != neededPlanes->end()) {
+                    *layer = *equivalent;
+                }
+            }
+        }
+    } else {
+        // Analysis, or an effect without any input: no render action planned the planes.
+        getAvailableLayers(time, view, inputNb, &availableLayers);
+        maskChannelIndex = node->getMaskChannel(inputNb, availableLayers, &maskLayer);
+        maskResolved = true;
+
+        std::vector<ResolvedLayer> selected;
+        if ((maskChannelIndex != -1) && (maskLayer.getNumComponents() > 0)) {
+            *layer = maskLayer;
+        } else if (node->resolveLayerKnob(time, view, &selected) && !selected.empty() && !selected.front().desc.isColorLayer()) {
+            *layer = selected.front().desc;
+        } else {
+            *layer = fallbackLayer;
+        }
+    }
+
+    if (maskChannel) {
+        if (!maskResolved) {
+            getAvailableLayers(time, view, inputNb, &availableLayers);
+            maskChannelIndex = node->getMaskChannel(inputNb, availableLayers, &maskLayer);
+        }
+        if ((maskChannelIndex != -1) && (maskLayer.getNumComponents() > 0)) {
+            *maskChannel = maskChannelIndex;
+        }
+    }
+
+    return layer->getNumComponents() > 0;
+} // EffectInstance::resolveInputPlaneForRender
 
 bool
 EffectInstance::onKnobValueChanged(KnobI* /*k*/,

@@ -140,7 +140,12 @@
 #include "Engine/Nodes/Channel/AddLayers.h"
 #include "Engine/Nodes/Channel/RemoveLayers.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
+#include "Engine/Nodes/Color/Clamp.h"
+#include "Engine/Nodes/Color/ColorCorrect.h"
+#include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Deep/DeepAddLayers.h"
 #include "Engine/Nodes/Deep/DeepCrop.h"
 #include "Engine/Nodes/Deep/DeepExpression.h"
@@ -1598,7 +1603,14 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
     registerBuiltInPlugin<ShuffleCopy>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<RemoveLayers>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<AddLayers>(QString::fromUtf8(""), false, false);
-    registerBuiltInPlugin<Grade>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<Grade>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.GradePlugin.png"), false, false);
+    registerBuiltInPlugin<ColorCorrect>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ColorCorrectPlugin.png"), false, false);
+    registerBuiltInPlugin<Saturation>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.SaturationPlugin.png"), false, false);
+    registerBuiltInPlugin<Clamp>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Clamp.png"), false, false);
+    registerBuiltInPlugin<Invert>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Invert.png"), false, false);
+    registerBuiltInPlugin<ColorMathAdd>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.AddPlugin.png"), false, false);
+    registerBuiltInPlugin<ColorMathMultiply>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MultiplyPlugin.png"), false, false);
+    registerBuiltInPlugin<ColorMathGamma>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.GammaPlugin.png"), false, false);
     registerBuiltInPlugin<DiskCacheNode>(QString::fromUtf8(NATRON_IMAGES_PATH "diskcache_icon.png"), false, false);
     registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_IMAGES_PATH "GroupingIcons/Set2/paint_grouping_2.png"), false, false);
     registerBuiltInPlugin<RotoNode>(QString::fromUtf8(NATRON_IMAGES_PATH "rotoNodeIcon.png"), false, false);

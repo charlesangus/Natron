@@ -1618,7 +1618,7 @@ public:
     virtual void setDimensionName(int dim, const std::string & name) OVERRIDE FINAL;
     virtual bool hasModifications() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool hasModifications(int dimension) const OVERRIDE FINAL WARN_UNUSED_RETURN;
-    virtual bool hasModificationsForSerialization() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool hasModificationsForSerialization() const OVERRIDE WARN_UNUSED_RETURN;
     virtual void checkAnimationLevel(ViewSpec view, int dimension) OVERRIDE FINAL;
     virtual KnobIPtr createDuplicateOnHolder(KnobHolder* otherHolder,
                                             const std::shared_ptr<KnobPage>& page,

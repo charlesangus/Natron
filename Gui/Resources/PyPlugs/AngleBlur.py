@@ -108,6 +108,11 @@ def createInstance(app,group):
     lastNode.setColor(0.7, 0.3, 0.1)
     groupTransform1 = lastNode
 
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
+
     param = lastNode.getParam("rotate")
     if param is not None:
         param.setValue(0, 0)
@@ -135,6 +140,11 @@ def createInstance(app,group):
     lastNode.setSize(104, 34)
     lastNode.setColor(0.7, 0.3, 0.1)
     groupTransform3 = lastNode
+
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
 
     param = lastNode.getParam("rotate")
     if param is not None:
@@ -171,7 +181,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setChannels(["R", "G", "B", "A"])
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
         del param
 
     param = lastNode.getParam("size")

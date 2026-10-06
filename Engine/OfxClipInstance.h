@@ -30,6 +30,7 @@
 
 #include <cassert>
 #include <list>
+#include <utility>
 
 CLANG_DIAG_OFF(deprecated)
 #include <QMutex>
@@ -214,6 +215,14 @@ public:
                     const ImageLayerDesc& components);
     void invalidateClipTLS();
 
+    /**
+     * @brief While pushed, the layers present on this clip are listed at `time`/`view` instead of
+     * the effect's current time/view. For actions that receive a time and view but may run outside
+     * any render.
+     **/
+    void pushComponentsPresentTimeView(double time, ViewIdx view);
+    void popComponentsPresentTimeView();
+
     //returns the index of this clip if it is an input clip, otherwise -1.
     int getInputNb() const WARN_UNUSED_RETURN;
 
@@ -256,6 +265,7 @@ public:
         std::list<ViewIdx> view;
         //mipmaplevel may be involved in a recursive action
         std::list<unsigned int> mipmapLevel;
+        std::list<std::pair<double, ViewIdx>> componentsPresentTimeView;
 
         //////////////////////////////////////////////////////////////
         //////////////////////////////////////////////////////////////
@@ -274,6 +284,7 @@ public:
         ClipTLSData()
             : view()
             , mipmapLevel()
+            , componentsPresentTimeView()
             , componentsPresent()
             , unmappedComponents()
         {
@@ -282,6 +293,7 @@ public:
         ClipTLSData(const ClipTLSData& other)
             : view(other.view)
             , mipmapLevel(other.mipmapLevel)
+            , componentsPresentTimeView(other.componentsPresentTimeView)
             , renderData()
             , componentsPresent(other.componentsPresent)
             , unmappedComponents(other.unmappedComponents)

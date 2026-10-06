@@ -1111,7 +1111,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setChannels(["R", "G", "B", "A"])
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
         del param
 
     param = lastNode.getParam("expandRoD")
@@ -1204,6 +1204,11 @@ def createInstance(app,group):
     lastNode.setColor(0.3, 0.37, 0.776)
     groupDisableLuma = lastNode
 
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
+
     param = lastNode.getParam("which")
     if param is not None:
         param.setValue(0, 0)
@@ -1220,6 +1225,11 @@ def createInstance(app,group):
     lastNode.setSize(104, 34)
     lastNode.setColor(0.3, 0.37, 0.776)
     groupDisableLuma1 = lastNode
+
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
 
     param = lastNode.getParam("which")
     if param is not None:
@@ -1249,6 +1259,11 @@ def createInstance(app,group):
     lastNode.setSize(104, 34)
     lastNode.setColor(0.3, 0.37, 0.776)
     groupConstantColor = lastNode
+
+    param = lastNode.getParam("channels")
+    if param is not None:
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
+        del param
 
     param = lastNode.getParam("which")
     if param is not None:
@@ -1281,7 +1296,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setChannels(["A"])
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["A"])
         del param
 
     param = lastNode.getParam("size")
@@ -1398,7 +1413,7 @@ def createInstance(app,group):
 
     param = lastNode.getParam("channels")
     if param is not None:
-        param.setChannels(["R", "G", "B", "A"])
+        param.setLayer("uk.co.thefoundry.OfxImagePlaneColour", ["R", "G", "B", "A"])
         del param
 
     param = lastNode.getParam("size")

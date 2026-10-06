@@ -43,32 +43,32 @@
 
 #include "Global/QtCompat.h"
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/BlockingBackgroundRender.h"
-#include "Engine/DiskCacheNode.h"
 #include "Engine/Cache.h"
+#include "Engine/DiskCacheNode.h"
+#include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Log.h"
 #include "Engine/Node.h"
-#include "Engine/OfxEffectInstance.h"
+#include "Engine/OSGLContext.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
-#include "Engine/OSGLContext.h"
-#include "Engine/GPUContextPool.h"
 #include "Engine/PluginMemory.h"
 #include "Engine/Project.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/Settings.h"
+#include "Engine/ThreadPool.h"
 #include "Engine/Timer.h"
 #include "Engine/Transform.h"
-#include "Engine/ThreadPool.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
 
@@ -774,7 +774,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     {
         std::string channelMessage;
         if (!getNode()->checkSelectedChannelsPresent(args.time, args.view, &channelMessage)) {
-            setPersistentMessage(eMessageTypeError, channelMessage);
+            getNode()->setChannelSelectorMessageFromRender(channelMessage, abortInfo);
             return eRenderRoIRetCodeFailed;
         }
     }
@@ -1703,6 +1703,12 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
 #endif
 
     assert(!outputLayers->empty());
+
+    // The channel check passed, but only a render that delivers its image retires the error: one
+    // aborted or failed after the check leaves the error of the frame still displayed. A newer
+    // delivering render retires it whatever time it failed at, since the user scrubbing back to
+    // a frame that renders expects the error to go.
+    getNode()->clearChannelSelectorMessageFromRender(abortInfo ? abortInfo->getRenderSequence() : 0, aborted());
 
     return eRenderRoIRetCodeOk;
 } // renderRoI

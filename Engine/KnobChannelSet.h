@@ -162,6 +162,15 @@ public:
     }
 
     /**
+     * @brief Always saved, even on its default: the default differs per node and has changed
+     * before, and an absent value would be read back as whatever the default is at load time.
+     **/
+    virtual bool hasModificationsForSerialization() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    /**
      * @brief The rows an empty value stands for: the Color layer, every channel.
      * Knob<T>::populate() resets the value to an empty string after construction, so the
      * type's own default cannot live in the constructor; getRows() substitutes these
@@ -189,6 +198,14 @@ public:
      * if another eModeLayer row already names layerID.
      **/
     void setLayer(int row, const std::string& layerID, const std::vector<std::string>* channelsOrAll);
+
+    /**
+     * @brief Sets a layer row's enabled channels. A row 0 that is currently None or All is
+     * first turned into a Color layer row, the layer that mode stood for before per-row
+     * layers existed, so a script written against that older shape still lands where it
+     * meant to instead of throwing. Throws std::invalid_argument on a regex row, whose
+     * channels field means "excluded" rather than "enabled" (see setExcludedChannels()).
+     **/
     void setChannels(int row, const std::vector<std::string>& channels);
 
     /**

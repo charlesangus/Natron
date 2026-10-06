@@ -997,6 +997,44 @@ Gui::renderViewersAndRefreshKnobsAfterTimelineTimeChange(SequenceTime time,
         }
     }
 
+    // Before the viewers render: a cached frame renders nothing, so it would never retire the
+    // missing-channel error of the frame just left.
+    {
+        NodesList owners;
+        Node::getNodesOwningChannelSelectorMessage(&owners);
+        if (!owners.empty()) {
+            // The error stays while any displayed view still lacks the channel.
+            std::list<ViewIdx> views;
+            const std::list<ViewerTab*>& viewerTabs = getViewersList();
+            for (std::list<ViewerTab*>::const_iterator it = viewerTabs.begin(); it != viewerTabs.end(); ++it) {
+                const ViewIdx view = (*it)->getInternalNode()->getViewerCurrentView();
+                bool listed = false;
+                for (std::list<ViewIdx>::const_iterator v = views.begin(); v != views.end(); ++v) {
+                    if (v->value() == view.value()) {
+                        listed = true;
+                        break;
+                    }
+                }
+                if (!listed) {
+                    views.push_back(view);
+                }
+            }
+            if (views.empty()) {
+                for (int i = 0; i < project->getProjectViewsCount(); ++i) {
+                    views.push_back(ViewIdx(i));
+                }
+            }
+            if (views.empty()) {
+                views.push_back(ViewIdx(0));
+            }
+            AppInstancePtr app = getApp();
+            for (NodesList::iterator it = owners.begin(); it != owners.end(); ++it) {
+                if (((*it)->getApp() == app) && (*it)->isActivated()) {
+                    (*it)->refreshChannelSelectorMessageAtTime(time, views);
+                }
+            }
+        }
+    }
 
     ViewerInstance* leadViewer = getApp()->getLastViewerUsingTimeline();
     const std::list<ViewerTab*>& viewers = getViewersList();

@@ -357,7 +357,12 @@ KnobChannelSet::setChannels(int row,
     if (row < 0 || row >= (int)rows.size()) {
         throw std::invalid_argument("Channel set row index out of range");
     }
-    if (rows[row].mode != ChannelSetRow::eModeLayer) {
+    if (row == 0 && (rows[row].mode == ChannelSetRow::eModeNone || rows[row].mode == ChannelSetRow::eModeAll)) {
+        // Pre-per-row-layer scripts called setChannels() expecting the then-implicit Color
+        // row; turning a None/All row 0 into Color here instead of throwing keeps them loading.
+        rows[row].mode = ChannelSetRow::eModeLayer;
+        rows[row].layerOrPattern = kNatronColorLayerID;
+    } else if (rows[row].mode != ChannelSetRow::eModeLayer) {
         throw std::invalid_argument("Channels can only be set on a layer row");
     }
     rows[row].channels = channels;

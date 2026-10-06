@@ -25,10 +25,11 @@
 
 #include "AbortableRenderInfo.h"
 
+#include <atomic>
+#include <cassert>
 #include <set>
 #include <sstream>
 #include <string>
-#include <cassert>
 
 #include <QMutex>
 #include <QAtomicInt>
@@ -51,12 +52,16 @@ NATRON_NAMESPACE_ENTER
 
 typedef std::set<AbortableThread*> ThreadSet;
 
+static std::atomic<U64> s_latestRenderSequence(0);
+
 struct AbortableRenderInfoPrivate
 {
     AbortableRenderInfo* _p;
     bool canAbort;
     QAtomicInt aborted;
     U64 age;
+    U64 sequence;
+    std::atomic<bool> superseded;
     mutable QMutex threadsMutex;
     ThreadSet threadsForThisRender;
     mutable QMutex timerMutex;
@@ -71,12 +76,14 @@ struct AbortableRenderInfoPrivate
         , canAbort(canAbort)
         , aborted()
         , age(age)
+        , sequence(++s_latestRenderSequence)
+        , superseded(false)
         , threadsMutex()
         , threadsForThisRender()
         , timerMutex()
         , timerStarted(false)
         , abortTimeoutTimer(new QTimer)
-        , ownerThread( QThread::currentThread() )
+        , ownerThread(QThread::currentThread())
     {
         aborted.fetchAndStoreAcquire(0);
 
@@ -109,6 +116,30 @@ U64
 AbortableRenderInfo::getRenderAge() const
 {
     return _imp->age;
+}
+
+U64
+AbortableRenderInfo::getRenderSequence() const
+{
+    return _imp->sequence;
+}
+
+U64
+AbortableRenderInfo::getLatestRenderSequence()
+{
+    return s_latestRenderSequence.load();
+}
+
+void
+AbortableRenderInfo::setSuperseded()
+{
+    _imp->superseded.store(true);
+}
+
+bool
+AbortableRenderInfo::isSuperseded() const
+{
+    return _imp->superseded.load();
 }
 
 bool

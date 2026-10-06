@@ -1100,6 +1100,13 @@ public:
     void setAll();
 
     void setLayer(const QString& layerID, const QStringList& channels = QStringList(), int row = 0);
+
+    /**
+     * @brief Sets row's enabled channels. If row 0 is currently None or All, it is switched to
+     * the Color layer first (the layer that mode stood for before per-row layers existed), so a
+     * script written before that change still lands where it meant to. Raises ValueError on a
+     * regex row.
+     **/
     void setChannels(const QStringList& channels, int row = 0);
     void setRegex(const QString& pattern, int row = 0);
 

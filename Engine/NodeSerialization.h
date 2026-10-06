@@ -71,7 +71,8 @@ GCC_DIAG_ON(unused-parameter)
 #define NODE_SERIALIZATION_SERIALIZE_PAGE_INDEX 14
 #define NODE_SERIALIZATION_INTRODUCES_TRACKER_CONTEXT 15
 #define NODE_SERIALIZATION_REMOVES_USER_COMPONENTS 16
-#define NODE_SERIALIZATION_CURRENT_VERSION NODE_SERIALIZATION_REMOVES_USER_COMPONENTS
+#define NODE_SERIALIZATION_ALWAYS_SAVES_CHANNEL_SET 17
+#define NODE_SERIALIZATION_CURRENT_VERSION NODE_SERIALIZATION_ALWAYS_SAVES_CHANNEL_SET
 
 NATRON_NAMESPACE_ENTER
 
@@ -88,6 +89,7 @@ public:
     ////Used to deserialize
     NodeSerialization()
         : _isNull(true)
+        , _version(NODE_SERIALIZATION_CURRENT_VERSION)
         , _nbKnobs(0)
         , _knobsValues()
         , _knobsAge(0)
@@ -179,6 +181,15 @@ public:
         return _isNull;
     }
 
+    /**
+     * @brief The archive version this was loaded from, or NODE_SERIALIZATION_CURRENT_VERSION
+     * when it was built from a live node.
+     **/
+    unsigned int getVersion() const
+    {
+        return _version;
+    }
+
     U64 getKnobsAge() const
     {
         return _knobsAge;
@@ -237,6 +248,7 @@ public:
 private:
 
     bool _isNull;
+    unsigned int _version;
     int _nbKnobs;
     KnobValues _knobsValues;
     U64 _knobsAge;
@@ -324,6 +336,7 @@ private:
             throw std::invalid_argument("The project you're trying to load contains data produced by a more recent "
                                         "version of Natron, which makes it unreadable");
         }
+        _version = version;
 
         ar & ::boost::serialization::make_nvp("Plugin_label", _nodeLabel);
         if (version >= NODE_SERIALIZATION_INTRODUCES_SCRIPT_NAME) {

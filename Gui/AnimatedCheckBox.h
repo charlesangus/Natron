@@ -55,6 +55,9 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
     bool altered;
     bool checked;
 
+    // Read-only, so GUI test scripts can check the keyframe colouring.
+    Q_PROPERTY(int animation READ getAnimation)
+
 public:
 
     AnimatedCheckBox(QWidget *parent = NULL);

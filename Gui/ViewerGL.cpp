@@ -3332,44 +3332,43 @@ ViewerGL::updatePersistentMessageToWidth(int w)
         return;
     }
 
-    const std::list<DockablePanel*>& openedPanels = _imp->viewerTab->getGui()->getVisiblePanels();
-
-    _imp->persistentMessages.clear();
-    QStringList allMessages;
-    int type = 0;
-    ///Draw overlays in reverse order of appearance
-    std::list<DockablePanel*>::const_iterator next = openedPanels.begin();
-    if ( next != openedPanels.end() ) {
-        ++next;
+    // The nodes feeding what this viewer shows report here whether or not their panel is open,
+    // then any other node whose panel is open.
+    NodesList nodes;
+    ViewerInstance* viewerNode = _imp->viewerTab->getInternalNode();
+    if (viewerNode) {
+        viewerNode->getUpstreamNodesWithPersistentMessage(&nodes);
     }
-    int nbNonEmpty = 0;
+    const std::list<DockablePanel*>& openedPanels = _imp->viewerTab->getGui()->getVisiblePanels();
     for (std::list<DockablePanel*>::const_iterator it = openedPanels.begin(); it != openedPanels.end(); ++it) {
         const NodeSettingsPanel* isNodePanel = dynamic_cast<const NodeSettingsPanel*>(*it);
         if (!isNodePanel) {
             continue;
         }
-
-        NodePtr node = isNodePanel->getNode()->getNode();
-        if (!node) {
-            continue;
-        }
-
-        QString mess;
-        int nType;
-        node->getPersistentMessage(&mess, &nType);
-        if ( !mess.isEmpty() ) {
-            allMessages.append(mess);
-            ++nbNonEmpty;
-        }
-        if ( next != openedPanels.end() ) {
-            ++next;
-        }
-
-        if ( !mess.isEmpty() ) {
-            type = (nbNonEmpty == 1 && nType == 2) ? 2 : 1;
+        NodeGuiPtr nodeGui = isNodePanel->getNode();
+        NodePtr node = nodeGui ? nodeGui->getNode() : NodePtr();
+        if (node && (std::find(nodes.begin(), nodes.end(), node) == nodes.end())) {
+            nodes.push_back(node);
         }
     }
+
+    _imp->persistentMessages.clear();
+    QStringList allMessages;
+    int type = 0;
+    int nbNonEmpty = 0;
+    for (NodesList::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        QString mess;
+        int nType = 0;
+        (*it)->getPersistentMessage(&mess, &nType);
+        if (mess.isEmpty() || allMessages.contains(mess)) {
+            continue;
+        }
+        allMessages.append(mess);
+        ++nbNonEmpty;
+        type = (nbNonEmpty == 1 && nType == 2) ? 2 : 1;
+    }
     _imp->persistentMessageType = type;
+    setProperty("natronPersistentMessages", QVariant(allMessages));
 
     assert(_imp->_textFont);
     QFontMetrics fm(*_imp->_textFont);

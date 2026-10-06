@@ -82,6 +82,10 @@ struct ViewerTabPrivate
     ComboBox* alphaChannelChoice;
     mutable QMutex currentLayerMutex;
     QString currentLayerChoice, currentAlphaLayerChoice;
+    // The time and view the layer menus were last listed at, so that a menu index picked later
+    // maps into the same list even if the timeline moved meanwhile.
+    double layerMenuTime;
+    ViewIdx layerMenuView;
     ChannelsComboBox* viewerChannels;
     bool viewerChannelsAutoswitchedToAlpha;
     ComboBox* zoomCombobox;
@@ -217,7 +221,7 @@ struct ViewerTabPrivate
 
 #endif
 
-    void getComponentsAvailabel(std::set<ImageLayerDesc>* comps) const;
+    void getComponentsAvailabel(double time, ViewIdx view, std::set<ImageLayerDesc>* comps) const;
 
     std::list<PluginViewerContext>::iterator findActiveNodeContextForPlugin(const std::string& pluginID);
 

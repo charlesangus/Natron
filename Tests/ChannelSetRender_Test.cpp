@@ -58,10 +58,13 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/Node.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
 #include <ofxNatron.h>
+
+#include <SequenceParsing.h>
 
 NATRON_NAMESPACE_USING
 
@@ -125,18 +128,18 @@ protected:
         return effect;
     }
 
-    // Appends a WriteOIIO writing every layer of `node` as one 32-bit float part and renders
-    // frame 1 into `tmp`, parsing the result into `image`.
-    bool renderAllLayers(const NodePtr& node,
-                         const QTemporaryDir& tmp,
-                         FlatExrImage* image,
-                         std::string* error)
+    // Appends a WriteOIIO writing every layer of `node` as one 32-bit float part per frame into
+    // `tmp`, following the frame-numbered file name pattern it returns in `pattern`.
+    NodePtr createAllLayersWriter(const NodePtr& node,
+                                  const QTemporaryDir& tmp,
+                                  std::string* pattern,
+                                  std::string* error)
     {
         NodePtr writer = createNode(_writeOIIOPluginID);
         if (!writer) {
             *error = "writer creation failed";
 
-            return false;
+            return NodePtr();
         }
         connectNodes(node, writer, 0, true);
 
@@ -147,15 +150,28 @@ protected:
         if (!partSplitting || !bitDepth || !compression || !writerChannels) {
             *error = "writer knobs missing";
 
-            return false;
+            return NodePtr();
         }
         partSplitting->setValueFromID("single", 0);
         bitDepth->setValueFromID("32f", 0);
         compression->setValueFromID("none", 0);
         writerChannels->setAll();
 
-        const std::string path = (tmp.path() + QLatin1String("/out.exr")).toStdString();
-        writer->setOutputFilesForWriter(path);
+        *pattern = (tmp.path() + QLatin1String("/out.####.exr")).toStdString();
+        writer->setOutputFilesForWriter(*pattern);
+
+        return writer;
+    }
+
+    // Renders `frame` of `writer`, whose output files follow `pattern`, and parses the result.
+    bool renderFrame(const NodePtr& writer,
+                     const std::string& pattern,
+                     int frame,
+                     FlatExrImage* image,
+                     std::string* error)
+    {
+        const std::vector<std::string>& viewNames = getApp()->getProject()->getProjectViewNames();
+        const std::string path = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, 0);
         QFile::remove(QString::fromStdString(path));
 
         OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
@@ -165,7 +181,7 @@ protected:
             return false;
         }
         std::list<AppInstance::RenderWork> works;
-        works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
+        works.push_back(AppInstance::RenderWork(writerEffect, frame, frame, 1, false));
         getApp()->startWritersRendering(false, works);
 
         if (!QFile::exists(QString::fromStdString(path))) {
@@ -175,6 +191,22 @@ protected:
         }
 
         return readFlatExr(path, image, error);
+    }
+
+    // Appends an all-layers writer to `node` and renders frame 1 into `tmp`, parsing the result
+    // into `image`.
+    bool renderAllLayers(const NodePtr& node,
+                         const QTemporaryDir& tmp,
+                         FlatExrImage* image,
+                         std::string* error)
+    {
+        std::string pattern;
+        NodePtr writer = createAllLayersWriter(node, tmp, &pattern, error);
+        if (!writer) {
+            return false;
+        }
+
+        return renderFrame(writer, pattern, 1, image, error);
     }
 };
 
@@ -270,6 +302,50 @@ TEST_F(ChannelSetRenderTest, GradeSpecularRowLeavesColorAndDiffuseUntouched)
     expectColor(image, 1.f, 0.f, 0.f, 1.f);
     expectPlane(image, "diffuse.", 0.f, 1.f, 0.f);
     expectPlane(image, "specular.", 0.f, 0.f, 0.5f);
+}
+
+// Constant(0.25, 0.25, 0.25, 1) -> Grade(multiply 2 on R/G/B) with the Grade's Disable keyed
+// off at frame 1 and on at frame 2. Each frame is rendered with the timeline parked on the
+// other one, so a Disable read at the timeline's frame rather than the rendered frame grades
+// the wrong one.
+TEST_F(ChannelSetRenderTest, GradeDisableKeyedPerFrameIsHonouredAtTheRenderedFrame)
+{
+    NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
+    ASSERT_TRUE(bool(constant));
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName("color").get());
+    ASSERT_TRUE(color != NULL);
+    color->setValues(0.25, 0.25, 0.25, 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    ASSERT_TRUE(bool(grade));
+    connectNodes(constant, grade, 0, true);
+    KnobColor* multiply = dynamic_cast<KnobColor*>(grade->getKnobByName("multiply").get());
+    ASSERT_TRUE(multiply != NULL);
+    multiply->setValues(2., 2., 2., 1., ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+
+    KnobBoolPtr disable = grade->getDisabledKnob();
+    ASSERT_TRUE(bool(disable));
+    disable->setValueAtTime(1, false, ViewSpec::all(), 0);
+    disable->setValueAtTime(2, true, ViewSpec::all(), 0);
+
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    std::string pattern;
+    std::string error;
+    NodePtr writer = createAllLayersWriter(grade, tmp, &pattern, &error);
+    ASSERT_TRUE(bool(writer)) << error;
+
+    TimeLinePtr timeline = getApp()->getTimeLine();
+
+    timeline->seekFrame(2, false, NULL, eTimelineChangeReasonOtherSeek);
+    FlatExrImage graded;
+    ASSERT_TRUE(renderFrame(writer, pattern, 1, &graded, &error)) << error;
+    expectColor(graded, 0.5f, 0.5f, 0.5f, 1.f);
+
+    timeline->seekFrame(1, false, NULL, eTimelineChangeReasonOtherSeek);
+    FlatExrImage ungraded;
+    ASSERT_TRUE(renderFrame(writer, pattern, 2, &ungraded, &error)) << error;
+    expectColor(ungraded, 0.25f, 0.25f, 0.25f, 1.f);
 }
 
 // --- "(Un)premult by" (host-owned; see Node::createUnPremultSelector()) -----------------

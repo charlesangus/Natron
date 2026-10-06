@@ -575,6 +575,15 @@ public:
     virtual LayerKnobSpec getLayerKnobSpec() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief True when this effect moves, filters, selects or retimes pixels without giving any
+     * channel a meaning, so its channel-set knob starts on "All" instead of the Color layer.
+     **/
+    virtual bool defaultProcessesAllLayers() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
      * @brief Called on a Read/Write container's effect whenever its embedded node lists the
      * layers present on one of its inputs (getPresentLayers() with inputNb >= 0). The container
      * may narrow the list to what the user selected on it; the default keeps it whole.
@@ -915,14 +924,15 @@ public:
      * When cycling through the tree, we prefer non optional inputs and we span inputs
      * from last to first.
      * If this not is not disabled, it will return a pointer to this.
+     * Disabled means disabled at `time`.
      **/
-    EffectInstancePtr getNearestNonDisabled() const;
+    EffectInstancePtr getNearestNonDisabled(double time) const;
 
     /**
      * @brief Same as getNearestNonDisabled() except that it returns the *last* disabled node before the nearest non disabled node.
      * @param inputNb[out] The inputNb of the node that is non disabled.
      **/
-    EffectInstancePtr getNearestNonDisabledPrevious(int* inputNb);
+    EffectInstancePtr getNearestNonDisabledPrevious(double time, int* inputNb);
 
     /**
      * @brief Same as getNearestNonDisabled except that it looks for the nearest non identity node.
@@ -2100,7 +2110,18 @@ public:
 
     const std::vector<std::string>& getUserLayers() const;
 
+    /**
+     * @brief The input whose layers pass through this effect at (time, view), and the time and
+     * view they are read at: the input this effect is an identity of there, otherwise the
+     * preferred input at (time, view). Called again while its own identity query is running,
+     * it answers the preferred input at (time, view) without asking isIdentity() again.
+     **/
+    void getLayersPassThroughInput(double time, ViewIdx view,
+                                   int* inputNb, double* inputTime, ViewIdx* inputView);
+
 private:
+    bool isResolvingLayersPassThrough() const;
+
     void getComponentsNeededDefault(double time, ViewIdx view,
                                     EffectInstance::ComponentsNeededMap* comps,
                                     std::list<ImageLayerDesc>* passThroughLayers,
@@ -2214,6 +2235,10 @@ public:
 
         std::vector<std::string> userLayerStrings;
 
+        // Set while isIdentity() runs to pick the input whose layers pass through: an identity
+        // test that asks for this effect's own layers must not re-enter that choice.
+        bool resolvingLayersPassThrough;
+
         EffectTLSData()
             : beginEndRenderCount(0)
             , actionRecursionLevel(0)
@@ -2223,6 +2248,7 @@ public:
             , frameArgs()
             , currentRenderArgs()
             , userLayerStrings()
+            , resolvingLayersPassThrough(false)
         {
         }
     };

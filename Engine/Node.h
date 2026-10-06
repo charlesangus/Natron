@@ -1387,6 +1387,17 @@ public:
     void addPositionInteract(const KnobDoublePtr& position,
                              const KnobBoolPtr& interactive);
 
+    void addRectangleInteract(const KnobDoublePtr& bottomLeft,
+                              const KnobDoublePtr& size,
+                              const KnobBoolPtr& interactive,
+                              const KnobBoolPtr& enable);
+
+    /**
+     * @brief Host overlays declared before the node has a GUI; they are handed to the GUI by
+     * initializeHostOverlays().
+     **/
+    std::list<HostOverlayKnobsPtr> getPendingHostOverlays() const;
+
     void addTransformInteract(const KnobDoublePtr& translate,
                               const KnobDoublePtr& scale,
                               const KnobBoolPtr& scaleUniform,

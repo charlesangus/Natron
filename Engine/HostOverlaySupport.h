@@ -26,6 +26,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include <memory>
 #include <string>
 
 #include "Global/Macros.h"
@@ -170,6 +171,28 @@ private:
     virtual void describeOverlayKnobs() OVERRIDE FINAL;
 };
 
+class HostOverlayKnobsRectangle
+    : public HostOverlayKnobs {
+public:
+    enum KnobsEnumeration {
+        eKnobsEnumerationBottomLeft,
+        eKnobsEnumerationSize,
+        eKnobsEnumerationInteractive,
+        eKnobsEnumerationEnable
+    };
+
+    HostOverlayKnobsRectangle()
+        : HostOverlayKnobs()
+    {
+    }
+
+    virtual ~HostOverlayKnobsRectangle() { }
+
+private:
+    virtual void describeOverlayKnobs() OVERRIDE FINAL;
+};
+
+typedef std::shared_ptr<HostOverlayKnobsRectangle> HostOverlayKnobsRectanglePtr;
 
 NATRON_NAMESPACE_EXIT
 

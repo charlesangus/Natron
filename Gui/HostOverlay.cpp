@@ -346,6 +346,163 @@ public:
 
 typedef std::shared_ptr<PositionInteract> PositionInteractPtr;
 
+class RectangleInteract
+    : public DefaultInteractI {
+public:
+    enum MouseStateEnum {
+        eMouseStateIdle = 0,
+        eMouseStateDraggingTopLeft,
+        eMouseStateDraggingTopRight,
+        eMouseStateDraggingBtmLeft,
+        eMouseStateDraggingBtmRight,
+        eMouseStateDraggingCenter,
+        eMouseStateDraggingTopMid,
+        eMouseStateDraggingMidRight,
+        eMouseStateDraggingBtmMid,
+        eMouseStateDraggingMidLeft
+    };
+
+    enum DrawStateEnum {
+        eDrawStateInactive = 0,
+        eDrawStateHoveringTopLeft,
+        eDrawStateHoveringTopRight,
+        eDrawStateHoveringBtmLeft,
+        eDrawStateHoveringBtmRight,
+        eDrawStateHoveringCenter,
+        eDrawStateHoveringTopMid,
+        eDrawStateHoveringMidRight,
+        eDrawStateHoveringBtmMid,
+        eDrawStateHoveringMidLeft
+    };
+
+private:
+    KnobDoubleWPtr _btmLeft;
+    KnobDoubleWPtr _size;
+    KnobBoolWPtr _interactive;
+    KnobBoolWPtr _enable;
+    OfxPointD _lastMousePos;
+    MouseStateEnum _mouseState;
+    DrawStateEnum _drawState;
+    int _modifierStateCtrl;
+    int _modifierStateShift;
+    OfxPointD _btmLeftDragPos;
+    OfxPointD _sizeDrag;
+    bool _interactiveDrag;
+
+public:
+    RectangleInteract(const HostOverlayKnobsRectangle* knobs,
+                      HostOverlay* overlay)
+        : DefaultInteractI(overlay)
+        , _btmLeft()
+        , _size()
+        , _interactive()
+        , _enable()
+        , _lastMousePos()
+        , _mouseState(eMouseStateIdle)
+        , _drawState(eDrawStateInactive)
+        , _modifierStateCtrl(0)
+        , _modifierStateShift(0)
+        , _btmLeftDragPos()
+        , _sizeDrag()
+        , _interactiveDrag(false)
+    {
+        _btmLeft = knobs->getKnob<KnobDouble>(HostOverlayKnobsRectangle::eKnobsEnumerationBottomLeft);
+        _size = knobs->getKnob<KnobDouble>(HostOverlayKnobsRectangle::eKnobsEnumerationSize);
+        _interactive = knobs->getKnob<KnobBool>(HostOverlayKnobsRectangle::eKnobsEnumerationInteractive);
+        _enable = knobs->getKnob<KnobBool>(HostOverlayKnobsRectangle::eKnobsEnumerationEnable);
+        _lastMousePos.x = _lastMousePos.y = 0.;
+        _btmLeftDragPos.x = _btmLeftDragPos.y = 0.;
+        _sizeDrag.x = _sizeDrag.y = 0.;
+    }
+
+    virtual ~RectangleInteract()
+    {
+    }
+
+    virtual bool isInteractForKnob(const KnobI* knob) const OVERRIDE FINAL
+    {
+        return _btmLeft.lock().get() == knob || _size.lock().get() == knob;
+    }
+
+    static double pointSize()
+    {
+        return 5.;
+    }
+
+    static double pointTolerance()
+    {
+        return 6.;
+    }
+
+    static double crossSize()
+    {
+        return 7.;
+    }
+
+    virtual void draw(double time,
+                      const RenderScale& renderScale,
+                      ViewIdx view,
+                      const OfxPointD& pscale,
+                      const QPointF& lastPenPos,
+                      const OfxRGBColourD& color,
+                      const OfxPointD& shadow,
+                      const QFont& font,
+                      const QFontMetrics& fm) OVERRIDE FINAL;
+    virtual bool penMotion(double time,
+                           const RenderScale& renderScale,
+                           ViewIdx view,
+                           const OfxPointD& pscale,
+                           const QPointF& lastPenPos,
+                           const QPointF& penPos,
+                           const QPoint& penPosViewport,
+                           double pressure) OVERRIDE FINAL;
+    virtual bool penUp(double time,
+                       const RenderScale& renderScale,
+                       ViewIdx view,
+                       const OfxPointD& pscale,
+                       const QPointF& lastPenPos,
+                       const QPointF& penPos,
+                       const QPoint& penPosViewport,
+                       double pressure) OVERRIDE FINAL;
+    virtual bool penDown(double time,
+                         const RenderScale& renderScale,
+                         ViewIdx view,
+                         const OfxPointD& pscale,
+                         const QPointF& lastPenPos,
+                         const QPointF& penPos,
+                         const QPoint& penPosViewport,
+                         double pressure) OVERRIDE FINAL;
+    virtual bool keyDown(double time,
+                         const RenderScale& renderScale,
+                         ViewIdx view,
+                         int key,
+                         char* keyString) OVERRIDE FINAL;
+    virtual bool keyUp(double time,
+                       const RenderScale& renderScale,
+                       ViewIdx view,
+                       int key,
+                       char* keyString) OVERRIDE FINAL;
+    virtual bool loseFocus(double time,
+                           const RenderScale& renderScale,
+                           ViewIdx view) OVERRIDE FINAL;
+
+private:
+    bool isActive(double time) const;
+
+    void getRectangle(double time,
+                      double* x1,
+                      double* y1,
+                      double* w,
+                      double* h) const;
+
+    void setValue(double time,
+                  OfxPointD btmLeft,
+                  OfxPointD size,
+                  const OfxPointD& pscale);
+};
+
+typedef std::shared_ptr<RectangleInteract> RectangleInteractPtr;
+
 class TransformInteract
     : public DefaultInteractI
 {
@@ -931,6 +1088,7 @@ HostOverlay::addInteract(const HostOverlayKnobsPtr& knobs)
     HostOverlayKnobsPosition* isPosition = dynamic_cast<HostOverlayKnobsPosition*>( knobs.get() );
     HostOverlayKnobsTransform* isTransform = dynamic_cast<HostOverlayKnobsTransform*>( knobs.get() );
     HostOverlayKnobsCornerPin* isCornerPin = dynamic_cast<HostOverlayKnobsCornerPin*>( knobs.get() );
+    HostOverlayKnobsRectangle* isRectangle = dynamic_cast<HostOverlayKnobsRectangle*>(knobs.get());
     DefaultInteractIPtr overlay;
     if (isPosition) {
         PositionInteractPtr p( new PositionInteract(isPosition, this) );
@@ -940,6 +1098,9 @@ HostOverlay::addInteract(const HostOverlayKnobsPtr& knobs)
         overlay = p;
     } else if (isCornerPin) {
         CornerPinInteractPtr p( new CornerPinInteract(isCornerPin, this) );
+        overlay = p;
+    } else if (isRectangle) {
+        RectangleInteractPtr p(new RectangleInteract(isRectangle, this));
         overlay = p;
     }
 
@@ -1018,6 +1179,637 @@ PositionInteract::draw(double time,
                    pscale.x, pscale.y, QString::fromUtf8( knob->getOriginalName().c_str() ), c, font);
     }
 } // PositionInteract::draw
+
+bool
+RectangleInteract::isActive(double time) const
+{
+    KnobDoublePtr btmLeft = _btmLeft.lock();
+    KnobDoublePtr size = _size.lock();
+
+    if (!btmLeft || !size || !btmLeft->shouldDrawOverlayInteract() || !size->shouldDrawOverlayInteract()) {
+        return false;
+    }
+    KnobBoolPtr enable = _enable.lock();
+    if (enable && !enable->getValueAtTime(time)) {
+        return false;
+    }
+
+    return true;
+}
+
+void
+RectangleInteract::getRectangle(double time,
+                                double* x1,
+                                double* y1,
+                                double* w,
+                                double* h) const
+{
+    if (_mouseState != eMouseStateIdle) {
+        *x1 = _btmLeftDragPos.x;
+        *y1 = _btmLeftDragPos.y;
+        *w = _sizeDrag.x;
+        *h = _sizeDrag.y;
+
+        return;
+    }
+    KnobDoublePtr btmLeft = _btmLeft.lock();
+    KnobDoublePtr size = _size.lock();
+    double p[2];
+    double s[2];
+    for (int i = 0; i < 2; ++i) {
+        p[i] = btmLeft->getValueAtTime(time, i);
+        if (btmLeft->getValueIsNormalized(i) != eValueIsNormalizedNone) {
+            p[i] = btmLeft->denormalize(i, time, p[i]);
+        }
+        s[i] = size->getValueAtTime(time, i);
+        if (size->getValueIsNormalized(i) != eValueIsNormalizedNone) {
+            s[i] = size->denormalize(i, time, s[i]);
+        }
+    }
+    *x1 = p[0];
+    *y1 = p[1];
+    *w = s[0];
+    *h = s[1];
+}
+
+static bool
+rectangleHandleIsNearby(const OfxPointD& p,
+                        double x,
+                        double y,
+                        double tolerance,
+                        const OfxPointD& pscale)
+{
+    return std::fabs(p.x - x) <= tolerance * pscale.x && std::fabs(p.y - y) <= tolerance * pscale.y;
+}
+
+static void
+drawRectangleHandle(const OfxRGBColourD& color,
+                    double x,
+                    double y,
+                    RectangleInteract::DrawStateEnum id,
+                    RectangleInteract::DrawStateEnum ds,
+                    bool keepAR,
+                    int l)
+{
+    if (ds == id) {
+        if (keepAR) {
+            glColor3f(1.f * l, 0.f * l, 0.f * l);
+        } else {
+            glColor3f(0.f * l, 1.f * l, 0.f * l);
+        }
+    } else {
+        glColor3f((float)color.r * l, (float)color.g * l, (float)color.b * l);
+    }
+    glVertex2d(x, y);
+}
+
+void
+RectangleInteract::draw(double time,
+                        const RenderScale& /*renderScale*/,
+                        ViewIdx /*view*/,
+                        const OfxPointD& pscale,
+                        const QPointF& /*lastPenPos*/,
+                        const OfxRGBColourD& color,
+                        const OfxPointD& shadow,
+                        const QFont& /*font*/,
+                        const QFontMetrics& /*fm*/)
+{
+    if (!isActive(time)) {
+        return;
+    }
+
+    double screenPixelRatio = getScreenPixelRatio();
+    double x1, y1, w, h;
+    getRectangle(time, &x1, &y1, &w, &h);
+    double x2 = x1 + w;
+    double y2 = y1 + h;
+    double xc = x1 + w / 2;
+    double yc = y1 + h / 2;
+    const bool keepAR = _modifierStateShift > 0;
+    const bool centered = _modifierStateCtrl > 0;
+
+    glDisable(GL_LINE_STIPPLE);
+    glEnable(GL_LINE_SMOOTH);
+    glDisable(GL_POINT_SMOOTH);
+    glEnable(GL_BLEND);
+    glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
+    glLineWidth(1.5f * screenPixelRatio);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    // Draw everything twice
+    // l = 0: shadow
+    // l = 1: drawing
+    for (int l = 0; l < 2; ++l) {
+        // shadow (uses GL_PROJECTION)
+        glMatrixMode(GL_PROJECTION);
+        int direction = (l == 0) ? 1 : -1;
+        // translate (1,-1) pixels
+        glTranslated(direction * shadow.x, -direction * shadow.y, 0);
+        glMatrixMode(GL_MODELVIEW);
+
+        glColor3f((float)color.r * l, (float)color.g * l, (float)color.b * l);
+
+        glBegin(GL_LINE_LOOP);
+        glVertex2d(x1, y1);
+        glVertex2d(x1, y2);
+        glVertex2d(x2, y2);
+        glVertex2d(x2, y1);
+        glEnd();
+
+        glPointSize(pointSize() * screenPixelRatio);
+        glBegin(GL_POINTS);
+        drawRectangleHandle(color, x1, y1, eDrawStateHoveringBtmLeft, _drawState, keepAR, l);
+        drawRectangleHandle(color, x1, yc, eDrawStateHoveringMidLeft, _drawState, false, l);
+        drawRectangleHandle(color, x1, y2, eDrawStateHoveringTopLeft, _drawState, keepAR, l);
+        drawRectangleHandle(color, xc, y1, eDrawStateHoveringBtmMid, _drawState, false, l);
+        drawRectangleHandle(color, xc, yc, eDrawStateHoveringCenter, _drawState, false, l);
+        drawRectangleHandle(color, xc, y2, eDrawStateHoveringTopMid, _drawState, false, l);
+        drawRectangleHandle(color, x2, y1, eDrawStateHoveringBtmRight, _drawState, keepAR, l);
+        drawRectangleHandle(color, x2, yc, eDrawStateHoveringMidRight, _drawState, false, l);
+        drawRectangleHandle(color, x2, y2, eDrawStateHoveringTopRight, _drawState, keepAR, l);
+        glEnd();
+        glPointSize(1);
+
+        glBegin(GL_LINES);
+        if ((_drawState == eDrawStateHoveringCenter) || (centered && (_drawState != eDrawStateInactive))) {
+            glColor3f(0.f * l, 1.f * l, 0.f * l);
+        } else {
+            glColor3f((float)color.r * l, (float)color.g * l, (float)color.b * l);
+        }
+        glVertex2d(xc - crossSize() * pscale.x, yc);
+        glVertex2d(xc + crossSize() * pscale.x, yc);
+        glVertex2d(xc, yc - crossSize() * pscale.y);
+        glVertex2d(xc, yc + crossSize() * pscale.y);
+        glEnd();
+    }
+} // RectangleInteract::draw
+
+bool
+RectangleInteract::penMotion(double time,
+                             const RenderScale& /*renderScale*/,
+                             ViewIdx /*view*/,
+                             const OfxPointD& pscale,
+                             const QPointF& /*lastPenPos*/,
+                             const QPointF& penPos,
+                             const QPoint& /*penPosViewport*/,
+                             double /*pressure*/)
+{
+    if (!isActive(time)) {
+        return false;
+    }
+
+    OfxPointD pen;
+    pen.x = penPos.x();
+    pen.y = penPos.y();
+    double x1, y1, w, h;
+    getRectangle(time, &x1, &y1, &w, &h);
+    double x2 = x1 + w;
+    double y2 = y1 + h;
+    double xc = x1 + w / 2;
+    double yc = y1 + h / 2;
+    bool valuesChanged = false;
+    OfxPointD delta;
+    delta.x = pen.x - _lastMousePos.x;
+    delta.y = pen.y - _lastMousePos.y;
+
+    DrawStateEnum newState;
+    // The centre is tested first so that a small rectangle can still be moved.
+    if (rectangleHandleIsNearby(pen, xc, yc, pointTolerance(), pscale)) {
+        newState = eDrawStateHoveringCenter;
+    } else if (rectangleHandleIsNearby(pen, x1, y1, pointTolerance(), pscale)) {
+        newState = eDrawStateHoveringBtmLeft;
+    } else if (rectangleHandleIsNearby(pen, x2, y1, pointTolerance(), pscale)) {
+        newState = eDrawStateHoveringBtmRight;
+    } else if (rectangleHandleIsNearby(pen, x1, y2, pointTolerance(), pscale)) {
+        newState = eDrawStateHoveringTopLeft;
+    } else if (rectangleHandleIsNearby(pen, x2, y2, pointTolerance(), pscale)) {
+        newState = eDrawStateHoveringTopRight;
+    } else if (rectangleHandleIsNearby(pen, xc, y1, pointTolerance(), pscale)) {
+        newState = eDrawStateHoveringBtmMid;
+    } else if (rectangleHandleIsNearby(pen, xc, y2, pointTolerance(), pscale)) {
+        newState = eDrawStateHoveringTopMid;
+    } else if (rectangleHandleIsNearby(pen, x1, yc, pointTolerance(), pscale)) {
+        newState = eDrawStateHoveringMidLeft;
+    } else if (rectangleHandleIsNearby(pen, x2, yc, pointTolerance(), pscale)) {
+        newState = eDrawStateHoveringMidRight;
+    } else {
+        newState = eDrawStateInactive;
+    }
+    bool redraw = _drawState != newState;
+    _drawState = newState;
+
+    const bool keepAR = _modifierStateShift > 0;
+    const bool centered = _modifierStateCtrl > 0;
+    if (keepAR && (_sizeDrag.x > 0.) && (_sizeDrag.y > 0.) && ((_mouseState == eMouseStateDraggingTopLeft) || (_mouseState == eMouseStateDraggingTopRight) || (_mouseState == eMouseStateDraggingBtmLeft) || (_mouseState == eMouseStateDraggingBtmRight))) {
+        // Project the motion onto the diagonal being dragged, so the aspect ratio is kept.
+        double r2 = _sizeDrag.x * _sizeDrag.x + _sizeDrag.y * _sizeDrag.y;
+        if ((_mouseState == eMouseStateDraggingTopRight) || (_mouseState == eMouseStateDraggingBtmLeft)) {
+            double dotprod = (delta.x * _sizeDrag.y + delta.y * _sizeDrag.x) / r2;
+            delta.x = _sizeDrag.x * dotprod;
+            delta.y = _sizeDrag.y * dotprod;
+        } else {
+            double dotprod = (delta.x * _sizeDrag.y - delta.y * _sizeDrag.x) / r2;
+            delta.x = _sizeDrag.x * dotprod;
+            delta.y = -_sizeDrag.y * dotprod;
+        }
+    }
+    if (_mouseState == eMouseStateDraggingBtmLeft) {
+        _drawState = eDrawStateHoveringBtmLeft;
+        OfxPointD topRight;
+        topRight.x = _btmLeftDragPos.x + _sizeDrag.x;
+        topRight.y = _btmLeftDragPos.y + _sizeDrag.y;
+        _btmLeftDragPos.x += delta.x;
+        _btmLeftDragPos.y += delta.y;
+        _sizeDrag.x = topRight.x - _btmLeftDragPos.x;
+        _sizeDrag.y = topRight.y - _btmLeftDragPos.y;
+        if (centered) {
+            _sizeDrag.x -= delta.x;
+            _sizeDrag.y -= delta.y;
+        }
+        valuesChanged = true;
+    } else if (_mouseState == eMouseStateDraggingTopLeft) {
+        _drawState = eDrawStateHoveringTopLeft;
+        OfxPointD btmRight;
+        btmRight.x = _btmLeftDragPos.x + _sizeDrag.x;
+        btmRight.y = _btmLeftDragPos.y;
+        _btmLeftDragPos.x += delta.x;
+        _sizeDrag.y += delta.y;
+        _sizeDrag.x = btmRight.x - _btmLeftDragPos.x;
+        if (centered) {
+            _sizeDrag.x -= delta.x;
+            _sizeDrag.y += delta.y;
+            _btmLeftDragPos.y -= delta.y;
+        }
+        valuesChanged = true;
+    } else if (_mouseState == eMouseStateDraggingTopRight) {
+        _drawState = eDrawStateHoveringTopRight;
+        _sizeDrag.x += delta.x;
+        _sizeDrag.y += delta.y;
+        if (centered) {
+            _sizeDrag.x += delta.x;
+            _btmLeftDragPos.x -= delta.x;
+            _sizeDrag.y += delta.y;
+            _btmLeftDragPos.y -= delta.y;
+        }
+        valuesChanged = true;
+    } else if (_mouseState == eMouseStateDraggingBtmRight) {
+        _drawState = eDrawStateHoveringBtmRight;
+        OfxPointD topLeft;
+        topLeft.x = _btmLeftDragPos.x;
+        topLeft.y = _btmLeftDragPos.y + _sizeDrag.y;
+        _sizeDrag.x += delta.x;
+        _btmLeftDragPos.y += delta.y;
+        _sizeDrag.y = topLeft.y - _btmLeftDragPos.y;
+        if (centered) {
+            _sizeDrag.x += delta.x;
+            _btmLeftDragPos.x -= delta.x;
+            _sizeDrag.y -= delta.y;
+        }
+        valuesChanged = true;
+    } else if (_mouseState == eMouseStateDraggingTopMid) {
+        _drawState = eDrawStateHoveringTopMid;
+        _sizeDrag.y += delta.y;
+        if (centered) {
+            _sizeDrag.y += delta.y;
+            _btmLeftDragPos.y -= delta.y;
+        }
+        valuesChanged = true;
+    } else if (_mouseState == eMouseStateDraggingMidRight) {
+        _drawState = eDrawStateHoveringMidRight;
+        _sizeDrag.x += delta.x;
+        if (centered) {
+            _sizeDrag.x += delta.x;
+            _btmLeftDragPos.x -= delta.x;
+        }
+        valuesChanged = true;
+    } else if (_mouseState == eMouseStateDraggingBtmMid) {
+        _drawState = eDrawStateHoveringBtmMid;
+        double top = _btmLeftDragPos.y + _sizeDrag.y;
+        _btmLeftDragPos.y += delta.y;
+        _sizeDrag.y = top - _btmLeftDragPos.y;
+        if (centered) {
+            _sizeDrag.y -= delta.y;
+        }
+        valuesChanged = true;
+    } else if (_mouseState == eMouseStateDraggingMidLeft) {
+        _drawState = eDrawStateHoveringMidLeft;
+        double right = _btmLeftDragPos.x + _sizeDrag.x;
+        _btmLeftDragPos.x += delta.x;
+        _sizeDrag.x = right - _btmLeftDragPos.x;
+        if (centered) {
+            _sizeDrag.x -= delta.x;
+        }
+        valuesChanged = true;
+    } else if (_mouseState == eMouseStateDraggingCenter) {
+        _drawState = eDrawStateHoveringCenter;
+        _btmLeftDragPos.x += delta.x;
+        _btmLeftDragPos.y += delta.y;
+        valuesChanged = true;
+    }
+
+    // Dragging an edge past the opposite one flips the rectangle, and the dragged handle with it.
+    if (_sizeDrag.x < 0) {
+        if (_mouseState == eMouseStateDraggingBtmLeft) {
+            _mouseState = eMouseStateDraggingBtmRight;
+        } else if (_mouseState == eMouseStateDraggingMidLeft) {
+            _mouseState = eMouseStateDraggingMidRight;
+        } else if (_mouseState == eMouseStateDraggingTopLeft) {
+            _mouseState = eMouseStateDraggingTopRight;
+        } else if (_mouseState == eMouseStateDraggingBtmRight) {
+            _mouseState = eMouseStateDraggingBtmLeft;
+        } else if (_mouseState == eMouseStateDraggingMidRight) {
+            _mouseState = eMouseStateDraggingMidLeft;
+        } else if (_mouseState == eMouseStateDraggingTopRight) {
+            _mouseState = eMouseStateDraggingTopLeft;
+        }
+
+        _btmLeftDragPos.x += _sizeDrag.x;
+        _sizeDrag.x = -_sizeDrag.x;
+        valuesChanged = true;
+    }
+    if (_sizeDrag.y < 0) {
+        if (_mouseState == eMouseStateDraggingTopLeft) {
+            _mouseState = eMouseStateDraggingBtmLeft;
+        } else if (_mouseState == eMouseStateDraggingTopMid) {
+            _mouseState = eMouseStateDraggingBtmMid;
+        } else if (_mouseState == eMouseStateDraggingTopRight) {
+            _mouseState = eMouseStateDraggingBtmRight;
+        } else if (_mouseState == eMouseStateDraggingBtmLeft) {
+            _mouseState = eMouseStateDraggingTopLeft;
+        } else if (_mouseState == eMouseStateDraggingBtmMid) {
+            _mouseState = eMouseStateDraggingTopMid;
+        } else if (_mouseState == eMouseStateDraggingBtmRight) {
+            _mouseState = eMouseStateDraggingTopRight;
+        }
+
+        _btmLeftDragPos.y += _sizeDrag.y;
+        _sizeDrag.y = -_sizeDrag.y;
+        valuesChanged = true;
+    }
+
+    if (_sizeDrag.x < 1) {
+        _sizeDrag.x = 1;
+        valuesChanged = true;
+    }
+    if (_sizeDrag.y < 1) {
+        _sizeDrag.y = 1;
+        valuesChanged = true;
+    }
+
+    if ((_mouseState != eMouseStateIdle) && _interactiveDrag && valuesChanged) {
+        setValue(time, _btmLeftDragPos, _sizeDrag, pscale);
+    } else if (redraw || valuesChanged) {
+        requestRedraw();
+    }
+
+    _lastMousePos = pen;
+
+    return valuesChanged;
+} // RectangleInteract::penMotion
+
+bool
+RectangleInteract::penDown(double time,
+                           const RenderScale& /*renderScale*/,
+                           ViewIdx /*view*/,
+                           const OfxPointD& pscale,
+                           const QPointF& /*lastPenPos*/,
+                           const QPointF& penPos,
+                           const QPoint& /*penPosViewport*/,
+                           double /*pressure*/)
+{
+    if (!isActive(time)) {
+        return false;
+    }
+
+    if (_mouseState == eMouseStateIdle) {
+        KnobBoolPtr interactive = _interactive.lock();
+        if (interactive) {
+            _interactiveDrag = interactive->isEnabled(0) && interactive->getValueAtTime(time);
+        } else {
+            _interactiveDrag = !appPTR->getCurrentSettings()->getRenderOnEditingFinishedOnly();
+        }
+    }
+    OfxPointD pen;
+    pen.x = penPos.x();
+    pen.y = penPos.y();
+    double x1, y1, w, h;
+    getRectangle(time, &x1, &y1, &w, &h);
+    double x2 = x1 + w;
+    double y2 = y1 + h;
+    double xc = x1 + w / 2;
+    double yc = y1 + h / 2;
+
+    MouseStateEnum newState;
+    if (rectangleHandleIsNearby(pen, xc, yc, pointTolerance(), pscale)) {
+        newState = eMouseStateDraggingCenter;
+    } else if (rectangleHandleIsNearby(pen, x1, y1, pointTolerance(), pscale)) {
+        newState = eMouseStateDraggingBtmLeft;
+    } else if (rectangleHandleIsNearby(pen, x2, y1, pointTolerance(), pscale)) {
+        newState = eMouseStateDraggingBtmRight;
+    } else if (rectangleHandleIsNearby(pen, x1, y2, pointTolerance(), pscale)) {
+        newState = eMouseStateDraggingTopLeft;
+    } else if (rectangleHandleIsNearby(pen, x2, y2, pointTolerance(), pscale)) {
+        newState = eMouseStateDraggingTopRight;
+    } else if (rectangleHandleIsNearby(pen, xc, y1, pointTolerance(), pscale)) {
+        newState = eMouseStateDraggingBtmMid;
+    } else if (rectangleHandleIsNearby(pen, xc, y2, pointTolerance(), pscale)) {
+        newState = eMouseStateDraggingTopMid;
+    } else if (rectangleHandleIsNearby(pen, x1, yc, pointTolerance(), pscale)) {
+        newState = eMouseStateDraggingMidLeft;
+    } else if (rectangleHandleIsNearby(pen, x2, yc, pointTolerance(), pscale)) {
+        newState = eMouseStateDraggingMidRight;
+    } else {
+        newState = eMouseStateIdle;
+    }
+    bool didSomething = _mouseState != newState;
+    _mouseState = newState;
+
+    _btmLeftDragPos.x = x1;
+    _btmLeftDragPos.y = y1;
+    _sizeDrag.x = w;
+    _sizeDrag.y = h;
+    _lastMousePos = pen;
+    if (didSomething) {
+        requestRedraw();
+    }
+
+    return didSomething;
+} // RectangleInteract::penDown
+
+bool
+RectangleInteract::penUp(double time,
+                         const RenderScale& /*renderScale*/,
+                         ViewIdx /*view*/,
+                         const OfxPointD& pscale,
+                         const QPointF& /*lastPenPos*/,
+                         const QPointF& /*penPos*/,
+                         const QPoint& /*penPosViewport*/,
+                         double /*pressure*/)
+{
+    if (!isActive(time)) {
+        return false;
+    }
+
+    bool didSomething = false;
+    if (!_interactiveDrag && (_mouseState != eMouseStateIdle)) {
+        setValue(time, _btmLeftDragPos, _sizeDrag, pscale);
+        didSomething = true;
+    } else if (_mouseState != eMouseStateIdle) {
+        requestRedraw();
+    }
+    _mouseState = eMouseStateIdle;
+
+    return didSomething;
+}
+
+bool
+RectangleInteract::keyDown(double time,
+                           const RenderScale& /*renderScale*/,
+                           ViewIdx /*view*/,
+                           int key,
+                           char* /*keyString*/)
+{
+    if (!isActive(time)) {
+        return false;
+    }
+
+    // Note that on the Mac:
+    // cmd/apple/cloverleaf is kOfxKey_Control_L
+    // ctrl is kOfxKey_Meta_L
+    // alt/option is kOfxKey_Alt_L
+    bool mustRedraw = false;
+
+    // the two control keys may be pressed consecutively, be aware about this
+    if ((key == kOfxKey_Control_L) || (key == kOfxKey_Control_R)) {
+        mustRedraw = _modifierStateCtrl == 0;
+        ++_modifierStateCtrl;
+    }
+    if ((key == kOfxKey_Shift_L) || (key == kOfxKey_Shift_R)) {
+        mustRedraw = _modifierStateShift == 0;
+        ++_modifierStateShift;
+    }
+    if (mustRedraw) {
+        requestRedraw();
+    }
+
+    // modifiers are not "caught"
+    return false;
+}
+
+bool
+RectangleInteract::keyUp(double time,
+                         const RenderScale& /*renderScale*/,
+                         ViewIdx /*view*/,
+                         int key,
+                         char* /*keyString*/)
+{
+    if (!isActive(time)) {
+        return false;
+    }
+
+    bool mustRedraw = false;
+
+    if ((key == kOfxKey_Control_L) || (key == kOfxKey_Control_R)) {
+        // we may have missed a keypress
+        if (_modifierStateCtrl > 0) {
+            --_modifierStateCtrl;
+            mustRedraw = _modifierStateCtrl == 0;
+        }
+    }
+    if ((key == kOfxKey_Shift_L) || (key == kOfxKey_Shift_R)) {
+        if (_modifierStateShift > 0) {
+            --_modifierStateShift;
+            mustRedraw = _modifierStateShift == 0;
+        }
+    }
+    if (mustRedraw) {
+        requestRedraw();
+    }
+
+    // modifiers are not "caught"
+    return false;
+}
+
+bool
+RectangleInteract::loseFocus(double /*time*/,
+                             const RenderScale& /*renderScale*/,
+                             ViewIdx /*view*/)
+{
+    _modifierStateCtrl = 0;
+    _modifierStateShift = 0;
+    _interactiveDrag = false;
+
+    return false;
+}
+
+void
+RectangleInteract::setValue(double time,
+                            OfxPointD btmLeft,
+                            OfxPointD size,
+                            const OfxPointD& pscale)
+{
+    // Only the coordinates the dragged handle moves are rounded, so the others keep their exact values.
+    switch (_mouseState) {
+    case eMouseStateIdle:
+        break;
+    case eMouseStateDraggingTopLeft:
+        btmLeft.x = fround(btmLeft.x, pscale.x);
+        size.x = fround(size.x, pscale.x);
+        size.y = fround(size.y, pscale.y);
+        break;
+    case eMouseStateDraggingTopRight:
+        size.x = fround(size.x, pscale.x);
+        size.y = fround(size.y, pscale.y);
+        break;
+    case eMouseStateDraggingBtmLeft:
+        btmLeft.x = fround(btmLeft.x, pscale.x);
+        btmLeft.y = fround(btmLeft.y, pscale.y);
+        size.x = fround(size.x, pscale.x);
+        size.y = fround(size.y, pscale.y);
+        break;
+    case eMouseStateDraggingBtmRight:
+        size.x = fround(size.x, pscale.x);
+        size.y = fround(size.y, pscale.y);
+        btmLeft.y = fround(btmLeft.y, pscale.y);
+        break;
+    case eMouseStateDraggingCenter:
+        btmLeft.x = fround(btmLeft.x, pscale.x);
+        btmLeft.y = fround(btmLeft.y, pscale.y);
+        break;
+    case eMouseStateDraggingTopMid:
+        size.y = fround(size.y, pscale.y);
+        break;
+    case eMouseStateDraggingMidRight:
+        size.x = fround(size.x, pscale.x);
+        break;
+    case eMouseStateDraggingBtmMid:
+        btmLeft.y = fround(btmLeft.y, pscale.y);
+        break;
+    case eMouseStateDraggingMidLeft:
+        btmLeft.x = fround(btmLeft.x, pscale.x);
+        break;
+    }
+
+    KnobDoublePtr btmLeftKnob = _btmLeft.lock();
+    KnobDoublePtr sizeKnob = _size.lock();
+    double p[2] = { btmLeft.x, btmLeft.y };
+    double s[2] = { size.x, size.y };
+    for (int i = 0; i < 2; ++i) {
+        if (btmLeftKnob->getValueIsNormalized(i) != eValueIsNormalizedNone) {
+            p[i] = btmLeftKnob->normalize(i, time, p[i]);
+        }
+        if (sizeKnob->getValueIsNormalized(i) != eValueIsNormalizedNone) {
+            s[i] = sizeKnob->normalize(i, time, s[i]);
+        }
+    }
+
+    EffectInstancePtr holder = _overlay->getNode()->getNode()->getEffectInstance();
+    holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOnCreateNewCommand);
+    // Do not use setValues(x,y) (see note at the top of this file).
+    nonBlockingSetValues(btmLeftKnob, p[0], p[1], eValueChangedReasonNatronGuiEdited);
+    nonBlockingSetValues(sizeKnob, s[0], s[1], eValueChangedReasonNatronGuiEdited);
+    holder->setMultipleParamsEditLevel(KnobHolder::eMultipleParamsEditOff);
+} // RectangleInteract::setValue
 
 static void
 getTargetCenter(const OfxPointD &center,

@@ -357,7 +357,7 @@ Shared rules for every node task in this phase:
 - Tests: `Tests/Native/Native<Name>_Test.cpp`, with knob parity, parity at mipmap 0 and 1 (≥5 cases, 2–3 marked `record`), a `renderBothWaysDirect` check that is bit-exact with 0 unplanned pulls, and the identity conditions.
 - Registration is done only by the batch's registration owner (see the batch plan).
 
-- [ ] M67.P2.T1 — Copy the replaced plugins' icons into Natron's resources
+- [x] M67.P2.T1 — Copy the replaced plugins' icons into Natron's resources
   - files: `Gui/Resources/Images/NativeNodes/` (new PNGs), `Gui/GuiResources.qrc`
   - approach:
     - Copy, from `build/assets/plugin-src/openfx-misc`, the `net.sf.openfx.*.png` icons of Grade, ColorCorrect, Saturation, Clamp, Invert, Add, Multiply, Gamma, Merge and its nine sibling PNGs that exist, Dissolve, Constant, Solid, CheckerBoard, Transform, TransformMasked, Crop, Reformat, Position, Keyer, ChromaKeyer and ColorLookup. Keep their file names.
@@ -366,7 +366,7 @@ Shared rules for every node task in this phase:
   - verify: `ls Gui/Resources/Images/NativeNodes | wc -l` matches the qrc lines, and the batch build compiles the qrc.
   - size: S
 
-- [ ] M67.P2.T2 — Native ColorCorrect (`net.sf.openfx.ColorCorrectPlugin` 3.0)
+- [x] M67.P2.T2 — Native ColorCorrect (`net.sf.openfx.ColorCorrectPlugin` 3.0)
   - files: `Engine/Nodes/Color/ColorCorrect.h`, `Engine/Nodes/Color/ColorCorrect.cpp`, `Tests/Native/NativeColorCorrect_Test.cpp`
   - approach:
     - Components RGBA, RGB, Alpha. Quad RGB on, A off.
@@ -384,7 +384,7 @@ Shared rules for every node task in this phase:
   - verify: As in the phase rules. Cases include each group alone, a disabled group, a non-default `range`, every `luminanceMath`, and an edited `toneRanges` point (set on both nodes through `KnobParametric` API). Knob parity includes the parametric knob's default control points.
   - size: L
 
-- [ ] M67.P2.T3 — Native Saturation (`net.sf.openfx.SaturationPlugin` 3.0)
+- [x] M67.P2.T3 — Native Saturation (`net.sf.openfx.SaturationPlugin` 3.0)
   - files: `Engine/Nodes/Color/Saturation.h`, `Engine/Nodes/Color/Saturation.cpp`, `Tests/Native/NativeSaturation_Test.cpp`
   - approach:
     - Components RGBA and RGB only, as in OFX. Quad RGB on, A off.
@@ -394,7 +394,7 @@ Shared rules for every node task in this phase:
   - verify: As in the phase rules, including every other `luminanceMath`, saturation 0 and 2.5, and the clamps.
   - size: M
 
-- [ ] M67.P2.T4 — Native Clamp (`net.sf.openfx.Clamp` 3.0)
+- [x] M67.P2.T4 — Native Clamp (`net.sf.openfx.Clamp` 3.0)
   - files: `Engine/Nodes/Color/Clamp.h`, `Engine/Nodes/Color/Clamp.cpp`, `Tests/Native/NativeClamp_Test.cpp`
   - approach:
     - Components RGBA, RGB, Alpha, XY. Quad all four on.
@@ -404,7 +404,7 @@ Shared rules for every node task in this phase:
   - verify: As in the phase rules, at the exact tolerance class.
   - size: M
 
-- [ ] M67.P2.T5 — Native Invert (`net.sf.openfx.Invert` 3.0)
+- [x] M67.P2.T5 — Native Invert (`net.sf.openfx.Invert` 3.0)
   - files: `Engine/Nodes/Color/Invert.h`, `Engine/Nodes/Color/Invert.cpp`, `Tests/Native/NativeInvert_Test.cpp`
   - approach:
     - Components RGBA, RGB, Alpha, XY. Quad all on.
@@ -413,7 +413,7 @@ Shared rules for every node task in this phase:
   - verify: As in the phase rules, at the exact class, including values outside 0..1 and `hostUnPremultBy`.
   - size: M
 
-- [ ] M67.P2.T6 — Native ColorMath: Add, Multiply, Gamma (three IDs, one class)
+- [x] M67.P2.T6 — Native ColorMath: Add, Multiply, Gamma (three IDs, one class)
   - files: `Engine/Nodes/Color/ColorMathNode.h`, `Engine/Nodes/Color/ColorMathNode.cpp`, `Tests/Native/NativeColorMath_Test.cpp`, `Engine/AppManager.cpp` (B5's registration owner). The node files are not named `ColorMath.*`, which would clash with `Engine/Nodes/Image/ColorMath.h`.
   - approach:
     - One class `ColorMathNode` templated or parameterised by operation, registered as `net.sf.openfx.AddPlugin`, `MultiplyPlugin` and `GammaPlugin`, all 3.0. Grouping `Color/Math`, labels Add, Multiply, Gamma. Quad RGB on, A off.
@@ -1053,3 +1053,4 @@ Notes:
 - 2026-10-06 — **P1.T4/P1.T5 landed** (`593a878d6`, `0d6c0307c`): native-vs-host comparisons are bit-exact; Grade parity max diff is 0, except 2.98e-8 on multiply-offset at mipmap 0; both modes are bit-exact with 0 unplanned pulls. Deviations: divisor planning goes in the default `getComponentsNeededDefault` path (non-multiplanar effects never call the override), so OFX nodes using `hostUnPremultBy` on another layer get it planned too. **A pre-existing engine bug was fixed:** two paths cached a window-dependent identity answer computed on the project format (`getNearestNonIdentity`, `addIdentityNodesRecursively`), so those no longer cache. Traits are fixed in the subclass constructor rather than in `NativePluginDescription`. With unpremult and mask/mix both on, mix blends with the undivided source, which differs from OFX only where divisor ≤ ε. Six old tests that assume an unversioned Grade is OFX are being pinned to major 2 ahead of P2.T7.
 - 2026-10-06 — **P1.T6 gate run 1: NO-GO on HD only** (`f4c6f890c`, harness labelled it contended: 3 of 24 configs started at load 0.54–0.70, no IO pressure; spreads ≤ 0.06). Native/OFX medians: mem 0.216, build 0.884, tiny 0.503, **HD 1.697** (29.9 → 50.7 ms/node). Old OFX-hosting tests are pinned to Grade major 2 (`c78748768`); full ctest 1020/1020 in both modes. **PM decision:** the family phases stay unstarted per the gate, but a slower point op is more likely an implementation defect (threading, per-pixel double maths, a source conversion copy) than a property of native nodes. A consultant is diagnosing and fixing it in the shared base, then the gate re-runs. Only if the gap can't be closed does M67 go `blocked`.
 - 2026-10-06 — **P1.T6 gate: GO after a fix** (`m67gate2`, release; native configs all started quiet, 4 OFX configs at load 0.54–1.59). Medians: mem 0.216, build 0.871, tiny 0.498, **HD 0.700** (30.0 → 21.0 ms/node), spreads ≤ 0.037. Root cause of run 1's 1.70x: native point ops ran single-threaded (parallelism 1.0 vs OFX 3.0), because the host only fans out over several rects and its single-rect split is commented out (`EffectInstanceRenderRoI.cpp:1174`). **Fix and Design departure (accepted by PM):** `NativeImageEffect` splits its window into row bands on `parallelForOnGlobalPool` within the host thread budget (≥16384 px per band, ≤4 bands per thread) and declares `eRenderSafetyFullySafe`, like OFX Grade, rather than `FullySafeFrame`. Design §2/§9's host-slices-the-RoI model does not hold; every later node inherits the band split. Code `0e0cb4948`; ctest 1023/1023 in both modes; parity unchanged. The gate-2 table still needs appending to `BASELINE.md` (next batch).
+- 2026-10-06 — **B5 landed** (`68c975b86`..`7fe48113f`): native ColorCorrect, Saturation, Clamp, Invert and Add/Multiply/Gamma, plus 29 icons. Targeted tests pass 107/107 and full ctest 1094/1094 in both modes. Max parity diff is 0 for Clamp/Invert/ColorMath, 5.96e-8 for Saturation and 2.38e-7 for ColorCorrect. Fixes: ColorCorrect's tone curves are evaluated lock-free (`ToneCurve` repeats `Curve::getValueAt` exactly) instead of a locked `Curve` copy per pixel; a `ColorMath.h` overload ambiguity. No old tests needed pinning (all pass on the native nodes), so P2.T7 has nothing failing to triage. Open gaps: XY planes are accepted but never rendered end to end; ColorMath identity checks all channels, not just processed ones (conservative). `Engine/Nodes` source glob lacks `CONFIGURE_DEPENDS`, so debug builds need `--reconfigure` after new files.

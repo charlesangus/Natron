@@ -125,6 +125,37 @@ NativeEffectBase::isInputOptional(int inputNb) const
     return desc.inputs[inputNb].optional;
 }
 
+bool
+NativeEffectBase::isInputMask(int inputNb) const
+{
+    const NativePluginDescription desc = getNativePluginDescription();
+
+    if ((inputNb < 0) || ((std::size_t)inputNb >= desc.inputs.size())) {
+        return false;
+    }
+
+    return desc.inputs[inputNb].isMask;
+}
+
+void
+NativeEffectBase::getPluginGrouping(std::list<std::string>* grouping) const
+{
+    const std::string path = getNativePluginDescription().grouping;
+    std::size_t start = 0;
+
+    while (start <= path.size()) {
+        const std::size_t slash = path.find('/', start);
+        const std::size_t end = (slash == std::string::npos) ? path.size() : slash;
+        if (end > start) {
+            grouping->push_back(path.substr(start, end - start));
+        }
+        if (slash == std::string::npos) {
+            break;
+        }
+        start = slash + 1;
+    }
+}
+
 DataKindEnum
 NativeEffectBase::getInputDataKind(int inputNb) const
 {

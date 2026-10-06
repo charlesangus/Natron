@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <list>
 #include <string>
 #include <vector>
 
@@ -42,26 +43,30 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief Statically describes one input of a NativeEffectBase subclass: its label,
- * whether it may be left unconnected, and the DataKindEnum it accepts.
+ * whether it may be left unconnected, the DataKindEnum it accepts, and whether it is a mask.
+ * The host gives a mask input the enableMask_<label>/maskChannel_<label> selectors.
  **/
 struct NativeInputDescription {
     std::string label;
     bool optional;
     DataKindEnum kind;
+    bool isMask;
 
     explicit NativeInputDescription(const std::string& label_,
                                     bool optional_ = false,
-                                    DataKindEnum kind_ = eDataKindImage)
+                                    DataKindEnum kind_ = eDataKindImage,
+                                    bool isMask_ = false)
         : label(label_)
         , optional(optional_)
         , kind(kind_)
+        , isMask(isMask_)
     {
     }
 };
 
 /**
  * @brief Statically describes a NativeEffectBase subclass: plugin id/label/description,
- * grouping, version, its inputs, the DataKindEnum it outputs, and whether it is a writer. One
+ * grouping (a menu path whose levels are separated by '/', e.g. "Color/Math"), version, its inputs, the DataKindEnum it outputs, and whether it is a writer. One
  * instance of this, returned by NativeEffectBase::getNativePluginDescription(), replaces the
  * half-dozen one-line EffectInstance accessor overrides a hand-written node otherwise repeats.
  **/
@@ -192,10 +197,7 @@ public:
         return getNativePluginDescription().description;
     }
 
-    virtual void getPluginGrouping(std::list<std::string>* grouping) const OVERRIDE FINAL
-    {
-        grouping->push_back(getNativePluginDescription().grouping);
-    }
+    virtual void getPluginGrouping(std::list<std::string>* grouping) const OVERRIDE FINAL;
 
     virtual int getMajorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
@@ -224,6 +226,7 @@ public:
 
     virtual std::string getInputLabel(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
     virtual bool isInputOptional(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
+    virtual bool isInputMask(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
 
     virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN
     {

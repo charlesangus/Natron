@@ -4868,6 +4868,24 @@ EffectInstance::getComponentsNeededDefault(double time, ViewIdx view,
         if (inputPlanes.empty()) {
             inputPlanes = metadataPlanes;
         }
+
+        // The "(Un)premult by" divisor is fetched from every non-mask input next to the planes
+        // being processed, so the request pass must plan it too. A colour divisor already in the
+        // list as a colour plane is not added again: findEquivalentLayer() would then be
+        // choosing between two colour layouts for the plane being rendered.
+        ImageLayerDesc divisorLayer;
+        if ((node->getUnPremultChannel(upstreamAvailableLayers, &divisorLayer) != -1) && (divisorLayer.getNumComponents() > 0)) {
+            bool planned = false;
+            for (std::list<ImageLayerDesc>::const_iterator it = inputPlanes.begin(); it != inputPlanes.end(); ++it) {
+                if (divisorLayer.isColorLayer() ? it->isColorLayer() : (*it == divisorLayer)) {
+                    planned = true;
+                    break;
+                }
+            }
+            if (!planned) {
+                inputPlanes.push_back(divisorLayer);
+            }
+        }
     }
 } // EffectInstance::getComponentsNeededDefault
 
@@ -5856,7 +5874,10 @@ EffectInstance::getNearestNonIdentity(double time)
     double inputTimeIdentity;
     int inputNbIdentity;
     ViewIdx inputView;
-    if ( !isIdentity_public(true, hash, time, RenderScale::identity, frmt, ViewIdx(0), &inputTimeIdentity, &inputView, &inputNbIdentity) ) {
+    // Uncached: the identity cache holds whole-image answers keyed on the hash alone, and the
+    // project format is not this effect's image, so an answer that depends on the window (a
+    // mask that misses it, say) must neither be served here nor be left for a render to find.
+    if (!isIdentity_public(false, hash, time, RenderScale::identity, frmt, ViewIdx(0), &inputTimeIdentity, &inputView, &inputNbIdentity)) {
         return shared_from_this();
     } else {
         if (inputNbIdentity < 0) {

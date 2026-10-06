@@ -78,7 +78,8 @@ RenderMismatch renderBothWays(const NodePtr& writer,
 // Renders `roi` (in pixel coordinates at `mipmapLevel`) of `node`'s RGBA float output once in
 // Legacy mode directly through renderRoI, bypassing the cache, then per pool size as a frame
 // built and run by the RenderScheduler, and compares the pixels inside `roi` bit for bit. A Task
-// graph pass that runs no task through the scheduler is reported as a mismatch.
+// graph pass that runs no task through the scheduler is reported as a mismatch. `unplannedPulls`,
+// when given, receives each Task graph pass's count of pulls past the frame store, in pool order.
 RenderMismatch renderBothWaysDirect(const NodePtr& node,
                                     double time,
                                     ViewIdx view,
@@ -86,7 +87,8 @@ RenderMismatch renderBothWaysDirect(const NodePtr& node,
                                     const RectI& roi,
                                     const std::vector<int>& poolSizes,
                                     const std::function<void()>& beforeTaskGraph = std::function<void()>(),
-                                    float tolerance = 0.f);
+                                    float tolerance = 0.f,
+                                    std::vector<int>* unplannedPulls = 0);
 
 std::string describe(const RenderMismatch& m);
 

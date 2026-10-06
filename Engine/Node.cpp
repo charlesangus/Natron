@@ -7130,7 +7130,10 @@ addIdentityNodesRecursively(const Node* caller,
 
             RectI format = node->getEffectInstance()->getOutputFormat();
 
-            isIdentity = node->getEffectInstance()->isIdentity_public(true, renderHash, time, RenderScale::identity, format, view, &inputTimeId, &identityView, &inputNbId);
+            // Uncached: the output format is not the node's image, and the identity cache keeps
+            // whole-image answers keyed on the hash alone, which the node's own render would then
+            // take for its region of definition.
+            isIdentity = node->getEffectInstance()->isIdentity_public(false, renderHash, time, RenderScale::identity, format, view, &inputTimeId, &identityView, &inputNbId);
         }
 
 

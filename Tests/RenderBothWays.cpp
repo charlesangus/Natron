@@ -329,6 +329,7 @@ struct DirectPass {
     ImagePtr image;
     std::map<ImageLayerDesc, ImagePtr> planes;
     int tasksRun = 0;
+    int unplannedPulls = 0;
     RenderMismatch error;
 };
 
@@ -390,6 +391,7 @@ renderDirect(const NodePtr& node,
         }
         layers = future->getRootPlanes();
         pass.tasksRun = stats->getTasksRun();
+        pass.unplannedPulls = stats->getUnplannedPulls();
     } else {
         std::list<ImageLayerDesc> components = requestedComponents;
         if (components.empty()) {
@@ -616,9 +618,13 @@ renderBothWaysDirect(const NodePtr& node,
                      const RectI& roi,
                      const std::vector<int>& poolSizes,
                      const std::function<void()>& beforeTaskGraph,
-                     float tolerance)
+                     float tolerance,
+                     std::vector<int>* unplannedPulls)
 {
     const int frame = static_cast<int>(time);
+    if (unplannedPulls) {
+        unplannedPulls->clear();
+    }
     if (!node) {
         return failure("no node", frame);
     }
@@ -648,6 +654,9 @@ renderBothWaysDirect(const NodePtr& node,
     for (std::size_t i = 0; i < poolSizes.size(); ++i) {
         enterMode(eRenderSchedulerModeTaskGraph, poolSizes[i]);
         const DirectPass taskGraph = renderDirect(node, time, view, mipmapLevel, roi, true /*throughScheduler*/);
+        if (unplannedPulls) {
+            unplannedPulls->push_back(taskGraph.unplannedPulls);
+        }
         RenderMismatch m;
         if (taskGraph.error.any) {
             m = taskGraph.error;

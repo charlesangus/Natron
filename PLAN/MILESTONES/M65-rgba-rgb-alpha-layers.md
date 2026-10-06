@@ -343,7 +343,7 @@ Execution notes:
   - verify: `ctest -R ColorViews` passes; the full debug ctest is green.
   - size: M
 
-- [ ] M65.P8.T3 — Package the release AppImage for the user checkpoint
+- [x] M65.P8.T3 — Package the release AppImage for the user checkpoint
   - files: `build/appimages/M65-<sha>.AppImage`, `build/appimages/M65-uat.md`
   - approach: build with the release `package.sh`. The UAT script walks through:
     - Grade's menu showing rgba, rgb and alpha.
@@ -522,3 +522,4 @@ Execution notes:
 - **Widening `isColorLayer`:** this masks views leaking into engine lists. P4.T1's "no view ID in `getPresentLayers`" test is the guard, so keep it strict.
 - **Shuffle wiring:** implicit wiring by name, the overlap rule and zero-reads change behaviour from M34/M61. Some tests will need re-baselining, and the change should be called out in UAT.
 - **M60 (deep):** deep present lists pick up the views only if M60 goes through `expandColorViews`. Note this in the M60 draft.
+- 2026-10-06 — **Parcel UAT passed (user, via inbox 2026-10-04): "These all look good."** UAT-gated tasks checked off; PR merges bottom-up by the PM.

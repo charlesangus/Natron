@@ -298,7 +298,7 @@ Execution notes:
   - verify: the file exists and INDEX links to it.
   - size: S
 
-- [ ] M37.P6.T2 — Packaged release AppImage and user checkpoint
+- [x] M37.P6.T2 — Packaged release AppImage and user checkpoint
   - files: `build/appimages/M37-<sha>.AppImage`, `build/appimages/M37-uat.md`
   - approach: build with the release `package.sh`. The UAT script walks through:
     - RemoveLayers `diffuse`: the viewer menu and a Write-All EXR no longer have it;
@@ -362,3 +362,4 @@ Execution notes:
     - Full ctest 733/733.
   - **Known gap:** Write's channel set follows metadata, so a frame whose real colour layout differs from the metadata writes zero-filled channels. This predates M37.
 - 2026-10-02 — AppImage `build/appimages/M37-70fda8e85.AppImage` launch-checked. P4.T3 shot approval and P6.T2 UAT deferred to the parcel UAT.
+- 2026-10-06 — **Parcel UAT passed (user, via inbox 2026-10-04): "These all look good."** UAT-gated tasks checked off; PR merges bottom-up by the PM.

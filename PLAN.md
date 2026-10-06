@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: null
-pm_heartbeat: 2026-10-05T10:43:36-04:00
+current: M64 (elaboration)
+pm_heartbeat: 2026-10-06T00:14:23-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -176,6 +176,8 @@ future core work has solid ground to build on.
 - **Stacked milestone PRs (2026-09-22, user):** from M34 on, every milestone packages an AppImage to `build/appimages/`, opens its PR against the previous milestone's branch, runs its review round, and stays open. The next milestone branches off the previous tip, and the user checks and merges asynchronously. Fixes from a user check are merged up the stack, never rebased. See `DECISIONS/2026-09-22-stacked-milestone-prs.md`.
 - **Parallel milestones in worktrees (2026-09-23, user):** M28 and M30 run alongside M34 in worktrees under `build/wt/` (inside the container mount), each branched off `main` and PR'd against `main`, not stacked. Builds still serialize through the one natron-dev container. See `DECISIONS/2026-09-23-parallel-worktree-milestones.md`.
 
+- **Parcel 2 (2026-10-06, user):** parcel 1 (M61 → M62, PRs #34–#40) passed UAT and is being merged bottom-up by the PM. Next, M64 (tiles), then M67 (native core nodes: colour → merge/generators → spatial → keying/misc), each stacked on the previous branch starting from M63's #41, for one UAT. M68 (headless GL, ex-M63.P5.T4) is deferred until the user gives the go-ahead. See `DECISIONS/2026-10-06-m67-core-node-families.md`.
+
 # Board
 
 | ID | Milestone | Status | File |
@@ -217,8 +219,9 @@ future core work has solid ground to build on.
 | M60 | Deep images get layers/channels like flat images | blocked | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
 | M62 | Render scaling: fix the algorithmic hotspots (bench harness, O(N²)/exponential walks, TLS copy, host copies) | blocked | [M62-render-scaling-hotspots.md](PLAN/MILESTONES/M62-render-scaling-hotspots.md) |
 | M63 | Task-graph render scheduler | blocked | [M63-task-graph-render-scheduler.md](PLAN/MILESTONES/M63-task-graph-render-scheduler.md) |
-| M64 | Tiled / fused rendering for bandwidth-bound chains (stub) | todo | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
+| M64 | Tiled / fused rendering for bandwidth-bound chains | doing | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
 | M67 | Rewrite core nodes as native nodes (stub) | todo | [M67-native-core-nodes.md](PLAN/MILESTONES/M67-native-core-nodes.md) |
+| M68 | Headless GL: EGL surfaceless/device backend (deferred) | todo | [M68-headless-gl-egl-backend.md](PLAN/MILESTONES/M68-headless-gl-egl-backend.md) |
 | M25 | Guard the GL init path against the debug FP traps | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M27 | Make the debug build a debug build again | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M28 | Stop treating page cache as memory pressure | done | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |
@@ -264,28 +267,5 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M63 awaits the parcel UAT (PR #41, stacked on #40):** gate green (full ctest 987/987 in both modes, CI green on `18aab690f`, strict GL tests under Xvfb, viewer and GL GUI checks, benchmarks in `tools/bench/BASELINE.md`), two review rounds closed. AppImage `build/appimages/M63-18aab690f.AppImage` with `build/appimages/M63-uat.md`. Decision for you: P5.T4 (EGL surfaceless backend so a GPU passed into the container, and headless NatronRenderer/ctest, get real GL) is filed in M63 as a follow-up; say go to run it, otherwise it waits with M64.
-- **M62 awaits the parcel UAT (PR #40, stacked on #39):** gate green (ctest 900/900 ×3, bench gate in `tools/bench/BASELINE.md`, Xvfb smoke, manually dispatched CI green on both workflows), Codex round 1 closed (6 fixed). AppImage `build/appimages/M62-318bdea87.AppImage` with `build/appimages/M62-uat.md`. Merge after #39, then re-run `tools/bench/run_matrix.sh` on `main` once to refresh `BASELINE.md`'s provenance.
-- **M65 awaits the user's UAT sign-off (P8.T3), deferred to the parcel UAT:** `build/appimages/M65-26cc11c9c.AppImage` with `build/appimages/M65-uat.md`. PR #35 is stacked on M61's #34; both Codex review rounds are closed.
-
-- **Parcel UAT (M61 → M65 → M66 → M37 → M50 → M60), awaiting the user.** Every PR is stacked (#34 ← #35 ← #36 ← #37 ← #38 ← #39), and every Codex round is closed. Merge bottom-up after the UAT. The top AppImage is now `build/appimages/M63-18aab690f.AppImage` (task-graph scheduler on by default; `build/appimages/M63-uat.md`). Each milestone's UAT script is `build/appimages/M<id>-uat.md`.
-  - **Fork PRs, merge with their milestone:**
-    - M65: openfx-misc#5, openfx-io#8, openfx-arena#2.
-    - M66: openfx-misc#6, openfx-io#9, openfx-arena#3.
-    - M50: openfx-io#10, openfx-arena#4, openfx-natron#3.
-
-    Re-pin `tools/ci/local/fetch-assets.sh` and `libs/OpenFX` to the merge SHAs afterwards.
-  - **Screenshots to approve:**
-    - M37: `build/m37-gui/shots/`;
-    - M50: `build/m50-gui/*.png`;
-    - M60: `build/m60-gui/shots/`.
-
-- **M60 awaits the parcel UAT (P5.T1 shots, P6.T2):** PR #39 is stacked on #38.
-
-- **M50 awaits the parcel UAT (screenshots and P6.T2):** run `build/appimages/M50-da55c7b39.AppImage` with `build/appimages/M50-uat.md`. The screenshots are in `build/m50-gui/`. PR #38 is stacked on #37 and both Codex rounds are closed. Fork PRs: openfx-io#10, openfx-arena#4, openfx-natron#3. Re-pin after they merge.
-
-- **M37 awaits the parcel UAT (P4.T3 shots, P6.T2):** run `build/appimages/M37-70fda8e85.AppImage` with `build/appimages/M37-uat.md`; the shots are in `build/m37-gui/shots/`. PR #37 is stacked on #36, and both Codex rounds are closed. Every properties panel is now ~17 px taller (tab-bar height fix), so look at that during the UAT.
-
-- **M66 awaits the parcel UAT (P6.T3):** `build/appimages/M66-a82886de7.AppImage` with `build/appimages/M66-uat.md`. PR #36 is stacked on #35, and both Codex rounds are closed. Fork PRs: openfx-misc#6, openfx-io#9, openfx-arena#3. Re-pin after they merge.
-
-- **M61 awaits the user's sign-off** (row `blocked`, stacked-PR rule: asynchronous). Please run the UAT on `build/appimages/M61-072541618.AppImage` using `build/appimages/M61-uat.md`, and approve the P2.T3 keyed-Disable node-box screenshots and the P2.T5 disabled-cross width (2, i.e. pipe weight). PR #34 is green; its review rounds 1 and 2 are closed. After sign-off: check off P2.T3/P2.T5/P4.T1, mark M61 `done`, and the user merges PR #34.
+- **M63 awaits the parcel-2 UAT (PR #41):** gate green, two review rounds closed. AppImage `build/appimages/M63-18aab690f.AppImage` with `build/appimages/M63-uat.md`. It will be UAT'd together with M64 and M67 on top.
+- **Parcel 1 merge in progress (PM):** fork PRs first (merge commits, branches kept so pinned SHAs stay reachable), then #34 → #40 squash-merged bottom-up, with `main` merged into each next branch (no rebase). The re-pin of `fetch-assets.sh`/`libs/OpenFX` rides on #40. The `BASELINE.md` refresh on `main` folds into M64's re-baseline.

@@ -592,3 +592,4 @@ Execution notes:
   - **Codex round 2:** 3 findings, 2 fixed in `ab2b06c90` (colourless DeepRecolor coverage now spans the input's region of definition). The sub-millisecond, same-size memo collision was declined.
   - **De-flake from M66:** the M66 Magick test compared the randomly seeded Sketch per pixel. That comparison was dropped in `9c9f21f2f` on M66 and merged up through M37, M50 and M60.
   - **Result:** full ctest 885/885, and the release AppImage `build/appimages/M60-ab2b06c90.AppImage` is launch-checked. P5.T1 shot approval and P6.T2 UAT are deferred to the parcel UAT.
+- 2026-10-06 — **Parcel UAT passed (user, via inbox 2026-10-04): "These all look good."** UAT-gated tasks checked off; PR merges bottom-up by the PM.

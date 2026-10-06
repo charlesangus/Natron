@@ -138,7 +138,7 @@ Execution notes:
   - verify: the plugin pins match the three SHAs; full ctest green.
   - size: M
 
-- [ ] M66.P6.T3 — Package the release AppImage for the user checkpoint
+- [x] M66.P6.T3 — Package the release AppImage for the user checkpoint
   - files: `build/appimages/M66-<sha>.AppImage`, `build/appimages/M66-uat.md`
   - approach: release `package.sh`. The UAT doc gives an alpha-only check per plugin, plus finding HueCorrect1 and MagickText in node search. The UAT is deferred to the parcel UAT.
   - verify: `build/appimages/run-launch-check.sh` passes.
@@ -160,3 +160,4 @@ Execution notes:
   - **Follow-up, not fixed:** a plugin with a Source input that also supports the Generator context (TimeBufferRead) is treated as a generator by `OfxEffectInstance::isGenerator`/`getLayerKnobSpec`, and its target-layer picker defaults to `rgba`, which widens alpha-only streams.
 - 2026-10-02 — **Gate run:** forks pushed (misc#6, io#9, arena#3, each stacked on its m65 PR), pins committed in `5e9b3d983`, decision published in `8ef99725d`; fresh fetch-assets + full debug ctest 662/662 + smoke green. PR #36 opened against M65's branch; Codex round 1 posted 8 findings (6 accepted, #7 PR-ledger comment declined as pre-existing reference). First AppImage `M66-8ef99725d` launch-checked; repackage after the review fixes.
 - 2026-10-02 — **Review closed.** Round 1 (8 findings: 7 fixed, the PR-ledger comment declined) was fixed in `a82886de7`, with forks io `649ce948`, misc `49e08467` and arena `45235bdb`, all re-pinned. The fixes put ReadEXR's slices at the data-window origin (wrong before this PR too), zero-fill missing channels, drop the dead RGB branch, fetch TimeBuffer's Sync clip by its own name, and strengthen the tests. Full ctest 664/664. Round 2 (4 findings: 3 fixed, the RY/BY subsampled fixture declined) was fixed in `4f7879242`. ImageMagick's charcoal differs at 8/256 pixels when an opaque alpha is present, and Sketch is randomly seeded, so its test checks zero/nonzero placement only. AppImage `build/appimages/M66-a82886de7.AppImage` is launch-checked. P6.T3 waits for the parcel UAT.
+- 2026-10-06 — **Parcel UAT passed (user, via inbox 2026-10-04): "These all look good."** UAT-gated tasks checked off; PR merges bottom-up by the PM.

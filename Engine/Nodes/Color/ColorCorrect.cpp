@@ -362,7 +362,6 @@ colorCorrectTraits()
 KnobColorPtr
 addScaleKnob(KnobHolder* holder,
              const KnobGroupPtr& group,
-             const KnobPagePtr& page,
              const std::string& name,
              const std::string& label,
              double defaultValue,
@@ -380,7 +379,6 @@ addScaleKnob(KnobHolder* holder,
         knob->setDisplayMaximum(displayMax, i);
     }
     group->addKnob(knob);
-    page->addKnob(knob);
 
     return knob;
 }
@@ -465,14 +463,13 @@ ColorCorrect::addGroup(const KnobPagePtr& page,
         enable->setHintToolTip(tr("When checked, %1 correction is enabled.").arg(QString::fromUtf8(name.c_str())));
         enable->setDefaultValue(true);
         group->addKnob(enable);
-        page->addKnob(enable);
         knobs.enable = enable;
     }
-    knobs.saturation = addScaleKnob(this, group, page, name + kColorCorrectParamSaturation, kColorCorrectParamSaturation, 1., 0., 4.);
-    knobs.contrast = addScaleKnob(this, group, page, name + kColorCorrectParamContrast, kColorCorrectParamContrast, 1., 0., 4.);
-    knobs.gamma = addScaleKnob(this, group, page, name + kColorCorrectParamGamma, kColorCorrectParamGamma, 1., 0.2, 5.);
-    knobs.gain = addScaleKnob(this, group, page, name + kColorCorrectParamGain, kColorCorrectParamGain, 1., 0., 4.);
-    knobs.offset = addScaleKnob(this, group, page, name + kColorCorrectParamOffset, kColorCorrectParamOffset, 0., -1., 1.);
+    knobs.saturation = addScaleKnob(this, group, name + kColorCorrectParamSaturation, kColorCorrectParamSaturation, 1., 0., 4.);
+    knobs.contrast = addScaleKnob(this, group, name + kColorCorrectParamContrast, kColorCorrectParamContrast, 1., 0., 4.);
+    knobs.gamma = addScaleKnob(this, group, name + kColorCorrectParamGamma, kColorCorrectParamGamma, 1., 0.2, 5.);
+    knobs.gain = addScaleKnob(this, group, name + kColorCorrectParamGain, kColorCorrectParamGain, 1., 0., 4.);
+    knobs.offset = addScaleKnob(this, group, name + kColorCorrectParamOffset, kColorCorrectParamOffset, 0., -1., 1.);
 }
 
 void

@@ -25,6 +25,7 @@
 
 #include "Clamp.h"
 
+#include <cfloat>
 #include <memory>
 #include <string>
 
@@ -113,6 +114,10 @@ addClampColorKnob(KnobHolder* holder,
     knob->setHintToolTip(hint);
     for (int i = 0; i < 4; ++i) {
         knob->setDefaultValue(defaultValue, i);
+        knob->setMinimum(-DBL_MAX, i);
+        knob->setMaximum(DBL_MAX, i);
+        knob->setDisplayMinimum(0., i);
+        knob->setDisplayMaximum(1., i);
     }
     knob->setAddNewLine(false);
     page->addKnob(knob);

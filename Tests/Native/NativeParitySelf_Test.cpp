@@ -52,8 +52,8 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const char* const kGradeID = "net.sf.openfx.GradePlugin";
-const int kOfxGradeMajor = 2;
+const char* const kColorMatrixID = "net.sf.openfx.ColorMatrixPlugin";
+const int kOfxColorMatrixMajor = 2;
 
 const ImageLayerDesc*
 findColorLayer(const std::list<ImageLayerDesc>& layers)
@@ -97,11 +97,11 @@ planeValue(const RenderedPlane& plane,
 class NativeParitySelfTest
     : public BaseTest {
 protected:
-    // Both sides are the OFX Grade at its own major, so every difference the harness reports is
-    // one the test put there.
-    ParityPair makeGradeSelfPair()
+    // Both sides are the OFX ColorMatrix at its own major, so every difference the harness
+    // reports is one the test put there.
+    ParityPair makeSelfPair()
     {
-        return makeParityPair(getApp(), kGradeID, kOfxGradeMajor, kOfxGradeMajor);
+        return makeParityPair(getApp(), kColorMatrixID, kOfxColorMatrixMajor, kOfxColorMatrixMajor);
     }
 };
 
@@ -168,12 +168,12 @@ TEST_F(NativeParitySelfTest, ParitySourceRendersEveryPlaneDeterministically)
     EXPECT_EQ(1.f, paritySourceColorValue(3, 10, 4, time));
 }
 
-TEST_F(NativeParitySelfTest, OfxGradeAgainstItselfMatchesExactly)
+TEST_F(NativeParitySelfTest, OfxColorMatrixAgainstItselfMatchesExactly)
 {
-    ParityPair pair = makeGradeSelfPair();
+    ParityPair pair = makeSelfPair();
     ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live()) << "the OFX Grade must be loadable at major " << kOfxGradeMajor;
-    ASSERT_TRUE(setKnobOnBoth(pair, "multiply", { 1.5 }));
+    ASSERT_TRUE(pair.live()) << "the OFX ColorMatrix must be loadable at major " << kOfxColorMatrixMajor;
+    ASSERT_TRUE(setKnobOnBoth(pair, "outputRed", { 1.5, 0., 0., 0. }));
 
     for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
         const ParityResult r = compareParity(pair, "self", RectI(), mipmapLevel, ParityTolerance::exact(), false);
@@ -189,12 +189,12 @@ TEST_F(NativeParitySelfTest, OfxGradeAgainstItselfMatchesExactly)
 
 TEST_F(NativeParitySelfTest, AKnobChangedOnOneSideIsReported)
 {
-    ParityPair pair = makeGradeSelfPair();
+    ParityPair pair = makeSelfPair();
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobValues(pair.native, "gamma", std::vector<double>(1, 0.5)));
+    ASSERT_TRUE(setKnobValues(pair.native, "outputGreen", { 0., 0.5, 0., 0. }));
 
-    const ParityResult r = compareParity(pair, "gamma-one-side", RectI(), 0, ParityTolerance::transcendental(), false);
+    const ParityResult r = compareParity(pair, "green-one-side", RectI(), 0, ParityTolerance::transcendental(), false);
     EXPECT_FALSE(r.ok) << describe(r);
     EXPECT_FALSE(r.plane.empty());
     EXPECT_FALSE(r.channel.empty());
@@ -208,10 +208,10 @@ TEST_F(NativeParitySelfTest, RecordedReferencesReplayExactly)
     ASSERT_TRUE(tmp.isValid());
     const std::string dir = tmp.path().toStdString();
 
-    ParityPair pair = makeGradeSelfPair();
+    ParityPair pair = makeSelfPair();
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, "multiply", { 1.5 }));
+    ASSERT_TRUE(setKnobOnBoth(pair, "outputRed", { 1.5, 0., 0., 0. }));
     setParitySourceExtraLayer(pair.source, true);
 
     ParityOptions recordOptions;
@@ -224,8 +224,8 @@ TEST_F(NativeParitySelfTest, RecordedReferencesReplayExactly)
         const ParityResult recorded = compareParity(pair, "recorded", RectI(), mipmapLevel, ParityTolerance::exact(), true, recordOptions);
         ASSERT_TRUE(recorded.ok) << describe(recorded);
         EXPECT_GE(recorded.planesCompared, 2) << "the extra layer must be recorded too";
-        EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(parityReferencePath(dir, kGradeID, "recorded", mipmapLevel, ImageLayerDesc::getRGBAComponents()))));
-        EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(parityReferencePath(dir, kGradeID, "recorded", mipmapLevel, paritySourceExtraLayer()))));
+        EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(parityReferencePath(dir, kColorMatrixID, "recorded", mipmapLevel, ImageLayerDesc::getRGBAComponents()))));
+        EXPECT_TRUE(QFileInfo::exists(QString::fromStdString(parityReferencePath(dir, kColorMatrixID, "recorded", mipmapLevel, paritySourceExtraLayer()))));
 
         const ParityResult replayed = compareParity(pair, "recorded", RectI(), mipmapLevel, ParityTolerance::exact(), false, replayOptions);
         EXPECT_TRUE(replayed.ok) << "mipmap " << mipmapLevel << ": " << describe(replayed);
@@ -234,7 +234,7 @@ TEST_F(NativeParitySelfTest, RecordedReferencesReplayExactly)
         EXPECT_EQ(0., replayed.maxAbsDiff);
     }
 
-    ASSERT_TRUE(setKnobValues(pair.native, "gamma", std::vector<double>(1, 0.5)));
+    ASSERT_TRUE(setKnobValues(pair.native, "outputGreen", { 0., 0.5, 0., 0. }));
     const ParityResult diverged = compareParity(pair, "recorded", RectI(), 0, ParityTolerance::exact(), false, replayOptions);
     EXPECT_FALSE(diverged.ok) << describe(diverged);
     EXPECT_FALSE(diverged.live);
@@ -245,7 +245,7 @@ TEST_F(NativeParitySelfTest, ReplayWithoutAReferenceFailsTheTest)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
 
-    ParityPair pair = makeGradeSelfPair();
+    ParityPair pair = makeSelfPair();
     ASSERT_TRUE(bool(pair.native));
 
     ParityOptions options;

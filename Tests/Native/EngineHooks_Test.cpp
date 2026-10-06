@@ -62,8 +62,8 @@
 #define kEngineHooksUnPremultPluginID "test.natron.built-in.EngineHooksUnPremult"
 #define kEngineHooksPlaneRecorderPluginID "test.natron.built-in.EngineHooksPlaneRecorder"
 
-// The OpenFX Grade, which a native Grade shadows for unversioned requests.
-#define kOfxGradeMajor 2
+// A colour plugin that stays OpenFX, so it still exercises the OpenFX hosting paths.
+#define kOfxColorMatrixMajor 2
 
 NATRON_NAMESPACE_ENTER
 
@@ -306,27 +306,27 @@ TEST_F(EngineHooksTest, EffectNotAskingGetsNoHostUnPremultSelector)
 
 TEST_F(EngineHooksTest, OfxPluginPairStillYieldsTheHostSelectorAndIsHidden)
 {
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"), kOfxGradeMajor);
-    ASSERT_TRUE(bool(grade));
+    NodePtr colorMatrix = createNode(QString::fromUtf8("net.sf.openfx.ColorMatrixPlugin"), kOfxColorMatrixMajor);
+    ASSERT_TRUE(bool(colorMatrix));
 
-    EXPECT_TRUE(bool(grade->getUnPremultBySelector()));
-    KnobIPtr pluginEnabled = grade->getKnobByName(kUnPremultByPluginKnobName);
-    KnobIPtr pluginChannel = grade->getKnobByName(kUnPremultByChannelPluginKnobName);
+    EXPECT_TRUE(bool(colorMatrix->getUnPremultBySelector()));
+    KnobIPtr pluginEnabled = colorMatrix->getKnobByName(kUnPremultByPluginKnobName);
+    KnobIPtr pluginChannel = colorMatrix->getKnobByName(kUnPremultByChannelPluginKnobName);
     ASSERT_TRUE(bool(pluginEnabled));
     ASSERT_TRUE(bool(pluginChannel));
     EXPECT_TRUE(pluginEnabled->getIsSecret());
     EXPECT_TRUE(pluginChannel->getIsSecret());
 }
 
-TEST_F(EngineHooksTest, OfxGradeOutsideRenderReadsTheSelectedNonColorLayer)
+TEST_F(EngineHooksTest, OfxColorMatrixOutsideRenderReadsTheSelectedNonColorLayer)
 {
     NodePtr reader = createThreeLayerReader();
     ASSERT_TRUE(bool(reader));
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"), kOfxGradeMajor);
-    ASSERT_TRUE(bool(grade));
-    connectNodes(reader, grade, 0, true);
+    NodePtr colorMatrix = createNode(QString::fromUtf8("net.sf.openfx.ColorMatrixPlugin"), kOfxColorMatrixMajor);
+    ASSERT_TRUE(bool(colorMatrix));
+    connectNodes(reader, colorMatrix, 0, true);
 
-    EffectInstancePtr effect = grade->getEffectInstance();
+    EffectInstancePtr effect = colorMatrix->getEffectInstance();
     ImageLayerDesc layer;
     int maskChannel = 42;
 
@@ -334,7 +334,7 @@ TEST_F(EngineHooksTest, OfxGradeOutsideRenderReadsTheSelectedNonColorLayer)
     EXPECT_TRUE(layer.isColorLayer()) << layer.getLayerID();
     EXPECT_EQ(-1, maskChannel);
 
-    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(grade->getKnobByName(kNodeParamChannelSet));
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(colorMatrix->getKnobByName(kNodeParamChannelSet));
     ASSERT_TRUE(bool(channels));
     channels->setLayer(0, "diffuse", NULL);
 
@@ -344,26 +344,26 @@ TEST_F(EngineHooksTest, OfxGradeOutsideRenderReadsTheSelectedNonColorLayer)
     EXPECT_EQ(-1, maskChannel);
 }
 
-TEST_F(EngineHooksTest, OfxGradeMaskInputReadsTheSelectedMaskChannel)
+TEST_F(EngineHooksTest, OfxColorMatrixMaskInputReadsTheSelectedMaskChannel)
 {
     NodePtr reader = createThreeLayerReader();
     ASSERT_TRUE(bool(reader));
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"), kOfxGradeMajor);
-    ASSERT_TRUE(bool(grade));
-    connectNodes(reader, grade, 0, true);
+    NodePtr colorMatrix = createNode(QString::fromUtf8("net.sf.openfx.ColorMatrixPlugin"), kOfxColorMatrixMajor);
+    ASSERT_TRUE(bool(colorMatrix));
+    connectNodes(reader, colorMatrix, 0, true);
 
-    const int maskInput = inputNamed(grade, "Mask");
+    const int maskInput = inputNamed(colorMatrix, "Mask");
     ASSERT_GE(maskInput, 0);
-    connectNodes(reader, grade, maskInput, true);
+    connectNodes(reader, colorMatrix, maskInput, true);
 
-    KnobBool* maskEnabled = dynamic_cast<KnobBool*>(grade->getKnobByName("enableMask_Mask").get());
+    KnobBool* maskEnabled = dynamic_cast<KnobBool*>(colorMatrix->getKnobByName("enableMask_Mask").get());
     ASSERT_TRUE(maskEnabled != NULL);
     maskEnabled->setValue(true);
-    KnobChannelSelect* maskSelect = dynamic_cast<KnobChannelSelect*>(grade->getKnobByName("maskChannel_Mask").get());
+    KnobChannelSelect* maskSelect = dynamic_cast<KnobChannelSelect*>(colorMatrix->getKnobByName("maskChannel_Mask").get());
     ASSERT_TRUE(maskSelect != NULL);
     maskSelect->set("specular.G");
 
-    EffectInstancePtr effect = grade->getEffectInstance();
+    EffectInstancePtr effect = colorMatrix->getEffectInstance();
     ImageLayerDesc layer;
     int maskChannel = -1;
 

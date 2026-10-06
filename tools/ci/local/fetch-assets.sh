@@ -142,11 +142,15 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # DEBUG), and the deprecated HueCorrect 1.0 is registered as
 # net.sf.openfx.HueCorrect1 so only HueCorrect 2.0 owns net.sf.openfx.HueCorrect.
 #
+# This revision excludes the OFX Grade, ColorCorrect, Saturation, Clamp,
+# Invert, Add, Multiply and Gamma plugins; the native nodes in Engine/Nodes/Color
+# take their IDs.
+#
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
 # this container with no other source changes needed.
 OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
-OPENFX_MISC_REF="3060fe33b55db2817653ea69edf778f3b3d03b0a"
+OPENFX_MISC_REF="47293e94343e903f3ad7d287e449eaf9cebbbeff"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a

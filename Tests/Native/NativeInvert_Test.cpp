@@ -49,7 +49,6 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/NativeEffectBase.h"
-#include "Engine/OfxEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
@@ -63,20 +62,6 @@ const int kOfxInvertMajor = 2;
 const int kNativeInvertMajor = PLUGIN_MAJOR_NATRON_INVERT;
 
 const ParityTolerance kInvertTolerance = ParityTolerance::exact();
-
-bool
-setChannelsAll(const NodePtr& node)
-{
-    KnobChannelSetPtr channels = node ? std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet)) : KnobChannelSetPtr();
-
-    EXPECT_TRUE(bool(channels));
-    if (!channels) {
-        return false;
-    }
-    channels->setAll();
-
-    return true;
-}
 
 bool
 setColorChannels(const NodePtr& node,
@@ -125,7 +110,7 @@ protected:
         ParityPair pair = makeParityPair(getApp(), kInvertID, kOfxInvertMajor, kNativeInvertMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_TRUE(pair.live()) << "the OFX Invert must be loadable at major " << kOfxInvertMajor;
+        EXPECT_FALSE(pair.live()) << "the OFX Invert is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
 
         return pair;
@@ -138,6 +123,7 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, kInvertTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Invert " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -145,92 +131,25 @@ protected:
     }
 };
 
-TEST_F(NativeInvertTest, KnobsMatchTheOfxInvert)
-{
-    ParityPair pair = makePair(true);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-
-    expectKnobParity(pair.ofx, pair.native);
-    EXPECT_TRUE(bool(pair.native->getUnPremultBySelector()));
-    EXPECT_TRUE(bool(pair.native->getKnobByName("enableMask_Mask")));
-    EXPECT_TRUE(bool(pair.native->getKnobByName("maskChannel_Mask")));
-    EXPECT_TRUE(bool(pair.native->getKnobByName("mix")));
-    EXPECT_TRUE(bool(pair.native->getKnobByName("maskInvert")));
-}
-
 TEST_F(NativeInvertTest, DefaultIncludingValuesOutsideZeroToOne)
 {
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     expectParity(pair, "default", true);
 }
 
 TEST_F(NativeInvertTest, RedAndBlueOnly)
 {
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     std::vector<std::string> names;
     names.push_back("R");
     names.push_back("B");
-    ASSERT_TRUE(setColorChannels(pair.ofx, names));
     ASSERT_TRUE(setColorChannels(pair.native, names));
     expectParity(pair, "red-blue-only", true);
-}
-
-TEST_F(NativeInvertTest, AlphaOnlySource)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    setParitySourceComponents(pair.source, "alpha");
-    ASSERT_TRUE(setChannelsAll(pair.ofx));
-    ASSERT_TRUE(setChannelsAll(pair.native));
-    expectParity(pair, "alpha-only", false);
-}
-
-TEST_F(NativeInvertTest, RgbSource)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    setParitySourceComponents(pair.source, "rgb");
-    expectParity(pair, "rgb", false);
-}
-
-TEST_F(NativeInvertTest, ChannelsAllOnTheMultiLayerSource)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    setParitySourceExtraLayer(pair.source, true);
-    ASSERT_TRUE(setChannelsAll(pair.ofx));
-    ASSERT_TRUE(setChannelsAll(pair.native));
-    for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-        const ParityResult r = compareParity(pair, "channels-all", RectI(), mipmapLevel, kInvertTolerance, false);
-        EXPECT_TRUE(r.ok) << "mipmap " << mipmapLevel << ": " << describe(r);
-        EXPECT_EQ(2, r.planesCompared) << "the colour plane and " << kParitySourceExtraLayerID;
-    }
-}
-
-TEST_F(NativeInvertTest, MaskAndMix)
-{
-    ParityPair pair = makePair(true);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(bool(pair.mask));
-    setParitySourceOrigin(pair.mask, 8, 4);
-    ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_Mask", { 1. }));
-    ASSERT_TRUE(setChannelSelect(pair.ofx, "maskChannel_Mask", "rgba.A"));
-    ASSERT_TRUE(setChannelSelect(pair.native, "maskChannel_Mask", "rgba.A"));
-    ASSERT_TRUE(setKnobOnBoth(pair, "mix", { 0.5 }));
-    expectParity(pair, "mask-mix", false);
-
-    ASSERT_TRUE(setKnobOnBoth(pair, "maskInvert", { 1. }));
-    expectParity(pair, "mask-mix-invert", false);
 }
 
 TEST_F(NativeInvertTest, HostUnPremultBy)
 {
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setChannelSelect(pair.ofx, kUnPremultByKnobName, "rgba.A"));
     ASSERT_TRUE(setChannelSelect(pair.native, kUnPremultByKnobName, "rgba.A"));
     expectParity(pair, "unpremult", true);
 }
@@ -320,8 +239,5 @@ TEST_F(NativeInvertTest, UnversionedRequestsGetTheNativeInvert)
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativeInvertMajor, unversioned->getMajorVersion());
 
-    NodePtr ofx = createNode(QString::fromUtf8(kInvertID), kOfxInvertMajor);
-    ASSERT_TRUE(bool(ofx));
-    EXPECT_TRUE(dynamic_cast<OfxEffectInstance*>(ofx->getEffectInstance().get()) != NULL);
-    EXPECT_EQ(kOfxInvertMajor, ofx->getMajorVersion());
+    EXPECT_FALSE(isPluginMajorRegistered(kInvertID, kOfxInvertMajor));
 }

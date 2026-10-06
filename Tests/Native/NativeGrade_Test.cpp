@@ -49,7 +49,6 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/NativeEffectBase.h"
-#include "Engine/OfxEffectInstance.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
@@ -65,20 +64,6 @@ const int kNativeGradeMajor = PLUGIN_MAJOR_NATRON_GRADE;
 
 // Grade's gamma is a pow(), so the class bound of the transcendental nodes.
 const ParityTolerance kGradeTolerance = ParityTolerance::transcendental();
-
-bool
-setChannelsAll(const NodePtr& node)
-{
-    KnobChannelSetPtr channels = node ? std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet)) : KnobChannelSetPtr();
-
-    EXPECT_TRUE(bool(channels));
-    if (!channels) {
-        return false;
-    }
-    channels->setAll();
-
-    return true;
-}
 
 bool
 setChannelSelect(const NodePtr& node,
@@ -102,12 +87,6 @@ isNative(const NodePtr& node)
     return node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
 }
 
-bool
-isOfx(const NodePtr& node)
-{
-    return node && dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get());
-}
-
 } // namespace
 
 class NativeGradeTest
@@ -118,7 +97,7 @@ protected:
         ParityPair pair = makeParityPair(getApp(), kGradeID, kOfxGradeMajor, kNativeGradeMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_TRUE(pair.live()) << "the OFX Grade must be loadable at major " << kOfxGradeMajor;
+        EXPECT_FALSE(pair.live()) << "the OFX Grade is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
 
         return pair;
@@ -133,6 +112,7 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, kGradeTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Grade " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -140,29 +120,9 @@ protected:
     }
 };
 
-TEST_F(NativeGradeTest, KnobsMatchTheOfxGrade)
-{
-    ParityPair pair = makePair(true);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-
-    expectKnobParity(pair.ofx, pair.native);
-    EXPECT_TRUE(bool(pair.native->getUnPremultBySelector()));
-    EXPECT_TRUE(bool(pair.native->getKnobByName("enableMask_Mask")));
-    EXPECT_TRUE(bool(pair.native->getKnobByName("maskChannel_Mask")));
-}
-
-TEST_F(NativeGradeTest, Default)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    expectParity(pair, "default", false);
-}
-
 TEST_F(NativeGradeTest, MultiplyOffset)
 {
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(setKnobOnBoth(pair, "multiply", { 1.5, 0.75, 2., 1.25 }));
     ASSERT_TRUE(setKnobOnBoth(pair, "offset", { 0.1, -0.05, 0.2, 0. }));
     ASSERT_TRUE(setKnobOnBoth(pair, "blackPoint", { 0.05 }));
@@ -170,19 +130,9 @@ TEST_F(NativeGradeTest, MultiplyOffset)
     expectParity(pair, "multiply-offset", true);
 }
 
-TEST_F(NativeGradeTest, GammaOnNegatives)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, "gamma", { 0.45 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "clampBlack", { 0. }));
-    expectParity(pair, "gamma-negatives", false);
-}
-
 TEST_F(NativeGradeTest, Reverse)
 {
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(setKnobOnBoth(pair, "reverse", { 1. }));
     ASSERT_TRUE(setKnobOnBoth(pair, "multiply", { 1.5 }));
     ASSERT_TRUE(setKnobOnBoth(pair, "black", { 0.1 }));
@@ -191,93 +141,31 @@ TEST_F(NativeGradeTest, Reverse)
     expectParity(pair, "reverse", true);
 }
 
-TEST_F(NativeGradeTest, ClampWhite)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, "multiply", { 2. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "clampWhite", { 1. }));
-    expectParity(pair, "clamp-white", false);
-}
-
-TEST_F(NativeGradeTest, AlphaOnlySourceProcessesAlpha)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    setParitySourceComponents(pair.source, "alpha");
-    ASSERT_TRUE(setChannelsAll(pair.ofx));
-    ASSERT_TRUE(setChannelsAll(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, "multiply", { 0.5 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "offset", { 0.25 }));
-    expectParity(pair, "alpha-only", false);
-}
-
-TEST_F(NativeGradeTest, ChannelsAllOnTheMultiLayerSource)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    setParitySourceExtraLayer(pair.source, true);
-    ASSERT_TRUE(setChannelsAll(pair.ofx));
-    ASSERT_TRUE(setChannelsAll(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, "multiply", { 1.5 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "gamma", { 0.7 }));
-    for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-        const ParityResult r = compareParity(pair, "channels-all", RectI(), mipmapLevel, kGradeTolerance, false);
-        EXPECT_TRUE(r.ok) << "mipmap " << mipmapLevel << ": " << describe(r);
-        EXPECT_EQ(2, r.planesCompared) << "the colour plane and " << kParitySourceExtraLayerID;
-        std::cout << "[ parity ] Grade channels-all mipmap " << mipmapLevel << ": planes " << r.planesCompared << ", max abs diff " << r.maxAbsDiff << std::endl;
-    }
-}
-
 TEST_F(NativeGradeTest, MaskAndMix)
 {
     ParityPair pair = makePair(true);
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(bool(pair.mask));
     setParitySourceOrigin(pair.mask, 8, 4);
     ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_Mask", { 1. }));
-    ASSERT_TRUE(setChannelSelect(pair.ofx, "maskChannel_Mask", "rgba.A"));
     ASSERT_TRUE(setChannelSelect(pair.native, "maskChannel_Mask", "rgba.A"));
     ASSERT_TRUE(setKnobOnBoth(pair, "mix", { 0.5 }));
     ASSERT_TRUE(setKnobOnBoth(pair, "multiply", { 1.5 }));
     ASSERT_TRUE(setKnobOnBoth(pair, "gamma", { 0.8 }));
     expectParity(pair, "mask-mix", true);
-
-    ASSERT_TRUE(setKnobOnBoth(pair, "maskInvert", { 1. }));
-    expectParity(pair, "mask-mix-invert", false);
 }
 
-TEST_F(NativeGradeTest, HostUnPremultBy)
+TEST_F(NativeGradeTest, NormalizeSetsTheBlackAndWhitePoints)
 {
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setChannelSelect(pair.ofx, kUnPremultByKnobName, "rgba.A"));
-    ASSERT_TRUE(setChannelSelect(pair.native, kUnPremultByKnobName, "rgba.A"));
-    ASSERT_TRUE(setKnobOnBoth(pair, "multiply", { 1.5 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "gamma", { 0.7 }));
-    expectParity(pair, "unpremult", false);
-}
+    ASSERT_TRUE(bool(pair.native));
 
-TEST_F(NativeGradeTest, NormalizeMatchesTheOfxGrade)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-
-    const NodePtr nodes[2] = { pair.ofx, pair.native };
-    for (int i = 0; i < 2; ++i) {
-        KnobButton* normalize = dynamic_cast<KnobButton*>(nodes[i]->getKnobByName(kGradeParamNormalize).get());
-        ASSERT_TRUE(normalize != NULL);
-        normalize->trigger();
-    }
+    KnobButton* normalize = dynamic_cast<KnobButton*>(pair.native->getKnobByName(kGradeParamNormalize).get());
+    ASSERT_TRUE(normalize != NULL);
+    normalize->trigger();
     const char* const names[2] = { kGradeParamBlackPoint, kGradeParamWhitePoint };
     for (int n = 0; n < 2; ++n) {
-        KnobColor* ofx = dynamic_cast<KnobColor*>(pair.ofx->getKnobByName(names[n]).get());
         KnobColor* native = dynamic_cast<KnobColor*>(pair.native->getKnobByName(names[n]).get());
-        ASSERT_TRUE(ofx != NULL);
         ASSERT_TRUE(native != NULL);
-        for (int d = 0; d < 4; ++d) {
-            EXPECT_EQ(ofx->getValue(d), native->getValue(d)) << names[n] << "[" << d << "]";
-        }
         EXPECT_NE(n == 0 ? 0. : 1., native->getValue(0)) << names[n] << " was not set";
     }
 }
@@ -289,10 +177,7 @@ TEST_F(NativeGradeTest, UnversionedRequestsGetTheNativeGrade)
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativeGradeMajor, unversioned->getMajorVersion());
 
-    NodePtr ofx = createNode(QString::fromUtf8(kGradeID), kOfxGradeMajor);
-    ASSERT_TRUE(bool(ofx));
-    EXPECT_TRUE(isOfx(ofx));
-    EXPECT_EQ(kOfxGradeMajor, ofx->getMajorVersion());
+    EXPECT_FALSE(isPluginMajorRegistered(kGradeID, kOfxGradeMajor));
 
     NodesList before = getApp()->getProject()->getNodes();
     const std::string script = getApp()->getAppIDString() + ".createNode(\"" + std::string(kGradeID) + "\")\n";

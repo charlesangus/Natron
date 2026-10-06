@@ -139,7 +139,7 @@ protected:
         ParityPair pair = makeParityPair(getApp(), kSaturationID, kOfxSaturationMajor, kNativeSaturationMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_TRUE(pair.live()) << "the OFX Saturation must be loadable at major " << kOfxSaturationMajor;
+        EXPECT_FALSE(pair.live()) << "the OFX Saturation is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
 
         return pair;
@@ -152,6 +152,7 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, kSaturationTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Saturation " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -171,29 +172,9 @@ protected:
     }
 };
 
-TEST_F(NativeSaturationTest, KnobsMatchTheOfxSaturation)
-{
-    ParityPair pair = makePair(true);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-
-    expectKnobParity(pair.ofx, pair.native);
-    EXPECT_TRUE(bool(pair.native->getUnPremultBySelector()));
-    EXPECT_TRUE(bool(pair.native->getKnobByName("enableMask_Mask")));
-    EXPECT_TRUE(bool(pair.native->getKnobByName("maskChannel_Mask")));
-}
-
-TEST_F(NativeSaturationTest, Default)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    expectParity(pair, "default", false);
-}
-
 TEST_F(NativeSaturationTest, SaturationZeroAndAboveOne)
 {
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(setKnobOnBoth(pair, "saturation", { 0. }));
     expectParity(pair, "saturation-0", true);
 
@@ -201,68 +182,24 @@ TEST_F(NativeSaturationTest, SaturationZeroAndAboveOne)
     expectParity(pair, "saturation-2.5", true);
 }
 
-TEST_F(NativeSaturationTest, EveryLuminanceMathTheOfxPluginComputes)
+TEST_F(NativeSaturationTest, Rec2020LuminanceMath)
 {
-    const char* const options[] = { "rec709", "rec2020", "acesap0", "ccir601", "average", "max" };
-
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(setKnobOnBoth(pair, "saturation", { 0.4 }));
-    for (std::size_t i = 0; i < sizeof(options) / sizeof(options[0]); ++i) {
-        ASSERT_TRUE(setKnobOnBoth(pair, "luminanceMath", std::string(options[i])));
-        expectParity(pair, std::string("luminance-") + options[i], i == 1);
-    }
-}
-
-TEST_F(NativeSaturationTest, ClampsAndNegatives)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, "saturation", { 2.5 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "clampBlack", { 0. }));
-    expectParity(pair, "no-clamp", false);
-
-    ASSERT_TRUE(setKnobOnBoth(pair, "clampWhite", { 1. }));
-    expectParity(pair, "clamp-white", false);
-
-    ASSERT_TRUE(setKnobOnBoth(pair, "clampBlack", { 1. }));
-    expectParity(pair, "clamp-both", false);
-}
-
-TEST_F(NativeSaturationTest, RgbSource)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    setParitySourceComponents(pair.source, "rgb");
-    ASSERT_TRUE(setKnobOnBoth(pair, "saturation", { 0.3 }));
-    expectParity(pair, "rgb-source", false);
+    ASSERT_TRUE(setKnobOnBoth(pair, "luminanceMath", std::string("rec2020")));
+    expectParity(pair, "luminance-rec2020", true);
 }
 
 TEST_F(NativeSaturationTest, MaskAndMix)
 {
     ParityPair pair = makePair(true);
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(bool(pair.mask));
     setParitySourceOrigin(pair.mask, 8, 4);
     ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_Mask", { 1. }));
-    ASSERT_TRUE(setChannelSelect(pair.ofx, "maskChannel_Mask", "rgba.A"));
     ASSERT_TRUE(setChannelSelect(pair.native, "maskChannel_Mask", "rgba.A"));
     ASSERT_TRUE(setKnobOnBoth(pair, "mix", { 0.5 }));
     ASSERT_TRUE(setKnobOnBoth(pair, "saturation", { 1.8 }));
     expectParity(pair, "mask-mix", true);
-
-    ASSERT_TRUE(setKnobOnBoth(pair, "maskInvert", { 1. }));
-    expectParity(pair, "mask-mix-invert", false);
-}
-
-TEST_F(NativeSaturationTest, HostUnPremultBy)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setChannelSelect(pair.ofx, kUnPremultByKnobName, "rgba.A"));
-    ASSERT_TRUE(setChannelSelect(pair.native, kUnPremultByKnobName, "rgba.A"));
-    ASSERT_TRUE(setKnobOnBoth(pair, "saturation", { 0.6 }));
-    expectParity(pair, "unpremult", false);
 }
 
 // The OpenFX plugin falls through from ACES AP1 to CCIR 601, so this option is compared with

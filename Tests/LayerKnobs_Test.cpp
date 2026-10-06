@@ -91,19 +91,20 @@ makeChannelSelectKnob()
     return knob;
 }
 
-TEST_F(BaseTest, GradeGetsChannelSetSeededByItsQuad)
+// Quantize stays OpenFX and, like the retired OpenFX Grade, defaults processA to false.
+TEST_F(BaseTest, QuantizeGetsChannelSetSeededByItsQuad)
 {
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"), 2);
+    NodePtr quantize = createNode(QString::fromUtf8("net.sf.openfx.Quantize"), 1);
 
-    ASSERT_TRUE(bool(grade));
+    ASSERT_TRUE(bool(quantize));
 
-    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(grade->getKnobByName(kNodeParamChannelSet));
+    KnobChannelSetPtr channels = std::dynamic_pointer_cast<KnobChannelSet>(quantize->getKnobByName(kNodeParamChannelSet));
     ASSERT_TRUE(bool(channels));
-    EXPECT_EQ(channels, grade->getLayerKnob());
+    EXPECT_EQ(channels, quantize->getLayerKnob());
     EXPECT_TRUE(isFirstOnItsPage(channels));
     EXPECT_FALSE(channels->isAnimationEnabled());
 
-    KnobBoolPtr processA = std::dynamic_pointer_cast<KnobBool>(grade->getKnobByName(kNatronOfxParamProcessA));
+    KnobBoolPtr processA = std::dynamic_pointer_cast<KnobBool>(quantize->getKnobByName(kNatronOfxParamProcessA));
     ASSERT_TRUE(bool(processA));
     EXPECT_FALSE(processA->getDefaultValue(0));
     EXPECT_TRUE(processA->getIsSecret());
@@ -120,9 +121,9 @@ TEST_F(BaseTest, GradeGetsChannelSetSeededByItsQuad)
     rgb.push_back("B");
     EXPECT_EQ(rgb, rows[0].channels);
 
-    EXPECT_FALSE(bool(grade->getKnobByName("channels_legacy")));
-    EXPECT_FALSE(bool(grade->getKnobByName("Source_channels_legacy")));
-    EXPECT_FALSE(bool(grade->getKnobByName("processAllLayers")));
+    EXPECT_FALSE(bool(quantize->getKnobByName("channels_legacy")));
+    EXPECT_FALSE(bool(quantize->getKnobByName("Source_channels_legacy")));
+    EXPECT_FALSE(bool(quantize->getKnobByName("processAllLayers")));
 }
 
 TEST_F(BaseTest, InvertGetsChannelSetWithEveryChannel)

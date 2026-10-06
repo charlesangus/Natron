@@ -48,7 +48,6 @@
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Image/ColorMath.h"
 #include "Engine/Nodes/NativeEffectBase.h"
-#include "Engine/OfxEffectInstance.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
 
@@ -64,20 +63,6 @@ const double kTime = 1.;
 // Contrast and gamma are pow(), and the tone weights come from a float LUT, so the class bound of
 // the transcendental nodes.
 const ParityTolerance kColorCorrectTolerance = ParityTolerance::transcendental();
-
-bool
-setChannelsAll(const NodePtr& node)
-{
-    KnobChannelSetPtr channels = node ? std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet)) : KnobChannelSetPtr();
-
-    EXPECT_TRUE(bool(channels));
-    if (!channels) {
-        return false;
-    }
-    channels->setAll();
-
-    return true;
-}
 
 bool
 setChannelSelect(const NodePtr& node,
@@ -99,12 +84,6 @@ bool
 isNative(const NodePtr& node)
 {
     return node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
-}
-
-bool
-isOfx(const NodePtr& node)
-{
-    return node && dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get());
 }
 
 KnobParametric*
@@ -151,7 +130,7 @@ protected:
         ParityPair pair = makeParityPair(getApp(), kColorCorrectID, kOfxColorCorrectMajor, kNativeColorCorrectMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_TRUE(pair.live()) << "the OFX ColorCorrect must be loadable at major " << kOfxColorCorrectMajor;
+        EXPECT_FALSE(pair.live()) << "the OFX ColorCorrect is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
 
         return pair;
@@ -166,6 +145,7 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, kColorCorrectTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] ColorCorrect " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -183,234 +163,109 @@ protected:
     }
 };
 
-TEST_F(NativeColorCorrectTest, KnobsMatchTheOfxColorCorrect)
+TEST_F(NativeColorCorrectTest, GroupChildrenAreParentedToTheirGroup)
 {
     ParityPair pair = makePair(true);
     ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
 
-    expectKnobParity(pair.ofx, pair.native);
-    EXPECT_TRUE(bool(pair.native->getUnPremultBySelector()));
-    EXPECT_TRUE(bool(pair.native->getKnobByName("enableMask_Mask")));
-    EXPECT_TRUE(bool(pair.native->getKnobByName("maskChannel_Mask")));
-}
-
-TEST_F(NativeColorCorrectTest, ToneRangesDefaultPointsMatchTheOfxColorCorrect)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-
-    KnobParametric* ofx = toneRangesOf(pair.ofx);
-    KnobParametric* native = toneRangesOf(pair.native);
-    ASSERT_TRUE(ofx != NULL);
-    ASSERT_TRUE(native != NULL);
-    ASSERT_EQ(2, ofx->getDimension());
-    ASSERT_EQ(2, native->getDimension());
-    for (int d = 0; d < 2; ++d) {
-        EXPECT_EQ(ofx->getDimensionName(d), native->getDimensionName(d));
-        int ofxCount = 0;
-        int nativeCount = 0;
-        ASSERT_EQ(eStatusOK, ofx->getNControlPoints(d, &ofxCount));
-        ASSERT_EQ(eStatusOK, native->getNControlPoints(d, &nativeCount));
-        EXPECT_EQ(2, nativeCount) << "curve " << d;
-        ASSERT_EQ(ofxCount, nativeCount) << "curve " << d;
-        for (int i = 0; i < nativeCount; ++i) {
-            KeyFrame ofxKey;
-            KeyFrame nativeKey;
-            ASSERT_TRUE(ofx->getParametricCurve(d)->getKeyFrameWithIndex(i, &ofxKey));
-            ASSERT_TRUE(native->getParametricCurve(d)->getKeyFrameWithIndex(i, &nativeKey));
-            EXPECT_EQ(ofxKey.getTime(), nativeKey.getTime()) << "curve " << d << ", point " << i;
-            EXPECT_EQ(ofxKey.getValue(), nativeKey.getValue()) << "curve " << d << ", point " << i;
-            EXPECT_EQ(ofxKey.getLeftDerivative(), nativeKey.getLeftDerivative()) << "curve " << d << ", point " << i;
-            EXPECT_EQ(ofxKey.getRightDerivative(), nativeKey.getRightDerivative()) << "curve " << d << ", point " << i;
-            EXPECT_EQ(ofxKey.getInterpolation(), nativeKey.getInterpolation()) << "curve " << d << ", point " << i;
+    const char* groups[] = { kColorCorrectGroupMaster, kColorCorrectGroupShadows, kColorCorrectGroupMidtones, kColorCorrectGroupHighlights };
+    const char* params[] = { kColorCorrectParamSaturation, kColorCorrectParamContrast, kColorCorrectParamGamma, kColorCorrectParamGain, kColorCorrectParamOffset };
+    for (int g = 0; g < 4; ++g) {
+        const std::string groupName = groups[g];
+        KnobIPtr group = pair.native->getKnobByName(groupName);
+        ASSERT_TRUE(bool(group)) << groupName;
+        for (int p = 0; p < 5; ++p) {
+            KnobIPtr child = pair.native->getKnobByName(groupName + params[p]);
+            ASSERT_TRUE(bool(child)) << groupName << params[p];
+            EXPECT_EQ(group, child->getParentKnob()) << groupName << params[p];
         }
-        EXPECT_EQ(ofx->getDefaultParametricCurve(d)->getKeyFramesCount(), native->getDefaultParametricCurve(d)->getKeyFramesCount()) << "curve " << d;
-        for (int s = 0; s <= 20; ++s) {
-            const double x = -0.25 + 1.5 * s / 20.;
-            double ofxValue = 0.;
-            double nativeValue = 0.;
-            ASSERT_EQ(eStatusOK, ofx->getValue(d, x, &ofxValue));
-            ASSERT_EQ(eStatusOK, native->getValue(d, x, &nativeValue));
-            EXPECT_EQ(ofxValue, nativeValue) << "curve " << d << " at " << x;
+        if (g != 0) {
+            KnobIPtr enable = pair.native->getKnobByName(groupName + kColorCorrectParamEnable);
+            ASSERT_TRUE(bool(enable)) << groupName;
+            EXPECT_EQ(group, enable->getParentKnob()) << groupName;
         }
     }
 }
 
-TEST_F(NativeColorCorrectTest, Default)
+TEST_F(NativeColorCorrectTest, ToneRangesDefaultPointsMatchTheOfxColorCorrect)
 {
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    expectParity(pair, "default", false);
+    NodePtr node = createNodeAtMajor(getApp(), kColorCorrectID, kNativeColorCorrectMajor);
+    ASSERT_TRUE(isNative(node));
+    KnobParametric* native = toneRangesOf(node);
+    ASSERT_TRUE(native != NULL);
+    ASSERT_EQ(2, native->getDimension());
+    EXPECT_EQ(std::string("Shadow"), native->getDimensionName(0));
+    EXPECT_EQ(std::string("Highlight"), native->getDimensionName(1));
+
+    // The OpenFX plugin's default points, which its host gives horizontal tangents.
+    const double points[2][2][2] = { { { 0., 1. }, { 0.09, 0. } }, { { 0.5, 0. }, { 1., 1. } } };
+    for (int d = 0; d < 2; ++d) {
+        int count = 0;
+        ASSERT_EQ(eStatusOK, native->getNControlPoints(d, &count));
+        ASSERT_EQ(2, count) << "curve " << d;
+        for (int i = 0; i < count; ++i) {
+            KeyFrame key;
+            ASSERT_TRUE(native->getParametricCurve(d)->getKeyFrameWithIndex(i, &key));
+            EXPECT_EQ(points[d][i][0], key.getTime()) << "curve " << d << ", point " << i;
+            EXPECT_EQ(points[d][i][1], key.getValue()) << "curve " << d << ", point " << i;
+            EXPECT_EQ(0., key.getLeftDerivative()) << "curve " << d << ", point " << i;
+            EXPECT_EQ(0., key.getRightDerivative()) << "curve " << d << ", point " << i;
+            EXPECT_EQ(eKeyframeTypeHorizontal, key.getInterpolation()) << "curve " << d << ", point " << i;
+        }
+        EXPECT_EQ(2, native->getDefaultParametricCurve(d)->getKeyFramesCount()) << "curve " << d;
+        double mid = 0.;
+        ASSERT_EQ(eStatusOK, native->getValue(d, 0.5 * (points[d][0][0] + points[d][1][0]), &mid));
+        EXPECT_NEAR(0.5, mid, 1e-12) << "curve " << d;
+    }
 }
 
 TEST_F(NativeColorCorrectTest, MasterAlone)
 {
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     setGroup(pair, kColorCorrectGroupMaster);
     ASSERT_TRUE(setKnobOnBoth(pair, kColorCorrectParamClampBlack, { 0. }));
     expectParity(pair, "master", true);
 }
 
-TEST_F(NativeColorCorrectTest, ShadowsAlone)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    setGroup(pair, kColorCorrectGroupShadows);
-    expectParity(pair, "shadows", false);
-}
-
 TEST_F(NativeColorCorrectTest, MidtonesAlone)
 {
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     setGroup(pair, kColorCorrectGroupMidtones);
     ASSERT_TRUE(setKnobOnBoth(pair, kColorCorrectParamClampBlack, { 0. }));
     expectParity(pair, "midtones", true);
 }
 
-TEST_F(NativeColorCorrectTest, HighlightsAlone)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    setGroup(pair, kColorCorrectGroupHighlights);
-    expectParity(pair, "highlights", false);
-}
-
-TEST_F(NativeColorCorrectTest, DisabledGroupIsIgnored)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    setGroup(pair, kColorCorrectGroupShadows);
-    setGroup(pair, kColorCorrectGroupHighlights);
-    ASSERT_TRUE(setKnobOnBoth(pair, std::string(kColorCorrectGroupShadows) + kColorCorrectParamEnable, { 0. }));
-    expectParity(pair, "shadows-disabled", false);
-}
-
-TEST_F(NativeColorCorrectTest, NonDefaultRange)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    setGroup(pair, kColorCorrectGroupShadows);
-    setGroup(pair, kColorCorrectGroupMidtones);
-    ASSERT_TRUE(setKnobOnBoth(pair, kColorCorrectParamRange, { 0.2, 0.8 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kColorCorrectParamClampBlack, { 0. }));
-    expectParity(pair, "range", false);
-}
-
-TEST_F(NativeColorCorrectTest, EveryLuminanceMath)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, std::string(kColorCorrectGroupMaster) + kColorCorrectParamSaturation, { 0.4, 1.6, 0.8, 1. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, std::string(kColorCorrectGroupShadows) + kColorCorrectParamGain, { 1.8 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, std::string(kColorCorrectGroupHighlights) + kColorCorrectParamSaturation, { 2. }));
-
-    const char* const options[] = { "rec709", "rec2020", "acesap0", "acesap1", "ccir601", "average", "max" };
-    for (const char* option : options) {
-        ASSERT_TRUE(setKnobOnBoth(pair, kColorMathParamLuminanceMath, std::string(option)));
-        expectParity(pair, std::string("luminance-") + option, false);
-    }
-}
-
 TEST_F(NativeColorCorrectTest, EditedToneRanges)
 {
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(editToneRanges(pair.ofx));
     ASSERT_TRUE(editToneRanges(pair.native));
     setGroup(pair, kColorCorrectGroupShadows);
     setGroup(pair, kColorCorrectGroupHighlights);
     expectParity(pair, "tone-ranges", true);
 }
 
-TEST_F(NativeColorCorrectTest, ClampWhite)
+TEST_F(NativeColorCorrectTest, IdentityConditions)
 {
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, std::string(kColorCorrectGroupMaster) + kColorCorrectParamGain, { 2. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kColorCorrectParamClampWhite, { 1. }));
-    expectParity(pair, "clamp-white", false);
-}
-
-TEST_F(NativeColorCorrectTest, AlphaOnlySourceProcessesAlpha)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    setParitySourceComponents(pair.source, "alpha");
-    ASSERT_TRUE(setChannelsAll(pair.ofx));
-    ASSERT_TRUE(setChannelsAll(pair.native));
-    setGroup(pair, kColorCorrectGroupMaster);
-    setGroup(pair, kColorCorrectGroupShadows);
-    expectParity(pair, "alpha-only", false);
-}
-
-TEST_F(NativeColorCorrectTest, RgbSource)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    setParitySourceComponents(pair.source, "rgb");
-    setGroup(pair, kColorCorrectGroupMidtones);
-    expectParity(pair, "rgb", false);
-}
-
-TEST_F(NativeColorCorrectTest, MaskAndMix)
-{
-    ParityPair pair = makePair(true);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(bool(pair.mask));
-    setParitySourceOrigin(pair.mask, 8, 4);
-    ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_Mask", { 1. }));
-    ASSERT_TRUE(setChannelSelect(pair.ofx, "maskChannel_Mask", "rgba.A"));
-    ASSERT_TRUE(setChannelSelect(pair.native, "maskChannel_Mask", "rgba.A"));
-    ASSERT_TRUE(setKnobOnBoth(pair, "mix", { 0.5 }));
-    setGroup(pair, kColorCorrectGroupMaster);
-    expectParity(pair, "mask-mix", false);
-
-    ASSERT_TRUE(setKnobOnBoth(pair, "maskInvert", { 1. }));
-    expectParity(pair, "mask-mix-invert", false);
-}
-
-TEST_F(NativeColorCorrectTest, HostUnPremultBy)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setChannelSelect(pair.ofx, kUnPremultByKnobName, "rgba.A"));
-    ASSERT_TRUE(setChannelSelect(pair.native, kUnPremultByKnobName, "rgba.A"));
-    setGroup(pair, kColorCorrectGroupMidtones);
-    expectParity(pair, "unpremult", false);
-}
-
-TEST_F(NativeColorCorrectTest, IdentityMatchesTheOfxColorCorrect)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     const RectI window = paritySourceWindow(pair.source, kTime, 0);
 
     // clampBlack is on by default, so the default node is not an identity.
     EXPECT_FALSE(identityOf(pair.native, window));
-    EXPECT_EQ(identityOf(pair.ofx, window), identityOf(pair.native, window));
 
     ASSERT_TRUE(setKnobOnBoth(pair, kColorCorrectParamClampBlack, { 0. }));
     EXPECT_TRUE(identityOf(pair.native, window));
-    EXPECT_EQ(identityOf(pair.ofx, window), identityOf(pair.native, window));
 
     ASSERT_TRUE(setKnobOnBoth(pair, std::string(kColorCorrectGroupShadows) + kColorCorrectParamGain, { 1.5 }));
     EXPECT_FALSE(identityOf(pair.native, window));
-    EXPECT_EQ(identityOf(pair.ofx, window), identityOf(pair.native, window));
 
     ASSERT_TRUE(setKnobOnBoth(pair, std::string(kColorCorrectGroupShadows) + kColorCorrectParamEnable, { 0. }));
     EXPECT_TRUE(identityOf(pair.native, window));
-    EXPECT_EQ(identityOf(pair.ofx, window), identityOf(pair.native, window));
 
     ASSERT_TRUE(setKnobOnBoth(pair, kColorCorrectParamClampWhite, { 1. }));
     EXPECT_FALSE(identityOf(pair.native, window));
-    EXPECT_EQ(identityOf(pair.ofx, window), identityOf(pair.native, window));
 
     ASSERT_TRUE(setKnobOnBoth(pair, "mix", { 0. }));
     EXPECT_TRUE(identityOf(pair.native, window));
-    EXPECT_EQ(identityOf(pair.ofx, window), identityOf(pair.native, window));
 }
 
 TEST_F(NativeColorCorrectTest, UserEditedRangeIsSwappedWhenReversed)
@@ -460,9 +315,5 @@ TEST_F(NativeColorCorrectTest, UnversionedRequestsGetTheNativeColorCorrect)
     ASSERT_TRUE(bool(unversioned));
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativeColorCorrectMajor, unversioned->getMajorVersion());
-
-    NodePtr ofx = createNode(QString::fromUtf8(kColorCorrectID), kOfxColorCorrectMajor);
-    ASSERT_TRUE(bool(ofx));
-    EXPECT_TRUE(isOfx(ofx));
-    EXPECT_EQ(kOfxColorCorrectMajor, ofx->getMajorVersion());
+    EXPECT_FALSE(isPluginMajorRegistered(kColorCorrectID, kOfxColorCorrectMajor));
 }

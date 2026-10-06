@@ -63,6 +63,9 @@ namespace {
 // specular (0, 0, 1).
 const int kSize = 8;
 
+// The OpenFX Constant, which the native Constant shadows for unversioned requests.
+const int kOfxConstantMajor = 1;
+
 const double kConstantR = 0.75;
 const double kConstantG = 0.5;
 const double kConstantB = 0.25;
@@ -160,9 +163,10 @@ protected:
     }
 
     NodePtr createGenerator(const char* pluginID,
-                            KnobLayerSelectPtr* layer)
+                            KnobLayerSelectPtr* layer,
+                            int majorVersion = -1)
     {
-        NodePtr generator = createNode(QString::fromUtf8(pluginID));
+        NodePtr generator = createNode(QString::fromUtf8(pluginID), majorVersion);
 
         if (!generator) {
             return NodePtr();
@@ -400,7 +404,7 @@ TEST_F(GeneratorLayerTest, ConstantOutputComponentsIsLockedToRGBA)
     project->reset(false, true);
 
     KnobLayerSelectPtr layer;
-    NodePtr constant = createGenerator("net.sf.openfx.ConstantPlugin", &layer);
+    NodePtr constant = createGenerator("net.sf.openfx.ConstantPlugin", &layer, kOfxConstantMajor);
     ASSERT_TRUE(bool(constant));
     ASSERT_TRUE(bool(layer));
 

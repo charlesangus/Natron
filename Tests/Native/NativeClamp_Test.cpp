@@ -47,7 +47,6 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Clamp.h"
 #include "Engine/Nodes/NativeEffectBase.h"
-#include "Engine/OfxEffectInstance.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
@@ -94,7 +93,7 @@ protected:
         ParityPair pair = makeParityPair(getApp(), kClampID, kOfxClampMajor, kNativeClampMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_TRUE(pair.live()) << "the OFX Clamp must be loadable at major " << kOfxClampMajor;
+        EXPECT_FALSE(pair.live()) << "the OFX Clamp is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
 
         return pair;
@@ -107,6 +106,7 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, kClampTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Clamp " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -124,18 +124,6 @@ protected:
         return effect->isIdentity_public(false, effect->getRenderHash(), 1., RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb);
     }
 };
-
-TEST_F(NativeClampTest, KnobsMatchTheOfxClamp)
-{
-    ParityPair pair = makePair(true);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-
-    expectKnobParity(pair.ofx, pair.native);
-    EXPECT_TRUE(bool(pair.native->getUnPremultBySelector()));
-    EXPECT_TRUE(bool(pair.native->getKnobByName("enableMask_Mask")));
-    EXPECT_TRUE(bool(pair.native->getKnobByName("maskChannel_Mask")));
-}
 
 TEST_F(NativeClampTest, AcceptsXYAndNotOnTheMask)
 {
@@ -156,32 +144,12 @@ TEST_F(NativeClampTest, AcceptsXYAndNotOnTheMask)
 TEST_F(NativeClampTest, Default)
 {
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     expectParity(pair, "default", true);
-}
-
-TEST_F(NativeClampTest, MinimumOnly)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, "minimum", { 0.2, 0.1, 0.3, 0.4 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "maximumEnable", { 0. }));
-    expectParity(pair, "minimum-only", false);
-}
-
-TEST_F(NativeClampTest, MaximumOnly)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, "maximum", { 0.8, 0.9, 0.7, 0.6 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "minimumEnable", { 0. }));
-    expectParity(pair, "maximum-only", false);
 }
 
 TEST_F(NativeClampTest, ClampToValues)
 {
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(setKnobOnBoth(pair, "minimum", { 0.3 }));
     ASSERT_TRUE(setKnobOnBoth(pair, "maximum", { 0.6 }));
     ASSERT_TRUE(setKnobOnBoth(pair, "minClampTo", { -1., 2., -3., 0.25 }));
@@ -189,66 +157,6 @@ TEST_F(NativeClampTest, ClampToValues)
     ASSERT_TRUE(setKnobOnBoth(pair, "maxClampTo", { 5., -5., 0.5, 0.75 }));
     ASSERT_TRUE(setKnobOnBoth(pair, "maxClampToEnable", { 1. }));
     expectParity(pair, "clamp-to", true);
-}
-
-TEST_F(NativeClampTest, ThresholdToBinary)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, "minimum", { 0.5 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "maximum", { 0. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "minClampToEnable", { 1. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "maxClampToEnable", { 1. }));
-    expectParity(pair, "threshold", false);
-}
-
-TEST_F(NativeClampTest, MinimumAboveMaximumTestsTheMinimumFirst)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, "minimum", { 0.7 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "maximum", { 0.2 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "maxClampToEnable", { 1. }));
-    expectParity(pair, "minimum-above-maximum", false);
-}
-
-TEST_F(NativeClampTest, MaskAndMix)
-{
-    ParityPair pair = makePair(true);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(bool(pair.mask));
-    setParitySourceOrigin(pair.mask, 8, 4);
-    ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_Mask", { 1. }));
-    ASSERT_TRUE(setChannelSelect(pair.ofx, "maskChannel_Mask", "rgba.A"));
-    ASSERT_TRUE(setChannelSelect(pair.native, "maskChannel_Mask", "rgba.A"));
-    ASSERT_TRUE(setKnobOnBoth(pair, "mix", { 0.5 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "minimum", { 0.25 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "maximum", { 0.75 }));
-    expectParity(pair, "mask-mix", false);
-
-    ASSERT_TRUE(setKnobOnBoth(pair, "maskInvert", { 1. }));
-    expectParity(pair, "mask-mix-invert", false);
-}
-
-TEST_F(NativeClampTest, HostUnPremultBy)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setChannelSelect(pair.ofx, kUnPremultByKnobName, "rgba.A"));
-    ASSERT_TRUE(setChannelSelect(pair.native, kUnPremultByKnobName, "rgba.A"));
-    ASSERT_TRUE(setKnobOnBoth(pair, "minimum", { 0.2 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "maximum", { 0.8 }));
-    expectParity(pair, "unpremult", false);
-}
-
-TEST_F(NativeClampTest, AlphaOnlySource)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    setParitySourceComponents(pair.source, "alpha");
-    ASSERT_TRUE(setKnobOnBoth(pair, "minimum", { 0.3 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "maximum", { 0.6 }));
-    expectParity(pair, "alpha-only", false);
 }
 
 TEST_F(NativeClampTest, IdentityWhenBothSidesAreOff)

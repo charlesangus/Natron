@@ -50,7 +50,6 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/NativeEffectBase.h"
-#include "Engine/OfxEffectInstance.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
@@ -90,20 +89,6 @@ allCases()
 }
 
 bool
-setChannelsAll(const NodePtr& node)
-{
-    KnobChannelSetPtr channels = node ? std::dynamic_pointer_cast<KnobChannelSet>(node->getKnobByName(kNodeParamChannelSet)) : KnobChannelSetPtr();
-
-    EXPECT_TRUE(bool(channels));
-    if (!channels) {
-        return false;
-    }
-    channels->setAll();
-
-    return true;
-}
-
-bool
 setChannelSelect(const NodePtr& node,
                  const std::string& name,
                  const std::string& value)
@@ -123,12 +108,6 @@ bool
 isNative(const NodePtr& node)
 {
     return node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
-}
-
-bool
-isOfx(const NodePtr& node)
-{
-    return node && dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get());
 }
 
 bool
@@ -154,7 +133,7 @@ protected:
         ParityPair pair = makeParityPair(getApp(), op.id, kOfxColorMathMajor, kNativeColorMathMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native)) << op.label;
-        EXPECT_TRUE(pair.live()) << "the OFX " << op.label << " must be loadable at major " << kOfxColorMathMajor;
+        EXPECT_FALSE(pair.live()) << "the OFX " << op.label << " is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native)) << op.label;
 
         return pair;
@@ -168,6 +147,7 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, op.tolerance, record);
             EXPECT_TRUE(r.ok) << op.label << " " << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << op.label << " " << caseName;
             std::cout << "[ parity ] " << op.label << " " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -205,122 +185,14 @@ protected:
     }
 };
 
-TEST_F(NativeColorMathTest, KnobsMatchTheOfxPlugins)
-{
-    const std::vector<ColorMathCase> cases = allCases();
-
-    for (std::size_t i = 0; i < cases.size(); ++i) {
-        ParityPair pair = makePair(cases[i], true);
-        ASSERT_TRUE(bool(pair.native)) << cases[i].label;
-        ASSERT_TRUE(pair.live()) << cases[i].label;
-
-        expectKnobParity(pair.ofx, pair.native);
-        EXPECT_TRUE(bool(pair.native->getUnPremultBySelector())) << cases[i].label;
-        EXPECT_TRUE(bool(pair.native->getKnobByName("enableMask_Mask"))) << cases[i].label;
-        EXPECT_TRUE(bool(pair.native->getKnobByName("maskChannel_Mask"))) << cases[i].label;
-        EXPECT_EQ(cases[i].isGamma, bool(pair.native->getKnobByName(kColorMathParamInvert))) << cases[i].label;
-    }
-}
-
-TEST_F(NativeColorMathTest, Default)
-{
-    const std::vector<ColorMathCase> cases = allCases();
-
-    for (std::size_t i = 0; i < cases.size(); ++i) {
-        ParityPair pair = makePair(cases[i]);
-        ASSERT_TRUE(pair.live()) << cases[i].label;
-        expectParity(cases[i], pair, "default", false);
-    }
-}
-
-TEST_F(NativeColorMathTest, OneValueOnEveryChannel)
-{
-    const std::vector<ColorMathCase> cases = allCases();
-
-    for (std::size_t i = 0; i < cases.size(); ++i) {
-        ParityPair pair = makePair(cases[i]);
-        ASSERT_TRUE(pair.live()) << cases[i].label;
-        ASSERT_TRUE(setKnobValues(pair.ofx, kColorMathParamValue, singleValue(cases[i])));
-        ASSERT_TRUE(setKnobValues(pair.native, kColorMathParamValue, singleValue(cases[i])));
-        expectParity(cases[i], pair, "single-value", false);
-    }
-}
-
 TEST_F(NativeColorMathTest, ADifferentValueOnEachChannel)
 {
     const std::vector<ColorMathCase> cases = allCases();
 
     for (std::size_t i = 0; i < cases.size(); ++i) {
         ParityPair pair = makePair(cases[i]);
-        ASSERT_TRUE(pair.live()) << cases[i].label;
-        ASSERT_TRUE(setKnobValues(pair.ofx, kColorMathParamValue, perChannelValue(cases[i])));
         ASSERT_TRUE(setKnobValues(pair.native, kColorMathParamValue, perChannelValue(cases[i])));
         expectParity(cases[i], pair, "per-channel-value", true);
-    }
-}
-
-TEST_F(NativeColorMathTest, AlphaProcessedWhenAllChannelsAreOn)
-{
-    const std::vector<ColorMathCase> cases = allCases();
-
-    for (std::size_t i = 0; i < cases.size(); ++i) {
-        ParityPair pair = makePair(cases[i]);
-        ASSERT_TRUE(pair.live()) << cases[i].label;
-        ASSERT_TRUE(setChannelsAll(pair.ofx));
-        ASSERT_TRUE(setChannelsAll(pair.native));
-        ASSERT_TRUE(setKnobValues(pair.ofx, kColorMathParamValue, perChannelValue(cases[i])));
-        ASSERT_TRUE(setKnobValues(pair.native, kColorMathParamValue, perChannelValue(cases[i])));
-        expectParity(cases[i], pair, "alpha-processed", false);
-    }
-}
-
-TEST_F(NativeColorMathTest, AlphaOnlySourceProcessesAlpha)
-{
-    const std::vector<ColorMathCase> cases = allCases();
-
-    for (std::size_t i = 0; i < cases.size(); ++i) {
-        ParityPair pair = makePair(cases[i]);
-        ASSERT_TRUE(pair.live()) << cases[i].label;
-        setParitySourceComponents(pair.source, "alpha");
-        ASSERT_TRUE(setChannelsAll(pair.ofx));
-        ASSERT_TRUE(setChannelsAll(pair.native));
-        ASSERT_TRUE(setKnobValues(pair.ofx, kColorMathParamValue, perChannelValue(cases[i])));
-        ASSERT_TRUE(setKnobValues(pair.native, kColorMathParamValue, perChannelValue(cases[i])));
-        expectParity(cases[i], pair, "alpha-only", false);
-    }
-}
-
-TEST_F(NativeColorMathTest, RgbSourceLeavesNoAlpha)
-{
-    const std::vector<ColorMathCase> cases = allCases();
-
-    for (std::size_t i = 0; i < cases.size(); ++i) {
-        ParityPair pair = makePair(cases[i]);
-        ASSERT_TRUE(pair.live()) << cases[i].label;
-        setParitySourceComponents(pair.source, "rgb");
-        ASSERT_TRUE(setKnobValues(pair.ofx, kColorMathParamValue, perChannelValue(cases[i])));
-        ASSERT_TRUE(setKnobValues(pair.native, kColorMathParamValue, perChannelValue(cases[i])));
-        expectParity(cases[i], pair, "rgb-source", false);
-    }
-}
-
-TEST_F(NativeColorMathTest, ChannelsAllOnTheMultiLayerSource)
-{
-    const std::vector<ColorMathCase> cases = allCases();
-
-    for (std::size_t i = 0; i < cases.size(); ++i) {
-        ParityPair pair = makePair(cases[i]);
-        ASSERT_TRUE(pair.live()) << cases[i].label;
-        setParitySourceExtraLayer(pair.source, true);
-        ASSERT_TRUE(setChannelsAll(pair.ofx));
-        ASSERT_TRUE(setChannelsAll(pair.native));
-        ASSERT_TRUE(setKnobValues(pair.ofx, kColorMathParamValue, singleValue(cases[i])));
-        ASSERT_TRUE(setKnobValues(pair.native, kColorMathParamValue, singleValue(cases[i])));
-        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-            const ParityResult r = compareParity(pair, "channels-all", RectI(), mipmapLevel, cases[i].tolerance, false);
-            EXPECT_TRUE(r.ok) << cases[i].label << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_EQ(2, r.planesCompared) << cases[i].label << ": the colour plane and " << kParitySourceExtraLayerID;
-        }
     }
 }
 
@@ -330,53 +202,22 @@ TEST_F(NativeColorMathTest, MaskAndMix)
 
     for (std::size_t i = 0; i < cases.size(); ++i) {
         ParityPair pair = makePair(cases[i], true);
-        ASSERT_TRUE(pair.live()) << cases[i].label;
         ASSERT_TRUE(bool(pair.mask));
         setParitySourceOrigin(pair.mask, 8, 4);
         ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_Mask", { 1. }));
-        ASSERT_TRUE(setChannelSelect(pair.ofx, "maskChannel_Mask", "rgba.A"));
         ASSERT_TRUE(setChannelSelect(pair.native, "maskChannel_Mask", "rgba.A"));
         ASSERT_TRUE(setKnobOnBoth(pair, "mix", { 0.5 }));
-        ASSERT_TRUE(setKnobValues(pair.ofx, kColorMathParamValue, perChannelValue(cases[i])));
         ASSERT_TRUE(setKnobValues(pair.native, kColorMathParamValue, perChannelValue(cases[i])));
         expectParity(cases[i], pair, "mask-mix", true);
-
-        ASSERT_TRUE(setKnobOnBoth(pair, "maskInvert", { 1. }));
-        expectParity(cases[i], pair, "mask-mix-invert", false);
     }
 }
 
-TEST_F(NativeColorMathTest, HostUnPremultBy)
-{
-    const std::vector<ColorMathCase> cases = allCases();
-
-    for (std::size_t i = 0; i < cases.size(); ++i) {
-        ParityPair pair = makePair(cases[i]);
-        ASSERT_TRUE(pair.live()) << cases[i].label;
-        ASSERT_TRUE(setChannelSelect(pair.ofx, kUnPremultByKnobName, "rgba.A"));
-        ASSERT_TRUE(setChannelSelect(pair.native, kUnPremultByKnobName, "rgba.A"));
-        ASSERT_TRUE(setKnobValues(pair.ofx, kColorMathParamValue, singleValue(cases[i])));
-        ASSERT_TRUE(setKnobValues(pair.native, kColorMathParamValue, singleValue(cases[i])));
-        expectParity(cases[i], pair, "unpremult", false);
-    }
-}
-
-TEST_F(NativeColorMathTest, GammaInvertAndTheDegenerateValues)
+TEST_F(NativeColorMathTest, GammaInvert)
 {
     ParityPair pair = makePair(kGamma);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobValues(pair.ofx, kColorMathParamValue, perChannelValue(kGamma)));
     ASSERT_TRUE(setKnobValues(pair.native, kColorMathParamValue, perChannelValue(kGamma)));
     ASSERT_TRUE(setKnobOnBoth(pair, kColorMathParamInvert, { 1. }));
     expectParity(kGamma, pair, "invert", true);
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kColorMathParamInvert, { 0. }));
-    std::vector<double> degenerate(4, 0.);
-    degenerate[1] = 1.;
-    degenerate[2] = 4.;
-    ASSERT_TRUE(setKnobValues(pair.ofx, kColorMathParamValue, degenerate));
-    ASSERT_TRUE(setKnobValues(pair.native, kColorMathParamValue, degenerate));
-    expectParity(kGamma, pair, "zero-value", false);
 }
 
 TEST_F(NativeColorMathTest, IdentityWhenEveryValueIsNeutral)
@@ -434,11 +275,7 @@ TEST_F(NativeColorMathTest, UnversionedRequestsGetTheNativeNodes)
         EXPECT_TRUE(isNative(unversioned)) << cases[i].label;
         EXPECT_EQ(kNativeColorMathMajor, unversioned->getMajorVersion()) << cases[i].label;
         EXPECT_EQ(std::string(cases[i].id), unversioned->getPluginID());
-
-        NodePtr ofx = createNode(QString::fromUtf8(cases[i].id), kOfxColorMathMajor);
-        ASSERT_TRUE(bool(ofx)) << cases[i].label;
-        EXPECT_TRUE(isOfx(ofx)) << cases[i].label;
-        EXPECT_EQ(kOfxColorMathMajor, ofx->getMajorVersion()) << cases[i].label;
+        EXPECT_FALSE(isPluginMajorRegistered(cases[i].id, kOfxColorMathMajor)) << cases[i].label;
     }
 }
 

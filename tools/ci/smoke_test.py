@@ -300,8 +300,8 @@ def check_plugin_id_enumeration():
 
     bundles = {
         "IO": ("fr.inria.openfx.ReadOIIO", "fr.inria.openfx.WriteOIIO"),
-        "Misc": ("net.sf.openfx.ConstantPlugin", "net.sf.openfx.GradePlugin",
-                 "net.sf.openfx.MergePlugin"),
+        "Misc": ("net.sf.openfx.Premult", "net.sf.openfx.HSVToolPlugin",
+                 "net.sf.openfx.switchPlugin"),
         "CImg": ("net.sf.cimg.CImgBlur", "net.sf.cimg.CImgPlasma"),
         "Arena": ("net.fxarena.openfx.Text", "net.fxarena.openfx.Texture"),
         "metadataCompare": ("org.openfx.examples.metadataCompare",),
@@ -595,11 +595,11 @@ def _compare_or_stash_render(out_path):
               % (name, output_dir))
 
 
-def check_misc_effect_render():
+def _render_constant_through(effect_id, configure, png_name, description):
     from PySide6 import QtGui
 
     tmpdir = tempfile.mkdtemp(prefix="natron-ci-smoke-misc-")
-    out_path = os.path.join(tmpdir, "graded.png")
+    out_path = os.path.join(tmpdir, png_name)
 
     constant = app.createNode("net.sf.openfx.ConstantPlugin")
     if constant is None:
@@ -611,27 +611,29 @@ def check_misc_effect_render():
     _mark("[smoke] created Constant node, color=(0.5, 0.25, 0.125, 1.0) "
           "16x16")
 
-    grade = app.createNode("net.sf.openfx.GradePlugin")
-    if grade is None:
+    effect = app.createNode(effect_id)
+    if effect is None:
         raise AssertionError(
-            "app.createNode('net.sf.openfx.GradePlugin') returned None")
-    if not grade.connectInput(0, constant):
+            "app.createNode(%r) returned None" % (effect_id,))
+    if not effect.connectInput(0, constant):
         raise AssertionError(
-            "Effect.connectInput(0, constant) failed for Constant -> Grade")
-    grade.getParam("multiply").set(2.0, 2.0, 2.0, 1.0)
-    _mark("[smoke] created Grade node, multiply=(2.0, 2.0, 2.0, 1.0), wired "
-          "Constant -> Grade")
+            "Effect.connectInput(0, constant) failed for Constant -> %s"
+            % (description,))
+    configure(effect)
+    _mark("[smoke] created %s node, wired Constant -> %s"
+          % (description, description))
 
     writer = app.createWriter(out_path)
     if writer is None:
         raise AssertionError(
             "app.createWriter(%r) returned None" % (out_path,))
-    if not writer.connectInput(0, grade):
+    if not writer.connectInput(0, effect):
         raise AssertionError(
-            "Effect.connectInput(0, grade) failed for Grade -> Writer")
+            "Effect.connectInput(0, effect) failed for %s -> Writer"
+            % (description,))
 
     _mark("[smoke] calling app.render([(writer, 1, 1)]) for "
-          "Constant -> Grade -> Writer...")
+          "Constant -> %s -> Writer..." % (description,))
     app.render([(writer, 1, 1)])
 
     if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
@@ -644,29 +646,50 @@ def check_misc_effect_render():
         raise AssertionError(
             "app.render() produced no decodable PNG at %r" % (out_path,))
     color = img.pixelColor(img.width() // 2, img.height() // 2)
-    _mark("[smoke] Constant -> Grade -> PNG code value (%d, %d, %d)"
-          % (color.red(), color.green(), color.blue()))
+    _mark("[smoke] Constant -> %s -> PNG code value (%d, %d, %d)"
+          % (description, color.red(), color.green(), color.blue()))
 
     # Measured through the ACES 2.0 Studio Output Transform, not a pure
     # sRGB EOTF: scene-linear 1.0/0.5/0.25 land at 255/177/123 after
     # tone mapping. Without the 2x multiply the values would be ~118/80/50.
     if abs(color.red() - 255) > 2:
         raise AssertionError(
-            "red channel is %d, expected 255 +/- 2 -- Grade's multiply does "
-            "not appear to have been applied" % (color.red(),))
+            "red channel is %d, expected 255 +/- 2 -- the %s doubling does "
+            "not appear to have been applied" % (color.red(), description))
     if abs(color.green() - 177) > 15:
         raise AssertionError(
-            "green channel is %d, expected 177 +/- 15 -- Grade's multiply "
-            "does not appear to have been applied" % (color.green(),))
+            "green channel is %d, expected 177 +/- 15 -- the %s doubling "
+            "does not appear to have been applied"
+            % (color.green(), description))
     if abs(color.blue() - 123) > 15:
         raise AssertionError(
-            "blue channel is %d, expected 123 +/- 15 -- Grade's multiply "
-            "does not appear to have been applied" % (color.blue(),))
+            "blue channel is %d, expected 123 +/- 15 -- the %s doubling "
+            "does not appear to have been applied"
+            % (color.blue(), description))
     _compare_or_stash_render(out_path)
-    _mark("[smoke] OK: Constant -> Grade -> Writer render intact, rendered "
-          "%r" % (out_path,))
+    _mark("[smoke] OK: Constant -> %s -> Writer render intact, rendered %r"
+          % (description, out_path))
 
 
+def check_misc_effect_render():
+    """Render through a plugin that is still OFX, then through native Grade.
+
+    ColorMatrix stays in the Misc bundle, so the first render is what proves
+    the bundle loads and renders; Constant and Grade are native nodes.
+    """
+    def configure_color_matrix(effect):
+        effect.getParam("outputRed").set(2.0, 0.0, 0.0, 0.0)
+        effect.getParam("outputGreen").set(0.0, 2.0, 0.0, 0.0)
+        effect.getParam("outputBlue").set(0.0, 0.0, 2.0, 0.0)
+
+    def configure_grade(effect):
+        effect.getParam("multiply").set(2.0, 2.0, 2.0, 1.0)
+
+    _render_constant_through("net.sf.openfx.ColorMatrixPlugin",
+                             configure_color_matrix, "colormatrix.png",
+                             "ColorMatrix")
+    _render_constant_through("net.sf.openfx.GradePlugin", configure_grade,
+                             "graded.png", "Grade")
 
 
 def check_deep_write_render():

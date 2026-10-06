@@ -70,6 +70,8 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
+const int kOfxGradeMajor = 2;
+
 const int32_t kCheckX = 1;
 const int32_t kCheckY = 1;
 
@@ -112,13 +114,14 @@ protected:
 
     NodePtr createEffectOnReader(const QString& pluginID,
                                  KnobChannelSetPtr* channels,
-                                 const std::string& fixture = "flat-three-layers.exr")
+                                 const std::string& fixture = "flat-three-layers.exr",
+                                 int majorVersion = -1)
     {
         NodePtr reader = createReader(fixture);
         if (!reader) {
             return NodePtr();
         }
-        NodePtr effect = createNode(pluginID);
+        NodePtr effect = createNode(pluginID, majorVersion);
         if (!effect) {
             return NodePtr();
         }
@@ -701,7 +704,7 @@ TEST_F(ChannelSetRenderUnPremultByTest, AMissingDivisorChannelFailsTheRender)
 TEST_F(ChannelSetRenderTest, GradeUnPremultByIsHostOwnedAndOldPremultFamilyGoneOrSecret)
 {
     KnobChannelSetPtr channels;
-    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels);
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &channels, "flat-three-layers.exr", kOfxGradeMajor);
     ASSERT_TRUE(bool(grade));
 
     KnobChannelSelectPtr hostUnPremultBy = grade->getUnPremultBySelector();
@@ -1305,7 +1308,7 @@ TEST_F(ChannelSetRenderTest, KeyMixQuadIsLeftToThePluginWhileGradeQuadIsAdopted)
     EXPECT_TRUE(keyMixProcessR->getValue());
 
     KnobChannelSetPtr gradeChannels;
-    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &gradeChannels);
+    NodePtr grade = createEffectOnReader(QString::fromUtf8("net.sf.openfx.GradePlugin"), &gradeChannels, "flat-three-layers.exr", kOfxGradeMajor);
     ASSERT_TRUE(bool(grade));
     EXPECT_FALSE(grade->pluginOwnsChannelMask());
 

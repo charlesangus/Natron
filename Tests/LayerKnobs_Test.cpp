@@ -93,7 +93,7 @@ makeChannelSelectKnob()
 
 TEST_F(BaseTest, GradeGetsChannelSetSeededByItsQuad)
 {
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"), 2);
 
     ASSERT_TRUE(bool(grade));
 

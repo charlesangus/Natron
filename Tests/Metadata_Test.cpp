@@ -490,7 +490,7 @@ TEST_F(MetadataPluginFixture, InputClipCarriesUpstreamOutputMetadata)
     NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
     ASSERT_TRUE(bool(constant)) << "node creation failed for net.sf.openfx.ConstantPlugin";
 
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"), 2);
     ASSERT_TRUE(bool(grade)) << "node creation failed for net.sf.openfx.GradePlugin";
 
     connectNodes(constant, grade, 0, true);
@@ -536,7 +536,7 @@ TEST_F(MetadataPluginFixture, DisconnectedInputClipFallsBackToHostDerivedMetadat
     NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
     ASSERT_TRUE(bool(constant)) << "node creation failed for net.sf.openfx.ConstantPlugin";
 
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"), 2);
     ASSERT_TRUE(bool(grade)) << "node creation failed for net.sf.openfx.GradePlugin";
 
     connectNodes(constant, grade, 0, true);
@@ -698,7 +698,7 @@ TEST_F(MetadataPluginFixture, ReaderFileMetadataReachesADownstreamInputClip)
     ASSERT_TRUE(dynamic_cast<ReadNode*>(reader->getEffectInstance().get()) != NULL) << "the reader is not backed by a Read container";
     ASSERT_TRUE(dynamic_cast<OfxEffectInstance*>(reader->getEffectInstance().get()) == NULL) << "the Read container is itself an OFX effect, so nothing here needs unwrapping";
 
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"), 2);
     ASSERT_TRUE(bool(grade)) << "node creation failed for net.sf.openfx.GradePlugin";
 
     connectNodes(reader, grade, 0, true);

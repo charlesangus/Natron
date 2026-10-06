@@ -57,9 +57,9 @@ namespace DeepFlatten {
  * scratch and work are the caller-owned reusable storage that tidying needs (see DeepPixelOps.h);
  * nothing is allocated per pixel.
  *
- * Returns eStatusFailed if dst's depth or component count disagrees with channelOrder, or if src
- * lacks one of the named channels. A src with no "Z" channel at all holds no samples anywhere, so
- * that is not an error: roi is zeroed and eStatusOK returned.
+ * Returns eStatusFailed if dst's depth or component count disagrees with channelOrder. A channel
+ * src lacks reads zero, and a src with no "Z" channel at all holds no samples anywhere, so
+ * neither is an error: the values are zero and eStatusOK is returned.
  **/
 StatusEnum flattenToImage(const DeepImage& src,
                           const RectI& roi,
@@ -68,6 +68,35 @@ StatusEnum flattenToImage(const DeepImage& src,
                           DeepPixelScratch* scratch,
                           DeepTidyWorkspace* work,
                           const ImagePtr& dst) WARN_UNUSED_RETURN;
+
+/**
+ * @brief One flat image that flattenLayersToImages() fills: channelNames[c] names the DeepImage
+ * channel that lands in dst's c-th component.
+ **/
+struct FlattenTarget {
+    std::vector<std::string> channelNames;
+    ImagePtr dst;
+};
+
+/**
+ * @brief Flattens several layers in one pass: every pixel's samples are tidied once over the union
+ * of all the targets' channels plus alphaChannelName, then composited front-to-back with that
+ * alpha, and each target receives its own components. Each target's dst must be a float Image
+ * whose component count equals its channelNames' size. Pixels outside src, or holding no samples,
+ * are written as zero.
+ *
+ * A channel name src lacks reads zero, alphaChannelName included: without alpha nothing occludes,
+ * so the result is the plain sum of the samples.
+ *
+ * Returns eStatusFailed if a target has a null dst, no channels, or a dst of the wrong depth or
+ * component count.
+ **/
+StatusEnum flattenLayersToImages(const DeepImage& src,
+                                 const RectI& roi,
+                                 const std::string& alphaChannelName,
+                                 const std::vector<FlattenTarget>& targets,
+                                 DeepPixelScratch* scratch,
+                                 DeepTidyWorkspace* work) WARN_UNUSED_RETURN;
 
 /**
  * @brief Copies out the samples src holds at pixel (x, y), in the order they are stored, together

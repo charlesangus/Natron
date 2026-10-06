@@ -360,6 +360,21 @@ protected:
                                    const DeepRewriteSamplesFunc& rewrite) WARN_UNUSED_RETURN;
 
     /**
+     * @brief Runs a deep render that keeps its input's sample structure and every channel it does
+     * not name, removing the channels in drop and adding a zero-filled one for each name in
+     * addZero the input lacks. The output aliases the input the way renderDeepFromInput() does,
+     * and copies the input's samples over the output's bounds when those differ, so the sample
+     * table and every untouched channel stay shared on the aliasing path. A name in drop the
+     * input lacks is ignored, and so is a name in addZero it already has: an existing channel is
+     * never detached or zeroed. "Z" and "ZBack" are never dropped or added, whichever list names
+     * them. The output's tidiness is the input's.
+     **/
+    StatusEnum renderDeepReshapingChannels(const DeepRenderActionArgs& args,
+                                           const DeepImagePtr& input,
+                                           const std::vector<std::string>& drop,
+                                           const std::vector<std::string>& addZero) WARN_UNUSED_RETURN;
+
+    /**
      * @brief Splits bounds into the scanline chunks renderDeepTwoPass() parallelizes over.
      * Exposed so a node needing its own parallel pass over the same rectangle can use the same
      * partition, and so tests can reason about it.
@@ -394,6 +409,13 @@ protected:
 
 private:
     typedef std::function<void(const RectI& chunk)> DeepChunkFunc;
+
+    // Fills the output over its own bounds with the input's samples: the input's channels but
+    // those in dropNames, then a zero-filled one for each name in extraNames the input lacks.
+    StatusEnum copyDeepInputOverOutputBounds(const DeepRenderActionArgs& args,
+                                             const DeepImagePtr& input,
+                                             const std::vector<std::string>& dropNames,
+                                             const std::vector<std::string>& extraNames) WARN_UNUSED_RETURN;
 
     // Runs body over every chunk in parallel, each render thread carrying the calling thread's
     // TLS for the duration. Returns false if the render was aborted, in which case some chunks

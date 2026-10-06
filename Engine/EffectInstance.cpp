@@ -194,6 +194,20 @@ removeFromLayersList(const std::list<ImageLayerDesc>& toRemove,
 
 } // removeFromLayersList
 
+// Same ID and same channels, so colour layouts differ from each other, unlike findEquivalentLayer().
+static bool
+containsIdenticalLayer(const std::list<ImageLayerDesc>& list,
+                       const ImageLayerDesc& layer)
+{
+    for (std::list<ImageLayerDesc>::const_iterator it = list.begin(); it != list.end(); ++it) {
+        if ((it->getLayerID() == layer.getLayerID()) && (it->getChannels() == layer.getChannels())) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 const std::vector<std::string>&
 EffectInstance::getUserLayers() const
 {
@@ -4698,6 +4712,51 @@ EffectInstance::getComponentsNeededAndProduced_public(U64 hash,
         return;
     }
 
+    // A deep stream always carries colour, so the default path's colourless-stream handling has
+    // nothing to do here. The split is by exact layout rather than findEquivalentLayer(), which
+    // sees every colour layout as one layer: a node that narrows or widens its input's colour,
+    // or drops a layer, would otherwise go on presenting the input's.
+    if (producesDeepData()) {
+        std::list<ImageLayerDesc> deepLayers;
+        getDeepLayers(time, view, &deepLayers);
+
+        ViewIdx ptView;
+        getLayersPassThroughInput(time, view, passThroughInputNb, passThroughTime, &ptView);
+        *passThroughView = ptView;
+
+        passThroughLayers->clear();
+        if (*passThroughInputNb != -1) {
+            std::list<ImageLayerDesc> upstreamLayers;
+            getAvailableLayers(*passThroughTime, ptView, *passThroughInputNb, &upstreamLayers);
+            for (std::list<ImageLayerDesc>::const_iterator it = upstreamLayers.begin(); it != upstreamLayers.end(); ++it) {
+                if (containsIdenticalLayer(deepLayers, *it)) {
+                    passThroughLayers->push_back(*it);
+                }
+            }
+            filterPassThroughLayers(*passThroughTime, ptView, passThroughLayers);
+        }
+
+        comps->clear();
+        std::list<ImageLayerDesc>& outputLayers = (*comps)[-1];
+        for (std::list<ImageLayerDesc>::const_iterator it = deepLayers.begin(); it != deepLayers.end(); ++it) {
+            if (!containsIdenticalLayer(*passThroughLayers, *it)) {
+                outputLayers.push_back(*it);
+            }
+        }
+        int maxInput = getNInputs();
+        for (int i = 0; i < maxInput; ++i) {
+            (*comps)[i];
+        }
+
+        processChannels->set();
+        processChannelsPerPlane->clear();
+
+        if (cacheResults) {
+            _imp->actionsCache->setComponentsNeededResults(hash, time, view, *comps, *processChannels, *processChannelsPerPlane, *passThroughLayers, *passThroughInputNb, ptView, *passThroughTime);
+        }
+        return;
+    }
+
     if ( !isMultiPlanar() ) {
         getComponentsNeededDefault(time, view, comps, passThroughLayers, passThroughTime, passThroughView, processChannels, processChannelsPerPlane, passThroughInputNb);
         if (cacheResults) {
@@ -4849,6 +4908,22 @@ EffectInstance::getPresentLayers(double time, ViewIdx view, int inputNb, std::li
     }
 
 } // getPresentLayers
+
+void
+EffectInstance::getDeepLayers(double time,
+                              ViewIdx view,
+                              std::list<ImageLayerDesc>* layers)
+{
+    int inputNb = -1;
+    double inputTime = time;
+    ViewIdx inputView = view;
+
+    getLayersPassThroughInput(time, view, &inputNb, &inputTime, &inputView);
+    if (inputNb == -1) {
+        return;
+    }
+    getPresentLayers(inputTime, inputView, inputNb, layers);
+}
 
 void
 EffectInstance::getAvailableLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* availableLayers)

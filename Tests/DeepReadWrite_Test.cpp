@@ -26,7 +26,10 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <initializer_list>
 #include <limits>
+#include <list>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -50,6 +53,7 @@
 #include "Engine/CLArgs.h"
 #include "Engine/DeepImage.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -303,6 +307,42 @@ runOiiotool(const QStringList& args,
     *output = QString::fromUtf8(process.readAll());
 
     return (process.exitStatus() == QProcess::NormalExit) ? process.exitCode() : -1;
+}
+
+// The colour storage entry is named by its layout, e.g. "Color(1)", so a narrowed plane shows.
+std::vector<std::string>
+describeLayers(const std::list<ImageLayerDesc>& layers)
+{
+    std::vector<std::string> ids;
+
+    for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        if (it->isColorLayer()) {
+            std::ostringstream os;
+            os << "Color(" << it->getNumComponents() << ")";
+            ids.push_back(os.str());
+        } else {
+            ids.push_back(it->getLayerID());
+        }
+    }
+
+    return ids;
+}
+
+std::vector<std::string>
+presentLayersAt(const NodePtr& node,
+                double time)
+{
+    std::list<ImageLayerDesc> layers;
+
+    node->getEffectInstance()->getPresentLayers(time, ViewIdx(0), -1, &layers);
+
+    return describeLayers(layers);
+}
+
+std::vector<std::string>
+strings(std::initializer_list<const char*> list)
+{
+    return std::vector<std::string>(list.begin(), list.end());
 }
 
 } // namespace
@@ -851,4 +891,117 @@ TEST_F(DeepReadWriteTest, CLIWriterArgOverridesTheFileKnobAndRendersThroughGetWr
     getApp()->startWritersRendering(true, works);
     EXPECT_TRUE(QFile::exists(overrideFilename));
     EXPECT_FALSE(QFile::exists(originalFilename));
+}
+
+TEST_F(DeepReadWriteTest, ReportsTheFilesLayers)
+{
+    NodePtr layered = createDeepRead(fixturePath("deep-layers.exr"));
+    NodePtr noncanonical = createDeepRead(fixturePath("deep-noncanonical.exr"));
+    NodePtr scanline = createDeepRead(fixturePath("deep-scanline.exr"));
+    ASSERT_TRUE(layered && noncanonical && scanline);
+
+    EXPECT_EQ(strings({ "Color(4)", "diffuse", "specular" }), presentLayersAt(layered, 1.));
+    EXPECT_EQ(strings({ "Color(1)", "AOV" }), presentLayersAt(noncanonical, 1.));
+    EXPECT_EQ(strings({ "Color(4)", "AOV" }), presentLayersAt(scanline, 1.));
+}
+
+TEST_F(DeepReadWriteTest, LayersFollowTheFrameWhateverTheTimelineIsOn)
+{
+    NodePtr read = createDeepRead(fixturePath("deep-seq-layers.####.exr"));
+    ASSERT_TRUE(bool(read));
+
+    for (int frame = 1; frame <= 2; ++frame) {
+        getApp()->getTimeLine()->seekFrame(3 - frame, false, NULL, eTimelineChangeReasonOtherSeek);
+        if (frame == 1) {
+            EXPECT_EQ(strings({ "Color(4)", "diffuse", "specular" }), presentLayersAt(read, frame)) << "frame " << frame;
+        } else {
+            EXPECT_EQ(strings({ "Color(4)" }), presentLayersAt(read, frame)) << "frame " << frame;
+        }
+    }
+}
+
+TEST_F(DeepReadWriteTest, LayersFollowAFileRewrittenInPlace)
+{
+    QTemporaryDir tmp;
+
+    ASSERT_TRUE(tmp.isValid());
+    const QString rewritten = tmp.path() + QString::fromUtf8("/rewritten.exr");
+    ASSERT_TRUE(QFile::copy(fixturePath("deep-layers.exr"), rewritten));
+
+    NodePtr read = createDeepRead(rewritten);
+    ASSERT_TRUE(bool(read));
+    EXPECT_EQ(strings({ "Color(4)", "diffuse", "specular" }), presentLayersAt(read, 1.));
+
+    QFile replacement(fixturePath("deep-noncanonical.exr"));
+    ASSERT_TRUE(replacement.open(QIODevice::ReadOnly));
+    const QByteArray bytes = replacement.readAll();
+    QFile target(rewritten);
+    ASSERT_TRUE(target.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    ASSERT_EQ((qint64)bytes.size(), target.write(bytes));
+    target.close();
+
+    // A reload bumps the node's hash, which only clears the actions cached under the old one.
+    read->incrementKnobsAge();
+    EXPECT_EQ(strings({ "Color(1)", "AOV" }), presentLayersAt(read, 1.));
+}
+
+TEST_F(DeepReadWriteTest, RegistersTheFilesLayersInTheProject)
+{
+    NodePtr read = createDeepRead(fixturePath("deep-layers.exr"));
+    ASSERT_TRUE(bool(read));
+
+    read->registerProducedLayers();
+
+    ImageLayerDesc diffuse;
+    ImageLayerDesc specular;
+    EXPECT_TRUE(getApp()->getProject()->findLayer("diffuse", &diffuse));
+    EXPECT_TRUE(getApp()->getProject()->findLayer("specular", &specular));
+}
+
+TEST_F(DeepReadWriteTest, RefusesAFileWithNoAlpha)
+{
+    QTemporaryDir tmp;
+
+    ASSERT_TRUE(tmp.isValid());
+    const QString noAlpha = tmp.path() + QString::fromUtf8("/no-alpha.exr");
+
+    QString output;
+    ASSERT_EQ(0, runOiiotool(QStringList() << fixturePath("deep-scanline.exr") << QString::fromUtf8("--ch") << QString::fromUtf8("R,G,B,Z") << QString::fromUtf8("-o") << noAlpha, &output)) << output.toStdString();
+
+    NodePtr read = createDeepRead(noAlpha);
+    ASSERT_TRUE(bool(read));
+
+    DeepImagePtr image;
+    EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 1., fullFrame(), &image));
+
+    QString message;
+    int type = 0;
+    read->getPersistentMessage(&message, &type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("no alpha"))) << message.toStdString();
+}
+
+TEST_F(DeepReadWriteTest, ReadWriteOfALayeredFileKeepsAllTwelveChannels)
+{
+    QTemporaryDir tmp;
+
+    ASSERT_TRUE(tmp.isValid());
+    const QString written = tmp.path() + QString::fromUtf8("/written-layers.exr");
+
+    NodePtr read = createDeepRead(fixturePath("deep-layers.exr"));
+    NodePtr write = createDeepWrite(written, false /*tiled*/);
+    ASSERT_TRUE(read != NULL);
+    ASSERT_TRUE(write != NULL);
+    connectNodes(read, write, 0, true);
+
+    DeepImagePtr image;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(write, 1., fullFrame(), &image));
+    ASSERT_TRUE(image != NULL);
+    EXPECT_EQ((std::size_t)12, channelNamesOf(*image).size());
+
+    QString output;
+    EXPECT_EQ(0, runOiiotool(QStringList() << QString::fromUtf8("--diff") << fixturePath("deep-layers.exr") << written, &output)) << output.toStdString();
+
+    QString infoOutput;
+    ASSERT_EQ(0, runOiiotool(QStringList() << QString::fromUtf8("--info") << QString::fromUtf8("-v") << written, &infoOutput)) << infoOutput.toStdString();
+    EXPECT_TRUE(infoOutput.contains(QString::fromUtf8("12 channel"))) << infoOutput.toStdString();
 }

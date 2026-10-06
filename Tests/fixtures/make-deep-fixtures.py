@@ -3,7 +3,7 @@
 #
 #   python3 Tests/fixtures/make-deep-fixtures.py Tests/fixtures
 #
-# Writes five files. deep-scanline.exr and deep-tiled.exr hold identical
+# Writes eight files. deep-scanline.exr and deep-tiled.exr hold identical
 # content and differ only in whether the EXR part is scanline or tiled.
 # deep-noncanonical.exr holds the same sample structure over a channel set with
 # no RGB at all, which OpenImageIO hands to a reader as A, Z, ZBack, AOV -- an
@@ -14,6 +14,10 @@
 # image over the same frame for merging with deep-scanline.exr
 # (DeepPipeline_Test.cpp): its samples sit in front of, between and behind the
 # first file's without ever overlapping one in depth.
+# deep-layers.exr holds PIXELS' structure over R,G,B,A,Z,ZBack plus dotted AOV
+# layers diffuse.RGB = (0, 1, 0) * A and specular.RGB = (0, 0, 1) * A.
+# deep-seq-layers.0001.exr is the same file and deep-seq-layers.0002.exr holds
+# R,G,B,A,Z,ZBack only, so a sequence's layers change from frame to frame.
 # Run it inside the dev container (tools/ci/local/devshell.sh), which ships the
 # OpenImageIO 3.1 Python module.
 #
@@ -80,6 +84,18 @@ INTERLEAVED = {
 }
 
 
+LAYER_CHANNELS = CHANNELS[:6] + ["diffuse.R", "diffuse.G", "diffuse.B",
+                                 "specular.R", "specular.G", "specular.B"]
+
+
+def with_layers(pixels):
+    result = {}
+    for key, samples in pixels.items():
+        result[key] = [sample[:6] + [0.0, sample[3], 0.0, 0.0, 0.0, sample[3]]
+                       for sample in samples]
+    return result
+
+
 def make_spec(names, tiled):
     spec = oiio.ImageSpec(WIDTH, HEIGHT, len(names), "float")
     spec.channelnames = names
@@ -134,6 +150,14 @@ def main():
           [name for name, _ in NOZBACK],
           [column for _, column in NOZBACK], False)
     write("%s/deep-interleaved.exr" % outdir, CHANNELS[:6], list(range(6)),
+          False, INTERLEAVED)
+    layered = with_layers(PIXELS)
+    layer_columns = list(range(len(LAYER_CHANNELS)))
+    write("%s/deep-layers.exr" % outdir, LAYER_CHANNELS, layer_columns, False,
+          layered)
+    write("%s/deep-seq-layers.0001.exr" % outdir, LAYER_CHANNELS,
+          layer_columns, False, layered)
+    write("%s/deep-seq-layers.0002.exr" % outdir, CHANNELS[:6], list(range(6)),
           False, INTERLEAVED)
 
 

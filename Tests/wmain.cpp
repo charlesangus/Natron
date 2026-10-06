@@ -80,7 +80,9 @@ registerDeepRenderTestPlugins()
     // nodes exactly what it wants to reason about.
     registerTestBuiltInPlugin<DeepRenderTestSource>();
     registerTestBuiltInPlugin<DeepRenderTestGain>();
+    registerTestBuiltInPlugin<DeepRenderTestReshape>();
     registerTestBuiltInPlugin<DeepSyntheticSource>();
+    registerTestBuiltInPlugin<DeepLayersStub>();
     registerTestBuiltInPlugin<ImageRenderTestSource>();
 }
 

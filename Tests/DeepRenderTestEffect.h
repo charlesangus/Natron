@@ -33,23 +33,30 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "Engine/DeepImage.h"
+#include "Engine/DeepLayers.h"
 #include "Engine/DeepPixelOps.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 
 #define kTestPluginIDDeepRenderSource "test.natron.built-in.DeepRenderSource"
 #define kTestPluginIDDeepRenderGain "test.natron.built-in.DeepRenderGain"
+#define kTestPluginIDDeepReshape "test.natron.built-in.DeepReshape"
 #define kTestPluginIDDeepSyntheticSource "test.natron.built-in.DeepSyntheticSource"
+#define kTestPluginIDDeepLayersStub "test.natron.built-in.DeepLayersStub"
+#define kTestParamDeepLayersStubLayers "layers"
 #define kTestPluginIDImageRenderSource "test.natron.built-in.ImageRenderSource"
 
 #define kDeepRenderTestWidth 19
@@ -190,6 +197,13 @@ public:
         return eStatusOK;
     }
 
+    virtual void getDeepLayers(double /*time*/,
+                               ViewIdx /*view*/,
+                               std::list<ImageLayerDesc>* layers) OVERRIDE FINAL
+    {
+        DeepLayers::groupDeepChannels(deepRenderTestChannelNames(), layers);
+    }
+
 private:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
@@ -312,6 +326,87 @@ private:
     }
 };
 
+// What DeepRenderTestReshape is asked to do, and what it saw of its input's storage when it ran.
+struct DeepRenderTestReshapeConfig {
+    std::vector<std::string> drop;
+    std::vector<std::string> addZero;
+    bool sharedSampleTable = false;
+    std::vector<std::string> sharedChannels;
+    int renderCount = 0;
+};
+
+inline DeepRenderTestReshapeConfig&
+deepRenderTestReshapeConfig()
+{
+    static DeepRenderTestReshapeConfig config;
+
+    return config;
+}
+
+/**
+ * @brief A deep op that only reshapes its input's channel set through
+ * NativeEffectBase::renderDeepReshapingChannels(), as configured by deepRenderTestReshapeConfig().
+ **/
+class DeepRenderTestReshape
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DeepRenderTestReshape(n);
+    }
+
+    explicit DeepRenderTestReshape(NodePtr n)
+        : NativeEffectBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    virtual bool supportsTiles() const OVERRIDE FINAL
+    {
+        return true;
+    }
+
+private:
+    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        NativePluginDescription desc;
+
+        desc.id = kTestPluginIDDeepReshape;
+        desc.label = "Test Deep Reshape";
+        desc.description = "";
+        desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindDeep));
+        desc.outputKind = eDataKindDeep;
+
+        return desc;
+    }
+
+    virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        DeepRenderTestReshapeConfig& config = deepRenderTestReshapeConfig();
+        const DeepImagePtr source = args.getInputDeepImage(0);
+        if (!source) {
+            return eStatusFailed;
+        }
+
+        const StatusEnum status = renderDeepReshapingChannels(args, source, config.drop, config.addZero);
+
+        ++config.renderCount;
+        config.sharedSampleTable = args.outputDeepImage->sharesSampleTableWith(*source);
+        config.sharedChannels.clear();
+        for (std::map<std::string, DeepChannelBuffer>::const_iterator it = args.outputDeepImage->getChannels().begin(); it != args.outputDeepImage->getChannels().end(); ++it) {
+            if (args.outputDeepImage->sharesChannelStorageWith(*source, it->first)) {
+                config.sharedChannels.push_back(it->first);
+            }
+        }
+
+        return status;
+    }
+};
+
 // The deep images DeepSyntheticSource instances serve, keyed by their "slot" knob: a test builds
 // whatever sample layout it needs, parks it here and points a node at it.
 inline std::map<int, DeepImagePtr>&
@@ -368,6 +463,22 @@ public:
         rod->y2 = bounds.y2;
 
         return eStatusOK;
+    }
+
+    virtual void getDeepLayers(double /*time*/,
+                               ViewIdx /*view*/,
+                               std::list<ImageLayerDesc>* layers) OVERRIDE FINAL
+    {
+        const DeepImagePtr image = getImage();
+
+        if (!image) {
+            return;
+        }
+        std::vector<std::string> names;
+        for (std::map<std::string, DeepChannelBuffer>::const_iterator it = image->getChannels().begin(); it != image->getChannels().end(); ++it) {
+            names.push_back(it->first);
+        }
+        DeepLayers::groupDeepChannels(names, layers);
     }
 
 private:
@@ -454,6 +565,83 @@ private:
     }
 
     KnobIntWPtr _slot;
+};
+
+/**
+ * @brief A deep node with one deep input that reports whatever layers a test hands it, so the
+ * produced/pass-through split can be checked against a node that narrows, widens or drops its
+ * input's layers. Its "layers" channel set is input-bound on Source. It never renders.
+ **/
+class DeepLayersStub
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new DeepLayersStub(n);
+    }
+
+    explicit DeepLayersStub(NodePtr n)
+        : NativeEffectBase(n)
+        , _layersMutex()
+        , _layers()
+        , _layersKnob()
+    {
+    }
+
+    void setDeepLayers(const std::list<ImageLayerDesc>& layers)
+    {
+        std::lock_guard<std::mutex> lock(_layersMutex);
+
+        _layers = layers;
+    }
+
+    KnobChannelSetPtr getLayersKnob() const
+    {
+        return _layersKnob.lock();
+    }
+
+    virtual void getDeepLayers(double /*time*/,
+                               ViewIdx /*view*/,
+                               std::list<ImageLayerDesc>* layers) OVERRIDE FINAL
+    {
+        std::lock_guard<std::mutex> lock(_layersMutex);
+
+        layers->insert(layers->end(), _layers.begin(), _layers.end());
+    }
+
+private:
+    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        NativePluginDescription desc;
+
+        desc.id = kTestPluginIDDeepLayersStub;
+        desc.label = "Test Deep Layers Stub";
+        desc.description = "";
+        desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindDeep));
+        desc.outputKind = eDataKindDeep;
+
+        return desc;
+    }
+
+    virtual void initializeKnobs() OVERRIDE FINAL
+    {
+        KnobPagePtr page = createKnob<KnobPage>(std::string("Controls"));
+        KnobChannelSetPtr layers = createKnob<KnobChannelSet>(std::string("Layers"));
+
+        layers->setName(kTestParamDeepLayersStubLayers);
+        layers->setAnimationEnabled(false);
+        page->addKnob(layers);
+        _layersKnob = layers;
+
+        NodePtr node = getNode();
+        if (node) {
+            node->declareLayerKnob(layers, 0, LayerKnobSpec::eRoleInputBound);
+        }
+    }
+
+    std::mutex _layersMutex;
+    std::list<ImageLayerDesc> _layers;
+    KnobChannelSetWPtr _layersKnob;
 };
 
 // The per-pixel formula the image stub evaluates, and what a test expects back from anything

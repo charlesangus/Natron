@@ -62,6 +62,9 @@
 #define kEngineHooksUnPremultPluginID "test.natron.built-in.EngineHooksUnPremult"
 #define kEngineHooksPlaneRecorderPluginID "test.natron.built-in.EngineHooksPlaneRecorder"
 
+// The OpenFX Grade, which a native Grade shadows for unversioned requests.
+#define kOfxGradeMajor 2
+
 NATRON_NAMESPACE_ENTER
 
 class EngineHooksUnPremultTestEffect
@@ -303,7 +306,7 @@ TEST_F(EngineHooksTest, EffectNotAskingGetsNoHostUnPremultSelector)
 
 TEST_F(EngineHooksTest, OfxPluginPairStillYieldsTheHostSelectorAndIsHidden)
 {
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"), kOfxGradeMajor);
     ASSERT_TRUE(bool(grade));
 
     EXPECT_TRUE(bool(grade->getUnPremultBySelector()));
@@ -319,7 +322,7 @@ TEST_F(EngineHooksTest, OfxGradeOutsideRenderReadsTheSelectedNonColorLayer)
 {
     NodePtr reader = createThreeLayerReader();
     ASSERT_TRUE(bool(reader));
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"), kOfxGradeMajor);
     ASSERT_TRUE(bool(grade));
     connectNodes(reader, grade, 0, true);
 
@@ -345,7 +348,7 @@ TEST_F(EngineHooksTest, OfxGradeMaskInputReadsTheSelectedMaskChannel)
 {
     NodePtr reader = createThreeLayerReader();
     ASSERT_TRUE(bool(reader));
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
+    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"), kOfxGradeMajor);
     ASSERT_TRUE(bool(grade));
     connectNodes(reader, grade, 0, true);
 

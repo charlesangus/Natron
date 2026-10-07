@@ -1080,3 +1080,12 @@ Notes:
     - (b) **GUI crash:** `GuiPrivate::setUndoRedoActions` keeps a raw pointer to the undo action of a destroyed node's panel, and the next knob edit segfaults. This is generic, not M67's.
   - **References:** estimated at 1.28 MB.
 - 2026-10-07 — **Spatial references recorded** (`1f5d37957`, 1.36 MB; 75/75 pass). **B10 dispatched.** EdgeDetect moved into wave 1, because it only needs `BlurKernels`, which has landed. Only P5.T6 waits for wave 2, because it edits `ColorLookup.cpp`.
+- 2026-10-07 — **B10 written; the build and P5.T7 run as one agent.**
+  - **P4.T9:** spatial plugins retired in the fork (`99817f41`, force-pushed over a bad partial commit, parent `0424c257` intact).
+  - **P5.T3 split:** Erode/Dilate is `ErodeDilate` plus a thin `Dilate` subclass, and its CImg comparison test is split out into `ErodeDilateKernels_Test`. EdgeDetect reuses `ErodeDilateKernels::filterLine`.
+  - **P5.T6 API:** `KnobParametric::setBackgroundPainter` returns quads, additive quads and polylines, and `CurveWidget` paints them.
+  - **Behaviour departures:**
+    - The histogram does not unpremultiply, because `Image` carries no premult state.
+    - Keyer and ChromaKeyer with an RGB source treat alpha as 1 for Normal, and add nothing for "Add to Inside Mask". OFX reads out of bounds there.
+    - Neither keyer mirrors OFX's output-premult preference, because `NodeMetadata` has no field for it.
+  - **Brief lesson:** the P5.T1 agent read "own AppManager" as its whole task and waited for a Keyer author who never came. Keyer was re-dispatched. When one agent both implements and owns registration, the brief must lead with the implementation.

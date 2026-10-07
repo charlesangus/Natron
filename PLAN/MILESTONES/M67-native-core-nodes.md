@@ -607,7 +607,7 @@ Shared rules for every node task in this phase:
   - verify: Full ctest green in both modes. The GUI results file shows matching knob order, and the rectangle drag changed `size`. Screenshots are listed for UAT.
   - size: M
 
-- [ ] M67.P3.T8 — Record parity references and retire the merge/generator OFX plugins
+- [x] M67.P3.T8 — Record parity references and retire the merge/generator OFX plugins
   - files: `Tests/fixtures/native-parity/…` (generated), `tools/ci/local/fetch-assets.sh`, `Engine/OfxEffectInstance.cpp`, `Tests/Native/NativePluginList_Test.cpp`, plus in the fork: `CMakeLists.txt`
   - approach:
     - Record first, PM-run on the pre-bump bundle, as in P2.T9: `-R 'Native(Merge|Dissolve|Constant|CheckerBoard)'`.
@@ -621,7 +621,7 @@ Shared rules for every node task in this phase:
 
 ## Phase 67.4: Spatial (Transform, Crop, Reformat, Position, Blur)
 
-- [ ] M67.P4.T1 — Shared resampler: the ten OFX filters, clamp, black outside, supersampling, motion-blur sampling
+- [x] M67.P4.T1 — Shared resampler: the ten OFX filters, clamp, black outside, supersampling, motion-blur sampling
   - files: `Engine/Nodes/Image/Resampler.h` (new), `Engine/Nodes/Image/Resampler.cpp` (new), `Engine/Nodes/Image/TransformMath.h` (new), `Tests/Native/Resampler_Test.cpp` (new)
   - approach:
     - Port `SupportExt/ofxsFilter.h:53-340,661-826` as float functions:
@@ -645,7 +645,7 @@ Shared rules for every node task in this phase:
     - Matrix composition against hand-computed matrices for each skew order.
   - size: L
 
-- [ ] M67.P4.T2 — Native Transform and TransformMasked (`net.sf.openfx.TransformPlugin` 2.0, `net.sf.openfx.TransformMaskedPlugin` 2.0)
+- [x] M67.P4.T2 — Native Transform and TransformMasked (`net.sf.openfx.TransformPlugin` 2.0, `net.sf.openfx.TransformMaskedPlugin` 2.0)
   - files: `Engine/Nodes/Transform/Transform.h` (new), `Engine/Nodes/Transform/Transform.cpp` (new), `Tests/Native/NativeTransform_Test.cpp` (new)
   - approach:
     - Inputs: `Source`, plus `Mask` (`isMask`) for the masked ID. Components RGBA, RGB, XY, Alpha. `defaultProcessesAllLayers` true. No `hostUnPremultBy`.
@@ -676,7 +676,7 @@ Shared rules for every node task in this phase:
     - `renderBothWaysDirect` bit-exact.
   - size: L
 
-- [ ] M67.P4.T3 — Native Crop (`net.sf.openfx.CropPlugin` 2.0)
+- [x] M67.P4.T3 — Native Crop (`net.sf.openfx.CropPlugin` 2.0)
   - files: `Engine/Nodes/Transform/Crop.h`, `Engine/Nodes/Transform/Crop.cpp`, `Tests/Native/NativeCrop_Test.cpp`
   - approach:
     - Input `Source` (required). Components RGBA, RGB, XY, Alpha. `defaultProcessesAllLayers` true.
@@ -694,7 +694,7 @@ Shared rules for every node task in this phase:
     - `renderBothWaysDirect` bit-exact.
   - size: M
 
-- [ ] M67.P4.T4 — Native Reformat (`net.sf.openfx.Reformat` 3.0)
+- [x] M67.P4.T4 — Native Reformat (`net.sf.openfx.Reformat` 3.0)
   - files: `Engine/Nodes/Transform/Reformat.h`, `Engine/Nodes/Transform/Reformat.cpp`, `Tests/Native/NativeReformat_Test.cpp`
   - approach:
     - Input `Source`. Components RGBA, RGB, XY, Alpha. `supportsMultipleClipPARs` true.
@@ -718,7 +718,7 @@ Shared rules for every node task in this phase:
     - `renderBothWaysDirect` bit-exact.
   - size: L
 
-- [ ] M67.P4.T5 — Native Position (`net.sf.openfx.Position` 2.0)
+- [x] M67.P4.T5 — Native Position (`net.sf.openfx.Position` 2.0)
   - files: `Engine/Nodes/Transform/Position.h`, `Engine/Nodes/Transform/Position.cpp`, `Tests/Native/NativePosition_Test.cpp`
   - approach:
     - Input `Source`. Components RGBA, RGB, Alpha, XY. `defaultProcessesAllLayers` true.
@@ -728,7 +728,7 @@ Shared rules for every node task in this phase:
   - verify: Knob parity. Parity at the exact class for translate 0, (10.4, −3.6), mipmap 1 and PAR 2.
   - size: M
 
-- [ ] M67.P4.T6 — Separable IIR/FIR blur kernels ported from CImg (Van Vliet, Deriche, box, triangle, quadratic)
+- [x] M67.P4.T6 — Separable IIR/FIR blur kernels ported from CImg (Van Vliet, Deriche, box, triangle, quadratic)
   - files: `Engine/Nodes/Filter/BlurKernels.h` (new), `Engine/Nodes/Filter/BlurKernels.cpp` (new), `Tests/Native/BlurKernels_Test.cpp` (new)
   - approach:
     - Port, as 1-D line filters over a float stride:
@@ -741,7 +741,7 @@ Shared rules for every node task in this phase:
   - verify: `BlurKernels_Test` compares each filter at sigma 0.5, 3 and 25, order 0 and 1, both boundaries, against the CImg reference called directly from the bundled `CImg.h` in the test. Test-only include of `build/assets/plugin-src/openfx-misc/CImg/CImg.h`, behind a `NATRON_TESTS_CIMG_DIR` define. Max abs diff ≤ 1e-6.
   - size: L
 
-- [ ] M67.P4.T7 — Native Blur (`net.sf.cimg.CImgBlur` 5.0)
+- [x] M67.P4.T7 — Native Blur (`net.sf.cimg.CImgBlur` 5.0)
   - files: `Engine/Nodes/Filter/Blur.h` (new), `Engine/Nodes/Filter/Blur.cpp` (new), `Tests/Native/NativeBlur_Test.cpp` (new)
   - approach:
     - Inputs `Source`, `Mask` (`isMask`). Components RGBA, RGB, XY, Alpha. `defaultProcessesAllLayers` true. Quad all on (v4 blurs alpha). `hostUnPremultBy` on.
@@ -769,7 +769,7 @@ Shared rules for every node task in this phase:
     - Roto feather/blur paths that create `PLUGINID_OFX_BLURCIMG` (`RotoDrawableItem.cpp:186`) pass `ctest -R Roto`.
   - size: L
 
-- [ ] M67.P4.T8 — Spatial test triage and GUI check
+- [x] M67.P4.T8 — Spatial test triage and GUI check
   - files: failing tests (≤5, per P2.T7's rules), `build/m67-gui/panels_check.py` (untracked)
   - approach:
     - Triage. Expect the scheduler suites' `mixed` graphs, `SchedulerEquivalence_Test`'s Transform→Transform case, and the Tracker and Roto suites.
@@ -1070,3 +1070,12 @@ Notes:
     - Reformat's `useRoD` is a metadata slave, so toggling it refreshes the output format.
     - Blur passes the source through where the mask is 0. It does not reproduce OFX's boundary-mode copy, which differs only with mask, "nearest" and an expanded RoD together.
   - **Missing icon:** Blur had none; it is copied in with the build.
+- 2026-10-07 — **B9 landed** (`2e2804fc0`, `249cbd7d7`, `c9face1b3`, `c3f03b59e`): merge and generators retired, and all six spatial nodes native. Full debug ctest passes 1200/1200 in both modes, as does smoke and the release build. 40/40 clean loops of the scheduler tests over native Transform.
+  - **Parity:** max diff is 0 for Crop, Position and Blur, and ≤2.4e-7 for Transform, TransformMasked and Reformat.
+  - **P4.T8 triage:** no old test failed.
+  - **Fixes:** Crop repeats edge pixels outside the source, like OFX's `getPixelAddressNearest`, and panel layout matches OFX (sliders, Scale folding, spacing).
+  - **GUI:** shots are `build/m67-gui/spatial-*`, and overlay drags match OFX.
+  - **Found, not fixed:**
+    - (a) The host `PositionInteract::penUp` commits `lastPenPos`, so a release with no final motion lands one step short.
+    - (b) **GUI crash:** `GuiPrivate::setUndoRedoActions` keeps a raw pointer to the undo action of a destroyed node's panel, and the next knob edit segfaults. This is generic, not M67's.
+  - **References:** estimated at 1.28 MB.

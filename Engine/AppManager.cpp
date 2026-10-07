@@ -157,10 +157,15 @@
 #include "Engine/Nodes/Deep/DeepRemoveLayers.h"
 #include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
+#include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Transform/Crop.h"
+#include "Engine/Nodes/Transform/Position.h"
+#include "Engine/Nodes/Transform/Reformat.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Nodes/TypedPassthrough.h"
 
 #include "Engine/Utils.h"
@@ -1629,6 +1634,12 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
     registerBuiltInPlugin<MergePreset<eMergePresetMin>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMin.png"), false, false);
     registerBuiltInPlugin<MergePreset<eMergePresetDifference>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeDifference.png"), false, false);
     registerBuiltInPlugin<Dissolve>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.DissolvePlugin.png"), false, false);
+    registerBuiltInPlugin<Crop>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.CropPlugin.png"), false, false);
+    registerBuiltInPlugin<Position>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Position.png"), false, false);
+    registerBuiltInPlugin<TransformNode>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.TransformPlugin.png"), false, false);
+    registerBuiltInPlugin<TransformMasked>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.TransformMaskedPlugin.png"), false, false);
+    registerBuiltInPlugin<Reformat>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Reformat.png"), false, false);
+    registerBuiltInPlugin<Blur>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgBlur.png"), false, false);
     registerBuiltInPlugin<DiskCacheNode>(QString::fromUtf8(NATRON_IMAGES_PATH "diskcache_icon.png"), false, false);
     registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_IMAGES_PATH "GroupingIcons/Set2/paint_grouping_2.png"), false, false);
     registerBuiltInPlugin<RotoNode>(QString::fromUtf8(NATRON_IMAGES_PATH "rotoNodeIcon.png"), false, false);

@@ -404,6 +404,7 @@
         <file>Resources/Images/NativeNodes/net.sf.openfx.CropPlugin.png</file>
         <file>Resources/Images/NativeNodes/net.sf.openfx.Reformat.png</file>
         <file>Resources/Images/NativeNodes/net.sf.openfx.Position.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.cimg.CImgBlur.png</file>
         <file>Resources/Images/NativeNodes/net.sf.openfx.KeyerPlugin.png</file>
         <file>Resources/Images/NativeNodes/net.sf.openfx.ChromaKeyerPlugin.png</file>
         <file>Resources/Images/NativeNodes/net.sf.openfx.ColorLookupPlugin.png</file>

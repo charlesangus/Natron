@@ -924,7 +924,7 @@ Shared rules for every node task in this phase:
 
 ## Phase 67.6: Wrap-up: measurement, PyPlug audit, docs, AppImage
 
-- [ ] M67.P6.T1 — Bench the M67 tip against the M63 tip, interleaved in one run
+- [x] M67.P6.T1 — Bench the M67 tip against the M63 tip, interleaved in one run
   - files: `tools/bench/BASELINE.md`
   - approach:
     - Build the release of `ce575b4d2` in a worktree, `build/wt/m67-base`, inside the container mount. Its plugin set is `build/assets/Plugins.pre-m67`: a copy of the bundle at pin `3060fe33`, kept by the PM before P2.T10's first re-pin. Then build the M67 tip release.
@@ -970,7 +970,7 @@ Shared rules for every node task in this phase:
   - verify: Every node of this milestone appears in the table with the tolerance its test uses (cross-check by grepping the test constants). The comment policy checker passes on the file.
   - size: M
 
-- [ ] M67.P6.T4 — Package the release AppImage and write the UAT script
+- [x] M67.P6.T4 — Package the release AppImage and write the UAT script
   - files: `build/appimages/M67-<sha>.AppImage` (artefact), `build/appimages/M67-uat.md` (untracked)
   - approach:
     - Build release at the milestone tip and run `tools/ci/local/package.sh release`. A debug AppImage cannot be packaged in the container. Copy the result to `build/appimages/M67-<sha>.AppImage`.
@@ -1109,3 +1109,17 @@ Notes:
   - **Tests:** full debug ctest passes 1210/1210 in both modes, smoke passes (`verify_plugin_loads` on Misc and CImg), and the release build succeeds. `NativePluginList_Test` passes with all 34 retired IDs, each a single native version. The PyPlug tests pass.
   - **Replay mode:** a gdb trace of `compareParity` showed every native comparison replays. The only live calls are `NativeParitySelf_Test` on ColorMatrix, which is not retired.
   - **PyPlug fix:** DropShadow and PIKColor now set `hostUnPremultBy` to `rgba.A`, and a test checks it. The allow-list was trimmed to the names PyPlugs still set (`NatronOfxParamProcess*`, `aChannelsChanged`/`bChannelsChanged`). Dropping `premultChanged` departs from the spec, accepted because an entry nothing uses can only hide a regression.
+- 2026-10-07 — **B12 landed; gate green; PR #42 open** (stacked on #41; CI dispatched manually; Codex review running).
+  - **Bench** (`6fc2ec38f`, 44/44 configs exit 0, 6 head configs contended, ratios only):
+    - mem 0.198 and HD 0.708. Both are within 0.1 of the gate medians (0.216 and 0.700).
+    - Tiny graphs 0.34–0.72.
+    - **Finding:** HD mixed, wide and footagecomp are 1.10–1.20x slower. By subtraction, Merge and CheckerBoard use about 1.9x the OFX CPU, and Blur, Transform and ColorCorrect about 1.3x. Not profiled; follow-up below.
+  - **Input for M64:**
+    - A native Grade is 21.3 ms/node against a ~5 ms bandwidth floor. One memory pass is ~24% of a node's cost, up from ~17%.
+    - Even removing all of the bandwidth cost would give ≤1.23x, still under M64's 1.3x kill gate. M64 should re-estimate around fusing native kernels.
+  - **AppImage:** `build/appimages/M67-31fc0fbbe.AppImage`; the launch check passes.
+  - **UAT script:** `build/appimages/M67-uat.md`, which lists all 111 shots and is stacked on M63's.
+  - **Process notes:**
+    - `Plugins.pre-m67` lives in the worktree's `build/assets/`.
+    - Packaging needs `build/appimagetool-wrapper` (`-n`) copied into the worktree's `build/`, because the container has no network.
+  - **Published:** `docs/decisions/2026-10-06-m67-core-node-families.md` (`7d1db14cb`).

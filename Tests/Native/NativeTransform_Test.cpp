@@ -46,7 +46,6 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/Transform.h"
-#include "Engine/OfxEffectInstance.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -76,12 +75,6 @@ isNative(const NodePtr& node)
     return node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
 }
 
-bool
-isOfx(const NodePtr& node)
-{
-    return node && dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get());
-}
-
 // Keys `name` (a 2-D double knob) on both nodes of the pair to (x0, y0) at t0 and (x1, y1) at t1.
 bool
 animateOnBoth(const ParityPair& pair,
@@ -95,9 +88,6 @@ animateOnBoth(const ParityPair& pair,
 {
     std::vector<NodePtr> nodes;
     nodes.push_back(pair.native);
-    if (pair.ofx) {
-        nodes.push_back(pair.ofx);
-    }
     for (std::size_t i = 0; i < nodes.size(); ++i) {
         KnobDouble* knob = nodes[i] ? dynamic_cast<KnobDouble*>(nodes[i]->getKnobByName(name).get()) : NULL;
         EXPECT_TRUE(knob != NULL) << name;
@@ -111,23 +101,6 @@ animateOnBoth(const ParityPair& pair,
     }
 
     return true;
-}
-
-RectD
-regionOfDefinition(const NodePtr& node,
-                   const RenderScale& scale)
-{
-    RectD rod;
-    EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
-
-    EXPECT_TRUE(bool(effect));
-    if (!effect) {
-        return rod;
-    }
-    const StatusEnum stat = effect->getRegionOfDefinition(effect->getRenderHash(), kTime, scale, ViewIdx(0), &rod);
-    EXPECT_NE(eStatusFailed, stat) << node->getPluginID();
-
-    return rod;
 }
 
 } // namespace
@@ -155,7 +128,7 @@ protected:
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(isNative(pair.native));
-        EXPECT_TRUE(pair.live()) << "the OFX " << id << " must be loadable at major " << kOfxTransformMajor;
+        EXPECT_FALSE(pair.live()) << "the OFX " << id << " is retired, so parity replays the recorded references";
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
         }
@@ -174,26 +147,10 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, tolerance, record);
             EXPECT_TRUE(r.ok) << pair.id << " " << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] " << pair.id << " " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
-        }
-    }
-
-    void expectSameRegionOfDefinition(const ParityPair& pair,
-                                      const std::string& caseName)
-    {
-        if (!pair.ofx) {
-            return;
-        }
-        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-            const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
-            const RectD ofx = regionOfDefinition(pair.ofx, scale);
-            const RectD native = regionOfDefinition(pair.native, scale);
-            EXPECT_DOUBLE_EQ(ofx.x1, native.x1) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_DOUBLE_EQ(ofx.y1, native.y1) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_DOUBLE_EQ(ofx.x2, native.x2) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_DOUBLE_EQ(ofx.y2, native.y2) << caseName << " mipmap " << mipmapLevel;
         }
     }
 
@@ -214,172 +171,60 @@ protected:
     }
 };
 
-TEST_F(NativeTransformTest, KnobsMatchTheOfxTransform)
-{
-    resetProject();
-    ParityPair pair = makeParityPair(getApp(), kTransformID, kOfxTransformMajor, kNativeTransformMajor);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-    expectKnobParity(pair.ofx, pair.native);
-}
-
-TEST_F(NativeTransformTest, KnobsMatchTheOfxTransformMasked)
-{
-    resetProject();
-    ParityPair pair = makeParityPair(getApp(), kTransformMaskedID, kOfxTransformMajor, kNativeTransformMaskedMajor);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-    expectKnobParity(pair.ofx, pair.native);
-}
-
-TEST_F(NativeTransformTest, EveryFilterMinifyingAndRotated)
+TEST_F(NativeTransformTest, CubicMinifyingAndRotated)
 {
     resetProject();
     ParityPair pair = makePair(kTransformID, kNativeTransformMajor);
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamRotate, { 30. }));
     ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamScale, { 0.5, 0.5 }));
-    const char* const filters[] = { "impulse", "box", "bilinear", "cubic", "keys", "simon", "rifman", "mitchell", "parzen", "notch" };
-    for (std::size_t i = 0; i < sizeof(filters) / sizeof(filters[0]); ++i) {
-        const std::string filter = filters[i];
-        ASSERT_TRUE(setKnobOnBoth(pair, kResamplerParamFilterType, filter));
-        expectParity(pair, "rotate30-scale05-" + filter, kResamplingTolerance, filter == "cubic");
-    }
-    expectSameRegionOfDefinition(pair, "rotate30-scale05");
+    ASSERT_TRUE(setKnobOnBoth(pair, kResamplerParamFilterType, std::string("cubic")));
+    expectParity(pair, "rotate30-scale05-cubic", kResamplingTolerance, true);
 }
 
-TEST_F(NativeTransformTest, SkewInBothOrders)
+TEST_F(NativeTransformTest, SkewYX)
 {
     resetProject();
     ParityPair pair = makePair(kTransformID, kNativeTransformMajor);
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamSkewX, { 0.3 }));
     ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamSkewY, { -0.2 }));
     ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamTranslate, { 3.25, -2.5 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamSkewOrder, std::string("XY")));
-    expectParity(pair, "skew-xy", kResamplingTolerance, false);
     ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamSkewOrder, std::string("YX")));
     expectParity(pair, "skew-yx", kResamplingTolerance, true);
-    expectSameRegionOfDefinition(pair, "skew-yx");
-}
-
-TEST_F(NativeTransformTest, Invert)
-{
-    resetProject();
-    ParityPair pair = makePair(kTransformID, kNativeTransformMajor);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamRotate, { -20. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamScale, { 1.3, 0.8 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamTranslate, { 4.5, 1.75 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamInvert, { 1. }));
-    expectParity(pair, "invert", kResamplingTolerance, false);
-    expectSameRegionOfDefinition(pair, "invert");
-}
-
-TEST_F(NativeTransformTest, BlackOutsideOff)
-{
-    resetProject();
-    ParityPair pair = makePair(kTransformID, kNativeTransformMajor);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamRotate, { 12. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamScale, { 0.7, 0.7 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kResamplerParamFilterBlackOutside, { 0. }));
-    expectParity(pair, "black-outside-off", kResamplingTolerance, false);
-    expectSameRegionOfDefinition(pair, "black-outside-off");
-}
-
-TEST_F(NativeTransformTest, ClampWithKeys)
-{
-    resetProject();
-    ParityPair pair = makePair(kTransformID, kNativeTransformMajor);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamRotate, { 7. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamScale, { 2.5, 2.5 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kResamplerParamFilterType, std::string("keys")));
-    ASSERT_TRUE(setKnobOnBoth(pair, kResamplerParamFilterClamp, { 1. }));
-    expectParity(pair, "clamp-keys", kResamplingTolerance, false);
-}
-
-TEST_F(NativeTransformTest, PixelAspectRatioTwo)
-{
-    resetProject(2.);
-    ParityPair pair = makePair(kTransformID, kNativeTransformMajor);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamRotate, { 25. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamScale, { 0.8, 0.9 }));
-    expectParity(pair, "par2", kResamplingTolerance, false);
-    expectSameRegionOfDefinition(pair, "par2");
 }
 
 TEST_F(NativeTransformTest, MotionBlurOverTheShutter)
 {
     resetProject();
     ParityPair pair = makePair(kTransformID, kNativeTransformMajor);
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(animateOnBoth(pair, kTransformNodeParamTranslate, 0., 0., 0., 2., 8., 4.));
     ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamMotionBlur, { 1. }));
     ASSERT_TRUE(setKnobOnBoth(pair, kResamplerParamShutterOffset, std::string("centered")));
     expectParity(pair, "motion-blur-centered", kMotionBlurTolerance, true);
-    expectSameRegionOfDefinition(pair, "motion-blur-centered");
-    ASSERT_TRUE(setKnobOnBoth(pair, kResamplerParamShutterOffset, std::string("start")));
-    expectParity(pair, "motion-blur-start", kMotionBlurTolerance, false);
-    expectSameRegionOfDefinition(pair, "motion-blur-start");
-}
-
-TEST_F(NativeTransformTest, DirectionalBlur)
-{
-    resetProject();
-    ParityPair pair = makePair(kTransformID, kNativeTransformMajor);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamTranslate, { 6., 2. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamRotate, { 10. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamDirectionalBlur, { 1. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamMotionBlur, { 1. }));
-    expectParity(pair, "directional-blur", kMotionBlurTolerance, false);
-    expectSameRegionOfDefinition(pair, "directional-blur");
 }
 
 TEST_F(NativeTransformTest, MaskedMixHalf)
 {
     resetProject();
     ParityPair pair = makePair(kTransformMaskedID, kNativeTransformMaskedMajor, "Mask");
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(bool(pair.mask));
     ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_Mask", { 1. }));
     ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamRotate, { 30. }));
     ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamScale, { 0.5, 0.5 }));
     ASSERT_TRUE(setKnobOnBoth(pair, kOfxMixParamName, { 0.5 }));
     expectParity(pair, "mask-mix05", kResamplingTolerance, true);
-    expectSameRegionOfDefinition(pair, "mask-mix05");
-    ASSERT_TRUE(setKnobOnBoth(pair, kOfxMaskInvertParamName, { 1. }));
-    expectParity(pair, "mask-invert-mix05", kResamplingTolerance, false);
 }
 
-TEST_F(NativeTransformTest, MaskedWithoutMaskMixesWithTheSource)
-{
-    resetProject();
-    ParityPair pair = makePair(kTransformMaskedID, kNativeTransformMaskedMajor);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, kTransformNodeParamTranslate, { 5.5, -3.25 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kOfxMixParamName, { 0.5 }));
-    expectParity(pair, "mix05", kResamplingTolerance, false);
-}
-
-TEST_F(NativeTransformTest, ChainConcatenatesAndMatchesTheOfxChain)
+TEST_F(NativeTransformTest, ChainConcatenates)
 {
     resetProject();
     ParityPair first = makePair(kTransformID, kNativeTransformMajor);
-    ASSERT_TRUE(first.live());
     ASSERT_TRUE(setKnobOnBoth(first, kTransformNodeParamTranslate, { 5.5, 3. }));
     ASSERT_TRUE(setKnobOnBoth(first, kTransformNodeParamRotate, { 15. }));
 
     ParityPair chain = first;
     chain.native = createNodeAtMajor(getApp(), kTransformID, kNativeTransformMajor);
-    chain.ofx = createNodeAtMajor(getApp(), kTransformID, kOfxTransformMajor);
     ASSERT_TRUE(isNative(chain.native));
-    ASSERT_TRUE(isOfx(chain.ofx));
     ASSERT_TRUE(chain.native->connectInput(first.native, 0));
-    ASSERT_TRUE(chain.ofx->connectInput(first.ofx, 0));
     ASSERT_TRUE(setKnobOnBoth(chain, kTransformNodeParamCenter, { 32., 24. }));
     ASSERT_TRUE(setKnobOnBoth(chain, kTransformNodeParamScale, { 0.75, 0.6 }));
     ASSERT_TRUE(setKnobOnBoth(chain, kTransformNodeParamTranslate, { -2., 1.5 }));
@@ -397,7 +242,6 @@ TEST_F(NativeTransformTest, ChainConcatenatesAndMatchesTheOfxChain)
     EXPECT_EQ(first.native->getEffectInstance(), im.newInputEffect);
     EXPECT_EQ(first.source->getEffectInstance(), im.newInputEffect->getInput(im.newInputNbToFetchFrom));
 
-    expectParity(chain, "chain", kResamplingTolerance, false);
     expectBothSchedulerModesAgree(chain.native);
 }
 

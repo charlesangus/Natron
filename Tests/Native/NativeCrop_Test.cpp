@@ -50,7 +50,6 @@
 #include "Engine/Nodes/Image/NativeGenerator.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/Crop.h"
-#include "Engine/OfxEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
@@ -118,19 +117,6 @@ setBoolAsUser(const NodePtr& node,
     return true;
 }
 
-bool
-setExtentOnBoth(const ParityPair& pair,
-                const std::string& extent)
-{
-    bool ok = setChoiceAsUser(pair.native, kNativeGeneratorParamExtent, extent);
-
-    if (pair.ofx) {
-        ok = setChoiceAsUser(pair.ofx, kNativeGeneratorParamExtent, extent) && ok;
-    }
-
-    return ok;
-}
-
 RectD
 regionOfDefinition(const NodePtr& node,
                    double time,
@@ -180,6 +166,7 @@ protected:
         ParityPair pair = makeParityPair(getApp(), kCropID, kOfxCropMajor, kNativeCropMajor);
 
         EXPECT_TRUE(bool(pair.native));
+        EXPECT_FALSE(pair.live()) << "the OFX Crop is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
@@ -205,38 +192,13 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, caseWindow(mipmapLevel), mipmapLevel, tolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Crop " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
         }
     }
-
-    void expectSameRegionOfDefinition(const ParityPair& pair,
-                                      const std::string& caseName)
-    {
-        if (!pair.ofx) {
-            return;
-        }
-        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-            const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
-            const RectD ofx = regionOfDefinition(pair.ofx, kTime, scale);
-            const RectD native = regionOfDefinition(pair.native, kTime, scale);
-            EXPECT_EQ(ofx.x1, native.x1) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.y1, native.y1) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.x2, native.x2) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.y2, native.y2) << caseName << " mipmap " << mipmapLevel;
-        }
-    }
 };
-
-TEST_F(NativeCropTest, KnobsMatchTheOfxPlugin)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-    expectKnobParity(pair.ofx, pair.native);
-}
 
 TEST_F(NativeCropTest, SizeExtentIsTheDefault)
 {
@@ -257,7 +219,6 @@ TEST_F(NativeCropTest, SizeExtentWithoutSoftness)
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(setRectangle(pair, 10., 8., 40., 30.));
     expectParity(pair, "size", kExactTolerance, true);
-    expectSameRegionOfDefinition(pair, "size");
 }
 
 TEST_F(NativeCropTest, SoftEdges)
@@ -278,80 +239,6 @@ TEST_F(NativeCropTest, BlackOutside)
     ASSERT_TRUE(setRectangle(pair, 10., 8., 40., 30.));
     ASSERT_TRUE(setKnobOnBoth(pair, kCropParamBlackOutside, { 1. }));
     expectParity(pair, "black-outside", kExactTolerance, true);
-    expectSameRegionOfDefinition(pair, "black-outside");
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kCropParamSoftness, { 12. }));
-    expectParity(pair, "black-outside-softness-12", kSoftTolerance, false);
-}
-
-TEST_F(NativeCropTest, Reformat)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setRectangle(pair, 10., 8., 40., 30.));
-    ASSERT_TRUE(setKnobOnBoth(pair, kCropParamReformat, { 1. }));
-    expectParity(pair, "reformat", kExactTolerance, false);
-    expectSameRegionOfDefinition(pair, "reformat");
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kCropParamBlackOutside, { 1. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kCropParamSoftness, { 9. }));
-    expectParity(pair, "reformat-black-soft", kSoftTolerance, false);
-    expectSameRegionOfDefinition(pair, "reformat-black-soft");
-}
-
-TEST_F(NativeCropTest, Intersect)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setRectangle(pair, -8., 20., 90., 60.));
-    ASSERT_TRUE(setKnobOnBoth(pair, kCropParamIntersect, { 1. }));
-    expectParity(pair, "intersect", kExactTolerance, false);
-    expectSameRegionOfDefinition(pair, "intersect");
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kCropParamBlackOutside, { 1. }));
-    expectParity(pair, "intersect-black", kExactTolerance, false);
-    expectSameRegionOfDefinition(pair, "intersect-black");
-}
-
-TEST_F(NativeCropTest, ProjectAndDefaultExtents)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    setParitySourceOrigin(pair.source, 7, 3);
-
-    ASSERT_TRUE(setExtentOnBoth(pair, kNativeGeneratorExtentProject));
-    expectParity(pair, "extent-project", kExactTolerance, false);
-    expectSameRegionOfDefinition(pair, "extent-project");
-    ASSERT_TRUE(setKnobOnBoth(pair, kCropParamReformat, { 1. }));
-    expectParity(pair, "extent-project-reformat", kExactTolerance, false);
-    expectSameRegionOfDefinition(pair, "extent-project-reformat");
-    ASSERT_TRUE(setKnobOnBoth(pair, kCropParamReformat, { 0. }));
-
-    ASSERT_TRUE(setExtentOnBoth(pair, kNativeGeneratorExtentDefault));
-    ASSERT_TRUE(setKnobOnBoth(pair, kCropParamSoftness, { 10. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kCropParamBlackOutside, { 1. }));
-    expectParity(pair, "extent-default", kSoftTolerance, false);
-    expectSameRegionOfDefinition(pair, "extent-default");
-}
-
-TEST_F(NativeCropTest, FormatExtent)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-
-    ASSERT_TRUE(setExtentOnBoth(pair, kNativeGeneratorExtentFormat));
-    ASSERT_TRUE(setKnobOnBoth(pair, kNatronParamFormatSize, { 50., 40. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kNatronParamFormatPar, { 1. }));
-    expectParity(pair, "extent-format", kExactTolerance, false);
-    expectSameRegionOfDefinition(pair, "extent-format");
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kCropParamReformat, { 1. }));
-    expectParity(pair, "extent-format-reformat", kExactTolerance, false);
-    expectSameRegionOfDefinition(pair, "extent-format-reformat");
 }
 
 TEST_F(NativeCropTest, ReformatOnFormatSetsTheOutputFormat)

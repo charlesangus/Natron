@@ -1324,14 +1324,9 @@ OfxEffectInstance::defaultProcessesAllLayers() const
 {
     static const std::set<std::string> processAllLayers = {
         // Transform and distortion
-        "net.sf.openfx.TransformPlugin",
-        "net.sf.openfx.TransformMaskedPlugin",
         "net.sf.openfx.DirBlur",
         "net.sf.openfx.CornerPinPlugin",
         "net.sf.openfx.CornerPinMaskedPlugin",
-        "net.sf.openfx.CropPlugin",
-        "net.sf.openfx.Position",
-        "net.sf.openfx.Reformat",
         "net.sf.openfx.Card3D",
         "net.sf.openfx.AdjustRoDPlugin",
         "net.sf.openfx.SpriteSheet",
@@ -1362,7 +1357,6 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         "net.sf.openfx.TimeBufferRead",
         "net.sf.openfx.TimeBufferWrite",
         // Filter
-        "net.sf.cimg.CImgBlur",
         "net.sf.cimg.CImgLaplacian",
         "net.sf.cimg.CImgSharpen",
         "net.sf.cimg.CImgSoften",

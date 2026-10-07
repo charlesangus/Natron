@@ -61,8 +61,6 @@ const int kOfxBlurMajor = 4;
 const int kNativeBlurMajor = PLUGIN_MAJOR_NATRON_BLUR;
 const double kTime = 1.;
 
-// An identity blur passes the source through on both sides.
-const ParityTolerance kIdentityTolerance = ParityTolerance::exact();
 // The IIR filters run in double with float storage between passes, as CImg does; the box family
 // shares the class so every case of the node is held to one bound.
 const ParityTolerance kBlurTolerance = ParityTolerance::iir();
@@ -131,6 +129,7 @@ protected:
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(isNative(pair.native));
+        EXPECT_FALSE(pair.live()) << "the OFX Blur is retired, so parity replays the recorded references";
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
         }
@@ -138,42 +137,20 @@ protected:
         return pair;
     }
 
-    // Compares the pair at mipmap 0 and 1 over `window` (the source's region of definition when
-    // null) and prints the largest difference of each, so the tolerance actually needed is on
-    // record.
+    // Compares the pair at mipmap 0 and 1 over the source's region of definition and prints the
+    // largest difference of each, so the tolerance actually needed is on record.
     void expectParity(const ParityPair& pair,
                       const std::string& caseName,
                       const ParityTolerance& tolerance,
-                      bool record,
-                      bool useOwnRegionOfDefinition = false)
+                      bool record)
     {
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-            RectI window;
-            if (useOwnRegionOfDefinition) {
-                window = regionOfDefinition(pair.native, kTime, RenderScale::fromMipmapLevel(mipmapLevel)).toPixelEnclosing(mipmapLevel, 1.);
-            }
-            const ParityResult r = compareParity(pair, caseName, window, mipmapLevel, tolerance, record);
+            const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, tolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Blur " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
-        }
-    }
-
-    void expectSameRegionOfDefinition(const ParityPair& pair,
-                                      const std::string& caseName)
-    {
-        if (!pair.ofx) {
-            return;
-        }
-        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-            const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
-            const RectD ofx = regionOfDefinition(pair.ofx, kTime, scale);
-            const RectD native = regionOfDefinition(pair.native, kTime, scale);
-            EXPECT_EQ(ofx.x1, native.x1) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.y1, native.y1) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.x2, native.x2) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.y2, native.y2) << caseName << " mipmap " << mipmapLevel;
         }
     }
 
@@ -198,15 +175,6 @@ protected:
         }
     }
 };
-
-TEST_F(NativeBlurTest, KnobsMatchTheOfxPlugin)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-    expectKnobParity(pair.ofx, pair.native);
-}
 
 TEST_F(NativeBlurTest, UnversionedRequestsGetTheNativeBlur)
 {
@@ -266,16 +234,6 @@ TEST_F(NativeBlurTest, SourceRegionOfInterestIsTheOfxHalo)
     EXPECT_FALSE(Blur::paramsAreIdentity(RenderScale::identity, params));
 }
 
-TEST_F(NativeBlurTest, IdentityBelowTheGaussianThreshold)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamSize, { 0.2 }));
-    expectParity(pair, "size-0.2", kIdentityTolerance, false);
-    expectSameRegionOfDefinition(pair, "size-0.2");
-}
-
 TEST_F(NativeBlurTest, GaussianSize3)
 {
     resetProject();
@@ -283,24 +241,6 @@ TEST_F(NativeBlurTest, GaussianSize3)
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamSize, { 3. }));
     expectParity(pair, "gaussian-3", kBlurTolerance, true);
-    expectSameRegionOfDefinition(pair, "gaussian-3");
-}
-
-TEST_F(NativeBlurTest, EveryFilterAtSize25)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamSize, { 25. }));
-
-    const char* const filters[] = {
-        kBlurParamFilterQuasiGaussian, kBlurParamFilterGaussian, kBlurParamFilterBox, kBlurParamFilterTriangle, kBlurParamFilterQuadratic
-    };
-    for (std::size_t f = 0; f < sizeof(filters) / sizeof(filters[0]); ++f) {
-        ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamFilter, std::string(filters[f])));
-        expectParity(pair, std::string("size-25-") + filters[f], kBlurTolerance, false);
-        expectSameRegionOfDefinition(pair, std::string("size-25-") + filters[f]);
-    }
 }
 
 TEST_F(NativeBlurTest, AnisotropicSize40By5)
@@ -310,82 +250,6 @@ TEST_F(NativeBlurTest, AnisotropicSize40By5)
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamSize, { 40., 5. }));
     expectParity(pair, "gaussian-40x5", kBlurTolerance, true);
-    expectSameRegionOfDefinition(pair, "gaussian-40x5");
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamFilter, std::string(kBlurParamFilterTriangle)));
-    expectParity(pair, "triangle-40x5", kBlurTolerance, false);
-}
-
-TEST_F(NativeBlurTest, FirstOrderDerivatives)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamSize, { 6. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamOrderX, { 1. }));
-    expectParity(pair, "gaussian-6-dx", kBlurTolerance, false);
-    expectSameRegionOfDefinition(pair, "gaussian-6-dx");
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamOrderY, { 1. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamFilter, std::string(kBlurParamFilterQuasiGaussian)));
-    expectParity(pair, "quasigaussian-6-dxdy", kBlurTolerance, false);
-
-    // A box of size 0 still differentiates.
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamSize, { 0. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamFilter, std::string(kBlurParamFilterBox)));
-    expectParity(pair, "box-0-dxdy", kBlurTolerance, false);
-    expectSameRegionOfDefinition(pair, "box-0-dxdy");
-}
-
-TEST_F(NativeBlurTest, NearestBoundary)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamSize, { 10. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamBoundary, std::string(kBlurParamBoundaryNearest)));
-    expectParity(pair, "nearest-10", kBlurTolerance, false);
-
-    // Without cropping to the format the halo outside the source is rendered too.
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamCropToFormat, { 0. }));
-    expectSameRegionOfDefinition(pair, "nearest-10-uncropped");
-    expectParity(pair, "nearest-10-uncropped", kBlurTolerance, false, true);
-}
-
-TEST_F(NativeBlurTest, ExpandRoDOff)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamSize, { 12. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamExpandRoD, { 0. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamCropToFormat, { 0. }));
-    expectSameRegionOfDefinition(pair, "expand-off");
-    expectParity(pair, "expand-off", kBlurTolerance, false);
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamBoundary, std::string(kBlurParamBoundaryNearest)));
-    expectParity(pair, "expand-off-nearest", kBlurTolerance, false);
-}
-
-TEST_F(NativeBlurTest, OffsetSourceAgainstTheFormat)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    setParitySourceOrigin(pair.source, 20, -6);
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamSize, { 9. }));
-    expectSameRegionOfDefinition(pair, "offset-source");
-    expectParity(pair, "offset-source", kBlurTolerance, false, true);
-}
-
-TEST_F(NativeBlurTest, AlphaThreshold)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamSize, { 14. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamAlphaThreshold, { 0.3 }));
-    expectParity(pair, "alpha-threshold", kBlurTolerance, false);
 }
 
 TEST_F(NativeBlurTest, MaskAndMix)
@@ -400,9 +264,6 @@ TEST_F(NativeBlurTest, MaskAndMix)
     ASSERT_TRUE(setKnobOnBoth(pair, kOfxMixParamName, { 0.5 }));
     ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamSize, { 6. }));
     expectParity(pair, "mask-mix", kBlurTolerance, true);
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kOfxMaskInvertParamName, { 1. }));
-    expectParity(pair, "mask-mix-invert", kBlurTolerance, false);
 }
 
 TEST_F(NativeBlurTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)

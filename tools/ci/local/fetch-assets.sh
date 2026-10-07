@@ -147,12 +147,15 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # take their IDs. It also excludes Merge (with its presets, MergeRoto and the
 # Merge 1.0 compat factories), Dissolve, Constant (Solid) and CheckerBoard,
 # which the native nodes in Engine/Nodes/Merge and Engine/Nodes/Generator take over.
+# It also excludes Transform and TransformMasked (DirBlur stays OFX), Crop, Position,
+# Reformat (with its 1.1 compat factory) and CImgBlur, which the native nodes in
+# Engine/Nodes/Transform and Engine/Nodes/Filter take over.
 #
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
 # this container with no other source changes needed.
 OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
-OPENFX_MISC_REF="0424c257a0e8264da8a8492a7e97be8f21cd6d00"
+OPENFX_MISC_REF="99817f41e249ff40a3dcaadd4f83ca9d135a8a44"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a

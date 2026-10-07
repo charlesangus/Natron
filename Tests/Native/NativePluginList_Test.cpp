@@ -43,11 +43,16 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Color/Saturation.h"
+#include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Transform/Crop.h"
+#include "Engine/Nodes/Transform/Position.h"
+#include "Engine/Nodes/Transform/Reformat.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
 
 NATRON_NAMESPACE_USING
@@ -86,6 +91,12 @@ nativeTable()
         { PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT },
         { PLUGINID_NATRON_SOLID, PLUGIN_MAJOR_NATRON_CONSTANT },
         { PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD },
+        { PLUGINID_NATRON_TRANSFORM, PLUGIN_MAJOR_NATRON_TRANSFORM },
+        { PLUGINID_NATRON_TRANSFORMMASKED, PLUGIN_MAJOR_NATRON_TRANSFORMMASKED },
+        { PLUGINID_NATRON_CROP, PLUGIN_MAJOR_NATRON_CROP },
+        { PLUGINID_NATRON_POSITION, PLUGIN_MAJOR_NATRON_POSITION },
+        { PLUGINID_NATRON_REFORMAT, PLUGIN_MAJOR_NATRON_REFORMAT },
+        { PLUGINID_NATRON_BLUR, PLUGIN_MAJOR_NATRON_BLUR },
     };
 
     return table;

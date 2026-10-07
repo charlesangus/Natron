@@ -49,7 +49,6 @@
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/Reformat.h"
-#include "Engine/OfxEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
@@ -71,12 +70,6 @@ bool
 isNative(const NodePtr& node)
 {
     return node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
-}
-
-bool
-isOfx(const NodePtr& node)
-{
-    return node && dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get());
 }
 
 RectD
@@ -134,7 +127,7 @@ protected:
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(isNative(pair.native));
-        EXPECT_TRUE(pair.live()) << "the OFX Reformat must be loadable at major " << kOfxReformatMajor;
+        EXPECT_FALSE(pair.live()) << "the OFX Reformat is retired, so parity replays the recorded references";
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
         }
@@ -165,53 +158,11 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, caseWindow(pair, mipmapLevel), mipmapLevel, kReformatTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Reformat " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
         }
-    }
-
-    void expectSameRegionOfDefinition(const ParityPair& pair,
-                                      const std::string& caseName)
-    {
-        if (!pair.ofx) {
-            return;
-        }
-        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-            const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
-            const RectD ofx = regionOfDefinition(pair.ofx, kTime, scale);
-            const RectD native = regionOfDefinition(pair.native, kTime, scale);
-            EXPECT_EQ(ofx.x1, native.x1) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.y1, native.y1) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.x2, native.x2) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.y2, native.y2) << caseName << " mipmap " << mipmapLevel;
-        }
-    }
-
-    void expectSameMetadata(const ParityPair& pair,
-                            const std::string& caseName)
-    {
-        if (!pair.ofx) {
-            return;
-        }
-        EffectInstancePtr ofx = pair.ofx->getEffectInstance();
-        EffectInstancePtr native = pair.native->getEffectInstance();
-        EXPECT_EQ(ofx->getAspectRatio(-1), native->getAspectRatio(-1)) << caseName;
-        const RectI ofxFormat = ofx->getOutputFormat();
-        const RectI nativeFormat = native->getOutputFormat();
-        EXPECT_EQ(ofxFormat.x1, nativeFormat.x1) << caseName;
-        EXPECT_EQ(ofxFormat.y1, nativeFormat.y1) << caseName;
-        EXPECT_EQ(ofxFormat.x2, nativeFormat.x2) << caseName;
-        EXPECT_EQ(ofxFormat.y2, nativeFormat.y2) << caseName;
-    }
-
-    void expectFullParity(const ParityPair& pair,
-                          const std::string& caseName,
-                          bool record)
-    {
-        expectParity(pair, caseName, record);
-        expectSameRegionOfDefinition(pair, caseName);
-        expectSameMetadata(pair, caseName);
     }
 
     // The To Box type with a 50x20 box the output is cropped to.
@@ -220,15 +171,6 @@ protected:
         return setKnobOnBoth(pair, kReformatParamType, std::string(kReformatParamTypeOptionToBox)) && setKnobOnBoth(pair, kReformatParamBoxSize, { 50., 20. }) && setKnobOnBoth(pair, kReformatParamBoxFixed, { 1. });
     }
 };
-
-TEST_F(NativeReformatTest, KnobsMatchTheOfxPlugin)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-    expectKnobParity(pair.ofx, pair.native);
-}
 
 TEST_F(NativeReformatTest, VisibleKnobsFollowTheType)
 {
@@ -272,18 +214,14 @@ TEST_F(NativeReformatTest, ScaleWritesTheBoxBack)
 {
     resetProject();
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
+    ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamType, std::string(kReformatParamTypeOptionScale)));
     ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamScale, { 0.5, 0.25 }));
 
     KnobInt* boxSize = dynamic_cast<KnobInt*>(pair.native->getKnobByName(kReformatParamBoxSize).get());
-    KnobInt* ofxBoxSize = dynamic_cast<KnobInt*>(pair.ofx->getKnobByName(kReformatParamBoxSize).get());
     ASSERT_TRUE(boxSize != NULL);
-    ASSERT_TRUE(ofxBoxSize != NULL);
     EXPECT_EQ(32, boxSize->getValue(0));
     EXPECT_EQ(12, boxSize->getValue(1));
-    EXPECT_EQ(ofxBoxSize->getValue(0), boxSize->getValue(0));
-    EXPECT_EQ(ofxBoxSize->getValue(1), boxSize->getValue(1));
     KnobBool* boxFixed = dynamic_cast<KnobBool*>(pair.native->getKnobByName(kReformatParamBoxFixed).get());
     ASSERT_TRUE(boxFixed != NULL);
     EXPECT_TRUE(boxFixed->getValue());
@@ -297,7 +235,7 @@ TEST_F(NativeReformatTest, ToProjectFormatFromTheSourceRoD)
     // The source is 64x48 while its format is the 40x30 project one, so only useRoD resamples.
     ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamUseRoD, { 1. }));
     ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamResize, std::string(kReformatParamResizeOptionFit)));
-    expectFullParity(pair, "project", true);
+    expectParity(pair, "project", true);
 
     EffectInstancePtr effect = pair.native->getEffectInstance();
     EXPECT_EQ(1., effect->getAspectRatio(-1));
@@ -306,89 +244,6 @@ TEST_F(NativeReformatTest, ToProjectFormatFromTheSourceRoD)
     EXPECT_EQ(0, format.y1);
     EXPECT_EQ(40, format.x2);
     EXPECT_EQ(30, format.y2);
-}
-
-TEST_F(NativeReformatTest, ToProjectFormatDefaults)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    expectFullParity(pair, "project-defaults", false);
-}
-
-TEST_F(NativeReformatTest, EveryResizeModeIntoAFixedBox)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setFixedBox(pair));
-
-    const char* const modes[] = {
-        kReformatParamResizeOptionNone,
-        kReformatParamResizeOptionWidth,
-        kReformatParamResizeOptionHeight,
-        kReformatParamResizeOptionFit,
-        kReformatParamResizeOptionFill,
-        kReformatParamResizeOptionDistort,
-    };
-    for (std::size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); ++i) {
-        const std::string mode = modes[i];
-        ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamResize, mode));
-        expectFullParity(pair, "box-" + mode, mode == kReformatParamResizeOptionFit);
-
-        ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamCenter, { 0. }));
-        expectFullParity(pair, "box-" + mode + "-uncentered", false);
-        ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamCenter, { 1. }));
-    }
-}
-
-TEST_F(NativeReformatTest, BoxNotFixedKeepsTheWholeImage)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setFixedBox(pair));
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamBoxFixed, { 0. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamResize, std::string(kReformatParamResizeOptionFill)));
-    expectFullParity(pair, "box-free-fill", false);
-}
-
-TEST_F(NativeReformatTest, ScaleType)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamType, std::string(kReformatParamTypeOptionScale)));
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamScale, { 0.5, 0.75 }));
-    expectFullParity(pair, "scale", false);
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamScaleUniform, { 1. }));
-    expectFullParity(pair, "scale-uniform", false);
-}
-
-TEST_F(NativeReformatTest, FlipFlopAndTurn)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setFixedBox(pair));
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamResize, std::string(kReformatParamResizeOptionDistort)));
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamFlip, { 1. }));
-    expectFullParity(pair, "flip", false);
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamFlip, { 0. }));
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamFlop, { 1. }));
-    expectFullParity(pair, "flop", false);
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamFlop, { 0. }));
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamTurn, { 1. }));
-    expectFullParity(pair, "turn", false);
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamFlip, { 1. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamFlop, { 1. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamResize, std::string(kReformatParamResizeOptionFit)));
-    expectFullParity(pair, "turn-flip-flop-fit", false);
 }
 
 TEST_F(NativeReformatTest, ToFormatWithAPixelAspectRatio)
@@ -400,39 +255,18 @@ TEST_F(NativeReformatTest, ToFormatWithAPixelAspectRatio)
     // What the host writes when a 40x30 format at PAR 1.09 is picked, the way a PAL format is.
     ASSERT_TRUE(setKnobOnBoth(pair, kNatronParamFormatSize, { 40., 30. }));
     ASSERT_TRUE(setKnobOnBoth(pair, kNatronParamFormatPar, { 1.09 }));
-    expectFullParity(pair, "format-par", true);
+    expectParity(pair, "format-par", true);
     EXPECT_EQ(1.09, pair.native->getEffectInstance()->getAspectRatio(-1));
 }
 
-TEST_F(NativeReformatTest, FromAnAnamorphicSource)
-{
-    resetProject(64, 48, 2.);
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setFixedBox(pair));
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamResize, std::string(kReformatParamResizeOptionFit)));
-    expectFullParity(pair, "par2-box-fit", false);
-}
-
-TEST_F(NativeReformatTest, FiltersAndBlackOutside)
+TEST_F(NativeReformatTest, FitIntoAFixedBox)
 {
     resetProject();
     ParityPair pair = makePair();
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(setFixedBox(pair));
     ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamResize, std::string(kReformatParamResizeOptionFit)));
-
-    const std::vector<Resampler::ChoiceOption>& filters = Resampler::filterOptions();
-    for (std::size_t i = 0; i < filters.size(); ++i) {
-        ASSERT_TRUE(setKnobOnBoth(pair, kResamplerParamFilterType, std::string(filters[i].id)));
-        expectParity(pair, std::string("filter-") + filters[i].id, false);
-    }
-    ASSERT_TRUE(setKnobOnBoth(pair, kResamplerParamFilterType, std::string(Resampler::filterOptions()[Resampler::eFilterKeys].id)));
-    ASSERT_TRUE(setKnobOnBoth(pair, kResamplerParamFilterClamp, { 1. }));
-    expectParity(pair, "keys-clamp", false);
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kResamplerParamFilterBlackOutside, { 1. }));
-    expectFullParity(pair, "keys-clamp-black-outside", false);
+    expectParity(pair, "box-fit", true);
 }
 
 TEST_F(NativeReformatTest, PreserveBoundingBox)
@@ -447,19 +281,6 @@ TEST_F(NativeReformatTest, PreserveBoundingBox)
     ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamPreserveBoundingBox, { 1. }));
     EXPECT_TRUE(pair.native->getEffectInstance()->getCanTransform());
     EXPECT_TRUE(pair.native->getCurrentCanTransform());
-    expectFullParity(pair, "preserve-bb", false);
-}
-
-TEST_F(NativeReformatTest, UseRoDOfAnOffsetSource)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    setParitySourceOrigin(pair.source, 7, 3);
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamUseRoD, { 1. }));
-    ASSERT_TRUE(setFixedBox(pair));
-    ASSERT_TRUE(setKnobOnBoth(pair, kReformatParamResize, std::string(kReformatParamResizeOptionWidth)));
-    expectFullParity(pair, "use-rod", false);
 }
 
 TEST_F(NativeReformatTest, NoResizeNoCenterIsIdentity)
@@ -490,12 +311,6 @@ TEST_F(NativeReformatTest, UnversionedRequestsGetTheNativeReformat)
     ASSERT_TRUE(bool(unversioned));
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativeReformatMajor, unversioned->getMajorVersion());
-
-    if (isPluginMajorRegistered(kReformatID, kOfxReformatMajor)) {
-        NodePtr ofx = createNode(QString::fromUtf8(kReformatID), kOfxReformatMajor);
-        ASSERT_TRUE(bool(ofx));
-        EXPECT_TRUE(isOfx(ofx));
-    }
 }
 
 TEST_F(NativeReformatTest, RendersTheSameInBothSchedulerModes)

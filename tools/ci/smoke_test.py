@@ -302,7 +302,7 @@ def check_plugin_id_enumeration():
         "IO": ("fr.inria.openfx.ReadOIIO", "fr.inria.openfx.WriteOIIO"),
         "Misc": ("net.sf.openfx.Premult", "net.sf.openfx.HSVToolPlugin",
                  "net.sf.openfx.switchPlugin"),
-        "CImg": ("net.sf.cimg.CImgBlur", "net.sf.cimg.CImgPlasma"),
+        "CImg": ("net.sf.cimg.CImgSharpen", "net.sf.cimg.CImgPlasma"),
         "Arena": ("net.fxarena.openfx.Text", "net.fxarena.openfx.Texture"),
         "metadataCompare": ("org.openfx.examples.metadataCompare",),
         "metadataContribute": ("org.openfx.examples.metadataContribute",),

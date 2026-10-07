@@ -43,7 +43,6 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/Position.h"
-#include "Engine/OfxEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
@@ -65,12 +64,6 @@ bool
 isNative(const NodePtr& node)
 {
     return node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
-}
-
-bool
-isOfx(const NodePtr& node)
-{
-    return node && dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get());
 }
 
 // The source's region and a margin on every side, so the shifted edges and the zero fill outside
@@ -103,7 +96,7 @@ protected:
 
         EXPECT_TRUE(bool(pair.native));
         EXPECT_TRUE(isNative(pair.native));
-        EXPECT_TRUE(pair.live()) << "the OFX Position must be loadable at major " << kOfxPositionMajor;
+        EXPECT_FALSE(pair.live()) << "the OFX Position is retired, so parity replays the recorded references";
 
         return pair;
     }
@@ -116,34 +109,13 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, caseWindow(mipmapLevel, par), mipmapLevel, kPositionTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Position " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
         }
     }
-
-    RectD regionOfDefinition(const NodePtr& node,
-                             unsigned mipmapLevel)
-    {
-        EffectInstancePtr effect = node->getEffectInstance();
-        RectD rod;
-        bool isProjectFormat = false;
-
-        EXPECT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::fromMipmapLevel(mipmapLevel), ViewIdx(0), &rod, &isProjectFormat));
-
-        return rod;
-    }
 };
-
-TEST_F(NativePositionTest, KnobsMatchTheOfxPosition)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-
-    expectKnobParity(pair.ofx, pair.native);
-}
 
 TEST_F(NativePositionTest, TranslateOverlayIsAHostPositionOverlay)
 {
@@ -160,7 +132,6 @@ TEST_F(NativePositionTest, TranslateZero)
 {
     resetProject();
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     expectParity(pair, "translate-0", true);
 }
 
@@ -168,61 +139,22 @@ TEST_F(NativePositionTest, TranslateIsRoundedToThePixel)
 {
     resetProject();
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(setKnobOnBoth(pair, kPositionParamTranslate, { 10.4, -3.6 }));
     expectParity(pair, "translate-10.4-3.6", true);
-}
-
-TEST_F(NativePositionTest, NegativeTranslate)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, kPositionParamTranslate, { -17.5, 21.5 }));
-    expectParity(pair, "translate-neg", false);
 }
 
 TEST_F(NativePositionTest, PixelAspectRatioTwo)
 {
     resetProject(2.);
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(setKnobOnBoth(pair, kPositionParamTranslate, { 10.4, -3.6 }));
     expectParity(pair, "par2", true, 2.);
-}
-
-TEST_F(NativePositionTest, TranslateBeyondTheSourceIsBlack)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    // The window must still meet the shifted RoD: a render entirely outside it produces no plane.
-    ASSERT_TRUE(setKnobOnBoth(pair, kPositionParamTranslate, { 60., 20. }));
-    expectParity(pair, "translate-far", false);
-}
-
-TEST_F(NativePositionTest, RegionOfDefinitionIsShifted)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, kPositionParamTranslate, { 10.4, -3.6 }));
-    for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-        const RectD ofx = regionOfDefinition(pair.ofx, mipmapLevel);
-        const RectD native = regionOfDefinition(pair.native, mipmapLevel);
-
-        EXPECT_EQ(ofx.x1, native.x1) << mipmapLevel;
-        EXPECT_EQ(ofx.y1, native.y1) << mipmapLevel;
-        EXPECT_EQ(ofx.x2, native.x2) << mipmapLevel;
-        EXPECT_EQ(ofx.y2, native.y2) << mipmapLevel;
-    }
 }
 
 TEST_F(NativePositionTest, ZeroShiftIsIdentityOfTheSource)
 {
     resetProject();
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     EffectInstancePtr effect = pair.native->getEffectInstance();
     const RectI window = caseWindow(0, 1.);
     double inputTime = 0.;
@@ -242,10 +174,4 @@ TEST_F(NativePositionTest, UnversionedRequestsGetTheNativePosition)
     ASSERT_TRUE(bool(unversioned));
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativePositionMajor, unversioned->getMajorVersion());
-
-    if (isPluginMajorRegistered(kPositionID, kOfxPositionMajor)) {
-        NodePtr ofx = createNode(QString::fromUtf8(kPositionID), kOfxPositionMajor);
-        ASSERT_TRUE(bool(ofx));
-        EXPECT_TRUE(isOfx(ofx));
-    }
 }

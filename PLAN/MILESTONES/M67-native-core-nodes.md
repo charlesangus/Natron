@@ -990,19 +990,19 @@ Shared rules for every node task in this phase:
 
 Codex's review on PR #42 has 13 findings, and the user chose to fix the HD composite slowdown within M67. Both run as batch B13: parallel implementers with disjoint file sets, then one build, one rebench and one repackage.
 
-- [ ] M67.P7.T1 — TransformMasked correctness and the affine resampler fast path (findings 0, 1, 10)
+- [x] M67.P7.T1 — TransformMasked correctness and the affine resampler fast path (findings 0, 1, 10)
   - files: `Engine/Nodes/Transform/Transform.{h,cpp}`, `Engine/Nodes/Image/Resampler.{h,cpp}`, `Tests/Native/NativeTransform_Test.cpp`, `Tests/Native/Resampler_Test.cpp`
   - size: L
-- [ ] M67.P7.T2 — Shared spatial-filter helpers, cancellable band parallelism, Blur gather, base comment (findings 3, 5, 9, 12)
+- [x] M67.P7.T2 — Shared spatial-filter helpers, cancellable band parallelism, Blur gather, base comment (findings 3, 5, 9, 12)
   - files: `Engine/Nodes/Image/NativeImageEffect.{h,cpp}`, a new shared helper module under `Engine/Nodes/Filter/`, `Engine/Nodes/Filter/{Blur,ErodeDilate,EdgeDetect}.cpp`
   - size: L
-- [ ] M67.P7.T3 — Merge alpha-only toggles, Merge operator dispatch hoisted out of the pixel loop, CheckerBoard spans (findings 2, 7, 8)
+- [x] M67.P7.T3 — Merge alpha-only toggles, Merge operator dispatch hoisted out of the pixel loop, CheckerBoard spans (findings 2, 7, 8)
   - files: `Engine/Nodes/Merge/{Merge,MergeOperators}.{h,cpp}`, `Engine/Nodes/Generator/CheckerBoard.cpp`, `Tests/Native/NativeMerge_Test.cpp`, `Tests/Native/MergeOperators_Test.cpp`
   - size: M
-- [ ] M67.P7.T4 — ColorCorrect: drop `ToneCurve` for `CurveSnapshot`, skip identity groups (findings 4, 11)
+- [x] M67.P7.T4 — ColorCorrect: drop `ToneCurve` for `CurveSnapshot`, skip identity groups (findings 4, 11)
   - files: `Engine/Nodes/Color/ColorCorrect.{h,cpp}`
   - size: M
-- [ ] M67.P7.T5 — Share the extent knobs between `NativeGenerator` and Crop (finding 6)
+- [x] M67.P7.T5 — Share the extent knobs between `NativeGenerator` and Crop (finding 6)
   - files: `Engine/Nodes/Image/NativeGenerator.{h,cpp}`, `Engine/Nodes/Transform/Crop.{h,cpp}`, a new shared extent module
   - size: M
 - [ ] M67.P7.T6 — Build, full ctest (both modes), per-node HD rebench against the M63 tip, profile anything still slower than OFX, repackage the AppImage
@@ -1148,3 +1148,12 @@ Notes:
     - Packaging needs `build/appimagetool-wrapper` (`-n`) copied into the worktree's `build/`, because the container has no network.
   - **Published:** `docs/decisions/2026-10-06-m67-core-node-families.md` (`7d1db14cb`).
 - 2026-10-07 — **Codex review round 1 (PR #42): 13 findings, all accepted.** The user chose to fix the HD composite slowdown in M67 before UAT rather than in a follow-up. Phase 67.7 / B13 was added.
+- 2026-10-07 — **B13 fixes written (P7.T1–T5); build, rebench and repackage dispatched (P7.T6).**
+  - **TransformMasked:** the OFX host also concatenates into TransformMasked, and OFX has the same pass-through bug. Native now blends with its immediate input. This is a **deliberate divergence**, fixed rather than replicated.
+  - **Affine resampler path:** claimed bit-identical (same operation order, no FMA).
+  - **Cancellation:**
+    - **Cause:** `aborted()` only works on the render thread.
+    - **Fix:** `RenderCancellation` publishes an atomic flag, and `parallelForCancellable`'s caller wait is timed at 10 ms. The remaining nodes are being swapped over in P7.T6.
+  - **Merge and CheckerBoard:** per-operator templated row functions and CheckerBoard runs, both fuzz-verified bit-identical on the host.
+  - **ColorCorrect:** skips identity groups, but not the tone blend, whose weights don't sum to exactly 1 in float.
+  - **Extent knobs:** shared by Crop and the generators (`ExtentKnobs`); each node keeps its own knob order.

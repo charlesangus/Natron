@@ -67,24 +67,6 @@ const double kTime = 1.;
 // suppression repeat the OpenFX arithmetic, so the whole node is held to the IIR class.
 const ParityTolerance kEdgeDetectTolerance = ParityTolerance::iir();
 
-const char* const kFilters[] = {
-    kEdgeDetectParamFilterSimple,
-    kEdgeDetectParamFilterSobel,
-    kEdgeDetectParamFilterRotationInvariant,
-    kEdgeDetectParamFilterQuasiGaussian,
-    kEdgeDetectParamFilterGaussian,
-    kEdgeDetectParamFilterBox,
-    kEdgeDetectParamFilterTriangle,
-    kEdgeDetectParamFilterQuadratic,
-};
-
-const char* const kMultiChannelModes[] = {
-    kEdgeDetectParamMultiChannelSeparate,
-    kEdgeDetectParamMultiChannelRMS,
-    kEdgeDetectParamMultiChannelMax,
-    kEdgeDetectParamMultiChannelTensor,
-};
-
 bool
 isNative(const NodePtr& node)
 {
@@ -162,6 +144,7 @@ protected:
         ParityPair pair = makeParityPair(getApp(), kEdgeDetectID, kOfxEdgeDetectMajor, kNativeEdgeDetectMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
+        EXPECT_FALSE(pair.live()) << "the OFX EdgeDetect is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
@@ -171,9 +154,6 @@ protected:
         // and Tensor combinations, even with A off. The native node combines only the channels
         // it processes, so both are compared with alpha processed.
         EXPECT_TRUE(processRGBA(pair.native));
-        if (pair.ofx) {
-            EXPECT_TRUE(processRGBA(pair.ofx));
-        }
 
         return pair;
     }
@@ -189,26 +169,10 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, tolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] EdgeDetect " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
-        }
-    }
-
-    void expectSameRegionOfDefinition(const ParityPair& pair,
-                                      const std::string& caseName)
-    {
-        if (!pair.ofx) {
-            return;
-        }
-        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-            const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
-            const RectD ofx = regionOfDefinition(pair.ofx, kTime, scale);
-            const RectD native = regionOfDefinition(pair.native, kTime, scale);
-            EXPECT_EQ(ofx.x1, native.x1) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.y1, native.y1) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.x2, native.x2) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.y2, native.y2) << caseName << " mipmap " << mipmapLevel;
         }
     }
 
@@ -232,15 +196,6 @@ protected:
         }
     }
 };
-
-TEST_F(NativeEdgeDetectTest, KnobsMatchTheOfxPlugin)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-    expectKnobParity(pair.ofx, pair.native);
-}
 
 TEST_F(NativeEdgeDetectTest, UnversionedRequestsGetTheNativeEdgeDetect)
 {
@@ -327,81 +282,21 @@ TEST_F(NativeEdgeDetectTest, DefaultGaussianTensor)
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamBlurSize, { 3. }));
     expectParity(pair, "gaussian-tensor-3", kEdgeDetectTolerance, true);
-    expectSameRegionOfDefinition(pair, "gaussian-tensor-3");
 }
 
-TEST_F(NativeEdgeDetectTest, EveryFilterAndMultiChannelModeAtBlurSize3)
+// Erosion leaves flat plateaus, so suppression then compares exactly tied neighbours. Only the
+// Gaussian gradients match the OpenFX plug-in bit for bit (it is built with -Ofast); Sobel's
+// differ by ulps, which flips those ties and whole edge pixels with them.
+TEST_F(NativeEdgeDetectTest, ErodeWithSuppression)
 {
     resetProject();
     ParityPair pair = makePair();
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamBlurSize, { 3. }));
-
-    for (std::size_t f = 0; f < sizeof(kFilters) / sizeof(kFilters[0]); ++f) {
-        ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamFilter, std::string(kFilters[f])));
-        for (std::size_t m = 0; m < sizeof(kMultiChannelModes) / sizeof(kMultiChannelModes[0]); ++m) {
-            ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamMultiChannel, std::string(kMultiChannelModes[m])));
-            const std::string caseName = std::string(kFilters[f]) + "-" + kMultiChannelModes[m] + "-3";
-            expectParity(pair, caseName, kEdgeDetectTolerance, false);
-        }
-        expectSameRegionOfDefinition(pair, std::string(kFilters[f]) + "-3");
-    }
-}
-
-TEST_F(NativeEdgeDetectTest, UnblurredFiniteDifferences)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-
-    const char* const schemes[] = { kEdgeDetectParamFilterSimple, kEdgeDetectParamFilterSobel, kEdgeDetectParamFilterRotationInvariant, kEdgeDetectParamFilterBox };
-    for (std::size_t s = 0; s < sizeof(schemes) / sizeof(schemes[0]); ++s) {
-        ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamFilter, std::string(schemes[s])));
-        expectParity(pair, std::string(schemes[s]) + "-0", kEdgeDetectTolerance, false);
-    }
-}
-
-TEST_F(NativeEdgeDetectTest, ErodeAndDilateWithSuppression)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamBlurSize, { 3. }));
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamErodeSize, { 2. }));
-    expectParity(pair, "gaussian-tensor-erode2", kEdgeDetectTolerance, false);
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamErodeSize, { -2. }));
-    expectParity(pair, "gaussian-tensor-dilate2", kEdgeDetectTolerance, false);
-
     ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamNMS, { 1. }));
-    for (std::size_t m = 0; m < sizeof(kMultiChannelModes) / sizeof(kMultiChannelModes[0]); ++m) {
-        ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamMultiChannel, std::string(kMultiChannelModes[m])));
-        expectParity(pair, std::string("gaussian-") + kMultiChannelModes[m] + "-dilate2-nms", kEdgeDetectTolerance, false);
-    }
-
-    // Erosion leaves flat plateaus, so suppression then compares exactly tied neighbours. Only the
-    // Gaussian gradients match the OpenFX plug-in bit for bit (it is built with -Ofast); Sobel's
-    // differ by ulps, which flips those ties and whole edge pixels with them.
     ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamMultiChannel, std::string(kEdgeDetectParamMultiChannelSeparate)));
     ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamErodeSize, { 2. }));
     expectParity(pair, "gaussian-separate-erode2-nms", kEdgeDetectTolerance, true);
-}
-
-TEST_F(NativeEdgeDetectTest, ExpandRoDOffAndUncropped)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamBlurSize, { 6. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamCropToFormat, { 0. }));
-    expectSameRegionOfDefinition(pair, "uncropped");
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamFilter, std::string(kEdgeDetectParamFilterTriangle)));
-    expectSameRegionOfDefinition(pair, "uncropped-triangle");
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamExpandRoD, { 0. }));
-    expectSameRegionOfDefinition(pair, "expand-off");
-    expectParity(pair, "triangle-expand-off", kEdgeDetectTolerance, false);
 }
 
 TEST_F(NativeEdgeDetectTest, MaskAndMix)
@@ -416,9 +311,6 @@ TEST_F(NativeEdgeDetectTest, MaskAndMix)
     ASSERT_TRUE(setKnobOnBoth(pair, kOfxMixParamName, { 0.5 }));
     ASSERT_TRUE(setKnobOnBoth(pair, kEdgeDetectParamBlurSize, { 3. }));
     expectParity(pair, "mask-mix", kEdgeDetectTolerance, true);
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kOfxMaskInvertParamName, { 1. }));
-    expectParity(pair, "mask-mix-invert", kEdgeDetectTolerance, false);
 }
 
 TEST_F(NativeEdgeDetectTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)

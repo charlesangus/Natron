@@ -1362,8 +1362,6 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         "net.sf.cimg.CImgSoften",
         "net.sf.cimg.CImgBloom",
         "net.sf.cimg.CImgMedian",
-        "net.sf.cimg.CImgErode",
-        "net.sf.cimg.CImgDilate",
         "net.sf.cimg.CImgErodeSmooth",
         "net.sf.cimg.CImgBilateral",
         "net.sf.cimg.CImgBilateralGuided",
@@ -1404,7 +1402,6 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         "net.sf.openfx.TrackerPM",
         "net.sf.cimg.CImgExpression",
         "net.sf.cimg.CImgChromaBlur",
-        "eu.cimg.EdgeDetect",
         "eu.cimg.EdgeExtend",
     };
 

@@ -39,6 +39,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/ViewIdx.h"
 
@@ -76,9 +77,15 @@ protected:
 
     ParityPair makePair()
     {
-        ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_COLORLOOKUP, 1, PLUGIN_MAJOR_NATRON_COLORLOOKUP);
-
+        ParityPair pair;
+        pair.app = getApp();
+        pair.source = createNodeAtMajor(pair.app, kTestPluginIDParitySource, -1);
+        pair.native = createNodeAtMajor(pair.app, PLUGINID_NATRON_COLORLOOKUP, PLUGIN_MAJOR_NATRON_COLORLOOKUP);
+        EXPECT_TRUE(bool(pair.source));
         EXPECT_TRUE(bool(pair.native));
+        if (pair.source && pair.native) {
+            EXPECT_TRUE(NodeCollection::connectNodes(0, pair.source, pair.native));
+        }
 
         return pair;
     }

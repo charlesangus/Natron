@@ -73,7 +73,6 @@ toleranceForShow(const std::string& show)
 }
 
 const double kGreenKey[3] = { 0.1, 0.8, 0.2 };
-const double kBlueKey[3] = { 0.1, 0.2, 0.9 };
 
 bool
 isNative(const NodePtr& node)
@@ -125,7 +124,7 @@ protected:
         ParityPair pair = makeParityPair(getApp(), kChromaKeyerID, kOfxChromaKeyerMajor, kNativeChromaKeyerMajor);
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_TRUE(pair.live()) << "the OFX ChromaKeyer is still loadable, so parity is live";
+        EXPECT_FALSE(pair.live()) << "the OFX ChromaKeyer is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
         if (!pair.native || !pair.source) {
             return pair;
@@ -170,7 +169,7 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, tolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_TRUE(r.live);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] ChromaKeyer " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -206,21 +205,6 @@ TEST_F(NativeChromaKeyerTest, UnversionedRequestsGetTheNativeChromaKeyer)
     EXPECT_EQ(kNativeChromaKeyerMajor, unversioned->getMajorVersion());
 }
 
-TEST_F(NativeChromaKeyerTest, KnobParity)
-{
-    ParityPair pair = makePair(false, false);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(bool(pair.ofx));
-    expectKnobParity(pair.ofx, pair.native);
-}
-
-TEST_F(NativeChromaKeyerTest, DefaultsWithoutBg)
-{
-    ParityPair pair = makePair(false, false);
-    ASSERT_TRUE(bool(pair.native));
-    expectParity(pair, "defaults-no-bg");
-}
-
 TEST_F(NativeChromaKeyerTest, CompositeOverBg)
 {
     ParityPair pair = makePair(true, false);
@@ -229,116 +213,22 @@ TEST_F(NativeChromaKeyerTest, CompositeOverBg)
     expectParity(pair, "composite-green", true);
 }
 
-TEST_F(NativeChromaKeyerTest, EveryShow)
-{
-    const char* const shows[4] = { "intermediate", "premultiplied", "unpremultiplied", "composite" };
-
-    for (int s = 0; s < 4; ++s) {
-        ParityPair pair = makePair(true, false);
-        ASSERT_TRUE(bool(pair.native));
-        setKey(pair, kBlueKey);
-        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamShow, std::string(shows[s])));
-        expectParity(pair, std::string("show-") + shows[s], false, toleranceForShow(shows[s]));
-    }
-}
-
-TEST_F(NativeChromaKeyerTest, EveryShowWithMasks)
-{
-    const char* const shows[4] = { "intermediate", "premultiplied", "unpremultiplied", "composite" };
-
-    for (int s = 0; s < 4; ++s) {
-        ParityPair pair = makePair(true, true);
-        ASSERT_TRUE(bool(pair.native));
-        setKey(pair, kGreenKey);
-        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamShow, std::string(shows[s])));
-        expectParity(pair, std::string("masks-") + shows[s], s == 1, toleranceForShow(shows[s]));
-    }
-}
-
-TEST_F(NativeChromaKeyerTest, EachColorspaceLinearOnAndOff)
-{
-    const char* const colorspaces[3] = { "ccir601", "rec709", "rec2020" };
-
-    for (int c = 0; c < 3; ++c) {
-        for (int linear = 0; linear < 2; ++linear) {
-            ParityPair pair = makePair(true, false);
-            ASSERT_TRUE(bool(pair.native));
-            setKey(pair, kGreenKey);
-            ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamColorspace, std::string(colorspaces[c])));
-            ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamLinear, { (double)linear }));
-            ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamShow, std::string("premultiplied")));
-            expectParity(pair, std::string("colorspace-") + colorspaces[c] + (linear ? "-linear" : "-encoded"));
-        }
-    }
-}
-
-TEST_F(NativeChromaKeyerTest, AngleExtremes)
-{
-    const double acceptance[4] = { 0., 180., 120., 90. };
-    const double suppression[4] = { 40., 40., 0., 180. };
-
-    for (int a = 0; a < 4; ++a) {
-        ParityPair pair = makePair(true, false);
-        ASSERT_TRUE(bool(pair.native));
-        setKey(pair, kGreenKey);
-        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamAcceptanceAngle, { acceptance[a] }));
-        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamSuppressionAngle, { suppression[a] }));
-        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamShow, std::string("unpremultiplied")));
-        expectParity(pair, std::string("angles-") + std::to_string(a), false, kChromaKeyerUnpremultipliedTolerance);
-    }
-}
-
-TEST_F(NativeChromaKeyerTest, KeyGainAndLift)
-{
-    const double gains[4] = { 0., 1., 0.5, 2. };
-    const double lifts[4] = { 0., 1., 0.4, 0.2 };
-
-    for (int k = 0; k < 4; ++k) {
-        ParityPair pair = makePair(true, true);
-        ASSERT_TRUE(bool(pair.native));
-        setKey(pair, kGreenKey);
-        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamKeyGain, { gains[k] }));
-        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamKeyLift, { lifts[k] }));
-        expectParity(pair, std::string("gain-lift-") + std::to_string(k));
-    }
-}
-
-TEST_F(NativeChromaKeyerTest, SourceAlphaHandling)
-{
-    const char* const handling[3] = { "ignore", "insidemask", "normal" };
-
-    for (int h = 0; h < 3; ++h) {
-        ParityPair pair = makePair(true, false);
-        ASSERT_TRUE(bool(pair.native));
-        setKey(pair, kGreenKey);
-        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamSourceAlpha, std::string(handling[h])));
-        expectParity(pair, std::string("source-alpha-") + handling[h]);
-    }
-}
-
-// The OpenFX plug-in reads the alpha of an RGB source out of bounds when it uses source alpha, so
-// only the cases that never read it are compared.
-TEST_F(NativeChromaKeyerTest, RgbSource)
-{
-    const char* const shows[3] = { "premultiplied", "unpremultiplied", "composite" };
-
-    for (int s = 0; s < 3; ++s) {
-        ParityPair pair = makePair(true, true, "rgb");
-        ASSERT_TRUE(bool(pair.native));
-        setKey(pair, kGreenKey);
-        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamShow, std::string(shows[s])));
-        expectParity(pair, std::string("rgb-source-") + shows[s], s == 1, toleranceForShow(shows[s]));
-    }
-}
-
-TEST_F(NativeChromaKeyerTest, MaskInputsAreIgnoredWhileTheirSelectorIsOff)
+TEST_F(NativeChromaKeyerTest, PremultipliedWithMasks)
 {
     ParityPair pair = makePair(true, true);
     ASSERT_TRUE(bool(pair.native));
     setKey(pair, kGreenKey);
-    ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_InM", { 0. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_OutM", { 0. }));
-    expectParity(pair, "masks-disabled");
+    ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamShow, std::string("premultiplied")));
+    expectParity(pair, "masks-premultiplied", true, toleranceForShow("premultiplied"));
+}
+
+TEST_F(NativeChromaKeyerTest, UnpremultipliedRgbSource)
+{
+    ParityPair pair = makePair(true, true, "rgb");
+    ASSERT_TRUE(bool(pair.native));
+    setKey(pair, kGreenKey);
+    ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamShow, std::string("unpremultiplied")));
+    expectParity(pair, "rgb-source-unpremultiplied", true, toleranceForShow("unpremultiplied"));
 }
 
 TEST_F(NativeChromaKeyerTest, BothSchedulerModesAgreeWithNoUnplannedPull)

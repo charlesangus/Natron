@@ -63,8 +63,6 @@ const double kTime = 1.;
 const ParityTolerance kKeyerTolerance = ParityTolerance::transcendental();
 
 const double kGreenKey[3] = { 0.1, 0.8, 0.2 };
-const char* const kModes[4] = { "luminance", "color", "screen", "none" };
-const char* const kShows[4] = { "intermediate", "premultiplied", "unpremultiplied", "composite" };
 
 bool
 isNative(const NodePtr& node)
@@ -127,7 +125,7 @@ protected:
         ParityPair pair = makeParityPair(getApp(), kKeyerID, kOfxKeyerMajor, kNativeKeyerMajor);
 
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_TRUE(pair.live()) << "the OFX Keyer is still loadable, so parity is live";
+        EXPECT_FALSE(pair.live()) << "the OFX Keyer is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
         if (!pair.native || !pair.source) {
             return pair;
@@ -174,20 +172,10 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, kKeyerTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
-            EXPECT_TRUE(r.live);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Keyer " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
-        }
-    }
-
-    void expectThresholdsMatch(const ParityPair& pair,
-                               const std::string& what)
-    {
-        const char* const names[5] = { kKeyerParamSoftnessLower, kKeyerParamToleranceLower, kKeyerParamCenter, kKeyerParamToleranceUpper, kKeyerParamSoftnessUpper };
-
-        for (int i = 0; i < 5; ++i) {
-            EXPECT_NEAR(knobValue(pair.ofx, names[i]), knobValue(pair.native, names[i]), 1e-6) << what << ": " << names[i];
         }
     }
 };
@@ -220,169 +208,33 @@ TEST_F(NativeKeyerTest, UnversionedRequestsGetTheNativeKeyer)
     EXPECT_EQ(kNativeKeyerMajor, unversioned->getMajorVersion());
 }
 
-TEST_F(NativeKeyerTest, KnobParity)
+TEST_F(NativeKeyerTest, ColorModeWithBgComposite)
 {
-    ParityPair pair = makePair(false, false);
+    ParityPair pair = makePair(true, false);
     ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(bool(pair.ofx));
-    expectKnobParity(pair.ofx, pair.native);
+    setModeAndKey(pair, "color", kGreenKey);
+    ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamShow, std::string("composite")));
+    expectParity(pair, "bg-color-composite", true);
 }
 
-TEST_F(NativeKeyerTest, DefaultsWithoutBg)
+TEST_F(NativeKeyerTest, ScreenModeWithMasksPremultiplied)
 {
-    ParityPair pair = makePair(false, false);
+    ParityPair pair = makePair(false, true);
     ASSERT_TRUE(bool(pair.native));
-    expectParity(pair, "defaults-no-bg");
+    setModeAndKey(pair, "screen", kGreenKey);
+    ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamShow, std::string("premultiplied")));
+    expectParity(pair, "masks-screen-premultiplied", true);
 }
 
-TEST_F(NativeKeyerTest, EveryModeEveryShowWithBg)
-{
-    for (int m = 0; m < 4; ++m) {
-        for (int s = 0; s < 4; ++s) {
-            ParityPair pair = makePair(true, false);
-            ASSERT_TRUE(bool(pair.native));
-            setModeAndKey(pair, kModes[m], kGreenKey);
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamShow, std::string(kShows[s])));
-            expectParity(pair, std::string("bg-") + kModes[m] + "-" + kShows[s], (m == 1) && (s == 3));
-        }
-    }
-}
-
-TEST_F(NativeKeyerTest, EveryModeEveryShowWithMasksAndNoBg)
-{
-    for (int m = 0; m < 4; ++m) {
-        for (int s = 0; s < 4; ++s) {
-            ParityPair pair = makePair(false, true);
-            ASSERT_TRUE(bool(pair.native));
-            setModeAndKey(pair, kModes[m], kGreenKey);
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamShow, std::string(kShows[s])));
-            expectParity(pair, std::string("masks-") + kModes[m] + "-" + kShows[s], (m == 2) && (s == 1));
-        }
-    }
-}
-
-TEST_F(NativeKeyerTest, EveryLuminanceMath)
-{
-    const char* const maths[7] = { "rec709", "rec2020", "acesap0", "acesap1", "ccir601", "average", "max" };
-
-    for (int m = 0; m < 7; ++m) {
-        for (int mode = 0; mode < 2; ++mode) {
-            ParityPair pair = makePair(true, false);
-            ASSERT_TRUE(bool(pair.native));
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamLuminanceMath, std::string(maths[m])));
-            // A black key colour makes Color mode fall back to the luminance too.
-            const double black[3] = { 0., 0., 0. };
-            setModeAndKey(pair, kModes[mode], mode ? black : kGreenKey);
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamCenter, { 0.5 }));
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamShow, std::string("composite")));
-            expectParity(pair, std::string("luminance-math-") + maths[m] + (mode ? "-color" : "-luminance"));
-        }
-    }
-}
-
-TEST_F(NativeKeyerTest, ThresholdsAndTolerances)
-{
-    const double softnessLower[3] = { -0.3, 0., -1. };
-    const double toleranceLower[3] = { -0.1, -0.2, 0. };
-    const double center[3] = { 0.4, 0., 0.9 };
-    const double toleranceUpper[3] = { 0.1, 0.3, 0.2 };
-    const double softnessUpper[3] = { 0.2, 0., 0.5 };
-
-    for (int k = 0; k < 3; ++k) {
-        for (int mode = 0; mode < 3; ++mode) {
-            ParityPair pair = makePair(true, false);
-            ASSERT_TRUE(bool(pair.native));
-            setModeAndKey(pair, kModes[mode], kGreenKey);
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamSoftnessLower, { softnessLower[k] }));
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamToleranceLower, { toleranceLower[k] }));
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamCenter, { center[k] }));
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamToleranceUpper, { toleranceUpper[k] }));
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamSoftnessUpper, { softnessUpper[k] }));
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamShow, std::string("premultiplied")));
-            expectParity(pair, std::string("thresholds-") + std::to_string(k) + "-" + kModes[mode]);
-        }
-    }
-}
-
-TEST_F(NativeKeyerTest, DespillInScreenAndNone)
-{
-    const double despills[4] = { 0., 0.5, 1., 2. };
-    const double angles[4] = { 120., 60., 180., 0. };
-    const double screenKey[3] = { 0.1, 0.8, 0.2 };
-
-    for (int mode = 2; mode < 4; ++mode) {
-        for (int d = 0; d < 4; ++d) {
-            ParityPair pair = makePair(true, true);
-            ASSERT_TRUE(bool(pair.native));
-            setModeAndKey(pair, kModes[mode], screenKey);
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamDespill, { despills[d] }));
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamDespillAngle, { angles[d] }));
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamShow, std::string("unpremultiplied")));
-            expectParity(pair, std::string("despill-") + kModes[mode] + "-" + std::to_string(d), (mode == 3) && (d == 2));
-        }
-    }
-}
-
-TEST_F(NativeKeyerTest, SourceAlphaHandling)
-{
-    const char* const handling[3] = { "ignore", "inside", "normal" };
-
-    for (int h = 0; h < 3; ++h) {
-        for (int m = 0; m < 4; ++m) {
-            ParityPair pair = makePair(true, h == 1);
-            ASSERT_TRUE(bool(pair.native));
-            setModeAndKey(pair, kModes[m], kGreenKey);
-            ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamSourceAlpha, std::string(handling[h])));
-            expectParity(pair, std::string("source-alpha-") + handling[h] + "-" + kModes[m]);
-        }
-    }
-}
-
-// The OpenFX plug-in reads the alpha of an RGB source out of bounds when it uses source alpha, so
-// only the cases that never read it are compared.
-TEST_F(NativeKeyerTest, RgbSource)
-{
-    for (int m = 0; m < 4; ++m) {
-        ParityPair pair = makePair(true, true, "rgb");
-        ASSERT_TRUE(bool(pair.native));
-        setModeAndKey(pair, kModes[m], kGreenKey);
-        ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamShow, std::string("composite")));
-        expectParity(pair, std::string("rgb-source-") + kModes[m]);
-    }
-}
-
-TEST_F(NativeKeyerTest, MaskInputsAreIgnoredWhileTheirSelectorIsOff)
+TEST_F(NativeKeyerTest, DespillInNoneMode)
 {
     ParityPair pair = makePair(true, true);
     ASSERT_TRUE(bool(pair.native));
-    setModeAndKey(pair, "color", kGreenKey);
-    ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_InM", { 0. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_OutM", { 0. }));
-    expectParity(pair, "masks-disabled");
-}
-
-TEST_F(NativeKeyerTest, EditingTheKeyColorOrModeResetsTheThresholdsAsOfxDoes)
-{
-    ParityPair pair = makePair(false, false);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(bool(pair.ofx));
-    const double key[3] = { 0.2, 0.6, 0.3 };
-
-    for (int m = 0; m < 4; ++m) {
-        ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamMode, std::string(kModes[m])));
-        expectThresholdsMatch(pair, std::string("mode ") + kModes[m]);
-        ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamKeyColor, { key[0], key[1], key[2] }));
-        expectThresholdsMatch(pair, std::string("key colour in ") + kModes[m]);
-    }
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamMode, std::string("luminance")));
-    ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamLuminanceMath, std::string("rec2020")));
-    ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamKeyColor, { 0.9, 0.1, 0.4 }));
-    expectThresholdsMatch(pair, "rec2020 luminance");
-
-    ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamMode, std::string("screen")));
-    ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamKeyColor, { 0., 0., 0. }));
-    expectThresholdsMatch(pair, "black screen key");
+    setModeAndKey(pair, "none", kGreenKey);
+    ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamDespill, { 1. }));
+    ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamDespillAngle, { 180. }));
+    ASSERT_TRUE(setKnobOnBoth(pair, kKeyerParamShow, std::string("unpremultiplied")));
+    expectParity(pair, "despill-none-2", true);
 }
 
 TEST_F(NativeKeyerTest, EditingTheKeyColorSetsTheLuminanceThresholds)

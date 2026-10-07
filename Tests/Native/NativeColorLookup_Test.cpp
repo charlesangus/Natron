@@ -171,6 +171,7 @@ protected:
         ParityPair pair = makeParityPair(getApp(), kColorLookupID, kOfxColorLookupMajor, kNativeColorLookupMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
+        EXPECT_FALSE(pair.live()) << "the OFX ColorLookup is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
 
         return pair;
@@ -185,6 +186,7 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, kColorLookupTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] ColorLookup " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -192,78 +194,12 @@ protected:
     }
 };
 
-TEST_F(NativeColorLookupTest, KnobsMatchTheOfxPlugin)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-    expectKnobParity(pair.ofx, pair.native);
-}
-
-TEST_F(NativeColorLookupTest, LookupTableDefaultsMatchTheOfxPlugin)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-    KnobParametric* ofx = tableOf(pair.ofx);
-    KnobParametric* native = tableOf(pair.native);
-    ASSERT_TRUE(ofx != NULL);
-    ASSERT_TRUE(native != NULL);
-    ASSERT_EQ(ColorLookup::eCurveCount, native->getDimension());
-    ASSERT_EQ(ofx->getDimension(), native->getDimension());
-
-    for (int d = 0; d < ColorLookup::eCurveCount; ++d) {
-        EXPECT_EQ(ofx->getDimensionName(d), native->getDimensionName(d)) << "curve " << d;
-        double ofxColor[3];
-        double nativeColor[3];
-        ofx->getCurveColor(d, &ofxColor[0], &ofxColor[1], &ofxColor[2]);
-        native->getCurveColor(d, &nativeColor[0], &nativeColor[1], &nativeColor[2]);
-        for (int c = 0; c < 3; ++c) {
-            EXPECT_EQ(ofxColor[c], nativeColor[c]) << "curve " << d << ", colour " << c;
-        }
-        CurvePtr a = ofx->getParametricCurve(d);
-        CurvePtr b = native->getParametricCurve(d);
-        ASSERT_EQ(2, b->getKeyFramesCount()) << "curve " << d;
-        ASSERT_EQ(a->getKeyFramesCount(), b->getKeyFramesCount()) << "curve " << d;
-        EXPECT_EQ(2, native->getDefaultParametricCurve(d)->getKeyFramesCount()) << "curve " << d;
-        for (int i = 0; i < 2; ++i) {
-            KeyFrame ka;
-            KeyFrame kb;
-            ASSERT_TRUE(a->getKeyFrameWithIndex(i, &ka));
-            ASSERT_TRUE(b->getKeyFrameWithIndex(i, &kb));
-            EXPECT_EQ(ka.getTime(), kb.getTime()) << "curve " << d << ", point " << i;
-            EXPECT_EQ(ka.getValue(), kb.getValue()) << "curve " << d << ", point " << i;
-            EXPECT_EQ(ka.getLeftDerivative(), kb.getLeftDerivative()) << "curve " << d << ", point " << i;
-            EXPECT_EQ(ka.getRightDerivative(), kb.getRightDerivative()) << "curve " << d << ", point " << i;
-            EXPECT_EQ(eKeyframeTypeCubic, kb.getInterpolation()) << "curve " << d << ", point " << i;
-            EXPECT_EQ(ka.getInterpolation(), kb.getInterpolation()) << "curve " << d << ", point " << i;
-        }
-    }
-}
-
-TEST_F(NativeColorLookupTest, DefaultCurvesWithAWideRange)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, "range", { -0.5, 2. }));
-    expectParity(pair, "default-range", false);
-}
-
 TEST_F(NativeColorLookupTest, StandardEditedCurves)
 {
     ParityPair pair = makePair();
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(editCurves(pair));
     expectParity(pair, "standard-edited", true);
-}
-
-TEST_F(NativeColorLookupTest, WeightedStandard)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(editCurves(pair));
-    ASSERT_TRUE(setKnobOnBoth(pair, kColorLookupParamMasterCurveMode, std::string("weightedstandard")));
-    expectParity(pair, "weighted", false);
 }
 
 TEST_F(NativeColorLookupTest, FilmLike)
@@ -284,45 +220,6 @@ TEST_F(NativeColorLookupTest, LuminanceWithAWiderRange)
     ASSERT_TRUE(setKnobOnBoth(pair, "luminanceMath", std::string("acesap1")));
     ASSERT_TRUE(setKnobOnBoth(pair, kColorLookupParamRange, { -0.5, 2. }));
     expectParity(pair, "luminance-range", true);
-}
-
-TEST_F(NativeColorLookupTest, ANarrowRangeSendsMostValuesThroughTheCurves)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(editCurves(pair));
-    ASSERT_TRUE(setKnobOnBoth(pair, kColorLookupParamRange, { 0.2, 0.8 }));
-    expectParity(pair, "narrow-range", false);
-}
-
-TEST_F(NativeColorLookupTest, ClampsOnBothSides)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(editCurves(pair));
-    ASSERT_TRUE(setKnobOnBoth(pair, kColorLookupParamMasterCurveMode, std::string("luminance")));
-    ASSERT_TRUE(setKnobOnBoth(pair, kColorLookupParamClampBlack, { 1. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kColorLookupParamClampWhite, { 1. }));
-    expectParity(pair, "clamps", false);
-}
-
-TEST_F(NativeColorLookupTest, AlphaOnlyInput)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    setParitySourceComponents(pair.source, "alpha");
-    ASSERT_TRUE(editCurves(pair));
-    expectParity(pair, "alpha-only", false);
-}
-
-TEST_F(NativeColorLookupTest, RgbInput)
-{
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    setParitySourceComponents(pair.source, "rgb");
-    ASSERT_TRUE(editCurves(pair));
-    ASSERT_TRUE(setKnobOnBoth(pair, kColorLookupParamMasterCurveMode, std::string("filmlike")));
-    expectParity(pair, "rgb-input", false);
 }
 
 TEST_F(NativeColorLookupTest, SetButtonsAddCubicControlPoints)
@@ -442,5 +339,5 @@ TEST_F(NativeColorLookupTest, UnversionedRequestsGetTheNativeColorLookup)
     ASSERT_TRUE(bool(unversioned));
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativeColorLookupMajor, unversioned->getMajorVersion());
-    EXPECT_TRUE(isPluginMajorRegistered(kColorLookupID, kOfxColorLookupMajor));
+    EXPECT_FALSE(isPluginMajorRegistered(kColorLookupID, kOfxColorLookupMajor));
 }

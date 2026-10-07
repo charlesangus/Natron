@@ -39,13 +39,18 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Clamp.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
+#include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/EdgeDetect.h"
+#include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Keyer/ChromaKeyer.h"
+#include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -97,6 +102,12 @@ nativeTable()
         { PLUGINID_NATRON_POSITION, PLUGIN_MAJOR_NATRON_POSITION },
         { PLUGINID_NATRON_REFORMAT, PLUGIN_MAJOR_NATRON_REFORMAT },
         { PLUGINID_NATRON_BLUR, PLUGIN_MAJOR_NATRON_BLUR },
+        { PLUGINID_NATRON_KEYER, PLUGIN_MAJOR_NATRON_KEYER },
+        { PLUGINID_NATRON_CHROMAKEYER, PLUGIN_MAJOR_NATRON_CHROMAKEYER },
+        { PLUGINID_NATRON_ERODE, PLUGIN_MAJOR_NATRON_ERODE },
+        { PLUGINID_NATRON_DILATE, PLUGIN_MAJOR_NATRON_DILATE },
+        { PLUGINID_NATRON_EDGEDETECT, PLUGIN_MAJOR_NATRON_EDGEDETECT },
+        { PLUGINID_NATRON_COLORLOOKUP, PLUGIN_MAJOR_NATRON_COLORLOOKUP },
     };
 
     return table;

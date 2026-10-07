@@ -127,12 +127,12 @@ protected:
         project->setOrAddProjectFormat(Format(0, 0, kParitySourceWidth, kParitySourceHeight, "nativeErodeDilate64x48", 1.));
     }
 
-    ParityPair makePair(const MorphologyVariant& variant,
-                        bool withMask = false)
+    ParityPair makePair(const MorphologyVariant& variant)
     {
-        ParityPair pair = makeParityPair(getApp(), variant.id, kOfxMajor, variant.nativeMajor, withMask ? std::string("Mask") : std::string());
+        ParityPair pair = makeParityPair(getApp(), variant.id, kOfxMajor, variant.nativeMajor);
 
         EXPECT_TRUE(bool(pair.native));
+        EXPECT_FALSE(pair.live()) << "the OFX plugin is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
@@ -144,38 +144,17 @@ protected:
     void expectParity(const ParityPair& pair,
                       const MorphologyVariant& variant,
                       const std::string& caseName,
-                      bool record,
-                      bool useOwnRegionOfDefinition = false)
+                      bool record)
     {
         const std::string fullName = std::string(variant.name) + "-" + caseName;
 
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-            RectI window;
-            if (useOwnRegionOfDefinition) {
-                window = regionOfDefinition(pair.native, kTime, RenderScale::fromMipmapLevel(mipmapLevel)).toPixelEnclosing(mipmapLevel, 1.);
-            }
-            const ParityResult r = compareParity(pair, fullName, window, mipmapLevel, kTolerance, record);
+            const ParityResult r = compareParity(pair, fullName, RectI(), mipmapLevel, kTolerance, record);
             EXPECT_TRUE(r.ok) << fullName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << fullName;
             std::cout << "[ parity ] " << fullName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
-        }
-    }
-
-    void expectSameRegionOfDefinition(const ParityPair& pair,
-                                      const std::string& caseName)
-    {
-        if (!pair.ofx) {
-            return;
-        }
-        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
-            const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
-            const RectD ofx = regionOfDefinition(pair.ofx, kTime, scale);
-            const RectD native = regionOfDefinition(pair.native, kTime, scale);
-            EXPECT_EQ(ofx.x1, native.x1) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.y1, native.y1) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.x2, native.x2) << caseName << " mipmap " << mipmapLevel;
-            EXPECT_EQ(ofx.y2, native.y2) << caseName << " mipmap " << mipmapLevel;
         }
     }
 
@@ -204,89 +183,14 @@ protected:
         ASSERT_TRUE(bool(pair.native));
 
         expectParity(pair, variant, "size-1x1", true);
-        expectSameRegionOfDefinition(pair, "size-1x1");
 
         ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { 5., 0. }));
         expectParity(pair, variant, "size-5x0", true);
-        expectSameRegionOfDefinition(pair, "size-5x0");
 
         ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { -3., -3. }));
         expectParity(pair, variant, "size-neg3x3", true);
-        expectSameRegionOfDefinition(pair, "size-neg3x3");
-
-        // The erosion of one axis and the dilation of the other do not commute.
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { 4., -2. }));
-        expectParity(pair, variant, "size-4x-2", false);
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { -5., 3. }));
-        expectParity(pair, variant, "size-neg5x3", false);
-
-        // A window wider than the image collapses the line to its extremum.
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { 40., 30. }));
-        expectParity(pair, variant, "size-40x30", false);
-    }
-
-    void runEdges(const MorphologyVariant& variant)
-    {
-        resetProject();
-        ParityPair pair = makePair(variant);
-        ASSERT_TRUE(bool(pair.native));
-        setParitySourceOrigin(pair.source, 20, -6);
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { -4., 2. }));
-        expectSameRegionOfDefinition(pair, "edges");
-        expectParity(pair, variant, "edges", false, true);
-
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamExpandRoD, { 0. }));
-        expectSameRegionOfDefinition(pair, "edges-no-expand");
-        expectParity(pair, variant, "edges-no-expand", false);
-    }
-
-    void runAlphaOnly(const MorphologyVariant& variant)
-    {
-        resetProject();
-        ParityPair pair = makePair(variant);
-        ASSERT_TRUE(bool(pair.native));
-        setParitySourceComponents(pair.source, "alpha");
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { 3., 2. }));
-        expectParity(pair, variant, "alpha-3x2", false);
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { -3., -2. }));
-        expectParity(pair, variant, "alpha-neg3x2", false);
-    }
-
-    void runMaskAndMix(const MorphologyVariant& variant)
-    {
-        resetProject();
-        ParityPair pair = makePair(variant, true);
-        ASSERT_TRUE(bool(pair.native));
-        ASSERT_TRUE(bool(pair.mask));
-        setParitySourceOrigin(pair.mask, 8, 4);
-        ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_Mask", { 1. }));
-        ASSERT_TRUE(setChannelSelect(pair.native, "maskChannel_Mask", "rgba.A"));
-        ASSERT_TRUE(setKnobOnBoth(pair, kOfxMixParamName, { 0.5 }));
-        ASSERT_TRUE(setKnobOnBoth(pair, kErodeDilateParamSize, { 3., 2. }));
-        expectParity(pair, variant, "mask-mix", false);
-
-        ASSERT_TRUE(setKnobOnBoth(pair, kOfxMaskInvertParamName, { 1. }));
-        expectParity(pair, variant, "mask-mix-invert", false);
     }
 };
-
-TEST_F(NativeErodeDilateTest, ErodeKnobsMatchTheOfxPlugin)
-{
-    resetProject();
-    ParityPair pair = makePair(kErode);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-    expectKnobParity(pair.ofx, pair.native);
-}
-
-TEST_F(NativeErodeDilateTest, DilateKnobsMatchTheOfxPlugin)
-{
-    resetProject();
-    ParityPair pair = makePair(kDilate);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-    expectKnobParity(pair.ofx, pair.native);
-}
 
 TEST_F(NativeErodeDilateTest, UnversionedRequestsGetTheNativeNodes)
 {
@@ -361,36 +265,6 @@ TEST_F(NativeErodeDilateTest, ErodeSizes)
 TEST_F(NativeErodeDilateTest, DilateSizes)
 {
     runSizes(kDilate);
-}
-
-TEST_F(NativeErodeDilateTest, ErodeImageEdges)
-{
-    runEdges(kErode);
-}
-
-TEST_F(NativeErodeDilateTest, DilateImageEdges)
-{
-    runEdges(kDilate);
-}
-
-TEST_F(NativeErodeDilateTest, ErodeAlphaOnlyInput)
-{
-    runAlphaOnly(kErode);
-}
-
-TEST_F(NativeErodeDilateTest, DilateAlphaOnlyInput)
-{
-    runAlphaOnly(kDilate);
-}
-
-TEST_F(NativeErodeDilateTest, ErodeMaskAndMix)
-{
-    runMaskAndMix(kErode);
-}
-
-TEST_F(NativeErodeDilateTest, DilateMaskAndMix)
-{
-    runMaskAndMix(kDilate);
 }
 
 TEST_F(NativeErodeDilateTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)

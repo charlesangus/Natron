@@ -150,12 +150,14 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # It also excludes Transform and TransformMasked (DirBlur stays OFX), Crop, Position,
 # Reformat (with its 1.1 compat factory) and CImgBlur, which the native nodes in
 # Engine/Nodes/Transform and Engine/Nodes/Filter take over.
+# It also excludes Keyer, ChromaKeyer, ColorLookup, CImgErode, CImgDilate and
+# EdgeDetect, which the native nodes in Engine/Nodes/Keyer, Engine/Nodes/Color and Engine/Nodes/Filter take over.
 #
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
 # this container with no other source changes needed.
 OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
-OPENFX_MISC_REF="99817f41e249ff40a3dcaadd4f83ca9d135a8a44"
+OPENFX_MISC_REF="59ae4c26ab8078e858b8243044471958108dbd91"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a

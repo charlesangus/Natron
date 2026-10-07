@@ -1059,3 +1059,8 @@ Notes:
   - **Engine change:** native Merge and Dissolve are `InspectorNode`s, as their OFX versions are (`AppInstance::isEntitledForInspector`), because the node type is chosen before the effect exists.
   - **Behaviour fixes:** Dissolve's RoD with partial inputs falls back to the project extent, as OFX does. The Merge panel now creates explicit separator knobs, because `setAddSeparator` draws nothing on native knobs.
   - **Parity references:** the parity windows exceed Design §6's 64×48. The estimated references come to about 1.44 MB, against the 1.5 MB cap.
+- 2026-10-07 — **B9 wave 1 written; wave 2 dispatched; nothing built yet.**
+  - **P3.T8 retirement:** references recorded and committed (`7fa817a80`, 1.45 MB; replay 57/57). The fork commit "M67: retire merge and generators" is pushed at `0424c257` and pinned. Unrecorded parity cases and the OFX knob-parity tests for the family are deleted.
+  - **P4.T1 resampler:** in a standalone host check, its output matched openfx-misc's `ofxsFilter.h` bit for bit over 80k random cases. Interpolation is done in double, as in OFX.
+  - **P4.T6 blur kernels:** bit-exact against CImg 2.9.9. **Deviation:** the test define is `NATRON_TESTS_CIMG_HEADER` (full path), because an `#include` can't join a directory macro to a file name.
+  - **P4.T3 Crop:** it declares the generator extent knobs itself, because `NativeGenerator` has no static knob helper. Folding the two into one helper is a follow-up. AppManager registration was split: Crop's is in wave 1, the rest in wave 2 under P4.T2.

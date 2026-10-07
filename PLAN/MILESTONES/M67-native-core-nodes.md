@@ -907,7 +907,7 @@ Shared rules for every node task in this phase:
   - verify: Full ctest green in both modes. Screenshots are listed for UAT.
   - size: M
 
-- [ ] M67.P5.T8 — Record parity references and retire the keying/misc OFX plugins
+- [x] M67.P5.T8 — Record parity references and retire the keying/misc OFX plugins
   - files: `Tests/fixtures/native-parity/…` (generated), `tools/ci/local/fetch-assets.sh`, `Engine/OfxEffectInstance.cpp`, `Engine/OfxParamInstance.cpp`, `Tests/Native/NativePluginList_Test.cpp`, plus in the fork: `CMakeLists.txt`, `CImg/Blur/CImgBlur.cpp`
   - approach:
     - Record first, PM-run, `-R 'Native(Keyer|ChromaKeyer|ErodeDilate|EdgeDetect|ColorLookup)'`.
@@ -947,7 +947,7 @@ Shared rules for every node task in this phase:
     - `compare.py` output is pasted into the section.
   - size: M
 
-- [ ] M67.P6.T2 — PyPlug audit: every param the bundled PyPlugs set on a now-native node exists
+- [x] M67.P6.T2 — PyPlug audit: every param the bundled PyPlugs set on a now-native node exists
   - files: `Tests/Native/PyPlugNativeParams_Test.cpp` (new)
   - approach:
     - Parse each bundled PyPlug in `NATRON_TESTS_PYPLUGS_DIR` (Glow, PIKColor, LightWrap, ZMask, DropShadow, EdgeBlur, AngleBlur, ZRemap, Fill, and any other that creates a retired ID). For each `createNode("<retired id>", …)` block, collect the `getParam("<name>")` names. Plain text parsing in C++ with `QRegularExpression`.
@@ -956,7 +956,7 @@ Shared rules for every node task in this phase:
   - verify: The test passes. A missing name is listed with PyPlug, node and param. Each finding is fixed in the node (if it is a real knob) or in the allow-list (if it is OFX-internal), with the reason.
   - size: M
 
-- [ ] M67.P6.T3 — Document flat native nodes and the parity tolerances
+- [x] M67.P6.T3 — Document flat native nodes and the parity tolerances
   - files: `Engine/Nodes/README.md`
   - approach: Add a section "Flat image nodes (`NativeImageEffect`)" covering:
     - the point-op kernel contract and the fusion-readiness rules (Design §5);
@@ -1105,3 +1105,7 @@ Notes:
   - **P5.T8:** keying retired in the fork (`59ae4c26`).
   - **P6.T2 audit:** found no missing real knobs. The allow-list gains Merge's `aChannelsChanged`/`bChannelsChanged`, OFX state flags that native Merge has no use for.
   - **Regression found:** DropShadow's `Multiply1` and PIKColor's two Dilates set the OFX `unPremultBy`, which is a no-op on native nodes, so they would silently stop unpremultiplying. The fix goes in the PyPlugs (`hostUnPremultBy`), with a test, rather than an alias knob, per the clean-break rule.
+- 2026-10-07 — **B11 landed** (`ec8eb4629`, `eeb5d8172`, `31fc0fbbe`): every OFX plugin M67 replaces is now retired.
+  - **Tests:** full debug ctest passes 1210/1210 in both modes, smoke passes (`verify_plugin_loads` on Misc and CImg), and the release build succeeds. `NativePluginList_Test` passes with all 34 retired IDs, each a single native version. The PyPlug tests pass.
+  - **Replay mode:** a gdb trace of `compareParity` showed every native comparison replays. The only live calls are `NativeParitySelf_Test` on ColorMatrix, which is not retired.
+  - **PyPlug fix:** DropShadow and PIKColor now set `hostUnPremultBy` to `rgba.A`, and a test checks it. The allow-list was trimmed to the names PyPlugs still set (`NatronOfxParamProcess*`, `aChannelsChanged`/`bChannelsChanged`). Dropping `premultChanged` departs from the spec, accepted because an entry nothing uses can only hide a regression.

@@ -46,7 +46,6 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/NativeEffectBase.h"
-#include "Engine/OfxEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/ViewIdx.h"
@@ -67,12 +66,6 @@ bool
 isNative(const NodePtr& node)
 {
     return node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
-}
-
-bool
-isOfx(const NodePtr& node)
-{
-    return node && dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get());
 }
 
 bool
@@ -116,6 +109,7 @@ protected:
         ParityPair pair = makeParityPair(getApp(), kDissolveID, kOfxDissolveMajor, kNativeDissolveMajor, withMask ? std::string("Mask") : std::string());
 
         EXPECT_TRUE(bool(pair.native));
+        EXPECT_FALSE(pair.live()) << "the OFX Dissolve is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
         if (pair.source) {
             setParitySourceOrigin(pair.source, 0, 0);
@@ -139,6 +133,7 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, caseWindow(mipmapLevel), mipmapLevel, kDissolveTolerance, record);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] Dissolve " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -156,16 +151,6 @@ protected:
         return node;
     }
 };
-
-TEST_F(NativeDissolveTest, KnobsMatchTheOfxDissolve)
-{
-    resetProject();
-    ParityPair pair = makePair(1, true);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live()) << "the OFX Dissolve must be loadable at major " << kOfxDissolveMajor;
-
-    expectKnobParity(pair.ofx, pair.native);
-}
 
 TEST_F(NativeDissolveTest, InputsKeepTheOfxOrder)
 {
@@ -188,15 +173,6 @@ TEST_F(NativeDissolveTest, InputsKeepTheOfxOrder)
     }
 }
 
-TEST_F(NativeDissolveTest, WhichZero)
-{
-    resetProject();
-    ParityPair pair = makePair(3);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kDissolveParamWhich, { 0. }));
-    expectParity(pair, "which-0", false);
-}
-
 TEST_F(NativeDissolveTest, WhichBetweenZeroAndOne)
 {
     resetProject();
@@ -204,24 +180,6 @@ TEST_F(NativeDissolveTest, WhichBetweenZeroAndOne)
     ASSERT_TRUE(bool(pair.native));
     ASSERT_TRUE(setKnobOnBoth(pair, kDissolveParamWhich, { 0.3 }));
     expectParity(pair, "which-0.3", true);
-}
-
-TEST_F(NativeDissolveTest, WhichOne)
-{
-    resetProject();
-    ParityPair pair = makePair(3);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kDissolveParamWhich, { 1. }));
-    expectParity(pair, "which-1", false);
-}
-
-TEST_F(NativeDissolveTest, WhichBetweenOneAndTwo)
-{
-    resetProject();
-    ParityPair pair = makePair(3);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kDissolveParamWhich, { 1.5 }));
-    expectParity(pair, "which-1.5", false);
 }
 
 TEST_F(NativeDissolveTest, WhichTwoAndAHalfIsClampedToTheLastInput)
@@ -243,41 +201,6 @@ TEST_F(NativeDissolveTest, MaskedBlend)
     ASSERT_TRUE(setChannelSelect(pair.native, "maskChannel_Mask", "rgba.A"));
     ASSERT_TRUE(setKnobOnBoth(pair, kDissolveParamWhich, { 0.4 }));
     expectParity(pair, "masked", true);
-}
-
-TEST_F(NativeDissolveTest, MaskedInvertedBlend)
-{
-    resetProject();
-    ParityPair pair = makePair(2, true);
-    ASSERT_TRUE(bool(pair.mask));
-    setParitySourceOrigin(pair.mask, 12, 6);
-    ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_Mask", { 1. }));
-    ASSERT_TRUE(setChannelSelect(pair.native, "maskChannel_Mask", "rgba.A"));
-    ASSERT_TRUE(setKnobOnBoth(pair, "maskInvert", { 1. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kDissolveParamWhich, { 0.7 }));
-    expectParity(pair, "masked-inverted", false);
-}
-
-TEST_F(NativeDissolveTest, MissingUpperInput)
-{
-    resetProject();
-    ParityPair pair = makePair(1);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(setKnobOnBoth(pair, kDissolveParamWhich, { 0.5 }));
-    expectParity(pair, "missing-upper", false);
-}
-
-TEST_F(NativeDissolveTest, MissingLowerInput)
-{
-    resetProject();
-    ParityPair pair = makePair(2);
-    ASSERT_TRUE(bool(pair.native));
-    pair.native->disconnectInput(0);
-    if (pair.ofx) {
-        pair.ofx->disconnectInput(0);
-    }
-    ASSERT_TRUE(setKnobOnBoth(pair, kDissolveParamWhich, { 0.5 }));
-    expectParity(pair, "missing-lower", false);
 }
 
 TEST_F(NativeDissolveTest, DisplayRangeFollowsTheHighestConnectedInput)
@@ -303,12 +226,6 @@ TEST_F(NativeDissolveTest, UnversionedRequestsGetTheNativeDissolve)
     ASSERT_TRUE(bool(unversioned));
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativeDissolveMajor, unversioned->getMajorVersion());
-
-    if (isPluginMajorRegistered(kDissolveID, kOfxDissolveMajor)) {
-        NodePtr ofx = createNode(QString::fromUtf8(kDissolveID), kOfxDissolveMajor);
-        ASSERT_TRUE(bool(ofx));
-        EXPECT_TRUE(isOfx(ofx));
-    }
 }
 
 TEST_F(NativeDissolveTest, OnlyTheTwoChosenInputsAreRendered)

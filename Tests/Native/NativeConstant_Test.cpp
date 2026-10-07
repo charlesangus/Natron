@@ -53,7 +53,6 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/NativeGenerator.h"
 #include "Engine/Nodes/NativeEffectBase.h"
-#include "Engine/OfxEffectInstance.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
@@ -69,27 +68,13 @@ const int kOfxConstantMajor = 1;
 const int kNativeConstantMajor = PLUGIN_MAJOR_NATRON_CONSTANT;
 const double kTime = 1.;
 
-// The OpenFX generator's output layout choices, which the layer select replaces on the native
-// node: the host hides outputComponents and outputBitDepth is only shown in debug plug-in builds.
-const std::vector<std::string> kIgnoredOfxKnobs = { "outputComponents", "outputBitDepth" };
-
 // A generator writes knob values straight to the output: no arithmetic, so the exact class.
 const ParityTolerance kConstantTolerance = ParityTolerance::exact();
-
-const char* const kExtents[4] = {
-    kNativeGeneratorExtentFormat, kNativeGeneratorExtentSize, kNativeGeneratorExtentProject, kNativeGeneratorExtentDefault
-};
 
 bool
 isNative(const NodePtr& node)
 {
     return node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
-}
-
-bool
-isOfx(const NodePtr& node)
-{
-    return node && dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get());
 }
 
 // Sets a choice by option ID as a user edit, which is what makes the OpenFX generator refresh
@@ -116,19 +101,6 @@ setChoiceAsUser(const NodePtr& node,
     ADD_FAILURE() << name << " has no option " << optionID;
 
     return false;
-}
-
-bool
-setExtentOnBoth(const ParityPair& pair,
-                const std::string& extent)
-{
-    bool ok = setChoiceAsUser(pair.native, kNativeGeneratorParamExtent, extent);
-
-    if (pair.ofx) {
-        ok = setChoiceAsUser(pair.ofx, kNativeGeneratorParamExtent, extent) && ok;
-    }
-
-    return ok;
 }
 
 bool
@@ -163,17 +135,6 @@ regionOfDefinition(const NodePtr& node,
     EXPECT_NE(eStatusFailed, stat) << node->getPluginID();
 
     return rod;
-}
-
-void
-expectSameRect(const RectD& expected,
-               const RectD& actual,
-               const std::string& what)
-{
-    EXPECT_EQ(expected.x1, actual.x1) << what;
-    EXPECT_EQ(expected.y1, actual.y1) << what;
-    EXPECT_EQ(expected.x2, actual.x2) << what;
-    EXPECT_EQ(expected.y2, actual.y2) << what;
 }
 
 // A window wider than the extents the cases use, so clipping to the region of definition is
@@ -226,7 +187,7 @@ protected:
         }
         pair.native = createNodeAtMajor(getApp(), id, kNativeConstantMajor);
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_TRUE(pair.live()) << "the OFX " << id << " must be loadable at major " << kOfxConstantMajor;
+        EXPECT_FALSE(pair.live()) << "the OFX " << id << " is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
 
         return pair;
@@ -243,6 +204,7 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, caseWindow(mipmapLevel), mipmapLevel, kConstantTolerance, record, options);
             EXPECT_TRUE(r.ok) << pair.id << " " << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] " << pair.id << " " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -250,168 +212,23 @@ protected:
     }
 };
 
-TEST_F(NativeConstantTest, KnobsMatchTheOfxConstantInEveryExtent)
-{
-    resetProject();
-    ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_CONSTANT);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-
-    expectKnobParity(pair.ofx, pair.native, kIgnoredOfxKnobs);
-    for (int e = 0; e < 4; ++e) {
-        ASSERT_TRUE(setExtentOnBoth(pair, kExtents[e]));
-        SCOPED_TRACE(kExtents[e]);
-        expectKnobParity(pair.ofx, pair.native, kIgnoredOfxKnobs);
-    }
-    EXPECT_TRUE(bool(pair.native->getLayerKnob()));
-    EXPECT_TRUE(pair.native->isTargetLayerKnob(pair.native->getLayerKnob()));
-    EXPECT_FALSE(bool(pair.native->getKnobByName("outputComponents")));
-}
-
-TEST_F(NativeConstantTest, KnobsMatchTheOfxSolidInEveryExtent)
-{
-    resetProject();
-    ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_SOLID);
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-
-    expectKnobParity(pair.ofx, pair.native, kIgnoredOfxKnobs);
-    for (int e = 0; e < 4; ++e) {
-        ASSERT_TRUE(setExtentOnBoth(pair, kExtents[e]));
-        SCOPED_TRACE(kExtents[e]);
-        expectKnobParity(pair.ofx, pair.native, kIgnoredOfxKnobs);
-    }
-    KnobColor* color = dynamic_cast<KnobColor*>(pair.native->getKnobByName(kConstantParamColor).get());
-    ASSERT_TRUE(color != NULL);
-    EXPECT_EQ(3, color->getDimension());
-}
-
-TEST_F(NativeConstantTest, RegionOfDefinitionMatchesInEveryExtent)
-{
-    resetProject();
-    ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_CONSTANT);
-    ASSERT_TRUE(pair.live());
-
-    for (int e = 0; e < 4; ++e) {
-        ASSERT_TRUE(setExtentOnBoth(pair, kExtents[e]));
-        if (std::string(kExtents[e]) == kNativeGeneratorExtentSize) {
-            ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamBottomLeft, { 11., 7. }));
-            ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamSize, { 37., 23. }));
-        }
-        expectSameRect(regionOfDefinition(pair.ofx, kTime), regionOfDefinition(pair.native, kTime), kExtents[e]);
-    }
-
-    // A format chosen in Format extent sets the size and pixel aspect ratio the region follows.
-    ASSERT_TRUE(setExtentOnBoth(pair, kNativeGeneratorExtentFormat));
-    const NodePtr nodes[2] = { pair.ofx, pair.native };
-    for (int i = 0; i < 2; ++i) {
-        KnobChoice* format = dynamic_cast<KnobChoice*>(nodes[i]->getKnobByName(kNatronParamFormatChoice).get());
-        ASSERT_TRUE(format != NULL);
-        ASSERT_GT(format->getNumEntries(), 2);
-        format->setValue(1, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
-    }
-    expectSameRect(regionOfDefinition(pair.ofx, kTime), regionOfDefinition(pair.native, kTime), "format entry 1");
-
-    // The project extents follow a project format change, pixel aspect ratio included.
-    for (int e = 2; e < 4; ++e) {
-        ASSERT_TRUE(setExtentOnBoth(pair, kExtents[e]));
-        useProjectFormat(80, 60, 2.);
-        const RectD native = regionOfDefinition(pair.native, kTime);
-        expectSameRect(regionOfDefinition(pair.ofx, kTime), native, std::string(kExtents[e]) + " after a project format change");
-        EXPECT_EQ(160., native.x2) << kExtents[e];
-        EXPECT_EQ(60., native.y2) << kExtents[e];
-        useProjectFormat(64, 48, 1.);
-    }
-}
-
-TEST_F(NativeConstantTest, PixelAspectRatioAndFormatMatchInEveryExtent)
-{
-    resetProject(2.);
-    ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_CONSTANT);
-    ASSERT_TRUE(pair.live());
-
-    for (int e = 0; e < 4; ++e) {
-        ASSERT_TRUE(setExtentOnBoth(pair, kExtents[e]));
-        if (std::string(kExtents[e]) == kNativeGeneratorExtentSize) {
-            ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamReformat, { 1. }));
-            ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamBottomLeft, { 3., 5. }));
-            ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamSize, { 41., 29. }));
-        }
-        pair.ofx->getEffectInstance()->refreshMetadata_public(false);
-        pair.native->getEffectInstance()->refreshMetadata_public(false);
-        EXPECT_EQ(pair.ofx->getEffectInstance()->getAspectRatio(-1), pair.native->getEffectInstance()->getAspectRatio(-1)) << kExtents[e];
-        const RectI ofxFormat = pair.ofx->getEffectInstance()->getOutputFormat();
-        const RectI nativeFormat = pair.native->getEffectInstance()->getOutputFormat();
-        EXPECT_EQ(ofxFormat.x1, nativeFormat.x1) << kExtents[e];
-        EXPECT_EQ(ofxFormat.y1, nativeFormat.y1) << kExtents[e];
-        EXPECT_EQ(ofxFormat.x2, nativeFormat.x2) << kExtents[e];
-        EXPECT_EQ(ofxFormat.y2, nativeFormat.y2) << kExtents[e];
-        EXPECT_EQ(4, pair.native->getEffectInstance()->getMetadataNComps(-1)) << kExtents[e];
-    }
-}
-
 TEST_F(NativeConstantTest, DefaultExtent)
 {
     resetProject();
     ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_CONSTANT);
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(setKnobOnBoth(pair, kConstantParamColor, { 0.25, -0.5, 1.75, 0.6 }));
     expectParity(pair, "default", true);
-}
-
-TEST_F(NativeConstantTest, ProjectExtent)
-{
-    resetProject();
-    ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_CONSTANT);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setExtentOnBoth(pair, kNativeGeneratorExtentProject));
-    ASSERT_TRUE(setKnobOnBoth(pair, kConstantParamColor, { 0.5, 0.25, 0.125, 1. }));
-    expectParity(pair, "project", false);
-}
-
-TEST_F(NativeConstantTest, FormatExtent)
-{
-    resetProject();
-    ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_CONSTANT);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setExtentOnBoth(pair, kNativeGeneratorExtentFormat));
-    ASSERT_TRUE(setKnobOnBoth(pair, kConstantParamColor, { 2., 0.75, -1., 0.5 }));
-    expectParity(pair, "format", false);
 }
 
 TEST_F(NativeConstantTest, SizeExtentWithAnOffset)
 {
     resetProject();
     ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_CONSTANT);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setExtentOnBoth(pair, kNativeGeneratorExtentSize));
+    ASSERT_TRUE(setChoiceAsUser(pair.native, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
     ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamBottomLeft, { 11., 7. }));
     ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamSize, { 37., 23. }));
     ASSERT_TRUE(setKnobOnBoth(pair, kConstantParamColor, { 0.1, 0.2, 0.3, 0.4 }));
     expectParity(pair, "size-offset", true);
-}
-
-TEST_F(NativeConstantTest, AnimatedColor)
-{
-    resetProject();
-    ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_CONSTANT);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamFrameRange, { 1., 10. }));
-
-    const NodePtr nodes[2] = { pair.ofx, pair.native };
-    for (int i = 0; i < 2; ++i) {
-        nodes[i]->getEffectInstance()->refreshMetadata_public(false);
-        EXPECT_FALSE(nodes[i]->getEffectInstance()->isFrameVarying()) << nodes[i]->getPluginID() << " major " << nodes[i]->getMajorVersion();
-        KnobColor* color = dynamic_cast<KnobColor*>(nodes[i]->getKnobByName(kConstantParamColor).get());
-        ASSERT_TRUE(color != NULL);
-        for (int d = 0; d < 4; ++d) {
-            color->setValueAtTime(1., 0.1 * (d + 1), ViewSpec::all(), d);
-            color->setValueAtTime(10., 1. - 0.1 * d, ViewSpec::all(), d);
-        }
-        nodes[i]->getEffectInstance()->refreshMetadata_public(false);
-        EXPECT_TRUE(nodes[i]->getEffectInstance()->isFrameVarying()) << nodes[i]->getPluginID() << " major " << nodes[i]->getMajorVersion();
-    }
-    expectParity(pair, "animated-color", false, 5.);
 }
 
 TEST_F(NativeConstantTest, OverSourceWritesTheSelectedChannelsAndPassesTheRestThrough)
@@ -419,15 +236,13 @@ TEST_F(NativeConstantTest, OverSourceWritesTheSelectedChannelsAndPassesTheRestTh
     resetProject();
     ParityPair pair = makeParityPair(getApp(), PLUGINID_NATRON_CONSTANT, kOfxConstantMajor, kNativeConstantMajor);
     ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
+    EXPECT_FALSE(pair.live());
     setParitySourceOrigin(pair.source, 5, 3);
     ASSERT_TRUE(setKnobOnBoth(pair, kConstantParamColor, { 0.75, 0.5, 0.25, 0.125 }));
     std::vector<std::string> rg;
     rg.push_back("R");
     rg.push_back("G");
-    ASSERT_TRUE(setTargetChannels(pair.ofx, rg));
     ASSERT_TRUE(setTargetChannels(pair.native, rg));
-    expectSameRect(regionOfDefinition(pair.ofx, kTime), regionOfDefinition(pair.native, kTime), "default extent over a source");
     expectParity(pair, "over-source-rg", true);
 }
 
@@ -435,57 +250,36 @@ TEST_F(NativeConstantTest, SolidIsOpaque)
 {
     resetProject();
     ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_SOLID);
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(setKnobOnBoth(pair, kConstantParamColor, { 0.3, 0.6, 0.9 }));
     expectParity(pair, "default", true);
-
-    ASSERT_TRUE(setExtentOnBoth(pair, kNativeGeneratorExtentSize));
-    ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamBottomLeft, { 9., 13. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamSize, { 20., 17. }));
-    expectParity(pair, "size-offset", false);
 }
 
 TEST_F(NativeConstantTest, FrameRangeIsTheTimeDomain)
 {
     resetProject();
-    ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_CONSTANT);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamFrameRange, { 3., 9. }));
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), kNativeConstantMajor);
+    ASSERT_TRUE(isNative(node));
+    ASSERT_TRUE(setKnobValues(node, kNativeGeneratorParamFrameRange, { 3., 9. }));
 
-    double ofxFirst = 0., ofxLast = 0., nativeFirst = 0., nativeLast = 0.;
-    pair.ofx->getEffectInstance()->getFrameRange_public(pair.ofx->getEffectInstance()->getRenderHash(), &ofxFirst, &ofxLast, true);
-    pair.native->getEffectInstance()->getFrameRange_public(pair.native->getEffectInstance()->getRenderHash(), &nativeFirst, &nativeLast, true);
-    EXPECT_EQ(3., nativeFirst);
-    EXPECT_EQ(9., nativeLast);
-    EXPECT_EQ(ofxFirst, nativeFirst);
-    EXPECT_EQ(ofxLast, nativeLast);
+    double first = 0., last = 0.;
+    node->getEffectInstance()->getFrameRange_public(node->getEffectInstance()->getRenderHash(), &first, &last, true);
+    EXPECT_EQ(3., first);
+    EXPECT_EQ(9., last);
 }
 
-TEST_F(NativeConstantTest, RecenterMatchesTheOfxConstant)
+TEST_F(NativeConstantTest, RecenterCentresTheRectangleOnTheProject)
 {
     resetProject();
-    ParityPair pair = makeGeneratorPair(PLUGINID_NATRON_CONSTANT);
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setExtentOnBoth(pair, kNativeGeneratorExtentSize));
-    ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamSize, { 21., 10. }));
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), kNativeConstantMajor);
+    ASSERT_TRUE(isNative(node));
+    ASSERT_TRUE(setChoiceAsUser(node, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+    ASSERT_TRUE(setKnobValues(node, kNativeGeneratorParamSize, { 21., 10. }));
 
-    const NodePtr nodes[2] = { pair.ofx, pair.native };
-    for (int i = 0; i < 2; ++i) {
-        KnobButton* recenter = dynamic_cast<KnobButton*>(nodes[i]->getKnobByName(kNativeGeneratorParamRecenter).get());
-        ASSERT_TRUE(recenter != NULL);
-        recenter->trigger();
-    }
-    const char* const names[2] = { kNativeGeneratorParamBottomLeft, kNativeGeneratorParamSize };
-    for (int n = 0; n < 2; ++n) {
-        KnobDouble* ofx = dynamic_cast<KnobDouble*>(pair.ofx->getKnobByName(names[n]).get());
-        KnobDouble* native = dynamic_cast<KnobDouble*>(pair.native->getKnobByName(names[n]).get());
-        ASSERT_TRUE(ofx != NULL);
-        ASSERT_TRUE(native != NULL);
-        for (int d = 0; d < 2; ++d) {
-            EXPECT_EQ(ofx->getValue(d), native->getValue(d)) << names[n] << "[" << d << "]";
-        }
-    }
-    KnobDouble* bottomLeft = dynamic_cast<KnobDouble*>(pair.native->getKnobByName(kNativeGeneratorParamBottomLeft).get());
+    KnobButton* recenter = dynamic_cast<KnobButton*>(node->getKnobByName(kNativeGeneratorParamRecenter).get());
+    ASSERT_TRUE(recenter != NULL);
+    recenter->trigger();
+
+    KnobDouble* bottomLeft = dynamic_cast<KnobDouble*>(node->getKnobByName(kNativeGeneratorParamBottomLeft).get());
     ASSERT_TRUE(bottomLeft != NULL);
     EXPECT_EQ(21.5, bottomLeft->getValue(0));
     EXPECT_EQ(19., bottomLeft->getValue(1));
@@ -529,10 +323,6 @@ TEST_F(NativeConstantTest, UnversionedRequestsGetTheNativeGenerators)
         ASSERT_TRUE(bool(unversioned)) << ids[i];
         EXPECT_TRUE(isNative(unversioned)) << ids[i];
         EXPECT_EQ(kNativeConstantMajor, unversioned->getMajorVersion()) << ids[i];
-
-        NodePtr ofx = createNode(QString::fromUtf8(ids[i]), kOfxConstantMajor);
-        ASSERT_TRUE(bool(ofx)) << ids[i];
-        EXPECT_TRUE(isOfx(ofx)) << ids[i];
     }
 }
 

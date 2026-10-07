@@ -46,7 +46,6 @@
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Image/NativeGenerator.h"
 #include "Engine/Nodes/NativeEffectBase.h"
-#include "Engine/OfxEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
@@ -61,66 +60,13 @@ const int kOfxCheckerBoardMajor = 1;
 const int kNativeCheckerBoardMajor = PLUGIN_MAJOR_NATRON_CHECKERBOARD;
 const double kTime = 1.;
 
-// The output layout choices the layer select replaces on the native node: the host hides
-// outputComponents and outputBitDepth is only shown in debug plug-in builds.
-const std::vector<std::string> kIgnoredOfxKnobs = { "outputComponents", "outputBitDepth" };
-
 // Every pixel is one of six knob colours chosen by comparisons, so the exact class.
 const ParityTolerance kCheckerBoardTolerance = ParityTolerance::exact();
-
-const char* const kExtents[4] = {
-    kNativeGeneratorExtentFormat, kNativeGeneratorExtentSize, kNativeGeneratorExtentProject, kNativeGeneratorExtentDefault
-};
 
 bool
 isNative(const NodePtr& node)
 {
     return node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
-}
-
-bool
-isOfx(const NodePtr& node)
-{
-    return node && dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get());
-}
-
-// Sets a choice by option ID as a user edit, which is what makes the OpenFX generator refresh
-// which of its knobs are shown.
-bool
-setChoiceAsUser(const NodePtr& node,
-                const std::string& name,
-                const std::string& optionID)
-{
-    KnobChoice* choice = node ? dynamic_cast<KnobChoice*>(node->getKnobByName(name).get()) : NULL;
-
-    EXPECT_TRUE(choice != NULL) << name;
-    if (!choice) {
-        return false;
-    }
-    const std::vector<ChoiceOption> entries = choice->getEntries_mt_safe();
-    for (std::size_t i = 0; i < entries.size(); ++i) {
-        if (entries[i].id == optionID) {
-            choice->setValue((int)i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
-
-            return true;
-        }
-    }
-    ADD_FAILURE() << name << " has no option " << optionID;
-
-    return false;
-}
-
-bool
-setExtentOnBoth(const ParityPair& pair,
-                const std::string& extent)
-{
-    bool ok = setChoiceAsUser(pair.native, kNativeGeneratorParamExtent, extent);
-
-    if (pair.ofx) {
-        ok = setChoiceAsUser(pair.ofx, kNativeGeneratorParamExtent, extent) && ok;
-    }
-
-    return ok;
 }
 
 // The project window and a margin around it, so clipping to the region of definition is
@@ -164,7 +110,7 @@ protected:
         }
         pair.native = createNodeAtMajor(getApp(), kCheckerBoardID, kNativeCheckerBoardMajor);
         EXPECT_TRUE(bool(pair.native));
-        EXPECT_TRUE(pair.live()) << "the OFX CheckerBoard must be loadable at major " << kOfxCheckerBoardMajor;
+        EXPECT_FALSE(pair.live()) << "the OFX CheckerBoard is retired, so parity replays the recorded references";
         EXPECT_TRUE(isNative(pair.native));
 
         return pair;
@@ -184,6 +130,7 @@ protected:
         for (unsigned mipmapLevel = 0; mipmapLevel <= 2; ++mipmapLevel) {
             const ParityResult r = compareParity(pair, caseName, caseWindow(mipmapLevel, par), mipmapLevel, kCheckerBoardTolerance, record, options);
             EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_FALSE(r.live);
             EXPECT_GE(r.planesCompared, 1) << caseName;
             std::cout << "[ parity ] CheckerBoard " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
                       << ", max abs diff " << r.maxAbsDiff << std::endl;
@@ -191,46 +138,17 @@ protected:
     }
 };
 
-TEST_F(NativeCheckerBoardTest, KnobsMatchTheOfxCheckerBoard)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(bool(pair.native));
-    ASSERT_TRUE(pair.live());
-
-    expectKnobParity(pair.ofx, pair.native, kIgnoredOfxKnobs);
-    for (int e = 0; e < 4; ++e) {
-        ASSERT_TRUE(setExtentOnBoth(pair, kExtents[e]));
-        SCOPED_TRACE(kExtents[e]);
-        expectKnobParity(pair.ofx, pair.native, kIgnoredOfxKnobs);
-    }
-}
-
 TEST_F(NativeCheckerBoardTest, Default)
 {
     resetProject();
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     expectParity(pair, "default", true);
-}
-
-TEST_F(NativeCheckerBoardTest, SmallBoxesWithoutLines)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, kCheckerBoardParamBoxSize, { 10., 7. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kCheckerBoardParamColor0, { 0.9, -0.2, 0.3, 1. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kCheckerBoardParamColor2, { 0.2, 1.5, 0.4, 0.5 }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kCheckerBoardParamLineWidth, { 0. }));
-    expectParity(pair, "boxes-line0", false);
 }
 
 TEST_F(NativeCheckerBoardTest, SmallBoxesWithLines)
 {
     resetProject();
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(setKnobOnBoth(pair, kCheckerBoardParamBoxSize, { 10., 7. }));
     ASSERT_TRUE(setKnobOnBoth(pair, kCheckerBoardParamLineWidth, { 2. }));
     ASSERT_TRUE(setKnobOnBoth(pair, kCheckerBoardParamCenterLineWidth, { 3. }));
@@ -242,45 +160,9 @@ TEST_F(NativeCheckerBoardTest, PixelAspectRatioTwoProject)
 {
     resetProject(2.);
     ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
     ASSERT_TRUE(setKnobOnBoth(pair, kCheckerBoardParamBoxSize, { 12., 9. }));
     ASSERT_TRUE(setKnobOnBoth(pair, kCheckerBoardParamLineWidth, { 2. }));
     expectParity(pair, "par2", true, 2.);
-}
-
-TEST_F(NativeCheckerBoardTest, SizeExtentCentresOnItsRectangle)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setExtentOnBoth(pair, kNativeGeneratorExtentSize));
-    ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamBottomLeft, { 9., 5. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamSize, { 43., 31. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kCheckerBoardParamBoxSize, { 8., 8. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kCheckerBoardParamLineWidth, { 1. }));
-    expectParity(pair, "size-offset", false);
-}
-
-TEST_F(NativeCheckerBoardTest, AnimatedColor0)
-{
-    resetProject();
-    ParityPair pair = makePair();
-    ASSERT_TRUE(pair.live());
-    ASSERT_TRUE(setKnobOnBoth(pair, kNativeGeneratorParamFrameRange, { 1., 10. }));
-    ASSERT_TRUE(setKnobOnBoth(pair, kCheckerBoardParamBoxSize, { 10., 7. }));
-
-    const NodePtr nodes[2] = { pair.ofx, pair.native };
-    for (int i = 0; i < 2; ++i) {
-        KnobColor* color0 = dynamic_cast<KnobColor*>(nodes[i]->getKnobByName(kCheckerBoardParamColor0).get());
-        ASSERT_TRUE(color0 != NULL);
-        for (int d = 0; d < 4; ++d) {
-            color0->setValueAtTime(1., 0.1 * (d + 1), ViewSpec::all(), d);
-            color0->setValueAtTime(10., 1. - 0.1 * d, ViewSpec::all(), d);
-        }
-        nodes[i]->getEffectInstance()->refreshMetadata_public(false);
-        EXPECT_TRUE(nodes[i]->getEffectInstance()->isFrameVarying()) << (isOfx(nodes[i]) ? "ofx" : "native");
-    }
-    expectParity(pair, "animated-color0", false, 1., 5.);
 }
 
 TEST_F(NativeCheckerBoardTest, UnversionedRequestsGetTheNativeCheckerBoard)
@@ -289,10 +171,6 @@ TEST_F(NativeCheckerBoardTest, UnversionedRequestsGetTheNativeCheckerBoard)
     ASSERT_TRUE(bool(unversioned));
     EXPECT_TRUE(isNative(unversioned));
     EXPECT_EQ(kNativeCheckerBoardMajor, unversioned->getMajorVersion());
-
-    NodePtr ofx = createNode(QString::fromUtf8(kCheckerBoardID), kOfxCheckerBoardMajor);
-    ASSERT_TRUE(bool(ofx));
-    EXPECT_TRUE(isOfx(ofx));
 }
 
 TEST_F(NativeCheckerBoardTest, RendersTheSameInBothSchedulerModes)

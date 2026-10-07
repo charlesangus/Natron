@@ -159,6 +159,8 @@
 #include "Engine/Nodes/Deep/DeepWrite.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Merge/Dissolve.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/TypedPassthrough.h"
 
 #include "Engine/Utils.h"
@@ -1616,6 +1618,17 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
     registerBuiltInPlugin<Constant>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ConstantPlugin.png"), false, false);
     registerBuiltInPlugin<Solid>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Solid.png"), false, false);
     registerBuiltInPlugin<CheckerBoard>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.CheckerBoardPlugin.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetMerge>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergePlugin.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetPlus>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergePlus.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetMatte>>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetMultiply>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMultiply.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetIn>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeIn.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetOut>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeOut.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetScreen>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeScreen.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetMax>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMax.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetMin>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMin.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetDifference>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeDifference.png"), false, false);
+    registerBuiltInPlugin<Dissolve>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.DissolvePlugin.png"), false, false);
     registerBuiltInPlugin<DiskCacheNode>(QString::fromUtf8(NATRON_IMAGES_PATH "diskcache_icon.png"), false, false);
     registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_IMAGES_PATH "GroupingIcons/Set2/paint_grouping_2.png"), false, false);
     registerBuiltInPlugin<RotoNode>(QString::fromUtf8(NATRON_IMAGES_PATH "rotoNodeIcon.png"), false, false);

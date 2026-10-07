@@ -65,6 +65,8 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/GroupOutput.h"
 #include "Engine/Node.h"
 #include "Engine/NodeSerialization.h"
+#include "Engine/Nodes/Merge/Dissolve.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Plugin.h"
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
@@ -1075,6 +1077,17 @@ isEntitledForInspector(Plugin* plugin,
          ( plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_ROTOPAINT) ) ||
          ( plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_ROTO) ) ) {
         return true;
+    }
+
+    // The native nodes that took over the IDs of OpenFX plug-ins the rule below makes inspectors,
+    // so that their inputs show and connect as they did.
+    if (plugin->getPluginID() == QString::fromUtf8(PLUGINID_NATRON_DISSOLVE)) {
+        return true;
+    }
+    for (int preset = eMergePresetMerge; preset <= eMergePresetDifference; ++preset) {
+        if (plugin->getPluginID() == QString::fromUtf8(MergeNode::presetPluginID((MergePresetEnum)preset).c_str())) {
+            return true;
+        }
     }
 
     if (!ofxDesc) {

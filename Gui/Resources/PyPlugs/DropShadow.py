@@ -275,9 +275,9 @@ def createInstance(app,group):
         param.setValue(0.5, 3)
         del param
 
-    param = lastNode.getParam("unPremultBy")
+    param = lastNode.getParam("hostUnPremultBy")
     if param is not None:
-        param.setValue(True)
+        param.set("rgba.A")
         del param
 
     del lastNode

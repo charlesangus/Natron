@@ -986,6 +986,30 @@ Shared rules for every node task in this phase:
   - verify: The AppImage launches under the launch check. The UAT file lists every screenshot from P2.T8, P3.T7, P4.T8 and P5.T7.
   - size: M
 
+## Phase 67.7: Review round 1 and HD performance (user: fix in M67 before UAT)
+
+Codex's review on PR #42 has 13 findings, and the user chose to fix the HD composite slowdown within M67. Both run as batch B13: parallel implementers with disjoint file sets, then one build, one rebench and one repackage.
+
+- [ ] M67.P7.T1 — TransformMasked correctness and the affine resampler fast path (findings 0, 1, 10)
+  - files: `Engine/Nodes/Transform/Transform.{h,cpp}`, `Engine/Nodes/Image/Resampler.{h,cpp}`, `Tests/Native/NativeTransform_Test.cpp`, `Tests/Native/Resampler_Test.cpp`
+  - size: L
+- [ ] M67.P7.T2 — Shared spatial-filter helpers, cancellable band parallelism, Blur gather, base comment (findings 3, 5, 9, 12)
+  - files: `Engine/Nodes/Image/NativeImageEffect.{h,cpp}`, a new shared helper module under `Engine/Nodes/Filter/`, `Engine/Nodes/Filter/{Blur,ErodeDilate,EdgeDetect}.cpp`
+  - size: L
+- [ ] M67.P7.T3 — Merge alpha-only toggles, Merge operator dispatch hoisted out of the pixel loop, CheckerBoard spans (findings 2, 7, 8)
+  - files: `Engine/Nodes/Merge/{Merge,MergeOperators}.{h,cpp}`, `Engine/Nodes/Generator/CheckerBoard.cpp`, `Tests/Native/NativeMerge_Test.cpp`, `Tests/Native/MergeOperators_Test.cpp`
+  - size: M
+- [ ] M67.P7.T4 — ColorCorrect: drop `ToneCurve` for `CurveSnapshot`, skip identity groups (findings 4, 11)
+  - files: `Engine/Nodes/Color/ColorCorrect.{h,cpp}`
+  - size: M
+- [ ] M67.P7.T5 — Share the extent knobs between `NativeGenerator` and Crop (finding 6)
+  - files: `Engine/Nodes/Image/NativeGenerator.{h,cpp}`, `Engine/Nodes/Transform/Crop.{h,cpp}`, a new shared extent module
+  - size: M
+- [ ] M67.P7.T6 — Build, full ctest (both modes), per-node HD rebench against the M63 tip, profile anything still slower than OFX, repackage the AppImage
+  - verify: full ctest green in both modes; every parity test still replays; HD mixed, wide and footagecomp ≤ 1.0x of base, or profiled with the reason recorded; AppImage launch check passes
+  - size: L
+- [ ] M67.P7.T7 — Reply on each review thread and close the round
+
 ## Batch plan
 
 One detached debug build + ctest per batch (both scheduler modes where noted), in the single-tenant `natron-dev` container. Check `pgrep -x ninja` is 0 and use a fresh `.done` marker before relaunching. **Registration owner** means the only task in the batch allowed to edit `Engine/AppManager.cpp`; it adds the `#include` and `registerBuiltInPlugin` lines for every node of its batch, with the class and header names fixed in this plan. With `Tests/Native/*_Test.cpp` globbed after P1.T3, no later batch edits `Tests/CMakeLists.txt`.
@@ -1123,3 +1147,4 @@ Notes:
     - `Plugins.pre-m67` lives in the worktree's `build/assets/`.
     - Packaging needs `build/appimagetool-wrapper` (`-n`) copied into the worktree's `build/`, because the container has no network.
   - **Published:** `docs/decisions/2026-10-06-m67-core-node-families.md` (`7d1db14cb`).
+- 2026-10-07 — **Codex review round 1 (PR #42): 13 findings, all accepted.** The user chose to fix the HD composite slowdown in M67 before UAT rather than in a follow-up. Phase 67.7 / B13 was added.

@@ -783,7 +783,7 @@ Shared rules for every node task in this phase:
   - verify: Full ctest green in both modes. Overlay drags change the knobs. Screenshots are listed for UAT.
   - size: M
 
-- [ ] M67.P4.T9 — Record parity references and retire the spatial OFX plugins
+- [x] M67.P4.T9 — Record parity references and retire the spatial OFX plugins
   - files: `Tests/fixtures/native-parity/…` (generated), `tools/ci/local/fetch-assets.sh`, `tools/ci/smoke_test.py`, `Engine/OfxEffectInstance.cpp`, `Tests/Native/NativePluginList_Test.cpp`, plus in the fork: `CMakeLists.txt`, `Transform/Transform.cpp`, `CImg/Blur/CImgBlur.cpp`, `Reformat/Reformat.cpp`
   - approach:
     - Record first, PM-run, `-R 'Native(Transform|Crop|Reformat|Position|Blur)'`.
@@ -801,7 +801,7 @@ Shared rules for every node task in this phase:
 
 ## Phase 67.5: Keying and misc (Keyer, ChromaKeyer, Erode/Dilate, EdgeDetect, ColorLookup)
 
-- [ ] M67.P5.T1 — Native Keyer (`net.sf.openfx.KeyerPlugin` 2.0)
+- [x] M67.P5.T1 — Native Keyer (`net.sf.openfx.KeyerPlugin` 2.0)
   - files: `Engine/Nodes/Keyer/Keyer.h` (new), `Engine/Nodes/Keyer/Keyer.cpp` (new), `Tests/Native/NativeKeyer_Test.cpp` (new)
   - approach:
     - Inputs `Source` (RGBA, RGB), `InM` and `OutM` (`isMask`, optional), `Bg` (RGBA, RGB, optional). Output RGBA. Grouping `Keyer`. Colour default quad.
@@ -822,7 +822,7 @@ Shared rules for every node task in this phase:
     - Picking `keyColor` through the knob updates the thresholds as OFX does: set on both, then compare the threshold values.
   - size: M
 
-- [ ] M67.P5.T2 — Native ChromaKeyer (`net.sf.openfx.ChromaKeyerPlugin` 2.0)
+- [x] M67.P5.T2 — Native ChromaKeyer (`net.sf.openfx.ChromaKeyerPlugin` 2.0)
   - files: `Engine/Nodes/Keyer/ChromaKeyer.h`, `Engine/Nodes/Keyer/ChromaKeyer.cpp`, `Tests/Native/NativeChromaKeyer_Test.cpp`
   - approach:
     - Inputs as Keyer.
@@ -839,7 +839,7 @@ Shared rules for every node task in this phase:
   - verify: Knob parity. Parity at the `pow` class across colourspaces, linear on and off, the angle extremes (0, 180), keyGain 0, keyLift 1, every `show`, and masks.
   - size: M
 
-- [ ] M67.P5.T3 — Native Erode and Dilate (`net.sf.cimg.CImgErode` 3.0, `net.sf.cimg.CImgDilate` 3.0; one class)
+- [x] M67.P5.T3 — Native Erode and Dilate (`net.sf.cimg.CImgErode` 3.0, `net.sf.cimg.CImgDilate` 3.0; one class)
   - files: `Engine/Nodes/Filter/ErodeDilate.h`, `Engine/Nodes/Filter/ErodeDilate.cpp`, `Tests/Native/NativeErodeDilate_Test.cpp`
   - approach:
     - Inputs `Source`, `Mask`. Components RGBA, RGB, XY, Alpha. Quad all on (A on). `defaultProcessesAllLayers` true. `hostUnPremultBy` on, defaulting to on for premultiplied sources as `defaultUnpremult` does. Check what the host selector supports; if it has no "auto" default, keep the selector at None and note it.
@@ -852,7 +852,7 @@ Shared rules for every node task in this phase:
   - verify: Knob parity for both IDs. Parity at the exact class for sizes (1,1), (5,0), (−3,−3), mipmap 1, an alpha-only input, and the image edges. `renderBothWays` at pool sizes 1 and 4 is bit-exact.
   - size: M
 
-- [ ] M67.P5.T4 — Native EdgeDetect (`eu.cimg.EdgeDetect` 5.0)
+- [x] M67.P5.T4 — Native EdgeDetect (`eu.cimg.EdgeDetect` 5.0)
   - files: `Engine/Nodes/Filter/EdgeDetect.h`, `Engine/Nodes/Filter/EdgeDetect.cpp`, `Tests/Native/NativeEdgeDetect_Test.cpp`
   - approach:
     - Inputs `Source`, `Mask`. Quad RGB on, A off. Keeps the colour layer (it is in `keepColorLayer`).
@@ -870,7 +870,7 @@ Shared rules for every node task in this phase:
   - verify: Knob parity. Parity at the IIR class for each filter × each multiChannel mode, blurSize 3, erodeSize ±2 and nms on. `renderBothWays` at pool sizes 1 and 4 is bit-exact.
   - size: L
 
-- [ ] M67.P5.T5 — Native ColorLookup (`net.sf.openfx.ColorLookupPlugin` 2.0)
+- [x] M67.P5.T5 — Native ColorLookup (`net.sf.openfx.ColorLookupPlugin` 2.0)
   - files: `Engine/Nodes/Color/ColorLookup.h`, `Engine/Nodes/Color/ColorLookup.cpp`, `Tests/Native/NativeColorLookup_Test.cpp`
   - approach:
     - Inputs `Source` (RGBA, RGB, XY, Alpha), `Mask`. Quad RGBA. `hostUnPremultBy` on.
@@ -889,7 +889,7 @@ Shared rules for every node task in this phase:
   - verify: Knob parity, including the parametric defaults. Parity at the `pow` class for each master mode, an edited curve (same points set on both), a non-default `range`, values outside the range, the clamps, and an alpha-only input.
   - size: M
 
-- [ ] M67.P5.T6 — Curve background for native parametric knobs (ColorLookup's colour ramp and histogram)
+- [x] M67.P5.T6 — Curve background for native parametric knobs (ColorLookup's colour ramp and histogram)
   - files: `Engine/KnobTypes.h`, `Engine/KnobTypes.cpp`, `Gui/CurveWidget.cpp`, `Engine/Nodes/Color/ColorLookup.cpp`, `Tests/Native/ParametricBackground_Test.cpp` (new)
   - approach:
     - Add `KnobParametric::setBackgroundPainter(std::function<void(const ParametricBackgroundContext&)>)`. It is engine-side and GL-free, giving a list of coloured quads or polylines in curve space. `CurveWidget` draws it where it draws `getCustomInteract()` today (`CurveWidget.cpp:666-676`), when there is no OFX custom interact.
@@ -899,7 +899,7 @@ Shared rules for every node task in this phase:
   - verify: `ParametricBackground_Test` checks that the painter returns the ramp quads and a histogram whose counts sum to the source pixel count. The visual result is checked in P5.T7's GUI run (ramp and histogram screenshots).
   - size: M
 
-- [ ] M67.P5.T7 — Keying/misc test triage and GUI check
+- [x] M67.P5.T7 — Keying/misc test triage and GUI check
   - files: failing tests (≤5, per P2.T7's rules), `build/m67-gui/panels_check.py` (untracked)
   - approach:
     - Triage.
@@ -1089,3 +1089,14 @@ Notes:
     - Keyer and ChromaKeyer with an RGB source treat alpha as 1 for Normal, and add nothing for "Add to Inside Mask". OFX reads out of bounds there.
     - Neither keyer mirrors OFX's output-premult preference, because `NodeMetadata` has no field for it.
   - **Brief lesson:** the P5.T1 agent read "own AppManager" as its whole task and waited for a Keyer author who never came. Keyer was re-dispatched. When one agent both implements and owns registration, the brief must lead with the implementation.
+- 2026-10-07 — **B10 landed** (`610c41c08`, `9572c894c`, `4d1ff597c`): spatial OFX retired, and the keying/misc nodes are native.
+  - **Test results:**
+    - Full debug ctest 1244/1244 in both modes.
+    - After the last panel fixes, a targeted run of 289/289 in both modes, plus smoke, the release build, and 40/40 hang loops.
+  - **No old tests re-pointed.**
+  - **Parity:** max diff is 0 for Erode/Dilate and ≤7.7e-7 for the others.
+  - **GUI:** ColorLookup's ramp and histogram render the same as OFX, and the knob order matches for all six (`build/m67-gui/keying-*`).
+  - **Parity decisions:**
+    - **(1) EdgeDetect channel combining:** in this host, OFX EdgeDetect always feeds alpha into the rms/max/tensor modes. `Node.cpp:2940` keeps the plugin's own RGBA switches on and applies the channel set afterwards. Native combines only the processed channels, as upstream Natron's plugin does. So parity pairs process RGBA on both sides.
+    - **(2) `-Ofast` ulps:** the OFX plugins are built with `-Ofast`, and their ulp differences flip tied pixels under Sobel plus non-maxima suppression. The recorded case uses Gaussian, which is bit-exact.
+    - **(3) ChromaKeyer unpremultiplied tolerance:** these cases use a measured 1e-4 relative tolerance. The same ulps get divided by near-zero key alpha; 5e-5 fails.

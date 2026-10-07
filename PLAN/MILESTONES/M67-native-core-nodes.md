@@ -1100,3 +1100,4 @@ Notes:
     - **(1) EdgeDetect channel combining:** in this host, OFX EdgeDetect always feeds alpha into the rms/max/tensor modes. `Node.cpp:2940` keeps the plugin's own RGBA switches on and applies the channel set afterwards. Native combines only the processed channels, as upstream Natron's plugin does. So parity pairs process RGBA on both sides.
     - **(2) `-Ofast` ulps:** the OFX plugins are built with `-Ofast`, and their ulp differences flip tied pixels under Sobel plus non-maxima suppression. The recorded case uses Gaussian, which is bit-exact.
     - **(3) ChromaKeyer unpremultiplied tolerance:** these cases use a measured 1e-4 relative tolerance. The same ulps get divided by near-zero key alpha; 5e-5 fails.
+- 2026-10-07 — **Keying references recorded** (`9c1f8f362`, 1.11 MB; 74/74 pass). B11 dispatched: P5.T8, P6.T2, P6.T3.

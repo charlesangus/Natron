@@ -376,3 +376,215 @@ on the `isIdentity()` route rather than a `render()` override -- that
 splicing it into a render chain doesn't change the rendered result, by
 rendering the same chain with and without the node and comparing every
 output pixel. Add the new test file to `Tests_SOURCES` in `Tests/CMakeLists.txt`.
+
+## Flat image nodes (`NativeImageEffect`)
+
+The flat 2D core nodes -- the colour, merge, generator, spatial and keying
+families that replaced the openfx-misc and openfx-io plugins -- sit on
+`Engine/Nodes/Image/NativeImageEffect` (`NativeGenerator` for nodes with no
+image input). It is a convenience layer on `NativeEffectBase`, not a second
+hierarchy. It is float-only, tile-capable, multi-resolution, supports render
+scale, and is not multiplanar: the host's layer knob decides which planes are
+rendered and which channels of each are processed, and `render()` is called
+once per plane. Spatial parameters scale by `mappedScale`. Per-instance state
+is knobs only; kernels and lookup tables are built per render call.
+
+### Point ops: the kernel contract
+
+A point operator returns true from `isPointOp()` and builds a `PixelKernel`
+(`Engine/Nodes/Image/PixelKernel.h`) in `makeKernel()`. The base's `render()`
+then does the whole per-pixel pipeline in one pass over each row, so the host
+neither copies unprocessed channels nor multiplies back
+(`rendersUnprocessedChannels()` is true). The order is fixed:
+
+1. divide every channel but the divisor itself by the "(Un)premult by" channel,
+   where `Image::unPremultDivisorIsUsable()` says it is usable;
+2. run the kernel;
+3. multiply the processed channels back (`Image::premultiplyValue()`);
+4. blend each processed channel with the *undivided* source by mask x `mix`,
+   with the `ofxsMaskMixPix()` arithmetic;
+5. pass the unprocessed channels through from the source.
+
+A pixel outside the source reads as zero, outside the divisor as a divisor of
+one (neither divided nor multiplied), and outside the mask as a mask of zero.
+The divide and multiply share their per-pixel helpers with
+`Image::unPremultiplyByChannel()`/`premultiplyByChannel()`, so the two paths
+compute identical values. A node that overrides `isIdentityOp()` only answers
+for the operator itself; the base adds the mask and mix rules.
+
+A `PixelKernel` is fusion-ready: it is immutable, built from knob values at a
+`KernelContext` (time, view, mapped scale, processed channels), and
+`processRow()` is pure on its `RowIO` -- no knob access, allocation or I/O. Rows
+may run in any order, on any thread, or be chained with other kernels over a
+strip. No fusing pass exists yet; keep to those rules so one can be added
+without touching the nodes.
+
+### Host knobs and script names
+
+The host owns which layers and channels are processed, so a node declares
+none of that. It gets, with these script names, which a node must not rename
+or redeclare:
+
+- the layer knob at row 0 (`channels` is the channel-set knob), with defaults
+  from the traits (`NativeImageTraits::processesAllLayers`, `defaultChannels`);
+- `enableMask_<label>` and `maskChannel_<label>` for each input declared with
+  `NativeInputDescription::isMask`;
+- `hostUnPremultBy`, when the traits ask for it (`hostUnPremult`);
+- `maskInvert` and `mix`, declared by the node through `addMaskMixKnobs()` and
+  moved by the host to the end of the page, after the mask selectors.
+
+Beyond those, a node's own knobs follow the OFX plugin's order, names, types,
+dimensions and defaults. The OFX-internal `NatronOfxParamProcess*`,
+`unPremultBy*` and `premultChanged` are not declared. Labels drop the `OFX`
+suffix and grouping is a `/`-separated path matching the OFX menus.
+
+### Scheduler declaration: zero unplanned pulls
+
+Everything `render()` fetches must be declared beforehand, so a task-graph
+render shows 0 unplanned pulls and the legacy and task-graph schedulers give
+bit-identical output at any pool size. `NativeImageEffect` already declares the
+source plane, the divisor layer (through the "(Un)premult by" selector) and the
+mask layer (through the mask selector), all at the render window. A node that
+reads more -- a wider window, another input, another time -- declares it through
+`getRegionsOfInterest()`, `getComponentsNeededAndProduced()` and
+`getFramesNeeded()`. `isIdentity()` matches the OFX conditions so identities
+become identity tasks. `TransformNode`, and `Reformat` with `preserveBB`,
+implement `getCanTransform()`/`getTransform()` and consume a concatenated input
+transform. No node here touches deep data or GL.
+
+### Threading
+
+The host does not split a render window across threads for these nodes, and
+they declare `eRenderSafetyFullySafe`, as an OFX plugin using the multithread
+suite does. Each node parallelises its own render, within the thread budget
+`AppManager::getNCPUsAvailableForEffect()` grants it, on
+`parallelForOnGlobalPool`:
+
+- **Point ops** split their own row bands (`NativeImageEffect::makeRowBands()`:
+  at least 16384 pixels per band, at most 4 bands per thread). The kernel must
+  therefore be safe to call concurrently.
+- **Spatial filters** (`Blur`, `EdgeDetect`, `ErodeDilate`) parallelise over
+  whole rows or whole columns, one line per task, never over the host's tile
+  split. Their result is then independent of thread count and band layout.
+- Other nodes with their own `render()` (`Merge`, `Dissolve`, `TransformNode`,
+  `Crop`, `Reformat`, `Position`, `Keyer`, `ChromaKeyer`, the generators) split
+  row bands the same way as point ops.
+
+Read an image's bounds with `Image::getBounds()` on the calling thread, before
+the bands start, and hand the rectangle to the band. `getBounds()` takes the
+image's read lock; a band thread that asks for it queues behind a writer
+waiting on an image the render already holds, and never returns.
+
+### IDs and versions
+
+A native node registers under the ID of the OFX plugin it replaces, with
+`majorVersion` one above the highest OFX major registered for that ID and minor
+0, so every unversioned or older request -- Python `app.createNode(id)`, PyPlug
+calls, Roto's and Tracker's internal nodes -- resolves to the native node. The
+OFX plugin stays loadable by its exact major until its family is retired, which
+is how a parity test renders both side by side. The ID and major live in
+`PLUGINID_NATRON_<NAME>` and `PLUGIN_MAJOR_NATRON_<NAME>` next to the class; each
+node exposes `static EffectInstance* BuildEffect(NodePtr)`, and icons are in
+`Gui/Resources/Images/NativeNodes/<pluginID>.png`.
+
+Siblings are one class under several IDs: the Merge presets (`Plus`, `Matte`,
+`Multiply`, `In`, `Out`, `Screen`, `Max`, `Min`, `Difference`) are `MergeNode`
+with a default `operation`; `Solid` is a `Constant` preset; `TransformMasked`
+is `TransformNode` with a mask input; `Add`, `Multiply` and `Gamma` are one
+`ColorMath` class; `Erode` and `Dilate` are `ErodeDilate` and a thin subclass.
+The compat versions of retired plugins are gone, and nothing migrates a project
+saved with the OFX versions.
+
+### Writing a parity test
+
+Parity tests live in `Tests/Native/` and are picked up by a glob, so
+`Tests/CMakeLists.txt` stays untouched. The helpers are in `Tests/NativeParity.h`.
+
+1. `makeParityPair(app, id, ofxMajor, nativeMajor, maskInputLabel)` creates the
+   node at both exact majors, fed by the deterministic `ParitySourceTestEffect`
+   (64x48, with negatives, super-whites and exact-0, exact-1 and ramp alpha
+   bands). `pair.ofx` is null once the OFX plugin is retired.
+2. `setKnobOnBoth()` applies the same values to both nodes, and
+   `connectParityInput()` wires further inputs.
+3. `compareParity(pair, caseName, roi, mipmapLevel, tolerance, record)` renders
+   both through `renderRoI` and compares every channel of every plane. Run every
+   case at mipmap 0 and 1.
+4. Mark about three representative cases per node `record`. With
+   `NATRON_PARITY_RECORD_DIR` set, the OFX output of those is written as
+   `Tests/fixtures/native-parity/<id>/<case>.f32` (`NPAR` header, width, height,
+   components, float32 little-endian; `.mip1` suffix for mipmap 1), at windows
+   near 64x48 and within the family cap of 1.5 MB. Decide which cases to record
+   *before* the record step: an unrecorded case is deleted with the plugin.
+5. After retirement the same call replays the references. With neither a live
+   OFX plugin nor a reference, the test fails; there is no skip.
+
+A node's tolerance is a named constant at the top of its test, built from one of
+the classes below, and a node that cannot meet its class carries a measured bound
+with the reason beside it.
+
+### Parity tolerances
+
+`ParityTolerance` accepts a value when
+`|native - reference| <= absolute + relative * max(1, |reference|)`. A pair of
+NaNs matches, as do equal infinities.
+
+| Class | `ParityTolerance` | Bound | Used for |
+|---|---|---|---|
+| Exact | `exact()` | 0 | generators, Position, Clamp, Invert, Erode/Dilate, Merge Porter-Duff operators, Crop without softness |
+| Arithmetic | `arithmetic()` | 1e-6 relative | Add, Multiply, Dissolve |
+| Transcendental | `transcendental()` | 1e-5 relative | `pow`, trig, LUTs, HSL: Grade, Gamma, ColorCorrect, Saturation, Keyer, ChromaKeyer, ColorLookup, Merge blend modes |
+| Resampling | `resampling()` | 1e-5 absolute | Transform, Reformat, Crop softness |
+| IIR | `iir()` | 1e-4 absolute | Blur, EdgeDetect, Transform motion blur |
+
+Every node of the flat families, with the constant its test uses:
+
+| Node (ID) | Class | Test constant | Notes |
+|---|---|---|---|
+| Grade | transcendental | `kGradeTolerance` | gamma |
+| ColorCorrect | transcendental | `kColorCorrectTolerance` | tone curves evaluated lock-free |
+| Saturation | transcendental | `kSaturationTolerance` | the ACES AP1 option is exempt: native uses the real AP1 coefficients, where the OFX plugin falls through to CCIR 601 |
+| Clamp | exact | `kClampTolerance` | |
+| Invert | exact | `kInvertTolerance` | |
+| Add | arithmetic | `kAdd` (`NativeColorMath_Test`) | |
+| Multiply | arithmetic | `kMultiply` | |
+| Gamma | transcendental | `kGamma` | |
+| Merge and its nine presets | exact / transcendental | `toleranceFor()` per operator | Porter-Duff operators (ATop, ConjointOver, Copy, DisjointOver, In, Mask, Matte, Out, Over, Stencil, Under, XOR) exact; blend modes transcendental, and mask and mix too. `op-divide` measured 3.05e-5 on large values. The presets share the class and test that each carries its operation |
+| Dissolve | arithmetic | `kDissolveTolerance` | |
+| Constant | exact | `kConstantTolerance` | |
+| Solid | exact | `kConstantTolerance` | a Constant preset, tested in `NativeConstant_Test` |
+| CheckerBoard | exact | `kCheckerBoardTolerance` | |
+| Blur | IIR | `kBlurTolerance` | box filters share the class |
+| Transform | resampling / IIR | `kResamplingTolerance`, `kMotionBlurTolerance` | motion blur averages up to hundreds of samples |
+| TransformMasked | resampling | `kResamplingTolerance` | the `mask-mix05` case |
+| Crop | exact / resampling | `kExactTolerance`, `kSoftTolerance` | softness 0 copies pixels; a soft edge is a double smoothstep rounded to float |
+| Reformat | resampling | `kReformatTolerance` | |
+| Position | exact | `kPositionTolerance` | |
+| Erode, Dilate | exact | `kTolerance` | rectangular min and max are exact in float |
+| EdgeDetect | IIR | `kEdgeDetectTolerance` | see the exceptions below |
+| Keyer | transcendental | `kKeyerTolerance` | |
+| ChromaKeyer | transcendental / measured | `kChromaKeyerTolerance`, `kChromaKeyerUnpremultipliedTolerance` | the unpremultiplied output uses 1e-4 relative |
+| ColorLookup | transcendental | `kColorLookupTolerance` | |
+
+Measured exceptions and what they are not:
+
+- **ChromaKeyer, unpremultiplied output: 1e-4 relative**
+  (`ParityTolerance::make(0., 1e-4)`). The OFX plugin is built with `-Ofast`, so
+  its key differs from the native one by a few ulps, and the unpremultiplied
+  output divides the suppressed colour by a key alpha that can be near zero,
+  magnifying them. 5e-5 fails; the other `show` outputs stay at the
+  transcendental class.
+- **EdgeDetect, RGBA processing.** In this host the OFX EdgeDetect always feeds
+  alpha into the rms, max and tensor modes: `Node.cpp` keeps the plugin's own
+  RGBA switches on and applies the channel set afterwards. The native node
+  combines only the processed channels, as upstream Natron's plugin does. Parity
+  pairs therefore set the channel set to process RGBA on both sides; with fewer
+  channels the two legitimately differ.
+- **`-Ofast`.** The OFX plugins are compiled with `-Ofast`, whose ulp
+  differences flip tied pixels under Sobel plus non-maxima suppression, because
+  erosion leaves flat plateaus that suppression compares exactly. The recorded
+  EdgeDetect case uses the Gaussian gradients, which are bit-exact. Do not read a
+  Sobel-plus-suppression mismatch as a native bug without checking for ties.
+- **Deliberate fixes** are divergences, excluded from parity by case: Saturation's
+  ACES AP1 coefficients above. Keyer and ChromaKeyer with an RGB source treat
+  alpha as 1 for Normal and add nothing for "Add to Inside Mask", where OFX
+  reads out of bounds, and neither mirrors OFX's output-premult preference.

@@ -138,6 +138,7 @@ writesEveryChannel(int nComps,
 void
 readSourceRow(const Image* image,
               const Image::ReadAccess* access,
+              const RectI& bounds,
               int x0,
               int y,
               int width,
@@ -148,7 +149,6 @@ readSourceRow(const Image* image,
     if (!image) {
         return;
     }
-    const RectI& bounds = image->getBounds();
     if ((y < bounds.y1) || (y >= bounds.y2)) {
         return;
     }
@@ -716,8 +716,11 @@ NativeGenerator::render(const RenderActionArgs& args)
     }
 
     // Images are locked here, on the calling thread, for the whole render; the band threads only
-    // compute pixel addresses through these accesses.
+    // compute pixel addresses through these accesses. Their bounds are read here too, because
+    // Image::getBounds() takes the lock, which a band thread must not ask for: behind a writer
+    // waiting on an image this render holds for reading, it blocks forever.
     std::vector<std::shared_ptr<Image::ReadAccess>> srcAccesses(jobs.size());
+    std::vector<RectI> srcBounds(jobs.size());
     std::vector<std::shared_ptr<Image::WriteAccess>> dstAccesses(jobs.size());
     std::vector<GeneratorBand> bands;
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
@@ -728,6 +731,7 @@ NativeGenerator::render(const RenderActionArgs& args)
             continue;
         }
         if (jobs[j].src) {
+            srcBounds[j] = jobs[j].src->getBounds();
             srcAccesses[j] = std::make_shared<Image::ReadAccess>(jobs[j].src.get());
         }
         dstAccesses[j] = std::make_shared<Image::WriteAccess>(jobs[j].dst.get());
@@ -769,7 +773,7 @@ NativeGenerator::render(const RenderActionArgs& args)
                 continue;
             }
             if (job.passThrough) {
-                readSourceRow(job.src.get(), srcAccesses[band.job].get(), roi.x1, y, width, nComps, dstPix);
+                readSourceRow(job.src.get(), srcAccesses[band.job].get(), srcBounds[band.job], roi.x1, y, width, nComps, dstPix);
             }
             io.y = y;
             io.dst = dstPix;

@@ -84,10 +84,15 @@ const std::size_t kMinBandPixels = 16384;
 // finds work left rather than leaving the band it would have had to the others.
 const int kBandsPerThread = 4;
 
+// Image::getBounds() takes the image's lock, which a band thread must never ask for: behind a
+// writer waiting on an image this render holds for reading, it blocks forever. The bounds are
+// read once on the calling thread instead.
 struct PlaneAccess {
     std::shared_ptr<Image::ReadAccess> src;
     std::shared_ptr<Image::ReadAccess> divisor;
     std::shared_ptr<Image::WriteAccess> dst;
+    RectI srcBounds;
+    RectI divisorBounds;
 };
 
 struct RowBand {
@@ -136,6 +141,7 @@ isFloatImage(const ImagePtr& image)
 void
 readSourceRow(const Image* image,
               const Image::ReadAccess* access,
+              const RectI& bounds,
               int x0,
               int y,
               int width,
@@ -146,7 +152,6 @@ readSourceRow(const Image* image,
     if (!image) {
         return;
     }
-    const RectI& bounds = image->getBounds();
     if ((y < bounds.y1) || (y >= bounds.y2)) {
         return;
     }
@@ -180,6 +185,7 @@ readSourceRow(const Image* image,
 void
 readChannelRow(const Image* image,
                const Image::ReadAccess* access,
+               const RectI& bounds,
                int channel,
                int x0,
                int y,
@@ -191,7 +197,6 @@ readChannelRow(const Image* image,
     if (!image) {
         return;
     }
-    const RectI& bounds = image->getBounds();
     if ((y < bounds.y1) || (y >= bounds.y2)) {
         return;
     }
@@ -491,7 +496,9 @@ NativeImageEffect::render(const RenderActionArgs& args)
     }
 
     std::shared_ptr<Image::ReadAccess> maskAccess;
+    RectI maskBounds;
     if (mask) {
+        maskBounds = mask->getBounds();
         maskAccess = std::make_shared<Image::ReadAccess>(mask.get());
     }
 
@@ -507,9 +514,11 @@ NativeImageEffect::render(const RenderActionArgs& args)
             continue;
         }
         if (jobs[j].src) {
+            accesses[j].srcBounds = jobs[j].src->getBounds();
             accesses[j].src = std::make_shared<Image::ReadAccess>(jobs[j].src.get());
         }
         if (jobs[j].divisor) {
+            accesses[j].divisorBounds = jobs[j].divisor->getBounds();
             accesses[j].divisor = std::make_shared<Image::ReadAccess>(jobs[j].divisor.get());
         }
         accesses[j].dst = std::make_shared<Image::WriteAccess>(jobs[j].dst.get());
@@ -558,10 +567,10 @@ NativeImageEffect::render(const RenderActionArgs& args)
                 }
             }
 
-            readSourceRow(job.src.get(), access.src.get(), roi.x1, y, width, nComps, &sourceRow[0]);
+            readSourceRow(job.src.get(), access.src.get(), access.srcBounds, roi.x1, y, width, nComps, &sourceRow[0]);
             std::copy(sourceRow.begin(), sourceRow.end(), dividedRow.begin());
             if (job.divisor) {
-                readChannelRow(job.divisor.get(), access.divisor.get(), job.divisorChannel, roi.x1, y, width, 1.f, &divisorRow[0]);
+                readChannelRow(job.divisor.get(), access.divisor.get(), access.divisorBounds, job.divisorChannel, roi.x1, y, width, 1.f, &divisorRow[0]);
                 for (int i = 0; i < width; ++i) {
                     const float d = divisorRow[i];
                     if (!Image::unPremultDivisorIsUsable(d)) {
@@ -576,7 +585,7 @@ NativeImageEffect::render(const RenderActionArgs& args)
                 }
             }
             if (doMask) {
-                readChannelRow(mask.get(), maskAccess.get(), maskChannel, roi.x1, y, width, 0.f, &maskRow[0]);
+                readChannelRow(mask.get(), maskAccess.get(), maskBounds, maskChannel, roi.x1, y, width, 0.f, &maskRow[0]);
             }
 
             io.y = y;

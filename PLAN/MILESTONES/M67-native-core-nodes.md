@@ -1064,3 +1064,9 @@ Notes:
   - **P4.T1 resampler:** in a standalone host check, its output matched openfx-misc's `ofxsFilter.h` bit for bit over 80k random cases. Interpolation is done in double, as in OFX.
   - **P4.T6 blur kernels:** bit-exact against CImg 2.9.9. **Deviation:** the test define is `NATRON_TESTS_CIMG_HEADER` (full path), because an `#include` can't join a directory macro to a file name.
   - **P4.T3 Crop:** it declares the generator extent knobs itself, because `NativeGenerator` has no static knob helper. Folding the two into one helper is a follow-up. AppManager registration was split: Crop's is in wave 1, the rest in wave 2 under P4.T2.
+- 2026-10-07 — **B9 wave 2 written** (Transform/TransformMasked, Reformat, Blur); the batch build and P4.T8 run as one agent.
+  - **Deviation:** the Transform class is `TransformNode`, because `namespace Transform` (holding `Matrix3x3`) already exists.
+  - **Behaviour departures:**
+    - Reformat's `useRoD` is a metadata slave, so toggling it refreshes the output format.
+    - Blur passes the source through where the mask is 0. It does not reproduce OFX's boundary-mode copy, which differs only with mask, "nearest" and an expanded RoD together.
+  - **Missing icon:** Blur had none; it is copied in with the build.

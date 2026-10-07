@@ -28,9 +28,10 @@
 
 #include "Global/Macros.h"
 
-#include <vector>
-#include <string>
+#include <functional>
 #include <map>
+#include <string>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 #include <QCoreApplication>
@@ -967,6 +968,97 @@ private:
 
 /******************************KnobParametric**************************************/
 
+/**
+ * @brief A vertex of a parametric background, in curve space, with a straight-alpha colour.
+ **/
+struct ParametricBackgroundVertex {
+    double x;
+    double y;
+    float r;
+    float g;
+    float b;
+    float a;
+
+    ParametricBackgroundVertex()
+        : x(0.)
+        , y(0.)
+        , r(0.f)
+        , g(0.f)
+        , b(0.f)
+        , a(1.f)
+    {
+    }
+
+    ParametricBackgroundVertex(double x_,
+                               double y_,
+                               float r_,
+                               float g_,
+                               float b_,
+                               float a_ = 1.f)
+        : x(x_)
+        , y(y_)
+        , r(r_)
+        , g(g_)
+        , b(b_)
+        , a(a_)
+    {
+    }
+};
+
+/**
+ * @brief Four vertices in order around the quad; colours interpolate between them.
+ **/
+struct ParametricBackgroundQuad {
+    ParametricBackgroundVertex v[4];
+};
+
+struct ParametricBackgroundPolyline {
+    std::vector<ParametricBackgroundVertex> points;
+    double lineWidth;
+
+    ParametricBackgroundPolyline()
+        : points()
+        , lineWidth(1.)
+    {
+    }
+};
+
+/**
+ * @brief What a KnobParametric background painter returns, drawn behind the curves in this order:
+ * `quads` replacing what is under them, `additiveQuads` added to it (so overlapping quads sum),
+ * then `polylines`.
+ **/
+struct ParametricBackground {
+    std::vector<ParametricBackgroundQuad> quads;
+    std::vector<ParametricBackgroundQuad> additiveQuads;
+    std::vector<ParametricBackgroundPolyline> polylines;
+};
+
+/**
+ * @brief The view a background painter is asked to cover: the visible rectangle in curve space and
+ * the size of a screen pixel in curve units, so it can choose how finely to slice.
+ **/
+struct ParametricBackgroundContext {
+    double xMin;
+    double xMax;
+    double yMin;
+    double yMax;
+    double pixelScaleX;
+    double pixelScaleY;
+
+    ParametricBackgroundContext()
+        : xMin(0.)
+        , xMax(1.)
+        , yMin(0.)
+        , yMax(1.)
+        , pixelScaleX(0.)
+        , pixelScaleY(0.)
+    {
+    }
+};
+
+typedef std::function<ParametricBackground(const ParametricBackgroundContext&)> ParametricBackgroundPainter;
+
 class KnobParametric
     :  public QObject, public KnobDoubleBase
 {
@@ -977,6 +1069,9 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
     mutable QMutex _curvesMutex;
     std::vector<CurvePtr> _curves, _defaultCurves;
     std::vector<RGBAColourD> _curvesColor;
+    mutable QMutex _backgroundMutex;
+    ParametricBackgroundPainter _backgroundPainter;
+
 public:
 
     static KnobHelper * BuildKnob(KnobHolder* holder,
@@ -1048,6 +1143,20 @@ public:
     Natron::StatusEnum deleteAllControlPoints(Natron::ValueChangedReasonEnum reason, int dimension) WARN_UNUSED_RETURN;
     static const std::string & typeNameStatic() WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Installs the painter the curve editor calls to draw behind the curves when the knob has
+     * no OpenFX custom interact. It is engine-side and GL-free, and called on the GUI thread, so it
+     * must only read state it keeps alive itself. An empty function removes it.
+     **/
+    void setBackgroundPainter(const ParametricBackgroundPainter& painter);
+
+    ParametricBackgroundPainter getBackgroundPainter() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Asks the GUI to repaint the background after the data its painter reads changed.
+     **/
+    void notifyBackgroundChanged();
+
     void saveParametricCurves(std::list<Curve >* curves) const;
 
     void loadParametricCurves(const std::list<Curve > & curves);
@@ -1059,6 +1168,8 @@ Q_SIGNALS:
     void curveChanged(int);
 
     void curveColorChanged(int);
+
+    void backgroundChanged();
 
 private:
 

@@ -1784,9 +1784,8 @@ KnobPage::moveOneStepDown(KnobI* k)
 
 /******************************KnobParametric**************************************/
 
-
 KnobParametric::KnobParametric(KnobHolder* holder,
-                               const std::string &label,
+                               const std::string& label,
                                int dimension,
                                bool declaredByPlugin)
     : KnobDoubleBase(holder, label, dimension, declaredByPlugin)
@@ -1794,6 +1793,8 @@ KnobParametric::KnobParametric(KnobHolder* holder,
     , _curves(dimension)
     , _defaultCurves(dimension)
     , _curvesColor(dimension)
+    , _backgroundMutex()
+    , _backgroundPainter()
 {
     for (int i = 0; i < dimension; ++i) {
         RGBAColourD color;
@@ -1805,7 +1806,7 @@ KnobParametric::KnobParametric(KnobHolder* holder,
 }
 
 KnobParametric::KnobParametric(KnobHolder* holder,
-                               const QString &label,
+                               const QString& label,
                                int dimension,
                                bool declaredByPlugin)
     : KnobDoubleBase(holder, label.toStdString(), dimension, declaredByPlugin)
@@ -1813,6 +1814,8 @@ KnobParametric::KnobParametric(KnobHolder* holder,
     , _curves(dimension)
     , _defaultCurves(dimension)
     , _curvesColor(dimension)
+    , _backgroundMutex()
+    , _backgroundPainter()
 {
     for (int i = 0; i < dimension; ++i) {
         RGBAColourD color;
@@ -1821,6 +1824,30 @@ KnobParametric::KnobParametric(KnobHolder* holder,
         _curves[i] = std::make_shared<Curve>(this, i);
         _defaultCurves[i] = std::make_shared<Curve>(this, i);
     }
+}
+
+void
+KnobParametric::setBackgroundPainter(const ParametricBackgroundPainter& painter)
+{
+    {
+        QMutexLocker k(&_backgroundMutex);
+        _backgroundPainter = painter;
+    }
+    Q_EMIT backgroundChanged();
+}
+
+ParametricBackgroundPainter
+KnobParametric::getBackgroundPainter() const
+{
+    QMutexLocker k(&_backgroundMutex);
+
+    return _backgroundPainter;
+}
+
+void
+KnobParametric::notifyBackgroundChanged()
+{
+    Q_EMIT backgroundChanged();
 }
 
 void

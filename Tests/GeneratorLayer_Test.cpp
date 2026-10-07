@@ -63,8 +63,9 @@ namespace {
 // specular (0, 0, 1).
 const int kSize = 8;
 
-// The OpenFX Constant, which the native Constant shadows for unversioned requests.
-const int kOfxConstantMajor = 1;
+// A generator built on openfx-misc's Generator base that stays OpenFX.
+const char kOfxGeneratorID[] = "net.sf.openfx.ColorWheel";
+const int kOfxGeneratorMajor = 1;
 
 const double kConstantR = 0.75;
 const double kConstantG = 0.5;
@@ -397,18 +398,18 @@ TEST_F(GeneratorLayerTest, ConstantOverSourceWritesTwoChannelsOfColor)
 // It stays pinned to RGBA regardless of the selection: the buttons choose which channels the
 // plug-in writes, but the others still pass through (or are zero with no source), so the
 // stream itself always carries all four channels.
-TEST_F(GeneratorLayerTest, ConstantOutputComponentsIsLockedToRGBA)
+TEST_F(GeneratorLayerTest, OfxGeneratorOutputComponentsIsLockedToRGBA)
 {
     ProjectPtr project = getApp()->getProject();
 
     project->reset(false, true);
 
     KnobLayerSelectPtr layer;
-    NodePtr constant = createGenerator("net.sf.openfx.ConstantPlugin", &layer, kOfxConstantMajor);
-    ASSERT_TRUE(bool(constant));
+    NodePtr generator = createGenerator(kOfxGeneratorID, &layer, kOfxGeneratorMajor);
+    ASSERT_TRUE(bool(generator));
     ASSERT_TRUE(bool(layer));
 
-    KnobChoice* outputComponents = dynamic_cast<KnobChoice*>(constant->getKnobByName("outputComponents").get());
+    KnobChoice* outputComponents = dynamic_cast<KnobChoice*>(generator->getKnobByName("outputComponents").get());
     ASSERT_TRUE(outputComponents);
 
     // Default target is the rgba view with every channel selected.

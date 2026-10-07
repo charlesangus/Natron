@@ -551,7 +551,7 @@ Shared rules for every node task in this phase:
     - The four HSL modes are checked against values from the OFX plugin, rendered once by P3.T5's parity cases.
   - size: M
 
-- [ ] M67.P3.T5 — Native Merge and its nine presets (`net.sf.openfx.MergePlugin` 3.0 and `net.sf.openfx.Merge{Plus,Matte,Multiply,In,Out,Screen,Max,Min,Difference}` 3.0)
+- [x] M67.P3.T5 — Native Merge and its nine presets (`net.sf.openfx.MergePlugin` 3.0 and `net.sf.openfx.Merge{Plus,Matte,Multiply,In,Out,Screen,Max,Min,Difference}` 3.0)
   - files: `Engine/Nodes/Merge/Merge.h` (new), `Engine/Nodes/Merge/Merge.cpp` (new), `Tests/Native/NativeMerge_Test.cpp` (new)
   - approach:
     - Inputs, keeping the OFX index order because scripts connect by index (`graph_bench.py:251`: 0=B, 1=A): `B`, `A`, `Mask` (`isMask`), `A2`..`A64`, all optional. Components RGBA, RGB, XY, Alpha. RGB is promoted to RGBA for output, as in OFX.
@@ -582,7 +582,7 @@ Shared rules for every node task in this phase:
     - The Roto render tests (`ctest -R Roto`) pass.
   - size: L
 
-- [ ] M67.P3.T6 — Native Dissolve (`net.sf.openfx.DissolvePlugin` 2.0)
+- [x] M67.P3.T6 — Native Dissolve (`net.sf.openfx.DissolvePlugin` 2.0)
   - files: `Engine/Nodes/Merge/Dissolve.h`, `Engine/Nodes/Merge/Dissolve.cpp`, `Tests/Native/NativeDissolve_Test.cpp`
   - approach:
     - Inputs `0`..`63` (optional), then `Mask` (`isMask`). Components RGBA, RGB, XY, Alpha. General context only: there is no transition context in Natron.
@@ -596,7 +596,7 @@ Shared rules for every node task in this phase:
     - `renderBothWaysDirect` with 0 unplanned pulls at which = 0.3. The two inputs not chosen are never rendered (counting test effect).
   - size: M
 
-- [ ] M67.P3.T7 — Merge/generator test triage and GUI check
+- [x] M67.P3.T7 — Merge/generator test triage and GUI check
   - files: the failing tests from the P3 batch (≤5 files, as in P2.T7, expected `Tests/GeneratorLayer_Test.cpp`, `Tests/Metadata_Test.cpp` and scheduler suites using CheckerBoard), `build/m67-gui/panels_check.py` (untracked)
   - approach:
     - Triage by P2.T7's rules (a/b/c).
@@ -1054,3 +1054,8 @@ Notes:
 - 2026-10-06 — **P2.T8 GUI check run** (`build/m67-gui/`, Natron exit 0): knob order is identical for all 8 pairs apart from the 7 documented hidden OFX knobs, and the panels are pixel-identical except two native defects now being fixed: ColorCorrect's Shadows/Midtones/Highlights children are parented to the page rather than their group (so they never fold), and Clamp's colour knobs aren't folded to one value. P2.T8 stays open until a re-shoot after the fix. Screenshots go to the parcel UAT.
 - 2026-10-06 — **B7 landed** (`a206d9191`..`0aaff24f7`): panel fixes re-shot and matching OFX (`build/m67-gui/colour-{colorcorrect,clamp}-native-fixed.png`, `gen-constant-native-overlay.png`); colour family retired via openfx-misc#7 (head `47293e94`, merges with M67's PR); rectangle overlay, generators (Constant/Solid/CheckerBoard parity 0 vs OFX major 1) and the Merge operator library landed. Full ctest passes 1093/1093 in both modes, and smoke passes. Engine fix: `Project::reset` left stale format-menu entries. **After retirement, unrecorded colour parity cases and the OFX knob-parity tests were deleted** (Design §6: about 3 recorded cases per node remain, 19 in total). OFX-hosting tests were re-pointed at ColorMatrix/Quantize, and OFX Constant tests are pinned to major 1 until P3.T7. Lesson for later families: decide which cases to keep **before** the record step, because unrecorded cases die at retirement. `run-gui.sh` deletes `colour-*.png`, so the B7 shots used `build/m67-b7/run-gui-b7.sh`.
 - 2026-10-06 — **Batch plan consolidated (user request: fewer, slower builds).** B8–B17 become B8–B12: from five builds for the spatial and keying families down to two, and no per-batch release builds (the only release builds are B12's bench and package). Each family's triage and GUI check now run on that family's implementation build instead of on a build of their own; a fix found there gets one incremental rebuild. Dependent tasks within a batch (P4.T2 on P4.T1, P4.T7 on P4.T6) run as a second wave of edits, still without a build in between. The cost is more compile errors surfacing at once, which costs less than the full builds saved.
+- 2026-10-06 — **B8 landed** (`b77c8fa3b`, `1f2cb4eb4`, `7e3a729c6`): native Merge, its nine presets and Dissolve. Full debug ctest passes 1125/1125 in both modes, smoke passes, and the release build succeeds. Parity is 0 everywhere except MergePlugin `op-divide` at 3.05e-5, and `grain-extract`/`hypot` below 5e-7, all in the transcendental class. P3.T7's triage only had to deal with B7's OFX Constant pins: OFX-clip tests moved to ColorWheel major 1, and Constant-as-source tests now run unpinned on the native node. GUI: visible knobs match for all 14 pairs (`build/m67-gui/merge-*.png`, `gen-*.png`; scripts in `build/m67-b8/`).
+  - **Deadlock fix in the shared base:** band threads called `Image::getBounds()`, which takes the read lock, and queued behind a writer while the calling thread held the image. `TwoWritersOnTwoBranchesRenderedTogether` hung in 8 of 30 legacy runs. Bounds are now read once on the calling thread, and it then passed 30/30.
+  - **Engine change:** native Merge and Dissolve are `InspectorNode`s, as their OFX versions are (`AppInstance::isEntitledForInspector`), because the node type is chosen before the effect exists.
+  - **Behaviour fixes:** Dissolve's RoD with partial inputs falls back to the project extent, as OFX does. The Merge panel now creates explicit separator knobs, because `setAddSeparator` draws nothing on native knobs.
+  - **Parity references:** the parity windows exceed Design §6's 64×48. The estimated references come to about 1.44 MB, against the 1.5 MB cap.

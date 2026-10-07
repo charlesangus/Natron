@@ -142,6 +142,7 @@
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Color/Clamp.h"
 #include "Engine/Nodes/Color/ColorCorrect.h"
+#include "Engine/Nodes/Color/ColorLookup.h"
 #include "Engine/Nodes/Color/ColorMathNode.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Color/Invert.h"
@@ -158,8 +159,12 @@
 #include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/EdgeDetect.h"
+#include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Keyer/ChromaKeyer.h"
+#include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Transform/Crop.h"
@@ -1640,6 +1645,12 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
     registerBuiltInPlugin<TransformMasked>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.TransformMaskedPlugin.png"), false, false);
     registerBuiltInPlugin<Reformat>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Reformat.png"), false, false);
     registerBuiltInPlugin<Blur>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgBlur.png"), false, false);
+    registerBuiltInPlugin<Keyer>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.KeyerPlugin.png"), false, false);
+    registerBuiltInPlugin<ChromaKeyer>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ChromaKeyerPlugin.png"), false, false);
+    registerBuiltInPlugin<ErodeDilate>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgErode.png"), false, false);
+    registerBuiltInPlugin<Dilate>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgDilate.png"), false, false);
+    registerBuiltInPlugin<EdgeDetect>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/eu.cimg.EdgeDetect.png"), false, false);
+    registerBuiltInPlugin<ColorLookup>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ColorLookupPlugin.png"), false, false);
     registerBuiltInPlugin<DiskCacheNode>(QString::fromUtf8(NATRON_IMAGES_PATH "diskcache_icon.png"), false, false);
     registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_IMAGES_PATH "GroupingIcons/Set2/paint_grouping_2.png"), false, false);
     registerBuiltInPlugin<RotoNode>(QString::fromUtf8(NATRON_IMAGES_PATH "rotoNodeIcon.png"), false, false);

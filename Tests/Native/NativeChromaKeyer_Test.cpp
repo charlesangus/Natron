@@ -1,0 +1,364 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "Global/Macros.h"
+
+#include <functional>
+#include <iostream>
+#include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include <QString>
+
+#include "BaseTest.h"
+#include "NativeParity.h"
+#include "RenderBothWays.h"
+
+#include "Engine/AppInstance.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/KnobChannelSelect.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Keyer/ChromaKeyer.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Project.h"
+#include "Engine/ViewIdx.h"
+
+NATRON_NAMESPACE_USING
+
+namespace {
+
+const char* const kChromaKeyerID = PLUGINID_NATRON_CHROMAKEYER;
+const int kOfxChromaKeyerMajor = 1;
+const int kNativeChromaKeyerMajor = PLUGIN_MAJOR_NATRON_CHROMAKEYER;
+const double kTime = 1.;
+
+// The maths is single-precision conversions around double-precision key arithmetic, with a
+// Rec. 709 transfer function in front, the class the plan tabulates for it.
+const ParityTolerance kChromaKeyerTolerance = ParityTolerance::transcendental();
+
+// The OpenFX plug-in is built with -Ofast, so its key differs from this node's by a few ulps, and
+// the unpremultiplied output divides the suppressed colour by a key alpha that can be near zero,
+// magnifying those ulps: measured under 5e-5 relative with masks, and under 1e-4 at the angle extremes.
+const ParityTolerance kChromaKeyerUnpremultipliedTolerance = ParityTolerance::make(0., 1e-4);
+
+const ParityTolerance&
+toleranceForShow(const std::string& show)
+{
+    return (show == "unpremultiplied") ? kChromaKeyerUnpremultipliedTolerance : kChromaKeyerTolerance;
+}
+
+const double kGreenKey[3] = { 0.1, 0.8, 0.2 };
+const double kBlueKey[3] = { 0.1, 0.2, 0.9 };
+
+bool
+isNative(const NodePtr& node)
+{
+    return node && dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+}
+
+bool
+setChannelSelect(const NodePtr& node,
+                 const std::string& name,
+                 const std::string& value)
+{
+    KnobChannelSelect* select = node ? dynamic_cast<KnobChannelSelect*>(node->getKnobByName(name).get()) : NULL;
+
+    EXPECT_TRUE(select != NULL) << name;
+    if (!select) {
+        return false;
+    }
+    select->set(value);
+
+    return true;
+}
+
+bool
+setChannelSelectOnBoth(const ParityPair& pair,
+                       const std::string& name,
+                       const std::string& value)
+{
+    return setChannelSelect(pair.native, name, value) && (!pair.ofx || setChannelSelect(pair.ofx, name, value));
+}
+
+} // namespace
+
+class NativeChromaKeyerTest
+    : public BaseTest {
+protected:
+    void resetProject()
+    {
+        getApp()->getProject()->reset(false, true);
+    }
+
+    // The pair on a source of `components`, with Bg and the two masks connected on request, each
+    // at its own origin so that the regions of definition differ.
+    ParityPair makePair(bool withBg,
+                        bool withMasks,
+                        const std::string& components = std::string("rgba"))
+    {
+        resetProject();
+        ParityPair pair = makeParityPair(getApp(), kChromaKeyerID, kOfxChromaKeyerMajor, kNativeChromaKeyerMajor);
+
+        EXPECT_TRUE(bool(pair.native));
+        EXPECT_TRUE(pair.live()) << "the OFX ChromaKeyer is still loadable, so parity is live";
+        EXPECT_TRUE(isNative(pair.native));
+        if (!pair.native || !pair.source) {
+            return pair;
+        }
+        setParitySourceComponents(pair.source, components);
+        if (withBg) {
+            NodePtr bg = connectParityInput(pair, "Bg");
+            EXPECT_TRUE(bool(bg));
+            if (bg) {
+                setParitySourceOrigin(bg, 8, 4);
+            }
+        }
+        if (withMasks) {
+            const char* const labels[2] = { "InM", "OutM" };
+            const int origins[2][2] = { { -6, 10 }, { 12, 6 } };
+            for (int k = 0; k < 2; ++k) {
+                NodePtr mask = connectParityInput(pair, labels[k]);
+                EXPECT_TRUE(bool(mask)) << labels[k];
+                if (!mask) {
+                    continue;
+                }
+                setParitySourceOrigin(mask, origins[k][0], origins[k][1]);
+                EXPECT_TRUE(setKnobOnBoth(pair, std::string("enableMask_") + labels[k], { 1. }));
+                EXPECT_TRUE(setChannelSelectOnBoth(pair, std::string("maskChannel_") + labels[k], "rgba.A"));
+            }
+        }
+
+        return pair;
+    }
+
+    void setKey(const ParityPair& pair,
+                const double key[3])
+    {
+        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamKeyColor, { key[0], key[1], key[2] }));
+    }
+
+    void expectParity(const ParityPair& pair,
+                      const std::string& caseName,
+                      bool record = false,
+                      const ParityTolerance& tolerance = kChromaKeyerTolerance)
+    {
+        for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+            const ParityResult r = compareParity(pair, caseName, RectI(), mipmapLevel, tolerance, record);
+            EXPECT_TRUE(r.ok) << caseName << ", mipmap " << mipmapLevel << ": " << describe(r);
+            EXPECT_TRUE(r.live);
+            EXPECT_GE(r.planesCompared, 1) << caseName;
+            std::cout << "[ parity ] ChromaKeyer " << caseName << " mipmap " << mipmapLevel << ": planes " << r.planesCompared
+                      << ", max abs diff " << r.maxAbsDiff << std::endl;
+        }
+    }
+};
+
+TEST_F(NativeChromaKeyerTest, InputsKeepTheOfxOrder)
+{
+    resetProject();
+    NodePtr node = createNode(QString::fromUtf8(kChromaKeyerID), kNativeChromaKeyerMajor);
+    ASSERT_TRUE(isNative(node));
+
+    EffectInstancePtr effect = node->getEffectInstance();
+    ASSERT_EQ(4, effect->getNInputs());
+    EXPECT_EQ("Source", effect->getInputLabel(kChromaKeyerInputSource));
+    EXPECT_EQ("InM", effect->getInputLabel(kChromaKeyerInputInsideMask));
+    EXPECT_EQ("OutM", effect->getInputLabel(kChromaKeyerInputOutsideMask));
+    EXPECT_EQ("Bg", effect->getInputLabel(kChromaKeyerInputBg));
+    EXPECT_FALSE(effect->isInputOptional(kChromaKeyerInputSource));
+    EXPECT_TRUE(effect->isInputOptional(kChromaKeyerInputBg));
+    EXPECT_FALSE(effect->isInputMask(kChromaKeyerInputSource));
+    EXPECT_TRUE(effect->isInputMask(kChromaKeyerInputInsideMask));
+    EXPECT_TRUE(effect->isInputMask(kChromaKeyerInputOutsideMask));
+    EXPECT_FALSE(effect->isInputMask(kChromaKeyerInputBg));
+}
+
+TEST_F(NativeChromaKeyerTest, UnversionedRequestsGetTheNativeChromaKeyer)
+{
+    NodePtr unversioned = createNode(QString::fromUtf8(kChromaKeyerID));
+    ASSERT_TRUE(bool(unversioned));
+    EXPECT_TRUE(isNative(unversioned));
+    EXPECT_EQ(kNativeChromaKeyerMajor, unversioned->getMajorVersion());
+}
+
+TEST_F(NativeChromaKeyerTest, KnobParity)
+{
+    ParityPair pair = makePair(false, false);
+    ASSERT_TRUE(bool(pair.native));
+    ASSERT_TRUE(bool(pair.ofx));
+    expectKnobParity(pair.ofx, pair.native);
+}
+
+TEST_F(NativeChromaKeyerTest, DefaultsWithoutBg)
+{
+    ParityPair pair = makePair(false, false);
+    ASSERT_TRUE(bool(pair.native));
+    expectParity(pair, "defaults-no-bg");
+}
+
+TEST_F(NativeChromaKeyerTest, CompositeOverBg)
+{
+    ParityPair pair = makePair(true, false);
+    ASSERT_TRUE(bool(pair.native));
+    setKey(pair, kGreenKey);
+    expectParity(pair, "composite-green", true);
+}
+
+TEST_F(NativeChromaKeyerTest, EveryShow)
+{
+    const char* const shows[4] = { "intermediate", "premultiplied", "unpremultiplied", "composite" };
+
+    for (int s = 0; s < 4; ++s) {
+        ParityPair pair = makePair(true, false);
+        ASSERT_TRUE(bool(pair.native));
+        setKey(pair, kBlueKey);
+        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamShow, std::string(shows[s])));
+        expectParity(pair, std::string("show-") + shows[s], false, toleranceForShow(shows[s]));
+    }
+}
+
+TEST_F(NativeChromaKeyerTest, EveryShowWithMasks)
+{
+    const char* const shows[4] = { "intermediate", "premultiplied", "unpremultiplied", "composite" };
+
+    for (int s = 0; s < 4; ++s) {
+        ParityPair pair = makePair(true, true);
+        ASSERT_TRUE(bool(pair.native));
+        setKey(pair, kGreenKey);
+        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamShow, std::string(shows[s])));
+        expectParity(pair, std::string("masks-") + shows[s], s == 1, toleranceForShow(shows[s]));
+    }
+}
+
+TEST_F(NativeChromaKeyerTest, EachColorspaceLinearOnAndOff)
+{
+    const char* const colorspaces[3] = { "ccir601", "rec709", "rec2020" };
+
+    for (int c = 0; c < 3; ++c) {
+        for (int linear = 0; linear < 2; ++linear) {
+            ParityPair pair = makePair(true, false);
+            ASSERT_TRUE(bool(pair.native));
+            setKey(pair, kGreenKey);
+            ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamColorspace, std::string(colorspaces[c])));
+            ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamLinear, { (double)linear }));
+            ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamShow, std::string("premultiplied")));
+            expectParity(pair, std::string("colorspace-") + colorspaces[c] + (linear ? "-linear" : "-encoded"));
+        }
+    }
+}
+
+TEST_F(NativeChromaKeyerTest, AngleExtremes)
+{
+    const double acceptance[4] = { 0., 180., 120., 90. };
+    const double suppression[4] = { 40., 40., 0., 180. };
+
+    for (int a = 0; a < 4; ++a) {
+        ParityPair pair = makePair(true, false);
+        ASSERT_TRUE(bool(pair.native));
+        setKey(pair, kGreenKey);
+        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamAcceptanceAngle, { acceptance[a] }));
+        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamSuppressionAngle, { suppression[a] }));
+        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamShow, std::string("unpremultiplied")));
+        expectParity(pair, std::string("angles-") + std::to_string(a), false, kChromaKeyerUnpremultipliedTolerance);
+    }
+}
+
+TEST_F(NativeChromaKeyerTest, KeyGainAndLift)
+{
+    const double gains[4] = { 0., 1., 0.5, 2. };
+    const double lifts[4] = { 0., 1., 0.4, 0.2 };
+
+    for (int k = 0; k < 4; ++k) {
+        ParityPair pair = makePair(true, true);
+        ASSERT_TRUE(bool(pair.native));
+        setKey(pair, kGreenKey);
+        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamKeyGain, { gains[k] }));
+        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamKeyLift, { lifts[k] }));
+        expectParity(pair, std::string("gain-lift-") + std::to_string(k));
+    }
+}
+
+TEST_F(NativeChromaKeyerTest, SourceAlphaHandling)
+{
+    const char* const handling[3] = { "ignore", "insidemask", "normal" };
+
+    for (int h = 0; h < 3; ++h) {
+        ParityPair pair = makePair(true, false);
+        ASSERT_TRUE(bool(pair.native));
+        setKey(pair, kGreenKey);
+        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamSourceAlpha, std::string(handling[h])));
+        expectParity(pair, std::string("source-alpha-") + handling[h]);
+    }
+}
+
+// The OpenFX plug-in reads the alpha of an RGB source out of bounds when it uses source alpha, so
+// only the cases that never read it are compared.
+TEST_F(NativeChromaKeyerTest, RgbSource)
+{
+    const char* const shows[3] = { "premultiplied", "unpremultiplied", "composite" };
+
+    for (int s = 0; s < 3; ++s) {
+        ParityPair pair = makePair(true, true, "rgb");
+        ASSERT_TRUE(bool(pair.native));
+        setKey(pair, kGreenKey);
+        ASSERT_TRUE(setKnobOnBoth(pair, kChromaKeyerParamShow, std::string(shows[s])));
+        expectParity(pair, std::string("rgb-source-") + shows[s], s == 1, toleranceForShow(shows[s]));
+    }
+}
+
+TEST_F(NativeChromaKeyerTest, MaskInputsAreIgnoredWhileTheirSelectorIsOff)
+{
+    ParityPair pair = makePair(true, true);
+    ASSERT_TRUE(bool(pair.native));
+    setKey(pair, kGreenKey);
+    ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_InM", { 0. }));
+    ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_OutM", { 0. }));
+    expectParity(pair, "masks-disabled");
+}
+
+TEST_F(NativeChromaKeyerTest, BothSchedulerModesAgreeWithNoUnplannedPull)
+{
+    ParityPair pair = makePair(true, true);
+    ASSERT_TRUE(bool(pair.native));
+    setKey(pair, kGreenKey);
+    ASSERT_TRUE(setKnobValue(pair.native, kChromaKeyerParamSourceAlpha, "normal"));
+
+    std::vector<int> poolSizes;
+    poolSizes.push_back(1);
+    poolSizes.push_back(4);
+    for (unsigned mipmapLevel = 0; mipmapLevel <= 1; ++mipmapLevel) {
+        const RectI window = paritySourceWindow(pair.source, kTime, mipmapLevel);
+        std::vector<int> unplannedPulls;
+        const RenderMismatch m = renderBothWaysDirect(pair.native, kTime, ViewIdx(0), mipmapLevel, window, poolSizes, std::function<void()>(), 0.f, &unplannedPulls);
+        EXPECT_FALSE(m.any) << "mipmap " << mipmapLevel << ": " << describe(m);
+        ASSERT_EQ(poolSizes.size(), unplannedPulls.size());
+        for (std::size_t i = 0; i < unplannedPulls.size(); ++i) {
+            EXPECT_EQ(0, unplannedPulls[i]) << "mipmap " << mipmapLevel << ", pool " << poolSizes[i];
+        }
+    }
+}

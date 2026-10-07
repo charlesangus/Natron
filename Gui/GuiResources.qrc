@@ -408,5 +408,8 @@
         <file>Resources/Images/NativeNodes/net.sf.openfx.KeyerPlugin.png</file>
         <file>Resources/Images/NativeNodes/net.sf.openfx.ChromaKeyerPlugin.png</file>
         <file>Resources/Images/NativeNodes/net.sf.openfx.ColorLookupPlugin.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.cimg.CImgErode.png</file>
+        <file>Resources/Images/NativeNodes/net.sf.cimg.CImgDilate.png</file>
+        <file>Resources/Images/NativeNodes/eu.cimg.EdgeDetect.png</file>
     </qresource>
 </RCC>

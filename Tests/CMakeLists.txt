@@ -121,6 +121,7 @@ target_compile_definitions(Tests
     PRIVATE
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
         NATRON_TESTS_PYPLUGS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Gui/Resources/PyPlugs"
+        NATRON_TESTS_CIMG_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/../build/assets/plugin-src/openfx-misc/CImg/CImg.h"
 )
 target_include_directories(Tests
     PRIVATE

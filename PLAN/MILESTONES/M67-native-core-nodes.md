@@ -1101,3 +1101,7 @@ Notes:
     - **(2) `-Ofast` ulps:** the OFX plugins are built with `-Ofast`, and their ulp differences flip tied pixels under Sobel plus non-maxima suppression. The recorded case uses Gaussian, which is bit-exact.
     - **(3) ChromaKeyer unpremultiplied tolerance:** these cases use a measured 1e-4 relative tolerance. The same ulps get divided by near-zero key alpha; 5e-5 fails.
 - 2026-10-07 — **Keying references recorded** (`9c1f8f362`, 1.11 MB; 74/74 pass). B11 dispatched: P5.T8, P6.T2, P6.T3.
+- 2026-10-07 — **B11 written; build and verification dispatched.**
+  - **P5.T8:** keying retired in the fork (`59ae4c26`).
+  - **P6.T2 audit:** found no missing real knobs. The allow-list gains Merge's `aChannelsChanged`/`bChannelsChanged`, OFX state flags that native Merge has no use for.
+  - **Regression found:** DropShadow's `Multiply1` and PIKColor's two Dilates set the OFX `unPremultBy`, which is a no-op on native nodes, so they would silently stop unpremultiplying. The fix goes in the PyPlugs (`hostUnPremultBy`), with a test, rather than an alias knob, per the clean-break rule.

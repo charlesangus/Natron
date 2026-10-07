@@ -1001,7 +1001,7 @@ One detached debug build + ctest per batch (both scheduler modes where noted), i
 | B7 | P2.T10, P3.T2, P3.T3, P3.T4 | AppManager: P3.T2 (Constant, Solid, CheckerBoard) | PM copies `build/assets/Plugins` to `Plugins.pre-m67` before re-running `fetch-assets.sh`; then debug build + ctest + smoke |
 | B8 | P3.T5, P3.T6 | AppManager: P3.T5 (Merge, 9 presets, Dissolve) | debug build + ctest (both modes); no release build. P3.T7 triage and GUI check run on this build, then P3.T8's record step |
 | B9 | P3.T8, P4.T1, P4.T3, P4.T5, P4.T6, then P4.T2, P4.T4, P4.T7 (second wave edits only, no build in between) | AppManager: P4.T3 in wave 1 (Crop), P4.T2 in wave 2 (Position, Transform, TransformMasked, Reformat, Blur); `Tests/CMakeLists.txt` define: P4.T6 | `fetch-assets.sh`; debug build + ctest (both modes) + smoke. P4.T8 triage and GUI check run on this build, then P4.T9's record step |
-| B10 | P4.T9, P5.T1, P5.T2, P5.T3, P5.T5, then P5.T4, P5.T6 | AppManager: P5.T1 (Keyer, ChromaKeyer, Erode, Dilate, ColorLookup, EdgeDetect) | `fetch-assets.sh`; debug build + ctest (both modes) + smoke. P5.T7 triage and GUI check run on this build, then P5.T8's record step |
+| B10 | P4.T9, P5.T1, P5.T2, P5.T3, P5.T4, P5.T5, then P5.T6 (second wave, after ColorLookup exists) | AppManager: P5.T1 (Keyer, ChromaKeyer, Erode, Dilate, EdgeDetect, ColorLookup); `NativePluginList_Test`: P4.T9 | `fetch-assets.sh`; debug build + ctest (both modes) + smoke. P5.T7 triage and GUI check run on this build, then P5.T8's record step |
 | B11 | P5.T8, P6.T2, P6.T3 | — | `fetch-assets.sh`; debug build + ctest (both modes) + smoke |
 | B12 | P6.T1, then P6.T4 | — | release builds (base and head), bench, package |
 
@@ -1079,3 +1079,4 @@ Notes:
     - (a) The host `PositionInteract::penUp` commits `lastPenPos`, so a release with no final motion lands one step short.
     - (b) **GUI crash:** `GuiPrivate::setUndoRedoActions` keeps a raw pointer to the undo action of a destroyed node's panel, and the next knob edit segfaults. This is generic, not M67's.
   - **References:** estimated at 1.28 MB.
+- 2026-10-07 — **Spatial references recorded** (`1f5d37957`, 1.36 MB; 75/75 pass). **B10 dispatched.** EdgeDetect moved into wave 1, because it only needs `BlurKernels`, which has landed. Only P5.T6 waits for wave 2, because it edits `ColorLookup.cpp`.

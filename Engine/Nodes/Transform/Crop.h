@@ -48,12 +48,14 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief Crop: keeps the pixels inside a rectangle, optionally fading them to black at its edges
- * (softness), translating the rectangle to the origin (reformat), clipping it to the source's
- * region of definition (intersect) and adding a black border around it (blackOutside). The
- * rectangle comes from the same extent knobs as a generator (Format, Size, Project or Default,
- * with Size as the initial extent), shown with the host rectangle overlay while it is editable.
- * Knob names, defaults, region of definition, clip preferences and per-pixel arithmetic are the
- * openfx-misc CropPlugin's; it registers under that plug-in's ID one major above.
+ * (softness), translating the rectangle to the origin and making it the output format
+ * (reformat), clipping it to the source's region of definition (intersect) and adding a black
+ * border around it (blackOutside). The rectangle comes from the same extent knobs as a generator
+ * (Format, Size, Project or Default, with Size as the initial extent), shown with the host
+ * rectangle overlay while it is editable. Knob names, defaults, region of definition, clip
+ * preferences and per-pixel arithmetic are the openfx-misc CropPlugin's, except that reformat
+ * there sets the output format for the Format and Project extents only; it registers under that
+ * plug-in's ID one major above.
  *
  * Every channel of every requested plane is cropped; the unprocessed-channel copy stays with
  * the host.

@@ -47,6 +47,7 @@
 #include "Engine/HostOverlaySupport.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Image/NativeGenerator.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/Crop.h"
@@ -348,4 +349,63 @@ TEST_F(NativeCropTest, RendersTheSameInBothSchedulerModes)
             EXPECT_EQ(0, unplannedPulls[p]) << "mipmap " << mipmapLevel << ", pool " << poolSizes[p];
         }
     }
+}
+
+TEST_F(NativeCropTest, ReformatOnSizeMakesTheRectangleTheOutputFormat)
+{
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr crop = createNode(QString::fromUtf8(kCropID), kNativeCropMajor);
+    NodePtr downstream = createNode(QString::fromUtf8(PLUGINID_NATRON_INVERT));
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(isNative(crop));
+    ASSERT_TRUE(isNative(downstream));
+    setParitySourceOrigin(source, 0, 0);
+    connectNodes(source, crop, 0, true);
+    connectNodes(crop, downstream, 0, true);
+    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamBottomLeft, { 10., 8. }));
+    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { 40., 30. }));
+
+    const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+    std::vector<RenderedPlane> inPlace;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(crop, kTime, ViewIdx(0), 0, RectI(10, 8, 50, 38), layers, &inPlace, &error)) << error;
+
+    ASSERT_TRUE(setBoolAsUser(crop, kCropParamReformat, true));
+    EffectInstancePtr effect = crop->getEffectInstance();
+    const RectI format = effect->getOutputFormat();
+    EXPECT_EQ(RectI(0, 0, 40, 30), format);
+    EXPECT_EQ(1., effect->getAspectRatio(-1));
+    EXPECT_EQ(RectD(0., 0., 40., 30.), regionOfDefinition(crop, kTime));
+    EXPECT_EQ(RectI(0, 0, 40, 30), downstream->getEffectInstance()->getOutputFormat());
+
+    std::vector<RenderedPlane> moved;
+    ASSERT_TRUE(renderNodePlanesDirect(crop, kTime, ViewIdx(0), 0, RectI(0, 0, 40, 30), layers, &moved, &error)) << error;
+    ASSERT_EQ(1u, inPlace.size());
+    ASSERT_EQ(1u, moved.size());
+    EXPECT_EQ(inPlace[0].pixels, moved[0].pixels);
+
+    ASSERT_TRUE(setKnobValues(crop, kNativeGeneratorParamSize, { 24., 12. }));
+    EXPECT_EQ(RectI(0, 0, 24, 12), effect->getOutputFormat());
+
+    ASSERT_TRUE(setBoolAsUser(crop, kCropParamReformat, false));
+    EXPECT_EQ(RectI(0, 0, 64, 48), effect->getOutputFormat());
+}
+
+TEST_F(NativeCropTest, ReformatOnDefaultMakesTheSourceExtentTheOutputFormat)
+{
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr crop = createNode(QString::fromUtf8(kCropID), kNativeCropMajor);
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(isNative(crop));
+    setParitySourceOrigin(source, 20, 10);
+    connectNodes(source, crop, 0, true);
+    ASSERT_TRUE(setChoiceAsUser(crop, kNativeGeneratorParamExtent, kNativeGeneratorExtentDefault));
+    ASSERT_TRUE(setBoolAsUser(crop, kCropParamReformat, true));
+
+    const RectD sourceRoD = regionOfDefinition(source, kTime);
+    const RectI expected(0, 0, (int)(sourceRoD.x2 - sourceRoD.x1), (int)(sourceRoD.y2 - sourceRoD.y1));
+    EXPECT_EQ(expected, crop->getEffectInstance()->getOutputFormat());
+    EXPECT_EQ(RectD(0., 0., expected.x2, expected.y2), regionOfDefinition(crop, kTime));
 }

@@ -267,7 +267,7 @@ Crop::getNativePluginDescription() const
     desc.id = PLUGINID_NATRON_CROP;
     desc.label = "Crop";
     desc.description = tr("Removes everything outside the defined rectangle and optionally adds black edges so everything outside is black.\n"
-                          "If the 'Extent' parameter is set to 'Format', and 'Reformat' is checked, the output pixel aspect ratio is also set to this of the format.\n"
+                          "If 'Reformat' is checked, the crop rectangle, moved to (0,0), becomes the output format; with the 'Format' extent the output pixel aspect ratio is also set to this of the format.\n"
                           "This plugin does not concatenate transforms.")
                            .toStdString();
     desc.grouping = PLUGIN_GROUP_TRANSFORM;
@@ -301,11 +301,9 @@ Crop::initializeKnobs()
 
     KnobBoolPtr reformat = createKnob<KnobBool>(tr("Reformat"));
     reformat->setName(kCropParamReformat);
-    reformat->setHintToolTip(tr("Translates the bottom left corner of the crop rectangle to be in (0,0)."
-                                " This sets the output format only if 'Format' or 'Project' is selected as the output Extend. "
-                                "In order to actually change the format of this image stream for other Extent choices, feed the output of this node to a either a NoOp node which sets the proper format, "
-                                "or a Reformat node with the same extent and with 'Resize Type' set to None and 'Center' unchecked. "
-                                "The reason is that the Crop size may be animated, but the output format can not be animated."));
+    reformat->setHintToolTip(tr("Translates the bottom left corner of the crop rectangle to be in (0,0), and makes the crop rectangle the output format. "
+                                "With the 'Size' or 'Default' extent, the output format is the crop rectangle at the current frame: "
+                                "the rectangle may be animated, but the output format can not."));
     reformat->setDefaultValue(false);
     reformat->setAnimationEnabled(false);
     reformat->setAddNewLine(false);
@@ -548,6 +546,13 @@ Crop::getPreferredMetadata(NodeMetadata& metadata)
     } else if (extent == eExtentProject) {
         const RectD project = _extentKnobs.getProjectExtentRect(&par);
         pixelFormat = toPixelNearest(project, 1., par);
+    } else {
+        // Unlike the OpenFX Crop, which leaves the source's format around the smaller image for
+        // these extents. The rectangle may be animated while a format cannot, so the format is
+        // the rectangle at the current time.
+        RectD rect;
+        getCropRectangle(getCurrentTime(), ViewIdx(0), RenderScale::identity, false, false, false, true, &rect, &par);
+        pixelFormat = toPixelNearest(rect, 1., par);
     }
     if (par != 0.) {
         metadata.setPixelAspectRatio(-1, par);

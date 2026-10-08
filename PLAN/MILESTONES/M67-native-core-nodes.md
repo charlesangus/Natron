@@ -1186,3 +1186,7 @@ Notes:
 - 2026-10-08 — **CI fixed** (`670a4c482`, Tests and Checks green). CI caches only `build/assets/Plugins`, so `plugin-src/.../CImg.h` was missing on a cache hit. `fetch-assets.sh` now keeps it at `build/assets/CImg/`, and the three workflows cache that directory too.
   - **Milestone state:** complete, held for the parcel-2 UAT with M63. The board row is `blocked` on the UAT.
 - 2026-10-08 — **Parcel-2 UAT (user): approved except three failures.** Crop's reformat doesn't reformat; ChromaKeyer gives NaN on a real image; the viewer's NaN warning persists after ChromaKeyer is out of the tree. Phase 67.8 added.
+- 2026-10-08 — **Crop reformat (user decision):**
+  - **Finding:** native Crop matches OFX exactly. With the Size extent, OFX reformat only moves the rectangle to the origin; it sets the format only for the Format and Project extents.
+  - **User chose to depart from OFX:** with the Size or Default extent, reformat sets the output format to the crop rectangle (at the origin, source PAR). Recorded as a deliberate divergence.
+  - **ChromaKeyer NaN:** not reproduced with the user's image across every mode and 691k kernel parameter combinations. Waiting on the user's exact settings.

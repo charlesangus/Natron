@@ -1010,6 +1010,15 @@ Codex's review on PR #42 has 13 findings, and the user chose to fix the HD compo
   - size: L
 - [x] M67.P7.T7 — Reply on each review thread and close the round
 
+## Phase 67.8: UAT fixes (parcel-2 UAT, 2026-10-08)
+
+The user approved the parcel except for these:
+
+- [ ] M67.P8.T1 — Crop's `reformat` knob does not reformat the image
+- [ ] M67.P8.T2 — ChromaKeyer produces NaN pixels on a real-world image
+- [ ] M67.P8.T3 — The viewer's NaN warning persists after ChromaKeyer is removed from the input tree
+- [ ] M67.P8.T4 — Build, full ctest (both modes), new AppImage, push, CI
+
 ## Batch plan
 
 One detached debug build + ctest per batch (both scheduler modes where noted), in the single-tenant `natron-dev` container. Check `pgrep -x ninja` is 0 and use a fresh `.done` marker before relaunching. **Registration owner** means the only task in the batch allowed to edit `Engine/AppManager.cpp`; it adds the `#include` and `registerBuiltInPlugin` lines for every node of its batch, with the class and header names fixed in this plan. With `Tests/Native/*_Test.cpp` globbed after P1.T3, no later batch edits `Tests/CMakeLists.txt`.
@@ -1176,3 +1185,4 @@ Notes:
   - **AppImage:** `M67-37259b177` predates this fix. The change only affects a case the engine can't produce, so the AppImage stays valid for UAT.
 - 2026-10-08 — **CI fixed** (`670a4c482`, Tests and Checks green). CI caches only `build/assets/Plugins`, so `plugin-src/.../CImg.h` was missing on a cache hit. `fetch-assets.sh` now keeps it at `build/assets/CImg/`, and the three workflows cache that directory too.
   - **Milestone state:** complete, held for the parcel-2 UAT with M63. The board row is `blocked` on the UAT.
+- 2026-10-08 — **Parcel-2 UAT (user): approved except three failures.** Crop's reformat doesn't reformat; ChromaKeyer gives NaN on a real image; the viewer's NaN warning persists after ChromaKeyer is out of the tree. Phase 67.8 added.

@@ -286,6 +286,9 @@ LineFilter::applyVanVliet(float* data,
     const double* filter = _filter;
     const double* M = _triggs;
     const double sumsq = filter[0], sum = sumsq * sumsq, a1 = filter[1], a2 = filter[2], a3 = filter[3];
+    // The k loops below are unrolled by pragma because -O2 leaves them as loops, which keeps
+    // val[] in memory and nearly doubles the cost of each sample; the operations and their order
+    // are unchanged.
     double val[4] = { 0, 0, 0, 0 };
     // Line position of the sample being written. CImg walks a pointer one step past either end
     // after the last write of a pass; i only reaches -1 or N in the same places and is never
@@ -296,6 +299,7 @@ LineFilter::applyVanVliet(float* data,
         const double iplus = (_neumann ? data[(N - 1) * off] : 0.f);
         for (int pass = 0; pass < 2; ++pass) {
             if (!pass) {
+#pragma GCC unroll 4
                 for (int k = 1; k < 4; ++k) {
                     val[k] = (_neumann ? data[i * off] / sumsq : 0);
                 }
@@ -307,6 +311,7 @@ LineFilter::applyVanVliet(float* data,
                 val[2] = (M[6] * unp + M[7] * unp1 + M[8] * unp2 + vplus) * sum;
                 data[i * off] = (float)val[0];
                 --i;
+#pragma GCC unroll 4
                 for (int k = 3; k > 0; --k) {
                     val[k] = val[k - 1];
                 }
@@ -316,6 +321,7 @@ LineFilter::applyVanVliet(float* data,
                 if (pass) {
                     val[0] *= sum;
                 }
+#pragma GCC unroll 4
                 for (int k = 1; k < 4; ++k) {
                     val[0] += val[k] * filter[k];
                 }
@@ -325,6 +331,7 @@ LineFilter::applyVanVliet(float* data,
                 } else {
                     --i;
                 }
+#pragma GCC unroll 4
                 for (int k = 3; k > 0; --k) {
                     val[k] = val[k - 1];
                 }
@@ -342,9 +349,11 @@ LineFilter::applyVanVliet(float* data,
     double x[3];
     for (int pass = 0; pass < 2; ++pass) {
         if (!pass) {
+#pragma GCC unroll 4
             for (int k = 0; k < 3; ++k) {
                 x[k] = (_neumann ? data[i * off] : 0.f);
             }
+#pragma GCC unroll 4
             for (int k = 0; k < 4; ++k) {
                 val[k] = 0;
             }
@@ -355,6 +364,7 @@ LineFilter::applyVanVliet(float* data,
             val[2] = (M[6] * unp + M[7] * unp1 + M[8] * unp2) * sum;
             data[i * off] = (float)val[0];
             --i;
+#pragma GCC unroll 4
             for (int k = 3; k > 0; --k) {
                 val[k] = val[k - 1];
             }
@@ -388,6 +398,7 @@ LineFilter::applyVanVliet(float* data,
                     break;
                 }
             }
+#pragma GCC unroll 4
             for (int k = 1; k < 4; ++k) {
                 val[0] += val[k] * filter[k];
             }
@@ -397,9 +408,11 @@ LineFilter::applyVanVliet(float* data,
             } else {
                 --i;
             }
+#pragma GCC unroll 4
             for (int k = 2; k > 0; --k) {
                 x[k] = x[k - 1];
             }
+#pragma GCC unroll 4
             for (int k = 3; k > 0; --k) {
                 val[k] = val[k - 1];
             }

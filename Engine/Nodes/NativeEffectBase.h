@@ -28,9 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <functional>
 #include <list>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "Engine/AppManager.h" // for AppManager::createKnob
@@ -94,6 +96,44 @@ struct NativePluginDescription {
     {
     }
 };
+
+/**
+ * @brief The abort state of one render, shared with the pool threads running its bands.
+ * EffectInstance::aborted() finds the render through the AbortableThread info or the effect's
+ * TLS frame args of the asking thread, which only the thread running render() carries: a pool
+ * thread asking is always told the render goes on. So only the thread that built this asks the
+ * effect, and it publishes the answer in a flag the other threads read.
+ **/
+class RenderCancellation {
+public:
+    explicit RenderCancellation(const EffectInstance* effect);
+
+    RenderCancellation(const RenderCancellation&) = delete;
+    RenderCancellation& operator=(const RenderCancellation&) = delete;
+
+    /**
+     * @brief Whether the render was aborted. Asks the effect on the thread that built this,
+     * and only reads the published flag on any other.
+     **/
+    bool check();
+
+private:
+    const EffectInstance* _effect;
+    std::thread::id _owner;
+    std::atomic<bool> _cancelled;
+};
+
+/**
+ * @brief parallelForOnGlobalPool() that stops once the render is aborted: no index starts after
+ * that, and while the calling thread waits for the helpers' last calls it wakes at short
+ * intervals to ask the effect, so a body polling cancel.check() between rows returns soon after
+ * an abort whichever thread runs it. A render that is not aborted runs every index exactly as
+ * parallelForOnGlobalPool() does. Must be called on the thread that built cancel.
+ **/
+void parallelForCancellable(int count,
+                            int maxThreads,
+                            RenderCancellation& cancel,
+                            const std::function<void(int)>& body);
 
 /**
  * @brief Convenience base class for native (non-OFX) nodes living under Engine/Nodes/, rooted at

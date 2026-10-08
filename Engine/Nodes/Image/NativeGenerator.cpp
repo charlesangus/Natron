@@ -27,7 +27,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cfloat>
 #include <cmath>
 #include <cstddef>
 #include <functional>
@@ -41,14 +40,12 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
-#include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/PoolParallelFor.h"
-#include "Engine/Project.h"
 #include "Engine/RectI.h"
 
 NATRON_NAMESPACE_ENTER
@@ -56,39 +53,6 @@ NATRON_NAMESPACE_ENTER
 namespace {
 // How many rows render() runs between two abort checks.
 const int kAbortCheckRows = 16;
-
-struct FormatResolution {
-    const char* id;
-    const char* label;
-    int width;
-    int height;
-    double par;
-};
-
-// The openfx-misc format list (SupportExt/ofxsFormatResolution.h), in its order. The host
-// replaces these entries with the project's formats once the node is created.
-const FormatResolution kFormats[] = {
-    { "PC_Video", "PC_Video 640x480", 640, 480, 1. },
-    { "NTSC", "NTSC 720x486 0.91", 720, 486, 0.91 },
-    { "PAL", "PAL 720x576 1.09", 720, 576, 1.09 },
-    { "NTSC_16:9", "NTSC_16:9 720x486 1.21", 720, 486, 1.21 },
-    { "PAL_16:9", "PAL_16:9 720x576 1.46", 720, 576, 1.46 },
-    { "HD_720", "HD_720 1280x1720", 1280, 720, 1. },
-    { "HD", "HD 1920x1080", 1920, 1080, 1. },
-    { "UHD_4K", "UHD_4K 3840x2160", 3840, 2160, 1. },
-    { "1K_Super35(full-ap)", "1K_Super35(full-ap) 1024x778", 1024, 778, 1. },
-    { "1K_Cinemascope", "1K_Cinemascope 914x778 2", 914, 778, 2. },
-    { "2K_Super35(full-ap)", "2K_Super35(full-ap) 2048x1556", 2048, 1556, 1. },
-    { "2K_Cinemascope", "2K_Cinemascope 1828x1556 2", 1828, 1556, 2. },
-    { "2K_DCP", "2K_DCP 2048x1080", 2048, 1080, 1. },
-    { "4K_Super35(full-ap)", "4K_Super35(full-ap) 4096x3112", 4096, 3112, 1. },
-    { "4K_Cinemascope", "4K_Cinemascope 3656x3112 2", 3656, 3112, 2. },
-    { "4K_DCP", "4K_DCP 4096x2160", 4096, 2160, 1. },
-    { "square_256", "square_256 256x256", 256, 256, 1. },
-    { "square_512", "square_512 512x512", 512, 512, 1. },
-    { "square_1K", "square_1K 1024x1024", 1024, 1024, 1. },
-    { "square_2K", "square_2K 2048x2048", 2048, 2048, 1. },
-};
 
 // The index in an nComps-channel pixel of the channel on colour bit `bit`, or -1.
 int
@@ -223,6 +187,19 @@ isAnimatedKnob(const KnobIPtr& knob)
     return false;
 }
 
+ExtentPolicy
+generatorExtentPolicy()
+{
+    ExtentPolicy policy;
+
+    policy.defaultExtent = ExtentKnobs::eExtentDefault;
+    policy.reformatToggle = true;
+    policy.overlayFollowsExtent = true;
+    policy.recenterOnSource = false;
+
+    return policy;
+}
+
 NativeImageTraits
 generatorTraits()
 {
@@ -232,21 +209,11 @@ generatorTraits()
 
     return traits;
 }
-
-void
-setSecretAndDisabled(const KnobIPtr& knob,
-                     bool secret)
-{
-    if (!knob) {
-        return;
-    }
-    knob->setSecret(secret);
-    knob->setAllDimensionsEnabled(!secret);
-}
 } // anonymous namespace
 
 NativeGenerator::NativeGenerator(NodePtr node)
     : NativeImageEffect(node, generatorTraits())
+    , _extentKnobs(this, generatorExtentPolicy())
 {
 }
 
@@ -263,270 +230,36 @@ NativeGenerator::describeSourceInput(NativePluginDescription* desc)
 void
 NativeGenerator::initializeGeneratorKnobs(const KnobPagePtr& page)
 {
-    KnobChoicePtr extent = createKnob<KnobChoice>(tr("Extent"));
-    extent->setName(kNativeGeneratorParamExtent);
-    extent->setHintToolTip(tr("Extent (size and offset) of the output."));
-    {
-        std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption(kNativeGeneratorExtentFormat, tr("Format").toStdString(), tr("Use a pre-defined image format.").toStdString()));
-        options.push_back(ChoiceOption(kNativeGeneratorExtentSize, tr("Size").toStdString(), tr("Use a specific extent (size and offset).").toStdString()));
-        options.push_back(ChoiceOption(kNativeGeneratorExtentProject, tr("Project").toStdString(), tr("Use the project extent (size and offset).").toStdString()));
-        options.push_back(ChoiceOption(kNativeGeneratorExtentDefault, tr("Default").toStdString(), tr("Use the default extent (e.g. the source clip extent, if connected).").toStdString()));
-        extent->populateChoices(options);
-    }
-    extent->setDefaultValue((int)eExtentDefault);
-    extent->setAddNewLine(false);
-    extent->setAnimationEnabled(false);
-    extent->setIsMetadataSlave(true);
-    page->addKnob(extent);
-    _extent = extent;
-
-    KnobButtonPtr recenter = createKnob<KnobButton>(tr("Center"));
-    recenter->setName(kNativeGeneratorParamRecenter);
-    recenter->setHintToolTip(tr("Centers the region of definition to the input region of definition. "
-                                "If there is no input, then the region of definition is centered to the project window."));
-    recenter->setAddNewLine(false);
-    page->addKnob(recenter);
-    _recenter = recenter;
-
-    KnobBoolPtr reformat = createKnob<KnobBool>(tr("Reformat"));
-    reformat->setName(kNativeGeneratorParamReformat);
-    reformat->setHintToolTip(tr("Set the output format to the given extent, except if the Bottom Left or Size parameters is animated."));
-    reformat->setDefaultValue(false);
-    reformat->setAddNewLine(false);
-    reformat->setAnimationEnabled(false);
-    reformat->setIsMetadataSlave(true);
-    page->addKnob(reformat);
-    _reformat = reformat;
-
-    KnobChoicePtr format = createKnob<KnobChoice>(tr("Format"));
-    format->setName(kNatronParamFormatChoice);
-    format->setHintToolTip(tr("The output format"));
-    {
-        std::vector<ChoiceOption> options;
-        for (std::size_t i = 0; i < sizeof(kFormats) / sizeof(kFormats[0]); ++i) {
-            options.push_back(ChoiceOption(kFormats[i].id, kFormats[i].label, std::string()));
-        }
-        format->populateChoices(options);
-    }
-    format->setDefaultValue(0);
-    format->setAnimationEnabled(false);
-    format->setIsMetadataSlave(true);
-    page->addKnob(format);
-    _format = format;
-
-    KnobIntPtr formatSize = createKnob<KnobInt>(tr("Size"), 2);
-    formatSize->setName(kNatronParamFormatSize);
-    formatSize->setHintToolTip(tr("The output dimensions of the image in pixels."));
-    formatSize->setDefaultValue(kFormats[0].width, 0);
-    formatSize->setDefaultValue(kFormats[0].height, 1);
-    formatSize->setAnimationEnabled(false);
-    formatSize->setIsMetadataSlave(true);
-    formatSize->setSecretByDefault(true);
-    formatSize->setDefaultAllDimensionsEnabled(false);
-    page->addKnob(formatSize);
-    _formatSize = formatSize;
-
-    KnobDoublePtr formatPar = createKnob<KnobDouble>(tr("Pixel Aspect Ratio"));
-    formatPar->setName(kNatronParamFormatPar);
-    formatPar->setHintToolTip(tr("Output pixel aspect ratio."));
-    formatPar->setMinimum(0.);
-    formatPar->setMaximum(DBL_MAX);
-    formatPar->setDisplayMinimum(0.5);
-    formatPar->setDisplayMaximum(2.);
-    formatPar->setDefaultValue(kFormats[0].par);
-    formatPar->setAnimationEnabled(false);
-    formatPar->setIsMetadataSlave(true);
-    formatPar->setSecretByDefault(true);
-    formatPar->setDefaultAllDimensionsEnabled(false);
-    page->addKnob(formatPar);
-    _formatPar = formatPar;
-
-    KnobDoublePtr bottomLeft = createKnob<KnobDouble>(tr("Bottom Left"), 2);
-    bottomLeft->setName(kNativeGeneratorParamBottomLeft);
-    bottomLeft->setHintToolTip(tr("Coordinates of the bottom left corner of the size rectangle."));
-    bottomLeft->setSpatial(true);
-    bottomLeft->disableSlider();
-    bottomLeft->setDefaultValuesAreNormalized(true);
-    for (int d = 0; d < 2; ++d) {
-        bottomLeft->setMinimum(-DBL_MAX, d);
-        bottomLeft->setMaximum(DBL_MAX, d);
-        bottomLeft->setDisplayMinimum(-10000., d);
-        bottomLeft->setDisplayMaximum(10000., d);
-        bottomLeft->setIncrement(1., d);
-        bottomLeft->setDecimals(0, d);
-        bottomLeft->setDefaultValue(0., d);
-    }
-    bottomLeft->setAddNewLine(false);
-    bottomLeft->setIsMetadataSlave(true);
-    page->addKnob(bottomLeft);
-    _bottomLeft = bottomLeft;
-
-    KnobDoublePtr size = createKnob<KnobDouble>(tr("Size"), 2);
-    size->setName(kNativeGeneratorParamSize);
-    size->setHintToolTip(tr("Width and height of the size rectangle."));
-    size->setSpatial(true);
-    size->setCanAutoFoldDimensions(true);
-    size->setDefaultValuesAreNormalized(true);
-    size->setDimensionName(0, "w");
-    size->setDimensionName(1, "h");
-    for (int d = 0; d < 2; ++d) {
-        size->setMinimum(0., d);
-        size->setMaximum(DBL_MAX, d);
-        size->setDisplayMinimum(0., d);
-        size->setDisplayMaximum(10000., d);
-        size->setIncrement(1., d);
-        size->setDecimals(0, d);
-        size->setDefaultValue(1., d);
-    }
-    size->setIsMetadataSlave(true);
-    page->addKnob(size);
-    _size = size;
-
-    KnobBoolPtr interactive = createKnob<KnobBool>(tr("Interactive Update"));
-    interactive->setName(kNativeGeneratorParamInteractive);
-    interactive->setHintToolTip(tr("If checked, update the parameter values during interaction with the image viewer, else update the values when pen is released."));
-    interactive->setDefaultValue(false);
-    interactive->setEvaluateOnChange(false);
-    page->addKnob(interactive);
-    _interactive = interactive;
-
-    // Kept for knob parity with the OpenFX generators; the host overlay sizes itself.
-    KnobBoolPtr hiDPI = createKnob<KnobBool>(tr("HiDPI"));
-    hiDPI->setName(kNativeGeneratorParamHiDPI);
-    hiDPI->setHintToolTip(tr("Should be checked when the display area is High-DPI (a.k.a Retina). Draws OpenGL overlays twice larger."));
-    hiDPI->setDefaultValue(false);
-    hiDPI->setAnimationEnabled(false);
-    hiDPI->setEvaluateOnChange(false);
-    page->addKnob(hiDPI);
-    _hiDPI = hiDPI;
-
-    KnobIntPtr frameRange = createKnob<KnobInt>(tr("Frame Range"), 2);
-    frameRange->setName(kNativeGeneratorParamFrameRange);
-    frameRange->setHintToolTip(tr("Time domain."));
-    frameRange->setDimensionName(0, "min");
-    frameRange->setDimensionName(1, "max");
-    frameRange->setDefaultValue(1, 0);
-    frameRange->setDefaultValue(1, 1);
-    frameRange->setAnimationEnabled(false);
-    page->addKnob(frameRange);
-    _frameRange = frameRange;
-
-    // The rectangle overlay has no per-handle hooks, so this is what hides it outside Size extent.
-    KnobBoolPtr rectangleEnable = createKnob<KnobBool>(std::string("Rectangle Interact Enable"));
-    rectangleEnable->setName(kNativeGeneratorParamRectangleEnable);
-    rectangleEnable->setDefaultValue(false);
-    rectangleEnable->setAnimationEnabled(false);
-    rectangleEnable->setEvaluateOnChange(false);
-    rectangleEnable->setIsPersistent(false);
-    rectangleEnable->setSecretByDefault(true);
-    page->addKnob(rectangleEnable);
-    _rectangleEnable = rectangleEnable;
-
-    updateExtentKnobsVisibility();
-
-    NodePtr node = getNode();
-    if (node) {
-        node->addRectangleInteract(bottomLeft, size, interactive, rectangleEnable);
-    }
-} // NativeGenerator::initializeGeneratorKnobs
+    _extentKnobs.createKnobs(page);
+    _extentKnobs.finishKnobs();
+}
 
 NativeGenerator::ExtentEnum
 NativeGenerator::getExtent() const
 {
-    KnobChoicePtr extent = _extent.lock();
-
-    return extent ? (ExtentEnum)extent->getValue() : eExtentDefault;
-}
-
-void
-NativeGenerator::updateExtentKnobsVisibility()
-{
-    const ExtentEnum extent = getExtent();
-    const bool hasFormat = (extent == eExtentFormat);
-    const bool hasSize = (extent == eExtentSize);
-
-    setSecretAndDisabled(_format.lock(), !hasFormat);
-    setSecretAndDisabled(_reformat.lock(), !hasSize);
-    setSecretAndDisabled(_size.lock(), !hasSize);
-    setSecretAndDisabled(_recenter.lock(), !hasSize);
-    setSecretAndDisabled(_bottomLeft.lock(), !hasSize);
-    setSecretAndDisabled(_interactive.lock(), !hasSize);
-    setSecretAndDisabled(_hiDPI.lock(), !hasSize);
-
-    KnobBoolPtr rectangleEnable = _rectangleEnable.lock();
-    if (rectangleEnable && (rectangleEnable->getValue() != hasSize)) {
-        rectangleEnable->setValue(hasSize);
-    }
+    return _extentKnobs.getExtent();
 }
 
 RectD
 NativeGenerator::getProjectExtentRect() const
 {
-    Format format;
-
-    getApp()->getProject()->getProjectDefaultFormat(&format);
-
-    return format.toCanonicalFormat();
-}
-
-void
-NativeGenerator::recenter()
-{
-    KnobDoublePtr size = _size.lock();
-    KnobDoublePtr bottomLeft = _bottomLeft.lock();
-
-    if (!size || !bottomLeft) {
-        return;
-    }
-
-    // The openfx-misc generators never pass a source clip here, so the project window is the
-    // reference even with Source connected.
-    const RectD project = getProjectExtentRect();
-    const double centerX = (project.x2 + project.x1) / 2.;
-    const double centerY = (project.y2 + project.y1) / 2.;
-    const double width = size->getValue(0);
-    const double height = size->getValue(1);
-    const double x1 = centerX - width / 2.;
-    const double y1 = centerY - height / 2.;
-
-    beginChanges();
-    size->setValue((x1 + width) - x1, ViewSpec::all(), 0);
-    size->setValue((y1 + height) - y1, ViewSpec::all(), 1);
-    bottomLeft->setValue(x1, ViewSpec::all(), 0);
-    bottomLeft->setValue(y1, ViewSpec::all(), 1);
-    endChanges();
+    return _extentKnobs.getProjectExtentRect();
 }
 
 bool
 NativeGenerator::knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
                              ViewSpec /*view*/,
-                             double /*time*/,
+                             double time,
                              bool /*originatedFromMainThread*/)
 {
-    KnobChoicePtr extent = _extent.lock();
-    if (extent && (k == extent.get())) {
-        if (reason != eValueChangedReasonTimeChanged) {
-            updateExtentKnobsVisibility();
-        }
-
-        return true;
-    }
-    KnobButtonPtr recenterButton = _recenter.lock();
-    if (recenterButton && (k == recenterButton.get())) {
-        recenter();
-
-        return true;
-    }
-
-    return false;
+    return _extentKnobs.onKnobChanged(k, reason, time);
 }
 
 void
 NativeGenerator::onKnobsLoaded()
 {
-    updateExtentKnobsVisibility();
+    _extentKnobs.updateVisibility();
 }
 
 bool
@@ -534,50 +267,7 @@ NativeGenerator::getExtentRegionOfDefinition(double time,
                                              ViewIdx view,
                                              RectD* rod) const
 {
-    switch (getExtent()) {
-    case eExtentFormat: {
-        KnobIntPtr formatSize = _formatSize.lock();
-        KnobDoublePtr formatPar = _formatPar.lock();
-        if (!formatSize || !formatPar) {
-            return false;
-        }
-        const int w = formatSize->getValueAtTime(time, 0, view);
-        const int h = formatSize->getValueAtTime(time, 1, view);
-        const double par = formatPar->getValueAtTime(time, 0, view);
-        if ((w <= 0) || (h <= 0)) {
-            rod->x1 = rod->y1 = rod->x2 = rod->y2 = 0.;
-        } else {
-            rod->x1 = 0.;
-            rod->y1 = 0.;
-            rod->x2 = w * par;
-            rod->y2 = h;
-        }
-
-        return true;
-    }
-    case eExtentSize: {
-        KnobDoublePtr size = _size.lock();
-        KnobDoublePtr bottomLeft = _bottomLeft.lock();
-        if (!size || !bottomLeft) {
-            return false;
-        }
-        rod->x1 = bottomLeft->getValueAtTime(time, 0, view);
-        rod->y1 = bottomLeft->getValueAtTime(time, 1, view);
-        rod->x2 = size->getValueAtTime(time, 0, view) + rod->x1;
-        rod->y2 = size->getValueAtTime(time, 1, view) + rod->y1;
-
-        return true;
-    }
-    case eExtentProject:
-        *rod = getProjectExtentRect();
-
-        return true;
-    case eExtentDefault:
-
-        return false;
-    }
-
-    return false;
+    return _extentKnobs.getExtentRegionOfDefinition(time, view, rod);
 }
 
 StatusEnum
@@ -613,7 +303,7 @@ void
 NativeGenerator::getFrameRange(double* first,
                                double* last)
 {
-    KnobIntPtr frameRange = _frameRange.lock();
+    KnobIntPtr frameRange = _extentKnobs.getFrameRangeKnob();
 
     *first = frameRange ? frameRange->getValue(0) : 1.;
     *last = frameRange ? frameRange->getValue(1) : 1.;
@@ -628,21 +318,19 @@ NativeGenerator::getPreferredMetadata(NodeMetadata& metadata)
 
     double par = 0.;
     switch (getExtent()) {
-    case eExtentFormat: {
-        KnobDoublePtr formatPar = _formatPar.lock();
+    case ExtentKnobs::eExtentFormat: {
+        KnobDoublePtr formatPar = _extentKnobs.getFormatParKnob();
         par = formatPar ? formatPar->getValue() : 1.;
         break;
     }
-    case eExtentProject:
-    case eExtentDefault: {
-        Format format;
-        getApp()->getProject()->getProjectDefaultFormat(&format);
-        par = format.getPixelAspectRatio();
+    case ExtentKnobs::eExtentProject:
+    case ExtentKnobs::eExtentDefault: {
+        _extentKnobs.getProjectExtentRect(&par);
         break;
     }
-    case eExtentSize: {
-        KnobBoolPtr reformat = _reformat.lock();
-        if (reformat && reformat->getValue() && !isAnimatedKnob(_bottomLeft.lock()) && !isAnimatedKnob(_size.lock())) {
+    case ExtentKnobs::eExtentSize: {
+        KnobBoolPtr reformat = _extentKnobs.getReformatKnob();
+        if (reformat && reformat->getValue() && !isAnimatedKnob(_extentKnobs.getBottomLeftKnob()) && !isAnimatedKnob(_extentKnobs.getSizeKnob())) {
             par = 1.;
         }
         break;
@@ -740,8 +428,7 @@ NativeGenerator::render(const RenderActionArgs& args)
         }
     }
 
-    QThread* const callingThread = QThread::currentThread();
-    std::atomic<bool> wasAborted(false);
+    RenderCancellation cancel(this);
 
     const std::function<void(int)> renderBand = [&](int bandIndex) {
         const GeneratorBand& band = bands[bandIndex];
@@ -756,16 +443,8 @@ NativeGenerator::render(const RenderActionArgs& args)
         io.channels = job.channels;
 
         for (int y = band.y1; y < band.y2; ++y) {
-            if (((y - band.y1) % kAbortCheckRows) == 0) {
-                if (wasAborted.load(std::memory_order_relaxed)) {
-                    return;
-                }
-                // Only the calling thread carries the render's TLS, so only it may ask.
-                if ((QThread::currentThread() == callingThread) && aborted()) {
-                    wasAborted = true;
-
-                    return;
-                }
+            if ((((y - band.y1) % kAbortCheckRows) == 0) && cancel.check()) {
+                return;
             }
 
             float* dstPix = (float*)dstAccesses[band.job]->pixelAt(roi.x1, y);
@@ -780,7 +459,7 @@ NativeGenerator::render(const RenderActionArgs& args)
             kernel->processRow(io);
         }
     };
-    parallelForOnGlobalPool((int)bands.size(), nThreads, renderBand);
+    parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
 
     return eStatusOK;
 } // NativeGenerator::render

@@ -34,8 +34,6 @@
 #include <sstream>
 #include <vector>
 
-#include <QThread>
-
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
@@ -158,55 +156,6 @@ toPixelEnclosing(const RectD& rod,
     return rod.toPixelEnclosing(scale.toMipmapLevel(), par);
 }
 
-// Copies `width` pixels of row y starting at x0 into row (nComps floats per pixel), writing zero
-// wherever the image has no pixel, and flags in present which pixels the image has. An image in
-// another layout is mapped channel by colour bit, a channel it lacks reading as zero.
-void
-readRow(const Image* image,
-        const Image::ReadAccess* access,
-        const RectI& bounds,
-        int x0,
-        int y,
-        int width,
-        int nComps,
-        float* row,
-        unsigned char* present)
-{
-    std::fill(row, row + (std::size_t)width * nComps, 0.f);
-    std::fill(present, present + width, (unsigned char)0);
-    if (!image) {
-        return;
-    }
-    if ((y < bounds.y1) || (y >= bounds.y2)) {
-        return;
-    }
-    const int xStart = (std::max)(x0, bounds.x1);
-    const int xEnd = (std::min)(x0 + width, bounds.x2);
-    if (xStart >= xEnd) {
-        return;
-    }
-    std::fill(present + (xStart - x0), present + (xEnd - x0), (unsigned char)1);
-    const int srcNComps = (int)image->getComponentsCount();
-    const float* srcPix = (const float*)access->pixelAt(xStart, y);
-    float* dstPix = row + (std::size_t)(xStart - x0) * nComps;
-    if (srcNComps == nComps) {
-        std::copy(srcPix, srcPix + (std::size_t)(xEnd - xStart) * nComps, dstPix);
-
-        return;
-    }
-    int srcIndex[4] = { -1, -1, -1, -1 };
-    for (int c = 0; c < nComps; ++c) {
-        srcIndex[c] = channelIndexForBit(srcNComps, pixelKernelChannelBit(nComps, c));
-    }
-    for (int x = xStart; x < xEnd; ++x, srcPix += srcNComps, dstPix += nComps) {
-        for (int c = 0; c < nComps; ++c) {
-            if (srcIndex[c] >= 0) {
-                dstPix[c] = srcPix[srcIndex[c]];
-            }
-        }
-    }
-}
-
 // One value per pixel of `channel` of row y, zero wherever the image has no pixel.
 void
 readChannelRow(const Image* image,
@@ -240,23 +189,6 @@ readChannelRow(const Image* image,
     }
 }
 
-// The alpha OpenFX Merge gives a side of the merge: the channel holding it in a four- or
-// one-channel pixel, and otherwise one when that side's alpha toggle is on and the pixel exists.
-inline float
-sideAlpha(const float* pix,
-          int nComps,
-          bool alphaToggle,
-          bool present)
-{
-    if (nComps == 4) {
-        return pix[3];
-    } else if (nComps == 1) {
-        return pix[0];
-    }
-
-    return (alphaToggle && present) ? 1.f : 0.f;
-}
-
 // Image::getBounds() takes the image's lock, which a band thread must never ask for: behind a
 // writer waiting on an image this render holds for reading, it blocks forever. The bounds are
 // read once on the calling thread instead.
@@ -265,6 +197,75 @@ struct MergeSource {
     std::shared_ptr<Image::ReadAccess> access;
     RectI bounds;
 };
+
+// Row y of `source` over [x0, x0 + width), nComps floats per pixel: a pointer into the image
+// itself when it has the whole row in that layout and `keep` keeps every channel, and otherwise
+// a copy in `row` that is zero in the channels `keep` (indexed by pixel channel) turns off and
+// wherever the image has no pixel. An image in another layout is mapped channel by colour bit, a
+// channel it lacks reading as zero. *present is null when the image has every pixel of the row,
+// and otherwise points at presentRow, which flags the pixels it has.
+const float*
+fetchRow(const MergeSource& source,
+         int x0,
+         int y,
+         int width,
+         int nComps,
+         const std::bitset<4>& keep,
+         float* row,
+         unsigned char* presentRow,
+         const unsigned char** present)
+{
+    const std::size_t rowSize = (std::size_t)width * nComps;
+    int xStart = x0;
+    int xEnd = x0;
+    if (source.image && (y >= source.bounds.y1) && (y < source.bounds.y2)) {
+        xStart = (std::max)(x0, source.bounds.x1);
+        xEnd = (std::min)(x0 + width, source.bounds.x2);
+    }
+    if (xStart >= xEnd) {
+        std::fill(row, row + rowSize, 0.f);
+        std::fill(presentRow, presentRow + width, (unsigned char)0);
+        *present = presentRow;
+
+        return row;
+    }
+    const bool wholeRow = (xStart == x0) && (xEnd == x0 + width);
+    if (wholeRow) {
+        *present = 0;
+    } else {
+        std::fill(presentRow, presentRow + width, (unsigned char)0);
+        std::fill(presentRow + (xStart - x0), presentRow + (xEnd - x0), (unsigned char)1);
+        *present = presentRow;
+    }
+    const int srcNComps = (int)source.image->getComponentsCount();
+    bool keepAll = true;
+    int srcIndex[4] = { -1, -1, -1, -1 };
+    for (int c = 0; c < nComps; ++c) {
+        keepAll = keepAll && keep[c];
+        if (keep[c]) {
+            srcIndex[c] = channelIndexForBit(srcNComps, pixelKernelChannelBit(nComps, c));
+        }
+    }
+    const float* srcPix = (const float*)source.access->pixelAt(xStart, y);
+    if (wholeRow && keepAll && (srcNComps == nComps)) {
+        return srcPix;
+    }
+    std::fill(row, row + (std::size_t)(xStart - x0) * nComps, 0.f);
+    std::fill(row + (std::size_t)(xEnd - x0) * nComps, row + rowSize, 0.f);
+    float* dstPix = row + (std::size_t)(xStart - x0) * nComps;
+    if (keepAll && (srcNComps == nComps)) {
+        std::copy(srcPix, srcPix + (std::size_t)(xEnd - xStart) * nComps, dstPix);
+
+        return row;
+    }
+    for (int x = xStart; x < xEnd; ++x, srcPix += srcNComps, dstPix += nComps) {
+        for (int c = 0; c < nComps; ++c) {
+            dstPix[c] = (srcIndex[c] >= 0) ? srcPix[srcIndex[c]] : 0.f;
+        }
+    }
+
+    return row;
+}
 
 struct MergePlaneJob {
     ImagePtr dst;
@@ -275,6 +276,9 @@ struct MergePlaneJob {
     // The image the channels left unprocessed are copied from, the way the host copies them
     // from the preferred input for an effect that does not: -1 none, 0 B, i + 1 the i-th A.
     int passSource;
+    // Whether dst is also one of the inputs, so its rows cannot take the result before the
+    // inputs are read.
+    bool dstIsInput;
 
     MergePlaneJob()
         : dst()
@@ -283,6 +287,7 @@ struct MergePlaneJob {
         , b()
         , as()
         , passSource(-1)
+        , dstIsInput(false)
     {
     }
 };
@@ -1013,9 +1018,11 @@ MergeNode::render(const RenderActionArgs& args)
             job.b.bounds = job.b.image->getBounds();
             job.b.access = std::make_shared<Image::ReadAccess>(job.b.image.get());
         }
+        job.dstIsInput = (job.dst == job.b.image);
         for (std::size_t i = 0; i < job.as.size(); ++i) {
             job.as[i].bounds = job.as[i].image->getBounds();
             job.as[i].access = std::make_shared<Image::ReadAccess>(job.as[i].image.get());
+            job.dstIsInput = job.dstIsInput || (job.dst == job.as[i].image);
         }
         for (std::size_t b = 0; b < bandRects.size(); ++b) {
             bands.push_back(MergeRowBand(j, bandRects[b].y1, bandRects[b].y2));
@@ -1023,157 +1030,144 @@ MergeNode::render(const RenderActionArgs& args)
     }
 
     const bool identityForBOnly = MergeOperators::isIdentityForBOnly(op);
-    QThread* const callingThread = QThread::currentThread();
-    std::atomic<bool> wasAborted(false);
+    RenderCancellation cancel(this);
 
     const std::function<void(int)> renderBand = [&](int bandIndex) {
         const MergeRowBand& band = bands[bandIndex];
         const MergePlaneJob& job = jobs[band.job];
         const int nComps = (int)job.dst->getComponentsCount();
         const std::size_t rowSize = (std::size_t)width * nComps;
-        int outputBit[4];
-        int processedBit[4];
+        int channelBit[4];
+        std::bitset<4> keepAll;
+        std::bitset<4> aKeep;
+        std::bitset<4> bKeep;
+        bool allOutputs = true;
+        bool allProcessed = true;
         for (int c = 0; c < nComps; ++c) {
-            outputBit[c] = (nComps > 1) ? c : 3;
-            processedBit[c] = pixelKernelChannelBit(nComps, c);
+            channelBit[c] = pixelKernelChannelBit(nComps, c);
+            keepAll[c] = true;
+            aKeep[c] = aChannels[channelBit[c]];
+            bKeep[c] = bChannels[channelBit[c]];
+            allOutputs = allOutputs && outputChannels[channelBit[c]];
+            allProcessed = allProcessed && job.channels[channelBit[c]];
         }
+        const bool bKeepsAll = (bKeep == keepAll);
+        const float aOpaqueAlpha = aChannels[3] ? 1.f : 0.f;
+        const float bOpaqueAlpha = bChannels[3] ? 1.f : 0.f;
+        const MergeOperators::RowFunction mergeRow = MergeOperators::mergeRowFunction(op, nComps);
+        const MergeOperators::RowFunction mergeOverRow = MergeOperators::mergeOverRowFunction(op, nComps);
+        const bool mixesWithB = doMask || (mix != 1.f) || !allOutputs;
+        // The result goes straight into the output row when every channel of it is processed.
+        const bool writesDst = allProcessed && !job.dstIsInput;
         std::vector<float> bRow(rowSize);
-        std::vector<unsigned char> bPresent(width);
+        std::vector<unsigned char> bPresentRow(width);
+        std::vector<float> bKept(bKeepsAll ? 0 : rowSize);
         std::vector<float> aRow(rowSize);
-        std::vector<unsigned char> aPresent(width);
+        std::vector<unsigned char> aPresentRow(width);
         std::vector<float> passRow(rowSize);
-        std::vector<unsigned char> passPresent(width);
+        std::vector<unsigned char> passPresentRow(width);
         std::vector<float> maskRow(doMask ? width : 0);
         std::vector<unsigned char> maskPresent(doMask ? width : 0);
-        std::vector<float> result(rowSize);
+        std::vector<float> result(writesDst ? 0 : rowSize);
+        std::vector<float> noARow(job.as.empty() ? rowSize : 0, 0.f);
+        std::vector<unsigned char> noAPresent(job.as.empty() ? width : 0, (unsigned char)0);
 
         for (int y = band.y1; y < band.y2; ++y) {
-            if (((y - band.y1) % kAbortCheckRows) == 0) {
-                if (wasAborted.load(std::memory_order_relaxed)) {
-                    return;
-                }
-                // Only the calling thread carries the render's TLS, so only it may ask.
-                if ((QThread::currentThread() == callingThread) && aborted()) {
-                    wasAborted = true;
-
-                    return;
-                }
-            }
-
-            readRow(job.b.image.get(), job.b.access.get(), job.b.bounds, roi.x1, y, width, nComps, &bRow[0], &bPresent[0]);
-
-            if (job.as.empty() && identityForBOnly) {
-                for (int x = 0; x < width; ++x) {
-                    const float* bPix = &bRow[(std::size_t)x * nComps];
-                    float* out = &result[(std::size_t)x * nComps];
-                    for (int c = 0; c < nComps; ++c) {
-                        out[c] = (outputChannels[outputBit[c]] && bPresent[x]) ? bPix[c] : 0.f;
-                    }
-                }
-            } else {
-                // The first A image over B. Without one, a transparent A still goes through the
-                // operator once.
-                if (!job.as.empty()) {
-                    readRow(job.as[0].image.get(), job.as[0].access.get(), job.as[0].bounds, roi.x1, y, width, nComps, &aRow[0], &aPresent[0]);
-                } else {
-                    std::fill(aRow.begin(), aRow.end(), 0.f);
-                    std::fill(aPresent.begin(), aPresent.end(), (unsigned char)0);
-                }
-                for (int x = 0; x < width; ++x) {
-                    float* out = &result[(std::size_t)x * nComps];
-                    const bool hasA = aPresent[x] != 0;
-                    const bool hasB = bPresent[x] != 0;
-                    if (!hasA && !hasB) {
-                        std::fill(out, out + nComps, 0.f);
-                        continue;
-                    }
-                    const float* aPix = &aRow[(std::size_t)x * nComps];
-                    const float* bPix = &bRow[(std::size_t)x * nComps];
-                    float tmpA[4];
-                    float tmpB[4];
-                    for (int c = 0; c < nComps; ++c) {
-                        tmpA[c] = (aChannels[c] && hasA) ? aPix[c] : 0.f;
-                        tmpB[c] = (bChannels[c] && hasB) ? bPix[c] : 0.f;
-                    }
-                    const float a = sideAlpha(tmpA, nComps, aChannels[3], hasA);
-                    const float b = sideAlpha(tmpB, nComps, bChannels[3], hasB);
-                    MergeOperators::mergePixel(op, alphaMasking, tmpA, a, tmpB, b, nComps, out);
-                }
-
-                // Each later A image over the running result, whose alpha is b.
-                for (std::size_t i = 1; i < job.as.size(); ++i) {
-                    readRow(job.as[i].image.get(), job.as[i].access.get(), job.as[i].bounds, roi.x1, y, width, nComps, &aRow[0], &aPresent[0]);
-                    for (int x = 0; x < width; ++x) {
-                        if (!aPresent[x]) {
-                            continue;
-                        }
-                        float* out = &result[(std::size_t)x * nComps];
-                        const float* aPix = &aRow[(std::size_t)x * nComps];
-                        float tmpA[4];
-                        for (int c = 0; c < nComps; ++c) {
-                            tmpA[c] = aChannels[c] ? aPix[c] : 0.f;
-                        }
-                        const float a = sideAlpha(tmpA, nComps, aChannels[3], true);
-                        float b = 1.f;
-                        if (nComps == 4) {
-                            b = out[3];
-                        } else if (nComps == 1) {
-                            b = out[0];
-                        }
-                        MergeOperators::mergePixel(op, alphaMasking, tmpA, a, out, b, nComps, out);
-                    }
-                }
-
-                if (doMask) {
-                    readChannelRow(mask.get(), maskAccess.get(), maskBounds, maskChannel, roi.x1, y, width, &maskRow[0], &maskPresent[0]);
-                }
-                for (int x = 0; x < width; ++x) {
-                    float* out = &result[(std::size_t)x * nComps];
-                    const float* bPix = &bRow[(std::size_t)x * nComps];
-                    const bool hasB = bPresent[x] != 0;
-                    float maskScale = 1.f;
-                    if (doMask) {
-                        if (!maskPresent[x]) {
-                            maskScale = maskInvert ? 1.f : 0.f;
-                        } else {
-                            maskScale = maskInvert ? (1.f - maskRow[x]) : maskRow[x];
-                        }
-                    }
-                    const float alpha = maskScale * mix;
-                    if (alpha == 0.f) {
-                        for (int c = 0; c < nComps; ++c) {
-                            out[c] = hasB ? bPix[c] : 0.f;
-                        }
-                    } else if (alpha != 1.f) {
-                        for (int c = 0; c < nComps; ++c) {
-                            out[c] = hasB ? (out[c] * alpha + (1.f - alpha) * bPix[c]) : (out[c] * alpha);
-                        }
-                    }
-                    for (int c = 0; c < nComps; ++c) {
-                        if (!outputChannels[outputBit[c]]) {
-                            out[c] = hasB ? bPix[c] : 0.f;
-                        }
-                    }
-                }
-            }
-
-            const float* pass = 0;
-            if (job.passSource == 0) {
-                pass = &bRow[0];
-            } else if (job.passSource > 0) {
-                const MergeSource& source = job.as[job.passSource - 1];
-                readRow(source.image.get(), source.access.get(), source.bounds, roi.x1, y, width, nComps, &passRow[0], &passPresent[0]);
-                pass = &passRow[0];
+            if ((((y - band.y1) % kAbortCheckRows) == 0) && cancel.check()) {
+                return;
             }
 
             float* dstPix = (float*)job.dstAccess->pixelAt(roi.x1, y);
             if (!dstPix) {
                 continue;
             }
+            float* const result0 = writesDst ? dstPix : &result[0];
+
+            const unsigned char* bPresent = 0;
+            const float* const bPixels = fetchRow(job.b, roi.x1, y, width, nComps, keepAll, &bRow[0], &bPresentRow[0], &bPresent);
+
+            if (job.as.empty() && identityForBOnly) {
+                for (int x = 0; x < width; ++x) {
+                    const float* bPix = bPixels + (std::size_t)x * nComps;
+                    float* out = result0 + (std::size_t)x * nComps;
+                    const bool hasB = !bPresent || bPresent[x];
+                    for (int c = 0; c < nComps; ++c) {
+                        out[c] = (outputChannels[channelBit[c]] && hasB) ? bPix[c] : 0.f;
+                    }
+                }
+            } else {
+                MergeOperators::RowSide bSide = { bPixels, bPresent, bOpaqueAlpha };
+                if (!bKeepsAll) {
+                    for (std::size_t i = 0; i < rowSize; ++i) {
+                        bKept[i] = bKeep[i % nComps] ? bPixels[i] : 0.f;
+                    }
+                    bSide.pixels = &bKept[0];
+                }
+
+                // The first A image over B. Without one, a transparent A still goes through the
+                // operator once.
+                MergeOperators::RowSide aSide = { noARow.data(), noAPresent.data(), aOpaqueAlpha };
+                if (!job.as.empty()) {
+                    aSide.pixels = fetchRow(job.as[0], roi.x1, y, width, nComps, aKeep, &aRow[0], &aPresentRow[0], &aSide.present);
+                }
+                mergeRow(alphaMasking, aSide, bSide, width, result0);
+
+                // Each later A image over the running result, whose alpha is b.
+                const MergeOperators::RowSide running = { result0, 0, 1.f };
+                for (std::size_t i = 1; i < job.as.size(); ++i) {
+                    aSide.pixels = fetchRow(job.as[i], roi.x1, y, width, nComps, aKeep, &aRow[0], &aPresentRow[0], &aSide.present);
+                    mergeOverRow(alphaMasking, aSide, running, width, result0);
+                }
+
+                if (mixesWithB) {
+                    if (doMask) {
+                        readChannelRow(mask.get(), maskAccess.get(), maskBounds, maskChannel, roi.x1, y, width, &maskRow[0], &maskPresent[0]);
+                    }
+                    for (int x = 0; x < width; ++x) {
+                        float* out = result0 + (std::size_t)x * nComps;
+                        const float* bPix = bPixels + (std::size_t)x * nComps;
+                        const bool hasB = !bPresent || bPresent[x];
+                        float maskScale = 1.f;
+                        if (doMask) {
+                            if (!maskPresent[x]) {
+                                maskScale = maskInvert ? 1.f : 0.f;
+                            } else {
+                                maskScale = maskInvert ? (1.f - maskRow[x]) : maskRow[x];
+                            }
+                        }
+                        const float alpha = maskScale * mix;
+                        if (alpha == 0.f) {
+                            for (int c = 0; c < nComps; ++c) {
+                                out[c] = hasB ? bPix[c] : 0.f;
+                            }
+                        } else if (alpha != 1.f) {
+                            for (int c = 0; c < nComps; ++c) {
+                                out[c] = hasB ? (out[c] * alpha + (1.f - alpha) * bPix[c]) : (out[c] * alpha);
+                            }
+                        }
+                        for (int c = 0; c < nComps; ++c) {
+                            if (!outputChannels[channelBit[c]]) {
+                                out[c] = hasB ? bPix[c] : 0.f;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (writesDst) {
+                continue;
+            }
+            const float* pass = 0;
+            if (job.passSource == 0) {
+                pass = bPixels;
+            } else if (job.passSource > 0) {
+                const unsigned char* passPresent = 0;
+                pass = fetchRow(job.as[job.passSource - 1], roi.x1, y, width, nComps, keepAll, &passRow[0], &passPresentRow[0], &passPresent);
+            }
             for (int x = 0; x < width; ++x, dstPix += nComps) {
-                const float* out = &result[(std::size_t)x * nComps];
+                const float* out = result0 + (std::size_t)x * nComps;
                 for (int c = 0; c < nComps; ++c) {
-                    if (job.channels[processedBit[c]]) {
+                    if (job.channels[channelBit[c]]) {
                         dstPix[c] = out[c];
                     } else {
                         dstPix[c] = pass ? pass[(std::size_t)x * nComps + c] : 0.f;
@@ -1182,7 +1176,7 @@ MergeNode::render(const RenderActionArgs& args)
             }
         }
     };
-    parallelForOnGlobalPool((int)bands.size(), nThreads, renderBand);
+    parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
 
     return eStatusOK;
 } // MergeNode::render

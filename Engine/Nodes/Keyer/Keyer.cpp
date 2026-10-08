@@ -37,8 +37,6 @@
 #include <string>
 #include <vector>
 
-#include <QThread>
-
 #include <ofxNatron.h>
 
 #include "Engine/AppManager.h"
@@ -977,8 +975,7 @@ Keyer::render(const RenderActionArgs& args)
         }
     }
 
-    QThread* const callingThread = QThread::currentThread();
-    std::atomic<bool> wasAborted(false);
+    RenderCancellation cancel(this);
 
     const std::function<void(int)> renderBand = [&](int bandIndex) {
         const KeyBand& band = bands[bandIndex];
@@ -992,16 +989,8 @@ Keyer::render(const RenderActionArgs& args)
         const LockedImage* bgImage = (job.bgIndex >= 0) ? &locked[job.bgIndex] : NULL;
 
         for (int y = band.y1; y < band.y2; ++y) {
-            if (((y - band.y1) % kAbortCheckRows) == 0) {
-                if (wasAborted.load(std::memory_order_relaxed)) {
-                    return;
-                }
-                // Only the calling thread carries the render's TLS, so only it may ask.
-                if ((QThread::currentThread() == callingThread) && aborted()) {
-                    wasAborted = true;
-
-                    return;
-                }
+            if ((((y - band.y1) % kAbortCheckRows) == 0) && cancel.check()) {
+                return;
             }
 
             int srcStart, srcEnd, bgStart, bgEnd;
@@ -1033,7 +1022,7 @@ Keyer::render(const RenderActionArgs& args)
             }
         }
     };
-    parallelForOnGlobalPool((int)bands.size(), nThreads, renderBand);
+    parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
 
     return eStatusOK;
 } // Keyer::render

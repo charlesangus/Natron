@@ -25,23 +25,29 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <atomic>
 #include <bitset>
+#include <chrono>
 #include <list>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include <QString>
 #include <QStringList>
+#include <QThreadPool>
 
 #include "Tests/BaseTest.h"
 #include "Tests/NativeParity.h"
 #include "Tests/RenderBothWays.h"
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
@@ -55,10 +61,12 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/Project.h"
 #include "Engine/RenderScale.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 #include <ofxImageEffect.h>
@@ -721,4 +729,73 @@ TEST_F(NativeImageEffectTest, BandsAgreeInBothSchedulerModesWithNoUnplannedPull)
             EXPECT_EQ(0, unplannedPulls[i]) << "mipmap " << mipmapLevel << ", pool " << poolSizes[i];
         }
     }
+}
+
+// A pool thread cannot ask EffectInstance::aborted() itself, so a band polling the cancellation
+// on a helper only learns of the abort through the calling thread's timed wait.
+TEST_F(NativeImageEffectTest, AnAbortReachesABandRunningOnAPoolThread)
+{
+    NodePtr op = createOp(createSource());
+    ASSERT_TRUE(bool(op));
+    QThreadPool* pool = QThreadPool::globalInstance();
+    const int savedPoolSize = pool->maxThreadCount();
+    pool->setMaxThreadCount(std::max(savedPoolSize, 2));
+
+    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+    ParallelRenderArgsSetter frameArgs(1.,
+                                       ViewIdx(0),
+                                       true /*isRenderUserInteraction*/,
+                                       false /*isSequential*/,
+                                       abortInfo,
+                                       op,
+                                       0 /*textureIndex*/,
+                                       getApp()->getTimeLine().get(),
+                                       NodePtr(),
+                                       false /*isAnalysis*/,
+                                       false /*draftMode*/,
+                                       RenderStatsPtr());
+    ASSERT_FALSE(op->getEffectInstance()->aborted());
+
+    typedef std::chrono::steady_clock Clock;
+    const Clock::duration giveUp = std::chrono::seconds(5);
+    const std::thread::id caller = std::this_thread::get_id();
+    std::atomic<bool> helperStarted(false);
+    std::atomic<bool> helperSawAbort(false);
+    std::atomic<long long> helperWaitMs(-1);
+    RenderCancellation cancel(op->getEffectInstance().get());
+    // Two indices, so once the caller has run its own it has none left to claim and is in its
+    // wait when the helper raises the abort.
+    parallelForCancellable(2, 2, cancel, [&](int) {
+        const Clock::time_point start = Clock::now();
+        if (std::this_thread::get_id() == caller) {
+            // Holds the caller until a helper owns a band, so the abort is raised while the
+            // caller is waiting rather than claiming bands.
+            while (!helperStarted.load() && (Clock::now() - start < giveUp)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+
+            return;
+        }
+        if (helperStarted.exchange(true)) {
+            return;
+        }
+        abortInfo->setAborted();
+        const Clock::time_point aborted = Clock::now();
+        while (Clock::now() - aborted < giveUp) {
+            if (cancel.check()) {
+                helperSawAbort = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        helperWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - aborted).count();
+    });
+
+    pool->setMaxThreadCount(savedPoolSize);
+
+    ASSERT_TRUE(helperStarted.load());
+    EXPECT_TRUE(helperSawAbort.load());
+    EXPECT_GE(helperWaitMs.load(), 0);
+    EXPECT_LT(helperWaitMs.load(), 1000);
+    EXPECT_TRUE(cancel.check());
 }

@@ -36,8 +36,6 @@
 #include <string>
 #include <vector>
 
-#include <QThread>
-
 #include "Engine/AppManager.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
@@ -407,8 +405,7 @@ Position::render(const RenderActionArgs& args)
         }
     }
 
-    QThread* const callingThread = QThread::currentThread();
-    std::atomic<bool> wasAborted(false);
+    RenderCancellation cancel(this);
 
     const std::function<void(int)> renderBand = [&](int bandIndex) {
         const PositionBand& band = bands[bandIndex];
@@ -419,16 +416,8 @@ Position::render(const RenderActionArgs& args)
         std::vector<float> unshiftedRow(job.anyUnprocessed ? rowSize : 0);
 
         for (int y = band.y1; y < band.y2; ++y) {
-            if (((y - band.y1) % kAbortCheckRows) == 0) {
-                if (wasAborted.load(std::memory_order_relaxed)) {
-                    return;
-                }
-                // Only the calling thread carries the render's TLS, so only it may ask.
-                if ((QThread::currentThread() == callingThread) && aborted()) {
-                    wasAborted = true;
-
-                    return;
-                }
+            if ((((y - band.y1) % kAbortCheckRows) == 0) && cancel.check()) {
+                return;
             }
 
             readRow(job.src.get(), job.srcAccess.get(), job.srcBounds, roi.x1 - tx, y - ty, width, nComps, &shiftedRow[0]);
@@ -449,7 +438,7 @@ Position::render(const RenderActionArgs& args)
             }
         }
     };
-    parallelForOnGlobalPool((int)bands.size(), nThreads, renderBand);
+    parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
 
     return eStatusOK;
 } // Position::render

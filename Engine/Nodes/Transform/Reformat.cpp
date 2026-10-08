@@ -37,8 +37,6 @@
 #include <utility>
 #include <vector>
 
-#include <QThread>
-
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
@@ -1228,8 +1226,7 @@ Reformat::render(const RenderActionArgs& args)
         }
     }
 
-    QThread* const callingThread = QThread::currentThread();
-    std::atomic<bool> wasAborted(false);
+    RenderCancellation cancel(this);
 
     const std::function<void(int)> renderBand = [&](int bandIndex) {
         const ReformatBand& band = bands[bandIndex];
@@ -1240,16 +1237,8 @@ Reformat::render(const RenderActionArgs& args)
         std::vector<float> row(hasSource ? (std::size_t)width * srcNComps : 0);
 
         for (int y = band.y1; y < band.y2; ++y) {
-            if (((y - band.y1) % kAbortCheckRows) == 0) {
-                if (wasAborted.load(std::memory_order_relaxed)) {
-                    return;
-                }
-                // Only the calling thread carries the render's TLS, so only it may ask.
-                if ((QThread::currentThread() == callingThread) && aborted()) {
-                    wasAborted = true;
-
-                    return;
-                }
+            if ((((y - band.y1) % kAbortCheckRows) == 0) && cancel.check()) {
+                return;
             }
 
             float* dstPix = (float*)job.dstAccess->pixelAt(roi.x1, y);
@@ -1274,7 +1263,7 @@ Reformat::render(const RenderActionArgs& args)
             }
         }
     };
-    parallelForOnGlobalPool((int)bands.size(), nThreads, renderBand);
+    parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
 
     return eStatusOK;
 } // Reformat::render

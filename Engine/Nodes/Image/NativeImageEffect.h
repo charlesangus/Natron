@@ -65,32 +65,13 @@ struct NativeImageTraits {
 
 /**
  * @brief Base for flat 2D native image nodes: float-only, tile-capable, multi-resolution, render
- * scale supported, and FullySafe. The host does not split a render window across threads, so a
- * point operator's render() splits it into row bands itself, over the global pool and within the
- * thread budget the host grants the render (AppManager::getNCPUsAvailableForEffect()), the way
- * an OpenFX plug-in does through the multithread suite; the bands only run the pure pixel
- * pipeline, so the kernel must be safe to call concurrently. It is not multiplanar: the host's
- * layer knob decides which planes are rendered and which channels of each are processed, and
- * render() is called once per plane.
- *
- * A point operator returns true from isPointOp() and builds a PixelKernel in makeKernel(); the
- * base's render() then does the whole per-pixel pipeline in one pass over each row of the
- * window, so the host neither copies unprocessed channels nor multiplies back:
- *  1. divide every channel but the divisor itself by the "(Un)premult by" channel where it is
- *     usable (Image::unPremultDivisorIsUsable());
- *  2. run the kernel;
- *  3. multiply the processed channels back (Image::premultiplyValue());
- *  4. blend each processed channel with the undivided source by mask x mix, with the OpenFX
- *     ofxsMaskMixPix() arithmetic;
- *  5. pass the unprocessed channels through from the source.
- * A pixel outside the source reads as zero, outside the divisor as a divisor of one (neither
- * divided nor multiplied), and outside the mask as a mask value of zero.
- *
- * The first input described as a mask is the one the pipeline reads; addMaskMixKnobs() declares
- * the maskInvert and mix knobs it reads. Every image render() fetches (the source plane, the
- * divisor plane and the mask) is one the default request planning already declares: the mask
- * layer through the mask selector, the divisor layer through the "(Un)premult by" selector, at
- * the render window, so the scheduler pulls nothing it did not plan.
+ * scale supported, and FullySafe. The host does not split a render window across threads, so
+ * render() splits it into row bands itself over the global pool, within the thread budget the
+ * host grants (AppManager::getNCPUsAvailableForEffect()); the kernel must therefore be safe to
+ * call concurrently. Band threads carry no render TLS: they never take an image lock or read
+ * image bounds (both happen on the calling thread before the bands start) and learn of an abort
+ * only through RenderCancellation. Every image render() fetches is one the default request
+ * planning already declares at the render window, so the scheduler pulls nothing it did not plan.
  **/
 class NativeImageEffect
     : public NativeEffectBase {

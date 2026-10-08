@@ -458,7 +458,8 @@ The host does not split a render window across threads for these nodes, and
 they declare `eRenderSafetyFullySafe`, as an OFX plugin using the multithread
 suite does. Each node parallelises its own render, within the thread budget
 `AppManager::getNCPUsAvailableForEffect()` grants it, on
-`parallelForOnGlobalPool`:
+`parallelForCancellable` (`NativeEffectBase.h`), never on
+`parallelForOnGlobalPool` directly:
 
 - **Point ops** split their own row bands (`NativeImageEffect::makeRowBands()`:
   at least 16384 pixels per band, at most 4 bands per thread). The kernel must
@@ -474,6 +475,15 @@ Read an image's bounds with `Image::getBounds()` on the calling thread, before
 the bands start, and hand the rectangle to the band. `getBounds()` takes the
 image's read lock; a band thread that asks for it queues behind a writer
 waiting on an image the render already holds, and never returns.
+
+A band thread carries none of the render's TLS, so `EffectInstance::aborted()`
+asked there always answers "not aborted". Build one `RenderCancellation` on the
+calling thread, pass it to `parallelForCancellable`, and poll its `check()`
+every few rows inside the band. Only the calling thread asks the effect; it
+publishes the answer in an atomic flag the band threads read, and while it waits
+for the helpers it wakes every 10 ms to ask again. Once the flag is set no new
+band starts and running bands return at their next poll, so an abort is honoured
+within a few rows instead of after the whole window.
 
 ### IDs and versions
 

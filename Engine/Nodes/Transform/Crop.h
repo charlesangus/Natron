@@ -31,6 +31,7 @@
 #include <list>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectD.h"
@@ -60,12 +61,11 @@ NATRON_NAMESPACE_ENTER
 class Crop
     : public NativeImageEffect {
 public:
-    enum ExtentEnum {
-        eExtentFormat = 0,
-        eExtentSize,
-        eExtentProject,
-        eExtentDefault
-    };
+    typedef ExtentKnobs::ExtentEnum ExtentEnum;
+    static constexpr ExtentEnum eExtentFormat = ExtentKnobs::eExtentFormat;
+    static constexpr ExtentEnum eExtentSize = ExtentKnobs::eExtentSize;
+    static constexpr ExtentEnum eExtentProject = ExtentKnobs::eExtentProject;
+    static constexpr ExtentEnum eExtentDefault = ExtentKnobs::eExtentDefault;
 
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -136,37 +136,11 @@ private:
     virtual void initializeKnobs() OVERRIDE FINAL;
 
     /**
-     * @brief The project's default format in canonical coordinates, and its pixel aspect ratio.
-     **/
-    RectD getProjectExtentRect(double* par) const WARN_UNUSED_RETURN;
-
-    /**
-     * @brief Shows the extent knobs the current extent uses and hides the others.
-     **/
-    void updateExtentKnobsVisibility();
-
-    /**
      * @brief Keeps the rectangle overlay on while the crop is not reformatted.
      **/
     void updateRectangleEnable();
 
-    /**
-     * @brief Centres the Size rectangle on the source's region of definition, or on the project
-     * window without a source, keeping its size.
-     **/
-    void recenter(double time, ViewIdx view);
-
-    KnobChoiceWPtr _extent;
-    KnobButtonWPtr _recenter;
-    KnobChoiceWPtr _format;
-    KnobIntWPtr _formatSize;
-    KnobDoubleWPtr _formatPar;
-    KnobDoubleWPtr _bottomLeft;
-    KnobDoubleWPtr _size;
-    KnobBoolWPtr _interactive;
-    KnobBoolWPtr _hiDPI;
-    KnobIntWPtr _frameRange;
-    KnobBoolWPtr _rectangleEnable;
+    ExtentKnobs _extentKnobs;
     KnobDoubleWPtr _softness;
     KnobBoolWPtr _reformat;
     KnobBoolWPtr _intersect;

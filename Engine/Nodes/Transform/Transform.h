@@ -75,7 +75,9 @@ NATRON_NAMESPACE_ENTER
  * It concatenates: getTransform() hands the host its pixel matrix so a chain of transforms is
  * resampled once, and render() folds in the transform the host hands back with a concatenated
  * source image. TransformMasked is the same node with a Mask input and the maskInvert and mix
- * knobs; it applies concatenated upstream transforms but does not offer its own.
+ * knobs; it applies concatenated upstream transforms but does not offer its own. Where mask x mix
+ * is below 1 it shows its immediate input, which under concatenation it resamples through the
+ * upstream transforms alone.
  *
  * The class is not called Transform because that name is the engine's matrix namespace.
  **/

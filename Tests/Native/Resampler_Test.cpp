@@ -645,6 +645,80 @@ TEST(Resampler, ResampleRowMultiChannel)
     }
 }
 
+// Scaling a matrix by 2 is exact and leaves every sample unchanged, but its last row is no longer
+// (0, 0, 1), so the scaled copy goes through the projective per-pixel path while the original
+// takes the affine one. Both must agree bit for bit.
+TEST(Resampler, AffinePathMatchesProjectivePath)
+{
+    const RectI bounds(-3, 2, 37, 31);
+    const int nCompsList[] = { 1, 4 };
+    for (int nComps : nCompsList) {
+        std::vector<float> data((size_t)bounds.width() * bounds.height() * nComps);
+        for (size_t i = 0; i < data.size(); ++i) {
+            data[i] = (float)std::sin(0.37 * (double)i) * 0.75f + 0.5f;
+        }
+        const SourceImage src(&data.front(), bounds, nComps);
+
+        std::vector<Mat3> matrices;
+        TransformParams p;
+        p.translateX = 3.3;
+        p.translateY = -1.7;
+        p.rotate = 30.;
+        p.scaleX = 0.5;
+        p.scaleY = 0.5;
+        p.centerX = 17.;
+        p.centerY = 15.;
+        matrices.push_back(TransformMath::inverseTransformCanonical(p, 1., false));
+        p.scaleX = 2.25;
+        p.scaleY = 1.5;
+        p.skewX = 0.3;
+        p.skewY = -0.2;
+        matrices.push_back(TransformMath::inverseTransformCanonical(p, 1., false));
+        p = TransformParams();
+        p.scaleX = 0.125;
+        p.scaleY = 0.2;
+        p.rotate = -12.;
+        matrices.push_back(TransformMath::inverseTransformCanonical(p, 1., false));
+        matrices.push_back(Mat3(1., 0., -0.25, 0., 1., 0.5, 0., 0., 1.));
+
+        for (const Mat3& affine : matrices) {
+            ASSERT_EQ(affine(2, 0), 0.);
+            ASSERT_EQ(affine(2, 1), 0.);
+            ASSERT_EQ(affine(2, 2), 1.);
+            Mat3 projective = affine;
+            for (int k = 0; k < 9; ++k) {
+                projective.m[k] *= 2.;
+            }
+            SamplingTransforms a;
+            a.invTransforms.push_back(affine);
+            SamplingTransforms b;
+            b.invTransforms.push_back(projective);
+            const int x1 = -8;
+            const int x2 = 45;
+            const size_t n = (size_t)(x2 - x1) * nComps;
+            for (FilterEnum f : kAllFilters) {
+                for (int clampIndex = 0; clampIndex < 2; ++clampIndex) {
+                    for (int blackIndex = 0; blackIndex < 2; ++blackIndex) {
+                        const bool clamp = clampIndex != 0;
+                        const bool blackOutside = blackIndex != 0;
+                        const ResampleParams pa = makeResampleParams(a, f, clamp, blackOutside);
+                        const ResampleParams pb = makeResampleParams(b, f, clamp, blackOutside);
+                        for (int y = -2; y < 36; y += 3) {
+                            std::vector<float> rowA(n, -1.f);
+                            std::vector<float> rowB(n, -2.f);
+                            resampleRow(pa, src, y, x1, x2, &rowA.front());
+                            resampleRow(pb, src, y, x1, x2, &rowB.front());
+                            for (size_t i = 0; i < n; ++i) {
+                                ASSERT_EQ(rowA[i], rowB[i]) << "filter " << f << " clamp " << clamp << " blackOutside " << blackOutside << " nComps " << nComps << " y " << y << " i " << i;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 TEST(TransformMath, ComposeSkewOrders)
 {
     TransformParams p;

@@ -36,8 +36,6 @@
 #include <string>
 #include <vector>
 
-#include <QThread>
-
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Format.h"
@@ -90,6 +88,9 @@ struct TransformPlaneJob {
     Resampler::SourceImage source;
     Resampler::SamplingTransforms transforms;
     Resampler::ResampleParams params;
+    bool resamplePassThrough = false;
+    Resampler::SamplingTransforms passThroughTransforms;
+    Resampler::ResampleParams passThroughParams;
 };
 
 struct TransformBand {
@@ -923,7 +924,20 @@ TransformNode::getRegionsOfInterest(double time,
             srcRoD = RectD();
         }
         const OfxPointD s = scale.toOfxPointD();
-        Resampler::getRegionOfInterest(makeCanonicalTransformFn(view), renderWindow, srcRoD, getProjectRect(), time, getAspectRatio(0), s.x, s.y, getRegionParams(time, view), &srcRoI);
+        const Resampler::RegionParams params = getRegionParams(time, view);
+        Resampler::getRegionOfInterest(makeCanonicalTransformFn(view), renderWindow, srcRoD, getProjectRect(), time, getAspectRatio(0), s.x, s.y, params, &srcRoI);
+        // Wherever mask x mix is below 1 the render also reads the input under the output pixel,
+        // without a mask too, and through a concatenated input transform it resamples there with
+        // the node's filter. The engine maps this region through that transform.
+        if (_masked && (params.doMasking || (getMixValue(time, view) != 1.)) && !renderWindow.isNull()) {
+            RectD passThrough = renderWindow;
+            Resampler::expandRoI(renderWindow, getAspectRatio(0), s.x, s.y, params.filter, false, 1., &passThrough);
+            if (srcRoI.isNull()) {
+                srcRoI = passThrough;
+            } else {
+                srcRoI.merge(passThrough);
+            }
+        }
         ret->insert(std::make_pair(source, srcRoI));
     }
     // The mask is read under each output pixel, as the OpenFX host's default region of interest.
@@ -1097,7 +1111,18 @@ TransformNode::render(const RenderActionArgs& args)
             }
             Resampler::buildSamplingTransforms(fn, time, invert, blur, s.x, s.y, false, srcPar, dstPar, &job.transforms);
             if (job.inputTransform) {
-                Resampler::concatenateInputTransform(TransformMath::fromEngineMatrix(*job.inputTransform), &job.transforms);
+                const Mat3 inputTransform = TransformMath::fromEngineMatrix(*job.inputTransform);
+                Resampler::concatenateInputTransform(inputTransform, &job.transforms);
+                if (_masked) {
+                    // The source fetched is upstream of the concatenated transforms, but the
+                    // unmasked part must show this node's immediate input: resample it through
+                    // the input transform alone. That input is black outside its own region,
+                    // whatever this node's black_outside says.
+                    job.passThroughTransforms.invTransforms.push_back(Mat3::identity());
+                    Resampler::concatenateInputTransform(inputTransform, &job.passThroughTransforms);
+                    job.passThroughParams = Resampler::makeResampleParams(job.passThroughTransforms, filter, clamp, true);
+                    job.resamplePassThrough = true;
+                }
             }
         } else {
             job.source = Resampler::SourceImage((const float*)0, RectI(), nComps);
@@ -1114,8 +1139,7 @@ TransformNode::render(const RenderActionArgs& args)
         }
     }
 
-    QThread* const callingThread = QThread::currentThread();
-    std::atomic<bool> wasAborted(false);
+    RenderCancellation cancel(this);
 
     const std::function<void(int)> renderBand = [&](int bandIndex) {
         const TransformBand& band = bands[bandIndex];
@@ -1123,18 +1147,11 @@ TransformNode::render(const RenderActionArgs& args)
         const int nComps = (int)job.dst->getComponentsCount();
         std::vector<float> resampled((std::size_t)width * nComps);
         std::vector<float> maskRow(doMask ? width : 0);
+        std::vector<float> passThroughRow(job.resamplePassThrough ? (std::size_t)width * nComps : 0);
 
         for (int y = band.y1; y < band.y2; ++y) {
-            if (((y - band.y1) % kAbortCheckRows) == 0) {
-                if (wasAborted.load(std::memory_order_relaxed)) {
-                    return;
-                }
-                // Only the calling thread carries the render's TLS, so only it may ask.
-                if ((QThread::currentThread() == callingThread) && aborted()) {
-                    wasAborted = true;
-
-                    return;
-                }
+            if ((((y - band.y1) % kAbortCheckRows) == 0) && cancel.check()) {
+                return;
             }
 
             float* dstPix = (float*)job.dstAccess->pixelAt(roi.x1, y);
@@ -1149,9 +1166,12 @@ TransformNode::render(const RenderActionArgs& args)
             if (doMask) {
                 readMaskRow(maskAccess.get(), maskBounds, maskNComps, maskChannel, roi.x1, y, width, &maskRow[0]);
             }
+            if (job.resamplePassThrough) {
+                Resampler::resampleRow(job.passThroughParams, job.source, y, roi.x1, roi.x2, &passThroughRow[0]);
+            }
             for (int i = 0; i < width; ++i, dstPix += nComps) {
                 const float* tmpPix = &resampled[(std::size_t)i * nComps];
-                const float* srcPix = job.source.pixel(roi.x1 + i, y);
+                const float* srcPix = job.resamplePassThrough ? &passThroughRow[(std::size_t)i * nComps] : job.source.pixel(roi.x1 + i, y);
                 float maskScale = 1.f;
                 if (doMask) {
                     maskScale = maskInvert ? (1.f - maskRow[i]) : maskRow[i];
@@ -1177,7 +1197,7 @@ TransformNode::render(const RenderActionArgs& args)
             }
         }
     };
-    parallelForOnGlobalPool((int)bands.size(), nThreads, renderBand);
+    parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
 
     return eStatusOK;
 } // TransformNode::render

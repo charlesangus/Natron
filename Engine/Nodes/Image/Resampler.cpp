@@ -689,6 +689,55 @@ namespace {
         interpolateSuperT<N, filter, clamp>(fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, tmpPix);
     }
 
+    /*
+     * samplePixel() for a matrix whose last row is exactly (0, 0, 1). Then z is exactly 1, so
+     * fx, fy and the Jacobian come out bit for bit as samplePixel() computes them, while only
+     * the column products that vary along the row are recomputed per pixel. rowX and rowY are
+     * H(0, 1) * py and H(1, 1) * py for the row's pixel-centre ordinate py.
+     */
+    template <int N, FilterEnum filter, bool clamp>
+    inline void
+    sampleAffinePixel(const Mat3& H,
+                      double rowX,
+                      double rowY,
+                      int x,
+                      const SourceImage& src,
+                      bool blackOutside,
+                      float* tmpPix)
+    {
+        const double px = (double)x + 0.5;
+        const double fx = H(0, 0) * px + rowX + H(0, 2);
+        const double fy = H(1, 0) * px + rowY + H(1, 2);
+        if (filter == eFilterImpulse) {
+            interpolateT<N, filter, clamp>(fx, fy, src, blackOutside, tmpPix);
+            return;
+        }
+        bool xinside = (src.bounds.x1 <= fx + 0.5 && fx - 0.5 < src.bounds.x2);
+        bool yinside = (src.bounds.y1 <= fy + 0.5 && fy - 0.5 < src.bounds.y2);
+        if (blackOutside && !(xinside && yinside)) {
+            xinside = yinside = false;
+        }
+        const double Jxx = xinside ? H(0, 0) : 0.;
+        const double Jxy = xinside ? H(0, 1) : 0.;
+        const double Jyx = yinside ? H(1, 0) : 0.;
+        const double Jyy = yinside ? H(1, 1) : 0.;
+        interpolateSuperT<N, filter, clamp>(fx, fy, Jxx, Jxy, Jyx, Jyy, src, blackOutside, tmpPix);
+    }
+
+    inline bool
+    isAffine(const Mat3& H)
+    {
+        if ((H(2, 0) != 0.) || (H(2, 1) != 0.) || (H(2, 2) != 1.)) {
+            return false;
+        }
+        for (int k = 0; k < 6; ++k) {
+            if (!std::isfinite(H.m[k])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     template <int N, FilterEnum filter, bool clamp>
     void
     motionBlurPixelT(const ResampleParams& params,
@@ -789,6 +838,15 @@ namespace {
 
         if ((params.motionBlur == 0.) || (params.count <= 1)) {
             const Mat3& H = params.invTransforms[0];
+            if (srcValid && isAffine(H)) {
+                const double py = (double)y + 0.5;
+                const double rowX = H(0, 1) * py;
+                const double rowY = H(1, 1) * py;
+                for (int x = x1; x < x2; ++x, dst += N) {
+                    sampleAffinePixel<N, filter, clamp>(H, rowX, rowY, x, src, params.blackOutside, dst);
+                }
+                return;
+            }
             for (int x = x1; x < x2; ++x, dst += N) {
                 samplePixel<N, filter, clamp>(H, x, y, src, srcValid, params.blackOutside, dst);
             }

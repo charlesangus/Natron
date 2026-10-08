@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
 #include <functional>
 #include <iostream>
 #include <list>
@@ -40,6 +41,7 @@
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
@@ -50,6 +52,7 @@
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
+#include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -101,6 +104,36 @@ animateOnBoth(const ParityPair& pair,
     }
 
     return true;
+}
+
+// The RGBA output of `node` over `window` at mipmap 0, rendered directly without the cache.
+bool
+renderRGBA(const NodePtr& node,
+           const RectI& window,
+           RenderedPlane* plane)
+{
+    std::list<ImageLayerDesc> layers;
+    layers.push_back(ImageLayerDesc::getRGBAComponents());
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &planes, &error);
+    EXPECT_TRUE(ok) << node->getScriptName() << ": " << error;
+    if (!ok || (planes.size() != 1)) {
+        return false;
+    }
+    EXPECT_EQ(4u, planes[0].channels.size());
+    *plane = planes[0];
+
+    return planes[0].channels.size() == 4;
+}
+
+float
+planeValue(const RenderedPlane& plane,
+           int x,
+           int y,
+           int c)
+{
+    return plane.pixels[((std::size_t)(y - plane.window.y1) * plane.window.width() + (x - plane.window.x1)) * 4 + c];
 }
 
 } // namespace
@@ -391,4 +424,119 @@ TEST_F(NativeTransformTest, RendersTheSameInBothSchedulerModes)
     ASSERT_TRUE(setKnobValues(masked, kTransformNodeParamTranslate, { 4.5, -2.25 }));
     ASSERT_TRUE(setKnobValues(masked, kOfxMixParamName, { 0.5 }));
     expectBothSchedulerModesAgree(masked);
+}
+
+// TransformMasked takes the transform of an upstream Transform as the host concatenates it, so the
+// source it fetches is the one before that Transform. Where mask x mix is below 1 it must still
+// show its immediate input, the upstream Transform's output, not that earlier source.
+TEST_F(NativeTransformTest, MaskedAfterATransformMixesWithItsImmediateInput)
+{
+    resetProject();
+    ASSERT_TRUE(appPTR->getCurrentSettings()->isTransformConcatenationEnabled());
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr maskSource = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr first = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
+    NodePtr masked = createNode(QString::fromUtf8(kTransformMaskedID), kNativeTransformMaskedMajor);
+    NodePtr plain = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(bool(maskSource));
+    ASSERT_TRUE(isNative(first));
+    ASSERT_TRUE(isNative(masked));
+    ASSERT_TRUE(isNative(plain));
+    setParitySourceOrigin(source, 0, 0);
+    setParitySourceOrigin(maskSource, 10, 6);
+    connectNodes(source, first, 0, true);
+    connectNodes(first, masked, 0, true);
+    connectNodes(maskSource, masked, 1, true);
+    connectNodes(first, plain, 0, true);
+
+    ASSERT_TRUE(setKnobValues(first, kTransformNodeParamCenter, { 32., 24. }));
+    ASSERT_TRUE(setKnobValues(first, kTransformNodeParamRotate, { 15. }));
+    ASSERT_TRUE(setKnobValues(first, kTransformNodeParamTranslate, { 5.5, 3. }));
+    const NodePtr second[] = { masked, plain };
+    for (const NodePtr& node : second) {
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamCenter, { 32., 24. }));
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamScale, { 0.75, 0.6 }));
+        ASSERT_TRUE(setKnobValues(node, kTransformNodeParamTranslate, { -2., 1.5 }));
+    }
+    ASSERT_TRUE(setKnobValues(masked, "enableMask_Mask", { 1. }));
+    ASSERT_TRUE(setKnobValues(masked, kOfxMixParamName, { 0.5 }));
+
+    InputMatrixMap transforms;
+    masked->getEffectInstance()->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);
+    ASSERT_EQ(1u, transforms.count(0)) << "the upstream Transform must concatenate into TransformMasked";
+
+    const RectI window(0, 0, 64, 48);
+    RenderedPlane out, immediate, transformed, mask, original;
+    ASSERT_TRUE(renderRGBA(masked, window, &out));
+    ASSERT_TRUE(renderRGBA(first, window, &immediate));
+    ASSERT_TRUE(renderRGBA(plain, window, &transformed));
+    ASSERT_TRUE(renderRGBA(maskSource, window, &mask));
+    ASSERT_TRUE(renderRGBA(source, window, &original));
+
+    const float mix = 0.5f;
+    int partial = 0;
+    int passThrough = 0;
+    int againstOriginal = 0;
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            const float alpha = planeValue(mask, x, y, 3) * mix;
+            if (alpha == 0.f) {
+                ++passThrough;
+            } else if (alpha < 1.f) {
+                ++partial;
+            }
+            for (int c = 0; c < 4; ++c) {
+                const float expected = planeValue(transformed, x, y, c) * alpha + (1.f - alpha) * planeValue(immediate, x, y, c);
+                ASSERT_NEAR(expected, planeValue(out, x, y, c), 1e-4) << "x " << x << " y " << y << " c " << c;
+                const float wrong = planeValue(transformed, x, y, c) * alpha + (1.f - alpha) * planeValue(original, x, y, c);
+                if (std::abs(wrong - planeValue(out, x, y, c)) > 1e-2) {
+                    ++againstOriginal;
+                }
+            }
+        }
+    }
+    EXPECT_GT(partial, 0);
+    EXPECT_GT(passThrough, 0);
+    EXPECT_GT(againstOriginal, 0) << "the case cannot tell the immediate input from the original source";
+}
+
+// A partial render window whose pass-through pixels lie outside the back-transformed window: the
+// region of interest must cover both, with or without a mask, or the unmasked part renders black.
+TEST_F(NativeTransformTest, MaskedPartialWindowFetchesThePassThroughRegion)
+{
+    resetProject();
+    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
+    NodePtr masked = createNode(QString::fromUtf8(kTransformMaskedID), kNativeTransformMaskedMajor);
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(isNative(masked));
+    setParitySourceOrigin(source, 0, 0);
+    connectNodes(source, masked, 0, true);
+    ASSERT_TRUE(setKnobValues(masked, kTransformNodeParamCenter, { 32., 24. }));
+    ASSERT_TRUE(setKnobValues(masked, kTransformNodeParamTranslate, { 30., 0. }));
+    ASSERT_TRUE(setKnobValues(masked, kOfxMixParamName, { 0.5 }));
+
+    // Output columns 34..49 read the transformed source at 4..19 and pass source 34..49 through.
+    const RectI window(34, 0, 50, 48);
+    RoIMap rois;
+    masked->getEffectInstance()->getRegionsOfInterest_public(kTime, RenderScale::identity, RectD(0., 0., 95., 48.), RectD(34., 0., 50., 48.), ViewIdx(0), &rois);
+    ASSERT_EQ(1u, rois.count(source->getEffectInstance()));
+    const RectD& roi = rois[source->getEffectInstance()];
+    EXPECT_LE(roi.x1, 4.);
+    EXPECT_GE(roi.x2, 50.);
+
+    // Rendered before anything else, so no cached source image hides a short region of interest.
+    RenderedPlane out, original;
+    ASSERT_TRUE(renderRGBA(masked, window, &out));
+    ASSERT_TRUE(renderRGBA(source, RectI(0, 0, 64, 48), &original));
+
+    const float mix = 0.5f;
+    for (int y = window.y1; y < window.y2; ++y) {
+        for (int x = window.x1; x < window.x2; ++x) {
+            for (int c = 0; c < 4; ++c) {
+                const float expected = planeValue(original, x - 30, y, c) * mix + (1.f - mix) * planeValue(original, x, y, c);
+                ASSERT_NEAR(expected, planeValue(out, x, y, c), 1e-6) << "x " << x << " y " << y << " c " << c;
+            }
+        }
+    }
 }

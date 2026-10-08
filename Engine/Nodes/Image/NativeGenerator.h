@@ -29,23 +29,9 @@
 #include "Global/Macros.h"
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/RectD.h"
-
-#define kNativeGeneratorParamExtent "extent"
-#define kNativeGeneratorParamRecenter "recenter"
-#define kNativeGeneratorParamReformat "reformat"
-#define kNativeGeneratorParamBottomLeft "bottomLeft"
-#define kNativeGeneratorParamSize "size"
-#define kNativeGeneratorParamInteractive "interactive"
-#define kNativeGeneratorParamHiDPI "hidpi"
-#define kNativeGeneratorParamFrameRange "frameRange"
-#define kNativeGeneratorParamRectangleEnable "rectangleInteractEnable"
-
-#define kNativeGeneratorExtentFormat "format"
-#define kNativeGeneratorExtentSize "size"
-#define kNativeGeneratorExtentProject "project"
-#define kNativeGeneratorExtentDefault "default"
 
 #define kNativeGeneratorSourceInputLabel "Source"
 
@@ -110,12 +96,7 @@ struct GeneratorRowChannels {
 class NativeGenerator
     : public NativeImageEffect {
 public:
-    enum ExtentEnum {
-        eExtentFormat = 0,
-        eExtentSize,
-        eExtentProject,
-        eExtentDefault
-    };
+    typedef ExtentKnobs::ExtentEnum ExtentEnum;
 
     explicit NativeGenerator(NodePtr node);
 
@@ -177,29 +158,7 @@ protected:
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
-    /**
-     * @brief Shows the knobs the current extent uses and hides the others, and keeps the
-     * rectangle overlay's enable knob in step with Size extent.
-     **/
-    void updateExtentKnobsVisibility();
-
-    /**
-     * @brief Centres the Size rectangle on the project window, keeping its size.
-     **/
-    void recenter();
-
-    KnobChoiceWPtr _extent;
-    KnobButtonWPtr _recenter;
-    KnobBoolWPtr _reformat;
-    KnobChoiceWPtr _format;
-    KnobIntWPtr _formatSize;
-    KnobDoubleWPtr _formatPar;
-    KnobDoubleWPtr _bottomLeft;
-    KnobDoubleWPtr _size;
-    KnobBoolWPtr _interactive;
-    KnobBoolWPtr _hiDPI;
-    KnobIntWPtr _frameRange;
-    KnobBoolWPtr _rectangleEnable;
+    ExtentKnobs _extentKnobs;
 };
 
 NATRON_NAMESPACE_EXIT

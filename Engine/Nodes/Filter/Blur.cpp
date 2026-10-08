@@ -37,8 +37,6 @@
 #include <string>
 #include <vector>
 
-#include <QThread>
-
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Format.h"
@@ -47,118 +45,15 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/PoolParallelFor.h"
+#include "Engine/Nodes/Filter/SpatialFilterSupport.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 
 NATRON_NAMESPACE_ENTER
 
+using namespace SpatialFilter;
+
 namespace {
-// How many lines a worker filters or writes between two abort checks.
-const int kAbortCheckLines = 16;
-// Below this many pixels a chunk of lines is not worth handing to another thread.
-const std::size_t kMinChunkPixels = 16384;
-// Chunks per available thread, so a helper that starts late still finds work left.
-const int kChunksPerThread = 4;
-
-int
-channelIndexForBit(int nComps,
-                   int bit)
-{
-    if (nComps == 1) {
-        return (bit == 3) ? 0 : -1;
-    }
-
-    return (bit < nComps) ? bit : -1;
-}
-
-// A one-channel plane rendered into a wider image sits where EffectInstance's copy back reads
-// it: alpha for a colour plane, channel 0 otherwise.
-std::bitset<4>
-processedBitsForImage(const ImageLayerDesc& plane,
-                      int dstNComps,
-                      const std::bitset<4>& planeBits)
-{
-    if ((plane.getNumComponents() != 1) || (dstNComps == 1)) {
-        return planeBits;
-    }
-    std::bitset<4> bits;
-    bits[plane.isColorLayer() ? 3 : 0] = planeBits[3];
-
-    return bits;
-}
-
-bool
-isFloatImage(const ImagePtr& image)
-{
-    return !image || (image->getBitDepth() == eImageBitDepthFloat);
-}
-
-bool
-isEmptyRect(const RectI& r)
-{
-    return (r.x2 <= r.x1) || (r.y2 <= r.y1);
-}
-
-bool
-isEmptyRect(const RectD& r)
-{
-    return (r.x2 <= r.x1) || (r.y2 <= r.y1);
-}
-
-// OFX::Coords::toPixelEnclosing().
-RectI
-toPixelEnclosing(const RectD& r,
-                 const RenderScale& scale,
-                 double par)
-{
-    if (isEmptyRect(r)) {
-        return RectI(0, 0, 0, 0);
-    }
-    const OfxPointD s = scale.toOfxPointD();
-
-    return RectI((int)std::floor(r.x1 * s.x / par),
-                 (int)std::floor(r.y1 * s.y),
-                 (int)std::ceil(r.x2 * s.x / par),
-                 (int)std::ceil(r.y2 * s.y));
-}
-
-// OFX::Coords::toCanonical().
-RectD
-toCanonical(const RectI& r,
-            const RenderScale& scale,
-            double par)
-{
-    if (isEmptyRect(r)) {
-        return RectD(0., 0., 0., 0.);
-    }
-    const OfxPointD s = scale.toOfxPointD();
-
-    return RectD(r.x1 * par / s.x, r.y1 / s.y, r.x2 * par / s.x, r.y2 / s.y);
-}
-
-// OFX::Coords::rectIntersection(): rectangles that merely touch still intersect, and a failed
-// intersection leaves an empty rectangle at the origin.
-bool
-intersectRects(const RectI& a,
-               const RectI& b,
-               RectI* out)
-{
-    if (isEmptyRect(a) || isEmptyRect(b) || (a.x1 > b.x2) || (b.x1 > a.x2) || (a.y1 > b.y2) || (b.y1 > a.y2)) {
-        *out = RectI(0, 0, 0, 0);
-
-        return false;
-    }
-    RectI r;
-    r.x1 = std::max(a.x1, b.x1);
-    r.x2 = std::max(r.x1, std::min(a.x2, b.x2));
-    r.y1 = std::max(a.y1, b.y1);
-    r.y2 = std::max(r.y1, std::min(a.y2, b.y2));
-    *out = r;
-
-    return true;
-}
-
 bool
 isGaussianFamily(BlurKernels::Filter filter)
 {
@@ -169,271 +64,6 @@ int
 boxIterations(BlurKernels::Filter filter)
 {
     return (filter == BlurKernels::eFilterBox) ? 1 : ((filter == BlurKernels::eFilterTriangle) ? 2 : 3);
-}
-
-// Copies `width` pixels of row y starting at x0 into row (nComps floats per pixel), writing zero
-// wherever the image has no pixel. An image in another layout is mapped channel by colour bit,
-// a channel it lacks reading as zero.
-void
-readSourceRow(const Image* image,
-              const Image::ReadAccess* access,
-              const RectI& bounds,
-              int srcNComps,
-              int x0,
-              int y,
-              int width,
-              int nComps,
-              float* row)
-{
-    std::fill(row, row + (std::size_t)width * nComps, 0.f);
-    if (!image) {
-        return;
-    }
-    if ((y < bounds.y1) || (y >= bounds.y2)) {
-        return;
-    }
-    const int xStart = std::max(x0, bounds.x1);
-    const int xEnd = std::min(x0 + width, bounds.x2);
-    if (xStart >= xEnd) {
-        return;
-    }
-    const float* srcPix = (const float*)access->pixelAt(xStart, y);
-    if (!srcPix) {
-        return;
-    }
-    float* dstPix = row + (std::size_t)(xStart - x0) * nComps;
-    if (srcNComps == nComps) {
-        std::copy(srcPix, srcPix + (std::size_t)(xEnd - xStart) * nComps, dstPix);
-
-        return;
-    }
-    int srcIndex[4] = { -1, -1, -1, -1 };
-    for (int c = 0; (c < nComps) && (c < 4); ++c) {
-        srcIndex[c] = channelIndexForBit(srcNComps, pixelKernelChannelBit(nComps, c));
-    }
-    for (int x = xStart; x < xEnd; ++x, srcPix += srcNComps, dstPix += nComps) {
-        for (int c = 0; (c < nComps) && (c < 4); ++c) {
-            if (srcIndex[c] >= 0) {
-                dstPix[c] = srcPix[srcIndex[c]];
-            }
-        }
-    }
-}
-
-// One value per pixel of `channel` of row y, `fill` wherever the image has no pixel.
-void
-readChannelRow(const Image* image,
-               const Image::ReadAccess* access,
-               const RectI& bounds,
-               int imageNComps,
-               int channel,
-               int x0,
-               int y,
-               int width,
-               float fill,
-               float* row)
-{
-    std::fill(row, row + width, fill);
-    if (!image) {
-        return;
-    }
-    if ((y < bounds.y1) || (y >= bounds.y2)) {
-        return;
-    }
-    const int xStart = std::max(x0, bounds.x1);
-    const int xEnd = std::min(x0 + width, bounds.x2);
-    if (xStart >= xEnd) {
-        return;
-    }
-    const float* pix = (const float*)access->pixelAt(xStart, y);
-    if (!pix) {
-        return;
-    }
-    for (int x = xStart; x < xEnd; ++x, pix += imageNComps) {
-        row[x - x0] = pix[channel];
-    }
-}
-
-// The mask channel at (x, y), or null outside the mask image.
-const float*
-maskValueAt(const Image::ReadAccess& access,
-            const RectI& bounds,
-            int nComps,
-            int channel,
-            int x,
-            int y)
-{
-    if ((x < bounds.x1) || (x >= bounds.x2) || (y < bounds.y1) || (y >= bounds.y2)) {
-        return NULL;
-    }
-    const float* pix = (const float*)access.pixelAt(x, y);
-
-    return pix ? (pix + channel) : NULL;
-}
-
-// CImgFilterPluginHelperBase::maskLineIsZero(), including its treatment of the last column of
-// the mask image as outside it when the mask is inverted, which decides the extent of the lines
-// the filters run over and so must match.
-bool
-maskRowIsZero(const Image::ReadAccess& access,
-              const RectI& bounds,
-              int nComps,
-              int channel,
-              int x1,
-              int x2,
-              int y,
-              bool maskInvert)
-{
-    if (maskInvert) {
-        if ((y < bounds.y1) || (bounds.y2 <= y) || (x1 < bounds.x1) || (bounds.x2 <= x2)) {
-            return false;
-        }
-        for (int x = x1; x < x2; ++x) {
-            const float* p = maskValueAt(access, bounds, nComps, channel, x, y);
-            if (!p || (*p != 1.)) {
-                return false;
-            }
-        }
-    } else {
-        if ((y < bounds.y1) || (bounds.y2 <= y)) {
-            return true;
-        }
-        x1 = std::max(x1, bounds.x1);
-        x2 = std::min(x2, bounds.x2);
-        for (int x = x1; x < x2; ++x) {
-            const float* p = maskValueAt(access, bounds, nComps, channel, x, y);
-            if (p && (*p != 0.)) {
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-// CImgFilterPluginHelperBase::maskColumnIsZero().
-bool
-maskColumnIsZero(const Image::ReadAccess& access,
-                 const RectI& bounds,
-                 int nComps,
-                 int channel,
-                 int x,
-                 int y1,
-                 int y2,
-                 bool maskInvert)
-{
-    if (maskInvert) {
-        if ((x < bounds.x1) || (bounds.x2 <= x) || (y1 < bounds.y1) || (bounds.y2 <= y2)) {
-            return false;
-        }
-        for (int y = y1; y < y2; ++y) {
-            const float* p = maskValueAt(access, bounds, nComps, channel, x, y);
-            if (!p || (*p != 1.)) {
-                return false;
-            }
-        }
-    } else {
-        if ((x < bounds.x1) || (bounds.x2 <= x)) {
-            return true;
-        }
-        y1 = std::max(y1, bounds.y1);
-        y2 = std::min(y2, bounds.y2);
-        for (int y = y1; y < y2; ++y) {
-            const float* p = maskValueAt(access, bounds, nComps, channel, x, y);
-            if (p && (*p != 0.)) {
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-struct BlurPlaneJob {
-    ImagePtr dst;
-    std::bitset<4> channels;
-    ImagePtr src;
-    ImagePtr divisor;
-    int divisorChannel;
-    int skipChannel;
-    int nComps;
-    int srcNComps;
-    int divisorNComps;
-    // Image::getBounds() takes the image's lock, which a pool thread must never ask for: behind a
-    // writer waiting on an image this render holds for reading, it blocks forever. The bounds are
-    // read once on the calling thread instead.
-    RectI srcBounds;
-    RectI divisorBounds;
-    std::shared_ptr<Image::ReadAccess> srcAccess;
-    std::shared_ptr<Image::ReadAccess> divisorAccess;
-    std::shared_ptr<Image::WriteAccess> dstAccess;
-
-    BlurPlaneJob()
-        : dst()
-        , channels()
-        , src()
-        , divisor()
-        , divisorChannel(-1)
-        , skipChannel(-1)
-        , nComps(0)
-        , srcNComps(0)
-        , divisorNComps(0)
-    {
-    }
-};
-
-// Shares the render's abort state between the calling thread, which alone may ask the effect,
-// and the pool threads.
-struct AbortState {
-    const EffectInstance* effect;
-    QThread* callingThread;
-    std::atomic<bool> flag;
-
-    explicit AbortState(const EffectInstance* effect_)
-        : effect(effect_)
-        , callingThread(QThread::currentThread())
-        , flag(false)
-    {
-    }
-
-    bool check()
-    {
-        if (flag.load(std::memory_order_relaxed)) {
-            return true;
-        }
-        if ((QThread::currentThread() == callingThread) && effect->aborted()) {
-            flag = true;
-
-            return true;
-        }
-
-        return false;
-    }
-};
-
-// Runs body(first, end) over [0, nLines) split into contiguous chunks on the global pool. Each
-// line is processed whole by one call, so the result does not depend on the split.
-void
-forEachLineChunk(int nLines,
-                 std::size_t pixelsPerLine,
-                 int nThreads,
-                 const std::function<void(int, int)>& body)
-{
-    if (nLines <= 0) {
-        return;
-    }
-    std::size_t nChunks = 1;
-    if (nThreads > 1) {
-        nChunks = std::min((std::size_t)nThreads * kChunksPerThread, ((std::size_t)nLines * pixelsPerLine) / kMinChunkPixels);
-        nChunks = std::max((std::size_t)1, std::min(nChunks, (std::size_t)nLines));
-    }
-    const int linesPerChunk = (int)(((std::size_t)nLines + nChunks - 1) / nChunks);
-    const int realChunks = (nLines + linesPerChunk - 1) / linesPerChunk;
-    const std::function<void(int)> chunk = [&](int i) {
-        const int first = i * linesPerChunk;
-        body(first, std::min(nLines, first + linesPerChunk));
-    };
-    parallelForOnGlobalPool(realChunks, nThreads, chunk);
 }
 } // anonymous namespace
 
@@ -981,9 +611,9 @@ Blur::render(const RenderActionArgs& args)
         }
     }
 
-    std::vector<BlurPlaneJob> jobs;
+    std::vector<PlaneJob> jobs;
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        BlurPlaneJob job;
+        PlaneJob job;
         job.dst = it->second;
         if (!job.dst) {
             continue;
@@ -1017,8 +647,7 @@ Blur::render(const RenderActionArgs& args)
     }
 
     const RectI& roi = args.roi;
-    const int width = roi.width();
-    if ((width <= 0) || (roi.height() <= 0)) {
+    if ((roi.width() <= 0) || (roi.height() <= 0)) {
         return eStatusOK;
     }
 
@@ -1033,27 +662,14 @@ Blur::render(const RenderActionArgs& args)
 
     // Images are locked here, on the calling thread, for the whole render; the pool threads only
     // compute pixel addresses through these accesses.
-    std::shared_ptr<Image::ReadAccess> maskAccess;
-    RectI maskBounds;
-    int maskNComps = 0;
-    if (mask) {
-        maskBounds = mask->getBounds();
-        maskNComps = (int)mask->getComponentsCount();
-        maskAccess = std::make_shared<Image::ReadAccess>(mask.get());
-    }
+    MaskInput maskSource;
+    maskSource.applied = doMask;
+    maskSource.invert = maskInvert;
+    maskSource.image = mask;
+    maskSource.channel = maskChannel;
+    maskSource.lock();
     for (std::size_t j = 0; j < jobs.size(); ++j) {
-        BlurPlaneJob& job = jobs[j];
-        if (job.src) {
-            job.srcBounds = job.src->getBounds();
-            job.srcNComps = (int)job.src->getComponentsCount();
-            job.srcAccess = std::make_shared<Image::ReadAccess>(job.src.get());
-        }
-        if (job.divisor) {
-            job.divisorBounds = job.divisor->getBounds();
-            job.divisorNComps = (int)job.divisor->getComponentsCount();
-            job.divisorAccess = std::make_shared<Image::ReadAccess>(job.divisor.get());
-        }
-        job.dstAccess = std::make_shared<Image::WriteAccess>(job.dst.get());
+        jobs[j].lock();
     }
 
     // The processed window shrinks past the rows and columns where the mask is zero, exactly as
@@ -1063,20 +679,7 @@ Blur::render(const RenderActionArgs& args)
         processWindow.x2 = processWindow.x1;
         processWindow.y2 = processWindow.y1;
     }
-    if (maskAccess) {
-        while ((processWindow.y2 > processWindow.y1) && maskRowIsZero(*maskAccess, maskBounds, maskNComps, maskChannel, processWindow.x1, processWindow.x2, processWindow.y2 - 1, maskInvert)) {
-            --processWindow.y2;
-        }
-        while ((processWindow.y2 > processWindow.y1) && maskRowIsZero(*maskAccess, maskBounds, maskNComps, maskChannel, processWindow.x1, processWindow.x2, processWindow.y1, maskInvert)) {
-            ++processWindow.y1;
-        }
-        while ((processWindow.x2 > processWindow.x1) && maskColumnIsZero(*maskAccess, maskBounds, maskNComps, maskChannel, processWindow.x1, processWindow.y1, processWindow.y2, maskInvert)) {
-            ++processWindow.x1;
-        }
-        while ((processWindow.x2 > processWindow.x1) && maskColumnIsZero(*maskAccess, maskBounds, maskNComps, maskChannel, processWindow.x2 - 1, processWindow.y1, processWindow.y2, maskInvert)) {
-            --processWindow.x2;
-        }
-    }
+    processWindow = shrinkToMask(processWindow, maskSource);
     const bool processing = !isEmptyRect(processWindow);
 
     RectI bufferRect(0, 0, 0, 0);
@@ -1088,101 +691,19 @@ Blur::render(const RenderActionArgs& args)
     const std::size_t planeSize = (std::size_t)bufferWidth * bufferHeight;
 
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
-    AbortState abortState(this);
+    RenderCancellation cancel(this);
 
     for (std::size_t j = 0; j < jobs.size(); ++j) {
-        const BlurPlaneJob& job = jobs[j];
-        const int nComps = job.nComps;
-
-        // The processed channels, one plane each, the way CImgFilterPluginHelper extracts them.
-        std::vector<int> planeChannel;
-        int planeOfChannel[4] = { -1, -1, -1, -1 };
-        int alphaPlane = -1;
-        for (int c = 0; (c < nComps) && (c < 4); ++c) {
-            const int bit = pixelKernelChannelBit(nComps, c);
-            if (job.channels[bit]) {
-                planeOfChannel[c] = (int)planeChannel.size();
-                if (bit == 3) {
-                    alphaPlane = (int)planeChannel.size();
-                }
-                planeChannel.push_back(c);
-            }
-        }
-        const int nPlanes = (int)planeChannel.size();
+        const PlaneJob& job = jobs[j];
+        const ProcessedPlanes planes(job);
+        const int nPlanes = planes.count();
         std::vector<float> buffer(processing ? planeSize * nPlanes : 0);
 
         if (!buffer.empty()) {
-            // 1. The source over the buffer, outside its image by the boundary condition, divided
-            // by the "(Un)premult by" channel where that is usable.
-            const std::function<void(int, int)> fillRows = [&](int firstRow, int endRow) {
-                std::vector<float> pixel(nComps);
-                int srcIndex[4] = { -1, -1, -1, -1 };
-                for (int c = 0; (c < nComps) && (c < 4); ++c) {
-                    srcIndex[c] = job.src ? channelIndexForBit(job.srcNComps, pixelKernelChannelBit(nComps, c)) : -1;
-                }
-                const RectI& b = job.srcBounds;
-                const bool hasSource = job.src && !isEmptyRect(b);
-                for (int row = firstRow; row < endRow; ++row) {
-                    if ((((row - firstRow) % kAbortCheckLines) == 0) && abortState.check()) {
-                        return;
-                    }
-                    const int y = bufferRect.y1 + row;
-                    int cy = y;
-                    bool rowInside = hasSource;
-                    if (hasSource && ((y < b.y1) || (y >= b.y2))) {
-                        if (params.neumann) {
-                            cy = (y < b.y1) ? b.y1 : (b.y2 - 1);
-                        } else {
-                            rowInside = false;
-                        }
-                    }
-                    const float* srcRow = rowInside ? (const float*)job.srcAccess->pixelAt(b.x1, cy) : NULL;
-                    const float* divisorRow = NULL;
-                    const RectI& db = job.divisorBounds;
-                    if (srcRow && job.divisor && (cy >= db.y1) && (cy < db.y2)) {
-                        divisorRow = (const float*)job.divisorAccess->pixelAt(db.x1, cy);
-                    }
-                    for (int i = 0; i < bufferWidth; ++i) {
-                        const int x = bufferRect.x1 + i;
-                        std::fill(pixel.begin(), pixel.end(), 0.f);
-                        if (srcRow) {
-                            int cx = x;
-                            bool inside = true;
-                            if ((x < b.x1) || (x >= b.x2)) {
-                                if (params.neumann) {
-                                    cx = (x < b.x1) ? b.x1 : (b.x2 - 1);
-                                } else {
-                                    inside = false;
-                                }
-                            }
-                            if (inside) {
-                                const float* srcPix = srcRow + (std::size_t)(cx - b.x1) * job.srcNComps;
-                                for (int c = 0; (c < nComps) && (c < 4); ++c) {
-                                    if (srcIndex[c] >= 0) {
-                                        pixel[c] = srcPix[srcIndex[c]];
-                                    }
-                                }
-                                if (divisorRow && (cx >= db.x1) && (cx < db.x2)) {
-                                    const float d = divisorRow[(std::size_t)(cx - db.x1) * job.divisorNComps + job.divisorChannel];
-                                    if (Image::unPremultDivisorIsUsable(d)) {
-                                        for (int c = 0; (c < nComps) && (c < 4); ++c) {
-                                            if (c != job.skipChannel) {
-                                                pixel[c] = Image::unPremultiplyValue(pixel[c], d);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        const std::size_t offset = (std::size_t)row * bufferWidth + i;
-                        for (int p = 0; p < nPlanes; ++p) {
-                            buffer[(std::size_t)p * planeSize + offset] = pixel[planeChannel[p]];
-                        }
-                    }
-                }
-            };
-            forEachLineChunk(bufferHeight, (std::size_t)bufferWidth * nPlanes, nThreads, fillRows);
-            if (abortState.check()) {
+            // 1. The source over the buffer, outside its image by the boundary condition, divided by the "(Un)premult by"
+            // channel where that is usable.
+            fillBuffer(job, planes, bufferRect, params.neumann ? Boundary::Nearest : Boundary::Zero, nThreads, cancel, &buffer[0]);
+            if (cancel.check()) {
                 return eStatusOK;
             }
 
@@ -1192,7 +713,7 @@ Blur::render(const RenderActionArgs& args)
                     const std::function<void(int, int)> rows = [&](int first, int end) {
                         BlurKernels::LineScratch scratch;
                         for (int line = first; line < end; ++line) {
-                            if ((((line - first) % kAbortCheckLines) == 0) && abortState.check()) {
+                            if ((((line - first) % kAbortCheckLines) == 0) && cancel.check()) {
                                 return;
                             }
                             const int p = line / bufferHeight;
@@ -1200,8 +721,8 @@ Blur::render(const RenderActionArgs& args)
                             filterX.apply(&buffer[(std::size_t)p * planeSize + (std::size_t)row * bufferWidth], bufferWidth, 1, scratch);
                         }
                     };
-                    forEachLineChunk(nPlanes * bufferHeight, (std::size_t)bufferWidth, nThreads, rows);
-                    if (abortState.check()) {
+                    forEachLineChunk(nPlanes * bufferHeight, (std::size_t)bufferWidth, nThreads, cancel, rows);
+                    if (cancel.check()) {
                         return eStatusOK;
                     }
                 }
@@ -1211,7 +732,7 @@ Blur::render(const RenderActionArgs& args)
                     const std::function<void(int, int)> columns = [&](int first, int end) {
                         BlurKernels::LineScratch scratch;
                         for (int line = first; line < end; ++line) {
-                            if ((((line - first) % kAbortCheckLines) == 0) && abortState.check()) {
+                            if ((((line - first) % kAbortCheckLines) == 0) && cancel.check()) {
                                 return;
                             }
                             const int p = line / bufferWidth;
@@ -1219,8 +740,8 @@ Blur::render(const RenderActionArgs& args)
                             filterY.apply(&buffer[(std::size_t)p * planeSize + column], bufferHeight, bufferWidth, scratch);
                         }
                     };
-                    forEachLineChunk(nPlanes * bufferWidth, (std::size_t)bufferHeight, nThreads, columns);
-                    if (abortState.check()) {
+                    forEachLineChunk(nPlanes * bufferWidth, (std::size_t)bufferHeight, nThreads, cancel, columns);
+                    if (cancel.check()) {
                         return eStatusOK;
                     }
                 }
@@ -1230,79 +751,24 @@ Blur::render(const RenderActionArgs& args)
         // 4. The window: derivative scale and alpha threshold, multiply back, mask and mix
         // against the undivided source; unprocessed channels and the pixels outside the
         // processed window pass through.
-        std::vector<RectI> bandRects;
-        NativeImageEffect::makeRowBands(roi, nThreads, &bandRects);
-        const std::function<void(int)> writeBand = [&](int bandIndex) {
-            const RectI& band = bandRects[bandIndex];
-            const std::size_t rowSize = (std::size_t)width * nComps;
-            std::vector<float> sourceRow(rowSize);
-            std::vector<float> maskRow(doMask ? width : 0);
-            std::vector<float> divisorRow(job.divisor ? width : 0);
-
-            for (int y = band.y1; y < band.y2; ++y) {
-                if ((((y - band.y1) % kAbortCheckLines) == 0) && abortState.check()) {
-                    return;
-                }
-                float* dstPix = (float*)job.dstAccess->pixelAt(roi.x1, y);
-                if (!dstPix) {
-                    continue;
-                }
-                readSourceRow(job.src.get(), job.srcAccess.get(), job.srcBounds, job.srcNComps, roi.x1, y, width, nComps, &sourceRow[0]);
-                const bool rowProcessed = processing && (y >= processWindow.y1) && (y < processWindow.y2);
-                if (!rowProcessed) {
-                    std::copy(sourceRow.begin(), sourceRow.end(), dstPix);
-                    continue;
-                }
-                if (job.divisor) {
-                    readChannelRow(job.divisor.get(), job.divisorAccess.get(), job.divisorBounds, job.divisorNComps, job.divisorChannel, roi.x1, y, width, 1.f, &divisorRow[0]);
-                }
-                if (doMask) {
-                    readChannelRow(mask.get(), maskAccess.get(), maskBounds, maskNComps, maskChannel, roi.x1, y, width, 0.f, &maskRow[0]);
-                }
-                const bool rowInBuffer = (y >= bufferRect.y1) && (y < bufferRect.y2);
-                const std::size_t bufferRow = rowInBuffer ? (std::size_t)(y - bufferRect.y1) * bufferWidth : 0;
-                for (int i = 0; i < width; ++i, dstPix += nComps) {
-                    const int x = roi.x1 + i;
-                    const float* srcPix = &sourceRow[(std::size_t)i * nComps];
-                    if ((x < processWindow.x1) || (x >= processWindow.x2)) {
-                        std::copy(srcPix, srcPix + nComps, dstPix);
-                        continue;
-                    }
-                    const bool inBuffer = rowInBuffer && (x >= bufferRect.x1) && (x < bufferRect.x2);
-                    const std::size_t offset = inBuffer ? bufferRow + (std::size_t)(x - bufferRect.x1) : 0;
-                    float alpha = mix;
-                    if (doMask) {
-                        const float maskScale = maskInvert ? (1.f - maskRow[i]) : maskRow[i];
-                        alpha = maskScale * mix;
-                    }
-                    for (int c = 0; c < nComps; ++c) {
-                        const int p = (c < 4) ? planeOfChannel[c] : -1;
-                        if (p < 0) {
-                            dstPix[c] = srcPix[c];
-                            continue;
-                        }
-                        float v = inBuffer ? buffer[(std::size_t)p * planeSize + offset] : 0.f;
-                        if (scaleDerivative) {
-                            v = (float)(v * derivativeScale);
-                        }
-                        if (thresholdAlpha && (p == alphaPlane) && (v < params.alphaThreshold)) {
-                            v = 0.f;
-                        }
-                        if (job.divisor && (c != job.skipChannel)) {
-                            v = Image::premultiplyValue(v, divisorRow[i]);
-                        }
-                        if (alpha == 0.f) {
-                            v = srcPix[c];
-                        } else if (alpha != 1.f) {
-                            v = v * alpha + (1.f - alpha) * srcPix[c];
-                        }
-                        dstPix[c] = v;
-                    }
-                }
+        WindowLayout layout;
+        layout.roi = roi;
+        layout.processWindow = processWindow;
+        layout.processing = processing;
+        layout.bufferRect = bufferRect;
+        layout.buffer = buffer.empty() ? NULL : &buffer[0];
+        layout.mix = mix;
+        writeWindow(job, planes, maskSource, layout, nThreads, cancel, [&](float v, int p) -> float {
+            if (scaleDerivative) {
+                v = (float)(v * derivativeScale);
             }
-        };
-        parallelForOnGlobalPool((int)bandRects.size(), nThreads, writeBand);
-        if (abortState.check()) {
+            if (thresholdAlpha && (p == planes.alphaPlane) && (v < params.alphaThreshold)) {
+                v = 0.f;
+            }
+
+            return v;
+        });
+        if (cancel.check()) {
             return eStatusOK;
         }
     }

@@ -124,10 +124,16 @@ jobs:
       # and nothing reads it on a hit. The cached dir is ~52 MB,
       # negligible against the 10 GB per-repo quota the ccache entries
       # above have to live within.
+      #
+      # build/assets/CImg holds the one plugin-src file the tests read
+      # (CImg.h, the reference the native kernels are checked against), so
+      # it must be cached alongside Plugins/.
       - name: Cache test assets
         uses: actions/cache@v6.1.0
         with:
-          path: build/assets/Plugins
+          path: |
+            build/assets/Plugins
+            build/assets/CImg
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
       - name: Fetch test assets

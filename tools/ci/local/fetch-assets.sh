@@ -223,6 +223,9 @@ PLUGINS_TARGET="${ASSETS_DIR}/Plugins"
 PLUGINS_SRC_DIR="${ASSETS_DIR}/plugin-src"
 DEPS_PREFIX="${PLUGINS_SRC_DIR}/deps-install"
 PLUGINS_STAMP="${PLUGINS_TARGET}/.natron-plugin-pins"
+# CImg.h outlives plugin-src/ (which CI does not cache) because the native
+# kernel tests compare against it; Tests/CMakeLists.txt reads this path.
+CIMG_HEADER_KEPT="${ASSETS_DIR}/CImg/CImg.h"
 PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPENFX_MISC_REF} lcms2=${LCMS2_REF} libzip=${LIBZIP_REF} imagemagick=${IMAGEMAGICK_REF} openfx-arena=${OPENFX_ARENA_REF} openfx-metadata=${OPENFX_METADATA_REF}"
 
 # Defined unconditionally (not just in the build branch below) so both the
@@ -244,7 +247,7 @@ for i in "${!METADATA_PLUGIN_NAMES[@]}"; do
     METADATA_OFX+=("${PLUGINS_TARGET}/${METADATA_PLUGIN_NAMES[$i]}.ofx.bundle/Contents/Linux-x86-64/${METADATA_PLUGIN_NAMES[$i]}.ofx")
 done
 
-if [ -f "${PLUGINS_STAMP}" ] && [ "$(cat "${PLUGINS_STAMP}")" = "${PLUGINS_WANT}" ]; then
+if [ -f "${PLUGINS_STAMP}" ] && [ "$(cat "${PLUGINS_STAMP}")" = "${PLUGINS_WANT}" ] && [ -f "${CIMG_HEADER_KEPT}" ]; then
     echo "[Plugins] already built at the pinned refs -- skipping."
     echo "[Plugins]   ${PLUGINS_WANT}"
 else
@@ -442,6 +445,8 @@ else
     curl -fsS -o "${MISC_SRC}/CImg/Inpaint/inpaint.h" \
         "https://raw.githubusercontent.com/dtschump/CImg/${CIMG_VERSION}/plugins/inpaint.h"
     patch -p0 -d "${MISC_SRC}/CImg" < "${MISC_SRC}/CImg/Inpaint/inpaint.h.patch" > /dev/null
+    mkdir -p "${ASSETS_DIR}/CImg"
+    cp "${MISC_SRC}/CImg/CImg.h" "${CIMG_HEADER_KEPT}"
 
     rm -rf "${MISC_BUILD}"
     cmake -S "${MISC_SRC}" -B "${MISC_BUILD}" \

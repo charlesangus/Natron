@@ -118,7 +118,9 @@ jobs:
       - name: Cache test assets
         uses: actions/cache@v6.1.0
         with:
-          path: build/assets/Plugins
+          path: |
+            build/assets/Plugins
+            build/assets/CImg
           key: assets-linux-${{ hashFiles('tools/ci/local/fetch-assets.sh') }}
 
       - name: Fetch test assets

@@ -28,6 +28,8 @@
 #include <cmath>
 #include <functional>
 #include <iostream>
+#include <limits>
+#include <list>
 #include <string>
 #include <vector>
 
@@ -40,13 +42,16 @@
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -272,4 +277,78 @@ TEST_F(NativeKeyerTest, BothSchedulerModesAgreeWithNoUnplannedPull)
             EXPECT_EQ(0, unplannedPulls[i]) << "mipmap " << mipmapLevel << ", pool " << poolSizes[i];
         }
     }
+}
+
+namespace {
+void
+setKeyerColorKnob(const NodePtr& node,
+                  const char* name,
+                  const double* values)
+{
+    KnobColor* color = dynamic_cast<KnobColor*>(node->getKnobByName(name).get());
+
+    ASSERT_TRUE(color != NULL) << name;
+    for (int i = 0; i < color->getDimension(); ++i) {
+        color->setValue(values[i], ViewSpec::all(), i, eValueChangedReasonPluginEdited, NULL);
+    }
+}
+} // namespace
+
+// The host's NaN conversion is off, so a NaN the kernel produces reaches the rendered image
+// instead of being replaced by 1.
+TEST_F(NativeKeyerTest, ProblemPixelsKeyToFiniteValues)
+{
+    const double big = std::numeric_limits<float>::max();
+    const double inf = std::numeric_limits<double>::infinity();
+    const double pixels[][4] = {
+        { 0.18, 0.18, 0.18, 1. },
+        { 0., 0., 0., 0. },
+        { -0.5, 0.2, -0.1, 1. },
+        { 40., 12., 3., 1. },
+        { big, big, big, 1. },
+        { big, 0., -big, 0.5 },
+        { inf, 1., 1., 1. },
+    };
+    const double keys[][3] = {
+        { 0., 0., 0. },
+        { 0.1, 0.8, 0.1 },
+        { -0.2, 0.5, 0.1 },
+        { 1e-25, 0., 0. },
+        { big, 0., 0. },
+    };
+
+    KnobBoolPtr convertNaNs = std::dynamic_pointer_cast<KnobBool>(appPTR->getCurrentSettings()->getKnobByName("convertNaNs"));
+    ASSERT_TRUE(bool(convertNaNs));
+    const bool convertNaNsWas = convertNaNs->getValue();
+    convertNaNs->setValue(false);
+
+    resetProject();
+    NodePtr source = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr keyer = createNode(QString::fromUtf8(PLUGINID_NATRON_KEYER));
+    ASSERT_TRUE(bool(source));
+    ASSERT_TRUE(isNative(keyer));
+    connectNodes(source, keyer, 0, true);
+    ASSERT_TRUE(setKnobValues(keyer, kKeyerParamDespill, { 2. }));
+
+    const std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+    for (std::size_t p = 0; p < sizeof(pixels) / sizeof(pixels[0]); ++p) {
+        setKeyerColorKnob(source, kConstantParamColor, pixels[p]);
+        for (std::size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); ++k) {
+            setKeyerColorKnob(keyer, kKeyerParamKeyColor, keys[k]);
+            for (int mode = 0; mode < 4; ++mode) {
+                for (int show = 0; show < 4; ++show) {
+                    ASSERT_TRUE(setKnobValues(keyer, kKeyerParamMode, { (double)mode }));
+                    ASSERT_TRUE(setKnobValues(keyer, kKeyerParamShow, { (double)show }));
+                    std::vector<RenderedPlane> planes;
+                    std::string error;
+                    ASSERT_TRUE(renderNodePlanesDirect(keyer, 1., ViewIdx(0), 0, RectI(0, 0, 4, 4), layers, &planes, &error)) << error;
+                    ASSERT_EQ(1u, planes.size());
+                    for (std::size_t i = 0; i < planes[0].pixels.size(); ++i) {
+                        ASSERT_FALSE(std::isnan(planes[0].pixels[i])) << "pixel " << p << ", key " << k << ", mode " << mode << ", show " << show << ", value " << i;
+                    }
+                }
+            }
+        }
+    }
+    convertNaNs->setValue(convertNaNsWas);
 }

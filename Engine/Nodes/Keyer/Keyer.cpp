@@ -128,7 +128,7 @@ public:
         , _keyColorNorm2(0.f)
     {
         for (int i = 0; i < 3; ++i) {
-            _keyColor[i] = settings.keyColor[i];
+            _keyColor[i] = ColorMath::boundForKeying(settings.keyColor[i]);
         }
         // Single precision, as the OpenFX plug-in sums them.
         _keyColor111 = _keyColor[0] + _keyColor[1] + _keyColor[2];
@@ -164,9 +164,9 @@ public:
         inMask = (std::max)(0.f, (std::min)(inMask, 1.f));
         outMask = (std::max)(0.f, (std::min)(outMask, 1.f));
 
-        double fgr = fg ? fg[0] : 0.;
-        double fgg = fg ? fg[1] : 0.;
-        double fgb = fg ? fg[2] : 0.;
+        double fgr = fg ? ColorMath::boundForKeying(fg[0]) : 0.;
+        double fgg = fg ? ColorMath::boundForKeying(fg[1]) : 0.;
+        double fgb = fg ? ColorMath::boundForKeying(fg[2]) : 0.;
         const double bgr = bg[0];
         const double bgg = bg[1];
         const double bgb = bg[2];

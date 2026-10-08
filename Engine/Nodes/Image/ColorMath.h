@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -149,6 +150,25 @@ fromRec709(float v)
     }
 
     return std::pow((v + 0.0993f) * (1.0f / 1.0993f), (1.0f / 0.45f));
+}
+
+// Bounds a value a keyer is given so the sums and differences of its colour maths cannot
+// overflow: the OpenFX keyers turn an infinite or near-FLT_MAX channel into inf - inf or
+// inf * 0, a NaN, while any value up to the bound keys as the limit of ever larger values does.
+// NaN is left as it came.
+inline float
+boundForKeying(float v)
+{
+    const float bound = std::numeric_limits<float>::max() / 4;
+
+    if (v > bound) {
+        return bound;
+    }
+    if (v < -bound) {
+        return -bound;
+    }
+
+    return v;
 }
 
 inline float

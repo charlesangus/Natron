@@ -163,15 +163,23 @@ public:
         }
 
         float y, cb, cr;
-        const float r = _linear ? settings.keyColor[0] : ColorMath::toRec709(settings.keyColor[0]);
-        const float g = _linear ? settings.keyColor[1] : ColorMath::toRec709(settings.keyColor[1]);
-        const float b = _linear ? settings.keyColor[2] : ColorMath::toRec709(settings.keyColor[2]);
+        const float keyR = ColorMath::boundForKeying(settings.keyColor[0]);
+        const float keyG = ColorMath::boundForKeying(settings.keyColor[1]);
+        const float keyB = ColorMath::boundForKeying(settings.keyColor[2]);
+        const float r = _linear ? keyR : ColorMath::toRec709(keyR);
+        const float g = _linear ? keyG : ColorMath::toRec709(keyG);
+        const float b = _linear ? keyB : ColorMath::toRec709(keyB);
         _toYPbPr(r, g, b, &y, &cb, &cr);
         if ((cb == 0.) && (cr == 0.)) {
             // A key without chrominance has no direction: default to a blue screen.
             cb = 1.;
         }
         _xKey = 2 * std::sqrt(cb * cb + cr * cr);
+        if (!(_xKey > 0.) || !std::isfinite(_xKey)) {
+            // The squares underflowed to zero or overflowed in single precision, which would
+            // leave the key direction 0/0 or inf/inf.
+            _xKey = 2 * std::sqrt((double)cb * cb + (double)cr * cr);
+        }
         _cosKey = 2 * cb / _xKey;
         _sinKey = 2 * cr / _xKey;
         _ys = _xKey == 0. ? 0. : y / _xKey;
@@ -203,9 +211,9 @@ public:
         inMask = (std::max)(0.f, (std::min)(inMask, 1.f));
         outMask = (std::max)(0.f, (std::min)(outMask, 1.f));
 
-        float fgr = fg ? fg[0] : 0.f;
-        float fgg = fg ? fg[1] : 0.f;
-        float fgb = fg ? fg[2] : 0.f;
+        float fgr = fg ? ColorMath::boundForKeying(fg[0]) : 0.f;
+        float fgg = fg ? ColorMath::boundForKeying(fg[1]) : 0.f;
+        float fgb = fg ? ColorMath::boundForKeying(fg[2]) : 0.f;
         const float bgr = bg[0];
         const float bgg = bg[1];
         const float bgb = bg[2];

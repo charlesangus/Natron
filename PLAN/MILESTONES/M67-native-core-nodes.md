@@ -1202,3 +1202,4 @@ Notes:
   - **Tests:** full ctest 1226/1226 in both modes, smoke, and an Xvfb GUI check.
   - **AppImage:** `build/appimages/M67-uat2-670a4c482.AppImage`, launch check passes.
 - 2026-10-08 — **CI green on `dc9be2636`.** Waiting on the user's re-test of `M67-uat2` and their ChromaKeyer settings if NaN persists.
+- 2026-10-08 — **Shipped:** PR #42 squash-merged to `main` as `c1eb2fd1b`. Board row `done`. Follow-up: openfx-misc#7 is still open, so `OPENFX_MISC_REF` needs a re-pin once it merges.

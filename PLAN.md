@@ -176,7 +176,7 @@ future core work has solid ground to build on.
 - **Stacked milestone PRs (2026-09-22, user):** from M34 on, every milestone packages an AppImage to `build/appimages/`, opens its PR against the previous milestone's branch, runs its review round, and stays open. The next milestone branches off the previous tip, and the user checks and merges asynchronously. Fixes from a user check are merged up the stack, never rebased. See `DECISIONS/2026-09-22-stacked-milestone-prs.md`.
 - **Parallel milestones in worktrees (2026-09-23, user):** M28 and M30 run alongside M34 in worktrees under `build/wt/` (inside the container mount), each branched off `main` and PR'd against `main`, not stacked. Builds still serialize through the one natron-dev container. See `DECISIONS/2026-09-23-parallel-worktree-milestones.md`.
 
-- **Parcel 2 (2026-10-06, user):** parcel 1 (M61 → M62, PRs #34–#40) passed UAT and **merged 2026-10-06** (squashes a83bc9a7f … 1c2f9d62e on `main`; fork PRs merged with merge commits and re-pinned in d1111ef8f, which rode #40). #41 now targets `main` (head ce575b4d2). Next, M64 (tiles), then M67 (native core nodes: colour → merge/generators → spatial → keying/misc), each stacked on the previous branch starting from M63's #41, for one UAT. M68 (headless GL, ex-M63.P5.T4) is deferred until the user gives the go-ahead. See `DECISIONS/2026-10-06-m67-core-node-families.md`.
+- **Parcel 2 (2026-10-06, user):** parcel 1 (M61 → M62, PRs #34–#40) passed UAT and **merged 2026-10-06** (squashes a83bc9a7f … 1c2f9d62e on `main`; fork PRs merged with merge commits and re-pinned in d1111ef8f, which rode #40). #41 now targets `main` (head ce575b4d2). Next, M64 (tiles), then M67 (native core nodes: colour → merge/generators → spatial → keying/misc), each stacked on the previous branch starting from M63's #41, for one UAT. **Parcel 2 merged 2026-10-08:** M63 as PR #41 (squash `d4beebbf6`, 12:10Z) and M67 as PR #42 (squash `c1eb2fd1b`, 13:36Z), both on `main`; M64 stayed parked. M68 (headless GL, ex-M63.P5.T4) is deferred until the user gives the go-ahead. See `DECISIONS/2026-10-06-m67-core-node-families.md`.
 
 # Board
 
@@ -218,9 +218,9 @@ future core work has solid ground to build on.
 | M50 | Project OCIO Support | done | [M50-proper-ocio-support.md](PLAN/MILESTONES/M50-proper-ocio-support.md) |
 | M60 | Deep Layers And Channels | done | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
 | M62 | Render Scaling Hotspots | done | [M62-render-scaling-hotspots.md](PLAN/MILESTONES/M62-render-scaling-hotspots.md) |
-| M63 | Task-Graph Render Scheduler | blocked | [M63-task-graph-render-scheduler.md](PLAN/MILESTONES/M63-task-graph-render-scheduler.md) |
+| M63 | Task-Graph Render Scheduler | done | [M63-task-graph-render-scheduler.md](PLAN/MILESTONES/M63-task-graph-render-scheduler.md) |
 | M64 | Tiled Rendering | blocked | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
-| M67 | Native Core Nodes | blocked | [M67-native-core-nodes.md](PLAN/MILESTONES/M67-native-core-nodes.md) |
+| M67 | Native Core Nodes | done | [M67-native-core-nodes.md](PLAN/MILESTONES/M67-native-core-nodes.md) |
 | M68 | Headless GL EGL | todo | [M68-headless-gl-egl-backend.md](PLAN/MILESTONES/M68-headless-gl-egl-backend.md) |
 | M25 | GL Init FP Guard | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M27 | Real Debug Build | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
@@ -267,10 +267,5 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M63 awaits the parcel-2 UAT (PR #41):** gate green, two review rounds closed. AppImage `build/appimages/M63-18aab690f.AppImage` with `build/appimages/M63-uat.md`. It will be UAT'd together with M64 and M67 on top.
-- **M67 awaits the parcel-2 UAT (PR #42, stacked on #41):** gate green, two Codex review rounds closed, CI green at `670a4c482`.
-  - **Artefacts:** AppImage `build/appimages/M67-37259b177.AppImage`, with `build/appimages/M67-uat.md` (stacked on M63's UAT).
-  - **Merge order:** openfx-misc#7 (`m67/retire-native-core`) merges with #42, then `OPENFX_MISC_REF` is re-pinned to its merge commit.
-  - **Bench:** HD composites now 0.76–0.94x the M63 tip; mem 0.197x.
-  - **Next:** M64 should be re-estimated around fusing native kernels (see M67's B12 Decisions).
-- **M64 is parked on kill gate 1 (confirmed on a quiet host 2026-10-06):** best strip pull is 1.17x on chain 30 and 1.15x on chain 100 (gate 1.3x). It waits for M67; see its Decisions.
+- **M67 - Native Core Nodes: re-pin `OPENFX_MISC_REF` after openfx-misc#7 merges.** PR #42 merged to `main` on 2026-10-08, but `charlesangus/openfx-misc` PR #7 (`m67/retire-native-core`) is still open, so `tools/ci/local/fetch-assets.sh` pins a branch commit (`3060fe33b`). Merge it, then re-pin to its merge commit.
+- **M64 - Tiled Rendering is parked on kill gate 1** (confirmed on a quiet host 2026-10-06): best strip pull is 1.17x on chain 30 and 1.15x on chain 100 (gate 1.3x). It was waiting for M67 - Native Core Nodes, which has now merged. M67's B12 Decisions say to re-estimate it around fusing native kernels; start that only on the user's go-ahead.

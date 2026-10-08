@@ -232,3 +232,4 @@ Execution notes:
 - 2026-10-05 — **Final verification on `18aab690f`:** full ctest 987/987 in both modes; CI on the branch green (format, lint-ci, build-and-test with both legs); release built; AppImage packaging in progress.
 - 2026-10-05 — **Gate passed; milestone parked on the parcel UAT.** AppImage `build/appimages/M63-18aab690f.AppImage` launch-checked; PR #41 body refreshed; row `blocked` per the stacked-PR rule. Open follow-ups: P5.T4 (EGL backend, user go-ahead), M31 Phase 31.3 hand-offs, review-declined test-helper dedup.
 - 2026-10-05 — **User decision: P5.T4 (headless GL via EGL) moved to its own deferred milestone M68.** M63 has no remaining work beyond the parcel UAT.
+- 2026-10-08 — **Shipped:** PR #41 squash-merged to `main` as `d4beebbf6` after the parcel-2 UAT. Board row `done`.

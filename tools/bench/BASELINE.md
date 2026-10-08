@@ -757,3 +757,204 @@ Classifier verdicts (`classify.py`, legacy / taskgraph):
 - Task graph wins where there are independent branches: UHD iobound x0.72 (4 concurrent tasks), footagecomp x0.83, rambound x0.90. readchain (a serial chain) is even at x1.00. deepcomp is x1.06 with 2 concurrent tasks and only 4 tasks run for 10 nodes, so most of the deep chain runs inside a single task.
 - Pixel identity: in a 2-frame smoke (`BENCH_KEEP=1`, frames 1-3 of readchain 10, footagecomp 16, iobound 8, deepcomp 8 at HD and iobound 8, rambound 30 at UHD) every legacy and taskgraph EXR is byte-identical except for 2-3 bytes inside the `capDate` header.
 - DeepRead does not report itself frame-varying, so within one process every frame of a `####` deep sequence after the first returned the first frame's samples: frame 2 rendered after frame 1 was byte-identical to frame 1 apart from `capDate`, while frame 2 rendered alone differed in 11.5M bytes. Both modes reproduce it. `graph_bench.py` works around it by keyframing each DeepRead's `disableNode`; the reader itself still needs the fix.
+
+## M67 gate (contended) (2026-10-06)
+
+Native Grade versus OFX Grade (`net.sf.openfx.GradePlugin` major 3 versus 2), release build, `tools/bench/native_vs_ofx.sh m67gate 3`: three ABAB rounds, each a tiny chain of 0 and 1000 Grades (5 frames) and an HD chain of 30 and 100 Grades (3 frames). Results: `build/bench/results-m67gate-r<1..3>-{ofx,native}.jsonl`. The host was quiet when the run started (load1 0.33), but 3 of the 24 configurations began at load1 0.54-0.70 (the previous configuration's tail), so the harness labels the run contended and the absolute numbers are not references. The ratios are, since each round is interleaved and the spread across rounds is at most 0.06.
+
+| round | mem | build | tiny | hd | KB/node ofx -> native | HD ms/node ofx -> native |
+|---|---|---|---|---|---|---|
+| 1 | 0.216 | 0.886 | 0.503 | 1.731 | 634 -> 137 | 29.34 -> 50.79 |
+| 2 | 0.216 | 0.884 | 0.511 | 1.672 | 634 -> 137 | 30.18 -> 50.45 |
+| 3 | 0.216 | 0.874 | 0.497 | 1.697 | 634 -> 137 | 29.87 -> 50.69 |
+| median | 0.216 | 0.884 | 0.503 | 1.697 | 634 -> 137 | 29.87 -> 50.69 |
+| spread | 0.000 | 0.012 | 0.014 | 0.059 | | |
+
+Gate: mem <= 0.50 passes (0.216), build <= 1.15 passes (0.884), tiny <= 1.15 passes (0.503), hd <= 1.05 fails (1.697). Verdict NO-GO.
+
+Median frame wall (s), per config: tiny 1000 ofx 0.337 / native 0.170; hd 30 ofx 1.01 / native 1.62; hd 100 ofx 3.12 / native 5.17. RSS before the first frame (MB), tiny 0 / 1000: ofx 112 / 731, native 112 / 246.
+
+### M67 gate (run 2, after the band split) (2026-10-06)
+
+The same comparison and settings as the section above (`tools/bench/native_vs_ofx.sh m67gate2 3`, release build, three ABAB rounds), re-run after native point ops began splitting their render window into row bands on the global pool. Results: `build/bench/results-m67gate2-r<1..3>-{ofx,native}.jsonl`; the harness summary is `build/m67-perf/gate2.log`.
+
+The run was contended, so the ratios are the result and the absolute numbers are not references. 4 of the 12 OFX configurations started at load1 0.54-1.59 (round 2 hd 100 at 1.11, round 2 tiny 1000 at 0.54, round 3 tiny 1000 at 1.59, round 3 hd 30 at 0.55), while every native configuration started quiet (load1 0.15-0.48, cpu `some avg10` at most 0.74%, io at most 0.18%, no memory pressure). The OFX side was therefore the more disturbed one, which can only have flattered the native ratios slightly; the spread across rounds is at most 0.037.
+
+| round | mem | build | tiny | hd | KB/node ofx -> native | HD ms/node ofx -> native |
+|---|---|---|---|---|---|---|
+| 1 | 0.216 | 0.871 | 0.498 | 0.700 | 634 -> 137 | 29.99 -> 20.98 |
+| 2 | 0.216 | 0.857 | 0.493 | 0.715 | 634 -> 137 | 30.29 -> 21.66 |
+| 3 | 0.216 | 0.894 | 0.502 | 0.700 | 634 -> 137 | 29.91 -> 20.95 |
+| median | 0.216 | 0.871 | 0.498 | 0.700 | 634 -> 137 | 29.99 -> 20.98 |
+| spread | 0.000 | 0.037 | 0.009 | 0.015 | | |
+
+Gate: mem <= 0.50 passes (0.216), build <= 1.15 passes (0.871), tiny <= 1.15 passes (0.498), hd <= 1.05 passes (0.700). Verdict GO, with HD 0.700 (run 1: 1.697).
+
+Cause of run 1's 1.70x: the native point ops ran single-threaded (parallelism 1.0 against the OFX Grade's 3.0), because the host never splits a single render window across threads. They now split their window into row bands on the global pool, within the host's thread budget.
+
+Median frame wall (s), per config: tiny 1000 ofx 0.334 / native 0.167; hd 30 ofx 1.006 / native 0.725; hd 100 ofx 3.105 / native 2.198. RSS before the first frame (MB), tiny 0 / 1000: ofx 112 / 731, native 112 / 246.
+
+## After M67 (ratios only) (2026-10-07, review fixes on `7d1db14cb` against `ce575b4d2`)
+
+Head is the M67 branch after the first review round: `7d1db14cb` plus the review fixes, not yet committed when measured (`build/wt/m64/build/release`). Base, plug-ins, `BENCH_IMPL` and the base/head interleaving are as in the pre-review run below. Three invocations, all from `build/m67-b13/`:
+
+- `bench.sh`: 2 rounds of base then head, each running
+  ```
+  tools/bench/run_matrix.sh m67b13-r<r>-<base|head>-tiny tiny 5 0 chain:0,1000
+  tools/bench/run_matrix.sh m67b13-r<r>-<base|head>-hd hd 3 0 chain:30,100 mixed:100 wide:100 comp:100
+  tools/bench/run_matrix.sh m67b13-r<r>-<base|head>-real hd 3 0 readchain:30 footagecomp:32
+  tools/bench/run_matrix.sh m67b13-r<r>-<base|head>-node hd 3 0 ccchain:10,40 blurchain:10,40 xfchain:10,40 mergechain:10,40 mergesrcchain:10,40
+  ```
+- `bench2.sh` (tag `m67b13b`): the same without the tiny set and with only `blurchain` in the node set, after the Blur kernel fix described below. Only Blur changed between the two head builds, so the Grade-only measures (mem, hd, tiny, build) come from `bench.sh`, and everything with a Blur in it comes from `bench2.sh`.
+- `bench3.sh`: one more base/head pair of wide 100 and comp 100, because both base configurations of `bench2.sh` round 2 started at load1 7.0–8.8.
+
+The per-node chains (`ccchain`, `blurchain`, `xfchain`, `mergechain`, `mergesrcchain`) are new in `graph_bench.py`; see the README. A node's cost is the marginal frame time between 10 and 40 of them. Transform is `xfchain` minus `chain`, since Transforms in series concatenate, and CheckerBoard is `mergesrcchain` minus `mergechain`.
+
+Host: an external load the sandbox cannot see came and went during the runs (load1 7–9, cpu `some avg10` 50–57%). Configurations started under it were discarded: head footagecomp and both head `xfchain` sizes in round 1, base `mergechain` 40 and `mergesrcchain` 10 in round 1, and base wide and comp in `bench2.sh` round 2. Of the rest, a few started at load1 0.50–1.0 with cpu pressure under 2.3%, the previous configuration's tail. All configurations exited 0. `build/m67-b13/analyze.py <tag>` writes `build/bench/results-<tag>-combined.jsonl` and prints the ratios.
+
+### Ratios (head / base)
+
+| measure | pre-review (median) | r1 | r2 | median |
+|---|---|---|---|---|
+| mem: idle RSS per node, (chain 1000 − chain 0) tiny | 0.198 | 0.195 | 0.198 | **0.197** |
+| hd: HD marginal per Grade, (chain 100 − chain 30) / 70 | 0.708 | 0.729 | 0.739 | **0.734** |
+| build: chain 1000 tiny build_s | 0.878 | 0.900 | 0.900 | 0.900 |
+| tiny chain 1000 frame | 0.507 | 0.545 | 0.521 | 0.533 |
+| HD readchain 30 frame | 0.742 | 0.742 | 0.691 | 0.716 |
+| HD comp 100 frame | 1.027 | 0.841 | 0.825 (r3) | **0.833** |
+| HD mixed 100 frame | 1.102 | 0.766 | 0.743 | **0.755** |
+| HD wide 100 frame | 1.194 | 0.904 | 0.917 (r3) | **0.911** |
+| HD footagecomp 32 frame | 1.199 | 0.946 | 0.934 | **0.940** |
+
+The mem, hd, build and tiny rows are from `bench.sh`, the others from `bench2.sh` (wide and comp round 2 from `bench3.sh`). In `bench.sh`, before the Blur fix, the same graphs gave mixed 0.908/0.855, wide 0.902/0.885, comp 0.917/0.935 and footagecomp 1.158 (its quiet round).
+
+Per node at HD (marginal wall ms/node, base → head, quiet rounds; CPU ms/node from the median `frame_cpu_s`):
+
+| node | wall ms/node | wall ratio | CPU ms/node | CPU ratio |
+|---|---|---|---|---|
+| Grade (`chain`) | 30.5 → 22.4 | 0.73 | 98 → 71 | 0.73 |
+| ColorCorrect (`ccchain`) | 62.5 → 45.3 | 0.72 | 218 → 154 | 0.71 |
+| Blur, size 3 (`blurchain`) | 108.3 → 90.6 | 0.84 | 272 → 298 | 1.10 |
+| Blur before the kernel fix | 107.6 → 109.0 | 1.01 | 274 → 366 | 1.34 |
+| Transform (`xfchain` − `chain`) | 53.1 → 43.3 | 0.82 | 173 → 145 | 0.84 |
+| Merge (`mergechain`, round 2) | 19.3 → 20.1 | 1.04 | 53 → 60 | 1.13 |
+| Merge + CheckerBoard (`mergesrcchain`, round 2) | 23.6 → 22.1 | 0.94 | 74 → 70 | 0.96 |
+
+The Merge and CheckerBoard costs are small, about 20 ms/node, so their ratios are within a few ms of noise. CheckerBoard alone, by subtraction, is about 4 → 2 ms/node.
+
+rss_peak (MB, median, base → head): mixed 100 951 → 630, wide 100 923 → 859, comp 100 1685 → 1465, footagecomp 32 2035 → 2039.
+
+### Gate checks
+
+- PASS: mem is within 0.1 of the P1.T6 gate median. 0.197 against 0.216.
+- PASS: hd is within 0.1 of the gate median. 0.734 against 0.700 (+0.034).
+- PASS: HD mixed (0.755), wide (0.911) and footagecomp (0.940) are at or below 1.0x base. comp 100 is at 0.833.
+
+### What closed the gap
+
+- **Merge and CheckerBoard** (operators resolved to per-operator row functions once per render, fewer row copies, CheckerBoard filled in runs) brought wide 100 from 1.19 to about 0.90 with no other change to that graph.
+- **ColorCorrect** (identity groups skipped, curves through `CurveSnapshot`) is at 0.71 of OFX per node.
+- **Transform** (affine fast path in the resampler) is at 0.82 per node.
+- **Blur** was the rest. In `bench.sh` footagecomp stayed at 1.16 in its quiet round. Ablations of footagecomp (OFX and native, 2 rounds each) put the whole excess on its Blurs: without them head ran at 0.93–0.94, while the static-transform and unmasked variants stayed at 1.03–1.10. An eu-stack profile showed 72% of the busy Blur samples in `BlurKernels::LineFilter::applyVanVliet`. In `blurchain` native Blur used 1.34x CImg's CPU per node, and only matched it in wall time through higher parallelism (3.3 against 2.5); in footagecomp the branches compete for cores, so the CPU cost showed. A standalone benchmark of the kernel on an HD RGBA frame took 236 ms at `-O2` (how Natron's release build compiles it) and 129 ms at `-O3`; CImg's own recursion took 137 ms at openfx-misc's `-Ofast` and 234 ms at `-O2`. At `-O2` GCC keeps the three-term `val[]` loops as loops, so the recurrence state stays in memory. `#pragma GCC unroll 4` on those loops gives 133 ms at `-O2`, with output bit-identical to the old code at `-O0` and `-O2` across all orders, both boundaries, five sigmas and strided lines, and Blur parity in the release build still at a max diff of 0.
+
+## After M67, pre-review run (contended, ratios only) (2026-10-07, `31fc0fbbe` against `ce575b4d2`)
+
+Head is the M67 tip `31fc0fbbe` (`build/wt/m64/build/release`, `build/assets/Plugins`): 34 core IDs are native, and their OFX plugins are retired. Base is the M63 tip `ce575b4d2` (`build/wt/m67-base/build/release`, with the bundle at pin `3060fe33` kept as `build/assets/Plugins.pre-m67`), where the same IDs are OFX. Base runs with `BENCH_IMPL=ofx` (Grade major 2) and head with `BENCH_IMPL=native` (Grade major 3). Every other ID is unversioned, so it resolves to OFX on base and native on head. Both run the head's `graph_bench.py`. The two builds alternate in one invocation (`build/m67-b12/bench.sh`), base then head, for 2 rounds, with the harness defaults (load1 < 0.5 then 60 s before each configuration). Each round runs:
+
+```
+tools/bench/run_matrix.sh m67vs-r<r>-<base|head>-tiny tiny 5 0 chain:0,1000 wide:1000 comp:300
+tools/bench/run_matrix.sh m67vs-r<r>-<base|head>-hd hd 3 0 chain:30,100 mixed:100 wide:100 comp:100
+tools/bench/run_matrix.sh m67vs-r<r>-<base|head>-real hd 3 0 readchain:30 footagecomp:32
+```
+
+Base used `BENCH_RENDERER_DIR`/`BENCH_PLUGIN_PATH`. Both used `BENCH_PLATES_DIR` set to the main checkout's `build/bench/fixtures` and `BENCH_TIMEOUT=3600`. All 44 configurations exited 0, and the whole run took 79 minutes. `build/m67-b12/analyze.py` tags each record with `build` (base or head) and writes `build/bench/results-m67vs-combined.jsonl`, which `compare.py --pair-field build base head` reads twice.
+
+Host: 38 of 44 configurations started quiet. Six started at load1 0.50–0.72, the previous configuration's tail:
+- head round 1: mixed 100 hd, readchain 30, chain 1000 tiny, wide 1000 tiny;
+- head round 2: mixed 100 hd, wide 100 hd.
+
+The cpu, io and memory `some avg10` stayed at or below 1.61% at every start, and memory pressure was 0 throughout. So the run is contended and these ratios are the result, not absolute references. Every configuration that feeds the per-node HD cost (chain 30 and 100 hd, both builds, both rounds) and all of round 2's tiny chain started quiet. Mean clocks per pair are within 10% (no `compare.py` clock note).
+
+### Ratios (head / base, median of the 2 rounds)
+
+| measure | r1 | r2 | median | P1.T6 gate median |
+|---|---|---|---|---|
+| mem: idle RSS per node, (chain 1000 − chain 0) tiny | 0.198 | 0.198 | **0.198** | 0.216 |
+| hd: HD marginal per node, (chain 100 − chain 30) / 70 | 0.709 | 0.707 | **0.708** | 0.700 |
+| build: chain 1000 tiny build_s | 0.872 | 0.884 | 0.878 | 0.871 |
+| tiny chain 1000 frame | 0.513 | 0.500 | 0.507 | 0.498 |
+| tiny wide 1000 frame | 0.351 | 0.323 | 0.337 | |
+| tiny comp 300 frame | 0.718 | 0.721 | 0.719 | |
+| HD readchain 30 frame | 0.730 | 0.753 | 0.742 | |
+| HD comp 100 frame | 1.023 | 1.030 | 1.027 | |
+| HD mixed 100 frame | 1.099 | 1.105 | **1.102** | |
+| HD wide 100 frame | 1.183 | 1.205 | **1.194** | |
+| HD footagecomp 32 frame | 1.220 | 1.178 | **1.199** | |
+
+The largest spread across rounds is 0.042 (footagecomp).
+
+Per node (indicative, from the quiet configurations): idle RSS is 625 KB/node on base and 124 KB/node on head. HD marginal cost is 30.0 ms/node (OFX Grade) and 21.3 ms/node (native Grade).
+
+rss_peak (MB, median, base → head):
+
+| config | base → head | ratio |
+|---|---|---|
+| chain 1000 tiny | 759 → 264 | 0.35 |
+| wide 1000 tiny | 1213 → 378 | 0.31 |
+| comp 300 tiny | 410 → 198 | 0.48 |
+| chain 30 hd | 506 → 507 | 1.00 |
+| chain 100 hd | 629 → 471 | 0.75 |
+| mixed 100 hd | 924 → 691 | 0.75 |
+| wide 100 hd | 926 → 890 | 0.96 |
+| comp 100 hd | 1659 → 1515 | 0.91 |
+| readchain 30 hd | 694 → 604 | 0.87 |
+| footagecomp 32 hd | 2008 → 2008 | 1.00 |
+
+`compare.py --pair-field build base head results-m67vs-combined.jsonl results-m67vs-combined.jsonl` (default threshold 1.5, nothing flagged, exit 0):
+
+```
+chain n=0 res=tiny named=True      build_s 0.0046->0.0025 x0.54  frame_s 0.0015->0.00145 x0.97  parallelism 1.12->1.09 x0.97  rss_mb 120.5->118 x0.98  io_r 0MB->0MB x-  io_w 0.06144MB->0.06144MB x1.00  load1 0.2->0.335  psi_cpu 0.345->0.48  psi_io 0.07->0.235  khz_mean 1.888e+06->1.754e+06
+chain n=30 res=hd named=True       build_s 0.09525->0.0505 x0.53  frame_s 0.9802->0.74 x0.76  parallelism 3.15->3 x0.95  rss_mb 131->109 x0.83  io_r 0MB->0MB x-  io_w 49.83MB->49.83MB x1.00  load1 0.215->0.075  psi_cpu 0.295->0.32  psi_io 0.115->0  khz_mean 2.341e+06->2.304e+06
+chain n=100 res=hd named=True      build_s 0.3105->0.1889 x0.61  frame_s 3.082->2.228 x0.72  parallelism 3.235->3.13 x0.97  rss_mb 174->119 x0.68  io_r 0MB->0MB x-  io_w 49.83MB->49.83MB x1.00  load1 0.31->0.28  psi_cpu 0.24->0.49  psi_io 0.03->0  khz_mean 2.617e+06->2.512e+06
+chain n=1000 res=tiny named=True   build_s 6.646->5.834 x0.88  frame_s 0.3333->0.1689 x0.51  parallelism 1.01->1.02 x1.01  rss_mb 731->239 x0.33  io_r 0MB->0MB x-  io_w 0.06144MB->0.06144MB x1.00  load1 0.325->0.39  psi_cpu 0.275->0.21  psi_io 0.025->0.095  khz_mean 2.521e+06->2.522e+06
+comp n=100 res=hd named=True       build_s 0.3846->0.2094 x0.54  frame_s 3.729->3.828 x1.03  parallelism 3.165->3.365 x1.06  rss_mb 196->122 x0.62  io_r 0MB->0MB x-  io_w 53.9MB->53.9MB x1.00  load1 0.37->0.27  psi_cpu 0.425->0.295  psi_io 0->0  khz_mean 2.574e+06->2.613e+06
+comp n=300 res=tiny named=True     build_s 1.325->0.7937 x0.60  frame_s 0.2132->0.1533 x0.72  parallelism 1.575->1.395 x0.89  rss_mb 360->156 x0.43  io_r 0MB->0MB x-  io_w 1.29MB->1.29MB x1.00  load1 0.285->0.18  psi_cpu 0.41->0.33  psi_io 0->0  khz_mean 2.08e+06->1.997e+06
+footagecomp n=32 res=hd named=True build_s 0.5184->0.4143 x0.80  frame_s 1.31->1.571 x1.20  parallelism 3.32->3.325 x1.00  rss_mb 169.5->135.5 x0.80  io_r 28.37MB->0MB x0.00  io_w 50.55MB->50.55MB x1.00  load1 0.195->0.315  psi_cpu 0.315->0.565  psi_io 0.805->0.05  khz_mean 2.397e+06->2.458e+06
+mixed n=100 res=hd named=True      build_s 0.3743->0.2117 x0.57  frame_s 11.31->12.47 x1.10  parallelism 2.925->3.28 x1.12  rss_mb 191->121 x0.63  io_r 0MB->0MB x-  io_w 73.56MB->73.56MB x1.00  load1 0.2->0.56  psi_cpu 0.33->0.46  psi_io 0.12->0  khz_mean 2.261e+06->2.28e+06
+readchain n=30 res=hd named=True   build_s 0.1703->0.1268 x0.74  frame_s 1.038->0.7695 x0.74  parallelism 3.06->2.95 x0.96  rss_mb 133->113 x0.85  io_r 14.09MB->0MB x0.00  io_w 49.83MB->49.83MB x1.00  load1 0.29->0.34  psi_cpu 0.445->0.34  psi_io 0->0.76  khz_mean 2.303e+06->2.163e+06
+wide n=100 res=hd named=True       build_s 0.4436->0.2162 x0.49  frame_s 1.557->1.859 x1.19  parallelism 3.545->3.58 x1.01  rss_mb 210->125 x0.60  io_r 0MB->0MB x-  io_w 49.83MB->49.83MB x1.00  load1 0.385->0.4  psi_cpu 0.445->0.29  psi_io 0->0.795  khz_mean 2.455e+06->2.483e+06
+wide n=1000 res=tiny named=True    build_s 7.108->4.319 x0.61  frame_s 0.4562->0.1535 x0.34  parallelism 1.455->1.475 x1.01  rss_mb 1111->314 x0.28  io_r 0MB->0MB x-  io_w 0.06144MB->0.06144MB x1.00  load1 0.3->0.52  psi_cpu 0.275->0.25  psi_io 0->0  khz_mean 2.545e+06->2.404e+06
+```
+
+### Gate checks
+
+- PASS: mem is no worse than the P1.T6 gate median plus 0.1. 0.198 against 0.216; it is better.
+- PASS: hd is no worse than the P1.T6 gate median plus 0.1. 0.708 against 0.700 (+0.008).
+- Every configuration exited 0.
+
+### Finding: the HD graphs that mix in non-Grade nodes got slower
+
+Native Grade is faster at every size: chain 30 and 100 HD run at 0.72–0.76, readchain at 0.74, and tiny chain at 0.51. All tiny graphs run at 0.34–0.72 and all build times at 0.49–0.88. Idle RSS falls to 0.20 per node and peak RSS to 0.31–0.48 on the tiny graphs.
+
+Three HD graphs regressed, all reproducing in both rounds within 0.04:
+- mixed 100 at 1.10;
+- wide 100 at 1.19;
+- footagecomp 32 at 1.20.
+
+comp 100 is at 1.03. Parallelism is unchanged or higher in every one, so the extra time is CPU work, not lost occupancy. The median CPU-seconds per frame rise from 5.56 to 6.63 (wide), 32.9 to 40.8 (mixed) and 4.34 to 5.12 (footagecomp).
+
+Subtracting the Grades' share gives an estimate of where it goes. From chain 100, a Grade costs 0.100 s on OFX and 0.070 s on native, in CPU-seconds per frame per node. On that basis:
+- wide's non-Grade nodes (33 CheckerBoard, 32 Merge and the writer) go from about 2.3 to 4.3 CPU-s, roughly 1.9x;
+- mixed's Blur, Transform and ColorCorrect (25 each) go from about 30.4 to 39.1 CPU-s, roughly 1.3x.
+
+This is an estimate by subtraction, not a profile. The next step is per-node HD chains of Merge, CheckerBoard, Blur, Transform and ColorCorrect alone (OFX on base, native on head), plus an eu-stack profile of the slowest. Only Grade is in `NATIVE_MAJORS` and has been chained on its own so far.
+
+### Input for M64
+
+At HD on this host, a native Grade costs 21.3 ms/node against 30.0 ms/node for the OFX Grade. The `stream_bench` bandwidth floor for one node-at-a-time pass is about 5 ms/node (5.1 ms at 12.9 GB/s in the M64 scout). So one full-frame memory pass is now about 24% of a native Grade node, up from about 17% of an OFX Grade.
+
+M64's kill-gate premise is that plugin compute dwarfs the memory pass, so strip pulling can't reach 1.3x on Grade chains. That premise is weaker but still holds on this host. Suppose tiling or fusing removed the whole bandwidth cost down to the scout's fused 1.15 ms/node. A chain of native Grades would then gain at most about 21.3 / (21.3 − 5.1 + 1.15) ≈ 1.23x, still under the 1.3x gate, unless the per-node compute or the per-image engine passes (alloc/fill, `checkForNaNsAndFix`) also shrink.
+
+The native point ops are fusion-ready (`PixelKernel`), so M64 can fuse the kernels as well as tile. That removes the per-node fork-join and the intermediate images, which strip pulling alone cannot do. M64's estimate should be redone with fusion of native kernels as the mechanism, not OFX strip pulls.
+
+This is one data point from a 4-core N100. On a many-core workstation the per-node compute divides across more cores while memory bandwidth grows far less, so the bandwidth share of a native node, and with it M64's possible gain, is larger there than measured here.

@@ -1324,14 +1324,9 @@ OfxEffectInstance::defaultProcessesAllLayers() const
 {
     static const std::set<std::string> processAllLayers = {
         // Transform and distortion
-        "net.sf.openfx.TransformPlugin",
-        "net.sf.openfx.TransformMaskedPlugin",
         "net.sf.openfx.DirBlur",
         "net.sf.openfx.CornerPinPlugin",
         "net.sf.openfx.CornerPinMaskedPlugin",
-        "net.sf.openfx.CropPlugin",
-        "net.sf.openfx.Position",
-        "net.sf.openfx.Reformat",
         "net.sf.openfx.Card3D",
         "net.sf.openfx.AdjustRoDPlugin",
         "net.sf.openfx.SpriteSheet",
@@ -1362,14 +1357,11 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         "net.sf.openfx.TimeBufferRead",
         "net.sf.openfx.TimeBufferWrite",
         // Filter
-        "net.sf.cimg.CImgBlur",
         "net.sf.cimg.CImgLaplacian",
         "net.sf.cimg.CImgSharpen",
         "net.sf.cimg.CImgSoften",
         "net.sf.cimg.CImgBloom",
         "net.sf.cimg.CImgMedian",
-        "net.sf.cimg.CImgErode",
-        "net.sf.cimg.CImgDilate",
         "net.sf.cimg.CImgErodeSmooth",
         "net.sf.cimg.CImgBilateral",
         "net.sf.cimg.CImgBilateralGuided",
@@ -1392,7 +1384,6 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         "net.fxarena.openfx.Morphology",
         // Routing
         "net.sf.openfx.switchPlugin",
-        "net.sf.openfx.DissolvePlugin",
         "net.sf.openfx.TimeDissolvePlugin",
         "net.sf.openfx.KeyMix",
         "net.sf.openfx.CopyRectanglePlugin",
@@ -1411,7 +1402,6 @@ OfxEffectInstance::defaultProcessesAllLayers() const
         "net.sf.openfx.TrackerPM",
         "net.sf.cimg.CImgExpression",
         "net.sf.cimg.CImgChromaBlur",
-        "eu.cimg.EdgeDetect",
         "eu.cimg.EdgeExtend",
     };
 

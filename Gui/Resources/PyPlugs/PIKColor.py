@@ -1008,9 +1008,9 @@ def createInstance(app,group):
         param.setValue(False)
         del param
 
-    param = lastNode.getParam("unPremultBy")
+    param = lastNode.getParam("hostUnPremultBy")
     if param is not None:
-        param.setValue(True)
+        param.set("rgba.A")
         del param
 
     param = lastNode.getParam("userTextArea")
@@ -1046,9 +1046,9 @@ def createInstance(app,group):
         param.setValue(False)
         del param
 
-    param = lastNode.getParam("unPremultBy")
+    param = lastNode.getParam("hostUnPremultBy")
     if param is not None:
-        param.setValue(True)
+        param.set("rgba.A")
         del param
 
     param = lastNode.getParam("userTextArea")

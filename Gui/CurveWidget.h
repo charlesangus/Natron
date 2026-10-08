@@ -169,6 +169,11 @@ public:
 
     // The interact will be drawn after the background and before any curve
     void setCustomInteract(const OfxParamOverlayInteractPtr & interactDesc);
+
+    /**
+     * @brief Draws the knob's background painter behind the curves, unless a custom interact is set.
+     **/
+    void setBackgroundKnob(const KnobParametricPtr& knob);
     OfxParamOverlayInteractPtr getCustomInteract() const;
 
 public Q_SLOTS:

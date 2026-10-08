@@ -2647,6 +2647,20 @@ Project::doResetEnd(bool aboutToQuit)
             _imp->additionalFormats.clear();
             _imp->layers.reset(new LayerRegistry());
         }
+        {
+            // The menu must lose the additional formats too: tryAddProjectFormat() indexes it as
+            // builtin + additional, so a stale entry would be selected for the next added format.
+            std::vector<ChoiceOption> entries;
+            for (std::list<Format>::const_iterator it = _imp->builtinFormats.begin(); it != _imp->builtinFormats.end(); ++it) {
+                QString formatStr = ProjectPrivate::generateStringFromFormat(*it);
+                if (!it->getName().empty()) {
+                    entries.push_back(ChoiceOption(it->getName(), formatStr.toStdString(), ""));
+                } else {
+                    entries.push_back(ChoiceOption(formatStr.toStdString()));
+                }
+            }
+            _imp->formatKnob->populateChoices(entries);
+        }
         getApp()->removeAllKeyframesIndicators();
 
         Q_EMIT projectNameChanged(QString::fromUtf8(NATRON_PROJECT_UNTITLED), false);

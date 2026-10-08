@@ -85,6 +85,13 @@ const char kMetadataPrintID[] = "org.openfx.examples.metadataPrint";
 const char kMetadataTimeCodeID[] = "org.openfx.examples.metadataTimeCode";
 const char kMetadataViewID[] = "org.openfx.examples.metadataView";
 
+// A generator and a colour plugin that stay OpenFX: the cases that read an OpenFX clip of either
+// end of a connection use these.
+const char kOfxGeneratorID[] = "net.sf.openfx.ColorWheel";
+const int kOfxGeneratorMajor = 1;
+const char kOfxColorEffectID[] = "net.sf.openfx.ColorMatrixPlugin";
+const int kOfxColorEffectMajor = 2;
+
 // the param metadataContribute reads, and the key it publishes that param's value under
 const char kContributeNoteParam[] = "note";
 const char kContributeNoteKey[] = "org.openfx.examples.metadataContribute.note";
@@ -441,7 +448,7 @@ TEST_F(MetadataPluginFixture, MetadataAndPropertySuiteAreFetchableFromOfxHost)
 
 // The base ClipInstance::fetchMetadata() adds nothing of the host's own, so without
 // Natron's override an output clip's metadata carries only whatever the plug-in
-// contributed -- and Constant contributes nothing. Every key checked here therefore comes
+// contributed -- and ColorWheel contributes nothing. Every key checked here therefore comes
 // from the host, and the values are the ones the project and its format imply.
 TEST_F(MetadataPluginFixture, OutputClipCarriesHostDerivedMetadata)
 {
@@ -451,8 +458,8 @@ TEST_F(MetadataPluginFixture, OutputClipCarriesHostDerivedMetadata)
     Format projectFormat;
     getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
 
-    NodePtr node = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
-    ASSERT_TRUE(bool(node)) << "node creation failed for net.sf.openfx.ConstantPlugin";
+    NodePtr node = createNode(QString::fromUtf8(kOfxGeneratorID), kOfxGeneratorMajor);
+    ASSERT_TRUE(bool(node)) << "node creation failed for " << kOfxGeneratorID;
 
     OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get());
     ASSERT_TRUE(ofxEffect != NULL) << "node's effect instance is not backed by the OFX host";
@@ -487,30 +494,30 @@ TEST_F(MetadataPluginFixture, InputClipCarriesUpstreamOutputMetadata)
     Format projectFormat;
     getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
 
-    NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
-    ASSERT_TRUE(bool(constant)) << "node creation failed for net.sf.openfx.ConstantPlugin";
+    NodePtr generator = createNode(QString::fromUtf8(kOfxGeneratorID), kOfxGeneratorMajor);
+    ASSERT_TRUE(bool(generator)) << "node creation failed for " << kOfxGeneratorID;
 
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
-    ASSERT_TRUE(bool(grade)) << "node creation failed for net.sf.openfx.GradePlugin";
+    NodePtr colorMatrix = createNode(QString::fromUtf8(kOfxColorEffectID), kOfxColorEffectMajor);
+    ASSERT_TRUE(bool(colorMatrix)) << "node creation failed for " << kOfxColorEffectID;
 
-    connectNodes(constant, grade, 0, true);
+    connectNodes(generator, colorMatrix, 0, true);
 
-    OfxEffectInstance* constantEffect = dynamic_cast<OfxEffectInstance*>(constant->getEffectInstance().get());
-    ASSERT_TRUE(constantEffect != NULL) << "Constant is not backed by the OFX host";
+    OfxEffectInstance* generatorEffect = dynamic_cast<OfxEffectInstance*>(generator->getEffectInstance().get());
+    ASSERT_TRUE(generatorEffect != NULL) << "ColorWheel is not backed by the OFX host";
 
-    OfxEffectInstance* gradeEffect = dynamic_cast<OfxEffectInstance*>(grade->getEffectInstance().get());
-    ASSERT_TRUE(gradeEffect != NULL) << "Grade is not backed by the OFX host";
+    OfxEffectInstance* colorMatrixEffect = dynamic_cast<OfxEffectInstance*>(colorMatrix->getEffectInstance().get());
+    ASSERT_TRUE(colorMatrixEffect != NULL) << "ColorMatrix is not backed by the OFX host";
 
-    OFX::Host::ImageEffect::ClipInstance* constantOutput = constantEffect->effectInstance()->getClip(kOfxImageEffectOutputClipName);
-    ASSERT_TRUE(constantOutput != NULL) << "Constant has no output clip";
+    OFX::Host::ImageEffect::ClipInstance* generatorOutput = generatorEffect->effectInstance()->getClip(kOfxImageEffectOutputClipName);
+    ASSERT_TRUE(generatorOutput != NULL) << "ColorWheel has no output clip";
 
-    OFX::Host::ImageEffect::ClipInstance* gradeSource = gradeEffect->effectInstance()->getClip(kOfxImageEffectSimpleSourceClipName);
-    ASSERT_TRUE(gradeSource != NULL) << "Grade has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+    OFX::Host::ImageEffect::ClipInstance* colorMatrixSource = colorMatrixEffect->effectInstance()->getClip(kOfxImageEffectSimpleSourceClipName);
+    ASSERT_TRUE(colorMatrixSource != NULL) << "ColorMatrix has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
-    MetadataRef upstream(constantOutput, 1.);
+    MetadataRef upstream(generatorOutput, 1.);
     ASSERT_TRUE(upstream.get() != NULL);
 
-    MetadataRef source(gradeSource, 1.);
+    MetadataRef source(colorMatrixSource, 1.);
     ASSERT_TRUE(source.get() != NULL);
 
     // the keys are copied out of the upstream set, not aliased to it, so the two clips hold
@@ -520,7 +527,7 @@ TEST_F(MetadataPluginFixture, InputClipCarriesUpstreamOutputMetadata)
     EXPECT_EQ(upstream->getIntProperty(kOfxMetadataKeyWidth), source->getIntProperty(kOfxMetadataKeyWidth));
     EXPECT_EQ(upstream->getIntProperty(kOfxMetadataKeyHeight), source->getIntProperty(kOfxMetadataKeyHeight));
 
-    // Constant generates the project format, so the values that reached Grade are the ones
+    // ColorWheel generates the project format, so the values that reached ColorMatrix are the ones
     // the project implies rather than whatever a default constructed set would carry
     EXPECT_DOUBLE_EQ(getApp()->getProjectFrameRate(), source->getDoubleProperty(kOfxMetadataKeyFrameRate));
     EXPECT_EQ(projectFormat.width(), source->getIntProperty(kOfxMetadataKeyWidth));
@@ -533,22 +540,22 @@ TEST_F(MetadataPluginFixture, DisconnectedInputClipFallsBackToHostDerivedMetadat
     Format projectFormat;
     getApp()->getProject()->getProjectDefaultFormat(&projectFormat);
 
-    NodePtr constant = createNode(QString::fromUtf8("net.sf.openfx.ConstantPlugin"));
-    ASSERT_TRUE(bool(constant)) << "node creation failed for net.sf.openfx.ConstantPlugin";
+    NodePtr generator = createNode(QString::fromUtf8(kOfxGeneratorID), kOfxGeneratorMajor);
+    ASSERT_TRUE(bool(generator)) << "node creation failed for " << kOfxGeneratorID;
 
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
-    ASSERT_TRUE(bool(grade)) << "node creation failed for net.sf.openfx.GradePlugin";
+    NodePtr colorMatrix = createNode(QString::fromUtf8(kOfxColorEffectID), kOfxColorEffectMajor);
+    ASSERT_TRUE(bool(colorMatrix)) << "node creation failed for " << kOfxColorEffectID;
 
-    connectNodes(constant, grade, 0, true);
-    disconnectNodes(constant, grade, true);
+    connectNodes(generator, colorMatrix, 0, true);
+    disconnectNodes(generator, colorMatrix, true);
 
-    OfxEffectInstance* gradeEffect = dynamic_cast<OfxEffectInstance*>(grade->getEffectInstance().get());
-    ASSERT_TRUE(gradeEffect != NULL) << "Grade is not backed by the OFX host";
+    OfxEffectInstance* colorMatrixEffect = dynamic_cast<OfxEffectInstance*>(colorMatrix->getEffectInstance().get());
+    ASSERT_TRUE(colorMatrixEffect != NULL) << "ColorMatrix is not backed by the OFX host";
 
-    OFX::Host::ImageEffect::ClipInstance* gradeSource = gradeEffect->effectInstance()->getClip(kOfxImageEffectSimpleSourceClipName);
-    ASSERT_TRUE(gradeSource != NULL) << "Grade has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+    OFX::Host::ImageEffect::ClipInstance* colorMatrixSource = colorMatrixEffect->effectInstance()->getClip(kOfxImageEffectSimpleSourceClipName);
+    ASSERT_TRUE(colorMatrixSource != NULL) << "ColorMatrix has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
-    MetadataRef source(gradeSource, 1.);
+    MetadataRef source(colorMatrixSource, 1.);
     ASSERT_TRUE(source.get() != NULL);
 
     EXPECT_DOUBLE_EQ(getApp()->getProjectFrameRate(), source->getDoubleProperty(kOfxMetadataKeyFrameRate));
@@ -698,15 +705,15 @@ TEST_F(MetadataPluginFixture, ReaderFileMetadataReachesADownstreamInputClip)
     ASSERT_TRUE(dynamic_cast<ReadNode*>(reader->getEffectInstance().get()) != NULL) << "the reader is not backed by a Read container";
     ASSERT_TRUE(dynamic_cast<OfxEffectInstance*>(reader->getEffectInstance().get()) == NULL) << "the Read container is itself an OFX effect, so nothing here needs unwrapping";
 
-    NodePtr grade = createNode(QString::fromUtf8("net.sf.openfx.GradePlugin"));
-    ASSERT_TRUE(bool(grade)) << "node creation failed for net.sf.openfx.GradePlugin";
+    NodePtr colorMatrix = createNode(QString::fromUtf8(kOfxColorEffectID), kOfxColorEffectMajor);
+    ASSERT_TRUE(bool(colorMatrix)) << "node creation failed for " << kOfxColorEffectID;
 
-    connectNodes(reader, grade, 0, true);
+    connectNodes(reader, colorMatrix, 0, true);
 
-    OFX::Host::ImageEffect::ClipInstance* gradeSource = clipOf(grade, kOfxImageEffectSimpleSourceClipName);
-    ASSERT_TRUE(gradeSource != NULL) << "the downstream node has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+    OFX::Host::ImageEffect::ClipInstance* colorMatrixSource = clipOf(colorMatrix, kOfxImageEffectSimpleSourceClipName);
+    ASSERT_TRUE(colorMatrixSource != NULL) << "the downstream node has no " << kOfxImageEffectSimpleSourceClipName << " clip";
 
-    MetadataRef source(gradeSource, frame);
+    MetadataRef source(colorMatrixSource, frame);
     ASSERT_TRUE(source.get() != NULL);
     ASSERT_TRUE(source->fetchProperty(kOfxMetadataKeyFilePath) != NULL)
         << "the reader's " << kOfxMetadataKeyFilePath << " never reached the input clip of the node connected to it";
@@ -882,10 +889,10 @@ TEST_F(MetadataPluginFixture, UnchangedStateDoesNotReRunTheGetMetadataAction)
 // is checked as each side being contained in what the tail carries rather than as a literal set.
 TEST_F(MetadataPluginFixture, MetadataChainCarriesTheContributedKeysDownstream)
 {
-    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
+    NodePtr generator = createNode(QString::fromUtf8(kOfxGeneratorID), kOfxGeneratorMajor);
     NodePtr contribute = createNode(QString::fromUtf8(kMetadataContributeID));
     NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
-    ASSERT_TRUE(bool(generator)) << "node creation failed for " << PLUGINID_OFX_CONSTANT;
+    ASSERT_TRUE(bool(generator)) << "node creation failed for " << kOfxGeneratorID;
     ASSERT_TRUE(bool(contribute)) << "node creation failed for " << kMetadataContributeID;
     ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
 

@@ -142,11 +142,22 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # DEBUG), and the deprecated HueCorrect 1.0 is registered as
 # net.sf.openfx.HueCorrect1 so only HueCorrect 2.0 owns net.sf.openfx.HueCorrect.
 #
+# This revision excludes the OFX Grade, ColorCorrect, Saturation, Clamp,
+# Invert, Add, Multiply and Gamma plugins; the native nodes in Engine/Nodes/Color
+# take their IDs. It also excludes Merge (with its presets, MergeRoto and the
+# Merge 1.0 compat factories), Dissolve, Constant (Solid) and CheckerBoard,
+# which the native nodes in Engine/Nodes/Merge and Engine/Nodes/Generator take over.
+# It also excludes Transform and TransformMasked (DirBlur stays OFX), Crop, Position,
+# Reformat (with its 1.1 compat factory) and CImgBlur, which the native nodes in
+# Engine/Nodes/Transform and Engine/Nodes/Filter take over.
+# It also excludes Keyer, ChromaKeyer, ColorLookup, CImgErode, CImgDilate and
+# EdgeDetect, which the native nodes in Engine/Nodes/Keyer, Engine/Nodes/Color and Engine/Nodes/Filter take over.
+#
 # Unlike openfx-io, its CMakeLists.txt has no variable-name bug and nothing in
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
 # this container with no other source changes needed.
 OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
-OPENFX_MISC_REF="3060fe33b55db2817653ea69edf778f3b3d03b0a"
+OPENFX_MISC_REF="59ae4c26ab8078e858b8243044471958108dbd91"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a
@@ -212,6 +223,9 @@ PLUGINS_TARGET="${ASSETS_DIR}/Plugins"
 PLUGINS_SRC_DIR="${ASSETS_DIR}/plugin-src"
 DEPS_PREFIX="${PLUGINS_SRC_DIR}/deps-install"
 PLUGINS_STAMP="${PLUGINS_TARGET}/.natron-plugin-pins"
+# CImg.h outlives plugin-src/ (which CI does not cache) because the native
+# kernel tests compare against it; Tests/CMakeLists.txt reads this path.
+CIMG_HEADER_KEPT="${ASSETS_DIR}/CImg/CImg.h"
 PLUGINS_WANT="openfx-io=${OPENFX_IO_REF} seexpr=${SEEXPR_REF} openfx-misc=${OPENFX_MISC_REF} lcms2=${LCMS2_REF} libzip=${LIBZIP_REF} imagemagick=${IMAGEMAGICK_REF} openfx-arena=${OPENFX_ARENA_REF} openfx-metadata=${OPENFX_METADATA_REF}"
 
 # Defined unconditionally (not just in the build branch below) so both the
@@ -233,7 +247,7 @@ for i in "${!METADATA_PLUGIN_NAMES[@]}"; do
     METADATA_OFX+=("${PLUGINS_TARGET}/${METADATA_PLUGIN_NAMES[$i]}.ofx.bundle/Contents/Linux-x86-64/${METADATA_PLUGIN_NAMES[$i]}.ofx")
 done
 
-if [ -f "${PLUGINS_STAMP}" ] && [ "$(cat "${PLUGINS_STAMP}")" = "${PLUGINS_WANT}" ]; then
+if [ -f "${PLUGINS_STAMP}" ] && [ "$(cat "${PLUGINS_STAMP}")" = "${PLUGINS_WANT}" ] && [ -f "${CIMG_HEADER_KEPT}" ]; then
     echo "[Plugins] already built at the pinned refs -- skipping."
     echo "[Plugins]   ${PLUGINS_WANT}"
 else
@@ -431,6 +445,8 @@ else
     curl -fsS -o "${MISC_SRC}/CImg/Inpaint/inpaint.h" \
         "https://raw.githubusercontent.com/dtschump/CImg/${CIMG_VERSION}/plugins/inpaint.h"
     patch -p0 -d "${MISC_SRC}/CImg" < "${MISC_SRC}/CImg/Inpaint/inpaint.h.patch" > /dev/null
+    mkdir -p "${ASSETS_DIR}/CImg"
+    cp "${MISC_SRC}/CImg/CImg.h" "${CIMG_HEADER_KEPT}"
 
     rm -rf "${MISC_BUILD}"
     cmake -S "${MISC_SRC}" -B "${MISC_BUILD}" \

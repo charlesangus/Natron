@@ -2,6 +2,11 @@
 """Compare two graph_bench.py result files and flag regressions.
 
 usage: compare.py BEFORE.jsonl AFTER.jsonl [--threshold 1.5] [--pair-settings BEFORE_SETTINGS AFTER_SETTINGS]
+                  [--pair-field FIELD BEFORE_VALUE AFTER_VALUE]
+
+--pair-field FIELD A B pairs rows by topo/n/res where FIELD equals A in the first file against rows
+where it equals B in the second (the same file may be given twice) and prints B/A ratios. Ratios from
+rows of one interleaved run are comparable; the printed load/PSI shows how contended each side was.
 """
 import argparse
 import json
@@ -30,7 +35,16 @@ IO_METRICS = [
 ]
 
 
-def load(path, only_settings=None):
+# Recorded by graph_bench.py at the start of the timed phase; printed, never flagged.
+PRESSURE_FIELDS = [
+    ("load1", "load1_start"),
+    ("psi_cpu", "psi_cpu_some10"),
+    ("psi_io", "psi_io_some10"),
+    ("psi_mem", "psi_mem_some10"),
+]
+
+
+def load(path, only_settings=None, only_field=None):
     groups = {}
     with open(path) as fh:
         for line in fh:
@@ -44,6 +58,11 @@ def load(path, only_settings=None):
                 if isinstance(rec.get(src), (int, float)):
                     rec[dst] = rec[src] / 1e6
             settings = rec.get("settings") or ""
+            if only_field is not None:
+                name, value = only_field
+                if str(rec.get(name)) != value:
+                    continue
+                settings = ""
             if only_settings is not None:
                 if settings != only_settings:
                     continue
@@ -109,13 +128,26 @@ def main():
         help="match rows whose settings equal BEFORE_SETTINGS in the first file against rows whose "
         "settings equal AFTER_SETTINGS in the second; 'default' selects rows with empty settings",
     )
+    ap.add_argument(
+        "--pair-field",
+        nargs=3,
+        metavar=("FIELD", "BEFORE_VALUE", "AFTER_VALUE"),
+        help="generalises --pair-settings: match rows whose FIELD equals BEFORE_VALUE in the first "
+        "file against rows whose FIELD equals AFTER_VALUE in the second",
+    )
     args = ap.parse_args()
+    if args.pair_field and args.pair_settings:
+        ap.error("--pair-field and --pair-settings are exclusive")
 
     only_before = only_after = None
+    field_before = field_after = None
+    if args.pair_field:
+        field_before = (args.pair_field[0], args.pair_field[1])
+        field_after = (args.pair_field[0], args.pair_field[2])
     if args.pair_settings:
         only_before, only_after = ("" if v == "default" else v for v in args.pair_settings)
-    before = load(args.before, only_before)
-    after = load(args.after, only_after)
+    before = load(args.before, only_before, field_before)
+    after = load(args.after, only_after, field_after)
     common = sorted(set(before) & set(after), key=key_sort)
     flagged_any = False
 
@@ -140,6 +172,11 @@ def main():
             cells.append("%s %sMB->%sMB x%s" % (label, fmt(b), fmt(a), "-" if not b else "%.2f" % (a / b)))
         flagged_any = flagged_any or flagged
         head = "%s n=%s res=%s named=%s%s" % (topo, n, res, named, " settings=" + settings if settings else "")
+        for label, field in PRESSURE_FIELDS:
+            b = median_of(before[key], field)
+            a = median_of(after[key], field)
+            if b is not None or a is not None:
+                cells.append("%s %s->%s" % (label, fmt(b), fmt(a)))
         khz = khz_note(head, before[key], after[key])
         if khz:
             cells.append(khz)

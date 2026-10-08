@@ -66,7 +66,7 @@ Image::premultByChannelForDepth(const RectI& roi,
 
             if (divide) {
                 // Dividing by <= 0 is left as identity, as ofxsUnPremult() did in the plug-in.
-                if (d <= (float)(FLT_EPSILON)) {
+                if (!unPremultDivisorIsUsable(d)) {
                     continue;
                 }
             }
@@ -74,7 +74,7 @@ Image::premultByChannelForDepth(const RectI& roi,
                 if (!processChannels[channelBit(c)] || (c == skipChannel)) {
                     continue;
                 }
-                const float v = divide ? ((float)dst_pixels[c] / d) : ((float)dst_pixels[c] * std::max(0.f, d));
+                const float v = divide ? unPremultiplyValue((float)dst_pixels[c], d) : premultiplyValue((float)dst_pixels[c], d);
                 dst_pixels[c] = clampIfInt<PIX>(v);
             }
         }

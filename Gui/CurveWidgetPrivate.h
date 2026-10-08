@@ -149,6 +149,7 @@ private:
 public:
 
     OfxParamOverlayInteractWPtr _customInteract;
+    KnobParametricWPtr _backgroundKnob;
     QPoint _lastMousePos; /// the last click pressed, in widget coordinates [ (0,0) == top left corner ]
     ZoomContext zoomCtx;
     EventStateEnum _state;

@@ -28,10 +28,11 @@
 
 #include "Global/Macros.h"
 
-#include <list>
-#include <map>
 #include <algorithm> // min, max
 #include <bitset>
+#include <cfloat>
+#include <list>
+#include <map>
 
 #include "Global/GlobalDefines.h"
 
@@ -799,6 +800,31 @@ public:
                               int divisorChannel,
                               std::bitset<4> processChannels,
                               int skipChannel);
+
+    /**
+     * @brief The per-value maths of unPremultiplyByChannel() and premultiplyByChannel(), on a
+     * divisor d already normalised to [0, 1] for integer depths. A render that does the pair
+     * itself calls these so its values match the host's bit for bit.
+     * Dividing is skipped where unPremultDivisorIsUsable(d) is false.
+     **/
+    static inline bool unPremultDivisorIsUsable(float d)
+    {
+        // A negated <= rather than >, so a NaN divisor turns the value into NaN, as the
+        // multiply does, instead of passing it through undivided.
+        return !(d <= (float)FLT_EPSILON);
+    }
+
+    static inline float unPremultiplyValue(float v,
+                                           float d)
+    {
+        return v / d;
+    }
+
+    static inline float premultiplyValue(float v,
+                                         float d)
+    {
+        return v * std::max(0.f, d);
+    }
 
     /**
      * @brief Mask the image by the given mask and also disolves it to the originalImg with the given mix.

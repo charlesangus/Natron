@@ -30,8 +30,10 @@
 #include <cstddef>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include <QMutexLocker>
 #include <QThread>
 #include <QThreadPool>
 
@@ -42,6 +44,91 @@
 #include "Engine/TLSHolder.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+// How long the calling thread of parallelForCancellable() waits for the helpers before it asks
+// the effect again whether the render was aborted.
+const unsigned long kCancelPollMilliseconds = 10;
+} // anonymous namespace
+
+RenderCancellation::RenderCancellation(const EffectInstance* effect)
+    : _effect(effect)
+    , _owner(std::this_thread::get_id())
+    , _cancelled(false)
+{
+}
+
+bool
+RenderCancellation::check()
+{
+    if (_cancelled.load(std::memory_order_relaxed)) {
+        return true;
+    }
+    if ((std::this_thread::get_id() == _owner) && _effect && _effect->aborted()) {
+        _cancelled.store(true, std::memory_order_relaxed);
+
+        return true;
+    }
+
+    return false;
+}
+
+// The fork-join of parallelForOnGlobalPool(), whose caller wait cannot be interrupted, with a
+// timed caller wait instead.
+void
+parallelForCancellable(int count,
+                       int maxThreads,
+                       RenderCancellation& cancel,
+                       const std::function<void(int)>& body)
+{
+    if ((count <= 0) || cancel.check()) {
+        return;
+    }
+    const std::function<void(int)> guarded = [&](int index) {
+        if (!cancel.check()) {
+            body(index);
+        }
+    };
+    std::shared_ptr<PoolParallelForDetail::State> state = std::make_shared<PoolParallelForDetail::State>();
+    state->body = &guarded;
+    state->count = count;
+
+    const int helperPriority = AppTLS::currentRunnablePriority() + 1;
+    const int numHelpers = std::min(count, std::max(1, maxThreads)) - 1;
+    QThreadPool* pool = QThreadPool::globalInstance();
+    const std::function<void()> helper = [state]() {
+        OpenMPThreadsScope openMPThreads(1);
+        PoolParallelForDetail::drain(*state);
+    };
+    for (int i = 0; i < numHelpers; ++i) {
+        pool->start(helper, helperPriority);
+    }
+
+    if (numHelpers > 0) {
+        // The caller is one of the threads this split was sized for, so what it runs must not
+        // split again.
+        AppTLS::ThreadBudgetScope budget(1);
+        OpenMPThreadsScope openMPThreads(1);
+        PoolParallelForDetail::drain(*state);
+    } else {
+        PoolParallelForDetail::drain(*state);
+    }
+
+    {
+        QMutexLocker locker(&state->mutex);
+        while (state->done < state->count) {
+            if (!state->allDone.wait(&state->mutex, kCancelPollMilliseconds)) {
+                // aborted() may take locks of its own, so it is not asked under the state's mutex.
+                locker.unlock();
+                cancel.check();
+                locker.relock();
+            }
+        }
+    }
+    if (state->error) {
+        std::rethrow_exception(state->error);
+    }
+} // parallelForCancellable
 
 namespace {
 float*
@@ -125,6 +212,37 @@ NativeEffectBase::isInputOptional(int inputNb) const
     return desc.inputs[inputNb].optional;
 }
 
+bool
+NativeEffectBase::isInputMask(int inputNb) const
+{
+    const NativePluginDescription desc = getNativePluginDescription();
+
+    if ((inputNb < 0) || ((std::size_t)inputNb >= desc.inputs.size())) {
+        return false;
+    }
+
+    return desc.inputs[inputNb].isMask;
+}
+
+void
+NativeEffectBase::getPluginGrouping(std::list<std::string>* grouping) const
+{
+    const std::string path = getNativePluginDescription().grouping;
+    std::size_t start = 0;
+
+    while (start <= path.size()) {
+        const std::size_t slash = path.find('/', start);
+        const std::size_t end = (slash == std::string::npos) ? path.size() : slash;
+        if (end > start) {
+            grouping->push_back(path.substr(start, end - start));
+        }
+        if (slash == std::string::npos) {
+            break;
+        }
+        start = slash + 1;
+    }
+}
+
 DataKindEnum
 NativeEffectBase::getInputDataKind(int inputNb) const
 {
@@ -198,20 +316,20 @@ NativeEffectBase::forEachDeepChunk(const std::vector<RectI>& chunks,
 {
     QThread* const callingThread = QThread::currentThread();
     const FrameRenderContext* const frameContext = AppTLS::currentFrameContext();
-    std::atomic<bool> wasAborted(false);
+    RenderCancellation cancel(this);
+    std::atomic<int> chunksRun(0);
 
     const std::function<void(int)> runChunk = [&](int i) {
         AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, frameContext, AppTLS::eSpawnKindHostFrameThreading);
 
-        if (aborted()) {
-            wasAborted = true;
-        } else {
+        if (!aborted()) {
             body(chunks[i]);
+            ++chunksRun;
         }
     };
-    parallelForOnGlobalPool((int)chunks.size(), appPTR->getNCPUsAvailableForEffect(), runChunk);
+    parallelForCancellable((int)chunks.size(), appPTR->getNCPUsAvailableForEffect(), cancel, runChunk);
 
-    return !wasAborted;
+    return chunksRun.load() == (int)chunks.size();
 }
 
 StatusEnum

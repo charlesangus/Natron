@@ -849,6 +849,7 @@ Node::computeHashInternal()
     bool hashChanged = oldHash != newHash;
 
     if (hashChanged) {
+        clearStaleNaNWarning(newHash);
         _imp->effect->onNodeHashChanged(newHash);
         if ( _imp->nodeCreated && !getApp()->getProject()->isProjectClosing() ) {
             /*
@@ -2672,20 +2673,25 @@ Node::createUnPremultSelector(const KnobPagePtr& mainPage)
     // and one channel selector over every layer of the source takes their place. The divide and
     // the multiply are then done either side of the plug-in's render action, by
     // OfxClipInstance::getInputImageInternal() and EffectInstance::tiledRenderingFunctor().
+    // An effect asking through wantsHostUnPremultSelector() has no such pair to hide, and does
+    // the divide and the multiply in its own render.
     KnobBoolPtr pluginEnabled = _imp->effect->getKnobByNameAndType<KnobBool>(kUnPremultByPluginKnobName);
     KnobChoicePtr pluginChannel = _imp->effect->getKnobByNameAndType<KnobChoice>(kUnPremultByChannelPluginKnobName);
+    const bool pluginDeclaresPair = pluginEnabled && pluginChannel;
 
-    if (!pluginEnabled || !pluginChannel) {
+    if (!pluginDeclaresPair && !_imp->effect->wantsHostUnPremultSelector()) {
         return;
     }
 
-    pluginEnabled->setValue(false);
-    pluginEnabled->setSecret(true);
-    pluginEnabled->setSecretLocked(true);
-    pluginEnabled->setIsPersistent(false);
-    pluginChannel->setSecret(true);
-    pluginChannel->setSecretLocked(true);
-    pluginChannel->setIsPersistent(false);
+    if (pluginDeclaresPair) {
+        pluginEnabled->setValue(false);
+        pluginEnabled->setSecret(true);
+        pluginEnabled->setSecretLocked(true);
+        pluginEnabled->setIsPersistent(false);
+        pluginChannel->setSecret(true);
+        pluginChannel->setSecretLocked(true);
+        pluginChannel->setIsPersistent(false);
+    }
 
     KnobChannelSelectPtr channel = _imp->effect->createChannelSelectKnob(kUnPremultByKnobName, tr(kUnPremultByKnobLabel).toStdString(), false);
     channel->setAnimationEnabled(false);
@@ -4609,6 +4615,38 @@ Node::setChannelSelectorMessageFromRender(const std::string& content,
     postPersistentMessage(eMessageTypeError, content, true, render ? render->getRenderSequence() : 0, render.get());
 }
 
+void
+Node::setNaNWarning(const std::string& content,
+                    U64 renderedHash)
+{
+    if ((renderedHash == 0) || (renderedHash != getHashValue())) {
+        return;
+    }
+    postPersistentMessage(eMessageTypeWarning, content, false, 0, NULL);
+
+    QMutexLocker k(&_imp->persistentMessageMutex);
+    if ((_imp->persistentMessage == QString::fromUtf8(content.c_str())) && (_imp->persistentMessageType == (int)eMessageTypeWarning)) {
+        _imp->nanWarningHash = renderedHash;
+    }
+}
+
+void
+Node::clearStaleNaNWarning(U64 currentHash)
+{
+    bool changed = false;
+    {
+        QMutexLocker k(&_imp->persistentMessageMutex);
+        if ((_imp->nanWarningHash != 0) && (_imp->nanWarningHash != currentHash)) {
+            _imp->nanWarningHash = 0;
+            _imp->persistentMessage.clear();
+            changed = true;
+        }
+    }
+    if (changed) {
+        Q_EMIT persistentMessageChanged();
+    }
+}
+
 bool
 Node::storePersistentMessage(MessageTypeEnum type,
                              const std::string& content,
@@ -4637,6 +4675,7 @@ Node::storePersistentMessage(MessageTypeEnum type,
     }
     setChannelSelectorOwnership(fromChannelSelector);
     _imp->persistentMessageFromProjectLoad = false;
+    _imp->nanWarningHash = 0;
     _imp->persistentMessageRenderSequence = fromChannelSelector ? renderSequence : 0;
     _imp->persistentMessageType = (int)type;
     _imp->persistentMessage = mess;
@@ -4772,6 +4811,7 @@ Node::clearPersistentMessageInternal()
         QMutexLocker k(&_imp->persistentMessageMutex);
         setChannelSelectorOwnership(false);
         _imp->persistentMessageFromProjectLoad = false;
+        _imp->nanWarningHash = 0;
         _imp->persistentMessageRenderSequence = 0;
         changed = !_imp->persistentMessage.isEmpty();
         if (changed) {
@@ -7125,7 +7165,10 @@ addIdentityNodesRecursively(const Node* caller,
 
             RectI format = node->getEffectInstance()->getOutputFormat();
 
-            isIdentity = node->getEffectInstance()->isIdentity_public(true, renderHash, time, RenderScale::identity, format, view, &inputTimeId, &identityView, &inputNbId);
+            // Uncached: the output format is not the node's image, and the identity cache keeps
+            // whole-image answers keyed on the hash alone, which the node's own render would then
+            // take for its region of definition.
+            isIdentity = node->getEffectInstance()->isIdentity_public(false, renderHash, time, RenderScale::identity, format, view, &inputTimeId, &identityView, &inputNbId);
         }
 
 

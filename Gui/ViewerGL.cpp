@@ -3336,24 +3336,12 @@ ViewerGL::updatePersistentMessageToWidth(int w)
         return;
     }
 
-    // The nodes feeding what this viewer shows report here whether or not their panel is open,
-    // then any other node whose panel is open.
+    // Only the nodes feeding what this viewer shows: a message is about the image a node renders,
+    // so a node outside the tree, even with its panel open, has nothing to say about this one.
     NodesList nodes;
     ViewerInstance* viewerNode = _imp->viewerTab->getInternalNode();
     if (viewerNode) {
         viewerNode->getUpstreamNodesWithPersistentMessage(&nodes);
-    }
-    const std::list<DockablePanel*>& openedPanels = _imp->viewerTab->getGui()->getVisiblePanels();
-    for (std::list<DockablePanel*>::const_iterator it = openedPanels.begin(); it != openedPanels.end(); ++it) {
-        const NodeSettingsPanel* isNodePanel = dynamic_cast<const NodeSettingsPanel*>(*it);
-        if (!isNodePanel) {
-            continue;
-        }
-        NodeGuiPtr nodeGui = isNodePanel->getNode();
-        NodePtr node = nodeGui ? nodeGui->getNode() : NodePtr();
-        if (node && (std::find(nodes.begin(), nodes.end(), node) == nodes.end())) {
-            nodes.push_back(node);
-        }
     }
 
     _imp->persistentMessages.clear();

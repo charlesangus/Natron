@@ -28,8 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <functional>
+#include <list>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "Engine/AppManager.h" // for AppManager::createKnob
@@ -42,26 +45,30 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief Statically describes one input of a NativeEffectBase subclass: its label,
- * whether it may be left unconnected, and the DataKindEnum it accepts.
+ * whether it may be left unconnected, the DataKindEnum it accepts, and whether it is a mask.
+ * The host gives a mask input the enableMask_<label>/maskChannel_<label> selectors.
  **/
 struct NativeInputDescription {
     std::string label;
     bool optional;
     DataKindEnum kind;
+    bool isMask;
 
     explicit NativeInputDescription(const std::string& label_,
                                     bool optional_ = false,
-                                    DataKindEnum kind_ = eDataKindImage)
+                                    DataKindEnum kind_ = eDataKindImage,
+                                    bool isMask_ = false)
         : label(label_)
         , optional(optional_)
         , kind(kind_)
+        , isMask(isMask_)
     {
     }
 };
 
 /**
  * @brief Statically describes a NativeEffectBase subclass: plugin id/label/description,
- * grouping, version, its inputs, the DataKindEnum it outputs, and whether it is a writer. One
+ * grouping (a menu path whose levels are separated by '/', e.g. "Color/Math"), version, its inputs, the DataKindEnum it outputs, and whether it is a writer. One
  * instance of this, returned by NativeEffectBase::getNativePluginDescription(), replaces the
  * half-dozen one-line EffectInstance accessor overrides a hand-written node otherwise repeats.
  **/
@@ -89,6 +96,44 @@ struct NativePluginDescription {
     {
     }
 };
+
+/**
+ * @brief The abort state of one render, shared with the pool threads running its bands.
+ * EffectInstance::aborted() finds the render through the AbortableThread info or the effect's
+ * TLS frame args of the asking thread, which only the thread running render() carries: a pool
+ * thread asking is always told the render goes on. So only the thread that built this asks the
+ * effect, and it publishes the answer in a flag the other threads read.
+ **/
+class RenderCancellation {
+public:
+    explicit RenderCancellation(const EffectInstance* effect);
+
+    RenderCancellation(const RenderCancellation&) = delete;
+    RenderCancellation& operator=(const RenderCancellation&) = delete;
+
+    /**
+     * @brief Whether the render was aborted. Asks the effect on the thread that built this,
+     * and only reads the published flag on any other.
+     **/
+    bool check();
+
+private:
+    const EffectInstance* _effect;
+    std::thread::id _owner;
+    std::atomic<bool> _cancelled;
+};
+
+/**
+ * @brief parallelForOnGlobalPool() that stops once the render is aborted: no index starts after
+ * that, and while the calling thread waits for the helpers' last calls it wakes at short
+ * intervals to ask the effect, so a body polling cancel.check() between rows returns soon after
+ * an abort whichever thread runs it. A render that is not aborted runs every index exactly as
+ * parallelForOnGlobalPool() does. Must be called on the thread that built cancel.
+ **/
+void parallelForCancellable(int count,
+                            int maxThreads,
+                            RenderCancellation& cancel,
+                            const std::function<void(int)>& body);
 
 /**
  * @brief Convenience base class for native (non-OFX) nodes living under Engine/Nodes/, rooted at
@@ -192,10 +237,7 @@ public:
         return getNativePluginDescription().description;
     }
 
-    virtual void getPluginGrouping(std::list<std::string>* grouping) const OVERRIDE FINAL
-    {
-        grouping->push_back(getNativePluginDescription().grouping);
-    }
+    virtual void getPluginGrouping(std::list<std::string>* grouping) const OVERRIDE FINAL;
 
     virtual int getMajorVersion() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
@@ -224,6 +266,7 @@ public:
 
     virtual std::string getInputLabel(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
     virtual bool isInputOptional(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
+    virtual bool isInputMask(int inputNb) const OVERRIDE WARN_UNUSED_RETURN;
 
     virtual DataKindEnum getOutputDataKind() const OVERRIDE WARN_UNUSED_RETURN
     {

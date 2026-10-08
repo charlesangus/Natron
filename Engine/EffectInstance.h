@@ -619,6 +619,34 @@ public:
     bool isMaskEnabled(int inputNb) const;
 
     /**
+     * @brief The plane of input inputNb that a render of this effect reads, and the channel of it
+     * a mask input reads. Inside a render action it is the entry of the input's needed components
+     * equivalent to the plane being rendered (the no-shuffle invariant), else the entry the list
+     * starts with, else, for an empty list, the input's metadata components. Outside one it is
+     * the plane the input's mask selector names, else the non-colour layer the layer knob
+     * selects, else the input's metadata components.
+     * *maskChannel, when maskChannel is not NULL, is the channel index in *layer the mask
+     * selector names, or -1 when inputNb has no mask selector or it does not resolve.
+     * Returns false when no plane with any channel could be chosen.
+     **/
+    bool resolveInputPlaneForRender(int inputNb,
+                                    double time,
+                                    ViewIdx view,
+                                    ImageLayerDesc* layer,
+                                    int* maskChannel);
+
+    /**
+     * @brief Same, with fallbackLayer standing in for the input's metadata components: an
+     * OpenFX clip passes its own components, which is what a plug-in was told it reads.
+     **/
+    bool resolveInputPlaneForRender(int inputNb,
+                                    double time,
+                                    ViewIdx view,
+                                    const ImageLayerDesc& fallbackLayer,
+                                    ImageLayerDesc* layer,
+                                    int* maskChannel);
+
+    /**
      * @brief Routine called after the creation of an effect. This function must
      * fill for the given input what image components we can feed it with.
      * This function is also called to specify what image components this effect can output.
@@ -2128,6 +2156,28 @@ public:
      * @brief Reimplement to activate host mixing
      **/
     virtual bool isHostMixingEnabled() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Reimplement to return true to get the host "(Un)premult by" channel selector
+     * (kUnPremultByKnobName) without declaring the plug-in unPremultBy/unPremultByChannel pair
+     * it otherwise stands in for. The effect then reads the selector and does the divide and the
+     * multiply itself.
+     **/
+    virtual bool wantsHostUnPremultSelector() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Reimplement to return true when render() writes every channel of every output plane,
+     * the channels it does not process included. The host then neither copies the unprocessed
+     * channels from the source after render() nor multiplies back by the "(Un)premult by"
+     * channel, both of which would overwrite what the effect wrote.
+     **/
+    virtual bool rendersUnprocessedChannels() const
     {
         return false;
     }

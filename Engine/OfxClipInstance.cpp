@@ -853,58 +853,9 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
     //bool isMultiplanar = effect->isMultiPlanar();
     ImageLayerDesc comp;
     if (!ofxPlane) {
-        EffectInstance::ComponentsNeededMapPtr neededComps;
-        effect->getThreadLocalNeededComponents(&neededComps);
-        bool foundCompsInTLS = false;
-        if (neededComps) {
-            EffectInstance::ComponentsNeededMap::iterator found = neededComps->find(inputnb);
-            if ( found != neededComps->end() ) {
-                if ( found->second.empty() ) {
-                    ///We are in the case of a multi-plane effect who did not specify correctly the needed components for an input
-                    //fallback on the basic components indicated on the clip
-                    //This could be the case for example for the Mask Input
-                    ImageLayerDesc pairedComp;
-                    ImageLayerDesc::mapOFXComponentsTypeStringToLayers(thisClipComponents, &comp, &pairedComp);
-
-                    foundCompsInTLS = true;
-                    //qDebug() << _imp->nodeInstance->getScriptName_mt_safe().c_str() << " didn't specify any needed components via getClipComponents for clip " << getName().c_str();
-                } else {
-                    // No-shuffle invariant: a node rendering plane L reads plane L from every
-                    // non-mask input and writes plane L; the channels of L it does not process
-                    // are copied from the preferred input's plane L. The needed list carries
-                    // every plane the node renders, so the entry equivalent to the plane being
-                    // rendered is picked; only a list without it (mask inputs, multiplanar
-                    // effects) yields the front.
-                    comp = found->second.front();
-                    ImageLayerDesc layerBeingRendered;
-                    if (effect->getThreadLocalOutputLayerBeingRendered(&layerBeingRendered) && layerBeingRendered.getNumComponents() > 0) {
-                        std::list<ImageLayerDesc>::const_iterator equivalent = ImageLayerDesc::findEquivalentLayer(layerBeingRendered, found->second.begin(), found->second.end());
-                        if (equivalent != found->second.end()) {
-                            comp = *equivalent;
-                        }
-                    }
-                    foundCompsInTLS = true;
-                }
-            }
-        }
-
-        if (!foundCompsInTLS) {
-            ///We are in analysis or the effect does not have any input
-            NodePtr node = effect->getNode();
-            std::list<ImageLayerDesc> availableLayers;
-            effect->getAvailableLayers(time, ViewIdx(0), inputnb, &availableLayers);
-
-            ImageLayerDesc maskComp;
-            std::vector<ResolvedLayer> selected;
-            if ((node->getMaskChannel(inputnb, availableLayers, &maskComp) != -1) && (maskComp.getNumComponents() > 0)) {
-                comp = maskComp;
-            } else if (node->resolveLayerKnob(time, ViewIdx(0), &selected) && !selected.empty() && !selected.front().desc.isColorLayer()) {
-                comp = selected.front().desc;
-            } else {
-                ImageLayerDesc pairedComp;
-                ImageLayerDesc::mapOFXComponentsTypeStringToLayers(thisClipComponents, &comp, &pairedComp);
-            }
-        }
+        ImageLayerDesc clipComp, pairedComp;
+        ImageLayerDesc::mapOFXComponentsTypeStringToLayers(thisClipComponents, &clipComp, &pairedComp);
+        effect->resolveInputPlaneForRender(inputnb, time, ViewIdx(0), clipComp, &comp, NULL);
     } else {
         if (*ofxPlane == kFnOfxImagePlaneColour) {
             ImageLayerDesc pairedComp;

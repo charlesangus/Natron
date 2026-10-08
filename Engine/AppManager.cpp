@@ -140,6 +140,13 @@
 #include "Engine/Nodes/Channel/AddLayers.h"
 #include "Engine/Nodes/Channel/RemoveLayers.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
+#include "Engine/Nodes/Color/Clamp.h"
+#include "Engine/Nodes/Color/ColorCorrect.h"
+#include "Engine/Nodes/Color/ColorLookup.h"
+#include "Engine/Nodes/Color/ColorMathNode.h"
+#include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Color/Invert.h"
+#include "Engine/Nodes/Color/Saturation.h"
 #include "Engine/Nodes/Deep/DeepAddLayers.h"
 #include "Engine/Nodes/Deep/DeepCrop.h"
 #include "Engine/Nodes/Deep/DeepExpression.h"
@@ -151,6 +158,19 @@
 #include "Engine/Nodes/Deep/DeepRemoveLayers.h"
 #include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
+#include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Filter/EdgeDetect.h"
+#include "Engine/Nodes/Filter/ErodeDilate.h"
+#include "Engine/Nodes/Generator/CheckerBoard.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Keyer/ChromaKeyer.h"
+#include "Engine/Nodes/Keyer/Keyer.h"
+#include "Engine/Nodes/Merge/Dissolve.h"
+#include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Transform/Crop.h"
+#include "Engine/Nodes/Transform/Position.h"
+#include "Engine/Nodes/Transform/Reformat.h"
+#include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Nodes/TypedPassthrough.h"
 
 #include "Engine/Utils.h"
@@ -1597,6 +1617,40 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
     registerBuiltInPlugin<ShuffleCopy>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<RemoveLayers>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<AddLayers>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<Grade>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.GradePlugin.png"), false, false);
+    registerBuiltInPlugin<ColorCorrect>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ColorCorrectPlugin.png"), false, false);
+    registerBuiltInPlugin<Saturation>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.SaturationPlugin.png"), false, false);
+    registerBuiltInPlugin<Clamp>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Clamp.png"), false, false);
+    registerBuiltInPlugin<Invert>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Invert.png"), false, false);
+    registerBuiltInPlugin<ColorMathAdd>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.AddPlugin.png"), false, false);
+    registerBuiltInPlugin<ColorMathMultiply>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MultiplyPlugin.png"), false, false);
+    registerBuiltInPlugin<ColorMathGamma>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.GammaPlugin.png"), false, false);
+    registerBuiltInPlugin<Constant>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ConstantPlugin.png"), false, false);
+    registerBuiltInPlugin<Solid>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Solid.png"), false, false);
+    registerBuiltInPlugin<CheckerBoard>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.CheckerBoardPlugin.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetMerge>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergePlugin.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetPlus>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergePlus.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetMatte>>(QString::fromUtf8(""), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetMultiply>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMultiply.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetIn>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeIn.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetOut>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeOut.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetScreen>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeScreen.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetMax>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMax.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetMin>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeMin.png"), false, false);
+    registerBuiltInPlugin<MergePreset<eMergePresetDifference>>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.MergeDifference.png"), false, false);
+    registerBuiltInPlugin<Dissolve>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.DissolvePlugin.png"), false, false);
+    registerBuiltInPlugin<Crop>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.CropPlugin.png"), false, false);
+    registerBuiltInPlugin<Position>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Position.png"), false, false);
+    registerBuiltInPlugin<TransformNode>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.TransformPlugin.png"), false, false);
+    registerBuiltInPlugin<TransformMasked>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.TransformMaskedPlugin.png"), false, false);
+    registerBuiltInPlugin<Reformat>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.Reformat.png"), false, false);
+    registerBuiltInPlugin<Blur>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgBlur.png"), false, false);
+    registerBuiltInPlugin<Keyer>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.KeyerPlugin.png"), false, false);
+    registerBuiltInPlugin<ChromaKeyer>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ChromaKeyerPlugin.png"), false, false);
+    registerBuiltInPlugin<ErodeDilate>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgErode.png"), false, false);
+    registerBuiltInPlugin<Dilate>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.cimg.CImgDilate.png"), false, false);
+    registerBuiltInPlugin<EdgeDetect>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/eu.cimg.EdgeDetect.png"), false, false);
+    registerBuiltInPlugin<ColorLookup>(QString::fromUtf8(NATRON_IMAGES_PATH "NativeNodes/net.sf.openfx.ColorLookupPlugin.png"), false, false);
     registerBuiltInPlugin<DiskCacheNode>(QString::fromUtf8(NATRON_IMAGES_PATH "diskcache_icon.png"), false, false);
     registerBuiltInPlugin<RotoPaint>(QString::fromUtf8(NATRON_IMAGES_PATH "GroupingIcons/Set2/paint_grouping_2.png"), false, false);
     registerBuiltInPlugin<RotoNode>(QString::fromUtf8(NATRON_IMAGES_PATH "rotoNodeIcon.png"), false, false);

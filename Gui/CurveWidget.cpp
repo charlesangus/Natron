@@ -605,6 +605,60 @@ CurveWidget::resizeGL(int width,
     }
 }
 
+namespace {
+void
+glVertexOf(const ParametricBackgroundVertex& v)
+{
+    glColor4f(v.r, v.g, v.b, v.a);
+    glVertex2d(v.x, v.y);
+}
+
+void
+drawBackgroundQuads(const std::vector<ParametricBackgroundQuad>& quads)
+{
+    if (quads.empty()) {
+        return;
+    }
+    glBegin(GL_QUADS);
+    for (std::size_t i = 0; i < quads.size(); ++i) {
+        for (int j = 0; j < 4; ++j) {
+            glVertexOf(quads[i].v[j]);
+        }
+    }
+    glEnd();
+}
+
+void
+drawParametricBackground(const ParametricBackground& background)
+{
+    GLProtectAttrib a(GL_LINE_BIT | GL_CURRENT_BIT | GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT);
+
+    glDisable(GL_BLEND);
+    drawBackgroundQuads(background.quads);
+
+    if (!background.additiveQuads.empty()) {
+        glEnable(GL_BLEND);
+        glBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
+        glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ONE);
+        drawBackgroundQuads(background.additiveQuads);
+    }
+
+    if (!background.polylines.empty()) {
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        for (std::size_t i = 0; i < background.polylines.size(); ++i) {
+            const ParametricBackgroundPolyline& line = background.polylines[i];
+            glLineWidth((GLfloat)line.lineWidth);
+            glBegin(GL_LINE_STRIP);
+            for (std::size_t j = 0; j < line.points.size(); ++j) {
+                glVertexOf(line.points[j]);
+            }
+            glEnd();
+        }
+    }
+}
+} // namespace
+
 void
 CurveWidget::paintGL()
 {
@@ -675,6 +729,19 @@ CurveWidget::paintGL()
             customInteract->setCallingViewport(this);
             customInteract->drawAction(0, scale, 0, customInteract->hasColorPicker() ? &customInteract->getLastColorPickerColor() : 0);
             glCheckErrorIgnoreOSXBug();
+        } else if (KnobParametricPtr backgroundKnob = _imp->_backgroundKnob.lock()) {
+            ParametricBackgroundPainter painter = backgroundKnob->getBackgroundPainter();
+            if (painter) {
+                ParametricBackgroundContext context;
+                context.xMin = zoomLeft;
+                context.xMax = zoomRight;
+                context.yMin = zoomBottom;
+                context.yMax = zoomTop;
+                context.pixelScaleX = width() > 0 ? (zoomRight - zoomLeft) / width() : 0.;
+                context.pixelScaleY = height() > 0 ? (zoomTop - zoomBottom) / height() : 0.;
+                drawParametricBackground(painter(context));
+                glCheckErrorIgnoreOSXBug();
+            }
         }
 
         _imp->drawScale(_imp->_screenPixelRatio);
@@ -2287,6 +2354,12 @@ void
 CurveWidget::setCustomInteract(const OfxParamOverlayInteractPtr & interactDesc)
 {
     _imp->_customInteract = interactDesc;
+}
+
+void
+CurveWidget::setBackgroundKnob(const KnobParametricPtr& knob)
+{
+    _imp->_backgroundKnob = knob;
 }
 
 OfxParamOverlayInteractPtr

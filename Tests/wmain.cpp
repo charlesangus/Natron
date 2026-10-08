@@ -18,6 +18,7 @@
 #include "DeepRenderTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
+#include "NativeParity.h"
 #include "PassThroughRoDTestEffect.h"
 
 using namespace NATRON_NAMESPACE;
@@ -120,6 +121,14 @@ registerFrameGraphBuildTestPlugins()
     // upstream like OpenFX filters' do, without the cost of creating that many OpenFX nodes.
     registerTestBuiltInPlugin<PassThroughRoDTestEffect>();
 }
+
+void
+registerNativeParityTestPlugins()
+{
+    // Registered so the native-node parity tests feed the OFX and native versions of a node the
+    // same deterministic multiplanar picture, with negatives, super-whites and exact alpha bands.
+    registerTestBuiltInPlugin<ParitySourceTestEffect>();
+}
 }
 
 #if defined(_WIN32) && defined(UNICODE)
@@ -157,6 +166,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerGraphScalingTestPlugins();
     registerRenderSchedulerTestPlugins();
     registerFrameGraphBuildTestPlugins();
+    registerNativeParityTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

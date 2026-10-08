@@ -198,4 +198,13 @@ HostOverlayKnobsPosition::describeOverlayKnobs()
     describeKnob(eKnobsEnumerationInteractive, KnobBool::typeNameStatic(), 1, true);
 }
 
+void
+HostOverlayKnobsRectangle::describeOverlayKnobs()
+{
+    describeKnob(eKnobsEnumerationBottomLeft, KnobDouble::typeNameStatic(), 2);
+    describeKnob(eKnobsEnumerationSize, KnobDouble::typeNameStatic(), 2);
+    describeKnob(eKnobsEnumerationInteractive, KnobBool::typeNameStatic(), 1, true);
+    describeKnob(eKnobsEnumerationEnable, KnobBool::typeNameStatic(), 1, true);
+}
+
 NATRON_NAMESPACE_EXIT

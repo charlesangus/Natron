@@ -313,6 +313,38 @@ Node::addPositionInteract(const KnobDoublePtr& position,
     }
 }
 
+void
+Node::addRectangleInteract(const KnobDoublePtr& bottomLeft,
+                           const KnobDoublePtr& size,
+                           const KnobBoolPtr& interactive,
+                           const KnobBoolPtr& enable)
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    HostOverlayKnobsRectanglePtr knobs = std::make_shared<HostOverlayKnobsRectangle>();
+    knobs->addKnob(bottomLeft, HostOverlayKnobsRectangle::eKnobsEnumerationBottomLeft);
+    knobs->addKnob(size, HostOverlayKnobsRectangle::eKnobsEnumerationSize);
+    if (interactive) {
+        knobs->addKnob(interactive, HostOverlayKnobsRectangle::eKnobsEnumerationInteractive);
+    }
+    if (enable) {
+        knobs->addKnob(enable, HostOverlayKnobsRectangle::eKnobsEnumerationEnable);
+    }
+    // Unlike the other host overlays this is kept in background mode too, so the declaration
+    // can be checked without a GUI; it is never drawn there.
+    NodeGuiIPtr nodeGui = getNodeGui();
+    if (!nodeGui) {
+        _imp->nativeOverlays.push_back(knobs);
+    } else {
+        nodeGui->addDefaultInteract(knobs);
+    }
+}
+
+std::list<HostOverlayKnobsPtr>
+Node::getPendingHostOverlays() const
+{
+    return _imp->nativeOverlays;
+}
 
 void
 Node::addTransformInteract(const KnobDoublePtr& translate,

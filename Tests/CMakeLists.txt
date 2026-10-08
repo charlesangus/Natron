@@ -17,7 +17,7 @@
 # along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
 # ***** END LICENSE BLOCK *****
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h RenderBothWays.h)
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeParity.h RenderBothWays.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -66,6 +66,7 @@ set(Tests_SOURCES
     Lut_Test.cpp
     MemoryInfo_Test.cpp
     Metadata_Test.cpp
+    NativeParity.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
     PluginIdentity_Test.cpp
@@ -103,6 +104,10 @@ set(Tests_SOURCES
     ImageConvert_Test.cpp
     wmain.cpp
 )
+# Per-node native tests are picked up without editing this list; CONFIGURE_DEPENDS re-globs on
+# every build, so a newly added file is compiled without re-running cmake by hand.
+file(GLOB Tests_NATIVE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Native/*_Test.cpp)
+list(APPEND Tests_SOURCES ${Tests_NATIVE_SOURCES})
 add_executable(Tests ${Tests_HEADERS} ${Tests_SOURCES})
 target_link_libraries(Tests
     PRIVATE
@@ -116,9 +121,11 @@ target_compile_definitions(Tests
     PRIVATE
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
         NATRON_TESTS_PYPLUGS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../Gui/Resources/PyPlugs"
+        NATRON_TESTS_CIMG_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/../build/assets/CImg/CImg.h"
 )
 target_include_directories(Tests
     PRIVATE
+        .
         ..
         ../libs/SequenceParsing
         google-test/include

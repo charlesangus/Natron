@@ -143,6 +143,9 @@ KnobGuiParametric::createWidget(QHBoxLayout* layout)
     _curveWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     if (interact) {
         _curveWidget->setCustomInteract(interact);
+    } else {
+        _curveWidget->setBackgroundKnob(knob);
+        QObject::connect(knob.get(), SIGNAL(backgroundChanged()), _curveWidget, SLOT(update()));
     }
     if ( hasToolTip() ) {
         _curveWidget->setToolTip( toolTip() );

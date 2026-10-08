@@ -10,6 +10,9 @@
 # Each configuration waits for the load average to drop (BENCH_MAX_LOAD, BENCH_COOLDOWN_TIMEOUT)
 # and then sleeps BENCH_COOLDOWN seconds, and its CPU clock is logged to
 # build/bench/freq-<tag>-<topo>-<n>.txt and summarised into the result record.
+# BENCH_IMPL (ofx|native) is forwarded to graph_bench.py. BENCH_RENDERER_DIR (default build/release)
+# and BENCH_PLUGIN_PATH (default build/assets/Plugins) select another build and OFX plugin set,
+# both resolved against the repo root when relative.
 # shellcheck source-path=SCRIPTDIR
 set -u
 status=0
@@ -20,9 +23,13 @@ frames=$3
 range=$4
 shift 4
 out=$repo/build/bench/results-$tag.jsonl
+renderer_dir=${BENCH_RENDERER_DIR:-build/release}
+plugin_path=${BENCH_PLUGIN_PATH:-build/assets/Plugins}
+case $renderer_dir in /*) ;; *) renderer_dir=$repo/$renderer_dir ;; esac
+case $plugin_path in /*) ;; *) plugin_path=$repo/$plugin_path ;; esac
 # Expands BENCH_SETTINGS inside the container so values need no extra quoting layer.
 # shellcheck disable=SC2016  # expanded by the shell inside the container
-inner='cd "$REPO" && args=(); IFS=";" read -ra kv <<< "${BENCH_SETTINGS:-}"; for s in "${kv[@]}"; do args+=(--setting "$s"); done; timeout "$BENCH_TIMEOUT" xvfb-run --auto-servernum build/release/Renderer/NatronRenderer "${args[@]}" -b tools/bench/graph_bench.py'
+inner='cd "$REPO" && args=(); IFS=";" read -ra kv <<< "${BENCH_SETTINGS:-}"; for s in "${kv[@]}"; do args+=(--setting "$s"); done; timeout "$BENCH_TIMEOUT" xvfb-run --auto-servernum "$BENCH_RENDERER_DIR/Renderer/NatronRenderer" "${args[@]}" -b tools/bench/graph_bench.py'
 logs=$repo/build/bench/logs
 mkdir -p "$logs"
 # shellcheck source=lib.sh
@@ -41,10 +48,12 @@ for spec in "$@"; do
             -e BENCH_FRAMES="$frames" -e BENCH_RANGE="$range" -e BENCH_OUT="$out" -e BENCH_NAMED="${BENCH_NAMED:-1}" \
             -e BENCH_SETTINGS="${BENCH_SETTINGS:-}" -e BENCH_TIMEOUT="${BENCH_TIMEOUT:-1800}" -e REPO="$repo" \
             -e OMP_WAIT_POLICY -e GOMP_SPINCOUNT -e OMP_THREAD_LIMIT -e OMP_DISPLAY_ENV -e BENCH_RENDER_STATS -e BENCH_PLATES_DIR \
-            -e OFX_PLUGIN_PATH="$repo"/build/assets/Plugins natron-dev bash -lc "$inner" \
+            -e BENCH_IMPL -e BENCH_RENDERER="$renderer_dir/Renderer/NatronRenderer" -e BENCH_RENDERER_DIR="$renderer_dir" \
+            -e OFX_PLUGIN_PATH="$plugin_path" natron-dev bash -lc "$inner" \
             > "$log" 2>&1
         code=$?
         bench_freq_stop
+        echo "pressure after: $(bench_pressure)"
         if [ "$(wc -l < "$out" 2>/dev/null || echo 0)" -gt "$before" ]; then
             bench_record_freq "$out" "$freq"
         fi

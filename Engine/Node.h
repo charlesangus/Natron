@@ -970,6 +970,14 @@ public:
     static void getNodesOwningChannelSelectorMessage(NodesList* nodes);
 
     /**
+     * @brief Posts the warning of a render that found NaN pixels in its output, renderedHash being
+     * the node hash the render started at. The warning describes the image at that hash only, so
+     * a render started before the last change of the hash posts nothing, and the next change of
+     * the hash clears it. Any other message posted since takes the message out of that clear.
+     **/
+    void setNaNWarning(const std::string& content, U64 renderedHash);
+
+    /**
      * @brief Clears the persistent message before a preview render, except a channel-selector
      * error, which stays until a render or check that passes retires it, and a project-load
      * warning, which no render can retire.
@@ -989,6 +997,8 @@ private:
     void clearPersistentMessageRecursive(std::list<Node*>& markedNodes);
 
     void clearPersistentMessageInternal();
+
+    void clearStaleNaNWarning(U64 currentHash);
 
 public:
 
@@ -1386,6 +1396,17 @@ public:
 
     void addPositionInteract(const KnobDoublePtr& position,
                              const KnobBoolPtr& interactive);
+
+    void addRectangleInteract(const KnobDoublePtr& bottomLeft,
+                              const KnobDoublePtr& size,
+                              const KnobBoolPtr& interactive,
+                              const KnobBoolPtr& enable);
+
+    /**
+     * @brief Host overlays declared before the node has a GUI; they are handed to the GUI by
+     * initializeHostOverlays().
+     **/
+    std::list<HostOverlayKnobsPtr> getPendingHostOverlays() const;
 
     void addTransformInteract(const KnobDoublePtr& translate,
                               const KnobDoublePtr& scale,

@@ -531,49 +531,23 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
     if (minimized) {
         _settingsPanel->restoreMinimizedState(true);
     }
-
-    const std::list<ViewerTab*>& viewers = getDagGui()->getGui()->getViewersList();
-    for (std::list<ViewerTab*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
-        (*it)->getViewer()->updatePersistentMessage();
-    }
 } // NodeGui::ensurePanelCreated
 
 void
 NodeGui::onSettingsPanelClosed(bool closed)
 {
-    NodePtr internalNode = getNode();
-    if (internalNode && internalNode->hasAnyPersistentMessage()) {
-        const std::list<ViewerTab*>& viewers = getDagGui()->getGui()->getViewersList();
-        for (std::list<ViewerTab*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
-            (*it)->getViewer()->updatePersistentMessage();
-        }
-    }
     Q_EMIT settingsPanelClosed(closed);
 }
 
 void
 NodeGui::onSettingsPanelMinimized()
 {
-    NodePtr internalNode = getNode();
-    if (internalNode && internalNode->hasAnyPersistentMessage()) {
-        const std::list<ViewerTab*>& viewers = getDagGui()->getGui()->getViewersList();
-        for (std::list<ViewerTab*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
-            (*it)->getViewer()->updatePersistentMessage();
-        }
-    }
     Q_EMIT settingsPanelMinimized();
 }
 
 void
 NodeGui::onSettingsPanelMaximized()
 {
-    NodePtr internalNode = getNode();
-    if (internalNode && internalNode->hasAnyPersistentMessage()) {
-        const std::list<ViewerTab*>& viewers = getDagGui()->getGui()->getViewersList();
-        for (std::list<ViewerTab*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
-            (*it)->getViewer()->updatePersistentMessage();
-        }
-    }
     Q_EMIT settingsPanelMaximized();
 }
 

@@ -3128,7 +3128,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
             warning.append( QString::number(actionArgs.roi.y2) );
             warning.append( QString::fromUtf8(") ") );
             warning.append( tr("contains NaN values. They have been converted to 1.") );
-            _publicInterface->setPersistentMessage( eMessageTypeWarning, warning.toStdString() );
+            _publicInterface->getNode()->setNaNWarning(warning.toStdString(), _publicInterface->getRenderHash());
         }
 
         // Per the no-shuffle invariant (see EffectInstance::resolveInputPlaneForRender), the channels

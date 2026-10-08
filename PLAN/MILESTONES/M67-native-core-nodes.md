@@ -1168,3 +1168,9 @@ Notes:
   - **Cancellation helpers moved:** they now live in `NativeEffectBase`, and every native band loop uses them.
   - **AppImage:** `build/appimages/M67-37259b177.AppImage`, launch check passes, UAT updated.
   - **Review round 2** (Codex, fix diff only) is running, because the fixes touched the pool wait and two refactors.
+- 2026-10-07 — **Review round 2** (Codex, fix diff): 1 finding, fixed in `8f88cc653`.
+  - **Finding:** Merge checked whether an output was also an input only after taking its locks, which would self-deadlock.
+  - **Investigation:** a flat render's output can't be an input's image (own cache entry or a fresh image; the OFX host has always locked them together). So the check was dead.
+  - **Fix:** Merge now checks before any lock and falls back to a private, bit-identical copy. Tested through the helper, plus a bit-exact scheduler case.
+  - **Round closed**, all threads replied. CI was dispatched on the tip.
+  - **AppImage:** `M67-37259b177` predates this fix. The change only affects a case the engine can't produce, so the AppImage stays valid for UAT.

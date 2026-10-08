@@ -20,6 +20,11 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 
 Topologies: `chain` (N Grades in series), `mixed` (Grade/Blur/Transform/ColorCorrect in series),
 `wide` (sources merged by a balanced tree), `comp` (seeded random DAG with fan-out and merges).
+Per-node chains isolate one node's cost: `ccchain` and `blurchain` (N ColorCorrects or Blurs),
+`xfchain` (N Transform + Grade pairs, since Transforms in series concatenate), `mergechain` (N
+Merges, each with the same second source) and `mergesrcchain` (each Merge with a fresh
+CheckerBoard). Take the marginal cost between two sizes, and subtract `chain` from `xfchain` and
+`mergechain` from `mergesrcchain`.
 Resolutions: `tiny` (32x32, isolates per-node overhead), `hd`, `uhd`. Sources are animated so
 nothing is cached as frame-invariant.
 

@@ -794,7 +794,70 @@ Cause of run 1's 1.70x: the native point ops ran single-threaded (parallelism 1.
 
 Median frame wall (s), per config: tiny 1000 ofx 0.334 / native 0.167; hd 30 ofx 1.006 / native 0.725; hd 100 ofx 3.105 / native 2.198. RSS before the first frame (MB), tiny 0 / 1000: ofx 112 / 731, native 112 / 246.
 
-## After M67 (contended, ratios only) (2026-10-07, `31fc0fbbe` against `ce575b4d2`)
+## After M67 (ratios only) (2026-10-07, review fixes on `7d1db14cb` against `ce575b4d2`)
+
+Head is the M67 branch after the first review round: `7d1db14cb` plus the review fixes, not yet committed when measured (`build/wt/m64/build/release`). Base, plug-ins, `BENCH_IMPL` and the base/head interleaving are as in the pre-review run below. Three invocations, all from `build/m67-b13/`:
+
+- `bench.sh`: 2 rounds of base then head, each running
+  ```
+  tools/bench/run_matrix.sh m67b13-r<r>-<base|head>-tiny tiny 5 0 chain:0,1000
+  tools/bench/run_matrix.sh m67b13-r<r>-<base|head>-hd hd 3 0 chain:30,100 mixed:100 wide:100 comp:100
+  tools/bench/run_matrix.sh m67b13-r<r>-<base|head>-real hd 3 0 readchain:30 footagecomp:32
+  tools/bench/run_matrix.sh m67b13-r<r>-<base|head>-node hd 3 0 ccchain:10,40 blurchain:10,40 xfchain:10,40 mergechain:10,40 mergesrcchain:10,40
+  ```
+- `bench2.sh` (tag `m67b13b`): the same without the tiny set and with only `blurchain` in the node set, after the Blur kernel fix described below. Only Blur changed between the two head builds, so the Grade-only measures (mem, hd, tiny, build) come from `bench.sh`, and everything with a Blur in it comes from `bench2.sh`.
+- `bench3.sh`: one more base/head pair of wide 100 and comp 100, because both base configurations of `bench2.sh` round 2 started at load1 7.0–8.8.
+
+The per-node chains (`ccchain`, `blurchain`, `xfchain`, `mergechain`, `mergesrcchain`) are new in `graph_bench.py`; see the README. A node's cost is the marginal frame time between 10 and 40 of them. Transform is `xfchain` minus `chain`, since Transforms in series concatenate, and CheckerBoard is `mergesrcchain` minus `mergechain`.
+
+Host: an external load the sandbox cannot see came and went during the runs (load1 7–9, cpu `some avg10` 50–57%). Configurations started under it were discarded: head footagecomp and both head `xfchain` sizes in round 1, base `mergechain` 40 and `mergesrcchain` 10 in round 1, and base wide and comp in `bench2.sh` round 2. Of the rest, a few started at load1 0.50–1.0 with cpu pressure under 2.3%, the previous configuration's tail. All configurations exited 0. `build/m67-b13/analyze.py <tag>` writes `build/bench/results-<tag>-combined.jsonl` and prints the ratios.
+
+### Ratios (head / base)
+
+| measure | pre-review (median) | r1 | r2 | median |
+|---|---|---|---|---|
+| mem: idle RSS per node, (chain 1000 − chain 0) tiny | 0.198 | 0.195 | 0.198 | **0.197** |
+| hd: HD marginal per Grade, (chain 100 − chain 30) / 70 | 0.708 | 0.729 | 0.739 | **0.734** |
+| build: chain 1000 tiny build_s | 0.878 | 0.900 | 0.900 | 0.900 |
+| tiny chain 1000 frame | 0.507 | 0.545 | 0.521 | 0.533 |
+| HD readchain 30 frame | 0.742 | 0.742 | 0.691 | 0.716 |
+| HD comp 100 frame | 1.027 | 0.841 | 0.825 (r3) | **0.833** |
+| HD mixed 100 frame | 1.102 | 0.766 | 0.743 | **0.755** |
+| HD wide 100 frame | 1.194 | 0.904 | 0.917 (r3) | **0.911** |
+| HD footagecomp 32 frame | 1.199 | 0.946 | 0.934 | **0.940** |
+
+The mem, hd, build and tiny rows are from `bench.sh`, the others from `bench2.sh` (wide and comp round 2 from `bench3.sh`). In `bench.sh`, before the Blur fix, the same graphs gave mixed 0.908/0.855, wide 0.902/0.885, comp 0.917/0.935 and footagecomp 1.158 (its quiet round).
+
+Per node at HD (marginal wall ms/node, base → head, quiet rounds; CPU ms/node from the median `frame_cpu_s`):
+
+| node | wall ms/node | wall ratio | CPU ms/node | CPU ratio |
+|---|---|---|---|---|
+| Grade (`chain`) | 30.5 → 22.4 | 0.73 | 98 → 71 | 0.73 |
+| ColorCorrect (`ccchain`) | 62.5 → 45.3 | 0.72 | 218 → 154 | 0.71 |
+| Blur, size 3 (`blurchain`) | 108.3 → 90.6 | 0.84 | 272 → 298 | 1.10 |
+| Blur before the kernel fix | 107.6 → 109.0 | 1.01 | 274 → 366 | 1.34 |
+| Transform (`xfchain` − `chain`) | 53.1 → 43.3 | 0.82 | 173 → 145 | 0.84 |
+| Merge (`mergechain`, round 2) | 19.3 → 20.1 | 1.04 | 53 → 60 | 1.13 |
+| Merge + CheckerBoard (`mergesrcchain`, round 2) | 23.6 → 22.1 | 0.94 | 74 → 70 | 0.96 |
+
+The Merge and CheckerBoard costs are small, about 20 ms/node, so their ratios are within a few ms of noise. CheckerBoard alone, by subtraction, is about 4 → 2 ms/node.
+
+rss_peak (MB, median, base → head): mixed 100 951 → 630, wide 100 923 → 859, comp 100 1685 → 1465, footagecomp 32 2035 → 2039.
+
+### Gate checks
+
+- PASS: mem is within 0.1 of the P1.T6 gate median. 0.197 against 0.216.
+- PASS: hd is within 0.1 of the gate median. 0.734 against 0.700 (+0.034).
+- PASS: HD mixed (0.755), wide (0.911) and footagecomp (0.940) are at or below 1.0x base. comp 100 is at 0.833.
+
+### What closed the gap
+
+- **Merge and CheckerBoard** (operators resolved to per-operator row functions once per render, fewer row copies, CheckerBoard filled in runs) brought wide 100 from 1.19 to about 0.90 with no other change to that graph.
+- **ColorCorrect** (identity groups skipped, curves through `CurveSnapshot`) is at 0.71 of OFX per node.
+- **Transform** (affine fast path in the resampler) is at 0.82 per node.
+- **Blur** was the rest. In `bench.sh` footagecomp stayed at 1.16 in its quiet round. Ablations of footagecomp (OFX and native, 2 rounds each) put the whole excess on its Blurs: without them head ran at 0.93–0.94, while the static-transform and unmasked variants stayed at 1.03–1.10. An eu-stack profile showed 72% of the busy Blur samples in `BlurKernels::LineFilter::applyVanVliet`. In `blurchain` native Blur used 1.34x CImg's CPU per node, and only matched it in wall time through higher parallelism (3.3 against 2.5); in footagecomp the branches compete for cores, so the CPU cost showed. A standalone benchmark of the kernel on an HD RGBA frame took 236 ms at `-O2` (how Natron's release build compiles it) and 129 ms at `-O3`; CImg's own recursion took 137 ms at openfx-misc's `-Ofast` and 234 ms at `-O2`. At `-O2` GCC keeps the three-term `val[]` loops as loops, so the recurrence state stays in memory. `#pragma GCC unroll 4` on those loops gives 133 ms at `-O2`, with output bit-identical to the old code at `-O0` and `-O2` across all orders, both boundaries, five sigmas and strided lines, and Blur parity in the release build still at a max diff of 0.
+
+## After M67, pre-review run (contended, ratios only) (2026-10-07, `31fc0fbbe` against `ce575b4d2`)
 
 Head is the M67 tip `31fc0fbbe` (`build/wt/m64/build/release`, `build/assets/Plugins`): 34 core IDs are native, and their OFX plugins are retired. Base is the M63 tip `ce575b4d2` (`build/wt/m67-base/build/release`, with the bundle at pin `3060fe33` kept as `build/assets/Plugins.pre-m67`), where the same IDs are OFX. Base runs with `BENCH_IMPL=ofx` (Grade major 2) and head with `BENCH_IMPL=native` (Grade major 3). Every other ID is unversioned, so it resolves to OFX on base and native on head. Both run the head's `graph_bench.py`. The two builds alternate in one invocation (`build/m67-b12/bench.sh`), base then head, for 2 rounds, with the harness defaults (load1 < 0.5 then 60 s before each configuration). Each round runs:
 

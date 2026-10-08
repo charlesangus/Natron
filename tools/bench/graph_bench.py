@@ -4,7 +4,8 @@
 #
 # Environment:
 #   BENCH_TOPO    chain | mixed | wide | comp (generator-fed), or the plate-fed families
-#                 readchain | footagecomp | iobound | rambound | deepcomp (see README "Realistic workloads")
+#                 readchain | footagecomp | iobound | rambound | deepcomp (see README "Realistic workloads"),
+#                 or the per-node chains ccchain | blurchain | xfchain | mergechain | mergesrcchain
 #   BENCH_N       approximate number of processing nodes
 #   BENCH_RES     tiny (32x32, isolates per-node overhead) | hd (1920x1080) | uhd (3840x2160); for the
 #                 plate-fed families it also picks the plate resolution (deepcomp always uses HD)
@@ -316,6 +317,45 @@ def build_chain():
     return out
 
 
+def build_ccchain():
+    out = source(0)
+    for i in range(N):
+        out = colorcorrect(out, i)
+    return out
+
+
+def build_blurchain():
+    out = source(0)
+    for i in range(N):
+        out = blur(out, i)
+    return out
+
+
+def build_xfchain():
+    # Transforms in series would concatenate into one resample, so each is followed by a Grade;
+    # subtract the chain topology's per-node cost to get the Transform's.
+    out = source(0)
+    for i in range(N):
+        out = grade(transform(out, i), i)
+    return out
+
+
+def build_mergechain():
+    src = source(1)
+    out = source(0)
+    for i in range(N):
+        out = merge(src, out)
+    return out
+
+
+def build_mergesrcchain():
+    # One more CheckerBoard per Merge than mergechain: the difference is the generator's cost.
+    out = source(0)
+    for i in range(N):
+        out = merge(source(i + 1), out)
+    return out
+
+
 def build_mixed():
     ops = (grade, blur, transform, colorcorrect)
     out = source(0)
@@ -571,7 +611,9 @@ def main():
 
     builders = {"chain": build_chain, "mixed": build_mixed, "wide": build_wide, "comp": build_comp,
                 "readchain": build_readchain, "footagecomp": build_footagecomp, "iobound": build_iobound,
-                "rambound": build_rambound, "deepcomp": build_deepcomp}
+                "rambound": build_rambound, "deepcomp": build_deepcomp, "ccchain": build_ccchain,
+                "blurchain": build_blurchain, "xfchain": build_xfchain, "mergechain": build_mergechain,
+                "mergesrcchain": build_mergesrcchain}
     t0 = time.time()
     root = builders[TOPO]()
     build_s = time.time() - t0

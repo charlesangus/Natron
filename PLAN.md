@@ -244,6 +244,7 @@ future core work has solid ground to build on.
 | M46 | Labelmaker Annotations | todo | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |
 | M16 | Project Format Redesign | todo | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
 | M31 | Architectural Cleanup | todo | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
+| M69 | Minor Cleanup | todo | [M69-minor-cleanup.md](PLAN/MILESTONES/M69-minor-cleanup.md) |
 
 - 2026-09-18 — **M18's manual GUI checklist: all 6 items now confirmed**
   (re-run on a rebuilt AppImage at `94ceb9407` or later). Separately, the

@@ -1005,10 +1005,10 @@ Codex's review on PR #42 has 13 findings, and the user chose to fix the HD compo
 - [x] M67.P7.T5 — Share the extent knobs between `NativeGenerator` and Crop (finding 6)
   - files: `Engine/Nodes/Image/NativeGenerator.{h,cpp}`, `Engine/Nodes/Transform/Crop.{h,cpp}`, a new shared extent module
   - size: M
-- [ ] M67.P7.T6 — Build, full ctest (both modes), per-node HD rebench against the M63 tip, profile anything still slower than OFX, repackage the AppImage
+- [x] M67.P7.T6 — Build, full ctest (both modes), per-node HD rebench against the M63 tip, profile anything still slower than OFX, repackage the AppImage
   - verify: full ctest green in both modes; every parity test still replays; HD mixed, wide and footagecomp ≤ 1.0x of base, or profiled with the reason recorded; AppImage launch check passes
   - size: L
-- [ ] M67.P7.T7 — Reply on each review thread and close the round
+- [x] M67.P7.T7 — Reply on each review thread and close the round
 
 ## Batch plan
 
@@ -1157,3 +1157,14 @@ Notes:
   - **Merge and CheckerBoard:** per-operator templated row functions and CheckerBoard runs, both fuzz-verified bit-identical on the host.
   - **ColorCorrect:** skips identity groups, but not the tone blend, whose weights don't sum to exactly 1 in float.
   - **Extent knobs:** shared by Crop and the generators (`ExtentKnobs`); each node keeps its own knob order.
+- 2026-10-07 — **B13 landed** (`16dbe8278`, `8798512d0`, `0a672442a`, `3b1ce830f`, `37259b177`, pushed). All 13 round-1 threads are replied to.
+  - **Tests:** full ctest 1216/1216 in both modes, smoke passes, 146/151 parity comparisons in replay (the 5 live are ColorMatrix self-tests), 40/40 hang loops.
+  - **HD targets met:**
+    - mixed 0.755, wide 0.911, footagecomp 0.940;
+    - mem 0.197 and hd 0.734, both within 0.1 of the gate medians.
+  - **Per-node chains, vs OFX wall time:** ColorCorrect 0.72, Transform 0.82, Blur 0.84, Merge 1.04 (≈ noise at about 20 ms/node).
+  - **Root cause of the Blur slowdown:** GCC at `-O2` leaves `applyVanVliet`'s loops in memory; OFX builds at `-Ofast`. `#pragma GCC unroll` fixed it, bit-identical.
+  - **Merge alpha-only regression test dropped:** the host always gives Merge RGBA output, so the graph can't reach the branch; the fix was checked by reading.
+  - **Cancellation helpers moved:** they now live in `NativeEffectBase`, and every native band loop uses them.
+  - **AppImage:** `build/appimages/M67-37259b177.AppImage`, launch check passes, UAT updated.
+  - **Review round 2** (Codex, fix diff only) is running, because the fixes touched the pool wait and two refactors.

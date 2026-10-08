@@ -30,6 +30,7 @@
 
 #include <list>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
@@ -118,6 +119,14 @@ public:
      * @brief The input index of the i-th A input (0 for A, 1 for A2, ...), or -1 past the last.
      **/
     static int aInputIndex(int i) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief `source`, or a private copy of it when it is one of `outputs`. The render holds every
+     * output for writing while it reads its sources, and the image lock cannot be taken for
+     * reading by the thread that holds it for writing.
+     **/
+    static ImagePtr sourceDetachedFromOutputs(const ImagePtr& source,
+                                              const std::vector<ImagePtr>& outputs) WARN_UNUSED_RETURN;
 
 protected:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;

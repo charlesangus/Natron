@@ -26,8 +26,10 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cstring>
 #include <iostream>
 #include <list>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -45,6 +47,8 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/Image.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -509,4 +513,63 @@ TEST_F(NativeMergeTest, CompGraphRendersTheSameInBothSchedulerModes)
         ASSERT_TRUE(bool(out));
     }
     expectSameBothWays(out);
+}
+
+// One upstream image on B, A, A2 and the mask at once: the render locks the same image for
+// reading once per role while it holds the output for writing.
+TEST_F(NativeMergeTest, OneSourceOnEveryInput)
+{
+    NodePtr source = createSource(0);
+    ASSERT_TRUE(bool(source));
+    NodePtr merge = createMerge(source, source, source);
+    ASSERT_TRUE(isNative(merge));
+    connectNodes(source, merge, MergeNode::aInputIndex(1), true);
+    expectSameBothWays(merge);
+}
+
+// The engine never hands a render an input that is also one of its outputs, so the aliasing is
+// forced here, on the function the render passes every source through before it locks anything.
+TEST_F(NativeMergeTest, SourceThatIsAnOutputIsReadFromAPrivateCopy)
+{
+    const RectI bounds(-2, 1, 5, 4);
+    const RectD rod(-2., 1., 5., 4.);
+    const auto makeImage = [&]() {
+        return std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), rod, bounds, 0, 1., eImageBitDepthFloat, eImageFieldingOrderNone, false, eStorageModeRAM);
+    };
+    const ImagePtr output = makeImage();
+    const ImagePtr otherOutput = makeImage();
+    {
+        Image::WriteAccess write(output.get());
+        float value = -1.25f;
+        for (int y = bounds.y1; y < bounds.y2; ++y) {
+            float* pix = (float*)write.pixelAt(bounds.x1, y);
+            for (int i = 0; i < bounds.width() * 4; ++i, value += 0.37f) {
+                pix[i] = value;
+            }
+        }
+    }
+    std::vector<ImagePtr> outputs;
+    outputs.push_back(otherOutput);
+    outputs.push_back(output);
+
+    const ImagePtr source = MergeNode::sourceDetachedFromOutputs(output, outputs);
+    ASSERT_TRUE(bool(source));
+    ASSERT_NE(output, source);
+    ASSERT_NE(otherOutput, source);
+    EXPECT_EQ(bounds, source->getBounds());
+    EXPECT_EQ(4u, source->getComponentsCount());
+    EXPECT_EQ(eImageBitDepthFloat, source->getBitDepth());
+    {
+        Image::WriteAccess write(output.get());
+        Image::ReadAccess read(source.get());
+        for (int y = bounds.y1; y < bounds.y2; ++y) {
+            const void* expected = write.pixelAt(bounds.x1, y);
+            const void* actual = read.pixelAt(bounds.x1, y);
+            EXPECT_EQ(0, std::memcmp(expected, actual, sizeof(float) * 4 * bounds.width())) << "row " << y;
+        }
+    }
+
+    const ImagePtr input = makeImage();
+    EXPECT_EQ(input, MergeNode::sourceDetachedFromOutputs(input, outputs));
+    EXPECT_FALSE(MergeNode::sourceDetachedFromOutputs(ImagePtr(), outputs));
 }

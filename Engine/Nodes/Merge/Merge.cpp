@@ -276,9 +276,6 @@ struct MergePlaneJob {
     // The image the channels left unprocessed are copied from, the way the host copies them
     // from the preferred input for an effect that does not: -1 none, 0 B, i + 1 the i-th A.
     int passSource;
-    // Whether dst is also one of the inputs, so its rows cannot take the result before the
-    // inputs are read.
-    bool dstIsInput;
 
     MergePlaneJob()
         : dst()
@@ -287,7 +284,6 @@ struct MergePlaneJob {
         , b()
         , as()
         , passSource(-1)
-        , dstIsInput(false)
     {
     }
 };
@@ -482,6 +478,21 @@ MergeNode::aInputIndex(int i)
     }
 
     return kMergeInputMask + i;
+}
+
+ImagePtr
+MergeNode::sourceDetachedFromOutputs(const ImagePtr& source,
+                                     const std::vector<ImagePtr>& outputs)
+{
+    if (!source || (std::find(outputs.begin(), outputs.end(), source) == outputs.end())) {
+        return source;
+    }
+    const RectI bounds = source->getBounds();
+    ImagePtr copy = std::make_shared<Image>(source->getComponents(), source->getRoD(), bounds, source->getMipmapLevel(), source->getPixelAspectRatio(),
+                                            source->getBitDepth(), source->getFieldingOrder(), false /*useBitmap*/, eStorageModeRAM);
+    copy->pasteFrom(*source, bounds, false /*copyBitmap*/);
+
+    return copy;
 }
 
 std::string
@@ -998,6 +1009,20 @@ MergeNode::render(const RenderActionArgs& args)
         return eStatusOK;
     }
 
+    // Every output is locked for writing below, for the whole render, so no source may be one
+    // of them.
+    std::vector<ImagePtr> outputs;
+    for (std::size_t j = 0; j < jobs.size(); ++j) {
+        outputs.push_back(jobs[j].dst);
+    }
+    mask = sourceDetachedFromOutputs(mask, outputs);
+    for (std::size_t j = 0; j < jobs.size(); ++j) {
+        jobs[j].b.image = sourceDetachedFromOutputs(jobs[j].b.image, outputs);
+        for (std::size_t i = 0; i < jobs[j].as.size(); ++i) {
+            jobs[j].as[i].image = sourceDetachedFromOutputs(jobs[j].as[i].image, outputs);
+        }
+    }
+
     std::shared_ptr<Image::ReadAccess> maskAccess;
     RectI maskBounds;
     if (mask) {
@@ -1018,11 +1043,9 @@ MergeNode::render(const RenderActionArgs& args)
             job.b.bounds = job.b.image->getBounds();
             job.b.access = std::make_shared<Image::ReadAccess>(job.b.image.get());
         }
-        job.dstIsInput = (job.dst == job.b.image);
         for (std::size_t i = 0; i < job.as.size(); ++i) {
             job.as[i].bounds = job.as[i].image->getBounds();
             job.as[i].access = std::make_shared<Image::ReadAccess>(job.as[i].image.get());
-            job.dstIsInput = job.dstIsInput || (job.dst == job.as[i].image);
         }
         for (std::size_t b = 0; b < bandRects.size(); ++b) {
             bands.push_back(MergeRowBand(j, bandRects[b].y1, bandRects[b].y2));
@@ -1058,7 +1081,7 @@ MergeNode::render(const RenderActionArgs& args)
         const MergeOperators::RowFunction mergeOverRow = MergeOperators::mergeOverRowFunction(op, nComps);
         const bool mixesWithB = doMask || (mix != 1.f) || !allOutputs;
         // The result goes straight into the output row when every channel of it is processed.
-        const bool writesDst = allProcessed && !job.dstIsInput;
+        const bool writesDst = allProcessed;
         std::vector<float> bRow(rowSize);
         std::vector<unsigned char> bPresentRow(width);
         std::vector<float> bKept(bKeepsAll ? 0 : rowSize);

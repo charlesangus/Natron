@@ -28,7 +28,6 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
-#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -37,6 +36,7 @@
 #include "Engine/Interpolation.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Image/ColorMath.h"
+#include "Engine/Nodes/Image/CurveSnapshot.h"
 #include "Engine/RenderScale.h"
 
 NATRON_NAMESPACE_ENTER
@@ -84,92 +84,6 @@ struct PixelRGBA {
     double v[4];
 };
 
-// An immutable copy of a tone curve, evaluated without the Curve's mutex: render threads share
-// one kernel, and pixels outside `range` evaluate the curve directly, once per pixel. The
-// evaluation is Curve::getValueAt()'s for a non-periodic curve: the same segment selection and
-// extrapolation, Interpolation::interpolate() and the clamp to the curve's Y range.
-class ToneCurve {
-public:
-    ToneCurve()
-        : _yMin(-std::numeric_limits<double>::infinity())
-        , _yMax(std::numeric_limits<double>::infinity())
-    {
-    }
-
-    explicit ToneCurve(const CurvePtr& curve)
-        : _yMin(-std::numeric_limits<double>::infinity())
-        , _yMax(std::numeric_limits<double>::infinity())
-    {
-        if (!curve) {
-            return;
-        }
-        const KeyFrameSet keys = curve->getKeyFrames_mt_safe();
-        _keys.assign(keys.begin(), keys.end());
-        const Curve::YRange yRange = curve->getCurveYRange();
-        _yMin = yRange.min;
-        _yMax = yRange.max;
-    }
-
-    double valueAt(double t) const
-    {
-        if (_keys.empty()) {
-            return 0.;
-        }
-        std::vector<KeyFrame>::const_iterator next = std::upper_bound(_keys.begin(), _keys.end(), t, isBefore);
-        double tcur, vcur, vcurDerivRight, tnext, vnext, vnextDerivLeft;
-        KeyframeTypeEnum interp, interpNext;
-        if (next == _keys.begin()) {
-            tnext = next->getTime();
-            vnext = next->getValue();
-            vnextDerivLeft = next->getLeftDerivative();
-            interpNext = next->getInterpolation();
-            tcur = tnext - 1.;
-            vcur = vnext;
-            vcurDerivRight = 0.;
-            interp = eKeyframeTypeNone;
-        } else if (next == _keys.end()) {
-            const KeyFrame& last = _keys.back();
-            tcur = last.getTime();
-            vcur = last.getValue();
-            vcurDerivRight = last.getRightDerivative();
-            interp = last.getInterpolation();
-            tnext = tcur + 1.;
-            vnext = vcur;
-            vnextDerivLeft = 0.;
-            interpNext = eKeyframeTypeNone;
-        } else {
-            const KeyFrame& cur = *(next - 1);
-            tcur = cur.getTime();
-            vcur = cur.getValue();
-            vcurDerivRight = cur.getRightDerivative();
-            interp = cur.getInterpolation();
-            tnext = next->getTime();
-            vnext = next->getValue();
-            vnextDerivLeft = next->getLeftDerivative();
-            interpNext = next->getInterpolation();
-        }
-        const double v = Interpolation::interpolate(tcur, vcur, vcurDerivRight, vnextDerivLeft, tnext, vnext, t, interp, interpNext);
-        if (v > _yMax) {
-            return _yMax;
-        } else if (v < _yMin) {
-            return _yMin;
-        }
-
-        return v;
-    }
-
-private:
-    static bool isBefore(double t,
-                         const KeyFrame& key)
-    {
-        return t < key.getTime();
-    }
-
-    std::vector<KeyFrame> _keys;
-    double _yMin;
-    double _yMax;
-};
-
 class ColorCorrectKernel
     : public PixelKernel {
 public:
@@ -179,7 +93,7 @@ public:
                        double rangeMax,
                        bool clampBlack,
                        bool clampWhite,
-                       const ToneCurve curves[2])
+                       const CurveSnapshot curves[2])
         : _luminanceMath(luminanceMath)
         , _rangeMin((std::min)(rangeMin, rangeMax))
         , _rangeMax((std::max)(rangeMin, rangeMax))
@@ -188,6 +102,10 @@ public:
     {
         for (int g = 0; g < ColorCorrect::eGroupCount; ++g) {
             _groups[g] = groups[g];
+            _active[g] = !groups[g].isIdentity();
+            for (int i = 0; i < 4; ++i) {
+                _invGamma[g][i] = 1. / groups[g].gamma[i];
+            }
         }
         if (_rangeMin == _rangeMax) {
             _rangeMax = _rangeMin + 1.;
@@ -229,18 +147,28 @@ public:
             const double hScale = interpolate(1, l);
             const double mScale = 1.f - sScale - hScale;
 
+            // An identity group leaves the pixel bit-for-bit as it is, so it is not run. The
+            // blend below still runs: its weights do not sum to exactly one in floating point.
             PixelRGBA s = p;
             PixelRGBA m = p;
             PixelRGBA h = p;
-            applyGroup(_groups[ColorCorrect::eGroupShadows], process, &s);
-            applyGroup(_groups[ColorCorrect::eGroupMidtones], process, &m);
-            applyGroup(_groups[ColorCorrect::eGroupHighlights], process, &h);
+            if (_active[ColorCorrect::eGroupShadows]) {
+                applyGroup(ColorCorrect::eGroupShadows, process, &s);
+            }
+            if (_active[ColorCorrect::eGroupMidtones]) {
+                applyGroup(ColorCorrect::eGroupMidtones, process, &m);
+            }
+            if (_active[ColorCorrect::eGroupHighlights]) {
+                applyGroup(ColorCorrect::eGroupHighlights, process, &h);
+            }
             for (int i = 0; i < 4; ++i) {
                 if (process[i]) {
                     p.v[i] = s.v[i] * sScale + m.v[i] * mScale + h.v[i] * hScale;
                 }
             }
-            applyGroup(_groups[ColorCorrect::eGroupMaster], process, &p);
+            if (_active[ColorCorrect::eGroupMaster]) {
+                applyGroup(ColorCorrect::eGroupMaster, process, &p);
+            }
 
             for (int c = 0; (c < nComps) && (c < 4); ++c) {
                 if (process[bits[c]]) {
@@ -291,10 +219,12 @@ private:
         return static_cast<float>(a * (1.f - alpha) + b * alpha);
     }
 
-    void applyGroup(const GroupValues& group,
+    void applyGroup(int groupIndex,
                     const bool process[4],
                     PixelRGBA* p) const
     {
+        const GroupValues& group = _groups[groupIndex];
+        const double* invGamma = _invGamma[groupIndex];
         applySaturation(group.saturation, process, p);
         for (int i = 0; i < 4; ++i) {
             if (!process[i]) {
@@ -305,7 +235,7 @@ private:
                 v = std::pow(v / 0.18, group.contrast[i]) * 0.18;
             }
             if ((v > 0) && (group.gamma[i] != 1.)) {
-                v = std::pow(v, 1. / group.gamma[i]);
+                v = std::pow(v, invGamma[i]);
             }
             if (group.gain[i] != 1.) {
                 v = v * group.gain[i];
@@ -339,12 +269,14 @@ private:
     }
 
     GroupValues _groups[ColorCorrect::eGroupCount];
+    bool _active[ColorCorrect::eGroupCount];
+    double _invGamma[ColorCorrect::eGroupCount][4];
     ColorMath::LuminanceMathEnum _luminanceMath;
     double _rangeMin;
     double _rangeMax;
     bool _clampBlack;
     bool _clampWhite;
-    ToneCurve _curves[2];
+    CurveSnapshot _curves[2];
     std::vector<float> _lut[2];
 };
 
@@ -576,10 +508,10 @@ ColorCorrect::makeKernel(const KernelContext& context)
         luminanceMath = (ColorMath::LuminanceMathEnum)choice->getValueAtTime(context.time, 0, context.view);
     }
 
-    ToneCurve curves[2];
+    CurveSnapshot curves[2];
     if (KnobParametricPtr toneRanges = _toneRanges.lock()) {
         for (int curve = 0; curve < 2; ++curve) {
-            curves[curve] = ToneCurve(toneRanges->getParametricCurve(curve));
+            curves[curve] = CurveSnapshot(toneRanges->getParametricCurve(curve));
         }
     }
 

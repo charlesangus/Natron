@@ -1199,3 +1199,4 @@ Notes:
     - It is now scoped to upstream nodes and tied to the node hash of the render.
   - **Tests:** full ctest 1226/1226 in both modes, smoke, and an Xvfb GUI check.
   - **AppImage:** `build/appimages/M67-uat2-670a4c482.AppImage`, launch check passes.
+- 2026-10-08 — **CI green on `dc9be2636`.** Waiting on the user's re-test of `M67-uat2` and their ChromaKeyer settings if NaN persists.

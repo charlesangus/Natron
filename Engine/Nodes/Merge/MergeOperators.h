@@ -131,6 +131,40 @@ void mergePixel(Operation op,
                 const float B[4],
                 int nComps,
                 float out[4]);
+
+/**
+ * @brief One side of a row merged by a RowFunction. @p pixels holds nComps floats per pixel and
+ * is already zero in every channel the caller turned off and in every pixel the side lacks.
+ * @p present flags the pixels the side has, null meaning all of them. @p opaqueAlpha is the alpha
+ * of a pixel the side has when there are two or three components.
+ **/
+struct RowSide {
+    const float* pixels;
+    const unsigned char* present;
+    float opaqueAlpha;
+};
+
+/**
+ * @brief mergePixel() over @p width pixels, with the operator and the component count fixed when
+ * the function is looked up, so the row loop does no per-pixel dispatch. A side's alpha is its
+ * channel 3 with four components, its channel 0 with one, and otherwise its opaqueAlpha where it
+ * has the pixel and 0 where it does not. @p out may alias B's pixels.
+ **/
+typedef void (*RowFunction)(bool alphaMasking,
+                            const RowSide& A,
+                            const RowSide& B,
+                            int width,
+                            float* out);
+
+/// Merges A over B into out, writing zero where neither side has the pixel. Null for an
+/// operator or component count out of range.
+RowFunction mergeRowFunction(Operation op,
+                             int nComps);
+
+/// Merges A over B into out, leaving out as it is where A lacks the pixel. Null for an
+/// operator or component count out of range.
+RowFunction mergeOverRowFunction(Operation op,
+                                 int nComps);
 } // namespace MergeOperators
 
 NATRON_NAMESPACE_EXIT

@@ -20,10 +20,12 @@
 #include "MergeOperators.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cfloat>
 #include <cmath>
 #include <cstring>
+#include <utility>
 
 NATRON_NAMESPACE_ENTER
 
@@ -508,7 +510,7 @@ namespace {
         bool separable;
     };
 
-    const OperationInfo kOperations[eOperationCount] = {
+    constexpr OperationInfo kOperations[eOperationCount] = {
         // id, hint, maskable, identityForBOnly, separable
         { "atop", "Ab + B(1 - a) (a.k.a. src-atop)", false, true, true },
         { "average", "(A + B) / 2", true, false, true },
@@ -551,14 +553,14 @@ namespace {
         { "xor", "A(1-b)+B(1-a)", false, true, true }
     };
 
+    template <Operation OP>
     PIX
-    separable(Operation op,
-              PIX A,
+    separable(PIX A,
               PIX B,
               PIX a,
               PIX b)
     {
-        switch (op) {
+        switch (OP) {
         case eATop:
 
             return atopFunc(A, B, a, b);
@@ -675,6 +677,140 @@ namespace {
 
         return 0;
     }
+
+    // alphaMasking is the effective setting: already forced on for Matte and off for an operator
+    // that is not maskable.
+    template <Operation OP, int NC>
+    void
+    mergePixelT(bool alphaMasking,
+                const float* A,
+                float a,
+                const float* B,
+                float b,
+                float* out)
+    {
+        if constexpr (!kOperations[OP].separable) {
+            pixman_rgb_t src, dest, res;
+            if (isZero(a) || NC < 3) {
+                src.r = src.g = src.b = 0;
+            } else {
+                src.r = A[0] / (pixman_float_t)a;
+                src.g = A[1] / (pixman_float_t)a;
+                src.b = A[2] / (pixman_float_t)a;
+            }
+            if (isZero(b) || NC < 3) {
+                dest.r = dest.g = dest.b = 0;
+            } else {
+                dest.r = B[0] / (pixman_float_t)b;
+                dest.g = B[1] / (pixman_float_t)b;
+                dest.b = B[2] / (pixman_float_t)b;
+            }
+            pixman_float_t sa = a / (pixman_float_t)maxValue;
+            pixman_float_t da = b / (pixman_float_t)maxValue;
+
+            if constexpr (OP == eHue) {
+                blendHslHue(&res, &dest, da, &src, sa);
+            } else if constexpr (OP == eSaturation) {
+                blendHslSaturation(&res, &dest, da, &src, sa);
+            } else if constexpr (OP == eColor) {
+                blendHslColor(&res, &dest, da, &src, sa);
+            } else {
+                static_assert(OP == eLuminosity, "the four non-separable operators");
+                blendHslLuminosity(&res, &dest, da, &src, sa);
+            }
+            pixman_float_t R[3] = { res.r, res.g, res.b };
+            for (int i = 0; i < (std::min)(NC, 3); ++i) {
+                out[i] = PIX((1 - sa) * B[i] + (1 - da) * A[i] + R[i] * maxValue);
+            }
+            if constexpr (NC == 4) {
+                out[3] = PIX(a + b - a * b / (double)maxValue);
+            }
+        } else {
+            int maxComp = NC;
+            if (alphaMasking && (NC == 4)) {
+                maxComp = 3;
+                out[3] = PIX(a + b - a * b / (double)maxValue);
+            }
+            for (int i = 0; i < maxComp; ++i) {
+                out[i] = separable<OP>(A[i], B[i], a, b);
+            }
+        }
+    }
+
+    template <int NC>
+    float
+    rowSideAlpha(const float* pix,
+                 bool present,
+                 float opaqueAlpha)
+    {
+        if constexpr (NC == 4) {
+            return pix[3];
+        } else if constexpr (NC == 1) {
+            return pix[0];
+        } else {
+            return present ? opaqueAlpha : 0.f;
+        }
+    }
+
+    // OVER merges A over a running result: a pixel A lacks keeps what out holds.
+    template <Operation OP, int NC, bool OVER>
+    void
+    mergeRowT(bool alphaMasking,
+              const RowSide& A,
+              const RowSide& B,
+              int width,
+              float* out)
+    {
+        const bool masking = (OP == eMatte) || (alphaMasking && kOperations[OP].maskable);
+        const float* aPix = A.pixels;
+        const float* bPix = B.pixels;
+
+        for (int x = 0; x < width; ++x, aPix += NC, bPix += NC, out += NC) {
+            const bool hasA = !A.present || A.present[x];
+            const bool hasB = !B.present || B.present[x];
+            if constexpr (OVER) {
+                if (!hasA) {
+                    continue;
+                }
+            } else if (!hasA && !hasB) {
+                for (int c = 0; c < NC; ++c) {
+                    out[c] = 0.f;
+                }
+                continue;
+            }
+            const float a = rowSideAlpha<NC>(aPix, hasA, A.opaqueAlpha);
+            const float b = rowSideAlpha<NC>(bPix, hasB, B.opaqueAlpha);
+            mergePixelT<OP, NC>(masking, aPix, a, bPix, b, out);
+        }
+    }
+
+    typedef void (*PixelFunction)(bool, const float*, float, const float*, float, float*);
+
+    // Entry I is operator I / 4 at I % 4 + 1 components.
+    template <std::size_t... I>
+    constexpr std::array<PixelFunction, sizeof...(I)>
+    makePixelTable(std::index_sequence<I...>)
+    {
+        return { { &mergePixelT<static_cast<Operation>(I / 4), static_cast<int>(I % 4) + 1>... } };
+    }
+
+    template <bool OVER, std::size_t... I>
+    constexpr std::array<RowFunction, sizeof...(I)>
+    makeRowTable(std::index_sequence<I...>)
+    {
+        return { { &mergeRowT<static_cast<Operation>(I / 4), static_cast<int>(I % 4) + 1, OVER>... } };
+    }
+
+    constexpr std::array<PixelFunction, eOperationCount * 4> kPixelFunctions = makePixelTable(std::make_index_sequence<eOperationCount * 4>());
+    constexpr std::array<RowFunction, eOperationCount * 4> kRowFunctions = makeRowTable<false>(std::make_index_sequence<eOperationCount * 4>());
+    constexpr std::array<RowFunction, eOperationCount * 4> kOverRowFunctions = makeRowTable<true>(std::make_index_sequence<eOperationCount * 4>());
+
+    bool
+    isValid(Operation op,
+            int nComps)
+    {
+        return (op >= 0) && (op < eOperationCount) && (nComps >= 1) && (nComps <= 4);
+    }
 } // namespace
 
 bool
@@ -732,64 +868,9 @@ mergePixel(Operation op,
            int nComps,
            float* out)
 {
+    assert(isValid(op, nComps));
     alphaMasking = (op == eMatte) || (alphaMasking && isMaskable(op));
-
-    if (!isSeparable(op)) {
-        pixman_rgb_t src, dest, res;
-        if (isZero(a) || nComps < 3) {
-            src.r = src.g = src.b = 0;
-        } else {
-            src.r = A[0] / (pixman_float_t)a;
-            src.g = A[1] / (pixman_float_t)a;
-            src.b = A[2] / (pixman_float_t)a;
-        }
-        if (isZero(b) || nComps < 3) {
-            dest.r = dest.g = dest.b = 0;
-        } else {
-            dest.r = B[0] / (pixman_float_t)b;
-            dest.g = B[1] / (pixman_float_t)b;
-            dest.b = B[2] / (pixman_float_t)b;
-        }
-        pixman_float_t sa = a / (pixman_float_t)maxValue;
-        pixman_float_t da = b / (pixman_float_t)maxValue;
-
-        switch (op) {
-        case eHue:
-            blendHslHue(&res, &dest, da, &src, sa);
-            break;
-        case eSaturation:
-            blendHslSaturation(&res, &dest, da, &src, sa);
-            break;
-        case eColor:
-            blendHslColor(&res, &dest, da, &src, sa);
-            break;
-        case eLuminosity:
-            blendHslLuminosity(&res, &dest, da, &src, sa);
-            break;
-        default:
-            res.r = res.g = res.b = 0;
-            assert(false);
-            break;
-        }
-        pixman_float_t R[3] = { res.r, res.g, res.b };
-        for (int i = 0; i < (std::min)(nComps, 3); ++i) {
-            out[i] = PIX((1 - sa) * B[i] + (1 - da) * A[i] + R[i] * maxValue);
-        }
-        if (nComps == 4) {
-            out[3] = PIX(a + b - a * b / (double)maxValue);
-        }
-
-        return;
-    }
-
-    int maxComp = nComps;
-    if (alphaMasking && nComps == 4) {
-        maxComp = 3;
-        out[3] = PIX(a + b - a * b / (double)maxValue);
-    }
-    for (int i = 0; i < maxComp; ++i) {
-        out[i] = separable(op, A[i], B[i], a, b);
-    }
+    kPixelFunctions[(std::size_t)op * 4 + (nComps - 1)](alphaMasking, A, a, B, b, out);
 }
 
 void
@@ -812,6 +893,20 @@ mergePixel(Operation op,
         b = 1.f;
     }
     mergePixel(op, alphaMasking, A, a, B, b, nComps, out);
+}
+
+RowFunction
+mergeRowFunction(Operation op,
+                 int nComps)
+{
+    return isValid(op, nComps) ? kRowFunctions[(std::size_t)op * 4 + (nComps - 1)] : 0;
+}
+
+RowFunction
+mergeOverRowFunction(Operation op,
+                     int nComps)
+{
+    return isValid(op, nComps) ? kOverRowFunctions[(std::size_t)op * 4 + (nComps - 1)] : 0;
 }
 } // namespace MergeOperators
 

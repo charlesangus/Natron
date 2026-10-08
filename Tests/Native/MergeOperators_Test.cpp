@@ -27,6 +27,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <set>
 #include <string>
 #include <vector>
@@ -471,4 +473,129 @@ TEST(MergeOperators, HslModesWriteUnionAlphaAndSkipColourBelowThreeComponents)
     mergePixel(eHue, false, A, B, 2, two);
     EXPECT_TRUE(closeTo(two[0], 0.0));
     EXPECT_EQ(9.f, two[2]);
+}
+
+namespace {
+bool
+sameBits(float x,
+         float y)
+{
+    std::uint32_t bx, by;
+    std::memcpy(&bx, &x, sizeof(bx));
+    std::memcpy(&by, &y, sizeof(by));
+
+    return bx == by;
+}
+
+// A row side as the RowSide contract has it: zero wherever the side lacks the pixel.
+void
+makeRowSide(int width,
+            int nComps,
+            int seed,
+            int absentEvery,
+            std::vector<float>* pixels,
+            std::vector<unsigned char>* present)
+{
+    pixels->assign((std::size_t)width * nComps, 0.f);
+    present->assign(width, (unsigned char)1);
+    for (int x = 0; x < width; ++x) {
+        if ((x % absentEvery) == seed % absentEvery) {
+            (*present)[x] = 0;
+            continue;
+        }
+        for (int c = 0; c < nComps; ++c) {
+            const bool isAlpha = (nComps == 1) || (c == 3);
+            const int k = x * 5 + c * 3 + seed;
+            (*pixels)[(std::size_t)x * nComps + c] = isAlpha ? kAlphas[k % 4] : kValues[k % 6];
+        }
+    }
+}
+
+float
+rowAlpha(const float* pix,
+         int nComps,
+         bool present,
+         float opaqueAlpha)
+{
+    if (nComps == 4) {
+        return pix[3];
+    } else if (nComps == 1) {
+        return pix[0];
+    }
+
+    return present ? opaqueAlpha : 0.f;
+}
+} // namespace
+
+TEST(MergeOperators, RowFunctionsMatchMergePixelBitForBit)
+{
+    const int width = 37;
+    const float kSentinel = 7.f;
+
+    for (int i = 0; i < eOperationCount; ++i) {
+        const Operation op = (Operation)i;
+        for (int nComps = 1; nComps <= 4; ++nComps) {
+            const RowFunction mergeRow = mergeRowFunction(op, nComps);
+            const RowFunction overRow = mergeOverRowFunction(op, nComps);
+            ASSERT_TRUE(mergeRow != 0) << operationId(op) << " " << nComps;
+            ASSERT_TRUE(overRow != 0) << operationId(op) << " " << nComps;
+            for (int masking = 0; masking < 2; ++masking) {
+                for (int opaque = 0; opaque < 2; ++opaque) {
+                    const float aOpaque = opaque ? 1.f : 0.f;
+                    const float bOpaque = opaque ? 0.f : 1.f;
+                    std::vector<float> A, B;
+                    std::vector<unsigned char> aPresent, bPresent;
+                    makeRowSide(width, nComps, 1, 3, &A, &aPresent);
+                    makeRowSide(width, nComps, 2, 4, &B, &bPresent);
+
+                    // A over B; once with the presence flags and once with every pixel present.
+                    for (int allPresent = 0; allPresent < 2; ++allPresent) {
+                        std::vector<unsigned char> aHas = allPresent ? std::vector<unsigned char>(width, 1) : aPresent;
+                        std::vector<unsigned char> bHas = allPresent ? std::vector<unsigned char>(width, 1) : bPresent;
+                        const RowSide aSide = { &A[0], allPresent ? 0 : &aHas[0], aOpaque };
+                        const RowSide bSide = { &B[0], allPresent ? 0 : &bHas[0], bOpaque };
+                        std::vector<float> out(A.size(), kSentinel);
+                        mergeRow(masking != 0, aSide, bSide, width, &out[0]);
+                        for (int x = 0; x < width; ++x) {
+                            const std::size_t p = (std::size_t)x * nComps;
+                            float expected[4] = { 0.f, 0.f, 0.f, 0.f };
+                            if (aHas[x] || bHas[x]) {
+                                const float a = rowAlpha(&A[p], nComps, aHas[x] != 0, aOpaque);
+                                const float b = rowAlpha(&B[p], nComps, bHas[x] != 0, bOpaque);
+                                mergePixel(op, masking != 0, &A[p], a, &B[p], b, nComps, expected);
+                            }
+                            for (int c = 0; c < nComps; ++c) {
+                                EXPECT_TRUE(sameBits(expected[c], out[p + c]))
+                                    << operationId(op) << " nComps " << nComps << " masking " << masking << " x " << x << " c " << c
+                                    << ": " << out[p + c] << " vs " << expected[c];
+                            }
+                        }
+                    }
+
+                    // A over a running result, in place.
+                    std::vector<float> running(B);
+                    std::vector<float> expected(B);
+                    const RowSide aSide = { &A[0], &aPresent[0], aOpaque };
+                    const RowSide runningSide = { &running[0], 0, 1.f };
+                    overRow(masking != 0, aSide, runningSide, width, &running[0]);
+                    for (int x = 0; x < width; ++x) {
+                        if (!aPresent[x]) {
+                            continue;
+                        }
+                        const std::size_t p = (std::size_t)x * nComps;
+                        const float a = rowAlpha(&A[p], nComps, true, aOpaque);
+                        const float b = rowAlpha(&expected[p], nComps, true, 1.f);
+                        mergePixel(op, masking != 0, &A[p], a, &expected[p], b, nComps, &expected[p]);
+                    }
+                    for (std::size_t k = 0; k < running.size(); ++k) {
+                        EXPECT_TRUE(sameBits(expected[k], running[k]))
+                            << operationId(op) << " over, nComps " << nComps << " masking " << masking << " index " << k;
+                    }
+                }
+            }
+        }
+    }
+    EXPECT_TRUE(mergeRowFunction(eOver, 0) == 0);
+    EXPECT_TRUE(mergeRowFunction(eOver, 5) == 0);
+    EXPECT_TRUE(mergeOverRowFunction(eOperationCount, 4) == 0);
 }

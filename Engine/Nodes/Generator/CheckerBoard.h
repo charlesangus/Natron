@@ -47,6 +47,74 @@
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief Where CheckerBoard draws, in pixel coordinates at the render scale, as the openfx-misc
+ * CheckerBoardProcessorBase::setValues() derives it.
+ **/
+struct CheckerBoardGeometry {
+    double boxSizeX;
+    double boxSizeY;
+    double lineInfX;
+    double lineSupX;
+    double lineInfY;
+    double lineSupY;
+    double centerlineInfX;
+    double centerlineSupX;
+    double centerlineInfY;
+    double centerlineSupY;
+    double centerX;
+    double centerY;
+};
+
+/**
+ * @brief The geometry for the knob values (box size, line widths in canonical units), the
+ * region of definition in canonical coordinates, the render scale and the pixel aspect ratio.
+ **/
+CheckerBoardGeometry checkerBoardGeometry(double boxSizeX,
+                                          double boxSizeY,
+                                          double lineWidth,
+                                          double centerlineWidth,
+                                          const RectD& rod,
+                                          double renderScaleX,
+                                          double renderScaleY,
+                                          double par);
+
+/// The colour knob a pixel takes.
+enum CheckerBoardColorEnum {
+    eCheckerBoardColor0 = 0,
+    eCheckerBoardColor1,
+    eCheckerBoardColor2,
+    eCheckerBoardColor3,
+    eCheckerBoardColorLine,
+    eCheckerBoardColorCenterline
+};
+
+/**
+ * @brief What row y of the checkerboard holds: one colour throughout (a centre line or a line
+ * between boxes), or boxes, with the colours of its even and odd box columns.
+ **/
+struct CheckerBoardRow {
+    bool uniform;
+    CheckerBoardColorEnum uniformColor;
+    CheckerBoardColorEnum evenColor;
+    CheckerBoardColorEnum oddColor;
+};
+
+CheckerBoardRow checkerBoardRow(const CheckerBoardGeometry& g,
+                                int y);
+
+/**
+ * @brief The end of the run of pixels from x (x < xEnd) on a row that take pixel x's colour,
+ * at most xEnd, and that colour in *color. Walking a row run by run gives every pixel the colour
+ * the openfx-misc per-pixel test gives it, with a handful of divisions per box instead of two per
+ * pixel.
+ **/
+int checkerBoardRunEnd(const CheckerBoardGeometry& g,
+                       const CheckerBoardRow& row,
+                       int x,
+                       int xEnd,
+                       CheckerBoardColorEnum* color);
+
+/**
  * @brief CheckerBoard: boxes of boxSize canonical units in four colours around the centre of the
  * region of definition (of the project for Default extent), with optional lines between boxes
  * and centre lines, with the openfx-misc CheckerBoardPlugin's knobs, defaults and pixel maths.

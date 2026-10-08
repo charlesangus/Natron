@@ -25,8 +25,11 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <cmath>
 #include <functional>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -76,6 +79,68 @@ caseWindow(unsigned mipmapLevel,
            double par)
 {
     return RectD(-8. * par, -8., 72. * par, 56.).toPixelEnclosing(mipmapLevel, par);
+}
+
+// The openfx-misc per-pixel test: the reference every run must match.
+CheckerBoardColorEnum
+perPixelColor(const CheckerBoardGeometry& g,
+              int x,
+              int y)
+{
+    if (((g.centerY - g.centerlineInfY) <= y) && (y < (g.centerY + g.centerlineSupY))) {
+        return eCheckerBoardColorCenterline;
+    }
+    const double yline = g.centerY + g.boxSizeY * std::floor((y - g.centerY) / g.boxSizeY + 0.5);
+    if (((yline - g.lineInfY) <= y) && (y < (yline + g.lineSupY))) {
+        return eCheckerBoardColorLine;
+    }
+    const int ybox = (int)std::floor((y - g.centerY) / g.boxSizeY);
+    if (((g.centerX - g.centerlineInfX) <= x) && (x < (g.centerX + g.centerlineSupX))) {
+        return eCheckerBoardColorCenterline;
+    }
+    const double xline = g.centerX + g.boxSizeX * std::floor((x - g.centerX) / g.boxSizeX + 0.5);
+    if (((xline - g.lineInfX) <= x) && (x < (xline + g.lineSupX))) {
+        return eCheckerBoardColorLine;
+    }
+    const int xbox = static_cast<int>(std::floor((x - g.centerX) / g.boxSizeX));
+    if (ybox & 1) {
+        return (xbox & 1) ? eCheckerBoardColor2 : eCheckerBoardColor3;
+    }
+
+    return (xbox & 1) ? eCheckerBoardColor1 : eCheckerBoardColor0;
+}
+
+// Walks [x0, xEnd) of row y run by run and counts the pixels whose run colour differs from the
+// per-pixel colour, reporting the first few.
+int
+countRunMismatches(const CheckerBoardGeometry& g,
+                   int y,
+                   int x0,
+                   int xEnd,
+                   const std::string& what)
+{
+    const CheckerBoardRow row = checkerBoardRow(g, y);
+    int mismatches = 0;
+    int x = x0;
+    while (x < xEnd) {
+        CheckerBoardColorEnum color = eCheckerBoardColor0;
+        const int end = checkerBoardRunEnd(g, row, x, xEnd, &color);
+        if ((end <= x) || (end > xEnd)) {
+            ADD_FAILURE() << what << ": run from " << x << " ends at " << end << ", row ends at " << xEnd;
+
+            return mismatches + 1;
+        }
+        for (; x < end; ++x) {
+            const CheckerBoardColorEnum expected = perPixelColor(g, x, y);
+            if (expected != color) {
+                if (++mismatches <= 3) {
+                    ADD_FAILURE() << what << ": pixel (" << x << ", " << y << ") gets colour " << color << ", per pixel " << expected;
+                }
+            }
+        }
+    }
+
+    return mismatches;
 }
 
 } // namespace
@@ -193,4 +258,50 @@ TEST_F(NativeCheckerBoardTest, RendersTheSameInBothSchedulerModes)
             EXPECT_EQ(0, unplannedPulls[p]) << "mipmap " << mipmapLevel << ", pool " << poolSizes[p];
         }
     }
+}
+
+// The runs give every pixel the colour of the per-pixel test, at odd box sizes, line widths,
+// region offsets, render scales and pixel aspect ratios, over rows that start anywhere: the
+// whole window, and the window cut into short tiles so that runs start inside boxes and lines.
+TEST(CheckerBoardRuns, MatchThePerPixelTest)
+{
+    const double boxSizes[][2] = { { 64., 64. }, { 1., 1. }, { 3., 7. }, { 7.5, 2.5 }, { 10., 10. }, { 13.3, 5.7 } };
+    const double lineWidths[] = { 0., 1., 2.5 };
+    const double centerlineWidths[] = { 0., 1., 3. };
+    const RectD rods[] = { RectD(0., 0., 64., 48.), RectD(-3., 5., 61., 53.), RectD(1.5, -2.25, 100.75, 31.) };
+    const double scales[] = { 1., 0.5, 0.3 };
+    const double pars[] = { 1., 2. };
+    const int tile = 13;
+
+    int mismatches = 0;
+    for (const auto& box : boxSizes) {
+        for (double lineWidth : lineWidths) {
+            for (double centerlineWidth : centerlineWidths) {
+                for (const RectD& rod : rods) {
+                    for (double scale : scales) {
+                        for (double par : pars) {
+                            const CheckerBoardGeometry g = checkerBoardGeometry(box[0], box[1], lineWidth, centerlineWidth, rod, scale, scale, par);
+                            const int x1 = (int)std::floor(rod.x1 * scale / par) - 9;
+                            const int x2 = (int)std::ceil(rod.x2 * scale / par) + 9;
+                            const int y1 = (int)std::floor(rod.y1 * scale) - 5;
+                            const int y2 = (int)std::ceil(rod.y2 * scale) + 5;
+                            std::ostringstream what;
+                            what << "box " << box[0] << "x" << box[1] << ", line " << lineWidth << ", centerline " << centerlineWidth
+                                 << ", rod (" << rod.x1 << ", " << rod.y1 << ", " << rod.x2 << ", " << rod.y2 << "), scale " << scale << ", par " << par;
+                            for (int y = y1; y < y2; ++y) {
+                                mismatches += countRunMismatches(g, y, x1, x2, what.str());
+                                for (int x0 = x1; x0 < x2; x0 += tile) {
+                                    mismatches += countRunMismatches(g, y, x0, (std::min)(x0 + tile, x2), what.str() + ", tiled");
+                                }
+                            }
+                            if (mismatches > 20) {
+                                FAIL() << "stopping after " << mismatches << " mismatches";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    EXPECT_EQ(0, mismatches);
 }

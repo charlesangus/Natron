@@ -1014,10 +1014,10 @@ Codex's review on PR #42 has 13 findings, and the user chose to fix the HD compo
 
 The user approved the parcel except for these:
 
-- [ ] M67.P8.T1 — Crop's `reformat` knob does not reformat the image
-- [ ] M67.P8.T2 — ChromaKeyer produces NaN pixels on a real-world image
-- [ ] M67.P8.T3 — The viewer's NaN warning persists after ChromaKeyer is removed from the input tree
-- [ ] M67.P8.T4 — Build, full ctest (both modes), new AppImage, push, CI
+- [x] M67.P8.T1 — Crop's `reformat` knob does not reformat the image
+- [x] M67.P8.T2 — ChromaKeyer produces NaN pixels on a real-world image
+- [x] M67.P8.T3 — The viewer's NaN warning persists after ChromaKeyer is removed from the input tree
+- [x] M67.P8.T4 — Build, full ctest (both modes), new AppImage, push, CI
 
 ## Batch plan
 
@@ -1190,3 +1190,12 @@ Notes:
   - **Finding:** native Crop matches OFX exactly. With the Size extent, OFX reformat only moves the rectangle to the origin; it sets the format only for the Format and Project extents.
   - **User chose to depart from OFX:** with the Size or Default extent, reformat sets the output format to the crop rectangle (at the origin, source PAR). Recorded as a deliberate divergence.
   - **ChromaKeyer NaN:** not reproduced with the user's image across every mode and 691k kernel parameter combinations. Waiting on the user's exact settings.
+- 2026-10-08 — **UAT fixes landed** (`2508af2fd`, `c17aaeb6b`, `dc9be2636`).
+  - **Crop:** reformat with the Size or Default extent sets the format to the crop box.
+  - **Keyers:** bound inf and huge values and fall back to double for an underflowing key. Both are OFX NaN sources, fixed rather than replicated. **The user's image did not reproduce the NaN**, so the real cause is unconfirmed until the user sends their settings.
+  - **Viewer warning, two pre-existing bugs:**
+    - The viewer showed messages from any node with an open panel, not just upstream ones.
+    - The NaN warning was never cleared.
+    - It is now scoped to upstream nodes and tied to the node hash of the render.
+  - **Tests:** full ctest 1226/1226 in both modes, smoke, and an Xvfb GUI check.
+  - **AppImage:** `build/appimages/M67-uat2-670a4c482.AppImage`, launch check passes.

@@ -13,13 +13,15 @@ import re
 import sys
 
 FRAME = re.compile(r"^#(\d+)\s+0x[0-9a-f]+\s+(.*?)(?:\s+-\s+(\S+))?$")
+# libgomp workers parked between parallel regions spin or futex-wait in the barrier; they are not working.
 BLOCKING = ("futex", "__GI___futex", "pthread_cond_", "__pthread_cond", "poll", "epoll_wait",
             "nanosleep", "clock_nanosleep", "select", "__select", "read", "__libc_read",
             "sem_wait", "__new_sem_wait", "do_futex_wait", "__lll_lock_wait", "syscall",
-            "QWaitCondition::wait", "QSemaphore::acquire")
+            "QWaitCondition::wait", "QSemaphore::acquire", "gomp_barrier_wait_end",
+            "gomp_team_barrier_wait_end", "gomp_thread_start")
 BLOCKING_RE = re.compile(r"futex|pthread_cond_|^(__)?poll$|^__GI___poll|epoll_wait|nanosleep|^(__)?select$|"
                          r"^(__libc_)?read$|sem_wait|__lll_lock_wait|^syscall$|QWaitCondition::wait|"
-                         r"QSemaphore::acquire|^ppoll|^__ppoll")
+                         r"QSemaphore::acquire|^ppoll|^__ppoll|^gomp_(team_)?barrier_wait|^gomp_thread_start")
 RENDER_MARKERS = ("renderRoI", "renderViewer", "tiledRenderingFunctor", "renderHandler",
                   "RenderThreadTask", "DefaultScheduler::processFrame", "renderFrame",
                   "treeRecurseFunctor", "computeRequestPass", "getImage")

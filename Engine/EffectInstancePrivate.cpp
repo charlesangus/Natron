@@ -641,13 +641,14 @@ EffectInstance::Implementation::waitForImageBeingRenderedElsewhere(const RectI &
     k.unlock(); // imagesBeingRenderedMutex
     std::list<RectI> restToRender;
     bool isBeingRenderedElseWhere = false;
-    img->getRestToRender_trimap(roi, restToRender, &isBeingRenderedElseWhere);
 
-    bool ab = _publicInterface->aborted();
-
+    // The bitmap is read under ibr->lock, which unmarkImageAsBeingRendered() holds while it updates the bitmap and
+    // signals, so no wake-up is lost. The timeout only bounds how late an abort is noticed: nothing signals on abort.
     QMutexLocker kk(&ibr->lock);
+    img->getRestToRender_trimap(roi, restToRender, &isBeingRenderedElseWhere);
+    bool ab = _publicInterface->aborted();
     while (!ab && isBeingRenderedElseWhere && !ibr->failed && ibr->refCount > 1) {
-        ibr->cond.wait(kk.mutex(), 50);
+        ibr->cond.wait(kk.mutex(), 100);
         restToRender.clear();
         isBeingRenderedElseWhere = false;
         img->getRestToRender_trimap(roi, restToRender, &isBeingRenderedElseWhere);

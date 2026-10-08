@@ -25,6 +25,7 @@
 
 #include "RenderStats.h"
 
+#include <atomic>
 #include <bitset>
 #include <cassert>
 #include <stdexcept>
@@ -298,12 +299,32 @@ struct RenderStatsPrivate
     typedef std::map<NodeWPtr, NodeRenderStats, std::owner_less<NodeWPtr>> NodeInfosMap;
     NodeInfosMap nodeInfos;
 
+    std::atomic<int> tasksRun;
+    std::atomic<int> maxConcurrentTasks;
+    std::atomic<int> tasksPurged;
+    std::atomic<int> frameStoreHits;
+    std::atomic<int> unplannedPulls;
+    std::atomic<int> legacyFallbacks;
+    std::atomic<bool> trackRenderRoICalls;
+
+    // Both guarded by lock.
+    std::map<std::string, int> legacyFallbackReasons;
+    std::map<std::tuple<std::string, double, int>, int> renderRoICalls;
 
     RenderStatsPrivate()
         : lock()
         , totalTimeSpentForFrameTimer()
         , doNodesProfiling(false)
         , nodeInfos()
+        , tasksRun(0)
+        , maxConcurrentTasks(0)
+        , tasksPurged(0)
+        , frameStoreHits(0)
+        , unplannedPulls(0)
+        , legacyFallbacks(0)
+        , trackRenderRoICalls(false)
+        , legacyFallbackReasons()
+        , renderRoICalls()
     {
     }
 
@@ -433,6 +454,124 @@ RenderStats::getStats(double *totalTimeSpent) const
     *totalTimeSpent = _imp->totalTimeSpentForFrameTimer.getTimeSinceCreation();
 
     return ret;
+}
+
+void
+RenderStats::incTasksRun()
+{
+    ++_imp->tasksRun;
+}
+
+int
+RenderStats::getTasksRun() const
+{
+    return _imp->tasksRun.load();
+}
+
+void
+RenderStats::noteConcurrentTasks(int running)
+{
+    int seen = _imp->maxConcurrentTasks.load();
+
+    while ((running > seen) && !_imp->maxConcurrentTasks.compare_exchange_weak(seen, running)) {
+    }
+}
+
+int
+RenderStats::getMaxConcurrentTasks() const
+{
+    return _imp->maxConcurrentTasks.load();
+}
+
+void
+RenderStats::incTasksPurged()
+{
+    ++_imp->tasksPurged;
+}
+
+int
+RenderStats::getTasksPurged() const
+{
+    return _imp->tasksPurged.load();
+}
+
+void
+RenderStats::incFrameStoreHits()
+{
+    ++_imp->frameStoreHits;
+}
+
+int
+RenderStats::getFrameStoreHits() const
+{
+    return _imp->frameStoreHits.load();
+}
+
+void
+RenderStats::incUnplannedPulls()
+{
+    ++_imp->unplannedPulls;
+}
+
+int
+RenderStats::getUnplannedPulls() const
+{
+    return _imp->unplannedPulls.load();
+}
+
+void
+RenderStats::incLegacyFallbacks(const std::string& reason)
+{
+    ++_imp->legacyFallbacks;
+    QMutexLocker k(&_imp->lock);
+    ++_imp->legacyFallbackReasons[reason];
+}
+
+int
+RenderStats::getLegacyFallbacks() const
+{
+    return _imp->legacyFallbacks.load();
+}
+
+std::map<std::string, int>
+RenderStats::getLegacyFallbackReasons() const
+{
+    QMutexLocker k(&_imp->lock);
+
+    return _imp->legacyFallbackReasons;
+}
+
+void
+RenderStats::setTrackRenderRoICalls(bool track)
+{
+    _imp->trackRenderRoICalls = track;
+}
+
+bool
+RenderStats::isTrackingRenderRoICalls() const
+{
+    return _imp->trackRenderRoICalls.load(std::memory_order_relaxed);
+}
+
+void
+RenderStats::noteRenderRoI(const NodePtr& node,
+                           double time,
+                           ViewIdx view)
+{
+    if (!isTrackingRenderRoICalls()) {
+        return;
+    }
+    const std::string name = node->getScriptName_mt_safe();
+    QMutexLocker k(&_imp->lock);
+    ++_imp->renderRoICalls[std::make_tuple(name, time, view.value())];
+}
+
+std::map<std::tuple<std::string, double, int>, int>
+RenderStats::getRenderRoICalls() const
+{
+    QMutexLocker k(&_imp->lock);
+
+    return _imp->renderRoICalls;
 }
 
 NATRON_NAMESPACE_EXIT

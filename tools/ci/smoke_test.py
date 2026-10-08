@@ -121,6 +121,7 @@
 from __future__ import print_function
 
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -557,6 +558,43 @@ def check_exr_to_png_colorspace():
           % (out_path,))
 
 
+def _compare_or_stash_render(out_path):
+    """Pin the PNG across two runs under different render scheduler modes.
+
+    The modes must produce identical pixels, and a byte comparison is the
+    only check here that would notice a one-code-value drift the tolerance
+    asserts below let through.
+    """
+    name = os.path.basename(out_path)
+    reference_dir = os.environ.get("NATRON_SMOKE_REFERENCE_DIR")
+    if reference_dir:
+        reference_path = os.path.join(reference_dir, name)
+        # A comparison that was asked for but cannot happen must not pass
+        # silently, or a misordered CI leg would turn the check off.
+        if not os.path.isfile(reference_path):
+            raise AssertionError(
+                "NATRON_SMOKE_REFERENCE_DIR is set but %r does not exist"
+                % (reference_path,))
+        with open(reference_path, "rb") as f:
+            reference = f.read()
+        with open(out_path, "rb") as f:
+            rendered = f.read()
+        if reference != rendered:
+            raise AssertionError(
+                "%r differs from the reference render %r (%d vs %d bytes); "
+                "the render scheduler modes are not pixel-identical"
+                % (out_path, reference_path, len(rendered), len(reference)))
+        _mark("[smoke] OK: %s is byte-identical to the reference render %r"
+              % (name, reference_path))
+        return
+    output_dir = os.environ.get("NATRON_SMOKE_OUTPUT_DIR")
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        shutil.copyfile(out_path, os.path.join(output_dir, name))
+        _mark("[smoke] saved %s into %r as a reference render"
+              % (name, output_dir))
+
+
 def check_misc_effect_render():
     from PySide6 import QtGui
 
@@ -624,6 +662,7 @@ def check_misc_effect_render():
         raise AssertionError(
             "blue channel is %d, expected 123 +/- 15 -- Grade's multiply "
             "does not appear to have been applied" % (color.blue(),))
+    _compare_or_stash_render(out_path)
     _mark("[smoke] OK: Constant -> Grade -> Writer render intact, rendered "
           "%r" % (out_path,))
 
@@ -779,8 +818,39 @@ def check_reader_cli_time_offset_regression():
           "despite a stale non-zero timeOffset" % (frame_paths,))
 
 
+_RENDER_SCHEDULER_MODES = ("legacy", "taskgraph")
+
+
+def _report_render_scheduler_mode():
+    # The engine's resolved mode has no Python getter, so it is derived the
+    # way AppManager resolves it: a valid NATRON_RENDER_SCHEDULER overrides
+    # the renderSchedulerMode preference.
+    env = os.environ.get("NATRON_RENDER_SCHEDULER")
+    try:
+        import NatronEngine
+        param = NatronEngine.natron.getSettings().getParam(
+            "renderSchedulerMode")
+        index = param.getValue()
+        setting = (_RENDER_SCHEDULER_MODES[index]
+                   if 0 <= index < len(_RENDER_SCHEDULER_MODES)
+                   else "unknown index %r" % (index,))
+    except Exception as e:
+        setting = None
+        _mark("[smoke] WARNING: cannot read the renderSchedulerMode "
+              "setting: %r" % (e,))
+    if env in _RENDER_SCHEDULER_MODES:
+        resolved, source = env, "NATRON_RENDER_SCHEDULER"
+    elif setting is not None:
+        resolved, source = setting, "renderSchedulerMode setting"
+    else:
+        resolved, source = "unknown", "neither source readable"
+    _mark("[smoke] render scheduler mode: %s (from %s; env=%r, setting=%r)"
+          % (resolved, source, env, setting))
+
+
 def main():
     _mark("[smoke] script started")
+    _report_render_scheduler_mode()
 
     global app
     try:

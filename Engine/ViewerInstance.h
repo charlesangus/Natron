@@ -28,11 +28,13 @@
 
 #include "Global/Macros.h"
 
+#include <map>
 #include <string>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/ProjectColorManagement.h"
+#include "Engine/SchedulerEligibility.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
@@ -122,6 +124,16 @@ public:
                                                                 const NodePtr& rotoPaintNode,
                                                                 const RenderStatsPtr& stats,
                                                                 ViewerArgs* outArgs);
+
+    typedef NATRON_NAMESPACE::SchedulerEligibility SchedulerEligibility;
+
+    static void scanFrameArgsForScheduler(const std::map<NodePtr, ParallelRenderArgsPtr>& args, SchedulerEligibility* eligibility);
+
+    /**
+     * @brief Whether the viewer frame eligibility describes may be rendered by the RenderScheduler. When it may not
+     * and reason is not null, *reason names the first cause.
+     **/
+    static bool isFrameEligibleForScheduler(const SchedulerEligibility& eligibility, const char** reason);
 
 private:
     /**
@@ -341,7 +353,7 @@ public:
     void setDoingPartialUpdates(bool doing);
     bool isDoingPartialUpdates() const;
 
-    virtual void reportStats(int time, ViewIdx view, double wallTime, const RenderStatsMap& stats) OVERRIDE FINAL;
+    virtual void reportStats(int time, ViewIdx view, double wallTime, const RenderStatsMap& stats, const RenderStatsPtr& renderStats) OVERRIDE FINAL;
 
     ///Only callable on MT
     void setActivateInputChangeRequestedFromViewer(bool fromViewer);

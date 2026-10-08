@@ -28,17 +28,18 @@
 
 #include "Global/Macros.h"
 
-#include <set>
-#include <map>
 #include <list>
+#include <map>
+#include <set>
+#include <vector>
 
 #include "Global/GlobalDefines.h"
 
+#include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
-
 
 //This controls how many frames a plug-in can pre-fetch (per view and per input)
 //This is to avoid cases where the user would for example use the FrameBlend node with a huge amount of frames so that they
@@ -196,6 +197,19 @@ struct FrameViewPerRequestData
 
 struct FrameViewRequest
 {
+    /**
+     * @brief One renderRoI call this frame/view makes on an upstream frame/view before rendering. An identity
+     * frame/view has a single edge to the frame/view it forwards its render to, with inputNb the identity input
+     * (-2 when identity of itself at another time).
+     **/
+    struct TaskEdge {
+        NodeWPtr node;
+        double time;
+        ViewIdx view;
+        unsigned int mipmapLevel;
+        int inputNb;
+    };
+
     ///All different requests led by different branches in the tree
     //std::list<std::pair<RectD, FrameViewPerRequestData> > requests;
 
@@ -204,6 +218,18 @@ struct FrameViewRequest
 
     ///Global datas for this frame/view set upon first request
     FrameViewRequestGlobalData globalData;
+
+    /// Frames past NATRON_MAX_FRAMES_NEEDED_PRE_FETCHING are left to getImage during the render and have no edge here
+    std::vector<TaskEdge> dependencies;
+
+    /// Number of distinct (consumer frame/view, input) edges pointing at this frame/view
+    int consumers = 0;
+
+    /// Union of the layers requested from this frame/view by its consumers, including getImage pulls past the pre-fetch cap
+    std::list<ImageLayerDesc> componentsRequested;
+
+    /// Every dependency reachable on the first walk of this frame/view has a lower number
+    int dfsPostOrder = -1;
 };
 
 struct FrameView_compare_less
@@ -241,9 +267,19 @@ public:
     bool getFrameViewCanonicalRoI(double time, ViewIdx view, RectD* roi) const;
 
     const FrameViewRequest* getFrameViewRequest(double time, ViewIdx view) const;
+
+    FrameViewRequest* findFrameViewRequest(double time, ViewIdx view);
 };
 
-typedef std::map<NodePtr, NodeFrameRequestPtr> FrameRequestMap;
+class FrameRequestMap
+    : public std::map<NodePtr, NodeFrameRequestPtr> {
+public:
+    FrameViewRequest* findFrameViewRequest(const NodePtr& node, double time, ViewIdx view);
+
+    const FrameViewRequest* findFrameViewRequest(const NodePtr& node, double time, ViewIdx view) const;
+
+    int nextDfsPostOrder = 0;
+};
 
 /**
  * @brief Per-render context is captured up front into thread-local storage
@@ -286,9 +322,47 @@ public:
 
     ParallelRenderArgsSetter(const std::shared_ptr<std::map<NodePtr, ParallelRenderArgsPtr> >& args);
 
+    typedef std::vector<std::pair<NodePtr, ParallelRenderArgsPtr>> ArgsInstallSequence;
+
+    /**
+     * @brief Creates the frame args the first constructor installs, without installing them. out maps each node to
+     * the args getParallelRenderArgsTLS() returns once they are installed. installSequence, when given, receives
+     * every installation in order, including a node installed twice, and collectedNodes the nodes whose args the
+     * destructor invalidates.
+     **/
+    static void buildArgsMap(double time,
+                             ViewIdx view,
+                             bool isRenderUserInteraction,
+                             bool isSequential,
+                             const AbortableRenderInfoPtr& abortInfo,
+                             const NodePtr& treeRoot,
+                             int textureIndex,
+                             const TimeLine* timeline,
+                             const NodePtr& activeRotoPaintNode,
+                             bool isAnalysis,
+                             bool draftMode,
+                             const RenderStatsPtr& stats,
+                             bool setUpstreamArgs,
+                             const OSGLContextPtr& glContext,
+                             std::map<NodePtr, ParallelRenderArgsPtr>* out,
+                             ArgsInstallSequence* installSequence = 0,
+                             NodesList* collectedNodes = 0);
+
     void updateNodesRequest(const FrameRequestMap& request);
 
+    /**
+     * @brief The frame args the first constructor installed on this thread, each node mapped to the args
+     * getParallelRenderArgsTLS() returns for it. Empty when built from an existing args map.
+     **/
+    const std::map<NodePtr, ParallelRenderArgsPtr>& getInstalledArgs() const
+    {
+        return _installedArgs;
+    }
+
     virtual ~ParallelRenderArgsSetter();
+
+private:
+    std::map<NodePtr, ParallelRenderArgsPtr> _installedArgs;
 };
 
 NATRON_NAMESPACE_EXIT

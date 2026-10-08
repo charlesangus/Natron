@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <functional>
 #include <list>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -421,6 +422,23 @@ public:
     bool getUseThreadPool() const;
 
     /**
+     * @brief Parses a NATRON_RENDER_SCHEDULER value: "legacy" or "taskgraph". Returns nothing for anything else.
+     **/
+    static std::optional<RenderSchedulerModeEnum> parseRenderSchedulerModeEnv(const char* value);
+
+    RenderSchedulerModeEnum getRenderSchedulerMode() const;
+
+    /**
+     * @brief Overrides the mode, whatever its source, until the next Settings change.
+     **/
+    void setRenderSchedulerMode(RenderSchedulerModeEnum mode);
+
+    /**
+     * @brief Called by the Settings when the knob changes. Ignored while the environment variable override is active.
+     **/
+    void onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode);
+
+    /**
      * @brief Updates the global runningThreadsCount maintained across the whole application
      **/
     void fetchAndAddNRunningThreads(int nThreads);
@@ -438,6 +456,13 @@ public:
      * settings, the busy thread-pool workers and the render threads already running.
      **/
     int getNCPUsAvailableForEffect();
+
+    /**
+     * @brief The arithmetic of getNCPUsAvailableForEffect(): poolMax is the global pool's maximum thread count,
+     * active its active thread count, running the render threads started outside of it, and perEffect the
+     * per-effect thread limit.
+     **/
+    static int computeNCPUsAvailable(int poolMax, int active, int running, int perEffect);
 
     void setThreadAsActionCaller(OfxImageEffectInstance* instance, bool actionCaller);
 
@@ -539,6 +564,16 @@ public:
     OFX::Host::ImageEffect::Descriptor* getPluginContextAndDescribe(OFX::Host::ImageEffect::ImageEffectPlugin* plugin,
                                                                     Natron::ContextEnum* ctx);
     AppTLS* getAppTLS() const;
+
+    /**
+     * @brief Created on first use, destroyed once the global pool has been drained at shutdown.
+     **/
+    RenderScheduler* getRenderScheduler();
+
+    /**
+     * @brief Whether getRenderScheduler() has created the scheduler, without creating it.
+     **/
+    bool hasRenderScheduler() const;
     const OfxHost* getOFXHost() const;
     GPUContextPool* getGPUContextPool() const;
 

@@ -17,7 +17,7 @@
 # along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
 # ***** END LICENSE BLOCK *****
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h)
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h RenderBothWays.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -44,7 +44,11 @@ set(Tests_SOURCES
     DeepRenderPipeline_Test.cpp
     DefaultChannelSet_Test.cpp
     FileSystemModel_Test.cpp
+    FrameGraphBuild_Test.cpp
+    FrameRenderContext_Test.cpp
+    FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
+    GLScheduler_Test.cpp
     GraphScaling_Test.cpp
     GraphScalingExpressionDeps_Test.cpp
     GraphScalingNaming_Test.cpp
@@ -65,8 +69,11 @@ set(Tests_SOURCES
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
     PluginIdentity_Test.cpp
+    PoolParallelFor_Test.cpp
+    PoolSharing_Test.cpp
     ProjectColorManagement_Test.cpp
     ViewerDisplayTransform_Test.cpp
+    ViewerScheduler_Test.cpp
     ProjectOCIODefaults_Test.cpp
     ProjectOCIOPlugins_Test.cpp
     ProjectOCIO_Test.cpp
@@ -76,8 +83,15 @@ set(Tests_SOURCES
     ReadFormat_Test.cpp
     RemoveLayers_Test.cpp
     RemoveLayersRender_Test.cpp
+    RenderBothWays.cpp
+    RenderBothWaysSelf_Test.cpp
     RenderRange_Test.cpp
+    RenderScheduler_Test.cpp
+    RenderSchedulerAbort_Test.cpp
+    RenderSchedulerMode_Test.cpp
     RotoLayer_Test.cpp
+    SchedulerEquivalence_Test.cpp
+    SchedulerWriters_Test.cpp
     Shuffle_Test.cpp
     ShufflePluginList_Test.cpp
     ShuffleRender_Test.cpp
@@ -94,6 +108,7 @@ target_link_libraries(Tests
     PRIVATE
         NatronEngine
         Qt::Core
+        Qt::Concurrent
         Python3::Python
         openMVG
 )

@@ -34,10 +34,11 @@
 
 #include <QThread>
 #include <QThreadPool>
-#include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
 
+#include "Engine/AppManager.h"
 #include "Engine/DeepImage.h"
 #include "Engine/Node.h"
+#include "Engine/PoolParallelFor.h"
 #include "Engine/TLSHolder.h"
 
 NATRON_NAMESPACE_ENTER
@@ -196,17 +197,19 @@ NativeEffectBase::forEachDeepChunk(const std::vector<RectI>& chunks,
                                    const DeepChunkFunc& body)
 {
     QThread* const callingThread = QThread::currentThread();
+    const FrameRenderContext* const frameContext = AppTLS::currentFrameContext();
     std::atomic<bool> wasAborted(false);
 
-    QtConcurrent::blockingMap(chunks, [&](RectI chunk) {
-        AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, AppTLS::eSpawnKindHostFrameThreading);
+    const std::function<void(int)> runChunk = [&](int i) {
+        AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, frameContext, AppTLS::eSpawnKindHostFrameThreading);
 
         if (aborted()) {
             wasAborted = true;
         } else {
-            body(chunk);
+            body(chunks[i]);
         }
-    });
+    };
+    parallelForOnGlobalPool((int)chunks.size(), appPTR->getNCPUsAvailableForEffect(), runChunk);
 
     return !wasAborted;
 }

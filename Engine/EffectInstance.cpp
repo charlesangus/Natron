@@ -48,6 +48,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/BlockingBackgroundRender.h"
 #include "Engine/DiskCacheNode.h"
+#include "Engine/FrameRenderContext.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/ImageParams.h"
@@ -70,6 +71,7 @@
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/Settings.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/Timer.h"
 #include "Engine/Transform.h"
 #include "Engine/UndoCommand.h"
@@ -313,6 +315,33 @@ EffectInstance::setParallelRenderArgsTLS(double time,
 {
     EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     std::list<ParallelRenderArgsPtr>& argsList = tls->frameArgs;
+    ParallelRenderArgsPtr args = createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, visitsCount, nodeRequest, glContext, textureIndex, timeline, isAnalysis, isDuringPaintStrokeCreation, rotoPaintNodes, currentThreadSafety, currentOpenGLSupport, doNanHandling, draftMode, stats);
+
+    argsList.push_back(args);
+}
+
+ParallelRenderArgsPtr
+EffectInstance::createParallelRenderArgs(double time,
+                                         ViewIdx view,
+                                         bool isRenderUserInteraction,
+                                         bool isSequential,
+                                         U64 nodeHash,
+                                         const AbortableRenderInfoPtr& abortInfo,
+                                         const NodePtr& treeRoot,
+                                         int visitsCount,
+                                         const NodeFrameRequestPtr& nodeRequest,
+                                         const OSGLContextPtr& glContext,
+                                         int textureIndex,
+                                         const TimeLine* timeline,
+                                         bool isAnalysis,
+                                         bool isDuringPaintStrokeCreation,
+                                         const NodesList& rotoPaintNodes,
+                                         RenderSafetyEnum currentThreadSafety,
+                                         PluginOpenGLRenderSupport currentOpenGLSupport,
+                                         bool doNanHandling,
+                                         bool draftMode,
+                                         const RenderStatsPtr& stats) const
+{
     ParallelRenderArgsPtr args = std::make_shared<ParallelRenderArgs>();
 
     args->time = time;
@@ -341,7 +370,14 @@ EffectInstance::setParallelRenderArgsTLS(double time,
     args->tilesSupported = getNode()->getCurrentSupportTiles();
     args->stats = stats;
     args->openGLContext = glContext;
-    argsList.push_back(args);
+
+    return args;
+}
+
+const TLSHolderBase*
+EffectInstance::getTLSHolder() const
+{
+    return _imp->tlsData.get();
 }
 
 bool
@@ -723,15 +759,28 @@ EffectInstance::getThreadLocalRegionsOfInterests(RoIMap & roiMap) const
 }
 
 OSGLContextPtr
+EffectInstance::getRenderGLContext(const ParallelRenderArgsPtr& frameArgs)
+{
+    if (AppTLS::currentFrameContext()) {
+        return appPTR->getGPUContextPool()->getOrCreateContextForCurrentThread();
+    }
+    if (!frameArgs) {
+        return OSGLContextPtr();
+    }
+
+    return frameArgs->openGLContext.lock();
+}
+
+OSGLContextPtr
 EffectInstance::getThreadLocalOpenGLContext() const
 {
     EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
 
     if ( !tls || tls->frameArgs.empty() ) {
-        return OSGLContextPtr();
+        return getRenderGLContext(ParallelRenderArgsPtr());
     }
 
-    return tls->frameArgs.back()->openGLContext.lock();
+    return getRenderGLContext(tls->frameArgs.back());
 }
 
 static bool
@@ -810,6 +859,111 @@ layerKnobSelectsColorView(const KnobIPtr& knob)
     }
 
     return false;
+}
+
+bool
+EffectInstance::lookupFrameStore(const EffectInstancePtr& input,
+                                 double time,
+                                 ViewIdx view,
+                                 unsigned mipmap,
+                                 const std::list<ImageLayerDesc>& comps,
+                                 const RectI& pixelRoI,
+                                 std::list<ImagePtr>* out)
+{
+    const FrameRenderContext* context = AppTLS::currentFrameContext();
+    if (!context || !input || comps.empty() || pixelRoI.isNull()) {
+        return false;
+    }
+    FrameStore::TaskKey key;
+    key.node = input->getNode();
+    key.time = time;
+    key.view = view;
+    key.mipmapLevel = mipmap;
+    if (!key.node) {
+        return false;
+    }
+    RectI neededRoI = pixelRoI;
+    // Read from the frame rather than the input's TLS, which would install the input's args on this thread.
+    ParallelRenderArgsPtr inputFrameArgs = context->getArgsForHolder(input->getTLSHolder());
+    const FrameViewRequest* request = (inputFrameArgs && inputFrameArgs->request) ? inputFrameArgs->request->getFrameViewRequest(time, view) : 0;
+    if (request) {
+        // Stored images stop at the region of definition, which a requested RoI may exceed.
+        neededRoI = neededRoI.intersect(request->globalData.rod.toPixelEnclosing(mipmap, input->getAspectRatio(-1)));
+        if (neededRoI.isNull()) {
+            return false;
+        }
+    }
+
+    return context->getStore().find(key, comps, neededRoI, out);
+}
+
+bool
+EffectInstance::frameStoreImagesMatch(const std::list<ImagePtr>& images,
+                                      ImageBitDepthEnum depth,
+                                      StorageModeEnum storage)
+{
+    for (std::list<ImagePtr>::const_iterator it = images.begin(); it != images.end(); ++it) {
+        if (!*it || ((*it)->getBitDepth() != depth) || ((*it)->getStorageMode() != storage)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+EffectInstance::RenderRoIRetCode
+EffectInstance::renderInputOrTakeFromStore(const EffectInstancePtr& input,
+                                           int inputNb,
+                                           RenderRoIArgs* args,
+                                           std::map<ImageLayerDesc, ImagePtr>* layers)
+{
+    std::list<ImagePtr> stored;
+    const bool fromStore = lookupFrameStore(input, args->time, args->view, args->mipmapLevel, args->components, args->roi, &stored);
+    if (fromStore) {
+        noteFrameStoreHit();
+    } else if (!args->roi.isNull() && !isRotoPaintTreePull(input)) {
+        noteUnplannedPull();
+    }
+    if (fromStore && frameStoreImagesMatch(stored, args->bitdepth, args->returnStorage)) {
+        std::list<ImagePtr>::const_iterator image = stored.begin();
+        for (std::list<ImageLayerDesc>::const_iterator comp = args->components.begin(); comp != args->components.end(); ++comp, ++image) {
+            layers->insert(std::make_pair(*comp, *image));
+        }
+
+        return eRenderRoIRetCodeOk;
+    }
+    if (fromStore) {
+        ImageList& seeded = args->inputImagesList[inputNb];
+        seeded.insert(seeded.end(), stored.begin(), stored.end());
+    }
+
+    return input->renderRoI(*args, layers);
+}
+
+bool
+EffectInstance::isRotoPaintTreePull(const EffectInstancePtr& input)
+{
+    const FrameRenderContext* context = AppTLS::currentFrameContext();
+
+    return context && input && context->isRotoPaintTreeNode(input->getNode().get());
+}
+
+void
+EffectInstance::noteFrameStoreHit()
+{
+    const FrameRenderContext* context = AppTLS::currentFrameContext();
+    if (context && context->getStats()) {
+        context->getStats()->incFrameStoreHits();
+    }
+}
+
+void
+EffectInstance::noteUnplannedPull()
+{
+    const FrameRenderContext* context = AppTLS::currentFrameContext();
+    if (context && context->getStats()) {
+        context->getStats()->incUnplannedPulls();
+    }
 }
 
 ImagePtr
@@ -971,7 +1125,9 @@ EffectInstance::getImage(int inputNb,
             nodeHash = frameRenderArgs->nodeHash;
             duringPaintStroke = frameRenderArgs->isDuringPaintStrokeCreation;
             isAnalysisPass = frameRenderArgs->isAnalysis;
-            glContext = frameRenderArgs->openGLContext.lock();
+            if (returnStorage == eStorageModeGLTex) {
+                glContext = getRenderGLContext(frameRenderArgs);
+            }
             renderInfo = frameRenderArgs->abortInfo.lock();
         } else {
             //This is a bug, when entering here, frameArgs TLS should always have been set, except for unknown threads.
@@ -1221,23 +1377,48 @@ EffectInstance::getImage(int inputNb,
     std::list<ImageLayerDesc> requestedComps;
     requestedComps.push_back(renderedComps);
     std::map<ImageLayerDesc, ImagePtr> inputImages;
-    RenderRoIRetCode retCode = inputEffect->renderRoI(RenderRoIArgs(time,
-                                                                    scale,
-                                                                    renderMappedMipmapLevel,
-                                                                    view,
-                                                                    byPassCache,
-                                                                    pixelRoI,
-                                                                    RectD(),
-                                                                    requestedComps,
-                                                                    depth,
-                                                                    true,
-                                                                    this,
-                                                                    returnStorage,
-                                                                    thisEffectRenderTime,
-                                                                    inputImagesThreadLocal), &inputImages);
+    std::list<ImagePtr> storedImages;
+    const bool fromStore = lookupFrameStore(inputEffect, time, view, renderMappedMipmapLevel, requestedComps, pixelRoI, &storedImages);
+    if (fromStore) {
+        // The pre-render of this render already counted the store images it handed over.
+        bool handedOverByPreRender = false;
+        EffectInstance::InputImagesMap::const_iterator preRendered = inputImagesThreadLocal.find(inputNb);
+        if (preRendered != inputImagesThreadLocal.end()) {
+            handedOverByPreRender = std::find(preRendered->second.begin(), preRendered->second.end(), storedImages.front()) != preRendered->second.end();
+        }
+        if (!handedOverByPreRender) {
+            noteFrameStoreHit();
+        }
+    }
+    if (fromStore && frameStoreImagesMatch(storedImages, depth, returnStorage)) {
+        inputImages.insert(std::make_pair(renderedComps, storedImages.front()));
+    } else {
+        // Store images in another depth or storage go through renderRoI(), which finds them by key and converts them.
+        EffectInstance::InputImagesMap seededInputImages;
+        if (fromStore) {
+            seededInputImages = inputImagesThreadLocal;
+            ImageList& seeded = seededInputImages[inputNb];
+            seeded.insert(seeded.end(), storedImages.begin(), storedImages.end());
+        }
+        RenderRoIRetCode retCode = inputEffect->renderRoI(RenderRoIArgs(time,
+                                                                        scale,
+                                                                        renderMappedMipmapLevel,
+                                                                        view,
+                                                                        byPassCache,
+                                                                        pixelRoI,
+                                                                        RectD(),
+                                                                        requestedComps,
+                                                                        depth,
+                                                                        true,
+                                                                        this,
+                                                                        returnStorage,
+                                                                        thisEffectRenderTime,
+                                                                        fromStore ? seededInputImages : inputImagesThreadLocal),
+                                                          &inputImages);
 
-    if (retCode != eRenderRoIRetCodeOk) {
-        return ImagePtr();
+        if (retCode != eRenderRoIRetCodeOk) {
+            return ImagePtr();
+        }
     }
     if (inputImages.empty()) {
         // A colourless input reads as zero in every colour channel. The plane is built here, not
@@ -1386,7 +1567,7 @@ EffectInstance::getRegionOfDefinition(U64 hash,
         if (input) {
             RectD inputRod;
             bool isProjectFormat;
-            StatusEnum st = input->getRegionOfDefinition_public(hash, time, renderMappedScale, view, &inputRod, &isProjectFormat);
+            StatusEnum st = input->getRegionOfDefinition_public(input->getRenderHash(), time, renderMappedScale, view, &inputRod, &isProjectFormat);
             assert(inputRod.x2 >= inputRod.x1 && inputRod.y2 >= inputRod.y1);
             if (st == eStatusFailed) {
                 return st;
@@ -1444,7 +1625,7 @@ EffectInstance::ifInfiniteApplyHeuristic(U64 hash,
                 if (input->supportsRenderScaleMaybe() == eSupportsNo) {
                     inputScale = RenderScale::identity;
                 }
-                StatusEnum st = input->getRegionOfDefinition_public(hash, time, inputScale, view, &inputRod, &isProjectFormat);
+                StatusEnum st = input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, &inputRod, &isProjectFormat);
                 if (st != eStatusFailed) {
                     if (firstInput) {
                         inputsUnion = inputRod;
@@ -1583,7 +1764,8 @@ EffectInstance::getFrameRange(double *first,
         EffectInstancePtr input = getInput(i);
         if (input) {
             double inpFirst, inpLast;
-            input->getFrameRange(&inpFirst, &inpLast);
+            // Through the cached action: a graph whose inputs fan out and rejoin would otherwise be walked once per path.
+            input->getFrameRange_public(input->getRenderHash(), &inpFirst, &inpLast);
             if (i == 0) {
                 *first = inpFirst;
                 *last = inpLast;
@@ -2254,20 +2436,20 @@ EffectInstance::transformInputRois(const EffectInstance* self,
 
 EffectInstance::RenderRoIRetCode
 EffectInstance::renderInputImagesForRoI(const FrameViewRequest* request,
-                                        bool useTransforms,
+                                        bool /*useTransforms*/,
                                         StorageModeEnum renderStorageMode,
                                         double time,
                                         ViewIdx view,
-                                        const RectD & rod,
-                                        const RectD & canonicalRenderWindow,
+                                        const RectD& rod,
+                                        const RectD& canonicalRenderWindow,
                                         const InputMatrixMapPtr& inputTransforms,
                                         unsigned int mipmapLevel,
-                                        const RenderScale & renderMappedScale,
+                                        const RenderScale& renderMappedScale,
                                         bool useScaleOneInputImages,
                                         bool byPassCache,
-                                        const FramesNeededMap & framesNeeded,
-                                        const EffectInstance::ComponentsNeededMap & neededComps,
-                                        EffectInstance::InputImagesMap *inputImages,
+                                        const FramesNeededMap& framesNeeded,
+                                        const EffectInstance::ComponentsNeededMap& neededComps,
+                                        EffectInstance::InputImagesMap* inputImages,
                                         RoIMap* inputsRoi)
 {
     if (!request) {
@@ -2280,19 +2462,14 @@ EffectInstance::renderInputImagesForRoI(const FrameViewRequest* request,
     }
 #endif
 
-
-    return treeRecurseFunctor(true,
-                              getNode(),
+    return treeRecurseFunctor(getNode(),
                               framesNeeded,
                               *inputsRoi,
                               inputTransforms,
-                              useTransforms,
                               renderStorageMode,
                               mipmapLevel,
                               time,
                               view,
-                              NodePtr(),
-                              0,
                               inputImages,
                               &neededComps,
                               useScaleOneInputImages,
@@ -2305,7 +2482,7 @@ EffectInstance::Implementation::tiledRenderingFunctor(EffectInstance::Implementa
                                                       QThread* callingThread)
 {
     ///Make the thread-storage live as long as the render action is called if we're in a newly launched thread in eRenderSafetyFullySafeFrame mode
-    AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, AppTLS::eSpawnKindHostFrameThreading);
+    AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, args.frameContext, AppTLS::eSpawnKindHostFrameThreading);
 
     EffectInstance::RenderingFunctorRetEnum ret = tiledRenderingFunctor(specificData,
                                                                         args.renderFullScaleThenDownscale,
@@ -2631,7 +2808,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
     std::unique_ptr<OSGLContextAttacher> glContextAttacher;
     if (layers.useOpenGL) {
         // Setup the viewport and the framebuffer
-        glContext = frameArgs->openGLContext.lock();
+        glContext = getRenderGLContext(frameArgs);
         AbortableRenderInfoPtr abortInfo = frameArgs->abortInfo.lock();
         assert(abortInfo);
         assert(glContext);
@@ -2692,7 +2869,8 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
             return eRenderingFunctorRetOK;
         } else {
             EffectInstance::RenderRoIRetCode renderOk;
-            renderOk = tls->currentRenderArgs.identityInput->renderRoI(*renderArgs, &identityLayers);
+            // renderRoI() finds store images needing a conversion by key, whatever input number they are filed under.
+            renderOk = EffectInstance::renderInputOrTakeFromStore(tls->currentRenderArgs.identityInput, -1, renderArgs.get(), &identityLayers);
             if (renderOk == eRenderRoIRetCodeAborted) {
                 return eRenderingFunctorRetAborted;
             } else if (renderOk == eRenderRoIRetCodeFailed) {
@@ -4048,6 +4226,22 @@ EffectInstance::getRegionOfDefinitionFromCache(U64 hash,
     return eStatusFailed;
 }
 
+bool
+EffectInstance::hasComponentsNeededInCache(U64 hash,
+                                           double time,
+                                           ViewIdx view) const
+{
+    ComponentsNeededMap comps;
+    std::bitset<4> processChannels;
+    ProcessChannelsPerPlaneMap processChannelsPerPlane;
+    std::list<ImageLayerDesc> passThroughLayers;
+    int passThroughInputNb = -1;
+    ViewIdx passThroughView;
+    double passThroughTime = 0.;
+
+    return _imp->actionsCache->getComponentsNeededResults(hash, time, view, &comps, &processChannels, &processChannelsPerPlane, &passThroughLayers, &passThroughInputNb, &passThroughView, &passThroughTime);
+}
+
 StatusEnum
 EffectInstance::getRegionOfDefinition_public(U64 hash,
                                              double time,
@@ -4353,7 +4547,8 @@ EffectInstance::dettachAllOpenGLContexts()
 
     for (EffectInstance::OpenGLContextEffectsMap::iterator it = _imp->attachedContexts.begin(); it != _imp->attachedContexts.end(); ++it) {
         OSGLContextPtr context = it->first.lock();
-        if (!context) {
+        // A context bound for a render is current on the render's thread, where a thread-exclusive one must stay.
+        if (!context || (context->getRenderBindCount() != 0)) {
             continue;
         }
         context->setContextCurrentNoRender();

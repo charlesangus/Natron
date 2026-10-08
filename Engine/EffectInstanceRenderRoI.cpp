@@ -61,11 +61,13 @@
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/PluginMemory.h"
+#include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/Settings.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/ThreadPool.h"
 #include "Engine/Timer.h"
 #include "Engine/Transform.h"
@@ -347,13 +349,12 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     } else {
         //The hash must not have changed if we did a pre-pass.
         frameArgs = tls->frameArgs.back();
-        glContext = frameArgs->openGLContext.lock();
         abortInfo = frameArgs->abortInfo.lock();
-        if (!abortInfo) {
-            // If we don't have info to identify the render, we cannot manage the OpenGL context properly, so don't try to render with OpenGL.
-            glContext.reset();
-        }
         assert(!frameArgs->request || frameArgs->nodeHash == frameArgs->request->nodeHash);
+    }
+
+    if (frameArgs->stats && frameArgs->stats->isTrackingRenderRoICalls()) {
+        frameArgs->stats->noteRenderRoI(getNode(), args.time, args.view);
     }
 
     ///For writer we never want to cache otherwise the next time we want to render it will skip writing the image on disk!
@@ -482,7 +483,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                         }
 
                         std::map<ImageLayerDesc, ImagePtr> inputLayers;
-                        RenderRoIRetCode inputRetCode = passThroughInput->renderRoI(*inArgs, &inputLayers);
+                        RenderRoIRetCode inputRetCode = renderInputOrTakeFromStore(passThroughInput, ptInputNb, inArgs.get(), &inputLayers);
                         assert(inputLayers.size() == 1 || inputLayers.empty());
                         if ((inputRetCode == eRenderRoIRetCodeAborted) || (inputRetCode == eRenderRoIRetCodeFailed) || inputLayers.empty()) {
                             return inputRetCode;
@@ -587,7 +588,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                 inputArgs->components = requestedComponents;
 
                 std::map<ImageLayerDesc, ImagePtr> identityLayers;
-                RenderRoIRetCode ret = inputEffectIdentity->renderRoI(*inputArgs, &identityLayers);
+                RenderRoIRetCode ret = renderInputOrTakeFromStore(inputEffectIdentity, inputNbIdentity, inputArgs.get(), &identityLayers);
                 if (ret != eRenderRoIRetCodeOk) {
                     return ret;
                 }
@@ -694,10 +695,38 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     StorageModeEnum storage = eStorageModeRAM;
     OSGLContextAttacherPtr glContextLocker;
 
+    bool wantsGLStorage = false;
     if ( dynamic_cast<DiskCacheNode*>(this) ) {
         storage = eStorageModeDisk;
-    } else if ( glContext && ( (openGLSupport == ePluginOpenGLRenderSupportNeeded) ||
-                             ( ( openGLSupport == ePluginOpenGLRenderSupportYes) && args.allowGPURendering) ) ) {
+    } else if (abortInfo && ((openGLSupport == ePluginOpenGLRenderSupportNeeded) || ((openGLSupport == ePluginOpenGLRenderSupportYes) && args.allowGPURendering))) {
+        wantsGLStorage = true;
+        // If the plug-in knows how to render on CPU, check if we actually should not render on CPU instead.
+        if (openGLSupport == ePluginOpenGLRenderSupportYes) {
+            // User want to force caching of this node but we cannot cache OpenGL renders, so fallback on CPU.
+            // If a node has multiple outputs, do not render it on OpenGL since we do not use the cache. We could end-up with this render being executed multiple times.
+            // Also, if the render time is different from the caller render time, don't render using OpenGL otherwise we could computed this render multiple times.
+            if (getNode()->isForceCachingEnabled() || (frameArgs->visitsCount > 1) || (args.time != args.callerRenderTime)) {
+                wantsGLStorage = false;
+            }
+        }
+    }
+
+    // A task creates its thread's context on first use, so only the renders that will use one may ask for it. Without
+    // info to identify the render, the context cannot be managed properly, so such a render never uses OpenGL.
+    if (abortInfo && (wantsGLStorage || (args.returnStorage == eStorageModeGLTex))) {
+        glContext = getRenderGLContext(frameArgs);
+    }
+
+    // The limit is only known once a context exists.
+    if (glContext && wantsGLStorage && (openGLSupport == ePluginOpenGLRenderSupportYes)) {
+        int maxTextureSize = appPTR->getGPUContextPool()->getCurrentOpenGLRendererMaxTextureSize();
+        if ((roi.width() >= maxTextureSize) || (roi.height() >= maxTextureSize)) {
+            // Fallback on CPU rendering since the image is larger than the maximum allowed OpenGL texture size
+            wantsGLStorage = false;
+        }
+    }
+
+    if (glContext && wantsGLStorage) {
         // Enable GPU render if the plug-in cannot render another way or if all conditions are met
 
         if (openGLSupport == ePluginOpenGLRenderSupportNeeded && !getNode()->getPlugin()->isOpenGLEnabled()) {
@@ -718,54 +747,28 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                                                                   );
         storage = eStorageModeGLTex;
 
-        // If the plug-in knows how to render on CPU, check if we actually should not render on CPU instead.
-        if (openGLSupport == ePluginOpenGLRenderSupportYes) {
-            // User want to force caching of this node but we cannot cache OpenGL renders, so fallback on CPU.
-            if ( getNode()->isForceCachingEnabled() ) {
-                storage = eStorageModeRAM;
-                glContextLocker.reset();
-            }
-
-            // If a node has multiple outputs, do not render it on OpenGL since we do not use the cache. We could end-up with this render being executed multiple times.
-            // Also, if the render time is different from the caller render time, don't render using OpenGL otherwise we could computed this render multiple times.
-
-            if (storage == eStorageModeGLTex) {
-                if ( (frameArgs->visitsCount > 1) ||
-                     ( args.time != args.callerRenderTime) ) {
-                    storage = eStorageModeRAM;
-                    glContextLocker.reset();
+        // OpenGL renders always support render scale...
+        if (renderFullScaleThenDownscale) {
+            renderFullScaleThenDownscale = false;
+            renderMappedMipmapLevel = args.mipmapLevel;
+            renderMappedScale = RenderScale::fromMipmapLevel(renderMappedMipmapLevel);
+            if (frameArgs->tilesSupported) {
+                roi = args.roi.intersect(downscaledImageBoundsNc);
+                if (roi.isNull()) {
+                    return eRenderRoIRetCodeOk;
                 }
-            }
-
-            // Ensure that the texture will be at least smaller than the maximum OpenGL texture size
-            if (storage == eStorageModeGLTex) {
-                int maxTextureSize = appPTR->getGPUContextPool()->getCurrentOpenGLRendererMaxTextureSize();
-                if ( (roi.width() >= maxTextureSize) ||
-                     ( roi.height() >= maxTextureSize) ) {
-                    // Fallback on CPU rendering since the image is larger than the maximum allowed OpenGL texture size
-                    storage = eStorageModeRAM;
-                    glContextLocker.reset();
-                }
+            } else {
+                roi = downscaledImageBoundsNc;
             }
         }
-        if (storage == eStorageModeGLTex) {
-            // OpenGL renders always support render scale...
-            if (renderFullScaleThenDownscale) {
-                renderFullScaleThenDownscale = false;
-                renderMappedMipmapLevel = args.mipmapLevel;
-                renderMappedScale = RenderScale::fromMipmapLevel(renderMappedMipmapLevel);
-                if (frameArgs->tilesSupported) {
-                    roi = args.roi.intersect(downscaledImageBoundsNc);
-                    if ( roi.isNull() ) {
-                        return eRenderRoIRetCodeOk;
-                    }
-                } else {
-                    roi = downscaledImageBoundsNc;
-                }
-            }
-        }
-    } else if ( appPTR->isOpenGLLoaded() && !appPTR->getCurrentSettings()->isOpenGLRenderingEnabled() && openGLSupport == ePluginOpenGLRenderSupportNeeded ) {
+    } else if (appPTR->isOpenGLLoaded() && !appPTR->getCurrentSettings()->isOpenGLRenderingEnabled() && openGLSupport == ePluginOpenGLRenderSupportNeeded) {
         QString message = tr("OpenGL render is required for a plugin but it's currently disabled, please consider passing `--opengl enabled` to %1").arg(QString::fromUtf8(NATRON_APPLICATION_NAME));
+        setPersistentMessage(eMessageTypeError, message.toStdString());
+        return eRenderRoIRetCodeFailed;
+    } else if (wantsGLStorage && (openGLSupport == ePluginOpenGLRenderSupportNeeded)) {
+        // The thread is beyond the OpenGL context limit or its context could not be created, and the plug-in has no
+        // CPU path to fall back on.
+        QString message = tr("OpenGL render is required for %1 but no OpenGL context is available").arg(QString::fromUtf8(getNode()->getLabel().c_str()));
         setPersistentMessage(eMessageTypeError, message.toStdString());
         return eRenderRoIRetCodeFailed;
     }
@@ -1154,12 +1157,11 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     RenderSafetyEnum safety = frameArgs->currentThreadSafety;
     if (safety == eRenderSafetyFullySafeFrame) {
         int nbThreads = appPTR->getCurrentSettings()->getNumberOfThreads();
+        const int budget = AppTLS::currentThreadBudget();
         // If the plug-in is eRenderSafetyFullySafeFrame that means it wants the host to perform SMP aka slice up the RoI into chunks
         // but if the effect doesn't support tiles it won't work.
         // Also check that the number of threads indicating by the settings are appropriate for this render mode.
-        if ( !frameArgs->tilesSupported || (nbThreads == -1) || (nbThreads == 1) ||
-            ( (nbThreads == 0) && (appPTR->getHardwareIdealThreadCount() == 1) ) ||
-            ( QThreadPool::globalInstance()->activeThreadCount() >= QThreadPool::globalInstance()->maxThreadCount() )) {
+        if (!frameArgs->tilesSupported || (nbThreads == -1) || (nbThreads == 1) || ((nbThreads == 0) && (appPTR->getHardwareIdealThreadCount() == 1)) || ((budget > 0) ? (budget <= 1) : (QThreadPool::globalInstance()->activeThreadCount() >= QThreadPool::globalInstance()->maxThreadCount()))) {
             safety = eRenderSafetyFullySafe;
         }
     }
@@ -1772,16 +1774,6 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
         renderingNotifier = std::make_shared<NotifyRenderingStarted_RAII>( self->getNode().get() );
     }
 
-    std::shared_ptr<std::map<NodePtr, ParallelRenderArgsPtr> > tlsCopy;
-    if (safety == eRenderSafetyFullySafeFrame) {
-        tlsCopy = std::make_shared<std::map<NodePtr, ParallelRenderArgsPtr> >();
-        /*
-         * Since we're about to start new threads potentially, copy all the thread-local storage on all nodes (any node may be involved in
-         * expressions, and we need to retrieve the exact local time of render).
-         */
-        self->getApp()->getProject()->getParallelRenderArgs(*tlsCopy);
-    }
-
     double firstFrame, lastFrame;
     self->getFrameRange_public(nodeHash, &firstFrame, &lastFrame);
 
@@ -1820,6 +1812,7 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
             QThread* currentThread = QThread::currentThread();
             std::unique_ptr<Implementation::TiledRenderingFunctorArgs> tiledArgs(new Implementation::TiledRenderingFunctorArgs);
             tiledArgs->renderFullScaleThenDownscale = renderFullScaleThenDownscale;
+            tiledArgs->isSequentialRender = isSequentialRender;
             tiledArgs->isRenderResponseToUserInteraction = isRenderMadeInResponseToUserInteraction;
             tiledArgs->firstFrame = firstFrame;
             tiledArgs->lastFrame = lastFrame;
@@ -1836,7 +1829,7 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
             tiledArgs->processChannels = processChannels;
             tiledArgs->layers = layersToRender;
             tiledArgs->compsNeeded = compsNeeded;
-
+            tiledArgs->frameContext = AppTLS::currentFrameContext();
 
 #ifdef NATRON_HOSTFRAMETHREADING_SEQUENTIAL
             std::vector<EffectInstance::RenderingFunctorRetEnum> ret( tiledData.size() );
@@ -1850,13 +1843,16 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
 
 #else
 
-            std::function<RenderingFunctorRetEnum(const RectToRender&)> render = [&](const RectToRender& rect) {
-                return self->_imp->tiledRenderingFunctor(*tiledArgs, rect, currentThread);
+            std::vector<const RectToRender*> rects;
+            for (std::list<RectToRender>::const_iterator it = layersToRender->rectsToRender.begin(); it != layersToRender->rectsToRender.end(); ++it) {
+                rects.push_back(&*it);
+            }
+            std::vector<EffectInstance::RenderingFunctorRetEnum> ret(rects.size(), EffectInstance::eRenderingFunctorRetFailed);
+            const std::function<void(int)> render = [&](int i) {
+                ret[i] = self->_imp->tiledRenderingFunctor(*tiledArgs, *rects[i], currentThread);
             };
-
-            QFuture<RenderingFunctorRetEnum> ret = QtConcurrent::mapped(layersToRender->rectsToRender, render);
-            ret.waitForFinished();
-            QFuture<EffectInstance::RenderingFunctorRetEnum>::const_iterator it2;
+            parallelForOnGlobalPool((int)rects.size(), appPTR->getNCPUsAvailableForEffect(), render);
+            std::vector<EffectInstance::RenderingFunctorRetEnum>::const_iterator it2;
 
 #endif
             for (it2 = ret.begin(); it2 != ret.end(); ++it2) {

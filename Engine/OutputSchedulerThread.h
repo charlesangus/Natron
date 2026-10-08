@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <vector>
 
 #include <QThread>
@@ -477,6 +478,14 @@ public:
                      const OutputEffectInstancePtr& effect);
 
     virtual ~DefaultScheduler();
+
+    typedef std::function<void(int time, ViewIdx view, const RenderStatsPtr& stats)> FrameStatsObserver;
+
+    /**
+     * @brief Calls observer with the stats of each frame view a writer rendered, on the thread that rendered it,
+     * before the frame is reported. An empty function stops observing.
+     **/
+    static void setFrameStatsObserverForTests(const FrameStatsObserver& observer);
 
 private:
 

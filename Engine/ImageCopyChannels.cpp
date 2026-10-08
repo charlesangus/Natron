@@ -34,9 +34,9 @@
 #include <vector>
 
 #include <QDebug>
-#include <QtConcurrentMap>
 
 #include "Engine/AppManager.h"
+#include "Engine/PoolParallelFor.h"
 
 #include "Engine/OSGLContext.h"
 #include "Engine/GLShader.h"
@@ -169,8 +169,8 @@ forEachCopyUnProcessedRowBand(const RectI& roi,
     for (int y = roi.y1; y < roi.y2; y += rowsPerBand) {
         bands.push_back(RectI(roi.x1, y, roi.x2, std::min(y + rowsPerBand, roi.y2)));
     }
-    QtConcurrent::blockingMap(bands, [&](RectI band) {
-        copyRows(band.y1, band.y2);
+    parallelForOnGlobalPool((int)bands.size(), nBands, [&](int i) {
+        copyRows(bands[i].y1, bands[i].y2);
     });
 }
 

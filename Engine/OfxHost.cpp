@@ -52,7 +52,6 @@ CLANG_DIAG_ON(deprecated-register)
 #ifdef OFX_SUPPORTS_MULTITHREAD
 #include <QThread>
 #include <QThreadStorage>
-#include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
 #endif
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -102,9 +101,10 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/NodeSerialization.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
-#include "Engine/OutputSchedulerThread.h"
 #include "Engine/OfxMemory.h"
+#include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
+#include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/StandardPaths.h"
@@ -1212,7 +1212,8 @@ threadFunctionWrapper(OfxThreadFunctionV1 func,
                       unsigned int threadIndex,
                       unsigned int threadMax,
                       QThread* spawnerThread,
-                      void *customArg)
+                      const FrameRenderContext* frameContext,
+                      void* customArg)
 {
 #ifdef DEBUG
     boost_adaptbx::floating_point::exception_trapping trap(boost_adaptbx::floating_point::exception_trapping::division_by_zero |
@@ -1221,7 +1222,7 @@ threadFunctionWrapper(OfxThreadFunctionV1 func,
 #endif
     assert(threadIndex < threadMax);
     // Before any thread-local data is fetched: registering the spawner drops what the thread kept.
-    AppTLS::SpawnedThreadScope spawnedThreadTLS(spawnerThread);
+    AppTLS::SpawnedThreadScope spawnedThreadTLS(spawnerThread, frameContext);
     OfxHost::OfxHostDataTLSPtr tls = appPTR->getOFXHost()->getTLSData();
     tls->threadIndexes.push_back( (int)threadIndex );
 
@@ -1253,14 +1254,16 @@ public:
               unsigned int threadIndex,
               unsigned int threadMax,
               QThread* spawnerThread,
-              void *customArg,
-              OfxStatus *stat)
+              const FrameRenderContext* frameContext,
+              void* customArg,
+              OfxStatus* stat)
         : QThread()
         , AbortableThread(this)
         , _func(func)
         , _threadIndex(threadIndex)
         , _threadMax(threadMax)
         , _spawnerThread(spawnerThread)
+        , _frameContext(frameContext)
         , _customArg(customArg)
         , _stat(stat)
     {
@@ -1276,7 +1279,7 @@ public:
 #endif
        assert(_threadIndex < _threadMax);
        // Before any thread-local data is fetched: registering the spawner drops what the thread kept.
-       AppTLS::SpawnedThreadScope spawnedThreadTLS(_spawnerThread);
+       AppTLS::SpawnedThreadScope spawnedThreadTLS(_spawnerThread, _frameContext);
        OfxHost::OfxHostDataTLSPtr tls = appPTR->getOFXHost()->getTLSData();
        tls->threadIndexes.push_back((int)_threadIndex);
 
@@ -1298,6 +1301,7 @@ private:
     unsigned int _threadIndex;
     unsigned int _threadMax;
     QThread* _spawnerThread;
+    const FrameRenderContext* _frameContext;
     void *_customArg;
     OfxStatus *_stat;
 };
@@ -1345,28 +1349,20 @@ OfxHost::multiThread(OfxThreadFunctionV1 func,
     }
 
     QThread* spawnerThread = QThread::currentThread();
+    const FrameRenderContext* frameContext = AppTLS::currentFrameContext();
     bool useThreadPool = appPTR->getUseThreadPool();
 
     if (useThreadPool) {
-        std::vector<uint32_t> threadIndexes(nThreads);
-        for (uint32_t i = 0; i < nThreads; ++i) {
-            threadIndexes[i] = i;
-        }
-
-        /// DON'T set the maximum thread count, this is a global application setting, and see the documentation excerpt above
-        //QThreadPool::globalInstance()->setMaxThreadCount(nThreads);
-        std::function<OfxStatus (const uint32_t&)> process = [&](const uint32_t tid) {
-            return threadFunctionWrapper(func, tid, nThreads, spawnerThread, customArg);
+        std::vector<OfxStatus> status(nThreads, kOfxStatFailed);
+        // The calling thread runs thread functions too, which is what the +1 of multiThreadNumCPUS counts it for.
+        const std::function<void(int)> process = [&](int tid) {
+            status[tid] = threadFunctionWrapper(func, (unsigned int)tid, nThreads, spawnerThread, frameContext, customArg);
         };
-        QFuture<OfxStatus> future = QtConcurrent::mapped( threadIndexes, process );
-        future.waitForFinished();
-        ///DON'T reset back to the original value the maximum thread count
-        //QThreadPool::globalInstance()->setMaxThreadCount(QThread::idealThreadCount());
+        parallelForOnGlobalPool((int)nThreads, (int)maxConcurrentThread, process);
 
-        for (QFuture<OfxStatus>::const_iterator it = future.begin(); it != future.end(); ++it) {
-            OfxStatus stat = *it;
-            if (stat != kOfxStatOK) {
-                return stat;
+        for (std::vector<OfxStatus>::const_iterator it = status.begin(); it != status.end(); ++it) {
+            if (*it != kOfxStatOK) {
+                return *it;
             }
         }
     } else {
@@ -1376,7 +1372,7 @@ OfxHost::multiThread(OfxThreadFunctionV1 func,
             // at most maxConcurrentThread should be running at the same time
             QVector<OfxThread*> threads(nThreads);
             for (unsigned int i = 0; i < nThreads; ++i) {
-                threads[i] = new OfxThread(func, i, nThreads, spawnerThread, customArg, &status[i]);
+                threads[i] = new OfxThread(func, i, nThreads, spawnerThread, frameContext, customArg, &status[i]);
             }
             unsigned int i = 0; // index of next thread to launch
             unsigned int running = 0; // number of running threads

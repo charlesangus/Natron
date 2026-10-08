@@ -398,7 +398,8 @@ void
 OutputEffectInstance::reportStats(int time,
                                   ViewIdx view,
                                   double wallTime,
-                                  const std::map<NodePtr, NodeRenderStats > & stats)
+                                  const std::map<NodePtr, NodeRenderStats>& stats,
+                                  const RenderStatsPtr& renderStats)
 {
     std::string filename;
     KnobIPtr fileKnob = getKnobByName(kOfxImageEffectFileParamName);
@@ -433,6 +434,17 @@ OutputEffectInstance::reportStats(int time,
     }
 
     ofile << "Time spent to render frame (wall clock time): " << Timer::printAsTime(wallTime, false).toStdString() << std::endl;
+    if (renderStats) {
+        ofile << "Tasks run: " << renderStats->getTasksRun() << std::endl;
+        ofile << "Max concurrent tasks: " << renderStats->getMaxConcurrentTasks() << std::endl;
+        ofile << "Frame store hits: " << renderStats->getFrameStoreHits() << std::endl;
+        ofile << "Unplanned pulls: " << renderStats->getUnplannedPulls() << std::endl;
+        ofile << "Legacy fallbacks: " << renderStats->getLegacyFallbacks() << std::endl;
+        const std::map<std::string, int> fallbackReasons = renderStats->getLegacyFallbackReasons();
+        for (std::map<std::string, int>::const_iterator it = fallbackReasons.begin(); it != fallbackReasons.end(); ++it) {
+            ofile << "Legacy fallback reason " << it->first << ": " << it->second << std::endl;
+        }
+    }
     for (std::map<NodePtr, NodeRenderStats >::const_iterator it = stats.begin(); it != stats.end(); ++it) {
         ofile << "------------------------------- " << it->first->getScriptName_mt_safe() << "------------------------------- " << std::endl;
         ofile << "Time spent rendering: " << Timer::printAsTime(it->second.getTotalTimeSpentRendering(), false).toStdString() << std::endl;

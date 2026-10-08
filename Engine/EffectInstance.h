@@ -885,6 +885,35 @@ public:
                                   bool draftMode,
                                   const RenderStatsPtr & stats);
 
+    /**
+     * @brief The frame args setParallelRenderArgsTLS() would install, without installing them.
+     **/
+    ParallelRenderArgsPtr createParallelRenderArgs(double time,
+                                                   ViewIdx view,
+                                                   bool isRenderUserInteraction,
+                                                   bool isSequential,
+                                                   U64 nodeHash,
+                                                   const AbortableRenderInfoPtr& abortInfo,
+                                                   const NodePtr& treeRoot,
+                                                   int visitsCount,
+                                                   const NodeFrameRequestPtr& nodeRequest,
+                                                   const OSGLContextPtr& glContext,
+                                                   int textureIndex,
+                                                   const TimeLine* timeline,
+                                                   bool isAnalysis,
+                                                   bool isDuringPaintStrokeCreation,
+                                                   const NodesList& rotoPaintNodes,
+                                                   RenderSafetyEnum currentThreadSafety,
+                                                   PluginOpenGLRenderSupport currentOpenGLSupport,
+                                                   bool doNanHandling,
+                                                   bool draftMode,
+                                                   const RenderStatsPtr& stats) const;
+
+    /**
+     * @brief The holder of this effect's thread-local data, shared with its render clones.
+     **/
+    const TLSHolderBase* getTLSHolder() const;
+
     void setDuringPaintStrokeCreationThreadLocal(bool duringPaintStroke);
 
     void setNodeRequestThreadLocal(const NodeFrameRequestPtr & nodeRequest);
@@ -921,24 +950,65 @@ public:
                                          const NodePtr & treeRoot,
                                          FrameRequestMap & request);
 
-    // Implem is in ParallelRenderArgs.cpp
-    static EffectInstance::RenderRoIRetCode treeRecurseFunctor(bool isRenderFunctor,
-                                                               const NodePtr & node,
-                                                               const FramesNeededMap & framesNeeded,
-                                                               const RoIMap & inputRois,
-                                                               const InputMatrixMapPtr & reroutesMap,
-                                                               bool useTransforms,         // roi functor specific
+    /**
+     * @brief Pre-renders the input frames node needs before rendering. Implem is in ParallelRenderArgs.cpp
+     **/
+    static EffectInstance::RenderRoIRetCode treeRecurseFunctor(const NodePtr& node,
+                                                               const FramesNeededMap& framesNeeded,
+                                                               const RoIMap& inputRois,
+                                                               const InputMatrixMapPtr& reroutesMap,
                                                                StorageModeEnum renderStorageMode, // The storage of the image returned by the current Render
-                                                               unsigned int originalMipmapLevel,         // roi functor specific
+                                                               unsigned int originalMipmapLevel,
                                                                double time,
                                                                ViewIdx view,
-                                                               const NodePtr & treeRoot,
-                                                               FrameRequestMap* requests,          // roi functor specific
-                                                               EffectInstance::InputImagesMap* inputImages,         // render functor specific
-                                                               const EffectInstance::ComponentsNeededMap* neededComps,         // render functor specific
-                                                               bool useScaleOneInputs,         // render functor specific
-                                                               bool byPassCache);         // render functor specific
+                                                               EffectInstance::InputImagesMap* inputImages,
+                                                               const EffectInstance::ComponentsNeededMap* neededComps,
+                                                               bool useScaleOneInputs,
+                                                               bool byPassCache);
 
+    /**
+     * @brief Appends to out the images of comps that the task rendering input at time/view/mipmap left in the store of
+     * the frame installed on this thread, if they cover pixelRoI. Returns false without looking anything up when no
+     * frame is installed.
+     **/
+    static bool lookupFrameStore(const EffectInstancePtr& input,
+                                 double time,
+                                 ViewIdx view,
+                                 unsigned mipmap,
+                                 const std::list<ImageLayerDesc>& comps,
+                                 const RectI& pixelRoI,
+                                 std::list<ImagePtr>* out);
+
+    /**
+     * @brief Whether images from the store are already in the depth and storage renderRoI() would return, so that they
+     * can stand in for its result without a conversion.
+     **/
+    static bool frameStoreImagesMatch(const std::list<ImagePtr>& images,
+                                      ImageBitDepthEnum depth,
+                                      StorageModeEnum storage);
+
+    /**
+     * @brief Calls input->renderRoI(*args, layers) unless the frame installed on this thread stored what it asks for,
+     * in which case the stored images are returned in its place. Stored images needing a conversion are passed to
+     * renderRoI() in args->inputImagesList under inputNb, where it finds them by key.
+     **/
+    static RenderRoIRetCode renderInputOrTakeFromStore(const EffectInstancePtr& input,
+                                                       int inputNb,
+                                                       RenderRoIArgs* args,
+                                                       std::map<ImageLayerDesc, ImagePtr>* layers);
+
+    /**
+     * @brief Count, in the stats of the frame installed on this thread, an input taken from the store or one rendered
+     * by pulling it. Nothing is counted when no frame is installed.
+     **/
+    static void noteFrameStoreHit();
+    static void noteUnplannedPull();
+
+    /**
+     * @brief Whether input belongs to the internal tree of a RotoPaint node of the frame installed on this thread. The
+     * RotoPaint task renders that tree itself, so pulling its nodes is not work the scheduler left unplanned.
+     **/
+    static bool isRotoPaintTreePull(const EffectInstancePtr& input);
 
     /**
      * @brief Don't override this one, override onKnobValueChanged instead.
@@ -1117,6 +1187,13 @@ public:
     bool getThreadLocalRegionsOfInterests(RoIMap & roiMap) const;
 
     OSGLContextPtr getThreadLocalOpenGLContext() const;
+
+    /**
+     * @brief The OpenGL context a render of this effect uses on the calling thread: the thread's own context inside a
+     * RenderScheduler task, since a frame's tasks run concurrently on several threads, and the context attached to
+     * the frame otherwise.
+     **/
+    static OSGLContextPtr getRenderGLContext(const ParallelRenderArgsPtr& frameArgs);
 
     void getThreadLocalInputImages(InputImagesMap* images) const;
 
@@ -1485,6 +1562,8 @@ public:
                                               ViewIdx view,
                                               RectD* rod,
                                               bool* isProjectFormat) WARN_UNUSED_RETURN;
+
+    bool hasComponentsNeededInCache(U64 hash, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
 public:
 

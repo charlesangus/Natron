@@ -118,12 +118,43 @@ public:
     static void notifyInheritedCopy();
 
     /**
-     * @brief Calls softCopy() from the current thread on construction and cleanupTLSForThread()
-     * on destruction, unless the current thread is fromThread itself.
+     * @brief Number of live holders with data for the current thread.
+     **/
+    static std::size_t getNumHoldersWithDataForCurrentThread();
+
+    /**
+     * @brief The frame installed on the current thread by the innermost FrameContextScope, or null. An effect without
+     * data on this thread that no spawner provides gets its frame args from it.
+     **/
+    static const FrameRenderContext* currentFrameContext();
+
+    /**
+     * @brief Threads the task running on the current thread may use for its own parallelism, as granted by the
+     * scheduler; 0 when no scope set it.
+     **/
+    static int currentThreadBudget();
+
+    /**
+     * @brief Pool priority of the task running on the current thread; 0 when no scope set it.
+     **/
+    static int currentRunnablePriority();
+
+    /**
+     * @brief Unless the current thread is fromThread itself: calls softCopy() from the current thread and installs
+     * frameContext as the current thread's frame, a thread budget of 1 and an OpenMP nthreads ICV of 1 on
+     * construction, then restores the previous frame, budget and ICV and calls cleanupTLSForThread() on destruction. frameContext must be the spawner's
+     * currentFrameContext(), read on the spawner before it hands the work out, since another thread cannot read the
+     * spawner's.
+     *
+     * The OpenMP workers a plug-in spawns on its own get neither scope, so they run without a frame or a budget. That
+     * is safe because their parallel regions are pure pixel loops: abort() and clipGetImage are only called from the
+     * suite's thread, which has its frame installed.
      **/
     class SpawnedThreadScope {
     public:
-        explicit SpawnedThreadScope(QThread* fromThread, SpawnKindEnum kind = eSpawnKindMultiThreadSuite);
+        SpawnedThreadScope(QThread* fromThread,
+                           const FrameRenderContext* frameContext,
+                           SpawnKindEnum kind = eSpawnKindMultiThreadSuite);
 
         ~SpawnedThreadScope();
 
@@ -132,6 +163,46 @@ public:
 
     private:
         bool _spawned;
+        const FrameRenderContext* _previousFrameContext;
+        int _previousBudget;
+        int _previousOpenMPThreads;
+    };
+
+    /**
+     * @brief Installs a frame, the task's thread budget and its pool priority on the current thread for the time of
+     * a task. The outermost scope cleans up the thread's TLS on destruction.
+     **/
+    class FrameContextScope {
+    public:
+        explicit FrameContextScope(const FrameRenderContext* context,
+                                   int budget = 0,
+                                   int runnablePriority = 0);
+
+        ~FrameContextScope();
+
+        FrameContextScope(const FrameContextScope&) = delete;
+        FrameContextScope& operator=(const FrameContextScope&) = delete;
+
+    private:
+        const FrameRenderContext* _previous;
+        int _previousBudget;
+        int _previousPriority;
+    };
+
+    /**
+     * @brief Sets the current thread's budget for the lifetime of the scope.
+     **/
+    class ThreadBudgetScope {
+    public:
+        explicit ThreadBudgetScope(int budget);
+
+        ~ThreadBudgetScope();
+
+        ThreadBudgetScope(const ThreadBudgetScope&) = delete;
+        ThreadBudgetScope& operator=(const ThreadBudgetScope&) = delete;
+
+    private:
+        int _previous;
     };
 
 private:
@@ -181,6 +252,7 @@ private:
 
     std::shared_ptr<T> findDataForThread(const QThread* curThread) const WARN_UNUSED_RETURN;
     std::shared_ptr<T> inheritFromSpawner(const QThread* curThread) const WARN_UNUSED_RETURN;
+    std::shared_ptr<T> createFromFrameContext(const QThread* curThread) const WARN_UNUSED_RETURN;
     std::shared_ptr<T> insertForThread(const QThread* curThread, const std::shared_ptr<T>& value) const WARN_UNUSED_RETURN;
 
     mutable QReadWriteLock perThreadDataMutex;

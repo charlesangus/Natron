@@ -111,7 +111,7 @@ public:
 
 
     virtual void initializeData() OVERRIDE FINAL;
-    virtual void reportStats(int time, ViewIdx view, double wallTime, const std::map<NodePtr, NodeRenderStats > & stats);
+    virtual void reportStats(int time, ViewIdx view, double wallTime, const std::map<NodePtr, NodeRenderStats>& stats, const RenderStatsPtr& renderStats);
 
 protected:
 

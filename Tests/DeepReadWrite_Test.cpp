@@ -920,6 +920,36 @@ TEST_F(DeepReadWriteTest, LayersFollowTheFrameWhateverTheTimelineIsOn)
     }
 }
 
+TEST_F(DeepReadWriteTest, ASequenceIsFrameVaryingAndAStillIsNot)
+{
+    NodePtr sequence = createDeepRead(fixturePath("deep-seq-layers.####.exr"));
+    NodePtr still = createDeepRead(fixturePath("deep-layers.exr"));
+    ASSERT_TRUE(sequence && still);
+
+    EXPECT_TRUE(sequence->getEffectInstance()->isFrameVarying());
+    EXPECT_FALSE(still->getEffectInstance()->isFrameVarying());
+}
+
+TEST_F(DeepReadWriteTest, EachFrameOfASequenceRendersItsOwnFileThroughTheCache)
+{
+    NodePtr read = createDeepRead(fixturePath("deep-seq-layers.####.exr"));
+    ASSERT_TRUE(bool(read));
+
+    DeepImagePtr first;
+    DeepImagePtr second;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 1., fullFrame(), &first));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 2., fullFrame(), &second));
+    ASSERT_TRUE(first && second);
+    EXPECT_NE(channelNamesOf(*first), channelNamesOf(*second));
+
+    appPTR->clearAllCaches();
+
+    DeepImagePtr fresh;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, renderDeepFrame(read, 2., fullFrame(), &fresh));
+    ASSERT_TRUE(bool(fresh));
+    EXPECT_EQ(channelNamesOf(*fresh), channelNamesOf(*second));
+}
+
 TEST_F(DeepReadWriteTest, LayersFollowAFileRewrittenInPlace)
 {
     QTemporaryDir tmp;

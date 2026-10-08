@@ -51,8 +51,10 @@
 #include <clocale>
 #include <csignal>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring> // for std::memcpy
 #include <locale>
+#include <optional>
 #include <sstream> // stringstream
 #include <stdexcept>
 
@@ -118,20 +120,22 @@
 #include "Engine/Log.h"
 #include "Engine/MemoryInfo.h" // getSystemTotalRAM, printAsRAM
 #include "Engine/Node.h"
-#include "Engine/OfxImageEffectInstance.h"
+#include "Engine/OSGLContext.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxHost.h"
-#include "Engine/OSGLContext.h"
+#include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OneViewNode.h"
+#include "Engine/PrecompNode.h"
 #include "Engine/ProcessHandler.h" // ProcessInputChannel
 #include "Engine/Project.h"
-#include "Engine/PrecompNode.h"
 #include "Engine/ReadNode.h"
+#include "Engine/RenderScheduler.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoSmear.h"
 #include "Engine/StandardPaths.h"
-#include "Engine/TrackerNode.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/ThreadPool.h"
+#include "Engine/TrackerNode.h"
 
 #include "Engine/Nodes/Channel/AddLayers.h"
 #include "Engine/Nodes/Channel/RemoveLayers.h"
@@ -289,6 +293,15 @@ AppManager::AppManager()
     assert(!_instance);
     _instance = this;
 
+    // Read before the settings load: CI selects the scheduler per job through the environment.
+    {
+        std::optional<RenderSchedulerModeEnum> envMode = parseRenderSchedulerModeEnv(std::getenv("NATRON_RENDER_SCHEDULER"));
+        if (envMode) {
+            _imp->renderSchedulerMode = (int)*envMode;
+            _imp->renderSchedulerEnvOverride = true;
+        }
+    }
+
     QObject::connect( this, SIGNAL(s_requestOFXDialogOnMainThread(OfxImageEffectInstance*,void*)), this, SLOT(onOFXDialogOnMainThreadReceived(OfxImageEffectInstance*,void*)) );
 
 #ifdef __NATRON_WIN32__
@@ -383,7 +396,14 @@ AppManager::loadFromArgs(const CLArgs& cl)
 
     _imp->idealThreadCount = QThread::idealThreadCount();
 
-
+    // A cold RoD query on a deep chain recurses through the OFX host at about 2 kB of stack per node; only the pages a
+    // thread touches are committed. The size only applies to threads the pool creates later, and pool threads never
+    // expire, so a thread created before this call would keep the default stack for the life of the process.
+    if (QThreadPool::globalInstance()->activeThreadCount() > 0) {
+        qDebug() << "The global thread pool already has" << QThreadPool::globalInstance()->activeThreadCount()
+                 << "active threads, which keep the default stack size";
+    }
+    QThreadPool::globalInstance()->setStackSize(64 * 1024 * 1024);
     QThreadPool::globalInstance()->setExpiryTimeout(-1); //< make threads never exit on their own
     //otherwise it might crash with thread-local storage
 
@@ -464,6 +484,11 @@ AppManager::~AppManager()
 
     ///Caches may have launched some threads to delete images, wait for them to be done
     QThreadPool::globalInstance()->waitForDone();
+
+    {
+        QMutexLocker k(&_imp->renderSchedulerMutex);
+        _imp->renderScheduler.reset();
+    }
 
     ///Kill caches now because decreaseNCacheFilesOpened can be called
     if (_imp->_nodeCache) {
@@ -735,6 +760,7 @@ AppManager::loadInternal(const CLArgs& cl)
     // Settings: always call restoreSettings, but call restoreKnobsFromSettings conditionally
     // Call restore after initializing knobs
     _imp->_settings->restoreSettings( cl.isLoadedUsingDefaultSettings() );
+    onRenderSchedulerModeSettingChanged(_imp->_settings->getRenderSchedulerMode());
     if (cl.isLoadedUsingDefaultSettings()) {
         _imp->_settings->setSaveSettings(false);
     }
@@ -2891,6 +2917,44 @@ AppManager::setNThreadsPerEffect(int nThreadsPerEffect)
     _imp->nThreadsPerEffect = nThreadsPerEffect;
 }
 
+std::optional<RenderSchedulerModeEnum>
+AppManager::parseRenderSchedulerModeEnv(const char* value)
+{
+    if (!value) {
+        return std::nullopt;
+    }
+    const std::string str(value);
+    if (str == "legacy") {
+        return eRenderSchedulerModeLegacy;
+    }
+    if (str == "taskgraph") {
+        return eRenderSchedulerModeTaskGraph;
+    }
+
+    return std::nullopt;
+}
+
+RenderSchedulerModeEnum
+AppManager::getRenderSchedulerMode() const
+{
+    return (RenderSchedulerModeEnum)_imp->renderSchedulerMode.load();
+}
+
+void
+AppManager::setRenderSchedulerMode(RenderSchedulerModeEnum mode)
+{
+    _imp->renderSchedulerMode = (int)mode;
+}
+
+void
+AppManager::onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode)
+{
+    if (_imp->renderSchedulerEnvOverride) {
+        return;
+    }
+    _imp->renderSchedulerMode = (int)mode;
+}
+
 void
 AppManager::setUseThreadPool(bool useThreadPool)
 {
@@ -2929,28 +2993,44 @@ AppManager::getNCPUsAvailableForEffect()
         return 1;
     }
 
-    // activeThreadCount may be negative (for example if releaseThread() is called)
-    int activeThreadsCount = QThreadPool::globalInstance()->activeThreadCount();
+    const int budget = AppTLS::currentThreadBudget();
+    if (budget > 0) {
+        return std::min(budget, (nThreadsPerEffect > 0) ? nThreadsPerEffect : budget);
+    }
 
-    // Add the number of threads already running by the multiThreadSuite + parallel renders
+    // Threads already running for the multiThreadSuite + parallel renders
 #ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    activeThreadsCount += getNRunningThreads();
+    const int runningThreadsCount = getNRunningThreads();
+#else
+    const int runningThreadsCount = 0;
 #endif
-
-    activeThreadsCount = std::max(0, activeThreadsCount);
 
     // better than QThread::idealThreadCount();, because it can be set by a global preference:
     int maxThreadsCount = QThreadPool::globalInstance()->maxThreadCount();
     assert(maxThreadsCount >= 0);
 
     if (nThreadsPerEffect == 0) {
-        int hwConcurrency = getMaxThreadCount();
+        // A pool larger than the machine serves concurrent tasks; one effect splitting past the cores only adds
+        // context switches.
+        const int hwConcurrency = std::min(maxThreadsCount, getHardwareIdealThreadCount());
 
         nThreadsPerEffect = (hwConcurrency <= 0) ? 1 : hwConcurrency;
     }
 
-    // +1 because the calling thread waits during the parallel work, so it should not count as busy.
-    return std::max(1, std::min(maxThreadsCount - activeThreadsCount + 1, nThreadsPerEffect));
+    return computeNCPUsAvailable(maxThreadsCount, QThreadPool::globalInstance()->activeThreadCount(), runningThreadsCount, nThreadsPerEffect);
+}
+
+int
+AppManager::computeNCPUsAvailable(int poolMax,
+                                  int active,
+                                  int running,
+                                  int perEffect)
+{
+    // activeThreadCount may be negative (for example if releaseThread() is called)
+    const int busy = std::max(0, active + running);
+
+    // +1 because the calling thread runs a share of the parallel work itself, so it should not count as busy.
+    return std::max(1, std::min(poolMax - busy + 1, perEffect));
 }
 
 void
@@ -3399,6 +3479,25 @@ AppManager::getAppTLS() const
     return &_imp->globalTLS;
 }
 
+RenderScheduler*
+AppManager::getRenderScheduler()
+{
+    QMutexLocker k(&_imp->renderSchedulerMutex);
+
+    if (!_imp->renderScheduler) {
+        _imp->renderScheduler = std::make_shared<RenderScheduler>();
+    }
+
+    return _imp->renderScheduler.get();
+}
+
+bool
+AppManager::hasRenderScheduler() const
+{
+    QMutexLocker k(&_imp->renderSchedulerMutex);
+
+    return bool(_imp->renderScheduler);
+}
 
 QString
 AppManager::getBoostVersion() const

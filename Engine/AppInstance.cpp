@@ -26,22 +26,24 @@
 
 #include "AppInstance.h"
 
+#include <algorithm>
+#include <cassert>
 #include <fstream>
 #include <limits>
 #include <list>
-#include <cassert>
-#include <stdexcept>
 #include <sstream> // stringstream
+#include <stdexcept>
 
 #include <QCoreApplication>
 #include <QDir>
-#include <QTextStream>
-#include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
-#include <QUrl>
-#include <QFileInfo>
 #include <QEventLoop>
-#include <QSettings>
+#include <QFileInfo>
 #include <QNetworkReply>
+#include <QSettings>
+#include <QTextStream>
+#include <QThreadPool>
+#include <QUrl>
+#include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
 
 // ofxhPropertySuite.h:565:37: warning: 'this' pointer cannot be null in well-defined C++ code; comparison may be assumed to always evaluate to true [-Wtautological-undefined-compare]
 // clang-format off
@@ -58,17 +60,18 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/BlockingBackgroundRender.h"
 #include "Engine/CLArgs.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/DiskCacheNode.h"
 #include "Engine/FileDownloader.h"
 #include "Engine/GroupOutput.h"
-#include "Engine/DiskCacheNode.h"
-#include "Engine/ProjectSerialization.h"
 #include "Engine/Node.h"
 #include "Engine/NodeSerialization.h"
 #include "Engine/Plugin.h"
-#include "Engine/Project.h"
 #include "Engine/ProcessHandler.h"
+#include "Engine/Project.h"
+#include "Engine/ProjectSerialization.h"
 #include "Engine/ReadNode.h"
 #include "Engine/Settings.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/WriteNode.h"
 
 NATRON_NAMESPACE_ENTER
@@ -1810,9 +1813,14 @@ AppInstance::startWritersRendering(bool doBlockingRender,
     }
 
     if (appPTR->isBackground() || doBlockingRender) {
-        //blocking call, we don't want this function to return pre-maturely, in which case it would kill the app
-        QtConcurrent::blockingMap( itemsToQueue, [&](RenderQueueItem item) {
+        // blocking call, we don't want this function to return pre-maturely, in which case it would kill the app
+        // Each item's thread only waits for its render, so it must not hold one of the global pool's threads, which
+        // the Task graph scheduler runs the frames' work on: with a pool of one, that render would never start.
+        QThreadPool waitingPool;
+        waitingPool.setMaxThreadCount(std::max(1, (int)itemsToQueue.size()));
+        QtConcurrent::blockingMap(&waitingPool, itemsToQueue, [&](RenderQueueItem item) {
             _imp->startRenderingFullSequence(true, item);
+            appPTR->getAppTLS()->cleanupTLSForThread();
         });
     } else {
         bool isQueuingEnabled = appPTR->getCurrentSettings()->isRenderQueuingEnabled();

@@ -1,4 +1,6 @@
-# Milestone 67: Rewrite core nodes as native nodes
+# M67 - Native Core Nodes
+
+Full title: Rewrite core nodes as native nodes
 
 > **Elaborated 2026-10-06** (planning consultant, read-only, on `origin/milestone/m63-task-graph-render-scheduler` at `ce575b4d2`). The branch stacks on M63's PR #41. M64 is `blocked` after its strip-pull spike missed kill gate 1, and is parked until native kernels exist. Order: a benchmark harness and a native Grade, then a **go/no-go gate (P1.T6)**, then four family phases (colour → merge + generators → spatial → keying/misc), then wrap-up and packaging. Each family's native nodes take over the OFX plugin IDs at a higher major version. That family's openfx-misc plugins are retired from the bundle through one fork PR, `charlesangus/openfx-misc` `m67/retire-native-core`, which is merged with the milestone.
 

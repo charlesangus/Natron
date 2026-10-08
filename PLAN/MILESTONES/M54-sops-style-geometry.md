@@ -1,4 +1,6 @@
-# Milestone 54: SOPs-style geometry — GeoDetail data kind, bridges, operators, point editing
+# M54 - SOPs-Style Geometry
+
+Full title: SOPs-style geometry — GeoDetail data kind, bridges, operators, point editing
 
 Stage 3 of the 3D roadmap (`PLAN/DESIGN/2026-09-18-3d-roadmap-lops-paint-sops.md`,
 Question 3). A fourth data kind, `eDataKindGeometry`, carrying a

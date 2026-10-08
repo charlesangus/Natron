@@ -1,4 +1,6 @@
-# Milestone 58: Write's "All Layers" output copies one layer's pixel data into every layer
+# M58 - Write Multiplane Pixel Bug
+
+Full title: Write's "All Layers" output copies one layer's pixel data into every layer
 
 Discovered while diagnosing M57.P1.T2, then bisected out of that milestone because it predates
 M39 (confirmed pre-existing on `3e14c2a1e`). The user-visible symptom: with a Write node's

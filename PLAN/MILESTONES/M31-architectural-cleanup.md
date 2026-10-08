@@ -1,4 +1,6 @@
-# Milestone 31: Architectural cleanup
+# M31 - Architectural Cleanup
+
+Full title: Architectural cleanup
 
 **Deferred — do not start or elaborate without an explicit user go-ahead.**
 A parking place for structural debts the deep/3D work has exposed but that

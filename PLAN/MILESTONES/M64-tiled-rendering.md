@@ -1,4 +1,6 @@
-# Milestone 64: Tiled / fused rendering for bandwidth-bound chains
+# M64 - Tiled Rendering
+
+Full title: Tiled / fused rendering for bandwidth-bound chains
 
 > **Elaborated 2026-10-06** (planning consultant, on the M63 tip `18aab690f`). The user approved starting M64 now. It sits on a branch stacked on M63's tip and is UAT'd as one parcel with M67 on top. Architecture: tiles are tasks inside M63's frame graph. A **segment** is a connected set of tile-capable point-op nodes whose outputs are not cached. One **tile task** per row strip runs the segment's tail `renderRoI` over that strip and pulls the segment's interior nodes inside the task with per-strip RoIs. The segment's inputs come from the `FrameStore`. A **join task** stores the assembled tail image. Everything else stays a whole-image task. Two go/no-go gates (P1.T2, P4.T3) stop the milestone if HD chains don't reach at least 1.3x.
 

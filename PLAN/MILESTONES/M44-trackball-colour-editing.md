@@ -1,4 +1,6 @@
-# Milestone 44: Trackball-style colour editing
+# M44 - Trackball Colour Editing
+
+Full title: Trackball-style colour editing
 
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 

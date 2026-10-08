@@ -1,4 +1,6 @@
-# Milestone 3: Dependency modernization
+# M3 - Dependency Modernization
+
+Full title: Dependency modernization
 
 `~3-5 days` · low-medium risk · runs in parallel with M2 on a separate branch.
 

@@ -1,4 +1,6 @@
-# Milestone 36: ~~Add "new channel/layer" affordance wherever a node outputs channels~~ (folded into M38 Phase 38.7)
+# M36 - ~~New Channel Affordance~~
+
+Full title: ~~Add "new channel/layer" affordance wherever a node outputs channels~~ (folded into M38 Phase 38.7)
 
 > Cancelled 2026-09-19 (user decision, recorded in M38's `## Decisions`): delivered as M38 Phase 38.7 — the "New layer…" sentinel on target-role layer knobs. Kept for history.
 

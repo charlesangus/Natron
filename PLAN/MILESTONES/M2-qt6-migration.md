@@ -1,4 +1,6 @@
-# Milestone 2: Land the Qt6 migration
+# M2 - Qt6 Migration
+
+Full title: Land the Qt6 migration
 
 > **Resumed 2026-08-31 at `M2.P3.T1c`.** M8 shipped, restoring a merge path.
 > This milestone's 54 commits were rebased off `main` onto

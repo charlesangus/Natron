@@ -1,4 +1,6 @@
-# Milestone 29: Break the link to upstream — an independent repository
+# M29 - Independent Repository
+
+Full title: Break the link to upstream — an independent repository
 
 `charlesangus/Natron` (`origin`) is registered on GitHub as a **fork** of
 `NatronGitHub/Natron` (`gh api repos/charlesangus/Natron` returns

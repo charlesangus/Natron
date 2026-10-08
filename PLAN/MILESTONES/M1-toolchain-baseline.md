@@ -1,4 +1,6 @@
-# Milestone 1: Toolchain baseline
+# M1 - Toolchain Baseline
+
+Full title: Toolchain baseline
 
 `~2-3 days` · low risk. Set the floor before porting code to it.
 `CMakeLists.txt` already isolates the Qt5/Qt6 choice behind one

@@ -1,4 +1,6 @@
-# Milestone 30: Full release + AppImage on every merge, auto-versioned betas from 0.1.0-beta1
+# M30 - Automated Beta Releases
+
+Full title: Full release + AppImage on every merge, auto-versioned betas from 0.1.0-beta1
 
 `.github/workflows/release.yml` (name `Release`) already builds the full
 release pipeline — build, ctest, smoke test, `stage-bundle.sh`,

@@ -1,4 +1,6 @@
-# Milestone 25: Guard the GL init path against the debug FP traps
+# M25 - GL Init FP Guard
+
+Full title: Guard the GL init path against the debug FP traps
 
 `App/NatronApp_main.cpp:66` arms `FE_DIVBYZERO|FE_INVALID|FE_OVERFLOW` for the
 whole process as the first statement of `main()` under `-DDEBUG`, which

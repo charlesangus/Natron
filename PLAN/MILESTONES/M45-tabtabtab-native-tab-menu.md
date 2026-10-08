@@ -1,4 +1,6 @@
-# Milestone 45: Port tabtabtab-nuke as the native tab menu
+# M45 - Native Tab Menu
+
+Full title: Port tabtabtab-nuke as the native tab menu
 
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 

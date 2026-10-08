@@ -1,4 +1,6 @@
-# Milestone 34: New native Shuffle node
+# M34 - Native Shuffle Node
+
+Full title: New native Shuffle node
 
 Governing design doc: `PLAN/DESIGN/2026-09-22-native-shuffle.md` (v1, approved 2026-09-22; its "Answers" section amends §1). The design doc governs whenever a brief below is ambiguous. M38 built the machinery this milestone uses: the project LayerRegistry; the knobs `KnobChannelSet`, `KnobLayerSelect` and `KnobChannelSelect`; the per-plane render model; and the rule that nodes process in place and only Shuffle moves data between layers.
 

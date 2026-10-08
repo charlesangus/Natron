@@ -1,4 +1,6 @@
-# Milestone 0: Fork & cut scope
+# M0 - Fork And Cut Scope
+
+Full title: Fork & cut scope
 
 `~1 day` · low risk. Housekeeping that makes every later phase smaller — do this
 before touching Qt.

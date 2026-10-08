@@ -1,4 +1,6 @@
-# Milestone 57: Fix Write node plane/layer regressions found while testing M39
+# M57 - Write Layer Regressions
+
+Full title: Fix Write node plane/layer regressions found while testing M39
 
 M39 renamed "plane" to "layer" everywhere on the Natron side but correctly left the OFX ABI
 boundary untouched. Testing the rename surfaced two bugs on the **Write** node that trace back

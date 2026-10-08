@@ -1,4 +1,6 @@
-# Milestone 12: Documentation cruft removal
+# M12 - Documentation Cruft Removal
+
+Full title: Documentation cruft removal
 
 `urgent` · low technical risk, high context-pollution payoff. Almost entirely
 deletion; the code keeps building because none of it is a build input.

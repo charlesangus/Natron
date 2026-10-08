@@ -1,4 +1,6 @@
-# Milestone 22: Lossless project round-trip with missing plugins
+# M22 - Missing Plugin Placeholder
+
+Full title: Lossless project round-trip with missing plugins
 
 Loading a project whose node references an unavailable plugin currently destroys
 that node. It is skipped at load, every edge into and out of it is discarded, and

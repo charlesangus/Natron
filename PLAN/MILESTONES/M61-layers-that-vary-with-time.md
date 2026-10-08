@@ -1,4 +1,6 @@
-# Milestone 61: Layers that vary with time
+# M61 - Time-Varying Layers
+
+Full title: Layers that vary with time
 
 M34's second Codex round asked for a test proving that Shuffle validates at the render's time, not the timeline's. The PM declined it: "No node reports layers that vary with time." That's wrong. An input's layers can change from frame to frame, and this milestone makes sure Natron handles that and tests it. Three real graphs must each report different layers on different frames:
 

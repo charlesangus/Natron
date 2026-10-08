@@ -1,4 +1,6 @@
-# Milestone 17: Typed graph edges and native node framework
+# M17 - Typed Edges Framework
+
+Full title: Typed graph edges and native node framework
 
 Foundation milestone ("M-Typed" in the design doc). One typed-payload substrate
 with three payload kinds (image, deep, scene), connection-time enforcement, a

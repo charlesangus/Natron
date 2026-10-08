@@ -1,4 +1,6 @@
-# Milestone 68: Headless GL — EGL surfaceless/device backend
+# M68 - Headless GL EGL
+
+Full title: Headless GL — EGL surfaceless/device backend
 
 **Deferred — do not start or elaborate without an explicit user go-ahead.**
 Split out of M63 (was M63.P5.T4) by user decision on 2026-10-05. GL contexts

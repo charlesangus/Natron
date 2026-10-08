@@ -1,4 +1,6 @@
-# Milestone 53: Projected texture painting — UV bake, ProjectTexture, live textures
+# M53 - Projected Texture Painting
+
+Full title: Projected texture painting — UV bake, ProjectTexture, live textures
 
 Stage 2 of the 3D roadmap (`PLAN/DESIGN/2026-09-18-3d-roadmap-lops-paint-sops.md`,
 Question 2, "Texture painting"). Mari-style projection painting built from

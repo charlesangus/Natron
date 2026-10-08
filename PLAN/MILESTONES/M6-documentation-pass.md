@@ -1,4 +1,6 @@
-# Milestone 6: Documentation pass
+# M6 - Documentation Pass
+
+Full title: Documentation pass
 
 `~0.5-1 day` · low risk. Scope is the repo's **own** docs — the ones a
 contributor or an agent reads as instructions. The inherited Sphinx tree under

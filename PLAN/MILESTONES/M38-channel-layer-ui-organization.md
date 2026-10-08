@@ -1,4 +1,6 @@
-# Milestone 38: Layer/channel selection widget: process-in-place, no implicit shuffling (absorbs M35, M43, M36)
+# M38 - Layer Channel Widget
+
+Full title: Layer/channel selection widget: process-in-place, no implicit shuffling (absorbs M35, M43, M36)
 
 Governing design docs: `PLAN/DESIGN/2026-09-19-layer-registry.md` (Phase 38.1, approved
 2026-09-19 with the "present-only input lists" amendment) and

@@ -1,4 +1,6 @@
-# Milestone 32: Deep sample inspector node (replaces the hover probe)
+# M32 - Deep Sample Node
+
+Full title: Deep sample inspector node (replaces the hover probe)
 
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 

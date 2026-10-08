@@ -1,4 +1,6 @@
-# Milestone 23: Make release bundles actually relocatable
+# M23 - Relocatable Release Bundles
+
+Full title: Make release bundles actually relocatable
 
 `tools/release/stage-bundle.sh` produces a bundle that only starts on a machine
 that already has the ASWF VFX libraries and the Qt xcb dependencies installed

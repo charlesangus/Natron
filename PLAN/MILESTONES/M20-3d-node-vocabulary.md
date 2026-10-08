@@ -1,4 +1,6 @@
-# Milestone 20: 3D node vocabulary and HydraRender
+# M20 - 3D Node Vocabulary
+
+Full title: 3D node vocabulary and HydraRender
 
 "M-Scene-2" in the design doc: the Nuke-14-inspired, deliberately small v1 node
 vocabulary over M19's `SceneOps`, plus the two remaining consumers —

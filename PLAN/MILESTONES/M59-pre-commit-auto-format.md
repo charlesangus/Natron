@@ -1,4 +1,6 @@
-# Milestone 59: Pre-commit hook that auto-formats staged C/C++ so PRs stop failing CI's `format` check
+# M59 - Pre-Commit Auto-Format
+
+Full title: Pre-commit hook that auto-formats staged C/C++ so PRs stop failing CI's `format` check
 
 Small housekeeping milestone. CI's `format` job (`.github/workflows/checks.yml`)
 runs `git clang-format` (pinned `clang-format==21.1.8`) on changed lines, and PRs

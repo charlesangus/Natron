@@ -1,4 +1,6 @@
-# Milestone 5: Test & correctness baseline
+# M5 - Test And Correctness Baseline
+
+Full title: Test & correctness baseline
 
 ongoing after M4 · low risk. The foundation is "clean" once it's green *and*
 hard to silently break again. That intent is unchanged. The breakdown below

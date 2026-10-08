@@ -1,4 +1,6 @@
-# Milestone 60: Deep images get layers/channels like flat images
+# M60 - Deep Layers And Channels
+
+Full title: Deep images get layers/channels like flat images
 
 > **Elaborated 2026-10-02** (planning consultant) from the 2026-09-19 stub. The user answered the three design questions on 2026-10-02: Q1 and Q2 as defaulted, Q3 against the default (deep alpha is structural). See `## Design questions`.
 

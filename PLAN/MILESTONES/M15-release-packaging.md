@@ -1,4 +1,6 @@
-# Milestone 15: Release packaging — portable tarball and AppImage
+# M15 - Release Packaging
+
+Full title: Release packaging — portable tarball and AppImage
 
 Produce two release artifacts from a tag: `Natron-<version>-linux-x86_64.tar.xz`
 and `Natron-<version>-x86_64.AppImage`, both built from one staged tree, both

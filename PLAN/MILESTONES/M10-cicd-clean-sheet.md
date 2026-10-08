@@ -1,4 +1,6 @@
-# Milestone 10: Clean-sheet CI/CD
+# M10 - Clean-Sheet CI/CD
+
+Full title: Clean-sheet CI/CD
 
 M4 and M8 got the pipeline onto the right container and reusing the same
 `tools/ci/local/*.sh` scripts developers run — that part stands. What did not

@@ -1,4 +1,6 @@
-# Milestone 28: Stop treating page cache as memory pressure
+# M28 - Free RAM Fix
+
+Full title: Stop treating page cache as memory pressure
 
 `AppManager::checkCacheFreeMemoryIsGoodEnough()` drains the node cache and the
 deep image cache whenever `getAmountFreePhysicalRAM()` falls below

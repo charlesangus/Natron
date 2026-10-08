@@ -1,4 +1,6 @@
-# Milestone 19: USD/Hydra foundation — ScenePayload, ReadScene, Viewport3D
+# M19 - USD/Hydra Foundation
+
+Full title: USD/Hydra foundation — ScenePayload, ReadScene, Viewport3D
 
 "M-Scene-1" in the design doc: land the USD dependency, the `ScenePayload`/
 `SceneOps` transport, one input node, and the Storm viewport. *Proves the

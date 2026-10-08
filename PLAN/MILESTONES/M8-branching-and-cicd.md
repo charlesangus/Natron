@@ -1,4 +1,6 @@
-# Milestone 8: Branching model and CI/CD rebuild
+# M8 - Branching And CI/CD
+
+Full title: Branching model and CI/CD rebuild
 
 `~2-3 days` · unblocks M2's merge path. M4 delivered *a* pipeline; this
 delivers one that fits how this fork actually works. Three things forced it:

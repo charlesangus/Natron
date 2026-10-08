@@ -1,4 +1,6 @@
-# Milestone 50: Proper OCIO support as a project property
+# M50 - Project OCIO Support
+
+Full title: Proper OCIO support as a project property
 
 Colour management becomes a property of the project, and all of it goes through OpenColorIO. Each project saves an OCIO config, which defaults to ACES 2.0 Studio (`ocio://studio-config-v4.0.0_aces-v2.0_ocio-v2.5`). It also saves a working space, per-file-type default colourspaces (8-bit, 16-bit, log and float, as in Nuke), and the default display and view for new viewers. That config populates the viewer's Display/View/Look menus and every colourspace menu on Read, Write and OCIO* nodes. Natron's built-in sRGB/Rec.709/BT1886/Linear LUTs are retired, together with the project's "LUT" page and the viewer's fixed colourspace combo. That covers the viewer, bit-depth conversion, node previews, colour swatches and the tracker overlay. This is a clean break: no old project is migrated and no legacy fixture is built.
 

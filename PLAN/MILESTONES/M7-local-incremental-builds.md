@@ -1,4 +1,6 @@
-# Milestone 7: Local incremental builds
+# M7 - Local Incremental Builds
+
+Full title: Local incremental builds
 
 `~1 day` · unblocks everything else. Right now the only way to run the test
 suite is to push and wait for a full cold build on GitHub Actions — the last

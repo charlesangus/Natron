@@ -1,4 +1,6 @@
-# Milestone 26: Fix the shared test-fixture teardown flake
+# M26 - Test Teardown Flake Fix
+
+Full title: Fix the shared test-fixture teardown flake
 
 The ctest suite aborts in teardown roughly half the time. The gtest body prints
 `[  OK  ]` and `[  PASSED  ]`, and the process then dies with `QThread: Destroyed

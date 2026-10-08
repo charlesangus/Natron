@@ -1,4 +1,6 @@
-# Milestone 62: Render scaling — fix the algorithmic hotspots
+# M62 - Render Scaling Hotspots
+
+Full title: Render scaling — fix the algorithmic hotspots
 
 A side session on 2026-09-25 benchmarked large synthetic graphs at `b0e212d5a` (release build, `tools/bench/`, results and logs in `build/bench/`). It asked whether Natron needs a scanline, tiled or top-down rework to handle thousands of nodes. The data says not yet. A few superlinear algorithms in the engine dominate long before render architecture matters, so this milestone fixes them and leaves the benchmark harness in the repo as the regression gate. A task-graph scheduler (M63) and tiled rendering (M64) are stubbed behind it, blocked on this milestone's re-benchmark. See `DECISIONS/2026-09-25-perf-hotspots-before-render-architecture.md`.
 

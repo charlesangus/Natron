@@ -1,4 +1,6 @@
-# Milestone 21: Deep tier-2 nodes and deep/3D bridges
+# M21 - Deep Tier-2 And Bridges
+
+Full title: Deep tier-2 nodes and deep/3D bridges
 
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 

@@ -1,4 +1,6 @@
-# Milestone 56: Polish — visual and menus
+# M56 - Visual And Menu Polish
+
+Full title: Polish — visual and menus
 
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 

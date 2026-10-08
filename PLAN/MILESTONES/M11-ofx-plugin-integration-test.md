@@ -1,4 +1,6 @@
-# Milestone 11: OFX plugin integration test (post-release hardening)
+# M11 - OFX Plugin Integration Test
+
+Full title: OFX plugin integration test (post-release hardening)
 
 The existing smoke test proves the four OFX bundles (IO, Misc, CImg, Arena)
 load via dlopen and that IO.ofx renders pixels through reader→writer chains.

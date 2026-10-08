@@ -1,4 +1,6 @@
-# Milestone 46: Port Labelmaker as a native node graph annotation feature
+# M46 - Labelmaker Annotations
+
+Full title: Port Labelmaker as a native node graph annotation feature
 
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 

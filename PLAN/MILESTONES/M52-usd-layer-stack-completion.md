@@ -1,4 +1,6 @@
-# Milestone 52: USD layer-stack completion — schema-driven edits, path expressions, composition nodes
+# M52 - USD Layer-Stack Completion
+
+Full title: USD layer-stack completion — schema-driven edits, path expressions, composition nodes
 
 Stage 1 of the 3D roadmap (`PLAN/DESIGN/2026-09-18-3d-roadmap-lops-paint-sops.md`,
 Question 1). M19/M20 built the scene substrate and a hand-curated node

@@ -1,4 +1,6 @@
-# Milestone 63: Task-graph render scheduler
+# M63 - Task-Graph Render Scheduler
+
+Full title: Task-graph render scheduler
 
 > **Elaborated 2026-10-04** (planning consultant, fable; clean run per the user's direction recorded under `## Decisions`). Architecture: a task graph built from the request pass, executed on the one global pool, with `renderRoI` as the task body. Decision draft: `DECISIONS/2026-10-04-task-graph-render-scheduler.md` (published at P6.T1).
 

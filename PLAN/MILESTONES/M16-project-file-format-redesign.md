@@ -1,4 +1,6 @@
-# Milestone 16: Project file format redesign (.ntp successor)
+# M16 - Project Format Redesign
+
+Full title: Project file format redesign (.ntp successor)
 
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 > **Deferred by the user (2026-09-05): future work — do not start or elaborate

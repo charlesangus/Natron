@@ -1,4 +1,6 @@
-# Milestone 65: rgba, rgb, alpha and xy replace the Color layer
+# M65 - RGBA Layers
+
+Full title: rgba, rgb, alpha and xy replace the Color layer
 
 M65 replaces the one user-visible **Color** layer with four built-in registry layers, each with its own ID: `rgba` {R,G,B,A}, `rgb` {R,G,B}, `alpha` {A} and `xy` {X,Y}. All four are **colour views** of the one stored colour plane. A stream still carries at most one colour plane. `rgb.R` *is* `rgba.R`, so writing into `rgb` changes `rgba`. Selecting `rgb` or `alpha` on a node means the colour plane masked to those channels.
 

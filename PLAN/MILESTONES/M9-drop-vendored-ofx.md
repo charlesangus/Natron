@@ -1,4 +1,6 @@
-# Milestone 9: Drop the vendored OFX plugin dependency
+# M9 - ~~Drop Vendored OFX~~
+
+Full title: Drop the vendored OFX plugin dependency
 
 > **CANCELLED, 2026-08-31 — do not execute.** The premise did not survive
 > contact with a different container. See

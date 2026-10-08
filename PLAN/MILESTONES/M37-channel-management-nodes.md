@@ -1,4 +1,6 @@
-# Milestone 37: Channel/layer management nodes
+# M37 - Channel Management Nodes
+
+Full title: Channel/layer management nodes
 
 > **Draft (2026-09-26), answers recorded 2026-09-27, revised 2026-10-02 (see `## Decisions`).** Q3 and Q6 diverge from the recommended defaults the draft was written against, and both are applied throughout. Q6 renames Remove to RemoveLayers. Q3(c), as extended on 2026-10-02, means colour views are listed and matched, and RemoveLayers narrows or drops the colour plane. The §5a freshness check against M65's code was done on 2026-10-02: P1.T3 is cancelled, P1.T1, P1.T2, P2.T1, P2.T2, P3.T1, P3.T2, P4.T2, P4.T3, P5.T1, P6.T1 and P6.T2 were rewritten, and P2.T3 is new.
 

@@ -1,4 +1,6 @@
-# Milestone 51: Deep filtering nodes (OpenDCX integration)
+# M51 - Deep Filtering OpenDCX
+
+Full title: Deep filtering nodes (OpenDCX integration)
 
 Integrate OpenDCX (DreamWorks' open-source deep compositing extensions
 library) to add production-grade filtering, transformation, and manipulation

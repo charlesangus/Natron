@@ -1,4 +1,6 @@
-# Milestone 18: Deep compositing v1
+# M18 - Deep Compositing v1
+
+Full title: Deep compositing v1
 
 "M-Deep-1" in the design doc: `DeepImage` as a first-class payload integrated
 with caching, RoI, and the render scheduler — the part the Niik-l fork skipped —

@@ -1,4 +1,6 @@
-# Milestone 35: ~~Remove implicit output-plane shuffling from non-Shuffle nodes~~ (cancelled — folded into M38)
+# M35 - ~~Remove Implicit Shuffle~~
+
+Full title: ~~Remove implicit output-plane shuffling from non-Shuffle nodes~~ (cancelled — folded into M38)
 
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 

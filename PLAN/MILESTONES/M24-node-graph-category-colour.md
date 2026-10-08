@@ -1,4 +1,6 @@
-# Milestone 24: Node graph aesthetics: category colour and user colour
+# M24 - Node Graph Category Colour
+
+Full title: Node graph aesthetics: category colour and user colour
 
 Today a node's colour is chosen by `NodeGui::getColorFromGrouping()`
 (`Gui/NodeGui.cpp:377`) from the plugin's major `PLUGIN_GROUP_*` string, and applied

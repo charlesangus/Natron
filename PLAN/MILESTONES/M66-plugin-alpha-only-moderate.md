@@ -1,4 +1,6 @@
-# Milestone 66: Remaining OFX plugins accept alpha-only streams
+# M66 - Alpha-Only Plugin Support
+
+Full title: Remaining OFX plugins accept alpha-only streams
 
 The 12 "moderate" plugins from M65's survey process alpha-only (1-component) streams natively instead of through the host's widen-and-narrow fallback (M65 P8.T6):
 - the 9 openfx-arena ImageMagick effects: Arc, Charcoal, Edges, Implode, Oilpaint, Polar, Reflection, Sketch and Tile;

@@ -1,4 +1,6 @@
-# Milestone 4: CI/CD rebuild
+# M4 - CI/CD Rebuild
+
+Full title: CI/CD rebuild
 
 `~3-4 days` · low risk. One real, working pipeline beats three broken ones.
 Start this once M1 lands so every subsequent PR in M2/M3 gets gated

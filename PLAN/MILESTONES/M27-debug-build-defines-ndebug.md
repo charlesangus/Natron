@@ -1,4 +1,6 @@
-# Milestone 27: Make the debug build a debug build again
+# M27 - Real Debug Build
+
+Full title: Make the debug build a debug build again
 
 `tools/ci/local/build.sh debug` compiles with **both `-DDEBUG` and `-DNDEBUG`**,
 so `assert()` expands to nothing: measured from

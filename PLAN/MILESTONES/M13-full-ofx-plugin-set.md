@@ -1,4 +1,6 @@
-# Milestone 13: Build the full upstream OFX plugin set
+# M13 - Full OFX Plugin Set
+
+Full title: Build the full upstream OFX plugin set
 
 Upstream Natron bundles four OFX plugin repositories. This fork builds two —
 `openfx-io` and `openfx-misc`, from pinned source per

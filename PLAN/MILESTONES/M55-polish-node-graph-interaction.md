@@ -1,4 +1,6 @@
-# Milestone 55: Polish — node graph interaction
+# M55 - Node Graph Polish
+
+Full title: Polish — node graph interaction
 
 > Stub — elaborate into phases/tasks before starting (PLAN-FORMAT.md §5).
 

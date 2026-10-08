@@ -1,4 +1,6 @@
-# Milestone 14: Documentation tree → orphan branch
+# M14 - Documentation Orphan Branch
+
+Full title: Documentation tree → orphan branch
 
 Move the inherited `Documentation/` tree (~70 pages of upstream 2.4-era
 Sphinx guide) and `.readthedocs.yaml` off the main development branch and

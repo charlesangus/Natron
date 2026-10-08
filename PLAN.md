@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: running
-current: M67.review2
-pm_heartbeat: 2026-10-07T22:07:00-04:00
+status: paused
+current: null
+pm_heartbeat: 2026-10-07T23:42:07-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -220,7 +220,7 @@ future core work has solid ground to build on.
 | M62 | Render scaling: fix the algorithmic hotspots (bench harness, O(N²)/exponential walks, TLS copy, host copies) | done | [M62-render-scaling-hotspots.md](PLAN/MILESTONES/M62-render-scaling-hotspots.md) |
 | M63 | Task-graph render scheduler | blocked | [M63-task-graph-render-scheduler.md](PLAN/MILESTONES/M63-task-graph-render-scheduler.md) |
 | M64 | Tiled / fused rendering for bandwidth-bound chains | blocked | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
-| M67 | Rewrite core nodes as native nodes | doing | [M67-native-core-nodes.md](PLAN/MILESTONES/M67-native-core-nodes.md) |
+| M67 | Rewrite core nodes as native nodes | blocked | [M67-native-core-nodes.md](PLAN/MILESTONES/M67-native-core-nodes.md) |
 | M68 | Headless GL: EGL surfaceless/device backend (deferred) | todo | [M68-headless-gl-egl-backend.md](PLAN/MILESTONES/M68-headless-gl-egl-backend.md) |
 | M25 | Guard the GL init path against the debug FP traps | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M27 | Make the debug build a debug build again | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
@@ -268,4 +268,9 @@ future core work has solid ground to build on.
 # Open questions
 
 - **M63 awaits the parcel-2 UAT (PR #41):** gate green, two review rounds closed. AppImage `build/appimages/M63-18aab690f.AppImage` with `build/appimages/M63-uat.md`. It will be UAT'd together with M64 and M67 on top.
+- **M67 awaits the parcel-2 UAT (PR #42, stacked on #41):** gate green, two Codex review rounds closed, CI green at `670a4c482`.
+  - **Artefacts:** AppImage `build/appimages/M67-37259b177.AppImage`, with `build/appimages/M67-uat.md` (stacked on M63's UAT).
+  - **Merge order:** openfx-misc#7 (`m67/retire-native-core`) merges with #42, then `OPENFX_MISC_REF` is re-pinned to its merge commit.
+  - **Bench:** HD composites now 0.76–0.94x the M63 tip; mem 0.197x.
+  - **Next:** M64 should be re-estimated around fusing native kernels (see M67's B12 Decisions).
 - **M64 is parked on kill gate 1 (confirmed on a quiet host 2026-10-06):** best strip pull is 1.17x on chain 30 and 1.15x on chain 100 (gate 1.3x). It waits for M67; see its Decisions.

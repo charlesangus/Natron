@@ -1174,3 +1174,5 @@ Notes:
   - **Fix:** Merge now checks before any lock and falls back to a private, bit-identical copy. Tested through the helper, plus a bit-exact scheduler case.
   - **Round closed**, all threads replied. CI was dispatched on the tip.
   - **AppImage:** `M67-37259b177` predates this fix. The change only affects a case the engine can't produce, so the AppImage stays valid for UAT.
+- 2026-10-08 — **CI fixed** (`670a4c482`, Tests and Checks green). CI caches only `build/assets/Plugins`, so `plugin-src/.../CImg.h` was missing on a cache hit. `fetch-assets.sh` now keeps it at `build/assets/CImg/`, and the three workflows cache that directory too.
+  - **Milestone state:** complete, held for the parcel-2 UAT with M63. The board row is `blocked` on the UAT.

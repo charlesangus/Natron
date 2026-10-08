@@ -38,3 +38,13 @@ Acceptance sketch:
 - Tab menu opens in the right spot with no jump.
 - Curve-editor handles can be dragged, lengthened, shortened and broken.
 ````
+
+### 2026-10-08T12:15:00+00:00 — change-request
+- refs: M69
+- Append a new section to the M69 stub (apply after the M69-creation entry above) and add one line to its intent. Stub stays a stub; do not elaborate without a user go-ahead. Section to append to `PLAN/MILESTONES/M69-minor-cleanup.md`, under the existing groups:
+
+````markdown
+Viewer colour picker:
+- **Pick scene-referred values.** The picker's tooltip says it reads the display-referred value from the viewer and converts it back to linear. That is wrong: it must return the scene-referred value at the picked pixel, before any viewer transform (display/view, gain, gamma, channel display). Currently `ViewerGL::getColorAt` / `getColorAtRect` (Gui/ViewerGL.cpp) take a `linear` flag from the `getColorPickerLinear` setting; confirm at elaboration whether the values are read from the post-transform texture, and fix so the picker samples the pre-transform image data. The tooltip and the `getColorPickerLinear` setting are then likely obsolete.
+- **Pick from a node's input or output.** Add a viewer picker mode that reads the colour on the viewed node's **input** or on its **output**. The default is the node's **input**, the opposite of Nuke (where it is the output). Decide at elaboration where the mode lives (viewer toolbar or the picker's own control) and how it behaves when the viewed node has several inputs (the one feeding the viewer's active input, or the first).
+````

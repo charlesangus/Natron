@@ -27,10 +27,18 @@ Parcel 2 merged on 2026-10-08, but M67 - Native Core Nodes left loose ends: `OPE
   - verify: board has no stale mention of the branch pin.
   - size: S
 
-**Verification gate:** `main` carries a pin that is a merge commit on openfx-misc's default branch; CI green; no merged stack branches or worktrees remain.
+- [ ] M73.P1.T4 — Put every fork's SupportExt pin on openfx-supportext's master
+  - files: SupportExt submodule pointers in charlesangus/openfx-misc, openfx-io, openfx-arena; `tools/ci/local/fetch-assets.sh` (`OPENFX_IO_REF`, `OPENFX_ARENA_REF`, `OPENFX_MISC_REF`) on PR #43
+  - approach: misc pins `32b4b59b1` (openfx-supportext#4 head, open), io pins `bc361202b` and arena `db19d2f1f` (diverged `-on-io-base`/`-on-arena-base` variants). Merge supportext#4 with a merge commit; get io's and arena's needed changes onto supportext master without breaking their builds (consultant decides how); bump SupportExt in each fork through a merge-committed PR; re-pin all three forks on PR #43.
+  - verify: each fork's pinned SupportExt commit is an ancestor of openfx-supportext master; each fork pin is an ancestor of that fork's default branch; PR #43 CI green (cold fetch + build of the bundle).
+  - size: L
+
+**Verification gate:** `main` carries a pin that is a merge commit on openfx-misc's default branch, and every fork's SupportExt pin is on openfx-supportext master; CI green; no merged stack branches or worktrees remain.
 
 ## Decisions
 - 2026-10-08 — **Scheduled first (user):** runs before the M64 re-evaluation and the backlog. The unconfirmed ChromaKeyer NaN (needs the user's exact settings) is not part of this milestone.
 - 2026-10-08 — **Freshness check:** the live pin is `59ae4c26a` (openfx-misc#7's head), not `3060fe33b`; T1's grep updated. T2 resized S → M: deciding whether a squash-merged branch is safe to delete needs judgement.
 - 2026-10-08 — **openfx-misc#7 merged** as `9fb0d0904` (merge commit; tree `ecaf615f` identical to the old pin `59ae4c26a`). The fork has no CI of its own; Natron's CI cold-fetching the new ref on PR #43 stands in for the local clean `build/assets` fetch, since the source is byte-identical.
 - 2026-10-08 — **Cleanup done:** 13 local + 7 remote merged milestone branches deleted (each checked against its squash-merged PR's head), plus `milestone/m67-native-core-nodes`. Worktrees `build/wt/m30`, `m64`, `m67-base` removed (`m64`/`m67-base` needed `--force` only because they hold submodules; both clean). `build/wt/m64/build/bench` (M64 start-of-milestone benchmarks and ablations, not in the main checkout) was copied to `build/bench/from-wt-m64/` first. Seven fully-pushed, merged fork clones under `build/wt/` deleted. Kept: `milestone/m64-tiled-rendering`, `ci-smoke-test-m2p3t1a`, `m7-validation`, upstream-era `origin/*` branches, and `build/wt/m65-supportext` — openfx-supportext#4 is still open (see Open questions).
+
+- 2026-10-08 — **T4 added (user):** the three forks pin SupportExt commits that are off openfx-supportext master — same class of dangling pin as openfx-misc#7. Folded into this milestone; PR #43 waits for it.

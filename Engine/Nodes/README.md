@@ -104,6 +104,35 @@ default doesn't fit it: `getNInputs()`, `getInputLabel()`, `isInputOptional()`,
 `inputParticipatesInDataKindPropagation()`, `addAcceptedComponents()`,
 `addSupportedBitDepth()` and `renderThreadSafety()`.
 
+## Per-frame metadata
+
+`NativeEffectBase::getOutputMetadata(time, view)` returns the `ImageMetadata`
+(`Engine/Nodes/Metadata/ImageMetadata.h`) of the image the node outputs at that
+frame and view. The default passes through, unchanged, the metadata of the
+first connected non-mask input, so every existing node is transparent to
+metadata with no edit. A node that adds, edits or drops keys overrides it,
+usually starting from `getUpstreamMetadata(time, view)`.
+
+- A native input answers with its own `getOutputMetadata()`. Any other kind of
+  effect currently answers with an empty map; `getInputEffectMetadata()` is the
+  one place that lookup is extended.
+- The default's result is cached per `(time, view)` on the node and dropped on
+  every knob change of the node or anything upstream of it, every connection
+  change (both arrive as a node hash change) and every clip-preferences
+  refresh. An override is not cached by the base, so it must depend only on its
+  knobs and its upstream metadata.
+- The cache lock is a leaf. Derivation runs downstream to upstream and holds no
+  lock while it asks upstream nodes; invalidation runs upstream to downstream
+  and takes only that leaf lock. An override must not hold a lock of its own
+  across `getUpstreamMetadata()`. The reasoning is in
+  `docs/decisions/2026-09-10-metadata-cache-locking.md`.
+
+Framework policies: `Merge` takes the metadata of its A input (then A2.., then
+B if no A is connected), never B's; `NativeGenerator` outputs only
+`ofx/framerate` and `ofx/pixelaspect` (it has no source, and `ofx/frame` is the
+frame number within the source, so it is omitted); transforms and filters
+keep the default.
+
 ## Writing a node, start to finish
 
 `TypedPassthrough` (`Engine/Nodes/TypedPassthrough.h` /

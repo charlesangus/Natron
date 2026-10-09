@@ -747,6 +747,22 @@ MergeNode::onKnobsLoaded()
     refreshOperationDependents(getCurrentTime());
 }
 
+ImageMetadata
+MergeNode::getOutputMetadata(double time,
+                             ViewIdx view)
+{
+    // Not cached: the default's cache cannot tell which input was chosen, and the answer is only
+    // a lookup in already-cached upstream metadata.
+    for (int i = 0; i < kMergeMaxAInputs; ++i) {
+        const int inputNb = aInputIndex(i);
+        if (getInput(inputNb)) {
+            return getInputMetadata(inputNb, time, view);
+        }
+    }
+
+    return getInputMetadata(kMergeInputB, time, view);
+}
+
 StatusEnum
 MergeNode::getPreferredMetadata(NodeMetadata& metadata)
 {

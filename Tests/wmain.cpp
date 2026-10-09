@@ -18,6 +18,7 @@
 #include "DeepRenderTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
+#include "NativeMetadataTestEffect.h"
 #include "NativeParity.h"
 #include "PassThroughRoDTestEffect.h"
 
@@ -123,6 +124,14 @@ registerFrameGraphBuildTestPlugins()
 }
 
 void
+registerNativeMetadataTestPlugins()
+{
+    // Registered so NativeMetadata_Test.cpp can inject metadata at the head of a native chain,
+    // which no shipped node does.
+    registerTestBuiltInPlugin<MetadataSourceTestEffect>();
+}
+
+void
 registerNativeParityTestPlugins()
 {
     // Registered so the native-node parity tests feed the OFX and native versions of a node the
@@ -167,6 +176,7 @@ GTEST_API_ int main(int argc, char **argv)
     registerRenderSchedulerTestPlugins();
     registerFrameGraphBuildTestPlugins();
     registerNativeParityTestPlugins();
+    registerNativeMetadataTestPlugins();
     int retval = RUN_ALL_TESTS();
     return retval;
 }

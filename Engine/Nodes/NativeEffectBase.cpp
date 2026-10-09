@@ -29,6 +29,7 @@
 #include <atomic>
 #include <cstddef>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -40,6 +41,8 @@
 #include "Engine/AppManager.h"
 #include "Engine/DeepImage.h"
 #include "Engine/Node.h"
+#include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Metadata/OfxMetadataBridge.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/TLSHolder.h"
 
@@ -172,6 +175,9 @@ forEachPixelOfChunk(const RectI& bounds,
 
 NativeEffectBase::NativeEffectBase(NodePtr node)
     : OutputEffectInstance(node)
+    , _metadataCacheMutex()
+    , _metadataCache()
+    , _metadataGeneration(0)
 {
     // Left unresolved, render-scale support is settled only by the probe in
     // Node::refreshAllInputRelatedData(), which runs when inputs change and needs
@@ -253,6 +259,114 @@ NativeEffectBase::getInputDataKind(int inputNb) const
     }
 
     return desc.inputs[inputNb].kind;
+}
+
+namespace {
+// Bounds the memory held for a node scrubbed across a long sequence; the entries are cheap
+// to rebuild.
+const std::size_t kMaxCachedMetadataFrames = 256;
+} // anonymous namespace
+
+ImageMetadata
+NativeEffectBase::getInputEffectMetadata(const EffectInstancePtr& input,
+                                         double time,
+                                         ViewIdx view)
+{
+    NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(input.get());
+
+    if (native) {
+        return native->getOutputMetadata(time, view);
+    }
+
+    // The OpenFX clip cache is keyed by time alone, so an OpenFX input has one answer for
+    // every view.
+    return OfxMetadataBridge::getOfxEffectOutputMetadata(input, time);
+}
+
+ImageMetadata
+NativeEffectBase::getUpstreamMetadata(double time,
+                                      ViewIdx view) const
+{
+    const int nInputs = getNInputs();
+
+    for (int i = 0; i < nInputs; ++i) {
+        if (isInputMask(i)) {
+            continue;
+        }
+        EffectInstancePtr input = getInput(i);
+        if (input) {
+            return getInputEffectMetadata(input, time, view);
+        }
+    }
+
+    return ImageMetadata();
+}
+
+ImageMetadata
+NativeEffectBase::getOutputMetadata(double time,
+                                    ViewIdx view)
+{
+    const MetadataKey key(time, view.value());
+    U64 generation;
+
+    {
+        std::lock_guard<std::mutex> locker(_metadataCacheMutex);
+        std::map<MetadataKey, ImageMetadata>::const_iterator it = _metadataCache.find(key);
+        if (it != _metadataCache.end()) {
+            return it->second;
+        }
+        generation = _metadataGeneration;
+    }
+
+    // Derived with the lock released: it asks upstream nodes, which take their own locks.
+    ImageMetadata derived = getUpstreamMetadata(time, view);
+
+    {
+        std::lock_guard<std::mutex> locker(_metadataCacheMutex);
+        // An invalidation that raced the derivation above must not be undone by storing a
+        // result that may predate it.
+        if (generation == _metadataGeneration) {
+            if (_metadataCache.size() >= kMaxCachedMetadataFrames) {
+                _metadataCache.clear();
+            }
+            _metadataCache[key] = derived;
+        }
+    }
+
+    return derived;
+}
+
+void
+NativeEffectBase::invalidateOutputMetadata()
+{
+    std::map<MetadataKey, ImageMetadata> dropped;
+
+    {
+        std::lock_guard<std::mutex> locker(_metadataCacheMutex);
+        dropped.swap(_metadataCache);
+        ++_metadataGeneration;
+    }
+}
+
+void
+NativeEffectBase::onNodeHashChanged(U64 hash)
+{
+    OutputEffectInstance::onNodeHashChanged(hash);
+
+    // Node::computeHashRecursive visits every node downstream of the one that changed and a
+    // node's hash folds in its inputs', so each node whose cached metadata could be stale gets
+    // here without a walk of its own. Taking no lock but the cache's keeps this safe against a
+    // render thread deriving metadata downstream to upstream.
+    invalidateOutputMetadata();
+}
+
+void
+NativeEffectBase::onMetadataRefreshed(const NodeMetadata& metadata)
+{
+    OutputEffectInstance::onMetadataRefreshed(metadata);
+
+    // Project-level changes (format, frame rate) reach a node here with no hash change.
+    invalidateOutputMetadata();
 }
 
 DataKindEnum

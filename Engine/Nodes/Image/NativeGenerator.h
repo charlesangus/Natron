@@ -113,6 +113,12 @@ public:
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Only ofx/frame, ofx/framerate and ofx/pixelaspect: a generator has no source file, so
+     * nothing a Source input carries is passed on.
+     **/
+    virtual ImageMetadata getOutputMetadata(double time, ViewIdx view) OVERRIDE WARN_UNUSED_RETURN;
+
     ExtentEnum getExtent() const WARN_UNUSED_RETURN;
 
     /**

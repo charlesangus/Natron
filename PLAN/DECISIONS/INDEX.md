@@ -64,3 +64,4 @@
 - 2026-10-08 — rfvswitch-design: RFVSwitch = multi-line glob/`re:` patterns, first match wins, read-set hook for its variable; Set-node drop-down and promote-to-project copy variables unlinked → DECISIONS/2026-10-08-rfvswitch-design.md
 - 2026-10-08 — rfvread-design: RFVRead resolves the context statically along the active viewer path, shared overlay code with the request pass → DECISIONS/2026-10-08-rfvread-design.md
 - 2026-10-08 — backlog-order-after-parcel-2: M73 wrap-up → M64 re-evaluation → M27, M22, M31, M69, M24, M44, M55+M46, M56, M45; RFV, deep, M16 and 3D deferred → DECISIONS/2026-10-08-backlog-order-after-parcel-2.md
+- 2026-10-08 — supportext-master-carries-all-layers-rename: fork SupportExt pins now on supportext master; a future SupportExt bump must rename the host's processAllPlanes lookup in the same change → DECISIONS/2026-10-08-supportext-master-carries-all-layers-rename.md

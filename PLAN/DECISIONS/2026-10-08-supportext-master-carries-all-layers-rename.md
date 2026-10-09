@@ -1,0 +1,5 @@
+# openfx-supportext master carries the "All Layers" rename; bump the host constant with it
+
+M73 - Native Core Nodes Wrap-Up put every fork's pinned SupportExt commit on openfx-supportext master by merging three branches with merge commits (#4 `4e6234110`, #5 `b2b6c0cd0`, #6 `369ecbf16`). No pin changed, so every built tree is byte-identical. But #6 brought `5df32d6` onto master: `kMultiPlaneProcessAllPlanesParam` becomes `"processAllLayers"` / "All Layers".
+
+Consequence for any future SupportExt bump in a fork: openfx-misc moving to master turns Premult/Unpremult's checkbox into `processAllLayers`, while the host still looks it up as `"processAllPlanes"` (`Engine/OfxEffectInstance.cpp`, the takeover near `hideDeprecatedPremultKnobs`), so that takeover would silently stop working. The bump must change the host constant in the same change. Moving openfx-io to master also exposes `unPremultBy`/`unPremultByChannel` on its 8 OCIO/SeExpr plugins (the host hides only the old names), which is a visible UI change to be tested in the GUI.

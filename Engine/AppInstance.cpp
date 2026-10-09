@@ -65,6 +65,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/GroupOutput.h"
 #include "Engine/Node.h"
 #include "Engine/NodeSerialization.h"
+#include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Plugin.h"
@@ -1124,6 +1125,10 @@ isEntitledForInspector(Plugin* plugin,
 
 }
 
+namespace {
+const int kReadContainerMajor = 1;
+}
+
 NodePtr
 AppInstance::createNodeInternal(CreateNodeArgs& args)
 {
@@ -1155,12 +1160,20 @@ AppInstance::createNodeInternal(CreateNodeArgs& args)
         if ( ReadNode::isBundledReader( argsPluginID.toStdString(), wasProjectCreatedWithLowerCaseIDs() ) ) {
             args.addParamDefaultValue(kNatronReadNodeParamDecodingPluginID, argsPluginID.toStdString());
             findId = QString::fromUtf8(PLUGINID_NATRON_READ);
+            // The requested version is the decoder's, not the container's.
+            versionMajor = kReadContainerMajor;
         } else if ( WriteNode::isBundledWriter( argsPluginID.toStdString(), wasProjectCreatedWithLowerCaseIDs() ) ) {
             args.addParamDefaultValue(kNatronWriteNodeParamEncodingPluginID, argsPluginID.toStdString());
             findId = QString::fromUtf8(PLUGINID_NATRON_WRITE);
         }
     }
 #endif
+
+    // Unversioned and older Read requests keep resolving to the container until routing picks
+    // the native reader.
+    if ((findId == QString::fromUtf8(PLUGINID_NATRON_READ)) && (versionMajor != PLUGIN_MAJOR_NATRON_READ)) {
+        versionMajor = kReadContainerMajor;
+    }
 
     try {
         plugin = appPTR->getPluginBinary(findId, versionMajor, versionMinor, _imp->_projectCreatedWithLowerCaseIDs && serialization);

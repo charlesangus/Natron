@@ -63,8 +63,8 @@ public:
         return false;
     }
 
-    virtual ImageMetadata getOutputMetadata(double time,
-                                            ViewIdx /*view*/) OVERRIDE FINAL WARN_UNUSED_RETURN
+    virtual ImageMetadata deriveOutputMetadata(double time,
+                                               ViewIdx /*view*/) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         ++_derivations;
 
@@ -89,6 +89,13 @@ public:
     int derivationCount() const
     {
         return _derivations.load();
+    }
+
+    // Unlike a knob change, leaves the caches of the nodes downstream in place, so a test can
+    // tell whether one of them answered from its own cache.
+    void dropOwnMetadataCache()
+    {
+        invalidateOutputMetadata();
     }
 
 private:

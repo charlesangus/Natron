@@ -166,9 +166,13 @@ toOfxPropertySet(const ImageMetadata& metadata,
             property->setValue(*s, 0);
             properties->addProperty(property.release());
         } else if (const std::vector<int>* iv = std::get_if<std::vector<int>>(&value)) {
-            writeValues<OFX::Host::Property::Int, int>(key, *iv, properties);
+            if (!iv->empty()) {
+                writeValues<OFX::Host::Property::Int, int>(key, *iv, properties);
+            }
         } else if (const std::vector<double>* dv = std::get_if<std::vector<double>>(&value)) {
-            writeValues<OFX::Host::Property::Double, double>(key, *dv, properties);
+            if (!dv->empty()) {
+                writeValues<OFX::Host::Property::Double, double>(key, *dv, properties);
+            }
         }
     }
 }

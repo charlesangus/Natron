@@ -1862,11 +1862,20 @@ OfxClipInstance::fetchMetadata(OfxTime time,
                 }
             }
         }
+    } else if (NativeEffectBase* nativeInput = dynamic_cast<NativeEffectBase*>(inputNode.get())) {
+        // The native node's metadata is the whole answer, with nothing derived from this clip
+        // underneath: every standard key describes the source the image was read from, so a
+        // value the host made up from the clip or the timeline (ofx/frame from the render time,
+        // say) would misdescribe it, and the delivered image's own rate, aspect, size and
+        // depth already reach the plug-in through the clip's properties. View 0, because this
+        // clip's cache is keyed by time alone: whichever view filled it would otherwise decide
+        // what every later read sees.
+        OfxMetadataBridge::toOfxPropertySet(nativeInput->getOutputMetadata(time, ViewIdx(0)), &metadata);
     } else {
-        // Either this is the output clip, or it is an input clip with no upstream OFX clip:
-        // nothing is connected to it, or what is connected is a native node. The keys are
-        // derived from this clip, which falls back to the project's own values when it has no
-        // input, and a native node's own metadata is laid over them below.
+        // Either this is the output clip, or it is an input clip fed by nothing that has
+        // metadata to give: no node at all, or a built-in one that is neither OpenFX nor native,
+        // such as a Dot. The keys are derived from this clip, which falls back to the project's
+        // own values when it has no input.
         addMetadataDouble(metadata, kOfxMetadataKeyFrameRate, getFrameRate());
         addMetadataDouble(metadata, kOfxMetadataKeyPixelAspect, getAspectRatio());
 
@@ -1906,15 +1915,6 @@ OfxClipInstance::fetchMetadata(OfxTime time,
             if (reader && reader->isReader()) {
                 addReaderFileMetadata(metadata, reader, time);
             }
-        }
-
-        NativeEffectBase* nativeInput = dynamic_cast<NativeEffectBase*>(inputNode.get());
-        if (nativeInput) {
-            // The derived keys stay underneath because a native chain with no metadata source
-            // at its head carries none of the keys a plug-in may rely on. View 0, because this
-            // clip's cache is keyed by time alone: whichever view filled it would otherwise
-            // decide what every later read sees.
-            OfxMetadataBridge::toOfxPropertySet(nativeInput->getOutputMetadata(time, ViewIdx(0)), &metadata);
         }
     }
 

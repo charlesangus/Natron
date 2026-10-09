@@ -319,7 +319,7 @@ NativeEffectBase::getOutputMetadata(double time,
     }
 
     // Derived with the lock released: it asks upstream nodes, which take their own locks.
-    ImageMetadata derived = getUpstreamMetadata(time, view);
+    ImageMetadata derived = deriveOutputMetadata(time, view);
 
     {
         std::lock_guard<std::mutex> locker(_metadataCacheMutex);
@@ -334,6 +334,13 @@ NativeEffectBase::getOutputMetadata(double time,
     }
 
     return derived;
+}
+
+ImageMetadata
+NativeEffectBase::deriveOutputMetadata(double time,
+                                       ViewIdx view)
+{
+    return getUpstreamMetadata(time, view);
 }
 
 void

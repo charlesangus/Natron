@@ -116,12 +116,6 @@ public:
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
 
     /**
-     * @brief The metadata of the first connected A input (A, then A2, ...), or of B when no A is
-     * connected. The Mask never contributes.
-     **/
-    virtual ImageMetadata getOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
-
-    /**
      * @brief The input index of the i-th A input (0 for A, 1 for A2, ...), or -1 past the last.
      **/
     static int aInputIndex(int i) WARN_UNUSED_RETURN;
@@ -136,6 +130,12 @@ public:
 
 protected:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The metadata of the first connected A input (A, then A2, ...), or of B when no A is
+     * connected. The Mask never contributes.
+     **/
+    virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;

@@ -147,6 +147,38 @@ TEST_F(BaseTest, MergeMetadataFollowsAWhenItChanges)
     EXPECT_EQ(std::optional<int>(5), mergeEffect->getOutputMetadata(1., ViewIdx(0)).getInt("exr/tag"));
 }
 
+TEST_F(BaseTest, MergeMetadataIsCachedPerFrame)
+{
+    NodePtr source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));
+
+    ASSERT_TRUE(source && merge);
+
+    connectNodes(source, merge, kMergeInputA, true);
+
+    NativeEffectBase* mergeEffect = nativeEffectOf(merge);
+    MetadataSourceTestEffect* sourceEffect = dynamic_cast<MetadataSourceTestEffect*>(source->getEffectInstance().get());
+
+    ASSERT_TRUE(mergeEffect != NULL);
+    ASSERT_TRUE(sourceEffect != NULL);
+
+    const ImageMetadata first = mergeEffect->getOutputMetadata(1., ViewIdx(0));
+    const int afterFirst = sourceEffect->derivationCount();
+
+    // With the source's own cache gone, only Merge's cache can keep the source from being asked.
+    sourceEffect->dropOwnMetadataCache();
+    EXPECT_EQ(first, mergeEffect->getOutputMetadata(1., ViewIdx(0)));
+    EXPECT_EQ(afterFirst, sourceEffect->derivationCount());
+
+    const ImageMetadata otherFrame = mergeEffect->getOutputMetadata(2., ViewIdx(0));
+    EXPECT_EQ(std::optional<int>(2), otherFrame.getInt(kOfxMetadataKeySourceFrame));
+    EXPECT_EQ(afterFirst + 1, sourceEffect->derivationCount());
+
+    setTag(source, 3);
+    EXPECT_EQ(std::optional<int>(3), mergeEffect->getOutputMetadata(1., ViewIdx(0)).getInt("exr/tag"));
+    EXPECT_EQ(afterFirst + 2, sourceEffect->derivationCount());
+}
+
 TEST_F(BaseTest, GeneratorMetadataIsTheMinimalKeySet)
 {
     const char* const ids[] = { PLUGINID_NATRON_CONSTANT, PLUGINID_NATRON_CHECKERBOARD };

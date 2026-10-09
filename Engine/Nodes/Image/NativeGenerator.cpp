@@ -312,8 +312,8 @@ NativeGenerator::getFrameRange(double* first,
 }
 
 ImageMetadata
-NativeGenerator::getOutputMetadata(double /*time*/,
-                                   ViewIdx /*view*/)
+NativeGenerator::deriveOutputMetadata(double /*time*/,
+                                      ViewIdx /*view*/)
 {
     ImageMetadata metadata;
 

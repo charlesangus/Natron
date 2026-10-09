@@ -320,19 +320,12 @@ public:
     }
 
     /**
-     * @brief The metadata of the image this node outputs at time and view. The default passes
-     * through, unchanged, the metadata of the first connected non-mask input (see
-     * getUpstreamMetadata()), so a node that does not override this is transparent to metadata.
-     * A node that adds, edits or drops keys overrides it, typically starting from
-     * getUpstreamMetadata(). Only the default is cached: the cache is dropped whenever a knob
-     * of this node or anything upstream of it changes, a connection changes, or the node's
-     * clip preferences are refreshed, so an override that reads only knobs and the upstream
-     * metadata is always consistent with them. An override that reads anything else must say
-     * so by making that thing invalidate the node's hash.
-     * Callable from any thread. An override must not assume it is called at most once per
-     * frame, and must not hold a lock of its own while calling getUpstreamMetadata().
+     * @brief The metadata of the image this node outputs at time and view: what
+     * deriveOutputMetadata() gives, cached per (time, view). The cache is dropped whenever a knob
+     * of this node or anything upstream of it changes, a connection changes, or the node's clip
+     * preferences are refreshed. Callable from any thread.
      **/
-    virtual ImageMetadata getOutputMetadata(double time, ViewIdx view) WARN_UNUSED_RETURN;
+    ImageMetadata getOutputMetadata(double time, ViewIdx view) WARN_UNUSED_RETURN;
 
 protected:
     /**
@@ -342,6 +335,24 @@ protected:
      * OfxMetadataBridge; any other kind of effect contributes nothing.
      **/
     ImageMetadata getUpstreamMetadata(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Derives the metadata getOutputMetadata() caches. The default passes through,
+     * unchanged, getUpstreamMetadata(), so a node that does not override this is transparent to
+     * metadata. A node that adds, edits or drops keys overrides it, typically starting from
+     * getUpstreamMetadata() or getInputMetadata(). The result is cached until one of the events
+     * getOutputMetadata() lists, so an override must read only this node's knobs, its upstream
+     * metadata and project settings; anything else it reads must invalidate the node's hash
+     * when it changes. Called from any thread, possibly more than once for the same frame, and
+     * an override must not hold a lock of its own while asking upstream nodes.
+     **/
+    virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Drops every cached getOutputMetadata() result of this node alone; nodes downstream
+     * keep theirs.
+     **/
+    void invalidateOutputMetadata();
 
     /**
      * @brief The metadata of the effect connected to inputNb, or empty if nothing is. For a node
@@ -495,8 +506,6 @@ private:
     static ImageMetadata getInputEffectMetadata(const EffectInstancePtr& input,
                                                 double time,
                                                 ViewIdx view) WARN_UNUSED_RETURN;
-
-    void invalidateOutputMetadata();
 
     typedef std::pair<double, int> MetadataKey;
 

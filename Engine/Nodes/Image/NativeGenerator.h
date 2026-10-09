@@ -113,12 +113,6 @@ public:
                                              ViewIdx view,
                                              RectD* rod) OVERRIDE WARN_UNUSED_RETURN;
 
-    /**
-     * @brief Only ofx/frame, ofx/framerate and ofx/pixelaspect: a generator has no source file, so
-     * nothing a Source input carries is passed on.
-     **/
-    virtual ImageMetadata getOutputMetadata(double time, ViewIdx view) OVERRIDE WARN_UNUSED_RETURN;
-
     ExtentEnum getExtent() const WARN_UNUSED_RETURN;
 
     /**
@@ -160,6 +154,13 @@ protected:
                                double* last) OVERRIDE;
 
     virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Only ofx/framerate and ofx/pixelaspect. Nothing the Source input carries is passed
+     * on, since the generator replaces that image, and ofx/frame is omitted because it numbers
+     * an image within a source and a generator has none.
+     **/
+    virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE WARN_UNUSED_RETURN;
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 

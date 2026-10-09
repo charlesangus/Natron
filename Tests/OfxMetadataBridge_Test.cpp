@@ -50,6 +50,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Metadata/OfxMetadataBridge.h"
@@ -220,12 +221,17 @@ TEST(OfxMetadataBridge, ConvertsEverySupportedTypeBothWays)
     OFX::Host::Property::Set back;
     OfxMetadataBridge::toOfxPropertySet(native, &back);
 
-    EXPECT_EQ(native.size(), back.getProperties().size());
-    for (ImageMetadata::const_iterator it = native.begin(); it != native.end(); ++it) {
+    // OpenFX metadata has no key of dimension 0, so the empty vector does not come back.
+    EXPECT_TRUE(back.fetchProperty("exr/emptyInts") == NULL);
+    EXPECT_EQ(native.size() - 1, back.getProperties().size());
+
+    ImageMetadata nonEmpty = native;
+    nonEmpty.remove("exr/emptyInts");
+    for (ImageMetadata::const_iterator it = nonEmpty.begin(); it != nonEmpty.end(); ++it) {
         expectPropertyHolds(back, it->first, it->second);
     }
 
-    EXPECT_EQ(native, OfxMetadataBridge::fromOfxPropertySet(back));
+    EXPECT_EQ(nonEmpty, OfxMetadataBridge::fromOfxPropertySet(back));
 }
 
 TEST(OfxMetadataBridge, WritingReplacesAPropertyOfAnotherType)
@@ -244,8 +250,6 @@ TEST(OfxMetadataBridge, WritingReplacesAPropertyOfAnotherType)
     expectPropertyHolds(ofx, kReplacedKey, ImageMetadata::Value(12.5));
 }
 
-// A native passthrough feeding an OpenFX node: the OpenFX input clip carries every key the native
-// chain puts out, with type and value unchanged.
 TEST_F(BaseTest, OfxMetadataBridgeNativeKeysReachTheOfxInputClip)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDMetadataSource));
@@ -286,13 +290,45 @@ TEST_F(BaseTest, OfxMetadataBridgeNativeKeysReachTheOfxInputClip)
         expectPropertyHolds(*received.get(), it->first, it->second);
     }
 
-    // Host-derived keys the native chain does not carry are still present.
-    EXPECT_TRUE(received->fetchProperty(kOfxMetadataKeyWidth) != NULL);
-    EXPECT_TRUE(received->fetchProperty(kOfxMetadataKeyFrameRate) != NULL);
+    EXPECT_TRUE(received->fetchProperty(kOfxMetadataKeyWidth) == NULL);
+    EXPECT_TRUE(received->fetchProperty(kOfxMetadataKeyFrameRate) == NULL);
 }
 
-// An OpenFX node feeding a native one: the native node's metadata carries the keys the OpenFX
-// output clip puts out, and follows a change to the OpenFX node's params.
+TEST_F(BaseTest, OfxMetadataBridgeNativeGeneratorKeysReachTheOfxInputClipWithoutSourceKeys)
+{
+    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    NodePtr view = createNode(QString::fromUtf8(kMetadataViewID));
+
+    ASSERT_TRUE(bool(generator));
+    ASSERT_TRUE(bool(view)) << "node creation failed for " << kMetadataViewID;
+
+    NativeEffectBase* generatorEffect = nativeEffectOf(generator);
+    ASSERT_TRUE(generatorEffect != NULL);
+
+    connectNodes(generator, view, 0, true);
+
+    OFX::Host::ImageEffect::ClipInstance* clip = clipOf(view, kOfxImageEffectSimpleSourceClipName);
+    ASSERT_TRUE(clip != NULL) << "metadataView has no " << kOfxImageEffectSimpleSourceClipName << " clip";
+
+    const double time = 7.;
+    MetadataRef received(clip, time);
+    ASSERT_TRUE(received.get() != NULL);
+
+    EXPECT_TRUE(received->fetchProperty(kOfxMetadataKeySourceFrame) == NULL);
+    EXPECT_TRUE(received->fetchProperty(kOfxMetadataKeyFilePath) == NULL);
+    EXPECT_TRUE(received->fetchProperty(kOfxMetadataKeyFileSize) == NULL);
+    EXPECT_TRUE(received->fetchProperty(kOfxMetadataKeyMTime) == NULL);
+    EXPECT_TRUE(received->fetchProperty(kOfxMetadataKeyWidth) == NULL);
+    EXPECT_TRUE(received->fetchProperty(kOfxMetadataKeyBitDepth) == NULL);
+
+    ASSERT_TRUE(received->fetchProperty(kOfxMetadataKeyFrameRate) != NULL);
+    EXPECT_EQ(getApp()->getProjectFrameRate(), received->getDoubleProperty(kOfxMetadataKeyFrameRate));
+    ASSERT_TRUE(received->fetchProperty(kOfxMetadataKeyPixelAspect) != NULL);
+    EXPECT_EQ(generatorEffect->getAspectRatio(-1), received->getDoubleProperty(kOfxMetadataKeyPixelAspect));
+
+    EXPECT_EQ(OfxMetadataBridge::fromOfxPropertySet(*received.get()), generatorEffect->getOutputMetadata(time, ViewIdx(0)));
+}
+
 TEST_F(BaseTest, OfxMetadataBridgeOfxKeysReachTheNativeNode)
 {
     NodePtr contribute = createNode(QString::fromUtf8(kMetadataContributeID));
@@ -326,8 +362,6 @@ TEST_F(BaseTest, OfxMetadataBridgeOfxKeysReachTheNativeNode)
     EXPECT_EQ(std::optional<std::string>("changed"), shuffleEffect->getOutputMetadata(time, ViewIdx(0)).getString(kContributeNoteKey));
 }
 
-// The reader's file keys have to survive a native Grade and Merge and still arrive on the input
-// clip of the OpenFX encoder inside the Write container, which is the clip a real writer reads.
 TEST_F(BaseTest, OfxMetadataBridgeReadKeysReachTheWriteEncoderThroughNativeNodes)
 {
     NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));

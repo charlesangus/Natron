@@ -59,9 +59,9 @@ ImageMetadata fromOfxPropertySet(const OFX::Host::Property::Set& properties) WAR
 /**
  * @brief Writes every entry of metadata into properties, replacing a property of the same
  * name whatever its type. Scalars become properties of dimension 1, vectors properties whose
- * dimension is the vector's size. Every ImageMetadata type has an OpenFX counterpart, so
- * nothing is skipped; but a one-element vector reads back through fromOfxPropertySet() as a
- * scalar, since dimension is all OpenFX records.
+ * dimension is the vector's size. An empty vector is skipped, leaving any property of that
+ * name in place, because OpenFX metadata has no key of dimension 0. A one-element vector
+ * reads back through fromOfxPropertySet() as a scalar, since dimension is all OpenFX records.
  **/
 void toOfxPropertySet(const ImageMetadata& metadata, OFX::Host::Property::Set* properties);
 

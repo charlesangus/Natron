@@ -30,7 +30,7 @@ Gives native nodes a host-side per-frame metadata map, so metadata no longer sto
   - verify: gtest per policy: Merge with differing A and B metadata yields A's keys; a generator has the minimal set.
   - size: M
 
-- [ ] M74.P2.T3 — End-to-end gate test: OFX Read → native Grade → native Merge → OFX Write
+- [x] M74.P2.T3 — End-to-end gate test: OFX Read → native Grade → native Merge → OFX Write
   - files: new test in `Tests/` (or an existing metadata test file), `Tests/CMakeLists.txt`
   - approach: build the graph in a `BaseTest`, read a small EXR/PNG fixture through the Read container, and assert the Write's embedded OFX writer input clip sees the Read's metadata (`ofx/filepath`, `ofx/frame` for a sequence, any format-specific keys the reader sets).
   - verify: the test passes and fails if `getInputEffectMetadata`'s OFX branch is stubbed out.
@@ -42,3 +42,4 @@ Gives native nodes a host-side per-frame metadata map, so metadata no longer sto
 - 2026-10-08 — **Freshness check passed:** every referenced file exists; `ofxMetadata.h` is in-repo at `libs/OpenFX/include/ofxMetadata.h`, so briefs point there rather than at `build/assets`.
 - 2026-10-08 — **Generators omit `ofx/frame` (deviation from P2.T2's brief):** `ofxMetadata.h` defines `ofx/frame` as int, the frame number within the source, omitted for a single image and never renumbered to the timeline. A generator has no source, so it emits only `ofx/framerate` and `ofx/pixelaspect`. Test sources inject `ofx/frame` as int.
 - 2026-10-09 — **All four tasks landed as one commit** (`7b0df1fac`): they were implemented in parallel without a build between them and share `NativeEffectBase.*` and `Tests/CMakeLists.txt`, so splitting them would mean hand-splitting hunks. Debug build green; full ctest 1254/1254. The gate's end-to-end OFX Read → Grade → Merge → OFX Write test was not covered by any task; added as P2.T3.
+- 2026-10-09 — **P2.T3 landed** (`e5d8fb6c9`): real Read and Write containers, self-generated EXR sequence; fails with the OFX bridge branch stubbed. PR #44 opened against `main`.

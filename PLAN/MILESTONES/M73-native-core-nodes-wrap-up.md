@@ -21,7 +21,7 @@ Parcel 2 merged on 2026-10-08, but M67 - Native Core Nodes left loose ends: `OPE
   - verify: `git worktree list` and `git branch -a` show only unmerged/active branches; the report lists everything skipped and why.
   - size: M
 
-- [ ] M73.P1.T3 — Drop the resolved open question
+- [x] M73.P1.T3 — Drop the resolved open question
   - files: `PLAN.md` (PM work)
   - approach: after T1 merges, remove the M67 `OPENFX_MISC_REF` item from `# Open questions` and record the merge commit in this milestone's `## Decisions`.
   - verify: board has no stale mention of the branch pin.
@@ -43,3 +43,4 @@ Parcel 2 merged on 2026-10-08, but M67 - Native Core Nodes left loose ends: `OPE
 
 - 2026-10-08 — **T4 added (user):** the three forks pin SupportExt commits that are off openfx-supportext master — same class of dangling pin as openfx-misc#7. Folded into this milestone; PR #43 waits for it.
 - 2026-10-08 — **T4 done without fork PRs or re-pins** (consultant's plan): merged openfx-supportext #4 (`4e6234110`), plus new PRs #5 (`-on-arena-base`, empty diff, `b2b6c0cd0`) and #6 (`-on-io-base`, brings the All Layers rename, `369ecbf16`), all as merge commits. misc `32b4b59b1`, io `bc361202b`, arena `db19d2f1f` are now ancestors of supportext master; `OPENFX_IO_REF`/`OPENFX_ARENA_REF`/`OPENFX_MISC_REF` are already their forks' master heads, and all upstream submodule pins are on default branches. Merged supportext branches deleted. The latent rename hazard is a project-wide decision: `DECISIONS/2026-10-08-supportext-master-carries-all-layers-rename.md`.
+- 2026-10-08 — **T3:** the board already had no `OPENFX_MISC_REF` open question (removed earlier); grep confirms no stale pin mention. Pin is merge commit `9fb0d0904`. **Shipped:** PR #43 squash `cb04295b9` after one Codex round (0 findings); CI green.

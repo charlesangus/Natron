@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M73.P1.T3
-pm_heartbeat: 2026-10-08T20:42:57-04:00
+current: null
+pm_heartbeat: 2026-10-08T21:21:10-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -181,6 +181,7 @@ future core work has solid ground to build on.
 - **M70–M72 (Reverse-Flow Variables) authored 2026-10-08**: Nuke-style graph-scope variables generalised to any knob type, animatable, set on the project or by a `ReverseFlowVariableSet` node and read in expressions as `rfv`. Order M70 → M71 → M72; no ordering against other backlog work was given, so they are unscheduled. Design: `DECISIONS/2026-10-08-reverse-flow-variables-design.md`.
 
 - **Backlog order (2026-10-08, user):** M73 (wrap-up of M67 - Native Core Nodes) → M64 (re-evaluation only, stops for a go-ahead) → M27 → M22 → M31 → M69 → M24 → M44 → M55 and M46 together (evaluate Labelmaker-style node-graph info as part of node-graph polish) → M56 → M45. M25, M29 and M68 were not placed and stay unscheduled. **Deferred, do not start:** RFV (M70–M72), deep (M21, M51, M32), M16, and the 3D roadmap (M19, M20, M52–M54). Naming M31 here is the go-ahead its stub asked for. See `DECISIONS/2026-10-08-backlog-order-after-parcel-2.md`.
+  **M73 shipped 2026-10-08** (PR #43, squash `cb04295b9`): openfx-misc pinned to its merge commit `9fb0d0904`; every fork's SupportExt pin is now on openfx-supportext master; merged stack branches and `build/wt/` worktrees removed (M64 benchmarks saved to `build/bench/from-wt-m64/`).
 
 # Board
 
@@ -226,7 +227,7 @@ future core work has solid ground to build on.
 | M67 | Native Core Nodes | done | [M67-native-core-nodes.md](PLAN/MILESTONES/M67-native-core-nodes.md) |
 | M28 | Free RAM Fix | done | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |
 | M30 | Automated Beta Releases | done | [M30-automated-beta-releases.md](PLAN/MILESTONES/M30-automated-beta-releases.md) |
-| M73 | Native Core Nodes Wrap-Up | doing | [M73-native-core-nodes-wrap-up.md](PLAN/MILESTONES/M73-native-core-nodes-wrap-up.md) |
+| M73 | Native Core Nodes Wrap-Up | done | [M73-native-core-nodes-wrap-up.md](PLAN/MILESTONES/M73-native-core-nodes-wrap-up.md) |
 | M74 | Native Metadata Core | todo | [M74-native-metadata-core.md](PLAN/MILESTONES/M74-native-metadata-core.md) |
 | M75 | Native Read | todo | [M75-native-read.md](PLAN/MILESTONES/M75-native-read.md) |
 | M76 | Native Write | todo | [M76-native-write.md](PLAN/MILESTONES/M76-native-write.md) |

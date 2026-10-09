@@ -227,6 +227,11 @@ future core work has solid ground to build on.
 | M28 | Free RAM Fix | done | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |
 | M30 | Automated Beta Releases | done | [M30-automated-beta-releases.md](PLAN/MILESTONES/M30-automated-beta-releases.md) |
 | M73 | Native Core Nodes Wrap-Up | doing | [M73-native-core-nodes-wrap-up.md](PLAN/MILESTONES/M73-native-core-nodes-wrap-up.md) |
+| M74 | Native Metadata Core | todo | [M74-native-metadata-core.md](PLAN/MILESTONES/M74-native-metadata-core.md) |
+| M75 | Native Read | todo | [M75-native-read.md](PLAN/MILESTONES/M75-native-read.md) |
+| M76 | Native Write | todo | [M76-native-write.md](PLAN/MILESTONES/M76-native-write.md) |
+| M77 | Native Metadata Nodes | todo | [M77-native-metadata-nodes.md](PLAN/MILESTONES/M77-native-metadata-nodes.md) |
+| M78 | Metadata In Expressions | todo | [M78-metadata-in-expressions.md](PLAN/MILESTONES/M78-metadata-in-expressions.md) |
 | M64 | Tiled Rendering | todo | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
 | M27 | Real Debug Build | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M22 | Missing Plugin Placeholder | todo | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
@@ -253,11 +258,6 @@ future core work has solid ground to build on.
 | M70 | RFV Declaration And Storage | todo | [M70-rfv-declaration-and-storage.md](PLAN/MILESTONES/M70-rfv-declaration-and-storage.md) |
 | M71 | RFV Render Context | todo | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
 | M72 | RFV Integration And UAT | todo | [M72-rfv-integration-and-uat.md](PLAN/MILESTONES/M72-rfv-integration-and-uat.md) |
-| M74 | Native Metadata Core | todo | [M74-native-metadata-core.md](PLAN/MILESTONES/M74-native-metadata-core.md) |
-| M75 | Native Read | todo | [M75-native-read.md](PLAN/MILESTONES/M75-native-read.md) |
-| M76 | Native Write | todo | [M76-native-write.md](PLAN/MILESTONES/M76-native-write.md) |
-| M77 | Native Metadata Nodes | todo | [M77-native-metadata-nodes.md](PLAN/MILESTONES/M77-native-metadata-nodes.md) |
-| M78 | Metadata In Expressions | todo | [M78-metadata-in-expressions.md](PLAN/MILESTONES/M78-metadata-in-expressions.md) |
 
 - 2026-09-18 — **M18's manual GUI checklist: all 6 items now confirmed**
   (re-run on a rebuilt AppImage at `94ceb9407` or later). Separately, the

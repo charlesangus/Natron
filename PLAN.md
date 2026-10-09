@@ -178,6 +178,8 @@ future core work has solid ground to build on.
 
 - **Parcel 2 (2026-10-06, user):** parcel 1 (M61 → M62, PRs #34–#40) passed UAT and **merged 2026-10-06** (squashes a83bc9a7f … 1c2f9d62e on `main`; fork PRs merged with merge commits and re-pinned in d1111ef8f, which rode #40). #41 now targets `main` (head ce575b4d2). Next, M64 (tiles), then M67 (native core nodes: colour → merge/generators → spatial → keying/misc), each stacked on the previous branch starting from M63's #41, for one UAT. **Parcel 2 merged 2026-10-08:** M63 as PR #41 (squash `d4beebbf6`, 12:10Z) and M67 as PR #42 (squash `c1eb2fd1b`, 13:36Z), both on `main`; M64 stayed parked. M68 (headless GL, ex-M63.P5.T4) is deferred until the user gives the go-ahead. See `DECISIONS/2026-10-06-m67-core-node-families.md`.
 
+- **M70–M72 (Reverse-Flow Variables) authored 2026-10-08**: Nuke-style graph-scope variables generalised to any knob type, animatable, set on the project or by a `ReverseFlowVariableSet` node and read in expressions as `rfv`. Order M70 → M71 → M72; no ordering against other backlog work was given, so they are unscheduled. Design: `DECISIONS/2026-10-08-reverse-flow-variables-design.md`.
+
 # Board
 
 | ID | Milestone | Status | File |
@@ -245,6 +247,9 @@ future core work has solid ground to build on.
 | M16 | Project Format Redesign | todo | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
 | M31 | Architectural Cleanup | todo | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
 | M69 | Minor Cleanup | todo | [M69-minor-cleanup.md](PLAN/MILESTONES/M69-minor-cleanup.md) |
+| M70 | RFV Declaration And Storage | todo | [M70-rfv-declaration-and-storage.md](PLAN/MILESTONES/M70-rfv-declaration-and-storage.md) |
+| M71 | RFV Render Context | todo | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
+| M72 | RFV Integration And UAT | todo | [M72-rfv-integration-and-uat.md](PLAN/MILESTONES/M72-rfv-integration-and-uat.md) |
 
 - 2026-09-18 — **M18's manual GUI checklist: all 6 items now confirmed**
   (re-run on a rebuilt AppImage at `94ceb9407` or later). Separately, the

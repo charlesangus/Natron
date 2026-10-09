@@ -6,7 +6,7 @@ Parcel 2 merged on 2026-10-08, but M67 - Native Core Nodes left loose ends: `OPE
 
 ## Phase 73.1: Re-pin and clean up
 
-- [ ] M73.P1.T1 — Merge openfx-misc#7 and re-pin `OPENFX_MISC_REF`
+- [x] M73.P1.T1 — Merge openfx-misc#7 and re-pin `OPENFX_MISC_REF`
   - files: `tools/ci/local/fetch-assets.sh` (and any workflow or doc that names the old pin; grep for `59ae4c26a` and `OPENFX_MISC_REF`)
   - approach:
     - Check `gh pr view 7 --repo charlesangus/openfx-misc` is green, then merge it with a merge commit (the convention used for the fork PRs in parcels 1 and 2). Do not squash: the pin must be an ancestor-stable commit.
@@ -32,3 +32,4 @@ Parcel 2 merged on 2026-10-08, but M67 - Native Core Nodes left loose ends: `OPE
 ## Decisions
 - 2026-10-08 — **Scheduled first (user):** runs before the M64 re-evaluation and the backlog. The unconfirmed ChromaKeyer NaN (needs the user's exact settings) is not part of this milestone.
 - 2026-10-08 — **Freshness check:** the live pin is `59ae4c26a` (openfx-misc#7's head), not `3060fe33b`; T1's grep updated. T2 resized S → M: deciding whether a squash-merged branch is safe to delete needs judgement.
+- 2026-10-08 — **openfx-misc#7 merged** as `9fb0d0904` (merge commit; tree `ecaf615f` identical to the old pin `59ae4c26a`). The fork has no CI of its own; Natron's CI cold-fetching the new ref on PR #43 stands in for the local clean `build/assets` fetch, since the source is byte-identical.

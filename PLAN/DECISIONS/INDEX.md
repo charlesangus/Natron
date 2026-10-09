@@ -62,3 +62,4 @@
 - 2026-10-06 — m67-core-node-families: M67 = colour, merge/generators, spatial, keying/misc; M64 then M67 stacked on #41; headless GL deferred to M68 → DECISIONS/2026-10-06-m67-core-node-families.md
 - 2026-10-08 — reverse-flow-variables-design: per-path context keyed by upstream read-set; RFV group knob declares variables; project is the base layer; `rfv` returns None when unset; values frozen at the Set node → DECISIONS/2026-10-08-reverse-flow-variables-design.md
 - 2026-10-08 — rfvswitch-design: RFVSwitch = multi-line glob/`re:` patterns, first match wins, read-set hook for its variable; Set-node drop-down and promote-to-project copy variables unlinked → DECISIONS/2026-10-08-rfvswitch-design.md
+- 2026-10-08 — rfvread-design: RFVRead resolves the context statically along the active viewer path, shared overlay code with the request pass → DECISIONS/2026-10-08-rfvread-design.md

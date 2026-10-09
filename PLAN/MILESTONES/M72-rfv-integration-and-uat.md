@@ -46,6 +46,28 @@ Placed before Phase 72.3 so the UAT covers it. Design: `DECISIONS/2026-10-08-rfv
   - verify: the new tests pass under both schedulers.
   - size: M
 
+## Phase 72.5: RFVRead
+
+Placed before Phase 72.3 so the UAT covers it. Design: `DECISIONS/2026-10-08-rfvread-design.md`.
+
+- [ ] M72.P5.T1 — Resolve the context a node would see, without rendering
+  - files: `Engine/RFV.h`, `Engine/RFV.cpp`, `Engine/ParallelRenderArgs.cpp` (reuse only)
+  - approach: `RFV::resolveContextAt(NodePtr target, double time)` finds a downstream path from `target` to the active viewer's displayed input chain (the first path found when several exist; if the target is on no viewer's path, the project base values), then folds the Set-node overlays along that path, nearest to the target winning, evaluated at `time`. Use the same overlay function the request pass uses (extract it if `M71.P3.T1` left it inline) so the two cannot drift. Returns the full context plus the name of the path's output node.
+  - verify: gtest: user's two-Set example with the viewer on each branch gives `a` then `b`; a node on no viewer path gives the project values; a nested override resolves nearest-first.
+  - size: M
+
+- [ ] M72.P5.T2 — RFVRead node
+  - files: `Engine/Nodes/RFV/RFVRead.h`, `Engine/Nodes/RFV/RFVRead.cpp` (new), `Engine/AppManager.cpp`, `Engine/CMakeLists.txt`
+  - approach: polymorphic pass-through like `ReverseFlowVariableSet` (identity, no render). It reads nothing, so it does not widen any upstream context key. One read-only multi-line string knob, "Variables", lists every variable in the resolved context as `name = value` (arrays as `[1, 2, 3]`, strings quoted) with a header line `from <output node>, frame <t>`. Recompute via `RFV::resolveContextAt` on timeline change, viewer change, connection change, and any change to a Set node or the project RFV group. Variables whose value is unset on this path are not listed.
+  - verify: gtest: build the user's example, call the node's refresh with the viewer on each branch, and compare the knob text to the expected lines.
+  - size: M
+
+- [ ] M72.P5.T3 — RFVRead refresh in the GUI
+  - files: `Gui/NodeGraph*.cpp` or the viewer-change signal source (grep for the active-viewer-input changed signal), `Engine/Nodes/RFV/RFVRead.cpp`
+  - approach: hook the active-viewer and displayed-input change into RFVRead's refresh so the panel updates without a render. Keep the knob read-only and selectable for copy.
+  - verify: Xvfb GUI run: move the viewer between the two branches of the example and screenshot the panel showing `var = 'a'` then `var = 'b'`.
+  - size: M
+
 ## Phase 72.3: UAT
 
 - [ ] M72.P3.T1 — Package an AppImage and capture screenshots
@@ -56,7 +78,7 @@ Placed before Phase 72.3 so the UAT covers it. Design: `DECISIONS/2026-10-08-rfv
 
 - [ ] M72.P3.T2 — User check of the AppImage
   - files: none
-  - approach: the user opens the AppImage and builds the example graph, checks that an RFVSwitch picks inputs by glob and regex, checks that animated variables work, that a project variable is overridden by a Set, and that save and reload keeps everything. Record their findings as tasks or decisions.
+  - approach: the user opens the AppImage and builds the example graph, checks that an RFVRead lists the right variables for the viewed branch, checks that an RFVSwitch picks inputs by glob and regex, checks that animated variables work, that a project variable is overridden by a Set, and that save and reload keeps everything. Record their findings as tasks or decisions.
   - verify: the user signs off.
   - size: S
 

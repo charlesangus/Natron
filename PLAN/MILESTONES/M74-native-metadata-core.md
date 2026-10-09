@@ -34,3 +34,4 @@ Gives native nodes a host-side per-frame metadata map, so metadata no longer sto
 
 ## Decisions
 - 2026-10-08 — **Freshness check passed:** every referenced file exists; `ofxMetadata.h` is in-repo at `libs/OpenFX/include/ofxMetadata.h`, so briefs point there rather than at `build/assets`.
+- 2026-10-08 — **Generators omit `ofx/frame` (deviation from P2.T2's brief):** `ofxMetadata.h` defines `ofx/frame` as int, the frame number within the source, omitted for a single image and never renumbered to the timeline. A generator has no source, so it emits only `ofx/framerate` and `ofx/pixelaspect`. Test sources inject `ofx/frame` as int.

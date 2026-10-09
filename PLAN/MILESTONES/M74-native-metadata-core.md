@@ -31,3 +31,6 @@ Gives native nodes a host-side per-frame metadata map, so metadata no longer sto
   - size: M
 
 **Verification gate:** `ImageMetadata` and bridge gtests pass; a graph of OFX Read → native Grade → native Merge → OFX Write preserves the Read's metadata end to end; full ctest green; `format`, `lint-ci`, `build-and-test` green on the PR.
+
+## Decisions
+- 2026-10-08 — **Freshness check passed:** every referenced file exists; `ofxMetadata.h` is in-repo at `libs/OpenFX/include/ofxMetadata.h`, so briefs point there rather than at `build/assets`.

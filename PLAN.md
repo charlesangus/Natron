@@ -1,7 +1,7 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: M64.P7.T1
+current: M74.P1.T1
 pm_heartbeat: 2026-10-08T23:19:16-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
@@ -229,8 +229,8 @@ future core work has solid ground to build on.
 | M28 | Free RAM Fix | done | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |
 | M30 | Automated Beta Releases | done | [M30-automated-beta-releases.md](PLAN/MILESTONES/M30-automated-beta-releases.md) |
 | M73 | Native Core Nodes Wrap-Up | done | [M73-native-core-nodes-wrap-up.md](PLAN/MILESTONES/M73-native-core-nodes-wrap-up.md) |
-| M64 | Tiled Rendering | doing | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
-| M74 | Native Metadata Core | todo | [M74-native-metadata-core.md](PLAN/MILESTONES/M74-native-metadata-core.md) |
+| M64 | Tiled Rendering | blocked | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
+| M74 | Native Metadata Core | doing | [M74-native-metadata-core.md](PLAN/MILESTONES/M74-native-metadata-core.md) |
 | M75 | Native Read | todo | [M75-native-read.md](PLAN/MILESTONES/M75-native-read.md) |
 | M76 | Native Write | todo | [M76-native-write.md](PLAN/MILESTONES/M76-native-write.md) |
 | M77 | Native Metadata Nodes | todo | [M77-native-metadata-nodes.md](PLAN/MILESTONES/M77-native-metadata-nodes.md) |
@@ -283,5 +283,5 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M64 - Tiled Rendering:** blocked on kill gate 1 until M67 landed; M67 has now merged. Phase 64.7 re-evaluates it and reports; the PM stops there for the user's go-ahead.
+- **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.
 - **M55 - Node Graph Polish / M46 - Labelmaker Annotations:** are they one milestone or two? Decide after the evaluation described in the 2026-10-08 backlog-order decision.

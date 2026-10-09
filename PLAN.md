@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
-status: paused
-current: null
-pm_heartbeat: 2026-10-08T04:45:32-04:00
+status: running
+current: M73.P1.T1
+pm_heartbeat: 2026-10-08T20:35:04-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -226,7 +226,7 @@ future core work has solid ground to build on.
 | M67 | Native Core Nodes | done | [M67-native-core-nodes.md](PLAN/MILESTONES/M67-native-core-nodes.md) |
 | M28 | Free RAM Fix | done | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |
 | M30 | Automated Beta Releases | done | [M30-automated-beta-releases.md](PLAN/MILESTONES/M30-automated-beta-releases.md) |
-| M73 | Native Core Nodes Wrap-Up | todo | [M73-native-core-nodes-wrap-up.md](PLAN/MILESTONES/M73-native-core-nodes-wrap-up.md) |
+| M73 | Native Core Nodes Wrap-Up | doing | [M73-native-core-nodes-wrap-up.md](PLAN/MILESTONES/M73-native-core-nodes-wrap-up.md) |
 | M64 | Tiled Rendering | todo | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
 | M27 | Real Debug Build | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M22 | Missing Plugin Placeholder | todo | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |

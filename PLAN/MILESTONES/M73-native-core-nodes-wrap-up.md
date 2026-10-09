@@ -7,7 +7,7 @@ Parcel 2 merged on 2026-10-08, but M67 - Native Core Nodes left loose ends: `OPE
 ## Phase 73.1: Re-pin and clean up
 
 - [ ] M73.P1.T1 — Merge openfx-misc#7 and re-pin `OPENFX_MISC_REF`
-  - files: `tools/ci/local/fetch-assets.sh` (and any workflow or doc that names the old pin; grep for `3060fe33b` and `OPENFX_MISC_REF`)
+  - files: `tools/ci/local/fetch-assets.sh` (and any workflow or doc that names the old pin; grep for `59ae4c26a` and `OPENFX_MISC_REF`)
   - approach:
     - Check `gh pr view 7 --repo charlesangus/openfx-misc` is green, then merge it with a merge commit (the convention used for the fork PRs in parcels 1 and 2). Do not squash: the pin must be an ancestor-stable commit.
     - Branch `milestone/m73-native-core-nodes-wrap-up` off `main`. Set `OPENFX_MISC_REF` to the merge commit and check no other file references the branch commit.
@@ -19,7 +19,7 @@ Parcel 2 merged on 2026-10-08, but M67 - Native Core Nodes left loose ends: `OPE
   - files: none in the repo; local and `origin` branches `milestone/m6*`, `milestone/m37*`, `milestone/m50*`, worktrees under `build/wt/`
   - approach: for each candidate, confirm it is merged (`git branch --merged main`, or its PR is merged per `gh pr view`; squash merges need the PR check) before `git worktree remove` and `git branch -d`/`git push origin --delete`. Leave anything unmerged or carrying unpushed commits and list it in the report. Never remove `build/appimages/`.
   - verify: `git worktree list` and `git branch -a` show only unmerged/active branches; the report lists everything skipped and why.
-  - size: S
+  - size: M
 
 - [ ] M73.P1.T3 — Drop the resolved open question
   - files: `PLAN.md` (PM work)
@@ -31,3 +31,4 @@ Parcel 2 merged on 2026-10-08, but M67 - Native Core Nodes left loose ends: `OPE
 
 ## Decisions
 - 2026-10-08 — **Scheduled first (user):** runs before the M64 re-evaluation and the backlog. The unconfirmed ChromaKeyer NaN (needs the user's exact settings) is not part of this milestone.
+- 2026-10-08 — **Freshness check:** the live pin is `59ae4c26a` (openfx-misc#7's head), not `3060fe33b`; T1's grep updated. T2 resized S → M: deciding whether a squash-merged branch is safe to delete needs judgement.

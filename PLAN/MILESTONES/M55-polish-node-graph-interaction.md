@@ -25,3 +25,5 @@ Acceptance sketch:
 - Dragging a node over a pipe previews the splice; dropping inserts it.
 - Multi-selected roto points' feather all adjust together on a single drag.
 - Render prompts for frame range and defaults to foreground rendering.
+
+Scheduling note (2026-10-08, user): runs together with M46. Before elaborating, evaluate whether Labelmaker-style node-graph info belongs inside node-graph polish; elaborate them as one milestone or two accordingly.

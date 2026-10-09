@@ -180,6 +180,8 @@ future core work has solid ground to build on.
 
 - **M70–M72 (Reverse-Flow Variables) authored 2026-10-08**: Nuke-style graph-scope variables generalised to any knob type, animatable, set on the project or by a `ReverseFlowVariableSet` node and read in expressions as `rfv`. Order M70 → M71 → M72; no ordering against other backlog work was given, so they are unscheduled. Design: `DECISIONS/2026-10-08-reverse-flow-variables-design.md`.
 
+- **Backlog order (2026-10-08, user):** M73 (wrap-up of M67 - Native Core Nodes) → M64 (re-evaluation only, stops for a go-ahead) → M27 → M22 → M31 → M69 → M24 → M44 → M55 and M46 together (evaluate Labelmaker-style node-graph info as part of node-graph polish) → M56 → M45. M25, M29 and M68 were not placed and stay unscheduled. **Deferred, do not start:** RFV (M70–M72), deep (M21, M51, M32), M16, and the 3D roadmap (M19, M20, M52–M54). Naming M31 here is the go-ahead its stub asked for. See `DECISIONS/2026-10-08-backlog-order-after-parcel-2.md`.
+
 # Board
 
 | ID | Milestone | Status | File |
@@ -221,19 +223,24 @@ future core work has solid ground to build on.
 | M60 | Deep Layers And Channels | done | [M60-deep-layers-and-channels.md](PLAN/MILESTONES/M60-deep-layers-and-channels.md) |
 | M62 | Render Scaling Hotspots | done | [M62-render-scaling-hotspots.md](PLAN/MILESTONES/M62-render-scaling-hotspots.md) |
 | M63 | Task-Graph Render Scheduler | done | [M63-task-graph-render-scheduler.md](PLAN/MILESTONES/M63-task-graph-render-scheduler.md) |
-| M64 | Tiled Rendering | blocked | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
 | M67 | Native Core Nodes | done | [M67-native-core-nodes.md](PLAN/MILESTONES/M67-native-core-nodes.md) |
-| M68 | Headless GL EGL | todo | [M68-headless-gl-egl-backend.md](PLAN/MILESTONES/M68-headless-gl-egl-backend.md) |
-| M25 | GL Init FP Guard | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
-| M27 | Real Debug Build | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M28 | Free RAM Fix | done | [M28-free-ram-reads-memfree.md](PLAN/MILESTONES/M28-free-ram-reads-memfree.md) |
-| M22 | Missing Plugin Placeholder | todo | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
-| M29 | Independent Repository | todo | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |
 | M30 | Automated Beta Releases | done | [M30-automated-beta-releases.md](PLAN/MILESTONES/M30-automated-beta-releases.md) |
+| M73 | Native Core Nodes Wrap-Up | todo | [M73-native-core-nodes-wrap-up.md](PLAN/MILESTONES/M73-native-core-nodes-wrap-up.md) |
+| M64 | Tiled Rendering | todo | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
+| M27 | Real Debug Build | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
+| M22 | Missing Plugin Placeholder | todo | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
+| M31 | Architectural Cleanup | todo | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
+| M69 | Minor Cleanup | todo | [M69-minor-cleanup.md](PLAN/MILESTONES/M69-minor-cleanup.md) |
 | M24 | Node Graph Category Colour | todo | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
 | M44 | Trackball Colour Editing | todo | [M44-trackball-colour-editing.md](PLAN/MILESTONES/M44-trackball-colour-editing.md) |
 | M55 | Node Graph Polish | todo | [M55-polish-node-graph-interaction.md](PLAN/MILESTONES/M55-polish-node-graph-interaction.md) |
+| M46 | Labelmaker Annotations | todo | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |
 | M56 | Visual And Menu Polish | todo | [M56-polish-visual-and-menus.md](PLAN/MILESTONES/M56-polish-visual-and-menus.md) |
+| M45 | Native Tab Menu | todo | [M45-tabtabtab-native-tab-menu.md](PLAN/MILESTONES/M45-tabtabtab-native-tab-menu.md) |
+| M25 | GL Init FP Guard | todo | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
+| M29 | Independent Repository | todo | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |
+| M68 | Headless GL EGL | todo | [M68-headless-gl-egl-backend.md](PLAN/MILESTONES/M68-headless-gl-egl-backend.md) |
 | M19 | USD/Hydra Foundation | todo | [M19-usd-hydra-foundation.md](PLAN/MILESTONES/M19-usd-hydra-foundation.md) |
 | M20 | 3D Node Vocabulary | todo | [M20-3d-node-vocabulary.md](PLAN/MILESTONES/M20-3d-node-vocabulary.md) |
 | M52 | USD Layer-Stack Completion | todo | [M52-usd-layer-stack-completion.md](PLAN/MILESTONES/M52-usd-layer-stack-completion.md) |
@@ -242,11 +249,7 @@ future core work has solid ground to build on.
 | M21 | Deep Tier-2 And Bridges | todo | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M51 | Deep Filtering OpenDCX | todo | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep Sample Node | todo | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
-| M45 | Native Tab Menu | todo | [M45-tabtabtab-native-tab-menu.md](PLAN/MILESTONES/M45-tabtabtab-native-tab-menu.md) |
-| M46 | Labelmaker Annotations | todo | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |
 | M16 | Project Format Redesign | todo | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
-| M31 | Architectural Cleanup | todo | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
-| M69 | Minor Cleanup | todo | [M69-minor-cleanup.md](PLAN/MILESTONES/M69-minor-cleanup.md) |
 | M70 | RFV Declaration And Storage | todo | [M70-rfv-declaration-and-storage.md](PLAN/MILESTONES/M70-rfv-declaration-and-storage.md) |
 | M71 | RFV Render Context | todo | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
 | M72 | RFV Integration And UAT | todo | [M72-rfv-integration-and-uat.md](PLAN/MILESTONES/M72-rfv-integration-and-uat.md) |
@@ -273,5 +276,5 @@ future core work has solid ground to build on.
 
 # Open questions
 
-- **M67 - Native Core Nodes: re-pin `OPENFX_MISC_REF` after openfx-misc#7 merges.** PR #42 merged to `main` on 2026-10-08, but `charlesangus/openfx-misc` PR #7 (`m67/retire-native-core`) is still open, so `tools/ci/local/fetch-assets.sh` pins a branch commit (`3060fe33b`). Merge it, then re-pin to its merge commit.
-- **M64 - Tiled Rendering is parked on kill gate 1** (confirmed on a quiet host 2026-10-06): best strip pull is 1.17x on chain 30 and 1.15x on chain 100 (gate 1.3x). It was waiting for M67 - Native Core Nodes, which has now merged. M67's B12 Decisions say to re-estimate it around fusing native kernels; start that only on the user's go-ahead.
+- **M64 - Tiled Rendering:** blocked on kill gate 1 until M67 landed; M67 has now merged. Phase 64.7 re-evaluates it and reports; the PM stops there for the user's go-ahead.
+- **M55 - Node Graph Polish / M46 - Labelmaker Annotations:** are they one milestone or two? Decide after the evaluation described in the 2026-10-08 backlog-order decision.

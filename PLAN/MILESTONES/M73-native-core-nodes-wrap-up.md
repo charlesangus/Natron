@@ -1,0 +1,33 @@
+# M73 - Native Core Nodes Wrap-Up
+
+Full title: Housekeeping to close out M67 - Native Core Nodes
+
+Parcel 2 merged on 2026-10-08, but M67 - Native Core Nodes left loose ends: `OPENFX_MISC_REF` pins a branch commit of an unmerged fork PR, and the parcel-1/2 stacked branches and worktrees are still lying around. This milestone closes them so the next milestones start from a clean `main`. No feature work.
+
+## Phase 73.1: Re-pin and clean up
+
+- [ ] M73.P1.T1 — Merge openfx-misc#7 and re-pin `OPENFX_MISC_REF`
+  - files: `tools/ci/local/fetch-assets.sh` (and any workflow or doc that names the old pin; grep for `3060fe33b` and `OPENFX_MISC_REF`)
+  - approach:
+    - Check `gh pr view 7 --repo charlesangus/openfx-misc` is green, then merge it with a merge commit (the convention used for the fork PRs in parcels 1 and 2). Do not squash: the pin must be an ancestor-stable commit.
+    - Branch `milestone/m73-native-core-nodes-wrap-up` off `main`. Set `OPENFX_MISC_REF` to the merge commit and check no other file references the branch commit.
+    - Run the full-tree `git clang-format` against the merge base before pushing. Open the PR against `main`; wait for CI.
+  - verify: `fetch-assets.sh` in a clean `build/assets` resolves and builds the plugin bundle at the new pin; CI (`format`, `lint-ci`, `build-and-test`) green.
+  - size: M
+
+- [ ] M73.P1.T2 — Remove merged stack branches and worktrees
+  - files: none in the repo; local and `origin` branches `milestone/m6*`, `milestone/m37*`, `milestone/m50*`, worktrees under `build/wt/`
+  - approach: for each candidate, confirm it is merged (`git branch --merged main`, or its PR is merged per `gh pr view`; squash merges need the PR check) before `git worktree remove` and `git branch -d`/`git push origin --delete`. Leave anything unmerged or carrying unpushed commits and list it in the report. Never remove `build/appimages/`.
+  - verify: `git worktree list` and `git branch -a` show only unmerged/active branches; the report lists everything skipped and why.
+  - size: S
+
+- [ ] M73.P1.T3 — Drop the resolved open question
+  - files: `PLAN.md` (PM work)
+  - approach: after T1 merges, remove the M67 `OPENFX_MISC_REF` item from `# Open questions` and record the merge commit in this milestone's `## Decisions`.
+  - verify: board has no stale mention of the branch pin.
+  - size: S
+
+**Verification gate:** `main` carries a pin that is a merge commit on openfx-misc's default branch; CI green; no merged stack branches or worktrees remain.
+
+## Decisions
+- 2026-10-08 — **Scheduled first (user):** runs before the M64 re-evaluation and the backlog. The unconfirmed ChromaKeyer NaN (needs the user's exact settings) is not part of this milestone.

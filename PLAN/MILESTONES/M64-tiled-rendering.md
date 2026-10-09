@@ -69,6 +69,21 @@ All anchors are at `18aab690f`. The shared checkout at `/home/bosley/git/Natron`
 6. **Mode.** A new `tiledRendering` setting {Off, On} plus `NATRON_TILED_RENDERING=0|1` (env first), following the `renderSchedulerMode` pattern. It only acts when the scheduler mode is Task graph. The default is Off until P4.T3 passes, and P6.T2 flips it. There is no project-format change and no legacy fixtures (clean-break rule).
 7. **Out of scope for v1, recorded as follow-ups:** spatial nodes with halos (Blur, Transform filtering) as segment members, which would need overlap recompute or halo exchange; tiling cached nodes into cache entries through the trimap; static graphs, where every node is cached by the existing rule; and fusing kernels across nodes, which needs native nodes (M67).
 
+## Phase 64.7: Re-evaluation after native core nodes (user, 2026-10-08; runs first)
+
+M67 - Native Core Nodes has merged, which is what kill gate 1's parking waited for. This phase is analysis only. The PM stops after it and waits for the user's go-ahead; do not run Phases 64.1 to 64.6 on its own authority.
+
+- [ ] M64.P7.T1 — Re-estimate tiled/fused rendering against native core nodes
+  - files: `tools/bench/` (read, and run if needed), `PLAN/DECISIONS/2026-10-08-m64-reevaluation.md` (new), `PLAN/DECISIONS/INDEX.md`
+  - approach:
+    - Re-run the existing chain benchmarks on `main` (native Grade/ColorCorrect/Merge/Transform chains) on a quiet host, and `stream_bench`, then recompute the bandwidth share per node. M67's B12 Decisions already say to re-estimate around fusing native kernels, so read them first.
+    - Evaluate three options against that data: (a) the planned strip-task design as written; (b) a smaller design where native point-op nodes declare point-op/tile traits directly and fuse kernels (no RoI probe); (c) cancel, because M63 and M67 already took the wins.
+    - Write the decision with measured numbers, a recommendation, and the effect on Phases 64.1 to 64.6 (which tasks survive, which are rewritten). Do not edit those phases.
+  - verify: decision file and INDEX line exist; it states the recommendation and the numbers behind it.
+  - size: L
+
+**Phase gate:** report the recommendation to the user and set M64 `blocked` on their go-ahead. Continue to the next board milestone meanwhile.
+
 ## Phase 64.1: Re-baseline and the go/no-go spike
 
 - [ ] M64.P1.T1 — Re-baseline on the current tip and record the bandwidth floor
@@ -319,3 +334,4 @@ Execution notes:
 - 2026-10-06 — **P1.T1/P1.T2 measured on a contended host (load 2–21 on 4 cores, IO pressure ~95%, from outside the sandbox); code `30700800a` on `milestone/m64-tiled-rendering` (local, unpushed).** The spike's pixels are identical at every strip height. The best strip-pull speed-ups are chain 30 **0.60x/0.72x** and chain 100 **1.14x/1.21x** (two runs), both under kill gate 1 (1.3x). Per-call fit: a≈0.27 ms, b≈68 ns/px for one Grade. Absolute times run ~3x those after M63, so the baseline is not trusted as a reference. **Applying the PM default: M64 is `blocked`** pending a re-run of the spike on a quiet host. If it still lands below 1.3x, M64 stays parked until M67's native nodes exist. Chain 30 strips being slower than the whole frame at every height is unexplained and is the first thing to look at on the re-run. P1.T1 and P1.T2 stay unchecked until the quiet re-run.
 - 2026-10-06 — **Kill gate 1 confirmed on a quiet host** (load 0.25/0.53, IO pressure 0): best strip pull is 1.05–1.17x on chain 30 and 1.14–1.15x on chain 100, with pixels identical everywhere. a≈0.20 ms, b≈58 ns/px per Grade call. There is a cliff between 16- and 32-row strips (4 strips in flight × input+output planes cross the 6 MB L3); recursive strip pulls keep N intermediates alive and zero-fill fresh images per strip; the chain-100 win comes from the whole-frame path slowing with N (31→51 ms/node). **M64 stays parked until M67's native nodes exist.** Revisit then with native point-op kernels, where fusing without per-node images is the real lever. Logs: `build/m67-b1/spike{1,2}.log`.
 - 2026-10-07 — **Large-frame, out-of-RAM benchmarking added (user request):** P1.T3/P1.T4 and P4.T5 test 2:1 frames up to 24k (24576×12288, 4.8 GB float RGBA) under a swap-free memory cap, because HD never exercises the case tiling should win: working sets larger than RAM. Gates 1 and 2 no longer stop the milestone on HD speed alone when the large-frame data shows a memory benefit. Source-plus-output (about 9.7 GB at 24k) is a floor tiling cannot go below unless the source joins a segment.
+- 2026-10-08 — **Re-evaluation scheduled (user):** Phase 64.7 re-estimates against the merged native core nodes before any implementation. The user then decides between the strip-task design, a native-fused-kernel design, or cancelling.

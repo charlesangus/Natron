@@ -14,3 +14,5 @@ elaboration.
 Acceptance sketch:
 - Nodes can display rich, Labelmaker-style annotation text/data on the node
   graph.
+
+Scheduling note (2026-10-08, user): runs together with M55. Before elaborating, evaluate whether Labelmaker-style node-graph info belongs inside node-graph polish; elaborate them as one milestone or two accordingly.

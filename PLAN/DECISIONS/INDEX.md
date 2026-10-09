@@ -63,3 +63,4 @@
 - 2026-10-08 — reverse-flow-variables-design: per-path context keyed by upstream read-set; RFV group knob declares variables; project is the base layer; `rfv` returns None when unset; values frozen at the Set node → DECISIONS/2026-10-08-reverse-flow-variables-design.md
 - 2026-10-08 — rfvswitch-design: RFVSwitch = multi-line glob/`re:` patterns, first match wins, read-set hook for its variable; Set-node drop-down and promote-to-project copy variables unlinked → DECISIONS/2026-10-08-rfvswitch-design.md
 - 2026-10-08 — rfvread-design: RFVRead resolves the context statically along the active viewer path, shared overlay code with the request pass → DECISIONS/2026-10-08-rfvread-design.md
+- 2026-10-08 — backlog-order-after-parcel-2: M73 wrap-up → M64 re-evaluation → M27, M22, M31, M69, M24, M44, M55+M46, M56, M45; RFV, deep, M16 and 3D deferred → DECISIONS/2026-10-08-backlog-order-after-parcel-2.md

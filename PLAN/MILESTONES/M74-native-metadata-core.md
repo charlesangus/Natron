@@ -1,0 +1,33 @@
+# M74 - Native Metadata Core
+
+Gives native nodes a host-side per-frame metadata map, so metadata no longer stops at the first native node (`Engine/OfxClipInstance.cpp` `fetchMetadata` falls back to project values there). Every later milestone in this group builds on it. See `DECISIONS/2026-10-08-native-io-and-metadata-design.md`.
+
+## Phase 74.1: Data model and OFX bridge
+
+- [ ] M74.P1.T1 — Define the `ImageMetadata` type
+  - files: new `Engine/Nodes/Metadata/ImageMetadata.h/.cpp`, `Tests/ImageMetadata_Test.cpp`
+  - approach: ordered string-key to typed-value map (int, double, string, int/double vectors, matrix-free). Keys use the `ofx/`, `exr/`, `exif/`, `dpx/` prefixes from `ofxMetadata.h` (openfx-metadata checkout under `build/assets/plugin-src/openfx-metadata/include/`). Cheap copy (shared, copy-on-write), equality, stable hash for cache keys, get/set/remove/merge. No Qt types in the header beyond what the Engine already uses.
+  - verify: gtest covers round-trip of every value type, copy-on-write isolation, hash stability, and merge precedence.
+  - size: M
+
+- [ ] M74.P1.T2 — Bridge `ImageMetadata` to and from OFX clip metadata
+  - files: `Engine/OfxClipInstance.cpp`, `Engine/OfxClipInstance.h`, new `Engine/Nodes/Metadata/OfxMetadataBridge.h/.cpp`
+  - approach: functions converting between `ImageMetadata` and the OFX clip metadata property set used by `fetchMetadata` / `addReaderFileMetadata`. An OFX node downstream of a native node receives the native node's metadata instead of the project-value fallback; a native node downstream of an OFX node receives the converted set.
+  - verify: gtest with a native passthrough feeding an OFX node (and the reverse) shows the key set arrives unchanged, including `ofx/frame` and `ofx/filepath`.
+  - size: M
+
+## Phase 74.2: Flow through native nodes
+
+- [ ] M74.P2.T1 — Add the metadata accessor to the native node API
+  - files: `Engine/Nodes/NativeEffectBase.h/.cpp`, `Engine/Nodes/README.md`
+  - approach: virtual `getOutputMetadata(time, view, ctx)` on `NativeEffectBase`. The default merges the first connected input's metadata unchanged, so existing native nodes become transparent with no edit. Results are cached per node, time and view, and invalidated when a knob or input changes, following the locking rules in `docs/decisions/2026-09-10-metadata-cache-locking.md`. Document the contract in the README.
+  - verify: gtest on `Tests/TypedPassthrough_Test.cpp`'s pattern: a Shuffle and a Merge chain keep the A-input metadata; a knob change invalidates the cache.
+  - size: M
+
+- [ ] M74.P2.T2 — Ensure the framework-level nodes declare their merge policy
+  - files: `Engine/Nodes/Merge/Merge.cpp`, `Engine/Nodes/Generator/*.cpp` (the generator base only), `Engine/Nodes/Transform/*.cpp` only where a decision is needed
+  - approach: Merge takes metadata from its A input (documented, matches Nuke's behaviour); generators emit only `ofx/frame`, `ofx/framerate`, `ofx/pixelaspect`; transforms and filters keep the default. Override `getOutputMetadata` only where the default is wrong.
+  - verify: gtest per policy: Merge with differing A and B metadata yields A's keys; a generator has the minimal set.
+  - size: M
+
+**Verification gate:** `ImageMetadata` and bridge gtests pass; a graph of OFX Read → native Grade → native Merge → OFX Write preserves the Read's metadata end to end; full ctest green; `format`, `lint-ci`, `build-and-test` green on the PR.

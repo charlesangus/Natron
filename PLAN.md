@@ -253,6 +253,11 @@ future core work has solid ground to build on.
 | M70 | RFV Declaration And Storage | todo | [M70-rfv-declaration-and-storage.md](PLAN/MILESTONES/M70-rfv-declaration-and-storage.md) |
 | M71 | RFV Render Context | todo | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
 | M72 | RFV Integration And UAT | todo | [M72-rfv-integration-and-uat.md](PLAN/MILESTONES/M72-rfv-integration-and-uat.md) |
+| M74 | Native Metadata Core | todo | [M74-native-metadata-core.md](PLAN/MILESTONES/M74-native-metadata-core.md) |
+| M75 | Native Read | todo | [M75-native-read.md](PLAN/MILESTONES/M75-native-read.md) |
+| M76 | Native Write | todo | [M76-native-write.md](PLAN/MILESTONES/M76-native-write.md) |
+| M77 | Native Metadata Nodes | todo | [M77-native-metadata-nodes.md](PLAN/MILESTONES/M77-native-metadata-nodes.md) |
+| M78 | Metadata In Expressions | todo | [M78-metadata-in-expressions.md](PLAN/MILESTONES/M78-metadata-in-expressions.md) |
 
 - 2026-09-18 — **M18's manual GUI checklist: all 6 items now confirmed**
   (re-run on a rebuilt AppImage at `94ceb9407` or later). Separately, the

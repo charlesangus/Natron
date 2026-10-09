@@ -1,0 +1,3 @@
+# The in-flight M64 re-evaluation finishes before M74–M78
+
+A side session ordered M74 - Native Metadata Core through M78 - Metadata In Expressions directly after M73 - Native Core Nodes Wrap-Up, ahead of the M64 - Tiled Rendering re-evaluation (`2026-10-08-native-io-and-metadata-next.md`). By then the PM had already started Phase 64.7 (analysis only; it stops for the user's go-ahead). The user confirmed (2026-10-08) that M74–M78 move to after the work already in flight: the order is M64 Phase 64.7 → M74 → M75 → M76 → M77 → M78 → M27 and the rest of the backlog order. This supersedes the "ahead of the M64 re-evaluation" clause of `2026-10-08-native-io-and-metadata-next.md`.

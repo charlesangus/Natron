@@ -126,7 +126,7 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # OPENFX_MISC_REF: charlesangus/openfx-misc -- our fork, ahead of
 # NatronGitHub/openfx-misc. Fork-and-fix is the standing pattern for small
 # changes to NatronGitHub repos (see OPENFX_IO_REF above). Deltas are
-# recorded at charlesangus/openfx-misc PRs #1-#6; the per-channel
+# recorded at charlesangus/openfx-misc PRs #1-#7; the per-channel
 # "(Un)premult by" rename also needed charlesangus/openfx-supportext PRs
 # #2-#3.
 #
@@ -157,7 +157,7 @@ SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 # it depends on OIIO/OCIO/SeExpr, so it configures and links clean against
 # this container with no other source changes needed.
 OPENFX_MISC_REPO="https://github.com/charlesangus/openfx-misc.git"
-OPENFX_MISC_REF="59ae4c26ab8078e858b8243044471958108dbd91"
+OPENFX_MISC_REF="9fb0d09046b3980951bdd72962fdf9ee3c95a8c8"
 
 # LCMS2_REF: mm2/Little-CMS at the lcms2.16 tag. Built from source even
 # though the image already ships /usr/local/lib/liblcms2.so.2.0.19 with a

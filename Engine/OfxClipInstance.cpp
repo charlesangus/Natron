@@ -69,8 +69,8 @@
 #include <SequenceParsing.h>
 
 #include "Engine/KnobFile.h"
-#include "Engine/ReadNode.h"
-#include "Engine/WriteNode.h"
+#include "Engine/Nodes/Metadata/OfxMetadataBridge.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 
 #include <ofxMetadata.h>
 #endif
@@ -1835,36 +1835,15 @@ OfxClipInstance::fetchMetadata(OfxTime time,
                                OFX::Host::Property::Set& metadata)
 {
     OFX::Host::ImageEffect::ClipInstance* upstreamOutput = NULL;
+    EffectInstancePtr inputNode;
 
     if (!isOutput()) {
         // An input clip carries the metadata of the image handed to it, which is the one the
         // node connected to it puts out of its own output clip. That node is taken as it is
         // rather than through getNearestNonIdentity(): a node that passes its pixels through
         // untouched may still be there precisely to add metadata to them.
-        EffectInstancePtr inputNode = getAssociatedNode();
-        OfxEffectInstance* ofxInputNode = dynamic_cast<OfxEffectInstance*>(inputNode.get());
-        if (!ofxInputNode) {
-            // A bundled reader or writer stands in the graph as a Read/Write container, which
-            // is not itself an OFX effect: the clips are the decoder's or encoder's, and so is
-            // the metadata that has to reach whatever is connected downstream of the container.
-            NodePtr embedded;
-            ReadNode* isReadNode = dynamic_cast<ReadNode*>(inputNode.get());
-            WriteNode* isWriteNode = dynamic_cast<WriteNode*>(inputNode.get());
-            if (isReadNode) {
-                embedded = isReadNode->getEmbeddedReader();
-            } else if (isWriteNode) {
-                embedded = isWriteNode->getEmbeddedWriter();
-            }
-            if (embedded) {
-                ofxInputNode = dynamic_cast<OfxEffectInstance*>(embedded->getEffectInstance().get());
-            }
-        }
-        if (ofxInputNode) {
-            OfxImageEffectInstance* upstreamEffect = ofxInputNode->effectInstance();
-            if (upstreamEffect) {
-                upstreamOutput = upstreamEffect->getClip(kOfxImageEffectOutputClipName);
-            }
-        }
+        inputNode = getAssociatedNode();
+        upstreamOutput = OfxMetadataBridge::getOfxOutputClip(inputNode);
     }
 
     if (upstreamOutput) {
@@ -1883,11 +1862,20 @@ OfxClipInstance::fetchMetadata(OfxTime time,
                 }
             }
         }
+    } else if (NativeEffectBase* nativeInput = dynamic_cast<NativeEffectBase*>(inputNode.get())) {
+        // The native node's metadata is the whole answer, with nothing derived from this clip
+        // underneath: every standard key describes the source the image was read from, so a
+        // value the host made up from the clip or the timeline (ofx/frame from the render time,
+        // say) would misdescribe it, and the delivered image's own rate, aspect, size and
+        // depth already reach the plug-in through the clip's properties. View 0, because this
+        // clip's cache is keyed by time alone: whichever view filled it would otherwise decide
+        // what every later read sees.
+        OfxMetadataBridge::toOfxPropertySet(nativeInput->getOutputMetadata(time, ViewIdx(0)), &metadata);
     } else {
-        // Either this is the output clip, or it is an input clip whose metadata cannot be
-        // read from upstream: nothing is connected to it, or what is connected is a native
-        // node and so has no OFX clip at all. The keys are derived from this clip instead,
-        // which falls back to the project's own values when it has no input.
+        // Either this is the output clip, or it is an input clip fed by nothing that has
+        // metadata to give: no node at all, or a built-in one that is neither OpenFX nor native,
+        // such as a Dot. The keys are derived from this clip, which falls back to the project's
+        // own values when it has no input.
         addMetadataDouble(metadata, kOfxMetadataKeyFrameRate, getFrameRate());
         addMetadataDouble(metadata, kOfxMetadataKeyPixelAspect, getAspectRatio());
 

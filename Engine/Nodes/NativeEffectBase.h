@@ -31,6 +31,8 @@
 #include <atomic>
 #include <functional>
 #include <list>
+#include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -39,7 +41,9 @@
 #include "Engine/DeepPixelOps.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/OutputEffectInstance.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -315,7 +319,55 @@ public:
         return eRenderSafetyFullySafeFrame;
     }
 
+    /**
+     * @brief The metadata of the image this node outputs at time and view: what
+     * deriveOutputMetadata() gives, cached per (time, view). The cache is dropped whenever a knob
+     * of this node or anything upstream of it changes, a connection changes, or the node's clip
+     * preferences are refreshed. Callable from any thread.
+     **/
+    ImageMetadata getOutputMetadata(double time, ViewIdx view) WARN_UNUSED_RETURN;
+
 protected:
+    /**
+     * @brief The metadata of the first connected non-mask input at time and view, or empty if
+     * none is connected. Metadata of a native input comes from its getOutputMetadata(), that of
+     * an OpenFX input (or a Read/Write container) from its output clip's metadata, converted by
+     * OfxMetadataBridge; any other kind of effect contributes nothing.
+     **/
+    ImageMetadata getUpstreamMetadata(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Derives the metadata getOutputMetadata() caches. The default passes through,
+     * unchanged, getUpstreamMetadata(), so a node that does not override this is transparent to
+     * metadata. A node that adds, edits or drops keys overrides it, typically starting from
+     * getUpstreamMetadata() or getInputMetadata(). The result is cached until one of the events
+     * getOutputMetadata() lists, so an override must read only this node's knobs, its upstream
+     * metadata and project settings; anything else it reads must invalidate the node's hash
+     * when it changes. Called from any thread, possibly more than once for the same frame, and
+     * an override must not hold a lock of its own while asking upstream nodes.
+     **/
+    virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Drops every cached getOutputMetadata() result of this node alone; nodes downstream
+     * keep theirs.
+     **/
+    void invalidateOutputMetadata();
+
+    /**
+     * @brief The metadata of the effect connected to inputNb, or empty if nothing is. For a node
+     * that picks its source input itself instead of taking the first connected one.
+     **/
+    ImageMetadata getInputMetadata(int inputNb, double time, ViewIdx view) const WARN_UNUSED_RETURN
+    {
+        EffectInstancePtr input = getInput(inputNb);
+
+        return input ? getInputEffectMetadata(input, time, view) : ImageMetadata();
+    }
+
+    virtual void onNodeHashChanged(U64 hash) OVERRIDE;
+    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE;
+
     /**
      * @brief Pass 1 of a two-pass deep render: returns how many samples the pixel at (x, y) --
      * absolute pixel coordinates within the output DeepImage's bounds -- will hold. Called once
@@ -451,6 +503,19 @@ protected:
     }
 
 private:
+    static ImageMetadata getInputEffectMetadata(const EffectInstancePtr& input,
+                                                double time,
+                                                ViewIdx view) WARN_UNUSED_RETURN;
+
+    typedef std::pair<double, int> MetadataKey;
+
+    // A leaf lock: never held while another effect is asked for its metadata, and taken by
+    // invalidation, which runs upstream to downstream. See
+    // docs/decisions/2026-09-10-metadata-cache-locking.md.
+    std::mutex _metadataCacheMutex;
+    std::map<MetadataKey, ImageMetadata> _metadataCache;
+    U64 _metadataGeneration;
+
     typedef std::function<void(const RectI& chunk)> DeepChunkFunc;
 
     // Fills the output over its own bounds with the input's samples: the input's channels but

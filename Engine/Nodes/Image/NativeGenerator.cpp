@@ -36,6 +36,7 @@
 
 #include <QThread>
 
+#include <ofxMetadata.h>
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
@@ -45,6 +46,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/RectI.h"
 
@@ -307,6 +309,18 @@ NativeGenerator::getFrameRange(double* first,
 
     *first = frameRange ? frameRange->getValue(0) : 1.;
     *last = frameRange ? frameRange->getValue(1) : 1.;
+}
+
+ImageMetadata
+NativeGenerator::deriveOutputMetadata(double /*time*/,
+                                      ViewIdx /*view*/)
+{
+    ImageMetadata metadata;
+
+    metadata.setDouble(kOfxMetadataKeyFrameRate, getApp()->getProjectFrameRate());
+    metadata.setDouble(kOfxMetadataKeyPixelAspect, getAspectRatio(-1));
+
+    return metadata;
 }
 
 StatusEnum

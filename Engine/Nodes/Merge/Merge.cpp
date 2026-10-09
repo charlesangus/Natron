@@ -747,6 +747,20 @@ MergeNode::onKnobsLoaded()
     refreshOperationDependents(getCurrentTime());
 }
 
+ImageMetadata
+MergeNode::deriveOutputMetadata(double time,
+                                ViewIdx view)
+{
+    for (int i = 0; i < kMergeMaxAInputs; ++i) {
+        const int inputNb = aInputIndex(i);
+        if (getInput(inputNb)) {
+            return getInputMetadata(inputNb, time, view);
+        }
+    }
+
+    return getInputMetadata(kMergeInputB, time, view);
+}
+
 StatusEnum
 MergeNode::getPreferredMetadata(NodeMetadata& metadata)
 {

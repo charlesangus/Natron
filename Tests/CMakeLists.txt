@@ -17,7 +17,7 @@
 # along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
 # ***** END LICENSE BLOCK *****
 
-set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeParity.h RenderBothWays.h)
+set(Tests_HEADERS BaseTest.h CacheMemoryPressureGuard.h CountingTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h NativeMetadataTestEffect.h NativeParity.h RenderBothWays.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -102,6 +102,10 @@ set(Tests_SOURCES
     TypedPassthrough_Test.cpp
     WriteAllLayers_Test.cpp
     ImageConvert_Test.cpp
+    ImageMetadata_Test.cpp
+    NativeMetadata_Test.cpp
+    NativeMetadataPolicy_Test.cpp
+    OfxMetadataBridge_Test.cpp
     wmain.cpp
 )
 # Per-node native tests are picked up without editing this list; CONFIGURE_DEPENDS re-globs on

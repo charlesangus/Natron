@@ -131,6 +131,12 @@ public:
 protected:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    /**
+     * @brief The metadata of the first connected A input (A, then A2, ...), or of B when no A is
+     * connected. The Mask never contributes.
+     **/
+    virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 private:
     virtual void initializeKnobs() OVERRIDE FINAL;
 

@@ -58,4 +58,24 @@ Reverse-Flow Variables, part 1 of 3 (see `DECISIONS/2026-10-08-reverse-flow-vari
   - verify: Xvfb GUI run: add a project variable from the panel, save and reload; screenshot of the panel.
   - size: M
 
-**Verification gate:** ctest passes in full, including the new RFV tests; the Xvfb GUI run adds variables to a Set node and to the project and they survive a save/load; screenshots of both editors are shared with the user before sign-off.
+## Phase 70.5: Moving variables between a Set node and the project
+
+- [ ] M70.P5.T1 — "Existing variable" drop-down on the Set node
+  - files: `Engine/Nodes/RFV/ReverseFlowVariableSet.cpp`, `Engine/RFV.cpp`, `Engine/RFV.h`
+  - approach: a Choice knob outside the RFV group, entry 0 "Add existing variable...". Its entries are every variable name declared on the project or on any other Set node in the project, minus names already on this node, repopulated each time the node's panel refreshes. Choosing a name creates a child in this node's RFV group with the same knob type, dimension count and default as the first declaration found (project first), then resets the drop-down to entry 0. The new knob starts with the source's current value and no animation; it does not stay linked to the source.
+  - verify: gtest: project declares `a` (Double) and another Set node declares `b` (String); on a third Set node, choosing `a` then `b` adds two matching children, and a name already present is not offered again.
+  - size: M
+
+- [ ] M70.P5.T2 — `RFV::promoteToProject` operation
+  - files: `Engine/RFV.cpp`, `Engine/RFV.h`, `Tests/RFVSetNode_Test.cpp`
+  - approach: copies a variable knob from a Set node's RFV group into the project's RFV group (same type, dimensions, value, animation curves, label and hint). Refuses with a clear error if the project already declares that name. The node's own variable stays, so it keeps overriding the project value.
+  - verify: gtest: promote an animated Double; the project knob's curve and value match, and a second promote of the same name fails.
+  - size: M
+
+- [ ] M70.P5.T3 — Right-click "Add to project variables" on a Set-node variable
+  - files: `Gui/KnobGui.cpp`, `Gui/KnobGui.h`
+  - approach: the knob's context menu gains the item only when the knob is a direct child of a Set node's RFV group (not on the project's own group). Disabled, with a tooltip, when the project already declares the name. Calls `RFV::promoteToProject`.
+  - verify: Xvfb GUI run: right-click a variable on a Set node, choose the item, and see it appear in the project Variables section; screenshot of the menu.
+  - size: M
+
+**Verification gate:** ctest passes in full, including the new RFV tests; the Xvfb GUI run adds variables to a Set node and to the project (including the drop-down and the right-click promote) and they survive a save/load; screenshots of both editors are shared with the user before sign-off.

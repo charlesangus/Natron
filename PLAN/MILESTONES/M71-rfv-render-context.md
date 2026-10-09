@@ -20,7 +20,7 @@ Scouting notes: `treeRoot` is the viewer/writer requester only, with about 10 se
 
 - [ ] M71.P1.T3 — Per-node upstream read-set
   - files: `Engine/Node.cpp`, `Engine/Node.h`, `Engine/NodeInputs.cpp`
-  - approach: `Node::getUpstreamRFVReadSet()` is the union of the node's own knob read-sets, its Set node's declared variables where relevant (a Set node's own expressions count), and the read-sets of all inputs and expression-dependency nodes. Memoize; invalidate with the same events that recompute `computeHashRecursive` (the input connection changes and expression changes). Beware of cycles through expression dependencies: use a visited set.
+  - approach: `Node::getUpstreamRFVReadSet()` is the union of the node's own knob read-sets, a Set node's own knob expressions, and a per-node hook `Node::getExtraRFVReads()` that a native node overrides to name variables it reads outside expressions (RFVSwitch's variable name; default empty), and the read-sets of all inputs and expression-dependency nodes. Memoize; invalidate with the same events that recompute `computeHashRecursive` (the input connection changes and expression changes). Beware of cycles through expression dependencies: use a visited set.
   - verify: gtest on a three-node chain plus an expression dependency from a side branch: read-sets are as expected, and editing an expression updates it.
   - size: M
 

@@ -24,6 +24,28 @@ Reverse-Flow Variables, part 3 of 3 (design in `DECISIONS/2026-10-08-reverse-flo
   - verify: docs build check (if any) is clean; the example from the task text runs verbatim in a test.
   - size: S
 
+## Phase 72.4: RFVSwitch
+
+Placed before Phase 72.3 so the UAT covers it. Design: `DECISIONS/2026-10-08-rfvswitch-design.md`.
+
+- [ ] M72.P4.T1 — Pattern matcher for RFVSwitch
+  - files: `Engine/Nodes/RFV/RFVPatternMatch.h`, `Engine/Nodes/RFV/RFVPatternMatch.cpp` (new), `Engine/CMakeLists.txt`, `Tests/RFVPatternMatch_Test.cpp`
+  - approach: `int firstMatch(const std::string& value, const std::vector<std::string>& lines)` returns the index of the first matching non-empty line or -1. A line starting `re:` is an ECMAScript regex matched against the whole value; any other line is a glob (`*`, `?`, `[abc]`, `[!abc]`) matched against the whole value. An invalid regex never matches and is reported through an out-parameter so the node can show it. Empty lines never match but still occupy their input index.
+  - verify: gtest table: globs, regexes, first-wins ordering, empty lines, invalid regex.
+  - size: M
+
+- [ ] M72.P4.T2 — RFVSwitch node
+  - files: `Engine/Nodes/RFV/RFVSwitch.h`, `Engine/Nodes/RFV/RFVSwitch.cpp` (new), `Engine/AppManager.cpp`, `Engine/CMakeLists.txt`
+  - approach: native polymorphic-kind node with a fixed set of optional inputs (16, hidden until a line exists, following how existing multi-input native nodes declare inputs; check `Engine/Nodes/README.md`). Knobs: "Variable" (string), "Patterns" (multi-line string; line i selects input i), "If no match" (Choice: Error / First input). `isIdentity` reads `rfv` for Variable under the request-pass context, converts it with `str()` (arrays and unset convert to a no-match), runs `firstMatch`, and returns the matching input. `getExtraRFVReads()` returns the Variable's value so the node's context key includes it. Unset or non-matching with "Error" sets a render error naming the variable and its value.
+  - verify: gtest: three Checkerboards of different sizes feed the switch; with the project variable `shot=sh010` and patterns `sh01*` / `re:sh0[2-9]0` the first input is passed; changing the variable to `sh030` passes the second.
+  - size: M
+
+- [ ] M72.P4.T3 — RFVSwitch under two Set nodes
+  - files: `Tests/RFVSwitch_Test.cpp` (new), `Tests/CMakeLists.txt`
+  - approach: the user's two-branch graph with an RFVSwitch below a shared upstream: Writer A under Set(`var='a'`), Writer B under Set(`var='b'`) must each pick a different input, with `renderBothWays` bit-identical. Plus a diamond where one branch hits and the other falls to "First input". Assert via `CountingTestEffect` that only the selected inputs render.
+  - verify: the new tests pass under both schedulers.
+  - size: M
+
 ## Phase 72.3: UAT
 
 - [ ] M72.P3.T1 — Package an AppImage and capture screenshots
@@ -34,7 +56,7 @@ Reverse-Flow Variables, part 3 of 3 (design in `DECISIONS/2026-10-08-reverse-flo
 
 - [ ] M72.P3.T2 — User check of the AppImage
   - files: none
-  - approach: the user opens the AppImage and builds the example graph, checks that animated variables work, that a project variable is overridden by a Set, and that save and reload keeps everything. Record their findings as tasks or decisions.
+  - approach: the user opens the AppImage and builds the example graph, checks that an RFVSwitch picks inputs by glob and regex, checks that animated variables work, that a project variable is overridden by a Set, and that save and reload keeps everything. Record their findings as tasks or decisions.
   - verify: the user signs off.
   - size: S
 

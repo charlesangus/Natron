@@ -51,7 +51,8 @@ NATRON_NAMESPACE_ENTER
  *   - colour: ocioInputSpace, ocioInputSpaceIndex, ocioInputSpaceSet, and the hidden
  *     ocioConfigFile and ocioWorkingSpace
  *   - views: the hidden availableViews
- * Only filename exists so far; the node renders black.
+ * Only filename exists so far. The colour plane is decoded from the file; the other planes are
+ * not produced yet.
  **/
 class NativeRead
     : public NativeEffectBase {
@@ -102,6 +103,8 @@ private:
     virtual void initializeKnobs() OVERRIDE FINAL;
 
     virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    std::string pathAtTime(double time) const;
 
     KnobFileWPtr _filename;
 };

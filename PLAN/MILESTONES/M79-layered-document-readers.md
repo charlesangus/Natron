@@ -9,3 +9,6 @@ Blocked on: M75 - Native Read shipping (the native reader structure and layer ma
 Acceptance sketch:
 - A PSD/PSB, KRA, ORA and XCF file each read through Read, with their layers available as Natron layers.
 - No OFX reader is involved.
+
+## Decisions
+- 2026-10-10 — **Library choice (user):** when M79 comes up, a consultant scouts decoding libraries per format and the PM puts the recommendation to the user before elaborating.

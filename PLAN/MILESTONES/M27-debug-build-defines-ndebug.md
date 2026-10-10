@@ -31,3 +31,6 @@ source would look identical from the compile line.
   - size: M
 
 **Verification gate:** no debug translation unit defines `NDEBUG`; a deliberate `assert(false)` aborts a ctest case; the release build still defines `NDEBUG`; whole ctest suite green with assertions live.
+
+## Decisions
+- 2026-10-10 — **Opened as a parallel lane** in `.worktrees/m27` (branch `milestone/m27-real-debug-build`) alongside M75 - Native Read (user). Freshness check passed. P1.T2's assertion audit waits until M75 merges, so the audit covers the native Read.

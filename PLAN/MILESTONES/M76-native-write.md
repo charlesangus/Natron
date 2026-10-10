@@ -1,45 +1,175 @@
 # M76 - Native Write
 
-Replaces the `Write` container node with a native OIIO writer for EXR, PNG, JPEG and TIFF at minimum, writing the graph's metadata and handling very large images. The old OFX `WriteOIIO` overflows on large frames (`(height - 1) * rowBytes` with `int` operands at `WriteOIIO.cpp:1455` in the openfx-io source), so this milestone is the fix: no patch to the OFX plugin. Video (FFmpeg) stays on the OFX writer through a fallback. See `DECISIONS/2026-10-08-native-io-and-metadata-design.md`.
+Replaces the `Write` container (`Engine/WriteNode.cpp`) and every OFX writer with a native OpenImageIO writer. The native Write registers under the container's ID `fr.inria.built-in.Write` at major 2 (the "IDs and versions" rule in `Engine/Nodes/README.md`) and becomes the only Write, with no extension fallback. It writes every format OIIO can write, taken from OIIO's runtime output format list minus the Read's exclusions (`kExcludedOiioFormats`: raw, null, term, ffmpeg, psd). There is no video. It mirrors M75 - Native Read. Script names and option IDs are WriteOIIO's, because tests, `tools/bench` and the host (`viewsSelector`, `frameRange`, `firstFrame`/`lastFrame`) look knobs up by name. Colour goes through the project OCIO with the Read's knob behaviour (nested menu, context, reset, reselect). Upstream metadata is written into the file through M74's `getUpstreamMetadata`. Every size, stride and offset is 64-bit, and the writer never makes a full-frame copy of its own, so the old WriteOIIO overflow (`(height - 1) * rowBytes` at `WriteOIIO.cpp:1480`) can't recur. Band-sized peak memory, which needs the scheduler to stream input, is moved to M64 - Tiled Rendering. The task order follows M75: native features, then the extension set, entry points, test migration in batches, unreachable, strip, delete, and finally retiring the OFX writers from the bundle. See `DECISIONS/2026-10-10-native-write-mirrors-native-read.md`, `DECISIONS/2026-10-09-native-read-format-scope.md` and `DECISIONS/2026-10-08-native-io-and-metadata-design.md` (its fallback clause is superseded).
 
 ## Phase 76.1: Writer core
 
-- [ ] M76.P1.T1 — Scout the Write contract and write the node skeleton
-  - files: new `Engine/Nodes/IO/NativeWrite.h/.cpp`, `Engine/AppManager.cpp` (one registration line)
-  - approach: study `Engine/WriteNode.cpp` and OFX GenericWriter behaviour (output file pattern, frame range, "render" button, overwrite policy, premult, colourspace through project OCIO, `isWriter` in the plugin description so the render scheduler treats it as an output). Check `WriteNode.cpp:762`, which calls the reader lookup where the writer lookup looks intended, and report it. Skeleton renders nothing.
-  - verify: registers, shows in the Tab menu, saves/loads in a project, "Render" on the skeleton completes without crashing.
+- [ ] M76.P1.T1 — Node skeleton under the Write ID, with the container pinned for now
+  - files: new `Engine/Nodes/IO/NativeWrite.h/.cpp`, `Engine/AppManager.cpp` (one `registerBuiltInPlugin<NativeWrite>` line beside `WriteNode`'s at `:1664`), `Engine/AppInstance.cpp`, new `Tests/Native/NativeWriteSkeleton_Test.cpp`
+  - approach: derive from `NativeEffectBase` (`desc.isWriter = true`, which gives `isWriter()`/`isOutput()`; one image input "Source"; image output). Use the ID `PLUGINID_NATRON_WRITE` (`Engine/EffectInstance.h:92`) and add `PLUGIN_MAJOR_NATRON_WRITE 2` next to the class. Overrides: `isMultiPlanar()` true; `supportsTiles()` false; `isViewAware()` true; `getSequentialPreference()` not sequential; `getLayerKnobSpec()` returns `LayerKnobSpec(eKindChannelSet, eRoleInputBound, true)`, as `WriteNode.cpp:1091` does. Write the full knob list in the header comment using WriteOIIO/GenericWriter script names: `filename`, `overwrite`, `formatType`, the host format knobs, `clipToRoD`, `frameRange`, `firstFrame`, `lastFrame`, `frameIncr`, `bitDepth`, `compression`, `quality`, `dwaCompressionLevel`, `zipCompressionLevel`, `tileSize`, `partSplitting`, `viewsSelector`, `ocioOutputSpace`, `ocioOutputSpaceIndex`, `ocioOutputSpaceSet`, the `Context` group `key1..4`/`value1..4`, hidden `ocioConfigFile`/`ocioWorkingSpace`, `writeMetadata` and `readBack`. Create `filename` and `frameIncr` now: `Node::createWriterFrameStepKnob` is compiled out under `NATRON_ENABLE_IO_META_NODES` (`Node.cpp:2812`), and the Render button comes free from `Node::initializeDefaultKnobs` (`:3218-3239`). Move `kNatronWriteParamFrameStep*`, `kNatronWriteParamReadBack*` and `kNatronWriteParamStartRender` from `WriteNode.h:36-48` into `NativeWrite.h` and include it from `WriteNode.h`. `render()` copies the input to the output and writes nothing. In `AppInstance::createNodeInternal`, until P2.T4, an unversioned `PLUGINID_NATRON_WRITE` request resolves to major 1. The `isBundledWriter` redirect (`AppInstance.cpp:1133-1139`) always pins major 1.
+  - verify: gtest: `createNode(Write, 2)` is a `NativeWrite`; `createNode(Write)` and `createNode(WriteOIIO)` are `WriteNode` containers; the native node has a Render button and `frameIncr`; a save/load round trip keeps major 2 and the filename. Full ctest unchanged.
   - size: M
 
-- [ ] M76.P1.T2 — OIIO encode with 64-bit addressing
-  - files: `Engine/Nodes/IO/NativeWrite.cpp`, new `Engine/Nodes/IO/OiioWriteSupport.h/.cpp`
-  - approach: `ImageOutput` create/open with the chosen format, per-format options (EXR compression and data type, PNG bit depth, JPEG quality, TIFF compression and bit depth). Write by scanline or tile chunks so peak memory is a band, not a second full-frame copy. Every size, stride and offset is `size_t`/`qint64`/`stride_t`; no `int` row arithmetic.
-  - verify: gtest round-trips small EXR, PNG 8/16, JPEG, TIFF fixtures through write then OIIO read.
+- [ ] M76.P1.T2 — Writable extension set and per-format capabilities
+  - files: new `Engine/Nodes/IO/OiioWriteSupport.h/.cpp`, `Engine/Nodes/IO/OiioReadSupport.h` (only if `kExcludedOiioFormats` moves to a shared spot), new `Tests/Native/OiioWriteSupport_Test.cpp`
+  - approach: no node code. (1) `writableExtensions()`: a thread-safe static computed once from OIIO's `output_format_list` attribute crossed with `extension_list`, minus `kExcludedOiioFormats` (`OiioReadSupport.cpp:777`). `extension_list` alone mixes readers and writers. If the attribute is missing in the container's OIIO, keep the formats for which `OIIO::ImageOutput::create(format)` succeeds. Never hand-list extensions. Lower case, case-insensitive; also `formatNameForWritableExtension(ext)` and `isWritablePath(path)`. GIF stays (one still per frame). (2) `FormatCaps capabilities(formatName)` from a probe `ImageOutput`'s `supports()`: tiles, displaywindow, origin, negativeorigin, nchannels, alpha, multiimage, appendsubimage, channelformats, multiview. The "auto" data type is keyed by OIIO format name (openexr→half; hdr and pfm→float; jpeg, bmp, png, targa, ico, pnm, softimage, gif, webp→uint8; else uint16; as WriteOIIO's `getDefaultBitDepth`, `WriteOIIO.cpp:651`). Port the compression choices and option knobs per format from WriteOIIO's `refreshParamsVisibility`, keyed by format name. Wrap every OIIO open in the debug FP-trap guard `OiioReadSupport.cpp:50-57` uses.
+  - verify: gtest prints the set and asserts it contains exr, png, jpg, tif, dpx, tga, hdr, pfm, bmp, sgi, webp and excludes raw/null/term/psd/ffmpeg extensions and any read-only format. Every member maps to a non-excluded format; "auto" is half for exr and uint8 for png; EXR caps report tiles, displaywindow and multiimage.
+  - size: M
+
+- [ ] M76.P1.T3 — Band encoder with 64-bit addressing and atomic output
+  - files: `Engine/Nodes/IO/OiioWriteSupport.h/.cpp`, new `Tests/Native/OiioWriteEncode_Test.cpp`
+  - approach: `writeFile(path, parts, rowSource, cancel, &error)`. Each part is an `ImageSpec` plus its channel list; `rowSource(part, yTop, yEnd, float* band, stride_t rowStride)` fills packed float rows in file (top-down) order. Open one `ImageOutput` (several subimages via `open(path, n, specs)`). Write bands of about 16 MB with `write_scanlines`, or tile-row bands with `write_tiles`. The band buffer is the only pixel memory the encoder owns. Every size, stride and offset is `size_t`/`stride_t`; no `int` row arithmetic. Write to a sibling temporary name and rename on success (user decision), so a failed or cancelled render never leaves a truncated file at the final path. Return OIIO's `geterror()` on failure. No colour, premult or channel logic here.
+  - verify: gtest round-trips through OIIO's reader: EXR half/float, scanline and tiled, with an offset data window and two parts; PNG 8/16; JPEG (within quantisation); TIFF 8/16/float; DPX 10; TGA; HDR; PFM. Lossless cases are bit-exact. A cancelled write leaves no file at the target path and no temporary behind.
   - size: L
 
-- [ ] M76.P1.T3 — Large-image gate test
-  - files: new `Tests/NativeWriteLarge_Test.cpp`
-  - approach: write a frame of at least 20000 x 12000 float RGBA (≈3.8 GB), over 2^31 bytes, using a generator and a native Write, to a temp file under `build/`. Read back the first, middle and last scanlines and compare. Skip with a clear log line when free disk or RAM is below the need (use a runtime check, not `GTEST_SKIP`, which this repo's gtest version lacks).
-  - verify: passes in the container; fails when the stride type is deliberately narrowed to `int` (check once, then revert).
+- [ ] M76.P1.T4 — Write the colour plane: windows, format options and pass-through
+  - files: `Engine/Nodes/IO/NativeWrite.h/.cpp`, `Engine/Nodes/Image/ExtentKnobs.*` (reuse the format knobs as `ExtentKnobs.cpp:159` builds them), new `Tests/Native/NativeWriteEncode_Test.cpp`
+  - approach: GenericWriter semantics (`GenericWriter.cpp:1537-1660`). `formatType` (IDs `input`/`project`/`fixed`) picks the display window. `clipToRoD` (shown only where caps report displaywindow) writes the input RoD as the data window; otherwise the format window is written, padded with black. Override `getRegionOfDefinition`; `getRegionsOfInterest` declares exactly the written window, so a task-graph render shows zero unplanned pulls (README "Scheduler declaration"). `render`: with `overwrite` off and the file present, pass through and write nothing. Otherwise build the spec: data type from `bitDepth` (WriteOIIO's option IDs, including `auto`), `compression`/`quality`/`dwaCompressionLevel`/`zipCompressionLevel`/`tileSize` per P1.T2's caps, `PixelAspectRatio`, `oiio:UnassociatedAlpha` 1. Pixels are written as they are; no premult knob. Channels R,G,B,A follow the input colour components. The row source reads straight from the input `Image` rows inside `parallelForCancellable` band conversion (README "Threading"); read bounds on the calling thread. The output plane is a copy of the input, for the viewer. A path outside `writableExtensions()` sets a persistent "Unsupported format" message and fails. Knob visibility follows the format on every filename change.
+  - verify: gtest renders a native Constant/CheckerBoard through `renderRoI`/`startWritersRendering` to EXR (half and 32f, compression none/zip/dwaa), PNG 8/16, JPEG, TIFF and DPX, then reads back with OIIO; values match within quantisation. `clipToRoD` on EXR writes the RoD as the data window with the display window equal to the format. `overwrite` off leaves an existing file untouched. Option visibility checked for EXR and JPEG.
   - size: M
 
-- [ ] M76.P1.T4 — Frame range, file pattern and render integration
-  - files: `Engine/Nodes/IO/NativeWrite.cpp`
-  - approach: `####`/`%04d` output patterns, frame range modes, create-directory option, overwrite policy, render-from-GUI and `-w` command line paths via the existing output scheduler. Confirm the M63 task-graph scheduler treats the node as a writer.
-  - verify: gtest renders a 3-frame range to disk; a headless `NatronRenderer -w` run produces the same files.
+- [ ] M76.P1.T5 — Frame range, file patterns and render integration
+  - files: `Engine/Nodes/IO/NativeWrite.cpp`, new `Tests/Native/NativeWriteRange_Test.cpp`
+  - approach: `frameRange` (IDs `union`/`project`/`manual`; `AppInstance::createWriter` sets index 2 at `:1022`, so keep the option order). `firstFrame`/`lastFrame` are plain int fields with `disableSlider()`, as `NativeRead.cpp:361,381`. No frame-rate knob: GenericWriter never had one and the project fps isn't stamped into files. `getFrameRange` returns the chosen range. Resolve the path with `KnobOutputFile::generateFileNameAtTime(time, view)` for `####`, `%04d`, `%v`/`%V`. Directory creation is already host-side (`OutputEffectInstance::createWriterPath`, `:326`). Show the file name as the node-graph sublabel as `Node.cpp:5588-5601` does for writers. Confirm the Render button (`Node.cpp:5980`), `app.render`/`startWritersRendering`, `frameIncr` (`Node::getFrameStepKnobValue`) and both scheduler modes treat the node as a writer with no WriteNode branch (`OutputSchedulerThread.cpp:1090,1175,2377,2759` only handle the container).
+  - verify: gtest renders frames 1–3 with `####`, then 1–5 with `frameIncr` 2. Legacy and task-graph modes give identical files with 0 unplanned pulls (`Tests/RenderBothWays` once it accepts the native Write). `manual`/`project`/`union` give the expected `getFrameRange`.
   - size: M
 
-## Phase 76.2: Metadata and fallback
-
-- [ ] M76.P2.T1 — Write metadata out
-  - files: `Engine/Nodes/IO/NativeWrite.cpp`, `Engine/Nodes/IO/OiioWriteSupport.cpp`
-  - approach: map `ImageMetadata` keys back to `ImageSpec` attributes (`exr/*`, `exif/*`, timecode, framerate). Keys with no representation in the target format are dropped with a debug log. A knob lets the user choose "write metadata: all / none / only listed keys". Natron-owned `ofx/*` keys that describe the source file (`ofx/filepath`, `ofx/mtime`, `ofx/filesize`) are not written.
-  - verify: gtest: Read an EXR with custom attributes → Write EXR → re-read; attributes survive. JPEG keeps EXIF.
+- [ ] M76.P1.T6 — Large-image gate test
+  - files: new `Tests/Native/NativeWriteLarge_Test.cpp`
+  - approach: two levels. (a) Support level: `OiioWriteSupport::writeFile` from a row source over a buffer larger than 2^31 bytes (e.g. 16384 x 8448 float RGBA ≈ 2.2 GB), written as uncompressed EXR. (b) Node level: a native generator → native Write of the same size through `startWritersRendering`. Read back the first, middle and last scanlines with OIIO and compare. Before each level, check free disk under `build/` and available RAM (about 3x the frame for level b); if short, log a clear line and return early (no `GTEST_SKIP` in this gtest). Temp files go under `build/` and are removed.
+  - verify: passes in the container. Narrow a stride in `OiioWriteSupport` to `int`, confirm the test fails, then revert (reported in the commit message).
   - size: M
 
-- [ ] M76.P2.T2 — Fallback to the OFX writers for unsupported formats
-  - files: `Engine/AppManager.cpp`, `Engine/WriteNode.cpp`
-  - approach: mirror M75 - Native Read's fallback: the native Write wins for its four formats; other extensions build the old container with the OFX writer. Fix the `WriteNode.cpp:762` lookup if T1 confirmed it is wrong.
-  - verify: script writes `.exr` (native) and `.mov` (OFX container); both outputs open.
+- [ ] M76.P1.T7 — Share the OCIO colourspace knob block between Read and Write
+  - files: new `Engine/Nodes/IO/OcioSpaceKnobs.h/.cpp`, `Engine/Nodes/IO/NativeRead.h/.cpp`, `Engine/Nodes/IO/ReadColorSpace.h/.cpp` (rename to `IoColorSpace.*` and update includes), `Tests/Native/NativeReadColor_Test.cpp` (includes only)
+  - approach: no behaviour change. Move the Read's colourspace knob machinery into a helper parameterised by the knob prefix (`ocioInputSpace` / `ocioOutputSpace`): persistent string, cascading non-persistent index menu with `setCascading` and `setNotifiesOnReselect`, the `*Set` flag, the `Context` group, menu rebuild from `Project::colorSpaceOptions` on config change, `eValueChangedReasonRestoreDefault` handling (delivered twice), reselect-marks-user-choice, and `contextVariables()`. Generalise `toWorkingProcessor` into `processor(project, from, to, context, …)` and keep `toWorkingProcessor` as a thin wrapper. Pick up the M75 review-round code first (purge, colour part); re-read line numbers.
+  - verify: build; every `NativeRead*` suite green and unchanged; `Tests/gui/m75_read.py` still passes in the P2.T16 run.
   - size: M
 
-**Verification gate:** large-image gate test passes; round-trip tests for all four formats, with metadata, pass; headless render works; fallback writes a `.mov`; full ctest and CI green. User signs off after a GUI render in an AppImage (see the AppImage testing memory).
+- [ ] M76.P1.T8 — Output colourspace through the project OCIO
+  - files: `Engine/Nodes/IO/NativeWrite.cpp`, `Engine/Nodes/IO/IoColorSpace.*`, new `Tests/Native/NativeWriteColor_Test.cpp`
+  - approach: use P1.T7's helper with the `ocioOutputSpace` prefix plus hidden `ocioConfigFile`/`ocioWorkingSpace`; `Project::pushOCIOConfigToNode` (`Project.cpp:345-366`) fills these by name, and `ocioOutputSpace` is already in `reportUnresolvedOCIOColorSpaces`' list (`:303`). No input-space knob: the input is always the working space. Defaults apply only on a new node, a user filename edit or a `bitDepth` change while `ocioOutputSpaceSet` is false. Order: config file rules, applied literally as the Read does (user decision), then `Project::getFileColorSpace(category)`. Category from the resolved output data type: float/half → float; 10/12/16-bit integer DPX/Cineon → log (WriteOIIO's rule, `WriteOIIO.cpp:795-812`); other 16-bit → 16-bit; else 8-bit. Conversion: a cached working → output CPU processor over the colour plane's RGB, per band, before encoding; other planes stay raw. Tag the file `oiio:ColorSpace` with the output space name.
+  - verify: gtest ports the Write expectations of `ProjectOCIODefaults_Test.cpp:605-680` to the native Write, with the EXR case now expecting the studio config's `*.exr` rule (ACES2065-1): PNG → 8-bit default; an existing Write keeps its space across a project default change and reload; 0.18 written to an 8-bit PNG encodes to code 118. Also: pick, then Reset to default (same API as `RestoreDefaultsCommand`) restores the guess and re-renders; reselecting the shown entry sets `ocioOutputSpaceSet`; a context key/value changes the conversion and the hash; the written file carries `oiio:ColorSpace`; a 10-bit DPX takes the log default.
+  - size: M
+
+- [ ] M76.P1.T9 — Layers and channels from the channel set
+  - files: `Engine/Nodes/IO/NativeWrite.cpp`, new `Tests/Native/NativeWriteLayers_Test.cpp`
+  - approach: resolve the channel set with `getNode()->resolveLayerKnob` (as `WriteNode.cpp:594-642`) and declare every selected plane in `getComponentsNeededAndProduced`. The colour row writes its selected R/G/B/A as RGBA, RGB or A (the `refreshOutputComponentsFromChannelSet` mapping, `:621-628`). Every other selected layer writes its enabled channels as `layer.channel` in the same part (port `filterLayersForEmbeddedInput`, `:1097-1135`). A format that can't hold more than 4 channels writes the colour row only and sets a warning naming the dropped layers. Use OIIO channel names the native Read regroups through `LayerRegistry::groupChannelNames`.
+  - verify: gtest ports `WriteAllLayers_Test`'s cases (all layers, colour plus one layer, RGB subset, single channels of a layer, a layer alone with no colour, a one-channel user layer), read back with the native Read. A PNG with an extra layer selected writes colour only and warns.
+  - size: M
+
+- [ ] M76.P1.T10 — Views and EXR parts
+  - files: `Engine/Nodes/IO/NativeWrite.cpp`, new `Tests/Native/NativeWriteViews_Test.cpp`
+  - approach: `viewsSelector` (All, then each project view) and `partSplitting` (IDs `single`/`views`/`views_layers`, EXR only). Keep the names: `OutputEffectInstance.cpp:186` and `Node.cpp:5617` look `viewsSelector` up by name and hide it under `%V`. With `%v`/`%V` each view renders to its own file. With "All" and one file, the render of view 0 fetches every view's planes, declared through `getFramesNeeded` so there are no unplanned pulls, and writes the `multiView` attribute (single part) or one part per view with `view` (and `oiio:subimagename` per layer under `views_layers`). Port the layout from `WriteOIIO.cpp:1240-1430`.
+  - verify: gtest with a two-view project: single-part and split-views EXRs both read back through the native Read with distinct views; `%V` gives two files; `views_layers` gives one part per layer per view.
+  - size: M
+
+## Phase 76.2: Metadata, read-back and integration
+
+- [ ] M76.P2.T1 — Write upstream metadata into the file
+  - files: `Engine/Nodes/IO/NativeWrite.cpp`, `Engine/Nodes/IO/OiioWriteSupport.h/.cpp`, new `Tests/Native/NativeWriteMetadata_Test.cpp`
+  - approach: the inverse of `OiioReadSupport::attributeMetadata`'s prefix map. Keys come from `getUpstreamMetadata(time, view)` (`NativeEffectBase.h:337`, so a Dot is looked through). `exr/*` → `openexr:`/unprefixed in EXR; `exif/*` → `Exif:`; `tiff/`, `dpx/`, `oiio/` likewise; `ofx/timecode`/`ofx/edgecode` → SMPTE timecode/keycode. Write only keys the target format can hold; drop the rest with a debug log. Never write `ofx/filepath`, `ofx/frame`, `ofx/framerate`, `ofx/filesize`, `ofx/mtime` or `oiio/ColorSpace` (the Write sets its own tag, P1.T8). One bool `writeMetadata`, default on; key filtering belongs to M77's RemoveMetadata. The Write's own `deriveOutputMetadata` stays pass-through.
+  - verify: gtest: native Read of an EXR with custom attributes → Dot → native Write EXR → re-read; the attributes survive. JPEG keeps the EXIF fields OIIO keeps. The source keys are absent. `writeMetadata` off writes none.
+  - size: M
+
+- [ ] M76.P2.T2 — Read back the written file
+  - files: `Engine/Nodes/IO/NativeWrite.h/.cpp`, new `Tests/Native/NativeWriteReadBack_Test.cpp`
+  - approach: replaces WriteNode's internal decoder and `ocioInputSpace` slave (`WriteNode.cpp:757-822`). With `readBack` on and no sequential render running, `render` decodes the resolved file at that time and view through `OiioReadSupport::decode` and converts output space → working space explicitly through `IoColorSpace::processor` (not the Read's defaults, which a file rule could override). A missing frame gives the persistent error and a later good frame clears it, as the Read does. Disable the Render button while it is on (as `WriteNode.cpp:1401-1405`). When a sequential render finishes, bump the node hash so the viewer re-reads.
+  - verify: gtest renders an EXR and a PNG; `readBack` then yields the file's pixels in working space (equal to the input within quantisation). Changing the file on disk and finishing another render refreshes the output. Off restores the pass-through.
+  - size: M
+
+- [ ] M76.P2.T3 — Create-time save dialog and unsupported paths
+  - files: `Engine/Nodes/IO/NativeWrite.h/.cpp`, `Tests/Native/NativeWriteSkeleton_Test.cpp`
+  - approach: override `onEffectCreated(mayCreateFileDialog, args)` like `NativeRead.cpp:600-613`: when allowed, `Settings::isFileDialogEnabledForNewWriters()` is true, the app isn't background and no filename was given, call `getApp()->saveImageFileDialog()`; cancel throws so creation aborts. A filename outside `writableExtensions()` (`.cr2`, `.mov`, `.psd`) sets the persistent "Unsupported format" message and never crashes.
+  - verify: gtest: unsupported names set the message and render fails cleanly. The dialog path is covered by P2.T16 under Xvfb.
+  - size: M
+
+- [ ] M76.P2.T4 — Switch every Write entry point to the native node
+  - files: `Engine/AppInstance.cpp`, `Engine/AppManager.cpp`/`.h`, `Engine/WriteNode.cpp`, `Tests/Native/NativeWriteSkeleton_Test.cpp`, new `Tests/Native/NativeWriteEntryPoints_Test.cpp`
+  - approach: delete P1.T1's pin so unversioned Write requests take major 2. The `isBundledWriter` redirect stays until P2.T9, so explicit OFX writer IDs in unmigrated tests still build the container. Reimplement `getSupportedWriterFileFormats` (`AppManager.cpp:3451`) and `getWriterPluginIDForFileType` (`:3482`) on `OiioWriteSupport::writableExtensions()`; the latter returns `PLUGINID_NATRON_WRITE` or "". The container picks its encoder through `getWriterPluginIDForFileType` (`WriteNode.cpp:873,1024-1026`), so give it a local helper over the `writerPlugins` registry until P2.T12 (the M75 P2.T8 trap). Unchanged sites then follow: Image > Write and Render Selected (`Gui20.cpp:1277,1304`, `Gui40.cpp:874`), `KnobGuiFile.cpp:576`, the save dialog (`Gui20.cpp:1346`), `app.createWriter` (`PyAppInstance.cpp:206`), `-w` (`AppInstance.cpp:488`), Precomp (`PrecompNode.cpp:475,561`) and the W shortcut (`GuiApplicationManager.cpp:1030`). Delete the dead `#ifndef NATRON_ENABLE_IO_META_NODES` block in `AppInstance::createWriter` (`:1002-1018`).
+  - verify: gtest: `createNode(Write)` with no major, and `createWriter` on `.exr`, `.png`, `.dpx`, `.tif`, build a `NativeWrite`; `getWriterPluginIDForFileType` returns the Write ID for every member and "" for `mov`/`cr2`; supported formats equal the set; a Precomp over a sub-project with a native Write reads its output; save/load keeps the native class. Full ctest green; smoke passes, including `app.createWriter` + `app.render` (`smoke_test.py:439-472`).
+  - size: M
+
+- [ ] M76.P2.T5 — Migrate tests: shared base and render/scheduler batch
+  - files: `Tests/BaseTest.h/.cpp`, `Tests/RenderBothWays.h/.cpp`, `Tests/FlatExrReader.h`, `Tests/SchedulerEquivalence_Test.cpp`, `Tests/SchedulerWriters_Test.cpp`, `Tests/RenderRange_Test.cpp`, `Tests/RenderSchedulerAbort_Test.cpp`, `Tests/GLScheduler_Test.cpp`, `Tests/RenderBothWaysSelf_Test.cpp`
+  - approach: add `_writePluginID = PLUGINID_NATRON_WRITE` beside `_writeOIIOPluginID` (`BaseTest.cpp:83-84`; removed in P2.T9) and use it in BaseTest's writer helpers (`:276,385,401`), `SchedulerEquivalence_Test.cpp:274,445-447`, and the `RenderBothWays.cpp:576-577` message. Fix `FlatExrReader.h:30-39`'s WriteOIIO comment. Each failing assertion is either a native bug, fixed in `NativeWrite`, or a container-specific expectation, rewritten and justified in the commit message. Runs after P1 and P2.T1–T4.
+  - verify: full ctest green; no `_writeOIIOPluginID` in these files.
+  - size: M
+
+- [ ] M76.P2.T6 — Migrate tests: layer and channel batch
+  - files: `Tests/WriteAllLayers_Test.cpp`, `Tests/AddLayersRender_Test.cpp`, `Tests/RemoveLayersRender_Test.cpp`, `Tests/ShuffleRender_Test.cpp`, `Tests/ChannelSetRender_Test.cpp`, `Tests/LayerKnobsRender_Test.cpp`, `Tests/GeneratorLayer_Test.cpp`, `Tests/RotoLayer_Test.cpp`, `Tests/TypedPassthrough_Test.cpp`, `Tests/DeepPipeline_Test.cpp`
+  - approach: as P2.T5. In `WriteAllLayers_Test`, delete `EncoderChannelQuadIsAdoptedAndStaysHidden` (`:506-532`; there is no encoder) and drop the `WriteNode` cast at `:218`. Independent of P2.T7/T8.
+  - verify: full ctest green; no `_writeOIIOPluginID` or `WriteNode` in these files.
+  - size: M
+
+- [ ] M76.P2.T7 — Migrate tests: colour, OCIO and metadata batch
+  - files: `Tests/ProjectOCIO_Test.cpp`, `Tests/ProjectOCIODefaults_Test.cpp`, `Tests/ProjectOCIOPlugins_Test.cpp`, `Tests/ColorViewsRender_Test.cpp`, `Tests/Metadata_Test.cpp`, `Tests/OfxMetadataBridge_Test.cpp`
+  - approach: `ProjectOCIO_Test`: the writer helper (`:103`) reads the knobs off the native Write; the WriteOIIO/WritePNG creations (`:289,309,416,553,611`) become native Writes. `ProjectOCIODefaults_Test`: the Write cases (`:605-680`) move to the native Write; the `embeddedNode` checks go (P1.T8 pins the values). `ProjectOCIOPlugins_Test`: take the OFX instance-property checks (`:70-85`) from an OFX OCIO plugin in the bundle (e.g. `fr.inria.openfx.OCIOColorSpace`). `OfxMetadataBridge_Test.cpp:413`: replace the `WriteNode` cast with a `NativeWrite` check; the OFX-boundary assertions use an OFX node downstream of the Read.
+  - verify: full ctest green; no `WriteNode`, `PLUGINID_OFX_WRITE*` or `_writeOIIOPluginID` in these files.
+  - size: M
+
+- [ ] M76.P2.T8 — Migrate tests: project and engine batch
+  - files: `Tests/ProjectSerialization_Test.cpp`, `Tests/PersistentMessage_Test.cpp`, `Tests/ReadFormat_Test.cpp`, `Tests/Native/EngineHooks_Test.cpp`, `Tests/Native/NativeGrade_Test.cpp`, `Tests/Native/NativeReadEntryPoints_Test.cpp`
+  - approach: as P2.T5. `ProjectSerialization_Test`: delete the Write1/`outputChannels` compatibility assertions of the M65 legacy fixture test (`:420-440`, incl. the `WriteOIIO` `filterKnobChoiceOptionCompat` check) — no backward compatibility; don't build a new legacy fixture. `NativeReadEntryPoints_Test`'s read-back case (`:220-260`) is superseded by P2.T2 and goes.
+  - verify: full ctest green; `grep -rn '_writeOIIOPluginID\|PLUGINID_OFX_WRITE\|WriteNode\b' Tests` finds only `BaseTest` and the "builds nothing" assertions P2.T9 adds.
+  - size: M
+
+- [ ] M76.P2.T9 — Make the container and the OFX writers unreachable
+  - files: `Engine/AppInstance.cpp`, `Engine/AppManager.cpp`, `Engine/OfxHost.cpp`, `Tests/BaseTest.h/.cpp`, `Tests/Native/NativePluginList_Test.cpp`, `tools/ci/smoke_test.py`, `tools/release/check-startup.sh`, `tools/ci/regen_read_time_offset.py`, `Tests/fixtures/read-time-offset.ntp`
+  - approach: delete the `isBundledWriter` redirect (`AppInstance.cpp:1131-1139`) and `registerBuiltInPlugin<WriteNode>` (`AppManager.cpp:1664`); `WriteNode` stays compiled but dead until P2.T12. In `OfxHost::loadOFXPlugins`, skip writer-context plugins next to the reader skip (`OfxHost.cpp:957-960`). Drop `_writeOIIOPluginID` from BaseTest. `NativePluginList_Test`: Write has one version, the native major; no registered plugin except `PLUGINID_NATRON_WRITE` and `DeepWrite` is a writer; `createNode("fr.inria.openfx.WriteOIIO")` builds nothing. The `smoke_test.py:302` IO representative becomes `fr.inria.openfx.OIIOText`. `check-startup.sh:262` expects `fr.inria.built-in.Write`. The regen script (`:41`) uses `app.createWriter`; regenerate `read-time-offset.ntp` with it (no hand conversion).
+  - verify: full ctest green; smoke passes, including `NatronRenderer -i Read1`.
+  - size: M
+
+- [ ] M76.P2.T10 — Strip container branches from Engine code
+  - files: `Engine/Node.cpp`, `Engine/NodeMain.cpp`, `Engine/AppInstance.cpp`, `Engine/Project.cpp`, `Engine/OutputSchedulerThread.cpp`, `Engine/Nodes/Metadata/OfxMetadataBridge.cpp`, `Engine/OfxParamInstance.cpp`, `Engine/OfxEffectInstance.cpp`, `Engine/AppManager.cpp`
+  - approach: deletion only. `Node.cpp:896-905,1735-1742,3414-3420,4371-4381`, `NodeMain.cpp:111-119`, `AppInstance.cpp:1446-1455` (doc generation), `Project.cpp:351-363` (the embedded half; fix the `:301` comment), `OutputSchedulerThread.cpp:1090-1096,1175-1181,2377-2383,2758-2762`, `OfxMetadataBridge.cpp:187-193`, `OfxParamInstance.cpp:322-327`, `OfxEffectInstance.cpp:698-700` and `:1439` (`isVideoWriter` returns false or goes), `AppManager.cpp:2146-2148`. Parallel with P2.T11.
+  - verify: build; full ctest green.
+  - size: M
+
+- [ ] M76.P2.T11 — Strip container branches from Gui code
+  - files: `Gui/DockablePanel.cpp`, `Gui/DocumentationManager.cpp`
+  - approach: deletion only: `DockablePanel.cpp:57,136-146`; `DocumentationManager.cpp:48,184,273-282`, plus the WriteFFmpeg/WriteOIIO/WritePFM/WritePNG entries in the static list (`:175-178`). Parallel with P2.T10.
+  - verify: build; full ctest green; `grep -rn WriteNode Gui` is empty.
+  - size: M
+
+- [ ] M76.P2.T12 — Delete WriteNode and the writer-plugin map
+  - files: delete `Engine/WriteNode.h/.cpp`; `Engine/EffectInstance.h`, `Engine/AppManager.cpp/.h`, `Engine/AppManagerPrivate.h/.cpp`, `Engine/OfxHost.cpp/.h`, `Engine/Nodes/IO/NativeWrite.h`, remaining test includes of `Engine/WriteNode.h`
+  - approach: compile-driven deletion after P2.T10/T11. Remove the files (Engine globs sources; reconfigure) and `friend class WriteNode` (`EffectInstance.h:2608`). Remove unused `PLUGINID_OFX_WRITE*` defines (`:56,72-74`); keep `PLUGINID_OFX_WRITEOIIO` if P2.T9's "builds nothing" test uses it. Remove `writerPlugins` (`AppManagerPrivate.h:83`), `getFileFormatsForWritingAndWriter`, `getWritersForFormat`, P2.T4's container helper, and the `IOPluginsMap` parameter through `loadBuiltinNodePlugins` (`AppManager.h:721`) and `loadOFXPlugins` (`OfxHost.h:157`); delete `IOPluginsMap` if nothing else uses it.
+  - verify: clean reconfigure and build; full ctest green; `grep -rn 'WriteNode\b\|writerPlugins\|isBundledWriter' Engine Gui Tests` is empty.
+  - size: M
+
+- [ ] M76.P2.T13 — Remove the IO meta-node container plumbing
+  - files: `Engine/Node.cpp/.h`, `Engine/NodePrivate.h`, `Engine/NodeMain.cpp`, `Engine/EffectInstance.cpp/.h`, `Engine/CreateNodeArgs.h`, `Engine/OfxEffectInstance.cpp/.h`, `Engine/OfxClipInstance.cpp`, `Engine/OfxImageEffectInstance.cpp`, `Engine/OfxParamInstance.*`, `Global/Macros.h` and the remaining `NATRON_ENABLE_IO_META_NODES` sites in Engine/Gui
+  - approach: with WriteNode gone nothing sets `ioContainer`. Delete `getIOContainer`, `kCreateNodeArgsPropMetaNodeContainer`, `filterLayersForEmbeddedInput`, `producesColorOnlyFromPassThroughInput` and its `EffectInstance.cpp:5027` use. Fold `NATRON_ENABLE_IO_META_NODES` to its enabled branch everywhere and delete the dead `#ifndef` branches (about 130 references, 79 in `Node.cpp`). Compile-driven, deletion only.
+  - verify: clean build; full ctest green; `grep -rn 'ioContainer\|IO_META_NODES\|MetaNodeContainer' Engine Gui Global` is empty.
+  - size: L
+
+- [ ] M76.P2.T14 — Retire the OFX writers from the plugin bundle
+  - files: `tools/ci/local/fetch-assets.sh`, and `CMakeLists.txt` in the forks `charlesangus/openfx-io` and `charlesangus/openfx-arena`
+  - approach: follow M75.P2.T18. Fork branch `m76/retire-writers` in openfx-io extends the reader filter to writers (`/Write[A-Za-z0-9]+\.cpp$`: WriteOIIO, WriteEXR, WritePNG, WritePFM, WriteFFmpeg), keeping OIIOText, OIIOResize, the OCIO plugins, SeExpr and RunScript. Arena: bump its OpenFX-IO submodule to the new openfx-io head. Re-pin `OPENFX_IO_REF`/`OPENFX_ARENA_REF` to the branch heads (then to the merge commits, merge-committed, when the fork PRs merge with M76). State the contract in a comment, not history. `fetch-assets.sh:554`'s symbol check swaps `fr.inria.openfx.WriteOIIO` for `fr.inria.openfx.OIIOText`.
+  - verify: after the PM reruns `fetch-assets.sh` in the container, `verify_plugin_loads` passes for IO and Arena; full ctest green; smoke passes.
+  - size: M
+
+- [ ] M76.P2.T15 — Tools sweep
+  - files: `tools/bench/make_plates.py`, `tools/bench/comps/build_comps.py`, `tools/bench/comps/*.ntp`, `tools/bench/graph_bench.py`, `tools/bench/render-profile-report.py`, `tools/genStaticDocs.sh`, `tools/bench/analyze_stacks.py`
+  - approach: the scripts use `app.createWriter` with `bitDepth`/`compression` IDs the native Write keeps; confirm each runs. Regenerate the three comps `.ntp` with `build_comps.py` in the container (no hand edits). `render-profile-report.py:295`'s fixture names the old `internalEncoderNode`/WriteOIIO pair; update it to the native Write. `genStaticDocs.sh:77` and `analyze_stacks.py:47` drop WriteOIIO/WriteNode.
+  - verify: `build_comps.py` and `make_plates.py` run under NatronRenderer and write files; `grep -rn 'WriteOIIO\|WriteNode' tools` is empty.
+  - size: M
+
+- [ ] M76.P2.T16 — Panel and render check under Xvfb
+  - files: `Engine/Nodes/IO/NativeWrite.cpp` (page layout and labels only), new `Tests/gui/m76_write.py`, `Tests/gui/m61_uat.py` (if it creates writers); `Gui/` only if a hook is missing
+  - approach: Controls page with file, overwrite, format type/format/clip to RoD, frame range, first/last (no sliders), frame increment, the channel set row, then colourspace (nested menu), Context, format options, metadata and read back, and the Render button. Run the Xvfb recipe (`build/deeprepro/run-gui.sh`, `checkForUpdates` pre-seeded off) on the release build. Checks: a Tab-menu Write opens the save dialog first, and its filter lists EXR/DPX/TIFF but not MOV/CR2/PSD; Render from the panel writes a 3-frame EXR with progress; read back shows the file; the output colourspace submenu opens, and Reset to default and reselect behave; searching "WriteOIIO" or "WritePNG" in the Tab menu finds nothing; Render Selected on a non-writer creates a native Write.
+  - verify: the script passes under Xvfb, and `m75_read.py`, `m61_uat.py` and `viewer_error_scrub.py` still pass. Screenshots of the panel, the open colourspace submenu and a finished render are shared and the user approves them before sign-off.
+  - size: M
+
+- [ ] M76.P2.T17 — Document the native Write
+  - files: `Engine/Nodes/README.md`
+  - approach: extend "I/O nodes" (`:154`) to the Write as built: native only at `PLUGIN_MAJOR_NATRON_WRITE` with a single version; formats from `OiioWriteSupport::writableExtensions()` (OIIO's output format list minus `kExcludedOiioFormats`), no hand list; every entry point through `getWriterPluginIDForFileType`/`getSupportedWriterFileFormats`; `OfxHost` refuses writer-context OFX plugins; WriteOIIO knob names; the band encoder with 64-bit addressing, atomic rename and no full-frame copy of its own; colour working → output through the project OCIO with the file tagged; metadata write-out prefix map; read-back. Replace "Write is still a container" (`:161`), the `WriteNode` mention at `:172`, and the Write container sentence in "Per-frame metadata" (`:121-123`).
+  - verify: the section matches the code (`writableExtensions`, `kExcludedOiioFormats`, `PLUGIN_MAJOR_NATRON_WRITE`, the OfxHost skip); `lint-ci` green.
+  - size: M
+
+**Verification gate:** every extension in OIIO's runtime output format list outside the excluded formats (raw, null, term, ffmpeg, psd) creates a native Write through every entry point (Tab menu, Image > Write, Render Selected, `app.createWriter`, `-w`, Precomp), and unsupported extensions (mov, cr2, psd) are refused with a message. EXR (scanline, tiled, multi-part, multi-view), PNG 8/16, JPEG, TIFF 8/16/float, DPX, TGA, HDR and PFM round-trip through the native Read in ctest. Layers, channel subsets, views and parts, output colourspace defaults/conversion/reset/context, metadata write-out and read-back are tested. The large-image gate test (a frame over 2^31 bytes) passes at support and node level, and a 3-frame range renders identically in the legacy and task-graph schedulers with 0 unplanned pulls. No OFX writer is registered or reachable, `WriteNode` and the IO meta-node plumbing are gone from the tree, and the fork bundles no longer build OFX writers. Full ctest green; smoke green, including `app.render` and `-i Read1`; the release startup probe expects the native Write. The Xvfb GUI check passes with screenshots approved by the user, and the user signs off on a GUI render in an AppImage. CI (`format`, `lint-ci`, `build-and-test`) green.
+
+## Decisions
+- 2026-10-10 — **Re-planned at promotion** (consultant, opus) for the user decision that Write mirrors the Read (all OIIO-writable formats, WriteNode and OFX writers removed, no fallback, no video). Stacked on `milestone/m75-native-read` in `.worktrees/m76` while M75's PR is in review. Findings taken: no frame-rate knob (GenericWriter never had one; `frameIncr` is a render step); read-back becomes a native decode in the Write (P2.T2), replacing the internal Read and its `ocioInputSpace` slave; the metadata filter is one on/off switch (key filtering is M77's RemoveMetadata); no premult, orientation, library-info or encoder knobs; the writable list comes from OIIO's `output_format_list`, GIF stays as stills; the old brief's `WriteNode.cpp:762` "bug" is a correct reader lookup and goes with WriteNode; M31's brief names `WriteNode` and needs a refresh after M76.
+- 2026-10-10 — **User calls at promotion:** default output colourspace follows OCIO file rules literally, like the Read (the EXR default test now expects ACES2065-1 under the studio config); the dead IO-container plumbing is removed here (P2.T13), not in M31; atomic writes (temporary name, rename on success); band-sized peak memory (scheduler streaming of the writer's input) moves to M64 - Tiled Rendering, so M76 guarantees 64-bit addressing and no writer-owned full-frame copy (peak about two frames) and its gate frame is ~2.2 GB.

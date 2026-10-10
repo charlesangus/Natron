@@ -56,7 +56,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - verify: Fresh DeepRead, DeepMerge and DeepToImage nodes created from the toolbar show white labels. Making a category colour dark flips its nodes' labels to white after Save. The screenshot script checks the label colour by sampling a text pixel, not just by asserting.
   - size: M
 
-- [ ] M24.P5.T3 — Colour unconnected input pipes by their data kind, with per-kind edge colours in Preferences
+- [x] M24.P5.T3 — Colour unconnected input pipes by their data kind, with per-kind edge colours in Preferences
   - files: `Gui/Edge.cpp`, `Gui/Edge.h`, `Engine/Settings.h`, `Engine/Settings.cpp`
   - approach:
     - Today an edge takes its kind colour from the connected source node's output kind, so a dangling input pipe is black even when the input only accepts Deep (DeepToImage). For an edge with no source, use the data kind that input accepts (or the input's declared kind; find how native nodes declare input kinds, e.g. `NativePluginDescription` inputs). An input that accepts several kinds stays neutral.

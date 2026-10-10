@@ -23,7 +23,15 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 
 - [x] M24.P1.T1 — Survey the state of the art and pin the concrete visual spec
   - files: `PLAN/DESIGN/2026-09-07-node-graph-category-colour.md` (new, on the plan branch)
-  - approach: Survey how Houdini, Nuke, Fusion and Blender separate "what kind of node is this" from "what colour did the user give it" in their network editors, Houdini especially. Then pin: the closed category list and each default colour; the user-border pen width in px at 100% zoom and how it scales; inset vs outset; the minimum border/body contrast rule; and how the border stays distinct from the selection halo (`_stateIndicator`, a `NodeGraphRectItem` at `depth-1` inflated by `NATRON_STATE_INDICATOR_OFFSET`, `Gui/NodeGui.cpp:697,1064-1067`). Nodes are square-cornered today (corner radius 0, `Gui/NodeGui.cpp:634`), since M18.P4.T4 removed the kind silhouettes. Also pin: (a) whether the Reader/Writer/Generator rungs beat the Deep group (DeepWrite is Writer-coloured today); (c) the label-text luminance threshold and the light/dark text colours. Items (b) 3D category and (d) edge width ladder are user decisions recorded in `## Decisions` — implement what they say.
+  - approach: Survey how Houdini, Nuke, Fusion and Blender separate "what kind of node is this" from "what colour did the user give it" in their network editors, Houdini especially. Then pin: the closed category list and each default colour; the user-border pen width in px at 100% zoom and how it scales; inset vs outset; the minimum border/body contrast rule; and how the border stays distinct from the selection halo (`_stateIndicator`, a `NodeGraphRectItem` at `depth-1` inflated by `NATRON_STATE_INDICATOR_OFFSET`, `Gui/NodeGui.cpp:697,1064-1067`). Nodes are square-cornered today (corner radius 0, `Gui/NodeGui.cpp:634`), since M18.P4.T4 removed the kind silhouettes. Also pin: (a) whether the Reader/Writer/Generator rungs beat the Deep group (DeepWrite is Writer-coloured today); (c) the label-text luminance threshold and the light/dark text colours. Items (b) 3D category and (d) edge width ladder are user decisions recorded in `
+
+- [ ] M24.P4.T3 — Stop fading optional-input edges
+  - files: `Gui/Edge.cpp`
+  - approach: Solid edges into optional inputs are drawn at 40% opacity (`Gui/Edge.cpp` ~:855), which dims a deep edge into the background now that colour is the only data-kind signal on edges. Draw them at full opacity like every other edge. Leave the dash patterns (mask, hidden and disconnected inputs) and the selection and highlight styling alone.
+  - verify: In the screenshot run, the DeepFromImage → DeepMerge.A edge is the same blue as the other deep edges, and DeepToImage → Merge.B is the same black as the other image edges.
+  - size: S
+
+## Decisions` — implement what they say.
   - verify: The note exists, names each surveyed application and what it does, and gives every number and rule above as one unambiguous value.
   - size: M
 
@@ -173,6 +181,8 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 - 2026-10-10 — **Border wraps the whole node (user):** answers the P3.T4 gate note. The border must enclose the icon column too, so P3.T2a was added.
 
 - 2026-10-10 — **One build at the end (user):** builds are the bottleneck on this host, so tasks are implemented and committed without per-task builds or tests, and implementers do not compile. The milestone gets a single build, test and screenshot run once every task has landed, and any breakage is fixed then. Task checkboxes mean implemented and committed, not verified.
+
+- 2026-10-10 — **Optional inputs are not faded (user):** this answers the P3.T2 evidence note. P4.T3 was added.
 
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate

@@ -1583,4 +1583,316 @@ drawLocus(const LumaBasis& basis,
     return points;
 }
 
+double
+gear(bool ctrlHeld,
+     bool shiftHeld)
+{
+    if (ctrlHeld && shiftHeld) {
+        return 0.01;
+    }
+    if (ctrlHeld) {
+        return 0.1;
+    }
+    if (shiftHeld) {
+        return 4.0;
+    }
+
+    return 1.0;
+}
+
+double
+valueRatePerPixel(const TrackballRates& rates,
+                  ColorKnobRoleEnum role)
+{
+    return isRatioRole(role) ? rates.valueStopPerPixelRatio : rates.valuePerPixelOffset;
+}
+
+double
+tempRatePerPixel(const TrackballRates& rates,
+                 ColorKnobRoleEnum role)
+{
+    return isRatioRole(role) ? rates.tempMiredPerPixelRatio : rates.tempTintPerPixelOffset;
+}
+
+double
+tintRatePerPixel(const TrackballRates& rates,
+                 ColorKnobRoleEnum role)
+{
+    return isRatioRole(role) ? rates.tintPerPixelRatio : rates.tempTintPerPixelOffset;
+}
+
+namespace {
+// The out-of-domain and Power-wrapping fallback that applyEdit's relative TempTint edit needs
+// and fromTempTint, by design, does not provide on its own (see its header comment): walking
+// the locus by (current + delta) can fail where the locus itself is undefined (an out-of-gamut
+// ratio-role chromaticity, or a frozen one), and the caller is the one who knows a relative
+// nudge should then fall back to moving along the same linear axes directly in (a, b) space
+// rather than refusing outright. For Offset, toTempTint's decomposition is exact over the
+// whole plane, so this fallback is never actually reached for that role.
+ChromaEditResult
+nudgeTempTint(ColorKnobRoleEnum role,
+              const LumaBasis& basis,
+              const KnobColorValue& v,
+              double dTemp,
+              double dTint)
+{
+    if (role == eColorKnobRolePower) {
+        KnobColorValue effect;
+
+        if (!toEffectValue(v, effect)) {
+            return refused(v);
+        }
+
+        ChromaEditResult effectResult = nudgeTempTint(eColorKnobRoleGain, basis, effect, dTemp, dTint);
+
+        if (!effectResult.valid) {
+            return refused(v);
+        }
+
+        ChromaEditResult result;
+
+        if (!fromEffectValue(effectResult.value, result.value)) {
+            return refused(v);
+        }
+        result.valid = true;
+
+        return result;
+    }
+
+    TempTintResult current = toTempTint(role, basis, v);
+
+    if (current.valid) {
+        ChromaEditResult viaLocus = fromTempTint(role, basis, v, current.temp + dTemp, current.tint + dTint);
+
+        if (viaLocus.valid) {
+            return viaLocus;
+        }
+    }
+
+    double Y0 = luma(basis, v.rgb);
+    TempTintAxes axes = linearTempTintAxes(basis);
+
+    if (!axes.valid || isFrozen(role, Y0)) {
+        return refused(v);
+    }
+
+    LumaChroma lc = split(basis, v.rgb);
+    ChromaEditResult result;
+
+    result.value = v;
+    result.valid = true;
+    join(basis, Y0,
+         lc.a + dTemp * axes.temp[0] + dTint * axes.tint[0],
+         lc.b + dTemp * axes.temp[1] + dTint * axes.tint[1],
+         result.value.rgb);
+
+    return result;
+}
+} // namespace
+
+ChromaEditResult
+applyEdit(ColorKnobRoleEnum role,
+          const LumaBasis& basis,
+          const KnobColorValue& v,
+          const ColorEdit& edit,
+          double rememberedHueDegrees)
+{
+    bool ratio = isRatioRole(role);
+
+    switch (edit.axis) {
+    case eColorAxisTrackball:
+        return translate(role, basis, v, edit.d1, edit.d2);
+
+    case eColorAxisHue:
+        return edit.absolute ? setHue(role, basis, v, edit.d1) : rotateHueAboutWhite(role, basis, v, edit.d1);
+
+    case eColorAxisSat:
+        return edit.absolute ? setSaturation(role, basis, v, edit.d1, rememberedHueDegrees)
+                             : moveSaturation(role, basis, v, edit.d1, rememberedHueDegrees);
+
+    case eColorAxisValue: {
+        double target = ratio ? std::pow(2.0, edit.d1) : edit.d1;
+        ChromaEditResult result;
+
+        result.value = edit.absolute
+            ? setValue(role, basis, v, target)
+            : (ratio ? scaleValue(role, basis, v, target) : addValue(role, basis, v, edit.d1));
+        result.valid = true;
+
+        return result;
+    }
+
+    case eColorAxisTempTint:
+        return edit.absolute ? fromTempTint(role, basis, v, edit.d1, edit.d2) : nudgeTempTint(role, basis, v, edit.d1, edit.d2);
+
+    case eColorAxisAlpha: {
+        ChromaEditResult result;
+
+        result.value = v;
+        result.valid = v.hasAlpha;
+        if (v.hasAlpha) {
+            result.value.a = edit.absolute ? edit.d1 : v.a + edit.d1;
+        }
+
+        return result;
+    }
+    }
+
+    return refused(v);
+}
+
+ChromaEditResult
+globalModeEdit(ColorGlobalModeEnum mode,
+               ColorKnobRoleEnum role,
+               const LumaBasis& basis,
+               const KnobColorValue& v,
+               double dx,
+               double dy,
+               double gearFactor,
+               const TrackballRates& rates,
+               double rememberedHueDegrees)
+{
+    switch (mode) {
+    case eColorGlobalModeC: {
+        ColorEdit hueEdit;
+
+        hueEdit.axis = eColorAxisHue;
+        hueEdit.d1 = dx * rates.hueDegreesPerPixel * gearFactor;
+        ChromaEditResult rotated = applyEdit(role, basis, v, hueEdit, rememberedHueDegrees);
+        KnobColorValue afterHue = rotated.valid ? rotated.value : v;
+
+        ColorEdit satEdit;
+
+        satEdit.axis = eColorAxisSat;
+        satEdit.d1 = -dy * rates.satPlanePerPixel * gearFactor;
+        ChromaEditResult moved = applyEdit(role, basis, afterHue, satEdit, rememberedHueDegrees);
+
+        return moved.valid ? moved : rotated;
+    }
+
+    case eColorGlobalModeT: {
+        ColorEdit ttEdit;
+
+        ttEdit.axis = eColorAxisTempTint;
+        ttEdit.d1 = dx * tempRatePerPixel(rates, role) * gearFactor;
+        ttEdit.d2 = -dy * tintRatePerPixel(rates, role) * gearFactor;
+
+        return applyEdit(role, basis, v, ttEdit, rememberedHueDegrees);
+    }
+
+    case eColorGlobalModeV: {
+        ColorEdit valueEdit;
+
+        valueEdit.axis = eColorAxisValue;
+        valueEdit.d1 = (dx - dy) * valueRatePerPixel(rates, role) * gearFactor;
+
+        return applyEdit(role, basis, v, valueEdit, rememberedHueDegrees);
+    }
+    }
+
+    return refused(v);
+}
+
+SliderRange
+sliderMapping(ColorSliderKindEnum kind,
+              ColorKnobRoleEnum role,
+              const TrackballRates& rates)
+{
+    bool ratio = isRatioRole(role);
+    SliderRange range;
+
+    switch (kind) {
+    case eColorSliderKindHue:
+        range.rangeMin = 0.0;
+        range.rangeMax = 360.0;
+        range.unit = "deg";
+        break;
+
+    case eColorSliderKindSat:
+        range.rangeMin = 0.0;
+        range.rangeMax = rates.wheelRim;
+        range.unit = "xy";
+        break;
+
+    case eColorSliderKindValue:
+        if (ratio) {
+            range.rangeMin = -3.0;
+            range.rangeMax = 3.0;
+            range.unit = "stop";
+        } else {
+            range.rangeMin = -0.25;
+            range.rangeMax = 0.25;
+            range.unit = "Y";
+        }
+        break;
+
+    case eColorSliderKindTemp:
+        if (ratio) {
+            range.rangeMin = -100.0;
+            range.rangeMax = 100.0;
+            range.unit = "mired";
+        } else {
+            range.rangeMin = -50.0;
+            range.rangeMax = 50.0;
+            range.unit = "axis";
+        }
+        break;
+
+    case eColorSliderKindTint:
+        range.rangeMin = -50.0;
+        range.rangeMax = 50.0;
+        range.unit = ratio ? "tint" : "axis";
+        break;
+
+    case eColorSliderKindAlpha:
+        if (ratio) {
+            range.rangeMin = 0.0;
+            range.rangeMax = 4.0;
+        } else {
+            range.rangeMin = -0.25;
+            range.rangeMax = 0.25;
+        }
+        range.unit = "alpha";
+        break;
+    }
+
+    return range;
+}
+
+double
+valueToMarker(const SliderRange& range,
+              double value)
+{
+    double span = range.rangeMax - range.rangeMin;
+
+    if (!(span > 0.0)) {
+        return 0.0;
+    }
+
+    return std::min(1.0, std::max(0.0, (value - range.rangeMin) / span));
+}
+
+double
+markerToValue(const SliderRange& range,
+              double marker)
+{
+    double t = std::min(1.0, std::max(0.0, marker));
+
+    return range.rangeMin + t * (range.rangeMax - range.rangeMin);
+}
+
+SliderChevronEnum
+sliderChevron(const SliderRange& range,
+              double value)
+{
+    if (value < range.rangeMin) {
+        return eSliderChevronLow;
+    }
+    if (value > range.rangeMax) {
+        return eSliderChevronHigh;
+    }
+
+    return eSliderChevronNone;
+}
+
 NATRON_NAMESPACE_EXIT

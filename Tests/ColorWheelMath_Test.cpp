@@ -1113,3 +1113,256 @@ TEST(ColorWheelMath, InferColorRoleConstantColourAndOfxStyleGamma)
     // An empty defaults list matches no rule.
     EXPECT_EQ(eColorKnobRoleColour, inferColorRole({}, 0.0, "anything"));
 }
+
+TEST(ColorWheelMath, GearTableMatchesTheFourModifierCombinations)
+{
+    EXPECT_EQ(1.0, gear(false, false));
+    EXPECT_EQ(0.1, gear(true, false));
+    EXPECT_EQ(4.0, gear(false, true));
+    EXPECT_EQ(0.01, gear(true, true));
+}
+
+TEST(ColorWheelMath, ApplyEditDispatchesTrackballHueSatValueTempTintAndAlpha)
+{
+    LumaBasis basis = acescg();
+    KnobColorValue v = makeValue(1.2, 1.0, 0.9, 1.0);
+
+    ColorEdit trackballEdit;
+    trackballEdit.axis = eColorAxisTrackball;
+    trackballEdit.d1 = 0.01;
+    trackballEdit.d2 = -0.005;
+    ChromaEditResult viaDispatch = applyEdit(eColorKnobRoleGain, basis, v, trackballEdit, 0.0);
+    ChromaEditResult viaDirectCall = translate(eColorKnobRoleGain, basis, v, 0.01, -0.005);
+    ASSERT_TRUE(viaDispatch.valid);
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(viaDirectCall.value.rgb[i], viaDispatch.value.rgb[i]);
+    }
+
+    ColorEdit hueAbs;
+    hueAbs.axis = eColorAxisHue;
+    hueAbs.d1 = 90.0;
+    hueAbs.absolute = true;
+    ChromaEditResult hueResult = applyEdit(eColorKnobRoleGain, basis, v, hueAbs, 0.0);
+    ASSERT_TRUE(hueResult.valid);
+    PlanePoint hueQ = toPlane(eColorKnobRoleGain, basis, hueResult.value);
+    EXPECT_NEAR(90.0, planeHue(hueQ), 1e-6);
+
+    ColorEdit satAbs;
+    satAbs.axis = eColorAxisSat;
+    satAbs.d1 = 0.02;
+    satAbs.absolute = true;
+    ChromaEditResult satResult = applyEdit(eColorKnobRoleGain, basis, v, satAbs, 0.0);
+    ASSERT_TRUE(satResult.valid);
+    EXPECT_NEAR(0.02, planeSaturation(toPlane(eColorKnobRoleGain, basis, satResult.value)), 1e-9);
+
+    ColorEdit valueAbsRatio;
+    valueAbsRatio.axis = eColorAxisValue;
+    valueAbsRatio.d1 = 1.0;
+    valueAbsRatio.absolute = true;
+    ChromaEditResult valueResult = applyEdit(eColorKnobRoleGain, basis, v, valueAbsRatio, 0.0);
+    EXPECT_NEAR(2.0, luma(basis, valueResult.value.rgb), 1e-12);
+
+    ColorEdit valueRelOffset;
+    valueRelOffset.axis = eColorAxisValue;
+    valueRelOffset.d1 = 0.05;
+    KnobColorValue offsetV = makeValue(0.0, 0.0, 0.0, 0.0, false);
+    ChromaEditResult offsetValueResult = applyEdit(eColorKnobRoleOffset, basis, offsetV, valueRelOffset, 0.0);
+    EXPECT_NEAR(0.05, luma(basis, offsetValueResult.value.rgb), 1e-12);
+
+    ColorEdit ttAbs;
+    ttAbs.axis = eColorAxisTempTint;
+    ttAbs.d1 = 20.0;
+    ttAbs.d2 = -5.0;
+    ttAbs.absolute = true;
+    ChromaEditResult ttResult = applyEdit(eColorKnobRoleGain, basis, v, ttAbs, 0.0);
+    ASSERT_TRUE(ttResult.valid);
+    TempTintResult ttBack = toTempTint(eColorKnobRoleGain, basis, ttResult.value);
+    ASSERT_TRUE(ttBack.valid);
+    EXPECT_NEAR(20.0, ttBack.temp, 1e-6);
+    EXPECT_NEAR(-5.0, ttBack.tint, 1e-6);
+
+    ColorEdit alphaRel;
+    alphaRel.axis = eColorAxisAlpha;
+    alphaRel.d1 = 0.25;
+    ChromaEditResult alphaResult = applyEdit(eColorKnobRoleGain, basis, v, alphaRel, 0.0);
+    ASSERT_TRUE(alphaResult.valid);
+    EXPECT_NEAR(1.25, alphaResult.value.a, 1e-12);
+
+    KnobColorValue noAlpha = makeValue(1.0, 1.0, 1.0, 0.0, false);
+    ChromaEditResult alphaOnNoAlpha = applyEdit(eColorKnobRoleGain, basis, noAlpha, alphaRel, 0.0);
+    EXPECT_FALSE(alphaOnNoAlpha.valid) << "a 3-dim knob has no alpha axis to edit";
+}
+
+TEST(ColorWheelMath, RelativeTempTintEditFallsBackToTheLinearAxesOutOfDomain)
+{
+    // The same out-of-domain target OutOfDomainTempTintNeverProducesNaN uses for the absolute
+    // edit, which fromTempTint alone correctly refuses: here the *relative* dispatcher is
+    // expected to still move, by falling back to a direct step along linearTempTintAxes.
+    LumaBasis basis = acescg();
+    KnobColorValue white = makeValue(1.0, 1.0, 1.0, 1.0);
+
+    ChromaEditResult absolute = fromTempTint(eColorKnobRoleGain, basis, white, 100000.0, 0.0);
+    ASSERT_FALSE(absolute.valid);
+
+    ColorEdit relative;
+    relative.axis = eColorAxisTempTint;
+    relative.d1 = 100000.0;
+    relative.d2 = 0.0;
+    ChromaEditResult viaDispatch = applyEdit(eColorKnobRoleGain, basis, white, relative, 0.0);
+
+    ASSERT_TRUE(viaDispatch.valid);
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_FALSE(std::isnan(viaDispatch.value.rgb[i]));
+    }
+    EXPECT_NEAR(1.0, luma(basis, viaDispatch.value.rgb), 1e-9);
+}
+
+TEST(ColorWheelMath, GlobalCYDragMovesSaturationAtTenPercentOfTheWheelsOwnRate)
+{
+    LumaBasis basis = acescg();
+    TrackballRates rates;
+    KnobColorValue neutral = makeValue(1.0, 1.0, 1.0, 1.0);
+
+    ChromaEditResult fullSpeed = globalModeEdit(eColorGlobalModeC, eColorKnobRoleGain, basis, neutral,
+                                                0.0, -100.0, gear(false, false), rates, 0.0);
+    ASSERT_TRUE(fullSpeed.valid);
+    EXPECT_NEAR(3.5e-3, planeSaturation(toPlane(eColorKnobRoleGain, basis, fullSpeed.value)), 1e-9);
+
+    ChromaEditResult geared = globalModeEdit(eColorGlobalModeC, eColorKnobRoleGain, basis, neutral,
+                                             0.0, -100.0, gear(true, false), rates, 0.0);
+    ASSERT_TRUE(geared.valid);
+    EXPECT_NEAR(3.5e-4, planeSaturation(toPlane(eColorKnobRoleGain, basis, geared.value)), 1e-9);
+}
+
+TEST(ColorWheelMath, GlobalCXDragRotatesHueAtHalfADegreePerPixel)
+{
+    LumaBasis basis = acescg();
+    TrackballRates rates;
+    KnobColorValue chromatic = makeValue(1.2, 1.0, 0.9, 1.0);
+    double startHue = planeHue(toPlane(eColorKnobRoleGain, basis, chromatic));
+
+    ChromaEditResult edited = globalModeEdit(eColorGlobalModeC, eColorKnobRoleGain, basis, chromatic,
+                                             40.0, 0.0, gear(false, false), rates, startHue);
+
+    ASSERT_TRUE(edited.valid);
+    double expectedHue = std::fmod(startHue + 40.0 * rates.hueDegreesPerPixel + 360.0, 360.0);
+    EXPECT_NEAR(expectedHue, planeHue(toPlane(eColorKnobRoleGain, basis, edited.value)), 1e-6);
+}
+
+TEST(ColorWheelMath, GlobalVUsesDxMinusDyAtTheRolesValueRate)
+{
+    LumaBasis basis = acescg();
+    TrackballRates rates;
+
+    KnobColorValue gainV = makeValue(1.0, 1.0, 1.0, 1.0);
+    ChromaEditResult gainResult = globalModeEdit(eColorGlobalModeV, eColorKnobRoleGain, basis, gainV,
+                                                 10.0, -10.0, gear(false, false), rates, 0.0);
+    double expectedStops = 20.0 * rates.valueStopPerPixelRatio;
+    EXPECT_NEAR(std::pow(2.0, expectedStops), luma(basis, gainResult.value.rgb), 1e-12);
+
+    KnobColorValue offsetV = makeValue(0.0, 0.0, 0.0, 0.0, false);
+    ChromaEditResult offsetResult = globalModeEdit(eColorGlobalModeV, eColorKnobRoleOffset, basis, offsetV,
+                                                   10.0, -10.0, gear(false, false), rates, 0.0);
+    double expectedDelta = 20.0 * rates.valuePerPixelOffset;
+    EXPECT_NEAR(expectedDelta, luma(basis, offsetResult.value.rgb), 1e-12);
+}
+
+TEST(ColorWheelMath, GlobalTModeKeepsLumaExactForRatioAndOffsetRoles)
+{
+    LumaBasis basis = acescg();
+    TrackballRates rates;
+
+    KnobColorValue gainV = makeValue(1.2, 1.0, 0.9, 1.0);
+    ChromaEditResult gainResult = globalModeEdit(eColorGlobalModeT, eColorKnobRoleGain, basis, gainV,
+                                                 15.0, -8.0, gear(false, false), rates, 0.0);
+    ASSERT_TRUE(gainResult.valid);
+    expectLumaAndAlphaKept(eColorKnobRoleGain, basis, gainV, gainResult);
+
+    KnobColorValue offsetV = makeValue(0.05, -0.02, 0.03, 0.0, false);
+    ChromaEditResult offsetResult = globalModeEdit(eColorGlobalModeT, eColorKnobRoleOffset, basis, offsetV,
+                                                   15.0, -8.0, gear(false, false), rates, 0.0);
+    ASSERT_TRUE(offsetResult.valid);
+    expectLumaAndAlphaKept(eColorKnobRoleOffset, basis, offsetV, offsetResult);
+}
+
+TEST(ColorWheelMath, SliderMappingMatchesTheHybridTableRanges)
+{
+    TrackballRates rates;
+
+    SliderRange hue = sliderMapping(eColorSliderKindHue, eColorKnobRoleGain, rates);
+    EXPECT_EQ(0.0, hue.rangeMin);
+    EXPECT_EQ(360.0, hue.rangeMax);
+
+    SliderRange sat = sliderMapping(eColorSliderKindSat, eColorKnobRoleOffset, rates);
+    EXPECT_EQ(0.0, sat.rangeMin);
+    EXPECT_EQ(rates.wheelRim, sat.rangeMax);
+
+    SliderRange valueGain = sliderMapping(eColorSliderKindValue, eColorKnobRoleGain, rates);
+    EXPECT_EQ(-3.0, valueGain.rangeMin);
+    EXPECT_EQ(3.0, valueGain.rangeMax);
+
+    SliderRange valueOffset = sliderMapping(eColorSliderKindValue, eColorKnobRoleOffset, rates);
+    EXPECT_EQ(-0.25, valueOffset.rangeMin);
+    EXPECT_EQ(0.25, valueOffset.rangeMax);
+
+    SliderRange tempGain = sliderMapping(eColorSliderKindTemp, eColorKnobRolePower, rates);
+    EXPECT_EQ(-100.0, tempGain.rangeMin);
+    EXPECT_EQ(100.0, tempGain.rangeMax);
+
+    SliderRange tempOffset = sliderMapping(eColorSliderKindTemp, eColorKnobRoleOffset, rates);
+    EXPECT_EQ(-50.0, tempOffset.rangeMin);
+    EXPECT_EQ(50.0, tempOffset.rangeMax);
+
+    SliderRange tintGain = sliderMapping(eColorSliderKindTint, eColorKnobRoleColour, rates);
+    SliderRange tintOffset = sliderMapping(eColorSliderKindTint, eColorKnobRoleOffset, rates);
+    EXPECT_EQ(-50.0, tintGain.rangeMin);
+    EXPECT_EQ(50.0, tintGain.rangeMax);
+    EXPECT_EQ(tintGain.rangeMin, tintOffset.rangeMin);
+    EXPECT_EQ(tintGain.rangeMax, tintOffset.rangeMax);
+
+    SliderRange alphaGain = sliderMapping(eColorSliderKindAlpha, eColorKnobRoleGain, rates);
+    EXPECT_EQ(0.0, alphaGain.rangeMin);
+    EXPECT_EQ(4.0, alphaGain.rangeMax);
+
+    SliderRange alphaOffset = sliderMapping(eColorSliderKindAlpha, eColorKnobRoleOffset, rates);
+    EXPECT_EQ(-0.25, alphaOffset.rangeMin);
+    EXPECT_EQ(0.25, alphaOffset.rangeMax);
+}
+
+TEST(ColorWheelMath, SliderMarkerRoundTrips)
+{
+    TrackballRates rates;
+    SliderRange hue = sliderMapping(eColorSliderKindHue, eColorKnobRoleGain, rates);
+
+    for (double value : { 0.0, 45.0, 180.0, 359.0, 360.0 }) {
+        double marker = valueToMarker(hue, value);
+        EXPECT_GE(marker, 0.0);
+        EXPECT_LE(marker, 1.0);
+        EXPECT_NEAR(value, markerToValue(hue, marker), 1e-9);
+    }
+
+    SliderRange temp = sliderMapping(eColorSliderKindTemp, eColorKnobRoleGain, rates);
+    EXPECT_NEAR(0.0, valueToMarker(temp, -100.0), 1e-12);
+    EXPECT_NEAR(0.5, valueToMarker(temp, 0.0), 1e-12);
+    EXPECT_NEAR(1.0, valueToMarker(temp, 100.0), 1e-12);
+    EXPECT_NEAR(-100.0, markerToValue(temp, 0.0), 1e-12);
+    EXPECT_NEAR(100.0, markerToValue(temp, 1.0), 1e-12);
+}
+
+TEST(ColorWheelMath, SliderChevronReportsPastEitherEnd)
+{
+    TrackballRates rates;
+    SliderRange temp = sliderMapping(eColorSliderKindTemp, eColorKnobRoleGain, rates);
+
+    EXPECT_EQ(eSliderChevronNone, sliderChevron(temp, 0.0));
+    EXPECT_EQ(eSliderChevronNone, sliderChevron(temp, -100.0));
+    EXPECT_EQ(eSliderChevronNone, sliderChevron(temp, 100.0));
+    EXPECT_EQ(eSliderChevronLow, sliderChevron(temp, -100.1));
+    EXPECT_EQ(eSliderChevronHigh, sliderChevron(temp, 100.1));
+
+    // A marker is always clamped into the track regardless of how far the raw value has run
+    // off the end, which is exactly what lets the chevron, rather than the marker position,
+    // carry the "there is more this way" information.
+    EXPECT_EQ(1.0, valueToMarker(temp, 100.1));
+    EXPECT_EQ(0.0, valueToMarker(temp, -500.0));
+}

@@ -364,6 +364,166 @@ TempTintAxes linearTempTintAxes(const LumaBasis& basis);
  **/
 std::vector<PlanePoint> drawLocus(const LumaBasis& basis, const PlanePoint& anchor);
 
+/**
+ * @brief The three held modifiers' speed multiplier, read fresh on every pointer move so a
+ * modifier pressed or released mid-drag takes effect from the next move rather than jumping
+ * the accumulated delta. Ctrl+Shift is checked first because it is not "ctrl, then overridden
+ * by shift": it is its own, slower-than-either rate.
+ **/
+double gear(bool ctrlHeld, bool shiftHeld);
+
+/**
+ * @brief Every per-pixel and per-notch rate a wheel, slider or the global trackball mode
+ * applies, gathered in one place so retuning any of them is a one-line change here rather than
+ * a hunt through widget code. Values are at gear 1 (no modifier held); gear() scales them.
+ *
+ * wheelRim is the trackball's starting radius in plane units. The rates that move chroma
+ * (hue, saturation, temp, tint) are tuned per axis rather than derived from wheelRim, because
+ * round-tripping them through a shared "chroma per pixel" constant would tie the saturation
+ * and temperature controls' feel together for no reason other than sharing a formula.
+ *
+ * Saturation has one rate for both the Sat slider's relative drag and global C mode's y-axis:
+ * both are explicit saturation controls, unlike the wheel trackball (which moves hue and
+ * saturation together and keeps its own, faster feel) or global C's x-axis (hue, its own rate).
+ * Value, temp and tint each have a separate rate for ratio roles (Gain, Colour, Power, Auto)
+ * and for Offset, because the two roles' axes live on different physical scales: a ratio
+ * role's value axis is a count of stops (powers of two), while Offset's is a raw delta on a
+ * linear axis through 18% grey.
+ **/
+struct TrackballRates {
+    double wheelRim = 0.035;
+    double hueDegreesPerPixel = 0.5;
+    double satPlanePerPixel = 3.5e-5;
+    double valueStopPerPixelRatio = 0.01;
+    double valuePerPixelOffset = 7e-4;
+    double tempMiredPerPixelRatio = 0.5;
+    double tintPerPixelRatio = 0.25;
+    double tempTintPerPixelOffset = 7e-4;
+    double zoomFactorPerNotch = 0.8408964152537145;
+    double zoomMin = 0.0002;
+    double zoomMax = 1.0;
+};
+
+/**
+ * @brief The Value, Temp and Tint per-pixel rates, picked by whether role is a ratio role or
+ * Offset (see TrackballRates). Shared by the wheel's held-key locks, the sliders' relative
+ * drags and the global trackball mode, so all three feel identical for the same role.
+ **/
+double valueRatePerPixel(const TrackballRates& rates, ColorKnobRoleEnum role);
+double tempRatePerPixel(const TrackballRates& rates, ColorKnobRoleEnum role);
+double tintRatePerPixel(const TrackballRates& rates, ColorKnobRoleEnum role);
+
+/**
+ * @brief Which gesture a ColorEdit carries out. Trackball is the wheel's own 2D drag; Hue, Sat,
+ * Value, TempTint and Alpha are the individual axes that the sliders, the wheel's held-key
+ * locks and the global trackball mode all funnel through applyEdit.
+ **/
+enum ColorAxisEnum {
+    eColorAxisTrackball,
+    eColorAxisHue,
+    eColorAxisSat,
+    eColorAxisValue,
+    eColorAxisTempTint,
+    eColorAxisAlpha
+};
+
+/**
+ * @brief One gesture step, already converted out of screen pixels and into the axis's own
+ * units (degrees, plane distance, stops, Y, mired, tint or alpha) by whichever widget or mode
+ * read the pointer delta and the gear. d2 is the y-component for Trackball and TempTint, and
+ * unused otherwise. absolute means d1 (and d2, for TempTint) is the target value, as a slider
+ * marker drag or a ring click gives; otherwise it is a delta to add to the current value, as
+ * every other drag gives. Trackball has no absolute form (a 2D position is only ever reached
+ * by accumulating drags, never typed or clicked directly), so absolute is ignored for it.
+ **/
+struct ColorEdit {
+    ColorAxisEnum axis;
+    double d1 = 0.0;
+    double d2 = 0.0;
+    bool absolute = false;
+};
+
+/**
+ * @brief The single dispatcher every wheel, slider and the global trackball mode calls once
+ * they have turned their own input into a ColorEdit: it is the only place that needs to know
+ * how each axis maps onto the roles' value and chroma edits above. rememberedHueDegrees is
+ * only read by Sat edits that start from a neutral value, where the plane point has no hue of
+ * its own to grow back out along.
+ **/
+ChromaEditResult applyEdit(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, const ColorEdit& edit, double rememberedHueDegrees);
+
+/**
+ * @brief Which property a click-drag in the global trackball mode adjusts: C is hue (x) and
+ * saturation (y, up = more), T is temp (x, right = warmer) and tint (y, up = magenta), and V is
+ * value from dx - dy, so either screen axis brightens or darkens depending on its sign. (The
+ * round-1 H and S modes are dropped: C already reaches hue and saturation, each on its own
+ * screen axis, which is what H and S separately offered at the cost of an extra pair of keys.)
+ **/
+enum ColorGlobalModeEnum {
+    eColorGlobalModeC,
+    eColorGlobalModeT,
+    eColorGlobalModeV
+};
+
+/**
+ * @brief One global-mode pointer move, turned into the matching ColorEdit(s) through
+ * TrackballRates and applied through applyEdit. dx and dy are raw screen pixels; gearFactor is
+ * gear()'s result for whatever is held. C rotates hue then moves saturation, in that order, so
+ * a drag starting exactly on white grows saturation along the hue the same move just set,
+ * rather than along a stale remembered one.
+ **/
+ChromaEditResult globalModeEdit(ColorGlobalModeEnum mode, ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, double dx, double dy, double gearFactor, const TrackballRates& rates, double rememberedHueDegrees);
+
+/**
+ * @brief Which of the six sliders a ColorEditSlider is: Hue, Sat, Value, Temp, Tint or Alpha.
+ * This is a separate list from ColorAxisEnum because Temp and Tint are one combined gesture
+ * axis (TempTint) but two separate sliders with two separate ranges.
+ **/
+enum ColorSliderKindEnum {
+    eColorSliderKindHue,
+    eColorSliderKindSat,
+    eColorSliderKindValue,
+    eColorSliderKindTemp,
+    eColorSliderKindTint,
+    eColorSliderKindAlpha
+};
+
+/**
+ * @brief A slider's domain and the unit its typed field should show. Sat's range tops out at
+ * the wheel's rim, so dragging the Sat marker all the way across reaches the same saturation as
+ * dragging the puck to the wheel's edge. Value, Temp and Tint differ by role for the same
+ * reason their rates do (TrackballRates): a ratio role's axes are stops and physical
+ * mired/tint, Offset's are raw deltas on a linear axis, so "axis" is their unit rather than a
+ * physical one.
+ **/
+struct SliderRange {
+    double rangeMin = 0.0;
+    double rangeMax = 0.0;
+    std::string unit;
+};
+
+SliderRange sliderMapping(ColorSliderKindEnum kind, ColorKnobRoleEnum role, const TrackballRates& rates);
+
+/**
+ * @brief Past either end of a slider's range, its marker is drawn as a chevron pointing off the
+ * track instead of being clamped onto it, so a value that has run off one end still reads as
+ * "more that way" rather than looking identical to one sitting exactly at the end.
+ **/
+enum SliderChevronEnum {
+    eSliderChevronNone,
+    eSliderChevronLow,
+    eSliderChevronHigh
+};
+
+/**
+ * @brief The marker position in [0, 1] along the track for a value in range, clamped at either
+ * end, and its inverse. Round-tripping a value already inside the range through both is exact;
+ * sliderChevron reports when the raw, unclamped value is the one that needs the chevron look.
+ **/
+double valueToMarker(const SliderRange& range, double value);
+double markerToValue(const SliderRange& range, double marker);
+SliderChevronEnum sliderChevron(const SliderRange& range, double value);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // NATRON_ENGINE_COLORWHEELMATH_H

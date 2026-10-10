@@ -73,7 +73,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - verify: Xvfb screenshots: a node with no user colour unchanged; a recoloured node with category body + user border; the same node selected with the halo still distinct; a cloned node unchanged.
   - size: L
 
-- [ ] M24.P3.T3 — Persist "the user set a colour" explicitly
+- [x] M24.P3.T3 — Persist "the user set a colour" explicitly
   - files: `Gui/NodeGuiSerialization.h`, `Gui/NodeGuiSerialization.cpp`,
     `Gui/ProjectGui.cpp`
   - approach: `NodeGuiSerialization` stores `_r/_g/_b` and a `_colorWasFound` flag,
@@ -153,6 +153,8 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - Deep nodes are narrower than other nodes, with no icon column, so their labels overflow the box. P3.T6 fixes the label contrast but not the overflow; node-text wrap is M56's.
   - Solid optional-input edges draw at 40% opacity, which dims a deep edge into the background now that colour is the only kind signal.
   - Natron's SIGTERM handler calls `quitApplication()` from the signal handler and often does not exit, so a hung GUI test outlives its timeout.
+
+- 2026-10-10 — **P3.T3:** NodeGuiSerialization version 6 → 7 (`NODE_GUI_INTRODUCES_USER_COLOR`), with GuiTests `NodeGuiUserColorSerialization.*` (4/4). The GUI save/reload round-trip moves to the gate, since nothing outside C++ sets a user colour until P3.T4. Older Natron builds cannot read v7 projects, as with every earlier bump. A pre-existing bug was found but left alone: `NodeGui::copyFrom()` swaps green and blue when restoring the overlay colour (`fromRgbF(overlayR, overlayB, overlayG)`).
 
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate

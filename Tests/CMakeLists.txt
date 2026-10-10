@@ -150,6 +150,7 @@ set(GuiTests_SOURCES
     ColorAdjustPanel_Test.cpp
     ColorEditSlider_Test.cpp
     ColorKnobUndoMerge_Test.cpp
+    ColorPickerLabel_Test.cpp
     ColorWheelWidget_Test.cpp
     KnobGuiString_Test.cpp
     LayerChannelRow_Test.cpp

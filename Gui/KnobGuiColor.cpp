@@ -32,10 +32,12 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QApplication>
+#include <QFocusEvent>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QMetaObject>
+#include <QMouseEvent>
 #include <QScrollArea>
 #include <QStyle>
 #include <QToolTip>
@@ -122,6 +124,10 @@ colorValueFromVector(const std::vector<double>& values)
 
     return v;
 }
+
+// Fixed rather than derived from the swatch's own size (22px, NATRON_MEDIUM_BUTTON_SIZE), so
+// the drag's feel does not change if that size ever does.
+const double kSwatchTrackballPixelsPerRim = 64.0;
 } // namespace
 
 ColorPickerLabel::ColorPickerLabel(KnobGuiColor* knob,
@@ -129,30 +135,301 @@ ColorPickerLabel::ColorPickerLabel(KnobGuiColor* knob,
     : Label(parent)
     , _pickingEnabled(false)
     , _knob(knob)
+    , _pressed(false)
+    , _dragging(false)
+    , _pressPos()
+    , _lastDragPos()
+    , _segmentBase()
+    , _dragValue()
+    , _dragTotal()
+    , _hasDragTotal(false)
+    , _heldLocks()
+    , _hovered(false)
+    , _keyboardGrabbed(false)
 {
     setMouseTracking(true);
+    if (_knob) {
+        // So a V/T lock key held before the drag starts still reaches keyPressEvent below.
+        setFocusPolicy(Qt::StrongFocus);
+    }
+}
+
+bool
+ColorPickerLabel::isLockKey(int key) const
+{
+    return (key == Qt::Key_V) || (key == Qt::Key_T);
+}
+
+bool
+ColorPickerLabel::wantsShortcutOverride(const QKeyEvent* e) const
+{
+    if (!isLockKey(e->key()) || !(_dragging || _hovered)) {
+        return false;
+    }
+
+    // Ctrl is only claimed mid-drag, where it is the gear: over an idle swatch Ctrl+V and
+    // Ctrl+T must still reach their application shortcuts.
+    Qt::KeyboardModifiers allowed = Qt::ShiftModifier | Qt::KeypadModifier;
+
+    if (_dragging) {
+        allowed |= Qt::ControlModifier;
+    }
+
+    return !(e->modifiers() & ~allowed);
+}
+
+ColorAxisEnum
+ColorPickerLabel::activeLock() const
+{
+    if (_heldLocks.empty()) {
+        return eColorAxisTrackball;
+    }
+
+    return (_heldLocks.back() == Qt::Key_V) ? eColorAxisValue : eColorAxisTempTint;
+}
+
+QString
+ColorPickerLabel::axisLabel(ColorAxisEnum axis) const
+{
+    switch (axis) {
+    case eColorAxisValue:
+        return tr("Value");
+    case eColorAxisTempTint:
+        return tr("Temp/Tint");
+    default:
+        return tr("Trackball");
+    }
+}
+
+bool
+ColorPickerLabel::beginTrackballDrag()
+{
+    if (!_knob->isColorEditable()) {
+        return false;
+    }
+    _segmentBase = _knob->getCurrentColorValue();
+    _dragValue = _segmentBase;
+    _hasDragTotal = false;
+    _knob->getEditSession()->begin(tr("Trackball"));
+    grabKeyboard();
+    _keyboardGrabbed = true;
+
+    return true;
 }
 
 void
-ColorPickerLabel::mousePressEvent(QMouseEvent*)
+ColorPickerLabel::stepTrackballDrag(const QPointF& pos,
+                                    Qt::KeyboardModifiers modifiers)
+{
+    double dx = pos.x() - _lastDragPos.x();
+    double dy = pos.y() - _lastDragPos.y();
+
+    _lastDragPos = pos;
+    if ((dx == 0.0) && (dy == 0.0)) {
+        return;
+    }
+
+    ColorKnobRoleEnum role = _knob->getColorRole();
+    TrackballRates rates;
+    double g = gear(modifiers.testFlag(Qt::ControlModifier), modifiers.testFlag(Qt::ShiftModifier));
+    ColorEdit edit;
+
+    edit.axis = activeLock();
+    switch (edit.axis) {
+    case eColorAxisValue:
+        edit.d1 = -dy * valueRatePerPixel(rates, role) * g;
+        break;
+
+    case eColorAxisTempTint:
+        edit.d1 = dx * tempRatePerPixel(rates, role) * g;
+        edit.d2 = -dy * tintRatePerPixel(rates, role) * g;
+        break;
+
+    default: {
+        double scale = rates.wheelRim / kSwatchTrackballPixelsPerRim * g;
+
+        edit.axis = eColorAxisTrackball;
+        edit.d1 = dx * scale;
+        edit.d2 = -dy * scale;
+        break;
+    }
+    }
+
+    // Applied from a fixed base plus the accumulated total, like ColorAdjustPanel, so repeated
+    // rounding across many small moves never drifts the result away from a single big one.
+    if (_hasDragTotal && (edit.axis != _dragTotal.axis)) {
+        _segmentBase = _dragValue;
+        _hasDragTotal = false;
+    }
+    if (!_hasDragTotal) {
+        _dragTotal = edit;
+    } else {
+        _dragTotal.d1 += edit.d1;
+        _dragTotal.d2 += edit.d2;
+    }
+    _hasDragTotal = true;
+
+    ChromaEditResult r = applyEdit(role, _knob->getEditBasis(), _segmentBase, _dragTotal, 0.0);
+
+    if (r.valid) {
+        _dragValue = r.value;
+    }
+
+    _knob->getEditSession()->move(_dragValue, axisLabel(edit.axis));
+}
+
+void
+ColorPickerLabel::endTrackballDrag()
+{
+    if (_keyboardGrabbed) {
+        releaseKeyboard();
+        _keyboardGrabbed = false;
+    }
+    _knob->getEditSession()->end(_dragValue, axisLabel(_hasDragTotal ? _dragTotal.axis : eColorAxisTrackball));
+    _hasDragTotal = false;
+}
+
+void
+ColorPickerLabel::mousePressEvent(QMouseEvent* e)
 {
     if (!_knob) {
         return;
     }
-    _pickingEnabled = !_pickingEnabled;
-    Q_EMIT pickingEnabled(_pickingEnabled);
-    setColor(_currentColor); //< refresh the icon
+    if (_pressed) {
+        Label::mousePressEvent(e);
+
+        return;
+    }
+    _pressed = true;
+    _dragging = false;
+    _pressPos = e->position();
+    _lastDragPos = _pressPos;
+    setFocus(Qt::MouseFocusReason);
+}
+
+void
+ColorPickerLabel::mouseMoveEvent(QMouseEvent* e)
+{
+    if (!_knob || !_pressed) {
+        Label::mouseMoveEvent(e);
+
+        return;
+    }
+
+    QPointF pos = e->position();
+
+    if (!_dragging) {
+        if ((pos - _pressPos).manhattanLength() < QApplication::startDragDistance()) {
+            return;
+        }
+        if (!beginTrackballDrag()) {
+            // Not editable right now (an expression, a slaved dimension, or disabled): the
+            // gesture never starts, so an eventual release still reads as a plain click.
+            return;
+        }
+        _dragging = true;
+    }
+    stepTrackballDrag(pos, e->modifiers());
+}
+
+void
+ColorPickerLabel::mouseReleaseEvent(QMouseEvent* e)
+{
+    if (!_knob || !_pressed) {
+        Label::mouseReleaseEvent(e);
+
+        return;
+    }
+
+    bool wasDragging = _dragging;
+
+    if (_dragging) {
+        stepTrackballDrag(e->position(), e->modifiers());
+        endTrackballDrag();
+    }
+    _pressed = false;
+    _dragging = false;
+    if (!wasDragging) {
+        _pickingEnabled = !_pickingEnabled;
+        Q_EMIT pickingEnabled(_pickingEnabled);
+        setColor(_currentColor); //< refresh the icon
+    }
+}
+
+void
+ColorPickerLabel::keyPressEvent(QKeyEvent* e)
+{
+    int key = e->key();
+
+    if (!_knob || !isLockKey(key) || !(_dragging || _hovered)) {
+        Label::keyPressEvent(e);
+
+        return;
+    }
+    e->accept();
+    if (e->isAutoRepeat()) {
+        return;
+    }
+    _heldLocks.erase(std::remove(_heldLocks.begin(), _heldLocks.end(), key), _heldLocks.end());
+    _heldLocks.push_back(key);
+}
+
+void
+ColorPickerLabel::keyReleaseEvent(QKeyEvent* e)
+{
+    int key = e->key();
+
+    if (!_knob || !isLockKey(key)) {
+        Label::keyReleaseEvent(e);
+
+        return;
+    }
+    e->accept();
+    if (e->isAutoRepeat()) {
+        return;
+    }
+    _heldLocks.erase(std::remove(_heldLocks.begin(), _heldLocks.end(), key), _heldLocks.end());
+}
+
+void
+ColorPickerLabel::focusOutEvent(QFocusEvent* e)
+{
+    // The releases of keys held when focus leaves go elsewhere, so they would otherwise stay
+    // latched; mid-drag the keyboard grab still delivers them here.
+    if (!_dragging) {
+        _heldLocks.clear();
+    }
+    Label::focusOutEvent(e);
+}
+
+bool
+ColorPickerLabel::event(QEvent* e)
+{
+    if (_knob && (e->type() == QEvent::ShortcutOverride) && wantsShortcutOverride(static_cast<QKeyEvent*>(e))) {
+        e->accept();
+
+        return true;
+    }
+
+    return Label::event(e);
 }
 
 void
 ColorPickerLabel::enterEvent(QEnterEvent*)
 {
+    _hovered = true;
+    if (_knob) {
+        // Taking focus on hover is what lets a lock key pressed before the mouse button reach
+        // the swatch at all; with click-to-focus it would only work from the second drag on.
+        setFocus(Qt::MouseFocusReason);
+    }
     QToolTip::showText( QCursor::pos(), toolTip() );
 }
 
 void
 ColorPickerLabel::leaveEvent(QEvent*)
 {
+    _hovered = false;
     QToolTip::hideText();
 }
 
@@ -314,6 +591,32 @@ KnobGuiColor::getEditSession()
     }
 
     return _editSession.get();
+}
+
+ColorKnobRoleEnum
+KnobGuiColor::getColorRole() const
+{
+    KnobColorPtr knob = _knob.lock();
+
+    return knob ? knob->getColorRole() : eColorKnobRoleAuto;
+}
+
+LumaBasis
+KnobGuiColor::getEditBasis() const
+{
+    return ColorKnobEditSession::basisFor(getColorManagement());
+}
+
+KnobColorValue
+KnobGuiColor::getCurrentColorValue() const
+{
+    return ColorKnobEditSession::readKnobValue(_knob.lock());
+}
+
+bool
+KnobGuiColor::isColorEditable() const
+{
+    return isAdjustPanelEditable();
 }
 
 ProjectColorManagementPtr
@@ -536,12 +839,17 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
     KnobColorPtr knob = _knob.lock();
     _colorLabel = new ColorPickerLabel( _useSimplifiedUI ? NULL : this, containerLayout->widget() );
     if (!_useSimplifiedUI) {
-        _colorLabel->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("To pick a color on a viewer, click this and then press control + left click on any viewer.\n"
-                                                                   "You can also pick the average color of a given rectangle by holding control + shift + left click\n. "
-                                                                   "To deselect the picker left click anywhere."
-                                                                   "Note that by default %1 converts to linear the color picked\n"
-                                                                   "because all the processing pipeline is linear, but you can turn this off in the\n"
-                                                                   "preferences panel.").arg( QString::fromUtf8(NATRON_APPLICATION_NAME) ), NATRON_NAMESPACE::WhiteSpaceNormal) );
+        _colorLabel->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Click and drag to adjust this colour's hue and saturation like a trackball. "
+                                                                          "Hold V while dragging to change only its value, or T for its temperature and tint. "
+                                                                          "Hold Ctrl to move ten times slower, Shift to move four times faster, or both together for the slowest, finest control.\n\n"
+                                                                          "A click without dragging toggles picking a color on a viewer instead: once enabled, press control + left click on any viewer.\n"
+                                                                          "You can also pick the average color of a given rectangle by holding control + shift + left click\n. "
+                                                                          "To deselect the picker left click anywhere."
+                                                                          "Note that by default %1 converts to linear the color picked\n"
+                                                                          "because all the processing pipeline is linear, but you can turn this off in the\n"
+                                                                          "preferences panel.")
+                                                                           .arg(QString::fromUtf8(NATRON_APPLICATION_NAME)),
+                                                                       NATRON_NAMESPACE::WhiteSpaceNormal));
     }
 
     QSize medSize( TO_DPIX(NATRON_MEDIUM_BUTTON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE) );

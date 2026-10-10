@@ -22,3 +22,6 @@ target_link_libraries(Smoke_Test PRIVATE smoke GTest::gtest_main)
 
 include(GoogleTest)
 gtest_discover_tests(Smoke_Test)
+
+add_executable(DeviceList tests/DeviceList_main.cpp)
+target_link_libraries(DeviceList PRIVATE Vulkan::Vulkan -static-libstdc++ -static-libgcc)

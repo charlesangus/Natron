@@ -79,7 +79,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
     - The inference table is tested row by row: Grade's seven knobs (by default, range and name), Constant's colour, and an OFX-style `gamma` param.
   - size: M
 
-- [ ] M44.P1.T5 — Add the gesture model: gears, the rates table, slider absolute/relative mapping, and global-mode axis mapping
+- [x] M44.P1.T5 — Add the gesture model: gears, the rates table, slider absolute/relative mapping, and global-mode axis mapping
   - files: `Engine/ColorWheelMath.h`, `Engine/ColorWheelMath.cpp`, `Tests/ColorWheelMath_Test.cpp`
   - approach:
     - `double gear(bool ctrl, bool shift)` gives ×0.1, ×4 and ×0.01.

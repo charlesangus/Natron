@@ -955,6 +955,10 @@ OfxHost::loadOFXPlugins(IOPluginsMap* readersMap,
         if (p->getContexts().size() == 0) {
             continue;
         }
+        // Reading is done by the native Read node only.
+        if (p->getContexts().find(kOfxImageEffectContextReader) != p->getContexts().end()) {
+            continue;
+        }
         assert( p->getBinary() );
         if ( !p->getBinary() ) {
             continue;

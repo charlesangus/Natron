@@ -80,9 +80,6 @@ BaseTest::registerTestPlugins()
 
     _readPluginID = QString::fromUtf8(PLUGINID_NATRON_READ);
 
-    _readOIIOPluginID = QString::fromUtf8(PLUGINID_OFX_READOIIO);
-    _allTestPluginIDs.push_back(_readOIIOPluginID);
-
     _writeOIIOPluginID = QString::fromUtf8(PLUGINID_OFX_WRITEOIIO);
     _allTestPluginIDs.push_back(_writeOIIOPluginID);
 

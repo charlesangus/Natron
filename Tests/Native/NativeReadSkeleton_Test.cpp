@@ -40,13 +40,13 @@
 #include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Project.h"
-#include "Engine/ReadNode.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
 
@@ -58,12 +58,6 @@ bool
 isNativeRead(const NodePtr& node)
 {
     return node && dynamic_cast<NativeRead*>(node->getEffectInstance().get());
-}
-
-bool
-isReadContainer(const NodePtr& node)
-{
-    return node && dynamic_cast<ReadNode*>(node->getEffectInstance().get());
 }
 
 } // namespace
@@ -90,28 +84,19 @@ TEST_F(NativeReadSkeletonTest, ExplicitMajorTwoIsTheNativeNode)
 
     ASSERT_TRUE(bool(node));
     EXPECT_TRUE(isNativeRead(node));
-    EXPECT_FALSE(isReadContainer(node));
     EXPECT_EQ(PLUGIN_MAJOR_NATRON_READ, node->getMajorVersion());
     EXPECT_TRUE(node->getEffectInstance()->isReader());
     EXPECT_EQ(0, node->getEffectInstance()->getNInputs());
 }
 
-TEST_F(NativeReadSkeletonTest, BundledReaderIDIsTheContainer)
+TEST_F(NativeReadSkeletonTest, OfxReaderIDBuildsNothingAtTheNativeMajor)
 {
-    NodePtr node = createNode(_readOIIOPluginID);
+    CreateNodeArgs args(PLUGINID_OFX_READOIIO, getApp()->getProject());
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, PLUGIN_MAJOR_NATRON_READ, 0);
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, -1, 1);
+    args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
 
-    ASSERT_TRUE(bool(node));
-    EXPECT_TRUE(isReadContainer(node));
-    EXPECT_FALSE(isNativeRead(node));
-}
-
-TEST_F(NativeReadSkeletonTest, BundledReaderIDIsTheContainerEvenAtTheNativeMajor)
-{
-    NodePtr node = createNode(_readOIIOPluginID, PLUGIN_MAJOR_NATRON_READ);
-
-    ASSERT_TRUE(bool(node));
-    EXPECT_TRUE(isReadContainer(node));
-    EXPECT_FALSE(isNativeRead(node));
+    EXPECT_FALSE(bool(getApp()->createNode(args)));
 }
 
 TEST_F(NativeReadSkeletonTest, RendersBlack)

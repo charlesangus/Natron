@@ -1125,10 +1125,6 @@ isEntitledForInspector(Plugin* plugin,
 
 }
 
-namespace {
-const int kReadContainerMajor = 1;
-}
-
 NodePtr
 AppInstance::createNodeInternal(CreateNodeArgs& args)
 {
@@ -1155,14 +1151,9 @@ AppInstance::createNodeInternal(CreateNodeArgs& args)
 
 #ifdef NATRON_ENABLE_IO_META_NODES
     NodePtr argsIOContainer = args.getProperty<NodePtr>(kCreateNodeArgsPropMetaNodeContainer);
-    //If it is a reader or writer, create a ReadNode or WriteNode
+    // If it is a writer, create a WriteNode
     if (!argsIOContainer) {
-        if ( ReadNode::isBundledReader( argsPluginID.toStdString(), wasProjectCreatedWithLowerCaseIDs() ) ) {
-            args.addParamDefaultValue(kNatronReadNodeParamDecodingPluginID, argsPluginID.toStdString());
-            findId = QString::fromUtf8(PLUGINID_NATRON_READ);
-            // The requested version is the decoder's, not the container's.
-            versionMajor = kReadContainerMajor;
-        } else if ( WriteNode::isBundledWriter( argsPluginID.toStdString(), wasProjectCreatedWithLowerCaseIDs() ) ) {
+        if (WriteNode::isBundledWriter(argsPluginID.toStdString(), wasProjectCreatedWithLowerCaseIDs())) {
             args.addParamDefaultValue(kNatronWriteNodeParamEncodingPluginID, argsPluginID.toStdString());
             findId = QString::fromUtf8(PLUGINID_NATRON_WRITE);
         }

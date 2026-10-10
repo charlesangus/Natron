@@ -99,7 +99,6 @@ protected:
     ///////////////stick to the default plug-ins that are pre-compiled in the shell-script.
     QString _generatorPluginID;
     QString _readPluginID;
-    QString _readOIIOPluginID;
     QString _writeOIIOPluginID;
     QString _textArenaPluginID;
     std::vector<QString> _allTestPluginIDs;

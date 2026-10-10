@@ -34,7 +34,9 @@
 
 #include "BaseTest.h"
 
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Color/Clamp.h"
@@ -49,6 +51,7 @@
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -59,6 +62,7 @@
 #include "Engine/Nodes/Transform/Reformat.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Plugin.h"
+#include "Engine/Project.h"
 
 NATRON_NAMESPACE_USING
 
@@ -108,6 +112,7 @@ nativeTable()
         { PLUGINID_NATRON_DILATE, PLUGIN_MAJOR_NATRON_DILATE },
         { PLUGINID_NATRON_EDGEDETECT, PLUGIN_MAJOR_NATRON_EDGEDETECT },
         { PLUGINID_NATRON_COLORLOOKUP, PLUGIN_MAJOR_NATRON_COLORLOOKUP },
+        { PLUGINID_NATRON_READ, PLUGIN_MAJOR_NATRON_READ },
     };
 
     return table;
@@ -138,4 +143,23 @@ TEST_F(NativePluginListTest, CreatedNodesAreNative)
         ASSERT_TRUE(bool(node)) << entry.id;
         EXPECT_TRUE(dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get())) << entry.id;
     }
+}
+
+TEST_F(NativePluginListTest, NativeReadIsTheOnlyReader)
+{
+    for (const auto& versions : appPTR->getPluginsList()) {
+        for (const Plugin* plugin : versions.second) {
+            if (plugin->isReader()) {
+                EXPECT_EQ(std::string(PLUGINID_NATRON_READ), versions.first);
+            }
+        }
+    }
+}
+
+TEST_F(NativePluginListTest, OfxReaderIDBuildsNothing)
+{
+    CreateNodeArgs args(PLUGINID_OFX_READOIIO, getApp()->getProject());
+    args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
+
+    EXPECT_FALSE(bool(getApp()->createNode(args)));
 }

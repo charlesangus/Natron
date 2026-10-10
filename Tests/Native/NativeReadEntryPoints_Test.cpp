@@ -58,7 +58,6 @@
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Project.h"
-#include "Engine/ReadNode.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/WriteNode.h"
@@ -136,13 +135,12 @@ TEST_F(NativeReadEntryPointsTest, UnversionedReadIsTheNativeNode)
     EXPECT_EQ(PLUGIN_MAJOR_NATRON_READ, node->getMajorVersion());
 }
 
-TEST_F(NativeReadEntryPointsTest, ExplicitOfxReaderIDStillBuildsTheContainer)
+TEST_F(NativeReadEntryPointsTest, ExplicitOfxReaderIDBuildsNothing)
 {
-    NodePtr node = createNode(_readOIIOPluginID);
+    CreateNodeArgs args(PLUGINID_OFX_READOIIO, getApp()->getProject());
+    args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
 
-    ASSERT_TRUE(bool(node));
-    EXPECT_FALSE(isNativeRead(node));
-    EXPECT_TRUE(dynamic_cast<ReadNode*>(node->getEffectInstance().get()) != NULL);
+    EXPECT_FALSE(bool(getApp()->createNode(args)));
 }
 
 TEST_F(NativeReadEntryPointsTest, CreateReaderBuildsANativeReadForEveryFormat)

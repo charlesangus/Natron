@@ -168,7 +168,7 @@ def _write_solid_png(path, width, height, rgb):
 
     Used as the smoke test's input image so this script does not depend on
     any downloaded test assets or a generator OpenFX plug-in (only
-    openfx-io's ReadOIIO/WriteOIIO are available in CI, see
+    openfx-io's WriteOIIO is available in CI, see
     ".github/workflows/ci.yml"'s "Download Plugins" step; the generator
     plug-ins from openfx-misc, e.g. CheckerBoard/ColorBars/Constant, are
     not).
@@ -299,7 +299,7 @@ def check_plugin_id_enumeration():
     actual_ids = set(NatronEngine.natron.getPluginIDs())
 
     bundles = {
-        "IO": ("fr.inria.openfx.ReadOIIO", "fr.inria.openfx.WriteOIIO"),
+        "IO": ("fr.inria.openfx.WriteOIIO",),
         "Misc": ("net.sf.openfx.Premult", "net.sf.openfx.HSVToolPlugin",
                  "net.sf.openfx.switchPlugin"),
         "CImg": ("net.sf.cimg.CImgSharpen", "net.sf.cimg.CImgPlasma"),
@@ -762,6 +762,7 @@ def _write_time_offset_fixture_copy(dir_path, output_dir):
     # timeOffset==0 there is nothing stale for GenericReaderPlugin's
     # sequenceTime = t - timeOffset to get wrong. Do not "simplify" this
     # fixture to a zero offset.
+    # tools/ci/regen_read_time_offset.py regenerates the fixture.
     content = content.replace(READ_TIME_OFFSET_FIXTURE_OUTPUT_TOKEN, output_dir)
 
     copy_path = os.path.join(dir_path, "read-time-offset.ntp")

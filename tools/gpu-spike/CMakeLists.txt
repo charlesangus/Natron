@@ -9,6 +9,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 find_package(Vulkan REQUIRED)
 find_package(GTest REQUIRED)
+find_package(Threads REQUIRED)
 
 include(FetchSlang)
 include(SlangKernels)
@@ -31,3 +32,15 @@ slang_add_kernel(blur kernels/blur.slang ENTRY blurPass)
 add_executable(BlurCpu_Test tests/BlurCpu_Test.cpp)
 target_link_libraries(BlurCpu_Test PRIVATE blur GTest::gtest_main)
 gtest_discover_tests(BlurCpu_Test)
+
+add_library(gpuspike_core STATIC src/GpuDevice.cpp src/Vma.cpp)
+target_include_directories(gpuspike_core PUBLIC src)
+target_include_directories(gpuspike_core SYSTEM PUBLIC
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/VulkanMemoryAllocator/include")
+target_link_libraries(gpuspike_core PUBLIC Vulkan::Vulkan Threads::Threads)
+target_compile_options(gpuspike_core PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+
+add_executable(GpuDevice_Test tests/GpuDevice_Test.cpp)
+target_link_libraries(GpuDevice_Test PRIVATE gpuspike_core GTest::gtest_main
+  -static-libstdc++ -static-libgcc)
+gtest_discover_tests(GpuDevice_Test)

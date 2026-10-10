@@ -4,12 +4,12 @@ Measure where render time actually goes on real comps, and what host↔GPU trans
 
 ## Phase 82.1: Instrumentation
 
-- [ ] M82.P1.T1 — Record per-task render cost in the task-graph scheduler
+- [x] M82.P1.T1 — Record per-task render cost in the task-graph scheduler
   - files: `Engine/RenderScheduler.cpp`, `Engine/RenderScheduler.h`, a new `Tests/RenderProfile_Test.cpp`
   - approach: In `RenderScheduler::executeTask`, when a profiling switch is on (env var `NATRON_RENDER_PROFILE=<path>`; off by default, zero cost when off), record per task: plugin ID, node script name, time, view, mipmap level, RoI pixel count, components and bit depth, input-dependency task IDs, `estimatedBytes`, wall time of `renderRoI`, and whether the node is a pure point op (native `PixelKernel` effect) or reports GL support. Append records to a JSON-lines file per process, buffered and mutex-guarded so pool threads don't contend on I/O.
   - verify: a gtest renders a small Read → Grade → Blur → Merge graph with the variable set and checks one record per task with a non-zero time and correct dependency edges.
   - size: M
-- [ ] M82.P1.T2 — Region analysis report script
+- [x] M82.P1.T2 — Region analysis report script
   - files: a new `tools/bench/render-profile-report.py`
   - approach: Read the JSON-lines output. Aggregate time per plugin. Mark nodes as heavy (above a configurable ms/Mpx threshold) or cheap. Find connected regions of "GPU-candidate" nodes (heavy nodes plus the cheap nodes linking them). For each region, compare its CPU time with its boundary bytes ÷ a bandwidth parameter (default 25 GB/s; unified memory as a second scenario). Print a per-comp summary: share of frame time in heavy nodes, number and size of regions, estimated net GPU gain.
   - verify: runs on M82.P1.T1's test output and on a synthetic file with a known answer.
@@ -33,3 +33,4 @@ Measure where render time actually goes on real comps, and what host↔GPU trans
 ## Decisions
 
 - 2026-10-10 — Runs on a second machine alongside M75 - Native Read: the user started the GPU milestones on the 7800X3D / RX 7900 XTX workstation while M75–M80 run on another machine. This PM leaves the board frontmatter (`current`, `pm_heartbeat`) to the M75 PM, edits only the M82–M87 rows and files, and pulls with rebase before every plan push. The PR targets `main`, not stacked on M75.
+- 2026-10-10 — First full ctest on this machine: 1251/1253; the two failures (`BlurKernels.CImgReferenceAvailable`, `NativeErodeDilateKernels.CImgReferenceAvailable`) are a missing CImg.h test asset after the dev image was rebuilt from scratch, not code. `RenderProfileTest` passes.

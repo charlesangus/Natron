@@ -184,6 +184,8 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 
 - 2026-10-10 — **Optional inputs are not faded (user):** this answers the P3.T2 evidence note. P4.T3 was added.
 
+- 2026-10-10 — **Gate (local):** the one end build (`fast`) was clean on the first try. 17 targeted ctest cases pass, and the screenshot script reports 32 PASS, 15 shots and 0 failures. Two script bugs were fixed along the way: reloading a just-saved project returns the same App, so `closeProject()` quit Natron; and the framing helper's centring was wrong for node subsets. The full debug and release suites run in CI on PR #50.
+
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate
 were captured (Xvfb + screenshot, since this cannot be asserted in a unit test),

@@ -50,7 +50,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
     - `clampToDisc` returns the direction to an off-disc point.
   - size: M
 
-- [ ] M44.P1.T3 — Add Planckian temperature/tint and the offset-role linear axes
+- [x] M44.P1.T3 — Add Planckian temperature/tint and the offset-role linear axes
   - files: `Engine/ColorWheelMath.h`, `Engine/ColorWheelMath.cpp`, `Tests/ColorWheelMath_Test.cpp`
   - approach: Port the mockup's model (`mockup.py:49-147`).
     - The Kim et al. locus is valid for 1667–25000 K, worked in CIE 1960 uv, with Newton inversion to (mired, Duv).
@@ -67,7 +67,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
     - Out-of-domain inputs return invalid and never produce NaN.
   - size: M
 
-- [ ] M44.P1.T4 — Add the Power role (gamma through the mid-grey effect vector) and role inference
+- [x] M44.P1.T4 — Add the Power role (gamma through the mid-grey effect vector) and role inference
   - files: `Engine/ColorWheelMath.h`, `Engine/ColorWheelMath.cpp`, `Tests/ColorWheelMath_Test.cpp`
   - approach:
     - `powerToEffect(γ) = 0.18^(1/γ)` and its inverse `γ = ln 0.18 / ln e`. e ≤ 0, e ≥ 1, or γ ≤ 0 is invalid.
@@ -79,7 +79,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
     - The inference table is tested row by row: Grade's seven knobs (by default, range and name), Constant's colour, and an OFX-style `gamma` param.
   - size: M
 
-- [ ] M44.P1.T5 — Add the gesture model: gears, the rates table, slider absolute/relative mapping, and global-mode axis mapping
+- [x] M44.P1.T5 — Add the gesture model: gears, the rates table, slider absolute/relative mapping, and global-mode axis mapping
   - files: `Engine/ColorWheelMath.h`, `Engine/ColorWheelMath.cpp`, `Tests/ColorWheelMath_Test.cpp`
   - approach:
     - `double gear(bool ctrl, bool shift)` gives ×0.1, ×4 and ×0.01.
@@ -102,7 +102,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
 
 ## Phase 44.2: Engine plumbing
 
-- [ ] M44.P2.T1 — Expose the working space's luma weights and XYZ matrix from OCIO
+- [x] M44.P2.T1 — Expose the working space's luma weights and XYZ matrix from OCIO
   - files: `Engine/ProjectColorManagement.h`, `Engine/ProjectColorManagement.cpp`, `Tests/ProjectColorManagement_Test.cpp`
   - approach:
     - Add `bool getWorkingToXYZ(double m[9]) const` and `void getWorkingLuma(double w[3]) const`.
@@ -119,7 +119,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
     - A config change refreshes the cache.
   - size: M
 
-- [ ] M44.P2.T2 — Add a GUI-only role to `KnobColor` and declare it on Grade and ColorCorrect
+- [x] M44.P2.T2 — Add a GUI-only role to `KnobColor` and declare it on Grade and ColorCorrect
   - files: `Engine/KnobTypes.h`, `Engine/KnobTypes.cpp`, `Engine/Nodes/Color/Grade.cpp`, `Engine/Nodes/Color/ColorCorrect.cpp`, `Tests/Native/NativeGrade_Test.cpp`
   - approach:
     - Add `setColorRole` / `getColorRole` to `KnobColor`. Auto resolves through `inferColorRole` from the dimension-0 default, the display minimum and the script name.
@@ -136,7 +136,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
 
 These widgets know nothing about knobs. Tests go in the **`GuiTests`** executable: add each file to `GuiTests_SOURCES` in `Tests/CMakeLists.txt`, then run `build/debug/Tests/GuiTests --gtest_filter=<Suite>*`, or `ctest -R <Suite>`. They run on the offscreen platform with no GL, so the debug FP-trap limit does not apply.
 
-- [ ] M44.P3.T1 — Build `ColorWheelWidget` painting: the re-centred xy disc, hue ring, gamut triangle, locus or axes, white marker with off-wheel crosshair and caret, and puck parking
+- [x] M44.P3.T1 — Build `ColorWheelWidget` painting: the re-centred xy disc, hue ring, gamut triangle, locus or axes, white marker with off-wheel crosshair and caret, and puck parking
   - files: `Gui/ColorWheelWidget.h` (new), `Gui/ColorWheelWidget.cpp` (new), `Tests/ColorWheelWidget_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - Inputs: `setBasis(LumaBasis)`, `setRole`, `setValue(KnobColorValue)` (which sets the anchor), `setRim`, and `setDisplayConverter(std::function<void(float*, int)>)` for the bulk working → color_picking conversion.
@@ -153,7 +153,7 @@ These widgets know nothing about knobs. Tests go in the **`GuiTests`** executabl
     - It writes `grab()` PNGs to the test output directory.
   - size: L
 
-- [ ] M44.P3.T2 — Add wheel input: relative trackball, ring hue set/drag, working V/T held locks, gearing, scroll zoom, double-click reset, re-centre on release
+- [x] M44.P3.T2 — Add wheel input: relative trackball, ring hue set/drag, working V/T held locks, gearing, scroll zoom, double-click reset, re-centre on release
   - files: `Gui/ColorWheelWidget.h`, `Gui/ColorWheelWidget.cpp`, `Tests/ColorWheelWidget_Test.cpp`
   - approach:
     - **Hit test.** A press lands in the disc (trackball) or the ring band (12 px wide, 4 px tolerance).
@@ -183,7 +183,7 @@ These widgets know nothing about knobs. Tests go in the **`GuiTests`** executabl
     - A double-click emits a reset.
   - size: L
 
-- [ ] M44.P3.T3 — Build `ColorEditSlider`: the absolute marker, relative elsewhere, end chevrons and double-click reset
+- [x] M44.P3.T3 — Build `ColorEditSlider`: the absolute marker, relative elsewhere, end chevrons and double-click reset
   - files: `Gui/ColorEditSlider.h` (new), `Gui/ColorEditSlider.cpp` (new), `Tests/ColorEditSlider_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - A horizontal track painted with a gradient the caller supplies (hue spectrum, grey → hue, dark → light, blue → amber, green → magenta, black → white).
@@ -201,7 +201,7 @@ These widgets know nothing about knobs. Tests go in the **`GuiTests`** executabl
     - A double-click emits a reset.
   - size: M
 
-- [ ] M44.P3.T4 — Build `ColorAdjustPanel`: a Wheel tab (wheel + Hue/Sat/Value/Temp/Tint/Alpha sliders) and a Values tab (unclamped RGB/HSV, hex, palette)
+- [x] M44.P3.T4 — Build `ColorAdjustPanel`: a Wheel tab (wheel + Hue/Sat/Value/Temp/Tint/Alpha sliders) and a Values tab (unclamped RGB/HSV, hex, palette)
   - files: `Gui/ColorAdjustPanel.h` (new), `Gui/ColorAdjustPanel.cpp` (new), `Tests/ColorAdjustPanel_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - The panel owns the maths calls.
@@ -227,7 +227,7 @@ These widgets know nothing about knobs. Tests go in the **`GuiTests`** executabl
 
 These tasks change the real colour rows. Each task's GUI evidence is a scratch script under `build/m44-gui/` (untracked), run with `Tests/gui/run-gui-test.sh build/m44-gui/<script>.py build/fast/App/Natron` after `tools/ci/local/build.sh fast`. Debug builds cannot run the GUI under Xvfb, because they trap FP exceptions inside llvmpipe.
 
-- [ ] M44.P4.T1 — Add a below-row widget hook to `KnobGuiValue`, and top-align the labels of rows that use it
+- [x] M44.P4.T1 — Add a below-row widget hook to `KnobGuiValue`, and top-align the labels of rows that use it
   - files: `Gui/KnobGuiValue.h`, `Gui/KnobGuiValue.cpp`, `Gui/KnobGui.h`, `Gui/KnobGui.cpp`, `Gui/KnobGuiContainerHelper.cpp`
   - approach:
     - Add a protected virtual `QWidget* createBelowRowWidget(QWidget* parent)`, defaulting to null.
@@ -242,7 +242,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
     - With the property unset, the screenshot matches the pre-change layout pixel for pixel.
   - size: M
 
-- [ ] M44.P4.T2 — Wire `ColorAdjustPanel` into `KnobGuiColor` as the dropdown, replacing the popup, with gesture-to-undo plumbing
+- [x] M44.P4.T2 — Wire `ColorAdjustPanel` into `KnobGuiColor` as the dropdown, replacing the popup, with gesture-to-undo plumbing
   - files: `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`, `Gui/ColorKnobEditSession.h` (new), `Gui/ColorKnobEditSession.cpp` (new)
   - approach:
     - **Toggle.** `_colorSelectorButton` becomes a checkable ▸/▾ toggle for non-simplified knobs. The `QWidgetAction` popup stays on the simplified path only.
@@ -262,7 +262,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
     - Screenshots: collapsed, expanded, mid-drag.
   - size: L
 
-- [ ] M44.P4.T3 — Make each gesture exactly one undo step with a gesture-scoped merge key on `KnobUndoCommand`
+- [x] M44.P4.T3 — Make each gesture exactly one undo step with a gesture-scoped merge key on `KnobUndoCommand`
   - files: `Gui/KnobUndoCommand.h`, `Gui/ColorKnobEditSession.cpp`
   - approach:
     - Add an optional `quint64 mergeKey` (0 = today's behaviour) to the list constructor.
@@ -398,6 +398,8 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
   - verify: The AppImage exists and launches (`--version` under `devshell.sh`). The user runs the UAT and records their verdict in the M44 Decisions.
   - size: S
 
+- 2026-10-10 — **One build at the end (user):** builds are the bottleneck on this host, so tasks are implemented and committed without per-task builds or tests, and implementers do not compile. The milestone gets a single build, test and screenshot run once every task has landed, and any breakage is fixed then. Task checkboxes mean implemented and committed, not verified.
+
 **Verification gate:**
 - CI `format`, `lint-ci` and `build-and-test` are green.
 - In `Tests`: `ColorWheelMath*`, `ProjectColorManagement*`, and the new NativeGrade/ColorCorrect role cases pass.
@@ -448,3 +450,6 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
 - 2026-10-10 — **P1.T2 landed:** AP1 measures R–G 0.767, G–B 0.787 and B–R 0.636 in xy, with primaries at 353.5°, 107.7° and 236.6°. Across 10,000 random edits, the worst luma drift was 6e-16 relative on gains. Two calls to confirm at the gate:
   - A config with no XYZ matrix gets a stand-in linear plane (J = 0.1·F): no triangle, but centred on white and Y-exact, so the wheel still works.
   - The u′v′ sides are 0.513/0.482/0.566, not the design note's 0.59.
+- 2026-10-10 — **P2.T1: the OCIO probe is D65-adapted.** `cie_xyz_d65_interchange` adapts ACEScg's D60 white to D65, so a real ACES 2.0 Studio project reports luma ≈ (0.2677, 0.6743, 0.0580) and shifted primaries, not the textbook AP1 values. The tests assert the measured values. Neutral (1,1,1) still maps to the wheel centre, because the white point is the image of neutral. The no-project fallback (`ColorMath::acesCgLumaWeights()`, native AP1) differs from a real project by about 0.005–0.009 in chroma. That is acceptable for a fallback, but the two are not interchangeable in tests.
+- 2026-10-10 — **P3.T4 for UAT:** the slider ranges and the per-pixel rates disagree for Offset temp/tint. The range is ±50 while the rate is 7e-4/px, so the marker barely moves. Retune the ranges or the rates in `TrackballRates`/`sliderMapping` after the user tries it. The panel's signal is `valuesEdited(value, Start|Move|End, undoLabel)`.
+- 2026-10-10 — **P4.T2:** colour knobs that share a row with other knobs never get the below-row hook (P4.T1's rule), so they keep the old popup, as simplified and viewer colour knobs do. Confirm this at UAT. `Gui/ColorKnobEditSession.cpp` is new, so the end build must re-run cmake.

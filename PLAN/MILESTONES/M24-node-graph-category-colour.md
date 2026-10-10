@@ -23,7 +23,15 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 
 - [x] M24.P1.T1 — Survey the state of the art and pin the concrete visual spec
   - files: `PLAN/DESIGN/2026-09-07-node-graph-category-colour.md` (new, on the plan branch)
-  - approach: Survey how Houdini, Nuke, Fusion and Blender separate "what kind of node is this" from "what colour did the user give it" in their network editors, Houdini especially. Then pin: the closed category list and each default colour; the user-border pen width in px at 100% zoom and how it scales; inset vs outset; the minimum border/body contrast rule; and how the border stays distinct from the selection halo (`_stateIndicator`, a `NodeGraphRectItem` at `depth-1` inflated by `NATRON_STATE_INDICATOR_OFFSET`, `Gui/NodeGui.cpp:697,1064-1067`). Nodes are square-cornered today (corner radius 0, `Gui/NodeGui.cpp:634`), since M18.P4.T4 removed the kind silhouettes. Also pin: (a) whether the Reader/Writer/Generator rungs beat the Deep group (DeepWrite is Writer-coloured today); (c) the label-text luminance threshold and the light/dark text colours. Items (b) 3D category and (d) edge width ladder are user decisions recorded in `## Decisions` — implement what they say.
+  - approach: Survey how Houdini, Nuke, Fusion and Blender separate "what kind of node is this" from "what colour did the user give it" in their network editors, Houdini especially. Then pin: the closed category list and each default colour; the user-border pen width in px at 100% zoom and how it scales; inset vs outset; the minimum border/body contrast rule; and how the border stays distinct from the selection halo (`_stateIndicator`, a `NodeGraphRectItem` at `depth-1` inflated by `NATRON_STATE_INDICATOR_OFFSET`, `Gui/NodeGui.cpp:697,1064-1067`). Nodes are square-cornered today (corner radius 0, `Gui/NodeGui.cpp:634`), since M18.P4.T4 removed the kind silhouettes. Also pin: (a) whether the Reader/Writer/Generator rungs beat the Deep group (DeepWrite is Writer-coloured today); (c) the label-text luminance threshold and the light/dark text colours. Items (b) 3D category and (d) edge width ladder are user decisions recorded in `
+
+- [x] M24.P4.T3 — Stop fading optional-input edges
+  - files: `Gui/Edge.cpp`
+  - approach: Solid edges into optional inputs are drawn at 40% opacity (`Gui/Edge.cpp` ~:855), which dims a deep edge into the background now that colour is the only data-kind signal on edges. Draw them at full opacity like every other edge. Leave the dash patterns (mask, hidden and disconnected inputs) and the selection and highlight styling alone.
+  - verify: In the screenshot run, the DeepFromImage → DeepMerge.A edge is the same blue as the other deep edges, and DeepToImage → Merge.B is the same black as the other image edges.
+  - size: S
+
+## Decisions` — implement what they say.
   - verify: The note exists, names each surveyed application and what it does, and gives every number and rule above as one unambiguous value.
   - size: M
 
@@ -73,6 +81,12 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - verify: Xvfb screenshots: a node with no user colour unchanged; a recoloured node with category body + user border; the same node selected with the halo still distinct; a cloned node unchanged.
   - size: L
 
+- [x] M24.P3.T2a — Make the user-colour border wrap the whole node, icon column included
+  - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/NodeGraphRectItem.h`, `Gui/NodeGraphRectItem.cpp`
+  - approach: P3.T2 strokes the inset border on `_boundingBox`, which covers only the coloured label area, so the dark plugin-icon column on the left (and anything else outside `_boundingBox`, such as the preview area) sits outside it. Stroke the border around the node's full footprint instead: the union of the icon column, `_boundingBox` and any preview. Either draw it on a dedicated item sized to that union, kept in sync wherever the node resizes or toggles its preview, or move the stroke to an item that already spans the whole node. The stroke stays inset: its outer edge sits on the full footprint, so it still never touches the outset `_stateIndicator` halo. Keep the contrast nudge, hiding on clones, and the Dot/Backdrop handling exactly as P3.T2 defined them.
+  - verify: screenshot script (`build/m24-shots/m24_border.py`) shots of a user-coloured Grade show the border enclosing both the icon column and the label area, selected and unselected, with the halo still distinct; a node with its preview enabled shows the border around the whole node; no border on nodes without a user colour.
+  - size: M
+
 - [x] M24.P3.T3 — Persist "the user set a colour" explicitly
   - files: `Gui/NodeGuiSerialization.h`, `Gui/NodeGuiSerialization.cpp`,
     `Gui/ProjectGui.cpp`
@@ -97,13 +111,13 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - verify: Picking a colour in the panel sets the border and leaves the body; clearing removes the border; Python `setColor` sets the border; undo behaves as before. Xvfb screenshots of each.
   - size: M
 
-- [ ] M24.P3.T5 — Re-colour open graphs when a category colour preference changes
+- [x] M24.P3.T5 — Re-colour open graphs when a category colour preference changes
   - files: `Engine/Settings.h`, `Engine/Settings.cpp`, `Gui/NodeGraph.cpp`, `Gui/NodeGui.cpp`
   - approach: `Settings::onKnobValueChanged` already emits `settingChanged(KnobI*)` (`Engine/Settings.cpp:2257`). Add `Settings::isNodeCategoryColorKnob(KnobI*)`; the node graph connects to `settingChanged` and on a category knob re-applies the category body colour and label contrast (P3.T6) to every `NodeGui`, leaving user borders untouched. Skip while settings are being restored (`_restoringSettings`).
   - verify: With a graph open, changing the Merge colour in Preferences updates every Merge node's body and label colour live; a recoloured Merge node keeps its border.
   - size: M
 
-- [ ] M24.P3.T6 — Contrast-aware node label colour (fixes deep nodes' black-on-navy labels)
+- [x] M24.P3.T6 — Contrast-aware node label colour (fixes deep nodes' black-on-navy labels)
   - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`
   - approach: The label is hard-coded black at `Gui/NodeGui.cpp:682` and `:3203` (`setNameItemHtml()`, `:3107-3222`). When the label HTML has no user `<font color>`, pick light or dark text from the relative luminance of the body colour (category colour, or `_clonedColor` for clones) using P1.T1's threshold. A user font colour from `KnobGuiString::parseFont` still wins. Re-evaluate whenever the body brush changes (`applyBrush`/`refreshCurrentBrush`). Deep's default (0, 0, 0.38) must give white text.
   - verify: Xvfb screenshots: white label text on DeepRead/DeepMerge (navy), dark text on a Grade (light), a label with an explicit `<font color>` unchanged; with P3.T5, a live Preferences change flips the text.
@@ -111,7 +125,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 
 ## Phase 24.4: Retire the data-kind leftovers
 
-- [ ] M24.P4.T1 — Remove the dead NodeGui kind-tint helper left behind by M18
+- [x] M24.P4.T1 — Remove the dead NodeGui kind-tint helper left behind by M18
   - files: `Gui/NodeGui.cpp`
   - approach: M18.P4.T3/T4 already removed the tinted backdrop, silhouette radius and input glyphs; `NodeGui::paint()` (`:2264`) is empty. Delete the now-unused static `kindTintColor()` and its comment (`Gui/NodeGui.cpp:181-201`). Fix the comment at `:1354-1355` so it no longer mentions a silhouette; keep the `update()` call only if something still reads kind at paint time, otherwise delete it with the comment. Leave `Gui/Edge.cpp`'s own `kindTintColor()` alone.
   - verify: Builds with no unused-function warning; `grep -n kindTintColor Gui/NodeGui.cpp` returns nothing.
@@ -163,6 +177,22 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - The reset is a right-click on the panel's colour button. Colour changes stay off the undo stack, as before.
   - Headless `setColor` is still a no-op, the same as position and size.
   - **For the gate:** the border wraps only the coloured label area (`_boundingBox`), not the dark icon column on the left. Confirm whether it should wrap the whole node.
+
+- 2026-10-10 — **Border wraps the whole node (user):** answers the P3.T4 gate note. The border must enclose the icon column too, so P3.T2a was added.
+
+- 2026-10-10 — **One build at the end (user):** builds are the bottleneck on this host, so tasks are implemented and committed without per-task builds or tests, and implementers do not compile. The milestone gets a single build, test and screenshot run once every task has landed, and any breakage is fixed then. Task checkboxes mean implemented and committed, not verified.
+
+- 2026-10-10 — **Optional inputs are not faded (user):** this answers the P3.T2 evidence note. P4.T3 was added.
+
+- 2026-10-10 — **Gate (local):** the one end build (`fast`) was clean on the first try. 17 targeted ctest cases pass, and the screenshot script reports 32 PASS, 15 shots and 0 failures. Two script bugs were fixed along the way: reloading a just-saved project returns the same App, so `closeProject()` quit Natron; and the framing helper's centring was wrong for node subsets. The full debug and release suites run in CI on PR #50.
+
+- 2026-10-10 — **Review round (Claude opus; Codex not logged in on this host), PR #50:** 15 findings (2 high, 4 medium, 5 low, 4 nits), all fixed in `eebd52d14`. The two judgement calls, made by the PM:
+  - A Python `setColor` within 0.05 per channel of the category colour clears the user colour, so legacy PyPlugs don't sprout borders. The bundled PyPlugs were not regenerated.
+  - Dots draw their user colour as the disk, as they did before M24.
+
+  Re-verified with one `fast` build: 17 targeted ctest cases pass, and the screenshot script reports 0 failures, now covering the 0.05 rule, Dot colour and Backdrop reset. Every thread has a reply.
+
+- 2026-10-10 — **CI green on PR #50** (`format`, `lint-ci`, `build-and-test` at `eebd52d14`). The user asked for an AppImage UAT before merge: `build/appimages/M24-eebd52d14.AppImage` (fast build). It launches (`--version`), but the version string reports a stale commit `d9dcaf1` from the cached configure; the bits are `eebd52d14`. A local, untracked `build/appimagetool-wrapper/appimagetool` passes `--no-appstream`, since this host cannot reach wikimedia.org. **PR #50 stays open pending the user's UAT.**
 
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate

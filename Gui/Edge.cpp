@@ -635,9 +635,9 @@ Edge::initLine()
 QRectF
 Edge::boundingRect() const
 {
-    // QGraphicsLineItem::boundingRect() covers the line stroked with the item's pen, whose width
-    // now varies with the resolved data kind, but the arrow head is painted (and stroked with that
-    // same pen) outside the line's own rect, exactly as shape() below already accounts for.
+    // QGraphicsLineItem::boundingRect() covers the line stroked with the item's pen, but the
+    // arrow head is painted (and stroked with that same pen) outside the line's own rect,
+    // exactly as shape() below already accounts for.
     QRectF rect = QGraphicsLineItem::boundingRect();
     QRectF headRect = _imp->arrowHead.boundingRect();
 
@@ -777,25 +777,11 @@ Edge::isNearbyBendPoint(const QPointF & scenePoint)
     return false;
 }
 
-// Width is the primary channel for data-kind styling: it stays legible under both
-// colorblindness and zoom-out, where a fine dash period collapses into a uniform gray.
-// The existing dash pattern below is reserved for edge activity (mask / hidden input),
-// an orthogonal, simultaneously-possible state, so kind styling must never touch it.
-static qreal
-kindWidthMultiplier(DataKindEnum kind)
-{
-    switch (kind) {
-    case eDataKindDeep:
-        return 3.;
-    case eDataKindScene:
-        return 2.;
-    case eDataKindImage:
-    case eDataKindPolymorphic:
-    default:
-        return 1.;
-    }
-}
-
+// Colour is the only data-kind channel on edges: the Okabe-Ito palette below
+// stays distinguishable under the common forms of colour-vision deficiency,
+// so it does not need a second (e.g. width) channel to stay legible. The
+// dash pattern below is unrelated: it signals edge activity (mask / hidden
+// input), an orthogonal, simultaneously-possible state.
 static bool
 kindTintColor(DataKindEnum kind,
               QColor* color)
@@ -825,18 +811,6 @@ Edge::refreshDataKindPen()
         return;
     }
     _imp->dataKind = kind;
-
-    QPen p = pen();
-    qreal width = EDGE_PEN_WIDTH * kindWidthMultiplier(kind);
-    if (p.widthF() != width) {
-        // The width belongs on the item's own pen, not on a pen local to paint(): both
-        // QGraphicsLineItem::boundingRect() and shape() are derived from it, so a width only
-        // paint() knew about would draw outside the item's bounding rect -- clipped, left behind
-        // on partial repaints, and unclickable along the part of the stroke outside shape().
-        prepareGeometryChange();
-        p.setWidthF(width);
-        setPen(p);
-    }
     update();
 }
 

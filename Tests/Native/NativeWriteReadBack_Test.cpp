@@ -1,0 +1,348 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "Global/Macros.h"
+
+#include <cmath>
+#include <list>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include <OpenImageIO/imageio.h>
+
+#include <QMetaObject>
+#include <QString>
+#include <QTemporaryDir>
+
+#include <ofxImageEffect.h>
+
+#include "BaseTest.h"
+#include "NativeParity.h"
+#include "RenderBothWays.h"
+
+#include "Engine/AppInstance.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobFile.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Generator/CheckerBoard.h"
+#include "Engine/Nodes/IO/NativeWrite.h"
+#include "Engine/OutputEffectInstance.h"
+#include "Engine/OutputSchedulerThread.h"
+#include "Engine/Project.h"
+#include "Engine/ViewIdx.h"
+
+NATRON_NAMESPACE_USING
+
+namespace {
+const char* const kSRGBSpace = "sRGB Encoded Rec.709 (sRGB)";
+const char* const kOutputSpaceMenuKnob = "ocioOutputSpaceIndex";
+
+const int kWidth = 16;
+const int kHeight = 8;
+const float kGray = 0.18f;
+const float kOther = 0.5f;
+} // namespace
+
+class NativeWriteReadBackTest
+    : public BaseTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        BaseTest::SetUp();
+        project()->reset(false, true);
+        project()->setAutoSetProjectFormatEnabled(true);
+        project()->setOrAddProjectFormat(Format(0, 0, kWidth, kHeight, "nativeWriteReadBack", 1.));
+
+        _checker = createNode(QString::fromUtf8(PLUGINID_NATRON_CHECKERBOARD), PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+        ASSERT_TRUE(bool(_checker));
+        ASSERT_TRUE(setKnobValues(_checker, kCheckerBoardParamBoxSize, { 4096., 2112. }));
+        ASSERT_TRUE(setKnobValues(_checker, kCheckerBoardParamLineWidth, { 0. }));
+        ASSERT_TRUE(setKnobValues(_checker, kCheckerBoardParamCenterLineWidth, { 0. }));
+        for (const char* name : { kCheckerBoardParamColor0, kCheckerBoardParamColor1, kCheckerBoardParamColor2, kCheckerBoardParamColor3 }) {
+            ASSERT_TRUE(setKnobValues(_checker, name, { (double)kGray, (double)kGray, (double)kGray, 1. }));
+        }
+        _writer = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
+        ASSERT_TRUE(bool(_writer));
+        connectNodes(_checker, _writer, 0, true);
+        ASSERT_TRUE(_dir.isValid());
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        _writer.reset();
+        _checker.reset();
+        project()->reset(false, true);
+        BaseTest::TearDown();
+    }
+
+    ProjectPtr project() const
+    {
+        return getApp()->getProject();
+    }
+
+    std::string pathOf(const std::string& name) const
+    {
+        return (_dir.path() + QLatin1Char('/') + QString::fromStdString(name)).toStdString();
+    }
+
+    void setFile(const std::string& path)
+    {
+        KnobOutputFile* file = dynamic_cast<KnobOutputFile*>(_writer->getKnobByName(kOfxImageEffectFileParamName).get());
+
+        ASSERT_TRUE(file != NULL);
+        file->setValue(path);
+    }
+
+    void setBitDepth(const std::string& id)
+    {
+        KnobChoice* choice = dynamic_cast<KnobChoice*>(_writer->getKnobByName(kNatronWriteParamBitDepth).get());
+
+        ASSERT_TRUE(choice != NULL);
+        const std::vector<ChoiceOption> entries = choice->getEntries_mt_safe();
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            if (entries[i].id == id) {
+                choice->setValue((int)i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+
+                return;
+            }
+        }
+        ADD_FAILURE() << "no bit depth " << id;
+    }
+
+    void pickOutputSpace(const std::string& space)
+    {
+        KnobChoice* menu = dynamic_cast<KnobChoice*>(_writer->getKnobByName(kOutputSpaceMenuKnob).get());
+
+        ASSERT_TRUE(menu != NULL);
+        const std::vector<ChoiceOption> entries = menu->getEntries_mt_safe();
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            if (entries[i].id == space) {
+                menu->setValue((int)i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0, true);
+
+                return;
+            }
+        }
+        ADD_FAILURE() << "no colourspace " << space;
+    }
+
+    void setReadBack(bool on)
+    {
+        KnobBool* knob = dynamic_cast<KnobBool*>(_writer->getKnobByName(kNatronWriteParamReadBack).get());
+
+        ASSERT_TRUE(knob != NULL);
+        knob->setValue(on, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
+    }
+
+    void writeSequence()
+    {
+        OutputEffectInstance* effect = dynamic_cast<OutputEffectInstance*>(_writer->getEffectInstance().get());
+
+        ASSERT_TRUE(effect != NULL);
+        std::list<AppInstance::RenderWork> works;
+        works.push_back(AppInstance::RenderWork(effect, 1, 1, 1, false));
+        getApp()->startWritersRendering(false, works);
+    }
+
+    void finishSequence()
+    {
+        OutputEffectInstance* effect = dynamic_cast<OutputEffectInstance*>(_writer->getEffectInstance().get());
+
+        ASSERT_TRUE(effect != NULL);
+        RenderEnginePtr engine = effect->getRenderEngine();
+        ASSERT_TRUE(bool(engine));
+        ASSERT_TRUE(QMetaObject::invokeMethod(engine.get(), "renderFinished", Qt::DirectConnection, Q_ARG(int, 0)));
+    }
+
+    // Renders the Write's output at `time`, the way a viewer asks for it.
+    bool outputAt(double time,
+                  std::vector<float>* pixels)
+    {
+        std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+        std::vector<RenderedPlane> planes;
+        std::string error;
+
+        if (!renderNodePlanesDirect(_writer, time, ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), layers, &planes, &error) || planes.size() != 1) {
+            return false;
+        }
+        *pixels = planes[0].pixels;
+
+        return true;
+    }
+
+    bool outputIsGray(float value,
+                      float tolerance)
+    {
+        std::vector<float> pixels;
+
+        if (!outputAt(1., &pixels) || pixels.size() != (std::size_t)kWidth * kHeight * 4) {
+            return false;
+        }
+        for (std::size_t i = 0; i < pixels.size(); ++i) {
+            const float want = (i % 4 == 3) ? 1.f : value;
+            if (std::fabs(pixels[i] - want) > tolerance) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // Replaces the file with a flat float image of `value` in every colour channel.
+    void overwriteWithGray(const std::string& path,
+                           float value)
+    {
+        OIIO::ImageSpec spec(kWidth, kHeight, 4, OIIO::TypeDesc::FLOAT);
+        std::vector<float> pixels((std::size_t)kWidth * kHeight * 4, value);
+        for (std::size_t i = 3; i < pixels.size(); i += 4) {
+            pixels[i] = 1.f;
+        }
+        OIIO::ImageOutput::unique_ptr out = OIIO::ImageOutput::create(path);
+
+        ASSERT_TRUE(bool(out));
+        ASSERT_TRUE(out->open(path, spec));
+        ASSERT_TRUE(out->write_image(OIIO::TypeDesc::FLOAT, pixels.data()));
+        ASSERT_TRUE(out->close());
+    }
+
+    std::string message() const
+    {
+        QString text;
+        int type = 0;
+
+        _writer->getPersistentMessage(&text, &type, false);
+
+        return text.toStdString();
+    }
+
+    NodePtr _checker;
+    NodePtr _writer;
+    QTemporaryDir _dir;
+};
+
+TEST_F(NativeWriteReadBackTest, AnExrReadBackIsTheFilesPixelsInTheWorkingSpace)
+{
+    const std::string path = pathOf("back.exr");
+    setFile(path);
+    setBitDepth("32f");
+    pickOutputSpace(project()->getWorkingColorSpace());
+    writeSequence();
+    overwriteWithGray(path, kOther);
+
+    setReadBack(true);
+
+    EXPECT_TRUE(outputIsGray(kOther, 1e-6f)) << message();
+}
+
+TEST_F(NativeWriteReadBackTest, AnEncodedPngReadBackReturnsToTheWorkingSpace)
+{
+    const std::string path = pathOf("back.png");
+    setFile(path);
+    pickOutputSpace(kSRGBSpace);
+    writeSequence();
+
+    setReadBack(true);
+
+    EXPECT_TRUE(outputIsGray(kGray, 0.005f)) << message();
+}
+
+TEST_F(NativeWriteReadBackTest, TurningItOffPassesTheInputThrough)
+{
+    const std::string path = pathOf("off.exr");
+    setFile(path);
+    setBitDepth("32f");
+    pickOutputSpace(project()->getWorkingColorSpace());
+    writeSequence();
+    overwriteWithGray(path, kOther);
+    setReadBack(true);
+    ASSERT_TRUE(outputIsGray(kOther, 1e-6f)) << message();
+
+    setReadBack(false);
+
+    EXPECT_TRUE(outputIsGray(kGray, 1e-6f)) << message();
+}
+
+TEST_F(NativeWriteReadBackTest, AFinishedSequenceChangesTheHashSoTheViewerReadsAgain)
+{
+    const std::string path = pathOf("hash.exr");
+    setFile(path);
+    setBitDepth("32f");
+    pickOutputSpace(project()->getWorkingColorSpace());
+    writeSequence();
+    setReadBack(true);
+    const U64 before = _writer->getHashValue();
+
+    finishSequence();
+
+    EXPECT_NE(before, _writer->getHashValue());
+}
+
+TEST_F(NativeWriteReadBackTest, AFinishedSequenceLeavesTheHashAloneWhileReadBackIsOff)
+{
+    const std::string path = pathOf("idle.exr");
+    setFile(path);
+    setBitDepth("32f");
+    writeSequence();
+    const U64 before = _writer->getHashValue();
+
+    finishSequence();
+
+    EXPECT_EQ(before, _writer->getHashValue());
+}
+
+TEST_F(NativeWriteReadBackTest, AMissingFrameIsAPersistentErrorAGoodFrameClears)
+{
+    setFile(pathOf("seq.####.exr"));
+    setBitDepth("32f");
+    pickOutputSpace(project()->getWorkingColorSpace());
+    writeSequence();
+    setReadBack(true);
+
+    std::vector<float> pixels;
+    EXPECT_FALSE(outputAt(2., &pixels));
+    EXPECT_TRUE(_writer->hasPersistentMessage());
+
+    EXPECT_TRUE(outputAt(1., &pixels));
+    EXPECT_FALSE(_writer->hasPersistentMessage()) << message();
+}
+
+TEST_F(NativeWriteReadBackTest, TheRenderButtonIsDisabledWhileReadBackIsOn)
+{
+    KnobIPtr button = _writer->getKnobByName(kNatronWriteParamStartRender);
+
+    ASSERT_TRUE(bool(button));
+    EXPECT_TRUE(button->isEnabled(0));
+
+    setReadBack(true);
+    EXPECT_FALSE(button->isEnabled(0));
+
+    setReadBack(false);
+    EXPECT_TRUE(button->isEnabled(0));
+}

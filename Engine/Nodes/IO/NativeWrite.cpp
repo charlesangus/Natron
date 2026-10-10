@@ -38,12 +38,15 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
 
 #include <OpenImageIO/imageio.h>
+
+#include <QObject>
 
 #include <ofxImageEffect.h>
 #include <ofxNatron.h>
@@ -60,12 +63,15 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Channel/ChannelCopy.h"
 #include "Engine/Nodes/IO/IoColorSpace.h"
+#include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
+#include "Engine/Settings.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -99,6 +105,77 @@ std::string
 extensionOf(const std::string& path)
 {
     return std::filesystem::path(path).extension().string();
+}
+
+std::string
+viewNameOf(const std::vector<std::string>& names,
+           ViewIdx view)
+{
+    const int index = view.value();
+
+    return (index >= 0 && (std::size_t)index < names.size()) ? names[(std::size_t)index] : std::string();
+}
+
+struct ReadBackPlane {
+    Image* target;
+    RectI rect;
+    std::string path;
+    int subimage;
+    std::vector<int> fileChannels; // one per component, -1 for a component the file lacks
+    OCIO_NAMESPACE::ConstCPUProcessorRcPtr toWorking;
+};
+
+// Decodes the rows [y1, y2) of plane.rect into plane.target, through a staging buffer holding
+// the file channels from the first to the last one the plane uses.
+bool
+decodeReadBackBand(const ReadBackPlane& plane,
+                   Image::WriteAccess& access,
+                   int nComps,
+                   int y1,
+                   int y2,
+                   std::string* error)
+{
+    int lo = -1;
+    int hi = -1;
+    for (int c = 0; c < nComps; ++c) {
+        const int idx = plane.fileChannels[(std::size_t)c];
+        if (idx < 0) {
+            continue;
+        }
+        lo = lo < 0 ? idx : std::min(lo, idx);
+        hi = std::max(hi, idx);
+    }
+    const int width = plane.rect.width();
+    if (lo < 0) {
+        for (int y = y1; y < y2; ++y) {
+            std::fill_n((float*)access.pixelAt(plane.rect.x1, y), (std::size_t)width * nComps, 0.f);
+        }
+
+        return true;
+    }
+    const int span = hi - lo + 1;
+    const RectI window(plane.rect.x1, y1, plane.rect.x2, y2);
+    std::vector<float> staging((std::size_t)width * (y2 - y1) * span);
+    if (!OiioReadSupport::decode(plane.path, plane.subimage, lo, hi + 1, window, staging.data(), (std::size_t)width * span, error)) {
+        return false;
+    }
+    for (int y = y1; y < y2; ++y) {
+        const float* src = staging.data() + (std::size_t)(y - y1) * width * span;
+        float* dst = (float*)access.pixelAt(plane.rect.x1, y);
+        for (int x = 0; x < width; ++x) {
+            for (int c = 0; c < nComps; ++c) {
+                const int idx = plane.fileChannels[(std::size_t)c];
+                dst[c] = idx < 0 ? 0.f : src[idx - lo];
+            }
+            src += span;
+            dst += nComps;
+        }
+        if (plane.toWorking && !IoColorSpace::convertRow(*plane.toWorking, (float*)access.pixelAt(plane.rect.x1, y), width, nComps, error)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 std::vector<ChoiceOption>
@@ -874,6 +951,29 @@ NativeWrite::initializeKnobs()
     frameIncr->setDefaultValue(1);
     page->addKnob(frameIncr);
 
+    KnobBoolPtr readBack = createKnob<KnobBool>(tr(kNatronWriteParamReadBackLabel));
+    readBack->setName(kNatronWriteParamReadBack);
+    readBack->setHintToolTip(tr(kNatronWriteParamReadBackHint));
+    readBack->setDefaultValue(false);
+    readBack->setAnimationEnabled(false);
+    page->addKnob(readBack);
+    _readBack = readBack;
+
+    // A change to this knob is how a finished sequence reaches the hash, which no effect may bump directly.
+    KnobIntPtr stamp = createKnob<KnobInt>(tr("Read Back Stamp"));
+    stamp->setName(kNatronWriteParamReadBackStamp);
+    stamp->setSecretByDefault(true);
+    stamp->setIsPersistent(false);
+    stamp->setAnimationEnabled(false);
+    stamp->setDefaultValue(0);
+    page->addKnob(stamp);
+    _readBackStamp = stamp;
+
+    RenderEnginePtr engine = getRenderEngine();
+    if (engine) {
+        QObject::connect(engine.get(), &RenderEngine::renderFinished, getNode().get(), [this](int) { onSequenceRenderFinished(); });
+    }
+
     refreshOptions();
 }
 
@@ -882,6 +982,7 @@ NativeWrite::onKnobsLoaded()
 {
     _outputSpace.refreshMenu();
     refreshOptions();
+    refreshReadBackState();
 }
 
 std::optional<std::string>
@@ -960,6 +1061,9 @@ FramesNeededMap
 NativeWrite::getFramesNeeded(double time,
                              ViewIdx view)
 {
+    if (readBackActive()) {
+        return FramesNeededMap();
+    }
     FramesNeededMap ret = NativeEffectBase::getFramesNeeded(time, view);
     const std::vector<ViewIdx> views = viewsToWrite(view);
     FramesNeededMap::iterator input = ret.find(0);
@@ -973,6 +1077,82 @@ NativeWrite::getFramesNeeded(double time,
     }
 
     return ret;
+}
+
+void
+NativeWrite::onEffectCreated(bool mayCreateFileDialog,
+                             const CreateNodeArgs& /*args*/)
+{
+    KnobOutputFilePtr filename = _filename.lock();
+
+    if (!mayCreateFileDialog || !filename || !filename->getValue().empty() || getApp()->isBackground()
+        || !appPTR->getCurrentSettings()->isFileDialogEnabledForNewWriters()) {
+        return;
+    }
+    const std::string path = getApp()->saveImageFileDialog();
+    if (path.empty()) {
+        throw std::runtime_error("");
+    }
+    filename->setValue(path);
+}
+
+bool
+NativeWrite::readBackActive() const
+{
+    const KnobBoolPtr readBack = _readBack.lock();
+
+    return readBack && readBack->getValue() && !isDoingSequentialRender();
+}
+
+void
+NativeWrite::refreshReadBackState()
+{
+    const KnobBoolPtr readBack = _readBack.lock();
+    const KnobIPtr button = getKnobByName(kNatronWriteParamStartRender);
+
+    if (readBack && button) {
+        button->setAllDimensionsEnabled(!readBack->getValue());
+    }
+}
+
+void
+NativeWrite::onSequenceRenderFinished()
+{
+    const KnobBoolPtr readBack = _readBack.lock();
+    const KnobIntPtr stamp = _readBackStamp.lock();
+
+    if (readBack && stamp && readBack->getValue()) {
+        stamp->setValue(stamp->getValue() + 1);
+    }
+}
+
+std::shared_ptr<const OiioReadSupport::Header>
+NativeWrite::readBackHeader(double time,
+                            ViewIdx view,
+                            std::string* path)
+{
+    KnobOutputFilePtr filename = _filename.lock();
+
+    *path = filename ? filename->generateFileNameAtTime((SequenceTime)std::floor(time + 0.5), view).toStdString() : std::string();
+    if (path->empty()) {
+        setPersistentMessage(eMessageTypeError, tr("No output file is set").toStdString());
+
+        return std::shared_ptr<const OiioReadSupport::Header>();
+    }
+    if (!OiioReadSupport::isReadablePath(*path)) {
+        setPersistentMessage(eMessageTypeError, tr("Unsupported format: %1").arg(QString::fromStdString(*path)).toStdString());
+
+        return std::shared_ptr<const OiioReadSupport::Header>();
+    }
+    std::string error;
+    std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(*path, &error);
+    if (!header || header->subimages.empty()) {
+        setPersistentMessage(eMessageTypeError, error.empty() ? tr("Could not read %1").arg(QString::fromStdString(*path)).toStdString() : error);
+
+        return std::shared_ptr<const OiioReadSupport::Header>();
+    }
+
+    return header;
 }
 
 bool
@@ -1073,6 +1253,13 @@ NativeWrite::knobChanged(KnobI* k,
 {
     if (reason == eValueChangedReasonTimeChanged) {
         return false;
+    }
+    const KnobBoolPtr readBack = _readBack.lock();
+    if (readBack && (k == readBack.get())) {
+        refreshReadBackState();
+        clearPersistentMessage(false);
+
+        return true;
     }
     KnobOutputFilePtr filename = _filename.lock();
     KnobChoicePtr compression = _compression.lock();
@@ -1202,6 +1389,26 @@ NativeWrite::getRegionOfDefinition(U64 /*hash*/,
                                    ViewIdx view,
                                    RectD* rod)
 {
+    if (readBackActive()) {
+        std::string path;
+        const std::shared_ptr<const OiioReadSupport::Header> header = readBackHeader(time, view, &path);
+        if (!header) {
+            // The request pass only treats a failed RoD as an error when the RoD it leaves is not
+            // null; a null one reads as an empty image and the render goes on to produce a plane.
+            Format format;
+            getApp()->getProject()->getProjectDefaultFormat(&format);
+            *rod = format.toCanonicalFormat();
+
+            return eStatusFailed;
+        }
+        OiioReadSupport::PartChannels colour;
+        const bool hasColour = OiioReadSupport::colourPartOf(*header, viewNameOf(getApp()->getProject()->getProjectViewNames(), view), &colour);
+        const OIIO::ImageSpec& spec = header->subimages[hasColour ? (std::size_t)colour.subimage : 0];
+        *rod = OiioReadSupport::dataWindowOf(spec).toCanonical_noClipping(0, OiioReadSupport::pixelAspectOf(spec));
+        clearPersistentMessage(false);
+
+        return eStatusOK;
+    }
     Window window;
 
     if (!resolveWindow(time, view, &window)) {
@@ -1220,6 +1427,9 @@ NativeWrite::getRegionsOfInterest(double /*time*/,
                                   ViewIdx /*view*/,
                                   RoIMap* ret)
 {
+    if (readBackActive()) {
+        return;
+    }
     EffectInstancePtr input = getInput(0);
 
     if (input) {
@@ -1228,8 +1438,146 @@ NativeWrite::getRegionsOfInterest(double /*time*/,
 }
 
 StatusEnum
+NativeWrite::renderReadBack(const RenderActionArgs& args)
+{
+    std::string path;
+    const std::shared_ptr<const OiioReadSupport::Header> header = readBackHeader(args.time, args.view, &path);
+    if (!header) {
+        return eStatusFailed;
+    }
+    ProjectPtr project = getApp()->getProject();
+    const std::string viewName = viewNameOf(project->getProjectViewNames(), args.view);
+    std::vector<OiioReadSupport::FileLayer> fileLayers;
+    OiioReadSupport::PartChannels colourPart;
+    OiioReadSupport::fileLayers(*header, &fileLayers, viewName);
+    const bool hasColour = OiioReadSupport::colourPartOf(*header, viewName, &colourPart);
+
+    // The file's own tag or a file rule could name another space, but what the file holds is what this node wrote.
+    OCIO_NAMESPACE::ConstCPUProcessorRcPtr toWorking;
+    {
+        std::string conversionError;
+        if (!IoColorSpace::processor(*project, _outputSpace.space(), _outputSpace.workingSpace(), _outputSpace.contextVariables(args.time), &toWorking, &conversionError)) {
+            setPersistentMessage(eMessageTypeError, conversionError);
+
+            return eStatusFailed;
+        }
+    }
+
+    const int nThreads = appPTR->getNCPUsAvailableForEffect();
+    RenderCancellation cancel(this);
+    std::atomic<bool> failed(false);
+    std::mutex errorMutex;
+    std::string error;
+    const unsigned int level = args.mappedScale.toMipmapLevel();
+
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+        const ImagePtr& image = it->second;
+        if (!image) {
+            continue;
+        }
+        if (image->getBitDepth() != eImageBitDepthFloat) {
+            return eStatusFailed;
+        }
+        const int nComps = (int)image->getComponentsCount();
+
+        RectI dataWindow;
+        int subimage = 0;
+        std::vector<int> fileChannels((std::size_t)nComps, -1);
+        if (it->first.isColorLayer()) {
+            if (hasColour) {
+                subimage = colourPart.subimage;
+                dataWindow = OiioReadSupport::dataWindowOf(header->subimages[(std::size_t)subimage]);
+                const OiioReadSupport::ColourChannels colour = OiioReadSupport::ColourChannels::of(colourPart.names, colourPart.index);
+                for (int c = 0; c < nComps; ++c) {
+                    fileChannels[(std::size_t)c] = colour.fileChannelForComponent(nComps, c);
+                }
+            }
+        } else {
+            const std::vector<std::string>& wanted = image->getComponents().getChannels();
+            for (std::vector<OiioReadSupport::FileLayer>::const_iterator layer = fileLayers.begin(); layer != fileLayers.end(); ++layer) {
+                if (layer->desc.getLayerID() != it->first.getLayerID()) {
+                    continue;
+                }
+                subimage = layer->subimage;
+                dataWindow = OiioReadSupport::dataWindowOf(header->subimages[(std::size_t)subimage]);
+                const std::vector<std::string>& present = layer->desc.getChannels();
+                for (int c = 0; c < nComps && (std::size_t)c < wanted.size(); ++c) {
+                    const std::vector<std::string>::const_iterator found = std::find(present.begin(), present.end(), wanted[(std::size_t)c]);
+                    if (found != present.end()) {
+                        fileChannels[(std::size_t)c] = layer->channels[(std::size_t)(found - present.begin())];
+                    }
+                }
+                break;
+            }
+        }
+
+        // At a coarser level the rows behind the window are decoded at full size, then reduced.
+        ImagePtr full;
+        const RectI fullRect = args.roi.upscalePowerOfTwo(level).intersect(dataWindow);
+        Image* target = image.get();
+        if (level > 0 && !fullRect.isNull()) {
+            full = std::make_shared<Image>(image->getComponents(), image->getRoD(), fullRect, 0, image->getPixelAspectRatio(), eImageBitDepthFloat, image->getFieldingOrder(), false);
+            target = full.get();
+        }
+        if (level > 0 || fullRect != args.roi) {
+            Image::WriteAccess outAccess(image.get());
+            for (int y = args.roi.y1; y < args.roi.y2; ++y) {
+                std::fill_n((float*)outAccess.pixelAt(args.roi.x1, y), (std::size_t)args.roi.width() * nComps, 0.f);
+            }
+        }
+        if (fullRect.isNull()) {
+            continue;
+        }
+
+        ReadBackPlane plane;
+        plane.target = target;
+        plane.rect = fullRect;
+        plane.path = path;
+        plane.subimage = subimage;
+        plane.fileChannels = fileChannels;
+        if (it->first.isColorLayer() && (nComps == 3 || nComps == 4)) {
+            plane.toWorking = toWorking;
+        }
+        const int rowsPerBand = std::max(1, kMinBandPixels / fullRect.width());
+        const int nBands = (fullRect.height() + rowsPerBand - 1) / rowsPerBand;
+        {
+            Image::WriteAccess access(target);
+            const std::function<void(int)> renderBand = [&](int band) {
+                if (cancel.check() || failed.load()) {
+                    return;
+                }
+                const int y1 = fullRect.y1 + band * rowsPerBand;
+                const int y2 = std::min(y1 + rowsPerBand, fullRect.y2);
+                std::string bandError;
+                if (!decodeReadBackBand(plane, access, nComps, y1, y2, &bandError)) {
+                    std::lock_guard<std::mutex> lock(errorMutex);
+                    if (!failed.exchange(true)) {
+                        error = bandError;
+                    }
+                }
+            };
+            parallelForCancellable(nBands, nThreads, cancel, renderBand);
+        }
+        if (failed.load()) {
+            setPersistentMessage(eMessageTypeError, error.empty() ? tr("Could not read %1").arg(QString::fromStdString(path)).toStdString() : error);
+
+            return eStatusFailed;
+        }
+        if (full && !cancel.check()) {
+            full->downscaleMipmap(image->getRoD(), fullRect, 0, level, false, image.get());
+        }
+    }
+    clearPersistentMessage(false);
+
+    return eStatusOK;
+}
+
+StatusEnum
 NativeWrite::render(const RenderActionArgs& args)
 {
+    if (readBackActive()) {
+        return renderReadBack(args);
+    }
     struct PlaneCopy {
         ImagePtr source;
         RectI sourceBounds;

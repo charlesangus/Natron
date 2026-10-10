@@ -554,8 +554,10 @@ TEST_F(NativeWriteEncodeTest, UnsupportedExtensionWritesNothing)
     const std::string path = pathOf("nothing.notaformat");
 
     setFile(path);
+    EXPECT_TRUE(_writer->hasPersistentMessage());
     renderFrame();
     EXPECT_FALSE(exists(path));
+    EXPECT_TRUE(_writer->hasPersistentMessage());
 }
 
 TEST_F(NativeWriteEncodeTest, TaskGraphRenderHasNoUnplannedPulls)

@@ -28,12 +28,14 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 
 #include "Engine/EffectInstance.h" // for PLUGINID_NATRON_WRITE
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/IO/OcioSpaceKnobs.h"
+#include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define kNatronWriteParamFrameStep "frameIncr"
@@ -45,6 +47,8 @@
 #define kNatronWriteParamReadBack "readBack"
 #define kNatronWriteParamReadBackLabel "Read back file"
 #define kNatronWriteParamReadBackHint "When checked, the output of this node comes from reading the written file instead of the input node"
+
+#define kNatronWriteParamReadBackStamp "readBackStamp"
 
 #define kNatronWriteParamStartRender "startRender"
 
@@ -171,6 +175,9 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    virtual void onEffectCreated(bool mayCreateFileDialog,
+                                 const CreateNodeArgs& args) OVERRIDE FINAL;
+
     virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
 
     virtual FramesNeededMap getFramesNeeded(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -187,6 +194,20 @@ private:
     bool clipToRoDActive() const;
 
     bool resolveWindow(double time, ViewIdx view, Window* window) const WARN_UNUSED_RETURN;
+
+    // Whether the output comes from the written file: the knob is on and the file is not being written.
+    bool readBackActive() const WARN_UNUSED_RETURN;
+
+    // The headers of the file of `time` and `view`, or null with a persistent error set.
+    std::shared_ptr<const OiioReadSupport::Header> readBackHeader(double time, ViewIdx view, std::string* path) WARN_UNUSED_RETURN;
+
+    StatusEnum renderReadBack(const RenderActionArgs& args) WARN_UNUSED_RETURN;
+
+    // The Render button is off while the node shows the file.
+    void refreshReadBackState();
+
+    // A finished sequence changed the file, which the hash must tell the viewer.
+    void onSequenceRenderFinished();
 
     // Menus and visibility follow the format of the file name and the chosen compression.
     void refreshOptions();
@@ -217,6 +238,8 @@ private:
     KnobChoiceWPtr _tileSize;
     KnobChoiceWPtr _partSplitting;
     KnobBoolWPtr _writeMetadata;
+    KnobBoolWPtr _readBack;
+    KnobIntWPtr _readBackStamp;
     KnobChoiceWPtr _views;
     KnobChoiceWPtr _frameRange;
     KnobIntWPtr _firstFrame;

@@ -909,6 +909,35 @@ isReadablePath(const std::string& path)
 
     return !formatNameForExtension(path.substr(dot + 1)).empty();
 }
+double
+pixelAspectOf(const OIIO::ImageSpec& spec)
+{
+    const float par = spec.get_float_attribute("PixelAspectRatio", 1.f);
+
+    return par > 0.f ? (double)par : 1.;
+}
+
+bool
+colourPartOf(const Header& header,
+             const std::string& view,
+             PartChannels* colour)
+{
+    std::vector<PartChannels> parts;
+
+    viewParts(header, view, &parts);
+    for (std::vector<PartChannels>::const_iterator it = parts.begin(); it != parts.end(); ++it) {
+        if (!it->part.empty() && !isColourPartName(it->part)) {
+            continue;
+        }
+        if (ColourChannels::of(it->names, it->index).hasAny()) {
+            *colour = *it;
+
+            return true;
+        }
+    }
+
+    return false;
+}
 } // namespace OiioReadSupport
 
 NATRON_NAMESPACE_EXIT

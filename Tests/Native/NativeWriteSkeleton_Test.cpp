@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <initializer_list>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -37,6 +38,7 @@
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
@@ -59,6 +61,17 @@ bool
 isWriteContainer(const NodePtr& node)
 {
     return node && dynamic_cast<WriteNode*>(node->getEffectInstance().get());
+}
+
+std::string
+messageOf(const NodePtr& node)
+{
+    QString message;
+    int type = 0;
+
+    node->getPersistentMessage(&message, &type, false);
+
+    return message.toStdString();
 }
 
 } // namespace
@@ -153,4 +166,42 @@ TEST_F(NativeWriteSkeletonTest, MajorAndFilenameSurviveSaveAndLoad)
     KnobOutputFile* loadedFile = dynamic_cast<KnobOutputFile*>(loaded->getKnobByName(kOfxImageEffectFileParamName).get());
     ASSERT_TRUE(loadedFile != NULL);
     EXPECT_EQ(std::string("/tmp/native-write-skeleton.png"), loadedFile->getValue());
+}
+
+TEST_F(NativeWriteSkeletonTest, UnsupportedNamesPostTheMessageAtOnceAndASupportedNameClearsIt)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
+    ASSERT_TRUE(isNativeWrite(node));
+    KnobOutputFile* file = dynamic_cast<KnobOutputFile*>(node->getKnobByName(kOfxImageEffectFileParamName).get());
+    ASSERT_TRUE(file != NULL);
+
+    const char* const unsupported[] = { "/tmp/shot.cr2", "/tmp/shot.mov", "/tmp/shot.psd" };
+    for (std::size_t i = 0; i < sizeof(unsupported) / sizeof(unsupported[0]); ++i) {
+        file->setValue(std::string(unsupported[i]));
+        EXPECT_TRUE(node->hasPersistentMessage()) << unsupported[i];
+        EXPECT_NE(std::string::npos, messageOf(node).find("Unsupported format")) << messageOf(node);
+        for (const char* name : { kNatronWriteParamBitDepth, kNatronWriteParamCompression, kNatronWriteParamQuality, kNatronWriteParamTileSize }) {
+            KnobIPtr option = node->getKnobByName(name);
+            ASSERT_TRUE(bool(option)) << name;
+            EXPECT_TRUE(option->getIsSecret()) << name << " " << unsupported[i];
+        }
+    }
+
+    file->setValue(std::string("/tmp/shot.png"));
+    EXPECT_FALSE(node->hasPersistentMessage()) << messageOf(node);
+}
+
+TEST_F(NativeWriteSkeletonTest, CreatingWithAFilenameInTheArgsKeepsItAndOpensNoDialog)
+{
+    CreateNodeArgs args(PLUGINID_NATRON_WRITE, getApp()->getProject());
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, PLUGIN_MAJOR_NATRON_WRITE, 0);
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, 0, 1);
+    args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, "/tmp/native-write-args.png");
+
+    NodePtr node = getApp()->createNode(args);
+    ASSERT_TRUE(isNativeWrite(node));
+    KnobOutputFile* file = dynamic_cast<KnobOutputFile*>(node->getKnobByName(kOfxImageEffectFileParamName).get());
+    ASSERT_TRUE(file != NULL);
+    EXPECT_EQ(std::string("/tmp/native-write-args.png"), file->getValue());
+    EXPECT_TRUE(getApp()->isBackground());
 }

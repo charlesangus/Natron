@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -178,6 +180,107 @@ bool isColourPartName(const std::string& part);
  * in a file that names none, which gives every subimage whole.
  **/
 void viewParts(const Header& header, const std::string& view, std::vector<PartChannels>* parts);
+
+/**
+ * @brief Where the R, G, B and A of a file sit among its channels, -1 when it has none, and its
+ * luminance (Y or I), which stands in for R, G and B when the file has none of them.
+ **/
+struct ColourChannels {
+    int index[4];
+    int luminance;
+
+    ColourChannels()
+        : index { -1, -1, -1, -1 }
+        , luminance(-1)
+    {
+    }
+
+    // `names[k]` is the name of file channel `index[k]`.
+    static ColourChannels of(const std::vector<std::string>& names,
+                             const std::vector<int>& index)
+    {
+        ColourChannels result;
+
+        for (std::size_t k = 0; k < index.size() && k < names.size(); ++k) {
+            const int i = index[k];
+            std::string name = names[k];
+            std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
+            if (name.compare(0, 5, "rgba.") == 0) {
+                name.erase(0, 5);
+            }
+            if (name.size() != 1) {
+                continue;
+            }
+            if (name[0] == 'y' || name[0] == 'i') {
+                if (result.luminance < 0) {
+                    result.luminance = i;
+                }
+                continue;
+            }
+            const std::size_t slot = std::string("rgba").find(name[0]);
+            if (slot != std::string::npos && result.index[slot] < 0) {
+                result.index[slot] = i;
+            }
+        }
+
+        return result;
+    }
+
+    bool hasRgb() const
+    {
+        return index[0] >= 0 || index[1] >= 0 || index[2] >= 0;
+    }
+
+    bool hasAny() const
+    {
+        return hasRgb() || luminance >= 0 || index[3] >= 0;
+    }
+
+    bool spreadsLuminance() const
+    {
+        return !hasRgb() && luminance >= 0;
+    }
+
+    // A file with none of R, G, B, A or luminance stays a black RGBA plane rather than being
+    // shuffled in.
+    int nComps() const
+    {
+        if (hasRgb() || spreadsLuminance()) {
+            return index[3] >= 0 ? 4 : 3;
+        }
+
+        return index[3] >= 0 ? 1 : 4;
+    }
+
+    int fileChannelForComponent(int nComps,
+                                int component) const
+    {
+        if (nComps == 1) {
+            return index[3];
+        }
+        if ((nComps == 3 || nComps == 4) && component < nComps) {
+            if (spreadsLuminance() && component < 3) {
+                return luminance;
+            }
+
+            return index[component];
+        }
+
+        return -1;
+    }
+};
+
+/**
+ * @brief The pixel aspect ratio a file's PixelAspectRatio attribute gives, 1 when it has none.
+ **/
+double pixelAspectOf(const OIIO::ImageSpec& spec);
+
+/**
+ * @brief The part that holds the colour plane of `view`: the first whose name, without the view,
+ * is none or the colour plane's, and that has an R, G, B, A or luminance channel. A part named
+ * otherwise is a layer of that name, which fileLayers lists, so it never stands in for the colour.
+ **/
+bool colourPartOf(const Header& header, const std::string& view, PartChannels* colour);
 
 /**
  * @brief Decodes channels [chbegin, chend) of `subimage` over `window` as 32-bit floats, as

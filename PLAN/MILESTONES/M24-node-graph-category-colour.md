@@ -17,29 +17,14 @@ register rather than a string match, and removes the two data-kind affordances t
 M17 shipped and that have not earned their place: the tinted backdrop behind
 deep/scene nodes, and the edge pen-width ladder.
 
-Scope note: this milestone does **not** touch the node silhouette shapes
-(`kindSilhouetteCornerRadiusPx()`) or the input-arrow glyph shapes and tints
-(`Gui/NodeGui.cpp:1660-1690`). Those are working and stay exactly as they are.
+Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhouettes, the tinted backdrop and the input-arrow glyphs, so there is no node-level kind visual left to protect; the edge colour and edge width are the only data-kind signals in the graph.
 
 ## Phase 24.1: Pin the visual specification
 
 - [ ] M24.P1.T1 — Survey the state of the art and pin the concrete visual spec
-  - files: `PLAN/DESIGN/2026-09-07-node-graph-category-colour.md` (new)
-  - approach: Survey how Houdini, Nuke, Fusion and Blender separate "what kind of
-    node is this" from "what colour did the user give it" in their network editors —
-    Houdini especially, since its node graph is the reference. Then pin the numbers
-    this milestone builds to, so the GUI tasks are not making them up: the closed
-    category list and each category's default colour; the user-border pen width in
-    px at 100% zoom and how it scales; whether the border is drawn inset or outset
-    relative to the node rect; the minimum contrast rule between border and body so
-    a user colour close to the category colour is still visible; and what the border
-    must look like so it is never confused with the selection halo
-    (`_stateIndicator`, a `NodeGraphRectItem` at `zValue depth-1` inflated by
-    `indicatorOffset`, `Gui/NodeGui.cpp:714,1076`). Record any judgement call as a
-    milestone-scoped decision in `## Decisions` below.
-  - verify: The note exists, names each surveyed application and what it does, and
-    states every number above as a single unambiguous value that a later task can
-    implement without further design work.
+  - files: `PLAN/DESIGN/2026-09-07-node-graph-category-colour.md` (new, on the plan branch)
+  - approach: Survey how Houdini, Nuke, Fusion and Blender separate "what kind of node is this" from "what colour did the user give it" in their network editors, Houdini especially. Then pin: the closed category list and each default colour; the user-border pen width in px at 100% zoom and how it scales; inset vs outset; the minimum border/body contrast rule; and how the border stays distinct from the selection halo (`_stateIndicator`, a `NodeGraphRectItem` at `depth-1` inflated by `NATRON_STATE_INDICATOR_OFFSET`, `Gui/NodeGui.cpp:697,1064-1067`). Nodes are square-cornered today (corner radius 0, `Gui/NodeGui.cpp:634`), since M18.P4.T4 removed the kind silhouettes. Also pin: (a) whether the Reader/Writer/Generator rungs beat the Deep group (DeepWrite is Writer-coloured today); (c) the label-text luminance threshold and the light/dark text colours. Items (b) 3D category and (d) edge width ladder are user decisions recorded in `## Decisions` — implement what they say.
+  - verify: The note exists, names each surveyed application and what it does, and gives every number and rule above as one unambiguous value.
   - size: M
 
 ## Phase 24.2: Make the node category a first-class engine concept
@@ -61,26 +46,11 @@ Scope note: this milestone does **not** touch the node silhouette shapes
     still loads with its customised group colours intact.
   - size: M
 
-- [ ] M24.P2.T2 — Let nodes declare their category, with a heuristic fallback
-  - files: `Engine/Nodes/NativeEffectBase.h`, `Engine/Nodes/NativeEffectBase.cpp`,
-    `Engine/Nodes/TypedPassthrough.cpp`, `Engine/Node.h`, `Engine/Node.cpp`
-  - approach: Add a `NodeCategoryEnum category` field to `NativePluginDescription`
-    (`Engine/Nodes/NativeEffectBase.h`) — the same place a native node already
-    declares its id, grouping, inputs and `outputKind` — defaulting to
-    `eNodeCategoryOther`, and set it on `TypedPassthrough`'s descriptor (the only
-    native node today). Add `Node::getNodeCategory()` resolving in a fixed ladder:
-    (1) the declared category if the effect is a `NativeEffectBase`; (2)
-    `isReader()` / `isWriter()` / `isGenerator()`; (3) the major `PLUGIN_GROUP_*`
-    grouping string — this is what covers the bundled OFX set, which declares proper
-    groupings; (4) a keyword heuristic over the plugin label and ID for third-party
-    OFX plugins whose grouping is arbitrary, in the spirit of Nuke's name matching;
-    (5) `eNodeCategoryOther`. Keep the ladder in one function in the engine so no
-    caller ever re-derives it.
-  - verify: A unit or manual check that each rung fires — `TypedPassthrough` resolves
-    via its descriptor, a bundled OFX Grade resolves to the color category via its
-    grouping, and a plugin with a nonsense grouping but a recognisable name resolves
-    via the keyword heuristic rather than falling to other.
-  - size: L
+- [ ] M24.P2.T2 — Resolve a node's category in one engine function
+  - files: `Engine/Node.h`, `Engine/Node.cpp`, `Tests/NodeCategory_Test.cpp` (new), `Tests/CMakeLists.txt`
+  - approach: Add `NodeCategoryEnum Node::getNodeCategory() const` with this ladder, in the order fixed by P1.T1: (1) Backdrop stays on its own colour — callers check first or a sentinel is returned; (2) `isReader()` / `isWriter()` / `isGenerator()`; (3) the major `PLUGIN_GROUP_*` from `getPluginGrouping()` through one static string→enum table — this covers every native node (all ~36 `NativePluginDescription`s set `grouping`) and the bundled OFX set; (4) a keyword heuristic over plugin label/ID for third-party OFX plugins with an arbitrary grouping; (5) `eNodeCategoryOther`. Do **not** add a `category` field to `NativePluginDescription` or touch any `Engine/Nodes/*` file: grouping already carries the information.
+  - verify: A ctest case covers each rung: native Grade → color; DeepMerge → deep; Constant → generator; DeepWrite → whatever P1.T1 decided; TypedPassthrough → other; a test effect with grouping "Foo" and label "MyBlur" → filter via the heuristic. `tools/ci/local/test.sh ctest debug` green.
+  - size: M
 
 ## Phase 24.3: Two colour channels on the node
 
@@ -98,20 +68,9 @@ Scope note: this milestone does **not** touch the node silhouette shapes
   - size: M
 
 - [ ] M24.P3.T2 — Split the node's single colour into category body + user border
-  - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/NodeGraphRectItem.h`
-  - approach: `NodeGui` currently keeps one `_currentColor` that is both the category
-    default and the user's pick. Keep the category colour as the body brush applied
-    to `_boundingBox` (`Gui/NodeGui.cpp:1864`) and add an explicit optional user
-    colour: when set, draw it as a border pen on `_boundingBox` itself, to the width
-    and inset fixed by M24.P1.T1. Draw it **inside the node's own footprint** — not
-    as an inflated outer rect — because `_stateIndicator` already owns the inflated
-    halo for selection and state, and an outer border would be indistinguishable
-    from it. The pen must follow `_boundingBox`'s current corner radius so it works
-    on the capsule and rounded silhouettes too.
-  - verify: A node with no user colour looks the same as before this milestone. After
-    setting a user colour, the body keeps the category colour and the border shows
-    the user colour; selecting that node still shows a visually distinct selection
-    halo.
+  - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/NodeGraphRectItem.h`, `Gui/NodeGraphRectItem.cpp`
+  - approach: Keep `_currentColor` as the category body applied by `applyBrush()` (`Gui/NodeGui.cpp:1782-1801`, which also covers `_nameFrame` and `_resizeHandle`). Add an optional `_userColor` drawn as an inset pen on `_boundingBox`, width/inset per P1.T1, inside the node footprint so it never reads as the `_stateIndicator` halo. Decide and document how it interacts with `_clonedColor` (`refreshCurrentBrush()`, `:1795`). The pen follows `_boundingBox`'s corner radius (0 today).
+  - verify: Xvfb screenshots: a node with no user colour unchanged; a recoloured node with category body + user border; the same node selected with the halo still distinct; a cloned node unchanged.
   - size: L
 
 - [ ] M24.P3.T3 — Persist "the user set a colour" explicitly
@@ -132,83 +91,37 @@ Scope note: this milestone does **not** touch the node silhouette shapes
     nodes recoloured.
   - size: L
 
-- [ ] M24.P3.T4 — Wire set and clear of the user colour through the panel
-  - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/DockablePanel.cpp`
-  - approach: `NodeGui::setCurrentColor()` (`Gui/NodeGui.cpp:3407`) is called both to
-    apply a category default (`restoreStateAfterCreation()`,
-    `setPluginIDAndVersion()`) and to apply a user pick (the panel colour button,
-    `Gui/DockablePanel.cpp:1463`). Separate them: the default path sets the category
-    colour, the panel path sets the user colour. The colour button must show the
-    user colour when one is set and the category colour otherwise, and there must be
-    a way to clear the user colour and return the node to its category colour.
-  - verify: Picking a colour in the panel sets the border and leaves the body alone;
-    clearing it removes the border; both are undoable if the existing colour change
-    was undoable.
+- [ ] M24.P3.T4 — Wire set and clear of the user colour through the panel and Python
+  - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/DockablePanel.h`, `Gui/DockablePanel.cpp`
+  - approach: Split `NodeGui::setCurrentColor()` (`Gui/NodeGui.cpp:3318`). The category path is called from `restoreStateAfterCreation()` (`:451`) and `setPluginIDAndVersion()` (`:3824`). The user path is the panel (`DockablePanel::onColorButtonClicked()` `:1455-1469` → `colorChanged` → `onSettingsPanelColorChanged` `:757`) and Python `NodeGui::setColor()` (`:3598-3606`). The panel button icon (`onColorDialogColorChanged` `:1380`) shows the user colour when set, otherwise the category colour. Add a "reset to category colour" action.
+  - verify: Picking a colour in the panel sets the border and leaves the body; clearing removes the border; Python `setColor` sets the border; undo behaves as before. Xvfb screenshots of each.
   - size: M
 
 - [ ] M24.P3.T5 — Re-colour open graphs when a category colour preference changes
-  - files: `Engine/Settings.h`, `Engine/Settings.cpp`, `Gui/NodeGraph.cpp`,
-    `Gui/NodeGui.cpp`
-  - approach: Changing a category colour in Preferences should recolour every
-    already-placed node of that category, not just newly created ones. Hook the
-    category colour knobs' value-changed path in `Engine/Settings` and have the node
-    graph re-apply the category colour to each `NodeGui` that has no user colour set.
-    Nodes with a user colour keep their border and also update their body, since the
-    body is still the category channel.
-  - verify: With a graph open, change the Merge category colour in Preferences and
-    watch every merge node's body update without reopening the project.
+  - files: `Engine/Settings.h`, `Engine/Settings.cpp`, `Gui/NodeGraph.cpp`, `Gui/NodeGui.cpp`
+  - approach: `Settings::onKnobValueChanged` already emits `settingChanged(KnobI*)` (`Engine/Settings.cpp:2257`). Add `Settings::isNodeCategoryColorKnob(KnobI*)`; the node graph connects to `settingChanged` and on a category knob re-applies the category body colour and label contrast (P3.T6) to every `NodeGui`, leaving user borders untouched. Skip while settings are being restored (`_restoringSettings`).
+  - verify: With a graph open, changing the Merge colour in Preferences updates every Merge node's body and label colour live; a recoloured Merge node keeps its border.
   - size: M
 
-- [ ] M24.P3.T6 — Flip node label text colour to white when the node body
-      colour is dark
-  - files: `Gui/NodeGui.cpp`, `Gui/NodeGui.h`
-  - approach: Node labels are drawn in a fixed colour today. Compute the
-    relative luminance of the node's current body (category) colour
-    wherever the label is painted/updated, and switch between a light and a
-    dark text colour at a fixed luminance threshold, so labels stay
-    readable regardless of category or user body colour. Re-evaluate when
-    the body colour changes at runtime (the M24.P3.T5 re-colour path), so
-    an open graph's label colours stay correct after a Preferences change.
-  - verify: Xvfb GUI check — a node with a light category colour keeps dark
-    text, a node with a dark category colour shows white text, and
-    changing a category's colour in Preferences updates already-placed
-    nodes' label colour along with their body.
-  - size: S
+- [ ] M24.P3.T6 — Contrast-aware node label colour (fixes deep nodes' black-on-navy labels)
+  - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`
+  - approach: The label is hard-coded black at `Gui/NodeGui.cpp:682` and `:3203` (`setNameItemHtml()`, `:3107-3222`). When the label HTML has no user `<font color>`, pick light or dark text from the relative luminance of the body colour (category colour, or `_clonedColor` for clones) using P1.T1's threshold. A user font colour from `KnobGuiString::parseFont` still wins. Re-evaluate whenever the body brush changes (`applyBrush`/`refreshCurrentBrush`). Deep's default (0, 0, 0.38) must give white text.
+  - verify: Xvfb screenshots: white label text on DeepRead/DeepMerge (navy), dark text on a Grade (light), a label with an explicit `<font color>` unchanged; with P3.T5, a live Preferences change flips the text.
+  - size: M
 
-## Phase 24.4: Retire the data-kind affordances that did not earn their place
+## Phase 24.4: Retire the data-kind leftovers
 
-- [ ] M24.P4.T1 — Remove the tinted backdrop behind deep and scene nodes
+- [ ] M24.P4.T1 — Remove the dead NodeGui kind-tint helper left behind by M18
   - files: `Gui/NodeGui.cpp`
-  - approach: `NodeGui::paint()` (`Gui/NodeGui.cpp:2336`) fills the whole bounding
-    rect with an opaque kind tint that `_boundingBox` then covers except at the
-    corners, so all the user ever sees is coloured wedges bleeding out of the node's
-    rounded corners. Delete that fill. Keep the `_boundingBox->setCornerRadiusPx()`
-    call in the same function — the silhouette shape is the affordance that works.
-    Keep `kindTintColor()`, which the input-arrow glyphs still use
-    (`Gui/NodeGui.cpp:1676-1684`); if `paint()` ends up with nothing left but the
-    corner-radius update, move that update somewhere it is not doing a full repaint's
-    work.
-  - verify: A deep node renders as a clean capsule and a scene node as a clean
-    rounded rect, with no colour visible outside the silhouette at any zoom level;
-    the input-arrow glyphs are unchanged.
+  - approach: M18.P4.T3/T4 already removed the tinted backdrop, silhouette radius and input glyphs; `NodeGui::paint()` (`:2264`) is empty. Delete the now-unused static `kindTintColor()` and its comment (`Gui/NodeGui.cpp:181-201`). Fix the comment at `:1354-1355` so it no longer mentions a silhouette; keep the `update()` call only if something still reads kind at paint time, otherwise delete it with the comment. Leave `Gui/Edge.cpp`'s own `kindTintColor()` alone.
+  - verify: Builds with no unused-function warning; `grep -n kindTintColor Gui/NodeGui.cpp` returns nothing.
   - size: S
 
 - [ ] M24.P4.T2 — Remove the edge pen-width ladder
   - files: `Gui/Edge.cpp`
-  - approach: Delete `kindWidthMultiplier()` (`Gui/Edge.cpp:785`) and its use at
-    `Gui/Edge.cpp:830` so every edge is drawn at `EDGE_PEN_WIDTH` regardless of data
-    kind — in practice the 3x/2x difference is not noticeable. Keep the Okabe-Ito
-    kind colour (`Gui/Edge.cpp:800,880`): it is now the only edge-level kind channel,
-    which is acceptable because Okabe-Ito is chosen to be distinguishable under all
-    common colour-vision deficiencies, and node shape carries the same information
-    redundantly. Update the comment block at `Gui/Edge.cpp:780-783`, which currently
-    asserts the opposite ("width is the primary channel ... colour is reinforcement
-    only, never the sole signal"), so the file does not document a rule it no longer
-    follows.
-  - verify: All edges render at the same width; deep edges are still blue and scene
-    edges still orange; selection and highlight states, which are orthogonal to kind
-    styling, still render as before.
-  - size: S
+  - approach: Run only if `## Decisions` says the ladder goes. Delete `kindWidthMultiplier()` (`Gui/Edge.cpp:785-797`) and its use at `:830` so every edge uses `EDGE_PEN_WIDTH`. Keep the Okabe-Ito colours (`:800-813`, `:880`). Rewrite the comment at `:779-782` to say colour is now the only kind channel. Leave the dash pattern for mask/hidden inputs alone.
+  - verify: Xvfb screenshot of a graph with image and deep edges: same width, deep edges still blue, mask/hidden dash and selection/highlight unchanged.
+  - size: M
 
 ## Decisions
 
@@ -227,6 +140,8 @@ Scope note: this milestone does **not** touch the node silhouette shapes
   the Okabe-Ito edge colour the sole edge-level kind channel. This supersedes the
   rationale documented in `Gui/Edge.cpp:780-783`; node silhouette shape remains the
   non-colour channel for data kind.
+
+- 2026-10-10 — **Freshness check at promotion (§5a):** M18 Phase 18.4 had already done P4.T1's job (P4.T1 is now a dead-code cleanup), and every native node from M67 already sets a `PLUGIN_GROUP_*` grouping, so P2.T2 resolves the category from grouping instead of adding a `NativePluginDescription` field. P1.T1, P3.T2, P3.T4–T6 and P4.T2 were rewritten against current code; P3.T6 now carries the 2026-10-03 deep-label fix and is sized M. P2.T1, P3.T1 and P3.T3 stand, but their line numbers have moved: settings getters are at `Engine/Settings.h:200-218`, knob creation at `Engine/Settings.cpp:922-1012`, `getColorFromGrouping` at `Gui/NodeGui.cpp:385-437`, and the duplicate chain at `Gui/ProjectGui.cpp:304-351`. P3.T3 also covers `NodeGui::copyFrom()` (`Gui/NodeGui.cpp:2321-2326`, the paste/preset path). The third 2026-09-07 decision's "node silhouette shape remains the non-colour channel" is no longer true.
 
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate

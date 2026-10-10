@@ -1,7 +1,7 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M75.P2.T14, M27.P1.T1, M88.P1.T1]
+current: [M75.P2.T14, M27.P1.T1, M89.P1.T1]
 pm_heartbeat: 2026-10-10T07:28:32-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
@@ -245,7 +245,7 @@ future core work has solid ground to build on.
 | M85 | Native GPU Kernels | todo |  | [M85-native-gpu-kernels.md](PLAN/MILESTONES/M85-native-gpu-kernels.md) |
 | M86 | OFX 1.5 GPU Suites | todo |  | [M86-ofx-gpu-suites.md](PLAN/MILESTONES/M86-ofx-gpu-suites.md) |
 | M87 | Point-Op Kernel Fusion | todo |  | [M87-point-op-kernel-fusion.md](PLAN/MILESTONES/M87-point-op-kernel-fusion.md) |
-| M88 | Shared Worktree Ccache | doing | - | [M88-shared-worktree-ccache.md](PLAN/MILESTONES/M88-shared-worktree-ccache.md) |
+| M89 | Shared Worktree Ccache | doing | - | [M89-shared-worktree-ccache.md](PLAN/MILESTONES/M89-shared-worktree-ccache.md) |
 | M27 | Real Debug Build | doing | - | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M22 | Missing Plugin Placeholder | todo | M75 | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M31 | Architectural Cleanup | todo | M75, M76 | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |

@@ -33,7 +33,7 @@ add_executable(BlurCpu_Test tests/BlurCpu_Test.cpp)
 target_link_libraries(BlurCpu_Test PRIVATE blur GTest::gtest_main)
 gtest_discover_tests(BlurCpu_Test)
 
-add_library(gpuspike_core STATIC src/GpuDevice.cpp src/Vma.cpp)
+add_library(gpuspike_core STATIC src/GpuDevice.cpp src/GpuKernel.cpp src/Vma.cpp)
 target_include_directories(gpuspike_core PUBLIC src)
 target_include_directories(gpuspike_core SYSTEM PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/VulkanMemoryAllocator/include")
@@ -50,3 +50,25 @@ slang_add_kernel(grade kernels/grade.slang ENTRY grade_main)
 add_executable(GradeCpu_Test tests/GradeCpu_Test.cpp)
 target_link_libraries(GradeCpu_Test PRIVATE grade GTest::gtest_main)
 gtest_discover_tests(GradeCpu_Test)
+
+slang_add_kernel(fill kernels/fill.slang ENTRY fill_main)
+
+add_executable(GpuKernel_Test tests/GpuKernel_Test.cpp)
+target_link_libraries(GpuKernel_Test PRIVATE gpuspike_core fill GTest::gtest_main
+  -static-libstdc++ -static-libgcc)
+gtest_discover_tests(GpuKernel_Test)
+
+# The host has no gtest: stage the shared libs next to the binaries so
+# run-host.sh can put them on LD_LIBRARY_PATH.
+foreach(_t GTest::gtest GTest::gtest_main)
+  get_target_property(_lib ${_t} IMPORTED_LOCATION)
+  if(NOT _lib)
+    get_target_property(_lib ${_t} IMPORTED_LOCATION_RELEASE)
+  endif()
+  if(NOT _lib)
+    get_target_property(_lib ${_t} IMPORTED_LOCATION_NOCONFIG)
+  endif()
+  if(_lib)
+    file(COPY "${_lib}" DESTINATION "${CMAKE_BINARY_DIR}/hostlibs" FOLLOW_SYMLINK_CHAIN)
+  endif()
+endforeach()

@@ -38,4 +38,9 @@ fi
 # RADV only exposes the dedicated SDMA transfer-only queue family when asked.
 export RADV_PERFTEST="${RADV_PERFTEST:+${RADV_PERFTEST},}transfer_queue"
 
+# The host has no gtest; the build stages the container's copy in hostlibs/.
+if [[ -d "${BUILD_DIR}/hostlibs" ]]; then
+    export LD_LIBRARY_PATH="${BUILD_DIR}/hostlibs${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
+
 exec "${bin}" "$@"

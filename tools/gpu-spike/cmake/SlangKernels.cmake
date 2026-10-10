@@ -7,7 +7,8 @@
 #   - The C++ target, built against the Slang prelude headers, exporting the
 #     C symbols <entry>, <entry>_Group and <entry>_Thread.
 # <target>.reflection.json is written beside them; the numthreads values live
-# as `threadGroupSize` in its entryPoints array.
+# as `threadGroupSize` in its entryPoints array and are also emitted into the
+# header as `inline constexpr uint32_t <target>_group_size[3]`.
 
 if(CMAKE_SCRIPT_MODE_FILE)
   # Script mode: `cmake -DIN=.. -DOUT=.. -DSYMBOL=.. -P SlangKernels.cmake`
@@ -23,6 +24,10 @@ if(CMAKE_SCRIPT_MODE_FILE)
   string(REGEX REPLACE "([0-9a-f][0-9a-f])([0-9a-f][0-9a-f])([0-9a-f][0-9a-f])([0-9a-f][0-9a-f])"
          "0x\\4\\3\\2\\1u," _words "${_hex}")
   math(EXPR _count "${_bytes} / 4")
+  file(READ "${JSON}" _json)
+  string(JSON _gx GET "${_json}" entryPoints 0 threadGroupSize 0)
+  string(JSON _gy GET "${_json}" entryPoints 0 threadGroupSize 1)
+  string(JSON _gz GET "${_json}" entryPoints 0 threadGroupSize 2)
   file(WRITE "${OUT}"
 "#pragma once
 #include <cstddef>
@@ -30,6 +35,7 @@ if(CMAKE_SCRIPT_MODE_FILE)
 
 inline constexpr uint32_t ${SYMBOL}_spirv[] = {${_words}};
 inline constexpr std::size_t ${SYMBOL}_spirv_words = ${_count};
+inline constexpr uint32_t ${SYMBOL}_group_size[3] = {${_gx}u, ${_gy}u, ${_gz}u};
 ")
   return()
 endif()
@@ -54,7 +60,7 @@ function(slang_add_kernel target source)
     COMMAND "${SLANG_COMPILER}" "${_src}" -entry ${ARG_ENTRY} -stage compute
             -target spirv -profile spirv_1_5 -o "${_spv}"
             -reflection-json "${_json}"
-    COMMAND ${CMAKE_COMMAND} -DIN=${_spv} -DOUT=${_hdr} -DSYMBOL=${target}
+    COMMAND ${CMAKE_COMMAND} -DIN=${_spv} -DOUT=${_hdr} -DSYMBOL=${target} -DJSON=${_json}
             -P "${_SLANG_KERNELS_SELF}"
     DEPENDS "${_src}"
     VERBATIM)

@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <cstdio>
 #include <list>
 #include <memory>
 #include <string>
@@ -143,7 +144,10 @@ bool
 readWithOiio(const std::string& path,
              Decoded* decoded)
 {
-    OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::open(path);
+    // PFM is only flipped to top-down by OIIO when the open carries a config.
+    OIIO::ImageSpec config;
+    config["pnm:pfmflip"] = 1;
+    OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::open(path, &config);
     if (!input) {
         return false;
     }
@@ -315,6 +319,49 @@ TEST_F(NativeReadDecodeTest, MipmapZeroIsBitExactAgainstOiioForEveryFormat)
             continue;
         }
         expectMatchesOiio(path, kFormats[i].channels);
+    }
+}
+
+TEST_F(NativeReadDecodeTest, PfmIsShownTopDownFromItsBottomUpRows)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const int w = 4;
+    const int h = 3;
+    const std::string path = (dir.path() + QString::fromUtf8("/bottom-up.pfm")).toStdString();
+    {
+        std::FILE* f = std::fopen(path.c_str(), "wb");
+        ASSERT_TRUE(f != NULL);
+        std::fprintf(f, "PF\n%d %d\n-1.0\n", w, h);
+        // Stored bottom row first; every row has its own value so a flip is visible.
+        for (int stored = 0; stored < h; ++stored) {
+            for (int x = 0; x < w; ++x) {
+                for (int c = 0; c < 3; ++c) {
+                    const float v = (float)(stored + 1) * 10.f + (float)x + (float)c * 0.25f;
+                    std::fwrite(&v, sizeof(v), 1, f);
+                }
+            }
+        }
+        std::fclose(f);
+    }
+
+    NodePtr node = createRead();
+    setFile(node, path);
+    std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBComponents());
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, w, h), layers, &planes, &error)) << error;
+    ASSERT_EQ(1u, planes.size());
+    ASSERT_EQ((std::size_t)w * h * 3, planes[0].pixels.size());
+
+    // Plane row 0 is the bottom of the image, so the last plane row is its top.
+    for (int row = 0; row < h; ++row) {
+        for (int x = 0; x < w; ++x) {
+            for (int c = 0; c < 3; ++c) {
+                const float want = (float)(row + 1) * 10.f + (float)x + (float)c * 0.25f;
+                EXPECT_EQ(want, planes[0].pixels[((std::size_t)row * w + x) * 3 + c]) << "row " << row << " x " << x << " c " << c;
+            }
+        }
     }
 }
 

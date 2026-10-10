@@ -181,12 +181,7 @@ DocumentationManager::handler(QHttpRequest *req,
      */
     {
         const std::string id = pluginID.toStdString();
-        if (WriteNode::isBundledWriter(id, false) || pluginID.startsWith(QString::fromUtf8("fr.inria.openfx.OCIO")) ||
-            // pluginID.startsWith( QString::fromUtf8("fr.inria.openfx.Read") ) ||
-            // pluginID.startsWith( QString::fromUtf8("fr.inria.openfx.Write") ) ||
-            // pluginID.startsWith( QString::fromUtf8("net.fxarena.openfx.Read") ) ||
-            // pluginID.startsWith( QString::fromUtf8("net.fxarena.openfx.Write") ) ||
-            id == PLUGINID_NATRON_READ || id == PLUGINID_NATRON_WRITE) {
+        if (WriteNode::isBundledWriter(id, false) || pluginID.startsWith(QString::fromUtf8("fr.inria.openfx.OCIO")) || id == PLUGINID_NATRON_READ || id == PLUGINID_NATRON_WRITE) {
             // use the dynamic version, to get the right colorspace options
             staticPage.clear();
         }

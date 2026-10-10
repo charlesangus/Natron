@@ -51,7 +51,12 @@ namespace {
     {
         const FpTrapGuard guard;
 
-        return OIIO::ImageInput::open(path);
+        // PFM stores rows bottom-up and OIIO only flips them to top-down when the open carries a
+        // config; other formats ignore the attribute.
+        OIIO::ImageSpec config;
+        config["pnm:pfmflip"] = 1;
+
+        return OIIO::ImageInput::open(path, &config);
     }
 
     struct CacheEntry {
@@ -68,6 +73,12 @@ namespace {
 
     std::mutex g_cacheMutex;
     std::map<std::string, CacheEntry> g_cache;
+    // A header parsed across an eviction may describe the file as it was before it, under the same
+    // modification time and size as the file now, so it is only cached if no eviction intervened.
+    std::uint64_t g_evictions = 0;
+
+    std::mutex g_headerParsedHookMutex;
+    std::function<void(const std::string&)> g_headerParsedHook;
 
     bool
     fail(std::string* error,
@@ -139,12 +150,14 @@ readHeader(const std::string& path,
         return std::shared_ptr<const Header>();
     }
 
+    std::uint64_t evictions = 0;
     {
         std::lock_guard<std::mutex> lock(g_cacheMutex);
         const std::map<std::string, CacheEntry>::const_iterator it = g_cache.find(path);
         if (it != g_cache.end() && it->second.mtime == mtime && it->second.size == size) {
             return it->second.header;
         }
+        evictions = g_evictions;
     }
 
     OIIO::ImageInput::unique_ptr input = openInput(path);
@@ -161,8 +174,20 @@ readHeader(const std::string& path,
     }
     input->close();
 
+    std::function<void(const std::string&)> hook;
+    {
+        std::lock_guard<std::mutex> lock(g_headerParsedHookMutex);
+        hook = g_headerParsedHook;
+    }
+    if (hook) {
+        hook(path);
+    }
+
     {
         std::lock_guard<std::mutex> lock(g_cacheMutex);
+        if (evictions != g_evictions) {
+            return header;
+        }
         if (g_cache.size() >= kMaxCachedHeaders && g_cache.find(path) == g_cache.end()) {
             g_cache.clear();
         }
@@ -180,6 +205,25 @@ clearHeaderCache()
 {
     std::lock_guard<std::mutex> lock(g_cacheMutex);
     g_cache.clear();
+    ++g_evictions;
+}
+
+void
+evictHeaders(const std::vector<std::string>& paths)
+{
+    std::lock_guard<std::mutex> lock(g_cacheMutex);
+
+    for (std::vector<std::string>::const_iterator it = paths.begin(); it != paths.end(); ++it) {
+        g_cache.erase(*it);
+    }
+    ++g_evictions;
+}
+
+void
+setHeaderParsedHookForTests(const std::function<void(const std::string&)>& hook)
+{
+    std::lock_guard<std::mutex> lock(g_headerParsedHookMutex);
+    g_headerParsedHook = hook;
 }
 
 RectI
@@ -339,19 +383,17 @@ namespace {
 
         return part;
     }
-
-    // Writers name the part holding the colour plane after it ("Color" for Natron's), so the bare
-    // channels of such a part are the colour plane's rather than a layer named after the part.
-    bool
-    isColourPartName(const std::string& part)
-    {
-        static const char* const names[] = {
-            kNatronColorStorageLabel, kNatronColorLayerID, kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY
-        };
-
-        return std::any_of(std::begin(names), std::end(names), [&part](const char* name) { return sameName(part, name); });
-    }
 } // anonymous namespace
+
+bool
+isColourPartName(const std::string& part)
+{
+    static const char* const names[] = {
+        kNatronColorStorageLabel, kNatronColorLayerID, kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY
+    };
+
+    return std::any_of(std::begin(names), std::end(names), [&part](const char* name) { return sameName(part, name); });
+}
 
 std::vector<std::string>
 viewNames(const Header& header)

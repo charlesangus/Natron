@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 
 NATRON_NAMESPACE_ENTER
 
@@ -140,14 +141,15 @@ resolve(double time, const Settings& settings, const std::set<int>& framesOnDisk
     const MissingFrame policy = settings.onMissingFrame;
     const bool searchOtherFrame = policy == eMissingPrevious || policy == eMissingNext || policy == eMissingNearest;
 
-    // The search stops at frame 0 even when negative frame numbers exist, and never probes
-    // below it; the nearest order is 0, +1, -1, +2, -2, with +n skipped when -n would go negative.
+    // The nearest order is 0, +1, -1, +2, -2, ...; frames are probed in 64 bits so that a search
+    // from either end of the int range stays defined.
     int offset = 0;
     do {
-        if (framesOnDisk.count(frame + offset)) {
+        const int64_t candidate = static_cast<int64_t>(frame) + offset;
+        if (candidate >= std::numeric_limits<int>::min() && candidate <= std::numeric_limits<int>::max() && framesOnDisk.count(static_cast<int>(candidate))) {
             Result r;
             r.kind = Result::eFile;
-            r.frame = frame + offset;
+            r.frame = static_cast<int>(candidate);
             return r;
         }
         if (policy == eMissingPrevious) {
@@ -155,15 +157,9 @@ resolve(double time, const Settings& settings, const std::set<int>& framesOnDisk
         } else if (policy == eMissingNext) {
             ++offset;
         } else if (policy == eMissingNearest) {
-            if (offset <= 0) {
-                offset = -offset + 1;
-            } else if (frame - offset >= 0) {
-                offset = -offset;
-            } else {
-                ++offset;
-            }
+            offset = offset <= 0 ? -offset + 1 : -offset;
         }
-    } while (searchOtherFrame && std::abs(offset) <= kMissingFrameSearchRange && frame + offset >= 0);
+    } while (searchOtherFrame && std::abs(offset) <= kMissingFrameSearchRange);
 
     if (policy == eMissingBlack) {
         return Result();

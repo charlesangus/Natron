@@ -325,3 +325,15 @@ TEST(ReadTimeDomain, MissingFrameSearchRangeIsOneHundredFrames)
     expectCases(s, { 1 }, { { 101, 1 } });
     expectCases(s, { 1 }, { { 102, kError } });
 }
+
+TEST(ReadTimeDomain, MissingFrameSearchCrossesZero)
+{
+    Settings s = makeSettings(-10, 10, eBeforeAfterHold, eBeforeAfterHold);
+    const std::set<int> frames = { -6, 0 };
+    s.onMissingFrame = eMissingNext;
+    expectCases(s, frames, { { -8, -6 }, { -3, 0 } });
+    s.onMissingFrame = eMissingPrevious;
+    expectCases(s, frames, { { -4, -6 }, { 3, 0 } });
+    s.onMissingFrame = eMissingNearest;
+    expectCases(s, frames, { { -4, -6 }, { -2, 0 }, { -5, -6 } });
+}

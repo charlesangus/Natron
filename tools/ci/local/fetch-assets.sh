@@ -108,8 +108,8 @@ echo "Assets dir:  ${ASSETS_DIR}"
 #
 # ReadEXR also decodes alpha-only files into 1-component buffers.
 #
-# This revision excludes ReadOIIO, ReadEXR, ReadPNG, ReadPFM and ReadFFmpeg,
-# which the native Read replaces; the Write plugins stay.
+# Its reader targets (ReadOIIO, ReadEXR, ReadPNG, ReadPFM, ReadFFmpeg) are
+# disabled because the native Read decodes those files; its writers are built.
 #
 # It also takes the OCIO config from the host's instance property and
 # the working space and per-file-type colourspaces (8-bit, 16-bit, log,
@@ -199,10 +199,11 @@ IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 # net.fxarena.openfx.MagickText so only the pango Text owns
 # net.fxarena.openfx.Text.
 #
-# This revision excludes ReadPSD, ReadMisc, ReadKrita, OpenRaster, ReadSVG,
-# ReadPDF and ReadCDR, which the native Read replaces; with them go the
-# librsvg, poppler-glib and libcdr/librevenge dependencies. Its OpenFX-IO
-# submodule points at the openfx-io revision that likewise drops its readers.
+# Its reader targets (ReadPSD, ReadMisc, ReadKrita, OpenRaster, ReadSVG,
+# ReadPDF, ReadCDR) are disabled because the native Read decodes those files,
+# so the librsvg, poppler-glib and libcdr/librevenge dependencies are not
+# needed. Its OpenFX-IO submodule is an openfx-io revision whose readers are
+# disabled too.
 OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
 OPENFX_ARENA_REF="7e3337fad8a2fc46d53e8d35422289fcdb2a7514"
 

@@ -1,0 +1,3 @@
+upstream: https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+tag: v3.3.0
+sha256(vk_mem_alloc.h): 90ce12fc4a2466235a09ae02905dd0c13aee80c1bbf11b331ab61230c2ceb112

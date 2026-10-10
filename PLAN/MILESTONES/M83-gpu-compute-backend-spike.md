@@ -329,3 +329,11 @@ Scouted facts this plan relies on (2026-10-10):
   - **How native was measured:** UHD/8K over 16 threads, compiling the real `BlurKernels.cpp` into the bench with a shim, plus a verbatim copy of `GradeKernel`.
 - 2026-10-10 — **User signed off** on the design note (`PLAN/DESIGN/2026-10-10-gpu-compute-backend.md`) and the decision record: Vulkan compute; Slang compiled offline to SPIR-V; hand-written CPU kernels primary, with the Slang twin as a test oracle; interop via an exported buffer → GL PBO. The CPU-Blur baseline gap is left as an open risk in the note for M84 - GPU Placement And Residency to measure: in-graph CPU Blur runs 14–23 ms/Mpx using ~3 of 16 threads, against 1.4–20 for the bare kernel.
 - 2026-10-10 — Gate green after the rebase onto main: spike ctest 32/32 on lavapipe (Qt/Xvfb included) and every suite passing on RADV. PR #48 opened. Published to `docs/decisions/` in the same PR: vulkan-slang-backend, gpu-compute-backend-chosen, gpu-residency-from-day-one, and hard-cut-covers-default-changes. The last two should have been published with #47 and #46 and were caught up here.
+- 2026-10-10 — PR #48 review round (Claude Opus; Codex is not logged in) closed in `a13dcdb7d`. All 5 majors were fixed:
+  - a blur radius/channel guard behind `recordBlurPass`;
+  - the compute callback returns `GpuStatus`;
+  - validation is opt-in;
+  - a validation messenger fails tests (the layer isn't installed anywhere here, so the wiring is checked by injecting a message);
+  - point ops use push constants and have a GPU test.
+
+  Minors and nits were fixed, with two deferred to M84 - GPU Placement And Residency: a concurrency-safe descriptor pool, and GlInterop double-buffering. Results: lavapipe 60/60, and all suites pass on RADV with and without push descriptors. No second round, because M84 re-reviews this code when it promotes it.

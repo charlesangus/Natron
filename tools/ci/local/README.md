@@ -262,10 +262,20 @@ no benefit -- this only matters for GUI/GL launches.
 | `HOME` | Docker named volume `natron-dev-home` | `docker volume rm` |
 | Container | `natron-dev` | `docker rm -f natron-dev`, or see below |
 
-`CCACHE_MAXSIZE` defaults to `40G`, overridable via env var. The container
+`CCACHE_MAXSIZE` defaults to `80G`, overridable via env var (`build.sh`
+applies it inside the container, so a changed value needs no `--recreate`). The container
 name is overridable via `NATRON_DEV_CONTAINER` -- use this to give a second
 worktree its own container and caches, e.g.
 `NATRON_DEV_CONTAINER=natron-dev-wt2 tools/ci/local/devshell.sh`.
+
+### Sharing the cache with worktrees
+
+`build.sh` sets `CCACHE_BASEDIR` to the main checkout's root and
+`CCACHE_NOHASHDIR=1`, so a worktree build is served from entries the main
+tree built (and vice versa) when the build directory sits at the same depth
+below its tree root as the main tree's. `.worktrees/<id>/build/<type>` does;
+`build/wt/<id>/` does not, and gets no sharing. Debug info from a cache hit
+can name the other tree's source paths.
 
 ## Running build.sh/test.sh/package.sh from inside a container already (e.g. CI)
 

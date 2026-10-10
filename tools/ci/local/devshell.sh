@@ -49,12 +49,13 @@ HOME_MOUNT="/home/devshell"
 # off across branch switches (e.g. Qt6-migration branch <-> base branch),
 # where the same translation units get rebuilt repeatedly, so it needs
 # enough headroom to hold several full build trees at once. A full debug
-# build tree is ~4.1 GB, and the Docker filesystem has 116 GB free, so 40
-# GiB (roughly ten build trees' worth) comfortably covers realistic
-# branch-switch churn without being unbounded or eating the disk.
+# build tree is ~4.1 GB, and the Docker filesystem has 116 GB free, so 80
+# GiB (roughly twenty build trees' worth) covers branch-switch churn plus
+# several worktrees sharing the cache without being unbounded or eating the
+# disk.
 # Overridable the same way NATRON_DEV_CONTAINER is, e.g. for a smaller disk:
 #   CCACHE_MAXSIZE=10G tools/ci/local/devshell.sh
-CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-40G}"
+CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-80G}"
 
 # Resolve repo root from this script's own location, not $PWD, so this
 # works the same from any worktree.

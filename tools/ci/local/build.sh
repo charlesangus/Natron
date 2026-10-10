@@ -131,6 +131,9 @@ if ! in_container; then
     # container. `env` with no VAR=val arguments just execs its remaining
     # arguments normally, so this is a no-op when NATRON_BUILD_JOBS is unset.
     ENV_FORWARD=()
+    if [[ -n "${CCACHE_MAXSIZE:-}" ]]; then
+        ENV_FORWARD+=("NATRON_CCACHE_MAXSIZE=${CCACHE_MAXSIZE}")
+    fi
     if [[ -n "${NATRON_BUILD_JOBS:-}" ]]; then
         ENV_FORWARD+=("NATRON_BUILD_JOBS=${NATRON_BUILD_JOBS}")
     fi
@@ -166,6 +169,30 @@ case "${BUILD_TYPE}" in
         )
         ;;
 esac
+
+# Share ccache entries between the main checkout and its worktrees. Object
+# keys hash absolute paths, so a worktree under .worktrees/<id>/ would never
+# hit entries built in the main tree. With base_dir set to the main root,
+# ccache rewrites paths under it to relative ones, and a worktree's
+# build/<type> sits at the same depth below its own root as the main tree's,
+# so those relative paths come out identical. The root comes from the git
+# common dir (the main .git in both a worktree and the main tree), never from
+# the worktree's own root, which would defeat the sharing. hash_dir is
+# disabled because -g would otherwise hash the differing cwd.
+CCACHE_BASEDIR=""
+if COMMON_DIR="$(git -C "${REPO_ROOT}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+        && [[ -n "${COMMON_DIR}" ]]; then
+    CCACHE_BASEDIR="$(dirname "${COMMON_DIR}")"
+fi
+# Unreadable repo (e.g. safe.directory refusal) or a non-git source tree.
+if [[ -z "${CCACHE_BASEDIR}" || ! -d "${CCACHE_BASEDIR}" ]]; then
+    CCACHE_BASEDIR="${REPO_ROOT}"
+fi
+export CCACHE_BASEDIR
+export CCACHE_NOHASHDIR=1
+# The container's own CCACHE_MAXSIZE is fixed at creation; apply the size here
+# so raising it needs no --recreate.
+export CCACHE_MAXSIZE="${NATRON_CCACHE_MAXSIZE:-80G}"
 
 mkdir -p "${BUILD_DIR}"
 

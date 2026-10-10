@@ -31,7 +31,7 @@ Scouted facts this plan relies on (2026-10-10):
 
 ## Phase 83.1: Toolchain and scaffold
 
-- [ ] M83.P1.T1 — Create the standalone `tools/gpu-spike/` CMake project with a pinned Slang toolchain
+- [x] M83.P1.T1 — Create the standalone `tools/gpu-spike/` CMake project with a pinned Slang toolchain
   - files: `tools/gpu-spike/CMakeLists.txt`, `tools/gpu-spike/cmake/FetchSlang.cmake`, `tools/gpu-spike/cmake/SlangKernels.cmake`, `tools/gpu-spike/kernels/smoke.slang`, `tools/gpu-spike/tests/Smoke_Test.cpp`
   - approach:
     - A self-contained C++20 project, not added to the root `CMakeLists.txt`. Dependencies: `find_package(Vulkan REQUIRED)`, `find_package(GTest)` (the image has it in `/usr/local/lib/cmake/GTest`), and Slang.
@@ -50,7 +50,7 @@ Scouted facts this plan relies on (2026-10-10):
     - Record the configure and build wall time.
   - size: M
 
-- [ ] M83.P1.T2 — Vendor Vulkan Memory Allocator
+- [x] M83.P1.T2 — Vendor Vulkan Memory Allocator
   - files: `libs/VulkanMemoryAllocator/include/vk_mem_alloc.h`, `libs/VulkanMemoryAllocator/LICENSE.txt`, `libs/VulkanMemoryAllocator/VERSION`
   - approach: Copy the single header from tag `v3.3.0` of GPUOpen's VulkanMemoryAllocator (MIT), unmodified, with its licence and a version and SHA note. It goes under `libs/`, next to the other vendored deps, because M84 will include it from `Engine/`. Nothing in the main build references it yet.
   - verify: `sha256sum` matches the upstream tag's file. A one-file compile check (`#define VMA_IMPLEMENTATION`, against the container's Vulkan headers) compiles warning-free with the project's warning flags.
@@ -179,7 +179,7 @@ Scouted facts this plan relies on (2026-10-10):
   - verify: the output matches `GradeRef` and `BlurRef` within the P3 bounds on radeonsi. Timings land in the bench CSV. If the timebox runs out, write down why it was dropped instead.
   - size: M
 
-- [ ] M83.P5.T2 — OpenCL 3.0 reference on the same kernels (only if a runtime is available)
+- [x] M83.P5.T2 — ~~OpenCL 3.0 reference on the same kernels (only if a runtime is available)~~ (dropped 2026-10-10, user)
   - files: `tools/gpu-spike/ref-cl/grade.cl`, `tools/gpu-spike/ref-cl/blur.cl`, `tools/gpu-spike/ref-cl/OpenCl_main.cpp`
   - approach:
     - There is no OpenCL ICD on the host or in the image (verified). This task runs only if the user installs one on the host: Mesa rusticl (`mesa-opencl-icd` from bookworm-backports, `RUSTICL_ENABLE=radeonsi`) or ROCm's OpenCL runtime.
@@ -234,7 +234,7 @@ Scouted facts this plan relies on (2026-10-10):
   - verify: the user reviews and signs off on the decision. M84's stub cites the note.
   - size: M
 
-- [ ] M83.P6.T5 — CI step that runs the spike on lavapipe
+- [x] M83.P6.T5 — ~~CI step that runs the spike on lavapipe~~ (dropped 2026-10-10, user: spike stays local-only)
   - files: `.github/workflows/ci.yml`
   - approach:
     - After the existing ctest steps, cache `~/.cache/natron-deps` with `actions/cache` keyed on the Slang version and SHA.
@@ -285,3 +285,5 @@ Scouted facts this plan relies on (2026-10-10):
 - 2026-10-10 — **GL 4.3 compute and OpenCL are timeboxed references** that can be dropped (user direction: build toward Vulkan + Slang). OpenCL runs only if a host runtime is installed, since none exists today.
 - 2026-10-10 — **The bench covers up to 24k**, with strip tiling, per the project's tiling target workload.
 - 2026-10-10 — Blocker resolved: the user confirmed Vulkan compute + Slang and asked for parallel GPU work, so M83 starts while M82 - Render Cost Profiling finishes its comp profiling (see DECISIONS/2026-10-10-vulkan-slang-backend-and-parallel-gpu-milestones.md). Lane: worktree `build/wt/m83-gpu-backend-spike` off `main`, PR against `main`.
+- 2026-10-10 — User answers: **OpenCL reference dropped** (M83.P5.T2) — no runtime on host or image, and Vulkan + Slang is decided. **Spike stays local-only** (M83.P6.T5 dropped); CI coverage arrives when M84 moves the code into `Engine/`. **FIR Gaussian is acceptable for GPU Blur**, and the user wants FIR added to the native CPU Blur as its default filter too — split out as M88 - FIR Gaussian Blur so it ships independently; M83.P3.T2's FIR maths should match what M88 puts in the CPU node.
+- 2026-10-10 — The VMA vendor commit bypassed the comment gate: all ten flags were in upstream's unmodified `vk_mem_alloc.h`, which is not ours to rewrite.

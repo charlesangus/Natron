@@ -17,7 +17,7 @@ Measure where render time actually goes on real comps, and what host↔GPU trans
 
 ## Phase 82.2: Measurement
 
-- [ ] M82.P2.T1 — Host↔GPU transfer microbenchmark
+- [x] M82.P2.T1 — Host↔GPU transfer microbenchmark
   - files: spike code under `build/` only; results into a `PLAN/DESIGN/` note
   - approach: Measure upload and download of a UHD RGBA float frame (and half, and 8-bit) through the existing GL PBO path, and through plain Vulkan with pinned staging if that's quick to stand up. Runs on the host GPU (the container has no usable GPU under Xvfb). Record PCIe generation and width.
   - verify: a design note with measured GB/s per direction and per path.

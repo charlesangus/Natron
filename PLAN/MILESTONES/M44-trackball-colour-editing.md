@@ -227,7 +227,7 @@ These widgets know nothing about knobs. Tests go in the **`GuiTests`** executabl
 
 These tasks change the real colour rows. Each task's GUI evidence is a scratch script under `build/m44-gui/` (untracked), run with `Tests/gui/run-gui-test.sh build/m44-gui/<script>.py build/fast/App/Natron` after `tools/ci/local/build.sh fast`. Debug builds cannot run the GUI under Xvfb, because they trap FP exceptions inside llvmpipe.
 
-- [ ] M44.P4.T1 — Add a below-row widget hook to `KnobGuiValue`, and top-align the labels of rows that use it
+- [x] M44.P4.T1 — Add a below-row widget hook to `KnobGuiValue`, and top-align the labels of rows that use it
   - files: `Gui/KnobGuiValue.h`, `Gui/KnobGuiValue.cpp`, `Gui/KnobGui.h`, `Gui/KnobGui.cpp`, `Gui/KnobGuiContainerHelper.cpp`
   - approach:
     - Add a protected virtual `QWidget* createBelowRowWidget(QWidget* parent)`, defaulting to null.

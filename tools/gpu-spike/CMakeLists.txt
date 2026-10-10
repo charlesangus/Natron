@@ -138,3 +138,24 @@ if(Qt6OpenGLWidgets_FOUND)
     set_tests_properties(GlInteropQt PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb;${GL_INTEROP_TEST_ENV}")
   endif()
 endif()
+
+slang_add_kernel(grade_twin kernels/grade.slang ENTRY grade_main)
+slang_add_kernel(blur_twin kernels/blur.slang ENTRY blurPass)
+foreach(_t grade_twin blur_twin)
+  target_compile_options(${_t} PRIVATE -O2 -DNDEBUG -march=x86-64-v3)
+endforeach()
+
+# The engine's blur filters, compiled from source against stand-ins for the two Natron headers
+# they include, so the native CPU side is measured without linking the engine.
+set(CPU_TWIN_SHIM "${CMAKE_CURRENT_BINARY_DIR}/cpu-twin-shim")
+file(WRITE "${CPU_TWIN_SHIM}/Python.h" "")
+file(WRITE "${CPU_TWIN_SHIM}/Global/Macros.h"
+"#pragma once\n#define NATRON_NAMESPACE_ENTER\n#define NATRON_NAMESPACE_EXIT\n")
+add_library(native_blur_kernels STATIC ../../Engine/Nodes/Filter/BlurKernels.cpp)
+target_include_directories(native_blur_kernels PUBLIC "${CPU_TWIN_SHIM}"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../Engine/Nodes/Filter")
+target_compile_options(native_blur_kernels PRIVATE -O2 -DNDEBUG -march=x86-64-v3)
+
+add_executable(CpuTwinBench bench/CpuTwinBench_main.cpp)
+target_compile_options(CpuTwinBench PRIVATE -O2 -DNDEBUG -march=x86-64-v3)
+target_link_libraries(CpuTwinBench PRIVATE grade_twin blur_twin native_blur_kernels Threads::Threads)

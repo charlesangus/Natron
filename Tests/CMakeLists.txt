@@ -147,6 +147,7 @@ target_include_directories(Tests
 set(GuiTests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
+    ColorWheelWidget_Test.cpp
     KnobGuiString_Test.cpp
     LayerChannelRow_Test.cpp
     NodeGuiUserColorSerialization_Test.cpp
@@ -166,6 +167,7 @@ target_link_libraries(GuiTests
 target_compile_definitions(GuiTests
     PRIVATE
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+        NATRON_TESTS_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/output"
 )
 target_include_directories(GuiTests
     PRIVATE

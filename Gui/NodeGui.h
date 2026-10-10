@@ -624,6 +624,8 @@ private:
 
     void refreshUserColorBorder();
 
+    void refreshNameItemTextColor();
+
     void refreshPanelColorIndicator();
 
     void initializeInputsForInspector();
@@ -686,6 +688,7 @@ private:
     bool _hasUserColor;
     QColor _userColor;
     QColor _clonedColor;
+    bool _nameItemHasUserFontColor; //< true once the label HTML carries an explicit <font color>, so body-colour contrast must not override it
     bool _wasBeginEditCalled;
     mutable QMutex positionMutex;
 

@@ -216,6 +216,14 @@ wcagRelativeLuminance(const QColor& c)
         + 0.0722 * srgbChannelToLinear(c.blueF());
 }
 
+// 0.179 is the luminance at which white and black text give the same WCAG contrast ratio
+// against the background, so it is the threshold rather than an arbitrary pick.
+static QColor
+contrastingLabelTextColor(const QColor& body)
+{
+    return wcagRelativeLuminance(body) > 0.179 ? QColor(0, 0, 0, 255) : QColor(255, 255, 255, 255);
+}
+
 // Only a user colour close to the body in both luminance and hue is pushed away from it: a pure
 // hue difference at matched luminance is already visible and must keep the user's exact colour.
 static QColor
@@ -282,6 +290,7 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _hasUserColor(false)
     , _userColor()
     , _clonedColor()
+    , _nameItemHasUserFontColor(false)
     , _wasBeginEditCalled(false)
     , positionMutex()
     , _slaveMasterLink(NULL)
@@ -704,7 +713,10 @@ NodeGui::createGui()
 
     _nameItem = new NodeGraphTextItem(getDagGui(), this, false);
     _nameItem->setPlainText( QString::fromUtf8( node->getLabel().c_str() ) );
-    _nameItem->setDefaultTextColor( QColor(0, 0, 0, 255) );
+    // setNameItemHtml() re-picks this against the real body colour as soon as the category
+    // colour is known; until then, fall back to black against the still-undetermined body.
+    QColor initialCategoryColor;
+    _nameItem->setDefaultTextColor(getCategoryColor(node, &initialCategoryColor) ? contrastingLabelTextColor(initialCategoryColor) : QColor(0, 0, 0, 255));
     //_nameItem->setFont( QFont(appFont,appFontSize) );
     _nameItem->setZValue(depth + 1);
 
@@ -1825,6 +1837,26 @@ NodeGui::refreshCurrentBrush()
         applyBrush(_currentColor);
     }
     refreshUserColorBorder();
+    refreshNameItemTextColor();
+}
+
+void
+NodeGui::refreshNameItemTextColor()
+{
+    // An explicit <font color> in the label HTML always wins; re-picking it here would
+    // fight the colour setNameItemHtml() already locked in from KnobGuiString::parseFont.
+    if (!_nameItem || _nameItemHasUserFontColor) {
+        return;
+    }
+    QColor body;
+    {
+        QMutexLocker k(&_currentColorMutex);
+        body = _currentColor;
+    }
+    if (_slaveMasterLink) {
+        body = _clonedColor;
+    }
+    _nameItem->setDefaultTextColor(contrastingLabelTextColor(body));
 }
 
 void
@@ -2597,6 +2629,7 @@ NodeGui::onAllKnobsSlaved(bool b)
         }
     }
     refreshUserColorBorder();
+    refreshNameItemTextColor();
     update();
 }
 
@@ -3253,7 +3286,16 @@ NodeGui::setNameItemHtml(const QString & name,
     }
 
     QFont f;
-    QColor color = Qt::black;
+    QColor body;
+    {
+        QMutexLocker k(&_currentColorMutex);
+        body = _currentColor;
+    }
+    if (_slaveMasterLink) {
+        body = _clonedColor;
+    }
+    QColor color = contrastingLabelTextColor(body);
+    _nameItemHasUserFontColor = (startFontTag != -1);
     if (startFontTag != -1) {
         KnobGuiString::parseFont(finalText, &f, &color);
         //Remove font from the HTML

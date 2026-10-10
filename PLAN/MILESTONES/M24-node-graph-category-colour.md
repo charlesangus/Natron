@@ -37,6 +37,39 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - verify: In the screenshot script, a user-coloured Grade's border sits outside the icon column with nothing overlapping it, and the selection halo sits outside the border. A node without a user colour is unchanged.
   - size: M
 
+## Phase 24.5: UAT round 2 fixes
+
+- [ ] M24.P5.T1 — Recolour open graphs only when Preferences are saved
+  - files: `Gui/NodeGraph.h`, `Gui/NodeGraph.cpp`, `Gui/PreferencesPanel.h`, `Gui/PreferencesPanel.cpp`, `Engine/Settings.h`, `Engine/Settings.cpp`
+  - approach: Today `NodeGraph::onSettingChanged` reacts to every `settingChanged`, so nodes recolour while the user is still editing in Preferences, and Discard doesn't undo it. Stop reacting live. Recolour every open graph once, when the Preferences Save action commits the settings. Find the Save/Discard handlers in `PreferencesPanel` and how Discard restores the values, then hook a signal emitted on save (or when the panel closes after saving), plus any other path that commits settings, such as restoring defaults followed by Save. Discard must leave the graphs untouched. Live-preview behaviour of other settings is out of scope.
+  - verify: Editing the Merge colour without saving leaves Merge nodes unchanged, and Discard keeps them unchanged; Save recolours them. Adjust the screenshot script's Preferences step to call whatever the Save path does.
+  - size: M
+
+- [ ] M24.P5.T2 — Fix label contrast on deep nodes (still black on navy at UAT) and widen the border to 5
+  - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/NodeGraphRectItem.h` (or wherever `NATRON_USER_COLOR_BORDER_WIDTH` is defined)
+  - approach:
+    - In the AppImage, deep nodes still show black text, and darkening a category colour doesn't change the label colour, although screenshots under Xvfb showed white. Find the real cause in the real app path. Likely suspects:
+      - `_nameItemHasUserFontColor` treats a label HTML that merely contains a `<font size=` tag (which Natron's default label formatting or the knob-label sublabel may carry) as a user colour.
+      - The label is re-set later by another path that hard-codes black, for example `setNameItemHtml` callers, the sublabel, a stylesheet, or `refreshNameItemTextColor` not running on the deep nodes' creation path.
+    - Fix it so that only an explicit user `color=` attribute counts as a user colour.
+    - Change `NATRON_USER_COLOR_BORDER_WIDTH` from 4 to 5 (user).
+  - verify: Fresh DeepRead, DeepMerge and DeepToImage nodes created from the toolbar show white labels. Making a category colour dark flips its nodes' labels to white after Save. The screenshot script checks the label colour by sampling a text pixel, not just by asserting.
+  - size: M
+
+- [ ] M24.P5.T3 — Colour unconnected input pipes by their data kind, with per-kind edge colours in Preferences
+  - files: `Gui/Edge.cpp`, `Gui/Edge.h`, `Engine/Settings.h`, `Engine/Settings.cpp`
+  - approach:
+    - Today an edge takes its kind colour from the connected source node's output kind, so a dangling input pipe is black even when the input only accepts Deep (DeepToImage). For an edge with no source, use the data kind that input accepts (or the input's declared kind; find how native nodes declare input kinds, e.g. `NativePluginDescription` inputs). An input that accepts several kinds stays neutral.
+    - Move the Okabe-Ito kind colours (`kindTintColor` in `Gui/Edge.cpp`) into Settings, as one `KnobColor` per data kind (image, deep, scene, and geometry if `DataKindEnum` has it) on the Node Graph colours page, with the current values as defaults. An edge recolours when the setting is saved, which is the same Save-only trigger as P5.T1.
+  - verify: A freshly created DeepToImage shows a blue input pipe before it is connected. Changing the deep edge colour in Preferences and saving recolours deep edges.
+  - size: M
+
+- [ ] M24.P5.T4 — Give Dots a properties panel with label and colour
+  - files: `Gui/DotGui.h`, `Gui/DotGui.cpp`, plus whatever creates or suppresses node settings panels (search for where Dots are excluded, e.g. `NodeGui::createPanel`, `isSettingsPanelVisible`, Dot plugin flags in `Engine/Dot.cpp`)
+  - approach: Dots currently have no properties panel, so a user colour can't be set from the GUI. Give Dots a normal node settings panel, opened by double-click like other nodes, with the node label (Label tab) and the colour button. The Dot's label should draw next to the disk, the way other nodes show their label. The user colour fills the disk, as today.
+  - verify: Double-clicking a Dot opens its panel. Setting a colour fills the disk, setting a label shows it beside the Dot, and both survive save and reload.
+  - size: M
+
 ## Decisions` — implement what they say.
   - verify: The note exists, names each surveyed application and what it does, and gives every number and rule above as one unambiguous value.
   - size: M
@@ -201,6 +234,16 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 - 2026-10-10 — **CI green on PR #50** (`format`, `lint-ci`, `build-and-test` at `eebd52d14`). The user asked for an AppImage UAT before merge: `build/appimages/M24-eebd52d14.AppImage` (fast build). It launches (`--version`), but the version string reports a stale commit `d9dcaf1` from the cached configure; the bits are `eebd52d14`. A local, untracked `build/appimagetool-wrapper/appimagetool` passes `--no-appstream`, since this host cannot reach wikimedia.org. **PR #50 stays open pending the user's UAT.**
 
 - 2026-10-10 — **UAT round 1 (user, AppImage `M24-eebd52d14`):** the inset user-colour border impinges on the icon area. It should enlarge the node and be drawn outside the regular node area, with the selection halo outside that. Added P3.T2b. PR #50 stays open.
+
+- 2026-10-10 — **UAT round 2 (user):**
+  - (1) Preferences recolouring must happen on Save only; Discard must not recolour. → P5.T1.
+  - (2) Deep labels are still black and don't follow a dark category colour. → P5.T2.
+  - (3) Unconnected deep-only inputs should already be blue, and the per-kind edge colours belong in Preferences. → P5.T3.
+  - (5) Dots need a properties panel with label and colour. → P5.T4.
+  - The border goes from 4 to 5 units (in P5.T2).
+  - (6) Old projects don't matter, since this is a clean break; the existing legacy seeding stays since it only draws the setting differently.
+  - (9) Clones hiding the user border is acceptable for now.
+  - (4, 7, 8, 10) are OK.
 
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate

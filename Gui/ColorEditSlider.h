@@ -72,6 +72,12 @@ public:
     void setRates(const TrackballRates& rates);
     const TrackballRates& rates() const;
 
+    // A relative drag moves this many range units per pixel (before the gear) when it is
+    // positive, so a slider can share a gesture rate with the wheel locks and the global mode;
+    // zero or less spreads the range over the track width instead, so the rate follows the size.
+    void setRelativeRatePerPixel(double unitsPerPixel);
+    double relativeRatePerPixel() const;
+
     // sliderMapping(kind(), role(), rates()), exposed so a caller (or a test) never has to
     // re-derive it.
     SliderRange range() const;

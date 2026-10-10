@@ -89,6 +89,7 @@ struct ColorEditSliderPrivate {
     ColorSliderKindEnum kind;
     ColorKnobRoleEnum role;
     TrackballRates rates;
+    double relativeRate;
     double value;
     QGradientStops gradientStops;
     LineEdit* edit;
@@ -103,6 +104,7 @@ struct ColorEditSliderPrivate {
         : kind(kind)
         , role(eColorKnobRoleGain)
         , rates()
+        , relativeRate(0.)
         , value(0.)
         , gradientStops()
         , edit(0)
@@ -177,6 +179,18 @@ const TrackballRates&
 ColorEditSlider::rates() const
 {
     return _imp->rates;
+}
+
+void
+ColorEditSlider::setRelativeRatePerPixel(double unitsPerPixel)
+{
+    _imp->relativeRate = unitsPerPixel;
+}
+
+double
+ColorEditSlider::relativeRatePerPixel() const
+{
+    return _imp->relativeRate;
 }
 
 SliderRange
@@ -431,8 +445,8 @@ ColorEditSlider::mouseMoveEvent(QMouseEvent* e)
         Q_EMIT gestureMoved(_imp->value, true, label);
     } else {
         double g = gear(modifierHasControl(e), modifierHasShift(e));
-        double span = rng.rangeMax - rng.rangeMin;
-        double delta = (x - _imp->dragLastX) * span / w * g;
+        double perPixel = (_imp->relativeRate > 0.) ? _imp->relativeRate : (rng.rangeMax - rng.rangeMin) / w;
+        double delta = (x - _imp->dragLastX) * perPixel * g;
         _imp->value += delta;
         Q_EMIT gestureMoved(delta, false, label);
     }

@@ -147,6 +147,7 @@ target_include_directories(Tests
 set(GuiTests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
+    ColorAdjustPanel_Test.cpp
     ColorEditSlider_Test.cpp
     ColorWheelWidget_Test.cpp
     KnobGuiString_Test.cpp

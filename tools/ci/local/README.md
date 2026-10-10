@@ -33,8 +33,10 @@ This prevents formatting issues from reaching CI, using the same `clang-format==
 ## 1. Build the image
 
 `Dockerfile` is `FROM aswf/ci-vfxall:2027-clang21.1` -- the exact tag
-`.github/workflows/ci.yml` pins -- and adds no layers, because that base
-image already ships everything CI's `dnf install` step provides. See the
+`.github/workflows/ci.yml` pins -- and installs nothing, because that base
+image already ships everything CI's `dnf install` step provides. Its one
+layer relinks Mesa against the system LLVM (see "Mesa is relinked against
+the system LLVM" below); CI uses the base image directly, without it. See the
 comments at the top of `Dockerfile` for the full package-by-package
 breakdown, why this is `ci-vfxall` rather than `ci-baseqt`, and the one
 documented gap (`extra-cmake-modules`, below).
@@ -226,30 +228,81 @@ to connect first: `xhost +local:docker`.
 GPU passthrough only covers Mesa (Intel/AMD) via `/dev/dri`; an NVIDIA GPU
 needs `nvidia-container-toolkit`'s `--gpus`, which this script doesn't set up.
 
-**Known issue: `undefined symbol: LLVMInitializeAMDGPUTargetInfo`.** This
-image's `LD_LIBRARY_PATH` puts `/usr/local/lib` (the Conan-installed
-toolchain LLVM, used for compiling) ahead of `/usr/lib64` (the system LLVM
-Mesa's `libgallium` was actually built against). The Conan build is missing
-AMDGPU codegen, so loading Mesa's GLX driver for real rendering fails with
-that symbol error -- confirmed via `nm -D --defined-only
-/usr/local/lib/libLLVM.so.21.1 | grep LLVMInitializeAMDGPUTargetInfo`
-(nothing) vs. the same against `/usr/lib64/libLLVM.so.21.1` (present).
-Reordering `LD_LIBRARY_PATH` wholesale just trades this failure for another
-(`libQt6Gui.so.6: undefined symbol: FT_Get_Paint` -- Qt needs the Conan
-FreeType, not the system one). The fix is to force only the correct LLVM via
-`LD_PRELOAD`, leaving the rest of the search order untouched:
+**Mesa is relinked against the system LLVM.** The base image's
+`ld.so.conf` and `LD_LIBRARY_PATH` both put `/usr/local/lib` (the Conan
+clang toolchain's `libLLVM.so.21.1`, built without the AMDGPU target) ahead
+of `/usr/lib64` (the system `libLLVM.so.21.1` Mesa was built against), so
+unmodified, RADV and radeonsi fail with `undefined symbol:
+LLVMInitializeAMDGPUTargetInfo` and only llvmpipe/lavapipe work. Neither
+reordering the search path (Qt then picks up the wrong FreeType) nor a
+global `LD_PRELOAD` (clang itself links the `/usr/local` copy, so it would
+swap the compiler's LLVM) fixes this cleanly. Instead, the `Dockerfile`
+rewrites the `NEEDED libLLVM.so.21.1` entry of every Mesa library that has
+one (`libgallium`, `libvulkan_radeon`, `libvulkan_lvp`, `libOSMesa`) to the
+absolute path `/usr/lib64/libLLVM.so.21.1` with `patchelf`. The dynamic
+linker opens a slash-containing `NEEDED` by that exact path, so Mesa always
+gets the system LLVM and nothing else's search order changes. CI runs the
+base image directly and is unaffected; locally, llvmpipe (under `xvfb-run`)
+now runs on the system LLVM 21.1.8 rather than the toolchain one.
+
+A `natron-dev` image built from an older checkout lacks the relink; rebuild
+it (step 1) and `--recreate` the container. `readelf -d
+/usr/lib64/libvulkan_radeon.so | grep LLVM` inside it shows the absolute
+path when the relink is present.
+
+## GPU container (Vulkan on the host GPU)
 
 ```
-tools/ci/local/devshell.sh env LD_PRELOAD=/usr/lib64/libLLVM.so.21.1 ./build/debug/App/Natron
+tools/ci/local/devshell.sh --gpu                      # shell in natron-dev-gpu
+tools/ci/local/devshell.sh --gpu <cmd> [args...]
+NATRON_DEV_GPU=1 tools/ci/local/build.sh release     # build there
+NATRON_DEV_GPU=1 tools/ci/local/test.sh ctest release
 ```
 
-This is a genuine image-level library mismatch (`aswf/ci-vfxall:2027-clang21.1`'s
-Conan LLVM package vs. its system Mesa package), not something fixable from
-`devshell.sh` flags alone -- `LD_PRELOAD` here is a targeted workaround, not
-a real fix. It isn't baked into the container's default environment because
-`LD_PRELOAD`-ing a ~125 MB library into every process (including the
-thousands spawned during a build) would add unnecessary overhead there for
-no benefit -- this only matters for GUI/GL launches.
+`--gpu` (or `NATRON_DEV_GPU=1`, which is what `build.sh`/`test.sh` pick up,
+since they re-exec through `devshell.sh` without flags) uses a separate
+container, `natron-dev-gpu` (still overridable via `NATRON_DEV_CONTAINER`),
+from the same image, sharing the repo bind mount and `.ccache`, with its
+own `natron-dev-gpu-home` volume. On top of the normal container it:
+
+- refuses to start unless some `/dev/dri/renderD*` is readable and writable
+  by the invoking user, rather than silently falling back to lavapipe;
+- sets `RADV_PERFTEST=transfer_queue`. Mesa 25.2's RADV only exposes its
+  transfer-only (SDMA) queue family with that set; without it the RX 7900
+  XTX shows graphics, compute, video-decode and sparse families only.
+
+On an AMD RX 7900 XTX host, the Vulkan device list inside it is:
+
+```
+[0] AMD Radeon RX 7900 XTX (RADV NAVI31)   driver radv, Mesa 25.2.7
+    queue family 0: graphics|compute|transfer|sparse
+    queue family 1: compute|transfer|sparse (x4)
+    queue family 2: video-decode
+    queue family 3: transfer|sparse [transfer-only] (x2)
+    queue family 4: sparse
+[1] llvmpipe (LLVM 21.1.8, 256 bits)
+```
+
+To force lavapipe in that container, select its ICD alone:
+`VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json`.
+The image has no `vulkaninfo`; list devices with a small Vulkan program.
+
+**Host requirement: render node permissions after a reboot.** The render
+node must be openable by the uid the container runs as. With a
+user-namespaced Docker daemon, the host's `render`/`video` groups do not map
+into the namespace, so the node appears as `nobody:nogroup` (uid 65534) and
+the `--group-add` GIDs do not help; only the "other" permission bits count.
+Make it world-accessible with a udev rule on the host, e.g.
+`/etc/udev/rules.d/70-dri-render.rules`:
+
+```
+KERNEL=="renderD*", SUBSYSTEM=="drm", MODE="0666"
+```
+
+then `sudo udevadm control --reload && sudo udevadm trigger -s drm` (or
+reboot). Without it, a manual `chmod 666 /dev/dri/renderD128` works until
+the next reboot, after which `--gpu` refuses to start again. Note this
+grants every local user access to the GPU's render node.
 
 ## Where things live, and how to reset them
 
@@ -261,6 +314,7 @@ no benefit -- this only matters for GUI/GL launches.
 | ccache | `.ccache` (repo root, gitignored, host bind mount) | delete the directory |
 | `HOME` | Docker named volume `natron-dev-home` | `docker volume rm` |
 | Container | `natron-dev` | `docker rm -f natron-dev`, or see below |
+| GPU container | `natron-dev-gpu`, home volume `natron-dev-gpu-home` | `docker rm -f natron-dev-gpu` |
 
 `CCACHE_MAXSIZE` defaults to `80G`, overridable via env var (`devshell.sh`
 passes it on every exec, so a changed value needs no `--recreate`). The container

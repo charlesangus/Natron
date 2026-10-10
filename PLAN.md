@@ -240,7 +240,7 @@ future core work has solid ground to build on.
 | M80 | Native RAW Support | todo | M75 | [M80-native-raw-support.md](PLAN/MILESTONES/M80-native-raw-support.md) |
 | M82 | Render Cost Profiling | done |  | [M82-render-cost-profiling.md](PLAN/MILESTONES/M82-render-cost-profiling.md) |
 | M83 | GPU Compute Backend Spike | doing |  | [M83-gpu-compute-backend-spike.md](PLAN/MILESTONES/M83-gpu-compute-backend-spike.md) |
-| M84 | GPU Placement And Residency | todo |  | [M84-gpu-placement-and-residency.md](PLAN/MILESTONES/M84-gpu-placement-and-residency.md) |
+| M84 | GPU Placement And Residency | doing |  | [M84-gpu-placement-and-residency.md](PLAN/MILESTONES/M84-gpu-placement-and-residency.md) |
 | M81 | Raw GPU Kernels | todo |  | [M81-raw-gpu-kernels.md](PLAN/MILESTONES/M81-raw-gpu-kernels.md) |
 | M85 | Native GPU Kernels | todo |  | [M85-native-gpu-kernels.md](PLAN/MILESTONES/M85-native-gpu-kernels.md) |
 | M86 | OFX 1.5 GPU Suites | todo |  | [M86-ofx-gpu-suites.md](PLAN/MILESTONES/M86-ofx-gpu-suites.md) |

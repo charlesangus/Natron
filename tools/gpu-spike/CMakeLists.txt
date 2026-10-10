@@ -72,3 +72,13 @@ foreach(_t GTest::gtest GTest::gtest_main)
     file(COPY "${_lib}" DESTINATION "${CMAKE_BINARY_DIR}/hostlibs" FOLLOW_SYMLINK_CHAIN)
   endif()
 endforeach()
+
+slang_add_kernel(pointop_grade kernels/pointops.slang ENTRY pointop_grade)
+slang_add_kernel(pointop_invert kernels/pointops.slang ENTRY pointop_invert)
+slang_add_kernel(pointop_chain kernels/pointops.slang ENTRY pointop_chain)
+slang_add_kernel(pointop_masked kernels/pointops.slang ENTRY pointop_masked)
+
+add_executable(PointOpCompose_Test tests/PointOpCompose_Test.cpp)
+target_link_libraries(PointOpCompose_Test PRIVATE pointop_grade pointop_invert pointop_chain
+  pointop_masked GTest::gtest_main)
+gtest_discover_tests(PointOpCompose_Test)

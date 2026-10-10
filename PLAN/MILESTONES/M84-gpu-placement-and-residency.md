@@ -52,7 +52,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 
 ## Phase 84.1: Early measurements and environment
 
-- [ ] M84.P1.T1 — Re-measure the in-graph CPU Blur cost against the bare FIR kernel, and find where the threads go
+- [x] M84.P1.T1 — Re-measure the in-graph CPU Blur cost against the bare FIR kernel, and find where the threads go
   - files: `tools/bench/` (only if a bench script needs a flag); results go in this file's `## Decisions`
   - approach:
     - Use a release build of `main` in natron-dev with 16 threads.
@@ -594,3 +594,22 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 - 2026-10-10 — **GPU tiling overrides the stub's "fine tiling stays a CPU concern"** for buffers over `maxStorageBufferRange` or the device budget.
 - 2026-10-10 — **Placement runs only in task-graph mode.** The legacy scheduler stays CPU-only.
 - 2026-10-10 — M84.P1.T4 done (plan-only change). The corrected `2026-10-04-task-graph-render-scheduler.md` must be re-published to `docs/decisions/` at the M84 gate.
+- 2026-10-10 — M84.P1.T1 done (code `336b0ce81`, `592682281`). **In-graph CPU cost** (UHD float, 16 threads, `blurchain` N=1, per-task ms/Mpx):
+
+  | Filter | σ3 | σ25 | σ100 |
+  |---|---|---|---|
+  | FIR | 16.9 | 25.1 | 47.7 |
+  | FIR, serial | 46 | 100 | 267 |
+  | IIR | 18.9 (flat) | | |
+  | IIR, serial | 71 | | |
+
+  8K matches. The thread budget is fine (16 threads). About 100 ms per UHD task is serial and independent of σ:
+  - ~35 ms zeroing the 133 MB buffer on one thread;
+  - ~50 ms in a single-threaded `memmove` in `Image::pasteFromForDepth` called from `renderHandler`;
+  - ~15 ms in `writeWindow`.
+
+  The kernel passes themselves run at 1.3–1.8× the bare kernel.
+  - **Fix kept (a few lines):** leave the Blur buffer uninitialised. FIR becomes 13.2 / 21.0 / 43.4 ms/Mpx. Full ctest passes, except the known CImg-asset test.
+  - **Split off:** the rest went to M90 - Render Path Serial Overhead (user rule).
+  - **Cost-model inputs:** Blur FIR is ~12 ms/Mpx fixed + ~1.5× the bare kernel; Grade is 9.4 ms/Mpx in-graph (24.8 serial).
+  - **Also added:** `BENCH_SIZE`/`BENCH_BLUR_SIZE`/`BENCH_BLUR_FILTER` in `graph_bench.py`. This overlaps M83's own `BENCH_SIZE` change, so it may conflict when M83 merges.

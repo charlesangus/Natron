@@ -1,0 +1,3 @@
+# Skip the GPU milestones here; run the backlog in parallel lanes
+
+2026-10-10 (user): after M80 - Native RAW Support, this host skips the GPU milestones (M81–M87: Render Cost Profiling, GPU Compute Backend Spike, GPU Placement And Residency, Raw GPU Kernels, Native GPU Kernels, OFX 1.5 GPU Suites, Point-Op Kernel Fusion), which run on another host, and picks up the backlog milestones that follow them on the board. Work runs in parallel lanes in `.worktrees/<id>/` as far as declared `Deps` and the file-overlap check allow, with builds one at a time. M16 - Project Format Redesign still needs an explicit user go-ahead, and M64 - Tiled Rendering stays blocked.

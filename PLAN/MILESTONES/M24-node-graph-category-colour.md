@@ -54,7 +54,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 
 ## Phase 24.3: Two colour channels on the node
 
-- [ ] M24.P3.T1 — Route the GUI through `Node::getNodeCategory()` and delete the
+- [x] M24.P3.T1 — Route the GUI through `Node::getNodeCategory()` and delete the
       duplicated group chain
   - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/ProjectGui.cpp`
   - approach: Replace the `if/else` chain in `NodeGui::getColorFromGrouping()`

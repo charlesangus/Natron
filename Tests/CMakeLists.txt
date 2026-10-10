@@ -147,6 +147,7 @@ set(GuiTests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
     LayerChannelRow_Test.cpp
+    NodeGuiUserColorSerialization_Test.cpp
     ShuffleMatrix_Test.cpp
     ViewerDataSerialization_Test.cpp
     guimain.cpp

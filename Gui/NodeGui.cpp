@@ -2361,8 +2361,12 @@ NodeGui::copyFrom(const NodeGuiSerialization & obj)
 {
     float r, g, b;
     double overlayR, overlayB, overlayG;
-    obj.getColor(&r, &g, &b);
-    setCurrentColor( QColor::fromRgbF(r, g, b) );
+    if (dynamic_cast<BackdropGui*>(this)) {
+        obj.getColor(&r, &g, &b);
+        setCurrentColor(QColor::fromRgbF(r, g, b));
+    } else {
+        restoreCategoryAndUserColor(obj);
+    }
     if (obj.getOverlayColor(&overlayR, &overlayG, &overlayB)) {
         setOverlayColor( QColor::fromRgbF(overlayR, overlayB, overlayG) );
     }
@@ -3399,6 +3403,25 @@ NodeGui::getUserColor() const
     QMutexLocker k(&_currentColorMutex);
 
     return _userColor;
+}
+
+void
+NodeGui::restoreCategoryAndUserColor(const NodeGuiSerialization& obj)
+{
+    QColor categoryColor;
+    bool hasCategoryColor = getCategoryColor(getNode(), &categoryColor);
+    float catR, catG, catB;
+    categoryColor.getRgbF(&catR, &catG, &catB);
+    if (hasCategoryColor) {
+        setCurrentColor(categoryColor);
+    }
+
+    float r, g, b;
+    if (obj.resolveUserColor(catR, catG, catB, &r, &g, &b)) {
+        setUserColor(QColor::fromRgbF(r, g, b));
+    } else {
+        clearUserColor();
+    }
 }
 
 void

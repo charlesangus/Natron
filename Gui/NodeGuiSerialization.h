@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <cmath>
+
 #if !defined(Q_MOC_RUN) && !defined(SBK_RUN)
 GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF
 // clang-format off
@@ -52,14 +54,14 @@ GCC_DIAG_ON(unused-parameter)
 #define NODE_GUI_MERGE_BACKDROP 4
 #define NODE_GUI_INTRODUCES_OVERLAY_COLOR 5
 #define NODE_GUI_INTRODUCES_CHILDREN 6
-#define NODE_GUI_SERIALIZATION_VERSION NODE_GUI_INTRODUCES_CHILDREN
+#define NODE_GUI_INTRODUCES_USER_COLOR 7
+#define NODE_GUI_SERIALIZATION_VERSION NODE_GUI_INTRODUCES_USER_COLOR
 
 NATRON_NAMESPACE_ENTER
 
 class NodeGuiSerialization
 {
 public:
-
     NodeGuiSerialization()
         : _posX(0.)
         , _posY(0.)
@@ -75,6 +77,11 @@ public:
         , _overlayG(1.)
         , _overlayB(1.)
         , _hasOverlayColor(false)
+        , _userColorIsKnown(false)
+        , _hasUserColor(false)
+        , _userR(0.)
+        , _userG(0.)
+        , _userB(0.)
     {
     }
 
@@ -140,6 +147,53 @@ public:
         return true;
     }
 
+    void setUserColor(float r,
+                      float g,
+                      float b)
+    {
+        _userColorIsKnown = true;
+        _hasUserColor = true;
+        _userR = r;
+        _userG = g;
+        _userB = b;
+    }
+
+    /**
+     * @brief Whether the node should carry a user colour, and which one. Archives that
+     * predate the user colour only stored a single node colour, so a colour that differs
+     * from the category colour by more than 0.05 in any channel is taken to be the user's.
+     **/
+    bool resolveUserColor(float categoryR,
+                          float categoryG,
+                          float categoryB,
+                          float* r,
+                          float* g,
+                          float* b) const
+    {
+        if (_userColorIsKnown) {
+            if (!_hasUserColor) {
+                return false;
+            }
+            *r = _userR;
+            *g = _userG;
+            *b = _userB;
+
+            return true;
+        }
+        if (!_colorWasFound) {
+            return false;
+        }
+        if ((std::abs(_r - categoryR) > 0.05) || (std::abs(_g - categoryG) > 0.05) || (std::abs(_b - categoryB) > 0.05)) {
+            *r = _r;
+            *g = _g;
+            *b = _b;
+
+            return true;
+        }
+
+        return false;
+    }
+
     const std::list<NodeGuiSerializationPtr>& getChildren() const
     {
         return _children;
@@ -156,6 +210,9 @@ private:
     bool _selected;
     double _overlayR, _overlayG, _overlayB;
     bool _hasOverlayColor;
+    bool _userColorIsKnown;
+    bool _hasUserColor;
+    float _userR, _userG, _userB;
 
     ///If this node is a group, this is the children
     std::list<NodeGuiSerializationPtr> _children;
@@ -181,6 +238,13 @@ private:
             ar & ::boost::serialization::make_nvp("oR", _overlayR);
             ar & ::boost::serialization::make_nvp("oG", _overlayG);
             ar & ::boost::serialization::make_nvp("oB", _overlayB);
+        }
+
+        ar& ::boost::serialization::make_nvp("HasUserColor", _hasUserColor);
+        if (_hasUserColor) {
+            ar& ::boost::serialization::make_nvp("uR", _userR);
+            ar& ::boost::serialization::make_nvp("uG", _userG);
+            ar& ::boost::serialization::make_nvp("uB", _userB);
         }
 
         int nodesCount = (int)_children.size();
@@ -228,6 +292,17 @@ private:
             }
         } else {
             _hasOverlayColor = false;
+        }
+
+        _userColorIsKnown = version >= NODE_GUI_INTRODUCES_USER_COLOR;
+        _hasUserColor = false;
+        if (_userColorIsKnown) {
+            ar& ::boost::serialization::make_nvp("HasUserColor", _hasUserColor);
+            if (_hasUserColor) {
+                ar& ::boost::serialization::make_nvp("uR", _userR);
+                ar& ::boost::serialization::make_nvp("uG", _userG);
+                ar& ::boost::serialization::make_nvp("uB", _userB);
+            }
         }
 
         if (version >= NODE_GUI_INTRODUCES_CHILDREN) {

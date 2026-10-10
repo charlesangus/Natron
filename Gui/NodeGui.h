@@ -309,6 +309,12 @@ public:
 
     QColor getUserColor() const;
 
+    /**
+     * @brief Resets the body to the category colour and applies the user colour the
+     * serialization resolves to, so a saved project follows later Preferences changes.
+     **/
+    void restoreCategoryAndUserColor(const NodeGuiSerialization& obj);
+
     void setOverlayColor(const QColor& c);
 
     void refreshKnobsAfterTimeChange(bool onlyTimeEvaluationKnobs, SequenceTime time);

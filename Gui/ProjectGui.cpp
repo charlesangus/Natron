@@ -299,20 +299,26 @@ loadNodeGuiSerialization(Gui* gui,
         nGui->togglePreview();
     }
 
-    if (serialization.colorWasFound()) {
-        BackdropGui* isBd = dynamic_cast<BackdropGui*>( nGui.get() );
-        QColor defaultColor;
-        NodeGui::getCategoryColor(nGui->getNode(), &defaultColor);
-        float defR, defG, defB;
-        defaultColor.getRgbF(&defR, &defG, &defB);
+    BackdropGui* isBd = dynamic_cast<BackdropGui*>(nGui.get());
+    if (!isBd) {
+        nGui->restoreCategoryAndUserColor(serialization);
+    }
 
-        float r, g, b;
-        serialization.getColor(&r, &g, &b);
-        ///restore color only if different from default.
-        if ( (std::abs(r - defR) > 0.05) || (std::abs(g - defG) > 0.05) || (std::abs(b - defB) > 0.05) ) {
-            QColor color;
-            color.setRgbF(r, g, b);
-            nGui->setCurrentColor(color);
+    if (serialization.colorWasFound()) {
+        if (isBd) {
+            QColor defaultColor;
+            NodeGui::getCategoryColor(nGui->getNode(), &defaultColor);
+            float defR, defG, defB;
+            defaultColor.getRgbF(&defR, &defG, &defB);
+
+            float r, g, b;
+            serialization.getColor(&r, &g, &b);
+            /// restore color only if different from default.
+            if ((std::abs(r - defR) > 0.05) || (std::abs(g - defG) > 0.05) || (std::abs(b - defB) > 0.05)) {
+                QColor color;
+                color.setRgbF(r, g, b);
+                nGui->setCurrentColor(color);
+            }
         }
 
         double ovR, ovG, ovB;

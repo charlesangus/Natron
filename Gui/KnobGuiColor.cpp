@@ -31,15 +31,16 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QApplication>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QHeaderView>
+#include <QMetaObject>
+#include <QScrollArea>
 #include <QStyle>
 #include <QToolTip>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
-#include <QHeaderView>
-#include <QApplication>
-#include <QScrollArea>
 #include <QWidgetAction>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
@@ -63,6 +64,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/Button.h"
 #include "Gui/ClickableLabel.h"
+#include "Gui/ColorKnobEditSession.h"
 #include "Gui/ComboBox.h"
 #include "Gui/CurveGui.h"
 #include "Gui/DockablePanel.h"
@@ -85,6 +87,42 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+ColorAdjustPanel::DisplayConverter
+makeDisplayConverter(const ProjectColorManagementPtr& colorManagement)
+{
+    if (!colorManagement) {
+        return ColorAdjustPanel::DisplayConverter();
+    }
+
+    std::weak_ptr<ProjectColorManagement> weak = colorManagement;
+
+    return [weak](float* rgb, int count) {
+        ProjectColorManagementPtr cm = weak.lock();
+
+        if (!cm) {
+            return;
+        }
+        for (int i = 0; i < count; ++i) {
+            cm->workingToColorPicking(&rgb[3 * i], &rgb[3 * i + 1], &rgb[3 * i + 2]);
+        }
+    };
+}
+
+KnobColorValue
+colorValueFromVector(const std::vector<double>& values)
+{
+    KnobColorValue v;
+
+    v.rgb[0] = values.empty() ? 0.0 : values[0];
+    v.rgb[1] = (values.size() >= 3) ? values[1] : v.rgb[0];
+    v.rgb[2] = (values.size() >= 3) ? values[2] : v.rgb[0];
+    v.hasAlpha = values.size() >= 4;
+    v.a = v.hasAlpha ? values[3] : 1.0;
+
+    return v;
+}
+} // namespace
 
 ColorPickerLabel::ColorPickerLabel(KnobGuiColor* knob,
                                    QWidget* parent)
@@ -204,14 +242,18 @@ ColorPickerLabel::setColor(const QColor & color)
 } // ColorPickerLabel::setColor
 
 KnobGuiColor::KnobGuiColor(KnobIPtr knob,
-                           KnobGuiContainerI *container)
+                           KnobGuiContainerI* container)
     : KnobGuiValue(knob, container)
-    , _knob( std::dynamic_pointer_cast<KnobColor>(knob) )
+    , _knob(std::dynamic_pointer_cast<KnobColor>(knob))
     , _colorLabel(0)
     , _colorSelector(0)
     , _colorSelectorButton(0)
     , _lastColor()
     , _useSimplifiedUI(true)
+    , _adjustPanel()
+    , _editSession()
+    , _configCallbackOwner()
+    , _configCallbackId(-1)
 {
     KnobColorPtr k = _knob.lock();
     assert(k);
@@ -229,6 +271,209 @@ KnobGuiColor::KnobGuiColor(KnobIPtr knob,
     _useSimplifiedUI = isViewerUIKnob() || ( k && k->isSimplified() );
 }
 
+KnobGuiColor::~KnobGuiColor()
+{
+    ProjectColorManagementPtr colorManagement = _configCallbackOwner.lock();
+
+    if (colorManagement && (_configCallbackId >= 0)) {
+        colorManagement->removeConfigChangedCallback(_configCallbackId);
+    }
+}
+
+bool
+KnobGuiColor::wantsTopAlignedLabel() const
+{
+    return !_adjustPanel.isNull();
+}
+
+ColorAdjustPanel*
+KnobGuiColor::getAdjustPanel() const
+{
+    return _adjustPanel.data();
+}
+
+bool
+KnobGuiColor::isAdjustPanelExpanded() const
+{
+    return _adjustPanel && _colorSelectorButton && _colorSelectorButton->isChecked();
+}
+
+void
+KnobGuiColor::setAdjustPanelExpanded(bool expanded)
+{
+    if (_adjustPanel && _colorSelectorButton) {
+        _colorSelectorButton->setChecked(expanded);
+    }
+}
+
+ColorKnobEditSession*
+KnobGuiColor::getEditSession()
+{
+    if (!_editSession) {
+        _editSession.reset(new ColorKnobEditSession(shared_from_this()));
+    }
+
+    return _editSession.get();
+}
+
+ProjectColorManagementPtr
+KnobGuiColor::getColorManagement() const
+{
+    KnobColorPtr knob = _knob.lock();
+
+    if (!knob || !knob->getHolder() || !knob->getHolder()->getApp()) {
+        return ProjectColorManagementPtr();
+    }
+
+    ProjectPtr project = knob->getHolder()->getApp()->getProject();
+
+    return project ? project->getColorManagement() : ProjectColorManagementPtr();
+}
+
+QWidget*
+KnobGuiColor::createBelowRowWidget(QWidget* parent)
+{
+    KnobColorPtr knob = _knob.lock();
+
+    if (_useSimplifiedUI || !knob) {
+        return 0;
+    }
+
+    ProjectColorManagementPtr colorManagement = getColorManagement();
+
+    _adjustPanel = new ColorAdjustPanel(parent);
+    _adjustPanel->setObjectName(QString::fromUtf8("ColorAdjustPanel"));
+    _adjustPanel->setKnobValue(ColorKnobEditSession::readKnobValue(knob),
+                               knob->getDimension(),
+                               knob->getColorRole(),
+                               ColorKnobEditSession::basisFor(colorManagement));
+    _adjustPanel->setDisplayConverter(makeDisplayConverter(colorManagement));
+    _adjustPanel->setColorManagement(colorManagement);
+    QObject::connect(_adjustPanel.data(), &ColorAdjustPanel::valuesEdited, this, &KnobGuiColor::onAdjustPanelValuesEdited);
+
+    if (colorManagement) {
+        QPointer<KnobGuiColor> self(this);
+        _configCallbackId = colorManagement->addConfigChangedCallback([self]() {
+            if (self) {
+                QMetaObject::invokeMethod(self.data(), "onProjectColorConfigChanged", Qt::AutoConnection);
+            }
+        });
+        _configCallbackOwner = colorManagement;
+    }
+
+    return _adjustPanel.data();
+}
+
+void
+KnobGuiColor::refreshAdjustPanelColorManagement()
+{
+    KnobColorPtr knob = _knob.lock();
+
+    if (!_adjustPanel || !knob) {
+        return;
+    }
+
+    ProjectColorManagementPtr colorManagement = getColorManagement();
+
+    _adjustPanel->setColorManagement(colorManagement);
+    _adjustPanel->setDisplayConverter(makeDisplayConverter(colorManagement));
+    _adjustPanel->setRole(knob->getColorRole());
+    _adjustPanel->setBasis(ColorKnobEditSession::basisFor(colorManagement));
+}
+
+void
+KnobGuiColor::onProjectColorConfigChanged()
+{
+    refreshAdjustPanelColorManagement();
+}
+
+bool
+KnobGuiColor::isAdjustPanelEditable() const
+{
+    KnobColorPtr knob = _knob.lock();
+
+    if (!knob || !knob->isEnabled(0)) {
+        return false;
+    }
+
+    const int rgbDims = std::min(knob->getDimension(), 3);
+
+    for (int i = 0; i < rgbDims; ++i) {
+        if (!knob->getExpression(i).empty() || knob->isSlave(i)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void
+KnobGuiColor::refreshAdjustPanelState()
+{
+    KnobColorPtr knob = _knob.lock();
+
+    if (!_adjustPanel || !knob) {
+        return;
+    }
+
+    bool editable = isAdjustPanelEditable();
+
+    _adjustPanel->setEnabled(knob->isEnabled(0));
+    _adjustPanel->getWheelTab()->setEnabled(editable);
+    _adjustPanel->getValuesTab()->setEnabled(editable);
+}
+
+void
+KnobGuiColor::onAdjustPanelToggled(bool expanded)
+{
+    if (!_adjustPanel) {
+        return;
+    }
+    if (expanded) {
+        KnobColorPtr knob = _knob.lock();
+
+        if (knob && !_adjustPanel->isEditing()) {
+            _adjustPanel->setKnobValue(ColorKnobEditSession::readKnobValue(knob));
+        }
+    }
+    _adjustPanel->setVisible(expanded);
+    _colorSelectorButton->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+    _colorSelectorButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(expanded ? tr("Hide the colour adjustment panel.") : tr("Show the colour adjustment panel: a trackball wheel with hue, saturation, value, temperature, tint and alpha sliders, and a Values tab with unclamped RGBA and HSV fields and the colour palette."),
+                                                                            NATRON_NAMESPACE::WhiteSpaceNormal));
+}
+
+void
+KnobGuiColor::onAdjustPanelValuesEdited(KnobColorValue value,
+                                        ColorAdjustPanel::GesturePhaseEnum phase,
+                                        QString undoLabel)
+{
+    ColorKnobEditSession* session = getEditSession();
+
+    switch (phase) {
+    case ColorAdjustPanel::eGesturePhaseStart:
+        if (isAdjustPanelEditable()) {
+            session->begin(undoLabel);
+        }
+        break;
+    case ColorAdjustPanel::eGesturePhaseMove:
+        session->move(value, undoLabel);
+        break;
+    case ColorAdjustPanel::eGesturePhaseEnd: {
+        bool applied = session->isActive();
+
+        session->end(value, undoLabel);
+
+        // A refused gesture still moved the panel's own copy of the value, so it is put back.
+        KnobColorPtr knob = _knob.lock();
+
+        if (!applied && knob && _adjustPanel) {
+            _adjustPanel->setKnobValue(ColorKnobEditSession::readKnobValue(knob));
+        }
+        break;
+    }
+    }
+}
+
 void
 KnobGuiColor::connectKnobSignalSlots()
 {
@@ -236,6 +481,12 @@ KnobGuiColor::connectKnobSignalSlots()
     QObject::connect( this, SIGNAL(dimensionSwitchToggled(bool)), knob.get(), SLOT(onDimensionSwitchToggled(bool)) );
     QObject::connect( knob.get(), SIGNAL(mustActivateAllDimensions()), this, SLOT(onMustShowAllDimension()) );
     QObject::connect( knob.get(), SIGNAL(pickingEnabled(bool)), this, SLOT(setPickingEnabled(bool)) );
+
+    KnobSignalSlotHandlerPtr handler = knob->getSignalSlotHandler();
+    if (handler) {
+        QObject::connect(handler.get(), SIGNAL(expressionChanged(int)), this, SLOT(refreshAdjustPanelState()));
+        QObject::connect(handler.get(), SIGNAL(knobSlaved(int, bool)), this, SLOT(refreshAdjustPanelState()));
+    }
 }
 
 void
@@ -304,14 +555,25 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         containerLayout->addSpacing( TO_DPIX(5) );
     }
 
-    // add color selector popup
+    _colorSelectorButton = new QToolButton( containerLayout->widget() );
+    _colorSelectorButton->setObjectName(QString::fromUtf8("ColorSelectorButton"));
+    _colorSelectorButton->setFixedSize(medSize);
+
+    if (_adjustPanel) {
+        _colorSelectorButton->setAutoRaise(false);
+        _colorSelectorButton->setCheckable(true);
+        _colorSelectorButton->setChecked(false);
+        _colorSelectorButton->setFocusPolicy(Qt::NoFocus);
+        QObject::connect(_colorSelectorButton, &QToolButton::toggled, this, &KnobGuiColor::onAdjustPanelToggled);
+        onAdjustPanelToggled(false);
+        containerLayout->addWidget(_colorSelectorButton);
+
+        return;
+    }
+
     QPixmap colorSelectorPix;
     appPTR->getIcon(NATRON_PIXMAP_COLORWHEEL, NATRON_MEDIUM_BUTTON_ICON_SIZE, &colorSelectorPix);
-
-    _colorSelectorButton = new QToolButton( containerLayout->widget() );
-    _colorSelectorButton->setObjectName( QString::fromUtf8("ColorSelectorButton") );
-    _colorSelectorButton->setIcon( QIcon(colorSelectorPix) );
-    _colorSelectorButton->setFixedSize(medSize);
+    _colorSelectorButton->setIcon(QIcon(colorSelectorPix));
     _colorSelectorButton->setIconSize(medIconSize);
     _colorSelectorButton->setPopupMode(QToolButton::InstantPopup);
     _colorSelectorButton->setArrowType(Qt::NoArrow);
@@ -434,6 +696,9 @@ KnobGuiColor::_hide()
     }
     _colorLabel->hide();
     _colorSelectorButton->hide();
+    if (_adjustPanel) {
+        _adjustPanel->hide();
+    }
 }
 
 void
@@ -444,6 +709,9 @@ KnobGuiColor::_show()
     }
     _colorLabel->show();
     _colorSelectorButton->show();
+    if (isAdjustPanelExpanded()) {
+        _adjustPanel->show();
+    }
 }
 
 void
@@ -464,6 +732,11 @@ KnobGuiColor::updateExtraGui(const std::vector<double>& values)
         a = values[3];
     }
     updateLabel(r, g, b, a);
+
+    // A collapsed panel is brought up to date when it is expanded, so it is not redrawn here.
+    if (_adjustPanel && !_adjustPanel->isHidden()) {
+        _adjustPanel->setKnobValue(colorValueFromVector(values));
+    }
 }
 
 void
@@ -518,13 +791,19 @@ void
 KnobGuiColor::setEnabledExtraGui(bool enabled)
 {
     _colorLabel->setEnabledMode(enabled);
-    _colorSelectorButton->setEnabled(enabled);
+    if (!_adjustPanel) {
+        _colorSelectorButton->setEnabled(enabled);
+    }
+    refreshAdjustPanelState();
 }
 
 void
 KnobGuiColor::updateColorSelector()
 {
     KnobColorPtr knob = _knob.lock();
+    if (!_colorSelector || !knob) {
+        return;
+    }
     const int nDims = knob->getDimension();
     double curR = knob->getValue(0);
 

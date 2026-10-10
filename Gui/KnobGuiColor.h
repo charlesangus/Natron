@@ -28,12 +28,14 @@
 
 #include "Global/Macros.h"
 
-#include <vector> // KnobGuiInt
 #include <list>
+#include <memory>
+#include <vector> // KnobGuiInt
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QObject>
+#include <QPointer>
 #include <QStyledItemDelegate>
 #include <QTextEdit>
 #include <QToolButton>
@@ -47,18 +49,20 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Knob.h"
 #include "Engine/Singleton.h"
 
-#include "Gui/CurveSelection.h"
-#include "Gui/KnobGuiValue.h"
-#include "Gui/ColorSelectorWidget.h"
 #include "Gui/AnimatedCheckBox.h"
-#include "Gui/Label.h"
+#include "Gui/ColorAdjustPanel.h"
+#include "Gui/ColorSelectorWidget.h"
+#include "Gui/CurveSelection.h"
 #include "Gui/GuiFwd.h"
+#include "Gui/KnobGuiValue.h"
+#include "Gui/Label.h"
 
 NATRON_NAMESPACE_ENTER
 
 //================================
 
 class KnobGuiColor;
+class ColorKnobEditSession;
 class ColorPickerLabel
     : public Label
 {
@@ -127,7 +131,19 @@ public:
     KnobGuiColor(KnobIPtr knob,
                  KnobGuiContainerI *container);
 
-    virtual ~KnobGuiColor() {}
+    virtual ~KnobGuiColor() OVERRIDE;
+
+    virtual bool wantsTopAlignedLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The row's adjustment panel, or null for simplified and viewer knobs and for knobs
+     * that share their line with other knobs, which keep the colour selector popup.
+     **/
+    ColorAdjustPanel* getAdjustPanel() const;
+    bool isAdjustPanelExpanded() const;
+    void setAdjustPanelExpanded(bool expanded);
+
+    ColorKnobEditSession* getEditSession();
 
 public Q_SLOTS:
 
@@ -140,6 +156,14 @@ public Q_SLOTS:
     void onMustShowAllDimension();
 
     void onColorSelectorChanged(float r, float g, float b, float a);
+
+    void onAdjustPanelToggled(bool expanded);
+
+    void onAdjustPanelValuesEdited(KnobColorValue value, ColorAdjustPanel::GesturePhaseEnum phase, QString undoLabel);
+
+    void onProjectColorConfigChanged();
+
+    void refreshAdjustPanelState();
 
 Q_SIGNALS:
 
@@ -173,6 +197,11 @@ private:
     virtual void getDecimals(std::vector<int>* decimals) const OVERRIDE FINAL;
     virtual void addExtraWidgets(QHBoxLayout* containerLayout) OVERRIDE FINAL;
     virtual void updateExtraGui(const std::vector<double>& values) OVERRIDE FINAL;
+    virtual QWidget* createBelowRowWidget(QWidget* parent) OVERRIDE FINAL;
+
+    ProjectColorManagementPtr getColorManagement() const;
+    void refreshAdjustPanelColorManagement();
+    bool isAdjustPanelEditable() const;
 
     void updateLabel(double r, double g, double b, double a);
 
@@ -190,6 +219,10 @@ private:
     QToolButton *_colorSelectorButton;
     std::vector<double> _lastColor;
     bool _useSimplifiedUI;
+    QPointer<ColorAdjustPanel> _adjustPanel;
+    std::unique_ptr<ColorKnobEditSession> _editSession;
+    std::weak_ptr<ProjectColorManagement> _configCallbackOwner;
+    int _configCallbackId;
 };
 
 NATRON_NAMESPACE_EXIT

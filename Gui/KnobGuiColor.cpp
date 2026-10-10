@@ -43,6 +43,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QToolTip>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <QVariant>
 #include <QWidgetAction>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
@@ -210,6 +211,7 @@ ColorPickerLabel::beginTrackballDrag()
     _segmentBase = _knob->getCurrentColorValue();
     _dragValue = _segmentBase;
     _hasDragTotal = false;
+    _knob->touchColorKnob();
     _knob->getEditSession()->begin(tr("Trackball"));
     grabKeyboard();
     _keyboardGrabbed = true;
@@ -593,6 +595,22 @@ KnobGuiColor::getEditSession()
     return _editSession.get();
 }
 
+void
+KnobGuiColor::touchColorKnob()
+{
+    Gui* gui = getGui();
+
+    if (!gui) {
+        return;
+    }
+
+    ColorKnobTouchTracker* tracker = ColorKnobTouchTracker::instanceFor(gui);
+
+    if (tracker) {
+        tracker->touch(this);
+    }
+}
+
 ColorKnobRoleEnum
 KnobGuiColor::getColorRole() const
 {
@@ -646,6 +664,7 @@ KnobGuiColor::createBelowRowWidget(QWidget* parent)
 
     _adjustPanel = new ColorAdjustPanel(parent);
     _adjustPanel->setObjectName(QString::fromUtf8("ColorAdjustPanel"));
+    _adjustPanel->setProperty(colorKnobTouchTagPropertyName(), QVariant::fromValue<void*>(this));
     _adjustPanel->setKnobValue(ColorKnobEditSession::readKnobValue(knob),
                                knob->getDimension(),
                                knob->getColorRole(),
@@ -755,6 +774,7 @@ KnobGuiColor::onAdjustPanelValuesEdited(KnobColorValue value,
     switch (phase) {
     case ColorAdjustPanel::eGesturePhaseStart:
         if (isAdjustPanelEditable()) {
+            touchColorKnob();
             session->begin(undoLabel);
         }
         break;
@@ -837,6 +857,11 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
 {
     containerLayout->addSpacing( TO_DPIX(10) );
     KnobColorPtr knob = _knob.lock();
+    if (_adjustPanel) {
+        // Tags the row so ColorKnobTouchTracker's app-wide filter can find this knob from a
+        // press, wheel or focus-in on any of its spinboxes, not only from a gesture session.
+        containerLayout->widget()->setProperty(colorKnobTouchTagPropertyName(), QVariant::fromValue<void*>(this));
+    }
     _colorLabel = new ColorPickerLabel( _useSimplifiedUI ? NULL : this, containerLayout->widget() );
     if (!_useSimplifiedUI) {
         _colorLabel->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Click and drag to adjust this colour's hue and saturation like a trackball. "

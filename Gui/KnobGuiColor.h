@@ -53,6 +53,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/AnimatedCheckBox.h"
 #include "Gui/ColorAdjustPanel.h"
 #include "Gui/ColorSelectorWidget.h"
+#include "Gui/ColorTrackballTarget.h"
 #include "Gui/CurveSelection.h"
 #include "Gui/GuiFwd.h"
 #include "Gui/KnobGuiValue.h"
@@ -182,6 +183,14 @@ public:
     void setAdjustPanelExpanded(bool expanded);
 
     ColorKnobEditSession* getEditSession();
+
+    /**
+     * @brief Records this knob as the last one touched on its panel, for the global trackball
+     * mode's target resolution. Called on every edit session's Start, and by the app-wide
+     * ColorKnobTouchTracker filter when a press, wheel or focus-in lands on the row or panel
+     * without going through a session (for example a plain spinbox click).
+     **/
+    void touchColorKnob();
 
     /**
      * @brief The knob's colour role, luma-chroma basis, current value, and whether it can be

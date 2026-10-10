@@ -136,7 +136,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
 
 These widgets know nothing about knobs. Tests go in the **`GuiTests`** executable: add each file to `GuiTests_SOURCES` in `Tests/CMakeLists.txt`, then run `build/debug/Tests/GuiTests --gtest_filter=<Suite>*`, or `ctest -R <Suite>`. They run on the offscreen platform with no GL, so the debug FP-trap limit does not apply.
 
-- [ ] M44.P3.T1 — Build `ColorWheelWidget` painting: the re-centred xy disc, hue ring, gamut triangle, locus or axes, white marker with off-wheel crosshair and caret, and puck parking
+- [x] M44.P3.T1 — Build `ColorWheelWidget` painting: the re-centred xy disc, hue ring, gamut triangle, locus or axes, white marker with off-wheel crosshair and caret, and puck parking
   - files: `Gui/ColorWheelWidget.h` (new), `Gui/ColorWheelWidget.cpp` (new), `Tests/ColorWheelWidget_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - Inputs: `setBasis(LumaBasis)`, `setRole`, `setValue(KnobColorValue)` (which sets the anchor), `setRim`, and `setDisplayConverter(std::function<void(float*, int)>)` for the bulk working → color_picking conversion.

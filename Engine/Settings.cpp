@@ -1010,6 +1010,18 @@ Settings::initializeKnobsNodeGraphColors()
     _defaultDeepGroupColor->setSimplified(true);
     _defaultDeepGroupColor->setHintToolTip( tr("The color used for newly created Deep nodes.") );
     _nodegraphColorsTab->addKnob(_defaultDeepGroupColor);
+
+    _defaultNative3DGroupColor = AppManager::createKnob<KnobColor>(this, tr("Native 3D group"), 3);
+    _defaultNative3DGroupColor->setName("native3DNodesColor");
+    _defaultNative3DGroupColor->setSimplified(true);
+    _defaultNative3DGroupColor->setHintToolTip(tr("The color used for newly created Native 3D nodes."));
+    _nodegraphColorsTab->addKnob(_defaultNative3DGroupColor);
+
+    _defaultUsd3DGroupColor = AppManager::createKnob<KnobColor>(this, tr("USD 3D group"), 3);
+    _defaultUsd3DGroupColor->setName("usd3DNodesColor");
+    _defaultUsd3DGroupColor->setSimplified(true);
+    _defaultUsd3DGroupColor->setHintToolTip(tr("The color used for newly created USD 3D nodes."));
+    _nodegraphColorsTab->addKnob(_defaultUsd3DGroupColor);
 } // Settings::initializeKnobsNodeGraphColors
 
 void
@@ -1775,7 +1787,12 @@ Settings::setDefaultValues()
     _defaultDeepGroupColor->setDefaultValue(0., 0);
     _defaultDeepGroupColor->setDefaultValue(0., 1);
     _defaultDeepGroupColor->setDefaultValue(0.38, 2);
-
+    _defaultNative3DGroupColor->setDefaultValue(0.50, 0);
+    _defaultNative3DGroupColor->setDefaultValue(0.20, 1);
+    _defaultNative3DGroupColor->setDefaultValue(0.60, 2);
+    _defaultUsd3DGroupColor->setDefaultValue(0.20, 0);
+    _defaultUsd3DGroupColor->setDefaultValue(0.55, 1);
+    _defaultUsd3DGroupColor->setDefaultValue(0.55, 2);
 
     endChanges();
 } // setDefaultValues
@@ -3044,6 +3061,85 @@ Settings::getDeepGroupColor(float *r,
     *r = _defaultDeepGroupColor->getValue(0);
     *g = _defaultDeepGroupColor->getValue(1);
     *b = _defaultDeepGroupColor->getValue(2);
+}
+
+void
+Settings::getNative3DGroupColor(float* r,
+                                float* g,
+                                float* b) const
+{
+    *r = _defaultNative3DGroupColor->getValue(0);
+    *g = _defaultNative3DGroupColor->getValue(1);
+    *b = _defaultNative3DGroupColor->getValue(2);
+}
+
+void
+Settings::getUsd3DGroupColor(float* r,
+                             float* g,
+                             float* b) const
+{
+    *r = _defaultUsd3DGroupColor->getValue(0);
+    *g = _defaultUsd3DGroupColor->getValue(1);
+    *b = _defaultUsd3DGroupColor->getValue(2);
+}
+
+void
+Settings::getNodeCategoryColor(NodeCategoryEnum category,
+                               float* r,
+                               float* g,
+                               float* b) const
+{
+    switch (category) {
+    case eNodeCategoryRead:
+        getReaderColor(r, g, b);
+        break;
+    case eNodeCategoryWrite:
+        getWriterColor(r, g, b);
+        break;
+    case eNodeCategoryGenerator:
+        getGeneratorColor(r, g, b);
+        break;
+    case eNodeCategoryColor:
+        getColorGroupColor(r, g, b);
+        break;
+    case eNodeCategoryFilter:
+        getFilterGroupColor(r, g, b);
+        break;
+    case eNodeCategoryChannel:
+        getChannelGroupColor(r, g, b);
+        break;
+    case eNodeCategoryKeyer:
+        getKeyerGroupColor(r, g, b);
+        break;
+    case eNodeCategoryMerge:
+        getMergeGroupColor(r, g, b);
+        break;
+    case eNodeCategoryDraw:
+        getDrawGroupColor(r, g, b);
+        break;
+    case eNodeCategoryTime:
+        getTimeGroupColor(r, g, b);
+        break;
+    case eNodeCategoryTransform:
+        getTransformGroupColor(r, g, b);
+        break;
+    case eNodeCategoryViews:
+        getViewsGroupColor(r, g, b);
+        break;
+    case eNodeCategoryDeep:
+        getDeepGroupColor(r, g, b);
+        break;
+    case eNodeCategoryNative3D:
+        getNative3DGroupColor(r, g, b);
+        break;
+    case eNodeCategoryUsd3D:
+        getUsd3DGroupColor(r, g, b);
+        break;
+    case eNodeCategoryOther:
+    default:
+        getDefaultNodeColor(r, g, b);
+        break;
+    }
 }
 
 int

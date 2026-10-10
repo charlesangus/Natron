@@ -216,6 +216,10 @@ public:
     void getMergeGroupColor(float *r, float *g, float *b) const;
     void getViewsGroupColor(float *r, float *g, float *b) const;
     void getDeepGroupColor(float *r, float *g, float *b) const;
+    void getNative3DGroupColor(float* r, float* g, float* b) const;
+    void getUsd3DGroupColor(float* r, float* g, float* b) const;
+
+    void getNodeCategoryColor(NodeCategoryEnum category, float* r, float* g, float* b) const;
 
     bool getRenderOnEditingFinishedOnly() const;
     void setRenderOnEditingFinishedOnly(bool render);
@@ -650,6 +654,8 @@ private:
     KnobColorPtr _defaultMergeGroupColor;
     KnobColorPtr _defaultViewsGroupColor;
     KnobColorPtr _defaultDeepGroupColor;
+    KnobColorPtr _defaultNative3DGroupColor;
+    KnobColorPtr _defaultUsd3DGroupColor;
     std::vector<ChoiceOption> _knownHostNames;
     bool _restoringSettings;
     bool _settingsExisted;

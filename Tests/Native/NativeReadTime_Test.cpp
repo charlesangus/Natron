@@ -178,6 +178,31 @@ protected:
         knob<KnobChoice>(node, name)->setValue(index, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL);
     }
 
+    // The same calls, in the same order, as the Gui's "Reset to default" on one knob.
+    void restoreDefaultAsTheGuiDoes(const NodePtr& node,
+                                    const char* name)
+    {
+        KnobIPtr target = node->getKnobByName(name);
+        ASSERT_TRUE(bool(target)) << name;
+        KnobHolder* holder = target->getHolder();
+        ASSERT_TRUE(holder != NULL);
+
+        holder->beginChanges();
+        holder->beginChanges();
+        for (int d = 0; d < target->getDimension(); ++d) {
+            target->resetToDefaultValue(d);
+        }
+        holder->endChanges(true);
+        holder->onKnobValueChanged_public(target.get(), eValueChangedReasonRestoreDefault, 0., ViewIdx(0), true);
+        holder->endChanges();
+        holder->incrHashAndEvaluate(true, true);
+    }
+
+    bool userEdited(const NodePtr& node)
+    {
+        return knob<KnobBool>(node, "timeDomainUserEdited")->getValue();
+    }
+
     int intValue(const NodePtr& node,
                  const char* name,
                  int dimension = 0)
@@ -361,6 +386,117 @@ TEST_F(NativeReadTimeTest, ChangingTheFirstFrameNarrowsTheSequenceAndMovesTheSta
     EXPECT_EQ(0.25f, render(node, 2.));
 }
 
+TEST_F(NativeReadTimeTest, ResettingTheFirstFrameRestoresTheRangeAndTheStartingTime)
+{
+    QTemporaryDir dir;
+    writeSequence(dir, "seq");
+    NodePtr node = createRead(patternPath(dir, "seq"));
+
+    userSetInt(node, "firstFrame", 2);
+    ASSERT_TRUE(userEdited(node));
+    restoreDefaultAsTheGuiDoes(node, "firstFrame");
+
+    EXPECT_EQ(1, intValue(node, "firstFrame"));
+    EXPECT_EQ(1, intValue(node, "startingTime"));
+    EXPECT_EQ(0, intValue(node, "timeOffset"));
+    EXPECT_FALSE(userEdited(node));
+    EXPECT_EQ(0.125f, render(node, 1.));
+    EXPECT_EQ(0.25f, render(node, 2.));
+
+    for (int frame = 1; frame <= 5; ++frame) {
+        ASSERT_TRUE(writeConstantFrame(framePath(dir, "other", frame), 0.5f));
+    }
+    setFile(node, patternPath(dir, "other"));
+    EXPECT_EQ(1, intValue(node, "firstFrame"));
+    EXPECT_EQ(5, intValue(node, "lastFrame"));
+}
+
+TEST_F(NativeReadTimeTest, ResettingTheLastFrameFollowsTheFileAgain)
+{
+    QTemporaryDir dir;
+    writeSequence(dir, "seq");
+    ASSERT_TRUE(dir.isValid());
+    for (int frame = 1; frame <= 5; ++frame) {
+        ASSERT_TRUE(writeConstantFrame(framePath(dir, "other", frame), 0.5f));
+    }
+    NodePtr node = createRead(patternPath(dir, "seq"));
+
+    userSetInt(node, "lastFrame", 3);
+    ASSERT_TRUE(userEdited(node));
+    restoreDefaultAsTheGuiDoes(node, "lastFrame");
+
+    EXPECT_EQ(4, intValue(node, "lastFrame"));
+    EXPECT_FALSE(userEdited(node));
+
+    setFile(node, patternPath(dir, "other"));
+    EXPECT_EQ(5, intValue(node, "lastFrame"));
+}
+
+TEST_F(NativeReadTimeTest, ResettingOneEndOfAnEditedRangeKeepsTheOtherEdit)
+{
+    QTemporaryDir dir;
+    writeSequence(dir, "seq");
+    NodePtr node = createRead(patternPath(dir, "seq"));
+
+    userSetInt(node, "firstFrame", 2);
+    userSetInt(node, "lastFrame", 3);
+    restoreDefaultAsTheGuiDoes(node, "firstFrame");
+
+    EXPECT_EQ(1, intValue(node, "firstFrame"));
+    EXPECT_EQ(3, intValue(node, "lastFrame"));
+    EXPECT_TRUE(userEdited(node));
+}
+
+TEST_F(NativeReadTimeTest, ResettingTheStartingTimeRestoresTheOffset)
+{
+    QTemporaryDir dir;
+    writeSequence(dir, "seq");
+    NodePtr node = createRead(patternPath(dir, "seq"));
+
+    userSetInt(node, "startingTime", 100);
+    ASSERT_EQ(99, intValue(node, "timeOffset"));
+    restoreDefaultAsTheGuiDoes(node, "startingTime");
+
+    EXPECT_EQ(1, intValue(node, "startingTime"));
+    EXPECT_EQ(0, intValue(node, "timeOffset"));
+    EXPECT_FALSE(userEdited(node));
+    EXPECT_EQ(0.125f, render(node, 1.));
+    EXPECT_EQ(0.25f, render(node, 2.));
+}
+
+TEST_F(NativeReadTimeTest, ResettingTheTimeOffsetRestoresTheStartingTime)
+{
+    QTemporaryDir dir;
+    writeSequence(dir, "seq");
+    NodePtr node = createRead(patternPath(dir, "seq"));
+
+    userSetChoice(node, "frameMode", 1);
+    userSetInt(node, "timeOffset", 10);
+    ASSERT_EQ(11, intValue(node, "startingTime"));
+    restoreDefaultAsTheGuiDoes(node, "timeOffset");
+
+    EXPECT_EQ(0, intValue(node, "timeOffset"));
+    EXPECT_EQ(1, intValue(node, "startingTime"));
+    EXPECT_FALSE(userEdited(node));
+    EXPECT_EQ(0.125f, render(node, 1.));
+}
+
+TEST_F(NativeReadTimeTest, ResettingTheFrameModeShowsTheDefaultModesKnob)
+{
+    QTemporaryDir dir;
+    writeSequence(dir, "seq");
+    NodePtr node = createRead(patternPath(dir, "seq"));
+
+    userSetChoice(node, "frameMode", 1);
+    ASSERT_TRUE(knob<KnobInt>(node, "startingTime")->getIsSecret());
+    ASSERT_FALSE(knob<KnobInt>(node, "timeOffset")->getIsSecret());
+    restoreDefaultAsTheGuiDoes(node, "frameMode");
+
+    EXPECT_EQ(0, knob<KnobChoice>(node, "frameMode")->getValue());
+    EXPECT_FALSE(knob<KnobInt>(node, "startingTime")->getIsSecret());
+    EXPECT_TRUE(knob<KnobInt>(node, "timeOffset")->getIsSecret());
+}
+
 TEST_F(NativeReadTimeTest, AUserEditedTimeDomainSurvivesAFilenameChange)
 {
     QTemporaryDir dir;
@@ -383,16 +519,20 @@ TEST_F(NativeReadTimeTest, AUserEditedTimeDomainSurvivesAFilenameChange)
     EXPECT_EQ(4, intValue(edited, "lastFrame"));
 }
 
-TEST_F(NativeReadTimeTest, ACustomFrameRateReachesTheOutputMetadata)
+TEST_F(NativeReadTimeTest, TheReadHasNoFrameRateKnobs)
 {
-    QTemporaryDir dir;
-    writeSequence(dir, "seq");
-    NodePtr node = createRead(patternPath(dir, "seq"));
+    NodePtr node = createRead(std::string());
 
-    knob<KnobBool>(node, "customFps")->setValue(true);
-    knob<KnobDouble>(node, "frameRate")->setValue(30.);
-    node->getEffectInstance()->refreshMetadata_public(false);
-    EXPECT_DOUBLE_EQ(30., node->getEffectInstance()->getFrameRate());
+    EXPECT_FALSE(bool(node->getKnobByName("frameRate")));
+    EXPECT_FALSE(bool(node->getKnobByName("customFps")));
+}
+
+TEST_F(NativeReadTimeTest, FirstAndLastFrameAreFieldsWithoutASlider)
+{
+    NodePtr node = createRead(std::string());
+
+    EXPECT_TRUE(knob<KnobInt>(node, "firstFrame")->isSliderDisabled());
+    EXPECT_TRUE(knob<KnobInt>(node, "lastFrame")->isSliderDisabled());
 }
 
 TEST_F(NativeReadTimeTest, ASingleImageAnswersEveryFrame)

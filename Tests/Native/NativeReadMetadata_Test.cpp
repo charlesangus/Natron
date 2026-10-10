@@ -263,7 +263,7 @@ TEST_F(NativeReadMetadataTest, ExrAttributesAndTheStandardKeys)
 
     EXPECT_EQ(std::optional<std::string>(framePath(dir, "meta", 2)), metadata.getString("ofx/filepath"));
     EXPECT_EQ(std::optional<int>(2), metadata.getInt("ofx/frame"));
-    EXPECT_EQ(std::optional<double>(24000. / 1001.), metadata.getDouble("ofx/framerate"));
+    EXPECT_FALSE(metadata.contains("ofx/framerate"));
     EXPECT_EQ(std::optional<double>(2.), metadata.getDouble("ofx/pixelaspect"));
     EXPECT_EQ(std::optional<std::string>("01:02:03:04"), metadata.getString("ofx/timecode"));
 
@@ -358,20 +358,42 @@ TEST_F(NativeReadMetadataTest, AFrameThatLoadsBlackHasNoFileKeys)
     EXPECT_FALSE(metadata.contains("ofx/filesize"));
     EXPECT_FALSE(metadata.contains("ofx/mtime"));
     EXPECT_FALSE(metadata.contains("exr/myString"));
-    EXPECT_TRUE(metadata.contains("ofx/framerate"));
+    EXPECT_FALSE(metadata.contains("ofx/framerate"));
     EXPECT_TRUE(metadata.contains("ofx/pixelaspect"));
 }
 
-TEST_F(NativeReadMetadataTest, ReadWithoutAFileHasOnlyTheRateAndTheAspect)
+TEST_F(NativeReadMetadataTest, ReadWithoutAFileHasOnlyTheAspect)
 {
     NodePtr read = createRead(std::string());
     ASSERT_TRUE(bool(read));
 
     const ImageMetadata metadata = metadataOf(read, 1.);
 
-    EXPECT_EQ(2u, metadata.size());
-    EXPECT_TRUE(metadata.contains("ofx/framerate"));
+    EXPECT_EQ(1u, metadata.size());
+    EXPECT_FALSE(metadata.contains("ofx/framerate"));
     EXPECT_TRUE(metadata.contains("ofx/pixelaspect"));
+}
+
+TEST_F(NativeReadMetadataTest, AFileFrameRateIsPlainMetadataAndNotTheOutputRate)
+{
+    KnobDouble* projectFrameRate = dynamic_cast<KnobDouble*>(getApp()->getProject()->getKnobByName("frameRate").get());
+    ASSERT_TRUE(projectFrameRate != NULL);
+    projectFrameRate->setValue(30.);
+
+    QTemporaryDir dir;
+    std::vector<int> frames(1, 1);
+    writeSequence(dir, "rate", frames);
+    NodePtr read = createRead(patternPath(dir, "rate"));
+    ASSERT_TRUE(bool(read));
+    NodePtr empty = createRead(std::string());
+    ASSERT_TRUE(bool(empty));
+
+    const ImageMetadata metadata = metadataOf(read, 1.);
+
+    EXPECT_FALSE(metadata.contains("ofx/framerate"));
+    EXPECT_EQ(std::optional<double>(24000. / 1001.), metadata.getDouble("exr/FramesPerSecond"));
+    EXPECT_DOUBLE_EQ(empty->getEffectInstance()->getFrameRate(), read->getEffectInstance()->getFrameRate());
+    EXPECT_NE(24000. / 1001., read->getEffectInstance()->getFrameRate());
 }
 
 TEST_F(NativeReadMetadataTest, KeysReachANativeNodePastADot)

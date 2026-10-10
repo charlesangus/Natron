@@ -236,8 +236,10 @@ public:
     ProjectColorManagementPtr getColorManagement() const;
 
     /**
-     * @brief One option per colourspace of the config of \p cm, its id and label the colourspace
-     * name and its tooltip the colourspace description.
+     * @brief One option per colourspace of the config of \p cm: its id the colourspace name, its
+     * label the '/'-separated path of the colourspace's family followed by the name, for a
+     * cascading choice, and its tooltip the colourspace description. Every label is unique and
+     * none is also a submenu of another.
      **/
     static std::vector<ChoiceOption> colorSpaceOptions(const ProjectColorManagement& cm);
 

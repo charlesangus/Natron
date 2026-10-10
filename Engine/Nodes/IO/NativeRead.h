@@ -52,7 +52,7 @@ NATRON_NAMESPACE_ENTER
  *   - file and proxy: filename (kOfxImageEffectFileParamName, a metadata slave), proxy,
  *     proxyThreshold, originalProxyScale, customProxyScale
  *   - time: originalFrameRange, firstFrame, lastFrame, before, after, onMissingFrame,
- *     frameMode, startingTime, timeOffset, timeDomainUserEdited, frameRate, customFps
+ *     frameMode, startingTime, timeOffset, timeDomainUserEdited
  *   - colour: ocioInputSpace, ocioInputSpaceIndex, ocioInputSpaceSet, and the hidden
  *     ocioConfigFile and ocioWorkingSpace
  *   - views: the hidden availableViews
@@ -182,8 +182,6 @@ private:
     ReadTimeDomain::Settings settingsAt(double time) const;
     Target targetAtTime(double time, bool proxy = false) const;
     std::string representativePath(bool proxy = false) const;
-    double fileFrameRate() const;
-    void refreshFrameRateFromFile();
     void refreshTimeKnobState();
     void refreshProxyScale();
     void refreshProxyKnobState();
@@ -196,8 +194,10 @@ private:
     bool colourKnobChanged(KnobI* k,
                            ValueChangedReasonEnum reason);
     void guessInputSpace();
+    void resetInputSpace();
     void refreshInputSpaceMenu();
     std::string workingSpaceName() const;
+    std::vector<std::pair<std::string, std::string>> contextVariables(double time) const;
 
     KnobFileWPtr _filename;
     KnobFileWPtr _proxy;
@@ -214,13 +214,13 @@ private:
     KnobIntWPtr _startingTime;
     KnobIntWPtr _timeOffset;
     KnobBoolWPtr _timeDomainUserEdited;
-    KnobDoubleWPtr _frameRate;
-    KnobBoolWPtr _customFps;
     KnobStringWPtr _ocioConfigFile;
     KnobStringWPtr _ocioWorkingSpace;
     KnobStringWPtr _inputSpace;
     KnobChoiceWPtr _inputSpaceMenu;
     KnobBoolWPtr _inputSpaceSet;
+    KnobStringWPtr _contextKeys[4];
+    KnobStringWPtr _contextValues[4];
 
     KnobStringWPtr _availableViews;
 

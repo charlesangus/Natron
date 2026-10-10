@@ -184,24 +184,6 @@ struct ColourChannels {
     }
 };
 
-// OpenEXR stores the frame rate as a rational, other formats as a float.
-double
-framesPerSecondOf(const OIIO::ImageSpec& spec)
-{
-    const OIIO::ParamValue* attribute = spec.find_attribute("FramesPerSecond");
-
-    if (!attribute) {
-        return 0.;
-    }
-    if (attribute->type() == OIIO::TypeRational) {
-        const int* ratio = (const int*)attribute->data();
-
-        return ratio[1] != 0 ? (double)ratio[0] / ratio[1] : 0.;
-    }
-
-    return (double)spec.get_float_attribute("FramesPerSecond", 0.f);
-}
-
 // The subimage that holds the colour in `view`: the first with channels of that view.
 int
 colourSubimageOf(const OiioReadSupport::Header& header,
@@ -227,12 +209,23 @@ const char* const kKnobFrameMode = "frameMode";
 const char* const kKnobStartingTime = "startingTime";
 const char* const kKnobTimeOffset = "timeOffset";
 const char* const kKnobTimeDomainUserEdited = "timeDomainUserEdited";
-const char* const kKnobFrameRate = "frameRate";
-const char* const kKnobCustomFps = "customFps";
 const char* const kKnobOCIOConfigFile = "ocioConfigFile";
 const char* const kKnobOCIOWorkingSpace = "ocioWorkingSpace";
 const char* const kKnobOCIOInputSpaceIndex = "ocioInputSpaceIndex";
 const char* const kKnobOCIOInputSpaceSet = "ocioInputSpaceSet";
+const char* const kKnobOCIOContext = "Context";
+
+bool
+timeDomainAtDefaults(const KnobIntPtr& firstFrame,
+                     const KnobIntPtr& lastFrame,
+                     const KnobIntPtr& startingTime,
+                     const KnobIntPtr& timeOffset)
+{
+    return firstFrame->getValue() == firstFrame->getDefaultValue(0)
+        && lastFrame->getValue() == lastFrame->getDefaultValue(0)
+        && startingTime->getValue() == startingTime->getDefaultValue(0)
+        && timeOffset->getValue() == timeOffset->getDefaultValue(0);
+}
 } // anonymous namespace
 
 NativeRead::NativeRead(NodePtr node)
@@ -252,8 +245,6 @@ NativeRead::NativeRead(NodePtr node)
     , _startingTime()
     , _timeOffset()
     , _timeDomainUserEdited()
-    , _frameRate()
-    , _customFps()
     , _ocioConfigFile()
     , _ocioWorkingSpace()
     , _inputSpace()
@@ -367,6 +358,7 @@ NativeRead::initializeKnobs()
                                   "this is also the first output frame."));
     firstFrame->setDefaultValue(0);
     firstFrame->setAnimationEnabled(false);
+    firstFrame->disableSlider();
     firstFrame->setAddNewLine(false);
     page->addKnob(firstFrame);
     _firstFrame = firstFrame;
@@ -386,6 +378,7 @@ NativeRead::initializeKnobs()
                                  "this is also the last output frame."));
     lastFrame->setDefaultValue(0);
     lastFrame->setAnimationEnabled(false);
+    lastFrame->disableSlider();
     lastFrame->setAddNewLine(false);
     page->addKnob(lastFrame);
     _lastFrame = lastFrame;
@@ -462,31 +455,6 @@ NativeRead::initializeKnobs()
     page->addKnob(originalRange);
     _originalFrameRange = originalRange;
 
-    KnobDoublePtr frameRate = createKnob<KnobDouble>(tr("Frame rate"));
-    frameRate->setName(kKnobFrameRate);
-    frameRate->setHintToolTip(tr("By default this value is guessed from the file. You can override it by checking Custom FPS. "
-                                 "The frame rate is only metadata passed to the nodes downstream."));
-    frameRate->setDefaultValue(24.);
-    frameRate->setMinimum(0.);
-    frameRate->setDisplayMinimum(0.);
-    frameRate->setDisplayMaximum(300.);
-    frameRate->setAnimationEnabled(false);
-    frameRate->setEvaluateOnChange(false);
-    frameRate->setIsMetadataSlave(true);
-    frameRate->setAddNewLine(false);
-    page->addKnob(frameRate);
-    _frameRate = frameRate;
-
-    KnobBoolPtr customFps = createKnob<KnobBool>(tr("Custom FPS"));
-    customFps->setName(kKnobCustomFps);
-    customFps->setHintToolTip(tr("If checked, the Frame rate value can be set freely instead of following the file."));
-    customFps->setDefaultValue(false);
-    customFps->setAnimationEnabled(false);
-    customFps->setEvaluateOnChange(false);
-    customFps->setIsMetadataSlave(true);
-    page->addKnob(customFps);
-    _customFps = customFps;
-
     KnobStringPtr availableViews = createKnob<KnobString>(tr("Available Views"));
     availableViews->setName(kReadOIIOAvailableViewsKnobName);
     availableViews->setAnimationEnabled(false);
@@ -527,8 +495,10 @@ NativeRead::initializeKnobs()
     inputSpaceMenu->setHintToolTip(tr("The OpenColorIO colorspace of the file. The image is converted from it to the project's "
                                       "working space. A new Read takes the colorspace the config's file rules give the file, else the "
                                       "colorspace tagged in the file, else the project's default for files of its kind. The "
-                                      "config's default rule does not count."));
+                                      "config's default rule does not count. Reset to default returns to that colorspace."));
     inputSpaceMenu->setAnimationEnabled(false);
+    inputSpaceMenu->setCascading(true);
+    inputSpaceMenu->setNotifiesOnReselect(true);
     inputSpaceMenu->setIsPersistent(false);
     // Only the input space string it sets decides the render.
     inputSpaceMenu->setEvaluateOnChange(false);
@@ -543,6 +513,31 @@ NativeRead::initializeKnobs()
     inputSpaceSet->setSecret(true);
     page->addKnob(inputSpaceSet);
     _inputSpaceSet = inputSpaceSet;
+
+    const QString contextHint = tr("OCIO Contexts allow you to apply specific LUTs or grades to different shots.\n"
+                                   "Here you can specify the context name (key) and its corresponding value.\n"
+                                   "Full details of how to set up contexts and add them to your config can be found in the OpenColorIO documentation:\n"
+                                   "http://opencolorio.org/userguide/contexts.html");
+    KnobGroupPtr context = createKnob<KnobGroup>(tr("OCIO Context"));
+    context->setName(kKnobOCIOContext);
+    context->setHintToolTip(contextHint);
+    context->setDefaultValue(false);
+    page->addKnob(context);
+    for (int i = 0; i < 4; ++i) {
+        const std::string n = std::to_string(i + 1);
+        KnobStringPtr key = createKnob<KnobString>("key" + n);
+        key->setName("key" + n);
+        key->setHintToolTip(contextHint);
+        key->setAddNewLine(false);
+        context->addKnob(key);
+        _contextKeys[i] = key;
+
+        KnobStringPtr value = createKnob<KnobString>("value" + n);
+        value->setName("value" + n);
+        value->setHintToolTip(contextHint);
+        context->addKnob(value);
+        _contextValues[i] = value;
+    }
 
     refreshInputSpaceMenu();
     refreshTimeKnobState();
@@ -634,16 +629,11 @@ NativeRead::refreshTimeKnobState()
     KnobChoicePtr frameMode = _frameMode.lock();
     KnobIntPtr startingTime = _startingTime.lock();
     KnobIntPtr timeOffset = _timeOffset.lock();
-    KnobDoublePtr frameRate = _frameRate.lock();
-    KnobBoolPtr customFps = _customFps.lock();
 
     if (frameMode && startingTime && timeOffset) {
         const bool byStartingTime = frameMode->getValue() == (int)ReadTimeDomain::eFrameModeStartingTime;
         startingTime->setSecret(!byStartingTime);
         timeOffset->setSecret(byStartingTime);
-    }
-    if (frameRate && customFps) {
-        frameRate->setEnabled(0, customFps->getValue());
     }
 }
 
@@ -903,35 +893,6 @@ NativeRead::proxySourceAt(double time,
     return true;
 }
 
-double
-NativeRead::fileFrameRate() const
-{
-    const std::string path = representativePath();
-
-    if (path.empty()) {
-        return 0.;
-    }
-    std::string error;
-    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
-
-    return (header && !header->subimages.empty()) ? framesPerSecondOf(header->subimages[0]) : 0.;
-}
-
-void
-NativeRead::refreshFrameRateFromFile()
-{
-    KnobDoublePtr frameRate = _frameRate.lock();
-    KnobBoolPtr customFps = _customFps.lock();
-
-    if (!frameRate || !customFps || customFps->getValue()) {
-        return;
-    }
-    const double fps = fileFrameRate();
-    if (fps > 0.) {
-        frameRate->setValue(fps);
-    }
-}
-
 void
 NativeRead::getFrameRange(double* first,
                           double* last)
@@ -962,6 +923,26 @@ NativeRead::workingSpaceName() const
     ProjectPtr project = app ? app->getProject() : ProjectPtr();
 
     return project ? project->getWorkingColorSpace() : std::string();
+}
+
+std::vector<std::pair<std::string, std::string>>
+NativeRead::contextVariables(double time) const
+{
+    std::vector<std::pair<std::string, std::string>> variables;
+
+    for (int i = 0; i < 4; ++i) {
+        KnobStringPtr key = _contextKeys[i].lock();
+        KnobStringPtr value = _contextValues[i].lock();
+        if (!key || !value) {
+            continue;
+        }
+        const std::string name = key->getValueAtTime(time);
+        if (!name.empty()) {
+            variables.push_back(std::make_pair(name, value->getValueAtTime(time)));
+        }
+    }
+
+    return variables;
 }
 
 void
@@ -1021,6 +1002,25 @@ NativeRead::guessInputSpace()
     }
 }
 
+void
+NativeRead::resetInputSpace()
+{
+    KnobStringPtr space = _inputSpace.lock();
+    KnobBoolPtr spaceSet = _inputSpaceSet.lock();
+
+    if (!space || !spaceSet) {
+        return;
+    }
+    spaceSet->setValue(false);
+    if (representativePath().empty()) {
+        space->setValue(std::string());
+    } else {
+        guessInputSpace();
+    }
+    // The space may already hold the default, so nothing else re-selects it in the menu.
+    refreshInputSpaceMenu();
+}
+
 bool
 NativeRead::colourKnobChanged(KnobI* k,
                               ValueChangedReasonEnum reason)
@@ -1049,6 +1049,11 @@ NativeRead::colourKnobChanged(KnobI* k,
     }
     if (k == configFile.get() || k == workingSpace.get()) {
         refreshInputSpaceMenu();
+
+        return true;
+    }
+    if ((k == menu.get() || k == space.get()) && reason == eValueChangedReasonRestoreDefault) {
+        resetInputSpace();
 
         return true;
     }
@@ -1094,9 +1099,8 @@ NativeRead::knobChanged(KnobI* k,
     KnobIntPtr startingTime = _startingTime.lock();
     KnobIntPtr timeOffset = _timeOffset.lock();
     KnobBoolPtr userEdited = _timeDomainUserEdited.lock();
-    KnobBoolPtr customFps = _customFps.lock();
 
-    if (!filename || !originalRange || !firstFrame || !lastFrame || !frameMode || !startingTime || !timeOffset || !userEdited || !customFps) {
+    if (!filename || !originalRange || !firstFrame || !lastFrame || !frameMode || !startingTime || !timeOffset || !userEdited) {
         return false;
     }
     const bool byUser = reason == eValueChangedReasonUserEdited;
@@ -1106,7 +1110,6 @@ NativeRead::knobChanged(KnobI* k,
             invalidateFrameListing();
             invalidateOutputMetadata();
             refreshAvailableViews(false);
-            refreshFrameRateFromFile();
             refreshProxyScale();
         }
 
@@ -1134,39 +1137,43 @@ NativeRead::knobChanged(KnobI* k,
 
         return true;
     }
-    if (k == firstFrame.get() && byUser) {
+    // Resetting a knob reaches here twice with the restore reason, so every step below is a pure
+    // function of the knob values.
+    const bool restored = reason == eValueChangedReasonRestoreDefault;
+    const bool edited = byUser || restored;
+
+    // A time domain back at its defaults follows the file again.
+    const auto markEdited = [&]() {
+        userEdited->setValue(!restored || !timeDomainAtDefaults(firstFrame, lastFrame, startingTime, timeOffset));
+    };
+
+    if (k == firstFrame.get() && edited) {
         lastFrame->setDisplayMinimum(firstFrame->getValue());
         startingTime->setValue(firstFrame->getValue() + timeOffset->getValue());
-        userEdited->setValue(true);
+        markEdited();
 
         return true;
     }
-    if (k == lastFrame.get() && byUser) {
+    if (k == lastFrame.get() && edited) {
         firstFrame->setDisplayMaximum(lastFrame->getValue());
-        userEdited->setValue(true);
+        markEdited();
 
         return true;
     }
-    if (k == frameMode.get() && byUser) {
+    if (k == frameMode.get() && edited) {
         refreshTimeKnobState();
 
         return true;
     }
-    if (k == startingTime.get() && byUser) {
+    if (k == startingTime.get() && edited) {
         timeOffset->setValue(startingTime->getValue() - firstFrame->getValue());
-        userEdited->setValue(true);
+        markEdited();
 
         return true;
     }
-    if (k == timeOffset.get() && byUser) {
+    if (k == timeOffset.get() && edited) {
         startingTime->setValue(timeOffset->getValue() + firstFrame->getValue());
-        userEdited->setValue(true);
-
-        return true;
-    }
-    if (k == customFps.get()) {
-        refreshTimeKnobState();
-        refreshFrameRateFromFile();
+        markEdited();
 
         return true;
     }
@@ -1182,21 +1189,6 @@ NativeRead::getPreferredMetadata(NodeMetadata& metadata)
     metadata.setNComps(-1, 4);
 
     metadata.setIsFrameVarying(true);
-
-    KnobDoublePtr frameRate = _frameRate.lock();
-    KnobBoolPtr customFps = _customFps.lock();
-    if (frameRate) {
-        double fps = frameRate->getValue();
-        if (!customFps || !customFps->getValue()) {
-            const double fileFps = fileFrameRate();
-            if (fileFps > 0.) {
-                fps = fileFps;
-            }
-        }
-        if (fps > 0.) {
-            metadata.setOutputFrameRate(fps);
-        }
-    }
 
     // The format is one per node, so a frame that loads nothing still reports the sequence's.
     const Target target = targetAtTime(getCurrentTime());
@@ -1227,7 +1219,6 @@ NativeRead::deriveOutputMetadata(double time,
 {
     ImageMetadata metadata;
 
-    metadata.setDouble(kOfxMetadataKeyFrameRate, getFrameRate());
     metadata.setDouble(kOfxMetadataKeyPixelAspect, getAspectRatio(-1));
 
     // A frame that loads black or an error has no file to describe, and a key whose value is
@@ -1451,7 +1442,7 @@ NativeRead::render(const RenderActionArgs& args)
     if (header) {
         KnobStringPtr inputSpace = _inputSpace.lock();
         std::string conversionError;
-        if (!ReadColorSpace::toWorkingProcessor(*getApp()->getProject(), inputSpace ? inputSpace->getValue() : std::string(), workingSpaceName(), &toWorking, &conversionError)) {
+        if (!ReadColorSpace::toWorkingProcessor(*getApp()->getProject(), inputSpace ? inputSpace->getValue() : std::string(), workingSpaceName(), contextVariables(args.time), &toWorking, &conversionError)) {
             setPersistentMessage(eMessageTypeError, conversionError);
 
             return eStatusFailed;

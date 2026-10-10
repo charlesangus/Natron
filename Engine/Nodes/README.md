@@ -179,8 +179,9 @@ Write is still a container (`WriteNode`) around OFX writers. Decoding lives in
   `proxyThreshold`, `originalProxyScale`, `customProxyScale`,
   `originalFrameRange`, `firstFrame`, `lastFrame`, `before`, `after`,
   `onMissingFrame`, `frameMode`, `startingTime`, `timeOffset`,
-  `timeDomainUserEdited`, `frameRate`, `customFps`, `ocioInputSpace`,
-  `ocioInputSpaceIndex`, `ocioInputSpaceSet`, and the hidden `ocioConfigFile`,
+  `timeDomainUserEdited`, `ocioInputSpace`,
+  `ocioInputSpaceIndex`, `ocioInputSpaceSet`, the `Context` group of
+  `key1`..`key4` and `value1`..`value4`, and the hidden `ocioConfigFile`,
   `ocioWorkingSpace` and `availableViews`.
 - **Colour.** Pixels are converted to the project's working space through the
   project's OCIO config (`ReadColorSpace::toWorkingProcessor()`). The default
@@ -189,7 +190,9 @@ Write is still a container (`WriteNode`) around OFX writers. Decoding lives in
   count), the file's `oiio:ColorSpace` tag if the config has a colourspace, role
   or alias of that name (`embeddedColorSpace()`), then the project's file
   default for the pixel depth (`categoryOf()`: float, 16-bit or 8-bit). Setting
-  the input space by hand (`ocioInputSpaceSet`) overrides the default.
+  the input space by hand (`ocioInputSpaceSet`) overrides the default. The
+  non-empty `key`/`value` pairs are set as OCIO context variables when the
+  processor is built, and are part of its cache key.
 - **Layers and views.** Every layer of the file becomes a produced plane
   (`getComponentsNeededAndProduced()`, grouped by `OiioReadSupport::fileLayers`)
   and the Read is multi-planar. A greyscale file (a lone `Y` or `I` channel)
@@ -205,12 +208,13 @@ Write is still a container (`WriteNode`) around OFX writers. Decoding lives in
   `startingTime` or `timeOffset` for the shift.
 - **Proxies.** The `proxy` file is read instead of `filename` when the render
   scale is at or below `proxyThreshold`; it has its own frame listing.
-- **Metadata.** `deriveOutputMetadata()` publishes `ofx/framerate`,
+- **Metadata.** `deriveOutputMetadata()` publishes
   `ofx/pixelaspect` and, for a frame that loads a file, the file path, source
   frame, mtime and size plus the file's own attributes
-  (`OiioReadSupport::attributeMetadata()`), for downstream native nodes and, via
-  `OfxMetadataBridge`, OFX nodes. A black or error frame carries only the first
-  two.
+  (`OiioReadSupport::attributeMetadata()`, so a frame rate in the header appears under the
+  format's prefix like any other attribute), for downstream native nodes and, via
+  `OfxMetadataBridge`, OFX nodes. A black or error frame carries only the pixel aspect. A Read has no frame rate: it
+  leaves the output frame rate at the host default and publishes no `ofx/framerate`.
 - **Not read.** RAW (`raw` is excluded; a later milestone adds it) and layered
   documents such as PSD (`psd` is excluded; deferred to "M79 - Layered Document
   Readers").

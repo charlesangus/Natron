@@ -127,6 +127,7 @@ bool
 toWorkingProcessor(const Project& project,
                    const std::string& input,
                    const std::string& working,
+                   const std::vector<std::pair<std::string, std::string>>& context,
                    OCIO_NAMESPACE::ConstCPUProcessorRcPtr* processor,
                    std::string* error)
 {
@@ -141,7 +142,13 @@ toWorkingProcessor(const Project& project,
         return false;
     }
     const ProjectColorManagementPtr colorManagement = project.getColorManagement();
-    OCIO_NAMESPACE::ConstCPUProcessorRcPtr cpu = colorManagement ? colorManagement->getConversionProcessor(input, working) : OCIO_NAMESPACE::ConstCPUProcessorRcPtr();
+    std::vector<std::pair<std::string, std::string>> variables;
+    for (std::size_t i = 0; i < context.size(); ++i) {
+        if (!context[i].first.empty()) {
+            variables.push_back(context[i]);
+        }
+    }
+    OCIO_NAMESPACE::ConstCPUProcessorRcPtr cpu = colorManagement ? colorManagement->getConversionProcessor(input, working, variables) : OCIO_NAMESPACE::ConstCPUProcessorRcPtr();
     if (!cpu) {
         *error = Project::tr("Cannot convert from the OpenColorIO colorspace \"%1\" to the working space \"%2\".")
                      .arg(QString::fromStdString(input))

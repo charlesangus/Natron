@@ -29,6 +29,8 @@
 #include "Global/Macros.h"
 
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <OpenColorIO/OpenColorIO.h>
 #include <OpenImageIO/imageio.h>
@@ -78,11 +80,13 @@ std::string defaultInputSpace(const Project& project, const std::string& path, c
 /**
  * @brief The processor converting \p input to \p working through the project's config, left
  * null when no conversion is needed: an empty space, equal spaces or a processor that is a no-op.
+ * \p context holds the OCIO context variables to set; a pair with an empty key is ignored.
  * Returns false, filling \p error, when a conversion is needed and cannot be built.
  **/
 bool toWorkingProcessor(const Project& project,
                         const std::string& input,
                         const std::string& working,
+                        const std::vector<std::pair<std::string, std::string>>& context,
                         OCIO_NAMESPACE::ConstCPUProcessorRcPtr* processor,
                         std::string* error);
 

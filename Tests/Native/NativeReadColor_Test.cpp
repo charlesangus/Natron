@@ -28,9 +28,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <fstream>
 #include <list>
 #include <memory>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -255,7 +258,13 @@ protected:
             }
         }
         ASSERT_GE(index, 0) << space;
-        menu->setValue(index, ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0);
+        // The Gui's menu sends no change for the entry already shown, only a reselection.
+        if (index == menu->getValue()) {
+            ASSERT_TRUE(menu->getNotifiesOnReselect());
+            menu->setValue(index, ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0, true);
+        } else {
+            menu->setValue(index, ViewSpec::all(), 0, eValueChangedReasonUserEdited, 0);
+        }
         ASSERT_EQ(std::string(space), stringValue(node, kInputSpaceKnob));
     }
 
@@ -298,6 +307,24 @@ protected:
         }
 
         return flipped;
+    }
+
+    // The same calls, in the same order, as the Gui's "Reset to default" on one knob.
+    void restoreDefaultAsTheGuiDoes(const KnobIPtr& knob)
+    {
+        ASSERT_TRUE(bool(knob));
+        KnobHolder* holder = knob->getHolder();
+        ASSERT_TRUE(holder != NULL);
+
+        holder->beginChanges();
+        holder->beginChanges();
+        for (int d = 0; d < knob->getDimension(); ++d) {
+            knob->resetToDefaultValue(d);
+        }
+        holder->endChanges(true);
+        holder->onKnobValueChanged_public(knob.get(), eValueChangedReasonRestoreDefault, 0., ViewIdx(0), true);
+        holder->endChanges();
+        holder->incrHashAndEvaluate(true, true);
     }
 
     void saveResetAndLoad(const QTemporaryDir& tmp,
@@ -680,4 +707,355 @@ TEST_F(NativeReadColorTest, AnUnknownInputSpaceIsReported)
     message = persistentMessage(node);
     EXPECT_NE(std::string::npos, message.find(kInputSpaceKnob)) << message;
     EXPECT_NE(std::string::npos, message.find(kUnknownSpace)) << message;
+}
+
+TEST_F(NativeReadColorTest, TheInputColourspaceMenuNestsTheConfigsFamilies)
+{
+    ASSERT_EQ('/', config()->getFamilySeparator());
+    NodePtr node = createRead();
+    KnobChoicePtr menu = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kInputSpaceMenuKnob));
+    ASSERT_TRUE(bool(menu));
+    EXPECT_TRUE(menu->isCascading());
+
+    const std::vector<std::string> names = project()->getColorManagement()->getColorSpaces();
+    const std::vector<ChoiceOption> entries = menu->getEntries_mt_safe();
+    ASSERT_EQ(names.size(), entries.size());
+    std::set<std::string> labels;
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        EXPECT_EQ(names[i], entries[i].id);
+        OCIO_NAMESPACE::ConstColorSpaceRcPtr cs = config()->getColorSpace(entries[i].id.c_str());
+        ASSERT_TRUE(bool(cs)) << entries[i].id;
+        const std::string family = cs->getFamily() ? cs->getFamily() : "";
+        EXPECT_EQ(family.empty() ? entries[i].id : family + "/" + entries[i].id, entries[i].label);
+        EXPECT_TRUE(labels.insert(entries[i].label).second) << entries[i].label;
+    }
+
+    struct Expected {
+        const char* id;
+        const char* label;
+    };
+    const Expected expected[] = {
+        { "ACEScg", "ACES/ACEScg" },
+        { "ARRI LogC4", "Input/ARRI/ARRI LogC4" },
+        { kLinearRec709Space, "Utility/Linear Rec.709 (sRGB)" },
+        { "Camera Rec.709", "Utility/ITU/Camera Rec.709" },
+    };
+    for (std::size_t e = 0; e < sizeof(expected) / sizeof(expected[0]); ++e) {
+        userPicksInputSpace(node, expected[e].id);
+        EXPECT_EQ(std::string(expected[e].id), stringValue(node, kInputSpaceKnob));
+        EXPECT_EQ(std::string(expected[e].id), menuValue(node));
+        EXPECT_EQ(std::string(expected[e].label), menu->getEntry(menu->getValue()).label);
+        EXPECT_TRUE(userSet(node));
+    }
+
+    KnobChoicePtr working = project()->getKnobByNameAndType<KnobChoice>("workingSpace");
+    ASSERT_TRUE(bool(working));
+    EXPECT_TRUE(working->isCascading());
+    const std::vector<ChoiceOption> workingEntries = working->getEntries_mt_safe();
+    ASSERT_EQ(entries.size(), workingEntries.size());
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        EXPECT_EQ(entries[i].id, workingEntries[i].id);
+        EXPECT_EQ(entries[i].label, workingEntries[i].label);
+    }
+}
+
+TEST_F(NativeReadColorTest, ColourspaceMenuPathsNeverCollideWithASubmenu)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = (dir.path() + QString::fromUtf8("/config.ocio")).toStdString();
+    {
+        std::ofstream out(path.c_str());
+        out << "ocio_profile_version: 2\n"
+               "roles:\n"
+               "  default: raw\n"
+               "  scene_linear: lin\n"
+               "file_rules:\n"
+               "  - !<Rule> {name: Default, colorspace: default}\n"
+               "displays:\n"
+               "  sRGB:\n"
+               "    - !<View> {name: Raw, colorspace: raw}\n"
+               "active_displays: []\n"
+               "active_views: []\n"
+               "colorspaces:\n"
+               "  - !<ColorSpace>\n"
+               "    name: raw\n"
+               "    isdata: true\n"
+               "  - !<ColorSpace>\n"
+               "    name: Utility\n"
+               "  - !<ColorSpace>\n"
+               "    name: lin\n"
+               "    family: Utility\n"
+               "  - !<ColorSpace>\n"
+               "    name: Sub\n"
+               "    family: Utility\n"
+               "  - !<ColorSpace>\n"
+               "    name: a/b\n"
+               "    family: Utility/Sub\n";
+        ASSERT_TRUE(out.good());
+    }
+    ProjectColorManagement cm;
+    std::string error;
+    ASSERT_EQ(ProjectColorManagement::eLoadErrorNone, cm.load(path, std::string(), &error)) << error;
+
+    const std::vector<ChoiceOption> options = Project::colorSpaceOptions(cm);
+    ASSERT_EQ(5u, options.size());
+    const char* const ids[] = { "raw", "Utility", "lin", "Sub", "a/b" };
+    const char* const labels[] = { "raw", "Utility/Utility", "Utility/lin", "Utility/Sub/Sub", "Utility/Sub/a\u2215b" };
+    for (std::size_t i = 0; i < options.size(); ++i) {
+        EXPECT_EQ(std::string(ids[i]), options[i].id);
+        EXPECT_EQ(std::string(labels[i]), options[i].label);
+    }
+}
+
+TEST_F(NativeReadColorTest, ResettingTheInputColourspaceMenuReturnsToTheAutomaticSpace)
+{
+    const std::string path = fixture("png-8bit.png");
+    Decoded ref;
+    ASSERT_TRUE(readWithOiio(path, &ref));
+    const RectI window = OiioReadSupport::dataWindowOf(ref.spec);
+
+    NodePtr node = createRead();
+    setFile(node, path);
+    ASSERT_EQ(std::string(kSRGBSpace), stringValue(node, kInputSpaceKnob));
+    userPicksInputSpace(node, kLinearRec709Space);
+    ASSERT_TRUE(userSet(node));
+    RenderedPlane picked;
+    renderFile(node, window, 3, &picked);
+
+    restoreDefaultAsTheGuiDoes(node->getKnobByName(kInputSpaceMenuKnob));
+
+    EXPECT_FALSE(userSet(node));
+    EXPECT_EQ(std::string(kSRGBSpace), stringValue(node, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kSRGBSpace), menuValue(node));
+
+    RenderedPlane reset;
+    renderFile(node, window, 3, &reset);
+    EXPECT_NE(picked.pixels, reset.pixels);
+    const std::vector<float> want = reference(ref, kSRGBSpace, project()->getWorkingColorSpace());
+    ASSERT_EQ(want.size(), reset.pixels.size());
+    std::size_t mismatches = 0;
+    for (std::size_t i = 0; i < want.size(); ++i) {
+        if (!nearlyEqual(reset.pixels[i], want[i]) && ++mismatches <= 5) {
+            ADD_FAILURE() << "sample " << i << ": got " << reset.pixels[i] << ", want " << want[i];
+        }
+    }
+    EXPECT_EQ(0u, mismatches);
+
+    setFile(node, fixture("flat-rgb-only.exr"));
+    EXPECT_EQ(std::string(kOtherWorkingSpace), stringValue(node, kInputSpaceKnob));
+}
+
+TEST_F(NativeReadColorTest, ResettingTheInputColourspaceStringReturnsToTheAutomaticSpace)
+{
+    NodePtr node = createRead();
+    setFile(node, fixture("png-8bit.png"));
+    userPicksInputSpace(node, kLinearRec709Space);
+    ASSERT_TRUE(userSet(node));
+
+    KnobIPtr space = node->getKnobByName(kInputSpaceKnob);
+    restoreDefaultAsTheGuiDoes(space);
+
+    EXPECT_FALSE(userSet(node));
+    EXPECT_EQ(std::string(kSRGBSpace), stringValue(node, kInputSpaceKnob));
+    EXPECT_EQ(std::string(kSRGBSpace), menuValue(node));
+    EXPECT_TRUE(space->getIsSecret());
+}
+
+TEST_F(NativeReadColorTest, ResettingTheInputColourspaceOfAReadWithoutAFileConvertsNothing)
+{
+    NodePtr node = createRead();
+    userPicksInputSpace(node, kLinearRec709Space);
+    ASSERT_TRUE(userSet(node));
+
+    restoreDefaultAsTheGuiDoes(node->getKnobByName(kInputSpaceMenuKnob));
+
+    EXPECT_FALSE(userSet(node));
+    EXPECT_EQ(std::string(), stringValue(node, kInputSpaceKnob));
+    EXPECT_EQ(project()->getWorkingColorSpace(), menuValue(node));
+}
+
+// A config whose "shot" colourspace applies the LUT file named by the $LUT context variable.
+class NativeReadContextTest
+    : public NativeReadColorTest {
+protected:
+    void useContextConfig(const QTemporaryDir& dir)
+    {
+        ASSERT_TRUE(dir.isValid());
+        const std::string root = dir.path().toStdString();
+        const char* const luts[][2] = { { "half", "0.5" }, { "quarter", "0.25" } };
+        for (std::size_t i = 0; i < 2; ++i) {
+            std::ofstream lut((root + "/" + luts[i][0] + ".cube").c_str());
+            lut << "LUT_1D_SIZE 2\n0 0 0\n"
+                << luts[i][1] << " " << luts[i][1] << " " << luts[i][1] << "\n";
+            ASSERT_TRUE(lut.good());
+        }
+        const std::string path = root + "/config.ocio";
+        {
+            std::ofstream out(path.c_str());
+            out << "ocio_profile_version: 2\n"
+                   "search_path: .\n"
+                   "environment:\n"
+                   "  LUT: half\n"
+                   "roles:\n"
+                   "  default: raw\n"
+                   "  scene_linear: lin\n"
+                   "file_rules:\n"
+                   "  - !<Rule> {name: Default, colorspace: default}\n"
+                   "displays:\n"
+                   "  sRGB:\n"
+                   "    - !<View> {name: Raw, colorspace: raw}\n"
+                   "active_displays: []\n"
+                   "active_views: []\n"
+                   "colorspaces:\n"
+                   "  - !<ColorSpace>\n"
+                   "    name: raw\n"
+                   "    isdata: true\n"
+                   "  - !<ColorSpace>\n"
+                   "    name: lin\n"
+                   "  - !<ColorSpace>\n"
+                   "    name: shot\n"
+                   "    to_scene_reference: !<FileTransform> {src: $LUT.cube, interpolation: linear}\n";
+            ASSERT_TRUE(out.good());
+        }
+        KnobChoicePtr configChoice = project()->getKnobByNameAndType<KnobChoice>("ocioConfig");
+        KnobStringBasePtr configFile = project()->getKnobByNameAndType<KnobStringBase>("ocioConfigFile");
+        ASSERT_TRUE(bool(configChoice));
+        ASSERT_TRUE(bool(configFile));
+        configChoice->setValueFromID("Custom config", 0);
+        configFile->setValue(path);
+        ASSERT_EQ(path, project()->getColorManagement()->getConfigSource());
+        setProjectSpace("workingSpace", "lin");
+    }
+
+    void setContext(const NodePtr& node,
+                    int pair,
+                    const char* key,
+                    const char* value)
+    {
+        const std::string n = std::to_string(pair);
+        KnobStringPtr keyKnob = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("key" + n));
+        KnobStringPtr valueKnob = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("value" + n));
+
+        ASSERT_TRUE(bool(keyKnob));
+        ASSERT_TRUE(bool(valueKnob));
+        keyKnob->setValue(std::string(key));
+        valueKnob->setValue(std::string(value));
+    }
+
+    // The first plane of the png fixture read through "shot", and the file's own pixels.
+    void renderShot(const NodePtr& node,
+                    std::vector<float>* converted,
+                    std::vector<float>* raw)
+    {
+        Decoded ref;
+        ASSERT_TRUE(readWithOiio(fixture("png-8bit.png"), &ref));
+        RenderedPlane plane;
+        renderFile(node, OiioReadSupport::dataWindowOf(ref.spec), 3, &plane);
+        *converted = plane.pixels;
+        *raw = reference(ref, std::string(), std::string());
+    }
+
+    void expectScaled(const std::vector<float>& got,
+                      const std::vector<float>& raw,
+                      float scale)
+    {
+        ASSERT_EQ(raw.size(), got.size());
+        std::size_t mismatches = 0;
+        for (std::size_t i = 0; i < raw.size(); ++i) {
+            if (!nearlyEqual(got[i], raw[i] * scale) && ++mismatches <= 5) {
+                ADD_FAILURE() << "sample " << i << ": got " << got[i] << ", want " << raw[i] * scale;
+            }
+        }
+        EXPECT_EQ(0u, mismatches);
+    }
+
+    NodePtr createShotRead()
+    {
+        NodePtr node = createRead();
+        setFile(node, fixture("png-8bit.png"));
+        userPicksInputSpace(node, "shot");
+
+        return node;
+    }
+};
+
+TEST_F(NativeReadContextTest, TheContextGroupHasFourKeyValuePairs)
+{
+    NodePtr node = createRead();
+
+    EXPECT_TRUE(dynamic_cast<KnobGroup*>(node->getKnobByName("Context").get()) != NULL);
+    for (int i = 1; i <= 4; ++i) {
+        const std::string n = std::to_string(i);
+        KnobStringPtr key = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("key" + n));
+        KnobStringPtr value = std::dynamic_pointer_cast<KnobString>(node->getKnobByName("value" + n));
+
+        ASSERT_TRUE(bool(key)) << "key" << n;
+        ASSERT_TRUE(bool(value)) << "value" << n;
+        EXPECT_EQ(std::string(), key->getValue());
+        EXPECT_EQ(std::string(), value->getValue());
+        EXPECT_FALSE(key->getIsSecret());
+    }
+}
+
+TEST_F(NativeReadContextTest, AContextVariableChangesTheConversionAndTheHash)
+{
+    QTemporaryDir dir;
+    useContextConfig(dir);
+    NodePtr node = createShotRead();
+
+    std::vector<float> withDefault, raw;
+    renderShot(node, &withDefault, &raw);
+    expectScaled(withDefault, raw, 0.5f);
+    const U64 hashBefore = node->getHashValue();
+
+    setContext(node, 2, "LUT", "quarter");
+    EXPECT_NE(hashBefore, node->getHashValue());
+
+    std::vector<float> withContext;
+    renderShot(node, &withContext, &raw);
+    expectScaled(withContext, raw, 0.25f);
+
+    setContext(node, 2, "", "quarter");
+    std::vector<float> cleared;
+    renderShot(node, &cleared, &raw);
+    expectScaled(cleared, raw, 0.5f);
+}
+
+TEST_F(NativeReadContextTest, PairsWithAnEmptyKeyAreIgnored)
+{
+    QTemporaryDir dir;
+    useContextConfig(dir);
+    NodePtr node = createShotRead();
+
+    std::vector<float> none, raw;
+    renderShot(node, &none, &raw);
+
+    setContext(node, 1, "", "quarter");
+    setContext(node, 3, "", "");
+    std::vector<float> emptyKeys;
+    renderShot(node, &emptyKeys, &raw);
+    EXPECT_EQ(none, emptyKeys);
+
+    std::vector<std::pair<std::string, std::string>> pairs;
+    pairs.push_back(std::make_pair(std::string(), std::string("quarter")));
+    OCIO_NAMESPACE::ConstCPUProcessorRcPtr withIgnored, without;
+    std::string error;
+    ASSERT_TRUE(ReadColorSpace::toWorkingProcessor(*project(), "shot", "lin", pairs, &withIgnored, &error)) << error;
+    ASSERT_TRUE(ReadColorSpace::toWorkingProcessor(*project(), "shot", "lin", std::vector<std::pair<std::string, std::string>>(), &without, &error)) << error;
+    ASSERT_TRUE(bool(withIgnored));
+    EXPECT_EQ(without, withIgnored);
+}
+
+TEST_F(NativeReadContextTest, EachPairOfTheGroupSetsAContextVariable)
+{
+    QTemporaryDir dir;
+    useContextConfig(dir);
+    NodePtr node = createShotRead();
+
+    setContext(node, 1, "UNUSED", "x");
+    setContext(node, 4, "LUT", "quarter");
+    std::vector<float> got, raw;
+    renderShot(node, &got, &raw);
+    expectScaled(got, raw, 0.25f);
 }

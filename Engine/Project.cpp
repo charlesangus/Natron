@@ -1020,27 +1020,102 @@ namesToOptions(const std::vector<std::string>& names)
     return ret;
 }
 
+// The Gui's cascading menu splits labels on '/', so one inside a name is shown as U+2215.
+std::string
+menuSegment(const std::string& text)
+{
+    std::string ret;
+
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '/') {
+            ret += "\u2215";
+        } else {
+            ret += text[i];
+        }
+    }
+
+    return ret;
+}
+
+std::vector<std::string>
+familySegments(const std::string& family,
+               char separator)
+{
+    std::vector<std::string> ret;
+    std::size_t start = 0;
+
+    while (start <= family.size()) {
+        std::size_t end = family.find(separator, start);
+        if (end == std::string::npos) {
+            end = family.size();
+        }
+        if (end > start) {
+            ret.push_back(menuSegment(family.substr(start, end - start)));
+        }
+        start = end + 1;
+    }
+
+    return ret;
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 std::vector<ChoiceOption>
 Project::colorSpaceOptions(const ProjectColorManagement& cm)
 {
-    std::vector<ChoiceOption> ret;
     OCIO_NAMESPACE::ConstConfigRcPtr config = cm.getConfig();
     const std::vector<std::string> names = cm.getColorSpaces();
+    const char separator = config ? config->getFamilySeparator() : '/';
+    std::vector<std::string> ids;
+    std::vector<std::string> leaves;
+    std::vector<std::string> paths;
+    std::vector<std::string> descriptions;
+    std::set<std::string> menus;
 
     for (std::size_t i = 0; i < names.size(); ++i) {
         if (names[i].empty()) {
             continue;
         }
+        std::string family;
         std::string description;
         if (config) {
             OCIO_NAMESPACE::ConstColorSpaceRcPtr cs = config->getColorSpace(names[i].c_str());
+            if (cs && cs->getFamily()) {
+                family = cs->getFamily();
+            }
             if (cs && cs->getDescription()) {
                 description = cs->getDescription();
             }
         }
-        ret.push_back(ChoiceOption(names[i], names[i], description));
+        std::string path;
+        const std::vector<std::string> segments = familySegments(family, separator);
+        for (std::size_t s = 0; s < segments.size(); ++s) {
+            path += segments[s];
+            menus.insert(path);
+            path += '/';
+        }
+        const std::string leaf = menuSegment(names[i]);
+        ids.push_back(names[i]);
+        leaves.push_back(leaf);
+        paths.push_back(path + leaf);
+        descriptions.push_back(description);
+    }
+
+    // A label that is also a submenu, or a repeated label, would desynchronise the Gui menu's
+    // item indices from the option indices.
+    std::vector<ChoiceOption> ret;
+    std::set<std::string> used;
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        std::string label = paths[i];
+        while (menus.count(label)) {
+            label += '/' + leaves[i];
+        }
+        std::string unique = label;
+        for (int n = 2; menus.count(unique) || used.count(unique); ++n) {
+            unique = label + " (" + std::to_string(n) + ")";
+        }
+        used.insert(unique);
+        ret.push_back(ChoiceOption(ids[i], unique, descriptions[i]));
     }
 
     return ret;
@@ -1351,30 +1426,35 @@ Project::initializeKnobs()
     _imp->workingSpace->setName("workingSpace");
     _imp->workingSpace->setHintToolTip(tr("The colorspace images are processed in. It defaults to the colorspace of the config's scene_linear role."));
     _imp->workingSpace->setAnimationEnabled(false);
+    _imp->workingSpace->setCascading(true);
     colorPage->addKnob(_imp->workingSpace);
 
     _imp->colorSpace8Bit = AppManager::createKnob<KnobChoice>(this, tr("8-bit files"));
     _imp->colorSpace8Bit->setName("colorSpace8Bit");
     _imp->colorSpace8Bit->setHintToolTip(tr("The default colorspace of new Read and Write nodes for 8-bit files."));
     _imp->colorSpace8Bit->setAnimationEnabled(false);
+    _imp->colorSpace8Bit->setCascading(true);
     colorPage->addKnob(_imp->colorSpace8Bit);
 
     _imp->colorSpace16Bit = AppManager::createKnob<KnobChoice>(this, tr("16-bit files"));
     _imp->colorSpace16Bit->setName("colorSpace16Bit");
     _imp->colorSpace16Bit->setHintToolTip(tr("The default colorspace of new Read and Write nodes for 16-bit integer files."));
     _imp->colorSpace16Bit->setAnimationEnabled(false);
+    _imp->colorSpace16Bit->setCascading(true);
     colorPage->addKnob(_imp->colorSpace16Bit);
 
     _imp->colorSpaceLog = AppManager::createKnob<KnobChoice>(this, tr("Log files"));
     _imp->colorSpaceLog->setName("colorSpaceLog");
     _imp->colorSpaceLog->setHintToolTip(tr("The default colorspace of new Read and Write nodes for log-encoded files, such as Cineon and DPX."));
     _imp->colorSpaceLog->setAnimationEnabled(false);
+    _imp->colorSpaceLog->setCascading(true);
     colorPage->addKnob(_imp->colorSpaceLog);
 
     _imp->colorSpaceFloat = AppManager::createKnob<KnobChoice>(this, tr("Floating-point files"));
     _imp->colorSpaceFloat->setName("colorSpaceFloat");
     _imp->colorSpaceFloat->setHintToolTip(tr("The default colorspace of new Read and Write nodes for floating-point files."));
     _imp->colorSpaceFloat->setAnimationEnabled(false);
+    _imp->colorSpaceFloat->setCascading(true);
     colorPage->addKnob(_imp->colorSpaceFloat);
 
     _imp->viewerDisplay = AppManager::createKnob<KnobChoice>(this, tr("Viewer display"));

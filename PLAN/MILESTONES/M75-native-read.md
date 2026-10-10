@@ -146,31 +146,31 @@ Replaces the `Read` container node with a native node on OpenImageIO that reads 
   - verify: gtest: a run-time one-channel PNG and TIFF read as 3 components with R=G=B equal to OIIO's value; a Y+A PNG reads as 4; `NativeReadDecodeTest.AFileWithoutRgbaChannelsGivesABlackRgbaPlane` is rewritten for a file with no colour channel at all; `ColorViewsRender`'s alpha-only PNG round trip asserts the read-back RGB equals the written value.
   - size: M
 
-- [ ] M75.P2.T20 — Drop the Read's frame rate
+- [x] M75.P2.T20 — Drop the Read's frame rate
   - files: `Engine/Nodes/IO/NativeRead.h/.cpp`, `Engine/Nodes/IO/ReadTimeDomain.*` if it carries fps, `Tests/Native/NativeReadTime_Test.cpp`, `Tests/Native/NativeReadMetadata*_Test.cpp`, `Engine/Nodes/README.md`; grep `frameRate`/`customFps` for any other reader-specific use (DopeSheet, Write read-back, Python)
   - approach: a Read has no frame rate: one file frame per project frame. Delete the `frameRate` and `customFps` knobs and every path that reads the file's `FramesPerSecond` into the output frame rate or `ofx/framerate`; the Read leaves the output frame rate at the host default. The file's own fps attribute still passes through as plain file metadata under its prefix, like any other header attribute.
   - verify: gtest: the Read has no `frameRate`/`customFps` knob; a file tagged 24 fps under a 30 fps project emits no Read-derived `ofx/framerate` and the output frame rate is the default; the file's attribute is still visible under its prefix. Targeted suites green.
   - size: M
 
-- [ ] M75.P2.T21 — First and last frame as plain fields
+- [x] M75.P2.T21 — First and last frame as plain fields
   - files: `Engine/Nodes/IO/NativeRead.cpp`
   - approach: keep `firstFrame`/`lastFrame` and their semantics, but show them as integer fields with no slider (no display range / slider hidden, as other plain-int knobs in the tree do it).
   - verify: Xvfb panel screenshot in P2.T3 shows no sliders on first/last frame; NativeReadTime suites green.
   - size: M
 
-- [ ] M75.P2.T22 — Nested input colourspace menu
+- [x] M75.P2.T22 — Nested input colourspace menu
   - files: `Engine/Nodes/IO/NativeRead.cpp`, `Engine/Nodes/IO/ReadColorSpace.*`, `Engine/Project.cpp`/`.h` (`colorSpaceOptions`), `Tests/Native/NativeReadColor_Test.cpp`
   - approach: make `ocioInputSpaceIndex` a cascading choice (`KnobChoice::setCascading`, `Engine/KnobTypes.h:548`) whose entries are `family/name` from the OCIO config's colourspace families, so the studio config shows ACES, Input/…, Utility and so on as submenus. Check how the Gui renders cascading choices and how the OFX OCIO plugins built their family paths; the persistent `ocioInputSpace` string stays the bare colourspace name, so saved projects and `reportUnresolvedOCIOColorSpaces` are unaffected. Spaces with no family sit at the top level.
   - verify: gtest: under the studio config the index entries carry family paths and selecting one sets the bare name in `ocioInputSpace`; Xvfb screenshot of the open submenu in P2.T3.
   - size: M
 
-- [ ] M75.P2.T23 — Reset to default on the input colourspace
+- [x] M75.P2.T23 — Reset to default on the input colourspace
   - files: `Engine/Nodes/IO/NativeRead.cpp`, `Engine/Nodes/IO/ReadColorSpace.*`, `Tests/Native/NativeReadColor_Test.cpp`; Engine knob reset path only if the fault is there
   - approach: user report: pick a colourspace, right-click the input colourspace → Reset to default: the knob changes but the image doesn't, and refreshing the viewer or clearing the cache doesn't fix it. Diagnose first (likely the reset touches only the non-persistent `ocioInputSpaceIndex` without updating `ocioInputSpace`/`ocioInputSpaceSet`, or the reset's change reason skips `knobChanged`). Reset should mean: clear `ocioInputSpaceSet` and recompute the automatic default (file rule → file tag → bit-depth default), set `ocioInputSpace` to it, and re-render. If the fault is in the generic reset path, say so; it may affect other knobs.
   - verify: gtest reproducing the report (pick a space, reset via the same API the Gui's reset action calls, render) fails before and passes after; Xvfb check in P2.T3.
   - size: L
 
-- [ ] M75.P2.T24 — OCIO context key/value knobs
+- [x] M75.P2.T24 — OCIO context key/value knobs
   - files: `Engine/Nodes/IO/NativeRead.cpp`, `Engine/Nodes/IO/ReadColorSpace.*`, `Tests/Native/NativeReadColor_Test.cpp`
   - approach: restore GenericOCIO's context knobs (the OFX readers' `key1`..`key4` / `value1`..`value4` in a Context group; take names, labels and layout from the openfx-io source so they match). Build the OCIO processor from a context with those variables set, and add the pairs to the processor cache key and the render hash so changing one re-renders. Empty keys are ignored.
   - verify: gtest: under a config whose colourspace path depends on a context variable, setting the key/value changes the conversion and the hash; empty pairs are a no-op. Xvfb panel screenshot in P2.T3.
@@ -211,3 +211,4 @@ Replaces the `Read` container node with a native node on OpenImageIO that reads 
 - 2026-10-10 — **User testing feedback (user):** a Read has no frame rate (one file frame per project frame): `frameRate`/`customFps` and the Read-derived `ofx/framerate` go (P2.T20). First/last frame stay, as plain int fields without sliders (P2.T21). The input colourspace menu nests by OCIO family (P2.T22). Reset to default on the input colourspace changes the knob but not the image (P2.T23). P2.T3's Xvfb check now also covers these.
 - 2026-10-10 — **OCIO context knobs (user):** the native Read lacks the OCIO context key/value knobs the OFX readers had; added as P2.T24, dispatched after P2.T22/T23 because it touches the same colour code.
 - 2026-10-10 — **P2.T20–T23 implemented, unbuilt.** Reset bug root cause: `colourKnobChanged` acted only on `eValueChangedReasonUserEdited`, but the Gui's reset (`RestoreDefaultsCommand::redo`) sends `eValueChangedReasonRestoreDefault`, so only the non-persistent menu index reset while `ocioInputSpace`/`ocioInputSpaceSet` kept the pick. The generic reset path is correct. The shared `Project::colorSpaceOptions` now emits family-path labels, so the project's working-space and file-default knobs cascade too. The same user-edit-only gating on the time knobs is being fixed under P2.T23's scope. Known gap left alone: undoing a reset doesn't restore the colourspace (`RestoreDefaultsCommand::undo` never calls `knobChanged`).
+- 2026-10-10 — **P2.T20–T24** landed as one commit (`ad94f2349`, parallel implementers, interleaved hunks); release ctest 1391/1391, smoke green. Beyond the briefs: the time knobs got the same RestoreDefault handling as the colourspace (`timeDomainUserEdited` clears only when all four time values are back at defaults). Re-picking the menu entry already shown (the working space on a fileless Read, or the current guess) was a no-op at both Engine `setValue` and `ComboBox::setCurrentIndex`; fixed with an opt-in `KnobChoice::setNotifiesOnReselect` plus a `ComboBox::currentIndexReselected` signal, used only by the Read's input-colourspace menu. Undo of a reset or reselection doesn't restore `ocioInputSpace` — known, left alone.

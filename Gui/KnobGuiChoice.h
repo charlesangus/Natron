@@ -111,6 +111,8 @@ public Q_SLOTS:
 
     void onCurrentIndexChanged(int i);
 
+    void onCurrentIndexReselected(int i);
+
     void onEntriesPopulated();
 
     void onEntryAppended();

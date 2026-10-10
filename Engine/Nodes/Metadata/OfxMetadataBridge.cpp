@@ -27,6 +27,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -39,10 +40,10 @@
 // clang-format on
 
 #include "Engine/EffectInstance.h"
+#include "Engine/NoOpBase.h"
 #include "Engine/Node.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
-#include "Engine/ReadNode.h"
 #include "Engine/WriteNode.h"
 
 NATRON_NAMESPACE_ENTER
@@ -183,17 +184,11 @@ getOfxOutputClip(const EffectInstancePtr& effect)
     OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>(effect.get());
 
     if (!ofxEffect) {
-        // A bundled reader or writer stands in the graph as a Read/Write container, which
-        // is not itself an OFX effect: the clips are the decoder's or encoder's, and so is
-        // the metadata that has to reach whatever is connected downstream of the container.
-        NodePtr embedded;
-        ReadNode* isReadNode = dynamic_cast<ReadNode*>(effect.get());
+        // A bundled writer stands in the graph as a Write container, which is not itself
+        // an OFX effect: the clips are the encoder's, and so is the metadata that has to
+        // reach whatever is connected downstream of the container.
         WriteNode* isWriteNode = dynamic_cast<WriteNode*>(effect.get());
-        if (isReadNode) {
-            embedded = isReadNode->getEmbeddedReader();
-        } else if (isWriteNode) {
-            embedded = isWriteNode->getEmbeddedWriter();
-        }
+        NodePtr embedded = isWriteNode ? isWriteNode->getEmbeddedWriter() : NodePtr();
         if (embedded) {
             ofxEffect = dynamic_cast<OfxEffectInstance*>(embedded->getEffectInstance().get());
         }
@@ -205,6 +200,26 @@ getOfxOutputClip(const EffectInstancePtr& effect)
     OfxImageEffectInstance* instance = ofxEffect->effectInstance();
 
     return instance ? instance->getClip(kOfxImageEffectOutputClipName) : NULL;
+}
+
+EffectInstancePtr
+skipPassThroughNodes(const EffectInstancePtr& effect)
+{
+    EffectInstancePtr current = effect;
+    std::set<const EffectInstance*> visited;
+
+    while (current && dynamic_cast<NoOpBase*>(current.get()) && current->getNInputs() > 0) {
+        if (!visited.insert(current.get()).second) {
+            break;
+        }
+        EffectInstancePtr next = current->getInput(0);
+        if (!next) {
+            break;
+        }
+        current = next;
+    }
+
+    return current;
 }
 
 ImageMetadata

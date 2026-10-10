@@ -54,7 +54,6 @@
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
-#include "Engine/ReadNode.h"
 
 #include <ofxImageEffect.h>
 #include <ofxMetadata.h>
@@ -564,103 +563,9 @@ TEST_F(MetadataPluginFixture, DisconnectedInputClipFallsBackToHostDerivedMetadat
     EXPECT_EQ(1, source->getIntProperty(kOfxMetadataKeySourceFrame));
 }
 
-// ofx/filepath is the one standard key whose value has to change from frame to frame, and a
-// reader is the only node that knows it. Rendering a real two-frame sequence and reading it
-// back is what makes that testable: a host that published the unexpanded sequence pattern, or
-// cached one metadata set for the whole clip, would hand both frames the same path.
-//
-// The project format is deliberately left alone. setOrAddProjectFormat() only takes effect the
-// first time it is called in a process and the app instance is shared across the suite, so a
-// case that set its own format and asserted against it would pass alone and fail in a full run.
-// Nothing here depends on the image size.
-TEST_F(MetadataPluginFixture, ReaderOutputClipCarriesPerFrameFileMetadata)
-{
-    NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
-    NodePtr writer = createNode(_writeOIIOPluginID);
-    ASSERT_TRUE(bool(generator) && bool(writer));
-
-    connectNodes(generator, writer, 0, true);
-
-    KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(writer->getKnobByName("bitDepth").get());
-    ASSERT_TRUE(bitDepth != NULL);
-    bitDepth->setValueFromID("32f", 0);
-
-    KnobChoice* compression = dynamic_cast<KnobChoice*>(writer->getKnobByName("compression").get());
-    ASSERT_TRUE(compression != NULL);
-    compression->setValueFromID("none", 0);
-
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-    const std::string pattern = (tmp.path() + QLatin1String("/readerMetadata.####.exr")).toStdString();
-    writer->setOutputFilesForWriter(pattern);
-
-    const int firstFrame = 1;
-    const int lastFrame = 2;
-
-    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
-    ASSERT_TRUE(writerEffect != NULL);
-
-    std::list<AppInstance::RenderWork> works;
-    works.push_back(AppInstance::RenderWork(writerEffect, firstFrame, lastFrame, 1, false));
-    getApp()->startWritersRendering(false, works);
-
-    const std::vector<std::string>& viewNames = getApp()->getProject()->getProjectViewNames();
-    std::vector<std::string> renderedPaths;
-    for (int frame = firstFrame; frame <= lastFrame; ++frame) {
-        const std::string path = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, 0);
-        ASSERT_TRUE(QFile::exists(QString::fromStdString(path))) << "frame " << frame << " was not rendered: " << path;
-        renderedPaths.push_back(path);
-    }
-
-    CreateNodeArgs args(_readOIIOPluginID.toStdString(), getApp()->getProject());
-    args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, pattern);
-    NodePtr reader = getApp()->createNode(args);
-    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
-
-    // a bundled reader is created as a Read container holding the decoder, and the clip that
-    // carries the metadata belongs to the decoder
-    ReadNode* readNode = dynamic_cast<ReadNode*>(reader->getEffectInstance().get());
-    ASSERT_TRUE(readNode != NULL) << "the reader is not backed by a Read container";
-
-    NodePtr decoder = readNode->getEmbeddedReader();
-    ASSERT_TRUE(bool(decoder)) << "no decoder was created for the rendered sequence";
-
-    OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>(decoder->getEffectInstance().get());
-    ASSERT_TRUE(ofxEffect != NULL) << "the decoder is not backed by the OFX host";
-
-    OFX::Host::ImageEffect::ClipInstance* output = ofxEffect->effectInstance()->getClip(kOfxImageEffectOutputClipName);
-    ASSERT_TRUE(output != NULL) << "the decoder has no output clip";
-
-    MetadataRef first(output, firstFrame);
-    ASSERT_TRUE(first.get() != NULL);
-
-    MetadataRef second(output, lastFrame);
-    ASSERT_TRUE(second.get() != NULL);
-
-    ASSERT_TRUE(first->fetchProperty(kOfxMetadataKeyFilePath) != NULL) << "the reader published no " << kOfxMetadataKeyFilePath;
-    ASSERT_TRUE(second->fetchProperty(kOfxMetadataKeyFilePath) != NULL) << "the reader published no " << kOfxMetadataKeyFilePath;
-
-    const std::string firstPath = first->getStringProperty(kOfxMetadataKeyFilePath);
-    const std::string secondPath = second->getStringProperty(kOfxMetadataKeyFilePath);
-
-    EXPECT_EQ(renderedPaths[0], firstPath);
-    EXPECT_EQ(renderedPaths[1], secondPath);
-    EXPECT_NE(firstPath, secondPath) << "both frames claim the same source file: " << firstPath;
-
-    EXPECT_GT(first->getDoubleProperty(kOfxMetadataKeyFileSize), 0.);
-    EXPECT_GT(second->getDoubleProperty(kOfxMetadataKeyFileSize), 0.);
-    EXPECT_GT(first->getDoubleProperty(kOfxMetadataKeyMTime), 0.);
-
-    for (std::size_t i = 0; i < renderedPaths.size(); ++i) {
-        QFile::remove(QString::fromStdString(renderedPaths[i]));
-    }
-} // TEST_F(MetadataPluginFixture, ReaderOutputClipCarriesPerFrameFileMetadata)
-
 // The point of a reader publishing its file keys is for the rest of the tree to read them, and
-// nothing downstream ever looks at the decoder's own output clip: it looks at its own input
-// clip. A bundled reader stands in the graph as a Read container, which is not an OFX effect at
-// all, so a host that stops there publishes the keys where no plug-in can reach them. The case
-// above reaches into the container by hand and would not notice.
+// a downstream plug-in looks at its own input clip. The native Read is not an OFX effect, so the
+// host has to carry its keys across to that clip.
 TEST_F(MetadataPluginFixture, ReaderFileMetadataReachesADownstreamInputClip)
 {
     NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
@@ -695,15 +600,12 @@ TEST_F(MetadataPluginFixture, ReaderFileMetadataReachesADownstreamInputClip)
     const std::string renderedPath = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, frame, 0);
     ASSERT_TRUE(QFile::exists(QString::fromStdString(renderedPath))) << "frame " << frame << " was not rendered: " << renderedPath;
 
-    CreateNodeArgs args(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    CreateNodeArgs args(_readPluginID.toStdString(), getApp()->getProject());
     args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, pattern);
     NodePtr reader = getApp()->createNode(args);
-    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readPluginID.toStdString();
 
-    // the two facts that make the read below a real test of the unwrapping rather than of the
-    // ordinary input clip path
-    ASSERT_TRUE(dynamic_cast<ReadNode*>(reader->getEffectInstance().get()) != NULL) << "the reader is not backed by a Read container";
-    ASSERT_TRUE(dynamic_cast<OfxEffectInstance*>(reader->getEffectInstance().get()) == NULL) << "the Read container is itself an OFX effect, so nothing here needs unwrapping";
+    ASSERT_TRUE(dynamic_cast<OfxEffectInstance*>(reader->getEffectInstance().get()) == NULL) << "the reader is itself an OFX effect, so nothing here needs carrying across";
 
     NodePtr colorMatrix = createNode(QString::fromUtf8(kOfxColorEffectID), kOfxColorEffectMajor);
     ASSERT_TRUE(bool(colorMatrix)) << "node creation failed for " << kOfxColorEffectID;

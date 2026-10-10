@@ -483,7 +483,12 @@ ComboBox::createMenu()
     if (triggered) {
         QVariant data = triggered->data();
         if ( data.toString() != QString::fromUtf8("New") ) {
-            setCurrentIndex( data.toInt() );
+            const int index = data.toInt();
+            const bool reselected = index == _currentIndex;
+            setCurrentIndex(index);
+            if (reselected && _enabled && !_readOnly) {
+                Q_EMIT currentIndexReselected(index);
+            }
         } else {
             Q_EMIT itemNewSelected();
         }

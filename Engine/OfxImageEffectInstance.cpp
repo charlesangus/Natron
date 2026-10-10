@@ -712,7 +712,7 @@ OfxImageEffectInstance::newParam(const std::string &paramName,
 
 #ifdef NATRON_ENABLE_IO_META_NODES
     /**
-     * For readers/writers embedded in a ReadNode or WriteNode, the holder will be the ReadNode and WriteNode
+     * For writers embedded in a WriteNode, the holder will be the WriteNode
      * but to ensure that all functions such as getKnobByName actually work, we add them to the knob vector so that
      * interacting with the Reader or the container is actually the same.
      **/
@@ -867,7 +867,7 @@ OfxImageEffectInstance::addParamsToTheirParents()
                             sep->setName(separatorName);
 #ifdef NATRON_ENABLE_IO_META_NODES
                             /**
-                             * For readers/writers embedded in a ReadNode or WriteNode, the holder will be the ReadNode and WriteNode
+                             * For writers embedded in a WriteNode, the holder will be the WriteNode
                              * but to ensure that all functions such as getKnobByName actually work, we add them to the knob vector so that
                              * interacting with the Reader or the container is actually the same.
                              **/
@@ -986,7 +986,7 @@ OfxImageEffectInstance::addParamsToTheirParents()
                         sep->setName(separatorName);
 #ifdef NATRON_ENABLE_IO_META_NODES
                         /**
-                         * For readers/writers embedded in a ReadNode or WriteNode, the holder will be the ReadNode and WriteNode
+                         * For writers embedded in a WriteNode, the holder will be the WriteNode
                          * but to ensure that all functions such as getKnobByName actually work, we add them to the knob vector so that
                          * interacting with the Reader or the container is actually the same.
                          **/

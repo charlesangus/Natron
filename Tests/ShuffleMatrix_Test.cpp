@@ -179,10 +179,10 @@ protected:
 
     void createShuffleOnFixture()
     {
-        CreateNodeArgs readerArgs(PLUGINID_OFX_READOIIO, _app->getProject());
+        CreateNodeArgs readerArgs(PLUGINID_NATRON_READ, _app->getProject());
         readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, fixturePath("flat-three-layers.exr"));
         NodePtr reader = _app->createNode(readerArgs);
-        ASSERT_TRUE(bool(reader)) << "node creation failed for " << PLUGINID_OFX_READOIIO;
+        ASSERT_TRUE(bool(reader)) << "node creation failed for " << PLUGINID_NATRON_READ;
 
         CreateNodeArgs shuffleArgs(PLUGINID_NATRON_SHUFFLE, _app->getProject());
         _shuffle = _app->createNode(shuffleArgs);

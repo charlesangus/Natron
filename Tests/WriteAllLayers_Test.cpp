@@ -176,10 +176,8 @@ protected:
     void createFixtureReader(NodePtr* reader,
                              const std::string& fixtureFile = std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"))
     {
-        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, fixtureFile);
-        *reader = getApp()->createNode(readerArgs);
-        ASSERT_TRUE(bool(*reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+        *reader = createWorkingSpaceRead(fixtureFile);
+        ASSERT_TRUE(bool(*reader));
     }
 
     void createFixtureWriter(const std::string& fixtureFile = std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"))
@@ -533,10 +531,9 @@ TEST_F(WriteAllLayersTest, EncoderChannelQuadIsAdoptedAndStaysHidden)
     }
 } // TEST_F(WriteAllLayersTest, EncoderChannelQuadIsAdoptedAndStaysHidden)
 
-// A source file with no R/G/B/A layer keeps ReadOIIO's default: its first layer ("diffuse") is
-// duplicated into Color as well as staying present under its own name, each with its own pixels
-// -- Color is not an alias, "All Layers" writes both.
-TEST_F(WriteAllLayersTest, WriteAllLayersFromNoColorSourceDuplicatesFirstLayerIntoColor)
+// A source file with no R/G/B/A layer reads as a black RGBA colour plane next to its own layers,
+// none of which is copied into Color; "All Layers" writes the colour plane and every layer.
+TEST_F(WriteAllLayersTest, WriteAllLayersFromNoColorSourceWritesABlackColorPlane)
 {
     createFixtureWriter(std::string(NATRON_TESTS_FIXTURES_DIR "/flat-no-color-layers.exr"));
     if (HasFatalFailure()) {
@@ -555,20 +552,20 @@ TEST_F(WriteAllLayersTest, WriteAllLayersFromNoColorSourceDuplicatesFirstLayerIn
     std::string error;
     ASSERT_TRUE(renderAndRead(app, _writer, path, &image, &error)) << error;
 
-    static const std::set<std::string> expected = { "R", "G", "B", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" };
+    static const std::set<std::string> expected = { "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.R", "specular.G", "specular.B" };
     EXPECT_EQ(expected, channelSet(image));
 
-    // Color duplicates the first layer's (diffuse) values.
-    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "R"), 1e-4f);
-    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "G"), 1e-4f);
-    EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "B"), 1e-4f);
+    EXPECT_EQ(0.f, image.at(kCheckX, kCheckY, "R"));
+    EXPECT_EQ(0.f, image.at(kCheckX, kCheckY, "G"));
+    EXPECT_EQ(0.f, image.at(kCheckX, kCheckY, "B"));
+    EXPECT_EQ(0.f, image.at(kCheckX, kCheckY, "A"));
     expectDiffusePixels(image);
     EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "specular.R"), 1e-4f);
     EXPECT_NEAR(0.f, image.at(kCheckX, kCheckY, "specular.G"), 1e-4f);
     EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "specular.B"), 1e-4f);
 
     QFile::remove(QString::fromStdString(path));
-} // TEST_F(WriteAllLayersTest, WriteAllLayersFromNoColorSourceDuplicatesFirstLayerIntoColor)
+} // TEST_F(WriteAllLayersTest, WriteAllLayersFromNoColorSourceWritesABlackColorPlane)
 
 // A one-channel user layer alongside the fixture's: a Roto targeting a registered `mask [A]`
 // layer feeds Write All. The channel is `mask.A` in the single-part file, and in the encoder's
@@ -653,7 +650,7 @@ TEST_F(WriteAllLayersTest, WriteAllWithOneChannelUserLayerNamesItAndReadsBackAsT
 
     const std::string written[2] = { singlePart, perLayerParts };
     for (int i = 0; i < 2; ++i) {
-        CreateNodeArgs readBackArgs(_readOIIOPluginID.toStdString(), project);
+        CreateNodeArgs readBackArgs(_readPluginID.toStdString(), project);
         readBackArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, written[i]);
         NodePtr readBack = app->createNode(readBackArgs);
         ASSERT_TRUE(bool(readBack)) << written[i];
@@ -681,10 +678,10 @@ TEST_F(WriteAllLayersTest, WriteAllWithOneChannelUserLayerNamesItAndReadsBackAsT
 // top of that, on the output (inputNb == -1) query only.
 TEST_F(BaseTest, PresentLayersAreStreamOnlyAvailableLayersIncludeRegistry)
 {
-    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    CreateNodeArgs readerArgs(_readPluginID.toStdString(), getApp()->getProject());
     readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
     NodePtr reader = getApp()->createNode(readerArgs);
-    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+    ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readPluginID.toStdString();
 
     EffectInstancePtr readerEffect = reader->getEffectInstance();
     ASSERT_TRUE(bool(readerEffect));

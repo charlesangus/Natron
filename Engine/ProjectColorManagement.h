@@ -33,6 +33,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -133,8 +134,14 @@ public:
                                             const std::string& look,
                                             std::string* error = 0) const;
 
+    /**
+     * @brief The processor converting \p src to \p dst. \p context lists the variables set on the
+     * config's current context before the processor is built, in order; a processor is cached per
+     * set of them.
+     **/
     OCIO_NAMESPACE::ConstCPUProcessorRcPtr getConversionProcessor(const std::string& src,
-                                                                  const std::string& dst) const;
+                                                                  const std::string& dst,
+                                                                  const std::vector<std::pair<std::string, std::string>>& context = std::vector<std::pair<std::string, std::string>>()) const;
 
     void setWorkingSpace(const std::string& name);
 

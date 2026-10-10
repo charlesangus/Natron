@@ -909,36 +909,6 @@ Gui::findOrCreateToolButton(const PluginGroupNodePtr & plugin)
         pluginsToolButton->setAction( menu->menuAction() );
     }
 
-#ifndef NATRON_ENABLE_IO_META_NODES
-    if ( !plugin->getParent() && ( pluginsToolButton->getLabel() == QString::fromUtf8(PLUGIN_GROUP_IMAGE) ) ) {
-        ///create 2 special actions to create a reader and a writer so the user doesn't have to guess what
-        ///plugin to choose for reading/writing images, let Natron deal with it. THe user can still change
-        ///the behavior of Natron via the Preferences Readers/Writers tabs.
-        QMenu* imageMenu = pluginsToolButton->getMenu();
-        assert(imageMenu);
-        QAction* createReaderAction = new QAction(this);
-        QObject::connect( createReaderAction, SIGNAL(triggered()), this, SLOT(createReader()) );
-        createReaderAction->setText( tr("Read") );
-        QPixmap readImagePix;
-        appPTR->getIcon(NATRON_PIXMAP_READ_IMAGE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &readImagePix);
-        createReaderAction->setIcon( QIcon(readImagePix) );
-        createReaderAction->setShortcutContext(Qt::WidgetShortcut);
-        createReaderAction->setShortcut( QKeySequence(Qt::Key_R) );
-        imageMenu->addAction(createReaderAction);
-
-        QAction* createWriterAction = new QAction(this);
-        QObject::connect( createWriterAction, SIGNAL(triggered()), this, SLOT(createWriter()) );
-        createWriterAction->setText( tr("Write") );
-        QPixmap writeImagePix;
-        appPTR->getIcon(NATRON_PIXMAP_WRITE_IMAGE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &writeImagePix);
-        createWriterAction->setIcon( QIcon(writeImagePix) );
-        createWriterAction->setShortcutContext(Qt::WidgetShortcut);
-        createWriterAction->setShortcut( QKeySequence(Qt::Key_W) );
-        imageMenu->addAction(createWriterAction);
-    }
-#endif
-
-
     //if it has a parent, add the new tool button as a child
     if (parentToolButton) {
         parentToolButton->tryAddChild(pluginsToolButton);
@@ -1291,38 +1261,8 @@ Gui::createReader()
         NodeCollectionPtr group = graph->getGroup();
         assert(group);
 
-#ifdef NATRON_ENABLE_IO_META_NODES
         CreateNodeArgs args(PLUGINID_NATRON_READ, group);
         ret = getApp()->createReader(pattern, args);
-#else
-
-        QString qpattern = QString::fromUtf8( pattern.c_str() );
-        std::string patternCpy = pattern;
-        std::string path = SequenceParsing::removePath(patternCpy);
-        _imp->_lastLoadSequenceOpenedDir = QString::fromUtf8( path.c_str() );
-
-        QString ext_qs = QtCompat::removeFileExtension(qpattern).toLower();
-        std::string ext = ext_qs.toStdString();
-        std::map<std::string, std::string>::iterator found = readersForFormat.find(ext);
-        if ( found == readersForFormat.end() ) {
-            errorDialog( tr("Reader").toStdString(), tr("No plugin capable of decoding \"%1\" files was found.").arg(ext_qs).toStdString(), false);
-        } else {
-            CreateNodeArgs args(found->second.c_str(), group);
-            args.addParamDefaultValue(kOfxImageEffectFileParamName, pattern);
-            std::string canonicalFilename = pattern;
-            getApp()->getProject()->canonicalizePath(canonicalFilename);
-            int firstFrame, lastFrame;
-            Node::getOriginalFrameRangeForReader(found->second, canonicalFilename, &firstFrame, &lastFrame);
-            args.paramValues.push_back( createDefaultValueForParam(kReaderParamNameOriginalFrameRange, firstFrame, lastFrame) );
-
-
-            ret = getApp()->createNode(args);
-
-            if (!ret) {
-                return ret;
-            }
-        }
-#endif
     }
 
     return ret;
@@ -1337,11 +1277,7 @@ Gui::createWriter()
     appPTR->getSupportedWriterFileFormats(&filters);
 
     std::string file;
-#ifdef NATRON_ENABLE_IO_META_NODES
     bool useDialogForWriters = appPTR->getCurrentSettings()->isFileDialogEnabledForNewWriters();
-#else
-    bool useDialogForWriters = true;
-#endif
     if (useDialogForWriters) {
         file = popSaveFileDialog( true, filters, _imp->_lastSaveSequenceOpenedDir.toStdString(), true );
         if ( file.empty() ) {

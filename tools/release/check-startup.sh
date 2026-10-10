@@ -258,7 +258,7 @@ if not plugin_ids:
     fail("NatronEngine.natron.getPluginIDs() returned no plugins at all")
 
 expected_plugins = {
-    "reader": "fr.inria.openfx.ReadOIIO",
+    "reader": "fr.inria.built-in.Read",
     "writer": "fr.inria.openfx.WriteOIIO",
     "Merge": "net.sf.openfx.MergePlugin",
 }

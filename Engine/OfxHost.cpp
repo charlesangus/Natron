@@ -853,8 +853,7 @@ QDebug operator<<(QDebug dbg, const std::list<std::string> &l)
 }
 
 void
-OfxHost::loadOFXPlugins(IOPluginsMap* readersMap,
-                        IOPluginsMap* writersMap)
+OfxHost::loadOFXPlugins(IOPluginsMap* writersMap)
 {
     qDebug() << "Load OFX Plugins...";
     SettingsPtr settings = appPTR->getCurrentSettings();
@@ -953,6 +952,10 @@ OfxHost::loadOFXPlugins(IOPluginsMap* readersMap,
         OFX::Host::ImageEffect::ImageEffectPlugin* p = it->second;
         assert(p);
         if (p->getContexts().size() == 0) {
+            continue;
+        }
+        // Reading is done by the native Read node only.
+        if (p->getContexts().find(kOfxImageEffectContextReader) != p->getContexts().end()) {
             continue;
         }
         assert( p->getBinary() );
@@ -1055,8 +1058,8 @@ OfxHost::loadOFXPlugins(IOPluginsMap* readersMap,
         getPluginShortcuts(p->getDescriptor(), &shortcuts);
         natronPlugin->setShorcuts(shortcuts);
 
-        ///if this plugin's descriptor has the kTuttleOfxImageEffectPropSupportedExtensions property,
-        ///use it to fill the readersMap and writersMap
+        /// if this plugin's descriptor has the kTuttleOfxImageEffectPropSupportedExtensions property,
+        /// use it to fill the writersMap
         int formatsCount = p->getDescriptor().getProps().getDimension(kTuttleOfxImageEffectPropSupportedExtensions);
         std::vector<std::string> formats(formatsCount);
         for (int k = 0; k < formatsCount; ++k) {
@@ -1066,14 +1069,7 @@ OfxHost::loadOFXPlugins(IOPluginsMap* readersMap,
 
         double evaluation = p->getDescriptor().getProps().getDoubleProperty(kTuttleOfxImageEffectPropEvaluation);
 
-
-        if (!isDeprecated && ( foundReader != contexts.end() ) && (formatsCount > 0) && readersMap) {
-            ///we're safe to assume that this plugin is a reader
-            for (std::size_t k = 0; k < formats.size(); ++k) {
-                IOPluginSetForFormat& evalForFormat = (*readersMap)[formats[k]];
-                evalForFormat.insert( IOPluginEvaluation(openfxId, evaluation) );
-            }
-        } else if (!isDeprecated && ( foundWriter != contexts.end() ) && (formatsCount > 0) && writersMap) {
+        if (!isDeprecated && (foundWriter != contexts.end()) && (formatsCount > 0) && writersMap) {
             ///we're safe to assume that this plugin is a writer.
             for (std::size_t k = 0; k < formats.size(); ++k) {
                 IOPluginSetForFormat& evalForFormat = (*writersMap)[formats[k]];

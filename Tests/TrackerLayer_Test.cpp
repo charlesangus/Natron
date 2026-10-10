@@ -76,10 +76,10 @@ class TrackerLayerTest
 protected:
     void createTrackerOverFixture(const std::string& pattern)
     {
-        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+        CreateNodeArgs readerArgs(_readPluginID.toStdString(), getApp()->getProject());
         readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/") + pattern);
         NodePtr reader = getApp()->createNode(readerArgs);
-        ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+        ASSERT_TRUE(bool(reader)) << "node creation failed for " << _readPluginID.toStdString();
 
         _tracker = createNode(QString::fromUtf8(PLUGINID_NATRON_TRACKER));
         ASSERT_TRUE(bool(_tracker));

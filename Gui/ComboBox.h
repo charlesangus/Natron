@@ -208,6 +208,9 @@ Q_SIGNALS:
 
     void itemNewSelected();
 
+    /// Emitted when the user picks from the menu the entry that is already the current one
+    void currentIndexReselected(int index);
+
     void minimumSizeChanged(QSize);
 
 protected:

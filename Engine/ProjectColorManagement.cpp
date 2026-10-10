@@ -715,9 +715,14 @@ ProjectColorManagement::DisplayProcessor::applyForEightBitOutput(float* rgba,
 
 OCIO::ConstCPUProcessorRcPtr
 ProjectColorManagement::getConversionProcessor(const std::string& src,
-                                               const std::string& dst) const
+                                               const std::string& dst,
+                                               const std::vector<std::pair<std::string, std::string>>& context) const
 {
-    const std::string key = src + "|" + dst;
+    // The unit separator cannot appear in a colourspace name or a variable a user types.
+    std::string key = src + "|" + dst;
+    for (std::size_t i = 0; i < context.size(); ++i) {
+        key += '\x1f' + context[i].first + '\x1f' + context[i].second;
+    }
     OCIO::ConstConfigRcPtr config;
     {
         QMutexLocker k(&_mutex);
@@ -733,7 +738,16 @@ ProjectColorManagement::getConversionProcessor(const std::string& src,
 
     OCIO::ConstCPUProcessorRcPtr cpu;
     try {
-        OCIO::ConstProcessorRcPtr processor = config->getProcessor(src.c_str(), dst.c_str());
+        OCIO::ConstProcessorRcPtr processor;
+        if (context.empty()) {
+            processor = config->getProcessor(src.c_str(), dst.c_str());
+        } else {
+            OCIO::ContextRcPtr editable = config->getCurrentContext()->createEditableCopy();
+            for (std::size_t i = 0; i < context.size(); ++i) {
+                editable->setStringVar(context[i].first.c_str(), context[i].second.c_str());
+            }
+            processor = config->getProcessor(editable, src.c_str(), dst.c_str());
+        }
         cpu = processor->getOptimizedCPUProcessor(OCIO::BIT_DEPTH_F32, OCIO::BIT_DEPTH_F32, OCIO::OPTIMIZATION_DEFAULT);
     } catch (const std::exception&) {
         return OCIO::ConstCPUProcessorRcPtr();

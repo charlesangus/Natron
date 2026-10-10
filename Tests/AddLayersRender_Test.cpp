@@ -138,24 +138,14 @@ protected:
 
     NodePtr createReader(const std::string& fixture)
     {
-        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
-        NodePtr reader = getApp()->createNode(readerArgs);
-        EXPECT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
-
-        return reader;
+        return createWorkingSpaceRead(std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
     }
 
     // Frame 1 of flat-seq-layers.####.exr carries RGBA + diffuse + specular (the same values as
     // flat-three-layers.exr), frame 2 carries RGBA only.
     NodePtr createReadSequence()
     {
-        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-seq-layers.####.exr"));
-        NodePtr reader = getApp()->createNode(readerArgs);
-        EXPECT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
-
-        return reader;
+        return createWorkingSpaceRead(std::string(NATRON_TESTS_FIXTURES_DIR "/flat-seq-layers.####.exr"));
     }
 
     void createAddOn(const NodePtr& source)

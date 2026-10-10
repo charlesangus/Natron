@@ -479,7 +479,7 @@ TEST_F(BaseTest, ChannelSetListsPresentLayersOfPreferredInput)
         EXPECT_EQ(std::string(kNatronColorLayerID), ids[0]);
     }
 
-    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), project);
+    CreateNodeArgs readerArgs(_readPluginID.toStdString(), project);
     readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
     NodePtr reader = getApp()->createNode(readerArgs);
     ASSERT_TRUE(bool(reader));
@@ -642,7 +642,7 @@ TEST_F(BaseTest, DeclaredInputBoundLayerKnobIsReferencedAndFollowsInputRebind)
 
     merge->declareLayerKnob(userLayer, 0, LayerKnobSpec::eRoleInputBound);
 
-    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), project);
+    CreateNodeArgs readerArgs(_readPluginID.toStdString(), project);
     readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
     NodePtr reader = getApp()->createNode(readerArgs);
     ASSERT_TRUE(bool(reader));

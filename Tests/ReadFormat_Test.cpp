@@ -42,9 +42,9 @@
 #include "Engine/Format.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
-#include "Engine/ReadNode.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -93,11 +93,11 @@ class ReadFormatTest
 protected:
     NodePtr createRead(const std::string& file)
     {
-        CreateNodeArgs args(_readOIIOPluginID.toStdString(), getApp()->getProject());
+        CreateNodeArgs args(_readPluginID.toStdString(), getApp()->getProject());
         args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, file);
         NodePtr read = getApp()->createNode(args);
-        if (read && !dynamic_cast<ReadNode*>(read->getEffectInstance().get())) {
-            ADD_FAILURE() << "the reader is not backed by a Read container";
+        if (read && !dynamic_cast<NativeRead*>(read->getEffectInstance().get())) {
+            ADD_FAILURE() << "the reader is not a NativeRead";
             return NodePtr();
         }
 

@@ -1,0 +1,242 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+#ifndef Engine_Nodes_IO_NativeRead_h
+#define Engine_Nodes_IO_NativeRead_h
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "Global/Macros.h"
+
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <string>
+#include <vector>
+
+#include "Engine/EffectInstance.h" // for PLUGINID_NATRON_READ
+#include "Engine/EngineFwd.h"
+#include "Engine/Nodes/IO/ReadTimeDomain.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+
+#define PLUGIN_MAJOR_NATRON_READ 2
+#define kNatronReadNodeOCIOParamInputSpace "ocioInputSpace"
+
+NATRON_NAMESPACE_ENTER
+
+/**
+ * @brief The native image reader: a still or a sequence pattern decoded through OpenImageIO,
+ * producing the colour plane and every other layer and view of the file.
+ *
+ * Its knobs keep GenericReader's script names, because the host hooks and the DopeSheet look
+ * reader knobs up by those names.
+ **/
+class NativeRead
+    : public NativeEffectBase {
+public:
+    static EffectInstance* BuildEffect(NodePtr node)
+    {
+        return new NativeRead(node);
+    }
+
+    explicit NativeRead(NodePtr node);
+
+    virtual bool isReader() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual bool isGenerator() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual bool isMultiPlanar() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual bool supportsTiles() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual bool isViewAware() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual LayerKnobSpec getLayerKnobSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return LayerKnobSpec();
+    }
+
+    virtual StatusEnum getRegionOfDefinition(U64 hash,
+                                             double time,
+                                             const RenderScale& scale,
+                                             ViewIdx view,
+                                             RectD* rod) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void getComponentsNeededAndProduced(double time,
+                                                ViewIdx view,
+                                                EffectInstance::ComponentsNeededMap* comps,
+                                                double* passThroughTime,
+                                                int* passThroughView,
+                                                int* passThroughInputNb) OVERRIDE FINAL;
+
+    virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
+
+    /**
+     * @brief Forgets what this node read from disk (its frame listings, the headers of its files
+     * and proxy files, its output metadata) and lists its files again, so that the files now on
+     * disk are what it reads. Only this node is touched: the callers announce the change
+     * downstream, a single node's caller by evaluating the node afterwards and Clear Caches by
+     * one refresh of the whole project.
+     **/
+    virtual void purgeCaches() OVERRIDE FINAL;
+
+    /**
+     * @brief Calls `hook` each time a Read has listed the files of a pattern on disk, before it
+     * keeps the listing. An empty function removes the hook.
+     **/
+    static void setFrameListingScannedHookForTests(const std::function<void()>& hook);
+
+private:
+    virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual void initializeKnobs() OVERRIDE FINAL;
+
+    virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    virtual void onEffectCreated(bool mayCreateFileDialog,
+                                 const CreateNodeArgs& args) OVERRIDE FINAL;
+
+    bool rejectUnsupportedFormat(const std::string& path);
+
+    // The frames a filename pattern matches on disk, listed once per pattern.
+    struct FrameListing {
+        std::string pattern;
+        bool singleImage;
+        std::string singlePath;
+        std::set<int> frames;
+        std::vector<std::string> paths;
+
+        FrameListing()
+            : pattern()
+            , singleImage(true)
+            , singlePath()
+            , frames()
+            , paths()
+        {
+        }
+    };
+
+    // What an output frame loads: a file, black, or an error to report.
+    struct Target {
+        ReadTimeDomain::Result::Kind kind;
+        std::string path;
+        std::string message;
+        int frame; // the file frame path was resolved from, valid for eFile
+
+        Target()
+            : kind(ReadTimeDomain::Result::eBlack)
+            , path()
+            , message()
+            , frame(0)
+        {
+        }
+    };
+
+    void refreshAvailableViews(bool silent);
+    std::string projectViewName(ViewIdx view) const;
+
+    std::shared_ptr<const FrameListing> frameListing(bool proxy = false) const;
+    void invalidateFrameListing();
+    ReadTimeDomain::Settings settingsAt(double time) const;
+    Target targetAtTime(double time, bool proxy = false) const;
+    std::string representativePath(bool proxy = false) const;
+    void refreshTimeKnobState();
+    void refreshProxyScale();
+    void refreshProxyKnobState();
+    bool proxyKnobChanged(KnobI* k,
+                          ValueChangedReasonEnum reason);
+    bool proxySourceAt(double time,
+                       unsigned int level,
+                       Target* source,
+                       unsigned int* fileLevel) const;
+    bool colourKnobChanged(KnobI* k,
+                           ValueChangedReasonEnum reason);
+    void guessInputSpace();
+    void resetInputSpace();
+    void refreshInputSpaceMenu();
+    std::string workingSpaceName() const;
+    std::vector<std::pair<std::string, std::string>> contextVariables(double time) const;
+
+    KnobFileWPtr _filename;
+    KnobFileWPtr _proxy;
+    KnobDoubleWPtr _proxyThreshold;
+    KnobDoubleWPtr _originalProxyScale;
+    KnobBoolWPtr _customProxyScale;
+    KnobIntWPtr _originalFrameRange;
+    KnobIntWPtr _firstFrame;
+    KnobIntWPtr _lastFrame;
+    KnobChoiceWPtr _before;
+    KnobChoiceWPtr _after;
+    KnobChoiceWPtr _onMissingFrame;
+    KnobChoiceWPtr _frameMode;
+    KnobIntWPtr _startingTime;
+    KnobIntWPtr _timeOffset;
+    KnobBoolWPtr _timeDomainUserEdited;
+    KnobStringWPtr _ocioConfigFile;
+    KnobStringWPtr _ocioWorkingSpace;
+    KnobStringWPtr _inputSpace;
+    KnobChoiceWPtr _inputSpaceMenu;
+    KnobBoolWPtr _inputSpaceSet;
+    KnobStringWPtr _contextKeys[4];
+    KnobStringWPtr _contextValues[4];
+
+    KnobStringWPtr _availableViews;
+
+    mutable std::mutex _listingMutex;
+    mutable std::shared_ptr<const FrameListing> _listing;
+    mutable std::shared_ptr<const FrameListing> _proxyListing;
+    std::uint64_t _listingInvalidations;
+};
+
+NATRON_NAMESPACE_EXIT
+
+#endif // Engine_Nodes_IO_NativeRead_h

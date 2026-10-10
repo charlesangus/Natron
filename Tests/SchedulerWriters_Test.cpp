@@ -303,7 +303,7 @@ TEST_F(SchedulerWriters, Diamond)
 // Read (RGB only) -> AddLayers (alpha) -> Shuffle swapping R and B -> Grade -> Write.
 TEST_F(SchedulerWriters, AddLayersAndShuffle)
 {
-    CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    CreateNodeArgs readerArgs(_readPluginID.toStdString(), getApp()->getProject());
     readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgb-only.exr"));
     NodePtr reader = getApp()->createNode(readerArgs);
     ASSERT_TRUE(bool(reader));

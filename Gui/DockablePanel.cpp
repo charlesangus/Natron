@@ -44,14 +44,13 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 
 #include <ofxNatron.h>
 
+#include "Engine/GroupOutput.h"
 #include "Engine/Image.h" // Image::clamp
 #include "Engine/KnobTypes.h" // KnobButton
-#include "Engine/GroupOutput.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/Plugin.h"
-#include "Engine/ReadNode.h"
 #include "Engine/Settings.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
@@ -129,24 +128,14 @@ DockablePanel::DockablePanel(Gui* gui,
         if ( dynamic_cast<GroupOutput*>(isEffect) ) {
             headerMode = eHeaderModeReadOnlyName;
         }
-        // if this is a Read or Write plugin, get the info from the embedded plugin
+        // if this is a Write plugin, get the info from the embedded plugin
         node = isEffect->getNode();
         nodeForDocumentation = node;
         if (node) {
             const std::string pluginID = isEffect->getPluginID();
-            if (pluginID == PLUGINID_NATRON_READ ||
-                pluginID == PLUGINID_NATRON_WRITE) {
+            if (pluginID == PLUGINID_NATRON_WRITE) {
                 EffectInstancePtr effectInstance = node->getEffectInstance();
-                if ( effectInstance && effectInstance->isReader() ) {
-                    ReadNode* isReadNode = dynamic_cast<ReadNode*>( effectInstance.get() );
-
-                    if (isReadNode) {
-                        NodePtr subnode = isReadNode->getEmbeddedReader();
-                        if (subnode) {
-                            nodeForDocumentation = subnode;
-                        }
-                    }
-                } else if ( effectInstance && effectInstance->isWriter() ) {
+                if (effectInstance && effectInstance->isWriter()) {
                     WriteNode* isWriteNode = dynamic_cast<WriteNode*>( effectInstance.get() );
 
                     if (isWriteNode) {

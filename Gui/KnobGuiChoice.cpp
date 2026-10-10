@@ -241,6 +241,7 @@ KnobGuiChoice::createWidget(QHBoxLayout* layout)
 
     QObject::connect( _comboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(onCurrentIndexChanged(int)) );
     QObject::connect( _comboBox, SIGNAL(itemNewSelected()), this, SLOT(onItemNewSelected()) );
+    QObject::connect(_comboBox, SIGNAL(currentIndexReselected(int)), this, SLOT(onCurrentIndexReselected(int)));
     ///set the copy/link actions in the right click menu
     enableRightClickMenu(_comboBox, 0);
 
@@ -256,6 +257,16 @@ KnobGuiChoice::onCurrentIndexChanged(int i)
         return;
     }
     pushUndoCommand( new KnobUndoCommand<int>(shared_from_this(), knob->getValue(0), i, 0, false, 0) );
+}
+
+void
+KnobGuiChoice::onCurrentIndexReselected(int i)
+{
+    KnobChoicePtr knob = _knob.lock();
+    if (!knob || !knob->getNotifiesOnReselect()) {
+        return;
+    }
+    ignore_result(knob->setValue(i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL, true));
 }
 
 void

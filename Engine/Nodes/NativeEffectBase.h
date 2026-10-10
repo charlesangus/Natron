@@ -503,7 +503,7 @@ protected:
     }
 
 private:
-    static ImageMetadata getInputEffectMetadata(const EffectInstancePtr& input,
+    static ImageMetadata getInputEffectMetadata(const EffectInstancePtr& connected,
                                                 double time,
                                                 ViewIdx view) WARN_UNUSED_RETURN;
 

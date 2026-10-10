@@ -51,7 +51,6 @@
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
-#include "Engine/ReadNode.h"
 #include "Engine/Settings.h"
 #include "Engine/WriteNode.h"
 
@@ -89,7 +88,7 @@ createNode(const std::string& pluginID)
 NodePtr
 createReader(const std::string& fixture)
 {
-    CreateNodeArgs args(PLUGINID_OFX_READOIIO, project());
+    CreateNodeArgs args(PLUGINID_NATRON_READ, project());
 
     args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
 
@@ -101,9 +100,6 @@ embeddedNode(const NodePtr& node)
 {
     EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
 
-    if (ReadNode* isRead = dynamic_cast<ReadNode*>(effect.get())) {
-        return isRead->getEmbeddedReader();
-    }
     if (WriteNode* isWrite = dynamic_cast<WriteNode*>(effect.get())) {
         return isWrite->getEmbeddedWriter();
     }
@@ -240,19 +236,6 @@ restoreEnvVar(const char* name,
     }
 }
 
-std::string
-ofxConfigProperty(const NodePtr& node)
-{
-    OfxEffectInstance* effect = node ? dynamic_cast<OfxEffectInstance*>(node->getEffectInstance().get()) : NULL;
-
-    EXPECT_TRUE(effect != NULL);
-    if (!effect || !effect->effectInstance()) {
-        return std::string();
-    }
-
-    return effect->effectInstance()->getProps().getStringProperty(kOfxImageEffectPropOCIOConfig, 0);
-}
-
 void
 setWorkingSpace(const char* name)
 {
@@ -309,11 +292,9 @@ TEST_F(ProjectOCIOTest, NewReadWriteAndColorSpaceNodesCarryTheProjectConfigHidde
     ASSERT_TRUE(bool(read));
     ASSERT_TRUE(bool(write));
     ASSERT_TRUE(bool(colorSpace));
-    ASSERT_TRUE(bool(embeddedNode(read)));
     ASSERT_TRUE(bool(embeddedNode(write)));
 
     expectCarriesConfig(read, kStudioURI);
-    expectCarriesConfig(embeddedNode(read), kStudioURI);
     expectCarriesConfig(write, kStudioURI);
     expectCarriesConfig(embeddedNode(write), kStudioURI);
     expectCarriesConfig(colorSpace, kStudioURI);
@@ -338,7 +319,6 @@ TEST_F(ProjectOCIOTest, SwitchingToCGUpdatesEveryNodeAndRebuildsTheColorSpaceMen
     switchProjectConfig(kCGURI);
 
     expectCarriesConfig(read, kCGURI);
-    expectCarriesConfig(embeddedNode(read), kCGURI);
     expectCarriesConfig(write, kCGURI);
     expectCarriesConfig(embeddedNode(write), kCGURI);
     expectCarriesConfig(colorSpace, kCGURI);
@@ -350,29 +330,6 @@ TEST_F(ProjectOCIOTest, SwitchingToCGUpdatesEveryNodeAndRebuildsTheColorSpaceMen
     for (std::size_t i = 0; i < cgSpaces.size(); ++i) {
         EXPECT_TRUE(hasOptionNamed(entries, cgSpaces[i])) << cgSpaces[i];
     }
-}
-
-TEST_F(ProjectOCIOTest, ANewDecoderAfterAFormatChangeCarriesTheProjectConfig)
-{
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-
-    NodePtr read = createReader("flat-rgb-only.exr");
-    ASSERT_TRUE(bool(read));
-    ASSERT_TRUE(bool(embeddedNode(read)));
-    const std::string exrDecoder = embeddedNode(read)->getPluginID();
-
-    switchProjectConfig(kCGURI);
-
-    KnobFilePtr file = std::dynamic_pointer_cast<KnobFile>(read->getKnobByName(kOfxImageEffectFileParamName));
-    ASSERT_TRUE(bool(file));
-    file->setValue((tmp.path() + QString::fromUtf8("/other.png")).toStdString());
-
-    NodePtr decoder = embeddedNode(read);
-    ASSERT_TRUE(bool(decoder));
-    ASSERT_NE(exrDecoder, decoder->getPluginID());
-    expectCarriesConfig(decoder, kCGURI);
-    expectCarriesConfig(read, kCGURI);
 }
 
 TEST_F(ProjectOCIOTest, SwitchingToAConfigThatLacksAColorSpaceKeepsTheNameAndFlagsTheNode)
@@ -476,7 +433,6 @@ TEST_F(ProjectOCIOTest, ASavedAndReloadedProjectKeepsTheConfigTheCleanStateAndTh
     ASSERT_TRUE(bool(colorSpace));
 
     expectCarriesConfig(read, kCGURI);
-    expectCarriesConfig(embeddedNode(read), kCGURI);
     expectCarriesConfig(write, kCGURI);
     expectCarriesConfig(embeddedNode(write), kCGURI);
     expectCarriesConfig(colorSpace, kCGURI);
@@ -515,7 +471,6 @@ TEST_F(ProjectOCIOTest, UnderAnOCIOOverrideALoadedProjectsNodesUseTheOverrideAnd
     ASSERT_TRUE(bool(read));
     ASSERT_TRUE(bool(colorSpace));
     expectCarriesConfig(read, kStudioURI);
-    expectCarriesConfig(embeddedNode(read), kStudioURI);
     expectCarriesConfig(colorSpace, kStudioURI);
     EXPECT_EQ(std::string(kStudioOnlySpace), stringKnob(colorSpace, "ocioInputSpace")->getValue());
     EXPECT_FALSE(colorSpace->hasPersistentMessage());
@@ -597,33 +552,31 @@ TEST_F(ProjectOCIOTest, ChangingTheWorkingSpaceMovesOnlyTheTechnicalSideOfExisti
     NodePtr read = createReader("flat-rgb-only.exr");
     NodePtr write = createNode(PLUGINID_OFX_WRITEOIIO);
     NodePtr colorSpace = createNode(kOCIOColorSpaceID);
-    ASSERT_TRUE(bool(embeddedNode(read)));
     ASSERT_TRUE(bool(embeddedNode(write)));
     ASSERT_TRUE(bool(colorSpace));
     plantInputSpace(colorSpace, kSharedSpace);
     plantSpace(colorSpace, "ocioOutputSpace", kSharedSpace);
 
-    const NodePtr decoder = embeddedNode(read);
     const NodePtr encoder = embeddedNode(write);
-    ASSERT_EQ(std::string(kSharedSpace), stringKnob(decoder, "ocioOutputSpace")->getValue());
+    ASSERT_EQ(std::string(kSharedSpace), stringKnob(read, "ocioWorkingSpace")->getValue());
     ASSERT_EQ(std::string(kSharedSpace), stringKnob(encoder, "ocioInputSpace")->getValue());
-    const std::string readFileSpace = stringKnob(decoder, "ocioInputSpace")->getValue();
+    const std::string readFileSpace = stringKnob(read, "ocioInputSpace")->getValue();
     const std::string writeFileSpace = stringKnob(encoder, "ocioOutputSpace")->getValue();
 
     setWorkingSpace("ACEScct");
 
-    EXPECT_EQ(std::string("ACEScct"), stringKnob(decoder, "ocioOutputSpace")->getValue());
+    EXPECT_EQ(std::string("ACEScct"), stringKnob(read, "ocioWorkingSpace")->getValue());
     EXPECT_EQ(std::string("ACEScct"), stringKnob(encoder, "ocioInputSpace")->getValue());
-    EXPECT_EQ(readFileSpace, stringKnob(decoder, "ocioInputSpace")->getValue());
+    EXPECT_EQ(readFileSpace, stringKnob(read, "ocioInputSpace")->getValue());
     EXPECT_EQ(writeFileSpace, stringKnob(encoder, "ocioOutputSpace")->getValue());
     EXPECT_EQ(std::string(kSharedSpace), stringKnob(colorSpace, "ocioInputSpace")->getValue());
     EXPECT_EQ(std::string(kSharedSpace), stringKnob(colorSpace, "ocioOutputSpace")->getValue());
 
     setWorkingSpace(kSharedSpace);
 
-    EXPECT_EQ(std::string(kSharedSpace), stringKnob(decoder, "ocioOutputSpace")->getValue());
+    EXPECT_EQ(std::string(kSharedSpace), stringKnob(read, "ocioWorkingSpace")->getValue());
     EXPECT_EQ(std::string(kSharedSpace), stringKnob(encoder, "ocioInputSpace")->getValue());
-    EXPECT_EQ(readFileSpace, stringKnob(decoder, "ocioInputSpace")->getValue());
+    EXPECT_EQ(readFileSpace, stringKnob(read, "ocioInputSpace")->getValue());
     EXPECT_EQ(writeFileSpace, stringKnob(encoder, "ocioOutputSpace")->getValue());
 }
 
@@ -634,7 +587,6 @@ TEST_F(ProjectOCIOTest, AConfigFileThatFailsToLoadKeepsTheKnobButPublishesTheCon
     const std::string missing = (tmp.path() + QString::fromUtf8("/missing.ocio")).toStdString();
 
     NodePtr read = createReader("flat-rgb-only.exr");
-    ASSERT_TRUE(bool(embeddedNode(read)));
 
     KnobChoicePtr config = project()->getKnobByNameAndType<KnobChoice>("ocioConfig");
     KnobStringBasePtr configFile = project()->getKnobByNameAndType<KnobStringBase>("ocioConfigFile");
@@ -649,8 +601,6 @@ TEST_F(ProjectOCIOTest, AConfigFileThatFailsToLoadKeepsTheKnobButPublishesTheCon
     EXPECT_EQ(std::string(kStudioURI), project()->getOCIOConfigSource());
     EXPECT_FALSE(project()->getOCIOConfigError(0));
     expectCarriesConfig(read, kStudioURI);
-    expectCarriesConfig(embeddedNode(read), kStudioURI);
-    EXPECT_EQ(std::string(kStudioURI), ofxConfigProperty(embeddedNode(read)));
 }
 
 namespace {

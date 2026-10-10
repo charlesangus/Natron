@@ -61,10 +61,10 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeSerialization.h"
+#include "Engine/Nodes/IO/NativeRead.h" // kNatronReadNodeOCIOParamInputSpace
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
-#include "Engine/ReadNode.h"
 #include "Engine/Settings.h"
 
 //The plug-in that is instantiated whenever this node is created and doesn't point to any valid or known extension
@@ -203,7 +203,7 @@ public:
     std::list<KnobSerializationPtr> genericKnobsSerialization;
     KnobOutputFileWPtr outputFileKnob;
 
-    //Thiese are knobs owned by the ReadNode and not the Reader
+    // These are knobs owned by the WriteNode and not the Writer
     KnobIntWPtr frameIncrKnob;
     KnobBoolWPtr readBackKnob;
     KnobChoiceWPtr pluginSelectorKnob;
@@ -783,7 +783,7 @@ WriteNodePrivate::createReadNodeAndConnectGraph(const std::string& filename)
             originalRange[1] = (int)last;
             args.addParamDefaultValueN<int>(kReaderParamNameOriginalFrameRange, originalRange);
             args.addParamDefaultValue<int>(kParamFirstFrame, (int)first);
-            args.addParamDefaultValue<int>(kParamFirstFrame, (int)last);
+            args.addParamDefaultValue<int>(kParamLastFrame, (int)last);
         }
 
 
@@ -803,7 +803,9 @@ WriteNodePrivate::createReadNodeAndConnectGraph(const std::string& filename)
                 output->replaceInput(readNode, 0);
                 connectOutputToInput = false;
             }
-            readNode->replaceInput(input, 0);
+            if (readNode->getNInputs() > 0) {
+                readNode->replaceInput(input, 0);
+            }
             // sync the output colorspace of the reader from input colorspace of the writer
 
             KnobIPtr outputWriteColorSpace = writeNode->getKnobByName(kOCIOParamOutputSpace);

@@ -195,11 +195,7 @@ class LayerKnobsRenderTest
 protected:
     NodePtr createReader(const std::string& fixture = "flat-three-layers.exr")
     {
-        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-
-        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
-
-        return getApp()->createNode(readerArgs);
+        return createWorkingSpaceRead(std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
     }
 
     NodePtr createInvertOnReader(KnobChannelSetPtr* channels,

@@ -128,7 +128,6 @@
 #include "Engine/PrecompNode.h"
 #include "Engine/ProcessHandler.h" // ProcessInputChannel
 #include "Engine/Project.h"
-#include "Engine/ReadNode.h"
 #include "Engine/RenderScheduler.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoSmear.h"
@@ -163,6 +162,8 @@
 #include "Engine/Nodes/Filter/ErodeDilate.h"
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -1462,10 +1463,10 @@ AppManager::loadAllPlugins()
     assert( _imp->_formats.empty() );
 
     // Load plug-ins bundled into Natron
-    loadBuiltinNodePlugins(&_imp->readerPlugins, &_imp->writerPlugins);
+    loadBuiltinNodePlugins(&_imp->writerPlugins);
 
     // Load OpenFX plug-ins
-    _imp->ofxHost->loadOFXPlugins( &_imp->readerPlugins, &_imp->writerPlugins);
+    _imp->ofxHost->loadOFXPlugins(&_imp->writerPlugins);
 
     // Load PyPlugs and init.py & initGui.py scripts
     // Should be done after settings are declared
@@ -1593,8 +1594,7 @@ AppManager::registerBuiltInPlugin(const QString& iconPath,
 }
 
 void
-AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
-                                   IOPluginsMap* /*writersMap*/)
+AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*writersMap*/)
 {
     registerBuiltInPlugin<Backdrop>(QString::fromUtf8(NATRON_IMAGES_PATH "backdrop_icon.png"), false, false);
     registerBuiltInPlugin<GroupOutput>(QString::fromUtf8(NATRON_IMAGES_PATH "output_icon.png"), false, false);
@@ -1660,7 +1660,7 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
     registerBuiltInPlugin<JoinViewsNode>(QString::fromUtf8(NATRON_IMAGES_PATH "joinViewsNode.png"), false, false);
     registerBuiltInPlugin<OneViewNode>(QString::fromUtf8(NATRON_IMAGES_PATH "oneViewNode.png"), false, false);
 #ifdef NATRON_ENABLE_IO_META_NODES
-    registerBuiltInPlugin<ReadNode>(QString::fromUtf8(NATRON_IMAGES_PATH "readImage.png"), false, false);
+    registerBuiltInPlugin<NativeRead>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<WriteNode>(QString::fromUtf8(NATRON_IMAGES_PATH "writeImage.png"), false, false);
 #endif
 
@@ -2143,8 +2143,7 @@ AppManager::registerPlugin(const QString& resourcesPath,
     std::string stdID = pluginID.toStdString();
 
 #ifdef NATRON_ENABLE_IO_META_NODES
-    if ( ReadNode::isBundledReader( stdID, false ) ||
-         WriteNode::isBundledWriter( stdID, false ) ) {
+    if (WriteNode::isBundledWriter(stdID, false)) {
         plugin->setForInternalUseOnly(true);
     }
 #endif
@@ -3437,12 +3436,6 @@ AppManager::mapUNCPathToPathWithDriveLetter(const QString& uncPath) const
 #endif
 
 const IOPluginsMap&
-AppManager::getFileFormatsForReadingAndReader() const
-{
-    return _imp->readerPlugins;
-}
-
-const IOPluginsMap&
 AppManager::getFileFormatsForWritingAndWriter() const
 {
     return _imp->writerPlugins;
@@ -3451,13 +3444,7 @@ AppManager::getFileFormatsForWritingAndWriter() const
 void
 AppManager::getSupportedReaderFileFormats(std::vector<std::string>* formats) const
 {
-    const IOPluginsMap& readersForFormat = getFileFormatsForReadingAndReader();
-
-    formats->resize( readersForFormat.size() );
-    int i = 0;
-    for (IOPluginsMap::const_iterator it = readersForFormat.begin(); it != readersForFormat.end(); ++it, ++i) {
-        (*formats)[i] = it->first;
-    }
+    *formats = OiioReadSupport::readableExtensions();
 }
 
 void
@@ -3470,19 +3457,6 @@ AppManager::getSupportedWriterFileFormats(std::vector<std::string>* formats) con
     for (IOPluginsMap::const_iterator it = writersForFormat.begin(); it != writersForFormat.end(); ++it, ++i) {
         (*formats)[i] = it->first;
     }
-}
-
-void
-AppManager::getReadersForFormat(const std::string& format,
-                                IOPluginSetForFormat* decoders) const
-{
-    // This will perform a case insensitive find
-    IOPluginsMap::const_iterator found = _imp->readerPlugins.find(format);
-
-    if ( found == _imp->readerPlugins.end() ) {
-        return;
-    }
-    *decoders = found->second;
 }
 
 void
@@ -3501,15 +3475,7 @@ AppManager::getWritersForFormat(const std::string& format,
 std::string
 AppManager::getReaderPluginIDForFileType(const std::string & extension) const
 {
-    // This will perform a case insensitive find
-    IOPluginsMap::const_iterator found = _imp->readerPlugins.find(extension);
-
-    if ( found == _imp->readerPlugins.end() ) {
-        return std::string();
-    }
-    // Return the "best" plug-in (i.e: higher score)
-
-    return found->second.empty() ? std::string() : found->second.rbegin()->pluginID;
+    return OiioReadSupport::formatNameForExtension(extension).empty() ? std::string() : std::string(PLUGINID_NATRON_READ);
 }
 
 std::string

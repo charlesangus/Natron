@@ -28,6 +28,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <exception>
 #include <functional>
 #include <list>
 #include <map>
@@ -412,7 +413,16 @@ renderDirect(const NodePtr& node,
                                            0 /*caller*/,
                                            eStorageModeRAM,
                                            time);
-        if (effect->renderRoI(args, &layers) != EffectInstance::eRenderRoIRetCodeOk) {
+        // renderRoI reports a failed render action by throwing rather than through its return code.
+        EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeFailed;
+        try {
+            code = effect->renderRoI(args, &layers);
+        } catch (const std::exception& e) {
+            pass.error = failure(std::string("renderRoI failed: ") + e.what(), frame);
+
+            return pass;
+        }
+        if (code != EffectInstance::eRenderRoIRetCodeOk) {
             pass.error = failure("renderRoI failed", frame);
 
             return pass;

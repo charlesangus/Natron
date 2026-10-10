@@ -555,6 +555,21 @@ public:
         return _isCascading;
     }
 
+    /**
+     * @brief When set, the user picking the entry that is already selected still calls
+     * knobChanged, as a user edit. For a menu that stands for state it does not hold itself,
+     * such as whether the user chose its value at all.
+     **/
+    void setNotifiesOnReselect(bool notifies)
+    {
+        _notifiesOnReselect = notifies;
+    }
+
+    bool getNotifiesOnReselect() const
+    {
+        return _notifiesOnReselect;
+    }
+
     /// set the KnobChoice value from the label
     ValueChangedReturnCodeEnum setValueFromID(const std::string & value,
                                                  int dimension,
@@ -598,6 +613,7 @@ private:
     bool _addNewChoice;
     static const std::string _typeNameStr;
     bool _isCascading;
+    bool _notifiesOnReselect;
 };
 
 /******************************KnobSeparator**************************************/

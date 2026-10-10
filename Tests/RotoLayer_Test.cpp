@@ -124,9 +124,7 @@ protected:
     NodePtr createRotoOnReader(const char* pluginID,
                                KnobLayerSelectPtr* layer)
     {
-        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
-        NodePtr reader = getApp()->createNode(readerArgs);
+        NodePtr reader = createWorkingSpaceRead(std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
         if (!reader) {
             return NodePtr();
         }

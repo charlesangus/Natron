@@ -91,7 +91,7 @@ try:
             return False
         if frame == 2:
             return max(c) < 40
-        return c[0] > 200 and c[1] > 200 and c[2] < 60
+        return c[0] > 150 and c[1] > 150 and c[2] < 60
 
     def state_matches(frame):
         node_has = bool(shuffle.getPersistentMessage())

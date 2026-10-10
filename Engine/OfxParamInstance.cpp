@@ -38,26 +38,25 @@
 
 #include <QDebug>
 
-#include "Global/GlobalDefines.h"
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/Curve.h"
+#include "Engine/Format.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobFactory.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
-#include "Engine/OfxEffectInstance.h"
-#include "Engine/OfxClipInstance.h"
-#include "Engine/OfxImageEffectInstance.h"
-#include "Engine/ViewerInstance.h"
-#include "Engine/Curve.h"
-#include "Engine/OfxOverlayInteract.h"
-#include "Engine/Format.h"
-#include "Engine/Project.h"
-#include "Engine/AppInstance.h"
-#include "Engine/ReadNode.h"
 #include "Engine/Node.h"
+#include "Engine/OfxClipInstance.h"
+#include "Engine/OfxEffectInstance.h"
+#include "Engine/OfxImageEffectInstance.h"
+#include "Engine/OfxOverlayInteract.h"
+#include "Engine/Project.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 #include "Engine/WriteNode.h"
+#include "Global/GlobalDefines.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -317,11 +316,10 @@ OfxParamToKnob::getKnobHolder() const
     assert(node);
     std::string pluginID = node->getPluginID();
     /*
-       For readers and writers
+       For writers
      */
     bool wasProjectCreatedWithLowerCaseIDs = node->getApp()->wasProjectCreatedWithLowerCaseIDs();
-    if ( ReadNode::isBundledReader(pluginID, wasProjectCreatedWithLowerCaseIDs) ||
-         WriteNode::isBundledWriter(pluginID, wasProjectCreatedWithLowerCaseIDs) ) {
+    if (WriteNode::isBundledWriter(pluginID, wasProjectCreatedWithLowerCaseIDs)) {
         NodePtr iocontainer = node->getIOContainer();
         assert(iocontainer);
 

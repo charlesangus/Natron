@@ -498,7 +498,7 @@ KnobButton::trigger()
     // don't show help in the tootlip if there are more entries that this
 
 KnobChoice::KnobChoice(KnobHolder* holder,
-                       const std::string &label,
+                       const std::string& label,
                        int dimension,
                        bool declaredByPlugin)
     : KnobIntBase(holder, label, dimension, declaredByPlugin)
@@ -506,11 +506,12 @@ KnobChoice::KnobChoice(KnobHolder* holder,
     , _currentEntry()
     , _addNewChoice(false)
     , _isCascading(false)
+    , _notifiesOnReselect(false)
 {
 }
 
 KnobChoice::KnobChoice(KnobHolder* holder,
-                       const QString &label,
+                       const QString& label,
                        int dimension,
                        bool declaredByPlugin)
     : KnobIntBase(holder, label.toStdString(), dimension, declaredByPlugin)
@@ -518,6 +519,7 @@ KnobChoice::KnobChoice(KnobHolder* holder,
     , _currentEntry()
     , _addNewChoice(false)
     , _isCascading(false)
+    , _notifiesOnReselect(false)
 {
 }
 

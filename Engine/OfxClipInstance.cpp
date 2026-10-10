@@ -1841,8 +1841,9 @@ OfxClipInstance::fetchMetadata(OfxTime time,
         // An input clip carries the metadata of the image handed to it, which is the one the
         // node connected to it puts out of its own output clip. That node is taken as it is
         // rather than through getNearestNonIdentity(): a node that passes its pixels through
-        // untouched may still be there precisely to add metadata to them.
-        inputNode = getAssociatedNode();
+        // untouched may still be there precisely to add metadata to them. Only the nodes that
+        // can add none, a Dot say, are looked through.
+        inputNode = OfxMetadataBridge::skipPassThroughNodes(getAssociatedNode());
         upstreamOutput = OfxMetadataBridge::getOfxOutputClip(inputNode);
     }
 

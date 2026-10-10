@@ -117,10 +117,19 @@ edits or drops keys overrides `deriveOutputMetadata()`, usually starting from
 
 - What an input gives depends on its kind. A native input answers with its own
   `getOutputMetadata()`, so the lookup recurses up a native chain. An OpenFX
-  input, or a Read/Write container, answers with its output clip's metadata
-  (the embedded decoder's or encoder's for a container), converted by
+  input, or a Write container, answers with its output clip's metadata
+  (the embedded encoder's for a container), converted by
   `OfxMetadataBridge`. Any other kind of effect gives an empty map.
   `getInputEffectMetadata()` is the one place that lookup is extended.
+- A `NoOpBase` input (a Dot, a group Output, the typed test pass-throughs) is
+  looked through, along any chain of them, to the node connected to its input
+  0: `OfxMetadataBridge::skipPassThroughNodes()` does the walk, for native
+  derivation and for an OpenFX input clip alike. A `NoOpBase` is always an
+  identity and has no metadata of its own to add. One with nothing connected
+  (or no input, like a group Input or a Backdrop) ends the walk and is treated
+  as before: empty for a native node, the host-derived keys for an OpenFX clip.
+  Nothing extra invalidates: the hash change that reaches a node past a Dot
+  already reaches the Dot's downstream.
 - Every node's result is cached per `(time, view)`, overrides included, and
   dropped on every knob change of the node or anything upstream of it, every
   connection change (both arrive as a node hash change) and every
@@ -141,6 +150,74 @@ B if no A is connected), never B's; `NativeGenerator` outputs only
 `ofx/framerate` and `ofx/pixelaspect` (it has no source, and `ofx/frame` is the
 frame number within the source, so it is omitted); transforms and filters
 keep the default.
+
+## I/O nodes
+
+`Engine/Nodes/IO/` holds the native Read. `NativeRead` (`NativeRead.h`) is the
+only plug-in registered under `PLUGINID_NATRON_READ`, at one version,
+`PLUGIN_MAJOR_NATRON_READ`. There is no Read container and no OFX reader behind
+it: `ReadNode` is gone, and `OfxHost::loadOFXPlugins()` skips any OFX plug-in
+whose contexts include `kOfxImageEffectContextReader`, so none is registered.
+Write is still a container (`WriteNode`) around OFX writers. Decoding lives in
+`OiioReadSupport.*` (header cache, layer grouping, metadata), time mapping in
+`ReadTimeDomain.*` and colour in `ReadColorSpace.*`.
+
+- **Formats.** `OiioReadSupport::readableExtensions()` is OIIO's
+  `extension_list` attribute minus the formats named in `kExcludedOiioFormats`
+  (`raw`, `null`, `term`, `ffmpeg`, `psd`), lower case and sorted. There is no
+  hand-written list, so a build with more OIIO plug-ins reads more. A path with
+  any other extension gets an "Unsupported format" error from
+  `NativeRead::rejectUnsupportedFormat()`.
+- **Entry points.** The file dialogs, drag and drop, `KnobGuiFile`, the CLI,
+  `PrecompNode` and `WriteNode` all ask
+  `AppManager::getReaderPluginIDForFileType()` (extension to
+  `PLUGINID_NATRON_READ`, or empty) and
+  `AppManager::getSupportedReaderFileFormats()` (the extension list). Don't
+  hard-code an extension set or a reader id elsewhere.
+- **Knobs.** The script names are `GenericReader`'s, so existing scripts and
+  the host hooks that look knobs up by name keep working: `filename`, `proxy`,
+  `proxyThreshold`, `originalProxyScale`, `customProxyScale`,
+  `originalFrameRange`, `firstFrame`, `lastFrame`, `before`, `after`,
+  `onMissingFrame`, `frameMode`, `startingTime`, `timeOffset`,
+  `timeDomainUserEdited`, `ocioInputSpace`,
+  `ocioInputSpaceIndex`, `ocioInputSpaceSet`, the `Context` group of
+  `key1`..`key4` and `value1`..`value4`, and the hidden `ocioConfigFile`,
+  `ocioWorkingSpace` and `availableViews`.
+- **Colour.** Pixels are converted to the project's working space through the
+  project's OCIO config (`ReadColorSpace::toWorkingProcessor()`). The default
+  input space (`ReadColorSpace::defaultInputSpace()`) is, in order: the config's
+  file rules (`fileRuleColorSpace()`; a match on the default rule alone does not
+  count), the file's `oiio:ColorSpace` tag if the config has a colourspace, role
+  or alias of that name (`embeddedColorSpace()`), then the project's file
+  default for the pixel depth (`categoryOf()`: float, 16-bit or 8-bit). Setting
+  the input space by hand (`ocioInputSpaceSet`) overrides the default. The
+  non-empty `key`/`value` pairs are set as OCIO context variables when the
+  processor is built, and are part of its cache key.
+- **Layers and views.** Every layer of the file becomes a produced plane
+  (`getComponentsNeededAndProduced()`, grouped by `OiioReadSupport::fileLayers`)
+  and the Read is multi-planar. A greyscale file (a lone `Y` or `I` channel)
+  fills R, G and B from it. A multi-view EXR, as parts with a `view` attribute
+  or channels prefixed per its `multiView` list, fills `availableViews` so the
+  project gets those views; a project view the file lacks reads the file's
+  default view.
+- **Time.** A filename pattern resolves to one file per output frame, listed
+  once per pattern (`FrameListing`). `ReadTimeDomain::resolve()` maps an output
+  frame to a file, black or an error from `before`/`after` (hold, loop, bounce,
+  black, error) and `onMissingFrame` (previous, next, nearest, error, black;
+  searches up to `kMissingFrameSearchRange` frames each way). `frameMode` picks
+  `startingTime` or `timeOffset` for the shift.
+- **Proxies.** The `proxy` file is read instead of `filename` when the render
+  scale is at or below `proxyThreshold`; it has its own frame listing.
+- **Metadata.** `deriveOutputMetadata()` publishes
+  `ofx/pixelaspect` and, for a frame that loads a file, the file path, source
+  frame, mtime and size plus the file's own attributes
+  (`OiioReadSupport::attributeMetadata()`, so a frame rate in the header appears under the
+  format's prefix like any other attribute), for downstream native nodes and, via
+  `OfxMetadataBridge`, OFX nodes. A black or error frame carries only the pixel aspect. A Read has no frame rate: it
+  leaves the output frame rate at the host default and publishes no `ofx/framerate`.
+- **Not read.** RAW (`raw` is excluded; a later milestone adds it) and layered
+  documents such as PSD (`psd` is excluded; deferred to "M79 - Layered Document
+  Readers").
 
 ## Writing a node, start to finish
 

@@ -108,6 +108,9 @@ echo "Assets dir:  ${ASSETS_DIR}"
 #
 # ReadEXR also decodes alpha-only files into 1-component buffers.
 #
+# Its reader targets (ReadOIIO, ReadEXR, ReadPNG, ReadPFM, ReadFFmpeg) are
+# disabled because the native Read decodes those files; its writers are built.
+#
 # It also takes the OCIO config from the host's instance property and
 # the working space and per-file-type colourspaces (8-bit, 16-bit, log,
 # float) as defaults for new Reads and Writes, rebuilding the colourspace
@@ -119,7 +122,7 @@ echo "Assets dir:  ${ASSETS_DIR}"
 # SEEXPR_REF: wdas/SeExpr, branch v1-2.11, not v2/v3 -- openfx-io's
 # SeNoise.cpp targets the v1-2.11 header layout. Not forked.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="5124f2e76201cd7e23a1031824106db11c626bc3"
+OPENFX_IO_REF="b6b3134194dca5d43382ee598ade853c7182979b"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 
@@ -186,16 +189,9 @@ LIBZIP_REF="6f8a0cdd24a0dc6cce9dac4a7679da784ab124ea"
 IMAGEMAGICK_REPO="https://github.com/ImageMagick/ImageMagick.git"
 IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 
-# OPENFX_ARENA_REF: charlesangus/openfx-arena -- our fork, adding
-# WITH_SVG/WITH_PDF/WITH_CDR CMake options (all defaulting ON, so upstream
-# behaviour is unchanged) that gate the three readers whose dependencies
-# (librsvg, poppler-glib, libcdr/librevenge) this image does not ship. We
-# turn them OFF below rather than carry the missing libraries.
-#
-# It also has ReadPSD and the OpenRaster reader accept alpha-only
-# (1-component) images, and fetches SupportExt from our fork, since the
-# NatronGitHub mirror lacks the fix that reads a missing colour channel as
-# zero.
+# OPENFX_ARENA_REF: charlesangus/openfx-arena -- our fork. It fetches
+# SupportExt from our fork, since the NatronGitHub mirror lacks the fix that
+# reads a missing colour channel as zero.
 #
 # Its nine ImageMagick effects (Arc, Charcoal, Edges, Implode, Oilpaint,
 # Polar, Reflection, Sketch, Tile) also accept alpha-only images, and the
@@ -203,15 +199,13 @@ IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 # net.fxarena.openfx.MagickText so only the pango Text owns
 # net.fxarena.openfx.Text.
 #
-# Its OpenFX-IO submodule now points at charlesangus/openfx-io (the
-# commit that OPENFX_IO_REF merges into master; same tree), which brings
-# the host-supplied OCIO config and file colourspace defaults to its
-# readers, and
-# existingColorSpaceOrFallback, which the earlier pin lacked. Its six
-# readers (ReadPSD, ReadMisc, ReadSVG, ReadCDR, ReadKrita, OpenRaster)
-# drop the filePremult out-parameter that GenericReader no longer has.
+# Its reader targets (ReadPSD, ReadMisc, ReadKrita, OpenRaster, ReadSVG,
+# ReadPDF, ReadCDR) are disabled because the native Read decodes those files,
+# so the librsvg, poppler-glib and libcdr/librevenge dependencies are not
+# needed. Its OpenFX-IO submodule is an openfx-io revision whose readers are
+# disabled too.
 OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
-OPENFX_ARENA_REF="6fd143dc41710b9f76d266d91007372f9096665e"
+OPENFX_ARENA_REF="7e3337fad8a2fc46d53e8d35422289fcdb2a7514"
 
 # OPENFX_METADATA_REF: charlesangus/openfx -- our ASWF-lineage OpenFX fork,
 # whose Support/Plugins/Metadata* examples exercise the clip and image
@@ -476,8 +470,7 @@ else
         cmake -S "${ARENA_SRC}" -B "${ARENA_BUILD}" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_PREFIX_PATH=/usr/local \
-        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-        -DWITH_SVG=OFF -DWITH_PDF=OFF -DWITH_CDR=OFF
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5
     cmake --build "${ARENA_BUILD}" -j "$(nproc)"
 
     # --- openfx-metadata plugins -------------------------------------------
@@ -559,19 +552,19 @@ else
     # of a pipeline entirely.
     IO_SYMBOLS="${IO_BUILD}/io-symbols.txt"
     strings "${IO_OFX}" > "${IO_SYMBOLS}"
-    for id in fr.inria.openfx.ReadOIIO fr.inria.openfx.WriteOIIO net.sf.openfx.SeNoise; do
+    for id in fr.inria.openfx.WriteOIIO net.sf.openfx.SeNoise; do
         if ! grep -Fxq -- "${id}" "${IO_SYMBOLS}"; then
             echo "[Plugins] ERROR: built bundle does not export ${id}" >&2
             exit 1
         fi
     done
 
-    # Same check for openfx-arena, for the two Magick-backed IDs. (A third ID,
-    # fr.inria.openfx.ReadMisc, is asserted further down instead -- see the
-    # comment by ARENA_PROBE_OUT for why `strings` can't see it.)
+    # Same check for openfx-arena, for the two Magick-backed IDs. (The pango
+    # Text ID, net.fxarena.openfx.Text, is asserted further down instead --
+    # see the comment by ARENA_PROBE_OUT.)
     ARENA_SYMBOLS="${ARENA_BUILD}/arena-symbols.txt"
     strings "${ARENA_OFX}" > "${ARENA_SYMBOLS}"
-    for id in net.fxarena.openfx.MagickText net.fxarena.openfx.ReadPSD; do
+    for id in net.fxarena.openfx.MagickText net.fxarena.openfx.Charcoal; do
         if ! grep -Fxq -- "${id}" "${ARENA_SYMBOLS}"; then
             echo "[Plugins] ERROR: built bundle does not export ${id}" >&2
             exit 1
@@ -579,7 +572,7 @@ else
     done
 
     # The openfx-metadata IDs can't be checked with `strings` here -- same
-    # contiguous-bytes problem as fr.inria.openfx.ReadMisc, see the comment
+    # contiguous-bytes problem as net.fxarena.openfx.Text, see the comment
     # by ARENA_PROBE_OUT below. They're asserted from the verify_plugin_loads
     # probe output instead, further down.
 
@@ -633,7 +626,7 @@ for ofx in "${MISC_OFX}" "${CIMG_OFX}" "${ARENA_OFX}"; do
 done
 
 # The seven openfx-metadata IDs have the same "not one contiguous run of
-# bytes" problem as fr.inria.openfx.ReadMisc below -- see the comment by
+# bytes" problem as net.fxarena.openfx.Text below -- see the comment by
 # ARENA_PROBE_OUT -- so each is asserted from this probe's own output
 # rather than via `strings`. Capture to a file first for the same
 # anti-pipefail reason as ARENA_PROBE_OUT: never `| grep -q` directly.
@@ -649,23 +642,18 @@ for id_i in "${!METADATA_OFX[@]}"; do
     fi
 done
 
-# fr.inria.openfx.ReadMisc (unconditional -- never gated by WITH_SVG/
-# WITH_PDF/WITH_CDR, so its presence also proves the three disabled readers
-# didn't silently take other targets down with them) can't be asserted via
-# `strings` like the two IDs above: at this -Ofast optimization level, GCC
-# builds this specific 24-byte std::string constant from a 16-byte prefix
-# copy out of .rodata (shared with the other four "fr.inria.openfx."-prefixed
-# IDs) plus the 8-byte tail "ReadMisc" folded into a `movabs` immediate
-# operand in the code itself (confirmed by disassembling the bytes at that
-# offset). The full identifier therefore never exists as one contiguous run
-# anywhere in the file for `strings`/grep to find, even though it's exactly
-# what a real host sees at runtime -- which is what this probe call already
-# gives us for free. Same anti-pipefail discipline as the `strings` checks:
-# capture to a file first, `grep -Fxq` the file, never `| grep -q` directly.
+# net.fxarena.openfx.Text, the pango Text that only this plugin owns (the
+# ImageMagick one is MagickText), is asserted from the probe's own output
+# rather than via `strings`: at -Ofast, GCC can fold the tail of a short
+# std::string constant into a `movabs` immediate, so the full identifier need
+# not exist as one contiguous run in the file, while the probe reports exactly
+# what a real host sees. Same anti-pipefail discipline as the `strings`
+# checks: capture to a file first, `grep -Fq` the file, never `| grep -q`
+# directly.
 ARENA_PROBE_OUT="${PLUGINS_SRC_DIR}/arena-probe-out.txt"
 "${VERIFY_LOADER_BIN}" "${ARENA_OFX}" > "${ARENA_PROBE_OUT}"
-if ! grep -Fq -- "fr.inria.openfx.ReadMisc " "${ARENA_PROBE_OUT}"; then
-    echo "[verify_plugin_loads] ERROR: ${ARENA_OFX##*/} does not report plugin fr.inria.openfx.ReadMisc" >&2
+if ! grep -Fq -- "net.fxarena.openfx.Text " "${ARENA_PROBE_OUT}"; then
+    echo "[verify_plugin_loads] ERROR: ${ARENA_OFX##*/} does not report plugin net.fxarena.openfx.Text" >&2
     exit 1
 fi
 

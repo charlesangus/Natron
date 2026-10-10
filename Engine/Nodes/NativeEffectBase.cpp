@@ -268,10 +268,11 @@ const std::size_t kMaxCachedMetadataFrames = 256;
 } // anonymous namespace
 
 ImageMetadata
-NativeEffectBase::getInputEffectMetadata(const EffectInstancePtr& input,
+NativeEffectBase::getInputEffectMetadata(const EffectInstancePtr& connected,
                                          double time,
                                          ViewIdx view)
 {
+    const EffectInstancePtr input = OfxMetadataBridge::skipPassThroughNodes(connected);
     NativeEffectBase* native = dynamic_cast<NativeEffectBase*>(input.get());
 
     if (native) {

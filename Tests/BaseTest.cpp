@@ -78,8 +78,7 @@ BaseTest::registerTestPlugins()
     _generatorPluginID = QString::fromUtf8(PLUGINID_OFX_SENOISE);
     _allTestPluginIDs.push_back(_generatorPluginID);
 
-    _readOIIOPluginID = QString::fromUtf8(PLUGINID_OFX_READOIIO);
-    _allTestPluginIDs.push_back(_readOIIOPluginID);
+    _readPluginID = QString::fromUtf8(PLUGINID_NATRON_READ);
 
     _writeOIIOPluginID = QString::fromUtf8(PLUGINID_OFX_WRITEOIIO);
     _allTestPluginIDs.push_back(_writeOIIOPluginID);
@@ -140,6 +139,31 @@ BaseTest::createNode(const QString & pluginID,
     EXPECT_NE(ret.get(), (Node*)NULL);
 
     return ret;
+}
+
+NodePtr
+BaseTest::createWorkingSpaceRead(const std::string& filePath)
+{
+    CreateNodeArgs args(_readPluginID.toStdString(), getApp()->getProject());
+
+    args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, filePath);
+    NodePtr reader = getApp()->createNode(args);
+    EXPECT_TRUE(bool(reader)) << "node creation failed for " << _readPluginID.toStdString() << " on " << filePath;
+    if (reader) {
+        readInWorkingSpace(reader);
+    }
+
+    return reader;
+}
+
+void
+BaseTest::readInWorkingSpace(const NodePtr& reader)
+{
+    KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(reader->getKnobByName("ocioInputSpace").get());
+
+    ASSERT_TRUE(inputSpace != NULL) << reader->getScriptName_mt_safe();
+    inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
+    reader->getEffectInstance()->refreshMetadata_public(false);
 }
 
 void

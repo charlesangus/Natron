@@ -31,6 +31,12 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - verify: In the screenshot run, the DeepFromImage → DeepMerge.A edge is the same blue as the other deep edges, and DeepToImage → Merge.B is the same black as the other image edges.
   - size: S
 
+- [ ] M24.P3.T2b — Draw the user-colour border outside the node, with the selection halo outside it
+  - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/NodeGraphRectItem.h`, `Gui/NodeGraphRectItem.cpp`
+  - approach: UAT found that the inset border eats into the icon column. Draw the border outside the node's regular footprint instead. The body, icon column and label keep their size and position; the border is a ring of `NATRON_USER_COLOR_BORDER_WIDTH` around them, so a user-coloured node looks larger. The selection halo (`_stateIndicator`, inflated by `NATRON_STATE_INDICATOR_OFFSET`) grows by the border width when a user colour is set, so it sits outside the border and the two stay distinct. Keep the contrast nudge and clone hiding. Check that the edge attach points, hit-testing and bounding rect (`boundingRect`/`shape`, which edges and rubber-band selection use) stay sensible with the larger footprint, and that nodes without a user colour are pixel-identical to before.
+  - verify: In the screenshot script, a user-coloured Grade's border sits outside the icon column with nothing overlapping it, and the selection halo sits outside the border. A node without a user colour is unchanged.
+  - size: M
+
 ## Decisions` — implement what they say.
   - verify: The note exists, names each surveyed application and what it does, and gives every number and rule above as one unambiguous value.
   - size: M
@@ -193,6 +199,8 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   Re-verified with one `fast` build: 17 targeted ctest cases pass, and the screenshot script reports 0 failures, now covering the 0.05 rule, Dot colour and Backdrop reset. Every thread has a reply.
 
 - 2026-10-10 — **CI green on PR #50** (`format`, `lint-ci`, `build-and-test` at `eebd52d14`). The user asked for an AppImage UAT before merge: `build/appimages/M24-eebd52d14.AppImage` (fast build). It launches (`--version`), but the version string reports a stale commit `d9dcaf1` from the cached configure; the bits are `eebd52d14`. A local, untracked `build/appimagetool-wrapper/appimagetool` passes `--no-appstream`, since this host cannot reach wikimedia.org. **PR #50 stays open pending the user's UAT.**
+
+- 2026-10-10 — **UAT round 1 (user, AppImage `M24-eebd52d14`):** the inset user-colour border impinges on the icon area. It should enlarge the node and be drawn outside the regular node area, with the selection halo outside that. Added P3.T2b. PR #50 stays open.
 
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate

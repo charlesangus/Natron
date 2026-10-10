@@ -33,7 +33,7 @@ add_executable(BlurCpu_Test tests/BlurCpu_Test.cpp)
 target_link_libraries(BlurCpu_Test PRIVATE blur GTest::gtest_main)
 gtest_discover_tests(BlurCpu_Test)
 
-add_library(gpuspike_core STATIC src/GpuDevice.cpp src/GpuKernel.cpp src/Vma.cpp)
+add_library(gpuspike_core STATIC src/GpuDevice.cpp src/GpuKernel.cpp src/GpuTransfer.cpp src/Vma.cpp)
 target_include_directories(gpuspike_core PUBLIC src)
 target_include_directories(gpuspike_core SYSTEM PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/VulkanMemoryAllocator/include")
@@ -57,6 +57,11 @@ add_executable(GpuKernel_Test tests/GpuKernel_Test.cpp)
 target_link_libraries(GpuKernel_Test PRIVATE gpuspike_core fill GTest::gtest_main
   -static-libstdc++ -static-libgcc)
 gtest_discover_tests(GpuKernel_Test)
+
+add_executable(GpuTransfer_Test tests/GpuTransfer_Test.cpp)
+target_link_libraries(GpuTransfer_Test PRIVATE gpuspike_core GTest::gtest_main
+  -static-libstdc++ -static-libgcc)
+gtest_discover_tests(GpuTransfer_Test DISCOVERY_TIMEOUT 30 PROPERTIES TIMEOUT 600)
 
 # The host has no gtest: stage the shared libs next to the binaries so
 # run-host.sh can put them on LD_LIBRARY_PATH.

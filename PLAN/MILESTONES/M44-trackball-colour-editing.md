@@ -262,7 +262,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
     - Screenshots: collapsed, expanded, mid-drag.
   - size: L
 
-- [ ] M44.P4.T3 — Make each gesture exactly one undo step with a gesture-scoped merge key on `KnobUndoCommand`
+- [x] M44.P4.T3 — Make each gesture exactly one undo step with a gesture-scoped merge key on `KnobUndoCommand`
   - files: `Gui/KnobUndoCommand.h`, `Gui/ColorKnobEditSession.cpp`
   - approach:
     - Add an optional `quint64 mergeKey` (0 = today's behaviour) to the list constructor.

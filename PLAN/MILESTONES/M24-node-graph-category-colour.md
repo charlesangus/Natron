@@ -103,7 +103,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - verify: Picking a colour in the panel sets the border and leaves the body; clearing removes the border; Python `setColor` sets the border; undo behaves as before. Xvfb screenshots of each.
   - size: M
 
-- [ ] M24.P3.T5 — Re-colour open graphs when a category colour preference changes
+- [x] M24.P3.T5 — Re-colour open graphs when a category colour preference changes
   - files: `Engine/Settings.h`, `Engine/Settings.cpp`, `Gui/NodeGraph.cpp`, `Gui/NodeGui.cpp`
   - approach: `Settings::onKnobValueChanged` already emits `settingChanged(KnobI*)` (`Engine/Settings.cpp:2257`). Add `Settings::isNodeCategoryColorKnob(KnobI*)`; the node graph connects to `settingChanged` and on a category knob re-applies the category body colour and label contrast (P3.T6) to every `NodeGui`, leaving user borders untouched. Skip while settings are being restored (`_restoringSettings`).
   - verify: With a graph open, changing the Merge colour in Preferences updates every Merge node's body and label colour live; a recoloured Merge node keeps its border.
@@ -171,6 +171,8 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - **For the gate:** the border wraps only the coloured label area (`_boundingBox`), not the dark icon column on the left. Confirm whether it should wrap the whole node.
 
 - 2026-10-10 — **Border wraps the whole node (user):** answers the P3.T4 gate note. The border must enclose the icon column too, so P3.T2a was added.
+
+- 2026-10-10 — **One build at the end (user):** builds are the bottleneck on this host, so tasks are implemented and committed without per-task builds or tests, and implementers do not compile. The milestone gets a single build, test and screenshot run once every task has landed, and any breakage is fixed then. Task checkboxes mean implemented and committed, not verified.
 
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate

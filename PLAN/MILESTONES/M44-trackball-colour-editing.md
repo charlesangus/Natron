@@ -50,7 +50,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
     - `clampToDisc` returns the direction to an off-disc point.
   - size: M
 
-- [ ] M44.P1.T3 — Add Planckian temperature/tint and the offset-role linear axes
+- [x] M44.P1.T3 — Add Planckian temperature/tint and the offset-role linear axes
   - files: `Engine/ColorWheelMath.h`, `Engine/ColorWheelMath.cpp`, `Tests/ColorWheelMath_Test.cpp`
   - approach: Port the mockup's model (`mockup.py:49-147`).
     - The Kim et al. locus is valid for 1667–25000 K, worked in CIE 1960 uv, with Newton inversion to (mired, Duv).
@@ -397,6 +397,8 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
     - things to judge: saturation speed, the default zoom, and the triangle shape
   - verify: The AppImage exists and launches (`--version` under `devshell.sh`). The user runs the UAT and records their verdict in the M44 Decisions.
   - size: S
+
+- 2026-10-10 — **One build at the end (user):** builds are the bottleneck on this host, so tasks are implemented and committed without per-task builds or tests, and implementers do not compile. The milestone gets a single build, test and screenshot run once every task has landed, and any breakage is fixed then. Task checkboxes mean implemented and committed, not verified.
 
 **Verification gate:**
 - CI `format`, `lint-ci` and `build-and-test` are green.

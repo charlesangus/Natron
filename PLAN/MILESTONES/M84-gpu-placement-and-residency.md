@@ -108,7 +108,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
 
 ## Phase 84.2: Promote the backend into the main build
 
-- [ ] M84.P2.T1 — Build `Engine/Gpu/` (`NatronGpu`) from the spike sources, with Slang in the root build
+- [x] M84.P2.T1 — Build `Engine/Gpu/` (`NatronGpu`) from the spike sources, with Slang in the root build
   - files: `CMakeLists.txt`, `cmake/FetchSlang.cmake`, `cmake/SlangKernels.cmake`, `Engine/Gpu/CMakeLists.txt`, `Engine/CMakeLists.txt`, plus the moved `Engine/Gpu/{GpuDevice,GpuKernel,GpuTransfer,GlInterop}.{h,cpp}`, `Engine/Gpu/Vma.cpp` and `Engine/Gpu/Kernels/{grade,blur,pointops,gradeops}.slang` (moved as they are, not rewritten)
   - approach:
     - In the root build, add `option(NATRON_GPU "Vulkan compute backend" ON)` and `find_package(Vulkan)`. If Vulkan is missing, print a status message and turn the option off.
@@ -646,3 +646,4 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - Probe: the scratchpad `import-probe/`, which was not committed.
 - 2026-10-10 — #48 merged. Once the in-flight tasks commit, rebase M84 with `git rebase --onto origin/main 87dcb403a`; `87dcb403a` is the M83 tip the branch is stacked on.
 - 2026-10-10 — M84.P4.T3 done. `DeviceImage` exposes `downloadToRam()`/`evictToRam()` returning an `ImagePtr` (rather than `downloadTo(Image&)`); `bytesInFlight()` returns the host figure, so the scheduler is unchanged. Device bytes are counted per entry, not de-duplicated across keys; revisit if identity tasks store device images (P7.T2). Full ctest 1280/1280.
+- 2026-10-10 — M84.P2.T1 done (`85ea0d6b7`). `NatronGpu` builds from the root, and `-DNATRON_GPU=OFF` builds. The ldd difference is only `libvulkan.so.1`. Targeted ctest passed 30/30. `slang_add_kernel` emits a header-only SPIR-V target by default, and `CPP` gives the C++-twin library. Kernel target names (grade, blur, pointop_*) match the spike's, so P2.T4 must resolve that collision. `tools/ci/local/test.sh` has no ctest filter; worth adding when convenient.

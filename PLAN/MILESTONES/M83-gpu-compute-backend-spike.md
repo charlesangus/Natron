@@ -119,7 +119,7 @@ Scouted facts this plan relies on (2026-10-10):
   - verify: `GradeCpu_Test` passes in the container, and reports and asserts max abs and relative error and the ULP distribution (proposed bound: ≤ 4 ULP of float, or abs ≤ 1e-6 near 0). The float-vs-double gap is stated as the expected cost of computing in float.
   - size: M
 
-- [ ] M83.P3.T2 — Separable Gaussian blur kernels in Slang, with a C++ twin and a reference
+- [x] M83.P3.T2 — Separable Gaussian blur kernels in Slang, with a C++ twin and a reference
   - files: `tools/gpu-spike/kernels/blur.slang`, `tools/gpu-spike/ref/BlurRef.h`, `tools/gpu-spike/tests/BlurCpu_Test.cpp`
   - approach:
     - Write horizontal and vertical gather passes of a truncated Gaussian FIR (radius ceil(3σ)), with weights normalised on the host.
@@ -287,3 +287,4 @@ Scouted facts this plan relies on (2026-10-10):
 - 2026-10-10 — Blocker resolved: the user confirmed Vulkan compute + Slang and asked for parallel GPU work, so M83 starts while M82 - Render Cost Profiling finishes its comp profiling (see DECISIONS/2026-10-10-vulkan-slang-backend-and-parallel-gpu-milestones.md). Lane: worktree `build/wt/m83-gpu-backend-spike` off `main`, PR against `main`.
 - 2026-10-10 — User answers: **OpenCL reference dropped** (M83.P5.T2) — no runtime on host or image, and Vulkan + Slang is decided. **Spike stays local-only** (M83.P6.T5 dropped); CI coverage arrives when M84 moves the code into `Engine/`. **FIR Gaussian is acceptable for GPU Blur**, and the user wants FIR added to the native CPU Blur as its default filter too — split out as M88 - FIR Gaussian Blur so it ships independently; M83.P3.T2's FIR maths should match what M88 puts in the CPU node.
 - 2026-10-10 — The VMA vendor commit bypassed the comment gate: all ten flags were in upstream's unmodified `vk_mem_alloc.h`, which is not ours to rewrite.
+- 2026-10-10 — M83.P3.T2: no IIR-vs-FIR difference numbers — linking `BlurKernels` into the standalone spike drags in Engine/Python headers. M88 - FIR Gaussian Blur's tests can report that gap from inside the engine instead.

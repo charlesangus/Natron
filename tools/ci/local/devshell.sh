@@ -207,8 +207,9 @@ fi
 # `docker logs <container>`, not here). `docker exec` never re-invokes the
 # entrypoint, so it never pollutes the output below -- this is also why we
 # don't need a TTY for the non-interactive path.
+# The container's env is fixed at creation, so pass the current size on every exec.
 if [[ "$#" -eq 0 ]]; then
-    exec docker exec -it "${CONTAINER_NAME}" bash -l
+    exec docker exec -it -e CCACHE_MAXSIZE="${CCACHE_MAXSIZE}" "${CONTAINER_NAME}" bash -l
 else
-    exec docker exec -i "${CONTAINER_NAME}" "$@"
+    exec docker exec -i -e CCACHE_MAXSIZE="${CCACHE_MAXSIZE}" "${CONTAINER_NAME}" "$@"
 fi

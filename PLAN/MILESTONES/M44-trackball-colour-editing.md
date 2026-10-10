@@ -119,7 +119,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
     - A config change refreshes the cache.
   - size: M
 
-- [ ] M44.P2.T2 — Add a GUI-only role to `KnobColor` and declare it on Grade and ColorCorrect
+- [x] M44.P2.T2 — Add a GUI-only role to `KnobColor` and declare it on Grade and ColorCorrect
   - files: `Engine/KnobTypes.h`, `Engine/KnobTypes.cpp`, `Engine/Nodes/Color/Grade.cpp`, `Engine/Nodes/Color/ColorCorrect.cpp`, `Tests/Native/NativeGrade_Test.cpp`
   - approach:
     - Add `setColorRole` / `getColorRole` to `KnobColor`. Auto resolves through `inferColorRole` from the dimension-0 default, the display minimum and the script name.

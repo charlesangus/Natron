@@ -44,7 +44,6 @@
 #include "Engine/Node.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
-#include "Engine/ReadNode.h"
 #include "Engine/WriteNode.h"
 
 NATRON_NAMESPACE_ENTER
@@ -185,17 +184,11 @@ getOfxOutputClip(const EffectInstancePtr& effect)
     OfxEffectInstance* ofxEffect = dynamic_cast<OfxEffectInstance*>(effect.get());
 
     if (!ofxEffect) {
-        // A bundled reader or writer stands in the graph as a Read/Write container, which
-        // is not itself an OFX effect: the clips are the decoder's or encoder's, and so is
-        // the metadata that has to reach whatever is connected downstream of the container.
-        NodePtr embedded;
-        ReadNode* isReadNode = dynamic_cast<ReadNode*>(effect.get());
+        // A bundled writer stands in the graph as a Write container, which is not itself
+        // an OFX effect: the clips are the encoder's, and so is the metadata that has to
+        // reach whatever is connected downstream of the container.
         WriteNode* isWriteNode = dynamic_cast<WriteNode*>(effect.get());
-        if (isReadNode) {
-            embedded = isReadNode->getEmbeddedReader();
-        } else if (isWriteNode) {
-            embedded = isWriteNode->getEmbeddedWriter();
-        }
+        NodePtr embedded = isWriteNode ? isWriteNode->getEmbeddedWriter() : NodePtr();
         if (embedded) {
             ofxEffect = dynamic_cast<OfxEffectInstance*>(embedded->getEffectInstance().get());
         }

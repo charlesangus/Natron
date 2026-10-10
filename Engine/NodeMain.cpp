@@ -29,14 +29,13 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
-#include "Engine/LibraryBinary.h"
-#include "Engine/ReadNode.h"
-#include "Engine/WriteNode.h"
 #include "Engine/EffectInstance.h"
-#include "Engine/Project.h"
+#include "Engine/GenericSchedulerThreadWatcher.h"
+#include "Engine/LibraryBinary.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/NodeSerialization.h"
-#include "Engine/GenericSchedulerThreadWatcher.h"
+#include "Engine/Project.h"
+#include "Engine/WriteNode.h"
 
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
@@ -112,15 +111,10 @@ Node::load(const CreateNodeArgs& args)
 #ifdef NATRON_ENABLE_IO_META_NODES
         NodePtr ioContainer = _imp->ioContainer.lock();
         if (ioContainer) {
-            ReadNode* isReader = dynamic_cast<ReadNode*>( ioContainer->getEffectInstance().get() );
-            if (isReader) {
-                isReader->setEmbeddedReader(thisShared);
-            } else {
-                WriteNode* isWriter = dynamic_cast<WriteNode*>( ioContainer->getEffectInstance().get() );
-                assert(isWriter);
-                if (isWriter) {
-                    isWriter->setEmbeddedWriter(thisShared);
-                }
+            WriteNode* isWriter = dynamic_cast<WriteNode*>(ioContainer->getEffectInstance().get());
+            assert(isWriter);
+            if (isWriter) {
+                isWriter->setEmbeddedWriter(thisShared);
             }
         }
 #endif

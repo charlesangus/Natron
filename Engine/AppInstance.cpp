@@ -72,7 +72,6 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectSerialization.h"
-#include "Engine/ReadNode.h"
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
 #include "Engine/WriteNode.h"
@@ -980,32 +979,12 @@ NodePtr
 AppInstance::createReader(const std::string& filename,
                           CreateNodeArgs& args)
 {
-    std::string pluginID;
-
-#ifndef NATRON_ENABLE_IO_META_NODES
-
-    std::map<std::string, std::string> readersForFormat;
-    appPTR->getCurrentSettings()->getFileFormatsForReadingAndReader(&readersForFormat);
-    QString fileCpy = QString::fromUtf8( filename.c_str() );
-    QString extq = QtCompat::removeFileExtension(fileCpy).toLower();
-    std::string ext = extq.toStdString();
-    std::map<std::string, std::string>::iterator found = readersForFormat.find(ext);
-    if ( found == readersForFormat.end() ) {
-        Dialogs::errorDialog( tr("Reader").toStdString(),
-                              tr("No plugin capable of decoding %1 was found").arg(extq).toStdString(), false );
-
-        return NodePtr();
-    }
-    pluginID = found->second;
-    CreateNodeArgs args(QString::fromUtf8( found->second.c_str() ), reason, group);
-#endif
-
     args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, filename);
     std::string canonicalFilename = filename;
     getProject()->canonicalizePath(canonicalFilename);
 
     int firstFrame, lastFrame;
-    Node::getOriginalFrameRangeForReader(pluginID, canonicalFilename, &firstFrame, &lastFrame);
+    Node::getOriginalFrameRangeForReader(std::string(), canonicalFilename, &firstFrame, &lastFrame);
     std::vector<int> originalRange(2);
     originalRange[0] = firstFrame;
     originalRange[1] = lastFrame;
@@ -1464,27 +1443,13 @@ AppInstance::exportDocs(const QString path)
                     qDebug() << pluginID;
                     // IMPORTANT: this code is *very* similar to DocumentationManager::handler(...) is section "_plugin.html"
                     NodePtr node = createNode(args);
-                    if ( node &&
-                         pluginID != QString::fromUtf8(PLUGINID_NATRON_READ) &&
-                         pluginID != QString::fromUtf8(PLUGINID_NATRON_WRITE) ) {
-                        EffectInstancePtr effectInstance = node->getEffectInstance();
-                        if ( effectInstance && effectInstance->isReader() ) {
-                            ReadNode* isReadNode = dynamic_cast<ReadNode*>( effectInstance.get() );
+                    if (node && (pluginID != QString::fromUtf8(PLUGINID_NATRON_WRITE))) {
+                        WriteNode* isWriteNode = dynamic_cast<WriteNode*>(node->getEffectInstance().get());
 
-                            if (isReadNode) {
-                                NodePtr subnode = isReadNode->getEmbeddedReader();
-                                if (subnode) {
-                                    node = subnode;
-                                }
-                            }
-                        } else if ( effectInstance && effectInstance->isWriter() ) {
-                            WriteNode* isWriteNode = dynamic_cast<WriteNode*>( effectInstance.get() );
-
-                            if (isWriteNode) {
-                                NodePtr subnode = isWriteNode->getEmbeddedWriter();
-                                if (subnode) {
-                                    node = subnode;
-                                }
+                        if (isWriteNode) {
+                            NodePtr subnode = isWriteNode->getEmbeddedWriter();
+                            if (subnode) {
+                                node = subnode;
                             }
                         }
                     }

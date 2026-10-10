@@ -81,7 +81,6 @@
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/ProjectPrivate.h"
 #include "Engine/ProjectSerialization.h"
-#include "Engine/ReadNode.h"
 #include "Engine/RectDSerialization.h"
 #include "Engine/RectISerialization.h"
 #include "Engine/RotoLayer.h"
@@ -299,7 +298,7 @@ NATRON_NAMESPACE_ANONYMOUS_ENTER
 
 // The parameter names openfx-io's GenericOCIO gives every plug-in that reads,
 // writes or converts through OpenColorIO (see IOSupport/GenericOCIO.h), also
-// mirrored by Engine/ReadNode.cpp and Engine/WriteNode.cpp.
+// mirrored by Engine/WriteNode.cpp.
 const char* const ocioConfigFileKnobName = "ocioConfigFile";
 const char* const ocioWorkingSpaceKnobName = "ocioWorkingSpace";
 const char* const ocioColorSpaceKnobNames[] = { "ocioInputSpace", "ocioOutputSpace" };
@@ -352,9 +351,7 @@ Project::pushOCIOConfigToNode(const NodePtr& node)
     const std::string workingSpace = getWorkingColorSpace();
     NodePtr embedded;
     EffectInstancePtr effect = node->getEffectInstance();
-    if (ReadNode* isRead = dynamic_cast<ReadNode*>(effect.get())) {
-        embedded = isRead->getEmbeddedReader();
-    } else if (WriteNode* isWrite = dynamic_cast<WriteNode*>(effect.get())) {
+    if (WriteNode* isWrite = dynamic_cast<WriteNode*>(effect.get())) {
         embedded = isWrite->getEmbeddedWriter();
     }
 

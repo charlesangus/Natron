@@ -74,7 +74,6 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/OfxParamInstance.h"
 #include "Engine/Project.h"
-#include "Engine/ReadNode.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
@@ -696,8 +695,8 @@ OfxEffectInstance::hideDeprecatedPremultKnobs()
         "premult", "premultChanged", "premultChannel", "filePremult", "outputPremult", "inputPremult", 0
     };
 
-    // Read/Write plugins are hosted behind a ReadNode/WriteNode container: their generic
-    // GenericReader/GenericWriter params (filePremult, outputPremult, inputPremult) are
+    // Write plugins are hosted behind a WriteNode container: their generic
+    // GenericWriter params (filePremult, outputPremult, inputPremult) are
     // instantiated onto the container's knob holder, not this effect's.
     NodePtr ioContainer = getNode() ? getNode()->getIOContainer() : NodePtr();
     EffectInstancePtr containerEffect = ioContainer ? ioContainer->getEffectInstance() : EffectInstancePtr();
@@ -1435,13 +1434,6 @@ OfxEffectInstance::isReader() const
 }
 
 bool
-OfxEffectInstance::isVideoReader() const
-{
-    return isReader() && ReadNode::isVideoReader( getPluginID() );
-}
-
-
-bool
 OfxEffectInstance::isVideoWriter() const
 {
     return isWriter() && WriteNode::isVideoWriter( getPluginID() );
@@ -1713,11 +1705,7 @@ OfxEffectInstance::getInputLabel(int inputNb) const
 {
     assert(_imp->context != eContextNone);
     assert( inputNb >= 0 &&  inputNb < (int)_imp->clipsInfos.size() );
-    if (_imp->context != eContextReader) {
-        return _imp->clipsInfos[inputNb].clip->getShortLabel();
-    } else {
-        return NATRON_READER_INPUT_NAME;
-    }
+    return _imp->clipsInfos[inputNb].clip->getShortLabel();
 }
 
 std::string
@@ -1725,11 +1713,7 @@ OfxEffectInstance::getInputHint(int inputNb) const
 {
     assert(_imp->context != eContextNone);
     assert( inputNb >= 0 &&  inputNb < (int)_imp->clipsInfos.size() );
-    if (_imp->context != eContextReader) {
-        return _imp->clipsInfos[inputNb].clip->getHint();
-    } else {
-        return NATRON_READER_INPUT_NAME;
-    }
+    return _imp->clipsInfos[inputNb].clip->getHint();
 }
 
 OfxEffectInstance::MappedInputV

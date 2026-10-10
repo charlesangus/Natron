@@ -89,7 +89,6 @@
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectSerialization.h"
-#include "Engine/ReadNode.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoStrokeItem.h"
@@ -896,11 +895,8 @@ Node::computeHashRecursive(std::list<Node*>& marked)
 
     {
         NodePtr embedded;
-        ReadNode* isReadNode = dynamic_cast<ReadNode*>(_imp->effect.get());
         WriteNode* isWriteNode = dynamic_cast<WriteNode*>(_imp->effect.get());
-        if (isReadNode) {
-            embedded = isReadNode->getEmbeddedReader();
-        } else if (isWriteNode) {
+        if (isWriteNode) {
             embedded = isWriteNode->getEmbeddedWriter();
         }
         if (embedded) {
@@ -1736,15 +1732,9 @@ Node::loadKnob(const KnobIPtr & knob,
     std::string pluginID = getPluginID();
 
     {
-        // Use the plug-in ID of the encoder/decoder for reader and writer
-        ReadNode* isReadNode = dynamic_cast<ReadNode*>( getEffectInstance().get() );
+        // Use the plug-in ID of the encoder for writer
         WriteNode* isWriteNode = dynamic_cast<WriteNode*>( getEffectInstance().get() );
-        if (isReadNode) {
-            NodePtr p = isReadNode->getEmbeddedReader();
-            if (p) {
-                pluginID = p->getPluginID();
-            }
-        } else if (isWriteNode) {
+        if (isWriteNode) {
             NodePtr p = isWriteNode->getEmbeddedWriter();
             if (p) {
                 pluginID = p->getPluginID();
@@ -3070,7 +3060,7 @@ Node::createLayerKnob(const LayerKnobSpec& spec,
 void
 Node::initializeDefaultKnobs(bool loadingSerialization)
 {
-    //Readers and Writers don't have default knobs since these knobs are on the ReadNode/WriteNode itself
+    // Readers and Writers don't have default knobs since these knobs are on the Read/WriteNode itself
 #ifdef NATRON_ENABLE_IO_META_NODES
     NodePtr ioContainer = getIOContainer();
 #endif
@@ -3424,15 +3414,10 @@ Node::setEffect(const EffectInstancePtr& effect)
     NodePtr thisShared = shared_from_this();
     NodePtr ioContainer = _imp->ioContainer.lock();
     if (ioContainer) {
-        ReadNode* isReader = dynamic_cast<ReadNode*>( ioContainer->getEffectInstance().get() );
-        if (isReader) {
-            isReader->setEmbeddedReader(thisShared);
-        } else {
-            WriteNode* isWriter = dynamic_cast<WriteNode*>( ioContainer->getEffectInstance().get() );
-            assert(isWriter);
-            if (isWriter) {
-                isWriter->setEmbeddedWriter(thisShared);
-            }
+        WriteNode* isWriter = dynamic_cast<WriteNode*>(ioContainer->getEffectInstance().get());
+        assert(isWriter);
+        if (isWriter) {
+            isWriter->setEmbeddedWriter(thisShared);
         }
     }
 #endif
@@ -3750,19 +3735,6 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
     // If the effect was doing OpenGL rendering and had context(s) bound, detach them.
     _imp->effect->dettachAllOpenGLContexts();
 
-
-#if NATRON_VERSION_ENCODED < NATRON_VERSION_ENCODE(3,0,0)
-    // In Natron 2, the meta Read node is NOT a Group, hence the internal decoder node is not a child of the Read node.
-    // As a result of it, if the user deleted the meta Read node, the internal decoder is node destroyed
-    ReadNode* isReader = dynamic_cast<ReadNode*>(_imp->effect.get());
-    if (isReader) {
-        NodePtr internalDecoder = isReader->getEmbeddedReader();
-        if (internalDecoder) {
-            internalDecoder->deactivate();
-        }
-    }
-#endif
-
     ///Free all memory used by the plug-in.
 
     ///COMMENTED-OUT: Don't do this, the node may still be rendering here since the abort call is not blocking.
@@ -3867,18 +3839,6 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
             output->connectInput(thisShared, it->second);
         }
     }
-
-#if NATRON_VERSION_ENCODED < NATRON_VERSION_ENCODE(3,0,0)
-    // In Natron 2, the meta Read node is NOT a Group, hence the internal decoder node is not a child of the Read node.
-    // As a result of it, if the user deleted the meta Read node, the internal decoder is node destroyed
-    ReadNode* isReader = dynamic_cast<ReadNode*>(_imp->effect.get());
-    if (isReader) {
-        NodePtr internalDecoder = isReader->getEmbeddedReader();
-        if (internalDecoder) {
-            internalDecoder->activate();
-        }
-    }
-#endif
 
     {
         QMutexLocker l(&_imp->activatedMutex);
@@ -4408,28 +4368,15 @@ Node::getPluginDescription() const
         }
     }
 
-    // if this is a Read or Write plugin, return the description from the embedded plugin
-    std::string pluginID = getPluginID();
-    if (pluginID == PLUGINID_NATRON_READ ||
-        pluginID == PLUGINID_NATRON_WRITE) {
+    // if this is a Write plugin, return the description from the embedded plugin
+    if (getPluginID() == PLUGINID_NATRON_WRITE) {
         EffectInstancePtr effectInstance = getEffectInstance();
-        if ( effectInstance && effectInstance->isReader() ) {
-            ReadNode* isReadNode = dynamic_cast<ReadNode*>( effectInstance.get() );
+        WriteNode* isWriteNode = dynamic_cast<WriteNode*>(effectInstance.get());
 
-            if (isReadNode) {
-                NodePtr subnode = isReadNode->getEmbeddedReader();
-                if (subnode) {
-                    return subnode->getPluginDescription();
-                }
-            }
-        } else if ( effectInstance && effectInstance->isWriter() ) {
-            WriteNode* isWriteNode = dynamic_cast<WriteNode*>( effectInstance.get() );
-
-            if (isWriteNode) {
-                NodePtr subnode = isWriteNode->getEmbeddedWriter();
-                if (subnode) {
-                    return subnode->getPluginDescription();
-                }
+        if (isWriteNode) {
+            NodePtr subnode = isWriteNode->getEmbeddedWriter();
+            if (subnode) {
+                return subnode->getPluginDescription();
             }
         }
     }
@@ -5680,25 +5627,19 @@ Node::onFileNameParameterChanged(KnobI* fileKnob)
 } // Node::onFileNameParameterChanged
 
 void
-Node::getOriginalFrameRangeForReader(const std::string& pluginID,
+Node::getOriginalFrameRangeForReader(const std::string& /*pluginID*/,
                                      const std::string& canonicalFileName,
                                      int* firstFrame,
                                      int* lastFrame)
 {
-    if ( ReadNode::isVideoReader(pluginID) ) {
-        ///If the plug-in is a video, only ffmpeg may know how many frames there are
-        *firstFrame = std::numeric_limits<int>::min();
-        *lastFrame = std::numeric_limits<int>::max();
-    } else {
-        SequenceParsing::SequenceFromPattern seq;
-        FileSystemModel::filesListFromPattern(canonicalFileName, &seq);
-        if ( seq.empty() || (seq.size() == 1) ) {
-            *firstFrame = 1;
-            *lastFrame = 1;
-        } else if (seq.size() > 1) {
-            *firstFrame = seq.begin()->first;
-            *lastFrame = seq.rbegin()->first;
-        }
+    SequenceParsing::SequenceFromPattern seq;
+    FileSystemModel::filesListFromPattern(canonicalFileName, &seq);
+    if (seq.empty() || (seq.size() == 1)) {
+        *firstFrame = 1;
+        *lastFrame = 1;
+    } else if (seq.size() > 1) {
+        *firstFrame = seq.begin()->first;
+        *lastFrame = seq.rbegin()->first;
     }
 }
 
@@ -5711,18 +5652,6 @@ Node::computeFrameRangeForReader(KnobI* fileKnob)
        hence may not exactly end-up with the same file sequence as what the user
        selected from the file dialog.
      */
-    ReadNode* isReadNode = dynamic_cast<ReadNode*>( _imp->effect.get() );
-    std::string pluginID;
-
-    if (isReadNode) {
-        NodePtr embeddedPlugin = isReadNode->getEmbeddedReader();
-        if (embeddedPlugin) {
-            pluginID = embeddedPlugin->getPluginID();
-        }
-    } else {
-        pluginID = getPluginID();
-    }
-
     int leftBound = std::numeric_limits<int>::min();
     int rightBound = std::numeric_limits<int>::max();
     ///Set the originalFrameRange parameter of the reader if it has one.
@@ -5736,23 +5665,18 @@ Node::computeFrameRangeForReader(KnobI* fileKnob)
                 throw std::logic_error("Node::computeFrameRangeForReader");
             }
 
-            if ( ReadNode::isVideoReader(pluginID) ) {
-                ///If the plug-in is a video, only ffmpeg may know how many frames there are
-                originalFrameRange->setValues(std::numeric_limits<int>::min(), std::numeric_limits<int>::max(), ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
-            } else {
-                std::string pattern = isFile->getValue();
-                getApp()->getProject()->canonicalizePath(pattern);
-                SequenceParsing::SequenceFromPattern seq;
-                FileSystemModel::filesListFromPattern(pattern, &seq);
-                if ( seq.empty() || (seq.size() == 1) ) {
-                    leftBound = 1;
-                    rightBound = 1;
-                } else if (seq.size() > 1) {
-                    leftBound = seq.begin()->first;
-                    rightBound = seq.rbegin()->first;
-                }
-                originalFrameRange->setValues(leftBound, rightBound, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
+            std::string pattern = isFile->getValue();
+            getApp()->getProject()->canonicalizePath(pattern);
+            SequenceParsing::SequenceFromPattern seq;
+            FileSystemModel::filesListFromPattern(pattern, &seq);
+            if (seq.empty() || (seq.size() == 1)) {
+                leftBound = 1;
+                rightBound = 1;
+            } else if (seq.size() > 1) {
+                leftBound = seq.begin()->first;
+                rightBound = seq.rbegin()->first;
             }
+            originalFrameRange->setValues(leftBound, rightBound, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
         }
     }
 }

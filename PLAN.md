@@ -238,7 +238,7 @@ future core work has solid ground to build on.
 | M78 | Metadata In Expressions | todo | [M78-metadata-in-expressions.md](PLAN/MILESTONES/M78-metadata-in-expressions.md) |
 | M79 | Layered Document Readers | todo | [M79-layered-document-readers.md](PLAN/MILESTONES/M79-layered-document-readers.md) |
 | M80 | Native RAW Support | todo | [M80-native-raw-support.md](PLAN/MILESTONES/M80-native-raw-support.md) |
-| M82 | Render Cost Profiling | todo | [M82-render-cost-profiling.md](PLAN/MILESTONES/M82-render-cost-profiling.md) |
+| M82 | Render Cost Profiling | doing | [M82-render-cost-profiling.md](PLAN/MILESTONES/M82-render-cost-profiling.md) |
 | M83 | GPU Compute Backend Spike | todo | [M83-gpu-compute-backend-spike.md](PLAN/MILESTONES/M83-gpu-compute-backend-spike.md) |
 | M84 | GPU Placement And Residency | todo | [M84-gpu-placement-and-residency.md](PLAN/MILESTONES/M84-gpu-placement-and-residency.md) |
 | M81 | Raw GPU Kernels | todo | [M81-raw-gpu-kernels.md](PLAN/MILESTONES/M81-raw-gpu-kernels.md) |

@@ -29,3 +29,7 @@ Measure where render time actually goes on real comps, and what host↔GPU trans
   - size: M
 
 **Verification gate:** `ctest` green including `RenderProfile_Test`; profiling off by default with no measurable overhead; the transfer note and comp report exist in `PLAN/DESIGN/`; the user has given a go/no-go on M83 - GPU Compute Backend Spike.
+
+## Decisions
+
+- 2026-10-10 — Runs on a second machine alongside M75 - Native Read: the user started the GPU milestones on the 7800X3D / RX 7900 XTX workstation while M75–M80 run on another machine. This PM leaves the board frontmatter (`current`, `pm_heartbeat`) to the M75 PM, edits only the M82–M87 rows and files, and pulls with rebase before every plan push. The PR targets `main`, not stacked on M75.

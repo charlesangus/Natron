@@ -67,7 +67,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
     same colour, checked against the pre-change behaviour for one node per category.
   - size: M
 
-- [ ] M24.P3.T2 — Split the node's single colour into category body + user border
+- [x] M24.P3.T2 — Split the node's single colour into category body + user border
   - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/NodeGraphRectItem.h`, `Gui/NodeGraphRectItem.cpp`
   - approach: Keep `_currentColor` as the category body applied by `applyBrush()` (`Gui/NodeGui.cpp:1782-1801`, which also covers `_nameFrame` and `_resizeHandle`). Add an optional `_userColor` drawn as an inset pen on `_boundingBox`, width/inset per P1.T1, inside the node footprint so it never reads as the `_stateIndicator` halo. Decide and document how it interacts with `_clonedColor` (`refreshCurrentBrush()`, `:1795`). The pen follows `_boundingBox`'s corner radius (0 today).
   - verify: Xvfb screenshots: a node with no user colour unchanged; a recoloured node with category body + user border; the same node selected with the halo still distinct; a cloned node unchanged.
@@ -117,7 +117,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - verify: Builds with no unused-function warning; `grep -n kindTintColor Gui/NodeGui.cpp` returns nothing.
   - size: S
 
-- [ ] M24.P4.T2 — Remove the edge pen-width ladder
+- [x] M24.P4.T2 — Remove the edge pen-width ladder
   - files: `Gui/Edge.cpp`
   - approach: Run only if `## Decisions` says the ladder goes. Delete `kindWidthMultiplier()` (`Gui/Edge.cpp:785-797`) and its use at `:830` so every edge uses `EDGE_PEN_WIDTH`. Keep the Okabe-Ito colours (`:800-813`, `:880`). Rewrite the comment at `:779-782` to say colour is now the only kind channel. Leave the dash pattern for mask/hidden inputs alone.
   - verify: Xvfb screenshot of a graph with image and deep edges: same width, deep edges still blue, mask/hidden dash and selection/highlight unchanged.
@@ -147,6 +147,12 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 - 2026-10-10 — **Two 3D categories (user):** add both a USD 3D category and a Native 3D category, each with its own Preferences colour knob, although no scene nodes exist yet. P1.T1 gives each a default colour; P2.T1 adds both enum values and knobs.
 
 - 2026-10-10 — **P2.T2 verify:** full debug ctest 1266/1267. The one failure, `DeepChannelNodesTest.DeepRemoveLayersIsRegisteredAsADeepNode`, passed its assertions and then crashed (SIGSEGV) on a worker thread during teardown; it passed 5/5 when re-run alone. It is an intermittent teardown crash, not caused by this change. Callers check `isBackdropNode()` before `getNodeCategory()`, since there is no backdrop sentinel in `NodeCategoryEnum`.
+
+- 2026-10-10 — **GUI evidence needs the `fast` build:** debug builds trap FP exceptions (`App/NatronApp_main.cpp`, under `DEBUG`), and llvmpipe trips the trap at GL context creation, so Natron dies with SIGFPE under Xvfb (this is M25 - GL Init FP Guard). Screenshots use `build/fast/App/Natron` and the script at `build/m24-shots/m24_border.py` (untracked), run through `Tests/gui/run-gui-test.sh` with `GUI_TEST_TIMEOUT=120`.
+- 2026-10-10 — **P3.T2 / P4.T2 evidence:** shots confirm uniform edge width (2 px core), deep edges blue, image edges black, the halo distinct from the node, and a clone's body in the clone colour. The user border has no Python path until P3.T4, so its shot waits for that task. The same run surfaced three things to look at:
+  - Deep nodes are narrower than other nodes, with no icon column, so their labels overflow the box. P3.T6 fixes the label contrast but not the overflow; node-text wrap is M56's.
+  - Solid optional-input edges draw at 40% opacity, which dims a deep edge into the background now that colour is the only kind signal.
+  - Natron's SIGTERM handler calls `quitApplication()` from the signal handler and often does not exit, so a hung GUI test outlives its timeout.
 
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate

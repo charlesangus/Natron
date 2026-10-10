@@ -116,25 +116,25 @@ Replaces the `Read` container node with a native node on OpenImageIO that reads 
   - verify: full ctest green; `tools/ci/local/test.sh smoke debug` passes, including the `NatronRenderer -i Read1` check.
   - size: M
 
-- [ ] M75.P2.T15 — Strip container branches from Engine code
+- [x] M75.P2.T15 — Strip container branches from Engine code
   - files: `Engine/Node.cpp`, `Engine/NodeMain.cpp`, `Engine/AppInstance.cpp`, `Engine/Project.cpp`, `Engine/Nodes/Metadata/OfxMetadataBridge.cpp`, `Engine/OfxParamInstance.cpp`, `Engine/OfxEffectInstance.cpp`
   - approach: deletion only. Drop the Read halves at `Node.cpp:899,1740,3427,3757,3874,4417`, `NodeMain.cpp:115`, `AppInstance.cpp:1487` and the dead `#ifndef` block at `:984`, `Project.cpp:355`, `OfxMetadataBridge.cpp:190` (keep the WriteNode embedded-encoder lookup), `OfxParamInstance.cpp:323` (keep `isBundledWriter`). `OfxEffectInstance.cpp:1440` `isVideoReader` returns false, or goes if nothing else overrides it. Write branches untouched. Parallel with P2.T16.
   - verify: build; full ctest green; the M74 metadata tests and Write tests are unchanged.
   - size: M
 
-- [ ] M75.P2.T16 — Strip container branches from Gui code
+- [x] M75.P2.T16 — Strip container branches from Gui code
   - files: `Gui/DockablePanel.cpp`, `Gui/DocumentationManager.cpp`, `Gui/DopeSheet.cpp`, `Gui/DopeSheetEditorUndoRedo.cpp`, `Gui/Gui20.cpp`, `Gui/SequenceFileDialog.cpp`, `Gui/Gui.cpp`
   - approach: deletion only. Remove the `ReadNode` includes and dynamic-cast branches (`DockablePanel.cpp:141`, `DocumentationManager.cpp:281`) and the reader half of `DocumentationManager.cpp:186`. Delete the never-compiled `#ifndef NATRON_ENABLE_IO_META_NODES` branches at `DopeSheet.cpp:242,326`, `DopeSheetEditorUndoRedo.cpp:112`, `Gui20.cpp:1298`, `SequenceFileDialog.cpp:2695`, and the Windows-only reader-format loop at `Gui.cpp:92`. Parallel with P2.T15.
   - verify: build; full ctest green; `grep -rn ReadNode Gui` is empty.
   - size: M
 
-- [ ] M75.P2.T17 — Delete ReadNode and the reader-plugin map
+- [x] M75.P2.T17 — Delete ReadNode and the reader-plugin map
   - files: delete `Engine/ReadNode.h/.cpp`; `Engine/EffectInstance.h/.cpp`, `Engine/PyNodeGroup.cpp`, `Engine/WriteNode.cpp`, `Engine/AppManager.cpp/.h`, `Engine/AppManagerPrivate.h`, `Engine/OfxHost.cpp/.h`, `Gui/GuiApplicationManager.h`, `Gui/GuiApplicationManager10.cpp`, `Engine/Nodes/IO/NativeRead.h`
   - approach: compile-driven deletion after P2.T15/T16. Remove the files (Engine globs sources; reconfigure), `friend class ReadNode` (`EffectInstance.h:2627`), the includes, and the now-unused `PLUGINID_OFX_READ*` defines (`EffectInstance.h:55-85`). Move `kNatronReadNodeOCIOParamInputSpace` into `NativeRead.h` for `WriteNode.cpp:810`. Delete `readerPlugins`, `getFileFormatsForReadingAndReader`, `getReadersForFormat` and the `readersMap` parameter through `loadBuiltinNodePlugins` and `loadOFXPlugins`. Fix the `NativeRead.h:42-43` comment: Read is the only plugin under its ID.
   - verify: clean reconfigure and build; full ctest green; `grep -rn 'ReadNode\b\|readerPlugins\|isBundledReader' Engine Gui Tests` is empty.
   - size: M
 
-- [ ] M75.P2.T18 — Retire the OFX readers from the plugin bundle
+- [x] M75.P2.T18 — Retire the OFX readers from the plugin bundle
   - files: `tools/ci/local/fetch-assets.sh`, `tools/ci/smoke_test.py`, and `CMakeLists.txt` in the forks `charlesangus/openfx-io` and `charlesangus/openfx-arena`
   - approach: follow M67.P2.T10. Fork branch `m75/retire-readers` in openfx-io drops ReadOIIO (keeping WriteOIIO and OIIOText), ReadEXR, ReadPNG and ReadPFM; WritePNG/WritePFM stay for M76. In openfx-arena drop ReadPSD, ReadMisc, ReadKrita and OpenRaster (`CMakeLists.txt:159-179`), keep the ImageMagick effects, and point arena's OpenFX-IO submodule at the new openfx-io head. Re-pin `OPENFX_IO_REF`/`OPENFX_ARENA_REF` to the branch heads, then to the merge commits (merge-committed, not squashed) when the fork PRs merge with M75. Add a comment line in the style of the M67 lines saying the native Read replaces them. `smoke_test.py`'s Arena representatives must not be readers.
   - verify: after the PM reruns `fetch-assets.sh` in the container, `verify_plugin_loads` passes for IO and Arena; full ctest green; smoke passes.
@@ -152,7 +152,7 @@ Replaces the `Read` container node with a native node on OpenImageIO that reads 
   - verify: the scripts pass under Xvfb; screenshots of the panel, the layer menu and the DPX in the viewer are shared and the user approves them before sign-off.
   - size: M
 
-- [ ] M75.P2.T6 — Document the native Read
+- [x] M75.P2.T6 — Document the native Read
   - files: `Engine/Nodes/README.md`
   - approach: an "I/O nodes" section summarising the code as built: Read is native only, at `PLUGIN_MAJOR_NATRON_READ` with a single version; the extension set comes from OIIO's `extension_list` minus `kExcludedOiioFormats`, with no hand list; every entry point goes through `getReaderPluginIDForFileType`/`getSupportedReaderFileFormats`; `OfxHost` refuses reader-context OFX plugins; knob names are shared with GenericReader; colour goes through the project OCIO and honours a valid embedded colourspace; RAW is dropped and layered documents are deferred to M79. Fix the stale "Read/Write container" wording at `:120` to Write only.
   - verify: the section matches the code (`readableExtensions`, `kExcludedOiioFormats`, `PLUGIN_MAJOR_NATRON_READ`, the OfxHost skip); `lint-ci` green.
@@ -176,3 +176,4 @@ Replaces the `Read` container node with a native node on OpenImageIO that reads 
 - 2026-10-10 — **P2.T9–T13** landed as one commit (`d9f5518ff`): five parallel implementers, then a consultant fixed 77 failures (71 from EXR fixtures converted by the `*.exr` file rule, now read in the working space through `BaseTest::createWorkingSpaceRead`; a NativeRead bug where an EXR part named "Color" also became a layer; two stale container expectations). Full ctest 1371/1371, smoke green. The container IDs still appear in `NativeReadSkeleton_Test` and `NativeReadEntryPoints_Test`, which test the redirect P2.T14 removes.
 - 2026-10-10 — **P2.T14** (`d2fc63f0c`) and **P2.T19** (`9f2e7dd02`) landed after a PM restart (the previous session died with both implemented; a finisher regenerated the time-offset fixture with `tools/ci/regen_read_time_offset.py`, kept in the tree). Full ctest 1374/1374, smoke green including `-i Read1`.
 - 2026-10-10 — **One build for the rest of Phase 75.2 (user: at most one build per phase; build time is the bottleneck).** P2.T15–T18 and P2.T6 are implemented without a build, then one **release** build runs fetch-assets (new fork pins), full ctest and smoke, and P2.T3's Xvfb check uses that same release binary (GUI checks can't use debug under llvmpipe).
+- 2026-10-10 — **P2.T15** (`4eff2dd03`), **P2.T16** (`cb2ec0b2e`), **P2.T17** (`d6dcbd361`), **P2.T18** (`871953103`; fork PRs charlesangus/openfx-io#11 and charlesangus/openfx-arena#5, branch `m75/retire-readers`, to merge-commit with this milestone) and **P2.T6** (`281ecc6bf`) landed on one release build: fetch-assets with the new pins, full ctest 1374/1374, smoke green. One compile fix: `OfxEffectInstance`'s reader-context input labels used a define from `ReadNode.h`; those branches were dead and went. Beyond the briefs: arena also drops ReadSVG, ReadPDF and ReadCDR, and openfx-io drops ReadFFmpeg. `PLUGINID_OFX_READOIIO` stays because three tests assert that ID builds nothing.

@@ -97,7 +97,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - The CI image is unaffected: CI is green.
   - size: L
 
-- [ ] M84.P1.T4 — Fix the stale GL statement in the M63 decision record
+- [x] M84.P1.T4 — Fix the stale GL statement in the M63 decision record
   - files: `.plan/PLAN/DECISIONS/2026-10-04-task-graph-render-scheduler.md`
   - approach:
     - In its Risks paragraph, take OpenGL out of the "stay on the legacy path in v1" list.
@@ -593,3 +593,4 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - not persisted across sessions.
 - 2026-10-10 — **GPU tiling overrides the stub's "fine tiling stays a CPU concern"** for buffers over `maxStorageBufferRange` or the device budget.
 - 2026-10-10 — **Placement runs only in task-graph mode.** The legacy scheduler stays CPU-only.
+- 2026-10-10 — M84.P1.T4 done (plan-only change). The corrected `2026-10-04-task-graph-render-scheduler.md` must be re-published to `docs/decisions/` at the M84 gate.

@@ -147,6 +147,8 @@ NodeGraph::NodeGraph(Gui* gui,
     _imp->_undoStack->setUndoLimit( appPTR->getCurrentSettings()->getMaximumUndoRedoNodeGraph() );
     getGui()->registerNewUndoStack(_imp->_undoStack);
 
+    QObject::connect(appPTR->getCurrentSettings().get(), SIGNAL(settingChanged(KnobI*)), this, SLOT(onSettingChanged(KnobI*)));
+
     _imp->_hintInputEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
     _imp->_hintInputEdge->setDefaultColor( QColor(0, 255, 0, 100) );
     _imp->_hintInputEdge->hide();
@@ -216,6 +218,19 @@ NodeGraph::~NodeGraph()
 
     QObject::disconnect( &_imp->_refreshCacheTextTimer, SIGNAL(timeout()), this, SLOT(updateCacheSizeText()) );
     _imp->_nodeCreationShortcutEnabled = false;
+}
+
+void
+NodeGraph::onSettingChanged(KnobI* knob)
+{
+    SettingsPtr settings = appPTR->getCurrentSettings();
+
+    if (settings->isRestoringSettings() || !settings->isNodeCategoryColorKnob(knob)) {
+        return;
+    }
+    for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
+        (*it)->refreshCategoryColor();
+    }
 }
 
 bool

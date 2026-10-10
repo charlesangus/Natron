@@ -3444,6 +3444,18 @@ NodeGui::restoreCategoryAndUserColor(const NodeGuiSerialization& obj)
 }
 
 void
+NodeGui::refreshCategoryColor()
+{
+    if (dynamic_cast<BackdropGui*>(this)) {
+        return;
+    }
+    QColor color;
+    if (getCategoryColor(getNode(), &color)) {
+        setCurrentColor(color);
+    }
+}
+
+void
 NodeGui::setOverlayColor(const QColor& c)
 {
     if (_settingsPanel) {

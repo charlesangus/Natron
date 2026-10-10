@@ -3142,6 +3142,12 @@ Settings::getNodeCategoryColor(NodeCategoryEnum category,
     }
 }
 
+bool
+Settings::isNodeCategoryColorKnob(KnobI* k) const
+{
+    return (k == _defaultNodeColor.get()) || (k == _defaultGeneratorColor.get()) || (k == _defaultReaderColor.get()) || (k == _defaultWriterColor.get()) || (k == _defaultColorGroupColor.get()) || (k == _defaultFilterGroupColor.get()) || (k == _defaultTransformGroupColor.get()) || (k == _defaultTimeGroupColor.get()) || (k == _defaultDrawGroupColor.get()) || (k == _defaultKeyerGroupColor.get()) || (k == _defaultChannelGroupColor.get()) || (k == _defaultMergeGroupColor.get()) || (k == _defaultViewsGroupColor.get()) || (k == _defaultDeepGroupColor.get()) || (k == _defaultNative3DGroupColor.get()) || (k == _defaultUsd3DGroupColor.get());
+}
+
 int
 Settings::getDisconnectedArrowLength() const
 {

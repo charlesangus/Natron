@@ -243,6 +243,8 @@ public Q_SLOTS:
 
     void onAutoScrollTimerTriggered();
 
+    void onSettingChanged(KnobI* knob);
+
 private:
 
     NodeGraph(const NodeGraph&) = delete;

@@ -316,6 +316,13 @@ public:
      **/
     void restoreCategoryAndUserColor(const NodeGuiSerialization& obj);
 
+    /**
+     * @brief Re-applies this node's category body colour after a Preferences
+     * change, leaving any user colour border untouched. No-op for a backdrop,
+     * whose body colour doubles as its user colour with no way to tell the two apart.
+     **/
+    void refreshCategoryColor();
+
     void setOverlayColor(const QColor& c);
 
     void refreshKnobsAfterTimeChange(bool onlyTimeEvaluationKnobs, SequenceTime time);

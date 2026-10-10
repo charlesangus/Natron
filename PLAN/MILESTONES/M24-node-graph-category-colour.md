@@ -21,7 +21,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 
 ## Phase 24.1: Pin the visual specification
 
-- [ ] M24.P1.T1 — Survey the state of the art and pin the concrete visual spec
+- [x] M24.P1.T1 — Survey the state of the art and pin the concrete visual spec
   - files: `PLAN/DESIGN/2026-09-07-node-graph-category-colour.md` (new, on the plan branch)
   - approach: Survey how Houdini, Nuke, Fusion and Blender separate "what kind of node is this" from "what colour did the user give it" in their network editors, Houdini especially. Then pin: the closed category list and each default colour; the user-border pen width in px at 100% zoom and how it scales; inset vs outset; the minimum border/body contrast rule; and how the border stays distinct from the selection halo (`_stateIndicator`, a `NodeGraphRectItem` at `depth-1` inflated by `NATRON_STATE_INDICATOR_OFFSET`, `Gui/NodeGui.cpp:697,1064-1067`). Nodes are square-cornered today (corner radius 0, `Gui/NodeGui.cpp:634`), since M18.P4.T4 removed the kind silhouettes. Also pin: (a) whether the Reader/Writer/Generator rungs beat the Deep group (DeepWrite is Writer-coloured today); (c) the label-text luminance threshold and the light/dark text colours. Items (b) 3D category and (d) edge width ladder are user decisions recorded in `## Decisions` — implement what they say.
   - verify: The note exists, names each surveyed application and what it does, and gives every number and rule above as one unambiguous value.

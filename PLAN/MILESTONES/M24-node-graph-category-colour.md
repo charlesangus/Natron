@@ -29,7 +29,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 
 ## Phase 24.2: Make the node category a first-class engine concept
 
-- [ ] M24.P2.T1 — Add `NodeCategoryEnum` and a settings colour knob per category
+- [x] M24.P2.T1 — Add `NodeCategoryEnum` and a settings colour knob per category
   - files: `Global/Enums.h`, `Engine/Settings.h`, `Engine/Settings.cpp`
   - approach: Add `NodeCategoryEnum` beside `DataKindEnum` (`Global/Enums.h:531`)
     with the closed list fixed by M24.P1.T1 — at minimum read, write, generator,

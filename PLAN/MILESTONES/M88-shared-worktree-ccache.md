@@ -14,3 +14,4 @@ Worktree builds currently start cold: ccache's `base_dir` is unset and `hash_dir
 
 ## Decisions
 - 2026-10-10 — **Added (user):** worktree builds missed ccache entirely. Runs as its own lane, independent of the other milestones.
+- 2026-10-10 — **First measurement is a cold baseline:** existing cache entries were keyed on absolute paths, so the first `base_dir` build hits 0%. The real measurement is a second fresh worktree of the same commit after it.

@@ -5608,11 +5608,7 @@ Node::onFileNameParameterChanged(KnobI* fileKnob)
         KnobOutputFile* fileParam = dynamic_cast<KnobOutputFile*>(fileKnob);
         if (fileParam) {
             std::string pattern = fileParam->getValue();
-            std::size_t foundViewPattern = pattern.find_first_of("%v");
-            if (foundViewPattern == std::string::npos) {
-                foundViewPattern = pattern.find_first_of("%V");
-            }
-            if (foundViewPattern != std::string::npos) {
+            if ((pattern.find("%v") != std::string::npos) || (pattern.find("%V") != std::string::npos)) {
                 //We found view pattern
                 KnobIPtr viewsKnob = getKnobByName(kWriteOIIOParamViewsSelector);
                 if (viewsKnob) {

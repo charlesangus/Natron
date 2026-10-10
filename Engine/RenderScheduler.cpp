@@ -29,8 +29,14 @@
 #include <atomic>
 #include <bitset>
 #include <cassert>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <exception>
+#include <iostream>
 #include <limits>
+#include <mutex>
+#include <string>
 #include <unordered_map>
 #include <utility>
 
@@ -41,12 +47,15 @@
 #include <QThread>
 #include <QThreadPool>
 
+#include <unistd.h>
+
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
 #include "Engine/MemoryInfo.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/NativeImageEffect.h"
 #include "Engine/NonKeyParams.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OpenMPThreads.h"
@@ -148,6 +157,220 @@ private:
 };
 
 namespace {
+
+class ProfileSink {
+public:
+    ProfileSink()
+        : _enabled(false)
+    {
+        const char* env = std::getenv("NATRON_RENDER_PROFILE");
+        if (env && *env) {
+            setPath(env);
+        }
+    }
+
+    bool isEnabled() const
+    {
+        return _enabled.load(std::memory_order_relaxed);
+    }
+
+    // append() re-reads the path under the lock, so a task that saw a stale isEnabled() only loses its line.
+    void setPath(const std::string& path)
+    {
+        std::lock_guard<std::mutex> k(_mutex);
+
+        flushLocked();
+        if (path.empty()) {
+            _filePath.clear();
+            _enabled.store(false);
+        } else {
+            _filePath = path + "." + std::to_string(static_cast<long long>(::getpid()));
+            _enabled.store(true);
+        }
+    }
+
+    std::string getFilePath()
+    {
+        std::lock_guard<std::mutex> k(_mutex);
+
+        return _filePath;
+    }
+
+    void append(const std::string& line)
+    {
+        std::lock_guard<std::mutex> k(_mutex);
+
+        if (_filePath.empty()) {
+            return;
+        }
+        _buffer += line;
+        if (_buffer.size() >= kFlushBytes) {
+            flushLocked();
+        }
+    }
+
+    void flush()
+    {
+        std::lock_guard<std::mutex> k(_mutex);
+
+        flushLocked();
+    }
+
+private:
+    static const std::size_t kFlushBytes = 256 * 1024;
+
+    void flushLocked()
+    {
+        if (_buffer.empty() || _filePath.empty()) {
+            _buffer.clear();
+
+            return;
+        }
+        std::FILE* file = std::fopen(_filePath.c_str(), "ab");
+        if (file) {
+            std::fwrite(_buffer.data(), 1, _buffer.size(), file);
+            std::fclose(file);
+        } else if (!_openFailureReported) {
+            _openFailureReported = true;
+            std::cerr << "NATRON_RENDER_PROFILE: cannot open " << _filePath << " for writing; profile records are dropped" << std::endl;
+        }
+        _buffer.clear();
+    }
+
+    std::atomic<bool> _enabled;
+    bool _openFailureReported = false;
+    std::mutex _mutex;
+    std::string _filePath;
+    std::string _buffer;
+};
+
+// Heap-allocated and never destroyed because pool threads can still append while static destructors run; the
+// environment is read on first use and the atexit handler flushes what remains.
+ProfileSink&
+profileSink()
+{
+    static ProfileSink* sink = []() {
+        ProfileSink* created = new ProfileSink;
+
+        std::atexit([]() {
+            profileSink().flush();
+        });
+
+        return created;
+    }();
+
+    return *sink;
+}
+
+void
+appendJSONString(const std::string& value,
+                 std::string* out)
+{
+    out->push_back('"');
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(value[i]);
+        switch (c) {
+        case '"':
+            out->append("\\\"");
+            break;
+        case '\\':
+            out->append("\\\\");
+            break;
+        case '\n':
+            out->append("\\n");
+            break;
+        case '\r':
+            out->append("\\r");
+            break;
+        case '\t':
+            out->append("\\t");
+            break;
+        default:
+            if (c < 0x20) {
+                char buf[8];
+                std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                out->append(buf);
+            } else {
+                out->push_back(static_cast<char>(c));
+            }
+            break;
+        }
+    }
+    out->push_back('"');
+}
+
+const char*
+bitDepthName(ImageBitDepthEnum depth)
+{
+    switch (depth) {
+    case eImageBitDepthByte:
+        return "byte";
+    case eImageBitDepthShort:
+        return "short";
+    case eImageBitDepthHalf:
+        return "half";
+    case eImageBitDepthFloat:
+        return "float";
+    case eImageBitDepthNone:
+        break;
+    }
+
+    return "none";
+}
+
+std::string
+formatTaskRecord(const FrameGraph::Task& task,
+                 const EffectInstancePtr& effect,
+                 unsigned long long frameSequence,
+                 int taskIndex,
+                 long long wallNs,
+                 bool ok)
+{
+    const NodePtr& node = task.key.node;
+    const NativeImageEffect* native = dynamic_cast<const NativeImageEffect*>(effect.get());
+    const bool pointOp = native && native->isPointOp();
+    const bool glSupport = effect && (effect->supportsOpenGLRender() != ePluginOpenGLRenderSupportNone);
+    char num[192];
+    std::string line;
+
+    line.reserve(384);
+    std::snprintf(num, sizeof(num), "{\"frame\":%llu,\"task\":%d,\"plugin\":", frameSequence, taskIndex);
+    line.append(num);
+    appendJSONString(node ? node->getPluginID() : std::string(), &line);
+    line.append(",\"node\":");
+    appendJSONString(node ? node->getScriptName_mt_safe() : std::string(), &line);
+    std::snprintf(num, sizeof(num), ",\"time\":%.17g,\"view\":%d,\"mipmapLevel\":%u,\"roiPixels\":%llu,",
+                  task.key.time, task.key.view.value(), task.key.mipmapLevel,
+                  static_cast<unsigned long long>(task.roi.isNull() ? 0 : task.roi.area()));
+    line.append(num);
+    line.append("\"components\":[");
+    for (std::list<ImageLayerDesc>::const_iterator it = task.components.begin(); it != task.components.end(); ++it) {
+        if (it != task.components.begin()) {
+            line.push_back(',');
+        }
+        appendJSONString(it->getChannelsLabel(), &line);
+    }
+    std::snprintf(num, sizeof(num), "],\"bitDepth\":\"%s\",\"deps\":[", bitDepthName(task.bitdepth));
+    line.append(num);
+    for (std::size_t i = 0; i < task.dependencies.size(); ++i) {
+        if (i > 0) {
+            line.push_back(',');
+        }
+        line.append(std::to_string(task.dependencies[i]));
+    }
+    std::snprintf(num, sizeof(num), "],\"estimatedBytes\":%llu,\"wallNs\":%lld,",
+                  static_cast<unsigned long long>(task.estimatedBytes), wallNs);
+    line.append(num);
+    line.append("\"pointOp\":");
+    line.append(pointOp ? "true" : "false");
+    line.append(",\"glSupport\":");
+    line.append(glSupport ? "true" : "false");
+    line.append(",\"ok\":");
+    line.append(ok ? "true" : "false");
+    line.append("}\n");
+
+    return line;
+}
 
 const int kBackgroundRunnablePriority = 0;
 const int kInteractiveRunnablePriority = 2;
@@ -711,6 +934,9 @@ RenderScheduler::executeTask(const FramePtr& frame,
                                            caller.key.time);
         AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
         OpenMPThreadsScope openMPThreads(budget);
+        ProfileSink& sink = profileSink();
+        const bool profiling = sink.isEnabled();
+        const std::chrono::steady_clock::time_point renderStart = profiling ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
         const int rendering = ++_tasksRendering;
         if (frame->context->getStats()) {
             frame->context->getStats()->noteConcurrentTasks(rendering);
@@ -723,6 +949,10 @@ RenderScheduler::executeTask(const FramePtr& frame,
             retCode = EffectInstance::eRenderRoIRetCodeFailed;
         }
         --_tasksRendering;
+        if (profiling) {
+            const long long wallNs = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - renderStart).count();
+            sink.append(formatTaskRecord(task, effect, frame->sequence, taskIndex, wallNs, retCode == EffectInstance::eRenderRoIRetCodeOk));
+        }
 
         bool glPlanes = false;
         for (std::map<ImageLayerDesc, ImagePtr>::const_iterator it = planes.begin(); it != planes.end(); ++it) {
@@ -825,6 +1055,24 @@ RenderScheduler::executeTask(const FramePtr& frame,
         }
     }
 } // RenderScheduler::executeTask
+
+void
+RenderScheduler::setProfilePath(const std::string& path)
+{
+    profileSink().setPath(path);
+}
+
+std::string
+RenderScheduler::getProfileFilePath()
+{
+    return profileSink().getFilePath();
+}
+
+void
+RenderScheduler::flushProfile()
+{
+    profileSink().flush();
+}
 
 RenderScheduler::SharedOutputKey
 RenderScheduler::sharedOutputKeyOf(const FrameGraph::Task& task)
@@ -1120,6 +1368,9 @@ RenderScheduler::startRunnables(int count,
 void
 RenderScheduler::finalizeFrames(const std::vector<FramePtr>& finished)
 {
+    if (!finished.empty() && profileSink().isEnabled()) {
+        profileSink().flush();
+    }
     for (std::vector<FramePtr>::const_iterator it = finished.begin(); it != finished.end(); ++it) {
         const FramePtr& frame = *it;
         // No task of a finished frame runs or is queued any more, so its fields are read without the lock.

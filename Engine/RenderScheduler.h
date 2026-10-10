@@ -34,6 +34,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <string>
 #include <tuple>
 #include <vector>
 
@@ -229,6 +230,23 @@ public:
     std::size_t getBytesBudget() const;
 
     void setBytesBudgetForTests(std::size_t bytes);
+
+    /**
+     * @brief Turns the per-task cost profile on or off for this process; an empty path turns it off. It starts on when
+     * NATRON_RENDER_PROFILE is set. Each task appends one JSON line to "<path>.<pid>", in which "frame" and "task"
+     * identify the task and "deps" lists the "task" indices of its dependencies within the same frame.
+     **/
+    static void setProfilePath(const std::string& path);
+
+    /**
+     * @brief The file the profile is appended to; empty while it is off.
+     **/
+    static std::string getProfileFilePath();
+
+    /**
+     * @brief Writes the buffered profile lines to the file.
+     **/
+    static void flushProfile();
 
     /**
      * @brief The largest sum of the bytes in the stores of all frames in flight, sampled each time a task finished.

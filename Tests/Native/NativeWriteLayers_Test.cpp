@@ -176,6 +176,13 @@ protected:
         ASSERT_TRUE(bool(reader));
         _writer = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
         ASSERT_TRUE(bool(_writer));
+        // The values are compared with the constants that went in, so the file is written without conversion.
+        KnobStringBase* outputSpace = dynamic_cast<KnobStringBase*>(_writer->getKnobByName("ocioOutputSpace").get());
+        KnobBool* outputSpaceSet = dynamic_cast<KnobBool*>(_writer->getKnobByName("ocioOutputSpaceSet").get());
+        ASSERT_TRUE(outputSpace != NULL);
+        ASSERT_TRUE(outputSpaceSet != NULL);
+        outputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
+        outputSpaceSet->setValue(true);
         connectNodes(reader, _writer, 0, true);
         _reader = reader;
 

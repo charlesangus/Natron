@@ -28,8 +28,12 @@
 
 #include "Global/Macros.h"
 
+#include <optional>
+#include <string>
+
 #include "Engine/EffectInstance.h" // for PLUGINID_NATRON_WRITE
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define kNatronWriteParamFrameStep "frameIncr"
@@ -55,9 +59,11 @@
 #define kNatronWriteParamTileSize "tileSize"
 #define kNatronWriteParamFrameRange "frameRange"
 #define kNatronWriteParamPartSplitting "partSplitting"
+#define kNatronWriteParamWriteMetadata "writeMetadata"
 #define kNatronWriteParamViewsSelector "viewsSelector"
 #define kNatronWriteParamFirstFrame "firstFrame"
 #define kNatronWriteParamLastFrame "lastFrame"
+#define kNatronWriteParamOCIOOutputSpace "ocioOutputSpace"
 
 #define kNatronWriteFrameRangeUnion "union"
 #define kNatronWriteFrameRangeProject "project"
@@ -191,6 +197,11 @@ private:
     // input has none.
     void seedFrame(const KnobIntPtr& knob, bool isFirst, bool force);
 
+    // The colourspace of the file: the config's file rules for its name, else the project default
+    // for the kind of data it holds.
+    std::optional<std::string> automaticOutputSpace() const WARN_UNUSED_RETURN;
+
+    OcioSpaceKnobs _outputSpace;
     KnobOutputFileWPtr _filename;
     KnobBoolWPtr _overwrite;
     KnobChoiceWPtr _formatType;
@@ -205,6 +216,7 @@ private:
     KnobIntWPtr _zipCompressionLevel;
     KnobChoiceWPtr _tileSize;
     KnobChoiceWPtr _partSplitting;
+    KnobBoolWPtr _writeMetadata;
     KnobChoiceWPtr _views;
     KnobChoiceWPtr _frameRange;
     KnobIntWPtr _firstFrame;

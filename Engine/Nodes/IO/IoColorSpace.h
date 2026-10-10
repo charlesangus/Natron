@@ -67,15 +67,28 @@ std::string fileRuleColorSpace(const OCIO_NAMESPACE::ConstConfigRcPtr& config, c
 
 /**
  * @brief The colourspace the file's own oiio:ColorSpace tag names, by its name in \p config.
- * Empty when there is no tag or \p config has no colourspace, role or alias of that name.
+ * The tag may be a name, role, alias or Color Interop ID. Empty when there is no tag or
+ * \p config has no colourspace it names.
  **/
 std::string embeddedColorSpace(const OCIO_NAMESPACE::ConstConfigRcPtr& config, const OIIO::ImageSpec& spec);
+
+/**
+ * @brief The oiio:ColorSpace tag a file written in \p space carries: the space's Color Interop ID
+ * in the project's config when it has one, else \p space itself.
+ **/
+std::string fileTag(const Project& project, const std::string& space);
 
 /**
  * @brief The input colourspace a Read takes for \p path: the config's file rules, then the file's
  * own tag, then the project's file default for categoryOf(spec).
  **/
 std::string defaultInputSpace(const Project& project, const std::string& path, const OIIO::ImageSpec& spec);
+
+/**
+ * @brief The output colourspace a Write takes for \p path whose data falls in \p category: the
+ * config's file rules, then the project's file default for \p category.
+ **/
+std::string defaultOutputSpace(const Project& project, const std::string& path, FileColorCategoryEnum category);
 
 /**
  * @brief The processor converting \p from to \p to through the project's config, left null when

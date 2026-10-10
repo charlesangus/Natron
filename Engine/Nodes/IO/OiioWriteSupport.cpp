@@ -22,7 +22,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <initializer_list>
 #include <map>
@@ -30,12 +32,17 @@
 #include <new>
 #include <set>
 #include <system_error>
+#include <variant>
 
 #ifdef _WIN32
 #include <process.h>
 #else
 #include <unistd.h>
 #endif
+
+#include <QDebug>
+
+#include <ofxMetadata.h>
 
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 
@@ -739,6 +746,248 @@ writeFile(const std::string& path,
     temporary.keep();
 
     return true;
+}
+
+namespace {
+    bool startsWith(const std::string& s, const char* prefix)
+    {
+        return s.compare(0, std::strlen(prefix), prefix) == 0;
+    }
+
+    bool oneOf(std::initializer_list<const char*> names, const std::string& name)
+    {
+        for (const char* candidate : names) {
+            if (name == candidate) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Names whose value describes the layout of the file the metadata was read from, which the
+    // writer fixes from its own knobs; carrying them over would contradict the file being written.
+    bool describesSourceLayout(const std::string& name)
+    {
+        return oneOf({ "compression", "CompressionQuality", "dwaCompressionLevel", "planarconfig",
+                       "PixelAspectRatio", "lineOrder", "roundingmode", "chunkCount", "name", "type",
+                       "view", "multiView", "ExifVersion", "FlashPixVersion" },
+                     name);
+    }
+
+    // The tags OIIO files without a prefix; every other EXIF tag is under "Exif:".
+    bool isUnprefixedExifTag(const std::string& name)
+    {
+        return oneOf({ "Artist", "Copyright", "DateTime", "DocumentName", "HostComputer", "ImageDescription",
+                       "Make", "Model", "Orientation", "Software", "ExposureTime", "FNumber",
+                       "XResolution", "YResolution", "ResolutionUnit" },
+                     name);
+    }
+
+    bool isExcludedOiioName(const std::string& name)
+    {
+        return oneOf({ "ColorSpace", "BitsPerSample", "UnassociatedAlpha", "subimagename", "subimages",
+                       "Endian", "ioproxy", "Movie", "SHA-1", "ConstantColor", "AverageColor" },
+                     name);
+    }
+
+    bool isExcludedTiffName(const std::string& name)
+    {
+        return oneOf({ "Compression", "PhotometricInterpretation", "PlanarConfiguration", "RowsPerStrip",
+                       "Predictor", "ZipQuality", "UnassociatedAlpha" },
+                     name);
+    }
+
+    bool isExcludedDpxName(const std::string& name)
+    {
+        return oneOf({ "ImageDescriptor", "Packing", "Encoding", "Version", "EndOfLinePadding", "EndOfImagePadding" }, name);
+    }
+
+    // The reverse of the Read's conversion of a RATIONAL to a double.
+    void setRational(OIIO::ImageSpec& spec, const std::string& name, double value)
+    {
+        if (!(value > 0.) || value > 1e6) {
+            return;
+        }
+        int rate[2] = { (int)std::lround(value), 1 };
+        if (std::fabs(value - rate[0]) > 1e-9) {
+            const double thousandths = value * 1001.;
+            if (std::fabs(thousandths - std::round(thousandths)) < 1e-6) {
+                rate[0] = (int)std::lround(thousandths);
+                rate[1] = 1001;
+            } else {
+                rate[0] = (int)std::lround(value * 1000000.);
+                rate[1] = 1000000;
+            }
+        }
+        spec.attribute(name, OIIO::TypeRational, rate);
+    }
+
+    void setValue(OIIO::ImageSpec& spec, const std::string& name, const ImageMetadata::Value& value)
+    {
+        if (const int* i = std::get_if<int>(&value)) {
+            if (name == "FramesPerSecond") {
+                setRational(spec, name, *i);
+            } else {
+                spec.attribute(name, *i);
+            }
+        } else if (const double* d = std::get_if<double>(&value)) {
+            if (name == "FramesPerSecond") {
+                setRational(spec, name, *d);
+            } else {
+                // OpenEXR has no double attribute, and the tags of the other formats take a float.
+                spec.attribute(name, (float)*d);
+            }
+        } else if (const std::string* str = std::get_if<std::string>(&value)) {
+            spec.attribute(name, *str);
+        } else if (const std::vector<int>* ints = std::get_if<std::vector<int>>(&value)) {
+            if (!ints->empty()) {
+                spec.attribute(name, OIIO::TypeDesc(OIIO::TypeDesc::INT, (int)ints->size()), ints->data());
+            }
+        } else if (const std::vector<double>* doubles = std::get_if<std::vector<double>>(&value)) {
+            const std::vector<float> floats(doubles->begin(), doubles->end());
+            OIIO::TypeDesc type(OIIO::TypeDesc::FLOAT, (int)floats.size());
+            switch (floats.size()) {
+            case 0:
+                return;
+            case 2:
+                type = OIIO::TypeDesc(OIIO::TypeDesc::FLOAT, OIIO::TypeDesc::VEC2);
+                break;
+            case 3:
+                type = OIIO::TypeVector;
+                break;
+            case 9:
+                type = OIIO::TypeMatrix33;
+                break;
+            case 16:
+                type = OIIO::TypeMatrix44;
+                break;
+            default:
+                break;
+            }
+            spec.attribute(name, type, floats.data());
+        }
+    }
+
+    // Every run of digits in `text`, and whether a ';' (the drop-frame separator) occurs.
+    std::vector<int> numbersIn(const std::string& text, bool* dropFrame)
+    {
+        std::vector<int> numbers;
+        std::size_t pos = 0;
+
+        *dropFrame = false;
+        while (pos < text.size()) {
+            if (!std::isdigit((unsigned char)text[pos])) {
+                *dropFrame = *dropFrame || text[pos] == ';';
+                ++pos;
+                continue;
+            }
+            long long n = 0;
+            while (pos < text.size() && std::isdigit((unsigned char)text[pos])) {
+                n = std::min(n * 10 + (text[pos] - '0'), 1000000000LL);
+                ++pos;
+            }
+            numbers.push_back((int)n);
+        }
+
+        return numbers;
+    }
+
+    unsigned int bcd(int n)
+    {
+        return (unsigned int)(((n / 10) % 10) << 4 | (n % 10));
+    }
+
+    bool setTimecode(OIIO::ImageSpec& spec, const std::string& text)
+    {
+        bool drop;
+        const std::vector<int> n = numbersIn(text, &drop);
+
+        if (n.size() != 4 || n[0] > 23 || n[1] > 59 || n[2] > 59 || n[3] > 99) {
+            return false;
+        }
+        const unsigned int timecode[2] = { bcd(n[0]) << 24 | bcd(n[1]) << 16 | bcd(n[2]) << 8 | bcd(n[3]) | (drop ? 0x40u : 0u), 0u };
+        spec.attribute("smpte:TimeCode", OIIO::TypeTimeCode, timecode);
+
+        return true;
+    }
+
+    bool setKeycode(OIIO::ImageSpec& spec, const std::string& text)
+    {
+        bool drop;
+        const std::vector<int> n = numbersIn(text, &drop);
+
+        if (n.size() != 7) {
+            return false;
+        }
+        spec.attribute("smpte:KeyCode", OIIO::TypeKeyCode, n.data());
+
+        return true;
+    }
+} // namespace
+
+void
+applyMetadata(OIIO::ImageSpec& spec,
+              const ImageMetadata& metadata,
+              const std::string& formatName)
+{
+    const bool openExr = formatName == "openexr";
+    std::string dropped;
+
+    for (ImageMetadata::const_iterator it = metadata.begin(); it != metadata.end(); ++it) {
+        const std::string& key = it->first;
+        std::string name;
+        bool writable = true;
+
+        if (key == kOfxMetadataKeyTimecode || key == kOfxMetadataKeyEdgecode) {
+            const std::string* text = std::get_if<std::string>(&it->second);
+            const bool isTimecode = key == kOfxMetadataKeyTimecode;
+            if (!text || !(isTimecode ? setTimecode(spec, *text) : setKeycode(spec, *text))) {
+                dropped += " " + key;
+            }
+            continue;
+        }
+        if (startsWith(key, kOfxMetadataKeyPrefixExr)) {
+            const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixExr));
+            writable = openExr && !describesSourceLayout(rest);
+            name = rest;
+        } else if (startsWith(key, kOfxMetadataKeyPrefixExif)) {
+            const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixExif));
+            writable = !describesSourceLayout(rest);
+            if (startsWith(rest, "GPS:")) {
+                name = rest;
+            } else {
+                name = (!openExr && isUnprefixedExifTag(rest)) ? rest : "Exif:" + rest;
+            }
+        } else if (startsWith(key, kOfxMetadataKeyPrefixTiff)) {
+            const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixTiff));
+            writable = formatName == "tiff" && !isExcludedTiffName(rest);
+            name = "tiff:" + rest;
+        } else if (startsWith(key, kOfxMetadataKeyPrefixDpx)) {
+            const std::string rest = key.substr(std::strlen(kOfxMetadataKeyPrefixDpx));
+            writable = formatName == "dpx" && !isExcludedDpxName(rest);
+            name = "dpx:" + rest;
+        } else if (startsWith(key, kOfxMetadataKeyPrefixCin)) {
+            writable = formatName == "cineon";
+            name = "cineon:" + key.substr(std::strlen(kOfxMetadataKeyPrefixCin));
+        } else if (startsWith(key, "oiio/")) {
+            const std::string rest = key.substr(5);
+            writable = !isExcludedOiioName(rest);
+            name = "oiio:" + rest;
+        } else {
+            // The remaining ofx/ keys describe the source file or the frame, and quicktime/ has
+            // no OIIO attribute; neither is worth a log line per frame.
+            continue;
+        }
+        if (!writable || name.empty()) {
+            dropped += " " + key;
+            continue;
+        }
+        setValue(spec, name, it->second);
+    }
+    if (!dropped.empty()) {
+        qDebug() << "Metadata not written to" << formatName.c_str() << "file:" << dropped.c_str();
+    }
 }
 } // namespace OiioWriteSupport
 

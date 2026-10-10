@@ -26,7 +26,9 @@
 #include "NativeWrite.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bitset>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -35,6 +37,7 @@
 #include <limits>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -56,6 +59,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Channel/ChannelCopy.h"
+#include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Project.h"
@@ -231,6 +235,51 @@ activeID(const KnobChoicePtr& knob)
     return knob ? knob->getActiveEntry().id : std::string();
 }
 
+// The sample type a file of `formatName` is written with: the Bit Depth choice when the format
+// holds it, else the format's own pick.
+OiioWriteSupport::DataType
+resolveDataType(const KnobChoicePtr& bitDepth,
+                const std::string& formatName,
+                const std::string& extension)
+{
+    OiioWriteSupport::DataType type = OiioWriteSupport::autoDataType(formatName, extension);
+    OiioWriteSupport::DataType chosen;
+
+    if (bitDepth && OiioWriteSupport::dataTypeFromId(activeID(bitDepth), &chosen)) {
+        const std::vector<OiioWriteSupport::DataType>& valid = OiioWriteSupport::validDataTypes(formatName);
+        if (std::find(valid.begin(), valid.end(), chosen) != valid.end()) {
+            type = chosen;
+        }
+    }
+
+    return type;
+}
+
+FileColorCategoryEnum
+colorCategoryOf(OiioWriteSupport::DataType type,
+                const std::string& extension)
+{
+    switch (type) {
+    case OiioWriteSupport::DataType::Half:
+    case OiioWriteSupport::DataType::Float:
+    case OiioWriteSupport::DataType::Double:
+        return eFileColorCategoryFloat;
+    case OiioWriteSupport::DataType::UInt10:
+    case OiioWriteSupport::DataType::UInt12:
+    case OiioWriteSupport::DataType::UInt16: {
+        std::string lower = extension;
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+
+        return (lower == ".dpx" || lower == ".cin") ? eFileColorCategoryLog : eFileColorCategory16Bit;
+    }
+    case OiioWriteSupport::DataType::UInt32:
+    case OiioWriteSupport::DataType::UInt64:
+        return eFileColorCategory16Bit;
+    default:
+        return eFileColorCategory8Bit;
+    }
+}
+
 struct FrameSource {
     const Image::ReadAccess* access;
     ImageBitDepthEnum depth;
@@ -241,7 +290,24 @@ struct FrameSource {
     // Where this plane's channels start among the file channels of a pixel, and how many a pixel has.
     int outOffset;
     int outStride;
+    // The colour plane, whose RGB is converted to the output colourspace.
+    bool colour;
 };
+
+// The columns of file row `y` that the frame's source covers; the rest of the row stays black.
+bool
+coveredColumns(const FrameSource& frame,
+               int y,
+               int* x1,
+               int* x2)
+{
+    const bool inRows = (y >= frame.bounds.y1) && (y < frame.bounds.y2);
+
+    *x1 = inRows ? std::max(frame.window.x1, frame.bounds.x1) : frame.window.x2;
+    *x2 = inRows ? std::min(frame.window.x2, frame.bounds.x2) : frame.window.x2;
+
+    return *x2 > *x1;
+}
 
 template <typename SRCPIX>
 void
@@ -250,11 +316,10 @@ convertRow(const FrameSource& frame,
            float* out)
 {
     const int nOut = (int)frame.channels.size();
-    const bool inRows = (y >= frame.bounds.y1) && (y < frame.bounds.y2);
-    const int x1 = inRows ? std::max(frame.window.x1, frame.bounds.x1) : frame.window.x2;
-    const int x2 = inRows ? std::min(frame.window.x2, frame.bounds.x2) : frame.window.x2;
+    int x1 = 0;
+    int x2 = 0;
 
-    if (x2 <= x1) {
+    if (!coveredColumns(frame, y, &x1, &x2)) {
         return;
     }
     const SRCPIX* in = (const SRCPIX*)frame.access->pixelAt(x1, y);
@@ -288,6 +353,37 @@ convertFileRow(const FrameSource& frame,
         convertRow<float>(frame, y, out);
         break;
     }
+}
+
+// Converts the RGB of a colour frame's row, already in `out`, to the output colourspace.
+bool
+convertColourRow(const FrameSource& frame,
+                 int fileRow,
+                 const OCIO_NAMESPACE::CPUProcessor& processor,
+                 std::vector<float>& scratch,
+                 float* out,
+                 std::string* error)
+{
+    int x1 = 0;
+    int x2 = 0;
+
+    if (frame.channels.size() < 3 || !coveredColumns(frame, frame.window.y2 - 1 - fileRow, &x1, &x2)) {
+        return true;
+    }
+    const int count = x2 - x1;
+    scratch.resize((std::size_t)count * 3);
+    float* base = out + (std::size_t)(x1 - frame.window.x1) * (std::size_t)frame.outStride + (std::size_t)frame.outOffset;
+    for (int i = 0; i < count; ++i) {
+        std::copy(base + (std::size_t)i * (std::size_t)frame.outStride, base + (std::size_t)i * (std::size_t)frame.outStride + 3, scratch.begin() + (std::ptrdiff_t)i * 3);
+    }
+    if (!IoColorSpace::convertRow(processor, scratch.data(), count, 3, error)) {
+        return false;
+    }
+    for (int i = 0; i < count; ++i) {
+        std::copy(scratch.begin() + (std::ptrdiff_t)i * 3, scratch.begin() + (std::ptrdiff_t)i * 3 + 3, base + (std::size_t)i * (std::size_t)frame.outStride);
+    }
+
+    return true;
 }
 
 StatusEnum
@@ -619,6 +715,18 @@ NativeWrite::initializeKnobs()
     page->addKnob(bitDepth);
     _bitDepth = bitDepth;
 
+    OcioSpaceKnobs::Description outputSpace;
+    outputSpace.prefix = kNatronWriteParamOCIOOutputSpace;
+    outputSpace.label = tr("Output Colorspace");
+    outputSpace.spaceHint = tr("The OpenColorIO colorspace of the file. The image is converted to it from the project's "
+                               "working space. It is shown only when the project's config has no colorspace of that name.");
+    outputSpace.menuHint = tr("The OpenColorIO colorspace of the file. The image is converted to it from the project's "
+                              "working space. A new Write takes the colorspace the config's file rules give the file name, "
+                              "else the project's default for files of its kind. The config's default rule does not count. "
+                              "Reset to default returns to that colorspace.");
+    outputSpace.setLabel = tr("Output Colorspace Set");
+    _outputSpace.create(this, page, outputSpace, [this]() { return automaticOutputSpace(); });
+
     KnobChoicePtr compression = createKnob<KnobChoice>(tr("Compression"));
     compression->setName(kNatronWriteParamCompression);
     compression->setHintToolTip(tr("The compression of the file, for the formats that have a choice. Default lets the format decide."));
@@ -696,6 +804,14 @@ NativeWrite::initializeKnobs()
     page->addKnob(partSplitting);
     _partSplitting = partSplitting;
 
+    KnobBoolPtr writeMetadata = createKnob<KnobBool>(tr("Write Metadata"));
+    writeMetadata->setName(kNatronWriteParamWriteMetadata);
+    writeMetadata->setHintToolTip(tr("When checked, the metadata of the input image (EXR attributes, EXIF fields, timecode and so on) is written to the file, as far as the file format can hold it."));
+    writeMetadata->setDefaultValue(true);
+    writeMetadata->setAnimationEnabled(false);
+    page->addKnob(writeMetadata);
+    _writeMetadata = writeMetadata;
+
     // Its script name and its first entry are what OutputEffectInstance and Node look for.
     KnobChoicePtr views = createKnob<KnobChoice>(tr("Views"));
     views->setName(kNatronWriteParamViewsSelector);
@@ -764,7 +880,34 @@ NativeWrite::initializeKnobs()
 void
 NativeWrite::onKnobsLoaded()
 {
+    _outputSpace.refreshMenu();
     refreshOptions();
+}
+
+std::optional<std::string>
+NativeWrite::automaticOutputSpace() const
+{
+    KnobOutputFilePtr filename = _filename.lock();
+    const std::string path = filename ? filename->getValue() : std::string();
+
+    // A Write without a file converts nothing.
+    if (path.empty()) {
+        return std::string();
+    }
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    const std::string extension = extensionOf(path);
+    const std::string formatName = OiioWriteSupport::formatNameForWritableExtension(extension);
+    if (!project || formatName.empty()) {
+        return std::nullopt;
+    }
+    const OiioWriteSupport::DataType type = resolveDataType(_bitDepth.lock(), formatName, extension);
+    const std::string space = IoColorSpace::defaultOutputSpace(*project, path, colorCategoryOf(type, extension));
+    if (space.empty()) {
+        return std::nullopt;
+    }
+
+    return space;
 }
 
 void
@@ -934,9 +1077,19 @@ NativeWrite::knobChanged(KnobI* k,
     KnobOutputFilePtr filename = _filename.lock();
     KnobChoicePtr compression = _compression.lock();
     KnobChoicePtr formatType = _formatType.lock();
+    KnobChoicePtr bitDepth = _bitDepth.lock();
 
+    if (bitDepth && (k == bitDepth.get())) {
+        _outputSpace.sourceChanged();
+
+        return true;
+    }
+    if (_outputSpace.knobChanged(k, reason)) {
+        return true;
+    }
     if (filename && (k == filename.get())) {
         refreshOptions();
+        _outputSpace.sourceChanged();
         const std::string path = filename->getValue();
         if (path.empty() || !rejectUnsupportedFormat(path)) {
             clearPersistentMessage(false);
@@ -1209,16 +1362,8 @@ NativeWrite::render(const RenderActionArgs& args)
             names.insert(names.end(), fileChannelsOfPlane[p].names.begin(), fileChannelsOfPlane[p].names.end());
         }
 
-        KnobChoicePtr bitDepth = _bitDepth.lock();
         KnobChoicePtr compression = _compression.lock();
-        OiioWriteSupport::DataType type = OiioWriteSupport::autoDataType(formatName, ext);
-        OiioWriteSupport::DataType chosen;
-        if (bitDepth && OiioWriteSupport::dataTypeFromId(activeID(bitDepth), &chosen)) {
-            const std::vector<OiioWriteSupport::DataType>& valid = OiioWriteSupport::validDataTypes(formatName);
-            if (std::find(valid.begin(), valid.end(), chosen) != valid.end()) {
-                type = chosen;
-            }
-        }
+        const OiioWriteSupport::DataType type = resolveDataType(_bitDepth.lock(), formatName, ext);
 
         OiioWriteSupport::WritePart part;
         OIIO::ImageSpec& spec = part.spec;
@@ -1230,6 +1375,19 @@ NativeWrite::render(const RenderActionArgs& args)
         // Without this OIIO divides RGB by alpha on the way out for the formats it treats as
         // unassociated, and the buffer must be written as it is.
         spec.attribute("oiio:UnassociatedAlpha", 1);
+        const std::string outputSpace = _outputSpace.space();
+        if (!outputSpace.empty()) {
+            spec.attribute("oiio:ColorSpace", IoColorSpace::fileTag(*getApp()->getProject(), outputSpace));
+        }
+        OCIO_NAMESPACE::ConstCPUProcessorRcPtr toOutput;
+        {
+            std::string conversionError;
+            if (!IoColorSpace::processor(*getApp()->getProject(), _outputSpace.workingSpace(), outputSpace, _outputSpace.contextVariables(args.time), &toOutput, &conversionError)) {
+                setPersistentMessage(eMessageTypeError, conversionError);
+
+                return eStatusFailed;
+            }
+        }
         if (window.par != 1.) {
             spec.attribute("PixelAspectRatio", (float)window.par);
         }
@@ -1240,6 +1398,11 @@ NativeWrite::render(const RenderActionArgs& args)
             spec.full_y = window.display.y1;
             spec.full_width = window.display.width();
             spec.full_height = window.display.height();
+        }
+
+        const KnobBoolPtr writeMetadata = _writeMetadata.lock();
+        if (!writeMetadata || writeMetadata->getValue()) {
+            OiioWriteSupport::applyMetadata(spec, getUpstreamMetadata(args.time, args.view), formatName);
         }
 
         const std::string compressionID = activeID(compression);
@@ -1294,12 +1457,14 @@ NativeWrite::render(const RenderActionArgs& args)
                 frame.window = dataWindow;
                 frame.outOffset = 0;
                 frame.outStride = 0;
+                frame.colour = false;
                 for (std::size_t i = 0; i < fileChannelsOfPlane[p].source.size(); ++i) {
                     frame.channels.push_back(copy.srcChannels[(std::size_t)fileChannelsOfPlane[p].source[i]]);
                 }
                 plane.names = fileChannelsOfPlane[p].names;
                 std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator layer = args.outputLayers.begin();
                 std::advance(layer, filePlanes[p]);
+                frame.colour = layer->first.isColorLayer();
                 plane.label = layer->first.isColorLayer() ? std::string(kNatronColorStorageLabel) : layer->first.getLayerID();
                 planes.planes.push_back(plane);
             }
@@ -1315,6 +1480,9 @@ NativeWrite::render(const RenderActionArgs& args)
 
         const int nThreads = appPTR->getNCPUsAvailableForEffect();
         const int rowsPerChunk = std::max(1, kMinBandPixels / std::max(1, spec.width));
+        std::atomic<bool> conversionFailed(false);
+        std::string rowError;
+        std::mutex rowErrorMutex;
         const OiioWriteSupport::RowSource rowSource = [&](int part, int rowBegin, int rowEnd, float* band, OIIO::stride_t rowStride) {
             const std::vector<FrameSource>& frames = layout.frames[(std::size_t)part];
             const int rowFloats = spec.width * layout.parts[(std::size_t)part].spec.nchannels;
@@ -1323,12 +1491,23 @@ NativeWrite::render(const RenderActionArgs& args)
             const std::function<void(int)> body = [&](int chunk) {
                 const int first = rowBegin + chunk * rowsPerChunk;
                 const int last = std::min(rowEnd, first + rowsPerChunk);
+                std::vector<float> scratch;
                 for (int r = first; r < last; ++r) {
                     float* out = (float*)((char*)band + (std::ptrdiff_t)(r - rowBegin) * (std::ptrdiff_t)rowStride);
                     std::fill(out, out + rowFloats, 0.f);
                     for (std::size_t f = 0; f < frames.size(); ++f) {
                         if (frames[f].access) {
                             convertFileRow(frames[f], r, out);
+                            if (toOutput && frames[f].colour) {
+                                std::string error;
+                                if (!convertColourRow(frames[f], r, *toOutput, scratch, out, &error)) {
+                                    std::lock_guard<std::mutex> lock(rowErrorMutex);
+                                    rowError = error;
+                                    conversionFailed = true;
+
+                                    return;
+                                }
+                            }
                         }
                     }
                     if (((r - first) % 8 == 0) && cancel.check()) {
@@ -1338,10 +1517,15 @@ NativeWrite::render(const RenderActionArgs& args)
             };
             parallelForCancellable(chunks, nThreads, cancel, body);
 
-            return !cancel.check();
+            return !cancel.check() && !conversionFailed;
         };
 
         wrote = OiioWriteSupport::writeFile(path, layout.parts, rowSource, [&]() { return cancel.check(); }, &writeError);
+        if (conversionFailed) {
+            setPersistentMessage(eMessageTypeError, rowError);
+
+            return eStatusFailed;
+        }
         if (!wrote && !cancel.check()) {
             setPersistentMessage(eMessageTypeError, writeError.empty() ? tr("Could not write %1").arg(QString::fromStdString(path)).toStdString() : writeError);
 

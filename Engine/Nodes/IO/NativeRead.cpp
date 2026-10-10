@@ -285,7 +285,7 @@ NativeRead::getNativePluginDescription() const
 void
 NativeRead::initializeKnobs()
 {
-    KnobPagePtr page = createKnob<KnobPage>(tr("File"));
+    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
     KnobFilePtr filename = createKnob<KnobFile>(tr("File"));
 
     filename->setName(kOfxImageEffectFileParamName);

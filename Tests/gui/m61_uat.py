@@ -99,10 +99,10 @@ try:
     # ---- state probes
 
     COLOURS = {
-        "red": lambda c: c[0] > 200 and c[1] < 60 and c[2] < 60,
-        "green": lambda c: c[0] < 60 and c[1] > 200 and c[2] < 60,
+        "red": lambda c: c[0] > 150 and c[1] < 90 and c[2] < 90,
+        "green": lambda c: c[0] < 90 and c[1] > 150 and c[2] < 90,
         "black": lambda c: max(c) < 40,
-        "white": lambda c: min(c) > 200,
+        "white": lambda c: min(c) > 150,
     }
 
     def colour_is(name):

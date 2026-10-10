@@ -337,3 +337,4 @@ Scouted facts this plan relies on (2026-10-10):
   - point ops use push constants and have a GPU test.
 
   Minors and nits were fixed, with two deferred to M84 - GPU Placement And Residency: a concurrency-safe descriptor pool, and GlInterop double-buffering. Results: lavapipe 60/60, and all suites pass on RADV with and without push descriptors. No second round, because M84 re-reviews this code when it promotes it.
+- 2026-10-10 — Shipped: PR #48 squash-merged to `main` as `59c3ebea0` with CI green. The worktree and the `natron-dev-m83` container have been removed.

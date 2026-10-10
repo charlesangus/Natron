@@ -291,7 +291,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
 
 ## Phase 44.5: Global trackball mode
 
-- [ ] M44.P5.T1 — Track the last-touched colour knob and resolve the global-mode target
+- [x] M44.P5.T1 — Track the last-touched colour knob and resolve the global-mode target
   - files: `Gui/ColorTrackballTarget.h` (new), `Gui/ColorTrackballTarget.cpp` (new), `Gui/KnobGuiColor.cpp`, `Tests/ColorTrackballTarget_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - `ColorKnobTouchTracker`, created lazily per `Gui`, implements the Design notes (Last-touched colour knob and the target): the app-wide filter for press, wheel and focus-in, and the dynamic-property tag that `KnobGuiColor` sets on its container and panel.

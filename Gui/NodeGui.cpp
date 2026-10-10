@@ -181,27 +181,6 @@ getPixmapForMergeOperator(const QString& op,
     }
 }
 
-// Shared by the node silhouette and the input-arrow glyphs, so both use the exact
-// same tint per kind. Kept in sync with the Okabe-Ito colors Edge.cpp uses for the
-// same kinds: color is reinforcement only, never the sole signal.
-static bool
-kindTintColor(DataKindEnum kind,
-              QColor* color)
-{
-    switch (kind) {
-    case eDataKindDeep:
-        *color = QColor(0, 114, 178, 235); // Okabe-Ito blue
-        return true;
-    case eDataKindScene:
-        *color = QColor(230, 159, 0, 235); // Okabe-Ito orange
-        return true;
-    case eDataKindImage:
-    case eDataKindPolymorphic:
-    default:
-        return false;
-    }
-}
-
 static double
 srgbChannelToLinear(double c)
 {
@@ -1388,10 +1367,6 @@ NodeGui::onDataKindChanged()
     if (_outputEdge) {
         _outputEdge->refreshDataKindPen();
     }
-
-    // The silhouette reads the resolved kind at paint time, so it only follows a change that
-    // repaints the node item.
-    update();
 }
 
 void

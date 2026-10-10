@@ -56,7 +56,7 @@ Scouted facts this plan relies on (2026-10-10):
   - verify: `sha256sum` matches the upstream tag's file. A one-file compile check (`#define VMA_IMPLEMENTATION`, against the container's Vulkan headers) compiles warning-free with the project's warning flags.
   - size: S
 
-- [ ] M83.P1.T3 — Establish the host-GPU run path
+- [x] M83.P1.T3 — Establish the host-GPU run path
   - files: `tools/gpu-spike/run-host.sh`, `tools/gpu-spike/tests/DeviceList_main.cpp`
   - approach:
     - Speed runs need RADV. The quick probe saw only lavapipe inside the container, even with `--device=/dev/dri`. Find out why: device node ownership showed up as 65534 in the probe, and the ICD JSON or libdrm-amdgpu may be missing in the image.

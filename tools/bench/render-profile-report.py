@@ -2,36 +2,16 @@
 """Estimate how much of a comp's render time could move to a GPU.
 
 Reads the JSON-lines files written by the render scheduler when
-NATRON_RENDER_PROFILE=<path> is set (the files are named <path>.<pid>).
-Each line is one executed task with fields: frame, task, plugin, node, time,
-view, mipmapLevel, roiPixels, components, bitDepth, deps, estimatedBytes,
-wallNs, pointOp, glSupport, ok.
-
-Method:
-  * A task is heavy when wallNs / roiPixels exceeds --heavy-ms-per-mpx.
-  * A cheap task joins the GPU candidate set when it lies on a dependency path
-    between two heavy tasks; connected candidate tasks form a region.
-    Writer/encoder tasks (internalEncoderNode, Write plugins) never join one;
-    they bound it, so their input counts as region output.
-  * Boundary bytes of a region are the estimatedBytes of every outside task it
-    reads plus every region task whose result is read outside the region or
-    is a final output. Each is counted once.
-  * Net gain = cpu_ms / parallelism * (1 - 1 / gpu_speedup) - boundary_bytes
-    / bandwidth, in wall-clock ms, and is reported as a share of frame wall
-    time. parallelism is task time per frame divided by --wall-ms-per-frame
-    (1 when that is not given, which is right for a one-thread profile).
-    Only regions with a positive gain count as offloaded.
-  * The unified-memory scenario repeats this with --unified-bandwidth-gbps
-    (0 means transfers are free).
-
-Frames are keyed on the record's "frame" field (the render index); "time" can
-hold sentinels such as -1073741824 when time-offset nodes are in the graph.
+NATRON_RENDER_PROFILE=<path> is set (the files are named <path>.<pid>), one
+executed task per line. Times are milliseconds of thread time; gains are
+wall-clock milliseconds, also given as a share of the frame wall time. Frames
+are keyed on the record's "frame" field (the render index).
 
 wallNs is thread time, inflated by contention when many render threads run, so
 the heavy/cheap split of a multi-thread profile is unreliable. Profile with
-"--setting noRenderThreads=1" and pass that file as --serial-profile (or
-analyse the one-thread file directly); the multi-thread run then only supplies
-the task graph and --wall-ms-per-frame.
+"--setting noRenderThreads=1" and pass that file as the serial half of
+--serial-profile INPUT=SERIAL (or analyse the one-thread file directly); the
+multi-thread run then only supplies the task graph and --wall-ms-per-frame.
 """
 
 import argparse
@@ -43,45 +23,65 @@ import sys
 WRITER_NODES = ("internalEncoderNode",)
 
 
+REQUIRED_FIELDS = ("frame", "task", "plugin", "node", "deps", "roiPixels", "estimatedBytes", "wallNs")
+
+
 def load_records(paths):
-    """Returns {(path, frame): {task: record}} keeping only successful tasks."""
+    """Returns {(path, frame): {task: record}} keeping only successful tasks.
+
+    A malformed final line is what a crashed render leaves behind; it is skipped with a warning."""
     frames = collections.OrderedDict()
     for path in paths:
-        with open(path, "r", encoding="utf-8") as handle:
-            for number, line in enumerate(handle, 1):
-                line = line.strip()
-                if not line:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            lines = [(n, line.strip()) for n, line in enumerate(handle, 1) if line.strip()]
+        for index, (number, line) in enumerate(lines):
+            try:
+                rec = json.loads(line)
+                missing = [f for f in REQUIRED_FIELDS if f not in rec]
+                if missing:
+                    raise KeyError(", ".join(missing))
+            except (ValueError, KeyError, TypeError) as err:
+                if index == len(lines) - 1:
+                    sys.stderr.write("%s:%d: skipping truncated last line (%s)\n" % (path, number, err))
                     continue
-                try:
-                    rec = json.loads(line)
-                    key = (path, rec["frame"])
-                    task = rec["task"]
-                    rec["plugin"], rec["node"], rec["deps"]
-                    rec["roiPixels"], rec["estimatedBytes"], rec["wallNs"]
-                except (ValueError, KeyError) as err:
-                    sys.exit("%s:%d: bad record (%s)" % (path, number, err))
-                if not rec.get("ok", True):
-                    continue
-                frames.setdefault(key, {})[task] = rec
+                sys.exit("%s:%d: bad record (%s)" % (path, number, err))
+            if not rec.get("ok", True):
+                continue
+            frames.setdefault((path, rec["frame"]), {})[rec["task"]] = rec
     return frames
 
 
 def is_writer(rec):
-    return rec["node"] in WRITER_NODES or "write" in rec["plugin"].lower()
+    if rec["node"] in WRITER_NODES:
+        return True
+    return rec["plugin"].rsplit(".", 1)[-1].lower().startswith("write")
 
 
-def apply_serial_costs(frames, serial_frames):
-    """Replaces each task's wallNs by the one-thread cost per pixel of its node."""
-    ns = collections.defaultdict(float)
-    px = collections.defaultdict(float)
-    for tasks in serial_frames.values():
-        for rec in tasks.values():
-            ns[rec["node"]] += rec["wallNs"]
-            px[rec["node"]] += rec["roiPixels"]
-    for tasks in frames.values():
-        for rec in tasks.values():
-            if px.get(rec["node"], 0) > 0:
-                rec["wallNs"] = ns[rec["node"]] / px[rec["node"]] * rec["roiPixels"]
+def apply_serial_costs(frames, serial_frames, pairs):
+    """Replaces each task's wallNs by the one-thread cost per pixel of its node.
+
+    pairs maps an input file to its serial profile; costs are never shared between files."""
+    for path, serial_path in pairs.items():
+        ns = collections.defaultdict(float)
+        px = collections.defaultdict(float)
+        for (spath, _), tasks in serial_frames.items():
+            if spath != serial_path:
+                continue
+            for rec in tasks.values():
+                ns[rec["node"]] += rec["wallNs"]
+                px[rec["node"]] += rec["roiPixels"]
+        missing = set()
+        for (fpath, _), tasks in frames.items():
+            if fpath != path:
+                continue
+            for rec in tasks.values():
+                if px.get(rec["node"], 0) > 0:
+                    rec["wallNs"] = ns[rec["node"]] / px[rec["node"]] * rec["roiPixels"]
+                else:
+                    missing.add(rec["node"])
+        if missing:
+            sys.stderr.write("warning: %s: no cost in %s for node(s) %s; keeping their contended wallNs\n"
+                             % (path, serial_path, ", ".join(sorted(missing))))
 
 
 def ms_per_mpx(rec):
@@ -91,7 +91,7 @@ def ms_per_mpx(rec):
 
 
 def find_regions(tasks, threshold):
-    """Returns (heavy ids, list of region id-sets) for one frame."""
+    """Returns (heavy ids, region id-sets, deps, users) for one frame."""
     ids = set(tasks)
     deps = {t: [d for d in tasks[t]["deps"] if d in ids] for t in ids}
     users = {t: [] for t in ids}
@@ -160,19 +160,18 @@ def analyse(frames, args):
     for path, plist in by_file.items():
         plugin_ms = collections.defaultdict(float)
         plugin_heavy_ms = collections.defaultdict(float)
-        total_ms = heavy_ms = 0.0
+        heavy_ms = 0.0
         sigs = collections.OrderedDict()
         gain_pcie = gain_unified = 0.0
         offloaded_regions = 0
         total_ms = sum(rec["wallNs"] for _, tasks in plist for rec in tasks.values()) / 1e6
-        wall_ms = args.wall_ms_per_frame * len(plist) if args.wall_ms_per_frame > 0 else total_ms
-        parallelism = total_ms / wall_ms if wall_ms else 1.0
-        total_ms = 0.0
+        per_frame = args.wall_ms_per_frame.get(path, 0.0)
+        wall_ms = per_frame * len(plist) if per_frame > 0 else total_ms
+        parallelism = max(total_ms / wall_ms, 1.0) if wall_ms else 1.0
         for frame, tasks in plist:
             heavy, regions, deps, users = find_regions(tasks, args.heavy_ms_per_mpx)
             for t, rec in tasks.items():
                 ms = rec["wallNs"] / 1e6
-                total_ms += ms
                 plugin_ms[rec["plugin"]] += ms
                 if t in heavy:
                     heavy_ms += ms
@@ -183,11 +182,12 @@ def analyse(frames, args):
                 saved = cpu / parallelism * (1 - 1 / args.gpu_speedup)
                 g1 = saved - transfer_ms(nbytes, args.bandwidth_gbps)
                 g2 = saved - transfer_ms(nbytes, args.unified_bandwidth_gbps)
+                g1 = max(g1, 0.0)
+                g2 = max(g2, 0.0)
+                gain_pcie += g1
+                gain_unified += g2
                 if g1 > 0:
-                    gain_pcie += g1
                     offloaded_regions += 1
-                if g2 > 0:
-                    gain_unified += g2
                 sig = tuple(sorted(tasks[t]["node"] for t in region))
                 agg = sigs.setdefault(sig, {
                     "nodes": list(sig), "frames": 0, "cpu_ms": 0.0,
@@ -263,7 +263,7 @@ def self_test(args):
     args.gpu_speedup = 10.0
     args.bandwidth_gbps = 25.0
     args.unified_bandwidth_gbps = 0.0
-    args.wall_ms_per_frame = 0.0
+    args.wall_ms_per_frame = {}
     res = analyse(load_records([sample]), args)[0]
 
     def close(a, b):
@@ -282,7 +282,7 @@ def self_test(args):
     assert close(res["net_gain_ms"], 183.22 + 178.72), res["net_gain_ms"]
 
     frames = load_records([sample])
-    args.wall_ms_per_frame = 427.0 / 2
+    args.wall_ms_per_frame = {sample: 427.0 / 2}
     half = analyse(frames, args)[0]
     assert close(half["parallelism"], 2.0), half["parallelism"]
     assert close(half["net_gain_ms"], (205 + 200) / 2 * 0.9 - 2 * 1.28), half["net_gain_ms"]
@@ -313,13 +313,17 @@ def main():
                     help="bandwidth for the unified-memory scenario in GB/s; 0 means free (default 0)")
     ap.add_argument("--gpu-speedup", type=float, default=10.0,
                     help="assumed GPU speedup over the CPU for the nodes inside a region (default 10)")
-    ap.add_argument("--wall-ms-per-frame", type=float, default=0.0,
-                    help="measured wall-clock ms per frame of the same comp; parallelism is task time "
-                         "per frame divided by this (default: 1, for a one-thread profile)")
-    ap.add_argument("--serial-profile", metavar="FILE", action="append", default=[],
-                    help="one-thread profile (noRenderThreads=1) giving each node's own cost per pixel, "
-                         "replacing the contended wallNs of the input files for classification and "
-                         "region cost; may be repeated for several pids")
+    ap.add_argument("--wall-ms-per-frame", metavar="[INPUT=]MS", action="append", default=[],
+                    help="measured wall-clock ms per frame of the same comp, over the same frames as the "
+                         "input (e.g. the steady frames, not the cold first one); parallelism is task time "
+                         "per frame divided by this, at least 1. Use INPUT=MS to give one value per input "
+                         "file; a bare MS is accepted only with a single input. Default: parallelism 1, "
+                         "right for a one-thread profile")
+    ap.add_argument("--serial-profile", metavar="INPUT=SERIAL", action="append", default=[],
+                    help="pairs an input file with the one-thread profile (noRenderThreads=1) of the same "
+                         "comp; each node's own cost per pixel then replaces the contended wallNs of that "
+                         "input for classification and region cost. Costs are not shared between inputs; "
+                         "nodes absent from the serial profile keep their wallNs and are reported")
     ap.add_argument("--json", action="store_true", help="print machine-readable JSON instead of text")
     ap.add_argument("--self-test", action="store_true",
                     help="check the analysis against render-profile-sample.jsonl and exit")
@@ -332,9 +336,29 @@ def main():
         ap.error("no input files")
     if args.gpu_speedup <= 0 or args.bandwidth_gbps <= 0:
         ap.error("--gpu-speedup and --bandwidth-gbps must be positive")
+    walls = {}
+    for spec in args.wall_ms_per_frame:
+        key, sep, value = spec.rpartition("=")
+        if not sep:
+            if len(args.files) != 1:
+                ap.error("--wall-ms-per-frame needs INPUT=MS with several input files")
+            key = args.files[0]
+        elif key not in args.files:
+            ap.error("--wall-ms-per-frame: %s is not an input file" % key)
+        try:
+            walls[key] = float(value)
+        except ValueError:
+            ap.error("--wall-ms-per-frame: bad value %r" % value)
+    args.wall_ms_per_frame = walls
+    pairs = {}
+    for spec in args.serial_profile:
+        key, sep, serial = spec.partition("=")
+        if not sep or key not in args.files:
+            ap.error("--serial-profile needs INPUT=SERIAL with INPUT one of the input files")
+        pairs[key] = serial
     frames = load_records(args.files)
-    if args.serial_profile:
-        apply_serial_costs(frames, load_records(args.serial_profile))
+    if pairs:
+        apply_serial_costs(frames, load_records(pairs.values()), pairs)
     results = analyse(frames, args)
     if args.json:
         json.dump(results, sys.stdout, indent=2)

@@ -34,6 +34,8 @@
 #include <utility>
 #include <vector>
 
+#include <unistd.h>
+
 #include <gtest/gtest.h>
 
 #include <QString>
@@ -134,52 +136,72 @@ protected:
     {
         BaseTest::SetUp();
         getApp()->getProject()->reset(false, true);
+        const char* tmp = std::getenv("TMPDIR");
+        std::string pattern = std::string(tmp && *tmp ? tmp : "/tmp") + "/render_profile_test_XXXXXX";
+        ASSERT_TRUE(mkdtemp(&pattern[0]) != NULL);
+        _dir = pattern;
     }
 
     virtual void TearDown() OVERRIDE
     {
         RenderScheduler::setProfilePath(std::string());
         getApp()->getProject()->reset(false, true);
+        if (!_dir.empty()) {
+            std::remove(RenderScheduler::getProfileFilePath().c_str());
+            rmdir(_dir.c_str());
+        }
         BaseTest::TearDown();
     }
+
+    // Read -> Grade -> Blur -> Merge, with a CheckerBoard source that needs no file on disk.
+    void buildScene()
+    {
+        source = createNode(QString::fromUtf8(kCheckerBoardPluginID));
+        grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE), PLUGIN_MAJOR_NATRON_GRADE);
+        blur = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), PLUGIN_MAJOR_NATRON_BLUR);
+        merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
+        ASSERT_TRUE(source && grade && blur && merge);
+        connectNodes(source, grade, 0, true);
+        connectNodes(grade, blur, 0, true);
+        connectNodes(blur, merge, 0, true);
+        connectNodes(source, merge, 1, true);
+    }
+
+    // Returns the graph that was rendered.
+    FrameGraph renderScene()
+    {
+        const double time = 1.;
+        const ViewIdx view(0);
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
+        RenderStatsPtr stats = std::make_shared<RenderStats>(false);
+        ParallelRenderArgsSetter frameArgs(time, view, false, false, abortInfo, merge, 0, getApp()->getTimeLine().get(), NodePtr(), false, false, stats);
+        std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+        EXPECT_NE(EffectInstance::computeRequestPass(time, view, 0, RectD(0., 0., kWindowSize, kWindowSize), merge, *request), eStatusFailed);
+        frameArgs.updateNodesRequest(*request);
+        FrameRenderContextPtr context = FrameRenderContext::createFromSetter(frameArgs, abortInfo, stats, time, view);
+        context->setRequest(request);
+        FrameGraph graph = RenderScheduler::buildGraph(context, merge, time, view, 0);
+        EXPECT_EQ(graph.tasks.size(), 4u);
+        const FrameGraph expected = graph;
+        FrameFuturePtr future = appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Background);
+        EXPECT_EQ(future->wait(), EffectInstance::eRenderRoIRetCodeOk);
+        RenderScheduler::flushProfile();
+
+        return expected;
+    }
+
+    std::string _dir;
+    NodePtr source, grade, blur, merge;
 };
 
-// The graph stands in for Read -> Grade -> Blur -> Merge with a CheckerBoard source, which needs no file on disk.
 TEST_F(RenderProfileTest, OneRecordPerTaskWithTheGraphsEdges)
 {
-    NodePtr source = createNode(QString::fromUtf8(kCheckerBoardPluginID));
-    NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE), PLUGIN_MAJOR_NATRON_GRADE);
-    NodePtr blur = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), PLUGIN_MAJOR_NATRON_BLUR);
-    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE), PLUGIN_MAJOR_NATRON_MERGE);
-    ASSERT_TRUE(source && grade && blur && merge);
-    connectNodes(source, grade, 0, true);
-    connectNodes(grade, blur, 0, true);
-    connectNodes(blur, merge, 0, true);
-    connectNodes(source, merge, 1, true);
-
-    const std::string base = "render_profile_test.jsonl";
-    RenderScheduler::setProfilePath(base);
+    buildScene();
+    RenderScheduler::setProfilePath(_dir + "/profile.jsonl");
     const std::string file = RenderScheduler::getProfileFilePath();
     ASSERT_FALSE(file.empty());
-    std::remove(file.c_str());
 
-    const double time = 1.;
-    const ViewIdx view(0);
-    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
-    RenderStatsPtr stats = std::make_shared<RenderStats>(false);
-    ParallelRenderArgsSetter frameArgs(time, view, false, false, abortInfo, merge, 0, getApp()->getTimeLine().get(), NodePtr(), false, false, stats);
-    std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
-    ASSERT_NE(EffectInstance::computeRequestPass(time, view, 0, RectD(0., 0., kWindowSize, kWindowSize), merge, *request), eStatusFailed);
-    frameArgs.updateNodesRequest(*request);
-    FrameRenderContextPtr context = FrameRenderContext::createFromSetter(frameArgs, abortInfo, stats, time, view);
-    context->setRequest(request);
-    FrameGraph graph = RenderScheduler::buildGraph(context, merge, time, view, 0);
-    ASSERT_EQ(graph.tasks.size(), 4u);
-    const FrameGraph expected = graph;
-
-    FrameFuturePtr future = appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Background);
-    ASSERT_EQ(future->wait(), EffectInstance::eRenderRoIRetCodeOk);
-    RenderScheduler::flushProfile();
+    const FrameGraph expected = renderScene();
 
     std::map<int, Record> records;
     std::ifstream in(file.c_str());
@@ -190,6 +212,8 @@ TEST_F(RenderProfileTest, OneRecordPerTaskWithTheGraphsEdges)
         EXPECT_EQ(r.frame, records.begin()->second.frame);
     }
     ASSERT_EQ(records.size(), expected.tasks.size());
+    int gradeTask = -1;
+    int blurTask = -1;
     for (std::size_t i = 0; i < expected.tasks.size(); ++i) {
         std::map<int, Record>::const_iterator it = records.find(static_cast<int>(i));
         ASSERT_TRUE(it != records.end()) << "no record for task " << i;
@@ -200,8 +224,36 @@ TEST_F(RenderProfileTest, OneRecordPerTaskWithTheGraphsEdges)
         EXPECT_GT(it->second.wallNs, 0);
         if (task.key.node == grade) {
             EXPECT_TRUE(it->second.pointOp);
+            gradeTask = static_cast<int>(i);
+        } else if (task.key.node == blur) {
+            blurTask = static_cast<int>(i);
         }
     }
+    ASSERT_GE(gradeTask, 0);
+    ASSERT_GE(blurTask, 0);
+    // Stated independently of the graph the profiler read.
+    EXPECT_EQ(records[blurTask].deps, std::vector<int>(1, gradeTask));
+}
 
-    std::remove(file.c_str());
+TEST_F(RenderProfileTest, OffWritesNoFile)
+{
+    buildScene();
+    RenderScheduler::setProfilePath(_dir + "/profile.jsonl");
+    const std::string file = RenderScheduler::getProfileFilePath();
+    RenderScheduler::setProfilePath(std::string());
+    EXPECT_TRUE(RenderScheduler::getProfileFilePath().empty());
+
+    renderScene();
+
+    EXPECT_FALSE(std::ifstream(file.c_str()).good());
+}
+
+TEST_F(RenderProfileTest, UnwritablePathDoesNotAffectTheRender)
+{
+    buildScene();
+    RenderScheduler::setProfilePath(_dir + "/missing/profile.jsonl");
+
+    renderScene();
+
+    EXPECT_FALSE(std::ifstream(RenderScheduler::getProfileFilePath().c_str()).good());
 }

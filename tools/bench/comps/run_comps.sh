@@ -5,9 +5,6 @@
 #
 #   [TAG=serial RENDERER_ARGS="--setting noRenderThreads=1"] tools/bench/comps/run_comps.sh [FIRST LAST [comp ...]]
 #
-# TAG is appended to the output names (<comp>-<TAG>.steady.jsonl) and RENDERER_ARGS is passed to
-# NatronRenderer; a one-thread run gives each node's cost without contention from its siblings.
-#
 # Waits for other benchmarks on the host to finish first. Output lands in build/bench/m82-profile/.
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/../../.." && pwd)

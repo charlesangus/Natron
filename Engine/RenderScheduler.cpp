@@ -33,6 +33,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <iostream>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -54,8 +55,8 @@
 #include "Engine/Image.h"
 #include "Engine/MemoryInfo.h"
 #include "Engine/Node.h"
-#include "Engine/NonKeyParams.h"
 #include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/NonKeyParams.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OpenMPThreads.h"
 #include "Engine/ParallelRenderArgs.h"
@@ -157,9 +158,6 @@ private:
 
 namespace {
 
-// Appends one JSON object per executed task to "<path>.<pid>". The lines are formatted by the caller and only the
-// append to the in-memory buffer happens under the lock, so pool threads never wait on file I/O except when the
-// buffer fills.
 class ProfileSink {
 public:
     ProfileSink()
@@ -171,16 +169,12 @@ public:
         }
     }
 
-    ~ProfileSink()
-    {
-        flush();
-    }
-
     bool isEnabled() const
     {
         return _enabled.load(std::memory_order_relaxed);
     }
 
+    // append() re-reads the path under the lock, so a task that saw a stale isEnabled() only loses its line.
     void setPath(const std::string& path)
     {
         std::lock_guard<std::mutex> k(_mutex);
@@ -206,6 +200,9 @@ public:
     {
         std::lock_guard<std::mutex> k(_mutex);
 
+        if (_filePath.empty()) {
+            return;
+        }
         _buffer += line;
         if (_buffer.size() >= kFlushBytes) {
             flushLocked();
@@ -233,23 +230,36 @@ private:
         if (file) {
             std::fwrite(_buffer.data(), 1, _buffer.size(), file);
             std::fclose(file);
+        } else if (!_openFailureReported) {
+            _openFailureReported = true;
+            std::cerr << "NATRON_RENDER_PROFILE: cannot open " << _filePath << " for writing; profile records are dropped" << std::endl;
         }
         _buffer.clear();
     }
 
     std::atomic<bool> _enabled;
+    bool _openFailureReported = false;
     std::mutex _mutex;
     std::string _filePath;
     std::string _buffer;
 };
 
-// Function-local so that the environment is read once, on the first task, and the destructor flushes at exit.
+// Heap-allocated and never destroyed because pool threads can still append while static destructors run; the
+// environment is read on first use and the atexit handler flushes what remains.
 ProfileSink&
 profileSink()
 {
-    static ProfileSink sink;
+    static ProfileSink* sink = []() {
+        ProfileSink* created = new ProfileSink;
 
-    return sink;
+        std::atexit([]() {
+            profileSink().flush();
+        });
+
+        return created;
+    }();
+
+    return *sink;
 }
 
 void
@@ -1358,6 +1368,9 @@ RenderScheduler::startRunnables(int count,
 void
 RenderScheduler::finalizeFrames(const std::vector<FramePtr>& finished)
 {
+    if (!finished.empty() && profileSink().isEnabled()) {
+        profileSink().flush();
+    }
     for (std::vector<FramePtr>::const_iterator it = finished.begin(); it != finished.end(); ++it) {
         const FramePtr& frame = *it;
         // No task of a finished frame runs or is queued any more, so its fields are read without the lock.

@@ -147,7 +147,7 @@ NodeGraph::NodeGraph(Gui* gui,
     _imp->_undoStack->setUndoLimit( appPTR->getCurrentSettings()->getMaximumUndoRedoNodeGraph() );
     getGui()->registerNewUndoStack(_imp->_undoStack);
 
-    QObject::connect(appPTR->getCurrentSettings().get(), SIGNAL(settingChanged(KnobI*)), this, SLOT(onSettingChanged(KnobI*)));
+    QObject::connect(appPTR->getCurrentSettings().get(), SIGNAL(settingsSaved()), this, SLOT(onSettingsSaved()));
 
     _imp->_hintInputEdge = new Edge(0, 0, NodeGuiPtr(), _imp->_nodeRoot);
     _imp->_hintInputEdge->setDefaultColor( QColor(0, 255, 0, 100) );
@@ -221,18 +221,22 @@ NodeGraph::~NodeGraph()
 }
 
 void
-NodeGraph::onSettingChanged(KnobI* knob)
+NodeGraph::onSettingsSaved()
 {
-    SettingsPtr settings = appPTR->getCurrentSettings();
-
-    if (settings->isRestoringSettings() || !settings->isNodeCategoryColorKnob(knob)) {
-        return;
-    }
+    // Settings are only committed on Save (or Restore Defaults followed by
+    // Save), never while the Preferences panel is merely being edited, so a
+    // Discard never reaches here. Refresh every node unconditionally rather
+    // than tracking which category/edge colour knobs actually changed:
+    // refreshCategoryColor() already early-outs when a node's colour is
+    // unchanged, and this fires once per save, not per edit.
     for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
         (*it)->refreshCategoryColor();
     }
     for (NodesGuiList::const_iterator it = _imp->_nodesTrash.begin(); it != _imp->_nodesTrash.end(); ++it) {
         (*it)->refreshCategoryColor();
+    }
+    if (scene()) {
+        scene()->update();
     }
 }
 

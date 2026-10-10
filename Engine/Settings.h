@@ -428,6 +428,15 @@ Q_SIGNALS:
 
     void settingChanged(KnobI* knob);
 
+    /**
+     * @brief Emitted once settings have actually been committed to disk
+     * (the Preferences Save button, restoring defaults followed by Save, or
+     * any of the saveSettings()/saveSetting()/saveAllSettings() paths), as
+     * opposed to settingChanged(), which fires on every edit even before the
+     * user has chosen to keep it.
+     **/
+    void settingsSaved();
+
 private:
 
     virtual void initializeKnobs() OVERRIDE FINAL;

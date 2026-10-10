@@ -243,7 +243,7 @@ public Q_SLOTS:
 
     void onAutoScrollTimerTriggered();
 
-    void onSettingChanged(KnobI* knob);
+    void onSettingsSaved();
 
 private:
 

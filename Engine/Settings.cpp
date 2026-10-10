@@ -2052,6 +2052,8 @@ Settings::saveSettings(const std::vector<KnobI*>& knobs,
     if (doWarnings) {
         warnChangedKnobs(changedKnobs);
     }
+
+    Q_EMIT settingsSaved();
 } // saveSettings
 
 void

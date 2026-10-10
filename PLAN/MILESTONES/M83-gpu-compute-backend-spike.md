@@ -68,7 +68,7 @@ Scouted facts this plan relies on (2026-10-10):
 
 ## Phase 83.2: Vulkan core (the layer M84 promotes)
 
-- [ ] M83.P2.T1 — Headless device, queues and allocator
+- [x] M83.P2.T1 — Headless device, queues and allocator
   - files: `tools/gpu-spike/src/GpuDevice.h`, `tools/gpu-spike/src/GpuDevice.cpp`, `tools/gpu-spike/src/Vma.cpp`, `tools/gpu-spike/tests/GpuDevice_Test.cpp`
   - approach:
     - Create a Vulkan 1.3 instance with no WSI or surface extensions, so it needs no X, Wayland or EGL. `VK_LAYER_KHRONOS_validation` is used when present; neither the image nor the host has it, so its absence is not an error.

@@ -68,7 +68,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - the per-plugin CPU numbers that P6.T2's cost table will use.
   - size: M
 
-- [ ] M84.P1.T2 — Measure host-import registration cost and churn on RADV
+- [x] M84.P1.T2 — Measure host-import registration cost and churn on RADV
   - files: `tools/gpu-spike/bench/ImportCost_main.cpp` (new), `tools/gpu-spike/CMakeLists.txt`
   - approach:
     - Allocate page-aligned buffers of 1 MB, 133 MB (UHD), 530 MB (8K) and 4 GB.
@@ -621,3 +621,16 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - **CI:** unaffected, because the workflows use the base image directly.
   - **Host follow-up:** the host still needs the udev rule (`KERNEL=="renderD*", SUBSYSTEM=="drm", MODE="0666"`) for this to survive reboots.
 - 2026-10-10 — The M84 branch is stacked on `milestone/m83-gpu-backend-spike` while PR #48 waits on CI (user: work ahead). Rebase onto `main` after #48 squash-merges, dropping the M83 commits. M84 commits so far after the stacking rebase: `62bc42d6a` Blur buffer, `3e29ed34b` graph_bench (merged with M83's `BENCH_SIZE`), `d0995e115` dev container.
+- 2026-10-10 — M84.P1.T2 done. **Host-import cost on RADV.** **Decision for P4.T1: a recycling pool for large page-aligned buffers**, not per-allocation import caching.
+
+  | Size | pin (touched) | unpin | pin (untouched, page faults) | fresh `aligned_alloc` + touch | free |
+  |---|---|---|---|---|---|
+  | UHD | 2.4–3.6 ms | 0.14 ms | ~30 ms | 40–44 ms | ~6 ms |
+  | 8K | 12–29 ms | 0.45 ms | ~135 ms | ~157 ms | ~23 ms |
+
+  - **Above 4 GiB:** a 4 GB import fails on RADV (`VK_ERROR_UNKNOWN`), so imports must stay under that size.
+  - **UHD round-trip per frame:**
+    - fresh buffers: 105–126 ms;
+    - recycled buffers with cached imports: 10.7–11.2 ms;
+    - recycled buffers through staging: 19.5–20.4 ms.
+  - **Why a pool:** fresh allocation and first touch dominate, so only recycling makes host-import pay off.

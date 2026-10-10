@@ -242,7 +242,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
     - With the property unset, the screenshot matches the pre-change layout pixel for pixel.
   - size: M
 
-- [ ] M44.P4.T2 — Wire `ColorAdjustPanel` into `KnobGuiColor` as the dropdown, replacing the popup, with gesture-to-undo plumbing
+- [x] M44.P4.T2 — Wire `ColorAdjustPanel` into `KnobGuiColor` as the dropdown, replacing the popup, with gesture-to-undo plumbing
   - files: `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`, `Gui/ColorKnobEditSession.h` (new), `Gui/ColorKnobEditSession.cpp` (new)
   - approach:
     - **Toggle.** `_colorSelectorButton` becomes a checkable ▸/▾ toggle for non-simplified knobs. The `QWidgetAction` popup stays on the simplified path only.
@@ -452,3 +452,4 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
   - The u′v′ sides are 0.513/0.482/0.566, not the design note's 0.59.
 - 2026-10-10 — **P2.T1: the OCIO probe is D65-adapted.** `cie_xyz_d65_interchange` adapts ACEScg's D60 white to D65, so a real ACES 2.0 Studio project reports luma ≈ (0.2677, 0.6743, 0.0580) and shifted primaries, not the textbook AP1 values. The tests assert the measured values. Neutral (1,1,1) still maps to the wheel centre, because the white point is the image of neutral. The no-project fallback (`ColorMath::acesCgLumaWeights()`, native AP1) differs from a real project by about 0.005–0.009 in chroma. That is acceptable for a fallback, but the two are not interchangeable in tests.
 - 2026-10-10 — **P3.T4 for UAT:** the slider ranges and the per-pixel rates disagree for Offset temp/tint. The range is ±50 while the rate is 7e-4/px, so the marker barely moves. Retune the ranges or the rates in `TrackballRates`/`sliderMapping` after the user tries it. The panel's signal is `valuesEdited(value, Start|Move|End, undoLabel)`.
+- 2026-10-10 — **P4.T2:** colour knobs that share a row with other knobs never get the below-row hook (P4.T1's rule), so they keep the old popup, as simplified and viewer colour knobs do. Confirm this at UAT. `Gui/ColorKnobEditSession.cpp` is new, so the end build must re-run cmake.

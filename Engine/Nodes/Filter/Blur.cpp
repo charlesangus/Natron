@@ -742,12 +742,16 @@ Blur::render(const RenderActionArgs& args)
         const PlaneJob& job = jobs[j];
         const ProcessedPlanes planes(job);
         const int nPlanes = planes.count();
-        std::vector<float> buffer(processing ? planeSize * nPlanes : 0);
+        // Left uninitialised: fillBuffer() writes every element, and zeroing here would fault the pages in
+        // on this thread alone.
+        const std::size_t bufferSize = processing ? planeSize * nPlanes : 0;
+        const std::unique_ptr<float[]> bufferStorage(bufferSize ? new float[bufferSize] : NULL);
+        float* const buffer = bufferStorage.get();
 
-        if (!buffer.empty()) {
+        if (buffer) {
             // 1. The source over the buffer, outside its image by the boundary condition, divided by the "(Un)premult by"
             // channel where that is usable.
-            fillBuffer(job, planes, bufferRect, params.neumann ? Boundary::Nearest : Boundary::Zero, nThreads, cancel, &buffer[0]);
+            fillBuffer(job, planes, bufferRect, params.neumann ? Boundary::Nearest : Boundary::Zero, nThreads, cancel, buffer);
             if (cancel.check()) {
                 return eStatusOK;
             }
@@ -769,7 +773,7 @@ Blur::render(const RenderActionArgs& args)
                             }
                             const int p = line / bufferHeight;
                             const int row = line % bufferHeight;
-                            filterX.apply(&buffer[(std::size_t)p * planeSize + (std::size_t)row * bufferWidth], bufferWidth, 1, scratch);
+                            filterX.apply(buffer + (std::size_t)p * planeSize + (std::size_t)row * bufferWidth, bufferWidth, 1, scratch);
                         }
                     };
                     forEachLineChunk(nPlanes * bufferHeight, (std::size_t)bufferWidth * tapsX, nThreads, cancel, rows);
@@ -791,7 +795,7 @@ Blur::render(const RenderActionArgs& args)
                             }
                             const int p = line / blocksPerPlane;
                             const int column = (line % blocksPerPlane) * block;
-                            filterY.applyColumns(&buffer[(std::size_t)p * planeSize + column], bufferHeight, bufferWidth, std::min(block, bufferWidth - column), scratch);
+                            filterY.applyColumns(buffer + (std::size_t)p * planeSize + column, bufferHeight, bufferWidth, std::min(block, bufferWidth - column), scratch);
                         }
                     };
                     forEachLineChunk(nPlanes * blocksPerPlane, (std::size_t)bufferHeight * block * tapsY, nThreads, cancel, columnBlocks);
@@ -807,7 +811,7 @@ Blur::render(const RenderActionArgs& args)
                             }
                             const int p = line / bufferWidth;
                             const int column = line % bufferWidth;
-                            filterY.apply(&buffer[(std::size_t)p * planeSize + column], bufferHeight, bufferWidth, scratch);
+                            filterY.apply(buffer + (std::size_t)p * planeSize + column, bufferHeight, bufferWidth, scratch);
                         }
                     };
                     forEachLineChunk(nPlanes * bufferWidth, (std::size_t)bufferHeight, nThreads, cancel, columns);
@@ -826,7 +830,7 @@ Blur::render(const RenderActionArgs& args)
         layout.processWindow = processWindow;
         layout.processing = processing;
         layout.bufferRect = bufferRect;
-        layout.buffer = buffer.empty() ? NULL : &buffer[0];
+        layout.buffer = buffer;
         layout.mix = mix;
         writeWindow(job, planes, maskSource, layout, nThreads, cancel, [&](float v, int p) -> float {
             if (scaleDerivative) {

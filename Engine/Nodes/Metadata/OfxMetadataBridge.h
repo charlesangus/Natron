@@ -79,6 +79,17 @@ OFX::Host::ImageEffect::ClipInstance* getOfxOutputClip(const EffectInstancePtr& 
  * of it, so the caller must not hold a lock that an invalidation of those effects could wait on.
  **/
 ImageMetadata getOfxEffectOutputMetadata(const EffectInstancePtr& effect, double time) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The effect whose output is, to the pixel and to the metadata, what effect puts out:
+ * effect itself unless it is a NoOpBase (a Dot, a group Output), in which case the chain of
+ * NoOpBase nodes is followed through input 0 to the first node that is not one. A NoOpBase is
+ * always an identity and has no knob that touches metadata, so it adds nothing of its own. If
+ * the chain ends on a NoOpBase with nothing connected, that node is returned, so the caller
+ * sees what it would have seen for it before. A chain that loops back on itself is cut at the
+ * node that closes it.
+ **/
+EffectInstancePtr skipPassThroughNodes(const EffectInstancePtr& effect) WARN_UNUSED_RETURN;
 } // namespace OfxMetadataBridge
 
 NATRON_NAMESPACE_EXIT

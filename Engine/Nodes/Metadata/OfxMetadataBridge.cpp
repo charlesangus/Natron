@@ -27,6 +27,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -39,6 +40,7 @@
 // clang-format on
 
 #include "Engine/EffectInstance.h"
+#include "Engine/NoOpBase.h"
 #include "Engine/Node.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
@@ -205,6 +207,26 @@ getOfxOutputClip(const EffectInstancePtr& effect)
     OfxImageEffectInstance* instance = ofxEffect->effectInstance();
 
     return instance ? instance->getClip(kOfxImageEffectOutputClipName) : NULL;
+}
+
+EffectInstancePtr
+skipPassThroughNodes(const EffectInstancePtr& effect)
+{
+    EffectInstancePtr current = effect;
+    std::set<const EffectInstance*> visited;
+
+    while (current && dynamic_cast<NoOpBase*>(current.get()) && current->getNInputs() > 0) {
+        if (!visited.insert(current.get()).second) {
+            break;
+        }
+        EffectInstancePtr next = current->getInput(0);
+        if (!next) {
+            break;
+        }
+        current = next;
+    }
+
+    return current;
 }
 
 ImageMetadata

@@ -121,6 +121,15 @@ edits or drops keys overrides `deriveOutputMetadata()`, usually starting from
   (the embedded decoder's or encoder's for a container), converted by
   `OfxMetadataBridge`. Any other kind of effect gives an empty map.
   `getInputEffectMetadata()` is the one place that lookup is extended.
+- A `NoOpBase` input (a Dot, a group Output, the typed test pass-throughs) is
+  looked through, along any chain of them, to the node connected to its input
+  0: `OfxMetadataBridge::skipPassThroughNodes()` does the walk, for native
+  derivation and for an OpenFX input clip alike. A `NoOpBase` is always an
+  identity and has no metadata of its own to add. One with nothing connected
+  (or no input, like a group Input or a Backdrop) ends the walk and is treated
+  as before: empty for a native node, the host-derived keys for an OpenFX clip.
+  Nothing extra invalidates: the hash change that reaches a node past a Dot
+  already reaches the Dot's downstream.
 - Every node's result is cached per `(time, view)`, overrides included, and
   dropped on every knob change of the node or anything upstream of it, every
   connection change (both arrive as a node hash change) and every

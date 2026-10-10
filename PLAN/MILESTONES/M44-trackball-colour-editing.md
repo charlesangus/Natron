@@ -8,7 +8,7 @@ Natron's colour knobs get a trackball adjustment panel that drops down under the
 
 All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothing from Qt or OCIO and takes the luma weights and the XYZ matrix as plain doubles. Tests go in the **`Tests`** executable: add `Tests/ColorWheelMath_Test.cpp` to `Tests_SOURCES` in `Tests/CMakeLists.txt`, then run `ctest --test-dir build/debug -R ColorWheelMath` inside `tools/ci/local/devshell.sh`, after `tools/ci/local/build.sh debug`. Engine sources are globbed (`Engine/CMakeLists.txt:37`), so new files need a re-configure, not a list edit.
 
-- [ ] M44.P1.T1 — Add the luma basis, roles and value edits with alpha tracking
+- [x] M44.P1.T1 — Add the luma basis, roles and value edits with alpha tracking
   - files: `Engine/ColorWheelMath.h` (new), `Engine/ColorWheelMath.cpp` (new), `Tests/ColorWheelMath_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - `ColorKnobRoleEnum { eColorKnobRoleAuto, Gain, Offset, Colour, Power }`.

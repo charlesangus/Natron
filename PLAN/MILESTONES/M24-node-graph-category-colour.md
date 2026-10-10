@@ -91,7 +91,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
     nodes recoloured.
   - size: L
 
-- [ ] M24.P3.T4 — Wire set and clear of the user colour through the panel and Python
+- [x] M24.P3.T4 — Wire set and clear of the user colour through the panel and Python
   - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/DockablePanel.h`, `Gui/DockablePanel.cpp`
   - approach: Split `NodeGui::setCurrentColor()` (`Gui/NodeGui.cpp:3318`). The category path is called from `restoreStateAfterCreation()` (`:451`) and `setPluginIDAndVersion()` (`:3824`). The user path is the panel (`DockablePanel::onColorButtonClicked()` `:1455-1469` → `colorChanged` → `onSettingsPanelColorChanged` `:757`) and Python `NodeGui::setColor()` (`:3598-3606`). The panel button icon (`onColorDialogColorChanged` `:1380`) shows the user colour when set, otherwise the category colour. Add a "reset to category colour" action.
   - verify: Picking a colour in the panel sets the border and leaves the body; clearing removes the border; Python `setColor` sets the border; undo behaves as before. Xvfb screenshots of each.
@@ -155,6 +155,14 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - Natron's SIGTERM handler calls `quitApplication()` from the signal handler and often does not exit, so a hung GUI test outlives its timeout.
 
 - 2026-10-10 — **P3.T3:** NodeGuiSerialization version 6 → 7 (`NODE_GUI_INTRODUCES_USER_COLOR`), with GuiTests `NodeGuiUserColorSerialization.*` (4/4). The GUI save/reload round-trip moves to the gate, since nothing outside C++ sets a user colour until P3.T4. Older Natron builds cannot read v7 projects, as with every earlier bump. A pre-existing bug was found but left alone: `NodeGui::copyFrom()` swaps green and blue when restoring the overlay colour (`fromRgbF(overlayR, overlayB, overlayG)`).
+
+- 2026-10-10 — **P3.T4 evidence:** the screenshot script passed all checks.
+  - Python `setColor` draws the red inset border, which stays distinct from the white selection halo.
+  - A user colour within 0.02 of the body is nudged lighter, so it stays visible.
+  - `resetColor()` restores the category colour, and the user colour survives save and reload.
+  - The reset is a right-click on the panel's colour button. Colour changes stay off the undo stack, as before.
+  - Headless `setColor` is still a no-op, the same as position and size.
+  - **For the gate:** the border wraps only the coloured label area (`_boundingBox`), not the dark icon column on the left. Confirm whether it should wrap the whole node.
 
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate

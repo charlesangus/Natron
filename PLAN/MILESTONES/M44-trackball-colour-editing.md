@@ -30,3 +30,8 @@ Acceptance sketch:
   - Alpha tracks luma.
   - No rim auto-zoom. The puck may go past the wheel's edge, where it parks on the edge with a changed look to show it is off the wheel, and the scroll wheel zooms the trackball.
   - Over the trackball itself, holding H, S, V or T while dragging adjusts just that parameter.
+- 2026-10-10 — **Hybrid clarifications (user):**
+  - "Alpha tracks luma" means a value edit scales alpha by the same factor as luma (for Offset, it adds the same amount), so a gain of (2,2,2,1) becomes (2,2,2,2). Hue, sat, temp and tint edits leave alpha alone, and alpha keeps its own slider.
+  - Global-mode axes: H is hue on x and value on y; S is saturation on x and value on y; V changes value with either axis.
+  - Global mode is engaged by a button on each colour knob row, or a shortcut (G with the cursor over a colour knob or its panel). It shows a HUD, Esc cancels, and Enter or a click commits.
+  - Next step: a single hybrid Qt mockup for the user to try before elaboration.

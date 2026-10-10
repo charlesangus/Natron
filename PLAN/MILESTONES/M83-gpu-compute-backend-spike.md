@@ -203,7 +203,7 @@ Scouted facts this plan relies on (2026-10-10):
   - verify: `run-bench.sh` produces a CSV with every cell filled and a second run within ±10%. It reports the break-even point: the CPU time a region must save to pay for one round trip at the measured bandwidth.
   - size: M
 
-- [ ] M83.P6.T2 — Evaluate the Slang C++ target as the CPU fallback
+- [x] M83.P6.T2 — Evaluate the Slang C++ target as the CPU fallback
   - files: `tools/gpu-spike/bench/CpuTwinBench_main.cpp`
   - approach:
     - Time the Slang C++-target Grade and Blur, compiled at `-O2 -march=x86-64-v3` and run over 16 threads in row strips, against Natron's hand-written `GradeKernel` and the IIR and box Blur on the same inputs.
@@ -321,3 +321,9 @@ Scouted facts this plan relies on (2026-10-10):
   - `package.sh` needs no change: it stages only `build/<type>`, and `excludelist.txt` already excludes `libvulkan.so.1`.
   - Licences: Slang (Apache-2.0 WITH LLVM-exception) and VMA (MIT) are both GPL-compatible.
   - CI: n/a, because the spike is local-only.
+- 2026-10-10 — M83.P6.T2 done (`cb21e6224`). **The Slang C++ twin is a test oracle only, not the CPU path.**
+  - **Blur:** the twin runs 20.6 / 158 / 616 ms/Mpx at σ 3 / 25 / 100 against native FIR's 1.44 / 5.5 / 19.9 (14–31× slower). Native IIR stays ~3.4 and box ~2.8, flat in σ.
+  - **Grade:** the twin is 2.9 vs native 3.4 ms/Mpx with gcc, 1.5× faster with clang; the twin is float, native is double.
+  - **Why the twin is slow:** it doesn't vectorise. Each pixel is a scalar call inside an 8×8 group loop, the FP reduction is unreorderable, and every tap resolves its bounds.
+  - **Integration:** headers only, from the prelude. The entry point is dispatch-shaped (`k(ComputeVaryingInput*, entryParams, globalParams)`) with a hand-synced Params layout, so it fits `PixelKernel::processRow` poorly and doesn't fit the planar column-block Blur at all.
+  - **How native was measured:** UHD/8K over 16 threads, compiling the real `BlurKernels.cpp` into the bench with a shim, plus a verbatim copy of `GradeKernel`.

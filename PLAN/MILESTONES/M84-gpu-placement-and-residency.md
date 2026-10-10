@@ -84,7 +84,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - otherwise, keep a recycling pool for large aligned buffers.
   - size: M
 
-- [ ] M84.P1.T3 — Make RADV work inside the natron-dev container
+- [x] M84.P1.T3 — Make RADV work inside the natron-dev container
   - files: `tools/ci/local/Dockerfile`, `tools/ci/local/devshell.sh`, `tools/ci/local/README.md`
   - approach:
     - Run a second container with `--device /dev/dri` and the render group.
@@ -613,3 +613,10 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - **Split off:** the rest went to M90 - Render Path Serial Overhead (user rule).
   - **Cost-model inputs:** Blur FIR is ~12 ms/Mpx fixed + ~1.5× the bare kernel; Grade is 9.4 ms/Mpx in-graph (24.8 serial).
   - **Also added:** `BENCH_SIZE`/`BENCH_BLUR_SIZE`/`BENCH_BLUR_FILTER` in `graph_bench.py`. This overlaps M83's own `BENCH_SIZE` change, so it may conflict when M83 merges.
+- 2026-10-10 — M84.P1.T3 done (`9eeba79ba`). **RADV in the container.**
+  - **Fix:** `tools/ci/local/Dockerfile` uses `patchelf` to repoint Mesa's LLVM-linked libraries (gallium, radv, lvp, OSMesa) at `/usr/lib64/libLLVM.so.21.1` by absolute path.
+  - **Why not `LD_PRELOAD`:** it was rejected because it would also swap the clang toolchain's same-soname `libLLVM` in every build process.
+  - **Usage:** `devshell.sh --gpu` (or `NATRON_DEV_GPU=1` for `build.sh`/`test.sh`) runs `natron-dev-gpu` with `/dev/dri` and `RADV_PERFTEST=transfer_queue`. The env var is required for the transfer-only family on this Mesa.
+  - **Results:** full ctest in the GPU container is 1274/1275; the only failure is the known CImg asset. Lavapipe is still selectable with `VK_ICD_FILENAMES`.
+  - **CI:** unaffected, because the workflows use the base image directly.
+  - **Host follow-up:** the host still needs the udev rule (`KERNEL=="renderD*", SUBSYSTEM=="drm", MODE="0666"`) for this to survive reboots.

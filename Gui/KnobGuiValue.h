@@ -125,6 +125,18 @@ protected:
 
     virtual void addExtraWidgets(QHBoxLayout* /*containerLayout*/) {}
 
+    /**
+     * @brief Lets a subclass supply a widget placed below the knob's row, spanning the
+     * field area. It starts hidden; the subclass that created it is responsible for
+     * showing and hiding it. Returning non-null also relaxes the row's fixed height so it
+     * can grow to fit the widget, and callers should pair this with wantsTopAlignedLabel()
+     * so the row label does not drift when the widget appears.
+     **/
+    virtual QWidget* createBelowRowWidget(QWidget* /*parent*/)
+    {
+        return 0;
+    }
+
     virtual void _hide() OVERRIDE;
     virtual void _show() OVERRIDE;
     virtual void setEnabledExtraGui(bool /*enabled*/) {}

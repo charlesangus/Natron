@@ -31,16 +31,17 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QApplication>
+#include <QColorDialog>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QHeaderView>
+#include <QScrollArea>
 #include <QStyle>
-#include <QColorDialog>
 #include <QToolTip>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
-#include <QHeaderView>
-#include <QApplication>
-#include <QScrollArea>
+#include <QVBoxLayout>
 GCC_DIAG_UNUSED_PRIVATE_FIELD_OFF
 // /opt/local/include/QtGui/qmime.h:119:10: warning: private field 'type' is not used [-Wunused-private-field]
 #include <QKeyEvent>
@@ -90,6 +91,7 @@ struct KnobGuiValuePrivate
     KnobDoubleBaseWPtr doubleKnob;
     std::vector<std::pair<SpinBox *, ClickableLabel *> > spinBoxes;
     QWidget *container;
+    QWidget* belowRowColumn; // non-null only when createBelowRowWidget() supplied a widget; owns "container" as a child
     ScaleSliderQWidget *slider;
     Button* rectangleFormatButton;
     Button *dimensionSwitchButton;
@@ -97,10 +99,11 @@ struct KnobGuiValuePrivate
 
     KnobGuiValuePrivate(KnobIPtr knob)
         : knob(knob)
-        , intKnob( std::dynamic_pointer_cast<KnobIntBase>(knob) )
-        , doubleKnob( std::dynamic_pointer_cast<KnobDoubleBase>(knob) )
+        , intKnob(std::dynamic_pointer_cast<KnobIntBase>(knob))
+        , doubleKnob(std::dynamic_pointer_cast<KnobDoubleBase>(knob))
         , spinBoxes()
         , container(0)
+        , belowRowColumn(0)
         , slider(0)
         , rectangleFormatButton(0)
         , dimensionSwitchButton(0)
@@ -211,7 +214,12 @@ KnobGuiValue::~KnobGuiValue()
 void
 KnobGuiValue::removeSpecificGui()
 {
-    _imp->container->deleteLater();
+    // The column, when there is one, owns "container" as a child, so deleting it is enough.
+    if (_imp->belowRowColumn) {
+        _imp->belowRowColumn->deleteLater();
+    } else {
+        _imp->container->deleteLater();
+    }
     _imp->spinBoxes.clear();
 }
 
@@ -221,8 +229,7 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
     connectKnobSignalSlots();
 
     _imp->container = new QWidget( layout->parentWidget() );
-    QHBoxLayout *containerLayout = new QHBoxLayout(_imp->container);
-    layout->addWidget(_imp->container);
+    QHBoxLayout* containerLayout = new QHBoxLayout(_imp->container);
 
     containerLayout->setContentsMargins(0, 0, 0, 0);
     containerLayout->setSpacing(3);
@@ -231,8 +238,32 @@ KnobGuiValue::createWidget(QHBoxLayout* layout)
         disableSlider();
     }
 
+    // Rows that share a line with other knobs have no single field column to grow,
+    // so they never get a below-row widget.
+    QWidget* belowRowWidget = (getKnobsCountOnSameLine() > 1) ? 0 : createBelowRowWidget(layout->parentWidget());
+
+    if (belowRowWidget) {
+        _imp->belowRowColumn = new QWidget(layout->parentWidget());
+        QVBoxLayout* columnLayout = new QVBoxLayout(_imp->belowRowColumn);
+        columnLayout->setContentsMargins(0, 0, 0, 0);
+        columnLayout->setSpacing(0);
+        columnLayout->addWidget(_imp->container);
+        belowRowWidget->setParent(_imp->belowRowColumn);
+        belowRowWidget->hide();
+        columnLayout->addWidget(belowRowWidget);
+        layout->addWidget(_imp->belowRowColumn);
+    } else {
+        layout->addWidget(_imp->container);
+    }
+
     if ( !isSliderDisabled() ) {
-        layout->parentWidget()->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        // A row with a below-row widget must be able to grow when that widget is shown,
+        // so its fixed height only applies to rows that cannot have one.
+        if (belowRowWidget) {
+            layout->parentWidget()->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+        } else {
+            layout->parentWidget()->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+        }
     }
 
     KnobIPtr knob = _imp->getKnob();

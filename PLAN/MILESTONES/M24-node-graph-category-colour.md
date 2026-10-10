@@ -143,6 +143,9 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 
 - 2026-10-10 — **Freshness check at promotion (§5a):** M18 Phase 18.4 had already done P4.T1's job (P4.T1 is now a dead-code cleanup), and every native node from M67 already sets a `PLUGIN_GROUP_*` grouping, so P2.T2 resolves the category from grouping instead of adding a `NativePluginDescription` field. P1.T1, P3.T2, P3.T4–T6 and P4.T2 were rewritten against current code; P3.T6 now carries the 2026-10-03 deep-label fix and is sized M. P2.T1, P3.T1 and P3.T3 stand, but their line numbers have moved: settings getters are at `Engine/Settings.h:200-218`, knob creation at `Engine/Settings.cpp:922-1012`, `getColorFromGrouping` at `Gui/NodeGui.cpp:385-437`, and the duplicate chain at `Gui/ProjectGui.cpp:304-351`. P3.T3 also covers `NodeGui::copyFrom()` (`Gui/NodeGui.cpp:2321-2326`, the paste/preset path). The third 2026-09-07 decision's "node silhouette shape remains the non-colour channel" is no longer true.
 
+- 2026-10-10 — **Edge width ladder goes (user):** M24.P4.T2 runs even though, with the silhouettes gone, edge colour becomes the graph's only data-kind signal.
+- 2026-10-10 — **Two 3D categories (user):** add both a USD 3D category and a Native 3D category, each with its own Preferences colour knob, although no scene nodes exist yet. P1.T1 gives each a default colour; P2.T1 adds both enum values and knobs.
+
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate
 were captured (Xvfb + screenshot, since this cannot be asserted in a unit test),

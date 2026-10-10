@@ -67,7 +67,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
     - Out-of-domain inputs return invalid and never produce NaN.
   - size: M
 
-- [ ] M44.P1.T4 — Add the Power role (gamma through the mid-grey effect vector) and role inference
+- [x] M44.P1.T4 — Add the Power role (gamma through the mid-grey effect vector) and role inference
   - files: `Engine/ColorWheelMath.h`, `Engine/ColorWheelMath.cpp`, `Tests/ColorWheelMath_Test.cpp`
   - approach:
     - `powerToEffect(γ) = 0.18^(1/γ)` and its inverse `γ = ln 0.18 / ln e`. e ≤ 0, e ≥ 1, or γ ≤ 0 is invalid.

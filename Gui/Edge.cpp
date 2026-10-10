@@ -777,35 +777,46 @@ Edge::isNearbyBendPoint(const QPointF & scenePoint)
     return false;
 }
 
-// Colour is the only data-kind channel on edges: the Okabe-Ito palette below
-// stays distinguishable under the common forms of colour-vision deficiency,
-// so it does not need a second (e.g. width) channel to stay legible. The
-// dash pattern below is unrelated: it signals edge activity (mask / hidden
-// input), an orthogonal, simultaneously-possible state.
+// Colour is the only data-kind channel on edges, so it does not need a second (e.g. width)
+// channel to stay legible. The dash pattern below is unrelated: it signals edge activity (mask /
+// hidden input), an orthogonal, simultaneously-possible state. The actual colours are user-facing
+// Preferences knobs (Settings::getEdgeKindColor), defaulting to an Okabe-Ito palette that stays
+// distinguishable under the common forms of colour-vision deficiency.
 static bool
 kindTintColor(DataKindEnum kind,
               QColor* color)
 {
-    switch (kind) {
-    case eDataKindDeep:
-        *color = QColor(0, 114, 178); // Okabe-Ito blue
-        return true;
-    case eDataKindScene:
-        *color = QColor(230, 159, 0); // Okabe-Ito orange
-        return true;
-    case eDataKindImage:
-    case eDataKindPolymorphic:
-    default:
+    float r, g, b;
+
+    if (!appPTR->getCurrentSettings()->getEdgeKindColor(kind, &r, &g, &b)) {
         return false;
     }
+    color->setRgbF(r, g, b);
+
+    return true;
 }
 
 void
 Edge::refreshDataKindPen()
 {
     NodeGuiPtr src = _imp->source.lock();
-    NodePtr srcNode = src ? src->getNode() : NodePtr();
-    DataKindEnum kind = srcNode ? srcNode->getEffectiveOutputDataKind() : eDataKindPolymorphic;
+    DataKindEnum kind = eDataKindPolymorphic;
+
+    if (src) {
+        NodePtr srcNode = src->getNode();
+        kind = srcNode ? srcNode->getEffectiveOutputDataKind() : eDataKindPolymorphic;
+    } else if (!_imp->isOutputEdge) {
+        // No source to take a kind from: fall back to what this input itself accepts, so a
+        // dangling pipe into a Deep-only input still reads as deep. An input declaring
+        // eDataKindPolymorphic (accepts anything) or eDataKindImage stays neutral, same as a
+        // connected image-kind source does.
+        NodeGuiPtr dst = _imp->dest.lock();
+        NodePtr dstNode = dst ? dst->getNode() : NodePtr();
+        EffectInstancePtr dstEffect = dstNode ? dstNode->getEffectInstance() : EffectInstancePtr();
+        if (dstEffect) {
+            kind = dstEffect->getInputDataKind(_imp->inputNb);
+        }
+    }
 
     if (kind == _imp->dataKind) {
         return;

@@ -221,6 +221,16 @@ public:
 
     void getNodeCategoryColor(NodeCategoryEnum category, float* r, float* g, float* b) const;
 
+    void getEdgeDeepColor(float* r, float* g, float* b) const;
+    void getEdgeSceneColor(float* r, float* g, float* b) const;
+
+    /**
+     * @brief The colour an edge should tint itself with for the given data kind, if any. Returns
+     * false for eDataKindImage and eDataKindPolymorphic, which have no knob of their own and stay
+     * untinted (the edge keeps its own default colour), leaving r/g/b untouched.
+     **/
+    bool getEdgeKindColor(DataKindEnum kind, float* r, float* g, float* b) const;
+
     /**
      * @brief True for the per-category node colour knobs that getNodeCategoryColor()
      * reads from (including the "other"/default node colour), so a node graph can
@@ -675,6 +685,8 @@ private:
     KnobColorPtr _defaultDeepGroupColor;
     KnobColorPtr _defaultNative3DGroupColor;
     KnobColorPtr _defaultUsd3DGroupColor;
+    KnobColorPtr _edgeDeepColor;
+    KnobColorPtr _edgeSceneColor;
     std::vector<ChoiceOption> _knownHostNames;
     bool _restoringSettings;
     bool _settingsExisted;

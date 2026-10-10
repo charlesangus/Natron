@@ -1022,6 +1022,18 @@ Settings::initializeKnobsNodeGraphColors()
     _defaultUsd3DGroupColor->setSimplified(true);
     _defaultUsd3DGroupColor->setHintToolTip(tr("The color used for newly created USD 3D nodes."));
     _nodegraphColorsTab->addKnob(_defaultUsd3DGroupColor);
+
+    _edgeDeepColor = AppManager::createKnob<KnobColor>(this, tr("Deep edges"), 3);
+    _edgeDeepColor->setName("edgeDeepColor");
+    _edgeDeepColor->setSimplified(true);
+    _edgeDeepColor->setHintToolTip(tr("The color used to tint node graph edges carrying Deep data, connected or not."));
+    _nodegraphColorsTab->addKnob(_edgeDeepColor);
+
+    _edgeSceneColor = AppManager::createKnob<KnobColor>(this, tr("Scene edges"), 3);
+    _edgeSceneColor->setName("edgeSceneColor");
+    _edgeSceneColor->setSimplified(true);
+    _edgeSceneColor->setHintToolTip(tr("The color used to tint node graph edges carrying Scene data, connected or not."));
+    _nodegraphColorsTab->addKnob(_edgeSceneColor);
 } // Settings::initializeKnobsNodeGraphColors
 
 void
@@ -1793,6 +1805,12 @@ Settings::setDefaultValues()
     _defaultUsd3DGroupColor->setDefaultValue(0.20, 0);
     _defaultUsd3DGroupColor->setDefaultValue(0.55, 1);
     _defaultUsd3DGroupColor->setDefaultValue(0.55, 2);
+    _edgeDeepColor->setDefaultValue(0. / 255., 0); // Okabe-Ito blue
+    _edgeDeepColor->setDefaultValue(114. / 255., 1);
+    _edgeDeepColor->setDefaultValue(178. / 255., 2);
+    _edgeSceneColor->setDefaultValue(230. / 255., 0); // Okabe-Ito orange
+    _edgeSceneColor->setDefaultValue(159. / 255., 1);
+    _edgeSceneColor->setDefaultValue(0. / 255., 2);
 
     endChanges();
 } // setDefaultValues
@@ -3146,6 +3164,46 @@ bool
 Settings::isNodeCategoryColorKnob(KnobI* k) const
 {
     return (k == _defaultNodeColor.get()) || (k == _defaultGeneratorColor.get()) || (k == _defaultReaderColor.get()) || (k == _defaultWriterColor.get()) || (k == _defaultColorGroupColor.get()) || (k == _defaultFilterGroupColor.get()) || (k == _defaultTransformGroupColor.get()) || (k == _defaultTimeGroupColor.get()) || (k == _defaultDrawGroupColor.get()) || (k == _defaultKeyerGroupColor.get()) || (k == _defaultChannelGroupColor.get()) || (k == _defaultMergeGroupColor.get()) || (k == _defaultViewsGroupColor.get()) || (k == _defaultDeepGroupColor.get()) || (k == _defaultNative3DGroupColor.get()) || (k == _defaultUsd3DGroupColor.get());
+}
+
+void
+Settings::getEdgeDeepColor(float* r,
+                           float* g,
+                           float* b) const
+{
+    *r = _edgeDeepColor->getValue(0);
+    *g = _edgeDeepColor->getValue(1);
+    *b = _edgeDeepColor->getValue(2);
+}
+
+void
+Settings::getEdgeSceneColor(float* r,
+                            float* g,
+                            float* b) const
+{
+    *r = _edgeSceneColor->getValue(0);
+    *g = _edgeSceneColor->getValue(1);
+    *b = _edgeSceneColor->getValue(2);
+}
+
+bool
+Settings::getEdgeKindColor(DataKindEnum kind,
+                           float* r,
+                           float* g,
+                           float* b) const
+{
+    switch (kind) {
+    case eDataKindDeep:
+        getEdgeDeepColor(r, g, b);
+        return true;
+    case eDataKindScene:
+        getEdgeSceneColor(r, g, b);
+        return true;
+    case eDataKindImage:
+    case eDataKindPolymorphic:
+    default:
+        return false;
+    }
 }
 
 int

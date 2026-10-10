@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 NATRON_NAMESPACE_ENTER
 
@@ -770,6 +771,549 @@ clampToDisc(const PlanePoint& p,
     }
 
     return result;
+}
+
+namespace {
+// The Kim et al. cubic fit to the Planckian locus (1667-25000 K), worked in CIE 1960 uv so the
+// locus's own tangent and normal give temperature and tint directly. None of this depends on
+// any basis: it is the same physical curve for every working space.
+const double kMiredMin = 40.0;
+const double kMiredMax = 600.0;
+const double kDuvDomain = 0.05;
+const double kNewtonSeedMired = 166.0;
+const int kNewtonIterations = 25;
+const double kNewtonStepMired = 0.05;
+const double kNewtonConvergeTol = 1e-12;
+const double kNewtonResidualTol = 1e-7;
+const double kAxisStepMired = 0.5;
+
+void
+kimXY(double kelvin,
+      double& x,
+      double& y)
+{
+    double T = std::min(std::max(kelvin, 1667.0), 25000.0);
+    double T2 = T * T;
+    double T3 = T2 * T;
+
+    if (T <= 4000.0) {
+        x = -0.2661239e9 / T3 - 0.2343589e6 / T2 + 0.8776956e3 / T + 0.179910;
+    } else {
+        x = -3.0258469e9 / T3 + 2.1070379e6 / T2 + 0.2226347e3 / T + 0.240390;
+    }
+
+    double x2 = x * x;
+    double x3 = x2 * x;
+
+    if (T <= 2222.0) {
+        y = -1.1063814 * x3 - 1.34811020 * x2 + 2.18555832 * x - 0.20219683;
+    } else if (T <= 4000.0) {
+        y = -0.9549476 * x3 - 1.37418593 * x2 + 2.09137015 * x - 0.16748867;
+    } else {
+        y = 3.0817580 * x3 - 5.87338670 * x2 + 3.75112997 * x - 0.37001483;
+    }
+}
+
+void
+xyToUV60(double x,
+         double y,
+         double& u,
+         double& v)
+{
+    double d = -2.0 * x + 12.0 * y + 3.0;
+
+    u = 4.0 * x / d;
+    v = 6.0 * y / d;
+}
+
+void
+uv60ToXY(double u,
+         double v,
+         double& x,
+         double& y)
+{
+    double d = 2.0 * u - 8.0 * v + 4.0;
+
+    x = 3.0 * u / d;
+    y = 2.0 * v / d;
+}
+
+void
+locusUV60(double mired,
+          double& u,
+          double& v)
+{
+    double x, y;
+
+    kimXY(1.0e6 / mired, x, y);
+    xyToUV60(x, y, u, v);
+}
+
+// The locus's own tangent, rotated a quarter turn and normalised, oriented so +Duv sits above
+// the locus (the locus runs from warm/low mired to cool/high mired as drawn here).
+void
+locusNormal60(double mired,
+              double& nx,
+              double& ny)
+{
+    double uPlus, vPlus, uMinus, vMinus;
+
+    locusUV60(std::min(mired + kAxisStepMired, kMiredMax), uPlus, vPlus);
+    locusUV60(std::max(mired - kAxisStepMired, kMiredMin), uMinus, vMinus);
+
+    double tx = uPlus - uMinus;
+    double ty = vPlus - vMinus;
+    double n = std::hypot(tx, ty);
+
+    if (!(n > 0.0)) {
+        nx = ny = 0.0;
+
+        return;
+    }
+    nx = -ty / n;
+    ny = tx / n;
+    if (ny < 0.0) {
+        nx = -nx;
+        ny = -ny;
+    }
+}
+
+void
+uvFromMiredDuv(double mired,
+               double duv,
+               double& u,
+               double& v)
+{
+    double u0, v0, nx, ny;
+
+    locusUV60(mired, u0, v0);
+    locusNormal60(mired, nx, ny);
+    u = u0 + duv * nx;
+    v = v0 + duv * ny;
+}
+
+bool
+solve2x2(double a00,
+         double a01,
+         double a10,
+         double a11,
+         double b0,
+         double b1,
+         double& x0,
+         double& x1)
+{
+    double det = a00 * a11 - a01 * a10;
+
+    if (det == 0.0 || !std::isfinite(det)) {
+        return false;
+    }
+    x0 = (a11 * b0 - a01 * b1) / det;
+    x1 = (a00 * b1 - a10 * b0) / det;
+
+    return std::isfinite(x0) && std::isfinite(x1);
+}
+
+// Newton inversion of the locus's (mired, Duv) parametrisation at the target uv, seeded near
+// the middle of the domain. The Duv column of the Jacobian is exact (uv is linear in Duv at
+// fixed mired); the mired column is a central difference.
+bool
+miredDuvFromUV(double targetU,
+               double targetV,
+               double& miredOut,
+               double& duvOut)
+{
+    double m = kNewtonSeedMired;
+    double d = 0.0;
+
+    for (int iter = 0; iter < kNewtonIterations; ++iter) {
+        double u, v;
+
+        uvFromMiredDuv(m, d, u, v);
+        double fx = u - targetU;
+        double fy = v - targetV;
+
+        if (std::hypot(fx, fy) < kNewtonConvergeTol) {
+            break;
+        }
+
+        double uPlus, vPlus, uMinus, vMinus;
+        double h = kNewtonStepMired;
+
+        uvFromMiredDuv(std::min(m + h, kMiredMax), d, uPlus, vPlus);
+        uvFromMiredDuv(std::max(m - h, kMiredMin), d, uMinus, vMinus);
+        double jmU = (uPlus - uMinus) / (2.0 * h);
+        double jmV = (vPlus - vMinus) / (2.0 * h);
+        double jdU, jdV;
+
+        locusNormal60(m, jdU, jdV);
+
+        double stepM, stepD;
+
+        if (!solve2x2(jmU, jdU, jmV, jdV, fx, fy, stepM, stepD)) {
+            return false;
+        }
+        m = std::min(std::max(m - stepM, kMiredMin), kMiredMax);
+        d -= stepD;
+        if (!std::isfinite(m) || !std::isfinite(d)) {
+            return false;
+        }
+    }
+
+    double u, v;
+
+    uvFromMiredDuv(m, d, u, v);
+    if (std::hypot(u - targetU, v - targetV) > kNewtonResidualTol) {
+        return false;
+    }
+    miredOut = m;
+    duvOut = d;
+
+    return true;
+}
+
+// The working white's own position on the locus. Independent of Y: XYZ of (1,1,1) is Mprime's
+// own row sums, and xy (hence uv) does not depend on their common scale.
+bool
+workingWhiteMiredDuv(const LumaBasis& basis,
+                     double& miredOut,
+                     double& duvOut)
+{
+    if (!basis.hasMatrix) {
+        return false;
+    }
+
+    double X = basis.Mprime[0][0] + basis.Mprime[0][1] + basis.Mprime[0][2];
+    double Y = basis.Mprime[1][0] + basis.Mprime[1][1] + basis.Mprime[1][2];
+    double Z = basis.Mprime[2][0] + basis.Mprime[2][1] + basis.Mprime[2][2];
+    double s = X + Y + Z;
+
+    if (!(s > 0.0)) {
+        return false;
+    }
+
+    double u, v;
+
+    xyToUV60(X / s, Y / s, u, v);
+    if (!std::isfinite(u) || !std::isfinite(v)) {
+        return false;
+    }
+
+    return miredDuvFromUV(u, v, miredOut, duvOut);
+}
+
+bool
+solve3x3(const double m[3][3],
+         const double rhs[3],
+         double out[3])
+{
+    double cof00 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
+    double cof01 = m[1][2] * m[2][0] - m[1][0] * m[2][2];
+    double cof02 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
+    double det = m[0][0] * cof00 + m[0][1] * cof01 + m[0][2] * cof02;
+
+    if (det == 0.0 || !std::isfinite(det)) {
+        return false;
+    }
+
+    double cof10 = m[0][2] * m[2][1] - m[0][1] * m[2][2];
+    double cof11 = m[0][0] * m[2][2] - m[0][2] * m[2][0];
+    double cof12 = m[0][1] * m[2][0] - m[0][0] * m[2][1];
+    double cof20 = m[0][1] * m[1][2] - m[0][2] * m[1][1];
+    double cof21 = m[0][2] * m[1][0] - m[0][0] * m[1][2];
+    double cof22 = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+
+    out[0] = (rhs[0] * cof00 + rhs[1] * cof10 + rhs[2] * cof20) / det;
+    out[1] = (rhs[0] * cof01 + rhs[1] * cof11 + rhs[2] * cof21) / det;
+    out[2] = (rhs[0] * cof02 + rhs[1] * cof12 + rhs[2] * cof22) / det;
+
+    return std::isfinite(out[0]) && std::isfinite(out[1]) && std::isfinite(out[2]);
+}
+
+// Walks the locus to mired(white) + temp, steps off it by Duv(white) - tint/1000 along its own
+// normal, rebuilds XYZ at Y, and solves Mprime*rgb = XYZ. The residual shift afterwards only
+// absorbs the solve's rounding: Mprime's Y row is w, so the result is already luma-exact.
+bool
+planckianRgbFromTempTint(const LumaBasis& basis,
+                         double temp,
+                         double tint,
+                         double Y,
+                         double rgb[3])
+{
+    double whiteMired, whiteDuv;
+
+    if (!workingWhiteMiredDuv(basis, whiteMired, whiteDuv)) {
+        return false;
+    }
+
+    double mired = whiteMired + temp;
+
+    if (!(mired > kMiredMin) || !(mired < kMiredMax)) {
+        return false;
+    }
+
+    double duv = whiteDuv - tint / 1000.0;
+
+    if (std::abs(duv) > kDuvDomain) {
+        return false;
+    }
+
+    double u, v;
+
+    uvFromMiredDuv(mired, duv, u, v);
+
+    double x, y;
+
+    uv60ToXY(u, v, x, y);
+    if (!std::isfinite(x) || !std::isfinite(y) || y == 0.0) {
+        return false;
+    }
+
+    double xyz[3] = { x / y * Y, Y, (1.0 - x - y) / y * Y };
+
+    if (!solve3x3(basis.Mprime, xyz, rgb)) {
+        return false;
+    }
+
+    double residual = Y - luma(basis, rgb);
+
+    for (int i = 0; i < 3; ++i) {
+        rgb[i] += residual;
+    }
+
+    return std::isfinite(rgb[0]) && std::isfinite(rgb[1]) && std::isfinite(rgb[2]);
+}
+
+// Independent of role, since it only looks at the chromaticity rgb implies, not at what kind
+// of knob it came from.
+bool
+planckianTempTintFromRgb(const LumaBasis& basis,
+                         const double rgb[3],
+                         double& temp,
+                         double& tint)
+{
+    if (!basis.hasMatrix) {
+        return false;
+    }
+    if (!(rgb[0] > 0.0) || !(rgb[1] > 0.0) || !(rgb[2] > 0.0)) {
+        return false;
+    }
+
+    double X = dot3(basis.Mprime[0], rgb);
+    double Y = dot3(basis.Mprime[1], rgb);
+    double Z = dot3(basis.Mprime[2], rgb);
+    double s = X + Y + Z;
+
+    if (!(s > 0.0)) {
+        return false;
+    }
+
+    double u, v;
+
+    xyToUV60(X / s, Y / s, u, v);
+    if (!std::isfinite(u) || !std::isfinite(v)) {
+        return false;
+    }
+
+    double mired, duv;
+
+    if (!miredDuvFromUV(u, v, mired, duv)) {
+        return false;
+    }
+    if (std::abs(duv) > kDuvDomain || !(mired > kMiredMin) || !(mired < kMiredMax)) {
+        return false;
+    }
+
+    double whiteMired, whiteDuv;
+
+    if (!workingWhiteMiredDuv(basis, whiteMired, whiteDuv)) {
+        return false;
+    }
+    temp = mired - whiteMired;
+    tint = -1000.0 * (duv - whiteDuv);
+
+    return true;
+}
+} // namespace
+
+TempTintAxes
+linearTempTintAxes(const LumaBasis& basis)
+{
+    TempTintAxes axes;
+
+    if (!basis.hasMatrix) {
+        return axes;
+    }
+
+    double tempPlus[3], tempMinus[3];
+    const double h = kAxisStepMired;
+
+    if (!planckianRgbFromTempTint(basis, h, 0.0, 1.0, tempPlus)
+        || !planckianRgbFromTempTint(basis, -h, 0.0, 1.0, tempMinus)) {
+        return axes;
+    }
+
+    double tintPlus[3], tintMinus[3];
+
+    if (!planckianRgbFromTempTint(basis, 0.0, h, 1.0, tintPlus)
+        || !planckianRgbFromTempTint(basis, 0.0, -h, 1.0, tintMinus)) {
+        return axes;
+    }
+
+    double dTemp[3], dTint[3];
+
+    for (int i = 0; i < 3; ++i) {
+        dTemp[i] = tempPlus[i] - tempMinus[i];
+        dTint[i] = tintPlus[i] - tintMinus[i];
+    }
+
+    double aTemp = dot3(basis.F[0], dTemp);
+    double bTemp = dot3(basis.F[1], dTemp);
+    double nTemp = std::hypot(aTemp, bTemp);
+    double aTint = dot3(basis.F[0], dTint);
+    double bTint = dot3(basis.F[1], dTint);
+    double nTint = std::hypot(aTint, bTint);
+
+    if (!(nTemp > 0.0) || !(nTint > 0.0) || !std::isfinite(nTemp) || !std::isfinite(nTint)) {
+        return axes;
+    }
+    axes.temp[0] = aTemp / nTemp;
+    axes.temp[1] = bTemp / nTemp;
+    axes.tint[0] = aTint / nTint;
+    axes.tint[1] = bTint / nTint;
+    axes.valid = true;
+
+    return axes;
+}
+
+TempTintResult
+toTempTint(ColorKnobRoleEnum role,
+           const LumaBasis& basis,
+           const KnobColorValue& v)
+{
+    TempTintResult result;
+
+    if (role == eColorKnobRoleOffset) {
+        TempTintAxes axes = linearTempTintAxes(basis);
+
+        if (!axes.valid) {
+            return result;
+        }
+
+        double det = axes.temp[0] * axes.tint[1] - axes.temp[1] * axes.tint[0];
+
+        if (det == 0.0 || !std::isfinite(det)) {
+            return result;
+        }
+
+        LumaChroma lc = split(basis, v.rgb);
+
+        result.temp = (axes.tint[1] * lc.a - axes.tint[0] * lc.b) / det;
+        result.tint = (-axes.temp[1] * lc.a + axes.temp[0] * lc.b) / det;
+        result.valid = true;
+
+        return result;
+    }
+
+    double Y0 = luma(basis, v.rgb);
+
+    if (isFrozen(role, Y0)) {
+        return result;
+    }
+    if (planckianTempTintFromRgb(basis, v.rgb, result.temp, result.tint)) {
+        result.valid = true;
+    }
+
+    return result;
+}
+
+ChromaEditResult
+fromTempTint(ColorKnobRoleEnum role,
+             const LumaBasis& basis,
+             const KnobColorValue& v,
+             double temp,
+             double tint)
+{
+    if (role == eColorKnobRoleOffset) {
+        TempTintAxes axes = linearTempTintAxes(basis);
+
+        if (!axes.valid) {
+            return refused(v);
+        }
+
+        ChromaEditResult result;
+
+        result.value = v;
+        result.valid = true;
+        join(basis, luma(basis, v.rgb),
+             temp * axes.temp[0] + tint * axes.tint[0],
+             temp * axes.temp[1] + tint * axes.tint[1],
+             result.value.rgb);
+
+        return result;
+    }
+
+    double Y0 = luma(basis, v.rgb);
+
+    if (isFrozen(role, Y0)) {
+        return refused(v);
+    }
+
+    ChromaEditResult result;
+
+    result.value = v;
+    if (!planckianRgbFromTempTint(basis, temp, tint, Y0, result.value.rgb)) {
+        return refused(v);
+    }
+    result.valid = true;
+
+    return result;
+}
+
+std::vector<PlanePoint>
+drawLocus(const LumaBasis& basis,
+          const PlanePoint& anchor)
+{
+    std::vector<PlanePoint> points;
+
+    double whiteMired, whiteDuv;
+
+    if (!workingWhiteMiredDuv(basis, whiteMired, whiteDuv)) {
+        return points;
+    }
+
+    const double step = 4.0;
+
+    for (double mired = kMiredMin + step; mired < kMiredMax - 0.5 * step; mired += step) {
+        double rgb[3];
+
+        if (!planckianRgbFromTempTint(basis, mired - whiteMired, 0.0, 1.0, rgb)) {
+            continue;
+        }
+
+        KnobColorValue sample;
+
+        sample.rgb[0] = rgb[0];
+        sample.rgb[1] = rgb[1];
+        sample.rgb[2] = rgb[2];
+        sample.a = 0.0;
+        sample.hasAlpha = false;
+
+        PlanePoint q = toPlane(eColorKnobRoleGain, basis, sample);
+
+        if (!q.valid) {
+            continue;
+        }
+
+        PlanePoint p;
+
+        p.x = q.x - anchor.x;
+        p.y = q.y - anchor.y;
+        p.valid = true;
+        p.linear = q.linear;
+        points.push_back(p);
+    }
+
+    return points;
 }
 
 NATRON_NAMESPACE_EXIT

@@ -73,6 +73,13 @@ acescg()
 }
 
 double
+dot3row(const double row[3],
+        const double rgb[3])
+{
+    return row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2];
+}
+
+double
 lumaTolerance(ColorKnobRoleEnum role,
               double Y)
 {
@@ -731,4 +738,244 @@ TEST(ColorWheelMath, ClampToDiscReportsTheDirectionToAnOffDiscPoint)
     DiscClamp caret = clampToDisc(white, 0.001);
     EXPECT_TRUE(caret.offDisc);
     EXPECT_NEAR(std::fmod(planeHue(anchor) + 180.0, 360.0), planeHue(caret.direction), 1e-9);
+}
+
+TEST(ColorWheelMath, NeutralTempTintReadsZero)
+{
+    LumaBasis basis = acescg();
+    KnobColorValue white = makeValue(1.0, 1.0, 1.0, 1.0);
+    TempTintResult r = toTempTint(eColorKnobRoleGain, basis, white);
+
+    ASSERT_TRUE(r.valid);
+    EXPECT_NEAR(0.0, r.temp, 1e-6);
+    EXPECT_NEAR(0.0, r.tint, 1e-6);
+
+    KnobColorValue blackOffset = makeValue(0.0, 0.0, 0.0, 0.0, false);
+    TempTintResult offsetNeutral = toTempTint(eColorKnobRoleOffset, basis, blackOffset);
+
+    ASSERT_TRUE(offsetNeutral.valid);
+    EXPECT_NEAR(0.0, offsetNeutral.temp, 1e-12);
+    EXPECT_NEAR(0.0, offsetNeutral.tint, 1e-12);
+}
+
+TEST(ColorWheelMath, KimLocusMatchesKnownTemperatures)
+{
+    LumaBasis basis = acescg();
+    KnobColorValue white = makeValue(1.0, 1.0, 1.0, 1.0);
+
+    // temp/tint for each CCT, computed the same way this module does (ACEScg's own white sits
+    // at mired 166.77 / Duv 0.003193, about 5996 K); x, y are the Kim cubic's own output at
+    // that CCT, checked bit-for-bit to confirm the formula's coefficients were transcribed
+    // correctly.
+    struct Case {
+        double temp;
+        double tint;
+        double x;
+        double y;
+    };
+    const Case cases[] = {
+        { 183.3696233683991, 3.1928851027017644, 0.4470706750966438, 0.40750879834778053 }, // 2856 K
+        { 33.10963930281605, 3.1928851027017644, 0.3449074537491241, 0.35151935324713224 }, // 5003 K
+        { -13.01889513863469, 3.1928851027017644, 0.313432036002229, 0.323601871509382 } // 6504 K
+    };
+    // The true blackbody locus (CIE 1931 CMF integration via Ohno 2013) at the same three CCTs:
+    // the Kim cubic's own fit error from it grows toward the low-CCT end of its domain, so this
+    // check is looser than the formula's typical accuracy away from 1667 K.
+    const double trueXY[][2] = {
+        { 0.44753661, 0.40743031 },
+        { 0.34501844, 0.35154254 },
+        { 0.31346459, 0.32356923 }
+    };
+
+    for (int i = 0; i < 3; ++i) {
+        ChromaEditResult set = fromTempTint(eColorKnobRoleGain, basis, white, cases[i].temp, cases[i].tint);
+        ASSERT_TRUE(set.valid);
+        EXPECT_NEAR(1.0, luma(basis, set.value.rgb), 1e-12);
+
+        double X = dot3row(basis.Mprime[0], set.value.rgb);
+        double Y = dot3row(basis.Mprime[1], set.value.rgb);
+        double Z = dot3row(basis.Mprime[2], set.value.rgb);
+        double s = X + Y + Z;
+        double x = X / s;
+        double y = Y / s;
+
+        EXPECT_NEAR(cases[i].x, x, 1e-6);
+        EXPECT_NEAR(cases[i].y, y, 1e-6);
+        EXPECT_NEAR(trueXY[i][0], x, 1e-3);
+        EXPECT_NEAR(trueXY[i][1], y, 1e-3);
+
+        TempTintResult back = toTempTint(eColorKnobRoleGain, basis, set.value);
+        ASSERT_TRUE(back.valid);
+        EXPECT_NEAR(cases[i].temp, back.temp, 1e-6);
+        EXPECT_NEAR(cases[i].tint, back.tint, 1e-6);
+    }
+}
+
+TEST(ColorWheelMath, TempTintEditsKeepLumaExactAcrossRandomSamples)
+{
+    LumaBasis basis = acescg();
+    std::mt19937 rng(443);
+    std::uniform_real_distribution<double> gain(0.2, 4.0);
+    std::uniform_real_distribution<double> offset(-0.1, 0.1);
+    std::uniform_real_distribution<double> tempStep(-80.0, 80.0);
+    std::uniform_real_distribution<double> tintStep(-30.0, 30.0);
+    int edits = 0;
+    int valid = 0;
+
+    for (int n = 0; n < 500; ++n) {
+        KnobColorValue g = makeValue(gain(rng), gain(rng), gain(rng), gain(rng));
+        KnobColorValue o = makeValue(offset(rng), offset(rng), offset(rng), offset(rng));
+        double temp = tempStep(rng);
+        double tint = tintStep(rng);
+        const std::pair<ColorKnobRoleEnum, KnobColorValue> cases[] = {
+            { eColorKnobRoleGain, g },
+            { eColorKnobRoleOffset, o }
+        };
+
+        for (const auto& c : cases) {
+            ++edits;
+            ChromaEditResult r = fromTempTint(c.first, basis, c.second, temp * (c.first == eColorKnobRoleOffset ? 0.001 : 1.0),
+                                              tint * (c.first == eColorKnobRoleOffset ? 0.001 : 1.0));
+            if (r.valid) {
+                ++valid;
+                expectLumaAndAlphaKept(c.first, basis, c.second, r);
+            }
+        }
+    }
+    EXPECT_GT(valid, edits * 8 / 10);
+}
+
+TEST(ColorWheelMath, TempTintRoundTripsThroughItsInverse)
+{
+    LumaBasis basis = acescg();
+    KnobColorValue v = makeValue(1.3, 0.8, 1.1, 1.0);
+
+    TempTintResult read = toTempTint(eColorKnobRoleGain, basis, v);
+    ASSERT_TRUE(read.valid);
+
+    ChromaEditResult rebuilt = fromTempTint(eColorKnobRoleGain, basis, v, read.temp, read.tint);
+    ASSERT_TRUE(rebuilt.valid);
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_NEAR(v.rgb[i], rebuilt.value.rgb[i], 1e-9);
+    }
+
+    ChromaEditResult set = fromTempTint(eColorKnobRoleGain, basis, v, 76.0, 37.8);
+    ASSERT_TRUE(set.valid);
+    TempTintResult setThenRead = toTempTint(eColorKnobRoleGain, basis, set.value);
+    ASSERT_TRUE(setThenRead.valid);
+    EXPECT_NEAR(76.0, setThenRead.temp, 1e-6);
+    EXPECT_NEAR(37.8, setThenRead.tint, 1e-6);
+
+    KnobColorValue o = makeValue(0.02, -0.01, 0.005, 0.0, false);
+    TempTintResult offsetRead = toTempTint(eColorKnobRoleOffset, basis, o);
+    ASSERT_TRUE(offsetRead.valid);
+    ChromaEditResult offsetRebuilt = fromTempTint(eColorKnobRoleOffset, basis, o, offsetRead.temp, offsetRead.tint);
+    ASSERT_TRUE(offsetRebuilt.valid);
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_NEAR(o.rgb[i], offsetRebuilt.value.rgb[i], 1e-9);
+    }
+}
+
+TEST(ColorWheelMath, TempTintRoundTripIsLooseOnlyRightAtAKimFormulaBreakpoint)
+{
+    // The Kim cubic is only C0 at its T = 4000 K / T = 2222 K piecewise joins (mired 250 and
+    // 450.045): a target landing within about a mired of one of them gives the finite-difference
+    // Newton step a one-sided kink to cross, so it stalls short of its usual tight convergence.
+    // That is a property of the locus formula itself, so it is bounded here instead of asserted
+    // away.
+    LumaBasis basis = acescg();
+    KnobColorValue v = makeValue(2.869346, 2.944037, 0.695136, 1.0);
+    TempTintResult read = toTempTint(eColorKnobRoleGain, basis, v);
+
+    ASSERT_TRUE(read.valid);
+
+    ChromaEditResult rebuilt = fromTempTint(eColorKnobRoleGain, basis, v, read.temp, read.tint);
+    ASSERT_TRUE(rebuilt.valid);
+    EXPECT_NEAR(luma(basis, v.rgb), luma(basis, rebuilt.value.rgb), 1e-12 * luma(basis, v.rgb));
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_FALSE(std::isnan(rebuilt.value.rgb[i]));
+        EXPECT_NEAR(v.rgb[i], rebuilt.value.rgb[i], 5e-6);
+    }
+}
+
+TEST(ColorWheelMath, OffsetTempTintAxesAreZeroLumaUnitDirections)
+{
+    LumaBasis basis = acescg();
+    TempTintAxes axes = linearTempTintAxes(basis);
+
+    ASSERT_TRUE(axes.valid);
+
+    double rgbTemp[3];
+    double rgbTint[3];
+    join(basis, 0.0, axes.temp[0], axes.temp[1], rgbTemp);
+    join(basis, 0.0, axes.tint[0], axes.tint[1], rgbTint);
+    EXPECT_NEAR(0.0, luma(basis, rgbTemp), 1e-15);
+    EXPECT_NEAR(0.0, luma(basis, rgbTint), 1e-15);
+    EXPECT_NEAR(1.0, std::hypot(axes.temp[0], axes.temp[1]), 1e-9);
+    EXPECT_NEAR(1.0, std::hypot(axes.tint[0], axes.tint[1]), 1e-9);
+
+    LumaBasis noMatrix(kRec709Weights);
+    EXPECT_FALSE(linearTempTintAxes(noMatrix).valid);
+}
+
+TEST(ColorWheelMath, OutOfDomainTempTintNeverProducesNaN)
+{
+    LumaBasis basis = acescg();
+    KnobColorValue white = makeValue(1.0, 1.0, 1.0, 1.0);
+
+    KnobColorValue negative = makeValue(-1.0, 0.5, 0.3, 1.0);
+    TempTintResult fromNegative = toTempTint(eColorKnobRoleGain, basis, negative);
+    EXPECT_FALSE(fromNegative.valid);
+    EXPECT_FALSE(std::isnan(fromNegative.temp));
+    EXPECT_FALSE(std::isnan(fromNegative.tint));
+
+    ChromaEditResult offLocus = fromTempTint(eColorKnobRoleGain, basis, white, 100000.0, 0.0);
+    EXPECT_FALSE(offLocus.valid);
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_FALSE(std::isnan(offLocus.value.rgb[i]));
+    }
+
+    ChromaEditResult hugeTint = fromTempTint(eColorKnobRoleGain, basis, white, 0.0, 1.0e6);
+    EXPECT_FALSE(hugeTint.valid);
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_FALSE(std::isnan(hugeTint.value.rgb[i]));
+    }
+
+    KnobColorValue black = makeValue(0.0, 0.0, 0.0, 1.0);
+    EXPECT_FALSE(toTempTint(eColorKnobRoleGain, basis, black).valid);
+    EXPECT_FALSE(fromTempTint(eColorKnobRoleGain, basis, black, 10.0, 0.0).valid);
+
+    LumaBasis noMatrix(kRec709Weights);
+    EXPECT_FALSE(toTempTint(eColorKnobRoleGain, noMatrix, white).valid);
+    EXPECT_FALSE(fromTempTint(eColorKnobRoleGain, noMatrix, white, 10.0, 0.0).valid);
+}
+
+TEST(ColorWheelMath, DrawLocusIsFiniteAndReCentresOnTheAnchor)
+{
+    LumaBasis basis = acescg();
+    PlanePoint origin;
+    origin.x = 0.0;
+    origin.y = 0.0;
+    origin.valid = true;
+
+    std::vector<PlanePoint> locus = drawLocus(basis, origin);
+    ASSERT_GT(static_cast<int>(locus.size()), 50);
+    for (const PlanePoint& p : locus) {
+        EXPECT_TRUE(p.valid);
+        EXPECT_FALSE(std::isnan(p.x));
+        EXPECT_FALSE(std::isnan(p.y));
+    }
+
+    PlanePoint anchor;
+    anchor.x = 0.01;
+    anchor.y = -0.02;
+    anchor.valid = true;
+
+    std::vector<PlanePoint> shifted = drawLocus(basis, anchor);
+    ASSERT_EQ(locus.size(), shifted.size());
+    EXPECT_NEAR(locus[10].x - shifted[10].x, anchor.x, 1e-9);
+    EXPECT_NEAR(locus[10].y - shifted[10].y, anchor.y, 1e-9);
+
+    LumaBasis noMatrix(kRec709Weights);
+    EXPECT_TRUE(drawLocus(noMatrix, origin).empty());
 }

@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <optional>
+#include <vector>
 
 NATRON_NAMESPACE_ENTER
 
@@ -265,6 +266,62 @@ struct DiscClamp {
 };
 
 DiscClamp clampToDisc(const PlanePoint& p, double rim);
+
+/**
+ * @brief A knob's position on the Planckian temperature/tint axes: temp
+ * is mired(c) - mired(white), positive = warmer/amber, and tint is -1000 * (Duv(c) -
+ * Duv(white)), positive = magenta, both read off the Kim et al. cubic locus (1667-25000 K)
+ * worked in CIE 1960 uv. A ratio role (Gain, Colour, Power, Auto) reads this straight off its
+ * own chromaticity; Offset has no white point of its own, so it instead reads the decomposition
+ * of its own (a, b) along linearTempTintAxes. valid is false out of the locus's domain (a ratio
+ * role channel <= 0, a channel sum <= 0, a solve that does not converge, |Duv| > 0.05, or a
+ * mired value off the 1667-25000 K range), when the basis has no matrix, or when the role is
+ * frozen; the caller then falls back to linearTempTintAxes for a relative edit.
+ **/
+struct TempTintResult {
+    double temp = 0.0;
+    double tint = 0.0;
+    bool valid = false;
+};
+
+TempTintResult toTempTint(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v);
+
+/**
+ * @brief The knob value at the given absolute temp/tint, with v's own luma held and its alpha
+ * copied unchanged: temp and tint, like hue and saturation, never touch alpha. A ratio role
+ * walks the locus to the requested mired, offsets it by the requested Duv along the locus's own
+ * normal, and rebuilds XYZ at Yheld = luma(basis, v.rgb) before solving v.rgb back out of
+ * Mprime; Mprime's Y row is w by construction, so that solve already keeps luma exact, and the
+ * residual shift this applies afterwards only absorbs rounding, not an actual chromaticity
+ * error. Offset instead rebuilds (a, b) directly through linearTempTintAxes, which is
+ * exact for the same reason join always is. Invalid on the same domain as toTempTint.
+ **/
+ChromaEditResult fromTempTint(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, double temp, double tint);
+
+/**
+ * @brief Two directions in (a, b) space (the same basis split/join use, not the plane's xy or
+ * u'v'), each one unit long: temp is the Kim locus's own tangent at the working white (warmer
+ * is positive) and tint is its normal (magenta is positive). They are the offset-role's
+ * temp/tint axes, and also what a ratio-role caller falls back to once toTempTint/fromTempTint
+ * report invalid. valid is false on a matrix-less basis or if the locus could not be walked
+ * near white; it does not depend on role, since the locus itself does not.
+ **/
+struct TempTintAxes {
+    double temp[2] = { 0.0, 0.0 };
+    double tint[2] = { 0.0, 0.0 };
+    bool valid = false;
+};
+
+TempTintAxes linearTempTintAxes(const LumaBasis& basis);
+
+/**
+ * @brief The Kim locus drawn as a polyline in plane coordinates (the same xy or u'v' the wheel
+ * draws everything else in), re-centred on anchor the way whitePoint is: each point is the
+ * locus's own plane position minus anchor. Spans the locus's 1667-25000 K domain at a fixed Y
+ * of 1; points where the underlying solve fails are skipped, so the polyline can be shorter
+ * than the sample count but never holds a NaN. Empty on a matrix-less basis.
+ **/
+std::vector<PlanePoint> drawLocus(const LumaBasis& basis, const PlanePoint& anchor);
 
 NATRON_NAMESPACE_EXIT
 

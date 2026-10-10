@@ -28,6 +28,7 @@ set(Tests_SOURCES
     CLArgs_Test.cpp
     ColorViews_Test.cpp
     ColorViewsRender_Test.cpp
+    ColorWheelMath_Test.cpp
     Curve_Test.cpp
     DataKind_Test.cpp
     DataKindProjectLoad_Test.cpp

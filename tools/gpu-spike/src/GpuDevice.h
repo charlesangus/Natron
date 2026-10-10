@@ -6,13 +6,11 @@
 
 #include <atomic>
 #include <cstdint>
-#include <map>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
 #include <string>
-#include <thread>
-#include <utility>
 #include <vector>
 
 namespace gpu {
@@ -32,11 +30,20 @@ enum class QueueKind
     Transfer,
 };
 
+using GpuDebugMessageFn = std::function<void(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                                             VkDebugUtilsMessageTypeFlagsEXT types, const char* message)>;
+
 struct GpuDeviceOptions
 {
     // Empty means: consult NATRON_GPU_DEVICE, then fall back to the ranked pick.
     std::string deviceSelector;
-    bool enableValidation = true;
+    // NATRON_GPU_VALIDATION=1 also enables it. Silently off when the Khronos layer is not installed.
+    bool enableValidation = false;
+    // Uses per-kernel descriptor pools even where VK_KHR_push_descriptor is available.
+    bool disablePushDescriptor = false;
+    // Receives VK_EXT_debug_utils messages (validation layer and loader) from whichever thread made
+    // the Vulkan call. Unset means no messenger is installed.
+    GpuDebugMessageFn debugMessage;
 };
 
 struct GpuDeviceInfo
@@ -52,6 +59,7 @@ struct GpuDeviceInfo
     bool transferUsesComputeQueue = false;
 
     bool validationEnabled = false;
+    bool debugMessenger = false;
     bool shaderFloat16 = false;
     bool externalMemoryFd = false;
     bool externalSemaphoreFd = false;
@@ -60,19 +68,10 @@ struct GpuDeviceInfo
     bool pushDescriptor = false;
 };
 
-struct GpuPhysicalDeviceDesc
-{
-    uint32_t index = 0;
-    std::string name;
-    VkPhysicalDeviceType type = VK_PHYSICAL_DEVICE_TYPE_OTHER;
-    bool meetsRequirements = false;
-};
-
 class GpuDevice
 {
 public:
     static GpuStatus create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& out);
-    static GpuStatus listDevices(std::vector<GpuPhysicalDeviceDesc>& out);
 
     ~GpuDevice();
     GpuDevice(const GpuDevice&) = delete;
@@ -86,9 +85,6 @@ public:
     uint32_t queueFamily(QueueKind kind) const;
 
     bool isLost() const { return lost_.load(std::memory_order_acquire); }
-
-    // Returns the calling thread's pool for the queue's family, creating it on first use.
-    GpuStatus commandPool(QueueKind kind, VkCommandPool& out);
 
     GpuStatus submit(QueueKind kind, std::span<const VkSubmitInfo2> submits, VkFence fence);
 
@@ -114,7 +110,9 @@ private:
     GpuStatus lostStatus() const;
 
     GpuDeviceInfo info_;
+    GpuDebugMessageFn debugMessage_;
     VkInstance instance_ = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
     VkPhysicalDevice physical_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
     VmaAllocator allocator_ = nullptr;
@@ -122,9 +120,6 @@ private:
 
     Queue computeQueue_;
     Queue transferQueue_;
-
-    std::mutex poolMutex_;
-    std::map<std::pair<std::thread::id, uint32_t>, VkCommandPool> pools_;
 
     std::atomic<bool> lost_{false};
 };

@@ -47,6 +47,10 @@ public:
     GpuStatus record(VkCommandBuffer cmd, std::span<const VkBuffer> buffers,
                      std::span<const std::byte> push, std::array<uint32_t, 3> threads);
 
+    // As record(), for kernels whose groups do not map one-to-one onto a thread grid.
+    GpuStatus recordGroups(VkCommandBuffer cmd, std::span<const VkBuffer> buffers,
+                           std::span<const std::byte> push, std::array<uint32_t, 3> groups);
+
     void releaseDescriptors();
 
     std::array<uint32_t, 3> groupCount(std::array<uint32_t, 3> threads) const;
@@ -59,9 +63,9 @@ private:
     GpuKernelDesc desc_;
     VkDescriptorSetLayout setLayout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
-    VkPipelineCache cache_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     PFN_vkCmdPushDescriptorSetKHR pushDescriptorFn_ = nullptr;
+    std::array<uint32_t, 3> maxGroups_{};
 
     std::mutex poolMutex_;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;

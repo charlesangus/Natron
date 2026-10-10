@@ -1,13 +1,14 @@
 #pragma once
 
-#include <gtest/gtest.h>
-
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <random>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include "Tolerance.h"
@@ -38,7 +39,6 @@ constexpr uint32_t kClampBlack = 2;
 constexpr uint32_t kClampWhite = 4;
 
 constexpr int64_t kUlpBound = 4;
-constexpr double kAbsBound = 1e-6;
 constexpr uint32_t kHeight = 3;
 
 struct KnobSet
@@ -192,7 +192,6 @@ inline double conditionedTolerance(double v, const graderef::Channel& ch, bool r
 struct Bounds
 {
     int64_t ulp = kUlpBound;
-    double abs = kAbsBound;
     // Allow what the Vulkan precision rules permit a driver beyond the CPU
     // bounds: spec-level pow/fma error, and unspecified results for subnormal inputs.
     bool gpu = false;
@@ -205,7 +204,7 @@ inline bool matches(float got, double want, double conditioned, const Bounds& bo
     if (classify(got) != tol::Kind::Finite)
         return true;
     const double abs = std::fabs(static_cast<double>(got) - want);
-    return tol::ulpDistance(got, static_cast<float>(want)) <= bounds.ulp || abs <= bounds.abs || abs <= conditioned;
+    return tol::ulpDistance(got, static_cast<float>(want)) <= bounds.ulp || abs <= conditioned;
 }
 
 struct GradeStats
@@ -216,7 +215,10 @@ struct GradeStats
     uint64_t passthrough = 0;
     uint64_t subnormalInputs = 0;
     uint64_t subnormalMatched = 0;
+    uint64_t subnormalBetween = 0;
     uint64_t violations = 0;
+    // The first few violations, for the caller to report.
+    std::vector<std::string> failures;
     // Worst ratio of observed abs error to the conditioned bound, over elements past the plain bound.
     double maxConditionedUse = 0;
 };
@@ -226,6 +228,14 @@ struct GradeStats
 inline void checkCase(GradeStats& stats, size_t caseIndex, const GradeCase& c, const float* dst,
                       const Bounds& bounds = {})
 {
+    auto violation = [&](auto&&... parts) {
+        if (++stats.violations > 10)
+            return;
+        std::ostringstream os;
+        os << "case " << caseIndex << " element ";
+        (os << ... << parts);
+        stats.failures.push_back(os.str());
+    };
     const GradeParams& p = c.p;
     const bool clampBlack = (p.flags & kClampBlack) != 0;
     const bool clampWhite = (p.flags & kClampWhite) != 0;
@@ -234,40 +244,48 @@ inline void checkCase(GradeStats& stats, size_t caseIndex, const GradeCase& c, c
         const uint32_t bit = p.nComps == 1 ? 3 : ch;
         if (!(p.channelMask & (1u << bit))) {
             ++stats.passthrough;
-            if (std::memcmp(&dst[i], &c.src[i], sizeof(float)) != 0 && ++stats.violations <= 10)
-                ADD_FAILURE() << "case " << caseIndex << " element " << i << " changed outside the channel mask";
+            if (std::memcmp(&dst[i], &c.src[i], sizeof(float)) != 0)
+                violation(i, " changed outside the channel mask");
             continue;
         }
         const graderef::Channel chan{p.a[bit], p.b[bit], p.gamma[bit]};
         const double in = c.src[i];
         const double want = graderef::apply(c.src[i], chan, c.reverse, clampBlack, clampWhite);
         if (bounds.gpu && in != 0 && std::fabs(in) < std::numeric_limits<float>::min()) {
-            // A driver may read a subnormal as zero in some operations and not in others,
-            // so pow of one can be arbitrary; only note whether either reading matched.
+            // A driver may flush a subnormal to zero in some operations and not in others, so pow
+            // of one can land anywhere between the two readings. Grade is monotonic in its input,
+            // so the result must still lie between the values for zero and for the input.
             ++stats.subnormalInputs;
             const double zero = graderef::apply(0.0f, chan, c.reverse, clampBlack, clampWhite);
-            if (matches(dst[i], want, conditionedTolerance(in, chan, c.reverse, want, true), bounds) ||
-                matches(dst[i], zero, conditionedTolerance(0, chan, c.reverse, zero, true), bounds))
+            const double tolWant = conditionedTolerance(in, chan, c.reverse, want, true);
+            const double tolZero = conditionedTolerance(0, chan, c.reverse, zero, true);
+            if (matches(dst[i], want, tolWant, bounds) || matches(dst[i], zero, tolZero, bounds)) {
                 ++stats.subnormalMatched;
+                continue;
+            }
+            const double got = dst[i];
+            const double lo = std::min(want, zero) - std::max(tolWant, tolZero);
+            const double hi = std::max(want, zero) + std::max(tolWant, tolZero);
+            if (std::isfinite(got) && got >= lo && got <= hi)
+                ++stats.subnormalBetween;
+            else
+                violation(i, " subnormal input ", c.src[i], " got=", dst[i], " outside [", want, ", ", zero, "]");
             continue;
         }
         const double conditioned = conditionedTolerance(in, chan, c.reverse, want, bounds.gpu);
         const tol::Sample s = stats.err.add(dst[i], want, caseIndex, i);
         if (s.classMismatch) {
-            if (++stats.violations <= 10)
-                ADD_FAILURE() << "case " << caseIndex << " element " << i << " classification mismatch got="
-                              << dst[i] << " want=" << want << " in=" << c.src[i];
+            violation(i, " classification mismatch got=", dst[i], " want=", want, " in=", c.src[i]);
             continue;
         }
-        if (!s.finite || (s.ulp <= bounds.ulp || s.abs <= bounds.abs))
+        if (!s.finite || s.ulp <= bounds.ulp)
             continue;
         stats.maxConditionedUse = std::max(stats.maxConditionedUse, s.abs / conditioned);
         if (s.abs <= conditioned) {
             ++stats.conditioned;
-        } else if (++stats.violations <= 10) {
-            ADD_FAILURE() << "case " << caseIndex << " element " << i << " got=" << dst[i] << " want=" << want
-                          << " in=" << c.src[i] << " ulp=" << s.ulp << " abs=" << s.abs
-                          << " conditioned=" << conditioned;
+        } else {
+            violation(i, " got=", dst[i], " want=", want, " in=", c.src[i], " ulp=", s.ulp, " abs=", s.abs,
+                      " conditioned=", conditioned);
         }
     }
 }
@@ -275,11 +293,13 @@ inline void checkCase(GradeStats& stats, size_t caseIndex, const GradeCase& c, c
 inline void printStats(const char* label, const GradeStats& s)
 {
     s.err.print(label);
-    std::printf("  passthrough=%llu beyond 4 ulp / 1e-6 but within conditioned bound: %llu"
+    std::printf("  passthrough=%llu beyond 4 ulp but within conditioned bound: %llu"
                 " (worst use of that bound: %.3g)\n"
-                "  subnormal inputs (not in the figures above)=%llu of which matched either reading=%llu\n",
+                "  subnormal inputs (not in the figures above)=%llu: matched a reading=%llu,"
+                " between the readings=%llu\n",
                 (unsigned long long)s.passthrough, (unsigned long long)s.conditioned, s.maxConditionedUse,
-                (unsigned long long)s.subnormalInputs, (unsigned long long)s.subnormalMatched);
+                (unsigned long long)s.subnormalInputs, (unsigned long long)s.subnormalMatched,
+                (unsigned long long)s.subnormalBetween);
 }
 
 } // namespace gradefix

@@ -458,19 +458,28 @@ GpuStatus GlInterop::initGl(bool semaphores)
         return s;
     }
 
+    // GL takes ownership of the fd only when the import itself succeeds, so every earlier call is
+    // checked on its own: a stale error read after the import would close an fd GL already owns.
     gl.CreateMemoryObjectsEXT(1, &glMemory_);
-    const GLint dedicated = GL_TRUE;
-    gl.MemoryObjectParameterivEXT(glMemory_, GL_DEDICATED_MEMORY_OBJECT_EXT, &dedicated);
+    GpuStatus s = glError("glCreateMemoryObjectsEXT");
+    if (s) {
+        const GLint dedicated = GL_TRUE;
+        gl.MemoryObjectParameterivEXT(glMemory_, GL_DEDICATED_MEMORY_OBJECT_EXT, &dedicated);
+        s = glError("glMemoryObjectParameterivEXT");
+    }
+    if (!s) {
+        close(memFd);
+        return s;
+    }
     gl.ImportMemoryFdEXT(glMemory_, ai.offset + ai.size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, memFd);
-    if (GpuStatus s = glError("glImportMemoryFdEXT"); !s) {
-        // GL only takes ownership of the fd when the import succeeds.
+    if (s = glError("glImportMemoryFdEXT"); !s) {
         close(memFd);
         return s;
     }
     gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, glBuffer_);
     gl.BufferStorageMemEXT(GL_PIXEL_UNPACK_BUFFER, static_cast<GLsizeiptr>(size_), glMemory_, ai.offset);
     gl.BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-    if (GpuStatus s = glError("glBufferStorageMemEXT"); !s) {
+    if (s = glError("glBufferStorageMemEXT"); !s) {
         return s;
     }
 
@@ -491,6 +500,10 @@ GpuStatus GlInterop::initGl(bool semaphores)
             return s;
         }
         gl.GenSemaphoresEXT(1, glSem);
+        if (GpuStatus s = glError("glGenSemaphoresEXT"); !s) {
+            close(fd);
+            return s;
+        }
         gl.ImportSemaphoreFdEXT(*glSem, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd);
         if (GpuStatus s = glError("glImportSemaphoreFdEXT"); !s) {
             close(fd);
@@ -563,7 +576,7 @@ GpuStatus GlInterop::waitProduced(uint64_t timeoutNs)
     return {};
 }
 
-GpuStatus GlInterop::produce(const std::function<void(VkCommandBuffer)>& record)
+GpuStatus GlInterop::produce(const std::function<GpuStatus(VkCommandBuffer)>& record)
 {
     if (pendingUpload_) {
         return fail(VK_ERROR_UNKNOWN, "produce() called twice without an upload() in between");
@@ -606,7 +619,9 @@ GpuStatus GlInterop::produce(const std::function<void(VkCommandBuffer)>& record)
         barrier(acquire);
     }
 
-    record(cmd_);
+    if (GpuStatus s = record(cmd_); !s) {
+        return s;
+    }
 
     if (path_ == GlHandoffPath::Readback) {
         VkBufferMemoryBarrier2 toCopy{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <string>
 #include <vector>
 
 #include "GpuHarness.h"
@@ -13,7 +14,7 @@ namespace {
 using gradefix::GradeCase;
 using gradefix::GradeParams;
 
-constexpr gradefix::Bounds kGpuBounds{gradefix::kUlpBound, gradefix::kAbsBound, true};
+constexpr gradefix::Bounds kGpuBounds{gradefix::kUlpBound, true};
 
 class GradeGpuTest : public gputest::GpuSuite
 {
@@ -38,9 +39,7 @@ protected:
                 [&](VkCommandBuffer cmd, const ComputeBinding& b, size_t k) {
                     const GradeParams& p = cases[k].p;
                     const VkBuffer bufs[] = {b.input, b.output};
-                    GpuStatus s = kernel->record(cmd, bufs, std::as_bytes(std::span(&p, 1)),
-                                                 {p.width, p.height, 1});
-                    EXPECT_TRUE(s.ok()) << s.message;
+                    return kernel->record(cmd, bufs, std::as_bytes(std::span(&p, 1)), {p.width, p.height, 1});
                 });
         return dst;
     }
@@ -65,8 +64,11 @@ TEST_F(GradeGpuTest, MatchesReferenceOverSweep)
                     w.p.nComps, w.p.flags, w.p.channelMask, (double)w.src[stats.err.worst.index]);
     }
 
+    for (const std::string& f : stats.failures)
+        ADD_FAILURE() << f;
     EXPECT_GT(stats.err.compared, 1000000u);
     EXPECT_GT(stats.err.nonFinite, 0u);
+    EXPECT_GT(stats.subnormalInputs, 0u);
     EXPECT_EQ(stats.violations, 0u);
 }
 
@@ -104,6 +106,8 @@ TEST_F(GradeGpuTest, GammaPrecision)
         std::snprintf(label, sizeof label, "  gamma=%.4f %s", cases[k].p.gamma[3],
                       cases[k].reverse ? "reverse" : "forward");
         gradefix::printStats(label, stats);
+        for (const std::string& f : stats.failures)
+            ADD_FAILURE() << label << ": " << f;
         EXPECT_EQ(stats.violations, 0u) << label;
     }
 }

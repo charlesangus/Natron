@@ -24,7 +24,8 @@ struct GpuTransferOptions
     // Keep host-pointer imports alive across process() calls, keyed by (pointer, size), so pinning
     // is paid once per buffer. The caller must keep such memory valid until releaseHostImports().
     bool cacheHostImports = false;
-    bool recordTimestamps = true;
+    // Fills the device-side TimeSpans of TransferTimeline. Costs a blocking query-pool reset per process().
+    bool recordTimestamps = false;
 };
 
 enum class TransferPath
@@ -54,7 +55,9 @@ struct ComputeBinding
 
 // Records the per-frame work into a compute-queue command buffer. Input and
 // output are owned by the compute family for the duration of the callback.
-using ComputeRecordFn = std::function<void(VkCommandBuffer, const ComputeBinding&)>;
+// A failed status stops process() before that command buffer is submitted, and
+// process() returns it.
+using ComputeRecordFn = std::function<GpuStatus(VkCommandBuffer, const ComputeBinding&)>;
 
 struct TimeSpan
 {
@@ -113,7 +116,8 @@ public:
 
     // Streams every frame host -> device -> compute -> device -> host, pipelined
     // across frames. A null `record` copies input to output. Blocks until all
-    // frames are back in their dst buffers.
+    // frames are back in their dst buffers. An exception thrown by `record` is
+    // rethrown once the work already submitted has drained.
     GpuStatus process(std::span<const TransferFrame> frames, const ComputeRecordFn& record,
                       TransferTimeline* timeline = nullptr);
 

@@ -1,5 +1,6 @@
 #include "GpuKernel.h"
 
+#include <string>
 
 namespace gpu {
 
@@ -65,19 +66,21 @@ GpuStatus GpuKernel::create(GpuDevice& device, const GpuKernelDesc& desc,
         return s;
     }
 
-    VkPipelineCacheCreateInfo pci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
-    s = device.check(vkCreatePipelineCache(dev, &pci, nullptr, &k->cache_), "vkCreatePipelineCache");
-    if (s) {
-        VkComputePipelineCreateInfo cpi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-        cpi.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
-                     VK_SHADER_STAGE_COMPUTE_BIT, module, desc.entry, nullptr};
-        cpi.layout = k->pipelineLayout_;
-        s = device.check(vkCreateComputePipelines(dev, k->cache_, 1, &cpi, nullptr, &k->pipeline_),
-                         "vkCreateComputePipelines");
-    }
+    VkComputePipelineCreateInfo cpi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    cpi.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                 VK_SHADER_STAGE_COMPUTE_BIT, module, desc.entry, nullptr};
+    cpi.layout = k->pipelineLayout_;
+    s = device.check(vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, nullptr, &k->pipeline_),
+                     "vkCreateComputePipelines");
     vkDestroyShaderModule(dev, module, nullptr);
     if (!s) {
         return s;
+    }
+
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(device.physicalDevice(), &props);
+    for (size_t i = 0; i < 3; ++i) {
+        k->maxGroups_[i] = props.limits.maxComputeWorkGroupCount[i];
     }
 
     if (push) {
@@ -113,9 +116,6 @@ GpuKernel::~GpuKernel()
     if (pipeline_) {
         vkDestroyPipeline(dev, pipeline_, nullptr);
     }
-    if (cache_) {
-        vkDestroyPipelineCache(dev, cache_, nullptr);
-    }
     if (pipelineLayout_) {
         vkDestroyPipelineLayout(dev, pipelineLayout_, nullptr);
     }
@@ -128,7 +128,7 @@ std::array<uint32_t, 3> GpuKernel::groupCount(std::array<uint32_t, 3> threads) c
 {
     std::array<uint32_t, 3> g{};
     for (size_t i = 0; i < 3; ++i) {
-        g[i] = (threads[i] + desc_.groupSize[i] - 1) / desc_.groupSize[i];
+        g[i] = static_cast<uint32_t>((uint64_t(threads[i]) + desc_.groupSize[i] - 1) / desc_.groupSize[i]);
     }
     return g;
 }
@@ -136,8 +136,21 @@ std::array<uint32_t, 3> GpuKernel::groupCount(std::array<uint32_t, 3> threads) c
 GpuStatus GpuKernel::record(VkCommandBuffer cmd, std::span<const VkBuffer> buffers,
                             std::span<const std::byte> push, std::array<uint32_t, 3> threads)
 {
+    return recordGroups(cmd, buffers, push, groupCount(threads));
+}
+
+GpuStatus GpuKernel::recordGroups(VkCommandBuffer cmd, std::span<const VkBuffer> buffers,
+                                  std::span<const std::byte> push, std::array<uint32_t, 3> groups)
+{
     if (buffers.size() != desc_.storageBufferCount || push.size() != desc_.pushConstantBytes) {
         return fail(VK_ERROR_INITIALIZATION_FAILED, "GpuKernel::record: binding or push size mismatch");
+    }
+    for (size_t i = 0; i < 3; ++i) {
+        if (groups[i] > maxGroups_[i]) {
+            return fail(VK_ERROR_FEATURE_NOT_PRESENT,
+                        "GpuKernel::record: " + std::to_string(groups[i]) + " groups along axis "
+                            + std::to_string(i) + " exceed the device limit of " + std::to_string(maxGroups_[i]));
+        }
     }
 
     std::vector<VkDescriptorBufferInfo> infos(buffers.size());
@@ -163,9 +176,13 @@ GpuStatus GpuKernel::record(VkCommandBuffer cmd, std::span<const VkBuffer> buffe
             ai.descriptorPool = pool_;
             ai.descriptorSetCount = 1;
             ai.pSetLayouts = &setLayout_;
-            GpuStatus s = device_.check(vkAllocateDescriptorSets(device_.device(), &ai, &set),
-                                        "vkAllocateDescriptorSets");
-            if (!s) {
+            const VkResult r = vkAllocateDescriptorSets(device_.device(), &ai, &set);
+            if (r == VK_ERROR_OUT_OF_POOL_MEMORY || r == VK_ERROR_FRAGMENTED_POOL) {
+                return fail(r, "GpuKernel::record: descriptor pool exhausted after "
+                                   + std::to_string(kDescriptorPoolSets)
+                                   + " dispatches; call releaseDescriptors() once recorded work completes");
+            }
+            if (GpuStatus s = device_.check(r, "vkAllocateDescriptorSets"); !s) {
                 return s;
             }
         }
@@ -181,8 +198,7 @@ GpuStatus GpuKernel::record(VkCommandBuffer cmd, std::span<const VkBuffer> buffe
         vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            static_cast<uint32_t>(push.size()), push.data());
     }
-    const std::array<uint32_t, 3> g = groupCount(threads);
-    vkCmdDispatch(cmd, g[0], g[1], g[2]);
+    vkCmdDispatch(cmd, groups[0], groups[1], groups[2]);
     return {};
 }
 

@@ -1,7 +1,5 @@
 module gradeops;
 
-// Selects spelled out so NaN lands on the same side as std::max/std::min in
-// the engine kernel, which SPIR-V's FMax/FMin leave undefined.
 public float grade(float v, float a, float b, float gamma, float invGamma)
 {
     // One rounding of a*v+b, so cancellation near zero costs no extra error.
@@ -38,6 +36,8 @@ public float gradeApply(float v, float a, float b, float gamma, float invGamma,
                  bool reverse, bool clampBlack, bool clampWhite)
 {
     v = reverse ? invGrade(v, a, b, gamma) : grade(v, a, b, gamma, invGamma);
+    // Selects spelled out so NaN lands on the same side as std::max/std::min in
+    // the engine kernel, which SPIR-V's FMax/FMin leave undefined.
     if (clampBlack)
         v = (0.0 < v) ? v : 0.0;
     if (clampWhite)

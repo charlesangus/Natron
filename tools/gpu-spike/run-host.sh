@@ -7,8 +7,9 @@
 #
 # <target> is a binary name found directly under the build dir, or a path.
 # GPU_SPIKE_BUILD defaults to <repo-of-this-script>/build/gpu-spike.
-# It refuses to run when no render node is openable, unless
-# GPU_SPIKE_ALLOW_SOFTWARE=1 accepts the lavapipe/llvmpipe fallback.
+# It refuses to run when no render node is openable, and the GPU tests fail
+# when the device they pick is a CPU device (e.g. the RADV ICD did not load),
+# unless GPU_SPIKE_ALLOW_SOFTWARE=1 accepts the lavapipe/llvmpipe fallback.
 #
 # The container cannot use RADV: its libvulkan_radeon.so needs the AMDGPU
 # target from the system libLLVM.so.21, but /usr/local carries a clang
@@ -53,6 +54,12 @@ if [[ ${render_ok} -eq 0 ]]; then
         exit 1
     fi
     echo "run-host.sh: WARNING: continuing on llvmpipe/lavapipe" >&2
+fi
+
+# A render node does not guarantee the RADV ICD loads; the test harness checks the device it
+# actually selected.
+if [[ "${GPU_SPIKE_ALLOW_SOFTWARE:-0}" != 1 ]]; then
+    export GPU_SPIKE_REQUIRE_HARDWARE=1
 fi
 
 # RADV only exposes the dedicated SDMA transfer-only queue family when asked.

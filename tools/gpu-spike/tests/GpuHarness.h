@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "GpuKernel.h"
+#include "GpuTestDevice.h"
 #include "GpuTransfer.h"
 
 // Device setup and dispatch plumbing shared by the GPU correctness tests. The
@@ -27,9 +28,8 @@ class GpuSuite : public ::testing::Test
 protected:
     static void SetUpTestSuite()
     {
-        gpu::GpuDeviceOptions o;
-        o.enableValidation = std::getenv("GPU_SPIKE_NO_VALIDATION") == nullptr;
-        gpu::GpuStatus s = gpu::GpuDevice::create(o, dev_);
+        suiteCheck_ = ValidationCheck();
+        gpu::GpuStatus s = createDevice(dev_);
         if (!s) {
             setupError_ = s.message;
             return;
@@ -37,14 +37,28 @@ protected:
         VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
         VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &driver};
         vkGetPhysicalDeviceProperties2(dev_->physicalDevice(), &props);
-        std::printf("device: %s | driver: %s %s | type=%d validation=%d pushDescriptor=%d\n",
-                    dev_->info().name.c_str(), driver.driverName, driver.driverInfo, int(dev_->info().type),
-                    dev_->info().validationEnabled, dev_->info().pushDescriptor);
+        std::printf("driver: %s %s | type=%d\n", driver.driverName, driver.driverInfo, int(dev_->info().type));
     }
 
-    static void TearDownTestSuite() { dev_.reset(); }
+    static void TearDownTestSuite()
+    {
+        dev_.reset();
+        suiteCheck_.expectClean("device teardown");
+    }
 
-    void SetUp() override { ASSERT_TRUE(dev_) << setupError_; }
+    void SetUp() override
+    {
+        suiteCheck_.expectClean("device setup");
+        ASSERT_TRUE(dev_) << setupError_;
+    }
+
+    void TearDown() override
+    {
+        if (dev_) {
+            dev_->waitIdle();
+        }
+        suiteCheck_.expectClean("the test");
+    }
 
     static std::unique_ptr<gpu::GpuKernel> makeKernel(const uint32_t* spirv, size_t words, const char* entry,
                                                       uint32_t buffers, uint32_t pushBytes,
@@ -141,13 +155,13 @@ protected:
     // kernel's descriptor pool; `record` sees the frame index within `frames`.
     static void process(gpu::GpuTransfer& transfer, gpu::GpuKernel& kernel,
                         std::span<const gpu::TransferFrame> frames, size_t batch,
-                        const std::function<void(VkCommandBuffer, const gpu::ComputeBinding&, size_t)>& record)
+                        const std::function<gpu::GpuStatus(VkCommandBuffer, const gpu::ComputeBinding&, size_t)>& record)
     {
         for (size_t first = 0; first < frames.size(); first += batch) {
             const size_t n = std::min(batch, frames.size() - first);
             gpu::GpuStatus s = transfer.process(
                 frames.subspan(first, n),
-                [&](VkCommandBuffer cmd, const gpu::ComputeBinding& b) { record(cmd, b, first + b.frameIndex); });
+                [&](VkCommandBuffer cmd, const gpu::ComputeBinding& b) { return record(cmd, b, first + b.frameIndex); });
             ASSERT_TRUE(s.ok()) << s.message << " (VkResult " << s.result << ")";
             kernel.releaseDescriptors();
         }
@@ -155,9 +169,11 @@ protected:
 
     static std::unique_ptr<gpu::GpuDevice> dev_;
     static std::string setupError_;
+    static ValidationCheck suiteCheck_;
 };
 
 inline std::unique_ptr<gpu::GpuDevice> GpuSuite::dev_;
 inline std::string GpuSuite::setupError_;
+inline ValidationCheck GpuSuite::suiteCheck_;
 
 } // namespace gputest

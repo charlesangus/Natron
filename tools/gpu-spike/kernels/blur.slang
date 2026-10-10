@@ -13,6 +13,7 @@ struct BlurParams
 };
 [[vk::push_constant]] ConstantBuffer<BlurParams> params;
 
+// kGroup, kColumns and kDirectMaxRadius are mirrored in src/GpuBlur.cpp.
 static const uint kGroup = 128;
 static const uint kColumns = 32;
 static const uint kDirectMaxRadius = 32;
@@ -40,9 +41,10 @@ uint pixelIndex(uint line, int p)
                                 : line * params.width + uint(p);
 }
 
-// Dispatch (ceil(axisLen / 128), lineCount, 1): group.x is the tile along the
-// blur axis, group.y the row it filters (horizontal) or a block of kColumns
-// columns (vertical with radius <= kDirectMaxRadius, where surplus groups idle).
+// Dispatch shape comes from blurGroupCount in src/GpuBlur.cpp, which also
+// refuses radius > kMaxRadius and more than 4 channels, the limits of `tile`.
+// group.x is the tile along the blur axis; group.y is the line it filters, or
+// a block of kColumns columns on the vertical direct path.
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void blurPass(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)

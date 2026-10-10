@@ -99,7 +99,47 @@ bool layerPresent(const char* name)
     });
 }
 
-GpuStatus createInstance(bool wantValidation, VkInstance& inst, bool& validationOn)
+bool instanceExtensionPresent(const char* layer, const char* name)
+{
+    uint32_t n = 0;
+    if (vkEnumerateInstanceExtensionProperties(layer, &n, nullptr) != VK_SUCCESS) {
+        return false;
+    }
+    std::vector<VkExtensionProperties> exts(n);
+    if (vkEnumerateInstanceExtensionProperties(layer, &n, exts.data()) < 0) {
+        return false;
+    }
+    return hasName(exts, name);
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL forwardDebugMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                                                   VkDebugUtilsMessageTypeFlagsEXT types,
+                                                   const VkDebugUtilsMessengerCallbackDataEXT* data, void* user)
+{
+    const auto* fn = static_cast<const GpuDebugMessageFn*>(user);
+    (*fn)(severity, types, data && data->pMessage ? data->pMessage : "");
+    return VK_FALSE;
+}
+
+VkDebugUtilsMessengerCreateInfoEXT messengerInfo(const GpuDebugMessageFn& fn)
+{
+    VkDebugUtilsMessengerCreateInfoEXT ci{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+    ci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    ci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+                     | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    ci.pfnUserCallback = forwardDebugMessage;
+    ci.pUserData = const_cast<GpuDebugMessageFn*>(&fn);
+    return ci;
+}
+
+bool envFlag(const char* name)
+{
+    const char* v = std::getenv(name);
+    return v && std::strcmp(v, "1") == 0;
+}
+
+GpuStatus createInstance(bool wantValidation, const GpuDebugMessageFn& debug, VkInstance& inst,
+                         bool& validationOn, bool& messengerOn)
 {
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "natron-gpu";
@@ -107,12 +147,23 @@ GpuStatus createInstance(bool wantValidation, VkInstance& inst, bool& validation
 
     static const char* kValidation = "VK_LAYER_KHRONOS_validation";
     validationOn = wantValidation && layerPresent(kValidation);
+    messengerOn = debug && (instanceExtensionPresent(nullptr, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)
+                            || (validationOn && instanceExtensionPresent(kValidation, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)));
 
     VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &app;
     if (validationOn) {
         ci.enabledLayerCount = 1;
         ci.ppEnabledLayerNames = &kValidation;
+    }
+    static const char* kDebugUtils = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    // Chained so messages from vkCreateInstance and vkDestroyInstance reach the callback too.
+    VkDebugUtilsMessengerCreateInfoEXT mci{};
+    if (messengerOn) {
+        mci = messengerInfo(debug);
+        ci.pNext = &mci;
+        ci.enabledExtensionCount = 1;
+        ci.ppEnabledExtensionNames = &kDebugUtils;
     }
     VkResult r = vkCreateInstance(&ci, nullptr, &inst);
     if (r != VK_SUCCESS) {
@@ -123,35 +174,28 @@ GpuStatus createInstance(bool wantValidation, VkInstance& inst, bool& validation
 
 } // namespace
 
-GpuStatus GpuDevice::listDevices(std::vector<GpuPhysicalDeviceDesc>& out)
-{
-    out.clear();
-    VkInstance inst = VK_NULL_HANDLE;
-    bool v = false;
-    if (GpuStatus s = createInstance(false, inst, v); !s) {
-        return s;
-    }
-    std::vector<VkPhysicalDevice> pds;
-    GpuStatus s = enumeratePhysical(inst, pds);
-    if (s) {
-        for (uint32_t i = 0; i < pds.size(); ++i) {
-            VkPhysicalDeviceProperties p;
-            vkGetPhysicalDeviceProperties(pds[i], &p);
-            out.push_back({i, p.deviceName, p.deviceType, meetsRequirements(pds[i], p)});
-        }
-    }
-    vkDestroyInstance(inst, nullptr);
-    return s;
-}
-
 GpuStatus GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& out)
 {
     out.reset();
     std::unique_ptr<GpuDevice> dev(new GpuDevice);
+    dev->debugMessage_ = options.debugMessage;
 
-    if (GpuStatus s = createInstance(options.enableValidation, dev->instance_,
-                                     dev->info_.validationEnabled); !s) {
+    if (GpuStatus s = createInstance(options.enableValidation || envFlag("NATRON_GPU_VALIDATION"),
+                                     dev->debugMessage_, dev->instance_, dev->info_.validationEnabled,
+                                     dev->info_.debugMessenger);
+        !s) {
         return s;
+    }
+    if (dev->info_.debugMessenger) {
+        auto create = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+            vkGetInstanceProcAddr(dev->instance_, "vkCreateDebugUtilsMessengerEXT"));
+        const VkDebugUtilsMessengerCreateInfoEXT mci = messengerInfo(dev->debugMessage_);
+        if (!create) {
+            return fail(VK_ERROR_EXTENSION_NOT_PRESENT, "vkCreateDebugUtilsMessengerEXT unavailable");
+        }
+        if (VkResult r = create(dev->instance_, &mci, nullptr, &dev->messenger_); r != VK_SUCCESS) {
+            return fail(r, "vkCreateDebugUtilsMessengerEXT failed");
+        }
     }
 
     std::vector<VkPhysicalDevice> pds;
@@ -274,7 +318,9 @@ GpuStatus GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<Gpu
     optional(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME, dev->info_.externalSemaphoreFd);
     optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, dev->info_.externalMemoryHost);
     optional(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, dev->info_.memoryBudget);
-    optional(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, dev->info_.pushDescriptor);
+    if (!options.disablePushDescriptor) {
+        optional(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, dev->info_.pushDescriptor);
+    }
 
     Features avail;
     vkGetPhysicalDeviceFeatures2(dev->physical_, &avail.f2);
@@ -341,15 +387,19 @@ GpuDevice::~GpuDevice()
 {
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
-        for (auto& [key, pool] : pools_) {
-            vkDestroyCommandPool(device_, pool, nullptr);
-        }
     }
     if (allocator_) {
         vmaDestroyAllocator(allocator_);
     }
     if (device_ != VK_NULL_HANDLE) {
         vkDestroyDevice(device_, nullptr);
+    }
+    if (messenger_ != VK_NULL_HANDLE) {
+        auto destroy = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+            vkGetInstanceProcAddr(instance_, "vkDestroyDebugUtilsMessengerEXT"));
+        if (destroy) {
+            destroy(instance_, messenger_, nullptr);
+        }
     }
     if (instance_ != VK_NULL_HANDLE) {
         vkDestroyInstance(instance_, nullptr);
@@ -382,30 +432,6 @@ GpuStatus GpuDevice::check(VkResult result, const char* what)
     if (result < 0) {
         return fail(result, std::string(what) + " failed");
     }
-    return {};
-}
-
-GpuStatus GpuDevice::commandPool(QueueKind kind, VkCommandPool& out)
-{
-    if (isLost()) {
-        return lostStatus();
-    }
-    const uint32_t family = queueFamily(kind);
-    const auto key = std::make_pair(std::this_thread::get_id(), family);
-    std::lock_guard<std::mutex> lock(poolMutex_);
-    if (auto it = pools_.find(key); it != pools_.end()) {
-        out = it->second;
-        return {};
-    }
-    VkCommandPoolCreateInfo ci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-    ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    ci.queueFamilyIndex = family;
-    VkCommandPool pool = VK_NULL_HANDLE;
-    if (GpuStatus s = check(vkCreateCommandPool(device_, &ci, nullptr, &pool), "vkCreateCommandPool"); !s) {
-        return s;
-    }
-    pools_.emplace(key, pool);
-    out = pool;
     return {};
 }
 

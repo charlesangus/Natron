@@ -73,11 +73,19 @@ def cpu_baseline(out):
             if len(parts) >= 3:
                 tags.append(parts)
     lines = [json.loads(l) for l in open(path) if l.strip()]
+    if tags and len(tags) != len(lines):
+        sys.exit("%s has %d records but %s has %d rows; cannot pair them" % (
+            path, len(lines), ctx_path, len(tags)))
     result = {}
     for rec, tag in zip(lines, tags):
         result[tag[0]] = rec
         ctx[tag[0]] = tag
     return result, ctx
+
+
+def cpu_threads(recs):
+    counts = sorted({str(r.get("cpus", "?")) for r in recs.values()})
+    return "/".join(counts) if counts else "?"
 
 
 def wall_ms(rec):
@@ -155,7 +163,7 @@ def main():
         return get(size, wl, "staging", "on", metric, mode=None)
 
     print("GPU: %s | CPU: Natron native Grade and Blur (IIR Gaussian), %s threads" % (
-        "RADV (see device line in gpu-run*.log)", next(iter(recs.values())).get("cpus", "?") if recs else "16"))
+        "RADV (see device line in gpu-run*.log)", cpu_threads(recs)))
     print("Times are ms per image, mean of %d run(s); medians of the iterations inside each run." % runs)
     print("e2e = upload + compute + download, pipelined across frames/strips (on) or one at a time (off).")
     print()
@@ -239,7 +247,8 @@ def main():
     if ctx:
         busy = [t for t, v in ctx.items() if v[2] != "idle"]
         print("  every CPU run started with no build running" + ("" if not busy else "; build seen after: " + ", ".join(busy)))
-        print("  render threads: all 16 (Natron default); other load: load1 at start in cpu-context.tsv")
+        print("  render threads: all %s (Natron default); other load: load1 at start in cpu-context.tsv"
+              % cpu_threads(recs))
     print("Cells: %d empty, %d NA (not applicable or not run; the note column says why)" % (empty, na))
     return 0
 

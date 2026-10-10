@@ -72,7 +72,9 @@ protected:
     void initializeGL() override
     {
         initializeOpenGLFunctions();
-        GpuStatus s = GpuDevice::create({}, dev_);
+        GpuDeviceOptions o;
+        o.enableValidation = std::getenv("GPU_SPIKE_NO_VALIDATION") == nullptr;
+        GpuStatus s = GpuDevice::create(o, dev_);
         if (!s) {
             error = "GpuDevice: " + s.message;
             return;
@@ -143,6 +145,7 @@ protected:
             GpuStatus s = interop_->produce([&](VkCommandBuffer cb) {
                 VkBufferCopy region{0, 0, size};
                 vkCmdCopyBuffer(cb, staging_, interop_->buffer(), 1, &region);
+                return GpuStatus{};
             });
             if (s) {
                 s = interop_->waitProduced();

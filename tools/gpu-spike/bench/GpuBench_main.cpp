@@ -21,6 +21,7 @@
 #include <thread>
 #include <vector>
 
+#include "GpuBlur.h"
 #include "GpuDevice.h"
 #include "GpuKernel.h"
 #include "GpuTransfer.h"
@@ -322,11 +323,8 @@ bool recordWork(VkCommandBuffer cmd, const Work& wk, Wl wl, uint32_t w, uint32_t
     begin(t.all);
     const uint32_t radius = uint32_t(blurref::radiusForSigma(wi.sigma));
     auto blurPass = [&](VkBuffer src, VkBuffer dst, bool vertical, GpuTimer* tm) {
-        const blurfix::BlurParams p{w, h, kChannels, radius, vertical ? 1u : 0u, 1};
         begin(tm);
-        const VkBuffer bufs[] = {src, dst, wk.weights};
-        check(wk.k->blur->record(cmd, bufs, std::as_bytes(std::span(&p, 1)), vertical ? std::array<uint32_t, 3>{h, w, 1}
-                                                                                         : std::array<uint32_t, 3>{w, h, 1}));
+        check(recordBlurPass(*wk.k->blur, cmd, src, dst, wk.weights, GpuBlurPass{w, h, kChannels, radius, vertical, true}));
         end(tm);
     };
     if (wi.grade) {
@@ -407,11 +405,20 @@ bool measureKernel(GpuDevice& dev, Kernels& k, const SizeSpec& s, Wl wl, const s
         return timers.back().get();
     };
 
+    VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pci.queueFamilyIndex = dev.queueFamily(QueueKind::Compute);
     VkCommandPool pool;
-    if (GpuStatus st = dev.commandPool(QueueKind::Compute, pool); !st) {
+    if (GpuStatus st = dev.check(vkCreateCommandPool(dev.device(), &pci, nullptr, &pool), "vkCreateCommandPool"); !st) {
         err = st.message;
         return false;
     }
+    struct PoolGuard
+    {
+        VkDevice d;
+        VkCommandPool p;
+        ~PoolGuard() { vkDestroyCommandPool(d, p, nullptr); }
+    } poolGuard{dev.device(), pool};
     VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     cai.commandPool = pool;
     cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -428,8 +435,10 @@ bool measureKernel(GpuDevice& dev, Kernels& k, const SizeSpec& s, Wl wl, const s
         std::vector<PassTimers> pt;
         VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkResetCommandBuffer(cmd, 0);
-        vkBeginCommandBuffer(cmd, &bi);
+        if (vkResetCommandBuffer(cmd, 0) != VK_SUCCESS || vkBeginCommandBuffer(cmd, &bi) != VK_SUCCESS) {
+            err = "command buffer begin failed";
+            return false;
+        }
         bool ok = true;
         for (const Unit& u : units) {
             PassTimers t{timer(), timer(), timer(), timer()};
@@ -549,12 +558,16 @@ bool runOnce(const Pipeline& pl, Images& im, Wl wl, const std::vector<Unit>& uni
                 const VkBufferCopy r{off, off, std::min(kChunk, b.bytes - off)};
                 vkCmdCopyBuffer(cmd, b.input, b.output, 1, &r);
             }
+            return GpuStatus{};
         };
     } else {
         record = [&](VkCommandBuffer cmd, const ComputeBinding& b) {
             const Unit& un = units[frameUnit[base + b.frameIndex]];
             VkBuffer tmp = pl.useScratch ? (*pl.scratch)[b.frameIndex % pl.scratch->size()].buffer : VK_NULL_HANDLE;
-            recordWork(cmd, wk, wl, s.w, un.srcRows, b.input, b.output, tmp, PassTimers{});
+            if (!recordWork(cmd, wk, wl, s.w, un.srcRows, b.input, b.output, tmp, PassTimers{})) {
+                return GpuStatus{VK_ERROR_UNKNOWN, "recording the workload failed"};
+            }
+            return GpuStatus{};
         };
     }
 
@@ -853,6 +866,7 @@ bool runSize(GpuDevice& dev, Kernels& k, const SizeSpec& s, const Config& cfg, s
             o.cacheHostImports = pc.import;
             o.copyThreads = pc.import ? 1 : 8;
             o.framesInFlight = depth;
+            o.recordTimestamps = true;
             std::unique_ptr<GpuTransfer> t;
             if (GpuStatus st = GpuTransfer::create(dev, o, t); !st || (pc.import && !t->hostImportSupported())) {
                 for (const char* ov : {"on", "off"}) {

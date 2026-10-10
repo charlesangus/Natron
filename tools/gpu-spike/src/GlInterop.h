@@ -80,7 +80,8 @@ public:
     unsigned int glBuffer() const { return glBuffer_; }
 
     // Submits the caller's writes to buffer() on the compute queue, after GL's previous read.
-    GpuStatus produce(const std::function<void(VkCommandBuffer)>& record);
+    // A failed status from `record` is returned without submitting anything.
+    GpuStatus produce(const std::function<GpuStatus(VkCommandBuffer)>& record);
 
     // Blocks the CPU until the last produce() has finished on the GPU.
     GpuStatus waitProduced(uint64_t timeoutNs = UINT64_MAX);

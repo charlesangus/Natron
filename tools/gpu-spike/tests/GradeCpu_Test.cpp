@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "grade_spirv.h"
@@ -50,6 +51,8 @@ TEST(GradeCpu, MatchesReferenceOverSweep)
     }
 
     gradefix::printStats("grade cpu twin vs reference", stats);
+    for (const std::string& f : stats.failures)
+        ADD_FAILURE() << f;
 
     EXPECT_GT(stats.err.compared, 1000000u);
     EXPECT_GT(stats.err.nonFinite, 0u);

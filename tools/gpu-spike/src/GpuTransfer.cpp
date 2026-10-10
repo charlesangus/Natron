@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -438,15 +439,22 @@ struct GpuTransfer::Impl
             queryCapacity = count;
         }
         // hostQueryReset is not enabled on the device, so the reset goes through a command buffer.
-        vkResetCommandBuffer(miscCb, 0);
-        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer(miscCb, &bi);
+        if (GpuStatus s = beginOneTime(miscCb); !s) return s;
         vkCmdResetQueryPool(miscCb, queries, 0, count);
         if (GpuStatus s = dev.check(vkEndCommandBuffer(miscCb), "vkEndCommandBuffer"); !s) return s;
         const uint64_t v = ++compValue;
         if (GpuStatus s = submit(QueueKind::Compute, miscCb, {}, compTL, v); !s) return s;
         return dev.waitSemaphore(compTL, v, kWaitTimeoutNs);
+    }
+
+    GpuStatus beginOneTime(VkCommandBuffer cb)
+    {
+        if (GpuStatus s = dev.check(vkResetCommandBuffer(cb, 0), "vkResetCommandBuffer"); !s) {
+            return s;
+        }
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        return dev.check(vkBeginCommandBuffer(cb, &bi), "vkBeginCommandBuffer");
     }
 
     GpuStatus submit(QueueKind kind, VkCommandBuffer cb, std::initializer_list<SemWait> waits, VkSemaphore signal,
@@ -685,9 +693,6 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
         cv.notify_all();
     };
 
-    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
     const Clock::time_point t0 = Clock::now();
     std::vector<ImportedBuffer> upImports;
     std::vector<ImportedBuffer> downImports;
@@ -728,8 +733,7 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
                 }
 
                 VkCommandBuffer cb = m.upCbs[r];
-                vkResetCommandBuffer(cb, 0);
-                vkBeginCommandBuffer(cb, &begin);
+                if (GpuStatus s = m.beginOneTime(cb); !s) return s;
                 stamp(cb, m.tsTransfer, qUp(k, i));
                 VkBufferCopy region{0, useImport ? 0 : off, len};
                 vkCmdCopyBuffer(cb, srcBuf, m.devIn[d].buffer, 1, &region);
@@ -761,8 +765,7 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
             }
 
             VkCommandBuffer cb = m.compCbs[d];
-            vkResetCommandBuffer(cb, 0);
-            vkBeginCommandBuffer(cb, &begin);
+            if (GpuStatus s = m.beginOneTime(cb); !s) return s;
             stamp(cb, m.tsCompute, qComp(k));
             if (m.ownershipTransfers) {
                 Barrier(m.devIn[d].buffer, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
@@ -771,7 +774,9 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
                     .record(cb);
             }
             if (record) {
-                record(cb, ComputeBinding{m.devIn[d].buffer, m.devOut[d].buffer, f.bytes, k});
+                if (GpuStatus s = record(cb, ComputeBinding{m.devIn[d].buffer, m.devOut[d].buffer, f.bytes, k}); !s) {
+                    return s;
+                }
             } else {
                 VkBufferCopy region{0, 0, f.bytes};
                 vkCmdCopyBuffer(cb, m.devIn[d].buffer, m.devOut[d].buffer, 1, &region);
@@ -864,8 +869,7 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
                 VkBuffer dstBuf = useImport ? imp.buffer : m.downSlots[r].buffer;
 
                 VkCommandBuffer cb = m.downCbs[r];
-                vkResetCommandBuffer(cb, 0);
-                vkBeginCommandBuffer(cb, &begin);
+                if (GpuStatus s = m.beginOneTime(cb); !s) return s;
                 stamp(cb, m.tsTransfer, qDown(k, i));
                 if (i == 0 && m.ownershipTransfers) {
                     Barrier(m.devOut[d].buffer, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT,
@@ -898,10 +902,22 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
         return {};
     };
 
+    std::exception_ptr upException;
+    std::exception_ptr downException;
     std::thread down([&] {
-        if (GpuStatus s = downloader(); !s) raise(std::move(s));
+        try {
+            if (GpuStatus s = downloader(); !s) raise(std::move(s));
+        } catch (...) {
+            downException = std::current_exception();
+            raise(fail(VK_ERROR_UNKNOWN, "GpuTransfer download thread threw"));
+        }
     });
-    if (GpuStatus s = uploader(); !s) raise(std::move(s));
+    try {
+        if (GpuStatus s = uploader(); !s) raise(std::move(s));
+    } catch (...) {
+        upException = std::current_exception();
+        raise(fail(VK_ERROR_UNKNOWN, "GpuTransfer compute callback or upload threw"));
+    }
     down.join();
     const Clock::time_point t1 = Clock::now();
 
@@ -914,6 +930,12 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
     }
     for (ImportedBuffer& b : upImports) m.destroyImport(b);
     for (ImportedBuffer& b : downImports) m.destroyImport(b);
+    if (upException) {
+        std::rethrow_exception(upException);
+    }
+    if (downException) {
+        std::rethrow_exception(downException);
+    }
     if (aborted) {
         return firstError;
     }

@@ -89,7 +89,7 @@ function(slang_add_kernel target source)
             -reflection-json "${_json}"
     COMMAND ${CMAKE_COMMAND} -DIN=${_spv} -DOUT=${_hdr} -DSYMBOL=${target} -DJSON=${_json}
             -P "${_SLANG_KERNELS_SELF}"
-    DEPENDS "${_src}" ${_modules}
+    DEPENDS "${_src}" ${_modules} "${_SLANG_KERNELS_SELF}"
     VERBATIM)
 
   add_custom_command(

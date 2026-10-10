@@ -19,6 +19,7 @@
 #include "GlInterop.h"
 #include "GpuDevice.h"
 #include "GpuKernel.h"
+#include "GpuTestDevice.h"
 #include "fill_spirv.h"
 
 using namespace gpu;
@@ -178,10 +179,11 @@ public:
         return dev.check(vmaCreateBuffer(dev.allocator(), &bci, &aci, &buffer, &alloc, nullptr), "device source");
     }
 
-    void copyTo(VkCommandBuffer cb, VkBuffer dst) const
+    GpuStatus copyTo(VkCommandBuffer cb, VkBuffer dst) const
     {
         VkBufferCopy region{0, 0, size};
         vkCmdCopyBuffer(cb, buffer, dst, 1, &region);
+        return {};
     }
 
     ~TestBuffer()
@@ -200,7 +202,7 @@ class GlInteropTest : public ::testing::Test
 protected:
     void SetUp() override
     {
-        GpuStatus s = GpuDevice::create({}, dev);
+        GpuStatus s = gputest::createDevice(dev);
         ASSERT_TRUE(s.ok()) << s.message;
         if (!egl.init()) {
             GTEST_SKIP() << "EGL surfaceless unavailable: " << egl.error;
@@ -228,6 +230,9 @@ protected:
         for (GLuint t : textures) {
             egl.gl.DeleteTextures(1, &t);
         }
+        fill.reset();
+        dev.reset();
+        check.expectClean("the test");
     }
 
     GLuint makeTexture(uint32_t w, uint32_t h)
@@ -269,13 +274,12 @@ protected:
         for (size_t i = 0; i < expected.size(); ++i) {
             expected[i] = float(i);
         }
-        GpuStatus recorded;
-        ASSERT_TRUE(gi->produce([&](VkCommandBuffer cb) {
-                          FillParams p{w * 4, h, 1};
-                          const VkBuffer bufs[] = {gi->buffer()};
-                          recorded = fill->record(cb, bufs, std::as_bytes(std::span(&p, 1)), {w * 4, h, 1});
-                      }).ok());
-        ASSERT_TRUE(recorded.ok()) << recorded.message;
+        s = gi->produce([&](VkCommandBuffer cb) {
+            FillParams p{w * 4, h, 1};
+            const VkBuffer bufs[] = {gi->buffer()};
+            return fill->record(cb, bufs, std::as_bytes(std::span(&p, 1)), {w * 4, h, 1});
+        });
+        ASSERT_TRUE(s.ok()) << s.message;
         s = gi->upload(tex);
         ASSERT_TRUE(s.ok()) << s.message;
         ASSERT_TRUE(gi->waitProduced().ok());
@@ -289,7 +293,7 @@ protected:
             fillPattern(staging.data, w, h, frame);
             staging.flush();
             expected.assign(staging.data, staging.data + size_t(w) * h * 4);
-            ASSERT_TRUE(gi->produce([&](VkCommandBuffer cb) { staging.copyTo(cb, gi->buffer()); }).ok());
+            ASSERT_TRUE(gi->produce([&](VkCommandBuffer cb) { return staging.copyTo(cb, gi->buffer()); }).ok());
             s = gi->upload(tex);
             ASSERT_TRUE(s.ok()) << s.message;
             std::vector<float> got = readTexture(tex, w, h);
@@ -301,6 +305,45 @@ protected:
                   << "\n";
     }
 
+    // Uploads several frames back to back with no GL readback in between, so each produce() can
+    // only rely on the GL-read-before-Vulkan-write ordering the interop provides.
+    void backToBack(GlHandoffPath path)
+    {
+        if (!caps.supports(path)) {
+            GTEST_SKIP() << toString(path) << " unavailable on " << driverLabel() << ": missing " << caps.missing;
+        }
+        constexpr uint32_t w = 1024;
+        constexpr uint32_t h = 512;
+        constexpr uint32_t kFrames = 8;
+        std::unique_ptr<GlInterop> gi;
+        GpuStatus s = GlInterop::create(*dev, eglLoader, w, h, path, gi);
+        ASSERT_TRUE(s.ok()) << s.message;
+        std::vector<std::unique_ptr<TestBuffer>> sources;
+        std::vector<GLuint> texs;
+        for (uint32_t f = 0; f < kFrames; ++f) {
+            auto staging = std::make_unique<TestBuffer>();
+            ASSERT_TRUE(staging->create(*dev, gi->size()).ok());
+            fillPattern(staging->data, w, h, 100 + f);
+            staging->flush();
+            sources.push_back(std::move(staging));
+            texs.push_back(makeTexture(w, h));
+        }
+        for (uint32_t f = 0; f < kFrames; ++f) {
+            s = gi->produce([&](VkCommandBuffer cb) { return sources[f]->copyTo(cb, gi->buffer()); });
+            ASSERT_TRUE(s.ok()) << s.message;
+            s = gi->upload(texs[f]);
+            ASSERT_TRUE(s.ok()) << s.message;
+        }
+        ASSERT_TRUE(gi->waitProduced().ok());
+        for (uint32_t f = 0; f < kFrames; ++f) {
+            const std::vector<float> got = readTexture(texs[f], w, h);
+            ASSERT_EQ(egl.gl.GetError(), GLenum(GL_NO_ERROR));
+            EXPECT_EQ(0, std::memcmp(sources[f]->data, got.data(), got.size() * sizeof(float)))
+                << toString(path) << " frame " << f << " differs";
+        }
+    }
+
+    gputest::ValidationCheck check;
     std::unique_ptr<GpuDevice> dev;
     std::unique_ptr<GpuKernel> fill;
     EglSurfaceless egl;
@@ -344,6 +387,21 @@ TEST_F(GlInteropTest, ReadbackByteExact)
     roundTrip(GlHandoffPath::Readback);
 }
 
+TEST_F(GlInteropTest, ZeroCopyBackToBack)
+{
+    backToBack(GlHandoffPath::ZeroCopy);
+}
+
+TEST_F(GlInteropTest, ZeroCopyHostSyncBackToBack)
+{
+    backToBack(GlHandoffPath::ZeroCopyHostSync);
+}
+
+TEST_F(GlInteropTest, ReadbackBackToBack)
+{
+    backToBack(GlHandoffPath::Readback);
+}
+
 TEST_F(GlInteropTest, UhdLatency)
 {
     constexpr uint32_t w = 3840;
@@ -382,7 +440,7 @@ TEST_F(GlInteropTest, UhdLatency)
                           dep.memoryBarrierCount = 1;
                           dep.pMemoryBarriers = &mb;
                           vkCmdPipelineBarrier2(cb, &dep);
-                          source.copyTo(cb, gi->buffer());
+                          return source.copyTo(cb, gi->buffer());
                       }).ok());
         ASSERT_TRUE(gi->upload(tex).ok());
 
@@ -391,7 +449,7 @@ TEST_F(GlInteropTest, UhdLatency)
         std::vector<double> endToEnd;
         for (int i = -2; i < iterations; ++i) {
             const auto t0 = clock::now();
-            ASSERT_TRUE(gi->produce([&](VkCommandBuffer cb) { source.copyTo(cb, gi->buffer()); }).ok());
+            ASSERT_TRUE(gi->produce([&](VkCommandBuffer cb) { return source.copyTo(cb, gi->buffer()); }).ok());
             ASSERT_TRUE(gi->waitProduced().ok());
             const auto t1 = clock::now();
             s = gi->upload(tex);
@@ -405,7 +463,7 @@ TEST_F(GlInteropTest, UhdLatency)
         }
         for (int i = -2; i < iterations; ++i) {
             const auto t0 = clock::now();
-            ASSERT_TRUE(gi->produce([&](VkCommandBuffer cb) { source.copyTo(cb, gi->buffer()); }).ok());
+            ASSERT_TRUE(gi->produce([&](VkCommandBuffer cb) { return source.copyTo(cb, gi->buffer()); }).ok());
             ASSERT_TRUE(gi->upload(tex).ok());
             egl.gl.Finish();
             if (i >= 0) {

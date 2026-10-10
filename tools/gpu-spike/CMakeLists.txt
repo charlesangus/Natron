@@ -33,7 +33,8 @@ add_executable(BlurCpu_Test tests/BlurCpu_Test.cpp)
 target_link_libraries(BlurCpu_Test PRIVATE blur GTest::gtest_main)
 gtest_discover_tests(BlurCpu_Test)
 
-add_library(gpuspike_core STATIC src/GpuDevice.cpp src/GpuKernel.cpp src/GpuTransfer.cpp src/Vma.cpp)
+add_library(gpuspike_core STATIC src/GpuDevice.cpp src/GpuKernel.cpp src/GpuBlur.cpp src/GpuTransfer.cpp
+  src/Vma.cpp)
 target_include_directories(gpuspike_core PUBLIC src)
 target_include_directories(gpuspike_core SYSTEM PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/VulkanMemoryAllocator/include")
@@ -53,10 +54,18 @@ gtest_discover_tests(GradeCpu_Test)
 
 slang_add_kernel(fill kernels/fill.slang ENTRY fill_main)
 
+# Registers a GPU kernel suite twice: as the device offers it, and with VK_KHR_push_descriptor
+# masked off so the descriptor-pool path in GpuKernel runs on every driver.
+function(gpu_kernel_tests target)
+  gtest_discover_tests(${target} DISCOVERY_TIMEOUT 30 PROPERTIES TIMEOUT 600)
+  gtest_discover_tests(${target} DISCOVERY_TIMEOUT 30 TEST_SUFFIX .NoPushDescriptor
+    PROPERTIES TIMEOUT 600 ENVIRONMENT GPU_SPIKE_NO_PUSH_DESCRIPTOR=1)
+endfunction()
+
 add_executable(GpuKernel_Test tests/GpuKernel_Test.cpp)
 target_link_libraries(GpuKernel_Test PRIVATE gpuspike_core fill GTest::gtest_main
   -static-libstdc++ -static-libgcc)
-gtest_discover_tests(GpuKernel_Test)
+gpu_kernel_tests(GpuKernel_Test)
 
 add_executable(GpuTransfer_Test tests/GpuTransfer_Test.cpp)
 target_link_libraries(GpuTransfer_Test PRIVATE gpuspike_core GTest::gtest_main
@@ -66,15 +75,15 @@ gtest_discover_tests(GpuTransfer_Test DISCOVERY_TIMEOUT 30 PROPERTIES TIMEOUT 60
 add_executable(GradeGpu_Test tests/GradeGpu_Test.cpp)
 target_link_libraries(GradeGpu_Test PRIVATE gpuspike_core grade GTest::gtest_main
   -static-libstdc++ -static-libgcc)
-gtest_discover_tests(GradeGpu_Test DISCOVERY_TIMEOUT 30 PROPERTIES TIMEOUT 600)
+gpu_kernel_tests(GradeGpu_Test)
 
 add_executable(BlurGpu_Test tests/BlurGpu_Test.cpp)
 target_link_libraries(BlurGpu_Test PRIVATE gpuspike_core blur GTest::gtest_main
   -static-libstdc++ -static-libgcc)
-gtest_discover_tests(BlurGpu_Test DISCOVERY_TIMEOUT 30 PROPERTIES TIMEOUT 600)
+gpu_kernel_tests(BlurGpu_Test)
 
 add_executable(GpuBench bench/GpuBench_main.cpp)
-target_link_libraries(GpuBench PRIVATE gpuspike_core grade blur GTest::gtest -static-libstdc++ -static-libgcc)
+target_link_libraries(GpuBench PRIVATE gpuspike_core grade blur -static-libstdc++ -static-libgcc)
 
 # The host has no gtest: stage the shared libs next to the binaries so
 # run-host.sh can put them on LD_LIBRARY_PATH.
@@ -100,6 +109,11 @@ add_executable(PointOpCompose_Test tests/PointOpCompose_Test.cpp)
 target_link_libraries(PointOpCompose_Test PRIVATE pointop_grade pointop_invert pointop_chain
   pointop_masked GTest::gtest_main)
 gtest_discover_tests(PointOpCompose_Test)
+
+add_executable(PointOpGpu_Test tests/PointOpGpu_Test.cpp)
+target_link_libraries(PointOpGpu_Test PRIVATE gpuspike_core pointop_grade pointop_chain pointop_masked
+  GTest::gtest_main -static-libstdc++ -static-libgcc)
+gpu_kernel_tests(PointOpGpu_Test)
 
 slang_add_glsl(grade_gl kernels/grade.slang ENTRY grade_main)
 slang_add_glsl(blur_gl kernels/blur.slang ENTRY blurPass)

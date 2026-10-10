@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <memory>
-#include <thread>
 #include <vector>
 
 #include "GpuDevice.h"
+#include "GpuTestDevice.h"
 
 using namespace gpu;
 
@@ -15,7 +15,7 @@ class GpuDeviceTest : public ::testing::Test
 protected:
     void SetUp() override
     {
-        GpuStatus s = GpuDevice::create({}, dev);
+        GpuStatus s = gputest::createDevice(dev);
         ASSERT_TRUE(s.ok()) << s.message << " (VkResult " << s.result << ")";
         std::cout << "device: " << dev->info().name
                   << " transferFallback=" << dev->info().transferUsesComputeQueue
@@ -28,6 +28,13 @@ protected:
                   << " pushDesc=" << dev->info().pushDescriptor << "\n";
     }
 
+    void TearDown() override
+    {
+        dev.reset();
+        check.expectClean("the test");
+    }
+
+    gputest::ValidationCheck check;
     std::unique_ptr<GpuDevice> dev;
 };
 
@@ -55,21 +62,36 @@ TEST_F(GpuDeviceTest, BudgetIsNonZero)
     EXPECT_GT(total, 0u);
 }
 
-TEST_F(GpuDeviceTest, CommandPoolIsPerThread)
+TEST(GpuDeviceOptions, ValidationIsOffByDefault)
 {
-    VkCommandPool mine = VK_NULL_HANDLE;
-    VkCommandPool mineAgain = VK_NULL_HANDLE;
-    ASSERT_TRUE(dev->commandPool(QueueKind::Compute, mine).ok());
-    ASSERT_TRUE(dev->commandPool(QueueKind::Compute, mineAgain).ok());
-    EXPECT_EQ(mine, mineAgain);
+    EXPECT_FALSE(GpuDeviceOptions{}.enableValidation);
+}
 
-    VkCommandPool other = VK_NULL_HANDLE;
-    GpuStatus s;
-    std::thread t([&] { s = dev->commandPool(QueueKind::Compute, other); });
-    t.join();
+TEST_F(GpuDeviceTest, PushDescriptorCanBeDisabled)
+{
+    gpu::GpuDeviceOptions o = gputest::deviceOptions();
+    o.disablePushDescriptor = true;
+    std::unique_ptr<GpuDevice> other;
+    GpuStatus s = gputest::createDevice(other, o);
     ASSERT_TRUE(s.ok()) << s.message;
-    EXPECT_NE(other, VK_NULL_HANDLE);
-    EXPECT_NE(mine, other);
+    EXPECT_FALSE(other->info().pushDescriptor);
+}
+
+TEST_F(GpuDeviceTest, DebugMessengerReachesCallback)
+{
+    if (!dev->info().debugMessenger) {
+        GTEST_SKIP() << "VK_EXT_debug_utils unavailable";
+    }
+    auto submit = reinterpret_cast<PFN_vkSubmitDebugUtilsMessageEXT>(
+        vkGetInstanceProcAddr(dev->instance(), "vkSubmitDebugUtilsMessageEXT"));
+    ASSERT_NE(submit, nullptr);
+    VkDebugUtilsMessengerCallbackDataEXT data{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT};
+    data.pMessage = "synthetic error from DebugMessengerReachesCallback";
+    const uint64_t before = gputest::validationErrors().load();
+    submit(dev->instance(), VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+           VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT, &data);
+    EXPECT_EQ(gputest::validationErrors().load(), before + 1);
+    check = gputest::ValidationCheck();
 }
 
 TEST_F(GpuDeviceTest, EmptySubmitSignalsTimelineSemaphore)
@@ -109,7 +131,7 @@ TEST_F(GpuDeviceTest, LostStateIsSticky)
     GpuStatus s = dev->check(VK_ERROR_DEVICE_LOST, "synthetic");
     EXPECT_EQ(s.result, VK_ERROR_DEVICE_LOST);
     EXPECT_TRUE(dev->isLost());
-    VkCommandPool p;
-    EXPECT_EQ(dev->commandPool(QueueKind::Compute, p).result, VK_ERROR_DEVICE_LOST);
+    VkSemaphore sem = VK_NULL_HANDLE;
+    EXPECT_EQ(dev->createTimelineSemaphore(0, sem).result, VK_ERROR_DEVICE_LOST);
     EXPECT_EQ(dev->waitIdle().result, VK_ERROR_DEVICE_LOST);
 }

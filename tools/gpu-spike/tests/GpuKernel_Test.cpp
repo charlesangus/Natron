@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "GpuKernel.h"
+#include "GpuTestDevice.h"
 #include "fill_spirv.h"
 
 using namespace gpu;
@@ -34,10 +35,8 @@ class GpuKernelTest : public ::testing::Test
 protected:
     void SetUp() override
     {
-        GpuStatus s = GpuDevice::create({}, dev);
+        GpuStatus s = gputest::createDevice(dev);
         ASSERT_TRUE(s.ok()) << s.message << " (VkResult " << s.result << ")";
-        std::cout << "device: " << dev->info().name << " pushDesc=" << dev->info().pushDescriptor
-                  << "\n";
 
         GpuKernelDesc d;
         d.spirv = fill_spirv;
@@ -58,6 +57,13 @@ protected:
         }
         destroy(device);
         destroy(readback);
+        if (pool_) {
+            vkDestroyCommandPool(dev->device(), pool_, nullptr);
+        }
+        timer.reset();
+        kernel.reset();
+        dev.reset();
+        check.expectClean("the test");
     }
 
     Buffer make(VkBufferUsageFlags usage, bool host)
@@ -92,10 +98,11 @@ protected:
         ASSERT_NE(device.buffer, VK_NULL_HANDLE);
         ASSERT_NE(readback.mapped, nullptr);
 
-        VkCommandPool pool = VK_NULL_HANDLE;
-        ASSERT_TRUE(dev->commandPool(QueueKind::Compute, pool).ok());
+        VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        pci.queueFamilyIndex = dev->queueFamily(QueueKind::Compute);
+        ASSERT_EQ(vkCreateCommandPool(dev->device(), &pci, nullptr, &pool_), VK_SUCCESS);
         VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-        ai.commandPool = pool;
+        ai.commandPool = pool_;
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         ai.commandBufferCount = 1;
         VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -146,12 +153,13 @@ protected:
         ASSERT_EQ(vkWaitForFences(dev->device(), 1, &fence, VK_TRUE, 30'000'000'000ull), VK_SUCCESS);
         vkDestroyFence(dev->device(), fence, nullptr);
         kernel->releaseDescriptors();
-        vkFreeCommandBuffers(dev->device(), pool, 1, &cmd);
 
         ASSERT_EQ(vmaInvalidateAllocation(dev->allocator(), readback.alloc, 0, VK_WHOLE_SIZE), VK_SUCCESS);
     }
 
+    gputest::ValidationCheck check;
     std::unique_ptr<GpuDevice> dev;
+    VkCommandPool pool_ = VK_NULL_HANDLE;
     std::unique_ptr<GpuKernel> kernel;
     std::unique_ptr<GpuTimer> timer;
     Buffer device;
@@ -162,10 +170,24 @@ protected:
 
 TEST_F(GpuKernelTest, GroupCountRoundsUp)
 {
-    const auto g = kernel->groupCount({kW, kH, 1});
-    EXPECT_EQ(g[0], (kW + fill_group_size[0] - 1) / fill_group_size[0]);
-    EXPECT_EQ(g[1], (kH + fill_group_size[1] - 1) / fill_group_size[1]);
-    EXPECT_EQ(g[2], 1u);
+    ASSERT_EQ(kernel->desc().groupSize, (std::array<uint32_t, 3>{16, 16, 1}));
+    EXPECT_EQ(kernel->groupCount({kW, kH, 1}), (std::array<uint32_t, 3>{121, 68, 1}));
+    EXPECT_EQ(kernel->groupCount({32, 16, 1}), (std::array<uint32_t, 3>{2, 1, 1}));
+    EXPECT_EQ(kernel->groupCount({0xFFFFFFFFu, 1, 1}), (std::array<uint32_t, 3>{0x10000000u, 1, 1}));
+}
+
+TEST_F(GpuKernelTest, RefusesGroupCountsBeyondTheDeviceLimit)
+{
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(dev->physicalDevice(), &props);
+    const uint32_t limit = props.limits.maxComputeWorkGroupCount[1];
+    if (limit == 0xFFFFFFFFu) {
+        GTEST_SKIP() << "device has no group count limit below 2^32";
+    }
+    FillParams p{1, 1, 0};
+    const VkBuffer bufs[] = {VK_NULL_HANDLE};
+    GpuStatus s = kernel->recordGroups(VK_NULL_HANDLE, bufs, std::as_bytes(std::span(&p, 1)), {1, limit + 1, 1});
+    EXPECT_EQ(s.result, VK_ERROR_FEATURE_NOT_PRESENT) << s.message;
 }
 
 TEST_F(GpuKernelTest, FillUint)

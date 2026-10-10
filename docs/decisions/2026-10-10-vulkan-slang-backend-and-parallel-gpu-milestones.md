@@ -13,3 +13,5 @@ the spike is sunk cost). Dependencies as currently understood: M84 needs M83; M8
 M84 and can run side by side; M87 needs M85's profiles (or M82 evidence); M81 needs M80 (other
 machine) plus M83, ideally M84. Within each milestone, independent tasks are dispatched
 concurrently; builds still go one at a time through the natron-dev container.
+
+Later the same day the OpenCL reference was dropped (no runtime on the host or in the image), so only GL 4.3 compute was measured. The outcome is recorded in `2026-10-10-gpu-compute-backend-chosen.md`.

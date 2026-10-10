@@ -13,6 +13,8 @@
 
 #include "slang-cpp-prelude.h"
 
+#include "../ref/GradeRef.h"
+
 extern "C" void pointop_grade(ComputeVaryingInput*, void*, void*);
 extern "C" void pointop_invert(ComputeVaryingInput*, void*, void*);
 extern "C" void pointop_chain(ComputeVaryingInput*, void*, void*);
@@ -101,18 +103,10 @@ int64_t orderedBits(float f)
     return i < 0 ? static_cast<int64_t>(INT32_MIN) - i : i;
 }
 
-float gradeScalar(float v, const PointParams& p, int c)
+double gradeRef(double v, const PointParams& p, int c)
 {
-    float x = std::fma(p.a[c], v, p.b[c]);
-    if (p.gamma[c] <= 0.0f)
-        x = x < 1.0f ? 0.0f : x == 1.0f ? 1.0f : INFINITY;
-    else if (p.gamma[c] != 1.0f && x > 0.0f)
-        x = std::pow(x, p.invGamma[c]);
-    if (p.flags & 2)
-        x = (0.0f < x) ? x : 0.0f;
-    if (p.flags & 4)
-        x = (x < 1.0f) ? x : 1.0f;
-    return x;
+    return graderef::apply(v, {p.a[c], p.b[c], p.gamma[c]}, (p.flags & 1) != 0, (p.flags & 2) != 0,
+                           (p.flags & 4) != 0);
 }
 
 } // namespace
@@ -132,15 +126,11 @@ TEST(PointOpCompose, ChainEqualsInvertAfterGrade)
         const std::vector<float> want = run(pointop_invert, graded, f.mask, f.p);
         const std::vector<float> got = run(pointop_chain, f.src, f.mask, f.p);
         ASSERT_EQ(got.size(), want.size());
-        int64_t maxUlp = 0;
-        for (size_t i = 0; i < got.size(); ++i)
-            maxUlp = std::max<int64_t>(maxUlp, std::llabs(orderedBits(got[i]) - orderedBits(want[i])));
-        EXPECT_LE(maxUlp, 1) << "seed " << seed;
-        EXPECT_EQ(0, std::memcmp(got.data(), want.data(), got.size() * sizeof(float)));
+        EXPECT_EQ(0, std::memcmp(got.data(), want.data(), got.size() * sizeof(float))) << "seed " << seed;
     }
 }
 
-TEST(PointOpCompose, MaskedMatchesHandWrittenReference)
+TEST(PointOpCompose, MaskedMatchesGradeReference)
 {
     for (uint32_t premult : {0u, 1u}) {
         Fixture f(10 + premult);
@@ -148,19 +138,20 @@ TEST(PointOpCompose, MaskedMatchesHandWrittenReference)
         const std::vector<float> got = run(pointop_masked, f.src, f.mask, f.p);
         int64_t maxUlp = 0;
         for (size_t px = 0; px < f.mask.size(); ++px) {
-            float v[4], in[4], out[4];
-            std::memcpy(v, &f.src[px * 4], sizeof v);
-            const float alpha = v[3];
+            double v[4], in[4], out[4];
             for (int c = 0; c < 4; ++c)
-                in[c] = (premult && c < 3 && alpha != 0.0f) ? v[c] / alpha : v[c];
+                v[c] = f.src[px * 4 + c];
+            const double alpha = v[3];
+            for (int c = 0; c < 4; ++c)
+                in[c] = (premult && c < 3 && alpha != 0.0) ? v[c] / alpha : v[c];
             for (int c = 0; c < 4; ++c) {
-                out[c] = gradeScalar(in[c], f.p, c);
+                out[c] = gradeRef(in[c], f.p, c);
                 if (premult && c < 3)
                     out[c] *= alpha;
             }
-            const float t = f.mask[px] * f.p.mixAmount;
+            const double t = double(f.mask[px]) * f.p.mixAmount;
             for (int c = 0; c < 4; ++c) {
-                const float want = v[c] + (out[c] - v[c]) * t;
+                const float want = static_cast<float>(v[c] + (out[c] - v[c]) * t);
                 const float have = got[px * 4 + c];
                 maxUlp = std::max<int64_t>(maxUlp, std::llabs(orderedBits(have) - orderedBits(want)));
                 EXPECT_NEAR(have, want, 1e-5f) << "px " << px << " c " << c;

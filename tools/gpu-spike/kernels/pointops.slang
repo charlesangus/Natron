@@ -17,7 +17,7 @@ struct PointParams
     float mixAmount;
     uint premult;
 };
-ConstantBuffer<PointParams> params;
+[[vk::push_constant]] ConstantBuffer<PointParams> params;
 
 interface IPixelOp
 {

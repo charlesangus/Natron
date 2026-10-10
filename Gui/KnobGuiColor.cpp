@@ -528,6 +528,7 @@ KnobGuiColor::KnobGuiColor(KnobIPtr knob,
     , _colorLabel(0)
     , _colorSelector(0)
     , _colorSelectorButton(0)
+    , _globalModeButton(0)
     , _lastColor()
     , _useSimplifiedUI(true)
     , _adjustPanel()
@@ -660,6 +661,9 @@ KnobGuiColor::engageGlobalMode()
 void
 KnobGuiColor::setGlobalModeHighlighted(bool highlighted)
 {
+    if (_globalModeButton) {
+        _globalModeButton->setChecked(highlighted);
+    }
     if (!_rowContainer) {
         return;
     }
@@ -934,6 +938,21 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         QObject::connect(_colorSelectorButton, &QToolButton::toggled, this, &KnobGuiColor::onAdjustPanelToggled);
         onAdjustPanelToggled(false);
         containerLayout->addWidget(_colorSelectorButton);
+
+        _globalModeButton = new QToolButton(containerLayout->widget());
+        _globalModeButton->setObjectName(QString::fromUtf8("ColorGlobalModeButton"));
+        _globalModeButton->setFixedSize(medSize);
+        QPixmap globalModePix;
+        appPTR->getIcon(NATRON_PIXMAP_VIEWER_CENTER, NATRON_MEDIUM_BUTTON_ICON_SIZE, &globalModePix);
+        _globalModeButton->setIcon(QIcon(globalModePix));
+        _globalModeButton->setIconSize(medIconSize);
+        _globalModeButton->setCheckable(true);
+        _globalModeButton->setChecked(false);
+        _globalModeButton->setAutoRaise(false);
+        _globalModeButton->setFocusPolicy(Qt::NoFocus);
+        _globalModeButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Engage the global trackball mode (Ctrl+E) on this knob: a click-drag anywhere then adjusts it until Esc or Enter accepts, or the shortcut is pressed again."), NATRON_NAMESPACE::WhiteSpaceNormal));
+        QObject::connect(_globalModeButton, &QToolButton::clicked, this, &KnobGuiColor::engageGlobalMode);
+        containerLayout->addWidget(_globalModeButton);
 
         return;
     }

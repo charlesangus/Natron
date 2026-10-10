@@ -289,6 +289,7 @@ private:
     ColorPickerLabel *_colorLabel;
     ColorSelectorWidget *_colorSelector;
     QToolButton *_colorSelectorButton;
+    QToolButton* _globalModeButton;
     std::vector<double> _lastColor;
     bool _useSimplifiedUI;
     QPointer<ColorAdjustPanel> _adjustPanel;

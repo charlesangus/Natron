@@ -48,16 +48,19 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Global/StrUtils.h"
 
 #include "Gui/ActionShortcuts.h"
+#include "Gui/ColorTrackballGlobalMode.h"
+#include "Gui/ColorTrackballTarget.h"
 #include "Gui/CurveEditor.h"
 #include "Gui/DopeSheetEditor.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h" // appPTR
 #include "Gui/GuiPrivate.h"
+#include "Gui/KnobGuiColor.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/ProjectGui.h"
-#include "Gui/ToolButton.h"
 #include "Gui/RenderStatsDialog.h"
+#include "Gui/ToolButton.h"
 #include "Gui/ViewerTab.h"
 
 NATRON_NAMESPACE_ENTER
@@ -625,6 +628,25 @@ Gui::createMenuActions()
     QObject::connect( _imp->actionNextTab, SIGNAL(triggered()), this, SLOT(onNextTabTriggered()) );
     _imp->actionCloseTab = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionCloseTab, kShortcutDescActionCloseTab, this);
     QObject::connect( _imp->actionCloseTab, SIGNAL(triggered()), this, SLOT(onCloseTabTriggered()) );
+
+    // Qt::ApplicationShortcut (not a window one) so Ctrl+E also reaches a floating properties
+    // panel, and the action is added directly to the main window rather than to a menu: the
+    // mode has no natural menu home, and the per-row target button already shows it in the UI.
+    _imp->actionColorTrackball = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionColorTrackball, kShortcutDescActionColorTrackball, this);
+    _imp->actionColorTrackball->setShortcutContext(Qt::ApplicationShortcut);
+    QObject::connect(_imp->actionColorTrackball, SIGNAL(triggered()), this, SLOT(onColorTrackballActionTriggered()));
+    addAction(_imp->actionColorTrackball);
+    // Lets the shortcut that engages the mode also exit it while the mode's own app-wide
+    // filter is installed, whatever the user has rebound it to; QAction::changed() keeps this
+    // current across a later rebind from the shortcut editor.
+    {
+        ActionWithShortcut* action = _imp->actionColorTrackball;
+        ColorTrackballGlobalMode* mode = ColorTrackballGlobalMode::instanceFor(this);
+        QObject::connect(action, &QAction::changed, [action, mode]() {
+            mode->setPassThroughShortcuts(QList<QKeySequence>() << action->shortcut());
+        });
+        mode->setPassThroughShortcuts(QList<QKeySequence>() << action->shortcut());
+    }
 
     _imp->menubar->addAction( _imp->menuFile->menuAction() );
     _imp->menubar->addAction( _imp->menuEdit->menuAction() );

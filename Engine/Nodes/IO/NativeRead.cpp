@@ -43,9 +43,12 @@
 
 #include <OpenImageIO/imageio.h>
 
+#include <QDateTime>
+#include <QFileInfo>
 #include <QString>
 
 #include <ofxImageEffect.h>
+#include <ofxMetadata.h>
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
@@ -59,6 +62,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
@@ -156,6 +160,9 @@ framesPerSecondOf(const OIIO::ImageSpec& spec)
     return (double)spec.get_float_attribute("FramesPerSecond", 0.f);
 }
 
+const char* const kKnobProxyThreshold = "proxyThreshold";
+const char* const kKnobOriginalProxyScale = "originalProxyScale";
+const char* const kKnobCustomProxyScale = "customProxyScale";
 const char* const kKnobOriginalFrameRange = "originalFrameRange";
 const char* const kKnobFirstFrame = "firstFrame";
 const char* const kKnobLastFrame = "lastFrame";
@@ -173,6 +180,10 @@ const char* const kKnobCustomFps = "customFps";
 NativeRead::NativeRead(NodePtr node)
     : NativeEffectBase(node)
     , _filename()
+    , _proxy()
+    , _proxyThreshold()
+    , _originalProxyScale()
+    , _customProxyScale()
     , _originalFrameRange()
     , _firstFrame()
     , _lastFrame()
@@ -187,6 +198,7 @@ NativeRead::NativeRead(NodePtr node)
     , _customFps()
     , _listingMutex()
     , _listing()
+    , _proxyListing()
 {
 }
 
@@ -220,6 +232,61 @@ NativeRead::initializeKnobs()
     filename->setIsMetadataSlave(true);
     page->addKnob(filename);
     _filename = filename;
+
+    KnobFilePtr proxy = createKnob<KnobFile>(tr("Proxy File"));
+    proxy->setName(kOfxImageEffectProxyParamName);
+    proxy->setAsInputImage();
+    proxy->setHintToolTip(tr("Filename of the proxy images. They are used instead of the images read from the File parameter "
+                             "when the render scale is at or below the proxy threshold."));
+    page->addKnob(proxy);
+    _proxy = proxy;
+
+    KnobDoublePtr proxyThreshold = createKnob<KnobDouble>(tr("Proxy threshold"), 2);
+    proxyThreshold->setName(kKnobProxyThreshold);
+    proxyThreshold->setHintToolTip(tr("When the render scale is at or below this scale, the proxy images are used instead of the "
+                                      "original images. It is set from the scale of the proxy images when the proxy file is "
+                                      "chosen, and can be edited by checking Custom Proxy Scale."));
+    proxyThreshold->setDefaultValue(1., 0);
+    proxyThreshold->setDefaultValue(1., 1);
+    proxyThreshold->setMinimum(0.01, 0);
+    proxyThreshold->setMinimum(0.01, 1);
+    proxyThreshold->setMaximum(1., 0);
+    proxyThreshold->setMaximum(1., 1);
+    proxyThreshold->setDisplayMinimum(0.01, 0);
+    proxyThreshold->setDisplayMinimum(0.01, 1);
+    proxyThreshold->setDisplayMaximum(1., 0);
+    proxyThreshold->setDisplayMaximum(1., 1);
+    proxyThreshold->setAnimationEnabled(false);
+    proxyThreshold->setAddNewLine(false);
+    page->addKnob(proxyThreshold);
+    _proxyThreshold = proxyThreshold;
+
+    KnobBoolPtr customProxyScale = createKnob<KnobBool>(tr("Custom Proxy Scale"));
+    customProxyScale->setName(kKnobCustomProxyScale);
+    customProxyScale->setHintToolTip(tr("Check to edit the proxy threshold and the scale of the proxy images instead of "
+                                        "following the proxy files."));
+    customProxyScale->setDefaultValue(false);
+    customProxyScale->setAnimationEnabled(false);
+    customProxyScale->setEvaluateOnChange(false);
+    page->addKnob(customProxyScale);
+    _customProxyScale = customProxyScale;
+
+    KnobDoublePtr originalProxyScale = createKnob<KnobDouble>(tr("Original Proxy Scale"), 2);
+    originalProxyScale->setName(kKnobOriginalProxyScale);
+    originalProxyScale->setHintToolTip(tr("The scale of the proxy images relative to the original images."));
+    originalProxyScale->setDefaultValue(1., 0);
+    originalProxyScale->setDefaultValue(1., 1);
+    originalProxyScale->setMinimum(0.01, 0);
+    originalProxyScale->setMinimum(0.01, 1);
+    originalProxyScale->setMaximum(1., 0);
+    originalProxyScale->setMaximum(1., 1);
+    originalProxyScale->setDisplayMinimum(0.01, 0);
+    originalProxyScale->setDisplayMinimum(0.01, 1);
+    originalProxyScale->setDisplayMaximum(1., 0);
+    originalProxyScale->setDisplayMaximum(1., 1);
+    originalProxyScale->setAnimationEnabled(false);
+    page->addKnob(originalProxyScale);
+    _originalProxyScale = originalProxyScale;
 
     const std::vector<ChoiceOption> beforeAfterChoices = {
         ChoiceOption("hold", tr("Hold").toStdString(), tr("While outside the sequence, load the nearest end frame.").toStdString()),
@@ -357,12 +424,14 @@ NativeRead::initializeKnobs()
     _customFps = customFps;
 
     refreshTimeKnobState();
+    refreshProxyKnobState();
 }
 
 void
 NativeRead::onKnobsLoaded()
 {
     refreshTimeKnobState();
+    refreshProxyKnobState();
 }
 
 void
@@ -385,9 +454,10 @@ NativeRead::refreshTimeKnobState()
 }
 
 std::shared_ptr<const NativeRead::FrameListing>
-NativeRead::frameListing() const
+NativeRead::frameListing(bool proxy) const
 {
-    KnobFilePtr filename = _filename.lock();
+    KnobFilePtr filename = proxy ? _proxy.lock() : _filename.lock();
+    std::shared_ptr<const FrameListing>& cached = proxy ? _proxyListing : _listing;
     std::string pattern;
 
     if (filename) {
@@ -396,8 +466,8 @@ NativeRead::frameListing() const
     }
     {
         std::lock_guard<std::mutex> lock(_listingMutex);
-        if (_listing && _listing->pattern == pattern) {
-            return _listing;
+        if (cached && cached->pattern == pattern) {
+            return cached;
         }
     }
 
@@ -417,7 +487,7 @@ NativeRead::frameListing() const
     }
 
     std::lock_guard<std::mutex> lock(_listingMutex);
-    _listing = listing;
+    cached = listing;
 
     return listing;
 }
@@ -427,6 +497,7 @@ NativeRead::invalidateFrameListing()
 {
     std::lock_guard<std::mutex> lock(_listingMutex);
     _listing.reset();
+    _proxyListing.reset();
 }
 
 ReadTimeDomain::Settings
@@ -458,16 +529,17 @@ NativeRead::settingsAt(double time) const
 }
 
 NativeRead::Target
-NativeRead::targetAtTime(double time) const
+NativeRead::targetAtTime(double time,
+                         bool proxy) const
 {
     Target target;
-    KnobFilePtr filename = _filename.lock();
+    KnobFilePtr filename = proxy ? _proxy.lock() : _filename.lock();
 
     if (!filename || filename->getValue().empty()) {
         return target;
     }
 
-    const std::shared_ptr<const FrameListing> listing = frameListing();
+    const std::shared_ptr<const FrameListing> listing = frameListing(proxy);
     const ReadTimeDomain::Settings settings = settingsAt(time);
     ReadTimeDomain::Result result;
     if (listing->singleImage) {
@@ -489,6 +561,7 @@ NativeRead::targetAtTime(double time) const
 
     target.kind = result.kind;
     target.message = result.message;
+    target.frame = result.frame;
     if (result.kind == ReadTimeDomain::Result::eFile) {
         target.path = (listing->singleImage && !listing->singlePath.empty()) ? listing->singlePath : filename->getFileName(result.frame, ViewIdx(0));
     }
@@ -497,19 +570,143 @@ NativeRead::targetAtTime(double time) const
 }
 
 std::string
-NativeRead::representativePath() const
+NativeRead::representativePath(bool proxy) const
 {
-    KnobFilePtr filename = _filename.lock();
+    KnobFilePtr filename = proxy ? _proxy.lock() : _filename.lock();
 
     if (!filename || filename->getValue().empty()) {
         return std::string();
     }
-    const std::shared_ptr<const FrameListing> listing = frameListing();
+    const std::shared_ptr<const FrameListing> listing = frameListing(proxy);
     if (!listing->singleImage) {
         return filename->getFileName(*listing->frames.begin(), ViewIdx(0));
     }
 
     return listing->singlePath.empty() ? filename->getFileName(0, ViewIdx(0)) : listing->singlePath;
+}
+
+namespace {
+unsigned int
+levelOfScale(double scale)
+{
+    if (!(scale > 0.)) {
+        return 0;
+    }
+
+    return Image::getLevelFromScale(std::min(scale, 1.));
+}
+} // anonymous namespace
+
+void
+NativeRead::refreshProxyKnobState()
+{
+    KnobFilePtr proxy = _proxy.lock();
+    KnobDoublePtr threshold = _proxyThreshold.lock();
+    KnobDoublePtr original = _originalProxyScale.lock();
+    KnobBoolPtr custom = _customProxyScale.lock();
+
+    if (!proxy || !threshold || !original || !custom) {
+        return;
+    }
+    const bool hasProxy = !proxy->getValue().empty();
+    const bool isCustom = custom->getValue();
+    threshold->setSecret(!hasProxy);
+    custom->setSecret(!hasProxy);
+    original->setSecret(!hasProxy || !isCustom);
+    threshold->setAllDimensionsEnabled(isCustom);
+    original->setAllDimensionsEnabled(isCustom);
+}
+
+void
+NativeRead::refreshProxyScale()
+{
+    KnobDoublePtr threshold = _proxyThreshold.lock();
+    KnobDoublePtr original = _originalProxyScale.lock();
+    KnobBoolPtr custom = _customProxyScale.lock();
+
+    if (!threshold || !original || !custom || custom->getValue()) {
+        return;
+    }
+
+    double x = 1.;
+    double y = 1.;
+    const std::string proxyPath = representativePath(true);
+    const std::string fullPath = representativePath(false);
+    if (!proxyPath.empty() && !fullPath.empty()) {
+        std::string error;
+        const std::shared_ptr<const OiioReadSupport::Header> fullHeader = OiioReadSupport::readHeader(fullPath, &error);
+        const std::shared_ptr<const OiioReadSupport::Header> proxyHeader = OiioReadSupport::readHeader(proxyPath, &error);
+        if (fullHeader && proxyHeader && !fullHeader->subimages.empty() && !proxyHeader->subimages.empty()) {
+            const OIIO::ImageSpec& fullSpec = fullHeader->subimages[0];
+            const OIIO::ImageSpec& proxySpec = proxyHeader->subimages[0];
+            const RectI fullWindow = OiioReadSupport::dataWindowOf(fullSpec);
+            const RectI proxyWindow = OiioReadSupport::dataWindowOf(proxySpec);
+            if (fullWindow.width() > 0 && fullWindow.height() > 0 && proxyWindow.width() > 0 && proxyWindow.height() > 0) {
+                x = (proxyWindow.width() * pixelAspectOf(proxySpec)) / (fullWindow.width() * pixelAspectOf(fullSpec));
+                y = proxyWindow.height() / (double)fullWindow.height();
+            }
+        }
+    }
+    x = std::min(x, 1.);
+    y = std::min(y, 1.);
+    original->setValue(x, ViewSpec::all(), 0);
+    original->setValue(y, ViewSpec::all(), 1);
+    threshold->setValue(x, ViewSpec::all(), 0);
+    threshold->setValue(y, ViewSpec::all(), 1);
+}
+
+bool
+NativeRead::proxyKnobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason)
+{
+    KnobFilePtr proxy = _proxy.lock();
+    KnobBoolPtr custom = _customProxyScale.lock();
+
+    if (proxy && k == proxy.get()) {
+        if (reason != eValueChangedReasonTimeChanged) {
+            invalidateFrameListing();
+            refreshProxyScale();
+            refreshProxyKnobState();
+        }
+
+        return true;
+    }
+    if (custom && k == custom.get()) {
+        refreshProxyScale();
+        refreshProxyKnobState();
+
+        return true;
+    }
+
+    return false;
+}
+
+bool
+NativeRead::proxySourceAt(double time,
+                          unsigned int level,
+                          Target* source,
+                          unsigned int* fileLevel) const
+{
+    KnobDoublePtr threshold = _proxyThreshold.lock();
+    KnobDoublePtr original = _originalProxyScale.lock();
+    KnobFilePtr proxy = _proxy.lock();
+
+    if (!threshold || !original || !proxy || proxy->getValue().empty()) {
+        return false;
+    }
+    const unsigned int thresholdLevel = levelOfScale(std::min(threshold->getValue(0), threshold->getValue(1)));
+    const unsigned int proxyLevel = levelOfScale(std::min(original->getValue(0), original->getValue(1)));
+    if (level < thresholdLevel || level < proxyLevel) {
+        return false;
+    }
+    const Target proxyTarget = targetAtTime(time, true);
+    if (proxyTarget.kind != ReadTimeDomain::Result::eFile) {
+        return false;
+    }
+    *source = proxyTarget;
+    *fileLevel = proxyLevel;
+
+    return true;
 }
 
 double
@@ -565,6 +762,9 @@ NativeRead::knobChanged(KnobI* k,
                         double /*time*/,
                         bool /*originatedFromMainThread*/)
 {
+    if (proxyKnobChanged(k, reason)) {
+        return true;
+    }
     KnobFilePtr filename = _filename.lock();
     KnobIntPtr originalRange = _originalFrameRange.lock();
     KnobIntPtr firstFrame = _firstFrame.lock();
@@ -583,7 +783,9 @@ NativeRead::knobChanged(KnobI* k,
     if (k == filename.get()) {
         if (reason != eValueChangedReasonTimeChanged) {
             invalidateFrameListing();
+            invalidateOutputMetadata();
             refreshFrameRateFromFile();
+            refreshProxyScale();
         }
 
         return true;
@@ -697,6 +899,41 @@ NativeRead::getPreferredMetadata(NodeMetadata& metadata)
     return eStatusOK;
 }
 
+ImageMetadata
+NativeRead::deriveOutputMetadata(double time,
+                                 ViewIdx /*view*/)
+{
+    ImageMetadata metadata;
+
+    metadata.setDouble(kOfxMetadataKeyFrameRate, getFrameRate());
+    metadata.setDouble(kOfxMetadataKeyPixelAspect, getAspectRatio(-1));
+
+    // A frame that loads black or an error has no file to describe, and a key whose value is
+    // unknown is left out rather than published empty.
+    const Target target = targetAtTime(time);
+    if (target.kind != ReadTimeDomain::Result::eFile) {
+        return metadata;
+    }
+    const QFileInfo info(QString::fromStdString(target.path));
+    if (!info.isFile()) {
+        return metadata;
+    }
+    metadata.setString(kOfxMetadataKeyFilePath, target.path);
+    metadata.setInt(kOfxMetadataKeySourceFrame, target.frame);
+    metadata.setDouble(kOfxMetadataKeyMTime, info.lastModified().toMSecsSinceEpoch() / 1000.);
+    metadata.setDouble(kOfxMetadataKeyFileSize, (double)info.size());
+
+    std::string error;
+    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(target.path, &error);
+    if (header && !header->subimages.empty()) {
+        const OIIO::ImageSpec& spec = header->subimages[0];
+        metadata.setDouble(kOfxMetadataKeyPixelAspect, pixelAspectOf(spec));
+        metadata.merge(OiioReadSupport::attributeMetadata(target.path, spec), ImageMetadata::eMergePreferThis);
+    }
+
+    return metadata;
+}
+
 StatusEnum
 NativeRead::getRegionOfDefinition(U64 /*hash*/,
                                   double time,
@@ -738,12 +975,43 @@ NativeRead::getRegionOfDefinition(U64 /*hash*/,
     return eStatusOK;
 }
 
+void
+NativeRead::getComponentsNeededAndProduced(double time,
+                                           ViewIdx view,
+                                           EffectInstance::ComponentsNeededMap* comps,
+                                           double* passThroughTime,
+                                           int* passThroughView,
+                                           int* passThroughInputNb)
+{
+    EffectInstance::getComponentsNeededAndProduced(time, view, comps, passThroughTime, passThroughView, passThroughInputNb);
+
+    // A frame that loads nothing still lists the sequence's layers, so that the layers a graph
+    // can select do not come and go with the frame.
+    const Target target = targetAtTime(time);
+    const std::string path = target.kind == ReadTimeDomain::Result::eFile ? target.path : representativePath();
+    if (path.empty()) {
+        return;
+    }
+    std::string error;
+    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
+    if (!header) {
+        return;
+    }
+    std::vector<OiioReadSupport::FileLayer> layers;
+    OiioReadSupport::fileLayers(*header, &layers);
+    std::list<ImageLayerDesc>& produced = (*comps)[-1];
+    for (std::vector<OiioReadSupport::FileLayer>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        produced.push_back(it->desc);
+    }
+}
+
 namespace {
 struct ReadPlane {
     Image* target;
     RectI rect;
     std::string path;
-    ColourChannels channels;
+    int subimage;
+    std::vector<int> fileChannels; // one per component, -1 for a component the file lacks
 };
 
 // Decodes the rows [y1, y2) of plane.rect into plane.target, through a staging buffer holding
@@ -756,11 +1024,10 @@ decodeBand(const ReadPlane& plane,
            int y2,
            std::string* error)
 {
-    const ColourChannels& map = plane.channels;
     int lo = -1;
     int hi = -1;
     for (int c = 0; c < nComps; ++c) {
-        const int idx = map.fileChannelForComponent(nComps, c);
+        const int idx = plane.fileChannels[(std::size_t)c];
         if (idx < 0) {
             continue;
         }
@@ -779,7 +1046,7 @@ decodeBand(const ReadPlane& plane,
     const int span = hi - lo + 1;
     const RectI window(plane.rect.x1, y1, plane.rect.x2, y2);
     std::vector<float> staging((std::size_t)width * (y2 - y1) * span);
-    if (!OiioReadSupport::decode(plane.path, 0, lo, hi + 1, window, staging.data(), (std::size_t)width * span, error)) {
+    if (!OiioReadSupport::decode(plane.path, plane.subimage, lo, hi + 1, window, staging.data(), (std::size_t)width * span, error)) {
         return false;
     }
     for (int y = y1; y < y2; ++y) {
@@ -787,7 +1054,7 @@ decodeBand(const ReadPlane& plane,
         float* dst = (float*)access.pixelAt(plane.rect.x1, y);
         for (int x = 0; x < width; ++x) {
             for (int c = 0; c < nComps; ++c) {
-                const int idx = map.fileChannelForComponent(nComps, c);
+                const int idx = plane.fileChannels[(std::size_t)c];
                 dst[c] = idx < 0 ? 0.f : src[idx - lo];
             }
             src += span;
@@ -819,17 +1086,26 @@ NativeRead::render(const RenderActionArgs& args)
 
         return eStatusFailed;
     }
-    const std::string path = target.path;
+    Target source = target;
+    unsigned int fileLevel = 0;
+    if (target.kind == ReadTimeDomain::Result::eFile) {
+        proxySourceAt(args.time, args.mappedScale.toMipmapLevel(), &source, &fileLevel);
+    }
+    const std::string path = source.path;
 
     std::string error;
     std::shared_ptr<const OiioReadSupport::Header> header;
-    if (target.kind == ReadTimeDomain::Result::eFile) {
+    if (source.kind == ReadTimeDomain::Result::eFile) {
         header = OiioReadSupport::readHeader(path, &error);
         if (!header || header->subimages.empty()) {
             setPersistentMessage(eMessageTypeError, error.empty() ? tr("Could not read %1").arg(QString::fromStdString(path)).toStdString() : error);
 
             return eStatusFailed;
         }
+    }
+    std::vector<OiioReadSupport::FileLayer> fileLayers;
+    if (header) {
+        OiioReadSupport::fileLayers(*header, &fileLayers);
     }
 
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
@@ -849,20 +1125,44 @@ NativeRead::render(const RenderActionArgs& args)
         const int nComps = (int)image->getComponentsCount();
         const RectI roi = args.roi;
         const unsigned int level = args.mappedScale.toMipmapLevel();
+        const unsigned int reduce = level - fileLevel;
 
         RectI dataWindow;
-        ColourChannels channels;
+        int subimage = 0;
+        std::vector<int> fileChannels((std::size_t)nComps, -1);
         if (header && it->first.isColorLayer()) {
             dataWindow = OiioReadSupport::dataWindowOf(header->subimages[0]);
-            channels = ColourChannels::of(header->subimages[0]);
+            const ColourChannels colour = ColourChannels::of(header->subimages[0]);
+            for (int c = 0; c < nComps; ++c) {
+                fileChannels[(std::size_t)c] = colour.fileChannelForComponent(nComps, c);
+            }
+        } else if (header) {
+            // Matched by channel name: the plane asked for may be the registry's union of this
+            // layer over several files, with channels this file lacks.
+            const std::vector<std::string>& wanted = image->getComponents().getChannels();
+            for (std::vector<OiioReadSupport::FileLayer>::const_iterator layer = fileLayers.begin(); layer != fileLayers.end(); ++layer) {
+                if (layer->desc.getLayerID() != it->first.getLayerID()) {
+                    continue;
+                }
+                subimage = layer->subimage;
+                dataWindow = OiioReadSupport::dataWindowOf(header->subimages[(std::size_t)subimage]);
+                const std::vector<std::string>& present = layer->desc.getChannels();
+                for (int c = 0; c < nComps && (std::size_t)c < wanted.size(); ++c) {
+                    const std::vector<std::string>::const_iterator found = std::find(present.begin(), present.end(), wanted[(std::size_t)c]);
+                    if (found != present.end()) {
+                        fileChannels[(std::size_t)c] = layer->channels[(std::size_t)(found - present.begin())];
+                    }
+                }
+                break;
+            }
         }
 
         // At a coarser level the rows behind the window are decoded at full size, then reduced.
         ImagePtr full;
-        const RectI fullRect = roi.upscalePowerOfTwo(level).intersect(dataWindow);
+        const RectI fullRect = roi.upscalePowerOfTwo(reduce).intersect(dataWindow);
         Image* target = image.get();
-        if (level > 0 && !fullRect.isNull()) {
-            full = std::make_shared<Image>(image->getComponents(), image->getRoD(), fullRect, 0, image->getPixelAspectRatio(), eImageBitDepthFloat, image->getFieldingOrder(), false);
+        if (reduce > 0 && !fullRect.isNull()) {
+            full = std::make_shared<Image>(image->getComponents(), image->getRoD(), fullRect, fileLevel, image->getPixelAspectRatio(), eImageBitDepthFloat, image->getFieldingOrder(), false);
             target = full.get();
         }
 
@@ -881,7 +1181,8 @@ NativeRead::render(const RenderActionArgs& args)
         plane.target = target;
         plane.rect = fullRect;
         plane.path = path;
-        plane.channels = channels;
+        plane.subimage = subimage;
+        plane.fileChannels = fileChannels;
 
         const int width = fullRect.width();
         const int height = fullRect.height();
@@ -917,7 +1218,7 @@ NativeRead::render(const RenderActionArgs& args)
         }
 
         if (full && !cancel.check()) {
-            full->downscaleMipmap(image->getRoD(), fullRect, 0, level, false, image.get());
+            full->downscaleMipmap(image->getRoD(), fullRect, fileLevel, level, false, image.get());
         }
     }
 

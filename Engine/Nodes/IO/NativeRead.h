@@ -55,9 +55,9 @@ NATRON_NAMESPACE_ENTER
  *   - colour: ocioInputSpace, ocioInputSpaceIndex, ocioInputSpaceSet, and the hidden
  *     ocioConfigFile and ocioWorkingSpace
  *   - views: the hidden availableViews
- * The file and time knobs exist so far. A sequence pattern is resolved to one file per output
- * frame through ReadTimeDomain. The colour plane is decoded from the file; the other planes are
- * not produced yet.
+ * The file, proxy and time knobs exist so far. A sequence pattern is resolved to one file per output
+ * frame through ReadTimeDomain. The colour plane and every other layer of the file are produced,
+ * the layers grouped as OiioReadSupport::fileLayers groups them.
  **/
 class NativeRead
     : public NativeEffectBase {
@@ -102,6 +102,13 @@ public:
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual void getComponentsNeededAndProduced(double time,
+                                                ViewIdx view,
+                                                EffectInstance::ComponentsNeededMap* comps,
+                                                double* passThroughTime,
+                                                int* passThroughView,
+                                                int* passThroughInputNb) OVERRIDE FINAL;
+
     virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
 
 private:
@@ -110,6 +117,8 @@ private:
     virtual void initializeKnobs() OVERRIDE FINAL;
 
     virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual bool knobChanged(KnobI* k,
                              ValueChangedReasonEnum reason,
@@ -140,25 +149,39 @@ private:
         ReadTimeDomain::Result::Kind kind;
         std::string path;
         std::string message;
+        int frame; // the file frame path was resolved from, valid for eFile
 
         Target()
             : kind(ReadTimeDomain::Result::eBlack)
             , path()
             , message()
+            , frame(0)
         {
         }
     };
 
-    std::shared_ptr<const FrameListing> frameListing() const;
+    std::shared_ptr<const FrameListing> frameListing(bool proxy = false) const;
     void invalidateFrameListing();
     ReadTimeDomain::Settings settingsAt(double time) const;
-    Target targetAtTime(double time) const;
-    std::string representativePath() const;
+    Target targetAtTime(double time, bool proxy = false) const;
+    std::string representativePath(bool proxy = false) const;
     double fileFrameRate() const;
     void refreshFrameRateFromFile();
     void refreshTimeKnobState();
+    void refreshProxyScale();
+    void refreshProxyKnobState();
+    bool proxyKnobChanged(KnobI* k,
+                          ValueChangedReasonEnum reason);
+    bool proxySourceAt(double time,
+                       unsigned int level,
+                       Target* source,
+                       unsigned int* fileLevel) const;
 
     KnobFileWPtr _filename;
+    KnobFileWPtr _proxy;
+    KnobDoubleWPtr _proxyThreshold;
+    KnobDoubleWPtr _originalProxyScale;
+    KnobBoolWPtr _customProxyScale;
     KnobIntWPtr _originalFrameRange;
     KnobIntWPtr _firstFrame;
     KnobIntWPtr _lastFrame;
@@ -174,6 +197,7 @@ private:
 
     mutable std::mutex _listingMutex;
     mutable std::shared_ptr<const FrameListing> _listing;
+    mutable std::shared_ptr<const FrameListing> _proxyListing;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -36,6 +36,8 @@
 #include <OpenImageIO/imageio.h>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/ImageLayerDesc.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/RectI.h"
 
 NATRON_NAMESPACE_ENTER
@@ -61,6 +63,32 @@ void clearHeaderCache();
 RectI dataWindowOf(const OIIO::ImageSpec& spec);
 
 /**
+ * @brief A layer of a file other than its colour: the layer, the subimage that holds it, and the
+ * index in that subimage of each of the layer's channels, in the layer's order.
+ **/
+struct FileLayer {
+    ImageLayerDesc desc;
+    int subimage;
+    std::vector<int> channels;
+
+    FileLayer()
+        : desc()
+        , subimage(0)
+        , channels()
+    {
+    }
+};
+
+/**
+ * @brief The layers of a file other than its colour, grouped by LayerRegistry::groupChannelNames
+ * one subimage at a time. In a file of several parts, a channel that names no layer belongs to
+ * the layer its part is named after; a part with no name of its own adds no layer name. A layer
+ * that LayerRegistry::validate refuses for a file, such as one over the channel cap, is left out,
+ * as is a layer whose ID an earlier one already has.
+ **/
+void fileLayers(const Header& header, std::vector<FileLayer>* layers);
+
+/**
  * @brief Decodes channels [chbegin, chend) of `subimage` over `window` as 32-bit floats, as
  * OIIO converts them and with no colour transform.
  *
@@ -80,6 +108,20 @@ bool decode(const std::string& path,
             float* dst,
             std::size_t rowStride,
             std::string* error);
+
+/**
+ * @brief The attributes of `spec`, a subimage header of the file at `path`, as metadata keys.
+ *
+ * A key is the prefix of the attribute's source followed by its name, whose OIIO prefix is
+ * dropped: `Exif:` and `GPS:` attributes give `exif/`, `dpx:` `dpx/`, `cineon:` `cin/`,
+ * `tiff:` `tiff/`, `openexr:` `exr/`, and `oiio:` `oiio/` (so `oiio:ColorSpace` is
+ * `oiio/ColorSpace`). An attribute with no prefix of its own gives `exr/` in an OpenEXR file and
+ * `exif/` in any other, and one with any other prefix is dropped. The SMPTE timecode and keycode give the standard `ofx/timecode` and
+ * `ofx/edgecode`. Integers give ints (wider ones doubles), floats and rationals doubles,
+ * strings strings, and arrays and aggregates vectors.
+ **/
+ImageMetadata attributeMetadata(const std::string& path,
+                                const OIIO::ImageSpec& spec);
 } // namespace OiioReadSupport
 
 NATRON_NAMESPACE_EXIT

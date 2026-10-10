@@ -26,12 +26,20 @@
 #include "OiioReadSupport.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <mutex>
+#include <set>
 #include <system_error>
+#include <vector>
+
+#include <ofxMetadata.h>
+
+#include "Engine/LayerRegistry.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -173,6 +181,99 @@ dataWindowOf(const OIIO::ImageSpec& spec)
     return RectI(spec.x, displayTop - (spec.y + spec.height), spec.x + spec.width, displayTop - spec.y);
 }
 
+namespace {
+    // OIIO names a part that has no name of its own "subimage" followed by digits.
+    std::string
+    partNameOf(const OIIO::ImageSpec& spec)
+    {
+        const OIIO::ParamValue* value = spec.find_attribute("oiio:subimagename", OIIO::TypeDesc::STRING);
+
+        if (!value || !value->data()) {
+            return std::string();
+        }
+        const char* const text = *(const char* const*)value->data();
+        const std::string name = text ? std::string(text) : std::string();
+        static const std::string synthesised("subimage");
+        if (name.size() > synthesised.size() && name.compare(0, synthesised.size(), synthesised) == 0 && std::all_of(name.begin() + (std::ptrdiff_t)synthesised.size(), name.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+            return std::string();
+        }
+
+        return name;
+    }
+
+    // Whether `flatName` is the channel `channel` of the layer groupChannelNames named `layerID`.
+    bool
+    isChannelOf(const std::string& flatName,
+                const std::string& layerID,
+                const std::string& channel)
+    {
+        if (flatName.find('.') != std::string::npos) {
+            return flatName.size() == layerID.size() + 1 + channel.size() && flatName.compare(0, layerID.size(), layerID) == 0 && flatName[layerID.size()] == '.' && flatName.compare(layerID.size() + 1, std::string::npos, channel) == 0;
+        }
+
+        return flatName == channel && (layerID == channel || (layerID == "depth" && channel == "Z"));
+    }
+} // anonymous namespace
+
+void
+fileLayers(const Header& header,
+           std::vector<FileLayer>* layers)
+{
+    if (!layers) {
+        return;
+    }
+    layers->clear();
+
+    const bool multiPart = header.subimages.size() > 1;
+    std::set<std::string> seen;
+    for (std::size_t s = 0; s < header.subimages.size(); ++s) {
+        const OIIO::ImageSpec& spec = header.subimages[s];
+        const std::string part = multiPart ? partNameOf(spec) : std::string();
+
+        std::vector<std::string> flat;
+        std::vector<int> fileIndex;
+        const int nNamed = std::min(spec.nchannels, (int)spec.channelnames.size());
+        for (int i = 0; i < nNamed; ++i) {
+            const std::string& name = spec.channelnames[(std::size_t)i];
+            if (name.empty()) {
+                continue;
+            }
+            flat.push_back((part.empty() || name.find('.') != std::string::npos) ? name : part + "." + name);
+            fileIndex.push_back(i);
+        }
+
+        std::vector<ImageLayerDesc> grouped;
+        LayerRegistry::groupChannelNames(flat, &grouped);
+
+        std::vector<bool> used(flat.size(), false);
+        for (std::size_t g = 0; g < grouped.size(); ++g) {
+            const ImageLayerDesc& desc = grouped[g];
+            if (desc.isColorLayer() || !LayerRegistry::validate(desc, true, NULL) || seen.count(desc.getLayerID()) > 0) {
+                continue;
+            }
+
+            FileLayer layer;
+            layer.desc = desc;
+            layer.subimage = (int)s;
+            const std::vector<std::string>& channels = desc.getChannels();
+            for (std::size_t c = 0; c < channels.size(); ++c) {
+                for (std::size_t f = 0; f < flat.size(); ++f) {
+                    if (!used[f] && isChannelOf(flat[f], desc.getLayerID(), channels[c])) {
+                        used[f] = true;
+                        layer.channels.push_back(fileIndex[f]);
+                        break;
+                    }
+                }
+            }
+            if (layer.channels.size() != channels.size()) {
+                continue;
+            }
+            seen.insert(desc.getLayerID());
+            layers->push_back(layer);
+        }
+    }
+} // fileLayers
+
 bool
 decode(const std::string& path,
        int subimage,
@@ -264,6 +365,195 @@ decode(const std::string& path,
     input->close();
 
     return true;
+}
+
+namespace {
+    struct KeyPrefix {
+        const char* attribute;
+        const char* key;
+    };
+
+    const KeyPrefix kKeyPrefixes[] = {
+        { "Exif:", "exif/" },
+        { "GPS:", "exif/GPS:" },
+        { "oiio:", "oiio/" },
+        { "dpx:", "dpx/" },
+        { "cineon:", "cin/" },
+        { "tiff:", "tiff/" },
+        { "openexr:", "exr/" }
+    };
+
+    bool
+    isOpenExrPath(const std::string& path)
+    {
+        const std::size_t dot = path.rfind('.');
+
+        if (dot == std::string::npos) {
+            return false;
+        }
+        std::string extension = path.substr(dot + 1);
+        std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
+
+        return extension == "exr" || extension == "sxr" || extension == "mxr";
+    }
+
+    // Empty when the attribute has no place in the metadata.
+    std::string
+    keyOf(const std::string& name,
+          bool openExr)
+    {
+        if (name == "smpte:TimeCode") {
+            return kOfxMetadataKeyTimecode;
+        }
+        if (name == "smpte:KeyCode") {
+            return kOfxMetadataKeyEdgecode;
+        }
+        for (const KeyPrefix& prefix : kKeyPrefixes) {
+            const std::size_t length = std::strlen(prefix.attribute);
+            if (name.compare(0, length, prefix.attribute) == 0) {
+                return std::string(prefix.key) + name.substr(length);
+            }
+        }
+        if (name.empty() || name.find(':') != std::string::npos) {
+            return std::string();
+        }
+
+        return std::string(openExr ? kOfxMetadataKeyPrefixExr : kOfxMetadataKeyPrefixExif) + name;
+    }
+
+    template <typename T>
+    void
+    widen(const void* data,
+          std::vector<double>* values)
+    {
+        const T* typed = static_cast<const T*>(data);
+
+        for (std::size_t i = 0; i < values->size(); ++i) {
+            (*values)[i] = (double)typed[i];
+        }
+    }
+
+    bool
+    valueOf(const OIIO::ParamValue& attribute,
+            ImageMetadata::Value* value)
+    {
+        const OIIO::TypeDesc type = attribute.type();
+        const std::size_t count = (std::size_t)type.basevalues() * (std::size_t)attribute.nvalues();
+
+        if (count == 0 || !attribute.data()) {
+            return false;
+        }
+        if (type.vecsemantics == OIIO::TypeDesc::TIMECODE || type.vecsemantics == OIIO::TypeDesc::KEYCODE) {
+            *value = attribute.get_string();
+
+            return true;
+        }
+        if (type.basetype == OIIO::TypeDesc::STRING) {
+            const OIIO::ustring* strings = static_cast<const OIIO::ustring*>(attribute.data());
+            std::string joined;
+            for (std::size_t i = 0; i < count; ++i) {
+                if (i > 0) {
+                    joined += ", ";
+                }
+                joined += strings[i].string();
+            }
+            *value = joined;
+
+            return true;
+        }
+
+        std::vector<double> numbers(count);
+        bool integral = true;
+        const void* data = attribute.data();
+        switch (type.basetype) {
+        case OIIO::TypeDesc::UINT8:
+            widen<uint8_t>(data, &numbers);
+            break;
+        case OIIO::TypeDesc::INT8:
+            widen<int8_t>(data, &numbers);
+            break;
+        case OIIO::TypeDesc::UINT16:
+            widen<uint16_t>(data, &numbers);
+            break;
+        case OIIO::TypeDesc::INT16:
+            widen<int16_t>(data, &numbers);
+            break;
+        case OIIO::TypeDesc::UINT32:
+            widen<uint32_t>(data, &numbers);
+            break;
+        case OIIO::TypeDesc::INT32:
+            widen<int32_t>(data, &numbers);
+            break;
+        case OIIO::TypeDesc::UINT64:
+            widen<uint64_t>(data, &numbers);
+            break;
+        case OIIO::TypeDesc::INT64:
+            widen<int64_t>(data, &numbers);
+            break;
+        case OIIO::TypeDesc::FLOAT:
+            widen<float>(data, &numbers);
+            integral = false;
+            break;
+        case OIIO::TypeDesc::DOUBLE:
+            widen<double>(data, &numbers);
+            integral = false;
+            break;
+        default:
+            return false;
+        }
+
+        if (type.vecsemantics == OIIO::TypeDesc::RATIONAL && count == 2) {
+            if (numbers[1] == 0.) {
+                return false;
+            }
+            *value = numbers[0] / numbers[1];
+
+            return true;
+        }
+        if (integral) {
+            for (double number : numbers) {
+                if (number < (double)std::numeric_limits<int>::min() || number > (double)std::numeric_limits<int>::max()) {
+                    integral = false;
+                    break;
+                }
+            }
+        }
+        if (integral) {
+            std::vector<int> ints(count);
+            for (std::size_t i = 0; i < count; ++i) {
+                ints[i] = (int)numbers[i];
+            }
+            if (count == 1) {
+                *value = ints[0];
+            } else {
+                *value = ints;
+            }
+        } else if (count == 1) {
+            *value = numbers[0];
+        } else {
+            *value = numbers;
+        }
+
+        return true;
+    } // valueOf
+} // namespace
+
+ImageMetadata
+attributeMetadata(const std::string& path,
+                  const OIIO::ImageSpec& spec)
+{
+    ImageMetadata metadata;
+    const bool openExr = isOpenExrPath(path);
+
+    for (const OIIO::ParamValue& attribute : spec.extra_attribs) {
+        const std::string key = keyOf(attribute.name().string(), openExr);
+        ImageMetadata::Value value;
+        if (!key.empty() && valueOf(attribute, &value)) {
+            metadata.set(key, value);
+        }
+    }
+
+    return metadata;
 }
 } // namespace OiioReadSupport
 

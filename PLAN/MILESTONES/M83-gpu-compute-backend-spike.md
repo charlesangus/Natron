@@ -82,7 +82,7 @@ Scouted facts this plan relies on (2026-10-10):
   - verify: `GpuDevice_Test` passes in the container on lavapipe with `DISPLAY` and `XDG_RUNTIME_DIR` unset, and on the host on RADV. It asserts that a transfer queue was found (RADV) or the fallback flag is set (lavapipe), and that the VMA budget query returns non-zero.
   - size: M
 
-- [ ] M83.P2.T2 — Kernel pipeline and dispatch
+- [x] M83.P2.T2 — Kernel pipeline and dispatch
   - files: `tools/gpu-spike/src/GpuKernel.h`, `tools/gpu-spike/src/GpuKernel.cpp`, `tools/gpu-spike/kernels/fill.slang`, `tools/gpu-spike/tests/GpuKernel_Test.cpp`
   - approach:
     - Build a compute pipeline from an embedded SPIR-V blob, with a pipeline cache.
@@ -289,3 +289,4 @@ Scouted facts this plan relies on (2026-10-10):
 - 2026-10-10 — The VMA vendor commit bypassed the comment gate: all ten flags were in upstream's unmodified `vk_mem_alloc.h`, which is not ours to rewrite.
 - 2026-10-10 — M83.P3.T2: no IIR-vs-FIR difference numbers — linking `BlurKernels` into the standalone spike drags in Engine/Python headers. M88 - FIR Gaussian Blur's tests can report that gap from inside the engine instead.
 - 2026-10-10 — M83.P3.T1: the flat 4-ULP Grade bound fails on ~5.5k of 27M values, all in reverse grade where pow(v, gamma) cancels against B before dividing by a tiny A; the test adds a per-element conditioned tolerance (4 + 2|ln y| ULP of the pow term plus subtraction/division rounding). Float-vs-double, not a kernel bug.
+- 2026-10-10 — M83.P2.T2 kernel convention: storage buffers in set 0 bindings 0..N-1 in declaration order, parameters as one `[[vk::push_constant]]` block (≤128 B); uniform buffers unsupported. `grade.slang`/`blur.slang` must switch their `ConstantBuffer` params to push constants before GPU dispatch (M83.P3.T4).

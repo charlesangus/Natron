@@ -80,31 +80,31 @@ Replaces the `Read` container node with a native node on OpenImageIO that reads 
   - verify: gtest: `createNode(Read)` with no major, and `app.createReader` on `.exr`, `.png`, `.dpx`, `.tga`, build a `NativeRead`; `getReaderPluginIDForFileType` returns the Read ID for every member of the set and "" for `cr2` and `mov`; supported formats equal the set; a Write with read-back renders through a native Read; save/load keeps the native class. Full ctest green; `tools/ci/local/test.sh smoke debug` passes.
   - size: M
 
-- [ ] M75.P2.T9 — Migrate tests to the native Read: shared base and layer/shuffle batch
+- [x] M75.P2.T9 — Migrate tests to the native Read: shared base and layer/shuffle batch
   - files: `Tests/BaseTest.h/.cpp`, `Tests/AddLayers_Test.cpp`, `Tests/AddLayersRender_Test.cpp`, `Tests/RemoveLayers_Test.cpp`, `Tests/RemoveLayersRender_Test.cpp`, `Tests/Shuffle_Test.cpp`, `Tests/ShuffleRender_Test.cpp`, `Tests/ShuffleMatrix_Test.cpp`
   - approach: add `_readPluginID = PLUGINID_NATRON_READ` to BaseTest beside `_readOIIOPluginID` (removed in P2.T14). Swap the reader ID in each file (`ShuffleMatrix_Test.cpp:189` uses `PLUGINID_OFX_READOIIO` directly); same `filename` knob. Each failing assertion is either a native bug, fixed in `NativeRead`, or a container-specific expectation, rewritten and justified in the commit message. Runs after P1 and P2.T1/T4/T5/T8.
   - verify: full ctest green; no `_readOIIOPluginID` left in the batch's test files.
   - size: M
 
-- [ ] M75.P2.T10 — Migrate tests: channel and tool-layer batch
+- [x] M75.P2.T10 — Migrate tests: channel and tool-layer batch
   - files: `Tests/ChannelSetRender_Test.cpp`, `Tests/LayerKnobs_Test.cpp`, `Tests/LayerKnobsRender_Test.cpp`, `Tests/GeneratorLayer_Test.cpp`, `Tests/RotoLayer_Test.cpp`, `Tests/TrackerLayer_Test.cpp`
   - approach: as P2.T9, using `_readPluginID`. Independent of P2.T11–T13.
   - verify: full ctest green; no `_readOIIOPluginID` left in these files.
   - size: M
 
-- [ ] M75.P2.T11 — Migrate tests: registry, colour-view, deep and time batch
+- [x] M75.P2.T11 — Migrate tests: registry, colour-view, deep and time batch
   - files: `Tests/LayerRegistry_Test.cpp`, `Tests/ColorViewsRender_Test.cpp`, `Tests/DeepLayers_Test.cpp`, `Tests/TimeVaryingLayers_Test.cpp`
   - approach: as P2.T9. Delete `ReadEmbeddedDecoderPlaneKnobsHiddenAndPinnedToColor` (`LayerRegistry_Test.cpp:598-625`): the native Read has no decoder and no layer knob, which P1.T1's test covers. In `ColorViewsRender_Test`, drop `kReadPNGPluginID`/`kReadEXRPluginID` (`:90-91`) and point the alpha-only PNG/EXR round trips (`:989`, `:1052`) at the native Read.
   - verify: full ctest green; no `_readOIIOPluginID`, `ReadNode` or `fr.inria.openfx.Read` left in these files.
   - size: M
 
-- [ ] M75.P2.T12 — Migrate tests: I/O, project and engine batch
+- [x] M75.P2.T12 — Migrate tests: I/O, project and engine batch
   - files: `Tests/WriteAllLayers_Test.cpp`, `Tests/SchedulerWriters_Test.cpp`, `Tests/ProjectSerialization_Test.cpp`, `Tests/PersistentMessage_Test.cpp`, `Tests/ReadFormat_Test.cpp`, `Tests/Native/EngineHooks_Test.cpp`, `Tests/Native/NativeImageEffect_Test.cpp`
   - approach: as P2.T9. `ReadFormat_Test.cpp:99`'s "backed by a Read container" check becomes a `NativeRead` check. WriteOIIO stays everywhere (Write is M76's job).
   - verify: full ctest green; no `_readOIIOPluginID` or `ReadNode` left in these files.
   - size: M
 
-- [ ] M75.P2.T13 — Migrate tests: metadata and OCIO batch
+- [x] M75.P2.T13 — Migrate tests: metadata and OCIO batch
   - files: `Tests/Metadata_Test.cpp`, `Tests/OfxMetadataBridge_Test.cpp`, `Tests/ProjectOCIO_Test.cpp`, `Tests/ProjectOCIODefaults_Test.cpp`, `Tests/ProjectOCIOPlugins_Test.cpp`
   - approach: Metadata_Test: delete `ReaderOutputClipCarriesPerFrameFileMetadata` (`:576-657`, decoder output clip; P2.T1 covers it) and point `ReaderFileMetadataReachesADownstreamInputClip` (`:664`) at the native Read. OfxMetadataBridge_Test: in `ReadKeysReachTheWriteEncoderThroughNativeNodes` (`:365`) replace the `dynamic_cast<ReadNode*>` (`:404`) with a `NativeRead` check. ProjectOCIO_Test: the reader helper (`:92-105`) builds the native Read and reads `ocioConfigFile`/`ocioWorkingSpace` off it; delete `ANewDecoderAfterAFormatChangeCarriesTheProjectConfig` (`:355`). ProjectOCIODefaults_Test: port the Read cases (`:356-537`) to the native Read with the same knob names and `ocioInputSpaceSet` semantics, **including** `ReadOIIOKeepsTheFilesOwnValidColorspaceOverTheProjectDefault` (`:393`, renamed for the native Read; the user chose to honour the file's tag). ProjectOCIOPlugins_Test: take the OFX instance-property checks from WriteOIIO's embedded encoder instead of ReadOIIO's decoder. Write cases untouched.
   - verify: full ctest green; `grep -rn '_readOIIOPluginID\|PLUGINID_OFX_READ\|ReadNode\b' Tests` finds only `BaseTest`.
@@ -173,3 +173,4 @@ Replaces the `Read` container node with a native node on OpenImageIO that reads 
 - 2026-10-09 — **P1.T6, P2.T5 and P2.T7** landed as one commit (`0252828be`, parallel implementers, interleaved hunks). Full ctest 1368/1368 before the file-rule change; targeted suites 166/166 after it. A consultant traced 21 of 22 batch failures to the studio config's `*.exr` rule (see the user decision above), and the 22nd to `renderRoI` throwing on a failed render, which `Tests/RenderBothWays.cpp` now reports as a failure. A Read created with its file in the creation args does get `knobChanged`, so the input-space guess and the views refresh both run; a test pins it. The dialog path in `onEffectCreated` has no automated test (the test app runs in background mode); P2.T3's Xvfb check covers it.
 - 2026-10-10 — **P2.T8** landed (`c1e3ab98e`); full ctest 1373/1373, smoke green. Beyond the brief: the container now picks its OFX decoder from the reader registry through a local helper (the changed `getReaderPluginIDForFileType` would otherwise make it embed the native Read); Write's read-back skips `replaceInput` on the input-less native Read and its `lastFrame` default typo is fixed; OIIO opens disable FP traps in debug builds (OIIO's first open probes OCIO and raises FE_INVALID, which killed smoke). `ProjectOCIODefaults_Test`'s container helper requests major 1 until P2.T13 ports it.
 - 2026-10-10 — **Greyscale files (user):** a lone `Y`/`I` channel fills R, G and B (and `Y`+`A` gives RGBA), consistent with `LayerRegistry`; it no longer reads as black, and not as alpha as ReadOIIO did. Added as P2.T19. Raised by the consultant fixing the P2.T9–T13 batch, which found an alpha-only WritePNG output (one grey channel) no longer round-trips.
+- 2026-10-10 — **P2.T9–T13** landed as one commit (`d9f5518ff`): five parallel implementers, then a consultant fixed 77 failures (71 from EXR fixtures converted by the `*.exr` file rule, now read in the working space through `BaseTest::createWorkingSpaceRead`; a NativeRead bug where an EXR part named "Color" also became a layer; two stale container expectations). Full ctest 1371/1371, smoke green. The container IDs still appear in `NativeReadSkeleton_Test` and `NativeReadEntryPoints_Test`, which test the redirect P2.T14 removes.

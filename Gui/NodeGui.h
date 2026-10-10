@@ -720,7 +720,7 @@ private:
     bool _hasUserColor;
     QColor _userColor;
     QColor _clonedColor;
-    bool _nameItemHasUserFontColor; //< the label HTML sets its own <font color>, which wins over body contrast
+    bool _nameItemHasUserFontColor; //< the label has a font colour the user picked, which wins over body contrast
     bool _wasBeginEditCalled;
     mutable QMutex positionMutex;
 

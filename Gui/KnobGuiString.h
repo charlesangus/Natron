@@ -211,6 +211,8 @@ public Q_SLOTS:
     ///of the font size.
     static void parseFont(const QString & s, QFont* f, QColor* color);
     static void findReplaceColorName(QString& text, const QColor& color);
+    static QString userFontColorName(const QColor& color);
+    static bool isAutomaticLabelFontColorName(const QString& colorName);
     static QString makeFontTag(const QString& family, int fontSize, const QColor& color);
     static QString decorateTextWithFontTag(const QString& family, int fontSize, const QColor& color, const QString& text);
     static QString removeNatronHtmlTag(QString text);

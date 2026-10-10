@@ -55,6 +55,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Knob.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
@@ -109,7 +110,7 @@ CLANG_DIAG_ON(uninitialized)
 #define NATRON_STATE_INDICATOR_OFFSET 5
 
 // Strictly thinner than the state indicator band around the node, so the two never look alike.
-#define NATRON_USER_COLOR_BORDER_WIDTH 4
+#define NATRON_USER_COLOR_BORDER_WIDTH 5
 
 #define NATRON_EDGE_DROP_TOLERANCE 15
 
@@ -202,6 +203,44 @@ contrastingLabelTextColor(const QColor& body)
 {
     return wcagRelativeLuminance(body) > 0.179 ? QColor(0, 0, 0, 255) : QColor(255, 255, 255, 255);
 }
+
+// The label's font tag stays in the HTML handed to the text item, so an inline colour there would
+// beat setDefaultTextColor(); an automatic one is cut out so the contrast colour can show.
+static bool
+takeUserLabelFontColor(QString* html,
+                       QColor* userColor)
+{
+    const QString sizeTag = QString::fromUtf8(kFontSizeTag);
+    const QString colorTag = QString::fromUtf8(kFontColorTag);
+    const int fontTagStart = html->indexOf(sizeTag);
+    if (fontTagStart == -1) {
+        return false;
+    }
+    const int fontTagEnd = html->indexOf(QLatin1Char('>'), fontTagStart);
+    const int attrStart = html->indexOf(colorTag, fontTagStart);
+    if ((attrStart == -1) || ((fontTagEnd != -1) && (attrStart > fontTagEnd))) {
+        return false;
+    }
+    const int valueStart = attrStart + colorTag.size();
+    const int valueEnd = html->indexOf(QLatin1Char('"'), valueStart);
+    if (valueEnd == -1) {
+        return false;
+    }
+    const QString colorName = html->mid(valueStart, valueEnd - valueStart);
+    const QColor parsed(colorName);
+    if (parsed.isValid() && !KnobGuiString::isAutomaticLabelFontColorName(colorName)) {
+        *userColor = parsed;
+
+        return true;
+    }
+    int attrEnd = valueEnd + 1;
+    if ((attrEnd < html->size()) && (html->at(attrEnd) == QLatin1Char(' '))) {
+        ++attrEnd;
+    }
+    html->remove(attrStart, attrEnd - attrStart);
+
+    return false;
+} // takeUserLabelFontColor
 
 // Only a user colour close to the body in both luminance and hue is pushed away from it: a pure
 // hue difference at matched luminance is already visible and must keep the user's exact colour.
@@ -1893,8 +1932,7 @@ NodeGui::refreshCurrentBrush()
 void
 NodeGui::refreshNameItemTextColor()
 {
-    // An explicit <font color> in the label HTML always wins; re-picking it here would
-    // fight the colour setNameItemHtml() already locked in from KnobGuiString::parseFont.
+    // A font colour the user picked in the label editor always wins over body contrast.
     if (!_nameItem || _nameItemHasUserFontColor) {
         return;
     }
@@ -3349,11 +3387,9 @@ NodeGui::setNameItemHtml(const QString & name,
     finalText.prepend( QString::fromUtf8("<div align=\"center\">") );
     finalText.append( QString::fromUtf8("</div>") );
 
-    int startFontTag = finalText.indexOf( QString::fromUtf8("<font size=") );
-    int endFontTag = -1;
-    if (startFontTag != -1) {
-        startFontTag = finalText.indexOf(QString::fromUtf8("\">"), startFontTag);
-    }
+    QColor userFontColor;
+    _nameItemHasUserFontColor = takeUserLabelFontColor(&finalText, &userFontColor);
+    const bool hasFontTag = finalText.indexOf(QString::fromUtf8(kFontSizeTag)) != -1;
 
     QString oldText = _nameItem->toHtml();
     if (finalText == oldText) {
@@ -3362,12 +3398,10 @@ NodeGui::setNameItemHtml(const QString & name,
     }
 
     QFont f;
-    QColor color = contrastingLabelTextColor(getDrawnBodyColor());
-    _nameItemHasUserFontColor = (startFontTag != -1);
-    if (startFontTag != -1) {
-        KnobGuiString::parseFont(finalText, &f, &color);
-        //Remove font from the HTML
-        finalText.remove(startFontTag, endFontTag - startFontTag);
+    QColor color = _nameItemHasUserFontColor ? userFontColor : contrastingLabelTextColor(getDrawnBodyColor());
+    if (hasFontTag) {
+        QColor colorFromTag;
+        KnobGuiString::parseFont(finalText, &f, &colorFromTag);
     } else {
         f = QApplication::font();
     }

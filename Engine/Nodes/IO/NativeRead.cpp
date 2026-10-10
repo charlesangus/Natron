@@ -69,7 +69,6 @@
 #include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
-#include "Engine/ReadNode.h"
 #include "Engine/RectI.h"
 
 NATRON_NAMESPACE_ENTER

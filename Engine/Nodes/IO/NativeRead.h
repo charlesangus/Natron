@@ -39,12 +39,13 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define PLUGIN_MAJOR_NATRON_READ 2
+#define kNatronReadNodeOCIOParamInputSpace "ocioInputSpace"
 
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The native image reader, registered under the ID of the Read container
- * (PLUGINID_NATRON_READ) at major 2. The container stays registered at major 1.
+ * @brief The native image reader, the only plug-in registered under PLUGINID_NATRON_READ,
+ * at major 2.
  *
  * The planned knobs keep GenericReader's script names, so the host hooks and the DopeSheet
  * that look knobs up by name apply unchanged:

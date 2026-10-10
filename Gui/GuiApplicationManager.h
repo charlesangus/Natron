@@ -215,8 +215,7 @@ private:
     void onPluginLoaded(Plugin* plugin) OVERRIDE;
     virtual void ignorePlugin(Plugin* plugin) OVERRIDE FINAL;
     virtual void onAllPluginsLoaded() OVERRIDE FINAL;
-    virtual void loadBuiltinNodePlugins(IOPluginsMap* readersMap,
-                                        IOPluginsMap* writersMap) OVERRIDE;
+    virtual void loadBuiltinNodePlugins(IOPluginsMap* writersMap) OVERRIDE;
     virtual bool initGui(const CLArgs& args) OVERRIDE FINAL;
     virtual AppInstancePtr makeNewInstance(int appID) const OVERRIDE FINAL;
     virtual void registerGuiMetaTypes() const OVERRIDE FINAL;

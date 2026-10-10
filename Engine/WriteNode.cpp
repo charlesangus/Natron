@@ -61,10 +61,10 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeSerialization.h"
+#include "Engine/Nodes/IO/NativeRead.h" // kNatronReadNodeOCIOParamInputSpace
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
-#include "Engine/ReadNode.h"
 #include "Engine/Settings.h"
 
 //The plug-in that is instantiated whenever this node is created and doesn't point to any valid or known extension
@@ -203,7 +203,7 @@ public:
     std::list<KnobSerializationPtr> genericKnobsSerialization;
     KnobOutputFileWPtr outputFileKnob;
 
-    //Thiese are knobs owned by the ReadNode and not the Reader
+    // These are knobs owned by the WriteNode and not the Writer
     KnobIntWPtr frameIncrKnob;
     KnobBoolWPtr readBackKnob;
     KnobChoiceWPtr pluginSelectorKnob;

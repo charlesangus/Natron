@@ -31,7 +31,6 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/PyNode.h"
-#include "Engine/ReadNode.h"
 NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
 

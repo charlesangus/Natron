@@ -67,22 +67,11 @@
 #define PLUGINID_OFX_FRAMEHOLD    "net.sf.openfx.FrameHold"
 #define PLUGINID_OFX_RETIME       "net.sf.openfx.Retime"
 #define PLUGINID_OFX_FRAMERANGE   "net.sf.openfx.FrameRange"
-#define PLUGINID_OFX_RUNSCRIPT    "fr.inria.openfx.RunScript"
-#define PLUGINID_OFX_READFFMPEG "fr.inria.openfx.ReadFFmpeg"
+#define PLUGINID_OFX_RUNSCRIPT "fr.inria.openfx.RunScript"
 #define PLUGINID_OFX_TIMEDISSOLVE "net.sf.openfx.TimeDissolvePlugin"
-#define PLUGINID_OFX_WRITEFFMPEG  "fr.inria.openfx.WriteFFmpeg"
-#define PLUGINID_OFX_READPFM      "fr.inria.openfx.ReadPFM"
-#define PLUGINID_OFX_WRITEPFM     "fr.inria.openfx.WritePFM"
-#define PLUGINID_OFX_READMISC     "fr.inria.openfx.ReadMisc"
-#define PLUGINID_OFX_READPSD      "net.fxarena.openfx.ReadPSD"
-#define PLUGINID_OFX_READKRITA    "fr.inria.openfx.ReadKrita"
-#define PLUGINID_OFX_READSVG      "net.fxarena.openfx.ReadSVG"
-#define PLUGINID_OFX_READORA      "fr.inria.openfx.OpenRaster"
-#define PLUGINID_OFX_READCDR      "fr.inria.openfx.ReadCDR"
-#define PLUGINID_OFX_READPNG      "fr.inria.openfx.ReadPNG"
-#define PLUGINID_OFX_WRITEPNG     "fr.inria.openfx.WritePNG"
-#define PLUGINID_OFX_READPDF      "fr.inria.openfx.ReadPDF"
-#define PLUGINID_OFX_READBRAW     "net.sf.openfx.BlackmagicRAW"
+#define PLUGINID_OFX_WRITEFFMPEG "fr.inria.openfx.WriteFFmpeg"
+#define PLUGINID_OFX_WRITEPFM "fr.inria.openfx.WritePFM"
+#define PLUGINID_OFX_WRITEPNG "fr.inria.openfx.WritePNG"
 
 #define PLUGINID_NATRON_VIEWER    (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.Viewer")
 #define PLUGINID_NATRON_DISKCACHE (NATRON_ORGANIZATION_DOMAIN_TOPLEVEL "." NATRON_ORGANIZATION_DOMAIN_SUB ".built-in.DiskCache")
@@ -427,14 +416,6 @@ public:
      * @brief Is the node a reader ?
      **/
     virtual bool isReader() const WARN_UNUSED_RETURN
-    {
-        return false;
-    }
-
-    /**
-     * @brief Basically returns true for PLUGINID_OFX_READFFMPEG
-     **/
-    virtual bool isVideoReader() const WARN_UNUSED_RETURN
     {
         return false;
     }
@@ -2624,7 +2605,6 @@ private:
     class Implementation;
     std::unique_ptr<Implementation> _imp; // PIMPL: hide implementation details
 
-    friend class ReadNode;
     friend class WriteNode;
     friend class ImageBitMapMarker_RAII;
 

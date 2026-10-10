@@ -658,14 +658,11 @@ public:
     const OSGLContext_glx_data* getGLXData() const;
 #endif
 
-    const IOPluginsMap& getFileFormatsForReadingAndReader() const;
     const IOPluginsMap& getFileFormatsForWritingAndWriter() const;
 
     void getSupportedReaderFileFormats(std::vector<std::string>* formats) const;
 
     void getSupportedWriterFileFormats(std::vector<std::string>* formats) const;
-
-    void getReadersForFormat(const std::string& format, IOPluginSetForFormat* decoders) const;
 
     void getWritersForFormat(const std::string& format, IOPluginSetForFormat* encoders) const;
 
@@ -721,8 +718,7 @@ Q_SIGNALS:
 protected:
 
     virtual bool initGui(const CLArgs& cl);
-    virtual void loadBuiltinNodePlugins(IOPluginsMap* readersMap,
-                                        IOPluginsMap* writersMap);
+    virtual void loadBuiltinNodePlugins(IOPluginsMap* writersMap);
 
     template <typename PLUGIN>
     void registerBuiltInPlugin(const QString& iconPath, bool isDeprecated, bool internalUseOnly);

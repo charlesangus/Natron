@@ -128,7 +128,6 @@
 #include "Engine/PrecompNode.h"
 #include "Engine/ProcessHandler.h" // ProcessInputChannel
 #include "Engine/Project.h"
-#include "Engine/ReadNode.h"
 #include "Engine/RenderScheduler.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoSmear.h"
@@ -1464,10 +1463,10 @@ AppManager::loadAllPlugins()
     assert( _imp->_formats.empty() );
 
     // Load plug-ins bundled into Natron
-    loadBuiltinNodePlugins(&_imp->readerPlugins, &_imp->writerPlugins);
+    loadBuiltinNodePlugins(&_imp->writerPlugins);
 
     // Load OpenFX plug-ins
-    _imp->ofxHost->loadOFXPlugins( &_imp->readerPlugins, &_imp->writerPlugins);
+    _imp->ofxHost->loadOFXPlugins(&_imp->writerPlugins);
 
     // Load PyPlugs and init.py & initGui.py scripts
     // Should be done after settings are declared
@@ -1595,8 +1594,7 @@ AppManager::registerBuiltInPlugin(const QString& iconPath,
 }
 
 void
-AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*readersMap*/,
-                                   IOPluginsMap* /*writersMap*/)
+AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*writersMap*/)
 {
     registerBuiltInPlugin<Backdrop>(QString::fromUtf8(NATRON_IMAGES_PATH "backdrop_icon.png"), false, false);
     registerBuiltInPlugin<GroupOutput>(QString::fromUtf8(NATRON_IMAGES_PATH "output_icon.png"), false, false);
@@ -2145,8 +2143,7 @@ AppManager::registerPlugin(const QString& resourcesPath,
     std::string stdID = pluginID.toStdString();
 
 #ifdef NATRON_ENABLE_IO_META_NODES
-    if ( ReadNode::isBundledReader( stdID, false ) ||
-         WriteNode::isBundledWriter( stdID, false ) ) {
+    if (WriteNode::isBundledWriter(stdID, false)) {
         plugin->setForInternalUseOnly(true);
     }
 #endif
@@ -3439,12 +3436,6 @@ AppManager::mapUNCPathToPathWithDriveLetter(const QString& uncPath) const
 #endif
 
 const IOPluginsMap&
-AppManager::getFileFormatsForReadingAndReader() const
-{
-    return _imp->readerPlugins;
-}
-
-const IOPluginsMap&
 AppManager::getFileFormatsForWritingAndWriter() const
 {
     return _imp->writerPlugins;
@@ -3466,19 +3457,6 @@ AppManager::getSupportedWriterFileFormats(std::vector<std::string>* formats) con
     for (IOPluginsMap::const_iterator it = writersForFormat.begin(); it != writersForFormat.end(); ++it, ++i) {
         (*formats)[i] = it->first;
     }
-}
-
-void
-AppManager::getReadersForFormat(const std::string& format,
-                                IOPluginSetForFormat* decoders) const
-{
-    // This will perform a case insensitive find
-    IOPluginsMap::const_iterator found = _imp->readerPlugins.find(format);
-
-    if ( found == _imp->readerPlugins.end() ) {
-        return;
-    }
-    *decoders = found->second;
 }
 
 void

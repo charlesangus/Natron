@@ -80,7 +80,6 @@ public:
     SettingsPtr _settings; //< app settings
     std::vector<Format> _formats; //<a list of the "base" formats available in the application
     PluginsMap _plugins; //< list of the plugins
-    IOPluginsMap readerPlugins; // for all reader plug-ins which are best suited for each format
     IOPluginsMap writerPlugins; // for all writer plug-ins which are best suited for each format
     std::unique_ptr<OfxHost> ofxHost; //< OpenFX host
     std::unique_ptr<KnobFactory> _knobFactory; //< knob maker

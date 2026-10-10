@@ -238,15 +238,16 @@ future core work has solid ground to build on.
 | M78 | Metadata In Expressions | todo | M75, M77 | [M78-metadata-in-expressions.md](PLAN/MILESTONES/M78-metadata-in-expressions.md) |
 | M79 | Layered Document Readers | todo | M75 | [M79-layered-document-readers.md](PLAN/MILESTONES/M79-layered-document-readers.md) |
 | M80 | Native RAW Support | todo | M75 | [M80-native-raw-support.md](PLAN/MILESTONES/M80-native-raw-support.md) |
-| M82 | Render Cost Profiling | doing |  | [M82-render-cost-profiling.md](PLAN/MILESTONES/M82-render-cost-profiling.md) |
-| M83 | GPU Compute Backend Spike | doing |  | [M83-gpu-compute-backend-spike.md](PLAN/MILESTONES/M83-gpu-compute-backend-spike.md) |
-| M84 | GPU Placement And Residency | todo |  | [M84-gpu-placement-and-residency.md](PLAN/MILESTONES/M84-gpu-placement-and-residency.md) |
+| M82 | Render Cost Profiling | done |  | [M82-render-cost-profiling.md](PLAN/MILESTONES/M82-render-cost-profiling.md) |
+| M83 | GPU Compute Backend Spike | done |  | [M83-gpu-compute-backend-spike.md](PLAN/MILESTONES/M83-gpu-compute-backend-spike.md) |
+| M84 | GPU Placement And Residency | doing |  | [M84-gpu-placement-and-residency.md](PLAN/MILESTONES/M84-gpu-placement-and-residency.md) |
 | M81 | Raw GPU Kernels | todo |  | [M81-raw-gpu-kernels.md](PLAN/MILESTONES/M81-raw-gpu-kernels.md) |
 | M85 | Native GPU Kernels | todo |  | [M85-native-gpu-kernels.md](PLAN/MILESTONES/M85-native-gpu-kernels.md) |
 | M86 | OFX 1.5 GPU Suites | todo |  | [M86-ofx-gpu-suites.md](PLAN/MILESTONES/M86-ofx-gpu-suites.md) |
 | M87 | Point-Op Kernel Fusion | todo |  | [M87-point-op-kernel-fusion.md](PLAN/MILESTONES/M87-point-op-kernel-fusion.md) |
 | M88 | FIR Gaussian Blur | done |  | [M88-fir-gaussian-blur.md](PLAN/MILESTONES/M88-fir-gaussian-blur.md) |
 | M89 | Shared Worktree Ccache | done | - | [M89-shared-worktree-ccache.md](PLAN/MILESTONES/M89-shared-worktree-ccache.md) |
+| M90 | Render Path Serial Overhead | todo |  | [M90-render-path-serial-overhead.md](PLAN/MILESTONES/M90-render-path-serial-overhead.md) |
 | M27 | Real Debug Build | doing | - | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M22 | Missing Plugin Placeholder | todo | M75 | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M31 | Architectural Cleanup | todo | M75, M76 | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |

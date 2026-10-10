@@ -1,14 +1,106 @@
-# M44 - Trackball Colour Editing
+# M44 elaboration draft: trackball colour editing
 
-Full title: Trackball-style colour editing
+2026-10-10. This is a draft task breakdown for `MILESTONES/M44-trackball-colour-editing.md`. It applies every `## Decisions` entry, and the "Hybrid round 2" entry wins wherever entries conflict. It replaces the draft Phase 44.1–44.5 in `DESIGN/2026-10-10-trackball-colour-editing.md`. That doc is still the reference for the luma–chroma split (§3.3), Kelvin/tint (§3.4), roles (§4.1), undo/render (§4.5) and the scouting table (§1). The hybrid mockup (`build/m44-mockups/mockup.py`, tab H) is the reference for rates and behaviour. It is not to be ported line by line. Code citations are from `264ebf9b4`.
 
-Natron's colour knobs get a trackball adjustment panel that drops down under the knob row: a colour wheel in CIE xy around the working white, plus horizontal sliders for hue, saturation, value, temperature, tint and alpha. It replaces the old colour popup, which clamped HDR values and had no undo. A global trackball mode (Ctrl+E) lets the user click-drag anywhere to adjust the last-touched colour knob on the topmost node in the properties bin. The design was assembled by the user from three tried mockups, recorded in `## Decisions`; the design notes (chroma plane, knob roles, last-touched tracking, HUD placement, rates) are in `PLAN/DESIGN/2026-10-10-m44-elaboration-draft.md`, and the `## Decisions` overrides below win over it.
+## Design notes
+
+### Chroma plane: CIE xy around the white point, through a projective map
+
+**Choice.** The wheel draws and edits chroma in **CIE 1931 xy coordinates relative to the working white**. The working → XYZ matrix comes from OCIO (P2.T1), uniformly scaled so that its Y row equals the luma weights **w** (`M' = M / (M_Y·1)`). Scaling every row by the same factor leaves xy unchanged.
+
+- **Ratio roles (Gain, Colour, Power's effect vector).** The plane point of a knob **c** is `q = xy(M'c) − xy_w`. Chromaticity does not depend on scale, so q is independent of Y, which makes it the right "relative chroma" for a multiplicative knob.
+- **Offset role.** The plane point is the chromaticity of what the offset does to 18 % grey: `q = xy(M'(0.18·1 + o)) − xy_w`. On mid-grey an offset acts like the gain `1 + o/0.18`, so the gain and offset wheels share one geometry. When `0.18 + w·o ≤ 0`, or X+Y+Z ≤ 0, the plane falls back to the linear Jacobian of the same map at white. That plane is continuous with the projective one at small chroma.
+- **Inverse.** For a target plane point q and the luminance Y held from gesture start (Y_p = 0.18 + w·o for offsets), the knob is rebuilt as `xyY → XYZ → c = M'⁻¹ XYZ` (offsets subtract 0.18·1 afterwards).
+
+**Why it gives the xy-shaped triangle.** XYZ is linear in c, and xy = (X, Y)/(X+Y+Z) is a projective map. Projective maps send straight lines to straight lines. The gamut edges `c_i = 0` are therefore straight segments, and they meet exactly at the primaries' xy coordinates. The triangle *is* the chromaticity-diagram triangle, translated so that white sits at the origin. Checked numerically for ACEScg in the dev container: the sides are 0.767 / 0.787 / 0.636 xy units, against 4.6 / 19.4 / 20.7 for the mockup's hexcone triangle. The primaries sit at hue angles 353.5° (R), 107.7° (G) and 236.6° (B), close to the familiar 0/120/240°, so the hue ring still reads naturally.
+
+**Why hue and sat edits stay Y-exact.** Every edit (trackball translation, hue rotation about white, saturation along the radius, temp/tint) changes only q, and the knob is always rebuilt at the Y held from gesture start. M' has **w** as its Y row, so `w·c = Y` holds by construction, to one rounding. The numeric check rebuilt from (x, y, Y) = (0.30, 0.36, 1.3) with ΔY = 0.0. The module keeps the old (a, b) split (`F`, `E`) for value edits (§3.3), for the Y ≤ 0 guard, and for the Jacobian fallback.
+
+**Rejected.** A linear opponent plane, or a linear 2×2 warp of (a, b), cannot reproduce the triangle. A linear map that fixes white has 4 degrees of freedom and cannot send three arbitrary vertices to their xy positions. It would also be badly wrong far from white, where the blue vertex lies. CIE 1976 u′v′ is also projective, so it would keep straight edges and (for ACEScg) give sides of 0.51 / 0.48 / 0.59. It is a one-constant swap in the module if UAT prefers it. The user asked for xy, so xy is the default.
+
+**Consequences, stated rather than hidden.**
+- The Hue field reads the xy dominant-direction angle, not HSV hue. Red is about 353° in ACEScg, not 0°.
+- Saturation is the distance from white in xy units, so the Sat slider's unit is xy distance (shown ×1000).
+- Zoom ("rim") is in xy units.
+- The mockup's gain rim of 0.25 relative chroma is about 0.031–0.040 xy around the wheel.
+
+**Re-centring.** The wheel is a relative device (round 2):
+- **At press.** The plane is anchored at the knob's current q (the "anchor"). The disc preview, the gamut triangle, the locus and the white marker are all drawn relative to that anchor, and the puck starts at the centre.
+- **During a drag.** The frame stays fixed, and the puck shows anchor + Δ. Past the rim, the puck parks on the edge with a hollow, outward-pointing look.
+- **On release.** The frame re-anchors on the new value and the puck returns to the centre.
+- **White off the wheel.** The white marker (neutral) is drawn as a crosshair. When it falls outside the wheel, it is clamped to the rim with a caret pointing toward it.
+- **Hue ring.** The ring stays an absolute hue legend about white, whatever the anchor. A press on the ring sets the hue to that angle (rotation about white at constant saturation and Y), and dragging along the ring keeps setting it, as one undo step.
+
+### Knob roles
+
+- **Roles.** `ColorKnobRoleEnum { Auto, Gain, Offset, Colour, Power }` lives in the new pure module `Engine/ColorWheelMath.h`, not in `Global/Enums.h` (an M24 file).
+- **Storage.** `KnobColor` carries it as GUI-only metadata: not serialised, not hashed.
+- **Native declarations.**
+  - Grade: `blackPoint`, `black` and `offset` are Offset. `whitePoint`, `white` and `multiply` are Gain. `gamma` is Power.
+  - ColorCorrect: `<Group>Saturation`, `<Group>Contrast` and `<Group>Gain` are Gain, `<Group>Offset` is Offset, and `<Group>Gamma` is Power, for each of the Master, Shadows, Midtones and Highlights groups.
+  - Both are declared through the existing helpers `addGradeColorKnob` (`Engine/Nodes/Color/Grade.cpp:167`) and `addScaleKnob` (`Engine/Nodes/Color/ColorCorrect.cpp:295`).
+- **Inference.** Everything else (OFX, Python, Constant and the keyers) stays Auto and goes through `inferColorRole(defaults, displayMin, scriptName)`:
+  - all defaults 1 → Gain
+  - all defaults 0 with displayMin < 0 → Offset
+  - script name containing "gamma" with default 1 → Power
+  - anything else → Colour
+- **Alpha tracks luma on value edits only.** Gain and Colour multiply alpha by Y₁/Y₀. Offset adds Y₁ − Y₀. Power applies the factor in the effect domain (e_a = 0.18^(1/γ_a)), then maps back. Hue, sat, temp and tint never touch alpha, and 3-dim knobs have no alpha.
+
+### Last-touched colour knob and the target
+
+- **Nothing tracks this today.** I found no focus or "last edited" tracking in `KnobGui`, `KnobGuiContainerHelper` or `Gui`.
+- **New tracker.** `ColorKnobTouchTracker` (Gui-owned) installs one app-wide event filter for `MouseButtonPress`, `Wheel` and `FocusIn`, and walks the target's parent chain to a widget tagged with a dynamic property.
+  - `KnobGuiColor` tags its own per-knob container (`containerLayout->widget()` in `addExtraWidgets`, which is KnobGuiValue's `_imp->container`) and its below-row panel. No `KnobGuiValue` internals need exposing.
+  - Shared field containers on multi-knob lines are not tagged, so the tag is never ambiguous.
+  - Undoable edits pushed from `KnobGuiColor` (panel, swatch, global mode) also call `touch()`.
+  - The tracker maps a `KnobGuiContainerI*` (the panel) to a `KnobGuiWPtr`, and a lookup that fails validation drops the entry.
+- **Topmost node.** This is the first entry of `Gui::getVisiblePanels()` (`Gui/Gui15.cpp:401`, front = top of the properties bin, as `putSettingsPanelFirst` maintains it) that is a docked `NodeSettingsPanel`. Floating and non-node panels are skipped.
+- **Target resolution**, a pure function tested in GuiTests:
+  1. The last-touched knob, if it still belongs to that panel and is visible and enabled.
+  2. Otherwise, plugin `net.sf.openfx.GradePlugin` → `white` (label "Gain").
+  3. Otherwise, plugin `net.sf.openfx.ColorCorrectPlugin` → `MasterGain`.
+  4. Otherwise, the first non-simplified, non-secret `KnobColor` in `getKnobsMapping()` order.
+  5. None → nothing happens, silently.
+- **Knob order.** Ctrl+Up/Down and Ctrl+scroll walk the same ordered list with no wrap. At either end they stop, and the HUD shows "first/last colour knob".
+
+### Global mode, HUD and viewer border
+
+- **Controller.** `ColorTrackballGlobalMode` is created once per `Gui`. While engaged it installs an app-level event filter.
+  - **Strokes.** It adjusts only while a button is held. A press anywhere (any widget, any window) starts a stroke and calls `grabMouse()` on the HUD. Moves send `(mode, dx, dy, gear)` to the edit layer. Release ends the stroke.
+  - **Undo.** Each stroke is one undo step (Q4).
+  - **Edge warp.** Near a screen edge the cursor is warped back with `QCursor::setPos`, and the synthetic move is ignored. Where warping is impossible (Wayland) it is a no-op.
+  - **Keys.** C, T and V pick the mode, Ctrl+Up/Down switches knob, and Esc or Enter accepts and exits. Ctrl+Z and Ctrl+Shift+Z pass through between strokes. Everything else is swallowed.
+  - **Exit on teardown.** The controller exits silently when the target's `KnobGui` or panel is destroyed.
+- **HUD.** It lives **in the properties bin**: a widget inserted into `PropertiesBinWrapper`'s top-level `QVBoxLayout` (built in `GuiPrivate::createPropertiesBinGui`, `Gui/GuiPrivate.cpp:307-381`), between the buttons row and the scroll area. It therefore stays visible however the bin is scrolled, and it is hidden when the mode is off. It shows:
+  - the node and knob name, with n/N
+  - the mode, and what x and y do
+  - the live values, Y, A and the gear
+  - the key legend
+  The target row is highlighted, and `ensureWidgetVisible` scrolls it into view.
+- **Viewer border.** A transparent, mouse-transparent overlay `QWidget` is parented to each `ViewerTab` and kept on the `ViewerGL` geometry (`ViewerTab::getViewer()`) through an event filter on resize and move. It draws a 3 px rectangle in the user's selection colour (`Settings::getSelectionColor`, read only). The overlay is owned by the global-mode code, so `ViewerTab` and `ViewerGL` need no changes.
+- **Shortcut.** Ctrl+G is a new `kShortcutGroupGlobal` action with `Qt::ApplicationShortcut` context, so it also works in floating windows. **Conflict:** Ctrl+G is already NodeGraph "Make group" (`Gui/GuiApplicationManager10.cpp:956`). Two live bindings on one key are ambiguous in Qt, and neither fires (Q1).
+- **Row button.** A target button sits at the end of every non-simplified colour row and engages global mode on that knob (earlier hybrid decision; round 2 did not remove it).
+
+### Rates (k = 1; Ctrl ×0.1, Shift ×4, Ctrl+Shift ×0.01, read on every move)
+
+| Gesture | Rate |
+|---|---|
+| Wheel trackball | The puck tracks the cursor: Δq = Δpx · rim/R_px. The default rim is 10 % of the mockup-equivalent: about 0.0035 xy for every role (Q2). Scrolling zooms ×2^(−¼) per notch, between 0.0002 and 1.0 xy. |
+| Saturation (Sat slider relative drag, global C y-axis) | 3.5e-5 xy/px: 10 % of the mockup's global-C rate, converted through the ≈0.14 xy-per-unit Jacobian. |
+| Hue (global C x-axis) | 0.5°/px |
+| Value (V lock, global V = dx − dy, Value slider relative drag) | Gain, Colour and Power: 1/100 stop/px. Offset: 7e-4 Y/px (the mockup's rim/72). |
+| Temp/tint (T lock, global T) | Gain, Colour and Power: 0.5 mired/px (x, right = warm) and 0.25 tint/px (y, up = magenta). Offset: 7e-4/px along the linear axes. |
+| Slider marker drag | Absolute and not geared. Pressing anywhere else on the slider, or on an end chevron, drags relatively and is geared. |
+
+All rates live in one `TrackballRates` table in the maths module, so UAT tuning is a one-line change.
+
+**Not carried over from the mockup:** the gear readout, rim readout and rim ± buttons (removed by the user); the H and S keys; the S-edge readout, the Y line and the grey preview (mockup extras: the Value field shows Y). The old `ColorSelectorWidget` popup stays only for simplified/viewer colour knobs (`_useSimplifiedUI`, `Gui/KnobGuiColor.cpp:217`). Everywhere else, the panel's Values tab replaces it.
 
 ## Phase 44.1: Colour maths (pure, no Qt, no OCIO)
 
 All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothing from Qt or OCIO and takes the luma weights and the XYZ matrix as plain doubles. Tests go in the **`Tests`** executable: add `Tests/ColorWheelMath_Test.cpp` to `Tests_SOURCES` in `Tests/CMakeLists.txt`, then run `ctest --test-dir build/debug -R ColorWheelMath` inside `tools/ci/local/devshell.sh`, after `tools/ci/local/build.sh debug`. Engine sources are globbed (`Engine/CMakeLists.txt:37`), so new files need a re-configure, not a list edit.
 
-- [x] M44.P1.T1 — Add the luma basis, roles and value edits with alpha tracking
+- [ ] M44.P1.T1 — Add the luma basis, roles and value edits with alpha tracking
   - files: `Engine/ColorWheelMath.h` (new), `Engine/ColorWheelMath.cpp` (new), `Tests/ColorWheelMath_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - `ColorKnobRoleEnum { eColorKnobRoleAuto, Gain, Offset, Colour, Power }`.
@@ -29,7 +121,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
     - HDR (gain 8) and negative (offset −0.3) inputs survive.
   - size: M
 
-- [x] M44.P1.T2 — Add the xy chroma plane: projective map, inverse at fixed Y, offset pivot, Jacobian fallback, hue/sat about white, plane overlays
+- [ ] M44.P1.T2 — Add the xy chroma plane: projective map, inverse at fixed Y, offset pivot, Jacobian fallback, hue/sat about white, plane overlays
   - files: `Engine/ColorWheelMath.h`, `Engine/ColorWheelMath.cpp`, `Tests/ColorWheelMath_Test.cpp`
   - approach: Implement the Design notes, Chroma plane section.
     - `PlanePoint toPlane(role, basis, v)` returns q relative to xy_w plus `valid`. The offset role pivots at 0.18 and falls back to the Jacobian when 0.18 + w·o ≤ 0 or X+Y+Z ≤ 0.
@@ -83,7 +175,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
   - files: `Engine/ColorWheelMath.h`, `Engine/ColorWheelMath.cpp`, `Tests/ColorWheelMath_Test.cpp`
   - approach:
     - `double gear(bool ctrl, bool shift)` gives ×0.1, ×4 and ×0.01.
-    - `TrackballRates` holds the table in the Design notes (Rates), including the saturation rate (10 % of the mockup's, for the Sat slider and global C only) and per-role defaults; the wheel trackball's default rim is the mockup-equivalent, not reduced.
+    - `TrackballRates` holds the table in the Design notes (Rates), including the 10 % saturation rate and per-role defaults.
     - `enum ColorAxis { Trackball, Hue, Sat, Value, TempTint, Alpha }`.
     - `ColorEdit { axis, d1, d2, absolute }` is applied by `applyEdit(role, basis, v, edit, rememberedHue)` (the single dispatcher the widgets and global mode call).
     - `globalModeEdit(mode ∈ {C, T, V}, dx, dy, gear, role, rates)`:
@@ -335,26 +427,28 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
       - The controller inserts it at index 1 of `qobject_cast<QVBoxLayout*>(gui->getPropertiesBin()->layout())`, between the buttons row and the scroll area (`Gui/GuiPrivate.cpp:380-381`).
       - It is shown on engage and hidden on exit.
       - `ensureWidgetVisible` keeps the target row in view.
-    - **`WindowHighlightFrame`** is a `WA_TransparentForMouseEvents` overlay on the main window, plus one on each floating window that holds a properties bin or viewer.
-      - An event filter keeps it on the window's geometry and on top.
-      - It paints a 3 px border in `Settings::getSelectionColor`. This is a read only; `Engine/Settings.*` is not edited.
+    - **`ViewerHighlightFrame`** is a `WA_TransparentForMouseEvents` overlay on each `ViewerTab` (from `gui->getViewersList()`).
+      - An event filter keeps it on `ViewerTab::getViewer()`'s geometry.
+      - It paints a 3 px border in `Settings::getSelectionColor` (read only, no edit to `Engine/Settings.*`).
+      - Viewers created mid-session get one too.
   - verify:
     - `GuiTests --gtest_filter=ColorTrackballHud*`: the HUD shows the given mode and values, its legend lights the active key, and a frame over a dummy widget tracks a resize.
-    - A scratch GUI script engages on Grade `white`: the HUD is visible inside the properties bin above the panels; the border pixel at the main window's edge equals the selection colour (±2/255); after exit, both are gone.
+    - A scratch GUI script engages on Grade `white`: the HUD is visible inside the properties bin above the panels; the border pixel at the viewer's edge equals the selection colour (±2/255); after exit, both are gone.
     - Screenshot of the global mode in T.
   - size: M
 
-- [ ] M44.P5.T4 — Add the Ctrl+E application-wide shortcut and the per-row target button
+- [ ] M44.P5.T4 — Add the Ctrl+G application-wide shortcut and the per-row target button
   - files: `Gui/ActionShortcuts.h`, `Gui/GuiApplicationManager10.cpp`, `Gui/Gui.cpp`, `Gui/KnobGuiColor.cpp`
   - approach:
-    - Add `kShortcutIDActionColorTrackball` and its description in `kShortcutGroupGlobal`, registered at Ctrl+E, which is unbound today.
+    - Add `kShortcutIDActionColorTrackball` and its description in `kShortcutGroupGlobal`, registered at Ctrl+G.
+    - Per Q1(a), move the default `kShortcutIDActionGraphMakeGroup` to Ctrl+Shift+G at `GuiApplicationManager10.cpp:956`. Both files are outside the M24 list. Q1(b) would need an edit in `Gui/NodeGraph25.cpp` and would be OVERLAP: `Gui/NodeGraph25.cpp`.
     - In `Gui.cpp`, create the `ActionWithShortcut` with `Qt::ApplicationShortcut`, `addAction` it to the main window, and connect it to resolve the target (P5.T1) and engage (P5.T2), or do nothing when there is no target. Pressing it while engaged exits.
     - Add a target button (crosshair icon, checkable while engaged) at the end of every non-simplified colour row.
   - verify: a scratch GUI script.
-    - With Grade on top and nothing touched, a synthetic Ctrl+E sent to the node graph engages on `white`.
-    - Ctrl+G with nodes selected still makes a group.
-    - With Blur on top, Ctrl+E does nothing and logs nothing.
-    - Ctrl+E from a floating properties panel works.
+    - With Grade on top and nothing touched, a synthetic Ctrl+G sent to the node graph engages on `white` and does not create a group.
+    - Ctrl+Shift+G with nodes selected makes a group.
+    - With Blur on top, Ctrl+G does nothing and logs nothing.
+    - Ctrl+G from a floating properties panel works.
     - The row button engages on its own knob.
     - The shortcut editor lists the new action.
   - size: M
@@ -377,8 +471,8 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
       - absolute and relative Value slider drags, with alpha tracking
       - an Offset (`black`) panel
       - the ACEScg triangle with roughly equal sides, drawn at a zoomed-out rim
-      - global mode by Ctrl+E: the HUD in the bin, the viewer border, a C stroke, Ctrl+Down to the next knob, Esc
-      - ColorCorrect, where Ctrl+E engages `MasterGain`
+      - global mode by Ctrl+G: the HUD in the bin, the viewer border, a C stroke, Ctrl+Down to the next knob, Esc
+      - ColorCorrect, where Ctrl+G engages `MasterGain`
     - Checks:
       - the viewer centre's luminance under the working weights stays within 1 % across hue, sat and temp edits
       - each stroke is one undo step
@@ -391,9 +485,9 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
   - approach: Run `tools/ci/local/package.sh fast` on the tree that passed P6.T1. Hand the user the AppImage path and a one-screen test card:
     - the wheel gestures and V/T locks
     - slider absolute/relative behaviour
-    - Ctrl+E, C/T/V, Ctrl+Up/Down or Ctrl+scroll, Esc/Enter
+    - Ctrl+G, C/T/V, Ctrl+Up/Down or Ctrl+scroll, Esc/Enter
     - the gearing
-    - that Ctrl+G still makes a group
+    - the Make group shortcut move (per Q1)
     - things to judge: saturation speed, the default zoom, and the triangle shape
   - verify: The AppImage exists and launches (`--version` under `devshell.sh`). The user runs the UAT and records their verdict in the M44 Decisions.
   - size: S
@@ -404,47 +498,25 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
 - In `GuiTests`: `ColorWheelWidget*`, `ColorEditSlider*`, `ColorAdjustPanel*`, `ColorTrackballTarget*` and `ColorTrackballHud*` pass.
 - `Tests/gui/run-gui-test.sh build/m44-gui/m44_trackball.py build/fast/App/Natron` passes, and its screenshots are attached to the PR.
 - `tools/ci/local/package.sh fast` produces an AppImage, and **the user's hands-on UAT on it passes**.
-- No file on M24's list is touched.
+- No file on M24's list is touched. If Q1 resolves to (b), the one exception is flagged OVERLAP: `Gui/NodeGraph25.cpp` and sequenced after M24 merges.
 
-## Decisions
+## Open questions for the user
 
-- 2026-10-10 — **Scope set by the user:** trackball-style grading on a colour-wheel widget (angle = hue, radius = saturation, adjusted together by an x/y drag, like a DaVinci/Pablo trackball, similar to Nuke's wheel), plus individual hue, saturation and value gestures, a temperature adjustment, and gearing (a modifier for slower/faster drags). Every non-value control preserves value. The wheel lives in a Nuke-style dropdown adjustment panel on any node's colour knobs; the node-colour button is out of scope. The maths runs on linear values, HDR-preserving, keeping hue, saturation and brightness separate; perceptual spaces other than HSV are to be investigated. The user asked for design pitches before elaboration (`PLAN/DESIGN/2026-10-10-trackball-colour-editing.md`).
-- 2026-10-10 — **Deps `-` (user-confirmed):** M44 touches only the colour-knob GUI, which M24 does not, so it runs alongside M24.
-- 2026-10-10 — **Colour model, temperature and popup (user):** the luma–chroma split (Y from the working space's luma weights, read from OCIO, plus a 2D chroma plane; hue and saturation edits leave Y exact), physically based Kelvin/tint temperature for gain, colour and gamma knobs with straight axes for offsets, and the old colour popup replaced by a "Values" tab in the new panel. The pitch choice (A/B/C) is still open.
-- 2026-10-10 — **Hybrid design (user, after trying the A/B/C mockups, claude.ai artifact `2Umo1q3iMH5v4i41YYtcUe`):**
-  - Gearing as in pitch A: Ctrl ×0.1, Shift ×4, Ctrl+Shift ×0.01.
-  - Dedicated drag zones as in A, but one per function, all horizontal and side by side. The slider's marker shows the absolute value: dragging the marker positions absolutely, and dragging anywhere else on the slider adjusts relatively, as in A.
-  - A "global trackball" mode. Once it is engaged, H, S, V, T or C picks the property, and a drag anywhere on screen adjusts it, with A's gearing. Esc cancels. Ctrl+Up/Down or Ctrl+scroll moves to the next or previous colour knob on the current node (the top node in the properties bin). Axes:
-    - T: left/right is cool/warm, up/down is magenta/green.
-    - C: left/right is hue, up/down is saturation.
-    - H or S: up/down is value.
-  - Alpha tracks luma.
-  - No rim auto-zoom. The puck may go past the wheel's edge, where it parks on the edge with a changed look to show it is off the wheel, and the scroll wheel zooms the trackball.
-  - Over the trackball itself, holding H, S, V or T while dragging adjusts just that parameter.
-- 2026-10-10 — **Hybrid clarifications (user):**
-  - "Alpha tracks luma" means a value edit scales alpha by the same factor as luma (for Offset, it adds the same amount), so a gain of (2,2,2,1) becomes (2,2,2,2). Hue, sat, temp and tint edits leave alpha alone, and alpha keeps its own slider.
-  - Global-mode axes: H is hue on x and value on y; S is saturation on x and value on y; V changes value with either axis.
-  - Global mode is engaged by a button on each colour knob row, or a shortcut (G with the cursor over a colour knob or its panel). It shows a HUD, Esc cancels, and Enter or a click commits.
-  - Next step: a single hybrid Qt mockup for the user to try before elaboration.
-- 2026-10-10 — **Hybrid round 2 (user, after trying the hybrid mockup):** these changes override the earlier hybrid entries where they conflict.
-  - Global mode adjusts only while a mouse button is held: click and drag, not free movement.
-  - Esc accepts and there is no cancel, since undo covers it. Enter also accepts.
-  - Clicking the hue rim sets the hue to that angle.
-  - The H and S keys are dropped; C (x = hue, y = saturation) covers them. Held-key locks over the trackball are V and T, and must actually work, unlike in the mockup.
-  - The gamut triangle on the wheel must look roughly as it would on an xy chromaticity plot. For ACEScg its sides should be about equal, unlike the mockup's lopsided hexcone projection.
-  - The gear readout, rim readout and rim ± buttons are removed.
-  - After each edit the trackball re-centres: the puck returns to centre and the wheel shows the change from the current value. When the neutral white point is off the wheel, it is marked at the edge with a crosshair plus a caret pointing toward it.
-  - The shortcut is Ctrl+G, and it is application-wide. It activates the last-touched colour knob on the topmost node in the properties bin. With no last-touched knob it falls back to `gain` on a Grade, master gain on a ColorCorrect, or the first colour knob on any other node. If the top node has no colour knobs, it silently does nothing.
-  - The default saturation speed is 10% of the mockup's.
-  - The global-mode HUD is not a popup. It sits in the properties bin, and a highlight-colour border is drawn around the viewer while the mode is active. "Monitor" is read as the viewer pane; this reading is not yet confirmed.
-  - **Implement in Natron now.** The next test round is on an AppImage, not the mockup.
-- 2026-10-10 — **Elaborated** from `PLAN/DESIGN/2026-10-10-m44-elaboration-draft.md` (20 tasks). Chroma plane: CIE xy around the working white through a projective map scaled so its Y row equals the working space's luma weights. Edits rebuild at the gesture's held Y, so hue and sat stay Y-exact; for ACEScg the triangle's sides are 0.77/0.79/0.64. ACEScg red sits at about 353° on the wheel.
-- 2026-10-10 — **Answers to the elaboration's questions (user):**
-  - The trackball shortcut is **Ctrl+E**, and Make group keeps Ctrl+G.
-  - The 10% saturation speed applies to the Sat slider and global C only. The wheel trackball keeps the mockup's rate.
-  - The global-mode highlight border goes around the **whole window**, not the viewer. This supersedes the "monitor = viewer" reading.
-  - In global mode, each click-drag stroke is one undo step, and Ctrl+Z works between strokes.
-
-- 2026-10-10 — **P1.T2 landed:** AP1 measures R–G 0.767, G–B 0.787 and B–R 0.636 in xy, with primaries at 353.5°, 107.7° and 236.6°. Across 10,000 random edits, the worst luma drift was 6e-16 relative on gains. Two calls to confirm at the gate:
-  - A config with no XYZ matrix gets a stand-in linear plane (J = 0.1·F): no triangle, but centred on white and Y-exact, so the wheel still works.
-  - The u′v′ sides are 0.513/0.482/0.566, not the design note's 0.59.
+1. **Ctrl+G is already NodeGraph "Make group"** (`Gui/GuiApplicationManager10.cpp:956`). An application-wide Ctrl+G cannot coexist with it.
+   - (a) The trackball takes Ctrl+G everywhere, and Make group's default moves to Ctrl+Shift+G (free today). Users can rebind either in the shortcut editor.
+   - (b) Ctrl+G stays Make group while the node graph has focus, and is the trackball elsewhere. Your usual flow, selecting the Grade in the graph and pressing Ctrl+G, would then make a group. This option is also OVERLAP: `Gui/NodeGraph25.cpp`.
+   - (c) Give the trackball a different key.
+   - **Recommended: (a).**
+2. **What "saturation speed 10 %" covers.**
+   - (a) Every saturation change: the Sat slider's relative drag, global C's y-axis, *and* the wheel trackball, through a default zoom 10× tighter. The puck still tracks the cursor, and the gamut triangle starts off the wheel until you scroll out.
+   - (b) Only the explicit saturation axes (Sat slider, global C). The wheel keeps the mockup's zoom.
+   - **Recommended: (a).** Both are one constant in `TrackballRates`, so UAT can retune.
+3. **The viewer border.** "Monitor" is read as the viewer pane.
+   - (a) A border on every open viewer pane.
+   - (b) A border on the active viewer only.
+   - (c) The whole main window, as in the mockup.
+   - **Recommended: (a).**
+4. **Undo granularity in click-drag global mode.**
+   - (a) One undo step per press→release stroke, with Ctrl+Z usable between strokes without leaving the mode.
+   - (b) One step per knob per session, as the earlier free-move design had.
+   - **Recommended: (a).** It matches "every user action is one undo step", and with Esc no longer cancelling, undo is the way back.

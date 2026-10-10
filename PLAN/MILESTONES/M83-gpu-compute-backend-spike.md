@@ -224,7 +224,7 @@ Scouted facts this plan relies on (2026-10-10):
   - verify: the script runs in the container and its output is pasted into the design note.
   - size: S
 
-- [ ] M83.P6.T4 — Write the design note and decision record
+- [x] M83.P6.T4 — Write the design note and decision record
   - files: `.plan/PLAN/DESIGN/2026-10-xx-gpu-compute-backend.md`, `.plan/PLAN/DECISIONS/2026-10-xx-gpu-compute-backend-chosen.md`, `.plan/PLAN/DECISIONS/INDEX.md`
   - approach: Measured numbers from P6.T1–T3, P4.T1 and P5. The tolerance table per kernel and driver. The CPU-fallback strategy from P6.T2. The interop path and its fallback. Then the handover:
     - **M84 API sketch:** `GpuDevice`, VMA-backed buffers, `GpuTransfer` streams with timeline values, the kernel registry, the threading model (submits behind a mutex, command pool per thread, thread budget 1), the device-lost state machine and the budget query.
@@ -327,3 +327,14 @@ Scouted facts this plan relies on (2026-10-10):
   - **Why the twin is slow:** it doesn't vectorise. Each pixel is a scalar call inside an 8×8 group loop, the FP reduction is unreorderable, and every tap resolves its bounds.
   - **Integration:** headers only, from the prelude. The entry point is dispatch-shaped (`k(ComputeVaryingInput*, entryParams, globalParams)`) with a hand-synced Params layout, so it fits `PixelKernel::processRow` poorly and doesn't fit the planar column-block Blur at all.
   - **How native was measured:** UHD/8K over 16 threads, compiling the real `BlurKernels.cpp` into the bench with a shim, plus a verbatim copy of `GradeKernel`.
+- 2026-10-10 — **User signed off** on the design note (`PLAN/DESIGN/2026-10-10-gpu-compute-backend.md`) and the decision record: Vulkan compute; Slang compiled offline to SPIR-V; hand-written CPU kernels primary, with the Slang twin as a test oracle; interop via an exported buffer → GL PBO. The CPU-Blur baseline gap is left as an open risk in the note for M84 - GPU Placement And Residency to measure: in-graph CPU Blur runs 14–23 ms/Mpx using ~3 of 16 threads, against 1.4–20 for the bare kernel.
+- 2026-10-10 — Gate green after the rebase onto main: spike ctest 32/32 on lavapipe (Qt/Xvfb included) and every suite passing on RADV. PR #48 opened. Published to `docs/decisions/` in the same PR: vulkan-slang-backend, gpu-compute-backend-chosen, gpu-residency-from-day-one, and hard-cut-covers-default-changes. The last two should have been published with #47 and #46 and were caught up here.
+- 2026-10-10 — PR #48 review round (Claude Opus; Codex is not logged in) closed in `a13dcdb7d`. All 5 majors were fixed:
+  - a blur radius/channel guard behind `recordBlurPass`;
+  - the compute callback returns `GpuStatus`;
+  - validation is opt-in;
+  - a validation messenger fails tests (the layer isn't installed anywhere here, so the wiring is checked by injecting a message);
+  - point ops use push constants and have a GPU test.
+
+  Minors and nits were fixed, with two deferred to M84 - GPU Placement And Residency: a concurrency-safe descriptor pool, and GlInterop double-buffering. Results: lavapipe 60/60, and all suites pass on RADV with and without push descriptors. No second round, because M84 re-reviews this code when it promotes it.
+- 2026-10-10 — Shipped: PR #48 squash-merged to `main` as `59c3ebea0` with CI green. The worktree and the `natron-dev-m83` container have been removed.

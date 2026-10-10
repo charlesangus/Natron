@@ -304,7 +304,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
     - A scratch GUI script opens Grade and then Blur (Blur on top → none), clicks Grade's `offset` spinbox, puts Grade first, and checks that the resolver returns `offset`.
   - size: M
 
-- [ ] M44.P5.T2 — Build the global-mode controller: engage/exit, click-drag strokes, C/T/V modes, gearing, accept keys, knob switching
+- [x] M44.P5.T2 — Build the global-mode controller: engage/exit, click-drag strokes, C/T/V modes, gearing, accept keys, knob switching
   - files: `Gui/ColorTrackballGlobalMode.h` (new), `Gui/ColorTrackballGlobalMode.cpp` (new), `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`
   - approach:
     - Implement the Design notes (Global mode, HUD and viewer border), without the HUD and border, which come in P5.T3.
@@ -453,3 +453,4 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
 - 2026-10-10 — **P2.T1: the OCIO probe is D65-adapted.** `cie_xyz_d65_interchange` adapts ACEScg's D60 white to D65, so a real ACES 2.0 Studio project reports luma ≈ (0.2677, 0.6743, 0.0580) and shifted primaries, not the textbook AP1 values. The tests assert the measured values. Neutral (1,1,1) still maps to the wheel centre, because the white point is the image of neutral. The no-project fallback (`ColorMath::acesCgLumaWeights()`, native AP1) differs from a real project by about 0.005–0.009 in chroma. That is acceptable for a fallback, but the two are not interchangeable in tests.
 - 2026-10-10 — **P3.T4 for UAT:** the slider ranges and the per-pixel rates disagree for Offset temp/tint. The range is ±50 while the rate is 7e-4/px, so the marker barely moves. Retune the ranges or the rates in `TrackballRates`/`sliderMapping` after the user tries it. The panel's signal is `valuesEdited(value, Start|Move|End, undoLabel)`.
 - 2026-10-10 — **P4.T2:** colour knobs that share a row with other knobs never get the below-row hook (P4.T1's rule), so they keep the old popup, as simplified and viewer colour knobs do. Confirm this at UAT. `Gui/ColorKnobEditSession.cpp` is new, so the end build must re-run cmake.
+- 2026-10-10 — **P5.T2:** Ctrl+Z, Ctrl+Shift+Z and Ctrl+Y in global mode call the target panel's own undo and redo between strokes, and are swallowed mid-stroke. They are not passed through to the app, because the Edit menu's active undo stack can follow the hovered node graph instead of the knob's panel. Near a screen edge the cursor warps back to the centre; this does nothing on Wayland.

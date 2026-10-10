@@ -31,10 +31,15 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QBrush>
+#include <QEnterEvent>
+#include <QFocusEvent>
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
+#include <QWheelEvent>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -57,6 +62,8 @@ const double kCaretLength = 6.0;
 const double kCaretHalfWidth = 4.0;
 const double kPuckRadius = 5.0;
 const double kParkedPuckRadius = 6.0;
+const double kRingHitTolerance = 4.0;
+const double kWheelNotch = 120.0;
 
 KnobColorValue
 neutralGain()
@@ -150,7 +157,15 @@ ColorWheelWidget::ColorWheelWidget(QWidget* parent)
     , _hasDragOffset(false)
     , _basisGeneration(0)
     , _converterGeneration(0)
+    , _dragZone(eHitZoneNone)
+    , _lastDragPos()
+    , _gestureOffset()
+    , _gestureMoved(false)
+    , _keyboardGrabbed(false)
+    , _hovered(false)
+    , _heldLocks()
 {
+    setFocusPolicy(Qt::StrongFocus);
     updateAnchor();
 }
 
@@ -817,6 +832,359 @@ ColorWheelWidget::paintEvent(QPaintEvent* /*e*/)
 
     drawWhiteMarker(p);
     drawPuck(p);
+}
+
+ColorAxisEnum
+ColorWheelWidget::getActiveLock() const
+{
+    if (_heldLocks.empty()) {
+        return eColorAxisTrackball;
+    }
+
+    return _heldLocks.back() == Qt::Key_V ? eColorAxisValue : eColorAxisTempTint;
+}
+
+bool
+ColorWheelWidget::isDragging() const
+{
+    return _dragZone != eHitZoneNone;
+}
+
+ColorWheelWidget::HitZoneEnum
+ColorWheelWidget::hitTest(const QPointF& pos) const
+{
+    QPointF c = getDiscCentre();
+    double r = std::hypot(pos.x() - c.x(), pos.y() - c.y());
+    double tolerance = TO_DPIX(kRingHitTolerance);
+
+    if (getDiscRadius() <= 1.0) {
+        return eHitZoneNone;
+    }
+    if (r <= getDiscRadius()) {
+        return eHitZoneDisc;
+    }
+    if ((r >= getRingInnerRadius() - tolerance) && (r <= getRingOuterRadius() + tolerance)) {
+        return eHitZoneRing;
+    }
+
+    return eHitZoneNone;
+}
+
+double
+ColorWheelWidget::ringAngleAt(const QPointF& pos) const
+{
+    QPointF c = getDiscCentre();
+    double degrees = std::atan2(-(pos.y() - c.y()), pos.x() - c.x()) * 180.0 / kPi;
+
+    return degrees < 0.0 ? degrees + 360.0 : degrees;
+}
+
+bool
+ColorWheelWidget::isLockKey(int key) const
+{
+    return (key == Qt::Key_V) || (key == Qt::Key_T);
+}
+
+bool
+ColorWheelWidget::wantsShortcutOverride(const QKeyEvent* e) const
+{
+    bool dragging = isDragging();
+
+    if (dragging && (e->key() == Qt::Key_Escape)) {
+        return true;
+    }
+    if (!isLockKey(e->key()) || !(dragging || _hovered)) {
+        return false;
+    }
+
+    // Ctrl is only claimed mid-drag, where it is the gear: over an idle wheel Ctrl+V and Ctrl+T
+    // must still reach their application shortcuts.
+    Qt::KeyboardModifiers allowed = Qt::ShiftModifier | Qt::KeypadModifier;
+
+    if (dragging) {
+        allowed |= Qt::ControlModifier;
+    }
+
+    return !(e->modifiers() & ~allowed);
+}
+
+void
+ColorWheelWidget::emitStep(const ColorEdit& edit,
+                           const QString& axisLabel)
+{
+    _gestureMoved = true;
+    Q_EMIT gestureMoved(edit, axisLabel);
+}
+
+void
+ColorWheelWidget::emitRingHue(const QPointF& pos)
+{
+    ColorEdit edit;
+
+    edit.axis = eColorAxisHue;
+    edit.d1 = ringAngleAt(pos);
+    edit.absolute = true;
+    emitStep(edit, tr("Hue"));
+}
+
+void
+ColorWheelWidget::dragTo(const QPointF& pos,
+                         Qt::KeyboardModifiers modifiers)
+{
+    double dx = pos.x() - _lastDragPos.x();
+    double dy = pos.y() - _lastDragPos.y();
+
+    _lastDragPos = pos;
+    if ((dx == 0.0) && (dy == 0.0)) {
+        return;
+    }
+
+    if (_dragZone == eHitZoneRing) {
+        emitRingHue(pos);
+
+        return;
+    }
+
+    TrackballRates rates;
+    double g = gear(modifiers.testFlag(Qt::ControlModifier), modifiers.testFlag(Qt::ShiftModifier));
+    ColorEdit edit;
+
+    edit.axis = getActiveLock();
+    switch (edit.axis) {
+    case eColorAxisValue:
+        edit.d1 = -dy * valueRatePerPixel(rates, _role) * g;
+        emitStep(edit, tr("Value"));
+        break;
+
+    case eColorAxisTempTint:
+        edit.d1 = dx * tempRatePerPixel(rates, _role) * g;
+        edit.d2 = -dy * tintRatePerPixel(rates, _role) * g;
+        emitStep(edit, tr("Temp/Tint"));
+        break;
+
+    default: {
+        double R = getDiscRadius();
+
+        if (R <= 0.0) {
+            return;
+        }
+
+        double scale = _rim / R * g;
+
+        edit.axis = eColorAxisTrackball;
+        edit.d1 = dx * scale;
+        edit.d2 = -dy * scale;
+        _gestureOffset.x += edit.d1;
+        _gestureOffset.y += edit.d2;
+        setDragOffset(_gestureOffset);
+        emitStep(edit, tr("Trackball"));
+        break;
+    }
+    }
+}
+
+void
+ColorWheelWidget::finishGesture()
+{
+    if (!isDragging()) {
+        return;
+    }
+
+    bool moved = _gestureMoved;
+
+    _dragZone = eHitZoneNone;
+    _gestureMoved = false;
+    _gestureOffset = planePoint(0.0, 0.0);
+    if (_keyboardGrabbed) {
+        releaseKeyboard();
+        _keyboardGrabbed = false;
+    }
+    Q_EMIT gestureFinished(moved);
+    clearDragOffset();
+}
+
+bool
+ColorWheelWidget::event(QEvent* e)
+{
+    if ((e->type() == QEvent::ShortcutOverride) && wantsShortcutOverride(static_cast<QKeyEvent*>(e))) {
+        e->accept();
+
+        return true;
+    }
+
+    return QWidget::event(e);
+}
+
+void
+ColorWheelWidget::mousePressEvent(QMouseEvent* e)
+{
+    if ((e->button() != Qt::LeftButton) || isDragging()) {
+        QWidget::mousePressEvent(e);
+
+        return;
+    }
+
+    QPointF pos = e->position();
+    HitZoneEnum zone = hitTest(pos);
+
+    if (zone == eHitZoneNone) {
+        QWidget::mousePressEvent(e);
+
+        return;
+    }
+
+    e->accept();
+    setFocus(Qt::MouseFocusReason);
+    _dragZone = zone;
+    _lastDragPos = pos;
+    _gestureMoved = false;
+    _gestureOffset = planePoint(0.0, 0.0);
+    // Without the grab, a lock key pressed mid-drag after the cursor has left the widget would
+    // go to whichever widget the focus chain picks, and its release would never reach us.
+    grabKeyboard();
+    _keyboardGrabbed = true;
+    Q_EMIT gestureStarted();
+
+    if (zone == eHitZoneRing) {
+        emitRingHue(pos);
+    } else {
+        setDragOffset(_gestureOffset);
+    }
+}
+
+void
+ColorWheelWidget::mouseMoveEvent(QMouseEvent* e)
+{
+    if (!isDragging()) {
+        QWidget::mouseMoveEvent(e);
+
+        return;
+    }
+    e->accept();
+    dragTo(e->position(), e->modifiers());
+}
+
+void
+ColorWheelWidget::mouseReleaseEvent(QMouseEvent* e)
+{
+    if (!isDragging() || (e->button() != Qt::LeftButton)) {
+        QWidget::mouseReleaseEvent(e);
+
+        return;
+    }
+    e->accept();
+    dragTo(e->position(), e->modifiers());
+    finishGesture();
+}
+
+void
+ColorWheelWidget::mouseDoubleClickEvent(QMouseEvent* e)
+{
+    if ((e->button() != Qt::LeftButton) || (hitTest(e->position()) == eHitZoneNone)) {
+        QWidget::mouseDoubleClickEvent(e);
+
+        return;
+    }
+    e->accept();
+    finishGesture();
+
+    ColorEdit edit;
+
+    edit.axis = eColorAxisSat;
+    edit.d1 = 0.0;
+    edit.absolute = true;
+    Q_EMIT gestureStarted();
+    Q_EMIT gestureMoved(edit, tr("Reset"));
+    Q_EMIT gestureFinished(true);
+}
+
+void
+ColorWheelWidget::wheelEvent(QWheelEvent* e)
+{
+    double notches = e->angleDelta().y() / kWheelNotch;
+
+    if (notches == 0.0) {
+        QWidget::wheelEvent(e);
+
+        return;
+    }
+    e->accept();
+
+    double before = _rim;
+
+    setRim(_rim * std::pow(TrackballRates().zoomFactorPerNotch, notches));
+    if (_rim != before) {
+        Q_EMIT rimZoomed(_rim);
+    }
+}
+
+void
+ColorWheelWidget::keyPressEvent(QKeyEvent* e)
+{
+    int key = e->key();
+
+    if (isDragging() && (key == Qt::Key_Escape)) {
+        e->accept();
+        finishGesture();
+
+        return;
+    }
+    if (!isLockKey(key) || !(isDragging() || _hovered)) {
+        QWidget::keyPressEvent(e);
+
+        return;
+    }
+    e->accept();
+    if (e->isAutoRepeat()) {
+        return;
+    }
+    _heldLocks.erase(std::remove(_heldLocks.begin(), _heldLocks.end(), key), _heldLocks.end());
+    _heldLocks.push_back(key);
+}
+
+void
+ColorWheelWidget::keyReleaseEvent(QKeyEvent* e)
+{
+    int key = e->key();
+
+    if (!isLockKey(key)) {
+        QWidget::keyReleaseEvent(e);
+
+        return;
+    }
+    e->accept();
+    if (e->isAutoRepeat()) {
+        return;
+    }
+    _heldLocks.erase(std::remove(_heldLocks.begin(), _heldLocks.end(), key), _heldLocks.end());
+}
+
+void
+ColorWheelWidget::enterEvent(QEnterEvent* e)
+{
+    _hovered = true;
+    // Taking focus on hover is what lets a lock key pressed before the mouse button reach the
+    // wheel at all; with click-to-focus it would only work from the second drag on.
+    setFocus(Qt::MouseFocusReason);
+    QWidget::enterEvent(e);
+}
+
+void
+ColorWheelWidget::leaveEvent(QEvent* e)
+{
+    _hovered = false;
+    QWidget::leaveEvent(e);
+}
+
+void
+ColorWheelWidget::focusOutEvent(QFocusEvent* e)
+{
+    // The releases of keys held when focus leaves go elsewhere, so they would otherwise stay
+    // latched; mid-drag the keyboard grab still delivers them here.
+    if (!isDragging()) {
+        _heldLocks.clear();
+    }
+    QWidget::focusOutEvent(e);
 }
 
 NATRON_NAMESPACE_EXIT

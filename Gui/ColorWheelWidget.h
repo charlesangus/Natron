@@ -38,14 +38,21 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QPointF>
 #include <QPolygonF>
 #include <QSize>
+#include <QString>
 #include <QWidget>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/ColorWheelMath.h"
 
+class QEnterEvent;
+class QEvent;
+class QFocusEvent;
+class QKeyEvent;
+class QMouseEvent;
 class QPainter;
 class QPaintEvent;
+class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
 
@@ -58,6 +65,14 @@ NATRON_NAMESPACE_ENTER
  *
  * Plane coordinates passed in or out (drag offset, overlay points) are wheel-relative, i.e.
  * already minus the anchor, matching whitePoint and drawLocus.
+ *
+ * Input: a left press in the disc starts a relative trackball drag (Ctrl/Shift gearing read on
+ * every move), a press on the hue ring sets the hue to the angle under the cursor and keeps
+ * doing so while dragged, holding V or T over the wheel turns a disc drag into a value or a
+ * temp/tint drag, the scroll wheel zooms the rim, and a double-click resets the chroma. Each
+ * gesture is bracketed by gestureStarted and gestureFinished, with one gestureMoved per step
+ * carrying a delta (absolute for the ring and the reset); the owner applies the edits, makes the
+ * gesture one undo step, and calls setValue on finish to re-centre the wheel.
  **/
 class ColorWheelWidget
     : public QWidget {
@@ -139,13 +154,58 @@ public:
      **/
     QImage getDiscImage() const;
 
+    /**
+     * @brief The held-key lock a disc drag would use right now: eColorAxisValue (V),
+     * eColorAxisTempTint (T), or eColorAxisTrackball when neither is held.
+     **/
+    ColorAxisEnum getActiveLock() const;
+    bool isDragging() const;
+
     virtual QSize sizeHint() const OVERRIDE;
     virtual QSize minimumSizeHint() const OVERRIDE;
 
+Q_SIGNALS:
+    void gestureStarted();
+
+    /**
+     * @brief One step of the current gesture, ready for applyEdit: a relative Trackball (d1, d2 =
+     * plane delta), Value or TempTint step from a disc drag, an absolute Hue from the ring, or an
+     * absolute Sat of 0 for a double-click reset. axisLabel names the step for the undo text.
+     **/
+    void gestureMoved(ColorEdit edit, QString axisLabel);
+
+    /**
+     * @brief moved is false when no gestureMoved was emitted since gestureStarted. Esc during a
+     * drag finishes it like a release does: there is no cancel, undo covers that.
+     **/
+    void gestureFinished(bool moved);
+
+    /**
+     * @brief The rim after a scroll zoom; a zoom never edits the value.
+     **/
+    void rimZoomed(double rim);
+
 protected:
     virtual void paintEvent(QPaintEvent* e) OVERRIDE;
+    virtual bool event(QEvent* e) OVERRIDE;
+    virtual void mousePressEvent(QMouseEvent* e) OVERRIDE;
+    virtual void mouseMoveEvent(QMouseEvent* e) OVERRIDE;
+    virtual void mouseReleaseEvent(QMouseEvent* e) OVERRIDE;
+    virtual void mouseDoubleClickEvent(QMouseEvent* e) OVERRIDE;
+    virtual void wheelEvent(QWheelEvent* e) OVERRIDE;
+    virtual void keyPressEvent(QKeyEvent* e) OVERRIDE;
+    virtual void keyReleaseEvent(QKeyEvent* e) OVERRIDE;
+    virtual void enterEvent(QEnterEvent* e) OVERRIDE;
+    virtual void leaveEvent(QEvent* e) OVERRIDE;
+    virtual void focusOutEvent(QFocusEvent* e) OVERRIDE;
 
 private:
+    enum HitZoneEnum {
+        eHitZoneNone,
+        eHitZoneDisc,
+        eHitZoneRing
+    };
+
     struct DiscCacheKey {
         QSize size;
         double rim = 0.0;
@@ -178,6 +238,15 @@ private:
     const QImage& ringImage() const;
     QColor activeColour() const;
 
+    HitZoneEnum hitTest(const QPointF& pos) const;
+    double ringAngleAt(const QPointF& pos) const;
+    bool isLockKey(int key) const;
+    bool wantsShortcutOverride(const QKeyEvent* e) const;
+    void emitStep(const ColorEdit& edit, const QString& axisLabel);
+    void emitRingHue(const QPointF& pos);
+    void dragTo(const QPointF& pos, Qt::KeyboardModifiers modifiers);
+    void finishGesture();
+
     void drawOverlays(QPainter& p) const;
     void drawWhiteMarker(QPainter& p) const;
     void drawPuck(QPainter& p) const;
@@ -192,6 +261,14 @@ private:
     bool _hasDragOffset;
     unsigned _basisGeneration;
     unsigned _converterGeneration;
+
+    HitZoneEnum _dragZone;
+    QPointF _lastDragPos;
+    PlanePoint _gestureOffset;
+    bool _gestureMoved;
+    bool _keyboardGrabbed;
+    bool _hovered;
+    std::vector<int> _heldLocks;
 
     mutable DiscCacheKey _discKey;
     mutable QImage _disc;

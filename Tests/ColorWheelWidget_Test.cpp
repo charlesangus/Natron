@@ -28,14 +28,20 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <vector>
 
+#include <QApplication>
 #include <QColor>
 #include <QDir>
+#include <QEnterEvent>
 #include <QImage>
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <QPixmap>
 #include <QPointF>
 #include <QPolygonF>
 #include <QString>
+#include <QWheelEvent>
 
 #include <gtest/gtest.h>
 
@@ -164,6 +170,162 @@ saveGrab(ColorWheelWidget& wheel,
     QString path = outputDirectory() + QString::fromUtf8("/ColorWheelWidget_") + QString::fromUtf8(name) + QString::fromUtf8(".png");
 
     EXPECT_TRUE(wheel.grab().save(path)) << path.toStdString();
+}
+
+struct GestureRecorder {
+    int started = 0;
+    int finished = 0;
+    std::vector<bool> finishedMoved;
+    std::vector<ColorEdit> edits;
+    std::vector<QString> labels;
+    int zooms = 0;
+
+    explicit GestureRecorder(ColorWheelWidget& wheel)
+    {
+        QObject::connect(&wheel, &ColorWheelWidget::gestureStarted, [this]() { ++started; });
+        QObject::connect(&wheel, &ColorWheelWidget::gestureMoved, [this](ColorEdit edit, QString label) {
+            edits.push_back(edit);
+            labels.push_back(label);
+        });
+        QObject::connect(&wheel, &ColorWheelWidget::gestureFinished, [this](bool moved) {
+            ++finished;
+            finishedMoved.push_back(moved);
+        });
+        QObject::connect(&wheel, &ColorWheelWidget::rimZoomed, [this](double) { ++zooms; });
+    }
+
+    double sum1(ColorAxisEnum axis) const
+    {
+        double s = 0.0;
+
+        for (const ColorEdit& e : edits) {
+            if (e.axis == axis) {
+                s += e.d1;
+            }
+        }
+
+        return s;
+    }
+
+    double sum2(ColorAxisEnum axis) const
+    {
+        double s = 0.0;
+
+        for (const ColorEdit& e : edits) {
+            if (e.axis == axis) {
+                s += e.d2;
+            }
+        }
+
+        return s;
+    }
+
+    int count(ColorAxisEnum axis) const
+    {
+        int n = 0;
+
+        for (const ColorEdit& e : edits) {
+            if (e.axis == axis) {
+                ++n;
+            }
+        }
+
+        return n;
+    }
+
+    void clear()
+    {
+        started = 0;
+        finished = 0;
+        finishedMoved.clear();
+        edits.clear();
+        labels.clear();
+        zooms = 0;
+    }
+};
+
+void
+sendMouse(ColorWheelWidget& wheel,
+          QEvent::Type type,
+          const QPointF& pos,
+          Qt::MouseButton button,
+          Qt::MouseButtons buttons,
+          Qt::KeyboardModifiers modifiers)
+{
+    QMouseEvent e(type, pos, wheel.mapToGlobal(pos), button, buttons, modifiers);
+
+    QApplication::sendEvent(&wheel, &e);
+}
+
+void
+pressAt(ColorWheelWidget& wheel,
+        const QPointF& pos,
+        Qt::KeyboardModifiers modifiers = Qt::NoModifier)
+{
+    sendMouse(wheel, QEvent::MouseButtonPress, pos, Qt::LeftButton, Qt::LeftButton, modifiers);
+}
+
+void
+moveTo(ColorWheelWidget& wheel,
+       const QPointF& pos,
+       Qt::KeyboardModifiers modifiers = Qt::NoModifier)
+{
+    sendMouse(wheel, QEvent::MouseMove, pos, Qt::NoButton, Qt::LeftButton, modifiers);
+}
+
+void
+releaseAt(ColorWheelWidget& wheel,
+          const QPointF& pos,
+          Qt::KeyboardModifiers modifiers = Qt::NoModifier)
+{
+    sendMouse(wheel, QEvent::MouseButtonRelease, pos, Qt::LeftButton, Qt::NoButton, modifiers);
+}
+
+void
+doubleClickAt(ColorWheelWidget& wheel,
+              const QPointF& pos)
+{
+    sendMouse(wheel, QEvent::MouseButtonDblClick, pos, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+}
+
+void
+sendKey(ColorWheelWidget& wheel,
+        QEvent::Type type,
+        int key,
+        bool autoRepeat = false,
+        Qt::KeyboardModifiers modifiers = Qt::NoModifier)
+{
+    QKeyEvent e(type, key, modifiers, QString(), autoRepeat);
+
+    QApplication::sendEvent(&wheel, &e);
+}
+
+void
+enterWheel(ColorWheelWidget& wheel)
+{
+    QPointF pos = wheel.getDiscCentre();
+    QEnterEvent e(pos, pos, wheel.mapToGlobal(pos));
+
+    QApplication::sendEvent(&wheel, &e);
+}
+
+bool
+shortcutOverrideAccepted(ColorWheelWidget& wheel,
+                         int key,
+                         Qt::KeyboardModifiers modifiers)
+{
+    QKeyEvent e(QEvent::ShortcutOverride, key, modifiers);
+
+    e.ignore();
+    QApplication::sendEvent(&wheel, &e);
+
+    return e.isAccepted();
+}
+
+double
+trackballScale(const ColorWheelWidget& wheel)
+{
+    return wheel.getRim() / wheel.getDiscRadius();
 }
 } // namespace
 
@@ -321,4 +483,337 @@ TEST(ColorWheelWidget, WritesGrabPngs)
         setUpWheel(wheel, eColorKnobRoleOffset, makeValue(0.02, 0.0, -0.01), 0.1);
         saveGrab(wheel, "OffsetAxes");
     }
+}
+
+TEST(ColorWheelWidget, TrackballDragEmitsRimOverRadiusPerPixel)
+{
+    ColorWheelWidget wheel;
+    double rim = 0.05;
+
+    setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), rim);
+
+    GestureRecorder rec(wheel);
+    QPointF c = wheel.getDiscCentre();
+
+    pressAt(wheel, c);
+    EXPECT_EQ(1, rec.started);
+    EXPECT_TRUE(rec.edits.empty());
+    for (int i = 1; i <= 5; ++i) {
+        moveTo(wheel, c + QPointF(10.0 * i, 0.0));
+    }
+
+    double expected = 50.0 * trackballScale(wheel);
+
+    EXPECT_EQ(5, rec.count(eColorAxisTrackball));
+    EXPECT_EQ((int)rec.edits.size(), rec.count(eColorAxisTrackball));
+    EXPECT_NEAR(expected, rec.sum1(eColorAxisTrackball), 1e-12);
+    EXPECT_NEAR(0.0, rec.sum2(eColorAxisTrackball), 1e-12);
+    EXPECT_NEAR(expected, wheel.getDragOffset().x, 1e-12);
+
+    moveTo(wheel, c + QPointF(50.0, -20.0));
+    EXPECT_NEAR(20.0 * trackballScale(wheel), rec.sum2(eColorAxisTrackball), 1e-12);
+
+    releaseAt(wheel, c + QPointF(50.0, -20.0));
+    EXPECT_EQ(1, rec.finished);
+    ASSERT_EQ(1u, rec.finishedMoved.size());
+    EXPECT_TRUE(rec.finishedMoved[0]);
+    EXPECT_FALSE(wheel.isDragging());
+    EXPECT_FALSE(wheel.hasDragOffset());
+}
+
+TEST(ColorWheelWidget, TrackballGearing)
+{
+    const Qt::KeyboardModifiers modifiers[3] = { Qt::ControlModifier, Qt::ShiftModifier, Qt::ControlModifier | Qt::ShiftModifier };
+    const double factors[3] = { 0.1, 4.0, 0.01 };
+
+    for (int k = 0; k < 3; ++k) {
+        ColorWheelWidget wheel;
+
+        setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.05);
+
+        GestureRecorder rec(wheel);
+        QPointF start = wheel.getDiscCentre() - QPointF(25.0, 0.0);
+
+        pressAt(wheel, start, modifiers[k]);
+        moveTo(wheel, start + QPointF(50.0, 0.0), modifiers[k]);
+        releaseAt(wheel, start + QPointF(50.0, 0.0), modifiers[k]);
+
+        EXPECT_NEAR(50.0 * trackballScale(wheel) * factors[k], rec.sum1(eColorAxisTrackball), 1e-12) << "gear " << k;
+    }
+}
+
+TEST(ColorWheelWidget, CtrlPressedMidDragDoesNotJump)
+{
+    ColorWheelWidget wheel;
+
+    setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.05);
+
+    GestureRecorder rec(wheel);
+    QPointF c = wheel.getDiscCentre();
+    double k = trackballScale(wheel);
+
+    pressAt(wheel, c);
+    moveTo(wheel, c + QPointF(25.0, 0.0));
+    moveTo(wheel, c + QPointF(25.0, 0.0), Qt::ControlModifier);
+    moveTo(wheel, c + QPointF(50.0, 0.0), Qt::ControlModifier);
+    releaseAt(wheel, c + QPointF(50.0, 0.0), Qt::ControlModifier);
+
+    ASSERT_EQ(2u, rec.edits.size());
+    EXPECT_NEAR(25.0 * k, rec.edits[0].d1, 1e-12);
+    EXPECT_NEAR(2.5 * k, rec.edits[1].d1, 1e-12);
+    EXPECT_NEAR(27.5 * k, rec.sum1(eColorAxisTrackball), 1e-12);
+}
+
+TEST(ColorWheelWidget, RingClickSetsAbsoluteHueAndDragFollows)
+{
+    ColorWheelWidget wheel;
+
+    setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.2, 1.0, 0.8), 0.05);
+
+    GestureRecorder rec(wheel);
+    QPointF c = wheel.getDiscCentre();
+    double r = 0.5 * (wheel.getRingInnerRadius() + wheel.getRingOuterRadius());
+
+    pressAt(wheel, c + QPointF(0.0, -r));
+    EXPECT_EQ(1, rec.started);
+    ASSERT_EQ(1u, rec.edits.size());
+    EXPECT_EQ(eColorAxisHue, rec.edits[0].axis);
+    EXPECT_TRUE(rec.edits[0].absolute);
+    EXPECT_LT(angleDifference(90.0, rec.edits[0].d1), 1.0);
+
+    moveTo(wheel, c + QPointF(-r, 0.0));
+    ASSERT_EQ(2u, rec.edits.size());
+    EXPECT_EQ(eColorAxisHue, rec.edits[1].axis);
+    EXPECT_TRUE(rec.edits[1].absolute);
+    EXPECT_LT(angleDifference(180.0, rec.edits[1].d1), 1.0);
+
+    releaseAt(wheel, c + QPointF(-r, 0.0));
+    EXPECT_EQ(1, rec.finished);
+    EXPECT_FALSE(wheel.hasDragOffset());
+}
+
+TEST(ColorWheelWidget, PressOutsideWheelIsIgnored)
+{
+    ColorWheelWidget wheel;
+
+    setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.05);
+
+    GestureRecorder rec(wheel);
+
+    pressAt(wheel, QPointF(1.0, 1.0));
+    moveTo(wheel, QPointF(20.0, 1.0));
+    releaseAt(wheel, QPointF(20.0, 1.0));
+    EXPECT_EQ(0, rec.started);
+    EXPECT_TRUE(rec.edits.empty());
+}
+
+TEST(ColorWheelWidget, VHeldBeforePressGivesValueFromDyOnly)
+{
+    ColorWheelWidget wheel;
+
+    setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.05);
+
+    GestureRecorder rec(wheel);
+    QPointF c = wheel.getDiscCentre();
+
+    enterWheel(wheel);
+    EXPECT_EQ(&wheel, wheel.focusWidget());
+    sendKey(wheel, QEvent::KeyPress, Qt::Key_V);
+    EXPECT_EQ(eColorAxisValue, wheel.getActiveLock());
+
+    pressAt(wheel, c);
+    moveTo(wheel, c + QPointF(30.0, -20.0));
+    moveTo(wheel, c + QPointF(70.0, -20.0));
+    releaseAt(wheel, c + QPointF(70.0, -20.0));
+    sendKey(wheel, QEvent::KeyRelease, Qt::Key_V);
+
+    EXPECT_EQ((int)rec.edits.size(), rec.count(eColorAxisValue));
+    EXPECT_FALSE(rec.edits.empty());
+    EXPECT_NEAR(20.0 * valueRatePerPixel(TrackballRates(), eColorKnobRoleGain), rec.sum1(eColorAxisValue), 1e-12);
+    EXPECT_EQ(eColorAxisTrackball, wheel.getActiveLock());
+}
+
+TEST(ColorWheelWidget, VPressedMidDragSwitchesAxisFromNextMove)
+{
+    ColorWheelWidget wheel;
+
+    setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.05);
+
+    GestureRecorder rec(wheel);
+    QPointF c = wheel.getDiscCentre();
+
+    enterWheel(wheel);
+    pressAt(wheel, c);
+    moveTo(wheel, c + QPointF(10.0, 0.0));
+    sendKey(wheel, QEvent::KeyPress, Qt::Key_V);
+    moveTo(wheel, c + QPointF(10.0, -10.0));
+    sendKey(wheel, QEvent::KeyRelease, Qt::Key_V);
+    moveTo(wheel, c + QPointF(20.0, -10.0));
+    releaseAt(wheel, c + QPointF(20.0, -10.0));
+
+    ASSERT_EQ(3u, rec.edits.size());
+    EXPECT_EQ(eColorAxisTrackball, rec.edits[0].axis);
+    EXPECT_EQ(eColorAxisValue, rec.edits[1].axis);
+    EXPECT_EQ(eColorAxisTrackball, rec.edits[2].axis);
+    EXPECT_EQ(1, rec.started);
+    EXPECT_EQ(1, rec.finished);
+}
+
+TEST(ColorWheelWidget, LastPressedLockKeyWins)
+{
+    ColorWheelWidget wheel;
+
+    setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.05);
+    enterWheel(wheel);
+
+    sendKey(wheel, QEvent::KeyPress, Qt::Key_T);
+    EXPECT_EQ(eColorAxisTempTint, wheel.getActiveLock());
+    sendKey(wheel, QEvent::KeyPress, Qt::Key_V);
+    EXPECT_EQ(eColorAxisValue, wheel.getActiveLock());
+    sendKey(wheel, QEvent::KeyRelease, Qt::Key_V);
+    EXPECT_EQ(eColorAxisTempTint, wheel.getActiveLock());
+    sendKey(wheel, QEvent::KeyRelease, Qt::Key_T);
+    EXPECT_EQ(eColorAxisTrackball, wheel.getActiveLock());
+}
+
+TEST(ColorWheelWidget, AutoRepeatLockKeyIsIgnored)
+{
+    ColorWheelWidget wheel;
+
+    setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.05);
+
+    GestureRecorder rec(wheel);
+    QPointF c = wheel.getDiscCentre();
+
+    enterWheel(wheel);
+    sendKey(wheel, QEvent::KeyPress, Qt::Key_V, true);
+    EXPECT_EQ(eColorAxisTrackball, wheel.getActiveLock());
+
+    pressAt(wheel, c);
+    moveTo(wheel, c + QPointF(0.0, -10.0));
+    releaseAt(wheel, c + QPointF(0.0, -10.0));
+    ASSERT_EQ(1u, rec.edits.size());
+    EXPECT_EQ(eColorAxisTrackball, rec.edits[0].axis);
+
+    sendKey(wheel, QEvent::KeyPress, Qt::Key_V);
+    sendKey(wheel, QEvent::KeyRelease, Qt::Key_V, true);
+    sendKey(wheel, QEvent::KeyPress, Qt::Key_V, true);
+    EXPECT_EQ(eColorAxisValue, wheel.getActiveLock());
+    sendKey(wheel, QEvent::KeyRelease, Qt::Key_V);
+    EXPECT_EQ(eColorAxisTrackball, wheel.getActiveLock());
+}
+
+TEST(ColorWheelWidget, ShortcutOverrideForLockKeysIsAccepted)
+{
+    ColorWheelWidget wheel;
+
+    setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.05);
+    enterWheel(wheel);
+
+    EXPECT_TRUE(shortcutOverrideAccepted(wheel, Qt::Key_V, Qt::NoModifier));
+    EXPECT_TRUE(shortcutOverrideAccepted(wheel, Qt::Key_T, Qt::NoModifier));
+    EXPECT_FALSE(shortcutOverrideAccepted(wheel, Qt::Key_X, Qt::NoModifier));
+    EXPECT_FALSE(shortcutOverrideAccepted(wheel, Qt::Key_V, Qt::ControlModifier));
+
+    QPointF c = wheel.getDiscCentre();
+
+    pressAt(wheel, c);
+    EXPECT_TRUE(shortcutOverrideAccepted(wheel, Qt::Key_V, Qt::ControlModifier));
+    EXPECT_TRUE(shortcutOverrideAccepted(wheel, Qt::Key_Escape, Qt::NoModifier));
+    releaseAt(wheel, c);
+}
+
+TEST(ColorWheelWidget, TLockGivesTempTint)
+{
+    ColorWheelWidget wheel;
+
+    setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.05);
+
+    GestureRecorder rec(wheel);
+    QPointF c = wheel.getDiscCentre();
+    TrackballRates rates;
+
+    enterWheel(wheel);
+    sendKey(wheel, QEvent::KeyPress, Qt::Key_T);
+    pressAt(wheel, c);
+    moveTo(wheel, c + QPointF(10.0, -6.0));
+    releaseAt(wheel, c + QPointF(10.0, -6.0));
+    sendKey(wheel, QEvent::KeyRelease, Qt::Key_T);
+
+    ASSERT_EQ(1u, rec.edits.size());
+    EXPECT_EQ(eColorAxisTempTint, rec.edits[0].axis);
+    EXPECT_FALSE(rec.edits[0].absolute);
+    EXPECT_NEAR(10.0 * tempRatePerPixel(rates, eColorKnobRoleGain), rec.edits[0].d1, 1e-12);
+    EXPECT_NEAR(6.0 * tintRatePerPixel(rates, eColorKnobRoleGain), rec.edits[0].d2, 1e-12);
+}
+
+TEST(ColorWheelWidget, ScrollZoomsRimOnly)
+{
+    ColorWheelWidget wheel;
+    KnobColorValue value = makeValue(1.2, 1.0, 0.8);
+    double rim = 0.05;
+
+    setUpWheel(wheel, eColorKnobRoleGain, value, rim);
+
+    GestureRecorder rec(wheel);
+    QPointF c = wheel.getDiscCentre();
+    QWheelEvent e(c, wheel.mapToGlobal(c), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+
+    QApplication::sendEvent(&wheel, &e);
+
+    EXPECT_NEAR(rim * TrackballRates().zoomFactorPerNotch, wheel.getRim(), 1e-15);
+    EXPECT_EQ(1, rec.zooms);
+    EXPECT_EQ(0, rec.started);
+    EXPECT_TRUE(rec.edits.empty());
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(value.rgb[i], wheel.getValue().rgb[i]);
+    }
+}
+
+TEST(ColorWheelWidget, DoubleClickEmitsChromaReset)
+{
+    ColorWheelWidget wheel;
+
+    setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.2, 1.0, 0.8), 0.05);
+
+    GestureRecorder rec(wheel);
+    QPointF p = wheel.getDiscCentre() + QPointF(5.0, 5.0);
+
+    pressAt(wheel, p);
+    releaseAt(wheel, p);
+    doubleClickAt(wheel, p);
+    releaseAt(wheel, p);
+
+    ASSERT_EQ(1u, rec.edits.size());
+    EXPECT_EQ(eColorAxisSat, rec.edits[0].axis);
+    EXPECT_TRUE(rec.edits[0].absolute);
+    EXPECT_EQ(0.0, rec.edits[0].d1);
+    EXPECT_EQ(2, rec.started);
+    EXPECT_EQ(2, rec.finished);
+    ASSERT_EQ(2u, rec.finishedMoved.size());
+    EXPECT_FALSE(rec.finishedMoved[0]);
+    EXPECT_TRUE(rec.finishedMoved[1]);
+}
+
+TEST(ColorWheelWidget, EscapeEndsDragWithoutCancel)
+{
+    ColorWheelWidget wheel;
+
+    setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.05);
+
+    GestureRecorder rec(wheel);
+    QPointF c = wheel.getDiscCentre();
+
+    pressAt(wheel, c);
+    moveTo(wheel, c + QPointF(10.0, 0.0));
+    sendKey(wheel, QEvent::KeyPress, Qt::Key_Escape);
+    EXPECT_FALSE(wheel.isDragging());
+    EXPECT_EQ(1, rec.finished);
+    ASSERT_EQ(1u, rec.finishedMoved.size());
+    EXPECT_TRUE(rec.finishedMoved[0]);
+
+    moveTo(wheel, c + QPointF(20.0, 0.0));
+    releaseAt(wheel, c + QPointF(20.0, 0.0));
+    EXPECT_EQ(1u, rec.edits.size());
+    EXPECT_EQ(1, rec.finished);
 }

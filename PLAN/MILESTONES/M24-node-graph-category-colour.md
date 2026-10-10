@@ -192,6 +192,8 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 
   Re-verified with one `fast` build: 17 targeted ctest cases pass, and the screenshot script reports 0 failures, now covering the 0.05 rule, Dot colour and Backdrop reset. Every thread has a reply.
 
+- 2026-10-10 — **CI green on PR #50** (`format`, `lint-ci`, `build-and-test` at `eebd52d14`). The user asked for an AppImage UAT before merge: `build/appimages/M24-eebd52d14.AppImage` (fast build). It launches (`--version`), but the version string reports a stale commit `d9dcaf1` from the cached configure; the bits are `eebd52d14`. A local, untracked `build/appimagetool-wrapper/appimagetool` passes `--no-appstream`, since this host cannot reach wikimedia.org. **PR #50 stays open pending the user's UAT.**
+
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate
 were captured (Xvfb + screenshot, since this cannot be asserted in a unit test),

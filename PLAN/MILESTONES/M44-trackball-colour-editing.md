@@ -102,7 +102,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
 
 ## Phase 44.2: Engine plumbing
 
-- [ ] M44.P2.T1 — Expose the working space's luma weights and XYZ matrix from OCIO
+- [x] M44.P2.T1 — Expose the working space's luma weights and XYZ matrix from OCIO
   - files: `Engine/ProjectColorManagement.h`, `Engine/ProjectColorManagement.cpp`, `Tests/ProjectColorManagement_Test.cpp`
   - approach:
     - Add `bool getWorkingToXYZ(double m[9]) const` and `void getWorkingLuma(double w[3]) const`.
@@ -450,3 +450,4 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
 - 2026-10-10 — **P1.T2 landed:** AP1 measures R–G 0.767, G–B 0.787 and B–R 0.636 in xy, with primaries at 353.5°, 107.7° and 236.6°. Across 10,000 random edits, the worst luma drift was 6e-16 relative on gains. Two calls to confirm at the gate:
   - A config with no XYZ matrix gets a stand-in linear plane (J = 0.1·F): no triangle, but centred on white and Y-exact, so the wheel still works.
   - The u′v′ sides are 0.513/0.482/0.566, not the design note's 0.59.
+- 2026-10-10 — **P2.T1: the OCIO probe is D65-adapted.** `cie_xyz_d65_interchange` adapts ACEScg's D60 white to D65, so a real ACES 2.0 Studio project reports luma ≈ (0.2677, 0.6743, 0.0580) and shifted primaries, not the textbook AP1 values. The tests assert the measured values. Neutral (1,1,1) still maps to the wheel centre, because the white point is the image of neutral. The no-project fallback (`ColorMath::acesCgLumaWeights()`, native AP1) differs from a real project by about 0.005–0.009 in chroma. That is acceptable for a fallback, but the two are not interchangeable in tests.

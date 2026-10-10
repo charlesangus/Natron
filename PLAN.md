@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M75 merge, M76.P1.T7, M27.P1.T1]
-pm_heartbeat: 2026-10-10T17:31:54-04:00
+current: [M76.P1.T9-T10 fixes, M27.P1.T1]
+pm_heartbeat: 2026-10-10T18:14:01-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -232,7 +232,7 @@ future core work has solid ground to build on.
 | M73 | Native Core Nodes Wrap-Up | done |  | [M73-native-core-nodes-wrap-up.md](PLAN/MILESTONES/M73-native-core-nodes-wrap-up.md) |
 | M64 | Tiled Rendering | blocked |  | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
 | M74 | Native Metadata Core | done |  | [M74-native-metadata-core.md](PLAN/MILESTONES/M74-native-metadata-core.md) |
-| M75 | Native Read | doing |  | [M75-native-read.md](PLAN/MILESTONES/M75-native-read.md) |
+| M75 | Native Read | done |  | [M75-native-read.md](PLAN/MILESTONES/M75-native-read.md) |
 | M76 | Native Write | doing | M75 | [M76-native-write.md](PLAN/MILESTONES/M76-native-write.md) |
 | M77 | Native Metadata Nodes | todo | M75 | [M77-native-metadata-nodes.md](PLAN/MILESTONES/M77-native-metadata-nodes.md) |
 | M78 | Metadata In Expressions | todo | M75, M77 | [M78-metadata-in-expressions.md](PLAN/MILESTONES/M78-metadata-in-expressions.md) |

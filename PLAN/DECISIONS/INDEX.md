@@ -78,3 +78,4 @@
 - 2026-10-10 — hard-cut-covers-default-changes: default changes bump the plugin version only; no legacy-default hooks, fixtures or compat tests → DECISIONS/2026-10-10-hard-cut-covers-default-changes.md
 - 2026-10-10 — gui-host-runs-polish-milestones: a third host runs M24/M44/M55/M56 in two lanes; rows only, no frontmatter writes; fetch before and push after every plan edit → DECISIONS/2026-10-10-gui-host-runs-polish-milestones.md
 - 2026-10-10 — m46-stays-separate-from-m55: M46 is its own milestone, after M24 and M56 text wrap → DECISIONS/2026-10-10-m46-stays-separate-from-m55.md
+- 2026-10-10 — gpu-residency-from-day-one: M84 builds resident GPU regions from the start (user, after the M82 report) → DECISIONS/2026-10-10-gpu-residency-from-day-one.md

@@ -27,3 +27,5 @@ Acceptance sketch:
 - Render prompts for frame range and defaults to foreground rendering.
 
 Scheduling note (2026-10-08, user): runs together with M46. Before elaborating, evaluate whether Labelmaker-style node-graph info belongs inside node-graph polish; elaborate them as one milestone or two accordingly.
+
+Scoping draft (2026-10-10): `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` holds a draft phase/task breakdown and the user questions to settle before elaborating. Deps: M24 (confirmed by the user).

@@ -27,3 +27,5 @@ Acceptance sketch:
   against before/after screenshots.
 - The unpremult-by picker is labelled, and IDistort/STMap's U/V/A channel
   pickers line up.
+
+Scoping draft (2026-10-10): `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` holds a draft phase/task breakdown and the user questions to settle before elaborating. Deps: M24 (confirmed by the user).

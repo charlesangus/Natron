@@ -55,7 +55,12 @@ namespace {
         boost_adaptbx::floating_point::exception_trapping trap(0);
 #endif
 
-        return OIIO::ImageInput::open(path);
+        // PFM stores rows bottom-up and OIIO only flips them to top-down when the open carries a
+        // config; other formats ignore the attribute.
+        OIIO::ImageSpec config;
+        config["pnm:pfmflip"] = 1;
+
+        return OIIO::ImageInput::open(path, &config);
     }
 
     struct CacheEntry {
@@ -184,6 +189,16 @@ clearHeaderCache()
 {
     std::lock_guard<std::mutex> lock(g_cacheMutex);
     g_cache.clear();
+}
+
+void
+evictHeaders(const std::vector<std::string>& paths)
+{
+    std::lock_guard<std::mutex> lock(g_cacheMutex);
+
+    for (std::vector<std::string>::const_iterator it = paths.begin(); it != paths.end(); ++it) {
+        g_cache.erase(*it);
+    }
 }
 
 RectI
@@ -343,19 +358,17 @@ namespace {
 
         return part;
     }
-
-    // Writers name the part holding the colour plane after it ("Color" for Natron's), so the bare
-    // channels of such a part are the colour plane's rather than a layer named after the part.
-    bool
-    isColourPartName(const std::string& part)
-    {
-        static const char* const names[] = {
-            kNatronColorStorageLabel, kNatronColorLayerID, kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY
-        };
-
-        return std::any_of(std::begin(names), std::end(names), [&part](const char* name) { return sameName(part, name); });
-    }
 } // anonymous namespace
+
+bool
+isColourPartName(const std::string& part)
+{
+    static const char* const names[] = {
+        kNatronColorStorageLabel, kNatronColorLayerID, kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY
+    };
+
+    return std::any_of(std::begin(names), std::end(names), [&part](const char* name) { return sameName(part, name); });
+}
 
 std::vector<std::string>
 viewNames(const Header& header)

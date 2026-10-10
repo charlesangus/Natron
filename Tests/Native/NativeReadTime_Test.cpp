@@ -29,6 +29,8 @@
 
 #include <cstdio>
 #include <list>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -52,6 +54,8 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -68,10 +72,12 @@ const float kValues[] = { 0.125f, 0.25f, 0.5f };
 
 bool
 writeConstantFrame(const std::string& path,
-                   float value)
+                   float value,
+                   int width = kSize,
+                   int height = kSize)
 {
-    OIIO::ImageSpec spec(kSize, kSize, 4, OIIO::TypeDesc::FLOAT);
-    std::vector<float> pixels((std::size_t)kSize * kSize * 4, value);
+    OIIO::ImageSpec spec(width, height, 4, OIIO::TypeDesc::FLOAT);
+    std::vector<float> pixels((std::size_t)width * (std::size_t)height * 4, value);
     OIIO::ImageOutput::unique_ptr out = OIIO::ImageOutput::create(path);
 
     return out && out->open(path, spec) && out->write_image(OIIO::TypeDesc::FLOAT, pixels.data()) && out->close();
@@ -240,6 +246,15 @@ protected:
                       double* last)
     {
         node->getEffectInstance()->getFrameRange_public(node->getHashValue(), first, last, true);
+    }
+
+    ImageMetadata metadataOf(const NodePtr& node,
+                             double time)
+    {
+        NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+        EXPECT_TRUE(effect != NULL);
+
+        return effect ? effect->getOutputMetadata(time, ViewIdx(0)) : ImageMetadata();
     }
 };
 
@@ -517,6 +532,144 @@ TEST_F(NativeReadTimeTest, AUserEditedTimeDomainSurvivesAFilenameChange)
     EXPECT_EQ(5, intValue(edited, "originalFrameRange", 1));
     EXPECT_EQ(2, intValue(edited, "firstFrame"));
     EXPECT_EQ(4, intValue(edited, "lastFrame"));
+}
+
+TEST_F(NativeReadTimeTest, ResettingAnEditedRangeAfterAFileChangeAdoptsTheNewFile)
+{
+    QTemporaryDir dir;
+    writeSequence(dir, "seq");
+    ASSERT_TRUE(dir.isValid());
+    for (int frame = 3; frame <= 6; ++frame) {
+        ASSERT_TRUE(writeConstantFrame(framePath(dir, "other", frame), 0.5f));
+    }
+    NodePtr node = createRead(patternPath(dir, "seq"));
+
+    userSetInt(node, "firstFrame", 2);
+    setFile(node, patternPath(dir, "other"));
+    ASSERT_EQ(2, intValue(node, "firstFrame"));
+    ASSERT_EQ(4, intValue(node, "lastFrame"));
+    ASSERT_TRUE(userEdited(node));
+
+    restoreDefaultAsTheGuiDoes(node, "firstFrame");
+    restoreDefaultAsTheGuiDoes(node, "lastFrame");
+
+    EXPECT_EQ(3, intValue(node, "firstFrame"));
+    EXPECT_EQ(6, intValue(node, "lastFrame"));
+    EXPECT_EQ(3, intValue(node, "startingTime"));
+    EXPECT_EQ(0, intValue(node, "timeOffset"));
+    EXPECT_FALSE(userEdited(node));
+    double first = 0.;
+    double last = 0.;
+    frameRangeOf(node, &first, &last);
+    EXPECT_EQ(3., first);
+    EXPECT_EQ(6., last);
+}
+
+TEST_F(NativeReadTimeTest, PurgingTheCachesFindsFramesAddedOnDisk)
+{
+    QTemporaryDir dir;
+    writeSequence(dir, "seq");
+    NodePtr node = createRead(patternPath(dir, "seq"));
+    ASSERT_EQ(kNotRendered, render(node, 3.));
+    ASSERT_FALSE(metadataOf(node, 3.).getString("ofx/filepath").has_value());
+
+    ASSERT_TRUE(writeConstantFrame(framePath(dir, "seq", 3), 0.375f));
+    ASSERT_TRUE(writeConstantFrame(framePath(dir, "seq", 5), 0.75f));
+    node->getEffectInstance()->purgeCaches();
+
+    EXPECT_EQ(5, intValue(node, "originalFrameRange", 1));
+    EXPECT_EQ(1, intValue(node, "firstFrame"));
+    EXPECT_EQ(5, intValue(node, "lastFrame"));
+    EXPECT_FALSE(userEdited(node));
+    double first = 0.;
+    double last = 0.;
+    frameRangeOf(node, &first, &last);
+    EXPECT_EQ(1., first);
+    EXPECT_EQ(5., last);
+    EXPECT_EQ(0.375f, render(node, 3.));
+    EXPECT_EQ(0.75f, render(node, 5.));
+    EXPECT_EQ(std::optional<std::string>(framePath(dir, "seq", 3)), metadataOf(node, 3.).getString("ofx/filepath"));
+}
+
+TEST_F(NativeReadTimeTest, PurgingTheCachesKeepsAUserEditedRange)
+{
+    QTemporaryDir dir;
+    writeSequence(dir, "seq");
+    NodePtr node = createRead(patternPath(dir, "seq"));
+    userSetInt(node, "lastFrame", 2);
+
+    ASSERT_TRUE(writeConstantFrame(framePath(dir, "seq", 5), 0.75f));
+    node->getEffectInstance()->purgeCaches();
+
+    EXPECT_EQ(5, intValue(node, "originalFrameRange", 1));
+    EXPECT_EQ(2, intValue(node, "lastFrame"));
+    EXPECT_TRUE(userEdited(node));
+
+    restoreDefaultAsTheGuiDoes(node, "lastFrame");
+    EXPECT_EQ(5, intValue(node, "lastFrame"));
+    EXPECT_FALSE(userEdited(node));
+}
+
+TEST_F(NativeReadTimeTest, PurgingOneReadKeepsTheHeadersOfAnother)
+{
+    QTemporaryDir dir;
+    writeSequence(dir, "seq");
+    ASSERT_TRUE(writeConstantFrame(framePath(dir, "other", 1), 0.5f));
+    ASSERT_TRUE(writeConstantFrame(framePath(dir, "proxy", 1), 0.5f));
+    NodePtr purged = createRead(patternPath(dir, "seq"));
+    KnobFile* proxy = knob<KnobFile>(purged, kOfxImageEffectProxyParamName);
+    ASSERT_TRUE(proxy != NULL);
+    proxy->setValue(patternPath(dir, "proxy"));
+    NodePtr kept = createRead(patternPath(dir, "other"));
+
+    std::string error;
+    const std::shared_ptr<const OiioReadSupport::Header> ownBefore = OiioReadSupport::readHeader(framePath(dir, "seq", 2), &error);
+    const std::shared_ptr<const OiioReadSupport::Header> proxyBefore = OiioReadSupport::readHeader(framePath(dir, "proxy", 1), &error);
+    const std::shared_ptr<const OiioReadSupport::Header> otherBefore = OiioReadSupport::readHeader(framePath(dir, "other", 1), &error);
+    ASSERT_TRUE(ownBefore && proxyBefore && otherBefore) << error;
+    ASSERT_EQ(otherBefore, OiioReadSupport::readHeader(framePath(dir, "other", 1), &error));
+
+    purged->getEffectInstance()->purgeCaches();
+
+    EXPECT_NE(ownBefore, OiioReadSupport::readHeader(framePath(dir, "seq", 2), &error));
+    EXPECT_NE(proxyBefore, OiioReadSupport::readHeader(framePath(dir, "proxy", 1), &error));
+    EXPECT_EQ(otherBefore, OiioReadSupport::readHeader(framePath(dir, "other", 1), &error));
+}
+
+TEST_F(NativeReadTimeTest, ClearingTheCachesRefreshesTheFormatOfARewrittenFile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = framePath(dir, "still", 1);
+    ASSERT_TRUE(writeConstantFrame(path, 0.5f));
+    NodePtr node = createRead(path);
+    ASSERT_TRUE(RectI(0, 0, kSize, kSize) == node->getEffectInstance()->getOutputFormat());
+
+    ASSERT_TRUE(writeConstantFrame(path, 0.5f, 8, 6));
+    getApp()->clearOpenFXPluginsCaches();
+
+    EXPECT_TRUE(RectI(0, 0, 8, 6) == node->getEffectInstance()->getOutputFormat());
+}
+
+TEST_F(NativeReadTimeTest, APatternMatchingOneFileKeepsItsFrameNumber)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    ASSERT_TRUE(writeConstantFrame(framePath(dir, "one", 100), 0.75f));
+    NodePtr node = createRead(patternPath(dir, "one"));
+
+    EXPECT_EQ(100, intValue(node, "originalFrameRange", 0));
+    EXPECT_EQ(100, intValue(node, "originalFrameRange", 1));
+    EXPECT_EQ(100, intValue(node, "firstFrame"));
+    EXPECT_EQ(100, intValue(node, "lastFrame"));
+    EXPECT_EQ(100, intValue(node, "startingTime"));
+    double first = 0.;
+    double last = 0.;
+    frameRangeOf(node, &first, &last);
+    EXPECT_EQ(100., first);
+    EXPECT_EQ(100., last);
+    EXPECT_EQ(0.75f, render(node, 100.));
+    EXPECT_EQ(std::optional<int>(100), metadataOf(node, 100.).getInt("ofx/frame"));
 }
 
 TEST_F(NativeReadTimeTest, TheReadHasNoFrameRateKnobs)

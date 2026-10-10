@@ -32,6 +32,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "Engine/EffectInstance.h" // for PLUGINID_NATRON_READ
 #include "Engine/EngineFwd.h"
@@ -44,24 +45,11 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The native image reader, the only plug-in registered under PLUGINID_NATRON_READ,
- * at major 2.
+ * @brief The native image reader: a still or a sequence pattern decoded through OpenImageIO,
+ * producing the colour plane and every other layer and view of the file.
  *
- * The planned knobs keep GenericReader's script names, so the host hooks and the DopeSheet
- * that look knobs up by name apply unchanged:
- *   - file and proxy: filename (kOfxImageEffectFileParamName, a metadata slave), proxy,
- *     proxyThreshold, originalProxyScale, customProxyScale
- *   - time: originalFrameRange, firstFrame, lastFrame, before, after, onMissingFrame,
- *     frameMode, startingTime, timeOffset, timeDomainUserEdited
- *   - colour: ocioInputSpace, ocioInputSpaceIndex, ocioInputSpaceSet, and the hidden
- *     ocioConfigFile and ocioWorkingSpace
- *   - views: the hidden availableViews
- * The file, proxy, time and colour knobs exist so far. A sequence pattern is resolved to one file per output
- * frame through ReadTimeDomain. The colour plane and every other layer of the file are produced,
- * the layers grouped as OiioReadSupport::fileLayers groups them. A file of several views, as
- * parts with a `view` attribute or channels prefixed per its `multiView` list, fills the hidden
- * availableViews so the project gets those views; each project view then reads its own part or
- * channels, and a view the file lacks reads the file's default view.
+ * Its knobs keep GenericReader's script names, because the host hooks and the DopeSheet look
+ * reader knobs up by those names.
  **/
 class NativeRead
     : public NativeEffectBase {
@@ -120,6 +108,15 @@ public:
 
     virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
 
+    /**
+     * @brief Forgets what this node read from disk (its frame listings, the headers of its files
+     * and proxy files, its output metadata) and lists its files again, so that the files now on
+     * disk are what it reads. Only this node is touched: the callers announce the change
+     * downstream, a single node's caller by evaluating the node afterwards and Clear Caches by
+     * one refresh of the whole project.
+     **/
+    virtual void purgeCaches() OVERRIDE FINAL;
+
 private:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -148,12 +145,14 @@ private:
         bool singleImage;
         std::string singlePath;
         std::set<int> frames;
+        std::vector<std::string> paths; // every file matched, in every view
 
         FrameListing()
             : pattern()
             , singleImage(true)
             , singlePath()
             , frames()
+            , paths()
         {
         }
     };

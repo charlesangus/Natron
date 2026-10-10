@@ -2006,6 +2006,10 @@ AppInstance::clearOpenFXPluginsCaches()
     for (NodesList::iterator it = activeNodes.begin(); it != activeNodes.end(); ++it) {
         (*it)->purgeAllInstancesCaches();
     }
+    // A purge only touches its own node, and a refresh downstream of each would revisit the
+    // nodes they share once per purged node; one pass over the project visits each node once,
+    // after its inputs.
+    _imp->_currentProject->forceComputeInputDependentDataOnAllTrees();
 }
 
 void

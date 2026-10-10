@@ -57,7 +57,9 @@
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Project.h"
+#include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/RenderScale.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -69,6 +71,8 @@ const int kPartHeight = 12;
 struct Part {
     const char* name;
     std::vector<std::string> channels;
+    int width = kPartWidth;
+    int height = kPartHeight;
 };
 
 float
@@ -204,19 +208,32 @@ protected:
         const std::string path = (dir.path() + QString::fromUtf8("/multi-part.exr")).toStdString();
         std::vector<OIIO::ImageSpec> specs;
         std::vector<std::vector<float>> pixels;
+        // OpenEXR requires every part of a multi-part file to share one display window.
+        int displayWidth = 0;
+        int displayHeight = 0;
+        for (std::size_t p = 0; p < parts.size(); ++p) {
+            displayWidth = std::max(displayWidth, parts[p].width);
+            displayHeight = std::max(displayHeight, parts[p].height);
+        }
         int channelBase = 0;
         for (std::size_t p = 0; p < parts.size(); ++p) {
             const int nChannels = (int)parts[p].channels.size();
-            OIIO::ImageSpec spec(kPartWidth, kPartHeight, nChannels, OIIO::TypeDesc::FLOAT);
+            const int width = parts[p].width;
+            const int height = parts[p].height;
+            OIIO::ImageSpec spec(width, height, nChannels, OIIO::TypeDesc::FLOAT);
+            spec.full_x = 0;
+            spec.full_y = 0;
+            spec.full_width = displayWidth;
+            spec.full_height = displayHeight;
             spec.channelnames = parts[p].channels;
             spec.attribute("oiio:subimagename", parts[p].name);
             specs.push_back(spec);
 
-            std::vector<float> values((std::size_t)kPartWidth * (std::size_t)kPartHeight * (std::size_t)nChannels);
-            for (int y = 0; y < kPartHeight; ++y) {
-                for (int x = 0; x < kPartWidth; ++x) {
+            std::vector<float> values((std::size_t)width * (std::size_t)height * (std::size_t)nChannels);
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
                     for (int c = 0; c < nChannels; ++c) {
-                        values[((std::size_t)y * kPartWidth + (std::size_t)x) * (std::size_t)nChannels + (std::size_t)c] = partValue(x, y, channelBase + c);
+                        values[((std::size_t)y * width + (std::size_t)x) * (std::size_t)nChannels + (std::size_t)c] = partValue(x, y, channelBase + c);
                     }
                 }
             }
@@ -417,6 +434,63 @@ TEST_F(NativeReadLayersTest, APartNamedAfterTheColourPlaneIsNotAlsoALayer)
 
     EXPECT_EQ(std::vector<std::string>({ "key" }), layerIDs(producedLayers(node)));
     expectPlaneMatchesOiio(node, path, ImageLayerDesc::getRGBAComponents(), { FileChannel { 0, "R" }, FileChannel { 0, "G" }, FileChannel { 0, "B" }, FileChannel { 0, "A" } });
+}
+
+// A part named after a layer is that layer wherever it sits in the file, so the colour plane, the
+// components and the region of definition (the data window) come from the part named "rgba". The
+// format is the display window, which every part of the file shares.
+TEST_F(NativeReadLayersTest, TheColourPlaneComesFromTheColourPartWhereverItIs)
+{
+    QTemporaryDir dir(temporaryTemplate());
+    ASSERT_TRUE(dir.isValid());
+    std::vector<Part> parts;
+    parts.push_back(Part { "diffuse", { "R", "G", "B" } });
+    parts.push_back(Part { "rgba", { "R", "G", "B", "A" }, 24, 20 });
+    const std::string path = writeMultiPart(dir, parts);
+    ASSERT_FALSE(path.empty());
+
+    NodePtr node = createRead(path);
+    ASSERT_TRUE(bool(node));
+    NativeRead* read = dynamic_cast<NativeRead*>(node->getEffectInstance().get());
+    ASSERT_TRUE(read != NULL);
+    read->refreshMetadata_public(false);
+
+    EXPECT_EQ(std::vector<std::string>({ "diffuse" }), layerIDs(producedLayers(node)));
+    expectPlaneMatchesOiio(node, path, ImageLayerDesc::getRGBAComponents(), { FileChannel { 1, "R" }, FileChannel { 1, "G" }, FileChannel { 1, "B" }, FileChannel { 1, "A" } });
+
+    EXPECT_EQ(4, read->getMetadataNComps(-1));
+    EXPECT_TRUE(RectI(0, 0, 24, 20) == read->getOutputFormat());
+    RectD rod;
+    ASSERT_EQ(eStatusOK, read->getRegionOfDefinition(0, 1., RenderScale(), ViewIdx(0), &rod));
+    EXPECT_EQ(0., rod.x1);
+    EXPECT_EQ(0., rod.y1);
+    EXPECT_EQ(24., rod.x2);
+    EXPECT_EQ(20., rod.y2);
+}
+
+TEST_F(NativeReadLayersTest, AMultiPartFileWithoutAColourPartHasABlackColourPlane)
+{
+    QTemporaryDir dir(temporaryTemplate());
+    ASSERT_TRUE(dir.isValid());
+    std::vector<Part> parts;
+    parts.push_back(Part { "diffuse", { "R", "G", "B" } });
+    parts.push_back(Part { "depth", { "Z" } });
+    const std::string path = writeMultiPart(dir, parts);
+    ASSERT_FALSE(path.empty());
+
+    NodePtr node = createRead(path);
+    ASSERT_TRUE(bool(node));
+    node->getEffectInstance()->refreshMetadata_public(false);
+    EXPECT_EQ(4, node->getEffectInstance()->getMetadataNComps(-1));
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, 8, 8), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
+    ASSERT_EQ(1u, planes.size());
+    ASSERT_FALSE(planes[0].pixels.empty());
+    for (std::size_t i = 0; i < planes[0].pixels.size(); ++i) {
+        EXPECT_EQ(0.f, planes[0].pixels[i]) << i;
+    }
 }
 
 TEST_F(NativeReadLayersTest, TheRegistryListsTheFilesLayersAfterCreation)

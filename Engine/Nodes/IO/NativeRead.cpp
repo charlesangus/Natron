@@ -103,17 +103,6 @@ struct ColourChannels {
     {
     }
 
-    static ColourChannels of(const OIIO::ImageSpec& spec)
-    {
-        std::vector<int> index;
-
-        for (int i = 0; i < spec.nchannels && i < (int)spec.channelnames.size(); ++i) {
-            index.push_back(i);
-        }
-
-        return of(spec.channelnames, index);
-    }
-
     // `names[k]` is the name of file channel `index[k]`.
     static ColourChannels of(const std::vector<std::string>& names,
                              const std::vector<int>& index)
@@ -150,6 +139,11 @@ struct ColourChannels {
         return index[0] >= 0 || index[1] >= 0 || index[2] >= 0;
     }
 
+    bool hasAny() const
+    {
+        return hasRgb() || luminance >= 0 || index[3] >= 0;
+    }
+
     bool spreadsLuminance() const
     {
         return !hasRgb() && luminance >= 0;
@@ -184,16 +178,39 @@ struct ColourChannels {
     }
 };
 
-// The subimage that holds the colour in `view`: the first with channels of that view.
-int
-colourSubimageOf(const OiioReadSupport::Header& header,
-                 const std::string& view)
+// The part that holds the colour plane of `view`: the first whose name, without the view, is
+// none or the colour plane's, and that has an R, G, B, A or luminance channel. A part named
+// otherwise is a layer of that name, which fileLayers lists, so it never stands in for the colour.
+bool
+colourPartOf(const OiioReadSupport::Header& header,
+             const std::string& view,
+             OiioReadSupport::PartChannels* colour)
 {
     std::vector<OiioReadSupport::PartChannels> parts;
 
     OiioReadSupport::viewParts(header, view, &parts);
+    for (std::vector<OiioReadSupport::PartChannels>::const_iterator it = parts.begin(); it != parts.end(); ++it) {
+        if (!it->part.empty() && !OiioReadSupport::isColourPartName(it->part)) {
+            continue;
+        }
+        if (ColourChannels::of(it->names, it->index).hasAny()) {
+            *colour = *it;
 
-    return parts.empty() ? 0 : parts[0].subimage;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// The subimage whose header describes the image of `view`: its colour part's, else the first.
+int
+colourSubimageOf(const OiioReadSupport::Header& header,
+                 const std::string& view)
+{
+    OiioReadSupport::PartChannels colour;
+
+    return colourPartOf(header, view, &colour) ? colour.subimage : 0;
 }
 
 const char* const kKnobProxyThreshold = "proxyThreshold";
@@ -660,13 +677,20 @@ NativeRead::frameListing(bool proxy) const
     if (!pattern.empty()) {
         std::map<int, std::map<int, std::string>> sequence;
         FileSystemModel::filesListFromPattern(pattern, &sequence);
-        if (sequence.size() > 1) {
+        // SequenceParsing files the matches of a pattern without a frame number under frame -1, and
+        // a frame number it parses has no sign.
+        if (!sequence.empty() && sequence.begin()->first >= 0) {
             listing->singleImage = false;
             for (std::map<int, std::map<int, std::string>>::const_iterator it = sequence.begin(); it != sequence.end(); ++it) {
                 listing->frames.insert(it->first);
             }
         } else if (sequence.size() == 1 && !sequence.begin()->second.empty()) {
             listing->singlePath = sequence.begin()->second.begin()->second;
+        }
+        for (std::map<int, std::map<int, std::string>>::const_iterator frame = sequence.begin(); frame != sequence.end(); ++frame) {
+            for (std::map<int, std::string>::const_iterator view = frame->second.begin(); view != frame->second.end(); ++view) {
+                listing->paths.push_back(view->second);
+            }
         }
     }
 
@@ -682,6 +706,39 @@ NativeRead::invalidateFrameListing()
     std::lock_guard<std::mutex> lock(_listingMutex);
     _listing.reset();
     _proxyListing.reset();
+}
+
+void
+NativeRead::purgeCaches()
+{
+    // The files listed before and after the purge, since frames may have come or gone on disk.
+    std::vector<std::string> paths;
+    const auto addPaths = [&paths](const std::shared_ptr<const FrameListing>& listing) {
+        if (listing) {
+            paths.insert(paths.end(), listing->paths.begin(), listing->paths.end());
+        }
+    };
+    {
+        std::lock_guard<std::mutex> lock(_listingMutex);
+        addPaths(_listing);
+        addPaths(_proxyListing);
+    }
+    invalidateFrameListing();
+    addPaths(frameListing(false));
+    addPaths(frameListing(true));
+    OiioReadSupport::evictHeaders(paths);
+    invalidateOutputMetadata();
+    clearActionsCache();
+
+    NodePtr node = getNode();
+    KnobFilePtr filename = _filename.lock();
+    if (!node || !filename) {
+        return;
+    }
+    // The range read from disk lands in the time domain through knobChanged, as for a new file.
+    node->computeFrameRangeForReader(filename.get());
+    refreshAvailableViews(false);
+    refreshProxyScale();
 }
 
 ReadTimeDomain::Settings
@@ -821,8 +878,9 @@ NativeRead::refreshProxyScale()
         const std::shared_ptr<const OiioReadSupport::Header> fullHeader = OiioReadSupport::readHeader(fullPath, &error);
         const std::shared_ptr<const OiioReadSupport::Header> proxyHeader = OiioReadSupport::readHeader(proxyPath, &error);
         if (fullHeader && proxyHeader && !fullHeader->subimages.empty() && !proxyHeader->subimages.empty()) {
-            const OIIO::ImageSpec& fullSpec = fullHeader->subimages[0];
-            const OIIO::ImageSpec& proxySpec = proxyHeader->subimages[0];
+            const std::string view = projectViewName(ViewIdx(0));
+            const OIIO::ImageSpec& fullSpec = fullHeader->subimages[(std::size_t)colourSubimageOf(*fullHeader, view)];
+            const OIIO::ImageSpec& proxySpec = proxyHeader->subimages[(std::size_t)colourSubimageOf(*proxyHeader, view)];
             const RectI fullWindow = OiioReadSupport::dataWindowOf(fullSpec);
             const RectI proxyWindow = OiioReadSupport::dataWindowOf(proxySpec);
             if (fullWindow.width() > 0 && fullWindow.height() > 0 && proxyWindow.width() > 0 && proxyWindow.height() > 0) {
@@ -996,7 +1054,8 @@ NativeRead::guessInputSpace()
     if (!header || header->subimages.empty()) {
         return;
     }
-    const std::string guess = ReadColorSpace::defaultInputSpace(*project, path, header->subimages[0]);
+    const OIIO::ImageSpec& spec = header->subimages[(std::size_t)colourSubimageOf(*header, projectViewName(ViewIdx(0)))];
+    const std::string guess = ReadColorSpace::defaultInputSpace(*project, path, spec);
     if (!guess.empty() && guess != space->getValue()) {
         space->setValue(guess);
     }
@@ -1125,13 +1184,14 @@ NativeRead::knobChanged(KnobI* k,
         firstFrame->setDisplayMaximum(originalLast);
         lastFrame->setDisplayMinimum(originalFirst);
         lastFrame->setDisplayMaximum(originalLast);
+        // The defaults follow the file even under an edit, so that resetting it adopts this file.
+        firstFrame->setDefaultValueWithoutApplying(originalFirst);
+        lastFrame->setDefaultValueWithoutApplying(originalLast);
+        startingTime->setDefaultValueWithoutApplying(originalFirst);
         if (!userEdited->getValue()) {
             firstFrame->setValue(originalFirst);
-            firstFrame->setDefaultValueWithoutApplying(originalFirst);
             lastFrame->setValue(originalLast);
-            lastFrame->setDefaultValueWithoutApplying(originalLast);
             startingTime->setValue(originalFirst);
-            startingTime->setDefaultValueWithoutApplying(originalFirst);
             timeOffset->setValue(0);
         }
 
@@ -1201,21 +1261,24 @@ NativeRead::getPreferredMetadata(NodeMetadata& metadata)
     if (!header || header->subimages.empty()) {
         return eStatusOK;
     }
-    const OIIO::ImageSpec& spec = header->subimages[0];
+    // The format is one per node, so it is the main view's.
+    OiioReadSupport::PartChannels colour;
+    const bool hasColour = colourPartOf(*header, projectViewName(ViewIdx(0)), &colour);
+    const OIIO::ImageSpec& spec = header->subimages[hasColour ? (std::size_t)colour.subimage : 0];
 
     // OpenFX formats must start at (0, 0), so a positive display-window origin only widens the
     // format. Mirroring the display window within itself top to bottom always lands it at
     // [0, full_height), which is why full_y drops out.
     metadata.setOutputFormat(RectI(0, 0, spec.full_x + spec.full_width, spec.full_height));
     metadata.setPixelAspectRatio(-1, pixelAspectOf(spec));
-    metadata.setNComps(-1, ColourChannels::of(spec).nComps());
+    metadata.setNComps(-1, ColourChannels::of(colour.names, colour.index).nComps());
 
     return eStatusOK;
 }
 
 ImageMetadata
 NativeRead::deriveOutputMetadata(double time,
-                                 ViewIdx /*view*/)
+                                 ViewIdx view)
 {
     ImageMetadata metadata;
 
@@ -1239,7 +1302,7 @@ NativeRead::deriveOutputMetadata(double time,
     std::string error;
     const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(target.path, &error);
     if (header && !header->subimages.empty()) {
-        const OIIO::ImageSpec& spec = header->subimages[0];
+        const OIIO::ImageSpec& spec = header->subimages[(std::size_t)colourSubimageOf(*header, projectViewName(view))];
         metadata.setDouble(kOfxMetadataKeyPixelAspect, pixelAspectOf(spec));
         metadata.merge(OiioReadSupport::attributeMetadata(target.path, spec), ImageMetadata::eMergePreferThis);
     }
@@ -1432,10 +1495,11 @@ NativeRead::render(const RenderActionArgs& args)
     }
     const std::string viewName = projectViewName(args.view);
     std::vector<OiioReadSupport::FileLayer> fileLayers;
-    std::vector<OiioReadSupport::PartChannels> colourParts;
+    OiioReadSupport::PartChannels colourPart;
+    bool hasColour = false;
     if (header) {
         OiioReadSupport::fileLayers(*header, &fileLayers, viewName);
-        OiioReadSupport::viewParts(*header, viewName, &colourParts);
+        hasColour = colourPartOf(*header, viewName, &colourPart);
     }
 
     OCIO_NAMESPACE::ConstCPUProcessorRcPtr toWorking;
@@ -1472,10 +1536,10 @@ NativeRead::render(const RenderActionArgs& args)
         int subimage = 0;
         std::vector<int> fileChannels((std::size_t)nComps, -1);
         if (header && it->first.isColorLayer()) {
-            if (!colourParts.empty()) {
-                subimage = colourParts[0].subimage;
+            if (hasColour) {
+                subimage = colourPart.subimage;
                 dataWindow = OiioReadSupport::dataWindowOf(header->subimages[(std::size_t)subimage]);
-                const ColourChannels colour = ColourChannels::of(colourParts[0].names, colourParts[0].index);
+                const ColourChannels colour = ColourChannels::of(colourPart.names, colourPart.index);
                 for (int c = 0; c < nComps; ++c) {
                     fileChannels[(std::size_t)c] = colour.fileChannelForComponent(nComps, c);
                 }

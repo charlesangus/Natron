@@ -5634,10 +5634,12 @@ Node::getOriginalFrameRangeForReader(const std::string& /*pluginID*/,
 {
     SequenceParsing::SequenceFromPattern seq;
     FileSystemModel::filesListFromPattern(canonicalFileName, &seq);
-    if (seq.empty() || (seq.size() == 1)) {
+    // SequenceParsing files the matches of a pattern without a frame number under frame -1, and a
+    // frame number it parses has no sign, so a pattern that matches a single frame keeps its number.
+    if (seq.empty() || (seq.begin()->first < 0)) {
         *firstFrame = 1;
         *lastFrame = 1;
-    } else if (seq.size() > 1) {
+    } else {
         *firstFrame = seq.begin()->first;
         *lastFrame = seq.rbegin()->first;
     }
@@ -5667,15 +5669,7 @@ Node::computeFrameRangeForReader(KnobI* fileKnob)
 
             std::string pattern = isFile->getValue();
             getApp()->getProject()->canonicalizePath(pattern);
-            SequenceParsing::SequenceFromPattern seq;
-            FileSystemModel::filesListFromPattern(pattern, &seq);
-            if (seq.empty() || (seq.size() == 1)) {
-                leftBound = 1;
-                rightBound = 1;
-            } else if (seq.size() > 1) {
-                leftBound = seq.begin()->first;
-                rightBound = seq.rbegin()->first;
-            }
+            getOriginalFrameRangeForReader(getPluginID(), pattern, &leftBound, &rightBound);
             originalFrameRange->setValues(leftBound, rightBound, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
         }
     }

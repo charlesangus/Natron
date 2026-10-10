@@ -57,6 +57,12 @@ std::shared_ptr<const Header> readHeader(const std::string& path, std::string* e
 void clearHeaderCache();
 
 /**
+ * @brief Drops the cached headers of `paths` alone, so that the next readHeader of each parses the
+ * file again. Thread-safe.
+ **/
+void evictHeaders(const std::vector<std::string>& paths);
+
+/**
  * @brief The data window of `spec` in Natron's canvas, whose rows run upwards from the bottom of
  * the display window while the file's run downwards from its top.
  **/
@@ -124,6 +130,13 @@ struct PartChannels {
     {
     }
 };
+
+/**
+ * @brief Whether a part named `part` holds the colour plane rather than a layer named after it,
+ * compared without regard to case. Writers name such a part after the plane ("Color" for
+ * Natron's, "rgba" for others), so its bare channels are the colour plane's.
+ **/
+bool isColourPartName(const std::string& part);
 
 /**
  * @brief The subimages of `header` that hold channels of `view` (resolved by resolveView), in

@@ -301,6 +301,14 @@ public:
 
     void setCurrentColor(const QColor & c);
 
+    void setUserColor(const QColor& c);
+
+    void clearUserColor();
+
+    bool hasUserColor() const;
+
+    QColor getUserColor() const;
+
     void setOverlayColor(const QColor& c);
 
     void refreshKnobsAfterTimeChange(bool onlyTimeEvaluationKnobs, SequenceTime time);
@@ -600,6 +608,8 @@ private:
 
     void refreshCurrentBrush();
 
+    void refreshUserColorBorder();
+
     void initializeInputsForInspector();
 
     /*pointer to the dag*/
@@ -651,8 +661,10 @@ private:
 
     //True when the settings panel has been  created
     bool _panelCreated;
-    mutable QMutex _currentColorMutex; //< protects _currentColor
+    mutable QMutex _currentColorMutex; //< protects _currentColor, _hasUserColor and _userColor
     QColor _currentColor; //< accessed by the serialization thread
+    bool _hasUserColor;
+    QColor _userColor;
     QColor _clonedColor;
     bool _wasBeginEditCalled;
     mutable QMutex positionMutex;

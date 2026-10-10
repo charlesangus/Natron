@@ -108,6 +108,9 @@ CLANG_DIAG_ON(uninitialized)
 
 #define NATRON_STATE_INDICATOR_OFFSET 5
 
+// Strictly thinner than the state indicator band around the node, so the two never look alike.
+#define NATRON_USER_COLOR_BORDER_WIDTH 4
+
 #define NATRON_EDGE_DROP_TOLERANCE 15
 
 #define NATRON_MAGNETIC_GRID_GRIP_TOLERANCE 20
@@ -199,6 +202,48 @@ kindTintColor(DataKindEnum kind,
     }
 }
 
+static double
+srgbChannelToLinear(double c)
+{
+    return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+}
+
+static double
+wcagRelativeLuminance(const QColor& c)
+{
+    return 0.2126 * srgbChannelToLinear(c.redF())
+        + 0.7152 * srgbChannelToLinear(c.greenF())
+        + 0.0722 * srgbChannelToLinear(c.blueF());
+}
+
+// Only a user colour close to the body in both luminance and hue is pushed away from it: a pure
+// hue difference at matched luminance is already visible and must keep the user's exact colour.
+static QColor
+userBorderColorAgainstBody(const QColor& user,
+                           const QColor& body)
+{
+    const double lBody = wcagRelativeLuminance(body);
+    const double lUser = wcagRelativeLuminance(user);
+    const double contrastRatio = (std::max(lBody, lUser) + 0.05) / (std::min(lBody, lUser) + 0.05);
+    const double dr = user.redF() - body.redF();
+    const double dg = user.greenF() - body.greenF();
+    const double db = user.blueF() - body.blueF();
+    const double distance = std::sqrt(dr * dr + dg * dg + db * db);
+
+    if ((contrastRatio >= 1.3) || (distance >= 0.10)) {
+        return user;
+    }
+    const double target = lBody < 0.5 ? 1. : 0.;
+    const double keep = 0.65;
+    QColor mixed;
+    mixed.setRgbF(user.redF() * keep + target * (1. - keep),
+                  user.greenF() * keep + target * (1. - keep),
+                  user.blueF() * keep + target * (1. - keep),
+                  user.alphaF());
+
+    return mixed;
+}
+
 NodeGui::NodeGui(QGraphicsItem* parent)
     : QObject()
     , QGraphicsItem(parent)
@@ -233,6 +278,8 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _panelCreated(false)
     , _currentColorMutex()
     , _currentColor()
+    , _hasUserColor(false)
+    , _userColor()
     , _clonedColor()
     , _wasBeginEditCalled(false)
     , positionMutex()
@@ -1767,6 +1814,29 @@ NodeGui::refreshCurrentBrush()
     } else {
         applyBrush(_currentColor);
     }
+    refreshUserColorBorder();
+}
+
+void
+NodeGui::refreshUserColorBorder()
+{
+    if (!_boundingBox) {
+        return;
+    }
+    QColor body, user;
+    bool hasUser;
+    {
+        QMutexLocker k(&_currentColorMutex);
+        body = _currentColor;
+        user = _userColor;
+        hasUser = _hasUserColor;
+    }
+    // A clone is drawn entirely in the clone colour, so the user colour is hidden while it is one.
+    if (!hasUser || !_masterNodeGui.expired()) {
+        _boundingBox->clearInsetBorder();
+        return;
+    }
+    _boundingBox->setInsetBorder(userBorderColorAgainstBody(user, body), TO_DPIX(NATRON_USER_COLOR_BORDER_WIDTH));
 }
 
 bool
@@ -2512,6 +2582,7 @@ NodeGui::onAllKnobsSlaved(bool b)
             }
         }
     }
+    refreshUserColorBorder();
     update();
 }
 
@@ -3290,6 +3361,44 @@ NodeGui::setCurrentColor(const QColor & c)
     if (_settingsPanel) {
         _settingsPanel->setCurrentColor(c);
     }
+}
+
+void
+NodeGui::setUserColor(const QColor& c)
+{
+    {
+        QMutexLocker k(&_currentColorMutex);
+        _hasUserColor = true;
+        _userColor = c;
+    }
+    refreshUserColorBorder();
+}
+
+void
+NodeGui::clearUserColor()
+{
+    {
+        QMutexLocker k(&_currentColorMutex);
+        _hasUserColor = false;
+        _userColor = QColor();
+    }
+    refreshUserColorBorder();
+}
+
+bool
+NodeGui::hasUserColor() const
+{
+    QMutexLocker k(&_currentColorMutex);
+
+    return _hasUserColor;
+}
+
+QColor
+NodeGui::getUserColor() const
+{
+    QMutexLocker k(&_currentColorMutex);
+
+    return _userColor;
 }
 
 void

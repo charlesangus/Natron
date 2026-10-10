@@ -113,6 +113,26 @@ DockablePanelPrivate::DockablePanelPrivate(DockablePanel* publicI,
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
+NodeColorButton::NodeColorButton(DockablePanel* panel,
+                                 const QIcon& icon,
+                                 QWidget* parent)
+    : Button(icon, QString(), parent)
+    , _panel(panel)
+{
+}
+
+void
+NodeColorButton::mousePressEvent(QMouseEvent* e)
+{
+    if (triggerButtonIsRight(e)) {
+        _panel->resetUserColor();
+    } else {
+        Button::mousePressEvent(e);
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////
+
 OverlayColorButton::OverlayColorButton(DockablePanel* panel,
                                        const QIcon& icon,
                                        QWidget* parent)

@@ -117,6 +117,12 @@ public:
 
     void resetHostOverlayColor();
 
+    /**
+     * @brief Clears the node's user colour, reverting its border to the plug-in category colour.
+     * No-op outside a NodeSettingsPanel.
+     **/
+    void resetUserColor();
+
     virtual MultiInstancePanelPtr getMultiInstancePanel() const
     {
         return MultiInstancePanelPtr();

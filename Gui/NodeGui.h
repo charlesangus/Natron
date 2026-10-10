@@ -183,7 +183,8 @@ public:
     virtual void setSize(double w, double h) OVERRIDE FINAL;
     virtual void getColor(double* r, double *g, double* b) const OVERRIDE FINAL;
     virtual void setColor(double r, double g, double b) OVERRIDE FINAL;
-
+    virtual void getUserColor(double* r, double* g, double* b) const OVERRIDE FINAL;
+    virtual void resetColor() OVERRIDE FINAL;
 
     /*Returns true if the NodeGUI contains the point (in items coordinates)*/
     virtual bool contains(const QPointF &point) const OVERRIDE FINAL;
@@ -305,7 +306,7 @@ public:
 
     void clearUserColor();
 
-    bool hasUserColor() const;
+    virtual bool hasUserColor() const OVERRIDE FINAL;
 
     QColor getUserColor() const;
 
@@ -615,6 +616,8 @@ private:
     void refreshCurrentBrush();
 
     void refreshUserColorBorder();
+
+    void refreshPanelColorIndicator();
 
     void initializeInputsForInspector();
 

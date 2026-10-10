@@ -7746,6 +7746,38 @@ Node::setColor(double r,
     }
 }
 
+bool
+Node::hasUserColor() const
+{
+    NodeGuiIPtr gui = _imp->guiPointer.lock();
+
+    return gui && gui->hasUserColor();
+}
+
+void
+Node::getUserColor(double* r,
+                   double* g,
+                   double* b) const
+{
+    NodeGuiIPtr gui = _imp->guiPointer.lock();
+
+    if (gui) {
+        gui->getUserColor(r, g, b);
+    } else {
+        *r = *g = *b = 0.;
+    }
+}
+
+void
+Node::resetColor()
+{
+    NodeGuiIPtr gui = _imp->guiPointer.lock();
+
+    if (gui) {
+        gui->resetColor();
+    }
+}
+
 void
 Node::setNodeGuiPointer(const NodeGuiIPtr& gui)
 {

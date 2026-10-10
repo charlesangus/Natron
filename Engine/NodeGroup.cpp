@@ -2796,11 +2796,9 @@ exportGroupInternal(int indentLevel,
     if (isGroup) {
         WRITE_INDENT(indentLevel); WRITE_STATIC_LINE("# Create the parameters of the group node the same way we did for all internal nodes");
         WRITE_INDENT(indentLevel); WRITE_STRING(QString::fromUtf8("lastNode = ") + groupName);
-        double r, g, b;
-        bool hasColor = groupNode->getColor(&r, &g, &b);
-        if (hasColor) {
-            // TODO: we could check if the color was actually changed from the default (NodeGui::getCategoryColor())
-
+        if (groupNode->hasUserColor()) {
+            double r, g, b;
+            groupNode->getUserColor(&r, &g, &b);
             // a precision of 3 digits is enough for the node color
             WRITE_INDENT(indentLevel); WRITE_STRING( QString::fromUtf8("lastNode.setColor(") + NUM_COLOR(r) + QString::fromUtf8(", ") + NUM_COLOR(g) + QString::fromUtf8(", ") + NUM_COLOR(b) +  QString::fromUtf8(")") );
         }
@@ -2863,11 +2861,13 @@ exportGroupInternal(int indentLevel,
         WRITE_INDENT(indentLevel); WRITE_STRING( QString::fromUtf8("lastNode.setPosition(") + NUM_PIXEL(x) + QString::fromUtf8(", ") + NUM_PIXEL(y) + QString::fromUtf8(")") );
         WRITE_INDENT(indentLevel); WRITE_STRING( QString::fromUtf8("lastNode.setSize(") + NUM_PIXEL(w) + QString::fromUtf8(", ") + NUM_PIXEL(h) + QString::fromUtf8(")") );
 
-        double r, g, b;
-        bool hasColor = (*it)->getColor(&r, &g, &b);
-        Q_UNUSED(hasColor);
-        // a precision of 3 digits is enough for the node color
-        WRITE_INDENT(indentLevel); WRITE_STRING( QString::fromUtf8("lastNode.setColor(") + NUM_COLOR(r) + QString::fromUtf8(", ") + NUM_COLOR(g) + QString::fromUtf8(", ") + NUM_COLOR(b) +  QString::fromUtf8(")") );
+        if ((*it)->hasUserColor()) {
+            double r, g, b;
+            (*it)->getUserColor(&r, &g, &b);
+            // a precision of 3 digits is enough for the node color
+            WRITE_INDENT(indentLevel);
+            WRITE_STRING(QString::fromUtf8("lastNode.setColor(") + NUM_COLOR(r) + QString::fromUtf8(", ") + NUM_COLOR(g) + QString::fromUtf8(", ") + NUM_COLOR(b) + QString::fromUtf8(")"));
+        }
 
         QString nodeNameInScript = groupName + QString::fromUtf8( (*it)->getScriptName_mt_safe().c_str() );
         WRITE_INDENT(indentLevel); WRITE_STRING( nodeNameInScript + QString::fromUtf8(" = lastNode") );

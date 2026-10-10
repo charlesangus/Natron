@@ -342,10 +342,22 @@ public:
     void getSize(double* w, double* h) const;
 
     /**
-     * @brief Get the colour of the node as it appears on the nodegraph.
+     * @brief Get the colour of the node as it appears on the nodegraph: the colour set
+     * by setColor() if any, otherwise the plug-in's default category colour. Ignored in
+     * background mode, since there is then no nodegraph to display it on.
      **/
     void getColor(double* r, double *g, double* b) const;
+
+    /**
+     * @brief Set a colour on the node, drawn as a border around its plug-in category
+     * colour in the nodegraph (left untouched). Ignored in background mode.
+     **/
     void setColor(double r, double g, double b);
+
+    /**
+     * @brief Clear the colour set by setColor(), reverting to the plug-in category colour.
+     **/
+    void resetColor();
 
     /**
      * @brief Returns true if the node is selected in the nodegraph

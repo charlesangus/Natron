@@ -772,13 +772,13 @@ NodeGui::createGui()
 void
 NodeGui::onSettingsPanelColorChanged(const QColor & color)
 {
-    {
-        QMutexLocker k(&_currentColorMutex);
-        _currentColor = color;
+    // The panel's colour button edits the body for a Backdrop (it has no category to
+    // keep showing), and the user colour border for every other node.
+    if (dynamic_cast<BackdropGui*>(this)) {
+        setCurrentColor(color);
+    } else {
+        setUserColor(color);
     }
-    Q_EMIT colorChanged(color);
-
-    refreshCurrentBrush();
 }
 
 void
@@ -3361,10 +3361,13 @@ NodeGui::getCurrentColor() const
 void
 NodeGui::setCurrentColor(const QColor & c)
 {
-    onSettingsPanelColorChanged(c);
-    if (_settingsPanel) {
-        _settingsPanel->setCurrentColor(c);
+    {
+        QMutexLocker k(&_currentColorMutex);
+        _currentColor = c;
     }
+    Q_EMIT colorChanged(c);
+    refreshCurrentBrush();
+    refreshPanelColorIndicator();
 }
 
 void
@@ -3376,6 +3379,7 @@ NodeGui::setUserColor(const QColor& c)
         _userColor = c;
     }
     refreshUserColorBorder();
+    refreshPanelColorIndicator();
 }
 
 void
@@ -3387,6 +3391,21 @@ NodeGui::clearUserColor()
         _userColor = QColor();
     }
     refreshUserColorBorder();
+    refreshPanelColorIndicator();
+}
+
+void
+NodeGui::resetColor()
+{
+    clearUserColor();
+}
+
+void
+NodeGui::refreshPanelColorIndicator()
+{
+    if (_settingsPanel) {
+        _settingsPanel->setCurrentColor(hasUserColor() ? getUserColor() : getCurrentColor());
+    }
 }
 
 bool
@@ -3689,7 +3708,19 @@ NodeGui::getColor(double* r,
                   double *g,
                   double* b) const
 {
-    QColor c = getCurrentColor();
+    QColor c = hasUserColor() ? getUserColor() : getCurrentColor();
+
+    *r = c.redF();
+    *g = c.greenF();
+    *b = c.blueF();
+}
+
+void
+NodeGui::getUserColor(double* r,
+                      double* g,
+                      double* b) const
+{
+    QColor c = getUserColor();
 
     *r = c.redF();
     *g = c.greenF();
@@ -3704,7 +3735,13 @@ NodeGui::setColor(double r,
     QColor c;
 
     c.setRgbF(r, g, b);
-    setCurrentColor(c);
+    // A Backdrop has no category colour of its own to keep showing underneath, so its
+    // body is still what setColor() sets.
+    if (dynamic_cast<BackdropGui*>(this)) {
+        setCurrentColor(c);
+    } else {
+        setUserColor(c);
+    }
 }
 
 void

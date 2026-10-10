@@ -724,11 +724,15 @@ public:
     void getSize(double* w, double* h) const;
 
     /**
-     * @brief Get the colour of the node as it appears on the nodegraph.
+     * @brief Get the colour of the node as it appears on the nodegraph: the user colour
+     * if one was set, otherwise the plug-in category colour. Ignored in background mode,
+     * since there is then no nodegraph to display it on.
      **/
     bool getColor(double* r, double *g, double* b) const;
     void setColor(double r, double g, double b);
-
+    bool hasUserColor() const;
+    void getUserColor(double* r, double* g, double* b) const;
+    void resetColor();
 
     std::string getKnobChangedCallback() const;
     std::string getInputChangedCallback() const;

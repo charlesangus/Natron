@@ -152,7 +152,9 @@ NodeSettingsPanel::initializeTrackerPanel()
 QColor
 NodeSettingsPanel::getCurrentColor() const
 {
-    return getNode()->getCurrentColor();
+    NodeGuiPtr node = getNode();
+
+    return node->hasUserColor() ? node->getUserColor() : node->getCurrentColor();
 }
 
 void

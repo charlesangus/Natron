@@ -130,7 +130,7 @@ Scouted facts this plan relies on (2026-10-10):
   - verify: `BlurCpu_Test` checks the C++ twin against `BlurRef` for σ ∈ {0.5, 3, 25, 100}, odd sizes and tiny images (smaller than the radius), with the tolerance asserted (proposed: abs ≤ 2e-6 on [0, 1] inputs).
   - size: M
 
-- [ ] M83.P3.T3 — Check Slang composition for point-op descriptions (feeds M85 and M87)
+- [x] M83.P3.T3 — Check Slang composition for point-op descriptions (feeds M85 and M87)
   - files: `tools/gpu-spike/kernels/pointops.slang`, `tools/gpu-spike/tests/PointOpCompose_Test.cpp`
   - approach:
     - Define `interface IPixelOp { float4 apply(float4 v, uint2 xy); }`. Grade (reusing `grade.slang`) and a trivial Invert implement it.
@@ -290,3 +290,4 @@ Scouted facts this plan relies on (2026-10-10):
 - 2026-10-10 — M83.P3.T2: no IIR-vs-FIR difference numbers — linking `BlurKernels` into the standalone spike drags in Engine/Python headers. M88 - FIR Gaussian Blur's tests can report that gap from inside the engine instead.
 - 2026-10-10 — M83.P3.T1: the flat 4-ULP Grade bound fails on ~5.5k of 27M values, all in reverse grade where pow(v, gamma) cancels against B before dividing by a tiny A; the test adds a per-element conditioned tolerance (4 + 2|ln y| ULP of the pow term plus subtraction/division rounding). Float-vs-double, not a kernel bug.
 - 2026-10-10 — M83.P2.T2 kernel convention: storage buffers in set 0 bindings 0..N-1 in declaration order, parameters as one `[[vk::push_constant]]` block (≤128 B); uniform buffers unsupported. `grade.slang`/`blur.slang` must switch their `ConstantBuffer` params to push constants before GPU dispatch (M83.P3.T4).
+- 2026-10-10 — M83.P3.T3 finding for M85/M87: Slang interface generics inline fully (one OpFunction, no calls) and Chain<Grade,Invert> is bit-exact with two passes, 12% fewer instructions, one dispatch and no intermediate buffer. But every op combination needs its own compiled entry point; a runtime graph needs generated wrappers or Slang link-time specialisation (untried).

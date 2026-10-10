@@ -25,3 +25,9 @@ gtest_discover_tests(Smoke_Test)
 
 add_executable(DeviceList tests/DeviceList_main.cpp)
 target_link_libraries(DeviceList PRIVATE Vulkan::Vulkan -static-libstdc++ -static-libgcc)
+
+slang_add_kernel(blur kernels/blur.slang ENTRY blurPass)
+
+add_executable(BlurCpu_Test tests/BlurCpu_Test.cpp)
+target_link_libraries(BlurCpu_Test PRIVATE blur GTest::gtest_main)
+gtest_discover_tests(BlurCpu_Test)

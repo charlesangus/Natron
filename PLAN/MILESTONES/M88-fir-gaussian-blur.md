@@ -15,10 +15,11 @@ Add a truncated FIR Gaussian filter to the native Blur node and make it the defa
   - verify: `ctest` green, including the new test.
   - size: M
 
-**Verification gate:** `ctest` green including `BlurFIRGaussian_Test`; new Blur nodes default to FIR Gaussian; an existing project with a default-filter Blur renders byte-identically to before.
+**Verification gate:** `ctest` green including `BlurFIRGaussian_Test`; new Blur nodes default to FIR Gaussian (old projects included — hard cut, no compat machinery).
 
 ## Decisions
 
 - 2026-10-10 — Split out of M83 - GPU Compute Backend Spike so a production node change doesn't ride in a spike PR, and so it runs in its own lane in parallel. Runs off `main`, PR against `main`.
 - 2026-10-10 — Compatibility mechanism: an untouched Filter knob isn't serialized (`NodeSerialization` skips unmodified knobs), and choices restore by ID. So Blur's plugin minor goes 5.0 → 5.1, and a new `EffectInstance::restoreLegacyKnobDefaults(major, minor)` hook resets the Filter default to the IIR Gaussian for anything saved or requested below 5.1. It is called from `Node::loadKnobs()` (every load path, not just the one `onKnobsAboutToBeLoaded` covers) and from `Node::load()` for versioned creation requests that carry no serialization. The second call was needed because the bundled PyPlugs (AngleBlur, DropShadow, LightWrap) create Blurs at old versions without setting Filter. Known gap: a script asking for major 5 with no minor gets FIR. The `NativeBlur_Test` comparisons against CImgBlur now set IIR explicitly.
 - 2026-10-10 — Gate green: ctest 1276/1276 (release, natron-dev rebuilt after the host reboot wiped Docker), including all 15 `BlurFIRGaussian*` tests, and a 5.0-fixture Blur renders `memcmp`-identical to an explicit IIR Blur. FIR-vs-IIR max abs diff (1-D, nearest boundary): σ 3 → impulse 5.5e-3, step 1.2e-2; σ 25 → impulse 2.4e-4, step 4.9e-3. Code: `12b313a1e`, `f9531059e`.
+- 2026-10-10 — **Hard cut (user), which supersedes the compatibility entry above:** keep the 5.0 → 5.1 version bump, but drop `restoreLegacyKnobDefaults`, every old-version code path, the 5.0 fixture and the compat tests. FIR is the default for every Blur, old ones included, and the IIR Gaussian stays as a selectable option. The PR #46 review findings about Python export and preset undo are declined as moot. See DECISIONS/2026-10-10-hard-cut-covers-default-changes.md.

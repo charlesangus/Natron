@@ -1,0 +1,3 @@
+# Hard cut covers default changes
+
+2026-10-10 (user): the project is a hard cut, and that includes changes to knob defaults. When a node's default changes, bump the plugin version but add no machinery to preserve old behaviour: no legacy-default hooks, no per-version load paths, no legacy fixtures or compat tests. Old projects and PyPlugs simply pick up the new default. This extends `2026-09-18-clean-break-no-project-compat.md`. Prompted by M88 - FIR Gaussian Blur, whose plan had asked for old projects to render byte-identically; that clause and the `restoreLegacyKnobDefaults` hook built for it were dropped.

@@ -245,7 +245,7 @@ future core work has solid ground to build on.
 | M85 | Native GPU Kernels | todo |  | [M85-native-gpu-kernels.md](PLAN/MILESTONES/M85-native-gpu-kernels.md) |
 | M86 | OFX 1.5 GPU Suites | todo |  | [M86-ofx-gpu-suites.md](PLAN/MILESTONES/M86-ofx-gpu-suites.md) |
 | M87 | Point-Op Kernel Fusion | todo |  | [M87-point-op-kernel-fusion.md](PLAN/MILESTONES/M87-point-op-kernel-fusion.md) |
-| M88 | FIR Gaussian Blur | done |  | [M88-fir-gaussian-blur.md](PLAN/MILESTONES/M88-fir-gaussian-blur.md) |
+| M88 | FIR Gaussian Blur | doing |  | [M88-fir-gaussian-blur.md](PLAN/MILESTONES/M88-fir-gaussian-blur.md) |
 | M89 | Shared Worktree Ccache | doing | - | [M89-shared-worktree-ccache.md](PLAN/MILESTONES/M89-shared-worktree-ccache.md) |
 | M27 | Real Debug Build | doing | - | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M22 | Missing Plugin Placeholder | todo | M75 | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |

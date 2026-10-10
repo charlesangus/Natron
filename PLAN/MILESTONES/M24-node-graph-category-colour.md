@@ -39,7 +39,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 
 ## Phase 24.5: UAT round 2 fixes
 
-- [ ] M24.P5.T1 — Recolour open graphs only when Preferences are saved
+- [x] M24.P5.T1 — Recolour open graphs only when Preferences are saved
   - files: `Gui/NodeGraph.h`, `Gui/NodeGraph.cpp`, `Gui/PreferencesPanel.h`, `Gui/PreferencesPanel.cpp`, `Engine/Settings.h`, `Engine/Settings.cpp`
   - approach: Today `NodeGraph::onSettingChanged` reacts to every `settingChanged`, so nodes recolour while the user is still editing in Preferences, and Discard doesn't undo it. Stop reacting live. Recolour every open graph once, when the Preferences Save action commits the settings. Find the Save/Discard handlers in `PreferencesPanel` and how Discard restores the values, then hook a signal emitted on save (or when the panel closes after saving), plus any other path that commits settings, such as restoring defaults followed by Save. Discard must leave the graphs untouched. Live-preview behaviour of other settings is out of scope.
   - verify: Editing the Merge colour without saving leaves Merge nodes unchanged, and Discard keeps them unchanged; Save recolours them. Adjust the screenshot script's Preferences step to call whatever the Save path does.

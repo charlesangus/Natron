@@ -19,14 +19,20 @@
 
 namespace blurref {
 
-inline int radiusForSigma(double sigma)
+inline int
+radiusForSigma(double sigma)
 {
     return sigma > 0.0 ? static_cast<int>(std::ceil(3.0 * sigma)) : 0;
 }
 
-inline double sigmaForSize(double size) { return size / 2.4; }
+inline double
+sigmaForSize(double size)
+{
+    return size / 2.4;
+}
 
-inline std::vector<double> makeWeights(double sigma)
+inline std::vector<double>
+makeWeights(double sigma)
 {
     const int r = radiusForSigma(sigma);
     std::vector<double> w(2 * r + 1, 0.0);
@@ -44,8 +50,9 @@ inline std::vector<double> makeWeights(double sigma)
     return w;
 }
 
-inline void blurAxis(const std::vector<double>& src, std::vector<double>& dst, int width, int height,
-                     int channels, const std::vector<double>& w, bool vertical, bool neumann)
+inline void
+blurAxis(const std::vector<double>& src, std::vector<double>& dst, int width, int height,
+         int channels, const std::vector<double>& w, bool vertical, bool neumann)
 {
     const int r = static_cast<int>(w.size() / 2);
     const int len = vertical ? height : width;
@@ -74,8 +81,9 @@ inline void blurAxis(const std::vector<double>& src, std::vector<double>& dst, i
     }
 }
 
-inline std::vector<double> blur(const std::vector<double>& src, int width, int height, int channels,
-                                double sigma, bool neumann)
+inline std::vector<double>
+blur(const std::vector<double>& src, int width, int height, int channels,
+     double sigma, bool neumann)
 {
     const std::vector<double> w = makeWeights(sigma);
     std::vector<double> tmp, out;

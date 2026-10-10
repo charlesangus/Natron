@@ -22,8 +22,7 @@ extern "C" void pointop_masked(ComputeVaryingInput*, void*, void*);
 
 namespace {
 
-struct PointParams
-{
+struct PointParams {
     float a[4];
     float b[4];
     float gamma[4];
@@ -36,8 +35,7 @@ struct PointParams
     uint32_t premult;
 };
 
-struct PointGlobals
-{
+struct PointGlobals {
     StructuredBuffer<float> srcBuf;
     RWStructuredBuffer<float> dstBuf;
     StructuredBuffer<float> maskBuf;
@@ -49,24 +47,24 @@ constexpr uint32_t kH = 19;
 
 using Kernel = void (*)(ComputeVaryingInput*, void*, void*);
 
-std::vector<float> run(Kernel k, const std::vector<float>& src, const std::vector<float>& mask,
-                       PointParams& p)
+std::vector<float>
+run(Kernel k, const std::vector<float>& src, const std::vector<float>& mask,
+    PointParams& p)
 {
     std::vector<float> dst(src.size(), -123.0f);
-    PointGlobals g{{const_cast<float*>(src.data()), src.size() / 4},
-                   {dst.data(), dst.size() / 4},
-                   {const_cast<float*>(mask.data()), mask.size()},
-                   &p};
+    PointGlobals g { { const_cast<float*>(src.data()), src.size() / 4 },
+                     { dst.data(), dst.size() / 4 },
+                     { const_cast<float*>(mask.data()), mask.size() },
+                     &p };
     ComputeVaryingInput vi = {};
-    vi.startGroupID = {0, 0, 0};
-    vi.endGroupID = {(kW + 7) / 8, (kH + 7) / 8, 1};
+    vi.startGroupID = { 0, 0, 0 };
+    vi.endGroupID = { (kW + 7) / 8, (kH + 7) / 8, 1 };
     k(&vi, nullptr, &g);
     return dst;
 }
 
-struct Fixture
-{
-    PointParams p{};
+struct Fixture {
+    PointParams p {};
     std::vector<float> src;
     std::vector<float> mask;
 
@@ -96,16 +94,18 @@ struct Fixture
     }
 };
 
-int64_t orderedBits(float f)
+int64_t
+orderedBits(float f)
 {
     int32_t i;
     std::memcpy(&i, &f, sizeof i);
     return i < 0 ? static_cast<int64_t>(INT32_MIN) - i : i;
 }
 
-double gradeRef(double v, const PointParams& p, int c)
+double
+gradeRef(double v, const PointParams& p, int c)
 {
-    return graderef::apply(v, {p.a[c], p.b[c], p.gamma[c]}, (p.flags & 1) != 0, (p.flags & 2) != 0,
+    return graderef::apply(v, { p.a[c], p.b[c], p.gamma[c] }, (p.flags & 1) != 0, (p.flags & 2) != 0,
                            (p.flags & 4) != 0);
 }
 
@@ -113,14 +113,14 @@ double gradeRef(double v, const PointParams& p, int c)
 
 TEST(PointOpCompose, SpirvHasMagic)
 {
-    for (uint32_t w : {pointop_grade_spirv[0], pointop_invert_spirv[0], pointop_chain_spirv[0],
-                       pointop_masked_spirv[0]})
+    for (uint32_t w : { pointop_grade_spirv[0], pointop_invert_spirv[0], pointop_chain_spirv[0],
+                        pointop_masked_spirv[0] })
         EXPECT_EQ(w, 0x07230203u);
 }
 
 TEST(PointOpCompose, ChainEqualsInvertAfterGrade)
 {
-    for (uint32_t seed : {1u, 2u, 3u}) {
+    for (uint32_t seed : { 1u, 2u, 3u }) {
         Fixture f(seed);
         const std::vector<float> graded = run(pointop_grade, f.src, f.mask, f.p);
         const std::vector<float> want = run(pointop_invert, graded, f.mask, f.p);
@@ -132,7 +132,7 @@ TEST(PointOpCompose, ChainEqualsInvertAfterGrade)
 
 TEST(PointOpCompose, MaskedMatchesGradeReference)
 {
-    for (uint32_t premult : {0u, 1u}) {
+    for (uint32_t premult : { 0u, 1u }) {
         Fixture f(10 + premult);
         f.p.premult = premult;
         const std::vector<float> got = run(pointop_masked, f.src, f.mask, f.p);

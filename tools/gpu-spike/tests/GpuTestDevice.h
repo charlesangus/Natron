@@ -20,19 +20,22 @@
 //   GPU_SPIKE_REQUIRE_HARDWARE=1     fail instead of running on a CPU device (lavapipe)
 namespace gputest {
 
-inline bool envSet(const char* name)
+inline bool
+envSet(const char* name)
 {
     const char* v = std::getenv(name);
     return v && std::strcmp(v, "1") == 0;
 }
 
-inline std::atomic<uint64_t>& validationErrors()
+inline std::atomic<uint64_t>&
+validationErrors()
 {
-    static std::atomic<uint64_t> n{0};
+    static std::atomic<uint64_t> n { 0 };
     return n;
 }
 
-inline gpu::GpuDeviceOptions deviceOptions()
+inline gpu::GpuDeviceOptions
+deviceOptions()
 {
     gpu::GpuDeviceOptions o;
     o.enableValidation = !envSet("GPU_SPIKE_NO_VALIDATION");
@@ -51,7 +54,8 @@ inline gpu::GpuDeviceOptions deviceOptions()
     return o;
 }
 
-inline gpu::GpuStatus createDevice(std::unique_ptr<gpu::GpuDevice>& out, gpu::GpuDeviceOptions o = deviceOptions())
+inline gpu::GpuStatus
+createDevice(std::unique_ptr<gpu::GpuDevice>& out, gpu::GpuDeviceOptions o = deviceOptions())
 {
     gpu::GpuStatus s = gpu::GpuDevice::create(o, out);
     if (!s) {
@@ -60,8 +64,8 @@ inline gpu::GpuStatus createDevice(std::unique_ptr<gpu::GpuDevice>& out, gpu::Gp
     if (envSet("GPU_SPIKE_REQUIRE_HARDWARE") && out->info().type == VK_PHYSICAL_DEVICE_TYPE_CPU) {
         const std::string name = out->info().name;
         out.reset();
-        return {VK_ERROR_INITIALIZATION_FAILED,
-                "selected device '" + name + "' is a CPU device but GPU_SPIKE_REQUIRE_HARDWARE=1"};
+        return { VK_ERROR_INITIALIZATION_FAILED,
+                 "selected device '" + name + "' is a CPU device but GPU_SPIKE_REQUIRE_HARDWARE=1" };
     }
     std::printf("vulkan device: %s | validation=%d debugMessenger=%d pushDescriptor=%d\n", out->info().name.c_str(),
                 out->info().validationEnabled, out->info().debugMessenger, out->info().pushDescriptor);
@@ -70,10 +74,12 @@ inline gpu::GpuStatus createDevice(std::unique_ptr<gpu::GpuDevice>& out, gpu::Gp
 
 // Fails the current test, or the suite when called from TearDownTestSuite, for every
 // validation error since the last call.
-class ValidationCheck
-{
+class ValidationCheck {
 public:
-    ValidationCheck() : seen_(validationErrors().load()) {}
+    ValidationCheck()
+        : seen_(validationErrors().load())
+    {
+    }
 
     void expectClean(const char* where)
     {

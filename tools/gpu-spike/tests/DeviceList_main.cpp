@@ -8,16 +8,22 @@
 
 namespace {
 
-bool hasExt(const std::vector<VkExtensionProperties>& exts, const char* name)
+bool
+hasExt(const std::vector<VkExtensionProperties>& exts, const char* name)
 {
     return std::any_of(exts.begin(), exts.end(), [&](const VkExtensionProperties& e) {
         return std::strcmp(e.extensionName, name) == 0;
     });
 }
 
-const char* yn(bool b) { return b ? "yes" : "no"; }
+const char*
+yn(bool b)
+{
+    return b ? "yes" : "no";
+}
 
-std::string queueFlags(VkQueueFlags f)
+std::string
+queueFlags(VkQueueFlags f)
 {
     std::string s;
     auto add = [&](VkQueueFlagBits bit, const char* n) {
@@ -38,11 +44,12 @@ std::string queueFlags(VkQueueFlags f)
 
 } // namespace
 
-int main()
+int
+main()
 {
-    VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    VkApplicationInfo app { VK_STRUCTURE_TYPE_APPLICATION_INFO };
     app.apiVersion = VK_API_VERSION_1_3;
-    VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    VkInstanceCreateInfo ici { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
     ici.pApplicationInfo = &app;
     VkInstance inst = VK_NULL_HANDLE;
     VkResult r = vkCreateInstance(&ici, nullptr, &inst);
@@ -58,8 +65,8 @@ int main()
     std::printf("%u physical device(s)\n", n);
 
     for (uint32_t i = 0; i < n; ++i) {
-        VkPhysicalDeviceDriverProperties drv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
-        VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &drv};
+        VkPhysicalDeviceDriverProperties drv { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
+        VkPhysicalDeviceProperties2 props { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &drv };
         vkGetPhysicalDeviceProperties2(devs[i], &props);
         const uint32_t v = props.properties.apiVersion;
 
@@ -75,9 +82,7 @@ int main()
         vkGetPhysicalDeviceQueueFamilyProperties(devs[i], &qn, qf.data());
         for (uint32_t q = 0; q < qn; ++q) {
             const bool compute = (qf[q].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
-            const bool transferOnly =
-                (qf[q].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == 0 &&
-                (qf[q].queueFlags & VK_QUEUE_TRANSFER_BIT) != 0;
+            const bool transferOnly = (qf[q].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == 0 && (qf[q].queueFlags & VK_QUEUE_TRANSFER_BIT) != 0;
             std::printf("    queue family %u: count=%u flags=%s%s%s\n", q, qf[q].queueCount,
                         queueFlags(qf[q].queueFlags).c_str(), compute ? " [compute]" : "",
                         transferOnly ? " [transfer-only]" : "");
@@ -94,12 +99,12 @@ int main()
         std::printf("    VK_EXT_memory_budget:          %s\n", yn(hasExt(exts, "VK_EXT_memory_budget")));
         std::printf("    VK_KHR_push_descriptor:        %s\n", yn(hasExt(exts, "VK_KHR_push_descriptor")));
 
-        VkPhysicalDeviceVulkan11Features f11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
-        VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-        VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+        VkPhysicalDeviceVulkan11Features f11 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
+        VkPhysicalDeviceVulkan12Features f12 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+        VkPhysicalDeviceVulkan13Features f13 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
         f11.pNext = &f12;
         f12.pNext = &f13;
-        VkPhysicalDeviceFeatures2 feats{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11};
+        VkPhysicalDeviceFeatures2 feats { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11 };
         const bool core12 = v >= VK_API_VERSION_1_2;
         const bool core13 = v >= VK_API_VERSION_1_3;
         if (core12) {

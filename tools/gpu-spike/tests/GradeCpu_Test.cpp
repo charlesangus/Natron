@@ -16,8 +16,7 @@ namespace {
 
 using gradefix::GradeParams;
 
-struct GradeGlobals
-{
+struct GradeGlobals {
     StructuredBuffer<float> srcBuf;
     RWStructuredBuffer<float> dstBuf;
     GradeParams* params;
@@ -41,10 +40,10 @@ TEST(GradeCpu, MatchesReferenceOverSweep)
         GradeParams p = c.p;
         std::vector<float> dst(c.src.size(), -123.0f);
 
-        GradeGlobals g{{c.src.data(), c.src.size()}, {dst.data(), dst.size()}, &p};
+        GradeGlobals g { { c.src.data(), c.src.size() }, { dst.data(), dst.size() }, &p };
         ComputeVaryingInput vi = {};
-        vi.startGroupID = {0, 0, 0};
-        vi.endGroupID = {(p.width + 7) / 8, (p.height + 7) / 8, 1};
+        vi.startGroupID = { 0, 0, 0 };
+        vi.endGroupID = { (p.width + 7) / 8, (p.height + 7) / 8, 1 };
         grade_main(&vi, nullptr, &g);
 
         gradefix::checkCase(stats, k, c, dst.data());

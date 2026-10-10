@@ -15,206 +15,209 @@ namespace gpu {
 
 namespace {
 
-using Clock = std::chrono::steady_clock;
+    using Clock = std::chrono::steady_clock;
 
-constexpr uint64_t kWaitTimeoutNs = 60ull * 1000 * 1000 * 1000;
+    constexpr uint64_t kWaitTimeoutNs = 60ull * 1000 * 1000 * 1000;
 
-GpuStatus fail(VkResult r, std::string msg)
-{
-    return GpuStatus{r, std::move(msg)};
-}
-
-double msSince(Clock::time_point t0, Clock::time_point t)
-{
-    return std::chrono::duration<double, std::milli>(t - t0).count();
-}
-
-class CopyPool
-{
-public:
-    explicit CopyPool(uint32_t threads)
+    GpuStatus fail(VkResult r, std::string msg)
     {
-        threads = std::max(1u, threads);
-        for (uint32_t i = 0; i < threads; ++i) {
-            workers_.emplace_back([this] { run(); });
-        }
+        return GpuStatus { r, std::move(msg) };
     }
 
-    ~CopyPool()
+    double msSince(Clock::time_point t0, Clock::time_point t)
     {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            stop_ = true;
-        }
-        cv_.notify_all();
-        for (std::thread& t : workers_) {
-            t.join();
-        }
+        return std::chrono::duration<double, std::milli>(t - t0).count();
     }
 
-    // Split across every worker even for a single caller; with one worker all copies from both directions serialize.
-    // Returns the memcpy time itself, excluding any wait behind the other direction's chunks.
-    double copy(void* dst, const void* src, size_t bytes)
-    {
-        const size_t parts = workers_.size();
-        const size_t chunk = ((bytes + parts - 1) / parts + 63) & ~size_t(63);
-        Batch batch;
-        size_t chunks = 0;
+    class CopyPool {
+    public:
+        explicit CopyPool(uint32_t threads)
         {
-            std::lock_guard<std::mutex> lock(mutex_);
-            for (size_t off = 0; off < bytes; off += chunk) {
-                tasks_.push_back({static_cast<char*>(dst) + off, static_cast<const char*>(src) + off,
-                                  std::min(chunk, bytes - off), &batch});
-                ++batch.remaining;
-                ++chunks;
+            threads = std::max(1u, threads);
+            for (uint32_t i = 0; i < threads; ++i) {
+                workers_.emplace_back([this] { run(); });
             }
         }
-        cv_.notify_all();
-        std::unique_lock<std::mutex> lock(batch.mutex);
-        batch.cv.wait(lock, [&] { return batch.remaining == 0; });
-        return batch.workMs / static_cast<double>(std::max<size_t>(1, std::min(chunks, parts)));
-    }
 
-private:
-    struct Batch
-    {
-        std::mutex mutex;
-        std::condition_variable cv;
-        size_t remaining = 0;
-        double workMs = 0.0;
-    };
-    struct Task
-    {
-        char* dst;
-        const char* src;
-        size_t bytes;
-        Batch* batch;
-    };
-
-    void run()
-    {
-        for (;;) {
-            Task t;
+        ~CopyPool()
+        {
             {
-                std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait(lock, [&] { return stop_ || !tasks_.empty(); });
-                if (tasks_.empty()) {
-                    return;
-                }
-                t = tasks_.front();
-                tasks_.pop_front();
+                std::lock_guard<std::mutex> lock(mutex_);
+                stop_ = true;
             }
-            const Clock::time_point b = Clock::now();
-            std::memcpy(t.dst, t.src, t.bytes);
-            const double ms = std::chrono::duration<double, std::milli>(Clock::now() - b).count();
-            std::lock_guard<std::mutex> lock(t.batch->mutex);
-            t.batch->workMs += ms;
-            if (--t.batch->remaining == 0) {
-                t.batch->cv.notify_all();
+            cv_.notify_all();
+            for (std::thread& t : workers_) {
+                t.join();
             }
         }
-    }
 
-    std::vector<std::thread> workers_;
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    std::deque<Task> tasks_;
-    bool stop_ = false;
-};
+        // Split across every worker even for a single caller; with one worker all copies from both directions serialize.
+        // Returns the memcpy time itself, excluding any wait behind the other direction's chunks.
+        double copy(void* dst, const void* src, size_t bytes)
+        {
+            const size_t parts = workers_.size();
+            const size_t chunk = ((bytes + parts - 1) / parts + 63) & ~size_t(63);
+            Batch batch;
+            size_t chunks = 0;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                for (size_t off = 0; off < bytes; off += chunk) {
+                    tasks_.push_back({ static_cast<char*>(dst) + off, static_cast<const char*>(src) + off,
+                                       std::min(chunk, bytes - off), &batch });
+                    ++batch.remaining;
+                    ++chunks;
+                }
+            }
+            cv_.notify_all();
+            std::unique_lock<std::mutex> lock(batch.mutex);
+            batch.cv.wait(lock, [&] { return batch.remaining == 0; });
+            return batch.workMs / static_cast<double>(std::max<size_t>(1, std::min(chunks, parts)));
+        }
 
-struct VmaBuffer
-{
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VmaAllocation allocation = nullptr;
-    void* mapped = nullptr;
-    VkDeviceSize size = 0;
-};
+    private:
+        struct Batch {
+            std::mutex mutex;
+            std::condition_variable cv;
+            size_t remaining = 0;
+            double workMs = 0.0;
+        };
+        struct Task {
+            char* dst;
+            const char* src;
+            size_t bytes;
+            Batch* batch;
+        };
 
-struct ImportedBuffer
-{
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-};
+        void run()
+        {
+            for (;;) {
+                Task t;
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    cv_.wait(lock, [&] { return stop_ || !tasks_.empty(); });
+                    if (tasks_.empty()) {
+                        return;
+                    }
+                    t = tasks_.front();
+                    tasks_.pop_front();
+                }
+                const Clock::time_point b = Clock::now();
+                std::memcpy(t.dst, t.src, t.bytes);
+                const double ms = std::chrono::duration<double, std::milli>(Clock::now() - b).count();
+                std::lock_guard<std::mutex> lock(t.batch->mutex);
+                t.batch->workMs += ms;
+                if (--t.batch->remaining == 0) {
+                    t.batch->cv.notify_all();
+                }
+            }
+        }
 
-struct Barrier
-{
-    VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+        std::vector<std::thread> workers_;
+        std::mutex mutex_;
+        std::condition_variable cv_;
+        std::deque<Task> tasks_;
+        bool stop_ = false;
+    };
 
-    Barrier(VkBuffer buffer, VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
-            VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
-            uint32_t srcFamily = VK_QUEUE_FAMILY_IGNORED, uint32_t dstFamily = VK_QUEUE_FAMILY_IGNORED)
-    {
-        b.srcStageMask = srcStage;
-        b.srcAccessMask = srcAccess;
-        b.dstStageMask = dstStage;
-        b.dstAccessMask = dstAccess;
-        b.srcQueueFamilyIndex = srcFamily;
-        b.dstQueueFamilyIndex = dstFamily;
-        b.buffer = buffer;
-        b.offset = 0;
-        b.size = VK_WHOLE_SIZE;
-    }
+    struct VmaBuffer {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VmaAllocation allocation = nullptr;
+        void* mapped = nullptr;
+        VkDeviceSize size = 0;
+    };
 
-    void record(VkCommandBuffer cb) const
-    {
-        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-        dep.bufferMemoryBarrierCount = 1;
-        dep.pBufferMemoryBarriers = &b;
-        vkCmdPipelineBarrier2(cb, &dep);
-    }
-};
+    struct ImportedBuffer {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+    };
 
-struct SemWait
-{
-    VkSemaphore semaphore;
-    uint64_t value;
-};
+    struct Barrier {
+        VkBufferMemoryBarrier2 b { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+
+        Barrier(VkBuffer buffer, VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
+                VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
+                uint32_t srcFamily = VK_QUEUE_FAMILY_IGNORED, uint32_t dstFamily = VK_QUEUE_FAMILY_IGNORED)
+        {
+            b.srcStageMask = srcStage;
+            b.srcAccessMask = srcAccess;
+            b.dstStageMask = dstStage;
+            b.dstAccessMask = dstAccess;
+            b.srcQueueFamilyIndex = srcFamily;
+            b.dstQueueFamilyIndex = dstFamily;
+            b.buffer = buffer;
+            b.offset = 0;
+            b.size = VK_WHOLE_SIZE;
+        }
+
+        void record(VkCommandBuffer cb) const
+        {
+            VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+            dep.bufferMemoryBarrierCount = 1;
+            dep.pBufferMemoryBarriers = &b;
+            vkCmdPipelineBarrier2(cb, &dep);
+        }
+    };
+
+    struct SemWait {
+        VkSemaphore semaphore;
+        uint64_t value;
+    };
 
 } // namespace
 
-double TransferTimeline::hostUploadBusyMs() const
+double
+TransferTimeline::hostUploadBusyMs() const
 {
     double s = 0;
-    for (const FrameTimeline& f : frames) s += f.hostUpload.busyMs;
+    for (const FrameTimeline& f : frames)
+        s += f.hostUpload.busyMs;
     return s;
 }
 
-double TransferTimeline::hostDownloadBusyMs() const
+double
+TransferTimeline::hostDownloadBusyMs() const
 {
     double s = 0;
-    for (const FrameTimeline& f : frames) s += f.hostDownload.busyMs;
+    for (const FrameTimeline& f : frames)
+        s += f.hostDownload.busyMs;
     return s;
 }
 
-double TransferTimeline::gpuUploadBusyMs() const
+double
+TransferTimeline::gpuUploadBusyMs() const
 {
     double s = 0;
-    for (const FrameTimeline& f : frames) s += f.gpuUpload.busyMs;
+    for (const FrameTimeline& f : frames)
+        s += f.gpuUpload.busyMs;
     return s;
 }
 
-double TransferTimeline::gpuComputeBusyMs() const
+double
+TransferTimeline::gpuComputeBusyMs() const
 {
     double s = 0;
-    for (const FrameTimeline& f : frames) s += f.gpuCompute.busyMs;
+    for (const FrameTimeline& f : frames)
+        s += f.gpuCompute.busyMs;
     return s;
 }
 
-double TransferTimeline::gpuDownloadBusyMs() const
+double
+TransferTimeline::gpuDownloadBusyMs() const
 {
     double s = 0;
-    for (const FrameTimeline& f : frames) s += f.gpuDownload.busyMs;
+    for (const FrameTimeline& f : frames)
+        s += f.gpuDownload.busyMs;
     return s;
 }
 
-double TransferTimeline::sumOfStagesMs() const
+double
+TransferTimeline::sumOfStagesMs() const
 {
     return hostUploadBusyMs() + gpuUploadBusyMs() + gpuComputeBusyMs() + gpuDownloadBusyMs()
-           + hostDownloadBusyMs();
+        + hostDownloadBusyMs();
 }
 
-struct GpuTransfer::Impl
-{
+struct GpuTransfer::Impl {
     GpuDevice& dev;
     const GpuTransferOptions& opt;
     VkDevice vk;
@@ -262,9 +265,13 @@ struct GpuTransfer::Impl
     std::map<std::pair<uintptr_t, VkDeviceSize>, ImportedBuffer> importCache;
 
     Impl(GpuDevice& d, const GpuTransferOptions& o)
-        : dev(d), opt(o), vk(d.device()), ownershipTransfers(!d.info().transferUsesComputeQueue),
-          computeFamily(d.info().computeFamily), transferFamily(d.info().transferFamily),
-          copies(o.copyThreads)
+        : dev(d)
+        , opt(o)
+        , vk(d.device())
+        , ownershipTransfers(!d.info().transferUsesComputeQueue)
+        , computeFamily(d.info().computeFamily)
+        , transferFamily(d.info().transferFamily)
+        , copies(o.copyThreads)
     {
     }
 
@@ -276,32 +283,37 @@ struct GpuTransfer::Impl
         releaseCachedImports();
         vkDeviceWaitIdle(vk);
         auto freeBuf = [&](VmaBuffer& b) {
-            if (b.buffer) vmaDestroyBuffer(dev.allocator(), b.buffer, b.allocation);
+            if (b.buffer)
+                vmaDestroyBuffer(dev.allocator(), b.buffer, b.allocation);
             b = {};
         };
-        for (auto* v : {&upSlots, &downSlots, &devIn, &devOut}) {
-            for (VmaBuffer& b : *v) freeBuf(b);
+        for (auto* v : { &upSlots, &downSlots, &devIn, &devOut }) {
+            for (VmaBuffer& b : *v)
+                freeBuf(b);
         }
-        for (VkCommandPool p : {upPool, downPool, compPool}) {
-            if (p) vkDestroyCommandPool(vk, p, nullptr);
+        for (VkCommandPool p : { upPool, downPool, compPool }) {
+            if (p)
+                vkDestroyCommandPool(vk, p, nullptr);
         }
-        for (VkSemaphore s : {upTL, compTL, downTL}) {
-            if (s) vkDestroySemaphore(vk, s, nullptr);
+        for (VkSemaphore s : { upTL, compTL, downTL }) {
+            if (s)
+                vkDestroySemaphore(vk, s, nullptr);
         }
-        if (queries) vkDestroyQueryPool(vk, queries, nullptr);
+        if (queries)
+            vkDestroyQueryPool(vk, queries, nullptr);
     }
 
     GpuStatus createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memUsage,
                            VmaAllocationCreateFlags flags, VmaBuffer& out)
     {
-        VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        VkBufferCreateInfo bci { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         bci.size = size;
         bci.usage = usage;
         bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        VmaAllocationCreateInfo aci{};
+        VmaAllocationCreateInfo aci {};
         aci.usage = memUsage;
         aci.flags = flags;
-        VmaAllocationInfo info{};
+        VmaAllocationInfo info {};
         if (GpuStatus s = dev.check(vmaCreateBuffer(dev.allocator(), &bci, &aci, &out.buffer, &out.allocation, &info),
                                     "vmaCreateBuffer");
             !s) {
@@ -314,14 +326,14 @@ struct GpuTransfer::Impl
 
     GpuStatus createPool(uint32_t family, uint32_t count, VkCommandPool& pool, std::vector<VkCommandBuffer>& cbs)
     {
-        VkCommandPoolCreateInfo ci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        VkCommandPoolCreateInfo ci { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
         ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         ci.queueFamilyIndex = family;
         if (GpuStatus s = dev.check(vkCreateCommandPool(vk, &ci, nullptr, &pool), "vkCreateCommandPool"); !s) {
             return s;
         }
         cbs.resize(count);
-        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        VkCommandBufferAllocateInfo ai { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
         ai.commandPool = pool;
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         ai.commandBufferCount = count;
@@ -330,9 +342,10 @@ struct GpuTransfer::Impl
 
     GpuStatus init()
     {
-        VkPhysicalDeviceExternalMemoryHostPropertiesEXT hostProps{
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
-        VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        VkPhysicalDeviceExternalMemoryHostPropertiesEXT hostProps {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT
+        };
+        VkPhysicalDeviceProperties2 props { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
         if (dev.info().externalMemoryHost) {
             props.pNext = &hostProps;
         }
@@ -388,14 +401,18 @@ struct GpuTransfer::Impl
         devIn.resize(depth);
         devOut.resize(depth);
 
-        if (GpuStatus s = createPool(transferFamily, n, upPool, upCbs); !s) return s;
-        if (GpuStatus s = createPool(transferFamily, n, downPool, downCbs); !s) return s;
-        if (GpuStatus s = createPool(computeFamily, depth + 1, compPool, compCbs); !s) return s;
+        if (GpuStatus s = createPool(transferFamily, n, upPool, upCbs); !s)
+            return s;
+        if (GpuStatus s = createPool(transferFamily, n, downPool, downCbs); !s)
+            return s;
+        if (GpuStatus s = createPool(computeFamily, depth + 1, compPool, compCbs); !s)
+            return s;
         miscCb = compCbs.back();
         compCbs.pop_back();
 
-        for (VkSemaphore* sem : {&upTL, &compTL, &downTL}) {
-            if (GpuStatus s = dev.createTimelineSemaphore(0, *sem); !s) return s;
+        for (VkSemaphore* sem : { &upTL, &compTL, &downTL }) {
+            if (GpuStatus s = dev.createTimelineSemaphore(0, *sem); !s)
+                return s;
         }
         return {};
     }
@@ -405,12 +422,13 @@ struct GpuTransfer::Impl
         if (bytes <= devCapacity) {
             return {};
         }
-        for (auto* v : {&devIn, &devOut}) {
+        for (auto* v : { &devIn, &devOut }) {
             for (VmaBuffer& b : *v) {
-                if (b.buffer) vmaDestroyBuffer(dev.allocator(), b.buffer, b.allocation);
+                if (b.buffer)
+                    vmaDestroyBuffer(dev.allocator(), b.buffer, b.allocation);
                 b = {};
                 const VkBufferUsageFlags usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-                                                 | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                    | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
                 if (GpuStatus s = createBuffer(bytes, usage, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, b); !s) {
                     devCapacity = 0;
                     return s;
@@ -427,10 +445,11 @@ struct GpuTransfer::Impl
             return {};
         }
         if (count > queryCapacity) {
-            if (queries) vkDestroyQueryPool(vk, queries, nullptr);
+            if (queries)
+                vkDestroyQueryPool(vk, queries, nullptr);
             queries = VK_NULL_HANDLE;
             queryCapacity = 0;
-            VkQueryPoolCreateInfo ci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            VkQueryPoolCreateInfo ci { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
             ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
             ci.queryCount = count;
             if (GpuStatus s = dev.check(vkCreateQueryPool(vk, &ci, nullptr, &queries), "vkCreateQueryPool"); !s) {
@@ -439,11 +458,14 @@ struct GpuTransfer::Impl
             queryCapacity = count;
         }
         // hostQueryReset is not enabled on the device, so the reset goes through a command buffer.
-        if (GpuStatus s = beginOneTime(miscCb); !s) return s;
+        if (GpuStatus s = beginOneTime(miscCb); !s)
+            return s;
         vkCmdResetQueryPool(miscCb, queries, 0, count);
-        if (GpuStatus s = dev.check(vkEndCommandBuffer(miscCb), "vkEndCommandBuffer"); !s) return s;
+        if (GpuStatus s = dev.check(vkEndCommandBuffer(miscCb), "vkEndCommandBuffer"); !s)
+            return s;
         const uint64_t v = ++compValue;
-        if (GpuStatus s = submit(QueueKind::Compute, miscCb, {}, compTL, v); !s) return s;
+        if (GpuStatus s = submit(QueueKind::Compute, miscCb, {}, compTL, v); !s)
+            return s;
         return dev.waitSemaphore(compTL, v, kWaitTimeoutNs);
     }
 
@@ -452,7 +474,7 @@ struct GpuTransfer::Impl
         if (GpuStatus s = dev.check(vkResetCommandBuffer(cb, 0), "vkResetCommandBuffer"); !s) {
             return s;
         }
-        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        VkCommandBufferBeginInfo bi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         return dev.check(vkBeginCommandBuffer(cb, &bi), "vkBeginCommandBuffer");
     }
@@ -463,20 +485,21 @@ struct GpuTransfer::Impl
         VkSemaphoreSubmitInfo w[4];
         uint32_t nw = 0;
         for (const SemWait& sw : waits) {
-            if (sw.value == 0) continue;
-            w[nw] = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+            if (sw.value == 0)
+                continue;
+            w[nw] = { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
             w[nw].semaphore = sw.semaphore;
             w[nw].value = sw.value;
             w[nw].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
             ++nw;
         }
-        VkSemaphoreSubmitInfo s{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+        VkSemaphoreSubmitInfo s { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
         s.semaphore = signal;
         s.value = signalValue;
         s.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-        VkCommandBufferSubmitInfo c{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+        VkCommandBufferSubmitInfo c { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
         c.commandBuffer = cb;
-        VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+        VkSubmitInfo2 si { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
         si.waitSemaphoreInfoCount = nw;
         si.pWaitSemaphoreInfos = w;
         si.commandBufferInfoCount = 1;
@@ -489,7 +512,7 @@ struct GpuTransfer::Impl
     bool importable(const void* p, VkDeviceSize bytes) const
     {
         return importAlignment != 0 && p != nullptr && reinterpret_cast<uintptr_t>(p) % importAlignment == 0
-               && bytes % importAlignment == 0;
+            && bytes % importAlignment == 0;
     }
 
     // Failure here is not an error: the caller falls back to staging.
@@ -499,13 +522,13 @@ struct GpuTransfer::Impl
             return false;
         }
         void* ptr = const_cast<void*>(p);
-        VkMemoryHostPointerPropertiesEXT hp{VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+        VkMemoryHostPointerPropertiesEXT hp { VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT };
         if (getHostPointerProps(vk, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, ptr, &hp) != VK_SUCCESS) {
             return false;
         }
-        VkExternalMemoryBufferCreateInfo ext{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
+        VkExternalMemoryBufferCreateInfo ext { VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO };
         ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
-        VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        VkBufferCreateInfo bci { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         bci.pNext = &ext;
         bci.size = bytes;
         bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -529,10 +552,10 @@ struct GpuTransfer::Impl
             out = {};
             return false;
         }
-        VkImportMemoryHostPointerInfoEXT imp{VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT};
+        VkImportMemoryHostPointerInfoEXT imp { VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT };
         imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
         imp.pHostPointer = ptr;
-        VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        VkMemoryAllocateInfo mai { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
         mai.pNext = &imp;
         mai.allocationSize = bytes;
         mai.memoryTypeIndex = type;
@@ -552,8 +575,10 @@ struct GpuTransfer::Impl
 
     void destroyImport(ImportedBuffer& b)
     {
-        if (b.buffer) vkDestroyBuffer(vk, b.buffer, nullptr);
-        if (b.memory) vkFreeMemory(vk, b.memory, nullptr);
+        if (b.buffer)
+            vkDestroyBuffer(vk, b.buffer, nullptr);
+        if (b.memory)
+            vkFreeMemory(vk, b.memory, nullptr);
         b = {};
     }
 
@@ -564,7 +589,8 @@ struct GpuTransfer::Impl
             return false;
         }
         if (!opt.cacheHostImports) {
-            if (!importHost(p, bytes, out)) return false;
+            if (!importHost(p, bytes, out))
+                return false;
             owned.push_back(out);
             return true;
         }
@@ -574,7 +600,8 @@ struct GpuTransfer::Impl
             out = it->second;
             return true;
         }
-        if (!importHost(p, bytes, out)) return false;
+        if (!importHost(p, bytes, out))
+            return false;
         importCache.emplace(key, out);
         return true;
     }
@@ -586,19 +613,22 @@ struct GpuTransfer::Impl
             return;
         }
         vkDeviceWaitIdle(vk);
-        for (auto& [key, b] : importCache) destroyImport(b);
+        for (auto& [key, b] : importCache)
+            destroyImport(b);
         importCache.clear();
     }
 };
 
 GpuTransfer::GpuTransfer(GpuDevice& device, const GpuTransferOptions& options)
-    : device_(device), options_(options)
+    : device_(device)
+    , options_(options)
 {
 }
 
 GpuTransfer::~GpuTransfer() = default;
 
-GpuStatus GpuTransfer::create(GpuDevice& device, const GpuTransferOptions& options, std::unique_ptr<GpuTransfer>& out)
+GpuStatus
+GpuTransfer::create(GpuDevice& device, const GpuTransferOptions& options, std::unique_ptr<GpuTransfer>& out)
 {
     out.reset();
     if (options.stripBytes == 0 || options.stripBytes % 64 != 0) {
@@ -614,8 +644,9 @@ GpuStatus GpuTransfer::create(GpuDevice& device, const GpuTransferOptions& optio
     return {};
 }
 
-GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const ComputeRecordFn& record,
-                               TransferTimeline* timeline)
+GpuStatus
+GpuTransfer::process(std::span<const TransferFrame> frames, const ComputeRecordFn& record,
+                     TransferTimeline* timeline)
 {
     Impl& m = *impl_;
     if (frames.empty()) {
@@ -710,7 +741,7 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
             if (useImport) {
                 const Clock::time_point te = Clock::now();
                 ft.uploadPath = TransferPath::HostImport;
-                ft.hostUpload = {msSince(t0, ti), msSince(t0, te), msSince(ti, te)};
+                ft.hostUpload = { msSince(t0, ti), msSince(t0, te), msSince(ti, te) };
             }
 
             const uint32_t pieces = useImport ? 1 : ft.strips;
@@ -727,15 +758,17 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
                     const double work = m.copies.copy(m.upSlots[r].mapped, static_cast<const char*>(f.src) + off, len);
                     vmaFlushAllocation(device_.allocator(), m.upSlots[r].allocation, 0, len);
                     const Clock::time_point ce = Clock::now();
-                    if (i == 0) ft.hostUpload.beginMs = msSince(t0, cs);
+                    if (i == 0)
+                        ft.hostUpload.beginMs = msSince(t0, cs);
                     ft.hostUpload.endMs = msSince(t0, ce);
                     ft.hostUpload.busyMs += work;
                 }
 
                 VkCommandBuffer cb = m.upCbs[r];
-                if (GpuStatus s = m.beginOneTime(cb); !s) return s;
+                if (GpuStatus s = m.beginOneTime(cb); !s)
+                    return s;
                 stamp(cb, m.tsTransfer, qUp(k, i));
-                VkBufferCopy region{0, useImport ? 0 : off, len};
+                VkBufferCopy region { 0, useImport ? 0 : off, len };
                 vkCmdCopyBuffer(cb, srcBuf, m.devIn[d].buffer, 1, &region);
                 if (i + 1 == pieces && m.ownershipTransfers) {
                     Barrier(m.devIn[d].buffer, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -743,9 +776,10 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
                         .record(cb);
                 }
                 stamp(cb, m.tsTransfer, qUp(k, i) + 1);
-                if (GpuStatus s = device_.check(vkEndCommandBuffer(cb), "vkEndCommandBuffer"); !s) return s;
+                if (GpuStatus s = device_.check(vkEndCommandBuffer(cb), "vkEndCommandBuffer"); !s)
+                    return s;
                 const uint64_t v = ++m.upValue;
-                if (GpuStatus s = m.submit(QueueKind::Transfer, cb, {{m.compTL, inFree}}, m.upTL, v); !s) {
+                if (GpuStatus s = m.submit(QueueKind::Transfer, cb, { { m.compTL, inFree } }, m.upTL, v); !s) {
                     return s;
                 }
                 m.upSlotValue[r] = v;
@@ -756,7 +790,8 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
             if (k >= D) {
                 std::unique_lock<std::mutex> lock(mtx);
                 cv.wait(lock, [&] { return aborted || downloadSubmitted > k - D; });
-                if (aborted) return {};
+                if (aborted)
+                    return {};
                 outFree = downloadDone[k - D];
                 lock.unlock();
                 if (GpuStatus s = device_.waitSemaphore(m.compTL, compBase + (k - D) + 1, kWaitTimeoutNs); !s) {
@@ -765,7 +800,8 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
             }
 
             VkCommandBuffer cb = m.compCbs[d];
-            if (GpuStatus s = m.beginOneTime(cb); !s) return s;
+            if (GpuStatus s = m.beginOneTime(cb); !s)
+                return s;
             stamp(cb, m.tsCompute, qComp(k));
             if (m.ownershipTransfers) {
                 Barrier(m.devIn[d].buffer, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
@@ -774,11 +810,11 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
                     .record(cb);
             }
             if (record) {
-                if (GpuStatus s = record(cb, ComputeBinding{m.devIn[d].buffer, m.devOut[d].buffer, f.bytes, k}); !s) {
+                if (GpuStatus s = record(cb, ComputeBinding { m.devIn[d].buffer, m.devOut[d].buffer, f.bytes, k }); !s) {
                     return s;
                 }
             } else {
-                VkBufferCopy region{0, 0, f.bytes};
+                VkBufferCopy region { 0, 0, f.bytes };
                 vkCmdCopyBuffer(cb, m.devIn[d].buffer, m.devOut[d].buffer, 1, &region);
             }
             if (m.ownershipTransfers) {
@@ -787,8 +823,9 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
                     .record(cb);
             }
             stamp(cb, m.tsCompute, qComp(k) + 1);
-            if (GpuStatus s = device_.check(vkEndCommandBuffer(cb), "vkEndCommandBuffer"); !s) return s;
-            if (GpuStatus s = m.submit(QueueKind::Compute, cb, {{m.upTL, uploadDone[k]}, {m.downTL, outFree}}, m.compTL,
+            if (GpuStatus s = device_.check(vkEndCommandBuffer(cb), "vkEndCommandBuffer"); !s)
+                return s;
+            if (GpuStatus s = m.submit(QueueKind::Compute, cb, { { m.upTL, uploadDone[k] }, { m.downTL, outFree } }, m.compTL,
                                        compBase + k + 1);
                 !s) {
                 return s;
@@ -802,8 +839,7 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
         return {};
     };
 
-    struct Piece
-    {
+    struct Piece {
         uint32_t frame;
         uint32_t ring;
         uint64_t value;
@@ -830,7 +866,8 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
                 const double work = m.copies.copy(static_cast<char*>(frames[p.frame].dst) + p.offset,
                                                   m.downSlots[p.ring].mapped, p.bytes);
                 const Clock::time_point ce = Clock::now();
-                if (p.offset == 0) ft.hostDownload.beginMs = msSince(t0, cs);
+                if (p.offset == 0)
+                    ft.hostDownload.beginMs = msSince(t0, cs);
                 ft.hostDownload.busyMs += work;
                 ft.hostDownload.endMs = msSince(t0, ce);
             } else {
@@ -843,7 +880,8 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
             {
                 std::unique_lock<std::mutex> lock(mtx);
                 cv.wait(lock, [&] { return aborted || computeSubmitted > k; });
-                if (aborted) return {};
+                if (aborted)
+                    return {};
             }
             const TransferFrame& f = frames[k];
             const uint32_t d = k % D;
@@ -855,13 +893,14 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
             if (useImport) {
                 const Clock::time_point te = Clock::now();
                 ft.downloadPath = TransferPath::HostImport;
-                ft.hostDownload = {msSince(t0, ti), msSince(t0, te), msSince(ti, te)};
+                ft.hostDownload = { msSince(t0, ti), msSince(t0, te), msSince(ti, te) };
             }
 
             const uint32_t pieces = useImport ? 1 : downPieces(f);
             for (uint32_t i = 0; i < pieces; ++i) {
                 if (fifo.size() == N) {
-                    if (GpuStatus s = drainOne(); !s) return s;
+                    if (GpuStatus s = drainOne(); !s)
+                        return s;
                 }
                 const uint32_t r = ringNext++ % N;
                 const VkDeviceSize off = useImport ? 0 : i * strip;
@@ -869,25 +908,27 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
                 VkBuffer dstBuf = useImport ? imp.buffer : m.downSlots[r].buffer;
 
                 VkCommandBuffer cb = m.downCbs[r];
-                if (GpuStatus s = m.beginOneTime(cb); !s) return s;
+                if (GpuStatus s = m.beginOneTime(cb); !s)
+                    return s;
                 stamp(cb, m.tsTransfer, qDown(k, i));
                 if (i == 0 && m.ownershipTransfers) {
                     Barrier(m.devOut[d].buffer, VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT,
                             VK_ACCESS_2_TRANSFER_READ_BIT, m.computeFamily, m.transferFamily)
                         .record(cb);
                 }
-                VkBufferCopy region{downOffset(f) + off, 0, len};
+                VkBufferCopy region { downOffset(f) + off, 0, len };
                 vkCmdCopyBuffer(cb, m.devOut[d].buffer, dstBuf, 1, &region);
                 Barrier(dstBuf, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT,
                         VK_ACCESS_2_HOST_READ_BIT)
                     .record(cb);
                 stamp(cb, m.tsTransfer, qDown(k, i) + 1);
-                if (GpuStatus s = device_.check(vkEndCommandBuffer(cb), "vkEndCommandBuffer"); !s) return s;
+                if (GpuStatus s = device_.check(vkEndCommandBuffer(cb), "vkEndCommandBuffer"); !s)
+                    return s;
                 const uint64_t v = ++m.downValue;
-                if (GpuStatus s = m.submit(QueueKind::Transfer, cb, {{m.compTL, compBase + k + 1}}, m.downTL, v); !s) {
+                if (GpuStatus s = m.submit(QueueKind::Transfer, cb, { { m.compTL, compBase + k + 1 } }, m.downTL, v); !s) {
                     return s;
                 }
-                fifo.push_back({k, r, v, off, len, !useImport, i + 1 == pieces});
+                fifo.push_back({ k, r, v, off, len, !useImport, i + 1 == pieces });
             }
             {
                 std::lock_guard<std::mutex> lock(mtx);
@@ -897,7 +938,8 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
             cv.notify_all();
         }
         while (!fifo.empty()) {
-            if (GpuStatus s = drainOne(); !s) return s;
+            if (GpuStatus s = drainOne(); !s)
+                return s;
         }
         return {};
     };
@@ -906,14 +948,16 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
     std::exception_ptr downException;
     std::thread down([&] {
         try {
-            if (GpuStatus s = downloader(); !s) raise(std::move(s));
+            if (GpuStatus s = downloader(); !s)
+                raise(std::move(s));
         } catch (...) {
             downException = std::current_exception();
             raise(fail(VK_ERROR_UNKNOWN, "GpuTransfer download thread threw"));
         }
     });
     try {
-        if (GpuStatus s = uploader(); !s) raise(std::move(s));
+        if (GpuStatus s = uploader(); !s)
+            raise(std::move(s));
     } catch (...) {
         upException = std::current_exception();
         raise(fail(VK_ERROR_UNKNOWN, "GpuTransfer compute callback or upload threw"));
@@ -928,8 +972,10 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
         raise(std::move(s));
         vkDeviceWaitIdle(m.vk);
     }
-    for (ImportedBuffer& b : upImports) m.destroyImport(b);
-    for (ImportedBuffer& b : downImports) m.destroyImport(b);
+    for (ImportedBuffer& b : upImports)
+        m.destroyImport(b);
+    for (ImportedBuffer& b : downImports)
+        m.destroyImport(b);
     if (upException) {
         std::rethrow_exception(upException);
     }
@@ -948,7 +994,8 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
         if (timestamps) {
             std::vector<uint64_t> ticks(written.size(), 0);
             for (uint32_t q = 0; q < written.size(); ++q) {
-                if (!written[q]) continue;
+                if (!written[q])
+                    continue;
                 if (GpuStatus s = device_.check(vkGetQueryPoolResults(m.vk, m.queries, q, 1, sizeof(uint64_t), &ticks[q],
                                                                       sizeof(uint64_t),
                                                                       VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT),
@@ -971,7 +1018,8 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
                 bool any = false;
                 for (uint32_t i = 0; i < pieces; ++i) {
                     const uint32_t q = q0 + 2 * i;
-                    if (!written[q] || !written[q + 1]) continue;
+                    if (!written[q] || !written[q + 1])
+                        continue;
                     const double b = double(ticks[q] - origin) * toMs;
                     const double e = double(ticks[q + 1] - origin) * toMs;
                     out.beginMs = any ? std::min(out.beginMs, b) : b;
@@ -991,7 +1039,8 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
     return {};
 }
 
-void GpuTransfer::releaseHostImports()
+void
+GpuTransfer::releaseHostImports()
 {
     impl_->releaseCachedImports();
 }

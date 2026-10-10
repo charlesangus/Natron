@@ -25,20 +25,21 @@ constexpr size_t kUhdBytes = kWidth * kHeight * 4 * sizeof(float);
 constexpr uint32_t kPipelinedFrames = 6;
 constexpr size_t kAlign = 4096;
 
-struct FreeDeleter
-{
+struct FreeDeleter {
     void operator()(void* p) const { std::free(p); }
 };
 using HostBuf = std::unique_ptr<uint8_t, FreeDeleter>;
 
-HostBuf alignedBuf(size_t bytes)
+HostBuf
+alignedBuf(size_t bytes)
 {
     const size_t rounded = (bytes + kAlign - 1) / kAlign * kAlign;
     return HostBuf(static_cast<uint8_t*>(std::aligned_alloc(kAlign, rounded)));
 }
 
 // Distinct per frame and per word so a misplaced strip or a stale frame cannot compare equal.
-void fillFrame(uint8_t* p, size_t bytes, uint32_t seed)
+void
+fillFrame(uint8_t* p, size_t bytes, uint32_t seed)
 {
     const size_t words = bytes / 4;
     const unsigned nt = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
@@ -55,17 +56,19 @@ void fillFrame(uint8_t* p, size_t bytes, uint32_t seed)
             }
         });
     }
-    for (std::thread& t : ts) t.join();
-    for (size_t i = words * 4; i < bytes; ++i) p[i] = static_cast<uint8_t>(i + seed);
+    for (std::thread& t : ts)
+        t.join();
+    for (size_t i = words * 4; i < bytes; ++i)
+        p[i] = static_cast<uint8_t>(i + seed);
 }
 
-const char* pathName(TransferPath p)
+const char*
+pathName(TransferPath p)
 {
     return p == TransferPath::HostImport ? "host-import" : "staging";
 }
 
-class GpuTransferTest : public ::testing::Test
-{
+class GpuTransferTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
     {
@@ -128,7 +131,8 @@ std::vector<HostBuf> GpuTransferTest::srcs_;
 std::vector<HostBuf> GpuTransferTest::dsts_;
 gputest::ValidationCheck GpuTransferTest::check_;
 
-void expectSame(const void* a, const void* b, size_t bytes, uint32_t frame)
+void
+expectSame(const void* a, const void* b, size_t bytes, uint32_t frame)
 {
     if (std::memcmp(a, b, bytes) == 0) {
         return;
@@ -136,7 +140,8 @@ void expectSame(const void* a, const void* b, size_t bytes, uint32_t frame)
     const uint8_t* x = static_cast<const uint8_t*>(a);
     const uint8_t* y = static_cast<const uint8_t*>(b);
     size_t i = 0;
-    while (x[i] == y[i]) ++i;
+    while (x[i] == y[i])
+        ++i;
     ADD_FAILURE() << "frame " << frame << " differs first at byte " << i << " of " << bytes;
 }
 
@@ -149,9 +154,9 @@ TEST_F(GpuTransferTest, StagingRoundTripUhd)
     auto t = make(o);
     ASSERT_TRUE(t);
     std::memset(dsts_[0].get(), 0, kUhdBytes);
-    TransferFrame f{srcs_[0].get(), dsts_[0].get(), kUhdBytes};
+    TransferFrame f { srcs_[0].get(), dsts_[0].get(), kUhdBytes };
     TransferTimeline tl;
-    GpuStatus s = t->process({&f, 1}, nullptr, &tl);
+    GpuStatus s = t->process({ &f, 1 }, nullptr, &tl);
     ASSERT_TRUE(s.ok()) << s.message;
     ASSERT_EQ(tl.frames.size(), 1u);
     EXPECT_EQ(tl.frames[0].uploadPath, TransferPath::Staging);
@@ -170,9 +175,9 @@ TEST_F(GpuTransferTest, HostImportRoundTripUhd)
     }
     ASSERT_EQ(kAlign % t->hostImportAlignment(), 0u);
     std::memset(dsts_[1].get(), 0, kUhdBytes);
-    TransferFrame f{srcs_[1].get(), dsts_[1].get(), kUhdBytes};
+    TransferFrame f { srcs_[1].get(), dsts_[1].get(), kUhdBytes };
     TransferTimeline tl;
-    GpuStatus s = t->process({&f, 1}, nullptr, &tl);
+    GpuStatus s = t->process({ &f, 1 }, nullptr, &tl);
     ASSERT_TRUE(s.ok()) << s.message;
     EXPECT_EQ(tl.frames[0].uploadPath, TransferPath::HostImport);
     EXPECT_EQ(tl.frames[0].downloadPath, TransferPath::HostImport);
@@ -185,9 +190,9 @@ TEST_F(GpuTransferTest, MisalignedPointerFallsBackToStaging)
     ASSERT_TRUE(t);
     const size_t bytes = kUhdBytes - 4096;
     std::memset(dsts_[2].get(), 0, kUhdBytes);
-    TransferFrame f{srcs_[2].get() + 16, dsts_[2].get(), bytes};
+    TransferFrame f { srcs_[2].get() + 16, dsts_[2].get(), bytes };
     TransferTimeline tl;
-    GpuStatus s = t->process({&f, 1}, nullptr, &tl);
+    GpuStatus s = t->process({ &f, 1 }, nullptr, &tl);
     ASSERT_TRUE(s.ok()) << s.message;
     EXPECT_EQ(tl.frames[0].uploadPath, TransferPath::Staging);
     if (t->hostImportSupported()) {
@@ -203,19 +208,19 @@ TEST_F(GpuTransferTest, OddSizesAndUserComputeCallback)
     o.allowHostImport = false;
     auto t = make(o);
     ASSERT_TRUE(t);
-    const std::vector<size_t> sizes = {4, (5u << 20) + 12, 1u << 20, 3 * 1000 * 1000 + 8};
+    const std::vector<size_t> sizes = { 4, (5u << 20) + 12, 1u << 20, 3 * 1000 * 1000 + 8 };
     std::vector<TransferFrame> frames;
     for (size_t i = 0; i < sizes.size(); ++i) {
         std::memset(dsts_[i].get(), 0, sizes[i]);
-        frames.push_back({srcs_[i].get(), dsts_[i].get(), sizes[i]});
+        frames.push_back({ srcs_[i].get(), dsts_[i].get(), sizes[i] });
     }
     uint32_t calls = 0;
     auto copy = [&](VkCommandBuffer cb, const ComputeBinding& b) {
         EXPECT_EQ(b.bytes, sizes[b.frameIndex]);
-        VkBufferCopy r{0, 0, b.bytes};
+        VkBufferCopy r { 0, 0, b.bytes };
         vkCmdCopyBuffer(cb, b.input, b.output, 1, &r);
         ++calls;
-        return GpuStatus{};
+        return GpuStatus {};
     };
     GpuStatus s = t->process(frames, copy, nullptr);
     ASSERT_TRUE(s.ok()) << s.message;
@@ -236,15 +241,15 @@ TEST_F(GpuTransferTest, FailedComputeRecordAbortsAndTransferStaysUsable)
     std::vector<TransferFrame> frames;
     for (uint32_t k = 0; k < 4; ++k) {
         std::memset(dsts_[k].get(), 0, kBytes);
-        frames.push_back({srcs_[k].get(), dsts_[k].get(), kBytes});
+        frames.push_back({ srcs_[k].get(), dsts_[k].get(), kBytes });
     }
     uint32_t calls = 0;
     GpuStatus s = t->process(frames, [&](VkCommandBuffer cb, const ComputeBinding& b) -> GpuStatus {
         ++calls;
         if (b.frameIndex == 2) {
-            return {VK_ERROR_OUT_OF_POOL_MEMORY, "synthetic record failure"};
+            return { VK_ERROR_OUT_OF_POOL_MEMORY, "synthetic record failure" };
         }
-        VkBufferCopy r{0, 0, b.bytes};
+        VkBufferCopy r { 0, 0, b.bytes };
         vkCmdCopyBuffer(cb, b.input, b.output, 1, &r);
         return {};
     });
@@ -269,14 +274,14 @@ TEST_F(GpuTransferTest, ThrowingComputeRecordPropagatesAndTransferStaysUsable)
     std::vector<TransferFrame> frames;
     for (uint32_t k = 0; k < 4; ++k) {
         std::memset(dsts_[k].get(), 0, kBytes);
-        frames.push_back({srcs_[k].get(), dsts_[k].get(), kBytes});
+        frames.push_back({ srcs_[k].get(), dsts_[k].get(), kBytes });
     }
     EXPECT_THROW(t->process(frames,
                             [&](VkCommandBuffer cb, const ComputeBinding& b) -> GpuStatus {
                                 if (b.frameIndex == 1) {
                                     throw std::runtime_error("synthetic");
                                 }
-                                VkBufferCopy r{0, 0, b.bytes};
+                                VkBufferCopy r { 0, 0, b.bytes };
                                 vkCmdCopyBuffer(cb, b.input, b.output, 1, &r);
                                 return {};
                             }),
@@ -290,13 +295,13 @@ TEST_F(GpuTransferTest, ThrowingComputeRecordPropagatesAndTransferStaysUsable)
 
 namespace {
 
-struct RunResult
-{
+struct RunResult {
     std::string label;
     TransferTimeline tl;
 };
 
-void printTimeline(const RunResult& r)
+void
+printTimeline(const RunResult& r)
 {
     const TransferTimeline& tl = r.tl;
     const double n = static_cast<double>(tl.frames.size());
@@ -324,8 +329,7 @@ void printTimeline(const RunResult& r)
 TEST_F(GpuTransferTest, PipelinedFramesTimeline)
 {
     const uint32_t many = std::max(2u, std::min(8u, std::thread::hardware_concurrency()));
-    struct Config
-    {
+    struct Config {
         std::string label;
         bool import;
         uint32_t threads;
@@ -333,19 +337,19 @@ TEST_F(GpuTransferTest, PipelinedFramesTimeline)
         bool cached = false;
     };
     const std::vector<Config> configs = {
-        {"staging, 1 copy thread, serial", false, 1, true},
-        {"staging, 1 copy thread", false, 1, false},
-        {"staging, " + std::to_string(many) + " copy threads, serial", false, many, true},
-        {"staging, " + std::to_string(many) + " copy threads", false, many, false},
-        {"host-import, serial", true, 1, true},
-        {"host-import", true, 1, false},
-        {"host-import cached, serial", true, 1, true, true},
-        {"host-import cached", true, 1, false, true},
+        { "staging, 1 copy thread, serial", false, 1, true },
+        { "staging, 1 copy thread", false, 1, false },
+        { "staging, " + std::to_string(many) + " copy threads, serial", false, many, true },
+        { "staging, " + std::to_string(many) + " copy threads", false, many, false },
+        { "host-import, serial", true, 1, true },
+        { "host-import", true, 1, false },
+        { "host-import cached, serial", true, 1, true, true },
+        { "host-import cached", true, 1, false, true },
     };
 
     std::vector<TransferFrame> frames;
     for (uint32_t k = 0; k < kPipelinedFrames; ++k) {
-        frames.push_back({srcs_[k].get(), dsts_[k].get(), kUhdBytes});
+        frames.push_back({ srcs_[k].get(), dsts_[k].get(), kUhdBytes });
     }
 
     std::vector<RunResult> results;
@@ -365,13 +369,13 @@ TEST_F(GpuTransferTest, PipelinedFramesTimeline)
             std::memset(dsts_[k].get(), 0, kUhdBytes);
         }
         // Warm-up pays first-touch page faults, and with cached imports the pinning, outside the measurement.
-        ASSERT_TRUE(t->process({frames.data(), c.cached ? frames.size() : 1}, nullptr, nullptr).ok());
+        ASSERT_TRUE(t->process({ frames.data(), c.cached ? frames.size() : 1 }, nullptr, nullptr).ok());
 
-        RunResult r{c.label, {}};
+        RunResult r { c.label, {} };
         if (c.serial) {
             for (uint32_t k = 0; k < kPipelinedFrames; ++k) {
                 TransferTimeline one;
-                GpuStatus s = t->process({&frames[k], 1}, nullptr, &one);
+                GpuStatus s = t->process({ &frames[k], 1 }, nullptr, &one);
                 ASSERT_TRUE(s.ok()) << s.message;
                 r.tl.wallMs += one.wallMs;
                 r.tl.gpuSpanMs += one.gpuSpanMs;

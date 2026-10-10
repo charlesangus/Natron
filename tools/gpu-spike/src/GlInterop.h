@@ -13,8 +13,7 @@ namespace gpu {
 // Resolves GL entry points for the context that is current when the GlInterop calls are made.
 using GlProcLoader = std::function<void*(const char*)>;
 
-enum class GlHandoffPath
-{
+enum class GlHandoffPath {
     // Exported Vulkan memory imported as a GL buffer, ordered by exported semaphores.
     ZeroCopy,
     // Exported memory without semaphores: the CPU waits on a Vulkan fence and on glFinish.
@@ -25,8 +24,7 @@ enum class GlHandoffPath
 
 const char* toString(GlHandoffPath path);
 
-struct GlInteropCaps
-{
+struct GlInteropCaps {
     bool vkExternalMemoryFd = false;
     bool vkExternalSemaphoreFd = false;
     bool vkBufferExportable = false;
@@ -37,10 +35,10 @@ struct GlInteropCaps
     bool glSemaphoreFd = false;
     bool uuidMatch = false;
 
-    std::array<uint8_t, 16> vkDeviceUuid{};
-    std::array<uint8_t, 16> vkDriverUuid{};
-    std::array<uint8_t, 16> glDeviceUuid{};
-    std::array<uint8_t, 16> glDriverUuid{};
+    std::array<uint8_t, 16> vkDeviceUuid {};
+    std::array<uint8_t, 16> vkDriverUuid {};
+    std::array<uint8_t, 16> glDeviceUuid {};
+    std::array<uint8_t, 16> glDriverUuid {};
     std::string glVendor;
     std::string glRenderer;
     std::string glVersion;
@@ -54,8 +52,7 @@ struct GlInteropCaps
 
 // Hands a width x height RGBA32F image produced by Vulkan into GL texture level 0.
 // All GL-touching calls, including destruction, need the creating GL context current.
-class GlInterop
-{
+class GlInterop {
 public:
     static GpuStatus probe(GpuDevice& device, const GlProcLoader& loader, GlInteropCaps& out);
 
@@ -105,7 +102,7 @@ private:
     uint32_t height_ = 0;
     VkDeviceSize size_ = 0;
 
-    VkExportMemoryAllocateInfo exportInfo_{VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
+    VkExportMemoryAllocateInfo exportInfo_ { VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO };
     VmaPool pool_ = nullptr;
     VkBuffer buffer_ = VK_NULL_HANDLE;
     VmaAllocation allocation_ = nullptr;

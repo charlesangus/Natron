@@ -17,19 +17,17 @@ namespace gpu {
 // bindings 0..N-1 in declaration order; parameters are one push-constant block
 // declared `[[vk::push_constant]] ConstantBuffer<P> params;` (at most
 // kMaxPushConstantBytes). Uniform-buffer bindings are not supported.
-struct GpuKernelDesc
-{
+struct GpuKernelDesc {
     const uint32_t* spirv = nullptr;
     size_t spirvWords = 0;
     const char* entry = "main";
     uint32_t storageBufferCount = 0;
     uint32_t pushConstantBytes = 0;
     // numthreads of the entry point, from the generated <name>_group_size.
-    std::array<uint32_t, 3> groupSize{1, 1, 1};
+    std::array<uint32_t, 3> groupSize { 1, 1, 1 };
 };
 
-class GpuKernel
-{
+class GpuKernel {
 public:
     static constexpr uint32_t kMaxPushConstantBytes = 128;
 
@@ -57,7 +55,11 @@ public:
     const GpuKernelDesc& desc() const { return desc_; }
 
 private:
-    GpuKernel(GpuDevice& device, const GpuKernelDesc& desc) : device_(device), desc_(desc) {}
+    GpuKernel(GpuDevice& device, const GpuKernelDesc& desc)
+        : device_(device)
+        , desc_(desc)
+    {
+    }
 
     GpuDevice& device_;
     GpuKernelDesc desc_;
@@ -65,7 +67,7 @@ private:
     VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     PFN_vkCmdPushDescriptorSetKHR pushDescriptorFn_ = nullptr;
-    std::array<uint32_t, 3> maxGroups_{};
+    std::array<uint32_t, 3> maxGroups_ {};
 
     std::mutex poolMutex_;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
@@ -73,8 +75,7 @@ private:
 
 // Two timestamps bracketing recorded work. supported() is false when the
 // compute queue family reports zero valid timestamp bits.
-class GpuTimer
-{
+class GpuTimer {
 public:
     static GpuStatus create(GpuDevice& device, std::unique_ptr<GpuTimer>& out);
     ~GpuTimer();
@@ -91,7 +92,10 @@ public:
     GpuStatus elapsedNs(double& ns);
 
 private:
-    GpuTimer(GpuDevice& device) : device_(device) {}
+    GpuTimer(GpuDevice& device)
+        : device_(device)
+    {
+    }
 
     GpuDevice& device_;
     VkQueryPool pool_ = VK_NULL_HANDLE;

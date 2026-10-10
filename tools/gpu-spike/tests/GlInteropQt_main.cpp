@@ -8,8 +8,8 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdlib>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -25,12 +25,14 @@ namespace {
 constexpr int kW = 256;
 constexpr int kH = 192;
 
-uint8_t patternByte(int x, int y, int c)
+uint8_t
+patternByte(int x, int y, int c)
 {
     return c == 3 ? 255 : uint8_t((x * 7 + y * 13 + c * 61) & 255);
 }
 
-uint64_t fnv1a(const void* data, size_t n)
+uint64_t
+fnv1a(const void* data, size_t n)
 {
     const auto* p = static_cast<const uint8_t*>(data);
     uint64_t h = 1469598103934665603ull;
@@ -40,8 +42,7 @@ uint64_t fnv1a(const void* data, size_t n)
     return h;
 }
 
-class InteropWidget : public QOpenGLWidget, protected QOpenGLExtraFunctions
-{
+class InteropWidget : public QOpenGLWidget, protected QOpenGLExtraFunctions {
 public:
     std::string error;
     std::string pathName;
@@ -109,13 +110,13 @@ protected:
         }
         glBindFramebuffer(GL_FRAMEBUFFER, defaultFramebufferObject());
 
-        VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        VkBufferCreateInfo bci { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         bci.size = interop_->size();
         bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        VmaAllocationCreateInfo aci{};
+        VmaAllocationCreateInfo aci {};
         aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
         aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        VmaAllocationInfo ai{};
+        VmaAllocationInfo ai {};
         if (vmaCreateBuffer(dev_->allocator(), &bci, &aci, &staging_, &stagingAlloc_, &ai) != VK_SUCCESS) {
             error = "staging allocation failed";
             return;
@@ -143,9 +144,9 @@ protected:
         if (!uploaded_) {
             const VkDeviceSize size = interop_->size();
             GpuStatus s = interop_->produce([&](VkCommandBuffer cb) {
-                VkBufferCopy region{0, 0, size};
+                VkBufferCopy region { 0, 0, size };
                 vkCmdCopyBuffer(cb, staging_, interop_->buffer(), 1, &region);
-                return GpuStatus{};
+                return GpuStatus {};
             });
             if (s) {
                 s = interop_->waitProduced();
@@ -190,7 +191,8 @@ private:
 
 } // namespace
 
-int main(int argc, char** argv)
+int
+main(int argc, char** argv)
 {
     QSurfaceFormat fmt;
     fmt.setRenderableType(QSurfaceFormat::OpenGL);

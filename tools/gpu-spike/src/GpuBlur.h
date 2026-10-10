@@ -9,8 +9,7 @@ namespace gpu {
 
 // Host side of kernels/blur.slang (entry blurPass): validates a pass against the kernel's
 // fixed-size shared tile and picks the dispatch shape for the path the kernel will take.
-struct GpuBlurPass
-{
+struct GpuBlurPass {
     uint32_t width = 0;
     uint32_t height = 0;
     // Interleaved float channels per pixel.

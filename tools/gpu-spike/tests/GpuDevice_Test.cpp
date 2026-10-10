@@ -10,8 +10,7 @@ using namespace gpu;
 
 namespace {
 
-class GpuDeviceTest : public ::testing::Test
-{
+class GpuDeviceTest : public ::testing::Test {
 protected:
     void SetUp() override
     {
@@ -64,7 +63,7 @@ TEST_F(GpuDeviceTest, BudgetIsNonZero)
 
 TEST(GpuDeviceOptions, ValidationIsOffByDefault)
 {
-    EXPECT_FALSE(GpuDeviceOptions{}.enableValidation);
+    EXPECT_FALSE(GpuDeviceOptions {}.enableValidation);
 }
 
 TEST_F(GpuDeviceTest, PushDescriptorCanBeDisabled)
@@ -85,7 +84,7 @@ TEST_F(GpuDeviceTest, DebugMessengerReachesCallback)
     auto submit = reinterpret_cast<PFN_vkSubmitDebugUtilsMessageEXT>(
         vkGetInstanceProcAddr(dev->instance(), "vkSubmitDebugUtilsMessageEXT"));
     ASSERT_NE(submit, nullptr);
-    VkDebugUtilsMessengerCallbackDataEXT data{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT};
+    VkDebugUtilsMessengerCallbackDataEXT data { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CALLBACK_DATA_EXT };
     data.pMessage = "synthetic error from DebugMessengerReachesCallback";
     const uint64_t before = gputest::validationErrors().load();
     submit(dev->instance(), VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
@@ -99,11 +98,11 @@ TEST_F(GpuDeviceTest, EmptySubmitSignalsTimelineSemaphore)
     VkSemaphore sem = VK_NULL_HANDLE;
     ASSERT_TRUE(dev->createTimelineSemaphore(0, sem).ok());
 
-    VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    VkSemaphoreSubmitInfo signal { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
     signal.semaphore = sem;
     signal.value = 1;
     signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    VkSubmitInfo2 submit { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
     submit.signalSemaphoreInfoCount = 1;
     submit.pSignalSemaphoreInfos = &signal;
 

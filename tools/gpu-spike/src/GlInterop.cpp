@@ -12,8 +12,7 @@
 
 namespace gpu {
 
-struct GlInterop::Gl
-{
+struct GlInterop::Gl {
     decltype(&::glGetError) GetError = nullptr;
     decltype(&::glGetString) GetString = nullptr;
     decltype(&::glGetIntegerv) GetIntegerv = nullptr;
@@ -117,63 +116,70 @@ struct GlInterop::Gl
 
 namespace {
 
-GpuStatus fail(VkResult r, std::string msg)
-{
-    return GpuStatus{r, std::move(msg)};
-}
-
-constexpr VkExternalMemoryHandleTypeFlagBits kMemHandle = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-constexpr VkExternalSemaphoreHandleTypeFlagBits kSemHandle = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
-constexpr VkDeviceSize kImportSlack = 256;
-constexpr VkBufferUsageFlags kBufferUsage =
-    VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-
-void appendMissing(std::string& missing, const std::string& what)
-{
-    if (!missing.empty()) {
-        missing += ", ";
+    GpuStatus fail(VkResult r, std::string msg)
+    {
+        return GpuStatus { r, std::move(msg) };
     }
-    missing += what;
-}
 
-std::string hex(const std::array<uint8_t, 16>& u)
-{
-    static const char* digits = "0123456789abcdef";
-    std::string s;
-    for (uint8_t b : u) {
-        s += digits[b >> 4];
-        s += digits[b & 15];
+    constexpr VkExternalMemoryHandleTypeFlagBits kMemHandle = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    constexpr VkExternalSemaphoreHandleTypeFlagBits kSemHandle = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+    constexpr VkDeviceSize kImportSlack = 256;
+    constexpr VkBufferUsageFlags kBufferUsage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+
+    void appendMissing(std::string& missing, const std::string& what)
+    {
+        if (!missing.empty()) {
+            missing += ", ";
+        }
+        missing += what;
     }
-    return s;
-}
+
+    std::string hex(const std::array<uint8_t, 16>& u)
+    {
+        static const char* digits = "0123456789abcdef";
+        std::string s;
+        for (uint8_t b : u) {
+            s += digits[b >> 4];
+            s += digits[b & 15];
+        }
+        return s;
+    }
 
 } // namespace
 
-const char* toString(GlHandoffPath path)
+const char*
+toString(GlHandoffPath path)
 {
     switch (path) {
-    case GlHandoffPath::ZeroCopy: return "zero-copy";
-    case GlHandoffPath::ZeroCopyHostSync: return "zero-copy-hostsync";
-    case GlHandoffPath::Readback: return "readback-pbo";
+    case GlHandoffPath::ZeroCopy:
+        return "zero-copy";
+    case GlHandoffPath::ZeroCopyHostSync:
+        return "zero-copy-hostsync";
+    case GlHandoffPath::Readback:
+        return "readback-pbo";
     }
     return "?";
 }
 
-bool GlInteropCaps::supports(GlHandoffPath path) const
+bool
+GlInteropCaps::supports(GlHandoffPath path) const
 {
     const bool memory = vkExternalMemoryFd && vkBufferExportable && glMemoryObject && glMemoryObjectFd && uuidMatch;
     switch (path) {
     case GlHandoffPath::ZeroCopy:
         return memory && vkExternalSemaphoreFd && vkSemaphoreExportable && glSemaphore && glSemaphoreFd;
-    case GlHandoffPath::ZeroCopyHostSync: return memory;
-    case GlHandoffPath::Readback: return true;
+    case GlHandoffPath::ZeroCopyHostSync:
+        return memory;
+    case GlHandoffPath::Readback:
+        return true;
     }
     return false;
 }
 
-GpuStatus GlInterop::probe(GpuDevice& device, const GlProcLoader& loader, GlInteropCaps& out)
+GpuStatus
+GlInterop::probe(GpuDevice& device, const GlProcLoader& loader, GlInteropCaps& out)
 {
-    out = GlInteropCaps{};
+    out = GlInteropCaps {};
     Gl gl;
     if (!gl.load(loader)) {
         return fail(VK_ERROR_INITIALIZATION_FAILED, "GL core entry points unavailable; is a context current?");
@@ -190,33 +196,31 @@ GpuStatus GlInterop::probe(GpuDevice& device, const GlProcLoader& loader, GlInte
     out.vkExternalMemoryFd = info.externalMemoryFd;
     out.vkExternalSemaphoreFd = info.externalSemaphoreFd;
 
-    VkPhysicalDeviceExternalBufferInfo bi{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO};
+    VkPhysicalDeviceExternalBufferInfo bi { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO };
     bi.usage = kBufferUsage;
     bi.handleType = kMemHandle;
-    VkExternalBufferProperties bp{VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES};
+    VkExternalBufferProperties bp { VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES };
     vkGetPhysicalDeviceExternalBufferProperties(device.physicalDevice(), &bi, &bp);
-    out.vkBufferExportable =
-        (bp.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) != 0;
+    out.vkBufferExportable = (bp.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) != 0;
 
-    VkPhysicalDeviceExternalSemaphoreInfo si{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO};
+    VkPhysicalDeviceExternalSemaphoreInfo si { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO };
     si.handleType = kSemHandle;
-    VkExternalSemaphoreProperties sp{VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES};
+    VkExternalSemaphoreProperties sp { VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES };
     vkGetPhysicalDeviceExternalSemaphoreProperties(device.physicalDevice(), &si, &sp);
-    out.vkSemaphoreExportable =
-        (sp.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT) != 0;
+    out.vkSemaphoreExportable = (sp.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT) != 0;
 
-    VkPhysicalDeviceIDProperties idp{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
-    VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    VkPhysicalDeviceIDProperties idp { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES };
+    VkPhysicalDeviceProperties2 p2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
     p2.pNext = &idp;
     vkGetPhysicalDeviceProperties2(device.physicalDevice(), &p2);
     std::memcpy(out.vkDeviceUuid.data(), idp.deviceUUID, VK_UUID_SIZE);
     std::memcpy(out.vkDriverUuid.data(), idp.driverUUID, VK_UUID_SIZE);
 
     out.glMemoryObject = gl.has("GL_EXT_memory_object") && gl.CreateMemoryObjectsEXT && gl.BufferStorageMemEXT
-                         && gl.GetUnsignedBytevEXT && gl.GetUnsignedBytei_vEXT;
+        && gl.GetUnsignedBytevEXT && gl.GetUnsignedBytei_vEXT;
     out.glMemoryObjectFd = gl.has("GL_EXT_memory_object_fd") && gl.ImportMemoryFdEXT;
     out.glSemaphore = gl.has("GL_EXT_semaphore") && gl.GenSemaphoresEXT && gl.WaitSemaphoreEXT
-                      && gl.SignalSemaphoreEXT;
+        && gl.SignalSemaphoreEXT;
     out.glSemaphoreFd = gl.has("GL_EXT_semaphore_fd") && gl.ImportSemaphoreFdEXT;
 
     // The UUID queries are defined by either EXT_memory_object or EXT_semaphore.
@@ -226,7 +230,7 @@ GpuStatus GlInterop::probe(GpuDevice& device, const GlProcLoader& loader, GlInte
         gl.GetIntegerv(GL_NUM_DEVICE_UUIDS_EXT, &devices);
         bool deviceMatch = false;
         for (GLint i = 0; i < devices; ++i) {
-            std::array<uint8_t, 16> u{};
+            std::array<uint8_t, 16> u {};
             gl.GetUnsignedBytei_vEXT(GL_DEVICE_UUID_EXT, static_cast<GLuint>(i), u.data());
             if (i == 0) {
                 out.glDeviceUuid = u;
@@ -264,9 +268,7 @@ GpuStatus GlInterop::probe(GpuDevice& device, const GlProcLoader& loader, GlInte
         appendMissing(out.missing, "GL_EXT_semaphore_fd");
     }
     if ((out.glMemoryObject || out.glSemaphore) && !out.uuidMatch) {
-        appendMissing(out.missing, "UUID mismatch (vk device " + hex(out.vkDeviceUuid) + " driver "
-                                       + hex(out.vkDriverUuid) + ", gl device " + hex(out.glDeviceUuid)
-                                       + " driver " + hex(out.glDriverUuid) + ")");
+        appendMissing(out.missing, "UUID mismatch (vk device " + hex(out.vkDeviceUuid) + " driver " + hex(out.vkDriverUuid) + ", gl device " + hex(out.glDeviceUuid) + " driver " + hex(out.glDriverUuid) + ")");
     }
 
     if (out.supports(GlHandoffPath::ZeroCopy)) {
@@ -279,12 +281,13 @@ GpuStatus GlInterop::probe(GpuDevice& device, const GlProcLoader& loader, GlInte
     return {};
 }
 
-GpuStatus GlInterop::create(GpuDevice& device,
-                            const GlProcLoader& loader,
-                            uint32_t width,
-                            uint32_t height,
-                            GlHandoffPath path,
-                            std::unique_ptr<GlInterop>& out)
+GpuStatus
+GlInterop::create(GpuDevice& device,
+                  const GlProcLoader& loader,
+                  uint32_t width,
+                  uint32_t height,
+                  GlHandoffPath path,
+                  std::unique_ptr<GlInterop>& out)
 {
     out.reset();
     GlInteropCaps caps;
@@ -317,14 +320,15 @@ GpuStatus GlInterop::create(GpuDevice& device,
     return {};
 }
 
-GpuStatus GlInterop::initVulkan(bool exportable, bool semaphores)
+GpuStatus
+GlInterop::initVulkan(bool exportable, bool semaphores)
 {
     GpuDevice& dev = *device_;
     VkDevice vk = dev.device();
 
-    VkExternalMemoryBufferCreateInfo extBuf{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
+    VkExternalMemoryBufferCreateInfo extBuf { VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO };
     extBuf.handleTypes = kMemHandle;
-    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    VkBufferCreateInfo bci { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     // llvmpipe refuses to back a GL buffer with imported memory unless the memory exceeds the buffer
     // by its rasterizer over-read margin (3 RGBA32F pixels).
     bci.size = exportable ? size_ + kImportSlack : size_;
@@ -334,7 +338,7 @@ GpuStatus GlInterop::initVulkan(bool exportable, bool semaphores)
         bci.pNext = &extBuf;
     }
 
-    VmaAllocationCreateInfo aci{};
+    VmaAllocationCreateInfo aci {};
     aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     if (exportable) {
         uint32_t typeIndex = 0;
@@ -345,7 +349,7 @@ GpuStatus GlInterop::initVulkan(bool exportable, bool semaphores)
         }
         // VMA keeps this pointer and chains it into every allocation the pool makes.
         exportInfo_.handleTypes = kMemHandle;
-        VmaPoolCreateInfo pci{};
+        VmaPoolCreateInfo pci {};
         pci.memoryTypeIndex = typeIndex;
         pci.pMemoryAllocateNext = &exportInfo_;
         if (GpuStatus s = dev.check(vmaCreatePool(dev.allocator(), &pci, &pool_), "vmaCreatePool"); !s) {
@@ -355,7 +359,7 @@ GpuStatus GlInterop::initVulkan(bool exportable, bool semaphores)
         // GL imports the whole VkDeviceMemory, so it must hold this buffer alone at offset 0.
         aci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
     }
-    VmaAllocationInfo ai{};
+    VmaAllocationInfo ai {};
     if (GpuStatus s = dev.check(vmaCreateBuffer(dev.allocator(), &bci, &aci, &buffer_, &allocation_, &ai),
                                 "vmaCreateBuffer");
         !s) {
@@ -363,13 +367,13 @@ GpuStatus GlInterop::initVulkan(bool exportable, bool semaphores)
     }
 
     if (!exportable) {
-        VkBufferCreateInfo rci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        VkBufferCreateInfo rci { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         rci.size = size_;
         rci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        VmaAllocationCreateInfo rai{};
+        VmaAllocationCreateInfo rai {};
         rai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
         rai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        VmaAllocationInfo rinfo{};
+        VmaAllocationInfo rinfo {};
         if (GpuStatus s = dev.check(
                 vmaCreateBuffer(dev.allocator(), &rci, &rai, &readback_, &readbackAllocation_, &rinfo),
                 "vmaCreateBuffer(readback)");
@@ -379,30 +383,30 @@ GpuStatus GlInterop::initVulkan(bool exportable, bool semaphores)
         readbackMapped_ = rinfo.pMappedData;
     }
 
-    VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    VkCommandPoolCreateInfo cpci { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     cpci.queueFamilyIndex = dev.queueFamily(QueueKind::Compute);
     if (GpuStatus s = dev.check(vkCreateCommandPool(vk, &cpci, nullptr, &cmdPool_), "vkCreateCommandPool"); !s) {
         return s;
     }
-    VkCommandBufferAllocateInfo cbai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    VkCommandBufferAllocateInfo cbai { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
     cbai.commandPool = cmdPool_;
     cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbai.commandBufferCount = 1;
     if (GpuStatus s = dev.check(vkAllocateCommandBuffers(vk, &cbai, &cmd_), "vkAllocateCommandBuffers"); !s) {
         return s;
     }
-    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFenceCreateInfo fci { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
     if (GpuStatus s = dev.check(vkCreateFence(vk, &fci, nullptr, &fence_), "vkCreateFence"); !s) {
         return s;
     }
 
     if (semaphores) {
-        VkExportSemaphoreCreateInfo esci{VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO};
+        VkExportSemaphoreCreateInfo esci { VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO };
         esci.handleTypes = kSemHandle;
-        VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        VkSemaphoreCreateInfo sci { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
         sci.pNext = &esci;
-        for (VkSemaphore* sem : {&vkReady_, &glDone_}) {
+        for (VkSemaphore* sem : { &vkReady_, &glDone_ }) {
             if (GpuStatus s = dev.check(vkCreateSemaphore(vk, &sci, nullptr, sem), "vkCreateSemaphore"); !s) {
                 return s;
             }
@@ -411,7 +415,8 @@ GpuStatus GlInterop::initVulkan(bool exportable, bool semaphores)
     return {};
 }
 
-GpuStatus GlInterop::glError(const char* what)
+GpuStatus
+GlInterop::glError(const char* what)
 {
     GLenum first = GL_NO_ERROR;
     for (GLenum e = gl_->GetError(); e != GL_NO_ERROR; e = gl_->GetError()) {
@@ -425,11 +430,11 @@ GpuStatus GlInterop::glError(const char* what)
     return fail(VK_ERROR_UNKNOWN, std::string(what) + " raised GL error 0x" + [&] {
         char buf[16];
         std::snprintf(buf, sizeof buf, "%04x", first);
-        return std::string(buf);
-    }());
+        return std::string(buf); }());
 }
 
-GpuStatus GlInterop::initGl(bool semaphores)
+GpuStatus
+GlInterop::initGl(bool semaphores)
 {
     Gl& gl = *gl_;
     VkDevice vk = device_->device();
@@ -448,9 +453,9 @@ GpuStatus GlInterop::initGl(bool semaphores)
     if (!getMemoryFd) {
         return fail(VK_ERROR_EXTENSION_NOT_PRESENT, "vkGetMemoryFdKHR unavailable");
     }
-    VmaAllocationInfo ai{};
+    VmaAllocationInfo ai {};
     vmaGetAllocationInfo(device_->allocator(), allocation_, &ai);
-    VkMemoryGetFdInfoKHR mfi{VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR};
+    VkMemoryGetFdInfoKHR mfi { VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR };
     mfi.memory = ai.deviceMemory;
     mfi.handleType = kMemHandle;
     int memFd = -1;
@@ -490,9 +495,9 @@ GpuStatus GlInterop::initGl(bool semaphores)
     if (!getSemFd) {
         return fail(VK_ERROR_EXTENSION_NOT_PRESENT, "vkGetSemaphoreFdKHR unavailable");
     }
-    std::pair<VkSemaphore, GLuint*> pairs[] = {{vkReady_, &glReady_}, {glDone_, &glDoneGl_}};
+    std::pair<VkSemaphore, GLuint*> pairs[] = { { vkReady_, &glReady_ }, { glDone_, &glDoneGl_ } };
     for (auto& [vkSem, glSem] : pairs) {
-        VkSemaphoreGetFdInfoKHR sfi{VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR};
+        VkSemaphoreGetFdInfoKHR sfi { VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR };
         sfi.semaphore = vkSem;
         sfi.handleType = kSemHandle;
         int fd = -1;
@@ -528,7 +533,7 @@ GlInterop::~GlInterop()
         if (glMemory_ && gl_->DeleteMemoryObjectsEXT) {
             gl_->DeleteMemoryObjectsEXT(1, &glMemory_);
         }
-        for (GLuint* sem : {&glReady_, &glDoneGl_}) {
+        for (GLuint* sem : { &glReady_, &glDoneGl_ }) {
             if (*sem && gl_->DeleteSemaphoresEXT) {
                 gl_->DeleteSemaphoresEXT(1, sem);
             }
@@ -538,7 +543,7 @@ GlInterop::~GlInterop()
         return;
     }
     VkDevice vk = device_->device();
-    for (VkSemaphore sem : {vkReady_, glDone_}) {
+    for (VkSemaphore sem : { vkReady_, glDone_ }) {
         if (sem != VK_NULL_HANDLE) {
             vkDestroySemaphore(vk, sem, nullptr);
         }
@@ -560,7 +565,8 @@ GlInterop::~GlInterop()
     }
 }
 
-GpuStatus GlInterop::waitProduced(uint64_t timeoutNs)
+GpuStatus
+GlInterop::waitProduced(uint64_t timeoutNs)
 {
     if (!submitted_ || fenceWaited_) {
         return {};
@@ -576,7 +582,8 @@ GpuStatus GlInterop::waitProduced(uint64_t timeoutNs)
     return {};
 }
 
-GpuStatus GlInterop::produce(const std::function<GpuStatus(VkCommandBuffer)>& record)
+GpuStatus
+GlInterop::produce(const std::function<GpuStatus(VkCommandBuffer)>& record)
 {
     if (pendingUpload_) {
         return fail(VK_ERROR_UNKNOWN, "produce() called twice without an upload() in between");
@@ -593,7 +600,7 @@ GpuStatus GlInterop::produce(const std::function<GpuStatus(VkCommandBuffer)>& re
     if (GpuStatus s = device_->check(vkResetCommandBuffer(cmd_, 0), "vkResetCommandBuffer"); !s) {
         return s;
     }
-    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    VkCommandBufferBeginInfo begin { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (GpuStatus s = device_->check(vkBeginCommandBuffer(cmd_, &begin), "vkBeginCommandBuffer"); !s) {
         return s;
@@ -601,7 +608,7 @@ GpuStatus GlInterop::produce(const std::function<GpuStatus(VkCommandBuffer)>& re
 
     const uint32_t family = device_->queueFamily(QueueKind::Compute);
     auto barrier = [&](const VkBufferMemoryBarrier2& b) {
-        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
         dep.bufferMemoryBarrierCount = 1;
         dep.pBufferMemoryBarriers = &b;
         vkCmdPipelineBarrier2(cmd_, &dep);
@@ -609,7 +616,7 @@ GpuStatus GlInterop::produce(const std::function<GpuStatus(VkCommandBuffer)>& re
 
     // The exported buffer is EXCLUSIVE, so GL's use must be bracketed by external queue-family transfers.
     if (releasedToGl_) {
-        VkBufferMemoryBarrier2 acquire{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+        VkBufferMemoryBarrier2 acquire { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
         acquire.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
         acquire.dstQueueFamilyIndex = family;
         acquire.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -624,7 +631,7 @@ GpuStatus GlInterop::produce(const std::function<GpuStatus(VkCommandBuffer)>& re
     }
 
     if (path_ == GlHandoffPath::Readback) {
-        VkBufferMemoryBarrier2 toCopy{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+        VkBufferMemoryBarrier2 toCopy { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
         toCopy.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         toCopy.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
         toCopy.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
@@ -634,9 +641,9 @@ GpuStatus GlInterop::produce(const std::function<GpuStatus(VkCommandBuffer)>& re
         toCopy.buffer = buffer_;
         toCopy.size = VK_WHOLE_SIZE;
         barrier(toCopy);
-        VkBufferCopy region{0, 0, size_};
+        VkBufferCopy region { 0, 0, size_ };
         vkCmdCopyBuffer(cmd_, buffer_, readback_, 1, &region);
-        VkBufferMemoryBarrier2 toHost{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+        VkBufferMemoryBarrier2 toHost { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
         toHost.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
         toHost.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         toHost.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
@@ -647,7 +654,7 @@ GpuStatus GlInterop::produce(const std::function<GpuStatus(VkCommandBuffer)>& re
         toHost.size = VK_WHOLE_SIZE;
         barrier(toHost);
     } else {
-        VkBufferMemoryBarrier2 release{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+        VkBufferMemoryBarrier2 release { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
         release.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         release.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
         release.srcQueueFamilyIndex = family;
@@ -661,15 +668,15 @@ GpuStatus GlInterop::produce(const std::function<GpuStatus(VkCommandBuffer)>& re
         return s;
     }
 
-    VkCommandBufferSubmitInfo cbsi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    VkCommandBufferSubmitInfo cbsi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
     cbsi.commandBuffer = cmd_;
-    VkSemaphoreSubmitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    VkSemaphoreSubmitInfo wait { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
     wait.semaphore = glDone_;
     wait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    VkSemaphoreSubmitInfo signal { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
     signal.semaphore = vkReady_;
     signal.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    VkSubmitInfo2 submit { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
     submit.commandBufferInfoCount = 1;
     submit.pCommandBufferInfos = &cbsi;
     if (path_ == GlHandoffPath::ZeroCopy) {
@@ -680,7 +687,7 @@ GpuStatus GlInterop::produce(const std::function<GpuStatus(VkCommandBuffer)>& re
         submit.signalSemaphoreInfoCount = 1;
         submit.pSignalSemaphoreInfos = &signal;
     }
-    if (GpuStatus s = device_->submit(QueueKind::Compute, {&submit, 1}, fence_); !s) {
+    if (GpuStatus s = device_->submit(QueueKind::Compute, { &submit, 1 }, fence_); !s) {
         return s;
     }
     glSignaled_ = false;
@@ -691,7 +698,8 @@ GpuStatus GlInterop::produce(const std::function<GpuStatus(VkCommandBuffer)>& re
     return {};
 }
 
-GpuStatus GlInterop::upload(unsigned int texture)
+GpuStatus
+GlInterop::upload(unsigned int texture)
 {
     if (!pendingUpload_) {
         return fail(VK_ERROR_UNKNOWN, "upload() without a preceding produce()");

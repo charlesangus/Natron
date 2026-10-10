@@ -5,20 +5,20 @@
 // the iterations; the kernel columns come from a separate resident-data run timed with timestamps.
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <array>
-#include <limits>
-#include <utility>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "GpuBlur.h"
@@ -43,8 +43,7 @@ constexpr uint32_t kRowQuantum = 4;
 uint32_t gStripRows = 2048;
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
-struct SizeSpec
-{
+struct SizeSpec {
     std::string name;
     uint32_t w, h;
     bool tiled;
@@ -53,8 +52,7 @@ struct SizeSpec
     bool single = false;
 };
 
-enum class Wl
-{
+enum class Wl {
     Copy,
     Grade,
     Blur3,
@@ -63,8 +61,7 @@ enum class Wl
     GradeBlur25,
 };
 
-struct WlInfo
-{
+struct WlInfo {
     const char* name;
     bool grade;
     double sigma;
@@ -72,29 +69,42 @@ struct WlInfo
 };
 
 constexpr WlInfo kWl[] = {
-    {"Copy", false, 0.0, true},      {"Grade", true, 0.0, false},      {"Blur3", false, 3.0, false},
-    {"Blur25", false, 25.0, false},  {"Blur100", false, 100.0, false}, {"GradeBlur25", true, 25.0, false},
+    { "Copy", false, 0.0, true },
+    { "Grade", true, 0.0, false },
+    { "Blur3", false, 3.0, false },
+    { "Blur25", false, 25.0, false },
+    { "Blur100", false, 100.0, false },
+    { "GradeBlur25", true, 25.0, false },
 };
 
-const WlInfo& info(Wl w) { return kWl[static_cast<int>(w)]; }
+const WlInfo&
+info(Wl w)
+{
+    return kWl[static_cast<int>(w)];
+}
 
-uint32_t roundUp(uint32_t v, uint32_t q) { return (v + q - 1) / q * q; }
+uint32_t
+roundUp(uint32_t v, uint32_t q)
+{
+    return (v + q - 1) / q * q;
+}
 
-uint32_t haloRows(Wl w)
+uint32_t
+haloRows(Wl w)
 {
     const WlInfo& i = info(w);
     return i.sigma > 0.0 ? roundUp(uint32_t(blurref::radiusForSigma(i.sigma)), kRowQuantum) : 0;
 }
 
-struct Unit
-{
+struct Unit {
     uint32_t srcRow, srcRows, dstRow, dstRows;
 };
 
-std::vector<Unit> makeUnits(const SizeSpec& s, Wl w)
+std::vector<Unit>
+makeUnits(const SizeSpec& s, Wl w)
 {
     if (!s.tiled) {
-        return {{0, s.h, 0, s.h}};
+        return { { 0, s.h, 0, s.h } };
     }
     const uint32_t halo = haloRows(w);
     std::vector<Unit> units;
@@ -102,24 +112,25 @@ std::vector<Unit> makeUnits(const SizeSpec& s, Wl w)
         const uint32_t y1 = std::min(s.h, y0 + gStripRows);
         const uint32_t s0 = y0 > halo ? y0 - halo : 0;
         const uint32_t s1 = std::min(s.h, y1 + halo);
-        units.push_back({s0, s1 - s0, y0, y1 - y0});
+        units.push_back({ s0, s1 - s0, y0, y1 - y0 });
     }
     return units;
 }
 
-struct FreeDeleter
-{
+struct FreeDeleter {
     void operator()(void* p) const { std::free(p); }
 };
 using HostBuf = std::unique_ptr<uint8_t, FreeDeleter>;
 
-HostBuf alignedBuf(size_t bytes)
+HostBuf
+alignedBuf(size_t bytes)
 {
     return HostBuf(static_cast<uint8_t*>(std::aligned_alloc(kAlign, (bytes + kAlign - 1) / kAlign * kAlign)));
 }
 
 template <class F>
-void parallelFor(size_t n, F&& fn)
+void
+parallelFor(size_t n, F&& fn)
 {
     const unsigned nt = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
     std::vector<std::thread> ts;
@@ -131,7 +142,8 @@ void parallelFor(size_t n, F&& fn)
     }
 }
 
-void fillImage(uint8_t* p, size_t bytes, uint32_t seed)
+void
+fillImage(uint8_t* p, size_t bytes, uint32_t seed)
 {
     float* f = reinterpret_cast<float*>(p);
     parallelFor(bytes / 4, [&](size_t b, size_t e) {
@@ -143,12 +155,14 @@ void fillImage(uint8_t* p, size_t bytes, uint32_t seed)
     });
 }
 
-void touch(uint8_t* p, size_t bytes)
+void
+touch(uint8_t* p, size_t bytes)
 {
     parallelFor(bytes, [&](size_t b, size_t e) { std::memset(p + b, 0, e - b); });
 }
 
-double median(std::vector<double> v)
+double
+median(std::vector<double> v)
 {
     if (v.empty()) {
         return kNaN;
@@ -157,7 +171,8 @@ double median(std::vector<double> v)
     return v[v.size() / 2];
 }
 
-double loadAvg()
+double
+loadAvg()
 {
     double l = 0.0;
     if (FILE* f = std::fopen("/proc/loadavg", "r")) {
@@ -169,8 +184,7 @@ double loadAvg()
     return l;
 }
 
-struct DevBuf
-{
+struct DevBuf {
     GpuDevice* dev = nullptr;
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation alloc = nullptr;
@@ -197,18 +211,19 @@ struct DevBuf
 };
 
 // Device-local storage, or host-visible and filled once when `data` is given.
-bool makeStorage(GpuDevice& dev, VkDeviceSize bytes, DevBuf& out, std::string& err, const void* data = nullptr)
+bool
+makeStorage(GpuDevice& dev, VkDeviceSize bytes, DevBuf& out, std::string& err, const void* data = nullptr)
 {
-    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    VkBufferCreateInfo bi { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     bi.size = std::max<VkDeviceSize>(bytes, 4);
     bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    VmaAllocationCreateInfo ai{};
+    VmaAllocationCreateInfo ai {};
     ai.usage = data ? VMA_MEMORY_USAGE_AUTO : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     if (data) {
         ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     }
     out.dev = &dev;
-    VmaAllocationInfo ainfo{};
+    VmaAllocationInfo ainfo {};
     const VkResult r = vmaCreateBuffer(dev.allocator(), &bi, &ai, &out.buffer, &out.alloc, &ainfo);
     if (r != VK_SUCCESS) {
         err = "vmaCreateBuffer(" + std::to_string(bytes) + " bytes) VkResult " + std::to_string(r);
@@ -222,26 +237,27 @@ bool makeStorage(GpuDevice& dev, VkDeviceSize bytes, DevBuf& out, std::string& e
     return true;
 }
 
-void computeBarrier(VkCommandBuffer cmd)
+void
+computeBarrier(VkCommandBuffer cmd)
 {
-    VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    VkMemoryBarrier2 mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
     mb.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     mb.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
     mb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
     dep.memoryBarrierCount = 1;
     dep.pMemoryBarriers = &mb;
     vkCmdPipelineBarrier2(cmd, &dep);
 }
 
-struct Kernels
-{
+struct Kernels {
     std::unique_ptr<GpuKernel> grade;
     std::unique_ptr<GpuKernel> blur;
 };
 
-bool makeKernels(GpuDevice& dev, Kernels& k)
+bool
+makeKernels(GpuDevice& dev, Kernels& k)
 {
     GpuKernelDesc g;
     g.spirv = grade_spirv;
@@ -249,15 +265,15 @@ bool makeKernels(GpuDevice& dev, Kernels& k)
     g.entry = "main";
     g.storageBufferCount = 2;
     g.pushConstantBytes = sizeof(gradefix::GradeParams);
-    g.groupSize = {grade_group_size[0], grade_group_size[1], grade_group_size[2]};
+    g.groupSize = { grade_group_size[0], grade_group_size[1], grade_group_size[2] };
     GpuKernelDesc b;
     b.spirv = blur_spirv;
     b.spirvWords = blur_spirv_words;
     b.entry = "main";
     b.storageBufferCount = 3;
     b.pushConstantBytes = sizeof(blurfix::BlurParams);
-    b.groupSize = {blur_group_size[0], blur_group_size[1], blur_group_size[2]};
-    for (auto [desc, out] : {std::pair{&g, &k.grade}, std::pair{&b, &k.blur}}) {
+    b.groupSize = { blur_group_size[0], blur_group_size[1], blur_group_size[2] };
+    for (auto [desc, out] : { std::pair { &g, &k.grade }, std::pair { &b, &k.blur } }) {
         GpuStatus s = GpuKernel::create(dev, *desc, *out);
         if (!s) {
             std::fprintf(stderr, "kernel create failed: %s\n", s.message.c_str());
@@ -267,17 +283,17 @@ bool makeKernels(GpuDevice& dev, Kernels& k)
     return true;
 }
 
-struct PassTimers
-{
+struct PassTimers {
     GpuTimer* all = nullptr;
     GpuTimer* grade = nullptr;
     GpuTimer* h = nullptr;
     GpuTimer* v = nullptr;
 };
 
-gradefix::GradeParams gradeParams(uint32_t w, uint32_t h)
+gradefix::GradeParams
+gradeParams(uint32_t w, uint32_t h)
 {
-    gradefix::GradeParams p{};
+    gradefix::GradeParams p {};
     for (int i = 0; i < 4; ++i) {
         p.a[i] = 1.2f;
         p.b[i] = 0.02f;
@@ -292,15 +308,15 @@ gradefix::GradeParams gradeParams(uint32_t w, uint32_t h)
     return p;
 }
 
-struct Work
-{
+struct Work {
     Kernels* k;
     VkBuffer weights;
 };
 
 // Records one image (or strip) of the workload from `in` to `out`. `tmp` is the blur scratch buffer.
-bool recordWork(VkCommandBuffer cmd, const Work& wk, Wl wl, uint32_t w, uint32_t h, VkBuffer in, VkBuffer out,
-                VkBuffer tmp, const PassTimers& t)
+bool
+recordWork(VkCommandBuffer cmd, const Work& wk, Wl wl, uint32_t w, uint32_t h, VkBuffer in, VkBuffer out,
+           VkBuffer tmp, const PassTimers& t)
 {
     const WlInfo& wi = info(wl);
     bool ok = true;
@@ -324,14 +340,14 @@ bool recordWork(VkCommandBuffer cmd, const Work& wk, Wl wl, uint32_t w, uint32_t
     const uint32_t radius = uint32_t(blurref::radiusForSigma(wi.sigma));
     auto blurPass = [&](VkBuffer src, VkBuffer dst, bool vertical, GpuTimer* tm) {
         begin(tm);
-        check(recordBlurPass(*wk.k->blur, cmd, src, dst, wk.weights, GpuBlurPass{w, h, kChannels, radius, vertical, true}));
+        check(recordBlurPass(*wk.k->blur, cmd, src, dst, wk.weights, GpuBlurPass { w, h, kChannels, radius, vertical, true }));
         end(tm);
     };
     if (wi.grade) {
         const gradefix::GradeParams p = gradeParams(w, h);
         begin(t.grade);
-        const VkBuffer bufs[] = {in, out};
-        check(wk.k->grade->record(cmd, bufs, std::as_bytes(std::span(&p, 1)), {w, h, 1}));
+        const VkBuffer bufs[] = { in, out };
+        check(wk.k->grade->record(cmd, bufs, std::as_bytes(std::span(&p, 1)), { w, h, 1 }));
         end(t.grade);
     }
     if (wi.grade && wi.sigma > 0.0) {
@@ -350,34 +366,34 @@ bool recordWork(VkCommandBuffer cmd, const Work& wk, Wl wl, uint32_t w, uint32_t
         computeBarrier(cmd);
         blurPass(out, in, true, t.v);
         computeBarrier(cmd);
-        const VkBufferCopy r{0, 0, VkDeviceSize(w) * h * kChannels * sizeof(float)};
+        const VkBufferCopy r { 0, 0, VkDeviceSize(w) * h * kChannels * sizeof(float) };
         vkCmdCopyBuffer(cmd, in, out, 1, &r);
     }
     end(t.all);
     return ok;
 }
 
-struct Weights
-{
+struct Weights {
     DevBuf buf;
     bool ok = false;
 };
 
-bool makeWeights(GpuDevice& dev, double sigma, DevBuf& out, std::string& err)
+bool
+makeWeights(GpuDevice& dev, double sigma, DevBuf& out, std::string& err)
 {
     const std::vector<double> wd = blurref::makeWeights(sigma);
     const std::vector<float> wf(wd.begin(), wd.end());
     return makeStorage(dev, wf.size() * sizeof(float), out, err, wf.data());
 }
 
-struct KernelTimes
-{
+struct KernelTimes {
     double total = kNaN, grade = kNaN, h = kNaN, v = kNaN;
 };
 
 // Times the workload over every unit of one image with the data resident on the GPU.
-bool measureKernel(GpuDevice& dev, Kernels& k, const SizeSpec& s, Wl wl, const std::vector<Unit>& units,
-                   bool useScratch, int iters, KernelTimes& out, std::string& err)
+bool
+measureKernel(GpuDevice& dev, Kernels& k, const SizeSpec& s, Wl wl, const std::vector<Unit>& units,
+              bool useScratch, int iters, KernelTimes& out, std::string& err)
 {
     uint32_t maxRows = 0;
     for (const Unit& u : units) {
@@ -395,7 +411,7 @@ bool measureKernel(GpuDevice& dev, Kernels& k, const SizeSpec& s, Wl wl, const s
     if (blur && !makeWeights(dev, info(wl).sigma, wbuf, err)) {
         return false;
     }
-    Work wk{&k, wbuf.buffer};
+    Work wk { &k, wbuf.buffer };
 
     std::vector<std::unique_ptr<GpuTimer>> timers;
     auto timer = [&]() {
@@ -405,7 +421,7 @@ bool measureKernel(GpuDevice& dev, Kernels& k, const SizeSpec& s, Wl wl, const s
         return timers.back().get();
     };
 
-    VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    VkCommandPoolCreateInfo pci { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pci.queueFamilyIndex = dev.queueFamily(QueueKind::Compute);
     VkCommandPool pool;
@@ -413,19 +429,18 @@ bool measureKernel(GpuDevice& dev, Kernels& k, const SizeSpec& s, Wl wl, const s
         err = st.message;
         return false;
     }
-    struct PoolGuard
-    {
+    struct PoolGuard {
         VkDevice d;
         VkCommandPool p;
         ~PoolGuard() { vkDestroyCommandPool(d, p, nullptr); }
-    } poolGuard{dev.device(), pool};
-    VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    } poolGuard { dev.device(), pool };
+    VkCommandBufferAllocateInfo cai { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
     cai.commandPool = pool;
     cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cai.commandBufferCount = 1;
     VkCommandBuffer cmd;
     vkAllocateCommandBuffers(dev.device(), &cai, &cmd);
-    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFenceCreateInfo fci { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
     VkFence fence;
     vkCreateFence(dev.device(), &fci, nullptr, &fence);
 
@@ -433,7 +448,7 @@ bool measureKernel(GpuDevice& dev, Kernels& k, const SizeSpec& s, Wl wl, const s
     for (int it = -1; it < iters; ++it) {
         timers.clear();
         std::vector<PassTimers> pt;
-        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        VkCommandBufferBeginInfo bi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         if (vkResetCommandBuffer(cmd, 0) != VK_SUCCESS || vkBeginCommandBuffer(cmd, &bi) != VK_SUCCESS) {
             err = "command buffer begin failed";
@@ -441,7 +456,7 @@ bool measureKernel(GpuDevice& dev, Kernels& k, const SizeSpec& s, Wl wl, const s
         }
         bool ok = true;
         for (const Unit& u : units) {
-            PassTimers t{timer(), timer(), timer(), timer()};
+            PassTimers t { timer(), timer(), timer(), timer() };
             pt.push_back(t);
             ok &= recordWork(cmd, wk, wl, s.w, u.srcRows, in.buffer, outB.buffer, tmp.buffer, t);
             computeBarrier(cmd);
@@ -451,13 +466,13 @@ bool measureKernel(GpuDevice& dev, Kernels& k, const SizeSpec& s, Wl wl, const s
             err = "record failed";
             return false;
         }
-        VkCommandBufferSubmitInfo csi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+        VkCommandBufferSubmitInfo csi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
         csi.commandBuffer = cmd;
-        VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+        VkSubmitInfo2 si { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
         si.commandBufferInfoCount = 1;
         si.pCommandBufferInfos = &csi;
         vkResetFences(dev.device(), 1, &fence);
-        if (GpuStatus st = dev.submit(QueueKind::Compute, {&si, 1}, fence); !st) {
+        if (GpuStatus st = dev.submit(QueueKind::Compute, { &si, 1 }, fence); !st) {
             err = st.message;
             return false;
         }
@@ -497,22 +512,19 @@ bool measureKernel(GpuDevice& dev, Kernels& k, const SizeSpec& s, Wl wl, const s
     return true;
 }
 
-struct StageTimes
-{
+struct StageTimes {
     double wall = 0, hostUp = 0, gpuUp = 0, gpuComp = 0, gpuDown = 0, hostDown = 0;
     uint32_t stripsPerImage = 0;
     bool viaImport = false;
     bool mixedPaths = false;
 };
 
-struct Images
-{
+struct Images {
     std::vector<HostBuf> src, dst;
     size_t bytes = 0;
 };
 
-struct Pipeline
-{
+struct Pipeline {
     GpuDevice* dev;
     Kernels* k;
     const SizeSpec* size;
@@ -522,8 +534,9 @@ struct Pipeline
     bool useScratch;
 };
 
-bool runOnce(const Pipeline& pl, Images& im, Wl wl, const std::vector<Unit>& units, bool overlap, StageTimes& out,
-             std::string& err)
+bool
+runOnce(const Pipeline& pl, Images& im, Wl wl, const std::vector<Unit>& units, bool overlap, StageTimes& out,
+        std::string& err)
 {
     const SizeSpec& s = *pl.size;
     const size_t rowBytes = size_t(s.w) * kChannels * sizeof(float);
@@ -547,7 +560,7 @@ bool runOnce(const Pipeline& pl, Images& im, Wl wl, const std::vector<Unit>& uni
 
     size_t base = 0;
     const bool copy = info(wl).copyOnly;
-    const Work wk{pl.k, pl.weights};
+    const Work wk { pl.k, pl.weights };
     ComputeRecordFn record;
     if (copy) {
         // RADV corrupts a single vkCmdCopyBuffer larger than about 2.5 GiB, which the default
@@ -555,19 +568,19 @@ bool runOnce(const Pipeline& pl, Images& im, Wl wl, const std::vector<Unit>& uni
         record = [](VkCommandBuffer cmd, const ComputeBinding& b) {
             constexpr VkDeviceSize kChunk = VkDeviceSize(1) << 29;
             for (VkDeviceSize off = 0; off < b.bytes; off += kChunk) {
-                const VkBufferCopy r{off, off, std::min(kChunk, b.bytes - off)};
+                const VkBufferCopy r { off, off, std::min(kChunk, b.bytes - off) };
                 vkCmdCopyBuffer(cmd, b.input, b.output, 1, &r);
             }
-            return GpuStatus{};
+            return GpuStatus {};
         };
     } else {
         record = [&](VkCommandBuffer cmd, const ComputeBinding& b) {
             const Unit& un = units[frameUnit[base + b.frameIndex]];
             VkBuffer tmp = pl.useScratch ? (*pl.scratch)[b.frameIndex % pl.scratch->size()].buffer : VK_NULL_HANDLE;
-            if (!recordWork(cmd, wk, wl, s.w, un.srcRows, b.input, b.output, tmp, PassTimers{})) {
-                return GpuStatus{VK_ERROR_UNKNOWN, "recording the workload failed"};
+            if (!recordWork(cmd, wk, wl, s.w, un.srcRows, b.input, b.output, tmp, PassTimers {})) {
+                return GpuStatus { VK_ERROR_UNKNOWN, "recording the workload failed" };
             }
-            return GpuStatus{};
+            return GpuStatus {};
         };
     }
 
@@ -598,7 +611,7 @@ bool runOnce(const Pipeline& pl, Images& im, Wl wl, const std::vector<Unit>& uni
         for (size_t k = 0; k < frames.size(); ++k) {
             base = k;
             TransferTimeline tl;
-            GpuStatus st = pl.transfer->process({&frames[k], 1}, record, &tl);
+            GpuStatus st = pl.transfer->process({ &frames[k], 1 }, record, &tl);
             if (!st) {
                 err = st.message;
                 return false;
@@ -611,7 +624,7 @@ bool runOnce(const Pipeline& pl, Images& im, Wl wl, const std::vector<Unit>& uni
         pl.k->blur->releaseDescriptors();
     }
     const double n = double(im.src.size());
-    for (double* v : {&out.wall, &out.hostUp, &out.gpuUp, &out.gpuComp, &out.gpuDown, &out.hostDown}) {
+    for (double* v : { &out.wall, &out.hostUp, &out.gpuUp, &out.gpuComp, &out.gpuDown, &out.hostDown }) {
         *v /= n;
     }
     out.stripsPerImage = uint32_t(units.size());
@@ -620,8 +633,7 @@ bool runOnce(const Pipeline& pl, Images& im, Wl wl, const std::vector<Unit>& uni
     return true;
 }
 
-struct Row
-{
+struct Row {
     std::string size, mode, workload, path, overlap, note, context;
     uint32_t images = 0, units = 0;
     double movedMb = kNaN;
@@ -630,7 +642,8 @@ struct Row
     double load1 = kNaN;
 };
 
-std::string num(double v)
+std::string
+num(double v)
 {
     if (std::isnan(v)) {
         return "NA";
@@ -640,11 +653,11 @@ std::string num(double v)
     return b;
 }
 
-const char* kCsvHeader =
-    "size,mode,workload,path,overlap,images,units_per_image,moved_mb_per_image,kernel_ms,grade_ms,h_ms,v_ms,"
-    "host_up_ms,gpu_up_ms,gpu_comp_ms,gpu_down_ms,host_down_ms,e2e_ms,load1,context,note";
+const char* kCsvHeader = "size,mode,workload,path,overlap,images,units_per_image,moved_mb_per_image,kernel_ms,grade_ms,h_ms,v_ms,"
+                         "host_up_ms,gpu_up_ms,gpu_comp_ms,gpu_down_ms,host_down_ms,e2e_ms,load1,context,note";
 
-void writeRow(std::ofstream& csv, const Row& r)
+void
+writeRow(std::ofstream& csv, const Row& r)
 {
     std::string note = r.note;
     std::replace(note.begin(), note.end(), ',', ';');
@@ -657,39 +670,40 @@ void writeRow(std::ofstream& csv, const Row& r)
     csv.flush();
 }
 
-struct Config
-{
-    std::vector<std::string> sizes{"uhd", "8k", "16k", "24k"};
+struct Config {
+    std::vector<std::string> sizes { "uhd", "8k", "16k", "24k" };
     int iters = 3;
     std::string csv = "gpu-bench.csv";
     std::string note;
 };
 
-std::vector<SizeSpec> sizeSpecs(const std::vector<std::string>& names)
+std::vector<SizeSpec>
+sizeSpecs(const std::vector<std::string>& names)
 {
     std::vector<SizeSpec> out;
     for (const std::string& n : names) {
         if (n == "uhd") {
-            out.push_back({"UHD", 3840, 2160, false, 8});
+            out.push_back({ "UHD", 3840, 2160, false, 8 });
         } else if (n == "8k") {
-            out.push_back({"8K", 7680, 4320, false, 4});
+            out.push_back({ "8K", 7680, 4320, false, 4 });
         } else if (n == "16k") {
-            out.push_back({"16k", 16000, 16000, true, 1});
+            out.push_back({ "16k", 16000, 16000, true, 1 });
         } else if (n == "24k") {
-            out.push_back({"24k", 24000, 24000, true, 1});
+            out.push_back({ "24k", 24000, 24000, true, 1 });
         } else if (n == "16k-single") {
-            out.push_back({"16k", 16000, 16000, false, 1, true});
+            out.push_back({ "16k", 16000, 16000, false, 1, true });
         } else if (n == "24k-single") {
-            out.push_back({"24k", 24000, 24000, false, 1, true});
+            out.push_back({ "24k", 24000, 24000, false, 1, true });
         }
     }
     return out;
 }
 
 // Tiled and untiled runs of the same image must agree: strips with halos reproduce the whole-frame blur.
-bool verifyTiling(GpuDevice& dev, Kernels& k)
+bool
+verifyTiling(GpuDevice& dev, Kernels& k)
 {
-    SizeSpec whole{"verify", 1024, 1536, false, 1};
+    SizeSpec whole { "verify", 1024, 1536, false, 1 };
     SizeSpec tiled = whole;
     tiled.tiled = true;
     const size_t bytes = size_t(whole.w) * whole.h * kChannels * sizeof(float);
@@ -698,8 +712,8 @@ bool verifyTiling(GpuDevice& dev, Kernels& k)
     fillImage(im.src[0].get(), bytes, 7);
     double worst = 0.0;
     std::vector<std::vector<float>> results;
-    for (const SizeSpec* s : {&whole, &tiled}) {
-        for (Wl wl : {Wl::Blur100, Wl::GradeBlur25}) {
+    for (const SizeSpec* s : { &whole, &tiled }) {
+        for (Wl wl : { Wl::Blur100, Wl::GradeBlur25 }) {
             GpuTransferOptions o;
             o.allowHostImport = false;
             o.copyThreads = 4;
@@ -719,7 +733,7 @@ bool verifyTiling(GpuDevice& dev, Kernels& k)
                         const uint32_t y1 = std::min(s->h, y0 + 512);
                         const uint32_t s0 = y0 > halo ? y0 - halo : 0;
                         const uint32_t s1 = std::min(s->h, y1 + halo);
-                        u.push_back({s0, s1 - s0, y0, y1 - y0});
+                        u.push_back({ s0, s1 - s0, y0, y1 - y0 });
                     }
                 }
                 return u;
@@ -742,7 +756,7 @@ bool verifyTiling(GpuDevice& dev, Kernels& k)
             std::memcpy(run.src[0].get(), im.src[0].get(), bytes);
             run.dst.push_back(alignedBuf(bytes));
             touch(run.dst[0].get(), bytes);
-            Pipeline pl{&dev, &k, s, t.get(), &scratch, wbuf.buffer, true};
+            Pipeline pl { &dev, &k, s, t.get(), &scratch, wbuf.buffer, true };
             StageTimes st;
             if (!runOnce(pl, run, wl, units, true, st, err)) {
                 std::fprintf(stderr, "verify run failed: %s\n", err.c_str());
@@ -761,7 +775,8 @@ bool verifyTiling(GpuDevice& dev, Kernels& k)
     return worst <= 1e-6;
 }
 
-bool runSize(GpuDevice& dev, Kernels& k, const SizeSpec& s, const Config& cfg, std::ofstream& csv)
+bool
+runSize(GpuDevice& dev, Kernels& k, const SizeSpec& s, const Config& cfg, std::ofstream& csv)
 {
     const size_t rowBytes = size_t(s.w) * kChannels * sizeof(float);
     const size_t imageBytes = rowBytes * s.h;
@@ -797,16 +812,15 @@ bool runSize(GpuDevice& dev, Kernels& k, const SizeSpec& s, const Config& cfg, s
         touch(im.dst.back().get(), imageBytes);
     }
 
-    struct PathCfg
-    {
+    struct PathCfg {
         const char* name;
         bool import;
     };
-    const PathCfg paths[] = {{"staging", false}, {"host-import", true}};
+    const PathCfg paths[] = { { "staging", false }, { "host-import", true } };
     const int iters = s.name == "UHD" ? std::max(cfg.iters, 5) : cfg.iters;
     const uint32_t depth = s.single ? 1 : 2;
 
-    for (Wl wl : {Wl::Copy, Wl::Grade, Wl::Blur3, Wl::Blur25, Wl::Blur100, Wl::GradeBlur25}) {
+    for (Wl wl : { Wl::Copy, Wl::Grade, Wl::Blur3, Wl::Blur25, Wl::Blur100, Wl::GradeBlur25 }) {
         const WlInfo& wi = info(wl);
         const std::vector<Unit> units = makeUnits(s, wl);
         uint64_t movedBytes = 0;
@@ -851,7 +865,7 @@ bool runSize(GpuDevice& dev, Kernels& k, const SizeSpec& s, const Config& cfg, s
         }
         for (const PathCfg& pc : paths) {
             if (!skip.empty() && !wi.copyOnly) {
-                for (const char* ov : {"on", "off"}) {
+                for (const char* ov : { "on", "off" }) {
                     Row r = base;
                     r.path = pc.name;
                     r.overlap = ov;
@@ -869,7 +883,7 @@ bool runSize(GpuDevice& dev, Kernels& k, const SizeSpec& s, const Config& cfg, s
             o.recordTimestamps = true;
             std::unique_ptr<GpuTransfer> t;
             if (GpuStatus st = GpuTransfer::create(dev, o, t); !st || (pc.import && !t->hostImportSupported())) {
-                for (const char* ov : {"on", "off"}) {
+                for (const char* ov : { "on", "off" }) {
                     Row r = base;
                     r.path = pc.name;
                     r.overlap = ov;
@@ -891,8 +905,8 @@ bool runSize(GpuDevice& dev, Kernels& k, const SizeSpec& s, const Config& cfg, s
                     }
                 }
             }
-            Pipeline pl{&dev, &k, &s, t.get(), &scratch, wbuf.buffer, useScratch};
-            for (bool overlap : {true, false}) {
+            Pipeline pl { &dev, &k, &s, t.get(), &scratch, wbuf.buffer, useScratch };
+            for (bool overlap : { true, false }) {
                 Row r = base;
                 r.path = pc.name;
                 r.overlap = overlap ? "on" : "off";
@@ -950,9 +964,7 @@ bool runSize(GpuDevice& dev, Kernels& k, const SizeSpec& s, const Config& cfg, s
                             }
                         }
                         if (bad) {
-                            const std::string msg = "ROUND TRIP DATA MISMATCH from byte " + std::to_string(first) + " in " +
-                                                    std::to_string(bad) + " of " +
-                                                    std::to_string((imageBytes + kBlock - 1) / kBlock) + " 64MB blocks";
+                            const std::string msg = "ROUND TRIP DATA MISMATCH from byte " + std::to_string(first) + " in " + std::to_string(bad) + " of " + std::to_string((imageBytes + kBlock - 1) / kBlock) + " 64MB blocks";
                             r.note += (r.note.empty() ? "" : "; ") + msg;
                             std::fprintf(stderr, "%s %s: %s\n", s.name.c_str(), pc.name, msg.c_str());
                         }
@@ -996,7 +1008,8 @@ bool runSize(GpuDevice& dev, Kernels& k, const SizeSpec& s, const Config& cfg, s
 
 } // namespace
 
-int main(int argc, char** argv)
+int
+main(int argc, char** argv)
 {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     Config cfg;

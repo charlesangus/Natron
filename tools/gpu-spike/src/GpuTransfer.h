@@ -11,8 +11,7 @@
 
 namespace gpu {
 
-struct GpuTransferOptions
-{
+struct GpuTransferOptions {
     // Staging slots per direction; each holds one strip.
     uint32_t slotCount = 3;
     VkDeviceSize stripBytes = VkDeviceSize(16) << 20;
@@ -28,14 +27,12 @@ struct GpuTransferOptions
     bool recordTimestamps = false;
 };
 
-enum class TransferPath
-{
+enum class TransferPath {
     Staging,
     HostImport,
 };
 
-struct TransferFrame
-{
+struct TransferFrame {
     const void* src = nullptr;
     void* dst = nullptr;
     VkDeviceSize bytes = 0;
@@ -45,8 +42,7 @@ struct TransferFrame
     VkDeviceSize dstBytes = 0;
 };
 
-struct ComputeBinding
-{
+struct ComputeBinding {
     VkBuffer input = VK_NULL_HANDLE;
     VkBuffer output = VK_NULL_HANDLE;
     VkDeviceSize bytes = 0;
@@ -59,16 +55,14 @@ struct ComputeBinding
 // process() returns it.
 using ComputeRecordFn = std::function<GpuStatus(VkCommandBuffer, const ComputeBinding&)>;
 
-struct TimeSpan
-{
+struct TimeSpan {
     double beginMs = 0.0;
     double endMs = 0.0;
     // Sum of the pieces inside [beginMs, endMs] that were actually working.
     double busyMs = 0.0;
 };
 
-struct FrameTimeline
-{
+struct FrameTimeline {
     TransferPath uploadPath = TransferPath::Staging;
     TransferPath downloadPath = TransferPath::Staging;
     uint32_t strips = 0;
@@ -83,8 +77,7 @@ struct FrameTimeline
     TimeSpan gpuDownload;
 };
 
-struct TransferTimeline
-{
+struct TransferTimeline {
     std::vector<FrameTimeline> frames;
     bool gpuTimestamps = false;
     double wallMs = 0.0;
@@ -99,8 +92,7 @@ struct TransferTimeline
     double sumOfStagesMs() const;
 };
 
-class GpuTransfer
-{
+class GpuTransfer {
 public:
     static GpuStatus create(GpuDevice& device, const GpuTransferOptions& options,
                             std::unique_ptr<GpuTransfer>& out);

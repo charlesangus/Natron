@@ -11,8 +11,8 @@
 #include <string>
 #include <vector>
 
-#include "Tolerance.h"
 #include "../ref/GradeRef.h"
+#include "Tolerance.h"
 
 // Inputs, bounds and per-element checks shared by the CPU-twin and GPU Grade
 // tests, so both are held to the same reference and the same tolerances.
@@ -21,8 +21,7 @@ namespace gradefix {
 using tol::classify;
 
 // Mirrors GradeParams in grade.slang, which has no padding between members.
-struct GradeParams
-{
+struct GradeParams {
     float a[4];
     float b[4];
     float gamma[4];
@@ -41,17 +40,17 @@ constexpr uint32_t kClampWhite = 4;
 constexpr int64_t kUlpBound = 4;
 constexpr uint32_t kHeight = 3;
 
-struct KnobSet
-{
+struct KnobSet {
     float a[4], b[4], gamma[4];
 };
 
-inline KnobSet makeKnobs(std::mt19937& rng)
+inline KnobSet
+makeKnobs(std::mt19937& rng)
 {
     std::uniform_real_distribution<double> unit(0.0, 1.0);
     auto pick = [&](double lo, double hi) { return lo + (hi - lo) * unit(rng); };
     // Mirrors the host-side precompute in the GradeKernel constructor.
-    KnobSet k{};
+    KnobSet k {};
     for (int i = 0; i < 4; ++i) {
         const double blackPoint = pick(-1, 1);
         double whitePoint = pick(0, 4);
@@ -63,10 +62,17 @@ inline KnobSet makeKnobs(std::mt19937& rng)
         const double offset = pick(-1, 1);
         double gamma = pick(0.2, 5);
         switch (rng() % 12) {
-        case 0: gamma = 1.0; break;
-        case 1: gamma = 0.0; break;
-        case 2: gamma = -pick(0, 2); break;
-        default: break;
+        case 0:
+            gamma = 1.0;
+            break;
+        case 1:
+            gamma = 0.0;
+            break;
+        case 2:
+            gamma = -pick(0, 2);
+            break;
+        default:
+            break;
         }
         const double d = whitePoint - blackPoint;
         const double A = (d != 0) ? multiply * (white - black) / d : 0;
@@ -77,27 +83,28 @@ inline KnobSet makeKnobs(std::mt19937& rng)
     return k;
 }
 
-inline std::vector<float> makeSweep()
+inline std::vector<float>
+makeSweep()
 {
     std::vector<float> v;
     for (int i = 0; i <= 9 * 512; ++i)
         v.push_back(-1.0f + static_cast<float>(i) / 512.0f);
     const float inf = std::numeric_limits<float>::infinity();
-    for (float s : {std::numeric_limits<float>::quiet_NaN(), inf, -inf, 0.0f, -0.0f, 1.0f,
-                    std::numeric_limits<float>::denorm_min(), std::numeric_limits<float>::min(),
-                    1e-20f, -1e-20f})
+    for (float s : { std::numeric_limits<float>::quiet_NaN(), inf, -inf, 0.0f, -0.0f, 1.0f,
+                     std::numeric_limits<float>::denorm_min(), std::numeric_limits<float>::min(),
+                     1e-20f, -1e-20f })
         v.push_back(s);
     return v;
 }
 
-struct GradeCase
-{
+struct GradeCase {
     GradeParams p;
     bool reverse;
     std::vector<float> src;
 };
 
-inline std::vector<GradeCase> makeCases()
+inline std::vector<GradeCase>
+makeCases()
 {
     std::mt19937 rng(20240607);
     const std::vector<float> sweep = makeSweep();
@@ -106,9 +113,9 @@ inline std::vector<GradeCase> makeCases()
 
     for (int trial = 0; trial < 150; ++trial) {
         const KnobSet knobs = makeKnobs(rng);
-        for (uint32_t nComps : {1u, 3u, 4u}) {
+        for (uint32_t nComps : { 1u, 3u, 4u }) {
             for (int reverse = 0; reverse < 2; ++reverse) {
-                GradeCase c{};
+                GradeCase c {};
                 GradeParams& p = c.p;
                 for (int i = 0; i < 4; ++i) {
                     p.a[i] = knobs.a[i];
@@ -120,8 +127,7 @@ inline std::vector<GradeCase> makeCases()
                 p.height = kHeight;
                 p.nComps = nComps;
                 p.channelMask = trial % 3 == 0 ? (rng() & 0xF) : 0xF;
-                p.flags = (reverse ? kReverse : 0) | ((rng() & 1) ? kClampBlack : 0) |
-                          ((rng() & 1) ? kClampWhite : 0);
+                p.flags = (reverse ? kReverse : 0) | ((rng() & 1) ? kClampBlack : 0) | ((rng() & 1) ? kClampWhite : 0);
                 c.reverse = reverse != 0;
 
                 c.src.resize(size_t(n) * kHeight * nComps);
@@ -138,7 +144,8 @@ inline std::vector<GradeCase> makeCases()
 // SPIR-V precision table: Pow is exp2(y * log2(x)), log2 is within 2^-21
 // absolute on [0.5, 2] and 3 ULP elsewhere, exp2 within 3 + 2|x| ULP, and Fma
 // is only required to match a multiply followed by an add.
-inline double specPowError(double x, double e, double y)
+inline double
+specPowError(double x, double e, double y)
 {
     using tol::ulpOf;
     if (!(x > 0) || !std::isfinite(y) || !std::isfinite(x) || y == 0)
@@ -155,8 +162,9 @@ inline double specPowError(double x, double e, double y)
 // cancels pow(v, gamma) against b. Both are properties of float arithmetic,
 // not of the kernel, so the fallback bound grows with them. `spec` adds what
 // a conforming GPU may do beyond that (see specPowError).
-inline double conditionedTolerance(double v, const graderef::Channel& ch, bool reverse, double result,
-                                   bool spec = false)
+inline double
+conditionedTolerance(double v, const graderef::Channel& ch, bool reverse, double result,
+                     bool spec = false)
 {
     using tol::ulpOf;
     constexpr double kBase = 4;
@@ -189,15 +197,15 @@ inline double conditionedTolerance(double v, const graderef::Channel& ch, bool r
     return tol;
 }
 
-struct Bounds
-{
+struct Bounds {
     int64_t ulp = kUlpBound;
     // Allow what the Vulkan precision rules permit a driver beyond the CPU
     // bounds: spec-level pow/fma error, and unspecified results for subnormal inputs.
     bool gpu = false;
 };
 
-inline bool matches(float got, double want, double conditioned, const Bounds& bounds)
+inline bool
+matches(float got, double want, double conditioned, const Bounds& bounds)
 {
     if (classify(got) != classify(static_cast<float>(want)))
         return false;
@@ -207,8 +215,7 @@ inline bool matches(float got, double want, double conditioned, const Bounds& bo
     return tol::ulpDistance(got, static_cast<float>(want)) <= bounds.ulp || abs <= conditioned;
 }
 
-struct GradeStats
-{
+struct GradeStats {
     tol::ErrorStats err;
     // Beyond the plain bound but inside the per-element conditioned bound.
     uint64_t conditioned = 0;
@@ -225,8 +232,9 @@ struct GradeStats
 
 // Checks every element of one case's output against the reference, and that
 // channels outside the mask came through untouched.
-inline void checkCase(GradeStats& stats, size_t caseIndex, const GradeCase& c, const float* dst,
-                      const Bounds& bounds = {})
+inline void
+checkCase(GradeStats& stats, size_t caseIndex, const GradeCase& c, const float* dst,
+          const Bounds& bounds = {})
 {
     auto violation = [&](auto&&... parts) {
         if (++stats.violations > 10)
@@ -248,7 +256,7 @@ inline void checkCase(GradeStats& stats, size_t caseIndex, const GradeCase& c, c
                 violation(i, " changed outside the channel mask");
             continue;
         }
-        const graderef::Channel chan{p.a[bit], p.b[bit], p.gamma[bit]};
+        const graderef::Channel chan { p.a[bit], p.b[bit], p.gamma[bit] };
         const double in = c.src[i];
         const double want = graderef::apply(c.src[i], chan, c.reverse, clampBlack, clampWhite);
         if (bounds.gpu && in != 0 && std::fabs(in) < std::numeric_limits<float>::min()) {
@@ -290,7 +298,8 @@ inline void checkCase(GradeStats& stats, size_t caseIndex, const GradeCase& c, c
     }
 }
 
-inline void printStats(const char* label, const GradeStats& s)
+inline void
+printStats(const char* label, const GradeStats& s)
 {
     s.err.print(label);
     std::printf("  passthrough=%llu beyond 4 ulp but within conditioned bound: %llu"

@@ -14,10 +14,9 @@ namespace {
 using gradefix::GradeCase;
 using gradefix::GradeParams;
 
-constexpr gradefix::Bounds kGpuBounds{gradefix::kUlpBound, true};
+constexpr gradefix::Bounds kGpuBounds { gradefix::kUlpBound, true };
 
-class GradeGpuTest : public gputest::GpuSuite
-{
+class GradeGpuTest : public gputest::GpuSuite {
 protected:
     // Runs every case through the kernel and returns each case's output.
     static std::vector<std::vector<float>> run(const std::vector<GradeCase>& cases)
@@ -33,13 +32,13 @@ protected:
 
         std::vector<TransferFrame> frames;
         for (size_t i = 0; i < cases.size(); ++i)
-            frames.push_back({cases[i].src.data(), dst[i].data(), cases[i].src.size() * sizeof(float)});
+            frames.push_back({ cases[i].src.data(), dst[i].data(), cases[i].src.size() * sizeof(float) });
 
         process(*transfer, *kernel, frames, 256,
                 [&](VkCommandBuffer cmd, const ComputeBinding& b, size_t k) {
                     const GradeParams& p = cases[k].p;
-                    const VkBuffer bufs[] = {b.input, b.output};
-                    return kernel->record(cmd, bufs, std::as_bytes(std::span(&p, 1)), {p.width, p.height, 1});
+                    const VkBuffer bufs[] = { b.input, b.output };
+                    return kernel->record(cmd, bufs, std::as_bytes(std::span(&p, 1)), { p.width, p.height, 1 });
                 });
         return dst;
     }
@@ -77,9 +76,9 @@ TEST_F(GradeGpuTest, MatchesReferenceOverSweep)
 TEST_F(GradeGpuTest, GammaPrecision)
 {
     std::vector<GradeCase> cases;
-    for (float gamma : {0.45f, 1.0f / 2.2f, 1.8f, 2.2f, 2.4f, 4.0f}) {
-        for (bool reverse : {false, true}) {
-            GradeCase c{};
+    for (float gamma : { 0.45f, 1.0f / 2.2f, 1.8f, 2.2f, 2.4f, 4.0f }) {
+        for (bool reverse : { false, true }) {
+            GradeCase c {};
             c.p.width = 4097;
             c.p.height = 1;
             c.p.nComps = 1;

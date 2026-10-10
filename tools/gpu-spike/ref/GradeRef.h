@@ -8,14 +8,14 @@
 // which sits in an anonymous namespace and cannot be linked from here.
 namespace graderef {
 
-struct Channel
-{
+struct Channel {
     double a;
     double b;
     double gamma;
 };
 
-inline double grade(double v, const Channel& ch)
+inline double
+grade(double v, const Channel& ch)
 {
     const double x = (ch.a * v) + ch.b;
 
@@ -33,7 +33,8 @@ inline double grade(double v, const Channel& ch)
     return std::pow(x, 1. / ch.gamma);
 }
 
-inline double invgrade(double v, const Channel& ch)
+inline double
+invgrade(double v, const Channel& ch)
 {
     if ((ch.gamma != 1.) && (v > 0))
         v = std::pow(v, ch.gamma);
@@ -43,7 +44,8 @@ inline double invgrade(double v, const Channel& ch)
     return v;
 }
 
-inline double apply(double v, const Channel& ch, bool reverse, bool clampBlack, bool clampWhite)
+inline double
+apply(double v, const Channel& ch, bool reverse, bool clampBlack, bool clampWhite)
 {
     v = reverse ? invgrade(v, ch) : grade(v, ch);
     if (clampBlack)

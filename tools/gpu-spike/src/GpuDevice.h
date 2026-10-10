@@ -15,8 +15,7 @@
 
 namespace gpu {
 
-struct GpuStatus
-{
+struct GpuStatus {
     VkResult result = VK_SUCCESS;
     std::string message;
 
@@ -24,8 +23,7 @@ struct GpuStatus
     explicit operator bool() const { return ok(); }
 };
 
-enum class QueueKind
-{
+enum class QueueKind {
     Compute,
     Transfer,
 };
@@ -33,8 +31,7 @@ enum class QueueKind
 using GpuDebugMessageFn = std::function<void(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                              VkDebugUtilsMessageTypeFlagsEXT types, const char* message)>;
 
-struct GpuDeviceOptions
-{
+struct GpuDeviceOptions {
     // Empty means: consult NATRON_GPU_DEVICE, then fall back to the ranked pick.
     std::string deviceSelector;
     // NATRON_GPU_VALIDATION=1 also enables it. Silently off when the Khronos layer is not installed.
@@ -46,8 +43,7 @@ struct GpuDeviceOptions
     GpuDebugMessageFn debugMessage;
 };
 
-struct GpuDeviceInfo
-{
+struct GpuDeviceInfo {
     std::string name;
     VkPhysicalDeviceType type = VK_PHYSICAL_DEVICE_TYPE_OTHER;
     uint32_t apiVersion = 0;
@@ -68,8 +64,7 @@ struct GpuDeviceInfo
     bool pushDescriptor = false;
 };
 
-class GpuDevice
-{
+class GpuDevice {
 public:
     static GpuStatus create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& out);
 
@@ -98,8 +93,7 @@ public:
     GpuStatus check(VkResult result, const char* what);
 
 private:
-    struct Queue
-    {
+    struct Queue {
         VkQueue handle = VK_NULL_HANDLE;
         std::mutex mutex;
     };
@@ -121,7 +115,7 @@ private:
     Queue computeQueue_;
     Queue transferQueue_;
 
-    std::atomic<bool> lost_{false};
+    std::atomic<bool> lost_ { false };
 };
 
 } // namespace gpu

@@ -18,8 +18,7 @@ using namespace gpu;
 namespace {
 
 // Mirrors PointParams in pointops.slang, which has no padding between members.
-struct PointParams
-{
+struct PointParams {
     float a[4];
     float b[4];
     float gamma[4];
@@ -32,18 +31,18 @@ struct PointParams
     uint32_t premult;
 };
 
-constexpr gradefix::Bounds kGpuBounds{gradefix::kUlpBound, true};
+constexpr gradefix::Bounds kGpuBounds { gradefix::kUlpBound, true };
 
-struct PointCase
-{
-    PointParams p{};
+struct PointCase {
+    PointParams p {};
     std::vector<float> src;
     std::vector<float> mask;
 };
 
-PointParams fromGrade(const gradefix::GradeParams& g)
+PointParams
+fromGrade(const gradefix::GradeParams& g)
 {
-    PointParams p{};
+    PointParams p {};
     for (int c = 0; c < 4; ++c) {
         p.a[c] = g.a[c];
         p.b[c] = g.b[c];
@@ -58,7 +57,8 @@ PointParams fromGrade(const gradefix::GradeParams& g)
 }
 
 // The grade sweep cases that are RGBA, the only layout the point-op kernels take.
-std::vector<gradefix::GradeCase> rgbaGradeCases()
+std::vector<gradefix::GradeCase>
+rgbaGradeCases()
 {
     std::vector<gradefix::GradeCase> out;
     for (gradefix::GradeCase& c : gradefix::makeCases())
@@ -67,13 +67,13 @@ std::vector<gradefix::GradeCase> rgbaGradeCases()
     return out;
 }
 
-bool subnormal(float v)
+bool
+subnormal(float v)
 {
     return v != 0.0f && std::fabs(v) < std::numeric_limits<float>::min();
 }
 
-class PointOpGpuTest : public gputest::GpuSuite
-{
+class PointOpGpuTest : public gputest::GpuSuite {
 protected:
     static std::vector<std::vector<float>> run(const uint32_t* spirv, size_t words, const uint32_t (&groupSize)[3],
                                                const std::vector<PointCase>& cases)
@@ -91,16 +91,16 @@ protected:
         std::vector<Buffer> masks;
         std::vector<TransferFrame> frames;
         for (size_t i = 0; i < cases.size(); ++i) {
-            masks.push_back(cases[i].mask.empty() ? Buffer{}
+            masks.push_back(cases[i].mask.empty() ? Buffer {}
                                                   : makeStorage(cases[i].mask.size() * sizeof(float),
                                                                 cases[i].mask.data()));
-            frames.push_back({cases[i].src.data(), dst[i].data(), cases[i].src.size() * sizeof(float)});
+            frames.push_back({ cases[i].src.data(), dst[i].data(), cases[i].src.size() * sizeof(float) });
         }
 
         process(*transfer, *kernel, frames, 256, [&](VkCommandBuffer cmd, const ComputeBinding& b, size_t k) {
             const PointParams& p = cases[k].p;
-            const VkBuffer bufs[] = {b.input, b.output, masks[k].buffer ? masks[k].buffer : unusedMask.buffer};
-            return kernel->record(cmd, bufs, std::as_bytes(std::span(&p, 1)), {p.width, p.height, 1});
+            const VkBuffer bufs[] = { b.input, b.output, masks[k].buffer ? masks[k].buffer : unusedMask.buffer };
+            return kernel->record(cmd, bufs, std::as_bytes(std::span(&p, 1)), { p.width, p.height, 1 });
         });
         return dst;
     }
@@ -113,7 +113,7 @@ TEST_F(PointOpGpuTest, GradeMatchesReference)
     const std::vector<gradefix::GradeCase> grade = rgbaGradeCases();
     std::vector<PointCase> cases;
     for (const gradefix::GradeCase& g : grade)
-        cases.push_back({fromGrade(g.p), g.src, {}});
+        cases.push_back({ fromGrade(g.p), g.src, {} });
     const std::vector<std::vector<float>> dst = run(pointop_grade_spirv, pointop_grade_spirv_words,
                                                     pointop_grade_group_size, cases);
 
@@ -134,7 +134,7 @@ TEST_F(PointOpGpuTest, ChainMatchesReference)
     const std::vector<gradefix::GradeCase> grade = rgbaGradeCases();
     std::vector<PointCase> cases;
     for (const gradefix::GradeCase& g : grade)
-        cases.push_back({fromGrade(g.p), g.src, {}});
+        cases.push_back({ fromGrade(g.p), g.src, {} });
     const std::vector<std::vector<float>> dst = run(pointop_chain_spirv, pointop_chain_spirv_words,
                                                     pointop_chain_group_size, cases);
 
@@ -148,7 +148,7 @@ TEST_F(PointOpGpuTest, ChainMatchesReference)
             const uint32_t c = static_cast<uint32_t>(i % 4);
             if (subnormal(g.src[i]))
                 continue;
-            const graderef::Channel chan{g.p.a[c], g.p.b[c], g.p.gamma[c]};
+            const graderef::Channel chan { g.p.a[c], g.p.b[c], g.p.gamma[c] };
             const bool graded = (g.p.channelMask & (1u << c)) != 0;
             const double v = graded ? graderef::apply(g.src[i], chan, g.reverse, clampBlack, clampWhite) : g.src[i];
             const double want = c < 3 ? 1.0 - v : v;
@@ -171,7 +171,7 @@ TEST_F(PointOpGpuTest, MaskedMatchesReference)
     constexpr uint32_t kW = 67;
     constexpr uint32_t kH = 19;
     std::vector<PointCase> cases;
-    for (uint32_t premult : {0u, 1u}) {
+    for (uint32_t premult : { 0u, 1u }) {
         std::mt19937 rng(10 + premult);
         std::uniform_real_distribution<float> u(0.0f, 1.0f);
         PointCase c;
@@ -211,7 +211,7 @@ TEST_F(PointOpGpuTest, MaskedMatchesReference)
             for (int ch = 0; ch < 4; ++ch)
                 in[ch] = (c.p.premult && ch < 3 && alpha != 0.0) ? v[ch] / alpha : v[ch];
             for (int ch = 0; ch < 4; ++ch) {
-                out[ch] = graderef::apply(in[ch], {c.p.a[ch], c.p.b[ch], c.p.gamma[ch]}, false, true, true);
+                out[ch] = graderef::apply(in[ch], { c.p.a[ch], c.p.b[ch], c.p.gamma[ch] }, false, true, true);
                 if (c.p.premult && ch < 3)
                     out[ch] *= alpha;
             }

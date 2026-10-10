@@ -10,171 +10,175 @@ namespace gpu {
 
 namespace {
 
-GpuStatus fail(VkResult r, std::string msg)
-{
-    return GpuStatus{r, std::move(msg)};
-}
-
-std::string lower(std::string_view s)
-{
-    std::string out(s);
-    std::transform(out.begin(), out.end(), out.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return out;
-}
-
-bool hasName(const std::vector<VkExtensionProperties>& exts, const char* name)
-{
-    return std::any_of(exts.begin(), exts.end(), [&](const VkExtensionProperties& e) {
-        return std::strcmp(e.extensionName, name) == 0;
-    });
-}
-
-int typeRank(VkPhysicalDeviceType t)
-{
-    switch (t) {
-    case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return 0;
-    case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return 1;
-    case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: return 2;
-    case VK_PHYSICAL_DEVICE_TYPE_CPU: return 3;
-    default: return 4;
-    }
-}
-
-struct Features
-{
-    VkPhysicalDeviceVulkan11Features f11{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
-    VkPhysicalDeviceVulkan12Features f12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-    VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-    VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-
-    Features()
+    GpuStatus fail(VkResult r, std::string msg)
     {
-        f2.pNext = &f11;
-        f11.pNext = &f12;
-        f12.pNext = &f13;
+        return GpuStatus { r, std::move(msg) };
     }
-    Features(const Features&) = delete;
-    Features& operator=(const Features&) = delete;
-};
 
-bool meetsRequirements(VkPhysicalDevice pd, const VkPhysicalDeviceProperties& props)
-{
-    if (props.apiVersion < VK_API_VERSION_1_3) {
-        return false;
+    std::string lower(std::string_view s)
+    {
+        std::string out(s);
+        std::transform(out.begin(), out.end(), out.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return out;
     }
-    Features f;
-    vkGetPhysicalDeviceFeatures2(pd, &f.f2);
-    return f.f12.timelineSemaphore && f.f13.synchronization2 && f.f11.storageBuffer16BitAccess;
-}
 
-GpuStatus enumeratePhysical(VkInstance inst, std::vector<VkPhysicalDevice>& out)
-{
-    uint32_t n = 0;
-    VkResult r = vkEnumeratePhysicalDevices(inst, &n, nullptr);
-    if (r != VK_SUCCESS) {
-        return fail(r, "vkEnumeratePhysicalDevices failed");
+    bool hasName(const std::vector<VkExtensionProperties>& exts, const char* name)
+    {
+        return std::any_of(exts.begin(), exts.end(), [&](const VkExtensionProperties& e) {
+            return std::strcmp(e.extensionName, name) == 0;
+        });
     }
-    out.resize(n);
-    r = vkEnumeratePhysicalDevices(inst, &n, out.data());
-    if (r != VK_SUCCESS && r != VK_INCOMPLETE) {
-        return fail(r, "vkEnumeratePhysicalDevices failed");
-    }
-    out.resize(n);
-    return {};
-}
 
-bool layerPresent(const char* name)
-{
-    uint32_t n = 0;
-    if (vkEnumerateInstanceLayerProperties(&n, nullptr) != VK_SUCCESS) {
-        return false;
+    int typeRank(VkPhysicalDeviceType t)
+    {
+        switch (t) {
+        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+            return 0;
+        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+            return 1;
+        case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+            return 2;
+        case VK_PHYSICAL_DEVICE_TYPE_CPU:
+            return 3;
+        default:
+            return 4;
+        }
     }
-    std::vector<VkLayerProperties> layers(n);
-    if (vkEnumerateInstanceLayerProperties(&n, layers.data()) < 0) {
-        return false;
+
+    struct Features {
+        VkPhysicalDeviceVulkan11Features f11 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
+        VkPhysicalDeviceVulkan12Features f12 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+        VkPhysicalDeviceVulkan13Features f13 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+        VkPhysicalDeviceFeatures2 f2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+
+        Features()
+        {
+            f2.pNext = &f11;
+            f11.pNext = &f12;
+            f12.pNext = &f13;
+        }
+        Features(const Features&) = delete;
+        Features& operator=(const Features&) = delete;
+    };
+
+    bool meetsRequirements(VkPhysicalDevice pd, const VkPhysicalDeviceProperties& props)
+    {
+        if (props.apiVersion < VK_API_VERSION_1_3) {
+            return false;
+        }
+        Features f;
+        vkGetPhysicalDeviceFeatures2(pd, &f.f2);
+        return f.f12.timelineSemaphore && f.f13.synchronization2 && f.f11.storageBuffer16BitAccess;
     }
-    return std::any_of(layers.begin(), layers.end(), [&](const VkLayerProperties& l) {
-        return std::strcmp(l.layerName, name) == 0;
-    });
-}
 
-bool instanceExtensionPresent(const char* layer, const char* name)
-{
-    uint32_t n = 0;
-    if (vkEnumerateInstanceExtensionProperties(layer, &n, nullptr) != VK_SUCCESS) {
-        return false;
+    GpuStatus enumeratePhysical(VkInstance inst, std::vector<VkPhysicalDevice>& out)
+    {
+        uint32_t n = 0;
+        VkResult r = vkEnumeratePhysicalDevices(inst, &n, nullptr);
+        if (r != VK_SUCCESS) {
+            return fail(r, "vkEnumeratePhysicalDevices failed");
+        }
+        out.resize(n);
+        r = vkEnumeratePhysicalDevices(inst, &n, out.data());
+        if (r != VK_SUCCESS && r != VK_INCOMPLETE) {
+            return fail(r, "vkEnumeratePhysicalDevices failed");
+        }
+        out.resize(n);
+        return {};
     }
-    std::vector<VkExtensionProperties> exts(n);
-    if (vkEnumerateInstanceExtensionProperties(layer, &n, exts.data()) < 0) {
-        return false;
+
+    bool layerPresent(const char* name)
+    {
+        uint32_t n = 0;
+        if (vkEnumerateInstanceLayerProperties(&n, nullptr) != VK_SUCCESS) {
+            return false;
+        }
+        std::vector<VkLayerProperties> layers(n);
+        if (vkEnumerateInstanceLayerProperties(&n, layers.data()) < 0) {
+            return false;
+        }
+        return std::any_of(layers.begin(), layers.end(), [&](const VkLayerProperties& l) {
+            return std::strcmp(l.layerName, name) == 0;
+        });
     }
-    return hasName(exts, name);
-}
 
-VKAPI_ATTR VkBool32 VKAPI_CALL forwardDebugMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-                                                   VkDebugUtilsMessageTypeFlagsEXT types,
-                                                   const VkDebugUtilsMessengerCallbackDataEXT* data, void* user)
-{
-    const auto* fn = static_cast<const GpuDebugMessageFn*>(user);
-    (*fn)(severity, types, data && data->pMessage ? data->pMessage : "");
-    return VK_FALSE;
-}
-
-VkDebugUtilsMessengerCreateInfoEXT messengerInfo(const GpuDebugMessageFn& fn)
-{
-    VkDebugUtilsMessengerCreateInfoEXT ci{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
-    ci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    ci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
-                     | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-    ci.pfnUserCallback = forwardDebugMessage;
-    ci.pUserData = const_cast<GpuDebugMessageFn*>(&fn);
-    return ci;
-}
-
-bool envFlag(const char* name)
-{
-    const char* v = std::getenv(name);
-    return v && std::strcmp(v, "1") == 0;
-}
-
-GpuStatus createInstance(bool wantValidation, const GpuDebugMessageFn& debug, VkInstance& inst,
-                         bool& validationOn, bool& messengerOn)
-{
-    VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    app.pApplicationName = "natron-gpu";
-    app.apiVersion = VK_API_VERSION_1_3;
-
-    static const char* kValidation = "VK_LAYER_KHRONOS_validation";
-    validationOn = wantValidation && layerPresent(kValidation);
-    messengerOn = debug && (instanceExtensionPresent(nullptr, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)
-                            || (validationOn && instanceExtensionPresent(kValidation, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)));
-
-    VkInstanceCreateInfo ci{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
-    ci.pApplicationInfo = &app;
-    if (validationOn) {
-        ci.enabledLayerCount = 1;
-        ci.ppEnabledLayerNames = &kValidation;
+    bool instanceExtensionPresent(const char* layer, const char* name)
+    {
+        uint32_t n = 0;
+        if (vkEnumerateInstanceExtensionProperties(layer, &n, nullptr) != VK_SUCCESS) {
+            return false;
+        }
+        std::vector<VkExtensionProperties> exts(n);
+        if (vkEnumerateInstanceExtensionProperties(layer, &n, exts.data()) < 0) {
+            return false;
+        }
+        return hasName(exts, name);
     }
-    static const char* kDebugUtils = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
-    // Chained so messages from vkCreateInstance and vkDestroyInstance reach the callback too.
-    VkDebugUtilsMessengerCreateInfoEXT mci{};
-    if (messengerOn) {
-        mci = messengerInfo(debug);
-        ci.pNext = &mci;
-        ci.enabledExtensionCount = 1;
-        ci.ppEnabledExtensionNames = &kDebugUtils;
+
+    VKAPI_ATTR VkBool32 VKAPI_CALL forwardDebugMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                                                       VkDebugUtilsMessageTypeFlagsEXT types,
+                                                       const VkDebugUtilsMessengerCallbackDataEXT* data, void* user)
+    {
+        const auto* fn = static_cast<const GpuDebugMessageFn*>(user);
+        (*fn)(severity, types, data && data->pMessage ? data->pMessage : "");
+        return VK_FALSE;
     }
-    VkResult r = vkCreateInstance(&ci, nullptr, &inst);
-    if (r != VK_SUCCESS) {
-        return fail(r, "vkCreateInstance failed");
+
+    VkDebugUtilsMessengerCreateInfoEXT messengerInfo(const GpuDebugMessageFn& fn)
+    {
+        VkDebugUtilsMessengerCreateInfoEXT ci { VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT };
+        ci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        ci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+            | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        ci.pfnUserCallback = forwardDebugMessage;
+        ci.pUserData = const_cast<GpuDebugMessageFn*>(&fn);
+        return ci;
     }
-    return {};
-}
+
+    bool envFlag(const char* name)
+    {
+        const char* v = std::getenv(name);
+        return v && std::strcmp(v, "1") == 0;
+    }
+
+    GpuStatus createInstance(bool wantValidation, const GpuDebugMessageFn& debug, VkInstance& inst,
+                             bool& validationOn, bool& messengerOn)
+    {
+        VkApplicationInfo app { VK_STRUCTURE_TYPE_APPLICATION_INFO };
+        app.pApplicationName = "natron-gpu";
+        app.apiVersion = VK_API_VERSION_1_3;
+
+        static const char* kValidation = "VK_LAYER_KHRONOS_validation";
+        validationOn = wantValidation && layerPresent(kValidation);
+        messengerOn = debug && (instanceExtensionPresent(nullptr, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) || (validationOn && instanceExtensionPresent(kValidation, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)));
+
+        VkInstanceCreateInfo ci { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
+        ci.pApplicationInfo = &app;
+        if (validationOn) {
+            ci.enabledLayerCount = 1;
+            ci.ppEnabledLayerNames = &kValidation;
+        }
+        static const char* kDebugUtils = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+        // Chained so messages from vkCreateInstance and vkDestroyInstance reach the callback too.
+        VkDebugUtilsMessengerCreateInfoEXT mci {};
+        if (messengerOn) {
+            mci = messengerInfo(debug);
+            ci.pNext = &mci;
+            ci.enabledExtensionCount = 1;
+            ci.ppEnabledExtensionNames = &kDebugUtils;
+        }
+        VkResult r = vkCreateInstance(&ci, nullptr, &inst);
+        if (r != VK_SUCCESS) {
+            return fail(r, "vkCreateInstance failed");
+        }
+        return {};
+    }
 
 } // namespace
 
-GpuStatus GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& out)
+GpuStatus
+GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& out)
 {
     out.reset();
     std::unique_ptr<GpuDevice> dev(new GpuDevice);
@@ -335,7 +339,7 @@ GpuStatus GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<Gpu
     const float prio = 1.0f;
     std::vector<VkDeviceQueueCreateInfo> qcis;
     auto addQueue = [&](uint32_t family) {
-        VkDeviceQueueCreateInfo q{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+        VkDeviceQueueCreateInfo q { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
         q.queueFamilyIndex = family;
         q.queueCount = 1;
         q.pQueuePriorities = &prio;
@@ -346,7 +350,7 @@ GpuStatus GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<Gpu
         addQueue(dev->info_.transferFamily);
     }
 
-    VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    VkDeviceCreateInfo dci { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     dci.pNext = &want.f2;
     dci.queueCreateInfoCount = static_cast<uint32_t>(qcis.size());
     dci.pQueueCreateInfos = qcis.data();
@@ -362,7 +366,7 @@ GpuStatus GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<Gpu
         vkGetDeviceQueue(dev->device_, dev->info_.transferFamily, 0, &dev->transferQueue_.handle);
     }
 
-    VmaAllocatorCreateInfo aci{};
+    VmaAllocatorCreateInfo aci {};
     aci.instance = dev->instance_;
     aci.physicalDevice = dev->physical_;
     aci.device = dev->device_;
@@ -406,12 +410,14 @@ GpuDevice::~GpuDevice()
     }
 }
 
-uint32_t GpuDevice::queueFamily(QueueKind kind) const
+uint32_t
+GpuDevice::queueFamily(QueueKind kind) const
 {
     return kind == QueueKind::Compute ? info_.computeFamily : info_.transferFamily;
 }
 
-GpuDevice::Queue& GpuDevice::queueFor(QueueKind kind)
+GpuDevice::Queue&
+GpuDevice::queueFor(QueueKind kind)
 {
     if (kind == QueueKind::Transfer && !info_.transferUsesComputeQueue) {
         return transferQueue_;
@@ -419,12 +425,14 @@ GpuDevice::Queue& GpuDevice::queueFor(QueueKind kind)
     return computeQueue_;
 }
 
-GpuStatus GpuDevice::lostStatus() const
+GpuStatus
+GpuDevice::lostStatus() const
 {
     return fail(VK_ERROR_DEVICE_LOST, "device is lost");
 }
 
-GpuStatus GpuDevice::check(VkResult result, const char* what)
+GpuStatus
+GpuDevice::check(VkResult result, const char* what)
 {
     if (result == VK_ERROR_DEVICE_LOST) {
         lost_.store(true, std::memory_order_release);
@@ -435,7 +443,8 @@ GpuStatus GpuDevice::check(VkResult result, const char* what)
     return {};
 }
 
-GpuStatus GpuDevice::submit(QueueKind kind, std::span<const VkSubmitInfo2> submits, VkFence fence)
+GpuStatus
+GpuDevice::submit(QueueKind kind, std::span<const VkSubmitInfo2> submits, VkFence fence)
 {
     if (isLost()) {
         return lostStatus();
@@ -446,25 +455,27 @@ GpuStatus GpuDevice::submit(QueueKind kind, std::span<const VkSubmitInfo2> submi
                  "vkQueueSubmit2");
 }
 
-GpuStatus GpuDevice::createTimelineSemaphore(uint64_t initialValue, VkSemaphore& out)
+GpuStatus
+GpuDevice::createTimelineSemaphore(uint64_t initialValue, VkSemaphore& out)
 {
     if (isLost()) {
         return lostStatus();
     }
-    VkSemaphoreTypeCreateInfo type{VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+    VkSemaphoreTypeCreateInfo type { VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO };
     type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
     type.initialValue = initialValue;
-    VkSemaphoreCreateInfo ci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    VkSemaphoreCreateInfo ci { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
     ci.pNext = &type;
     return check(vkCreateSemaphore(device_, &ci, nullptr, &out), "vkCreateSemaphore");
 }
 
-GpuStatus GpuDevice::waitSemaphore(VkSemaphore semaphore, uint64_t value, uint64_t timeoutNs)
+GpuStatus
+GpuDevice::waitSemaphore(VkSemaphore semaphore, uint64_t value, uint64_t timeoutNs)
 {
     if (isLost()) {
         return lostStatus();
     }
-    VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+    VkSemaphoreWaitInfo wi { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
     wi.semaphoreCount = 1;
     wi.pSemaphores = &semaphore;
     wi.pValues = &value;
@@ -475,7 +486,8 @@ GpuStatus GpuDevice::waitSemaphore(VkSemaphore semaphore, uint64_t value, uint64
     return check(r, "vkWaitSemaphores");
 }
 
-GpuStatus GpuDevice::waitIdle()
+GpuStatus
+GpuDevice::waitIdle()
 {
     if (isLost()) {
         return lostStatus();
@@ -483,12 +495,13 @@ GpuStatus GpuDevice::waitIdle()
     return check(vkDeviceWaitIdle(device_), "vkDeviceWaitIdle");
 }
 
-GpuStatus GpuDevice::queryBudget(std::vector<VmaBudget>& out)
+GpuStatus
+GpuDevice::queryBudget(std::vector<VmaBudget>& out)
 {
     if (isLost()) {
         return lostStatus();
     }
-    out.assign(memoryHeapCount_, VmaBudget{});
+    out.assign(memoryHeapCount_, VmaBudget {});
     vmaGetHeapBudgets(allocator_, out.data());
     return {};
 }

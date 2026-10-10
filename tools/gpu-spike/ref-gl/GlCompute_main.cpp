@@ -52,7 +52,8 @@ GL_FN(PFNGLGETQUERYOBJECTUI64VPROC, glGetQueryObjectui64v);
 #undef GL_FN
 
 template <class T>
-void load(T& fn, const char* name)
+void
+load(T& fn, const char* name)
 {
     fn = reinterpret_cast<T>(eglGetProcAddress(name));
     if (!fn) {
@@ -61,23 +62,41 @@ void load(T& fn, const char* name)
     }
 }
 
-void loadAll()
+void
+loadAll()
 {
 #define L(n) load(n, #n)
-    L(glCreateShader); L(glShaderSource); L(glCompileShader); L(glGetShaderiv);
-    L(glGetShaderInfoLog); L(glCreateProgram); L(glAttachShader); L(glLinkProgram);
-    L(glGetProgramiv); L(glGetProgramInfoLog); L(glUseProgram); L(glGenBuffers);
-    L(glBindBuffer); L(glBufferData); L(glBufferSubData); L(glGetBufferSubData);
-    L(glBindBufferBase); L(glDispatchCompute); L(glMemoryBarrier); L(glGenQueries);
-    L(glBeginQuery); L(glEndQuery); L(glGetQueryObjectui64v);
+    L(glCreateShader);
+    L(glShaderSource);
+    L(glCompileShader);
+    L(glGetShaderiv);
+    L(glGetShaderInfoLog);
+    L(glCreateProgram);
+    L(glAttachShader);
+    L(glLinkProgram);
+    L(glGetProgramiv);
+    L(glGetProgramInfoLog);
+    L(glUseProgram);
+    L(glGenBuffers);
+    L(glBindBuffer);
+    L(glBufferData);
+    L(glBufferSubData);
+    L(glGetBufferSubData);
+    L(glBindBufferBase);
+    L(glDispatchCompute);
+    L(glMemoryBarrier);
+    L(glGenQueries);
+    L(glBeginQuery);
+    L(glEndQuery);
+    L(glGetQueryObjectui64v);
 #undef L
 }
 
-bool makeContext()
+bool
+makeContext()
 {
     auto queryDevices = reinterpret_cast<PFNEGLQUERYDEVICESEXTPROC>(eglGetProcAddress("eglQueryDevicesEXT"));
-    auto getPlatformDisplay =
-        reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(eglGetProcAddress("eglGetPlatformDisplayEXT"));
+    auto getPlatformDisplay = reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(eglGetProcAddress("eglGetPlatformDisplayEXT"));
     if (!queryDevices || !getPlatformDisplay)
         return false;
     EGLDeviceEXT devs[8];
@@ -93,20 +112,21 @@ bool makeContext()
     if (dpy == EGL_NO_DISPLAY)
         return false;
     eglBindAPI(EGL_OPENGL_API);
-    EGLint cfgAttr[] = {EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE};
+    EGLint cfgAttr[] = { EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE };
     EGLConfig cfg;
     EGLint nc = 0;
     if (!eglChooseConfig(dpy, cfgAttr, &cfg, 1, &nc) || nc == 0)
         return false;
-    EGLint ctxAttr[] = {EGL_CONTEXT_MAJOR_VERSION, 4, EGL_CONTEXT_MINOR_VERSION, 3,
-                        EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT, EGL_NONE};
+    EGLint ctxAttr[] = { EGL_CONTEXT_MAJOR_VERSION, 4, EGL_CONTEXT_MINOR_VERSION, 3,
+                         EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT, EGL_NONE };
     EGLContext ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctxAttr);
     if (ctx == EGL_NO_CONTEXT)
         return false;
     return eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx) == EGL_TRUE;
 }
 
-GLuint buildProgram(const char* src)
+GLuint
+buildProgram(const char* src)
 {
     GLuint sh = glCreateShader(GL_COMPUTE_SHADER);
     glShaderSource(sh, 1, &src, nullptr);
@@ -131,7 +151,8 @@ GLuint buildProgram(const char* src)
     return prog;
 }
 
-GLuint makeBuffer(GLenum target, size_t bytes, const void* data)
+GLuint
+makeBuffer(GLenum target, size_t bytes, const void* data)
 {
     GLuint b;
     glGenBuffers(1, &b);
@@ -140,7 +161,8 @@ GLuint makeBuffer(GLenum target, size_t bytes, const void* data)
     return b;
 }
 
-std::vector<float> readBack(GLuint buf, size_t floats)
+std::vector<float>
+readBack(GLuint buf, size_t floats)
 {
     std::vector<float> v(floats);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, buf);
@@ -148,14 +170,16 @@ std::vector<float> readBack(GLuint buf, size_t floats)
     return v;
 }
 
-double median(std::vector<double> v)
+double
+median(std::vector<double> v)
 {
     std::sort(v.begin(), v.end());
     return v[v.size() / 2];
 }
 
 template <class F>
-double timeKernel(F&& dispatch)
+double
+timeKernel(F&& dispatch)
 {
     GLuint q;
     glGenQueries(1, &q);
@@ -172,7 +196,8 @@ double timeKernel(F&& dispatch)
     return median(ms);
 }
 
-int ulpDistance(float a, float b)
+int
+ulpDistance(float a, float b)
 {
     if (std::isnan(a) || std::isnan(b))
         return (std::isnan(a) && std::isnan(b)) ? 0 : INT32_MAX;
@@ -204,7 +229,8 @@ struct GradeCase {
     bool reverse, clampBlack, clampWhite;
 };
 
-bool runGrade(const std::vector<float>& input, size_t floats)
+bool
+runGrade(const std::vector<float>& input, size_t floats)
 {
     GLuint prog = buildProgram(grade_gl_glsl);
     glUseProgram(prog);
@@ -216,13 +242,13 @@ bool runGrade(const std::vector<float>& input, size_t floats)
     glBindBufferBase(GL_UNIFORM_BUFFER, 2, ubo);
 
     const GradeCase cases[] = {
-        {"gamma=1", 1.3f, 0.05f, 1.0f, false, false, false},
-        {"gamma=2.2", 1.1f, 0.02f, 2.2f, false, true, true},
-        {"reverse g=2.2", 1.1f, 0.02f, 2.2f, true, false, false},
+        { "gamma=1", 1.3f, 0.05f, 1.0f, false, false, false },
+        { "gamma=2.2", 1.1f, 0.02f, 2.2f, false, true, true },
+        { "reverse g=2.2", 1.1f, 0.02f, 2.2f, true, false, false },
     };
     bool pass = true;
     for (const GradeCase& c : cases) {
-        GradeParams p{};
+        GradeParams p {};
         for (int i = 0; i < 4; ++i) {
             p.a[i] = c.a;
             p.b[i] = c.b;
@@ -244,7 +270,7 @@ bool runGrade(const std::vector<float>& input, size_t floats)
         const double ms = timeKernel(dispatch);
         const std::vector<float> out = readBack(dst, floats);
 
-        graderef::Channel ch{c.a, c.b, c.gamma};
+        graderef::Channel ch { c.a, c.b, c.gamma };
         int maxUlp = 0;
         double maxAbs = 0;
         size_t violations = 0;
@@ -265,7 +291,8 @@ bool runGrade(const std::vector<float>& input, size_t floats)
     return pass;
 }
 
-bool runBlur(const std::vector<float>& input, size_t floats)
+bool
+runBlur(const std::vector<float>& input, size_t floats)
 {
     GLuint prog = buildProgram(blur_gl_glsl);
     glUseProgram(prog);
@@ -276,7 +303,7 @@ bool runBlur(const std::vector<float>& input, size_t floats)
     glBindBufferBase(GL_UNIFORM_BUFFER, 3, ubo);
 
     bool pass = true;
-    for (double sigma : {3.0, 25.0}) {
+    for (double sigma : { 3.0, 25.0 }) {
         const std::vector<double> w = blurref::makeWeights(sigma);
         std::vector<float> wf(w.begin(), w.end());
         GLuint bufW = makeBuffer(GL_SHADER_STORAGE_BUFFER, wf.size() * 4, wf.data());
@@ -285,7 +312,7 @@ bool runBlur(const std::vector<float>& input, size_t floats)
         for (int neumann = 1; neumann >= 0; --neumann) {
             double passMs[2];
             for (int vertical = 0; vertical < 2; ++vertical) {
-                BlurParams p{kW, kH, kC, radius, uint32_t(vertical), uint32_t(neumann), {}};
+                BlurParams p { kW, kH, kC, radius, uint32_t(vertical), uint32_t(neumann), {} };
                 glBindBuffer(GL_UNIFORM_BUFFER, ubo);
                 glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof p, &p);
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, vertical ? bufTmp : bufIn);
@@ -321,14 +348,14 @@ bool runBlur(const std::vector<float>& input, size_t floats)
             // Horizontal pass checked on whole rows against the input, vertical pass on
             // whole columns against the GPU's own intermediate, so each is judged alone.
             double maxErr = 0;
-            const int rows[] = {0, 1, 77, kH / 2, kH - 2, kH - 1};
+            const int rows[] = { 0, 1, 77, kH / 2, kH - 2, kH - 1 };
             for (int row : rows)
                 for (int x = 0; x < kW; ++x)
                     for (int c = 0; c < kC; ++c) {
                         const double ref = sample(input, false, row, x, c);
                         maxErr = std::max(maxErr, std::fabs(ref - double(tmp[(size_t(row) * kW + x) * kC + c])));
                     }
-            const int cols[] = {0, 1, 129, kW / 2, kW - 2, kW - 1};
+            const int cols[] = { 0, 1, 129, kW / 2, kW - 2, kW - 1 };
             for (int col : cols)
                 for (int y = 0; y < kH; ++y)
                     for (int c = 0; c < kC; ++c) {
@@ -347,7 +374,8 @@ bool runBlur(const std::vector<float>& input, size_t floats)
 
 } // namespace
 
-int main()
+int
+main()
 {
     if (!makeContext()) {
         std::fprintf(stderr, "no EGL device context\n");

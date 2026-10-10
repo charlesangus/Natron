@@ -26,15 +26,13 @@ using namespace gpu;
 
 namespace {
 
-struct FillParams
-{
+struct FillParams {
     uint32_t width;
     uint32_t height;
     uint32_t asFloat;
 };
 
-struct GlFns
-{
+struct GlFns {
     decltype(&::glGenTextures) GenTextures = nullptr;
     decltype(&::glDeleteTextures) DeleteTextures = nullptr;
     decltype(&::glBindTexture) BindTexture = nullptr;
@@ -45,13 +43,13 @@ struct GlFns
     decltype(&::glGetError) GetError = nullptr;
 };
 
-void* eglLoader(const char* name)
+void*
+eglLoader(const char* name)
 {
     return reinterpret_cast<void*>(eglGetProcAddress(name));
 }
 
-class EglSurfaceless
-{
+class EglSurfaceless {
 public:
     std::string error;
     GlFns gl;
@@ -63,8 +61,7 @@ public:
             error = "EGL_MESA_platform_surfaceless missing";
             return false;
         }
-        auto getPlatformDisplay =
-            reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(eglGetProcAddress("eglGetPlatformDisplayEXT"));
+        auto getPlatformDisplay = reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(eglGetProcAddress("eglGetPlatformDisplayEXT"));
         if (!getPlatformDisplay) {
             error = "eglGetPlatformDisplayEXT missing";
             return false;
@@ -128,7 +125,8 @@ private:
     EGLContext ctx_ = EGL_NO_CONTEXT;
 };
 
-void fillPattern(float* px, uint32_t w, uint32_t h, uint32_t seed)
+void
+fillPattern(float* px, uint32_t w, uint32_t h, uint32_t seed)
 {
     for (uint32_t y = 0; y < h; ++y) {
         for (uint32_t x = 0; x < w; ++x) {
@@ -141,8 +139,7 @@ void fillPattern(float* px, uint32_t w, uint32_t h, uint32_t seed)
     }
 }
 
-class TestBuffer
-{
+class TestBuffer {
 public:
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation alloc = nullptr;
@@ -153,13 +150,13 @@ public:
     {
         dev_ = &dev;
         size = bytes;
-        VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        VkBufferCreateInfo bci { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         bci.size = bytes;
         bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        VmaAllocationCreateInfo aci{};
+        VmaAllocationCreateInfo aci {};
         aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
         aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        VmaAllocationInfo ai{};
+        VmaAllocationInfo ai {};
         GpuStatus s = dev.check(vmaCreateBuffer(dev.allocator(), &bci, &aci, &buffer, &alloc, &ai), "staging");
         data = static_cast<float*>(ai.pMappedData);
         return s;
@@ -171,17 +168,17 @@ public:
     {
         dev_ = &dev;
         size = bytes;
-        VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        VkBufferCreateInfo bci { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         bci.size = bytes;
         bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        VmaAllocationCreateInfo aci{};
+        VmaAllocationCreateInfo aci {};
         aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
         return dev.check(vmaCreateBuffer(dev.allocator(), &bci, &aci, &buffer, &alloc, nullptr), "device source");
     }
 
     GpuStatus copyTo(VkCommandBuffer cb, VkBuffer dst) const
     {
-        VkBufferCopy region{0, 0, size};
+        VkBufferCopy region { 0, 0, size };
         vkCmdCopyBuffer(cb, buffer, dst, 1, &region);
         return {};
     }
@@ -197,8 +194,7 @@ private:
     GpuDevice* dev_ = nullptr;
 };
 
-class GlInteropTest : public ::testing::Test
-{
+class GlInteropTest : public ::testing::Test {
 protected:
     void SetUp() override
     {
@@ -215,7 +211,7 @@ protected:
         d.spirvWords = fill_spirv_words;
         d.storageBufferCount = 1;
         d.pushConstantBytes = sizeof(FillParams);
-        d.groupSize = {fill_group_size[0], fill_group_size[1], fill_group_size[2]};
+        d.groupSize = { fill_group_size[0], fill_group_size[1], fill_group_size[2] };
         s = GpuKernel::create(*dev, d, fill);
         ASSERT_TRUE(s.ok()) << s.message;
     }
@@ -275,9 +271,9 @@ protected:
             expected[i] = float(i);
         }
         s = gi->produce([&](VkCommandBuffer cb) {
-            FillParams p{w * 4, h, 1};
-            const VkBuffer bufs[] = {gi->buffer()};
-            return fill->record(cb, bufs, std::as_bytes(std::span(&p, 1)), {w * 4, h, 1});
+            FillParams p { w * 4, h, 1 };
+            const VkBuffer bufs[] = { gi->buffer() };
+            return fill->record(cb, bufs, std::as_bytes(std::span(&p, 1)), { w * 4, h, 1 });
         });
         ASSERT_TRUE(s.ok()) << s.message;
         s = gi->upload(tex);
@@ -351,7 +347,8 @@ protected:
     std::vector<GLuint> textures;
 };
 
-double median(std::vector<double> v)
+double
+median(std::vector<double> v)
 {
     std::sort(v.begin(), v.end());
     return v[v.size() / 2];
@@ -414,7 +411,7 @@ TEST_F(GlInteropTest, UhdLatency)
     std::printf("UHD RGBA32F (%.1f MB), %d iterations, median ms, on %s\n", w * h * 16 / 1e6, iterations,
                 driverLabel().c_str());
     std::printf("%-20s %12s %12s %12s\n", "path", "produce", "handoff", "end-to-end");
-    for (GlHandoffPath path : {GlHandoffPath::ZeroCopy, GlHandoffPath::ZeroCopyHostSync, GlHandoffPath::Readback}) {
+    for (GlHandoffPath path : { GlHandoffPath::ZeroCopy, GlHandoffPath::ZeroCopyHostSync, GlHandoffPath::Readback }) {
         if (!caps.supports(path)) {
             std::printf("%-20s skipped: missing %s\n", toString(path), caps.missing.c_str());
             continue;
@@ -431,12 +428,12 @@ TEST_F(GlInteropTest, UhdLatency)
         ASSERT_TRUE(source.createDeviceLocal(*dev, gi->size()).ok());
         ASSERT_TRUE(gi->produce([&](VkCommandBuffer cb) {
                           staging.copyTo(cb, source.buffer);
-                          VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+                          VkMemoryBarrier2 mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
                           mb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
                           mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
                           mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
                           mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-                          VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+                          VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
                           dep.memoryBarrierCount = 1;
                           dep.pMemoryBarriers = &mb;
                           vkCmdPipelineBarrier2(cb, &dep);

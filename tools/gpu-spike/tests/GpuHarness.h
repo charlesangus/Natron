@@ -23,8 +23,7 @@
 // binary runs on lavapipe and on RADV.
 namespace gputest {
 
-class GpuSuite : public ::testing::Test
-{
+class GpuSuite : public ::testing::Test {
 protected:
     static void SetUpTestSuite()
     {
@@ -34,8 +33,8 @@ protected:
             setupError_ = s.message;
             return;
         }
-        VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
-        VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &driver};
+        VkPhysicalDeviceDriverProperties driver { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
+        VkPhysicalDeviceProperties2 props { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &driver };
         vkGetPhysicalDeviceProperties2(dev_->physicalDevice(), &props);
         std::printf("driver: %s %s | type=%d\n", driver.driverName, driver.driverInfo, int(dev_->info().type));
     }
@@ -70,7 +69,7 @@ protected:
         d.entry = entry;
         d.storageBufferCount = buffers;
         d.pushConstantBytes = pushBytes;
-        d.groupSize = {groupSize[0], groupSize[1], groupSize[2]};
+        d.groupSize = { groupSize[0], groupSize[1], groupSize[2] };
         std::unique_ptr<gpu::GpuKernel> k;
         gpu::GpuStatus s = gpu::GpuKernel::create(*dev_, d, k);
         EXPECT_TRUE(s.ok()) << s.message << " (VkResult " << s.result << ")";
@@ -90,8 +89,7 @@ protected:
 
     // Storage buffer. With `data` it lives in host-visible memory and is filled
     // once; without, it is device-local scratch for work between passes.
-    struct Buffer
-    {
+    struct Buffer {
         Buffer() = default;
         Buffer(Buffer&& o) noexcept { *this = std::move(o); }
         Buffer& operator=(Buffer&& o) noexcept
@@ -119,16 +117,16 @@ protected:
 
     static Buffer makeStorage(VkDeviceSize bytes, const void* data = nullptr)
     {
-        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        VkBufferCreateInfo bi { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         bi.size = std::max<VkDeviceSize>(bytes, 4);
         bi.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        VmaAllocationCreateInfo ai{};
+        VmaAllocationCreateInfo ai {};
         ai.usage = VMA_MEMORY_USAGE_AUTO;
         if (data)
             ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
         Buffer b;
         b.dev = dev_.get();
-        VmaAllocationInfo info{};
+        VmaAllocationInfo info {};
         EXPECT_EQ(vmaCreateBuffer(dev_->allocator(), &bi, &ai, &b.buffer, &b.alloc, &info), VK_SUCCESS);
         if (data && info.pMappedData) {
             std::memcpy(info.pMappedData, data, bytes);
@@ -140,12 +138,12 @@ protected:
     // Compute write -> compute read, for dependent passes inside one callback.
     static void computeBarrier(VkCommandBuffer cmd)
     {
-        VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        VkMemoryBarrier2 mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
         mb.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         mb.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
         mb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
         dep.memoryBarrierCount = 1;
         dep.pMemoryBarriers = &mb;
         vkCmdPipelineBarrier2(cmd, &dep);

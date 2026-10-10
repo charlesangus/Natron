@@ -16,22 +16,19 @@ constexpr uint32_t kW = 1921;
 constexpr uint32_t kH = 1081;
 constexpr VkDeviceSize kBytes = VkDeviceSize(kW) * kH * sizeof(uint32_t);
 
-struct FillParams
-{
+struct FillParams {
     uint32_t width;
     uint32_t height;
     uint32_t asFloat;
 };
 
-struct Buffer
-{
+struct Buffer {
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation alloc = nullptr;
     void* mapped = nullptr;
 };
 
-class GpuKernelTest : public ::testing::Test
-{
+class GpuKernelTest : public ::testing::Test {
 protected:
     void SetUp() override
     {
@@ -44,7 +41,7 @@ protected:
         d.entry = "main";
         d.storageBufferCount = 1;
         d.pushConstantBytes = sizeof(FillParams);
-        d.groupSize = {fill_group_size[0], fill_group_size[1], fill_group_size[2]};
+        d.groupSize = { fill_group_size[0], fill_group_size[1], fill_group_size[2] };
         s = GpuKernel::create(*dev, d, kernel);
         ASSERT_TRUE(s.ok()) << s.message << " (VkResult " << s.result << ")";
         ASSERT_TRUE(GpuTimer::create(*dev, timer).ok());
@@ -68,16 +65,16 @@ protected:
 
     Buffer make(VkBufferUsageFlags usage, bool host)
     {
-        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        VkBufferCreateInfo bi { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         bi.size = kBytes;
         bi.usage = usage;
-        VmaAllocationCreateInfo ai{};
+        VmaAllocationCreateInfo ai {};
         if (host) {
             ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
         }
         ai.usage = VMA_MEMORY_USAGE_AUTO;
         Buffer b;
-        VmaAllocationInfo info{};
+        VmaAllocationInfo info {};
         EXPECT_EQ(vmaCreateBuffer(dev->allocator(), &bi, &ai, &b.buffer, &b.alloc, &info), VK_SUCCESS);
         b.mapped = info.pMappedData;
         return b;
@@ -98,40 +95,40 @@ protected:
         ASSERT_NE(device.buffer, VK_NULL_HANDLE);
         ASSERT_NE(readback.mapped, nullptr);
 
-        VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        VkCommandPoolCreateInfo pci { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
         pci.queueFamilyIndex = dev->queueFamily(QueueKind::Compute);
         ASSERT_EQ(vkCreateCommandPool(dev->device(), &pci, nullptr, &pool_), VK_SUCCESS);
-        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        VkCommandBufferAllocateInfo ai { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
         ai.commandPool = pool_;
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         ai.commandBufferCount = 1;
         VkCommandBuffer cmd = VK_NULL_HANDLE;
         ASSERT_EQ(vkAllocateCommandBuffers(dev->device(), &ai, &cmd), VK_SUCCESS);
 
-        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        VkCommandBufferBeginInfo bi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         ASSERT_EQ(vkBeginCommandBuffer(cmd, &bi), VK_SUCCESS);
 
         timer->begin(cmd);
-        FillParams p{kW, kH, asFloat};
-        const VkBuffer bufs[] = {device.buffer};
-        GpuStatus s = kernel->record(cmd, bufs, std::as_bytes(std::span(&p, 1)), {kW, kH, 1});
+        FillParams p { kW, kH, asFloat };
+        const VkBuffer bufs[] = { device.buffer };
+        GpuStatus s = kernel->record(cmd, bufs, std::as_bytes(std::span(&p, 1)), { kW, kH, 1 });
         ASSERT_TRUE(s.ok()) << s.message;
         timer->end(cmd);
 
-        VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        VkMemoryBarrier2 mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
         mb.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         mb.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
         mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
         mb.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
-        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
         dep.memoryBarrierCount = 1;
         dep.pMemoryBarriers = &mb;
         vkCmdPipelineBarrier2(cmd, &dep);
-        VkBufferCopy copy{0, 0, kBytes};
+        VkBufferCopy copy { 0, 0, kBytes };
         vkCmdCopyBuffer(cmd, device.buffer, readback.buffer, 1, &copy);
 
-        VkMemoryBarrier2 hb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        VkMemoryBarrier2 hb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
         hb.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
         hb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
         hb.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
@@ -141,11 +138,11 @@ protected:
         ASSERT_EQ(vkEndCommandBuffer(cmd), VK_SUCCESS);
 
         VkFence fence = VK_NULL_HANDLE;
-        VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        VkFenceCreateInfo fi { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
         ASSERT_EQ(vkCreateFence(dev->device(), &fi, nullptr, &fence), VK_SUCCESS);
-        VkCommandBufferSubmitInfo ci{VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+        VkCommandBufferSubmitInfo ci { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
         ci.commandBuffer = cmd;
-        VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+        VkSubmitInfo2 submit { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
         submit.commandBufferInfoCount = 1;
         submit.pCommandBufferInfos = &ci;
         s = dev->submit(QueueKind::Compute, std::span<const VkSubmitInfo2>(&submit, 1), fence);
@@ -170,10 +167,10 @@ protected:
 
 TEST_F(GpuKernelTest, GroupCountRoundsUp)
 {
-    ASSERT_EQ(kernel->desc().groupSize, (std::array<uint32_t, 3>{16, 16, 1}));
-    EXPECT_EQ(kernel->groupCount({kW, kH, 1}), (std::array<uint32_t, 3>{121, 68, 1}));
-    EXPECT_EQ(kernel->groupCount({32, 16, 1}), (std::array<uint32_t, 3>{2, 1, 1}));
-    EXPECT_EQ(kernel->groupCount({0xFFFFFFFFu, 1, 1}), (std::array<uint32_t, 3>{0x10000000u, 1, 1}));
+    ASSERT_EQ(kernel->desc().groupSize, (std::array<uint32_t, 3> { 16, 16, 1 }));
+    EXPECT_EQ(kernel->groupCount({ kW, kH, 1 }), (std::array<uint32_t, 3> { 121, 68, 1 }));
+    EXPECT_EQ(kernel->groupCount({ 32, 16, 1 }), (std::array<uint32_t, 3> { 2, 1, 1 }));
+    EXPECT_EQ(kernel->groupCount({ 0xFFFFFFFFu, 1, 1 }), (std::array<uint32_t, 3> { 0x10000000u, 1, 1 }));
 }
 
 TEST_F(GpuKernelTest, RefusesGroupCountsBeyondTheDeviceLimit)
@@ -184,9 +181,9 @@ TEST_F(GpuKernelTest, RefusesGroupCountsBeyondTheDeviceLimit)
     if (limit == 0xFFFFFFFFu) {
         GTEST_SKIP() << "device has no group count limit below 2^32";
     }
-    FillParams p{1, 1, 0};
-    const VkBuffer bufs[] = {VK_NULL_HANDLE};
-    GpuStatus s = kernel->recordGroups(VK_NULL_HANDLE, bufs, std::as_bytes(std::span(&p, 1)), {1, limit + 1, 1});
+    FillParams p { 1, 1, 0 };
+    const VkBuffer bufs[] = { VK_NULL_HANDLE };
+    GpuStatus s = kernel->recordGroups(VK_NULL_HANDLE, bufs, std::as_bytes(std::span(&p, 1)), { 1, limit + 1, 1 });
     EXPECT_EQ(s.result, VK_ERROR_FEATURE_NOT_PRESENT) << s.message;
 }
 
@@ -226,6 +223,6 @@ TEST_F(GpuKernelTest, FillFloat)
 
 TEST_F(GpuKernelTest, RejectsMismatchedBindings)
 {
-    GpuStatus s = kernel->record(VK_NULL_HANDLE, {}, {}, {1, 1, 1});
+    GpuStatus s = kernel->record(VK_NULL_HANDLE, {}, {}, { 1, 1, 1 });
     EXPECT_FALSE(s.ok());
 }

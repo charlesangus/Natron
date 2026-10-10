@@ -15,16 +15,14 @@ using namespace gpu;
 
 namespace {
 
-struct BlurCase
-{
+struct BlurCase {
     int w, h, ch;
     double sigma;
     bool neumann;
     std::vector<float> src;
 };
 
-class BlurGpuTest : public gputest::GpuSuite
-{
+class BlurGpuTest : public gputest::GpuSuite {
 protected:
     static std::vector<BlurCase> makeCases()
     {
@@ -33,8 +31,8 @@ protected:
         for (double sigma : blurfix::kSigmas) {
             for (const auto& s : blurfix::kSizes)
                 for (int ch : blurfix::kChannelCounts)
-                    for (bool neumann : {false, true}) {
-                        cases.push_back({s.w, s.h, ch, sigma, neumann, blurfix::makeImage(s.w, s.h, ch, seed++)});
+                    for (bool neumann : { false, true }) {
+                        cases.push_back({ s.w, s.h, ch, sigma, neumann, blurfix::makeImage(s.w, s.h, ch, seed++) });
                     }
         }
         return cases;
@@ -62,15 +60,15 @@ protected:
         std::vector<TransferFrame> frames;
         std::vector<Buffer> scratch;
         for (size_t i = 0; i < cases.size(); ++i) {
-            frames.push_back({cases[i].src.data(), dst[i].data(), cases[i].src.size() * sizeof(float)});
+            frames.push_back({ cases[i].src.data(), dst[i].data(), cases[i].src.size() * sizeof(float) });
             scratch.push_back(makeStorage(frames.back().bytes));
         }
 
         process(*transfer, *kernel, frames, 128,
                 [&](VkCommandBuffer cmd, const ComputeBinding& b, size_t k) -> GpuStatus {
                     const BlurCase& c = cases[k];
-                    GpuBlurPass pass{uint32_t(c.w), uint32_t(c.h), uint32_t(c.ch),
-                                     uint32_t(blurref::radiusForSigma(c.sigma)), false, c.neumann};
+                    GpuBlurPass pass { uint32_t(c.w), uint32_t(c.h), uint32_t(c.ch),
+                                       uint32_t(blurref::radiusForSigma(c.sigma)), false, c.neumann };
                     const VkBuffer w = weights[k].buffer;
                     const VkBuffer tmp = scratch[k].buffer;
                     if (GpuStatus s = recordBlurPass(*kernel, cmd, b.input, tmp, w, pass); !s) {
@@ -95,7 +93,7 @@ TEST_F(BlurGpuTest, MatchesReference)
     for (size_t k = 0; k < cases.size(); ++k) {
         const BlurCase& c = cases[k];
         const size_t sigmaIndex = std::find(std::begin(blurfix::kSigmas), std::end(blurfix::kSigmas), c.sigma)
-                                  - std::begin(blurfix::kSigmas);
+            - std::begin(blurfix::kSigmas);
         const std::vector<double> ref = blurfix::reference(c.src, c.w, c.h, c.ch, c.sigma, c.neumann);
         tol::ErrorStats caseStats;
         for (size_t i = 0; i < ref.size(); ++i) {
@@ -126,8 +124,8 @@ TEST_F(BlurGpuTest, LargestSupportedRadiusMatchesReference)
     constexpr double kSigma = 170.0;
     ASSERT_LE(uint32_t(blurref::radiusForSigma(kSigma)), kGpuBlurMaxRadius);
     std::vector<BlurCase> cases;
-    for (bool neumann : {false, true})
-        cases.push_back({333, 290, 4, kSigma, neumann, blurfix::makeImage(333, 290, 4, neumann ? 2 : 1)});
+    for (bool neumann : { false, true })
+        cases.push_back({ 333, 290, 4, kSigma, neumann, blurfix::makeImage(333, 290, 4, neumann ? 2 : 1) });
     const std::vector<std::vector<float>> dst = run(cases);
     for (size_t k = 0; k < cases.size(); ++k) {
         const BlurCase& c = cases[k];
@@ -146,20 +144,20 @@ TEST_F(BlurGpuTest, RefusesRadiusAndChannelsBeyondTheTile)
     ASSERT_TRUE(kernel);
     const uint32_t over = uint32_t(blurref::radiusForSigma(171.0));
     ASSERT_GT(over, kGpuBlurMaxRadius);
-    for (bool vertical : {false, true}) {
+    for (bool vertical : { false, true }) {
         const GpuStatus s = recordBlurPass(*kernel, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                           GpuBlurPass{64, 64, 4, over, vertical, true});
+                                           GpuBlurPass { 64, 64, 4, over, vertical, true });
         EXPECT_EQ(s.result, VK_ERROR_FEATURE_NOT_PRESENT) << s.message;
         EXPECT_NE(s.message.find("radius"), std::string::npos) << s.message;
     }
     const GpuStatus s = recordBlurPass(*kernel, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                       GpuBlurPass{64, 64, 5, 3, false, true});
+                                       GpuBlurPass { 64, 64, 5, 3, false, true });
     EXPECT_EQ(s.result, VK_ERROR_FEATURE_NOT_PRESENT) << s.message;
 }
 
 TEST(BlurGroupCount, VerticalDirectPathCoversColumnBlocks)
 {
-    EXPECT_EQ(blurGroupCount({1000, 300, 4, 32, true, true}), (std::array<uint32_t, 3>{3, 32, 1}));
-    EXPECT_EQ(blurGroupCount({1000, 300, 4, 33, true, true}), (std::array<uint32_t, 3>{3, 1000, 1}));
-    EXPECT_EQ(blurGroupCount({1000, 300, 4, 3, false, true}), (std::array<uint32_t, 3>{8, 300, 1}));
+    EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 32, true, true }), (std::array<uint32_t, 3> { 3, 32, 1 }));
+    EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 33, true, true }), (std::array<uint32_t, 3> { 3, 1000, 1 }));
+    EXPECT_EQ(blurGroupCount({ 1000, 300, 4, 3, false, true }), (std::array<uint32_t, 3> { 8, 300, 1 }));
 }

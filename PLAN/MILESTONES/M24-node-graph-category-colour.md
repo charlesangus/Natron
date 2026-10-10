@@ -186,6 +186,12 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 
 - 2026-10-10 — **Gate (local):** the one end build (`fast`) was clean on the first try. 17 targeted ctest cases pass, and the screenshot script reports 32 PASS, 15 shots and 0 failures. Two script bugs were fixed along the way: reloading a just-saved project returns the same App, so `closeProject()` quit Natron; and the framing helper's centring was wrong for node subsets. The full debug and release suites run in CI on PR #50.
 
+- 2026-10-10 — **Review round (Claude opus; Codex not logged in on this host), PR #50:** 15 findings (2 high, 4 medium, 5 low, 4 nits), all fixed in `eebd52d14`. The two judgement calls, made by the PM:
+  - A Python `setColor` within 0.05 per channel of the category colour clears the user colour, so legacy PyPlugs don't sprout borders. The bundled PyPlugs were not regenerated.
+  - Dots draw their user colour as the disk, as they did before M24.
+
+  Re-verified with one `fast` build: 17 targeted ctest cases pass, and the screenshot script reports 0 failures, now covering the 0.05 rule, Dot colour and Backdrop reset. Every thread has a reply.
+
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate
 were captured (Xvfb + screenshot, since this cannot be asserted in a unit test),

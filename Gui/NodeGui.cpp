@@ -259,6 +259,7 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _nameFrame(NULL)
     , _resizeHandle(NULL)
     , _boundingBox(NULL)
+    , _userColorBorder(NULL)
     , _channelsPixmap(NULL)
     , _previewPixmap(NULL)
     , _previewDataMutex()
@@ -651,6 +652,14 @@ NodeGui::createGui()
     _boundingBox = new NodeGraphRectItem(this, cornerRadiusPx);
     _boundingBox->setZValue(depth);
 
+    // Drawn above the icon frame and preview (both at depth/depth+1), on an item whose rect
+    // tracks _boundingBox's, which already spans the whole node footprint, so the inset border
+    // is never painted over by those opaque items.
+    _userColorBorder = new NodeGraphRectItem(this, cornerRadiusPx);
+    _userColorBorder->setZValue(depth + 1.5);
+    _userColorBorder->setPen(Qt::NoPen);
+    _userColorBorder->setBrush(Qt::NoBrush);
+
     if ( mustFrameName() ) {
         _nameFrame = new QGraphicsRectItem(this);
         _nameFrame->setZValue(depth + 1);
@@ -1029,6 +1038,7 @@ NodeGui::resize(int width,
     QRectF bbox(topLeft.x(), topLeft.y(), width, height);
 
     _boundingBox->setRect(bbox);
+    _userColorBorder->setRect(bbox);
 
     int iconSize = TO_DPIY(NATRON_PLUGIN_ICON_SIZE);
     int iconOffsetX = TO_DPIX(PLUGIN_ICON_OFFSET);
@@ -1820,7 +1830,7 @@ NodeGui::refreshCurrentBrush()
 void
 NodeGui::refreshUserColorBorder()
 {
-    if (!_boundingBox) {
+    if (!_userColorBorder) {
         return;
     }
     QColor body, user;
@@ -1833,10 +1843,10 @@ NodeGui::refreshUserColorBorder()
     }
     // A clone is drawn entirely in the clone colour, so the user colour is hidden while it is one.
     if (!hasUser || !_masterNodeGui.expired()) {
-        _boundingBox->clearInsetBorder();
+        _userColorBorder->clearInsetBorder();
         return;
     }
-    _boundingBox->setInsetBorder(userBorderColorAgainstBody(user, body), TO_DPIX(NATRON_USER_COLOR_BORDER_WIDTH));
+    _userColorBorder->setInsetBorder(userBorderColorAgainstBody(user, body), TO_DPIX(NATRON_USER_COLOR_BORDER_WIDTH));
 }
 
 bool

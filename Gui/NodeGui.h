@@ -651,6 +651,10 @@ private:
     /*A pointer to the rectangle of the node.*/
     NodeGraphRectItem* _boundingBox;
 
+    // Sized to the node's full footprint (icon column, _boundingBox and preview) and kept above
+    // them in z-order, so the user-colour border is not painted over by those opaque items.
+    NodeGraphRectItem* _userColorBorder;
+
     /*A pointer to the channels pixmap displayed*/
     QGraphicsPixmapItem* _channelsPixmap;
 

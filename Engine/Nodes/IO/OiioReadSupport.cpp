@@ -215,31 +215,224 @@ namespace {
     }
 } // anonymous namespace
 
+namespace {
+    bool
+    sameName(const std::string& a,
+             const std::string& b)
+    {
+        return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); });
+    }
+
+    // The strings of a string or string-array attribute.
+    std::vector<std::string>
+    stringsOf(const OIIO::ImageSpec& spec,
+              const char* name)
+    {
+        std::vector<std::string> result;
+        const OIIO::ParamValue* value = spec.find_attribute(name);
+
+        if (!value || !value->data() || value->type().basetype != OIIO::TypeDesc::STRING || value->type().is_unsized_array()) {
+            return result;
+        }
+        const std::size_t count = value->type().numelements() * (std::size_t)std::max(1, value->nvalues());
+        const char* const* text = (const char* const*)value->data();
+        for (std::size_t i = 0; i < count; ++i) {
+            if (text[i] && *text[i]) {
+                result.push_back(text[i]);
+            }
+        }
+
+        return result;
+    }
+
+    // How a subimage says which views it holds: one `view` for the whole part, or a `multiView`
+    // list whose members prefix the channel names.
+    struct SubimageViews {
+        std::string view;
+        std::vector<std::string> multiView;
+
+        explicit SubimageViews(const OIIO::ImageSpec& spec)
+            : view()
+            , multiView(stringsOf(spec, "multiView"))
+        {
+            const std::vector<std::string> single = stringsOf(spec, "view");
+
+            if (!single.empty()) {
+                view = single[0];
+            }
+        }
+    };
+
+    std::vector<std::string>
+    splitDots(const std::string& name)
+    {
+        std::vector<std::string> parts;
+        std::size_t begin = 0;
+
+        for (;;) {
+            const std::size_t dot = name.find('.', begin);
+            if (dot == std::string::npos) {
+                parts.push_back(name.substr(begin));
+
+                return parts;
+            }
+            parts.push_back(name.substr(begin, dot - begin));
+            begin = dot + 1;
+        }
+    }
+
+    // The view a channel of a `multiView` subimage belongs to, and its name without the view. A
+    // view name is the component before the last one; a channel that has none is in the first view.
+    std::string
+    viewOfChannel(const std::string& name,
+                  const std::vector<std::string>& multiView,
+                  std::string* base)
+    {
+        std::vector<std::string> parts = splitDots(name);
+
+        *base = name;
+        if (parts.size() >= 2) {
+            const std::string& candidate = parts[parts.size() - 2];
+            for (std::size_t v = 0; v < multiView.size(); ++v) {
+                if (sameName(candidate, multiView[v])) {
+                    parts.erase(parts.end() - 2);
+                    base->clear();
+                    for (std::size_t i = 0; i < parts.size(); ++i) {
+                        *base += (i > 0 ? "." : "") + parts[i];
+                    }
+
+                    return multiView[v];
+                }
+            }
+        }
+
+        return multiView[0];
+    }
+
+    // A part name without the view the part holds, which the file may append to it.
+    std::string
+    partNameWithoutView(const std::string& part,
+                        const std::string& view)
+    {
+        if (part.empty() || view.empty()) {
+            return part;
+        }
+        if (sameName(part, view)) {
+            return std::string();
+        }
+        const std::size_t n = view.size();
+        if (part.size() > n + 1 && std::strchr("_.-", part[part.size() - n - 1]) && sameName(part.substr(part.size() - n), view)) {
+            return part.substr(0, part.size() - n - 1);
+        }
+        if (part.size() > n + 1 && std::strchr("_.-", part[n]) && sameName(part.substr(0, n), view)) {
+            return part.substr(n + 1);
+        }
+
+        return part;
+    }
+} // anonymous namespace
+
+std::vector<std::string>
+viewNames(const Header& header)
+{
+    std::vector<std::string> names;
+    const auto add = [&names](const std::string& name) {
+        if (!name.empty() && std::none_of(names.begin(), names.end(), [&name](const std::string& known) { return sameName(known, name); })) {
+            names.push_back(name);
+        }
+    };
+
+    for (std::size_t s = 0; s < header.subimages.size(); ++s) {
+        const SubimageViews views(header.subimages[s]);
+        for (std::size_t v = 0; v < views.multiView.size(); ++v) {
+            add(views.multiView[v]);
+        }
+        add(views.view);
+    }
+
+    return names;
+}
+
+std::string
+resolveView(const Header& header,
+            const std::string& view)
+{
+    const std::vector<std::string> names = viewNames(header);
+
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (sameName(names[i], view)) {
+            return names[i];
+        }
+    }
+
+    return names.empty() ? std::string() : names[0];
+}
+
+void
+viewParts(const Header& header,
+          const std::string& view,
+          std::vector<PartChannels>* parts)
+{
+    if (!parts) {
+        return;
+    }
+    parts->clear();
+
+    const std::string target = resolveView(header, view);
+    const bool multiPart = header.subimages.size() > 1;
+    for (std::size_t s = 0; s < header.subimages.size(); ++s) {
+        const OIIO::ImageSpec& spec = header.subimages[s];
+        const SubimageViews views(spec);
+
+        PartChannels part;
+        part.subimage = (int)s;
+        part.part = multiPart ? partNameWithoutView(partNameOf(spec), views.view) : std::string();
+        const int nNamed = std::min(spec.nchannels, (int)spec.channelnames.size());
+        for (int i = 0; i < nNamed; ++i) {
+            std::string name = spec.channelnames[(std::size_t)i];
+            std::string channelView = views.view;
+            if (channelView.empty() && !views.multiView.empty()) {
+                std::string base;
+                channelView = viewOfChannel(name, views.multiView, &base);
+                name = base;
+            }
+            if (!target.empty() && !channelView.empty() && !sameName(channelView, target)) {
+                continue;
+            }
+            part.names.push_back(name);
+            part.index.push_back(i);
+        }
+        if (!part.index.empty()) {
+            parts->push_back(part);
+        }
+    }
+}
+
 void
 fileLayers(const Header& header,
-           std::vector<FileLayer>* layers)
+           std::vector<FileLayer>* layers,
+           const std::string& view)
 {
     if (!layers) {
         return;
     }
     layers->clear();
 
-    const bool multiPart = header.subimages.size() > 1;
+    std::vector<PartChannels> viewSubimages;
+    viewParts(header, view, &viewSubimages);
     std::set<std::string> seen;
-    for (std::size_t s = 0; s < header.subimages.size(); ++s) {
-        const OIIO::ImageSpec& spec = header.subimages[s];
-        const std::string part = multiPart ? partNameOf(spec) : std::string();
+    for (std::size_t s = 0; s < viewSubimages.size(); ++s) {
+        const std::string& part = viewSubimages[s].part;
 
         std::vector<std::string> flat;
         std::vector<int> fileIndex;
-        const int nNamed = std::min(spec.nchannels, (int)spec.channelnames.size());
-        for (int i = 0; i < nNamed; ++i) {
-            const std::string& name = spec.channelnames[(std::size_t)i];
+        for (std::size_t i = 0; i < viewSubimages[s].names.size(); ++i) {
+            const std::string& name = viewSubimages[s].names[i];
             if (name.empty()) {
                 continue;
             }
             flat.push_back((part.empty() || name.find('.') != std::string::npos) ? name : part + "." + name);
-            fileIndex.push_back(i);
+            fileIndex.push_back(viewSubimages[s].index[i]);
         }
 
         std::vector<ImageLayerDesc> grouped;
@@ -254,7 +447,7 @@ fileLayers(const Header& header,
 
             FileLayer layer;
             layer.desc = desc;
-            layer.subimage = (int)s;
+            layer.subimage = viewSubimages[s].subimage;
             const std::vector<std::string>& channels = desc.getChannels();
             for (std::size_t c = 0; c < channels.size(); ++c) {
                 for (std::size_t f = 0; f < flat.size(); ++f) {
@@ -554,6 +747,104 @@ attributeMetadata(const std::string& path,
     }
 
     return metadata;
+}
+
+const char* const kExcludedOiioFormats[5] = { "raw", "null", "term", "ffmpeg", "psd" };
+
+namespace {
+    struct ExtensionTable {
+        std::map<std::string, std::string> formatOf; // lower-case extension -> kept format
+        std::vector<std::string> extensions;
+
+        ExtensionTable()
+        {
+            const std::string list = OIIO::get_string_attribute("extension_list");
+            std::set<std::string> excluded;
+            for (const char* name : kExcludedOiioFormats) {
+                excluded.insert(name);
+            }
+            std::size_t pos = 0;
+            while (pos < list.size()) {
+                std::size_t end = list.find(';', pos);
+                if (end == std::string::npos) {
+                    end = list.size();
+                }
+                const std::string entry = list.substr(pos, end - pos);
+                pos = end + 1;
+
+                const std::size_t colon = entry.find(':');
+                if (colon == std::string::npos) {
+                    continue;
+                }
+                const std::string format = lowerCase(entry.substr(0, colon));
+                if (excluded.count(format)) {
+                    continue;
+                }
+                std::size_t extPos = colon + 1;
+                while (extPos <= entry.size()) {
+                    std::size_t extEnd = entry.find(',', extPos);
+                    if (extEnd == std::string::npos) {
+                        extEnd = entry.size();
+                    }
+                    const std::string ext = lowerCase(entry.substr(extPos, extEnd - extPos));
+                    extPos = extEnd + 1;
+                    if (!ext.empty()) {
+                        formatOf.insert(std::make_pair(ext, format));
+                    }
+                }
+            }
+            for (const auto& item : formatOf) {
+                extensions.push_back(item.first);
+            }
+        }
+
+        static std::string
+        lowerCase(std::string s)
+        {
+            std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+
+            return s;
+        }
+    };
+
+    const ExtensionTable&
+    extensionTable()
+    {
+        static const ExtensionTable table;
+
+        return table;
+    }
+} // namespace
+
+const std::vector<std::string>&
+readableExtensions()
+{
+    return extensionTable().extensions;
+}
+
+std::string
+formatNameForExtension(const std::string& extension)
+{
+    std::string ext = ExtensionTable::lowerCase(extension);
+    if (!ext.empty() && ext[0] == '.') {
+        ext.erase(0, 1);
+    }
+    const ExtensionTable& table = extensionTable();
+    const std::map<std::string, std::string>::const_iterator it = table.formatOf.find(ext);
+
+    return it == table.formatOf.end() ? std::string() : it->second;
+}
+
+bool
+isReadablePath(const std::string& path)
+{
+    const std::size_t dot = path.find_last_of('.');
+    const std::size_t slash = path.find_last_of("/\\");
+    if (dot == std::string::npos || (slash != std::string::npos && dot < slash)) {
+        return false;
+    }
+
+    return !formatNameForExtension(path.substr(dot + 1)).empty();
 }
 } // namespace OiioReadSupport
 

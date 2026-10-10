@@ -1023,8 +1023,10 @@ namesToOptions(const std::vector<std::string>& names)
     return ret;
 }
 
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
 std::vector<ChoiceOption>
-colorSpaceOptions(const ProjectColorManagement& cm)
+Project::colorSpaceOptions(const ProjectColorManagement& cm)
 {
     std::vector<ChoiceOption> ret;
     OCIO_NAMESPACE::ConstConfigRcPtr config = cm.getConfig();
@@ -1046,6 +1048,8 @@ colorSpaceOptions(const ProjectColorManagement& cm)
 
     return ret;
 }
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
 
 bool
 hasOption(const std::vector<ChoiceOption>& options,

@@ -55,9 +55,12 @@ NATRON_NAMESPACE_ENTER
  *   - colour: ocioInputSpace, ocioInputSpaceIndex, ocioInputSpaceSet, and the hidden
  *     ocioConfigFile and ocioWorkingSpace
  *   - views: the hidden availableViews
- * The file, proxy and time knobs exist so far. A sequence pattern is resolved to one file per output
+ * The file, proxy, time and colour knobs exist so far. A sequence pattern is resolved to one file per output
  * frame through ReadTimeDomain. The colour plane and every other layer of the file are produced,
- * the layers grouped as OiioReadSupport::fileLayers groups them.
+ * the layers grouped as OiioReadSupport::fileLayers groups them. A file of several views, as
+ * parts with a `view` attribute or channels prefixed per its `multiView` list, fills the hidden
+ * availableViews so the project gets those views; each project view then reads its own part or
+ * channels, and a view the file lacks reads the file's default view.
  **/
 class NativeRead
     : public NativeEffectBase {
@@ -85,6 +88,11 @@ public:
     }
 
     virtual bool supportsTiles() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual bool isViewAware() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return true;
     }
@@ -128,6 +136,11 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    virtual void onEffectCreated(bool mayCreateFileDialog,
+                                 const CreateNodeArgs& args) OVERRIDE FINAL;
+
+    bool rejectUnsupportedFormat(const std::string& path);
+
     // The frames a filename pattern matches on disk, listed once per pattern.
     struct FrameListing {
         std::string pattern;
@@ -160,6 +173,9 @@ private:
         }
     };
 
+    void refreshAvailableViews(bool silent);
+    std::string projectViewName(ViewIdx view) const;
+
     std::shared_ptr<const FrameListing> frameListing(bool proxy = false) const;
     void invalidateFrameListing();
     ReadTimeDomain::Settings settingsAt(double time) const;
@@ -176,6 +192,11 @@ private:
                        unsigned int level,
                        Target* source,
                        unsigned int* fileLevel) const;
+    bool colourKnobChanged(KnobI* k,
+                           ValueChangedReasonEnum reason);
+    void guessInputSpace();
+    void refreshInputSpaceMenu();
+    std::string workingSpaceName() const;
 
     KnobFileWPtr _filename;
     KnobFileWPtr _proxy;
@@ -194,6 +215,13 @@ private:
     KnobBoolWPtr _timeDomainUserEdited;
     KnobDoubleWPtr _frameRate;
     KnobBoolWPtr _customFps;
+    KnobStringWPtr _ocioConfigFile;
+    KnobStringWPtr _ocioWorkingSpace;
+    KnobStringWPtr _inputSpace;
+    KnobChoiceWPtr _inputSpaceMenu;
+    KnobBoolWPtr _inputSpaceSet;
+
+    KnobStringWPtr _availableViews;
 
     mutable std::mutex _listingMutex;
     mutable std::shared_ptr<const FrameListing> _listing;

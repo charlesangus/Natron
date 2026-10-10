@@ -140,6 +140,10 @@ protected:
         KnobFile* file = dynamic_cast<KnobFile*>(node->getKnobByName(knobName).get());
         ASSERT_TRUE(file != NULL) << knobName;
         file->setValue(path);
+        // These tests compare with the raw pixels, so the file is read without conversion.
+        KnobStringBase* inputSpace = dynamic_cast<KnobStringBase*>(node->getKnobByName("ocioInputSpace").get());
+        ASSERT_TRUE(inputSpace != NULL);
+        inputSpace->setValue(getApp()->getProject()->getWorkingColorSpace());
         node->getEffectInstance()->refreshMetadata_public(false);
     }
 

@@ -236,6 +236,12 @@ public:
     ProjectColorManagementPtr getColorManagement() const;
 
     /**
+     * @brief One option per colourspace of the config of \p cm, its id and label the colourspace
+     * name and its tooltip the colourspace description.
+     **/
+    static std::vector<ChoiceOption> colorSpaceOptions(const ProjectColorManagement& cm);
+
+    /**
      * @brief Remove all the autosave files from the disk.
      **/
     static void clearAutoSavesDir();

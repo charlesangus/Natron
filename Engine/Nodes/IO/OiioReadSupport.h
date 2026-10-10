@@ -85,8 +85,52 @@ struct FileLayer {
  * the layer its part is named after; a part with no name of its own adds no layer name. A layer
  * that LayerRegistry::validate refuses for a file, such as one over the channel cap, is left out,
  * as is a layer whose ID an earlier one already has.
+ *
+ * Only the parts and channels of `view` are listed, as viewParts gives them; a part name's view
+ * suffix is not part of a layer name, so the layers are the same in every view.
  **/
-void fileLayers(const Header& header, std::vector<FileLayer>* layers);
+void fileLayers(const Header& header, std::vector<FileLayer>* layers, const std::string& view = std::string());
+
+/**
+ * @brief The views a file names, in file order and without repeats: the `multiView` list of a
+ * single-part file, then the `view` attribute of each part. The first is the default view. Empty
+ * for a file that names none.
+ **/
+std::vector<std::string> viewNames(const Header& header);
+
+/**
+ * @brief The view of the file whose pixels `view` reads, compared without regard to case: `view`
+ * itself if the file has it, else the file's default view. Empty for a file that names no view.
+ **/
+std::string resolveView(const Header& header, const std::string& view);
+
+/**
+ * @brief The channels of one subimage that belong to a view: the file index of each, and its name
+ * with the view taken out (the OpenEXR multi-view convention puts the view before the last
+ * component of the name, and leaves the default view unprefixed). `part` is the subimage's name
+ * in a multi-part file, without the view that the name may end or begin with.
+ **/
+struct PartChannels {
+    int subimage;
+    std::string part;
+    std::vector<std::string> names;
+    std::vector<int> index;
+
+    PartChannels()
+        : subimage(0)
+        , part()
+        , names()
+        , index()
+    {
+    }
+};
+
+/**
+ * @brief The subimages of `header` that hold channels of `view` (resolved by resolveView), in
+ * file order. A subimage or channel that names no view belongs to every view; so does everything
+ * in a file that names none, which gives every subimage whole.
+ **/
+void viewParts(const Header& header, const std::string& view, std::vector<PartChannels>* parts);
 
 /**
  * @brief Decodes channels [chbegin, chend) of `subimage` over `window` as 32-bit floats, as
@@ -122,6 +166,29 @@ bool decode(const std::string& path,
  **/
 ImageMetadata attributeMetadata(const std::string& path,
                                 const OIIO::ImageSpec& spec);
+
+/**
+ * @brief The file extensions the native Read accepts: every extension in OIIO's runtime
+ * "extension_list" except those of a format in kExcludedOiioFormats, lower case, sorted. An
+ * extension that an excluded format shares with a kept one stays. Computed once. Thread-safe.
+ **/
+const std::vector<std::string>& readableExtensions();
+
+/**
+ * @brief The OIIO formats whose extensions the native Read does not accept.
+ **/
+extern const char* const kExcludedOiioFormats[5];
+
+/**
+ * @brief The name of the kept OIIO format that claims `extension` (case-insensitive, with or
+ * without a leading dot), or an empty string if no kept format does.
+ **/
+std::string formatNameForExtension(const std::string& extension);
+
+/**
+ * @brief Whether the extension of `path` is one the native Read accepts.
+ **/
+bool isReadablePath(const std::string& path);
 } // namespace OiioReadSupport
 
 NATRON_NAMESPACE_EXIT

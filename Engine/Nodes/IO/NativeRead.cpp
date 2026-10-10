@@ -37,6 +37,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -60,11 +61,15 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/IO/ReadColorSpace.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/Project.h"
+#include "Engine/ProjectColorManagement.h"
+#include "Engine/ReadNode.h"
 #include "Engine/RectI.h"
 
 NATRON_NAMESPACE_ENTER
@@ -98,10 +103,24 @@ struct ColourChannels {
 
     static ColourChannels of(const OIIO::ImageSpec& spec)
     {
-        ColourChannels result;
+        std::vector<int> index;
 
         for (int i = 0; i < spec.nchannels && i < (int)spec.channelnames.size(); ++i) {
-            std::string name = spec.channelnames[(std::size_t)i];
+            index.push_back(i);
+        }
+
+        return of(spec.channelnames, index);
+    }
+
+    // `names[k]` is the name of file channel `index[k]`.
+    static ColourChannels of(const std::vector<std::string>& names,
+                             const std::vector<int>& index)
+    {
+        ColourChannels result;
+
+        for (std::size_t k = 0; k < index.size() && k < names.size(); ++k) {
+            const int i = index[k];
+            std::string name = names[k];
             std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
             if (name.compare(0, 5, "rgba.") == 0) {
                 name.erase(0, 5);
@@ -160,6 +179,18 @@ framesPerSecondOf(const OIIO::ImageSpec& spec)
     return (double)spec.get_float_attribute("FramesPerSecond", 0.f);
 }
 
+// The subimage that holds the colour in `view`: the first with channels of that view.
+int
+colourSubimageOf(const OiioReadSupport::Header& header,
+                 const std::string& view)
+{
+    std::vector<OiioReadSupport::PartChannels> parts;
+
+    OiioReadSupport::viewParts(header, view, &parts);
+
+    return parts.empty() ? 0 : parts[0].subimage;
+}
+
 const char* const kKnobProxyThreshold = "proxyThreshold";
 const char* const kKnobOriginalProxyScale = "originalProxyScale";
 const char* const kKnobCustomProxyScale = "customProxyScale";
@@ -175,6 +206,10 @@ const char* const kKnobTimeOffset = "timeOffset";
 const char* const kKnobTimeDomainUserEdited = "timeDomainUserEdited";
 const char* const kKnobFrameRate = "frameRate";
 const char* const kKnobCustomFps = "customFps";
+const char* const kKnobOCIOConfigFile = "ocioConfigFile";
+const char* const kKnobOCIOWorkingSpace = "ocioWorkingSpace";
+const char* const kKnobOCIOInputSpaceIndex = "ocioInputSpaceIndex";
+const char* const kKnobOCIOInputSpaceSet = "ocioInputSpaceSet";
 } // anonymous namespace
 
 NativeRead::NativeRead(NodePtr node)
@@ -196,6 +231,12 @@ NativeRead::NativeRead(NodePtr node)
     , _timeDomainUserEdited()
     , _frameRate()
     , _customFps()
+    , _ocioConfigFile()
+    , _ocioWorkingSpace()
+    , _inputSpace()
+    , _inputSpaceMenu()
+    , _inputSpaceSet()
+    , _availableViews()
     , _listingMutex()
     , _listing()
     , _proxyListing()
@@ -423,6 +464,64 @@ NativeRead::initializeKnobs()
     page->addKnob(customFps);
     _customFps = customFps;
 
+    KnobStringPtr availableViews = createKnob<KnobString>(tr("Available Views"));
+    availableViews->setName(kReadOIIOAvailableViewsKnobName);
+    availableViews->setAnimationEnabled(false);
+    availableViews->setEvaluateOnChange(false);
+    availableViews->setIsPersistent(false);
+    availableViews->setSecret(true);
+    page->addKnob(availableViews);
+    _availableViews = availableViews;
+
+    KnobStringPtr ocioConfigFile = createKnob<KnobString>(tr("OCIO Config File"));
+    ocioConfigFile->setName(kKnobOCIOConfigFile);
+    ocioConfigFile->setAnimationEnabled(false);
+    // The project pushes its config to every node after creation and after a load.
+    ocioConfigFile->setIsPersistent(false);
+    ocioConfigFile->setSecret(true);
+    page->addKnob(ocioConfigFile);
+    _ocioConfigFile = ocioConfigFile;
+
+    KnobStringPtr ocioWorkingSpace = createKnob<KnobString>(tr("Working Colorspace"));
+    ocioWorkingSpace->setName(kKnobOCIOWorkingSpace);
+    ocioWorkingSpace->setAnimationEnabled(false);
+    ocioWorkingSpace->setIsPersistent(false);
+    ocioWorkingSpace->setSecret(true);
+    page->addKnob(ocioWorkingSpace);
+    _ocioWorkingSpace = ocioWorkingSpace;
+
+    KnobStringPtr inputSpace = createKnob<KnobString>(tr("Input Colorspace"));
+    inputSpace->setName(kNatronReadNodeOCIOParamInputSpace);
+    inputSpace->setHintToolTip(tr("The OpenColorIO colorspace of the file. The image is converted from it to the project's "
+                                  "working space. It is shown only when the project's config has no colorspace of that name."));
+    inputSpace->setAnimationEnabled(false);
+    inputSpace->setSecret(true);
+    page->addKnob(inputSpace);
+    _inputSpace = inputSpace;
+
+    KnobChoicePtr inputSpaceMenu = createKnob<KnobChoice>(tr("Input Colorspace"));
+    inputSpaceMenu->setName(kKnobOCIOInputSpaceIndex);
+    inputSpaceMenu->setHintToolTip(tr("The OpenColorIO colorspace of the file. The image is converted from it to the project's "
+                                      "working space. A new Read takes the colorspace the config's file rules give the file, else the "
+                                      "colorspace tagged in the file, else the project's default for files of its kind. The "
+                                      "config's default rule does not count."));
+    inputSpaceMenu->setAnimationEnabled(false);
+    inputSpaceMenu->setIsPersistent(false);
+    // Only the input space string it sets decides the render.
+    inputSpaceMenu->setEvaluateOnChange(false);
+    page->addKnob(inputSpaceMenu);
+    _inputSpaceMenu = inputSpaceMenu;
+
+    KnobBoolPtr inputSpaceSet = createKnob<KnobBool>(tr("Input Colorspace Set"));
+    inputSpaceSet->setName(kKnobOCIOInputSpaceSet);
+    inputSpaceSet->setDefaultValue(false);
+    inputSpaceSet->setAnimationEnabled(false);
+    inputSpaceSet->setEvaluateOnChange(false);
+    inputSpaceSet->setSecret(true);
+    page->addKnob(inputSpaceSet);
+    _inputSpaceSet = inputSpaceSet;
+
+    refreshInputSpaceMenu();
     refreshTimeKnobState();
     refreshProxyKnobState();
 }
@@ -430,8 +529,80 @@ NativeRead::initializeKnobs()
 void
 NativeRead::onKnobsLoaded()
 {
+    refreshInputSpaceMenu();
     refreshTimeKnobState();
     refreshProxyKnobState();
+    refreshAvailableViews(true);
+}
+
+void
+NativeRead::refreshAvailableViews(bool silent)
+{
+    KnobStringPtr knob = _availableViews.lock();
+
+    if (!knob) {
+        return;
+    }
+    // A single view needs no project view of its own, so only a file of several lists them.
+    std::string value;
+    const std::string path = representativePath();
+    if (!path.empty()) {
+        std::string error;
+        const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
+        if (header) {
+            const std::vector<std::string> names = OiioReadSupport::viewNames(*header);
+            if (names.size() > 1) {
+                for (std::size_t i = 0; i < names.size(); ++i) {
+                    value += (i > 0 ? "," : "") + names[i];
+                }
+            }
+        }
+    }
+    if (silent) {
+        // A project being loaded already holds its views, so it is not asked to create them.
+        knob->blockValueChanges();
+        knob->setValue(value);
+        knob->unblockValueChanges();
+        getNode()->refreshCreatedViews(true);
+    } else if (value != knob->getValue()) {
+        knob->setValue(value);
+    }
+}
+
+std::string
+NativeRead::projectViewName(ViewIdx view) const
+{
+    const std::vector<std::string> names = getApp()->getProject()->getProjectViewNames();
+    const int index = view.value();
+
+    return (index >= 0 && (std::size_t)index < names.size()) ? names[(std::size_t)index] : std::string();
+}
+
+void
+NativeRead::onEffectCreated(bool mayCreateFileDialog,
+                            const CreateNodeArgs& /*args*/)
+{
+    KnobFilePtr filename = _filename.lock();
+
+    if (!mayCreateFileDialog || !filename || !filename->getValue().empty() || getApp()->isBackground()) {
+        return;
+    }
+    const std::string path = getApp()->openImageFileDialog();
+    if (path.empty()) {
+        throw std::runtime_error("");
+    }
+    filename->setValue(path);
+}
+
+bool
+NativeRead::rejectUnsupportedFormat(const std::string& path)
+{
+    if (OiioReadSupport::isReadablePath(path)) {
+        return false;
+    }
+    setPersistentMessage(eMessageTypeError, tr("Unsupported format: %1").arg(QString::fromStdString(path)).toStdString());
+
+    return true;
 }
 
 void
@@ -755,6 +926,130 @@ NativeRead::getFrameRange(double* first,
     *last = range.max;
 }
 
+std::string
+NativeRead::workingSpaceName() const
+{
+    KnobStringPtr knob = _ocioWorkingSpace.lock();
+    const std::string pushed = knob ? knob->getValue() : std::string();
+
+    if (!pushed.empty()) {
+        return pushed;
+    }
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+
+    return project ? project->getWorkingColorSpace() : std::string();
+}
+
+void
+NativeRead::refreshInputSpaceMenu()
+{
+    KnobChoicePtr menu = _inputSpaceMenu.lock();
+    KnobStringPtr space = _inputSpace.lock();
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
+
+    if (!menu || !space || !colorManagement) {
+        return;
+    }
+    const std::vector<ChoiceOption> options = Project::colorSpaceOptions(*colorManagement);
+    menu->populateChoices(options);
+
+    // A Read without a file converts nothing, which the menu shows as the working space.
+    const std::string value = space->getValue();
+    const std::string shown = ReadColorSpace::nameInConfig(colorManagement->getConfig(), value.empty() ? workingSpaceName() : value);
+    int index = -1;
+    for (std::size_t i = 0; i < options.size(); ++i) {
+        if (!shown.empty() && options[i].id == shown) {
+            index = (int)i;
+            break;
+        }
+    }
+    if (index >= 0 && menu->getValue() != index) {
+        menu->setValue(index);
+    }
+    // A name the config lacks cannot be shown by the menu, so the string itself is shown.
+    space->setSecret(value.empty() || index >= 0);
+}
+
+void
+NativeRead::guessInputSpace()
+{
+    KnobStringPtr space = _inputSpace.lock();
+    AppInstancePtr app = getApp();
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+
+    if (!space || !project) {
+        return;
+    }
+    const std::string path = representativePath();
+    if (path.empty()) {
+        return;
+    }
+    std::string error;
+    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
+    if (!header || header->subimages.empty()) {
+        return;
+    }
+    const std::string guess = ReadColorSpace::defaultInputSpace(*project, path, header->subimages[0]);
+    if (!guess.empty() && guess != space->getValue()) {
+        space->setValue(guess);
+    }
+}
+
+bool
+NativeRead::colourKnobChanged(KnobI* k,
+                              ValueChangedReasonEnum reason)
+{
+    KnobFilePtr filename = _filename.lock();
+    KnobStringPtr configFile = _ocioConfigFile.lock();
+    KnobStringPtr workingSpace = _ocioWorkingSpace.lock();
+    KnobStringPtr space = _inputSpace.lock();
+    KnobChoicePtr menu = _inputSpaceMenu.lock();
+    KnobBoolPtr spaceSet = _inputSpaceSet.lock();
+
+    if (!filename || !configFile || !workingSpace || !space || !menu || !spaceSet || reason == eValueChangedReasonTimeChanged) {
+        return false;
+    }
+    const bool byUser = reason == eValueChangedReasonUserEdited;
+
+    if (k == filename.get()) {
+        // A loaded or pasted node keeps the input space it was saved with.
+        AppInstancePtr app = getApp();
+        const bool restoring = app && (app->isCreatingNodeTree() || (app->getProject() && app->getProject()->isLoadingProject()));
+        if (!spaceSet->getValue() && !restoring) {
+            guessInputSpace();
+        }
+
+        return false;
+    }
+    if (k == configFile.get() || k == workingSpace.get()) {
+        refreshInputSpaceMenu();
+
+        return true;
+    }
+    if (k == menu.get()) {
+        const int index = menu->getValue();
+        if (byUser && index >= 0 && index < menu->getNumEntries()) {
+            spaceSet->setValue(true);
+            space->setValue(menu->getEntry(index).id);
+        }
+
+        return true;
+    }
+    if (k == space.get()) {
+        if (byUser) {
+            spaceSet->setValue(true);
+        }
+        refreshInputSpaceMenu();
+
+        return true;
+    }
+
+    return false;
+}
+
 bool
 NativeRead::knobChanged(KnobI* k,
                         ValueChangedReasonEnum reason,
@@ -763,6 +1058,9 @@ NativeRead::knobChanged(KnobI* k,
                         bool /*originatedFromMainThread*/)
 {
     if (proxyKnobChanged(k, reason)) {
+        return true;
+    }
+    if (colourKnobChanged(k, reason)) {
         return true;
     }
     KnobFilePtr filename = _filename.lock();
@@ -784,6 +1082,7 @@ NativeRead::knobChanged(KnobI* k,
         if (reason != eValueChangedReasonTimeChanged) {
             invalidateFrameListing();
             invalidateOutputMetadata();
+            refreshAvailableViews(false);
             refreshFrameRateFromFile();
             refreshProxyScale();
         }
@@ -938,7 +1237,7 @@ StatusEnum
 NativeRead::getRegionOfDefinition(U64 /*hash*/,
                                   double time,
                                   const RenderScale& /*scale*/,
-                                  ViewIdx /*view*/,
+                                  ViewIdx view,
                                   RectD* rod)
 {
     const Target target = targetAtTime(time);
@@ -960,6 +1259,9 @@ NativeRead::getRegionOfDefinition(U64 /*hash*/,
 
         return eStatusOK;
     }
+    if (rejectUnsupportedFormat(path)) {
+        return eStatusFailed;
+    }
 
     std::string error;
     const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
@@ -968,7 +1270,7 @@ NativeRead::getRegionOfDefinition(U64 /*hash*/,
 
         return eStatusFailed;
     }
-    const OIIO::ImageSpec& spec = header->subimages[0];
+    const OIIO::ImageSpec& spec = header->subimages[(std::size_t)colourSubimageOf(*header, projectViewName(view))];
     *rod = OiioReadSupport::dataWindowOf(spec).toCanonical_noClipping(0, pixelAspectOf(spec));
     clearPersistentMessage(false);
 
@@ -998,7 +1300,7 @@ NativeRead::getComponentsNeededAndProduced(double time,
         return;
     }
     std::vector<OiioReadSupport::FileLayer> layers;
-    OiioReadSupport::fileLayers(*header, &layers);
+    OiioReadSupport::fileLayers(*header, &layers, projectViewName(view));
     std::list<ImageLayerDesc>& produced = (*comps)[-1];
     for (std::vector<OiioReadSupport::FileLayer>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
         produced.push_back(it->desc);
@@ -1012,6 +1314,7 @@ struct ReadPlane {
     std::string path;
     int subimage;
     std::vector<int> fileChannels; // one per component, -1 for a component the file lacks
+    OCIO_NAMESPACE::ConstCPUProcessorRcPtr toWorking; // null when the plane is not converted
 };
 
 // Decodes the rows [y1, y2) of plane.rect into plane.target, through a staging buffer holding
@@ -1061,6 +1364,13 @@ decodeBand(const ReadPlane& plane,
             dst += nComps;
         }
     }
+    if (plane.toWorking) {
+        for (int y = y1; y < y2; ++y) {
+            if (!ReadColorSpace::convertRow(*plane.toWorking, (float*)access.pixelAt(plane.rect.x1, y), width, nComps, error)) {
+                return false;
+            }
+        }
+    }
 
     return true;
 }
@@ -1096,6 +1406,9 @@ NativeRead::render(const RenderActionArgs& args)
     std::string error;
     std::shared_ptr<const OiioReadSupport::Header> header;
     if (source.kind == ReadTimeDomain::Result::eFile) {
+        if (rejectUnsupportedFormat(path)) {
+            return eStatusFailed;
+        }
         header = OiioReadSupport::readHeader(path, &error);
         if (!header || header->subimages.empty()) {
             setPersistentMessage(eMessageTypeError, error.empty() ? tr("Could not read %1").arg(QString::fromStdString(path)).toStdString() : error);
@@ -1103,9 +1416,23 @@ NativeRead::render(const RenderActionArgs& args)
             return eStatusFailed;
         }
     }
+    const std::string viewName = projectViewName(args.view);
     std::vector<OiioReadSupport::FileLayer> fileLayers;
+    std::vector<OiioReadSupport::PartChannels> colourParts;
     if (header) {
-        OiioReadSupport::fileLayers(*header, &fileLayers);
+        OiioReadSupport::fileLayers(*header, &fileLayers, viewName);
+        OiioReadSupport::viewParts(*header, viewName, &colourParts);
+    }
+
+    OCIO_NAMESPACE::ConstCPUProcessorRcPtr toWorking;
+    if (header) {
+        KnobStringPtr inputSpace = _inputSpace.lock();
+        std::string conversionError;
+        if (!ReadColorSpace::toWorkingProcessor(*getApp()->getProject(), inputSpace ? inputSpace->getValue() : std::string(), workingSpaceName(), &toWorking, &conversionError)) {
+            setPersistentMessage(eMessageTypeError, conversionError);
+
+            return eStatusFailed;
+        }
     }
 
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
@@ -1131,10 +1458,13 @@ NativeRead::render(const RenderActionArgs& args)
         int subimage = 0;
         std::vector<int> fileChannels((std::size_t)nComps, -1);
         if (header && it->first.isColorLayer()) {
-            dataWindow = OiioReadSupport::dataWindowOf(header->subimages[0]);
-            const ColourChannels colour = ColourChannels::of(header->subimages[0]);
-            for (int c = 0; c < nComps; ++c) {
-                fileChannels[(std::size_t)c] = colour.fileChannelForComponent(nComps, c);
+            if (!colourParts.empty()) {
+                subimage = colourParts[0].subimage;
+                dataWindow = OiioReadSupport::dataWindowOf(header->subimages[(std::size_t)subimage]);
+                const ColourChannels colour = ColourChannels::of(colourParts[0].names, colourParts[0].index);
+                for (int c = 0; c < nComps; ++c) {
+                    fileChannels[(std::size_t)c] = colour.fileChannelForComponent(nComps, c);
+                }
             }
         } else if (header) {
             // Matched by channel name: the plane asked for may be the registry's union of this
@@ -1183,6 +1513,9 @@ NativeRead::render(const RenderActionArgs& args)
         plane.path = path;
         plane.subimage = subimage;
         plane.fileChannels = fileChannels;
+        if (it->first.isColorLayer() && (nComps == 3 || nComps == 4)) {
+            plane.toWorking = toWorking;
+        }
 
         const int width = fullRect.width();
         const int height = fullRect.height();

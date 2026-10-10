@@ -201,7 +201,7 @@ These widgets know nothing about knobs. Tests go in the **`GuiTests`** executabl
     - A double-click emits a reset.
   - size: M
 
-- [ ] M44.P3.T4 — Build `ColorAdjustPanel`: a Wheel tab (wheel + Hue/Sat/Value/Temp/Tint/Alpha sliders) and a Values tab (unclamped RGB/HSV, hex, palette)
+- [x] M44.P3.T4 — Build `ColorAdjustPanel`: a Wheel tab (wheel + Hue/Sat/Value/Temp/Tint/Alpha sliders) and a Values tab (unclamped RGB/HSV, hex, palette)
   - files: `Gui/ColorAdjustPanel.h` (new), `Gui/ColorAdjustPanel.cpp` (new), `Tests/ColorAdjustPanel_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - The panel owns the maths calls.
@@ -451,3 +451,4 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
   - A config with no XYZ matrix gets a stand-in linear plane (J = 0.1·F): no triangle, but centred on white and Y-exact, so the wheel still works.
   - The u′v′ sides are 0.513/0.482/0.566, not the design note's 0.59.
 - 2026-10-10 — **P2.T1: the OCIO probe is D65-adapted.** `cie_xyz_d65_interchange` adapts ACEScg's D60 white to D65, so a real ACES 2.0 Studio project reports luma ≈ (0.2677, 0.6743, 0.0580) and shifted primaries, not the textbook AP1 values. The tests assert the measured values. Neutral (1,1,1) still maps to the wheel centre, because the white point is the image of neutral. The no-project fallback (`ColorMath::acesCgLumaWeights()`, native AP1) differs from a real project by about 0.005–0.009 in chroma. That is acceptable for a fallback, but the two are not interchangeable in tests.
+- 2026-10-10 — **P3.T4 for UAT:** the slider ranges and the per-pixel rates disagree for Offset temp/tint. The range is ±50 while the rate is 7e-4/px, so the marker barely moves. Retune the ranges or the rates in `TrackballRates`/`sliderMapping` after the user tries it. The panel's signal is `valuesEdited(value, Start|Move|End, undoLabel)`.

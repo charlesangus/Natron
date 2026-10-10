@@ -275,7 +275,9 @@ worktree its own container and caches, e.g.
 tree built (and vice versa) when the worktree sits under the main checkout
 and builds in the same `build/<type>` layout relative to its own root, as
 `.worktrees/<id>/build/<type>` does. Debug info from a cache hit
-can name the other tree's source paths.
+can name the other tree's source paths. Under `base_dir`, `__FILE__`
+expands to a path relative to the build dir, so code must not locate files
+from `__FILE__`.
 
 ## Running build.sh/test.sh/package.sh from inside a container already (e.g. CI)
 

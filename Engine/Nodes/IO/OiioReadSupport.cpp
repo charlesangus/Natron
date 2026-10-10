@@ -39,12 +39,25 @@
 
 #include <ofxMetadata.h>
 
+#include "Global/FloatingPointExceptions.h"
+
 #include "Engine/LayerRegistry.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace OiioReadSupport {
 namespace {
+    OIIO::ImageInput::unique_ptr openInput(const std::string& path)
+    {
+#ifdef DEBUG
+        // OIIO's first open() of some formats builds its default colour config, whose OCIO
+        // colourspace probing raises FE_INVALID, and debug builds trap that on the calling thread.
+        boost_adaptbx::floating_point::exception_trapping trap(0);
+#endif
+
+        return OIIO::ImageInput::open(path);
+    }
+
     struct CacheEntry {
         std::filesystem::file_time_type mtime;
         std::uintmax_t size = 0;
@@ -138,7 +151,7 @@ readHeader(const std::string& path,
         }
     }
 
-    OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::open(path);
+    OIIO::ImageInput::unique_ptr input = openInput(path);
     if (!input) {
         fail(error, openError(path));
 
@@ -516,7 +529,7 @@ decode(const std::string& path,
     sink.windowFileTop = displayTop - window.y2;
     sink.windowFileBottom = displayTop - window.y1;
 
-    OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::open(path);
+    OIIO::ImageInput::unique_ptr input = openInput(path);
     if (!input) {
         return fail(error, openError(path));
     }

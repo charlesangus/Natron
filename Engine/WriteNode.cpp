@@ -783,7 +783,7 @@ WriteNodePrivate::createReadNodeAndConnectGraph(const std::string& filename)
             originalRange[1] = (int)last;
             args.addParamDefaultValueN<int>(kReaderParamNameOriginalFrameRange, originalRange);
             args.addParamDefaultValue<int>(kParamFirstFrame, (int)first);
-            args.addParamDefaultValue<int>(kParamFirstFrame, (int)last);
+            args.addParamDefaultValue<int>(kParamLastFrame, (int)last);
         }
 
 
@@ -803,7 +803,9 @@ WriteNodePrivate::createReadNodeAndConnectGraph(const std::string& filename)
                 output->replaceInput(readNode, 0);
                 connectOutputToInput = false;
             }
-            readNode->replaceInput(input, 0);
+            if (readNode->getNInputs() > 0) {
+                readNode->replaceInput(input, 0);
+            }
             // sync the output colorspace of the reader from input colorspace of the writer
 
             KnobIPtr outputWriteColorSpace = writeNode->getKnobByName(kOCIOParamOutputSpace);

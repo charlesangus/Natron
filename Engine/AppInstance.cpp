@@ -1169,12 +1169,6 @@ AppInstance::createNodeInternal(CreateNodeArgs& args)
     }
 #endif
 
-    // Unversioned and older Read requests keep resolving to the container until routing picks
-    // the native reader.
-    if ((findId == QString::fromUtf8(PLUGINID_NATRON_READ)) && (versionMajor != PLUGIN_MAJOR_NATRON_READ)) {
-        versionMajor = kReadContainerMajor;
-    }
-
     try {
         plugin = appPTR->getPluginBinary(findId, versionMajor, versionMinor, _imp->_projectCreatedWithLowerCaseIDs && serialization);
     } catch (const std::exception & e1) {

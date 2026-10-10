@@ -71,6 +71,19 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+// The container decodes through OFX readers; AppManager::getReaderPluginIDForFileType names the native Read.
+std::string
+bestOfxReaderPluginID(const std::string& extension)
+{
+    IOPluginSetForFormat readers;
+
+    appPTR->getReadersForFormat(extension, &readers);
+
+    return readers.empty() ? std::string() : readers.rbegin()->pluginID;
+}
+} // namespace
+
 //Generic Reader
 #define kParamFilename kOfxImageEffectFileParamName
 #define kParamProxy kOfxImageEffectProxyParamName
@@ -669,7 +682,7 @@ ReadNodePrivate::createReadNode(bool throwErrors,
         int pluginChoice_i = pluginChoiceKnob->getValue();
         if (pluginChoice_i == 0) {
             //Use default
-            readerPluginID = appPTR->getReaderPluginIDForFileType(ext);
+            readerPluginID = bestOfxReaderPluginID(ext);
         } else {
             std::vector<ChoiceOption> entries = pluginChoiceKnob->getEntries_mt_safe();
             if ( (pluginChoice_i >= 0) && ( pluginChoice_i < (int)entries.size() ) ) {
@@ -916,7 +929,7 @@ ReadNodePrivate::refreshPluginSelectorKnob()
     std::string ext = QtCompat::removeFileExtension(qpattern).toLower().toStdString();
     std::string pluginID;
     if ( !ext.empty() ) {
-        pluginID = appPTR->getReaderPluginIDForFileType(ext);
+        pluginID = bestOfxReaderPluginID(ext);
         IOPluginSetForFormat readersForFormat;
         appPTR->getReadersForFormat(ext, &readersForFormat);
 

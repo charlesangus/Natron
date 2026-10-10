@@ -90,13 +90,15 @@ createReader(const std::string& decoderID,
     return appPTR->getTopLevelInstance()->createNode(args);
 }
 
-// Silent, so that no file dialog is offered and the Read starts with no decoder.
+// Silent, so that no file dialog is offered and the container starts with no decoder. The
+// container is the Read at major 1; an unversioned request builds the native Read.
 NodePtr
 createEmptyRead()
 {
     CreateNodeArgs args(PLUGINID_NATRON_READ, project());
 
     args.setProperty<bool>(kCreateNodeArgsPropSilent, true);
+    args.setProperty<int>(kCreateNodeArgsPropPluginVersion, 1, 0);
 
     return appPTR->getTopLevelInstance()->createNode(args);
 }

@@ -164,6 +164,7 @@
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -3453,13 +3454,7 @@ AppManager::getFileFormatsForWritingAndWriter() const
 void
 AppManager::getSupportedReaderFileFormats(std::vector<std::string>* formats) const
 {
-    const IOPluginsMap& readersForFormat = getFileFormatsForReadingAndReader();
-
-    formats->resize( readersForFormat.size() );
-    int i = 0;
-    for (IOPluginsMap::const_iterator it = readersForFormat.begin(); it != readersForFormat.end(); ++it, ++i) {
-        (*formats)[i] = it->first;
-    }
+    *formats = OiioReadSupport::readableExtensions();
 }
 
 void
@@ -3503,15 +3498,7 @@ AppManager::getWritersForFormat(const std::string& format,
 std::string
 AppManager::getReaderPluginIDForFileType(const std::string & extension) const
 {
-    // This will perform a case insensitive find
-    IOPluginsMap::const_iterator found = _imp->readerPlugins.find(extension);
-
-    if ( found == _imp->readerPlugins.end() ) {
-        return std::string();
-    }
-    // Return the "best" plug-in (i.e: higher score)
-
-    return found->second.empty() ? std::string() : found->second.rbegin()->pluginID;
+    return OiioReadSupport::formatNameForExtension(extension).empty() ? std::string() : std::string(PLUGINID_NATRON_READ);
 }
 
 std::string

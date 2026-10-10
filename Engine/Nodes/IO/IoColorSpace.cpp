@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "ReadColorSpace.h"
+#include "IoColorSpace.h"
 
 #include <exception>
 
@@ -33,7 +33,7 @@
 
 NATRON_NAMESPACE_ENTER
 
-namespace ReadColorSpace {
+namespace IoColorSpace {
 std::string
 nameInConfig(const OCIO_NAMESPACE::ConstConfigRcPtr& config,
              const std::string& name)
@@ -123,16 +123,17 @@ defaultInputSpace(const Project& project,
     return space;
 }
 
-bool
-toWorkingProcessor(const Project& project,
-                   const std::string& input,
-                   const std::string& working,
-                   const std::vector<std::pair<std::string, std::string>>& context,
-                   OCIO_NAMESPACE::ConstCPUProcessorRcPtr* processor,
-                   std::string* error)
+static bool
+buildProcessor(const Project& project,
+               const std::string& from,
+               const std::string& to,
+               const std::vector<std::pair<std::string, std::string>>& context,
+               const QString& failure,
+               OCIO_NAMESPACE::ConstCPUProcessorRcPtr* processor,
+               std::string* error)
 {
     processor->reset();
-    if (input.empty() || working.empty() || input == working) {
+    if (from.empty() || to.empty() || from == to) {
         return true;
     }
     std::string configError;
@@ -148,12 +149,9 @@ toWorkingProcessor(const Project& project,
             variables.push_back(context[i]);
         }
     }
-    OCIO_NAMESPACE::ConstCPUProcessorRcPtr cpu = colorManagement ? colorManagement->getConversionProcessor(input, working, variables) : OCIO_NAMESPACE::ConstCPUProcessorRcPtr();
+    OCIO_NAMESPACE::ConstCPUProcessorRcPtr cpu = colorManagement ? colorManagement->getConversionProcessor(from, to, variables) : OCIO_NAMESPACE::ConstCPUProcessorRcPtr();
     if (!cpu) {
-        *error = Project::tr("Cannot convert from the OpenColorIO colorspace \"%1\" to the working space \"%2\".")
-                     .arg(QString::fromStdString(input))
-                     .arg(QString::fromStdString(working))
-                     .toStdString();
+        *error = failure.arg(QString::fromStdString(from)).arg(QString::fromStdString(to)).toStdString();
 
         return false;
     }
@@ -162,6 +160,28 @@ toWorkingProcessor(const Project& project,
     }
 
     return true;
+}
+
+bool
+processor(const Project& project,
+          const std::string& from,
+          const std::string& to,
+          const std::vector<std::pair<std::string, std::string>>& context,
+          OCIO_NAMESPACE::ConstCPUProcessorRcPtr* processor,
+          std::string* error)
+{
+    return buildProcessor(project, from, to, context, Project::tr("Cannot convert from the OpenColorIO colorspace \"%1\" to the colorspace \"%2\"."), processor, error);
+}
+
+bool
+toWorkingProcessor(const Project& project,
+                   const std::string& input,
+                   const std::string& working,
+                   const std::vector<std::pair<std::string, std::string>>& context,
+                   OCIO_NAMESPACE::ConstCPUProcessorRcPtr* processor,
+                   std::string* error)
+{
+    return buildProcessor(project, input, working, context, Project::tr("Cannot convert from the OpenColorIO colorspace \"%1\" to the working space \"%2\"."), processor, error);
 }
 
 bool
@@ -185,6 +205,6 @@ convertRow(const OCIO_NAMESPACE::CPUProcessor& processor,
 
     return true;
 }
-} // namespace ReadColorSpace
+} // namespace IoColorSpace
 
 NATRON_NAMESPACE_EXIT

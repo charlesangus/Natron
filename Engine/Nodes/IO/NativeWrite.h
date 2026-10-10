@@ -54,6 +54,8 @@
 #define kNatronWriteParamZIPCompressionLevel "zipCompressionLevel"
 #define kNatronWriteParamTileSize "tileSize"
 #define kNatronWriteParamFrameRange "frameRange"
+#define kNatronWriteParamPartSplitting "partSplitting"
+#define kNatronWriteParamViewsSelector "viewsSelector"
 #define kNatronWriteParamFirstFrame "firstFrame"
 #define kNatronWriteParamLastFrame "lastFrame"
 
@@ -64,6 +66,12 @@
 #define kNatronWriteFormatTypeInput "input"
 #define kNatronWriteFormatTypeProject "project"
 #define kNatronWriteFormatTypeFixed "fixed"
+
+#define kNatronWritePartSplittingSingle "single"
+#define kNatronWritePartSplittingViews "views"
+#define kNatronWritePartSplittingViewsLayers "views_layers"
+
+#define kNatronWriteViewsAll "All"
 
 #define kNatronWriteBitDepthAuto "auto"
 #define kNatronWriteCompressionDefault "default"
@@ -157,6 +165,16 @@ private:
 
     virtual void onKnobsLoaded() OVERRIDE FINAL;
 
+    virtual void onMetadataRefreshed(const NodeMetadata& metadata) OVERRIDE FINAL;
+
+    virtual FramesNeededMap getFramesNeeded(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // The views a render of `view` puts in its file: several when one file takes every view of
+    // the project (rendered under view 0), none when another view's render writes the file.
+    std::vector<ViewIdx> viewsToWrite(ViewIdx view) const WARN_UNUSED_RETURN;
+
+    void refreshViewsMenu();
+
     // The format window the format type selects, in pixels.
     void selectedFormat(double time, ViewIdx view, RectI* display, double* par) const;
 
@@ -186,6 +204,8 @@ private:
     KnobDoubleWPtr _dwaCompressionLevel;
     KnobIntWPtr _zipCompressionLevel;
     KnobChoiceWPtr _tileSize;
+    KnobChoiceWPtr _partSplitting;
+    KnobChoiceWPtr _views;
     KnobChoiceWPtr _frameRange;
     KnobIntWPtr _firstFrame;
     KnobIntWPtr _lastFrame;

@@ -160,7 +160,9 @@ it: `ReadNode` is gone, and `OfxHost::loadOFXPlugins()` skips any OFX plug-in
 whose contexts include `kOfxImageEffectContextReader`, so none is registered.
 Write is still a container (`WriteNode`) around OFX writers. Decoding lives in
 `OiioReadSupport.*` (header cache, layer grouping, metadata), time mapping in
-`ReadTimeDomain.*` and colour in `ReadColorSpace.*`.
+`ReadTimeDomain.*` and colour in `IoColorSpace.*`, with the colourspace knobs
+(`ocioInputSpace` and the rest below) in `OcioSpaceKnobs.*`, which takes a
+script-name prefix so the Write can share it.
 
 - **Formats.** `OiioReadSupport::readableExtensions()` is OIIO's
   `extension_list` attribute minus the formats named in `kExcludedOiioFormats`
@@ -184,8 +186,8 @@ Write is still a container (`WriteNode`) around OFX writers. Decoding lives in
   `key1`..`key4` and `value1`..`value4`, and the hidden `ocioConfigFile`,
   `ocioWorkingSpace` and `availableViews`.
 - **Colour.** Pixels are converted to the project's working space through the
-  project's OCIO config (`ReadColorSpace::toWorkingProcessor()`). The default
-  input space (`ReadColorSpace::defaultInputSpace()`) is, in order: the config's
+  project's OCIO config (`IoColorSpace::toWorkingProcessor()`). The default
+  input space (`IoColorSpace::defaultInputSpace()`) is, in order: the config's
   file rules (`fileRuleColorSpace()`; a match on the default rule alone does not
   count), the file's `oiio:ColorSpace` tag if the config has a colourspace, role
   or alias of that name (`embeddedColorSpace()`), then the project's file

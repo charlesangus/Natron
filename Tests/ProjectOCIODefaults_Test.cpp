@@ -46,8 +46,8 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/IO/IoColorSpace.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
-#include "Engine/Nodes/IO/ReadColorSpace.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
@@ -145,7 +145,7 @@ writeUntaggedImage(const QTemporaryDir& dir,
     OIIO::ImageInput::unique_ptr in = OIIO::ImageInput::open(path);
     EXPECT_TRUE(bool(in)) << file;
     if (in) {
-        EXPECT_TRUE(ReadColorSpace::embeddedColorSpace(project()->getColorManagement()->getConfig(), in->spec()).empty())
+        EXPECT_TRUE(IoColorSpace::embeddedColorSpace(project()->getColorManagement()->getConfig(), in->spec()).empty())
             << file << " carries a colourspace of the config";
     }
 

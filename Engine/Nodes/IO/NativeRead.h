@@ -32,12 +32,14 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "Engine/EffectInstance.h" // for PLUGINID_NATRON_READ
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/IO/ReadTimeDomain.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
@@ -107,6 +109,8 @@ public:
                                                 double* passThroughTime,
                                                 int* passThroughView,
                                                 int* passThroughInputNb) OVERRIDE FINAL;
+
+    virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
 
     virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
 
@@ -200,11 +204,7 @@ private:
                        unsigned int* fileLevel) const;
     bool colourKnobChanged(KnobI* k,
                            ValueChangedReasonEnum reason);
-    void guessInputSpace();
-    void resetInputSpace();
-    void refreshInputSpaceMenu();
-    std::string workingSpaceName() const;
-    std::vector<std::pair<std::string, std::string>> contextVariables(double time) const;
+    std::optional<std::string> automaticInputSpace() const;
 
     KnobFileWPtr _filename;
     KnobFileWPtr _proxy;
@@ -221,13 +221,7 @@ private:
     KnobIntWPtr _startingTime;
     KnobIntWPtr _timeOffset;
     KnobBoolWPtr _timeDomainUserEdited;
-    KnobStringWPtr _ocioConfigFile;
-    KnobStringWPtr _ocioWorkingSpace;
-    KnobStringWPtr _inputSpace;
-    KnobChoiceWPtr _inputSpaceMenu;
-    KnobBoolWPtr _inputSpaceSet;
-    KnobStringWPtr _contextKeys[4];
-    KnobStringWPtr _contextValues[4];
+    OcioSpaceKnobs _inputSpace;
 
     KnobStringWPtr _availableViews;
 

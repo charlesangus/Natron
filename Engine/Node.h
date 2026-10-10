@@ -783,6 +783,24 @@ public:
     void getPluginGrouping(std::list<std::string>* grouping) const;
 
     /**
+     * @brief Resolves the NodeCategoryEnum used to colour this node in the node graph.
+     * Backdrop is not a category (it keeps its own Settings::getDefaultBackdropColor()):
+     * callers must check isBackdropNode() before calling this, exactly as
+     * NodeGui::getColorFromGrouping() checks dynamic_cast<Backdrop*> before resolving a
+     * category colour today.
+     **/
+    NodeCategoryEnum getNodeCategory() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The table + keyword heuristic half of getNodeCategory(): maps a plugin's major
+     * grouping string, label and ID to a category, for plugins that are not a Reader/Writer/
+     * Generator and whose grouping is not one of the domain categories (Deep, Native 3D, USD 3D).
+     **/
+    static NodeCategoryEnum categoryFromGroupingAndLabel(const std::string& grouping,
+                                                         const std::string& label,
+                                                         const std::string& id) WARN_UNUSED_RETURN;
+
+    /**
      * @brief Forwarded to the live effect instance
      **/
     std::string getPluginDescription() const;

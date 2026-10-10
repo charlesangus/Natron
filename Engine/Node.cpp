@@ -4397,6 +4397,131 @@ Node::getPluginGrouping(std::list<std::string>* grouping) const
     _imp->effect->getPluginGrouping(grouping);
 }
 
+NodeCategoryEnum
+Node::getNodeCategory() const
+{
+    EffectInstancePtr effect = getEffectInstance();
+    if (!effect) {
+        return eNodeCategoryOther;
+    }
+
+    std::list<std::string> grouping;
+    getPluginGrouping(&grouping);
+    const std::string majGroup = grouping.empty() ? std::string() : grouping.front();
+
+    // Domain categories carry their own colour identity and win over Reader/Writer/Generator:
+    // this is what makes DeepWrite (which also sets isWriter()) and DeepRead (which does not)
+    // agree on being coloured as Deep, rather than one of them falling through to Writer grey.
+    if (majGroup == PLUGIN_GROUP_DEEP) {
+        return eNodeCategoryDeep;
+    }
+    if (majGroup == PLUGIN_GROUP_3D) {
+        return eNodeCategoryNative3D;
+    }
+    if (majGroup == PLUGIN_GROUP_3D_USD) {
+        return eNodeCategoryUsd3D;
+    }
+
+    if (effect->isReader()) {
+        return eNodeCategoryRead;
+    }
+    if (effect->isWriter()) {
+        return eNodeCategoryWrite;
+    }
+    if (effect->isGenerator()) {
+        return eNodeCategoryGenerator;
+    }
+
+    return categoryFromGroupingAndLabel(majGroup, getPluginLabel(), getPluginID());
+}
+
+NodeCategoryEnum
+Node::categoryFromGroupingAndLabel(const std::string& grouping,
+                                   const std::string& label,
+                                   const std::string& id)
+{
+    if (grouping == PLUGIN_GROUP_DEEP) {
+        return eNodeCategoryDeep;
+    }
+    if (grouping == PLUGIN_GROUP_3D) {
+        return eNodeCategoryNative3D;
+    }
+    if (grouping == PLUGIN_GROUP_3D_USD) {
+        return eNodeCategoryUsd3D;
+    }
+    if (grouping == PLUGIN_GROUP_COLOR) {
+        return eNodeCategoryColor;
+    }
+    if (grouping == PLUGIN_GROUP_FILTER) {
+        return eNodeCategoryFilter;
+    }
+    if (grouping == PLUGIN_GROUP_CHANNEL) {
+        return eNodeCategoryChannel;
+    }
+    if (grouping == PLUGIN_GROUP_KEYER) {
+        return eNodeCategoryKeyer;
+    }
+    if (grouping == PLUGIN_GROUP_MERGE) {
+        return eNodeCategoryMerge;
+    }
+    if (grouping == PLUGIN_GROUP_PAINT) {
+        return eNodeCategoryDraw;
+    }
+    if (grouping == PLUGIN_GROUP_TIME) {
+        return eNodeCategoryTime;
+    }
+    if (grouping == PLUGIN_GROUP_TRANSFORM) {
+        return eNodeCategoryTransform;
+    }
+    if (grouping == PLUGIN_GROUP_MULTIVIEW) {
+        return eNodeCategoryViews;
+    }
+
+    // PLUGIN_GROUP_IMAGE/_READERS/_WRITERS/_TOOLSETS/_OTHER/_DEFAULT/_OFX are not categories of
+    // their own (see the design note's table): fall through to the keyword heuristic below,
+    // the last signal available for a third-party OFX plugin with an arbitrary grouping string.
+    struct KeywordEntry {
+        const char* keyword;
+        NodeCategoryEnum category;
+    };
+    static const KeywordEntry keywordTable[] = {
+        { "blur", eNodeCategoryFilter },
+        { "defocus", eNodeCategoryFilter },
+        { "key", eNodeCategoryKeyer },
+        { "grade", eNodeCategoryColor },
+        { "color", eNodeCategoryColor },
+        { "hue", eNodeCategoryColor },
+        { "sat", eNodeCategoryColor },
+        { "merge", eNodeCategoryMerge },
+        { "over", eNodeCategoryMerge },
+        { "plus", eNodeCategoryMerge },
+        { "transform", eNodeCategoryTransform },
+        { "crop", eNodeCategoryTransform },
+        { "reformat", eNodeCategoryTransform },
+        { "warp", eNodeCategoryTransform },
+        { "time", eNodeCategoryTime },
+        { "retime", eNodeCategoryTime },
+        { "frame", eNodeCategoryTime },
+        { "paint", eNodeCategoryDraw },
+        { "roto", eNodeCategoryDraw },
+        { "draw", eNodeCategoryDraw },
+        { "shuffle", eNodeCategoryChannel },
+        { "channel", eNodeCategoryChannel },
+        { "copy", eNodeCategoryChannel },
+    };
+
+    std::string haystack = label + " " + id;
+    std::transform(haystack.begin(), haystack.end(), haystack.begin(), ::tolower);
+
+    for (std::size_t i = 0; i < sizeof(keywordTable) / sizeof(keywordTable[0]); ++i) {
+        if (haystack.find(keywordTable[i].keyword) != std::string::npos) {
+            return keywordTable[i].category;
+        }
+    }
+
+    return eNodeCategoryOther;
+}
+
 std::string
 Node::getPyPlugID() const
 {

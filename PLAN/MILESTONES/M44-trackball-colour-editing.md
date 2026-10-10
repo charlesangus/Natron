@@ -344,7 +344,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
     - Screenshot of the global mode in T.
   - size: M
 
-- [ ] M44.P5.T4 — Add the Ctrl+E application-wide shortcut and the per-row target button
+- [x] M44.P5.T4 — Add the Ctrl+E application-wide shortcut and the per-row target button
   - files: `Gui/ActionShortcuts.h`, `Gui/GuiApplicationManager10.cpp`, `Gui/Gui.cpp`, `Gui/KnobGuiColor.cpp`
   - approach:
     - Add `kShortcutIDActionColorTrackball` and its description in `kShortcutGroupGlobal`, registered at Ctrl+E, which is unbound today.

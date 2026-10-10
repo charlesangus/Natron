@@ -44,3 +44,9 @@ add_executable(GpuDevice_Test tests/GpuDevice_Test.cpp)
 target_link_libraries(GpuDevice_Test PRIVATE gpuspike_core GTest::gtest_main
   -static-libstdc++ -static-libgcc)
 gtest_discover_tests(GpuDevice_Test)
+
+slang_add_kernel(grade kernels/grade.slang ENTRY grade_main)
+
+add_executable(GradeCpu_Test tests/GradeCpu_Test.cpp)
+target_link_libraries(GradeCpu_Test PRIVATE grade GTest::gtest_main)
+gtest_discover_tests(GradeCpu_Test)

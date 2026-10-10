@@ -190,7 +190,7 @@ Scouted facts this plan relies on (2026-10-10):
 
 ## Phase 83.6: Measurement and decision
 
-- [ ] M83.P6.T1 — GPU benchmark driver at UHD through 24k
+- [x] M83.P6.T1 — GPU benchmark driver at UHD through 24k
   - files: `tools/gpu-spike/bench/GpuBench_main.cpp`, `tools/gpu-spike/bench/run-bench.sh`
   - approach:
     - Sizes: UHD, 8K, 16k and 24k RGBA float. At 16k and 24k the frame goes through in strips with blur halos, as a tiled GPU unit, and 24k is also measured as a single frame if VRAM allows (about 9.2 GB).
@@ -203,7 +203,7 @@ Scouted facts this plan relies on (2026-10-10):
   - verify: `run-bench.sh` produces a CSV with every cell filled and a second run within ±10%. It reports the break-even point: the CPU time a region must save to pay for one round trip at the measured bandwidth.
   - size: M
 
-- [ ] M83.P6.T2 — Evaluate the Slang C++ target as the CPU fallback
+- [x] M83.P6.T2 — Evaluate the Slang C++ target as the CPU fallback
   - files: `tools/gpu-spike/bench/CpuTwinBench_main.cpp`
   - approach:
     - Time the Slang C++-target Grade and Blur, compiled at `-O2 -march=x86-64-v3` and run over 16 threads in row strips, against Natron's hand-written `GradeKernel` and the IIR and box Blur on the same inputs.
@@ -212,7 +212,7 @@ Scouted facts this plan relies on (2026-10-10):
   - verify: a recorded table of twin vs native ms/Mpx with a recommendation: twin as the CPU path, twin as test oracle only, or hand-written CPU kept as primary.
   - size: M
 
-- [ ] M83.P6.T3 — Record build and deployment cost
+- [x] M83.P6.T3 — Record build and deployment cost
   - files: `tools/gpu-spike/bench/build-cost.sh`
   - approach: Measure and print:
     - Slang tarball size and configure time, cold and cached;
@@ -296,3 +296,34 @@ Scouted facts this plan relies on (2026-10-10):
 - 2026-10-10 — M83.P4.T1 committed (`7d50bb922`) on lavapipe/llvmpipe evidence, and left unchecked until it runs byte-exact on RADV/radeonsi. Semaphore zero-copy skips on llvmpipe for a genuine reason: lavapipe lacks `VK_KHR_external_semaphore_fd`, and llvmpipe lacks `GL_EXT_semaphore`/`_fd`. The new `zero-copy-hostsync` path (the same memory import, with a fence plus `glFinish` instead of semaphores) runs byte-exact, Qt/Xvfb included. On llvmpipe at UHD float it takes 39 ms end-to-end against 125 ms for readback+PBO. `run-host.sh` now exits 1 when no render node opens (`GPU_SPIKE_ALLOW_SOFTWARE=1` overrides it).
 - 2026-10-10 — RADV access restored (the user made the host's render nodes world-rw). **M83.P2.T3 on RADV (7900 XTX):** `GpuTransfer_Test` 5/5. UHD RGBA float ×16 frames, ms/frame wall: staging with 1 copy thread 35.4; staging with 8 copy threads 20.1 (sum of stages 500 ms, wall 322 ms, overlap ×1.55); host-import with the frame already in imported memory 9.9. DMA ≈ 4.7–5.6 ms each way, compute 0.28 ms. The host memcpy dominates staging, so M84 should allocate frames in importable (page-aligned) memory rather than copy into staging. **M83.P4.T1 on RADV/radeonsi:** `GlInterop_Test` 5/5. Semaphore zero-copy works (all extensions present, UUIDs match). UHD hand-off end-to-end is 0.79 ms zero-copy, 0.87 ms hostsync, and 33.2 ms readback+PBO. radeonsi warns `os_same_file_description couldn't determine…` under this user namespace; the results were byte-exact regardless.
 - 2026-10-10 — M83.P3.T4 (`c4a97f794`) passes on lavapipe and RADV. Kernel params moved to push constants; the GLSL target rewrites them to a std140 UBO (`GlCompute` builds, but was not re-run). Grade on GPU keeps the 4-ULP/1e-6 bounds, plus a GPU-only conditioned slack taken from the SPIR-V precision table (pow = exp2·log2, unfused fma). Subnormal inputs only need to match either the value or zero, because lavapipe's pow/log2 on subnormals are garbage. RADV: Grade sweep worst conditioned-bound use is 0.244 (lavapipe: 0.487), gamma curves ≤ 31 ULP, and all 6033 subnormals match. Blur on RADV: max abs 1.4e-7 / 2.2e-7 / 5.8e-7 / 1.21e-6 at σ 0.5 / 3 / 25 / 100, within 2e-6 and matching lavapipe. Reverse grade now returns 1 for pow(v, 0), because SPIR-V Pow gave NaN for inf^0.
+- 2026-10-10 — M83.P6.T1 done (`1880943cb` before the rebase onto main). CSV and summary are in the worktree's `build/gpu-bench/`; 2 runs, median diff 0.6%, 5 of 180 cells over ±10% (mostly the 2 ms 8K Grade kernel). **CPU (16 threads, native) vs GPU host-import with overlap, ms per image:**
+
+  | Size | Grade | Blur σ=25 | Grade→Blur25 |
+  |---|---|---|---|
+  | UHD | 31 vs 9.5 | 128 vs 25.5 | 159 vs 23.7 |
+  | 16k | 904 vs 292 | 3561 vs 670 | 4465 vs 649 |
+  | 24k | 1998 vs 654 | 7822 vs 1048 | 9820 vs 1031 |
+
+  - **Round-trip break-even (host-import / staging):** UHD 10.8 / 20 ms; 24k 737 / 1338 ms. That is ≈25 / 13.6 GB/s, flat across sizes.
+  - **Grade:** transfer-bound, about 3× faster only.
+  - **Kept-resident chains:** up to 9.5× at 24k.
+  - **CPU Blur baseline:** IIR, not FIR. M88 - FIR Gaussian Blur hadn't merged when this ran.
+  - **Hard limits for M84:**
+    - `maxStorageBufferRange` is 4.29 GB on RADV, so frames above ~4 GB must be processed in tiles. 24k single-frame kernels can't run.
+    - A single `vkCmdCopyBuffer` over ~2.5 GiB corrupts data on RADV, and so does a single host-import copy over 4 GiB. Copies must be chunked (512 MB used).
+  - **Changes in the same commit:** `blur.slang` vertical pass now uses coalesced loads for r ≤ 32 (UHD σ=3 V 11.0 → 2.3 ms); wider radii keep shared tiles, with V 1.4–2.6× H. 8K σ=25 V is 6× H, likely stride aliasing, not chased. `GpuTransfer` gained interior-only strip downloads (`dstOffset`/`dstBytes`), and `graph_bench.py` gained `BENCH_SIZE`/`BENCH_BLUR_SIZE`.
+- 2026-10-10 — Branch rebased onto `main` after M88 - FIR Gaussian Blur (#46) merged.
+- 2026-10-10 — M83.P6.T3 done. **Deployment cost:**
+  - The Slang tarball is 79 MiB (238 MiB unpacked). Cold configure with the download takes 3.3 s, cached configure 0.83 s, and the full spike build 8.9 s at -j4.
+  - `slangc` takes 0.16–0.21 s per kernel per target, 4.1 s over all 22 invocations.
+  - Embedded SPIR-V totals 67 KiB over 10 kernels.
+  - Vulkan binaries need only `libvulkan.so.1` plus glibc (and gtest in tests). GL tools need libEGL/libOpenGL; the Qt variant needs Qt6 plus GLX.
+  - `package.sh` needs no change: it stages only `build/<type>`, and `excludelist.txt` already excludes `libvulkan.so.1`.
+  - Licences: Slang (Apache-2.0 WITH LLVM-exception) and VMA (MIT) are both GPL-compatible.
+  - CI: n/a, because the spike is local-only.
+- 2026-10-10 — M83.P6.T2 done (`cb21e6224`). **The Slang C++ twin is a test oracle only, not the CPU path.**
+  - **Blur:** the twin runs 20.6 / 158 / 616 ms/Mpx at σ 3 / 25 / 100 against native FIR's 1.44 / 5.5 / 19.9 (14–31× slower). Native IIR stays ~3.4 and box ~2.8, flat in σ.
+  - **Grade:** the twin is 2.9 vs native 3.4 ms/Mpx with gcc, 1.5× faster with clang; the twin is float, native is double.
+  - **Why the twin is slow:** it doesn't vectorise. Each pixel is a scalar call inside an 8×8 group loop, the FP reduction is unreorderable, and every tap resolves its bounds.
+  - **Integration:** headers only, from the prelude. The entry point is dispatch-shaped (`k(ComputeVaryingInput*, entryParams, globalParams)`) with a hand-synced Params layout, so it fits `PixelKernel::processRow` poorly and doesn't fit the planar column-block Blur at all.
+  - **How native was measured:** UHD/8K over 16 threads, compiling the real `BlurKernels.cpp` into the bench with a shim, plus a verbatim copy of `GradeKernel`.

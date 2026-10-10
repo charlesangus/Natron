@@ -146,6 +146,30 @@ Replaces the `Read` container node with a native node on OpenImageIO that reads 
   - verify: gtest: a run-time one-channel PNG and TIFF read as 3 components with R=G=B equal to OIIO's value; a Y+A PNG reads as 4; `NativeReadDecodeTest.AFileWithoutRgbaChannelsGivesABlackRgbaPlane` is rewritten for a file with no colour channel at all; `ColorViewsRender`'s alpha-only PNG round trip asserts the read-back RGB equals the written value.
   - size: M
 
+- [ ] M75.P2.T20 — Drop the Read's frame rate
+  - files: `Engine/Nodes/IO/NativeRead.h/.cpp`, `Engine/Nodes/IO/ReadTimeDomain.*` if it carries fps, `Tests/Native/NativeReadTime_Test.cpp`, `Tests/Native/NativeReadMetadata*_Test.cpp`, `Engine/Nodes/README.md`; grep `frameRate`/`customFps` for any other reader-specific use (DopeSheet, Write read-back, Python)
+  - approach: a Read has no frame rate: one file frame per project frame. Delete the `frameRate` and `customFps` knobs and every path that reads the file's `FramesPerSecond` into the output frame rate or `ofx/framerate`; the Read leaves the output frame rate at the host default. The file's own fps attribute still passes through as plain file metadata under its prefix, like any other header attribute.
+  - verify: gtest: the Read has no `frameRate`/`customFps` knob; a file tagged 24 fps under a 30 fps project emits no Read-derived `ofx/framerate` and the output frame rate is the default; the file's attribute is still visible under its prefix. Targeted suites green.
+  - size: M
+
+- [ ] M75.P2.T21 — First and last frame as plain fields
+  - files: `Engine/Nodes/IO/NativeRead.cpp`
+  - approach: keep `firstFrame`/`lastFrame` and their semantics, but show them as integer fields with no slider (no display range / slider hidden, as other plain-int knobs in the tree do it).
+  - verify: Xvfb panel screenshot in P2.T3 shows no sliders on first/last frame; NativeReadTime suites green.
+  - size: M
+
+- [ ] M75.P2.T22 — Nested input colourspace menu
+  - files: `Engine/Nodes/IO/NativeRead.cpp`, `Engine/Nodes/IO/ReadColorSpace.*`, `Engine/Project.cpp`/`.h` (`colorSpaceOptions`), `Tests/Native/NativeReadColor_Test.cpp`
+  - approach: make `ocioInputSpaceIndex` a cascading choice (`KnobChoice::setCascading`, `Engine/KnobTypes.h:548`) whose entries are `family/name` from the OCIO config's colourspace families, so the studio config shows ACES, Input/…, Utility and so on as submenus. Check how the Gui renders cascading choices and how the OFX OCIO plugins built their family paths; the persistent `ocioInputSpace` string stays the bare colourspace name, so saved projects and `reportUnresolvedOCIOColorSpaces` are unaffected. Spaces with no family sit at the top level.
+  - verify: gtest: under the studio config the index entries carry family paths and selecting one sets the bare name in `ocioInputSpace`; Xvfb screenshot of the open submenu in P2.T3.
+  - size: M
+
+- [ ] M75.P2.T23 — Reset to default on the input colourspace
+  - files: `Engine/Nodes/IO/NativeRead.cpp`, `Engine/Nodes/IO/ReadColorSpace.*`, `Tests/Native/NativeReadColor_Test.cpp`; Engine knob reset path only if the fault is there
+  - approach: user report: pick a colourspace, right-click the input colourspace → Reset to default: the knob changes but the image doesn't, and refreshing the viewer or clearing the cache doesn't fix it. Diagnose first (likely the reset touches only the non-persistent `ocioInputSpaceIndex` without updating `ocioInputSpace`/`ocioInputSpaceSet`, or the reset's change reason skips `knobChanged`). Reset should mean: clear `ocioInputSpaceSet` and recompute the automatic default (file rule → file tag → bit-depth default), set `ocioInputSpace` to it, and re-render. If the fault is in the generic reset path, say so; it may affect other knobs.
+  - verify: gtest reproducing the report (pick a space, reset via the same API the Gui's reset action calls, render) fails before and passes after; Xvfb check in P2.T3.
+  - size: L
+
 - [ ] M75.P2.T3 — Panel and viewer check under Xvfb
   - files: `Engine/Nodes/IO/NativeRead.cpp` (page layout and labels only), `Tests/gui/m61_uat.py`, `Tests/gui/viewer_error_scrub.py`, new `Tests/gui/m75_read.py`; `Gui/` only if a hook is missing
   - approach: no layer knob on Read (layer-widget design §3); the file's layers reach the viewer's layer menu through the present-layer listing. Panel layout as the container had it: file, proxy and frame range on Controls, then colourspace. Check the two existing GUI scripts that call `app.createReader`. Run the Xvfb recipe (`build/deeprepro/run-gui.sh`, `checkForUpdates` pre-seeded off): a Tab-menu Read opens the dialog first, and its filter lists DPX and TGA but not CR2; a multilayer EXR lists its layers in the viewer menu and switching changes the image; a run-time DPX and TGA each display through a native Read; searching "ReadOIIO" or "ReadPNG" in the Tab menu finds nothing.
@@ -178,3 +202,4 @@ Replaces the `Read` container node with a native node on OpenImageIO that reads 
 - 2026-10-10 — **One build for the rest of Phase 75.2 (user: at most one build per phase; build time is the bottleneck).** P2.T15–T18 and P2.T6 are implemented without a build, then one **release** build runs fetch-assets (new fork pins), full ctest and smoke, and P2.T3's Xvfb check uses that same release binary (GUI checks can't use debug under llvmpipe).
 - 2026-10-10 — **P2.T15** (`4eff2dd03`), **P2.T16** (`cb2ec0b2e`), **P2.T17** (`d6dcbd361`), **P2.T18** (`871953103`; fork PRs charlesangus/openfx-io#11 and charlesangus/openfx-arena#5, branch `m75/retire-readers`, to merge-commit with this milestone) and **P2.T6** (`281ecc6bf`) landed on one release build: fetch-assets with the new pins, full ctest 1374/1374, smoke green. One compile fix: `OfxEffectInstance`'s reader-context input labels used a define from `ReadNode.h`; those branches were dead and went. Beyond the briefs: arena also drops ReadSVG, ReadPDF and ReadCDR, and openfx-io drops ReadFFmpeg. `PLUGINID_OFX_READOIIO` stays because three tests assert that ID builds nothing.
 - 2026-10-10 — **P2.T3** implemented (`3042aeddd`): `Tests/gui/m75_read.py` 46/46, `m61_uat.py` 176/176, `viewer_error_scrub.py` 55/55 under Xvfb on the release build (the older scripts' colour thresholds were loosened for the viewer's display transform). The first page is renamed Controls (needs the next build). Screenshots sent to the user; the task stays open until they approve.
+- 2026-10-10 — **User testing feedback (user):** a Read has no frame rate (one file frame per project frame): `frameRate`/`customFps` and the Read-derived `ofx/framerate` go (P2.T20). First/last frame stay, as plain int fields without sliders (P2.T21). The input colourspace menu nests by OCIO family (P2.T22). Reset to default on the input colourspace changes the knob but not the image (P2.T23). P2.T3's Xvfb check now also covers these.

@@ -28,10 +28,14 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
+#include <mutex>
+#include <set>
 #include <string>
 
 #include "Engine/EffectInstance.h" // for PLUGINID_NATRON_READ
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/IO/ReadTimeDomain.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define PLUGIN_MAJOR_NATRON_READ 2
@@ -51,7 +55,8 @@ NATRON_NAMESPACE_ENTER
  *   - colour: ocioInputSpace, ocioInputSpaceIndex, ocioInputSpaceSet, and the hidden
  *     ocioConfigFile and ocioWorkingSpace
  *   - views: the hidden availableViews
- * Only filename exists so far. The colour plane is decoded from the file; the other planes are
+ * The file and time knobs exist so far. A sequence pattern is resolved to one file per output
+ * frame through ReadTimeDomain. The colour plane is decoded from the file; the other planes are
  * not produced yet.
  **/
 class NativeRead
@@ -97,6 +102,8 @@ public:
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
+
 private:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -104,9 +111,69 @@ private:
 
     virtual StatusEnum getPreferredMetadata(NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    std::string pathAtTime(double time) const;
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    // The frames a filename pattern matches on disk, listed once per pattern.
+    struct FrameListing {
+        std::string pattern;
+        bool singleImage;
+        std::string singlePath;
+        std::set<int> frames;
+
+        FrameListing()
+            : pattern()
+            , singleImage(true)
+            , singlePath()
+            , frames()
+        {
+        }
+    };
+
+    // What an output frame loads: a file, black, or an error to report.
+    struct Target {
+        ReadTimeDomain::Result::Kind kind;
+        std::string path;
+        std::string message;
+
+        Target()
+            : kind(ReadTimeDomain::Result::eBlack)
+            , path()
+            , message()
+        {
+        }
+    };
+
+    std::shared_ptr<const FrameListing> frameListing() const;
+    void invalidateFrameListing();
+    ReadTimeDomain::Settings settingsAt(double time) const;
+    Target targetAtTime(double time) const;
+    std::string representativePath() const;
+    double fileFrameRate() const;
+    void refreshFrameRateFromFile();
+    void refreshTimeKnobState();
 
     KnobFileWPtr _filename;
+    KnobIntWPtr _originalFrameRange;
+    KnobIntWPtr _firstFrame;
+    KnobIntWPtr _lastFrame;
+    KnobChoiceWPtr _before;
+    KnobChoiceWPtr _after;
+    KnobChoiceWPtr _onMissingFrame;
+    KnobChoiceWPtr _frameMode;
+    KnobIntWPtr _startingTime;
+    KnobIntWPtr _timeOffset;
+    KnobBoolWPtr _timeDomainUserEdited;
+    KnobDoubleWPtr _frameRate;
+    KnobBoolWPtr _customFps;
+
+    mutable std::mutex _listingMutex;
+    mutable std::shared_ptr<const FrameListing> _listing;
 };
 
 NATRON_NAMESPACE_EXIT

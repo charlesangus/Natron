@@ -32,7 +32,9 @@
 #include <cstddef>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <list>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -48,6 +50,8 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ChoiceOption.h"
+#include "Engine/FileSystemModel.h"
 #include "Engine/Format.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -67,6 +71,9 @@ const int kMinBandRows = 32;
 
 // Upper bound on the decoded bytes one band holds at a time.
 const std::size_t kStagingBytes = std::size_t(16) << 20;
+
+// Past this many frames a still image's valid range is no longer enumerated.
+const int kMaxStillFrames = 1 << 16;
 
 double
 pixelAspectOf(const OIIO::ImageSpec& spec)
@@ -130,11 +137,56 @@ struct ColourChannels {
         return -1;
     }
 };
+
+// OpenEXR stores the frame rate as a rational, other formats as a float.
+double
+framesPerSecondOf(const OIIO::ImageSpec& spec)
+{
+    const OIIO::ParamValue* attribute = spec.find_attribute("FramesPerSecond");
+
+    if (!attribute) {
+        return 0.;
+    }
+    if (attribute->type() == OIIO::TypeRational) {
+        const int* ratio = (const int*)attribute->data();
+
+        return ratio[1] != 0 ? (double)ratio[0] / ratio[1] : 0.;
+    }
+
+    return (double)spec.get_float_attribute("FramesPerSecond", 0.f);
+}
+
+const char* const kKnobOriginalFrameRange = "originalFrameRange";
+const char* const kKnobFirstFrame = "firstFrame";
+const char* const kKnobLastFrame = "lastFrame";
+const char* const kKnobBefore = "before";
+const char* const kKnobAfter = "after";
+const char* const kKnobOnMissingFrame = "onMissingFrame";
+const char* const kKnobFrameMode = "frameMode";
+const char* const kKnobStartingTime = "startingTime";
+const char* const kKnobTimeOffset = "timeOffset";
+const char* const kKnobTimeDomainUserEdited = "timeDomainUserEdited";
+const char* const kKnobFrameRate = "frameRate";
+const char* const kKnobCustomFps = "customFps";
 } // anonymous namespace
 
 NativeRead::NativeRead(NodePtr node)
     : NativeEffectBase(node)
     , _filename()
+    , _originalFrameRange()
+    , _firstFrame()
+    , _lastFrame()
+    , _before()
+    , _after()
+    , _onMissingFrame()
+    , _frameMode()
+    , _startingTime()
+    , _timeOffset()
+    , _timeDomainUserEdited()
+    , _frameRate()
+    , _customFps()
+    , _listingMutex()
+    , _listing()
 {
 }
 
@@ -168,18 +220,434 @@ NativeRead::initializeKnobs()
     filename->setIsMetadataSlave(true);
     page->addKnob(filename);
     _filename = filename;
+
+    const std::vector<ChoiceOption> beforeAfterChoices = {
+        ChoiceOption("hold", tr("Hold").toStdString(), tr("While outside the sequence, load the nearest end frame.").toStdString()),
+        ChoiceOption("loop", tr("Loop").toStdString(), tr("Repeat the sequence outside its range.").toStdString()),
+        ChoiceOption("bounce", tr("Bounce").toStdString(), tr("Repeat the sequence in reverse outside its range.").toStdString()),
+        ChoiceOption("black", tr("Black").toStdString(), tr("Render a black image.").toStdString()),
+        ChoiceOption("error", tr("Error").toStdString(), tr("Report an error.").toStdString()),
+    };
+
+    KnobIntPtr firstFrame = createKnob<KnobInt>(tr("First Frame"));
+    firstFrame->setName(kKnobFirstFrame);
+    firstFrame->setHintToolTip(tr("The first frame number to read from this image sequence. It cannot be less than the first "
+                                  "frame of the sequence or greater than its last. If Starting Time is 1 or Time Offset is 0, "
+                                  "this is also the first output frame."));
+    firstFrame->setDefaultValue(0);
+    firstFrame->setAnimationEnabled(false);
+    firstFrame->setAddNewLine(false);
+    page->addKnob(firstFrame);
+    _firstFrame = firstFrame;
+
+    KnobChoicePtr before = createKnob<KnobChoice>(tr("Before"));
+    before->setName(kKnobBefore);
+    before->setHintToolTip(tr("What to do before the first frame of the sequence."));
+    before->populateChoices(beforeAfterChoices);
+    before->setDefaultValue((int)ReadTimeDomain::eBeforeAfterHold);
+    page->addKnob(before);
+    _before = before;
+
+    KnobIntPtr lastFrame = createKnob<KnobInt>(tr("Last Frame"));
+    lastFrame->setName(kKnobLastFrame);
+    lastFrame->setHintToolTip(tr("The last frame number to read from this image sequence. It cannot be less than the first "
+                                 "frame of the sequence or greater than its last. If Starting Time is 1 or Time Offset is 0, "
+                                 "this is also the last output frame."));
+    lastFrame->setDefaultValue(0);
+    lastFrame->setAnimationEnabled(false);
+    lastFrame->setAddNewLine(false);
+    page->addKnob(lastFrame);
+    _lastFrame = lastFrame;
+
+    KnobChoicePtr after = createKnob<KnobChoice>(tr("After"));
+    after->setName(kKnobAfter);
+    after->setHintToolTip(tr("What to do after the last frame of the sequence."));
+    after->populateChoices(beforeAfterChoices);
+    after->setDefaultValue((int)ReadTimeDomain::eBeforeAfterHold);
+    page->addKnob(after);
+    _after = after;
+
+    KnobChoicePtr onMissing = createKnob<KnobChoice>(tr("On Missing Frame"));
+    onMissing->setName(kKnobOnMissingFrame);
+    onMissing->setHintToolTip(tr("What to do when a frame is missing from the sequence."));
+    std::vector<ChoiceOption> missingChoices;
+    missingChoices.push_back(ChoiceOption("previous", tr("Hold previous").toStdString(), tr("Try to load the previous frame in the sequence, if any.").toStdString()));
+    missingChoices.push_back(ChoiceOption("next", tr("Load next").toStdString(), tr("Try to load the next frame in the sequence, if any.").toStdString()));
+    missingChoices.push_back(ChoiceOption("nearest", tr("Load nearest").toStdString(), tr("Try to load the nearest frame in the sequence, if any.").toStdString()));
+    missingChoices.push_back(ChoiceOption("error", tr("Error").toStdString(), tr("Report an error.").toStdString()));
+    missingChoices.push_back(ChoiceOption("black", tr("Black").toStdString(), tr("Render a black image.").toStdString()));
+    onMissing->populateChoices(missingChoices);
+    onMissing->setDefaultValue((int)ReadTimeDomain::eMissingError);
+    page->addKnob(onMissing);
+    _onMissingFrame = onMissing;
+
+    KnobChoicePtr frameMode = createKnob<KnobChoice>(tr("Frame Mode"));
+    frameMode->setName(kKnobFrameMode);
+    std::vector<ChoiceOption> modeChoices;
+    modeChoices.push_back(ChoiceOption("startingTime", tr("Starting Time").toStdString(), tr("Set at what output frame the first sequence frame is output. The sequence frame designated by First Frame is output at that frame.").toStdString()));
+    modeChoices.push_back(ChoiceOption("timeOffset", tr("Time Offset").toStdString(), tr("Set an offset to be applied as a number of frames. The sequence frame designated by First Frame is output at First Frame + Time Offset.").toStdString()));
+    frameMode->populateChoices(modeChoices);
+    frameMode->setDefaultValue((int)ReadTimeDomain::eFrameModeStartingTime);
+    frameMode->setAnimationEnabled(false);
+    frameMode->setAddNewLine(false);
+    page->addKnob(frameMode);
+    _frameMode = frameMode;
+
+    KnobIntPtr startingTime = createKnob<KnobInt>(tr("Starting Time"));
+    startingTime->setName(kKnobStartingTime);
+    startingTime->setHintToolTip(tr("At what time (on the timeline) this sequence starts."));
+    startingTime->setDefaultValue(0);
+    startingTime->setAnimationEnabled(false);
+    startingTime->setAddNewLine(false);
+    page->addKnob(startingTime);
+    _startingTime = startingTime;
+
+    KnobIntPtr timeOffset = createKnob<KnobInt>(tr("Time Offset"));
+    timeOffset->setName(kKnobTimeOffset);
+    timeOffset->setHintToolTip(tr("Offset applied to the sequence in time units (frames)."));
+    timeOffset->setDefaultValue(0);
+    timeOffset->setAnimationEnabled(false);
+    page->addKnob(timeOffset);
+    _timeOffset = timeOffset;
+
+    KnobBoolPtr userEdited = createKnob<KnobBool>(tr("Time Domain User Edited"));
+    userEdited->setName(kKnobTimeDomainUserEdited);
+    userEdited->setDefaultValue(false);
+    userEdited->setAnimationEnabled(false);
+    userEdited->setEvaluateOnChange(false);
+    userEdited->setSecret(true);
+    page->addKnob(userEdited);
+    _timeDomainUserEdited = userEdited;
+
+    KnobIntPtr originalRange = createKnob<KnobInt>(tr("Original Range"), 2);
+    originalRange->setName(kKnobOriginalFrameRange);
+    originalRange->setDimensionName(0, "min");
+    originalRange->setDimensionName(1, "max");
+    originalRange->setDefaultValue(std::numeric_limits<int>::min(), 0);
+    originalRange->setDefaultValue(std::numeric_limits<int>::max(), 1);
+    originalRange->setAnimationEnabled(false);
+    originalRange->setIsPersistent(false);
+    originalRange->setSecret(true);
+    page->addKnob(originalRange);
+    _originalFrameRange = originalRange;
+
+    KnobDoublePtr frameRate = createKnob<KnobDouble>(tr("Frame rate"));
+    frameRate->setName(kKnobFrameRate);
+    frameRate->setHintToolTip(tr("By default this value is guessed from the file. You can override it by checking Custom FPS. "
+                                 "The frame rate is only metadata passed to the nodes downstream."));
+    frameRate->setDefaultValue(24.);
+    frameRate->setMinimum(0.);
+    frameRate->setDisplayMinimum(0.);
+    frameRate->setDisplayMaximum(300.);
+    frameRate->setAnimationEnabled(false);
+    frameRate->setEvaluateOnChange(false);
+    frameRate->setIsMetadataSlave(true);
+    frameRate->setAddNewLine(false);
+    page->addKnob(frameRate);
+    _frameRate = frameRate;
+
+    KnobBoolPtr customFps = createKnob<KnobBool>(tr("Custom FPS"));
+    customFps->setName(kKnobCustomFps);
+    customFps->setHintToolTip(tr("If checked, the Frame rate value can be set freely instead of following the file."));
+    customFps->setDefaultValue(false);
+    customFps->setAnimationEnabled(false);
+    customFps->setEvaluateOnChange(false);
+    customFps->setIsMetadataSlave(true);
+    page->addKnob(customFps);
+    _customFps = customFps;
+
+    refreshTimeKnobState();
+}
+
+void
+NativeRead::onKnobsLoaded()
+{
+    refreshTimeKnobState();
+}
+
+void
+NativeRead::refreshTimeKnobState()
+{
+    KnobChoicePtr frameMode = _frameMode.lock();
+    KnobIntPtr startingTime = _startingTime.lock();
+    KnobIntPtr timeOffset = _timeOffset.lock();
+    KnobDoublePtr frameRate = _frameRate.lock();
+    KnobBoolPtr customFps = _customFps.lock();
+
+    if (frameMode && startingTime && timeOffset) {
+        const bool byStartingTime = frameMode->getValue() == (int)ReadTimeDomain::eFrameModeStartingTime;
+        startingTime->setSecret(!byStartingTime);
+        timeOffset->setSecret(byStartingTime);
+    }
+    if (frameRate && customFps) {
+        frameRate->setEnabled(0, customFps->getValue());
+    }
+}
+
+std::shared_ptr<const NativeRead::FrameListing>
+NativeRead::frameListing() const
+{
+    KnobFilePtr filename = _filename.lock();
+    std::string pattern;
+
+    if (filename) {
+        pattern = filename->getValue();
+        getApp()->getProject()->canonicalizePath(pattern);
+    }
+    {
+        std::lock_guard<std::mutex> lock(_listingMutex);
+        if (_listing && _listing->pattern == pattern) {
+            return _listing;
+        }
+    }
+
+    std::shared_ptr<FrameListing> listing = std::make_shared<FrameListing>();
+    listing->pattern = pattern;
+    if (!pattern.empty()) {
+        std::map<int, std::map<int, std::string>> sequence;
+        FileSystemModel::filesListFromPattern(pattern, &sequence);
+        if (sequence.size() > 1) {
+            listing->singleImage = false;
+            for (std::map<int, std::map<int, std::string>>::const_iterator it = sequence.begin(); it != sequence.end(); ++it) {
+                listing->frames.insert(it->first);
+            }
+        } else if (sequence.size() == 1 && !sequence.begin()->second.empty()) {
+            listing->singlePath = sequence.begin()->second.begin()->second;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(_listingMutex);
+    _listing = listing;
+
+    return listing;
+}
+
+void
+NativeRead::invalidateFrameListing()
+{
+    std::lock_guard<std::mutex> lock(_listingMutex);
+    _listing.reset();
+}
+
+ReadTimeDomain::Settings
+NativeRead::settingsAt(double time) const
+{
+    ReadTimeDomain::Settings settings;
+    KnobIntPtr firstFrame = _firstFrame.lock();
+    KnobIntPtr lastFrame = _lastFrame.lock();
+    KnobChoicePtr before = _before.lock();
+    KnobChoicePtr after = _after.lock();
+    KnobChoicePtr onMissing = _onMissingFrame.lock();
+    KnobChoicePtr frameMode = _frameMode.lock();
+    KnobIntPtr startingTime = _startingTime.lock();
+    KnobIntPtr timeOffset = _timeOffset.lock();
+
+    if (!firstFrame || !lastFrame || !before || !after || !onMissing || !frameMode || !startingTime || !timeOffset) {
+        return settings;
+    }
+    settings.firstFrame = firstFrame->getValue();
+    settings.lastFrame = lastFrame->getValue();
+    settings.before = (ReadTimeDomain::BeforeAfter)before->getValueAtTime(time);
+    settings.after = (ReadTimeDomain::BeforeAfter)after->getValueAtTime(time);
+    settings.onMissingFrame = (ReadTimeDomain::MissingFrame)onMissing->getValueAtTime(time);
+    settings.frameMode = (ReadTimeDomain::FrameMode)frameMode->getValue();
+    settings.startingTime = startingTime->getValue();
+    settings.timeOffset = timeOffset->getValue();
+
+    return settings;
+}
+
+NativeRead::Target
+NativeRead::targetAtTime(double time) const
+{
+    Target target;
+    KnobFilePtr filename = _filename.lock();
+
+    if (!filename || filename->getValue().empty()) {
+        return target;
+    }
+
+    const std::shared_ptr<const FrameListing> listing = frameListing();
+    const ReadTimeDomain::Settings settings = settingsAt(time);
+    ReadTimeDomain::Result result;
+    if (listing->singleImage) {
+        // A still image answers every frame of the range, so the range itself stands for the
+        // frames on disk.
+        std::set<int> inRange;
+        if ((long long)settings.lastFrame - settings.firstFrame < kMaxStillFrames) {
+            for (int f = settings.firstFrame; f <= settings.lastFrame; ++f) {
+                inRange.insert(inRange.end(), f);
+            }
+        } else {
+            inRange.insert(settings.firstFrame);
+            inRange.insert(settings.lastFrame);
+        }
+        result = ReadTimeDomain::resolve(time, settings, inRange);
+    } else {
+        result = ReadTimeDomain::resolve(time, settings, listing->frames);
+    }
+
+    target.kind = result.kind;
+    target.message = result.message;
+    if (result.kind == ReadTimeDomain::Result::eFile) {
+        target.path = (listing->singleImage && !listing->singlePath.empty()) ? listing->singlePath : filename->getFileName(result.frame, ViewIdx(0));
+    }
+
+    return target;
 }
 
 std::string
-NativeRead::pathAtTime(double time) const
+NativeRead::representativePath() const
 {
     KnobFilePtr filename = _filename.lock();
 
-    if (!filename) {
+    if (!filename || filename->getValue().empty()) {
         return std::string();
     }
+    const std::shared_ptr<const FrameListing> listing = frameListing();
+    if (!listing->singleImage) {
+        return filename->getFileName(*listing->frames.begin(), ViewIdx(0));
+    }
 
-    return filename->getFileName((int)std::floor(time + 0.5), ViewIdx(0));
+    return listing->singlePath.empty() ? filename->getFileName(0, ViewIdx(0)) : listing->singlePath;
+}
+
+double
+NativeRead::fileFrameRate() const
+{
+    const std::string path = representativePath();
+
+    if (path.empty()) {
+        return 0.;
+    }
+    std::string error;
+    const std::shared_ptr<const OiioReadSupport::Header> header = OiioReadSupport::readHeader(path, &error);
+
+    return (header && !header->subimages.empty()) ? framesPerSecondOf(header->subimages[0]) : 0.;
+}
+
+void
+NativeRead::refreshFrameRateFromFile()
+{
+    KnobDoublePtr frameRate = _frameRate.lock();
+    KnobBoolPtr customFps = _customFps.lock();
+
+    if (!frameRate || !customFps || customFps->getValue()) {
+        return;
+    }
+    const double fps = fileFrameRate();
+    if (fps > 0.) {
+        frameRate->setValue(fps);
+    }
+}
+
+void
+NativeRead::getFrameRange(double* first,
+                          double* last)
+{
+    KnobFilePtr filename = _filename.lock();
+
+    if (!filename || filename->getValue().empty()) {
+        *first = std::numeric_limits<int>::min();
+        *last = std::numeric_limits<int>::max();
+
+        return;
+    }
+    const ReadTimeDomain::FrameRange range = ReadTimeDomain::outputRange(settingsAt(0.));
+    *first = range.min;
+    *last = range.max;
+}
+
+bool
+NativeRead::knobChanged(KnobI* k,
+                        ValueChangedReasonEnum reason,
+                        ViewSpec /*view*/,
+                        double /*time*/,
+                        bool /*originatedFromMainThread*/)
+{
+    KnobFilePtr filename = _filename.lock();
+    KnobIntPtr originalRange = _originalFrameRange.lock();
+    KnobIntPtr firstFrame = _firstFrame.lock();
+    KnobIntPtr lastFrame = _lastFrame.lock();
+    KnobChoicePtr frameMode = _frameMode.lock();
+    KnobIntPtr startingTime = _startingTime.lock();
+    KnobIntPtr timeOffset = _timeOffset.lock();
+    KnobBoolPtr userEdited = _timeDomainUserEdited.lock();
+    KnobBoolPtr customFps = _customFps.lock();
+
+    if (!filename || !originalRange || !firstFrame || !lastFrame || !frameMode || !startingTime || !timeOffset || !userEdited || !customFps) {
+        return false;
+    }
+    const bool byUser = reason == eValueChangedReasonUserEdited;
+
+    if (k == filename.get()) {
+        if (reason != eValueChangedReasonTimeChanged) {
+            invalidateFrameListing();
+            refreshFrameRateFromFile();
+        }
+
+        return true;
+    }
+    if (k == originalRange.get()) {
+        const int originalFirst = originalRange->getValue(0);
+        const int originalLast = originalRange->getValue(1);
+        if (originalFirst == std::numeric_limits<int>::min() || originalLast == std::numeric_limits<int>::max() || originalFirst > originalLast) {
+            return true;
+        }
+        firstFrame->setDisplayMinimum(originalFirst);
+        firstFrame->setDisplayMaximum(originalLast);
+        lastFrame->setDisplayMinimum(originalFirst);
+        lastFrame->setDisplayMaximum(originalLast);
+        if (!userEdited->getValue()) {
+            firstFrame->setValue(originalFirst);
+            firstFrame->setDefaultValueWithoutApplying(originalFirst);
+            lastFrame->setValue(originalLast);
+            lastFrame->setDefaultValueWithoutApplying(originalLast);
+            startingTime->setValue(originalFirst);
+            startingTime->setDefaultValueWithoutApplying(originalFirst);
+            timeOffset->setValue(0);
+        }
+
+        return true;
+    }
+    if (k == firstFrame.get() && byUser) {
+        lastFrame->setDisplayMinimum(firstFrame->getValue());
+        startingTime->setValue(firstFrame->getValue() + timeOffset->getValue());
+        userEdited->setValue(true);
+
+        return true;
+    }
+    if (k == lastFrame.get() && byUser) {
+        firstFrame->setDisplayMaximum(lastFrame->getValue());
+        userEdited->setValue(true);
+
+        return true;
+    }
+    if (k == frameMode.get() && byUser) {
+        refreshTimeKnobState();
+
+        return true;
+    }
+    if (k == startingTime.get() && byUser) {
+        timeOffset->setValue(startingTime->getValue() - firstFrame->getValue());
+        userEdited->setValue(true);
+
+        return true;
+    }
+    if (k == timeOffset.get() && byUser) {
+        startingTime->setValue(timeOffset->getValue() + firstFrame->getValue());
+        userEdited->setValue(true);
+
+        return true;
+    }
+    if (k == customFps.get()) {
+        refreshTimeKnobState();
+        refreshFrameRateFromFile();
+
+        return true;
+    }
+
+    return false;
 }
 
 StatusEnum
@@ -189,7 +657,26 @@ NativeRead::getPreferredMetadata(NodeMetadata& metadata)
     metadata.setComponentsType(-1, kNatronColorLayerID);
     metadata.setNComps(-1, 4);
 
-    const std::string path = pathAtTime(getCurrentTime());
+    metadata.setIsFrameVarying(true);
+
+    KnobDoublePtr frameRate = _frameRate.lock();
+    KnobBoolPtr customFps = _customFps.lock();
+    if (frameRate) {
+        double fps = frameRate->getValue();
+        if (!customFps || !customFps->getValue()) {
+            const double fileFps = fileFrameRate();
+            if (fileFps > 0.) {
+                fps = fileFps;
+            }
+        }
+        if (fps > 0.) {
+            metadata.setOutputFrameRate(fps);
+        }
+    }
+
+    // The format is one per node, so a frame that loads nothing still reports the sequence's.
+    const Target target = targetAtTime(getCurrentTime());
+    const std::string path = target.kind == ReadTimeDomain::Result::eFile ? target.path : representativePath();
     if (path.empty()) {
         return eStatusOK;
     }
@@ -217,7 +704,14 @@ NativeRead::getRegionOfDefinition(U64 /*hash*/,
                                   ViewIdx /*view*/,
                                   RectD* rod)
 {
-    const std::string path = pathAtTime(time);
+    const Target target = targetAtTime(time);
+
+    if (target.kind == ReadTimeDomain::Result::eError) {
+        setPersistentMessage(eMessageTypeError, target.message);
+
+        return eStatusFailed;
+    }
+    const std::string path = target.kind == ReadTimeDomain::Result::eFile ? target.path : representativePath();
 
     if (path.empty()) {
         // The base implementation leaves the RoD null for a node without inputs, and a null RoD
@@ -318,11 +812,18 @@ zeroRows(Image::WriteAccess& access,
 StatusEnum
 NativeRead::render(const RenderActionArgs& args)
 {
-    const std::string path = pathAtTime(args.time);
+    const Target target = targetAtTime(args.time);
+
+    if (target.kind == ReadTimeDomain::Result::eError) {
+        setPersistentMessage(eMessageTypeError, target.message);
+
+        return eStatusFailed;
+    }
+    const std::string path = target.path;
 
     std::string error;
     std::shared_ptr<const OiioReadSupport::Header> header;
-    if (!path.empty()) {
+    if (target.kind == ReadTimeDomain::Result::eFile) {
         header = OiioReadSupport::readHeader(path, &error);
         if (!header || header->subimages.empty()) {
             setPersistentMessage(eMessageTypeError, error.empty() ? tr("Could not read %1").arg(QString::fromStdString(path)).toStdString() : error);

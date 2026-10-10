@@ -109,7 +109,7 @@ Scouted facts this plan relies on (2026-10-10):
 
 ## Phase 83.3: Slang kernels and CPU twins
 
-- [ ] M83.P3.T1 — Grade point kernel in Slang, with a C++ twin and a reference
+- [x] M83.P3.T1 — Grade point kernel in Slang, with a C++ twin and a reference
   - files: `tools/gpu-spike/kernels/grade.slang`, `tools/gpu-spike/ref/GradeRef.h`, `tools/gpu-spike/tests/GradeCpu_Test.cpp`, `tools/gpu-spike/CMakeLists.txt`
   - approach:
     - Port `GradeKernel`'s maths from `Engine/Nodes/Color/Grade.cpp` to Slang in float: the A/B precompute on the host, grade and inverse grade, the gamma ≤ 0 edge cases, clamp black and white, and the per-channel process mask over 1/3/4-channel interleaved pixels.
@@ -288,3 +288,4 @@ Scouted facts this plan relies on (2026-10-10):
 - 2026-10-10 — User answers: **OpenCL reference dropped** (M83.P5.T2) — no runtime on host or image, and Vulkan + Slang is decided. **Spike stays local-only** (M83.P6.T5 dropped); CI coverage arrives when M84 moves the code into `Engine/`. **FIR Gaussian is acceptable for GPU Blur**, and the user wants FIR added to the native CPU Blur as its default filter too — split out as M88 - FIR Gaussian Blur so it ships independently; M83.P3.T2's FIR maths should match what M88 puts in the CPU node.
 - 2026-10-10 — The VMA vendor commit bypassed the comment gate: all ten flags were in upstream's unmodified `vk_mem_alloc.h`, which is not ours to rewrite.
 - 2026-10-10 — M83.P3.T2: no IIR-vs-FIR difference numbers — linking `BlurKernels` into the standalone spike drags in Engine/Python headers. M88 - FIR Gaussian Blur's tests can report that gap from inside the engine instead.
+- 2026-10-10 — M83.P3.T1: the flat 4-ULP Grade bound fails on ~5.5k of 27M values, all in reverse grade where pow(v, gamma) cancels against B before dividing by a tiny A; the test adds a per-element conditioned tolerance (4 + 2|ln y| ULP of the pow term plus subtraction/division rounding). Float-vs-double, not a kernel bug.

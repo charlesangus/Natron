@@ -620,3 +620,4 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - **Results:** full ctest in the GPU container is 1274/1275; the only failure is the known CImg asset. Lavapipe is still selectable with `VK_ICD_FILENAMES`.
   - **CI:** unaffected, because the workflows use the base image directly.
   - **Host follow-up:** the host still needs the udev rule (`KERNEL=="renderD*", SUBSYSTEM=="drm", MODE="0666"`) for this to survive reboots.
+- 2026-10-10 — The M84 branch is stacked on `milestone/m83-gpu-backend-spike` while PR #48 waits on CI (user: work ahead). Rebase onto `main` after #48 squash-merges, dropping the M83 commits. M84 commits so far after the stacking rebase: `62bc42d6a` Blur buffer, `3e29ed34b` graph_bench (merged with M83's `BENCH_SIZE`), `d0995e115` dev container.

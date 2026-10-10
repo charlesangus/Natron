@@ -45,7 +45,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - verify: Editing the Merge colour without saving leaves Merge nodes unchanged, and Discard keeps them unchanged; Save recolours them. Adjust the screenshot script's Preferences step to call whatever the Save path does.
   - size: M
 
-- [ ] M24.P5.T2 — Fix label contrast on deep nodes (still black on navy at UAT) and widen the border to 5
+- [x] M24.P5.T2 — Fix label contrast on deep nodes (still black on navy at UAT) and widen the border to 5
   - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/NodeGraphRectItem.h` (or wherever `NATRON_USER_COLOR_BORDER_WIDTH` is defined)
   - approach:
     - In the AppImage, deep nodes still show black text, and darkening a category colour doesn't change the label colour, although screenshots under Xvfb showed white. Find the real cause in the real app path. Likely suspects:
@@ -244,6 +244,11 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - (6) Old projects don't matter, since this is a clean break; the existing legacy seeding stays since it only draws the setting differently.
   - (9) Clones hiding the user border is acceptable for now.
   - (4, 7, 8, 10) are OK.
+
+- 2026-10-10 — **P5.T2 root cause (labels always black):** creating a node from the toolbar opens its settings panel, and `KnobGuiString::restoreTextInfoFromString` then wrote `<font ... color="#000000">` into the label. `setNameItemHtml` counted any font tag as a user colour, and a no-op `remove()` left the inline colour in the HTML. Python `createNode` doesn't open the panel, which is why the Xvfb screenshots were white.
+  - Fix: only a picked colour other than the automatic `#000000` overrides the contrast colour, and picked colours are now stored as `#AARRGGBB`.
+  - Side effect: a black picked by hand before this change, including in the shipped PyPlugs, now gets the contrast colour.
+  - The screenshot script now creates nodes the toolbar way and checks the label text by sampling its pixels.
 
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate

@@ -343,6 +343,18 @@ namespace {
 
         return part;
     }
+
+    // Writers name the part holding the colour plane after it ("Color" for Natron's), so the bare
+    // channels of such a part are the colour plane's rather than a layer named after the part.
+    bool
+    isColourPartName(const std::string& part)
+    {
+        static const char* const names[] = {
+            kNatronColorStorageLabel, kNatronColorLayerID, kNatronColorViewRGBA, kNatronColorViewRGB, kNatronColorViewAlpha, kNatronColorViewXY
+        };
+
+        return std::any_of(std::begin(names), std::end(names), [&part](const char* name) { return sameName(part, name); });
+    }
 } // anonymous namespace
 
 std::vector<std::string>
@@ -435,7 +447,7 @@ fileLayers(const Header& header,
     viewParts(header, view, &viewSubimages);
     std::set<std::string> seen;
     for (std::size_t s = 0; s < viewSubimages.size(); ++s) {
-        const std::string& part = viewSubimages[s].part;
+        const std::string part = isColourPartName(viewSubimages[s].part) ? std::string() : viewSubimages[s].part;
 
         std::vector<std::string> flat;
         std::vector<int> fileIndex;

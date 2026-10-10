@@ -401,6 +401,24 @@ TEST_F(NativeReadLayersTest, PartNamesNameTheLayersOfAMultiPartFile)
     expectPlaneMatchesOiio(node, path, ImageLayerDesc::getRGBAComponents(), { FileChannel { 0, "R" }, FileChannel { 0, "G" }, FileChannel { 0, "B" }, FileChannel { 0, "A" } });
 }
 
+// Natron's Write names the colour part "Color", a name the registry refuses for a layer.
+TEST_F(NativeReadLayersTest, APartNamedAfterTheColourPlaneIsNotAlsoALayer)
+{
+    QTemporaryDir dir(temporaryTemplate());
+    ASSERT_TRUE(dir.isValid());
+    std::vector<Part> parts;
+    parts.push_back(Part { "Color", { "R", "G", "B", "A" } });
+    parts.push_back(Part { "key", { "R", "G", "B" } });
+    const std::string path = writeMultiPart(dir, parts);
+    ASSERT_FALSE(path.empty());
+
+    NodePtr node = createRead(path);
+    ASSERT_TRUE(bool(node));
+
+    EXPECT_EQ(std::vector<std::string>({ "key" }), layerIDs(producedLayers(node)));
+    expectPlaneMatchesOiio(node, path, ImageLayerDesc::getRGBAComponents(), { FileChannel { 0, "R" }, FileChannel { 0, "G" }, FileChannel { 0, "B" }, FileChannel { 0, "A" } });
+}
+
 TEST_F(NativeReadLayersTest, TheRegistryListsTheFilesLayersAfterCreation)
 {
     EXPECT_FALSE(getApp()->getProject()->findLayer("diffuse", NULL));

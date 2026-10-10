@@ -51,6 +51,7 @@
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Metadata/OfxMetadataBridge.h"
@@ -59,7 +60,6 @@
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
-#include "Engine/ReadNode.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/WriteNode.h"
 
@@ -397,11 +397,11 @@ TEST_F(BaseTest, OfxMetadataBridgeReadKeysReachTheWriteEncoderThroughNativeNodes
     const std::string frameTwoPath = SequenceParsing::generateFileNameFromPattern(pattern, viewNames, lastFrame, 0);
     ASSERT_TRUE(QFile::exists(QString::fromStdString(frameTwoPath))) << "fixture frame was not rendered: " << frameTwoPath;
 
-    CreateNodeArgs readArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    CreateNodeArgs readArgs(_readPluginID.toStdString(), getApp()->getProject());
     readArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, pattern);
     NodePtr reader = getApp()->createNode(readArgs);
     ASSERT_TRUE(bool(reader));
-    ASSERT_TRUE(dynamic_cast<ReadNode*>(reader->getEffectInstance().get()) != NULL);
+    ASSERT_TRUE(dynamic_cast<NativeRead*>(reader->getEffectInstance().get()) != NULL);
 
     NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
     NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_MERGE));

@@ -111,7 +111,7 @@ protected:
 
     NodePtr createReader(const std::string& fixture = "flat-three-layers.exr")
     {
-        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+        CreateNodeArgs readerArgs(_readPluginID.toStdString(), getApp()->getProject());
 
         readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
 

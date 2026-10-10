@@ -105,10 +105,10 @@ protected:
 
     NodePtr createReader(const std::string& fixture)
     {
-        CreateNodeArgs args(_readOIIOPluginID.toStdString(), getApp()->getProject());
+        CreateNodeArgs args(_readPluginID.toStdString(), getApp()->getProject());
         args.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
         NodePtr reader = getApp()->createNode(args);
-        EXPECT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+        EXPECT_TRUE(bool(reader)) << "node creation failed for " << _readPluginID.toStdString();
 
         return reader;
     }

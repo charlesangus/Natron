@@ -156,11 +156,7 @@ class GeneratorLayerTest
 protected:
     NodePtr createFixtureReader()
     {
-        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-
-        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
-
-        return getApp()->createNode(readerArgs);
+        return createWorkingSpaceRead(std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
     }
 
     NodePtr createGenerator(const char* pluginID,

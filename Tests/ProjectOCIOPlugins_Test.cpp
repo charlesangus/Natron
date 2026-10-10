@@ -39,7 +39,7 @@
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
 #include "Engine/Project.h"
-#include "Engine/ReadNode.h"
+#include "Engine/WriteNode.h"
 
 NATRON_NAMESPACE_USING
 
@@ -67,19 +67,19 @@ protected:
         project()->reset(false, true);
     }
 
-    OFX::Host::ImageEffect::Instance* createReader()
+    OFX::Host::ImageEffect::Instance* createWriter()
     {
-        CreateNodeArgs args(PLUGINID_OFX_READOIIO, project());
+        CreateNodeArgs args(PLUGINID_OFX_WRITEOIIO, project());
         _node = appPTR->getTopLevelInstance()->createNode(args);
         if (!_node) {
             return NULL;
         }
-        ReadNode* readNode = dynamic_cast<ReadNode*>(_node->getEffectInstance().get());
-        NodePtr decoder = readNode ? readNode->getEmbeddedReader() : NodePtr();
-        if (!decoder) {
+        WriteNode* writeNode = dynamic_cast<WriteNode*>(_node->getEffectInstance().get());
+        NodePtr encoder = writeNode ? writeNode->getEmbeddedWriter() : NodePtr();
+        if (!encoder) {
             return NULL;
         }
-        OfxEffectInstance* effect = dynamic_cast<OfxEffectInstance*>(decoder->getEffectInstance().get());
+        OfxEffectInstance* effect = dynamic_cast<OfxEffectInstance*>(encoder->getEffectInstance().get());
 
         return effect ? effect->effectInstance() : NULL;
     }
@@ -89,7 +89,7 @@ protected:
 
 TEST_F(ProjectOCIOPluginsTest, InstancePropsReturnTheProjectConfigWorkingSpaceAndFileDefaults)
 {
-    OFX::Host::ImageEffect::Instance* instance = createReader();
+    OFX::Host::ImageEffect::Instance* instance = createWriter();
 
     ASSERT_TRUE(instance != NULL);
     const OFX::Host::Property::Set& props = instance->getProps();
@@ -109,7 +109,7 @@ TEST_F(ProjectOCIOPluginsTest, InstancePropsReturnTheProjectConfigWorkingSpaceAn
 
 TEST_F(ProjectOCIOPluginsTest, SwitchingTheProjectConfigIsSeenByTheSameInstance)
 {
-    OFX::Host::ImageEffect::Instance* instance = createReader();
+    OFX::Host::ImageEffect::Instance* instance = createWriter();
 
     ASSERT_TRUE(instance != NULL);
     const OFX::Host::Property::Set& props = instance->getProps();

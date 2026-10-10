@@ -453,7 +453,7 @@ TEST_F(LegacyColorProjectTest, LegacyColorWarningSurvivesARender)
     ASSERT_TRUE(hasLegacyColorWarning(grade));
     EXPECT_FALSE(ownsChannelSelectorMessage(grade));
 
-    CreateNodeArgs readArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+    CreateNodeArgs readArgs(_readPluginID.toStdString(), getApp()->getProject());
     readArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr"));
     NodePtr reader = getApp()->createNode(readArgs);
     ASSERT_TRUE(bool(reader));

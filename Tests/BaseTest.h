@@ -79,6 +79,14 @@ protected:
     ///disconnection is expected to succeed, and vice versa.
     void disconnectNodes(NodePtr input, NodePtr output, bool expectedReturnvalue);
 
+    /// Creates a Read of filePath whose input colourspace is the project's working space, so the
+    /// file's values reach the graph unconverted. Returns null, with a test failure, when the
+    /// node cannot be created.
+    NodePtr createWorkingSpaceRead(const std::string& filePath);
+
+    /// Sets an existing Read's input colourspace to the project's working space.
+    void readInWorkingSpace(const NodePtr& reader);
+
     void registerTestPlugins();
 
     ///////////////Pointers to plug-ins that might be used by all the tests. This makes
@@ -90,6 +98,7 @@ protected:
     ///////////////installed in order to the test to run, so don't add fancy plug-ins, you should
     ///////////////stick to the default plug-ins that are pre-compiled in the shell-script.
     QString _generatorPluginID;
+    QString _readPluginID;
     QString _readOIIOPluginID;
     QString _writeOIIOPluginID;
     QString _textArenaPluginID;

@@ -197,10 +197,10 @@ protected:
 
     NodePtr createReader(const char* fixturePath)
     {
-        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
+        CreateNodeArgs readerArgs(_readPluginID.toStdString(), getApp()->getProject());
         readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(fixturePath));
         NodePtr reader = getApp()->createNode(readerArgs);
-        EXPECT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+        EXPECT_TRUE(bool(reader)) << "node creation failed for " << _readPluginID.toStdString();
 
         return reader;
     }

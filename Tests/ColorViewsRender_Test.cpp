@@ -41,6 +41,8 @@
 
 #include <gtest/gtest.h>
 
+#include <OpenImageIO/imageio.h>
+
 CLANG_DIAG_OFF(deprecated)
 #include <QFile>
 #include <QString>
@@ -87,8 +89,6 @@ const char* const kMergePluginID = "net.sf.openfx.MergePlugin";
 const char* const kIDistortPluginID = "net.sf.openfx.IDistort";
 const char* const kPremultPluginID = "net.sf.openfx.Premult";
 const char* const kWritePNGPluginID = "fr.inria.openfx.WritePNG";
-const char* const kReadPNGPluginID = "fr.inria.openfx.ReadPNG";
-const char* const kReadEXRPluginID = "fr.inria.openfx.ReadEXR";
 const char* const kTimeBufferReadPluginID = "net.sf.openfx.TimeBufferRead";
 const char* const kTimeBufferWritePluginID = "net.sf.openfx.TimeBufferWrite";
 
@@ -162,11 +162,7 @@ class ColorViewsRenderTest
 protected:
     NodePtr createReader(const std::string& fixture)
     {
-        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-
-        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
-
-        return getApp()->createNode(readerArgs);
+        return createWorkingSpaceRead(std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
     }
 
     NodePtr createEffectOnReader(const char* pluginID,
@@ -728,7 +724,7 @@ TEST_F(ColorViewsRenderTest, DefaultGradeOverAlphaKeepsAlphaExactly)
 }
 
 // None of this suite's EXR fixtures carry a base layer with exactly two channels that aren't an
-// I+A (luminance+alpha) pair, so ReadOIIO's guessParamsFromFilename never reports
+// I+A (luminance+alpha) pair, so a Read never reports
 // ePixelComponentXY for them: there is no genuine 2-channel XY colour clip to render here. This
 // instead exercises the exact composition Node::listLayerViewsForKnob uses,
 // expandColorViews(listLayersForKnob(...)), directly on an XY storage desc, at the engine level.
@@ -984,9 +980,10 @@ TEST_F(ColorViewsRenderTest, PremultOnAlphaOnlyLeavesAlphaUnchanged)
     EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "A"), 1e-5f);
 }
 
-// WritePNG/ReadPNG declare Alpha support (kSupportsAlpha), so a 1-channel PNG keeps its
-// single channel as Alpha end to end instead of being forced wider on write or misread on read.
-TEST_F(ColorViewsRenderTest, AlphaOnlyPngRoundTripsThroughWriteAndRead)
+// WritePNG declares Alpha support, so an alpha-only input is written as a one-channel PNG instead
+// of being widened. PNG has no alpha-only type: the file is a grey image, which a Read gives a black
+// colour plane like any file without R, G, B or A, so the check is on the file itself.
+TEST_F(ColorViewsRenderTest, AlphaOnlyInputWritesAOneChannelPng)
 {
     NodePtr reader = createReader("flat-alpha-only.exr");
     ASSERT_TRUE(bool(reader));
@@ -1014,48 +1011,29 @@ TEST_F(ColorViewsRenderTest, AlphaOnlyPngRoundTripsThroughWriteAndRead)
     getApp()->startWritersRendering(false, writeWorks);
     ASSERT_TRUE(QFile::exists(QString::fromStdString(pngPath))) << pngPath;
 
-    CreateNodeArgs readArgs(std::string(kReadPNGPluginID), getApp()->getProject());
-    readArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, pngPath);
-    NodePtr readPng = getApp()->createNode(readArgs);
-    ASSERT_TRUE(bool(readPng));
-
-    FlatExrImage image;
-    std::string error;
-    ASSERT_TRUE(render(readPng, &ColorViewsRenderTest::writeAll, &image, &error)) << error;
-
-    ASSERT_EQ(1u, image.channels.size());
-    EXPECT_EQ(std::string("A"), image.channels.front());
-    EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "A"), 1e-4f);
+    OIIO::ImageInput::unique_ptr png = OIIO::ImageInput::open(pngPath);
+    ASSERT_TRUE(bool(png)) << OIIO::geterror();
+    const OIIO::ImageSpec& spec = png->spec();
+    ASSERT_EQ(1, spec.nchannels);
+    std::vector<float> pixels((std::size_t)spec.width * (std::size_t)spec.height);
+    ASSERT_TRUE(png->read_image(0, 0, 0, 1, OIIO::TypeDesc::FLOAT, pixels.data())) << png->geterror();
+    ASSERT_GT(spec.height, kCheckY);
+    ASSERT_GT(spec.width, kCheckX);
+    // PNG rows run top-down.
+    EXPECT_NEAR(1.f, pixels[(std::size_t)(spec.height - 1 - kCheckY) * (std::size_t)spec.width + (std::size_t)kCheckX], 1e-4f);
 }
 
-// ReadEXR is deprecated and loses the reader evaluation to ReadOIIO, so it is created by ID.
-// It only guesses its output layout from a file set after creation, as ReadNode sets it; a file
-// given as a creation default leaves the layout at RGBA.
-static NodePtr
-createReadExr(const AppInstancePtr& app,
-              const std::string& fixture)
+// A single-A file is decoded straight into a 1-component buffer instead of being widened to RGBA
+// and narrowed back.
+TEST_F(ColorViewsRenderTest, ReadDecodesAlphaOnlyFileIntoOneChannel)
 {
-    CreateNodeArgs readArgs(std::string(kReadEXRPluginID), app->getProject());
-    readArgs.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
-    NodePtr reader = app->createNode(readArgs);
-    KnobFile* file = reader ? dynamic_cast<KnobFile*>(reader->getKnobByName(kOfxImageEffectFileParamName).get()) : NULL;
-    if (!file) {
-        return NodePtr();
-    }
-    file->setValue(std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
-
-    return reader;
-}
-
-// Declaring Alpha support lets ReadEXR decode a single-A file straight into a 1-component buffer
-// instead of the host widening it to RGBA and narrowing back.
-TEST_F(ColorViewsRenderTest, ReadExrDecodesAlphaOnlyFileIntoOneChannel)
-{
-    NodePtr reader = createReadExr(getApp(), "flat-alpha-only.exr");
+    NodePtr reader = createReader("flat-alpha-only.exr");
     ASSERT_TRUE(bool(reader));
 
-    EXPECT_TRUE(reader->isSupportedComponent(-1, ImageLayerDesc::getAlphaComponents()));
-    EXPECT_EQ(1, reader->getEffectInstance()->getMetadataNComps(-1));
+    ImageLayerDesc layer;
+    ImageLayerDesc paired;
+    reader->getEffectInstance()->getMetadataComponents(-1, &layer, &paired);
+    EXPECT_EQ(1u, layer.getChannels().size());
 
     FlatExrImage image;
     std::string error;
@@ -1066,12 +1044,15 @@ TEST_F(ColorViewsRenderTest, ReadExrDecodesAlphaOnlyFileIntoOneChannel)
     EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "A"), 1e-5f);
 }
 
-TEST_F(ColorViewsRenderTest, ReadExrStillDecodesRgbaFileIntoFourChannels)
+TEST_F(ColorViewsRenderTest, ReadDecodesRgbaFileIntoFourChannels)
 {
-    NodePtr reader = createReadExr(getApp(), "flat-rgba-only.exr");
+    NodePtr reader = createReader("flat-rgba-only.exr");
     ASSERT_TRUE(bool(reader));
 
-    EXPECT_EQ(4, reader->getEffectInstance()->getMetadataNComps(-1));
+    ImageLayerDesc layer;
+    ImageLayerDesc paired;
+    reader->getEffectInstance()->getMetadataComponents(-1, &layer, &paired);
+    EXPECT_EQ(4u, layer.getChannels().size());
 
     FlatExrImage image;
     std::string error;
@@ -1087,26 +1068,21 @@ TEST_F(ColorViewsRenderTest, ReadExrStillDecodesRgbaFileIntoFourChannels)
 
 // Both fixtures put a 6x4 data window at file x = -1 inside a display window whose origin is
 // (-2, -1); OpenEXR addresses scanline samples by absolute file x, so a reader ignoring either
-// origin shifts the samples or writes past the row. ReadOIIO is the reference placement for
-// every channel it decodes. In the RGB-and-A fixture R and G hold each sample's file x and y,
+// origin shifts the samples or writes past the row. In the RGB-and-A fixture R and G hold each sample's file x and y,
 // so A must cover exactly the pixels whose R and G follow one consistent offset; B is absent
 // there and reads 0, as does every pixel outside the data window.
-TEST_F(ColorViewsRenderTest, ReadExrPlacesAnOffsetDataWindowLikeReadOIIOAndZeroFillsTheRest)
+TEST_F(ColorViewsRenderTest, ReadPlacesAnOffsetDataWindowAndZeroFillsTheRest)
 {
     const char* const fixtures[] = { "flat-rgb-a-offset-window.exr", "flat-alpha-offset-window.exr" };
     for (std::size_t f = 0; f < sizeof(fixtures) / sizeof(fixtures[0]); ++f) {
         SCOPED_TRACE(fixtures[f]);
 
-        NodePtr exrReader = createReadExr(getApp(), fixtures[f]);
-        NodePtr oiioReader = createReader(fixtures[f]);
+        NodePtr exrReader = createReader(fixtures[f]);
         ASSERT_TRUE(bool(exrReader));
-        ASSERT_TRUE(bool(oiioReader));
 
         FlatExrImage exr;
-        FlatExrImage reference;
         std::string error;
         ASSERT_TRUE(render(exrReader, &ColorViewsRenderTest::writeAll, &exr, &error)) << error;
-        ASSERT_TRUE(render(oiioReader, &ColorViewsRenderTest::writeAll, &reference, &error)) << error;
         ASSERT_GE(exr.channelIndex("A"), 0);
         const bool encodesPosition = exr.channelIndex("R") >= 0;
 
@@ -1127,8 +1103,6 @@ TEST_F(ColorViewsRenderTest, ReadExrPlacesAnOffsetDataWindowLikeReadOIIOAndZeroF
                     const float value = exr.at(x, y, channel);
                     if (!isCovered || (channel == "B")) {
                         EXPECT_EQ(0.f, value) << channel << " at (" << x << ", " << y << ")";
-                    } else if (reference.channelIndex(channel) >= 0) {
-                        EXPECT_NEAR(reference.at(x, y, channel), value, 1e-5f) << channel << " at (" << x << ", " << y << ")";
                     }
                 }
                 if (!encodesPosition || !isCovered) {
@@ -1157,35 +1131,23 @@ TEST_F(ColorViewsRenderTest, ReadExrPlacesAnOffsetDataWindowLikeReadOIIOAndZeroF
     }
 }
 
-// The RGB-only counterpart of the offset fixtures: with no A channel in the file, ReadEXR decodes
-// into RGBA and must fill A with 0 over the whole display window, while R, G and B land where
-// ReadOIIO puts them. R and G hold each sample's file x and y, and B is 0.5 over the data window.
-TEST_F(ColorViewsRenderTest, ReadExrZeroFillsTheAlphaOfAnOffsetRgbOnlyFile)
+// The RGB-only counterpart of the offset fixtures: with no A channel in the file the Read has no
+// A to place, and R, G and B land at one consistent offset. R and G hold each sample's file x and
+// y, and B is 0.5 over the data window.
+TEST_F(ColorViewsRenderTest, ReadPlacesAnOffsetRgbOnlyFile)
 {
-    NodePtr exrReader = createReadExr(getApp(), "flat-rgb-offset-window.exr");
-    NodePtr oiioReader = createReader("flat-rgb-offset-window.exr");
-    ASSERT_TRUE(bool(exrReader));
-    ASSERT_TRUE(bool(oiioReader));
+    NodePtr reader = createReader("flat-rgb-offset-window.exr");
+    ASSERT_TRUE(bool(reader));
 
     FlatExrImage exr;
-    FlatExrImage reference;
     std::string error;
-    ASSERT_TRUE(render(exrReader, &ColorViewsRenderTest::writeAll, &exr, &error)) << error;
-    ASSERT_TRUE(render(oiioReader, &ColorViewsRenderTest::writeAll, &reference, &error)) << error;
-    ASSERT_EQ(4u, exr.channels.size());
+    ASSERT_TRUE(render(reader, &ColorViewsRenderTest::writeAll, &exr, &error)) << error;
+    ASSERT_EQ(3u, exr.channels.size());
     ASSERT_GE(exr.channelIndex("R"), 0);
     ASSERT_GE(exr.channelIndex("G"), 0);
     ASSERT_GE(exr.channelIndex("B"), 0);
-    ASSERT_GE(exr.channelIndex("A"), 0);
-    ASSERT_GE(reference.channelIndex("R"), 0);
-    ASSERT_GE(reference.channelIndex("G"), 0);
-    ASSERT_GE(reference.channelIndex("B"), 0);
-    ASSERT_EQ(reference.x1, exr.x1);
-    ASSERT_EQ(reference.y1, exr.y1);
-    ASSERT_EQ(reference.width, exr.width);
-    ASSERT_EQ(reference.height, exr.height);
+    EXPECT_EQ(-1, exr.channelIndex("A"));
 
-    const char* const colorChannels[] = { "R", "G", "B" };
     int covered = 0;
     bool haveOffset = false;
     int32_t offsetX = 0;
@@ -1194,11 +1156,6 @@ TEST_F(ColorViewsRenderTest, ReadExrZeroFillsTheAlphaOfAnOffsetRgbOnlyFile)
     std::vector<bool> seenY(4, false);
     for (int32_t y = exr.y1; y < exr.y1 + exr.height; ++y) {
         for (int32_t x = exr.x1; x < exr.x1 + exr.width; ++x) {
-            EXPECT_EQ(0.f, exr.at(x, y, "A")) << "A at (" << x << ", " << y << ")";
-            for (std::size_t c = 0; c < 3; ++c) {
-                EXPECT_NEAR(reference.at(x, y, colorChannels[c]), exr.at(x, y, colorChannels[c]), 1e-5f)
-                    << colorChannels[c] << " at (" << x << ", " << y << ")";
-            }
             const bool isCovered = exr.at(x, y, "B") > 0.f;
             if (!isCovered) {
                 EXPECT_EQ(0.f, exr.at(x, y, "R")) << "R at (" << x << ", " << y << ")";

@@ -186,10 +186,8 @@ protected:
     void createFixtureReader(NodePtr* reader,
                              const std::string& fixture = "flat-three-layers.exr")
     {
-        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
-        *reader = getApp()->createNode(readerArgs);
-        ASSERT_TRUE(bool(*reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+        *reader = createWorkingSpaceRead(std::string(NATRON_TESTS_FIXTURES_DIR "/") + fixture);
+        ASSERT_TRUE(bool(*reader));
     }
 
     void createShuffleOnFixture(const std::string& fixture = "flat-three-layers.exr",
@@ -242,27 +240,15 @@ protected:
     // flat-three-layers.exr), frame 2 carries RGBA only.
     NodePtr createTimeVaryingReadSequence()
     {
-        CreateNodeArgs readerArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-        readerArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-seq-layers.####.exr"));
-        NodePtr reader = getApp()->createNode(readerArgs);
-        EXPECT_TRUE(bool(reader)) << "node creation failed for " << _readOIIOPluginID.toStdString();
-
-        return reader;
+        return createWorkingSpaceRead(std::string(NATRON_TESTS_FIXTURES_DIR "/flat-seq-layers.####.exr"));
     }
 
     // Carries diffuse at frame 1 only: `which` picks flat-three-layers.exr there and
     // flat-rgba-only.exr at frame 2.
     NodePtr createTimeVaryingSwitch()
     {
-        CreateNodeArgs readerAArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-        readerAArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
-        NodePtr readerA = getApp()->createNode(readerAArgs);
-        EXPECT_TRUE(bool(readerA)) << "node creation failed for " << _readOIIOPluginID.toStdString();
-
-        CreateNodeArgs readerBArgs(_readOIIOPluginID.toStdString(), getApp()->getProject());
-        readerBArgs.addParamDefaultValue<std::string>(kOfxImageEffectFileParamName, std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr"));
-        NodePtr readerB = getApp()->createNode(readerBArgs);
-        EXPECT_TRUE(bool(readerB)) << "node creation failed for " << _readOIIOPluginID.toStdString();
+        NodePtr readerA = createWorkingSpaceRead(std::string(NATRON_TESTS_FIXTURES_DIR "/flat-three-layers.exr"));
+        NodePtr readerB = createWorkingSpaceRead(std::string(NATRON_TESTS_FIXTURES_DIR "/flat-rgba-only.exr"));
 
         NodePtr switchNode = createNode(QString::fromUtf8("net.sf.openfx.switchPlugin"));
         EXPECT_TRUE(bool(switchNode));

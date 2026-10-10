@@ -634,3 +634,13 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - recycled buffers with cached imports: 10.7–11.2 ms;
     - recycled buffers through staging: 19.5–20.4 ms.
   - **Why a pool:** fresh allocation and first touch dominate, so only recycling makes host-import pay off.
+- 2026-10-10 — **Correction to M84.P1.T2's "4 GB import fails":** the failure happens only at sizes that are an **exact multiple of 4 GiB**. Imports of 4 GiB, 8, 12 and 16 GiB return −13; 4 GiB ± 4 KiB, 5 GiB, 6 GiB and 20 GiB + 4 KiB succeed. This points to a 32-bit size truncation in RADV's userptr path. The cause is not GTT (46.95 GiB), memlock, or VRAM.
+  - RADV advertises `maxMemoryAllocationSize` = 4 GiB − 4 but doesn't enforce it: 9 GiB device-local allocations succeed.
+  - Host-pointer imports map to memory type 5 only (the GTT heap, cached).
+  - **Engine rule:**
+    - clamp each import to `maxMemoryAllocationSize`;
+    - never submit an exact multiple of 4 GiB;
+    - treat −13 from an import as "fall back to staging", not fatal;
+    - split frames bigger than that into per-strip imports. This follows already from `maxStorageBufferRange`.
+  - The earlier M83 finding that "a single host-import copy over 4 GiB is wrong" is likely the same truncation.
+  - Probe: the scratchpad `import-probe/`, which was not committed.

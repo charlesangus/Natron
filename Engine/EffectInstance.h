@@ -2184,6 +2184,16 @@ public:
 
     virtual void onKnobsAboutToBeLoaded(const NodeSerializationPtr& /*serialization*/) {}
 
+    /**
+     * @brief Called before any knob takes a value from a file or a script, with the plug-in
+     * version those values were written for: by Node::loadKnobs() with the serialized version,
+     * and by Node::load() with the version a creation request without serialization names. A knob
+     * left at its default is absent from a file and unset by a script, so a node whose default
+     * differs between plug-in versions sets here the default that version had. A negative minor stands for the latest
+     * minor of that major.
+     **/
+    virtual void restoreLegacyKnobDefaults(int /*pluginMajor*/, int /*pluginMinor*/) {}
+
     virtual void onKnobsLoaded() {}
 
     /**

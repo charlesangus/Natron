@@ -41,9 +41,10 @@
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Separable 1-D blur and derivative filters over a strided float line, with the
- * arithmetic (float vs double rounding points included) of the CImg functions they port, so a
- * line filtered here equals the same line filtered by CImg<float>.
+ * @brief Separable 1-D blur and derivative filters over a strided float line. The IIR and box
+ * filters keep the arithmetic (float vs double rounding points included) of the CImg functions
+ * they port, so a line filtered here equals the same line filtered by CImg<float>; the FIR
+ * Gaussian has no CImg counterpart.
  *
  * Each filter runs in place over `n` samples at `data[0]`, `data[stride]`, ...,
  * `data[(n - 1) * stride]`. A row of an interleaved image is `stride = nComps`, a column is
@@ -60,13 +61,15 @@ enum Filter {
     eFilterGaussian,
     eFilterBox,
     eFilterTriangle,
-    eFilterQuadratic
+    eFilterQuadratic,
+    eFilterFIRGaussian
 };
 
 /// Per-thread working memory for LineFilter::apply. Grown on demand and reusable across lines.
 struct LineScratch {
     std::vector<double> recursive;
     std::vector<float> window;
+    std::vector<float> padded;
 };
 
 /**
@@ -102,11 +105,26 @@ public:
     static LineFilter box(float boxSize, int order, bool neumann, unsigned int iterations);
 
     /**
-     * @brief The line filter CImgBlur uses for `filter`: deriche for QuasiGaussian, vanVliet
-     * for Gaussian, box with 1/2/3 iterations for Box/Triangle/Quadratic. `size` is sigma for
-     * the first two and the box width for the others, both in pixels.
+     * @brief A Gaussian with finite support: weights exp(-k^2 / (2 sigma^2)) for |k| <= radius,
+     * radius = firGaussianRadius(sigma), computed in double and normalised to sum 1, then stored
+     * and accumulated in float. Outside the line, samples are the end sample (neumann) or zero.
+     * sigma below 0.1 gives no smoothing. An order of 1 or 2 then takes the centred difference
+     * box() takes; a higher order gives the identity.
+     **/
+    static LineFilter firGaussian(double sigma, unsigned int order, bool neumann);
+
+    /// ceil(3 sigma), or 0 when sigma < 0.1: the number of samples firGaussian reads on each side.
+    static int firGaussianRadius(double sigma);
+
+    /**
+     * @brief The line filter for `filter`: deriche for QuasiGaussian, vanVliet for Gaussian,
+     * box with 1/2/3 iterations for Box/Triangle/Quadratic, firGaussian for FIRGaussian. `size`
+     * is sigma for the Gaussians and the box width for the others, both in pixels.
      **/
     static LineFilter forFilter(Filter filter, float size, unsigned int order, bool neumann);
+
+    /// The column count applyColumns() works on at once.
+    static const int kColumnBlock = 64;
 
     /// True when apply() leaves every line unchanged.
     bool isIdentity() const { return _kind == eKindIdentity; }
@@ -117,17 +135,28 @@ public:
     /// apply() with a scratch allocated for this call only.
     void apply(float* data, int n, std::ptrdiff_t stride) const;
 
+    /**
+     * @brief apply() over the `count` lines starting at data, data + 1, ..., data + count - 1,
+     * each of n samples `stride` apart: adjacent columns of a row-major plane. Equal to calling
+     * apply() on each, but the FIR Gaussian walks the columns together, kColumnBlock at a time,
+     * reading each row once per block instead of once per column.
+     **/
+    void applyColumns(float* data, int n, std::ptrdiff_t stride, int count, LineScratch& scratch) const;
+
 private:
     enum Kind {
         eKindIdentity,
         eKindDeriche,
         eKindVanVliet,
-        eKindBox
+        eKindBox,
+        eKindFIRGaussian
     };
 
     void applyDeriche(float* data, int n, std::ptrdiff_t stride, LineScratch& scratch) const;
     void applyVanVliet(float* data, int n, std::ptrdiff_t stride) const;
     void applyBox(float* data, int n, std::ptrdiff_t stride, LineScratch& scratch) const;
+    void applyFIRGaussian(float* data, int n, std::ptrdiff_t stride, LineScratch& scratch) const;
+    void applyFIRGaussianColumns(float* data, int n, std::ptrdiff_t stride, int count, LineScratch& scratch) const;
 
     Kind _kind;
     unsigned int _order;
@@ -141,6 +170,10 @@ private:
 
     float _boxSize;
     unsigned int _iterations;
+
+    // FIR Gaussian: weights for offsets 0 to _radius; the kernel is symmetric.
+    std::vector<float> _weights;
+    int _radius;
 };
 
 /// One-shot wrappers: build the filter and apply it to a single line.

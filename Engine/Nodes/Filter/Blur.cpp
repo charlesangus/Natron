@@ -65,6 +65,13 @@ boxIterations(BlurKernels::Filter filter)
 {
     return (filter == BlurKernels::eFilterBox) ? 1 : ((filter == BlurKernels::eFilterTriangle) ? 2 : 3);
 }
+
+/// The FIR Gaussian's support for a size (diameter, in pixels at the render scale).
+int
+firRadius(double size)
+{
+    return BlurKernels::LineFilter::firGaussianRadius(size / 2.4);
+}
 } // anonymous namespace
 
 Blur::Blur(NodePtr node)
@@ -110,11 +117,13 @@ Blur::getNativePluginDescription() const
     desc.id = PLUGINID_NATRON_BLUR;
     desc.label = "Blur";
     desc.description = tr("Blur input stream or compute derivatives.\n"
-                          "The blur filter can be a quasi-Gaussian, a Gaussian, a box, a triangle or a quadratic filter.\n"
+                          "The blur filter can be a Gaussian (FIR), a quasi-Gaussian or a Gaussian (both IIR), a box, a triangle or a quadratic filter.\n"
                           "\n"
-                          "Note that the Gaussian filter [1] is implemented as an IIR (infinite impulse response) filter [2][3], whereas most compositing software implement the Gaussian as a FIR (finite impulse response) filter by cropping the Gaussian impulse response. Consequently, when blurring a white dot on black background, it produces very small values very far away from the dot. The quasi-Gaussian filter is also IIR.\n"
+                          "The default filter, Gaussian (FIR), is a Gaussian [1] implemented as a FIR (finite impulse response) filter, as in most compositing software: the Gaussian impulse response, of standard deviation sigma = size/2.4, is cropped at 3 sigma (rounded up to a whole pixel) and normalised. Its result is exactly zero further than that from any non-zero pixel.\n"
                           "\n"
-                          "A very common process in compositing to expand colors on the edge of a matte is to use the premult-blur-unpremult combination [4][5]. The very small values produced by the IIR Gaussian filter produce undesirable artifacts after unpremult. For this process, the FIR quadratic filter (or the faster triangle or box filters) should be preferred over the IIR Gaussian filter.\n"
+                          "The Gaussian filter is implemented as an IIR (infinite impulse response) filter [2][3]. Consequently, when blurring a white dot on black background, it produces very small values very far away from the dot. The quasi-Gaussian filter is also IIR. Projects saved before Gaussian (FIR) existed keep the IIR Gaussian filter they were made with.\n"
+                          "\n"
+                          "A very common process in compositing to expand colors on the edge of a matte is to use the premult-blur-unpremult combination [4][5]. The very small values produced by the IIR filters produce undesirable artifacts after unpremult. For this process, the FIR filters (Gaussian (FIR), quadratic, or the faster triangle or box) should be preferred over the IIR ones.\n"
                           "\n"
                           "References:\n"
                           "[1] https://en.wikipedia.org/wiki/Gaussian_filter\n"
@@ -123,12 +132,12 @@ Blur::getNativePluginDescription() const
                           "[4] Nuke Expand Edges or how to get rid of outlines. http://franzbrandstaetter.com/?p=452\n"
                           "[5] Colour Smear for Nuke. http://richardfrazer.com/tools-tutorials/colour-smear-for-nuke/\n"
                           "\n"
-                          "The filters are ports of the 'vanvliet', 'deriche' and 'boxfilter' functions of the CImg library (http://cimg.eu), "
+                          "The IIR, box, triangle and quadratic filters are ports of the 'vanvliet', 'deriche' and 'boxfilter' functions of the CImg library (http://cimg.eu), "
                           "distributed under the CeCILL-C licence.")
                            .toStdString();
     desc.grouping = PLUGIN_GROUP_FILTER;
     desc.majorVersion = PLUGIN_MAJOR_NATRON_BLUR;
-    desc.minorVersion = 0;
+    desc.minorVersion = PLUGIN_MINOR_NATRON_BLUR;
     desc.inputs.push_back(NativeInputDescription("Source", false, eDataKindImage));
     desc.inputs.push_back(NativeInputDescription("Mask", true, eDataKindImage, true));
     desc.outputKind = eDataKindImage;
@@ -143,7 +152,7 @@ Blur::initializeKnobs()
 
     KnobDoublePtr size = createKnob<KnobDouble>(tr("Size"), 2);
     size->setName(kBlurParamSize);
-    size->setHintToolTip(tr("Size (diameter) of the filter kernel, in pixel units (>=0). The standard deviation of the corresponding Gaussian is size/2.4. No blur is applied if size < 0.24 (Gaussian and quasi-Gaussian) or <= 1 (box, triangle and quadratic)."));
+    size->setHintToolTip(tr("Size (diameter) of the filter kernel, in pixel units (>=0). The standard deviation of the corresponding Gaussian is size/2.4. No blur is applied if size < 0.24 (the Gaussians and quasi-Gaussian) or <= 1 (box, triangle and quadratic)."));
     size->setSpatial(true);
     size->setCanAutoFoldDimensions(true);
     for (int d = 0; d < 2; ++d) {
@@ -204,7 +213,7 @@ Blur::initializeKnobs()
 
     KnobChoicePtr filter = createKnob<KnobChoice>(tr("Filter"));
     filter->setName(kBlurParamFilter);
-    filter->setHintToolTip(tr("Bluring filter. The quasi-Gaussian filter should be appropriate in most cases. The Gaussian filter is more isotropic (its impulse response has rotational symmetry), but slower."));
+    filter->setHintToolTip(tr("Bluring filter. The default, Gaussian (FIR), has a finite support of 3 sigma, so it leaves pixels far from any detail exactly unchanged, which also suits the premult-blur-unpremult process; it is fast for small and moderate sizes. The IIR filters cost the same at any size: the quasi-Gaussian is the faster, the Gaussian is more isotropic (its impulse response has rotational symmetry), but both produce very small non-zero values far from any detail."));
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption(kBlurParamFilterQuasiGaussian, tr("Quasi-Gaussian").toStdString(), tr("Quasi-Gaussian filter (0-order recursive Deriche filter, faster) - IIR (infinite support / impulsional response).").toStdString()));
@@ -212,15 +221,16 @@ Blur::initializeKnobs()
         options.push_back(ChoiceOption(kBlurParamFilterBox, tr("Box").toStdString(), tr("Box filter - FIR (finite support / impulsional response).").toStdString()));
         options.push_back(ChoiceOption(kBlurParamFilterTriangle, tr("Triangle").toStdString(), tr("Triangle/tent filter - FIR (finite support / impulsional response).").toStdString()));
         options.push_back(ChoiceOption(kBlurParamFilterQuadratic, tr("Quadratic").toStdString(), tr("Quadratic filter - FIR (finite support / impulsional response).").toStdString()));
+        options.push_back(ChoiceOption(kBlurParamFilterFIRGaussian, tr("Gaussian (FIR)").toStdString(), tr("Gaussian filter cropped at 3 sigma and normalised - FIR (finite support / impulsional response).").toStdString()));
         filter->populateChoices(options);
     }
-    filter->setDefaultValue((int)BlurKernels::eFilterGaussian);
+    filter->setDefaultValue((int)BlurKernels::eFilterFIRGaussian);
     page->addKnob(filter);
     _filter = filter;
 
     KnobBoolPtr expandRoD = createKnob<KnobBool>(tr("Expand RoD"));
     expandRoD->setName(kBlurParamExpandRoD);
-    expandRoD->setHintToolTip(tr("Expand the source region of definition by 1.5*size (3.6*sigma)."));
+    expandRoD->setHintToolTip(tr("Expand the source region of definition by 1.5*size (3.6*sigma), or by the filter's support for the FIR filters (3*sigma, rounded up, for the Gaussian (FIR))."));
     expandRoD->setDefaultValue(true);
     expandRoD->setAddNewLine(false);
     page->addKnob(expandRoD);
@@ -268,6 +278,25 @@ Blur::onKnobsLoaded()
     updateUniformVisibility();
 }
 
+bool
+Blur::filterDefaultWasIIRGaussian(int pluginMajor,
+                                  int pluginMinor)
+{
+    return (pluginMajor < PLUGIN_MAJOR_NATRON_BLUR) ||
+           ((pluginMajor == PLUGIN_MAJOR_NATRON_BLUR) && (pluginMinor >= 0) && (pluginMinor < PLUGIN_MINOR_NATRON_BLUR));
+}
+
+void
+Blur::restoreLegacyKnobDefaults(int pluginMajor,
+                                int pluginMinor)
+{
+    KnobChoicePtr filter = _filter.lock();
+
+    if (filter && filterDefaultWasIIRGaussian(pluginMajor, pluginMinor)) {
+        filter->setDefaultValue((int)BlurKernels::eFilterGaussian);
+    }
+}
+
 void
 Blur::getParams(double time,
                 ViewIdx view,
@@ -300,7 +329,7 @@ Blur::getParams(double time,
     params->neumann = boundary ? (boundary->getValueAtTime(time, 0, view) == 1) : false;
     if (filter) {
         const int f = filter->getValueAtTime(time, 0, view);
-        if ((f >= (int)BlurKernels::eFilterQuasiGaussian) && (f <= (int)BlurKernels::eFilterQuadratic)) {
+        if ((f >= (int)BlurKernels::eFilterQuasiGaussian) && (f <= (int)BlurKernels::eFilterFIRGaussian)) {
             params->filter = (BlurKernels::Filter)f;
         }
     }
@@ -332,11 +361,23 @@ Blur::getSourceRoI(const RectI& rect,
                      rect.x2 + deltaX + params.orderX,
                      rect.y2 + deltaY + params.orderY);
     }
+    const int derivX = (params.orderX > 0) ? 1 : 0;
+    const int derivY = (params.orderY > 0) ? 1 : 0;
+    if (params.filter == BlurKernels::eFilterFIRGaussian) {
+        const int radiusX = firRadius(sx);
+        const int radiusY = firRadius(sy);
+        if (!radiusX && !radiusY && !derivX && !derivY) {
+            return rect;
+        }
+
+        return RectI(rect.x1 - radiusX - derivX,
+                     rect.y1 - radiusY - derivY,
+                     rect.x2 + radiusX + derivX,
+                     rect.y2 + radiusY + derivY);
+    }
     const int iter = boxIterations(params.filter);
     const int deltaX = iter * static_cast<int>(std::floor((sx - 1) / 2) + 1);
     const int deltaY = iter * static_cast<int>(std::floor((sy - 1) / 2) + 1);
-    const int derivX = (params.orderX > 0) ? 1 : 0;
-    const int derivY = (params.orderY > 0) ? 1 : 0;
 
     return RectI(rect.x1 - deltaX - derivX,
                  rect.y1 - deltaY - derivY,
@@ -360,6 +401,9 @@ Blur::paramsAreIdentity(const RenderScale& scale,
         const float sigmay = (float)(sy / 2.4);
 
         return (sigmax < 0.1) && (sigmay < 0.1);
+    }
+    if (params.filter == BlurKernels::eFilterFIRGaussian) {
+        return !firRadius(sx) && !firRadius(sy);
     }
 
     return (sx <= 1) && (sy <= 1);
@@ -420,6 +464,18 @@ Blur::getRegionOfDefinition(U64 hash,
             rodPixel.x2 += deltaX + params.orderX;
             rodPixel.y1 -= deltaY + params.orderY;
             rodPixel.y2 += deltaY + params.orderY;
+        } else if (params.filter == BlurKernels::eFilterFIRGaussian) {
+            const int radiusX = firRadius(sx);
+            const int radiusY = firRadius(sy);
+            const int derivX = (params.orderX > 0) ? 1 : 0;
+            const int derivY = (params.orderY > 0) ? 1 : 0;
+            if (!radiusX && !radiusY && !derivX && !derivY) {
+                return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
+            }
+            rodPixel.x1 -= radiusX + derivX;
+            rodPixel.x2 += radiusX + derivX;
+            rodPixel.y1 -= radiusY + derivY;
+            rodPixel.y2 += radiusY + derivY;
         } else {
             if ((sx <= 1) && (sy <= 1) && (params.orderX == 0) && (params.orderY == 0)) {
                 return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
@@ -550,6 +606,10 @@ Blur::render(const RenderActionArgs& args)
             filterX = BlurKernels::LineFilter::forFilter(params.filter, sigmax, (unsigned int)params.orderX, params.neumann);
             filterY = BlurKernels::LineFilter::forFilter(params.filter, sigmay, (unsigned int)params.orderY, params.neumann);
         }
+    } else if (params.filter == BlurKernels::eFilterFIRGaussian) {
+        filterX = BlurKernels::LineFilter::firGaussian(sx / 2.4, (unsigned int)params.orderX, params.neumann);
+        filterY = BlurKernels::LineFilter::firGaussian(sy / 2.4, (unsigned int)params.orderY, params.neumann);
+        blurred = !filterX.isIdentity() || !filterY.isIdentity();
     } else {
         // CImg's box filter is the identity at size 0, but a derivative is still wanted there.
         const double boxX = (params.orderX && (sx <= 0.)) ? 1e-8 : sx;
@@ -727,8 +787,27 @@ Blur::render(const RenderActionArgs& args)
                     }
                 }
 
-                // 3. The vertical pass over whole columns of every plane.
-                if (!filterY.isIdentity()) {
+                // 3. The vertical pass over whole columns of every plane. The FIR Gaussian takes
+                // them a block of adjacent columns at a time, so it reads the plane row by row.
+                if (!filterY.isIdentity() && (params.filter == BlurKernels::eFilterFIRGaussian)) {
+                    const int block = BlurKernels::LineFilter::kColumnBlock;
+                    const int blocksPerPlane = (bufferWidth + block - 1) / block;
+                    const std::function<void(int, int)> columnBlocks = [&](int first, int end) {
+                        BlurKernels::LineScratch scratch;
+                        for (int line = first; line < end; ++line) {
+                            if (cancel.check()) {
+                                return;
+                            }
+                            const int p = line / blocksPerPlane;
+                            const int column = (line % blocksPerPlane) * block;
+                            filterY.applyColumns(&buffer[(std::size_t)p * planeSize + column], bufferHeight, bufferWidth, std::min(block, bufferWidth - column), scratch);
+                        }
+                    };
+                    forEachLineChunk(nPlanes * blocksPerPlane, (std::size_t)bufferHeight * block, nThreads, cancel, columnBlocks);
+                    if (cancel.check()) {
+                        return eStatusOK;
+                    }
+                } else if (!filterY.isIdentity()) {
                     const std::function<void(int, int)> columns = [&](int first, int end) {
                         BlurKernels::LineScratch scratch;
                         for (int line = first; line < end; ++line) {

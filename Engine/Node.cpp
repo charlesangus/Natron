@@ -1619,6 +1619,8 @@ Node::loadKnobs(const NodeSerialization & serialization,
         return;
     }
 
+    _imp->effect->restoreLegacyKnobDefaults(serialization.getPluginMajorVersion(), serialization.getPluginMinorVersion());
+
     const std::vector<KnobIPtr> & nodeKnobs = getKnobs();
 
     // Loading overwrites each knob's default with the one saved in the file.

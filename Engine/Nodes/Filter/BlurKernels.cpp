@@ -21,13 +21,14 @@
  * Ports of CImg's CImg<float>::deriche(), CImg<float>::vanvliet() and CImg<float>::boxfilter()
  * (CImg 2.9.9, as bundled with openfx-misc), by David Tschumperle and contributors,
  * <http://cimg.eu>. CImg is distributed under the CeCILL-C licence, which is compatible with
- * the GNU GPL.
+ * the GNU GPL. The FIR Gaussian is not from CImg.
  */
 
 #include "BlurKernels.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 NATRON_NAMESPACE_ENTER
 
@@ -51,6 +52,8 @@ LineFilter::LineFilter()
     , _triggs { 0, 0, 0, 0, 0, 0, 0, 0, 0 }
     , _boxSize(0)
     , _iterations(0)
+    , _weights()
+    , _radius(0)
 {
 }
 
@@ -176,6 +179,52 @@ LineFilter::box(float boxSize,
     return f;
 }
 
+int
+LineFilter::firGaussianRadius(double sigma)
+{
+    // The float rounding is the one Blur applies before the IIR Gaussians' 0.1 test, so both
+    // Gaussians stop blurring at the same size.
+    if (!(static_cast<float>(sigma) >= 0.1)) {
+        return 0;
+    }
+
+    return static_cast<int>(std::ceil(3. * sigma));
+}
+
+LineFilter
+LineFilter::firGaussian(double sigma,
+                        unsigned int order,
+                        bool neumann)
+{
+    LineFilter f;
+    if (order > 2) {
+        return f;
+    }
+    const int radius = firGaussianRadius(sigma);
+    if (!radius && !order) {
+        return f;
+    }
+    f._kind = eKindFIRGaussian;
+    f._order = order;
+    f._neumann = neumann;
+    f._radius = radius;
+    f._weights.assign(radius + 1, 1.f);
+    if (radius) {
+        std::vector<double> w(radius + 1);
+        const double twoSigmaSq = 2. * sigma * sigma;
+        double sum = 0.;
+        for (int k = 0; k <= radius; ++k) {
+            w[k] = std::exp(-static_cast<double>(k) * k / twoSigmaSq);
+            sum += k ? 2. * w[k] : w[k];
+        }
+        for (int k = 0; k <= radius; ++k) {
+            f._weights[k] = static_cast<float>(w[k] / sum);
+        }
+    }
+
+    return f;
+}
+
 LineFilter
 LineFilter::forFilter(Filter filter,
                       float size,
@@ -193,6 +242,8 @@ LineFilter::forFilter(Filter filter,
         return box(size, static_cast<int>(order), neumann, 2);
     case eFilterQuadratic:
         return box(size, static_cast<int>(order), neumann, 3);
+    case eFilterFIRGaussian:
+        return firGaussian(size, order, neumann);
     }
 
     return LineFilter();
@@ -222,6 +273,10 @@ LineFilter::apply(float* data,
         applyBox(data, n, stride, scratch);
 
         return;
+    case eKindFIRGaussian:
+        applyFIRGaussian(data, n, stride, scratch);
+
+        return;
     }
 }
 
@@ -233,6 +288,26 @@ LineFilter::apply(float* data,
     LineScratch scratch;
 
     apply(data, n, stride, scratch);
+}
+
+void
+LineFilter::applyColumns(float* data,
+                         int n,
+                         std::ptrdiff_t stride,
+                         int count,
+                         LineScratch& scratch) const
+{
+    if (!data || (n <= 0) || (count <= 0) || (_kind == eKindIdentity)) {
+        return;
+    }
+    if (_kind == eKindFIRGaussian) {
+        applyFIRGaussianColumns(data, n, stride, count, scratch);
+
+        return;
+    }
+    for (int c = 0; c < count; ++c) {
+        apply(data + c, n, stride, scratch);
+    }
 }
 
 void
@@ -441,6 +516,45 @@ namespace {
 
         return ptr[x * off];
     }
+
+    // CImg<float>::boxfilter()'s derivative step: order 1 is (next - previous) / 2, order 2 is
+    // next - 2 centre + previous, other orders leave the line unchanged.
+    void
+    centredDifference(float* ptr,
+                      int N,
+                      std::ptrdiff_t off,
+                      bool neumann,
+                      unsigned int order)
+    {
+        switch (order) {
+        case 1: {
+            float p = boxSample(ptr, N, off, neumann, -1), c = boxSample(ptr, N, off, neumann, 0),
+                  n = boxSample(ptr, N, off, neumann, 1);
+            for (int x = 0; x < N - 1; ++x) {
+                ptr[x * off] = (float)((n - p) / 2.);
+                p = c;
+                c = n;
+                n = boxSample(ptr, N, off, neumann, x + 2);
+            }
+            ptr[(N - 1) * off] = (float)((n - p) / 2.);
+            break;
+        }
+        case 2: {
+            float p = boxSample(ptr, N, off, neumann, -1), c = boxSample(ptr, N, off, neumann, 0),
+                  n = boxSample(ptr, N, off, neumann, 1);
+            for (int x = 0; x < N - 1; ++x) {
+                ptr[x * off] = (float)(n - 2 * c + p);
+                p = c;
+                c = n;
+                n = boxSample(ptr, N, off, neumann, x + 2);
+            }
+            ptr[(N - 1) * off] = (float)(n - 2 * c + p);
+            break;
+        }
+        default:
+            break;
+        }
+    }
 } // namespace
 
 void
@@ -484,33 +598,128 @@ LineFilter::applyBox(float* ptr,
         }
     }
 
-    switch (_order) {
-    case 1: {
-        float p = boxSample(ptr, N, off, neumann, -1), c = boxSample(ptr, N, off, neumann, 0),
-              n = boxSample(ptr, N, off, neumann, 1);
-        for (int x = 0; x < N - 1; ++x) {
-            ptr[x * off] = (float)((n - p) / 2.);
-            p = c;
-            c = n;
-            n = boxSample(ptr, N, off, neumann, x + 2);
+    centredDifference(ptr, N, off, neumann, _order);
+}
+
+namespace {
+    // Each block of W outputs is accumulated across W lanes at once, so the inner loop has a
+    // fixed trip count and no reduction, which GCC vectorises at -O2.
+    template <int W>
+    inline void
+    firAccumulate(const float* centre,
+                  std::ptrdiff_t step,
+                  const float* weights,
+                  int radius,
+                  float* __restrict acc)
+    {
+        const float w0 = weights[0];
+        for (int i = 0; i < W; ++i) {
+            acc[i] = w0 * centre[i];
         }
-        ptr[(N - 1) * off] = (float)((n - p) / 2.);
-        break;
-    }
-    case 2: {
-        float p = boxSample(ptr, N, off, neumann, -1), c = boxSample(ptr, N, off, neumann, 0),
-              n = boxSample(ptr, N, off, neumann, 1);
-        for (int x = 0; x < N - 1; ++x) {
-            ptr[x * off] = (float)(n - 2 * c + p);
-            p = c;
-            c = n;
-            n = boxSample(ptr, N, off, neumann, x + 2);
+        for (int k = 1; k <= radius; ++k) {
+            const float wk = weights[k];
+            const float* __restrict lo = centre - k * step;
+            const float* __restrict hi = centre + k * step;
+            for (int i = 0; i < W; ++i) {
+                acc[i] += wk * (lo[i] + hi[i]);
+            }
         }
-        ptr[(N - 1) * off] = (float)(n - 2 * c + p);
-        break;
     }
-    default:
-        break;
+
+    const int kRowBlock = 256;
+} // namespace
+
+void
+LineFilter::applyFIRGaussian(float* data,
+                             int N,
+                             std::ptrdiff_t off,
+                             LineScratch& scratch) const
+{
+    const int r = _radius;
+    if (r > 0) {
+        const int nBlocks = (N + kRowBlock - 1) / kRowBlock;
+        const std::size_t paddedSize = static_cast<std::size_t>(nBlocks) * kRowBlock + 2 * static_cast<std::size_t>(r);
+        if (scratch.padded.size() < paddedSize) {
+            scratch.padded.resize(paddedSize);
+        }
+        float* p = scratch.padded.data();
+        const float before = _neumann ? data[0] : 0.f;
+        const float after = _neumann ? data[(N - 1) * off] : 0.f;
+        std::fill(p, p + r, before);
+        for (int i = 0; i < N; ++i) {
+            p[r + i] = data[i * off];
+        }
+        std::fill(p + r + N, p + paddedSize, after);
+        const float* w = _weights.data();
+        float acc[kRowBlock];
+        for (int b = 0; b < nBlocks; ++b) {
+            const int x0 = b * kRowBlock;
+            firAccumulate<kRowBlock>(p + r + x0, 1, w, r, acc);
+            const int nx = std::min(kRowBlock, N - x0);
+            for (int i = 0; i < nx; ++i) {
+                data[(x0 + i) * off] = acc[i];
+            }
+        }
+    }
+    centredDifference(data, N, off, _neumann, _order);
+}
+
+void
+LineFilter::applyFIRGaussianColumns(float* data,
+                                    int N,
+                                    std::ptrdiff_t stride,
+                                    int count,
+                                    LineScratch& scratch) const
+{
+    const int r = _radius;
+    if (r > 0) {
+        const int B = kColumnBlock;
+        const int L = 2 * r + 1;
+        // Rows y - r to y + r of the current block, stored twice so that the window starting at
+        // any slot is contiguous. Each row is kept before it is overwritten in place.
+        const std::size_t ringSize = 2 * static_cast<std::size_t>(L) * B;
+        if (scratch.padded.size() < ringSize) {
+            scratch.padded.resize(ringSize);
+        }
+        float* ring = scratch.padded.data();
+        const float* w = _weights.data();
+        float acc[kColumnBlock];
+        for (int c0 = 0; c0 < count; c0 += B) {
+            const int nc = std::min(B, count - c0);
+            float* block = data + c0;
+            const auto loadRow = [&](int j) {
+                float* dst = ring + static_cast<std::size_t>((j + r) % L) * B;
+                const float* src = NULL;
+                if ((j >= 0) && (j < N)) {
+                    src = block + j * stride;
+                } else if (_neumann) {
+                    src = block + ((j < 0) ? 0 : (N - 1) * stride);
+                }
+                if (src) {
+                    std::memcpy(dst, src, nc * sizeof(float));
+                    std::fill(dst + nc, dst + B, 0.f);
+                } else {
+                    std::fill(dst, dst + B, 0.f);
+                }
+                std::memcpy(dst + static_cast<std::size_t>(L) * B, dst, B * sizeof(float));
+            };
+            for (int j = -r; j <= r; ++j) {
+                loadRow(j);
+            }
+            for (int y = 0; y < N; ++y) {
+                const float* window = ring + static_cast<std::size_t>(y % L) * B;
+                firAccumulate<kColumnBlock>(window + static_cast<std::size_t>(r) * B, B, w, r, acc);
+                std::memcpy(block + y * stride, acc, nc * sizeof(float));
+                if (y + 1 < N) {
+                    loadRow(y + r + 1);
+                }
+            }
+        }
+    }
+    if (_order) {
+        for (int c = 0; c < count; ++c) {
+            centredDifference(data + c, N, stride, _neumann, _order);
+        }
     }
 }
 

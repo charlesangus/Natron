@@ -239,6 +239,7 @@ TEST_F(NativeBlurTest, GaussianSize3)
     resetProject();
     ParityPair pair = makePair();
     ASSERT_TRUE(bool(pair.native));
+    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamFilter, std::string(kBlurParamFilterGaussian)));
     ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamSize, { 3. }));
     expectParity(pair, "gaussian-3", kBlurTolerance, true);
 }
@@ -248,6 +249,7 @@ TEST_F(NativeBlurTest, AnisotropicSize40By5)
     resetProject();
     ParityPair pair = makePair();
     ASSERT_TRUE(bool(pair.native));
+    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamFilter, std::string(kBlurParamFilterGaussian)));
     ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamSize, { 40., 5. }));
     expectParity(pair, "gaussian-40x5", kBlurTolerance, true);
 }
@@ -262,6 +264,7 @@ TEST_F(NativeBlurTest, MaskAndMix)
     ASSERT_TRUE(setKnobOnBoth(pair, "enableMask_Mask", { 1. }));
     ASSERT_TRUE(setChannelSelect(pair.native, "maskChannel_Mask", "rgba.A"));
     ASSERT_TRUE(setKnobOnBoth(pair, kOfxMixParamName, { 0.5 }));
+    ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamFilter, std::string(kBlurParamFilterGaussian)));
     ASSERT_TRUE(setKnobOnBoth(pair, kBlurParamSize, { 6. }));
     expectParity(pair, "mask-mix", kBlurTolerance, true);
 }
@@ -276,7 +279,7 @@ TEST_F(NativeBlurTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)
     connectNodes(source, blur, 0, true);
     ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 9., 4. }));
     ASSERT_TRUE(setKnobValues(blur, kBlurParamCropToFormat, { 0. }));
-    expectSameBothWays(blur, "gaussian-9x4");
+    expectSameBothWays(blur, "fir-gaussian-9x4");
 
     ASSERT_TRUE(setKnobValue(blur, kBlurParamBoundary, std::string(kBlurParamBoundaryNearest)));
     ASSERT_TRUE(setKnobValue(blur, kBlurParamFilter, std::string(kBlurParamFilterQuadratic)));

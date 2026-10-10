@@ -38,6 +38,7 @@
 
 #define PLUGINID_NATRON_BLUR "net.sf.cimg.CImgBlur"
 #define PLUGIN_MAJOR_NATRON_BLUR 5
+#define PLUGIN_MINOR_NATRON_BLUR 1
 
 #define kBlurParamSize "size"
 #define kBlurParamUniform "uniform"
@@ -52,6 +53,7 @@
 #define kBlurParamFilterBox "box"
 #define kBlurParamFilterTriangle "triangle"
 #define kBlurParamFilterQuadratic "quadratic"
+#define kBlurParamFilterFIRGaussian "firgaussian"
 #define kBlurParamExpandRoD "expandRoD"
 #define kBlurParamCropToFormat "cropToFormat"
 #define kBlurParamAlphaThreshold "alphaThreshold"
@@ -90,10 +92,11 @@ struct BlurParams {
 };
 
 /**
- * @brief Blur: a separable quasi-Gaussian (Deriche), Gaussian (Young / van Vliet), box, triangle
- * or quadratic blur, optionally a derivative of order up to 2 per axis, with black or nearest
- * boundary conditions. Knob names, defaults, region of definition (expandRoD, cropToFormat),
- * region of interest, identity rule and arithmetic are the openfx-misc CImgBlur's (its
+ * @brief Blur: a separable FIR Gaussian (the default), quasi-Gaussian (Deriche), IIR Gaussian
+ * (Young / van Vliet), box, triangle or quadratic blur, optionally a derivative of order up to 2
+ * per axis, with black or nearest boundary conditions. Apart from the FIR Gaussian and the Filter
+ * default, knob names, defaults, region of definition (expandRoD, cropToFormat), region of
+ * interest, identity rule and arithmetic are the openfx-misc CImgBlur's (its
  * CImgFilterPluginHelper base included); it registers under that plug-in's ID one major above.
  *
  * Each render filters one float buffer covering the render window plus the filter's halo,

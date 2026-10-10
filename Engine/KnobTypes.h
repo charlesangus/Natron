@@ -43,11 +43,12 @@ GCC_ONLY_DIAG_ON(class-memaccess)
 #include <QMutex>
 #include <QString>
 
-#include "Global/GlobalDefines.h"
+#include "Engine/ChoiceOption.h"
+#include "Engine/ColorWheelMath.h"
+#include "Engine/EngineFwd.h"
 #include "Engine/Knob.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
-#include "Engine/ChoiceOption.h"
+#include "Global/GlobalDefines.h"
 
 #define kFontSizeTag "<font size=\""
 #define kFontColorTag "color=\""
@@ -715,6 +716,23 @@ public:
         return true;
     }
 
+    /**
+     * @brief The native Grade/ColorCorrect declarations call this with an explicit role.
+     * GUI-only metadata: never serialised, never hashed, and not reachable from Python.
+     **/
+    void setColorRole(ColorKnobRoleEnum role)
+    {
+        _colorRole = role;
+    }
+
+    /**
+     * @brief Resolves eColorKnobRoleAuto (the default for every knob that setColorRole was
+     * never called on, i.e. every OFX, Python and keyer colour knob) through inferColorRole,
+     * read fresh each time rather than cached, since nothing currently changes a knob's
+     * defaults, display minimum or script name after construction.
+     **/
+    ColorKnobRoleEnum getColorRole() const;
+
 public Q_SLOTS:
 
     void onDimensionSwitchToggled(bool b);
@@ -738,6 +756,7 @@ private:
 private:
     bool _allDimensionsEnabled;
     bool _simplifiedMode;
+    ColorKnobRoleEnum _colorRole;
     static const std::string _typeNameStr;
 };
 

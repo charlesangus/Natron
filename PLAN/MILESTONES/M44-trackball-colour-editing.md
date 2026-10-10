@@ -153,7 +153,7 @@ These widgets know nothing about knobs. Tests go in the **`GuiTests`** executabl
     - It writes `grab()` PNGs to the test output directory.
   - size: L
 
-- [ ] M44.P3.T2 — Add wheel input: relative trackball, ring hue set/drag, working V/T held locks, gearing, scroll zoom, double-click reset, re-centre on release
+- [x] M44.P3.T2 — Add wheel input: relative trackball, ring hue set/drag, working V/T held locks, gearing, scroll zoom, double-click reset, re-centre on release
   - files: `Gui/ColorWheelWidget.h`, `Gui/ColorWheelWidget.cpp`, `Tests/ColorWheelWidget_Test.cpp`
   - approach:
     - **Hit test.** A press lands in the disc (trackball) or the ring band (12 px wide, 4 px tolerance).

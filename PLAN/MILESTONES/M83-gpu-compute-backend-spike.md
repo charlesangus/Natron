@@ -190,7 +190,7 @@ Scouted facts this plan relies on (2026-10-10):
 
 ## Phase 83.6: Measurement and decision
 
-- [ ] M83.P6.T1 — GPU benchmark driver at UHD through 24k
+- [x] M83.P6.T1 — GPU benchmark driver at UHD through 24k
   - files: `tools/gpu-spike/bench/GpuBench_main.cpp`, `tools/gpu-spike/bench/run-bench.sh`
   - approach:
     - Sizes: UHD, 8K, 16k and 24k RGBA float. At 16k and 24k the frame goes through in strips with blur halos, as a tiled GPU unit, and 24k is also measured as a single frame if VRAM allows (about 9.2 GB).
@@ -296,3 +296,20 @@ Scouted facts this plan relies on (2026-10-10):
 - 2026-10-10 — M83.P4.T1 committed (`7d50bb922`) on lavapipe/llvmpipe evidence, and left unchecked until it runs byte-exact on RADV/radeonsi. Semaphore zero-copy skips on llvmpipe for a genuine reason: lavapipe lacks `VK_KHR_external_semaphore_fd`, and llvmpipe lacks `GL_EXT_semaphore`/`_fd`. The new `zero-copy-hostsync` path (the same memory import, with a fence plus `glFinish` instead of semaphores) runs byte-exact, Qt/Xvfb included. On llvmpipe at UHD float it takes 39 ms end-to-end against 125 ms for readback+PBO. `run-host.sh` now exits 1 when no render node opens (`GPU_SPIKE_ALLOW_SOFTWARE=1` overrides it).
 - 2026-10-10 — RADV access restored (the user made the host's render nodes world-rw). **M83.P2.T3 on RADV (7900 XTX):** `GpuTransfer_Test` 5/5. UHD RGBA float ×16 frames, ms/frame wall: staging with 1 copy thread 35.4; staging with 8 copy threads 20.1 (sum of stages 500 ms, wall 322 ms, overlap ×1.55); host-import with the frame already in imported memory 9.9. DMA ≈ 4.7–5.6 ms each way, compute 0.28 ms. The host memcpy dominates staging, so M84 should allocate frames in importable (page-aligned) memory rather than copy into staging. **M83.P4.T1 on RADV/radeonsi:** `GlInterop_Test` 5/5. Semaphore zero-copy works (all extensions present, UUIDs match). UHD hand-off end-to-end is 0.79 ms zero-copy, 0.87 ms hostsync, and 33.2 ms readback+PBO. radeonsi warns `os_same_file_description couldn't determine…` under this user namespace; the results were byte-exact regardless.
 - 2026-10-10 — M83.P3.T4 (`c4a97f794`) passes on lavapipe and RADV. Kernel params moved to push constants; the GLSL target rewrites them to a std140 UBO (`GlCompute` builds, but was not re-run). Grade on GPU keeps the 4-ULP/1e-6 bounds, plus a GPU-only conditioned slack taken from the SPIR-V precision table (pow = exp2·log2, unfused fma). Subnormal inputs only need to match either the value or zero, because lavapipe's pow/log2 on subnormals are garbage. RADV: Grade sweep worst conditioned-bound use is 0.244 (lavapipe: 0.487), gamma curves ≤ 31 ULP, and all 6033 subnormals match. Blur on RADV: max abs 1.4e-7 / 2.2e-7 / 5.8e-7 / 1.21e-6 at σ 0.5 / 3 / 25 / 100, within 2e-6 and matching lavapipe. Reverse grade now returns 1 for pow(v, 0), because SPIR-V Pow gave NaN for inf^0.
+- 2026-10-10 — M83.P6.T1 done (`1880943cb` before the rebase onto main). CSV and summary are in the worktree's `build/gpu-bench/`; 2 runs, median diff 0.6%, 5 of 180 cells over ±10% (mostly the 2 ms 8K Grade kernel). **CPU (16 threads, native) vs GPU host-import with overlap, ms per image:**
+
+  | Size | Grade | Blur σ=25 | Grade→Blur25 |
+  |---|---|---|---|
+  | UHD | 31 vs 9.5 | 128 vs 25.5 | 159 vs 23.7 |
+  | 16k | 904 vs 292 | 3561 vs 670 | 4465 vs 649 |
+  | 24k | 1998 vs 654 | 7822 vs 1048 | 9820 vs 1031 |
+
+  - **Round-trip break-even (host-import / staging):** UHD 10.8 / 20 ms; 24k 737 / 1338 ms. That is ≈25 / 13.6 GB/s, flat across sizes.
+  - **Grade:** transfer-bound, about 3× faster only.
+  - **Kept-resident chains:** up to 9.5× at 24k.
+  - **CPU Blur baseline:** IIR, not FIR. M88 - FIR Gaussian Blur hadn't merged when this ran.
+  - **Hard limits for M84:**
+    - `maxStorageBufferRange` is 4.29 GB on RADV, so frames above ~4 GB must be processed in tiles. 24k single-frame kernels can't run.
+    - A single `vkCmdCopyBuffer` over ~2.5 GiB corrupts data on RADV, and so does a single host-import copy over 4 GiB. Copies must be chunked (512 MB used).
+  - **Changes in the same commit:** `blur.slang` vertical pass now uses coalesced loads for r ≤ 32 (UHD σ=3 V 11.0 → 2.3 ms); wider radii keep shared tiles, with V 1.4–2.6× H. 8K σ=25 V is 6× H, likely stride aliasing, not chased. `GpuTransfer` gained interior-only strip downloads (`dstOffset`/`dstBytes`), and `graph_bench.py` gained `BENCH_SIZE`/`BENCH_BLUR_SIZE`.
+- 2026-10-10 — Branch rebased onto `main` after M88 - FIR Gaussian Blur (#46) merged.

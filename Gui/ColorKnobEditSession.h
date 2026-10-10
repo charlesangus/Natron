@@ -96,6 +96,11 @@ private:
     std::list<double> toKnobValues(const KnobColorValue& value) const;
     void push(const std::list<double>& values);
 
+    /**
+     * @brief The undo text for the gesture's latest step: "<knob label>: <axis>".
+     **/
+    QString undoText() const;
+
     KnobGuiWPtr _knobGui;
     int _nDims;
     std::list<double> _start;
@@ -104,6 +109,7 @@ private:
     bool _active;
     bool _moved;
     QString _label;
+    quint64 _mergeKey;
 };
 
 NATRON_NAMESPACE_EXIT

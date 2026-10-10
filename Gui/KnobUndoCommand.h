@@ -67,13 +67,12 @@ class KnobUndoCommand
     Q_DECLARE_TR_FUNCTIONS(KnobUndoCommand)
 
 public:
-
     KnobUndoCommand(const KnobGuiPtr& knob,
-                    const T &oldValue,
-                    const T &newValue,
+                    const T& oldValue,
+                    const T& newValue,
                     int dimension = 0,
                     bool refreshGui = true,
-                    QUndoCommand *parent = 0)
+                    QUndoCommand* parent = 0)
         : QUndoCommand(parent)
         , _dimension(dimension)
         , _oldValue()
@@ -85,29 +84,36 @@ public:
         , _merge(true)
         , _refreshGuiFirstTime(refreshGui)
         , _firstRedoCalled(false)
+        , _mergeKey(0)
     {
         _oldValue.push_back(oldValue);
         _newValue.push_back(newValue);
     }
 
-    ///We moved from std::vector to std::list instead because std::vector<bool> expands to a bit field(std::_Bit_reference)
-    ///and produces an unresolved symbol error.
+    /// We moved from std::vector to std::list instead because std::vector<bool> expands to a bit field(std::_Bit_reference)
+    /// and produces an unresolved symbol error.
+    ///
+    ///  mergeKey, when non-zero, scopes merging to commands sharing the same key (one key per
+    ///  gesture), so two back-to-back gestures on the same knob stay two undo steps instead of
+    ///  folding into one. 0 keeps the knob-and-dimension-only merge every other caller relies on.
     KnobUndoCommand(const KnobGuiPtr& knob,
-                    const std::list<T> &oldValue,
-                    const std::list<T> &newValue,
+                    const std::list<T>& oldValue,
+                    const std::list<T>& newValue,
                     bool refreshGui = true,
-                    QUndoCommand *parent = 0)
+                    quint64 mergeKey = 0,
+                    QUndoCommand* parent = 0)
         : QUndoCommand(parent)
         , _dimension(-1)
         , _oldValue(oldValue)
         , _newValue(newValue)
         , _knob(knob)
-        , _valueChangedReturnCode( oldValue.size() )
-        , _newKeys( oldValue.size() )
-        , _oldKeys( oldValue.size() )
+        , _valueChangedReturnCode(oldValue.size())
+        , _newKeys(oldValue.size())
+        , _oldKeys(oldValue.size())
         , _merge(true)
         , _refreshGuiFirstTime(refreshGui)
         , _firstRedoCalled(false)
+        , _mergeKey(mergeKey)
     {
     }
 
@@ -308,6 +314,11 @@ private:
             return false;
         }
 
+        // A non-zero key scopes the merge to its own gesture: two commands can only merge when
+        // they are both unkeyed (today's knob-and-dimension-only behaviour) or share the same key.
+        if (((_mergeKey != 0) || (knobCommand->_mergeKey != 0)) && (_mergeKey != knobCommand->_mergeKey)) {
+            return false;
+        }
 
         _newValue = knobCommand->_newValue;
 
@@ -326,6 +337,7 @@ private:
     bool _merge;
     bool _refreshGuiFirstTime;
     bool _firstRedoCalled;
+    quint64 _mergeKey;
 };
 
 

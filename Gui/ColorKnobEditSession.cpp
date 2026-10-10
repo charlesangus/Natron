@@ -37,6 +37,27 @@
 
 NATRON_NAMESPACE_ENTER
 
+namespace {
+
+// One counter for the whole process: every colour gesture (a wheel or slider drag in the
+// adjustment panel, a swatch drag, a global-mode stroke) gets its own key, so consecutive
+// gestures on the same knob never merge into one undo step.
+quint64
+allocateMergeKey()
+{
+    static quint64 counter = 0;
+
+    ++counter;
+    if (counter == 0) {
+        // Wrapped past the top of the range: 0 is reserved to mean "no key".
+        ++counter;
+    }
+
+    return counter;
+}
+
+} // namespace
+
 ColorKnobEditSession::ColorKnobEditSession(const KnobGuiPtr& knobGui)
     : _knobGui(knobGui)
     , _nDims(0)
@@ -46,6 +67,7 @@ ColorKnobEditSession::ColorKnobEditSession(const KnobGuiPtr& knobGui)
     , _active(false)
     , _moved(false)
     , _label()
+    , _mergeKey(0)
 {
 }
 
@@ -138,6 +160,22 @@ ColorKnobEditSession::toKnobValues(const KnobColorValue& value) const
     return values;
 }
 
+QString
+ColorKnobEditSession::undoText() const
+{
+    KnobColorPtr knob = getKnob();
+    QString axis = _label;
+
+    if (!axis.isEmpty()) {
+        axis[0] = axis[0].toLower();
+    }
+    if (!knob) {
+        return axis;
+    }
+
+    return QString::fromUtf8(knob->getLabel().c_str()) + QString::fromUtf8(": ") + axis;
+}
+
 void
 ColorKnobEditSession::push(const std::list<double>& values)
 {
@@ -146,7 +184,22 @@ ColorKnobEditSession::push(const std::list<double>& values)
     if (!knobGui) {
         return;
     }
-    knobGui->pushUndoCommand(new KnobUndoCommand<double>(knobGui, _start, values, true));
+
+    KnobIPtr knob = knobGui->getKnob();
+    // pushUndoCommand() silently redoes-and-discards the command instead of putting it on the
+    // undo stack when the knob itself refuses undo, in which case there is no stack entry left
+    // to rename below.
+    const bool onUndoStack = knob && knob->getCanUndo() && knob->getEvaluateOnChange();
+
+    knobGui->pushUndoCommand(new KnobUndoCommand<double>(knobGui, _start, values, true, _mergeKey));
+    if (onUndoStack) {
+        // redo(), called synchronously by the push above, just set the command's text to the
+        // generic "Set value of knob.label"; replace it with the gesture's own label.
+        const QUndoCommand* cmd = knobGui->getLastUndoCommand();
+        if (cmd) {
+            const_cast<QUndoCommand*>(cmd)->setText(undoText());
+        }
+    }
     _committed = values;
 }
 
@@ -170,6 +223,7 @@ ColorKnobEditSession::begin(const QString& label)
     _active = true;
     _moved = false;
     _label = label;
+    _mergeKey = allocateMergeKey();
 
     KnobGuiPtr knobGui = _knobGui.lock();
     Gui* gui = knobGui ? knobGui->getGui() : 0;

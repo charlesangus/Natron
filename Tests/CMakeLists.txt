@@ -149,6 +149,7 @@ set(GuiTests_SOURCES
     google-mock/src/gmock-all.cc
     ColorAdjustPanel_Test.cpp
     ColorEditSlider_Test.cpp
+    ColorKnobUndoMerge_Test.cpp
     ColorWheelWidget_Test.cpp
     KnobGuiString_Test.cpp
     LayerChannelRow_Test.cpp

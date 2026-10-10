@@ -39,16 +39,14 @@ GCC_ONLY_DIAG_ON(class-memaccess)
 #include "qhttprequest.h"
 #include "qhttpresponse.h"
 
-#include "Gui/GuiApplicationManager.h" // appPTR
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Node.h"
 #include "Engine/NodeSerialization.h"
 #include "Engine/Project.h"
-#include "Engine/ReadNode.h"
 #include "Engine/Settings.h"
 #include "Engine/WriteNode.h"
-
+#include "Gui/GuiApplicationManager.h" // appPTR
 
 NATRON_NAMESPACE_ENTER
 DocumentationManager::DocumentationManager(QObject *parent)
@@ -183,15 +181,12 @@ DocumentationManager::handler(QHttpRequest *req,
      */
     {
         const std::string id = pluginID.toStdString();
-        if (ReadNode::isBundledReader(id, false) ||
-            WriteNode::isBundledWriter(id, false) ||
-            pluginID.startsWith( QString::fromUtf8("fr.inria.openfx.OCIO") ) ||
-            //pluginID.startsWith( QString::fromUtf8("fr.inria.openfx.Read") ) ||
-            //pluginID.startsWith( QString::fromUtf8("fr.inria.openfx.Write") ) ||
-            //pluginID.startsWith( QString::fromUtf8("net.fxarena.openfx.Read") ) ||
-            //pluginID.startsWith( QString::fromUtf8("net.fxarena.openfx.Write") ) ||
-            id == PLUGINID_NATRON_READ ||
-            id == PLUGINID_NATRON_WRITE) {
+        if (WriteNode::isBundledWriter(id, false) || pluginID.startsWith(QString::fromUtf8("fr.inria.openfx.OCIO")) ||
+            // pluginID.startsWith( QString::fromUtf8("fr.inria.openfx.Read") ) ||
+            // pluginID.startsWith( QString::fromUtf8("fr.inria.openfx.Write") ) ||
+            // pluginID.startsWith( QString::fromUtf8("net.fxarena.openfx.Read") ) ||
+            // pluginID.startsWith( QString::fromUtf8("net.fxarena.openfx.Write") ) ||
+            id == PLUGINID_NATRON_READ || id == PLUGINID_NATRON_WRITE) {
             // use the dynamic version, to get the right colorspace options
             staticPage.clear();
         }
@@ -277,16 +272,7 @@ DocumentationManager::handler(QHttpRequest *req,
                                  pluginID != QString::fromUtf8(PLUGINID_NATRON_READ) &&
                                  pluginID != QString::fromUtf8(PLUGINID_NATRON_WRITE) ) {
                                 EffectInstancePtr effectInstance = node->getEffectInstance();
-                                if ( effectInstance && effectInstance->isReader() ) {
-                                    ReadNode* isReadNode = dynamic_cast<ReadNode*>( effectInstance.get() );
-
-                                    if (isReadNode) {
-                                        NodePtr subnode = isReadNode->getEmbeddedReader();
-                                        if (subnode) {
-                                            node = subnode;
-                                        }
-                                    }
-                                } else if ( effectInstance && effectInstance->isWriter() ) {
+                                if (effectInstance && effectInstance->isWriter()) {
                                     WriteNode* isWriteNode = dynamic_cast<WriteNode*>( effectInstance.get() );
 
                                     if (isWriteNode) {

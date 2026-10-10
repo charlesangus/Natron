@@ -153,8 +153,13 @@ QColor
 NodeSettingsPanel::getCurrentColor() const
 {
     NodeGuiPtr node = getNode();
+    QColor color;
 
-    return node->hasUserColor() ? node->getUserColor() : node->getCurrentColor();
+    if (!node->getUserColor(&color)) {
+        color = node->getCurrentColor();
+    }
+
+    return color;
 }
 
 void

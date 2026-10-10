@@ -160,12 +160,15 @@ public:
 
     /**
      * @brief Whether the node should carry a user colour, and which one. Archives that
-     * predate the user colour only stored a single node colour, so a colour that differs
-     * from the category colour by more than 0.05 in any channel is taken to be the user's.
+     * predate the user colour only stored a single node colour, which was the default of
+     * either the current category colours or the older grouping ladder the archive may have
+     * been saved with, unless the user picked it. It is taken to be the user's only if it
+     * differs from both by more than 0.05 in some channel. Each colour is an RGB triple;
+     * legacyCategoryColor may be NULL, and with categoryColor NULL no stored colour is
+     * taken to be the user's, since there is nothing to tell a default apart from a pick.
      **/
-    bool resolveUserColor(float categoryR,
-                          float categoryG,
-                          float categoryB,
+    bool resolveUserColor(const float* categoryColor,
+                          const float* legacyCategoryColor,
                           float* r,
                           float* g,
                           float* b) const
@@ -180,18 +183,17 @@ public:
 
             return true;
         }
-        if (!_colorWasFound) {
+        if (!_colorWasFound || !categoryColor) {
             return false;
         }
-        if ((std::abs(_r - categoryR) > 0.05) || (std::abs(_g - categoryG) > 0.05) || (std::abs(_b - categoryB) > 0.05)) {
-            *r = _r;
-            *g = _g;
-            *b = _b;
-
-            return true;
+        if (storedColorIsNear(categoryColor) || storedColorIsNear(legacyCategoryColor)) {
+            return false;
         }
+        *r = _r;
+        *g = _g;
+        *b = _b;
 
-        return false;
+        return true;
     }
 
     const std::list<NodeGuiSerializationPtr>& getChildren() const
@@ -200,6 +202,10 @@ public:
     }
 
 private:
+    bool storedColorIsNear(const float* color) const
+    {
+        return color && (std::abs(_r - color[0]) <= 0.05) && (std::abs(_g - color[1]) <= 0.05) && (std::abs(_b - color[2]) <= 0.05);
+    }
 
     std::string _nodeName;
     double _posX, _posY;

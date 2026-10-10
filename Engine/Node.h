@@ -789,20 +789,24 @@ public:
     /**
      * @brief Resolves the NodeCategoryEnum used to colour this node in the node graph.
      * Backdrop is not a category (it keeps its own Settings::getDefaultBackdropColor()):
-     * callers must check isBackdropNode() before calling this, exactly as
-     * NodeGui::getCategoryColor() checks isBackdropNode() before resolving a
-     * category colour today.
+     * callers must check isBackdropNode() before calling this.
      **/
     NodeCategoryEnum getNodeCategory() const WARN_UNUSED_RETURN;
 
     /**
-     * @brief The table + keyword heuristic half of getNodeCategory(): maps a plugin's major
-     * grouping string, label and ID to a category, for plugins that are not a Reader/Writer/
-     * Generator and whose grouping is not one of the domain categories (Deep, Native 3D, USD 3D).
+     * @brief The domain half of getNodeCategory(): Deep, Native 3D or USD 3D, from the
+     * plugin grouping already split into its components. Returns false for any other grouping.
      **/
-    static NodeCategoryEnum categoryFromGroupingAndLabel(const std::string& grouping,
-                                                         const std::string& label,
-                                                         const std::string& id) WARN_UNUSED_RETURN;
+    static bool domainCategoryFromGrouping(const std::list<std::string>& grouping,
+                                           NodeCategoryEnum* category) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The table + keyword heuristic half of getNodeCategory(): maps a plugin's major
+     * grouping and label to a category, for plugins that are not a Reader/Writer/Generator
+     * and whose grouping is not a domain category. Keywords match whole words of the label.
+     **/
+    static NodeCategoryEnum categoryFromGroupingAndLabel(const std::string& majorGrouping,
+                                                         const std::string& label) WARN_UNUSED_RETURN;
 
     /**
      * @brief Forwarded to the live effect instance

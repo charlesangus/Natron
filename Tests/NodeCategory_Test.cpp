@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <string>
 
 #include <QString>
@@ -50,7 +51,7 @@ TEST_F(BaseTest, NativeColorNodeIsColorCategory)
     EXPECT_EQ(eNodeCategoryColor, grade->getNodeCategory());
 }
 
-// A native Deep node must read as the Deep category, the domain signal this milestone protects.
+// A native Deep node must read as the Deep category.
 TEST_F(BaseTest, NativeDeepNodeIsDeepCategory)
 {
     NodePtr deepMerge = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPMERGE));
@@ -102,35 +103,91 @@ TEST_F(BaseTest, TypedPassthroughIsOtherCategory)
 // since constructing a fake OFX plugin with an arbitrary grouping is impractical from a unit test.
 TEST(NodeCategoryHeuristic, UnknownGroupingFallsBackToLabelKeyword)
 {
-    EXPECT_EQ(eNodeCategoryFilter, Node::categoryFromGroupingAndLabel("Foo", "MyBlur", "com.example.MyBlur"));
-    EXPECT_EQ(eNodeCategoryKeyer, Node::categoryFromGroupingAndLabel("Foo", "UltraKeyer", "com.example.UltraKeyer"));
-    EXPECT_EQ(eNodeCategoryColor, Node::categoryFromGroupingAndLabel("Foo", "ColorGrade", "com.example.ColorGrade"));
-    EXPECT_EQ(eNodeCategoryMerge, Node::categoryFromGroupingAndLabel("Foo", "SuperMerge", "com.example.SuperMerge"));
-    EXPECT_EQ(eNodeCategoryTransform, Node::categoryFromGroupingAndLabel("Foo", "ReformatTool", "com.example.ReformatTool"));
-    EXPECT_EQ(eNodeCategoryTime, Node::categoryFromGroupingAndLabel("Foo", "Retimer", "com.example.Retimer"));
-    EXPECT_EQ(eNodeCategoryDraw, Node::categoryFromGroupingAndLabel("Foo", "RotoPaint2", "com.example.RotoPaint2"));
-    EXPECT_EQ(eNodeCategoryChannel, Node::categoryFromGroupingAndLabel("Foo", "ChannelShuffle", "com.example.ChannelShuffle"));
+    EXPECT_EQ(eNodeCategoryFilter, Node::categoryFromGroupingAndLabel("Foo", "MyBlur"));
+    EXPECT_EQ(eNodeCategoryFilter, Node::categoryFromGroupingAndLabel("Foo", "ZBlur"));
+    EXPECT_EQ(eNodeCategoryKeyer, Node::categoryFromGroupingAndLabel("Foo", "UltraKeyer"));
+    EXPECT_EQ(eNodeCategoryColor, Node::categoryFromGroupingAndLabel("Foo", "ColorGrade"));
+    EXPECT_EQ(eNodeCategoryMerge, Node::categoryFromGroupingAndLabel("Foo", "SuperMerge"));
+    EXPECT_EQ(eNodeCategoryMerge, Node::categoryFromGroupingAndLabel("Foo", "Over"));
+    EXPECT_EQ(eNodeCategoryTransform, Node::categoryFromGroupingAndLabel("Foo", "ReformatTool"));
+    EXPECT_EQ(eNodeCategoryTime, Node::categoryFromGroupingAndLabel("Foo", "TimeOffset2"));
+    EXPECT_EQ(eNodeCategoryDraw, Node::categoryFromGroupingAndLabel("Foo", "RotoPaint2"));
+    EXPECT_EQ(eNodeCategoryChannel, Node::categoryFromGroupingAndLabel("Foo", "channel_shuffle"));
 }
 
-// Keyword matching is case-insensitive, over both the label and the plugin ID.
-TEST(NodeCategoryHeuristic, KeywordMatchIsCaseInsensitiveAndChecksId)
+// Keyword matching is case-insensitive.
+TEST(NodeCategoryHeuristic, KeywordMatchIsCaseInsensitive)
 {
-    EXPECT_EQ(eNodeCategoryFilter, Node::categoryFromGroupingAndLabel("Foo", "DEFOCUS", "com.example.DEFOCUS"));
-    EXPECT_EQ(eNodeCategoryTransform, Node::categoryFromGroupingAndLabel("Foo", "Fx1", "com.example.WarpTool"));
+    EXPECT_EQ(eNodeCategoryFilter, Node::categoryFromGroupingAndLabel("Foo", "DEFOCUS"));
+    EXPECT_EQ(eNodeCategoryTransform, Node::categoryFromGroupingAndLabel("Foo", "warp tool"));
 }
 
-// With no PLUGIN_GROUP_* table match and no keyword match anywhere, the heuristic falls back to Other.
+// A keyword only matches a whole word of the label, never a fragment of a longer word.
+TEST(NodeCategoryHeuristic, KeywordMustMatchAWholeWord)
+{
+    EXPECT_EQ(eNodeCategoryOther, Node::categoryFromGroupingAndLabel("Foo", "Overlay"));
+    EXPECT_EQ(eNodeCategoryOther, Node::categoryFromGroupingAndLabel("Foo", "Recover"));
+    EXPECT_EQ(eNodeCategoryOther, Node::categoryFromGroupingAndLabel("Foo", "Overscan"));
+    EXPECT_EQ(eNodeCategoryOther, Node::categoryFromGroupingAndLabel("Foo", "Compensate"));
+}
+
+// KeyMix blends two inputs through a mask, so its "Mix" must win over its "Key".
+TEST(NodeCategoryHeuristic, KeyMixIsMerge)
+{
+    EXPECT_EQ(eNodeCategoryMerge, Node::categoryFromGroupingAndLabel("Foo", "KeyMix"));
+}
+
+// With no PLUGIN_GROUP_* table match and no keyword match, the heuristic falls back to Other.
 TEST(NodeCategoryHeuristic, NoMatchFallsBackToOther)
 {
-    EXPECT_EQ(eNodeCategoryOther, Node::categoryFromGroupingAndLabel("Foo", "Widget", "com.example.Widget"));
+    EXPECT_EQ(eNodeCategoryOther, Node::categoryFromGroupingAndLabel("Foo", "Widget"));
+    EXPECT_EQ(eNodeCategoryOther, Node::categoryFromGroupingAndLabel("Foo", "Fx1"));
 }
 
 // The major-group table itself, reached directly (as it would be for a plugin that is not a
 // Reader/Writer/Generator and whose grouping is one of Natron's own PLUGIN_GROUP_* literals).
 TEST(NodeCategoryHeuristic, MajorGroupTableTakesPrecedenceOverKeywords)
 {
-    EXPECT_EQ(eNodeCategoryKeyer, Node::categoryFromGroupingAndLabel(PLUGIN_GROUP_KEYER, "ColorMerge", "com.example.ColorMerge"));
-    EXPECT_EQ(eNodeCategoryViews, Node::categoryFromGroupingAndLabel(PLUGIN_GROUP_MULTIVIEW, "Anything", "com.example.Anything"));
-    EXPECT_EQ(eNodeCategoryNative3D, Node::categoryFromGroupingAndLabel(PLUGIN_GROUP_3D, "Anything", "com.example.Anything"));
-    EXPECT_EQ(eNodeCategoryUsd3D, Node::categoryFromGroupingAndLabel(PLUGIN_GROUP_3D_USD, "Anything", "com.example.Anything"));
+    EXPECT_EQ(eNodeCategoryKeyer, Node::categoryFromGroupingAndLabel(PLUGIN_GROUP_KEYER, "ColorMerge"));
+    EXPECT_EQ(eNodeCategoryViews, Node::categoryFromGroupingAndLabel(PLUGIN_GROUP_MULTIVIEW, "Anything"));
+}
+
+// getPluginGrouping() splits "3D/USD" into {"3D", "USD"}, so the USD category must be
+// recognised from the first two components rather than from the unsplit literal.
+TEST(NodeCategoryDomain, SplitGroupingResolvesDomainCategories)
+{
+    NodeCategoryEnum category = eNodeCategoryOther;
+    std::list<std::string> grouping;
+
+    grouping.push_back("3D");
+    ASSERT_TRUE(Node::domainCategoryFromGrouping(grouping, &category));
+    EXPECT_EQ(eNodeCategoryNative3D, category);
+
+    grouping.push_back("USD");
+    ASSERT_TRUE(Node::domainCategoryFromGrouping(grouping, &category));
+    EXPECT_EQ(eNodeCategoryUsd3D, category);
+
+    grouping.push_back("Lights");
+    ASSERT_TRUE(Node::domainCategoryFromGrouping(grouping, &category));
+    EXPECT_EQ(eNodeCategoryUsd3D, category);
+
+    grouping.clear();
+    grouping.push_back(PLUGIN_GROUP_DEEP);
+    ASSERT_TRUE(Node::domainCategoryFromGrouping(grouping, &category));
+    EXPECT_EQ(eNodeCategoryDeep, category);
+}
+
+TEST(NodeCategoryDomain, NonDomainGroupingIsNotADomainCategory)
+{
+    NodeCategoryEnum category = eNodeCategoryOther;
+    std::list<std::string> grouping;
+
+    EXPECT_FALSE(Node::domainCategoryFromGrouping(grouping, &category));
+
+    grouping.push_back("USD");
+    EXPECT_FALSE(Node::domainCategoryFromGrouping(grouping, &category));
+
+    grouping.clear();
+    grouping.push_back(PLUGIN_GROUP_FILTER);
+    EXPECT_FALSE(Node::domainCategoryFromGrouping(grouping, &category));
 }

@@ -99,7 +99,9 @@ public:
     /**
      * @brief Set the user colour of the node, drawn as a border around the plug-in
      * category colour (left untouched). A Backdrop has no category colour of its own, so
-     * this sets its body colour directly instead.
+     * this sets its body colour directly instead. A colour within 0.05 of the category
+     * colour clears the user colour instead, since exported scripts may write out every
+     * node's category colour, and that must not pin a border on each node.
      **/
     virtual void setColor(double r, double g, double b) = 0;
 
@@ -115,8 +117,9 @@ public:
 
     /**
      * @brief Clear the user colour set by setColor(), reverting to the plug-in category colour.
+     * A Backdrop is reset to the default backdrop colour.
      **/
-    virtual void resetColor() = 0;
+    virtual void clearUserColor() = 0;
 
     /**
      * @brief Get the suggested overlay colour

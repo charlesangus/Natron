@@ -231,6 +231,9 @@ NodeGraph::onSettingChanged(KnobI* knob)
     for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
         (*it)->refreshCategoryColor();
     }
+    for (NodesGuiList::const_iterator it = _imp->_nodesTrash.begin(); it != _imp->_nodesTrash.end(); ++it) {
+        (*it)->refreshCategoryColor();
+    }
 }
 
 bool

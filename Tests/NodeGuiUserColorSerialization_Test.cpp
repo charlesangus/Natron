@@ -116,8 +116,9 @@ TEST(NodeGuiUserColorSerialization, RoundTripsAUserColor)
 
     NodeGuiSerialization restored = roundTrip(original);
 
+    const float category[3] = { 0.f, 0.f, 0.f };
     float r = -1.f, g = -1.f, b = -1.f;
-    ASSERT_TRUE(restored.resolveUserColor(0.f, 0.f, 0.f, &r, &g, &b));
+    ASSERT_TRUE(restored.resolveUserColor(category, NULL, &r, &g, &b));
     EXPECT_FLOAT_EQ(0.25f, r);
     EXPECT_FLOAT_EQ(0.5f, g);
     EXPECT_FLOAT_EQ(0.75f, b);
@@ -127,8 +128,9 @@ TEST(NodeGuiUserColorSerialization, ACurrentArchiveWithoutAUserColorNeverGuesses
 {
     NodeGuiSerialization restored = roundTrip(NodeGuiSerialization());
 
+    const float category[3] = { 0.9f, 0.9f, 0.9f };
     float r, g, b;
-    EXPECT_FALSE(restored.resolveUserColor(0.9f, 0.9f, 0.9f, &r, &g, &b));
+    EXPECT_FALSE(restored.resolveUserColor(category, NULL, &r, &g, &b));
 }
 
 TEST(NodeGuiUserColorSerialization, ALegacyColorFarFromTheCategoryColorSeedsAUserColor)
@@ -143,8 +145,10 @@ TEST(NodeGuiUserColorSerialization, ALegacyColorFarFromTheCategoryColorSeedsAUse
     EXPECT_FLOAT_EQ(legacy.g, storedG);
     EXPECT_FLOAT_EQ(legacy.b, storedB);
 
+    const float category[3] = { 0.8f, 0.5f, 0.2f };
+    const float legacyCategory[3] = { 0.1f, 0.1f, 0.1f };
     float r = -1.f, g = -1.f, b = -1.f;
-    ASSERT_TRUE(restored.resolveUserColor(0.8f, 0.5f, 0.2f, &r, &g, &b));
+    ASSERT_TRUE(restored.resolveUserColor(category, legacyCategory, &r, &g, &b));
     EXPECT_FLOAT_EQ(legacy.r, r);
     EXPECT_FLOAT_EQ(legacy.g, g);
     EXPECT_FLOAT_EQ(legacy.b, b);
@@ -155,6 +159,31 @@ TEST(NodeGuiUserColorSerialization, ALegacyColorNearTheCategoryColorSeedsNoUserC
     const LegacyNodeGuiSerialization legacy;
     NodeGuiSerialization restored = loadLegacy(legacy);
 
+    const float category[3] = { 0.82f, 0.48f, 0.33f };
     float r, g, b;
-    EXPECT_FALSE(restored.resolveUserColor(0.82f, 0.48f, 0.33f, &r, &g, &b));
+    EXPECT_FALSE(restored.resolveUserColor(category, NULL, &r, &g, &b));
+}
+
+// A pre-user-colour archive stored whatever the older grouping ladder resolved to, which can
+// differ from the current category colour (e.g. a node that changed category), and that
+// stored default must not be mistaken for a colour the user picked.
+TEST(NodeGuiUserColorSerialization, ALegacyColorNearTheOldLadderColorSeedsNoUserColor)
+{
+    const LegacyNodeGuiSerialization legacy;
+    NodeGuiSerialization restored = loadLegacy(legacy);
+
+    const float category[3] = { 0.1f, 0.1f, 0.4f };
+    const float legacyCategory[3] = { 0.78f, 0.52f, 0.28f };
+    float r, g, b;
+    EXPECT_FALSE(restored.resolveUserColor(category, legacyCategory, &r, &g, &b));
+}
+
+// Without a category colour there is no default to compare against, so nothing is guessed.
+TEST(NodeGuiUserColorSerialization, ALegacyColorWithNoKnownCategoryColorSeedsNoUserColor)
+{
+    const LegacyNodeGuiSerialization legacy;
+    NodeGuiSerialization restored = loadLegacy(legacy);
+
+    float r, g, b;
+    EXPECT_FALSE(restored.resolveUserColor(NULL, NULL, &r, &g, &b));
 }

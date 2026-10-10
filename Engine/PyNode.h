@@ -356,6 +356,7 @@ public:
 
     /**
      * @brief Clear the colour set by setColor(), reverting to the plug-in category colour.
+     * A Backdrop is reset to the default backdrop colour.
      **/
     void resetColor();
 

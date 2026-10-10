@@ -184,7 +184,6 @@ public:
     virtual void getColor(double* r, double *g, double* b) const OVERRIDE FINAL;
     virtual void setColor(double r, double g, double b) OVERRIDE FINAL;
     virtual void getUserColor(double* r, double* g, double* b) const OVERRIDE FINAL;
-    virtual void resetColor() OVERRIDE FINAL;
 
     /*Returns true if the NodeGUI contains the point (in items coordinates)*/
     virtual bool contains(const QPointF &point) const OVERRIDE FINAL;
@@ -304,11 +303,19 @@ public:
 
     void setUserColor(const QColor& c);
 
-    void clearUserColor();
+    /**
+     * @brief Removes the user colour. A Backdrop has none, its body being the colour the
+     * user sets, so it is reset to Settings::getDefaultBackdropColor() instead.
+     **/
+    virtual void clearUserColor() OVERRIDE FINAL;
 
     virtual bool hasUserColor() const OVERRIDE FINAL;
 
-    QColor getUserColor() const;
+    /**
+     * @brief Reads the user colour flag and value under one lock. Returns false, leaving
+     * color untouched, when no user colour is set.
+     **/
+    bool getUserColor(QColor* color) const;
 
     /**
      * @brief Resets the body to the category colour and applies the user colour the
@@ -432,8 +439,6 @@ public:
     /**
      * @brief The colour a node of this category gets by default: the node's own
      * category colour, or Settings::getDefaultBackdropColor() for a backdrop.
-     * Static so callers without a NodeGui (e.g. ProjectGui's serialization loader)
-     * can recompute it without constructing one.
      **/
     static bool getCategoryColor(const NodePtr& internalNode, QColor* color);
 
@@ -600,6 +605,11 @@ protected:
 
     virtual void applyBrush(const QBrush & brush);
 
+    /**
+     * @brief True when the user colour is painted as the body instead of as a border.
+     **/
+    virtual bool drawsUserColorAsBody() const { return false; }
+
 private:
 
     int getPluginIconWidth() const;
@@ -621,6 +631,16 @@ private:
     void populateMenu();
 
     void refreshCurrentBrush();
+
+    /**
+     * @brief A Backdrop has no category colour to keep showing underneath, so the colour the
+     * user sets is its body colour itself rather than a separate user colour.
+     **/
+    bool colorIsBody() const;
+
+    bool isDrawnAsClone() const;
+
+    QColor getDrawnBodyColor() const;
 
     void refreshUserColorBorder();
 
@@ -688,7 +708,7 @@ private:
     bool _hasUserColor;
     QColor _userColor;
     QColor _clonedColor;
-    bool _nameItemHasUserFontColor; //< true once the label HTML carries an explicit <font color>, so body-colour contrast must not override it
+    bool _nameItemHasUserFontColor; //< the label HTML sets its own <font color>, which wins over body contrast
     bool _wasBeginEditCalled;
     mutable QMutex positionMutex;
 

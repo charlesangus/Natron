@@ -118,8 +118,8 @@ public:
     void resetHostOverlayColor();
 
     /**
-     * @brief Clears the node's user colour, reverting its border to the plug-in category colour.
-     * No-op outside a NodeSettingsPanel.
+     * @brief Removes the node's user colour border, or resets a Backdrop to the default
+     * backdrop colour. No-op outside a NodeSettingsPanel.
      **/
     void resetUserColor();
 

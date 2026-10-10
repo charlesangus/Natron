@@ -66,6 +66,9 @@ private:
 
     virtual void refreshStateIndicator() OVERRIDE FINAL;
     virtual void applyBrush(const QBrush & brush) OVERRIDE FINAL;
+
+    // The disk is too small to carry a border, so the user colour fills it instead.
+    virtual bool drawsUserColorAsBody() const OVERRIDE FINAL { return true; }
     virtual bool canResize() OVERRIDE FINAL WARN_UNUSED_RETURN { return false; }
 
     virtual QRectF boundingRect() const OVERRIDE FINAL;

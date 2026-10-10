@@ -59,8 +59,8 @@ NodeGuiSerialization::initialize(const NodeGui*  n)
     _b = color.blueF();
     _userColorIsKnown = true;
     _hasUserColor = false;
-    if (n->hasUserColor()) {
-        QColor userColor = n->getUserColor();
+    QColor userColor;
+    if (n->getUserColor(&userColor)) {
         setUserColor(userColor.redF(), userColor.greenF(), userColor.blueF());
     }
     _selected = n->isSelected();

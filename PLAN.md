@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M75 gate, M27.P1.T1]
-pm_heartbeat: 2026-10-10T15:24:34-04:00
+current: [M75 gate, M76 elaboration, M27.P1.T1]
+pm_heartbeat: 2026-10-10T15:30:20-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -233,7 +233,7 @@ future core work has solid ground to build on.
 | M64 | Tiled Rendering | blocked |  | [M64-tiled-rendering.md](PLAN/MILESTONES/M64-tiled-rendering.md) |
 | M74 | Native Metadata Core | done |  | [M74-native-metadata-core.md](PLAN/MILESTONES/M74-native-metadata-core.md) |
 | M75 | Native Read | doing |  | [M75-native-read.md](PLAN/MILESTONES/M75-native-read.md) |
-| M76 | Native Write | todo | M75 | [M76-native-write.md](PLAN/MILESTONES/M76-native-write.md) |
+| M76 | Native Write | doing | M75 | [M76-native-write.md](PLAN/MILESTONES/M76-native-write.md) |
 | M77 | Native Metadata Nodes | todo | M75 | [M77-native-metadata-nodes.md](PLAN/MILESTONES/M77-native-metadata-nodes.md) |
 | M78 | Metadata In Expressions | todo | M75, M77 | [M78-metadata-in-expressions.md](PLAN/MILESTONES/M78-metadata-in-expressions.md) |
 | M79 | Layered Document Readers | todo | M75 | [M79-layered-document-readers.md](PLAN/MILESTONES/M79-layered-document-readers.md) |

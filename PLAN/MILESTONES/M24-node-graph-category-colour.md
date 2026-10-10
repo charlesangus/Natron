@@ -125,7 +125,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 
 ## Phase 24.4: Retire the data-kind leftovers
 
-- [ ] M24.P4.T1 — Remove the dead NodeGui kind-tint helper left behind by M18
+- [x] M24.P4.T1 — Remove the dead NodeGui kind-tint helper left behind by M18
   - files: `Gui/NodeGui.cpp`
   - approach: M18.P4.T3/T4 already removed the tinted backdrop, silhouette radius and input glyphs; `NodeGui::paint()` (`:2264`) is empty. Delete the now-unused static `kindTintColor()` and its comment (`Gui/NodeGui.cpp:181-201`). Fix the comment at `:1354-1355` so it no longer mentions a silhouette; keep the `update()` call only if something still reads kind at paint time, otherwise delete it with the comment. Leave `Gui/Edge.cpp`'s own `kindTintColor()` alone.
   - verify: Builds with no unused-function warning; `grep -n kindTintColor Gui/NodeGui.cpp` returns nothing.

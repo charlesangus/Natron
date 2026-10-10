@@ -265,7 +265,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - An injected fault at startup degrades silently to CPU.
   - size: M
 
-- [ ] M84.P4.T3 — `FrameStore` entries that hold device images
+- [x] M84.P4.T3 — `FrameStore` entries that hold device images
   - files: `Engine/FrameRenderContext.{h,cpp}`, `Engine/DeviceImage.h` (new interface), `Engine/EffectInstance.cpp`, `Tests/FrameStoreHandoff_Test.cpp`
   - approach:
     - `DeviceImage` is an abstract interface: `bytes()`, `bounds()`, `nComps()`, `downloadTo(Image&)` and `evictToRam()`. The Vulkan implementation comes in P7.T2.
@@ -645,3 +645,4 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - The earlier M83 finding that "a single host-import copy over 4 GiB is wrong" is likely the same truncation.
   - Probe: the scratchpad `import-probe/`, which was not committed.
 - 2026-10-10 — #48 merged. Once the in-flight tasks commit, rebase M84 with `git rebase --onto origin/main 87dcb403a`; `87dcb403a` is the M83 tip the branch is stacked on.
+- 2026-10-10 — M84.P4.T3 done. `DeviceImage` exposes `downloadToRam()`/`evictToRam()` returning an `ImagePtr` (rather than `downloadTo(Image&)`); `bytesInFlight()` returns the host figure, so the scheduler is unchanged. Device bytes are counted per entry, not de-duplicated across keys; revisit if identity tasks store device images (P7.T2). Full ctest 1280/1280.

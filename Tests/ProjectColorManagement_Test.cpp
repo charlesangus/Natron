@@ -220,6 +220,139 @@ TEST(ProjectColorManagement, ConfigChangedCallbacksFireUntilRemoved)
 }
 
 namespace {
+void
+xyFromColumn(const double m[9],
+             int column,
+             double* x,
+             double* y)
+{
+    const double X = m[0 * 3 + column];
+    const double Y = m[1 * 3 + column];
+    const double Z = m[2 * 3 + column];
+    const double sum = X + Y + Z;
+
+    *x = X / sum;
+    *y = Y / sum;
+}
+} // namespace
+
+TEST(ProjectColorManagement, ACEScgWorkingGivesTheAP1LumaAndPrimaries)
+{
+    ProjectColorManagement cm;
+    std::string error;
+    ASSERT_EQ(ProjectColorManagement::eLoadErrorNone, cm.load(kStudioURI, std::string(), &error)) << error;
+    cm.setWorkingSpace("ACEScg");
+
+    double w[3];
+    cm.getWorkingLuma(w);
+    // ACEScg's own white is ACES D60; the D65 interchange role chromatically adapts to it, so
+    // these are AP1's weights and chromaticities after that adaptation, not the D60-native ones
+    // quoted in ST 2065-1.
+    EXPECT_NEAR(0.2676722, w[0], 1e-4);
+    EXPECT_NEAR(0.6743400, w[1], 1e-4);
+    EXPECT_NEAR(0.0579878, w[2], 1e-4);
+
+    double m[9];
+    ASSERT_TRUE(cm.getWorkingToXYZ(m));
+    const double kAP1[3][2] = {
+        { 0.7131959, 0.2926889 },
+        { 0.1595085, 0.8387885 },
+        { 0.1286730, 0.0438956 }
+    };
+    for (int c = 0; c < 3; ++c) {
+        double x, y;
+        xyFromColumn(m, c, &x, &y);
+        EXPECT_NEAR(kAP1[c][0], x, 1e-4) << "column " << c;
+        EXPECT_NEAR(kAP1[c][1], y, 1e-4) << "column " << c;
+    }
+}
+
+TEST(ProjectColorManagement, LinRec709WorkingGivesTheRec709Luma)
+{
+    ProjectColorManagement cm;
+    std::string error;
+    ASSERT_EQ(ProjectColorManagement::eLoadErrorNone, cm.load(kStudioURI, std::string(), &error)) << error;
+    cm.setWorkingSpace("lin_rec709");
+
+    double m[9];
+    ASSERT_TRUE(cm.getWorkingToXYZ(m));
+
+    double w[3];
+    cm.getWorkingLuma(w);
+    EXPECT_NEAR(0.2126729, w[0], 1e-4);
+    EXPECT_NEAR(0.7151522, w[1], 1e-4);
+    EXPECT_NEAR(0.0721750, w[2], 1e-4);
+    EXPECT_NEAR(m[3], w[0], 1e-9);
+    EXPECT_NEAR(m[4], w[1], 1e-9);
+    EXPECT_NEAR(m[5], w[2], 1e-9);
+}
+
+TEST(ProjectColorManagement, LogWorkingReportsANonlinearProbeAndTheFallbackLuma)
+{
+    ProjectColorManagement cm;
+    std::string error;
+    ASSERT_EQ(ProjectColorManagement::eLoadErrorNone, cm.load(kStudioURI, std::string(), &error)) << error;
+    const std::string logSpace = cm.resolveRoleOrName("compositing_log");
+    ASSERT_FALSE(logSpace.empty());
+    cm.setWorkingSpace(logSpace);
+
+    double m[9];
+    EXPECT_FALSE(cm.getWorkingToXYZ(m));
+
+    double coefs[3] = { 0., 0., 0. };
+    cm.getConfig()->getDefaultLumaCoefs(coefs);
+    double sum = coefs[0] + coefs[1] + coefs[2];
+    if (sum <= 1e-8) {
+        coefs[0] = 0.2126;
+        coefs[1] = 0.7152;
+        coefs[2] = 0.0722;
+        sum = coefs[0] + coefs[1] + coefs[2];
+    }
+
+    double w[3];
+    cm.getWorkingLuma(w);
+    EXPECT_NEAR(coefs[0] / sum, w[0], 1e-9);
+    EXPECT_NEAR(coefs[1] / sum, w[1], 1e-9);
+    EXPECT_NEAR(coefs[2] / sum, w[2], 1e-9);
+    EXPECT_NEAR(1.0, w[0] + w[1] + w[2], 1e-9);
+}
+
+TEST(ProjectColorManagement, AConfigChangeRefreshesTheColorimetryCache)
+{
+    ProjectColorManagement cm;
+    std::string error;
+    ASSERT_EQ(ProjectColorManagement::eLoadErrorNone, cm.load(kStudioURI, std::string(), &error)) << error;
+    cm.setWorkingSpace("ACEScg");
+
+    double beforeMatrix[9];
+    ASSERT_TRUE(cm.getWorkingToXYZ(beforeMatrix));
+    double beforeLuma[3];
+    cm.getWorkingLuma(beforeLuma);
+    EXPECT_NEAR(0.2676722, beforeLuma[0], 1e-4);
+
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const QString file = QDir(dir.path()).filePath(QString::fromUtf8("raw.ocio"));
+    {
+        std::ofstream out(file.toStdString());
+        OCIO_NAMESPACE::Config::CreateRaw()->serialize(out);
+    }
+    ASSERT_EQ(ProjectColorManagement::eLoadErrorNone, cm.load(file.toStdString(), std::string(), &error)) << error;
+    cm.setWorkingSpace("raw");
+
+    double afterMatrix[9];
+    const bool afterMatrixValid = cm.getWorkingToXYZ(afterMatrix);
+    double afterLuma[3];
+    cm.getWorkingLuma(afterLuma);
+
+    // The raw config has no "cie_xyz_d65_interchange" role, so the matrix falls back, and its
+    // luma is nowhere near ACEScg's AP1 weights: the cache was rebuilt, not left stale.
+    EXPECT_FALSE(afterMatrixValid);
+    EXPECT_NEAR(1.0, afterLuma[0] + afterLuma[1] + afterLuma[2], 1e-9);
+    EXPECT_GT(beforeLuma[0] - afterLuma[0], 1e-3);
+}
+
+namespace {
 ProjectPtr
 project()
 {

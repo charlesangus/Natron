@@ -62,6 +62,32 @@ enum LuminanceMathEnum {
     eLuminanceMathMax
 };
 
+/**
+ * @brief The AP1 (ACEScg) primaries' luma weights, matching the eLuminanceMathAcesAP1 case
+ * above, and its RGB-to-XYZ (D65) matrix, row-major so that XYZ = m·rgb. A colour knob with no
+ * project to read a working space's colorimetry from (ProjectColorManagement::getWorkingLuma,
+ * getWorkingToXYZ) uses these as its stand-in, since ACEScg is the default working space.
+ **/
+inline const double*
+acesCgLumaWeights()
+{
+    static const double w[3] = { 0.2722287168, 0.6740817658, 0.0536895174 };
+
+    return w;
+}
+
+inline const double*
+acesCgToXYZ()
+{
+    static const double m[9] = {
+        0.6624541811, 0.1340042065, 0.1561876870,
+        0.2722287168, 0.6740817658, 0.0536895174,
+        -0.0055746495, 0.0040607335, 1.0103391003
+    };
+
+    return m;
+}
+
 inline double
 luminance(LuminanceMathEnum math,
           double r,

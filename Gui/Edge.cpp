@@ -852,9 +852,6 @@ Edge::paint(QPainter *painter,
     } else {
         QColor tint;
         color = arrowColor = kindTintColor(_imp->dataKind, &tint) ? tint : _imp->defaultColor;
-        if (_imp->optional && !_imp->paintWithDash) {
-            color.setAlphaF(0.4);
-        }
     }
     myPen.setColor(color);
     painter->setPen(myPen);

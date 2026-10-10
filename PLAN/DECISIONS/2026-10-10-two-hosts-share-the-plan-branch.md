@@ -1,0 +1,3 @@
+# Two hosts share the plan branch
+
+2026-10-10: the GPU host's PM (M82 - Render Cost Profiling, M83 - GPU Compute Backend Spike, M88 - FIR Gaussian Blur) and this host's PM (the native I/O and backlog lanes) both commit to the `plan` branch and push it, so their histories diverge between pushes. Each PM fetches and merges `origin/plan` before pushing, and fetches before creating a milestone so a new ID doesn't collide: both PMs took M88 within five minutes, and the later one (Shared Worktree Ccache) became M89. Board frontmatter (`current`, `pm_heartbeat`) is this host's run state; the GPU host's lanes show as `doing` rows only.

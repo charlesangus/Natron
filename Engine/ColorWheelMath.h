@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <optional>
+#include <string>
 #include <vector>
 
 NATRON_NAMESPACE_ENTER
@@ -61,6 +62,22 @@ bool isRatioRole(ColorKnobRoleEnum role);
  * rather than divide by it. Offset is never frozen.
  **/
 bool isFrozen(ColorKnobRoleEnum role, double Y);
+
+/**
+ * @brief Resolves Auto for a knob that was never given an explicit role (OFX params, Python-
+ * created knobs): the knob's per-dimension default values, its display minimum (shared across
+ * dimensions by every native caller), and its script name.
+ *
+ * - every default equal to 0, with a negative display minimum -> Offset;
+ * - every default equal to 1, with a script name containing "gamma" (case-insensitive) -> Power;
+ * - every default equal to 1 -> Gain;
+ * - anything else -> Colour, including an empty defaults list.
+ *
+ * Offset is checked first because its all-zero defaults never collide with the all-one rules;
+ * Power is checked before the plain all-ones Gain rule so that a gamma-named knob whose default
+ * is 1 (every native gamma knob's default) resolves to Power rather than Gain.
+ **/
+ColorKnobRoleEnum inferColorRole(const std::vector<double>& defaults, double displayMin, const std::string& scriptName);
 
 /**
  * @brief Which projective chromaticity the wheel's plane is drawn in. Both are projective
@@ -157,12 +174,36 @@ KnobColorValue addValue(ColorKnobRoleEnum role, const LumaBasis& basis, const Kn
 KnobColorValue setValue(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, double Y);
 
 /**
- * @brief The Y a value reset targets: 1 for Gain and Power, 0 for Offset. Colour has no value
- * reset target (its neutral is the knob's own current Y, per the knob roles table), so it
- * returns nullopt, and so does Auto, which is never resolved to a role by the time this is
- * called. The caller feeds the result to setValue when it holds a value.
+ * @brief The Y a value reset targets: 1 for Gain, 0 for Offset. Power targets 0.18 (the mid-grey
+ * pivot), because that is where every value edit on Power actually runs: at zero chroma, the
+ * three channels' effect values are equal, so pinning their luma to 0.18 pins each one to 0.18
+ * itself, which is exactly powerToEffect(1), i.e. gamma 1. Colour has no value reset target (its
+ * neutral is the knob's own current Y, per the knob roles table), so it returns nullopt, and so
+ * does Auto, which is never resolved to a role by the time this is called. The caller feeds the
+ * result to setValue when it holds a value.
  **/
 std::optional<double> resetValue(ColorKnobRoleEnum role);
+
+/**
+ * @brief Power's gain model does not run on gamma directly: it runs on each channel's effect on
+ * 18% grey, effect = 0.18^(1/gamma), and maps the result back afterwards. powerToEffect is that
+ * forward map; it is invalid when gamma <= 0, where the effect is undefined. effectToGamma is
+ * its inverse, gamma = ln(0.18) / ln(effect); it is invalid when effect is outside (0, 1) (gamma
+ * 1 maps to effect exactly 0.18, and every other finite positive gamma maps strictly inside that
+ * range) or when the resulting gamma is not itself positive.
+ **/
+struct PowerEffectResult {
+    double effect = 0.0;
+    bool valid = false;
+};
+
+struct PowerGammaResult {
+    double gamma = 0.0;
+    bool valid = false;
+};
+
+PowerEffectResult powerToEffect(double gamma);
+PowerGammaResult effectToGamma(double effect);
 
 /**
  * @brief A point (or a vector) in the chroma plane, relative to the working white, so neutral

@@ -268,7 +268,9 @@ TEST(ColorWheelMath, ResetValueTargetsOneOrZeroAndColourIsANoOp)
     EXPECT_TRUE(resetValue(eColorKnobRoleGain).has_value());
     EXPECT_NEAR(1.0, *resetValue(eColorKnobRoleGain), 1e-12);
     EXPECT_TRUE(resetValue(eColorKnobRolePower).has_value());
-    EXPECT_NEAR(1.0, *resetValue(eColorKnobRolePower), 1e-12);
+    // Power's value edits run on 0.18^(1/gamma), so the target that lands on gamma 1 (at zero
+    // chroma) is 0.18 itself, not 1.
+    EXPECT_NEAR(0.18, *resetValue(eColorKnobRolePower), 1e-12);
     EXPECT_TRUE(resetValue(eColorKnobRoleOffset).has_value());
     EXPECT_NEAR(0.0, *resetValue(eColorKnobRoleOffset), 1e-12);
     EXPECT_FALSE(resetValue(eColorKnobRoleColour).has_value());
@@ -978,4 +980,136 @@ TEST(ColorWheelMath, DrawLocusIsFiniteAndReCentresOnTheAnchor)
 
     LumaBasis noMatrix(kRec709Weights);
     EXPECT_TRUE(drawLocus(noMatrix, origin).empty());
+}
+
+namespace {
+// The luma Power's gain model actually runs on: the effect each gamma channel has on 18% grey,
+// not the gamma values themselves.
+double
+powerEffectLuma(const LumaBasis& basis,
+                const double gammaRgb[3])
+{
+    double effect[3];
+
+    for (int i = 0; i < 3; ++i) {
+        effect[i] = powerToEffect(gammaRgb[i]).effect;
+    }
+
+    return luma(basis, effect);
+}
+} // namespace
+
+TEST(ColorWheelMath, PowerEffectRoundTripsThroughGammaOne)
+{
+    PowerEffectResult toEffect = powerToEffect(1.0);
+
+    ASSERT_TRUE(toEffect.valid);
+    EXPECT_NEAR(0.18, toEffect.effect, 1e-12);
+
+    PowerGammaResult backToGamma = effectToGamma(toEffect.effect);
+
+    ASSERT_TRUE(backToGamma.valid);
+    EXPECT_NEAR(1.0, backToGamma.gamma, 1e-12);
+
+    PowerGammaResult direct = effectToGamma(0.18);
+
+    ASSERT_TRUE(direct.valid);
+    EXPECT_NEAR(1.0, direct.gamma, 1e-12);
+
+    PowerEffectResult higherGamma = powerToEffect(2.4);
+
+    ASSERT_TRUE(higherGamma.valid);
+    PowerGammaResult roundTripped = effectToGamma(higherGamma.effect);
+
+    ASSERT_TRUE(roundTripped.valid);
+    EXPECT_NEAR(2.4, roundTripped.gamma, 1e-9);
+}
+
+TEST(ColorWheelMath, PowerEffectIsInvalidOutsideItsDomain)
+{
+    EXPECT_FALSE(powerToEffect(0.0).valid);
+    EXPECT_FALSE(powerToEffect(-1.0).valid);
+    EXPECT_FALSE(effectToGamma(0.0).valid);
+    EXPECT_FALSE(effectToGamma(-0.1).valid);
+    EXPECT_FALSE(effectToGamma(1.0).valid);
+    EXPECT_FALSE(effectToGamma(1.5).valid);
+}
+
+TEST(ColorWheelMath, PowerHueSaturationAndTempTintEditsKeepMidGreyLuminanceExact)
+{
+    LumaBasis basis = acescg();
+    KnobColorValue gammaValue = makeValue(1.0, 1.0, 1.2, 1.0);
+    double Y0 = powerEffectLuma(basis, gammaValue.rgb);
+
+    ChromaEditResult rotated = rotateHueAboutWhite(eColorKnobRolePower, basis, gammaValue, 37.0);
+
+    ASSERT_TRUE(rotated.valid);
+    EXPECT_NEAR(Y0, powerEffectLuma(basis, rotated.value.rgb), 1e-12 * Y0);
+    EXPECT_NEAR(gammaValue.a, rotated.value.a, 1e-9) << "hue never touches alpha";
+
+    ChromaEditResult saturated = moveSaturation(eColorKnobRolePower, basis, gammaValue, 0.02, 0.0);
+
+    ASSERT_TRUE(saturated.valid);
+    EXPECT_NEAR(Y0, powerEffectLuma(basis, saturated.value.rgb), 1e-12 * Y0);
+    EXPECT_NEAR(gammaValue.a, saturated.value.a, 1e-9) << "saturation never touches alpha";
+
+    ChromaEditResult warmed = fromTempTint(eColorKnobRolePower, basis, gammaValue, 20.0, -5.0);
+
+    ASSERT_TRUE(warmed.valid);
+    EXPECT_NEAR(Y0, powerEffectLuma(basis, warmed.value.rgb), 1e-12 * Y0);
+    EXPECT_NEAR(gammaValue.a, warmed.value.a, 1e-9) << "temp/tint never touches alpha";
+}
+
+TEST(ColorWheelMath, PowerValueEditWrapsTheGainEditOnTheEffectVectorAlphaIncluded)
+{
+    LumaBasis basis = acescg();
+    KnobColorValue gammaValue = makeValue(1.0, 1.0, 1.0, 1.0);
+
+    KnobColorValue out = scaleValue(eColorKnobRolePower, basis, gammaValue, 2.0);
+
+    // Doubling the effect's luma from 0.18 (gamma 1 on every channel, including alpha) lands
+    // every channel at effect 0.36, since the Gain edit this wraps keeps a ratio role's puck in
+    // place: the effect vector was achromatic, so it stays achromatic.
+    double expectedGamma = effectToGamma(0.36).gamma;
+
+    EXPECT_NEAR(expectedGamma, out.rgb[0], 1e-9);
+    EXPECT_NEAR(expectedGamma, out.rgb[1], 1e-9);
+    EXPECT_NEAR(expectedGamma, out.rgb[2], 1e-9);
+    EXPECT_NEAR(expectedGamma, out.a, 1e-9);
+
+    KnobColorValue noAlpha = makeValue(1.0, 1.0, 1.0, 0.0, false);
+    KnobColorValue outNoAlpha = scaleValue(eColorKnobRolePower, basis, noAlpha, 2.0);
+
+    EXPECT_FALSE(outNoAlpha.hasAlpha);
+    EXPECT_EQ(0.0, outNoAlpha.a) << "a 3-dim knob has no alpha to track";
+}
+
+TEST(ColorWheelMath, InferColorRoleMatchesGradesSevenNativeKnobs)
+{
+    // Grade's own declarations (Engine/Nodes/Color/Grade.cpp), by default value, display
+    // minimum and script name, as inferColorRole would see them if Grade relied on inference.
+    EXPECT_EQ(eColorKnobRoleOffset, inferColorRole({ 0.0, 0.0, 0.0, 0.0 }, -1.0, "blackPoint"));
+    EXPECT_EQ(eColorKnobRoleGain, inferColorRole({ 1.0, 1.0, 1.0, 1.0 }, 0.0, "whitePoint"));
+    EXPECT_EQ(eColorKnobRoleOffset, inferColorRole({ 0.0, 0.0, 0.0, 0.0 }, -1.0, "black"));
+    EXPECT_EQ(eColorKnobRoleGain, inferColorRole({ 1.0, 1.0, 1.0, 1.0 }, 0.0, "white"));
+    EXPECT_EQ(eColorKnobRoleGain, inferColorRole({ 1.0, 1.0, 1.0, 1.0 }, 0.0, "multiply"));
+    EXPECT_EQ(eColorKnobRoleOffset, inferColorRole({ 0.0, 0.0, 0.0, 0.0 }, -1.0, "offset"));
+    EXPECT_EQ(eColorKnobRolePower, inferColorRole({ 1.0, 1.0, 1.0, 1.0 }, 0.2, "gamma"));
+}
+
+TEST(ColorWheelMath, InferColorRoleConstantColourAndOfxStyleGamma)
+{
+    // Constant's colour knob (Engine/Nodes/Generator/Constant.cpp): all defaults 0, but its
+    // display minimum is 0, not negative, so it falls through the Offset rule to Colour.
+    EXPECT_EQ(eColorKnobRoleColour, inferColorRole({ 0.0, 0.0, 0.0, 0.0 }, 0.0, "color"));
+
+    // An OFX-style single-dimension gamma parameter: default 1, name contains "gamma".
+    EXPECT_EQ(eColorKnobRolePower, inferColorRole({ 1.0 }, 0.01, "gamma"));
+    EXPECT_EQ(eColorKnobRolePower, inferColorRole({ 1.0, 1.0, 1.0 }, 0.01, "Gamma"));
+
+    // A plain gain-like name does not get swept into Power.
+    EXPECT_EQ(eColorKnobRoleGain, inferColorRole({ 1.0, 1.0, 1.0 }, 0.0, "exposure"));
+
+    // An empty defaults list matches no rule.
+    EXPECT_EQ(eColorKnobRoleColour, inferColorRole({}, 0.0, "anything"));
 }

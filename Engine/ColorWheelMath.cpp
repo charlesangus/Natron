@@ -26,7 +26,9 @@
 #include "ColorWheelMath.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <string>
 #include <vector>
 
 NATRON_NAMESPACE_ENTER
@@ -258,6 +260,53 @@ isFrozen(ColorKnobRoleEnum role,
     return isRatioRole(role) && Y <= kFreezeThreshold;
 }
 
+namespace {
+bool
+allDefaultsEqual(const std::vector<double>& defaults,
+                 double target)
+{
+    if (defaults.empty()) {
+        return false;
+    }
+    for (double d : defaults) {
+        if (d != target) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool
+scriptNameMentionsGamma(const std::string& scriptName)
+{
+    std::string lower = scriptName;
+
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    return lower.find("gamma") != std::string::npos;
+}
+} // namespace
+
+ColorKnobRoleEnum
+inferColorRole(const std::vector<double>& defaults,
+               double displayMin,
+               const std::string& scriptName)
+{
+    if (allDefaultsEqual(defaults, 0.0) && displayMin < 0.0) {
+        return eColorKnobRoleOffset;
+    }
+    if (allDefaultsEqual(defaults, 1.0) && scriptNameMentionsGamma(scriptName)) {
+        return eColorKnobRolePower;
+    }
+    if (allDefaultsEqual(defaults, 1.0)) {
+        return eColorKnobRoleGain;
+    }
+
+    return eColorKnobRoleColour;
+}
+
 double
 luma(const LumaBasis& basis,
      const double rgb[3])
@@ -322,12 +371,151 @@ applyValueEdit(ColorKnobRoleEnum role,
     return out;
 }
 
+PowerEffectResult
+powerToEffect(double gamma)
+{
+    PowerEffectResult result;
+
+    if (!(gamma > 0.0)) {
+        return result;
+    }
+    result.effect = std::pow(kPivotGrey, 1.0 / gamma);
+    result.valid = std::isfinite(result.effect);
+
+    return result;
+}
+
+PowerGammaResult
+effectToGamma(double effect)
+{
+    PowerGammaResult result;
+
+    if (!(effect > 0.0) || !(effect < 1.0)) {
+        return result;
+    }
+    result.gamma = std::log(kPivotGrey) / std::log(effect);
+    result.valid = result.gamma > 0.0 && std::isfinite(result.gamma);
+
+    return result;
+}
+
+namespace {
+// Every Power-role edit is the matching Gain edit run on this effect vector (design doc Sec 4.1
+// Knob roles): gamma has no meaning to the basis's luma weights on its own, but 0.18^(1/gamma)
+// does, so edits run there and are mapped back afterwards. Invalid (false) on any channel whose
+// gamma is out of powerToEffect's domain; the caller then leaves the value untouched.
+bool
+toEffectValue(const KnobColorValue& gammaValue,
+              KnobColorValue& effectValue)
+{
+    effectValue.hasAlpha = gammaValue.hasAlpha;
+    for (int i = 0; i < 3; ++i) {
+        PowerEffectResult r = powerToEffect(gammaValue.rgb[i]);
+
+        if (!r.valid) {
+            return false;
+        }
+        effectValue.rgb[i] = r.effect;
+    }
+    if (gammaValue.hasAlpha) {
+        PowerEffectResult r = powerToEffect(gammaValue.a);
+
+        if (!r.valid) {
+            return false;
+        }
+        effectValue.a = r.effect;
+    } else {
+        effectValue.a = 0.0;
+    }
+
+    return true;
+}
+
+bool
+fromEffectValue(const KnobColorValue& effectValue,
+                KnobColorValue& gammaValue)
+{
+    gammaValue.hasAlpha = effectValue.hasAlpha;
+    for (int i = 0; i < 3; ++i) {
+        PowerGammaResult r = effectToGamma(effectValue.rgb[i]);
+
+        if (!r.valid) {
+            return false;
+        }
+        gammaValue.rgb[i] = r.gamma;
+    }
+    if (effectValue.hasAlpha) {
+        PowerGammaResult r = effectToGamma(effectValue.a);
+
+        if (!r.valid) {
+            return false;
+        }
+        gammaValue.a = r.gamma;
+    } else {
+        gammaValue.a = 0.0;
+    }
+
+    return true;
+}
+
+// The luma a chroma edit on v should hold fixed: v's own rgb for every role but Power, whose
+// rgb is gamma and so is meaningless to basis.w directly, and the effect vector's luma otherwise
+// (0.0 on an out-of-domain gamma, which the Power wrapper below then refuses on anyway).
+double
+heldLuma(ColorKnobRoleEnum role,
+         const LumaBasis& basis,
+         const KnobColorValue& v)
+{
+    if (role == eColorKnobRolePower) {
+        KnobColorValue effect;
+
+        if (!toEffectValue(v, effect)) {
+            return 0.0;
+        }
+
+        return luma(basis, effect.rgb);
+    }
+
+    return luma(basis, v.rgb);
+}
+
+// Runs edit (one of scaleValue/addValue/setValue, already resolved to Gain) on v's effect
+// vector and maps the result back to gamma; leaves v untouched when either map is out of
+// domain, so a value edit never produces a NaN gamma.
+template <typename Edit>
+KnobColorValue
+powerValueEdit(const LumaBasis& basis,
+               const KnobColorValue& v,
+               Edit edit)
+{
+    KnobColorValue effect;
+
+    if (!toEffectValue(v, effect)) {
+        return v;
+    }
+
+    KnobColorValue out;
+
+    if (!fromEffectValue(edit(basis, effect), out)) {
+        return v;
+    }
+
+    return out;
+}
+} // namespace
+
 KnobColorValue
 scaleValue(ColorKnobRoleEnum role,
            const LumaBasis& basis,
            const KnobColorValue& v,
            double factor)
 {
+    if (role == eColorKnobRolePower) {
+        return powerValueEdit(basis, v, [factor](const LumaBasis& b, const KnobColorValue& e) {
+            return scaleValue(eColorKnobRoleGain, b, e, factor);
+        });
+    }
+
     double Y0 = luma(basis, v.rgb);
 
     return applyValueEdit(role, basis, v, Y0 * factor);
@@ -339,6 +527,12 @@ addValue(ColorKnobRoleEnum role,
          const KnobColorValue& v,
          double delta)
 {
+    if (role == eColorKnobRolePower) {
+        return powerValueEdit(basis, v, [delta](const LumaBasis& b, const KnobColorValue& e) {
+            return addValue(eColorKnobRoleGain, b, e, delta);
+        });
+    }
+
     double Y0 = luma(basis, v.rgb);
 
     return applyValueEdit(role, basis, v, Y0 + delta);
@@ -350,6 +544,12 @@ setValue(ColorKnobRoleEnum role,
          const KnobColorValue& v,
          double Y)
 {
+    if (role == eColorKnobRolePower) {
+        return powerValueEdit(basis, v, [Y](const LumaBasis& b, const KnobColorValue& e) {
+            return setValue(eColorKnobRoleGain, b, e, Y);
+        });
+    }
+
     return applyValueEdit(role, basis, v, Y);
 }
 
@@ -358,8 +558,9 @@ resetValue(ColorKnobRoleEnum role)
 {
     switch (role) {
     case eColorKnobRoleGain:
-    case eColorKnobRolePower:
         return 1.0;
+    case eColorKnobRolePower:
+        return kPivotGrey;
     case eColorKnobRoleOffset:
         return 0.0;
     case eColorKnobRoleColour:
@@ -492,7 +693,7 @@ rebuildAt(ColorKnobRoleEnum role,
           const KnobColorValue& v,
           const PlanePoint& q)
 {
-    return fromPlane(role, basis, v, q, luma(basis, v.rgb));
+    return fromPlane(role, basis, v, q, heldLuma(role, basis, v));
 }
 } // namespace
 
@@ -501,6 +702,16 @@ toPlane(ColorKnobRoleEnum role,
         const LumaBasis& basis,
         const KnobColorValue& v)
 {
+    if (role == eColorKnobRolePower) {
+        KnobColorValue effect;
+
+        if (!toEffectValue(v, effect)) {
+            return PlanePoint();
+        }
+
+        return toPlane(eColorKnobRoleGain, basis, effect);
+    }
+
     PlanePoint q;
     double Y = luma(basis, v.rgb);
 
@@ -543,6 +754,29 @@ fromPlane(ColorKnobRoleEnum role,
           const PlanePoint& q,
           double Yheld)
 {
+    if (role == eColorKnobRolePower) {
+        KnobColorValue effect;
+
+        if (!toEffectValue(v, effect)) {
+            return refused(v);
+        }
+
+        ChromaEditResult effectResult = fromPlane(eColorKnobRoleGain, basis, effect, q, Yheld);
+
+        if (!effectResult.valid) {
+            return refused(v);
+        }
+
+        ChromaEditResult result;
+
+        if (!fromEffectValue(effectResult.value, result.value)) {
+            return refused(v);
+        }
+        result.valid = true;
+
+        return result;
+    }
+
     if (!q.valid || !std::isfinite(q.x) || !std::isfinite(q.y) || isFrozen(role, Yheld)) {
         return refused(v);
     }
@@ -1192,6 +1426,16 @@ toTempTint(ColorKnobRoleEnum role,
 {
     TempTintResult result;
 
+    if (role == eColorKnobRolePower) {
+        KnobColorValue effect;
+
+        if (!toEffectValue(v, effect)) {
+            return result;
+        }
+
+        return toTempTint(eColorKnobRoleGain, basis, effect);
+    }
+
     if (role == eColorKnobRoleOffset) {
         TempTintAxes axes = linearTempTintAxes(basis);
 
@@ -1233,6 +1477,29 @@ fromTempTint(ColorKnobRoleEnum role,
              double temp,
              double tint)
 {
+    if (role == eColorKnobRolePower) {
+        KnobColorValue effect;
+
+        if (!toEffectValue(v, effect)) {
+            return refused(v);
+        }
+
+        ChromaEditResult effectResult = fromTempTint(eColorKnobRoleGain, basis, effect, temp, tint);
+
+        if (!effectResult.valid) {
+            return refused(v);
+        }
+
+        ChromaEditResult result;
+
+        if (!fromEffectValue(effectResult.value, result.value)) {
+            return refused(v);
+        }
+        result.valid = true;
+
+        return result;
+    }
+
     if (role == eColorKnobRoleOffset) {
         TempTintAxes axes = linearTempTintAxes(basis);
 

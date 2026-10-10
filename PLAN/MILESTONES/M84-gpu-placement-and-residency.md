@@ -15,7 +15,9 @@ Teach the task-graph scheduler to place work on CPU or GPU, and keep GPU results
 - Graceful fallback to CPU on out-of-memory or device loss.
 - Fix the stale GL statement in the M63 decision record.
 
-Blocked on: M83 - GPU Compute Backend Spike's backend decision.
+Design input: `PLAN/DESIGN/2026-10-10-gpu-compute-backend.md`, from M83 - GPU Compute Backend Spike. It covers the API sketch (§5), the hard limits (§4) and the promotion plan (§7). One of those limits overrides the "fine tiling stays a CPU concern" bullet above: frames over `maxStorageBufferRange` (4.29 GB on RADV) must be tiled on the GPU.
+
+Blocked on: the user's sign-off on that design note. The backend is decided (Vulkan compute, offline Slang → SPIR-V, native CPU fallback, exported-buffer PBO interop; `DECISIONS/2026-10-10-gpu-compute-backend-chosen.md`).
 
 Acceptance sketch:
 - A chain of GPU-capable nodes renders with transfers only at the region boundary (asserted by transfer counters in a test).

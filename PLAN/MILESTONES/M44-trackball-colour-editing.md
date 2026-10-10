@@ -183,7 +183,7 @@ These widgets know nothing about knobs. Tests go in the **`GuiTests`** executabl
     - A double-click emits a reset.
   - size: L
 
-- [ ] M44.P3.T3 — Build `ColorEditSlider`: the absolute marker, relative elsewhere, end chevrons and double-click reset
+- [x] M44.P3.T3 — Build `ColorEditSlider`: the absolute marker, relative elsewhere, end chevrons and double-click reset
   - files: `Gui/ColorEditSlider.h` (new), `Gui/ColorEditSlider.cpp` (new), `Tests/ColorEditSlider_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - A horizontal track painted with a gradient the caller supplies (hue spectrum, grey → hue, dark → light, blue → amber, green → magenta, black → white).

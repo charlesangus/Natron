@@ -62,6 +62,18 @@ bool isRatioRole(ColorKnobRoleEnum role);
 bool isFrozen(ColorKnobRoleEnum role, double Y);
 
 /**
+ * @brief Which projective chromaticity the wheel's plane is drawn in. Both are projective
+ * maps of XYZ, so gamut edges stay straight and the triangle is the chromaticity diagram's
+ * own; u'v' is the alternative if xy reads badly, and is a one-constant swap.
+ **/
+enum ChromaticityKindEnum {
+    eChromaticityKindXY,
+    eChromaticityKindUPrimeVPrime
+};
+
+constexpr ChromaticityKindEnum kChromaticityKind = eChromaticityKindXY;
+
+/**
  * @brief The luma-chroma split (design doc Sec. 3.3), built once per working space and shared
  * by every colour knob. w is the working space's luma weights, renormalised so they sum to 1.
  * F is fixed (pure R, G, B sit at hue 0/120/240 degrees whatever the working space); E depends
@@ -74,6 +86,13 @@ bool isFrozen(ColorKnobRoleEnum role, double Y);
  * the two agree whenever the caller's weights and matrix come from the same probe). hasMatrix
  * is false when there is no matrix (a fallback config such as plain Rec.709 constants), and
  * Mprime is then left zeroed.
+ *
+ * The chroma plane is chroma(c) = (chromaNum * c) / (chromaDen . c), the chosen chromaticity
+ * (xy or u'v') written directly over working rgb, and white is chroma of (1, 1, 1). J is that
+ * map's Jacobian at (1, 1, 1) and JEinv is (J*E)^-1, which together give the linear plane used
+ * where the projective one is undefined. Without a matrix there is no chromaticity at all, so
+ * chromaNum, chromaDen and white are zeroed and J is a fixed multiple of F instead: the plane
+ * is then linear everywhere, still about white and still Y-exact, just not xy-shaped.
  **/
 struct LumaBasis {
     double w[3];
@@ -81,9 +100,14 @@ struct LumaBasis {
     double E[3][2];
     double Mprime[3][3];
     bool hasMatrix;
+    double chromaNum[2][3];
+    double chromaDen[3];
+    double white[2];
+    double J[2][3];
+    double JEinv[2][2];
 
     explicit LumaBasis(const double weights[3]);
-    LumaBasis(const double weights[3], const double workingToXYZ[9]);
+    LumaBasis(const double weights[3], const double workingToXYZ[9], ChromaticityKindEnum kind = kChromaticityKind);
 };
 
 /**
@@ -138,6 +162,109 @@ KnobColorValue setValue(ColorKnobRoleEnum role, const LumaBasis& basis, const Kn
  * called. The caller feeds the result to setValue when it holds a value.
  **/
 std::optional<double> resetValue(ColorKnobRoleEnum role);
+
+/**
+ * @brief A point (or a vector) in the chroma plane, relative to the working white, so neutral
+ * is (0, 0) and the hue angle and saturation are the polar coordinates about white.
+ *
+ * valid is false when the value has no plane point: a frozen ratio role, a ratio role whose
+ * chromaticity denominator is not positive, or a solve that failed. linear is true when the
+ * point came from the linear (Jacobian) plane rather than the projective one: an offset whose
+ * 18% grey pivot has Y <= 0 or a non-positive chromaticity denominator, or any role on a
+ * matrix-less basis.
+ **/
+struct PlanePoint {
+    double x = 0.0;
+    double y = 0.0;
+    bool valid = false;
+    bool linear = false;
+};
+
+/**
+ * @brief The outcome of a chroma edit. On valid false, value is the input unchanged, so a
+ * caller can apply it either way and only needs valid to decide whether to report a refusal.
+ **/
+struct ChromaEditResult {
+    KnobColorValue value;
+    bool valid;
+};
+
+/**
+ * @brief The plane point of a knob value.
+ *
+ * Ratio roles (Gain, Colour, Power, Auto) use q = chroma(rgb) - white, which does not depend on
+ * Y. Offset uses the chroma of what the offset does to 18% grey, chroma(0.18 + o) - white, so
+ * a gain and an offset that do the same thing to mid-grey land on the same point; where that
+ * is undefined it uses the linear plane J*o/0.18, which agrees with it to first order near
+ * white, so the switch has no visible jump at small chroma.
+ **/
+PlanePoint toPlane(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v);
+
+/**
+ * @brief The knob value whose plane point is q and whose luma w.rgb is Yheld (the knob's own
+ * luma, including for Offset: the 18% grey pivot is added internally). Alpha is copied from v.
+ *
+ * v is the gesture-start value and is only used to pick the plane, projective or linear, that
+ * toPlane(v) uses, so toPlane(fromPlane(v, q, Y)) == q within a gesture even across the
+ * offset fallback boundary. w.rgb == Yheld to rounding, by construction.
+ **/
+ChromaEditResult fromPlane(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, const PlanePoint& q, double Yheld);
+
+/**
+ * @brief The chroma edits. Each one reads q = toPlane(v), moves it, and rebuilds through
+ * fromPlane at v's own luma, so none of them changes w.rgb or alpha.
+ *
+ * Angles are in degrees, measured counter-clockwise from +x about white (the xy dominant
+ * direction, not HSV hue). translate adds (dx, dy) to q. rotateHueAboutWhite turns q by
+ * dThetaDegrees, and setHue sets its angle, both at constant saturation; on a neutral value
+ * they are no-ops. setSaturation sets |q| (clamped at 0) along q's own hue, or along
+ * rememberedHueDegrees when q is neutral, which is how a saturation drag grows back out of
+ * white in the direction it came from. moveSaturation is setSaturation(|q| + ds).
+ **/
+ChromaEditResult translate(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, double dx, double dy);
+ChromaEditResult rotateHueAboutWhite(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, double dThetaDegrees);
+ChromaEditResult setHue(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, double thetaDegrees);
+ChromaEditResult setSaturation(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, double s, double rememberedHueDegrees);
+ChromaEditResult moveSaturation(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, double ds, double rememberedHueDegrees);
+
+/**
+ * @brief The polar coordinates of a plane point about white: hue in [0, 360) degrees and
+ * saturation as the distance from white in plane units. A neutral point reads hue 0.
+ **/
+double planeHue(const PlanePoint& q);
+double planeSaturation(const PlanePoint& q);
+
+/**
+ * @brief The working gamut's primaries in the plane, relative to white, in r, g, b order. Its
+ * edges are the straight segments where one channel is 0. valid is false on a matrix-less
+ * basis, which has no chromaticity to draw a triangle in.
+ **/
+struct GamutTriangle {
+    PlanePoint vertex[3];
+    bool valid;
+};
+
+GamutTriangle gamutTriangle(const LumaBasis& basis);
+
+/**
+ * @brief Where neutral sits on a wheel re-centred on anchor: the wheel draws every overlay
+ * relative to the anchor, so white is at -anchor.
+ **/
+PlanePoint whitePoint(const PlanePoint& anchor);
+
+/**
+ * @brief Clamps a wheel-relative point to a disc of radius rim. point is p itself on the disc
+ * and p pulled back onto the rim past it; direction is the unit vector from the centre toward
+ * p (zero when p is the centre), which is both where a parked puck points and where the
+ * off-wheel white marker's caret points.
+ **/
+struct DiscClamp {
+    PlanePoint point;
+    bool offDisc;
+    PlanePoint direction;
+};
+
+DiscClamp clampToDisc(const PlanePoint& p, double rim);
 
 NATRON_NAMESPACE_EXIT
 

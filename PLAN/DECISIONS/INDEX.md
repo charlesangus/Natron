@@ -70,3 +70,4 @@
 - 2026-10-08 — m64-reeval-before-native-io: the in-flight M64 Phase 64.7 re-evaluation finishes first, then M74–M78, then M27 onward → DECISIONS/2026-10-08-m64-reeval-before-native-io.md
 - 2026-10-09 — native-read-format-scope: native Read covers all OIIO formats; RAW dropped (later, other technique); OFX Read container path removed (xpm/miff dropped, no video); layered docs → M79 → DECISIONS/2026-10-09-native-read-format-scope.md
 - 2026-10-09 — raw-support-via-rawspeed-and-darktable-ports: RAW returns as M80 (rawspeed decode, Read emits the mosaic, darktable CPU module ports) and M81 (GPU); supersedes the RAW-dropped clause → DECISIONS/2026-10-09-raw-support-via-rawspeed-and-darktable-ports.md
+- 2026-10-09 — one-engine-gpu-backend: one GPU backend chosen in M83 for nodes, scheduler and raw kernels; M80.P6.T1 becomes a requirements note; M81 after M83/M84 → DECISIONS/2026-10-09-one-engine-gpu-backend.md

@@ -154,10 +154,10 @@ Each port keeps the darktable source file named in `approach` as the reference, 
 
 ## Phase 80.6: GPU backend decision
 
-- [ ] M80.P6.T1 — Spike: choose the GPU backend for raw kernels
-  - files: new `PLAN/DECISIONS/` entry (written by the PM), spike code under `build/` only
-  - approach: Natron's GPU path is OpenGL 2.0 compatibility with FBO/PBO and glad (`Engine/OSGLContext.*`, `Tools/generate_glad.sh`); no node under `Engine/Nodes/` touches it, and there is no OpenCL, CUDA or compute-shader support. Compare (a) OpenCL as a new dependency, as darktable does (reuses darktable's kernels nearly verbatim; adds a runtime dependency and a second device context), and (b) GL fragment or compute shaders on the existing context (no new dependency; compute needs a GL 4.3 context the host does not create today; kernels need rewriting). Port one kernel (the RCD demosaic or the white-balance step) both ways and measure on the available GPU; the container has no GPU under Xvfb, so measurements run on the host. Recommend, with the many-core/modest-machine range in mind (CPU stays the default, GPU optional).
-  - verify: a decision record naming the backend, the measured numbers and the cost of the other option; the user confirms the choice before M81 - Raw GPU Kernels is elaborated.
+- [ ] M80.P6.T1 — Raw-kernel requirements for the engine GPU backend
+  - files: a `PLAN/DESIGN/` note (written by the PM from the spike), spike code under `build/` only
+  - approach: the GPU backend is chosen once, engine-wide, in M83 - GPU Compute Backend Spike (Vulkan compute + Slang is the lean; OpenCL and GL compute are the alternatives it measures). This task does not pick one. It records what raw kernels need from that backend: the darktable kernels to port first (RCD demosaic, white balance, highlight reconstruction, denoise) and their OpenCL constructs (local memory, barriers, image sampling, float precision), the per-frame working-set size, and the CPU/GPU tolerance a reference comparison can hold. Port one kernel (RCD or white balance) to Slang's C++ target, or to plain C++, as a CPU twin, to size the porting effort. Keep the many-core/modest-machine range in mind: CPU stays the default, GPU optional.
+  - verify: the note exists and M83 - GPU Compute Backend Spike's brief references it.
   - size: M
 
-**Verification gate:** `ctest` green including every new `Tests/Native/Raw*` and `NativeReadRaw` test; the darktable reference comparison (M80.P5.T1) passes within its stated tolerances on a Bayer and an X-Trans fixture; the large-image test (M80.P5.T2) passes; the Xvfb script (M80.P5.T3) passes and the user has approved the screenshots; the backend decision (M80.P6.T1) is confirmed by the user.
+**Verification gate:** `ctest` green including every new `Tests/Native/Raw*` and `NativeReadRaw` test; the darktable reference comparison (M80.P5.T1) passes within its stated tolerances on a Bayer and an X-Trans fixture; the large-image test (M80.P5.T2) passes; the Xvfb script (M80.P5.T3) passes and the user has approved the screenshots; the raw-kernel requirements note (M80.P6.T1) is written.

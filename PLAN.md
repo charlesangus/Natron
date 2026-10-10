@@ -2,7 +2,7 @@
 title: Linux-Only Qt6 Foundation Plan
 status: running
 current: M75.P2.T8
-pm_heartbeat: 2026-10-09T22:09:43-04:00
+pm_heartbeat: 2026-10-09T22:10:17-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -182,6 +182,7 @@ future core work has solid ground to build on.
 
 - **Backlog order (2026-10-08, user):** M73 (wrap-up of M67 - Native Core Nodes) → M64 (re-evaluation only, stops for a go-ahead) → M27 → M22 → M31 → M69 → M24 → M44 → M55 and M46 together (evaluate Labelmaker-style node-graph info as part of node-graph polish) → M56 → M45. M25, M29 and M68 were not placed and stay unscheduled. **Deferred, do not start:** RFV (M70–M72), deep (M21, M51, M32), M16, and the 3D roadmap (M19, M20, M52–M54). Naming M31 here is the go-ahead its stub asked for. See `DECISIONS/2026-10-08-backlog-order-after-parcel-2.md`.
   **M74–M78 (native I/O and metadata) inserted 2026-10-08 (user):** they run right after the M64 re-evaluation, which was already in flight when they were planned, and ahead of M27 and the rest of the order above. See `DECISIONS/2026-10-08-m64-reeval-before-native-io.md`. **Read scope (2026-10-09, user):** the native Read covers every OIIO format, RAW is dropped, and the OFX Read container path is removed. M79 - Layered Document Readers (PSD, KRA, ORA, XCF) was added later and is unscheduled. **RAW returns (2026-10-09, user)** as M80 - Native RAW Support (rawspeed + darktable ports, CPU) and M81 - Raw GPU Kernels, after M79; see `DECISIONS/2026-10-09-raw-support-via-rawspeed-and-darktable-ports.md`. See `DECISIONS/2026-10-09-native-read-format-scope.md`. **M74 shipped 2026-10-09** (PR #44, squash `2cf878e7f`): native nodes carry per-frame metadata, bridged to OFX both ways. **M64 dropped for now (2026-10-08, user):** the host is too slow for its benchmarks.
+  **M82–M87 (GPU rendering) added 2026-10-09 via the inbox (user-requested):** M82 - Render Cost Profiling measures first; M83 - GPU Compute Backend Spike picks one engine-wide backend (Vulkan compute + Slang is the lean, pending the user); M84 - GPU Placement And Residency, M85 - Native GPU Kernels, M86 - OFX 1.5 GPU Suites and M87 - Point-Op Kernel Fusion follow. They sit after M80, with M81 - Raw GPU Kernels moved behind M84 so raw kernels feed a resident region. M68 - Headless GL EGL stays deferred and is re-scoped once M83 lands. See `DECISIONS/2026-10-09-one-engine-gpu-backend.md`.
   **M73 shipped 2026-10-08** (PR #43, squash `cb04295b9`): openfx-misc pinned to its merge commit `9fb0d0904`; every fork's SupportExt pin is now on openfx-supportext master; merged stack branches and `build/wt/` worktrees removed (M64 benchmarks saved to `build/bench/from-wt-m64/`).
 
 # Board
@@ -237,7 +238,13 @@ future core work has solid ground to build on.
 | M78 | Metadata In Expressions | todo | [M78-metadata-in-expressions.md](PLAN/MILESTONES/M78-metadata-in-expressions.md) |
 | M79 | Layered Document Readers | todo | [M79-layered-document-readers.md](PLAN/MILESTONES/M79-layered-document-readers.md) |
 | M80 | Native RAW Support | todo | [M80-native-raw-support.md](PLAN/MILESTONES/M80-native-raw-support.md) |
+| M82 | Render Cost Profiling | todo | [M82-render-cost-profiling.md](PLAN/MILESTONES/M82-render-cost-profiling.md) |
+| M83 | GPU Compute Backend Spike | todo | [M83-gpu-compute-backend-spike.md](PLAN/MILESTONES/M83-gpu-compute-backend-spike.md) |
+| M84 | GPU Placement And Residency | todo | [M84-gpu-placement-and-residency.md](PLAN/MILESTONES/M84-gpu-placement-and-residency.md) |
 | M81 | Raw GPU Kernels | todo | [M81-raw-gpu-kernels.md](PLAN/MILESTONES/M81-raw-gpu-kernels.md) |
+| M85 | Native GPU Kernels | todo | [M85-native-gpu-kernels.md](PLAN/MILESTONES/M85-native-gpu-kernels.md) |
+| M86 | OFX 1.5 GPU Suites | todo | [M86-ofx-gpu-suites.md](PLAN/MILESTONES/M86-ofx-gpu-suites.md) |
+| M87 | Point-Op Kernel Fusion | todo | [M87-point-op-kernel-fusion.md](PLAN/MILESTONES/M87-point-op-kernel-fusion.md) |
 | M27 | Real Debug Build | todo | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M22 | Missing Plugin Placeholder | todo | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M31 | Architectural Cleanup | todo | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |

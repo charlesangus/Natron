@@ -110,6 +110,59 @@ ExtentKnobs::createRectangleEnable(const KnobPagePtr& page)
     _rectangleEnable = rectangleEnable;
 }
 
+ExtentKnobs::FormatKnobSet
+ExtentKnobs::createFormatKnobs(EffectInstance* effect,
+                               const KnobPagePtr& page)
+{
+    FormatKnobSet set;
+
+    KnobChoicePtr format = AppManager::createKnob<KnobChoice>(effect, EffectInstance::tr("Format"));
+    format->setName(kNatronParamFormatChoice);
+    format->setHintToolTip(EffectInstance::tr("The output format"));
+    {
+        std::vector<ChoiceOption> options;
+        for (std::size_t i = 0; i < sizeof(kFormats) / sizeof(kFormats[0]); ++i) {
+            options.push_back(ChoiceOption(kFormats[i].id, kFormats[i].label, std::string()));
+        }
+        format->populateChoices(options);
+    }
+    format->setDefaultValue(0);
+    format->setAnimationEnabled(false);
+    format->setIsMetadataSlave(true);
+    page->addKnob(format);
+
+    KnobIntPtr formatSize = AppManager::createKnob<KnobInt>(effect, EffectInstance::tr("Size"), 2);
+    formatSize->setName(kNatronParamFormatSize);
+    formatSize->setHintToolTip(EffectInstance::tr("The output dimensions of the image in pixels."));
+    formatSize->setDefaultValue(kFormats[0].width, 0);
+    formatSize->setDefaultValue(kFormats[0].height, 1);
+    formatSize->setAnimationEnabled(false);
+    formatSize->setIsMetadataSlave(true);
+    formatSize->setSecretByDefault(true);
+    formatSize->setDefaultAllDimensionsEnabled(false);
+    page->addKnob(formatSize);
+
+    KnobDoublePtr formatPar = AppManager::createKnob<KnobDouble>(effect, EffectInstance::tr("Pixel Aspect Ratio"));
+    formatPar->setName(kNatronParamFormatPar);
+    formatPar->setHintToolTip(EffectInstance::tr("Output pixel aspect ratio."));
+    formatPar->setMinimum(0.);
+    formatPar->setMaximum(DBL_MAX);
+    formatPar->setDisplayMinimum(0.5);
+    formatPar->setDisplayMaximum(2.);
+    formatPar->setDefaultValue(kFormats[0].par);
+    formatPar->setAnimationEnabled(false);
+    formatPar->setIsMetadataSlave(true);
+    formatPar->setSecretByDefault(true);
+    formatPar->setDefaultAllDimensionsEnabled(false);
+    page->addKnob(formatPar);
+
+    set.choice = format;
+    set.size = formatSize;
+    set.par = formatPar;
+
+    return set;
+}
+
 void
 ExtentKnobs::createKnobs(const KnobPagePtr& page)
 {
@@ -155,48 +208,10 @@ ExtentKnobs::createKnobs(const KnobPagePtr& page)
         _reformat = reformat;
     }
 
-    KnobChoicePtr format = AppManager::createKnob<KnobChoice>(_effect, EffectInstance::tr("Format"));
-    format->setName(kNatronParamFormatChoice);
-    format->setHintToolTip(EffectInstance::tr("The output format"));
-    {
-        std::vector<ChoiceOption> options;
-        for (std::size_t i = 0; i < sizeof(kFormats) / sizeof(kFormats[0]); ++i) {
-            options.push_back(ChoiceOption(kFormats[i].id, kFormats[i].label, std::string()));
-        }
-        format->populateChoices(options);
-    }
-    format->setDefaultValue(0);
-    format->setAnimationEnabled(false);
-    format->setIsMetadataSlave(true);
-    page->addKnob(format);
-    _format = format;
-
-    KnobIntPtr formatSize = AppManager::createKnob<KnobInt>(_effect, EffectInstance::tr("Size"), 2);
-    formatSize->setName(kNatronParamFormatSize);
-    formatSize->setHintToolTip(EffectInstance::tr("The output dimensions of the image in pixels."));
-    formatSize->setDefaultValue(kFormats[0].width, 0);
-    formatSize->setDefaultValue(kFormats[0].height, 1);
-    formatSize->setAnimationEnabled(false);
-    formatSize->setIsMetadataSlave(true);
-    formatSize->setSecretByDefault(true);
-    formatSize->setDefaultAllDimensionsEnabled(false);
-    page->addKnob(formatSize);
-    _formatSize = formatSize;
-
-    KnobDoublePtr formatPar = AppManager::createKnob<KnobDouble>(_effect, EffectInstance::tr("Pixel Aspect Ratio"));
-    formatPar->setName(kNatronParamFormatPar);
-    formatPar->setHintToolTip(EffectInstance::tr("Output pixel aspect ratio."));
-    formatPar->setMinimum(0.);
-    formatPar->setMaximum(DBL_MAX);
-    formatPar->setDisplayMinimum(0.5);
-    formatPar->setDisplayMaximum(2.);
-    formatPar->setDefaultValue(kFormats[0].par);
-    formatPar->setAnimationEnabled(false);
-    formatPar->setIsMetadataSlave(true);
-    formatPar->setSecretByDefault(true);
-    formatPar->setDefaultAllDimensionsEnabled(false);
-    page->addKnob(formatPar);
-    _formatPar = formatPar;
+    const FormatKnobSet formatKnobs = createFormatKnobs(_effect, page);
+    _format = formatKnobs.choice;
+    _formatSize = formatKnobs.size;
+    _formatPar = formatKnobs.par;
 
     KnobDoublePtr bottomLeft = AppManager::createKnob<KnobDouble>(_effect, EffectInstance::tr("Bottom Left"), 2);
     bottomLeft->setName(kNativeGeneratorParamBottomLeft);

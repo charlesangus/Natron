@@ -49,11 +49,7 @@ namespace OiioReadSupport {
 namespace {
     OIIO::ImageInput::unique_ptr openInput(const std::string& path)
     {
-#ifdef DEBUG
-        // OIIO's first open() of some formats builds its default colour config, whose OCIO
-        // colourspace probing raises FE_INVALID, and debug builds trap that on the calling thread.
-        boost_adaptbx::floating_point::exception_trapping trap(0);
-#endif
+        const FpTrapGuard guard;
 
         return OIIO::ImageInput::open(path);
     }

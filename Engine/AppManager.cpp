@@ -163,6 +163,7 @@
 #include "Engine/Nodes/Generator/CheckerBoard.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/Keyer/ChromaKeyer.h"
 #include "Engine/Nodes/Keyer/Keyer.h"
@@ -1662,6 +1663,7 @@ AppManager::loadBuiltinNodePlugins(IOPluginsMap* /*writersMap*/)
 #ifdef NATRON_ENABLE_IO_META_NODES
     registerBuiltInPlugin<NativeRead>(QString::fromUtf8(""), false, false);
     registerBuiltInPlugin<WriteNode>(QString::fromUtf8(NATRON_IMAGES_PATH "writeImage.png"), false, false);
+    registerBuiltInPlugin<NativeWrite>(QString::fromUtf8(NATRON_IMAGES_PATH "writeImage.png"), false, false);
 #endif
 
     if ( !isBackground() ) {

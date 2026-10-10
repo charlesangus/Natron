@@ -29,22 +29,10 @@
 #include "Global/Macros.h"
 
 #include "Engine/NodeGroup.h"
-
+#include "Engine/Nodes/IO/NativeWrite.h" // for the kNatronWriteParam* names
 
 #define kNatronWriteNodeParamEncodingPluginChoice "encodingPluginChoice"
 #define kNatronWriteNodeParamEncodingPluginID "encodingPluginID"
-
-#define kNatronWriteParamFrameStep "frameIncr"
-#define kNatronWriteParamFrameStepLabel "Frame Increment"
-#define kNatronWriteParamFrameStepHint "The number of frames the timeline should step before rendering the new frame. " \
-    "If 1, all frames will be rendered, if 2 only 1 frame out of 2, " \
-    "etc. This number cannot be less than 1."
-
-#define kNatronWriteParamReadBack "readBack"
-#define kNatronWriteParamReadBackLabel "Read back file"
-#define kNatronWriteParamReadBackHint "When checked, the output of this node comes from reading the written file instead of the input node"
-
-#define kNatronWriteParamStartRender "startRender"
 
 NATRON_NAMESPACE_ENTER
 

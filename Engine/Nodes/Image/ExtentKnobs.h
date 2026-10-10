@@ -93,6 +93,22 @@ public:
                 const ExtentPolicy& policy);
 
     /**
+     * @brief The host-managed format choice with its secret size and pixel aspect ratio.
+     **/
+    struct FormatKnobSet {
+        KnobChoicePtr choice;
+        KnobIntPtr size;
+        KnobDoublePtr par;
+    };
+
+    /**
+     * @brief Declares the format knobs on page, named as the host expects to manage them. For a
+     * node that wants the format choice without the rest of the extent knobs.
+     **/
+    static FormatKnobSet createFormatKnobs(EffectInstance* effect,
+                                           const KnobPagePtr& page);
+
+    /**
      * @brief Declares the knobs on page. The rectangle overlay's enable knob is declared first
      * unless the policy has the overlay follow the extent, in which case it comes last.
      **/

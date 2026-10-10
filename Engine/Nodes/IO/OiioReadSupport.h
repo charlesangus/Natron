@@ -35,6 +35,10 @@
 
 #include <OpenImageIO/imageio.h>
 
+#ifdef DEBUG
+#include "Global/FloatingPointExceptions.h"
+#endif
+
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
@@ -43,6 +47,29 @@
 NATRON_NAMESPACE_ENTER
 
 namespace OiioReadSupport {
+/**
+ * @brief Keeps floating-point traps off on the calling thread while it lives in a debug build, and
+ * does nothing in a release build. OIIO's first open or create of some formats builds its default
+ * colour config, whose OCIO colourspace probing raises FE_INVALID.
+ **/
+class FpTrapGuard {
+public:
+    FpTrapGuard()
+#ifdef DEBUG
+        : _trap(0)
+#endif
+    {
+    }
+
+    FpTrapGuard(const FpTrapGuard&) = delete;
+    FpTrapGuard& operator=(const FpTrapGuard&) = delete;
+
+private:
+#ifdef DEBUG
+    boost_adaptbx::floating_point::exception_trapping _trap;
+#endif
+};
+
 struct Header {
     std::vector<OIIO::ImageSpec> subimages;
 };

@@ -66,6 +66,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Node.h"
 #include "Engine/NodeSerialization.h"
 #include "Engine/Nodes/IO/NativeRead.h"
+#include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Plugin.h"
@@ -1104,6 +1105,10 @@ isEntitledForInspector(Plugin* plugin,
 
 }
 
+namespace {
+const int kWriteContainerMajor = 1;
+}
+
 NodePtr
 AppInstance::createNodeInternal(CreateNodeArgs& args)
 {
@@ -1135,9 +1140,17 @@ AppInstance::createNodeInternal(CreateNodeArgs& args)
         if (WriteNode::isBundledWriter(argsPluginID.toStdString(), wasProjectCreatedWithLowerCaseIDs())) {
             args.addParamDefaultValue(kNatronWriteNodeParamEncodingPluginID, argsPluginID.toStdString());
             findId = QString::fromUtf8(PLUGINID_NATRON_WRITE);
+            // The requested version is the encoder's, not the container's.
+            versionMajor = kWriteContainerMajor;
         }
     }
 #endif
+
+    // Unversioned and older Write requests keep resolving to the container until the entry
+    // points pick the native writer.
+    if ((findId == QString::fromUtf8(PLUGINID_NATRON_WRITE)) && (versionMajor != PLUGIN_MAJOR_NATRON_WRITE)) {
+        versionMajor = kWriteContainerMajor;
+    }
 
     try {
         plugin = appPTR->getPluginBinary(findId, versionMajor, versionMinor, _imp->_projectCreatedWithLowerCaseIDs && serialization);

@@ -49,12 +49,13 @@ HOME_MOUNT="/home/devshell"
 # off across branch switches (e.g. Qt6-migration branch <-> base branch),
 # where the same translation units get rebuilt repeatedly, so it needs
 # enough headroom to hold several full build trees at once. A full debug
-# build tree is ~4.1 GB, and the Docker filesystem has 116 GB free, so 40
-# GiB (roughly ten build trees' worth) comfortably covers realistic
-# branch-switch churn without being unbounded or eating the disk.
+# build tree is ~4.1 GB, and the Docker filesystem has 116 GB free, so 80
+# GiB (roughly twenty build trees' worth) covers branch-switch churn plus
+# several worktrees sharing the cache without being unbounded or eating the
+# disk.
 # Overridable the same way NATRON_DEV_CONTAINER is, e.g. for a smaller disk:
 #   CCACHE_MAXSIZE=10G tools/ci/local/devshell.sh
-CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-40G}"
+CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-80G}"
 
 # Resolve repo root from this script's own location, not $PWD, so this
 # works the same from any worktree.
@@ -206,8 +207,9 @@ fi
 # `docker logs <container>`, not here). `docker exec` never re-invokes the
 # entrypoint, so it never pollutes the output below -- this is also why we
 # don't need a TTY for the non-interactive path.
+# The container's env is fixed at creation, so pass the current size on every exec.
 if [[ "$#" -eq 0 ]]; then
-    exec docker exec -it "${CONTAINER_NAME}" bash -l
+    exec docker exec -it -e CCACHE_MAXSIZE="${CCACHE_MAXSIZE}" "${CONTAINER_NAME}" bash -l
 else
-    exec docker exec -i "${CONTAINER_NAME}" "$@"
+    exec docker exec -i -e CCACHE_MAXSIZE="${CCACHE_MAXSIZE}" "${CONTAINER_NAME}" "$@"
 fi

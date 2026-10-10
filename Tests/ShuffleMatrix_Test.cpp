@@ -32,7 +32,6 @@
 #include <vector>
 
 #include <QCoreApplication>
-#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLayout>
 #include <QString>
@@ -68,16 +67,10 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-// The GuiTests target does not define NATRON_TESTS_FIXTURES_DIR, and CMake compiles every
-// source by its absolute path, so the fixtures are found next to this file instead.
 std::string
 fixturePath(const char* name)
 {
-#ifdef NATRON_TESTS_FIXTURES_DIR
     const QString dir = QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR);
-#else
-    const QString dir = QFileInfo(QString::fromUtf8(__FILE__)).absolutePath() + QString::fromUtf8("/fixtures");
-#endif
 
     return (dir + QString::fromUtf8("/") + QString::fromUtf8(name)).toStdString();
 }

@@ -167,6 +167,26 @@ case "${BUILD_TYPE}" in
         ;;
 esac
 
+# Object keys hash absolute paths, so a worktree would never hit entries built
+# in the main tree. base_dir rewrites paths under the main root to ones
+# relative to the compiler's cwd; a worktree under the main root whose build
+# dir is <worktree>/build/<type> then yields the same relative paths as the
+# main tree's build/<type>. The root comes from the git common dir, not
+# REPO_ROOT, which is the worktree's own root. hash_dir is off because -g
+# would otherwise hash the differing cwd.
+CCACHE_BASEDIR=""
+# safe.directory is overridden so an ownership mismatch cannot silently
+# fall back to the worktree root.
+if COMMON_DIR="$(git -c safe.directory='*' -C "${REPO_ROOT}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+        && [[ -n "${COMMON_DIR}" ]]; then
+    CCACHE_BASEDIR="$(dirname "${COMMON_DIR}")"
+fi
+if [[ -z "${CCACHE_BASEDIR}" || ! -d "${CCACHE_BASEDIR}" ]]; then
+    CCACHE_BASEDIR="${REPO_ROOT}"
+fi
+export CCACHE_BASEDIR
+export CCACHE_NOHASHDIR=1
+
 mkdir -p "${BUILD_DIR}"
 
 CMAKE_CACHE="${BUILD_DIR}/CMakeCache.txt"

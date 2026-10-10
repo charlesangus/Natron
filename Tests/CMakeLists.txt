@@ -158,6 +158,10 @@ target_link_libraries(GuiTests
         Qt::Widgets
         Python3::Python
 )
+target_compile_definitions(GuiTests
+    PRIVATE
+        NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+)
 target_include_directories(GuiTests
     PRIVATE
         ..

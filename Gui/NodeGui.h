@@ -202,6 +202,12 @@ public:
 
     QRectF boundingRectWithEdges() const;
 
+    /*Like boundingRect(), but grown by the user-colour border's width when that border is
+       currently drawn, since the border sits outside the node's own footprint. Edges and
+       hit-testing use this so they reach past the border rather than stopping at the node
+       it wraps.*/
+    QRectF outlineBoundingRect() const;
+
     /*this function does the painting, using QPainter, you can overload it to change the aspect of
        the node.*/
     virtual void paint(QPainter* painter, const QStyleOptionGraphicsItem* options, QWidget* parent) OVERRIDE;
@@ -642,7 +648,11 @@ private:
 
     QColor getDrawnBodyColor() const;
 
+    bool isUserColorBorderShown() const;
+
     void refreshUserColorBorder();
+
+    void refreshUserColorBorderGeometry();
 
     void refreshNameItemTextColor();
 
@@ -673,8 +683,10 @@ private:
     /*A pointer to the rectangle of the node.*/
     NodeGraphRectItem* _boundingBox;
 
-    // Sized to the node's full footprint (icon column, _boundingBox and preview) and kept above
-    // them in z-order, so the user-colour border is not painted over by those opaque items.
+    // Sized to the node's full footprint (icon column, _boundingBox and preview) grown by the
+    // border's width while it is shown, so the ring is drawn entirely outside that footprint
+    // instead of eating into it, and kept above those items in z-order so it is never painted
+    // over by them.
     NodeGraphRectItem* _userColorBorder;
 
     /*A pointer to the channels pixmap displayed*/

@@ -1069,7 +1069,6 @@ NodeGui::resize(int width,
     QRectF bbox(topLeft.x(), topLeft.y(), width, height);
 
     _boundingBox->setRect(bbox);
-    _userColorBorder->setRect(bbox);
 
     int iconSize = TO_DPIY(NATRON_PLUGIN_ICON_SIZE);
     int iconOffsetX = TO_DPIX(PLUGIN_ICON_OFFSET);
@@ -1118,10 +1117,8 @@ NodeGui::resize(int width,
         _passThroughIndicator->refreshPosition(bottomRight);
     }
 
-    int indicatorOffset = TO_DPIX(NATRON_STATE_INDICATOR_OFFSET);
     _persistentMessage->setPos(midNodeX - (pMWidth / 2), topLeft.y() + height / 2 - metrics.height() / 2);
-    _stateIndicator->setRect(topLeft.x() - indicatorOffset, topLeft.y() - indicatorOffset,
-                             width + indicatorOffset * 2, height + indicatorOffset * 2);
+    refreshUserColorBorderGeometry();
 
     _disabledBtmLeftTopRight->setLine(insetDiagonal(bbox.bottomLeft(), bbox.topRight(), kDisabledCrossPenWidth));
     _disabledTopLeftBtmRight->setLine(insetDiagonal(bbox.topLeft(), bbox.bottomRight(), kDisabledCrossPenWidth));
@@ -1688,7 +1685,7 @@ NodeGui::initializeInputs()
 bool
 NodeGui::contains(const QPointF &point) const
 {
-    QRectF bbox = boundingRect();
+    QRectF bbox = outlineBoundingRect();
 
     bbox.adjust(-5, -5, 5, 5);
 
@@ -1720,6 +1717,25 @@ NodeGui::boundingRect() const
     t.translate( center.x(), center.y() );
     t.scale( scale(), scale() );
     t.translate( -center.x(), -center.y() );
+
+    return t.mapRect(bbox);
+}
+
+QRectF
+NodeGui::outlineBoundingRect() const
+{
+    if (!_userColorBorder) {
+        return boundingRect();
+    }
+
+    QTransform t;
+    QRectF bbox = _userColorBorder->rect();
+
+    QPointF center = bbox.center();
+
+    t.translate(center.x(), center.y());
+    t.scale(scale(), scale());
+    t.translate(-center.x(), -center.y());
 
     return t.mapRect(bbox);
 }
@@ -1806,7 +1822,7 @@ bool
 NodeGui::isNearby(QPointF &point)
 {
     QPointF p = mapFromScene(point);
-    QRectF bbox = boundingRect();
+    QRectF bbox = outlineBoundingRect();
     QRectF r( bbox.x() - TO_DPIX(NATRON_EDGE_DROP_TOLERANCE), bbox.y() - TO_DPIY(NATRON_EDGE_DROP_TOLERANCE),
               bbox.width() + TO_DPIX(NATRON_EDGE_DROP_TOLERANCE), bbox.height() + TO_DPIY(NATRON_EDGE_DROP_TOLERANCE) );
 
@@ -1885,26 +1901,60 @@ NodeGui::refreshNameItemTextColor()
     _nameItem->setDefaultTextColor(contrastingLabelTextColor(getDrawnBodyColor()));
 }
 
+bool
+NodeGui::isUserColorBorderShown() const
+{
+    if (!_userColorBorder || drawsUserColorAsBody()) {
+        return false;
+    }
+    // A clone is drawn entirely in the clone colour, so the user colour is hidden while it is one.
+    if (isDrawnAsClone()) {
+        return false;
+    }
+    QMutexLocker k(&_currentColorMutex);
+
+    return _hasUserColor;
+}
+
 void
 NodeGui::refreshUserColorBorder()
 {
     if (!_userColorBorder || drawsUserColorAsBody()) {
         return;
     }
-    QColor body, user;
-    bool hasUser;
-    {
-        QMutexLocker k(&_currentColorMutex);
-        body = _currentColor;
-        user = _userColor;
-        hasUser = _hasUserColor;
-    }
-    // A clone is drawn entirely in the clone colour, so the user colour is hidden while it is one.
-    if (!hasUser || isDrawnAsClone()) {
+    if (!isUserColorBorderShown()) {
         _userColorBorder->clearInsetBorder();
+    } else {
+        QColor body, user;
+        {
+            QMutexLocker k(&_currentColorMutex);
+            body = _currentColor;
+            user = _userColor;
+        }
+        _userColorBorder->setInsetBorder(userBorderColorAgainstBody(user, body), TO_DPIX(NATRON_USER_COLOR_BORDER_WIDTH));
+    }
+    refreshUserColorBorderGeometry();
+}
+
+void
+NodeGui::refreshUserColorBorderGeometry()
+{
+    if (!_userColorBorder || !_stateIndicator || !_boundingBox) {
         return;
     }
-    _userColorBorder->setInsetBorder(userBorderColorAgainstBody(user, body), TO_DPIX(NATRON_USER_COLOR_BORDER_WIDTH));
+    const QRectF bbox = _boundingBox->rect();
+    const double borderWidth = isUserColorBorderShown() ? (double)TO_DPIX(NATRON_USER_COLOR_BORDER_WIDTH) : 0.;
+
+    // The border's outer edge sits on _userColorBorder's own rect (NodeGraphRectItem::setInsetBorder
+    // strokes inward from it), so growing that rect by the border's width, rather than the body's
+    // rect, moves the whole ring outside the footprint instead of eating into it.
+    _userColorBorder->setRect(bbox.adjusted(-borderWidth, -borderWidth, borderWidth, borderWidth));
+
+    // The selection halo grows by the same amount so it keeps sitting outside the border instead
+    // of the two overlapping.
+    const double indicatorOffset = (double)TO_DPIX(NATRON_STATE_INDICATOR_OFFSET) + borderWidth;
+    _stateIndicator->setRect(bbox.x() - indicatorOffset, bbox.y() - indicatorOffset,
+                             bbox.width() + indicatorOffset * 2, bbox.height() + indicatorOffset * 2);
 }
 
 bool

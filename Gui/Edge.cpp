@@ -443,8 +443,8 @@ Edge::initLine()
     }
 
     double sc = scale();
-    QRectF sourceBBOX = source ? mapFromItem( source.get(), source->boundingRect() ).boundingRect() : QRectF(0, 0, 1, 1);
-    QRectF destBBOX = dest ? mapFromItem( dest.get(), dest->boundingRect() ).boundingRect()  : QRectF(0, 0, 1, 1);
+    QRectF sourceBBOX = source ? mapFromItem(source.get(), source->outlineBoundingRect()).boundingRect() : QRectF(0, 0, 1, 1);
+    QRectF destBBOX = dest ? mapFromItem(dest.get(), dest->outlineBoundingRect()).boundingRect() : QRectF(0, 0, 1, 1);
     QSize dstNodeSize;
     QSize srcNodeSize;
     if (dest) {
@@ -928,13 +928,13 @@ LinkArrow::refreshPosition()
     QRectF bboxSlave;
 
     if (slave) {
-        bboxSlave = mapFromItem( slave.get(), slave->boundingRect() ).boundingRect();
+        bboxSlave = mapFromItem(slave.get(), slave->outlineBoundingRect()).boundingRect();
     }
 
     ///like the box master in kfc! was bound to name it so I'm hungry atm
     QRectF boxMaster;
     if (master) {
-        boxMaster = mapFromItem( master.get(), master->boundingRect() ).boundingRect();
+        boxMaster = mapFromItem(master.get(), master->outlineBoundingRect()).boundingRect();
     }
     QPointF dst = boxMaster.center();
     QPointF src = bboxSlave.center();

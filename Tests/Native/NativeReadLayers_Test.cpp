@@ -436,9 +436,6 @@ TEST_F(NativeReadLayersTest, APartNamedAfterTheColourPlaneIsNotAlsoALayer)
     expectPlaneMatchesOiio(node, path, ImageLayerDesc::getRGBAComponents(), { FileChannel { 0, "R" }, FileChannel { 0, "G" }, FileChannel { 0, "B" }, FileChannel { 0, "A" } });
 }
 
-// A part named after a layer is that layer wherever it sits in the file, so the colour plane, the
-// components and the region of definition (the data window) come from the part named "rgba". The
-// format is the display window, which every part of the file shares.
 TEST_F(NativeReadLayersTest, TheColourPlaneComesFromTheColourPartWhereverItIs)
 {
     QTemporaryDir dir(temporaryTemplate());

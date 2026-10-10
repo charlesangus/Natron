@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -117,6 +119,12 @@ public:
      **/
     virtual void purgeCaches() OVERRIDE FINAL;
 
+    /**
+     * @brief Calls `hook` each time a Read has listed the files of a pattern on disk, before it
+     * keeps the listing. An empty function removes the hook.
+     **/
+    static void setFrameListingScannedHookForTests(const std::function<void()>& hook);
+
 private:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -145,7 +153,7 @@ private:
         bool singleImage;
         std::string singlePath;
         std::set<int> frames;
-        std::vector<std::string> paths; // every file matched, in every view
+        std::vector<std::string> paths;
 
         FrameListing()
             : pattern()
@@ -226,6 +234,7 @@ private:
     mutable std::mutex _listingMutex;
     mutable std::shared_ptr<const FrameListing> _listing;
     mutable std::shared_ptr<const FrameListing> _proxyListing;
+    std::uint64_t _listingInvalidations;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -61,6 +62,12 @@ void clearHeaderCache();
  * file again. Thread-safe.
  **/
 void evictHeaders(const std::vector<std::string>& paths);
+
+/**
+ * @brief Calls `hook` with the path of each header readHeader parsed, after parsing it and before
+ * caching it. An empty function removes the hook.
+ **/
+void setHeaderParsedHookForTests(const std::function<void(const std::string&)>& hook);
 
 /**
  * @brief The data window of `spec` in Natron's canvas, whose rows run upwards from the bottom of

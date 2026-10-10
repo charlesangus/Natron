@@ -203,7 +203,6 @@ colourPartOf(const OiioReadSupport::Header& header,
     return false;
 }
 
-// The subimage whose header describes the image of `view`: its colour part's, else the first.
 int
 colourSubimageOf(const OiioReadSupport::Header& header,
                  const std::string& view)
@@ -271,6 +270,7 @@ NativeRead::NativeRead(NodePtr node)
     , _listingMutex()
     , _listing()
     , _proxyListing()
+    , _listingInvalidations(0)
 {
 }
 
@@ -654,6 +654,18 @@ NativeRead::refreshTimeKnobState()
     }
 }
 
+namespace {
+std::mutex g_frameListingScannedHookMutex;
+std::function<void()> g_frameListingScannedHook;
+} // anonymous namespace
+
+void
+NativeRead::setFrameListingScannedHookForTests(const std::function<void()>& hook)
+{
+    std::lock_guard<std::mutex> lock(g_frameListingScannedHookMutex);
+    g_frameListingScannedHook = hook;
+}
+
 std::shared_ptr<const NativeRead::FrameListing>
 NativeRead::frameListing(bool proxy) const
 {
@@ -665,11 +677,13 @@ NativeRead::frameListing(bool proxy) const
         pattern = filename->getValue();
         getApp()->getProject()->canonicalizePath(pattern);
     }
+    std::uint64_t invalidations = 0;
     {
         std::lock_guard<std::mutex> lock(_listingMutex);
         if (cached && cached->pattern == pattern) {
             return cached;
         }
+        invalidations = _listingInvalidations;
     }
 
     std::shared_ptr<FrameListing> listing = std::make_shared<FrameListing>();
@@ -694,7 +708,25 @@ NativeRead::frameListing(bool proxy) const
         }
     }
 
+    std::function<void()> hook;
+    {
+        std::lock_guard<std::mutex> lock(g_frameListingScannedHookMutex);
+        hook = g_frameListingScannedHook;
+    }
+    if (hook) {
+        hook();
+    }
+
     std::lock_guard<std::mutex> lock(_listingMutex);
+    // An invalidation during the scan may have listed the files again since, so a scan begun
+    // before it never replaces the listing kept.
+    if (invalidations != _listingInvalidations) {
+        if (cached && cached->pattern == pattern) {
+            return cached;
+        }
+
+        return listing;
+    }
     cached = listing;
 
     return listing;
@@ -706,6 +738,7 @@ NativeRead::invalidateFrameListing()
     std::lock_guard<std::mutex> lock(_listingMutex);
     _listing.reset();
     _proxyListing.reset();
+    ++_listingInvalidations;
 }
 
 void
@@ -736,9 +769,12 @@ NativeRead::purgeCaches()
         return;
     }
     // The range read from disk lands in the time domain through knobChanged, as for a new file.
+    // knobChanged still runs inside the bracket; only the renders are held back, for the caller.
+    beginChanges();
     node->computeFrameRangeForReader(filename.get());
     refreshAvailableViews(false);
     refreshProxyScale();
+    endChanges(true);
 }
 
 ReadTimeDomain::Settings

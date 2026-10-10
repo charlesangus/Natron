@@ -77,6 +77,12 @@ namespace {
 
     std::mutex g_cacheMutex;
     std::map<std::string, CacheEntry> g_cache;
+    // A header parsed across an eviction may describe the file as it was before it, under the same
+    // modification time and size as the file now, so it is only cached if no eviction intervened.
+    std::uint64_t g_evictions = 0;
+
+    std::mutex g_headerParsedHookMutex;
+    std::function<void(const std::string&)> g_headerParsedHook;
 
     bool
     fail(std::string* error,
@@ -148,12 +154,14 @@ readHeader(const std::string& path,
         return std::shared_ptr<const Header>();
     }
 
+    std::uint64_t evictions = 0;
     {
         std::lock_guard<std::mutex> lock(g_cacheMutex);
         const std::map<std::string, CacheEntry>::const_iterator it = g_cache.find(path);
         if (it != g_cache.end() && it->second.mtime == mtime && it->second.size == size) {
             return it->second.header;
         }
+        evictions = g_evictions;
     }
 
     OIIO::ImageInput::unique_ptr input = openInput(path);
@@ -170,8 +178,20 @@ readHeader(const std::string& path,
     }
     input->close();
 
+    std::function<void(const std::string&)> hook;
+    {
+        std::lock_guard<std::mutex> lock(g_headerParsedHookMutex);
+        hook = g_headerParsedHook;
+    }
+    if (hook) {
+        hook(path);
+    }
+
     {
         std::lock_guard<std::mutex> lock(g_cacheMutex);
+        if (evictions != g_evictions) {
+            return header;
+        }
         if (g_cache.size() >= kMaxCachedHeaders && g_cache.find(path) == g_cache.end()) {
             g_cache.clear();
         }
@@ -189,6 +209,7 @@ clearHeaderCache()
 {
     std::lock_guard<std::mutex> lock(g_cacheMutex);
     g_cache.clear();
+    ++g_evictions;
 }
 
 void
@@ -199,6 +220,14 @@ evictHeaders(const std::vector<std::string>& paths)
     for (std::vector<std::string>::const_iterator it = paths.begin(); it != paths.end(); ++it) {
         g_cache.erase(*it);
     }
+    ++g_evictions;
+}
+
+void
+setHeaderParsedHookForTests(const std::function<void(const std::string&)>& hook)
+{
+    std::lock_guard<std::mutex> lock(g_headerParsedHookMutex);
+    g_headerParsedHook = hook;
 }
 
 RectI

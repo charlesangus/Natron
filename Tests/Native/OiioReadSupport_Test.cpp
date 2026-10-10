@@ -28,8 +28,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -294,6 +297,51 @@ TEST(OiioReadSupport, HeaderCacheFollowsTheFileOnDisk)
     const std::shared_ptr<const OiioReadSupport::Header> second = OiioReadSupport::readHeader(path, &error);
     ASSERT_TRUE(bool(second)) << error;
     EXPECT_EQ(32, second->subimages[0].width);
+}
+
+TEST(OiioReadSupport, AHeaderParsedAcrossAnEvictionIsNotCached)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const Fixture wide = { "h.pfm", OIIO::TypeDesc::FLOAT, 3, 4, 2, 0, 0, 0, 0, 4, 2, 0 };
+    const std::string path = writeFixture(dir, wide);
+    ASSERT_FALSE(path.empty());
+    std::error_code ec;
+    const std::filesystem::file_time_type mtime = std::filesystem::last_write_time(path, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    const std::uintmax_t size = std::filesystem::file_size(path, ec);
+    ASSERT_FALSE(ec) << ec.message();
+
+    // A rewrite with the same size and modification time, which the cache cannot tell from the
+    // file it parsed.
+    OiioReadSupport::clearHeaderCache();
+    bool rewritten = false;
+    OiioReadSupport::setHeaderParsedHookForTests([&](const std::string& parsed) {
+        if (rewritten || parsed != path) {
+            return;
+        }
+        rewritten = true;
+        const Fixture tall = { "h.pfm", OIIO::TypeDesc::FLOAT, 3, 2, 4, 0, 0, 0, 0, 2, 4, 0 };
+        EXPECT_FALSE(writeFixture(dir, tall).empty());
+        std::error_code setError;
+        std::filesystem::last_write_time(path, mtime, setError);
+        EXPECT_FALSE(setError) << setError.message();
+        OiioReadSupport::evictHeaders(std::vector<std::string>(1, path));
+    });
+    std::string error;
+    const std::shared_ptr<const OiioReadSupport::Header> during = OiioReadSupport::readHeader(path, &error);
+    OiioReadSupport::setHeaderParsedHookForTests(std::function<void(const std::string&)>());
+
+    ASSERT_TRUE(rewritten);
+    ASSERT_TRUE(bool(during)) << error;
+    EXPECT_EQ(4, during->subimages[0].width);
+    ASSERT_EQ(size, std::filesystem::file_size(path, ec));
+    ASSERT_TRUE(mtime == std::filesystem::last_write_time(path, ec));
+
+    const std::shared_ptr<const OiioReadSupport::Header> after = OiioReadSupport::readHeader(path, &error);
+    ASSERT_TRUE(bool(after)) << error;
+    EXPECT_EQ(2, after->subimages[0].width);
+    EXPECT_EQ(4, after->subimages[0].height);
 }
 
 TEST(OiioReadSupport, ReportsErrors)

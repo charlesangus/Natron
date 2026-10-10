@@ -28,6 +28,7 @@
 #include "Global/Macros.h"
 
 #include <cstdio>
+#include <functional>
 #include <list>
 #include <memory>
 #include <optional>
@@ -589,6 +590,31 @@ TEST_F(NativeReadTimeTest, PurgingTheCachesFindsFramesAddedOnDisk)
     EXPECT_EQ(0.375f, render(node, 3.));
     EXPECT_EQ(0.75f, render(node, 5.));
     EXPECT_EQ(std::optional<std::string>(framePath(dir, "seq", 3)), metadataOf(node, 3.).getString("ofx/filepath"));
+}
+
+TEST_F(NativeReadTimeTest, AListingScannedAcrossAPurgeIsNotKept)
+{
+    QTemporaryDir dir;
+    writeSequence(dir, "seq");
+    NodePtr node = createRead(patternPath(dir, "seq"));
+    ASSERT_EQ(kNotRendered, render(node, 3.));
+
+    // The purge inside the hook is the one a concurrent Reload File or Clear Caches makes while
+    // the outer purge is still listing frame 3 as missing.
+    bool purgedDuringScan = false;
+    NativeRead::setFrameListingScannedHookForTests([&]() {
+        if (purgedDuringScan) {
+            return;
+        }
+        purgedDuringScan = true;
+        EXPECT_TRUE(writeConstantFrame(framePath(dir, "seq", 3), 0.375f));
+        node->getEffectInstance()->purgeCaches();
+    });
+    node->getEffectInstance()->purgeCaches();
+    NativeRead::setFrameListingScannedHookForTests(std::function<void()>());
+
+    ASSERT_TRUE(purgedDuringScan);
+    EXPECT_EQ(0.375f, render(node, 3.));
 }
 
 TEST_F(NativeReadTimeTest, PurgingTheCachesKeepsAUserEditedRange)

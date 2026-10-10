@@ -328,7 +328,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
     - Esc exits, and the knob keeps its value.
   - size: L
 
-- [ ] M44.P5.T3 — Add the properties-bin HUD and the viewer highlight border
+- [x] M44.P5.T3 — Add the properties-bin HUD and the viewer highlight border
   - files: `Gui/ColorTrackballHud.h` (new), `Gui/ColorTrackballHud.cpp` (new), `Gui/ColorTrackballGlobalMode.cpp`, `Tests/ColorTrackballHud_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - **`ColorTrackballHud`** is a plain widget that shows the node and knob (n/N), the mode, the x/y meaning, the live values, Y, A, the gear, the key legend with the active key lit, and an end-of-list message.

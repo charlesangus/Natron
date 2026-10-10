@@ -4,7 +4,8 @@ no ReadOIIO / ReadPNG left in the node search, and the create-time file dialog's
 A DPX and a TGA are written at run time with oiiotool (or OpenImageIO's Python module if that is
 missing) under $NATRON_GUI_TEST_OUT/fixtures, so the container only needs one of the two.
 
-Screenshots (cropped): m75-read-panel.png (the Read's properties panel), m75-layer-menu.png (the
+Screenshots (cropped): m75-read-panel.png and m75-read-panel-context.png (the Read's properties panel),
+m75-input-colorspace-menu.png, m75-colorspace-changed.png and m75-colorspace-reset.png (the Input Colorspace menu and its reset), m75-layer-menu.png (the
 viewer's layer menu open on the multilayer EXR) and m75-dpx-viewer.png (the DPX in the viewer).
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m75_read.py
@@ -25,7 +26,7 @@ try:
     from PySide6.QtCore import QEvent, QMetaObject, QPointF, QRect, Qt, QTimer, Q_ARG
     from PySide6.QtGui import QEnterEvent, QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QListView
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QListView, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -64,6 +65,10 @@ try:
         if colour[order[0]] - colour[order[1]] < 60:
             return None
         return ("red", "green", "blue")[order[0]]
+
+    def same_colour(a, b):
+        """The display transform dithers by a code value, so equal images differ by one."""
+        return a is not None and b is not None and all(abs(x - y) <= 2 for x, y in zip(a, b))
 
     def viewer_shows(name):
         return dominant(gt.viewer_centre_colour()) == name
@@ -207,13 +212,165 @@ try:
             ok = yield ("until", lambda c=colour: viewer_shows(c), POLL_TIMEOUT_S)
             check(ok, "choosing %s displays %s (%r)" % (name, colour, gt.viewer_centre_colour()))
 
+    def knob_combo(panel, row_y):
+        """The knob menu on the panel row whose label sits at row_y."""
+        for w in gt.widgets_of("ComboBox"):
+            try:
+                if w.isVisible() and panel.isAncestorOf(w) and abs(w.mapTo(panel, w.rect().topLeft()).y() - row_y) < 16:
+                    return w
+            except RuntimeError:
+                continue
+        return None
+
+    def panel_rows(panel):
+        """(label text, y in the panel) for every visible label, top to bottom."""
+        rows = []
+        for w in panel.findChildren(QLabel):
+            try:
+                if w.isVisible() and w.text().strip():
+                    rows.append((w.text().strip(), w.mapTo(panel, w.rect().topLeft()).y()))
+            except RuntimeError:
+                continue
+        return sorted(rows, key=lambda r: r[1])
+
+    def first_y(rows, text):
+        return next((y for t, y in rows if t.rstrip(":") == text), None)
+
+    def popup_actions(popup):
+        return [(a.text(), a.menu() is not None) for a in popup.actions() if a.text()]
+
+    def reset_through_right_click(combo):
+        """Opens the knob's right-click menu the way a right click does and triggers its Reset to default."""
+        seen = {}
+
+        def trigger():
+            popup = QApplication.activePopupWidget()
+            if popup is None:
+                return
+            seen["entries"] = [a.text() for a in popup.actions() if a.text()]
+            action = next((a for a in popup.actions() if a.text() == "Reset to default"), None)
+            if action is not None and action.isEnabled():
+                action.trigger()
+                seen["triggered"] = True
+            popup.close()
+
+        QTimer.singleShot(800, trigger)
+        combo.customContextMenuRequested.emit(combo.rect().center())
+        return seen
+
+    def panel_section():
+        gt.section("Read panel")
+        read = connect_reader(os.path.join(gt.FIXTURES, "flat-rgba-only.exr"), 0, "the RGBA Read")
+        check(read.getParam("frameRate") is None, "there is no frameRate knob")
+        check(read.getParam("customFps") is None, "there is no customFps knob")
         yield from open_panel(read)
-        yield ("sleep", 500)
+        yield ("sleep", 800)
         panel = panel_of(read)
-        if panel is not None:
-            screen_crop("m75-read-panel.png", global_rect(panel))
-            tabs = [t for t in panel.findChildren(QLabel) if t.text() in ("Controls", "File", "Node")]
-            report("NOTE panel tab labels seen: %r" % sorted(set(t.text() for t in tabs)))
+        require(panel is not None, "the Read's panel is open")
+        rows = panel_rows(panel)
+        report("NOTE panel labels top to bottom: %r" % rows)
+        labels = [t for t, _ in rows]
+        check(not any("rame rate" in l or "FPS" in l for l in labels), "no frame rate or custom FPS label on the panel")
+        order = ["File", "Proxy File", "First Frame", "Last Frame", "Input Colorspace", "OCIO Context"]
+        ys = [first_y(rows, n) for n in order]
+        check(all(y is not None for y in ys) and ys == sorted(ys), "File, Proxy File, frame range, Input Colorspace, OCIO Context run top to bottom (%r)" % list(zip(order, ys)))
+        sliders = [w for w in panel.findChildren(QWidget) if gt.class_name(w) == "ScaleSliderQt" and w.isVisible()]
+        fy, ly = first_y(rows, "First Frame"), first_y(rows, "Last Frame")
+        near = [w for w in sliders if fy is not None and ly is not None and fy - 10 <= w.mapTo(panel, w.rect().topLeft()).y() <= ly + 30]
+        check(not near, "First Frame and Last Frame have no slider (%d slider(s) in the panel)" % len(sliders))
+        screen_crop("m75-read-panel.png", global_rect(panel))
+
+        check(read.getParam("Context") is not None, "the OCIO Context group exists")
+        toggles = [w for w in panel.findChildren(QLabel) if gt.class_name(w) == "GroupBoxLabel" and w.isVisible()]
+        require(len(toggles) == 1, "the panel has one group toggle (%d)" % len(toggles))
+        click(toggles[0])
+        yield ("sleep", 800)
+        rows = panel_rows(panel)
+        report("NOTE labels with the Context group open: %r" % rows)
+        names = [t.rstrip(":") for t, _ in rows]
+        check(all(("key%d" % n) in names and ("value%d" % n) in names for n in range(1, 5)), "key1..4 and value1..4 are shown in the Context group")
+        screen_crop("m75-read-panel-context.png", global_rect(panel))
+
+        combo = knob_combo(panel, first_y(rows, "Input Colorspace"))
+        require(combo is not None, "the Input Colorspace menu is on screen")
+        items = combo_items(combo)
+        report("NOTE Input Colorspace: %d entries, current %r, first entries %r" % (len(items), combo_current(combo), items[:12]))
+
+        menu = {}
+
+        def grab_menu():
+            popup = QApplication.activePopupWidget()
+            if popup is None:
+                return
+            top = popup_actions(popup)
+            menu["top"] = top
+            sub = next(((a, a.menu()) for a in popup.actions() if a.menu() is not None and a.text().startswith("Input")), None)
+            if sub is None:
+                sub = next(((a, a.menu()) for a in popup.actions() if a.menu() is not None), None)
+            if sub is not None:
+                popup.setActiveAction(sub[0])
+                QTest.keyClick(popup, Qt.Key_Right)
+                QApplication.processEvents()
+                menu["sub_name"] = sub[0].text()
+                menu["sub"] = popup_actions(sub[1])
+                menu["sub_visible"] = sub[1].isVisible()
+            QTimer.singleShot(600, finish_menu_shot)
+
+        def finish_menu_shot():
+            popup = QApplication.activePopupWidget()
+            rect = global_rect(combo)
+            for w in QApplication.topLevelWidgets():
+                try:
+                    if w.isVisible() and gt.class_name(w) == "QMenu":
+                        rect = rect.united(global_rect(w))
+                except RuntimeError:
+                    continue
+            screen_crop("m75-input-colorspace-menu.png", rect.adjusted(-10, -10, 10, 10))
+            while QApplication.activePopupWidget() is not None:
+                QApplication.activePopupWidget().close()
+
+        before_menu = combo_current(combo)
+        QTimer.singleShot(1200, grab_menu)
+        click(combo)
+        QApplication.processEvents()
+        check(bool(menu.get("top")), "the Input Colorspace menu opened as a popup")
+        nested = [n for n, is_menu in menu.get("top", []) if is_menu]
+        report("NOTE top-level menu entries: %r" % menu.get("top"))
+        check(len(nested) >= 3, "the top level holds nested submenus (%r)" % nested)
+        check(any("ACES" in n for n in nested) and any("Input" in n for n in nested) and any("Utility" in n for n in nested),
+              "submenus include ACES, Input and Utility families")
+        report("NOTE expanded submenu %r: %r (visible=%r)" % (menu.get("sub_name"), menu.get("sub"), menu.get("sub_visible")))
+        check(bool(menu.get("sub_visible")), "a submenu expanded")
+        check(combo_current(combo) == before_menu, "closing the menu without a choice leaves the colourspace alone")
+
+        yield ("sleep", 800)
+        viewers = [w for w in gt.widgets_of("ViewerGL") if w.isVisible()]
+        require(bool(viewers), "the viewer is on screen")
+        covered = global_rect(panel).intersects(global_rect(viewers[0]))
+        if covered:
+            panel.window().move(panel.window().x() + 700, panel.window().y())
+            yield ("sleep", 500)
+        yield ("sleep", 1500)
+        default_text = combo_current(combo)
+        default_colour = gt.viewer_centre_colour()
+        report("NOTE default colourspace %r displays %r" % (default_text, default_colour))
+        alt = next((i for i in items if "sRGB" in i and i != default_text), None)
+        require(alt is not None, "an sRGB colourspace is on the menu")
+        require(choose(combo, alt), "pick %s in the menu" % alt)
+        ok = yield ("until", lambda: gt.viewer_centre_colour() != default_colour, POLL_TIMEOUT_S)
+        changed = gt.viewer_centre_colour()
+        check(ok, "choosing %s changes the viewer image (%r -> %r)" % (alt, default_colour, changed))
+        check(combo_current(combo) != default_text, "the menu shows the new choice (%r)" % combo_current(combo))
+        yield ("sleep", 800)
+        screen_crop("m75-colorspace-changed.png", global_rect(panel))
+
+        seen = reset_through_right_click(combo)
+        check(seen.get("triggered", False), "the right-click menu offers an enabled Reset to default (%r)" % seen.get("entries"))
+        ok = yield ("until", lambda: same_colour(gt.viewer_centre_colour(), default_colour), POLL_TIMEOUT_S)
+        check(ok, "Reset to default restores the viewer image (%r -> %r, default %r)" % (changed, gt.viewer_centre_colour(), default_colour))
+        check(combo_current(combo) == default_text, "the menu is back on %r (shows %r)" % (default_text, combo_current(combo)))
+        yield ("sleep", 800)
+        screen_crop("m75-colorspace-reset.png", global_rect(panel))
         gt.close_all_panels()
 
     def format_section():
@@ -313,6 +470,7 @@ try:
         require(ok, "viewer widget is up")
         gt.close_all_panels()
         yield from layers_section()
+        yield from panel_section()
         yield from format_section()
         yield from search_section()
         yield from dialog_section()

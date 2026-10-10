@@ -7,6 +7,8 @@
 #                 readchain | footagecomp | iobound | rambound | deepcomp (see README "Realistic workloads"),
 #                 or the per-node chains ccchain | blurchain | xfchain | mergechain | mergesrcchain
 #   BENCH_N       approximate number of processing nodes
+#   BENCH_SIZE    WxH: render generator-fed topologies at this size; BENCH_RES is then only the record's label
+#   BENCH_BLUR_SIZE  size parameter of the Blur nodes (default 3; sigma = size / 2.4)
 #   BENCH_RES     tiny (32x32, isolates per-node overhead) | hd (1920x1080) | uhd (3840x2160); for the
 #                 plate-fed families it also picks the plate resolution (deepcomp always uses HD)
 #   BENCH_PLATES_DIR  where make_plates.py wrote the plates (default build/bench/fixtures)
@@ -136,6 +138,12 @@ LAST_FRAME = 1 + FRAMES + max(RANGE, 0) + 1
 READ_TOPOS = ("readchain", "footagecomp", "iobound", "deepcomp")
 PLATE_RES = "hd" if TOPO == "deepcomp" else RES
 SIZES = {"tiny": (32, 32), "hd": (1920, 1080), "uhd": (3840, 2160)}
+# BENCH_SIZE=WxH renders generator-fed topologies at that size; BENCH_RES then only labels the record.
+CUSTOM_SIZE = os.environ.get("BENCH_SIZE", "")
+if CUSTOM_SIZE:
+    SIZES[RES] = tuple(int(v) for v in CUSTOM_SIZE.lower().split("x"))
+# Blur "size" (diameter): the Gaussian standard deviation is size / 2.4.
+BLUR_SIZE = float(os.environ.get("BENCH_BLUR_SIZE", "3"))
 
 counts = {}
 majors = {}
@@ -225,9 +233,9 @@ def deep_read():
 def source(index):
     # Animated so that nothing downstream is treated as frame-invariant and cached once.
     cb = make("net.sf.openfx.CheckerBoardPlugin")
-    if RES == "tiny":
+    if RES == "tiny" or CUSTOM_SIZE:
         param(cb, "extent").set("Size")
-        param(cb, "size").set(32, 32)
+        param(cb, "size").set(*SIZES[RES])
     else:
         param(cb, "extent").set("Project")
     color = param(cb, "color0")
@@ -260,7 +268,7 @@ def transform(inp, i):
 def blur(inp, i):
     n = make("net.sf.cimg.CImgBlur")
     n.connectInput(0, inp)
-    param(n, "size").set(3.0, 3.0)
+    param(n, "size").set(BLUR_SIZE, BLUR_SIZE)
     return n
 
 

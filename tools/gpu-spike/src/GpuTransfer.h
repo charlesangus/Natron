@@ -38,6 +38,10 @@ struct TransferFrame
     const void* src = nullptr;
     void* dst = nullptr;
     VkDeviceSize bytes = 0;
+    // Download only [dstOffset, dstOffset + dstBytes) of the output buffer into dst. Zero dstBytes
+    // downloads `bytes` from the start; a strip with halo rows uses this to return just its interior.
+    VkDeviceSize dstOffset = 0;
+    VkDeviceSize dstBytes = 0;
 };
 
 struct ComputeBinding

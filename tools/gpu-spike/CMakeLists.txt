@@ -73,6 +73,9 @@ target_link_libraries(BlurGpu_Test PRIVATE gpuspike_core blur GTest::gtest_main
   -static-libstdc++ -static-libgcc)
 gtest_discover_tests(BlurGpu_Test DISCOVERY_TIMEOUT 30 PROPERTIES TIMEOUT 600)
 
+add_executable(GpuBench bench/GpuBench_main.cpp)
+target_link_libraries(GpuBench PRIVATE gpuspike_core grade blur GTest::gtest -static-libstdc++ -static-libgcc)
+
 # The host has no gtest: stage the shared libs next to the binaries so
 # run-host.sh can put them on LD_LIBRARY_PATH.
 foreach(_t GTest::gtest GTest::gtest_main)

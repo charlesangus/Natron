@@ -14,6 +14,8 @@ struct BlurParams
 [[vk::push_constant]] ConstantBuffer<BlurParams> params;
 
 static const uint kGroup = 128;
+static const uint kColumns = 32;
+static const uint kDirectMaxRadius = 32;
 static const uint kMaxRadius = 512;
 static const uint kMaxTile = kGroup + 2 * kMaxRadius;
 
@@ -39,7 +41,8 @@ uint pixelIndex(uint line, int p)
 }
 
 // Dispatch (ceil(axisLen / 128), lineCount, 1): group.x is the tile along the
-// blur axis, group.y the row (horizontal) or column (vertical) it filters.
+// blur axis, group.y the row it filters (horizontal) or a block of kColumns
+// columns (vertical with radius <= kDirectMaxRadius, where surplus groups idle).
 [shader("compute")]
 [numthreads(128, 1, 1)]
 void blurPass(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
@@ -75,23 +78,54 @@ void blurPass(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
         }
         break;
     default:
-        const int tileLen = int(kGroup) + 2 * R;
-        for (int t = int(tid.x); t < tileLen; t += int(kGroup))
+        if (params.vertical != 0 && R <= int(kDirectMaxRadius))
         {
-            int q = 0;
-            const bool ok = int(line) < lines && resolve(base - R + t, len, neumann, q);
-            for (uint c = 0; c < nc; ++c)
-                tile[uint(t) * nc + c] = ok ? srcBuf[pixelIndex(line, q) * nc + c] : 0.0;
-        }
-        GroupMemoryBarrierWithGroupSync();
-        if (active)
-        {
-            for (uint c = 0; c < nc; ++c)
+            // Small radii: threads of a wave take adjacent columns so every load is a contiguous
+            // row segment. Wide kernels reuse each sample so often that the shared tile wins
+            // despite its strided loads. group.y selects a block of kColumns columns.
+            const uint col = gid.y * kColumns + (tid.x % kColumns);
+            if (col < params.width)
             {
-                float acc = 0.0;
-                for (int k = 0; k <= 2 * R; ++k)
-                    acc += weights[k] * tile[(tid.x + uint(k)) * nc + c];
-                dstBuf[pixelIndex(line, pos) * nc + c] = acc;
+                for (uint r = tid.x / kColumns; r < kGroup; r += kGroup / kColumns)
+                {
+                    const int rowPos = base + int(r);
+                    if (rowPos < len)
+                    {
+                        for (uint c = 0; c < nc; ++c)
+                        {
+                            float acc = 0.0;
+                            for (int k = -R; k <= R; ++k)
+                            {
+                                int q;
+                                if (resolve(rowPos + k, len, neumann, q))
+                                    acc += weights[k + R] * srcBuf[(uint(q) * params.width + col) * nc + c];
+                            }
+                            dstBuf[(uint(rowPos) * params.width + col) * nc + c] = acc;
+                        }
+                    }
+                }
+            }
+        }
+        else
+        {
+            const int tileLen = int(kGroup) + 2 * R;
+            for (int t = int(tid.x); t < tileLen; t += int(kGroup))
+            {
+                int q = 0;
+                const bool ok = int(line) < lines && resolve(base - R + t, len, neumann, q);
+                for (uint c = 0; c < nc; ++c)
+                    tile[uint(t) * nc + c] = ok ? srcBuf[pixelIndex(line, q) * nc + c] : 0.0;
+            }
+            GroupMemoryBarrierWithGroupSync();
+            if (active)
+            {
+                for (uint c = 0; c < nc; ++c)
+                {
+                    float acc = 0.0;
+                    for (int k = 0; k <= 2 * R; ++k)
+                        acc += weights[k] * tile[(tid.x + uint(k)) * nc + c];
+                    dstBuf[pixelIndex(line, pos) * nc + c] = acc;
+                }
             }
         }
         break;

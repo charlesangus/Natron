@@ -627,8 +627,16 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
         if (!f.src || !f.dst || f.bytes == 0) {
             return fail(VK_ERROR_UNKNOWN, "frame needs src, dst and a non-zero size");
         }
+        if (f.dstBytes != 0 && f.dstOffset + f.dstBytes > f.bytes) {
+            return fail(VK_ERROR_UNKNOWN, "download range exceeds the frame");
+        }
         maxBytes = std::max(maxBytes, f.bytes);
     }
+    auto downBytes = [&](const TransferFrame& f) { return f.dstBytes != 0 ? f.dstBytes : f.bytes; };
+    auto downOffset = [&](const TransferFrame& f) { return f.dstBytes != 0 ? f.dstOffset : VkDeviceSize(0); };
+    auto downPieces = [&](const TransferFrame& f) {
+        return static_cast<uint32_t>((downBytes(f) + strip - 1) / strip);
+    };
     if (GpuStatus s = m.ensureDeviceBuffers(maxBytes); !s) {
         return s;
     }
@@ -838,21 +846,21 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
 
             ImportedBuffer imp;
             const Clock::time_point ti = Clock::now();
-            const bool useImport = m.acquireImport(f.dst, f.bytes, downImports, imp);
+            const bool useImport = m.acquireImport(f.dst, downBytes(f), downImports, imp);
             if (useImport) {
                 const Clock::time_point te = Clock::now();
                 ft.downloadPath = TransferPath::HostImport;
                 ft.hostDownload = {msSince(t0, ti), msSince(t0, te), msSince(ti, te)};
             }
 
-            const uint32_t pieces = useImport ? 1 : ft.strips;
+            const uint32_t pieces = useImport ? 1 : downPieces(f);
             for (uint32_t i = 0; i < pieces; ++i) {
                 if (fifo.size() == N) {
                     if (GpuStatus s = drainOne(); !s) return s;
                 }
                 const uint32_t r = ringNext++ % N;
                 const VkDeviceSize off = useImport ? 0 : i * strip;
-                const VkDeviceSize len = useImport ? f.bytes : std::min(strip, f.bytes - off);
+                const VkDeviceSize len = useImport ? downBytes(f) : std::min(strip, downBytes(f) - off);
                 VkBuffer dstBuf = useImport ? imp.buffer : m.downSlots[r].buffer;
 
                 VkCommandBuffer cb = m.downCbs[r];
@@ -864,7 +872,7 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
                             VK_ACCESS_2_TRANSFER_READ_BIT, m.computeFamily, m.transferFamily)
                         .record(cb);
                 }
-                VkBufferCopy region{off, 0, len};
+                VkBufferCopy region{downOffset(f) + off, 0, len};
                 vkCmdCopyBuffer(cb, m.devOut[d].buffer, dstBuf, 1, &region);
                 Barrier(dstBuf, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT,
                         VK_ACCESS_2_HOST_READ_BIT)
@@ -954,7 +962,7 @@ GpuStatus GpuTransfer::process(std::span<const TransferFrame> frames, const Comp
                 FrameTimeline& ft = timeline->frames[k];
                 span(ft.gpuUpload, qUp(k, 0), ft.uploadPath == TransferPath::HostImport ? 1 : ft.strips);
                 span(ft.gpuCompute, qComp(k), 1);
-                span(ft.gpuDownload, qDown(k, 0), ft.downloadPath == TransferPath::HostImport ? 1 : ft.strips);
+                span(ft.gpuDownload, qDown(k, 0), ft.downloadPath == TransferPath::HostImport ? 1 : downPieces(frames[k]));
             }
         }
     }

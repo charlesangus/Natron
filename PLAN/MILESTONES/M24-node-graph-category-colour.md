@@ -46,7 +46,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
     still loads with its customised group colours intact.
   - size: M
 
-- [ ] M24.P2.T2 — Resolve a node's category in one engine function
+- [x] M24.P2.T2 — Resolve a node's category in one engine function
   - files: `Engine/Node.h`, `Engine/Node.cpp`, `Tests/NodeCategory_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach: Add `NodeCategoryEnum Node::getNodeCategory() const` with this ladder, in the order fixed by P1.T1: (1) Backdrop stays on its own colour — callers check first or a sentinel is returned; (2) `isReader()` / `isWriter()` / `isGenerator()`; (3) the major `PLUGIN_GROUP_*` from `getPluginGrouping()` through one static string→enum table — this covers every native node (all ~36 `NativePluginDescription`s set `grouping`) and the bundled OFX set; (4) a keyword heuristic over plugin label/ID for third-party OFX plugins with an arbitrary grouping; (5) `eNodeCategoryOther`. Do **not** add a `category` field to `NativePluginDescription` or touch any `Engine/Nodes/*` file: grouping already carries the information.
   - verify: A ctest case covers each rung: native Grade → color; DeepMerge → deep; Constant → generator; DeepWrite → whatever P1.T1 decided; TypedPassthrough → other; a test effect with grouping "Foo" and label "MyBlur" → filter via the heuristic. `tools/ci/local/test.sh ctest debug` green.
@@ -145,6 +145,8 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
 
 - 2026-10-10 — **Edge width ladder goes (user):** M24.P4.T2 runs even though, with the silhouettes gone, edge colour becomes the graph's only data-kind signal.
 - 2026-10-10 — **Two 3D categories (user):** add both a USD 3D category and a Native 3D category, each with its own Preferences colour knob, although no scene nodes exist yet. P1.T1 gives each a default colour; P2.T1 adds both enum values and knobs.
+
+- 2026-10-10 — **P2.T2 verify:** full debug ctest 1266/1267. The one failure, `DeepChannelNodesTest.DeepRemoveLayersIsRegisteredAsADeepNode`, passed its assertions and then crashed (SIGSEGV) on a worker thread during teardown; it passed 5/5 when re-run alone. It is an intermittent teardown crash, not caused by this change. Callers check `isBackdropNode()` before `getNodeCategory()`, since there is no backdrop sentinel in `NodeCategoryEnum`.
 
 **Verification gate:** `format`, `lint-ci` and `build-and-test` green; plus visual
 evidence captured the same way M17's node-graph evidence and M23's packaging gate

@@ -27,7 +27,9 @@
 
 #include <cmath>
 #include <cstddef>
+#include <list>
 #include <map>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -41,6 +43,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QRect>
 #include <QScreen>
 #include <QStyle>
+#include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QWindow>
 CLANG_DIAG_ON(deprecated)
@@ -48,12 +51,19 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 
 #include "Gui/ColorKnobEditSession.h"
+#include "Gui/ColorTrackballHud.h"
 #include "Gui/DockablePanel.h"
+#include "Gui/FloatingWidget.h"
 #include "Gui/Gui.h"
 #include "Gui/KnobGuiColor.h"
 #include "Gui/KnobGuiContainerHelper.h"
+#include "Gui/NodeGui.h"
+#include "Gui/NodeSettingsPanel.h"
+#include "Gui/PropertiesBinWrapper.h"
+#include "Gui/ViewerTab.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -299,6 +309,210 @@ globalModeControllers()
 }
 } // namespace
 
+namespace {
+
+// Kept in side tables, keyed on the controller, rather than as members: the controller already
+// outlives its Gui's lifetime, so the table entry does too, and nothing outside this file ever
+// needs to look one up.
+std::map<const ColorTrackballGlobalMode*, QPointer<ColorTrackballHud>>&
+colorTrackballHuds()
+{
+    static std::map<const ColorTrackballGlobalMode*, QPointer<ColorTrackballHud>> huds;
+
+    return huds;
+}
+
+std::map<const ColorTrackballGlobalMode*, std::vector<QPointer<WindowHighlightFrame>>>&
+colorTrackballHighlightFrames()
+{
+    static std::map<const ColorTrackballGlobalMode*, std::vector<QPointer<WindowHighlightFrame>>> frames;
+
+    return frames;
+}
+
+std::map<const ColorTrackballGlobalMode*, QString>&
+colorTrackballEndOfListMessages()
+{
+    static std::map<const ColorTrackballGlobalMode*, QString> messages;
+
+    return messages;
+}
+
+ColorTrackballHud*
+findColorTrackballHud(const ColorTrackballGlobalMode* mode)
+{
+    std::map<const ColorTrackballGlobalMode*, QPointer<ColorTrackballHud>>& huds = colorTrackballHuds();
+    std::map<const ColorTrackballGlobalMode*, QPointer<ColorTrackballHud>>::iterator it = huds.find(mode);
+
+    return ((it != huds.end()) && it->second) ? it->second.data() : 0;
+}
+
+// Index 0 of the properties bin's own layout is its buttons row, so inserting at index 1 lands
+// the HUD directly under it and pushes the scroll area down to index 2, without either one
+// needing to know the HUD exists.
+ColorTrackballHud*
+ensureColorTrackballHud(ColorTrackballGlobalMode* mode)
+{
+    ColorTrackballHud* existing = findColorTrackballHud(mode);
+
+    if (existing) {
+        return existing;
+    }
+
+    Gui* gui = mode->getGui();
+    PropertiesBinWrapper* bin = gui ? gui->getPropertiesBin() : 0;
+    QVBoxLayout* layout = bin ? qobject_cast<QVBoxLayout*>(bin->layout()) : 0;
+
+    if (!layout) {
+        return 0;
+    }
+
+    ColorTrackballHud* hud = new ColorTrackballHud(bin);
+
+    layout->insertWidget(1, hud);
+    hud->hide();
+    colorTrackballHuds()[mode] = hud;
+
+    return hud;
+}
+
+// dynamic_cast rather than QObject::findChild: PropertiesBinWrapper has no Q_OBJECT of its own,
+// so it has no distinct meta-object for findChild to match against.
+bool
+windowHoldsPropertiesBinOrViewer(QWidget* window)
+{
+    if (!window) {
+        return false;
+    }
+
+    const QList<QWidget*> children = window->findChildren<QWidget*>();
+
+    for (QList<QWidget*>::const_iterator it = children.begin(); it != children.end(); ++it) {
+        if (dynamic_cast<PropertiesBinWrapper*>(*it) || dynamic_cast<ViewerTab*>(*it)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void
+showColorTrackballChrome(ColorTrackballGlobalMode* mode)
+{
+    ColorTrackballHud* hud = ensureColorTrackballHud(mode);
+
+    if (hud) {
+        hud->show();
+    }
+
+    Gui* gui = mode->getGui();
+
+    if (!gui) {
+        return;
+    }
+
+    std::vector<QPointer<WindowHighlightFrame>>& frames = colorTrackballHighlightFrames()[mode];
+
+    frames.push_back(QPointer<WindowHighlightFrame>(new WindowHighlightFrame(gui)));
+
+    const std::list<FloatingWidget*> floatingWindows = gui->getFloatingWindows();
+
+    for (std::list<FloatingWidget*>::const_iterator it = floatingWindows.begin(); it != floatingWindows.end(); ++it) {
+        if (windowHoldsPropertiesBinOrViewer(*it)) {
+            frames.push_back(QPointer<WindowHighlightFrame>(new WindowHighlightFrame(*it)));
+        }
+    }
+}
+
+void
+hideColorTrackballChrome(ColorTrackballGlobalMode* mode)
+{
+    ColorTrackballHud* hud = findColorTrackballHud(mode);
+
+    if (hud) {
+        hud->hide();
+    }
+
+    std::map<const ColorTrackballGlobalMode*, std::vector<QPointer<WindowHighlightFrame>>>& registry = colorTrackballHighlightFrames();
+    std::map<const ColorTrackballGlobalMode*, std::vector<QPointer<WindowHighlightFrame>>>::iterator it = registry.find(mode);
+
+    if (it == registry.end()) {
+        return;
+    }
+    for (std::size_t i = 0; i < it->second.size(); ++i) {
+        if (it->second[i]) {
+            delete it->second[i].data();
+        }
+    }
+    registry.erase(it);
+}
+
+// Everything the HUD shows beyond what the controller's own getters already carry: the node
+// and knob labels, and the mode's own chroma readout, read off the live value through the
+// target's own role and basis so the HUD never has to know either.
+void
+updateColorTrackballHud(ColorTrackballGlobalMode* mode)
+{
+    ColorTrackballHud* hud = findColorTrackballHud(mode);
+
+    if (!hud || !mode->isEngaged()) {
+        return;
+    }
+
+    ColorTrackballHudState state;
+    KnobGuiColor* target = mode->getTarget();
+
+    if (target) {
+        DockablePanel* panel = dynamic_cast<DockablePanel*>(target->getContainer());
+        NodeSettingsPanel* nodePanel = dynamic_cast<NodeSettingsPanel*>(panel);
+        NodeGuiPtr nodeGui = nodePanel ? nodePanel->getNode() : NodeGuiPtr();
+        NodePtr node = nodeGui ? nodeGui->getNode() : NodePtr();
+        KnobIPtr knob = target->getKnob();
+
+        state.nodeLabel = node ? QString::fromUtf8(node->getLabel().c_str()) : QString();
+        state.knobLabel = knob ? QString::fromUtf8(knob->getLabel().c_str()) : QString();
+        mode->getTargetPosition(&state.knobIndex, &state.knobCount);
+        state.value = mode->getLiveValue();
+
+        const ColorKnobRoleEnum role = target->getColorRole();
+        const LumaBasis basis = target->getEditBasis();
+
+        state.luma = luma(basis, state.value.rgb);
+        switch (mode->getMode()) {
+        case eColorGlobalModeC: {
+            const PlanePoint p = toPlane(role, basis, state.value);
+
+            state.chromaValid = p.valid;
+            state.hueDegrees = planeHue(p);
+            state.saturation = planeSaturation(p);
+            break;
+        }
+        case eColorGlobalModeT: {
+            const TempTintResult tt = toTempTint(role, basis, state.value);
+
+            state.chromaValid = tt.valid;
+            state.temp = tt.temp;
+            state.tint = tt.tint;
+            break;
+        }
+        case eColorGlobalModeV:
+            break;
+        }
+    }
+
+    state.mode = mode->getMode();
+    state.gear = mode->getGear();
+
+    std::map<const ColorTrackballGlobalMode*, QString>& messages = colorTrackballEndOfListMessages();
+    std::map<const ColorTrackballGlobalMode*, QString>::iterator it = messages.find(mode);
+
+    state.endOfListMessage = (it != messages.end()) ? it->second : QString();
+
+    hud->setState(state);
+} // updateColorTrackballHud
+
+} // namespace
+
 ColorTrackballGlobalMode*
 ColorTrackballGlobalMode::instanceFor(Gui* gui)
 {
@@ -358,6 +572,24 @@ ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
     , _swallowedKeys()
     , _passThrough()
 {
+    // Routed through the signals that already fire on every relevant change, rather than
+    // calling these from engage()/exit()/moveStroke() etc. directly, so the HUD and the
+    // highlight frames stay in one place and every caller of those signals updates them for
+    // free, including a future one this class does not have yet.
+    QObject::connect(this, &ColorTrackballGlobalMode::engagedChanged, this, [this](bool engaged) {
+        if (engaged) {
+            showColorTrackballChrome(this);
+        } else {
+            hideColorTrackballChrome(this);
+        }
+    });
+    QObject::connect(this, &ColorTrackballGlobalMode::stateChanged, this, [this]() {
+        updateColorTrackballHud(this);
+    });
+    QObject::connect(this, &ColorTrackballGlobalMode::knobListEndReached, this, [this](int direction) {
+        colorTrackballEndOfListMessages()[this] = (direction < 0) ? tr("First colour knob.") : tr("Last colour knob.");
+        updateColorTrackballHud(this);
+    });
 }
 
 ColorTrackballGlobalMode::~ColorTrackballGlobalMode()
@@ -372,6 +604,10 @@ ColorTrackballGlobalMode::~ColorTrackballGlobalMode()
     for (std::size_t i = 0; i < _targetConnections.size(); ++i) {
         QObject::disconnect(_targetConnections[i]);
     }
+    hideColorTrackballChrome(this);
+    delete findColorTrackballHud(this);
+    colorTrackballHuds().erase(this);
+    colorTrackballEndOfListMessages().erase(this);
 }
 
 KnobGuiColor*
@@ -538,6 +774,9 @@ void
 ColorTrackballGlobalMode::setTarget(const KnobGuiColorPtr& target)
 {
     clearTarget();
+    // A successful switch reaches a real knob, so whatever end-of-list message the previous
+    // step may have left standing no longer describes the HUD's new target.
+    colorTrackballEndOfListMessages().erase(this);
     _target = target;
     _targetObject = target.get();
 

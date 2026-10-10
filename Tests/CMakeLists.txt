@@ -152,6 +152,7 @@ set(GuiTests_SOURCES
     ColorKnobUndoMerge_Test.cpp
     ColorPickerLabel_Test.cpp
     ColorTrackballGlobalMode_Test.cpp
+    ColorTrackballHud_Test.cpp
     ColorTrackballTarget_Test.cpp
     ColorWheelWidget_Test.cpp
     KnobGuiString_Test.cpp

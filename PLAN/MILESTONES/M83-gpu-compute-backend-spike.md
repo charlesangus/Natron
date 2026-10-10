@@ -93,7 +93,7 @@ Scouted facts this plan relies on (2026-10-10):
   - verify: `GpuKernel_Test` dispatches `fill.slang` (writes `x + y*w`) over a 1921×1081 buffer on lavapipe and RADV, reads it back through a host-visible buffer and checks every value. A reported timestamp delta is greater than 0.
   - size: M
 
-- [ ] M83.P2.T3 — Pinned staging ring with transfer/compute overlap
+- [x] M83.P2.T3 — Pinned staging ring with transfer/compute overlap
   - files: `tools/gpu-spike/src/GpuTransfer.h`, `tools/gpu-spike/src/GpuTransfer.cpp`, `tools/gpu-spike/tests/GpuTransfer_Test.cpp`
   - approach:
     - Build a VMA staging ring with N slots (default 3): write-combined host memory for upload and `HOST_CACHED` memory for readback.
@@ -139,7 +139,7 @@ Scouted facts this plan relies on (2026-10-10):
   - verify: `PointOpCompose_Test` (CPU via the C++ twin) checks that `Chain<Grade, Invert>` equals Invert applied after Grade, and that `Masked` matches a hand-written reference. A recorded note gives the SPIR-V instruction counts for fused and unfused versions.
   - size: M
 
-- [ ] M83.P3.T4 — GPU correctness for both kernels against the references
+- [x] M83.P3.T4 — GPU correctness for both kernels against the references
   - files: `tools/gpu-spike/tests/GradeGpu_Test.cpp`, `tools/gpu-spike/tests/BlurGpu_Test.cpp`, `tools/gpu-spike/tests/Tolerance.h`
   - approach:
     - Dispatch the P3.T1 and P3.T2 kernels through `GpuKernel` and `GpuTransfer` on the same fixtures.
@@ -150,7 +150,7 @@ Scouted facts this plan relies on (2026-10-10):
 
 ## Phase 83.4: Hand-off to the GL viewer
 
-- [ ] M83.P4.T1 — Zero-copy Vulkan → GL hand-off through external memory
+- [x] M83.P4.T1 — Zero-copy Vulkan → GL hand-off through external memory
   - files: `tools/gpu-spike/src/GlInterop.h`, `tools/gpu-spike/src/GlInterop.cpp`, `tools/gpu-spike/tests/GlInterop_Test.cpp`, `tools/gpu-spike/tests/GlInteropQt_main.cpp`
   - approach:
     - Export a VMA-allocated device-local `VkBuffer` (dedicated allocation, `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT`) and a binary semaphore pair (`VK_KHR_external_semaphore_fd`).
@@ -292,3 +292,7 @@ Scouted facts this plan relies on (2026-10-10):
 - 2026-10-10 — M83.P2.T2 kernel convention: storage buffers in set 0 bindings 0..N-1 in declaration order, parameters as one `[[vk::push_constant]]` block (≤128 B); uniform buffers unsupported. `grade.slang`/`blur.slang` must switch their `ConstantBuffer` params to push constants before GPU dispatch (M83.P3.T4).
 - 2026-10-10 — M83.P3.T3 finding for M85/M87: Slang interface generics inline fully (one OpFunction, no calls) and Chain<Grade,Invert> is bit-exact with two passes, 12% fewer instructions, one dispatch and no intermediate buffer. But every op combination needs its own compiled entry point; a runtime graph needs generated wrappers or Slang link-time specialisation (untried).
 - 2026-10-10 — M83.P5.T1 (GL 4.3 compute reference, radeonsi, UHD RGBA float, median of 21): Grade 0.41–0.55 ms; Blur σ=3 12.95 ms (H 1.10 / V 11.86), σ=25 22.47 ms (H 6.47 / V 16.00); all within tolerance. Slang GLSL needed two fixups (`#version 450`→430, `controlBarrier`→`memoryBarrierShared(); barrier();`). The vertical pass is ~10× the horizontal because its loads stride across rows — the Vulkan blur in M83.P3.T4/P6.T1 should tile the vertical pass (2D tiles or transpose) rather than reuse the 1D line layout. Regenerating Natron's GL 2.0 glad for 4.3 is ~half a day; using compute also needs 4.3 contexts.
+- 2026-10-10 — M83.P2.T3 committed (`40690df50`) on lavapipe evidence only, and left unchecked. After the 07:30 host reboot, `/dev/dri/*` shows as 65534 inside this host's user namespace, so RADV can't open the device and `run-host.sh` silently falls back to llvmpipe. The RADV overlap figures (`GPU_SPIKE_BUILD=$PWD/build/gpu-spike-p2t3 tools/gpu-spike/run-host.sh GpuTransfer_Test`) are pending a fix on the real host. A review fix landed in the same commit: every staging-upload strip now waits on the compute timeline, not just the first. Lavapipe, UHD float ×16 frames: host-import wall 470 ms vs staging 623 ms.
+- 2026-10-10 — M83.P4.T1 committed (`7d50bb922`) on lavapipe/llvmpipe evidence, and left unchecked until it runs byte-exact on RADV/radeonsi. Semaphore zero-copy skips on llvmpipe for a genuine reason: lavapipe lacks `VK_KHR_external_semaphore_fd`, and llvmpipe lacks `GL_EXT_semaphore`/`_fd`. The new `zero-copy-hostsync` path (the same memory import, with a fence plus `glFinish` instead of semaphores) runs byte-exact, Qt/Xvfb included. On llvmpipe at UHD float it takes 39 ms end-to-end against 125 ms for readback+PBO. `run-host.sh` now exits 1 when no render node opens (`GPU_SPIKE_ALLOW_SOFTWARE=1` overrides it).
+- 2026-10-10 — RADV access restored (the user made the host's render nodes world-rw). **M83.P2.T3 on RADV (7900 XTX):** `GpuTransfer_Test` 5/5. UHD RGBA float ×16 frames, ms/frame wall: staging with 1 copy thread 35.4; staging with 8 copy threads 20.1 (sum of stages 500 ms, wall 322 ms, overlap ×1.55); host-import with the frame already in imported memory 9.9. DMA ≈ 4.7–5.6 ms each way, compute 0.28 ms. The host memcpy dominates staging, so M84 should allocate frames in importable (page-aligned) memory rather than copy into staging. **M83.P4.T1 on RADV/radeonsi:** `GlInterop_Test` 5/5. Semaphore zero-copy works (all extensions present, UUIDs match). UHD hand-off end-to-end is 0.79 ms zero-copy, 0.87 ms hostsync, and 33.2 ms readback+PBO. radeonsi warns `os_same_file_description couldn't determine…` under this user namespace; the results were byte-exact regardless.
+- 2026-10-10 — M83.P3.T4 (`c4a97f794`) passes on lavapipe and RADV. Kernel params moved to push constants; the GLSL target rewrites them to a std140 UBO (`GlCompute` builds, but was not re-run). Grade on GPU keeps the 4-ULP/1e-6 bounds, plus a GPU-only conditioned slack taken from the SPIR-V precision table (pow = exp2·log2, unfused fma). Subnormal inputs only need to match either the value or zero, because lavapipe's pow/log2 on subnormals are garbage. RADV: Grade sweep worst conditioned-bound use is 0.244 (lavapipe: 0.487), gamma curves ≤ 31 ULP, and all 6033 subnormals match. Blur on RADV: max abs 1.4e-7 / 2.2e-7 / 5.8e-7 / 1.21e-6 at σ 0.5 / 3 / 25 / 100, within 2e-6 and matching lavapipe. Reverse grade now returns 1 for pow(v, 0), because SPIR-V Pow gave NaN for inf^0.

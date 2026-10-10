@@ -251,11 +251,11 @@ future core work has solid ground to build on.
 | M22 | Missing Plugin Placeholder | todo | M75 | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M31 | Architectural Cleanup | todo | M75, M76 | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |
 | M69 | Minor Cleanup | todo | M75 | [M69-minor-cleanup.md](PLAN/MILESTONES/M69-minor-cleanup.md) |
-| M24 | Node Graph Category Colour | todo |  | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
-| M44 | Trackball Colour Editing | todo |  | [M44-trackball-colour-editing.md](PLAN/MILESTONES/M44-trackball-colour-editing.md) |
-| M55 | Node Graph Polish | todo |  | [M55-polish-node-graph-interaction.md](PLAN/MILESTONES/M55-polish-node-graph-interaction.md) |
+| M24 | Node Graph Category Colour | doing | - | [M24-node-graph-category-colour.md](PLAN/MILESTONES/M24-node-graph-category-colour.md) |
+| M44 | Trackball Colour Editing | doing | - | [M44-trackball-colour-editing.md](PLAN/MILESTONES/M44-trackball-colour-editing.md) |
+| M55 | Node Graph Polish | todo | M24 | [M55-polish-node-graph-interaction.md](PLAN/MILESTONES/M55-polish-node-graph-interaction.md) |
 | M46 | Labelmaker Annotations | todo |  | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |
-| M56 | Visual And Menu Polish | todo |  | [M56-polish-visual-and-menus.md](PLAN/MILESTONES/M56-polish-visual-and-menus.md) |
+| M56 | Visual And Menu Polish | todo | M24 | [M56-polish-visual-and-menus.md](PLAN/MILESTONES/M56-polish-visual-and-menus.md) |
 | M45 | Native Tab Menu | todo |  | [M45-tabtabtab-native-tab-menu.md](PLAN/MILESTONES/M45-tabtabtab-native-tab-menu.md) |
 | M25 | GL Init FP Guard | todo |  | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M29 | Independent Repository | todo |  | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |
@@ -296,4 +296,3 @@ future core work has solid ground to build on.
 # Open questions
 
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.
-- **M55 - Node Graph Polish / M46 - Labelmaker Annotations:** are they one milestone or two? Decide after the evaluation described in the 2026-10-08 backlog-order decision.

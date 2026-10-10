@@ -22,10 +22,16 @@ Measure where render time actually goes on real comps, and what host↔GPU trans
   - approach: Measure upload and download of a UHD RGBA float frame (and half, and 8-bit) through the existing GL PBO path, and through plain Vulkan with pinned staging if that's quick to stand up. Runs on the host GPU (the container has no usable GPU under Xvfb). Record PCIe generation and width.
   - verify: a design note with measured GB/s per direction and per path.
   - size: M
-- [ ] M82.P2.T2 — Profile representative comps
+- [x] M82.P2.T2 — Profile representative comps
   - files: a `PLAN/DESIGN/` report
   - approach: Profile at least three comps with M82.P1.T1 and M82.P1.T2: a keying-and-grade comp, a CG multi-pass merge comp, and a defocus/retime-heavy comp. Use user-supplied comps if available, otherwise build plausible ones. The dev host is 4-core, so state the core count next to every number and prefer a faster host if one is available. Feed in M82.P2.T1's bandwidth.
   - verify: the user reviews the report and gives a go/no-go plus scope for M83 - GPU Compute Backend Spike.
+  - size: M
+
+- [x] M82.P2.T3 — Fix the region report's gain, writer and time handling
+  - files: `tools/bench/render-profile-report.py`, `tools/bench/comps/wall_gain.py` (fold in and delete), `tools/bench/comps/run_comps.sh` if it calls it
+  - approach: Report net gain as a share of wall-clock frame time: divide thread-summed task time by the measured parallelism (task time ÷ frame wall time), as `wall_gain.py` does, and drop the old task-time "gain" so there's only one figure. Exclude writer/encoder nodes (`internalEncoderNode` and Write plugins) from GPU-candidate regions; they count as region boundaries. Key frames on the record's `frame` field, not `time`, which carries sentinels in retime comps. Add a `--serial-profile` option, or document that the heavy/cheap split should come from a 1-thread profile.
+  - verify: the synthetic known-answer file still passes; rerunning on the three comps' raw output in `build/bench/m82-profile/` reproduces the report's wall-clock gains, with no writer node in any region.
   - size: M
 
 **Verification gate:** `ctest` green including `RenderProfile_Test`; profiling off by default with no measurable overhead; the transfer note and comp report exist in `PLAN/DESIGN/`; the user has given a go/no-go on M83 - GPU Compute Backend Spike.
@@ -35,3 +41,5 @@ Measure where render time actually goes on real comps, and what host↔GPU trans
 - 2026-10-10 — Runs on a second machine alongside M75 - Native Read: the user started the GPU milestones on the 7800X3D / RX 7900 XTX workstation while M75–M80 run on another machine. This PM leaves the board frontmatter (`current`, `pm_heartbeat`) to the M75 PM, edits only the M82–M87 rows and files, and pulls with rebase before every plan push. The PR targets `main`, not stacked on M75.
 - 2026-10-10 — First full ctest on this machine: 1251/1253; the two failures (`BlurKernels.CImgReferenceAvailable`, `NativeErodeDilateKernels.CImgReferenceAvailable`) are a missing CImg.h test asset after the dev image was rebuilt from scratch, not code. `RenderProfileTest` passes.
 - 2026-10-10 — M82.P2.T2 uses synthetic comps (user): no real comps were supplied, so a subagent builds plausible keying-and-grade, CG multi-pass merge and defocus/retime comps and profiles them on this 16-core host. It runs once M88 - FIR Gaussian Blur releases the Natron build slot.
+- 2026-10-10 — M82.P2.T2 comps and report landed (code: `248ad8d0a`; report `PLAN/DESIGN/2026-10-10-render-cost-profile.md`). The task stays unchecked until the user reviews it. Profiler/report issues found: the report's "net gain" subtracts serial transfer time from thread-summed task time, so it isn't a frame share (`tools/bench/comps/wall_gain.py` rescales it by measured parallelism); `wallNs` under 16-thread contention makes the heavy/cheap split unreliable, so 1-thread profiles are used for it; the Write encoder lands inside GPU regions; the `time` field carries sentinels in retime comps. Transform with motion blur costs ~1014 ms/Mpx, worth a separate look.
+- 2026-10-10 — User reviewed the comp report: **go**, and M84 - GPU Placement And Residency builds **resident regions from day one** rather than placing heavy nodes first. Added M82.P2.T3 (user) to fix the report script before the PR.

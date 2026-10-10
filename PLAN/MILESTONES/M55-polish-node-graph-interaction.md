@@ -27,3 +27,11 @@ Acceptance sketch:
 - Render prompts for frame range and defaults to foreground rendering.
 
 Scheduling note (2026-10-08, user): runs together with M46. Before elaborating, evaluate whether Labelmaker-style node-graph info belongs inside node-graph polish; elaborate them as one milestone or two accordingly.
+
+Scoping draft (2026-10-10): `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` holds a draft phase/task breakdown and the user questions to settle before elaborating. Deps: M24 (confirmed by the user).
+
+## Decisions
+
+- 2026-10-10 — **M46 stays a separate milestone (user):** M55's items are unrelated to Labelmaker, whose real overlap is M56's node-text wrap.
+- 2026-10-10 — **Splice is always on while dragging; a modifier suppresses it (user).** It also works for multi-node selections and draws an insertion marker.
+- 2026-10-10 — **Foreground render is a modal progress dialog with cancel (user).** The UI is blocked but still repaints; "background" stays today's in-process render with the Progress panel.

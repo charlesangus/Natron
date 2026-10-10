@@ -29,3 +29,7 @@ Acceptance sketch:
   pickers line up.
 
 Scoping draft (2026-10-10): `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` holds a draft phase/task breakdown and the user questions to settle before elaborating. Deps: M24 (confirmed by the user).
+
+## Decisions
+
+- 2026-10-10 — **Icon direction (user):** a monochrome SVG line-icon set under a GPL-compatible licence, recoloured by the theme, with the three GroupingIcons sets reduced to one. The user wants pitched options before any before/after work starts.

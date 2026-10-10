@@ -77,3 +77,4 @@
 - 2026-10-10 — two-hosts-share-the-plan-branch: GPU host and this host both push `plan`; fetch+merge before push, fetch before allocating a milestone ID (M88 collision → ours is M89) → DECISIONS/2026-10-10-two-hosts-share-the-plan-branch.md
 - 2026-10-10 — hard-cut-covers-default-changes: default changes bump the plugin version only; no legacy-default hooks, fixtures or compat tests → DECISIONS/2026-10-10-hard-cut-covers-default-changes.md
 - 2026-10-10 — gui-host-runs-polish-milestones: a third host runs M24/M44/M55/M56 in two lanes; rows only, no frontmatter writes; fetch before and push after every plan edit → DECISIONS/2026-10-10-gui-host-runs-polish-milestones.md
+- 2026-10-10 — m46-stays-separate-from-m55: M46 is its own milestone, after M24 and M56 text wrap → DECISIONS/2026-10-10-m46-stays-separate-from-m55.md

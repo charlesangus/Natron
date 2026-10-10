@@ -296,4 +296,3 @@ future core work has solid ground to build on.
 # Open questions
 
 - **M64 - Tiled Rendering:** dropped for now (user, 2026-10-08): this 4-core dev host is too slow for the Phase 64.7 re-evaluation benchmarks to be meaningful. Resume only on a faster host and with the user's go-ahead.
-- **M55 - Node Graph Polish / M46 - Labelmaker Annotations:** are they one milestone or two? Decide after the evaluation described in the 2026-10-08 backlog-order decision.

@@ -35,3 +35,15 @@ Acceptance sketch:
   - Global-mode axes: H is hue on x and value on y; S is saturation on x and value on y; V changes value with either axis.
   - Global mode is engaged by a button on each colour knob row, or a shortcut (G with the cursor over a colour knob or its panel). It shows a HUD, Esc cancels, and Enter or a click commits.
   - Next step: a single hybrid Qt mockup for the user to try before elaboration.
+- 2026-10-10 — **Hybrid round 2 (user, after trying the hybrid mockup):** these changes override the earlier hybrid entries where they conflict.
+  - Global mode adjusts only while a mouse button is held: click and drag, not free movement.
+  - Esc accepts and there is no cancel, since undo covers it. Enter also accepts.
+  - Clicking the hue rim sets the hue to that angle.
+  - The H and S keys are dropped; C (x = hue, y = saturation) covers them. Held-key locks over the trackball are V and T, and must actually work, unlike in the mockup.
+  - The gamut triangle on the wheel must look roughly as it would on an xy chromaticity plot. For ACEScg its sides should be about equal, unlike the mockup's lopsided hexcone projection.
+  - The gear readout, rim readout and rim ± buttons are removed.
+  - After each edit the trackball re-centres: the puck returns to centre and the wheel shows the change from the current value. When the neutral white point is off the wheel, it is marked at the edge with a crosshair plus a caret pointing toward it.
+  - The shortcut is Ctrl+G, and it is application-wide. It activates the last-touched colour knob on the topmost node in the properties bin. With no last-touched knob it falls back to `gain` on a Grade, master gain on a ColorCorrect, or the first colour knob on any other node. If the top node has no colour knobs, it silently does nothing.
+  - The default saturation speed is 10% of the mockup's.
+  - The global-mode HUD is not a popup. It sits in the properties bin, and a highlight-colour border is drawn around the viewer while the mode is active. "Monitor" is read as the viewer pane; this reading is not yet confirmed.
+  - **Implement in Natron now.** The next test round is on an AppImage, not the mockup.

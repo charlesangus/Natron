@@ -644,3 +644,4 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - split frames bigger than that into per-strip imports. This follows already from `maxStorageBufferRange`.
   - The earlier M83 finding that "a single host-import copy over 4 GiB is wrong" is likely the same truncation.
   - Probe: the scratchpad `import-probe/`, which was not committed.
+- 2026-10-10 — #48 merged. Once the in-flight tasks commit, rebase M84 with `git rebase --onto origin/main 87dcb403a`; `87dcb403a` is the M83 tip the branch is stacked on.

@@ -382,9 +382,9 @@ NodeGui::initialize(NodeGraph* dag,
 } // initialize
 
 bool
-NodeGui::getColorFromGrouping(QColor* color)
+NodeGui::getCategoryColor(const NodePtr& internalNode,
+                          QColor* color)
 {
-    NodePtr internalNode = getNode();
     if (!internalNode) {
         return false;
     }
@@ -394,42 +394,11 @@ NodeGui::getColorFromGrouping(QColor* color)
     }
     SettingsPtr settings = appPTR->getCurrentSettings();
     float r, g, b;
-    Backdrop* isBd = dynamic_cast<Backdrop*>( iseffect.get() );
-    std::list<std::string> grouping;
 
-    internalNode->getPluginGrouping(&grouping);
-    std::string majGroup = grouping.empty() ? "" : grouping.front();
-
-    if ( iseffect->isReader() ) {
-        settings->getReaderColor(&r, &g, &b);
-    } else if (isBd) {
+    if (internalNode->isBackdropNode()) {
         settings->getDefaultBackdropColor(&r, &g, &b);
-    } else if ( iseffect->isWriter() ) {
-        settings->getWriterColor(&r, &g, &b);
-    } else if ( iseffect->isGenerator() ) {
-        settings->getGeneratorColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_COLOR) {
-        settings->getColorGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_FILTER) {
-        settings->getFilterGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_CHANNEL) {
-        settings->getChannelGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_KEYER) {
-        settings->getKeyerGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_MERGE) {
-        settings->getMergeGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_PAINT) {
-        settings->getDrawGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_TIME) {
-        settings->getTimeGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_TRANSFORM) {
-        settings->getTransformGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_MULTIVIEW) {
-        settings->getViewsGroupColor(&r, &g, &b);
-    } else if (majGroup == PLUGIN_GROUP_DEEP) {
-        settings->getDeepGroupColor(&r, &g, &b);
     } else {
-        settings->getDefaultNodeColor(&r, &g, &b);
+        settings->getNodeCategoryColor(internalNode->getNodeCategory(), &r, &g, &b);
     }
     color->setRgbF( Image::clamp<qreal>(r, 0., 1.),
                     Image::clamp<qreal>(g, 0., 1.),
@@ -448,7 +417,7 @@ NodeGui::restoreStateAfterCreation()
     ///Refresh the disabled knob
 
     QColor color;
-    if ( getColorFromGrouping(&color) ) {
+    if (getCategoryColor(internalNode, &color)) {
         setCurrentColor(color);
     }
     KnobBoolPtr disabledknob = internalNode->getDisabledKnob();
@@ -3821,7 +3790,7 @@ NodeGui::setPluginIDAndVersion(const std::list<std::string>& /*grouping*/,
                                unsigned int version)
 {
     QColor color;
-    if ( getColorFromGrouping(&color) ) {
+    if (getCategoryColor(getNode(), &color)) {
         setCurrentColor(color);
     }
     if ( getSettingPanel() ) {

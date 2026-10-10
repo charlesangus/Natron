@@ -299,47 +299,12 @@ loadNodeGuiSerialization(Gui* gui,
         nGui->togglePreview();
     }
 
-    EffectInstancePtr iseffect = nGui->getNode()->getEffectInstance();
-
-    if ( serialization.colorWasFound() ) {
-        std::list<std::string> grouping;
-        nGui->getNode()->getPluginGrouping(&grouping);
-        std::string majGroup = grouping.empty() ? "" : grouping.front();
+    if (serialization.colorWasFound()) {
         BackdropGui* isBd = dynamic_cast<BackdropGui*>( nGui.get() );
+        QColor defaultColor;
+        NodeGui::getCategoryColor(nGui->getNode(), &defaultColor);
         float defR, defG, defB;
-
-        if ( iseffect->isReader() ) {
-            settings->getReaderColor(&defR, &defG, &defB);
-        } else if ( iseffect->isWriter() ) {
-            settings->getWriterColor(&defR, &defG, &defB);
-        } else if ( iseffect->isGenerator() ) {
-            settings->getGeneratorColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_COLOR) {
-            settings->getColorGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_FILTER) {
-            settings->getFilterGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_CHANNEL) {
-            settings->getChannelGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_KEYER) {
-            settings->getKeyerGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_MERGE) {
-            settings->getMergeGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_PAINT) {
-            settings->getDrawGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_TIME) {
-            settings->getTimeGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_TRANSFORM) {
-            settings->getTransformGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_MULTIVIEW) {
-            settings->getViewsGroupColor(&defR, &defG, &defB);
-        } else if (majGroup == PLUGIN_GROUP_DEEP) {
-            settings->getDeepGroupColor(&defR, &defG, &defB);
-        } else if (isBd) {
-            settings->getDefaultBackdropColor(&defR, &defG, &defB);
-        } else {
-            settings->getDefaultNodeColor(&defR, &defG, &defB);
-        }
-
+        defaultColor.getRgbF(&defR, &defG, &defB);
 
         float r, g, b;
         serialization.getColor(&r, &g, &b);

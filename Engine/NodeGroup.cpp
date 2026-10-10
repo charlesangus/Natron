@@ -2799,8 +2799,8 @@ exportGroupInternal(int indentLevel,
         double r, g, b;
         bool hasColor = groupNode->getColor(&r, &g, &b);
         if (hasColor) {
-            // TODO: we could check if the color was actually changed from the default (NodeGui::getColorFromGrouping())
-            
+            // TODO: we could check if the color was actually changed from the default (NodeGui::getCategoryColor())
+
             // a precision of 3 digits is enough for the node color
             WRITE_INDENT(indentLevel); WRITE_STRING( QString::fromUtf8("lastNode.setColor(") + NUM_COLOR(r) + QString::fromUtf8(", ") + NUM_COLOR(g) + QString::fromUtf8(", ") + NUM_COLOR(b) +  QString::fromUtf8(")") );
         }

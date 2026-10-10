@@ -407,6 +407,14 @@ public:
     virtual bool setCurrentCursor(const QString& customCursorFilePath) OVERRIDE FINAL;
     virtual void showGroupKnobAsDialog(KnobGroup* group) OVERRIDE FINAL;
 
+    /**
+     * @brief The colour a node of this category gets by default: the node's own
+     * category colour, or Settings::getDefaultBackdropColor() for a backdrop.
+     * Static so callers without a NodeGui (e.g. ProjectGui's serialization loader)
+     * can recompute it without constructing one.
+     **/
+    static bool getCategoryColor(const NodePtr& internalNode, QColor* color);
+
 protected:
 
     virtual int getBaseDepth() const { return 20; }
@@ -435,8 +443,6 @@ public Q_SLOTS:
     void onRightClickActionTriggered();
 
     void onRightClickMenuKnobPopulated();
-
-    bool getColorFromGrouping(QColor* color);
 
     void onHideInputsKnobValueChanged(bool hidden);
 

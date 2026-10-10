@@ -786,7 +786,7 @@ public:
      * @brief Resolves the NodeCategoryEnum used to colour this node in the node graph.
      * Backdrop is not a category (it keeps its own Settings::getDefaultBackdropColor()):
      * callers must check isBackdropNode() before calling this, exactly as
-     * NodeGui::getColorFromGrouping() checks dynamic_cast<Backdrop*> before resolving a
+     * NodeGui::getCategoryColor() checks isBackdropNode() before resolving a
      * category colour today.
      **/
     NodeCategoryEnum getNodeCategory() const WARN_UNUSED_RETURN;

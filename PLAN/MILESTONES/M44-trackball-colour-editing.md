@@ -277,7 +277,7 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
     - Existing `GuiTests` and `ctest` stay green.
   - size: M
 
-- [ ] M44.P4.T4 — Make a swatch drag a trackball (with V/T locks) while a click still toggles picking
+- [x] M44.P4.T4 — Make a swatch drag a trackball (with V/T locks) while a click still toggles picking
   - files: `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`
   - approach:
     - Move `ColorPickerLabel`'s toggle (`Gui/KnobGuiColor.cpp:98-107`) from press to release when the pointer moved less than `QApplication::startDragDistance()`.

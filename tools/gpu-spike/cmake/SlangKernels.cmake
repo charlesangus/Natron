@@ -19,6 +19,14 @@ if(CMAKE_SCRIPT_MODE_FILE AND GLSL_IN)
   # memory barrier is the equivalent workgroup sync.
   string(REPLACE "#extension GL_KHR_memory_scope_semantics : require\n" "" _glsl "${_glsl}")
   string(REGEX REPLACE "controlBarrier\\([^;]*\\);" "memoryBarrierShared(); barrier();" _glsl "${_glsl}")
+  # push_constant does not exist in GL: turn the parameter block into a UBO
+  # bound right after the storage buffers, which is where the host binds it.
+  if(_glsl MATCHES "layout\\(push_constant\\)[ \t\n]*layout\\(std430\\) uniform")
+    string(REGEX MATCHALL "layout\\(std430, binding = [0-9]+\\)" _ssbos "${_glsl}")
+    list(LENGTH _ssbos _ubo_binding)
+    string(REGEX REPLACE "layout\\(push_constant\\)[ \t\n]*layout\\(std430\\) uniform"
+           "layout(std140, binding = ${_ubo_binding}) uniform" _glsl "${_glsl}")
+  endif()
   file(WRITE "${OUT}"
 "#pragma once
 
@@ -65,6 +73,8 @@ function(slang_add_kernel target source)
     message(FATAL_ERROR "slang_add_kernel(${target}): ENTRY is required")
   endif()
   get_filename_component(_src "${source}" ABSOLUTE)
+  get_filename_component(_srcdir "${_src}" DIRECTORY)
+  file(GLOB _modules CONFIGURE_DEPENDS "${_srcdir}/*.slang")
   set(_gen "${CMAKE_CURRENT_BINARY_DIR}/gen/${target}")
   set(_spv "${_gen}/${target}.spv")
   set(_hdr "${_gen}/${target}_spirv.h")
@@ -79,7 +89,7 @@ function(slang_add_kernel target source)
             -reflection-json "${_json}"
     COMMAND ${CMAKE_COMMAND} -DIN=${_spv} -DOUT=${_hdr} -DSYMBOL=${target} -DJSON=${_json}
             -P "${_SLANG_KERNELS_SELF}"
-    DEPENDS "${_src}"
+    DEPENDS "${_src}" ${_modules}
     VERBATIM)
 
   add_custom_command(
@@ -87,7 +97,7 @@ function(slang_add_kernel target source)
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_gen}"
     COMMAND "${SLANG_COMPILER}" "${_src}" -entry ${ARG_ENTRY} -stage compute
             -target cpp -o "${_cpp}"
-    DEPENDS "${_src}"
+    DEPENDS "${_src}" ${_modules}
     VERBATIM)
 
   add_library(${target} STATIC "${_cpp}" "${_hdr}")
@@ -106,6 +116,8 @@ function(slang_add_glsl target source)
     message(FATAL_ERROR "slang_add_glsl(${target}): ENTRY is required")
   endif()
   get_filename_component(_src "${source}" ABSOLUTE)
+  get_filename_component(_srcdir "${_src}" DIRECTORY)
+  file(GLOB _modules CONFIGURE_DEPENDS "${_srcdir}/*.slang")
   set(_gen "${CMAKE_CURRENT_BINARY_DIR}/gen/${target}")
   set(_comp "${_gen}/${target}.comp")
   set(_hdr "${_gen}/${target}.h")
@@ -116,7 +128,7 @@ function(slang_add_glsl target source)
             -target glsl -profile glsl_430 -o "${_comp}"
     COMMAND ${CMAKE_COMMAND} -DGLSL_IN=${_comp} -DOUT=${_hdr} -DSYMBOL=${target}
             -P "${_SLANG_KERNELS_SELF}"
-    DEPENDS "${_src}"
+    DEPENDS "${_src}" ${_modules} "${_SLANG_KERNELS_SELF}"
     VERBATIM)
   add_custom_target(${target}_glsl_gen DEPENDS "${_hdr}")
   add_library(${target} INTERFACE)

@@ -11,7 +11,7 @@ struct BlurParams
     uint vertical;
     uint neumann;
 };
-ConstantBuffer<BlurParams> params;
+[[vk::push_constant]] ConstantBuffer<BlurParams> params;
 
 static const uint kGroup = 128;
 static const uint kMaxRadius = 512;

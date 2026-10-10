@@ -24,8 +24,10 @@ public float grade(float v, float a, float b, float gamma, float invGamma)
 
 public float invGrade(float v, float a, float b, float gamma)
 {
+    // SPIR-V Pow is exp2(y * log2(x)), so pow(inf, 0) would be inf * 0 = NaN
+    // where the engine's std::pow gives 1.
     if (gamma != 1.0 && v > 0.0)
-        v = pow(v, gamma);
+        v = (gamma == 0.0) ? 1.0 : pow(v, gamma);
     v = v - b;
     if (a != 0.0)
         v /= a;

@@ -15,7 +15,7 @@ struct GradeParams
     uint channelMask;
     uint flags;
 };
-ConstantBuffer<GradeParams> params;
+[[vk::push_constant]] ConstantBuffer<GradeParams> params;
 
 static const uint kReverse = 1;
 static const uint kClampBlack = 2;

@@ -8,21 +8,15 @@
 
 #include "slang-cpp-prelude.h"
 
-#include "../ref/BlurRef.h"
+#include "BlurFixture.h"
 
 extern "C" void blurPass(ComputeVaryingInput*, void* entryPointParams, void* globalParams);
 
 namespace {
 
-struct BlurParams
-{
-    uint32_t width;
-    uint32_t height;
-    uint32_t channels;
-    uint32_t radius;
-    uint32_t vertical;
-    uint32_t neumann;
-};
+using blurfix::BlurParams;
+using blurfix::kGroup;
+using blurfix::kTolerance;
 
 struct BlurGlobals
 {
@@ -31,9 +25,6 @@ struct BlurGlobals
     StructuredBuffer<float> weights;
     BlurParams* params;
 };
-
-constexpr double kTolerance = 2e-6;
-constexpr uint32_t kGroup = 128;
 
 void runPass(const std::vector<float>& src, std::vector<float>& dst, const std::vector<float>& w,
              BlurParams p)
@@ -50,11 +41,7 @@ void runPass(const std::vector<float>& src, std::vector<float>& dst, const std::
 
 double maxError(int width, int height, int channels, double sigma, bool neumann, uint32_t seed)
 {
-    std::mt19937 rng(seed);
-    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
-    std::vector<float> img(size_t(width) * height * channels);
-    for (float& v : img)
-        v = dist(rng);
+    const std::vector<float> img = blurfix::makeImage(width, height, channels, seed);
 
     const std::vector<double> wd = blurref::makeWeights(sigma);
     const std::vector<float> wf(wd.begin(), wd.end());
@@ -65,8 +52,7 @@ double maxError(int width, int height, int channels, double sigma, bool neumann,
     p.vertical = 1;
     runPass(tmp, out, wf, p);
 
-    const std::vector<double> ref =
-        blurref::blur(std::vector<double>(img.begin(), img.end()), width, height, channels, sigma, neumann);
+    const std::vector<double> ref = blurfix::reference(img, width, height, channels, sigma, neumann);
     double worst = 0.0;
     for (size_t i = 0; i < ref.size(); ++i)
         worst = std::max(worst, std::abs(double(out[i]) - ref[i]));
@@ -77,19 +63,16 @@ double maxError(int width, int height, int channels, double sigma, bool neumann,
 
 TEST(BlurCpu, MatchesReference)
 {
-    const int sizes[][2] = {{1, 1}, {2, 3}, {5, 3}, {37, 23}, {129, 131}, {257, 5}, {4, 300}};
-    const double sigmas[] = {0.5, 3.0, 25.0, 100.0};
-    const int channelCounts[] = {1, 3, 4};
     double overall = 0.0;
     uint32_t seed = 1;
-    for (double sigma : sigmas)
-        for (const auto& s : sizes)
-            for (int ch : channelCounts)
+    for (double sigma : blurfix::kSigmas)
+        for (const auto& s : blurfix::kSizes)
+            for (int ch : blurfix::kChannelCounts)
                 for (bool neumann : {false, true}) {
-                    const double e = maxError(s[0], s[1], ch, sigma, neumann, seed++);
+                    const double e = maxError(s.w, s.h, ch, sigma, neumann, seed++);
                     overall = std::max(overall, e);
                     EXPECT_LE(e, kTolerance)
-                        << "sigma=" << sigma << " " << s[0] << "x" << s[1] << " ch=" << ch
+                        << "sigma=" << sigma << " " << s.w << "x" << s.h << " ch=" << ch
                         << " neumann=" << neumann;
                 }
     RecordProperty("max_abs_error", std::to_string(overall));

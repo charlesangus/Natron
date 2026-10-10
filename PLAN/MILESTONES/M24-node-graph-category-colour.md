@@ -81,7 +81,7 @@ Scope note (revised 2026-10-10): M18 Phase 18.4 already removed the node silhoue
   - verify: Xvfb screenshots: a node with no user colour unchanged; a recoloured node with category body + user border; the same node selected with the halo still distinct; a cloned node unchanged.
   - size: L
 
-- [ ] M24.P3.T2a — Make the user-colour border wrap the whole node, icon column included
+- [x] M24.P3.T2a — Make the user-colour border wrap the whole node, icon column included
   - files: `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/NodeGraphRectItem.h`, `Gui/NodeGraphRectItem.cpp`
   - approach: P3.T2 strokes the inset border on `_boundingBox`, which covers only the coloured label area, so the dark plugin-icon column on the left (and anything else outside `_boundingBox`, such as the preview area) sits outside it. Stroke the border around the node's full footprint instead: the union of the icon column, `_boundingBox` and any preview. Either draw it on a dedicated item sized to that union, kept in sync wherever the node resizes or toggles its preview, or move the stroke to an item that already spans the whole node. The stroke stays inset: its outer edge sits on the full footprint, so it still never touches the outset `_stateIndicator` halo. Keep the contrast nudge, hiding on clones, and the Dot/Backdrop handling exactly as P3.T2 defined them.
   - verify: screenshot script (`build/m24-shots/m24_border.py`) shots of a user-coloured Grade show the border enclosing both the icon column and the label area, selected and unselected, with the halo still distinct; a node with its preview enabled shows the border around the whole node; no border on nodes without a user colour.

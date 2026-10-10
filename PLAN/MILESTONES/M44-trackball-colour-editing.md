@@ -29,7 +29,7 @@ All of this phase lives in `Engine/ColorWheelMath.{h,cpp}`, which includes nothi
     - HDR (gain 8) and negative (offset −0.3) inputs survive.
   - size: M
 
-- [ ] M44.P1.T2 — Add the xy chroma plane: projective map, inverse at fixed Y, offset pivot, Jacobian fallback, hue/sat about white, plane overlays
+- [x] M44.P1.T2 — Add the xy chroma plane: projective map, inverse at fixed Y, offset pivot, Jacobian fallback, hue/sat about white, plane overlays
   - files: `Engine/ColorWheelMath.h`, `Engine/ColorWheelMath.cpp`, `Tests/ColorWheelMath_Test.cpp`
   - approach: Implement the Design notes, Chroma plane section.
     - `PlanePoint toPlane(role, basis, v)` returns q relative to xy_w plus `valid`. The offset role pivots at 0.18 and falls back to the Jacobian when 0.18 + w·o ≤ 0 or X+Y+Z ≤ 0.
@@ -445,3 +445,6 @@ These tasks change the real colour rows. Each task's GUI evidence is a scratch s
   - The global-mode highlight border goes around the **whole window**, not the viewer. This supersedes the "monitor = viewer" reading.
   - In global mode, each click-drag stroke is one undo step, and Ctrl+Z works between strokes.
 
+- 2026-10-10 — **P1.T2 landed:** AP1 measures R–G 0.767, G–B 0.787 and B–R 0.636 in xy, with primaries at 353.5°, 107.7° and 236.6°. Across 10,000 random edits, the worst luma drift was 6e-16 relative on gains. Two calls to confirm at the gate:
+  - A config with no XYZ matrix gets a stand-in linear plane (J = 0.1·F): no triangle, but centred on white and Y-exact, so the wheel still works.
+  - The u′v′ sides are 0.513/0.482/0.566, not the design note's 0.59.

@@ -68,6 +68,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Button.h"
 #include "Gui/ClickableLabel.h"
 #include "Gui/ColorKnobEditSession.h"
+#include "Gui/ColorTrackballGlobalMode.h"
 #include "Gui/ComboBox.h"
 #include "Gui/CurveGui.h"
 #include "Gui/DockablePanel.h"
@@ -530,6 +531,7 @@ KnobGuiColor::KnobGuiColor(KnobIPtr knob,
     , _lastColor()
     , _useSimplifiedUI(true)
     , _adjustPanel()
+    , _rowContainer()
     , _editSession()
     , _configCallbackOwner()
     , _configCallbackId(-1)
@@ -635,6 +637,37 @@ bool
 KnobGuiColor::isColorEditable() const
 {
     return isAdjustPanelEditable();
+}
+
+QWidget*
+KnobGuiColor::getGlobalModeRowWidget() const
+{
+    return _rowContainer.data();
+}
+
+void
+KnobGuiColor::engageGlobalMode()
+{
+    Gui* gui = getGui();
+    ColorTrackballGlobalMode* mode = gui ? ColorTrackballGlobalMode::instanceFor(gui) : 0;
+
+    if (!mode || !_adjustPanel) {
+        return;
+    }
+    mode->engage(std::dynamic_pointer_cast<KnobGuiColor>(shared_from_this()));
+}
+
+void
+KnobGuiColor::setGlobalModeHighlighted(bool highlighted)
+{
+    if (!_rowContainer) {
+        return;
+    }
+    _rowContainer->setProperty(colorTrackballTargetPropertyName(), highlighted);
+    // Qt only re-evaluates property selectors on polish.
+    _rowContainer->style()->unpolish(_rowContainer.data());
+    _rowContainer->style()->polish(_rowContainer.data());
+    _rowContainer->update();
 }
 
 ProjectColorManagementPtr
@@ -861,6 +894,7 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         // Tags the row so ColorKnobTouchTracker's app-wide filter can find this knob from a
         // press, wheel or focus-in on any of its spinboxes, not only from a gesture session.
         containerLayout->widget()->setProperty(colorKnobTouchTagPropertyName(), QVariant::fromValue<void*>(this));
+        _rowContainer = containerLayout->widget();
     }
     _colorLabel = new ColorPickerLabel( _useSimplifiedUI ? NULL : this, containerLayout->widget() );
     if (!_useSimplifiedUI) {

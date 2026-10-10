@@ -203,7 +203,21 @@ public:
     KnobColorValue getCurrentColorValue() const;
     bool isColorEditable() const;
 
+    /**
+     * @brief The row's own container widget, which the global trackball mode highlights and a
+     * readout of the mode can scroll into view. Null for knobs without an adjustment panel.
+     **/
+    QWidget* getGlobalModeRowWidget() const;
+
 public Q_SLOTS:
+
+    /**
+     * @brief Engages the global trackball mode on this knob. Does nothing on simplified and
+     * viewer knobs, which have no adjustment panel.
+     **/
+    void engageGlobalMode();
+
+    void setGlobalModeHighlighted(bool highlighted);
 
     void updateColorSelector();
 
@@ -278,6 +292,7 @@ private:
     std::vector<double> _lastColor;
     bool _useSimplifiedUI;
     QPointer<ColorAdjustPanel> _adjustPanel;
+    QPointer<QWidget> _rowContainer;
     std::unique_ptr<ColorKnobEditSession> _editSession;
     std::weak_ptr<ProjectColorManagement> _configCallbackOwner;
     int _configCallbackId;

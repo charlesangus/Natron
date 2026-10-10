@@ -34,6 +34,11 @@ Natron--NodeSettingsPanel[_selected="false"] {
     border-radius: 2px;
 }
 
+QWidget[_natronColorTrackballTarget="true"] {
+    border: 1px solid %1;
+    border-radius: 2px;
+}
+
 QToolTip {
    color: %5;
    background-color: black;

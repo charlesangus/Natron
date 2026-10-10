@@ -7,6 +7,8 @@
 #
 # <target> is a binary name found directly under the build dir, or a path.
 # GPU_SPIKE_BUILD defaults to <repo-of-this-script>/build/gpu-spike.
+# It refuses to run when no render node is openable, unless
+# GPU_SPIKE_ALLOW_SOFTWARE=1 accepts the lavapipe/llvmpipe fallback.
 #
 # The container cannot use RADV: its libvulkan_radeon.so needs the AMDGPU
 # target from the system libLLVM.so.21, but /usr/local carries a clang
@@ -33,6 +35,24 @@ elif [[ -x "${BUILD_DIR}/${target}" ]]; then
 else
     echo "run-host.sh: '${target}' not found in ${BUILD_DIR} (set GPU_SPIKE_BUILD)" >&2
     exit 1
+fi
+
+# Without an openable render node the Vulkan loader and EGL silently fall
+# back to lavapipe/llvmpipe, which would make RADV results meaningless.
+render_ok=0
+for node in /dev/dri/renderD*; do
+    if [[ -r "${node}" && -w "${node}" ]]; then
+        render_ok=1
+        break
+    fi
+done
+if [[ ${render_ok} -eq 0 ]]; then
+    echo "run-host.sh: no /dev/dri/renderD* node is openable ($(ls -ln /dev/dri 2>&1 | tr '\n' ' '))" >&2
+    if [[ "${GPU_SPIKE_ALLOW_SOFTWARE:-0}" != 1 ]]; then
+        echo "run-host.sh: RADV unavailable; set GPU_SPIKE_ALLOW_SOFTWARE=1 to run on llvmpipe anyway" >&2
+        exit 1
+    fi
+    echo "run-host.sh: WARNING: continuing on llvmpipe/lavapipe" >&2
 fi
 
 # RADV only exposes the dedicated SDMA transfer-only queue family when asked.

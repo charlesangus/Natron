@@ -95,3 +95,33 @@ find_package(OpenGL COMPONENTS EGL REQUIRED)
 add_executable(GlCompute ref-gl/GlCompute_main.cpp)
 target_include_directories(GlCompute PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(GlCompute PRIVATE grade_gl blur_gl OpenGL::EGL -static-libstdc++ -static-libgcc)
+
+add_library(gpuspike_glinterop STATIC src/GlInterop.cpp)
+target_link_libraries(gpuspike_glinterop PUBLIC gpuspike_core)
+target_compile_options(gpuspike_glinterop PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
+
+add_executable(GlInterop_Test tests/GlInterop_Test.cpp)
+target_link_libraries(GlInterop_Test PRIVATE gpuspike_glinterop fill OpenGL::EGL GTest::gtest_main
+  -static-libstdc++ -static-libgcc)
+# In the dev image /usr/local's glvnd only lists the NVIDIA EGL vendor, and /usr/local's libLLVM lacks
+# the AMDGPU target that the system libgallium needs; without both overrides Mesa GL cannot load at all.
+set(GL_INTEROP_TEST_ENV "")
+if(EXISTS /usr/share/glvnd/egl_vendor.d/50_mesa.json AND EXISTS /usr/local/share/glvnd/egl_vendor.d)
+  list(APPEND GL_INTEROP_TEST_ENV "__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json")
+endif()
+if(EXISTS /usr/lib64/libLLVM.so.21.1 AND EXISTS /usr/local/lib/libLLVM.so.21.1)
+  list(APPEND GL_INTEROP_TEST_ENV "LD_PRELOAD=/usr/lib64/libLLVM.so.21.1")
+endif()
+string(REPLACE ";" "\\;" _gl_interop_env "${GL_INTEROP_TEST_ENV}")
+gtest_discover_tests(GlInterop_Test DISCOVERY_TIMEOUT 30 PROPERTIES ENVIRONMENT "${_gl_interop_env}")
+
+find_package(Qt6 QUIET COMPONENTS OpenGLWidgets)
+if(Qt6OpenGLWidgets_FOUND)
+  add_executable(GlInteropQt tests/GlInteropQt_main.cpp)
+  target_link_libraries(GlInteropQt PRIVATE gpuspike_glinterop Qt6::OpenGLWidgets)
+  find_program(XVFB_RUN xvfb-run)
+  if(XVFB_RUN)
+    add_test(NAME GlInteropQt COMMAND ${XVFB_RUN} -a -s "-screen 0 1024x768x24" $<TARGET_FILE:GlInteropQt>)
+    set_tests_properties(GlInteropQt PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=xcb;${GL_INTEROP_TEST_ENV}")
+  endif()
+endif()

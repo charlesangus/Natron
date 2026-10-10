@@ -1,5 +1,7 @@
 # Render cost profile of three synthetic UHD comps (M82)
 
+> **Follow-up (2026-10-10, `cbb5c619a`):** the issues listed under the report-script findings below are fixed. `wall_gain.py` is folded into `render-profile-report.py`, which now reports gain as a share of wall time (`--wall-ms-per-frame`), takes per-node cost from a 1-thread run (`--serial-profile`), and treats writers as region boundaries. Re-running it reproduces the gains in this report. References to `wall_gain.py` below are historical.
+
 Question for M83/M84: do the expensive nodes of a real comp sit close enough to form GPU-resident regions, or are they isolated, so that a few heavy nodes with async transfers is enough?
 
 All numbers below were measured on the Ryzen 7 7800X3D, **16 threads (8 cores / 16 hardware threads, `nproc` = 16)**, Natron `build/release` of branch `milestone/m82-render-cost-profiling`, 3840x2160 float, native nodes where a native exists (Grade, ColorCorrect, Merge, Transform, Keyer, ChromaKeyer, CImgBlur/Erode/Dilate are native in this build; the rest are OFX).
@@ -111,5 +113,5 @@ Reproduce:
 tools/bench/comps/build_comps.sh
 tools/bench/comps/run_comps.sh 1 6
 TAG=serial RENDERER_ARGS="--setting noRenderThreads=1" tools/bench/comps/run_comps.sh 1 4
-python3 tools/bench/comps/wall_gain.py build/bench/m82-profile/keying_grade-serial.steady.jsonl 0.9
+python3 tools/bench/render-profile-report.py build/bench/m82-profile/keying_grade.steady.jsonl --serial-profile build/bench/m82-profile/keying_grade-serial.steady.jsonl --wall-ms-per-frame 900
 ```

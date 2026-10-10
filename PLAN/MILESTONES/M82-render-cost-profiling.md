@@ -28,7 +28,7 @@ Measure where render time actually goes on real comps, and what host↔GPU trans
   - verify: the user reviews the report and gives a go/no-go plus scope for M83 - GPU Compute Backend Spike.
   - size: M
 
-- [ ] M82.P2.T3 — Fix the region report's gain, writer and time handling
+- [x] M82.P2.T3 — Fix the region report's gain, writer and time handling
   - files: `tools/bench/render-profile-report.py`, `tools/bench/comps/wall_gain.py` (fold in and delete), `tools/bench/comps/run_comps.sh` if it calls it
   - approach: Report net gain as a share of wall-clock frame time: divide thread-summed task time by the measured parallelism (task time ÷ frame wall time), as `wall_gain.py` does, and drop the old task-time "gain" so there's only one figure. Exclude writer/encoder nodes (`internalEncoderNode` and Write plugins) from GPU-candidate regions; they count as region boundaries. Key frames on the record's `frame` field, not `time`, which carries sentinels in retime comps. Add a `--serial-profile` option, or document that the heavy/cheap split should come from a 1-thread profile.
   - verify: the synthetic known-answer file still passes; rerunning on the three comps' raw output in `build/bench/m82-profile/` reproduces the report's wall-clock gains, with no writer node in any region.

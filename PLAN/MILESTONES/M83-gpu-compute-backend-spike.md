@@ -169,7 +169,7 @@ Scouted facts this plan relies on (2026-10-10):
 
 ## Phase 83.5: Reference backends (timeboxed, can be dropped)
 
-- [ ] M83.P5.T1 — GL 4.3 compute reference on the same kernels
+- [x] M83.P5.T1 — GL 4.3 compute reference on the same kernels
   - files: `tools/gpu-spike/ref-gl/GlCompute_main.cpp`, `tools/gpu-spike/CMakeLists.txt`
   - approach:
     - Timebox: one working day. Emit GLSL 430 from the same `grade.slang` and `blur.slang` with `slangc -target glsl`. The build step gets added to `slang_add_kernel` behind an argument.
@@ -291,3 +291,4 @@ Scouted facts this plan relies on (2026-10-10):
 - 2026-10-10 — M83.P3.T1: the flat 4-ULP Grade bound fails on ~5.5k of 27M values, all in reverse grade where pow(v, gamma) cancels against B before dividing by a tiny A; the test adds a per-element conditioned tolerance (4 + 2|ln y| ULP of the pow term plus subtraction/division rounding). Float-vs-double, not a kernel bug.
 - 2026-10-10 — M83.P2.T2 kernel convention: storage buffers in set 0 bindings 0..N-1 in declaration order, parameters as one `[[vk::push_constant]]` block (≤128 B); uniform buffers unsupported. `grade.slang`/`blur.slang` must switch their `ConstantBuffer` params to push constants before GPU dispatch (M83.P3.T4).
 - 2026-10-10 — M83.P3.T3 finding for M85/M87: Slang interface generics inline fully (one OpFunction, no calls) and Chain<Grade,Invert> is bit-exact with two passes, 12% fewer instructions, one dispatch and no intermediate buffer. But every op combination needs its own compiled entry point; a runtime graph needs generated wrappers or Slang link-time specialisation (untried).
+- 2026-10-10 — M83.P5.T1 (GL 4.3 compute reference, radeonsi, UHD RGBA float, median of 21): Grade 0.41–0.55 ms; Blur σ=3 12.95 ms (H 1.10 / V 11.86), σ=25 22.47 ms (H 6.47 / V 16.00); all within tolerance. Slang GLSL needed two fixups (`#version 450`→430, `controlBarrier`→`memoryBarrierShared(); barrier();`). The vertical pass is ~10× the horizontal because its loads stride across rows — the Vulkan blur in M83.P3.T4/P6.T1 should tile the vertical pass (2D tiles or transpose) rather than reuse the 1D line layout. Regenerating Natron's GL 2.0 glad for 4.3 is ~half a day; using compute also needs 4.3 contexts.

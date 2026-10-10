@@ -212,7 +212,7 @@ Scouted facts this plan relies on (2026-10-10):
   - verify: a recorded table of twin vs native ms/Mpx with a recommendation: twin as the CPU path, twin as test oracle only, or hand-written CPU kept as primary.
   - size: M
 
-- [ ] M83.P6.T3 — Record build and deployment cost
+- [x] M83.P6.T3 — Record build and deployment cost
   - files: `tools/gpu-spike/bench/build-cost.sh`
   - approach: Measure and print:
     - Slang tarball size and configure time, cold and cached;
@@ -313,3 +313,11 @@ Scouted facts this plan relies on (2026-10-10):
     - A single `vkCmdCopyBuffer` over ~2.5 GiB corrupts data on RADV, and so does a single host-import copy over 4 GiB. Copies must be chunked (512 MB used).
   - **Changes in the same commit:** `blur.slang` vertical pass now uses coalesced loads for r ≤ 32 (UHD σ=3 V 11.0 → 2.3 ms); wider radii keep shared tiles, with V 1.4–2.6× H. 8K σ=25 V is 6× H, likely stride aliasing, not chased. `GpuTransfer` gained interior-only strip downloads (`dstOffset`/`dstBytes`), and `graph_bench.py` gained `BENCH_SIZE`/`BENCH_BLUR_SIZE`.
 - 2026-10-10 — Branch rebased onto `main` after M88 - FIR Gaussian Blur (#46) merged.
+- 2026-10-10 — M83.P6.T3 done. **Deployment cost:**
+  - The Slang tarball is 79 MiB (238 MiB unpacked). Cold configure with the download takes 3.3 s, cached configure 0.83 s, and the full spike build 8.9 s at -j4.
+  - `slangc` takes 0.16–0.21 s per kernel per target, 4.1 s over all 22 invocations.
+  - Embedded SPIR-V totals 67 KiB over 10 kernels.
+  - Vulkan binaries need only `libvulkan.so.1` plus glibc (and gtest in tests). GL tools need libEGL/libOpenGL; the Qt variant needs Qt6 plus GLX.
+  - `package.sh` needs no change: it stages only `build/<type>`, and `excludelist.txt` already excludes `libvulkan.so.1`.
+  - Licences: Slang (Apache-2.0 WITH LLVM-exception) and VMA (MIT) are both GPL-compatible.
+  - CI: n/a, because the spike is local-only.

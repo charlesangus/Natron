@@ -82,3 +82,11 @@ add_executable(PointOpCompose_Test tests/PointOpCompose_Test.cpp)
 target_link_libraries(PointOpCompose_Test PRIVATE pointop_grade pointop_invert pointop_chain
   pointop_masked GTest::gtest_main)
 gtest_discover_tests(PointOpCompose_Test)
+
+slang_add_glsl(grade_gl kernels/grade.slang ENTRY grade_main)
+slang_add_glsl(blur_gl kernels/blur.slang ENTRY blurPass)
+
+find_package(OpenGL COMPONENTS EGL REQUIRED)
+add_executable(GlCompute ref-gl/GlCompute_main.cpp)
+target_include_directories(GlCompute PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(GlCompute PRIVATE grade_gl blur_gl OpenGL::EGL -static-libstdc++ -static-libgcc)

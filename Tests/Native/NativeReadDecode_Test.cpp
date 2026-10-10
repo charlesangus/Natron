@@ -381,31 +381,167 @@ TEST_F(NativeReadDecodeTest, ComponentCountOfTheMetadataFollowsTheFile)
     EXPECT_EQ(4u, layer.getChannels().size());
 }
 
-TEST_F(NativeReadDecodeTest, AFileWithoutRgbaChannelsGivesABlackRgbaPlane)
+namespace {
+const int kSmall = 8;
+
+float
+smallValue(int x,
+           int y,
+           int c)
+{
+    return (float)((x * 31 + y * 17 + c * 53) % 251) / 250.f;
+}
+
+// Writes a kSmall x kSmall file whose channels are named `names`.
+std::string
+writeSmallFile(const QTemporaryDir& dir,
+               const char* file,
+               OIIO::TypeDesc type,
+               const std::vector<std::string>& names)
+{
+    const std::string path = (dir.path() + QString::fromUtf8("/") + QString::fromUtf8(file)).toStdString();
+    const int n = (int)names.size();
+    OIIO::ImageSpec spec(kSmall, kSmall, n, type);
+    spec.channelnames = names;
+    for (int c = 0; c < n; ++c) {
+        if (names[(std::size_t)c] == "A") {
+            spec.alpha_channel = c;
+        }
+    }
+    std::vector<float> pixels((std::size_t)kSmall * kSmall * n);
+    for (int y = 0; y < kSmall; ++y) {
+        for (int x = 0; x < kSmall; ++x) {
+            for (int c = 0; c < n; ++c) {
+                pixels[((std::size_t)y * kSmall + x) * n + c] = smallValue(x, y, c);
+            }
+        }
+    }
+    OIIO::ImageOutput::unique_ptr out = OIIO::ImageOutput::create(path);
+    EXPECT_TRUE(bool(out)) << file;
+    if (!out) {
+        return std::string();
+    }
+    EXPECT_TRUE(out->open(path, spec)) << out->geterror();
+    EXPECT_TRUE(out->write_image(OIIO::TypeDesc::FLOAT, pixels.data())) << out->geterror();
+    EXPECT_TRUE(out->close()) << out->geterror();
+
+    return path;
+}
+} // namespace
+
+TEST_F(NativeReadDecodeTest, AFileWithoutAnyColourChannelGivesABlackRgbaPlane)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
-    const std::string path = (dir.path() + QString::fromUtf8("/gray.exr")).toStdString();
-    OIIO::ImageSpec spec(8, 8, 1, OIIO::TypeDesc::FLOAT);
-    spec.channelnames = { "Y" };
-    std::vector<float> pixels(64, 0.5f);
-    OIIO::ImageOutput::unique_ptr out = OIIO::ImageOutput::create(path);
-    ASSERT_TRUE(bool(out));
-    ASSERT_TRUE(out->open(path, spec)) << out->geterror();
-    ASSERT_TRUE(out->write_image(OIIO::TypeDesc::FLOAT, pixels.data())) << out->geterror();
-    ASSERT_TRUE(out->close()) << out->geterror();
+    const std::string path = writeSmallFile(dir, "layers.exr", OIIO::TypeDesc::FLOAT, { "diffuse.R", "diffuse.G", "diffuse.B" });
+    ASSERT_FALSE(path.empty());
 
     NodePtr node = createRead();
     setFile(node, path);
+    ImageLayerDesc layer;
+    ImageLayerDesc paired;
+    node->getEffectInstance()->getMetadataComponents(-1, &layer, &paired);
+    EXPECT_EQ(4u, layer.getChannels().size());
+
     std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
     std::vector<RenderedPlane> planes;
     std::string error;
-    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, 8, 8), layers, &planes, &error)) << error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSmall, kSmall), layers, &planes, &error)) << error;
     ASSERT_EQ(1u, planes.size());
-    ASSERT_EQ(8u * 8u * 4u, planes[0].pixels.size());
+    ASSERT_EQ((std::size_t)kSmall * kSmall * 4u, planes[0].pixels.size());
     for (std::size_t i = 0; i < planes[0].pixels.size(); ++i) {
         EXPECT_EQ(0.f, planes[0].pixels[i]) << i;
     }
+}
+
+TEST_F(NativeReadDecodeTest, ALuminanceFileFillsRedGreenAndBlueWithItsValue)
+{
+    struct Case {
+        const char* file;
+        OIIO::TypeDesc type;
+        const char* channel;
+    };
+    const Case cases[] = {
+        { "grey.png", OIIO::TypeDesc::UINT8, "Y" },
+        { "grey.tif", OIIO::TypeDesc::UINT16, "Y" },
+        { "grey-i.exr", OIIO::TypeDesc::FLOAT, "I" },
+    };
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    for (std::size_t k = 0; k < sizeof(cases) / sizeof(cases[0]); ++k) {
+        SCOPED_TRACE(cases[k].file);
+        const std::string path = writeSmallFile(dir, cases[k].file, cases[k].type, { cases[k].channel });
+        ASSERT_FALSE(path.empty());
+        Decoded ref;
+        ASSERT_TRUE(readWithOiio(path, &ref));
+        ASSERT_EQ(1, ref.spec.nchannels);
+
+        NodePtr node = createRead();
+        setFile(node, path);
+        ImageLayerDesc layer;
+        ImageLayerDesc paired;
+        node->getEffectInstance()->getMetadataComponents(-1, &layer, &paired);
+        EXPECT_EQ(3u, layer.getChannels().size());
+
+        std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBComponents());
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSmall, kSmall), layers, &planes, &error)) << error;
+        ASSERT_EQ(1u, planes.size());
+        ASSERT_EQ((std::size_t)kSmall * kSmall * 3u, planes[0].pixels.size());
+        std::size_t mismatches = 0;
+        for (int row = 0; row < kSmall; ++row) {
+            for (int col = 0; col < kSmall; ++col) {
+                const float want = ref.pixels[(std::size_t)(kSmall - 1 - row) * kSmall + col];
+                for (int c = 0; c < 3; ++c) {
+                    const float got = planes[0].pixels[((std::size_t)row * kSmall + col) * 3 + c];
+                    if (got != want && ++mismatches <= 5) {
+                        ADD_FAILURE() << "pixel " << col << "," << row << " channel " << c << ": got " << got << ", want " << want;
+                    }
+                }
+            }
+        }
+        EXPECT_EQ(0u, mismatches);
+    }
+}
+
+TEST_F(NativeReadDecodeTest, ALuminanceAndAlphaFileGivesRgbaWithTheAlphaIntact)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string path = writeSmallFile(dir, "grey-alpha.png", OIIO::TypeDesc::UINT8, { "Y", "A" });
+    ASSERT_FALSE(path.empty());
+    Decoded ref;
+    ASSERT_TRUE(readWithOiio(path, &ref));
+    ASSERT_EQ(2, ref.spec.nchannels);
+
+    NodePtr node = createRead();
+    setFile(node, path);
+    ImageLayerDesc layer;
+    ImageLayerDesc paired;
+    node->getEffectInstance()->getMetadataComponents(-1, &layer, &paired);
+    EXPECT_EQ(4u, layer.getChannels().size());
+
+    std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBAComponents());
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSmall, kSmall), layers, &planes, &error)) << error;
+    ASSERT_EQ(1u, planes.size());
+    ASSERT_EQ((std::size_t)kSmall * kSmall * 4u, planes[0].pixels.size());
+    std::size_t mismatches = 0;
+    for (int row = 0; row < kSmall; ++row) {
+        for (int col = 0; col < kSmall; ++col) {
+            const std::size_t fileIndex = ((std::size_t)(kSmall - 1 - row) * kSmall + col) * 2;
+            const float want[4] = { ref.pixels[fileIndex], ref.pixels[fileIndex], ref.pixels[fileIndex], ref.pixels[fileIndex + 1] };
+            for (int c = 0; c < 4; ++c) {
+                const float got = planes[0].pixels[((std::size_t)row * kSmall + col) * 4 + c];
+                if (got != want[c] && ++mismatches <= 5) {
+                    ADD_FAILURE() << "pixel " << col << "," << row << " channel " << c << ": got " << got << ", want " << want[c];
+                }
+            }
+        }
+    }
+    EXPECT_EQ(0u, mismatches);
 }
 
 TEST_F(NativeReadDecodeTest, AnUnreadableFileSetsAPersistentMessageAndALaterGoodFrameClearsIt)

@@ -92,12 +92,15 @@ pixelAspectOf(const OIIO::ImageSpec& spec)
     return par > 0.f ? (double)par : 1.;
 }
 
-// Where the R, G, B and A of a file sit among its channels, -1 when it has none.
+// Where the R, G, B and A of a file sit among its channels, -1 when it has none, and its
+// luminance (Y or I), which stands in for R, G and B when the file has none of them.
 struct ColourChannels {
     int index[4];
+    int luminance;
 
     ColourChannels()
         : index { -1, -1, -1, -1 }
+        , luminance(-1)
     {
     }
 
@@ -128,6 +131,12 @@ struct ColourChannels {
             if (name.size() != 1) {
                 continue;
             }
+            if (name[0] == 'y' || name[0] == 'i') {
+                if (result.luminance < 0) {
+                    result.luminance = i;
+                }
+                continue;
+            }
             const std::size_t slot = std::string("rgba").find(name[0]);
             if (slot != std::string::npos && result.index[slot] < 0) {
                 result.index[slot] = i;
@@ -137,10 +146,21 @@ struct ColourChannels {
         return result;
     }
 
-    // A file with no R, G, B or A stays a black RGBA plane rather than being shuffled in.
+    bool hasRgb() const
+    {
+        return index[0] >= 0 || index[1] >= 0 || index[2] >= 0;
+    }
+
+    bool spreadsLuminance() const
+    {
+        return !hasRgb() && luminance >= 0;
+    }
+
+    // A file with none of R, G, B, A or luminance stays a black RGBA plane rather than being
+    // shuffled in.
     int nComps() const
     {
-        if (index[0] >= 0 || index[1] >= 0 || index[2] >= 0) {
+        if (hasRgb() || spreadsLuminance()) {
             return index[3] >= 0 ? 4 : 3;
         }
 
@@ -154,6 +174,10 @@ struct ColourChannels {
             return index[3];
         }
         if ((nComps == 3 || nComps == 4) && component < nComps) {
+            if (spreadsLuminance() && component < 3) {
+                return luminance;
+            }
+
             return index[component];
         }
 

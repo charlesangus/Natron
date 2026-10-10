@@ -51,6 +51,7 @@ CLANG_DIAG_ON(deprecated)
 
 #include "BaseTest.h"
 #include "FlatExrReader.h"
+#include "RenderBothWays.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -981,8 +982,8 @@ TEST_F(ColorViewsRenderTest, PremultOnAlphaOnlyLeavesAlphaUnchanged)
 }
 
 // WritePNG declares Alpha support, so an alpha-only input is written as a one-channel PNG instead
-// of being widened. PNG has no alpha-only type: the file is a grey image, which a Read gives a black
-// colour plane like any file without R, G, B or A, so the check is on the file itself.
+// of being widened. PNG has no alpha-only type: the file is a grey image, which a Read spreads over
+// R, G and B.
 TEST_F(ColorViewsRenderTest, AlphaOnlyInputWritesAOneChannelPng)
 {
     NodePtr reader = createReader("flat-alpha-only.exr");
@@ -1020,7 +1021,21 @@ TEST_F(ColorViewsRenderTest, AlphaOnlyInputWritesAOneChannelPng)
     ASSERT_GT(spec.height, kCheckY);
     ASSERT_GT(spec.width, kCheckX);
     // PNG rows run top-down.
-    EXPECT_NEAR(1.f, pixels[(std::size_t)(spec.height - 1 - kCheckY) * (std::size_t)spec.width + (std::size_t)kCheckX], 1e-4f);
+    const float written = pixels[(std::size_t)(spec.height - 1 - kCheckY) * (std::size_t)spec.width + (std::size_t)kCheckX];
+    EXPECT_NEAR(1.f, written, 1e-4f);
+
+    NodePtr readBack = createWorkingSpaceRead(pngPath);
+    ASSERT_TRUE(bool(readBack));
+    std::list<ImageLayerDesc> layers(1, ImageLayerDesc::getRGBComponents());
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(readBack, 1., ViewIdx(0), 0, RectI(0, 0, spec.width, spec.height), layers, &planes, &error)) << error;
+    ASSERT_EQ(1u, planes.size());
+    ASSERT_EQ((std::size_t)spec.width * (std::size_t)spec.height * 3u, planes[0].pixels.size());
+    const std::size_t at = ((std::size_t)kCheckY * (std::size_t)spec.width + (std::size_t)kCheckX) * 3;
+    EXPECT_EQ(written, planes[0].pixels[at]);
+    EXPECT_EQ(written, planes[0].pixels[at + 1]);
+    EXPECT_EQ(written, planes[0].pixels[at + 2]);
 }
 
 // A single-A file is decoded straight into a 1-component buffer instead of being widened to RGBA

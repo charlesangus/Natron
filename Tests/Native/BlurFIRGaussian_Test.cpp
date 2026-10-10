@@ -28,7 +28,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <cstring>
 #include <iostream>
 #include <list>
 #include <sstream>
@@ -191,13 +190,13 @@ TEST(BlurFIRGaussianKernel, ImpulseResponseMatchesTruncatedGaussian)
             for (int i = 0; i < n; ++i) {
                 const int k = i - center;
                 const double expected = (std::abs(k) <= radius) ? w[k + radius] : 0.;
-                EXPECT_NEAR(expected, line[i], 2e-6) << "sigma " << sigma << ", neumann " << neumann << ", offset " << k;
+                EXPECT_NEAR(expected, line[i], 1e-6) << "sigma " << sigma << ", neumann " << neumann << ", offset " << k;
                 if (std::abs(k) > radius) {
                     EXPECT_EQ(0.f, line[i]) << "sigma " << sigma << ", neumann " << neumann << ", offset " << k;
                 }
                 sum += line[i];
             }
-            EXPECT_NEAR(1., sum, 2e-6) << "sigma " << sigma << ", neumann " << neumann;
+            EXPECT_NEAR(1., sum, 1e-6) << "sigma " << sigma << ", neumann " << neumann;
         }
     }
 }
@@ -220,11 +219,46 @@ TEST(BlurFIRGaussianKernel, MatchesDoublePrecisionReferenceOnAnyLine)
                 LineFilter::firGaussian(sigmas[s], 0, neumann).apply(line.data(), n, 1);
                 const std::vector<double> expected = referenceFilter(src, sigmas[s], neumann);
                 for (int i = 0; i < n; ++i) {
-                    ASSERT_NEAR(expected[i], line[i], 2e-6) << "sigma " << sigmas[s] << ", n " << n << ", neumann " << neumann << ", i " << i;
+                    ASSERT_NEAR(expected[i], line[i], 1e-6) << "sigma " << sigmas[s] << ", n " << n << ", neumann " << neumann << ", i " << i;
                 }
             }
         }
     }
+}
+
+// The radius of a size-500 blur, which float accumulation over 1251 taps must still serve:
+// measured 9e-7 on values in [0, 1).
+TEST(BlurFIRGaussianKernel, LargeRadiusMatchesDoublePrecisionReference)
+{
+    const double sigma = 625. / 3.;
+    const int n = 4000;
+    std::vector<float> src(n);
+
+    ASSERT_EQ(625, LineFilter::firGaussianRadius(sigma));
+    for (int i = 0; i < n; ++i) {
+        src[i] = pseudoRandom(static_cast<unsigned>(i));
+    }
+    for (int boundary = 0; boundary < 2; ++boundary) {
+        const bool neumann = (boundary == 1);
+        std::vector<float> line = src;
+        LineFilter::firGaussian(sigma, 0, neumann).apply(line.data(), n, 1);
+        const std::vector<double> expected = referenceFilter(src, sigma, neumann);
+        double worst = 0.;
+        for (int i = 0; i < n; ++i) {
+            worst = std::max(worst, std::fabs(expected[i] - line[i]));
+        }
+        std::cout << "[ report ] FIR Gaussian, radius 625, neumann " << neumann << ": max abs error " << worst << std::endl;
+        EXPECT_LE(worst, 2e-6) << "neumann " << neumann;
+    }
+
+    std::vector<float> ones(n, 1.f);
+    LineFilter::firGaussian(sigma, 0, true).apply(ones.data(), n, 1);
+    double worstOnes = 0.;
+    for (int i = 0; i < n; ++i) {
+        worstOnes = std::max(worstOnes, std::fabs(1. - ones[i]));
+    }
+    std::cout << "[ report ] FIR Gaussian, radius 625, constant 1: max abs error " << worstOnes << std::endl;
+    EXPECT_LE(worstOnes, 2e-6);
 }
 
 TEST(BlurFIRGaussianKernel, BoundaryModesOnAConstantLine)
@@ -237,7 +271,7 @@ TEST(BlurFIRGaussianKernel, BoundaryModesOnAConstantLine)
     std::vector<float> nearest(n, 1.f);
     LineFilter::firGaussian(sigma, 0, true).apply(nearest.data(), n, 1);
     for (int i = 0; i < n; ++i) {
-        EXPECT_NEAR(1., nearest[i], 2e-6) << i;
+        EXPECT_NEAR(1., nearest[i], 1e-6) << i;
     }
 
     std::vector<float> black(n, 1.f);
@@ -246,9 +280,9 @@ TEST(BlurFIRGaussianKernel, BoundaryModesOnAConstantLine)
     for (int k = 0; k <= radius; ++k) {
         edge += w[radius + k];
     }
-    EXPECT_NEAR(edge, black[0], 2e-6);
-    EXPECT_NEAR(edge, black[n - 1], 2e-6);
-    EXPECT_NEAR(1., black[n / 2], 2e-6);
+    EXPECT_NEAR(edge, black[0], 1e-6);
+    EXPECT_NEAR(edge, black[n - 1], 1e-6);
+    EXPECT_NEAR(1., black[n / 2], 1e-6);
 }
 
 TEST(BlurFIRGaussianKernel, StrideAndInterleavedLinesGiveTheSameResult)
@@ -318,8 +352,9 @@ TEST(BlurFIRGaussianKernel, ForFilterBuildsTheFIRGaussianFromSigma)
     EXPECT_EQ(5, static_cast<int>(BlurKernels::eFilterFIRGaussian));
 }
 
-// Printed rather than asserted: the figures are context for ports of the filter to other
-// back ends, which have to choose between the two Gaussians.
+// The figures are context for ports of the filter to other back ends, which have to choose
+// between the two Gaussians; the bounds only catch a filter that is no longer a Gaussian of the
+// same sigma (measured: about 5e-3 and 1e-2 at sigma 3, 2e-4 and 5e-3 at sigma 25).
 TEST(BlurFIRGaussianKernel, ReportDifferenceFromTheIIRGaussian)
 {
     const float sizes[] = { 7.2f, 60.f };
@@ -338,23 +373,12 @@ TEST(BlurFIRGaussianKernel, ReportDifferenceFromTheIIRGaussian)
         LineFilter::firGaussian(sigma, 0, true).apply(step.data(), n, 1);
         LineFilter::forFilter(BlurKernels::eFilterGaussian, sigma, 0, true).apply(impulseIIR.data(), n, 1);
         LineFilter::forFilter(BlurKernels::eFilterGaussian, sigma, 0, true).apply(stepIIR.data(), n, 1);
-        std::cout << "[ report ] FIR vs IIR Gaussian, size " << sizes[s] << " (sigma " << sigma << "): impulse max abs diff "
-                  << maxAbsDiff(impulse, impulseIIR) << ", step max abs diff " << maxAbsDiff(step, stepIIR) << std::endl;
+        const double impulseDiff = maxAbsDiff(impulse, impulseIIR);
+        const double stepDiff = maxAbsDiff(step, stepIIR);
+        std::cout << "[ report ] FIR - IIR, sigma " << sigma << ": impulse " << impulseDiff << ", step " << stepDiff << std::endl;
+        EXPECT_LT(impulseDiff, 0.01) << "sigma " << sigma;
+        EXPECT_LT(stepDiff, 0.05) << "sigma " << sigma;
     }
-}
-
-TEST(BlurFIRGaussianCompat, FilterDefaultWasIIRGaussianTruthTable)
-{
-    EXPECT_TRUE(Blur::filterDefaultWasIIRGaussian(4, 0));
-    EXPECT_TRUE(Blur::filterDefaultWasIIRGaussian(4, 7));
-    EXPECT_TRUE(Blur::filterDefaultWasIIRGaussian(1, 0));
-    EXPECT_TRUE(Blur::filterDefaultWasIIRGaussian(5, 0));
-    EXPECT_TRUE(Blur::filterDefaultWasIIRGaussian(4, -1));
-    EXPECT_FALSE(Blur::filterDefaultWasIIRGaussian(5, -1));
-    EXPECT_FALSE(Blur::filterDefaultWasIIRGaussian(5, 1));
-    EXPECT_FALSE(Blur::filterDefaultWasIIRGaussian(5, 2));
-    EXPECT_FALSE(Blur::filterDefaultWasIIRGaussian(6, 0));
-    EXPECT_FALSE(Blur::filterDefaultWasIIRGaussian(PLUGIN_MAJOR_NATRON_BLUR, PLUGIN_MINOR_NATRON_BLUR));
 }
 
 class BlurFIRGaussianTest
@@ -378,27 +402,30 @@ protected:
         return filter ? filter->getValue() : -1;
     }
 
-    static RectI renderWindow(const NodePtr& node)
+    static RectI renderWindow(const NodePtr& node,
+                              unsigned mipmapLevel = 0)
     {
         RectD rod;
         EffectInstancePtr effect = node->getEffectInstance();
-        const StatusEnum stat = effect->getRegionOfDefinition(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod);
+        const RenderScale scale = RenderScale::fromMipmapLevel(mipmapLevel);
+        const StatusEnum stat = effect->getRegionOfDefinition(effect->getRenderHash(), kTime, scale, ViewIdx(0), &rod);
 
         EXPECT_NE(eStatusFailed, stat);
 
-        return rod.toPixelEnclosing(0, 1.);
+        return rod.toPixelEnclosing(mipmapLevel, 1.);
     }
 
     static bool renderRGBA(const NodePtr& node,
                            const RectI& window,
-                           RenderedPlane* plane)
+                           RenderedPlane* plane,
+                           unsigned mipmapLevel = 0)
     {
         std::list<ImageLayerDesc> layers;
         std::vector<RenderedPlane> planes;
         std::string error;
 
         layers.push_back(ImageLayerDesc::getRGBAComponents());
-        const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, layers, &planes, &error);
+        const bool ok = renderNodePlanesDirect(node, kTime, ViewIdx(0), mipmapLevel, window, layers, &planes, &error);
         EXPECT_TRUE(ok) << error;
         if (!ok || (planes.size() != 1)) {
             return false;
@@ -488,20 +515,22 @@ protected:
         return blur;
     }
 
-    // Renders `blur` over its region of definition and compares its alpha with the separable
-    // double-precision truncated Gaussian of `source` (1 inside `box`, 0 elsewhere in `format`,
-    // extended outside `format` by the boundary condition).
+    // Renders `blur` over its region of definition at `mipmapLevel` and compares its alpha with
+    // the separable double-precision truncated Gaussian of `source` (1 inside `box`, 0 elsewhere
+    // in `format`, extended outside `format` by the boundary condition). `format`, `box` and
+    // `sigma` are in pixels at that level.
     void expectMatchesReference(const NodePtr& blur,
                                 const RectI& format,
                                 const RectI& box,
                                 double sigma,
                                 bool neumann,
-                                const std::string& caseName)
+                                const std::string& caseName,
+                                unsigned mipmapLevel = 0)
     {
-        const RectI window = renderWindow(blur);
+        const RectI window = renderWindow(blur, mipmapLevel);
         RenderedPlane plane;
 
-        ASSERT_TRUE(renderRGBA(blur, window, &plane)) << caseName;
+        ASSERT_TRUE(renderRGBA(blur, window, &plane, mipmapLevel)) << caseName;
         const std::size_t nc = plane.channels.size();
         ASSERT_EQ(4u, nc) << caseName;
         const int W = window.width();
@@ -572,19 +601,6 @@ protected:
 
         return project->loadProject(dirPath, fileName);
     }
-
-    bool loadFixture(const QTemporaryDir& tmp,
-                     const char* fixtureName)
-    {
-        const QString dirPath = tmp.path() + QLatin1Char('/');
-        const QString fileName = QString::fromUtf8(fixtureName);
-
-        if (!QFile::copy(QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/") + fileName, dirPath + fileName)) {
-            return false;
-        }
-
-        return getApp()->getProject()->loadProject(dirPath, fileName);
-    }
 };
 
 TEST_F(BlurFIRGaussianTest, NewBlurDefaultsToTheFIRGaussian)
@@ -627,20 +643,51 @@ TEST_F(BlurFIRGaussianTest, ImpulseAndStepThroughTheNodeMatchTheReference)
     }
 }
 
-TEST_F(BlurFIRGaussianTest, ScriptRequestForAnOlderMajorKeepsTheIIRGaussian)
+TEST_F(BlurFIRGaussianTest, ReducedRenderScaleScalesSigma)
 {
-    resetProject();
-    NodePtr ofxEra = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), 3);
-    NodePtr minorZero = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), PLUGIN_MAJOR_NATRON_BLUR, 0);
-    NodePtr current = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), PLUGIN_MAJOR_NATRON_BLUR);
-    NodePtr unversioned = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR));
+    // At mipmap level 1, a size of 14.4 (sigma 6) is a sigma of 3 over a half-resolution image.
+    const RectI box(20, 10, 40, 30);
+    const RectI halfFormat(0, 0, kParitySourceWidth / 2, kParitySourceHeight / 2);
+    const RectI halfBox(box.x1 / 2, box.y1 / 2, box.x2 / 2, box.y2 / 2);
 
-    ASSERT_TRUE(bool(ofxEra) && bool(minorZero) && bool(current) && bool(unversioned));
-    EXPECT_EQ(PLUGIN_MAJOR_NATRON_BLUR, ofxEra->getMajorVersion());
-    EXPECT_EQ(kIIRChoiceIndex, filterIndexOf(ofxEra));
-    EXPECT_EQ(kIIRChoiceIndex, filterIndexOf(minorZero));
-    EXPECT_EQ(kFIRChoiceIndex, filterIndexOf(current));
-    EXPECT_EQ(kFIRChoiceIndex, filterIndexOf(unversioned));
+    resetProject();
+    NodePtr blur = makeBoxOverBlack(box);
+    ASSERT_TRUE(bool(blur));
+    ASSERT_TRUE(blur->getEffectInstance()->supportsRenderScale());
+    ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 14.4, 14.4 }));
+    expectMatchesReference(blur, halfFormat, halfBox, 3., false, "size 14.4 at mipmap level 1", 1);
+
+    BlurParams params;
+    params.filter = BlurKernels::eFilterFIRGaussian;
+    params.sizeX = params.sizeY = 14.4;
+    const RenderScale half = RenderScale::fromMipmapLevel(1);
+    EXPECT_EQ(RectI(10 - 9, 20 - 9, 30 + 9, 40 + 9), Blur::getSourceRoI(RectI(10, 20, 30, 40), half, params));
+    params.sizeX = params.sizeY = 0.4;
+    EXPECT_FALSE(Blur::paramsAreIdentity(RenderScale::identity, params));
+    EXPECT_TRUE(Blur::paramsAreIdentity(half, params));
+}
+
+TEST_F(BlurFIRGaussianTest, RegionOfDefinitionGrowsByTheRadius)
+{
+    const RectI format(0, 0, kParitySourceWidth, kParitySourceHeight);
+
+    resetProject();
+    NodePtr blur = makeBoxOverBlack(RectI(20, 10, 40, 30));
+    ASSERT_TRUE(bool(blur));
+    ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 7.2, 2.4 }));
+    EXPECT_EQ(RectI(-9, -3, kParitySourceWidth + 9, kParitySourceHeight + 3), renderWindow(blur));
+    EXPECT_EQ(RectI(-5, -2, kParitySourceWidth / 2 + 5, kParitySourceHeight / 2 + 2), renderWindow(blur, 1));
+
+    ASSERT_TRUE(setKnobValues(blur, kBlurParamOrderX, { 1. }));
+    EXPECT_EQ(RectI(-10, -3, kParitySourceWidth + 10, kParitySourceHeight + 3), renderWindow(blur));
+
+    ASSERT_TRUE(setKnobValues(blur, kBlurParamOrderX, { 0. }));
+    ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 0.2, 0.2 }));
+    EXPECT_EQ(format, renderWindow(blur));
+
+    ASSERT_TRUE(setKnobValues(blur, kBlurParamSize, { 7.2, 7.2 }));
+    ASSERT_TRUE(setKnobValues(blur, kBlurParamExpandRoD, { 0. }));
+    EXPECT_EQ(format, renderWindow(blur));
 }
 
 TEST_F(BlurFIRGaussianTest, SubRectRenderEqualsCropOfFullRender)
@@ -684,67 +731,6 @@ TEST_F(BlurFIRGaussianTest, RegionOfInterestPaddingIsTheRadius)
     EXPECT_TRUE(Blur::paramsAreIdentity(RenderScale::identity, params));
 }
 
-TEST_F(BlurFIRGaussianTest, LegacyFileKeepsTheIIRGaussian)
-{
-    QTemporaryDir tmp;
-
-    ASSERT_TRUE(tmp.isValid());
-    resetProject();
-    ASSERT_TRUE(loadFixture(tmp, "channel-set-legacy-defaults.ntp"));
-    NodePtr blur1 = getApp()->getProject()->getNodeByName("Blur1");
-    NodePtr blur2 = getApp()->getProject()->getNodeByName("Blur2");
-    ASSERT_TRUE(bool(blur1) && bool(blur2));
-    EXPECT_EQ(kIIRChoiceIndex, filterIndexOf(blur1));
-    EXPECT_EQ(kIIRChoiceIndex, filterIndexOf(blur2));
-}
-
-TEST_F(BlurFIRGaussianTest, LegacyBlurRendersExactlyAsAnExplicitIIRGaussian)
-{
-    QTemporaryDir tmp;
-
-    ASSERT_TRUE(tmp.isValid());
-    resetProject();
-    ASSERT_TRUE(loadFixture(tmp, "blur-5-0-default-filter.ntp"));
-    NodePtr legacy = getApp()->getProject()->getNodeByName("Blur1");
-    ASSERT_TRUE(bool(legacy));
-
-    NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
-    NodePtr iir = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), PLUGIN_MAJOR_NATRON_BLUR);
-    NodePtr fir = createNode(QString::fromUtf8(PLUGINID_NATRON_BLUR), PLUGIN_MAJOR_NATRON_BLUR);
-    ASSERT_TRUE(bool(source) && bool(iir) && bool(fir));
-    setParitySourceOrigin(source, 0, 0);
-    ASSERT_TRUE(setKnobValue(iir, kBlurParamFilter, std::string(kBlurParamFilterGaussian)));
-    const NodePtr blurs[3] = { legacy, iir, fir };
-    for (int i = 0; i < 3; ++i) {
-        connectNodes(source, blurs[i], 0, true);
-        ASSERT_TRUE(setKnobValues(blurs[i], kBlurParamSize, { 9., 9. }));
-    }
-
-    const RectI window = renderWindow(legacy);
-    ASSERT_EQ(window, renderWindow(iir));
-    RenderedPlane legacyPlane, iirPlane, firPlane;
-    ASSERT_TRUE(renderRGBA(legacy, window, &legacyPlane));
-    ASSERT_TRUE(renderRGBA(iir, window, &iirPlane));
-    ASSERT_TRUE(renderRGBA(fir, window, &firPlane));
-    ASSERT_EQ(iirPlane.pixels.size(), legacyPlane.pixels.size());
-    EXPECT_EQ(0, std::memcmp(legacyPlane.pixels.data(), iirPlane.pixels.data(), iirPlane.pixels.size() * sizeof(float)));
-    EXPECT_NE(iirPlane.pixels, firPlane.pixels);
-}
-
-TEST_F(BlurFIRGaussianTest, MajorFiveMinorZeroFileKeepsTheIIRGaussian)
-{
-    QTemporaryDir tmp;
-
-    ASSERT_TRUE(tmp.isValid());
-    resetProject();
-    ASSERT_TRUE(loadFixture(tmp, "blur-5-0-default-filter.ntp"));
-    NodePtr blur1 = getApp()->getProject()->getNodeByName("Blur1");
-    NodePtr blur2 = getApp()->getProject()->getNodeByName("Blur2");
-    ASSERT_TRUE(bool(blur1) && bool(blur2));
-    EXPECT_EQ(kIIRChoiceIndex, filterIndexOf(blur1));
-    EXPECT_EQ(kIIRChoiceIndex, filterIndexOf(blur2));
-}
-
 TEST_F(BlurFIRGaussianTest, SavedDefaultFilterReloadsAsFIR)
 {
     QTemporaryDir tmp;
@@ -760,22 +746,4 @@ TEST_F(BlurFIRGaussianTest, SavedDefaultFilterReloadsAsFIR)
     NodePtr loaded = getApp()->getProject()->getNodeByName(name);
     ASSERT_TRUE(bool(loaded));
     EXPECT_EQ(kFIRChoiceIndex, filterIndexOf(loaded));
-}
-
-TEST_F(BlurFIRGaussianTest, ResavedLegacyFileStaysIIR)
-{
-    QTemporaryDir tmp;
-    QTemporaryDir tmp2;
-
-    ASSERT_TRUE(tmp.isValid() && tmp2.isValid());
-    resetProject();
-    ASSERT_TRUE(loadFixture(tmp, "channel-set-legacy-defaults.ntp"));
-    ASSERT_EQ(kIIRChoiceIndex, filterIndexOf(getApp()->getProject()->getNodeByName("Blur1")));
-
-    ASSERT_TRUE(saveResetLoad(tmp2));
-    NodePtr blur1 = getApp()->getProject()->getNodeByName("Blur1");
-    NodePtr blur2 = getApp()->getProject()->getNodeByName("Blur2");
-    ASSERT_TRUE(bool(blur1) && bool(blur2));
-    EXPECT_EQ(kIIRChoiceIndex, filterIndexOf(blur1));
-    EXPECT_EQ(kIIRChoiceIndex, filterIndexOf(blur2));
 }

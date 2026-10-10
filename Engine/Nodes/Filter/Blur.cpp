@@ -72,6 +72,18 @@ firRadius(double size)
 {
     return BlurKernels::LineFilter::firGaussianRadius(size / 2.4);
 }
+
+/// The source pixels the FIR Gaussian reads beyond each side: its support plus one per derivative.
+void
+firPadding(double sx,
+           double sy,
+           const BlurParams& params,
+           int* padX,
+           int* padY)
+{
+    *padX = firRadius(sx) + ((params.orderX > 0) ? 1 : 0);
+    *padY = firRadius(sy) + ((params.orderY > 0) ? 1 : 0);
+}
 } // anonymous namespace
 
 Blur::Blur(NodePtr node)
@@ -121,7 +133,7 @@ Blur::getNativePluginDescription() const
                           "\n"
                           "The default filter, Gaussian (FIR), is a Gaussian [1] implemented as a FIR (finite impulse response) filter, as in most compositing software: the Gaussian impulse response, of standard deviation sigma = size/2.4, is cropped at 3 sigma (rounded up to a whole pixel) and normalised. Its result is exactly zero further than that from any non-zero pixel.\n"
                           "\n"
-                          "The Gaussian filter is implemented as an IIR (infinite impulse response) filter [2][3]. Consequently, when blurring a white dot on black background, it produces very small values very far away from the dot. The quasi-Gaussian filter is also IIR. Projects saved before Gaussian (FIR) existed keep the IIR Gaussian filter they were made with.\n"
+                          "The Gaussian filter is implemented as an IIR (infinite impulse response) filter [2][3]. Consequently, when blurring a white dot on black background, it produces very small values very far away from the dot. The quasi-Gaussian filter is also IIR.\n"
                           "\n"
                           "A very common process in compositing to expand colors on the edge of a matte is to use the premult-blur-unpremult combination [4][5]. The very small values produced by the IIR filters produce undesirable artifacts after unpremult. For this process, the FIR filters (Gaussian (FIR), quadratic, or the faster triangle or box) should be preferred over the IIR ones.\n"
                           "\n"
@@ -278,25 +290,6 @@ Blur::onKnobsLoaded()
     updateUniformVisibility();
 }
 
-bool
-Blur::filterDefaultWasIIRGaussian(int pluginMajor,
-                                  int pluginMinor)
-{
-    return (pluginMajor < PLUGIN_MAJOR_NATRON_BLUR) ||
-           ((pluginMajor == PLUGIN_MAJOR_NATRON_BLUR) && (pluginMinor >= 0) && (pluginMinor < PLUGIN_MINOR_NATRON_BLUR));
-}
-
-void
-Blur::restoreLegacyKnobDefaults(int pluginMajor,
-                                int pluginMinor)
-{
-    KnobChoicePtr filter = _filter.lock();
-
-    if (filter && filterDefaultWasIIRGaussian(pluginMajor, pluginMinor)) {
-        filter->setDefaultValue((int)BlurKernels::eFilterGaussian);
-    }
-}
-
 void
 Blur::getParams(double time,
                 ViewIdx view,
@@ -361,20 +354,14 @@ Blur::getSourceRoI(const RectI& rect,
                      rect.x2 + deltaX + params.orderX,
                      rect.y2 + deltaY + params.orderY);
     }
+    if (params.filter == BlurKernels::eFilterFIRGaussian) {
+        int padX, padY;
+        firPadding(sx, sy, params, &padX, &padY);
+
+        return RectI(rect.x1 - padX, rect.y1 - padY, rect.x2 + padX, rect.y2 + padY);
+    }
     const int derivX = (params.orderX > 0) ? 1 : 0;
     const int derivY = (params.orderY > 0) ? 1 : 0;
-    if (params.filter == BlurKernels::eFilterFIRGaussian) {
-        const int radiusX = firRadius(sx);
-        const int radiusY = firRadius(sy);
-        if (!radiusX && !radiusY && !derivX && !derivY) {
-            return rect;
-        }
-
-        return RectI(rect.x1 - radiusX - derivX,
-                     rect.y1 - radiusY - derivY,
-                     rect.x2 + radiusX + derivX,
-                     rect.y2 + radiusY + derivY);
-    }
     const int iter = boxIterations(params.filter);
     const int deltaX = iter * static_cast<int>(std::floor((sx - 1) / 2) + 1);
     const int deltaY = iter * static_cast<int>(std::floor((sy - 1) / 2) + 1);
@@ -465,17 +452,15 @@ Blur::getRegionOfDefinition(U64 hash,
             rodPixel.y1 -= deltaY + params.orderY;
             rodPixel.y2 += deltaY + params.orderY;
         } else if (params.filter == BlurKernels::eFilterFIRGaussian) {
-            const int radiusX = firRadius(sx);
-            const int radiusY = firRadius(sy);
-            const int derivX = (params.orderX > 0) ? 1 : 0;
-            const int derivY = (params.orderY > 0) ? 1 : 0;
-            if (!radiusX && !radiusY && !derivX && !derivY) {
+            int padX, padY;
+            firPadding(sx, sy, params, &padX, &padY);
+            if (!padX && !padY) {
                 return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
             }
-            rodPixel.x1 -= radiusX + derivX;
-            rodPixel.x2 += radiusX + derivX;
-            rodPixel.y1 -= radiusY + derivY;
-            rodPixel.y2 += radiusY + derivY;
+            rodPixel.x1 -= padX;
+            rodPixel.x2 += padX;
+            rodPixel.y1 -= padY;
+            rodPixel.y2 += padY;
         } else {
             if ((sx <= 1) && (sy <= 1) && (params.orderX == 0) && (params.orderY == 0)) {
                 return EffectInstance::getRegionOfDefinition(hash, time, scale, view, rod);
@@ -768,6 +753,12 @@ Blur::render(const RenderActionArgs& args)
             }
 
             if (blurred) {
+                // A FIR Gaussian sample costs its 2r + 1 taps, so the passes are split by taps
+                // rather than by pixels.
+                const bool fir = (params.filter == BlurKernels::eFilterFIRGaussian);
+                const std::size_t tapsX = fir ? (std::size_t)(2 * firRadius(sx) + 1) : 1;
+                const std::size_t tapsY = fir ? (std::size_t)(2 * firRadius(sy) + 1) : 1;
+
                 // 2. The horizontal pass over whole rows of every plane.
                 if (!filterX.isIdentity()) {
                     const std::function<void(int, int)> rows = [&](int first, int end) {
@@ -781,7 +772,7 @@ Blur::render(const RenderActionArgs& args)
                             filterX.apply(&buffer[(std::size_t)p * planeSize + (std::size_t)row * bufferWidth], bufferWidth, 1, scratch);
                         }
                     };
-                    forEachLineChunk(nPlanes * bufferHeight, (std::size_t)bufferWidth, nThreads, cancel, rows);
+                    forEachLineChunk(nPlanes * bufferHeight, (std::size_t)bufferWidth * tapsX, nThreads, cancel, rows);
                     if (cancel.check()) {
                         return eStatusOK;
                     }
@@ -789,7 +780,7 @@ Blur::render(const RenderActionArgs& args)
 
                 // 3. The vertical pass over whole columns of every plane. The FIR Gaussian takes
                 // them a block of adjacent columns at a time, so it reads the plane row by row.
-                if (!filterY.isIdentity() && (params.filter == BlurKernels::eFilterFIRGaussian)) {
+                if (!filterY.isIdentity() && fir) {
                     const int block = BlurKernels::LineFilter::kColumnBlock;
                     const int blocksPerPlane = (bufferWidth + block - 1) / block;
                     const std::function<void(int, int)> columnBlocks = [&](int first, int end) {
@@ -803,7 +794,7 @@ Blur::render(const RenderActionArgs& args)
                             filterY.applyColumns(&buffer[(std::size_t)p * planeSize + column], bufferHeight, bufferWidth, std::min(block, bufferWidth - column), scratch);
                         }
                     };
-                    forEachLineChunk(nPlanes * blocksPerPlane, (std::size_t)bufferHeight * block, nThreads, cancel, columnBlocks);
+                    forEachLineChunk(nPlanes * blocksPerPlane, (std::size_t)bufferHeight * block * tapsY, nThreads, cancel, columnBlocks);
                     if (cancel.check()) {
                         return eStatusOK;
                     }

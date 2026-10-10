@@ -141,11 +141,6 @@ Node::load(const CreateNodeArgs& args)
 
             _imp->effect->onKnobsAboutToBeLoaded(serialization);
             loadKnobs(*serialization);
-        } else {
-            const int requestedMajor = args.getProperty<int>(kCreateNodeArgsPropPluginVersion, 0);
-            if (requestedMajor >= 0) {
-                _imp->effect->restoreLegacyKnobDefaults(requestedMajor, args.getProperty<int>(kCreateNodeArgsPropPluginVersion, 1));
-            }
         }
         setValuesFromSerialization(args);
 

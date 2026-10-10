@@ -38,7 +38,6 @@
 
 #define PLUGINID_NATRON_BLUR "net.sf.cimg.CImgBlur"
 #define PLUGIN_MAJOR_NATRON_BLUR 5
-// Files and scripts written before this minor version left Filter unset for the IIR Gaussian.
 #define PLUGIN_MINOR_NATRON_BLUR 1
 
 #define kBlurParamSize "size"
@@ -99,8 +98,6 @@ struct BlurParams {
  * default, knob names, defaults, region of definition (expandRoD, cropToFormat), region of
  * interest, identity rule and arithmetic are the openfx-misc CImgBlur's (its
  * CImgFilterPluginHelper base included); it registers under that plug-in's ID one major above.
- * A Blur loaded from a file, or created by a script, for a version older than
- * PLUGIN_MINOR_NATRON_BLUR keeps the IIR Gaussian as its Filter default, so it renders as it did.
  *
  * Each render filters one float buffer covering the render window plus the filter's halo,
  * clipped to the output's region of definition, exactly as the OpenFX plug-in does: the IIR
@@ -145,15 +142,6 @@ public:
      * @brief Whether params leave the image unchanged at scale: CImgBlurPlugin::isIdentity().
      **/
     static bool paramsAreIdentity(const RenderScale& scale, const BlurParams& params) WARN_UNUSED_RETURN;
-
-    /**
-     * @brief Whether Filter defaulted to the IIR Gaussian at this plug-in version, so that a
-     * file or script written for it left Filter unset when it was the IIR Gaussian. Every major
-     * below this one, the openfx-misc CImgBlur's included, did. A negative minor is the latest.
-     **/
-    static bool filterDefaultWasIIRGaussian(int pluginMajor, int pluginMinor) WARN_UNUSED_RETURN;
-
-    virtual void restoreLegacyKnobDefaults(int pluginMajor, int pluginMinor) OVERRIDE FINAL;
 
 protected:
     virtual NativePluginDescription getNativePluginDescription() const OVERRIDE FINAL WARN_UNUSED_RETURN;

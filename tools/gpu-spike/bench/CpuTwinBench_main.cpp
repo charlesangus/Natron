@@ -26,9 +26,9 @@
 
 #include "slang-cpp-prelude.h"
 
-#include "../ref/BlurRef.h"
-#include "../tests/BlurFixture.h"
-#include "../tests/GradeFixture.h"
+#include "ref/BlurRef.h"
+#include "BlurFixture.h"
+#include "GradeFixture.h"
 #include "BlurKernels.h"
 
 extern "C" void grade_main(ComputeVaryingInput*, void* entryPointParams, void* globalParams);

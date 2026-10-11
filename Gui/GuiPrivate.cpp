@@ -110,6 +110,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/SpinBox.h"
 #include "Gui/Splitter.h"
 #include "Gui/TabWidget.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/ToolButton.h"
 #include "Gui/ViewerGL.h"
 #include "Gui/ViewerTab.h"
@@ -342,12 +343,7 @@ GuiPrivate::createPropertiesBinGui()
                                                                       NATRON_NAMESPACE::WhiteSpaceNormal) );
     _clearAllPanelsButton->setFocusPolicy(Qt::NoFocus);
     QObject::connect( _clearAllPanelsButton, SIGNAL(clicked(bool)), _gui, SLOT(clearAllVisiblePanels()) );
-    QPixmap minimizePix, maximizePix;
-    appPTR->getIcon(NATRON_PIXMAP_MINIMIZE_WIDGET, smallSizeIcon, &minimizePix);
-    appPTR->getIcon(NATRON_PIXMAP_MAXIMIZE_WIDGET, smallSizeIcon, &maximizePix);
-    QIcon mIc;
-    mIc.addPixmap(minimizePix, QIcon::Normal, QIcon::On);
-    mIc.addPixmap(maximizePix, QIcon::Normal, QIcon::Off);
+    const QIcon mIc = ThemedIcon::icon(QString::fromUtf8(NATRON_ICONS_PATH "lucide/chevrons-down-up.svg"), smallSizeIcon);
     _minimizeAllPanelsButtons = new Button(mIc, QString(), propertiesAreaButtonsContainer);
     _minimizeAllPanelsButtons->setCheckable(true);
     _minimizeAllPanelsButtons->setChecked(false);

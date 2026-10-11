@@ -25,21 +25,23 @@
 
 #include "GuiApplicationManagerPrivate.h"
 
+#include <cmath>
 #include <stdexcept>
 
 #include <fontconfig/fontconfig.h>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QApplication>
 #include <QDebug>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
-#include "Gui/Gui.h"
-#include "Gui/KnobGuiFactory.h"
-#include "Gui/GuiAppInstance.h"
 #include "Gui/DocumentationManager.h"
-
+#include "Gui/Gui.h"
+#include "Gui/GuiAppInstance.h"
+#include "Gui/KnobGuiFactory.h"
+#include "Gui/ThemedIcon.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -209,19 +211,25 @@ GuiApplicationManagerPrivate::createColorPickerCursor()
 void
 GuiApplicationManagerPrivate::createLinkToCursor()
 {
-    QPixmap p;
+    // The cursor's hotspot (the arrow tip) sits at (2, 2) on the glyph's 24-unit grid;
+    // scale it to whatever logical size the cursor is rendered at.
+    const int cursorSize = 22;
+    const QPixmap p = ThemedIcon::renderPixmap(QString::fromUtf8(NATRON_ICONS_PATH "natron/link-cursor.svg"),
+                                               cursorSize, ThemedIcon::themeTextColor(), qApp->devicePixelRatio());
+    const int hotspot = (int)std::lround(2. * cursorSize / 24.);
 
-    appPTR->getIcon(NATRON_PIXMAP_LINK_CURSOR, &p);
-    _linkToCursor = QCursor(p);
+    _linkToCursor = QCursor(p, hotspot, hotspot);
 }
 
 void
 GuiApplicationManagerPrivate::createLinkMultCursor()
 {
-    QPixmap p;
+    const int cursorSize = 22;
+    const QPixmap p = ThemedIcon::renderPixmap(QString::fromUtf8(NATRON_ICONS_PATH "natron/link-mult-cursor.svg"),
+                                               cursorSize, ThemedIcon::themeTextColor(), qApp->devicePixelRatio());
+    const int hotspot = (int)std::lround(2. * cursorSize / 24.);
 
-    appPTR->getIcon(NATRON_PIXMAP_LINK_MULT_CURSOR, &p);
-    _linkMultCursor = QCursor(p);
+    _linkMultCursor = QCursor(p, hotspot, hotspot);
 }
 
 void

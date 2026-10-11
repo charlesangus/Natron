@@ -175,7 +175,7 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_ICONS_PATH "lucide/x.svg";
         break;
     case NATRON_PIXMAP_CLOSE_PANEL:
-        path = NATRON_IMAGES_PATH "closePanel.png";
+        path = NATRON_ICONS_PATH "lucide/list-x.svg";
         break;
     case NATRON_PIXMAP_HIDE_UNMODIFIED:
         path = NATRON_ICONS_PATH "lucide/list-filter.svg";
@@ -211,16 +211,16 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_IMAGES_PATH "restoreDefaultDisabled.png";
         break;
     case NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON:
-        path = NATRON_IMAGES_PATH "layout.png";
+        path = NATRON_ICONS_PATH "lucide/layout-grid.svg";
         break;
     case NATRON_PIXMAP_TAB_WIDGET_LAYOUT_BUTTON_ANCHOR:
-        path = NATRON_IMAGES_PATH "layout_anchor.png";
+        path = NATRON_ICONS_PATH "natron/layout-anchor.svg";
         break;
     case NATRON_PIXMAP_TAB_WIDGET_SPLIT_HORIZONTALLY:
-        path = NATRON_IMAGES_PATH "splitHorizontally.png";
+        path = NATRON_ICONS_PATH "lucide/columns-2.svg";
         break;
     case NATRON_PIXMAP_TAB_WIDGET_SPLIT_VERTICALLY:
-        path = NATRON_IMAGES_PATH "splitVertically.png";
+        path = NATRON_ICONS_PATH "lucide/rows-2.svg";
         break;
     case NATRON_PIXMAP_VIEWER_CENTER:
         path = NATRON_ICONS_PATH "lucide/focus.svg";
@@ -333,10 +333,10 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_IMAGES_PATH "openeffects.png";
         break;
     case NATRON_PIXMAP_COMBOBOX:
-        path = NATRON_IMAGES_PATH "combobox.png";
+        path = NATRON_ICONS_PATH "lucide/chevron-down.svg";
         break;
     case NATRON_PIXMAP_COMBOBOX_PRESSED:
-        path = NATRON_IMAGES_PATH "pressed_combobox.png";
+        path = NATRON_ICONS_PATH "lucide/chevron-down.svg";
         break;
     case NATRON_PIXMAP_READ_IMAGE:
         path = NATRON_IMAGES_PATH "readImage.png";
@@ -574,31 +574,31 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_ICONS_PATH "lucide/locate-fixed.svg";
         break;
     case NATRON_PIXMAP_SCRIPT_CLEAR_OUTPUT:
-        path = NATRON_IMAGES_PATH "clearOutput.png";
+        path = NATRON_ICONS_PATH "lucide/brush-cleaning.svg";
         break;
     case NATRON_PIXMAP_SCRIPT_EXEC_SCRIPT:
-        path = NATRON_IMAGES_PATH "execScript.png";
+        path = NATRON_ICONS_PATH "lucide/circle-play.svg";
         break;
     case NATRON_PIXMAP_SCRIPT_LOAD_EXEC_SCRIPT:
-        path = NATRON_IMAGES_PATH "loadAndExecScript.png";
+        path = NATRON_ICONS_PATH "lucide/file-play.svg";
         break;
     case NATRON_PIXMAP_SCRIPT_LOAD_SCRIPT:
-        path = NATRON_IMAGES_PATH "loadScript.png";
+        path = NATRON_ICONS_PATH "lucide/file-code.svg";
         break;
     case NATRON_PIXMAP_SCRIPT_NEXT_SCRIPT:
-        path = NATRON_IMAGES_PATH "nextScript.png";
+        path = NATRON_ICONS_PATH "lucide/arrow-right.svg";
         break;
     case NATRON_PIXMAP_SCRIPT_OUTPUT_PANE_ACTIVATED:
-        path = NATRON_IMAGES_PATH "outputPanelActivated.png";
+        path = NATRON_ICONS_PATH "lucide/panel-top.svg";
         break;
     case NATRON_PIXMAP_SCRIPT_OUTPUT_PANE_DEACTIVATED:
-        path = NATRON_IMAGES_PATH "outputPanelDeactivated.png";
+        path = NATRON_ICONS_PATH "lucide/panel-top.svg";
         break;
     case NATRON_PIXMAP_SCRIPT_PREVIOUS_SCRIPT:
-        path = NATRON_IMAGES_PATH "previousScript.png";
+        path = NATRON_ICONS_PATH "lucide/arrow-left.svg";
         break;
     case NATRON_PIXMAP_SCRIPT_SAVE_SCRIPT:
-        path = NATRON_IMAGES_PATH "saveScript.png";
+        path = NATRON_ICONS_PATH "lucide/save.svg";
         break;
 
     case NATRON_PIXMAP_MERGE_ATOP:
@@ -720,10 +720,10 @@ pixmapEnumToPath(PixmapEnum e)
         break;
 
     case NATRON_PIXMAP_LINK_CURSOR:
-        path = NATRON_IMAGES_PATH "linkCursor.png";
+        path = NATRON_ICONS_PATH "natron/link-cursor.svg";
         break;
     case NATRON_PIXMAP_LINK_MULT_CURSOR:
-        path = NATRON_IMAGES_PATH "linkMultCursor.png";
+        path = NATRON_ICONS_PATH "natron/link-mult-cursor.svg";
         break;
     case NATRON_PIXMAP_ENTER_GROUP:
         path = NATRON_ICONS_PATH "lucide/square-arrow-right-enter.svg";

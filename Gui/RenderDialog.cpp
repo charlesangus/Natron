@@ -37,6 +37,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QHBoxLayout>
 #include <QProgressBar>
 #include <QProgressDialog>
+#include <QPushButton>
 #include <QStringList>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>

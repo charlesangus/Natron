@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M76.P1.T9-T10 fixes, M27.P1.T1]
-pm_heartbeat: 2026-10-10T18:14:01-04:00
+current: [M76.P1.T9-T10 fixes, M27.P1.T1, M16 elaboration]
+pm_heartbeat: 2026-10-10T21:44:00-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -72,7 +72,8 @@ future core work has solid ground to build on.
 
 - **M16 is authored but deferred** (2026-09-05): the `.ntp` format redesign is
   future work — do not start or elaborate it without an explicit user
-  go-ahead. Design and evidence live in
+  go-ahead. **Go-ahead given 2026-10-10 (user):** picked up on a separate host,
+  branch `milestone/m16-project-format-redesign` off `main`. Design and evidence live in
   `PLAN/DECISIONS/2026-09-05-project-format-bundle-design.md`.
 - **M17–M21 (deep compositing + USD/Hydra 3D)** authored 2026-09-05 from
   `PLAN/DESIGN/2026-09-05-deep-and-3d-native-extensions.md`, which governs on
@@ -270,7 +271,7 @@ future core work has solid ground to build on.
 | M21 | Deep Tier-2 And Bridges | todo |  | [M21-deep-tier2-and-bridges.md](PLAN/MILESTONES/M21-deep-tier2-and-bridges.md) |
 | M51 | Deep Filtering OpenDCX | todo |  | [M51-deep-filtering-opendcx.md](PLAN/MILESTONES/M51-deep-filtering-opendcx.md) |
 | M32 | Deep Sample Node | todo |  | [M32-deep-sample-node.md](PLAN/MILESTONES/M32-deep-sample-node.md) |
-| M16 | Project Format Redesign | todo |  | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
+| M16 | Project Format Redesign | doing |  | [M16-project-file-format-redesign.md](PLAN/MILESTONES/M16-project-file-format-redesign.md) |
 | M70 | RFV Declaration And Storage | todo |  | [M70-rfv-declaration-and-storage.md](PLAN/MILESTONES/M70-rfv-declaration-and-storage.md) |
 | M71 | RFV Render Context | todo |  | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
 | M72 | RFV Integration And UAT | todo |  | [M72-rfv-integration-and-uat.md](PLAN/MILESTONES/M72-rfv-integration-and-uat.md) |

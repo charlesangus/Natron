@@ -417,7 +417,7 @@ TEST_F(GLScheduler, GLNodeRendersInsideATaskAndStoresRAM)
     NodePtr colorSpace;
     ASSERT_NO_FATAL_FAILURE(createGPUColorSpace(checker, &colorSpace));
 
-    NodePtr writer = createNode(_writeOIIOPluginID);
+    NodePtr writer = createNativeWriter();
     ASSERT_TRUE(bool(writer));
     connectNodes(colorSpace, writer, 0, true);
 
@@ -464,7 +464,7 @@ TEST_F(GLScheduler, ConcurrentGLTasksBeyondTheContextLimitRenderOnCPU)
     ASSERT_NO_FATAL_FAILURE(createMerge(colorSpaces[2], colorSpaces[3], &right));
     ASSERT_NO_FATAL_FAILURE(createMerge(left, right, &root));
 
-    NodePtr writer = createNode(_writeOIIOPluginID);
+    NodePtr writer = createNativeWriter();
     ASSERT_TRUE(bool(writer));
     connectNodes(root, writer, 0, true);
 

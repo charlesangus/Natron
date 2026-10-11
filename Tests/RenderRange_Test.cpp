@@ -73,7 +73,7 @@ readExrFirstPixelRed(const std::string& path,
 
 } // namespace
 
-// Renders Constant -> WriteOIIO over a frame range with the Constant's colour keyframed to
+// Renders Constant -> native Write over a frame range with the Constant's colour keyframed to
 // a distinct, exactly-known value per frame, then reads every rendered frame back and checks
 // its pixel against the value keyframed for that frame. This catches both a scheduler that
 // silently stops dispatching frames (a missing file) and a writer that numbers or overwrites
@@ -85,7 +85,7 @@ readExrFirstPixelRed(const std::string& path,
 TEST_F(BaseTest, RenderFrameRangeProducesDistinctFramePixels)
 {
     NodePtr generator = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
-    NodePtr writer = createNode(_writeOIIOPluginID);
+    NodePtr writer = createNativeWriter();
     ASSERT_TRUE(bool(generator) && bool(writer));
 
     connectNodes(generator, writer, 0, true);

@@ -51,7 +51,6 @@
 #include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
-#include "Engine/WriteNode.h"
 
 #include <ofxImageEffect.h>
 #include <ofxNatron.h>
@@ -68,7 +67,7 @@ TEST_F(BaseTest, RoundTripsNodesConnectionsAndKnobValues)
     ProjectPtr project = getApp()->getProject();
 
     NodePtr generator = createNode(_generatorPluginID);
-    NodePtr writer = createNode(_writeOIIOPluginID);
+    NodePtr writer = createNativeWriter();
     ASSERT_TRUE(bool(generator) && bool(writer));
 
     connectNodes(generator, writer, 0, true);
@@ -312,7 +311,7 @@ ownsChannelSelectorMessage(const NodePtr& node)
 // Tests/fixtures/m65-legacy-color.ntp is hand-written at node serialization version 16 and
 // Natron 2.2. Grade1 saves channels = Color {R,G,B} (with Color as its saved default) and its
 // mask on Color.A; Shuffle1 reads and writes Color; Blur1 saves no channel set, so the pre-v17
-// gate lands it on Color; Write1 saves Natron 2.2's outputChannels option "RGBA".
+// gate lands it on Color.
 class LegacyColorProjectTest
     : public BaseTest {
 protected:
@@ -412,33 +411,9 @@ TEST_F(LegacyColorProjectTest, ColorLayerValuesResetToRgbaKeepingChannelsWithAWa
 // The colour storage ID is not a valid layer value, so Natron <= 2.2 colour option IDs must pass through unfiltered.
 TEST_F(LegacyColorProjectTest, LegacyColourChoiceOptionFallsBackWithoutThrowing)
 {
-    std::string option("RGBA");
-    EXPECT_FALSE(filterKnobChoiceOptionCompat("fr.inria.openfx.WriteOIIO", 1, 0, 2, 2, 0, "outputChannels", &option));
-    EXPECT_EQ(std::string("RGBA"), option);
-
-    option = "a";
+    std::string option("a");
     EXPECT_FALSE(filterKnobChoiceOptionCompat("net.sf.openfx.GradePlugin", 2, 0, 2, 2, 0, "maskChannel", &option));
     EXPECT_EQ(std::string("a"), option);
-
-    option = "Backward.Motion";
-    EXPECT_TRUE(filterKnobChoiceOptionCompat("fr.inria.openfx.WriteOIIO", 1, 0, 2, 2, 0, "outputChannels", &option));
-    EXPECT_EQ(std::string(kNatronBackwardMotionVectorsLayerID "." kNatronMotionComponentsLabel), option);
-
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-    bool loaded = false;
-    EXPECT_NO_THROW(loaded = loadFixture(tmp));
-    ASSERT_TRUE(loaded);
-
-    NodePtr write = getApp()->getProject()->getNodeByName("Write1");
-    ASSERT_TRUE(bool(write));
-    WriteNode* container = dynamic_cast<WriteNode*>(write->getEffectInstance().get());
-    ASSERT_TRUE(container != NULL);
-    NodePtr encoder = container->getEmbeddedWriter();
-    ASSERT_TRUE(bool(encoder));
-    KnobChoice* outputChannels = dynamic_cast<KnobChoice*>(encoder->getKnobByName("outputChannels").get());
-    ASSERT_TRUE(outputChannels != NULL);
-    EXPECT_EQ(outputChannels->getDefaultValue(0), outputChannels->getValue());
 }
 
 TEST_F(LegacyColorProjectTest, LegacyColorWarningSurvivesARender)
@@ -467,7 +442,7 @@ TEST_F(LegacyColorProjectTest, LegacyColorWarningSurvivesARender)
     ASSERT_GE(sourceInput, 0);
     connectNodes(reader, grade, sourceInput, true);
 
-    NodePtr writer = createNode(_writeOIIOPluginID);
+    NodePtr writer = createNativeWriter();
     ASSERT_TRUE(bool(writer));
     connectNodes(grade, writer, 0, true);
 

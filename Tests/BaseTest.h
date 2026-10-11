@@ -29,6 +29,7 @@
 
 #include "Global/Macros.h"
 
+#include <string>
 #include <vector>
 
 #if !defined(Q_MOC_RUN) && !defined(SBK_RUN)
@@ -67,6 +68,10 @@ protected:
     ///You should not call this function
     NodePtr createNode(const QString & pluginID, int majorVersion = -1, int minorVersion = -1);
 
+    // Creates the native Write with its output colourspace pinned to the project working space, so
+    // the written values equal the rendered ones. A non-empty `filename` is set as the output file.
+    NodePtr createNativeWriter(const std::string& filename = std::string());
+
     ///Useful function to connect 2 nodes together. It connects the input number inputNumber of
     ///output to the node input. expectedReturnValue is expected to have the same value as the return
     ///value of the underlying connect call. That means that if expectedReturnValue is true, the
@@ -100,6 +105,7 @@ protected:
     QString _generatorPluginID;
     QString _readPluginID;
     QString _writeOIIOPluginID;
+    QString _writePluginID;
     QString _textArenaPluginID;
     std::vector<QString> _allTestPluginIDs;
     AppInstanceWPtr _app;

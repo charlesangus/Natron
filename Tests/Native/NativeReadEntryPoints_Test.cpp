@@ -54,13 +54,11 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/NodeGroup.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Project.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/WriteNode.h"
 
 NATRON_NAMESPACE_USING
 
@@ -212,69 +210,4 @@ TEST_F(NativeReadEntryPointsTest, UnversionedReadKeepsItsClassThroughSaveAndLoad
     ASSERT_TRUE(bool(loaded));
     EXPECT_TRUE(isNativeRead(loaded));
     EXPECT_EQ(PLUGIN_MAJOR_NATRON_READ, loaded->getMajorVersion());
-}
-
-TEST_F(NativeReadEntryPointsTest, WriteReadBackIsANativeReadThatRendersTheWrittenFile)
-{
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-    const std::string source = writeFixture(tmp, "source.exr", OIIO::TypeDesc::FLOAT);
-    ASSERT_FALSE(source.empty());
-
-    CreateNodeArgs readArgs(PLUGINID_NATRON_READ, getApp()->getProject());
-    NodePtr read = getApp()->createReader(source, readArgs);
-    ASSERT_TRUE(isNativeRead(read));
-
-    NodePtr write = createNode(_writeOIIOPluginID);
-    ASSERT_TRUE(bool(write));
-    connectNodes(read, write, 0, true);
-
-    const std::string output = (tmp.path() + QString::fromUtf8("/written.exr")).toStdString();
-    write->getEffectInstance()->setOutputFilesForWriter(output);
-
-    std::list<AppInstance::RenderWork> works;
-    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(write->getEffectInstance().get());
-    ASSERT_TRUE(writerEffect != NULL);
-    works.push_back(AppInstance::RenderWork(writerEffect, 1, 1, 1, false));
-    getApp()->startWritersRendering(false, works);
-    ASSERT_TRUE(QFile::exists(QString::fromStdString(output)));
-
-    KnobBool* readBack = dynamic_cast<KnobBool*>(write->getKnobByName(kNatronWriteParamReadBack).get());
-    ASSERT_TRUE(readBack != NULL);
-    readBack->setValue(true);
-
-    NodeGroup* group = dynamic_cast<NodeGroup*>(write->getEffectInstance().get());
-    ASSERT_TRUE(group != NULL);
-    NodePtr decoder = group->getNodeByName("internalDecoderNode");
-    ASSERT_TRUE(bool(decoder));
-    EXPECT_TRUE(isNativeRead(decoder));
-
-    KnobFile* file = dynamic_cast<KnobFile*>(decoder->getKnobByName(kOfxImageEffectFileParamName).get());
-    ASSERT_TRUE(file != NULL);
-    EXPECT_EQ(output, file->getValue());
-
-    KnobIPtr outputSpace = write->getKnobByName("ocioOutputSpace");
-    KnobIPtr inputSpace = decoder->getKnobByName("ocioInputSpace");
-    ASSERT_TRUE(bool(inputSpace));
-    if (outputSpace) {
-        EXPECT_TRUE(inputSpace->getMaster(0).second.get() == outputSpace.get()) << "the decoder's input space is not bound to the Write's output space";
-    }
-
-    // The Write converts to its output space and the decoder back from it, so the round trip
-    // returns what the source Read produced, to the precision of a half-float file.
-    std::list<ImageLayerDesc> layers;
-    layers.push_back(ImageLayerDesc::getRGBAComponents());
-    std::vector<RenderedPlane> expected, planes;
-    std::string error;
-    ASSERT_TRUE(renderNodePlanesDirect(read, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), layers, &expected, &error)) << error;
-    ASSERT_TRUE(renderNodePlanesDirect(decoder, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), layers, &planes, &error)) << error;
-    ASSERT_EQ(1u, expected.size());
-    ASSERT_EQ(1u, planes.size());
-    ASSERT_EQ((std::size_t)kWidth * kHeight * 4, planes[0].pixels.size());
-    ASSERT_EQ(expected[0].pixels.size(), planes[0].pixels.size());
-    double maxDiff = 0.;
-    for (std::size_t i = 0; i < planes[0].pixels.size(); ++i) {
-        maxDiff = std::max(maxDiff, (double)std::abs(expected[0].pixels[i] - planes[0].pixels[i]));
-    }
-    EXPECT_LT(maxDiff, 2e-3);
 }

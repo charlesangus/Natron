@@ -59,7 +59,7 @@ struct RenderMismatch {
     std::string error;
 };
 
-// Renders frames [firstFrame, lastFrame] through `writer` (a WriteOIIO node) once in Legacy
+// Renders frames [firstFrame, lastFrame] through `writer` (a native Write node) once in Legacy
 // mode, then once in Task graph mode per entry of `poolSizes` with the global thread pool capped
 // at that size, and compares every output EXR of every project view bit for bit against the
 // Legacy one. The writer's output file, bitDepth and compression knobs are overwritten so its

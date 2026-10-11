@@ -574,7 +574,7 @@ renderBothWays(const NodePtr& writer,
     KnobChoicePtr bitDepth = std::dynamic_pointer_cast<KnobChoice>(writer->getKnobByName("bitDepth"));
     KnobChoicePtr compression = std::dynamic_pointer_cast<KnobChoice>(writer->getKnobByName("compression"));
     if (!bitDepth || !compression) {
-        return failure("writer has no bitDepth/compression knobs; renderBothWays needs WriteOIIO", firstFrame);
+        return failure("writer has no bitDepth/compression knobs; renderBothWays needs the native Write", firstFrame);
     }
     bitDepth->setValueFromID("32f", 0);
     compression->setValueFromID("none", 0);

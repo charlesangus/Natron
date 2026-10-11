@@ -277,7 +277,7 @@ protected:
         return read;
     }
 
-    // DeepRead(fixture) -> DeepToImage -> WriteOIIO, the writer set to write every layer it is
+    // DeepRead(fixture) -> DeepToImage -> Write, the writer set to write every layer it is
     // given as a single-part, uncompressed 32-bit float EXR.
     void createFlattenGraph(const char* fixture,
                             NodePtr* toImage,
@@ -288,7 +288,7 @@ protected:
 
         NodePtr read = createDeepRead(fixturePath(fixture));
         *toImage = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPTOIMAGE));
-        *writer = createNode(_writeOIIOPluginID);
+        *writer = createNativeWriter();
         ASSERT_TRUE(read && *toImage && *writer);
 
         connectNodes(read, *toImage, 0, true);
@@ -361,7 +361,7 @@ protected:
 };
 
 // The deep chain end to end, the way a user's render runs it: DeepRead x2 -> DeepMerge ->
-// DeepRecolor (Color: Constant) -> DeepToImage -> WriteOIIO, dispatched through the render
+// DeepRecolor (Color: Constant) -> DeepToImage -> Write, dispatched through the render
 // scheduler as a writer render rather than pulled by hand, and checked on what the writer put on
 // disk. Every pixel of the frame is compared against the composite computed independently from
 // the two fixtures' documented samples, at a tolerance a wrong merge or flatten cannot hide
@@ -374,7 +374,7 @@ TEST_F(DeepPipelineTest, DeepReadMergeRecolorToImageWriteMatchesTheSerialComposi
     NodePtr constant = createNode(QString::fromUtf8(PLUGINID_OFX_CONSTANT));
     NodePtr recolor = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPRECOLOR));
     NodePtr toImage = createNode(QString::fromUtf8(PLUGINID_NATRON_DEEPTOIMAGE));
-    NodePtr writer = createNode(_writeOIIOPluginID);
+    NodePtr writer = createNativeWriter();
 
     ASSERT_TRUE(readA && readB && merge && constant && recolor && toImage && writer);
 

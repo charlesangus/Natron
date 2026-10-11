@@ -89,7 +89,6 @@ const char* const kBlurPluginID = "net.sf.cimg.CImgBlur";
 const char* const kMergePluginID = "net.sf.openfx.MergePlugin";
 const char* const kIDistortPluginID = "net.sf.openfx.IDistort";
 const char* const kPremultPluginID = "net.sf.openfx.Premult";
-const char* const kWritePNGPluginID = "fr.inria.openfx.WritePNG";
 const char* const kTimeBufferReadPluginID = "net.sf.openfx.TimeBufferRead";
 const char* const kTimeBufferWritePluginID = "net.sf.openfx.TimeBufferWrite";
 
@@ -184,7 +183,7 @@ protected:
         return effect;
     }
 
-    // Appends a WriteOIIO writing a single-part, uncompressed 32-bit float EXR of `node`, with
+    // Appends a native Write writing a single-part, uncompressed 32-bit float EXR of `node`, with
     // its channel set chosen by `setChannels`, renders `frame` and parses the result.
     bool render(const NodePtr& node,
                 const std::function<void(KnobChannelSet*)>& setChannels,
@@ -192,7 +191,13 @@ protected:
                 std::string* error,
                 int frame = 1)
     {
-        NodePtr writer = createNode(_writeOIIOPluginID);
+        if (!_tmp.isValid()) {
+            *error = "no temporary directory";
+
+            return false;
+        }
+        const std::string path = (_tmp.path() + QString::fromUtf8("/out") + QString::number(_renderCount++) + QString::fromUtf8(".exr")).toStdString();
+        NodePtr writer = createNativeWriter(path);
         if (!writer) {
             *error = "writer creation failed";
 
@@ -200,6 +205,7 @@ protected:
         }
         connectNodes(node, writer, 0, true);
 
+        // The menus are rebuilt for the file's format, so these are set once the file is.
         KnobChoice* partSplitting = dynamic_cast<KnobChoice*>(writer->getKnobByName("partSplitting").get());
         KnobChoice* bitDepth = dynamic_cast<KnobChoice*>(writer->getKnobByName("bitDepth").get());
         KnobChoice* compression = dynamic_cast<KnobChoice*>(writer->getKnobByName("compression").get());
@@ -213,14 +219,6 @@ protected:
         bitDepth->setValueFromID("32f", 0);
         compression->setValueFromID("none", 0);
         setChannels(writerChannels);
-
-        if (!_tmp.isValid()) {
-            *error = "no temporary directory";
-
-            return false;
-        }
-        const std::string path = (_tmp.path() + QString::fromUtf8("/out") + QString::number(_renderCount++) + QString::fromUtf8(".exr")).toStdString();
-        writer->setOutputFilesForWriter(path);
 
         OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
         if (!writerEffect) {
@@ -981,7 +979,7 @@ TEST_F(ColorViewsRenderTest, PremultOnAlphaOnlyLeavesAlphaUnchanged)
     EXPECT_NEAR(1.f, image.at(kCheckX, kCheckY, "A"), 1e-5f);
 }
 
-// WritePNG declares Alpha support, so an alpha-only input is written as a one-channel PNG instead
+// The native Write supports alpha-only output, so an alpha-only input is written as a one-channel PNG instead
 // of being widened. PNG has no alpha-only type: the file is a grey image, which a Read spreads over
 // R, G and B.
 TEST_F(ColorViewsRenderTest, AlphaOnlyInputWritesAOneChannelPng)
@@ -989,7 +987,10 @@ TEST_F(ColorViewsRenderTest, AlphaOnlyInputWritesAOneChannelPng)
     NodePtr reader = createReader("flat-alpha-only.exr");
     ASSERT_TRUE(bool(reader));
 
-    NodePtr writePng = createNode(QString::fromUtf8(kWritePNGPluginID));
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string pngPath = (tmp.path() + QLatin1String("/alpha.png")).toStdString();
+    NodePtr writePng = createNativeWriter(pngPath);
     ASSERT_TRUE(bool(writePng));
     connectNodes(reader, writePng, 0, true);
 
@@ -998,12 +999,7 @@ TEST_F(ColorViewsRenderTest, AlphaOnlyInputWritesAOneChannelPng)
     writePngChannels->setAll();
     KnobChoice* pngBitDepth = dynamic_cast<KnobChoice*>(writePng->getKnobByName("bitDepth").get());
     ASSERT_TRUE(pngBitDepth != NULL);
-    pngBitDepth->setValueFromID("8u", 0);
-
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-    const std::string pngPath = (tmp.path() + QLatin1String("/alpha.png")).toStdString();
-    writePng->setOutputFilesForWriter(pngPath);
+    pngBitDepth->setValueFromID("8i", 0);
 
     OutputEffectInstance* writePngEffect = dynamic_cast<OutputEffectInstance*>(writePng->getEffectInstance().get());
     ASSERT_TRUE(writePngEffect != NULL);

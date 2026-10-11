@@ -135,6 +135,13 @@ public:
         return LayerKnobSpec(LayerKnobSpec::eKindChannelSet, LayerKnobSpec::eRoleInputBound, true);
     }
 
+    // The colour plane is the input's colour written out, so a stream without one gets none
+    // rather than a plane of zeros.
+    virtual bool producesColorOnlyFromPassThroughInput() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
     virtual StatusEnum getRegionOfDefinition(U64 hash,
                                              double time,
                                              const RenderScale& scale,

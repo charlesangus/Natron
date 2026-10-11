@@ -591,7 +591,7 @@ TEST_F(RenderSchedulerAbort, WriterRangeStopsSoonAfterEngineAbort)
     getApp()->getProject()->setOrAddProjectFormat(format);
     NodePtr source = createNode(QString::fromUtf8(kCheckerBoardPluginID));
     ASSERT_TRUE(bool(source));
-    NodePtr writer = createNode(_writeOIIOPluginID);
+    NodePtr writer = createNativeWriter();
     ASSERT_TRUE(bool(writer));
     connectNodes(source, writer, 0, true);
 

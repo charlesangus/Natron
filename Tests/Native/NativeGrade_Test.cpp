@@ -213,7 +213,7 @@ TEST_F(NativeGradeTest, ChainOfThirtyRendersTheSameInBothSchedulerModes)
         connectNodes(previous, grade, 0, true);
         previous = grade;
     }
-    NodePtr writer = createNode(_writeOIIOPluginID);
+    NodePtr writer = createNativeWriter();
     ASSERT_TRUE(bool(writer));
     connectNodes(previous, writer, 0, true);
 

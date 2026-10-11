@@ -1689,6 +1689,15 @@ NativeWrite::render(const RenderActionArgs& args)
         }
     }
     const bool warnDropped = !droppedLayers.empty();
+    std::string droppedNames;
+    for (std::size_t i = droppedLayers.size(); i-- > 0;) {
+        droppedNames += (droppedNames.empty() ? "" : ", ") + droppedLayers[i];
+    }
+    if (warnDropped && filePlanes.empty() && !exists) {
+        setPersistentMessage(eMessageTypeError, tr("%1 can hold only the colour channels, and there are none to write: %2 cannot be written").arg(QString::fromStdString(formatName), QString::fromStdString(droppedNames)).toStdString());
+
+        return eStatusFailed;
+    }
 
     RenderCancellation cancel(this);
     bool wrote = false;
@@ -1893,11 +1902,7 @@ NativeWrite::render(const RenderActionArgs& args)
         }
     }
     if (wrote && warnDropped) {
-        std::string names;
-        for (std::size_t i = droppedLayers.size(); i-- > 0;) {
-            names += (names.empty() ? "" : ", ") + droppedLayers[i];
-        }
-        setPersistentMessage(eMessageTypeWarning, tr("%1 cannot hold more than four channels: only the colour was written, not %2").arg(QString::fromStdString(formatName), QString::fromStdString(names)).toStdString());
+        setPersistentMessage(eMessageTypeWarning, tr("%1 cannot hold more than four channels: only the colour was written, not %2").arg(QString::fromStdString(formatName), QString::fromStdString(droppedNames)).toStdString());
     } else if (wrote || exists) {
         clearPersistentMessage(false);
     }

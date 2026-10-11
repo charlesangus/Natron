@@ -88,7 +88,7 @@ protected:
         }
         *lastGrade = upstream;
 
-        *writer = createNode(_writeOIIOPluginID);
+        *writer = createNativeWriter();
         ASSERT_TRUE(bool(*writer));
         connectNodes(upstream, *writer, 0, true);
     }

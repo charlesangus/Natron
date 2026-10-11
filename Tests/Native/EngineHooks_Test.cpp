@@ -390,7 +390,7 @@ TEST_F(EngineHooksTest, RenderReadsTheInputPlaneEquivalentToThePlaneBeingRendere
     ASSERT_TRUE(bool(channels));
     channels->setAll();
 
-    NodePtr writer = createNode(_writeOIIOPluginID);
+    NodePtr writer = createNativeWriter();
     ASSERT_TRUE(bool(writer));
     connectNodes(recorder, writer, 0, true);
     KnobChoice* partSplitting = dynamic_cast<KnobChoice*>(writer->getKnobByName("partSplitting").get());

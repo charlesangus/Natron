@@ -53,7 +53,6 @@
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/WriteNode.h"
 
 #include <ofxImageEffect.h>
 
@@ -167,9 +166,9 @@ renderAndRead(const AppInstancePtr& app,
 
 } // namespace
 
-// A Write container over WriteOIIO fed by the three-layer fixture, set up to write a
-// single-part, uncompressed 32-bit float EXR. The container's channel set is the only knob a
-// test changes between renders, so nothing else can bump the container's knobsAge in between.
+// A native Write fed by the three-layer fixture, set up to write a single-part, uncompressed
+// 32-bit float EXR. The channel set is the only knob a test changes between renders, so nothing
+// else can bump the Write's knobsAge in between.
 class WriteAllLayersTest
     : public BaseTest {
 protected:
@@ -192,7 +191,7 @@ protected:
 
     void createWriterOn(const NodePtr& input)
     {
-        _writer = createNode(_writeOIIOPluginID);
+        _writer = createNativeWriter();
         ASSERT_TRUE(bool(_writer));
 
         connectNodes(input, _writer, 0, true);
@@ -210,23 +209,16 @@ protected:
         compression->setValueFromID("none", 0);
 
         _channels = dynamic_cast<KnobChannelSet*>(_writer->getKnobByName(kNodeParamChannelSet).get());
-        ASSERT_TRUE(_channels != NULL) << "the Write container has no channel set knob";
-    }
-
-    NodePtr getEmbeddedEncoder() const
-    {
-        WriteNode* container = dynamic_cast<WriteNode*>(_writer->getEffectInstance().get());
-
-        return container ? container->getEmbeddedWriter() : NodePtr();
+        ASSERT_TRUE(_channels != NULL) << "the Write has no channel set knob";
     }
 
     NodePtr _writer;
     KnobChannelSet* _channels = NULL;
 };
 
-// Switching the container's channel set after a first render must reach the embedded encoder's
-// hash, so that its cached components-needed plane set is invalidated and the next render
-// fetches (and writes) the newly selected layers, not the plane set it cached the first time.
+// Switching the channel set after a first render must invalidate the cached components-needed
+// plane set, so the next render fetches (and writes) the newly selected layers, not the plane
+// set it cached the first time.
 TEST_F(WriteAllLayersTest, WriteAllLayersToggleAfterRenderWritesEveryLayer)
 {
     createFixtureWriter();
@@ -275,8 +267,8 @@ TEST_F(WriteAllLayersTest, WriteAllLayersToggleAfterRenderWritesEveryLayer)
 } // TEST_F(WriteAllLayersTest, WriteAllLayersToggleAfterRenderWritesEveryLayer)
 
 // The same graph as above, but every layer is selected before the very first render, so the
-// embedded encoder's components-needed plane set is correct from the start and never needs to
-// be invalidated by a later knob change.
+// components-needed plane set is correct from the start and never needs to be invalidated by a
+// later knob change.
 TEST_F(WriteAllLayersTest, WriteAllLayersCheckedBeforeFirstRenderWritesEveryLayer)
 {
     createFixtureWriter();
@@ -301,26 +293,13 @@ TEST_F(WriteAllLayersTest, WriteAllLayersCheckedBeforeFirstRenderWritesEveryLaye
 } // TEST_F(WriteAllLayersTest, WriteAllLayersCheckedBeforeFirstRenderWritesEveryLayer)
 
 // A partial selection (Color plus one of the two extra layers) reaches the file as exactly those
-// planes: the encoder enumerates "all planes present" on its input, and the host narrows that
-// list to the container's channel set. The encoder's own plane selection is forced to "all" and
-// hidden, since the host's answer is the selection.
+// planes.
 TEST_F(WriteAllLayersTest, WriteColorAndOneLayerWritesOnlyThose)
 {
     createFixtureWriter();
     if (HasFatalFailure()) {
         return;
     }
-
-    NodePtr encoder = getEmbeddedEncoder();
-    ASSERT_TRUE(bool(encoder));
-    KnobBool* processAllLayers = dynamic_cast<KnobBool*>(encoder->getKnobByName("processAllLayers").get());
-    ASSERT_TRUE(processAllLayers != NULL);
-    EXPECT_TRUE(processAllLayers->getValue());
-    EXPECT_TRUE(processAllLayers->getIsSecret());
-    EXPECT_FALSE(processAllLayers->getIsPersistent());
-    KnobIPtr outputChannels = encoder->getKnobByName("outputChannels");
-    ASSERT_TRUE(bool(outputChannels));
-    EXPECT_TRUE(outputChannels->getIsSecret());
 
     _channels->setLayer(0, kNatronColorViewRGBA, NULL);
     _channels->addLayer("diffuse", NULL);
@@ -339,9 +318,8 @@ TEST_F(WriteAllLayersTest, WriteColorAndOneLayerWritesOnlyThose)
     QFile::remove(QString::fromStdString(path));
 } // TEST_F(WriteAllLayersTest, WriteColorAndOneLayerWritesOnlyThose)
 
-// The encoder's colour path has fixed component counts, so a Color row that enables only R, G
-// and B maps to the RGB superset through the encoder's (hidden) outputComponents choice: the
-// file carries R, G and B and no alpha channel.
+// A Color row that enables only R, G and B writes an RGB colour plane: the file carries R, G
+// and B and no alpha channel.
 TEST_F(WriteAllLayersTest, WriteColorRgbSubsetWritesRgbOnly)
 {
     createFixtureWriter();
@@ -349,15 +327,8 @@ TEST_F(WriteAllLayersTest, WriteColorRgbSubsetWritesRgbOnly)
         return;
     }
 
-    NodePtr encoder = getEmbeddedEncoder();
-    ASSERT_TRUE(bool(encoder));
-    KnobChoice* outputComponents = dynamic_cast<KnobChoice*>(encoder->getKnobByName("outputComponents").get());
-    ASSERT_TRUE(outputComponents != NULL);
-    EXPECT_EQ("RGBA", outputComponents->getActiveEntry().id);
-
     const std::vector<std::string> rgb = { "R", "G", "B" };
     _channels->setLayer(0, kNatronColorViewRGBA, &rgb);
-    EXPECT_EQ("RGB", outputComponents->getActiveEntry().id);
 
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -379,8 +350,7 @@ TEST_F(WriteAllLayersTest, WriteColorRgbSubsetWritesRgbOnly)
 } // TEST_F(WriteAllLayersTest, WriteColorRgbSubsetWritesRgbOnly)
 
 // A non-Color row with some channels unchecked reaches the file as exactly those channels: the
-// host lists the plane to the encoder with just the enabled channels, and the encoder's fetch of
-// that plane renders the whole layer and extracts them.
+// host lists the plane with just the enabled channels.
 TEST_F(WriteAllLayersTest, WriteColorAndDiffuseGreenWritesThatChannelOnly)
 {
     createFixtureWriter();
@@ -442,9 +412,8 @@ TEST_F(WriteAllLayersTest, WriteColorAndSpecularRedBlueWritesThoseChannelsOnly)
     QFile::remove(QString::fromStdString(path));
 } // TEST_F(WriteAllLayersTest, WriteColorAndSpecularRedBlueWritesThoseChannelsOnly)
 
-// A channel set without a Color row writes no Color: the host stops forcing the encoder's
-// metadata (Color) plane into its produced set once the container excludes it from the
-// encoder's input, and the encoder names a lone non-Color plane's channels after the layer.
+// A channel set without a Color row writes no Color, and a lone non-Color plane's channels are
+// named after the layer.
 TEST_F(WriteAllLayersTest, WriteSpecularRedBlueAloneWritesNoColor)
 {
     createFixtureWriter();
@@ -499,38 +468,6 @@ TEST_F(WriteAllLayersTest, WriteDiffuseAloneWritesNoColor)
     QFile::remove(QString::fromStdString(path));
 } // TEST_F(WriteAllLayersTest, WriteDiffuseAloneWritesNoColor)
 
-// The encoder's own R/G/B/A quad is adopted by the container: forced on, non-persistent and
-// locked hidden, since both GenericWriter and the host's own channel-quad refresh would
-// otherwise re-show the boxes matching the Color component count after every metadata pass.
-// Seen hidden, GenericWriter packs nothing, so the Color subset test above keeps its pixels.
-TEST_F(WriteAllLayersTest, EncoderChannelQuadIsAdoptedAndStaysHidden)
-{
-    createFixtureWriter();
-    if (HasFatalFailure()) {
-        return;
-    }
-
-    NodePtr encoder = getEmbeddedEncoder();
-    ASSERT_TRUE(bool(encoder));
-    static const char* const quad[4] = { "NatronOfxParamProcessR", "NatronOfxParamProcessG", "NatronOfxParamProcessB", "NatronOfxParamProcessA" };
-    KnobBool* channels[4];
-    for (int i = 0; i < 4; ++i) {
-        channels[i] = dynamic_cast<KnobBool*>(encoder->getKnobByName(quad[i]).get());
-        ASSERT_TRUE(channels[i] != NULL) << quad[i];
-        EXPECT_TRUE(channels[i]->getValue()) << quad[i];
-        EXPECT_TRUE(channels[i]->getIsSecret()) << quad[i];
-        EXPECT_TRUE(channels[i]->isSecretLocked()) << quad[i];
-        EXPECT_FALSE(channels[i]->getIsPersistent()) << quad[i];
-    }
-
-    const std::vector<std::string> rgb = { "R", "G", "B" };
-    _channels->setLayer(0, kNatronColorViewRGBA, &rgb);
-    encoder->getEffectInstance()->refreshMetadata_public(true);
-    for (int i = 0; i < 4; ++i) {
-        EXPECT_TRUE(channels[i]->getIsSecret()) << quad[i];
-    }
-} // TEST_F(WriteAllLayersTest, EncoderChannelQuadIsAdoptedAndStaysHidden)
-
 // A source file with no R/G/B/A layer reads as a black RGBA colour plane next to its own layers,
 // none of which is copied into Color; "All Layers" writes the colour plane and every layer.
 TEST_F(WriteAllLayersTest, WriteAllLayersFromNoColorSourceWritesABlackColorPlane)
@@ -568,8 +505,8 @@ TEST_F(WriteAllLayersTest, WriteAllLayersFromNoColorSourceWritesABlackColorPlane
 } // TEST_F(WriteAllLayersTest, WriteAllLayersFromNoColorSourceWritesABlackColorPlane)
 
 // A one-channel user layer alongside the fixture's: a Roto targeting a registered `mask [A]`
-// layer feeds Write All. The channel is `mask.A` in the single-part file, and in the encoder's
-// default part-per-layer mode the file reads back with the same four layers -- the color part's
+// layer feeds Write All. The channel is `mask.A` in the single-part file, and in the
+// part-per-layer mode the file reads back with the same four layers -- the color part's
 // channels are unprefixed, so the reader falls back on the part name, which must be the layer's
 // and not the "subimageNN" OpenImageIO synthesises for an unnamed part.
 TEST_F(WriteAllLayersTest, WriteAllWithOneChannelUserLayerNamesItAndReadsBackAsThatLayer)

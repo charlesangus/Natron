@@ -1,0 +1,109 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "Global/Macros.h"
+
+#include <set>
+#include <string>
+
+#include <gtest/gtest.h>
+
+#include <QString>
+
+#include "BaseTest.h"
+
+#include "Engine/AppManager.h"
+#include "Engine/EffectInstance.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/Image/NativeImageEffect.h"
+#include "Engine/Plugin.h"
+
+NATRON_NAMESPACE_USING
+
+namespace {
+
+// The nodes that may answer true to canRenderOnGpu(); every other native node must stay on the CPU.
+const std::set<std::string>&
+gpuCapableIds()
+{
+    static const std::set<std::string> ids = {
+        PLUGINID_NATRON_GRADE,
+        PLUGINID_NATRON_BLUR,
+    };
+
+    return ids;
+}
+
+} // namespace
+
+class NativeGpuCapabilityTest
+    : public BaseTest {
+};
+
+TEST_F(NativeGpuCapabilityTest, OnlyAllowlistedNativeNodesRenderOnGpu)
+{
+    GpuQuery query;
+    query.nComps = 4;
+    query.bitDepth = eImageBitDepthFloat;
+
+    int nChecked = 0;
+    for (const auto& versions : appPTR->getPluginsList()) {
+        for (const Plugin* plugin : versions.second) {
+            // The OFX descriptor is only loaded on demand, so the plugin handle is the reliable OFX marker.
+            if (plugin->getOfxPlugin() || !plugin->getIsUserCreatable()) {
+                continue;
+            }
+            NodePtr node = createNode(plugin->getPluginID(), plugin->getMajorVersion());
+            if (!node) {
+                continue;
+            }
+            NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get());
+            if (!effect) {
+                continue;
+            }
+            ++nChecked;
+            const std::string id = versions.first;
+            if (gpuCapableIds().count(id) == 0) {
+                EXPECT_FALSE(effect->canRenderOnGpu(query)) << id;
+            }
+        }
+    }
+    EXPECT_GT(nChecked, 0);
+}
+
+TEST_F(NativeGpuCapabilityTest, DefaultsDeclineAndPassTheRegionThrough)
+{
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+    ASSERT_TRUE(bool(node));
+    NativeImageEffect* effect = dynamic_cast<NativeImageEffect*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+
+    const RectI roi(10, 20, 110, 220);
+    EXPECT_EQ(roi, effect->getGpuInputRoI(0, roi, RenderScale()));
+}

@@ -295,6 +295,8 @@ try:
         by_class = {}
         for w in dialog.findChildren(QWidget):
             by_class.setdefault(gt.class_name(w), []).append(w)
+        error_labels = [w for w in by_class.get("Label", [])
+                        if w.isVisible() and w.styleSheet().replace(" ", "") == "color:red;"]
         spins = sorted(by_class.get("SpinBox", []), key=lambda w: w.pos().x())
         checks = [w for w in by_class.get("QCheckBox", []) if w.isVisible()]
         boxes = by_class.get("DialogButtonBox", []) + by_class.get("QDialogButtonBox", [])
@@ -308,6 +310,7 @@ try:
             "background": checks[0] if checks else None,
             "buttons": boxes[0] if boxes else None,
             "tree": trees[0] if trees else None,
+            "error": error_labels[0] if error_labels else None,
         }
 
     def find_render_dialog():
@@ -398,6 +401,18 @@ try:
         setVisible(false) on the old one and setVisible(true) on the new one), so a ProgressPanel
         that is visible is the current tab of whatever pane holds it."""
         return any(w.isVisible() for w in gt.widgets_of("ProgressPanel"))
+
+    PANEL_TIMER_WAIT_MS = 3600
+
+    def check_panel_stays_hidden_after_timer(label):
+        """ProgressPanel raises itself NATRON_DISPLAY_PROGRESS_PANEL_AFTER_MS (3 s) after a task
+        starts, and again when the engine reports the task stopped; both arrive after the modal
+        dialog has closed, so the tab is checked again once they have had time to fire."""
+        yield ("sleep", PANEL_TIMER_WAIT_MS)
+        QApplication.processEvents()
+        check(not progress_panel_is_current_tab(),
+             "%s: the Progress panel is still not the current tab %.1f s later"
+             % (label, PANEL_TIMER_WAIT_MS / 1000.))
 
     def ensure_progress_panel_not_current(label):
         """A background render raises the Progress panel by design (render-background-custom
@@ -866,6 +881,7 @@ try:
             check(closed, "render-foreground-cancel: the progress dialog closed after Cancel")
         check(not progress_panel_is_current_tab(),
              "render-foreground-cancel: the Progress panel did not become the current tab after cancelling")
+        yield from check_panel_stays_hidden_after_timer("render-foreground-cancel")
         yield ("sleep", SETTLE_MS)
         cancel_files = count_output_files(os.path.join(gt.OUT, "render_cancel.*.png"))
         check(len(cancel_files) < CANCEL_FRAMES,
@@ -920,11 +936,59 @@ try:
                 check(not progress_panel_is_current_tab(),
                      "render-foreground-separate-process: the Progress panel did not become the current "
                      "tab after the render finished")
+                yield from check_panel_stays_hidden_after_timer("render-foreground-separate-process")
                 yield ("sleep", SETTLE_MS)
                 sep_files = count_output_files(os.path.join(gt.OUT, "render_sep.*.png"))
                 check(len(sep_files) == SEP_FRAMES,
                      "render-foreground-separate-process: all %d frames were written (got %d)"
                      % (SEP_FRAMES, len(sep_files)))
+
+                # The child process's command line cannot express a negative frame, so the
+                # dialog refuses a range that starts below 0 while this setting is on.
+                gt.section("render-separate-process-negative-range")
+
+                def configure_negative():
+                    label = "render-separate-process-negative-range"
+                    dlg = find_render_dialog()
+                    if not check(dlg is not None, "%s: the RenderDialog opened" % label):
+                        return
+                    parts = render_dialog_parts(dlg)
+                    if parts["combo"] is not None:
+                        set_combo_index(parts["combo"], 2)
+                    if check(parts["first"] is not None and parts["last"] is not None,
+                             "%s: found the first/last spin boxes" % label):
+                        set_line_edit_value(parts["first"], -5)
+                        set_line_edit_value(parts["last"], 5)
+                        if parts["step"] is not None:
+                            set_line_edit_value(parts["step"], 1)
+                    QApplication.processEvents()
+                    gt.shot("render-dialog-separate-process-negative.png")
+                    if check(parts["buttons"] is not None, "%s: found the dialog's button box" % label):
+                        ok_btn = parts["buttons"].button(QDialogButtonBox.StandardButton.Ok)
+                        check(ok_btn is not None and not ok_btn.isEnabled(),
+                             "%s: the Ok button is disabled" % label)
+                    error = render_dialog_parts(dlg)["error"]
+                    check(error is not None and "separate process" in error.text(),
+                         "%s: an inline error names the separate-process limit (got %r)"
+                         % (label, error.text() if error is not None else None))
+                    if parts["first"] is not None:
+                        set_line_edit_value(parts["first"], 0)
+                        QApplication.processEvents()
+                        if parts["buttons"] is not None:
+                            ok_btn = parts["buttons"].button(QDialogButtonBox.StandardButton.Ok)
+                            check(ok_btn is not None and ok_btn.isEnabled(),
+                                 "%s: the Ok button is enabled again once the range starts at 0" % label)
+                    if parts["buttons"] is not None:
+                        cancel_btn = parts["buttons"].button(QDialogButtonBox.StandardButton.Cancel)
+                        if cancel_btn is not None:
+                            cancel_btn.click()
+
+                render_button_neg = find_write_render_button(writer_sep)
+                if check(render_button_neg is not None,
+                         "render-separate-process-negative-range: found the Render button"):
+                    open_render_dialog_and(render_button_neg.click, configure_negative,
+                                           "render-separate-process-negative-range")
+                yield ("sleep", SETTLE_MS)
             finally:
                 try:
                     sep_param.set(original_sep)

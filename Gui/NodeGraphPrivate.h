@@ -56,8 +56,6 @@ CLANG_DIAG_ON(uninitialized)
 #define NATRON_CACHE_SIZE_TEXT_REFRESH_INTERVAL_MS 1000
 #define NATRON_NODES_RENDER_STATE_REFRESH_INTERVAL_MS 300
 
-#define NATRON_NODE_DUPLICATE_X_OFFSET 50
-
 ///These are percentages of the size of the NodeGraph in widget coordinates.
 #define NATRON_NAVIGATOR_BASE_HEIGHT 0.2
 #define NATRON_NAVIGATOR_BASE_WIDTH 0.2
@@ -183,7 +181,6 @@ public:
     QGraphicsItem *_tL, *_tR, *_bR, *_bL;
     bool _refreshOverlays;
 
-    // The ghost edges shown while splicing, previewing the entry/exit reconnection around the pipe.
     Edge* _hintInputEdge;
     Edge* _hintOutputEdge;
 
@@ -195,6 +192,9 @@ public:
     int _spliceEntryInput = -1;
     NodeGuiPtr _spliceExit;
     Edge* _splicePipe = nullptr;
+    // Set by Escape or focus loss, and cleared by the next press, so that the rest of the drag
+    // does not rebuild the plan that was just dismissed.
+    bool _spliceCancelled = false;
 
     NodeGuiPtr _backdropResized; //< the backdrop being resized
     NodesGuiList _selection;

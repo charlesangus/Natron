@@ -199,8 +199,19 @@ NodeGraph::resetSplicePlan()
 }
 
 void
+NodeGraph::cancelSplice()
+{
+    resetSplicePlan();
+    _imp->_spliceCancelled = true;
+}
+
+void
 NodeGraph::checkForSpliceHint()
 {
+    if (_imp->_spliceCancelled) {
+        return;
+    }
+
     if (!_imp->_splicePlanBuilt || (_imp->_splicePlanSelection != _imp->_selection)) {
         clearSpliceHint();
         buildSplicePlan();
@@ -388,7 +399,6 @@ NodeGraph::moveSelectedNodesBy(bool /*shiftdown*/,
     }
 
     if (!userEdit) {
-        // For !userEdit do not do auto-scroll and the splice hint
         return;
     }
 

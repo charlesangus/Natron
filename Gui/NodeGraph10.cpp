@@ -200,6 +200,7 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
     takeClickFocus();
 
     _imp->_hasMovedOnce = false;
+    _imp->_spliceCancelled = false;
     _imp->_deltaSinceMousePress = QPointF(0, 0);
     if ( buttonDownIsMiddle(e) ) {
         _imp->_evtState = eEventStateMovingArea;

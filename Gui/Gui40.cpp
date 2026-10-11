@@ -771,26 +771,10 @@ Gui::ensureScriptEditorVisible()
     }
 }
 
-void
-Gui::setProgressPanelTabSwitchSuppressed(bool suppressed)
-{
-    if (suppressed) {
-        ++_imp->_progressPanelTabSwitchSuppressDepth;
-    } else if (_imp->_progressPanelTabSwitchSuppressDepth > 0) {
-        --_imp->_progressPanelTabSwitchSuppressDepth;
-    }
-}
-
 PanelWidget*
 Gui::ensureProgressPanelVisible()
 {
     TabWidget* pane = _imp->_progressPanel->getParentPane();
-
-    if (_imp->_progressPanelTabSwitchSuppressDepth > 0) {
-        // The task row is already in the panel's table regardless of which tab is current;
-        // only the tab switch itself is what a suppressed caller wants to skip.
-        return pane ? pane->currentWidget() : 0;
-    }
 
     if (pane != 0) {
         PanelWidget* ret = pane->currentWidget();
@@ -874,6 +858,7 @@ Gui::renderSelectedNode()
         return;
     }
     std::list<NodePtr> writers;
+    NodePtr createdWriter;
     for (NodesGuiList::const_iterator it = selectedNodes.begin();
          it != selectedNodes.end(); ++it) {
         NodePtr internalNode = (*it)->getNode();
@@ -904,11 +889,16 @@ Gui::renderSelectedNode()
 #endif
                 if (writer) {
                     writers.push_back(writer);
+                    createdWriter = writer;
                 }
             }
         }
     }
-    showRenderDialog(this, writers);
+    // The dialog lists each writer's own name, file and frame range, so the Write node has to
+    // exist before it opens; one made only for this render goes away again if it is cancelled.
+    if (!showRenderDialog(this, writers) && createdWriter) {
+        createdWriter->destroyNode(false, false);
+    }
 } // Gui::renderSelectedNode
 
 void

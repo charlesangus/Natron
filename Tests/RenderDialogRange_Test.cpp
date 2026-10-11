@@ -130,3 +130,67 @@ TEST(RenderDialogRange, StepBelowZeroIsAnError)
 
     EXPECT_TRUE(range.error);
 }
+
+TEST(RenderDialogRange, ErrorKindsAreReported)
+{
+    RenderRange stepRange = resolveRenderRange(eRenderRangePresetCustom,
+                                               10, 20, 2,
+                                               1, 100,
+                                               makeCustom(10, 5, 0));
+    RenderRange orderRange = resolveRenderRange(eRenderRangePresetCustom,
+                                                10, 20, 2,
+                                                1, 100,
+                                                makeCustom(10, 5, 1));
+
+    EXPECT_EQ(eRenderRangeErrorStepBelowOne, stepRange.errorKind);
+    EXPECT_EQ(eRenderRangeErrorFirstAfterLast, orderRange.errorKind);
+}
+
+TEST(RenderDialogRange, NegativeFirstFrameIsAllowedInProcess)
+{
+    RenderRange range = resolveRenderRange(eRenderRangePresetCustom,
+                                           10, 20, 2,
+                                           1, 100,
+                                           makeCustom(-5, 5, 1),
+                                           false);
+
+    EXPECT_FALSE(range.error);
+    EXPECT_EQ(eRenderRangeErrorNone, range.errorKind);
+    EXPECT_EQ(-5, range.first);
+}
+
+TEST(RenderDialogRange, NegativeFirstFrameIsAnErrorInSeparateProcess)
+{
+    RenderRange range = resolveRenderRange(eRenderRangePresetCustom,
+                                           10, 20, 2,
+                                           1, 100,
+                                           makeCustom(-5, 5, 1),
+                                           true);
+
+    EXPECT_TRUE(range.error);
+    EXPECT_EQ(eRenderRangeErrorNegativeFirstInSeparateProcess, range.errorKind);
+}
+
+TEST(RenderDialogRange, NegativeProjectRangeIsAnErrorInSeparateProcess)
+{
+    RenderRange range = resolveRenderRange(eRenderRangePresetProjectRange,
+                                           10, 20, 1,
+                                           -10, 100,
+                                           makeCustom(1, 1, 1),
+                                           true);
+
+    EXPECT_TRUE(range.error);
+    EXPECT_EQ(eRenderRangeErrorNegativeFirstInSeparateProcess, range.errorKind);
+}
+
+TEST(RenderDialogRange, FrameZeroIsAllowedInSeparateProcess)
+{
+    RenderRange range = resolveRenderRange(eRenderRangePresetCustom,
+                                           10, 20, 2,
+                                           1, 100,
+                                           makeCustom(0, 5, 1),
+                                           true);
+
+    EXPECT_FALSE(range.error);
+    EXPECT_EQ(eRenderRangeErrorNone, range.errorKind);
+}

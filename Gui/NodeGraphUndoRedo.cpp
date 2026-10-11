@@ -538,7 +538,7 @@ InsertNodeCommand::InsertNodeCommand(NodeGraph* graph,
     : ConnectCommand(graph, edge, edge->getSource(), exitNode, parent)
     , _entryNode(entryNode ? entryNode : exitNode)
     , _entryInput(entryInput)
-    , _inputEdge(0)
+    , _connectedEntryInput(-1)
 {
     assert(exitNode);
     setText( tr("Insert node") );
@@ -560,8 +560,9 @@ InsertNodeCommand::undo()
 
     doConnect(exitNode, oldSrc, dst, _inputNb);
 
-    if (_inputEdge) {
-        doConnect( _inputEdge->getSource(), NodeGuiPtr(), _inputEdge->getDest(), _inputEdge->getInputNumber() );
+    NodeGuiPtr entryNode = _entryNode.lock();
+    if (entryNode && oldSrc && (_connectedEntryInput != -1)) {
+        doConnect(oldSrc, NodeGuiPtr(), entryNode, _connectedEntryInput);
     }
 
     ViewerInstance* isDstAViewer = dst->getNode()->isEffectViewer();
@@ -597,7 +598,6 @@ InsertNodeCommand::redo()
 
     doConnect(oldSrc, exitNode, dst, _inputNb);
 
-    /// find out if the entry node is already connected to what the edge is connected
     bool alreadyConnected = false;
     const std::vector<NodeWPtr>& inpNodes = entryNodeInternal->getGuiInputs();
     if (oldSrcInternal) {
@@ -609,14 +609,13 @@ InsertNodeCommand::redo()
         }
     }
 
-    _inputEdge = 0;
+    _connectedEntryInput = -1;
     if (oldSrcInternal && !alreadyConnected) {
-        /// push a second connection... this is a bit dirty but I don't have time to add a whole new command just for this
         int prefInput = (_entryInput != -1) ? _entryInput : entryNodeInternal->getPreferredInputForConnection();
-        if (prefInput != -1) {
-            _inputEdge = entryNode->getInputArrow(prefInput);
-            assert(_inputEdge);
-            doConnect( _inputEdge->getSource(), oldSrc, _inputEdge->getDest(), _inputEdge->getInputNumber() );
+        Edge* entryEdge = (prefInput != -1) ? entryNode->getInputArrow(prefInput) : 0;
+        if (entryEdge) {
+            doConnect(entryEdge->getSource(), oldSrc, entryNode, prefInput);
+            _connectedEntryInput = prefInput;
         }
     }
 

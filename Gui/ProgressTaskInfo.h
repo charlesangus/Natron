@@ -113,6 +113,12 @@ public:
 
     void restartTask();
 
+    // A foreground task is shown in its own modal dialog, so nothing it does may switch the
+    // current tab to the Progress panel.
+    void setForeground(bool foreground);
+
+    bool isForeground() const;
+
     NodePtr getNode() const;
 
     // -1 until the task has reported its first frame.

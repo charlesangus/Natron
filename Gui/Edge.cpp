@@ -141,7 +141,7 @@ Edge::Edge(int inputNb_,
     initLine();
     //setFlag(QGraphicsItem::ItemStacksBehindParent);
     setZValue(15);
-    refreshState(false);
+    refreshState();
 }
 
 void
@@ -195,7 +195,7 @@ Edge::setSource(const NodeGuiPtr & src)
 {
     _imp->source = src;
     initLine();
-    refreshState(false);
+    refreshState();
 }
 
 int
@@ -297,12 +297,12 @@ Edge::setSourceAndDestination(const NodeGuiPtr & src,
         _imp->label->setText( QString::fromUtf8( dst->getNode()->getInputLabel(_imp->inputNb).c_str() ) );
         //_imp->label->setPlainText( QString( dst->getNode()->getInputLabel(_imp->inputNb).c_str() ) );
     }
-    refreshState(false);
+    refreshState();
     initLine();
 }
 
 bool
-Edge::computeVisibility(bool /*hovered*/) const
+Edge::computeVisibility() const
 {
     NodeGuiPtr dst = _imp->dest.lock();
     EffectInstancePtr effect;
@@ -331,7 +331,7 @@ Edge::computeVisibility(bool /*hovered*/) const
 }
 
 void
-Edge::refreshState(bool hovered)
+Edge::refreshState()
 {
     refreshDataKindPen();
 
@@ -346,7 +346,7 @@ Edge::refreshState(bool hovered)
         if (_imp->isMask) {
             _imp->paintWithDash = true;
         }
-        bool visible = computeVisibility(hovered);
+        bool visible = computeVisibility();
         if (isVisible() != visible) {
             setVisible(visible);
         }

@@ -424,6 +424,16 @@ public:
     // Returns true if the knobChanged handler was caught and an action was done
     bool trigger();
 
+    // Like trigger(), but the host skips its own action for the button (a render button's
+    // render), for a caller that performs that action itself; the plug-in's and the user's
+    // Python knobChanged callbacks still run.
+    bool triggerCallbacksOnly();
+
+    bool isTriggeringCallbacksOnly() const
+    {
+        return _triggeringCallbacksOnly;
+    }
+
     virtual bool supportsInViewerContext() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return true;
@@ -458,6 +468,7 @@ private:
 private:
     static const std::string _typeNameStr;
     bool _renderButton;
+    bool _triggeringCallbacksOnly;
     bool _checkable;
     bool _isToolButtonAction;
 };

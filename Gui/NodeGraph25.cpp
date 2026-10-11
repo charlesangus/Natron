@@ -246,7 +246,7 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
     bool accept = true;
 
     if (key == Qt::Key_Escape) {
-        resetSplicePlan();
+        cancelSplice();
     }
 
 #ifndef NATRON_ENABLE_IO_META_NODES

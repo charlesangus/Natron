@@ -229,7 +229,6 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
             }
             const bool hasMoved = (_imp->_deltaSinceMousePress.x() != 0) || (_imp->_deltaSinceMousePress.y() != 0);
 
-            ///now if there was a hint displayed, use it to actually make connections.
             if (_imp->_splicePipe) {
                 Edge* pipe = _imp->_splicePipe;
                 NodeGuiPtr entryGui = _imp->_spliceEntry;
@@ -237,8 +236,6 @@ NodeGraph::mouseReleaseEvent(QMouseEvent* e)
                 int entryInput = _imp->_spliceEntryInput;
                 resetSplicePlan();
 
-                /// One undo step for the whole splice: the move (if any) and the connection(s)
-                /// are children of the same parent command, so a single undo restores both.
                 QUndoCommand* spliceCommand = new QUndoCommand(tr("Insert nodes"));
                 if (hasMoved) {
                     new MoveMultipleNodesCommand(nodesToMove, _imp->_deltaSinceMousePress.x(), _imp->_deltaSinceMousePress.y(), spliceCommand);

@@ -215,8 +215,6 @@ public Q_SLOTS:
 
     void centerOnAllNodes();
 
-    void toggleAutoHideInputs(bool setSettings = true);
-
     void toggleHideInputs();
 
     void popCreateNodeDialog();
@@ -258,6 +256,8 @@ private:
     void clearSpliceHint();
 
     void resetSplicePlan();
+
+    void cancelSplice();
 
     void moveSelectedNodesBy(bool shiftdown, bool controlDown, const QPointF& lastMousePosScene, const QPointF& newPos, const QRectF& visibleSceneR, bool userEdit);
 

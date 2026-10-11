@@ -200,7 +200,6 @@ GuiPrivate::GuiPrivate(const GuiAppInstancePtr& app,
     , _groups()
     , _curveEditor(0)
     , _progressPanel(0)
-    , _progressPanelTabSwitchSuppressDepth(0)
     , _dopeSheetEditor(0)
     , _toolBox(0)
     , _propertiesBin(0)

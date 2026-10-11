@@ -1,58 +1,47 @@
-"""M55.P1.T2: a GUI test that fails when a connected input has no drawn pipe, or an unconnected
-one hides when its node is deselected, from synthetic cases (Tests/CMakeLists.txt is not touched;
-this script is driven by Tests/gui/run-gui-test.sh, not ctest).
+"""A GUI test that fails when a connected input has no drawn pipe, or an unconnected one hides
+when its node is deselected, from synthetic cases. It is driven by Tests/gui/run-gui-test.sh, not
+ctest.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for why the GL symlink dance is needed):
     docker exec natron-dev bash -c 'cd /home/bosley/git/Natron && \
         NATRON_GUI_TEST_OUT=build/m55-pipes/out GUI_TEST_TIMEOUT=240 \
         Tests/gui/run-gui-test.sh Tests/gui/m55_input_pipes.py build/fast/App/Natron'
 
-Background (see PLAN/DESIGN/2026-10-10-m55-elaboration.md): before the fix, the "Auto hide masks
-inputs" preference (Settings' autoHideInputs, on by default) hid, whenever a node was neither
-hovered nor selected: every unconnected input the plugin marks optional (mask or not), and every
-input of a Reader outright (Edge::computeVisibility's removed autoHide/isReader/isViewer arm,
-Gui/Edge.cpp before 22dd828c0). Separately, four edge-refresh defects ((a) size-mismatch bail-outs
-in NodeGui::refreshEdges/connectEdge, (b) connectEdge nulling a source when the input's NodeGui
-isn't built yet, (b') ProjectGui only refreshing getVisibleNodes() after a project load, (c)
-NodeGui::showGui never calling refreshEdgesVisility()) can leave a *connected* input with no drawn
-pipe, or one that only reappears after the node is touched (hovered, moved, selected). This script
-probes both families of bug with synthetic graphs, run against the **existing**, pre-fix
-build/fast/App/Natron binary (built at a50bef552): see the SUMMARY this script prints and
-M55's "## Decisions" for which cases are expected to fail there.
+Two families of bug are probed. One hides an input that should show: an unconnected input the
+plugin marks optional (mask or not), or any input of a Reader, while the node is neither hovered
+nor selected. The other leaves a *connected* input with no drawn pipe, or one that only reappears
+after the node is touched (hovered, moved, selected): edge refreshes that bail out on an input
+count mismatch, a source nulled because the input's NodeGui is not built yet, a project load that
+only refreshes the root graph's visible nodes, and a shown node whose edge visibility is never
+recomputed.
 
-The probe (and why it samples pixels rather than the scene graph): the design called for finding
-Edge as a plain QGraphicsLineItem in the NodeGraph's scene (zValue() == 15, since Edge does not
-override type()). In this environment NodeGraph.scene() raises "Internal C++ object
-(QGraphicsScene) already deleted" on every call, for every NodeGraph, from the very first access
--- a PySide/shiboken wrapper-identity problem unrelated to any M55 code (it reproduces on a bare
-two-node graph with no groups, projects or undo involved). So every check here instead samples
-real screen pixels, exactly as the design doc's fallback describes: a connected pipe is tested by
-zooming/centring the view on the two nodes, grabbing the viewport, and sampling points along the
-straight line between the two node boxes' centres (the portion inside either box is skipped);
-enough of that line is non-background colour (differs from a corner pixel by more than a small
-tolerance) only when a pipe is actually drawn. A node's *unconnected* stub (case (e)'s Mask input,
-which has no second node to anchor a two-point line search on) is instead tested by counting
-non-background pixels in a thin strip just past one side of the node's box. Diffing two captures
-(e.g. hovered vs. unhovered) was tried first and discarded: under this environment's
+The probe samples pixels rather than the scene graph. Edge does not override type(), so it would
+show up as a plain QGraphicsLineItem at zValue() == 15, but in this environment NodeGraph.scene()
+raises "Internal C++ object (QGraphicsScene) already deleted" on every call, for every NodeGraph
+-- a PySide/shiboken wrapper-identity problem that reproduces on a bare two-node graph. So a
+connected pipe is tested by zooming/centring the view on the two nodes, grabbing the viewport,
+and sampling points along the straight line between the two node boxes' centres (the portion
+inside either box is skipped); enough of that line is non-background colour (differs from a
+corner pixel by more than a small tolerance) only when a pipe is actually drawn. A node's
+*unconnected* stub (case (e)'s Mask input, which has no second node to anchor a two-point line
+search on) is instead tested by counting non-background pixels in a thin strip just past one side
+of the node's box. Diffing two captures (e.g. hovered vs. unhovered) does not work: under the
 software-rendered Xvfb, two captures of an *unchanged* scene already differ by dozens of sampled
-pixels (confirmed with an all-inputs-connected control graph), swamping the few pixels an
-unconnected input's short stub occupies; an absolute content count in one capture does not have
-that problem. It is also why hovering turns out not to be the right lever for case (e) at all: in
-this binary, an edge's hidden/shown state is only ever recomputed at specific trigger points
-(selecting/deselecting the node, (dis)connecting an input, undo/redo, initializeInputs...) and
-nothing calls that recompute from a hover event, so moving the mouse over an otherwise-untouched
-node changes nothing -- confirmed by reading every call site of NodeGui::refreshEdgesVisility() in
-the pre-fix tree. Selecting the node is what actually reveals the stub pre-fix (and, since
-Edge::computeVisibility's hidden branch requires being both unselected and unhovered, is sufficient
-on its own to demonstrate the bug), so case (e) checks the deselected state directly instead. A
-group's subgraph NodeGraph is built with CreateNodeArgsPropSettingsOpened nodes
-exactly like the root graph, but Gui::createGroupGui() leaves it unparented from any tab whenever
-there is no already-focused graph pane to append it to (true throughout this script, since nothing
-here drives real OS focus) -- so before probing one, this script makes it momentarily visible by
-calling resize()/move()/show()/raise_() on the NodeGraph widget directly (plain QWidget methods,
-unrelated to the broken scene() accessor) rather than by trying to reproduce the real
-Shift+double-click UI gesture, which needs Gui::getLastSelectedGraph() to already be non-null and
-was not reliable to drive synthetically here.
+pixels, swamping the few pixels an unconnected input's short stub occupies; an absolute content
+count in one capture does not have that problem.
+
+Hovering is not a lever for case (e) either: an edge's hidden/shown state is only recomputed at
+specific trigger points (selecting/deselecting the node, (dis)connecting an input, undo/redo,
+initializeInputs...), never from a hover event. Selecting the node always reveals the stub, so
+case (e) checks the deselected state directly.
+
+A group's subgraph NodeGraph is built with CreateNodeArgsPropSettingsOpened nodes exactly like the
+root graph, but Gui::createGroupGui() leaves it unparented from any tab whenever there is no
+already-focused graph pane to append it to (true throughout this script, since nothing here
+drives real OS focus) -- so before probing one, this script makes it momentarily visible by
+calling resize()/move()/show()/raise_() on the NodeGraph widget directly rather than by trying to
+reproduce the real Shift+double-click UI gesture, which needs Gui::getLastSelectedGraph() to
+already be non-null and is not reliable to drive synthetically.
 
 Each pipe check runs three times -- now, after moving the mouse away from every node (clears any
 hover state left over from creating/connecting nodes), and after nudging the destination node by a
@@ -93,9 +82,8 @@ try:
     # ---- node / graph plumbing -------------------------------------------------------------
 
     def create(plugin_id, x, y, group=None):
-        """Every node is created the way the toolbar and Tab menu do (settings panel opened),
-        per the task's instruction, so this script exercises the same creation path the rest of
-        the GUI relies on."""
+        """Every node is created the way the toolbar and Tab menu do (settings panel opened), so
+        this script exercises the same creation path the rest of the GUI relies on."""
         props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
         node = app.createNode(plugin_id, -1, group, props)
         gt.require(node is not None, "create " + plugin_id, gt.plugin_problem(plugin_id))
@@ -386,7 +374,7 @@ try:
         # ---- (a1) Group gains a second Input; the first pipe (outside the group) must survive.
         # A plain Group comes with one Input/Output pair already built in, so group_a1 already
         # exposes 1 input before anything else is created; connecting to it and then adding one
-        # more Input node is exactly the task's "one Input ... then add a second Input" shape.
+        # more Input node gives the "one Input, then a second Input" shape under test.
         gt.section("a1-group-second-input")
         group_a1 = create("fr.inria.built-in.Group", 0, 0)
         const_a1 = create("net.sf.openfx.ConstantPlugin", -300, 0)
@@ -524,9 +512,7 @@ try:
         graph_shot(root_graph(), "d-separated")
 
         # ---- (e) Unconnected optional/mask input, and a Reader: must stay visible when
-        # deselected and unhovered. The old "auto hide masks inputs" preference hid exactly
-        # this, so it is expected to FAIL here against the pre-fix binary and to pass once that
-        # preference is removed.
+        # deselected and unhovered.
         gt.section("e-unconnected-optional-and-reader")
         merge_e = create("net.sf.openfx.MergePlugin", 3900, 0)
         a_idx = input_index(merge_e, "A")
@@ -541,10 +527,7 @@ try:
             connect(merge_e, b_idx, src_b_e)
         # Mask (mask_idx) is deliberately left unconnected: it is the stub this case targets. With
         # A connected from upper-left and B from lower-left, Natron lays the one remaining (Mask)
-        # input's stub out to the right of the node (confirmed empirically against this binary,
-        # both by eye and by sampling: 0 non-background pixels there while deselected, a clear
-        # cluster once selected -- selecting is the one thing in this binary that actually
-        # recomputes an edge's hidden state; see the module docstring on why hover does not).
+        # input's stub out to the right of the node.
         app.clearSelection()
         gt.close_all_panels()
         yield ("sleep", SETTLE_MS)

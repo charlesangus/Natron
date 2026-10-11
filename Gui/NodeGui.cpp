@@ -1799,25 +1799,10 @@ NodeGui::outlineBoundingRect() const
 void
 NodeGui::refreshEdgesVisility()
 {
-    QPointF mousePos = mapFromScene( _graph->mapToScene( _graph->mapFromGlobal( QCursor::pos() ) ) );
-    bool hovered = contains(mousePos);
-
-    refreshEdgesVisibilityInternal(hovered);
-}
-
-void
-NodeGui::refreshEdgesVisility(bool hovered)
-{
-    refreshEdgesVisibilityInternal(hovered);
-}
-
-void
-NodeGui::refreshEdgesVisibilityInternal(bool hovered)
-{
     std::vector<bool> edgesVisibility( _inputEdges.size() );
 
     for (std::size_t i = 0; i < _inputEdges.size(); ++i) {
-        edgesVisibility[i] = _inputEdges[i]->computeVisibility(hovered);
+        edgesVisibility[i] = _inputEdges[i]->computeVisibility();
     }
 
     NodePtr node = getNode();
@@ -2100,12 +2085,15 @@ NodeGui::connectEdge(int edgeNumber)
         _inputEdges[edgeNumber]->setSource(NodeGuiPtr());
     } else {
         NodeGuiIPtr ngi = input->getNodeGui();
-        // The input node exists but its GUI hasn't been created yet (e.g. nodes created or
-        // restored out of order): keep the edge's current source rather than clobbering a
-        // real connection with null. GuiAppInstance::createNodeGui() repairs this once the
-        // late GUI appears.
         if (ngi) {
             _inputEdges[edgeNumber]->setSource(std::dynamic_pointer_cast<NodeGui>(ngi));
+        } else {
+            // Without a GUI for the input yet, a source that is still this input is kept (see
+            // initializeInputs()), but a source for a different node is stale and must go.
+            NodeGuiPtr currentSource = _inputEdges[edgeNumber]->getSource();
+            if (currentSource && (currentSource->getNode() != input)) {
+                _inputEdges[edgeNumber]->setSource(NodeGuiPtr());
+            }
         }
     }
 
@@ -2156,67 +2144,6 @@ NodeGui::hasBendPointNearbyPoint(const QPointF & pt)
 
     return NULL;
 }
-
-Edge*
-NodeGui::hasEdgeNearbyRect(const QRectF & rect)
-{
-    ///try with all 4 corners
-
-    QLineF rectEdges[4] =
-    {
-        QLineF( rect.topLeft(), rect.topRight() ),
-        QLineF( rect.topRight(), rect.bottomRight() ),
-        QLineF( rect.bottomRight(), rect.bottomLeft() ),
-        QLineF( rect.bottomLeft(), rect.topLeft() )
-    };
-    QPointF intersection;
-    QPointF middleRect = rect.center();
-    Edge* closest = 0;
-    double closestSquareDist = 0;
-
-    for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
-        QLineF edgeLine = (*it)->line();
-        edgeLine.setP1( (*it)->mapToScene( edgeLine.p1() ) );
-        edgeLine.setP2( (*it)->mapToScene( edgeLine.p2() ) );
-        for (int j = 0; j < 4; ++j) {
-            QLineF::IntersectionType intersectType = edgeLine.intersects(rectEdges[j], &intersection);
-            if (intersectType == QLineF::BoundedIntersection) {
-                if (!closest) {
-                    closest = *it;
-                    closestSquareDist = ( intersection.x() - middleRect.x() ) * ( intersection.x() - middleRect.x() )
-                                        + ( intersection.y() - middleRect.y() ) * ( intersection.y() - middleRect.y() );
-                } else {
-                    double dist = ( intersection.x() - middleRect.x() ) * ( intersection.x() - middleRect.x() )
-                                  + ( intersection.y() - middleRect.y() ) * ( intersection.y() - middleRect.y() );
-                    if (dist < closestSquareDist) {
-                        closestSquareDist = dist;
-                        closest = *it;
-                    }
-                }
-                break;
-            }
-        }
-    }
-    if (closest) {
-        return closest;
-    }
-
-    if (_outputEdge) {
-        if ( _outputEdge->isVisible() ) {
-            QLineF edgeLine = _outputEdge->line();
-            edgeLine.setP1( (_outputEdge)->mapToScene( edgeLine.p1() ) );
-            edgeLine.setP2( (_outputEdge)->mapToScene( edgeLine.p2() ) );
-            for (int j = 0; j < 4; ++j) {
-                QLineF::IntersectionType intersectType = edgeLine.intersects(rectEdges[j], &intersection);
-                if (intersectType == QLineF::BoundedIntersection) {
-                    return _outputEdge;
-                }
-            }
-        }
-    }
-
-    return NULL;
-} // hasEdgeNearbyRect
 
 void
 NodeGui::showGui()

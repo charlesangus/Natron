@@ -394,11 +394,6 @@ public:
     PanelWidget* ensureProgressPanelVisible();
     void ensureScriptEditorVisible();
 
-    // A foreground render (modal progress dialog) tracks its tasks through the same
-    // ProgressPanel/ProgressTaskInfo plumbing a background render uses, so it must opt out
-    // of ensureProgressPanelVisible() itself rather than that plumbing telling the two apart.
-    void setProgressPanelTabSwitchSuppressed(bool suppressed);
-
     /*Useful function that saves on disk the image in png format.
        The name of the image will be the hash key of the image.*/
     static void debugImage( const Image* image, const RectI& roi, const QString & filename = QString() );
@@ -450,8 +445,6 @@ public:
     void renderAllViewers(bool canAbort);
 
     void abortAllViewers();
-
-    void toggleAutoHideGraphInputs();
 
     void centerAllNodeGraphsWithTimer();
 

@@ -26,8 +26,10 @@
 #include "RenderDialog.h"
 
 #include <algorithm>
+#include <exception>
 #include <limits>
 #include <memory>
+#include <string>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -42,6 +44,8 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QStringList>
+#include <QTimer>
 #include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -54,6 +58,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Node.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 
 #include "Gui/ComboBox.h"
 #include "Gui/DialogButtonBox.h"
@@ -73,7 +78,8 @@ resolveRenderRange(RenderRangePresetEnum preset,
                    int writerStep,
                    int projectFirst,
                    int projectLast,
-                   const RenderRangeCustom& custom)
+                   const RenderRangeCustom& custom,
+                   bool separateProcess)
 {
     RenderRange range;
 
@@ -101,7 +107,16 @@ resolveRenderRange(RenderRangePresetEnum preset,
         break;
     }
 
-    range.error = (range.first > range.last) || (range.step < 1);
+    if (range.step < 1) {
+        range.errorKind = eRenderRangeErrorStepBelowOne;
+    } else if (range.first > range.last) {
+        range.errorKind = eRenderRangeErrorFirstAfterLast;
+    } else if (separateProcess && (range.first < 0)) {
+        range.errorKind = eRenderRangeErrorNegativeFirstInSeparateProcess;
+    } else {
+        range.errorKind = eRenderRangeErrorNone;
+    }
+    range.error = (range.errorKind != eRenderRangeErrorNone);
 
     return range;
 }
@@ -145,6 +160,12 @@ writerOutputFileName(const NodePtr& node)
     }
 
     return QString::fromUtf8(outputFileKnob->getValue().c_str());
+}
+
+bool
+rendersInSeparateProcess()
+{
+    return appPTR->getCurrentSettings()->isRenderInSeparatedProcessEnabled();
 }
 } // anonymous namespace
 
@@ -227,9 +248,8 @@ RenderDialog::RenderDialog(Gui* gui,
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setSpacing(TO_DPIY(12));
 
-    // ---- Writers: a plain, read-only list (not a tree/table) since there is nothing here to
-    // edit or select. The output path is appended, dimmed, only when it fits on the same line;
-    // a long path would otherwise force the dialog as wide as the longest file name.
+    // The output path is shown only when it fits on the same line; a long path would otherwise
+    // force the dialog as wide as the longest file name.
     QGroupBox* writersGroup = new QGroupBox(tr("Writers"), this);
     QVBoxLayout* writersGroupLayout = new QVBoxLayout(writersGroup);
 
@@ -269,7 +289,6 @@ RenderDialog::RenderDialog(Gui* gui,
     writersGroupLayout->addWidget(writersScroll);
     mainLayout->addWidget(writersGroup);
 
-    // ---- Frame range ----
     QGroupBox* rangeGroup = new QGroupBox(tr("Frame Range"), this);
     QVBoxLayout* rangeGroupLayout = new QVBoxLayout(rangeGroup);
     rangeGroupLayout->setSpacing(TO_DPIY(8));
@@ -310,7 +329,6 @@ RenderDialog::RenderDialog(Gui* gui,
 
     mainLayout->addWidget(rangeGroup);
 
-    // ---- Mode ----
     QGroupBox* modeGroup = new QGroupBox(tr("Mode"), this);
     QVBoxLayout* modeGroupLayout = new QVBoxLayout(modeGroup);
     _imp->backgroundCheck = new QCheckBox(tr("Render in background (Progress panel)"), modeGroup);
@@ -377,17 +395,31 @@ RenderDialog::refreshValidation()
 
     bool hasError = _imp->writers.empty();
     QString message = hasError ? tr("There is no writer to render.") : QString();
+    const bool separateProcess = rendersInSeparateProcess();
 
     for (std::vector<WriterRowInfo>::const_iterator it = _imp->writers.begin(); it != _imp->writers.end(); ++it) {
         RenderRange range = resolveRenderRange(preset, it->writerFirst, it->writerLast, it->writerStep,
-                                               _imp->projectFirst, _imp->projectLast, custom);
-        if (range.error) {
-            hasError = true;
-            if (message.isEmpty()) {
-                message = (range.step < 1)
-                    ? tr("Frame step must be at least 1.")
-                    : tr("First frame is greater than the last frame.");
-            }
+                                               _imp->projectFirst, _imp->projectLast, custom, separateProcess);
+        if (!range.error) {
+            continue;
+        }
+        hasError = true;
+        if (!message.isEmpty()) {
+            continue;
+        }
+        switch (range.errorKind) {
+        case eRenderRangeErrorStepBelowOne:
+            message = tr("Frame step must be at least 1.");
+            break;
+        case eRenderRangeErrorFirstAfterLast:
+            message = tr("First frame is greater than the last frame.");
+            break;
+        case eRenderRangeErrorNegativeFirstInSeparateProcess:
+            message = tr("Rendering in a separate process cannot start before frame 0. "
+                         "Change the frame range, or turn off \"Render in a separate process\" in the Preferences.");
+            break;
+        case eRenderRangeErrorNone:
+            break;
         }
     }
 
@@ -437,10 +469,11 @@ RenderDialog::getRenderWorks() const
     custom.step = (int)_imp->stepSpin->value();
 
     bool useStats = (_imp->gui && _imp->gui->getApp()) ? _imp->gui->getApp()->isRenderStatsActionChecked() : false;
+    const bool separateProcess = rendersInSeparateProcess();
 
     for (std::vector<WriterRowInfo>::const_iterator it = _imp->writers.begin(); it != _imp->writers.end(); ++it) {
         RenderRange range = resolveRenderRange(preset, it->writerFirst, it->writerLast, it->writerStep,
-                                               _imp->projectFirst, _imp->projectLast, custom);
+                                               _imp->projectFirst, _imp->projectLast, custom, separateProcess);
         if (range.error) {
             continue;
         }
@@ -469,6 +502,7 @@ struct ForegroundRenderState {
     QProgressDialog* dialog;
     QProgressBar* bar;
     std::vector<ForegroundRenderEntry> entries;
+    QStringList failedLabels;
     bool userCanceled;
     bool closed;
 
@@ -477,6 +511,7 @@ struct ForegroundRenderState {
         , dialog(0)
         , bar(0)
         , entries()
+        , failedLabels()
         , userCanceled(false)
         , closed(false)
     {
@@ -497,8 +532,19 @@ closeForegroundRender(const ForegroundRenderStatePtr& state)
         state->dialog->hide();
         state->dialog->deleteLater();
     }
-    if (state->gui) {
-        state->gui->setProgressPanelTabSwitchSuppressed(false);
+    if (!state->failedLabels.isEmpty() && state->gui) {
+        QString message;
+        for (int i = 0; i < state->failedLabels.size(); ++i) {
+            if (i > 0) {
+                message += QLatin1Char('\n');
+            }
+            message += RenderDialog::tr("Rendering %1 failed.").arg(state->failedLabels[i]);
+        }
+        // Deferred because this runs inside the finishing task's own signal, and the error
+        // dialog's nested event loop must not run until that task has unwound.
+        QTimer::singleShot(0, state->gui, [message]() {
+            Dialogs::errorDialog(RenderDialog::tr("Render").toStdString(), message.toStdString());
+        });
     }
 }
 
@@ -578,14 +624,20 @@ runForegroundRender(Gui* gui,
         previousTasks.push_back((panel && node) ? panel->getTaskForNode(node) : ProgressTaskInfoPtr());
     }
 
-    // A foreground render shows its own modal dialog; it must never also steal the current
-    // tab away to the Progress panel, which shares its task tracking with background renders.
-    gui->setProgressPanelTabSwitchSuppressed(true);
-
-    gui->getApp()->startWritersRendering(false, works);
+    // A writer that started before another threw is still rendering, so it is tracked below.
+    // The error is shown only once those tasks are marked foreground and connected to the
+    // progress dialog, since the error dialog's event loop can run their signals and timers.
+    std::string startError;
+    try {
+        gui->getApp()->startWritersRendering(false, works);
+    } catch (const std::exception& e) {
+        startError = e.what();
+    }
 
     if (!panel) {
-        gui->setProgressPanelTabSwitchSuppressed(false);
+        if (!startError.empty()) {
+            Dialogs::errorDialog(RenderDialog::tr("Render").toStdString(), startError);
+        }
 
         return;
     }
@@ -604,6 +656,7 @@ runForegroundRender(Gui* gui,
         if (node) {
             ProgressTaskInfoPtr task = panel->getTaskForNode(node);
             if (task && (task != previousTasks[index])) {
+                task->setForeground(true);
                 entry.task = task;
                 entry.done = task->wasCanceled();
             }
@@ -612,9 +665,13 @@ runForegroundRender(Gui* gui,
         state->entries.push_back(entry);
     }
 
-    if (!anyRunning) {
-        gui->setProgressPanelTabSwitchSuppressed(false);
+    if (!startError.empty()) {
+        QTimer::singleShot(0, gui, [startError]() {
+            Dialogs::errorDialog(RenderDialog::tr("Render").toStdString(), startError);
+        });
+    }
 
+    if (!anyRunning) {
         return;
     }
 
@@ -644,10 +701,13 @@ runForegroundRender(Gui* gui,
             }
             refreshForegroundRender(state);
         });
-        QObject::connect(taskPtr, &ProgressTaskInfo::taskFinished, dialog, [state, taskPtr](int) {
+        QObject::connect(taskPtr, &ProgressTaskInfo::taskFinished, dialog, [state, taskPtr](int retCode) {
             for (std::size_t j = 0; j < state->entries.size(); ++j) {
                 if (state->entries[j].task.get() == taskPtr) {
                     state->entries[j].done = true;
+                    if ((retCode != 0) && !state->userCanceled) {
+                        state->failedLabels.push_back(state->entries[j].label);
+                    }
                 }
             }
             refreshForegroundRender(state);
@@ -672,29 +732,35 @@ runForegroundRender(Gui* gui,
 } // runForegroundRender
 } // anonymous namespace
 
-void
+bool
 showRenderDialog(Gui* gui,
                  const std::list<NodePtr>& writers)
 {
     if (!gui || writers.empty()) {
-        return;
+        return false;
     }
 
     RenderDialog dialog(gui, writers);
     if (dialog.exec() != QDialog::Accepted) {
-        return;
+        return false;
     }
 
     std::list<AppInstance::RenderWork> works = dialog.getRenderWorks();
     if (works.empty() || !gui->getApp()) {
-        return;
+        return true;
     }
 
     if (dialog.isBackgroundChecked()) {
-        gui->getApp()->startWritersRendering(false, works);
+        try {
+            gui->getApp()->startWritersRendering(false, works);
+        } catch (const std::exception& e) {
+            Dialogs::errorDialog(RenderDialog::tr("Render").toStdString(), e.what());
+        }
     } else {
         runForegroundRender(gui, works);
     }
+
+    return true;
 }
 
 NATRON_NAMESPACE_EXIT

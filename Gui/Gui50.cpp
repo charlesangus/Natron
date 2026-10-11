@@ -852,12 +852,6 @@ Gui::abortAllViewers()
 }
 
 void
-Gui::toggleAutoHideGraphInputs()
-{
-    _imp->_nodeGraphArea->toggleAutoHideInputs(false);
-}
-
-void
 Gui::centerAllNodeGraphsWithTimer()
 {
     QTimer::singleShot( 25, _imp->_nodeGraphArea, SLOT(centerOnAllNodes()) );

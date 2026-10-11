@@ -110,9 +110,7 @@ ProcessHandler::ProcessHandler(const QString& projectPath,
 
     ///connect the useful slots of the process
     QObject::connect( _process, SIGNAL(readyReadStandardOutput()), this, SLOT(onStandardOutputBytesWritten()) );
-    QObject::connect( _process, SIGNAL(readyReadStandardError()), this, SLOT(onStandardErrorBytesWritten()) );
-    // Qt6 renamed this signal to errorOccurred(); the functor-based connect also
-    // sidesteps the old signal's ambiguity with QProcess::error() the property getter.
+    QObject::connect(_process, SIGNAL(readyReadStandardError()), this, SLOT(onStandardErrorBytesWritten()));
     QObject::connect(_process, &QProcess::errorOccurred, this, &ProcessHandler::onProcessError);
     QObject::connect( _process, SIGNAL(finished(int,QProcess::ExitStatus)), this, SLOT(onProcessEnd(int,QProcess::ExitStatus)) );
 

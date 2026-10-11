@@ -194,7 +194,9 @@ public:
 private:
     NodeGuiWPtr _entryNode;
     int _entryInput;
-    Edge* _inputEdge;
+    // The entry input that redo() connected to the pipe's old source, or -1 if it made no such
+    // connection. An index rather than the Edge*, which initializeInputs() can delete.
+    int _connectedEntryInput;
 };
 
 

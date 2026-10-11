@@ -174,7 +174,6 @@ public:
     ///The curve editor.
     CurveEditor *_curveEditor;
     ProgressPanel* _progressPanel;
-    int _progressPanelTabSwitchSuppressDepth;
 
     // The dope sheet
     DopeSheetEditor *_dopeSheetEditor;

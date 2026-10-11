@@ -190,6 +190,7 @@ KnobGuiButton::emitValueChanged(bool clicked)
         EffectInstance* isEffect = dynamic_cast<EffectInstance*>(k->getHolder());
         NodePtr node = isEffect ? isEffect->getNode() : NodePtr();
         if (node && isEffect->isWriter() && getGui()) {
+            k->triggerCallbacksOnly();
             std::list<NodePtr> writers;
             writers.push_back(node);
             showRenderDialog(getGui(), writers);

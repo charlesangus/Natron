@@ -62,23 +62,34 @@ struct RenderRangeCustom {
     }
 };
 
+enum RenderRangeErrorEnum {
+    eRenderRangeErrorNone,
+    eRenderRangeErrorFirstAfterLast,
+    eRenderRangeErrorStepBelowOne,
+    eRenderRangeErrorNegativeFirstInSeparateProcess
+};
+
 struct RenderRange {
     int first;
     int last;
     int step;
     bool error;
+    RenderRangeErrorEnum errorKind;
 };
 
 // Writer bounds of INT_MIN/INT_MAX (an unresolved Write range) fall back to the project
 // range, matching AppInstancePrivate::validateRenderOptions. The frame step never comes
 // from the project; it is either the writer's own step or, for Custom, the typed one.
+// A separate render process takes its range on the command line, whose syntax cannot express
+// a negative frame, so separateProcess rejects a first frame below 0.
 RenderRange resolveRenderRange(RenderRangePresetEnum preset,
                                int writerFirst,
                                int writerLast,
                                int writerStep,
                                int projectFirst,
                                int projectLast,
-                               const RenderRangeCustom& custom);
+                               const RenderRangeCustom& custom,
+                               bool separateProcess = false);
 
 struct RenderDialogPrivate;
 
@@ -111,8 +122,9 @@ private:
 };
 
 // Opens the render dialog for the given writers and, if accepted, starts the render.
+// Returns false if the dialog was not shown or was cancelled.
 // A free function, rather than a Gui method, so callers only need this header.
-void showRenderDialog(Gui* gui, const std::list<NodePtr>& writers);
+bool showRenderDialog(Gui* gui, const std::list<NodePtr>& writers);
 
 NATRON_NAMESPACE_EXIT
 

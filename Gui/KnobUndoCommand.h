@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <iterator>
+#include <list>
 #include <map>
 #include <vector>
 
@@ -90,12 +92,13 @@ public:
         _newValue.push_back(newValue);
     }
 
-    /// We moved from std::vector to std::list instead because std::vector<bool> expands to a bit field(std::_Bit_reference)
+    /// std::list rather than std::vector: std::vector<bool> is a bit field (std::_Bit_reference)
     /// and produces an unresolved symbol error.
     ///
-    ///  mergeKey, when non-zero, scopes merging to commands sharing the same key (one key per
-    ///  gesture), so two back-to-back gestures on the same knob stay two undo steps instead of
-    ///  folding into one. 0 keeps the knob-and-dimension-only merge every other caller relies on.
+    /// The lists cover the knob's first oldValue.size() dimensions, so a caller can leave the
+    /// trailing ones untouched. mergeKey, when non-zero, scopes merging to commands sharing the
+    /// same key (one key per gesture), so two back-to-back gestures on the same knob stay two
+    /// undo steps instead of folding into one; 0 merges on knob and dimension alone.
     KnobUndoCommand(const KnobGuiPtr& knob,
                     const std::list<T>& oldValue,
                     const std::list<T>& newValue,
@@ -149,7 +152,7 @@ private:
 
         knob->beginChanges();
 
-        assert( (int)_oldValue.size() == knob->getDimension() || _dimension != -1 );
+        assert((int)_oldValue.size() <= knob->getDimension() || _dimension != -1);
 
         typename std::list<T>::iterator next = _oldValue.end();
         if ( next != _oldValue.end() ) {
@@ -231,7 +234,7 @@ private:
             time = holder->getApp()->getTimeLine()->currentFrame();
         }
 
-        assert( (int)_oldValue.size() == knob->getDimension() || _dimension != -1 );
+        assert((int)_oldValue.size() <= knob->getDimension() || _dimension != -1);
 
         bool modifiedKeyFrames = false;
 
@@ -320,11 +323,26 @@ private:
         }
 
         // A non-zero key scopes the merge to its own gesture: two commands can only merge when
-        // they are both unkeyed (today's knob-and-dimension-only behaviour) or share the same key.
+        // they are both unkeyed or share the same key.
         if (((_mergeKey != 0) || (knobCommand->_mergeKey != 0)) && (_mergeKey != knobCommand->_mergeKey)) {
             return false;
         }
+        if (knobCommand->_newValue.size() < _newValue.size()) {
+            return false;
+        }
 
+        // A later step of the same gesture may write more dimensions than the first did: the
+        // extra ones take their old values and keyframe bookkeeping from that step, which is
+        // the one that first wrote them.
+        for (std::size_t i = _oldValue.size(); i < knobCommand->_oldValue.size(); ++i) {
+            typename std::list<T>::const_iterator it = knobCommand->_oldValue.begin();
+
+            std::advance(it, i);
+            _oldValue.push_back(*it);
+            _valueChangedReturnCode.push_back(knobCommand->_valueChangedReturnCode[i]);
+            _newKeys.push_back(knobCommand->_newKeys[i]);
+            _oldKeys.push_back(knobCommand->_oldKeys[i]);
+        }
         _newValue = knobCommand->_newValue;
         if (!knobCommand->text().isEmpty()) {
             setText(knobCommand->text());

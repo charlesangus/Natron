@@ -46,6 +46,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/ColorWheelMath.h"
 
 class QEvent;
+class QHideEvent;
 class QKeyEvent;
 class QMouseEvent;
 class QPainter;
@@ -68,7 +69,8 @@ NATRON_NAMESPACE_ENTER
  * every move), a press on the hue ring sets the hue to the angle under the cursor and keeps
  * doing so while dragged, holding V or T, whether pressed before the drag starts or during it,
  * turns a disc drag into a value (either axis) or a temp/tint drag, the scroll wheel zooms the
- * rim, and a double-click resets the chroma. Each gesture is bracketed by gestureStarted and
+ * rim while the wheel has focus, is being dragged or Ctrl is held, and a double-click resets
+ * the chroma. Hiding the wheel mid-drag finishes the drag. Each gesture is bracketed by gestureStarted and
  * gestureFinished, with one gestureMoved per step carrying a delta (absolute for the ring and
  * the reset); the owner applies the edits, makes the gesture one undo step, and calls setValue
  * on finish to re-centre the wheel.
@@ -179,11 +181,6 @@ Q_SIGNALS:
      **/
     void gestureFinished(bool moved);
 
-    /**
-     * @brief The rim after a scroll zoom; a zoom never edits the value.
-     **/
-    void rimZoomed(double rim);
-
 protected:
     virtual void paintEvent(QPaintEvent* e) OVERRIDE;
     virtual bool event(QEvent* e) OVERRIDE;
@@ -193,6 +190,7 @@ protected:
     virtual void mouseDoubleClickEvent(QMouseEvent* e) OVERRIDE;
     virtual void wheelEvent(QWheelEvent* e) OVERRIDE;
     virtual void keyPressEvent(QKeyEvent* e) OVERRIDE;
+    virtual void hideEvent(QHideEvent* e) OVERRIDE;
 
 private:
     enum HitZoneEnum {

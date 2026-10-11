@@ -43,7 +43,7 @@ const double kF[2][3] = {
 
 const double kFreezeThreshold = 1e-6;
 
-const double kPivotGrey = 0.18;
+const double kPivotGrey = kColorPivotGrey;
 
 // Below this distance from white a value has no meaningful hue of its own, so saturation
 // edits take the caller's remembered hue instead of reading noise off a rounding residue.
@@ -204,10 +204,18 @@ initProjectivePlane(LumaBasis& basis,
     }
     computeJEinv(basis);
 }
+
+void initTempTintCache(LumaBasis& basis);
 } // namespace
 
 LumaBasis::LumaBasis(const double weights[3])
     : hasMatrix(false)
+    , hasLocusWhite(false)
+    , whiteMired(0.0)
+    , whiteDuv(0.0)
+    , hasTempTintAxes(false)
+    , tempAxis { 0.0, 0.0 }
+    , tintAxis { 0.0, 0.0 }
 {
     normalizeWeights(weights, w);
     copyF(F);
@@ -220,6 +228,12 @@ LumaBasis::LumaBasis(const double weights[3],
                      const double workingToXYZ[9],
                      ChromaticityKindEnum kind)
     : hasMatrix(false)
+    , hasLocusWhite(false)
+    , whiteMired(0.0)
+    , whiteDuv(0.0)
+    , hasTempTintAxes(false)
+    , tempAxis { 0.0, 0.0 }
+    , tintAxis { 0.0, 0.0 }
 {
     normalizeWeights(weights, w);
     copyF(F);
@@ -245,6 +259,7 @@ LumaBasis::LumaBasis(const double weights[3],
     }
     hasMatrix = true;
     initProjectivePlane(*this, kind);
+    initTempTintCache(*this);
 }
 
 bool
@@ -361,7 +376,7 @@ applyValueEdit(ColorKnobRoleEnum role,
     }
 
     if (out.hasAlpha) {
-        if (isRatioRole(role) && !isFrozen(role, Y0) && !isFrozen(role, Y1)) {
+        if (isRatioRole(role) && !isFrozen(role, Y0)) {
             out.a = v.a * (Y1 / Y0);
         } else {
             out.a = v.a + (Y1 - Y0);
@@ -400,10 +415,10 @@ effectToGamma(double effect)
 }
 
 namespace {
-// Every Power-role edit is the matching Gain edit run on this effect vector (design doc Sec 4.1
-// Knob roles): gamma has no meaning to the basis's luma weights on its own, but 0.18^(1/gamma)
-// does, so edits run there and are mapped back afterwards. Invalid (false) on any channel whose
-// gamma is out of powerToEffect's domain; the caller then leaves the value untouched.
+// Every Power-role edit is the matching Gain edit run on this effect vector: gamma has no
+// meaning to the basis's luma weights on its own, but 0.18^(1/gamma) does, so edits run there
+// and are mapped back afterwards. Invalid (false) on any channel whose gamma is out of
+// powerToEffect's domain; the caller then leaves the value untouched.
 bool
 toEffectValue(const KnobColorValue& gammaValue,
               KnobColorValue& effectValue)
@@ -431,26 +446,43 @@ toEffectValue(const KnobColorValue& gammaValue,
     return true;
 }
 
+// An effect at or past either end of the gamma range parks on that end, so an edit that
+// brightens or darkens too far holds there instead of being refused and snapping back to the
+// value it started from.
+bool
+cappedEffectToGamma(double effect,
+                    double& gamma)
+{
+    if (std::isnan(effect)) {
+        return false;
+    }
+
+    static const double effectAtMin = std::pow(kPivotGrey, 1.0 / kPowerGammaMin);
+    static const double effectAtMax = std::pow(kPivotGrey, 1.0 / kPowerGammaMax);
+    PowerGammaResult r = effectToGamma(std::min(std::max(effect, effectAtMin), effectAtMax));
+
+    if (!r.valid) {
+        return false;
+    }
+    gamma = std::min(std::max(r.gamma, kPowerGammaMin), kPowerGammaMax);
+
+    return true;
+}
+
 bool
 fromEffectValue(const KnobColorValue& effectValue,
                 KnobColorValue& gammaValue)
 {
     gammaValue.hasAlpha = effectValue.hasAlpha;
     for (int i = 0; i < 3; ++i) {
-        PowerGammaResult r = effectToGamma(effectValue.rgb[i]);
-
-        if (!r.valid) {
+        if (!cappedEffectToGamma(effectValue.rgb[i], gammaValue.rgb[i])) {
             return false;
         }
-        gammaValue.rgb[i] = r.gamma;
     }
     if (effectValue.hasAlpha) {
-        PowerGammaResult r = effectToGamma(effectValue.a);
-
-        if (!r.valid) {
+        if (!cappedEffectToGamma(effectValue.a, gammaValue.a)) {
             return false;
         }
-        gammaValue.a = r.gamma;
     } else {
         gammaValue.a = 0.0;
     }
@@ -480,8 +512,8 @@ heldLuma(ColorKnobRoleEnum role,
 }
 
 // Runs edit (one of scaleValue/addValue/setValue, already resolved to Gain) on v's effect
-// vector and maps the result back to gamma; leaves v untouched when either map is out of
-// domain, so a value edit never produces a NaN gamma.
+// vector and maps the result back to gamma, capped to the gamma range; leaves v untouched only
+// when v itself has no effect vector or the edit produced a NaN.
 template <typename Edit>
 KnobColorValue
 powerValueEdit(const LumaBasis& basis,
@@ -551,6 +583,28 @@ setValue(ColorKnobRoleEnum role,
     }
 
     return applyValueEdit(role, basis, v, Y);
+}
+
+KnobColorValue
+neutralGainValue(bool hasAlpha)
+{
+    KnobColorValue v;
+
+    v.rgb[0] = v.rgb[1] = v.rgb[2] = 1.0;
+    v.a = 1.0;
+    v.hasAlpha = hasAlpha;
+
+    return v;
+}
+
+double
+valueStopPivot(ColorKnobRoleEnum role)
+{
+    if (role == eColorKnobRolePower) {
+        return kPivotGrey;
+    }
+
+    return isRatioRole(role) ? 1.0 : 0.0;
 }
 
 std::optional<double>
@@ -1208,9 +1262,9 @@ miredDuvFromUV(double targetU,
 // The working white's own position on the locus. Independent of Y: XYZ of (1,1,1) is Mprime's
 // own row sums, and xy (hence uv) does not depend on their common scale.
 bool
-workingWhiteMiredDuv(const LumaBasis& basis,
-                     double& miredOut,
-                     double& duvOut)
+solveWorkingWhiteMiredDuv(const LumaBasis& basis,
+                          double& miredOut,
+                          double& duvOut)
 {
     if (!basis.hasMatrix) {
         return false;
@@ -1233,6 +1287,20 @@ workingWhiteMiredDuv(const LumaBasis& basis,
     }
 
     return miredDuvFromUV(u, v, miredOut, duvOut);
+}
+
+bool
+workingWhiteMiredDuv(const LumaBasis& basis,
+                     double& miredOut,
+                     double& duvOut)
+{
+    if (!basis.hasLocusWhite) {
+        return false;
+    }
+    miredOut = basis.whiteMired;
+    duvOut = basis.whiteDuv;
+
+    return true;
 }
 
 bool
@@ -1367,10 +1435,8 @@ planckianTempTintFromRgb(const LumaBasis& basis,
 
     return true;
 }
-} // namespace
-
 TempTintAxes
-linearTempTintAxes(const LumaBasis& basis)
+solveLinearTempTintAxes(const LumaBasis& basis)
 {
     TempTintAxes axes;
 
@@ -1414,6 +1480,38 @@ linearTempTintAxes(const LumaBasis& basis)
     axes.temp[1] = bTemp / nTemp;
     axes.tint[0] = aTint / nTint;
     axes.tint[1] = bTint / nTint;
+    axes.valid = true;
+
+    return axes;
+}
+
+void
+initTempTintCache(LumaBasis& basis)
+{
+    basis.hasLocusWhite = solveWorkingWhiteMiredDuv(basis, basis.whiteMired, basis.whiteDuv);
+
+    TempTintAxes axes = solveLinearTempTintAxes(basis);
+
+    basis.hasTempTintAxes = axes.valid;
+    for (int i = 0; i < 2; ++i) {
+        basis.tempAxis[i] = axes.temp[i];
+        basis.tintAxis[i] = axes.tint[i];
+    }
+}
+} // namespace
+
+TempTintAxes
+linearTempTintAxes(const LumaBasis& basis)
+{
+    TempTintAxes axes;
+
+    if (!basis.hasTempTintAxes) {
+        return axes;
+    }
+    for (int i = 0; i < 2; ++i) {
+        axes.temp[i] = basis.tempAxis[i];
+        axes.tint[i] = basis.tintAxis[i];
+    }
     axes.valid = true;
 
     return axes;
@@ -1711,12 +1809,14 @@ applyEdit(ColorKnobRoleEnum role,
                              : moveSaturation(role, basis, v, edit.d1, rememberedHueDegrees);
 
     case eColorAxisValue: {
-        double target = ratio ? std::pow(2.0, edit.d1) : edit.d1;
+        double factor = ratio ? std::pow(2.0, edit.d1) : 1.0;
         ChromaEditResult result;
 
-        result.value = edit.absolute
-            ? setValue(role, basis, v, target)
-            : (ratio ? scaleValue(role, basis, v, target) : addValue(role, basis, v, edit.d1));
+        if (edit.absolute) {
+            result.value = setValue(role, basis, v, ratio ? valueStopPivot(role) * factor : edit.d1);
+        } else {
+            result.value = ratio ? scaleValue(role, basis, v, factor) : addValue(role, basis, v, edit.d1);
+        }
         result.valid = true;
 
         return result;
@@ -1724,18 +1824,6 @@ applyEdit(ColorKnobRoleEnum role,
 
     case eColorAxisTempTint:
         return edit.absolute ? fromTempTint(role, basis, v, edit.d1, edit.d2) : nudgeTempTint(role, basis, v, edit.d1, edit.d2);
-
-    case eColorAxisAlpha: {
-        ChromaEditResult result;
-
-        result.value = v;
-        result.valid = v.hasAlpha;
-        if (v.hasAlpha) {
-            result.value.a = edit.absolute ? edit.d1 : v.a + edit.d1;
-        }
-
-        return result;
-    }
     }
 
     return refused(v);
@@ -1821,7 +1909,13 @@ sliderMapping(ColorSliderKindEnum kind,
         break;
 
     case eColorSliderKindValue:
-        if (ratio) {
+        if (role == eColorKnobRolePower) {
+            // Gamma 0.55 to 5.2: the cap at kPowerGammaMax sits about 2.2 stops above 0.18, so
+            // a wider track would end in a stretch that does nothing.
+            range.rangeMin = -2.0;
+            range.rangeMax = 2.0;
+            range.unit = "stop";
+        } else if (ratio) {
             range.rangeMin = -3.0;
             range.rangeMax = 3.0;
             range.unit = "stop";
@@ -1855,33 +1949,9 @@ sliderMapping(ColorSliderKindEnum kind,
             range.unit = "axis";
         }
         break;
-
-    case eColorSliderKindAlpha:
-        if (ratio) {
-            range.rangeMin = 0.0;
-            range.rangeMax = 4.0;
-        } else {
-            range.rangeMin = -0.25;
-            range.rangeMax = 0.25;
-        }
-        range.unit = "alpha";
-        break;
     }
 
     return range;
-}
-
-double
-valueToMarker(const SliderRange& range,
-              double value)
-{
-    double span = range.rangeMax - range.rangeMin;
-
-    if (!(span > 0.0)) {
-        return 0.0;
-    }
-
-    return std::min(1.0, std::max(0.0, (value - range.rangeMin) / span));
 }
 
 double
@@ -1891,20 +1961,6 @@ markerToValue(const SliderRange& range,
     double t = std::min(1.0, std::max(0.0, marker));
 
     return range.rangeMin + t * (range.rangeMax - range.rangeMin);
-}
-
-SliderChevronEnum
-sliderChevron(const SliderRange& range,
-              double value)
-{
-    if (value < range.rangeMin) {
-        return eSliderChevronLow;
-    }
-    if (value > range.rangeMax) {
-        return eSliderChevronHigh;
-    }
-
-    return eSliderChevronNone;
 }
 
 NATRON_NAMESPACE_EXIT

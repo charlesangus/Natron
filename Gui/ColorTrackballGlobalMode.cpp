@@ -33,6 +33,7 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QApplication>
 #include <QCoreApplication>
 #include <QCursor>
 #include <QEvent>
@@ -95,13 +96,7 @@ withoutKeypad(Qt::KeyboardModifiers modifiers)
 KnobColorValue
 neutralValue()
 {
-    KnobColorValue v;
-
-    v.rgb[0] = v.rgb[1] = v.rgb[2] = 1.0;
-    v.a = 1.0;
-    v.hasAlpha = false;
-
-    return v;
+    return neutralGainValue(false);
 }
 
 } // namespace
@@ -313,62 +308,6 @@ globalModeControllers()
 } // namespace
 
 namespace {
-
-// Kept in side tables, keyed on the controller, rather than as members: the controller already
-// outlives its Gui's lifetime, so the table entry does too, and nothing outside this file ever
-// needs to look one up.
-std::map<const ColorTrackballGlobalMode*, QPointer<ColorTrackballHud>>&
-colorTrackballHuds()
-{
-    static std::map<const ColorTrackballGlobalMode*, QPointer<ColorTrackballHud>> huds;
-
-    return huds;
-}
-
-std::map<const ColorTrackballGlobalMode*, std::vector<QPointer<WindowHighlightFrame>>>&
-colorTrackballHighlightFrames()
-{
-    static std::map<const ColorTrackballGlobalMode*, std::vector<QPointer<WindowHighlightFrame>>> frames;
-
-    return frames;
-}
-
-std::map<const ColorTrackballGlobalMode*, QString>&
-colorTrackballEndOfListMessages()
-{
-    static std::map<const ColorTrackballGlobalMode*, QString> messages;
-
-    return messages;
-}
-
-ColorTrackballHud*
-findColorTrackballHud(const ColorTrackballGlobalMode* mode)
-{
-    std::map<const ColorTrackballGlobalMode*, QPointer<ColorTrackballHud>>& huds = colorTrackballHuds();
-    std::map<const ColorTrackballGlobalMode*, QPointer<ColorTrackballHud>>::iterator it = huds.find(mode);
-
-    return ((it != huds.end()) && it->second) ? it->second.data() : 0;
-}
-
-// Created with no parent: it is homeless until a target attaches it into its own below-row
-// column, and is reparented and moved there whenever the target changes.
-ColorTrackballHud*
-ensureColorTrackballHud(ColorTrackballGlobalMode* mode)
-{
-    ColorTrackballHud* existing = findColorTrackballHud(mode);
-
-    if (existing) {
-        return existing;
-    }
-
-    ColorTrackballHud* hud = new ColorTrackballHud();
-
-    hud->hide();
-    colorTrackballHuds()[mode] = hud;
-
-    return hud;
-}
-
 // dynamic_cast rather than QObject::findChild: PropertiesBinWrapper has no Q_OBJECT of its own,
 // so it has no distinct meta-object for findChild to match against.
 bool
@@ -389,62 +328,72 @@ windowHoldsPropertiesBinOrViewer(QWidget* window)
     return false;
 }
 
-void
-showColorTrackballChrome(ColorTrackballGlobalMode* mode)
+bool
+isOnAnyScreen(const QPoint& p)
 {
-    // The HUD's own visibility follows attachGlobalModeHud()/detachGlobalModeHud() on the
-    // target, called from setTarget() and exit(); only the window border is this function's
-    // job.
-    Gui* gui = mode->getGui();
+    return QGuiApplication::screenAt(p) != 0;
+}
+} // namespace
 
-    if (!gui) {
-        return;
+// Created with no parent: it is homeless until a target attaches it into its own below-row
+// column, and is reparented and moved there whenever the target changes.
+ColorTrackballHud*
+ColorTrackballGlobalMode::ensureHud()
+{
+    if (!_hud) {
+        _hud = new ColorTrackballHud();
+        _hud->hide();
     }
 
-    std::vector<QPointer<WindowHighlightFrame>>& frames = colorTrackballHighlightFrames()[mode];
+    return _hud.data();
+}
 
-    frames.push_back(QPointer<WindowHighlightFrame>(new WindowHighlightFrame(gui)));
+void
+ColorTrackballGlobalMode::showChrome()
+{
+    // The HUD's own visibility follows attachGlobalModeHud()/detachGlobalModeHud() on the
+    // target, called from setTarget() and exit(); only the window border is done here.
+    if (!_gui) {
+        return;
+    }
+    _highlightFrames.push_back(QPointer<WindowHighlightFrame>(new WindowHighlightFrame(_gui)));
 
-    const std::list<FloatingWidget*> floatingWindows = gui->getFloatingWindows();
+    const std::list<FloatingWidget*> floatingWindows = _gui->getFloatingWindows();
 
     for (std::list<FloatingWidget*>::const_iterator it = floatingWindows.begin(); it != floatingWindows.end(); ++it) {
         if (windowHoldsPropertiesBinOrViewer(*it)) {
-            frames.push_back(QPointer<WindowHighlightFrame>(new WindowHighlightFrame(*it)));
+            _highlightFrames.push_back(QPointer<WindowHighlightFrame>(new WindowHighlightFrame(*it)));
         }
     }
 }
 
 void
-hideColorTrackballChrome(ColorTrackballGlobalMode* mode)
+ColorTrackballGlobalMode::hideChrome()
 {
-    std::map<const ColorTrackballGlobalMode*, std::vector<QPointer<WindowHighlightFrame>>>& registry = colorTrackballHighlightFrames();
-    std::map<const ColorTrackballGlobalMode*, std::vector<QPointer<WindowHighlightFrame>>>::iterator it = registry.find(mode);
+    for (std::size_t i = 0; i < _highlightFrames.size(); ++i) {
+        delete _highlightFrames[i].data();
+    }
+    _highlightFrames.clear();
+}
 
-    if (it == registry.end()) {
-        return;
-    }
-    for (std::size_t i = 0; i < it->second.size(); ++i) {
-        if (it->second[i]) {
-            delete it->second[i].data();
-        }
-    }
-    registry.erase(it);
+void
+ColorTrackballGlobalMode::refreshTargetPosition()
+{
+    getTargetPosition(&_targetPosition, &_targetCount);
 }
 
 // Everything the HUD shows beyond what the controller's own getters already carry: the node
 // and knob labels, and the mode's own chroma readout, read off the live value through the
 // target's own role and basis so the HUD never has to know either.
 void
-updateColorTrackballHud(ColorTrackballGlobalMode* mode)
+ColorTrackballGlobalMode::updateHud()
 {
-    ColorTrackballHud* hud = findColorTrackballHud(mode);
-
-    if (!hud || !mode->isEngaged()) {
+    if (!_hud || !_engaged) {
         return;
     }
 
     ColorTrackballHudState state;
-    KnobGuiColor* target = mode->getTarget();
+    KnobGuiColor* target = getTarget();
 
     if (target) {
         DockablePanel* panel = dynamic_cast<DockablePanel*>(target->getContainer());
@@ -455,14 +404,20 @@ updateColorTrackballHud(ColorTrackballGlobalMode* mode)
 
         state.nodeLabel = node ? QString::fromUtf8(node->getLabel().c_str()) : QString();
         state.knobLabel = knob ? QString::fromUtf8(knob->getLabel().c_str()) : QString();
-        mode->getTargetPosition(&state.knobIndex, &state.knobCount);
-        state.value = mode->getLiveValue();
+        // Mid-stroke only the value moves; the knob list scan waits for the stroke to end.
+        if (!_strokeActive) {
+            refreshTargetPosition();
+        }
+        state.knobIndex = _targetPosition;
+        state.knobCount = _targetCount;
+        state.value = getLiveValue();
 
-        const ColorKnobRoleEnum role = target->getColorRole();
-        const LumaBasis basis = target->getEditBasis();
+        const ColorKnobRoleEnum role = _strokeActive ? _strokeRole : target->getColorRole();
+        const LumaBasis basis = _strokeActive ? _strokeBasis : target->getEditBasis();
 
+        state.role = role;
         state.luma = luma(basis, state.value.rgb);
-        switch (mode->getMode()) {
+        switch (_mode) {
         case eColorGlobalModeC:
         case eColorGlobalModeS: {
             const PlanePoint p = toPlane(role, basis, state.value);
@@ -485,18 +440,12 @@ updateColorTrackballHud(ColorTrackballGlobalMode* mode)
         }
     }
 
-    state.mode = mode->getMode();
-    state.gear = mode->getGear();
+    state.mode = _mode;
+    state.gear = _gear;
+    state.endOfListMessage = _endOfListMessage;
 
-    std::map<const ColorTrackballGlobalMode*, QString>& messages = colorTrackballEndOfListMessages();
-    std::map<const ColorTrackballGlobalMode*, QString>::iterator it = messages.find(mode);
-
-    state.endOfListMessage = (it != messages.end()) ? it->second : QString();
-
-    hud->setState(state);
-} // updateColorTrackballHud
-
-} // namespace
+    _hud->setState(state);
+} // ColorTrackballGlobalMode::updateHud
 
 ColorTrackballGlobalMode*
 ColorTrackballGlobalMode::instanceFor(Gui* gui)
@@ -556,24 +505,27 @@ ColorTrackballGlobalMode::ColorTrackballGlobalMode(Gui* gui)
     , _wheelAccumulator(0)
     , _swallowedKeys()
     , _passThrough()
+    , _hud()
+    , _highlightFrames()
+    , _endOfListMessage()
+    , _targetPosition(0)
+    , _targetCount(0)
 {
-    // Routed through the signals that already fire on every relevant change, rather than
-    // calling these from engage()/exit()/moveStroke() etc. directly, so the HUD and the
-    // highlight frames stay in one place and every caller of those signals updates them for
-    // free, including a future one this class does not have yet.
+    // Driven by the signals rather than called from each place that emits them, so every
+    // emitter keeps the HUD and the highlight frames current without knowing about them.
     QObject::connect(this, &ColorTrackballGlobalMode::engagedChanged, this, [this](bool engaged) {
         if (engaged) {
-            showColorTrackballChrome(this);
+            showChrome();
         } else {
-            hideColorTrackballChrome(this);
+            hideChrome();
         }
     });
     QObject::connect(this, &ColorTrackballGlobalMode::stateChanged, this, [this]() {
-        updateColorTrackballHud(this);
+        updateHud();
     });
     QObject::connect(this, &ColorTrackballGlobalMode::knobListEndReached, this, [this](int direction) {
-        colorTrackballEndOfListMessages()[this] = (direction < 0) ? tr("First colour knob.") : tr("Last colour knob.");
-        updateColorTrackballHud(this);
+        _endOfListMessage = (direction < 0) ? tr("First colour knob.") : tr("Last colour knob.");
+        updateHud();
     });
 }
 
@@ -589,10 +541,8 @@ ColorTrackballGlobalMode::~ColorTrackballGlobalMode()
     for (std::size_t i = 0; i < _targetConnections.size(); ++i) {
         QObject::disconnect(_targetConnections[i]);
     }
-    hideColorTrackballChrome(this);
-    delete findColorTrackballHud(this);
-    colorTrackballHuds().erase(this);
-    colorTrackballEndOfListMessages().erase(this);
+    hideChrome();
+    delete _hud.data();
 }
 
 KnobGuiColor*
@@ -612,26 +562,9 @@ ColorTrackballGlobalMode::getTargetPanel() const
 }
 
 QString
-ColorTrackballGlobalMode::modeKeyName(ColorGlobalModeEnum mode)
-{
-    switch (mode) {
-    case eColorGlobalModeC:
-        return QString::fromUtf8("C");
-    case eColorGlobalModeS:
-        return QString::fromUtf8("S");
-    case eColorGlobalModeT:
-        return QString::fromUtf8("T");
-    case eColorGlobalModeV:
-        return QString::fromUtf8("V");
-    }
-
-    return QString();
-}
-
-QString
 ColorTrackballGlobalMode::strokeLabel() const
 {
-    return tr("Global %1").arg(modeKeyName(_strokeActive ? _strokeMode : _mode));
+    return tr("Global %1").arg(colorGlobalModeKeyName(_strokeActive ? _strokeMode : _mode));
 }
 
 void
@@ -763,7 +696,7 @@ ColorTrackballGlobalMode::setTarget(const KnobGuiColorPtr& target)
     // Taken off the outgoing target before clearTarget() lets go of it; the touched knob
     // itself is left exactly as the switch leaves it, open and unfolded, with nothing restored.
     KnobGuiColor* previousTarget = getTarget();
-    ColorTrackballHud* hud = ensureColorTrackballHud(this);
+    ColorTrackballHud* hud = ensureHud();
 
     if (previousTarget && hud) {
         previousTarget->detachGlobalModeHud(hud);
@@ -772,7 +705,7 @@ ColorTrackballGlobalMode::setTarget(const KnobGuiColorPtr& target)
     clearTarget();
     // A successful switch reaches a real knob, so whatever end-of-list message the previous
     // step may have left standing no longer describes the HUD's new target.
-    colorTrackballEndOfListMessages().erase(this);
+    _endOfListMessage.clear();
     _target = target;
     _targetObject = target.get();
 
@@ -797,8 +730,12 @@ ColorTrackballGlobalMode::setTarget(const KnobGuiColorPtr& target)
     KnobSignalSlotHandlerPtr handler = knob ? knob->getSignalSlotHandler() : KnobSignalSlotHandlerPtr();
 
     if (handler) {
+        // A stroke's own pushes are reported by moveStroke() already; this covers every other
+        // change to the knob, such as an undo or an edit from elsewhere.
         _targetConnections.push_back(QObject::connect(handler.get(), &KnobSignalSlotHandler::valueChanged, this, [this](ViewSpec, int, int) {
-            Q_EMIT stateChanged();
+            if (!_strokeActive) {
+                Q_EMIT stateChanged();
+            }
         }));
     }
 
@@ -906,10 +843,9 @@ ColorTrackballGlobalMode::exit()
     // The touched knob is left open and unfolded, exactly as the user left it; only the HUD
     // itself comes back out.
     KnobGuiColor* target = getTarget();
-    ColorTrackballHud* hud = findColorTrackballHud(this);
 
-    if (target && hud) {
-        target->detachGlobalModeHud(hud);
+    if (target && _hud) {
+        target->detachGlobalModeHud(_hud.data());
     }
 
     QCoreApplication* app = QCoreApplication::instance();
@@ -988,10 +924,13 @@ ColorTrackballGlobalMode::grabForStroke()
 void
 ColorTrackballGlobalMode::releaseStrokeGrab()
 {
-    if (_grabbed && (QWidget::mouseGrabber() == _grabbed.data())) {
-        _grabbed->releaseMouse();
-    }
+    QPointer<QWidget> grabbed = _grabbed;
+
+    // Cleared first, so the UngrabMouse this release may send is not read as a lost grab.
     _grabbed = 0;
+    if (grabbed && (QWidget::mouseGrabber() == grabbed.data())) {
+        grabbed->releaseMouse();
+    }
 }
 
 void
@@ -1023,13 +962,15 @@ ColorTrackballGlobalMode::warpNearScreenEdge(const QPointF& globalPos)
         return false;
     }
 
-    QRect g = screen->geometry();
+    // Only an edge with no other screen beyond it stops the pointer; across a border between
+    // two monitors it carries on by itself.
+    const int m = kEdgeWarpMargin;
 
-    if ((p.x() > g.left() + kEdgeWarpMargin) && (p.x() < g.right() - kEdgeWarpMargin) && (p.y() > g.top() + kEdgeWarpMargin) && (p.y() < g.bottom() - kEdgeWarpMargin)) {
+    if (isOnAnyScreen(p + QPoint(-m, 0)) && isOnAnyScreen(p + QPoint(m, 0)) && isOnAnyScreen(p + QPoint(0, -m)) && isOnAnyScreen(p + QPoint(0, m))) {
         return false;
     }
 
-    QPoint centre = g.center();
+    QPoint centre = screen->geometry().center();
 
     QCursor::setPos(screen, centre);
     // Where the platform refuses to move the pointer (Wayland), pos() still reports where it
@@ -1105,9 +1046,34 @@ ColorTrackballGlobalMode::endStroke()
     KnobGuiColor* target = getTarget();
 
     if (target) {
-        target->getEditSession()->end(_strokeValue, tr("Global %1").arg(modeKeyName(_strokeMode)));
+        target->getEditSession()->end(_strokeValue, tr("Global %1").arg(colorGlobalModeKeyName(_strokeMode)));
     }
     Q_EMIT stateChanged();
+}
+
+// For a stroke whose release will never arrive: the grab was taken away, the application lost
+// focus, or a modal dialog took over. The stroke so far is kept as its own undo step.
+void
+ColorTrackballGlobalMode::endStrokeWithoutRelease()
+{
+    if (_heldButtons == Qt::NoButton) {
+        return;
+    }
+    _heldButtons = Qt::NoButton;
+    endStroke();
+    releaseStrokeGrab();
+}
+
+bool
+ColorTrackballGlobalMode::leaveForModalWidget()
+{
+    if (!QApplication::activeModalWidget()) {
+        return false;
+    }
+    endStrokeWithoutRelease();
+    exit();
+
+    return true;
 }
 
 namespace {
@@ -1152,6 +1118,12 @@ ColorTrackballGlobalMode::handleMouseMove(QObject* watched,
         // Buttons held since before the mode was engaged belong to a drag some widget started;
         // it must still see the rest of it, or it is left stuck mid-drag.
         return e->buttons() == Qt::NoButton;
+    }
+    if (e->spontaneous() && (e->buttons() == Qt::NoButton)) {
+        // The release went somewhere this filter never saw it.
+        endStrokeWithoutRelease();
+
+        return true;
     }
     moveStroke(eventGlobalPosition(watched, e), e->modifiers(), e->spontaneous());
 
@@ -1319,7 +1291,37 @@ ColorTrackballGlobalMode::eventFilter(QObject* watched,
     switch (event->type()) {
     case QEvent::MouseButtonPress:
     case QEvent::MouseButtonDblClick:
+    case QEvent::KeyPress:
+    case QEvent::WindowActivate:
+        // Every press would otherwise be swallowed, leaving a modal dialog impossible to use.
+        if (leaveForModalWidget()) {
+            return QObject::eventFilter(watched, event);
+        }
+        break;
+    default:
+        break;
+    }
+
+    switch (event->type()) {
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonDblClick:
         return handleMousePress(watched, static_cast<QMouseEvent*>(event));
+
+    case QEvent::UngrabMouse:
+        if (watched == _grabbed.data()) {
+            endStrokeWithoutRelease();
+        }
+        break;
+
+    case QEvent::ApplicationDeactivate:
+        endStrokeWithoutRelease();
+        break;
+
+    case QEvent::ApplicationStateChange:
+        if (static_cast<QApplicationStateChangeEvent*>(event)->applicationState() != Qt::ApplicationActive) {
+            endStrokeWithoutRelease();
+        }
+        break;
 
     case QEvent::MouseMove:
         return handleMouseMove(watched, static_cast<QMouseEvent*>(event));

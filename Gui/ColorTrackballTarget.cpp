@@ -32,6 +32,7 @@ CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QCoreApplication>
 #include <QEvent>
+#include <QPointer>
 #include <QVariant>
 #include <QWidget>
 CLANG_DIAG_ON(deprecated)
@@ -88,19 +89,19 @@ pickTargetIndex(const std::string& pluginID,
     if (pluginID == PLUGINID_NATRON_GRADE) {
         int idx = findKnobIndex(knobs, kGradeParamWhite);
 
-        if ((idx >= 0) && knobs[idx].visible) {
+        if ((idx >= 0) && knobs[idx].visible && knobs[idx].enabled) {
             return idx;
         }
     } else if (pluginID == PLUGINID_NATRON_COLORCORRECT) {
         int idx = findKnobIndex(knobs, std::string(kColorCorrectGroupMaster) + kColorCorrectParamGain);
 
-        if ((idx >= 0) && knobs[idx].visible) {
+        if ((idx >= 0) && knobs[idx].visible && knobs[idx].enabled) {
             return idx;
         }
     }
 
     for (std::size_t i = 0; i < knobs.size(); ++i) {
-        if (knobs[i].visible) {
+        if (knobs[i].visible && knobs[i].enabled) {
             return (int)i;
         }
     }
@@ -228,12 +229,22 @@ ColorKnobTouchTracker::touch(KnobGuiColor* knobGui)
     }
 
     KnobGuiContainerI* panel = knobGui->getContainer();
+    // Empty while the knob's GUI is being torn down, which a late event can still land in.
+    KnobGuiPtr owner = knobGui->weak_from_this().lock();
 
-    if (!panel) {
+    if (!panel || !owner) {
         return;
     }
 
-    _lastTouched[panel] = knobGui->shared_from_this();
+    // An entry whose knob is gone belongs to a closed panel, whose address a new one may reuse.
+    for (std::map<KnobGuiContainerI*, KnobGuiWPtr>::iterator it = _lastTouched.begin(); it != _lastTouched.end();) {
+        if (it->second.expired()) {
+            it = _lastTouched.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    _lastTouched[panel] = owner;
 }
 
 KnobGui*
@@ -269,7 +280,10 @@ ColorKnobTouchTracker::eventFilter(QObject* watched,
             QVariant tag = w->property(colorKnobTouchTagPropertyName());
 
             if (tag.isValid()) {
-                owner = static_cast<KnobGuiColor*>(tag.value<void*>());
+                owner = tag.value<QPointer<KnobGuiColor>>().data();
+                if (!owner) {
+                    break;
+                }
             }
         }
         if (owner) {

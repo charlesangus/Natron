@@ -1084,6 +1084,116 @@ TEST(ColorWheelMath, PowerValueEditWrapsTheGainEditOnTheEffectVectorAlphaInclude
     EXPECT_EQ(0.0, outNoAlpha.a) << "a 3-dim knob has no alpha to track";
 }
 
+TEST(ColorWheelMath, PowerValueEditCapsTheGammaInsteadOfRefusing)
+{
+    LumaBasis basis = acescg();
+    KnobColorValue gammaOne = makeValue(1.0, 1.0, 1.0, 1.0);
+
+    // Effect 1 (Y = 1) is gamma infinity; it parks at the cap on every channel, alpha included.
+    KnobColorValue atOne = setValue(eColorKnobRolePower, basis, gammaOne, 1.0);
+
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_NEAR(kPowerGammaMax, atOne.rgb[i], 1e-9);
+    }
+    EXPECT_NEAR(kPowerGammaMax, atOne.a, 1e-9);
+
+    // Far past effect 1 the edit still parks at the cap instead of being refused.
+    KnobColorValue pastOne = scaleValue(eColorKnobRolePower, basis, gammaOne, 16.0);
+
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_NEAR(kPowerGammaMax, pastOne.rgb[i], 1e-9);
+    }
+
+    // Down to Y = 0 parks on the bottom of the range rather than going non-positive.
+    KnobColorValue atZero = setValue(eColorKnobRolePower, basis, gammaOne, 0.0);
+
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_NEAR(kPowerGammaMin, atZero.rgb[i], 1e-9);
+    }
+    EXPECT_NEAR(kPowerGammaMin, atZero.a, 1e-9);
+}
+
+TEST(ColorWheelMath, PowerValueDragNeverSnapsBackToItsStart)
+{
+    LumaBasis basis = acescg();
+    KnobColorValue start = makeValue(1.0, 1.0, 1.0, 1.0);
+    double previous = 1.0;
+
+    // A long V drag in the stroke style: every step re-applies the total travel to the start.
+    for (int step = 1; step <= 80; ++step) {
+        ColorEdit edit;
+
+        edit.axis = eColorAxisValue;
+        edit.d1 = 0.05 * step;
+        ChromaEditResult r = applyEdit(eColorKnobRolePower, basis, start, edit, 0.0);
+
+        ASSERT_TRUE(r.valid);
+        EXPECT_GE(r.value.rgb[0], previous - 1e-12) << "step " << step;
+        EXPECT_LE(r.value.rgb[0], kPowerGammaMax + 1e-12) << "step " << step;
+        previous = r.value.rgb[0];
+    }
+    EXPECT_NEAR(kPowerGammaMax, previous, 1e-9);
+}
+
+TEST(ColorWheelMath, PowerAbsoluteValueCountsStopsFromMidGrey)
+{
+    LumaBasis basis = acescg();
+    KnobColorValue start = makeValue(1.7, 1.7, 1.7, 1.7);
+    ColorEdit edit;
+
+    edit.axis = eColorAxisValue;
+    edit.absolute = true;
+    EXPECT_NEAR(0.18, valueStopPivot(eColorKnobRolePower), 1e-12);
+    EXPECT_NEAR(1.0, valueStopPivot(eColorKnobRoleGain), 1e-12);
+
+    // 0 stops is gamma 1, the Power role's neutral.
+    edit.d1 = 0.0;
+    ChromaEditResult zero = applyEdit(eColorKnobRolePower, basis, start, edit, 0.0);
+
+    ASSERT_TRUE(zero.valid);
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_NEAR(1.0, zero.value.rgb[i], 1e-9);
+    }
+    EXPECT_NEAR(1.0, zero.value.a, 1e-9);
+
+    // +1 and -1 stop land on effect 0.36 and 0.09, so positive stops do brighten.
+    edit.d1 = 1.0;
+    ChromaEditResult up = applyEdit(eColorKnobRolePower, basis, start, edit, 0.0);
+
+    EXPECT_NEAR(effectToGamma(0.36).gamma, up.value.rgb[0], 1e-9);
+    EXPECT_GT(up.value.rgb[0], 1.0);
+
+    edit.d1 = -1.0;
+    ChromaEditResult down = applyEdit(eColorKnobRolePower, basis, start, edit, 0.0);
+
+    EXPECT_NEAR(effectToGamma(0.09).gamma, down.value.rgb[0], 1e-9);
+    EXPECT_LT(down.value.rgb[0], 1.0);
+
+    SliderRange range = sliderMapping(eColorSliderKindValue, eColorKnobRolePower, TrackballRates());
+
+    edit.d1 = range.rangeMax;
+    ChromaEditResult top = applyEdit(eColorKnobRolePower, basis, start, edit, 0.0);
+
+    EXPECT_LT(top.value.rgb[0], kPowerGammaMax) << "the track's top end is still below the cap";
+}
+
+TEST(ColorWheelMath, GainValueEditNeverDrivesAlphaNegative)
+{
+    LumaBasis basis = acescg();
+    KnobColorValue v = makeValue(1.0, 1.0, 1.0, 1.0);
+
+    // -21 stops lands Y below the freeze threshold: alpha still scales, it does not shift.
+    KnobColorValue deep = scaleValue(eColorKnobRoleGain, basis, v, std::pow(2.0, -21.0));
+
+    EXPECT_GE(deep.a, 0.0);
+    EXPECT_NEAR(std::pow(2.0, -21.0), deep.a, 1e-12);
+
+    KnobColorValue toZero = setValue(eColorKnobRoleGain, basis, makeValue(2.0, 2.0, 2.0, 1.0), 0.0);
+
+    EXPECT_GE(toZero.a, 0.0);
+    EXPECT_NEAR(0.0, toZero.a, 1e-12);
+}
+
 TEST(ColorWheelMath, InferColorRoleMatchesGradesSevenNativeKnobs)
 {
     // Grade's own declarations (Engine/Nodes/Color/Grade.cpp), by default value, display
@@ -1180,17 +1290,6 @@ TEST(ColorWheelMath, ApplyEditDispatchesTrackballHueSatValueTempTintAndAlpha)
     ASSERT_TRUE(ttBack.valid);
     EXPECT_NEAR(20.0, ttBack.temp, 1e-6);
     EXPECT_NEAR(-5.0, ttBack.tint, 1e-6);
-
-    ColorEdit alphaRel;
-    alphaRel.axis = eColorAxisAlpha;
-    alphaRel.d1 = 0.25;
-    ChromaEditResult alphaResult = applyEdit(eColorKnobRoleGain, basis, v, alphaRel, 0.0);
-    ASSERT_TRUE(alphaResult.valid);
-    EXPECT_NEAR(1.25, alphaResult.value.a, 1e-12);
-
-    KnobColorValue noAlpha = makeValue(1.0, 1.0, 1.0, 0.0, false);
-    ChromaEditResult alphaOnNoAlpha = applyEdit(eColorKnobRoleGain, basis, noAlpha, alphaRel, 0.0);
-    EXPECT_FALSE(alphaOnNoAlpha.valid) << "a 3-dim knob has no alpha axis to edit";
 }
 
 TEST(ColorWheelMath, RelativeTempTintEditFallsBackToTheLinearAxesOutOfDomain)
@@ -1358,49 +1457,19 @@ TEST(ColorWheelMath, SliderMappingMatchesTheHybridTableRanges)
     EXPECT_EQ(-0.1, tintOffset.rangeMin);
     EXPECT_EQ(0.1, tintOffset.rangeMax);
 
-    SliderRange alphaGain = sliderMapping(eColorSliderKindAlpha, eColorKnobRoleGain, rates);
-    EXPECT_EQ(0.0, alphaGain.rangeMin);
-    EXPECT_EQ(4.0, alphaGain.rangeMax);
-
-    SliderRange alphaOffset = sliderMapping(eColorSliderKindAlpha, eColorKnobRoleOffset, rates);
-    EXPECT_EQ(-0.25, alphaOffset.rangeMin);
-    EXPECT_EQ(0.25, alphaOffset.rangeMax);
+    SliderRange valuePower = sliderMapping(eColorSliderKindValue, eColorKnobRolePower, rates);
+    EXPECT_EQ(-2.0, valuePower.rangeMin);
+    EXPECT_EQ(2.0, valuePower.rangeMax);
 }
 
-TEST(ColorWheelMath, SliderMarkerRoundTrips)
+TEST(ColorWheelMath, SliderMarkerMapsOntoTheRange)
 {
     TrackballRates rates;
-    SliderRange hue = sliderMapping(eColorSliderKindHue, eColorKnobRoleGain, rates);
-
-    for (double value : { 0.0, 45.0, 180.0, 359.0, 360.0 }) {
-        double marker = valueToMarker(hue, value);
-        EXPECT_GE(marker, 0.0);
-        EXPECT_LE(marker, 1.0);
-        EXPECT_NEAR(value, markerToValue(hue, marker), 1e-9);
-    }
-
     SliderRange temp = sliderMapping(eColorSliderKindTemp, eColorKnobRoleGain, rates);
-    EXPECT_NEAR(0.0, valueToMarker(temp, -100.0), 1e-12);
-    EXPECT_NEAR(0.5, valueToMarker(temp, 0.0), 1e-12);
-    EXPECT_NEAR(1.0, valueToMarker(temp, 100.0), 1e-12);
+
     EXPECT_NEAR(-100.0, markerToValue(temp, 0.0), 1e-12);
+    EXPECT_NEAR(0.0, markerToValue(temp, 0.5), 1e-12);
     EXPECT_NEAR(100.0, markerToValue(temp, 1.0), 1e-12);
-}
-
-TEST(ColorWheelMath, SliderChevronReportsPastEitherEnd)
-{
-    TrackballRates rates;
-    SliderRange temp = sliderMapping(eColorSliderKindTemp, eColorKnobRoleGain, rates);
-
-    EXPECT_EQ(eSliderChevronNone, sliderChevron(temp, 0.0));
-    EXPECT_EQ(eSliderChevronNone, sliderChevron(temp, -100.0));
-    EXPECT_EQ(eSliderChevronNone, sliderChevron(temp, 100.0));
-    EXPECT_EQ(eSliderChevronLow, sliderChevron(temp, -100.1));
-    EXPECT_EQ(eSliderChevronHigh, sliderChevron(temp, 100.1));
-
-    // A marker is always clamped into the track regardless of how far the raw value has run
-    // off the end, which is exactly what lets the chevron, rather than the marker position,
-    // carry the "there is more this way" information.
-    EXPECT_EQ(1.0, valueToMarker(temp, 100.1));
-    EXPECT_EQ(0.0, valueToMarker(temp, -500.0));
+    EXPECT_NEAR(100.0, markerToValue(temp, 1.5), 1e-12);
+    EXPECT_NEAR(-100.0, markerToValue(temp, -0.5), 1e-12);
 }

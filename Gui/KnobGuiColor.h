@@ -286,6 +286,7 @@ private:
     ProjectColorManagementPtr getColorManagement() const;
     void refreshAdjustPanelColorManagement();
     bool isAdjustPanelEditable() const;
+    void refreshAdjustPanelToolTip(bool expanded);
 
     void updateLabel(double r, double g, double b, double a);
 

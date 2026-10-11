@@ -180,7 +180,6 @@ struct GestureRecorder {
     std::vector<bool> finishedMoved;
     std::vector<ColorEdit> edits;
     std::vector<QString> labels;
-    int zooms = 0;
 
     explicit GestureRecorder(ColorWheelWidget& wheel)
     {
@@ -193,7 +192,6 @@ struct GestureRecorder {
             ++finished;
             finishedMoved.push_back(moved);
         });
-        QObject::connect(&wheel, &ColorWheelWidget::rimZoomed, [this](double) { ++zooms; });
     }
 
     double sum1(ColorAxisEnum axis) const
@@ -242,7 +240,6 @@ struct GestureRecorder {
         finishedMoved.clear();
         edits.clear();
         labels.clear();
-        zooms = 0;
     }
 };
 
@@ -807,7 +804,7 @@ TEST(ColorWheelWidget, ShortcutOverrideMidDragAcceptsGearAndEscape)
     releaseAt(wheel, c);
 }
 
-TEST(ColorWheelWidget, PointerOverWheelSwallowsVFromTheFocusedLineEdit)
+TEST(ColorWheelWidget, PointerOverWheelLetsVReachAFocusedTextField)
 {
     ColorWheelWidget wheel;
     QLineEdit other;
@@ -818,11 +815,61 @@ TEST(ColorWheelWidget, PointerOverWheelSwallowsVFromTheFocusedLineEdit)
 
     QCursor::setPos(wheel.mapToGlobal(wheel.getDiscCentre().toPoint()));
 
-    EXPECT_TRUE(shortcutOverrideAccepted(other, Qt::Key_V, Qt::NoModifier));
     sendKey(other, QEvent::KeyPress, Qt::Key_V, false, Qt::NoModifier, QString::fromUtf8("v"));
     sendKey(other, QEvent::KeyRelease, Qt::Key_V);
 
-    EXPECT_TRUE(other.text().isEmpty());
+    EXPECT_EQ(QString::fromUtf8("v"), other.text());
+}
+
+TEST(ColorWheelWidget, PointerOverWheelClaimsVFromAWidgetThatIsNotATextField)
+{
+    ColorWheelWidget wheel;
+    QLineEdit away;
+
+    setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.05);
+    placeApart(wheel, away);
+
+    QCursor::setPos(wheel.mapToGlobal(wheel.getDiscCentre().toPoint()));
+
+    QWidget bystander;
+
+    EXPECT_TRUE(shortcutOverrideAccepted(bystander, Qt::Key_V, Qt::NoModifier));
+}
+
+TEST(ColorWheelWidget, HidingOrDeletingAWheelMidDragEndsTheDrag)
+{
+    QLineEdit away;
+    QWidget bystander;
+
+    {
+        ColorWheelWidget wheel;
+
+        setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.05);
+        placeApart(wheel, away);
+        QCursor::setPos(away.mapToGlobal(QPoint(10, 10)));
+
+        GestureRecorder rec(wheel);
+        QPointF c = wheel.getDiscCentre();
+
+        pressAt(wheel, c);
+        moveTo(wheel, c + QPointF(10.0, 0.0));
+        EXPECT_TRUE(shortcutOverrideAccepted(bystander, Qt::Key_V, Qt::NoModifier));
+        wheel.hide();
+
+        EXPECT_FALSE(wheel.isDragging());
+        EXPECT_EQ(1, rec.finished);
+        EXPECT_FALSE(shortcutOverrideAccepted(bystander, Qt::Key_V, Qt::NoModifier));
+    }
+
+    ColorWheelWidget* doomed = new ColorWheelWidget();
+
+    setUpWheel(*doomed, eColorKnobRoleGain, makeValue(1.0, 1.0, 1.0), 0.05);
+    placeApart(*doomed, away);
+    QCursor::setPos(away.mapToGlobal(QPoint(10, 10)));
+    pressAt(*doomed, doomed->getDiscCentre());
+    EXPECT_TRUE(shortcutOverrideAccepted(bystander, Qt::Key_V, Qt::NoModifier));
+    delete doomed;
+    EXPECT_FALSE(shortcutOverrideAccepted(bystander, Qt::Key_V, Qt::NoModifier));
 }
 
 TEST(ColorWheelWidget, PointerAwayFromWheelLetsVReachTheFocusedLineEdit)
@@ -847,7 +894,7 @@ TEST(ColorWheelWidget, PointerAwayFromWheelLetsVReachTheFocusedLineEdit)
     EXPECT_EQ(QString::fromUtf8("v"), other.text());
 }
 
-TEST(ColorWheelWidget, ScrollZoomsRimOnly)
+TEST(ColorWheelWidget, CtrlScrollZoomsRimOnly)
 {
     ColorWheelWidget wheel;
     KnobColorValue value = makeValue(1.2, 1.0, 0.8);
@@ -857,17 +904,35 @@ TEST(ColorWheelWidget, ScrollZoomsRimOnly)
 
     GestureRecorder rec(wheel);
     QPointF c = wheel.getDiscCentre();
-    QWheelEvent e(c, wheel.mapToGlobal(c), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QWheelEvent e(c, wheel.mapToGlobal(c), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::ControlModifier, Qt::NoScrollPhase, false);
 
     QApplication::sendEvent(&wheel, &e);
 
+    EXPECT_TRUE(e.isAccepted());
     EXPECT_NEAR(rim * TrackballRates().zoomFactorPerNotch, wheel.getRim(), 1e-15);
-    EXPECT_EQ(1, rec.zooms);
     EXPECT_EQ(0, rec.started);
     EXPECT_TRUE(rec.edits.empty());
     for (int i = 0; i < 3; ++i) {
         EXPECT_EQ(value.rgb[i], wheel.getValue().rgb[i]);
     }
+}
+
+TEST(ColorWheelWidget, BareScrollOverAnUnfocusedWheelIsLeftForTheScrollArea)
+{
+    ColorWheelWidget wheel;
+    double rim = 0.05;
+
+    setUpWheel(wheel, eColorKnobRoleGain, makeValue(1.2, 1.0, 0.8), rim);
+    wheel.clearFocus();
+    ASSERT_FALSE(wheel.hasFocus());
+
+    QPointF c = wheel.getDiscCentre();
+    QWheelEvent e(c, wheel.mapToGlobal(c), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+
+    QApplication::sendEvent(&wheel, &e);
+
+    EXPECT_FALSE(e.isAccepted());
+    EXPECT_EQ(rim, wheel.getRim());
 }
 
 TEST(ColorWheelWidget, DoubleClickEmitsChromaReset)

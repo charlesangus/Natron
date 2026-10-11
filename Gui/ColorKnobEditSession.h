@@ -32,6 +32,7 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QPointer>
 #include <QString>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -44,15 +45,16 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Turns one colour gesture (a wheel or slider drag in the adjustment panel, a swatch
- * drag, a global-mode stroke) into knob changes: begin records the knob's values and turns
- * draft render on, move sets the gesture's current value on every dimension through the undo
- * stack, and end turns draft render off and makes sure the final value has been committed.
+ * @brief Turns one colour gesture (a wheel or slider drag in the adjustment panel, a global-mode
+ * stroke) into knob changes: begin records the knob's values and turns draft render on, move
+ * sets the gesture's current value through the undo stack, and end turns draft render off and
+ * makes sure the final value has been committed.
  *
  * Every push carries the values recorded at begin as its old values, so the pushes of one
  * gesture compress into a single step that undoes back to where the gesture started. When the
  * "render on editing finished only" preference is set, moves only record the value and end
- * pushes it once.
+ * pushes it once. The rgb dimensions are always written; alpha only once the gesture changes
+ * it, and never while an expression or a link drives it.
  **/
 class ColorKnobEditSession {
 public:
@@ -93,7 +95,8 @@ public:
 
 private:
     KnobColorPtr getKnob() const;
-    std::list<double> toKnobValues(const KnobColorValue& value) const;
+    std::list<double> toKnobValues(const KnobColorValue& value);
+    std::list<double> startValuesFor(const std::list<double>& values) const;
     void push(const std::list<double>& values);
 
     /**
@@ -108,8 +111,11 @@ private:
     std::list<double> _committed;
     bool _active;
     bool _moved;
+    bool _alphaWritable = false;
+    bool _writesAlpha;
     QString _label;
     quint64 _mergeKey;
+    QPointer<Gui> _gui;
 };
 
 NATRON_NAMESPACE_EXIT

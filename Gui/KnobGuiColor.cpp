@@ -189,6 +189,42 @@ activateLayoutsUpToInclusive(QWidget* bottom, QWidget* top)
         }
     }
 }
+
+// Holds a widget's updates off for one relayout, then flushes the layout requests and turns
+// them back on, unless they were already off when it started: whoever turned them off then is
+// still relaying out, and turning them back on here would paint its half-built state.
+class UpdatesHeldOff {
+public:
+    explicit UpdatesHeldOff(QWidget* widget)
+        : _widget(widget)
+        , _restore(widget && widget->updatesEnabled())
+    {
+        if (_restore) {
+            widget->setUpdatesEnabled(false);
+        }
+    }
+
+    ~UpdatesHeldOff()
+    {
+        if (_restore && _widget) {
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+            _widget->setUpdatesEnabled(true);
+        }
+    }
+
+    UpdatesHeldOff(const UpdatesHeldOff&) = delete;
+    UpdatesHeldOff& operator=(const UpdatesHeldOff&) = delete;
+
+private:
+    QPointer<QWidget> _widget;
+    bool _restore;
+};
+
+QVariant
+touchTagFor(KnobGuiColor* knobGui)
+{
+    return QVariant::fromValue(QPointer<KnobGuiColor>(knobGui));
+}
 } // namespace
 
 void
@@ -513,16 +549,10 @@ KnobGuiColor::attachGlobalModeHud(QWidget* hud)
     }
 
     QWidget* topWidget = getContainer() ? getContainer()->getContainerWidget() : 0;
+    UpdatesHeldOff held(topWidget);
 
-    if (topWidget) {
-        topWidget->setUpdatesEnabled(false);
-    }
     attachColorGlobalModeHud(columnLayout, getDimensionLinesWidget(), hud);
     activateLayoutsUpToInclusive(columnLayout->parentWidget(), topWidget);
-    if (topWidget) {
-        QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
-        topWidget->setUpdatesEnabled(true);
-    }
 }
 
 void
@@ -530,17 +560,11 @@ KnobGuiColor::detachGlobalModeHud(QWidget* hud)
 {
     QVBoxLayout* columnLayout = getBelowRowColumnLayout();
     QWidget* topWidget = getContainer() ? getContainer()->getContainerWidget() : 0;
+    UpdatesHeldOff held(topWidget);
 
-    if (topWidget) {
-        topWidget->setUpdatesEnabled(false);
-    }
     detachColorGlobalModeHud(hud);
     if (columnLayout) {
         activateLayoutsUpToInclusive(columnLayout->parentWidget(), topWidget);
-    }
-    if (topWidget) {
-        QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
-        topWidget->setUpdatesEnabled(true);
     }
 }
 
@@ -599,7 +623,7 @@ KnobGuiColor::createBelowRowWidget(QWidget* parent)
 
     _adjustPanel = new ColorAdjustPanel(parent);
     _adjustPanel->setObjectName(QString::fromUtf8("ColorAdjustPanel"));
-    _adjustPanel->setProperty(colorKnobTouchTagPropertyName(), QVariant::fromValue<void*>(this));
+    _adjustPanel->setProperty(colorKnobTouchTagPropertyName(), touchTagFor(this));
     _adjustPanel->setKnobValue(ColorKnobEditSession::readKnobValue(knob),
                                knob->getDimension(),
                                knob->getColorRole(),
@@ -689,9 +713,7 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
 
     // Everything below is one update: the panel's visibility, the channel lines' fold state,
     // and the layout settling they both need. See activateLayoutsUpToInclusive() for why.
-    if (topWidget) {
-        topWidget->setUpdatesEnabled(false);
-    }
+    UpdatesHeldOff held(topWidget);
 
     if (expanded) {
         KnobColorPtr knob = _knob.lock();
@@ -716,11 +738,12 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
     if (columnWidget) {
         activateLayoutsUpToInclusive(columnWidget, topWidget);
     }
-    if (topWidget) {
-        QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
-        topWidget->setUpdatesEnabled(true);
-    }
+    refreshAdjustPanelToolTip(expanded);
+}
 
+void
+KnobGuiColor::refreshAdjustPanelToolTip(bool expanded)
+{
     _colorSelectorButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(expanded ? tr("Hide the colour adjustment panel.") : tr("Show the colour adjustment panel: a trackball wheel with hue, saturation, value, temperature and tint sliders."),
                                                                             NATRON_NAMESPACE::WhiteSpaceNormal));
 }
@@ -827,12 +850,12 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         // press, wheel or focus-in on any of its spinboxes, not only from a gesture session.
         QWidget* row = containerLayout->parentWidget();
         if (row) {
-            row->setProperty(colorKnobTouchTagPropertyName(), QVariant::fromValue<void*>(this));
+            row->setProperty(colorKnobTouchTagPropertyName(), touchTagFor(this));
         }
         _rowContainer = row;
         QWidget* dimensionLines = getDimensionLinesWidget();
         if (dimensionLines) {
-            dimensionLines->setProperty(colorKnobTouchTagPropertyName(), QVariant::fromValue<void*>(this));
+            dimensionLines->setProperty(colorKnobTouchTagPropertyName(), touchTagFor(this));
         }
     }
     _colorLabel = new ColorPickerLabel( _useSimplifiedUI ? NULL : this, containerLayout->widget() );
@@ -873,7 +896,10 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         _colorSelectorButton->setChecked(false);
         _colorSelectorButton->setFocusPolicy(Qt::NoFocus);
         QObject::connect(_colorSelectorButton, &QToolButton::toggled, this, &KnobGuiColor::onAdjustPanelToggled);
-        onAdjustPanelToggled(false);
+        // The panel starts collapsed with nothing to undo, so the full toggle and its layout
+        // flush are not needed here, once per colour knob, while the panel is being built.
+        _adjustPanel->setVisible(false);
+        refreshAdjustPanelToolTip(false);
         containerLayout->addWidget(_colorSelectorButton);
 
         _globalModeButton = new QToolButton(containerLayout->widget());

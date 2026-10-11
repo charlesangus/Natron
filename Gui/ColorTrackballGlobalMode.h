@@ -58,6 +58,9 @@ class QWheelEvent;
 
 NATRON_NAMESPACE_ENTER
 
+class ColorTrackballHud;
+class WindowHighlightFrame;
+
 /**
  * @brief The bool dynamic property set on the global-mode target's row container while the
  * mode is engaged on it, for the application stylesheet to highlight the row by.
@@ -178,11 +181,12 @@ private:
  * the application's windows adjusts that knob (C = a trackball translate of hue and
  * saturation together, S = hue on x and saturation on y, T = temperature and tint, V = value),
  * each stroke being one undo step. Esc and Enter accept and exit, Ctrl+Up/Down and Ctrl+scroll
- * move to the previous or next colour knob on the same panel, and Ctrl+Z / Ctrl+Shift+Z undo
- * and redo strokes between them on the knob's own panel.
+ * move to the previous or next colour knob on the same panel, and Ctrl+Z / Ctrl+Shift+Z /
+ * Ctrl+Y undo and redo strokes between them on the knob's own panel. A modal dialog taking
+ * over, or the application losing focus, ends any stroke; a modal dialog also leaves the mode.
  *
- * One controller exists per Gui, created on first use. Its app-wide event filter is installed
- * only while it is engaged.
+ * One controller exists per Gui, created when the Gui builds its actions and deleted with the
+ * Gui. Its app-wide event filter is installed only while it is engaged.
  **/
 class ColorTrackballGlobalMode
     : public QObject {
@@ -252,11 +256,6 @@ public:
     KnobColorValue getLiveValue() const;
 
     /**
-     * @brief "C", "S", "T" or "V".
-     **/
-    static QString modeKeyName(ColorGlobalModeEnum mode);
-
-    /**
      * @brief The widget that grabs the mouse for the length of a stroke, so the stroke keeps
      * receiving moves wherever the pointer goes. Defaults to the Gui's main window when unset
      * or hidden.
@@ -303,9 +302,16 @@ private:
     QString strokeLabel() const;
     void setGear(double gearFactor);
 
+    ColorTrackballHud* ensureHud();
+    void showChrome();
+    void hideChrome();
+    void updateHud();
+    void refreshTargetPosition();
+
     void beginStroke();
     void moveStroke(const QPointF& globalPos, Qt::KeyboardModifiers modifiers, bool spontaneous);
     void endStroke();
+    void endStrokeWithoutRelease();
     bool warpNearScreenEdge(const QPointF& globalPos);
     void grabForStroke();
     void releaseStrokeGrab();
@@ -314,6 +320,7 @@ private:
     bool handleMouseMove(QObject* watched, QMouseEvent* e);
     bool handleMouseRelease(QMouseEvent* e);
     bool handleWheel(QWheelEvent* e);
+    bool leaveForModalWidget();
     bool isPassThrough(const QKeyEvent* e) const;
     bool handleShortcutOverride(QKeyEvent* e);
     bool handleKeyPress(QKeyEvent* e);
@@ -348,6 +355,12 @@ private:
     int _wheelAccumulator;
     std::set<int> _swallowedKeys;
     QList<QKeySequence> _passThrough;
+
+    QPointer<ColorTrackballHud> _hud;
+    std::vector<QPointer<WindowHighlightFrame>> _highlightFrames;
+    QString _endOfListMessage;
+    int _targetPosition;
+    int _targetCount;
 };
 
 NATRON_NAMESPACE_EXIT

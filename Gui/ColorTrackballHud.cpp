@@ -118,7 +118,7 @@ ColorTrackballHud::~ColorTrackballHud()
 }
 
 QString
-ColorTrackballHud::modeKeyName(ColorGlobalModeEnum mode)
+colorGlobalModeKeyName(ColorGlobalModeEnum mode)
 {
     switch (mode) {
     case eColorGlobalModeC:
@@ -177,7 +177,7 @@ ColorTrackballHud::setState(const ColorTrackballHudState& state)
                               .arg(state.knobIndex)
                               .arg(state.knobCount));
 
-    _modeLabel->setText(tr("Mode %1: %2").arg(modeKeyName(state.mode)).arg(modeAxesDescription(state.mode)));
+    _modeLabel->setText(tr("Mode %1: %2").arg(colorGlobalModeKeyName(state.mode)).arg(modeAxesDescription(state.mode)));
 
     QString values;
 
@@ -189,9 +189,13 @@ ColorTrackballHud::setState(const ColorTrackballHudState& state)
             : tr("Hue/Sat unavailable");
         break;
     case eColorGlobalModeT:
-        values = state.chromaValid
-            ? tr("Temp %1 mired  Tint %2").arg(state.temp, 0, 'f', 1).arg(state.tint, 0, 'f', 1)
-            : tr("Temp/tint unavailable");
+        if (!state.chromaValid) {
+            values = tr("Temp/tint unavailable");
+        } else if (isRatioRole(state.role)) {
+            values = tr("Temp %1 mired  Tint %2").arg(state.temp, 0, 'f', 1).arg(state.tint, 0, 'f', 1);
+        } else {
+            values = tr("Temp %1  Tint %2 (axis)").arg(state.temp, 0, 'f', 4).arg(state.tint, 0, 'f', 4);
+        }
         break;
     case eColorGlobalModeV:
         values = tr("Value");

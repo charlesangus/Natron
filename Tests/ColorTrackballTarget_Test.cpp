@@ -203,3 +203,32 @@ TEST(ColorTrackballTarget, AllSecretKnobsPickNone)
 
     EXPECT_EQ(-1, idx);
 }
+
+TEST(ColorTrackballTarget, DisabledGainFallsThroughToFirstEnabledKnob)
+{
+    std::vector<ColorKnobInfo> knobs = gradeKnobs();
+
+    for (std::size_t i = 0; i < knobs.size(); ++i) {
+        if ((knobs[i].scriptName == kGradeParamWhite) || (knobs[i].scriptName == kGradeParamBlackPoint)) {
+            knobs[i].enabled = false;
+        }
+    }
+
+    int idx = pickTargetIndex(PLUGINID_NATRON_GRADE, knobs, -1);
+
+    ASSERT_GE(idx, 0);
+    EXPECT_TRUE(knobs[idx].enabled);
+    EXPECT_NE(std::string(kGradeParamWhite), knobs[idx].scriptName);
+    EXPECT_NE(std::string(kGradeParamBlackPoint), knobs[idx].scriptName);
+}
+
+TEST(ColorTrackballTarget, AllDisabledKnobsPickNone)
+{
+    std::vector<ColorKnobInfo> knobs = gradeKnobs();
+
+    for (std::size_t i = 0; i < knobs.size(); ++i) {
+        knobs[i].enabled = false;
+    }
+
+    EXPECT_EQ(-1, pickTargetIndex(PLUGINID_NATRON_GRADE, knobs, -1));
+}

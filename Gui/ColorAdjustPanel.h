@@ -54,9 +54,10 @@ struct ColorAdjustPanelPrivate;
  *
  * Every gesture is applied to the value it started from, with the steps since then accumulated
  * into one edit, so a long drag never drifts by re-rounding its own output. Each gesture is
- * reported as one Start, any number of Moves and one End; a press that never moves reports
- * nothing. While a gesture runs, setKnobValue is ignored, so the knob echoing the panel's own
- * edits back cannot re-anchor the wheel mid-drag; the wheel re-centres on the new value at End.
+ * reported as one Start, any number of Moves and one End; a gesture that never edits (a disc
+ * press released without moving) reports nothing. While a gesture runs, setKnobValue is
+ * ignored, so the knob echoing the panel's own edits back cannot re-anchor the wheel mid-drag;
+ * the wheel re-centres on the new value at End.
  *
  * A slider reports absolute targets in its line's unit (degrees, plane distance, stops or Y,
  * mired, tint or the Offset axes); a spinbox commit is a one-shot absolute edit.
@@ -91,7 +92,6 @@ public:
      * invalidate the wheel's cached disc, so they are best left alone between config changes.
      **/
     void setKnobValue(const KnobColorValue& value);
-    void setDimensions(int nDims);
     void setRole(ColorKnobRoleEnum role);
     void setBasis(const LumaBasis& basis);
 
@@ -126,9 +126,6 @@ public:
     QWidget* getEditArea() const;
     ColorWheelWidget* getWheel() const;
 
-    /**
-     * @brief Null for eColorSliderKindAlpha, which has no line: the knob's own "a" line covers it.
-     **/
     ScaleSliderQWidget* getSlider(ColorSliderKindEnum kind) const;
     SpinBox* getSpinBox(ColorSliderKindEnum kind) const;
 

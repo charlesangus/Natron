@@ -40,20 +40,23 @@ NATRON_NAMESPACE_ENTER
 namespace {
 
 // One counter for the whole process: every colour gesture (a wheel or slider drag in the
-// adjustment panel, a swatch drag, a global-mode stroke) gets its own key, so consecutive
-// gestures on the same knob never merge into one undo step.
+// adjustment panel, a global-mode stroke) gets its own key, so consecutive gestures on the same
+// knob never merge into one undo step. 0 means "no key", so the count starts at 1.
 quint64
 allocateMergeKey()
 {
     static quint64 counter = 0;
 
-    ++counter;
-    if (counter == 0) {
-        // Wrapped past the top of the range: 0 is reserved to mean "no key".
-        ++counter;
-    }
+    return ++counter;
+}
 
-    return counter;
+// Whether a gesture may write this dimension: one driven by an expression or a link is left to
+// its driver.
+bool
+isDimensionWritable(const KnobColorPtr& knob,
+                    int dimension)
+{
+    return knob && knob->getExpression(dimension).empty() && !knob->isSlave(dimension);
 }
 
 } // namespace
@@ -66,8 +69,10 @@ ColorKnobEditSession::ColorKnobEditSession(const KnobGuiPtr& knobGui)
     , _committed()
     , _active(false)
     , _moved(false)
+    , _writesAlpha(false)
     , _label()
     , _mergeKey(0)
+    , _gui()
 {
 }
 
@@ -144,7 +149,7 @@ ColorKnobEditSession::getKnob() const
 }
 
 std::list<double>
-ColorKnobEditSession::toKnobValues(const KnobColorValue& value) const
+ColorKnobEditSession::toKnobValues(const KnobColorValue& value)
 {
     std::list<double> values;
 
@@ -153,11 +158,33 @@ ColorKnobEditSession::toKnobValues(const KnobColorValue& value) const
         values.push_back(value.rgb[1]);
         values.push_back(value.rgb[2]);
     }
-    if (_nDims >= 4) {
-        values.push_back(value.hasAlpha ? value.a : _start.back());
+    if (_nDims < 4) {
+        return values;
+    }
+
+    // Alpha is only written once the gesture actually moves it (hue, saturation, temp and tint
+    // never do), so with auto-keying on those edits set no alpha key. Once written it stays in
+    // every later push, so the gesture's merged undo step always covers it.
+    const double alpha = value.hasAlpha ? value.a : _start.back();
+
+    if (!_writesAlpha && _alphaWritable && (alpha != _start.back())) {
+        _writesAlpha = true;
+    }
+    if (_writesAlpha) {
+        values.push_back(alpha);
     }
 
     return values;
+}
+
+std::list<double>
+ColorKnobEditSession::startValuesFor(const std::list<double>& values) const
+{
+    std::list<double> start = _start;
+
+    start.resize(values.size());
+
+    return start;
 }
 
 QString
@@ -185,7 +212,7 @@ ColorKnobEditSession::push(const std::list<double>& values)
         return;
     }
 
-    KnobUndoCommand<double>* cmd = new KnobUndoCommand<double>(knobGui, _start, values, true, _mergeKey);
+    KnobUndoCommand<double>* cmd = new KnobUndoCommand<double>(knobGui, startValuesFor(values), values, true, _mergeKey);
 
     cmd->setText(undoText());
     knobGui->pushUndoCommand(cmd);
@@ -207,18 +234,22 @@ ColorKnobEditSession::begin(const QString& label)
     for (int i = 0; i < _nDims; ++i) {
         _start.push_back(knob->getValue(i));
     }
-    _current = _start;
-    _committed = _start;
+    _writesAlpha = false;
+    _alphaWritable = (_nDims >= 4) && isDimensionWritable(knob, 3);
     _active = true;
     _moved = false;
     _label = label;
     _mergeKey = allocateMergeKey();
+    _current = toKnobValues(readKnobValue(knob));
+    _committed = _current;
 
     KnobGuiPtr knobGui = _knobGui.lock();
-    Gui* gui = knobGui ? knobGui->getGui() : 0;
 
-    if (gui) {
-        gui->setDraftRenderEnabled(true);
+    // Held on its own: when the knob's GUI goes first, abandon() must still reach the Gui to
+    // turn draft render back off.
+    _gui = knobGui ? knobGui->getGui() : 0;
+    if (_gui) {
+        _gui->setDraftRenderEnabled(true);
     }
 }
 
@@ -260,9 +291,9 @@ ColorKnobEditSession::abandon()
     }
     _active = false;
 
-    KnobGuiPtr knobGui = _knobGui.lock();
-    Gui* gui = knobGui ? knobGui->getGui() : 0;
+    Gui* gui = _gui.data();
 
+    _gui.clear();
     // Draft goes off before the final push so that the committed value renders at full quality.
     if (gui) {
         gui->setDraftRenderEnabled(false);

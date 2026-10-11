@@ -174,6 +174,7 @@ GuiPrivate::GuiPrivate(const GuiAppInstancePtr& app,
     , actionNextTab(0)
     , actionPrevTab(0)
     , actionCloseTab(0)
+    , actionColorTrackball(0)
     , actionHelpWebsite(0)
     , actionHelpForum(0)
     , actionHelpIssues(0)

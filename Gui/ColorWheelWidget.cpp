@@ -30,15 +30,21 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QAbstractSpinBox>
 #include <QApplication>
 #include <QBrush>
 #include <QCursor>
+#include <QHideEvent>
 #include <QKeyEvent>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPen>
+#include <QPlainTextEdit>
+#include <QPointer>
+#include <QTextEdit>
 #include <QWheelEvent>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
@@ -49,8 +55,7 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 namespace {
-const double kRec709Weights[3] = { 0.2126729, 0.7151522, 0.0721750 };
-const double kGrey = 0.18;
+const double kGrey = kColorPivotGrey;
 const double kPi = 3.14159265358979323846;
 const int kHueTableSize = 360;
 
@@ -64,18 +69,6 @@ const double kPuckRadius = 5.0;
 const double kParkedPuckRadius = 6.0;
 const double kRingHitTolerance = 4.0;
 const double kWheelNotch = 120.0;
-
-KnobColorValue
-neutralGain()
-{
-    KnobColorValue v;
-
-    v.rgb[0] = v.rgb[1] = v.rgb[2] = 1.0;
-    v.a = 1.0;
-    v.hasAlpha = true;
-
-    return v;
-}
 
 PlanePoint
 planePoint(double x,
@@ -153,6 +146,12 @@ pointerOverWheel()
     return false;
 }
 
+bool
+isTextInput(const QObject* o)
+{
+    return qobject_cast<const QLineEdit*>(o) || qobject_cast<const QTextEdit*>(o) || qobject_cast<const QPlainTextEdit*>(o) || qobject_cast<const QAbstractSpinBox*>(o);
+}
+
 /**
  * @brief Installed once on qApp, so V/T reach the lock regardless of which widget has focus or
  * whether the pointer ever entered the wheel: Qt delivers key events to the focused widget, not
@@ -164,7 +163,7 @@ public:
     LockKeyTracker()
         : QObject()
         , _held()
-        , _draggingWheels(0)
+        , _draggingWheels()
     {
     }
 
@@ -177,16 +176,14 @@ public:
         return _held.back() == Qt::Key_V ? eColorAxisValue : eColorAxisTempTint;
     }
 
-    void dragStarted()
+    void dragStarted(ColorWheelWidget* wheel)
     {
-        ++_draggingWheels;
+        _draggingWheels.push_back(wheel);
     }
 
-    void dragFinished()
+    void dragFinished(ColorWheelWidget* wheel)
     {
-        if (_draggingWheels > 0) {
-            --_draggingWheels;
-        }
+        _draggingWheels.erase(std::remove(_draggingWheels.begin(), _draggingWheels.end(), wheel), _draggingWheels.end());
     }
 
 protected:
@@ -215,7 +212,7 @@ protected:
             return QObject::eventFilter(watched, e);
         }
 
-        bool consume = consumes(ke);
+        bool consume = consumes(watched, ke);
 
         if (shortcutOverride) {
             if (consume) {
@@ -237,24 +234,43 @@ protected:
     }
 
 private:
-    // Ctrl is only claimed mid-drag, where it is the gear: over an idle wheel (dragging or not)
-    // Ctrl+V and Ctrl+T must still reach their application shortcuts.
-    bool consumes(const QKeyEvent* e) const
+    // A wheel that went away or was hidden mid-drag never sees its release, so only a live,
+    // visible wheel that still reports a drag counts.
+    bool anyWheelDragging() const
     {
+        for (const QPointer<ColorWheelWidget>& w : _draggingWheels) {
+            if (w && w->isVisible() && w->isDragging()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Ctrl is only claimed mid-drag, where it is the gear: over an idle wheel (dragging or not)
+    // Ctrl+V and Ctrl+T must still reach their application shortcuts. Idle, a text field that
+    // has the key keeps it, so hovering a wheel never eats letters typed elsewhere.
+    bool consumes(const QObject* receiver,
+                  const QKeyEvent* e) const
+    {
+        const bool dragging = anyWheelDragging();
         Qt::KeyboardModifiers allowed = Qt::ShiftModifier | Qt::KeypadModifier;
 
-        if (_draggingWheels > 0) {
+        if (dragging) {
             allowed |= Qt::ControlModifier;
         }
         if (e->modifiers() & ~allowed) {
             return false;
         }
+        if (dragging) {
+            return true;
+        }
 
-        return (_draggingWheels > 0) || pointerOverWheel();
+        return !isTextInput(receiver) && pointerOverWheel();
     }
 
     std::vector<int> _held;
-    int _draggingWheels;
+    std::vector<QPointer<ColorWheelWidget>> _draggingWheels;
 };
 
 LockKeyTracker*
@@ -288,9 +304,9 @@ ColorWheelWidget::RingCacheKey::operator==(const RingCacheKey& other) const
 
 ColorWheelWidget::ColorWheelWidget(QWidget* parent)
     : QWidget(parent)
-    , _basis(kRec709Weights)
+    , _basis(kRec709LumaWeights)
     , _role(eColorKnobRoleGain)
-    , _value(neutralGain())
+    , _value(neutralGainValue())
     , _anchor()
     , _rim(TrackballRates().wheelRim)
     , _converter()
@@ -310,6 +326,11 @@ ColorWheelWidget::ColorWheelWidget(QWidget* parent)
 
 ColorWheelWidget::~ColorWheelWidget()
 {
+    // No gestureFinished from here: the owner may already be half destroyed, and it ends its
+    // own edit session when it goes.
+    if (isDragging()) {
+        lockKeyTracker()->dragFinished(this);
+    }
 }
 
 void
@@ -592,7 +613,7 @@ ColorWheelWidget::discColour(const PlanePoint& q,
                              double rgb[3]) const
 {
     if (isRatioRole(_role)) {
-        ChromaEditResult r = fromPlane(eColorKnobRoleGain, _basis, neutralGain(), q, kGrey);
+        ChromaEditResult r = fromPlane(eColorKnobRoleGain, _basis, neutralGainValue(), q, kGrey);
 
         for (int i = 0; i < 3; ++i) {
             rgb[i] = r.value.rgb[i];
@@ -624,7 +645,7 @@ ColorWheelWidget::buildHueTable(std::vector<float>& table) const
         double rgb[3];
 
         auto inGamut = [&](double s, double out[3]) {
-            ChromaEditResult r = fromPlane(eColorKnobRoleGain, _basis, neutralGain(), planePoint(s * cx, s * cy), kGrey);
+            ChromaEditResult r = fromPlane(eColorKnobRoleGain, _basis, neutralGainValue(), planePoint(s * cx, s * cy), kGrey);
 
             for (int i = 0; i < 3; ++i) {
                 out[i] = r.value.rgb[i];
@@ -1101,7 +1122,7 @@ ColorWheelWidget::finishGesture()
     _dragZone = eHitZoneNone;
     _gestureMoved = false;
     _gestureOffset = planePoint(0.0, 0.0);
-    lockKeyTracker()->dragFinished();
+    lockKeyTracker()->dragFinished(this);
     Q_EMIT gestureFinished(moved);
     clearDragOffset();
 }
@@ -1139,13 +1160,13 @@ ColorWheelWidget::mousePressEvent(QMouseEvent* e)
     }
 
     e->accept();
-    // Kept for Esc mid-drag; V/T no longer depend on this widget holding focus.
+    // Only Esc mid-drag needs focus here; V/T come through the app-wide LockKeyTracker.
     setFocus(Qt::MouseFocusReason);
     _dragZone = zone;
     _lastDragPos = pos;
     _gestureMoved = false;
     _gestureOffset = planePoint(0.0, 0.0);
-    lockKeyTracker()->dragStarted();
+    lockKeyTracker()->dragStarted(this);
     Q_EMIT gestureStarted();
 
     if (zone == eHitZoneRing) {
@@ -1205,20 +1226,23 @@ void
 ColorWheelWidget::wheelEvent(QWheelEvent* e)
 {
     double notches = e->angleDelta().y() / kWheelNotch;
+    // A bare scroll passing over the wheel belongs to the properties bin it sits in.
+    bool zoom = hasFocus() || isDragging() || e->modifiers().testFlag(Qt::ControlModifier);
 
-    if (notches == 0.0) {
-        QWidget::wheelEvent(e);
+    if ((notches == 0.0) || !zoom) {
+        e->ignore();
 
         return;
     }
     e->accept();
-
-    double before = _rim;
-
     setRim(_rim * std::pow(TrackballRates().zoomFactorPerNotch, notches));
-    if (_rim != before) {
-        Q_EMIT rimZoomed(_rim);
-    }
+}
+
+void
+ColorWheelWidget::hideEvent(QHideEvent* e)
+{
+    finishGesture();
+    QWidget::hideEvent(e);
 }
 
 void

@@ -952,7 +952,7 @@ KnobGuiValue::expandAllDimensions()
     _imp->dimensionSwitchButton->setChecked(true);
     _imp->dimensionSwitchButton->setDown(true);
     if (_imp->dimensionLines) {
-        _imp->slider->show();
+        _imp->slider->setVisible(shouldSliderBeVisible(_imp->slider->minimum(), _imp->slider->maximum()));
     } else {
         _imp->slider->hide();
     }
@@ -1286,28 +1286,47 @@ KnobGuiValue::sliderEditingEnd(double d)
     }
     std::vector<double> newValuesVec;
     if (_imp->dimensionSwitchButton) {
+        // The folded slider stands for every dimension, but one driven by an expression or a
+        // link keeps its driver's value. Driven trailing dimensions are left out of the undo
+        // command altogether, so it never writes them; one between two free ones is rewritten
+        // with the value it already shows.
+        KnobIPtr knob = _imp->getKnob();
+        std::vector<bool> driven(_imp->spinBoxes.size(), false);
+        int written = 1;
+
         for (std::size_t i = 0; i < _imp->spinBoxes.size(); ++i) {
-            _imp->spinBoxes[i].first->setValue(d);
+            driven[i] = knob && (!knob->getExpression((int)i).empty() || knob->isSlave((int)i));
+            if (!driven[i]) {
+                _imp->spinBoxes[i].first->setValue(d);
+                written = (int)i + 1;
+            }
         }
         d = valueAccordingToType(true, 0, d);
 
         if (doubleKnob) {
             std::list<double> oldValues, newValues;
-            for (int i = 0; i < (int)_imp->spinBoxes.size(); ++i) {
-                oldValues.push_back( doubleKnob->getValue(i) );
-                newValues.push_back(d);
-                newValuesVec.push_back(d);
+            for (int i = 0; i < written; ++i) {
+                const double old = doubleKnob->getValue(i);
+
+                oldValues.push_back(old);
+                newValues.push_back(driven[i] ? old : d);
+                newValuesVec.push_back(driven[i] ? old : d);
             }
             pushUndoCommand( new KnobUndoCommand<double>(shared_from_this(), oldValues, newValues, false) );
         } else {
             assert(intKnob);
             std::list<int> oldValues, newValues;
-            for (int i = 0; i < (int)_imp->spinBoxes.size(); ++i) {
-                oldValues.push_back( intKnob->getValue(i) );
-                newValues.push_back( (int)d );
-                newValuesVec.push_back(d);
+            for (int i = 0; i < written; ++i) {
+                const int old = intKnob->getValue(i);
+
+                oldValues.push_back(old);
+                newValues.push_back(driven[i] ? old : (int)d);
+                newValuesVec.push_back(driven[i] ? old : d);
             }
             pushUndoCommand( new KnobUndoCommand<int>(shared_from_this(), oldValues, newValues, false) );
+        }
+        for (int i = written; i < (int)_imp->spinBoxes.size(); ++i) {
+            newValuesVec.push_back(doubleKnob ? doubleKnob->getValue(i) : (double)intKnob->getValue(i));
         }
     } else {
         _imp->spinBoxes[0].first->setValue(d);

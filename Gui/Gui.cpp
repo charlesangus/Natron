@@ -629,23 +629,38 @@ Gui::createMenuActions()
     _imp->actionCloseTab = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionCloseTab, kShortcutDescActionCloseTab, this);
     QObject::connect( _imp->actionCloseTab, SIGNAL(triggered()), this, SLOT(onCloseTabTriggered()) );
 
-    // Qt::ApplicationShortcut (not a window one) so Ctrl+E also reaches a floating properties
-    // panel, and the action is added directly to the main window rather than to a menu: the
-    // mode has no natural menu home, and the per-row target button already shows it in the UI.
+    // A window shortcut on this Gui's own windows (the main window here, each floating window
+    // as registerFloatingWindow() adds it), not an application one: every open project has its
+    // own Gui and action, and two application shortcuts on one key are ambiguous, so neither
+    // would fire. The action has no menu home; the per-row target button shows it in the UI.
     _imp->actionColorTrackball = new ActionWithShortcut(kShortcutGroupGlobal, kShortcutIDActionColorTrackball, kShortcutDescActionColorTrackball, this);
-    _imp->actionColorTrackball->setShortcutContext(Qt::ApplicationShortcut);
+    _imp->actionColorTrackball->setShortcutContext(Qt::WindowShortcut);
     QObject::connect(_imp->actionColorTrackball, SIGNAL(triggered()), this, SLOT(onColorTrackballActionTriggered()));
     addAction(_imp->actionColorTrackball);
-    // Lets the shortcut that engages the mode also exit it while the mode's own app-wide
-    // filter is installed, whatever the user has rebound it to; QAction::changed() keeps this
-    // current across a later rebind from the shortcut editor.
+    // Every binding the user gave the action both engages the mode and, let through the mode's
+    // own app-wide filter, exits it. QAction::changed() keeps this current across a rebind.
     {
         ActionWithShortcut* action = _imp->actionColorTrackball;
         ColorTrackballGlobalMode* mode = ColorTrackballGlobalMode::instanceFor(this);
-        QObject::connect(action, &QAction::changed, [action, mode]() {
-            mode->setPassThroughShortcuts(QList<QKeySequence>() << action->shortcut());
-        });
-        mode->setPassThroughShortcuts(QList<QKeySequence>() << action->shortcut());
+        auto syncBindings = [action, mode]() {
+            QList<QKeySequence> bindings;
+            const std::list<QKeySequence> bound = appPTR->getKeySequenceForAction(QString::fromUtf8(kShortcutGroupGlobal), QString::fromUtf8(kShortcutIDActionColorTrackball));
+
+            for (std::list<QKeySequence>::const_iterator it = bound.begin(); it != bound.end(); ++it) {
+                if (!it->isEmpty()) {
+                    bindings << *it;
+                }
+            }
+            if (bindings.isEmpty()) {
+                bindings = action->shortcuts();
+            }
+            if (action->shortcuts() != bindings) {
+                action->setShortcuts(bindings);
+            }
+            mode->setPassThroughShortcuts(bindings);
+        };
+        QObject::connect(action, &QAction::changed, action, syncBindings);
+        syncBindings();
     }
 
     _imp->menubar->addAction( _imp->menuFile->menuAction() );

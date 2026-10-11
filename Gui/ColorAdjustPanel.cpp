@@ -50,8 +50,7 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 namespace {
-const double kRec709Weights[3] = { 0.2126729, 0.7151522, 0.0721750 };
-const double kGrey = 0.18;
+const double kGrey = kColorPivotGrey;
 const int kLineCount = 5;
 
 // Below this distance from white a value has no usable hue of its own, so the remembered hue
@@ -70,18 +69,6 @@ const ColorSliderKindEnum kLineKinds[kLineCount] = {
     eColorSliderKindTint
 };
 
-KnobColorValue
-neutralGain()
-{
-    KnobColorValue v;
-
-    v.rgb[0] = v.rgb[1] = v.rgb[2] = 1.0;
-    v.a = 1.0;
-    v.hasAlpha = true;
-
-    return v;
-}
-
 QString
 lineTitle(ColorSliderKindEnum kind)
 {
@@ -96,8 +83,6 @@ lineTitle(ColorSliderKindEnum kind)
         return QObject::tr("Temp");
     case eColorSliderKindTint:
         return QObject::tr("Tint");
-    case eColorSliderKindAlpha:
-        return QObject::tr("Alpha");
     }
 
     return QString();
@@ -119,8 +104,6 @@ lineUndoName(ColorSliderKindEnum kind)
         return QObject::tr("temperature");
     case eColorSliderKindTint:
         return QObject::tr("tint");
-    case eColorSliderKindAlpha:
-        return QObject::tr("alpha");
     }
 
     return QString();
@@ -144,11 +127,22 @@ lineDecimals(ColorSliderKindEnum kind,
     case eColorSliderKindTemp:
     case eColorSliderKindTint:
         return ratio ? 2 : 4;
-    case eColorSliderKindAlpha:
-        return 3;
     }
 
     return 3;
+}
+
+// One arrow-key or scroll step of a line's spinbox: a degree of hue, and a hundredth of the
+// track for the rest, which keeps every line's step a small fraction of its own range.
+double
+lineIncrement(ColorSliderKindEnum kind,
+              const SliderRange& range)
+{
+    if (kind == eColorSliderKindHue) {
+        return 1.0;
+    }
+
+    return (range.rangeMax - range.rangeMin) / 100.0;
 }
 
 double
@@ -273,10 +267,10 @@ struct ColorAdjustPanelPrivate {
 
     explicit ColorAdjustPanelPrivate(ColorAdjustPanel* publicInterface)
         : q(publicInterface)
-        , value(neutralGain())
+        , value(neutralGainValue())
         , nDims(4)
         , role(eColorKnobRoleGain)
-        , basis(kRec709Weights)
+        , basis(kRec709LumaWeights)
         , converter()
         , rates()
         , rememberedHue(0.0)
@@ -286,7 +280,7 @@ struct ColorAdjustPanelPrivate {
         , source(eSourceNone)
         , activeSlider(-1)
         , started(false)
-        , segmentBase(neutralGain())
+        , segmentBase(neutralGainValue())
         , segmentBaseHue(0.0)
         , total(makeEdit(eColorAxisTrackball, 0.0, 0.0, false))
         , hasTotal(false)
@@ -345,8 +339,7 @@ ColorAdjustPanelPrivate::buildEditArea()
     linesLayout->setVerticalSpacing((int)TO_DPIY(1.));
     linesLayout->setColumnStretch(2, 1);
 
-    // Sized from the widest caption rather than a flat guess, so none of them clip at the
-    // app's actual font and DPI.
+    // Sized from the widest caption, so none of them clip at the app's actual font and DPI.
     QFontMetrics captionMetrics(QApplication::font());
     int captionWidth = 0;
 
@@ -457,7 +450,7 @@ ColorAdjustPanelPrivate::lineValue(ColorSliderKindEnum kind) const
             out = Y;
         } else {
             // A non-positive Y has no stop count, so it reads as the bottom of the range.
-            out = Y > 0.0 ? std::log2(Y) : sliderMapping(kind, role, rates).rangeMin;
+            out = Y > 0.0 ? std::log2(Y / valueStopPivot(role)) : sliderMapping(kind, role, rates).rangeMin;
         }
         break;
     }
@@ -473,9 +466,6 @@ ColorAdjustPanelPrivate::lineValue(ColorSliderKindEnum kind) const
         out = tt.valid ? tt.tint : 0.0;
         break;
     }
-    case eColorSliderKindAlpha:
-        out = value.hasAlpha ? value.a : 0.0;
-        break;
     }
 
     return std::isfinite(out) ? out : 0.0;
@@ -527,8 +517,6 @@ ColorAdjustPanelPrivate::lineGradient(ColorSliderKindEnum kind) const
             r = applyEdit(role, basis, value, makeEdit(eColorAxisTempTint, 0.0, d, false), rememberedHue);
             break;
         }
-        case eColorSliderKindAlpha:
-            break;
         }
         previewRgb(role, r.valid ? r.value : value, &rgb[3 * k]);
     }
@@ -557,8 +545,6 @@ ColorAdjustPanelPrivate::lineEdit(ColorSliderKindEnum kind,
         return makeEdit(eColorAxisSat, target, 0.0, true);
     case eColorSliderKindValue:
         return makeEdit(eColorAxisValue, target, 0.0, true);
-    case eColorSliderKindAlpha:
-        return makeEdit(eColorAxisAlpha, target, 0.0, true);
     case eColorSliderKindTemp:
     case eColorSliderKindTint: {
         bool isTemp = kind == eColorSliderKindTemp;
@@ -598,6 +584,7 @@ ColorAdjustPanelPrivate::applyRanges()
 
         sliders[i]->setMinimumAndMaximum(range.rangeMin, range.rangeMax);
         spinBoxes[i]->decimals(lineDecimals(kind, role));
+        spinBoxes[i]->setIncrement(lineIncrement(kind, range));
 
         // Wide enough for the longest value the line's range shows at its decimals: the grid
         // would otherwise squeeze the field in a narrow properties pane until it is clipped.
@@ -633,9 +620,27 @@ ColorAdjustPanelPrivate::applyDimensions()
 void
 ColorAdjustPanelPrivate::refreshWheel()
 {
-    if (source != eSourceWheel) {
-        wheel->setValue(value);
+    if (source == eSourceWheel) {
+        return;
     }
+    // Re-anchoring re-renders the whole disc, so a slider drag only moves the puck off the
+    // anchor it started on; endGesture re-anchors once the drag is over.
+    if (source == eSourceSlider) {
+        PlanePoint now = toPlane(role, basis, value);
+
+        if (now.valid) {
+            PlanePoint anchor = wheel->getAnchor();
+            PlanePoint dq;
+
+            dq.x = now.x - (anchor.valid ? anchor.x : 0.0);
+            dq.y = now.y - (anchor.valid ? anchor.y : 0.0);
+            dq.valid = true;
+            wheel->setDragOffset(dq);
+        }
+
+        return;
+    }
+    wheel->setValue(value);
 }
 
 void
@@ -810,6 +815,10 @@ ColorAdjustPanel::ColorAdjustPanel(QWidget* parent)
 
 ColorAdjustPanel::~ColorAdjustPanel()
 {
+    // The wheel outlives _imp by a few steps of QWidget teardown, and must not call back in.
+    if (_imp->wheel) {
+        QObject::disconnect(_imp->wheel, nullptr, this, nullptr);
+    }
 }
 
 void
@@ -840,13 +849,6 @@ ColorAdjustPanel::setKnobValue(const KnobColorValue& value)
     _imp->value = value;
     _imp->updateRememberedHue();
     _imp->refreshAll(true);
-}
-
-void
-ColorAdjustPanel::setDimensions(int nDims)
-{
-    _imp->nDims = nDims;
-    _imp->applyDimensions();
 }
 
 void
@@ -1033,7 +1035,6 @@ ColorAdjustPanel::onSliderResetRequested()
 
     switch (kind) {
     case eColorSliderKindHue:
-    case eColorSliderKindAlpha:
         return;
     case eColorSliderKindSat:
         break;
@@ -1043,7 +1044,7 @@ ColorAdjustPanel::onSliderResetRequested()
         if (!target) {
             return;
         }
-        edit = makeEdit(eColorAxisValue, isRatioRole(role) ? std::log2(*target) : *target, 0.0, true);
+        edit = makeEdit(eColorAxisValue, isRatioRole(role) ? std::log2(*target / valueStopPivot(role)) : *target, 0.0, true);
         break;
     }
     case eColorSliderKindTemp:

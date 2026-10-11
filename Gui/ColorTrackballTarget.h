@@ -56,8 +56,8 @@ struct ColorKnobInfo {
 };
 
 /**
- * @brief The dynamic property name KnobGuiColor sets, with itself as the value, on its own
- * per-knob container and adjustment panel widgets. ColorKnobTouchTracker's app-wide filter
+ * @brief The dynamic property name KnobGuiColor sets, with a QPointer to itself as the value,
+ * on its own per-knob container and adjustment panel widgets. ColorKnobTouchTracker's app-wide filter
  * walks a touched widget's parent chain looking for this property to find which colour knob,
  * if any, the touch belongs to.
  **/
@@ -65,8 +65,8 @@ const char* colorKnobTouchTagPropertyName();
 
 /**
  * @brief The fallback chain from the Design notes: the last-touched knob if it is still a
- * legal target, else the node's canonical gain knob by plugin ID and script name, else the
- * first legal colour knob, else none (-1). Pure and Qt-free so it can be exercised without a
+ * legal target, else the node's canonical gain knob by plugin ID and script name if it is
+ * legal, else the first legal colour knob, else none (-1). Legal means visible and enabled. Pure and Qt-free so it can be exercised without a
  * Gui, a node or any widget.
  **/
 int pickTargetIndex(const std::string& pluginID,

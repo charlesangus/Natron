@@ -277,8 +277,6 @@ TEST(ColorAdjustPanel, HasNoTabsAndOneLinePerAxis)
         EXPECT_TRUE(panel.getSlider(kind)->isVisibleTo(&panel));
         EXPECT_TRUE(panel.getSpinBox(kind)->isVisibleTo(&panel));
     }
-    EXPECT_FALSE(panel.getSlider(eColorSliderKindAlpha));
-    EXPECT_FALSE(panel.getSpinBox(eColorSliderKindAlpha));
 }
 
 TEST(ColorAdjustPanel, OneDimensionalKnobShowsOnlyValue)
@@ -420,6 +418,56 @@ TEST(ColorAdjustPanel, TypedTwoStopsOnAGainMultipliesLumaByFour)
     EXPECT_LT(relativeError(luma(basis, rec.endValue.rgb), 4.0), 1e-9);
     EXPECT_NEAR(4.0, rec.endValue.a, 1e-9);
     EXPECT_NEAR(2.0, panel.getSpinBox(eColorSliderKindValue)->value(), 1e-9);
+}
+
+TEST(ColorAdjustPanel, PowerValueLineCountsStopsFromMidGrey)
+{
+    ColorAdjustPanel panel;
+
+    setUpPanel(panel, makeValue(1.0, 1.0, 1.0, 1.0), 4, eColorKnobRolePower);
+
+    EXPECT_NEAR(0.0, panel.getSpinBox(eColorSliderKindValue)->value(), 1e-9) << "gamma 1 is 0 stops";
+    EXPECT_NEAR(0.0, panel.getSlider(eColorSliderKindValue)->getPosition(), 1e-9);
+
+    PanelRecorder rec(panel);
+
+    typeInto(panel.getSpinBox(eColorSliderKindValue), "1");
+
+    ASSERT_EQ(1, rec.ends);
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_NEAR(effectToGamma(0.36).gamma, rec.endValue.rgb[i], 1e-9);
+    }
+    EXPECT_NEAR(1.0, panel.getSpinBox(eColorSliderKindValue)->value(), 1e-9);
+}
+
+TEST(ColorAdjustPanel, SliderDragMovesThePuckWithoutReanchoringTheWheel)
+{
+    ColorAdjustPanel panel;
+    KnobColorValue start = makeValue(1.5, 1.0, 1.0, 1.0);
+
+    setUpPanel(panel, start);
+
+    PanelRecorder rec(panel);
+    ColorWheelWidget* wheel = panel.getWheel();
+    ScaleSliderQWidget* hue = panel.getSlider(eColorSliderKindHue);
+    double y = hue->height() / 2.;
+
+    sendMouse(hue, QEvent::MouseButtonPress, QPointF(20., y), Qt::LeftButton, Qt::LeftButton);
+    sendMouse(hue, QEvent::MouseMove, QPointF(80., y), Qt::NoButton, Qt::LeftButton);
+
+    ASSERT_GE(rec.moves, 1);
+    EXPECT_TRUE(wheel->hasDragOffset());
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(start.rgb[i], wheel->getValue().rgb[i]) << "the wheel keeps its anchor mid-drag";
+    }
+
+    sendMouse(hue, QEvent::MouseButtonRelease, QPointF(80., y), Qt::LeftButton, Qt::NoButton);
+
+    ASSERT_EQ(1, rec.ends);
+    EXPECT_FALSE(wheel->hasDragOffset());
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_EQ(rec.endValue.rgb[i], wheel->getValue().rgb[i]);
+    }
 }
 
 TEST(ColorAdjustPanel, ReturnOnAnUnchangedFieldEditsNothing)

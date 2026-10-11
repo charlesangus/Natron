@@ -45,6 +45,11 @@ class QPaintEvent;
 NATRON_NAMESPACE_ENTER
 
 /**
+ * @brief The key that selects mode: "C", "S", "T" or "V".
+ **/
+QString colorGlobalModeKeyName(ColorGlobalModeEnum mode);
+
+/**
  * @brief Everything one moment of the global trackball mode HUD needs to show, gathered by the
  * controller so the widget itself needs no reference to the knob, the node, or the basis the
  * readouts were computed from.
@@ -55,6 +60,8 @@ struct ColorTrackballHudState {
     int knobIndex = 0;
     int knobCount = 0;
     ColorGlobalModeEnum mode = eColorGlobalModeC;
+    /// Offset's temp and tint are plane-axis offsets, not mired and Duv, and read in their units.
+    ColorKnobRoleEnum role = eColorKnobRoleGain;
     KnobColorValue value {};
     double luma = 0.0;
     double gear = 1.0;
@@ -70,8 +77,9 @@ struct ColorTrackballHudState {
 };
 
 /**
- * @brief The global trackball mode's own readout, docked inside the properties bin rather than
- * a popup so it stays visible wherever the bin is scrolled: the node and knob (n/N), the mode
+ * @brief The global trackball mode's own readout, inserted into the target knob's own column
+ * in the properties bin, under its channel lines, so it scrolls with the knob: the node and
+ * knob (n/N), the mode
  * and what its x and y axes do, the live values (hue/saturation, temp/tint or just the value,
  * depending on the mode), Y, A, the gear, the key legend (C, S, T, V, Esc/Enter, Ctrl+up/down)
  * with the active mode key lit, and an end-of-list message once a knob switch hits either end
@@ -94,7 +102,6 @@ public:
     void setState(const ColorTrackballHudState& state);
 
 private:
-    static QString modeKeyName(ColorGlobalModeEnum mode);
     static QString modeAxesDescription(ColorGlobalModeEnum mode);
     static void setLegendLit(QLabel* label, bool lit);
 

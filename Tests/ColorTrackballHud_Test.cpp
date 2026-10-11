@@ -141,6 +141,37 @@ TEST(ColorTrackballHud, LightsOnlyTheActiveModeKey)
     EXPECT_TRUE(isLegendLit(hud, "ColorTrackballHudLegendV"));
 }
 
+TEST(ColorTrackballHud, OffsetTempTintReadsInAxisUnitsNotMired)
+{
+    ColorTrackballHud hud;
+    ColorTrackballHudState state = stateForC();
+
+    state.mode = eColorGlobalModeT;
+    state.role = eColorKnobRoleOffset;
+    state.temp = 0.0123;
+    state.tint = -0.0045;
+    hud.setState(state);
+
+    const QString values = labelByName(hud, "ColorTrackballHudValues")->text();
+
+    EXPECT_FALSE(values.contains(QString::fromUtf8("mired")));
+    EXPECT_TRUE(values.contains(QString::fromUtf8("0.0123")));
+    EXPECT_TRUE(values.contains(QString::fromUtf8("-0.0045")));
+
+    state.role = eColorKnobRoleGain;
+    state.temp = 12.3;
+    hud.setState(state);
+    EXPECT_TRUE(labelByName(hud, "ColorTrackballHudValues")->text().contains(QString::fromUtf8("mired")));
+}
+
+TEST(ColorTrackballHud, ModeKeyNames)
+{
+    EXPECT_EQ(QString::fromUtf8("C"), colorGlobalModeKeyName(eColorGlobalModeC));
+    EXPECT_EQ(QString::fromUtf8("S"), colorGlobalModeKeyName(eColorGlobalModeS));
+    EXPECT_EQ(QString::fromUtf8("T"), colorGlobalModeKeyName(eColorGlobalModeT));
+    EXPECT_EQ(QString::fromUtf8("V"), colorGlobalModeKeyName(eColorGlobalModeV));
+}
+
 TEST(ColorTrackballHud, LightsOnlySForModeS)
 {
     ColorTrackballHud hud;

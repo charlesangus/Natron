@@ -309,3 +309,55 @@ TEST(ColorKnobUndoMerge, ZeroKeyNeverMergesWithANonZeroKey)
 
     EXPECT_EQ(2, container.undoStack.count());
 }
+
+TEST(ColorKnobUndoMerge, AGestureThatLeavesAlphaAloneNeverWritesIt)
+{
+    KnobColorPtr knob = makeWhiteKnob();
+    ASSERT_TRUE(bool(knob));
+
+    FakeKnobGuiContainer container;
+    KnobGuiPtr knobGui = std::make_shared<KnobGuiColor>(knob, &container);
+    ColorKnobEditSession session(knobGui);
+
+    session.begin(QString::fromUtf8("Hue"));
+    session.move(makeValue(0.3, 0.5, 0.7, kBaseline[3]), QString::fromUtf8("Hue"));
+    session.end(makeValue(0.3, 0.5, 0.7, kBaseline[3]), QString::fromUtf8("Hue"));
+    ASSERT_EQ(1, container.undoStack.count());
+
+    // Set outside the undo stack, so an undo that wrote alpha would put the baseline back.
+    knob->setValue(0.9, ViewSpec::all(), 3, true);
+    container.undoStack.undo();
+
+    EXPECT_DOUBLE_EQ(kBaseline[0], knob->getValue(0));
+    EXPECT_DOUBLE_EQ(kBaseline[2], knob->getValue(2));
+    EXPECT_DOUBLE_EQ(0.9, knob->getValue(3));
+}
+
+TEST(ColorKnobUndoMerge, AlphaJoiningMidGestureStaysOneUndoStep)
+{
+    KnobColorPtr knob = makeWhiteKnob();
+    ASSERT_TRUE(bool(knob));
+
+    FakeKnobGuiContainer container;
+    KnobGuiPtr knobGui = std::make_shared<KnobGuiColor>(knob, &container);
+    ColorKnobEditSession session(knobGui);
+
+    session.begin(QString::fromUtf8("Value"));
+    session.move(makeValue(0.3, 0.5, 0.75, kBaseline[3]), QString::fromUtf8("Value"));
+    session.move(makeValue(0.5, 1.0, 1.5, 2.0), QString::fromUtf8("Value"));
+    session.end(makeValue(0.5, 1.0, 1.5, 2.0), QString::fromUtf8("Value"));
+
+    ASSERT_EQ(1, container.undoStack.count());
+    EXPECT_DOUBLE_EQ(2.0, knob->getValue(3));
+
+    container.undoStack.undo();
+
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_DOUBLE_EQ(kBaseline[i], knob->getValue(i)) << "dimension " << i;
+    }
+
+    container.undoStack.redo();
+
+    EXPECT_DOUBLE_EQ(0.5, knob->getValue(0));
+    EXPECT_DOUBLE_EQ(2.0, knob->getValue(3));
+}

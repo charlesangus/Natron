@@ -92,8 +92,18 @@ enum ChromaticityKindEnum {
 constexpr ChromaticityKindEnum kChromaticityKind = eChromaticityKindXY;
 
 /**
- * @brief The luma-chroma split (design doc Sec. 3.3), built once per working space and shared
- * by every colour knob. w is the working space's luma weights, renormalised so they sum to 1.
+ * @brief The mid-grey level Power's effect vector, Offset's plane pivot and the wheel's disc are
+ * all measured at.
+ **/
+constexpr double kColorPivotGrey = 0.18;
+
+/**
+ * @brief Rec.709 luma weights, for a basis built before any working space is known.
+ **/
+inline constexpr double kRec709LumaWeights[3] = { 0.2126729, 0.7151522, 0.0721750 };
+
+/**
+ * @brief The luma-chroma split, built once per working space and shared by every colour knob. w is the working space's luma weights, renormalised so they sum to 1.
  * F is fixed (pure R, G, B sit at hue 0/120/240 degrees whatever the working space); E depends
  * on w and is the only place the working space enters split/join. By construction F*E is the
  * 2x2 identity and w.E is the zero row, so join(split(basis, c)) == c and any edit that only
@@ -111,6 +121,10 @@ constexpr ChromaticityKindEnum kChromaticityKind = eChromaticityKindXY;
  * where the projective one is undefined. Without a matrix there is no chromaticity at all, so
  * chromaNum, chromaDen and white are zeroed and J is a fixed multiple of F instead: the plane
  * is then linear everywhere, still about white and still Y-exact, just not xy-shaped.
+ *
+ * The working white's place on the Planckian locus and the linear temp/tint axes through it
+ * each take a Newton solve, and every temp/tint edit needs them, so they are solved once here:
+ * hasLocusWhite and hasTempTintAxes are false on a matrix-less basis or when the solve fails.
  **/
 struct LumaBasis {
     double w[3];
@@ -123,6 +137,12 @@ struct LumaBasis {
     double white[2];
     double J[2][3];
     double JEinv[2][2];
+    bool hasLocusWhite;
+    double whiteMired;
+    double whiteDuv;
+    bool hasTempTintAxes;
+    double tempAxis[2];
+    double tintAxis[2];
 
     explicit LumaBasis(const double weights[3]);
     LumaBasis(const double weights[3], const double workingToXYZ[9], ChromaticityKindEnum kind = kChromaticityKind);
@@ -137,6 +157,11 @@ struct KnobColorValue {
     double a;
     bool hasAlpha;
 };
+
+/**
+ * @brief (1, 1, 1) with alpha 1: a gain knob at rest, for a widget shown before it has a value.
+ **/
+KnobColorValue neutralGainValue(bool hasAlpha = true);
 
 /**
  * @brief The luma-chroma coordinates of an RGB triplet under a basis: Y = w.rgb, and (a, b) =
@@ -164,10 +189,11 @@ void join(const LumaBasis& basis, double Y, double a, double b, double rgb[3]);
  * any factor stays near zero, but adding to it does not, so addValue is what escapes a frozen
  * ratio role, and scaleValue on one is left close to a no-op, as multiplying by zero should be.
  *
- * Every one of the three applies the same alpha rule after the rgb edit: alpha scales by the
- * same Y1/Y0 factor as a ratio role's rgb when neither end is frozen, and otherwise shifts by
- * Y1-Y0, matching the rgb edit itself. hasAlpha false (a 3-dim knob) leaves alpha untouched.
- * Never clamped.
+ * Every one of the three applies the same alpha rule after the rgb edit, decided on the
+ * starting Y alone exactly as the rgb edit is: alpha scales by Y1/Y0 when the role is a ratio
+ * role and Y0 is not frozen, and otherwise shifts by Y1-Y0. A scale toward zero therefore never
+ * drives alpha negative. hasAlpha false (a 3-dim knob) leaves alpha untouched. Never clamped,
+ * except on Power, whose gamma is kept within [kPowerGammaMin, kPowerGammaMax].
  **/
 KnobColorValue scaleValue(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, double factor);
 KnobColorValue addValue(ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, double delta);
@@ -183,6 +209,21 @@ KnobColorValue setValue(ColorKnobRoleEnum role, const LumaBasis& basis, const Kn
  * result to setValue when it holds a value.
  **/
 std::optional<double> resetValue(ColorKnobRoleEnum role);
+
+/**
+ * @brief The luma a ratio role's Value axis counts its stops from, so that 0 stops is the
+ * role's neutral: 1 for Gain, Colour and Auto, and 0.18 for Power, whose neutral gamma 1 puts
+ * its effect vector's luma at 0.18. Offset has no stops and returns 0.
+ **/
+double valueStopPivot(ColorKnobRoleEnum role);
+
+/**
+ * @brief The gamma range every Power edit stays within. Near an effect of 1 the gamma
+ * ln(0.18) / ln(effect) runs off to infinity, so a value edit that brightens past the top of
+ * the range parks there instead of writing a huge gamma or being refused.
+ **/
+constexpr double kPowerGammaMin = 0.1;
+constexpr double kPowerGammaMax = 10.0;
 
 /**
  * @brief Power's gain model does not run on gamma directly: it runs on each channel's effect on
@@ -373,8 +414,7 @@ std::vector<PlanePoint> drawLocus(const LumaBasis& basis, const PlanePoint& anch
 double gear(bool ctrlHeld, bool shiftHeld);
 
 /**
- * @brief Every per-pixel and per-notch rate a wheel, slider or the global trackball mode
- * applies, gathered in one place so retuning any of them is a one-line change here rather than
+ * @brief Every per-pixel and per-notch rate the wheel or the global trackball mode applies, gathered in one place so retuning any of them is a one-line change here rather than
  * a hunt through widget code. Values are at gear 1 (no modifier held); gear() scales them.
  *
  * wheelRim is the trackball's starting radius in plane units. The rates that move chroma
@@ -383,11 +423,13 @@ double gear(bool ctrlHeld, bool shiftHeld);
  * and temperature controls' feel together for no reason other than sharing a formula.
  * globalTrackballPlanePerPixel is the one rate that is derived from wheelRim: global C mode is
  * a plain 2D translate with no hue or saturation axis of its own to tune separately, so it
- * reuses the removed swatch drag's own rate, wheelRim crossed in 64 px.
+ * crosses wheelRim in 64 px.
  *
- * Saturation has one rate for both the Sat slider's relative drag and global S mode's y-axis:
- * both are explicit saturation controls, unlike the wheel trackball (which moves hue and
- * saturation together and keeps its own, faster feel) or global S's x-axis (hue, its own rate).
+ * satPlanePerPixel is global S mode's y-axis, an explicit saturation control, unlike the wheel
+ * trackball (which moves hue and saturation together and keeps its own, faster feel) or
+ * global S's x-axis (hue, its own rate). The panel's sliders use none of these: each maps
+ * its own track width onto its range (sliderMapping).
+ *
  * Value, temp and tint each have a separate rate for ratio roles (Gain, Colour, Power, Auto)
  * and for Offset, because the two roles' axes live on different physical scales: a ratio
  * role's value axis is a count of stops (powers of two), while Offset's is a raw delta on a
@@ -410,8 +452,8 @@ struct TrackballRates {
 
 /**
  * @brief The Value, Temp and Tint per-pixel rates, picked by whether role is a ratio role or
- * Offset (see TrackballRates). Shared by the wheel's held-key locks, the sliders' relative
- * drags and the global trackball mode, so all three feel identical for the same role.
+ * Offset (see TrackballRates). Shared by the wheel's held-key locks and the global trackball
+ * mode, so both feel identical for the same role.
  **/
 double valueRatePerPixel(const TrackballRates& rates, ColorKnobRoleEnum role);
 double tempRatePerPixel(const TrackballRates& rates, ColorKnobRoleEnum role);
@@ -419,25 +461,24 @@ double tintRatePerPixel(const TrackballRates& rates, ColorKnobRoleEnum role);
 
 /**
  * @brief Which gesture a ColorEdit carries out. Trackball is the wheel's own 2D drag; Hue, Sat,
- * Value, TempTint and Alpha are the individual axes that the sliders, the wheel's held-key
- * locks and the global trackball mode all funnel through applyEdit.
+ * Value and TempTint are the individual axes that the sliders, the wheel's held-key locks and
+ * the global trackball mode all funnel through applyEdit.
  **/
 enum ColorAxisEnum {
     eColorAxisTrackball,
     eColorAxisHue,
     eColorAxisSat,
     eColorAxisValue,
-    eColorAxisTempTint,
-    eColorAxisAlpha
+    eColorAxisTempTint
 };
 
 /**
  * @brief One gesture step, already converted out of screen pixels and into the axis's own
- * units (degrees, plane distance, stops, Y, mired, tint or alpha) by whichever widget or mode
+ * units (degrees, plane distance, stops, Y, mired or tint) by whichever widget or mode
  * read the pointer delta and the gear. d2 is the y-component for Trackball and TempTint, and
  * unused otherwise. absolute means d1 (and d2, for TempTint) is the target value, as a slider
  * marker drag or a ring click gives; otherwise it is a delta to add to the current value, as
- * every other drag gives. Trackball has no absolute form (a 2D position is only ever reached
+ * every other drag gives. An absolute Value on a ratio role is in stops from valueStopPivot. Trackball has no absolute form (a 2D position is only ever reached
  * by accumulating drags, never typed or clicked directly), so absolute is ignored for it.
  **/
 struct ColorEdit {
@@ -460,9 +501,8 @@ ChromaEditResult applyEdit(ColorKnobRoleEnum role, const LumaBasis& basis, const
  * @brief Which property a click-drag in the global trackball mode adjusts. C is a relative 2D
  * translate in the chroma plane, exactly like the wheel's own trackball drag: dx and -dy at
  * globalTrackballPlanePerPixel move the plane point directly, so C reads no remembered hue. S
- * is the older, split control UAT round 1 asked C to give up: x = hue, y = saturation, each its
- * own one-dimensional edit, which does grow saturation back out along rememberedHueDegrees when
- * it starts from neutral. T is temp (x, right = warmer) and tint (y, up = magenta), and V is
+ * splits the same drag into two one-dimensional edits, x = hue and y = saturation, and does
+ * grow saturation back out along rememberedHueDegrees when it starts from neutral. T is temp (x, right = warmer) and tint (y, up = magenta), and V is
  * value from dx - dy, so either screen axis brightens or darkens depending on its sign.
  **/
 enum ColorGlobalModeEnum {
@@ -478,25 +518,23 @@ enum ColorGlobalModeEnum {
  * gear()'s result for whatever is held.
  *
  * C is a single translate() step, dx and -dy scaled by globalTrackballPlanePerPixel. S rotates
- * hue then moves saturation, in that order, so a drag starting exactly on white grows saturation
- * along the hue the same move just set, rather than along a stale remembered one. The remembered
- * hue itself advances once per stroke, outside this function (Gui/ColorTrackballGlobalMode.cpp's
- * ColorGlobalModeStroke), and only needs to for S: C's translate has no hue of its own to lose.
+ * hue then moves saturation, in that order. Rotating a neutral value is a no-op, so a caller
+ * that wants an S drag starting on white to grow saturation along the hue it has been dragged
+ * to passes that hue as rememberedHueDegrees.
  **/
 ChromaEditResult globalModeEdit(ColorGlobalModeEnum mode, ColorKnobRoleEnum role, const LumaBasis& basis, const KnobColorValue& v, double dx, double dy, double gearFactor, const TrackballRates& rates, double rememberedHueDegrees);
 
 /**
- * @brief Which of the panel's six Natron sliders this is: Hue, Sat, Value, Temp, Tint or Alpha.
- * This is a separate list from ColorAxisEnum because Temp and Tint are one combined gesture
- * axis (TempTint) but two separate sliders with two separate ranges.
+ * @brief Which of the panel's five sliders this is: Hue, Sat, Value, Temp or Tint. This is a
+ * separate list from ColorAxisEnum because Temp and Tint are one combined gesture axis
+ * (TempTint) but two separate sliders with two separate ranges.
  **/
 enum ColorSliderKindEnum {
     eColorSliderKindHue,
     eColorSliderKindSat,
     eColorSliderKindValue,
     eColorSliderKindTemp,
-    eColorSliderKindTint,
-    eColorSliderKindAlpha
+    eColorSliderKindTint
 };
 
 /**
@@ -505,7 +543,7 @@ enum ColorSliderKindEnum {
  * dragging the puck to the wheel's edge. Value, Temp and Tint differ by role for the same
  * reason their rates do (TrackballRates): a ratio role's axes are stops and physical
  * mired/tint, Offset's are raw deltas on a linear axis, so "axis" is their unit rather than a
- * physical one.
+ * physical one. A ratio role's Value range counts stops from valueStopPivot.
  **/
 struct SliderRange {
     double rangeMin = 0.0;
@@ -516,24 +554,9 @@ struct SliderRange {
 SliderRange sliderMapping(ColorSliderKindEnum kind, ColorKnobRoleEnum role, const TrackballRates& rates);
 
 /**
- * @brief Past either end of a slider's range, its marker is drawn as a chevron pointing off the
- * track instead of being clamped onto it, so a value that has run off one end still reads as
- * "more that way" rather than looking identical to one sitting exactly at the end.
+ * @brief The value at marker position t in [0, 1] along the slider's track, t clamped first.
  **/
-enum SliderChevronEnum {
-    eSliderChevronNone,
-    eSliderChevronLow,
-    eSliderChevronHigh
-};
-
-/**
- * @brief The marker position in [0, 1] along the track for a value in range, clamped at either
- * end, and its inverse. Round-tripping a value already inside the range through both is exact;
- * sliderChevron reports when the raw, unclamped value is the one that needs the chevron look.
- **/
-double valueToMarker(const SliderRange& range, double value);
 double markerToValue(const SliderRange& range, double marker);
-SliderChevronEnum sliderChevron(const SliderRange& range, double value);
 
 NATRON_NAMESPACE_EXIT
 

@@ -35,6 +35,7 @@
 #include "Engine/ColorWheelMath.h"
 
 #include "Gui/ColorTrackballGlobalMode.h"
+#include "Gui/ColorTrackballHud.h"
 
 NATRON_NAMESPACE_USING
 
@@ -361,9 +362,30 @@ TEST(ColorTrackballGlobalModeStroke, RememberedHueAdvancesOnAnSStrokeThatStaysNe
 
 TEST(ColorTrackballGlobalModeNames, ModeKeyNames)
 {
-    EXPECT_EQ(std::string("C"), ColorTrackballGlobalMode::modeKeyName(eColorGlobalModeC).toStdString());
-    EXPECT_EQ(std::string("S"), ColorTrackballGlobalMode::modeKeyName(eColorGlobalModeS).toStdString());
-    EXPECT_EQ(std::string("T"), ColorTrackballGlobalMode::modeKeyName(eColorGlobalModeT).toStdString());
-    EXPECT_EQ(std::string("V"), ColorTrackballGlobalMode::modeKeyName(eColorGlobalModeV).toStdString());
+    EXPECT_EQ(std::string("C"), colorGlobalModeKeyName(eColorGlobalModeC).toStdString());
+    EXPECT_EQ(std::string("S"), colorGlobalModeKeyName(eColorGlobalModeS).toStdString());
+    EXPECT_EQ(std::string("T"), colorGlobalModeKeyName(eColorGlobalModeT).toStdString());
+    EXPECT_EQ(std::string("V"), colorGlobalModeKeyName(eColorGlobalModeV).toStdString());
     EXPECT_TRUE(ColorTrackballGlobalMode::instanceFor(nullptr) == nullptr);
+}
+
+TEST(ColorTrackballGlobalModeStroke, LongPowerValueStrokeParksAtTheGammaCap)
+{
+    TrackballRates rates;
+    LumaBasis basis = acescg();
+    ColorGlobalModeStroke stroke;
+    double previous = 1.0;
+
+    stroke.begin(rgba(1, 1, 1, 1), 0.0);
+    for (int i = 0; i < 100; ++i) {
+        stroke.addMove(10.0, 0.0, 1.0);
+
+        ChromaEditResult r = stroke.evaluate(eColorGlobalModeV, eColorKnobRolePower, basis, rates);
+
+        ASSERT_TRUE(r.valid);
+        EXPECT_GE(r.value.rgb[0], previous - 1e-12) << "move " << i;
+        EXPECT_LE(r.value.rgb[0], kPowerGammaMax + 1e-12) << "move " << i;
+        previous = r.value.rgb[0];
+    }
+    EXPECT_NEAR(kPowerGammaMax, previous, 1e-9);
 }

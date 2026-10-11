@@ -59,10 +59,16 @@ const double kAP1ToXYZ[9] = {
     -0.0055746495, 0.0040607335, 1.0103391003
 };
 
-// ColorEditSlider lays out a 56px field, a 6px gap and 4px of padding either side, so its
-// track starts at x = 4 and is 70px narrower than the slider.
+// ColorEditSlider lays out its field, a 6px gap and 4px of padding either side, so its track
+// always starts at x = 4; the field's own width is font-dependent, so the track width is read
+// back from the slider rather than assumed.
 const double kTrackLeft = 4.;
-const double kTrackInset = 70.;
+
+double
+trackWidthOf(const ColorEditSlider* s)
+{
+    return s->width() - s->valueLineEdit()->width() - 6. - 2. * kTrackLeft;
+}
 
 LumaBasis
 acescg()
@@ -174,7 +180,7 @@ relativeDrag(ColorEditSlider* s,
              double dx)
 {
     double y = s->height() / 2.;
-    double trackWidth = s->width() - kTrackInset;
+    double trackWidth = trackWidthOf(s);
     double markerX = kTrackLeft + valueToMarker(s->range(), s->value()) * trackWidth;
     double x0 = (markerX > kTrackLeft + trackWidth / 2.) ? kTrackLeft + 4. : kTrackLeft + trackWidth / 2. + 10.;
 
@@ -522,7 +528,7 @@ TEST(ColorAdjustPanel, SliderGradientsFollowTheCurrentColour)
 
     ColorEditSlider* value = panel.getSlider(eColorSliderKindValue);
     double y = value->height() / 2.;
-    double trackWidth = value->width() - kTrackInset;
+    double trackWidth = trackWidthOf(value);
     QImage track = value->grab().toImage();
     QColor dark = track.pixelColor(QPoint((int)(kTrackLeft + 6.), (int)y));
     QColor bright = track.pixelColor(QPoint((int)(kTrackLeft + trackWidth - 6.), (int)y));
@@ -534,7 +540,7 @@ TEST(ColorAdjustPanel, SliderGradientsFollowTheCurrentColour)
     ColorEditSlider* sat = panel.getSlider(eColorSliderKindSat);
     QImage satTrack = sat->grab().toImage();
     QColor grey = satTrack.pixelColor(QPoint((int)(kTrackLeft + 3.), (int)y));
-    QColor tinted = satTrack.pixelColor(QPoint((int)(kTrackLeft + sat->width() - kTrackInset - 3.), (int)y));
+    QColor tinted = satTrack.pixelColor(QPoint((int)(kTrackLeft + trackWidthOf(sat) - 3.), (int)y));
 
     EXPECT_LE(std::abs(grey.red() - grey.blue()), 3);
     EXPECT_GT(tinted.red(), tinted.blue() + 3);

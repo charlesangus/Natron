@@ -26,6 +26,8 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <map>
 #include <set>
 #include <utility>
 #include <vector>
@@ -33,6 +35,7 @@
 #include <gtest/gtest.h>
 
 #include "Engine/FrameRenderContext.h"
+#include "Engine/GpuCostModel.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/RenderScheduler.h"
 
@@ -368,8 +371,8 @@ TEST(GpuPlacement, RejectedRegionStaysOnCpu)
     FrameGraph graph = makeGraph(3, { {0, 1}, {1, 2} });
     PlacementInputs inputs = gpuTasks(graph, {0, 1, 2});
 
-    inputs.acceptRegion = [](const FrameGraph&, const FrameGraph::Region&) {
-        return false;
+    inputs.regionGain = [](const FrameGraph&, const FrameGraph::Region&) {
+        return -1.;
     };
     placeGraph(graph, inputs);
 
@@ -417,4 +420,231 @@ TEST(GpuPlacement, NoAvailabilityLeavesGraphUnchanged)
     for (const FrameGraph::Task& task : graph.tasks) {
         EXPECT_EQ(task.device, FrameGraph::Device::Cpu);
     }
+}
+
+namespace {
+
+const char* const kGradeId = "net.sf.openfx.GradePlugin";
+const char* const kBlurId = "net.sf.cimg.CImgBlur";
+const RectI kUhd(0, 0, 3840, 2160);
+const std::size_t kUhdBytes = (std::size_t)3840 * 2160 * 4 * sizeof(float);
+const double kUhdMpx = 3840. * 2160. / 1e6;
+
+GpuTransferRates
+rates(double bytesPerSecond)
+{
+    GpuTransferRates r;
+
+    r.uploadBytesPerSecond = bytesPerSecond;
+    r.downloadBytesPerSecond = bytesPerSecond;
+
+    return r;
+}
+
+/**
+ * @brief A model on 16 threads, as the seeds were measured, whose traits come from a per-task table. Grade's CPU cost
+ * is that of a host where it runs at 1 ms/Mpx on the whole pool: the seeded cost includes the render path's serial
+ * overhead, against which even a lone Grade at 25 GB/s gains on the GPU.
+ **/
+struct CostFixture {
+    GpuCostModel model;
+    std::map<int, GpuTaskTraits> traits;
+    FrameGraph graph;
+
+    CostFixture(int nTasks,
+                const std::vector<std::pair<int, int> >& edges)
+        : graph(makeGraph(nTasks, edges))
+    {
+        for (FrameGraph::Task& task : graph.tasks) {
+            task.roi = kUhd;
+            task.renderedRoI = kUhd;
+            task.estimatedBytes = kUhdBytes;
+        }
+        model.setThreadCount(16);
+        model.setTransferRates(rates(25e9));
+        model.setCpuSeed(kGradeId, 16., 16.);
+        const FrameGraph* g = &graph;
+        const std::map<int, GpuTaskTraits>* table = &traits;
+        model.setTraitsHint([g, table](const FrameGraph::Task& task) {
+            std::map<int, GpuTaskTraits>::const_iterator found = table->find(indexOf(*g, task));
+
+            return (found == table->end()) ? GpuTaskTraits() : found->second;
+        });
+    }
+
+    void place()
+    {
+        PlacementInputs inputs;
+
+        inputs.canRenderOnGpu = [this](const FrameGraph::Task& task) {
+            return traits.count(indexOf(graph, task)) != 0;
+        };
+        inputs.regionGain = [this](const FrameGraph& g, const FrameGraph::Region& region) {
+            return model.regionGainMs(g, region);
+        };
+        placeGraph(graph, inputs);
+    }
+};
+
+} // namespace
+
+TEST(GpuCostModel, GradeCostsFollowSeedOverride)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(16);
+    model.setCpuSeed(kGradeId, 16., 16.);
+    EXPECT_NEAR(model.cpuMs(GpuTaskTraits(kGradeId), kUhdMpx), kUhdMpx, 1e-9);
+    EXPECT_NEAR(model.gpuMs(GpuTaskTraits(kGradeId), kUhdMpx), 0.0482 * kUhdMpx, 1e-9);
+    EXPECT_FALSE(model.hasGpuCost(GpuTaskTraits("net.sf.openfx.MergePlugin")));
+}
+
+TEST(GpuCostModel, SerialSeedScalesToPoolSize)
+{
+    GpuCostModel model;
+
+    // Blur FIR up to sigma 25: 100 ms/Mpx serial, 4.7619 at 16 threads.
+    const GpuTaskTraits blur(kBlurId, 25.);
+    model.setThreadCount(16);
+    EXPECT_NEAR(model.cpuMs(blur, 1.), 100. / 4.7619, 1e-6);
+    model.setThreadCount(1);
+    EXPECT_NEAR(model.cpuMs(blur, 1.), 100., 1e-6);
+    model.setThreadCount(4);
+    const double four = model.cpuMs(blur, 1.);
+    EXPECT_GT(four, 100. / 4.7619);
+    EXPECT_LT(four, 100.);
+    EXPECT_GE(four, 100. / 4.);
+}
+
+TEST(GpuCostModel, MeasurementsRefineByMovingAverage)
+{
+    GpuCostModel model;
+
+    model.setThreadCount(16);
+    model.setCpuSeed(kGradeId, 16., 16.);
+
+    // 32 thread-ms per Mpx against a seed of 16.
+    model.observeCpu(GpuTaskTraits(kGradeId), (std::int64_t)(2e6 * kUhdMpx), 16, kUhdMpx);
+    EXPECT_NEAR(model.cpuMs(GpuTaskTraits(kGradeId), 1.), (16. + GpuCostModel::kEmaWeight * 16.) / 16., 1e-9);
+
+    const double seedGpu = model.gpuMs(GpuTaskTraits(kGradeId), 1.);
+    model.observeGpu(GpuTaskTraits(kGradeId), (std::int64_t)(1e6 * kUhdMpx), kUhdMpx);
+    EXPECT_NEAR(model.gpuMs(GpuTaskTraits(kGradeId), 1.), seedGpu + GpuCostModel::kEmaWeight * (1. - seedGpu), 1e-9);
+
+    // A measured GPU run makes a plugin without a GPU seed eligible.
+    model.observeGpu(GpuTaskTraits("net.sf.openfx.MergePlugin"), 1000000, 1.);
+    EXPECT_TRUE(model.hasGpuCost(GpuTaskTraits("net.sf.openfx.MergePlugin")));
+}
+
+// sink 0 (CPU) <- Grade 1 <- reader 2 (CPU)
+TEST(GpuCostModel, IsolatedGradeNeedsUnifiedMemory)
+{
+    CostFixture fixture(3, { {0, 1}, {1, 2} });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.place();
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
+
+    GpuTransferRates unified;
+    unified.unifiedMemory = true;
+    fixture.model.setTransferRates(unified);
+    fixture.place();
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({1}));
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
+}
+
+// sink 0 (CPU) <- Grade 1 <- ... <- Grade 10 <- reader 11 (CPU)
+TEST(GpuCostModel, GradeChainFormsOneRegion)
+{
+    std::vector<std::pair<int, int> > edges;
+    for (int t = 0; t <= 10; ++t) {
+        edges.push_back(std::make_pair(t, t + 1));
+    }
+    CostFixture fixture(12, edges);
+    for (int t = 1; t <= 10; ++t) {
+        fixture.traits[t] = GpuTaskTraits(kGradeId);
+    }
+    fixture.place();
+
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members.size(), 10u);
+    EXPECT_EQ(fixture.graph.tasks[0].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(fixture.graph.tasks[11].device, FrameGraph::Device::Cpu);
+}
+
+// sink 0 (CPU) <- Blur 1 (sigma 25) <- reader 2 (CPU), on the seeds alone.
+TEST(GpuCostModel, LoneBlurIsAcceptedAtUhd)
+{
+    CostFixture fixture(3, { {0, 1}, {1, 2} });
+
+    fixture.traits[1] = GpuTaskTraits(kBlurId, 25.);
+    fixture.place();
+
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
+}
+
+// sink 0 (CPU) <- Grade 1 <- Grade 2 <- reader 3 (CPU): it gains about 4.7 ms at 25 GB/s and loses at 12.5.
+TEST(GpuCostModel, HalvingBandwidthRejectsMarginalRegion)
+{
+    CostFixture fixture(4, { {0, 1}, {1, 2}, {2, 3} });
+
+    fixture.traits[1] = GpuTaskTraits(kGradeId);
+    fixture.traits[2] = GpuTaskTraits(kGradeId);
+    fixture.place();
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({2, 1}));
+
+    fixture.model.setTransferRates(rates(12.5e9));
+    fixture.place();
+    EXPECT_TRUE(fixture.graph.regions.empty());
+    for (const FrameGraph::Task& task : fixture.graph.tasks) {
+        EXPECT_EQ(task.device, FrameGraph::Device::Cpu) << indexOf(fixture.graph, task);
+    }
+}
+
+// sink 0 (CPU) reads Blur 1 (sigma 3) and CPU 2, which both read Grade 3, which reads reader 4 (CPU). On a 3 GB/s link
+// the Grade's extra download sinks the region, but the Blur alone still gains.
+TEST(GpuCostModel, RejectedRegionShrinksToItsProfitableMember)
+{
+    CostFixture fixture(5, { {0, 1}, {0, 2}, {1, 3}, {2, 3}, {3, 4} });
+
+    fixture.traits[1] = GpuTaskTraits(kBlurId, 3.);
+    fixture.traits[3] = GpuTaskTraits(kGradeId);
+    fixture.model.setTransferRates(rates(3e9));
+    fixture.place();
+
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({1}));
+    EXPECT_EQ(fixture.graph.regions[0].externalInputs, std::vector<int>({3}));
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Gpu);
+    EXPECT_EQ(fixture.graph.tasks[3].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(fixture.graph.tasks[3].regionId, -1);
+    EXPECT_TRUE(isConvex(fixture.graph, 0));
+    EXPECT_TRUE(isContractionAcyclic(fixture.graph));
+}
+
+// root Blur 0 <- 1 <- Blur 3 <- reader 4 (CPU), and 1 also feeds the CPU sink 2. 1 is much slower on the GPU, so the
+// region would gain most by dropping it, but that would leave {3, 0} waiting on itself through 1: the shrink drops the
+// root first, then 1.
+TEST(GpuCostModel, ShrinkingNeverBreaksConvexity)
+{
+    CostFixture fixture(5, { {0, 1}, {1, 3}, {2, 1}, {3, 4} });
+    const char* const slowId = "test.SlowOnGpu";
+
+    fixture.model.setCpuSeed(slowId, 1., 1.);
+    fixture.model.observeGpu(GpuTaskTraits(slowId), 1000000000, 1.);
+    fixture.traits[0] = GpuTaskTraits(kBlurId, 3.);
+    fixture.traits[1] = GpuTaskTraits(slowId);
+    fixture.traits[3] = GpuTaskTraits(kBlurId, 3.);
+    fixture.place();
+
+    ASSERT_EQ(fixture.graph.regions.size(), 1u);
+    EXPECT_EQ(fixture.graph.regions[0].members, std::vector<int>({3}));
+    EXPECT_EQ(fixture.graph.tasks[0].device, FrameGraph::Device::Cpu);
+    EXPECT_EQ(fixture.graph.tasks[1].device, FrameGraph::Device::Cpu);
+    EXPECT_TRUE(isConvex(fixture.graph, 0));
+    EXPECT_TRUE(isContractionAcyclic(fixture.graph));
 }

@@ -50,10 +50,13 @@ struct PlacementInputs {
     // Whether the task passes its single dependency's images through. Unset: Task::isIdentity.
     std::function<bool(const FrameGraph::Task&)> isIdentity;
 
-    // Whether a formed region is worth running on the GPU; a rejected region's members stay on the CPU. Unset:
-    // every region is accepted.
-    std::function<bool(const FrameGraph&, const FrameGraph::Region&)> acceptRegion;
+    // What running a region on the GPU gains over the CPU; it is accepted when positive, else shrunk. The graph it is
+    // given has the members of the regions accepted so far on the GPU and every other task on the CPU. Unset: every
+    // region is accepted.
+    std::function<double(const FrameGraph&, const FrameGraph::Region&)> regionGain;
 };
+
+const int kMaxRegionShrinkSteps = 16;
 
 /**
  * @brief Places the tasks of graph on the CPU or the GPU and groups the GPU ones into graph.regions, replacing any
@@ -66,7 +69,12 @@ struct PlacementInputs {
  * once when that keeps the graph with each region contracted to one node acyclic, else the largest one of them that
  * does, else starts a region of its own. The invariant holds after every step, so each region is convex: no path leaves
  * it, through a CPU task or another region, and comes back, which is what lets a region run as one task. Each region is
- * then offered to acceptRegion.
+ * then evaluated with regionGain, in topological order.
+ *
+ * A region that gains nothing is shrunk greedily: each step drops the member on its boundary (with a dependency or a
+ * consumer outside it, or the root) whose removal leaves the most gain, among those whose removal keeps the
+ * contraction acyclic, and splits what is left into its connected parts. After kMaxRegionShrinkSteps steps, or when
+ * no member can go, what is left stays on the CPU, as do the dropped members.
  **/
 void placeGraph(FrameGraph& graph, const PlacementInputs& inputs);
 
@@ -88,8 +96,10 @@ bool makeGpuQueryForTask(const FrameGraph::Task& task,
                          GpuQuery* query);
 
 /**
- * @brief The inputs placeGraph() takes in a render: the effects and the image cache are asked. Must be called on the
- * thread that built the graph, which has the frame args of the render installed.
+ * @brief The inputs placeGraph() takes in a render: the effects and the image cache are asked, and, while the GPU
+ * context is available, GpuCostModel::session() judges the regions at the context's calibrated bandwidth; a task
+ * whose plugin has no GPU cost is then not a candidate. Must be called on the thread that built the graph, which has
+ * the frame args of the render installed.
  **/
 PlacementInputs makeRenderPlacementInputs(const FrameRenderContextPtr& context);
 

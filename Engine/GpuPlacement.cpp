@@ -36,6 +36,8 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FrameRenderContext.h"
+#include "Engine/GpuContext.h"
+#include "Engine/GpuCostModel.h"
 #include "Engine/Image.h"
 #include "Engine/ImageKey.h"
 #include "Engine/KnobChannelSelect.h"
@@ -321,19 +323,141 @@ placeGraph(FrameGraph& graph,
         return position[regionMembers[a].front()] < position[regionMembers[b].front()];
     });
 
-    // Rejecting a region keeps the contraction acyclic: a cycle through its members, now separate nodes, would have
-    // been one through the region.
-    for (int r : formed) {
-        FrameGraph::Region region = describeRegion(graph, regionMembers[r], label, r, identity);
-        if (inputs.acceptRegion && !inputs.acceptRegion(graph, region)) {
-            continue;
-        }
+    const auto accept = [&](int l) {
+        FrameGraph::Region region = describeRegion(graph, regionMembers[l], label, l, identity);
         const int regionId = (int)graph.regions.size();
         for (int m : region.members) {
             graph.tasks[m].device = FrameGraph::Device::Gpu;
             graph.tasks[m].regionId = regionId;
         }
         graph.regions.push_back(std::move(region));
+    };
+
+    const auto isOnBoundary = [&](int m, int l) {
+        const FrameGraph::Task& task = graph.tasks[m];
+        if (task.consumerTasks.empty()) {
+            return true;
+        }
+        for (int d : task.dependencies) {
+            if (label[d] != l) {
+                return true;
+            }
+        }
+        for (int c : task.consumerTasks) {
+            if (label[c] != l) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
+    // Each part keeps the order of members, and the parts are ordered by their first member.
+    const auto connectedParts = [&](const std::vector<int>& members, int l) {
+        std::vector<int> part(n, -1);
+        int nParts = 0;
+        for (int seed : members) {
+            if (part[seed] >= 0) {
+                continue;
+            }
+            std::vector<int> stack(1, seed);
+            part[seed] = nParts;
+            while (!stack.empty()) {
+                const int t = stack.back();
+                stack.pop_back();
+                for (const std::vector<int>* edges : {&graph.tasks[t].dependencies, &graph.tasks[t].consumerTasks}) {
+                    for (int u : *edges) {
+                        if ((label[u] == l) && (part[u] < 0)) {
+                            part[u] = nParts;
+                            stack.push_back(u);
+                        }
+                    }
+                }
+            }
+            ++nParts;
+        }
+        std::vector<std::vector<int> > parts(nParts);
+        for (int m : members) {
+            parts[part[m]].push_back(m);
+        }
+
+        return parts;
+    };
+
+    // Dropping a whole region keeps the contraction acyclic: a cycle through its members, now separate nodes, would
+    // have been one through the region. So does splitting a region into parts with no edge between them. Dropping a
+    // single member does not, hence the check.
+    for (int r : formed) {
+        if (!inputs.regionGain) {
+            accept(r);
+            continue;
+        }
+        std::vector<int> queue(1, r);
+        int steps = 0;
+        while (!queue.empty()) {
+            const int q = queue.front();
+            queue.erase(queue.begin());
+            const std::vector<int> members = regionMembers[q];
+            if (inputs.regionGain(graph, describeRegion(graph, members, label, q, identity)) > 0.) {
+                accept(q);
+                continue;
+            }
+
+            int drop = -1;
+            double dropGain = 0.;
+            if ((members.size() > 1) && (steps < kMaxRegionShrinkSteps)) {
+                for (int m : members) {
+                    if (!isOnBoundary(m, q)) {
+                        continue;
+                    }
+                    label[m] = -1;
+                    if (isContractionAcyclic(graph, label)) {
+                        std::vector<int> rest;
+                        for (int other : members) {
+                            if (other != m) {
+                                rest.push_back(other);
+                            }
+                        }
+                        const double gain = inputs.regionGain(graph, describeRegion(graph, rest, label, q, identity));
+                        if ((drop < 0) || (gain > dropGain)) {
+                            drop = m;
+                            dropGain = gain;
+                        }
+                    }
+                    label[m] = q;
+                }
+            }
+            if (drop < 0) {
+                for (int m : members) {
+                    label[m] = -1;
+                }
+                regionMembers[q].clear();
+                continue;
+            }
+
+            ++steps;
+            label[drop] = -1;
+            std::vector<int> rest;
+            for (int m : members) {
+                if (m != drop) {
+                    rest.push_back(m);
+                }
+            }
+            std::vector<std::vector<int> > parts = connectedParts(rest, q);
+            regionMembers[q] = parts.front();
+            queue.push_back(q);
+            for (std::size_t i = 1; i < parts.size(); ++i) {
+                const int fresh = (int)regionMembers.size();
+                for (int m : parts[i]) {
+                    label[m] = fresh;
+                }
+                regionMembers.push_back(parts[i]);
+                queue.push_back(fresh);
+            }
+            std::sort(queue.begin(), queue.end(), [&](int a, int b) {
+                return position[regionMembers[a].front()] < position[regionMembers[b].front()];
+            });
+        }
     }
 } // placeGraph
 
@@ -418,6 +542,19 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
 
         return native && native->canRenderOnGpu(query);
     };
+
+    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+    if (gpu && gpu->isAvailable()) {
+        GpuCostModel* model = &GpuCostModel::session();
+        model->setTransferRates(GpuTransferRates::fromCalibration(gpu->calibration()));
+        const std::function<bool(const FrameGraph::Task&)> effectCanRender = inputs.canRenderOnGpu;
+        inputs.canRenderOnGpu = [model, effectCanRender](const FrameGraph::Task& task) -> bool {
+            return model->hasGpuCost(model->traitsOf(task)) && effectCanRender(task);
+        };
+        inputs.regionGain = [model](const FrameGraph& graph, const FrameGraph::Region& region) {
+            return model->regionGainMs(graph, region);
+        };
+    }
 
     // Looks the cache up as renderRoI's first, non-draft, lookup does. Not knowing which full-scale flag renderRoI
     // will key with, either counts; a false hit only keeps a task on the CPU.

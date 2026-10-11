@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -41,6 +42,14 @@ NATRON_NAMESPACE_ENTER
 // boundary of its image and can be imported by the device rather than staged.
 const int kGpuStripRowQuantum = 4;
 const int kGpuStripDefaultRows = 2048;
+
+// The most strips a pipelined region holds buffers for at once: one computing, the next uploading and the previous
+// downloading.
+const int kGpuStripMaxInFlight = 3;
+
+// Thinner strips than this, made thinner only so that more fit in flight, cost more in per-strip overhead than the
+// overlap saves, so the region runs them one at a time instead.
+const int kGpuStripMinPipelinedRows = 64;
 
 // The device memory strips leave to what allocates outside the pool: the viewer's textures, the driver, other
 // processes and OFX plugins rendering on the GPU themselves. The pool already holds a fifth of the heap back, which is
@@ -94,6 +103,10 @@ struct GpuStripLimits {
     // When positive, the region runs as strips of at most this many rows even when it fits whole.
     int forcedRows = 0;
 
+    // The most strips that may hold their buffers at once; budgetBytes must hold that many strips' buffers, beside
+    // the resident images they share.
+    int maxInFlight = 1;
+
     // The bytes the device allocates for a request; the request itself when unset.
     std::function<std::uint64_t(std::uint64_t)> allocationBytes;
 };
@@ -111,6 +124,9 @@ struct GpuStrip {
 struct GpuStripCost {
     std::uint64_t largestBuffer = 0;
     std::uint64_t peakBytes = 0;
+
+    // The part of peakBytes held by resident slots, which strips in flight together share.
+    std::uint64_t residentBytes = 0;
 };
 
 enum class GpuStripResult {
@@ -155,11 +171,17 @@ RectI gpuStripBands(const GpuStripGraph& graph);
  * @brief Whether graph fits limits whole, and otherwise the tallest horizontal strips that do. Bands of rows, from the
  * lowest row of the interior slots, are given to every interior slot; the windows the members need then go backwards
  * through inputRoI, so each input of a strip carries the halo of everything after it.
+ *
+ * Strips that fit one at a time are then pipelined when limits.maxInFlight allows: inFlight receives the most strips,
+ * up to limits.maxInFlight, that fit the budget together at the height found for one, or else 2 with the tallest
+ * strips two of which fit, when those are at least kGpuStripMinPipelinedRows tall; and 1 otherwise, or when there is a
+ * single strip.
  **/
 GpuStripResult planGpuStrips(const GpuStripGraph& graph,
                              const GpuStripLimits& limits,
                              std::vector<GpuStrip>* strips,
-                             int* rows);
+                             int* rows,
+                             int* inFlight = nullptr);
 
 /**
  * @brief Caps maxStorageBufferRange and the strip height the region body plans with, so that a software device with
@@ -171,6 +193,27 @@ void setGpuStripOverridesForTests(std::uint64_t maxBufferBytes,
 std::uint64_t gpuStripMaxBufferOverride();
 
 int gpuStripRowsOverride();
+
+enum class GpuStripPipelining {
+    // Pipelined when the device has a transfer queue family of its own.
+    Auto,
+
+    // Pipelined on any device, a single queue family included, where the queue's own order keeps it correct.
+    On,
+    Off
+};
+
+void setGpuStripPipeliningForTests(GpuStripPipelining mode);
+
+GpuStripPipelining gpuStripPipelining();
+
+/**
+ * @brief Calls hook with a strip's index once a pipelined region has submitted its compute, on the region's thread;
+ * an empty hook removes it.
+ **/
+void setGpuStripSubmittedHookForTests(const std::function<void(std::size_t strip)>& hook);
+
+void gpuStripSubmitted(std::size_t strip);
 
 NATRON_NAMESPACE_EXIT
 

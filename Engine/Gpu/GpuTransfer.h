@@ -164,6 +164,11 @@ public:
     bool hostImportSupported() const { return importAlignment_ != 0; }
     VkDeviceSize hostImportAlignment() const { return importAlignment_; }
 
+    // True when both the transfer and the compute families write timestamps, so that StreamOptions::timestampPool
+    // is honoured; process() records its own only with GpuTransferOptions::recordTimestamps.
+    bool timestampsSupported() const;
+    double timestampPeriodNs() const;
+
     // Copies src into [offset, offset + src.bytes) of dst. Returns once the staging path has read
     // src; the import path reads it until `done` is reached, so src must stay unchanged until then.
     // With ComputeHandoff::Submit, compute work that waits on `done` may use the range directly.

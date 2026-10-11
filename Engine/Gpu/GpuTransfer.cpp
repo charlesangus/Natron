@@ -279,6 +279,9 @@ struct GpuTransfer::Impl {
     uint32_t transferFamily;
     bool tsTransfer = false;
     bool tsCompute = false;
+    // Whether the transfer family can write the timestamps a caller asks for through StreamOptions.
+    bool stampable = false;
+    bool timestampsSupported = false;
     float timestampPeriod = 1.0f;
     VkDeviceSize importAlignment = 0;
     VkDeviceSize importPieceMax = 0;
@@ -451,6 +454,8 @@ struct GpuTransfer::Impl {
         vkGetPhysicalDeviceQueueFamilyProperties(dev.physicalDevice(), &nf, fams.data());
         tsCompute = opt.recordTimestamps && fams[computeFamily].timestampValidBits > 0;
         tsTransfer = opt.recordTimestamps && fams[transferFamily].timestampValidBits > 0;
+        stampable = fams[transferFamily].timestampValidBits > 0;
+        timestampsSupported = stampable && fams[computeFamily].timestampValidBits > 0;
 
         const uint32_t n = std::max(1u, opt.slotCount);
         const uint32_t depth = std::max(1u, opt.framesInFlight);
@@ -631,7 +636,7 @@ struct GpuTransfer::Impl {
 
     void stamp(VkCommandBuffer cb, const StreamOptions& o, uint32_t which) const
     {
-        if (tsTransfer && o.timestampPool != VK_NULL_HANDLE) {
+        if (stampable && o.timestampPool != VK_NULL_HANDLE) {
             vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, o.timestampPool, o.timestampQuery + which);
         }
     }
@@ -1107,6 +1112,18 @@ GpuTransfer::GpuTransfer(GpuDevice& device, const GpuTransferOptions& options)
 }
 
 GpuTransfer::~GpuTransfer() = default;
+
+bool
+GpuTransfer::timestampsSupported() const
+{
+    return impl_->timestampsSupported;
+}
+
+double
+GpuTransfer::timestampPeriodNs() const
+{
+    return impl_->timestampPeriod;
+}
 
 GpuStatus
 GpuTransfer::create(GpuDevice& device, const GpuTransferOptions& options, std::unique_ptr<GpuTransfer>& out)

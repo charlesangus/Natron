@@ -63,6 +63,7 @@
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuRegionTask.h"
+#include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -269,6 +270,8 @@ protected:
     virtual void TearDown() OVERRIDE
     {
         setGpuStripOverridesForTests(0, 0);
+        setGpuStripPipeliningForTests(GpuStripPipelining::Auto);
+        setGpuStripSubmittedHookForTests(std::function<void(std::size_t)>());
         _scheduler->setRegionBody(_savedBody);
         appPTR->clearAllCaches();
         getApp()->getProject()->reset(false, true);
@@ -1061,7 +1064,7 @@ TEST_F(GpuResidencyTest, StripsMatchTheWholeRegionExactly)
     // One upload of the source and one download of the second Grade per strip.
     EXPECT_GT(tiled.stats->getUploadCount(), 2);
     EXPECT_EQ(tiled.stats->getUploadCount(), tiled.stats->getDownloadCount());
-    EXPECT_LE(tiled.stats->getPeakDeviceBytes(), (std::size_t)(1u << 20) * 4);
+    EXPECT_LE(tiled.stats->getPeakDeviceBytes(), (std::size_t)(1u << 20) * 4 * ((tiled.stats->getGpuPipelinedRegions() > 0) ? kGpuStripMaxInFlight : 1));
 
     const std::vector<float> tiledPixels = rootPixels(tiled);
     ASSERT_EQ(wholePixels.size(), tiledPixels.size());
@@ -1303,6 +1306,291 @@ TEST_F(GpuResidencyTest, LargeCompStaysWithinTheDeviceBudget)
     }
 }
 
+namespace {
+
+// Without push descriptors the region body never pipelines its strips, even when asked to.
+bool
+canPipeline()
+{
+    return appPTR->getGpuContext()->runtime()->device().info().pushDescriptor;
+}
+
+float
+worstDiff(const std::vector<float>& a,
+          const std::vector<float>& b)
+{
+    float worst = 0.f;
+    for (std::size_t i = 0; (i < a.size()) && (i < b.size()); ++i) {
+        worst = std::max(worst, std::fabs(a[i] - b[i]));
+    }
+
+    return worst;
+}
+
+} // namespace
+
+// With a 1 MB storage buffer range, the strips match the region run whole exactly, whether they run one at a time or
+// pipelined, with uploads and downloads in flight beside the compute of another strip; and both give every buffer back.
+TEST_F(GpuResidencyTest, PipelinedStripsMatchTheWholeRegionExactly)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    std::string error;
+
+    FrameRun whole;
+    ASSERT_TRUE(prepareStripFrame(chain, &whole, &error)) << error;
+    ASSERT_TRUE(render(&whole));
+    const std::vector<float> wholePixels = rootPixels(whole);
+    ASSERT_FALSE(wholePixels.empty());
+    expectReleased(whole);
+
+    setGpuStripOverridesForTests(1u << 20, 0);
+    const GpuStripPipelining modes[] = { GpuStripPipelining::On, GpuStripPipelining::Off };
+    for (GpuStripPipelining mode : modes) {
+        const bool on = (mode == GpuStripPipelining::On);
+        SCOPED_TRACE(on ? "pipelined" : "serial");
+        setGpuStripPipeliningForTests(mode);
+        const std::uint64_t liveBefore = runtime()->pool().stats().liveBytes;
+        FrameRun tiled;
+        ASSERT_TRUE(prepareStripFrame(chain, &tiled, &error)) << error;
+        ASSERT_TRUE(render(&tiled));
+        std::printf("[          ] %s: uploads %d, pipelined regions %d, transfer hidden %.3f ms, exposed %.3f ms, peak %llu bytes\n",
+                    on ? "pipelined" : "serial",
+                    tiled.stats->getUploadCount(),
+                    tiled.stats->getGpuPipelinedRegions(),
+                    tiled.stats->getGpuTransferHiddenMs(),
+                    tiled.stats->getGpuTransferExposedMs(),
+                    (unsigned long long)tiled.stats->getPeakDeviceBytes());
+        EXPECT_EQ(0, fallbacksOf(tiled));
+        EXPECT_EQ(1, tiled.stats->getGpuRegionsRun());
+        EXPECT_EQ((on && canPipeline()) ? 1 : 0, tiled.stats->getGpuPipelinedRegions());
+        EXPECT_EQ(0, renderRoICallsOf(tiled, chain.blur)) << "the Blur rendered on the CPU";
+        EXPECT_GT(tiled.stats->getUploadCount(), 2);
+        EXPECT_EQ(tiled.stats->getUploadCount(), tiled.stats->getDownloadCount());
+        EXPECT_LE(tiled.stats->getPeakDeviceBytes(), (std::size_t)(1u << 20) * 4 * (on ? kGpuStripMaxInFlight : 1));
+
+        const std::vector<float> tiledPixels = rootPixels(tiled);
+        ASSERT_EQ(wholePixels.size(), tiledPixels.size());
+        EXPECT_EQ(0.f, worstDiff(wholePixels, tiledPixels));
+        expectReleased(tiled);
+        EXPECT_EQ(liveBefore, runtime()->pool().stats().liveBytes);
+    }
+}
+
+// The frame is aborted once the second strip of a pipelined region is submitted: the region waits for the strips in
+// flight, gives their buffers back and ends the frame aborted, without rendering anything on the CPU.
+TEST_F(GpuResidencyTest, AbortMidPipelineEndsTheFrameCleanly)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    if (!canPipeline()) {
+        std::printf("[  SKIPPED ] the device has no push descriptors, so strips never run pipelined\n");
+
+        return;
+    }
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareStripFrame(chain, &run, &error)) << error;
+    setGpuStripOverridesForTests(1u << 20, 0);
+    setGpuStripPipeliningForTests(GpuStripPipelining::On);
+    const std::uint64_t liveBefore = runtime()->pool().stats().liveBytes;
+    const AbortableRenderInfoPtr abortInfo = run.abortInfo;
+    std::shared_ptr<std::atomic<int>> submitted = std::make_shared<std::atomic<int>>(0);
+    setGpuStripSubmittedHookForTests([abortInfo, submitted](std::size_t strip) {
+        ++*submitted;
+        if (strip == 1) {
+            abortInfo->setAborted();
+        }
+    });
+
+    EXPECT_FALSE(render(&run));
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, run.future->wait());
+    EXPECT_EQ(2, submitted->load()) << "the region went on submitting strips after the abort";
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(0, renderRoICallsOf(run, chain.blur));
+    EXPECT_EQ(0, renderRoICallsOf(run, chain.sink));
+    expectReleased(run);
+    EXPECT_EQ(liveBefore, runtime()->pool().stats().liveBytes);
+}
+
+// Three strips in flight fit the budget as planned, but each also holds the Blur's intermediate, which the plan leaves
+// out. Evicting frees nothing; the same strips run one at a time do fit, so the region neither halves them nor falls
+// back to the CPU.
+TEST_F(GpuResidencyTest, OutOfMemoryMidPipelineRunsTheStripsOneAtATime)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    if (!canPipeline()) {
+        std::printf("[  SKIPPED ] the device has no push descriptors, so strips never run pipelined\n");
+
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareStripFrame(chain, &run, &error)) << error;
+    setGpuStripOverridesForTests(1u << 20, 0);
+    setGpuStripPipeliningForTests(GpuStripPipelining::On);
+    // A strip's input and its Grade's output each take up to 1 MB, and the Blur's intermediate as much again.
+    const std::uint64_t budget = (13u << 20) / 2;
+    runtime()->pool().trim();
+    runtime()->pool().setUserBudget(budget);
+    const std::uint64_t liveBefore = runtime()->pool().stats().liveBytes;
+
+    ASSERT_TRUE(render(&run));
+    std::printf("[          ] retries %d, serialized %d, strip halvings %d, pipelined regions %d, uploads %d\n",
+                run.stats->getGpuRegionRetries(),
+                run.stats->getGpuStripPipelinesSerialized(),
+                run.stats->getGpuStripHalvings(),
+                run.stats->getGpuPipelinedRegions(),
+                run.stats->getUploadCount());
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(1, run.stats->getGpuRegionRetries());
+    EXPECT_EQ(1, run.stats->getGpuStripPipelinesSerialized());
+    EXPECT_EQ(0, run.stats->getGpuStripHalvings());
+    EXPECT_EQ(0, run.stats->getGpuPipelinedRegions());
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(0, renderRoICallsOf(run, chain.blur)) << "the Blur rendered on the CPU";
+    EXPECT_LE(run.stats->getPeakDeviceBytes(), budget);
+    expectReleased(run);
+    EXPECT_EQ(liveBefore, runtime()->pool().stats().liveBytes);
+    expectMatchesCpu(chain.sink, run, stripWindow());
+}
+
+// The device is lost while strips are in flight: they are drained, and the frame is rendered again on the CPU.
+TEST_F(GpuResidencyTest, DeviceLossMidPipelineRendersTheFrameOnTheCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    if (!canPipeline()) {
+        std::printf("[  SKIPPED ] the device has no push descriptors, so strips never run pipelined\n");
+
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    StripChain chain;
+    ASSERT_TRUE(makeStripChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareStripFrame(chain, &run, &error)) << error;
+    setGpuStripOverridesForTests(1u << 20, 0);
+    setGpuStripPipeliningForTests(GpuStripPipelining::On);
+    // The next operation issues the downloads of the first strip, behind the second strip's compute.
+    setGpuStripSubmittedHookForTests([](std::size_t strip) {
+        if (strip == 1) {
+            runtime()->device().injectFault(gpu::GpuFaultPlan::Kind::DeviceLost, 1);
+        }
+    });
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(gpu::GpuRuntimeState::Lost, runtime()->state());
+    EXPECT_EQ(1, fallbacksOf(run, "device lost"));
+    EXPECT_EQ(0, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, renderRoICallsOf(run, chain.blur));
+    expectReleased(run);
+    expectMatchesCpu(chain.sink, run, stripWindow());
+}
+
+// Renders Constant -> Grade -> Blur (sigma 25) -> Grade over NATRON_GPU_PIPELINE_BENCH x NATRON_GPU_PIPELINE_BENCH
+// pixels as strips, one at a time and then pipelined, and prints where the region's time went. It checks no timing:
+// only that both give the same pixels. Skipped unless the variable is set.
+TEST_F(GpuResidencyTest, PipelinedStripsOverlapBenchmark)
+{
+    const char* sizeText = std::getenv("NATRON_GPU_PIPELINE_BENCH");
+    if (!sizeText || (std::atoi(sizeText) <= 0)) {
+        std::printf("[  SKIPPED ] set NATRON_GPU_PIPELINE_BENCH to the image size to run it\n");
+
+        return;
+    }
+    if (!gpuOrSkip()) {
+        return;
+    }
+    const int size = std::atoi(sizeText);
+    NodePtr source = makeNode(PLUGINID_NATRON_CONSTANT, PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr grade1 = makeGrade(1.5, 0.1);
+    NodePtr blur = makeBlur(60.);
+    NodePtr grade2 = makeGrade(0.8, 0.02);
+    NodePtr sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(source && grade1 && blur && grade2 && sink);
+    ASSERT_TRUE(setKnobValue(source, kNativeGeneratorParamExtent, kNativeGeneratorExtentSize));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { 0., 0. }));
+    ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)size, (double)size }));
+    KnobBool* crop = dynamic_cast<KnobBool*>(blur->getKnobByName(kBlurParamCropToFormat).get());
+    ASSERT_TRUE(crop);
+    crop->setValue(false);
+    connectNodes(source, grade1, 0, true);
+    connectNodes(grade1, blur, 0, true);
+    connectNodes(blur, grade2, 0, true);
+    connectNodes(grade2, sink, 0, true);
+    const RectI window(0, 0, size, size);
+
+    std::shared_ptr<RenderScheduler::RegionReport> last = std::make_shared<RenderScheduler::RegionReport>();
+    _scheduler->setRegionBody([last](const FrameRenderContextPtr& context,
+                                     const FrameGraph& graph,
+                                     int region,
+                                     int budget,
+                                     std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                     RenderScheduler::RegionReport* report) {
+        const EffectInstance::RenderRoIRetCode code = runGpuRegion(context, graph, region, budget, rootPlanes, report);
+        *last = *report;
+
+        return code;
+    });
+
+    // The second render of each mode recycles the first one's host buffers, whose imports the device keeps, as frames
+    // of a sequence do; the first pays for touching fresh memory as it pins it.
+    const std::size_t maxPoolBytes = HostImageMemory::maxPoolBytes();
+    HostImageMemory::setMaxPoolBytes(std::size_t(32) << 30);
+    std::vector<float> reference;
+    const GpuStripPipelining modes[] = { GpuStripPipelining::Off, GpuStripPipelining::On };
+    for (GpuStripPipelining mode : modes) {
+        const bool on = (mode == GpuStripPipelining::On);
+        setGpuStripPipeliningForTests(mode);
+        for (int pass = 0; pass < 2; ++pass) {
+            FrameRun run;
+            std::string error;
+            ASSERT_TRUE(prepareFrame(sink, &run, &error, window)) << error;
+            const int grade1Task = taskOf(run.graph, grade1);
+            const int blurTask = taskOf(run.graph, blur);
+            const int grade2Task = taskOf(run.graph, grade2);
+            ASSERT_TRUE(grade1Task >= 0 && blurTask >= 0 && grade2Task >= 0);
+            assignRegions(&run.graph, { { grade1Task, blurTask, grade2Task } });
+            run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
+            ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+            const RenderScheduler::RegionReport report = *last;
+            const double sum = report.uploadMs + report.kernelMs + report.downloadMs;
+            std::printf("[          ] %dx%d %s, %s: %d strips, %d in flight; wall %.1f ms; upload %.1f + compute %.1f + download %.1f = %.1f ms; "
+                        "transfer hidden %.1f ms, exposed %.1f ms; %.1f MB up, %.1f MB down\n",
+                        size, size, on ? "pipelined" : "serial", (pass == 0) ? "first" : "recycled", report.strips, report.stripsInFlight, report.wallMs,
+                        report.uploadMs, report.kernelMs, report.downloadMs, sum, report.transferHiddenMs, report.transferExposedMs,
+                        (double)report.uploadBytes / 1e6, (double)report.downloadBytes / 1e6);
+            EXPECT_EQ(0, fallbacksOf(run));
+            EXPECT_GT(report.strips, 1);
+            EXPECT_EQ(on && canPipeline(), report.stripsInFlight > 1);
+            const std::map<ImageLayerDesc, ImagePtr> planes = run.future->getRootPlanes();
+            ASSERT_FALSE(planes.empty());
+            const std::vector<float> pixels = readRgba(planes.begin()->second, RectI(0, 0, size, std::min(size, 64)));
+            if (reference.empty()) {
+                reference = pixels;
+            } else {
+                EXPECT_EQ(0.f, worstDiff(reference, pixels));
+            }
+            expectReleased(run);
+        }
+    }
+    HostImageMemory::setMaxPoolBytes(maxPoolBytes);
+}
+
 #endif // NATRON_HAVE_GPU
 
 namespace {
@@ -1457,4 +1745,74 @@ TEST(GpuRegionStrips, BudgetLeavesHeadroomUnderTheDeviceMemory)
     EXPECT_EQ(3 * gb, gpuStripBudgetBytes(gb * 16 / 5, 4 * gb));
     EXPECT_EQ(gb * 3 / 4, gpuStripBudgetBytes(gb * 6 / 5, gb * 3 / 2));
     EXPECT_EQ(gb, gpuStripBudgetBytes(gb, 0));
+}
+
+// Strips the buffer range alone limits fit three in flight at the height a single one has.
+TEST(GpuRegionStrips, PipelinedStripsKeepTheirHeightWhenTheBudgetAllows)
+{
+    const GpuStripGraph graph = planChain();
+    GpuStripLimits limits;
+    limits.maxBufferBytes = 64 * kPlanRowBytes;
+    std::vector<GpuStrip> serial;
+    int serialRows = 0;
+    int inFlight = 0;
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &serial, &serialRows, &inFlight));
+    EXPECT_EQ(1, inFlight);
+
+    limits.maxInFlight = kGpuStripMaxInFlight;
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows, &inFlight));
+    EXPECT_EQ(kGpuStripMaxInFlight, inFlight);
+    EXPECT_EQ(serialRows, rows);
+    EXPECT_EQ(serial.size(), strips.size());
+}
+
+// Under a budget one strip fills, two in flight share it as thinner strips, each within half of it.
+TEST(GpuRegionStrips, PipelinedStripsShareTheBudget)
+{
+    const GpuStripGraph graph = planChain();
+    GpuStripLimits limits;
+    limits.maxBufferBytes = 256 * kPlanRowBytes;
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+    int inFlight = 0;
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows, &inFlight));
+    std::uint64_t peak = 0;
+    for (const GpuStrip& strip : strips) {
+        peak = std::max(peak, gpuStripCost(graph, strip.rects, limits).peakBytes);
+    }
+    limits.budgetBytes = peak;
+    limits.maxInFlight = kGpuStripMaxInFlight;
+
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows, &inFlight));
+    EXPECT_EQ(2, inFlight);
+    EXPECT_GE(rows, kGpuStripMinPipelinedRows);
+    for (const GpuStrip& strip : strips) {
+        EXPECT_LE(2 * gpuStripCost(graph, strip.rects, limits).peakBytes, limits.budgetBytes);
+    }
+}
+
+// Strips that would have to be thinner than kGpuStripMinPipelinedRows to fit two in flight run one at a time instead.
+TEST(GpuRegionStrips, ThinPipelinedStripsRunOneAtATime)
+{
+    const GpuStripGraph graph = planChain();
+    GpuStripLimits limits;
+    limits.maxBufferBytes = 64 * kPlanRowBytes;
+    std::vector<GpuStrip> serial;
+    int serialRows = 0;
+    int inFlight = 0;
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &serial, &serialRows, &inFlight));
+    std::uint64_t peak = 0;
+    for (const GpuStrip& strip : serial) {
+        peak = std::max(peak, gpuStripCost(graph, strip.rects, limits).peakBytes);
+    }
+    limits.budgetBytes = peak;
+    limits.maxInFlight = kGpuStripMaxInFlight;
+
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows, &inFlight));
+    EXPECT_EQ(1, inFlight);
+    EXPECT_EQ(serialRows, rows);
 }

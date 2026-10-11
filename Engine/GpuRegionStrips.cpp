@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <mutex>
 
 NATRON_NAMESPACE_ENTER
 
@@ -34,6 +35,10 @@ NATRON_NAMESPACE_ANONYMOUS_ENTER
 
 std::atomic<std::uint64_t> gMaxBufferOverride(0);
 std::atomic<int> gRowsOverride(0);
+std::atomic<GpuStripPipelining> gPipelining(GpuStripPipelining::Auto);
+std::atomic<bool> gHasSubmittedHook(false);
+std::mutex gSubmittedHookMutex;
+std::function<void(std::size_t)> gSubmittedHook;
 
 std::uint64_t
 bufferBytes(const RectI& rect,
@@ -175,6 +180,13 @@ fits(const GpuStripCost& cost,
     return (cost.largestBuffer <= limits.maxBufferBytes) && (cost.peakBytes <= limits.budgetBytes);
 }
 
+std::uint64_t
+inFlightBytes(const GpuStripCost& cost,
+              int inFlight)
+{
+    return cost.residentBytes + (std::uint64_t)std::max(1, inFlight) * (cost.peakBytes - cost.residentBytes);
+}
+
 enum class StripsFit {
     Fits,
     TooLarge,
@@ -188,6 +200,7 @@ stripsOfRows(const GpuStripGraph& graph,
              int rowsFrom,
              int rowsTo,
              int rows,
+             int inFlight,
              std::vector<GpuStrip>* strips)
 {
     strips->clear();
@@ -200,7 +213,7 @@ stripsOfRows(const GpuStripGraph& graph,
         if (cost.largestBuffer > limits.maxBufferBytes) {
             return StripsFit::TooLarge;
         }
-        if (cost.peakBytes > limits.budgetBytes) {
+        if (inFlightBytes(cost, inFlight) > limits.budgetBytes) {
             return StripsFit::OverBudget;
         }
         strips->push_back(strip);
@@ -254,6 +267,7 @@ gpuStripCost(const GpuStripGraph& graph,
         }
         if (slot.resident) {
             total += allocated(limits, bytes);
+            cost.residentBytes += allocated(limits, bytes);
         } else if (slot.external) {
             bufferOf[s] = acquire(bytes);
         }
@@ -307,10 +321,14 @@ GpuStripResult
 planGpuStrips(const GpuStripGraph& graph,
               const GpuStripLimits& limits,
               std::vector<GpuStrip>* strips,
-              int* rows)
+              int* rows,
+              int* inFlight)
 {
     strips->clear();
     *rows = 0;
+    if (inFlight) {
+        *inFlight = 1;
+    }
 
     std::vector<RectI> whole;
     for (const GpuStripSlot& slot : graph.images) {
@@ -333,7 +351,7 @@ planGpuStrips(const GpuStripGraph& graph,
     const int maxRows = (limits.forcedRows > 0) ? std::min(limits.maxRows, limits.forcedRows) : limits.maxRows;
     const int maxUnits = std::max(1, maxRows / kGpuStripRowQuantum);
     std::vector<GpuStrip> best;
-    switch (stripsOfRows(graph, limits, bands.y1, bands.y2, kGpuStripRowQuantum, &best)) {
+    switch (stripsOfRows(graph, limits, bands.y1, bands.y2, kGpuStripRowQuantum, 1, &best)) {
     case StripsFit::Fits:
         break;
     case StripsFit::TooLarge:
@@ -343,20 +361,49 @@ planGpuStrips(const GpuStripGraph& graph,
     case StripsFit::Unstrippable:
         return GpuStripResult::Unstrippable;
     }
-    int lo = 1;
-    int hi = maxUnits;
-    while (lo < hi) {
-        const int mid = lo + (hi - lo + 1) / 2;
-        std::vector<GpuStrip> candidate;
-        if (stripsOfRows(graph, limits, bands.y1, bands.y2, mid * kGpuStripRowQuantum, &candidate) == StripsFit::Fits) {
-            lo = mid;
-            best.swap(candidate);
-        } else {
-            hi = mid - 1;
+    // The tallest strips, in units of kGpuStripRowQuantum rows up to units, of which depth fit at once; 0 when not even
+    // the thinnest do.
+    const auto tallest = [&](int depth,
+                             int units,
+                             std::vector<GpuStrip>* found) {
+        int lo = 0;
+        int hi = units;
+        while (lo < hi) {
+            const int mid = lo + (hi - lo + 1) / 2;
+            std::vector<GpuStrip> candidate;
+            if (stripsOfRows(graph, limits, bands.y1, bands.y2, mid * kGpuStripRowQuantum, depth, &candidate) == StripsFit::Fits) {
+                lo = mid;
+                found->swap(candidate);
+            } else {
+                hi = mid - 1;
+            }
+        }
+
+        return lo;
+    };
+    const int serialUnits = std::max(1, tallest(1, maxUnits, &best));
+    int depth = 1;
+    if (best.size() > 1) {
+        for (int candidate = std::min(limits.maxInFlight, kGpuStripMaxInFlight); candidate >= 2; --candidate) {
+            std::vector<GpuStrip> deeper;
+            const int units = tallest(candidate, serialUnits, &deeper);
+            const bool asTall = (units == serialUnits);
+            const bool lastResort = (candidate == 2) && (units * kGpuStripRowQuantum >= kGpuStripMinPipelinedRows);
+            if ((units > 0) && (deeper.size() > 1) && (asTall || lastResort)) {
+                depth = candidate;
+                best.swap(deeper);
+                *rows = units * kGpuStripRowQuantum;
+                break;
+            }
         }
     }
+    if (depth == 1) {
+        *rows = serialUnits * kGpuStripRowQuantum;
+    }
     strips->swap(best);
-    *rows = lo * kGpuStripRowQuantum;
+    if (inFlight) {
+        *inFlight = depth;
+    }
 
     return GpuStripResult::Strips;
 } // planGpuStrips
@@ -379,6 +426,42 @@ int
 gpuStripRowsOverride()
 {
     return gRowsOverride.load();
+}
+
+void
+setGpuStripPipeliningForTests(GpuStripPipelining mode)
+{
+    gPipelining.store(mode);
+}
+
+GpuStripPipelining
+gpuStripPipelining()
+{
+    return gPipelining.load();
+}
+
+void
+setGpuStripSubmittedHookForTests(const std::function<void(std::size_t strip)>& hook)
+{
+    std::lock_guard<std::mutex> lock(gSubmittedHookMutex);
+    gSubmittedHook = hook;
+    gHasSubmittedHook.store(bool(hook));
+}
+
+void
+gpuStripSubmitted(std::size_t strip)
+{
+    if (!gHasSubmittedHook.load()) {
+        return;
+    }
+    std::function<void(std::size_t)> hook;
+    {
+        std::lock_guard<std::mutex> lock(gSubmittedHookMutex);
+        hook = gSubmittedHook;
+    }
+    if (hook) {
+        hook(strip);
+    }
 }
 
 NATRON_NAMESPACE_EXIT

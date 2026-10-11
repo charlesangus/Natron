@@ -316,6 +316,8 @@ struct RenderStatsPrivate
     std::atomic<int> gpuRegionsRun;
     std::atomic<int> gpuRegionRetries;
     std::atomic<int> gpuStripHalvings;
+    std::atomic<int> gpuStripPipelinesSerialized;
+    std::atomic<int> gpuPipelinedRegions;
     std::atomic<unsigned long long> peakDeviceBytes;
 
     // All guarded by lock.
@@ -323,6 +325,8 @@ struct RenderStatsPrivate
     std::map<std::string, int> cpuFallbackReasons;
     std::map<std::string, int> legacyFallbackReasons;
     std::map<std::tuple<std::string, double, int>, int> renderRoICalls;
+    double gpuTransferHiddenMs;
+    double gpuTransferExposedMs;
 
     RenderStatsPrivate()
         : lock()
@@ -344,11 +348,15 @@ struct RenderStatsPrivate
         , gpuRegionsRun(0)
         , gpuRegionRetries(0)
         , gpuStripHalvings(0)
+        , gpuStripPipelinesSerialized(0)
+        , gpuPipelinedRegions(0)
         , peakDeviceBytes(0)
         , gpuTasksPerNode()
         , cpuFallbackReasons()
         , legacyFallbackReasons()
         , renderRoICalls()
+        , gpuTransferHiddenMs(0.)
+        , gpuTransferExposedMs(0.)
     {
     }
 
@@ -611,6 +619,22 @@ RenderStats::noteGpuStripHalving()
 }
 
 void
+RenderStats::noteGpuStripPipelineSerialized()
+{
+    ++_imp->gpuStripPipelinesSerialized;
+}
+
+void
+RenderStats::noteGpuPipelinedRegion(double transferHiddenMs,
+                                    double transferExposedMs)
+{
+    ++_imp->gpuPipelinedRegions;
+    QMutexLocker k(&_imp->lock);
+    _imp->gpuTransferHiddenMs += transferHiddenMs;
+    _imp->gpuTransferExposedMs += transferExposedMs;
+}
+
+void
 RenderStats::noteCpuFallback(const std::string& reason)
 {
     QMutexLocker k(&_imp->lock);
@@ -674,6 +698,34 @@ RenderStats::getGpuStripHalvings() const
     return _imp->gpuStripHalvings.load();
 }
 
+int
+RenderStats::getGpuStripPipelinesSerialized() const
+{
+    return _imp->gpuStripPipelinesSerialized.load();
+}
+
+int
+RenderStats::getGpuPipelinedRegions() const
+{
+    return _imp->gpuPipelinedRegions.load();
+}
+
+double
+RenderStats::getGpuTransferHiddenMs() const
+{
+    QMutexLocker k(&_imp->lock);
+
+    return _imp->gpuTransferHiddenMs;
+}
+
+double
+RenderStats::getGpuTransferExposedMs() const
+{
+    QMutexLocker k(&_imp->lock);
+
+    return _imp->gpuTransferExposedMs;
+}
+
 std::map<std::string, int>
 RenderStats::getGpuTasksPerNode() const
 {
@@ -733,13 +785,9 @@ std::string
 formatRegionRecord(unsigned long long frameSequence,
                    int regionId,
                    const std::vector<int>& taskIds,
-                   double uploadMs,
-                   unsigned long long uploadBytes,
-                   double kernelMs,
-                   double downloadMs,
-                   unsigned long long downloadBytes)
+                   const GpuRegionTimes& times)
 {
-    char num[256];
+    char num[512];
     std::string line;
 
     std::snprintf(num, sizeof(num), "{\"kind\":\"region\",\"frame\":%llu,\"regionId\":%d,\"tasks\":[", frameSequence, regionId);
@@ -751,8 +799,10 @@ formatRegionRecord(unsigned long long frameSequence,
         line.append(std::to_string(taskIds[i]));
     }
     std::snprintf(num, sizeof(num),
-                  "],\"uploadMs\":%.6f,\"uploadBytes\":%llu,\"kernelMs\":%.6f,\"downloadMs\":%.6f,\"downloadBytes\":%llu}\n",
-                  uploadMs, uploadBytes, kernelMs, downloadMs, downloadBytes);
+                  "],\"uploadMs\":%.6f,\"uploadBytes\":%llu,\"kernelMs\":%.6f,\"downloadMs\":%.6f,\"downloadBytes\":%llu,"
+                  "\"wallMs\":%.6f,\"strips\":%d,\"stripsInFlight\":%d,\"transferHiddenMs\":%.6f,\"transferExposedMs\":%.6f}\n",
+                  times.uploadMs, times.uploadBytes, times.kernelMs, times.downloadMs, times.downloadBytes,
+                  times.wallMs, times.strips, times.stripsInFlight, times.transferHiddenMs, times.transferExposedMs);
     line.append(num);
 
     return line;

@@ -237,6 +237,18 @@ public:
         double downloadMs = 0.;
         unsigned long long downloadBytes = 0;
 
+        // The region's time on its thread, from its first upload to its last download landing.
+        double wallMs = 0.;
+
+        // The strips the region ran as, 0 when it ran whole, and the most of them in flight at once.
+        int strips = 0;
+        int stripsInFlight = 0;
+
+        // Transfer time on the device spent while compute ran, so hidden by it, and the rest, which the region waited
+        // for. Only a pipelined region hides any.
+        double transferHiddenMs = 0.;
+        double transferExposedMs = 0.;
+
         // The device was lost: the scheduler renders the whole frame again on the CPU, whatever the body returned.
         bool deviceLost = false;
 

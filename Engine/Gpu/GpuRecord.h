@@ -3,6 +3,7 @@
 #include "GpuBuffer.h"
 #include "GpuBufferPool.h"
 #include "GpuKernelRegistry.h"
+#include "GpuTransfer.h"
 
 #include <array>
 #include <cstddef>
@@ -61,8 +62,24 @@ public:
     // must be multiples of 4, and the size at most 65536 bytes.
     GpuStatus updateBuffer(const GpuBuffer& dst, VkDeviceSize offset, std::span<const std::byte> data);
 
+    // The compute-side halves of the ownership transfers of uploads and downloads made with
+    // ComputeHandoff::Record; the range must match the transfer's exactly.
+    void acquireFromTransfer(const GpuTransfer& transfer, const GpuBuffer& buffer, VkDeviceSize offset,
+                             VkDeviceSize bytes);
+    void releaseToTransfer(const GpuTransfer& transfer, const GpuBuffer& buffer, VkDeviceSize offset,
+                           VkDeviceSize bytes);
+
+    void resetQueries(VkQueryPool pool, uint32_t first, uint32_t count);
+    // Writes the time at which every command recorded before it, in this buffer and before it on the queue, is done.
+    void writeTimestamp(VkQueryPool pool, uint32_t query);
+
     // Ends the buffer, submits it and blocks until the queue finished it. The context cannot record afterwards.
     GpuStatus submitAndWait(uint64_t timeoutNs = 30'000'000'000ull);
+
+    // Ends the buffer and submits it once every wait is reached, signalling `signal` when it is done, without
+    // blocking. The context holds the command buffer and its scratch buffers, so it must not be destroyed before
+    // `signal` is reached.
+    GpuStatus submit(std::span<const TimelineValue> waits, TimelineValue signal);
 
 private:
     GpuRecordContext(GpuKernelRegistry& registry, GpuBufferPool* pool)

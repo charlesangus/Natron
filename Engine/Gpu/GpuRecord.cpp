@@ -129,6 +129,73 @@ GpuRecordContext::updateBuffer(const GpuBuffer& dst, VkDeviceSize offset, std::s
     return {};
 }
 
+void
+GpuRecordContext::acquireFromTransfer(const GpuTransfer& transfer, const GpuBuffer& buffer, VkDeviceSize offset,
+                                      VkDeviceSize bytes)
+{
+    if (open_) {
+        transfer.recordComputeAcquire(cmd_, buffer, offset, bytes);
+    }
+}
+
+void
+GpuRecordContext::releaseToTransfer(const GpuTransfer& transfer, const GpuBuffer& buffer, VkDeviceSize offset,
+                                    VkDeviceSize bytes)
+{
+    if (open_) {
+        transfer.recordComputeRelease(cmd_, buffer, offset, bytes);
+    }
+}
+
+void
+GpuRecordContext::resetQueries(VkQueryPool pool, uint32_t first, uint32_t count)
+{
+    if (open_ && pool != VK_NULL_HANDLE && count > 0) {
+        vkCmdResetQueryPool(cmd_, pool, first, count);
+    }
+}
+
+void
+GpuRecordContext::writeTimestamp(VkQueryPool pool, uint32_t query)
+{
+    if (open_ && pool != VK_NULL_HANDLE) {
+        vkCmdWriteTimestamp2(cmd_, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pool, query);
+    }
+}
+
+GpuStatus
+GpuRecordContext::submit(std::span<const TimelineValue> waits, TimelineValue signal)
+{
+    if (!open_) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::submit: context already submitted" };
+    }
+    if (!signal) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::submit: no semaphore to signal" };
+    }
+    open_ = false;
+    GpuDevice& device = registry_.device();
+    if (GpuStatus s = device.check(vkEndCommandBuffer(cmd_), "vkEndCommandBuffer"); !s) {
+        return s;
+    }
+    std::vector<VkSemaphoreSubmitInfo> waitInfos;
+    for (const TimelineValue& w : waits) {
+        if (w) {
+            waitInfos.push_back(w.waitInfo());
+        }
+    }
+    const VkSemaphoreSubmitInfo signalInfo = signal.waitInfo();
+    VkCommandBufferSubmitInfo ci { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+    ci.commandBuffer = cmd_;
+    VkSubmitInfo2 info { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+    info.waitSemaphoreInfoCount = static_cast<uint32_t>(waitInfos.size());
+    info.pWaitSemaphoreInfos = waitInfos.data();
+    info.commandBufferInfoCount = 1;
+    info.pCommandBufferInfos = &ci;
+    info.signalSemaphoreInfoCount = 1;
+    info.pSignalSemaphoreInfos = &signalInfo;
+    return device.submit(QueueKind::Compute, std::span<const VkSubmitInfo2>(&info, 1), VK_NULL_HANDLE);
+}
+
 GpuStatus
 GpuRecordContext::submitAndWait(uint64_t timeoutNs)
 {

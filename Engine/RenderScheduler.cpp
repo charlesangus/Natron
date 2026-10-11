@@ -1241,8 +1241,18 @@ RenderScheduler::executeRegion(const FramePtr& frame,
                 const long long memberNs = (i < report.memberNs.size()) ? report.memberNs[i] : 0;
                 lines += formatTaskRecord(member, effect, frame->sequence, members[i], memberNs, ok);
             }
-            lines += formatRegionRecord(frame->sequence, region, members, report.uploadMs, report.uploadBytes, report.kernelMs,
-                                        report.downloadMs, report.downloadBytes);
+            GpuRegionTimes times;
+            times.uploadMs = report.uploadMs;
+            times.uploadBytes = report.uploadBytes;
+            times.kernelMs = report.kernelMs;
+            times.downloadMs = report.downloadMs;
+            times.downloadBytes = report.downloadBytes;
+            times.wallMs = report.wallMs;
+            times.strips = report.strips;
+            times.stripsInFlight = report.stripsInFlight;
+            times.transferHiddenMs = report.transferHiddenMs;
+            times.transferExposedMs = report.transferExposedMs;
+            lines += formatRegionRecord(frame->sequence, region, members, times);
             sink.append(lines);
         }
         deviceLost = report.deviceLost && (retCode != EffectInstance::eRenderRoIRetCodeAborted);

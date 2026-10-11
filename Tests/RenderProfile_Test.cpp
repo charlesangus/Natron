@@ -298,8 +298,21 @@ TEST(RenderStatsGpuCounters, RegionRecordFormat)
     tasks.push_back(1);
     tasks.push_back(2);
 
-    EXPECT_EQ(formatRegionRecord(7, 3, tasks, 1.5, 64, 2.25, 0.5, 32),
+    GpuRegionTimes times;
+    times.uploadMs = 1.5;
+    times.uploadBytes = 64;
+    times.kernelMs = 2.25;
+    times.downloadMs = 0.5;
+    times.downloadBytes = 32;
+    times.wallMs = 3.;
+    times.strips = 4;
+    times.stripsInFlight = 3;
+    times.transferHiddenMs = 1.75;
+    times.transferExposedMs = 0.25;
+
+    EXPECT_EQ(formatRegionRecord(7, 3, tasks, times),
               "{\"kind\":\"region\",\"frame\":7,\"regionId\":3,\"tasks\":[1,2],"
               "\"uploadMs\":1.500000,\"uploadBytes\":64,\"kernelMs\":2.250000,"
-              "\"downloadMs\":0.500000,\"downloadBytes\":32}\n");
+              "\"downloadMs\":0.500000,\"downloadBytes\":32,\"wallMs\":3.000000,\"strips\":4,"
+              "\"stripsInFlight\":3,\"transferHiddenMs\":1.750000,\"transferExposedMs\":0.250000}\n");
 }

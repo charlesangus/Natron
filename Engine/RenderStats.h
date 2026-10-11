@@ -187,6 +187,19 @@ public:
     void noteGpuStripHalving();
 
     /**
+     * @brief Counts one region run again with its strips one at a time, after it ran out of device memory with several
+     * in flight.
+     **/
+    void noteGpuStripPipelineSerialized();
+
+    /**
+     * @brief Counts one region whose strips ran pipelined, with the transfer time the device hid behind its compute
+     * and the transfer time it left exposed.
+     **/
+    void noteGpuPipelinedRegion(double transferHiddenMs,
+                                double transferExposedMs);
+
+    /**
      * @brief Raises the high-water mark of bytes resident on the device.
      **/
     void notePeakDeviceBytes(unsigned long long bytes);
@@ -199,6 +212,10 @@ public:
     int getGpuRegionsRun() const;
     int getGpuRegionRetries() const;
     int getGpuStripHalvings() const;
+    int getGpuStripPipelinesSerialized() const;
+    int getGpuPipelinedRegions() const;
+    double getGpuTransferHiddenMs() const;
+    double getGpuTransferExposedMs() const;
     std::map<std::string, int> getGpuTasksPerNode() const;
     std::map<std::string, int> getCpuFallbackReasons() const;
     unsigned long long getPeakDeviceBytes() const;
@@ -226,17 +243,28 @@ private:
 };
 
 /**
+ * @brief What a GPU region spent its time on. Times are milliseconds, sizes bytes. strips is 0 for a region run whole.
+ **/
+struct GpuRegionTimes {
+    double uploadMs = 0.;
+    unsigned long long uploadBytes = 0;
+    double kernelMs = 0.;
+    double downloadMs = 0.;
+    unsigned long long downloadBytes = 0;
+    double wallMs = 0.;
+    int strips = 0;
+    int stripsInFlight = 0;
+    double transferHiddenMs = 0.;
+    double transferExposedMs = 0.;
+};
+
+/**
  * @brief One GPU region of a render profile, as a JSON-lines record ending in a newline.
- * Times are milliseconds, sizes bytes.
  **/
 std::string formatRegionRecord(unsigned long long frameSequence,
                                int regionId,
                                const std::vector<int>& taskIds,
-                               double uploadMs,
-                               unsigned long long uploadBytes,
-                               double kernelMs,
-                               double downloadMs,
-                               unsigned long long downloadBytes);
+                               const GpuRegionTimes& times);
 
 NATRON_NAMESPACE_EXIT
 

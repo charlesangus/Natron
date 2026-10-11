@@ -28,10 +28,13 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <deque>
 #include <exception>
 #include <limits>
 #include <list>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -254,6 +257,24 @@ struct Member {
     double weight = 1.;
 };
 
+/**
+ * @brief A strip of a pipelined region from its uploads until its downloads land: the transfers and compute it waits
+ * for before its buffers are reused, and the record context its command buffer and scratch buffers live in until then.
+ **/
+struct StripInFlight {
+    std::size_t index = 0;
+    std::unique_ptr<gpu::GpuRecordContext> recorder;
+    gpu::TimelineValue computeDone;
+    std::vector<gpu::TimelineValue> transfers;
+    bool downloadsIssued = false;
+
+    // By slot: the buffer the strip used for it, if any.
+    std::vector<gpu::GpuBufferHandle> handles;
+
+    // Buffers the strip's members released to one another.
+    std::vector<gpu::GpuBufferHandle> spare;
+};
+
 class RegionRun {
 public:
     RegionRun(const FrameRenderContextPtr& context,
@@ -261,6 +282,7 @@ public:
               int regionIndex,
               gpu::GpuRuntime& runtime,
               int forcedRows,
+              bool allowPipeline,
               RenderScheduler::RegionReport* report)
         : _context(context)
         , _graph(graph)
@@ -270,6 +292,7 @@ public:
         , _stats(context->getStats())
         , _report(report)
         , _forcedRows(forcedRows)
+        , _allowPipeline(allowPipeline)
         , _failedNode()
         , _failure()
         , _failureKind(FailureKind::None)
@@ -279,6 +302,12 @@ public:
     ~RegionRun()
     {
         drain();
+        if (_queries) {
+            vkDestroyQueryPool(_runtime.device().device(), _queries, nullptr);
+        }
+        if (_computeTimeline) {
+            vkDestroySemaphore(_runtime.device().device(), _computeTimeline, nullptr);
+        }
     }
 
     RegionRun(const RegionRun&) = delete;
@@ -289,6 +318,11 @@ public:
         std::vector<GpuStrip> strips;
         if (!plan() || !resolveInputs() || !planStrips(&strips)) {
             return failed();
+        }
+        const Clock::time_point begin = Clock::now();
+        if (_report) {
+            _report->strips = (int)strips.size();
+            _report->stripsInFlight = strips.empty() ? 0 : _inFlight;
         }
         if (strips.empty()) {
             if (!upload()) {
@@ -305,9 +339,15 @@ public:
                 return failed();
             }
         } else {
-            const EffectInstance::RenderRoIRetCode recorded = recordStrips(strips);
+            const EffectInstance::RenderRoIRetCode recorded = (_inFlight > 1) ? pipelineStrips(strips) : recordStrips(strips);
             if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
                 return (recorded == EffectInstance::eRenderRoIRetCodeFailed) ? failed() : recorded;
+            }
+        }
+        if (_report) {
+            _report->wallMs = msBetween(begin, Clock::now());
+            if (_inFlight <= 1) {
+                _report->transferExposedMs = _report->uploadMs + _report->downloadMs;
             }
         }
         if ( isAborted() ) {
@@ -355,6 +395,12 @@ public:
     int stripRows() const
     {
         return _stripRows;
+    }
+
+    // How many strips the run was planned to hold in flight at once; 1 for a run planned whole or serial.
+    int stripsInFlight() const
+    {
+        return _inFlight;
     }
 
 private:
@@ -615,6 +661,18 @@ private:
 
             return true;
         }
+        best = _recycled.size();
+        for (std::size_t i = 0; i < _recycled.size(); ++i) {
+            if ((_recycled[i].size() >= size) && ((best == _recycled.size()) || (_recycled[i].size() < _recycled[best].size()))) {
+                best = i;
+            }
+        }
+        if (best < _recycled.size()) {
+            *out = _recycled[best];
+            _recycled.erase(_recycled.begin() + (std::ptrdiff_t)best);
+
+            return true;
+        }
         const gpu::GpuStatus status = _runtime.acquire(size, *out);
         if (!status) {
             return failGpu(memberTask, "cannot allocate device memory", status);
@@ -634,6 +692,17 @@ private:
         }
         for (const gpu::GpuBufferHandle& spare : _spare) {
             bytes += (std::size_t)spare.size();
+        }
+        for (const gpu::GpuBufferHandle& recycled : _recycled) {
+            bytes += (std::size_t)recycled.size();
+        }
+        for (const StripInFlight& flight : _inFlightStrips) {
+            for (const gpu::GpuBufferHandle& handle : flight.handles) {
+                bytes += handle ? (std::size_t)handle.size() : 0;
+            }
+            for (const gpu::GpuBufferHandle& handle : flight.spare) {
+                bytes += (std::size_t)handle.size();
+            }
         }
         _peakDeviceBytes = std::max(_peakDeviceBytes, bytes);
     }
@@ -1045,13 +1114,14 @@ private:
         limits.budgetBytes = gpuStripBudgetBytes(_runtime.pool().budget(), _runtime.device().info().deviceLocalHeapSize);
         limits.maxRows = (gpuStripRowsOverride() > 0) ? gpuStripRowsOverride() : kGpuStripDefaultRows;
         limits.forcedRows = _forcedRows;
+        limits.maxInFlight = pipelineAllowed() ? kGpuStripMaxInFlight : 1;
         limits.allocationBytes = [](std::uint64_t bytes) {
             return (std::uint64_t)gpu::GpuBufferPool::sizeClass(bytes);
         };
 
         const GpuStripGraph graph = stripGraph();
         int rows = 0;
-        switch (planGpuStrips(graph, limits, strips, &rows)) {
+        switch (planGpuStrips(graph, limits, strips, &rows, &_inFlight)) {
         case GpuStripResult::Whole:
             _stripRows = std::max(0, gpuStripBands(graph).height());
             break;
@@ -1101,28 +1171,58 @@ private:
         return view;
     }
 
-    EffectInstance::RenderRoIRetCode recordStrips(const std::vector<GpuStrip>& strips)
+    // The read accesses of the inputs uploaded from RAM, by slot, and the RAM images the strips' interiors land in.
+    bool prepareStripImages(std::vector<std::shared_ptr<Image::ReadAccess>>* sources)
     {
-        std::vector<std::shared_ptr<Image::ReadAccess>> sources(_slots.size());
-
+        sources->assign(_slots.size(), std::shared_ptr<Image::ReadAccess>());
         for (std::size_t s = 0; s < _slots.size(); ++s) {
             Slot& slot = _slots[s];
             if (slot.source) {
-                sources[s] = std::make_shared<Image::ReadAccess>(slot.source.get());
+                (*sources)[s] = std::make_shared<Image::ReadAccess>(slot.source.get());
             }
             if (slot.download && !slot.pinned) {
                 const int producerTask = (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask;
                 slot.downloadImage = slot.layout.newRamImage();
                 if (!slot.downloadImage) {
-                    fail(producerTask, "cannot allocate the downloaded image");
-
-                    return EffectInstance::eRenderRoIRetCodeFailed;
+                    return fail(producerTask, "cannot allocate the downloaded image");
                 }
                 slot.downloadAccess = std::make_shared<Image::WriteAccess>(slot.downloadImage.get());
             }
         }
         if (_report) {
             _report->memberNs.assign(_members.size(), 0);
+        }
+
+        return true;
+    }
+
+    // Once every strip has landed: the outputs are whole in RAM.
+    bool finishStripImages()
+    {
+        for (Slot& slot : _slots) {
+            if (!slot.download) {
+                continue;
+            }
+            if (slot.pinned) {
+                if (!downloadPinned(slot)) {
+                    return false;
+                }
+                continue;
+            }
+            slot.downloadAccess.reset();
+            slot.downloaded = slot.downloadImage;
+            slot.downloadImage.reset();
+        }
+
+        return true;
+    }
+
+    EffectInstance::RenderRoIRetCode recordStrips(const std::vector<GpuStrip>& strips)
+    {
+        std::vector<std::shared_ptr<Image::ReadAccess>> sources;
+
+        if (!prepareStripImages(&sources)) {
+            return EffectInstance::eRenderRoIRetCodeFailed;
         }
         for (const GpuStrip& strip : strips) {
             if (isAborted()) {
@@ -1146,26 +1246,19 @@ private:
                 slot.released = false;
             }
         }
-        for (Slot& slot : _slots) {
-            if (!slot.download) {
-                continue;
-            }
-            if (slot.pinned) {
-                if (!downloadPinned(slot)) {
-                    return EffectInstance::eRenderRoIRetCodeFailed;
-                }
-                continue;
-            }
-            slot.downloadAccess.reset();
-            slot.downloaded = slot.downloadImage;
-            slot.downloadImage.reset();
-        }
 
-        return EffectInstance::eRenderRoIRetCodeOk;
+        return finishStripImages() ? EffectInstance::eRenderRoIRetCodeOk : EffectInstance::eRenderRoIRetCodeFailed;
     } // recordStrips
 
+    /**
+     * @brief Uploads the rows of strip each input reads into a buffer of its slot. Run serially, it waits for them;
+     * pipelined, it leaves them in flight, adds them to flight's transfers and to pending, which the strip's compute
+     * waits on, and leaves the compute queue's half of their ownership transfer to the strip's command buffer.
+     **/
     bool uploadStrip(const GpuStrip& strip,
-                     const std::vector<std::shared_ptr<Image::ReadAccess>>& sources)
+                     const std::vector<std::shared_ptr<Image::ReadAccess>>& sources,
+                     StripInFlight* flight = nullptr,
+                     std::vector<gpu::TimelineValue>* pending = nullptr)
     {
         const Clock::time_point begin = Clock::now();
         std::vector<gpu::TimelineValue> uploads;
@@ -1189,7 +1282,11 @@ private:
                 return fail(_graph.tasks[slot.externalTask].key.node, "its image has no pixels");
             }
             gpu::StreamOptions options;
-            options.handoff = gpu::ComputeHandoff::Submit;
+            options.handoff = flight ? gpu::ComputeHandoff::Record : gpu::ComputeHandoff::Submit;
+            if (flight && _queries && (_uploadQuery[s] >= 0)) {
+                options.timestampPool = _queries;
+                options.timestampQuery = queryOf(flight->index, _uploadQuery[s]);
+            }
             gpu::TimelineValue done;
             // upload() only reads the host range.
             const gpu::GpuStatus status = _runtime.upload({ const_cast<unsigned char*>(data), bytes }, slot.handle.buffer(), 0, done, options);
@@ -1198,7 +1295,12 @@ private:
 
                 return failGpu(slot.externalTask, "upload failed", status);
             }
-            uploads.push_back(done);
+            if (flight) {
+                flight->transfers.push_back(done);
+                pending->push_back(done);
+            } else {
+                uploads.push_back(done);
+            }
             slot.view = stripView(&slot.handle.buffer(), slot, rect);
             if (_stats) {
                 _stats->noteUpload(bytes);
@@ -1206,6 +1308,9 @@ private:
             if (_report) {
                 _report->uploadBytes += bytes;
             }
+        }
+        if (flight) {
+            return true;
         }
         for (const gpu::TimelineValue& done : uploads) {
             const gpu::GpuStatus status = _runtime.wait(done);
@@ -1222,12 +1327,14 @@ private:
         return true;
     } // uploadStrip
 
-    EffectInstance::RenderRoIRetCode recordStrip(const GpuStrip& strip)
+    /**
+     * @brief Records the members that render a part of strip into recorder, in order, with a barrier between them,
+     * appending their positions to segment.
+     **/
+    EffectInstance::RenderRoIRetCode recordStripMembers(const GpuStrip& strip,
+                                                        gpu::GpuRecordContext& recorder,
+                                                        std::vector<int>* segment)
     {
-        std::unique_ptr<gpu::GpuRecordContext> recorder;
-        std::vector<int> segment;
-        Clock::time_point segmentBegin = Clock::now();
-
         for (std::size_t i = 0; i < _members.size(); ++i) {
             if (isAborted()) {
                 return EffectInstance::eRenderRoIRetCodeAborted;
@@ -1237,16 +1344,8 @@ private:
                 continue;
             }
             const RectI& rect = strip.rects[member.outSlot];
-            if (!recorder) {
-                const gpu::GpuStatus status = _runtime.newRecordContext(recorder);
-                if (!status) {
-                    failGpu(member.task, "cannot record device work", status);
-
-                    return EffectInstance::eRenderRoIRetCodeFailed;
-                }
-                segmentBegin = Clock::now();
-            } else if (!segment.empty()) {
-                recorder->computeBarrier();
+            if (!segment->empty()) {
+                recorder.computeBarrier();
             }
             Slot& out = _slots[member.outSlot];
             if (!acquireBuffer(rowBytes(out) * (std::size_t)rect.height(), member.task, &out.handle)) {
@@ -1254,7 +1353,7 @@ private:
             }
             out.view = stripView(&out.handle.buffer(), out, rect);
 
-            GpuRenderArgs args(*recorder);
+            GpuRenderArgs args(recorder);
             args.query = member.query;
             args.outputRect = rect;
             args.inputs.resize(member.inputSlots.size());
@@ -1279,12 +1378,37 @@ private:
                 fail(member.task, "recording threw");
             }
             if (status != eStatusOK) {
-                failRecording(member.task, *recorder);
+                failRecording(member.task, recorder);
 
                 return EffectInstance::eRenderRoIRetCodeFailed;
             }
-            segment.push_back((int)i);
+            segment->push_back((int)i);
             releaseStripSlotsReadLastBy((int)i);
+        }
+
+        return EffectInstance::eRenderRoIRetCodeOk;
+    } // recordStripMembers
+
+    int firstMemberTask() const
+    {
+        return _members.empty() ? -1 : _members.front().task;
+    }
+
+    EffectInstance::RenderRoIRetCode recordStrip(const GpuStrip& strip)
+    {
+        std::unique_ptr<gpu::GpuRecordContext> recorder;
+        std::vector<int> segment;
+
+        const gpu::GpuStatus status = _runtime.newRecordContext(recorder);
+        if (!status) {
+            failGpu(firstMemberTask(), "cannot record device work", status);
+
+            return EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        const Clock::time_point segmentBegin = Clock::now();
+        const EffectInstance::RenderRoIRetCode recorded = recordStripMembers(strip, *recorder, &segment);
+        if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
+            return recorded;
         }
         if (!submit(&recorder, segment, segmentBegin)) {
             return EffectInstance::eRenderRoIRetCodeFailed;
@@ -1309,49 +1433,81 @@ private:
         }
     }
 
-    bool downloadStrip(const GpuStrip& strip)
+    // The row offset and the bytes of the interior of slot s that strip downloads; 0 bytes when it downloads none.
+    std::pair<VkDeviceSize, std::size_t> interiorRange(const GpuStrip& strip,
+                                                       std::size_t s) const
+    {
+        const Slot& slot = _slots[s];
+        const RectI& interior = strip.interiors[s];
+        if (!slot.download || slot.pinned || interior.isNull()) {
+            return std::make_pair(VkDeviceSize(0), std::size_t(0));
+        }
+        const std::size_t lineBytes = rowBytes(slot);
+
+        return std::make_pair((VkDeviceSize)lineBytes * (VkDeviceSize)(interior.y1 - strip.rects[s].y1), lineBytes * (std::size_t)interior.height());
+    }
+
+    /**
+     * @brief Downloads the interior rows of strip from the buffers of its slots: the current ones, waiting for them, or
+     * pipelined, those flight holds, after its compute and without waiting.
+     **/
+    bool downloadStrip(const GpuStrip& strip,
+                       StripInFlight* flight = nullptr)
     {
         const Clock::time_point begin = Clock::now();
         std::vector<gpu::TimelineValue> downloads;
 
         for (std::size_t s = 0; s < _slots.size(); ++s) {
             Slot& slot = _slots[s];
-            const RectI& interior = strip.interiors[s];
-            if (!slot.download || slot.pinned || interior.isNull()) {
+            const std::pair<VkDeviceSize, std::size_t> range = interiorRange(strip, s);
+            if (range.second == 0) {
                 continue;
             }
             const int producerTask = (slot.producer >= 0) ? _members[slot.producer].task : slot.externalTask;
-            const RectI& rect = strip.rects[s];
-            const std::size_t lineBytes = rowBytes(slot);
-            const std::size_t bytes = lineBytes * (std::size_t)interior.height();
-            const VkDeviceSize offset = (VkDeviceSize)lineBytes * (VkDeviceSize)(interior.y1 - rect.y1);
-            if (!slot.handle || (offset + bytes > (std::size_t)slot.handle.size())) {
+            const gpu::GpuBufferHandle& handle = flight ? flight->handles[s] : slot.handle;
+            if (!handle || (range.first + range.second > (std::size_t)handle.size())) {
                 drainUploads(downloads);
 
                 return fail(producerTask, "the strip was not rendered on the device");
             }
-            unsigned char* data = slot.downloadAccess->pixelAt(slot.layout.bounds.x1, interior.y1);
+            unsigned char* data = slot.downloadAccess->pixelAt(slot.layout.bounds.x1, strip.interiors[s].y1);
             if (!data) {
                 drainUploads(downloads);
 
                 return fail(producerTask, "the downloaded image has no pixels");
             }
             gpu::StreamOptions options;
-            options.handoff = gpu::ComputeHandoff::Submit;
+            options.handoff = flight ? gpu::ComputeHandoff::Record : gpu::ComputeHandoff::Submit;
+            if (flight) {
+                options.waits = std::span<const gpu::TimelineValue>(&flight->computeDone, 1);
+                if (_queries && (_downloadQuery[s] >= 0)) {
+                    options.timestampPool = _queries;
+                    options.timestampQuery = queryOf(flight->index, _downloadQuery[s]);
+                }
+            }
             gpu::TimelineValue done;
-            const gpu::GpuStatus status = _runtime.download(slot.handle.buffer(), offset, { data, bytes }, done, options);
+            const gpu::GpuStatus status = _runtime.download(handle.buffer(), range.first, { data, range.second }, done, options);
             if (!status) {
                 drainUploads(downloads);
 
                 return failGpu(producerTask, "download failed", status);
             }
-            downloads.push_back(done);
+            if (flight) {
+                flight->transfers.push_back(done);
+            } else {
+                downloads.push_back(done);
+            }
             if (_stats) {
-                _stats->noteDownload(bytes);
+                _stats->noteDownload(range.second);
             }
             if (_report) {
-                _report->downloadBytes += bytes;
+                _report->downloadBytes += range.second;
             }
+        }
+        if (flight) {
+            flight->downloadsIssued = true;
+
+            return true;
         }
         for (const gpu::TimelineValue& done : downloads) {
             const gpu::GpuStatus status = _runtime.wait(done);
@@ -1367,6 +1523,373 @@ private:
 
         return true;
     } // downloadStrip
+
+    /**
+     * @brief Whether the strips may run pipelined on this device. Every strip in flight holds an open record context,
+     * and without push descriptors the kernels' descriptor pools are reset only once no context is open, which a
+     * pipeline would never let happen.
+     **/
+    bool pipelineAllowed() const
+    {
+        const gpu::GpuDeviceInfo& info = _runtime.device().info();
+
+        if (!_allowPipeline || !info.pushDescriptor) {
+            return false;
+        }
+        switch (gpuStripPipelining()) {
+        case GpuStripPipelining::On:
+            return true;
+        case GpuStripPipelining::Off:
+            return false;
+        case GpuStripPipelining::Auto:
+            break;
+        }
+
+        return !info.transferUsesComputeQueue;
+    }
+
+    std::uint32_t queryOf(std::size_t strip,
+                          int pair) const
+    {
+        return (std::uint32_t)(strip * _queriesPerStrip) + (std::uint32_t)pair * 2;
+    }
+
+    /**
+     * @brief The timeline the strips' compute signals and, when the device can time both its queues, a query pool
+     * with a pair of timestamps per strip for its compute and for each of its uploads and downloads. Timing is
+     * optional: without it, the region still runs.
+     **/
+    bool startPipeline(std::size_t nStrips)
+    {
+        gpu::GpuDevice& device = _runtime.device();
+        const gpu::GpuStatus status = _runtime.note(device.createTimelineSemaphore(0, _computeTimeline));
+        if (!status) {
+            _computeTimeline = VK_NULL_HANDLE;
+
+            return failGpu(firstMemberTask(), "cannot create the strips' timeline", status);
+        }
+        if (!_runtime.transfer().timestampsSupported()) {
+            return true;
+        }
+        int pairs = 1;
+        _uploadQuery.assign(_slots.size(), -1);
+        _downloadQuery.assign(_slots.size(), -1);
+        for (std::size_t s = 0; s < _slots.size(); ++s) {
+            if (_slots[s].source) {
+                _uploadQuery[s] = pairs++;
+            }
+            if (_slots[s].download && !_slots[s].pinned) {
+                _downloadQuery[s] = pairs++;
+            }
+        }
+        _queriesPerStrip = (std::uint32_t)pairs * 2;
+        VkQueryPoolCreateInfo info { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+        info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        info.queryCount = (std::uint32_t)nStrips * _queriesPerStrip;
+        if (vkCreateQueryPool(device.device(), &info, nullptr, &_queries) != VK_SUCCESS) {
+            _queries = VK_NULL_HANDLE;
+
+            return true;
+        }
+        // The device does not enable host query resets, and the queries are written from both queues, so they are
+        // reset on the device before any strip starts.
+        std::unique_ptr<gpu::GpuRecordContext> reset;
+        gpu::GpuStatus resetStatus = _runtime.newRecordContext(reset);
+        if (resetStatus) {
+            reset->resetQueries(_queries, 0, info.queryCount);
+            resetStatus = _runtime.note(reset->submitAndWait());
+        }
+        if (!resetStatus) {
+            if (_runtime.isLost()) {
+                return failGpu(firstMemberTask(), "cannot reset the strips' timestamps", resetStatus);
+            }
+            vkDestroyQueryPool(device.device(), _queries, nullptr);
+            _queries = VK_NULL_HANDLE;
+        }
+
+        return true;
+    } // startPipeline
+
+    /**
+     * @brief Records strip into a command buffer of its own, which takes its uploaded inputs over from the transfer
+     * family, renders the members and hands the interiors it downloads back, then submits it to run once uploads are
+     * done, without waiting. flight takes the buffers the strip used.
+     **/
+    EffectInstance::RenderRoIRetCode submitStrip(const GpuStrip& strip,
+                                                 StripInFlight* flight,
+                                                 const std::vector<gpu::TimelineValue>& uploads)
+    {
+        const gpu::GpuStatus created = _runtime.newRecordContext(flight->recorder);
+        if (!created) {
+            failGpu(firstMemberTask(), "cannot record device work", created);
+
+            return EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        gpu::GpuRecordContext& recorder = *flight->recorder;
+        const gpu::GpuTransfer& transfer = _runtime.transfer();
+        if (_queries) {
+            recorder.writeTimestamp(_queries, queryOf(flight->index, 0));
+        }
+        for (std::size_t s = 0; s < _slots.size(); ++s) {
+            const Slot& slot = _slots[s];
+            if (slot.source && !strip.rects[s].isNull() && slot.handle) {
+                recorder.acquireFromTransfer(transfer, slot.handle.buffer(), 0, rowBytes(slot) * (std::size_t)strip.rects[s].height());
+            }
+        }
+        const EffectInstance::RenderRoIRetCode recorded = recordStripMembers(strip, recorder, &_stripSegments[flight->index]);
+        if (recorded != EffectInstance::eRenderRoIRetCodeOk) {
+            return recorded;
+        }
+        for (std::size_t s = 0; s < _slots.size(); ++s) {
+            const std::pair<VkDeviceSize, std::size_t> range = interiorRange(strip, s);
+            if ((range.second > 0) && _slots[s].handle) {
+                recorder.releaseToTransfer(transfer, _slots[s].handle.buffer(), range.first, range.second);
+            }
+        }
+        if (_queries) {
+            recorder.writeTimestamp(_queries, queryOf(flight->index, 0) + 1);
+        }
+        const gpu::TimelineValue done { _computeTimeline, ++_computeValue };
+        const gpu::GpuStatus status = _runtime.note(recorder.submit(uploads, done));
+        if (!status) {
+            failGpu(firstMemberTask(), "the device work failed", status);
+
+            return EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        flight->computeDone = done;
+
+        flight->handles.assign(_slots.size(), gpu::GpuBufferHandle());
+        for (std::size_t s = 0; s < _slots.size(); ++s) {
+            Slot& slot = _slots[s];
+            if (!slot.pinned) {
+                flight->handles[s] = slot.handle;
+                slot.handle = gpu::GpuBufferHandle();
+                slot.view = GpuImageView();
+            }
+            slot.released = false;
+        }
+        flight->spare.swap(_spare);
+        _spare.clear();
+
+        return EffectInstance::eRenderRoIRetCodeOk;
+    } // submitStrip
+
+    /**
+     * @brief Waits for the oldest strip in flight to land, then keeps its buffers for the next strips; they are free
+     * of any device work by then.
+     **/
+    bool retireStrip(const std::vector<GpuStrip>& strips)
+    {
+        StripInFlight& flight = _inFlightStrips.front();
+
+        if (!flight.downloadsIssued && !downloadStrip(strips[flight.index], &flight)) {
+            return false;
+        }
+        gpu::GpuStatus status = _runtime.wait(flight.computeDone);
+        for (std::size_t t = 0; status && (t < flight.transfers.size()); ++t) {
+            status = _runtime.wait(flight.transfers[t]);
+        }
+        if (!status) {
+            return failGpu(firstMemberTask(), "the strip failed on the device", status);
+        }
+        for (gpu::GpuBufferHandle& handle : flight.handles) {
+            if (handle) {
+                _recycled.push_back(handle);
+            }
+        }
+        for (gpu::GpuBufferHandle& handle : flight.spare) {
+            _recycled.push_back(handle);
+        }
+        _inFlightStrips.pop_front();
+
+        return true;
+    }
+
+    /**
+     * @brief Runs the strips as a pipeline of _inFlight strips at most: strip k's compute waits on its uploads on the
+     * device, strip k+1 uploads while it runs, and strip k's downloads are issued once strip k+1 is submitted, so the
+     * compute queue always has the next strip queued behind the one it runs. The host waits only to reuse the buffers
+     * of the oldest strip.
+     **/
+    EffectInstance::RenderRoIRetCode pipelineStrips(const std::vector<GpuStrip>& strips)
+    {
+        std::vector<std::shared_ptr<Image::ReadAccess>> sources;
+
+        _pipelineBegin = Clock::now();
+        _stripSegments.assign(strips.size(), std::vector<int>());
+        if (!prepareStripImages(&sources) || !startPipeline(strips.size())) {
+            return EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        for (std::size_t k = 0; k < strips.size(); ++k) {
+            if (isAborted()) {
+                return EffectInstance::eRenderRoIRetCodeAborted;
+            }
+            while ((int)_inFlightStrips.size() >= _inFlight) {
+                if (!retireStrip(strips)) {
+                    return EffectInstance::eRenderRoIRetCodeFailed;
+                }
+            }
+            _inFlightStrips.emplace_back();
+            StripInFlight& flight = _inFlightStrips.back();
+            flight.index = k;
+            std::vector<gpu::TimelineValue> uploads;
+            if (!uploadStrip(strips[k], sources, &flight, &uploads)) {
+                return EffectInstance::eRenderRoIRetCodeFailed;
+            }
+            const EffectInstance::RenderRoIRetCode submitted = submitStrip(strips[k], &flight, uploads);
+            if (submitted != EffectInstance::eRenderRoIRetCodeOk) {
+                return submitted;
+            }
+            notePeak();
+            gpuStripSubmitted(k);
+            if (_inFlightStrips.size() >= 2) {
+                StripInFlight& previous = _inFlightStrips[_inFlightStrips.size() - 2];
+                if (!previous.downloadsIssued && !downloadStrip(strips[previous.index], &previous)) {
+                    return EffectInstance::eRenderRoIRetCodeFailed;
+                }
+            }
+        }
+        while (!_inFlightStrips.empty()) {
+            if (!retireStrip(strips)) {
+                return EffectInstance::eRenderRoIRetCodeFailed;
+            }
+        }
+        _recycled.clear();
+        if (!finishStripImages()) {
+            return EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        notePipelineTimes(strips.size());
+
+        return EffectInstance::eRenderRoIRetCodeOk;
+    } // pipelineStrips
+
+    typedef std::vector<std::pair<std::uint64_t, std::uint64_t>> Intervals;
+
+    // Sorted, disjoint, and merged where they touched.
+    static Intervals unionOf(Intervals intervals)
+    {
+        std::sort(intervals.begin(), intervals.end());
+        Intervals merged;
+        for (const std::pair<std::uint64_t, std::uint64_t>& interval : intervals) {
+            if (!merged.empty() && (interval.first <= merged.back().second)) {
+                merged.back().second = std::max(merged.back().second, interval.second);
+            } else {
+                merged.push_back(interval);
+            }
+        }
+
+        return merged;
+    }
+
+    static std::uint64_t lengthOf(const Intervals& intervals)
+    {
+        std::uint64_t total = 0;
+        for (const std::pair<std::uint64_t, std::uint64_t>& interval : intervals) {
+            total += interval.second - interval.first;
+        }
+
+        return total;
+    }
+
+    // Both unions of intervals.
+    static std::uint64_t overlapOf(const Intervals& a,
+                                   const Intervals& b)
+    {
+        std::uint64_t total = 0;
+        std::size_t i = 0;
+        std::size_t j = 0;
+        while ((i < a.size()) && (j < b.size())) {
+            const std::uint64_t lo = std::max(a[i].first, b[j].first);
+            const std::uint64_t hi = std::min(a[i].second, b[j].second);
+            if (lo < hi) {
+                total += hi - lo;
+            }
+            if (a[i].second < b[j].second) {
+                ++i;
+            } else {
+                ++j;
+            }
+        }
+
+        return total;
+    }
+
+    /**
+     * @brief Reads the strips' timestamps into the report: device time of the uploads, the compute and the downloads,
+     * and how much of the transfers ran while compute did. Without timestamps, the region's wall time stands for its
+     * compute, which over-charges its members.
+     **/
+    void notePipelineTimes(std::size_t nStrips)
+    {
+        if (!_report) {
+            return;
+        }
+        std::vector<long long> stripNs(nStrips, 0);
+        if (_queries) {
+            const std::uint32_t count = (std::uint32_t)nStrips * _queriesPerStrip;
+            std::vector<std::uint64_t> results((std::size_t)count * 2, 0);
+            vkGetQueryPoolResults(_runtime.device().device(), _queries, 0, count, results.size() * sizeof(std::uint64_t), results.data(), 2 * sizeof(std::uint64_t),
+                                  VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+            const double nsPerTick = _runtime.transfer().timestampPeriodNs();
+            const auto pairOf = [&](std::size_t strip, int pair, std::pair<std::uint64_t, std::uint64_t>* interval) {
+                const std::size_t q = queryOf(strip, pair);
+                if ((results[q * 2 + 1] == 0) || (results[q * 2 + 3] == 0) || (results[q * 2 + 2] < results[q * 2])) {
+                    return false;
+                }
+                *interval = std::make_pair(results[q * 2], results[q * 2 + 2]);
+
+                return true;
+            };
+            const auto msOf = [nsPerTick](std::uint64_t ticks) {
+                return (double)ticks * nsPerTick * 1e-6;
+            };
+            Intervals compute;
+            Intervals transfers;
+            std::uint64_t uploadTicks = 0;
+            std::uint64_t downloadTicks = 0;
+            for (std::size_t k = 0; k < nStrips; ++k) {
+                std::pair<std::uint64_t, std::uint64_t> interval;
+                if (pairOf(k, 0, &interval)) {
+                    compute.push_back(interval);
+                    stripNs[k] = (long long)((double)(interval.second - interval.first) * nsPerTick);
+                }
+                for (std::size_t s = 0; s < _slots.size(); ++s) {
+                    if ((_uploadQuery[s] >= 0) && pairOf(k, _uploadQuery[s], &interval)) {
+                        transfers.push_back(interval);
+                        uploadTicks += interval.second - interval.first;
+                    }
+                    if ((_downloadQuery[s] >= 0) && pairOf(k, _downloadQuery[s], &interval)) {
+                        transfers.push_back(interval);
+                        downloadTicks += interval.second - interval.first;
+                    }
+                }
+            }
+            const Intervals computeBusy = unionOf(compute);
+            const Intervals transferBusy = unionOf(transfers);
+            const std::uint64_t hidden = overlapOf(transferBusy, computeBusy);
+            _report->uploadMs = msOf(uploadTicks);
+            _report->downloadMs = msOf(downloadTicks);
+            _report->kernelMs = msOf(lengthOf(computeBusy));
+            _report->transferHiddenMs = msOf(hidden);
+            _report->transferExposedMs = msOf(lengthOf(transferBusy) - hidden);
+        } else {
+            const long long ns = (long long)(msBetween(_pipelineBegin, Clock::now()) * 1e6);
+            _report->kernelMs = (double)ns * 1e-6;
+            for (std::size_t k = 0; k < nStrips; ++k) {
+                stripNs[k] = ns / (long long)std::max<std::size_t>(1, nStrips);
+            }
+        }
+        for (std::size_t k = 0; k < nStrips; ++k) {
+            const std::vector<int>& segment = _stripSegments[k];
+            double weights = 0.;
+            for (int position : segment) {
+                weights += _members[position].weight;
+            }
+            for (int position : segment) {
+                _report->memberNs[position] += (weights > 0.) ? (long long)((double)stripNs[k] * _members[position].weight / weights) : 0;
+            }
+        }
+    } // notePipelineTimes
 
     bool storeOutputs(std::map<ImageLayerDesc, ImagePtr>* rootPlanes)
     {
@@ -1444,6 +1967,9 @@ private:
         if (_stats) {
             _stats->noteGpuRegionRun();
             _stats->notePeakDeviceBytes(_peakDeviceBytes);
+            if (_inFlight > 1) {
+                _stats->noteGpuPipelinedRegion(_report ? _report->transferHiddenMs : 0., _report ? _report->transferExposedMs : 0.);
+            }
         }
     }
 
@@ -1454,6 +1980,15 @@ private:
         if (_runtime.isLost()) {
             _runtime.device().drainQueues();
         }
+        while (!_inFlightStrips.empty()) {
+            StripInFlight& flight = _inFlightStrips.front();
+            _runtime.wait(flight.computeDone);
+            for (const gpu::TimelineValue& transfer : flight.transfers) {
+                _runtime.wait(transfer);
+            }
+            _inFlightStrips.pop_front();
+        }
+        _recycled.clear();
         for (Slot& slot : _slots) {
             if (slot.downloadImage) {
                 _runtime.wait(slot.downloadDone);
@@ -1480,7 +2015,9 @@ private:
     const RenderStatsPtr _stats;
     RenderScheduler::RegionReport* _report;
     const int _forcedRows;
+    const bool _allowPipeline;
     int _stripRows = 0;
+    int _inFlight = 1;
 
     // Index in _members of each member task, -1 for every other task.
     std::vector<int> _position;
@@ -1490,6 +2027,21 @@ private:
     // Buffers no later member of the submission being recorded reads, reused before a new one is acquired.
     std::vector<gpu::GpuBufferHandle> _spare;
     std::vector<GpuDeviceImagePtr> _unpinAfterSubmit;
+
+    // Pipelined strips: those whose device work may still run, oldest first, and the buffers of those that landed.
+    std::deque<StripInFlight> _inFlightStrips;
+    std::vector<gpu::GpuBufferHandle> _recycled;
+    VkSemaphore _computeTimeline = VK_NULL_HANDLE;
+    std::uint64_t _computeValue = 0;
+    Clock::time_point _pipelineBegin;
+    std::vector<std::vector<int>> _stripSegments;
+
+    // Timestamps of the pipelined strips, when the device writes them on both queues. A strip's pairs are its compute,
+    // then those of the slots _uploadQuery and _downloadQuery number, -1 for a slot without one.
+    VkQueryPool _queries = VK_NULL_HANDLE;
+    std::uint32_t _queriesPerStrip = 0;
+    std::vector<int> _uploadQuery;
+    std::vector<int> _downloadQuery;
     std::size_t _peakDeviceBytes = 0;
     NodePtr _failedNode;
     std::string _failure;
@@ -1537,13 +2089,15 @@ runGpuRegion(const FrameRenderContextPtr& context,
     }
     if (runtime && gpu->isAvailable()) {
         bool evicted = false;
+        bool serial = false;
         int forcedRows = 0;
         for (;;) {
             *report = RenderScheduler::RegionReport();
             RegionRun::FailureKind kind;
             int rows = 0;
+            int inFlight = 1;
             {
-                RegionRun run(context, graph, region, *runtime, forcedRows, report);
+                RegionRun run(context, graph, region, *runtime, forcedRows, !serial, report);
                 const EffectInstance::RenderRoIRetCode code = run.run(rootPlanes);
                 if (code != EffectInstance::eRenderRoIRetCodeFailed) {
                     return code;
@@ -1552,6 +2106,7 @@ runGpuRegion(const FrameRenderContextPtr& context,
                 node = run.failedNode();
                 detail = run.failure();
                 rows = run.stripRows();
+                inFlight = run.stripsInFlight();
             }
             if (runtime->isLost()) {
                 return lost();
@@ -1579,6 +2134,16 @@ runGpuRegion(const FrameRenderContextPtr& context,
                     stats->noteGpuRegionRetry();
                 }
                 logRegion(node, QString::fromUtf8("GPU out of memory; retrying after evicting device buffers: %1").arg(QString::fromUtf8(detail.c_str())));
+                continue;
+            }
+            if (inFlight > 1) {
+                // The same strips one at a time hold a fraction of the buffers.
+                serial = true;
+                forcedRows = rows;
+                if (stats) {
+                    stats->noteGpuStripPipelineSerialized();
+                }
+                logRegion(node, QString::fromUtf8("GPU out of memory; retrying with strips of %1 rows one at a time: %2").arg(rows).arg(QString::fromUtf8(detail.c_str())));
                 continue;
             }
             if (rows <= kGpuStripRowQuantum) {

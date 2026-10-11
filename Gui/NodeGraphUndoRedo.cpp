@@ -1151,6 +1151,14 @@ LoadNodePresetsCommand::undo()
         panel->removeInstances(newChildren);
         panel->addInstances(oldChildren);
     }
+
+    NodesList allNodes;
+    internalNode->getApp()->getProject()->getActiveNodesExpandGroups(&allNodes);
+
+    std::map<std::string, std::string> oldNewScriptNames;
+    internalNode->storeKnobsLinks(*_oldSerialization.front(), oldNewScriptNames);
+    internalNode->restoreKnobsLinks(allNodes, oldNewScriptNames, true); // may not fail
+
     internalNode->getEffectInstance()->incrHashAndEvaluate(true, true);
     internalNode->getApp()->triggerAutoSave();
 }

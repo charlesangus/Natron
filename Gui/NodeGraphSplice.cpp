@@ -153,7 +153,10 @@ planSpliceForSelection(const NodesGuiList& selection)
 
         EffectInstancePtr effect = node->getEffectInstance();
         info.hasNoInputs = (effect && effect->isReader()) || (node->getNInputs() == 0);
-        info.preferredInput = node->getPreferredInputForConnection();
+        // getPreferredInputForConnection() skips taken inputs and falls back to a free Mask, which
+        // would make an already-connected node, or the inner node of a chain, look like an entry.
+        const int connectedPreferred = node->getPreferredInput();
+        info.preferredInput = (connectedPreferred >= 0) ? connectedPreferred : node->getPreferredInputForConnection();
 
         const std::vector<NodeWPtr>& inputs = node->getGuiInputs();
         info.inputIds.reserve(inputs.size());

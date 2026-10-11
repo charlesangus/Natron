@@ -59,6 +59,7 @@
 #include "Gui/NodeGui.h"
 #include "Gui/ScaleSliderQWidget.h"
 #include "Gui/SpinBox.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/TimeLineGui.h"
 #include "Gui/ViewerGL.h"
 
@@ -416,12 +417,8 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->secondRowLayout->setContentsMargins(0, 0, 0, 0);
     _imp->mainLayout->addWidget(_imp->secondSettingsRow);
 
-    QPixmap gainEnabled, gainDisabled;
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_GAIN_ENABLED, pixmapIconSize, &gainEnabled);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_GAIN_DISABLED, pixmapIconSize, &gainDisabled);
     QIcon gainIc;
-    gainIc.addPixmap(gainEnabled, QIcon::Normal, QIcon::On);
-    gainIc.addPixmap(gainDisabled, QIcon::Normal, QIcon::Off);
+    appPTR->getIcon(NATRON_PIXMAP_VIEWER_GAIN_ENABLED, pixmapIconSize, &gainIc);
     _imp->toggleGainButton = new Button(gainIc, QString(), _imp->secondSettingsRow);
     _imp->toggleGainButton->setCheckable(true);
     _imp->toggleGainButton->setChecked(false);
@@ -446,15 +443,11 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->gainSlider->setToolTip(gainTt);
     _imp->secondRowLayout->addWidget(_imp->gainSlider);
 
-    QString autoContrastToolTip( QString::fromUtf8("<p><b>") + tr("Auto-contrast:") + QString::fromUtf8("</b></p><p>") + tr(
-                                     "Automatically adjusts the gain and the offset applied "
-                                     "to the colors of the visible image portion on the viewer.") + QString::fromUtf8("</p>") );
-    QPixmap acOn, acOff;
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_AUTOCONTRAST_DISABLED, pixmapIconSize, &acOff);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_AUTOCONTRAST_ENABLED, pixmapIconSize, &acOn);
+    QString autoContrastToolTip(QString::fromUtf8("<p><b>") + tr("Auto-contrast:") + QString::fromUtf8("</b></p><p>") + tr("Automatically adjusts the gain and the offset applied "
+                                                                                                                           "to the colors of the visible image portion on the viewer.")
+                                + QString::fromUtf8("</p>"));
     QIcon acIc;
-    acIc.addPixmap(acOn, QIcon::Normal, QIcon::On);
-    acIc.addPixmap(acOff, QIcon::Normal, QIcon::Off);
+    appPTR->getIcon(NATRON_PIXMAP_VIEWER_AUTOCONTRAST_ENABLED, pixmapIconSize, &acIc);
     _imp->autoContrast = new Button(acIc, QString(), _imp->secondSettingsRow);
     _imp->autoContrast->setCheckable(true);
     _imp->autoContrast->setChecked(false);
@@ -464,12 +457,8 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->autoContrast->setToolTip(autoContrastToolTip);
     _imp->secondRowLayout->addWidget(_imp->autoContrast);
 
-    QPixmap gammaEnabled, gammaDisabled;
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_GAMMA_ENABLED, &gammaEnabled);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_GAMMA_DISABLED, &gammaDisabled);
     QIcon gammaIc;
-    gammaIc.addPixmap(gammaEnabled, QIcon::Normal, QIcon::On);
-    gammaIc.addPixmap(gammaDisabled, QIcon::Normal, QIcon::Off);
+    appPTR->getIcon(NATRON_PIXMAP_VIEWER_GAMMA_ENABLED, pixmapIconSize, &gammaIc);
     _imp->toggleGammaButton = new Button(gammaIc, QString(), _imp->secondSettingsRow);
     QObject::connect( _imp->toggleGammaButton, SIGNAL(clicked(bool)), this, SLOT(onGammaToggled(bool)) );
     _imp->toggleGammaButton->setCheckable(true);
@@ -513,12 +502,8 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                                  + QString::fromUtf8("</p>"));
     _imp->secondRowLayout->addWidget(_imp->viewerLook);
 
-    QPixmap pixCheckerboardEnabled, pixCheckerboardDisabld;
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_CHECKERBOARD_ENABLED, pixmapIconSize, &pixCheckerboardEnabled);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_CHECKERBOARD_DISABLED, pixmapIconSize, &pixCheckerboardDisabld);
     QIcon icCk;
-    icCk.addPixmap(pixCheckerboardEnabled, QIcon::Normal, QIcon::On);
-    icCk.addPixmap(pixCheckerboardDisabld, QIcon::Normal, QIcon::Off);
+    appPTR->getIcon(NATRON_PIXMAP_VIEWER_CHECKERBOARD_ENABLED, pixmapIconSize, &icCk);
     _imp->checkerboardButton = new Button(icCk, QString(), _imp->secondSettingsRow);
     _imp->checkerboardButton->setFocusPolicy(Qt::NoFocus);
     _imp->checkerboardButton->setCheckable(true);
@@ -807,12 +792,8 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     const QSize timeFormatSize( TO_DPIX(NATRON_LARGE_BUTTON_SIZE), TO_DPIY(NATRON_MEDIUM_BUTTON_SIZE) );
     _imp->timeFormat->setFixedSize(timeFormatSize);
 
-    QPixmap pixFreezeEnabled, pixFreezeDisabled;
-    appPTR->getIcon(NATRON_PIXMAP_FREEZE_ENABLED, &pixFreezeEnabled);
-    appPTR->getIcon(NATRON_PIXMAP_FREEZE_DISABLED, &pixFreezeDisabled);
     QIcon icFreeze;
-    icFreeze.addPixmap(pixFreezeEnabled, QIcon::Normal, QIcon::On);
-    icFreeze.addPixmap(pixFreezeDisabled, QIcon::Normal, QIcon::Off);
+    appPTR->getIcon(NATRON_PIXMAP_FREEZE_ENABLED, pixmapIconSize, &icFreeze);
     _imp->turboButton = new Button(icFreeze, QString(), _imp->playerButtonsContainer);
     _imp->turboButton->setCheckable(true);
     _imp->turboButton->setChecked(false);
@@ -836,21 +817,10 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     QPixmap pixPrevIncr;
     QPixmap pixNextIncr;
     QPixmap pixRefresh;
-    QPixmap pixRefreshActive;
     QPixmap pixCenterViewer;
     QPixmap pixLoopMode;
-    QPixmap pixClipToProjectEnabled;
-    QPixmap pixClipToProjectDisabled;
-    QPixmap pixViewerRoIEnabled;
-    QPixmap pixViewerRoIDisabled;
-    QPixmap pixViewerRs;
-    QPixmap pixViewerRsChecked;
     QPixmap pixInpoint;
     QPixmap pixOutPoint;
-    QPixmap pixPauseEnabled;
-    QPixmap pixPauseDisabled;
-    QPixmap pixFullFrameOn;
-    QPixmap pixFullFrameOff;
 
     appPTR->getIcon(NATRON_PIXMAP_PLAYER_FIRST_FRAME, &pixFirst);
     appPTR->getIcon(NATRON_PIXMAP_PLAYER_PREVIOUS_KEY, &pixPrevKF);
@@ -864,21 +834,10 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     appPTR->getIcon(NATRON_PIXMAP_PLAYER_PREVIOUS_INCR, &pixPrevIncr);
     appPTR->getIcon(NATRON_PIXMAP_PLAYER_NEXT_INCR, &pixNextIncr);
     appPTR->getIcon(NATRON_PIXMAP_VIEWER_REFRESH, &pixRefresh);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_REFRESH_ACTIVE, &pixRefreshActive);
     appPTR->getIcon(NATRON_PIXMAP_VIEWER_CENTER, &pixCenterViewer);
     appPTR->getIcon(NATRON_PIXMAP_PLAYER_LOOP_MODE, &pixLoopMode);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_CLIP_TO_PROJECT_ENABLED, &pixClipToProjectEnabled);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_CLIP_TO_PROJECT_DISABLED, &pixClipToProjectDisabled);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_ROI_ENABLED, &pixViewerRoIEnabled);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_ROI_DISABLED, &pixViewerRoIDisabled);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_RENDER_SCALE, &pixViewerRs);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_RENDER_SCALE_CHECKED, &pixViewerRsChecked);
     appPTR->getIcon(NATRON_PIXMAP_PLAYER_TIMELINE_IN, &pixInpoint);
     appPTR->getIcon(NATRON_PIXMAP_PLAYER_TIMELINE_OUT, &pixOutPoint);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_PAUSE_DISABLED, &pixPauseDisabled);
-    appPTR->getIcon(NATRON_PIXMAP_PLAYER_PAUSE_ENABLED, &pixPauseEnabled);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_FULL_FRAME_OFF, &pixFullFrameOff);
-    appPTR->getIcon(NATRON_PIXMAP_VIEWER_FULL_FRAME_ON, &pixFullFrameOn);
 
     _imp->firstFrame_Button->setIcon( QIcon(pixFirst) );
     _imp->previousKeyFrame_Button->setIcon( QIcon(pixPrevKF) );
@@ -899,7 +858,10 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->previousIncrement_Button->setIcon( QIcon(pixPrevIncr) );
     _imp->nextIncrement_Button->setIcon( QIcon(pixNextIncr) );
     _imp->iconRefreshOff = QIcon(pixRefresh);
-    _imp->iconRefreshOn = QIcon(pixRefreshActive);
+    // Refresh isn't a checkable toggle: refreshViewerRenderingState() swaps this icon in
+    // while a render is in flight, so the "active" state is built straight from the same
+    // glyph in the selection colour rather than through a second pixmap id.
+    _imp->iconRefreshOn = QIcon(ThemedIcon::renderPixmap(QString::fromUtf8(NATRON_ICONS_PATH "lucide/refresh-cw.svg"), pixmapIconSize, ThemedIcon::themeSelectionColor(), qApp->devicePixelRatio()));
     _imp->refreshButton->setIcon(_imp->iconRefreshOff);
     _imp->centerViewerButton->setIcon( QIcon(pixCenterViewer) );
     _imp->playbackMode_Button->setIcon( QIcon(pixLoopMode) );
@@ -907,28 +869,23 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->playBackOutputButton->setIcon( QIcon(pixOutPoint) );
 
     QIcon icClip;
-    icClip.addPixmap(pixClipToProjectEnabled, QIcon::Normal, QIcon::On);
-    icClip.addPixmap(pixClipToProjectDisabled, QIcon::Normal, QIcon::Off);
+    appPTR->getIcon(NATRON_PIXMAP_VIEWER_CLIP_TO_PROJECT_ENABLED, pixmapIconSize, &icClip);
     _imp->clipToProjectFormatButton->setIcon(icClip);
 
     QIcon icfullFrame;
-    icfullFrame.addPixmap(pixFullFrameOn, QIcon::Normal, QIcon::On);
-    icfullFrame.addPixmap(pixFullFrameOff, QIcon::Normal, QIcon::Off);
+    appPTR->getIcon(NATRON_PIXMAP_VIEWER_FULL_FRAME_ON, pixmapIconSize, &icfullFrame);
     _imp->fullFrameProcessingButton->setIcon(icfullFrame);
 
     QIcon icRoI;
-    icRoI.addPixmap(pixViewerRoIEnabled, QIcon::Normal, QIcon::On);
-    icRoI.addPixmap(pixViewerRoIDisabled, QIcon::Normal, QIcon::Off);
+    appPTR->getIcon(NATRON_PIXMAP_VIEWER_ROI_ENABLED, pixmapIconSize, &icRoI);
     _imp->enableViewerRoI->setIcon(icRoI);
 
     QIcon icViewerRs;
-    icViewerRs.addPixmap(pixViewerRs, QIcon::Normal, QIcon::Off);
-    icViewerRs.addPixmap(pixViewerRsChecked, QIcon::Normal, QIcon::On);
+    appPTR->getIcon(NATRON_PIXMAP_VIEWER_RENDER_SCALE, pixmapIconSize, &icViewerRs);
     _imp->activateRenderScale->setIcon(icViewerRs);
 
     QIcon icPauseViewer;
-    icPauseViewer.addPixmap(pixPauseDisabled, QIcon::Normal, QIcon::Off);
-    icPauseViewer.addPixmap(pixPauseEnabled, QIcon::Normal, QIcon::On);
+    appPTR->getIcon(NATRON_PIXMAP_PLAYER_PAUSE_ENABLED, pixmapIconSize, &icPauseViewer);
     _imp->pauseButton->setIcon(icPauseViewer);
 
     setToolTipWithShortcut(kShortcutGroupViewer, kShortcutIDActionFitViewer, "<p>" +

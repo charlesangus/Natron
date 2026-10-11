@@ -96,28 +96,28 @@ pixmapEnumToPath(PixmapEnum e)
 
     switch (e) {
     case NATRON_PIXMAP_PLAYER_PREVIOUS:
-        path = NATRON_IMAGES_PATH "back1.png";
+        path = NATRON_ICONS_PATH "lucide/step-back.svg";
         break;
     case NATRON_PIXMAP_PLAYER_FIRST_FRAME:
-        path = NATRON_IMAGES_PATH "firstFrame.png";
+        path = NATRON_ICONS_PATH "lucide/skip-back.svg";
         break;
     case NATRON_PIXMAP_PLAYER_NEXT:
-        path = NATRON_IMAGES_PATH "forward1.png";
+        path = NATRON_ICONS_PATH "lucide/step-forward.svg";
         break;
     case NATRON_PIXMAP_PLAYER_LAST_FRAME:
-        path = NATRON_IMAGES_PATH "lastFrame.png";
+        path = NATRON_ICONS_PATH "lucide/skip-forward.svg";
         break;
     case NATRON_PIXMAP_PLAYER_NEXT_INCR:
-        path = NATRON_IMAGES_PATH "nextIncr.png";
+        path = NATRON_ICONS_PATH "natron/incr-next.svg";
         break;
     case NATRON_PIXMAP_PLAYER_NEXT_KEY:
-        path = NATRON_IMAGES_PATH "nextKF.png";
+        path = NATRON_ICONS_PATH "natron/key-next.svg";
         break;
     case NATRON_PIXMAP_PLAYER_PREVIOUS_INCR:
-        path = NATRON_IMAGES_PATH "previousIncr.png";
+        path = NATRON_ICONS_PATH "natron/incr-prev.svg";
         break;
     case NATRON_PIXMAP_PLAYER_PREVIOUS_KEY:
-        path = NATRON_IMAGES_PATH "prevKF.png";
+        path = NATRON_ICONS_PATH "natron/key-prev.svg";
         break;
     case NATRON_PIXMAP_ADD_KEYFRAME:
         path = NATRON_IMAGES_PATH "addKF.png";
@@ -129,41 +129,41 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_IMAGES_PATH "rewind_enabled.png";
         break;
     case NATRON_PIXMAP_PLAYER_REWIND_DISABLED:
-        path = NATRON_IMAGES_PATH "rewind.png";
+        path = NATRON_ICONS_PATH "natron/play-reverse.svg";
         break;
     case NATRON_PIXMAP_PLAYER_PLAY_ENABLED:
-        path = NATRON_IMAGES_PATH "play_enabled.png";
+        path = NATRON_ICONS_PATH "lucide/play.svg";
         break;
     case NATRON_PIXMAP_PLAYER_PLAY_DISABLED:
-        path = NATRON_IMAGES_PATH "play.png";
+        path = NATRON_ICONS_PATH "lucide/play.svg";
         break;
     case NATRON_PIXMAP_PLAYER_STOP_ENABLED:
-        path = NATRON_IMAGES_PATH "stopEnabled.png";
+        path = NATRON_ICONS_PATH "lucide/square.svg";
         break;
     case NATRON_PIXMAP_PLAYER_STOP_DISABLED:
-        path = NATRON_IMAGES_PATH "stopDisabled.png";
+        path = NATRON_ICONS_PATH "lucide/square.svg";
         break;
     case NATRON_PIXMAP_PLAYER_PAUSE_ENABLED:
-        path = NATRON_IMAGES_PATH "pauseEnabled.png";
+        path = NATRON_ICONS_PATH "lucide/pause.svg";
         break;
     case NATRON_PIXMAP_PLAYER_PAUSE_DISABLED:
-        path = NATRON_IMAGES_PATH "pauseDisabled.png";
+        path = NATRON_ICONS_PATH "lucide/pause.svg";
         break;
 
     case NATRON_PIXMAP_PLAYER_LOOP_MODE:
-        path = NATRON_IMAGES_PATH "loopmode.png";
+        path = NATRON_ICONS_PATH "lucide/repeat.svg";
         break;
     case NATRON_PIXMAP_PLAYER_BOUNCE:
-        path = NATRON_IMAGES_PATH "bounce.png";
+        path = NATRON_ICONS_PATH "lucide/arrow-left-right.svg";
         break;
     case NATRON_PIXMAP_PLAYER_PLAY_ONCE:
-        path = NATRON_IMAGES_PATH "playOnce.png";
+        path = NATRON_ICONS_PATH "lucide/arrow-right-to-line.svg";
         break;
     case NATRON_PIXMAP_PLAYER_TIMELINE_IN:
-        path = NATRON_IMAGES_PATH "timelineIn.png";
+        path = NATRON_ICONS_PATH "natron/in-point.svg";
         break;
     case NATRON_PIXMAP_PLAYER_TIMELINE_OUT:
-        path = NATRON_IMAGES_PATH "timelineOut.png";
+        path = NATRON_ICONS_PATH "natron/out-point.svg";
         break;
     case NATRON_PIXMAP_MAXIMIZE_WIDGET:
         path = NATRON_IMAGES_PATH "maximize.png";
@@ -223,43 +223,43 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_IMAGES_PATH "splitVertically.png";
         break;
     case NATRON_PIXMAP_VIEWER_CENTER:
-        path = NATRON_IMAGES_PATH "centerViewer.png";
+        path = NATRON_ICONS_PATH "lucide/focus.svg";
         break;
     case NATRON_PIXMAP_VIEWER_FULL_FRAME_OFF:
-        path = NATRON_IMAGES_PATH "fullFrameOff.png";
+        path = NATRON_ICONS_PATH "lucide/fullscreen.svg";
         break;
     case NATRON_PIXMAP_VIEWER_FULL_FRAME_ON:
-        path = NATRON_IMAGES_PATH "fullFrameOn.png";
+        path = NATRON_ICONS_PATH "lucide/fullscreen.svg";
         break;
     case NATRON_PIXMAP_VIEWER_CLIP_TO_PROJECT_ENABLED:
-        path = NATRON_IMAGES_PATH "cliptoprojectEnabled.png";
+        path = NATRON_ICONS_PATH "lucide/square-dashed.svg";
         break;
     case NATRON_PIXMAP_VIEWER_CLIP_TO_PROJECT_DISABLED:
-        path = NATRON_IMAGES_PATH "cliptoprojectDisabled.png";
+        path = NATRON_ICONS_PATH "lucide/square-dashed.svg";
         break;
     case NATRON_PIXMAP_VIEWER_REFRESH:
-        path = NATRON_IMAGES_PATH "refresh.png";
+        path = NATRON_ICONS_PATH "lucide/refresh-cw.svg";
         break;
     case NATRON_PIXMAP_VIEWER_REFRESH_ACTIVE:
-        path = NATRON_IMAGES_PATH "refreshActive.png";
+        path = NATRON_ICONS_PATH "lucide/refresh-cw.svg";
         break;
     case NATRON_PIXMAP_VIEWER_ROI_ENABLED:
-        path = NATRON_IMAGES_PATH "viewer_roiEnabled.png";
+        path = NATRON_ICONS_PATH "natron/roi.svg";
         break;
     case NATRON_PIXMAP_VIEWER_ROI_DISABLED:
-        path = NATRON_IMAGES_PATH "viewer_roiDisabled.png";
+        path = NATRON_ICONS_PATH "natron/roi.svg";
         break;
     case NATRON_PIXMAP_VIEWER_RENDER_SCALE:
-        path = NATRON_IMAGES_PATH "renderScale.png";
+        path = NATRON_ICONS_PATH "natron/render-scale.svg";
         break;
     case NATRON_PIXMAP_VIEWER_RENDER_SCALE_CHECKED:
-        path = NATRON_IMAGES_PATH "renderScale_checked.png";
+        path = NATRON_ICONS_PATH "natron/render-scale.svg";
         break;
     case NATRON_PIXMAP_VIEWER_AUTOCONTRAST_ENABLED:
-        path = NATRON_IMAGES_PATH "AutoContrastON.png";
+        path = NATRON_ICONS_PATH "lucide/contrast.svg";
         break;
     case NATRON_PIXMAP_VIEWER_AUTOCONTRAST_DISABLED:
-        path = NATRON_IMAGES_PATH "AutoContrast.png";
+        path = NATRON_ICONS_PATH "lucide/contrast.svg";
         break;
     case NATRON_PIXMAP_OPEN_FILE:
         path = NATRON_IMAGES_PATH "open-file.png";
@@ -280,7 +280,7 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_IMAGES_PATH "roto_merge.png";
         break;
     case NATRON_PIXMAP_COLOR_PICKER:
-        path = NATRON_IMAGES_PATH "color_picker.png";
+        path = NATRON_ICONS_PATH "lucide/pipette.svg";
         break;
 
     case NATRON_PIXMAP_IO_GROUPING:
@@ -361,10 +361,10 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_IMAGES_PATH "unvisible.png";
         break;
     case NATRON_PIXMAP_LOCKED:
-        path = NATRON_IMAGES_PATH "locked.png";
+        path = NATRON_ICONS_PATH "lucide/lock.svg";
         break;
     case NATRON_PIXMAP_UNLOCKED:
-        path = NATRON_IMAGES_PATH "unlocked.png";
+        path = NATRON_ICONS_PATH "lucide/lock-open.svg";
         break;
     case NATRON_PIXMAP_LAYER:
         path = NATRON_IMAGES_PATH "layer.png";
@@ -478,19 +478,19 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_IMAGES_PATH "settings.png";
         break;
     case NATRON_PIXMAP_FREEZE_ENABLED:
-        path = NATRON_IMAGES_PATH "turbo_on.png";
+        path = NATRON_ICONS_PATH "lucide/snowflake.svg";
         break;
     case NATRON_PIXMAP_FREEZE_DISABLED:
-        path = NATRON_IMAGES_PATH "turbo_off.png";
+        path = NATRON_ICONS_PATH "lucide/snowflake.svg";
         break;
     case NATRON_PIXMAP_VIEWER_ICON:
         path = NATRON_IMAGES_PATH "viewer_icon.png";
         break;
     case NATRON_PIXMAP_VIEWER_CHECKERBOARD_ENABLED:
-        path = NATRON_IMAGES_PATH "checkerboard_on.png";
+        path = NATRON_ICONS_PATH "natron/checkerboard.svg";
         break;
     case NATRON_PIXMAP_VIEWER_CHECKERBOARD_DISABLED:
-        path = NATRON_IMAGES_PATH "checkerboard_off.png";
+        path = NATRON_ICONS_PATH "natron/checkerboard.svg";
         break;
     case NATRON_PIXMAP_VIEWER_ZEBRA_ENABLED:
         path = NATRON_IMAGES_PATH "zebra_on.png";
@@ -499,16 +499,16 @@ pixmapEnumToPath(PixmapEnum e)
         path = NATRON_IMAGES_PATH "zebra_off.png";
         break;
     case NATRON_PIXMAP_VIEWER_GAMMA_ENABLED:
-        path = NATRON_IMAGES_PATH "gammaON.png";
+        path = NATRON_ICONS_PATH "natron/gamma.svg";
         break;
     case NATRON_PIXMAP_VIEWER_GAMMA_DISABLED:
-        path = NATRON_IMAGES_PATH "gammaOFF.png";
+        path = NATRON_ICONS_PATH "natron/gamma.svg";
         break;
     case NATRON_PIXMAP_VIEWER_GAIN_ENABLED:
-        path = NATRON_IMAGES_PATH "expoON.png";
+        path = NATRON_ICONS_PATH "lucide/aperture.svg";
         break;
     case NATRON_PIXMAP_VIEWER_GAIN_DISABLED:
-        path = NATRON_IMAGES_PATH "expoOFF.png";
+        path = NATRON_ICONS_PATH "lucide/aperture.svg";
         break;
     case NATRON_PIXMAP_ADD_TRACK:
         path = NATRON_IMAGES_PATH "addTrack.png";

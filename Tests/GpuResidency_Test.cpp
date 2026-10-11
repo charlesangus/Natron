@@ -63,7 +63,6 @@
 #include "Engine/GpuPlacement.h"
 #include "Engine/GpuRegionStrips.h"
 #include "Engine/GpuRegionTask.h"
-#include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -1548,9 +1547,8 @@ TEST_F(GpuResidencyTest, PipelinedStripsOverlapBenchmark)
     });
 
     // The second render of each mode recycles the first one's host buffers, whose imports the device keeps, as frames
-    // of a sequence do; the first pays for touching fresh memory as it pins it.
-    const std::size_t maxPoolBytes = HostImageMemory::maxPoolBytes();
-    HostImageMemory::setMaxPoolBytes(std::size_t(32) << 30);
+    // of a sequence do; the first pays for touching fresh memory as it pins it. The pool keeps its default size, so
+    // the numbers are those of a real render.
     std::vector<float> reference;
     const GpuStripPipelining modes[] = { GpuStripPipelining::Off, GpuStripPipelining::On };
     for (GpuStripPipelining mode : modes) {
@@ -1588,7 +1586,6 @@ TEST_F(GpuResidencyTest, PipelinedStripsOverlapBenchmark)
             expectReleased(run);
         }
     }
-    HostImageMemory::setMaxPoolBytes(maxPoolBytes);
 }
 
 #endif // NATRON_HAVE_GPU

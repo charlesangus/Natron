@@ -28,6 +28,7 @@
 #include <bitset>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <limits>
@@ -40,6 +41,7 @@
 #include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/MemoryInfo.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -653,6 +655,27 @@ TEST(HostImageMemoryTest, SameSizeBufferIsReusedAfterRelease)
     EXPECT_EQ(a, b);
     EXPECT_EQ(HostImageMemory::pooledBufferCount(), 0u);
     HostImageMemory::release(b, bytes - 5);
+}
+
+TEST(HostImageMemoryTest, FrameSizedBuffersRecycleByDefault)
+{
+    HostImageMemoryGuard guard;
+    const std::size_t bytes = std::size_t(1) << 30;
+    if (getSystemTotalRAM() / 4 < 2 * bytes) {
+        std::printf("[  SKIPPED ] too little RAM for a pool that holds a 1 GiB frame\n");
+
+        return;
+    }
+    EXPECT_GE(HostImageMemory::maxPoolBytes(), (std::size_t)(getSystemTotalRAM() / 4));
+
+    // Never touched, so it costs address space only.
+    void* a = HostImageMemory::allocate(bytes);
+    ASSERT_NE(a, nullptr);
+    HostImageMemory::release(a, bytes);
+    EXPECT_EQ(HostImageMemory::pooledBytes(), HostImageMemory::paddedSize(bytes));
+    void* b = HostImageMemory::allocate(bytes);
+    EXPECT_EQ(a, b);
+    HostImageMemory::release(b, bytes);
 }
 
 TEST(HostImageMemoryTest, TrimToKeepsPooledBytesWithinHeadroom)

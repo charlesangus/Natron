@@ -45,8 +45,8 @@ NATRON_NAMESPACE_ENTER
  *
  * Pooled-but-unused bytes count against a cache's RAM limit: before a Cache evicts
  * anything it calls trimTo() with its remaining headroom, so idle pool memory is given up
- * before live entries are. They are also bounded by maxPoolBytes(), and dropped by trim()
- * or when an allocation fails.
+ * before live entries are. They are also bounded by maxPoolBytes(), a quarter of the system
+ * RAM by default, and dropped by trim() or when an allocation fails.
  *
  * All functions are thread-safe.
  **/

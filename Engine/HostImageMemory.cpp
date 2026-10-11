@@ -26,6 +26,8 @@
 
 #include "HostImageMemory.h"
 
+#include "Engine/MemoryInfo.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
@@ -41,6 +43,7 @@
 #include <malloc.h>
 #include <windows.h>
 #else
+#include <sys/mman.h>
 #include <unistd.h>
 #endif
 
@@ -48,8 +51,26 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 const std::size_t kMinPooledBytes = 1024 * 1024;
-const std::size_t kDefaultMaxPoolBytes = 512 * 1024 * 1024;
+const std::size_t kMinDefaultMaxPoolBytes = 512 * 1024 * 1024;
 const std::size_t kDefaultImportAlignment = 4096;
+
+// A frame of a sequence allocates the same few full-frame buffers as the one before it. A pool smaller than they are
+// frees them every frame, and the fresh ones cost a page fault per page on first touch and again when a GPU pins them
+// for a transfer; at 16k and above that dominates a GPU render.
+const std::size_t kDefaultMaxPoolRamFraction = 4;
+
+// Large buffers are backed by transparent huge pages where the system offers them on request, which cuts the cost of
+// faulting them in, and of pinning them for a GPU import, by an order of magnitude.
+const std::size_t kHugePageBytes = 2 * 1024 * 1024;
+const std::size_t kMinHugePageBufferBytes = 32 * 1024 * 1024;
+
+std::size_t
+defaultMaxPoolBytes()
+{
+    const U64 ram = getSystemTotalRAM();
+
+    return std::max<std::size_t>(kMinDefaultMaxPoolBytes, (std::size_t)(ram / kDefaultMaxPoolRamFraction));
+}
 
 struct PooledBuffer
 {
@@ -72,7 +93,7 @@ struct State
     State()
         : pageSize(0)
         , alignment(0)
-        , maxPoolBytes(kDefaultMaxPoolBytes)
+        , maxPoolBytes(defaultMaxPoolBytes())
         , pooledBytes(0)
         , nextHookId(1)
     {
@@ -111,6 +132,19 @@ rawAlloc(std::size_t padded,
 #ifdef __NATRON_WIN32__
     return _aligned_malloc(padded, pageSize);
 #else
+#ifdef MADV_HUGEPAGE
+    if (padded >= kMinHugePageBufferBytes) {
+        const std::size_t mapped = roundUp(padded, kHugePageBytes);
+        void* ptr = std::aligned_alloc(kHugePageBytes, mapped);
+        if (ptr) {
+            // Only advice: the buffer works the same on small pages when the system declines.
+            madvise(ptr, mapped, MADV_HUGEPAGE);
+        }
+
+        return ptr;
+    }
+#endif
+
     return std::aligned_alloc(pageSize, padded);
 #endif
 }

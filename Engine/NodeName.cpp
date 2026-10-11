@@ -25,6 +25,7 @@
 
 #include "NodePrivate.h"
 
+#include <QDebug>
 #include <QThread>
 
 #include <sstream>

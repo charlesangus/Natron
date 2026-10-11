@@ -57,6 +57,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/Backdrop.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/Curve.h"
 #include "Engine/DiskCacheNode.h"
 #include "Engine/Dot.h"
 #include "Engine/EffectInstance.h"
@@ -90,6 +91,7 @@
 #include "Engine/PrecompNode.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectSerialization.h"
+#include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoStrokeItem.h"
@@ -1653,7 +1655,7 @@ Node::loadKnobs(const NodeSerialization & serialization,
 
     ///now restore the roto context if the node has a roto context
     if (serialization.hasRotoContext() && _imp->rotoContext) {
-        _imp->rotoContext->load( serialization.getRotoContext() );
+        _imp->rotoContext->fromSerialization( serialization.getRotoContext() );
     }
 
     if (serialization.hasTrackerContext() && _imp->trackContext) {

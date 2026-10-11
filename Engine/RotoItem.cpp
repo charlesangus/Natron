@@ -46,7 +46,6 @@
 #include "Engine/Interpolation.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContextPrivate.h"
-#include "Engine/RotoItemSerialization.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
@@ -440,30 +439,6 @@ RotoItem::setLabel(const std::string& label)
     if (c) {
         c->onItemLabelChanged( shared_from_this() );
     }
-}
-
-void
-RotoItem::save(RotoItemSerialization *obj) const
-{
-    RotoLayerPtr parent;
-    {
-        QMutexLocker l(&itemMutex);
-        obj->activated = _imp->globallyActivated;
-        obj->name = _imp->scriptName;
-        obj->label = _imp->label;
-        obj->locked = _imp->locked;
-        parent = _imp->parentLayer.lock();
-    }
-
-    if (parent) {
-        obj->parentLayerName = parent->getScriptName();
-    }
-}
-
-void
-RotoItem::load(const RotoItemSerialization &obj)
-{
-    restoreSavedState(obj.name, obj.label, obj.activated, obj.parentLayerName, obj.locked);
 }
 
 void

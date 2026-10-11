@@ -28,6 +28,7 @@
 #include <sstream> // stringstream
 
 #include "Global/QtCompat.h"
+#include "Global/StrUtils.h"
 
 #if !defined(Q_MOC_RUN) && !defined(SBK_RUN)
 GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_OFF

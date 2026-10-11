@@ -30,7 +30,10 @@
 #include <stdexcept>
 #include <sstream> // stringstream
 
+#include <QDebug>
+
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/NodeSerialization.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"

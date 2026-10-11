@@ -69,7 +69,6 @@ class BezierCP
 
 public:
 
-    ///Constructore used by the serialization
     BezierCP();
 
     BezierCP(const BezierCP & other);
@@ -171,15 +170,6 @@ public:
      * @brief Sets the point, and its GUI copy, to the saved state.
      **/
     void fromSerialization(const Serialization::BezierCPSerialization& serialization);
-
-    template<class Archive>
-    void save(Archive & ar, const unsigned int version) const;
-
-    template<class Archive>
-    void load(Archive & ar, const unsigned int version);
-
-    template<class Archive>
-    void serialize(Archive & ar, const unsigned int version);
 
 private:
 

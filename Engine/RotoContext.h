@@ -83,7 +83,6 @@ public:
  * all the splines data structures and their state.
  * This class is MT-safe.
  **/
-class RotoContextSerialization;
 struct RotoContextPrivate;
 
 class RotoContext
@@ -235,12 +234,6 @@ public:
      *@brief Returns the age of the roto context
      **/
     U64 getAge();
-
-    ///Serialization
-    void save(RotoContextSerialization* obj) const;
-
-    ///Deserialization
-    void load(const RotoContextSerialization & obj);
 
     void toSerialization(Serialization::RotoContextSerialization* serialization) const;
 

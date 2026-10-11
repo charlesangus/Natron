@@ -31,6 +31,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"

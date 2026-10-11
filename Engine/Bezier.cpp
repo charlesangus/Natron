@@ -49,7 +49,6 @@
 #include "Engine/Settings.h"
 #include "Engine/Format.h"
 #include "Engine/RotoLayer.h"
-#include "Engine/BezierSerialization.h"
 #include "Engine/RenderStats.h"
 #include "Engine/Transform.h"
 #include "Engine/CoonsRegularization.h"
@@ -3294,70 +3293,6 @@ Bezier::rightDerivativeAtPoint(bool useGuiCurves,
         *dx = 3. * (p1.x - p0.x);
         *dy = 3. * (p1.y - p0.y);
     }
-}
-
-void
-Bezier::save(RotoItemSerialization* obj) const
-{
-    BezierSerialization* s = dynamic_cast<BezierSerialization*>(obj);
-
-    if (s) {
-        QMutexLocker l(&itemMutex);
-
-        s->_closed = _imp->finished;
-        s->_isOpenBezier = _imp->isOpenBezier;
-        assert( _imp->featherPoints.size() == _imp->points.size() || !useFeatherPoints() );
-
-
-        bool useFeather = useFeatherPoints();
-        BezierCPs::const_iterator fp = _imp->featherPoints.begin();
-        for (BezierCPs::const_iterator it = _imp->points.begin(); it != _imp->points.end(); ++it) {
-            BezierCP c;
-            c.clone(**it);
-            s->_controlPoints.push_back(c);
-            if (useFeather) {
-                BezierCP f;
-                f.clone(**fp);
-                s->_featherPoints.push_back(f);
-                ++fp;
-            }
-        }
-    }
-
-    RotoDrawableItem::save(obj);
-}
-
-void
-Bezier::load(const RotoItemSerialization & obj)
-{
-    BezierPtr this_shared = std::dynamic_pointer_cast<Bezier>( shared_from_this() );
-
-    assert(this_shared);
-
-    const BezierSerialization & s = dynamic_cast<const BezierSerialization &>(obj);
-    {
-        QMutexLocker l(&itemMutex);
-        _imp->isOpenBezier = s._isOpenBezier;
-        _imp->finished = s._closed && !_imp->isOpenBezier;
-
-        bool useFeather = useFeatherPoints();
-        std::list<BezierCP>::const_iterator itF = s._featherPoints.begin();
-        for (std::list<BezierCP>::const_iterator it = s._controlPoints.begin(); it != s._controlPoints.end(); ++it) {
-            BezierCPPtr cp = std::make_shared<BezierCP>(this_shared);
-            cp->clone(*it);
-            _imp->points.push_back(cp);
-
-            if (useFeather) {
-                BezierCPPtr fp = std::make_shared<FeatherPoint>(this_shared);
-                fp->clone(*itF);
-                _imp->featherPoints.push_back(fp);
-                ++itF;
-            }
-        }
-        copyInternalPointsToGuiPoints();
-    }
-    refreshPolygonOrientation(false);
-    RotoDrawableItem::load(obj);
 }
 
 void

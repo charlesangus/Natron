@@ -25,6 +25,7 @@
 
 #include "DocumentationManager.h"
 
+#include <QDebug>
 #include <QFile>
 #include <QFileInfo>
 GCC_ONLY_DIAG_OFF(class-memaccess)

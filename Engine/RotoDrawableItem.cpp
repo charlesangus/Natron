@@ -36,6 +36,8 @@
 #include <QLineF>
 #include <QDebug>
 
+#include "Serialization/KnobSerialization.h"
+
 #include "Engine/RotoContextPrivate.h"
 
 #include "Engine/AppInstance.h"
@@ -51,7 +53,6 @@
 #include "Engine/Interpolation.h"
 #include "Engine/Project.h"
 #include "Engine/RenderStats.h"
-#include "Engine/RotoDrawableItemSerialization.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/RotoContext.h"
@@ -899,38 +900,12 @@ serializeRotoKnob(const KnobIPtr & knob,
 }
 
 void
-RotoDrawableItem::save(RotoItemSerialization *obj) const
-{
-    RotoDrawableItemSerialization* s = dynamic_cast<RotoDrawableItemSerialization*>(obj);
-
-    assert(s);
-    if (!s) {
-        throw std::logic_error("RotoDrawableItem::save()");
-    }
-    serializeKnobs(&s->_knobs);
-    {
-        QMutexLocker l(&itemMutex);
-        std::memcpy(s->_overlayColor, _imp->overlayColor, sizeof(double) * 4);
-    }
-    RotoItem::save(obj);
-}
-
-void
 RotoDrawableItem::serializeKnobs(std::list<Serialization::KnobSerialization>* knobs) const
 {
     for (std::list<KnobIPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
         knobs->push_back( Serialization::KnobSerialization() );
         serializeRotoKnob( *it, &knobs->back() );
     }
-}
-
-void
-RotoDrawableItem::load(const RotoItemSerialization &obj)
-{
-    RotoItem::load(obj);
-    const RotoDrawableItemSerialization & s = dynamic_cast<const RotoDrawableItemSerialization &>(obj);
-
-    restoreSavedKnobs(s._knobs, s._overlayColor);
 }
 
 void

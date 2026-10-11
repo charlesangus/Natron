@@ -37,6 +37,7 @@
 #include "Global/FStreamsSupport.h"
 #include "Global/MathUtils.h"
 
+#include "Engine/Node.h"
 #include "Engine/NodeSerialization.h"
 #include "Engine/RotoLayer.h"
 

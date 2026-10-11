@@ -37,7 +37,6 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
-#include "Engine/BezierSerialization.h"
 #include "Engine/BezierCP.h"
 #include "Engine/CoonsRegularization.h"
 #include "Engine/FeatherPoint.h"
@@ -48,7 +47,6 @@
 #include "Engine/Interpolation.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoContextPrivate.h"
-#include "Engine/RotoLayerSerialization.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
@@ -147,95 +145,6 @@ RotoLayer::clone(const RotoItem* other)
                 _imp->items.push_back(copy);
                 getContext()->addLayer(copy);
             }
-        }
-    }
-}
-
-void
-RotoLayer::save(RotoItemSerialization *obj) const
-{
-    RotoLayerSerialization* s = dynamic_cast<RotoLayerSerialization*>(obj);
-
-    assert(s);
-    if (!s) {
-        throw std::logic_error("RotoLayer::save");
-    }
-    RotoItems items;
-    {
-        QMutexLocker l(&itemMutex);
-        items = _imp->items;
-    }
-
-    for (RotoItems::const_iterator it = items.begin(); it != items.end(); ++it) {
-        BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
-        RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(*it);
-        RotoLayerPtr layer = std::dynamic_pointer_cast<RotoLayer>(*it);
-        RotoItemSerializationPtr childSerialization;
-        if (isBezier && !isStroke) {
-            childSerialization = std::make_shared<BezierSerialization>();
-            isBezier->save( childSerialization.get() );
-        } else if (isStroke) {
-            childSerialization = std::make_shared<RotoStrokeItemSerialization>();
-            isStroke->save( childSerialization.get() );
-        } else {
-            assert(layer);
-            if (layer) {
-                childSerialization = std::make_shared<RotoLayerSerialization>();
-                layer->save( childSerialization.get() );
-            }
-        }
-        assert(childSerialization);
-        s->children.push_back(childSerialization);
-    }
-
-
-    RotoItem::save(obj);
-}
-
-void
-RotoLayer::load(const RotoItemSerialization &obj)
-{
-    const RotoLayerSerialization & s = dynamic_cast<const RotoLayerSerialization &>(obj);
-    RotoLayerPtr this_layer = std::dynamic_pointer_cast<RotoLayer>( shared_from_this() );
-
-    assert(this_layer);
-    RotoItem::load(obj);
-    {
-        for (std::list<RotoItemSerializationPtr>::const_iterator it = s.children.begin(); it != s.children.end(); ++it) {
-            BezierSerializationPtr b = std::dynamic_pointer_cast<BezierSerialization>(*it);
-            RotoStrokeItemSerializationPtr s = std::dynamic_pointer_cast<RotoStrokeItemSerialization>(*it);
-            RotoLayerSerializationPtr l = std::dynamic_pointer_cast<RotoLayerSerialization>(*it);
-            if (b && !s) {
-                BezierPtr bezier( new Bezier(getContext(), kRotoBezierBaseName, RotoLayerPtr(), false) );
-                bezier->createNodes(false);
-                bezier->load(*b);
-                if ( !bezier->getParentLayer() ) {
-                    bezier->setParentLayer(this_layer);
-                }
-                QMutexLocker l(&itemMutex);
-                _imp->items.push_back(bezier);
-            } else if (s) {
-                RotoStrokeItemPtr stroke( new RotoStrokeItem( (RotoStrokeType)s->getType(), getContext(), kRotoPaintBrushBaseName, RotoLayerPtr() ) );
-                stroke->createNodes(false);
-                stroke->load(*s);
-                if ( !stroke->getParentLayer() ) {
-                    stroke->setParentLayer(this_layer);
-                }
-
-
-                QMutexLocker l(&itemMutex);
-                _imp->items.push_back(stroke);
-            } else if (l) {
-                RotoLayerPtr layer( new RotoLayer(getContext(), kRotoLayerBaseName, this_layer) );
-                _imp->items.push_back(layer);
-                getContext()->addLayer(layer);
-                layer->load(*l);
-                if ( !layer->getParentLayer() ) {
-                    layer->setParentLayer(this_layer);
-                }
-            }
-            //Rotopaint tree nodes use the roto context age for their script-name, make sure they have a different one
-            getContext()->incrementAge();
         }
     }
 }

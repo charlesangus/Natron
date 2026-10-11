@@ -49,12 +49,14 @@ GCC_DIAG_ON(unused-parameter)
 #endif
 
 #include "Serialization/KnobSerialization.h"
+#include "Serialization/RotoSerialization.h"
 #include "Serialization/BoostXml/KnobXml.h"
+#include "Serialization/BoostXml/RotoXml.h"
 
 #include "Engine/TrackerSerialization.h"
-#include "Engine/RotoContextSerialization.h"
 #include "Engine/ImageParamsSerialization.h"
 #include "Engine/AppManager.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
 
 
@@ -212,7 +214,7 @@ public:
         return _hasRotoContext;
     }
 
-    const RotoContextSerialization & getRotoContext() const
+    const Serialization::RotoContextSerialization & getRotoContext() const
     {
         return _rotoContext;
     }
@@ -262,7 +264,7 @@ private:
     std::map<std::string, std::string> _inputs;
     std::vector<std::string> _oldInputs;
     bool _hasRotoContext;
-    RotoContextSerialization _rotoContext;
+    Serialization::RotoContextSerialization _rotoContext;
     bool _hasTrackerContext;
     TrackerContextSerialization _trackerContext;
     NodePtr _node;

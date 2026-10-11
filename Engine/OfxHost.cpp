@@ -42,6 +42,7 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_OFF(deprecated-register) //'register' storage class specifier is deprecated
 #include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QMutex>
 #include <QThreadPool>
 #include <QCoreApplication>

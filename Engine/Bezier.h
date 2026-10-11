@@ -614,20 +614,6 @@ private:
 public:
 
 
-    /**
-     * @brief Must be implemented by the derived class to save the state into
-     * the serialization object.
-     * Derived implementations must call the parent class implementation.
-     **/
-    virtual void save(RotoItemSerialization* obj) const OVERRIDE;
-
-    /**
-     * @brief Must be implemented by the derived class to load the state from
-     * the serialization object.
-     * Derived implementations must call the parent class implementation.
-     **/
-    virtual void load(const RotoItemSerialization & obj) OVERRIDE;
-
     void toSerialization(Serialization::BezierSerialization* serialization) const;
     void fromSerialization(const Serialization::BezierSerialization& serialization);
 

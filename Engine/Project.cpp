@@ -49,6 +49,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QDirIterator>
+#include <QFile>
 #include <QFileInfo>
 #include <QHostInfo>
 #include <QRegularExpression>
@@ -68,9 +69,10 @@
 #include "Global/FloatingPointExceptions.h"
 #endif
 
+#include "Serialization/BoostXml/RotoXml.h"
+
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
-#include "Engine/BezierCPSerialization.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FormatSerialization.h"
@@ -465,12 +467,14 @@ Project::loadProjectInternal(const QString & path,
 
             if ( (line.indexOf( QString::fromUtf8("Natron v1.0.0 RC2") ) != -1) || (line.indexOf( QString::fromUtf8("Natron v1.0.0 RC3") ) != -1) ) {
                 appPTR->setProjectCreatedDuringRC2Or3(true);
+                Serialization::setReadingRC2OrRC3Archive(true);
                 foundV = true;
                 break;
             }
         }
         if (!foundV) {
             appPTR->setProjectCreatedDuringRC2Or3(false);
+            Serialization::setReadingRC2OrRC3Archive(false);
         }
     }
 

@@ -34,6 +34,7 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/NodeSerialization.h"
+#include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
 #include "Engine/WriteNode.h"
 

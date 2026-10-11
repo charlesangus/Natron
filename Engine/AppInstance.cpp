@@ -35,8 +35,10 @@
 #include <stdexcept>
 
 #include <QCoreApplication>
+#include <QDebug>
 #include <QDir>
 #include <QEventLoop>
+#include <QFile>
 #include <QFileInfo>
 #include <QNetworkReply>
 #include <QSettings>
@@ -54,6 +56,8 @@ CLANG_DIAG_ON(tautological-undefined-compare)
 CLANG_DIAG_ON(unknown-pragmas)
 // clang-format on
 
+#include <SequenceParsing.h> // removePath
+
 #include "Global/QtCompat.h" // removeFileExtension
 #include "Global/PythonUtils.h"
 
@@ -68,6 +72,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"

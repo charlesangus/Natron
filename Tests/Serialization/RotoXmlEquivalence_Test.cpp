@@ -27,6 +27,7 @@
 
 #include <exception>
 #include <list>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -39,11 +40,11 @@
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/RotoContext.h"
-#include "Engine/RotoContextSerialization.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPoint.h"
 #include "Engine/RotoStrokeItem.h"
@@ -57,21 +58,7 @@ NATRON_NAMESPACE_USING
 namespace {
 
 std::string
-saveWithOldPath(const RotoContextPtr& context)
-{
-    std::stringstream buffer;
-    {
-        RotoContextSerialization serialization;
-        context->save(&serialization);
-        boost::archive::xml_oarchive archive(buffer);
-        archive << boost::serialization::make_nvp("RotoContext", serialization);
-    }
-
-    return buffer.str();
-}
-
-std::string
-saveWithNewPath(const Serialization::RotoContextSerialization& serialization)
+saveToXml(const Serialization::RotoContextSerialization& serialization)
 {
     std::stringstream buffer;
     {
@@ -83,8 +70,8 @@ saveWithNewPath(const Serialization::RotoContextSerialization& serialization)
 }
 
 bool
-loadWithNewPath(const std::string& xml,
-                Serialization::RotoContextSerialization* serialization)
+loadFromXml(const std::string& xml,
+            Serialization::RotoContextSerialization* serialization)
 {
     try {
         std::stringstream buffer(xml);
@@ -107,6 +94,102 @@ animateSquare(const BezierPtr& square)
     square->setKeyframe(1.);
     square->setPointAtIndex(false, 0, 10., 5., 45., 5., 45., 5., 45.);
     square->setPointAtIndex(true, 2, 10., 30., 25., 28., 25., 32., 25.);
+}
+
+std::set<double>
+keyframeTimes(const CurvePtr& curve)
+{
+    std::set<double> times;
+    const KeyFrameSet keyframes = curve->getKeyFrames_mt_safe();
+
+    for (KeyFrameSet::const_iterator it = keyframes.begin(); it != keyframes.end(); ++it) {
+        times.insert( it->getTime() );
+    }
+
+    return times;
+}
+
+// Compares the internal, not the GUI, curves of two points, and their tangents as stored: the
+// realigned tangents depend on the broken flag, which the project format does not keep.
+void
+expectSamePoint(const BezierCPPtr& expected,
+                const BezierCPPtr& actual,
+                const std::set<double>& times)
+{
+    EXPECT_EQ( keyframeTimes( expected->getXCurve() ), keyframeTimes( actual->getXCurve() ) );
+    EXPECT_EQ( keyframeTimes( expected->getLeftXCurve() ), keyframeTimes( actual->getLeftXCurve() ) );
+    for (std::set<double>::const_iterator it = times.begin(); it != times.end(); ++it) {
+        double expectedX = 0., expectedY = 0., actualX = 0., actualY = 0.;
+        expected->getPositionAtTime(false, *it, ViewIdx(0), &expectedX, &expectedY);
+        actual->getPositionAtTime(false, *it, ViewIdx(0), &actualX, &actualY);
+        EXPECT_DOUBLE_EQ(expectedX, actualX);
+        EXPECT_DOUBLE_EQ(expectedY, actualY);
+
+        expected->getLeftBezierPointAtTime(false, *it, ViewIdx(0), &expectedX, &expectedY, false);
+        actual->getLeftBezierPointAtTime(false, *it, ViewIdx(0), &actualX, &actualY, false);
+        EXPECT_DOUBLE_EQ(expectedX, actualX);
+        EXPECT_DOUBLE_EQ(expectedY, actualY);
+
+        expected->getRightBezierPointAtTime(false, *it, ViewIdx(0), &expectedX, &expectedY, false);
+        actual->getRightBezierPointAtTime(false, *it, ViewIdx(0), &actualX, &actualY, false);
+        EXPECT_DOUBLE_EQ(expectedX, actualX);
+        EXPECT_DOUBLE_EQ(expectedY, actualY);
+    }
+}
+
+void
+expectSameShape(const BezierPtr& expected,
+                const BezierPtr& actual)
+{
+    ASSERT_TRUE( bool(actual) );
+    EXPECT_EQ( expected->isCurveFinished(), actual->isCurveFinished() );
+    EXPECT_EQ( expected->isOpenBezier(), actual->isOpenBezier() );
+
+    std::set<double> expectedTimes, actualTimes;
+    expected->getKeyframeTimes(&expectedTimes);
+    actual->getKeyframeTimes(&actualTimes);
+    EXPECT_EQ(expectedTimes, actualTimes);
+    // Points without keyframes are only compared if at least one time is evaluated.
+    expectedTimes.insert(0.);
+
+    const std::list<BezierCPPtr> expectedPoints = expected->getControlPoints_mt_safe();
+    const std::list<BezierCPPtr> actualPoints = actual->getControlPoints_mt_safe();
+    ASSERT_EQ( expectedPoints.size(), actualPoints.size() );
+    std::list<BezierCPPtr>::const_iterator actualIt = actualPoints.begin();
+    for (std::list<BezierCPPtr>::const_iterator it = expectedPoints.begin(); it != expectedPoints.end(); ++it, ++actualIt) {
+        expectSamePoint(*it, *actualIt, expectedTimes);
+        // The project format has never kept the broken flag of a bezier's points.
+        EXPECT_FALSE( (*actualIt)->getBroken() );
+    }
+
+    const std::list<BezierCPPtr> expectedFeatherPoints = expected->getFeatherPoints_mt_safe();
+    const std::list<BezierCPPtr> actualFeatherPoints = actual->getFeatherPoints_mt_safe();
+    ASSERT_EQ( expectedFeatherPoints.size(), actualFeatherPoints.size() );
+    actualIt = actualFeatherPoints.begin();
+    for (std::list<BezierCPPtr>::const_iterator it = expectedFeatherPoints.begin(); it != expectedFeatherPoints.end(); ++it, ++actualIt) {
+        EXPECT_TRUE( (*actualIt)->isFeatherPoint() );
+        expectSamePoint(*it, *actualIt, expectedTimes);
+    }
+}
+
+void
+expectSameStroke(const RotoStrokeItemPtr& expected,
+                 const RotoStrokeItemPtr& actual)
+{
+    ASSERT_TRUE( bool(actual) );
+    EXPECT_EQ( expected->getBrushType(), actual->getBrushType() );
+
+    const std::list<CurvePtr> expectedCurves = expected->getXControlPoints();
+    const std::list<CurvePtr> actualCurves = actual->getXControlPoints();
+    ASSERT_EQ( expectedCurves.size(), actualCurves.size() );
+    std::list<CurvePtr>::const_iterator actualIt = actualCurves.begin();
+    for (std::list<CurvePtr>::const_iterator it = expectedCurves.begin(); it != expectedCurves.end(); ++it, ++actualIt) {
+        const std::set<double> times = keyframeTimes(*it);
+        EXPECT_EQ( times, keyframeTimes(*actualIt) );
+        for (std::set<double>::const_iterator timeIt = times.begin(); timeIt != times.end(); ++timeIt) {
+            EXPECT_DOUBLE_EQ( (*it)->getValueAt(*timeIt), (*actualIt)->getValueAt(*timeIt) );
+        }
+    }
 }
 
 } // anonymous namespace
@@ -148,25 +231,33 @@ protected:
         return stroke;
     }
 
-    // Checks that both paths write the same XML for the context, and that loading that XML
-    // through the new path into a fresh context reproduces it.
-    void expectOldAndNewPathsMatch(const RotoContextPtr& source,
-                                   Serialization::RotoContextSerialization* loaded)
+    // Saves the context to XML, loads that XML onto a fresh RotoPaint and checks that saving
+    // the fresh one writes the same XML. Returns the fresh context, or null on failure.
+    RotoContextPtr expectRoundTripMatches(const RotoContextPtr& source,
+                                          Serialization::RotoContextSerialization* loaded)
     {
-        const std::string oldXml = saveWithOldPath(source);
-
         Serialization::RotoContextSerialization saved;
         source->toSerialization(&saved);
-        const std::string newXml = saveWithNewPath(saved);
-        EXPECT_EQ(oldXml, newXml);
+        const std::string savedXml = saveToXml(saved);
 
-        ASSERT_TRUE( loadWithNewPath(newXml, loaded) );
-        EXPECT_EQ( newXml, saveWithNewPath(*loaded) );
+        if ( !loadFromXml(savedXml, loaded) ) {
+            return RotoContextPtr();
+        }
+        EXPECT_EQ( savedXml, saveToXml(*loaded) );
 
         RotoContextPtr restored = createRotoPaintContext();
-        ASSERT_TRUE( bool(restored) );
+        if (!restored) {
+            ADD_FAILURE() << "Could not create the RotoPaint node to load into";
+
+            return RotoContextPtr();
+        }
         restored->fromSerialization(*loaded);
-        EXPECT_EQ( oldXml, saveWithOldPath(restored) );
+
+        Serialization::RotoContextSerialization resaved;
+        restored->toSerialization(&resaved);
+        EXPECT_EQ( savedXml, saveToXml(resaved) );
+
+        return restored;
     }
 };
 
@@ -179,11 +270,12 @@ TEST_F(RotoXmlEquivalenceTest, Stroke)
     RotoStrokeItemPtr stroke = addStroke(context, context->getOrCreateBaseLayer(), "Stroke1");
     ASSERT_TRUE( bool(stroke) );
     // A loaded selection only ever selects beziers again, so a selected stroke would not
-    // survive the round trip through either path.
+    // survive the round trip.
     context->clearSelection(RotoItem::eSelectionReasonOther);
 
     Serialization::RotoContextSerialization loaded;
-    expectOldAndNewPathsMatch(context, &loaded);
+    RotoContextPtr restored = expectRoundTripMatches(context, &loaded);
+    ASSERT_TRUE( bool(restored) );
 
     ASSERT_EQ( 1u, loaded.baseLayer.children.size() );
     const Serialization::RotoLayerChildSerialization& child = loaded.baseLayer.children.front();
@@ -193,6 +285,18 @@ TEST_F(RotoXmlEquivalenceTest, Stroke)
     ASSERT_EQ( 2u, child.stroke.strokes.size() );
     EXPECT_EQ( 2u, child.stroke.strokes.front().xCurve.keyframes.size() );
     EXPECT_FALSE( child.stroke.knobs.empty() );
+
+    RotoLayerPtr restoredBaseLayer = restored->getOrCreateBaseLayer();
+    const std::list<RotoItemPtr> restoredItems = restoredBaseLayer->getItems_mt_safe();
+    ASSERT_EQ( 1u, restoredItems.size() );
+    RotoStrokeItemPtr restoredStroke = std::dynamic_pointer_cast<RotoStrokeItem>( restoredItems.front() );
+    ASSERT_TRUE( bool(restoredStroke) );
+    EXPECT_EQ( "Stroke1", restoredStroke->getScriptName() );
+    EXPECT_EQ( restoredBaseLayer, restoredStroke->getParentLayer() );
+    EXPECT_EQ( eRotoStrokeTypeSolid, restoredStroke->getBrushType() );
+    ASSERT_EQ( 2u, restoredStroke->getXControlPoints().size() );
+    expectSameStroke(stroke, restoredStroke);
+    EXPECT_TRUE( restored->getSelectedItems().empty() );
 }
 
 TEST_F(RotoXmlEquivalenceTest, AnimatedFeatheredBezierWithBrokenTangent)
@@ -219,7 +323,8 @@ TEST_F(RotoXmlEquivalenceTest, AnimatedFeatheredBezierWithBrokenTangent)
     context->select(square, RotoItem::eSelectionReasonOther);
 
     Serialization::RotoContextSerialization loaded;
-    expectOldAndNewPathsMatch(context, &loaded);
+    RotoContextPtr restored = expectRoundTripMatches(context, &loaded);
+    ASSERT_TRUE( bool(restored) );
 
     ASSERT_EQ( 1u, loaded.baseLayer.children.size() );
     const Serialization::RotoLayerChildSerialization& child = loaded.baseLayer.children.front();
@@ -234,6 +339,27 @@ TEST_F(RotoXmlEquivalenceTest, AnimatedFeatheredBezierWithBrokenTangent)
     EXPECT_FALSE(child.bezier.controlPoints.front().broken);
     ASSERT_EQ( 1u, loaded.selectedItems.size() );
     EXPECT_EQ( square->getScriptName(), loaded.selectedItems.front() );
+
+    BezierPtr restoredSquare = std::dynamic_pointer_cast<Bezier>( restored->getItemByName( square->getScriptName() ) );
+    ASSERT_TRUE( bool(restoredSquare) );
+    EXPECT_EQ( restored->getOrCreateBaseLayer(), restoredSquare->getParentLayer() );
+    EXPECT_EQ( 4, restoredSquare->getControlPointsCount() );
+    std::set<double> restoredTimes;
+    restoredSquare->getKeyframeTimes(&restoredTimes);
+    std::set<double> expectedTimes;
+    expectedTimes.insert(1.);
+    expectedTimes.insert(10.);
+    EXPECT_EQ(expectedTimes, restoredTimes);
+    expectSameShape(square, restoredSquare);
+
+    KnobDoublePtr restoredFeatherKnob = restoredSquare->getFeatherKnob();
+    ASSERT_TRUE( bool(restoredFeatherKnob) );
+    EXPECT_DOUBLE_EQ( 0., restoredFeatherKnob->getValueAtTime(1.) );
+    EXPECT_DOUBLE_EQ( 6., restoredFeatherKnob->getValueAtTime(10.) );
+
+    const std::list<RotoItemPtr> restoredSelection = restored->getSelectedItems();
+    ASSERT_EQ( 1u, restoredSelection.size() );
+    EXPECT_EQ( restoredSquare, restoredSelection.front() );
 }
 
 TEST_F(RotoXmlEquivalenceTest, NestedLayers)
@@ -263,7 +389,8 @@ TEST_F(RotoXmlEquivalenceTest, NestedLayers)
     context->select(innerSquare, RotoItem::eSelectionReasonOther);
 
     Serialization::RotoContextSerialization loaded;
-    expectOldAndNewPathsMatch(context, &loaded);
+    RotoContextPtr restored = expectRoundTripMatches(context, &loaded);
+    ASSERT_TRUE( bool(restored) );
 
     const std::list<Serialization::RotoLayerChildSerialization>& baseChildren = loaded.baseLayer.children;
     ASSERT_EQ( 2u, baseChildren.size() );
@@ -284,4 +411,44 @@ TEST_F(RotoXmlEquivalenceTest, NestedLayers)
     ASSERT_EQ( 1u, innerData.children.size() );
     EXPECT_EQ(Serialization::eRotoLayerChildTypeBezier, innerData.children.front().type);
     EXPECT_EQ( innerSquare->getScriptName(), innerData.children.front().bezier.name );
+
+    RotoLayerPtr restoredBaseLayer = restored->getOrCreateBaseLayer();
+    const std::list<RotoItemPtr> restoredBaseItems = restoredBaseLayer->getItems_mt_safe();
+    ASSERT_EQ( 2u, restoredBaseItems.size() );
+
+    BezierPtr restoredEllipse = std::dynamic_pointer_cast<Bezier>( restoredBaseItems.front() );
+    ASSERT_TRUE( bool(restoredEllipse) );
+    EXPECT_EQ( baseEllipse->getScriptName(), restoredEllipse->getScriptName() );
+    EXPECT_EQ( restoredBaseLayer, restoredEllipse->getParentLayer() );
+    expectSameShape(baseEllipse, restoredEllipse);
+
+    RotoLayerPtr restoredOuterLayer = std::dynamic_pointer_cast<RotoLayer>( restoredBaseItems.back() );
+    ASSERT_TRUE( bool(restoredOuterLayer) );
+    EXPECT_EQ( outerLayer->getScriptName(), restoredOuterLayer->getScriptName() );
+    EXPECT_EQ( restoredBaseLayer, restoredOuterLayer->getParentLayer() );
+    const std::list<RotoItemPtr> restoredOuterItems = restoredOuterLayer->getItems_mt_safe();
+    ASSERT_EQ( 2u, restoredOuterItems.size() );
+
+    RotoStrokeItemPtr restoredOuterStroke = std::dynamic_pointer_cast<RotoStrokeItem>( restoredOuterItems.front() );
+    ASSERT_TRUE( bool(restoredOuterStroke) );
+    EXPECT_EQ( "OuterStroke", restoredOuterStroke->getScriptName() );
+    EXPECT_EQ( restoredOuterLayer, restoredOuterStroke->getParentLayer() );
+    expectSameStroke(outerStroke, restoredOuterStroke);
+
+    RotoLayerPtr restoredInnerLayer = std::dynamic_pointer_cast<RotoLayer>( restoredOuterItems.back() );
+    ASSERT_TRUE( bool(restoredInnerLayer) );
+    EXPECT_EQ( innerLayer->getScriptName(), restoredInnerLayer->getScriptName() );
+    EXPECT_EQ( restoredOuterLayer, restoredInnerLayer->getParentLayer() );
+    const std::list<RotoItemPtr> restoredInnerItems = restoredInnerLayer->getItems_mt_safe();
+    ASSERT_EQ( 1u, restoredInnerItems.size() );
+
+    BezierPtr restoredInnerSquare = std::dynamic_pointer_cast<Bezier>( restoredInnerItems.front() );
+    ASSERT_TRUE( bool(restoredInnerSquare) );
+    EXPECT_EQ( innerSquare->getScriptName(), restoredInnerSquare->getScriptName() );
+    EXPECT_EQ( restoredInnerLayer, restoredInnerSquare->getParentLayer() );
+    expectSameShape(innerSquare, restoredInnerSquare);
+
+    const std::list<RotoItemPtr> restoredSelection = restored->getSelectedItems();
+    ASSERT_EQ( 1u, restoredSelection.size() );
+    EXPECT_EQ( restoredInnerSquare, restoredSelection.front() );
 }

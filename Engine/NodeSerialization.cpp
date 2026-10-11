@@ -180,7 +180,7 @@ NodeSerialization::NodeSerialization(const NodePtr& n,
         RotoContextPtr roto = n->getRotoContext();
         if ( roto && !roto->isEmpty() ) {
             _hasRotoContext = true;
-            roto->save(&_rotoContext);
+            roto->toSerialization(&_rotoContext);
         } else {
             _hasRotoContext = false;
         }

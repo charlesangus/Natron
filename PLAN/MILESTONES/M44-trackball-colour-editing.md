@@ -636,7 +636,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
     - In the GUI script, S pressed while engaged does not open Project Settings.
   - size: M
 
-- [ ] M44.P7.T10 — Put the HUD directly under the edited knob, and open and unfold that knob on engage
+- [x] M44.P7.T10 — Put the HUD directly under the edited knob, and open and unfold that knob on engage
   - files: `Gui/ColorTrackballGlobalMode.cpp`, `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`, `Gui/KnobGuiValue.h`, `Tests/ColorTrackballHud_Test.cpp`
   - approach:
     - **HUD placement.** Replace the properties-bin insertion (`ensureColorTrackballHud`, `layout->insertWidget(1, hud)` on the bin) with `KnobGuiColor::attachGlobalModeHud(QWidget*)` and `detachGlobalModeHud(QWidget*)`.

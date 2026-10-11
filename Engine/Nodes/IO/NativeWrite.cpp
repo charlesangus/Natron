@@ -784,14 +784,56 @@ NativeWrite::initializeKnobs()
     page->addKnob(clipToRoD);
     _clipToRoD = clipToRoD;
 
-    KnobChoicePtr bitDepth = createKnob<KnobChoice>(tr("Bit Depth"));
-    bitDepth->setName(kNatronWriteParamBitDepth);
-    bitDepth->setHintToolTip(tr("Number of bits per sample in the file. Auto picks the depth from the output format."));
-    bitDepth->populateChoices(bitDepthOptions(allDataTypes()));
-    bitDepth->setDefaultValue(0);
-    bitDepth->setAnimationEnabled(false);
-    page->addKnob(bitDepth);
-    _bitDepth = bitDepth;
+    KnobChoicePtr frameRange = createKnob<KnobChoice>(tr("Frame Range"));
+    frameRange->setName(kNatronWriteParamFrameRange);
+    frameRange->setHintToolTip(tr("What frame range should be rendered."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption(kNatronWriteFrameRangeUnion, tr("Union of input ranges").toStdString(), tr("The union of all inputs frame ranges will be rendered.").toStdString()));
+        options.push_back(ChoiceOption(kNatronWriteFrameRangeProject, tr("Project frame range").toStdString(), tr("The frame range delimited by the frame range of the project will be rendered.").toStdString()));
+        options.push_back(ChoiceOption(kNatronWriteFrameRangeManual, tr("Manual").toStdString(), tr("The frame range will be the one defined by the first frame and last frame parameters.").toStdString()));
+        frameRange->populateChoices(options);
+    }
+    frameRange->setDefaultValue(eFrameRangeProject);
+    frameRange->setAnimationEnabled(false);
+    page->addKnob(frameRange);
+    _frameRange = frameRange;
+
+    KnobIntPtr firstFrame = createKnob<KnobInt>(tr("First Frame"));
+    firstFrame->setName(kNatronWriteParamFirstFrame);
+    firstFrame->setHintToolTip(tr("The first frame to render, when the frame range is Manual."));
+    firstFrame->setDefaultValue(0);
+    firstFrame->setAnimationEnabled(false);
+    firstFrame->disableSlider();
+    firstFrame->setAddNewLine(false);
+    page->addKnob(firstFrame);
+    _firstFrame = firstFrame;
+
+    KnobIntPtr lastFrame = createKnob<KnobInt>(tr("Last Frame"));
+    lastFrame->setName(kNatronWriteParamLastFrame);
+    lastFrame->setHintToolTip(tr("The last frame to render, when the frame range is Manual."));
+    lastFrame->setDefaultValue(0);
+    lastFrame->setAnimationEnabled(false);
+    lastFrame->disableSlider();
+    page->addKnob(lastFrame);
+    _lastFrame = lastFrame;
+
+    // Node.cpp shows this knob's value, in parentheses, next to the node's label; it follows the
+    // file name there.
+    KnobStringPtr sublabel = createKnob<KnobString>(tr("SubLabel"));
+    sublabel->setName(kNatronOfxParamStringSublabelName);
+    sublabel->setSecretByDefault(true);
+    sublabel->setAnimationEnabled(false);
+    sublabel->setEvaluateOnChange(false);
+    page->addKnob(sublabel);
+
+    KnobIntPtr frameIncr = createKnob<KnobInt>(tr(kNatronWriteParamFrameStepLabel));
+    frameIncr->setName(kNatronWriteParamFrameStep);
+    frameIncr->setHintToolTip(tr(kNatronWriteParamFrameStepHint));
+    frameIncr->setAnimationEnabled(false);
+    frameIncr->setMinimum(1);
+    frameIncr->setDefaultValue(1);
+    page->addKnob(frameIncr);
 
     OcioSpaceKnobs::Description outputSpace;
     outputSpace.prefix = kNatronWriteParamOCIOOutputSpace;
@@ -804,6 +846,15 @@ NativeWrite::initializeKnobs()
                               "Reset to default returns to that colorspace.");
     outputSpace.setLabel = tr("Output Colorspace Set");
     _outputSpace.create(this, page, outputSpace, [this]() { return automaticOutputSpace(); });
+
+    KnobChoicePtr bitDepth = createKnob<KnobChoice>(tr("Bit Depth"));
+    bitDepth->setName(kNatronWriteParamBitDepth);
+    bitDepth->setHintToolTip(tr("Number of bits per sample in the file. Auto picks the depth from the output format."));
+    bitDepth->populateChoices(bitDepthOptions(allDataTypes()));
+    bitDepth->setDefaultValue(0);
+    bitDepth->setAnimationEnabled(false);
+    page->addKnob(bitDepth);
+    _bitDepth = bitDepth;
 
     KnobChoicePtr compression = createKnob<KnobChoice>(tr("Compression"));
     compression->setName(kNatronWriteParamCompression);
@@ -882,14 +933,6 @@ NativeWrite::initializeKnobs()
     page->addKnob(partSplitting);
     _partSplitting = partSplitting;
 
-    KnobBoolPtr writeMetadata = createKnob<KnobBool>(tr("Write Metadata"));
-    writeMetadata->setName(kNatronWriteParamWriteMetadata);
-    writeMetadata->setHintToolTip(tr("When checked, the metadata of the input image (EXR attributes, EXIF fields, timecode and so on) is written to the file, as far as the file format can hold it."));
-    writeMetadata->setDefaultValue(true);
-    writeMetadata->setAnimationEnabled(false);
-    page->addKnob(writeMetadata);
-    _writeMetadata = writeMetadata;
-
     // Its script name and its first entry are what OutputEffectInstance and Node look for.
     KnobChoicePtr views = createKnob<KnobChoice>(tr("Views"));
     views->setName(kNatronWriteParamViewsSelector);
@@ -900,56 +943,13 @@ NativeWrite::initializeKnobs()
     page->addKnob(views);
     _views = views;
 
-    KnobChoicePtr frameRange = createKnob<KnobChoice>(tr("Frame Range"));
-    frameRange->setName(kNatronWriteParamFrameRange);
-    frameRange->setHintToolTip(tr("What frame range should be rendered."));
-    {
-        std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption(kNatronWriteFrameRangeUnion, tr("Union of input ranges").toStdString(), tr("The union of all inputs frame ranges will be rendered.").toStdString()));
-        options.push_back(ChoiceOption(kNatronWriteFrameRangeProject, tr("Project frame range").toStdString(), tr("The frame range delimited by the frame range of the project will be rendered.").toStdString()));
-        options.push_back(ChoiceOption(kNatronWriteFrameRangeManual, tr("Manual").toStdString(), tr("The frame range will be the one defined by the first frame and last frame parameters.").toStdString()));
-        frameRange->populateChoices(options);
-    }
-    frameRange->setDefaultValue(eFrameRangeProject);
-    frameRange->setAnimationEnabled(false);
-    page->addKnob(frameRange);
-    _frameRange = frameRange;
-
-    KnobIntPtr firstFrame = createKnob<KnobInt>(tr("First Frame"));
-    firstFrame->setName(kNatronWriteParamFirstFrame);
-    firstFrame->setHintToolTip(tr("The first frame to render, when the frame range is Manual."));
-    firstFrame->setDefaultValue(0);
-    firstFrame->setAnimationEnabled(false);
-    firstFrame->disableSlider();
-    firstFrame->setAddNewLine(false);
-    page->addKnob(firstFrame);
-    _firstFrame = firstFrame;
-
-    KnobIntPtr lastFrame = createKnob<KnobInt>(tr("Last Frame"));
-    lastFrame->setName(kNatronWriteParamLastFrame);
-    lastFrame->setHintToolTip(tr("The last frame to render, when the frame range is Manual."));
-    lastFrame->setDefaultValue(0);
-    lastFrame->setAnimationEnabled(false);
-    lastFrame->disableSlider();
-    page->addKnob(lastFrame);
-    _lastFrame = lastFrame;
-
-    // Node.cpp shows this knob's value, in parentheses, next to the node's label; it follows the
-    // file name there.
-    KnobStringPtr sublabel = createKnob<KnobString>(tr("SubLabel"));
-    sublabel->setName(kNatronOfxParamStringSublabelName);
-    sublabel->setSecretByDefault(true);
-    sublabel->setAnimationEnabled(false);
-    sublabel->setEvaluateOnChange(false);
-    page->addKnob(sublabel);
-
-    KnobIntPtr frameIncr = createKnob<KnobInt>(tr(kNatronWriteParamFrameStepLabel));
-    frameIncr->setName(kNatronWriteParamFrameStep);
-    frameIncr->setHintToolTip(tr(kNatronWriteParamFrameStepHint));
-    frameIncr->setAnimationEnabled(false);
-    frameIncr->setMinimum(1);
-    frameIncr->setDefaultValue(1);
-    page->addKnob(frameIncr);
+    KnobBoolPtr writeMetadata = createKnob<KnobBool>(tr("Write Metadata"));
+    writeMetadata->setName(kNatronWriteParamWriteMetadata);
+    writeMetadata->setHintToolTip(tr("When checked, the metadata of the input image (EXR attributes, EXIF fields, timecode and so on) is written to the file, as far as the file format can hold it."));
+    writeMetadata->setDefaultValue(true);
+    writeMetadata->setAnimationEnabled(false);
+    page->addKnob(writeMetadata);
+    _writeMetadata = writeMetadata;
 
     KnobBoolPtr readBack = createKnob<KnobBool>(tr(kNatronWriteParamReadBackLabel));
     readBack->setName(kNatronWriteParamReadBack);

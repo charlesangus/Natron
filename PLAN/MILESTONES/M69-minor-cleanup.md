@@ -194,3 +194,11 @@ Acceptance sketch:
 - 2026-10-11 — **Scouting:** the picker already samples pre-viewer-transform data (`lastRenderedTiles` = `colorImage`). Only the "Linear color pickers" off-path applied a display transform, so the fix is to remove that path and setting. The Tab-menu jump is the completer list shown before the dialog is placed; it is unrelated to the pane menu's position. The node-deletion crash is `removeUndoStack` leaving `_currentUndoAction` dangling.
 - 2026-10-11 — **M56 overlap:** M56's "unpremult-by picker has no label" is the openfx-misc Premult/Unpremult plugin's own control, not the host `hostUnPremultBy` selector. It stays in M56. The footer move is M95.P3.T1.
 - 2026-10-11 — **User answers:** the split into M69 / M95 - Knob Cleanup And Keyer Redesign / M96 - Weighted Curve Tangents is approved. The Tab-menu jump moves to M45 - Native Tab Menu (P2.T1), so M69.P2.T5 is cancelled. Deps `M44, M55` confirmed. Design questions: `PLAN/DESIGN/2026-10-11-m69-questions.md`, being walked through with the user.
+- 2026-10-11 — **User answers to the design questions** (`PLAN/DESIGN/2026-10-11-m69-questions.md`):
+  - **Paste onto a selected node:** insert like node creation (re-route the selected node's outputs through the pasted node), one undo step (P2.T4 as written).
+  - **Connection shortcuts:** Y / Shift+Y as in Nuke (P2.T3 as written).
+  - **Pick-up mode:** left-click on empty space cancels (P2.T2 as written).
+  - **Picker Input/Output mode is a modifier, not a toolbar button:** plain Ctrl-click (and the rect/hover picks) read the viewed node's **input**; Ctrl+Alt reads its **output**, re-enabling the old commented-out `kShortcutIDMousePickInputColor` slot inverted. **P4.T3 changes accordingly:** no toolbar button; keep the info-bar "in"/"out" marker.
+  - **Several inputs:** the main/preferred input (B on Merge), falling back to Output when there is none.
+  - **Roto multi-feather:** same signed distance along each point's own normal.
+  - **Tangent join:** mean of the two angles.

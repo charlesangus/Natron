@@ -17,23 +17,4 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-// ***** BEGIN PYTHON BLOCK *****
-// from <https://docs.python.org/3/c-api/intro.html#include-files>:
-// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
-#include <Python.h>
-// ***** END PYTHON BLOCK *****
-
-#include "CurveSerialization.h"
-
-#include <cassert>
-#include <stdexcept>
-
-// explicit template instantiations
-
-NATRON_NAMESPACE_ENTER
-
-template void Curve::serialize<boost::archive::xml_iarchive>(boost::archive::xml_iarchive & ar,
-                                                             const unsigned int file_version);
-template void Curve::serialize<boost::archive::xml_oarchive>(boost::archive::xml_oarchive & ar,
-                                                             const unsigned int file_version);
-NATRON_NAMESPACE_EXIT
+#include "Serialization/CurveSerialization.h"

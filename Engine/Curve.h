@@ -36,6 +36,7 @@
 
 #include "Global/GlobalDefines.h"
 #include "Engine/EngineFwd.h"
+#include "Serialization/CurveSerialization.h"
 
 #define NATRON_CURVE_X_SPACING_EPSILON 1e-6
 
@@ -106,11 +107,6 @@ private:
     double _leftDerivative;
     double _rightDerivative;
     KeyframeTypeEnum _interpolation;
-
-    friend class ::boost::serialization::access;
-    template<class Archive>
-    void serialize(Archive & ar,
-                   const unsigned int version);
 };
 
 struct KeyFrame_compare_time
@@ -352,10 +348,17 @@ public:
 
     void setKeyframes(const KeyFrameSet& keys, bool refreshDerivatives);
 
+    /**
+     * @brief Fills serialization with the plain-data equivalent of this curve's keyframes.
+     **/
+    void toSerialization(Serialization::CurveSerialization* serialization) const;
+
+    /**
+     * @brief Replaces this curve's keyframes with the ones held by serialization.
+     **/
+    void fromSerialization(const Serialization::CurveSerialization& serialization);
+
 private:
-    friend class ::boost::serialization::access;
-    template<class Archive>
-    void serialize(Archive & ar, const unsigned int version);
 
     ///////The following functions are not thread-safe
     KeyFrameSet::const_iterator find(double time) const WARN_UNUSED_RETURN;

@@ -39,6 +39,7 @@ GCC_DIAG_OFF(unused-parameter)
 #include <boost/serialization/base_object.hpp>
 #include <boost/serialization/export.hpp>
 #include <boost/serialization/list.hpp>
+#include <boost/serialization/shared_ptr.hpp>
 #include <boost/serialization/split_member.hpp>
 #include <boost/serialization/version.hpp>
 #include <boost/serialization/map.hpp>
@@ -46,6 +47,9 @@ GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_ON
 GCC_DIAG_ON(unused-parameter)
 // clang-format on
 #endif
+
+#include "Serialization/CurveSerialization.h"
+#include "Serialization/BoostXml/CurveXml.h"
 
 #include "Engine/EngineFwd.h"
 
@@ -71,18 +75,25 @@ BezierCP::save(Archive & ar,
                const unsigned int version) const
 {
     Q_UNUSED(version);
+    Serialization::CurveSerialization xCurveData, yCurveData, leftXCurveData, leftYCurveData, rightXCurveData, rightYCurveData;
+    _imp->curveX->toSerialization(&xCurveData);
+    _imp->curveY->toSerialization(&yCurveData);
+    _imp->curveLeftBezierX->toSerialization(&leftXCurveData);
+    _imp->curveLeftBezierY->toSerialization(&leftYCurveData);
+    _imp->curveRightBezierX->toSerialization(&rightXCurveData);
+    _imp->curveRightBezierY->toSerialization(&rightYCurveData);
     ar & ::boost::serialization::make_nvp("X", _imp->x);
-    ar & ::boost::serialization::make_nvp("X_animation", *_imp->curveX);
+    ar & ::boost::serialization::make_nvp("X_animation", xCurveData);
     ar & ::boost::serialization::make_nvp("Y", _imp->y);
-    ar & ::boost::serialization::make_nvp("Y_animation", *_imp->curveY);
+    ar & ::boost::serialization::make_nvp("Y_animation", yCurveData);
     ar & ::boost::serialization::make_nvp("Left_X", _imp->leftX);
-    ar & ::boost::serialization::make_nvp("Left_X_animation", *_imp->curveLeftBezierX);
+    ar & ::boost::serialization::make_nvp("Left_X_animation", leftXCurveData);
     ar & ::boost::serialization::make_nvp("Left_Y", _imp->leftY);
-    ar & ::boost::serialization::make_nvp("Left_Y_animation", *_imp->curveLeftBezierY);
+    ar & ::boost::serialization::make_nvp("Left_Y_animation", leftYCurveData);
     ar & ::boost::serialization::make_nvp("Right_X", _imp->rightX);
-    ar & ::boost::serialization::make_nvp("Right_X_animation", *_imp->curveRightBezierX);
+    ar & ::boost::serialization::make_nvp("Right_X_animation", rightXCurveData);
     ar & ::boost::serialization::make_nvp("Right_Y", _imp->rightY);
-    ar & ::boost::serialization::make_nvp("Right_Y_animation", *_imp->curveRightBezierY);
+    ar & ::boost::serialization::make_nvp("Right_Y_animation", rightYCurveData);
     ar & ::boost::serialization::make_nvp("Broken", _imp->broken);
 }
 
@@ -95,30 +106,40 @@ BezierCP::load(Archive & ar,
 
     if ( (version >= BEZIER_CP_FIX_BUG_CURVE_POINTER) || !createdDuringToRC2Or3 ) {
         ar & ::boost::serialization::make_nvp("X", _imp->x);
+        Serialization::CurveSerialization xCurveData;
+        ar & ::boost::serialization::make_nvp("X_animation", xCurveData);
         Curve xCurve;
-        ar & ::boost::serialization::make_nvp("X_animation", xCurve);
+        xCurve.fromSerialization(xCurveData);
         _imp->curveX->clone(xCurve);
 
         if (version < BEZIER_CP_FIX_BUG_CURVE_POINTER) {
-            Curve curveBug;
-            ar & ::boost::serialization::make_nvp("Y", curveBug);
+            Serialization::CurveSerialization curveBugData;
+            ar & ::boost::serialization::make_nvp("Y", curveBugData);
         } else {
             ar & ::boost::serialization::make_nvp("Y", _imp->y);
         }
 
+        Serialization::CurveSerialization yCurveData;
+        ar & ::boost::serialization::make_nvp("Y_animation", yCurveData);
         Curve yCurve;
-        ar & ::boost::serialization::make_nvp("Y_animation", yCurve);
+        yCurve.fromSerialization(yCurveData);
         _imp->curveY->clone(yCurve);
 
         ar & ::boost::serialization::make_nvp("Left_X", _imp->leftX);
-        Curve leftCurveX, leftCurveY, rightCurveX, rightCurveY;
-        ar & ::boost::serialization::make_nvp("Left_X_animation", leftCurveX);
+        Serialization::CurveSerialization leftXCurveData, leftYCurveData, rightXCurveData, rightYCurveData;
+        ar & ::boost::serialization::make_nvp("Left_X_animation", leftXCurveData);
         ar & ::boost::serialization::make_nvp("Left_Y", _imp->leftY);
-        ar & ::boost::serialization::make_nvp("Left_Y_animation", leftCurveY);
+        ar & ::boost::serialization::make_nvp("Left_Y_animation", leftYCurveData);
         ar & ::boost::serialization::make_nvp("Right_X", _imp->rightX);
-        ar & ::boost::serialization::make_nvp("Right_X_animation", rightCurveX);
+        ar & ::boost::serialization::make_nvp("Right_X_animation", rightXCurveData);
         ar & ::boost::serialization::make_nvp("Right_Y", _imp->rightY);
-        ar & ::boost::serialization::make_nvp("Right_Y_animation", rightCurveY);
+        ar & ::boost::serialization::make_nvp("Right_Y_animation", rightYCurveData);
+
+        Curve leftCurveX, leftCurveY, rightCurveX, rightCurveY;
+        leftCurveX.fromSerialization(leftXCurveData);
+        leftCurveY.fromSerialization(leftYCurveData);
+        rightCurveX.fromSerialization(rightXCurveData);
+        rightCurveY.fromSerialization(rightYCurveData);
 
         _imp->curveLeftBezierX->clone(leftCurveX);
         _imp->curveLeftBezierY->clone(leftCurveY);
@@ -143,29 +164,58 @@ BezierCP::load(Archive & ar,
             _imp->broken = (std::abs(d) < 1e-4);
         }
     } else {
+        // Projects from this era (RC2/RC3, before BEZIER_CP_FIX_BUG_CURVE_POINTER)
+        // archived the animation curves through a tracked boost shared_ptr rather
+        // than by value, and even stored one under the "Y" tag by mistake. Curve
+        // itself no longer has a serialize of its own, so the pointee type read
+        // here is the plain-data CurveSerialization instead; the wire shape boost
+        // emits for a shared_ptr<T> does not depend on what T is, so this reads
+        // these old archives identically to reading a shared_ptr<Curve>.
         ar & ::boost::serialization::make_nvp("X", _imp->x);
-        CurvePtr xCurve, yCurve, leftCurveX, leftCurveY, rightCurveX, rightCurveY;
-        ar & ::boost::serialization::make_nvp("X_animation", xCurve);
-        _imp->curveX->clone(*xCurve);
+        std::shared_ptr<Serialization::CurveSerialization> xCurveData, yCurveData, leftXCurveData, leftYCurveData, rightXCurveData, rightYCurveData;
+        ar & ::boost::serialization::make_nvp("X_animation", xCurveData);
+        Curve xCurve;
+        if (xCurveData) {
+            xCurve.fromSerialization(*xCurveData);
+        }
+        _imp->curveX->clone(xCurve);
 
-        CurvePtr curveBug;
-        ar & ::boost::serialization::make_nvp("Y", curveBug);
-        ar & ::boost::serialization::make_nvp("Y_animation", yCurve);
-        _imp->curveY->clone(*yCurve);
+        std::shared_ptr<Serialization::CurveSerialization> curveBugData;
+        ar & ::boost::serialization::make_nvp("Y", curveBugData);
+        ar & ::boost::serialization::make_nvp("Y_animation", yCurveData);
+        Curve yCurve;
+        if (yCurveData) {
+            yCurve.fromSerialization(*yCurveData);
+        }
+        _imp->curveY->clone(yCurve);
 
         ar & ::boost::serialization::make_nvp("Left_X", _imp->leftX);
-        ar & ::boost::serialization::make_nvp("Left_X_animation", leftCurveX);
+        ar & ::boost::serialization::make_nvp("Left_X_animation", leftXCurveData);
         ar & ::boost::serialization::make_nvp("Left_Y", _imp->leftY);
-        ar & ::boost::serialization::make_nvp("Left_Y_animation", leftCurveY);
+        ar & ::boost::serialization::make_nvp("Left_Y_animation", leftYCurveData);
         ar & ::boost::serialization::make_nvp("Right_X", _imp->rightX);
-        ar & ::boost::serialization::make_nvp("Right_X_animation", rightCurveX);
+        ar & ::boost::serialization::make_nvp("Right_X_animation", rightXCurveData);
         ar & ::boost::serialization::make_nvp("Right_Y", _imp->rightY);
-        ar & ::boost::serialization::make_nvp("Right_Y_animation", rightCurveY);
+        ar & ::boost::serialization::make_nvp("Right_Y_animation", rightYCurveData);
 
-        _imp->curveLeftBezierX->clone(*leftCurveX);
-        _imp->curveLeftBezierY->clone(*leftCurveY);
-        _imp->curveRightBezierX->clone(*rightCurveX);
-        _imp->curveRightBezierY->clone(*rightCurveY);
+        Curve leftCurveX, leftCurveY, rightCurveX, rightCurveY;
+        if (leftXCurveData) {
+            leftCurveX.fromSerialization(*leftXCurveData);
+        }
+        if (leftYCurveData) {
+            leftCurveY.fromSerialization(*leftYCurveData);
+        }
+        if (rightXCurveData) {
+            rightCurveX.fromSerialization(*rightXCurveData);
+        }
+        if (rightYCurveData) {
+            rightCurveY.fromSerialization(*rightYCurveData);
+        }
+
+        _imp->curveLeftBezierX->clone(leftCurveX);
+        _imp->curveLeftBezierY->clone(leftCurveY);
+        _imp->curveRightBezierX->clone(rightCurveX);
+        _imp->curveRightBezierY->clone(rightCurveY);
     }
     if ( (version >= BEZIER_CP_INTRODUCES_OFFSET) && (version < BEZIER_CP_REMOVE_OFFSET) ) {
         int offsetTime;

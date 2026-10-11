@@ -54,7 +54,10 @@ GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_ON
 
 #include <SequenceParsing.h>
 
-#include "Engine/CurveSerialization.h"
+#include "Serialization/CurveSerialization.h"
+#include "Serialization/BoostXml/CurveXml.h"
+
+#include "Engine/Curve.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
@@ -311,7 +314,9 @@ struct ValueSerialization
         ar & ::boost::serialization::make_nvp("HasAnimation", hasAnimation);
 
         if (hasAnimation) {
-            ar & ::boost::serialization::make_nvp( "Curve", *( _knob->getCurve(ViewIdx(0), _dimension, true) ) );
+            Serialization::CurveSerialization curveData;
+            _knob->getCurve(ViewIdx(0), _dimension, true)->toSerialization(&curveData);
+            ar & ::boost::serialization::make_nvp("Curve", curveData);
         }
 
         if (isInt && !isChoice) {
@@ -381,8 +386,10 @@ struct ValueSerialization
         bool convertOldFileKeyframesToPattern = false;
         if (hasAnimation) {
             assert( _knob->canAnimate() );
+            Serialization::CurveSerialization curveData;
+            ar & ::boost::serialization::make_nvp("Curve", curveData);
             Curve c;
-            ar & ::boost::serialization::make_nvp("Curve", c);
+            c.fromSerialization(curveData);
             ///This is to overcome the change to the animation of file params: They no longer hold keyframes
             ///Don't try to load keyframes
             convertOldFileKeyframesToPattern = isFile && isFile->getName() == kOfxImageEffectFileParamName;
@@ -570,7 +577,13 @@ private:
         if (isParametric) {
             std::list<Curve > curves;
             isParametric->saveParametricCurves(&curves);
-            ar & ::boost::serialization::make_nvp("ParametricCurves", curves);
+            std::list<Serialization::CurveSerialization> curvesData;
+            for (std::list<Curve>::const_iterator it = curves.begin(); it != curves.end(); ++it) {
+                Serialization::CurveSerialization curveData;
+                it->toSerialization(&curveData);
+                curvesData.push_back(curveData);
+            }
+            ar & ::boost::serialization::make_nvp("ParametricCurves", curvesData);
         } else if (isString) {
             std::map<int, std::string> extraDatas;
             isString->getAnimation().save(&extraDatas);
@@ -671,8 +684,14 @@ private:
 
         ////restore extra datas
         if (isParametric) {
+            std::list<Serialization::CurveSerialization> curvesData;
+            ar & ::boost::serialization::make_nvp("ParametricCurves", curvesData);
             std::list<Curve > curves;
-            ar & ::boost::serialization::make_nvp("ParametricCurves", curves);
+            for (std::list<Serialization::CurveSerialization>::const_iterator it = curvesData.begin(); it != curvesData.end(); ++it) {
+                Curve c;
+                c.fromSerialization(*it);
+                curves.push_back(c);
+            }
             isParametric->loadParametricCurves(curves);
         } else if (isStringAnimated) {
             std::map<int, std::string> extraDatas;

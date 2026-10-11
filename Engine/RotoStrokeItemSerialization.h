@@ -44,8 +44,11 @@ GCC_DIAG_ON(unused-parameter)
 // clang-format on
 #endif
 
+#include "Serialization/CurveSerialization.h"
+#include "Serialization/BoostXml/CurveXml.h"
+
 #include "Engine/AppManager.h"
-#include "Engine/CurveSerialization.h"
+#include "Engine/Curve.h"
 #include "Engine/KnobSerialization.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
@@ -120,9 +123,13 @@ private:
         ar & ::boost::serialization::make_nvp("BrushType", _brushType);
         ar & ::boost::serialization::make_nvp("NbItems", nb);
         for (std::list<CurvePtr>::const_iterator it = _xCurves.begin(); it != _xCurves.end(); ++it, ++itY, ++itP) {
-            ar & ::boost::serialization::make_nvp("CurveX", **it);
-            ar & ::boost::serialization::make_nvp("CurveY", **itY);
-            ar & ::boost::serialization::make_nvp("CurveP", **itP);
+            Serialization::CurveSerialization xCurveData, yCurveData, pCurveData;
+            (*it)->toSerialization(&xCurveData);
+            (*itY)->toSerialization(&yCurveData);
+            (*itP)->toSerialization(&pCurveData);
+            ar & ::boost::serialization::make_nvp("CurveX", xCurveData);
+            ar & ::boost::serialization::make_nvp("CurveY", yCurveData);
+            ar & ::boost::serialization::make_nvp("CurveP", pCurveData);
         }
     }
 
@@ -141,9 +148,13 @@ private:
             CurvePtr x = std::make_shared<Curve>();
             CurvePtr y = std::make_shared<Curve>();
             CurvePtr p = std::make_shared<Curve>();
-            ar & ::boost::serialization::make_nvp("CurveX", *x);
-            ar & ::boost::serialization::make_nvp("CurveY", *y);
-            ar & ::boost::serialization::make_nvp("CurveP", *p);
+            Serialization::CurveSerialization xCurveData, yCurveData, pCurveData;
+            ar & ::boost::serialization::make_nvp("CurveX", xCurveData);
+            ar & ::boost::serialization::make_nvp("CurveY", yCurveData);
+            ar & ::boost::serialization::make_nvp("CurveP", pCurveData);
+            x->fromSerialization(xCurveData);
+            y->fromSerialization(yCurveData);
+            p->fromSerialization(pCurveData);
             _xCurves.push_back(x);
             _yCurves.push_back(y);
             _pressureCurves.push_back(p);
@@ -155,9 +166,13 @@ private:
                 CurvePtr x = std::make_shared<Curve>();
                 CurvePtr y = std::make_shared<Curve>();
                 CurvePtr p = std::make_shared<Curve>();
-                ar & ::boost::serialization::make_nvp("CurveX", *x);
-                ar & ::boost::serialization::make_nvp("CurveY", *y);
-                ar & ::boost::serialization::make_nvp("CurveP", *p);
+                Serialization::CurveSerialization xCurveData, yCurveData, pCurveData;
+                ar & ::boost::serialization::make_nvp("CurveX", xCurveData);
+                ar & ::boost::serialization::make_nvp("CurveY", yCurveData);
+                ar & ::boost::serialization::make_nvp("CurveP", pCurveData);
+                x->fromSerialization(xCurveData);
+                y->fromSerialization(yCurveData);
+                p->fromSerialization(pCurveData);
                 _xCurves.push_back(x);
                 _yCurves.push_back(y);
                 _pressureCurves.push_back(p);

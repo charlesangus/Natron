@@ -1,7 +1,9 @@
 #pragma once
 
+#include "GpuBuffer.h"
 #include "GpuDevice.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -20,8 +22,8 @@ struct GpuTransferOptions {
     // Size of the worker pool shared by both directions for host<->staging memcpy.
     uint32_t copyThreads = 1;
     bool allowHostImport = true;
-    // Keep host-pointer imports alive across process() calls, keyed by (pointer, size), so pinning
-    // is paid once per buffer. The caller must keep such memory valid until releaseHostImports().
+    // Keep host-pointer imports alive across calls so pinning is paid once per allocation. The
+    // caller must call forgetHostAllocation() before freeing such memory, or releaseHostImports().
     bool cacheHostImports = false;
     // Fills the device-side TimeSpans of TransferTimeline. Costs a blocking query-pool reset per process().
     bool recordTimestamps = false;
@@ -30,6 +32,66 @@ struct GpuTransferOptions {
 enum class TransferPath {
     Staging,
     HostImport,
+};
+
+// Caller-owned host memory. upload() only reads it.
+struct HostRange {
+    void* data = nullptr;
+    VkDeviceSize bytes = 0;
+};
+
+// A point on a timeline semaphore; reaching it means the operation that returned it is done on the
+// device. A default value is already reached.
+struct TimelineValue {
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    uint64_t value = 0;
+
+    explicit operator bool() const { return semaphore != VK_NULL_HANDLE && value != 0; }
+
+    // A wait entry for VkSubmitInfo2::pWaitSemaphoreInfos of a submission on any queue.
+    VkSemaphoreSubmitInfo waitInfo(VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT) const
+    {
+        VkSemaphoreSubmitInfo w { VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+        w.semaphore = semaphore;
+        w.value = value;
+        w.stageMask = stages;
+        return w;
+    }
+};
+
+// Who performs the compute-queue half of the queue-family ownership transfer of the device range.
+// All three behave the same when transfer and compute share a queue family.
+enum class ComputeHandoff {
+    // GpuTransfer submits it on the compute queue; the returned value already covers it.
+    Submit,
+    // The caller records recordComputeAcquire() / recordComputeRelease() into its own compute
+    // command buffer, which waits on the upload value or is waited on by the download.
+    Record,
+    // The range never visits the compute queue, e.g. an upload read straight back by a download.
+    None,
+};
+
+struct TimeSpan {
+    double beginMs = 0.0;
+    double endMs = 0.0;
+    // Sum of the pieces inside [beginMs, endMs] that were actually working.
+    double busyMs = 0.0;
+};
+
+struct StreamOptions {
+    // Device work the transfer must wait for, e.g. compute that reads the range being overwritten
+    // or writes the range being downloaded.
+    std::span<const TimelineValue> waits;
+    ComputeHandoff handoff = ComputeHandoff::Submit;
+    // Receives the path taken.
+    TransferPath* path = nullptr;
+    // Writes device timestamps at queries timestampQuery and timestampQuery + 1 around the
+    // transfer, when the transfer family supports them.
+    VkQueryPool timestampPool = VK_NULL_HANDLE;
+    uint32_t timestampQuery = 0;
+    // Host memcpy time, relative to hostOrigin. A download fills it in by the time wait() returns.
+    TimeSpan* hostSpan = nullptr;
+    std::chrono::steady_clock::time_point hostOrigin {};
 };
 
 struct TransferFrame {
@@ -54,13 +116,6 @@ struct ComputeBinding {
 // A failed status stops process() before that command buffer is submitted, and
 // process() returns it.
 using ComputeRecordFn = std::function<GpuStatus(VkCommandBuffer, const ComputeBinding&)>;
-
-struct TimeSpan {
-    double beginMs = 0.0;
-    double endMs = 0.0;
-    // Sum of the pieces inside [beginMs, endMs] that were actually working.
-    double busyMs = 0.0;
-};
 
 struct FrameTimeline {
     TransferPath uploadPath = TransferPath::Staging;
@@ -92,6 +147,9 @@ struct TransferTimeline {
     double sumOfStagesMs() const;
 };
 
+// Host<->device copies on the transfer queue. Every copy is split at GpuDeviceInfo::copyChunkSize.
+// A host range that is aligned to minImportedHostPointerAlignment is imported and copied without a
+// host memcpy; anything else goes through a pinned staging ring. Thread-safe.
 class GpuTransfer {
 public:
     static GpuStatus create(GpuDevice& device, const GpuTransferOptions& options,
@@ -102,9 +160,31 @@ public:
 
     const GpuTransferOptions& options() const { return options_; }
 
-    // True when host pointers can be imported; src/dst and the size must be multiples of the alignment.
+    // True when host pointers can be imported; the pointer and the size must be multiples of the alignment.
     bool hostImportSupported() const { return importAlignment_ != 0; }
     VkDeviceSize hostImportAlignment() const { return importAlignment_; }
+
+    // Copies src into [offset, offset + src.bytes) of dst. Returns once the staging path has read
+    // src; the import path reads it until `done` is reached, so src must stay unchanged until then.
+    // With ComputeHandoff::Submit, compute work that waits on `done` may use the range directly.
+    GpuStatus upload(HostRange src, GpuBuffer& dst, VkDeviceSize offset, TimelineValue& done,
+                     const StreamOptions& options = {});
+
+    // Copies [offset, offset + dst.bytes) of src into dst. dst holds the data once wait(done)
+    // returns. The range is then owned by the transfer family: compute may overwrite it, but must
+    // upload it again before reading it.
+    GpuStatus download(GpuBuffer& src, VkDeviceSize offset, HostRange dst, TimelineValue& done,
+                       const StreamOptions& options = {});
+
+    // Blocks until `value` is reached and, for a download, its data has landed in host memory.
+    GpuStatus wait(TimelineValue value);
+
+    // The compute-side halves of the ownership transfer for ComputeHandoff::Record. The range must
+    // match the upload's or download's exactly. No-ops when the families are the same.
+    void recordComputeAcquire(VkCommandBuffer computeCmd, const GpuBuffer& buffer, VkDeviceSize offset,
+                              VkDeviceSize bytes) const;
+    void recordComputeRelease(VkCommandBuffer computeCmd, const GpuBuffer& buffer, VkDeviceSize offset,
+                              VkDeviceSize bytes) const;
 
     // Streams every frame host -> device -> compute -> device -> host, pipelined
     // across frames. A null `record` copies input to output. Blocks until all
@@ -113,8 +193,15 @@ public:
     GpuStatus process(std::span<const TransferFrame> frames, const ComputeRecordFn& record,
                       TransferTimeline* timeline = nullptr);
 
+    // Drops every cached import overlapping [ptr, ptr + max(bytes, 1)), waiting for transfers that
+    // still use them. Call before freeing or remapping cached host memory. Cheap when nothing is cached.
+    void forgetHostAllocation(const void* ptr, size_t bytes = 0);
+
     // Waits for the device to go idle, then drops every cached import.
     void releaseHostImports();
+
+    // Host imports created so far, cached or not.
+    uint64_t hostImportCount() const;
 
 private:
     struct Impl;

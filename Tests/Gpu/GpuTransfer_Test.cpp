@@ -11,9 +11,14 @@
 #include <thread>
 #include <vector>
 
+#include <sys/mman.h>
+
+#include "GpuBuffer.h"
 #include "GpuDevice.h"
+#include "GpuKernel.h"
 #include "GpuTestDevice.h"
 #include "GpuTransfer.h"
+#include "fill_spirv.h"
 
 using namespace gpu;
 
@@ -407,4 +412,258 @@ TEST_F(GpuTransferTest, PipelinedFramesTimeline)
                     r.tl.gpuUploadBusyMs() / n, r.tl.gpuComputeBusyMs() / n, r.tl.gpuDownloadBusyMs() / n,
                     r.tl.hostDownloadBusyMs() / n, r.tl.sumOfStagesMs(), r.tl.wallMs);
     }
+}
+
+namespace {
+
+constexpr VkDeviceSize kChunk = VkDeviceSize(1) << 20;
+constexpr VkDeviceSize kNineMiB = VkDeviceSize(9) << 20;
+
+struct FillParams {
+    uint32_t width;
+    uint32_t height;
+    uint32_t asFloat;
+};
+
+} // namespace
+
+TEST_F(GpuTransferTest, ChunkedRoundTripBothPaths)
+{
+    GpuDeviceOptions opts = gputest::deviceOptions();
+    opts.copyChunkSize = kChunk;
+    std::unique_ptr<GpuDevice> dev;
+    GpuStatus s = gputest::createDevice(dev, opts);
+    ASSERT_TRUE(s.ok()) << s.message;
+    ASSERT_EQ(dev->info().copyChunkSize, kChunk);
+
+    for (bool import : { false, true }) {
+        GpuTransferOptions o;
+        o.allowHostImport = import;
+        std::unique_ptr<GpuTransfer> t;
+        s = GpuTransfer::create(*dev, o, t);
+        ASSERT_TRUE(s.ok()) << s.message;
+        if (import && !t->hostImportSupported()) {
+            std::printf("host-import path skipped: no VK_EXT_external_memory_host\n");
+            continue;
+        }
+        const TransferPath want = import ? TransferPath::HostImport : TransferPath::Staging;
+        GpuBuffer buf;
+        s = GpuBuffer::createDeviceLocal(*dev, kNineMiB, kGpuBufferDefaultUsage, buf);
+        ASSERT_TRUE(s.ok()) << s.message;
+        uint8_t* src = srcs_[0].get();
+        uint8_t* dst = dsts_[0].get();
+        std::memset(dst, 0, kNineMiB);
+
+        TransferPath upPath = TransferPath::Staging;
+        StreamOptions up;
+        up.path = &upPath;
+        TimelineValue uploaded;
+        s = t->upload({ src, kNineMiB }, buf, 0, uploaded, up);
+        ASSERT_TRUE(s.ok()) << s.message;
+        EXPECT_EQ(upPath, want);
+
+        TransferPath downPath = TransferPath::Staging;
+        StreamOptions down;
+        down.path = &downPath;
+        down.waits = { &uploaded, 1 };
+        TimelineValue downloaded;
+        s = t->download(buf, 0, { dst, kNineMiB }, downloaded, down);
+        ASSERT_TRUE(s.ok()) << s.message;
+        EXPECT_EQ(downPath, want);
+        s = t->wait(downloaded);
+        ASSERT_TRUE(s.ok()) << s.message;
+        expectSame(src, dst, kNineMiB, 0);
+
+        // Strip interiors: an aligned and a misaligned destination for the same row range.
+        const VkDeviceSize offset = (VkDeviceSize(3) << 20) + 4096;
+        const VkDeviceSize bytes = (VkDeviceSize(2) << 20) + 8192;
+        uint8_t* aligned = dsts_[1].get();
+        uint8_t* misaligned = dsts_[2].get() + 16;
+        std::memset(aligned, 0, bytes);
+        std::memset(misaligned, 0, bytes);
+        StreamOptions part;
+        part.handoff = ComputeHandoff::None;
+        part.waits = { &downloaded, 1 };
+        TransferPath alignedPath = TransferPath::Staging;
+        TransferPath misalignedPath = TransferPath::HostImport;
+        TimelineValue a;
+        TimelineValue b;
+        part.path = &alignedPath;
+        ASSERT_TRUE(t->download(buf, offset, { aligned, bytes }, a, part).ok());
+        part.path = &misalignedPath;
+        ASSERT_TRUE(t->download(buf, offset, { misaligned, bytes }, b, part).ok());
+        ASSERT_TRUE(t->wait(b).ok());
+        ASSERT_TRUE(t->wait(a).ok());
+        EXPECT_EQ(alignedPath, want);
+        EXPECT_EQ(misalignedPath, TransferPath::Staging);
+        expectSame(src + offset, aligned, bytes, 1);
+        expectSame(src + offset, misaligned, bytes, 2);
+    }
+}
+
+// The fill kernel overwrites a prefix of the uploaded buffer, so the downloaded prefix shows the
+// upload landed before compute and the download ran after it; the tail shows the upload itself.
+TEST_F(GpuTransferTest, UploadComputeDownloadWithoutHostWait)
+{
+    constexpr uint32_t w = 512;
+    constexpr uint32_t h = 256;
+    constexpr VkDeviceSize filled = VkDeviceSize(w) * h * sizeof(uint32_t);
+    constexpr VkDeviceSize total = 3 * filled;
+
+    GpuKernelDesc d;
+    d.spirv = fill_spirv;
+    d.spirvWords = fill_spirv_words;
+    d.storageBufferCount = 1;
+    d.pushConstantBytes = sizeof(FillParams);
+    d.groupSize = { fill_group_size[0], fill_group_size[1], fill_group_size[2] };
+    std::unique_ptr<GpuKernel> kernel;
+    GpuStatus s = GpuKernel::create(*dev_, d, kernel);
+    ASSERT_TRUE(s.ok()) << s.message;
+
+    VkDevice vk = dev_->device();
+    VkCommandPoolCreateInfo pci { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+    pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pci.queueFamilyIndex = dev_->info().computeFamily;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    ASSERT_EQ(vkCreateCommandPool(vk, &pci, nullptr, &pool), VK_SUCCESS);
+    VkCommandBufferAllocateInfo ai { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    ai.commandPool = pool;
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = 1;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    ASSERT_EQ(vkAllocateCommandBuffers(vk, &ai, &cb), VK_SUCCESS);
+    VkSemaphore sem = VK_NULL_HANDLE;
+    ASSERT_TRUE(dev_->createTimelineSemaphore(0, sem).ok());
+    uint64_t semValue = 0;
+
+    const uint8_t* src = srcs_[3].get();
+    uint8_t* dst = dsts_[3].get();
+    for (bool import : { false, true }) {
+        for (ComputeHandoff handoff : { ComputeHandoff::Submit, ComputeHandoff::Record }) {
+            const char* label = handoff == ComputeHandoff::Submit ? "submit" : "record";
+            SCOPED_TRACE(std::string(import ? "host-import " : "staging ") + label);
+            GpuTransferOptions o;
+            o.allowHostImport = import;
+            auto t = make(o);
+            ASSERT_TRUE(t != nullptr);
+            GpuBuffer buf;
+            ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev_, total, kGpuBufferDefaultUsage, buf).ok());
+            std::memset(dst, 0, total);
+
+            StreamOptions up;
+            up.handoff = handoff;
+            TimelineValue uploaded;
+            s = t->upload({ const_cast<uint8_t*>(src), total }, buf, 0, uploaded, up);
+            ASSERT_TRUE(s.ok()) << s.message;
+
+            ASSERT_EQ(vkResetCommandBuffer(cb, 0), VK_SUCCESS);
+            VkCommandBufferBeginInfo bi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+            bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            ASSERT_EQ(vkBeginCommandBuffer(cb, &bi), VK_SUCCESS);
+            if (handoff == ComputeHandoff::Record) {
+                t->recordComputeAcquire(cb, buf, 0, total);
+            }
+            const FillParams p { w, h, 0 };
+            const VkBuffer bufs[] = { buf.buffer() };
+            ASSERT_TRUE(kernel->record(cb, bufs, std::as_bytes(std::span(&p, 1)), { w, h, 1 }).ok());
+            if (handoff == ComputeHandoff::Record) {
+                t->recordComputeRelease(cb, buf, 0, total);
+            }
+            ASSERT_EQ(vkEndCommandBuffer(cb), VK_SUCCESS);
+
+            const VkSemaphoreSubmitInfo wait = uploaded.waitInfo();
+            const TimelineValue computed { sem, ++semValue };
+            VkSemaphoreSubmitInfo signal = computed.waitInfo();
+            VkCommandBufferSubmitInfo cbi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+            cbi.commandBuffer = cb;
+            VkSubmitInfo2 si { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+            si.waitSemaphoreInfoCount = 1;
+            si.pWaitSemaphoreInfos = &wait;
+            si.commandBufferInfoCount = 1;
+            si.pCommandBufferInfos = &cbi;
+            si.signalSemaphoreInfoCount = 1;
+            si.pSignalSemaphoreInfos = &signal;
+            s = dev_->submit(QueueKind::Compute, std::span<const VkSubmitInfo2>(&si, 1), VK_NULL_HANDLE);
+            ASSERT_TRUE(s.ok()) << s.message;
+
+            StreamOptions down;
+            down.handoff = handoff;
+            down.waits = { &computed, 1 };
+            TimelineValue downloaded;
+            s = t->download(buf, 0, { dst, total }, downloaded, down);
+            ASSERT_TRUE(s.ok()) << s.message;
+            s = t->wait(downloaded);
+            ASSERT_TRUE(s.ok()) << s.message;
+            kernel->releaseDescriptors();
+
+            const uint32_t* words = reinterpret_cast<const uint32_t*>(dst);
+            size_t wrong = 0;
+            for (uint32_t i = 0; i < w * h; ++i) {
+                wrong += words[i] != i;
+            }
+            EXPECT_EQ(wrong, 0u);
+            expectSame(src + filled, dst + filled, total - filled, 3);
+        }
+    }
+
+    vkDestroySemaphore(vk, sem, nullptr);
+    vkDestroyCommandPool(vk, pool, nullptr);
+}
+
+TEST_F(GpuTransferTest, ForgottenHostAllocationIsReimported)
+{
+    GpuTransferOptions o;
+    o.cacheHostImports = true;
+    auto t = make(o);
+    ASSERT_TRUE(t != nullptr);
+    if (!t->hostImportSupported()) {
+        GPUTEST_SKIP() << "VK_EXT_external_memory_host unavailable";
+    }
+    constexpr size_t kBytes = size_t(2) << 20;
+    ASSERT_EQ(kBytes % t->hostImportAlignment(), 0u);
+    void* p = mmap(nullptr, kBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    ASSERT_NE(p, MAP_FAILED);
+    if (reinterpret_cast<uintptr_t>(p) % t->hostImportAlignment() != 0) {
+        munmap(p, kBytes);
+        GPUTEST_SKIP() << "import alignment exceeds the page size";
+    }
+    GpuBuffer buf;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev_, kBytes, kGpuBufferDefaultUsage, buf).ok());
+    uint8_t* dst = dsts_[4].get();
+
+    auto roundTrip = [&](uint32_t seed) {
+        fillFrame(static_cast<uint8_t*>(p), kBytes, seed);
+        std::memset(dst, 0, kBytes);
+        TransferPath path = TransferPath::Staging;
+        StreamOptions up;
+        up.handoff = ComputeHandoff::None;
+        up.path = &path;
+        TimelineValue uploaded;
+        GpuStatus s = t->upload({ p, kBytes }, buf, 0, uploaded, up);
+        EXPECT_TRUE(s.ok()) << s.message;
+        EXPECT_EQ(path, TransferPath::HostImport);
+        StreamOptions down;
+        down.handoff = ComputeHandoff::None;
+        down.waits = { &uploaded, 1 };
+        TimelineValue downloaded;
+        s = t->download(buf, 0, { dst, kBytes }, downloaded, down);
+        EXPECT_TRUE(s.ok()) << s.message;
+        EXPECT_TRUE(t->wait(downloaded).ok());
+        expectSame(p, dst, kBytes, seed);
+    };
+
+    roundTrip(11);
+    const uint64_t imports = t->hostImportCount();
+    roundTrip(12);
+    EXPECT_EQ(t->hostImportCount(), imports) << "a cached range was imported again";
+
+    t->forgetHostAllocation(p, kBytes);
+    // MAP_FIXED over the old mapping puts fresh pages at the same address, as a free and reallocation can.
+    void* q = mmap(p, kBytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    ASSERT_EQ(q, p);
+    roundTrip(13);
+    EXPECT_EQ(t->hostImportCount(), imports + 1) << "the reallocated range was not imported again";
+
+    t->forgetHostAllocation(p, kBytes);
+    munmap(p, kBytes);
 }

@@ -404,6 +404,38 @@ Settings::initializeKnobsThreading()
                                             "The NATRON_RENDER_SCHEDULER environment variable (legacy or taskgraph) takes precedence over this setting."));
     _threadingPage->addKnob(_renderSchedulerMode);
 
+    _gpuComputeMode = AppManager::createKnob<KnobChoice>(this, tr("GPU compute"));
+    _gpuComputeMode->setName("gpuComputeMode");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("off",
+                                       tr("Off").toStdString(),
+                                       tr("Never use the GPU for compute.").toStdString()));
+        assert(entries.size() == (int)eGpuComputeModeAuto);
+        entries.push_back(ChoiceOption("auto",
+                                       tr("Auto").toStdString(),
+                                       tr("Use the GPU for compute when a suitable one is found.").toStdString()));
+        _gpuComputeMode->populateChoices(entries);
+    }
+    _gpuComputeMode->setHintToolTip(tr("Whether the GPU is used for compute. Auto uses a hardware Vulkan device when one is found and "
+                                       "never a software one. The NATRON_GPU environment variable (off, auto or force) takes precedence "
+                                       "over this setting; force also accepts software devices. Changing this takes effect upon the next application launch."));
+    _threadingPage->addKnob(_gpuComputeMode);
+
+    _gpuDevice = AppManager::createKnob<KnobString>(this, tr("GPU device"));
+    _gpuDevice->setName("gpuDevice");
+    _gpuDevice->setHintToolTip(tr("The name, or part of the name, of the Vulkan device to use for compute, or its index. "
+                                  "Leave empty to choose automatically. Changing this takes effect upon the next application launch."));
+    _threadingPage->addKnob(_gpuDevice);
+
+    _gpuMemoryBudgetMB = AppManager::createKnob<KnobInt>(this, tr("GPU memory budget (MB)"));
+    _gpuMemoryBudgetMB->setName("gpuMemoryBudgetMB");
+    _gpuMemoryBudgetMB->setHintToolTip(tr("The most device memory, in megabytes, that compute may hold on the GPU. "
+                                          "0 chooses automatically from what the device offers. Changing this takes effect upon the next application launch."));
+    _gpuMemoryBudgetMB->setMinimum(0);
+    _gpuMemoryBudgetMB->disableSlider();
+    _threadingPage->addKnob(_gpuMemoryBudgetMB);
+
     _renderInSeparateProcess = AppManager::createKnob<KnobBool>( this, tr("Render in a separate process") );
     _renderInSeparateProcess->setName("renderNewProcess");
     _renderInSeparateProcess->setHintToolTip( tr("If true, %1 will render frames to disk in "
@@ -1525,6 +1557,9 @@ Settings::setDefaultValues()
     _useThreadPool->setDefaultValue(true);
     _nThreadsPerEffect->setDefaultValue(0);
     _renderSchedulerMode->setDefaultValue((int)eRenderSchedulerModeTaskGraph);
+    _gpuComputeMode->setDefaultValue((int)eGpuComputeModeAuto);
+    _gpuDevice->setDefaultValue(std::string());
+    _gpuMemoryBudgetMB->setDefaultValue(0);
     _renderInSeparateProcess->setDefaultValue(false, 0);
     _queueRenders->setDefaultValue(false);
 
@@ -2471,6 +2506,24 @@ bool
 Settings::viewerOverlaysPath() const
 {
     return _viewerOverlaysPath->getValue();
+}
+
+GpuComputeModeEnum
+Settings::getGpuComputeMode() const
+{
+    return (GpuComputeModeEnum)_gpuComputeMode->getValue();
+}
+
+std::string
+Settings::getGpuDevice() const
+{
+    return _gpuDevice->getValue();
+}
+
+std::uint64_t
+Settings::getGpuMemoryBudgetMB() const
+{
+    return (std::uint64_t)std::max(0, _gpuMemoryBudgetMB->getValue());
 }
 
 ///////////////////////////////////////////////////////

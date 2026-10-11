@@ -429,6 +429,12 @@ public:
     RenderSchedulerModeEnum getRenderSchedulerMode() const;
 
     /**
+     * @brief The GPU context, null before the settings are loaded. It reports unavailable while it initializes
+     * on its own thread and whenever no suitable device exists.
+     **/
+    GpuContext* getGpuContext() const;
+
+    /**
      * @brief Overrides the mode, whatever its source, until the next Settings change.
      **/
     void setRenderSchedulerMode(RenderSchedulerModeEnum mode);

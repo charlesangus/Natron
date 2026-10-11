@@ -550,6 +550,11 @@ enum RenderSchedulerModeEnum {
     eRenderSchedulerModeTaskGraph = 1,
 };
 
+enum GpuComputeModeEnum {
+    eGpuComputeModeOff = 0,
+    eGpuComputeModeAuto = 1,
+};
+
 enum PenType
 {
     ePenTypeLMB,

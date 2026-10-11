@@ -782,6 +782,13 @@ AppManager::loadInternal(const CLArgs& cl)
     // Call restore after initializing knobs
     _imp->_settings->restoreSettings( cl.isLoadedUsingDefaultSettings() );
     onRenderSchedulerModeSettingChanged(_imp->_settings->getRenderSchedulerMode());
+    {
+        GpuContextOptions gpuOptions;
+        gpuOptions.mode = GpuContext::resolveMode(_imp->_settings->getGpuComputeMode(), std::getenv("NATRON_GPU"));
+        gpuOptions.device = _imp->_settings->getGpuDevice();
+        gpuOptions.memoryBudgetMB = _imp->_settings->getGpuMemoryBudgetMB();
+        _imp->gpuContext.reset(new GpuContext(gpuOptions));
+    }
     if (cl.isLoadedUsingDefaultSettings()) {
         _imp->_settings->setSaveSettings(false);
     }
@@ -2997,6 +3004,12 @@ void
 AppManager::setRenderSchedulerMode(RenderSchedulerModeEnum mode)
 {
     _imp->renderSchedulerMode = (int)mode;
+}
+
+GpuContext*
+AppManager::getGpuContext() const
+{
+    return _imp->gpuContext.get();
 }
 
 void

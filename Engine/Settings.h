@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstdint>
 #include <string>
 #include <map>
 #include <vector>
@@ -302,6 +303,10 @@ public:
 
     RenderSchedulerModeEnum getRenderSchedulerMode() const;
 
+    GpuComputeModeEnum getGpuComputeMode() const;
+    std::string getGpuDevice() const;
+    std::uint64_t getGpuMemoryBudgetMB() const;
+
     bool isAutoTurboEnabled() const;
 
     void setAutoTurboModeEnabled(bool e);
@@ -464,6 +469,9 @@ private:
     KnobBoolPtr _useThreadPool;
     KnobIntPtr _nThreadsPerEffect;
     KnobChoicePtr _renderSchedulerMode;
+    KnobChoicePtr _gpuComputeMode;
+    KnobStringPtr _gpuDevice;
+    KnobIntPtr _gpuMemoryBudgetMB;
     KnobBoolPtr _renderInSeparateProcess;
     KnobBoolPtr _queueRenders;
 

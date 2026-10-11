@@ -31,6 +31,7 @@
 #include <atomic>
 #include <list>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,7 @@
 #include "Engine/DeepImageCacheEntry.h"
 #include "Engine/FrameEntry.h"
 #include "Engine/GPUContextPool.h"
+#include "Engine/GpuContext.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
 #include "Engine/Image.h"
 #include "Engine/TLSHolder.h"
@@ -116,6 +118,9 @@ public:
     std::atomic<int> renderSchedulerMode;
     // NATRON_RENDER_SCHEDULER was set to a valid value at startup; settings changes must not override it.
     bool renderSchedulerEnvOverride;
+
+    // Created once the settings are loaded; destroyed with the private data.
+    std::unique_ptr<GpuContext> gpuContext;
 
     //The idea here is to keep track of the number of threads launched by Natron (except the ones of the global thread pool of QtConcurrent)
     //So that we can properly have an estimation of how much the cores of the CPU are used.

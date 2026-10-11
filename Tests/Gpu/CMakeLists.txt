@@ -27,6 +27,7 @@ set(GpuTests_SOURCES
     GpuDevice_Test.cpp
     GpuKernel_Test.cpp
     GpuKernelRegistry_Test.cpp
+    GpuRuntime_Test.cpp
     GpuTransfer_Test.cpp
     GradeCpu_Test.cpp
     GradeGpu_Test.cpp

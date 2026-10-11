@@ -31,6 +31,7 @@ add_library(NatronGpu STATIC
     GpuKernel.cpp
     GpuKernelRegistry.cpp
     GpuRecord.cpp
+    GpuRuntime.cpp
     GpuTransfer.cpp
     GpuBlur.cpp
     GlInterop.cpp

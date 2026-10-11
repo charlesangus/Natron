@@ -183,6 +183,8 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     out.reset();
     std::unique_ptr<GpuDevice> dev(new GpuDevice);
     dev->debugMessage_ = options.debugMessage;
+    dev->fault_ = options.fault;
+    dev->onDeviceLost_ = options.onDeviceLost;
 
     if (GpuStatus s = createInstance(options.enableValidation || envFlag("NATRON_GPU_VALIDATION"),
                                      dev->debugMessage_, dev->instance_, dev->info_.validationEnabled,
@@ -477,8 +479,8 @@ GpuDevice::lostStatus() const
 GpuStatus
 GpuDevice::check(VkResult result, const char* what)
 {
-    if (result == VK_ERROR_DEVICE_LOST) {
-        lost_.store(true, std::memory_order_release);
+    if (result == VK_ERROR_DEVICE_LOST && !lost_.exchange(true, std::memory_order_acq_rel) && onDeviceLost_) {
+        onDeviceLost_();
     }
     if (result < 0) {
         return fail(result, std::string(what) + " failed");
@@ -487,10 +489,52 @@ GpuDevice::check(VkResult result, const char* what)
 }
 
 GpuStatus
+GpuDevice::countOperation()
+{
+    const uint64_t n = operations_.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (fault_.kind == GpuFaultPlan::Kind::Off || n != fault_.atOperation) {
+        return {};
+    }
+    if (fault_.kind == GpuFaultPlan::Kind::DeviceLost) {
+        return check(VK_ERROR_DEVICE_LOST, "injected fault");
+    }
+    return check(VK_ERROR_OUT_OF_DEVICE_MEMORY, "injected fault");
+}
+
+bool
+GpuFaultPlan::parse(const std::string& text, GpuFaultPlan& out)
+{
+    const size_t at = text.find('@');
+    if (at == std::string::npos) {
+        return false;
+    }
+    const std::string kind = text.substr(0, at);
+    const std::string num = text.substr(at + 1);
+    if (num.empty() || num.find_first_not_of("0123456789") != std::string::npos || num.size() > 18) {
+        return false;
+    }
+    const uint64_t n = std::stoull(num);
+    if (n == 0) {
+        return false;
+    }
+    if (kind == "lost") {
+        out = { Kind::DeviceLost, n };
+    } else if (kind == "oom") {
+        out = { Kind::OutOfMemory, n };
+    } else {
+        return false;
+    }
+    return true;
+}
+
+GpuStatus
 GpuDevice::submit(QueueKind kind, std::span<const VkSubmitInfo2> submits, VkFence fence)
 {
     if (isLost()) {
         return lostStatus();
+    }
+    if (GpuStatus injected = countOperation(); !injected) {
+        return injected;
     }
     Queue& q = queueFor(kind);
     std::lock_guard<std::mutex> lock(q.mutex);

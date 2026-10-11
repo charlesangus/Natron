@@ -33,6 +33,22 @@ enum class QueueKind {
 using GpuDebugMessageFn = std::function<void(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                              VkDebugUtilsMessageTypeFlagsEXT types, const char* message)>;
 
+// Makes one chosen operation fail with the VkResult a driver would return, so the real error handling runs.
+// Operations are counted from 1 per device: every GpuDevice::submit and every GpuRuntime::acquire.
+// The fault fires once, on exactly operation `atOperation`.
+struct GpuFaultPlan {
+    enum class Kind {
+        Off,
+        DeviceLost,
+        OutOfMemory,
+    };
+    Kind kind = Kind::Off;
+    uint64_t atOperation = 0;
+
+    // Parses "lost@N" or "oom@N" with N >= 1.
+    static bool parse(const std::string& text, GpuFaultPlan& out);
+};
+
 struct GpuDeviceOptions {
     // Empty means: consult NATRON_GPU_DEVICE, then fall back to the ranked pick.
     std::string deviceSelector;
@@ -47,6 +63,9 @@ struct GpuDeviceOptions {
     uint64_t maxStorageBufferRange = 0;
     // Size of one host<->device copy chunk.
     uint64_t copyChunkSize = 512ull << 20;
+    GpuFaultPlan fault;
+    // Runs once, on the thread that first sees VK_ERROR_DEVICE_LOST, with no device lock held.
+    std::function<void()> onDeviceLost;
 };
 
 struct GpuDeviceInfo {
@@ -108,6 +127,9 @@ public:
     // Funnels a raw Vulkan result through the lost-device latch.
     GpuStatus check(VkResult result, const char* what);
 
+    // Counts one operation against the fault plan and returns the injected failure when it is due.
+    GpuStatus countOperation();
+
 private:
     struct Queue {
         VkQueue handle = VK_NULL_HANDLE;
@@ -131,6 +153,9 @@ private:
     Queue computeQueue_;
     Queue transferQueue_;
 
+    GpuFaultPlan fault_;
+    std::atomic<uint64_t> operations_ { 0 };
+    std::function<void()> onDeviceLost_;
     std::atomic<bool> lost_ { false };
 };
 

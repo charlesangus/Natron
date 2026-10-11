@@ -235,8 +235,6 @@ public:
     bool getRenderOnEditingFinishedOnly() const;
     void setRenderOnEditingFinishedOnly(bool render);
 
-    bool getIconsBlackAndWhite() const;
-
     std::string getHostName() const;
     const std::string& getKnownHostName(KnownHostNameEnum e) const
     {
@@ -574,7 +572,6 @@ private:
     KnobBoolPtr _autoScroll;
     KnobBoolPtr _autoTurbo;
     KnobBoolPtr _snapNodesToConnections;
-    KnobBoolPtr _useBWIcons;
     KnobIntPtr _maxUndoRedoNodeGraph;
     KnobIntPtr _disconnectedArrowLength;
     KnobBoolPtr _useInputAForMergeAutoConnect;

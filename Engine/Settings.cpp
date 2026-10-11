@@ -785,13 +785,6 @@ Settings::initializeKnobsGuiColors()
     _guiColorsTab = AppManager::createKnob<KnobPage>( this, tr("Main Window") );
     _appearanceTab->addKnob(_guiColorsTab);
 
-    _useBWIcons = AppManager::createKnob<KnobBool>( this, tr("Use black & white toolbutton icons") );
-    _useBWIcons->setName("useBwIcons");
-    _useBWIcons->setHintToolTip( tr("When checked, the tools icons in the left toolbar are greyscale. Changing this takes "
-                                    "effect upon the next launch of the application.") );
-    _guiColorsTab->addKnob(_useBWIcons);
-
-
     _sunkenColor =  AppManager::createKnob<KnobColor>(this, tr("Sunken"), 3);
     _sunkenColor->setName("sunken");
     _sunkenColor->setSimplified(true);
@@ -1679,7 +1672,6 @@ Settings::setDefaultValues()
     _autoScroll->setDefaultValue(false);
     _autoTurbo->setDefaultValue(false);
     _snapNodesToConnections->setDefaultValue(true);
-    _useBWIcons->setDefaultValue(false);
     _maxUndoRedoNodeGraph->setDefaultValue(20, 0);
     _disconnectedArrowLength->setDefaultValue(30);
     _useInputAForMergeAutoConnect->setDefaultValue(true);
@@ -3326,12 +3318,6 @@ void
 Settings::setRenderOnEditingFinishedOnly(bool render)
 {
     _renderOnEditingFinished->setValue(render);
-}
-
-bool
-Settings::getIconsBlackAndWhite() const
-{
-    return _useBWIcons->getValue();
 }
 
 std::string

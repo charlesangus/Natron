@@ -87,14 +87,10 @@ GuiApplicationManager::~GuiApplicationManager()
 
 namespace {
 /**
- * @brief Maps a PixmapEnum id to its resource path. Every *_GROUPING case now
- * points at a themed SVG glyph, so iconSetStr (the old GroupingIcons PNG set
- * number) is no longer read by any case; it stays a parameter here, unread,
- * until the black-and-white icons preference that still supplies it is removed.
+ * @brief Maps a PixmapEnum id to its resource path.
  **/
 std::string
-pixmapEnumToPath(PixmapEnum e,
-                 const std::string& iconSetStr)
+pixmapEnumToPath(PixmapEnum e)
 {
     std::string path;
 
@@ -810,9 +806,7 @@ void
 GuiApplicationManager::getIcon(PixmapEnum e,
                                QPixmap* pix) const
 {
-    int iconSet = appPTR->getCurrentSettings()->getIconsBlackAndWhite() ? 2 : 3;
-    std::string iconSetStr = QString::number(iconSet).toStdString();
-    std::string path = pixmapEnumToPath(e, iconSetStr);
+    std::string path = pixmapEnumToPath(e);
 
     if (path.empty()) {
         assert(!"Missing image.");
@@ -849,9 +843,7 @@ GuiApplicationManager::getIcon(PixmapEnum e,
                                int size,
                                QPixmap* pix) const
 {
-    int iconSet = appPTR->getCurrentSettings()->getIconsBlackAndWhite() ? 2 : 3;
-    std::string iconSetStr = QString::number(iconSet).toStdString();
-    std::string path = pixmapEnumToPath(e, iconSetStr);
+    std::string path = pixmapEnumToPath(e);
     const QString qpath = QString::fromUtf8(path.c_str());
 
     if (!path.empty() && ThemedIcon::isSvgPath(qpath)) {
@@ -883,9 +875,7 @@ GuiApplicationManager::getIcon(PixmapEnum e,
                                int size,
                                QIcon* icon) const
 {
-    int iconSet = appPTR->getCurrentSettings()->getIconsBlackAndWhite() ? 2 : 3;
-    std::string iconSetStr = QString::number(iconSet).toStdString();
-    std::string path = pixmapEnumToPath(e, iconSetStr);
+    std::string path = pixmapEnumToPath(e);
     const QString qpath = QString::fromUtf8(path.c_str());
 
     if (!path.empty() && ThemedIcon::isSvgPath(qpath)) {

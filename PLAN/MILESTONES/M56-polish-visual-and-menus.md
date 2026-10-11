@@ -139,7 +139,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: at the gate build, Preferences → Appearance → Main Window no longer shows the knob. A settings file with `useBwIcons=true` loads with no warning.
   - size: M
 
-- [ ] M56.P4.T7 — Move M44's colour-row icons onto the SVG path, and delete the grouping PNG sets
+- [x] M56.P4.T7 — Move M44's colour-row icons onto the SVG path, and delete the grouping PNG sets
   - files: `Gui/GuiApplicationManager.cpp` (`NATRON_PIXMAP_COLOR_ADJUST_DROPDOWN` / `_GLOBAL_TRACKBALL` cases), `Gui/GuiResources.qrc`, `Gui/Resources/Images/colorAdjustDropdown.png`, `Gui/Resources/Images/colorGlobalTrackball.png`, `Gui/Resources/Images/GroupingIcons/**`
   - approach:
     - Point M44's two ids at `Icons/lucide/chevrons-down.svg` and `expand.svg`. M44's checked-state `mainstyle.qss` rule stays.

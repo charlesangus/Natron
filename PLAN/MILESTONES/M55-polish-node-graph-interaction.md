@@ -11,7 +11,7 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
 
 ## Phase 55.1: Input pipes always drawn
 
-- [ ] M55.P1.T1 — Remove the "Auto hide masks inputs" preference; always show every input
+- [x] M55.P1.T1 — Remove the "Auto hide masks inputs" preference; always show every input
   - files: `Engine/Settings.h`, `Engine/Settings.cpp`, `Engine/AppManager.h`, `Engine/AppManager.cpp`, `Gui/GuiAppInstance.h`, `Gui/GuiAppInstance.cpp`, `Gui/NodeGraph.h`, `Gui/NodeGraph13.cpp`, `Gui/NodeGraph25.cpp`, `Gui/NodeGraph35.cpp`, `Gui/NodeGraph45.cpp`, `Gui/ActionShortcuts.h`, `Gui/ActionShortcuts.cpp`, `Gui/GuiApplicationManager10.cpp`, `Gui/Edge.h`, `Gui/Edge.cpp`. Deliberately **not** touched: `Gui/Gui.h`, `Gui/Gui50.cpp`, `Gui/Gui.cpp`, `Gui/GuiPrivate.h` (M44-owned) and `Engine/AppInstance.h` (M76-owned) — see approach.
   - approach:
     - This is finding (f) above: the preference's tooltip says "mask input", but `Edge::_imp->optional = _imp->isMask || effect->isInputOptional(inputNb)` (`Edge.cpp:373`) means it hides any plugin-optional input, mask or not, plus every input of a Reader outright. Remove it rather than retarget it.

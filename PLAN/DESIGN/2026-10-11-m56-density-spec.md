@@ -119,34 +119,34 @@ All values are logical px. In C++, wrap them in `TO_DPIX` (horizontal) or `TO_DP
 
 | Source | Token | New value | Where it is set |
 |---|---|---|---|
-| C10, C12 bottom margin (`NATRON_SETTINGS_VERTICAL_SPACING_PIXELS`) | `row-gap` | 4 | C++ (P6.T3) |
-| C9 grid spacing (`NATRON_FORM_LAYOUT_LINES_SPACING`) | `label-gap` (horizontal only) | `setHorizontalSpacing(8)`; vertical stays 0 | C++ (P6.T3) |
-| C10/C12 left inset 3 | `label-gap` | 0 (the gap moves to the grid column spacing) | C++ (P6.T3) |
+| C10, C12 bottom margin (`NATRON_SETTINGS_VERTICAL_SPACING_PIXELS`) | `row-gap` | 4 | C++ via `GuiDensity.h` (P6.T3) |
+| C9 grid spacing (`NATRON_FORM_LAYOUT_LINES_SPACING`) | `label-gap` (horizontal only) | `setHorizontalSpacing(8)`; vertical stays 0 | C++ via `GuiDensity.h` (P6.T3) |
+| C10/C12 left inset 3 | `label-gap` | 0 (the gap moves to the grid column spacing) | C++ via `GuiDensity.h` (P6.T3) |
 | C11 field-row spacing 2 | unchanged (intra-knob) | 2 | — |
-| C13 `getItemsSpacingOnSameLine` | `inline-gap` | 12 | C++ (P6.T3) |
-| C14 `TabGroup.cpp` | `row-gap` | 4 | C++ (P6.T3) |
+| C13 `getItemsSpacingOnSameLine` | `inline-gap` | 12 | C++ via `GuiDensity.h` (P6.T3) |
+| C14 `TabGroup.cpp` | `row-gap` | 4 | C++ via `GuiDensity.h` (P6.T3) |
 | C15 group children | `group-indent` | 12 | C++, **new code path** (P6.T3; see §4) |
-| C15 arrow `setFixedSize` raw 22 | hi-DPI fix | `TO_DPIX(22)` | C++ (P6.T3) |
-| C16 separator | `section-gap` | 8 above and below | C++ (P6.T3) |
-| C5 `_horizLayout` margins | `panel-margin` | 6,6,6,6 | C++ (P6.T3) |
-| C2 header margins | `panel-margin` (header) | 2,2,2,2 | C++ (P6.T3) |
-| C3 header spacing | `header-gap` | 2, plus `addSpacing(8)` between clusters | C++ (P6.T3) |
+| C15 arrow `setFixedSize` raw 22 | hi-DPI fix | `TO_DPIX(22)` | C++ via `GuiDensity.h` (P6.T3) |
+| C16 separator | `section-gap` | 8 above and below | C++ via `GuiDensity.h` (P6.T3) |
+| C5 `_horizLayout` margins | `panel-margin` | 6,6,6,6 | C++ via `GuiDensity.h` (P6.T3) |
+| C2 header margins | `panel-margin` (header) | 2,2,2,2 | C++ via `GuiDensity.h` (P6.T3) |
+| C3 header spacing | `header-gap` | 2, plus `addSpacing(8)` between clusters | C++ via `GuiDensity.h` (P6.T3) |
 | Q9 `QTabWidget::pane` | `panel-margin` | keep `margin-top:-1px`; the pane padding comes from C5 | qss (P6.T2) |
 | Q13 `QTabBar::tab` padding | `tab-padding` | `padding: 2px 10px` | qss (P6.T2) |
 | Q13 height | `tab-height` | follows from the padding (26 outer) | qss (P6.T2) |
 | Q14 page-tab min-width | `tab-padding` | keep 3em | qss |
 | Q16 close button | unchanged | Qt already leaves about 12 px before the × (measured) | — |
-| C21 `TabWidget` top margin 5 | `tab-height` (header rhythm) | 2 | C++ (P6.T4) |
-| C23 corner-button gap 10 | `toolbar-group-gap` | 6 | C++ (P6.T4) |
+| C21 `TabWidget` top margin 5 | `tab-height` (header rhythm) | 2 | C++ via `GuiDensity.h` (P6.T4) |
+| C23 corner-button gap 10 | `toolbar-group-gap` | 6 | C++ via `GuiDensity.h` (P6.T4) |
 | Q17 `QMenu` padding | `menu-padding` | `padding: 4px 0px` | qss (P6.T2) |
 | Q18 `QMenu::item` | `menu-item-padding` + `menu-icon-column` | `padding: 3px 24px 3px 32px` (8 + 24 column); `QMenu::icon { padding-left: 8px; }`; `QMenu::indicator { width: 14px; left: 8px; }` | qss (P6.T2) |
 | Q18 separator | `menu-separator-margin` | `QMenu::separator { height: 1px; background: %4; margin: 4px 8px; }` | qss (P6.T2). Uses the existing `%4`; no new colour. |
 | Q19 `QMenuBar::item` | `menu-item-padding` (horizontal) | `padding: 3px 8px` | qss (P6.T2) |
 | Q2 `QToolBar` spacing | `toolbar-spacing` | 2 | qss (P6.T2) |
 | C34/C35 toolbox | unchanged size | 30 | — |
-| C27/C28 viewer rows spacing 0 | `toolbar-spacing` | 2 | C++ (P6.T4) |
-| C25 `addSpacer` 5/5 raw | `toolbar-group-gap` | `TO_DPIX(6)` / `TO_DPIX(6)` | C++ (P6.T4) |
-| C27/C28 row margins 0 | `panel-margin` (toolbar) | 4,2,4,2 | C++ (P6.T4) |
+| C27/C28 viewer rows spacing 0 | `toolbar-spacing` | 2 | C++ via `GuiDensity.h` (P6.T4) |
+| C25 `addSpacer` 5/5 raw | `toolbar-group-gap` | `TO_DPIX(6)` / `TO_DPIX(6)` | C++ via `GuiDensity.h` (P6.T4) |
+| C27/C28 row margins 0 | `panel-margin` (toolbar) | 4,2,4,2 | C++ via `GuiDensity.h` (P6.T4) |
 | C31/C32 player spacing | `toolbar-group-gap` | keep (already DPI, already grouped) | — |
 | C36 properties-bin row | `toolbar-spacing` | 2 | C++ (optional, P6.T4) |
 | C17–C20 knob internals | unchanged | — | Outside P6.T3's file list. Leave as is. |
@@ -169,7 +169,7 @@ The Nuke figures below are approximate, from familiarity with Nuke 13–15 at 1�
 
 ## 5. What the qss cannot change (C++ only)
 
-Everything in §1b is a layout call, and **no stylesheet rule reaches it**. In particular:
+Everything in §1b is a layout call, and **no stylesheet rule reaches it**. §6 says where these values live instead. In particular:
 - The row gap, label gap, inline gap, group indent, section gap and panel margins (C5, C9–C16). These are QLayout margins and spacing set in `DockablePanel.cpp` and `KnobGuiContainerHelper.cpp`. QSS `margin`/`padding` on the container widgets would add to them and would not replace them.
 - The viewer toolbar spacing and separator gaps (C25, C27, C28). These are the `QHBoxLayout::setSpacing(0)` and `addSpacer()` literals in `ViewerTab.cpp`.
 - The pane header (C21, C23). These are `TabWidget.cpp` layout literals.
@@ -180,6 +180,34 @@ Hi-DPI notes for the implementers:
 - Raw (unscaled) literals that should become `TO_DPIX`/`TO_DPIY` while they are being touched: C1–C7, C15, C17, C20–C23, C25–C28 and C36.
 - QSS px are **not** passed through `TO_DPIX`. Under Qt 6, `QT_SCALE_FACTOR=2` scales both qss px and layouts, and `TO_DPIX` stays near 1, so the two stay consistent. They diverge only when the screen's *logical* DPI is not 96 (for example `Xft.dpi: 144`): then `TO_DPIX` is 1.5 and the qss stays at 1×. If P7.T1's 2× shots show a mismatch, P6.T2 can add one substitution to `loadStyleSheet`'s prelude (`Gui20.cpp:276-290`), for example `%12` = the DPI ratio. Do **not** reorder `%1`–`%11`.
 
-## 6. Approval
+## 6. Where the C++ values live
+
+Qt stylesheets cannot set layout spacing: `QLayout::setSpacing` and `setContentsMargins` don't respond to qss. A qss `margin` or `padding` on a container widget adds to the layout's values and never replaces them. The C++ tokens therefore need their own single source of truth, rather than more bare literals spread across six files.
+
+**Fix (P6.T3/T4):** add one header, `Gui/GuiDensity.h`, with named constants in logical px:
+
+```cpp
+#define NATRON_DENSITY_ROW_GAP            4
+#define NATRON_DENSITY_LABEL_GAP          8
+#define NATRON_DENSITY_INLINE_GAP        12
+#define NATRON_DENSITY_GROUP_INDENT      12
+#define NATRON_DENSITY_SECTION_GAP        8
+#define NATRON_DENSITY_PANEL_MARGIN       6
+#define NATRON_DENSITY_HEADER_MARGIN      2
+#define NATRON_DENSITY_HEADER_CLUSTER     8
+#define NATRON_DENSITY_TOOLBAR_SPACING    2
+#define NATRON_DENSITY_TOOLBAR_GROUP_GAP  6
+```
+
+Every call site in §3 marked C++ uses these, always through `TO_DPIX`/`TO_DPIY` (for example `fieldLayout->setContentsMargins(0, 0, 0, TO_DPIY(NATRON_DENSITY_ROW_GAP))`). The constants replace:
+- the file-local `NATRON_SETTINGS_VERTICAL_SPACING_PIXELS` and `NATRON_FORM_LAYOUT_LINES_SPACING` in `KnobGuiContainerHelper.cpp:49-50` and `TabGroup.cpp:38`;
+- the 15 in `getItemsSpacingOnSameLine()`;
+- the raw literals in `DockablePanel.cpp`, `TabWidget.cpp`, `ViewerTab.cpp` and `GuiPrivate.cpp`.
+
+The header sits beside `GuiDefines.h`, which keeps the widget sizes (button and tool sizes). This supersedes P6.T3's "constants kept local to these files" approach.
+
+**Optional later step (not M56):** expose the same values as `Q_PROPERTY`s on the container widgets (`DockablePanel`, `ViewerTab`, `TabWidget`), with defaults from `GuiDensity.h`. A user stylesheet could then theme them (`Natron--DockablePanel { qproperty-rowGap: 4; }`), and the qss and C++ tokens would be set in one place. Each setter must reapply its value to the layout, and the values still pass through `TO_DPIX`.
+
+## 7. Approval
 
 On approval, record the §2 values in M56 `## Decisions` verbatim. P6.T2 does the qss rows, P6.T3 the `DockablePanel` and `KnobGuiContainerHelper` rows, and P6.T4 the `ViewerTab`, `TabWidget`, `Gui05` and `GuiPrivate` rows.

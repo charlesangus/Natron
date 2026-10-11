@@ -156,7 +156,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 
 ## Phase 56.5: Icon replacement batches (scope per Q5)
 
-- [ ] M56.P5.T1 — Pitch the per-area glyph mapping for user approval
+- [x] M56.P5.T1 — Pitch the per-area glyph mapping for user approval
   - files: `PLAN/DESIGN/<date>-m56-icon-mapping.md` (new), a claude.ai artifact contact sheet (PM publishes it)
   - approach:
     - For each area in Q5's scope, list every `NATRON_PIXMAP_*` id with its current file (from `getIcon`'s switch, `GuiApplicationManager.cpp:86-809`) and its proposed Lucide glyph, or "custom needed".
@@ -178,11 +178,23 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: at the gate build, P1.T1's Grade panel shots at 1× and 2× show the approved glyphs.
   - size: M
 
-- [ ] M56.P5.T4 — (Only if Q5 = c) Send the path-based roto, tracker and dope-sheet icons through the themed loader
+- [ ] M56.P5.T4 — Send the path-based roto, tracker and dope-sheet icons through the themed loader
   - files: `Gui/KnobGuiButton.cpp` (`:99` icon load), `Gui/DopeSheetView.cpp`, `Engine/RotoPaint.cpp`, `Engine/TrackerNode.cpp`, `Engine/TrackerContextPrivate.cpp` (path strings only)
   - approach: `KnobGuiButton`/`DopeSheetView` call `ThemedIcon` when the path is an SVG. Engine keeps passing `:/Resources/...` strings, and only the file names change. The custom glyphs (roto point tools, tracker controls, interpolation) need their own approval sheet first, like P5.T1.
   - verify: at the gate build, shots of the roto and tracker toolbars and the curve-editor interpolation menu.
   - size: L
+
+- [ ] M56.P5.T6 — Vendor every approved glyph before the area tasks apply them
+  - files: `Gui/Resources/Icons/lucide/*.svg`, `Gui/Resources/Icons/natron/*.svg`, `Gui/Resources/Icons/SOURCES.txt`, `Gui/GuiResources.qrc`
+  - approach: from `PLAN/DESIGN/2026-10-11-m56-icon-mapping.md` (approved), fetch the 84 Lucide glyphs byte-identical from tag 1.55.0 (commit `70562c1ee1c4`) and write the 51 custom glyphs verbatim from the doc's SVG-source section (convention A for interpolation; dope-sheet markers stay small shapes). Record each in `SOURCES.txt` (Feather-derived glyphs are MIT; check Lucide's LICENSE list) and add qrc entries. Run before P5.T2, so the area tasks only re-point ids.
+  - verify: `xmllint --noout` on every new SVG; every qrc path exists; at the gate build, P1.T1's shots show no blank icon (the compact-arc-flag glyphs `eye`, `eye-off`, `droplet`, `eraser`, `diamond-plus`, `diamond-minus`, `feather`, `pen-tool`, `pin`, `zap` included; re-save any that Qt6::Svg can't draw, and note it in SOURCES.txt).
+  - size: M
+
+- [ ] M56.P5.T7 — Apply the approved glyphs to panes, the properties bin, the Script Editor, the file dialog and the link cursors
+  - files: `Gui/GuiApplicationManager.cpp`, `Gui/TabWidget.cpp`, `Gui/PropertiesBinWrapper.cpp` (or wherever the bin's buttons are built), `Gui/ScriptEditor.cpp`, `Gui/SequenceFileDialog.cpp`, and the cursor construction site (grep `NATRON_PIXMAP_LINK_CURSOR`)
+  - approach: point each id at its SVG per the mapping's "Panes, script editor and dialogs" section. The bin's minimise/maximise-all button loads Lucide `chevrons-down-up` through `ThemedIcon::icon` by path. The link cursors keep their black halo and use the hotspot the mapping gives; build them from a rendered pixmap with `QCursor(pixmap, hotX, hotY)`. Fix the Script Editor's close icon being overwritten by the clear-history icon only if the mapping says the close button should show it.
+  - verify: at the gate build, P1.T1 shots of a split pane header, the properties bin buttons, the Script Editor toolbar and the file dialog; the link cursor's hotspot lands on the clicked knob in the GUI script.
+  - size: M
 
 - [ ] M56.P5.T5 — Delete orphaned PNGs and their qrc entries
   - files: `Gui/GuiResources.qrc`, `Gui/Resources/Images/*.png` (only the unreferenced ones)
@@ -281,3 +293,8 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 - 2026-10-11 — **Started early (user):** M56 opened in `.worktrees/m56` on `milestone/m56-visual-and-menu-polish`, branched from `main` at `a50bef552`, while M44 - Trackball Colour Editing (PR #51, in CI) and M55 - Node Graph Polish (at its gate) are still open. The user asked for it explicitly. The lane rebases onto `main` after each of those merges. Tasks that build on M44's icons (P4.T7) wait until M44 has merged. P1.T1's "before" shots run later against a `main` build. **Freshness check:** every task's files exist on `main`. P4.T6 and P5.T5 were re-sized S → M under the sizing rule: they are multi-file edits that need grep judgement.
 - 2026-10-11 — **P4.T2:** Lucide pinned at 1.55.0 (commit `70562c1ee1c4`). Lucide's LICENSE lists `clock` and `move` as Feather-derived (MIT) as well as `chevrons-down`; SOURCES.txt records all three as MIT. The custom glyphs came from `PLAN/DESIGN/icons/` and were re-saved at stroke-width 2 so the runtime thinning treats them like Lucide.
 - 2026-10-11 — **P4.T5:** toolbox groupings map to SVGs (Misc, Other and the default catch-all all `puzzle` for now). A new public `GuiApplicationManager::getIcon(PixmapEnum, int, QIcon*)` overload builds themed state icons. The implementer found that `NodeGui`'s on-canvas plugin icon loads SVG paths with plain `QPixmap::load`, so **M56.P4.T8** was added to theme it.
+- 2026-10-11 — **Icon mapping approved (user)** after six comment rounds on claude.ai artifact `3iXFWNHqn6JCTVH3HF22kN`. It has 149 rows: 84 Lucide glyphs and 51 custom glyphs, with the SVG source for the custom glyphs in `PLAN/DESIGN/2026-10-11-m56-icon-mapping.md`. Interpolation uses **convention A** (Maya-style: one key dot and a curve whose shape is the type). The dope-sheet keyframe markers stay small shapes. Other → `circle-ellipsis`. The scope widened to panes, the bin, the Script Editor, the file dialog and the cursors, which became new task **P5.T7**. Vendoring all glyphs up front became new task **P5.T6**. P5.T4 is no longer conditional.
+  - **Free interpolation:** add a Free entry to the interpolation menu (user). This goes in P5.T4: the curve editor's and dope sheet's interpolation menus gain "Free" using `NATRON_PIXMAP_INTERP_CURVE`.
+  - **Bin minimise/maximise-all:** uses `chevrons-down-up` by path. **Link cursors** keep their black halo.
+  - **Order in Phase 56.5:** P5.T6, then T2, T3, T4, T7, then T5.
+- 2026-10-11 — **Density spec v2** published (claude.ai artifact `QTNUQASqsHJscpeR5JcvHa`): overlays off by default. Per the user's question, layout spacing goes through one `Gui/GuiDensity.h` header of named, DPI-scaled constants, which replaces P6.T3's "constants kept local". Optional Q_PROPERTY theming comes later. Awaiting the user's approval of the token values.

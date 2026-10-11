@@ -16,7 +16,7 @@ Scope: icon scope "Everything" (Q5 = c), so the areas are the viewer toolbar, th
 
 ## Counts
 
-| Area | Rows | Lucide | Custom | Keep PNG | Collapsing pairs | Revised (any round) | Revised in rounds 3-6 |
+| Area | Rows | Lucide | Custom | Keep PNG | Collapsing pairs | Revised (any round) | Revised in rounds 3-7 |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Viewer toolbar | 14 | 10 | 4 | 0 | 10 | 4 | 1 |
 | Timeline and transport | 17 | 10 | 7 | 0 | 1 | 5 | 3 |
@@ -24,8 +24,8 @@ Scope: icon scope "Everything" (Q5 = c), so the areas are the viewer toolbar, th
 | Roto and RotoPaint | 39 | 25 | 14 | 0 | 10 | 10 | 5 |
 | Tracker | 27 | 18 | 9 | 0 | 5 | 5 | 4 |
 | Curve editor and dope sheet | 17 | 0 | 17 | 0 | 9 | 17 | 9 |
-| Panes, script editor and dialogs | 18 | 15 | 3 | 0 | 2 | 18 | 0 |
-| **All** | 149 | 95 | 54 | 0 | 42 | 59 | 22 |
+| Panes, script editor and dialogs | 18 | 15 | 3 | 0 | 2 | 18 | 2 |
+| **All** | 149 | 95 | 54 | 0 | 42 | 59 | 24 |
 
 That is 84 distinct Lucide glyphs to vendor and **51 distinct custom glyphs**, each with a draft SVG below. Shared custom glyphs: `play-reverse` x3, `key-prev` x2.
 
@@ -40,6 +40,8 @@ That is 84 distinct Lucide glyphs to vendor and **51 distinct custom glyphs**, e
 **Revision 6 (2026-10-11).** Remove feather: the half-size feather didn't read, so it's back to the small dashed square, keeping the nib + item + minus layout. Pressure: a tapered S-squiggle with more bend and a stronger thin-to-thick taper (rows marked "Revised r6").
 
 **Revision 6, continued.** The user picked convention A for the interpolation icons. A is locked in on every interpolation row and the B drafts are removed. The dope-sheet markers are unchanged; whether they should follow is still an open question.
+
+**Revision 7 (2026-10-11).** Link cursors: an arrow tip marks the click point at the top-left hotspot (2, 2), with the link glyph moved down-right; each row gives the QCursor hotspot (rows marked "Revised r7").
 
 **Interpolation icon research.** *Maya* Graph Editor tangent buttons (Spline, Clamped, Linear, Flat, Stepped, Plateau) each draw a short curve through one key, so the curve's shape is the tangent type, and only Flat shows a handle. *Blender*'s Interpolation Mode menu (Constant, Linear, Bezier) and Easing menu draw the curve segment between keys: a stair for Constant, a straight line for Linear, an S for Bezier, and one curve per easing function. *After Effects* encodes interpolation in the keyframe's own shape on the timeline: diamond (linear), hourglass (easy ease), circle (auto Bezier), square (hold), and half-shapes when the in and out sides differ. *Houdini*'s animation editor exposes slope and tangent operations as toolbar buttons and menu entries (linear, bezier and tangent handles, manual/automatic slopes, zero slope), and its graph shows handles on the key rather than per-type icons. *Nuke*'s curve editor offers Constant, Linear, Smooth, Catmull-Rom, Cubic, Horizontal and Break from text menus and shortcuts, with no per-type icons. Natron copied Nuke's set and invented the letter-in-a-shape PNGs. Nothing here was inspected as artwork; this comes from the vendors' documentation. So there are two established conventions. Curve-shape icons (Maya, Blender) suit the menu, where the user is choosing a behaviour. Key-shape icons (After Effects) suit the dope-sheet markers, where they must stay tiny and show state at a glance. Convention A follows Maya: one key dot dead centre and one continuous curve whose shape is the interpolation, with handles drawn only for Horizontal, Break and Free, where the handle is the point. Convention B followed After Effects' key shapes (shown in round 3, not chosen). Smooth, Catmull-Rom and Cubic differ only subtly in shape, which is why Nuke names them in text and Natron's PNGs used letters. A tells them apart by clamping (no overshoot), end overshoot, and a continuous wave. Sources: Autodesk Maya Graph Editor Tangents menu (help.autodesk.com), Blender Manual F-Curves (docs.blender.org), Adobe After Effects keyframe interpolation (helpx.adobe.com), SideFX Houdini Graph view (sidefx.com), Foundry nuke.AnimationKey reference (learn.foundry.com).
 
@@ -238,8 +240,8 @@ Added in this revision at the user's request: the pane (TabWidget) buttons, the 
 | NATRON_PIXMAP_SCRIPT_OUTPUT_PANE_ACTIVATED / _DEACTIVATED | `outputPanelActivated.png`, `outputPanelDeactivated.png` | `panel-top` | **Collapses.** Revised (new scope). Show/hide the output pane (ScriptEditor.cpp:191-192 builds an On/Off QIcon). |
 | NATRON_PIXMAP_SCRIPT_CLEAR_OUTPUT | `clearOutput.png` | `brush-cleaning` | Revised (new scope). Clear the output pane. |
 | NATRON_PIXMAP_COMBOBOX / _COMBOBOX_PRESSED | `combobox.png`, `pressed_combobox.png` | `chevron-down` | Revised (new scope). SequenceFileDialog's filter drop-down (SequenceFileDialog.cpp:450). COMBOBOX_PRESSED has no caller; both ids point at one glyph. The preview toggle in the same dialog uses PLAY_ENABLED/DISABLED, see the timeline table. |
-| NATRON_PIXMAP_LINK_CURSOR | `linkCursor.png` | **custom** `natron/link-cursor.svg` (draft below): Lucide `link` over a 4.5-wide black halo at 70% (literal `#000000`, so it survives recolouring) to stay visible on any image. | Revised (new scope). Cursor while linking a parameter. Cursors sit over arbitrary images, so the draft carries a literal black halo that recolouring leaves alone. QCursor(p) uses the centre hotspot, as today. |
-| NATRON_PIXMAP_LINK_MULT_CURSOR | `linkMultCursor.png` | **custom** `natron/link-mult-cursor.svg` (draft below): Link cursor with a small x in the free bottom-right corner, same black halo. | Revised (new scope). Cursor while linking several parameters. |
+| NATRON_PIXMAP_LINK_CURSOR | `linkCursor.png` | **custom** `natron/link-cursor.svg` (draft below): Filled arrow tip at the top-left hotspot (2,2), with Lucide `link` redrawn at 0.7 scale (stroke not scaled) down and to the right; black 70% halo (literal `#000000`) so it reads over any image. | Revised (new scope). Cursor while linking a parameter. Cursors sit over arbitrary images, so the draft carries a literal black halo that recolouring leaves alone. QCursor(p) uses the centre hotspot, as today. Revised r7: arrow tip added; hotspot is top-left at (2, 2) in the 24-unit grid. The code must pass it to QCursor scaled to the rendered pixmap: `QCursor(pix, qRound(2.0 * w / 24), qRound(2.0 * h / 24))`, where w and h are the pixmap's logical size (2, 2 at 24 px). Today's call uses the default centre hotspot. |
+| NATRON_PIXMAP_LINK_MULT_CURSOR | `linkMultCursor.png` | **custom** `natron/link-mult-cursor.svg` (draft below): As link-cursor, plus a small x in the free bottom-left corner. | Revised (new scope). Cursor while linking several parameters. Revised r7: arrow tip added; hotspot is top-left at (2, 2) in the 24-unit grid. The code must pass it to QCursor scaled to the rendered pixmap: `QCursor(pix, qRound(2.0 * w / 24), qRound(2.0 * h / 24))`, where w and h are the pixmap's logical size (2, 2 at 24 px). Today's call uses the default centre hotspot. |
 
 ## Misc and Other toolbox candidates
 
@@ -875,35 +877,39 @@ Lucide `layout-grid` with the top-left cell filled (this pane is the anchor). Us
 
 ### `link-cursor`
 
-Lucide `link` over a 4.5-wide black halo at 70% (literal `#000000`, so it survives recolouring) to stay visible on any image. Used in: Panes, script editor and dialogs.
+Filled arrow tip at the top-left hotspot (2,2), with Lucide `link` redrawn at 0.7 scale (stroke not scaled) down and to the right; black 70% halo (literal `#000000`) so it reads over any image. Used in: Panes, script editor and dialogs.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
   <g stroke="#000000" stroke-opacity=".7" stroke-width="4.5">
-  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+  <path d="M2 2l2.6 7.2 1.6-3.4 3.4-1.6z" fill="currentColor"/>
+  <path d="M14 16.1a3.5 3.5 0 0 0 5.278.378l2.1-2.1a3.5 3.5 0 0 0-4.949-4.949l-1.204 1.197"/>
+  <path d="M16.8 14.7a3.5 3.5 0 0 0-5.278-.378l-2.1 2.1a3.5 3.5 0 0 0 4.949 4.949l1.197-1.197"/>
   </g>
-  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+  <path d="M2 2l2.6 7.2 1.6-3.4 3.4-1.6z" fill="currentColor"/>
+  <path d="M14 16.1a3.5 3.5 0 0 0 5.278.378l2.1-2.1a3.5 3.5 0 0 0-4.949-4.949l-1.204 1.197"/>
+  <path d="M16.8 14.7a3.5 3.5 0 0 0-5.278-.378l-2.1 2.1a3.5 3.5 0 0 0 4.949 4.949l1.197-1.197"/>
 </svg>
 ```
 
 ### `link-mult-cursor`
 
-Link cursor with a small x in the free bottom-right corner, same black halo. Used in: Panes, script editor and dialogs.
+As link-cursor, plus a small x in the free bottom-left corner. Used in: Panes, script editor and dialogs.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
   <g stroke="#000000" stroke-opacity=".7" stroke-width="4.5">
-  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-  <path d="m17 17 4.5 4.5"/>
-  <path d="m21.5 17-4.5 4.5"/>
+  <path d="M2 2l2.6 7.2 1.6-3.4 3.4-1.6z" fill="currentColor"/>
+  <path d="M14 16.1a3.5 3.5 0 0 0 5.278.378l2.1-2.1a3.5 3.5 0 0 0-4.949-4.949l-1.204 1.197"/>
+  <path d="M16.8 14.7a3.5 3.5 0 0 0-5.278-.378l-2.1 2.1a3.5 3.5 0 0 0 4.949 4.949l1.197-1.197"/>
+  <path d="m2.5 17.5 4 4"/>
+  <path d="m6.5 17.5-4 4"/>
   </g>
-  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-  <path d="m17 17 4.5 4.5"/>
-  <path d="m21.5 17-4.5 4.5"/>
+  <path d="M2 2l2.6 7.2 1.6-3.4 3.4-1.6z" fill="currentColor"/>
+  <path d="M14 16.1a3.5 3.5 0 0 0 5.278.378l2.1-2.1a3.5 3.5 0 0 0-4.949-4.949l-1.204 1.197"/>
+  <path d="M16.8 14.7a3.5 3.5 0 0 0-5.278-.378l-2.1 2.1a3.5 3.5 0 0 0 4.949 4.949l1.197-1.197"/>
+  <path d="m2.5 17.5 4 4"/>
+  <path d="m6.5 17.5-4 4"/>
 </svg>
 ```
 

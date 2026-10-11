@@ -1659,7 +1659,7 @@ Node::loadKnobs(const NodeSerialization & serialization,
     }
 
     if (serialization.hasTrackerContext() && _imp->trackContext) {
-        _imp->trackContext->load( serialization.getTrackerContext() );
+        _imp->trackContext->fromSerialization( serialization.getTrackerContext() );
     }
 
     restoreUserKnobs(serialization);

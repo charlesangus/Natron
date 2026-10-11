@@ -45,6 +45,8 @@
 #include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 
+#include "Serialization/SerializationFwd.h"
+
 namespace mv {
 class AutoTrack;
 }
@@ -131,9 +133,9 @@ public:
 
     virtual ~TrackerContext();
 
-    void load(const TrackerContextSerialization& serialization);
+    void fromSerialization(const Serialization::TrackerContextSerialization& serialization);
 
-    void save(TrackerContextSerialization* serialization) const;
+    void toSerialization(Serialization::TrackerContextSerialization* serialization) const;
 
 
     NodePtr getNode() const;

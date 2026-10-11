@@ -34,6 +34,8 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/Knob.h"
 
+#include "Serialization/SerializationFwd.h"
+
 #define kTrackerParamSearchWndBtmLeft "searchWndBtmLeft"
 #define kTrackerParamSearchWndBtmLeftLabel "Search Window Bottom Left"
 #define kTrackerParamSearchWndBtmLeftHint "The bottom left point of the search window, relative to the center point."
@@ -115,9 +117,12 @@ public:
 
     void clone(const TrackMarker& other);
 
-    void load(const TrackSerialization& serialization);
+    /**
+     * @brief Must be called once the knobs of the track exist.
+     **/
+    void fromSerialization(const Serialization::TrackSerialization& serialization);
 
-    void save(TrackSerialization* serialization) const;
+    void toSerialization(Serialization::TrackSerialization* serialization) const;
 
     TrackerContextPtr getContext() const;
 

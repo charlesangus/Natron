@@ -43,6 +43,8 @@ struct RotoLayerChildSerialization;
 struct RotoLayerSerialization;
 struct RotoStrokeCurvesSerialization;
 struct RotoStrokeItemSerialization;
+struct TrackSerialization;
+struct TrackerContextSerialization;
 }
 NATRON_NAMESPACE_EXIT
 

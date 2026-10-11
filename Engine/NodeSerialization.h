@@ -41,6 +41,7 @@ GCC_DIAG_OFF(sign-compare)
 #include <boost/archive/xml_oarchive.hpp>
 #include <boost/serialization/vector.hpp>
 #include <boost/serialization/list.hpp>
+#include <boost/serialization/split_member.hpp>
 #include <boost/serialization/version.hpp>
 GCC_DIAG_ON(sign-compare)
 GCC_DIAG_UNUSED_LOCAL_TYPEDEFS_ON
@@ -50,10 +51,11 @@ GCC_DIAG_ON(unused-parameter)
 
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/RotoSerialization.h"
+#include "Serialization/TrackerSerialization.h"
 #include "Serialization/BoostXml/KnobXml.h"
 #include "Serialization/BoostXml/RotoXml.h"
+#include "Serialization/BoostXml/TrackerXml.h"
 
-#include "Engine/TrackerSerialization.h"
 #include "Engine/ImageParamsSerialization.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
@@ -224,7 +226,7 @@ public:
         return _hasTrackerContext;
     }
 
-    const TrackerContextSerialization& getTrackerContext() const
+    const Serialization::TrackerContextSerialization& getTrackerContext() const
     {
         return _trackerContext;
     }
@@ -266,7 +268,7 @@ private:
     bool _hasRotoContext;
     Serialization::RotoContextSerialization _rotoContext;
     bool _hasTrackerContext;
-    TrackerContextSerialization _trackerContext;
+    Serialization::TrackerContextSerialization _trackerContext;
     NodePtr _node;
     std::string _multiInstanceParentName;
     std::list<Serialization::GroupKnobSerialization> _userPages;

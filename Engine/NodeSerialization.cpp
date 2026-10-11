@@ -36,6 +36,7 @@
 #include "Engine/RotoLayer.h"
 #include "Engine/NodeGroupSerialization.h"
 #include "Engine/RotoContext.h"
+#include "Engine/TrackerContext.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -188,7 +189,7 @@ NodeSerialization::NodeSerialization(const NodePtr& n,
         TrackerContextPtr tracker = n->getTrackerContext();
         if (tracker) {
             _hasTrackerContext = true;
-            tracker->save(&_trackerContext);
+            tracker->toSerialization(&_trackerContext);
         } else {
             _hasTrackerContext = false;
         }

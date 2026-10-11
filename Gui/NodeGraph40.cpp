@@ -49,6 +49,7 @@ GCC_DIAG_ON(unused-parameter)
 #include <QClipboard>
 #include <QDebug>
 #include <QMimeData>
+#include <QThread>
 
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"

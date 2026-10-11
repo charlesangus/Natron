@@ -399,6 +399,27 @@ try:
         that is visible is the current tab of whatever pane holds it."""
         return any(w.isVisible() for w in gt.widgets_of("ProgressPanel"))
 
+    def ensure_progress_panel_not_current(label):
+        """A background render raises the Progress panel by design (render-background-custom
+        runs earlier and does exactly that), so a foreground section cannot tell its own render
+        apart from that leftover state unless it first puts another tab back in front of the
+        Progress panel's pane itself. TabBar.setCurrentIndex is a slot wired to
+        TabWidget::makeCurrentTab, so driving it switches the pane for real, not just the tab
+        bar's own highlight."""
+        panels = [w for w in gt.widgets_of("ProgressPanel") if w.parentWidget() is not None]
+        if panels:
+            pane = panels[0].parentWidget()
+            bars = [w for w in pane.findChildren(QWidget) if gt.class_name(w) == "TabBar"]
+            if len(bars) == 1:
+                bar = bars[0]
+                count = bar.property("count")
+                current = bar.property("currentIndex")
+                if count is not None and current is not None and count > 1:
+                    QMetaObject.invokeMethod(bar, "setCurrentIndex", Q_ARG(int, (current + 1) % count))
+                    QApplication.processEvents()
+        check(not progress_panel_is_current_tab(),
+             "%s: the Progress panel is not the current tab before starting the render" % label)
+
     # ---- steps ------------------------------------------------------------------------------
 
     def steps():
@@ -776,6 +797,7 @@ try:
                         ok_btn.click()
             return configure
 
+        ensure_progress_panel_not_current("render-foreground")
         render_button_fg = find_write_render_button(writer_fg)
         if check(render_button_fg is not None, "render-foreground: found the Write panel's Render button"):
             open_render_dialog_and(render_button_fg.click, configure_fg_custom(1, FG_FRAMES), "render-foreground")
@@ -819,6 +841,7 @@ try:
                   "cancelling immediately after start should still outrun a 60-frame render")
         CANCEL_FRAMES = 60
 
+        ensure_progress_panel_not_current("render-foreground-cancel")
         render_button_cancel = find_write_render_button(writer_cancel)
         if check(render_button_cancel is not None, "render-foreground-cancel: found the Render button"):
             open_render_dialog_and(render_button_cancel.click, configure_fg_custom(1, CANCEL_FRAMES),
@@ -879,6 +902,7 @@ try:
                 yield wait_for_render_button(writer_sep)
                 SEP_FRAMES = 5
 
+                ensure_progress_panel_not_current("render-foreground-separate-process")
                 render_button_sep = find_write_render_button(writer_sep)
                 if check(render_button_sep is not None,
                          "render-foreground-separate-process: found the Render button"):

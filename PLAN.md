@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M76.P1.T9-T10 fixes, M27.P1.T1, M93.P1.T1]
-pm_heartbeat: 2026-10-10T22:30:00-04:00
+current: [M44 PR #51 review fixes, M55.P4.T1, M76.P1.T9-T10 fixes, M27.P1.T1, M93.P1.T1]
+pm_heartbeat: 2026-10-11T00:19:15-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -283,6 +283,7 @@ future core work has solid ground to build on.
 | M71 | RFV Render Context | todo |  | [M71-rfv-render-context.md](PLAN/MILESTONES/M71-rfv-render-context.md) |
 | M72 | RFV Integration And UAT | todo |  | [M72-rfv-integration-and-uat.md](PLAN/MILESTONES/M72-rfv-integration-and-uat.md) |
 | M92 | Linked Nodes | todo | M24 | [M92-linked-nodes.md](PLAN/MILESTONES/M92-linked-nodes.md) |
+| M94 | Delete Unused Maintainer Skill | todo | - | [M94-delete-unused-maintainer-skill.md](PLAN/MILESTONES/M94-delete-unused-maintainer-skill.md) |
 
 - 2026-09-18 — **M18's manual GUI checklist: all 6 items now confirmed**
   (re-run on a rebuilt AppImage at `94ceb9407` or later). Separately, the

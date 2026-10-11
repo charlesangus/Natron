@@ -678,7 +678,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
   - verify: `ctest` and `GuiTests` all green. The GUI script exits 0, with no FAIL in `results.txt` and every shot present.
   - size: M
 
-- [ ] M44.P7.T13 — Package the round-2 AppImage and test card
+- [x] M44.P7.T13 — Package the round-2 AppImage and test card
   - files: none (output: `build/appimages/M44-<sha>.AppImage`)
   - approach:
     - Run `tools/ci/local/package.sh fast` on the tree that passed T12.

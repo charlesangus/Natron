@@ -88,7 +88,12 @@ struct FrameGraph {
 
         // Every dependency is a leaf (vacuously so for a leaf): running it starts holding a new branch in memory.
         bool startsBranch = false;
+
+        // The host memory of its output; for a task standing for a region, of the outputs it downloads.
         std::size_t estimatedBytes = 0;
+
+        // The device memory a task standing for a region holds at its peak; 0 for any other task.
+        std::size_t estimatedDeviceBytes = 0;
 
         // Its output goes to the image cache, where another task of the same node rendering the same cached image
         // would wait inside renderRoI for this one: one at another time when the key has no time, or one at another
@@ -294,6 +299,20 @@ public:
 
     std::size_t getBytesBudget() const;
 
+    /**
+     * @brief The budget of the device memory the regions reserve, unbounded until set.
+     **/
+    std::size_t getDeviceBytesBudget() const;
+
+    void setDeviceBytesBudget(std::size_t bytes);
+
+    /**
+     * @brief How many regions may run at once; at least 1.
+     **/
+    int getGpuMaxConcurrentTasks() const;
+
+    void setGpuMaxConcurrentTasks(int count);
+
     void setBytesBudgetForTests(std::size_t bytes);
 
     /**
@@ -324,6 +343,8 @@ public:
      * @brief The estimated outputs of the admitted and running tasks, which is 0 once every frame finished.
      **/
     std::size_t getReservedBytesForTests() const;
+
+    std::size_t getReservedDeviceBytesForTests() const;
 
     /**
      * @brief The body every region runs. Unset, a region fails its frame.
@@ -370,6 +391,10 @@ private:
 
     void pushReadyLocked(const FramePtr& frame, int task);
 
+    void releaseGpuWaitingLocked();
+
+    static bool isRegionTask(const ReadyRef& ref);
+
     void purgeQueuedLocked(const FramePtr& frame, std::vector<int>* purged);
 
     void abortLocked(const FramePtr& frame, std::vector<ReadyRef>* purged, std::vector<FramePtr>* finished);
@@ -385,6 +410,12 @@ private:
     void admitGatedLocked(int maxRunnables);
 
     std::size_t bytesInFlightLocked() const;
+
+    std::size_t deviceBytesInFlightLocked() const;
+
+    void reserveLocked(const FrameGraph::Task& task);
+
+    void unreserveLocked(const FrameGraph::Task& task);
 
     void markDeadLocked(const FramePtr& frame, EffectInstance::RenderRoIRetCode retCode);
 
@@ -412,6 +443,10 @@ private:
     std::multimap<SharedOutputKey, ReadyRef> _deferredReady;
     std::list<FramePtr> _activeFrames;
 
+    // The ready regions held back while gpuMaxConcurrentTasks regions run, put back in the queues when one finished.
+    // They do not delay the CPU tasks.
+    std::vector<ReadyRef> _gpuWaiting;
+
     // The unfinished frames by the AbortableRenderInfo of their context, which each frame keeps alive.
     std::multimap<const AbortableRenderInfo*, FramePtr> _framesByAbortInfo;
     unsigned long long _nextFrameSequence;
@@ -421,6 +456,10 @@ private:
     // The estimated outputs of the admitted tasks and of the running ones, released when the task finished.
     std::size_t _reservedBytes;
     std::size_t _bytesBudget;
+    std::size_t _reservedDeviceBytes;
+    std::size_t _deviceBytesBudget;
+    int _runningGpuTasks;
+    int _gpuMaxConcurrentTasks;
     std::size_t _peakBytesInFlight;
     RegionBody _regionBody;
 

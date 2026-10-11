@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -229,6 +230,8 @@ protected:
         : BaseTest()
         , _scheduler(0)
         , _savedBudget(0)
+        , _savedDeviceBudget(0)
+        , _savedGpuMaxConcurrent(2)
     {
     }
 
@@ -239,11 +242,15 @@ protected:
         CountingTestRegistry::reset();
         _scheduler = appPTR->getRenderScheduler();
         _savedBudget = _scheduler->getBytesBudget();
+        _savedDeviceBudget = _scheduler->getDeviceBytesBudget();
+        _savedGpuMaxConcurrent = _scheduler->getGpuMaxConcurrentTasks();
     }
 
     virtual void TearDown() OVERRIDE
     {
         _scheduler->setBytesBudgetForTests(_savedBudget);
+        _scheduler->setDeviceBytesBudget(_savedDeviceBudget);
+        _scheduler->setGpuMaxConcurrentTasks(_savedGpuMaxConcurrent);
         _scheduler->setRegionBody(RenderScheduler::RegionBody());
         CountingTestRegistry::reset();
         getApp()->getProject()->reset(false, true);
@@ -532,6 +539,7 @@ protected:
         }
         EXPECT_EQ(0, _scheduler->getOutstandingRunnables());
         EXPECT_EQ(0u, _scheduler->getReservedBytesForTests());
+        EXPECT_EQ(0u, _scheduler->getReservedDeviceBytesForTests());
     }
 
     // Aborts the frame and waits for it on a timeout, so that the project is never reset under its live tasks.
@@ -759,6 +767,8 @@ protected:
 
     RenderScheduler* _scheduler;
     std::size_t _savedBudget;
+    std::size_t _savedDeviceBudget;
+    int _savedGpuMaxConcurrent;
 };
 
 TEST_F(RenderSchedulerTest, Chain)
@@ -1271,6 +1281,164 @@ TEST_F(RenderSchedulerTest, RegionsOfLeavesAndOfTheRoot)
             EXPECT_EQ(0u, run.context->getStore().bytesInFlight());
             expectSchedulerIdle();
         }
+    }
+}
+
+// What the region bodies of one frame observed.
+struct GpuBodyProbe {
+    std::atomic<int> active { 0 };
+    std::atomic<int> maxActive { 0 };
+    std::atomic<int> minBudget { 1 << 20 };
+    std::atomic<int> maxBudget { 0 };
+};
+
+TEST_F(RenderSchedulerTest, CpuBudgetsAreUnchangedWithoutRegions)
+{
+    EXPECT_EQ(8, RenderScheduler::computeTaskBudget(8, 1, 0, 8, 0));
+    EXPECT_EQ(4, RenderScheduler::computeTaskBudget(8, 1, 1, 8, 0));
+    EXPECT_EQ(2, RenderScheduler::computeTaskBudget(8, 1, 3, 8, 0));
+    EXPECT_EQ(3, RenderScheduler::computeTaskBudget(8, 1, 0, 8, 3));
+    EXPECT_EQ(1, RenderScheduler::computeTaskBudget(2, 4, 4, 8, 0));
+
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildWide(8, &nodes));
+    CountingTestRegistry::reset();
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., true, &run, &error)) << error;
+    for (std::size_t i = 0; i < run.graph.tasks.size(); ++i) {
+        EXPECT_EQ(0u, run.graph.tasks[i].estimatedDeviceBytes);
+    }
+    submit(&run);
+    ASSERT_TRUE(waitOrAbort(&run));
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+    EXPECT_FLOAT_EQ(8.f, rootValue(*run.future));
+    expectSchedulerIdle();
+}
+
+// Two independent regions of the wide graph, each holding two leaves and their merge, beside CPU merges.
+TEST_F(RenderSchedulerTest, GpuRegionsGetBudgetOneAndRespectTheConcurrencyCap)
+{
+    std::vector<NodePtr> wide;
+    ASSERT_TRUE(buildWide(8, &wide));
+    std::vector<NodePtr> gpu;
+    gpu.push_back(wide[0]);
+    gpu.push_back(wide[1]);
+    gpu.push_back(wide[8]);
+    gpu.push_back(wide[2]);
+    gpu.push_back(wide[3]);
+    gpu.push_back(wide[9]);
+
+    for (int cap = 1; cap <= 2; ++cap) {
+        SCOPED_TRACE("cap " + std::to_string(cap));
+        PoolSizeGuard pool(8);
+        CountingTestRegistry::reset();
+        _scheduler->setGpuMaxConcurrentTasks(cap);
+
+        std::shared_ptr<RegionBodyState> state = std::make_shared<RegionBodyState>();
+        std::shared_ptr<GpuBodyProbe> probe = std::make_shared<GpuBodyProbe>();
+        _scheduler->setRegionBody([state, probe](const FrameRenderContextPtr& context,
+                                                 const FrameGraph& graph,
+                                                 int region,
+                                                 int budget,
+                                                 std::map<ImageLayerDesc, ImagePtr>* rootPlanes) {
+            const int now = ++probe->active;
+            int seen = probe->maxActive.load();
+            while ((now > seen) && !probe->maxActive.compare_exchange_weak(seen, now)) {
+            }
+            int low = probe->minBudget.load();
+            while ((budget < low) && !probe->minBudget.compare_exchange_weak(low, budget)) {
+            }
+            int high = probe->maxBudget.load();
+            while ((budget > high) && !probe->maxBudget.compare_exchange_weak(high, budget)) {
+            }
+            QThread::msleep(40);
+            const EffectInstance::RenderRoIRetCode ret = renderRegionOnCpu(*state, context, graph, region, rootPlanes);
+            --probe->active;
+
+            return ret;
+        });
+
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(wide.back(), 1., true, &run, &error)) << error;
+        placeOnGpu(&run.graph, gpu);
+        ASSERT_EQ(2u, run.graph.regions.size());
+        submit(&run);
+        ASSERT_TRUE(waitOrAbort(&run));
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+        EXPECT_FLOAT_EQ(8.f, rootValue(*run.future));
+        EXPECT_EQ(2, state->runs.load());
+        EXPECT_EQ(1, probe->minBudget.load());
+        EXPECT_EQ(1, probe->maxBudget.load());
+        EXPECT_LE(probe->maxActive.load(), cap);
+        if (cap == 1) {
+            EXPECT_EQ(1, probe->maxActive.load());
+        }
+        expectSchedulerIdle();
+    }
+}
+
+// Device and host reservations return to 0 after frames that wait on a tight device budget, and after an abort.
+TEST_F(RenderSchedulerTest, DeviceAndHostReservationsAreReleased)
+{
+    std::vector<NodePtr> wide;
+    ASSERT_TRUE(buildWide(8, &wide));
+    std::vector<NodePtr> gpu;
+    gpu.push_back(wide[0]);
+    gpu.push_back(wide[1]);
+    gpu.push_back(wide[8]);
+    gpu.push_back(wide[2]);
+    gpu.push_back(wide[3]);
+    gpu.push_back(wide[9]);
+
+    PoolSizeGuard pool(4);
+    for (int mode = 0; mode < 2; ++mode) {
+        SCOPED_TRACE(mode == 0 ? "tight device budget" : "abort");
+        CountingTestRegistry::reset();
+        std::shared_ptr<RegionBodyState> state = std::make_shared<RegionBodyState>();
+        std::shared_ptr<std::atomic<bool>> inBody = std::make_shared<std::atomic<bool>>(false);
+        _scheduler->setRegionBody([state, inBody, mode](const FrameRenderContextPtr& context,
+                                                        const FrameGraph& graph,
+                                                        int region,
+                                                        int /*budget*/,
+                                                        std::map<ImageLayerDesc, ImagePtr>* rootPlanes) {
+            if (mode == 1) {
+                *inBody = true;
+                QThread::msleep(100);
+            }
+            return renderRegionOnCpu(*state, context, graph, region, rootPlanes);
+        });
+
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(wide.back(), 1., true, &run, &error)) << error;
+        placeOnGpu(&run.graph, gpu);
+        ASSERT_EQ(2u, run.graph.regions.size());
+        std::size_t largest = 0;
+        for (std::size_t r = 0; r < run.graph.regions.size(); ++r) {
+            largest = std::max(largest, run.graph.regions[r].workingSetBytes);
+        }
+        ASSERT_GT(largest, 0u);
+        _scheduler->setDeviceBytesBudget((mode == 0) ? largest : std::numeric_limits<std::size_t>::max());
+        submit(&run);
+        if (mode == 1) {
+            QElapsedTimer timer;
+            timer.start();
+            while (!*inBody && (timer.elapsed() < 5000)) {
+                QThread::msleep(1);
+            }
+            _scheduler->abort(run.context);
+            run.future->wait();
+        } else {
+            ASSERT_TRUE(waitOrAbort(&run));
+            ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+            EXPECT_FLOAT_EQ(8.f, rootValue(*run.future));
+            EXPECT_EQ(2, state->runs.load());
+        }
+        EXPECT_EQ(0u, run.context->getStore().hostBytesInFlight());
+        EXPECT_EQ(0u, run.context->getStore().deviceBytesInFlight());
+        expectSchedulerIdle();
     }
 }
 

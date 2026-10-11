@@ -450,12 +450,17 @@ RenderScheduler::RenderScheduler()
     , _sharedOutputsRunning()
     , _deferredReady()
     , _activeFrames()
+    , _gpuWaiting()
     , _framesByAbortInfo()
     , _nextFrameSequence(0)
     , _outstandingRunnables(0)
     , _runningTasks(0)
     , _reservedBytes(0)
     , _bytesBudget(std::numeric_limits<std::size_t>::max())
+    , _reservedDeviceBytes(0)
+    , _deviceBytesBudget(std::numeric_limits<std::size_t>::max())
+    , _runningGpuTasks(0)
+    , _gpuMaxConcurrentTasks(2)
     , _peakBytesInFlight(0)
     , _tasksRendering(0)
 {
@@ -682,6 +687,12 @@ RenderScheduler::appendRegionTasks(Frame* frame)
             unit.dfsPostOrder = std::min(unit.dfsPostOrder, member.dfsPostOrder);
         }
         unit.consumers = (int)unit.consumerTasks.size();
+        for (const FrameGraph::Region::Output& output : region.outputs) {
+            if (output.isRoot || (output.externalConsumers > 0)) {
+                unit.estimatedBytes += graph.tasks[output.task].estimatedBytes;
+            }
+        }
+        unit.estimatedDeviceBytes = region.workingSetBytes;
         unit.startsBranch = true;
         for (int d : unit.dependencies) {
             if (!graph.tasks[d].dependencies.empty()) {
@@ -784,7 +795,7 @@ RenderScheduler::getLoad(int* running,
     QMutexLocker k(&_mutex);
 
     *running = _runningTasks;
-    *ready = (int)(_freeReady.size() + _admittedReady.size() + _gatedReady.size() + _deferredReady.size());
+    *ready = (int)(_freeReady.size() + _admittedReady.size() + _gatedReady.size() + _deferredReady.size() + _gpuWaiting.size());
 }
 
 int
@@ -808,6 +819,43 @@ RenderScheduler::getBytesBudget() const
     QMutexLocker k(&_mutex);
 
     return _bytesBudget;
+}
+
+std::size_t
+RenderScheduler::getDeviceBytesBudget() const
+{
+    QMutexLocker k(&_mutex);
+
+    return _deviceBytesBudget;
+}
+
+void
+RenderScheduler::setDeviceBytesBudget(std::size_t bytes)
+{
+    {
+        QMutexLocker k(&_mutex);
+        _deviceBytesBudget = bytes;
+    }
+    reevaluate();
+}
+
+int
+RenderScheduler::getGpuMaxConcurrentTasks() const
+{
+    QMutexLocker k(&_mutex);
+
+    return _gpuMaxConcurrentTasks;
+}
+
+void
+RenderScheduler::setGpuMaxConcurrentTasks(int count)
+{
+    {
+        QMutexLocker k(&_mutex);
+        _gpuMaxConcurrentTasks = std::max(1, count);
+        releaseGpuWaitingLocked();
+    }
+    reevaluate();
 }
 
 void
@@ -842,6 +890,39 @@ RenderScheduler::getReservedBytesForTests() const
     QMutexLocker k(&_mutex);
 
     return _reservedBytes;
+}
+
+std::size_t
+RenderScheduler::getReservedDeviceBytesForTests() const
+{
+    QMutexLocker k(&_mutex);
+
+    return _reservedDeviceBytes;
+}
+
+void
+RenderScheduler::reserveLocked(const FrameGraph::Task& task)
+{
+    _reservedBytes += task.estimatedBytes;
+    _reservedDeviceBytes += task.estimatedDeviceBytes;
+}
+
+void
+RenderScheduler::unreserveLocked(const FrameGraph::Task& task)
+{
+    _reservedBytes -= task.estimatedBytes;
+    _reservedDeviceBytes -= task.estimatedDeviceBytes;
+}
+
+void
+RenderScheduler::releaseGpuWaitingLocked()
+{
+    std::vector<ReadyRef> waiting;
+
+    waiting.swap(_gpuWaiting);
+    for (ReadyRef& ref : waiting) {
+        pushReadyLocked(ref.frame, ref.task);
+    }
 }
 
 void
@@ -924,6 +1005,15 @@ RenderScheduler::popLocked(FramePtr* frame,
         heap->pop_back();
 
         const FrameGraph::Task& popped = ref.frame->graph.tasks[ref.task];
+        if (isRegionTask(ref) && (_runningGpuTasks >= _gpuMaxConcurrentTasks)) {
+            // Its reservation is dropped, as for a deferred task: once released it goes through admission again if it
+            // starts a branch.
+            if (heap == &_admittedReady) {
+                unreserveLocked(popped);
+            }
+            _gpuWaiting.push_back(std::move(ref));
+            continue;
+        }
         if (!popped.sharesCachedOutput) {
             break;
         }
@@ -933,7 +1023,7 @@ RenderScheduler::popLocked(FramePtr* frame,
         }
         // Its reservation is dropped: once released it goes through admission again if it starts a branch.
         if (heap == &_admittedReady) {
-            _reservedBytes -= popped.estimatedBytes;
+            unreserveLocked(popped);
         }
         _deferredReady.emplace(key, std::move(ref));
     }
@@ -942,8 +1032,12 @@ RenderScheduler::popLocked(FramePtr* frame,
     *task = ref.task;
     ++ref.frame->runningTasks;
     ++_runningTasks;
+    const bool region = isRegionTask(ref);
+    if (region) {
+        ++_runningGpuTasks;
+    }
     if (heap == &_freeReady) {
-        _reservedBytes += ref.frame->graph.tasks[ref.task].estimatedBytes;
+        reserveLocked(ref.frame->graph.tasks[ref.task]);
     }
 
     const int poolMax = std::max(1, QThreadPool::globalInstance()->maxThreadCount());
@@ -956,8 +1050,17 @@ RenderScheduler::popLocked(FramePtr* frame,
     }
     // The gated and deferred tasks are left out: they cannot start before a running task finished, so they do not
     // compete for threads now.
-    const int ready = (int)(_freeReady.size() + _admittedReady.size());
-    *budget = computeTaskBudget(poolMax, _runningTasks, ready, cores, nThreadsPerEffect);
+    if (region) {
+        // The region drives the device from this thread; the threads of a CPU task would only idle.
+        *budget = 1;
+
+        return true;
+    }
+    const auto regionsIn = [](const ReadyHeap& heap) {
+        return (int)std::count_if(heap.begin(), heap.end(), [](const ReadyRef& r) { return isRegionTask(r); });
+    };
+    const int ready = (int)(_freeReady.size() + _admittedReady.size()) - regionsIn(_freeReady) - regionsIn(_admittedReady);
+    *budget = computeTaskBudget(poolMax, _runningTasks - _runningGpuTasks, ready, cores, nThreadsPerEffect);
 
     return true;
 }
@@ -1147,8 +1250,12 @@ RenderScheduler::completeTask(const FramePtr& frame,
         QMutexLocker k(&_mutex);
         --_outstandingRunnables;
         --_runningTasks;
-        _reservedBytes -= task.estimatedBytes;
+        unreserveLocked(task);
         --frame->runningTasks;
+        if (taskIndex >= frame->regionTasksBegin) {
+            --_runningGpuTasks;
+            releaseGpuWaitingLocked();
+        }
         _peakBytesInFlight = std::max(_peakBytesInFlight, bytesInFlightLocked());
         if (task.sharesCachedOutput) {
             releaseSharedOutputLocked(task);
@@ -1266,6 +1373,12 @@ RenderScheduler::pushReadyLocked(const FramePtr& frame,
 }
 
 bool
+RenderScheduler::isRegionTask(const ReadyRef& ref)
+{
+    return ref.task >= ref.frame->regionTasksBegin;
+}
+
+bool
 RenderScheduler::isStaleLocked(const ReadyRef& ref) const
 {
     if (ref.frame->finished || ref.frame->dead) {
@@ -1283,7 +1396,7 @@ RenderScheduler::discardStaleTopsLocked(ReadyHeap* heap,
     while (!heap->empty() && isStaleLocked(heap->front())) {
         FramePtr frame = heap->front().frame;
         if (heap == &_admittedReady) {
-            _reservedBytes -= frame->graph.tasks[heap->front().task].estimatedBytes;
+            unreserveLocked(frame->graph.tasks[heap->front().task]);
         }
         std::pop_heap(heap->begin(), heap->end(), ReadyRefWorse());
         heap->pop_back();
@@ -1312,12 +1425,18 @@ RenderScheduler::admitGatedLocked(int maxRunnables)
         return;
     }
     const std::size_t inFlight = bytesInFlightLocked();
+    const std::size_t deviceInFlight = deviceBytesInFlightLocked();
 
     while ((slots > 0) && !_gatedReady.empty()) {
         const ReadyRef& top = _gatedReady.front();
-        const std::size_t estimated = top.frame->graph.tasks[top.task].estimatedBytes;
+        const FrameGraph::Task& topTask = top.frame->graph.tasks[top.task];
+        const std::size_t estimated = topTask.estimatedBytes;
+        const std::size_t estimatedDevice = topTask.estimatedDeviceBytes;
         // A stale task is admitted only to be dropped by the next pop, which releases its reservation.
-        const bool fits = isStaleLocked(top) || ((estimated <= _bytesBudget) && (inFlight + _reservedBytes <= _bytesBudget - estimated));
+        const bool fits = isStaleLocked(top)
+                          || ((estimated <= _bytesBudget) && (inFlight + _reservedBytes <= _bytesBudget - estimated)
+                              && (estimatedDevice <= _deviceBytesBudget)
+                              && (deviceInFlight + _reservedDeviceBytes <= _deviceBytesBudget - estimatedDevice));
         const bool idle = (_runningTasks == 0) && _freeReady.empty() && _admittedReady.empty();
         // Stopping at the first task that does not fit, rather than skipping to smaller ones, keeps a large branch
         // from being starved by the small ones behind it.
@@ -1330,6 +1449,7 @@ RenderScheduler::admitGatedLocked(int maxRunnables)
         _admittedReady.push_back(std::move(ref));
         std::push_heap(_admittedReady.begin(), _admittedReady.end(), ReadyRefWorse());
         _reservedBytes += estimated;
+        _reservedDeviceBytes += estimatedDevice;
         --slots;
     }
 }
@@ -1340,7 +1460,19 @@ RenderScheduler::bytesInFlightLocked() const
     std::size_t bytes = 0;
 
     for (std::list<FramePtr>::const_iterator it = _activeFrames.begin(); it != _activeFrames.end(); ++it) {
-        bytes += (*it)->context->getStore().bytesInFlight();
+        bytes += (*it)->context->getStore().hostBytesInFlight();
+    }
+
+    return bytes;
+}
+
+std::size_t
+RenderScheduler::deviceBytesInFlightLocked() const
+{
+    std::size_t bytes = 0;
+
+    for (std::list<FramePtr>::const_iterator it = _activeFrames.begin(); it != _activeFrames.end(); ++it) {
+        bytes += (*it)->context->getStore().deviceBytesInFlight();
     }
 
     return bytes;
@@ -1398,7 +1530,7 @@ RenderScheduler::purgeQueuedLocked(const FramePtr& frame,
         for (ReadyHeap::iterator it = heap->begin(); it != heap->end(); ++it) {
             if (it->frame == frame) {
                 if (heap == &_admittedReady) {
-                    _reservedBytes -= frame->graph.tasks[it->task].estimatedBytes;
+                    unreserveLocked(frame->graph.tasks[it->task]);
                 }
                 purged->push_back(it->task);
             } else {
@@ -1411,6 +1543,14 @@ RenderScheduler::purgeQueuedLocked(const FramePtr& frame,
         if (kept != heap->end()) {
             heap->erase(kept, heap->end());
             std::make_heap(heap->begin(), heap->end(), ReadyRefWorse());
+        }
+    }
+    for (std::vector<ReadyRef>::iterator it = _gpuWaiting.begin(); it != _gpuWaiting.end();) {
+        if (it->frame == frame) {
+            purged->push_back(it->task);
+            it = _gpuWaiting.erase(it);
+        } else {
+            ++it;
         }
     }
     for (std::multimap<SharedOutputKey, ReadyRef>::iterator it = _deferredReady.begin(); it != _deferredReady.end();) {

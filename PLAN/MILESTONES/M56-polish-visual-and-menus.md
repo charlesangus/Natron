@@ -79,7 +79,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: at the gate build, configure finds Qt6::Svg, `ldd build/fast/App/Natron | grep Svg` resolves, and the P7.T2 AppImage passes `tools/release/check-relocatable.sh`.
   - size: M
 
-- [ ] M56.P4.T2 — Vendor the Lucide glyphs and the custom glyphs, and add the third-party art licence record
+- [x] M56.P4.T2 — Vendor the Lucide glyphs and the custom glyphs, and add the third-party art licence record
   - files: `Gui/Resources/Icons/lucide/*.svg` (new), `Gui/Resources/Icons/natron/*.svg` (new), `Gui/Resources/Icons/SOURCES.txt` (new), `tools/license/components/LICENSE-Lucide.txt` (new), `tools/license/components/README.md`, `Gui/GuiResources.qrc`
   - approach:
     - Take the upstream files unmodified from one pinned Lucide release (record the version and commit). Keep `stroke="currentColor"` and `stroke-width="2"`; the loader thins the stroke at load time, so the vendored files stay byte-identical to upstream.
@@ -273,3 +273,4 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - **Twin labels / U-V-A layout:** the user asked for pictures of each option before choosing; pending.
 - 2026-10-11 — **Twin labels (user, from mockups at claude.ai artifact `5Fw2Nn1B4F7tmtjqF3WA4n`):** Premult/Unpremult picker on its own row labelled "Premult by" / "Unpremult by" (A1). IDistort/STMap: U, V and Alpha each on their own aligned row (B1), so P3.T1 stands as written. The user briefly floated a single layer row capped at two channels (first enabled = U, second = V, as in Nuke), and a consultant designed it (`KnobLayerSelect::setMaxChannels`, one `hostUVChannels` twin). The user then dropped that path in favour of B1, so it is not planned.
 - 2026-10-11 — **Started early (user):** M56 opened in `.worktrees/m56` on `milestone/m56-visual-and-menu-polish`, branched from `main` at `a50bef552`, while M44 - Trackball Colour Editing (PR #51, in CI) and M55 - Node Graph Polish (at its gate) are still open. The user asked for it explicitly. The lane rebases onto `main` after each of those merges. Tasks that build on M44's icons (P4.T7) wait until M44 has merged. P1.T1's "before" shots run later against a `main` build. **Freshness check:** every task's files exist on `main`. P4.T6 and P5.T5 were re-sized S → M under the sizing rule: they are multi-file edits that need grep judgement.
+- 2026-10-11 — **P4.T2:** Lucide pinned at 1.55.0 (commit `70562c1ee1c4`). Lucide's LICENSE lists `clock` and `move` as Feather-derived (MIT) as well as `chevrons-down`; SOURCES.txt records all three as MIT. The custom glyphs came from `PLAN/DESIGN/icons/` and were re-saved at stroke-width 2 so the runtime thinning treats them like Lucide.

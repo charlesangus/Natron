@@ -104,7 +104,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - verify: covered by `Tests/ThemedIcon_Test.cpp` (P4.T4) and P7.T1's icon shots at 1× and 2×.
   - size: M
 
-- [ ] M56.P4.T4 — Build state icons from one SVG, and unit-test the themed renderer
+- [x] M56.P4.T4 — Build state icons from one SVG, and unit-test the themed renderer
   - files: `Gui/ThemedIcon.h`, `Gui/ThemedIcon.cpp`, `Tests/ThemedIcon_Test.cpp` (new), `Tests/CMakeLists.txt`
   - approach:
     - Add `QIcon ThemedIcon::icon(path, logicalSize)`. It fills Normal/Off with the text colour, Normal/On with the selection colour (`getSelectionColor`), Disabled with the text colour at about 40% alpha over the base colour, and Active with the text colour (`addPixmap`, no custom `QIconEngine` unless `addPixmap` can't cover a case).

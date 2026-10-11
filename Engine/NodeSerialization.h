@@ -48,7 +48,9 @@ GCC_DIAG_ON(unused-parameter)
 // clang-format on
 #endif
 
-#include "Engine/KnobSerialization.h"
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/BoostXml/KnobXml.h"
+
 #include "Engine/TrackerSerialization.h"
 #include "Engine/RotoContextSerialization.h"
 #include "Engine/ImageParamsSerialization.h"
@@ -80,7 +82,7 @@ class NodeSerialization
 {
 public:
 
-    typedef std::list<KnobSerializationPtr> KnobValues;
+    typedef std::list<Serialization::KnobSerialization> KnobValues;
 
     ///Used to serialize
     explicit NodeSerialization(const NodePtr & n,
@@ -235,7 +237,7 @@ public:
         return _pagesIndexes;
     }
 
-    const std::list<GroupKnobSerializationPtr>& getUserPages() const
+    const std::list<Serialization::GroupKnobSerialization>& getUserPages() const
     {
         return _userPages;
     }
@@ -265,7 +267,7 @@ private:
     TrackerContextSerialization _trackerContext;
     NodePtr _node;
     std::string _multiInstanceParentName;
-    std::list<GroupKnobSerializationPtr> _userPages;
+    std::list<Serialization::GroupKnobSerialization> _userPages;
     std::list<std::string> _pagesIndexes;
 
     ///If this node is a group or a multi-instance, this is the children
@@ -288,7 +290,7 @@ private:
         ar & ::boost::serialization::make_nvp("KnobsCount", _nbKnobs);
 
         for (KnobValues::const_iterator it = _knobsValues.begin(); it != _knobsValues.end(); ++it) {
-            ar & ::boost::serialization::make_nvp( "item", *(*it) );
+            ar & ::boost::serialization::make_nvp("item", *it);
         }
         ar & ::boost::serialization::make_nvp("Inputs_map", _inputs);
         ar & ::boost::serialization::make_nvp("KnobsAge", _knobsAge);
@@ -306,8 +308,8 @@ private:
         ar & ::boost::serialization::make_nvp("MultiInstanceParent", _multiInstanceParentName);
         int userPagesCount = (int)_userPages.size();
         ar & ::boost::serialization::make_nvp("UserPagesCount", userPagesCount);
-        for (std::list<GroupKnobSerializationPtr>::const_iterator it = _userPages.begin(); it != _userPages.end(); ++it) {
-            ar & ::boost::serialization::make_nvp("item", **it);
+        for (std::list<Serialization::GroupKnobSerialization>::const_iterator it = _userPages.begin(); it != _userPages.end(); ++it) {
+            ar & ::boost::serialization::make_nvp("item", *it);
         }
 
         int pageSizes = (int)_pagesIndexes.size();
@@ -361,9 +363,8 @@ private:
         ar & ::boost::serialization::make_nvp("Plugin_minor_version", _pluginMinorVersion);
         ar & ::boost::serialization::make_nvp("KnobsCount", _nbKnobs);
         for (int i = 0; i < _nbKnobs; ++i) {
-            KnobSerializationPtr ks = std::make_shared<KnobSerialization>();
-            ar & ::boost::serialization::make_nvp("item", *ks);
-            _knobsValues.push_back(ks);
+            _knobsValues.push_back( Serialization::KnobSerialization() );
+            ar & ::boost::serialization::make_nvp("item", _knobsValues.back());
         }
 
         if (version < NODE_SERIALIZATION_CHANGE_INPUTS_SERIALIZATION) {
@@ -408,9 +409,8 @@ private:
             int userPagesCount;
             ar & ::boost::serialization::make_nvp("UserPagesCount", userPagesCount);
             for (int i = 0; i < userPagesCount; ++i) {
-                GroupKnobSerializationPtr s = std::make_shared<GroupKnobSerialization>();
-                ar & ::boost::serialization::make_nvp("item", *s);
-                _userPages.push_back(s);
+                _userPages.push_back( Serialization::GroupKnobSerialization() );
+                ar & ::boost::serialization::make_nvp("item", _userPages.back());
             }
             if (version >= NODE_SERIALIZATION_SERIALIZE_PAGE_INDEX) {
                 int count;

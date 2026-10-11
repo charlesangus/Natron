@@ -44,7 +44,10 @@ GCC_DIAG_ON(unused-parameter)
 // clang-format on
 #endif
 
-#include "Engine/KnobSerialization.h"
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/BoostXml/KnobXml.h"
+
+#include "Engine/EngineFwd.h"
 
 #include "Gui/GuiFwd.h"
 
@@ -86,10 +89,7 @@ public:
         w = width; h = height;
     }
 
-    KnobIPtr getLabelSerialization() const
-    {
-        return label->getKnob();
-    }
+    KnobIPtr getLabelSerialization() const;
 
     void getColor(float & red,
                   float &green,
@@ -114,7 +114,7 @@ private:
     double posY;
     int width, height;
     std::string name;
-    KnobSerializationPtr label;
+    Serialization::KnobSerialization label;
     float r, g, b;
     std::string masterBackdropName;
     bool selected;
@@ -131,7 +131,7 @@ private:
         ar & ::boost::serialization::make_nvp("Height", height);
         ar & ::boost::serialization::make_nvp("Name", name);
         ar & ::boost::serialization::make_nvp("MasterName", masterBackdropName);
-        ar & ::boost::serialization::make_nvp("Label", *label);
+        ar & ::boost::serialization::make_nvp("Label", label);
         ar & ::boost::serialization::make_nvp("r", r);
         ar & ::boost::serialization::make_nvp("g", g);
         ar & ::boost::serialization::make_nvp("b", b);
@@ -149,8 +149,7 @@ private:
         ar & ::boost::serialization::make_nvp("Name", name);
         ar & ::boost::serialization::make_nvp("MasterName", masterBackdropName);
 
-        label = std::make_shared<KnobSerialization>();
-        ar & ::boost::serialization::make_nvp("Label", *label);
+        ar & ::boost::serialization::make_nvp("Label", label);
         ar & ::boost::serialization::make_nvp("r", r);
         ar & ::boost::serialization::make_nvp("g", g);
         ar & ::boost::serialization::make_nvp("b", b);

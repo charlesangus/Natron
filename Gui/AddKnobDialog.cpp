@@ -37,7 +37,6 @@
 
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h" // KnobFile
-#include "Engine/KnobSerialization.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
@@ -61,7 +60,8 @@ NATRON_NAMESPACE_ENTER
 struct AddKnobDialogPrivate
 {
     KnobIPtr knob;
-    KnobSerializationPtr originalKnobSerialization;
+    // The knob being edited, kept alive to clone its values into the knob that replaces it.
+    KnobIPtr originalKnob;
     KnobIPtr isKnobAlias;
     DockablePanel* panel;
     QVBoxLayout* vLayout;
@@ -129,7 +129,7 @@ struct AddKnobDialogPrivate
 
     AddKnobDialogPrivate(DockablePanel* panel)
         : knob()
-        , originalKnobSerialization()
+        , originalKnob()
         , isKnobAlias()
         , panel(panel)
         , vLayout(0)
@@ -1045,7 +1045,7 @@ AddKnobDialog::AddKnobDialog(DockablePanel* panel,
     onTypeCurrentIndexChanged( (int)t );
 
     if (knob) {
-        _imp->originalKnobSerialization = std::make_shared<KnobSerialization>(knob);
+        _imp->originalKnob = knob;
     }
 }
 
@@ -1798,8 +1798,8 @@ AddKnobDialog::onOkClicked()
         assert(_imp->knob);
 
 
-        if (_imp->originalKnobSerialization) {
-            _imp->knob->clone( _imp->originalKnobSerialization->getKnob().get() );
+        if (_imp->originalKnob) {
+            _imp->knob->clone( _imp->originalKnob.get() );
         }
 
         KnobString* isLabelKnob = dynamic_cast<KnobString*>( _imp->knob.get() );

@@ -297,41 +297,37 @@ Node::setValuesFromSerialization(const CreateNodeArgs& args)
 void
 Node::restoreUserKnobs(const NodeSerialization& serialization)
 {
-    const std::list<GroupKnobSerializationPtr>& userPages = serialization.getUserPages();
+    const std::list<Serialization::GroupKnobSerialization>& userPages = serialization.getUserPages();
 
-    for (std::list<GroupKnobSerializationPtr>::const_iterator it = userPages.begin(); it != userPages.end(); ++it) {
-        KnobIPtr found = getKnobByName( (*it)->getName() );
+    for (std::list<Serialization::GroupKnobSerialization>::const_iterator it = userPages.begin(); it != userPages.end(); ++it) {
+        KnobIPtr found = getKnobByName(it->name);
         KnobPagePtr page;
         if (!found) {
-            page = AppManager::createKnob<KnobPage>(_imp->effect.get(), (*it)->getLabel(), 1, false);
+            page = AppManager::createKnob<KnobPage>(_imp->effect.get(), it->label, 1, false);
             page->setAsUserKnob(true);
-            page->setName( (*it)->getName() );
+            page->setName(it->name);
         } else {
             page = std::dynamic_pointer_cast<KnobPage>(found);
         }
         if (page) {
-            _imp->restoreUserKnobsRecursive( (*it)->getChildren(), KnobGroupPtr(), page );
+            _imp->restoreUserKnobsRecursive( it->children, KnobGroupPtr(), page );
         }
     }
     setPagesOrder( serialization.getPagesOrdered() );
 }
 
 void
-Node::Implementation::restoreUserKnobsRecursive(const std::list<KnobSerializationBasePtr>& knobs,
+Node::Implementation::restoreUserKnobsRecursive(const std::list<Serialization::GroupKnobChildSerialization>& knobs,
                                                 const KnobGroupPtr& group,
                                                 const KnobPagePtr& page)
 {
-    for (std::list<KnobSerializationBasePtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        GroupKnobSerialization* isGrp = dynamic_cast<GroupKnobSerialization*>( it->get() );
-        KnobSerialization* isRegular = dynamic_cast<KnobSerialization*>( it->get() );
-        assert(isGrp || isRegular);
-
-        KnobIPtr found = _publicInterface->getKnobByName( (*it)->getName() );
-
-        if (isGrp) {
+    for (std::list<Serialization::GroupKnobChildSerialization>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        if (it->isGroup) {
+            const Serialization::GroupKnobSerialization& groupSerialization = it->group;
+            KnobIPtr found = _publicInterface->getKnobByName(groupSerialization.name);
             KnobGroupPtr grp;
             if (!found) {
-                grp = AppManager::createKnob<KnobGroup>(effect.get(), isGrp->getLabel(), 1, false);
+                grp = AppManager::createKnob<KnobGroup>(effect.get(), groupSerialization.label, 1, false);
             } else {
                 grp = std::dynamic_pointer_cast<KnobGroup>(found);
                 if (!grp) {
@@ -339,357 +335,29 @@ Node::Implementation::restoreUserKnobsRecursive(const std::list<KnobSerializatio
                 }
             }
             grp->setAsUserKnob(true);
-            grp->setName( (*it)->getName() );
-            if ( isGrp && isGrp->isSetAsTab() ) {
+            grp->setName(groupSerialization.name);
+            if (groupSerialization.isSetAsTab) {
                 grp->setAsTab();
             }
             page->addKnob(grp);
             if (group) {
                 group->addKnob(grp);
             }
-            grp->setValue( isGrp->isOpened() );
-            restoreUserKnobsRecursive(isGrp->getChildren(), grp, page);
-        } else if (isRegular) {
-            assert( isRegular->isUserKnob() );
-            KnobIPtr sKnob = isRegular->getKnob();
-            KnobIPtr knob;
-            KnobInt* isInt = dynamic_cast<KnobInt*>( sKnob.get() );
-            KnobDouble* isDbl = dynamic_cast<KnobDouble*>( sKnob.get() );
-            KnobBool* isBool = dynamic_cast<KnobBool*>( sKnob.get() );
-            KnobChoice* isChoice = dynamic_cast<KnobChoice*>( sKnob.get() );
-            KnobColor* isColor = dynamic_cast<KnobColor*>( sKnob.get() );
-            KnobString* isStr = dynamic_cast<KnobString*>( sKnob.get() );
-            KnobFile* isFile = dynamic_cast<KnobFile*>( sKnob.get() );
-            KnobOutputFile* isOutFile = dynamic_cast<KnobOutputFile*>( sKnob.get() );
-            KnobPath* isPath = dynamic_cast<KnobPath*>( sKnob.get() );
-            KnobButton* isBtn = dynamic_cast<KnobButton*>( sKnob.get() );
-            KnobSeparator* isSep = dynamic_cast<KnobSeparator*>( sKnob.get() );
-            KnobParametric* isParametric = dynamic_cast<KnobParametric*>( sKnob.get() );
-            KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(sKnob.get());
-            KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(sKnob.get());
-            KnobChannelSelect* isChannelSelect = dynamic_cast<KnobChannelSelect*>(sKnob.get());
-            KnobShuffleMap* isShuffleMap = dynamic_cast<KnobShuffleMap*>(sKnob.get());
+            grp->setValue(groupSerialization.isOpened);
+            restoreUserKnobsRecursive(groupSerialization.children, grp, page);
+        } else {
+            const Serialization::KnobSerialization& knobSerialization = it->knob;
+            assert(knobSerialization.isUserKnob);
 
-            assert(isInt || isDbl || isBool || isChoice || isColor || isStr || isFile || isOutFile || isPath || isBtn || isSep || isParametric || isChannelSet || isLayerSelect || isChannelSelect || isShuffleMap);
-
-            if (isInt) {
-                KnobIntPtr k;
-
-                if (!found) {
-                    k = AppManager::createKnob<KnobInt>(effect.get(), isRegular->getLabel(),
-                                                        sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobInt>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                const ValueExtraData* data = dynamic_cast<const ValueExtraData*>( isRegular->getExtraData() );
-                assert(data);
-                if (data) {
-                    std::vector<int> minimums, maximums, dminimums, dmaximums;
-                    for (int i = 0; i < k->getDimension(); ++i) {
-                        minimums.push_back(data->min);
-                        maximums.push_back(data->max);
-                        dminimums.push_back(data->dmin);
-                        dmaximums.push_back(data->dmax);
-                    }
-                    k->setMinimumsAndMaximums(minimums, maximums);
-                    k->setDisplayMinimumsAndMaximums(dminimums, dmaximums);
-                }
-                knob = k;
-            } else if (isDbl) {
-                KnobDoublePtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobDouble>(effect.get(), isRegular->getLabel(),
-                                                           sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobDouble>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                const ValueExtraData* data = dynamic_cast<const ValueExtraData*>( isRegular->getExtraData() );
-                assert(data);
-                if (data) {
-                    std::vector<double> minimums, maximums, dminimums, dmaximums;
-                    for (int i = 0; i < k->getDimension(); ++i) {
-                        minimums.push_back(data->min);
-                        maximums.push_back(data->max);
-                        dminimums.push_back(data->dmin);
-                        dmaximums.push_back(data->dmax);
-                    }
-                    k->setMinimumsAndMaximums(minimums, maximums);
-                    k->setDisplayMinimumsAndMaximums(dminimums, dmaximums);
-                }
-                knob = k;
-
-                if ( isRegular->getUseHostOverlayHandle() ) {
-                    KnobDouble* isDbl = dynamic_cast<KnobDouble*>( knob.get() );
-                    if (isDbl) {
-                        isDbl->setHasHostOverlayHandle(true);
-                    }
-                }
-            } else if (isBool) {
-                KnobBoolPtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobBool>(effect.get(), isRegular->getLabel(),
-                                                         sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobBool>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                knob = k;
-            } else if (isChoice) {
-                KnobChoicePtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobChoice>(effect.get(), isRegular->getLabel(),
-                                                           sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobChoice>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                const ChoiceExtraData* data = dynamic_cast<const ChoiceExtraData*>( isRegular->getExtraData() );
-                assert(data);
-                if (data) {
-                    std::vector<ChoiceOption> options(data->_entries.size());
-                    for (std::size_t i =  0; i < options.size(); ++i) {
-                        options[i].id = data->_entries[i];
-                        if (i < data->_helpStrings.size()) {
-                            options[i].tooltip = data->_helpStrings[i];
-                        }
-                    }
-                    k->populateChoices(options);
-                }
-                knob = k;
-            } else if (isColor) {
-                KnobColorPtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobColor>(effect.get(), isRegular->getLabel(),
-                                                          sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobColor>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                const ValueExtraData* data = dynamic_cast<const ValueExtraData*>( isRegular->getExtraData() );
-                assert(data);
-                if (data) {
-                    std::vector<double> minimums, maximums, dminimums, dmaximums;
-                    for (int i = 0; i < k->getDimension(); ++i) {
-                        minimums.push_back(data->min);
-                        maximums.push_back(data->max);
-                        dminimums.push_back(data->dmin);
-                        dmaximums.push_back(data->dmax);
-                    }
-                    k->setMinimumsAndMaximums(minimums, maximums);
-                    k->setDisplayMinimumsAndMaximums(dminimums, dmaximums);
-                }
-                knob = k;
-            } else if (isStr) {
-                KnobStringPtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobString>(effect.get(), isRegular->getLabel(),
-                                                           sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobString>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                const TextExtraData* data = dynamic_cast<const TextExtraData*>( isRegular->getExtraData() );
-                assert(data);
-                if (data) {
-                    if (data->label) {
-                        k->setAsLabel();
-                    } else if (data->multiLine) {
-                        k->setAsMultiLine();
-                        if (data->richText) {
-                            k->setUsesRichText(true);
-                        }
-                    }
-                }
-                knob = k;
-            } else if (isFile) {
-                KnobFilePtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobFile>(effect.get(), isRegular->getLabel(),
-                                                         sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobFile>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                const FileExtraData* data = dynamic_cast<const FileExtraData*>( isRegular->getExtraData() );
-                assert(data);
-                if (data && data->useSequences) {
-                    k->setAsInputImage();
-                }
-                knob = k;
-            } else if (isOutFile) {
-                KnobOutputFilePtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobOutputFile>(effect.get(), isRegular->getLabel(),
-                                                               sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobOutputFile>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                const FileExtraData* data = dynamic_cast<const FileExtraData*>( isRegular->getExtraData() );
-                assert(data);
-                if (data && data->useSequences) {
-                    k->setAsOutputImageFile();
-                }
-                knob = k;
-            } else if (isPath) {
-                KnobPathPtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobPath>(effect.get(), isRegular->getLabel(),
-                                                         sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobPath>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                const PathExtraData* data = dynamic_cast<const PathExtraData*>( isRegular->getExtraData() );
-                assert(data);
-                if (data && data->multiPath) {
-                    k->setMultiPath(true);
-                }
-                knob = k;
-            } else if (isBtn) {
-                KnobButtonPtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobButton>(effect.get(), isRegular->getLabel(),
-                                                           sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobButton>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                knob = k;
-            } else if (isSep) {
-                KnobSeparatorPtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobSeparator>(effect.get(), isRegular->getLabel(),
-                                                              sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobSeparator>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                knob = k;
-            } else if (isParametric) {
-                KnobParametricPtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobParametric>(effect.get(), isRegular->getLabel(), sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobParametric>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                knob = k;
-            } else if (isChannelSet) {
-                KnobChannelSetPtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobChannelSet>(effect.get(), isRegular->getLabel(), sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobChannelSet>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                knob = k;
-            } else if (isLayerSelect) {
-                KnobLayerSelectPtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobLayerSelect>(effect.get(), isRegular->getLabel(), sKnob->getDimension(), false);
-                    k->setWithChannelButtons(isLayerSelect->getWithChannelButtons());
-                } else {
-                    k = std::dynamic_pointer_cast<KnobLayerSelect>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                knob = k;
-            } else if (isChannelSelect) {
-                KnobChannelSelectPtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobChannelSelect>(effect.get(), isRegular->getLabel(), sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobChannelSelect>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                knob = k;
-            } else if (isShuffleMap) {
-                KnobShuffleMapPtr k;
-                if (!found) {
-                    k = AppManager::createKnob<KnobShuffleMap>(effect.get(), isRegular->getLabel(), sKnob->getDimension(), false);
-                } else {
-                    k = std::dynamic_pointer_cast<KnobShuffleMap>(found);
-                    if (!k) {
-                        continue;
-                    }
-                }
-                knob = k;
-            }
-
-            assert(knob);
+            KnobIPtr found = _publicInterface->getKnobByName( NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(knobSerialization.name) );
+            KnobIPtr knob = createUserKnobFromSerialization(effect.get(), knobSerialization, found);
             if (!knob) {
                 continue;
             }
-            knob->cloneDefaultValues( sKnob.get() );
-            if (isChoice) {
-                const ChoiceExtraData* choiceData = dynamic_cast<const ChoiceExtraData*>( isRegular->getExtraData() );
-                assert(choiceData);
-                KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() );
-                assert(isChoice);
-                if (choiceData && isChoice) {
-                    KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>( sKnob.get() );
-                    if (choiceSerialized) {
-                        std::string optionID = choiceData->_choiceString;
-                        // first, try to get the id the easy way ( see choiceMatch() )
-                        int id = isChoice->choiceRestorationId(choiceSerialized, optionID);
-//#pragma message WARN("TODO: choice id filters")
-                        //if (id < 0) {
-                        //    // no luck, try the filters
-                        //    filterKnobChoiceOptionCompat(getPluginID(), serialization.getPluginMajorVersion(), serialization.getPluginMinorVersion(), projectInfos.vMajor, projectInfos.vMinor, projectInfos.vRev, serializedName, &optionID);
-                        //    id = isChoice->choiceRestorationId(choiceSerialized, optionID);
-                        //}
-                        isChoice->choiceRestoration(choiceSerialized, optionID, id);
-                    }
-                }
-            } else {
-                knob->clone( sKnob.get() );
-            }
-            knob->setAsUserKnob(true);
             if (group) {
                 group->addKnob(knob);
             } else if (page) {
                 page->addKnob(knob);
-            }
-
-            knob->setIsPersistent( isRegular->isPersistent() );
-            knob->setAnimationEnabled( isRegular->isAnimationEnabled() );
-            knob->setEvaluateOnChange( isRegular->getEvaluatesOnChange() );
-            knob->setName( isRegular->getName() );
-            knob->setHintToolTip( isRegular->getHintToolTip() );
-            if ( !isRegular->triggerNewLine() ) {
-                knob->setAddNewLine(false);
             }
         }
     }
@@ -697,31 +365,27 @@ Node::Implementation::restoreUserKnobsRecursive(const std::list<KnobSerializatio
 
 
 void
-Node::Implementation::storeKnobLinksRecursive(const GroupKnobSerialization* group,
+Node::Implementation::storeKnobLinksRecursive(const Serialization::GroupKnobSerialization& group,
                                               const std::map<std::string, std::string>& oldNewScriptNamesMapping)
 {
-    const std::list<KnobSerializationBasePtr>&  children = group->getChildren();
-
-    for (std::list<KnobSerializationBasePtr>::const_iterator it = children.begin(); it != children.end(); ++it) {
-        GroupKnobSerialization* isGrp = dynamic_cast<GroupKnobSerialization*>( it->get() );
-        KnobSerialization* isRegular = dynamic_cast<KnobSerialization*>( it->get() );
-        assert(isGrp || isRegular);
-        if (isGrp) {
-            storeKnobLinksRecursive(isGrp, oldNewScriptNamesMapping);
-        } else if (isRegular) {
-            KnobIPtr knob =  _publicInterface->getKnobByName( isRegular->getName() );
+    for (std::list<Serialization::GroupKnobChildSerialization>::const_iterator it = group.children.begin(); it != group.children.end(); ++it) {
+        if (it->isGroup) {
+            storeKnobLinksRecursive(it->group, oldNewScriptNamesMapping);
+        } else {
+            const std::string knobName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->knob.name);
+            KnobIPtr knob =  _publicInterface->getKnobByName(knobName);
             if (!knob) {
                 LogEntry::LogEntryColor c;
                 if (_publicInterface->getColor(&c.r, &c.g, &c.b)) {
                     c.colorSet = true;
                 }
 
-                QString err = tr("Could not find a parameter named %1").arg( QString::fromUtf8( (*it)->getName().c_str() ) );
+                QString err = tr("Could not find a parameter named %1").arg( QString::fromUtf8( knobName.c_str() ) );
                 appPTR->writeToErrorLog_mt_safe(QString::fromUtf8( _publicInterface->getScriptName_mt_safe().c_str() ), QDateTime::currentDateTime(), err, false, c);
                 continue;
             }
-            isRegular->storeKnobLinks(knob);
-            isRegular->restoreExpressions(knob, oldNewScriptNamesMapping);
+            knob->storeLinksFromSerialization(it->knob);
+            knob->restoreExpressionsFromSerialization(it->knob, oldNewScriptNamesMapping);
         }
     }
 }
@@ -737,24 +401,25 @@ Node::storeKnobsLinks(const NodeSerialization & serialization,
     const NodeSerialization::KnobValues & knobsValues = serialization.getKnobsValues();
     ///try to find a serialized value for this knob
     for (NodeSerialization::KnobValues::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
-        KnobIPtr knob = getKnobByName( (*it)->getName() );
+        const std::string knobName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
+        KnobIPtr knob = getKnobByName(knobName);
         if (!knob) {
             LogEntry::LogEntryColor c;
             if (getColor(&c.r, &c.g, &c.b)) {
                 c.colorSet = true;
             }
 
-            QString err = tr("Could not find a parameter named %1").arg( QString::fromUtf8( (*it)->getName().c_str() ) );
+            QString err = tr("Could not find a parameter named %1").arg( QString::fromUtf8( knobName.c_str() ) );
             appPTR->writeToErrorLog_mt_safe(QString::fromUtf8( getScriptName_mt_safe().c_str() ), QDateTime::currentDateTime(), err, false, c);
             continue;
         }
-        (*it)->storeKnobLinks(knob);
-        (*it)->restoreExpressions(knob, oldNewScriptNamesMapping);
+        knob->storeLinksFromSerialization(*it);
+        knob->restoreExpressionsFromSerialization(*it, oldNewScriptNamesMapping);
     }
 
-    const std::list<GroupKnobSerializationPtr>& userKnobs = serialization.getUserPages();
-    for (std::list<GroupKnobSerializationPtr>::const_iterator it = userKnobs.begin(); it != userKnobs.end(); ++it) {
-        _imp->storeKnobLinksRecursive( (*it).get(), oldNewScriptNamesMapping );
+    const std::list<Serialization::GroupKnobSerialization>& userKnobs = serialization.getUserPages();
+    for (std::list<Serialization::GroupKnobSerialization>::const_iterator it = userKnobs.begin(); it != userKnobs.end(); ++it) {
+        _imp->storeKnobLinksRecursive(*it, oldNewScriptNamesMapping);
     }
 }
 

@@ -23,250 +23,26 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "KnobSerialization.h"
+#include "KnobLoadCompat.h"
 
-#include <algorithm> // min, max
 #include <cassert>
-#include <stdexcept>
-
-#include <ofxNatron.h>
-
-#include <QDateTime>
-#include <QDebug>
+#include <list>
+#include <string>
+#include <vector>
 
 #include <ofxNatron.h>
 
 #include "Global/StrUtils.h"
 
-#include "Engine/Knob.h"
-#include "Engine/Curve.h"
-#include "Engine/Node.h"
-#include "Engine/EffectInstance.h"
-#include "Engine/AppInstance.h"
-#include "Engine/KnobTypes.h"
-#include "Engine/TrackMarker.h"
-#include "Engine/TrackerContext.h"
-
-#include "Engine/KnobChannelSelect.h"
-#include "Engine/KnobChannelSet.h"
-#include "Engine/KnobLayerSelect.h"
-#include "Engine/KnobShuffleMap.h"
+#include "Engine/ImageLayerDesc.h"
 
 NATRON_NAMESPACE_ENTER
-
-ValueSerialization::ValueSerialization()
-: _serialization(0)
-, _knob()
-, _dimension(0)
-, _master()
-, _expression()
-, _exprHasRetVar(false)
-{
-
-}
-
-ValueSerialization::ValueSerialization(KnobSerializationBase* serialization,
-                                       const KnobIPtr & knob,
-                                       int dimension)
-    : _serialization(serialization)
-    , _knob(knob)
-    , _dimension(dimension)
-    , _master()
-    , _expression()
-    , _exprHasRetVar(false)
-{
-}
-
-void
-ValueSerialization::initForLoad(KnobSerializationBase* serialization,
-                 const KnobIPtr & knob,
-                 int dimension)
-{
-    _serialization = serialization;
-    _knob = knob;
-    _dimension = dimension;
-}
-
-ValueSerialization::ValueSerialization(const KnobIPtr & knob,
-                                       int dimension,
-                                       bool exprHasRetVar,
-                                       const std::string& expr)
-    : _serialization(0)
-    , _knob()
-    , _dimension(0)
-    , _master()
-    , _expression()
-    , _exprHasRetVar(false)
-{
-    initForSave(knob, dimension, exprHasRetVar, expr);
-}
-
-void
-ValueSerialization::initForSave(const KnobIPtr & knob,
-                 int dimension,
-                 bool exprHasRetVar,
-                 const std::string& expr)
-{
-    _knob = knob;
-    _dimension = dimension;
-    _expression = expr;
-    _exprHasRetVar = exprHasRetVar;
-
-    std::pair<int, KnobIPtr> m = knob->getMaster(dimension);
-
-    if ( m.second && !knob->isMastersPersistenceIgnored() ) {
-        _master.masterDimension = m.first;
-        NamedKnobHolder* holder = dynamic_cast<NamedKnobHolder*>( m.second->getHolder() );
-        assert(holder);
-
-        TrackMarker* isMarker = dynamic_cast<TrackMarker*>(holder);
-        if (isMarker) {
-            _master.masterTrackName = isMarker->getScriptName_mt_safe();
-            _master.masterNodeNameFull = isMarker->getContext()->getNode()->getFullyQualifiedName();
-            _master.masterNodeName = isMarker->getContext()->getNode()->getScriptName_mt_safe();
-        } else {
-            // coverity[dead_error_line]
-            _master.masterNodeNameFull = holder ? holder->getFullyQualifiedName() : "";
-            _master.masterNodeName = holder ? holder->getScriptName_mt_safe() : "";
-        }
-        _master.masterKnobName = m.second->getName();
-    } else {
-        _master.masterDimension = -1;
-    }
-
-}
-
-void
-ValueSerialization::setChoiceExtraLabel(const std::string& label)
-{
-    assert(_serialization);
-    _serialization->setChoiceExtraString(label);
-}
-
-KnobIPtr
-KnobSerialization::createKnob(const std::string & typeName,
-                              int dimension)
-{
-    KnobIPtr ret;
-
-    if ( typeName == KnobInt::typeNameStatic() ) {
-        ret = std::make_shared<KnobInt>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobBool::typeNameStatic() ) {
-        ret = std::make_shared<KnobBool>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobDouble::typeNameStatic() ) {
-        ret = std::make_shared<KnobDouble>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobChoice::typeNameStatic() ) {
-        ret = std::make_shared<KnobChoice>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobString::typeNameStatic() ) {
-        ret = std::make_shared<KnobString>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobParametric::typeNameStatic() ) {
-        ret = std::make_shared<KnobParametric>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobColor::typeNameStatic() ) {
-        ret = std::make_shared<KnobColor>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobPath::typeNameStatic() ) {
-        ret = std::make_shared<KnobPath>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if ( typeName == KnobLayers::typeNameStatic() ) {
-        ret = std::make_shared<KnobLayers>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if (typeName == KnobChannelSet::typeNameStatic()) {
-        ret = std::make_shared<KnobChannelSet>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if (typeName == KnobLayerSelect::typeNameStatic()) {
-        ret = std::make_shared<KnobLayerSelect>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if (typeName == KnobChannelSelect::typeNameStatic()) {
-        ret = std::make_shared<KnobChannelSelect>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if (typeName == KnobShuffleMap::typeNameStatic()) {
-        ret = std::make_shared<KnobShuffleMap>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if (typeName == KnobFile::typeNameStatic()) {
-        ret = std::make_shared<KnobFile>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if (typeName == KnobOutputFile::typeNameStatic()) {
-        ret = std::make_shared<KnobOutputFile>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if (typeName == KnobButton::typeNameStatic()) {
-        ret = std::make_shared<KnobButton>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if (typeName == KnobSeparator::typeNameStatic()) {
-        ret = std::make_shared<KnobSeparator>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if (typeName == KnobGroup::typeNameStatic()) {
-        ret = std::make_shared<KnobGroup>((KnobHolder*)NULL, std::string(), dimension, false);
-    } else if (typeName == KnobPage::typeNameStatic()) {
-        ret = std::make_shared<KnobPage>((KnobHolder*)NULL, std::string(), dimension, false);
-    }
-
-    if (ret) {
-        ret->populate();
-    }
-
-    return ret;
-}
-
-
-void
-KnobSerialization::storeKnobLinks(const KnobIPtr & knob)
-{
-    if (_masterIsAlias) {
-        /*
-         * _masters can be empty for example if we expand a group: the slaved knobs are no longer slaves
-         */
-        if ( !_masters.empty() ) {
-            const std::string& aliasNodeNameFull = _masters.front().masterNodeNameFull;
-            const std::string& aliasNodeName = _masters.front().masterNodeName;
-            const std::string& masterTrackName  = _masters.front().masterTrackName;
-            const std::string& aliasKnobName = _masters.front().masterKnobName;
-            knob->storeLink(-1, aliasNodeNameFull, aliasNodeName, masterTrackName, aliasKnobName, -1);
-        }
-    } else {
-        assert(_masters.size() == _dimension);
-        int slaveDim = 0;
-        for (std::list<MasterSerialization>::iterator it = _masters.begin(); it != _masters.end(); ++it, ++slaveDim) {
-            if (it->masterDimension != -1) {
-                knob->storeLink(slaveDim, it->masterNodeNameFull, it->masterNodeName, it->masterTrackName, it->masterKnobName, it->masterDimension);
-            }
-        }
-    }
-}
-
-
-
-void
-KnobSerialization::restoreExpressions(const KnobIPtr & knob,
-                                      const std::map<std::string, std::string>& oldNewScriptNamesMapping)
-{
-    int dims = std::min( knob->getDimension(), _knob->getDimension() );
-
-    try {
-        for (int i = 0; i < dims; ++i) {
-            if ( !_expressions[i].first.empty() ) {
-                QString expr( QString::fromUtf8( _expressions[i].first.c_str() ) );
-
-                //Replace all occurrences of script-names that we know have changed
-                for (std::map<std::string, std::string>::const_iterator it = oldNewScriptNamesMapping.begin();
-                     it != oldNewScriptNamesMapping.end(); ++it) {
-                    expr.replace( QString::fromUtf8( it->first.c_str() ), QString::fromUtf8( it->second.c_str() ) );
-                }
-                knob->restoreExpression(i, expr.toStdString(), _expressions[i].second);
-            }
-        }
-    } catch (const std::exception& e) {
-        QString err = QString::fromUtf8("Failed to restore expression: %1").arg( QString::fromUtf8( e.what() ) );
-        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8( knob->getName().c_str() ), QDateTime::currentDateTime(), err);
-    }
-}
-
-void
-KnobSerialization::setChoiceExtraString(const std::string& label)
-{
-    assert(_extraData);
-    ChoiceExtraData* cData = dynamic_cast<ChoiceExtraData*>(_extraData);
-    assert(cData);
-    if (cData) {
-        cData->_choiceString = label;
-    }
-}
 
 static bool
 startsWith(const std::string& str,
            const std::string& prefix)
 {
     return str.substr( 0, prefix.size() ) == prefix;
-    // case insensitive version:
-    //return ci_string(str.substr(0,prefix.size()).c_str()) == prefix.c_str();
 }
 
 static bool
@@ -276,13 +52,6 @@ endsWith(const std::string &str,
     return ( ( str.size() >= suffix.size() ) &&
             (str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0) );
 }
-#if 0
-static bool
-containsString(const std::string& str, const std::string& substring)
-{
-    return str.find(substring) != std::string::npos;
-}
-#endif
 
 static bool
 equalsStringCaseSensitive(const std::string& str1, const std::string& str2)
@@ -635,7 +404,6 @@ public:
                 }
             }
             addOptionFilter(f, "8i", equalsStringCaseInsensitive);
-            //setNatronVersionMax(f, 1);
             filters.push_back(f);
         }
         {
@@ -649,7 +417,6 @@ public:
                 }
             }
             addOptionFilter(f, "16i", equalsStringCaseInsensitive);
-            //setNatronVersionMax(f, 1);
             filters.push_back(f);
         }
     }

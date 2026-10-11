@@ -97,7 +97,7 @@ struct KnobDimensionXml
 NATRON_NAMESPACE_EXIT
 
 // Non-intrusive adapters reproducing the NVP sequence, nesting and class versions of the old
-// intrusive KnobSerialization/ValueSerialization/MasterSerialization, including every branch
+// intrusive KnobSerialization/ValueSerialization/MasterSerialization/GroupKnobSerialization, including every branch
 // that reads files written by older versions.
 namespace boost {
 namespace serialization {
@@ -534,6 +534,70 @@ serialize(Archive & ar,
           const unsigned int version)
 {
     ::boost::serialization::split_free(ar, knob, version);
+}
+
+template<class Archive>
+void
+save(Archive & ar,
+     const NATRON_NAMESPACE::Serialization::GroupKnobSerialization & group,
+     const unsigned int /*version*/)
+{
+    ar & ::boost::serialization::make_nvp("Name", group.name);
+    ar & ::boost::serialization::make_nvp("Label", group.label);
+    ar & ::boost::serialization::make_nvp("Secret", group.secret);
+    ar & ::boost::serialization::make_nvp("IsTab", group.isSetAsTab);
+    ar & ::boost::serialization::make_nvp("IsOpened", group.isOpened);
+    int nbChildren = (int)group.children.size();
+    ar & ::boost::serialization::make_nvp("NbChildren", nbChildren);
+    for (std::list<NATRON_NAMESPACE::Serialization::GroupKnobChildSerialization>::const_iterator it = group.children.begin(); it != group.children.end(); ++it) {
+        std::string type = it->isGroup ? "Group" : "Regular";
+        ar & ::boost::serialization::make_nvp("Type", type);
+        if (it->isGroup) {
+            ar & ::boost::serialization::make_nvp("item", it->group);
+        } else {
+            ar & ::boost::serialization::make_nvp("item", it->knob);
+        }
+    }
+}
+
+template<class Archive>
+void
+load(Archive & ar,
+     NATRON_NAMESPACE::Serialization::GroupKnobSerialization & group,
+     const unsigned int /*version*/)
+{
+    group = NATRON_NAMESPACE::Serialization::GroupKnobSerialization();
+
+    ar & ::boost::serialization::make_nvp("Name", group.name);
+    ar & ::boost::serialization::make_nvp("Label", group.label);
+    ar & ::boost::serialization::make_nvp("Secret", group.secret);
+    ar & ::boost::serialization::make_nvp("IsTab", group.isSetAsTab);
+    ar & ::boost::serialization::make_nvp("IsOpened", group.isOpened);
+    int nbChildren = 0;
+    ar & ::boost::serialization::make_nvp("NbChildren", nbChildren);
+    for (int i = 0; i < nbChildren; ++i) {
+        std::string type;
+        ar & ::boost::serialization::make_nvp("Type", type);
+
+        // Each child is read in place: an archive may record where it loaded an object.
+        group.children.push_back( NATRON_NAMESPACE::Serialization::GroupKnobChildSerialization() );
+        NATRON_NAMESPACE::Serialization::GroupKnobChildSerialization & child = group.children.back();
+        child.isGroup = (type == "Group");
+        if (child.isGroup) {
+            ar & ::boost::serialization::make_nvp("item", child.group);
+        } else {
+            ar & ::boost::serialization::make_nvp("item", child.knob);
+        }
+    }
+}
+
+template<class Archive>
+void
+serialize(Archive & ar,
+          NATRON_NAMESPACE::Serialization::GroupKnobSerialization & group,
+          const unsigned int version)
+{
+    ::boost::serialization::split_free(ar, group, version);
 }
 
 } // namespace serialization

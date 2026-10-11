@@ -30,6 +30,7 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/RotoLayer.h"
@@ -37,6 +38,49 @@
 #include "Engine/RotoContext.h"
 
 NATRON_NAMESPACE_ENTER
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+void
+serializeUserKnobLayout(const KnobIPtr& knob,
+                        Serialization::GroupKnobSerialization* layout)
+{
+    KnobGroup* isGroup = dynamic_cast<KnobGroup*>( knob.get() );
+    KnobPage* isPage = dynamic_cast<KnobPage*>( knob.get() );
+
+    assert(isGroup || isPage);
+
+    layout->name = knob->getName();
+    layout->label = knob->getLabel();
+    layout->secret = knob->getIsSecret();
+
+    KnobsVec children;
+    if (isGroup) {
+        layout->isSetAsTab = isGroup->isTab();
+        layout->isOpened = isGroup->getValue();
+        children = isGroup->getChildren();
+    } else if (isPage) {
+        children = isPage->getChildren();
+    }
+
+    for (U32 i = 0; i < children.size(); ++i) {
+        // A page lists every knob below it; a knob inside a sub-group is saved by that group.
+        if ( isPage && (children[i]->getParentKnob().get() != isPage) ) {
+            continue;
+        }
+        layout->children.push_back( Serialization::GroupKnobChildSerialization() );
+        Serialization::GroupKnobChildSerialization & child = layout->children.back();
+        KnobGroupPtr isChildGroup = std::dynamic_pointer_cast<KnobGroup>(children[i]);
+        if (isChildGroup) {
+            child.isGroup = true;
+            serializeUserKnobLayout(isChildGroup, &child.group);
+        } else {
+            children[i]->toSerialization(&child.knob);
+        }
+    }
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 NodeSerialization::NodeSerialization(const NodePtr& n,
                                      bool serializeInputs)
@@ -89,40 +133,20 @@ NodeSerialization::NodeSerialization(const NodePtr& n,
             if (isGroup || isPage) {
                 continue;
             }
-            bool hasExpr = false;
-            for (int d = 0; d < knobs[i]->getDimension(); ++d) {
-                if (!knobs[i]->getExpression(d).empty()) {
-                    hasExpr = true;
-                    break;
-                }
-                std::pair<int, KnobIPtr> master = knobs[i]->getMaster(d);
-                if (master.second) {
-                    hasExpr = true;
-                    break;
-                }
-            }
-            // Always serialize nodes that have an expression or a link.
-            // See https://github.com/NatronGitHub/Natron/issues/585
-            // Already fixed in RB-3.0 by https://github.com/NatronGitHub/Natron/commit/7ef38849fe
-            if (!hasExpr) {
-                if ( !knobs[i]->getIsPersistent() ) {
-                    continue;
-                }
 
-                if ( !knobs[i]->hasModificationsForSerialization() ) {
-                    continue;
-                }
+            // A knob with an expression or a link is always saved, see
+            // https://github.com/NatronGitHub/Natron/issues/585
+            Serialization::KnobSerialization knobSerialization;
+            if ( knobs[i]->toSerialization(&knobSerialization) ) {
+                _knobsValues.push_back(knobSerialization);
             }
-
-            KnobSerializationPtr newKnobSer = std::make_shared<KnobSerialization>(knobs[i]);
-            _knobsValues.push_back(newKnobSer);
         }
 
         _nbKnobs = (int)_knobsValues.size();
 
         for (std::list<KnobIPtr>::const_iterator it = userPages.begin(); it != userPages.end(); ++it) {
-            GroupKnobSerializationPtr s = std::make_shared<GroupKnobSerialization>(*it);
-            _userPages.push_back(s);
+            _userPages.push_back( Serialization::GroupKnobSerialization() );
+            serializeUserKnobLayout(*it, &_userPages.back());
         }
 
         _knobsAge = n->getKnobsAge();

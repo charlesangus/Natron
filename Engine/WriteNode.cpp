@@ -57,7 +57,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
-#include "Engine/KnobSerialization.h" // createDefaultValueForParam
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeSerialization.h"
@@ -200,7 +199,7 @@ struct WriteNodePrivate
 public:
     WriteNode* _publicInterface;
     NodeWPtr embeddedPlugin, readBackNode, inputNode, outputNode;
-    std::list<KnobSerializationPtr> genericKnobsSerialization;
+    std::list<Serialization::KnobSerialization> genericKnobsSerialization;
     KnobOutputFileWPtr outputFileKnob;
 
     // These are knobs owned by the WriteNode and not the Writer
@@ -378,36 +377,25 @@ WriteNodePrivate::cloneGenericKnobs()
 {
     const KnobsVec& knobs = _publicInterface->getKnobs();
 
-    for (std::list<KnobSerializationPtr>::iterator it = genericKnobsSerialization.begin(); it != genericKnobsSerialization.end(); ++it) {
-        KnobIPtr serializedKnob = (*it)->getKnob();
+    for (std::list<Serialization::KnobSerialization>::iterator it = genericKnobsSerialization.begin(); it != genericKnobsSerialization.end(); ++it) {
+        KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it);
+        if (!serializedKnob) {
+            continue;
+        }
         for (KnobsVec::const_iterator it2 = knobs.begin(); it2 != knobs.end(); ++it2) {
             if ( (*it2)->getName() == serializedKnob->getName() ) {
                 KnobChoice* isChoice = dynamic_cast<KnobChoice*>( (*it2).get() );
-                KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>( serializedKnob.get() );;
+                KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>( serializedKnob.get() );
                 if (isChoice && choiceSerialized) {
-                    const ChoiceExtraData* choiceData = dynamic_cast<const ChoiceExtraData*>( (*it)->getExtraData() );
-                    assert(choiceData);
-                    if (choiceData) {
-                        std::string optionID = choiceData->_choiceString;
+                    if (it->choiceOptionID) {
+                        const std::string & optionID = *it->choiceOptionID;
                         // first, try to get the id the easy way ( see choiceMatch() )
                         int id = isChoice->choiceRestorationId(choiceSerialized, optionID);
-//#pragma message WARN("TODO: choice id filters")
-                        //if (id < 0) {
-                        //    // no luck, try the filters
-                        //    filterKnobChoiceOptionCompat(getPluginID(), serialization.getPluginMajorVersion(), serialization.getPluginMinorVersion(), projectInfos.vMajor, projectInfos.vMinor, projectInfos.vRev, serializedName, &optionID);
-                        //    id = isChoice->choiceRestorationId(choiceSerialized, optionID);
-                        //}
                         isChoice->choiceRestoration(choiceSerialized, optionID, id);
                     }
                 } else {
                     (*it2)->clone( serializedKnob.get() );
                 }
-                /*(*it2)->setSecret( serializedKnob->getIsSecret() );
-                if ( (*it2)->getDimension() == serializedKnob->getDimension() ) {
-                    for (int i = 0; i < (*it2)->getDimension(); ++i) {
-                        (*it2)->setEnabled( i, serializedKnob->isEnabled(i) );
-                    }
-                }*/
 
                 break;
             }
@@ -428,98 +416,55 @@ WriteNodePrivate::destroyWriteNode()
 
     genericKnobsSerialization.clear();
 
-    std::string serializationString;
     try {
-        std::ostringstream ss;
-        {   // see http://boost.2283326.n4.nabble.com/the-boost-xml-serialization-to-a-stringstream-does-not-have-an-end-tag-td2580772.html
-            // xml_oarchive must be destroyed before obtaining ss.str(), or the </boost_serialization> tag is missing,
-            // which throws an exception in boost 1.66.0, due to the following change:
-            // https://fossies.org/diffs/boost/1_65_1_vs_1_66_0/libs/serialization/src/basic_xml_grammar.ipp-diff.html
-            // see also https://svn.boost.org/trac10/ticket/13400
-            // see also https://svn.boost.org/trac10/ticket/13354
+        for (KnobsVec::iterator it = knobs.begin(); it != knobs.end(); ++it) {
 
-            boost::archive::xml_oarchive oArchive(ss);
-            std::list<KnobSerializationPtr> serialized;
-            for (KnobsVec::iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            // The internal node still holds a shared ptr to the knob.
+            // Since we want to keep some knobs around, ensure they do not get deleted in the destructor of the embedded node
+            embeddedNode->getEffectInstance()->removeKnobFromList(it->get());
 
-                // The internal node still holds a shared ptr to the knob.
-                // Since we want to keep some knobs around, ensure they do not get deleted in the destructor of the embedded node
-                embeddedNode->getEffectInstance()->removeKnobFromList(it->get());
-
-                if ( !(*it)->isDeclaredByPlugin() ) {
-                    continue;
-                }
-
-                //If it is a knob of this WriteNode, do not destroy it
-                bool isWriteNodeKnob = false;
-                for (std::list<KnobIWPtr>::iterator it2 = writeNodeKnobs.begin(); it2 != writeNodeKnobs.end(); ++it2) {
-                    if (it2->lock() == *it) {
-                        isWriteNodeKnob = true;
-                        break;
-                    }
-                }
-                if (isWriteNodeKnob) {
-                    continue;
-                }
-
-                //Keep pages around they will be re-used
-                KnobPage* isPage = dynamic_cast<KnobPage*>( it->get() );
-                if (isPage) {
-                    continue;
-                }
-
-                //This is a knob of the Writer plug-in
-
-                //Serialize generic knobs and keep them around until we create a new Writer plug-in
-                bool mustSerializeKnob;
-                bool isGeneric = isGenericKnob( (*it)->getName(), &mustSerializeKnob );
-                if (!isGeneric || mustSerializeKnob) {
-
-                    /*if (!isGeneric && !(*it)->getDefaultIsSecret()) {
-                     // Don't save the secret state otherwise some knobs could be invisible when cloning the serialization even if we change format
-                     (*it)->setSecret(false);
-                     }*/
-                    KnobSerializationPtr s = std::make_shared<KnobSerialization>(*it);
-                    serialized.push_back(s);
-                }
-                if (!isGeneric) {
-                    try {
-                        _publicInterface->deleteKnob(it->get(), false);
-                    } catch (...) {
-                    }
-                }
+            if ( !(*it)->isDeclaredByPlugin() ) {
+                continue;
             }
 
-            int n = (int)serialized.size();
-            oArchive << boost::serialization::make_nvp("numItems", n);
-            for (std::list<KnobSerializationPtr>::const_iterator it = serialized.begin(); it!= serialized.end(); ++it) {
-                oArchive << boost::serialization::make_nvp("item", **it);
+            //If it is a knob of this WriteNode, do not destroy it
+            bool isWriteNodeKnob = false;
+            for (std::list<KnobIWPtr>::iterator it2 = writeNodeKnobs.begin(); it2 != writeNodeKnobs.end(); ++it2) {
+                if (it2->lock() == *it) {
+                    isWriteNodeKnob = true;
+                    break;
+                }
+            }
+            if (isWriteNodeKnob) {
+                continue;
+            }
+
+            //Keep pages around they will be re-used
+            KnobPage* isPage = dynamic_cast<KnobPage*>( it->get() );
+            if (isPage) {
+                continue;
+            }
+
+            //This is a knob of the Writer plug-in
+
+            //Serialize generic knobs and keep them around until we create a new Writer plug-in
+            bool mustSerializeKnob;
+            bool isGeneric = isGenericKnob( (*it)->getName(), &mustSerializeKnob );
+            if (!isGeneric || mustSerializeKnob) {
+                genericKnobsSerialization.push_back( Serialization::KnobSerialization() );
+                (*it)->toSerialization( &genericKnobsSerialization.back() );
+            }
+            if (!isGeneric) {
+                try {
+                    _publicInterface->deleteKnob(it->get(), false);
+                } catch (...) {
+                }
             }
         }
-        serializationString = ss.str();
     } catch (...) {
         assert(false);
     }
 
-    try {
-        std::stringstream ss(serializationString);
-        {
-            boost::archive::xml_iarchive iArchive(ss);
-            int n ;
-            iArchive >> boost::serialization::make_nvp("numItems", n);
-            for (int i = 0; i < n; ++i) {
-                KnobSerializationPtr s = std::make_shared<KnobSerialization>();
-                iArchive >> boost::serialization::make_nvp("item", *s);
-                genericKnobsSerialization.push_back(s);
-            }
-        }
-    } catch (const std::exception& e) {
-        qDebug() << e.what();
-        assert(false);
-    } catch (...) {
-        assert(false);
-    }
-    
 
     //This will remove the GUI of non generic parameters
     _publicInterface->recreateKnobs(true);
@@ -694,13 +639,14 @@ WriteNodePrivate::checkEncoderCreated(double time,
 }
 
 static std::string
-getFileNameFromSerialization(const std::list<KnobSerializationPtr>& serializations)
+getFileNameFromSerialization(const std::list<Serialization::KnobSerialization>& serializations)
 {
     std::string filePattern;
 
-    for (std::list<KnobSerializationPtr>::const_iterator it = serializations.begin(); it != serializations.end(); ++it) {
-        if ( (*it)->getKnob()->getName() == kOfxImageEffectFileParamName ) {
-            KnobStringBase* isString = dynamic_cast<KnobStringBase*>( (*it)->getKnob().get() );
+    for (std::list<Serialization::KnobSerialization>::const_iterator it = serializations.begin(); it != serializations.end(); ++it) {
+        if ( NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == kOfxImageEffectFileParamName ) {
+            KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it);
+            KnobStringBase* isString = dynamic_cast<KnobStringBase*>( serializedKnob.get() );
             assert(isString);
             if (isString) {
                 filePattern = isString->getValue();

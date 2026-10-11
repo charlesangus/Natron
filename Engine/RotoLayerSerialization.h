@@ -46,7 +46,6 @@ GCC_DIAG_ON(unused-parameter)
 
 #include "Engine/AppManager.h"
 #include "Engine/BezierSerialization.h"
-#include "Engine/KnobSerialization.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoContextPrivate.h"
 #include "Engine/RotoItemSerialization.h"

@@ -46,7 +46,6 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
-#include "Engine/KnobSerialization.h"
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -60,7 +59,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-// Every type KnobSerialization::createKnob can load.
+// Every type a project file can create a knob of.
 const char* const kKnobTypeNames[] = {
     "Int", "Bool", "Double", "Choice", "String", "Parametric", "Color", "Path", "Layers", "ChannelSet",
     "LayerSelect", "ChannelSelect", "ShuffleMap", "InputFile", "OutputFile", "Button", "Separator", "Group", "Page"
@@ -295,11 +294,10 @@ variantApplies(const std::string& typeName,
 }
 
 std::string
-saveWithOldPath(const KnobIPtr& knob)
+saveToXml(const Serialization::KnobSerialization& serialization)
 {
     std::stringstream buffer;
     {
-        KnobSerialization serialization(knob);
         boost::archive::xml_oarchive archive(buffer);
         archive << boost::serialization::make_nvp("Knob", serialization);
     }
@@ -308,20 +306,17 @@ saveWithOldPath(const KnobIPtr& knob)
 }
 
 std::string
-saveWithNewPath(const Serialization::KnobSerialization& serialization)
+saveKnobToXml(const KnobIPtr& knob)
 {
-    std::stringstream buffer;
-    {
-        boost::archive::xml_oarchive archive(buffer);
-        archive << boost::serialization::make_nvp("Knob", serialization);
-    }
+    Serialization::KnobSerialization serialization;
+    knob->toSerialization(&serialization);
 
-    return buffer.str();
+    return saveToXml(serialization);
 }
 
 bool
-loadWithNewPath(const std::string& xml,
-                Serialization::KnobSerialization* serialization)
+loadFromXml(const std::string& xml,
+            Serialization::KnobSerialization* serialization)
 {
     try {
         std::stringstream buffer(xml);
@@ -329,23 +324,6 @@ loadWithNewPath(const std::string& xml,
         archive >> boost::serialization::make_nvp("Knob", *serialization);
     } catch (const std::exception& e) {
         ADD_FAILURE() << "Loading through Serialization/BoostXml failed: " << e.what();
-
-        return false;
-    }
-
-    return true;
-}
-
-bool
-loadWithOldPath(const std::string& xml,
-                KnobSerialization* serialization)
-{
-    try {
-        std::stringstream buffer(xml);
-        boost::archive::xml_iarchive archive(buffer);
-        archive >> boost::serialization::make_nvp("Knob", *serialization);
-    } catch (const std::exception& e) {
-        ADD_FAILURE() << "Loading through Engine/KnobSerialization failed: " << e.what();
 
         return false;
     }
@@ -380,7 +358,9 @@ doubleValue(const std::optional<Serialization::KnobValueSerialization>& value)
 
 } // anonymous namespace
 
-TEST_F(BaseTest, KnobXmlEquivalenceOldAndNewPathsMatch)
+// Byte-identity with the .ntp format itself is guarded by the golden project files of
+// GoldenXml_Test; this checks that saving, loading and applying a knob loses nothing.
+TEST_F(BaseTest, KnobXmlEquivalenceRoundTripIsByteIdentical)
 {
     NodePtr sourceNode = createNode(_generatorPluginID);
     NodePtr targetNode = createNode(_generatorPluginID);
@@ -428,18 +408,13 @@ TEST_F(BaseTest, KnobXmlEquivalenceOldAndNewPathsMatch)
                 EXPECT_TRUE( source->slaveTo(0, master, 0) );
             }
 
-            const std::string oldXml = saveWithOldPath(source);
-
-            Serialization::KnobSerialization saved;
-            source->toSerialization(&saved);
-            const std::string newXml = saveWithNewPath(saved);
-            EXPECT_EQ(oldXml, newXml);
+            const std::string savedXml = saveKnobToXml(source);
 
             Serialization::KnobSerialization loaded;
-            if ( !loadWithNewPath(newXml, &loaded) ) {
+            if ( !loadFromXml(savedXml, &loaded) ) {
                 continue;
             }
-            EXPECT_EQ(saveWithNewPath(saved), saveWithNewPath(loaded));
+            EXPECT_EQ( savedXml, saveToXml(loaded) );
 
             KnobIPtr restored;
             if (variant == eKnobVariantUserKnob) {
@@ -459,7 +434,7 @@ TEST_F(BaseTest, KnobXmlEquivalenceOldAndNewPathsMatch)
             restored->storeLinksFromSerialization(loaded);
             EXPECT_NO_THROW( restored->restoreLinks(getApp()->getProject()->getNodes(), noRenamedScriptNames, true) );
 
-            EXPECT_EQ( oldXml, saveWithOldPath(restored) );
+            EXPECT_EQ( savedXml, saveKnobToXml(restored) );
         }
     }
 }
@@ -477,6 +452,44 @@ TEST_F(BaseTest, KnobXmlEquivalenceFromSerializationRefusesAnotherType)
     Serialization::KnobSerialization saved;
     source->toSerialization(&saved);
     EXPECT_FALSE( target->fromSerialization(saved) );
+}
+
+TEST_F(BaseTest, KnobXmlEquivalenceFromSerializationFiltersAnUnknownChoiceOptionID)
+{
+    NodePtr node = createNode(_generatorPluginID);
+
+    ASSERT_TRUE( bool(node) );
+
+    KnobIPtr source = createKnobOfType(node->getEffectInstance().get(), KnobChoice::typeNameStatic(), "choiceSource");
+    ASSERT_TRUE( bool(source) );
+    defineKnob(source);
+
+    Serialization::KnobSerialization saved;
+    source->toSerialization(&saved);
+    saved.choiceOptionID = std::string("retiredGamma");
+
+    const KnobI::ChoiceOptionIDFilter renameRetiredOption = [](std::string* optionID) {
+        if (*optionID == "retiredGamma") {
+            *optionID = "gamma";
+        }
+    };
+
+    KnobIPtr filtered = createKnobOfType(node->getEffectInstance().get(), KnobChoice::typeNameStatic(), "choiceFiltered");
+    ASSERT_TRUE( bool(filtered) );
+    defineKnob(filtered);
+    EXPECT_TRUE( filtered->fromSerialization(saved, renameRetiredOption) );
+    KnobChoice* filteredChoice = dynamic_cast<KnobChoice*>( filtered.get() );
+    ASSERT_TRUE(filteredChoice != NULL);
+    EXPECT_EQ( 2, filteredChoice->getValue() );
+    EXPECT_EQ( std::string("gamma"), filteredChoice->getActiveEntry().id );
+
+    KnobIPtr unfiltered = createKnobOfType(node->getEffectInstance().get(), KnobChoice::typeNameStatic(), "choiceUnfiltered");
+    ASSERT_TRUE( bool(unfiltered) );
+    defineKnob(unfiltered);
+    EXPECT_TRUE( unfiltered->fromSerialization(saved) );
+    KnobChoice* unfilteredChoice = dynamic_cast<KnobChoice*>( unfiltered.get() );
+    ASSERT_TRUE(unfilteredChoice != NULL);
+    EXPECT_EQ( 0, unfilteredChoice->getValue() );
 }
 
 TEST_F(BaseTest, KnobXmlEquivalenceToSerializationReportsWhetherANodeMustSaveTheKnob)
@@ -510,7 +523,7 @@ TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacyChoiceLabel)
 
     KnobIPtr reference = createKnobOfType(node->getEffectInstance().get(), KnobInt::typeNameStatic(), "referenceKnob");
     ASSERT_TRUE( bool(reference) );
-    const std::string prologue = archivePrologue( saveWithOldPath(reference) );
+    const std::string prologue = archivePrologue( saveKnobToXml(reference) );
     ASSERT_FALSE( prologue.empty() );
 
     // Knob version 4 and value version 2: no alias flag, no expression, and the selected entry
@@ -532,7 +545,7 @@ TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacyChoiceLabel)
                             "</boost_serialization>\n";
 
     Serialization::KnobSerialization loaded;
-    ASSERT_TRUE( loadWithNewPath(xml, &loaded) );
+    ASSERT_TRUE( loadFromXml(xml, &loaded) );
     EXPECT_EQ(4u, loaded.version);
     EXPECT_EQ(std::string("legacyChoice"), loaded.name);
     ASSERT_EQ(1u, loaded.dimensions.size());
@@ -542,13 +555,18 @@ TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacyChoiceLabel)
     ASSERT_TRUE( loaded.choiceOptionID.has_value() );
     EXPECT_EQ( std::string("beta"), *loaded.choiceOptionID );
     EXPECT_FALSE(loaded.isUserKnob);
+    EXPECT_FALSE(loaded.masterIsAlias);
+    EXPECT_FALSE( loaded.dimensions[0].master.has_value() );
+    EXPECT_TRUE( loaded.dimensions[0].expression.empty() );
 
-    KnobSerialization oldLoaded;
-    ASSERT_TRUE( loadWithOldPath(xml, &oldLoaded) );
-    EXPECT_EQ(loaded.version, oldLoaded._version);
-    const ChoiceExtraData* oldChoiceData = dynamic_cast<const ChoiceExtraData*>( oldLoaded.getExtraData() );
-    ASSERT_TRUE(oldChoiceData != NULL);
-    EXPECT_EQ(oldChoiceData->_choiceString, *loaded.choiceOptionID);
+    KnobIPtr restored = createKnobOfType(node->getEffectInstance().get(), KnobChoice::typeNameStatic(), "legacyChoice");
+    ASSERT_TRUE( bool(restored) );
+    defineKnob(restored);
+    EXPECT_TRUE( restored->fromSerialization(loaded) );
+    KnobChoice* restoredChoice = dynamic_cast<KnobChoice*>( restored.get() );
+    ASSERT_TRUE(restoredChoice != NULL);
+    EXPECT_EQ( 1, restoredChoice->getValue() );
+    EXPECT_EQ( std::string("beta"), restoredChoice->getActiveEntry().id );
 }
 
 TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacyUserDoubleWithDefaultsAndExpressionResults)
@@ -559,7 +577,7 @@ TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacyUserDoubleWithDefaultsAndExpressio
 
     KnobIPtr reference = createKnobOfType(node->getEffectInstance().get(), KnobInt::typeNameStatic(), "referenceKnob");
     ASSERT_TRUE( bool(reference) );
-    const std::string prologue = archivePrologue( saveWithOldPath(reference) );
+    const std::string prologue = archivePrologue( saveKnobToXml(reference) );
     ASSERT_FALSE( prologue.empty() );
 
     // Knob version 12 (user knob with per-dimension DefaultValue elements and an overlay flag)
@@ -613,7 +631,7 @@ TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacyUserDoubleWithDefaultsAndExpressio
                             "</boost_serialization>\n";
 
     Serialization::KnobSerialization loaded;
-    ASSERT_TRUE( loadWithNewPath(xml, &loaded) );
+    ASSERT_TRUE( loadFromXml(xml, &loaded) );
     EXPECT_EQ(12u, loaded.version);
     ASSERT_EQ(2u, loaded.dimensions.size());
     ASSERT_TRUE( doubleValue(loaded.dimensions[0].value) != NULL );
@@ -633,15 +651,24 @@ TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacyUserDoubleWithDefaultsAndExpressio
     EXPECT_EQ(1., range->displayMaximum);
     ASSERT_TRUE( loaded.useHostOverlayHandle.has_value() );
     EXPECT_TRUE(*loaded.useHostOverlayHandle);
+    EXPECT_FALSE( loaded.dimensions[0].defaultValue.has_value() );
+    EXPECT_FALSE( loaded.dimensions[1].defaultValue.has_value() );
+    EXPECT_TRUE(loaded.triggerNewLine);
+    EXPECT_TRUE(loaded.evaluatesOnChange);
+    EXPECT_TRUE(loaded.animationEnabled);
+    EXPECT_TRUE(loaded.isPersistent);
+    EXPECT_FALSE( loaded.choiceOptionID.has_value() );
 
-    KnobSerialization oldLoaded;
-    ASSERT_TRUE( loadWithOldPath(xml, &oldLoaded) );
-    EXPECT_EQ(loaded.version, oldLoaded._version);
-    EXPECT_EQ( *loaded.useHostOverlayHandle, oldLoaded.getUseHostOverlayHandle() );
-    const ValueExtraData* oldRange = dynamic_cast<const ValueExtraData*>( oldLoaded.getExtraData() );
-    ASSERT_TRUE(oldRange != NULL);
-    EXPECT_EQ(oldRange->min, range->minimum);
-    EXPECT_EQ(oldRange->dmax, range->displayMaximum);
+    KnobIPtr restored = createUserKnobFromSerialization(node->getEffectInstance().get(), loaded);
+    ASSERT_TRUE( bool(restored) );
+    KnobDouble* restoredDouble = dynamic_cast<KnobDouble*>( restored.get() );
+    ASSERT_TRUE(restoredDouble != NULL);
+    EXPECT_EQ( 0.5, restoredDouble->getValue(0) );
+    EXPECT_EQ( 1.5, restoredDouble->getValue(1) );
+    EXPECT_EQ( -10., restoredDouble->getMinimum(0) );
+    EXPECT_EQ( 1., restoredDouble->getDisplayMaximum(0) );
+    EXPECT_TRUE( restoredDouble->isUserKnob() );
+    EXPECT_EQ( std::string("Saved by an old version"), restoredDouble->getHintToolTip() );
 }
 
 TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacySlavedTracksAndShortMaster)
@@ -652,7 +679,7 @@ TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacySlavedTracksAndShortMaster)
 
     KnobIPtr reference = createKnobOfType(node->getEffectInstance().get(), KnobInt::typeNameStatic(), "referenceKnob");
     ASSERT_TRUE( bool(reference) );
-    const std::string prologue = archivePrologue( saveWithOldPath(reference) );
+    const std::string prologue = archivePrologue( saveKnobToXml(reference) );
     ASSERT_FALSE( prologue.empty() );
 
     // Knob version 3 (a 2D Double named "center" followed by the since-removed slaved track
@@ -690,7 +717,7 @@ TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacySlavedTracksAndShortMaster)
                             "</boost_serialization>\n";
 
     Serialization::KnobSerialization loaded;
-    ASSERT_TRUE( loadWithNewPath(xml, &loaded) );
+    ASSERT_TRUE( loadFromXml(xml, &loaded) );
     EXPECT_EQ(3u, loaded.version);
     EXPECT_TRUE(loaded.secret);
     EXPECT_FALSE(loaded.masterIsAlias);
@@ -701,10 +728,12 @@ TEST_F(BaseTest, KnobXmlEquivalenceReadsLegacySlavedTracksAndShortMaster)
     EXPECT_EQ(std::string("translate"), loaded.dimensions[0].master->masterKnobName);
     EXPECT_TRUE( loaded.dimensions[0].master->masterNodeNameFull.empty() );
     EXPECT_FALSE( loaded.dimensions[1].master.has_value() );
+    ASSERT_TRUE( doubleValue(loaded.dimensions[0].value) != NULL );
+    EXPECT_EQ( 0.25, *doubleValue(loaded.dimensions[0].value) );
     ASSERT_TRUE( doubleValue(loaded.dimensions[1].value) != NULL );
     EXPECT_EQ( 0.75, *doubleValue(loaded.dimensions[1].value) );
-
-    KnobSerialization oldLoaded;
-    ASSERT_TRUE( loadWithOldPath(xml, &oldLoaded) );
-    EXPECT_EQ(loaded.version, oldLoaded._version);
+    EXPECT_FALSE( loaded.dimensions[0].defaultValue.has_value() );
+    EXPECT_TRUE( loaded.dimensions[0].expression.empty() );
+    EXPECT_TRUE( loaded.dimensions[0].master->masterTrackName.empty() );
+    EXPECT_FALSE(loaded.isUserKnob);
 }

@@ -52,7 +52,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeSerialization.h"
-#include "Engine/KnobSerialization.h"
 #include "Engine/EngineFwd.h"
 
 

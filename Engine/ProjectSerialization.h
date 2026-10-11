@@ -52,8 +52,10 @@ GCC_DIAG_ON(unused-parameter)
 #include "Global/GitVersion.h"
 #include "Global/GlobalDefines.h"
 
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/BoostXml/KnobXml.h"
+
 #include "Engine/AppInstance.h"
-#include "Engine/KnobSerialization.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/MemoryInfo.h" // isApplication32Bits
 #include "Engine/Node.h"
@@ -121,7 +123,7 @@ class ProjectSerialization
     NodeCollectionSerialization _nodes;
     std::list<Format> _additionalFormats;
     std::list<LayerRegistryEntry> _layers;
-    std::list<KnobSerializationPtr> _projectKnobs;
+    std::list<Serialization::KnobSerialization> _projectKnobs;
     SequenceTime _timelineCurrent;
     qint64 _creationDate;
     AppInstanceWPtr _app;
@@ -160,7 +162,7 @@ public:
         return _timelineCurrent;
     }
 
-    const std::list<KnobSerializationPtr  > & getProjectKnobsValues() const
+    const std::list<Serialization::KnobSerialization> & getProjectKnobsValues() const
     {
         return _projectKnobs;
     }
@@ -233,10 +235,10 @@ public:
         ar & ::boost::serialization::make_nvp("NodesCollection", _nodes);
         int knobsCount = _projectKnobs.size();
         ar & ::boost::serialization::make_nvp("ProjectKnobsCount", knobsCount);
-        for (std::list<KnobSerializationPtr>::const_iterator it = _projectKnobs.begin();
+        for (std::list<Serialization::KnobSerialization>::const_iterator it = _projectKnobs.begin();
              it != _projectKnobs.end();
              ++it) {
-            ar & ::boost::serialization::make_nvp( "item", *(*it) );
+            ar & ::boost::serialization::make_nvp("item", *it);
         }
         ar & ::boost::serialization::make_nvp("AdditionalFormats", _additionalFormats);
         ar& ::boost::serialization::make_nvp("Layers", _layers);
@@ -309,9 +311,8 @@ public:
         ar & ::boost::serialization::make_nvp("ProjectKnobsCount", knobsCount);
 
         for (int i = 0; i < knobsCount; ++i) {
-            KnobSerializationPtr ks = std::make_shared<KnobSerialization>();
-            ar & ::boost::serialization::make_nvp("item", *ks);
-            _projectKnobs.push_back(ks);
+            _projectKnobs.push_back( Serialization::KnobSerialization() );
+            ar & ::boost::serialization::make_nvp("item", _projectKnobs.back());
         }
 
         ar & ::boost::serialization::make_nvp("AdditionalFormats", _additionalFormats);

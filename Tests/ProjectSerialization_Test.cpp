@@ -44,7 +44,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
-#include "Engine/KnobSerialization.h"
+#include "Engine/KnobLoadCompat.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
 #include "Engine/Node.h"

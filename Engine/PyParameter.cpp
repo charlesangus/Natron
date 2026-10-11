@@ -40,7 +40,7 @@
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobLayerSelect.h"
-#include "Engine/KnobSerialization.h"
+#include "Engine/KnobLoadCompat.h"
 #include "Engine/KnobShuffleMap.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Channel/Shuffle.h"

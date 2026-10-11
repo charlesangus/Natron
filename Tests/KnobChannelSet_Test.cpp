@@ -42,9 +42,11 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
-#include "Engine/KnobSerialization.h"
 #include "Engine/Node.h"
 #include "Engine/ProjectSerialization.h"
+
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/BoostXml/KnobXml.h"
 
 NATRON_NAMESPACE_USING
 
@@ -913,24 +915,23 @@ TEST_F(BaseTest, KnobChannelSetSerializationRoundTrip)
 
     std::stringstream buffer;
     {
-        KnobSerialization serialization(source);
+        Serialization::KnobSerialization serialization;
+        source->toSerialization(&serialization);
         boost::archive::xml_oarchive archive(buffer);
         archive << boost::serialization::make_nvp("Knob", serialization);
     }
 
-    KnobSerialization loaded;
+    Serialization::KnobSerialization loaded;
     {
         boost::archive::xml_iarchive archive(buffer);
         archive >> boost::serialization::make_nvp("Knob", loaded);
     }
 
-    KnobIPtr loadedKnob = loaded.getKnob();
-    ASSERT_TRUE(bool(loadedKnob));
-    EXPECT_EQ(std::string("ChannelSet"), loadedKnob->typeName());
-    EXPECT_EQ(source->getName(), loadedKnob->getName());
+    EXPECT_EQ(std::string("ChannelSet"), loaded.typeName);
+    EXPECT_EQ(source->getName(), loaded.name);
 
-    KnobChannelSetPtr loadedSet = std::dynamic_pointer_cast<KnobChannelSet>(loadedKnob);
-    ASSERT_TRUE(bool(loadedSet));
+    KnobChannelSetPtr loadedSet = makeKnob();
+    ASSERT_TRUE(loadedSet->fromSerialization(loaded));
     std::vector<ChannelSetRow> actual = loadedSet->getRows();
     ASSERT_EQ(expected.size(), actual.size());
     for (std::size_t i = 0; i < expected.size(); ++i) {

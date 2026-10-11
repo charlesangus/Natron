@@ -288,6 +288,57 @@ struct KnobSerialization
     }
 };
 
+struct GroupKnobChildSerialization;
+
+/**
+ * @brief The layout of a user page or user group knob: its definition and, in order, the user
+ * knobs and nested groups it holds.
+ **/
+struct GroupKnobSerialization
+{
+    std::string name;
+    std::string label;
+    bool secret;
+
+    // Only meaningful for groups.
+    bool isSetAsTab;
+    bool isOpened;
+
+    std::list<GroupKnobChildSerialization> children;
+
+    GroupKnobSerialization();
+};
+
+/**
+ * @brief One child of a user page or group: the nested group when isGroup is set, the regular
+ * user knob otherwise.
+ **/
+struct GroupKnobChildSerialization
+{
+    bool isGroup;
+    KnobSerialization knob;
+    GroupKnobSerialization group;
+
+    GroupKnobChildSerialization()
+        : isGroup(false)
+        , knob()
+        , group()
+    {
+    }
+};
+
+// Defined once GroupKnobChildSerialization is complete, which the children list needs.
+inline
+GroupKnobSerialization::GroupKnobSerialization()
+    : name()
+    , label()
+    , secret(false)
+    , isSetAsTab(false)
+    , isOpened(false)
+    , children()
+{
+}
+
 /**
  * @brief The Knob<T> value type a knob type name stands for.
  **/

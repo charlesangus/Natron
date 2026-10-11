@@ -28,6 +28,8 @@
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
 struct CurveSerialization;
+struct GroupKnobChildSerialization;
+struct GroupKnobSerialization;
 struct KeyFrameSerialization;
 struct KnobDimensionSerialization;
 struct KnobMasterSerialization;

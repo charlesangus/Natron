@@ -406,7 +406,7 @@ TEST_F(DefaultChannelSetTest, ChannelSetIsSavedEvenOnItsDefault)
         bool saved = false;
         const NodeSerialization::KnobValues& values = serialization.getKnobsValues();
         for (NodeSerialization::KnobValues::const_iterator it = values.begin(); it != values.end(); ++it) {
-            if ((*it)->getName() == std::string(kNodeParamChannelSet)) {
+            if (it->name == std::string(kNodeParamChannelSet)) {
                 saved = true;
             }
         }

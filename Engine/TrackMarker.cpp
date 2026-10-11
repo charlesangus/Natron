@@ -341,11 +341,16 @@ TrackMarker::load(const TrackSerialization& serialization)
     _imp->trackScriptName = serialization._scriptName;
     const KnobsVec& knobs = getKnobs();
 
-    for (std::list<KnobSerializationPtr>::const_iterator it = serialization._knobs.begin(); it != serialization._knobs.end(); ++it) {
+    for (std::list<Serialization::KnobSerialization>::const_iterator it = serialization._knobs.begin(); it != serialization._knobs.end(); ++it) {
+        const std::string serializedName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
         for (KnobsVec::const_iterator it2 = knobs.begin(); it2 != knobs.end(); ++it2) {
-            if ( (*it2)->getName() == (*it)->getName() ) {
+            if ( (*it2)->getName() == serializedName ) {
+                KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it);
+                if (!serializedKnob) {
+                    break;
+                }
                 (*it2)->blockValueChanges();
-                (*it2)->clone( (*it)->getKnob() );
+                (*it2)->clone(serializedKnob);
                 (*it2)->unblockValueChanges();
                 break;
             }
@@ -359,16 +364,18 @@ TrackMarker::load(const TrackSerialization& serialization)
 void
 TrackMarker::save(TrackSerialization* serialization) const
 {
+    // Reading a value may evaluate an expression, which must not run under the track mutex.
+    KnobsVec knobs = getKnobs_mt_safe();
+    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        serialization->_knobs.push_back( Serialization::KnobSerialization() );
+        (*it)->toSerialization( &serialization->_knobs.back() );
+    }
+
     QMutexLocker k(&_imp->trackMutex);
 
     serialization->_isPM = (dynamic_cast<const TrackMarkerPM*>(this) != 0);
     serialization->_label = _imp->trackLabel;
     serialization->_scriptName = _imp->trackScriptName;
-    KnobsVec knobs = getKnobs_mt_safe();
-    for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-        KnobSerializationPtr s = std::make_shared<KnobSerialization>(*it);
-        serialization->_knobs.push_back(s);
-    }
     for (std::set<int>::const_iterator it = _imp->userKeyframes.begin(); it != _imp->userKeyframes.end(); ++it) {
         serialization->_userKeys.push_back(*it);
     }

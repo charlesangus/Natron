@@ -73,6 +73,7 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobLoadCompat.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Log.h"
@@ -1639,7 +1640,7 @@ Node::loadKnobs(const NodeSerialization & serialization,
             bool saved = false;
             const NodeSerialization::KnobValues& knobsValues = serialization.getKnobsValues();
             for (NodeSerialization::KnobValues::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
-                if ((*it)->getName() == channelSet->getName()) {
+                if (NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == channelSet->getName()) {
                     saved = true;
                     break;
                 }
@@ -1752,11 +1753,11 @@ Node::loadKnob(const KnobIPtr & knob,
             // If we found such a parameter, retrieve the string from it.
             std::string stringParamName = isChoice->getName() + "Choice";
             for (NodeSerialization::KnobValues::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
-                if ( (*it)->getName() == stringParamName ) {
-                    KnobStringPtr stringKnob = std::dynamic_pointer_cast<KnobString>((*it)->getKnob());
+                if ( NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == stringParamName ) {
+                    KnobStringPtr stringKnob = std::dynamic_pointer_cast<KnobString>( createDetachedKnobFromSerialization(*it) );
                     if (stringKnob) {
                         std::string serializedString = stringKnob->getValue();
-                        if ((*it)->_version < KNOB_SERIALIZATION_CHANGE_LAYERS_SERIALIZATION) {
+                        if (it->version < NATRON_SERIALIZATION_KNOB_CHANGE_LAYERS_SERIALIZATION) {
                             filterKnobChoiceOptionCompat(getPluginID(), getMajorVersion(), getMinorVersion(), projectInfos.vMajor, projectInfos.vMinor, projectInfos.vRev, isChoice->getName(), &serializedString);
                         }
                         isChoice->setActiveEntry(ChoiceOption(serializedString));
@@ -1770,7 +1771,7 @@ Node::loadKnob(const KnobIPtr & knob,
 
     for (NodeSerialization::KnobValues::const_iterator it = knobsValues.begin(); it != knobsValues.end(); ++it) {
 
-        std::string serializedName = (*it)->getName();
+        std::string serializedName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
         bool foundMatch = false;
         if (serializedName == knob->getName()) {
             foundMatch = true;
@@ -1786,71 +1787,19 @@ Node::loadKnob(const KnobIPtr & knob,
             continue;
         }
 
-        // don't load the value if the Knob is not persistent! (it is just the default value in this case)
-        ///EDIT: Allow non persistent params to be loaded if we found a valid serialization for them
-        //if ( knob->getIsPersistent() ) {
-        KnobIPtr serializedKnob = (*it)->getKnob();
-
-        // A knob might change its type between versions, do not load it
-        if ( knob->typeName() != serializedKnob->typeName() ) {
+        // Non persistent knobs are loaded too when the project saved a value for them.
+        // A knob might change its type between versions: fromSerialization() then loads nothing.
+        const KnobI::ChoiceOptionIDFilter choiceOptionIDFilter = [this, &serialization, &projectInfos, &serializedName](std::string* optionID) {
+            filterKnobChoiceOptionCompat(getPluginID(), serialization.getPluginMajorVersion(), serialization.getPluginMinorVersion(), projectInfos.vMajor, projectInfos.vMinor, projectInfos.vRev, serializedName, optionID);
+        };
+        if ( !knob->fromSerialization(*it, choiceOptionIDFilter) ) {
             continue;
-        }
-
-        knob->cloneDefaultValues( serializedKnob.get() );
-
-        if (isChoice) {
-            const TypeExtraData* extraData = (*it)->getExtraData();
-            const ChoiceExtraData* choiceData = dynamic_cast<const ChoiceExtraData*>(extraData);
-            assert(choiceData);
-            if (choiceData) {
-                KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>( serializedKnob.get() );
-                assert(choiceSerialized);
-                if (choiceSerialized) {
-                    std::string optionID = choiceData->_choiceString;
-                    // first, try to get the id the easy way ( see choiceMatch() )
-                    int id = isChoice->choiceRestorationId(choiceSerialized, optionID);
-                    if (id < 0) {
-                        // no luck, try the filters
-                        filterKnobChoiceOptionCompat(getPluginID(), serialization.getPluginMajorVersion(), serialization.getPluginMinorVersion(), projectInfos.vMajor, projectInfos.vMinor, projectInfos.vRev, serializedName, &optionID);
-                        id = isChoice->choiceRestorationId(choiceSerialized, optionID);
-                    }
-                    isChoice->choiceRestoration(choiceSerialized, optionID, id);
-                    //if (id >= 0) {
-                    //    choiceData->_choiceString = isChoice->getEntry(id).id;
-                    //}
-                }
-            }
-        } else {
-            // There is a case where the dimension of a parameter might have changed between versions, e.g:
-            // the size parameter of the Blur node was previously a Double1D and has become a Double2D to control
-            // both dimensions.
-            // For compatibility, we do not load only the first dimension, otherwise the result wouldn't be the same,
-            // instead we replicate the last dimension of the serialized knob to all other remaining dimensions to fit the
-            // knob's dimensions.
-            if ( serializedKnob->getDimension() < knob->getDimension() ) {
-                int nSerDims = serializedKnob->getDimension();
-                for (int i = 0; i < nSerDims; ++i) {
-                    knob->cloneAndUpdateGui(serializedKnob.get(), i);
-                }
-                for (int i = nSerDims; i < knob->getDimension(); ++i) {
-                    knob->cloneAndUpdateGui(serializedKnob.get(), i, nSerDims - 1);
-                }
-            } else {
-                knob->cloneAndUpdateGui( serializedKnob.get() );
-            }
-            knob->setSecret( serializedKnob->getIsSecret() );
-            if ( knob->getDimension() == serializedKnob->getDimension() ) {
-                for (int i = 0; i < knob->getDimension(); ++i) {
-                    knob->setEnabled( i, serializedKnob->isEnabled(i) );
-                }
-            }
         }
 
         if (knob->getName() == kOfxImageEffectFileParamName) {
             computeFrameRangeForReader( knob.get() );
         }
 
-        //}
         break;
 
     }

@@ -317,8 +317,8 @@ PythonPanelSerialization::initialize(NATRON_PYTHON_NAMESPACE::PyPanel* tab,
         //KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() );
 
         if (!isGroup && !isPage && !isButton) {
-            KnobSerializationPtr k( new KnobSerialization(knob) );
-            knobs.push_back(k);
+            knobs.push_back( Serialization::KnobSerialization() );
+            knob->toSerialization( &knobs.back() );
         }
         delete *it;
     }

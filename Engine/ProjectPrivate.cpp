@@ -42,6 +42,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeSerialization.h"
 #include "Engine/OfxEffectInstance.h"
@@ -159,7 +160,7 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
             layers->add(it->desc, it->origin, 0);
         }
 
-        const std::list<KnobSerializationPtr> & projectSerializedValues = obj.getProjectKnobsValues();
+        const std::list<Serialization::KnobSerialization> & projectSerializedValues = obj.getProjectKnobsValues();
         const std::vector<KnobIPtr> & projectKnobs = _publicInterface->getKnobs();
 
         _publicInterface->resetOCIOConfigKnobsForRestore();
@@ -167,36 +168,21 @@ ProjectPrivate::restoreFromSerialization(const ProjectSerialization & obj,
         /// 1) restore project's knobs.
         for (U32 i = 0; i < projectKnobs.size(); ++i) {
             ///try to find a serialized value for this knob
-            for (std::list<KnobSerializationPtr>::const_iterator it = projectSerializedValues.begin(); it != projectSerializedValues.end(); ++it) {
-                if ( (*it)->getName() == projectKnobs[i]->getName() ) {
-                    ///EDIT: Allow non persistent params to be loaded if we found a valid serialization for them
-                    //if ( projectKnobs[i]->getIsPersistent() ) {
-
+            for (std::list<Serialization::KnobSerialization>::const_iterator it = projectSerializedValues.begin(); it != projectSerializedValues.end(); ++it) {
+                if ( NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name) == projectKnobs[i]->getName() ) {
+                    // Non persistent knobs are loaded too when the project saved a value for them.
+                    KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it);
                     KnobChoice* isChoice = dynamic_cast<KnobChoice*>( projectKnobs[i].get() );
                     if (isChoice) {
-                        const TypeExtraData* extraData = (*it)->getExtraData();
-                        const ChoiceExtraData* choiceData = dynamic_cast<const ChoiceExtraData*>(extraData);
-                        assert(choiceData);
-                        if (choiceData) {
-                            KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>( (*it)->getKnob().get() );
-                            assert(choiceSerialized);
-                            if (choiceSerialized) {
-                                std::string optionID = choiceData->_choiceString;
-                                // first, try to get the id the easy way ( see choiceMatch() )
-                                int id = isChoice->choiceRestorationId(choiceSerialized, optionID);
-//#pragma message WARN("TODO: choice id filters")
-                                //if (id < 0) {
-                                //    // no luck, try the filters
-                                //    filterKnobChoiceOptionCompat(getPluginID(), serialization.getPluginMajorVersion(), serialization.getPluginMinorVersion(), projectInfos.vMajor, projectInfos.vMinor, projectInfos.vRev, serializedName, &optionID);
-                                //    id = isChoice->choiceRestorationId(choiceSerialized, optionID);
-                                //}
-                                isChoice->choiceRestoration(choiceSerialized, optionID, id);
-                            }
+                        KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>( serializedKnob.get() );
+                        if (choiceSerialized && it->choiceOptionID) {
+                            const std::string & optionID = *it->choiceOptionID;
+                            int id = isChoice->choiceRestorationId(choiceSerialized, optionID);
+                            isChoice->choiceRestoration(choiceSerialized, optionID, id);
                         }
-                    } else {
-                        projectKnobs[i]->clone( (*it)->getKnob() );
+                    } else if (serializedKnob) {
+                        projectKnobs[i]->clone(serializedKnob);
                     }
-                    //}
                     break;
                 }
             }

@@ -43,7 +43,9 @@ GCC_DIAG_ON(unused-parameter)
 // clang-format on
 #endif
 
-#include "Engine/KnobSerialization.h"
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/BoostXml/KnobXml.h"
+
 #include "Engine/TrackerContext.h"
 
 
@@ -89,8 +91,8 @@ private:
         ar & boost::serialization::make_nvp("Label", _label);
         int nbItems = (int)_knobs.size();
         ar & boost::serialization::make_nvp("NbItems", nbItems);
-        for (std::list<KnobSerializationPtr>::const_iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
-            ar & boost::serialization::make_nvp("Item", **it);
+        for (std::list<Serialization::KnobSerialization>::const_iterator it = _knobs.begin(); it != _knobs.end(); ++it) {
+            ar & boost::serialization::make_nvp("Item", *it);
         }
 
         int nbUserKeys = (int)_userKeys.size();
@@ -115,9 +117,8 @@ private:
         int nbItems;
         ar & boost::serialization::make_nvp("NbItems", nbItems);
         for (int i = 0; i < nbItems; ++i) {
-            KnobSerializationPtr s = std::make_shared<KnobSerialization>();
-            ar & boost::serialization::make_nvp("Item", *s);
-            _knobs.push_back(s);
+            _knobs.push_back( Serialization::KnobSerialization() );
+            ar & boost::serialization::make_nvp("Item", _knobs.back());
         }
         int nbUserKeys;
         ar & boost::serialization::make_nvp("NbUserKeys", nbUserKeys);
@@ -134,7 +135,7 @@ private:
     bool _enabled;
     bool _isPM;
     std::string _label, _scriptName;
-    std::list<KnobSerializationPtr> _knobs;
+    std::list<Serialization::KnobSerialization> _knobs;
     std::list<int> _userKeys;
 };
 

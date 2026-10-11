@@ -250,14 +250,19 @@ loadDetachedKnob(const Serialization::KnobSerialization & serialization,
 void
 restoreChoiceFromDetachedKnob(KnobChoice* knob,
                               const KnobIPtr & serializedKnob,
-                              const Serialization::KnobSerialization & serialization)
+                              const Serialization::KnobSerialization & serialization,
+                              const KnobI::ChoiceOptionIDFilter & choiceOptionIDFilter)
 {
     KnobChoice* choiceSerialized = dynamic_cast<KnobChoice*>( serializedKnob.get() );
     if (!choiceSerialized || !serialization.choiceOptionID) {
         return;
     }
-    const std::string & optionID = *serialization.choiceOptionID;
+    std::string optionID = *serialization.choiceOptionID;
     int id = knob->choiceRestorationId(choiceSerialized, optionID);
+    if ( (id < 0) && choiceOptionIDFilter ) {
+        choiceOptionIDFilter(&optionID);
+        id = knob->choiceRestorationId(choiceSerialized, optionID);
+    }
     knob->choiceRestoration(choiceSerialized, optionID, id);
 }
 
@@ -492,22 +497,22 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
 } // KnobHelper::toSerialization
 
 bool
-KnobHelper::fromSerialization(const Serialization::KnobSerialization& serialization)
+KnobHelper::fromSerialization(const Serialization::KnobSerialization& serialization,
+                              const ChoiceOptionIDFilter& choiceOptionIDFilter)
 {
     if ( typeName() != serialization.typeName ) {
         return false;
     }
-    KnobIPtr serializedKnob = createDetachedKnob(serialization.typeName, serialization.dimension);
+    KnobIPtr serializedKnob = createDetachedKnobFromSerialization(serialization);
     if (!serializedKnob) {
         return false;
     }
-    loadDetachedKnob(serialization, serializedKnob);
 
     cloneDefaultValues( serializedKnob.get() );
 
     KnobChoice* isChoice = dynamic_cast<KnobChoice*>(this);
     if (isChoice) {
-        restoreChoiceFromDetachedKnob(isChoice, serializedKnob, serialization);
+        restoreChoiceFromDetachedKnob(isChoice, serializedKnob, serialization, choiceOptionIDFilter);
 
         return true;
     }
@@ -584,15 +589,25 @@ KnobI::restoreExpressionsFromSerialization(const Serialization::KnobSerializatio
 }
 
 KnobIPtr
+createDetachedKnobFromSerialization(const Serialization::KnobSerialization& serialization)
+{
+    KnobIPtr serializedKnob = createDetachedKnob(serialization.typeName, serialization.dimension);
+    if (serializedKnob) {
+        loadDetachedKnob(serialization, serializedKnob);
+    }
+
+    return serializedKnob;
+}
+
+KnobIPtr
 createUserKnobFromSerialization(KnobHolder* holder,
                                 const Serialization::KnobSerialization& serialization,
                                 const KnobIPtr& existingKnob)
 {
-    KnobIPtr serializedKnob = createDetachedKnob(serialization.typeName, serialization.dimension);
+    KnobIPtr serializedKnob = createDetachedKnobFromSerialization(serialization);
     if (!serializedKnob) {
         return KnobIPtr();
     }
-    loadDetachedKnob(serialization, serializedKnob);
 
     const std::string & typeName = serialization.typeName;
     KnobIPtr knob;
@@ -719,7 +734,7 @@ createUserKnobFromSerialization(KnobHolder* holder,
     knob->cloneDefaultValues( serializedKnob.get() );
     KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() );
     if (isChoice) {
-        restoreChoiceFromDetachedKnob(isChoice, serializedKnob, serialization);
+        restoreChoiceFromDetachedKnob( isChoice, serializedKnob, serialization, KnobI::ChoiceOptionIDFilter() );
     } else {
         knob->clone( serializedKnob.get() );
     }

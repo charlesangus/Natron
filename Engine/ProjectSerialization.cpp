@@ -29,6 +29,7 @@
 #include <stdexcept>
 
 #include "Engine/AppManager.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TimeLine.h"
@@ -60,8 +61,8 @@ ProjectSerialization::initialize(const Project* project)
         if ( knobs[i]->getIsPersistent() &&
              !isGroup && !isPage && !isButton &&
              knobs[i]->hasModificationsForSerialization() ) {
-            KnobSerializationPtr newKnobSer = std::make_shared<KnobSerialization>(knobs[i]);
-            _projectKnobs.push_back(newKnobSer);
+            _projectKnobs.push_back( Serialization::KnobSerialization() );
+            knobs[i]->toSerialization( &_projectKnobs.back() );
         }
     }
 

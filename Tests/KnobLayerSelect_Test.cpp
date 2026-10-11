@@ -44,10 +44,12 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobLayerSelect.h"
-#include "Engine/KnobSerialization.h"
 #include "Engine/Node.h"
 #include "Engine/OfxMultiplaneChoice.h"
 #include "Engine/ProjectSerialization.h"
+
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/BoostXml/KnobXml.h"
 
 NATRON_NAMESPACE_USING
 
@@ -426,23 +428,22 @@ TEST_F(BaseTest, KnobLayerSelectNoneSerializationRoundTrip)
 
     std::stringstream buffer;
     {
-        KnobSerialization serialization(source);
+        Serialization::KnobSerialization serialization;
+        source->toSerialization(&serialization);
         boost::archive::xml_oarchive archive(buffer);
         archive << boost::serialization::make_nvp("Knob", serialization);
     }
 
-    KnobSerialization loaded;
+    Serialization::KnobSerialization loaded;
     {
         boost::archive::xml_iarchive archive(buffer);
         archive >> boost::serialization::make_nvp("Knob", loaded);
     }
 
-    KnobIPtr loadedKnob = loaded.getKnob();
-    ASSERT_TRUE(bool(loadedKnob));
-    EXPECT_EQ(std::string("LayerSelect"), loadedKnob->typeName());
+    EXPECT_EQ(std::string("LayerSelect"), loaded.typeName);
 
-    KnobLayerSelectPtr loadedSelect = std::dynamic_pointer_cast<KnobLayerSelect>(loadedKnob);
-    ASSERT_TRUE(bool(loadedSelect));
+    KnobLayerSelectPtr loadedSelect = makeLayerSelectKnob();
+    ASSERT_TRUE(loadedSelect->fromSerialization(loaded));
     EXPECT_EQ(std::string(""), loadedSelect->getLayer());
     EXPECT_EQ(source->getValue(), loadedSelect->getValue());
 }
@@ -461,23 +462,22 @@ TEST_F(BaseTest, KnobLayerSelectSerializationRoundTrip)
 
     std::stringstream buffer;
     {
-        KnobSerialization serialization(source);
+        Serialization::KnobSerialization serialization;
+        source->toSerialization(&serialization);
         boost::archive::xml_oarchive archive(buffer);
         archive << boost::serialization::make_nvp("Knob", serialization);
     }
 
-    KnobSerialization loaded;
+    Serialization::KnobSerialization loaded;
     {
         boost::archive::xml_iarchive archive(buffer);
         archive >> boost::serialization::make_nvp("Knob", loaded);
     }
 
-    KnobIPtr loadedKnob = loaded.getKnob();
-    ASSERT_TRUE(bool(loadedKnob));
-    EXPECT_EQ(std::string("LayerSelect"), loadedKnob->typeName());
+    EXPECT_EQ(std::string("LayerSelect"), loaded.typeName);
 
-    KnobLayerSelectPtr loadedSelect = std::dynamic_pointer_cast<KnobLayerSelect>(loadedKnob);
-    ASSERT_TRUE(bool(loadedSelect));
+    KnobLayerSelectPtr loadedSelect = makeLayerSelectKnob();
+    ASSERT_TRUE(loadedSelect->fromSerialization(loaded));
     EXPECT_EQ(std::string("diffuse"), loadedSelect->getLayer());
     EXPECT_EQ(channels("R", "G"), loadedSelect->getChannels());
     EXPECT_EQ(source->getValue(), loadedSelect->getValue());
@@ -588,23 +588,22 @@ TEST_F(BaseTest, KnobChannelSelectSerializationRoundTrip)
 
     std::stringstream buffer;
     {
-        KnobSerialization serialization(source);
+        Serialization::KnobSerialization serialization;
+        source->toSerialization(&serialization);
         boost::archive::xml_oarchive archive(buffer);
         archive << boost::serialization::make_nvp("Knob", serialization);
     }
 
-    KnobSerialization loaded;
+    Serialization::KnobSerialization loaded;
     {
         boost::archive::xml_iarchive archive(buffer);
         archive >> boost::serialization::make_nvp("Knob", loaded);
     }
 
-    KnobIPtr loadedKnob = loaded.getKnob();
-    ASSERT_TRUE(bool(loadedKnob));
-    EXPECT_EQ(std::string("ChannelSelect"), loadedKnob->typeName());
+    EXPECT_EQ(std::string("ChannelSelect"), loaded.typeName);
 
-    KnobChannelSelectPtr loadedSelect = std::dynamic_pointer_cast<KnobChannelSelect>(loadedKnob);
-    ASSERT_TRUE(bool(loadedSelect));
+    KnobChannelSelectPtr loadedSelect = makeChannelSelectKnob();
+    ASSERT_TRUE(loadedSelect->fromSerialization(loaded));
     EXPECT_EQ(std::string("diffuse.G"), loadedSelect->get());
     EXPECT_EQ(source->getValue(), loadedSelect->getValue());
 }

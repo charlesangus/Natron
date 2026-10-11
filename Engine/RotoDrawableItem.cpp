@@ -50,7 +50,6 @@
 #include "Engine/ImageParams.h"
 #include "Engine/Interpolation.h"
 #include "Engine/Project.h"
-#include "Engine/KnobSerialization.h"
 #include "Engine/RenderStats.h"
 #include "Engine/RotoDrawableItemSerialization.h"
 #include "Engine/RotoLayer.h"
@@ -881,14 +880,21 @@ RotoDrawableItem::clone(const RotoItem* other)
 
 static void
 serializeRotoKnob(const KnobIPtr & knob,
-                  KnobSerialization* serialization)
+                  Serialization::KnobSerialization* serialization)
 {
     std::pair<int, KnobIPtr> master = knob->getMaster(0);
 
     if (master.second) {
-        serialization->initialize(master.second);
+        // The values are those of the knob this one is slaved to, but the expressions remain
+        // this knob's own.
+        master.second->toSerialization(serialization);
+        const int dimensionCount = std::min( knob->getDimension(), (int)serialization->dimensions.size() );
+        for (int i = 0; i < dimensionCount; ++i) {
+            serialization->dimensions[i].expression = knob->getExpression(i);
+            serialization->dimensions[i].expressionHasReturnVariable = knob->isExpressionUsingRetVariable(i);
+        }
     } else {
-        serialization->initialize(knob);
+        knob->toSerialization(serialization);
     }
 }
 
@@ -902,9 +908,8 @@ RotoDrawableItem::save(RotoItemSerialization *obj) const
         throw std::logic_error("RotoDrawableItem::save()");
     }
     for (std::list<KnobIPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-        KnobSerializationPtr k = std::make_shared<KnobSerialization>(*it);
-        serializeRotoKnob( *it, k.get() );
-        s->_knobs.push_back(k);
+        s->_knobs.push_back( Serialization::KnobSerialization() );
+        serializeRotoKnob( *it, &s->_knobs.back() );
     }
     {
         QMutexLocker l(&itemMutex);
@@ -919,12 +924,17 @@ RotoDrawableItem::load(const RotoItemSerialization &obj)
     RotoItem::load(obj);
     const RotoDrawableItemSerialization & s = dynamic_cast<const RotoDrawableItemSerialization &>(obj);
 
-    for (std::list<KnobSerializationPtr>::const_iterator it = s._knobs.begin(); it != s._knobs.end(); ++it) {
+    for (std::list<Serialization::KnobSerialization>::const_iterator it = s._knobs.begin(); it != s._knobs.end(); ++it) {
+        const std::string serializedName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->name);
         for (std::list<KnobIPtr>::const_iterator it2 = _imp->knobs.begin(); it2 != _imp->knobs.end(); ++it2) {
-            if ( (*it2)->getName() == (*it)->getName() ) {
+            if ( (*it2)->getName() == serializedName ) {
+                KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it);
+                if (!serializedKnob) {
+                    break;
+                }
                 KnobSignalSlotHandlerPtr s = (*it2)->getSignalSlotHandler();
                 s->blockSignals(true);
-                (*it2)->clone( (*it)->getKnob().get() );
+                (*it2)->clone( serializedKnob.get() );
                 s->blockSignals(false);
                 break;
             }

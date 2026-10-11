@@ -48,6 +48,9 @@ GCC_DIAG_ON(unused-parameter)
 // clang-format on
 #endif
 
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/BoostXml/KnobXml.h"
+
 #include "Engine/RectD.h"
 
 #include "Gui/NodeGuiSerialization.h"
@@ -258,7 +261,7 @@ struct ViewerData
 class PythonPanelSerialization
 {
 public:
-    std::list<KnobSerializationPtr> knobs;
+    std::list<Serialization::KnobSerialization> knobs;
     std::string name;
     std::string pythonFunction;
     std::string userData;
@@ -274,8 +277,8 @@ public:
         int nKnobs = knobs.size();
         ar & ::boost::serialization::make_nvp("NumParams", nKnobs);
 
-        for (std::list<KnobSerializationPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
-            ar & ::boost::serialization::make_nvp("item", **it);
+        for (std::list<Serialization::KnobSerialization>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            ar & ::boost::serialization::make_nvp("item", *it);
         }
 
         ar & ::boost::serialization::make_nvp("UserData", userData);
@@ -291,9 +294,8 @@ public:
         ar & ::boost::serialization::make_nvp("NumParams", nKnobs);
 
         for (int i = 0; i < nKnobs; ++i) {
-            KnobSerializationPtr k = std::make_shared<KnobSerialization>();
-            ar & ::boost::serialization::make_nvp("item", *k);
-            knobs.push_back(k);
+            knobs.push_back( Serialization::KnobSerialization() );
+            ar & ::boost::serialization::make_nvp("item", knobs.back());
         }
 
         ar & ::boost::serialization::make_nvp("UserData", userData);

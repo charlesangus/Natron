@@ -555,10 +555,14 @@ ProjectGui::load<boost::archive::xml_iarchive>(bool isAutosave,  boost::archive:
             NATRON_PYTHON_NAMESPACE::PyPanel* panel = dynamic_cast<NATRON_PYTHON_NAMESPACE::PyPanel*>(found->second.first);
             if (panel) {
                 panel->restore( QString::fromUtf8( (*it)->userData.c_str() ) );
-                for (std::list<KnobSerializationPtr>::iterator it2 = (*it)->knobs.begin(); it2 != (*it)->knobs.end(); ++it2) {
-                    NATRON_PYTHON_NAMESPACE::Param* param = panel->getParam( QString::fromUtf8( (*it2)->getName().c_str() ) );
+                for (std::list<Serialization::KnobSerialization>::iterator it2 = (*it)->knobs.begin(); it2 != (*it)->knobs.end(); ++it2) {
+                    const std::string serializedName = NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it2->name);
+                    NATRON_PYTHON_NAMESPACE::Param* param = panel->getParam( QString::fromUtf8( serializedName.c_str() ) );
                     if (param) {
-                        param->getInternalKnob()->clone( (*it2)->getKnob() );
+                        KnobIPtr serializedKnob = createDetachedKnobFromSerialization(*it2);
+                        if (serializedKnob) {
+                            param->getInternalKnob()->clone(serializedKnob);
+                        }
                         delete param;
                     }
                 }

@@ -49,7 +49,6 @@ GCC_DIAG_ON(unused-parameter)
 
 #include "Engine/AppManager.h"
 #include "Engine/Curve.h"
-#include "Engine/KnobSerialization.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoContextPrivate.h"

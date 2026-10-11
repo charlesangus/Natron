@@ -41,12 +41,13 @@ GCC_DIAG_ON(unused-parameter)
 // clang-format on
 #endif
 
+#include "Serialization/KnobSerialization.h"
+
 #include "Engine/KnobTypes.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
 #include "Engine/TimeLine.h"
 #include "Engine/AppInstance.h"
-#include "Engine/KnobSerialization.h"
 #include "Engine/ViewIdx.h"
 
 #include "Gui/GuiApplicationManager.h"
@@ -59,7 +60,8 @@ struct PasteUndoCommandPrivate
     KnobClipBoardType type;
     int fromDimension;
     int targetDimension;
-    KnobSerializationPtr originalSerialization;
+    // A copy of the target knob as it was before the paste, which undo copies back from.
+    KnobIPtr originalKnob;
     KnobIPtr fromKnob;
 
     PasteUndoCommandPrivate()
@@ -67,9 +69,8 @@ struct PasteUndoCommandPrivate
         , type(eKnobClipBoardTypeCopyLink)
         , fromDimension(-1)
         , targetDimension(-1)
-        , originalSerialization()
+        , originalKnob()
     {
-        originalSerialization = std::make_shared<KnobSerialization>();
     }
 };
 
@@ -88,29 +89,11 @@ PasteUndoCommand::PasteUndoCommand(const KnobGuiPtr& knob,
     _imp->fromKnob = fromKnob;
 
     {
-        std::ostringstream ss;
-        {
-            try {
-                boost::archive::xml_oarchive oArchive(ss);
-                _imp->originalSerialization->initialize( knob->getKnob() );
-                oArchive << boost::serialization::make_nvp("KnobClipboard", *_imp->originalSerialization);
-            } catch (...) {
-                assert(false);
-            }
-        }
-        _imp->originalSerialization = std::make_shared<KnobSerialization>();
-        std::string str = ss.str();
-        {
-            try {
-                std::stringstream ss(str);
-                boost::archive::xml_iarchive iArchive(ss);
-                iArchive >> boost::serialization::make_nvp("KnobClipboard", *_imp->originalSerialization);
-            } catch (...) {
-                assert(false);
-            }
-        }
+        Serialization::KnobSerialization originalSerialization;
+        knob->getKnob()->toSerialization(&originalSerialization);
+        _imp->originalKnob = createDetachedKnobFromSerialization(originalSerialization);
     }
-    assert( _imp->originalSerialization->getKnob() );
+    assert(_imp->originalKnob);
 
     assert(knob);
     assert( _imp->targetDimension >= -1 && _imp->targetDimension < _imp->knob.lock()->getKnob()->getDimension() );
@@ -137,7 +120,7 @@ PasteUndoCommand::~PasteUndoCommand()
 void
 PasteUndoCommand::undo()
 {
-    copyFrom(_imp->originalSerialization->getKnob(), false);
+    copyFrom(_imp->originalKnob, false);
 } // undo
 
 void

@@ -1,17 +1,149 @@
 file | origin | licence
+lucide/aperture.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/arrow-left-right.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/arrow-left.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/arrow-right-to-line.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/arrow-right.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/bold.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/box.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/brush-cleaning.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/brush.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/chevron-down.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/chevron-right.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/chevrons-down-up.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/chevrons-down.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/circle-ellipsis.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/circle-play.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/circle-question-mark.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/clock.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/columns-2.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/contrast.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/crosshair.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/diamond-minus.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/diamond-plus.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/droplet.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/eraser.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/expand.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/eye-off.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/eye.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/feather.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/file-code.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/file-play.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/flame.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/focus.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/folder-open.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/fullscreen.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/glasses.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/image.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/italic.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
 lucide/layers-2.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/layers.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/layout-grid.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/link.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/list-checks.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/list-filter.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/list-x.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/locate-fixed.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/lock-open.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/lock.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
 lucide/menu.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/minus.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/mouse-pointer-2.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/move.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/paint-bucket.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/palette.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/panel-top.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/pause.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/pen-tool.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/pencil.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/pin.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/pipette.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/play.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/pointer.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/puzzle.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/redo-2.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/refresh-cw.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/repeat.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/rotate-ccw.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/rows-2.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/save.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/scan-search.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/scan.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/settings.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/skip-back.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/skip-forward.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/snowflake.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/spline.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/square-arrow-out-up-right.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/square-arrow-right-enter.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/square-dashed.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/square-mouse-pointer.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/square.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/stamp.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/step-back.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/step-forward.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/sun.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/swatch-book.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/tangent.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/timer.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/trash.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/triangle-alert.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/triangle.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+lucide/undo-2.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/undo-dot.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/waves-horizontal.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
 lucide/wrench.svg | Lucide 1.55.0 (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | ISC
+lucide/x.svg | Lucide 1.55.0, Feather-derived (commit 70562c1ee1c4fdcf736fe97bc893fb8511927934) | MIT
+natron/add-points.svg | Natron custom ("add-points", pen-tool nib with a plus) | GPL-2.0-or-later
+natron/buildup.svg | Natron custom ("buildup", 3-2-1 pyramid of circles) | GPL-2.0-or-later
+natron/checkerboard.svg | Natron custom ("checkerboard", rounded frame split 2x2) | GPL-2.0-or-later
+natron/clear-anim-bw.svg | Natron custom ("clear-anim-bw", trash can with a left chevron) | GPL-2.0-or-later
+natron/clear-anim-fw.svg | Natron custom ("clear-anim-fw", trash can with a right chevron) | GPL-2.0-or-later
+natron/clone-stamp.svg | Natron custom ("clone-stamp", two overlapping stamps) | GPL-2.0-or-later
+natron/cusp-point.svg | Natron custom ("cusp-point", sharp corner with a filled square point) | GPL-2.0-or-later
 natron/deep.svg | Natron custom ("Deep v3", D in a rounded square, Lucide-grid) | GPL-2.0-or-later
+natron/ellipse-handles.svg | Natron custom ("ellipse-handles", circle with four corner handles) | GPL-2.0-or-later
 natron/filter.svg | Natron custom ("Filter v2", droplet with fins, after Phosphor drop-half) | GPL-2.0-or-later
+natron/gamma.svg | Natron custom ("gamma", Greek letter gamma as a single open stroke) | GPL-2.0-or-later
+natron/in-point.svg | Natron custom ("in-point", L with a filled corner triangle) | GPL-2.0-or-later
+natron/incr-next.svg | Natron custom ("incr-next", bounded jump bars with a right arrow) | GPL-2.0-or-later
+natron/incr-prev.svg | Natron custom ("incr-prev", bounded jump bars with a left arrow) | GPL-2.0-or-later
+natron/interp-break.svg | Natron custom ("interp-break", key dot with right-angled handles) | GPL-2.0-or-later
+natron/interp-catmull.svg | Natron custom ("interp-catmull", S curve with overshooting outer key dots) | GPL-2.0-or-later
+natron/interp-constant.svg | Natron custom ("interp-constant", stepped line held flat into the key) | GPL-2.0-or-later
+natron/interp-cubic.svg | Natron custom ("interp-cubic", one continuous wave through the key) | GPL-2.0-or-later
+natron/interp-free.svg | Natron custom ("interp-free", S curve with a single tilted tangent handle) | GPL-2.0-or-later
+natron/interp-horizontal.svg | Natron custom ("interp-horizontal", curve flattening at the key with a horizontal handle) | GPL-2.0-or-later
+natron/interp-linear.svg | Natron custom ("interp-linear", two straight segments meeting at the key) | GPL-2.0-or-later
+natron/interp-smooth.svg | Natron custom ("interp-smooth", clamped S curve through the key) | GPL-2.0-or-later
+natron/inverted.svg | Natron custom ("inverted", rounded square with a circle cut out) | GPL-2.0-or-later
+natron/key-next.svg | Natron custom ("key-next", outline diamond beside a right chevron) | GPL-2.0-or-later
+natron/key-on-move.svg | Natron custom ("key-on-move", outline diamond at the centre of move's arrows) | GPL-2.0-or-later
+natron/key-prev.svg | Natron custom ("key-prev", left chevron beside an outline diamond) | GPL-2.0-or-later
+natron/layout-anchor.svg | Natron custom ("layout-anchor", layout-grid with the top-left cell filled) | GPL-2.0-or-later
+natron/link-cursor.svg | Natron custom ("link-cursor", arrow tip at the hotspot with a black halo) | GPL-2.0-or-later
+natron/link-mult-cursor.svg | Natron custom ("link-mult-cursor", link-cursor plus a small x) | GPL-2.0-or-later
+natron/marker-break.svg | Natron custom ("marker-break", four-point star key marker) | GPL-2.0-or-later
+natron/marker-c.svg | Natron custom ("marker-c", ring with a C inside) | GPL-2.0-or-later
+natron/marker-constant.svg | Natron custom ("marker-constant", square key marker) | GPL-2.0-or-later
+natron/marker-curve.svg | Natron custom ("marker-curve", round key marker) | GPL-2.0-or-later
+natron/marker-h.svg | Natron custom ("marker-h", ring with an H inside) | GPL-2.0-or-later
+natron/marker-linear.svg | Natron custom ("marker-linear", diamond key marker) | GPL-2.0-or-later
+natron/marker-node-root.svg | Natron custom ("marker-node-root", closed-tab key marker) | GPL-2.0-or-later
+natron/marker-r.svg | Natron custom ("marker-r", ring with an R inside) | GPL-2.0-or-later
+natron/marker-z.svg | Natron custom ("marker-z", ring with a Z inside) | GPL-2.0-or-later
+natron/open-close-curve.svg | Natron custom ("open-close-curve", solid arc completed by a dashed arc) | GPL-2.0-or-later
+natron/out-point.svg | Natron custom ("out-point", mirrored in-point) | GPL-2.0-or-later
+natron/play-reverse.svg | Natron custom ("play-reverse", Lucide play mirrored horizontally) | GPL-2.0-or-later
+natron/pressure.svg | Natron custom ("pressure", tapered S-squiggle) | GPL-2.0-or-later
+natron/rectangle-handles.svg | Natron custom ("rectangle-handles", rectangle with corner handles) | GPL-2.0-or-later
+natron/remove-feather.svg | Natron custom ("remove-feather", pen nib, feather point and a minus) | GPL-2.0-or-later
+natron/remove-points.svg | Natron custom ("remove-points", pen-tool nib with a minus) | GPL-2.0-or-later
+natron/render-scale.svg | Natron custom ("render-scale", hollow square with an inset filled square) | GPL-2.0-or-later
+natron/roi.svg | Natron custom ("roi", square with crop-style tick marks) | GPL-2.0-or-later
+natron/select-curves.svg | Natron custom ("select-curves", pointer arrow beside a Bezier arc) | GPL-2.0-or-later
+natron/select-feather.svg | Natron custom ("select-feather", pointer arrow with a dashed-outline point) | GPL-2.0-or-later
+natron/select-points.svg | Natron custom ("select-points", pointer arrow with a solid control point) | GPL-2.0-or-later
+natron/track-all-keys.svg | Natron custom ("track-all-keys", two keyframe diamonds in front of play triangles) | GPL-2.0-or-later
+natron/track-current-key.svg | Natron custom ("track-current-key", one keyframe diamond in front of play triangles) | GPL-2.0-or-later
+natron/track-range.svg | Natron custom ("track-range", play triangle with a closing bracket) | GPL-2.0-or-later

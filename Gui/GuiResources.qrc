@@ -66,22 +66,154 @@
         <file alias="LICENSE-hoedown.txt">../tools/license/components/LICENSE-hoedown.txt</file>
         <file>Resources/Fonts/DroidSans-Bold.ttf</file>
         <file>Resources/Fonts/DroidSans.ttf</file>
+        <file>Resources/Icons/lucide/aperture.svg</file>
+        <file>Resources/Icons/lucide/arrow-left-right.svg</file>
+        <file>Resources/Icons/lucide/arrow-left.svg</file>
+        <file>Resources/Icons/lucide/arrow-right-to-line.svg</file>
+        <file>Resources/Icons/lucide/arrow-right.svg</file>
+        <file>Resources/Icons/lucide/bold.svg</file>
         <file>Resources/Icons/lucide/box.svg</file>
+        <file>Resources/Icons/lucide/brush-cleaning.svg</file>
         <file>Resources/Icons/lucide/brush.svg</file>
+        <file>Resources/Icons/lucide/chevron-down.svg</file>
+        <file>Resources/Icons/lucide/chevron-right.svg</file>
+        <file>Resources/Icons/lucide/chevrons-down-up.svg</file>
         <file>Resources/Icons/lucide/chevrons-down.svg</file>
+        <file>Resources/Icons/lucide/circle-ellipsis.svg</file>
+        <file>Resources/Icons/lucide/circle-play.svg</file>
+        <file>Resources/Icons/lucide/circle-question-mark.svg</file>
         <file>Resources/Icons/lucide/clock.svg</file>
+        <file>Resources/Icons/lucide/columns-2.svg</file>
+        <file>Resources/Icons/lucide/contrast.svg</file>
+        <file>Resources/Icons/lucide/crosshair.svg</file>
+        <file>Resources/Icons/lucide/diamond-minus.svg</file>
+        <file>Resources/Icons/lucide/diamond-plus.svg</file>
+        <file>Resources/Icons/lucide/droplet.svg</file>
+        <file>Resources/Icons/lucide/eraser.svg</file>
         <file>Resources/Icons/lucide/expand.svg</file>
+        <file>Resources/Icons/lucide/eye-off.svg</file>
+        <file>Resources/Icons/lucide/eye.svg</file>
+        <file>Resources/Icons/lucide/feather.svg</file>
+        <file>Resources/Icons/lucide/file-code.svg</file>
+        <file>Resources/Icons/lucide/file-play.svg</file>
+        <file>Resources/Icons/lucide/flame.svg</file>
+        <file>Resources/Icons/lucide/focus.svg</file>
+        <file>Resources/Icons/lucide/folder-open.svg</file>
+        <file>Resources/Icons/lucide/fullscreen.svg</file>
         <file>Resources/Icons/lucide/glasses.svg</file>
         <file>Resources/Icons/lucide/image.svg</file>
+        <file>Resources/Icons/lucide/italic.svg</file>
         <file>Resources/Icons/lucide/layers-2.svg</file>
+        <file>Resources/Icons/lucide/layers.svg</file>
+        <file>Resources/Icons/lucide/layout-grid.svg</file>
+        <file>Resources/Icons/lucide/link.svg</file>
+        <file>Resources/Icons/lucide/list-checks.svg</file>
+        <file>Resources/Icons/lucide/list-filter.svg</file>
+        <file>Resources/Icons/lucide/list-x.svg</file>
+        <file>Resources/Icons/lucide/locate-fixed.svg</file>
+        <file>Resources/Icons/lucide/lock-open.svg</file>
+        <file>Resources/Icons/lucide/lock.svg</file>
         <file>Resources/Icons/lucide/menu.svg</file>
+        <file>Resources/Icons/lucide/minus.svg</file>
+        <file>Resources/Icons/lucide/mouse-pointer-2.svg</file>
         <file>Resources/Icons/lucide/move.svg</file>
+        <file>Resources/Icons/lucide/paint-bucket.svg</file>
         <file>Resources/Icons/lucide/palette.svg</file>
+        <file>Resources/Icons/lucide/panel-top.svg</file>
+        <file>Resources/Icons/lucide/pause.svg</file>
+        <file>Resources/Icons/lucide/pen-tool.svg</file>
+        <file>Resources/Icons/lucide/pencil.svg</file>
+        <file>Resources/Icons/lucide/pin.svg</file>
         <file>Resources/Icons/lucide/pipette.svg</file>
+        <file>Resources/Icons/lucide/play.svg</file>
+        <file>Resources/Icons/lucide/pointer.svg</file>
         <file>Resources/Icons/lucide/puzzle.svg</file>
+        <file>Resources/Icons/lucide/redo-2.svg</file>
+        <file>Resources/Icons/lucide/refresh-cw.svg</file>
+        <file>Resources/Icons/lucide/repeat.svg</file>
+        <file>Resources/Icons/lucide/rotate-ccw.svg</file>
+        <file>Resources/Icons/lucide/rows-2.svg</file>
+        <file>Resources/Icons/lucide/save.svg</file>
+        <file>Resources/Icons/lucide/scan-search.svg</file>
+        <file>Resources/Icons/lucide/scan.svg</file>
+        <file>Resources/Icons/lucide/settings.svg</file>
+        <file>Resources/Icons/lucide/skip-back.svg</file>
+        <file>Resources/Icons/lucide/skip-forward.svg</file>
+        <file>Resources/Icons/lucide/snowflake.svg</file>
+        <file>Resources/Icons/lucide/spline.svg</file>
+        <file>Resources/Icons/lucide/square-arrow-out-up-right.svg</file>
+        <file>Resources/Icons/lucide/square-arrow-right-enter.svg</file>
+        <file>Resources/Icons/lucide/square-dashed.svg</file>
+        <file>Resources/Icons/lucide/square-mouse-pointer.svg</file>
+        <file>Resources/Icons/lucide/square.svg</file>
+        <file>Resources/Icons/lucide/stamp.svg</file>
+        <file>Resources/Icons/lucide/step-back.svg</file>
+        <file>Resources/Icons/lucide/step-forward.svg</file>
+        <file>Resources/Icons/lucide/sun.svg</file>
+        <file>Resources/Icons/lucide/swatch-book.svg</file>
+        <file>Resources/Icons/lucide/tangent.svg</file>
+        <file>Resources/Icons/lucide/timer.svg</file>
+        <file>Resources/Icons/lucide/trash.svg</file>
+        <file>Resources/Icons/lucide/triangle-alert.svg</file>
+        <file>Resources/Icons/lucide/triangle.svg</file>
+        <file>Resources/Icons/lucide/undo-2.svg</file>
+        <file>Resources/Icons/lucide/undo-dot.svg</file>
+        <file>Resources/Icons/lucide/waves-horizontal.svg</file>
         <file>Resources/Icons/lucide/wrench.svg</file>
+        <file>Resources/Icons/lucide/x.svg</file>
+        <file>Resources/Icons/natron/add-points.svg</file>
+        <file>Resources/Icons/natron/buildup.svg</file>
+        <file>Resources/Icons/natron/checkerboard.svg</file>
+        <file>Resources/Icons/natron/clear-anim-bw.svg</file>
+        <file>Resources/Icons/natron/clear-anim-fw.svg</file>
+        <file>Resources/Icons/natron/clone-stamp.svg</file>
+        <file>Resources/Icons/natron/cusp-point.svg</file>
         <file>Resources/Icons/natron/deep.svg</file>
+        <file>Resources/Icons/natron/ellipse-handles.svg</file>
         <file>Resources/Icons/natron/filter.svg</file>
+        <file>Resources/Icons/natron/gamma.svg</file>
+        <file>Resources/Icons/natron/in-point.svg</file>
+        <file>Resources/Icons/natron/incr-next.svg</file>
+        <file>Resources/Icons/natron/incr-prev.svg</file>
+        <file>Resources/Icons/natron/interp-break.svg</file>
+        <file>Resources/Icons/natron/interp-catmull.svg</file>
+        <file>Resources/Icons/natron/interp-constant.svg</file>
+        <file>Resources/Icons/natron/interp-cubic.svg</file>
+        <file>Resources/Icons/natron/interp-free.svg</file>
+        <file>Resources/Icons/natron/interp-horizontal.svg</file>
+        <file>Resources/Icons/natron/interp-linear.svg</file>
+        <file>Resources/Icons/natron/interp-smooth.svg</file>
+        <file>Resources/Icons/natron/inverted.svg</file>
+        <file>Resources/Icons/natron/key-next.svg</file>
+        <file>Resources/Icons/natron/key-on-move.svg</file>
+        <file>Resources/Icons/natron/key-prev.svg</file>
+        <file>Resources/Icons/natron/layout-anchor.svg</file>
+        <file>Resources/Icons/natron/link-cursor.svg</file>
+        <file>Resources/Icons/natron/link-mult-cursor.svg</file>
+        <file>Resources/Icons/natron/marker-break.svg</file>
+        <file>Resources/Icons/natron/marker-c.svg</file>
+        <file>Resources/Icons/natron/marker-constant.svg</file>
+        <file>Resources/Icons/natron/marker-curve.svg</file>
+        <file>Resources/Icons/natron/marker-h.svg</file>
+        <file>Resources/Icons/natron/marker-linear.svg</file>
+        <file>Resources/Icons/natron/marker-node-root.svg</file>
+        <file>Resources/Icons/natron/marker-r.svg</file>
+        <file>Resources/Icons/natron/marker-z.svg</file>
+        <file>Resources/Icons/natron/open-close-curve.svg</file>
+        <file>Resources/Icons/natron/out-point.svg</file>
+        <file>Resources/Icons/natron/play-reverse.svg</file>
+        <file>Resources/Icons/natron/pressure.svg</file>
+        <file>Resources/Icons/natron/rectangle-handles.svg</file>
+        <file>Resources/Icons/natron/remove-feather.svg</file>
+        <file>Resources/Icons/natron/remove-points.svg</file>
+        <file>Resources/Icons/natron/render-scale.svg</file>
+        <file>Resources/Icons/natron/roi.svg</file>
+        <file>Resources/Icons/natron/select-curves.svg</file>
+        <file>Resources/Icons/natron/select-feather.svg</file>
+        <file>Resources/Icons/natron/select-points.svg</file>
+        <file>Resources/Icons/natron/track-all-keys.svg</file>
+        <file>Resources/Icons/natron/track-current-key.svg</file>
+        <file>Resources/Icons/natron/track-range.svg</file>
         <file>Resources/Images/addKF.png</file>
         <file>Resources/Images/addPoints.png</file>
         <file>Resources/Images/addTrack.png</file>

@@ -108,8 +108,11 @@ echo "Assets dir:  ${ASSETS_DIR}"
 #
 # ReadEXR also decodes alpha-only files into 1-component buffers.
 #
-# Its reader targets (ReadOIIO, ReadEXR, ReadPNG, ReadPFM, ReadFFmpeg) are
-# disabled because the native Read decodes those files; its writers are built.
+# Its reader and writer targets (ReadOIIO, ReadEXR, ReadPNG, ReadPFM,
+# ReadFFmpeg and WriteOIIO, WriteEXR, WritePNG, WritePFM, WriteFFmpeg) are
+# disabled because the native Read and Write handle those files, so the EXR,
+# FFmpeg and PNG libraries are not linked. OIIOText, OIIOResize, the OCIO
+# plugins, SeExpr and RunScript are built.
 #
 # It also takes the OCIO config from the host's instance property and
 # the working space and per-file-type colourspaces (8-bit, 16-bit, log,
@@ -122,7 +125,7 @@ echo "Assets dir:  ${ASSETS_DIR}"
 # SEEXPR_REF: wdas/SeExpr, branch v1-2.11, not v2/v3 -- openfx-io's
 # SeNoise.cpp targets the v1-2.11 header layout. Not forked.
 OPENFX_IO_REPO="https://github.com/charlesangus/openfx-io.git"
-OPENFX_IO_REF="b6b3134194dca5d43382ee598ade853c7182979b"
+OPENFX_IO_REF="6d84b613aef46c418832d6192d394349725c047e"
 SEEXPR_REPO="https://github.com/wdas/SeExpr.git"
 SEEXPR_REF="a5f02bb03199630759b0b94a64f37ce56c08675a"
 
@@ -202,10 +205,10 @@ IMAGEMAGICK_REF="b2dd67b1681e23d0e0b9769d81bed23f05129e2a"
 # Its reader targets (ReadPSD, ReadMisc, ReadKrita, OpenRaster, ReadSVG,
 # ReadPDF, ReadCDR) are disabled because the native Read decodes those files,
 # so the librsvg, poppler-glib and libcdr/librevenge dependencies are not
-# needed. Its OpenFX-IO submodule is an openfx-io revision whose readers are
-# disabled too.
+# needed. Its OpenFX-IO submodule is an openfx-io revision whose reader and
+# writer targets are disabled too.
 OPENFX_ARENA_REPO="https://github.com/charlesangus/openfx-arena.git"
-OPENFX_ARENA_REF="7e3337fad8a2fc46d53e8d35422289fcdb2a7514"
+OPENFX_ARENA_REF="6a8472edf96b6f687c3380f14e3e0227d31c39ab"
 
 # OPENFX_METADATA_REF: charlesangus/openfx -- our ASWF-lineage OpenFX fork,
 # whose Support/Plugins/Metadata* examples exercise the clip and image
@@ -394,9 +397,8 @@ else
     # passed here too are gone -- the fork's CMakeLists.txt now reads these
     # singular names, which is the whole point of pinning the fork.
     #
-    # FFmpeg is deliberately absent (ASWF ships none), so ReadFFmpeg and
-    # WriteFFmpeg are not in the bundle. Nothing in the test suite needs
-    # them; if that changes, ffmpeg has to come from somewhere first.
+    # FFmpeg is deliberately absent (ASWF ships none), and the bundle has no
+    # FFmpeg plugins.
     echo "[Plugins] building openfx-io..."
     IO_BUILD="${PLUGINS_SRC_DIR}/openfx-io/build"
     rm -rf "${IO_BUILD}"
@@ -552,7 +554,7 @@ else
     # of a pipeline entirely.
     IO_SYMBOLS="${IO_BUILD}/io-symbols.txt"
     strings "${IO_OFX}" > "${IO_SYMBOLS}"
-    for id in fr.inria.openfx.WriteOIIO net.sf.openfx.SeNoise; do
+    for id in fr.inria.openfx.OIIOText net.sf.openfx.SeNoise; do
         if ! grep -Fxq -- "${id}" "${IO_SYMBOLS}"; then
             echo "[Plugins] ERROR: built bundle does not export ${id}" >&2
             exit 1

@@ -27,6 +27,11 @@
 // headers, so including it here does not break the plain-data boundary.
 NATRON_NAMESPACE_ENTER
 namespace Serialization {
+struct CurveSerialization;
+struct KeyFrameSerialization;
+struct KnobDimensionSerialization;
+struct KnobMasterSerialization;
+struct KnobSerialization;
 }
 NATRON_NAMESPACE_EXIT
 

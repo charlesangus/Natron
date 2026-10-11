@@ -209,9 +209,11 @@ Node::load(const CreateNodeArgs& args)
 
     bool isLoadingPyPlug = getApp()->isCreatingPythonGroup();
 
-    _imp->effect->onEffectCreated(canOpenFileDialog, args);
-
+    // Messages posted while a silently created node is incomplete are dropped, so the node counts as
+    // created before the effect reports on its loaded state.
     _imp->nodeCreated = true;
+
+    _imp->effect->onEffectCreated(canOpenFileDialog, args);
 
     postPendingLegacyColorLayerWarning();
 

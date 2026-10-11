@@ -43,7 +43,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
 
 ## Phase 56.2: Node text layout
 
-- [ ] M56.P2.T1 — Grow a node horizontally up to a maximum width, then wrap its label
+- [x] M56.P2.T1 — Grow a node horizontally up to a maximum width, then wrap its label
   - files: `Gui/NodeGui.cpp`, `Gui/NodeGui.h`, `Gui/GuiDefines.h`, `Gui/BackdropGui.h`
   - approach:
     - Today `resize()` never widens a node for its text. `adjustSizeToContent` (`NodeGui.cpp:1001`) ignores `w`, and `setNameItemHtml` (`:3334-3446`) only calls `_nameItem->adjustSize()`, so a long label overflows the silhouette sideways.

@@ -29,6 +29,7 @@
 #include <cmath>
 
 #include <QBrush>
+#include <QFontMetrics>
 #include <QKeyEvent>
 #include <QLinearGradient>
 #include <QMouseEvent>
@@ -75,7 +76,22 @@ const double kMarkerHitPx = 4.;
 const double kMarkerHalfWidth = 3.;
 const double kChevronLen = 6.;
 const double kEditSpacing = 6.;
-const double kEditWidth = 56.;
+
+// Padding around the text on each side, so the digits never sit flush against the field's frame.
+const double kEditWidthPad = 10.;
+
+// The field has to hold a signed value with up to three integer digits and two decimals (an
+// absolute wheel target, say, or a typed override) without its lead digit scrolling out of view
+// the way a too-narrow right-aligned field does, so its width comes from the font instead of a
+// flat guess that stops matching once the font or the display's DPI changes.
+int
+editWidthFor(const QWidget* edit)
+{
+    QFontMetrics fm(edit->font());
+    int textWidth = fm.horizontalAdvance(QString::fromUtf8("-0000.000"));
+
+    return textWidth + 2 * (int)TO_DPIX(kEditWidthPad);
+}
 
 } // namespace
 
@@ -93,6 +109,7 @@ struct ColorEditSliderPrivate {
     double value;
     QGradientStops gradientStops;
     LineEdit* edit;
+    int editWidth;
 
     DragKindEnum dragKind;
     double dragGrabOffsetPx; // absolute drag only: press x minus the marker's own x at press time
@@ -108,6 +125,7 @@ struct ColorEditSliderPrivate {
         , value(0.)
         , gradientStops()
         , edit(0)
+        , editWidth(0)
         , dragKind(eDragKindNone)
         , dragGrabOffsetPx(0.)
         , dragLastX(0.)
@@ -134,7 +152,8 @@ ColorEditSlider::ColorEditSlider(ColorSliderKindEnum kind,
     setToolTip(sliderKindName(kind));
 
     _imp->edit = new LineEdit(this);
-    _imp->edit->setFixedWidth((int)kEditWidth);
+    _imp->editWidth = editWidthFor(_imp->edit);
+    _imp->edit->setFixedWidth(_imp->editWidth);
     _imp->edit->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     _imp->edit->installEventFilter(this);
     QObject::connect(_imp->edit, &LineEdit::returnPressed, this, &ColorEditSlider::onEditCommitted);
@@ -234,13 +253,15 @@ ColorEditSlider::valueLineEdit() const
 QSize
 ColorEditSlider::sizeHint() const
 {
-    return QSize(200, 20);
+    // Never shorter than the companion field's own (fixed) height, or the row around this
+    // widget gets laid out too short and the field's text clips top and bottom.
+    return QSize(200, std::max(20, _imp->edit->minimumHeight()));
 }
 
 QSize
 ColorEditSlider::minimumSizeHint() const
 {
-    return QSize(120, 18);
+    return QSize(120, std::max(18, _imp->edit->minimumHeight()));
 }
 
 namespace {
@@ -259,9 +280,12 @@ trackRectFor(const QWidget* w,
 void
 ColorEditSlider::resizeEvent(QResizeEvent* e)
 {
-    int editH = _imp->edit->sizeHint().height();
+    // The field's height is fixed (LineEdit sets it in its own constructor); reading it back
+    // here rather than QLineEdit::sizeHint() keeps the centring in step with the height Qt
+    // actually enforces.
+    int editH = _imp->edit->minimumHeight();
 
-    _imp->edit->setGeometry(width() - (int)kEditWidth - (int)kPad, (height() - editH) / 2, (int)kEditWidth, editH);
+    _imp->edit->setGeometry(width() - _imp->editWidth - (int)kPad, (height() - editH) / 2, _imp->editWidth, editH);
     QWidget::resizeEvent(e);
 }
 

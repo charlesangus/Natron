@@ -43,13 +43,12 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-// The widget's own layout carves a fixed-width LineEdit (56px) plus a 6px gap and 4px of
-// padding on each side off a resize() width, so a 220px-wide slider always has a 150px track
-// at (4, 0): every test below is built on that, rather than re-deriving it from the widget.
+// The widget's own layout carves a font-sized LineEdit plus a 6px gap and 4px of padding on
+// each side off a resize() width; the field's width depends on the font, so the track width
+// below is read back from the widget rather than assumed, and every test is built on that.
 const int kWidgetWidth = 220;
 const int kWidgetHeight = 20;
 const double kTrackLeft = 4.;
-const double kTrackWidth = 150.;
 
 ColorEditSlider*
 makeSlider(ColorSliderKindEnum kind,
@@ -64,10 +63,17 @@ makeSlider(ColorSliderKindEnum kind,
 }
 
 double
-markerX(const SliderRange& range,
+trackWidthOf(const ColorEditSlider* s)
+{
+    return kWidgetWidth - s->valueLineEdit()->width() - 6. - 2. * kTrackLeft;
+}
+
+double
+markerX(const ColorEditSlider* s,
+        const SliderRange& range,
         double value)
 {
-    return kTrackLeft + valueToMarker(range, value) * kTrackWidth;
+    return kTrackLeft + valueToMarker(range, value) * trackWidthOf(s);
 }
 
 void
@@ -169,13 +175,13 @@ TEST(ColorEditSlider, MarkerDragMovesByExactlyThatManyPixelsOfRangeRegardlessOfM
 
         s->setValue(0.);
         GestureSpy spy(s.get());
-        double mx = markerX(range, 0.);
+        double mx = markerX(s.get(), range, 0.);
 
         sendPress(s.get(), mx);
         sendMove(s.get(), mx + 40., mod);
         sendRelease(s.get(), mx + 40., mod);
 
-        double expected = 40. * span / kTrackWidth;
+        double expected = 40. * span / trackWidthOf(s.get());
         EXPECT_NEAR(expected, s->value(), 1e-9);
         EXPECT_EQ(1, spy.started);
         EXPECT_EQ(1, spy.finished);
@@ -201,7 +207,7 @@ TEST(ColorEditSlider, RelativeDragWithCtrlMovesOneTenthAsFar)
     sendMove(s.get(), pressX + 80., Qt::ControlModifier);
     sendRelease(s.get(), pressX + 80., Qt::ControlModifier);
 
-    double expected = 8. * span / kTrackWidth; // 80px at gear 0.1 == 8px of range
+    double expected = 8. * span / trackWidthOf(s.get()); // 80px at gear 0.1 == 8px of range
     EXPECT_NEAR(expected, s->value(), 1e-9);
     EXPECT_FALSE(spy.lastAbsolute);
     EXPECT_EQ(QString::fromUtf8("value slider (relative)"), spy.lastLabel);
@@ -230,7 +236,7 @@ TEST(ColorEditSlider, PressingPastEitherEndDragsRelativelyAndDoesNotSnap)
     double pastEnd = range.rangeMax + 1.;
     s->setValue(pastEnd);
     GestureSpy spy(s.get());
-    double chevronX = markerX(range, pastEnd); // the (clamped) pixel the chevron is drawn at
+    double chevronX = markerX(s.get(), range, pastEnd); // the (clamped) pixel the chevron is drawn at
 
     sendPress(s.get(), chevronX);
     sendMove(s.get(), chevronX + 6.);

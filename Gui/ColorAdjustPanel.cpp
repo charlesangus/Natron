@@ -32,7 +32,9 @@
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QApplication>
 #include <QColor>
+#include <QFontMetrics>
 #include <QGradient>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -49,6 +51,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Button.h"
 #include "Gui/ColorEditSlider.h"
 #include "Gui/ColorSelectorWidget.h"
+#include "Gui/GuiApplicationManager.h"
 #include "Gui/Label.h"
 #include "Gui/LineEdit.h"
 
@@ -364,6 +367,16 @@ ColorAdjustPanelPrivate::buildWheelTab()
     columnLayout->setContentsMargins(0, 0, 0, 0);
     columnLayout->setSpacing(2);
 
+    // Sized from the widest caption ("Value"/"Temp"/"Tint"/"Alpha") rather than a flat guess, so
+    // none of them clip at the app's actual font and DPI.
+    QFontMetrics captionMetrics(QApplication::font());
+    int captionWidth = 0;
+
+    for (int i = 0; i < kSliderCount; ++i) {
+        captionWidth = std::max(captionWidth, captionMetrics.horizontalAdvance(sliderTitle(kSliderKinds[i])));
+    }
+    captionWidth += (int)TO_DPIX(4.);
+
     for (int i = 0; i < kSliderCount; ++i) {
         QWidget* row = new QWidget(column);
         QHBoxLayout* rowLayout = new QHBoxLayout(row);
@@ -373,7 +386,7 @@ ColorAdjustPanelPrivate::buildWheelTab()
 
         Label* title = new Label(sliderTitle(kSliderKinds[i]), row);
 
-        title->setFixedWidth(36);
+        title->setFixedWidth(captionWidth);
         rowLayout->addWidget(title);
 
         ColorEditSlider* slider = new ColorEditSlider(kSliderKinds[i], row);

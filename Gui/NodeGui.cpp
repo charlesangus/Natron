@@ -1677,10 +1677,15 @@ NodeGui::initializeInputs()
         NodePtr input = inputs[i].lock();
         if (input) {
             NodeGuiIPtr gui_i = input->getNodeGui();
-            assert(gui_i);
-            NodeGuiPtr gui = std::dynamic_pointer_cast<NodeGui>(gui_i);
-            assert(gui);
-            edge->setSource(gui);
+            // The input node can exist before its own GUI does (nodes created or restored out
+            // of order). Leave this freshly made edge sourceless rather than asserting; the late
+            // GUI's own creation path (GuiAppInstance::createNodeGui) repairs it once it appears.
+            if (gui_i) {
+                NodeGuiPtr gui = std::dynamic_pointer_cast<NodeGui>(gui_i);
+                if (gui) {
+                    edge->setSource(gui);
+                }
+            }
         }
         if ( node &&
              !node->getEffectInstance()->isInputMask(i) &&
@@ -2091,14 +2096,19 @@ NodeGui::connectEdge(int edgeNumber)
         return false;
     }
 
-    NodeGuiPtr src;
     NodePtr input = inputs[edgeNumber].lock();
-    if (input) {
+    if (!input) {
+        _inputEdges[edgeNumber]->setSource(NodeGuiPtr());
+    } else {
         NodeGuiIPtr ngi = input->getNodeGui();
-        src = std::dynamic_pointer_cast<NodeGui>(ngi);
+        // The input node exists but its GUI hasn't been created yet (e.g. nodes created or
+        // restored out of order): keep the edge's current source rather than clobbering a
+        // real connection with null. GuiAppInstance::createNodeGui() repairs this once the
+        // late GUI appears.
+        if (ngi) {
+            _inputEdges[edgeNumber]->setSource(std::dynamic_pointer_cast<NodeGui>(ngi));
+        }
     }
-
-    _inputEdges[edgeNumber]->setSource(src);
 
     assert(node);
     if ( dynamic_cast<InspectorNode*>( node.get() ) ) {
@@ -2232,6 +2242,10 @@ NodeGui::showGui()
         _outputEdge->setActive(true);
     }
     refreshEdges();
+    // An edge created while this node was hidden was force-hidden regardless of its real
+    // connection state (see initializeInputs()); now that the node is shown again, recompute
+    // each edge's visibility from its actual state instead of leaving it stuck hidden.
+    refreshEdgesVisility();
     const NodesWList & outputs = node->getGuiOutputs();
     for (NodesWList::const_iterator it = outputs.begin(); it != outputs.end(); ++it) {
         NodePtr output = it->lock();

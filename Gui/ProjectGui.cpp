@@ -421,11 +421,17 @@ ProjectGui::load<boost::archive::xml_iarchive>(bool isAutosave,  boost::archive:
         loadNodeGuiSerialization(_gui, viewersProjections, settings, leftBound, rightBound,  *it);
     }
 
-
-    const NodesGuiList nodesGui = getVisibleNodes();
-    for (NodesGuiList::const_iterator it = nodesGui.begin(); it != nodesGui.end(); ++it) {
-        (*it)->refreshEdges();
-        (*it)->refreshKnobLinks();
+    // getVisibleNodes() only covers the root graph's active nodes; walk every node of every
+    // sub-graph too, so a Group's own pipes are repainted right after load as well.
+    NodesList allNodes;
+    _project.lock()->getNodes_recursive(allNodes, true);
+    for (NodesList::const_iterator it = allNodes.begin(); it != allNodes.end(); ++it) {
+        NodeGuiIPtr nodeGui_i = (*it)->getNodeGui();
+        NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>(nodeGui_i);
+        if (nodeGui) {
+            nodeGui->refreshEdges();
+            nodeGui->refreshKnobLinks();
+        }
     }
 
     ///now restore the backdrops from old version prior to Natron 1.1

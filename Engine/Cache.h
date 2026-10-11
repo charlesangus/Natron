@@ -836,6 +836,7 @@ private:
             memoryCacheSize = _memoryCacheSize;
             maximumInMemorySize = std::max( (std::size_t)1, _maximumInMemorySize );
         }
+        trimHostPoolToHeadroom(memoryCacheSize, maximumInMemorySize);
         {
             QMutexLocker locker(&_lock);
             std::list<EntryTypePtr> entriesToBeDeleted;
@@ -1163,6 +1164,17 @@ public:
         }
     } // clearInMemoryPortion
 
+    // Idle pooled image buffers are RAM this process holds without any entry owning it. They
+    // count against the limit, but giving them up is cheaper than evicting a live entry, so
+    // only what does not fit in the remaining headroom is returned to the OS.
+    static void trimHostPoolToHeadroom(U64 memoryCacheSize,
+                                       U64 maximumInMemorySize)
+    {
+        const U64 limit = (U64)(maximumInMemorySize * NATRON_CACHE_LIMIT_PERCENT);
+
+        HostImageMemory::trimTo(limit > memoryCacheSize ? (std::size_t)(limit - memoryCacheSize) : 0);
+    }
+
     void clearExceedingEntries()
     {
         ///Make sure the shared_ptrs live in this list and are destroyed not while under the lock
@@ -1177,6 +1189,7 @@ public:
                 memoryCacheSize = _memoryCacheSize;
                 maximumInMemorySize = std::max( (std::size_t)1, _maximumInMemorySize );
             }
+            trimHostPoolToHeadroom(memoryCacheSize, maximumInMemorySize);
             double occupationPercentage = (double)memoryCacheSize / maximumInMemorySize;
             while (occupationPercentage >= NATRON_CACHE_LIMIT_PERCENT) {
                 std::list<EntryTypePtr> deleted;

@@ -27,14 +27,17 @@
 
 #include <bitset>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <limits>
 #include <memory>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
+#include "Engine/HostImageMemory.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/RectD.h"
@@ -585,4 +588,157 @@ TEST(ImageCopyUnProcessedChannelsTest, LargeRoiMatchesReference)
     expectCopyUnProcessedMatchesReference<float, 1>(eImageBitDepthFloat, 1, 4, dstBounds, srcBounds, roi);
     expectCopyUnProcessedMatchesReference<unsigned char, 255>(eImageBitDepthByte, 4, 4, dstBounds, srcBounds, roi);
     expectCopyUnProcessedMatchesReference<unsigned short, 65535>(eImageBitDepthShort, 3, 1, dstBounds, srcBounds, roi);
+}
+
+namespace {
+struct HostImageMemoryGuard
+{
+    std::size_t savedMax;
+    std::size_t savedAlignment;
+
+    HostImageMemoryGuard()
+        : savedMax(HostImageMemory::maxPoolBytes())
+        , savedAlignment(HostImageMemory::importAlignment())
+    {
+        HostImageMemory::trim();
+    }
+
+    ~HostImageMemoryGuard()
+    {
+        HostImageMemory::setImportAlignment(savedAlignment);
+        HostImageMemory::setMaxPoolBytes(savedMax);
+        HostImageMemory::trim();
+    }
+};
+}
+
+TEST(HostImageMemoryTest, LargeBuffersArePageAlignedAndPadded)
+{
+    HostImageMemoryGuard guard;
+    const std::size_t bytes = 3 * 1024 * 1024 + 123;
+    void* p = HostImageMemory::allocate(bytes);
+    ASSERT_NE(p, nullptr);
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(p) % HostImageMemory::pageSize(), 0u);
+    EXPECT_EQ(HostImageMemory::paddedSize(bytes) % HostImageMemory::importAlignment(), 0u);
+    EXPECT_GE(HostImageMemory::paddedSize(bytes), bytes);
+    EXPECT_LT(HostImageMemory::paddedSize(bytes), bytes + HostImageMemory::importAlignment());
+    std::memset(p, 0xab, HostImageMemory::paddedSize(bytes));
+    HostImageMemory::release(p, bytes);
+
+    HostImageMemory::setImportAlignment(64 * 1024);
+    EXPECT_EQ(HostImageMemory::paddedSize(bytes) % (64 * 1024), 0u);
+}
+
+TEST(HostImageMemoryTest, SmallBuffersBypassThePool)
+{
+    HostImageMemoryGuard guard;
+    void* p = HostImageMemory::allocate(1000);
+    ASSERT_NE(p, nullptr);
+    HostImageMemory::release(p, 1000);
+    EXPECT_EQ(HostImageMemory::pooledBufferCount(), 0u);
+    EXPECT_EQ(HostImageMemory::allocate(0), nullptr);
+}
+
+TEST(HostImageMemoryTest, SameSizeBufferIsReusedAfterRelease)
+{
+    HostImageMemoryGuard guard;
+    const std::size_t bytes = 2 * 1024 * 1024 + 7;
+    void* a = HostImageMemory::allocate(bytes);
+    HostImageMemory::release(a, bytes);
+    EXPECT_EQ(HostImageMemory::pooledBufferCount(), 1u);
+    EXPECT_EQ(HostImageMemory::pooledBytes(), HostImageMemory::paddedSize(bytes));
+
+    // A different size that pads to the same size class is served by the same buffer.
+    void* b = HostImageMemory::allocate(bytes - 5);
+    EXPECT_EQ(a, b);
+    EXPECT_EQ(HostImageMemory::pooledBufferCount(), 0u);
+    HostImageMemory::release(b, bytes - 5);
+}
+
+TEST(HostImageMemoryTest, TrimToKeepsPooledBytesWithinHeadroom)
+{
+    HostImageMemoryGuard guard;
+    const std::size_t bytes = 1024 * 1024;
+    const std::size_t padded = HostImageMemory::paddedSize(bytes);
+    std::vector<void*> bufs;
+    for (int i = 0; i < 4; ++i) {
+        bufs.push_back( HostImageMemory::allocate(bytes) );
+    }
+    for (std::size_t i = 0; i < bufs.size(); ++i) {
+        HostImageMemory::release(bufs[i], bytes);
+    }
+    ASSERT_EQ(HostImageMemory::pooledBytes(), 4 * padded);
+
+    // The caller's headroom is what is left under its limit once live entries are counted.
+    HostImageMemory::trimTo(2 * padded + 1);
+    EXPECT_EQ(HostImageMemory::pooledBytes(), 2 * padded);
+    EXPECT_EQ(HostImageMemory::pooledBufferCount(), 2u);
+
+    HostImageMemory::trimTo(5 * padded);
+    EXPECT_EQ(HostImageMemory::pooledBytes(), 2 * padded);
+
+    HostImageMemory::trimTo(0);
+    EXPECT_EQ(HostImageMemory::pooledBytes(), 0u);
+    EXPECT_EQ(HostImageMemory::pooledBufferCount(), 0u);
+}
+
+TEST(HostImageMemoryTest, FreeHookFiresOnlyOnRealFrees)
+{
+    HostImageMemoryGuard guard;
+    std::vector<std::pair<void*, std::size_t> > freed;
+    const int id = HostImageMemory::addFreeHook([&freed](void* ptr, std::size_t padded) {
+                                                    freed.push_back(std::make_pair(ptr, padded));
+                                                });
+    const std::size_t bytes = 2 * 1024 * 1024;
+    void* a = HostImageMemory::allocate(bytes);
+    HostImageMemory::release(a, bytes);
+    EXPECT_TRUE( freed.empty() );
+
+    void* b = HostImageMemory::allocate(bytes);
+    EXPECT_EQ(a, b);
+    HostImageMemory::release(b, bytes);
+    EXPECT_TRUE( freed.empty() );
+
+    HostImageMemory::trim();
+    ASSERT_EQ(freed.size(), 1u);
+    EXPECT_EQ(freed[0].first, a);
+    EXPECT_EQ(freed[0].second, HostImageMemory::paddedSize(bytes));
+
+    HostImageMemory::removeFreeHook(id);
+    void* c = HostImageMemory::allocate(bytes);
+    HostImageMemory::release(c, bytes);
+    HostImageMemory::trim();
+    EXPECT_EQ(freed.size(), 1u);
+}
+
+TEST(HostImageMemoryTest, PoolStaysBounded)
+{
+    HostImageMemoryGuard guard;
+    const std::size_t bytes = 1024 * 1024;
+    const std::size_t padded = HostImageMemory::paddedSize(bytes);
+    HostImageMemory::setMaxPoolBytes(3 * padded);
+
+    std::size_t freedCount = 0;
+    const int id = HostImageMemory::addFreeHook([&freedCount](void*, std::size_t) {
+                                                    ++freedCount;
+                                                });
+    std::vector<void*> bufs;
+    for (int i = 0; i < 8; ++i) {
+        bufs.push_back( HostImageMemory::allocate(bytes) );
+    }
+    for (std::size_t i = 0; i < bufs.size(); ++i) {
+        HostImageMemory::release(bufs[i], bytes);
+        EXPECT_LE(HostImageMemory::pooledBytes(), 3 * padded);
+    }
+    EXPECT_EQ(HostImageMemory::pooledBufferCount(), 3u);
+    EXPECT_EQ(freedCount, 5u);
+
+    // A buffer larger than the whole pool is freed instead of pooled.
+    const std::size_t huge = 4 * padded;
+    void* h = HostImageMemory::allocate(huge);
+    HostImageMemory::release(h, huge);
+    EXPECT_EQ(freedCount, 6u);
+    EXPECT_LE(HostImageMemory::pooledBytes(), 3 * padded);
+
+    HostImageMemory::removeFreeHook(id);
 }

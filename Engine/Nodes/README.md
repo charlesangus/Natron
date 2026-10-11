@@ -288,7 +288,10 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
   planes (`getComponentsNeededAndProduced()`), the colour layout
   (`getPreferredMetadata()` makes an RGBA input RGB when the file gets no
   alpha), and the pixels the render copies. So a partial R/G/B selection shows
-  the whole RGB triple the file gets, a layer or alpha the format cannot hold
+  the whole RGB triple the file gets, a layer the file gets only some channels
+  of is declared as a layer of those channels alone under its own name (what
+  the native Read makes of the file; the render fetches the input's whole layer
+  and copies the written channels), a layer or alpha the format cannot hold
   is absent, and no other layer passes through
   (`producesMetadataLayerImplicitly()` is false and
   `isPassThroughForNonRenderedLayers()` blocks the rest). Without a writable
@@ -297,6 +300,14 @@ lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
 - **Read back.** With `readBack` on, the node outputs the written file instead
   of its input, decoded by `OiioReadSupport::decode()` inside the Write
   (`renderReadBack()`), with the file read in the output space it was written in.
+  The produced planes then come from the file's header too
+  (`readBackLayers()`: its colour part and the layers
+  `OiioReadSupport::fileLayers()` groups for the view), so the channel set and
+  the input, even a disconnected one, no longer decide what downstream sees.
+  The input is optional while reading back (`isInputOptional()`), so a Viewer
+  renders the Write without it, and `outputFollowsLayerKnob()` is false, so a
+  channel set that selects nothing does not make the Write an identity of its
+  input.
 
 ## Writing a node, start to finish
 

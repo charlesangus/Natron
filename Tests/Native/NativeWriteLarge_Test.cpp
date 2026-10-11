@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -122,11 +123,11 @@ megabytes(std::uint64_t bytes)
     return std::to_string(bytes >> 20) + " MiB";
 }
 
-// Prints (to stderr) why the test returns early and reports false when the machine cannot run it.
-bool
-hasRoom(const std::string& directory,
-        std::uint64_t diskNeeded,
-        std::uint64_t memoryNeeded)
+// Why the machine cannot run a frame of this size, or empty when it can.
+std::string
+missingRoom(const std::string& directory,
+            std::uint64_t diskNeeded,
+            std::uint64_t memoryNeeded)
 {
     std::error_code ec;
     const std::filesystem::space_info space = std::filesystem::space(directory, ec);
@@ -134,17 +135,30 @@ hasRoom(const std::string& directory,
     const std::uint64_t memory = availableMemoryBytes();
 
     if (disk < diskNeeded) {
-        std::cerr << "skipped: need " << megabytes(diskNeeded) << " of disk under " << directory << ", have " << megabytes(disk) << std::endl;
-
-        return false;
+        return "need " + megabytes(diskNeeded) + " of disk under " + directory + ", have " + megabytes(disk);
     }
     if (memory < memoryNeeded) {
-        std::cerr << "skipped: need " << megabytes(memoryNeeded) << " of available memory, have " << megabytes(memory) << std::endl;
-
-        return false;
+        return "need " + megabytes(memoryNeeded) + " of available memory, have " + megabytes(memory);
     }
 
-    return true;
+    return std::string();
+}
+
+// This gtest has no GTEST_SKIP, so a test that returns early is reported as passed. The skip is
+// printed and recorded in the XML report so that it shows, and NATRON_REQUIRE_LARGE_TESTS=1 makes it
+// a failure for a run that must exercise the large frame.
+void
+reportSkip(const std::string& missing)
+{
+    const char* required = std::getenv("NATRON_REQUIRE_LARGE_TESTS");
+
+    if (required && (std::string(required) == "1")) {
+        ADD_FAILURE() << "NATRON_REQUIRE_LARGE_TESTS is set but the test cannot run: " << missing;
+
+        return;
+    }
+    std::cerr << "SKIPPED: " << ::testing::UnitTest::GetInstance()->current_test_info()->name() << ": " << missing << std::endl;
+    ::testing::Test::RecordProperty("skipped", missing);
 }
 
 // The scanlines checked: the first, one a third of the way down, the middle and the last.
@@ -170,7 +184,10 @@ TEST(NativeWriteLarge, SupportWritesAFrameOverTwoGigabytes)
     QTemporaryDir dir(QDir(scratchRoot()).filePath(QStringLiteral("NativeWriteLarge-XXXXXX")));
 
     ASSERT_TRUE(dir.isValid());
-    if (!hasRoom(dir.path().toStdString(), kFrameBytes + (kFrameBytes >> 4), (std::uint64_t)512 << 20)) {
+    const std::string missing = missingRoom(dir.path().toStdString(), kFrameBytes + (kFrameBytes >> 4), (std::uint64_t)512 << 20);
+    if (!missing.empty()) {
+        reportSkip(missing);
+
         return;
     }
     const std::string path = dir.filePath(QStringLiteral("support.exr")).toStdString();
@@ -298,7 +315,10 @@ TEST_F(NativeWriteLargeTest, NodeWritesAFrameOverTwoGigabytes)
     QTemporaryDir dir(QDir(scratchRoot()).filePath(QStringLiteral("NativeWriteLarge-XXXXXX")));
 
     ASSERT_TRUE(dir.isValid());
-    if (!hasRoom(dir.path().toStdString(), kFrameBytes + (kFrameBytes >> 4), kFrameBytes * 3)) {
+    const std::string missing = missingRoom(dir.path().toStdString(), kFrameBytes + (kFrameBytes >> 4), kFrameBytes * 3);
+    if (!missing.empty()) {
+        reportSkip(missing);
+
         return;
     }
     const std::string path = dir.filePath(QStringLiteral("node.exr")).toStdString();

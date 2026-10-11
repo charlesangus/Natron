@@ -2157,6 +2157,17 @@ public:
         return false;
     }
 
+    /**
+     * @brief Reimplement to return false at a time and view where the output does not come from
+     * the planes the layer knob selects, such as a Write showing the file it wrote. A layer knob
+     * that selects no channel there then does not make the effect an identity of its input.
+     **/
+    virtual bool outputFollowsLayerKnob(double /*time*/,
+                                        ViewIdx /*view*/) const
+    {
+        return true;
+    }
+
     virtual void onKnobsAboutToBeLoaded(const NodeSerializationPtr& /*serialization*/) {}
 
     virtual void onKnobsLoaded() {}

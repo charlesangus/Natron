@@ -4174,7 +4174,7 @@ EffectInstance::isIdentity_public(bool useIdentityCache, // only set to true whe
         *inputNb = getNode()->getPreferredInput();
         *inputTime = time;
         *inputView = view;
-    } else if (!isResolvingLayersPassThrough() && !getNode()->hasAtLeastOneChannelToProcess(time, view)) {
+    } else if (!isResolvingLayersPassThrough() && outputFollowsLayerKnob(time, view) && !getNode()->hasAtLeastOneChannelToProcess(time, view)) {
         // The selection is resolved against the pass-through input, so choosing that input
         // cannot depend on the selection: while it is being chosen only the plug-in answers.
         // An unprocessed output then shows that input, not the preferred one: a Switch whose

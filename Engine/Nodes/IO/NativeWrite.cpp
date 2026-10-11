@@ -364,14 +364,11 @@ struct FrameSource {
     int nComps;
     std::vector<int> channels;
     RectI window;
-    // Where this plane's channels start among the file channels of a pixel, and how many a pixel has.
-    int outOffset;
-    int outStride;
-    // The colour plane, whose RGB is converted to the output colourspace.
+    std::size_t outOffset;
+    std::size_t outStride;
     bool colour;
 };
 
-// The columns of file row `y` that the frame's source covers; the rest of the row stays black.
 bool
 coveredColumns(const FrameSource& frame,
                int y,
@@ -400,7 +397,7 @@ convertRow(const FrameSource& frame,
         return;
     }
     const SRCPIX* in = (const SRCPIX*)frame.access->pixelAt(x1, y);
-    float* dst = out + (std::size_t)(x1 - frame.window.x1) * (std::size_t)frame.outStride + (std::size_t)frame.outOffset;
+    float* dst = out + (std::size_t)(x1 - frame.window.x1) * frame.outStride + frame.outOffset;
     for (int x = x1; x < x2; ++x, in += frame.nComps, dst += frame.outStride) {
         for (int c = 0; c < nOut; ++c) {
             const int s = frame.channels[(std::size_t)c];
@@ -432,7 +429,7 @@ convertFileRow(const FrameSource& frame,
     }
 }
 
-// Converts the RGB of a colour frame's row, already in `out`, to the output colourspace.
+// Runs after convertFileRow(), converting in place the RGB it left in `out`.
 bool
 convertColourRow(const FrameSource& frame,
                  int fileRow,
@@ -449,15 +446,15 @@ convertColourRow(const FrameSource& frame,
     }
     const int count = x2 - x1;
     scratch.resize((std::size_t)count * 3);
-    float* base = out + (std::size_t)(x1 - frame.window.x1) * (std::size_t)frame.outStride + (std::size_t)frame.outOffset;
+    float* base = out + (std::size_t)(x1 - frame.window.x1) * frame.outStride + frame.outOffset;
     for (int i = 0; i < count; ++i) {
-        std::copy(base + (std::size_t)i * (std::size_t)frame.outStride, base + (std::size_t)i * (std::size_t)frame.outStride + 3, scratch.begin() + (std::ptrdiff_t)i * 3);
+        std::copy(base + (std::size_t)i * frame.outStride, base + (std::size_t)i * frame.outStride + 3, scratch.begin() + (std::ptrdiff_t)i * 3);
     }
     if (!IoColorSpace::convertRow(processor, scratch.data(), count, 3, error)) {
         return false;
     }
     for (int i = 0; i < count; ++i) {
-        std::copy(scratch.begin() + (std::ptrdiff_t)i * 3, scratch.begin() + (std::ptrdiff_t)i * 3 + 3, base + (std::size_t)i * (std::size_t)frame.outStride);
+        std::copy(scratch.begin() + (std::ptrdiff_t)i * 3, scratch.begin() + (std::ptrdiff_t)i * 3 + 3, base + (std::size_t)i * frame.outStride);
     }
 
     return true;
@@ -483,7 +480,6 @@ copyPlane(const EffectInstance& effect,
         }
     }
 
-    // What the source does not cover is black.
     std::vector<RectI> blank;
     if (!hasBoth) {
         blank.push_back(roi);
@@ -504,8 +500,7 @@ copyPlane(const EffectInstance& effect,
 
     return eStatusOK;
 }
-// The channels of one plane that reach the file, as indices into the plane and the names they
-// are written under.
+
 struct PlaneChannels {
     std::vector<int> source;
     std::vector<std::string> names;
@@ -545,8 +540,7 @@ colourChannels(const ResolvedLayer* selection,
     return ret;
 }
 
-// Every other layer writes the channels its row enables as layer.channel, the names the native
-// Read regroups into the layer.
+// Named layer.channel, the names the native Read regroups into the layer.
 PlaneChannels
 layerChannels(const ImageLayerDesc& layer,
               const ResolvedLayer* selection)
@@ -577,15 +571,47 @@ findSelection(const std::vector<ResolvedLayer>& selected,
     return NULL;
 }
 
-// What a frame's file holds, planned from the candidate planes in their order: `planes` indexes the
-// planes the file gets, colour first, `channels` the channels of each, and `dropped` the layers
-// the format cannot hold beside the colour. The encoder writes this plan and the output shows it,
-// so the two cannot disagree.
+// A non-colour layer the file gets only some channels of is a layer of those channels alone,
+// under its own name, which is what the native Read makes of the file. The output declares it so,
+// rather than the input's whole layer with the unwritten channels black.
+ImageLayerDesc
+writtenLayer(const ImageLayerDesc& layer,
+             const PlaneChannels& channels)
+{
+    if (layer.isColorLayer() || ((int)channels.source.size() == layer.getNumComponents())) {
+        return layer;
+    }
+    const std::vector<std::string>& all = layer.getChannels();
+    std::vector<std::string> names;
+    for (std::size_t i = 0; i < channels.source.size(); ++i) {
+        names.push_back(all[(std::size_t)channels.source[i]]);
+    }
+
+    return ImageLayerDesc(layer.getLayerID(), layer.getLayerLabel(), std::string(), names);
+}
+
+// `planes` indexes the candidates the file gets, colour first, and `channels` and `outputs` run
+// alongside it. The encoder writes this plan and the output declares and shows it, so the two
+// cannot disagree.
 struct FilePlan {
     std::vector<int> planes;
     std::vector<PlaneChannels> channels;
+    std::vector<ImageLayerDesc> outputs;
     std::vector<std::string> dropped;
 };
+
+int
+plannedPlaneOf(const FilePlan& plan,
+               const ImageLayerDesc& layer)
+{
+    for (std::size_t p = 0; p < plan.outputs.size(); ++p) {
+        if (layer.isColorLayer() ? plan.outputs[p].isColorLayer() : (plan.outputs[p] == layer)) {
+            return (int)p;
+        }
+    }
+
+    return -1;
+}
 
 FilePlan
 planFile(const std::vector<ImageLayerDesc>& candidates,
@@ -613,12 +639,14 @@ planFile(const std::vector<ImageLayerDesc>& candidates,
             haveColor = true;
             plan.planes.insert(plan.planes.begin(), (int)i);
             plan.channels.insert(plan.channels.begin(), colourChannels(selection, layer.getNumComponents(), caps.alpha));
+            plan.outputs.insert(plan.outputs.begin(), layer);
         } else {
             PlaneChannels channels = layerChannels(layer, selection);
             if (channels.source.empty()) {
                 continue;
             }
             plan.planes.push_back((int)i);
+            plan.outputs.push_back(writtenLayer(layer, channels));
             plan.channels.push_back(channels);
         }
     }
@@ -628,13 +656,15 @@ planFile(const std::vector<ImageLayerDesc>& candidates,
             plan.dropped.push_back(candidates[(std::size_t)plan.planes.back()].getLayerID());
             plan.planes.pop_back();
             plan.channels.pop_back();
+            plan.outputs.pop_back();
         }
     }
 
     return plan;
 }
 
-// The dropped layers of a plan, in the order the planes were listed.
+// The planner drops layers from the back of the plan, so reading `dropped` backwards gives them in
+// the order they were listed.
 std::string
 droppedLayerNames(const FilePlan& plan)
 {
@@ -647,8 +677,7 @@ droppedLayerNames(const FilePlan& plan)
     return names;
 }
 
-// The capabilities that decide which channels the output shows. Without a writable format there
-// is no file to mirror, so only the channel set restricts the output.
+// Without a writable format there is no file to mirror, so only the channel set restricts the output.
 OiioWriteSupport::FormatCaps
 outputCaps(const std::string& path)
 {
@@ -700,12 +729,10 @@ struct ViewPlanes {
 
 struct PartLayout {
     std::vector<OiioWriteSupport::WritePart> parts;
-    // The frames that fill each part's pixels, with their offsets and strides set for that part.
     std::vector<std::vector<FrameSource>> frames;
 };
 
-// Lays the planes of every view out in parts: all in one with the views' channels side by side, one
-// per view, or one per plane of each view. `base` carries everything but the channels.
+// `base` is the spec of every part but for its channels.
 PartLayout
 layoutParts(const OIIO::ImageSpec& base,
             const std::vector<ViewPlanes>& views,
@@ -727,7 +754,7 @@ layoutParts(const OIIO::ImageSpec& base,
         for (std::size_t i = 0; i < members.size(); ++i) {
             const ViewPlane& plane = views[members[i].view].planes[members[i].plane];
             FrameSource frame = plane.frame;
-            frame.outOffset = (int)names.size();
+            frame.outOffset = names.size();
             for (std::size_t c = 0; c < plane.names.size(); ++c) {
                 if (alpha < 0 && plane.names[c] == "A" && !(prefixViews && members[i].view > 0)) {
                     alpha = (int)names.size();
@@ -737,7 +764,7 @@ layoutParts(const OIIO::ImageSpec& base,
             frames.push_back(frame);
         }
         for (std::size_t f = 0; f < frames.size(); ++f) {
-            frames[f].outStride = (int)names.size();
+            frames[f].outStride = names.size();
         }
         part.spec = base;
         part.spec.nchannels = (int)names.size();
@@ -1248,18 +1275,73 @@ NativeWrite::getComponentsNeededAndProduced(double time,
     EffectInstance::getComponentsNeededAndProduced(time, view, comps, passThroughTime, passThroughView, passThroughInputNb);
 
     std::list<ImageLayerDesc>& produced = (*comps)[-1];
+    if (readBackActive()) {
+        for (EffectInstance::ComponentsNeededMap::iterator it = comps->begin(); it != comps->end(); ++it) {
+            if (it->first >= 0) {
+                it->second.clear();
+            }
+        }
+        produced = readBackLayers(time, view);
+
+        return;
+    }
     const std::vector<ImageLayerDesc> candidates(produced.begin(), produced.end());
     std::vector<ResolvedLayer> selected;
     const bool hasLayerKnob = getNode()->resolveLayerKnob(time, view, &selected);
     const KnobOutputFilePtr filename = _filename.lock();
     const FilePlan plan = planFile(candidates, selected, hasLayerKnob, outputCaps(filename ? filename->getValue() : std::string()));
 
-    produced.clear();
-    for (std::size_t i = 0; i < candidates.size(); ++i) {
-        if (std::find(plan.planes.begin(), plan.planes.end(), (int)i) != plan.planes.end()) {
-            produced.push_back(candidates[i]);
+    produced.assign(plan.outputs.begin(), plan.outputs.end());
+}
+
+std::vector<ImageLayerDesc>
+NativeWrite::inputPlanes(double time,
+                         ViewIdx view)
+{
+    EffectInstance::ComponentsNeededMap comps;
+    double passThroughTime = time;
+    int passThroughView = view.value();
+    int passThroughInputNb = -1;
+
+    EffectInstance::getComponentsNeededAndProduced(time, view, &comps, &passThroughTime, &passThroughView, &passThroughInputNb);
+    const std::list<ImageLayerDesc>& planes = comps[-1];
+
+    return std::vector<ImageLayerDesc>(planes.begin(), planes.end());
+}
+
+std::list<ImageLayerDesc>
+NativeWrite::readBackLayers(double time,
+                            ViewIdx view) const
+{
+    std::list<ImageLayerDesc> layers;
+    ImageLayerDesc colourLayer;
+    ImageLayerDesc pairedLayer;
+    getMetadataComponents(-1, &colourLayer, &pairedLayer);
+
+    const KnobOutputFilePtr filename = _filename.lock();
+    const std::string path = filename ? filename->generateFileNameAtTime((SequenceTime)std::floor(time + 0.5), view).toStdString() : std::string();
+    std::string error;
+    const std::shared_ptr<const OiioReadSupport::Header> header = (path.empty() || !OiioReadSupport::isReadablePath(path)) ? std::shared_ptr<const OiioReadSupport::Header>() : OiioReadSupport::readHeader(path, &error);
+    // Without a readable file the render fails with the reason; a colour plane gives it a plane to fail on.
+    if (!header || header->subimages.empty()) {
+        if (colourLayer.isColorLayer()) {
+            layers.push_back(colourLayer);
         }
+
+        return layers;
     }
+    const std::string viewName = viewNameOf(getApp()->getProject()->getProjectViewNames(), view);
+    OiioReadSupport::PartChannels colourPart;
+    if (OiioReadSupport::colourPartOf(*header, viewName, &colourPart)) {
+        layers.push_back(colourLayer.isColorLayer() ? colourLayer : ImageLayerDesc::mapNCompsToColorLayer(OiioReadSupport::ColourChannels::of(colourPart.names, colourPart.index).nComps()));
+    }
+    std::vector<OiioReadSupport::FileLayer> fileLayers;
+    OiioReadSupport::fileLayers(*header, &fileLayers, viewName);
+    for (std::size_t i = 0; i < fileLayers.size(); ++i) {
+        layers.push_back(fileLayers[i].desc);
+    }
+
+    return layers;
 }
 
 StatusEnum
@@ -1282,15 +1364,9 @@ NativeWrite::checkFrameToWrite(double time,
             return eStatusOK;
         }
     }
-    EffectInstance::ComponentsNeededMap comps;
-    double passThroughTime = time;
-    int passThroughView = view.value();
-    int passThroughInputNb = -1;
-    EffectInstance::getComponentsNeededAndProduced(time, view, &comps, &passThroughTime, &passThroughView, &passThroughInputNb);
-    const std::list<ImageLayerDesc>& candidates = comps[-1];
     std::vector<ResolvedLayer> selected;
     const bool hasLayerKnob = getNode()->resolveLayerKnob(time, view, &selected);
-    const FilePlan plan = planFile(std::vector<ImageLayerDesc>(candidates.begin(), candidates.end()), selected, hasLayerKnob, OiioWriteSupport::capabilities(formatName));
+    const FilePlan plan = planFile(inputPlanes(time, view), selected, hasLayerKnob, OiioWriteSupport::capabilities(formatName));
 
     if (plan.planes.empty() && !plan.dropped.empty()) {
         setPersistentMessage(eMessageTypeError, tr("%1 can hold only the colour channels, and there are none to write: %2 cannot be written").arg(QString::fromStdString(formatName), QString::fromStdString(droppedLayerNames(plan))).toStdString());
@@ -1338,6 +1414,19 @@ NativeWrite::readBackActive() const
     const KnobBoolPtr readBack = _readBack.lock();
 
     return readBack && readBack->getValue() && !isDoingSequentialRender();
+}
+
+bool
+NativeWrite::isInputOptional(int inputNb) const
+{
+    return readBackActive() || NativeEffectBase::isInputOptional(inputNb);
+}
+
+bool
+NativeWrite::outputFollowsLayerKnob(double /*time*/,
+                                    ViewIdx /*view*/) const
+{
+    return !readBackActive();
 }
 
 void
@@ -1814,6 +1903,29 @@ NativeWrite::render(const RenderActionArgs& args)
     if (readBackActive()) {
         return renderReadBack(args);
     }
+    std::vector<ResolvedLayer> selected;
+    const bool hasLayerKnob = getNode()->resolveLayerKnob(args.time, args.view, &selected);
+    KnobOutputFilePtr filename = _filename.lock();
+    KnobBoolPtr overwrite = _overwrite.lock();
+    if (!filename || !overwrite) {
+        return eStatusFailed;
+    }
+    // Planned from every plane the input offers, not only those asked of this render, so that a
+    // layer the format cannot hold is still named in the warning about it.
+    const std::vector<ImageLayerDesc> candidates = inputPlanes(args.time, args.view);
+    const FilePlan plan = planFile(candidates, selected, hasLayerKnob, outputCaps(filename->getValue()));
+    const bool writing = isRenderingOwnSequence();
+
+    std::vector<int> outputPlanes;
+    std::vector<bool> fetched(plan.planes.size(), writing);
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+        const int p = plannedPlaneOf(plan, it->first);
+        outputPlanes.push_back(p);
+        if (p >= 0) {
+            fetched[(std::size_t)p] = true;
+        }
+    }
+
     struct PlaneCopy {
         ImagePtr source;
         RectI sourceBounds;
@@ -1821,12 +1933,16 @@ NativeWrite::render(const RenderActionArgs& args)
     };
 
     // Fetched before any image is locked: fetching renders upstream, which may write into a
-    // cached image this render would otherwise already hold a read lock on.
+    // cached image this render would otherwise already hold a read lock on. A plane is fetched as
+    // the input's whole layer, which the input produces, even when the file gets only some of it.
     const auto fetchPlanes = [&](ViewIdx view) {
-        std::vector<PlaneCopy> planes;
-        for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-            PlaneCopy copy;
-            const ImageLayerDesc& plane = it->first;
+        std::vector<PlaneCopy> planes(plan.planes.size());
+        for (std::size_t p = 0; p < plan.planes.size(); ++p) {
+            if (!fetched[p]) {
+                continue;
+            }
+            PlaneCopy& copy = planes[p];
+            const ImageLayerDesc& plane = candidates[(std::size_t)plan.planes[p]];
             RectI inputRoI;
 
             copy.source = getImage(0, args.time, args.mappedScale, view, NULL, &plane, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, NULL, &inputRoI);
@@ -1835,62 +1951,45 @@ NativeWrite::render(const RenderActionArgs& args)
                 copy.sourceBounds = copy.source->getBounds();
                 const int nAvailable = (int)copy.source->getComponentsCount();
                 for (int c = 0; (c < plane.getNumComponents()) && (c < nAvailable); ++c) {
-                    copy.srcChannels[c] = c;
+                    copy.srcChannels[(std::size_t)c] = c;
                 }
             }
-            planes.push_back(copy);
         }
 
         return planes;
     };
     const std::vector<PlaneCopy> copies = fetchPlanes(args.view);
 
-    std::vector<ResolvedLayer> selected;
-    const bool hasLayerKnob = getNode()->resolveLayerKnob(args.time, args.view, &selected);
-    KnobOutputFilePtr filename = _filename.lock();
-    KnobBoolPtr overwrite = _overwrite.lock();
-    if (!filename || !overwrite) {
-        return eStatusFailed;
-    }
-
-    std::vector<ImageLayerDesc> candidates;
-    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
-        candidates.push_back(it->first);
-    }
-    // A layer the format cannot hold is no output plane, yet the warning about it must name it.
-    for (std::size_t i = 0; i < selected.size(); ++i) {
-        const ImageLayerDesc& layer = selected[i].desc;
-        const bool listed = std::any_of(candidates.begin(), candidates.end(), [&](const ImageLayerDesc& c) {
-            return !c.isColorLayer() && (c.getLayerID() == layer.getLayerID());
-        });
-        if (!layer.isColorLayer() && !listed) {
-            candidates.push_back(layer);
-        }
-    }
-    const FilePlan plan = planFile(candidates, selected, hasLayerKnob, outputCaps(filename->getValue()));
-
     // The output is what the file of this frame holds, whether or not the frame is written, so the
     // cache holds the same image for a render to disk and for a pull.
     const auto copyOutput = [&]() {
-        std::vector<PlaneCopy>::const_iterator copy = copies.begin();
-        int index = 0;
-        for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it, ++copy, ++index) {
+        std::vector<int>::const_iterator planned = outputPlanes.begin();
+        for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it, ++planned) {
             const ImagePtr& outImage = it->second;
             if (!outImage) {
                 continue;
             }
-            std::vector<int> channels(copy->srcChannels.size(), -1);
-            const std::vector<int>::const_iterator planned = std::find(plan.planes.begin(), plan.planes.end(), index);
-            if (planned != plan.planes.end()) {
-                const PlaneChannels& inFile = plan.channels[(std::size_t)(planned - plan.planes.begin())];
-                for (std::size_t i = 0; i < inFile.source.size(); ++i) {
-                    const std::size_t c = (std::size_t)inFile.source[i];
-                    if (c < channels.size()) {
-                        channels[c] = copy->srcChannels[c];
+            std::vector<int> channels((std::size_t)outImage->getComponentsCount(), -1);
+            ImagePtr source;
+            RectI sourceBounds;
+            if (*planned >= 0) {
+                const std::size_t p = (std::size_t)*planned;
+                const PlaneCopy& copy = copies[p];
+                const std::vector<int>& inFile = plan.channels[p].source;
+                source = copy.source;
+                sourceBounds = copy.sourceBounds;
+                // The colour plane keeps its layout with the unwritten channels black; any other
+                // plane is the written channels alone, in file order.
+                const bool colour = it->first.isColorLayer();
+                for (std::size_t i = 0; i < inFile.size(); ++i) {
+                    const std::size_t c = (std::size_t)inFile[i];
+                    const std::size_t dst = colour ? c : i;
+                    if ((dst < channels.size()) && (c < copy.srcChannels.size())) {
+                        channels[dst] = copy.srcChannels[c];
                     }
                 }
             }
-            const StatusEnum stat = copyPlane(*this, copy->source, copy->sourceBounds, channels, outImage, args.roi);
+            const StatusEnum stat = copyPlane(*this, source, sourceBounds, channels, outImage, args.roi);
             if ((stat != eStatusOK) || aborted()) {
                 return stat;
             }
@@ -1901,11 +2000,10 @@ NativeWrite::render(const RenderActionArgs& args)
 
     // Only a render to disk writes the file; a viewer or a node downstream pulling this frame
     // must never touch the disk.
-    if (!isRenderingOwnSequence()) {
+    if (!writing) {
         return copyOutput();
     }
 
-    // The planes of every view this render writes, for the views other than the rendered one too.
     const std::vector<ViewIdx> written = viewsToWrite(args.view);
     std::vector<std::vector<PlaneCopy>> viewCopies;
     for (std::size_t v = 0; v < written.size(); ++v) {
@@ -1932,22 +2030,13 @@ NativeWrite::render(const RenderActionArgs& args)
     const std::string formatName = OiioWriteSupport::formatNameForWritableExtension(ext);
     const OiioWriteSupport::FormatCaps caps = OiioWriteSupport::capabilities(formatName);
 
-    // A plane the plan keeps beyond those handed to this render has no image to write from.
-    std::vector<int> filePlanes;
-    std::vector<PlaneChannels> fileChannelsOfPlane;
-    for (std::size_t p = 0; p < plan.planes.size(); ++p) {
-        if ((std::size_t)plan.planes[p] < args.outputLayers.size()) {
-            filePlanes.push_back(plan.planes[p]);
-            fileChannelsOfPlane.push_back(plan.channels[p]);
-        }
-    }
     const bool warnDropped = !plan.dropped.empty();
     const std::string droppedNames = droppedLayerNames(plan);
 
     RenderCancellation cancel(this);
     bool wrote = false;
     std::string writeError;
-    if (!exists && !filePlanes.empty() && !written.empty()) {
+    if (!exists && !plan.planes.empty() && !written.empty()) {
         Window window;
         if (!resolveWindow(args.time, args.view, &window)) {
             return eStatusFailed;
@@ -1960,8 +2049,8 @@ NativeWrite::render(const RenderActionArgs& args)
         }
 
         std::vector<std::string> names;
-        for (std::size_t p = 0; p < fileChannelsOfPlane.size(); ++p) {
-            names.insert(names.end(), fileChannelsOfPlane[p].names.begin(), fileChannelsOfPlane[p].names.end());
+        for (std::size_t p = 0; p < plan.channels.size(); ++p) {
+            names.insert(names.end(), plan.channels[p].names.begin(), plan.channels[p].names.end());
         }
 
         KnobChoicePtr compression = _compression.lock();
@@ -2047,8 +2136,8 @@ NativeWrite::render(const RenderActionArgs& args)
         for (std::size_t v = 0; v < written.size(); ++v) {
             ViewPlanes planes;
             planes.view = ((std::size_t)written[v].value() < projectViews.size()) ? projectViews[(std::size_t)written[v].value()] : std::string();
-            for (std::size_t p = 0; p < filePlanes.size(); ++p) {
-                const PlaneCopy& copy = viewCopies[v][(std::size_t)filePlanes[p]];
+            for (std::size_t p = 0; p < plan.planes.size(); ++p) {
+                const PlaneCopy& copy = viewCopies[v][p];
                 accesses.push_back(std::unique_ptr<Image::ReadAccess>(new Image::ReadAccess(copy.source.get())));
                 ViewPlane plane;
                 FrameSource& frame = plane.frame;
@@ -2060,14 +2149,14 @@ NativeWrite::render(const RenderActionArgs& args)
                 frame.outOffset = 0;
                 frame.outStride = 0;
                 frame.colour = false;
-                for (std::size_t i = 0; i < fileChannelsOfPlane[p].source.size(); ++i) {
-                    frame.channels.push_back(copy.srcChannels[(std::size_t)fileChannelsOfPlane[p].source[i]]);
+                for (std::size_t i = 0; i < plan.channels[p].source.size(); ++i) {
+                    const std::size_t c = (std::size_t)plan.channels[p].source[i];
+                    frame.channels.push_back(c < copy.srcChannels.size() ? copy.srcChannels[c] : -1);
                 }
-                plane.names = fileChannelsOfPlane[p].names;
-                std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator layer = args.outputLayers.begin();
-                std::advance(layer, filePlanes[p]);
-                frame.colour = layer->first.isColorLayer();
-                plane.label = layer->first.isColorLayer() ? std::string(kNatronColorStorageLabel) : layer->first.getLayerID();
+                plane.names = plan.channels[p].names;
+                const ImageLayerDesc& layer = plan.outputs[p];
+                frame.colour = layer.isColorLayer();
+                plane.label = layer.isColorLayer() ? std::string(kNatronColorStorageLabel) : layer.getLayerID();
                 planes.planes.push_back(plane);
             }
             viewPlanes.push_back(planes);
@@ -2087,7 +2176,7 @@ NativeWrite::render(const RenderActionArgs& args)
         std::mutex rowErrorMutex;
         const OiioWriteSupport::RowSource rowSource = [&](int part, int rowBegin, int rowEnd, float* band, OIIO::stride_t rowStride) {
             const std::vector<FrameSource>& frames = layout.frames[(std::size_t)part];
-            const int rowFloats = spec.width * layout.parts[(std::size_t)part].spec.nchannels;
+            const std::size_t rowFloats = (std::size_t)spec.width * (std::size_t)layout.parts[(std::size_t)part].spec.nchannels;
             const int count = rowEnd - rowBegin;
             const int chunks = (count + rowsPerChunk - 1) / rowsPerChunk;
             const std::function<void(int)> body = [&](int chunk) {

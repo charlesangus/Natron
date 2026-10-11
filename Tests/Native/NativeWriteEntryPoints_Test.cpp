@@ -99,16 +99,19 @@ TEST_F(NativeWriteEntryPointsTest, CreateWriterBuildsANativeWriteForEveryFormat)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
+    const std::vector<std::string>& writable = OiioWriteSupport::writableExtensions();
+    ASSERT_FALSE(writable.empty());
 
-    for (const char* name : { "a.exr", "a.png", "a.dpx", "a.tif" }) {
-        const std::string path = (tmp.path() + QString::fromUtf8("/") + QString::fromUtf8(name)).toStdString();
+    for (const std::string& ext : writable) {
+        const std::string path = (tmp.path() + QString::fromUtf8("/a.") + QString::fromStdString(ext)).toStdString();
         CreateNodeArgs args(PLUGINID_NATRON_WRITE, getApp()->getProject());
         NodePtr node = getApp()->createWriter(path, args);
-        ASSERT_TRUE(bool(node)) << name;
-        EXPECT_TRUE(isNativeWrite(node)) << name;
+        ASSERT_TRUE(bool(node)) << ext;
+        EXPECT_TRUE(isNativeWrite(node)) << ext;
         KnobOutputFile* file = dynamic_cast<KnobOutputFile*>(node->getKnobByName(kOfxImageEffectFileParamName).get());
-        ASSERT_TRUE(file != NULL) << name;
-        EXPECT_EQ(path, file->getValue()) << name;
+        ASSERT_TRUE(file != NULL) << ext;
+        EXPECT_EQ(path, file->getValue()) << ext;
+        EXPECT_FALSE(node->hasPersistentMessage()) << ext;
     }
 }
 

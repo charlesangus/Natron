@@ -28,9 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "Engine/EffectInstance.h" // for PLUGINID_NATRON_WRITE
 #include "Engine/EngineFwd.h"
@@ -148,6 +150,12 @@ public:
         return EffectInstance::ePassThroughBlockNonRenderedLayers;
     }
 
+    // While reading back, the output is the file: the input is not needed, so a Viewer shows the
+    // file with the input disconnected, and the channel set does not gate the render.
+    virtual bool isInputOptional(int inputNb) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool outputFollowsLayerKnob(double time, ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
     virtual StatusEnum getRegionOfDefinition(U64 hash,
                                              double time,
                                              const RenderScale& scale,
@@ -201,13 +209,21 @@ private:
     // action is never reached; this is where a render to disk learns it has nothing to write.
     virtual StatusEnum checkFrameToWrite(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The planes produced are those the file of the frame holds, so the output mirrors the file.
+    // The planes produced are those the file of the frame holds, so the output mirrors the file:
+    // the planned file while writing or pulling the input, the file on disk while reading it back.
     virtual void getComponentsNeededAndProduced(double time,
                                                 ViewIdx view,
                                                 EffectInstance::ComponentsNeededMap* comps,
                                                 double* passThroughTime,
                                                 int* passThroughView,
                                                 int* passThroughInputNb) OVERRIDE FINAL;
+
+    // The input's planes the channel set selects, whole, before the file's format narrows them.
+    std::vector<ImageLayerDesc> inputPlanes(double time, ViewIdx view) WARN_UNUSED_RETURN;
+
+    // The colour plane, when the file has one, and every other layer of the file of `time` and
+    // `view` as the native Read groups them; read back declares these whatever the input offers.
+    std::list<ImageLayerDesc> readBackLayers(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     // The views a render of `view` puts in its file: several when one file takes every view of
     // the project (rendered under view 0), none when another view's render writes the file.

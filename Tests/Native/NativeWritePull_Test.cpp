@@ -445,9 +445,17 @@ TEST_F(NativeWritePullTest, OneChannelOfALayerIsTheOnlyChannelDownstream)
 
     const std::list<ImageLayerDesc> layers = layersSeenDownstream();
     ASSERT_EQ(std::set<std::string>({ "specular" }), layerIDs(layers));
+    EXPECT_EQ(green, layers.front().getChannels());
     std::vector<float> pixels;
-    ASSERT_TRUE(pull(_dot, layers.front(), &pixels));
-    expectEveryPixel(pixels, { 0.f, 0.1875f, 0.f });
+    std::vector<std::string> channels;
+    ASSERT_TRUE(pull(_dot, layers.front(), &pixels, &channels));
+    EXPECT_EQ(green, channels);
+    expectEveryPixel(pixels, { 0.1875f });
+    EXPECT_FALSE(outputExists());
+
+    renderToDisk();
+    ASSERT_TRUE(outputExists());
+    EXPECT_EQ(1, fileChannelCount());
 }
 
 TEST_F(NativeWritePullTest, AnExplicitRenderWritesTheFileAndALaterPullDoesNotRewriteIt)
@@ -480,6 +488,49 @@ TEST_F(NativeWritePullTest, ReadBackThroughADownstreamNodeIsTheFile)
     std::vector<float> pixels;
     ASSERT_TRUE(pull(_dot, ImageLayerDesc::getRGBAComponents(), &pixels));
     expectEveryPixel(pixels, { 0.5f, 0.5f, 0.5f, 1.f });
+}
+
+TEST_F(NativeWritePullTest, ReadBackShowsTheFilesLayersWhateverTheInputOffers)
+{
+    renderToDisk();
+    ASSERT_TRUE(outputExists());
+    // Values the source does not have, and a specular of one channel and no mask, so that what
+    // downstream sees can only come from the file.
+    std::string error;
+    ASSERT_TRUE(writeExr(_output, { "R", "G", "B", "A", "diffuse.R", "diffuse.G", "diffuse.B", "specular.G" }, { 0.5f, 0.25f, 0.125f, 1.f, 0.75f, 0.5f, 0.25f, 0.625f }, 3, &error)) << error;
+    setReadBack(true);
+
+    const auto expectTheFile = [&](const char* when) {
+        SCOPED_TRACE(when);
+        const std::list<ImageLayerDesc> layers = layersSeenDownstream();
+        ASSERT_EQ(std::set<std::string>({ kNatronColorLayerID, "diffuse", "specular" }), layerIDs(layers));
+        std::vector<float> pixels;
+        std::vector<std::string> channels;
+        ASSERT_TRUE(pull(_dot, ImageLayerDesc::getRGBAComponents(), &pixels, &channels));
+        EXPECT_EQ(std::vector<std::string>({ "R", "G", "B", "A" }), channels);
+        expectEveryPixel(pixels, { 0.5f, 0.25f, 0.125f, 1.f });
+        for (std::list<ImageLayerDesc>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+            if (it->getLayerID() == "diffuse") {
+                ASSERT_TRUE(pull(_dot, *it, &pixels, &channels));
+                EXPECT_EQ(std::vector<std::string>({ "R", "G", "B" }), channels);
+                expectEveryPixel(pixels, { 0.75f, 0.5f, 0.25f });
+            } else if (it->getLayerID() == "specular") {
+                ASSERT_TRUE(pull(_dot, *it, &pixels, &channels));
+                EXPECT_EQ(std::vector<std::string>({ "G" }), channels);
+                expectEveryPixel(pixels, { 0.625f });
+            }
+        }
+    };
+
+    expectTheFile("as written");
+
+    _channels->setLayer(0, "diffuse", NULL);
+    _channels->addLayer("mask", NULL);
+    expectTheFile("after the channel set changed");
+
+    disconnectNodes(_reader, _writer, true);
+    expectTheFile("after the input was disconnected");
+    EXPECT_TRUE(outputExists());
 }
 
 TEST_F(NativeWritePullTest, AJpegShowsNeitherTheAlphaNorTheLayerItCannotHold)

@@ -492,7 +492,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
     - Ctrl+V while idle is not overridden.
   - size: M
 
-- [ ] M44.P7.T4 — Remove the swatch's trackball drag, keeping click-to-toggle picking
+- [x] M44.P7.T4 — Remove the swatch's trackball drag, keeping click-to-toggle picking
   - files: `Gui/KnobGuiColor.h`, `Gui/KnobGuiColor.cpp`, `Tests/ColorPickerLabel_Test.cpp`
   - approach:
     - Delete everything that drives the swatch drag:

@@ -248,6 +248,7 @@ future core work has solid ground to build on.
 | M88 | FIR Gaussian Blur | done |  | [M88-fir-gaussian-blur.md](PLAN/MILESTONES/M88-fir-gaussian-blur.md) |
 | M89 | Shared Worktree Ccache | done | - | [M89-shared-worktree-ccache.md](PLAN/MILESTONES/M89-shared-worktree-ccache.md) |
 | M90 | Render Path Serial Overhead | todo |  | [M90-render-path-serial-overhead.md](PLAN/MILESTONES/M90-render-path-serial-overhead.md) |
+| M91 | NVIDIA GPU Validation | todo | M84 | [M91-nvidia-gpu-validation.md](PLAN/MILESTONES/M91-nvidia-gpu-validation.md) |
 | M27 | Real Debug Build | doing | - | [M27-debug-build-defines-ndebug.md](PLAN/MILESTONES/M27-debug-build-defines-ndebug.md) |
 | M22 | Missing Plugin Placeholder | todo | M75 | [M22-missing-plugin-placeholder.md](PLAN/MILESTONES/M22-missing-plugin-placeholder.md) |
 | M31 | Architectural Cleanup | todo | M75, M76 | [M31-architectural-cleanup.md](PLAN/MILESTONES/M31-architectural-cleanup.md) |

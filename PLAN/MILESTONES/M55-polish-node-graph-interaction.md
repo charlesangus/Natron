@@ -104,7 +104,7 @@ The design notes, the current behaviour re-checked against `a50bef552`, and the 
     - Ctrl still offers the dangling-stub hint, and Ctrl+Shift still offers the merge hint, both unchanged.
   - size: L
 
-- [ ] M55.P2.T3 — Draw an insertion marker at the splice point
+- [x] M55.P2.T3 — Draw an insertion marker at the splice point
   - files: `Gui/NodeGraph.cpp`, `Gui/NodeGraphPrivate.h`, `Gui/NodeGraph20.cpp`, `Gui/NodeGraph15.cpp`
   - approach:
     - Create one `QGraphicsPathItem` marker under `_nodeRoot` beside the hint edges (`NodeGraph.cpp:152-158`), and delete it with them (`:204-209`).

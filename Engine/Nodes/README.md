@@ -117,8 +117,7 @@ edits or drops keys overrides `deriveOutputMetadata()`, usually starting from
 
 - What an input gives depends on its kind. A native input answers with its own
   `getOutputMetadata()`, so the lookup recurses up a native chain. An OpenFX
-  input, or a Write container, answers with its output clip's metadata
-  (the embedded encoder's for a container), converted by
+  input answers with its output clip's metadata, converted by
   `OfxMetadataBridge`. Any other kind of effect gives an empty map.
   `getInputEffectMetadata()` is the one place that lookup is extended.
 - A `NoOpBase` input (a Dot, a group Output, the typed test pass-throughs) is
@@ -153,7 +152,7 @@ keep the default.
 
 ## I/O nodes
 
-`Engine/Nodes/IO/` holds the native Read. `NativeRead` (`NativeRead.h`) is the
+`Engine/Nodes/IO/` holds the native Read and Write. `NativeRead` (`NativeRead.h`) is the
 only plug-in registered under `PLUGINID_NATRON_READ`, at one version,
 `PLUGIN_MAJOR_NATRON_READ`. There is no Read container and no OFX reader behind
 it: `ReadNode` is gone, and `OfxHost::loadOFXPlugins()` skips any OFX plug-in
@@ -220,6 +219,61 @@ script-name prefix so the Write can share it.
 - **Not read.** RAW (`raw` is excluded; a later milestone adds it) and layered
   documents such as PSD (`psd` is excluded; deferred to "M79 - Layered Document
   Readers").
+
+### Write
+
+`NativeWrite` (`NativeWrite.h`) mirrors the Read. It is the only plug-in
+registered under `PLUGINID_NATRON_WRITE` (`fr.inria.built-in.Write`), at one
+version, `PLUGIN_MAJOR_NATRON_WRITE`. There is no Write container and no OFX
+writer behind it: `WriteNode` is gone, and `OfxHost::loadOFXPlugins()` skips any
+OFX plug-in whose contexts include `kOfxImageEffectContextWriter`. Encoding
+lives in `OiioWriteSupport.*`; the output colourspace knobs reuse
+`OcioSpaceKnobs.*`.
+
+- **Formats.** `OiioWriteSupport::writableExtensions()` is the extensions of
+  OIIO's runtime `output_format_list` (every format `ImageOutput::create` can
+  make, if OIIO lacks that attribute) minus `kExcludedOiioFormats`, lower case
+  and sorted. There is no hand-written list and no video. A path with any other
+  extension gets an "Unsupported format" error from
+  `NativeWrite::rejectUnsupportedFormat()`.
+- **Entry points.** The file dialogs and `KnobGuiFile` take their filters from
+  `AppManager::getSupportedWriterFileFormats()`, and
+  `AppManager::getWriterPluginIDForFileType()` maps an extension to
+  `PLUGINID_NATRON_WRITE` (or empty). Everything that creates a Write (Render
+  Selected, `app.createWriter`, the command-line render of an output file)
+  names `PLUGINID_NATRON_WRITE` directly. Don't hard-code an extension set elsewhere.
+- **Knobs.** The script names are WriteOIIO's, because tests, `tools/bench` and
+  host code look them up by name: `filename`, `overwrite`, `formatType`,
+  `clipToRoD`, `frameRange`, `firstFrame`, `lastFrame`, `frameIncr`,
+  `bitDepth`, `compression`, `quality`, `dwaCompressionLevel`,
+  `zipCompressionLevel`, `tileSize`, `partSplitting`, `viewsSelector`,
+  `ocioOutputSpace`, `ocioOutputSpaceIndex`, `ocioOutputSpaceSet`, the `Context`
+  group of `key1`..`key4` and `value1`..`value4`, the hidden `ocioConfigFile`
+  and `ocioWorkingSpace`, `startRender`, `writeMetadata`, `readBack` and
+  `readBackStamp`. The compression, bit-depth and per-format knobs follow the
+  file name through `OiioWriteSupport::paramVisibility()`.
+- **Encoder.** `OiioWriteSupport::writeFile()` pulls rows from a `RowSource` one
+  band (about `kDefaultBandBytes`) at a time and is the only pixel memory held:
+  there is no full-frame copy, and sizes, strides and offsets are 64-bit, so the
+  frame size is bounded by the file format. The file is written under a
+  temporary name beside the target and renamed onto it on success; on failure
+  or cancellation the temporary is removed and the old file is untouched.
+- **Colour.** Rows go from the working space to the output space through the
+  project's OCIO config, in the band callback. The default output space is
+  from the config's file rules, then the project's file default for the pixel
+  depth. The file is tagged with `oiio:ColorSpace`, set to the space's Color
+  Interop ID when the config has one, else to the space name
+  (`IoColorSpace::fileTag()`).
+- **Metadata.** With `writeMetadata` on, the upstream metadata is written by
+  `OiioWriteSupport::applyMetadata()`, the inverse of
+  `OiioReadSupport::attributeMetadata()`, routed by key prefix: `exr/` to
+  OpenEXR only, `exif/` to every format, `tiff/`, `dpx/` and `cin/` to their own
+  format, `oiio/` to every format, and `ofx/timecode` and `ofx/edgecode` as
+  `smpte:TimeCode` and `smpte:KeyCode`. File-identity keys, `oiio/ColorSpace`,
+  other `ofx/` keys and the file-layout keys are never written.
+- **Read back.** With `readBack` on, the node outputs the written file instead
+  of its input, decoded by `OiioReadSupport::decode()` inside the Write
+  (`renderReadBack()`), with the file read in the output space it was written in.
 
 ## Writing a node, start to finish
 

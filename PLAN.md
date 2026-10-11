@@ -1,8 +1,8 @@
 ---
 title: Linux-Only Qt6 Foundation Plan
 status: running
-current: [M44 PR #51 CI then merge, M55 shot-review rebuild, M76.P2.T22, M27.P1.T1, M93.P1.T1, M84.P7.T7]
-pm_heartbeat: 2026-10-11T09:29:15-04:00
+current: [M44 PR #51 CI then merge, M55 gate run, M56.P2.T1, M76.P2.T22, M27.P1.T1, M93.P1.T1, M84.P7.T7]
+pm_heartbeat: 2026-10-11T09:33:15-04:00
 ship: pr-per-milestone
 publish_decisions: docs/decisions/
 ---
@@ -264,7 +264,7 @@ future core work has solid ground to build on.
 | M44 | Trackball Colour Editing | doing | - | [M44-trackball-colour-editing.md](PLAN/MILESTONES/M44-trackball-colour-editing.md) |
 | M55 | Node Graph Polish | doing | M24 | [M55-polish-node-graph-interaction.md](PLAN/MILESTONES/M55-polish-node-graph-interaction.md) |
 | M46 | Labelmaker Annotations | todo | M56 | [M46-labelmaker-annotations.md](PLAN/MILESTONES/M46-labelmaker-annotations.md) |
-| M56 | Visual And Menu Polish | todo | M44, M55 | [M56-polish-visual-and-menus.md](PLAN/MILESTONES/M56-polish-visual-and-menus.md) |
+| M56 | Visual And Menu Polish | doing | M44, M55 | [M56-polish-visual-and-menus.md](PLAN/MILESTONES/M56-polish-visual-and-menus.md) |
 | M45 | Native Tab Menu | todo | M55 | [M45-tabtabtab-native-tab-menu.md](PLAN/MILESTONES/M45-tabtabtab-native-tab-menu.md) |
 | M25 | GL Init FP Guard | todo |  | [M25-debug-fp-trap-gl-init.md](PLAN/MILESTONES/M25-debug-fp-trap-gl-init.md) |
 | M29 | Independent Repository | todo |  | [M29-independent-repository.md](PLAN/MILESTONES/M29-independent-repository.md) |

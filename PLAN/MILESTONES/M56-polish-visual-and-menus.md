@@ -137,7 +137,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
     - `restoreKnobsFromSettings` only looks up keys for knobs that exist, so an old `useBwIcons` key is silently ignored.
     - M55 deletes `_hideOptionalInputsAutomatically` in adjacent lines (`:1616`, `:577`), so expect a trivial textual conflict and resolve it on top of M55.
   - verify: at the gate build, Preferences → Appearance → Main Window no longer shows the knob. A settings file with `useBwIcons=true` loads with no warning.
-  - size: S
+  - size: M
 
 - [ ] M56.P4.T7 — Move M44's colour-row icons onto the SVG path, and delete the grouping PNG sets
   - files: `Gui/GuiApplicationManager.cpp` (`NATRON_PIXMAP_COLOR_ADJUST_DROPDOWN` / `_GLOBAL_TRACKBALL` cases), `Gui/GuiResources.qrc`, `Gui/Resources/Images/colorAdjustDropdown.png`, `Gui/Resources/Images/colorGlobalTrackball.png`, `Gui/Resources/Images/GroupingIcons/**`
@@ -186,7 +186,7 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
     - Leave `natronIcon*`, `splashscreen*`, `NativeNodes/`, `Other/` and every file the stylesheet references alone.
     - Put the deleted list in the commit message.
   - verify: the grep re-run shows each kept file referenced and each deleted file unreferenced. At the gate build, no `Missing image` assert appears in `natron.log` across the P1.T1 run.
-  - size: S
+  - size: M
 
 ## Phase 56.6: Stylesheet density (direction per Q8)
 
@@ -272,3 +272,4 @@ Design inputs: `PLAN/DESIGN/2026-10-10-m44-m55-m56-scoping.md` (M56 section), `P
   - **Size:** keep M56 whole.
   - **Twin labels / U-V-A layout:** the user asked for pictures of each option before choosing; pending.
 - 2026-10-11 — **Twin labels (user, from mockups at claude.ai artifact `5Fw2Nn1B4F7tmtjqF3WA4n`):** Premult/Unpremult picker on its own row labelled "Premult by" / "Unpremult by" (A1). IDistort/STMap: U, V and Alpha each on their own aligned row (B1), so P3.T1 stands as written. The user briefly floated a single layer row capped at two channels (first enabled = U, second = V, as in Nuke), and a consultant designed it (`KnobLayerSelect::setMaxChannels`, one `hostUVChannels` twin). The user then dropped that path in favour of B1, so it is not planned.
+- 2026-10-11 — **Started early (user):** M56 opened in `.worktrees/m56` on `milestone/m56-visual-and-menu-polish`, branched from `main` at `a50bef552`, while M44 - Trackball Colour Editing (PR #51, in CI) and M55 - Node Graph Polish (at its gate) are still open. The user asked for it explicitly. The lane rebases onto `main` after each of those merges. Tasks that build on M44's icons (P4.T7) wait until M44 has merged. P1.T1's "before" shots run later against a `main` build. **Freshness check:** every task's files exist on `main`. P4.T6 and P5.T5 were re-sized S → M under the sizing rule: they are multi-file edits that need grep judgement.

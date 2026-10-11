@@ -505,7 +505,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - Full ctest passes in both modes on lavapipe.
   - size: L
 
-- [ ] M84.P7.T9 — Make strip pipelining overlap in real renders
+- [x] M84.P7.T9 — Make strip pipelining overlap in real renders
   - files: `Engine/GpuRegionTask.cpp`, `Engine/GpuRegionStrips.{h,cpp}`, `Engine/Gpu/GpuTransfer.{h,cpp}`, `Engine/HostImageMemory*` (if the cause is pinning), `Tests/GpuResidency_Test.cpp`
   - approach: in the M84.P8.T2 release bench on RADV (`.local/m84p8/graph_bench_gbg.py`, G-B-G σ25 at 16384² and 24000²), stripped regions report `stripsInFlight` 3 but `transferHidden` 0–20 ms against 295–810 ms exposed, while P7.T8's in-test benchmark hid 274 ms. Find why (candidates: first-touch or pinning of fresh download images on the region thread every frame, host-import vs staging, the pipeline falling back, or a measurement bug), fix it, and re-run the 16k and 24k G-B-G bench.
   - verify:
@@ -513,6 +513,15 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - wall time improves on the P8.T2 numbers (16k 4.44 s, 24k 9.10 s);
     - tiled still matches untiled exactly;
     - full ctest passes in both modes on lavapipe.
+  - size: L
+
+- [ ] M84.P7.T10 — Fix the release-only segfault in the device-loss test on lavapipe
+  - files: `Engine/GpuPlacement.cpp`, `Engine/GpuContext.cpp`, `Engine/RenderScheduler.cpp`, `Engine/GpuRegionTask.cpp` (wherever the cause is), `Tests/GpuResidency_Test.cpp`
+  - approach: `GpuResidencyTest.DeviceLossRendersTheFrameOnTheCpuAndTheNextRenderRecovers` segfaults in `placeRenderGraph` in the **release** build on lavapipe, 3 of 3 runs. It also fails on the tip before P7.T9. It passes in debug and on RADV in release. Find the root cause (a likely suspect is a use-after-free or a race around `recreate()` and `recoverIfLost()` invalidating handles that placement or the cost model still holds), and fix it in the engine, not the test.
+  - verify:
+    - the test passes 20/20 in release on lavapipe in both modes, and in debug;
+    - if available, an ASan or TSan run of the test is clean;
+    - full ctest passes in both modes in debug and release on lavapipe.
   - size: L
 
 ## Phase 84.8: Benches and close-out
@@ -526,7 +535,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - verify: every case is within ±5% of `main` (the noise band, from two repeats). Diagnose any regression before the gate.
   - size: M
 
-- [ ] M84.P8.T2 — Quick directional GPU bench on RADV, up to 24k
+- [x] M84.P8.T2 — Quick directional GPU bench on RADV, up to 24k
   - files: none (results go in Decisions)
   - approach:
     - Run in the RADV container (P1.T3), comparing GPU Auto against Off.
@@ -577,6 +586,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - P7.T7 after P7.T6; P7.T6 is checked off together with it.
   - P7.T8 after P7.T7 (same files).
   - P7.T9 after P8.T2 (found by it).
+  - P7.T10 found by P7.T9; it blocks the gate.
 - **Phase 8:**
   - P8.T1 after Phase 7.
   - P8.T2 after Phase 7 and P6.T3.
@@ -836,3 +846,23 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   No comp is slower under Auto. The comp runs overlapped load of 4–6 from other sessions.
   - **Placement:** keying_grade forms 55 regions, 44 of them single-node (Grade and Blur on the GPU, keyers and morphology on the CPU). cg_multipass forms 110 regions, 88 single-node. A single-node region spends about 12 ms of wall, about 11 ms of it exposed transfer around a ~2 ms kernel. If a slower link ever regresses, check the bandwidth calibration first. The warm-up frame runs fully on the CPU.
   - **Finding:** the stripped regions at 16k and 24k hide only 0–20 ms of transfer against 295–810 ms exposed. **The strip pipeline is not overlapping in real renders.** New task M84.P7.T9 fixes this, and M84.P8.T2 is checked off once the 16k and 24k rows are re-run after it.
+- 2026-10-11 — M84.P7.T9 done (`67dba4f4a`), and M84.P8.T2 checked off with its re-run.
+  - **Root cause:** `HostImageMemory`'s pool cap was 512 MB, so 16k and 24k frame buffers (4.3 and 9.2 GB) never recycled. Every frame pinned fresh, untouched memory on the region thread, at 94–106 ms per strip download, so the queues serialised. P7.T8's benchmark hid this by raising the cap itself.
+  - **Fix:**
+    - the default cap is max(512 MB, RAM/4);
+    - buffers ≥ 32 MB are 2 MB-aligned with `MADV_HUGEPAGE`.
+    - `GpuRegionTask` and `GpuTransfer` are unchanged.
+  - **RADV release, G-B-G σ25, interleaved, 2 rounds:**
+
+    | Case | Off before | Off after | Auto before | Auto after |
+    |---|---|---|---|---|
+    | 16k | 10.3 s | 8.2 s | 4.5–4.7 s | **3.0–3.1 s** |
+    | 24k | 21.9–22.0 s | 17.7–18.0 s | 9.7–9.9 s | **6.4–6.6 s** |
+
+    Region transfer hidden / exposed is now 276/38 ms at 16k and 627/78 ms at 24k (before: ~20/300 and 0/805). The region is compute-bound, and the remaining exposed time is the first upload plus the last download.
+  - **Rest of the frame:** at 24k, CheckerBoard (~1 s) and the Write (~4.4 s) on the CPU now dominate. Off mode is also 18–21% faster.
+  - **Follow-ups:**
+    - first-frame imports of fresh destinations take ~50 ms per 512 MB strip on the region thread; import ahead on a helper thread, which needs `resolveImports` outside `importMutex`;
+    - the pool can hold up to RAM/4 plus pins when idle; consider an idle trim or a setting;
+    - ≤ 64 GB machines won't fully recycle 24k frames.
+  - **Found:** a pre-existing release-only segfault in the device-loss test on lavapipe → new task M84.P7.T10.

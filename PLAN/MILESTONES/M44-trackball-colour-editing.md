@@ -509,7 +509,7 @@ The "one build at the end" rule still applies. Implementers do not compile, and 
     - Delete the two drag cases from the file.
   - size: M
 
-- [ ] M44.P7.T5 — Keep colour rows compact on the left with the four buttons right-aligned in every state
+- [x] M44.P7.T5 — Keep colour rows compact on the left with the four buttons right-aligned in every state
   - files: `Gui/KnobGuiValue.cpp`, `Gui/KnobGuiColor.cpp`
   - approach:
     - **Slider stretch.** In `KnobGuiValue::createWidget`, add the slider with stretch factor 1: `containerLayout->addWidget(_imp->slider, 1)`, or `setStretchFactor` in the grid case.

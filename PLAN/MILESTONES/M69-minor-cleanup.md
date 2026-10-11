@@ -12,11 +12,14 @@ Keying and node knobs:
 
 Node graph interaction:
 - **Paste attaches.** Pasting a node while another node is selected connects the pasted node's main input to the selected node.
-- **Unconnected inputs stay visible** when the node is deselected (they currently disappear).
+- ~~**Unconnected inputs stay visible** when the node is deselected.~~ Moved to M55 - Node Graph Polish on 2026-10-10. M55 removes the "hide unused mask inputs" preference and always shows every input, up to the existing maximum.
 - **Inputs are easier to grab.** Unconnected input arrows have a clunky, small hitbox; enlarge it.
 - **Shortcuts for connecting node inputs.**
 - **Pick-up connection mode.** Clicking an input "picks it up" and it sticks to the cursor; clicking a node then sets that input to the clicked node. Panning and zooming still work while picked up; right-click or Escape puts it down (cancels).
 - **Tab menu position.** The tab menu briefly opens at the extreme top-left and then jumps to the cursor; it must open at the right position the first time.
+
+Roto:
+- **Multi-point feather drag.** When several roto points are selected, dragging one point's feather bar should adjust the feather of every selected point, not just the dragged one. This was moved here from M55 - Node Graph Polish on 2026-10-10, because the user said it isn't node-graph work. The M55 scout's notes are in `PLAN/DESIGN/2026-10-10-m55-elaboration.md`, Phase 55.3: put the maths in a pure helper, keep the selection when a selected point's feather bar is grabbed (`Engine/RotoPaint.cpp` around the press handler), and make a multi-point undo command. The rule for how the other points move is open. The scout recommends that every selected feather changes by the same distance along its own normal.
 
 Curve editor:
 - **Full handle control.** Dragging a handle lengthens/shortens it; handles can be broken (independent in/out tangents) and re-joined.

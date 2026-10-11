@@ -26,11 +26,13 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
@@ -79,6 +81,10 @@
 #include "Engine/RenderStats.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
 
 NATRON_NAMESPACE_USING
 
@@ -264,6 +270,46 @@ protected:
             _swapped = false;
         }
         BaseTest::TearDown();
+    }
+
+    /**
+     * @brief Renders with a GPU context of the test's own, so that the faults it injects and the budget it lowers do
+     * not outlive it.
+     **/
+    bool useOwnContext()
+    {
+        if (_swapped) {
+            return true;
+        }
+        GpuContextOptions options;
+        options.mode = GpuResolvedMode::Force;
+        options.infoLog = [](const std::string&) { };
+        std::unique_ptr<GpuContext> own(new GpuContext(options));
+        if (!own->waitForInit(std::chrono::seconds(60)) || !own->isAvailable()) {
+            return false;
+        }
+        _swappedContext = appPTR->swapGpuContextForTests(std::move(own));
+        _swapped = true;
+
+        return true;
+    }
+
+    /**
+     * @brief Runs onRegion(n, context) before the n-th region of the frames, counted from 1, then the region on the GPU.
+     **/
+    void interceptRegions(const std::function<void(int, const FrameRenderContextPtr&)>& onRegion)
+    {
+        std::shared_ptr<std::atomic<int>> count = std::make_shared<std::atomic<int>>(0);
+        _scheduler->setRegionBody([count, onRegion](const FrameRenderContextPtr& context,
+                                                    const FrameGraph& graph,
+                                                    int region,
+                                                    int budget,
+                                                    std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                                                    RenderScheduler::RegionReport* report) {
+            onRegion(++*count, context);
+
+            return runGpuRegion(context, graph, region, budget, rootPlanes, report);
+        });
     }
 
     // The bundled gtest has no GTEST_SKIP, so each test returns early on false.
@@ -474,6 +520,80 @@ protected:
         return (found == runs.end()) ? 0 : found->second;
     }
 
+    // Source -> Grade -> Blur -> Grade -> Invert, with the first Grade and the Blur in a region and the second Grade in
+    // another, which reads the Blur on the device.
+    struct SplitChain {
+        NodePtr source, grade1, blur, grade2, sink;
+    };
+
+    bool makeSplitChain(SplitChain* chain)
+    {
+        chain->source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+        chain->grade1 = makeGrade(1.5, 0.1);
+        chain->blur = makeBlur(7.);
+        chain->grade2 = makeGrade(0.8, 0.02);
+        chain->sink = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+        if (!chain->source || !chain->grade1 || !chain->blur || !chain->grade2 || !chain->sink) {
+            return false;
+        }
+        connectNodes(chain->source, chain->grade1, 0, true);
+        connectNodes(chain->grade1, chain->blur, 0, true);
+        connectNodes(chain->blur, chain->grade2, 0, true);
+        connectNodes(chain->grade2, chain->sink, 0, true);
+
+        return true;
+    }
+
+    bool prepareSplitFrame(const SplitChain& chain,
+                           FrameRun* run,
+                           std::string* error)
+    {
+        return prepareFrame(chain.sink, run, error) && splitRegions(chain, run, error);
+    }
+
+    static bool splitRegions(const SplitChain& chain,
+                             FrameRun* run,
+                             std::string* error)
+    {
+        const int grade1Task = taskOf(run->graph, chain.grade1);
+        const int blurTask = taskOf(run->graph, chain.blur);
+        const int grade2Task = taskOf(run->graph, chain.grade2);
+        if (grade1Task < 0 || blurTask < 0 || grade2Task < 0) {
+            *error = "a node of the chain has no task";
+
+            return false;
+        }
+        assignRegions(&run->graph, { { grade1Task, blurTask }, { grade2Task } });
+
+        return true;
+    }
+
+#ifdef NATRON_HAVE_GPU
+    static gpu::GpuRuntime* runtime()
+    {
+        return appPTR->getGpuContext()->runtime();
+    }
+#endif
+
+    static int fallbacksOf(const FrameRun& run,
+                           const std::string& reason)
+    {
+        const std::map<std::string, int> reasons = run.stats->getCpuFallbackReasons();
+        const std::map<std::string, int>::const_iterator found = reasons.find(reason);
+
+        return (found == reasons.end()) ? 0 : found->second;
+    }
+
+    static int fallbacksOf(const FrameRun& run)
+    {
+        int total = 0;
+        for (const std::pair<const std::string, int>& reason : run.stats->getCpuFallbackReasons()) {
+            total += reason.second;
+        }
+
+        return total;
+    }
+
     RenderScheduler* _scheduler;
     RenderScheduler::RegionBody _savedBody;
     std::unique_ptr<GpuContext> _swappedContext;
@@ -661,3 +781,178 @@ TEST_F(GpuResidencyTest, DownloadedOutputsKeepTheirTimeAndView)
     expectReleased(run);
     expectMatchesCpu(blend, run);
 }
+
+#ifdef NATRON_HAVE_GPU
+
+// The second region runs out of device memory once: it is run again on the GPU after evicting, the first region's
+// device image going to RAM and being uploaded again.
+TEST_F(GpuResidencyTest, OutOfMemoryRetriesTheRegionAfterEvicting)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    SplitChain chain;
+    ASSERT_TRUE(makeSplitChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareSplitFrame(chain, &run, &error)) << error;
+    const std::uint64_t budgetBefore = runtime()->pool().budget();
+    interceptRegions([](int region, const FrameRenderContextPtr&) {
+        if (region == 2) {
+            runtime()->device().injectFault(gpu::GpuFaultPlan::Kind::OutOfMemory, 1);
+        }
+    });
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(1, run.stats->getGpuRegionRetries());
+    EXPECT_EQ(0, fallbacksOf(run));
+    EXPECT_EQ(2, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(gpu::GpuRuntimeState::Degraded, runtime()->state());
+    EXPECT_LT(runtime()->pool().budget(), budgetBefore);
+    expectReleased(run);
+    expectMatchesCpu(chain.sink, run);
+}
+
+// The device has no room for the second region at all: after the retry, its Grade renders on the CPU from the Blur the
+// first region left on the device, downloaded first.
+TEST_F(GpuResidencyTest, OutOfMemoryAtTheSecondRegionRendersItOnTheCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    SplitChain chain;
+    ASSERT_TRUE(makeSplitChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareSplitFrame(chain, &run, &error)) << error;
+    interceptRegions([](int region, const FrameRenderContextPtr&) {
+        if (region == 2) {
+            runtime()->pool().setUserBudget(1);
+        }
+    });
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(1, fallbacksOf(run));
+    EXPECT_EQ(1, fallbacksOf(run, "out of device memory"));
+    EXPECT_EQ(1, run.stats->getGpuRegionRetries());
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, run.context->getStore().downloadCount()) << "the Blur's device image was not downloaded once";
+    EXPECT_EQ(1, renderRoICallsOf(run, chain.grade2));
+    EXPECT_EQ(0, renderRoICallsOf(run, chain.blur)) << "the Blur rendered again on the CPU";
+    EXPECT_EQ(gpu::GpuRuntimeState::Degraded, runtime()->state());
+    expectReleased(run);
+    expectMatchesCpu(chain.sink, run);
+}
+
+// The Invert has no GPU path: the region holding it renders on the CPU, root included, rather than failing the frame.
+TEST_F(GpuResidencyTest, MemberWithoutAGpuPathRendersTheRegionOnTheCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    NodePtr grade = makeGrade(1.25, 0.05);
+    NodePtr invert = makeNode(PLUGINID_NATRON_INVERT, PLUGIN_MAJOR_NATRON_INVERT);
+    ASSERT_TRUE(source && grade && invert);
+    connectNodes(source, grade, 0, true);
+    connectNodes(grade, invert, 0, true);
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(invert, &run, &error)) << error;
+    const int gradeTask = taskOf(run.graph, grade);
+    const int invertTask = taskOf(run.graph, invert);
+    ASSERT_TRUE(gradeTask >= 0 && invertTask >= 0);
+    assignRegions(&run.graph, { { gradeTask, invertTask } });
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(1, fallbacksOf(run));
+    EXPECT_EQ(1, fallbacksOf(run, "GPU refused"));
+    EXPECT_EQ(0, run.stats->getGpuRegionRetries());
+    EXPECT_EQ(0, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, renderRoICallsOf(run, grade));
+    EXPECT_EQ(1, renderRoICallsOf(run, invert));
+    expectReleased(run);
+    expectMatchesCpu(invert, run);
+}
+
+// The device is lost in the middle of the second region: the frame renders again, all on the CPU, and the next render
+// recreates the device and runs both regions on it.
+TEST_F(GpuResidencyTest, DeviceLossRendersTheFrameOnTheCpuAndTheNextRenderRecovers)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    SplitChain chain;
+    ASSERT_TRUE(makeSplitChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareSplitFrame(chain, &run, &error)) << error;
+    // The second region's first operation acquires its output; the second submits its work.
+    interceptRegions([](int region, const FrameRenderContextPtr&) {
+        if (region == 2) {
+            runtime()->device().injectFault(gpu::GpuFaultPlan::Kind::DeviceLost, 2);
+        }
+    });
+
+    ASSERT_TRUE(render(&run));
+    EXPECT_EQ(gpu::GpuRuntimeState::Lost, runtime()->state());
+    EXPECT_FALSE(appPTR->getGpuContext()->isAvailable());
+    EXPECT_EQ(1, fallbacksOf(run));
+    EXPECT_EQ(1, fallbacksOf(run, "device lost"));
+    EXPECT_EQ(1, run.stats->getGpuRegionsRun());
+    EXPECT_EQ(1, renderRoICallsOf(run, chain.grade1));
+    EXPECT_EQ(1, renderRoICallsOf(run, chain.blur));
+    EXPECT_EQ(1, renderRoICallsOf(run, chain.grade2));
+    expectReleased(run);
+    expectMatchesCpu(chain.sink, run);
+
+    _scheduler->setRegionBody(&runGpuRegion);
+    FrameRun next;
+    ASSERT_TRUE(prepareFrame(chain.sink, &next, &error)) << error;
+    placeRenderGraph(next.graph, next.context);
+    EXPECT_EQ(gpu::GpuRuntimeState::Ready, runtime()->state());
+    ASSERT_TRUE(appPTR->getGpuContext()->isAvailable());
+    ASSERT_TRUE(splitRegions(chain, &next, &error)) << error;
+
+    ASSERT_TRUE(render(&next));
+    EXPECT_EQ(0, fallbacksOf(next));
+    EXPECT_EQ(2, next.stats->getGpuRegionsRun());
+    EXPECT_EQ(0, renderRoICallsOf(next, chain.blur)) << "the Blur rendered on the CPU after the recovery";
+    expectReleased(next);
+    expectMatchesCpu(chain.sink, next);
+}
+
+// The frame is aborted as its only region falls back to the CPU: it ends aborted and gives every reservation back.
+TEST_F(GpuResidencyTest, AbortDuringACpuFallbackEndsTheFrameCleanly)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(useOwnContext());
+    SplitChain chain;
+    ASSERT_TRUE(makeSplitChain(&chain));
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(chain.sink, &run, &error)) << error;
+    const int grade2Task = taskOf(run.graph, chain.grade2);
+    ASSERT_GE(grade2Task, 0);
+    assignRegions(&run.graph, { { grade2Task } });
+    // The uploads fail before the region looks at the abort, so it is the fallback that sees it.
+    interceptRegions([](int, const FrameRenderContextPtr& context) {
+        runtime()->pool().setUserBudget(1);
+        context->getAbortInfo()->setAborted();
+    });
+
+    EXPECT_FALSE(render(&run));
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, run.future->wait());
+    EXPECT_EQ(1, fallbacksOf(run, "out of device memory"));
+    EXPECT_EQ(0, renderRoICallsOf(run, chain.grade2));
+    EXPECT_EQ(0, renderRoICallsOf(run, chain.sink));
+    expectReleased(run);
+}
+
+#endif // NATRON_HAVE_GPU

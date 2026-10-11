@@ -61,15 +61,21 @@ NATRON_NAMESPACE_ENTER
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
 void
-logRegionFailure(const NodePtr& node,
-                 const std::string& reason)
+logRegion(const NodePtr& node,
+          const QString& message)
 {
     if (!appPTR) {
         return;
     }
     const QString name = node ? QString::fromUtf8( node->getScriptName_mt_safe().c_str() ) : QString::fromUtf8("RenderScheduler");
-    appPTR->writeToErrorLog_mt_safe( name, QDateTime::currentDateTime(),
-                                     QString::fromUtf8("GPU render failed: %1").arg( QString::fromUtf8( reason.c_str() ) ) );
+    appPTR->writeToErrorLog_mt_safe(name, QDateTime::currentDateTime(), message);
+}
+
+void
+logRegionFailure(const NodePtr& node,
+                 const std::string& reason)
+{
+    logRegion(node, QString::fromUtf8("GPU render failed: %1").arg(QString::fromUtf8(reason.c_str())));
 }
 
 gpu::GpuRuntime*
@@ -78,6 +84,86 @@ availableRuntime()
     GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
 
     return (gpu && gpu->isAvailable()) ? gpu->runtime() : nullptr;
+}
+
+// The categories the CPU fallbacks are counted under; the detail goes to the error log.
+const char* const kFallbackOutOfMemory = "out of device memory";
+const char* const kFallbackRefused = "GPU refused";
+const char* const kFallbackDeviceError = "GPU error";
+const char* const kFallbackNoGpu = "no GPU";
+
+bool
+isContextAborted(const FrameRenderContextPtr& context)
+{
+    const AbortableRenderInfoPtr& abortInfo = context->getAbortInfo();
+
+    return abortInfo && abortInfo->isAborted();
+}
+
+/**
+ * @brief Renders the members of the region with renderRoI in topological order, as tasks outside every region would
+ * run: each reads its inputs from the store and stores its output for its consumers, members and others, releasing the
+ * outputs of the members it read. The images another region left on the device are downloaded first.
+ **/
+EffectInstance::RenderRoIRetCode
+renderMembersOnCpu(const FrameRenderContextPtr& context,
+                   const FrameGraph& graph,
+                   int regionIndex,
+                   gpu::GpuRuntime* runtime,
+                   std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
+                   RenderScheduler::RegionReport* report)
+{
+    const FrameGraph::Region& region = graph.regions[regionIndex];
+    FrameStore& store = context->getStore();
+
+    for (int input : region.externalInputs) {
+        const FrameGraph::Task& task = graph.tasks[input];
+        std::list<DeviceImagePtr> deviceImages;
+        if (task.components.empty() || !store.findDevice(task.key, task.components, task.renderedRoI, &deviceImages)) {
+            continue;
+        }
+        std::list<ImagePtr> images;
+        if (store.find(task.key, task.components, task.renderedRoI, &images)) {
+            continue;
+        }
+#ifdef NATRON_HAVE_GPU
+        // A member missing it would render it again through renderRoI, which only a lost device makes pointless.
+        if (runtime && runtime->isLost()) {
+            report->deviceLost = true;
+
+            return EffectInstance::eRenderRoIRetCodeFailed;
+        }
+#else
+        Q_UNUSED(runtime);
+        Q_UNUSED(report);
+#endif
+    }
+
+    for (int m : region.members) {
+        if (isContextAborted(context)) {
+            return EffectInstance::eRenderRoIRetCodeAborted;
+        }
+        const FrameGraph::Task& task = graph.tasks[m];
+        std::map<ImageLayerDesc, ImagePtr> planes;
+        const EffectInstance::RenderRoIRetCode code = RenderScheduler::renderTaskOnCpu(graph, m, eStorageModeRAM, &planes);
+        if (code != EffectInstance::eRenderRoIRetCodeOk) {
+            return code;
+        }
+        for (int d : task.dependencies) {
+            if (graph.tasks[d].regionId == regionIndex) {
+                store.release(graph.tasks[d].key);
+            }
+        }
+        if (task.consumers == 0) {
+            if (rootPlanes) {
+                *rootPlanes = planes;
+            }
+        } else if (!isContextAborted(context)) {
+            store.put(task.key, planes, task.renderedRoI, task.consumers);
+        }
+    }
+
+    return EffectInstance::eRenderRoIRetCodeOk;
 }
 
 #ifdef NATRON_HAVE_GPU
@@ -174,11 +260,12 @@ public:
         , _graph(graph)
         , _region(graph.regions[regionIndex])
         , _runtime(runtime)
-        , _store( context->getStore() )
-        , _stats( context->getStats() )
+        , _store(context->getStore())
+        , _stats(context->getStats())
         , _report(report)
         , _failedNode()
         , _failure()
+        , _failureKind(FailureKind::None)
     {
     }
 
@@ -216,44 +303,70 @@ public:
         return EffectInstance::eRenderRoIRetCodeOk;
     }
 
+    enum class FailureKind {
+        None,
+
+        // The region cannot run as planned on the GPU: a member has no GPU path for it, or refused to record.
+        Refused,
+        OutOfMemory,
+        DeviceError
+    };
+
+    FailureKind failureKind() const
+    {
+        return _failureKind;
+    }
+
+    const NodePtr& failedNode() const
+    {
+        return _failedNode;
+    }
+
+    std::string failure() const
+    {
+        return _failure.empty() ? std::string("unknown error") : _failure;
+    }
+
 private:
     bool fail(const NodePtr& node,
-              const std::string& reason)
+              const std::string& reason,
+              FailureKind kind = FailureKind::Refused)
     {
         if ( _failure.empty() ) {
             _failedNode = node;
             _failure = reason;
+            _failureKind = kind;
         }
 
         return false;
     }
 
     bool fail(int memberTask,
-              const std::string& reason)
+              const std::string& reason,
+              FailureKind kind = FailureKind::Refused)
     {
-        return fail( (memberTask >= 0) ? _graph.tasks[memberTask].key.node : NodePtr(), reason );
+        return fail((memberTask >= 0) ? _graph.tasks[memberTask].key.node : NodePtr(), reason, kind);
     }
 
     bool failGpu(int memberTask,
                  const std::string& what,
                  const gpu::GpuStatus& status)
     {
-        return fail(memberTask, what + ": " + status.message);
+        const FailureKind kind = (status.result == VK_ERROR_OUT_OF_DEVICE_MEMORY) ? FailureKind::OutOfMemory : FailureKind::DeviceError;
+
+        return fail(memberTask, what + ": " + status.message, kind);
     }
 
     EffectInstance::RenderRoIRetCode failed()
     {
         drain();
-        logRegionFailure(_failedNode, _failure.empty() ? std::string("unknown error") : _failure);
 
         return EffectInstance::eRenderRoIRetCodeFailed;
     }
 
     bool isAborted() const
     {
-        const AbortableRenderInfoPtr& abortInfo = _context->getAbortInfo();
-
-        return abortInfo && abortInfo->isAborted();
+        return isContextAborted(_context);
     }
 
     GpuImageLayout layoutOf(const FrameGraph::Task& task,
@@ -463,7 +576,7 @@ private:
         }
         const gpu::GpuStatus status = _runtime.acquire(size, *out);
         if (!status) {
-            return fail(memberTask, "cannot allocate device memory: " + status.message);
+            return failGpu(memberTask, "cannot allocate device memory", status);
         }
         notePeak();
 
@@ -904,6 +1017,10 @@ private:
     // Every transfer issued must land before the host memory it reads or writes goes away.
     void drain()
     {
+        // Waiting for a transfer fails at once after a loss, while an injected one leaves the device running it.
+        if (_runtime.isLost()) {
+            _runtime.device().drainQueues();
+        }
         for (Slot& slot : _slots) {
             if (slot.downloadImage) {
                 _runtime.wait(slot.downloadDone);
@@ -941,6 +1058,7 @@ private:
     std::size_t _peakDeviceBytes = 0;
     NodePtr _failedNode;
     std::string _failure;
+    FailureKind _failureKind;
 };
 
 #endif // NATRON_HAVE_GPU
@@ -960,23 +1078,83 @@ runGpuRegion(const FrameRenderContextPtr& context,
 
         return EffectInstance::eRenderRoIRetCodeFailed;
     }
+    RenderScheduler::RegionReport localReport;
+    if (!report) {
+        report = &localReport;
+    }
+    const RenderStatsPtr& stats = context->getStats();
+    const char* reason = kFallbackNoGpu;
+    std::string detail = "no GPU is available";
+    NodePtr node;
+    gpu::GpuRuntime* runtime = nullptr;
+
 #ifdef NATRON_HAVE_GPU
-    gpu::GpuRuntime* runtime = availableRuntime();
-    if (!runtime) {
-        logRegionFailure(NodePtr(), "no GPU is available");
+    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+    runtime = gpu ? gpu->runtime() : nullptr;
+    const auto lost = [&]() {
+        report->deviceLost = true;
+        logRegion(NodePtr(), QString::fromUtf8("GPU device lost; the frame is rendered again on the CPU"));
 
         return EffectInstance::eRenderRoIRetCodeFailed;
+    };
+    if (runtime && runtime->isLost()) {
+        return lost();
     }
-    RegionRun run(context, graph, region, *runtime, report);
-
-    return run.run(rootPlanes);
-#else
-    Q_UNUSED(rootPlanes);
-    Q_UNUSED(report);
-    logRegionFailure(NodePtr(), "this build has no GPU support");
-
-    return EffectInstance::eRenderRoIRetCodeFailed;
+    if (runtime && gpu->isAvailable()) {
+        for (int attempt = 0;; ++attempt) {
+            {
+                const bool outOfMemory = report->outOfDeviceMemory;
+                *report = RenderScheduler::RegionReport();
+                report->outOfDeviceMemory = outOfMemory;
+            }
+            RegionRun::FailureKind kind;
+            {
+                RegionRun run(context, graph, region, *runtime, report);
+                const EffectInstance::RenderRoIRetCode code = run.run(rootPlanes);
+                if (code != EffectInstance::eRenderRoIRetCodeFailed) {
+                    return code;
+                }
+                kind = run.failureKind();
+                node = run.failedNode();
+                detail = run.failure();
+            }
+            if (runtime->isLost()) {
+                return lost();
+            }
+            if (kind != RegionRun::FailureKind::OutOfMemory) {
+                reason = (kind == RegionRun::FailureKind::Refused) ? kFallbackRefused : kFallbackDeviceError;
+                break;
+            }
+            report->outOfDeviceMemory = true;
+            reason = kFallbackOutOfMemory;
+            if (attempt > 0) {
+                break;
+            }
+            // The run released its buffers when it ended, so what is evicted now makes room for the next one.
+            runtime->pool().evict(graph.regions[region].workingSetBytes);
+            if (stats) {
+                stats->noteGpuRegionRetry();
+            }
+            logRegion(node, QString::fromUtf8("GPU out of memory; retrying after evicting device buffers: %1").arg(QString::fromUtf8(detail.c_str())));
+        }
+    }
 #endif
+
+    report->cpuFallback = reason;
+    if (stats) {
+        stats->noteCpuFallback(reason);
+    }
+    logRegion(node, QString::fromUtf8("GPU region rendered on the CPU (%1): %2").arg(QString::fromUtf8(reason), QString::fromUtf8(detail.c_str())));
+
+    return renderMembersOnCpu(context, graph, region, runtime, rootPlanes, report);
+}
+
+std::shared_ptr<void>
+holdGpuRegionRuntime()
+{
+    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+
+    return gpu ? gpu->holdRuntime() : std::shared_ptr<void>();
 }
 
 bool

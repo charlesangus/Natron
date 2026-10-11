@@ -185,6 +185,8 @@ GpuRuntime::recreate()
             transfer_->releaseHostImports();
         }
         device_->waitIdle();
+    } else if (device_) {
+        device_->drainQueues();
     }
     teardown();
     // The fault already fired once; a fresh device would count from zero and fire it again.

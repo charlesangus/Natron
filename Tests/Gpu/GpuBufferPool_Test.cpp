@@ -103,6 +103,35 @@ TEST_F(GpuBufferPoolTest, EvictsLeastRecentlyUsedExactlyOnce)
     EXPECT_EQ(pool->stats().evictions, static_cast<uint64_t>(n));
 }
 
+TEST_F(GpuBufferPoolTest, EvictFreesPooledThenLeastRecentlyUsed)
+{
+    constexpr int n = 3;
+    std::vector<GpuBufferHandle> held(n);
+    std::vector<int> order;
+    for (int i = 0; i < n; ++i) {
+        ASSERT_TRUE(pool->acquire(8 * kMiB, held[i]).ok());
+        held[i].markEvictable([&, i] {
+            order.push_back(i);
+            held[i] = GpuBufferHandle();
+        });
+    }
+    {
+        GpuBufferHandle pooled;
+        ASSERT_TRUE(pool->acquire(4 * kMiB, pooled).ok());
+    }
+    ASSERT_GT(pool->stats().pooledBytes, 0u);
+    held[0].touch();
+
+    EXPECT_GE(pool->evict(12 * kMiB), 12 * kMiB);
+    EXPECT_EQ(order, (std::vector<int> { 1 }));
+    EXPECT_EQ(pool->stats().pooledBytes, 0u);
+    EXPECT_EQ(pool->stats().liveBytes, 2 * GpuBufferPool::sizeClass(8 * kMiB));
+
+    EXPECT_GE(pool->evict(~uint64_t(0)), 16 * kMiB);
+    EXPECT_EQ(order, (std::vector<int> { 1, 2, 0 }));
+    EXPECT_EQ(usage(), 0u);
+}
+
 TEST_F(GpuBufferPoolTest, LastReleaseReturnsBufferToPool)
 {
     GpuBufferHandle a;

@@ -169,7 +169,17 @@ public:
     void noteEviction();
     void noteGpuRegionRun();
     void noteGpuTaskRun(const std::string& nodeScriptName);
+
+    /**
+     * @brief Counts one region whose members were rendered on the CPU instead of the GPU, or one frame rendered again
+     * on the CPU after a device loss.
+     **/
     void noteCpuFallback(const std::string& reason);
+
+    /**
+     * @brief Counts one region run again on the GPU after it ran out of device memory and buffers were evicted.
+     **/
+    void noteGpuRegionRetry();
 
     /**
      * @brief Raises the high-water mark of bytes resident on the device.
@@ -182,6 +192,7 @@ public:
     unsigned long long getDownloadBytes() const;
     int getEvictions() const;
     int getGpuRegionsRun() const;
+    int getGpuRegionRetries() const;
     std::map<std::string, int> getGpuTasksPerNode() const;
     std::map<std::string, int> getCpuFallbackReasons() const;
     unsigned long long getPeakDeviceBytes() const;

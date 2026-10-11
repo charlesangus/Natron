@@ -162,9 +162,22 @@ public:
     std::string deviceName() const;
 
     /**
-     * @brief The runtime, or null while unavailable. Never null once isAvailable() returned true, until destruction.
+     * @brief The runtime once initialization succeeded, lost or not; null otherwise. Never null once isAvailable()
+     * returned true, until destruction.
      **/
     gpu::GpuRuntime* runtime() const;
+
+    /**
+     * @brief Keeps recoverIfLost() from recreating the runtime until the returned token is gone, for a holder of
+     * handles or images of the runtime, which a recreation would invalidate. Null while unavailable.
+     **/
+    std::shared_ptr<void> holdRuntime();
+
+    /**
+     * @brief Recreates the runtime when it was lost and no holdRuntime() token is alive. A failed recreation is not
+     * tried again for a few seconds, since every render start asks. Returns whether the runtime is usable.
+     **/
+    bool recoverIfLost();
 
 private:
 

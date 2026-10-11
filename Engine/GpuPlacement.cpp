@@ -607,6 +607,10 @@ bool
 placeRenderGraph(FrameGraph& graph,
                  const FrameRenderContextPtr& context)
 {
+    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+    if (gpu) {
+        gpu->recoverIfLost();
+    }
     if (!isGpuPlacementAvailable() || graph.tasks.empty() || !context) {
         return false;
     }

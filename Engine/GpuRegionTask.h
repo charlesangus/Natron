@@ -30,6 +30,7 @@
 
 #include <cstddef>
 #include <map>
+#include <memory>
 
 #include "Engine/EffectInstance.h"
 #include "Engine/EngineFwd.h"
@@ -52,7 +53,11 @@ NATRON_NAMESPACE_ENTER
  * intermediate is free for the next members once its last reader was recorded, and back in the pool once that work was
  * submitted. Nothing goes to the image cache.
  *
- * Fails the frame when no GPU is available or a member cannot render on it.
+ * When the device runs out of memory, the least recently used buffers are evicted and the region is run once more.
+ * When it runs out again, when a member cannot render on the GPU, or when no GPU is available, the members are rendered
+ * on the CPU with renderRoI instead, in topological order, as tasks outside every region would be, and the reason is
+ * counted in the frame's RenderStats. When the device is lost, it sets report->deviceLost and returns at once, for the
+ * scheduler renders the whole frame again on the CPU.
  **/
 EffectInstance::RenderRoIRetCode runGpuRegion(const FrameRenderContextPtr& context,
                                               const FrameGraph& graph,
@@ -60,6 +65,11 @@ EffectInstance::RenderRoIRetCode runGpuRegion(const FrameRenderContextPtr& conte
                                               int budget,
                                               std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
                                               RenderScheduler::RegionReport* report);
+
+/**
+ * @brief Keeps the application's GPU runtime from being recreated while the token is alive; null without a GPU.
+ **/
+std::shared_ptr<void> holdGpuRegionRuntime();
 
 /**
  * @brief Whether runGpuRegion() has a GPU to render on: the application's GpuContext is available.

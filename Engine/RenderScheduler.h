@@ -215,6 +215,11 @@ private:
  * member depends on has run, and its members are never run on their own. When it succeeded, each of those inputs is
  * released once per edge into a member, as the members would have released them, and the tasks outside it that consume
  * a member become ready as if the members had run. A region that fails or is aborted ends its frame as a task would.
+ *
+ * A region reporting a device loss does not end its frame: the frame's queued tasks are dropped, and once its running
+ * ones returned, whatever they produced is dropped with the store, every task is placed on the CPU and the leaves are
+ * queued again, the future still waiting. A frame with regions holds the GPU runtime from submit() until it finished
+ * or was restarted, so that the runtime is not recreated under the device images in its store.
  **/
 class RenderScheduler {
 public:
@@ -234,6 +239,15 @@ public:
         double kernelMs = 0.;
         double downloadMs = 0.;
         unsigned long long downloadBytes = 0;
+
+        // The device was lost: the scheduler renders the whole frame again on the CPU, whatever the body returned.
+        bool deviceLost = false;
+
+        // The device ran out of memory, which lowered the budget of the GPU pool.
+        bool outOfDeviceMemory = false;
+
+        // Why the members were rendered on the CPU rather than the GPU; empty when they were not.
+        std::string cpuFallback;
     };
 
     /**
@@ -243,7 +257,7 @@ public:
      * another, but not those of the region's external inputs, which the scheduler releases; and moves the planes of a
      * root output to rootPlanes. graph.tasks may hold entries past those the frame was submitted with, which the body
      * ignores. It may leave report untouched. It returns eRenderRoIRetCodeOk, or the code the frame fails or aborts
-     * with.
+     * with, unless it sets report->deviceLost.
      **/
     typedef std::function<EffectInstance::RenderRoIRetCode(const FrameRenderContextPtr& context,
                                                            const FrameGraph& graph,
@@ -269,6 +283,16 @@ public:
                                  double time,
                                  ViewIdx view,
                                  unsigned int mipmapLevel);
+
+    /**
+     * @brief Renders graph.tasks[task] with renderRoI as the scheduler runs a task outside every region, its images
+     * allocated with storage, on the calling thread, which must have the frame context installed. Leaves the frame's
+     * store alone.
+     **/
+    static EffectInstance::RenderRoIRetCode renderTaskOnCpu(const FrameGraph& graph,
+                                                            int task,
+                                                            StorageModeEnum storage,
+                                                            std::map<ImageLayerDesc, ImagePtr>* planes);
 
     /**
      * @brief Queues the tasks of graph. The context must stay unchanged until the future finished. An empty graph
@@ -403,7 +427,10 @@ private:
                       int task,
                       EffectInstance::RenderRoIRetCode retCode,
                       std::map<ImageLayerDesc, ImagePtr>&& planes,
-                      std::vector<FramePtr>* finished);
+                      std::vector<FramePtr>* finished,
+                      bool deviceLost = false);
+
+    void restartOnCpuLocked(const FramePtr& frame, std::vector<FramePtr>* finished);
 
     static void appendRegionTasks(Frame* frame);
 

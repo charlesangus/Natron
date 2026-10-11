@@ -314,6 +314,7 @@ struct RenderStatsPrivate
     std::atomic<unsigned long long> downloadBytes;
     std::atomic<int> evictions;
     std::atomic<int> gpuRegionsRun;
+    std::atomic<int> gpuRegionRetries;
     std::atomic<unsigned long long> peakDeviceBytes;
 
     // All guarded by lock.
@@ -340,6 +341,7 @@ struct RenderStatsPrivate
         , downloadBytes(0)
         , evictions(0)
         , gpuRegionsRun(0)
+        , gpuRegionRetries(0)
         , peakDeviceBytes(0)
         , gpuTasksPerNode()
         , cpuFallbackReasons()
@@ -595,6 +597,12 @@ RenderStats::noteGpuTaskRun(const std::string& nodeScriptName)
 }
 
 void
+RenderStats::noteGpuRegionRetry()
+{
+    ++_imp->gpuRegionRetries;
+}
+
+void
 RenderStats::noteCpuFallback(const std::string& reason)
 {
     QMutexLocker k(&_imp->lock);
@@ -644,6 +652,12 @@ int
 RenderStats::getGpuRegionsRun() const
 {
     return _imp->gpuRegionsRun.load();
+}
+
+int
+RenderStats::getGpuRegionRetries() const
+{
+    return _imp->gpuRegionRetries.load();
 }
 
 std::map<std::string, int>

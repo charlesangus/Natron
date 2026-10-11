@@ -183,7 +183,10 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     out.reset();
     std::unique_ptr<GpuDevice> dev(new GpuDevice);
     dev->debugMessage_ = options.debugMessage;
-    dev->fault_ = options.fault;
+    if (options.fault.kind != GpuFaultPlan::Kind::Off) {
+        dev->faultKind_.store(options.fault.kind);
+        dev->faultAt_.store(options.fault.atOperation);
+    }
     dev->onDeviceLost_ = options.onDeviceLost;
 
     if (GpuStatus s = createInstance(options.enableValidation || envFlag("NATRON_GPU_VALIDATION"),
@@ -492,13 +495,41 @@ GpuStatus
 GpuDevice::countOperation()
 {
     const uint64_t n = operations_.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (fault_.kind == GpuFaultPlan::Kind::Off || n != fault_.atOperation) {
+    const uint64_t at = faultAt_.load(std::memory_order_acquire);
+    if (at == 0 || n != at) {
         return {};
     }
-    if (fault_.kind == GpuFaultPlan::Kind::DeviceLost) {
+    const GpuFaultPlan::Kind kind = faultKind_.load(std::memory_order_acquire);
+    if (kind == GpuFaultPlan::Kind::Off) {
+        return {};
+    }
+    if (kind == GpuFaultPlan::Kind::DeviceLost) {
         return check(VK_ERROR_DEVICE_LOST, "injected fault");
     }
     return check(VK_ERROR_OUT_OF_DEVICE_MEMORY, "injected fault");
+}
+
+void
+GpuDevice::injectFault(GpuFaultPlan::Kind kind, uint64_t inOperations)
+{
+    if (kind == GpuFaultPlan::Kind::Off || inOperations == 0) {
+        faultAt_.store(0, std::memory_order_release);
+        faultKind_.store(GpuFaultPlan::Kind::Off, std::memory_order_release);
+        return;
+    }
+    faultKind_.store(kind, std::memory_order_release);
+    faultAt_.store(operations_.load(std::memory_order_relaxed) + inOperations, std::memory_order_release);
+}
+
+void
+GpuDevice::drainQueues()
+{
+    if (device_ == VK_NULL_HANDLE) {
+        return;
+    }
+    std::lock_guard<std::mutex> compute(computeQueue_.mutex);
+    std::lock_guard<std::mutex> transfer(transferQueue_.mutex);
+    vkDeviceWaitIdle(device_);
 }
 
 bool

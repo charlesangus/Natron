@@ -137,6 +137,45 @@ GpuBufferPool::trim()
     }
 }
 
+uint64_t
+GpuBufferPool::evict(uint64_t bytes)
+{
+    uint64_t freed = 0;
+    {
+        std::map<VkDeviceSize, std::vector<GpuBuffer>> doomed;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            doomed.swap(free_);
+            freed = stats_.pooledBytes;
+            stats_.pooledBytes = 0;
+        }
+    }
+    while (freed < bytes) {
+        std::function<void()> cb;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (lru_.empty()) {
+                break;
+            }
+            // As in acquire(): removed before the unlocked call so that the callback runs exactly once.
+            auto oldest = lru_.begin();
+            detail::BufferLease* victim = oldest->second;
+            cb = std::move(victim->onEvict);
+            victim->onEvict = nullptr;
+            victim->evictable = false;
+            freed += victim->buffer.size();
+            lru_.erase(oldest);
+            ++stats_.evictions;
+        }
+        if (cb) {
+            cb();
+        }
+    }
+    // An evicted buffer comes back to the free lists when its owner lets it go.
+    trim();
+    return freed;
+}
+
 GpuStatus
 GpuBufferPool::acquire(VkDeviceSize size, GpuBufferHandle& out)
 {

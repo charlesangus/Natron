@@ -205,6 +205,41 @@ TEST(GpuContextTest, MemoryBudgetIsApplied)
     EXPECT_LE(ctx.runtime()->pool().budget(), std::uint64_t(1024) << 20);
 }
 
+TEST(GpuContextTest, LostRuntimeIsRecreatedOnceNothingHoldsIt)
+{
+    LogCapture log;
+    GpuContext ctx(makeOptions(GpuResolvedMode::Force, log));
+
+    ASSERT_TRUE(ctx.waitForInit(std::chrono::seconds(60)));
+    if (!ctx.isAvailable()) {
+        if (std::getenv("NATRON_TEST_REQUIRE_GPU")) {
+            ADD_FAILURE() << "NATRON_TEST_REQUIRE_GPU is set but no Vulkan device is available";
+        } else {
+            std::fprintf(stderr, "no Vulkan device, skipping\n");
+        }
+        return;
+    }
+    EXPECT_TRUE(ctx.recoverIfLost());
+    gpu::GpuRuntime* rt = ctx.runtime();
+    rt->device().injectFault(gpu::GpuFaultPlan::Kind::DeviceLost, 1);
+    gpu::GpuBufferHandle handle;
+    EXPECT_EQ(rt->acquire(1 << 20, handle).result, VK_ERROR_DEVICE_LOST);
+    EXPECT_FALSE(ctx.isAvailable());
+    EXPECT_EQ(ctx.runtime(), rt);
+
+    std::shared_ptr<void> hold = ctx.holdRuntime();
+    ASSERT_TRUE(bool(hold));
+    EXPECT_FALSE(ctx.recoverIfLost());
+    EXPECT_FALSE(ctx.isAvailable());
+
+    hold.reset();
+    EXPECT_TRUE(ctx.recoverIfLost());
+    EXPECT_TRUE(ctx.isAvailable());
+    EXPECT_EQ(rt->state(), gpu::GpuRuntimeState::Ready);
+    EXPECT_TRUE(rt->acquire(1 << 20, handle).ok());
+    EXPECT_EQ(log.lines.size(), 1u);
+}
+
 TEST(GpuContextTest, InjectedFaultAtStartupDegradesSilently)
 {
     ScopedEnv fault("NATRON_GPU_FAULT", "lost@1");

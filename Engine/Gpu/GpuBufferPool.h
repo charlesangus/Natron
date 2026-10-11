@@ -100,6 +100,11 @@ public:
     // Destroys every pooled buffer.
     void trim();
 
+    // Frees at least `bytes` if it can: destroys the pooled buffers, then runs the eviction callbacks of the
+    // least-recently-used evictable buffers until enough was asked back, and destroys what their owners released.
+    // Returns the bytes freed or asked back.
+    uint64_t evict(uint64_t bytes);
+
     static VkDeviceSize sizeClass(VkDeviceSize size);
 
 private:

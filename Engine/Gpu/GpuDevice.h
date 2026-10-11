@@ -130,6 +130,15 @@ public:
     // Counts one operation against the fault plan and returns the injected failure when it is due.
     GpuStatus countOperation();
 
+    // Replaces the fault plan with one firing on the `inOperations`-th operation counted from now, for tests that
+    // need a fault at a point of a workload rather than at a count from creation. Kind::Off disarms it.
+    void injectFault(GpuFaultPlan::Kind kind, uint64_t inOperations);
+
+    // Waits until both queues are idle even once a loss was latched: an injected loss leaves the device running
+    // the work submitted before it, which may still read or write host memory its owner is about to free. On a
+    // device that is really lost the wait returns at once. Holds both queue locks for the wait.
+    void drainQueues();
+
 private:
     struct Queue {
         VkQueue handle = VK_NULL_HANDLE;
@@ -153,7 +162,9 @@ private:
     Queue computeQueue_;
     Queue transferQueue_;
 
-    GpuFaultPlan fault_;
+    // The fault plan, written by injectFault() while other threads count operations; faultAt_ 0 means none.
+    std::atomic<GpuFaultPlan::Kind> faultKind_ { GpuFaultPlan::Kind::Off };
+    std::atomic<uint64_t> faultAt_ { 0 };
     std::atomic<uint64_t> operations_ { 0 };
     std::function<void()> onDeviceLost_;
     std::atomic<bool> lost_ { false };

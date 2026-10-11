@@ -143,8 +143,14 @@ struct RenderScheduler::Frame {
     int runningTasks = 0;
     bool dead = false;
     bool finished = false;
+
+    // A region lost the device: the frame is rendered again on the CPU once its running tasks returned.
+    bool restartOnCpu = false;
     EffectInstance::RenderRoIRetCode retCode = EffectInstance::eRenderRoIRetCodeOk;
     std::map<ImageLayerDesc, ImagePtr> rootPlanes;
+
+    // Released only once the store holds no device image any more.
+    std::shared_ptr<void> gpuLease;
 };
 
 class RenderScheduler::NodeTask
@@ -641,6 +647,7 @@ RenderScheduler::submit(const FrameRenderContextPtr& context,
     const bool hasRegions = !frame->graph.regions.empty();
     if (hasRegions) {
         appendRegionTasks(frame.get());
+        frame->gpuLease = holdGpuRegionRuntime();
         poolDeviceBytesBudget = gpuRegionDeviceBytesBudget();
     }
 
@@ -1103,6 +1110,41 @@ failTaskWithReason(const EffectInstancePtr& effect,
 
 } // namespace
 
+EffectInstance::RenderRoIRetCode
+RenderScheduler::renderTaskOnCpu(const FrameGraph& graph,
+                                 int taskIndex,
+                                 StorageModeEnum storage,
+                                 std::map<ImageLayerDesc, ImagePtr>* planes)
+{
+    const FrameGraph::Task& task = graph.tasks[taskIndex];
+    EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
+    if (!effect) {
+        return EffectInstance::eRenderRoIRetCodeFailed;
+    }
+    const FrameGraph::Task& caller = task.consumerTasks.empty() ? task : graph.tasks[task.consumerTasks.front()];
+    EffectInstancePtr callerEffect = caller.key.node ? caller.key.node->getEffectInstance() : EffectInstancePtr();
+    EffectInstance::RenderRoIArgs args(task.key.time,
+                                       RenderScale::fromMipmapLevel(task.key.mipmapLevel),
+                                       task.key.mipmapLevel,
+                                       task.key.view,
+                                       false /*byPassCache*/,
+                                       task.roi,
+                                       RectD(),
+                                       task.components,
+                                       task.bitdepth,
+                                       false /*calledFromGetImage*/,
+                                       callerEffect.get(),
+                                       storage,
+                                       caller.key.time);
+    try {
+        return effect->renderRoI(args, planes);
+    } catch (const std::exception&) {
+        return EffectInstance::eRenderRoIRetCodeFailed;
+    } catch (...) {
+        return EffectInstance::eRenderRoIRetCodeFailed;
+    }
+}
+
 void
 RenderScheduler::executeTask(const FramePtr& frame,
                              int taskIndex,
@@ -1121,21 +1163,6 @@ RenderScheduler::executeTask(const FramePtr& frame,
     EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
 
     if (effect) {
-        const FrameGraph::Task& caller = task.consumerTasks.empty() ? task : frame->graph.tasks[task.consumerTasks.front()];
-        EffectInstancePtr callerEffect = caller.key.node ? caller.key.node->getEffectInstance() : EffectInstancePtr();
-        EffectInstance::RenderRoIArgs args(task.key.time,
-                                           RenderScale::fromMipmapLevel(task.key.mipmapLevel),
-                                           task.key.mipmapLevel,
-                                           task.key.view,
-                                           false /*byPassCache*/,
-                                           task.roi,
-                                           RectD(),
-                                           task.components,
-                                           task.bitdepth,
-                                           false /*calledFromGetImage*/,
-                                           callerEffect.get(),
-                                           task.storage,
-                                           caller.key.time);
         AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
         OpenMPThreadsScope openMPThreads(budget);
         ProfileSink& sink = profileSink();
@@ -1148,13 +1175,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
         if (frame->context->getStats()) {
             frame->context->getStats()->noteConcurrentTasks(rendering);
         }
-        try {
-            retCode = effect->renderRoI(args, &planes);
-        } catch (const std::exception&) {
-            retCode = EffectInstance::eRenderRoIRetCodeFailed;
-        } catch (...) {
-            retCode = EffectInstance::eRenderRoIRetCodeFailed;
-        }
+        retCode = renderTaskOnCpu(frame->graph, taskIndex, task.storage, &planes);
         --_tasksRendering;
         const long long wallNs = (profiling || observing) ? std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - renderStart).count() : 0;
         if (profiling) {
@@ -1229,6 +1250,7 @@ RenderScheduler::executeRegion(const FramePtr& frame,
         QMutexLocker k(&_mutex);
         body = _regionBody;
     }
+    bool deviceLost = false;
 
     if (body) {
         AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
@@ -1261,12 +1283,19 @@ RenderScheduler::executeRegion(const FramePtr& frame,
                                         report.downloadMs, report.downloadBytes);
             sink.append(lines);
         }
+        deviceLost = report.deviceLost && (retCode != EffectInstance::eRenderRoIRetCodeAborted);
+        if (report.outOfDeviceMemory) {
+            // The regions admitted from now on are held to what the device could give.
+            const std::size_t poolBudget = gpuRegionDeviceBytesBudget();
+            QMutexLocker k(&_mutex);
+            _poolDeviceBytesBudget = poolBudget;
+        }
     } else if (appPTR) {
         appPTR->writeToErrorLog_mt_safe(QString::fromUtf8("RenderScheduler"), QDateTime::currentDateTime(),
                                         QString::fromUtf8("Render task failed: a GPU region was scheduled with no region body set"));
     }
 
-    if (retCode == EffectInstance::eRenderRoIRetCodeOk) {
+    if ((retCode == EffectInstance::eRenderRoIRetCodeOk) && !deviceLost) {
         FrameStore& store = frame->context->getStore();
         for (std::vector<int>::const_iterator it = unit.dependencies.begin(); it != unit.dependencies.end(); ++it) {
             store.release(frame->graph.tasks[*it].key);
@@ -1279,7 +1308,7 @@ RenderScheduler::executeRegion(const FramePtr& frame,
         }
     }
 
-    completeTask(frame, taskIndex, retCode, std::move(planes), finished);
+    completeTask(frame, taskIndex, retCode, std::move(planes), finished, deviceLost);
 }
 
 void
@@ -1287,12 +1316,14 @@ RenderScheduler::completeTask(const FramePtr& frame,
                               int taskIndex,
                               EffectInstance::RenderRoIRetCode retCode,
                               std::map<ImageLayerDesc, ImagePtr>&& planes,
-                              std::vector<FramePtr>* finished)
+                              std::vector<FramePtr>* finished,
+                              bool deviceLost)
 {
     const FrameGraph::Task& task = frame->graph.tasks[taskIndex];
     int toStart = 0;
     int runnablePriority = 0;
     std::vector<ReadyRef> purgedOnFailure;
+    bool failsFrame = retCode == EffectInstance::eRenderRoIRetCodeFailed;
     {
         QMutexLocker k(&_mutex);
         --_outstandingRunnables;
@@ -1308,7 +1339,22 @@ RenderScheduler::completeTask(const FramePtr& frame,
             releaseSharedOutputLocked(task);
         }
 
-        if (retCode != EffectInstance::eRenderRoIRetCodeOk) {
+        if (deviceLost && !frame->dead && !frame->finished && !frame->restartOnCpu) {
+            frame->restartOnCpu = true;
+            // The store goes with the restart, so the inputs of the dropped tasks need no release.
+            std::vector<int> dropped;
+            purgeQueuedLocked(frame, &dropped);
+        }
+
+        const bool restarting = frame->restartOnCpu && !frame->dead;
+        if (restarting) {
+            // What a task returns while the frame waits for its restart is dropped with the store; a failure caused by
+            // the loss would only recur, or not, on the CPU.
+            failsFrame = false;
+            if (frame->runningTasks == 0) {
+                restartOnCpuLocked(frame, finished);
+            }
+        } else if (retCode != EffectInstance::eRenderRoIRetCodeOk) {
             markDeadLocked(frame, retCode);
             if (retCode == EffectInstance::eRenderRoIRetCodeFailed) {
                 abortLocked(frame, &purgedOnFailure, finished);
@@ -1317,11 +1363,12 @@ RenderScheduler::completeTask(const FramePtr& frame,
             markDeadLocked(frame, EffectInstance::eRenderRoIRetCodeAborted);
         }
 
-        if (frame->dead) {
+        // A restart may have dropped the task standing for a region, which task refers to.
+        if (!restarting && frame->dead) {
             if (frame->runningTasks == 0) {
                 finishLocked(frame, finished);
             }
-        } else {
+        } else if (!restarting) {
             if (task.consumers == 0) {
                 frame->rootPlanes = std::move(planes);
             }
@@ -1352,7 +1399,7 @@ RenderScheduler::completeTask(const FramePtr& frame,
     }
     startRunnables(toStart, runnablePriority);
 
-    if (retCode == EffectInstance::eRenderRoIRetCodeFailed) {
+    if (failsFrame) {
         releasePurgedInputs(purgedOnFailure);
         // The running siblings would otherwise render in full for a frame whose result is dropped.
         const AbortableRenderInfoPtr& abortInfo = frame->context->getAbortInfo();
@@ -1573,6 +1620,44 @@ RenderScheduler::finishLocked(const FramePtr& frame,
 }
 
 void
+RenderScheduler::restartOnCpuLocked(const FramePtr& frame,
+                                    std::vector<FramePtr>* finished)
+{
+    frame->restartOnCpu = false;
+    const AbortableRenderInfoPtr& abortInfo = frame->context->getAbortInfo();
+    if (abortInfo && abortInfo->isAborted()) {
+        markDeadLocked(frame, EffectInstance::eRenderRoIRetCodeAborted);
+        finishLocked(frame, finished);
+
+        return;
+    }
+    if (frame->context->getStats()) {
+        frame->context->getStats()->noteCpuFallback("device lost");
+    }
+    // No task of the frame runs or is queued, so nothing reads the store or the graph.
+    frame->context->getStore().clear();
+    frame->gpuLease.reset();
+    frame->rootPlanes.clear();
+
+    FrameGraph& graph = frame->graph;
+    graph.tasks.resize(frame->regionTasksBegin);
+    graph.regions.clear();
+    for (FrameGraph::Task& task : graph.tasks) {
+        task.device = FrameGraph::Device::Cpu;
+        task.regionId = -1;
+        task.storage = eStorageModeRAM;
+        task.estimatedDeviceBytes = 0;
+        task.remainingDeps = (int)task.dependencies.size();
+    }
+    frame->remainingTasks = (int)graph.tasks.size();
+    for (std::size_t i = 0; i < graph.tasks.size(); ++i) {
+        if (graph.tasks[i].remainingDeps == 0) {
+            pushReadyLocked(frame, (int)i);
+        }
+    }
+}
+
+void
 RenderScheduler::purgeQueuedLocked(const FramePtr& frame,
                                    std::vector<int>* purged)
 {
@@ -1722,6 +1807,7 @@ RenderScheduler::finalizeFrames(const std::vector<FramePtr>& finished)
         const FramePtr& frame = *it;
         // No task of a finished frame runs or is queued any more, so its fields are read without the lock.
         frame->context->getStore().clear();
+        frame->gpuLease.reset();
         if (frame->dead) {
             frame->future->finish(frame->retCode, std::map<ImageLayerDesc, ImagePtr>());
         } else {

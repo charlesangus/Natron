@@ -202,6 +202,25 @@ TEST_F(GpuRuntimeTest, InjectedOomDegradesAndShrinksBudget)
     EXPECT_EQ(rt->pool().budget(), before);
 }
 
+TEST_F(GpuRuntimeTest, InjectedFaultCountsFromNow)
+{
+    GpuStatus s = make();
+    GPUTEST_DEVICE_OR_SKIP(s.ok(), s.message);
+    EXPECT_EQ(runFill(), 0u);
+
+    rt->device().injectFault(GpuFaultPlan::Kind::OutOfMemory, 2);
+    GpuBufferHandle a, b, c;
+    EXPECT_TRUE(rt->acquire(kBytes, a).ok());
+    EXPECT_EQ(rt->acquire(kBytes, b).result, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+    EXPECT_TRUE(rt->acquire(kBytes, c).ok());
+    EXPECT_EQ(rt->state(), GpuRuntimeState::Degraded);
+
+    rt->device().injectFault(GpuFaultPlan::Kind::DeviceLost, 1);
+    rt->device().injectFault(GpuFaultPlan::Kind::Off, 0);
+    EXPECT_EQ(runFill(), 0u);
+    EXPECT_EQ(rt->state(), GpuRuntimeState::Degraded);
+}
+
 TEST_F(GpuRuntimeTest, RealPoolOomDegrades)
 {
     GpuStatus s = make();

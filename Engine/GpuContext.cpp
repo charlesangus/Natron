@@ -64,6 +64,11 @@ struct GpuContext::Shared
     GpuCalibration calibration;
     std::string deviceName;
 
+    // Taken before holders is read or changed, and held through a recreation.
+    std::mutex holdMutex;
+    int holders = 0;
+    std::chrono::steady_clock::time_point nextRecoveryAttempt;
+
 #ifdef NATRON_HAVE_GPU
     // Written before state becomes Ready and only reset by the destructor.
     std::unique_ptr<gpu::GpuRuntime> runtime;
@@ -205,6 +210,72 @@ GpuContext::runtime() const
 #endif
 
     return nullptr;
+}
+
+std::shared_ptr<void>
+GpuContext::holdRuntime()
+{
+    if (!runtime()) {
+        return std::shared_ptr<void>();
+    }
+    std::shared_ptr<Shared> shared = _shared;
+    {
+        std::lock_guard<std::mutex> k(shared->holdMutex);
+        ++shared->holders;
+    }
+
+    return std::shared_ptr<void>(static_cast<void*>(shared.get()), [shared](void*) {
+        std::lock_guard<std::mutex> k(shared->holdMutex);
+        --shared->holders;
+    });
+}
+
+bool
+GpuContext::recoverIfLost()
+{
+#ifdef NATRON_HAVE_GPU
+    gpu::GpuRuntime* rt = runtime();
+    if (!rt) {
+        return false;
+    }
+    if (!rt->isLost()) {
+        return true;
+    }
+    std::lock_guard<std::mutex> k(_shared->holdMutex);
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    if ((_shared->holders > 0) || (now < _shared->nextRecoveryAttempt)) {
+        return false;
+    }
+    if (!rt->isLost()) {
+        return true;
+    }
+    gpu::GpuStatus status;
+    {
+        // The free hook reaches the transfer, which the recreation replaces.
+        std::unique_lock<std::shared_mutex> hook(_shared->hookTarget->mutex);
+        status = rt->recreate();
+    }
+    std::string message;
+    if (status) {
+        if (_options.memoryBudgetMB > 0) {
+            rt->pool().setUserBudget(_options.memoryBudgetMB << 20);
+        }
+        message = "GPU compute recovered from a device loss";
+    } else {
+        _shared->nextRecoveryAttempt = now + std::chrono::seconds(10);
+        message = "GPU compute could not recover from a device loss: " + status.message;
+    }
+    if (_options.infoLog) {
+        _options.infoLog(message);
+    } else {
+        qInfo().noquote() << QString::fromStdString(message);
+    }
+
+    return status.ok();
+#else
+
+    return false;
+#endif
 }
 
 void

@@ -44,7 +44,7 @@ Scouting facts (2026-10-10, `main` at `6b0ec1f42`):
   - verify: `NATRON_BUILD_JOBS=4 tools/ci/local/build.sh debug`, then `ctest -R GoldenXml` in the devshell. It passes on unmodified code and fails when one knob default is changed by hand (spot-check, then revert). The build is required.
   - size: M
 
-- [ ] M93.P1.T2 — `Serialization/` library skeleton and include rule
+- [x] M93.P1.T2 — `Serialization/` library skeleton and include rule
   - files: new `Serialization/CMakeLists.txt`, new `Serialization/SerializationFwd.h`, new `Serialization/README.md`, `CMakeLists.txt`, `Engine/CMakeLists.txt`
   - approach: a static library `NatronSerialization` that depends on the std library only. `Serialization/BoostXml/` alone may include boost.serialization. Engine links it PUBLIC. The README states the rules: plain data only, no Engine/Gui/Qt/Python includes, conversion lives in Engine and Gui. Add the check to `lint-ci` (or a CMake configure-time grep): any `Serialization/**` file that includes `Engine/` or `Gui/` fails.
   - verify: compiled at P1.T6. A deliberately bad include, tried locally and not committed, makes the lint check fail.

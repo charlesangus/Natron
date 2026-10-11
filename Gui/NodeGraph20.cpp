@@ -128,8 +128,8 @@ buildSpliceMarkerPath(const QLineF& sceneSegment)
     }
     const QPointF normal(-dy, dx);
 
-    const double radius = TO_DPIX(6.);
-    const double barHalfLength = TO_DPIX(9.);
+    const double radius = TO_DPIX(12.);
+    const double barHalfLength = TO_DPIX(18.);
 
     QPainterPath path;
     path.addEllipse(QPointF(0., 0.), radius, radius);

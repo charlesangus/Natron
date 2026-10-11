@@ -25,6 +25,7 @@
 
 #include "RenderDialog.h"
 
+#include <algorithm>
 #include <limits>
 #include <memory>
 #include <vector>
@@ -34,19 +35,20 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QAbstractButton>
 #include <QCheckBox>
 #include <QDialogButtonBox>
+#include <QFrame>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QProgressBar>
 #include <QProgressDialog>
 #include <QPushButton>
-#include <QStringList>
-#include <QTreeWidget>
-#include <QTreeWidgetItem>
+#include <QScrollArea>
 #include <QVBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include <ofxImageEffect.h>
 
+#include "Engine/AppManager.h" // TO_DPIX, TO_DPIY
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
@@ -152,7 +154,6 @@ struct RenderDialogPrivate {
     int projectFirst;
     int projectLast;
 
-    QTreeWidget* writersTree;
     ComboBox* presetCombo;
     SpinBox* firstSpin;
     SpinBox* lastSpin;
@@ -166,7 +167,6 @@ struct RenderDialogPrivate {
         , writers()
         , projectFirst(1)
         , projectLast(1)
-        , writersTree(0)
         , presetCombo(0)
         , firstSpin(0)
         , lastSpin(0)
@@ -225,65 +225,102 @@ RenderDialog::RenderDialog(Gui* gui,
     _imp->projectLast = (int)projectLastD;
 
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
+    mainLayout->setSpacing(TO_DPIY(12));
 
-    _imp->writersTree = new QTreeWidget(this);
-    _imp->writersTree->setColumnCount(3);
-    QStringList headers;
-    headers << tr("Writer") << tr("Output File") << tr("Write Range");
-    _imp->writersTree->setHeaderLabels(headers);
-    _imp->writersTree->setRootIsDecorated(false);
-    _imp->writersTree->setSelectionMode(QAbstractItemView::NoSelection);
-    _imp->writersTree->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    // ---- Writers: a plain, read-only list (not a tree/table) since there is nothing here to
+    // edit or select. The output path is appended, dimmed, only when it fits on the same line;
+    // a long path would otherwise force the dialog as wide as the longest file name.
+    QGroupBox* writersGroup = new QGroupBox(tr("Writers"), this);
+    QVBoxLayout* writersGroupLayout = new QVBoxLayout(writersGroup);
+
+    QWidget* writersListWidget = new QWidget(writersGroup);
+    QVBoxLayout* writersListLayout = new QVBoxLayout(writersListWidget);
+    writersListLayout->setContentsMargins(0, 0, 0, 0);
+    writersListLayout->setSpacing(TO_DPIY(4));
+
+    const int kMaxInlineLineChars = 80;
     for (std::vector<WriterRowInfo>::const_iterator it = _imp->writers.begin(); it != _imp->writers.end(); ++it) {
-        RenderRange writerRange = resolveRenderRange(eRenderRangePresetWriteNodeRange,
-                                                     it->writerFirst, it->writerLast, it->writerStep,
-                                                     _imp->projectFirst, _imp->projectLast,
-                                                     RenderRangeCustom());
-        QString rangeText = writerRange.error
-            ? tr("invalid")
-            : QString::fromUtf8("%1-%2").arg(writerRange.first).arg(writerRange.last);
-        QTreeWidgetItem* item = new QTreeWidgetItem(_imp->writersTree);
-        item->setText(0, QString::fromUtf8(it->node->getLabel_mt_safe().c_str()));
-        item->setText(1, writerOutputFileName(it->node));
-        item->setText(2, rangeText);
+        QString name = QString::fromUtf8(it->node->getLabel_mt_safe().c_str());
+        QString path = writerOutputFileName(it->node);
+
+        QString text = name.toHtmlEscaped();
+        if (!path.isEmpty() && ((name.size() + path.size()) <= kMaxInlineLineChars)) {
+            text += QString::fromUtf8("&nbsp;&nbsp;<span style=\"color:#8c8c8c;\">%1</span>").arg(path.toHtmlEscaped());
+        }
+
+        Label* writerLabel = new Label(writersListWidget);
+        writerLabel->setTextFormat(Qt::RichText);
+        writerLabel->setText(text);
+        writersListLayout->addWidget(writerLabel);
     }
-    mainLayout->addWidget(_imp->writersTree);
+    writersListLayout->addStretch();
+
+    QScrollArea* writersScroll = new QScrollArea(writersGroup);
+    writersScroll->setFrameShape(QFrame::NoFrame);
+    writersScroll->setWidgetResizable(true);
+    writersScroll->setWidget(writersListWidget);
+    writersScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    writersScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    // Cap the list at a handful of rows so a project with many writers scrolls instead of
+    // growing the dialog past the screen.
+    const int maxVisibleRows = 6;
+    const int rowCount = std::max((int)_imp->writers.size(), 1);
+    writersScroll->setMaximumHeight(TO_DPIY(22) * std::min(rowCount, maxVisibleRows) + TO_DPIY(8));
+    writersGroupLayout->addWidget(writersScroll);
+    mainLayout->addWidget(writersGroup);
+
+    // ---- Frame range ----
+    QGroupBox* rangeGroup = new QGroupBox(tr("Frame Range"), this);
+    QVBoxLayout* rangeGroupLayout = new QVBoxLayout(rangeGroup);
+    rangeGroupLayout->setSpacing(TO_DPIY(8));
 
     QHBoxLayout* presetLayout = new QHBoxLayout();
-    Label* presetLabel = new Label(tr("Frame range:"), this);
-    _imp->presetCombo = new ComboBox(this);
+    Label* presetLabel = new Label(tr("Range:"), rangeGroup);
+    _imp->presetCombo = new ComboBox(rangeGroup);
     _imp->presetCombo->addItem(tr("Write node range"));
     _imp->presetCombo->addItem(tr("Project range"));
     _imp->presetCombo->addItem(tr("Custom"));
     presetLayout->addWidget(presetLabel);
     presetLayout->addWidget(_imp->presetCombo);
-    mainLayout->addLayout(presetLayout);
+    presetLayout->addStretch();
+    rangeGroupLayout->addLayout(presetLayout);
 
     QHBoxLayout* rangeLayout = new QHBoxLayout();
-    Label* firstLabel = new Label(tr("First:"), this);
-    _imp->firstSpin = new SpinBox(this, SpinBox::eSpinBoxTypeInt);
-    Label* lastLabel = new Label(tr("Last:"), this);
-    _imp->lastSpin = new SpinBox(this, SpinBox::eSpinBoxTypeInt);
-    Label* stepLabel = new Label(tr("Step:"), this);
-    _imp->stepSpin = new SpinBox(this, SpinBox::eSpinBoxTypeInt);
+    Label* firstLabel = new Label(tr("First:"), rangeGroup);
+    _imp->firstSpin = new SpinBox(rangeGroup, SpinBox::eSpinBoxTypeInt);
+    Label* lastLabel = new Label(tr("Last:"), rangeGroup);
+    _imp->lastSpin = new SpinBox(rangeGroup, SpinBox::eSpinBoxTypeInt);
+    Label* stepLabel = new Label(tr("Step:"), rangeGroup);
+    _imp->stepSpin = new SpinBox(rangeGroup, SpinBox::eSpinBoxTypeInt);
     _imp->stepSpin->setMinimum(0);
     rangeLayout->addWidget(firstLabel);
     rangeLayout->addWidget(_imp->firstSpin);
+    rangeLayout->addSpacing(TO_DPIX(12));
     rangeLayout->addWidget(lastLabel);
     rangeLayout->addWidget(_imp->lastSpin);
+    rangeLayout->addSpacing(TO_DPIX(12));
     rangeLayout->addWidget(stepLabel);
     rangeLayout->addWidget(_imp->stepSpin);
-    mainLayout->addLayout(rangeLayout);
+    rangeLayout->addStretch();
+    rangeGroupLayout->addLayout(rangeLayout);
 
-    _imp->errorLabel = new Label(this);
+    _imp->errorLabel = new Label(rangeGroup);
     _imp->errorLabel->setStyleSheet(QString::fromUtf8("color: red;"));
-    mainLayout->addWidget(_imp->errorLabel);
+    rangeGroupLayout->addWidget(_imp->errorLabel);
 
-    _imp->backgroundCheck = new QCheckBox(tr("Render in background (Progress panel)"), this);
-    mainLayout->addWidget(_imp->backgroundCheck);
+    mainLayout->addWidget(rangeGroup);
+
+    // ---- Mode ----
+    QGroupBox* modeGroup = new QGroupBox(tr("Mode"), this);
+    QVBoxLayout* modeGroupLayout = new QVBoxLayout(modeGroup);
+    _imp->backgroundCheck = new QCheckBox(tr("Render in background (Progress panel)"), modeGroup);
+    modeGroupLayout->addWidget(_imp->backgroundCheck);
+    mainLayout->addWidget(modeGroup);
 
     _imp->buttons = new DialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, Qt::Horizontal, this);
     mainLayout->addWidget(_imp->buttons);
+
+    setMinimumWidth(TO_DPIX(420));
 
     QObject::connect(_imp->presetCombo, SIGNAL(currentIndexChanged(int)), this, SLOT(onPresetChanged(int)));
     QObject::connect(_imp->firstSpin, SIGNAL(valueChanged(double)), this, SLOT(onRangeValueChanged(double)));

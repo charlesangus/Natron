@@ -505,9 +505,19 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - Full ctest passes in both modes on lavapipe.
   - size: L
 
+- [ ] M84.P7.T9 — Make strip pipelining overlap in real renders
+  - files: `Engine/GpuRegionTask.cpp`, `Engine/GpuRegionStrips.{h,cpp}`, `Engine/Gpu/GpuTransfer.{h,cpp}`, `Engine/HostImageMemory*` (if the cause is pinning), `Tests/GpuResidency_Test.cpp`
+  - approach: in the M84.P8.T2 release bench on RADV (`.local/m84p8/graph_bench_gbg.py`, G-B-G σ25 at 16384² and 24000²), stripped regions report `stripsInFlight` 3 but `transferHidden` 0–20 ms against 295–810 ms exposed, while P7.T8's in-test benchmark hid 274 ms. Find why (candidates: first-touch or pinning of fresh download images on the region thread every frame, host-import vs staging, the pipeline falling back, or a measurement bug), fix it, and re-run the 16k and 24k G-B-G bench.
+  - verify:
+    - in the release bench on RADV, a 16k and a 24k stripped region show most of the transfer time hidden;
+    - wall time improves on the P8.T2 numbers (16k 4.44 s, 24k 9.10 s);
+    - tiled still matches untiled exactly;
+    - full ctest passes in both modes on lavapipe.
+  - size: L
+
 ## Phase 84.8: Benches and close-out
 
-- [ ] M84.P8.T1 — Quick directional bench: no regression in CPU-only renders
+- [x] M84.P8.T1 — Quick directional bench: no regression in CPU-only renders
   - files: none (results go in Decisions)
   - approach:
     - Release builds of `main` (pre-M84) and the milestone, both with `NATRON_GPU=off`.
@@ -566,6 +576,7 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
   - P7.T6 after P7.T3 and P7.T4.
   - P7.T7 after P7.T6; P7.T6 is checked off together with it.
   - P7.T8 after P7.T7 (same files).
+  - P7.T9 after P8.T2 (found by it).
 - **Phase 8:**
   - P8.T1 after Phase 7.
   - P8.T2 after Phase 7 and P6.T3.
@@ -796,3 +807,32 @@ Scouted facts this plan relies on (2026-10-10, `main` at `938e77662`, spike at `
     - first-frame pinning of fresh download images on the region thread; pre-fault, or import on a helper thread;
     - a wait timeout without loss can return buffers in use (pre-existing);
     - contending regions on the out-of-memory ladder.
+- 2026-10-11 — M84.P8.T1 done: **no CPU-only regression; the milestone is faster.** Release (RelWithDebInfo) `main` `cd0f3f5f2` against the tip `1c06ea503`, `NATRON_GPU=off`, task-graph mode, UHD, interleaved, 3 rounds:
+
+  | Case | `main` | Milestone | Change |
+  |---|---|---|---|
+  | chain 30 | 1.12 s | 0.74 s | −34% |
+  | comp 50 | 1.76 s | 1.31 s | −25% |
+  | blurchain 10 | 1.11 s | 0.63 s | −43% |
+  | keying_grade, 12 frames | 13.26 s | 11.92 s | −10% |
+
+  The noise band is ≤ 2% (3.8% on keying_grade). The likely cause, not profiled, is the `HostImageMemory` pool plus the uninitialised Blur buffer. Logs are in the untracked `.local/m84p8/`; the `main` build is in the worktree `build/wt/main`.
+- 2026-10-11 — M84.P8.T2 run: **the direction holds.** RADV container, release tip, Auto vs Off, per-frame median including the Write. G-B-G is CheckerBoard → Grade → Blur σ25 → Grade, added in a local copy of `graph_bench.py`:
+
+  | Case | Off | Auto | Speedup |
+  |---|---|---|---|
+  | G-B-G, UHD | 0.279 s | 0.143 s | 1.95× |
+  | G-B-G, 8192² | 2.70 s | 1.49 s | 1.82× |
+  | G-B-G, 16384² (9 strips, 3 in flight) | 10.18 s | 4.44 s | 2.30× |
+  | G-B-G, 24000² (12 strips, 3 in flight) | 22.02 s | 9.10 s | 2.42× |
+  | blurchain σ25, UHD | | | 1.57× |
+  | blurchain σ25, 8192² | | | 1.49× |
+  | blurchain σ25, 16384² | | | 1.85× |
+  | blurchain σ25, 24000² | | | 1.96× |
+  | blurchain σ1.25, UHD | | | 1.38× |
+  | keying_grade, UHD, 12 frames | 12.15 s | 10.84 s | 1.12× |
+  | cg_multipass, UHD, 12 frames | 12.2 s | 9.7 s | 1.26× |
+
+  No comp is slower under Auto. The comp runs overlapped load of 4–6 from other sessions.
+  - **Placement:** keying_grade forms 55 regions, 44 of them single-node (Grade and Blur on the GPU, keyers and morphology on the CPU). cg_multipass forms 110 regions, 88 single-node. A single-node region spends about 12 ms of wall, about 11 ms of it exposed transfer around a ~2 ms kernel. If a slower link ever regresses, check the bandwidth calibration first. The warm-up frame runs fully on the CPU.
+  - **Finding:** the stripped regions at 16k and 24k hide only 0–20 ms of transfer against 295–810 ms exposed. **The strip pipeline is not overlapping in real renders.** New task M84.P7.T9 fixes this, and M84.P8.T2 is checked off once the 16k and 24k rows are re-run after it.
